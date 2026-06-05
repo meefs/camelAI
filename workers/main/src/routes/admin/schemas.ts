@@ -350,6 +350,7 @@ export const AppSchema = z.object({
   script_name: z.string(),
   org_id: z.string(),
   workspace_id: z.string(),
+  project_id: z.string().nullable().optional(),
   org_name: z.string().nullable().optional(),
   org_slug: z.string().nullable().optional(),
   workspace_name: z.string().nullable().optional(),
@@ -812,29 +813,6 @@ export const OrgUsageLogSumSchema = z.object({
   total_cache_read_input_tokens: z.number().int(),
   from_ms: z.number().int(),
   to_ms: z.number().int(),
-});
-
-export const BackfillHostUsageBodySchema = z.object({
-  org_ids: z.array(z.string()).optional(),
-  dry_run: z.boolean().optional().default(false),
-  page_limit: z.number().int().min(1).max(1000).optional().default(1000),
-  max_orgs: z.number().int().min(1).max(10_000).optional(),
-  max_entries: z.number().int().min(1).max(1_000_000).optional(),
-});
-
-export const BackfillHostUsageResponseSchema = z.object({
-  dry_run: z.boolean(),
-  orgs_scanned: z.number().int(),
-  legacy_entries_scanned: z.number().int(),
-  inserted: z.number().int(),
-  skipped_duplicates: z.number().int(),
-  errors: z.array(
-    z.object({
-      org_id: z.string(),
-      error: z.string(),
-    }),
-  ),
-  truncated: z.boolean(),
 });
 
 // ---------------------------------------------------------------------------

@@ -8,7 +8,7 @@ license: Complete terms in LICENSE.txt
 
 ## Python Environment Setup
 
-Common data analysis packages are **cached in the image** for instant installation. Initialize a Python project in the workspace if one doesn't exist:
+Install data analysis packages on demand. Initialize a Python project in the workspace if one does not exist:
 
 ```bash
 uv init --python 3.13
@@ -22,8 +22,6 @@ uv run jupyter nbconvert --to notebook --execute --inplace notebook.ipynb
 ```
 
 Add more packages with `uv add <package>`. The project's `pyproject.toml` and `.venv` persist across sessions. Skip `uv init` if `pyproject.toml` already exists.
-
-`google-cloud-bigquery`, `google-cloud-bigquery-storage`, and `google-auth` are cached in the image for fast `uv add`, but they are not preinstalled in the shared base interpreter.
 
 ## Database CLI
 
@@ -63,10 +61,10 @@ sqlite3 data.db "SELECT * FROM users LIMIT 10"
 
 | Package | Purpose | Status |
 |---------|---------|--------|
-| `pandas` | DataFrames and data manipulation | cached |
-| `numpy` | Numerical computing | cached |
-| `polars` | Fast DataFrame library (Rust-based) | cached |
-| `duckdb` | In-process SQL analytics | cached |
+| `pandas` | DataFrames and data manipulation | install with `uv add` |
+| `numpy` | Numerical computing | install with `uv add` |
+| `polars` | Fast DataFrame library (Rust-based) | install with `uv add` |
+| `duckdb` | In-process SQL analytics | install with `uv add` |
 
 ```python
 import pandas as pd
@@ -97,10 +95,10 @@ camelAI's notebook preview renders Altair and Plotly charts natively — not in 
 
 | Package | Purpose | Status |
 |---------|---------|--------|
-| `altair` | Declarative charts (Vega-Lite) — **preferred** | cached |
-| `plotly` | Interactive charts — use for 3D, maps, finance | cached |
-| `matplotlib` | Static plots (fallback) | cached |
-| `seaborn` | Statistical visualization (fallback) | cached |
+| `altair` | Declarative charts (Vega-Lite) — **preferred** | install with `uv add` |
+| `plotly` | Interactive charts — use for 3D, maps, finance | install with `uv add` |
+| `matplotlib` | Static plots (fallback) | install with `uv add` |
+| `seaborn` | Statistical visualization (fallback) | install with `uv add` |
 
 ```python
 # Altair (preferred — renders natively with dark/light theme support)
@@ -147,7 +145,7 @@ When outputting tabular data in notebooks, use plain pandas DataFrames — not `
 
 **Never output tables as raw HTML** (e.g., manually constructing `<table>` tags or using `IPython.display.HTML("<table>...")`). Always use pandas DataFrames for tabular output — the rendering environment detects DataFrames automatically and applies theme-aware styling, sortable columns, row filtering, and CSV export. Raw HTML tables bypass all of this and render unstyled in an iframe.
 
-The sandbox pre-configures pandas to show up to 200 rows and 200 characters per cell in notebook HTML output. You do not need to add `pd.set_option` calls for display limits unless the user asks for different values.
+Set pandas display options explicitly only when the user asks for different table display limits.
 
 Only use `df.style` when the user explicitly requests conditional formatting, cell-level color coding, or other per-cell visual logic that can't be achieved with a plain table.
 
@@ -193,7 +191,7 @@ After creating or updating a notebook, set the active chat preview to the notebo
 
 ```text
 set_preview(
-  path="/home/claude/analysis.ipynb",
+  path="/workspace/analysis.ipynb",
   content_type="application/x-ipynb+json"
 )
 ```
@@ -231,8 +229,8 @@ The user can toggle to Notebook mode to see all cells, code, and execution count
 
 | Package | Purpose | Status |
 |---------|---------|--------|
-| `scipy` | Scientific computing, optimization | cached |
-| `scikit-learn` | Machine learning algorithms | cached |
+| `scipy` | Scientific computing, optimization | install with `uv add` |
+| `scikit-learn` | Machine learning algorithms | install with `uv add` |
 
 ```python
 from sklearn.model_selection import train_test_split
@@ -247,12 +245,12 @@ predictions = model.predict(X_test)
 
 | Package | Purpose | Status |
 |---------|---------|--------|
-| `sqlalchemy` | Python ORM and database toolkit | cached |
-| `psycopg` | PostgreSQL driver | cached |
+| `sqlalchemy` | Python ORM and database toolkit | install with `uv add` |
+| `psycopg` | PostgreSQL driver | install with `uv add` |
 | `pymysql` | MySQL driver | `uv add pymysql` |
-| `google-cloud-bigquery` | BigQuery client | cached |
-| `google-cloud-bigquery-storage` | BigQuery Storage API client for faster downloads | cached |
-| `google-auth` | Google authentication (used for BigQuery tokens) | cached |
+| `google-cloud-bigquery` | BigQuery client | install with `uv add` |
+| `google-cloud-bigquery-storage` | BigQuery Storage API client for faster downloads | install with `uv add` |
+| `google-auth` | Google authentication (used for BigQuery tokens) | install with `uv add` |
 
 ### SQL Server / PostgreSQL / MySQL (Primary: Worker `DATA_PROXY` service binding)
 
@@ -321,12 +319,12 @@ mysql_df = pd.read_sql("SELECT * FROM orders", mysql_engine)
 
 | Package | Purpose | Status |
 |---------|---------|--------|
-| `pyarrow` | Parquet, Arrow files | cached |
-| `openpyxl` | Excel (.xlsx) read/write | cached |
-| `xlsxwriter` | Excel creation with formatting | cached |
-| `pdfplumber` | PDF text and table extraction | cached |
-| `python-docx` | Word documents | cached |
-| `python-pptx` | PowerPoint files | cached |
+| `pyarrow` | Parquet, Arrow files | install with `uv add` |
+| `openpyxl` | Excel (.xlsx) read/write | install with `uv add` |
+| `xlsxwriter` | Excel creation with formatting | install with `uv add` |
+| `pdfplumber` | PDF text and table extraction | install with `uv add` |
+| `python-docx` | Word documents | install with `uv add` |
+| `python-pptx` | PowerPoint files | install with `uv add` |
 
 ```python
 # Read Excel
@@ -361,7 +359,7 @@ Database connection credentials are available through the virtual connections bi
 
 | Package | Purpose | Status |
 |---------|---------|--------|
-| `statsmodels` | Statistical modeling, time series | cached |
-| `xgboost` | Gradient boosting | cached |
+| `statsmodels` | Statistical modeling, time series | install with `uv add` |
+| `xgboost` | Gradient boosting | install with `uv add` |
 | `geopandas` | Geospatial data | `uv add geopandas` |
 | `opencv-python-headless` | Computer vision | `uv add opencv-python-headless` |

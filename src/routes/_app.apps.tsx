@@ -201,6 +201,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
             preview_status: script.preview_status,
             preview_error: script.preview_error,
             config_path: script.config_path,
+            project_id: script.project_id,
             custom_domain_hostname: script.custom_domain_hostname,
             custom_domain_cf_hostname_id: script.custom_domain_cf_hostname_id,
             custom_domain_status: script.custom_domain_status,

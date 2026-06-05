@@ -3,9 +3,6 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 vi.mock('cloudflare:workers', () => ({
   DurableObject: class {},
 }));
-vi.mock('@cloudflare/containers', () => ({
-  Container: class {},
-}));
 
 const getSessionMock = vi.fn();
 const getEnvMock = vi.fn();

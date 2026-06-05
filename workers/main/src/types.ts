@@ -4,25 +4,44 @@
 
 import type { ChatEnv } from "./chat-thread-do.js";
 import type { DOEnv } from "./auth.js";
-import type { WorkspaceContainerEnv } from "./workspace-container.js";
 import type { DataProxyEnv } from "./data-proxy.js";
 import type { CfApiProxyEnv } from "./cf-api-proxy.js";
 import type { McpEnv } from "./mcp-handler.js";
 import type { WorkspaceDO } from "./workspace.js";
 import type { WorkerLogsDO } from "./worker-logs-do.js";
 import type { EmailHandleDO } from "./email-handle-registry.js";
+import type { MigrationPlanningAgent } from "./legacy-workspace-migration-workflow.js";
 import type {
   SlackTeamRegistryDO,
   TelegramRegistryDO,
 } from "./channel-registries.js";
 import type { AppScreenshotJob } from "./screenshot-queue.js";
 import type { SlackEventQueueMessage } from "./slack-types.js";
+import type { ArtifactsRepo } from "./workspace-filesystem-do.js";
+
+interface ArtifactsBinding {
+  create(
+    name: string,
+    options?: {
+      readOnly?: boolean;
+      description?: string;
+      setDefaultBranch?: string;
+    },
+  ): Promise<{
+    id?: string;
+    name: string;
+    remote: string;
+    defaultBranch?: string;
+    status?: "ready" | "creating" | "importing" | "forking";
+    token?: string;
+  }>;
+  get(name: string): Promise<ArtifactsRepo>;
+}
 
 export interface Env
   extends
     ChatEnv,
     DOEnv,
-    WorkspaceContainerEnv,
     DataProxyEnv,
     Omit<CfApiProxyEnv, "CHAT_THREAD">,
     Omit<McpEnv, "CHAT_THREAD" | "MCP_OBJECT"> {
@@ -35,6 +54,7 @@ export interface Env
   APP_SCREENSHOT_QUEUE?: Queue<AppScreenshotJob>;
   SLACK_EVENTS_QUEUE?: Queue<SlackEventQueueMessage>;
   BROWSER?: Fetcher;
+  ARTIFACTS?: ArtifactsBinding;
   GOOGLE_CLIENT_ID?: string;
   GOOGLE_CLIENT_SECRET?: string;
   GITHUB_CLIENT_ID?: string;
@@ -74,9 +94,21 @@ export interface Env
   // Claude API Proxy (CF AI Gateway)
   CF_GATEWAY_NAME?: string;
   CF_GATEWAY_TOKEN?: string;
+  AI_GATEWAY_AUTH_TOKEN?: string;
   BEDROCK_REGION?: string;
   // Sandbox proxy shared secret
   SANDBOX_PROXY_SECRET?: string;
+  SANDBOX_PROXY_MTLS_CERT_SHA256?: string;
+  PROJECT_RUNTIME_SERVICE_URL?: string;
+  PROJECT_RUNTIME_SERVICE_BEARER_TOKEN?: string;
+  LEGACY_WORKSPACE_HOST?: Fetcher;
+  LEGACY_WORKSPACE_SERVICE_URL?: string;
+  PROJECT_RUNTIME_ARTIFACTS_PROXY_BASE?: string;
+  PROJECT_RUNTIME_PROXY_SECRET?: string;
+  PROJECT_RUNTIME_MTLS_CERT_SHA256?: string;
+  LEGACY_WORKSPACE_MIGRATIONS?: Workflow;
+  MIGRATION_PLANNING_AGENT?: DurableObjectNamespace<MigrationPlanningAgent>;
+  ENABLE_LEGACY_WORKSPACE_MIGRATION?: string;
   // Email handle registry (atomic handle claims)
   EMAIL_HANDLE?: DurableObjectNamespace<EmailHandleDO>;
   // Channel routing registries (strongly consistent routing state)

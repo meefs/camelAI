@@ -116,19 +116,19 @@ describe('normalizeWorkspacePath', () => {
 });
 
 describe('toContainerPath', () => {
-  it('maps root to /home/claude', () => {
-    expect(toContainerPath('/')).toBe('/home/claude');
+  it('maps root to /workspace', () => {
+    expect(toContainerPath('/')).toBe('/workspace');
   });
 
-  it('prepends /home/claude to workspace paths', () => {
+  it('prepends /workspace to workspace paths', () => {
     expect(toContainerPath('/app/index.html')).toBe(
-      '/home/claude/app/index.html'
+      '/workspace/app/index.html'
     );
   });
 
   it('preserves spaces in container paths', () => {
     expect(toContainerPath('/Screenshot 2026-01-23.png')).toBe(
-      '/home/claude/Screenshot 2026-01-23.png'
+      '/workspace/Screenshot 2026-01-23.png'
     );
   });
 });
@@ -160,7 +160,7 @@ describe('resolveContainerPath', () => {
 
   it('resolves macOS screenshot NBSP filename via directory listing', async () => {
     const container = mockContainer({
-      '/home/claude': [
+      '/workspace': [
         {
           name: 'Screenshot 2026-01-23 at 12.39.52\u00a0PM.png',
           type: 'file',
@@ -175,25 +175,25 @@ describe('resolveContainerPath', () => {
     );
 
     expect(result).toBe(
-      '/home/claude/Screenshot 2026-01-23 at 12.39.52\u00a0PM.png'
+      '/workspace/Screenshot 2026-01-23 at 12.39.52\u00a0PM.png'
     );
   });
 
   it('prefers exact match over normalized match', async () => {
     const container = mockContainer({
-      '/home/claude': [
+      '/workspace': [
         { name: 'my file.txt', type: 'file' },
         { name: 'my\u00a0file.txt', type: 'file' },
       ],
     });
 
     const result = await resolveContainerPath(container, '/my file.txt');
-    expect(result).toBe('/home/claude/my file.txt');
+    expect(result).toBe('/workspace/my file.txt');
   });
 
   it('returns null when no match found', async () => {
     const container = mockContainer({
-      '/home/claude': [{ name: 'other-file.txt', type: 'file' }],
+      '/workspace': [{ name: 'other-file.txt', type: 'file' }],
     });
 
     const result = await resolveContainerPath(
@@ -205,7 +205,7 @@ describe('resolveContainerPath', () => {
 
   it('returns null when multiple ambiguous normalized matches exist', async () => {
     const container = mockContainer({
-      '/home/claude': [
+      '/workspace': [
         { name: 'file\u00a0name.txt', type: 'file' },
         { name: 'file\u202fname.txt', type: 'file' },
       ],
@@ -217,8 +217,8 @@ describe('resolveContainerPath', () => {
 
   it('resolves nested paths segment by segment', async () => {
     const container = mockContainer({
-      '/home/claude': [{ name: 'my\u00a0folder', type: 'directory' }],
-      '/home/claude/my\u00a0folder': [
+      '/workspace': [{ name: 'my\u00a0folder', type: 'directory' }],
+      '/workspace/my\u00a0folder': [
         { name: 'my\u00a0file.txt', type: 'file' },
       ],
     });
@@ -227,12 +227,12 @@ describe('resolveContainerPath', () => {
       container,
       '/my folder/my file.txt'
     );
-    expect(result).toBe('/home/claude/my\u00a0folder/my\u00a0file.txt');
+    expect(result).toBe('/workspace/my\u00a0folder/my\u00a0file.txt');
   });
 
   it('returns null if intermediate segment is not a directory', async () => {
     const container = mockContainer({
-      '/home/claude': [{ name: 'not-a-dir', type: 'file' }],
+      '/workspace': [{ name: 'not-a-dir', type: 'file' }],
     });
 
     const result = await resolveContainerPath(
@@ -242,10 +242,10 @@ describe('resolveContainerPath', () => {
     expect(result).toBeNull();
   });
 
-  it('returns /home/claude for root path', async () => {
+  it('returns /workspace for root path', async () => {
     const container = mockContainer({});
     const result = await resolveContainerPath(container, '/');
-    expect(result).toBe('/home/claude');
+    expect(result).toBe('/workspace');
   });
 
   it('returns null when listFiles throws', async () => {
@@ -259,11 +259,11 @@ describe('resolveContainerPath', () => {
 
   it('uses absolutePath from listing entry when available', async () => {
     const container = mockContainer({
-      '/home/claude': [
+      '/workspace': [
         {
           name: 'Screenshot\u00a0PM.png',
           type: 'file',
-          absolutePath: '/home/claude/Screenshot\u00a0PM.png',
+          absolutePath: '/workspace/Screenshot\u00a0PM.png',
         },
       ],
     });
@@ -272,6 +272,6 @@ describe('resolveContainerPath', () => {
       container,
       '/Screenshot PM.png'
     );
-    expect(result).toBe('/home/claude/Screenshot\u00a0PM.png');
+    expect(result).toBe('/workspace/Screenshot\u00a0PM.png');
   });
 });

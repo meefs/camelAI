@@ -2,9 +2,8 @@
  * Shared helpers for the external API routes.
  */
 
-import { getEnv, type CloudflareEnv } from './cloudflare.server';
+import type { CloudflareEnv } from './cloudflare.server';
 import { ExtApiOAuthProvider, type TokenGrantRecord } from '../../workers/main/src/external-api-oauth';
-import { WorkspaceContainer } from '../../workers/main/src/workspace-container';
 import { getEnvPrefix } from '../../workers/main/src/cf-api-proxy';
 import type { AppLoadContext } from 'react-router';
 
@@ -30,10 +29,6 @@ export async function requireBearerAuth(request: Request, env: CloudflareEnv): P
   const grant = await oauth.verifyAccessToken(h.slice(7));
   if (!grant) return err('Invalid or expired token', 401);
   return grant;
-}
-
-export function getContainer(env: CloudflareEnv, grant: TokenGrantRecord): WorkspaceContainer {
-  return new WorkspaceContainer(env as any, grant.workspace_id, grant.org_id);
 }
 
 export function getVanityDomain(env: CloudflareEnv): string {

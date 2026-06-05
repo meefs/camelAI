@@ -6,15 +6,13 @@
  */
 
 import { waitUntil } from "cloudflare:workers";
-import {
-  isSignedToken,
-  validateSignedToken,
-  createSignedToken,
-} from "./signed-tokens.js";
-import { validateSandboxProxy } from "./sandbox-auth.js";
+import { createSignedToken } from "./signed-tokens.js";
+import { validateProjectRuntimeProxy, validateSandboxProxy } from "./sandbox-auth.js";
 import type { OrgDO } from "./auth.js";
 import type { WorkspaceDO } from "./workspace.js";
 import { getBillingPlanLimits } from "../../../src/lib/billing-plans.js";
+import { workspaceIdFromGlobalProjectId } from "./project-vm-protocol.js";
+import type { WorkspaceFilesystemDO } from "./workspace-filesystem-do.js";
 
 const VIRTUAL_DATA_PROXY_BINDING_NAME = "DATA_PROXY";
 const VIRTUAL_CONNECTIONS_BINDING_NAME = "CONNECTIONS";
@@ -167,9 +165,6 @@ export function validateBindings(
   };
 }
 
-// Re-export for index.ts to use
-export const CHIRIDION_DEPLOY_TOKEN_HEADER = "X-Chiridion-Deploy-Token";
-
 const DISPATCH_SCRIPT_UPLOAD =
   /^\/client\/v4\/accounts\/[^/]+\/workers\/dispatch\/namespaces\/[^/]+\/scripts\/[^/]+$/;
 const DISPATCH_SCRIPT_BASE =
@@ -195,10 +190,14 @@ export interface CfApiProxyEnv {
   EMAIL_TO_USER: KVNamespace;
   APP_KV: KVNamespace;
   WORKSPACE: DurableObjectNamespace<WorkspaceDO>;
+  WORKSPACE_FS: DurableObjectNamespace<WorkspaceFilesystemDO>;
   ORG: DurableObjectNamespace<OrgDO>;
   CHAT_THREAD: DurableObjectNamespace;
   WORKER_BASE_URL?: string;
   SANDBOX_PROXY_SECRET?: string;
+  SANDBOX_PROXY_MTLS_CERT_SHA256?: string;
+  PROJECT_RUNTIME_PROXY_SECRET?: string;
+  PROJECT_RUNTIME_MTLS_CERT_SHA256?: string;
   CF_ZONE_ID?: string;
   CF_CUSTOM_HOSTNAME_FALLBACK?: string;
   CF_CUSTOM_HOSTNAME_CNAME_TARGET?: string;
@@ -214,6 +213,7 @@ export interface DeploySideEffectsInfo {
   workspaceId: string;
   hostname: string;
   threadId?: string;
+  projectId?: string;
   configPath?: string;
 }
 
@@ -410,7 +410,7 @@ function stripInternalProxyHeaders(headers: Headers): void {
   headers.delete("x-chiridion-workspace-id");
   headers.delete("x-chiridion-user-id");
   headers.delete("x-chiridion-thread-id");
-  headers.delete(CHIRIDION_DEPLOY_TOKEN_HEADER);
+  headers.delete("x-chiridion-project-id");
 }
 
 // Patterns for requests that may contain bindings in JSON body
@@ -1120,6 +1120,16 @@ export async function findCustomHostnameByHostname(
 
 export interface ProxyCloudflareApiOptions {
   onDeploySideEffects: (info: DeploySideEffectsInfo) => Promise<void>;
+  trustedIdentity?: CloudflareApiProxyIdentity;
+}
+
+export interface CloudflareApiProxyIdentity {
+  orgId: string;
+  orgSlug?: string;
+  workspaceId: string;
+  userId?: string;
+  threadId?: string;
+  projectId?: string;
 }
 
 export async function proxyCloudflareApi(
@@ -1148,9 +1158,8 @@ export async function proxyCloudflareApi(
   const dispatchNamespace = env.CF_DISPATCH_NAMESPACE?.trim();
 
   // Asset uploads use Cloudflare-issued JWTs from assets-upload-session.
-  // Skip our deploy token validation and pass through - Cloudflare validates the JWT.
-  // Security: JWTs can only be obtained via assets-upload-session (which requires deploy token auth)
-  // and are tied to the script name.
+  // Skip our proxy-auth validation and pass through; Cloudflare validates the JWT
+  // and the upload session is tied to the script name.
   if (
     ASSETS_UPLOAD.test(url.pathname) &&
     request.method.toUpperCase() === "POST"
@@ -1186,131 +1195,114 @@ export async function proxyCloudflareApi(
     });
   }
 
-  // Check sandbox proxy secret first (static secret from sandbox host)
+  // Deploys must come from a trusted internal handler or an authenticated
+  // proxy that injects org/workspace/project identity headers.
   let orgId: string;
   let orgSlug: string | undefined;
   let workspaceId: string;
   let userId: string | undefined;
   let threadId: string | undefined;
+  let projectId: string | undefined;
 
-  const proxyAuth = validateSandboxProxy(request, env);
-  if (proxyAuth.valid) {
-    orgId = proxyAuth.orgId;
-    workspaceId = proxyAuth.workspaceId;
-    userId = proxyAuth.userId;
-    threadId = proxyAuth.threadId;
+  const trustedIdentity = options.trustedIdentity;
+  if (trustedIdentity) {
+    orgId = trustedIdentity.orgId;
+    orgSlug = trustedIdentity.orgSlug;
+    workspaceId = trustedIdentity.workspaceId;
+    userId = trustedIdentity.userId;
+    threadId = trustedIdentity.threadId;
+    projectId = trustedIdentity.projectId;
 
-    // Look up org_slug from OrgDO (needed for script namespacing)
-    const orgStub = env.ORG.get(
-      env.ORG.idFromName(orgId),
-    ) as DurableObjectStub<OrgDO>;
-    orgSlug = (await orgStub.getSlug()) ?? undefined;
     if (!orgSlug) {
-      console.warn("[cf-api-proxy] sandbox proxy: org has no slug", { orgId });
+      const orgStub = env.ORG.get(
+        env.ORG.idFromName(orgId),
+      ) as DurableObjectStub<OrgDO>;
+      orgSlug = (await orgStub.getSlug()) ?? undefined;
+    }
+    if (!orgSlug) {
+      console.warn("[cf-api-proxy] trusted sandbox proxy: org has no slug", {
+        orgId,
+      });
       return cfApiError(10003, "Authentication error: Org has no slug", 401);
     }
 
-    console.log("[cf-api-proxy] authenticated via sandbox proxy", {
+    console.log("[cf-api-proxy] authenticated via trusted sandbox outbound", {
       orgId,
       workspaceId,
       orgSlug,
     });
   } else {
-    const proxyToken =
-      request.headers.get(CHIRIDION_DEPLOY_TOKEN_HEADER)?.trim() ||
-      (() => {
-        const authHeader = request.headers.get("Authorization") ?? "";
-        const bearerMatch = authHeader.match(/^Bearer\s+(.+)\s*$/i);
-        return bearerMatch?.[1]?.trim() || null;
-      })();
+    const proxyAuth = validateSandboxProxy(request, env);
+    if (proxyAuth.valid) {
+      orgId = proxyAuth.orgId;
+      workspaceId = proxyAuth.workspaceId;
+      userId = proxyAuth.userId;
+      threadId = proxyAuth.threadId;
+      projectId = proxyAuth.projectId;
 
-    if (!proxyToken) {
-      console.warn("[cf-api-proxy] missing deploy token", {
-        method: request.method,
-        path: url.pathname,
-        hasAuthorizationHeader: !!request.headers.get("Authorization"),
-        hasDeployTokenHeader: !!request.headers.get(
-          CHIRIDION_DEPLOY_TOKEN_HEADER,
-        ),
-      });
-      return cfApiError(
-        10001,
-        "Authentication error: Missing deploy token",
-        401,
-      );
-    }
+      // Look up org_slug from OrgDO (needed for script namespacing)
+      const orgStub = env.ORG.get(
+        env.ORG.idFromName(orgId),
+      ) as DurableObjectStub<OrgDO>;
+      orgSlug = (await orgStub.getSlug()) ?? undefined;
+      if (!orgSlug) {
+        console.warn("[cf-api-proxy] sandbox proxy: org has no slug", { orgId });
+        return cfApiError(10003, "Authentication error: Org has no slug", 401);
+      }
 
-    // Validate signed deploy token (no KV lookup needed)
-    if (!isSignedToken(proxyToken)) {
-      console.warn("[cf-api-proxy] invalid deploy token format", {
-        method: request.method,
-        path: url.pathname,
-        tokenPrefix: proxyToken.slice(0, 8),
-      });
-      return cfApiError(
-        10002,
-        "Authentication error: Invalid deploy token format",
-        401,
-      );
-    }
-
-    const tokenPayload = await validateSignedToken(
-      env.TOKEN_SIGNING_SECRET,
-      proxyToken,
-    );
-    if (!tokenPayload) {
-      console.warn("[cf-api-proxy] invalid deploy token signature", {
-        method: request.method,
-        path: url.pathname,
-        tokenPrefix: proxyToken.slice(0, 8),
-      });
-      return cfApiError(
-        10002,
-        "Authentication error: Invalid deploy token",
-        401,
-      );
-    }
-
-    // Check for deploy scope
-    if (!tokenPayload.scopes.includes("deploy")) {
-      console.warn("[cf-api-proxy] deploy token lacks deploy scope", {
-        method: request.method,
-        path: url.pathname,
-        scopes: tokenPayload.scopes,
-      });
-      return cfApiError(
-        10002,
-        "Authentication error: Token lacks deploy scope",
-        401,
-      );
-    }
-
-    if (!tokenPayload.workspace_id) {
-      console.warn("[cf-api-proxy] deploy token missing workspace_id", {
-        method: request.method,
-        path: url.pathname,
-      });
-      return cfApiError(10003, "Authentication error: Invalid workspace", 401);
-    }
-
-    orgId = tokenPayload.org_id;
-    orgSlug = tokenPayload.org_slug;
-    workspaceId = tokenPayload.workspace_id;
-    userId = tokenPayload.user_id;
-    threadId = tokenPayload.thread_id;
-
-    // Require org_slug for deploy operations
-    if (!orgSlug) {
-      console.warn("[cf-api-proxy] deploy token missing org_slug", {
-        method: request.method,
-        path: url.pathname,
+      console.log("[cf-api-proxy] authenticated via sandbox proxy", {
         orgId,
+        workspaceId,
+        orgSlug,
       });
-      return cfApiError(
-        10003,
-        "Authentication error: Deploy token missing org_slug",
-        401,
-      );
+    } else {
+      const projectProxyAuth = validateProjectRuntimeProxy(request, env);
+      if (projectProxyAuth.valid) {
+        projectId = projectProxyAuth.projectId;
+        workspaceId = workspaceIdFromGlobalProjectId(projectId) ?? "";
+        if (!workspaceId) {
+          return cfApiError(10003, "Authentication error: Invalid project id", 401);
+        }
+        const workspaceStub = env.WORKSPACE.get(
+          env.WORKSPACE.idFromName(workspaceId),
+        ) as DurableObjectStub<WorkspaceDO>;
+        const workspaceFsStub = env.WORKSPACE_FS.get(
+          env.WORKSPACE_FS.idFromName(workspaceId),
+        ) as DurableObjectStub<WorkspaceFilesystemDO>;
+        const [workspaceInfo, project] = await Promise.all([
+          workspaceStub.getInfo(),
+          workspaceFsStub.getProject(projectId),
+        ]);
+        if (!workspaceInfo || !project) {
+          return cfApiError(10003, "Authentication error: Project not found", 401);
+        }
+        orgId = workspaceInfo.org_id;
+        const orgStub = env.ORG.get(
+          env.ORG.idFromName(orgId),
+        ) as DurableObjectStub<OrgDO>;
+        orgSlug = (await orgStub.getSlug()) ?? undefined;
+        if (!orgSlug) {
+          console.warn("[cf-api-proxy] project proxy: org has no slug", { orgId, projectId });
+          return cfApiError(10003, "Authentication error: Org has no slug", 401);
+        }
+        console.log("[cf-api-proxy] authenticated via project runtime proxy", {
+          orgId,
+          workspaceId,
+          orgSlug,
+          projectId,
+        });
+      } else {
+        console.warn("[cf-api-proxy] missing trusted deploy proxy identity", {
+          method: request.method,
+          path: url.pathname,
+          hasAuthorizationHeader: !!request.headers.get("Authorization"),
+        });
+        return cfApiError(
+          10001,
+          "Authentication error: Trusted deploy proxy identity required",
+          401,
+        );
+      }
     }
   }
 
@@ -1753,6 +1745,7 @@ export async function proxyCloudflareApi(
             workspaceId,
             hostname: url.hostname,
             threadId,
+            projectId,
             configPath,
           })
           .catch((err) => {
@@ -1790,7 +1783,7 @@ export async function proxyCloudflareApi(
         );
       }
 
-      // Auto-set preview if threadId is in the deploy token
+      // Auto-set preview when the authenticated proxy identity includes a thread.
       if (threadId) {
         waitUntil(
           (async () => {

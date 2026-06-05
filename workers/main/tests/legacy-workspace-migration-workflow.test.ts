@@ -1,0 +1,890 @@
+import { env } from "cloudflare:test";
+import { describe, expect, it } from "vitest";
+import {
+  applyMigrationAgentPlan,
+  appendUnclassifiedMiscProject,
+  buildLegacyWorkspaceMigrationDiagnostics,
+  buildLegacyWorkspaceMigrationSeedPlan,
+  detectWorkerAppSourcePaths,
+  buildMigrationPlanningPrompt,
+  buildMigrationPlanningResponsesRequest,
+  buildMigrationPlanningTextFormat,
+  buildLegacyWorkspaceNamingContext,
+  parseMigrationPlanningAiResult,
+  type MigrationDeployedAppContext,
+  type LegacyWorkspaceMigrationRuntimeReader,
+  type RuntimeFileEntry,
+} from "../src/legacy-workspace-migration-workflow";
+import { WorkspaceFilesystemClient } from "../src/workspace-filesystem-do";
+
+describe("legacy workspace migration workflow", () => {
+  it("builds an agent discovery seed plan from top-level legacy paths", () => {
+    const plan = buildLegacyWorkspaceMigrationSeedPlan({
+      entries: [
+        { name: "web-app", type: "directory", absolutePath: "/home/claude/web-app" },
+        { name: "README.md", type: "file", absolutePath: "/home/claude/README.md" },
+        { name: ".cache", type: "directory", absolutePath: "/home/claude/.cache" },
+      ],
+    });
+
+    expect(plan.projects).toEqual([
+      {
+        name: "web-app",
+        description: "Legacy workspace path web-app.",
+        sourcePaths: ["/home/claude/web-app"],
+        ignoreGlobs: [],
+        reason: "Allowed source path for agent-led migration discovery.",
+      },
+      {
+        name: "readme-md",
+        description: "Legacy workspace path README.md.",
+        sourcePaths: ["/home/claude/README.md"],
+        ignoreGlobs: [],
+        reason: "Allowed source path for agent-led migration discovery.",
+      },
+    ]);
+    expect(plan.workspaceFiles).toEqual([]);
+    expect(plan.unclassified).toEqual(["/home/claude/.cache"]);
+  });
+
+  it("preserves hidden planning-only paths in a deterministic misc project", () => {
+    const plan = appendUnclassifiedMiscProject({
+      projects: [
+        {
+          name: "web-app",
+          description: "Migrated app",
+          sourcePaths: ["/home/claude/web-app"],
+        },
+      ],
+      workspaceFiles: [],
+      unclassified: ["/home/claude/.cache", "/home/claude/.claude"],
+    });
+
+    expect(plan.projects).toEqual([
+      {
+        name: "web-app",
+        description: "Migrated app",
+        sourcePaths: ["/home/claude/web-app"],
+      },
+      {
+        name: "legacy-workspace-misc",
+        description: "Miscellaneous hidden, cache, tooling, and loose legacy workspace paths preserved during migration.",
+        sourcePaths: ["/home/claude/.cache", "/home/claude/.claude"],
+        ignoreGlobs: [],
+        reason: "Preserved automatically outside the AI naming step so hidden/tooling paths are still migrated.",
+      },
+    ]);
+    expect(plan.unclassified).toEqual([]);
+  });
+
+  it("builds AI naming context by traversing readable project files without sampling secrets", async () => {
+    const reads: string[] = [];
+    const listings = new Map<string, RuntimeFileEntry[]>([
+      [
+        "/home/claude/analysis",
+        [
+          { name: "README.md", type: "file", absolutePath: "/home/claude/analysis/README.md" },
+          { name: "customers.csv", type: "file", absolutePath: "/home/claude/analysis/customers.csv" },
+          { name: ".env", type: "file", absolutePath: "/home/claude/analysis/.env" },
+          { name: "outputs", type: "directory", absolutePath: "/home/claude/analysis/outputs" },
+        ],
+      ],
+    ]);
+    const runtime: LegacyWorkspaceMigrationRuntimeReader = {
+      async listLegacyWorkspace(_orgId, _workspaceId, path) {
+        const files = listings.get(path) ?? [];
+        return { files, count: files.length };
+      },
+      async readLegacyText(_orgId, _workspaceId, path) {
+        reads.push(path);
+        if (path.endsWith("README.md")) return "# Customer churn analysis\nNotebook and CSV exploration.";
+        if (path.endsWith("customers.csv")) return "name,churned\nAda,false\nGrace,true";
+        if (path.endsWith(".env")) return "TOKEN=secret";
+        return null;
+      },
+    };
+
+    const context = await buildLegacyWorkspaceNamingContext({
+      runtime,
+      orgId: "org-1",
+      workspaceId: "workspace-1",
+      plan: {
+        projects: [
+          {
+            name: "analysis",
+            description: "Migrated notebook or data project.",
+            sourcePaths: ["/home/claude/analysis"],
+          },
+        ],
+      },
+    });
+
+    expect(reads).toEqual([
+      "/home/claude/analysis/README.md",
+      "/home/claude/analysis/customers.csv",
+    ]);
+    expect(context.projects[0].entries).toEqual([
+      "file /home/claude/analysis/README.md",
+      "file /home/claude/analysis/customers.csv",
+      "dir /home/claude/analysis/outputs",
+    ]);
+    expect(context.projects[0].samples).toEqual([
+      { path: "/home/claude/analysis/README.md", text: "# Customer churn analysis\nNotebook and CSV exploration." },
+      { path: "/home/claude/analysis/customers.csv", text: "name,churned\nAda,false\nGrace,true" },
+    ]);
+  });
+
+  it("applies a Think migration plan while preserving source paths and unique slugs", () => {
+    const plan = {
+      workspaceFiles: [],
+      projects: [
+        {
+          name: "analysis",
+          description: "Old description",
+          sourcePaths: ["/home/claude/analysis"],
+        },
+        {
+          name: "misc",
+          description: "Misc files",
+          sourcePaths: ["/home/claude/README.md"],
+        },
+      ],
+    };
+
+    const updated = applyMigrationAgentPlan(plan, {
+      projects: [
+        {
+          name: "Customer Churn Analysis",
+          description: "Notebook and CSV work for customer churn exploration.",
+          sourcePaths: ["/home/claude/analysis"],
+        },
+        {
+          name: "Customer Churn Analysis",
+          description: "  Loose workspace notes.  ",
+          sourcePaths: ["/home/claude/README.md"],
+        },
+      ],
+    });
+
+    expect(updated.projects).toEqual([
+      {
+        name: "customer-churn-analysis",
+        description: "Notebook and CSV work for customer churn exploration.",
+        sourcePaths: ["/home/claude/analysis"],
+        ignoreGlobs: [],
+        reason: "Migration planning agent grouped these legacy workspace paths.",
+      },
+      {
+        name: "customer-churn-analysis-2",
+        description: "Loose workspace notes.",
+        sourcePaths: ["/home/claude/README.md"],
+        ignoreGlobs: [],
+        reason: "Migration planning agent grouped these legacy workspace paths.",
+      },
+    ]);
+  });
+
+  it("applies deployed app associations from a Think migration plan", () => {
+    const deployedApps: MigrationDeployedAppContext[] = [
+      {
+        scriptName: "customer-dashboard",
+        configPath: "/home/claude/analysis/wrangler.jsonc",
+        projectId: null,
+        updatedAt: 1_700_000_000_000,
+        isPublic: true,
+      },
+    ];
+    const plan = {
+      workspaceFiles: [],
+      projects: [
+        {
+          name: "analysis",
+          description: "Old description",
+          sourcePaths: ["/home/claude/analysis"],
+        },
+      ],
+    };
+
+    const updated = applyMigrationAgentPlan(plan, {
+      projects: [
+        {
+          name: "Customer Dashboard",
+          description: "Dashboard app for customer analysis.",
+          sourcePaths: ["/home/claude/analysis"],
+          deployedApps: ["customer-dashboard"],
+        },
+      ],
+    }, { deployedApps });
+
+    expect(updated.projects[0]).toMatchObject({
+      name: "customer-dashboard",
+      sourcePaths: ["/home/claude/analysis"],
+      deployedApps: ["customer-dashboard"],
+    });
+  });
+
+  it("drops deployed app associations without concrete source evidence", () => {
+    const plan = {
+      workspaceFiles: [],
+      projects: [
+        {
+          name: "basic-ai-agent",
+          description: "Old description",
+          sourcePaths: ["/home/claude/basic-ai-agent"],
+        },
+      ],
+    };
+
+    const updated = applyMigrationAgentPlan(plan, {
+      projects: [
+        {
+          name: "basic-ai-agent",
+          description: "Basic AI agent project.",
+          sourcePaths: ["/home/claude/basic-ai-agent"],
+          deployedApps: ["basic-ai-agent", "quick-notes"],
+        },
+      ],
+    }, {
+      deployedApps: [
+        {
+          scriptName: "basic-ai-agent",
+          configPath: null,
+          projectId: null,
+          updatedAt: 1,
+          isPublic: true,
+        },
+        {
+          scriptName: "quick-notes",
+          configPath: null,
+          projectId: null,
+          updatedAt: 1,
+          isPublic: true,
+        },
+      ],
+    });
+
+    expect(updated.projects[0]?.deployedApps).toEqual(["basic-ai-agent"]);
+  });
+
+  it("keeps deployed app associations when the config path is inside the project", () => {
+    const plan = {
+      workspaceFiles: [],
+      projects: [
+        {
+          name: "customer-dashboard",
+          description: "Old description",
+          sourcePaths: ["/home/claude/apps/customer-dashboard"],
+        },
+      ],
+    };
+
+    const updated = applyMigrationAgentPlan(plan, {
+      projects: [
+        {
+          name: "customer-dashboard",
+          description: "Customer dashboard worker.",
+          sourcePaths: ["/home/claude/apps/customer-dashboard"],
+          deployedApps: ["customer-dashboard"],
+        },
+      ],
+    }, {
+      deployedApps: [
+        {
+          scriptName: "customer-dashboard",
+          configPath: "/home/claude/apps/customer-dashboard/wrangler.jsonc",
+          projectId: null,
+          updatedAt: 1,
+          isPublic: true,
+        },
+      ],
+    });
+
+    expect(updated.projects[0]?.deployedApps).toEqual(["customer-dashboard"]);
+  });
+
+  it("preserves paths that the migration planning agent omits in misc", () => {
+    const plan = {
+      workspaceFiles: [],
+      projects: [
+        {
+          name: "analysis",
+          description: "Old description",
+          sourcePaths: ["/home/claude/analysis"],
+        },
+        {
+          name: "misc",
+          description: "Misc files",
+          sourcePaths: ["/home/claude/README.md"],
+        },
+      ],
+    };
+
+    const updated = applyMigrationAgentPlan(plan, {
+      projects: [
+        {
+          name: "analysis",
+          description: "Notebook and CSV work.",
+          sourcePaths: ["/home/claude/analysis"],
+        },
+      ],
+    });
+
+    expect(updated.projects).toEqual([
+      {
+        name: "analysis",
+        description: "Notebook and CSV work.",
+        sourcePaths: ["/home/claude/analysis"],
+        ignoreGlobs: [],
+        reason: "Migration planning agent grouped these legacy workspace paths.",
+      },
+      {
+        name: "legacy-workspace-misc",
+        description: "Miscellaneous legacy workspace paths preserved because the migration planning agent did not classify them.",
+        sourcePaths: ["/home/claude/README.md"],
+        ignoreGlobs: [],
+        reason: "Added automatically so every allowed legacy source path is migrated exactly once.",
+      },
+    ]);
+  });
+
+  it("coalesces model and safety misc projects into one leftover project", () => {
+    const plan = {
+      workspaceFiles: [],
+      projects: [
+        {
+          name: "app",
+          description: "Old description",
+          sourcePaths: ["/home/claude/app"],
+        },
+        {
+          name: "README.md",
+          description: "Old description",
+          sourcePaths: ["/home/claude/README.md"],
+        },
+        {
+          name: "notes.txt",
+          description: "Old description",
+          sourcePaths: ["/home/claude/notes.txt"],
+        },
+      ],
+      unclassified: ["/home/claude/.cache"],
+    };
+
+    const result = appendUnclassifiedMiscProject(applyMigrationAgentPlan(plan, {
+      projects: [
+        {
+          name: "app",
+          description: "Application source.",
+          sourcePaths: ["/home/claude/app"],
+        },
+        {
+          name: "misc",
+          description: "Loose notes.",
+          sourcePaths: ["/home/claude/README.md"],
+        },
+      ],
+    }));
+
+    const miscProjects = result.projects.filter((project) => project.name.includes("misc"));
+    expect(miscProjects).toHaveLength(1);
+    expect(miscProjects[0]).toMatchObject({
+      name: "legacy-workspace-misc",
+      sourcePaths: ["/home/claude/README.md", "/home/claude/notes.txt", "/home/claude/.cache"],
+    });
+  });
+
+  it("deduplicates source paths from migration planning agent proposals", () => {
+    const plan = {
+      workspaceFiles: [],
+      projects: [
+        {
+          name: "analysis",
+          description: "Old description",
+          sourcePaths: ["/home/claude/analysis"],
+        },
+        {
+          name: "misc",
+          description: "Misc files",
+          sourcePaths: ["/home/claude/README.md"],
+        },
+      ],
+    };
+
+    const updated = applyMigrationAgentPlan(plan, {
+      projects: [
+        {
+          name: "analysis",
+          description: "Notebook and CSV work.",
+          sourcePaths: ["/home/claude/analysis"],
+        },
+        {
+          name: "notes",
+          description: "Loose workspace notes.",
+          sourcePaths: ["/home/claude/analysis", "/home/claude/README.md"],
+        },
+      ],
+    });
+
+    expect(updated.projects.map((project) => project.sourcePaths)).toEqual([
+      ["/home/claude/analysis"],
+      ["/home/claude/README.md"],
+    ]);
+  });
+
+  it("rejects Think migration plans that invent deployed apps", () => {
+    const plan = {
+      workspaceFiles: [],
+      projects: [
+        {
+          name: "analysis",
+          description: "Old description",
+          sourcePaths: ["/home/claude/analysis"],
+        },
+      ],
+    };
+
+    expect(() => applyMigrationAgentPlan(plan, {
+      projects: [
+        {
+          name: "analysis",
+          description: "Notebook and CSV work.",
+          sourcePaths: ["/home/claude/analysis"],
+          deployedApps: ["unknown-app"],
+        },
+      ],
+    }, { deployedApps: [] })).toThrow("unknown deployed app: unknown-app");
+  });
+
+  it("includes deployed app metadata in the migration planning prompt", () => {
+    const prompt = JSON.parse(buildMigrationPlanningPrompt({
+      workspaceId: "workspace-1",
+      plan: {
+        workspaceFiles: [],
+        projects: [
+          {
+            name: "analysis",
+            description: "Legacy workspace path analysis.",
+            sourcePaths: ["/home/claude/analysis"],
+          },
+        ],
+      },
+      context: {
+        workspaceId: "workspace-1",
+        projects: [
+          {
+            index: 0,
+            currentName: "analysis",
+            currentDescription: "Legacy workspace path analysis.",
+            sourcePaths: ["/home/claude/analysis"],
+            entries: [
+              "file /home/claude/analysis/wrangler.jsonc",
+              "file /home/claude/analysis/package.json",
+            ],
+            samples: [],
+          },
+        ],
+      },
+      deployedApps: [
+        {
+          scriptName: "customer-dashboard",
+          configPath: "/home/claude/analysis/wrangler.jsonc",
+          projectId: null,
+          updatedAt: 1_700_000_000_000,
+          isPublic: true,
+        },
+      ],
+    }));
+
+    expect(prompt.deployed_apps).toEqual([
+      {
+        scriptName: "customer-dashboard",
+        configPath: "/home/claude/analysis/wrangler.jsonc",
+        projectId: null,
+        updatedAt: 1_700_000_000_000,
+        isPublic: true,
+      },
+    ]);
+    expect(prompt.hard_requirements).toContain(
+      "Associate a deployed app only when its configPath is inside one of the project's sourcePaths, its projectId clearly identifies that project, or its scriptName matches a project source directory name.",
+    );
+    expect(prompt.hard_requirements).toContain(
+      "Use at most one misc project for unrelated loose files, caches, dotfolders, or leftovers that still need to be moved.",
+    );
+    expect(prompt.hard_requirements).toContain(
+      "Do not include multiple independent Worker apps in the same project. If multiple source paths each contain a Wrangler config, return them as separate projects.",
+    );
+    expect(prompt.deployed_app_evidence_rules.instruction).toBe(
+      "Only include deployedApps with strong evidence. Weak evidence means leave the app unassociated.",
+    );
+    expect(prompt.project_detection_script).toContain("detectWorkerAppProjects");
+    expect(prompt.detected_worker_app_paths).toEqual(["/home/claude/analysis"]);
+  });
+
+  it("detects Worker app source paths from Wrangler config entries", () => {
+    expect(detectWorkerAppSourcePaths({
+      workspaceId: "workspace-1",
+      projects: [
+        {
+          index: 0,
+          currentName: "worker-app",
+          currentDescription: "Worker app.",
+          sourcePaths: ["/home/claude/worker-app"],
+          entries: [
+            "file /home/claude/worker-app/wrangler.toml",
+            "file /home/claude/worker-app/package.json",
+          ],
+          samples: [],
+        },
+        {
+          index: 1,
+          currentName: "notebook",
+          currentDescription: "Notebook work.",
+          sourcePaths: ["/home/claude/notebook"],
+          entries: ["file /home/claude/notebook/README.md"],
+          samples: [],
+        },
+      ],
+    })).toEqual(["/home/claude/worker-app"]);
+  });
+
+  it("carries 100 Worker app projects plus loose analysis files through planning context", async () => {
+    const workerEntries = Array.from({ length: 100 }, (_, index) => {
+      const name = `worker-app-${String(index + 1).padStart(3, "0")}`;
+      return { name, type: "directory" as const, absolutePath: `/home/claude/${name}` };
+    });
+    const looseAnalysisEntries = [
+      { name: "analysis.ipynb", type: "file" as const, absolutePath: "/home/claude/analysis.ipynb" },
+      { name: "customers.csv", type: "file" as const, absolutePath: "/home/claude/customers.csv" },
+      { name: "analysis-notes.md", type: "file" as const, absolutePath: "/home/claude/analysis-notes.md" },
+    ];
+    const plan = buildLegacyWorkspaceMigrationSeedPlan({
+      entries: [...workerEntries, ...looseAnalysisEntries],
+    });
+    const listings = new Map<string, RuntimeFileEntry[]>();
+    for (const entry of workerEntries) {
+      listings.set(entry.absolutePath, [
+        { name: "wrangler.jsonc", type: "file", absolutePath: `${entry.absolutePath}/wrangler.jsonc` },
+        { name: "package.json", type: "file", absolutePath: `${entry.absolutePath}/package.json` },
+        { name: "src", type: "directory", absolutePath: `${entry.absolutePath}/src` },
+      ]);
+    }
+    const runtime: LegacyWorkspaceMigrationRuntimeReader = {
+      async listLegacyWorkspace(_orgId, _workspaceId, path) {
+        const files = listings.get(path) ?? [];
+        return { files, count: files.length };
+      },
+      async readLegacyText(_orgId, _workspaceId, path) {
+        if (path.endsWith(".ipynb")) return "{\"cells\":[{\"source\":[\"Random data analysis notebook\"]}]}";
+        if (path.endsWith(".csv")) return "customer,value\nAda,10\nGrace,20";
+        if (path.endsWith(".md")) return "# Analysis notes\nLoose exploratory files.";
+        return null;
+      },
+    };
+
+    const context = await buildLegacyWorkspaceNamingContext({
+      runtime,
+      orgId: "org-1",
+      workspaceId: "workspace-1",
+      plan,
+    });
+    const prompt = JSON.parse(buildMigrationPlanningPrompt({
+      workspaceId: "workspace-1",
+      plan,
+      context,
+    }));
+    const expectedWorkerPaths = workerEntries.map((entry) => entry.absolutePath);
+    const expectedLoosePaths = looseAnalysisEntries.map((entry) => entry.absolutePath);
+
+    expect(context.projects).toHaveLength(103);
+    expect(prompt.allowed_source_paths).toHaveLength(103);
+    expect(prompt.detected_worker_app_paths).toHaveLength(100);
+    expect(prompt.detected_worker_app_paths).toEqual(expectedWorkerPaths);
+    expect(prompt.allowed_source_paths).toEqual([...expectedWorkerPaths, ...expectedLoosePaths]);
+
+    const updated = applyMigrationAgentPlan(plan, {
+      projects: [
+        ...workerEntries.map((entry) => ({
+          name: entry.name,
+          description: `Worker app ${entry.name}.`,
+          sourcePaths: [entry.absolutePath],
+        })),
+        {
+          name: "random-data-analysis",
+          description: "Loose notebook, CSV, and notes for exploratory data analysis.",
+          sourcePaths: expectedLoosePaths,
+        },
+      ],
+    });
+    const assignedPaths = updated.projects.flatMap((project) => project.sourcePaths);
+
+    expect(updated.projects).toHaveLength(101);
+    expect(new Set(assignedPaths).size).toBe(103);
+    expect(assignedPaths.sort()).toEqual([...expectedWorkerPaths, ...expectedLoosePaths].sort());
+    expect(updated.projects.slice(0, 100).every((project) => project.sourcePaths.length === 1)).toBe(true);
+  });
+
+  it("uses a structured output JSON schema text format for migration planning", () => {
+    const textFormat = buildMigrationPlanningTextFormat(["/home/claude/app"]);
+
+    expect(textFormat).toMatchObject({
+      type: "json_schema",
+      name: "legacy_workspace_migration_plan",
+      strict: true,
+      schema: {
+        type: "object",
+      },
+    });
+    const schema = textFormat.schema as {
+      properties: {
+        projects: {
+          items: {
+            required: string[];
+            properties: {
+              sourcePaths: {
+                items: {
+                  enum: string[];
+                };
+              };
+            };
+          };
+        };
+      };
+    };
+    expect(schema.properties.projects.items.required).toEqual([
+      "name",
+      "description",
+      "sourcePaths",
+      "deployedApps",
+      "reason",
+    ]);
+    expect(schema.properties.projects.items.properties.sourcePaths.items.enum).toEqual(["/home/claude/app"]);
+  });
+
+  it("builds a Cloudflare Responses API request for migration planning", () => {
+    const request = buildMigrationPlanningResponsesRequest("Plan this workspace", ["/home/claude/app"]);
+
+    expect(request).toMatchObject({
+      model: "gpt-5.5",
+      input: "Plan this workspace",
+      text: {
+        format: {
+          type: "json_schema",
+          name: "legacy_workspace_migration_plan",
+        },
+      },
+    });
+    expect(request.instructions).toContain(
+      "A source path containing wrangler.toml, wrangler.json, or wrangler.jsonc is usually its own Worker app project.",
+    );
+  });
+
+  it("parses Responses API structured output migration planning AI results", () => {
+    const plan = parseMigrationPlanningAiResult({
+      output: [
+        {
+          type: "message",
+          content: [
+            {
+              type: "output_text",
+              text: JSON.stringify({
+                projects: [
+                  {
+                    name: "analysis",
+                    description: "Notebook and CSV analysis.",
+                    sourcePaths: ["/home/claude/analysis"],
+                  },
+                ],
+              }),
+            },
+          ],
+        },
+      ],
+    });
+
+    expect(plan).toEqual({
+      projects: [
+        {
+          name: "analysis",
+          description: "Notebook and CSV analysis.",
+          sourcePaths: ["/home/claude/analysis"],
+        },
+      ],
+    });
+  });
+
+  it("parses output_text migration planning AI results", () => {
+    const plan = parseMigrationPlanningAiResult({
+      output_text: JSON.stringify({
+        projects: [
+          {
+            name: "analysis",
+            description: "Notebook and CSV analysis.",
+            sourcePaths: ["/home/claude/analysis"],
+          },
+        ],
+      }),
+    });
+
+    expect(plan).toEqual({
+      projects: [
+        {
+          name: "analysis",
+          description: "Notebook and CSV analysis.",
+          sourcePaths: ["/home/claude/analysis"],
+        },
+      ],
+    });
+  });
+
+  it("parses OpenAI-compatible message content migration planning AI results", () => {
+    const plan = parseMigrationPlanningAiResult({
+      choices: [
+        {
+          message: {
+            content: JSON.stringify({
+              projects: [
+                {
+                  name: "analysis",
+                  description: "Notebook and CSV analysis.",
+                  sourcePaths: ["/home/claude/analysis"],
+                  deployedApps: [],
+                  reason: "Single notebook project.",
+                },
+              ],
+            }),
+          },
+        },
+      ],
+    });
+
+    expect(plan).toEqual({
+      projects: [
+        {
+          name: "analysis",
+          description: "Notebook and CSV analysis.",
+          sourcePaths: ["/home/claude/analysis"],
+          deployedApps: [],
+          reason: "Single notebook project.",
+        },
+      ],
+    });
+  });
+
+  it("rejects migration planning AI results without structured output text", () => {
+    expect(() => parseMigrationPlanningAiResult({
+      choices: [
+        {
+          message: {
+            tool_calls: [],
+          },
+        },
+      ],
+    })).toThrow("returned no structured output text");
+  });
+
+  it("reports when deployed apps exist but the legacy source scan is empty", () => {
+    const diagnostics = buildLegacyWorkspaceMigrationDiagnostics({
+      legacyRoot: "/home/claude",
+      legacyFileCount: 0,
+      deployedApps: [
+        {
+          scriptName: "simple-web-app",
+          configPath: null,
+          projectId: null,
+          updatedAt: 1_700_000_000_000,
+          isPublic: true,
+        },
+      ],
+    });
+
+    expect(diagnostics).toMatchObject({
+      legacyRoot: "/home/claude",
+      legacyFileCount: 0,
+      deployedAppCount: 1,
+      deployedAppNames: ["simple-web-app"],
+      warnings: [
+        expect.stringContaining("migration source is probably not connected to the legacy sandbox storage"),
+      ],
+    });
+  });
+
+  it("stores migration status and migrated project metadata in the workspace filesystem", async () => {
+    const workspaceId = `migration-test-${crypto.randomUUID()}`;
+    const workspace = new WorkspaceFilesystemClient(env, workspaceId);
+
+    await expect(workspace.getLegacyWorkspaceMigrationState()).resolves.toMatchObject({
+      workspaceId: expect.any(String),
+      status: "not_started",
+      attempts: 0,
+    });
+
+    const state = await workspace.setLegacyWorkspaceMigrationState({
+      status: "copying",
+      orgId: "org-1",
+      workflowId: "workflow-1",
+      attempts: 1,
+      plan: {
+        projects: [
+          {
+            name: "web-app",
+            description: "Migrated app",
+            sourcePaths: ["/home/claude/web-app"],
+          },
+        ],
+      },
+    });
+    expect(state).toMatchObject({
+      workspaceId: expect.any(String),
+      orgId: "org-1",
+      status: "copying",
+      workflowId: "workflow-1",
+      attempts: 1,
+    });
+
+    const project = await workspace.createProject({
+      name: "web-app",
+      description: "Migrated app",
+      migratedFrom: {
+        workspaceId,
+        legacyRoot: "/home/claude",
+        sourcePaths: ["/home/claude/web-app"],
+        migratedAt: "2026-06-04T00:00:00.000Z",
+      },
+    });
+
+    expect(project).toMatchObject({
+      name: "web-app",
+      description: "Migrated app",
+      migratedFrom: {
+        workspaceId,
+        legacyRoot: "/",
+        sourcePaths: ["/home/claude/web-app"],
+      },
+    });
+  });
+
+  it("clears stale migration errors when a later run succeeds", async () => {
+    const workspaceId = `migration-error-clear-${crypto.randomUUID()}`;
+    const workspace = new WorkspaceFilesystemClient(env, workspaceId);
+
+    await workspace.setLegacyWorkspaceMigrationState({
+      status: "failed",
+      error: "old planning error",
+      completedAt: "2026-06-04T00:00:00.000Z",
+    });
+    const queued = await workspace.setLegacyWorkspaceMigrationState({
+      status: "queued",
+      workflowId: "workflow-2",
+    });
+    expect(queued.error).toBeUndefined();
+    expect(queued.completedAt).toBeUndefined();
+
+    const complete = await workspace.setLegacyWorkspaceMigrationState({
+      status: "dry_run_complete",
+      plan: { projects: [] },
+      completedAt: "2026-06-05T00:00:00.000Z",
+    });
+    expect(complete.error).toBeUndefined();
+    expect(complete.completedAt).toBe("2026-06-05T00:00:00.000Z");
+  });
+});

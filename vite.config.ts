@@ -57,7 +57,6 @@ function withLocalDevVars(config: WorkerConfig): Partial<WorkerConfig> | void {
   const localAuthUserEmail = process.env.LOCAL_AUTH_USER_EMAIL;
   const localAuthUserName = process.env.LOCAL_AUTH_USER_NAME;
   const workerBaseUrl = process.env.WORKER_BASE_URL;
-  const sandboxHostUrl = process.env.SANDBOX_HOST_URL;
   const sandboxProxySecret = process.env.SANDBOX_PROXY_SECRET;
 
   if (
@@ -65,7 +64,6 @@ function withLocalDevVars(config: WorkerConfig): Partial<WorkerConfig> | void {
     !localAuthUserEmail &&
     !localAuthUserName &&
     !workerBaseUrl &&
-    !sandboxHostUrl &&
     !sandboxProxySecret
   ) {
     return;
@@ -80,7 +78,6 @@ function withLocalDevVars(config: WorkerConfig): Partial<WorkerConfig> | void {
         : {}),
       ...(localAuthUserName ? { LOCAL_AUTH_USER_NAME: localAuthUserName } : {}),
       ...(workerBaseUrl ? { WORKER_BASE_URL: workerBaseUrl } : {}),
-      ...(sandboxHostUrl ? { SANDBOX_HOST_URL: sandboxHostUrl } : {}),
       ...(sandboxProxySecret
         ? { SANDBOX_PROXY_SECRET: sandboxProxySecret }
         : {}),

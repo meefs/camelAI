@@ -176,13 +176,7 @@ describe('ChatThreadDO Codex turn handling', () => {
     expect(result).toEqual({ status: 'accepted' });
     expect(fake.ensureRunnerConnected).toHaveBeenCalledTimes(1);
     expect(fake.setChatIsStreaming).toHaveBeenCalledWith(true);
-    expect(fake.warmWorkspaceContainerForTurn).toHaveBeenCalledWith(
-      expect.objectContaining({
-        threadId: 'thread1',
-        workspaceId: 'workspace1',
-        orgId: 'org1',
-      }),
-    );
+    expect(fake.warmWorkspaceContainerForTurn).not.toHaveBeenCalled();
     expect(sentCommands).toHaveLength(1);
     expect(sentCommands[0]).toMatchObject({
       type: 'message',
@@ -1666,8 +1660,10 @@ describe('ChatThreadDO Codex turn handling', () => {
     expect(capturedWorkerCode.modules['index.js'].js).toContain('createCamelAiFacade');
     expect(capturedWorkerCode.modules['index.js'].js).toContain('createWorkspaceFacade');
     expect(capturedWorkerCode.modules['index.js'].js).toContain('const WORKSPACE = createWorkspaceFacade(callTool)');
-    expect(capturedWorkerCode.modules['index.js'].js).toContain('const env = Object.freeze({ CONNECTIONS, AI, CAMELAI, WORKSPACE })');
-    expect(capturedWorkerCode.modules['index.js'].js).toContain('const context = Object.freeze({ cloudflare: Object.freeze({ env, connections }) })');
+    expect(capturedWorkerCode.modules['index.js'].js).toContain('createVmFacade');
+    expect(capturedWorkerCode.modules['index.js'].js).toContain('createProjectsFacade');
+    expect(capturedWorkerCode.modules['index.js'].js).toContain('const env = Object.freeze({ CONNECTIONS, AI, CAMELAI, WORKSPACE, VM, PROJECTS })');
+    expect(capturedWorkerCode.modules['index.js'].js).toContain('const context = Object.freeze({ cloudflare: Object.freeze({ env, connections, vm, projects }) })');
     expect(capturedWorkerCode.modules['index.js'].js).toContain('parameters: tool.parameters');
     expect(capturedWorkerCode.modules['index.js'].js).toContain('await tools.help(\\"communication\\")');
     expect(capturedWorkerCode.modules['index.js'].js).toContain('await env.CAMELAI.help()');
@@ -1807,6 +1803,8 @@ describe('ChatThreadDO Codex turn handling', () => {
       'list_scheduled_prompts',
       'list_workflows',
       'list_integrations',
+      'create_project',
+      'set_project_description',
       'r2_read',
       'r2_write',
       'r2_list',
@@ -1819,7 +1817,17 @@ describe('ChatThreadDO Codex turn handling', () => {
       'connections_methods',
     ]));
     expect((byName.get('bash') as any).parameters.properties.command).toBeDefined();
+    expect((byName.get('bash') as any).parameters.properties.project).toBeDefined();
+    expect((byName.get('bash') as any).parameters.properties.projectId).toBeUndefined();
     expect((byName.get('read') as any).parameters.properties.path).toBeDefined();
+    expect((byName.get('read') as any).parameters.properties.project).toBeDefined();
+    expect((byName.get('create_project') as any).parameters.properties.description).toBeDefined();
+    expect((byName.get('create_project') as any).parameters.properties.name).toBeDefined();
+    expect((byName.get('create_project') as any).parameters.required).toContain('description');
+    expect((byName.get('create_project') as any).parameters.required).toContain('name');
+    expect((byName.get('set_project_description') as any).parameters.properties.project).toBeDefined();
+    expect((byName.get('set_project_description') as any).parameters.properties.projectId).toBeUndefined();
+    expect((byName.get('set_project_description') as any).parameters.properties.description).toBeDefined();
     expect((byName.get('WebSearch') as any).parameters.properties.query).toBeDefined();
     expect((byName.get('WebFetch') as any).parameters.properties.url).toBeDefined();
     expect((byName.get('r2_read') as any).parameters.properties.key).toBeDefined();
@@ -3199,17 +3207,17 @@ describe('ChatThreadDO Codex turn handling', () => {
     });
 
     const listing = await CodeModeToolsBinding.prototype.callTool.call(fake, 'ls', {
-      path: '/home/claude/.camelai/automations',
+      path: '/workspace/.camelai/automations',
     });
     expect((listing as any).text).toContain('automation-1.js');
 
     const read = await CodeModeToolsBinding.prototype.callTool.call(fake, 'read', {
-      path: '/home/claude/.camelai/automations/automation-1.js',
+      path: '/workspace/.camelai/automations/automation-1.js',
     });
     expect((read as any).text).toContain('AutomationWorkflow');
 
     const edit = await CodeModeToolsBinding.prototype.callTool.call(fake, 'edit', {
-      path: '/home/claude/.camelai/automations/automation-1.js',
+      path: '/workspace/.camelai/automations/automation-1.js',
       edits: [{ oldText: 'WorkflowEntrypoint {}', newText: 'WorkflowEntrypoint { async run() { return { ok: true }; } }' }],
     });
     expect((edit as any).text).toContain('source version 2');
@@ -3294,7 +3302,7 @@ describe('ChatThreadDO Codex turn handling', () => {
     });
   });
 
-  it('builds Wrangler deploy proxy env through the sandbox host', async () => {
+  it('builds Wrangler deploy proxy env through the sandbox VM outbound proxy', async () => {
     const fake = Object.create(CodeModeToolsBinding.prototype) as any;
     fake.env = {
       CF_ACCOUNT_ID: 'acct_1',
@@ -3326,31 +3334,26 @@ describe('ChatThreadDO Codex turn handling', () => {
       name: 'sandbox-proxy-thread',
     });
     expect(deployEnv.CLOUDFLARE_ACCOUNT_ID).toBe('acct_1');
-    expect(deployEnv.CLOUDFLARE_API_TOKEN).toBe('chiridion-sandbox-proxy');
+    expect(deployEnv.CLOUDFLARE_API_TOKEN).toBe('sandbox-outbound-proxy');
   });
 
   it('merges base container command env with Wrangler deploy env', async () => {
     const fake = Object.create(CodeModeToolsBinding.prototype) as any;
-    Object.defineProperty(fake, 'workspace', {
-      value: {
-        buildContainerCommandEnv: vi.fn(async () => ({
-          WORKSPACE_ID: 'workspace1',
-          ORG_ID: 'org1',
-          WRANGLER_SEND_METRICS: 'false',
-          CI: '1',
-          CF_DISPATCH_NAMESPACE: 'staging',
-          CHIRIDION_APP_SESSION: 'session_1',
-        })),
-      },
-    });
+    fake.createWorkspaceCommandEnv = vi.fn(async () => ({
+      WORKSPACE_ID: 'workspace1',
+      ORG_ID: 'org1',
+      WRANGLER_SEND_METRICS: 'false',
+      CI: '1',
+      CF_DISPATCH_NAMESPACE: 'staging',
+      CHIRIDION_APP_SESSION: 'session_1',
+    }));
     fake.createWranglerDeployEnv = vi.fn(async () => ({
       CLOUDFLARE_API_BASE_URL: 'https://staging.camelai.dev/client/v4',
       CLOUDFLARE_API_TOKEN: 'st_token',
       CLOUDFLARE_ACCOUNT_ID: 'acct_1',
     }));
 
-    const tools = fake.piContainerTools as any;
-    const commandEnv = await tools.commandEnv();
+    const commandEnv = await CodeModeToolsBinding.prototype['createContainerCommandEnv'].call(fake);
 
     expect(commandEnv).toMatchObject({
       WORKSPACE_ID: 'workspace1',
@@ -3387,8 +3390,6 @@ describe('ChatThreadDO Codex turn handling', () => {
 
     expect(toolNames).toEqual(expect.arrayContaining([
       'edit',
-      'grep',
-      'find',
       'AskUserQuestion',
       'TodoWrite',
       'set_preview',
@@ -3402,6 +3403,8 @@ describe('ChatThreadDO Codex turn handling', () => {
       'WebSearch',
       'WebFetch',
     ]));
+    expect(toolNames).not.toContain('grep');
+    expect(toolNames).not.toContain('find');
     expect(toolNames).not.toContain('list_deterministic_automations');
 
     const ask = tools.find((tool: any) => tool.name === 'AskUserQuestion');
@@ -3598,22 +3601,19 @@ describe('ChatThreadDO Codex turn handling', () => {
     expect((byName.get('edit') as any).parameters.properties.edits).toBeDefined();
     expect((byName.get('edit') as any).parameters.properties.old_string).toBeUndefined();
     expect((byName.get('bash') as any).parameters.properties.command).toBeDefined();
-    expect((byName.get('bash') as any).parameters.properties.timeout).toBeDefined();
-    expect((byName.get('bash') as any).parameters.properties.timeoutMs).toBeUndefined();
-    expect((byName.get('grep') as any).parameters.properties.literal).toBeDefined();
-    expect((byName.get('find') as any).parameters.properties.limit).toBeDefined();
+    expect((byName.get('bash') as any).parameters.properties.timeoutSeconds).toBeDefined();
+    expect((byName.get('bash') as any).parameters.properties.timeout).toBeUndefined();
+    expect(byName.get('grep')).toBeUndefined();
+    expect(byName.get('find')).toBeUndefined();
   });
 
-  it('routes restored search tools through sandbox host operations', async () => {
-    const execOnSandbox = vi.fn(async () => ({
-      success: true,
-      stdout: '/home/claude/src/app.ts:1:hello\n',
-      stderr: '',
-      exitCode: 0,
+  it('routes restored search tools through workspace file operations', async () => {
+    const callTool = vi.fn(async () => ({
+      text: 'app.ts:1: hello',
     }));
     const fake = Object.create(CodeModeToolsBinding.prototype) as any;
-    Object.defineProperty(fake, 'workspace', {
-      value: { execOnSandbox },
+    Object.defineProperty(fake, 'piContainerTools', {
+      value: { callTool },
     });
 
     const result = await CodeModeToolsBinding.prototype.callTool.call(fake, 'grep', {
@@ -3624,19 +3624,12 @@ describe('ChatThreadDO Codex turn handling', () => {
     });
 
     expect(result.text).toBe('app.ts:1: hello');
-    expect(execOnSandbox).toHaveBeenCalledTimes(1);
-    const [cmd, options] = execOnSandbox.mock.calls[0];
-    expect(cmd).toEqual([
-      'rg',
-      '--line-number',
-      '--color=never',
-      '--hidden',
-      '--fixed-strings',
-      '--',
-      'hello',
-      '/home/claude/src',
-    ]);
-    expect(options).toEqual({ cwd: '/home/claude' });
+    expect(callTool).toHaveBeenCalledWith('grep', {
+      pattern: 'hello',
+      path: 'src',
+      literal: true,
+      limit: 2,
+    });
   });
 
   it('normalizes AskUserQuestion string options before broadcasting to the browser', async () => {
@@ -3738,7 +3731,10 @@ describe('ChatThreadDO Codex turn handling', () => {
     };
     const rootTools = ChatThreadDO.prototype['createPiToolDefinitions'].call(fake, context);
     expect(rootTools.map((tool: any) => tool.name)).toEqual(
-      expect.arrayContaining(['Agent', 'agent', 'Explore', 'explore']),
+      expect.arrayContaining(['Agent', 'Explore']),
+    );
+    expect(rootTools.map((tool: any) => tool.name)).not.toEqual(
+      expect.arrayContaining(['agent', 'explore']),
     );
     expect(rootTools.find((tool: any) => tool.name === 'Agent')?.executionMode).toBe('sequential');
 
@@ -3746,7 +3742,7 @@ describe('ChatThreadDO Codex turn handling', () => {
       includeSubagents: false,
     });
     expect(childTools.map((tool: any) => tool.name)).not.toEqual(
-      expect.arrayContaining(['Agent', 'agent', 'Explore', 'explore']),
+      expect.arrayContaining(['Agent', 'Explore']),
     );
   });
 
@@ -3811,7 +3807,7 @@ describe('ChatThreadDO Codex turn handling', () => {
       type: 'tool_execution_start',
       toolCallId: 'tool1',
       toolName: 'bash',
-      args: { command: 'echo hi', cwd: '/home/claude' },
+      args: { command: 'echo hi', cwd: '/workspace' },
     });
     await ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, {
       type: 'tool_execution_update',
@@ -3845,7 +3841,7 @@ describe('ChatThreadDO Codex turn handling', () => {
       id: 'tool1',
       type: 'commandExecution',
       command: 'echo hi',
-      cwd: '/home/claude',
+      cwd: '/workspace',
       status: 'running',
     });
     expect(runtimeEvents[2].event.params).toEqual({
@@ -3857,7 +3853,7 @@ describe('ChatThreadDO Codex turn handling', () => {
       id: 'tool1',
       type: 'commandExecution',
       command: 'echo hi',
-      cwd: '/home/claude',
+      cwd: '/workspace',
       status: 'completed',
       aggregatedOutput: 'hi\n',
     });

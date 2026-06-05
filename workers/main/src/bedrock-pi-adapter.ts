@@ -198,7 +198,7 @@ export function buildBedrockPiModel(
       ...((enriched.compat as Record<string, unknown> | undefined) ?? {}),
       supportsEagerToolInputStreaming: false,
     },
-  } as Model<"bedrock-converse-stream">;
+	  } as unknown as Model<"bedrock-converse-stream">;
 }
 
 /**

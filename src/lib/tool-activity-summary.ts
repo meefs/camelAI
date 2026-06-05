@@ -130,6 +130,12 @@ function canonicalizeToolSummaryName(name: string): string {
       return 'ListConnectionTools';
     case 'connections_methods':
       return 'ListConnectionMethods';
+    case 'list_projects':
+      return 'ListProjects';
+    case 'create_project':
+      return 'CreateProject';
+    case 'clone_project':
+      return 'CloneProject';
     default:
       return name;
   }
@@ -522,7 +528,7 @@ export function getToolSummaryParts(
         if (!skill) return { action: 'Could not read instructions' };
         return { action: `Could not read instructions for ${skill}` };
       }
-      const path = skill ? `/home/claude/.claude/skills/${skill}/SKILL.md` : '';
+      const path = skill ? `/workspace/.claude/skills/${skill}/SKILL.md` : '';
       return {
         action: 'Read instructions for',
         filename: skill || 'task',

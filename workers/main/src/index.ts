@@ -16,6 +16,7 @@
  */
 
 import { createRequestHandler } from 'react-router';
+import { DurableObject } from 'cloudflare:workers';
 import type { Env, Route } from './types.js';
 import { handleSlackEventsQueue } from './slack-events-queue.js';
 import type { AppScreenshotJob } from './screenshot-queue.js';
@@ -59,6 +60,7 @@ import {
 } from './routes/billing.js';
 import { handleEmailSendProxy } from './routes/email-send-proxy.js';
 import { handleWorkerAuth } from './routes/worker-auth.js';
+import { handleProjectRuntimeArtifactsProxy } from './routes/project-runtime-artifacts.js';
 import {
   createRequestObservabilityContext,
   normalizePathForObservability,
@@ -87,7 +89,20 @@ export {
   DeterministicAutomationWorkflow,
   DynamicWorkflowBinding,
 } from './deterministic-automation-workflow.js';
+export {
+  LegacyWorkspaceMigrationWorkflow,
+  MigrationPlanningAgent,
+} from './legacy-workspace-migration-workflow.js';
 export { CamelAiService } from './camelai-service.js';
+export { WorkspaceFilesystemDO } from './workspace-filesystem-do.js';
+
+// Compatibility shim for environments whose deployed migration history still
+// references the old AdminIndexDO class. The app uses the D1-backed index now.
+export class AdminIndexDO extends DurableObject<Env> {}
+
+// Compatibility shim for deployed migration histories that contain the retired
+// Cloudflare Sandbox SDK experiment. Projects now use PROJECT_RUNTIME_HOST.
+export class CloudflareSandbox extends DurableObject<Env> {}
 
 // Extend React Router's AppLoadContext
 declare module 'react-router' {
@@ -188,6 +203,7 @@ const routes: Route[] = [
   { method: 'POST', path: /^\/api\/postgres\/query$/, handler: handlePostgresQuery },
   { method: 'POST', path: /^\/api\/mysql\/query$/, handler: handleMysqlQuery },
   { method: 'GET', path: /^\/api\/internal\/billing\/access$/, handler: handleInternalBillingAccess },
+  { method: 'ALL', path: /^\/api\/internal\/project-runtime\/artifacts(\/|$)/, handler: handleProjectRuntimeArtifactsProxy },
   { method: 'POST', path: /^\/api\/billing\/stripe\/webhook$/, handler: handleStripeWebhook },
 
   // Email sending proxy (for sandbox containers)

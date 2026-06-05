@@ -17,10 +17,6 @@ import {
 import { OrgDO, type OrgThread } from "../../workers/main/src/auth";
 import { WorkspaceDO } from "../../workers/main/src/workspace";
 import {
-  WorkspaceContainer,
-  type WorkspaceContainerEnv,
-} from "../../workers/main/src/workspace-container";
-import {
   getDefaultLlmModel,
   isLlmModelAllowedForNewThread,
   isLlmModel,
@@ -35,7 +31,6 @@ import {
   resolveDefaultModelForChat,
   resolveEffectivePickerConfig,
 } from "./model-picker-config";
-import { readMessagesFromResponse } from "./thread-messages.server";
 import { retryTransientDurableObjectRead } from "./do-rpc-retry.server";
 
 interface ParsedThreadMessage {
@@ -687,40 +682,17 @@ export async function getTodoState(
 export async function getMessages(
   context: AppLoadContext,
   threadId: string,
-  workspaceId: string,
+  _workspaceId: string,
   options: { skipBanCheck?: boolean } = {},
 ): Promise<Message[]> {
-  const env = getEnv(context);
-
   try {
+    void options;
     const piMessages = await getPiCoreMessages(context, threadId);
     if (piMessages.length > 0) {
       return piMessages as Message[];
     }
 
-    const wsInfo = await getWorkspaceInfo(env, workspaceId);
-    if (!wsInfo) return [];
-
-    const container = new WorkspaceContainer(
-      env as unknown as WorkspaceContainerEnv,
-      workspaceId,
-      wsInfo.org_id,
-    );
-    const legacyClaudeSessionId = await getLegacyClaudeSessionId(
-      context,
-      threadId,
-    );
-    const codexSessionId = await getCodexSessionId(context, threadId);
-    const streamResult = await container.readThreadMessagesStream(threadId, {
-      claudeSessionId: legacyClaudeSessionId,
-      codexSessionId,
-      skipBanCheck: options.skipBanCheck,
-    });
-    if (!streamResult.success || !streamResult.response) {
-      return [];
-    }
-
-    return await readMessagesFromResponse(streamResult.response);
+    return [];
   } catch (e) {
     console.error("[getMessages] Error:", e);
     return [];

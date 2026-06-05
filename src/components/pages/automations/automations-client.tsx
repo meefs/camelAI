@@ -459,7 +459,7 @@ export default function AutomationsClient({
       const systemMessage =
         `<camelai system message>I'd like to work on the automation "${automation.name}". ` +
         `Automation id: ${automation.id}. ` +
-        `Its source lives at /home/claude/.camelai/automations/${automation.id}.js. ` +
+        `Its source lives at /workspace/.camelai/automations/${automation.id}.js. ` +
         `Its current schedule is ${automation.cron_expression} UTC. ` +
         `Read it first, then ask me what I want to change.</camelai system message>`;
 

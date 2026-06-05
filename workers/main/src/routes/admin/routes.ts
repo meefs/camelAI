@@ -80,8 +80,6 @@ import {
   OrgUsageLimitsSchema,
   OrgUsageLogSchema,
   OrgUsageLogSumSchema,
-  BackfillHostUsageBodySchema,
-  BackfillHostUsageResponseSchema,
   SpamOrgIdsResponseSchema,
   AdminOrgListItemSchema,
   AdminOrgLlmProviderListItemSchema,
@@ -134,7 +132,8 @@ import {
 } from "../../ban-list.js";
 import { waitUntil } from "cloudflare:workers";
 import { refreshOrgCustomDomainHostnamesForAdmin } from "../../../../../src/lib/admin-custom-domain.server.js";
-import { backfillHostUsageToOrgDOs } from "./usage-backfill.js";
+import { WorkspaceFilesystemClient } from "../../workspace-filesystem-do.js";
+import { startLegacyWorkspaceMigrationWorkflow } from "../../legacy-workspace-migration-workflow.js";
 
 type HonoEnv = { Bindings: Env };
 
@@ -387,6 +386,21 @@ function toDailySpendPct(value: number, total: number): number {
 
 export const routes = new Hono<HonoEnv>();
 
+const LegacyWorkspaceMigrationTriggerBodySchema = z.object({
+  force: z.boolean().optional().default(false),
+  dry_run: z.boolean().optional().default(false),
+  requested_by: z.string().trim().min(1).max(128).optional(),
+});
+
+const LegacyWorkspaceMigrationTriggerResponseSchema = z.object({
+  success: z.boolean(),
+  org_id: z.string(),
+  workspace_id: z.string(),
+  workflow_id: z.string(),
+  dry_run: z.boolean(),
+  status: z.literal("queued"),
+});
+
 // ---------------------------------------------------------------------------
 // Cache-Control middleware for GET endpoints
 // ---------------------------------------------------------------------------
@@ -424,6 +438,94 @@ routes.get(
       total_workspaces: overview.total_workspaces,
       total_integrations: overview.total_integrations,
       orphaned_users: overview.orphaned_users,
+    });
+  },
+);
+
+// ---------------------------------------------------------------------------
+// POST /orgs/:orgId/workspaces/:workspaceId/legacy-migration
+// ---------------------------------------------------------------------------
+
+routes.get(
+  "/orgs/:orgId/workspaces/:workspaceId/legacy-migration",
+  openApi({
+    summary: "Get legacy workspace migration state",
+    responses: {
+      200: z.any(),
+      503: ErrorSchema,
+    },
+  }),
+  async (c) => {
+    if (!c.env.WORKSPACE_FS) {
+      return c.json({ error: "Workspace filesystem is not configured" }, 503);
+    }
+
+    const workspaceId = c.req.param("workspaceId");
+    const workspaceFs = new WorkspaceFilesystemClient(c.env as never, workspaceId);
+    return c.json(await workspaceFs.getLegacyWorkspaceMigrationState());
+  },
+);
+
+routes.post(
+  "/orgs/:orgId/workspaces/:workspaceId/legacy-migration",
+  openApi({
+    summary: "Queue legacy workspace migration",
+    request: { json: LegacyWorkspaceMigrationTriggerBodySchema },
+    responses: {
+      200: LegacyWorkspaceMigrationTriggerResponseSchema,
+      409: ErrorSchema,
+      503: ErrorSchema,
+    },
+  }),
+  async (c) => {
+    if (!c.env.WORKSPACE_FS || !c.env.LEGACY_WORKSPACE_MIGRATIONS || !c.env.MIGRATION_PLANNING_AGENT) {
+      return c.json({ error: "Legacy workspace migration is not configured" }, 503);
+    }
+
+    const orgId = c.req.param("orgId");
+    const workspaceId = c.req.param("workspaceId");
+    const body = c.req.valid("json");
+    const workspaceFs = new WorkspaceFilesystemClient(c.env as never, workspaceId);
+    const state = await workspaceFs.getLegacyWorkspaceMigrationState();
+    const force = body.force === true;
+    const dryRun = body.dry_run === true;
+
+    const activeMigrationStatuses = new Set(["queued", "scanning_legacy", "planning", "copying", "verifying"]);
+    if (!force && activeMigrationStatuses.has(state.status)) {
+      return c.json({ error: `Migration is already ${state.status}` }, 409);
+    }
+    if (!dryRun && !force && state.status !== "not_started" && state.status !== "failed") {
+      return c.json({ error: `Migration is already ${state.status}` }, 409);
+    }
+
+    const projects = await workspaceFs.listProjects();
+    if (!dryRun && !force && projects.length > 0) {
+      return c.json({ error: "Workspace already has projects; pass force to enqueue anyway" }, 409);
+    }
+
+    const attempt = state.attempts + 1;
+    const suffix = force ? `-${Date.now().toString(36)}` : "";
+    const workflowId = `legacy-migration-${workspaceId}-${attempt}${suffix}`;
+    await workspaceFs.setLegacyWorkspaceMigrationState({
+      status: "queued",
+      orgId,
+      workflowId,
+    });
+    await startLegacyWorkspaceMigrationWorkflow(c.env, {
+      workflowId,
+      workspaceId,
+      orgId,
+      requestedBy: body.requested_by || "admin-api",
+      dryRun,
+    });
+
+    return c.json({
+      success: true,
+      org_id: orgId,
+      workspace_id: workspaceId,
+      workflow_id: workflowId,
+      dry_run: dryRun,
+      status: "queued" as const,
     });
   },
 );
@@ -2176,48 +2278,6 @@ routes.get(
         chargeable_only === true,
       ),
     );
-  },
-);
-
-// ---------------------------------------------------------------------------
-// POST /usage/backfill-host
-// ---------------------------------------------------------------------------
-
-routes.post(
-  "/usage/backfill-host",
-  openApi({
-    summary: "Backfill legacy sandbox-host usage rows into OrgDO usage tables",
-    request: {
-      json: BackfillHostUsageBodySchema,
-    },
-    responses: {
-      200: BackfillHostUsageResponseSchema,
-      502: ErrorSchema,
-    },
-  }),
-  async (c) => {
-    try {
-      const body = c.req.valid("json");
-      return c.json(
-        await backfillHostUsageToOrgDOs(c.env, {
-          orgIds: body.org_ids,
-          dryRun: body.dry_run,
-          pageLimit: body.page_limit,
-          maxOrgs: body.max_orgs,
-          maxEntries: body.max_entries,
-        }),
-      );
-    } catch (error) {
-      return c.json(
-        {
-          error:
-            error instanceof Error
-              ? error.message
-              : "Failed to backfill host usage",
-        },
-        502,
-      );
-    }
   },
 );
 

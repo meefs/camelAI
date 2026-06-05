@@ -18,6 +18,7 @@ function makeScript(overrides: Partial<WorkerScript> = {}): WorkerScript {
     preview_status: null,
     preview_error: null,
     config_path: null,
+    project_id: null,
     custom_domain_hostname: null,
     custom_domain_cf_hostname_id: null,
     custom_domain_status: null,

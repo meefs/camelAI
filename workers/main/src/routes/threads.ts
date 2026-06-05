@@ -3,23 +3,17 @@
  */
 
 import type { RouteContext } from '../types.js';
-import { isSignedToken, validateSignedToken } from '../signed-tokens.js';
 import { getOrgStub, getThreadStub } from '../helpers/stubs.js';
 import { json } from '../helpers/response.js';
 import type { PreviewTarget } from '../chat-thread-do.js';
+import { validateSandboxProxy } from '../sandbox-auth.js';
 
 export async function handleThreadPreview({ req, env, match }: RouteContext): Promise<Response> {
   const threadId = match[1];
 
-  const authHeader = req.headers.get('Authorization');
-  if (!authHeader?.startsWith('Bearer ')) return json({ error: 'Missing authorization' }, 401);
-
-  const token = authHeader.slice(7);
-  if (!isSignedToken(token)) return json({ error: 'Invalid token format' }, 401);
-
-  const payload = await validateSignedToken(env.TOKEN_SIGNING_SECRET, token);
-  if (!payload || !payload.scopes.includes('deploy') || !payload.workspace_id) {
-    return json({ error: 'Invalid token' }, 401);
+  const auth = validateSandboxProxy(req, env);
+  if (!auth.valid) {
+    return json({ error: 'Trusted deploy proxy identity required' }, 401);
   }
 
   const body = (await req.json()) as { scriptName?: string };
@@ -35,9 +29,12 @@ export async function handleThreadPreview({ req, env, match }: RouteContext): Pr
 
   let isPublic = false;
   try {
-    const orgStub = getOrgStub(env, payload.org_id);
+    const orgStub = getOrgStub(env, auth.orgId);
     const script = await orgStub.getWorkerScript(scriptName);
     if (script) {
+      if (script.workspace_id !== auth.workspaceId) {
+        return json({ error: 'App does not belong to authenticated workspace' }, 403);
+      }
       isPublic = script.is_public;
     } else {
       const stored = await env.APP_KV.get(`script_org:${scriptName}`);

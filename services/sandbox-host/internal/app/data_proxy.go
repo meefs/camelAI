@@ -39,6 +39,7 @@ const (
 
 type DataProxyHandlerConfig struct {
 	RequestBodyLimitBytes int64
+	TunnelManager         *SSHTunnelManager
 }
 
 func DefaultDataProxyHandlerConfig() DataProxyHandlerConfig {
@@ -91,6 +92,18 @@ func normalizeDataProxyPath(path string) (string, bool) {
 	default:
 		return "", false
 	}
+}
+
+func errorJSON(w http.ResponseWriter, message string, status int) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(map[string]string{"error": message})
+}
+
+func writeJSON(w http.ResponseWriter, status int, value any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(value)
 }
 
 type sqlQueryResponse struct {
@@ -161,7 +174,13 @@ func handleDataProxyMssqlQueryWithConfig(w http.ResponseWriter, req *http.Reques
 		return nil
 	}
 
-	db, err := sql.Open("sqlserver", payload.connectionString())
+	endpoint, err := resolveSQLEndpoint(req.Context(), cfg, strings.TrimSpace(payload.Server), payload.effectivePort())
+	if err != nil {
+		errorJSON(w, err.Error(), http.StatusBadGateway)
+		return nil
+	}
+
+	db, err := sql.Open("sqlserver", payload.connectionStringFor(endpoint.Host, endpoint.Port))
 	if err != nil {
 		writeMssqlError(w, err)
 		return nil
@@ -213,7 +232,13 @@ func handleDataProxyPostgresQueryWithConfig(w http.ResponseWriter, req *http.Req
 		return nil
 	}
 
-	db, err := sql.Open("postgres", payload.connectionString())
+	endpoint, err := resolveSQLEndpoint(req.Context(), cfg, strings.TrimSpace(payload.Host), payload.effectivePort())
+	if err != nil {
+		errorJSON(w, err.Error(), http.StatusBadGateway)
+		return nil
+	}
+
+	db, err := sql.Open("postgres", payload.connectionStringFor(endpoint.Host, endpoint.Port))
 	if err != nil {
 		writePostgresError(w, err)
 		return nil
@@ -265,7 +290,13 @@ func handleDataProxyMySQLQueryWithConfig(w http.ResponseWriter, req *http.Reques
 		return nil
 	}
 
-	dsn, err := payload.connectionString()
+	endpoint, err := resolveSQLEndpoint(req.Context(), cfg, strings.TrimSpace(payload.Host), payload.effectivePort())
+	if err != nil {
+		errorJSON(w, err.Error(), http.StatusBadGateway)
+		return nil
+	}
+
+	dsn, err := payload.connectionStringFor(endpoint.Host, endpoint.Port)
 	if err != nil {
 		errorJSON(w, err.Error(), http.StatusBadRequest)
 		return nil
@@ -304,6 +335,18 @@ func hasRequiredSQLFields(host, user, password, query string) bool {
 		strings.TrimSpace(user) != "" &&
 		strings.TrimSpace(password) != "" &&
 		strings.TrimSpace(query) != ""
+}
+
+type sqlEndpoint struct {
+	Host string
+	Port int
+}
+
+func resolveSQLEndpoint(ctx context.Context, cfg DataProxyHandlerConfig, host string, port int) (sqlEndpoint, error) {
+	if cfg.TunnelManager == nil {
+		return sqlEndpoint{Host: host, Port: port}, nil
+	}
+	return cfg.TunnelManager.EnsureTunnel(ctx, host, port)
 }
 
 func positionalArgs(raw any) ([]any, error) {
@@ -495,6 +538,10 @@ func (r mssqlQueryRequest) trustServerCert() bool {
 }
 
 func (r mssqlQueryRequest) connectionString() string {
+	return r.connectionStringFor(strings.TrimSpace(r.Server), r.effectivePort())
+}
+
+func (r mssqlQueryRequest) connectionStringFor(host string, port int) string {
 	query := neturl.Values{}
 	query.Set("database", r.effectiveDatabase())
 	query.Set("encrypt", strconv.FormatBool(r.encryptEnabled()))
@@ -504,7 +551,7 @@ func (r mssqlQueryRequest) connectionString() string {
 	return (&neturl.URL{
 		Scheme:   "sqlserver",
 		User:     neturl.UserPassword(r.User, r.Password),
-		Host:     net.JoinHostPort(strings.TrimSpace(r.Server), strconv.Itoa(r.effectivePort())),
+		Host:     net.JoinHostPort(host, strconv.Itoa(port)),
 		RawQuery: query.Encode(),
 	}).String()
 }
@@ -553,6 +600,10 @@ func (r postgresQueryRequest) effectiveSSLMode() string {
 }
 
 func (r postgresQueryRequest) connectionString() string {
+	return r.connectionStringFor(strings.TrimSpace(r.Host), r.effectivePort())
+}
+
+func (r postgresQueryRequest) connectionStringFor(host string, port int) string {
 	query := neturl.Values{}
 	query.Set("sslmode", r.effectiveSSLMode())
 	query.Set("connect_timeout", strconv.Itoa(maxInt(1, int(defaultPostgresConnectMS.Seconds()))))
@@ -560,7 +611,7 @@ func (r postgresQueryRequest) connectionString() string {
 	return (&neturl.URL{
 		Scheme:   "postgres",
 		User:     neturl.UserPassword(r.User, r.Password),
-		Host:     net.JoinHostPort(strings.TrimSpace(r.Host), strconv.Itoa(r.effectivePort())),
+		Host:     net.JoinHostPort(host, strconv.Itoa(port)),
 		Path:     "/" + r.effectiveDatabase(),
 		RawQuery: query.Encode(),
 	}).String()
@@ -595,11 +646,15 @@ func (r mysqlQueryRequest) effectiveCharset() string {
 }
 
 func (r mysqlQueryRequest) connectionString() (string, error) {
+	return r.connectionStringFor(strings.TrimSpace(r.Host), r.effectivePort())
+}
+
+func (r mysqlQueryRequest) connectionStringFor(host string, port int) (string, error) {
 	cfg := mysqlDriver.NewConfig()
 	cfg.User = r.User
 	cfg.Passwd = r.Password
 	cfg.Net = "tcp"
-	cfg.Addr = net.JoinHostPort(strings.TrimSpace(r.Host), strconv.Itoa(r.effectivePort()))
+	cfg.Addr = net.JoinHostPort(host, strconv.Itoa(port))
 	cfg.DBName = r.effectiveDatabase()
 	cfg.ParseTime = true
 	cfg.Timeout = defaultMySQLConnectMS

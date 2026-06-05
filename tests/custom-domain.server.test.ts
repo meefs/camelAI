@@ -26,6 +26,7 @@ function makeScript(overrides: Partial<WorkerScript> = {}): WorkerScript {
     preview_status: 'pending',
     preview_error: null,
     config_path: null,
+    project_id: null,
     custom_domain_hostname: 'demo-app.apps.example.com',
     custom_domain_cf_hostname_id: 'cf-hostname-1',
     custom_domain_status: 'pending',

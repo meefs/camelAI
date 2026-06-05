@@ -16,9 +16,14 @@
 	"tail_consumers": [{ "service": "chiridion-user-logs-tail-dev-miguel" }],
 	"rules": [{ "type": "ESModule", "globs": ["**/*.js", "**/*.mjs"] }],
 	"routes": [
-		{ "pattern": "dev-miguel.camelai.dev/*", "zone_name": "camelai.dev" }
+		{ "pattern": "dev-miguel.camelai.dev/*", "zone_name": "camelai.dev" },
+		{ "pattern": "exe-agent-dev-miguel.camelai.dev/*", "zone_name": "camelai.dev" }
 	],
 	"vpc_services": [
+		{
+			"binding": "PROJECT_RUNTIME_HOST",
+			"service_id": "019e866e-90ab-72f2-b1bf-b044653ff154"
+		},
 		{
 			"binding": "SANDBOX_HOST",
 			"service_id": "019c54ff-d555-7741-8464-3b68f8a18edf"
@@ -30,7 +35,10 @@
 			"R2_ACCOUNT_ID": "85bbd288051330fb51ee1c86031a299b",
 			"R2_MOUNT_DIR": "/home/claude",
 			"R2_PARENT_ACCESS_KEY_ID": "4f8fdc386b4ccb9f4a2bea3c77c8ad95",
+			"R2_ACCESS_KEY_ID": "623236fde5ab11f7feef1e8e360c8de1",
+			"BACKUP_BUCKET_NAME": "chiridion-sandbox-vm-backups-dev-miguel",
 			"CF_ACCOUNT_ID": "85bbd288051330fb51ee1c86031a299b",
+			"CLOUDFLARE_ACCOUNT_ID": "85bbd288051330fb51ee1c86031a299b",
 			"CF_GATEWAY_NAME": "chiridion",
 			"CF_DISPATCH_NAMESPACE": "chiridion-platform-dev-miguel",
 			"WORKER_BASE_URL": "https://dev-miguel.camelai.dev",
@@ -39,7 +47,8 @@
 	
 				"EXT_API_CLIENT_ID": "set-me",
 				"CF_WORKER_NAME": "chiridion-app-dev-miguel",
-			"TAIL_WORKER_NAME": "chiridion-user-logs-tail-dev-miguel"
+			"TAIL_WORKER_NAME": "chiridion-user-logs-tail-dev-miguel",
+			"SANDBOX_TRANSPORT": "rpc"
 		},
 	"assets": {
 		"binding": "ASSETS",
@@ -49,13 +58,17 @@
 	"browser": { "binding": "BROWSER" },
 	"ai": { "binding": "AI", "remote": true },
 	"worker_loaders": [{ "binding": "CODE_MODE_LOADER" }],
+	"artifacts": [
+		{ "binding": "ARTIFACTS", "namespace": "dev-miguel" }
+	],
 	"send_email": [
 		{
 			"name": "EMAIL"
 		}
 	],
 	"r2_buckets": [
-		{ "binding": "R2_BUCKET", "bucket_name": "chiridion-sandbox" }
+		{ "binding": "R2_BUCKET", "bucket_name": "chiridion-sandbox" },
+		{ "binding": "BACKUP_BUCKET", "bucket_name": "chiridion-sandbox-vm-backups-dev-miguel" }
 	],
 	"analytics_engine_datasets": [
 		{ "binding": "ERROR_ANALYTICS", "dataset": "chiridion_errors_dev_miguel" },
@@ -99,14 +112,21 @@
 			{ "name": "WORKSPACE", "class_name": "WorkspaceDO" },
 			{ "name": "WORKSPACE_CRON", "class_name": "WorkspaceCronDO" },
 			{ "name": "MCP_OBJECT", "class_name": "ChiridionMcp" },
-			{ "name": "WORKER_LOGS", "class_name": "WorkerLogsDO" },
-		]
-	},
+				{ "name": "WORKER_LOGS", "class_name": "WorkerLogsDO" },
+				{ "name": "WORKSPACE_FS", "class_name": "WorkspaceFilesystemDO" },
+				{ "name": "MIGRATION_PLANNING_AGENT", "class_name": "MigrationPlanningAgent" },
+			]
+		},
 	"workflows": [
 		{
 			"name": "chiridion-deterministic-automations-dev-miguel",
 			"binding": "DETERMINISTIC_AUTOMATION_WORKFLOWS",
 			"class_name": "DeterministicAutomationWorkflow"
+		},
+		{
+			"name": "chiridion-legacy-workspace-migrations-dev-miguel",
+			"binding": "LEGACY_WORKSPACE_MIGRATIONS",
+			"class_name": "LegacyWorkspaceMigrationWorkflow"
 		}
 	],
 	"migrations": [
@@ -132,6 +152,15 @@
 		{ "tag": "v20", "new_sqlite_classes": ["EmailHandleDO"] },
 		{ "tag": "v21", "new_classes": ["EphemeralWorkerLogsDO"] },
 		{ "tag": "v22", "deleted_classes": ["AdminIndexDO"] },
-		{ "tag": "v23", "new_sqlite_classes": ["TelegramRegistryDO", "SlackTeamRegistryDO"] }
-	]
-}
+		{ "tag": "v24", "new_sqlite_classes": ["CloudflareSandbox"] },
+		{ "tag": "v25", "new_sqlite_classes": ["WorkspaceFilesystemDO"] },
+			{
+				"tag": "v26",
+				"new_sqlite_classes": [
+					"TelegramRegistryDO",
+					"SlackTeamRegistryDO"
+				]
+			},
+			{ "tag": "v27", "new_sqlite_classes": ["MigrationPlanningAgent"] }
+		]
+	}

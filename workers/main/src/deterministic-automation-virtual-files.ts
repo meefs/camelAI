@@ -1,12 +1,13 @@
 import type { WorkspaceCronDO } from "./workspace-cron";
 
-export const AUTOMATIONS_VIRTUAL_ROOT = "/home/claude/.camelai/automations";
+export const AUTOMATIONS_VIRTUAL_ROOT = "/workspace/.camelai/automations";
 
 export function normalizeAutomationVirtualPath(rawPath: string): string | null {
   const trimmed = rawPath.trim();
   if (!trimmed) return null;
   const aliases = [
     AUTOMATIONS_VIRTUAL_ROOT,
+    "/home/claude/.camelai/automations",
     ".camelai/automations",
     "~/.camelai/automations",
   ];

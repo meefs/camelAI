@@ -134,6 +134,7 @@ export interface WorkerScript {
   preview_status: WorkerScriptPreviewStatus | null;
   preview_error: string | null;
   config_path: string | null;
+  project_id: string | null;
   custom_domain_hostname: string | null;
   custom_domain_cf_hostname_id: string | null;
   custom_domain_status: string | null;

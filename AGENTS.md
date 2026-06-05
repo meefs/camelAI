@@ -36,7 +36,7 @@ Cloudflare AI Gateway and BYOK credentials back model access.
 - `workers/dispatcher/` - Workers for Platforms dispatcher for deployed user apps.
 - `workers/bedrock-provider/` - AI Gateway custom provider translating Anthropic-style requests to Bedrock.
 - `workers/user-logs-tail/` - Tail worker for deployed app logs.
-- `services/sandbox-host/` - Go sandbox host and data proxy services.
+- `services/sandbox-host/` - Legacy Go code retained for the data-proxy container build path.
 - `sandbox/` - In-container control plane, Codex/Claude harness integration, MCP helpers, scaffold/publish tooling, sandbox skills.
 - `scripts/` - Deploy and maintenance scripts.
 - `docs/` - Supporting documentation, including shadcn component catalog.
@@ -55,7 +55,6 @@ bun run test:run            # Vitest run once
 bun run test:workers        # Worker/Miniflare tests
 bun run test:all            # Unit + worker tests
 bun run test:e2e            # Playwright
-bun run test:sandbox-host   # Go tests for services/sandbox-host
 ```
 
 Common deploy commands:
@@ -66,10 +65,6 @@ bun run deploy:main:staging
 bun run deploy:dispatcher:prod
 bun run deploy:dispatcher:staging
 bun run deploy:bedrock-provider:prod
-bun run deploy:go:sandbox-host
-bun run deploy:go:sandbox-host:staging
-bun run deploy:go:data-proxy
-bun run deploy:go:data-proxy:staging
 ```
 
 ## Frontend Conventions
@@ -194,22 +189,17 @@ live in separate files, and the catalog tests fail if any of them drift apart.
 - OAuth integration code is split across `workers/main/src/services/oauth.ts`, `external-api-oauth.ts`, route files, and workspace integration storage.
 - Scheduled prompts are owned by `WorkspaceCronDO` and exposed through MCP tools.
 
-## Sandbox Host
+## Project Runtime
 
-- Go service code lives in `services/sandbox-host/`.
-- The host manages Docker + gVisor lifecycle, workspace filesystem operations, chat transcript retrieval, OpenAI proxying/usage tracking, and data proxy forwarding.
-- Prod and staging sandbox-hosts should be separate VMs/VPC services. GitHub Actions deploy SSH goes through Tailscale: prod `100.112.135.2` (`chiridion-sandbox-prod`) and staging `100.115.221.105` (`chiridion-sandbox-staging`). Direct public SSH should remain closed except for temporary break-glass. Keep deploys explicit with `bun run deploy:go:sandbox-host:prod` or `bun run deploy:go:sandbox-host:staging`.
-- GitHub Actions sandbox-host deploys join Tailscale as ephemeral `tag:ci` nodes using `TS_OAUTH_CLIENT_ID` and `TS_OAUTH_SECRET`; the OAuth client needs writable `auth_keys` scope for `tag:ci`, and the tailnet policy must allow `tag:ci` to reach prod and staging TCP/22.
-- Terraform examples for the Azure sandbox-host environments live in `infra/`; see `infra/README.md`, `infra/prod.tfvars.example`, and `infra/staging.tfvars.example`.
-- Run `bun run test:sandbox-host` for Go changes.
-- Local sandbox-host development uses `bun run dev:sandbox-host`.
+- Projects run through the external project runtime service via the `PROJECT_RUNTIME_HOST` VPC binding and `ProjectRuntimeServiceVmBridge`.
+- Project metadata and DO-backed workspace files live in `WorkspaceFilesystemDO`; project files and shell execution live in the runtime service.
+- The old app-owned sandbox-host deploy/dev scripts have been removed. Do not add new project VM behavior through the retired sandbox-host binding.
 
 ## Testing Guidance
 
 - For UI route/component changes, run at least `bun run typecheck` and the most relevant Vitest test(s).
 - For Worker/DO behavior, prefer focused `bun run test:workers -- <test-file>` or `bun run test:workers` when the surface is shared.
-- For sandbox-host changes, run `bun run test:sandbox-host`.
-- For changes crossing browser chat, worker routing, and sandbox behavior, test the smallest representative path plus typecheck.
+- For changes crossing browser chat, worker routing, and project runtime behavior, test the smallest representative path plus typecheck.
 - Add tests when changing auth, billing/usage, admin purge/ban behavior, proxy auth, file safety, or persistence semantics.
 
 ## Error Handling Culture
@@ -226,9 +216,7 @@ Common local secret/config files:
 
 - `.dev.vars` for Worker/dev secrets.
 - `wrangler*.jsonc` for environment-specific Cloudflare config.
-- `services/sandbox-host/README.md` for host-specific setup/deploy details.
-
-Useful local variables include `CF_GATEWAY_TOKEN`, OAuth client IDs/secrets, `INTEGRATION_SECRET_KEY`, `TOKEN_SIGNING_SECRET`, email provider settings, and sandbox debug flags such as `TRACE_SANDBOX_HOST` and `TRACE_SANDBOX_LIFECYCLE`.
+Useful local variables include `CF_GATEWAY_TOKEN`, OAuth client IDs/secrets, `INTEGRATION_SECRET_KEY`, `TOKEN_SIGNING_SECRET`, and email provider settings.
 
 ## Maintenance Rules
 

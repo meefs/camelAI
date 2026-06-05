@@ -23,7 +23,7 @@ export interface SignedTokenPayload {
   exp: number | null;
   /** Optional workspace ID for scoped tokens */
   workspace_id?: string;
-  /** Optional thread ID for per-thread deploy tokens */
+  /** Optional thread ID for scoped service tokens */
   thread_id?: string;
   /** Optional token name/purpose */
   name?: string;

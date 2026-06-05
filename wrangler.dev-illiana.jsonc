@@ -39,7 +39,8 @@
 	
 				"EXT_API_CLIENT_ID": "set-me",
 				"CF_WORKER_NAME": "chiridion-app-dev-illiana",
-			"TAIL_WORKER_NAME": "chiridion-user-logs-tail-dev-illiana"
+			"TAIL_WORKER_NAME": "chiridion-user-logs-tail-dev-illiana",
+			"SANDBOX_TRANSPORT": "rpc"
 		},
 	"assets": {
 		"binding": "ASSETS",
@@ -49,6 +50,9 @@
 	"browser": { "binding": "BROWSER" },
 	"ai": { "binding": "AI", "remote": true },
 	"worker_loaders": [{ "binding": "CODE_MODE_LOADER" }],
+	"artifacts": [
+		{ "binding": "ARTIFACTS", "namespace": "dev-illiana" }
+	],
 	"send_email": [
 		{
 			"name": "EMAIL"
@@ -99,14 +103,21 @@
 			{ "name": "WORKSPACE", "class_name": "WorkspaceDO" },
 			{ "name": "WORKSPACE_CRON", "class_name": "WorkspaceCronDO" },
 			{ "name": "MCP_OBJECT", "class_name": "ChiridionMcp" },
-			{ "name": "WORKER_LOGS", "class_name": "WorkerLogsDO" },
-		]
-	},
+				{ "name": "WORKER_LOGS", "class_name": "WorkerLogsDO" },
+				{ "name": "WORKSPACE_FS", "class_name": "WorkspaceFilesystemDO" },
+				{ "name": "MIGRATION_PLANNING_AGENT", "class_name": "MigrationPlanningAgent" },
+			]
+		},
 	"workflows": [
 		{
 			"name": "chiridion-deterministic-automations-dev-illiana",
 			"binding": "DETERMINISTIC_AUTOMATION_WORKFLOWS",
 			"class_name": "DeterministicAutomationWorkflow"
+		},
+		{
+			"name": "chiridion-legacy-workspace-migrations-dev-illiana",
+			"binding": "LEGACY_WORKSPACE_MIGRATIONS",
+			"class_name": "LegacyWorkspaceMigrationWorkflow"
 		}
 	],
 	"migrations": [
@@ -132,6 +143,9 @@
 		{ "tag": "v20", "new_sqlite_classes": ["EmailHandleDO"] },
 		{ "tag": "v21", "new_classes": ["EphemeralWorkerLogsDO"] },
 		{ "tag": "v22", "deleted_classes": ["AdminIndexDO"] },
-		{ "tag": "v23", "new_sqlite_classes": ["TelegramRegistryDO", "SlackTeamRegistryDO"] }
-	]
-}
+		{ "tag": "v23", "new_sqlite_classes": ["TelegramRegistryDO", "SlackTeamRegistryDO"] },
+		{ "tag": "v24", "new_sqlite_classes": ["CloudflareSandbox"] },
+		{ "tag": "v25", "new_sqlite_classes": ["WorkspaceFilesystemDO"] },
+			{ "tag": "v27", "new_sqlite_classes": ["MigrationPlanningAgent"] }
+		]
+	}

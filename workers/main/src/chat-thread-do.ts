@@ -21,9 +21,15 @@ import type { WorkspaceDO } from "./workspace";
 import type { WorkspaceCronDO } from "./workspace-cron";
 import type { WorkerLogsDO } from "./worker-logs-do";
 import {
-  WorkspaceContainer,
-  type WorkspaceContainerEnv,
-} from "./workspace-container";
+  WorkspaceFilesystemClient,
+  type WorkspaceFilesystemEnv,
+  type WorkspaceProject,
+  type WorkspaceProjectCloneSummary,
+} from "./workspace-filesystem-do";
+import {
+  ProjectRuntimeServiceVmBridge,
+  type ProjectRuntimeServiceVmEnv,
+} from "./project-runtime-service-vm";
 import { formatAttributedUserMessage } from './chat-author-attribution';
 import { injectFileSafetyMessage } from './file-safety';
 import { applyConnectionMentionContext } from './connection-mention-context';
@@ -83,7 +89,6 @@ import {
   PI_CONTAINER_TOOL_DEFINITIONS,
 } from "./pi-container-tools";
 import { repairPiMessageHistoryForReplay } from "./pi-message-history";
-import { ensureLegacyHostUsageBackfilled } from "./legacy-usage-backfill-gate";
 import { parseFilePreviewPath } from "./preview-paths";
 import {
   recordErrorEvent,
@@ -121,6 +126,7 @@ import { CodeModeCustomDomains } from "./code-mode-custom-domains";
 import { CodeModeScheduledPrompts } from "./code-mode-scheduled-prompts";
 import { CodeModeDeterministicAutomations } from "./code-mode-deterministic-automations";
 import { CodeModeIntegrations } from "./code-mode-integrations";
+import { createDispatcherSession } from "./worker-auth";
 import { createSignedToken } from "./signed-tokens";
 import {
   editAutomationVirtualFile,
@@ -301,7 +307,7 @@ interface ResolvedChannelAttachment {
 
 const MAX_CHANNEL_OUTBOUND_ATTACHMENT_BYTES = 25 * 1024 * 1024;
 
-export interface ChatEnv extends WorkspaceContainerEnv {
+export interface ChatEnv extends WorkspaceFilesystemEnv, ProjectRuntimeServiceVmEnv {
   CHAT_THREAD: DurableObjectNamespace<ChatThreadDO>;
   ORG: DurableObjectNamespace<OrgDO>;
   USER: DurableObjectNamespace<UserDO>;
@@ -322,6 +328,7 @@ export interface ChatEnv extends WorkspaceContainerEnv {
   AI_GATEWAY_AUTH_TOKEN?: string;
   CF_DISPATCH_NAMESPACE?: string;
   EMAIL_TO_USER: KVNamespace;
+  SESSIONS?: KVNamespace;
   R2_MOUNT_DIR?: string;
   PLATFORM_SCRIPT_TOKENS?: KVNamespace;
   SANDBOX_PROXY_SECRET?: string;
@@ -808,7 +815,6 @@ interface CodeModeToolDefinition {
   examples: string[];
   sideEffect: boolean;
   externalDelivery: boolean;
-  aliasFor?: string;
 }
 
 interface CodeModeToolRegistration extends CodeModeToolDefinition {
@@ -834,7 +840,6 @@ interface CodeModeToolOptions {
   examples?: string[];
   sideEffect?: boolean;
   externalDelivery?: boolean;
-  aliasFor?: string;
 }
 
 type CodeModeToolCallHandler = (
@@ -991,7 +996,6 @@ function codeModeTool(
     examples: options.examples ?? [],
     sideEffect: options.sideEffect ?? false,
     externalDelivery: options.externalDelivery ?? false,
-    aliasFor: options.aliasFor,
     piPassthrough: options.piPassthrough ?? false,
   };
 }
@@ -1005,24 +1009,6 @@ function codeModePassthroughTool(
   return codeModeTool(name, description, parameters, { ...options, piPassthrough: true });
 }
 
-function codeModeAlias(
-  alias: string,
-  target: CodeModeToolRegistration,
-  description: string,
-): CodeModeToolRegistration {
-  return {
-    name: alias,
-    description,
-    parameters: target.parameters,
-    category: target.category,
-    examples: target.examples.map((example) => example.replace(`tools.${target.name}`, `tools.${alias}`)),
-    sideEffect: target.sideEffect,
-    externalDelivery: target.externalDelivery,
-    aliasFor: target.name,
-    piPassthrough: target.piPassthrough,
-  };
-}
-
 function codeModeDefinition(
   registration: CodeModeToolRegistration,
 ): CodeModeToolDefinition {
@@ -1034,12 +1020,10 @@ function codeModeDefinition(
     examples: registration.examples,
     sideEffect: registration.sideEffect,
     externalDelivery: registration.externalDelivery,
-    aliasFor: registration.aliasFor,
   };
 }
 
 const CODE_MODE_CONTAINER_TOOL_NAMES = [
-  "bash",
   "read",
   "write",
   "ls",
@@ -1057,6 +1041,27 @@ const CODE_MODE_CONTAINER_TOOL_DEFINITIONS = CODE_MODE_CONTAINER_TOOL_NAMES.map(
     });
   },
 );
+
+const BASH_TOOL = codeModeTool(
+  "bash",
+  "Run a bash command in a project VM. Requires the unique workspace project name and a concise description for the UI. Arguments: { command, project, description, cwd?, timeoutMs?, timeoutSeconds?, env? }.",
+  Type.Object({
+    command: Type.String(),
+    project: Type.String(),
+    description: Type.String(),
+    cwd: Type.Optional(Type.String()),
+    timeoutMs: Type.Optional(Type.Number()),
+    timeoutSeconds: Type.Optional(Type.Number()),
+    env: Type.Optional(Type.Object({}, { additionalProperties: true })),
+  }, { additionalProperties: false }),
+);
+
+function vmTargetParameters() {
+  return {
+    location: Type.Optional(Type.Literal("vm")),
+    project: Type.String(),
+  };
+}
 
 const ASK_USER_QUESTION_TOOL = codeModePassthroughTool(
   "AskUserQuestion",
@@ -1265,6 +1270,78 @@ const EXPLORE_TOOL = codeModeTool(
 
 const CODE_MODE_TOOL_REGISTRY: CodeModeToolRegistration[] = [
   ...CODE_MODE_CONTAINER_TOOL_DEFINITIONS,
+  BASH_TOOL,
+  codeModeTool(
+    "vm_exec",
+    "Run a command in a project VM. Prefer the js_exec vm.exec(command, options) facade. Arguments: { command, project, location?: 'vm', cwd?, timeoutMs?, timeoutSeconds?, env? }.",
+    Type.Object({
+      command: Type.String(),
+      ...vmTargetParameters(),
+      cwd: Type.Optional(Type.String()),
+      timeoutMs: Type.Optional(Type.Number()),
+      timeoutSeconds: Type.Optional(Type.Number()),
+      env: Type.Optional(Type.Object({}, { additionalProperties: true })),
+    }),
+  ),
+  codeModeTool(
+    "vm_push",
+    "Copy selected files or directories from the durable workspace into a project VM. Prefer the js_exec vm.push({ paths, location: 'vm', project, vmRoot?, clean? }) facade. Arguments: { paths, project, location?: 'vm', vmRoot?, clean? }.",
+    Type.Object({
+      paths: Type.Array(Type.String()),
+      ...vmTargetParameters(),
+      vmRoot: Type.Optional(Type.String()),
+      clean: Type.Optional(Type.Boolean()),
+    }),
+  ),
+  codeModeTool(
+    "vm_pull",
+    "Copy selected files or directories from a project VM back into the durable workspace. Prefer the js_exec vm.pull({ paths?, location: 'vm', project, vmRoot?, workspaceRoot?, files? }) facade. Arguments: { paths?, project, location?: 'vm', vmRoot?, workspaceRoot?, files? }.",
+    Type.Object({
+      paths: Type.Optional(Type.Array(Type.String())),
+      ...vmTargetParameters(),
+      vmRoot: Type.Optional(Type.String()),
+      workspaceRoot: Type.Optional(Type.String()),
+      files: Type.Optional(Type.Array(Type.Object({
+        vmPath: Type.String(),
+        workspacePath: Type.String(),
+      }, { additionalProperties: false }))),
+    }),
+  ),
+  codeModeTool(
+    "list_projects",
+    "List known git/compute projects for this workspace as a nested tree. Includes project descriptions. Top-level rows are source projects; clone projects are nested under each source project's clones[] with cloneCount, like worktrees attached to the same remote. Arguments: {}.",
+  ),
+  codeModeTool(
+    "create_project",
+    "Create a project with one Artifacts Git repo and one default main VM checkout. Project names must be unique within the workspace. New projects require a concise description explaining what the project is for. Arguments: { name, description }.",
+    Type.Object({
+      name: Type.String(),
+      description: Type.String(),
+    }, { additionalProperties: false }),
+  ),
+  codeModeTool(
+    "set_project_description",
+    "Set the description for an existing project by its unique workspace project name. Use this when the project's purpose changes or needs clarification. Arguments: { project, description }.",
+    Type.Object({
+      project: Type.String(),
+      description: Type.String(),
+    }, { additionalProperties: false }),
+    {
+      sideEffect: true,
+    },
+  ),
+  codeModeTool(
+    "clone_project",
+    "Clone an existing project's VM filesystem into a fresh project VM while keeping the same Artifacts Git remote. This captures current VM files, including uncommitted changes. Optional description overrides the generated clone description. Arguments: { sourceProject, name?, description? }.",
+    Type.Object({
+      sourceProject: Type.String(),
+      name: Type.Optional(Type.String()),
+      description: Type.Optional(Type.String()),
+    }, { additionalProperties: false }),
+    {
+      sideEffect: true,
+    },
+  ),
   ASK_USER_QUESTION_TOOL,
   SEND_EMAIL_TOOL,
   SEND_SLACK_MESSAGE_TOOL,
@@ -1273,11 +1350,6 @@ const CODE_MODE_TOOL_REGISTRY: CodeModeToolRegistration[] = [
   R2_WRITE_TOOL,
   R2_LIST_TOOL,
   R2_DELETE_TOOL,
-  codeModeAlias(
-    "ask_user_question",
-    ASK_USER_QUESTION_TOOL,
-    "Alias for AskUserQuestion. Arguments: { questions }.",
-  ),
   codeModePassthroughTool(
     "TodoWrite",
     "Update the visible task list in the chat UI. Arguments: { todos: [{ content, status, activeForm? }] }. Status is pending, in_progress, or completed.",
@@ -1550,29 +1622,9 @@ const CODE_MODE_TOOL_REGISTRY: CodeModeToolRegistration[] = [
     },
   ),
   WEB_SEARCH_TOOL,
-  codeModeAlias(
-    "web_search",
-    WEB_SEARCH_TOOL,
-    "Alias for WebSearch. Arguments: { query, numResults?, maxCharacters? }.",
-  ),
   WEB_FETCH_TOOL,
-  codeModeAlias(
-    "web_fetch",
-    WEB_FETCH_TOOL,
-    "Alias for WebFetch. Arguments: { url, maxCharacters? }.",
-  ),
   AGENT_TOOL,
-  codeModeAlias(
-    "agent",
-    AGENT_TOOL,
-    "Alias for Agent. Arguments: { prompt, description?, agent?, model? }.",
-  ),
   EXPLORE_TOOL,
-  codeModeAlias(
-    "explore",
-    EXPLORE_TOOL,
-    "Alias for Explore. Arguments: { prompt? or query?, description?, agent?, model? }.",
-  ),
   codeModeTool(
     "connections_list",
     "List workspace connections. Prefer calling this from js_exec as await env.CONNECTIONS.list().",
@@ -1636,10 +1688,49 @@ const CODE_MODE_PI_PASSTHROUGH_TOOL_DEFINITIONS: CodeModeToolDefinition[] =
     .filter((registration) => registration.piPassthrough)
     .map(codeModeDefinition);
 
+function hasVmTarget(args: Record<string, unknown>): boolean {
+  if (args.location === "workspace") return false;
+  return args.location === "vm" ||
+    (typeof args.project === "string" && args.project.trim().length > 0);
+}
+
+function projectForAgent(project: WorkspaceProject): Record<string, unknown> {
+  return {
+    name: project.name,
+    description: project.description,
+    kind: project.kind,
+    defaultVmId: project.defaultVmId,
+    cloneSource: project.cloneSource
+      ? {
+          name: project.cloneSource.name,
+          description: project.cloneSource.description,
+        }
+      : undefined,
+    clones: project.clones?.map(projectCloneForAgent),
+    cloneCount: project.cloneCount,
+    artifactRemote: project.artifactRemote,
+    artifactDefaultBranch: project.artifactDefaultBranch,
+    artifactStatus: project.artifactStatus,
+    createdAt: project.createdAt,
+    updatedAt: project.updatedAt,
+  };
+}
+
+function projectCloneForAgent(project: WorkspaceProjectCloneSummary): Record<string, unknown> {
+  return {
+    name: project.name,
+    description: project.description,
+    defaultVmId: project.defaultVmId,
+    artifactRemote: project.artifactRemote,
+    artifactStatus: project.artifactStatus,
+    createdAt: project.createdAt,
+    updatedAt: project.updatedAt,
+  };
+}
+
 export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeToolsProps> {
   private static readonly TOOL_CALL_HANDLERS: Record<string, CodeModeToolCallHandler> = {
     AskUserQuestion: (binding, args) => binding.askUserQuestion(args),
-    ask_user_question: (binding, args) => binding.askUserQuestion(args),
     TodoWrite: (binding, args) => binding.updateTodos(args),
     set_preview: (binding, args) => binding.setPreview(args),
     list_apps: (binding) => binding.listApps(),
@@ -1679,13 +1770,9 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
     remove_custom_domain: (binding, args) => binding.removeCustomDomain(args),
     retry_custom_domain_hostnames: (binding) => binding.retryCustomDomainHostnames(),
     WebSearch: (binding, args) => binding.webSearch(args),
-    web_search: (binding, args) => binding.webSearch(args),
     WebFetch: (binding, args) => binding.webFetch(args),
-    web_fetch: (binding, args) => binding.webFetch(args),
     Agent: (binding, args, name) => binding.runSubagentTool(name, args),
-    agent: (binding, args, name) => binding.runSubagentTool(name, args),
     Explore: (binding, args, name) => binding.runSubagentTool(name, args),
-    explore: (binding, args, name) => binding.runSubagentTool(name, args),
     connections_list: (binding) => listConnections(binding.env, binding.connectionsContext),
     connections_get: (binding, args) => {
       const connection = typeof args.connection === "string" ? args.connection : "";
@@ -1709,12 +1796,12 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
     }),
   };
 
-  private get workspace(): WorkspaceContainer {
-    const { workspaceId, orgId } = this.ctx.props;
-    if (!workspaceId || !orgId) {
+  private get workspaceFs(): WorkspaceFilesystemClient {
+    const { workspaceId } = this.ctx.props;
+    if (!workspaceId) {
       throw new Error("Code mode tool binding is missing workspace scope");
     }
-    return new WorkspaceContainer(this.env, workspaceId, orgId);
+    return new WorkspaceFilesystemClient(this.env, workspaceId);
   }
 
   private get connectionsContext() {
@@ -1726,11 +1813,18 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
   }
 
   private get piContainerTools(): PiContainerTools {
-    return new PiContainerTools(this.workspace, {
-      commandEnv: async () => ({
-        ...(await this.workspace.buildContainerCommandEnv()),
-        ...(await this.createWranglerDeployEnv()),
-      }),
+    return new PiContainerTools(this.workspaceFs);
+  }
+
+  private get projectVm(): ProjectRuntimeServiceVmBridge {
+    const { workspaceId, orgId } = this.ctx.props;
+    if (!workspaceId || !orgId) {
+      throw new Error("Code mode VM binding is missing workspace scope");
+    }
+    return new ProjectRuntimeServiceVmBridge({
+      env: this.env,
+      workspace: this.workspaceFs,
+      commandEnv: () => this.createContainerCommandEnv(),
     });
   }
 
@@ -1786,6 +1880,45 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
     };
   }
 
+  private async createContainerCommandEnv(): Promise<Record<string, string>> {
+    return {
+      ...(await this.createWorkspaceCommandEnv()),
+      ...(await this.createWranglerDeployEnv()),
+    };
+  }
+
+  private async createWorkspaceCommandEnv(): Promise<Record<string, string>> {
+    const { orgId, workspaceId } = this.ctx.props;
+    const env: Record<string, string> = {
+      WORKSPACE_ID: workspaceId,
+      ORG_ID: orgId,
+      WRANGLER_SEND_METRICS: "false",
+      CI: "1",
+    };
+    const dispatchNamespace = this.env.CF_DISPATCH_NAMESPACE?.trim();
+    if (dispatchNamespace) {
+      env.CF_DISPATCH_NAMESPACE = dispatchNamespace;
+    }
+    Object.assign(env, await this.createAppAccessSession());
+    return env;
+  }
+
+  private async createAppAccessSession(): Promise<Record<string, string>> {
+    const { orgId, workspaceId } = this.ctx.props;
+    if (!this.env.SESSIONS || !orgId || !workspaceId) return {};
+    try {
+      const { sessionId } = await createDispatcherSession(
+        this.env.SESSIONS,
+        `sandbox:${workspaceId}`,
+        orgId,
+      );
+      return { CHIRIDION_APP_SESSION: sessionId };
+    } catch (error) {
+      console.error("[CodeModeToolsBinding] createAppAccessSession failed:", error);
+      return {};
+    }
+  }
+
   private async createWranglerDeployEnv(): Promise<Record<string, string>> {
     const { orgId, workspaceId, threadId } = this.ctx.props;
     if (!orgId || !workspaceId) {
@@ -1817,7 +1950,7 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
 
     return {
       CLOUDFLARE_API_BASE_URL: `${dockerProxyBaseUrl}${proxyPath}`,
-      CLOUDFLARE_API_TOKEN: "chiridion-sandbox-proxy",
+      CLOUDFLARE_API_TOKEN: "sandbox-outbound-proxy",
       CLOUDFLARE_ACCOUNT_ID: this.env.CF_ACCOUNT_ID?.trim() || "chiridion",
     };
   }
@@ -2272,9 +2405,10 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
     return this.callToolWithArtifactCapture(name, args, async () => {
       switch (name) {
         case "bash":
-        return this.piContainerTools.callTool("bash", args);
+          return this.projectVm.exec({ ...args, location: "vm" });
 
         case "read":
+          if (hasVmTarget(args)) return this.projectVm.read(args);
         {
           const path = typeof args.path === "string" ? args.path : "";
           if (normalizeAutomationVirtualPath(path) !== null) {
@@ -2302,6 +2436,7 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
         return this.piContainerTools.callTool("read", args);
 
         case "write":
+          if (hasVmTarget(args)) return this.projectVm.write(args);
         {
           const path = typeof args.path === "string" ? args.path : "";
           const content = typeof args.content === "string" ? args.content : "";
@@ -2318,6 +2453,7 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
         return this.piContainerTools.callTool("write", args);
 
         case "ls":
+          if (hasVmTarget(args)) return this.projectVm.ls(args);
         {
           if (typeof args.path === "string") {
             if (normalizeAutomationVirtualPath(args.path) !== null) {
@@ -2345,6 +2481,7 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
         return this.piContainerTools.callTool("ls", args);
 
         case "edit":
+          if (hasVmTarget(args)) return this.projectVm.edit(args);
         {
           const path = typeof args.path === "string" ? args.path : "";
           const edits = Array.isArray(args.edits)
@@ -2370,10 +2507,33 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
         return this.piContainerTools.callTool("edit", args);
 
         case "grep":
-        return this.piContainerTools.callTool("grep", args);
+          if (hasVmTarget(args)) return this.projectVm.grep(args);
+          return this.piContainerTools.callTool("grep", args);
 
         case "find":
-        return this.piContainerTools.callTool("find", args);
+          if (hasVmTarget(args)) return this.projectVm.find(args);
+          return this.piContainerTools.callTool("find", args);
+
+        case "vm_exec":
+          return this.projectVm.exec(args);
+
+        case "vm_push":
+          return this.projectVm.push(args);
+
+        case "vm_pull":
+          return this.projectVm.pull(args);
+
+        case "list_projects":
+          return (await this.workspaceFs.listProjects()).map(projectForAgent);
+
+        case "create_project":
+          return projectForAgent(await this.workspaceFs.createProject(args));
+
+        case "set_project_description":
+          return projectForAgent(await this.workspaceFs.setProjectDescription(args));
+
+        case "clone_project":
+          return this.projectVm.cloneProject(args);
 
         default:
           throw new Error(`Unknown code mode tool: ${name}`);
@@ -2553,8 +2713,8 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
 
   private runSubagentTool(name: string, args: Record<string, unknown>): Promise<AgentToolResult<unknown>> {
     return (this.chatThreadStub as unknown as {
-      runCodeModeSubagent(toolName: "Agent" | "agent" | "Explore" | "explore", params: unknown): Promise<AgentToolResult<unknown>>;
-    }).runCodeModeSubagent(name as "Agent" | "agent" | "Explore" | "explore", args);
+      runCodeModeSubagent(toolName: "Agent" | "Explore", params: unknown): Promise<AgentToolResult<unknown>>;
+    }).runCodeModeSubagent(name as "Agent" | "Explore", args);
   }
 
   private connectionQuery(args: Record<string, unknown>): string | Record<string, string> {
@@ -2896,7 +3056,7 @@ const PI_TURN_KEEP_ALIVE_INTERVAL_MS = 30_000;
 const PI_TURN_KEEP_ALIVE_STALL_MS = 10 * 60_000;
 
 const MAX_CHAT_EVENT_BUFFER = 500;
-const ASK_USER_QUESTION_UNAVAILABLE_MESSAGE = 'User is not at computer; ask_user_question is unavailable in this channel. Continue without asking and use best effort.';
+const ASK_USER_QUESTION_UNAVAILABLE_MESSAGE = 'User is not at computer; AskUserQuestion is unavailable in this channel. Continue without asking and use best effort.';
 
 export interface PiTurnRecoveryRow {
   turn_id: string;
@@ -3949,7 +4109,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
   }
 
   async runCodeModeSubagent(
-    toolName: "Agent" | "agent" | "Explore" | "explore",
+    toolName: "Agent" | "Explore",
     params: unknown,
   ): Promise<AgentToolResult<unknown>> {
     const baseContext = this.chatContext;
@@ -7023,37 +7183,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       size: rawContent.length,
       sampleKey,
     });
-    this.ctx.waitUntil(
-      this.warmWorkspaceContainerForTurn(context).catch((error) => {
-        console.warn("[ChatThreadDO] container warmup failed", error);
-        this.recordChatThreadObservabilityEvent("container_warmup", {
-          operation: "warm_after_user_message",
-          status: "error",
-          severity: "warn",
-          error,
-        });
-      }),
-    );
     return { status: "accepted" };
-  }
-
-  private async warmWorkspaceContainerForTurn(
-    context: ChatContextState,
-  ): Promise<void> {
-    const startedAt = Date.now();
-    const container = new WorkspaceContainer(
-      this.env,
-      context.workspaceId,
-      context.orgId,
-    );
-    const result = await container.warmContainer({ skipBanCheck: true });
-    this.recordChatThreadObservabilityEvent("container_warmup", {
-      operation: "warm_after_user_message",
-      status: result.success ? "ok" : "error",
-      severity: result.success ? "info" : "warn",
-      durationMs: Date.now() - startedAt,
-      error: result.success ? undefined : new Error(result.error || "Container warmup failed"),
-    });
   }
 
   private async handleQuestionResponse(
@@ -8153,13 +8283,15 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     );
     return [
       "You are camelAI, an AI coding agent running inside the user's camelAI workspace.",
-      "Use the provided tools for workspace files, shell commands, container operations, JavaScript code mode, and connections.",
-      "File, shell, and container operations execute through sandbox-host; do not assume local Worker filesystem access.",
+      "Use the provided tools for durable workspace files, JavaScript code mode, project VM work, and connections.",
+      "Workspace files live in a Durable Object filesystem. Do not assume local Worker filesystem access. The top-level file tools (`read`, `write`, `edit`, `ls`) default to these durable workspace files. For content search and glob/file search, use `js_exec` with `await tools.grep(...)` and `await tools.find(...)`.",
+      "Projects are compute + Git work areas backed by one Cloudflare Artifacts repo and one project VM checkout. Project names are unique within the workspace and are the handle to use in tools. File tools default to the outer durable workspace; when a file tool receives `location: \"vm\"` with `project`, it operates on that project's VM filesystem. Use `list_projects`, `create_project`, `set_project_description`, and `clone_project` to discover, create, describe, or quickly clone projects. New projects require a concise description, and `list_projects` includes descriptions for source projects and clones. Cloning copies the source VM filesystem into a fresh project VM, so it includes current uncommitted files and can be used like a lightweight worktree. `list_projects` returns source projects as top-level rows and nests clone projects under each source project's `clones` array.",
+      "Shell commands run in project VMs. Use the `bash` tool with `project` for a single direct command, or use `js_exec` with the `vm` facade when orchestrating multiple tool calls in JavaScript. The active checkout in the Go project runtime service is `/workspace`; do not create or use `/home/claude`, which is a legacy path and may not be writable in the current runtime image. The platform prepares a Git remote that reaches Cloudflare Artifacts through the runtime-service proxy, so the VM does not receive Artifacts tokens. Use normal Git commands there for version control (`git status`, `git diff`, selective `git add`, `git commit`, `git push`) and avoid committing build artifacts, dependency folders, caches, or secrets. Project VM files are persisted on the runtime host. Use `vm.exec` for commands and `vm.push`/`vm.pull` only when copying selected files between the durable workspace filesystem and the VM.",
       "Outbound email, Slack, and Telegram messages are opt-in side effects. In ordinary web chats, answer in chat only unless the user explicitly asks you to send an external message. Channel-originated turns include their own hidden routing instruction when an external reply is needed.",
       "When you create or edit a user-visible file or app, call the `set_preview` tool with the relevant file path or app name so the user can inspect the result in the preview pane.",
       "For workspace connections, prefer the `js_exec` tool. In `js_exec`, use `await env.CONNECTIONS.find(\"provider-or-type\")` to resolve one connection, then call it through `env.CONNECTIONS[entry.alias].method(input)`, `connections[entry.alias].method(input)`, or `context.cloudflare.connections[entry.alias].method(input)`. Database-style connections expose `query({ query })`; custom `other` connections expose `fetch(input, init)`. Channel side effects such as Telegram sending are virtual actions listed by `tools.list_integrations({ category: \"communication\" })` and `await env.CONNECTIONS.methods()`; call their copyable `tools.<action>(...)` examples from js_exec. Global `fetch()` is also available in `js_exec` for direct HTTP requests; prefer `tools.WebSearch` and `tools.WebFetch` for web lookup. Use `await env.CONNECTIONS.methods()` only when you need the full catalog, schemas, or examples. Connection credentials are intentionally hidden behind the binding.",
       "For hosted AI in `js_exec`, use `env.AI` or `context.cloudflare.env.AI` with `run()` only, for example `await env.AI.run(\"auto\", { messages: [{ role: \"user\", content: \"hello\" }] })`. Model tiers are `cheap`, `fast`, `auto` (default), and `smart`; any OpenRouter model id is also accepted. For images, call `await env.CAMELAI.generateImage(\"prompt\")`; for audio transcription, call `await env.CAMELAI.transcribeAudio({ path: \"/mnt/user-uploads/audio.ogg\" })` or pass base64 audio (same on `context.cloudflare.env.CAMELAI`). Use `await tools.help()` inside js_exec to expand tool categories, `await env.CAMELAI.help()` for CAMELAI methods, and `await env.WORKSPACE.info()` for workspace metadata such as its email address.",
-      "Before relying on repository-specific conventions, read /home/claude/AGENTS.md, /home/claude/CLAUDE.md, /AGENTS.md, or /CLAUDE.md if present.",
+      "Before relying on repository-specific conventions, read /workspace/AGENTS.md, /workspace/CLAUDE.md, /AGENTS.md, or /CLAUDE.md if present.",
       "",
       "## Available Skills",
       "When a task matches a skill, read that skill file with the read tool and follow it. Built-in skills are available at:",
@@ -9959,7 +10091,6 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       );
     }
 
-    await ensureLegacyHostUsageBackfilled(this.env, context.orgId);
     const usage = await orgStub.getUsageLogSum(0, Date.now(), true);
     const spentCents = Math.round(Number(usage.total_cost_usd ?? 0) * 100);
     const totalCreditsCents =
@@ -10199,24 +10330,11 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         execute: async (_id, params) => call("ls", params as Record<string, unknown>),
       },
       {
-        name: PI_CONTAINER_TOOL_DEFINITIONS.grep.name,
-        label: PI_CONTAINER_TOOL_DEFINITIONS.grep.label,
-        description: PI_CONTAINER_TOOL_DEFINITIONS.grep.description,
-        parameters: PI_CONTAINER_TOOL_DEFINITIONS.grep.parameters,
-        execute: async (_id, params) => call("grep", params as Record<string, unknown>),
-      },
-      {
-        name: PI_CONTAINER_TOOL_DEFINITIONS.find.name,
-        label: PI_CONTAINER_TOOL_DEFINITIONS.find.label,
-        description: PI_CONTAINER_TOOL_DEFINITIONS.find.description,
-        parameters: PI_CONTAINER_TOOL_DEFINITIONS.find.parameters,
-        execute: async (_id, params) => call("find", params as Record<string, unknown>),
-      },
-      {
-        name: PI_CONTAINER_TOOL_DEFINITIONS.bash.name,
-        label: PI_CONTAINER_TOOL_DEFINITIONS.bash.label,
-        description: PI_CONTAINER_TOOL_DEFINITIONS.bash.description,
-        parameters: PI_CONTAINER_TOOL_DEFINITIONS.bash.parameters,
+        name: "bash",
+        label: "bash",
+        description:
+          "Run a bash command in a project VM. Requires the unique workspace project name and a concise description. Use this for direct shell commands; use js_exec when orchestrating several tool calls in JavaScript.",
+        parameters: BASH_TOOL.parameters,
         execute: async (_id, params) => call("bash", params as Record<string, unknown>),
         executionMode: "sequential",
       },
@@ -10232,6 +10350,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
           "Custom `other` connections expose `fetch`, for example `const response = await connections[entry.alias].fetch(\"/v1/items\", { method: \"GET\" }); return await response.json();`; camelAI applies the stored auth settings. " +
           "Global `fetch()` is also available for direct HTTP requests to public URLs. For web search and page retrieval, prefer `await tools.WebSearch({ query: \"...\" })` and `await tools.WebFetch({ url: \"...\" })`. " +
           "Connection credentials are intentionally hidden behind the binding. " +
+          "For workflows that need a project VM, use the `projects` facade to list/create/describe/clone projects and the `vm` facade for project VM execution and file transfer. Project names are unique within the workspace and are the handle to use in tools: `const project = await projects.create({ name: \"web-app\", description: \"Customer-facing React app for tracking pizza orders.\" }); await vm.exec(\"git status && bun install && bun run build\", { project: project.name, timeoutSeconds: 120 }); await projects.setDescription({ project: project.name, description: \"Updated project purpose.\" }); const clone = await projects.clone({ sourceProject: project.name, name: \"web-app-experiment\" });`. Each project has one default VM checkout; cloning a project copies the source project VM filesystem, so it can include uncommitted files and be used like a lightweight worktree. The active project checkout is `/workspace` in the Go project runtime service. Do not use `/home/claude`; it is a legacy path and can fail with permission errors in the current runtime image. The platform configures the Git remote through the runtime-service proxy so Artifacts credentials stay outside the VM; use normal Git commands in the VM for selective commits and pushes. The normal file tools accept `location` and `project`: `await tools.read({ location: \"vm\", project: project.name, path: \"/src/App.tsx\" })` reads from the project VM while `await tools.read({ location: \"workspace\", path: \"/notes.md\" })` reads from durable workspace files. Search tools are also available inside js_exec: `await tools.grep({ location: \"vm\", project: project.name, pattern: \"TODO\", path: \"/workspace\" })` searches file contents and `await tools.find({ location: \"vm\", project: project.name, pattern: \"**/*.tsx\" })` finds files by glob. Copy selected durable workspace files with `vm.push({ project: project.name, paths: [\"/package.json\", \"/src\"], clean: true })` and `vm.pull({ project: project.name, paths: [\"/workspace/dist\"], workspaceRoot: \"/\" })`. The durable workspace filesystem remains separate. " +
           "AI globals: `env.AI` and `context.cloudflare.env.AI` expose the virtual AI binding (`run()` only). Call `await env.AI.run(\"auto\", { messages: [{ role: \"user\", content: \"hello\" }] })`; model tiers are `cheap`, `fast`, `auto` (default), and `smart`, and any OpenRouter model id is also accepted. For images, call `await env.CAMELAI.generateImage(\"prompt\")` or `await env.CAMELAI.generateImage({ prompt, referenceImageUrl })` on `context.cloudflare.env.CAMELAI`. Returns `{ text, imageDataUrl, images }`. For audio transcription, call `await env.CAMELAI.transcribeAudio({ path: \"/mnt/user-uploads/audio.ogg\" })` or pass base64 audio; it returns `{ text }`. Use `await env.CAMELAI.help()` for its method catalog. " +
           "Workspace metadata: call `await env.WORKSPACE.emailAddress()` when users want to email the current workspace; it returns the address string or null. `await env.WORKSPACE.info()` also includes `email_address`. " +
           "Every registered harness tool is also available on the global `tools` object. Start with `await tools.help()` for expandable categories, `await tools.help(\"communication\")` for a category, or `await tools.help(\"send_email\")` for one tool. `ALL_TOOLS` contains the same names, descriptions, schemas, categories, examples, and side-effect metadata. Provider-specific outbound channel tools are intentionally available only here; use them only when the current turn's channel instructions require an external reply or the user explicitly asks for external delivery. " +
@@ -10251,6 +10370,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         execute: async (toolUseId, params) => {
           const raw = params as {
             code?: unknown;
+            description?: unknown;
             timeoutMs?: unknown;
             maxOutputCharacters?: unknown;
           };
@@ -10300,7 +10420,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
 
     if (options.includeSubagents !== false) {
       const runAgent = (
-        toolName: "Agent" | "agent" | "Explore" | "explore",
+        toolName: "Agent" | "Explore",
         params: unknown,
         signal?: AbortSignal,
         onUpdate?: (partialResult: AgentToolResult<unknown>) => void,
@@ -10326,21 +10446,6 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
           executionMode: "sequential",
         },
         {
-          name: "agent",
-          label: "Agent",
-          description:
-            "Alias for Agent. Run a focused subagent in the same workspace with an isolated context.",
-          parameters: Type.Object({
-            prompt: Type.String(),
-            description: Type.Optional(Type.String()),
-            agent: Type.Optional(Type.String()),
-            model: Type.Optional(Type.String()),
-          }),
-          execute: async (_id, params, signal, onUpdate) =>
-            runAgent("agent", params, signal, onUpdate),
-          executionMode: "sequential",
-        },
-        {
           name: "Explore",
           label: "Explore",
           description:
@@ -10356,22 +10461,6 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
             runAgent("Explore", params, signal, onUpdate),
           executionMode: "sequential",
         },
-        {
-          name: "explore",
-          label: "Explore",
-          description:
-            "Alias for Explore. Run a focused read-oriented exploration subagent in the same workspace.",
-          parameters: Type.Object({
-            prompt: Type.Optional(Type.String()),
-            query: Type.Optional(Type.String()),
-            description: Type.Optional(Type.String()),
-            agent: Type.Optional(Type.String()),
-            model: Type.Optional(Type.String()),
-          }),
-          execute: async (_id, params, signal, onUpdate) =>
-            runAgent("explore", params, signal, onUpdate),
-          executionMode: "sequential",
-        },
       );
     }
 
@@ -10380,7 +10469,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
 
   private async runPiSubagentTool(
     context: ChatContextState,
-    toolName: "Agent" | "agent" | "Explore" | "explore",
+    toolName: "Agent" | "Explore",
     params: unknown,
     signal?: AbortSignal,
     onUpdate?: (partialResult: AgentToolResult<unknown>) => void,
@@ -10388,7 +10477,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     const raw = params && typeof params === "object"
       ? params as Record<string, unknown>
       : {};
-    const isExplore = toolName === "Explore" || toolName === "explore";
+    const isExplore = toolName === "Explore";
     const prompt =
       typeof raw.prompt === "string" && raw.prompt.trim()
         ? raw.prompt.trim()

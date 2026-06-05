@@ -1,16 +1,7 @@
 import type { Route } from './+types/admin.threads.$id.jsonl';
 import { requireSuperuser, getAuthEnv } from '@/lib/auth.server';
 import { getEnv } from '@/lib/cloudflare.server';
-import {
-  getCodexSessionId,
-  getLegacyClaudeSessionId,
-  getPiCoreMessages,
-} from '@/lib/chat-do.server';
-import { readMessagesFromResponse } from '@/lib/thread-messages.server';
-import {
-  WorkspaceContainer,
-  type WorkspaceContainerEnv,
-} from '../../../workers/main/src/workspace-container';
+import { getPiCoreMessages } from '@/lib/chat-do.server';
 
 function sanitizeFilename(value: string): string {
   const sanitized = value.replace(/[^a-zA-Z0-9._-]/g, '_');
@@ -22,10 +13,6 @@ function messagesToJsonl(messages: unknown[]): string {
     return '';
   }
   return `${messages.map((message) => JSON.stringify(message)).join('\n')}\n`;
-}
-
-function legacyClaudeJsonlPath(sessionId: string): string {
-  return `/home/claude/.claude/projects/-home-claude/${sessionId}.jsonl`;
 }
 
 export async function loader({ request, context, params }: Route.LoaderArgs) {
@@ -70,53 +57,7 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
       return new Response(messagesToJsonl(piMessages), { headers });
     }
 
-    const container = new WorkspaceContainer(
-      env as unknown as WorkspaceContainerEnv,
-      workspaceId,
-      orgId
-    );
-
-    const legacyClaudeSessionId = await getLegacyClaudeSessionId(context, threadId);
-    const codexSessionId = await getCodexSessionId(context, threadId);
-    const legacyClaudeCandidates = [
-      threadId,
-      legacyClaudeSessionId && legacyClaudeSessionId !== threadId
-        ? legacyClaudeSessionId
-        : null,
-    ].filter((candidate): candidate is string => Boolean(candidate));
-
-    for (const sessionId of legacyClaudeCandidates) {
-      const rawJsonl = await container.readFileStream(
-        legacyClaudeJsonlPath(sessionId),
-        { skipBanCheck: true },
-      );
-      if (!rawJsonl) continue;
-
-      const rawHeaders = new Headers(headers);
-      const contentLength = rawJsonl.headers.get('Content-Length');
-      if (contentLength) {
-        rawHeaders.set('Content-Length', contentLength);
-      }
-      return new Response(rawJsonl.body, { headers: rawHeaders });
-    }
-
-    const streamResult = await container.readThreadMessagesStream(threadId, {
-      claudeSessionId: legacyClaudeSessionId,
-      codexSessionId,
-      skipBanCheck: true,
-    });
-    if (!streamResult.success || !streamResult.response) {
-      const status = streamResult.code?.startsWith('HTTP_')
-        ? Number.parseInt(streamResult.code.slice(5), 10) || 500
-        : 500;
-      return Response.json(
-        { error: streamResult.error || 'Failed to load thread messages' },
-        { status },
-      );
-    }
-
-    const messages = await readMessagesFromResponse(streamResult.response);
-    return new Response(messagesToJsonl(messages), { headers });
+    return new Response('', { headers });
   } catch (error) {
     if (error instanceof Response) {
       return error;

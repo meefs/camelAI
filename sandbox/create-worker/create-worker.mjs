@@ -229,8 +229,8 @@ function generateCssFromPreset(preset, options) {
 }
 
 /**
- * Copy template directory to project directory (excludes node_modules
- * since bun install runs afterwards and pulls from the prewarmed cache).
+ * Copy template directory to project directory. Dependencies are installed
+ * afterwards so generated projects do not include template node_modules.
  */
 function copyTemplate(projectDir) {
   if (!existsSync(TEMPLATE_DIR)) {

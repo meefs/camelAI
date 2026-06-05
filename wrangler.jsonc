@@ -24,6 +24,7 @@
 		"CF_ACCOUNT_ID": "85bbd288051330fb51ee1c86031a299b",
 		"CF_DISPATCH_NAMESPACE": "chiridion-platform-local",
 		"CF_WORKER_NAME": "chiridion-app",
+		"ENABLE_LEGACY_WORKSPACE_MIGRATION": "1",
 		// Claude API proxy (CF AI Gateway)
 		"CF_GATEWAY_NAME": "chiridion",
 		"BEDROCK_REGION": "us-west-2",
@@ -31,6 +32,7 @@
 			"WORKSPACE_EMAIL_DOMAIN": "camelai.dev",
 
 				"EXT_API_CLIENT_ID": "set-me"
+				,"SANDBOX_TRANSPORT": "rpc"
 			// CF_GATEWAY_TOKEN is set via .dev.vars
 		},
 	"assets": {
@@ -49,6 +51,9 @@
 	},
 	"worker_loaders": [
 		{ "binding": "CODE_MODE_LOADER" }
+	],
+	"artifacts": [
+		{ "binding": "ARTIFACTS", "namespace": "local", "remote": true }
 	],
 	"send_email": [
 		{
@@ -71,6 +76,10 @@
 			"binding": "R2_BUCKET",
 			"bucket_name": "chiridion-sandbox",
       "remote": true
+		},
+		{
+			"binding": "BACKUP_BUCKET",
+			"bucket_name": "chiridion-sandbox-vm-backups"
 		}
 	],
 	// Shared dev/staging KV namespaces
@@ -125,8 +134,17 @@
 	],
 	"vpc_services": [
 		{
+			"binding": "PROJECT_RUNTIME_HOST",
+			"service_id": "019e866e-90ab-72f2-b1bf-b044653ff154",
+			"remote": true
+		},
+		{
+			"binding": "LEGACY_WORKSPACE_HOST",
+			"service_id": "019dd673-3397-7c93-b55c-e593a1ffd317",
+			"remote": true
+		},
+		{
 			"binding": "SANDBOX_HOST",
-			// Local dev should target the staging sandbox host by default.
 			"service_id": "019dd673-3397-7c93-b55c-e593a1ffd317",
 			"remote": true
 		}
@@ -143,14 +161,21 @@
 			{ "name": "WORKSPACE", "class_name": "WorkspaceDO" },
 			{ "name": "WORKSPACE_CRON", "class_name": "WorkspaceCronDO" },
 			{ "name": "MCP_OBJECT", "class_name": "ChiridionMcp" },
-			{ "name": "WORKER_LOGS", "class_name": "WorkerLogsDO" },
-		]
-	},
+				{ "name": "WORKER_LOGS", "class_name": "WorkerLogsDO" },
+				{ "name": "WORKSPACE_FS", "class_name": "WorkspaceFilesystemDO" },
+				{ "name": "MIGRATION_PLANNING_AGENT", "class_name": "MigrationPlanningAgent" },
+			]
+		},
 	"workflows": [
 		{
 			"name": "chiridion-deterministic-automations",
 			"binding": "DETERMINISTIC_AUTOMATION_WORKFLOWS",
 			"class_name": "DeterministicAutomationWorkflow"
+		},
+		{
+			"name": "chiridion-legacy-workspace-migrations",
+			"binding": "LEGACY_WORKSPACE_MIGRATIONS",
+			"class_name": "LegacyWorkspaceMigrationWorkflow"
 		}
 	],
 	"migrations": [
@@ -178,8 +203,11 @@
 		{ "tag": "v22", "deleted_classes": ["ExternalMcpDO"] },
 		{ "tag": "v23", "new_classes": ["EphemeralWorkerLogsDO"] },
 		{ "tag": "v24", "deleted_classes": ["AdminIndexDO"] },
-		{ "tag": "v25", "new_sqlite_classes": ["TelegramRegistryDO", "SlackTeamRegistryDO"] }
-	],
+		{ "tag": "v25", "new_sqlite_classes": ["TelegramRegistryDO", "SlackTeamRegistryDO"] },
+		{ "tag": "v26", "new_sqlite_classes": ["CloudflareSandbox"] },
+			{ "tag": "v27", "new_sqlite_classes": ["WorkspaceFilesystemDO"] },
+			{ "tag": "v28", "new_sqlite_classes": ["MigrationPlanningAgent"] }
+		],
 	"env": {
 		"prod": {
 			"name": "chiridion-app",
@@ -189,6 +217,14 @@
 				{ "pattern": "www.camelai.dev/*", "zone_name": "camelai.dev" }
 			],
 			"vpc_services": [
+				{
+					"binding": "PROJECT_RUNTIME_HOST",
+					"service_id": "019e8a87-d4d8-7711-a627-91eeb22040a6"
+				},
+				{
+					"binding": "LEGACY_WORKSPACE_HOST",
+					"service_id": "019c54ff-d555-7741-8464-3b68f8a18edf"
+				},
 				{
 					"binding": "SANDBOX_HOST",
 					"service_id": "019c54ff-d555-7741-8464-3b68f8a18edf"
@@ -313,12 +349,6 @@
 			"routes": [
 				{ "pattern": "staging.camelai.dev/*", "zone_name": "camelai.dev" }
 			],
-			"vpc_services": [
-				{
-					"binding": "SANDBOX_HOST",
-					"service_id": "019dd673-3397-7c93-b55c-e593a1ffd317"
-				}
-			],
 			"vars": {
 				"AI_VIRTUAL_MODEL": "dynamic/auto",
 				"R2_BUCKET_NAME": "chiridion-sandbox",
@@ -440,12 +470,6 @@
 			"tail_consumers": [{ "service": "chiridion-user-logs-tail-dev-miguel" }],
 			"routes": [
 				{ "pattern": "dev-miguel.camelai.dev/*", "zone_name": "camelai.dev" }
-			],
-			"vpc_services": [
-				{
-					"binding": "SANDBOX_HOST",
-					"service_id": "019c54ff-d555-7741-8464-3b68f8a18edf"
-				}
 			],
 			"vars": {
 				"AI_VIRTUAL_MODEL": "dynamic/auto",
@@ -569,12 +593,6 @@
 			"tail_consumers": [{ "service": "chiridion-user-logs-tail-dev-illiana" }],
 			"routes": [
 				{ "pattern": "dev-illiana.camelai.dev/*", "zone_name": "camelai.dev" }
-			],
-			"vpc_services": [
-				{
-					"binding": "SANDBOX_HOST",
-					"service_id": "019c54ff-d555-7741-8464-3b68f8a18edf"
-				}
 			],
 			"vars": {
 				"AI_VIRTUAL_MODEL": "dynamic/auto",

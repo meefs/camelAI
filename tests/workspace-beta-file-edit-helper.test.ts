@@ -4,10 +4,6 @@ vi.mock('cloudflare:workers', () => ({
   DurableObject: class {},
 }));
 
-vi.mock('@cloudflare/containers', () => ({
-  Container: class {},
-}));
-
 vi.mock('@/lib/auth.server', () => ({
   getSession: vi.fn(),
 }));

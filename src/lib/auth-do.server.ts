@@ -35,10 +35,6 @@ import {
 import { deriveCheapRecentActivityCounts } from "./admin-recent-activity";
 import { deleteDispatchScript } from "../../workers/main/src/cf-api-proxy";
 import {
-  WorkspaceContainer,
-  type WorkspaceContainerEnv,
-} from "../../workers/main/src/workspace-container";
-import {
   getAppIndexDatabase,
   getAppIndexReadDatabase,
 } from "../../workers/main/src/app-index-db";
@@ -908,20 +904,9 @@ export async function hardDeleteAdminOrgWithEnv(
     }
   }
 
-  // Purge each workspace sandbox and then hard-delete the WorkspaceDO.
+  // Hard-delete each WorkspaceDO. Project VM lifecycle is owned by the
+  // external project runtime service, not this app worker.
   for (const workspaceId of workspaceIds) {
-    const container = new WorkspaceContainer(
-      env as unknown as WorkspaceContainerEnv,
-      workspaceId,
-      orgId,
-    );
-    const purgeResult = await container.purgeWorkspace("admin_org_delete");
-    if (!purgeResult.success) {
-      throw new Error(
-        `Failed to purge workspace sandbox ${workspaceId.slice(0, 8)}: ${purgeResult.error ?? "unknown error"}`,
-      );
-    }
-
     const workspaceStub = authEnv.WORKSPACE.get(
       authEnv.WORKSPACE.idFromName(workspaceId),
     );

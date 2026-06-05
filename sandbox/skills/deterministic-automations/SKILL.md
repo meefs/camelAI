@@ -22,7 +22,7 @@ Use agent tasks when the user wants the agent to think or write a reply later. U
 Workflow scripts are also exposed as virtual files:
 
 ```text
-/home/claude/.camelai/automations/<workflow_id>.js
+/workspace/.camelai/automations/<workflow_id>.js
 ```
 
 After creating a workflow, use `read`, `edit`, or `write` on that path to inspect or update the script like a normal file. New workflows must be created with `create_workflow` because the schedule and display name are metadata, not file contents.
@@ -157,9 +157,9 @@ Cron expressions are 5 fields in UTC: `minute hour day-of-month month day-of-wee
 
 ```js
 await tools.list_workflows({});
-await tools.read({ path: "/home/claude/.camelai/automations/<workflow_id>.js" });
+await tools.read({ path: "/workspace/.camelai/automations/<workflow_id>.js" });
 await tools.edit({
-  path: "/home/claude/.camelai/automations/<workflow_id>.js",
+  path: "/workspace/.camelai/automations/<workflow_id>.js",
   edits: [{ oldText: "old code", newText: "new code" }],
 });
 ```

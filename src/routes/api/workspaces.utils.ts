@@ -4,17 +4,86 @@ import { getEnv, type CloudflareEnv } from '@/lib/cloudflare.server';
 import { type AuthEnv } from '@/lib/auth-helpers';
 import { getWorkspace, getWorkspaceAccess } from '@/lib/auth-do';
 import type { WorkspaceAccessLevel } from '../../../workers/main/src/workspace';
-import {
-  WorkspaceContainer,
-  type WorkspaceContainerEnv,
-} from '../../../workers/main/src/workspace-container';
+import type {
+  WorkspaceFilesystemClient,
+  WorkspaceListResponse as DoWorkspaceListResponse,
+  WorkspaceReadFileResponse,
+  WorkspaceWriteResponse,
+} from '../../../workers/main/src/workspace-filesystem-do';
+
+interface WorkspaceFileAdapterListResponse extends DoWorkspaceListResponse {
+  success: boolean;
+}
+
+class WorkspaceFileAdapter {
+  private fsPromise?: Promise<WorkspaceFilesystemClient>;
+
+  constructor(
+    private readonly env: CloudflareEnv,
+    private readonly workspaceId: string,
+  ) {}
+
+  private async getFs(): Promise<WorkspaceFilesystemClient> {
+    this.fsPromise ??= import('../../../workers/main/src/workspace-filesystem-do')
+      .then(({ WorkspaceFilesystemClient }) => new WorkspaceFilesystemClient(
+        this.env as never,
+        this.workspaceId,
+      ));
+    return this.fsPromise;
+  }
+
+  async readFile(path: string): Promise<WorkspaceReadFileResponse> {
+    return (await this.getFs()).readFile(toWorkspacePath(path));
+  }
+
+  async readFileStream(path: string): Promise<Response | null> {
+    const result = await this.readFile(path);
+    if (!result.success) return null;
+
+    const bytes = result.isBinary || result.encoding === 'base64'
+      ? base64ToBytes(result.content ?? '')
+      : new TextEncoder().encode(result.content ?? '');
+    return new Response(bytes as BodyInit, {
+      headers: {
+        'Content-Length': String(bytes.byteLength),
+      },
+    });
+  }
+
+  async writeFile(path: string, content: string): Promise<WorkspaceWriteResponse> {
+    return (await this.getFs()).writeFile(toWorkspacePath(path), content);
+  }
+
+  async writeBinaryFile(path: string, contentBase64: string): Promise<WorkspaceWriteResponse> {
+    return (await this.getFs()).writeBinaryFile(toWorkspacePath(path), contentBase64);
+  }
+
+  async listFiles(
+    path: string,
+    options?: { recursive?: boolean; includeHidden?: boolean; limit?: number },
+  ): Promise<WorkspaceFileAdapterListResponse> {
+    return (await this.getFs()).listFiles(toWorkspacePath(path), options) as Promise<WorkspaceFileAdapterListResponse>;
+  }
+
+  async mkdir(path: string, options?: { recursive?: boolean }): Promise<WorkspaceWriteResponse> {
+    return (await this.getFs()).mkdir(toWorkspacePath(path), options);
+  }
+
+  async deleteFile(path: string): Promise<WorkspaceWriteResponse> {
+    return (await this.getFs()).deleteFile(toWorkspacePath(path));
+  }
+
+  async moveFile(_fromPath: string, _toPath: string): Promise<WorkspaceWriteResponse> {
+    return { success: false, error: 'Move is not supported by the workspace filesystem API' };
+  }
+}
 
 export interface WorkspaceAuth {
   userId: string;
   orgId: string;
   workspaceId: string;
   access: WorkspaceAccessLevel;
-  container: WorkspaceContainer;
+  container: WorkspaceFileAdapter;
 }
 
 export interface WorkspaceAccessAuth {
@@ -116,7 +185,7 @@ export async function requireWorkspaceAuth(
 ): Promise<WorkspaceAuth> {
   const accessAuth = await requireWorkspaceAccess(request, context, workspaceId, options);
   const env = getEnv(context);
-  const container = new WorkspaceContainer(env as unknown as WorkspaceContainerEnv, accessAuth.workspaceId, accessAuth.orgId);
+  const container = new WorkspaceFileAdapter(env, accessAuth.workspaceId);
 
   return {
     ...accessAuth,
@@ -137,7 +206,8 @@ export function blockFileEdit(): Response {
 }
 
 /** Workspace root directory inside sandbox */
-const WORKSPACE_ROOT = '/home/claude';
+const WORKSPACE_ROOT = '/workspace';
+const LEGACY_WORKSPACE_ROOT = '/home/claude';
 
 const NORMALIZABLE_WHITESPACE = /[ \u00A0\u2007\u202F]/;
 
@@ -180,12 +250,33 @@ export function normalizeWorkspacePath(input?: string | null): string {
 
 /**
  * Convert a workspace-relative path to an absolute container path.
- * Workspace path '/' maps to '/home/claude', '/foo' maps to '/home/claude/foo'.
+ * Workspace path '/' maps to '/workspace', '/foo' maps to '/workspace/foo'.
  */
 export function toContainerPath(workspacePath: string): string {
   const normalized = normalizeWorkspacePath(workspacePath);
   if (normalized === '/') return WORKSPACE_ROOT;
   return `${WORKSPACE_ROOT}${normalized}`;
+}
+
+function toWorkspacePath(path: string): string {
+  const normalized = normalizeWorkspacePath(path);
+  const root = [WORKSPACE_ROOT, LEGACY_WORKSPACE_ROOT].find((candidate) =>
+    normalized === candidate || normalized.startsWith(`${candidate}/`)
+  );
+  if (root) {
+    if (normalized === root) return '/';
+    return normalizeWorkspacePath(normalized.slice(root.length));
+  }
+  return normalized;
+}
+
+function base64ToBytes(value: string): Uint8Array {
+  const binary = atob(value);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index);
+  }
+  return bytes;
 }
 
 function splitWorkspacePath(workspacePath: string): { dir: string; base: string } {
@@ -211,7 +302,7 @@ function joinContainerPath(dir: string, base: string): string {
  * Returns null if no match is found or the path has no normalizable whitespace.
  */
 export async function resolveContainerPath(
-  container: WorkspaceContainer,
+  container: WorkspaceFileAdapter,
   workspacePath: string
 ): Promise<string | null> {
   const normalizedPath = normalizeWorkspacePath(workspacePath);
@@ -225,7 +316,7 @@ export async function resolveContainerPath(
     const segment = segments[i];
     const normalizedSegment = normalizeWhitespace(segment);
 
-    let listing: Awaited<ReturnType<WorkspaceContainer['listFiles']>>;
+    let listing: Awaited<ReturnType<WorkspaceFileAdapter['listFiles']>>;
     try {
       listing = await container.listFiles(currentPath, {
         recursive: false,
@@ -263,7 +354,7 @@ export async function resolveContainerPath(
  * to resolve the parent directory and join the original basename.
  */
 export async function resolveContainerPathForWrite(
-  container: WorkspaceContainer,
+  container: WorkspaceFileAdapter,
   workspacePath: string,
   options: { allowExisting?: boolean } = {}
 ): Promise<string> {

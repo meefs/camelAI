@@ -32,7 +32,7 @@ type InitialUserMessageResult = Awaited<
 >;
 
 function getDefaultOnboardingSystemMessage(): string {
-  const questionToolName = 'ask_user_question';
+  const questionToolName = 'AskUserQuestion';
   return `This user just signed up and landed in their first chat. This is their very
 first interaction with camelAI.
 
@@ -79,7 +79,7 @@ immediately. They already told you what they want, so skip the standard
 onboarding preference questions and dive into the work.
 
 If you need clarification, ask focused follow-up questions inline as you go.
-Do not use AskUserQuestion or ask_user_question for onboarding in this case.`;
+Do not use AskUserQuestion for onboarding in this case.`;
 
 function getOnboardingSystemMessage(
   salesPrompt: string | null,

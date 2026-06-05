@@ -464,6 +464,7 @@ export interface AdminAppSummary {
   script_name: string;
   workspace_id: string;
   workspace_name: string;
+  project_id: string | null;
   org_id: string;
   org_name: string;
   org_slug: string | null;
@@ -566,6 +567,7 @@ export interface WorkerScript {
   preview_status: AppPreviewStatus | null;
   preview_error: string | null;
   config_path: string | null;
+  project_id: string | null;
   custom_domain_hostname: string | null;
   custom_domain_cf_hostname_id: string | null;
   custom_domain_status: string | null;

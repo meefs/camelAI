@@ -75,6 +75,7 @@ export interface AdminAppListRow {
   script_name: string;
   org_id: string;
   workspace_id: string;
+  project_id: string | null;
   org_name: string | null;
   org_slug: string | null;
   workspace_name: string | null;

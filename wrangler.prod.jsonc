@@ -21,6 +21,14 @@
   "routes": [{ "pattern": "camelai.dev", "custom_domain": true }],
   "vpc_services": [
     {
+      "binding": "PROJECT_RUNTIME_HOST",
+      "service_id": "019e8a87-d4d8-7711-a627-91eeb22040a6",
+    },
+    {
+      "binding": "LEGACY_WORKSPACE_HOST",
+      "service_id": "019c54ff-d555-7741-8464-3b68f8a18edf",
+    },
+    {
       "binding": "SANDBOX_HOST",
       "service_id": "019c54ff-d555-7741-8464-3b68f8a18edf",
     },
@@ -50,6 +58,7 @@
     "CF_ZONE_ID": "94f647d6b1658a287820a83d09492c73",
     "CF_CUSTOM_HOSTNAME_FALLBACK": "custom-domains.camelai.app",
     "CF_DCV_DELEGATION_UUID": "1b7fee6764db9b60",
+    "SANDBOX_TRANSPORT": "rpc",
   },
   "assets": {
     "binding": "ASSETS",
@@ -59,6 +68,9 @@
   "browser": { "binding": "BROWSER" },
   "ai": { "binding": "AI", "remote": true },
   "worker_loaders": [{ "binding": "CODE_MODE_LOADER" }],
+  "artifacts": [
+    { "binding": "ARTIFACTS", "namespace": "prod" },
+  ],
   "send_email": [
     {
       "name": "EMAIL",
@@ -115,14 +127,21 @@
       { "name": "WORKSPACE", "class_name": "WorkspaceDO" },
       { "name": "WORKSPACE_CRON", "class_name": "WorkspaceCronDO" },
       { "name": "MCP_OBJECT", "class_name": "ChiridionMcp" },
-      { "name": "WORKER_LOGS", "class_name": "WorkerLogsDO" },
-    ],
-  },
+	      { "name": "WORKER_LOGS", "class_name": "WorkerLogsDO" },
+	      { "name": "WORKSPACE_FS", "class_name": "WorkspaceFilesystemDO" },
+	      { "name": "MIGRATION_PLANNING_AGENT", "class_name": "MigrationPlanningAgent" },
+	    ],
+	  },
   "workflows": [
     {
       "name": "chiridion-deterministic-automations-prod",
       "binding": "DETERMINISTIC_AUTOMATION_WORKFLOWS",
       "class_name": "DeterministicAutomationWorkflow"
+    },
+    {
+      "name": "chiridion-legacy-workspace-migrations-prod",
+      "binding": "LEGACY_WORKSPACE_MIGRATIONS",
+      "class_name": "LegacyWorkspaceMigrationWorkflow"
     }
   ],
   "migrations": [
@@ -153,5 +172,8 @@
     { "tag": "v21", "new_classes": ["EphemeralWorkerLogsDO"] },
     { "tag": "v22", "deleted_classes": ["AdminIndexDO"] },
     { "tag": "v23", "new_sqlite_classes": ["TelegramRegistryDO", "SlackTeamRegistryDO"] },
-  ],
-}
+    { "tag": "v24", "new_sqlite_classes": ["CloudflareSandbox"] },
+    { "tag": "v25", "new_sqlite_classes": ["WorkspaceFilesystemDO"] },
+	    { "tag": "v27", "new_sqlite_classes": ["MigrationPlanningAgent"] },
+	  ],
+	}

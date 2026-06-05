@@ -17,6 +17,15 @@ import {
   parseWorkspaceModelPickerConfig,
 } from '../../../src/lib/model-picker-config';
 import { refreshRemoteMcpOAuthToken } from './remote-mcp-oauth';
+import {
+  WorkspaceFilesystemClient,
+  type LegacyWorkspaceMigrationStatus,
+  type WorkspaceFilesystemDO,
+} from './workspace-filesystem-do';
+import {
+  startLegacyWorkspaceMigrationWorkflow,
+  type MigrationPlanningAgent,
+} from './legacy-workspace-migration-workflow';
 
 // Buffer time before token expiry to trigger refresh (10 minutes)
 const TOKEN_REFRESH_BUFFER_MS = 10 * 60 * 1000;
@@ -35,6 +44,14 @@ const TOKEN_REFRESH_RATE_LIMIT_DEFAULT_MS = 2 * 60 * 1000;
 // Crash-cleanup horizon for detached turns. This should be much longer than a
 // normal coding-agent turn so long-running work does not disappear from status.
 const THREAD_STREAMING_STATUS_TTL_MS = 24 * 60 * 60 * 1000;
+const LEGACY_MIGRATION_ACTIVE_STALE_MS = 20 * 60 * 1000;
+const LEGACY_MIGRATION_ACTIVE_STATUSES = new Set<LegacyWorkspaceMigrationStatus>([
+  'queued',
+  'scanning_legacy',
+  'planning',
+  'copying',
+  'verifying',
+]);
 const WORKSPACE_STATUS_SOCKET_TAG = 'status';
 type BroadcastThreadStatus = 'running' | 'idle' | 'unread';
 
@@ -51,6 +68,11 @@ function normalizeRunningActivityText(value: unknown): string | null {
   const normalized = value.replace(/\s+/g, ' ').trim();
   if (!normalized) return null;
   return normalized.length > 240 ? `${normalized.slice(0, 237)}...` : normalized;
+}
+
+function isStaleLegacyMigrationState(updatedAt: string): boolean {
+  const updatedAtMs = Date.parse(updatedAt);
+  return !Number.isFinite(updatedAtMs) || Date.now() - updatedAtMs > LEGACY_MIGRATION_ACTIVE_STALE_MS;
 }
 
 /**
@@ -184,6 +206,10 @@ export interface WorkspaceEnv {
   EMAIL_TO_USER?: KVNamespace;
   CHAT_THREAD?: DurableObjectNamespace;
   WORKSPACE_CRON?: DurableObjectNamespace<WorkspaceCronDO>;
+  WORKSPACE_FS?: DurableObjectNamespace<WorkspaceFilesystemDO>;
+  LEGACY_WORKSPACE_MIGRATIONS?: Workflow;
+  MIGRATION_PLANNING_AGENT?: DurableObjectNamespace<MigrationPlanningAgent>;
+  ENABLE_LEGACY_WORKSPACE_MIGRATION?: string;
   TOKEN_SIGNING_SECRET?: string;
 }
 
@@ -680,7 +706,57 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
     if (changed) {
       await this.setInfo(info);
     }
+    this.enqueueLegacyWorkspaceMigrationIfNeeded(info);
     return info;
+  }
+
+  private enqueueLegacyWorkspaceMigrationIfNeeded(info: Workspace): void {
+    if (this.env.ENABLE_LEGACY_WORKSPACE_MIGRATION !== '1') return;
+    if (!this.env.WORKSPACE_FS || !this.env.LEGACY_WORKSPACE_MIGRATIONS || !this.env.MIGRATION_PLANNING_AGENT) return;
+    if (info.archived) return;
+
+    const task = this.startLegacyWorkspaceMigrationIfNeeded(info).catch((error) => {
+      console.error('[WorkspaceDO] failed to enqueue legacy workspace migration', {
+        workspaceId: info.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+    const waitUntil = (this.ctx as DurableObjectState & { waitUntil?: (promise: Promise<unknown>) => void }).waitUntil;
+    if (typeof waitUntil === 'function') {
+      waitUntil.call(this.ctx, task);
+    }
+  }
+
+  private async startLegacyWorkspaceMigrationIfNeeded(info: Workspace): Promise<void> {
+    if (!this.env.WORKSPACE_FS || !this.env.LEGACY_WORKSPACE_MIGRATIONS || !this.env.MIGRATION_PLANNING_AGENT) return;
+    const workspaceFs = new WorkspaceFilesystemClient(this.env as never, info.id);
+    const state = await workspaceFs.getLegacyWorkspaceMigrationState();
+    if (LEGACY_MIGRATION_ACTIVE_STATUSES.has(state.status)) {
+      if (!isStaleLegacyMigrationState(state.updatedAt)) return;
+      await workspaceFs.setLegacyWorkspaceMigrationState({
+        status: 'failed',
+        error: `Previous legacy workspace migration stalled in ${state.status}`,
+      });
+    } else if (state.status !== 'not_started') {
+      return;
+    }
+
+    const projects = await workspaceFs.listProjects();
+    if (projects.length > 0) return;
+
+    const workflowId = `legacy-migration-${info.id}-${state.attempts + 1}-${Date.now().toString(36)}`;
+    await workspaceFs.setLegacyWorkspaceMigrationState({
+      status: 'queued',
+      orgId: info.org_id,
+      workflowId,
+    });
+    await startLegacyWorkspaceMigrationWorkflow(this.env as never, {
+      workflowId,
+      workspaceId: info.id,
+      orgId: info.org_id,
+      requestedBy: 'workspace-wake',
+      dryRun: false,
+    });
   }
 
   private async claimEmailHandle(workspaceId: string): Promise<string> {

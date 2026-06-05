@@ -75,18 +75,18 @@ function sampleToolInput(name: string): Record<string, unknown> {
     case 'read':
     case 'write':
     case 'edit':
-      return { path: '/home/claude/src/app.tsx' };
+      return { path: '/workspace/src/app.tsx' };
     case 'ls':
     case 'find':
     case 'grep':
-      return { path: '/home/claude/src', pattern: '*.tsx' };
+      return { path: '/workspace/src', pattern: '*.tsx' };
     case 'AskUserQuestion':
     case 'ask_user_question':
       return { questions: [{ question: 'Choose an option', header: 'Choice' }] };
     case 'TodoWrite':
       return { todos: [{ content: 'Test task', status: 'completed' }] };
     case 'set_preview':
-      return { path: '/home/claude/src/app.tsx' };
+      return { path: '/workspace/src/app.tsx' };
     case 'set_app_visibility':
     case 'get_latest_logs':
     case 'set_custom_domain':
@@ -361,14 +361,14 @@ describe('getToolSummaryParts friendly dynamic tool labels', () => {
 describe('getToolSummaryParts set-preview MCP tools', () => {
   it('renders unified set_preview with a file path as a clickable file summary source', () => {
     const tool = makeMcpTool('set_preview', {
-      path: '/home/claude/src/app.tsx',
+      path: '/workspace/src/app.tsx',
     });
     const summary = getToolSummaryParts(tool, undefined, false, 'complete');
 
     expect(summary).toEqual({
       action: 'Previewed',
       filename: 'app.tsx',
-      path: '/home/claude/src/app.tsx',
+      path: '/workspace/src/app.tsx',
     });
   });
 
@@ -431,40 +431,40 @@ describe('getToolSummaryParts set-preview MCP tools', () => {
 
   it('shows the filename while set_file_preview is running with a path', () => {
     const tool = makeMcpTool('mcp__chiridion-mcp__set_file_preview', {
-      path: '/home/claude/src/app.tsx',
+      path: '/workspace/src/app.tsx',
     });
     const summary = getToolSummaryParts(tool, undefined, false, 'running');
 
     expect(summary).toEqual({
       action: 'Opening preview',
       filename: 'app.tsx',
-      path: '/home/claude/src/app.tsx',
+      path: '/workspace/src/app.tsx',
     });
   });
 
   it('renders set_file_preview as a clickable file summary source', () => {
     const tool = makeMcpTool('mcp__chiridion-mcp__set_file_preview', {
-      path: '/home/claude/src/app.tsx',
+      path: '/workspace/src/app.tsx',
     });
     const summary = getToolSummaryParts(tool, undefined, false, 'complete');
 
     expect(summary).toEqual({
       action: 'Previewed',
       filename: 'app.tsx',
-      path: '/home/claude/src/app.tsx',
+      path: '/workspace/src/app.tsx',
     });
   });
 
   it('shows file preview error copy with the filename', () => {
     const tool = makeMcpTool('mcp__chiridion-mcp__set_file_preview', {
-      path: '/home/claude/src/app.tsx',
+      path: '/workspace/src/app.tsx',
     });
     const summary = getToolSummaryParts(tool, undefined, false, 'error');
 
     expect(summary).toEqual({
       action: 'Failed to preview',
       filename: 'app.tsx',
-      path: '/home/claude/src/app.tsx',
+      path: '/workspace/src/app.tsx',
     });
   });
 

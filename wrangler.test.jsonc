@@ -43,16 +43,23 @@
 			{ "name": "ORG_SLUG", "class_name": "OrgSlugDO" },
 			{ "name": "EMAIL_HANDLE", "class_name": "EmailHandleDO" },
 			{ "name": "TELEGRAM_REGISTRY", "class_name": "TelegramRegistryDO" },
-			{ "name": "SLACK_TEAM_REGISTRY", "class_name": "SlackTeamRegistryDO" },
-			{ "name": "WORKSPACE", "class_name": "WorkspaceDO" },
-			{ "name": "WORKSPACE_CRON", "class_name": "WorkspaceCronDO" }
-		]
-	},
+				{ "name": "SLACK_TEAM_REGISTRY", "class_name": "SlackTeamRegistryDO" },
+				{ "name": "WORKSPACE", "class_name": "WorkspaceDO" },
+				{ "name": "WORKSPACE_CRON", "class_name": "WorkspaceCronDO" },
+				{ "name": "WORKSPACE_FS", "class_name": "WorkspaceFilesystemDO" },
+				{ "name": "MIGRATION_PLANNING_AGENT", "class_name": "MigrationPlanningAgent" }
+			]
+		},
 	"workflows": [
 		{
 			"name": "chiridion-deterministic-automations-test",
 			"binding": "DETERMINISTIC_AUTOMATION_WORKFLOWS",
 			"class_name": "DeterministicAutomationWorkflow"
+		},
+		{
+			"name": "chiridion-legacy-workspace-migrations-test",
+			"binding": "LEGACY_WORKSPACE_MIGRATIONS",
+			"class_name": "LegacyWorkspaceMigrationWorkflow"
 		}
 	],
 	"migrations": [
@@ -62,6 +69,8 @@
 		{ "tag": "v4", "new_sqlite_classes": ["WorkspaceCronDO"] },
 		{ "tag": "v5", "deleted_classes": ["OAuthStateDO"] },
 		{ "tag": "v6", "deleted_classes": ["AdminIndexDO"] },
-		{ "tag": "v7", "new_sqlite_classes": ["TelegramRegistryDO", "SlackTeamRegistryDO"] }
-	]
-}
+		{ "tag": "v7", "new_sqlite_classes": ["TelegramRegistryDO", "SlackTeamRegistryDO"] },
+			{ "tag": "v8", "new_sqlite_classes": ["WorkspaceFilesystemDO"] },
+			{ "tag": "v9", "new_sqlite_classes": ["MigrationPlanningAgent"] }
+		]
+	}

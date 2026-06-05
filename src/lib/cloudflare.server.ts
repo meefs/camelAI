@@ -1,6 +1,7 @@
 import type { AppLoadContext } from "react-router";
 import type { UserDO, OrgDO } from "../../workers/main/src/auth";
 import type { WorkspaceDO } from "../../workers/main/src/workspace";
+import type { WorkspaceFilesystemDO } from "../../workers/main/src/workspace-filesystem-do";
 import type { ChatThreadDO } from "../../workers/main/src/chat-thread-do";
 import type { WorkspaceCronDO } from "../../workers/main/src/workspace-cron";
 import type { WorkerLogsDO } from "../../workers/main/src/worker-logs-do";
@@ -20,6 +21,7 @@ export interface CloudflareEnv {
   USER: DurableObjectNamespace<UserDO>;
   ORG: DurableObjectNamespace<OrgDO>;
   WORKSPACE: DurableObjectNamespace<WorkspaceDO>;
+  WORKSPACE_FS: DurableObjectNamespace<WorkspaceFilesystemDO>;
   WORKSPACE_CRON: DurableObjectNamespace<WorkspaceCronDO>;
   MCP_OBJECT: DurableObjectNamespace;
   WORKER_LOGS: DurableObjectNamespace<WorkerLogsDO>;
@@ -36,6 +38,7 @@ export interface CloudflareEnv {
 
   // Service bindings
   WORKER_SELF_REFERENCE: Fetcher;
+  LEGACY_WORKSPACE_HOST?: Fetcher;
 
   // Other bindings
   ASSETS: Fetcher;
@@ -85,8 +88,8 @@ export interface CloudflareEnv {
   BILLING_TRIAL_CREDIT_CENTS?: string;
   BILLING_SUBSCRIPTION_INCLUDED_CREDIT_CENTS?: string;
   LEGACY_STRIPE_MIGRATION_CUSTOMERS?: string;
-  SANDBOX_HOST?: Fetcher;
-  SANDBOX_HOST_URL?: string;
+  ENABLE_LEGACY_WORKSPACE_MIGRATION?: string;
+  LEGACY_WORKSPACE_SERVICE_URL?: string;
   ADMIN_MCP_CLIENT_ID?: string;
   ADMIN_MCP_REDIRECT_URIS?: string;
   LOCAL_AUTH_BYPASS?: string;

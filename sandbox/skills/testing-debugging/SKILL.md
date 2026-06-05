@@ -255,7 +255,7 @@ bun test --coverage
 
 ## E2E Testing with Playwright
 
-Playwright and Chromium are pre-installed in the sandbox for end-to-end testing of deployed apps.
+Playwright is available as a project dependency in the starter template. Install browser binaries on demand before running end-to-end tests, for example with `bunx playwright install chromium`.
 
 ### Basic Usage
 

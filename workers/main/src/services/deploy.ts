@@ -17,7 +17,7 @@ const SCRIPT_PREFIX = 'script:';
 const SCRIPT_ORG_PREFIX_LEGACY = 'script_org:';
 
 export async function handleDeploySideEffects(env: Env, info: DeploySideEffectsInfo): Promise<void> {
-  const { scriptName, dispatchScriptName, orgId, orgSlug, workspaceId, hostname, threadId, configPath } = info;
+  const { scriptName, dispatchScriptName, orgId, orgSlug, workspaceId, hostname, threadId, projectId, configPath } = info;
   const orgStub = getOrgStub(env, orgId);
 
   // Register ownership (stores user-facing scriptName in OrgDO)
@@ -31,7 +31,7 @@ export async function handleDeploySideEffects(env: Env, info: DeploySideEffectsI
     } catch {}
   }
 
-  const script = await orgStub.registerWorkerScript(scriptName, workspaceId, createdBy, configPath);
+  const script = await orgStub.registerWorkerScript(scriptName, workspaceId, createdBy, configPath, projectId);
 
   // Store in KV with namespaced key: script:{script-name}--{org-slug}
   // This allows the dispatcher to look up access info by dispatchScriptName
@@ -80,9 +80,13 @@ export async function handleDeploySideEffects(env: Env, info: DeploySideEffectsI
     : await createScreenshotToken(env.APP_KV, { script_name: scriptName, org_id: orgId });
 
   try {
+    const sendOptions = {
+      contentType: 'json',
+      messageId: `${scriptName}:${script.updated_at}`,
+    } as unknown as QueueSendOptions;
     await env.APP_SCREENSHOT_QUEUE.send(
       { ...jobBase, ...(screenshotToken ? { screenshot_token: screenshotToken } : {}) },
-      { contentType: 'json', messageId: `${scriptName}:${script.updated_at}` }
+      sendOptions
     );
   } catch (err) {
     await orgStub.updateWorkerScriptPreview(scriptName, {

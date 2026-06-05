@@ -63,7 +63,7 @@ After saving a file, provide a URL so the user can access it. The URL format use
 
 Images will display inline in the chat, other files will download when clicked.
 
-**For HTML pages** - Save the file to `/mnt/user-outputs/` (or anywhere in `/home/claude/`) and call `set_preview()` to render it in the preview pane.
+**For HTML pages** - Save the file to `/mnt/user-outputs/` (or anywhere in `/workspace/`) and call `set_preview()` to render it in the preview pane.
 
 ## Best Practices
 

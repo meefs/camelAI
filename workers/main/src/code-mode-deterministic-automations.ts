@@ -61,7 +61,7 @@ export function formatDeterministicAutomation(
     last_run_error: automation.last_run_error,
     last_instance_id: automation.last_instance_id,
     run_count: automation.run_count,
-    virtual_path: `/home/claude/.camelai/automations/${automation.id}.js`,
+    virtual_path: `/workspace/.camelai/automations/${automation.id}.js`,
   };
 }
 

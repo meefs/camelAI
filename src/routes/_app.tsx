@@ -1,4 +1,5 @@
 import { Suspense, useEffect, useRef, useState } from "react";
+import { Loader2 } from "lucide-react";
 import {
   Await,
   Outlet,
@@ -18,6 +19,7 @@ import {
   type PaywallTakeoverContext,
 } from "@/components/billing/paywall-takeover";
 import { AppSidebar } from "@/components/sidebar/app-sidebar";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 import { ChatGroupsProvider } from "@/hooks/use-chat-groups";
 import { ChatThreadSnapshotsProvider } from "@/hooks/use-chat-thread-snapshots";
@@ -30,6 +32,7 @@ import {
 } from "@/lib/billing.server";
 import { listGroupsForWorkspace } from "@/lib/chat-groups.server";
 import { getByokProviderLabel } from "@/lib/byok-providers";
+import { getWorkspaceMigrationGate } from "@/lib/workspace-migration-gate.server";
 
 const SIDEBAR_COOKIE_NAME = "sidebar_state";
 
@@ -108,6 +111,10 @@ export async function loader({ request, context }: Route.LoaderArgs) {
   };
 
   const currentWorkspaceId = authContext.currentWorkspace?.id ?? null;
+  const projectMigrationGate = await getWorkspaceMigrationGate(
+    env,
+    currentWorkspaceId,
+  );
   const actingUserId =
     authContext.user?.id ?? authContext.session?.user_id ?? null;
   const currentChatGroupsPromise: Promise<ChatGroupView[]> = currentWorkspaceId && actingUserId
@@ -162,6 +169,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     billingAccessReady,
     appRouteAccessible,
     paywallContext,
+    projectMigrationGate,
   };
 
   // Re-sign session cookie if workspace fell back (e.g. workspace removed/access revoked)
@@ -188,6 +196,7 @@ export default function AppLayout() {
     billingAccessReady,
     appRouteAccessible,
     paywallContext,
+    projectMigrationGate,
   } =
     useLoaderData<typeof loader>();
   const navigate = useNavigate();
@@ -198,7 +207,9 @@ export default function AppLayout() {
         <ChatThreadSnapshotsProvider>
           <AppSidebar />
           <SidebarInset className="h-svh overflow-hidden flex flex-col">
-            {appRouteAccessible ? (
+            {projectMigrationGate ? (
+              <WorkspaceMigrationInProgress />
+            ) : appRouteAccessible ? (
               <Outlet />
             ) : paywallContext ? (
               <Suspense
@@ -246,6 +257,25 @@ export default function AppLayout() {
         </Suspense>
       ) : null}
     </SidebarProvider>
+  );
+}
+
+function WorkspaceMigrationInProgress() {
+  return (
+    <div className="flex min-h-0 flex-1 items-center justify-center bg-background p-6">
+      <Card className="w-full max-w-md text-center">
+        <CardHeader className="items-center gap-3">
+          <div className="flex size-9 items-center justify-center rounded-full bg-muted text-muted-foreground">
+            <Loader2 className="size-4 animate-spin" aria-hidden="true" />
+          </div>
+          <CardTitle className="text-base">camelAI migration in progress</CardTitle>
+        </CardHeader>
+        <CardContent className="text-sm text-muted-foreground">
+          We are upgrading camel&apos;s abilities. Please check back in 5
+          minutes.
+        </CardContent>
+      </Card>
+    </div>
   );
 }
 

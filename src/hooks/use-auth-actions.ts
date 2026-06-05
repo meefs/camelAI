@@ -2,7 +2,6 @@
 
 import { useCallback, useRef, useState } from 'react';
 import { useNavigate, useRevalidator } from 'react-router';
-import { clearWarmupCache } from './use-workspace-warmup';
 
 type AuthActionResponse = {
   success?: boolean;
@@ -57,7 +56,6 @@ export function useLogout() {
     setError(undefined);
     try {
       await postJsonAction('/api/auth/logout');
-      clearWarmupCache();
       navigate('/login');
     } catch (caught) {
       const nextError =

@@ -1,6 +1,5 @@
 const MCP_PREFIX = 'mcp__';
 const LEGACY_ASK_USER_QUESTION_TOOL = 'AskUserQuestion';
-const CUSTOM_ASK_USER_QUESTION_TOOL = 'ask_user_question';
 const SET_PREVIEW_TOOL = 'set_preview';
 const SET_FILE_PREVIEW_TOOL = 'set_file_preview';
 const SET_APP_PREVIEW_TOOL = 'set_app_preview';
@@ -33,11 +32,7 @@ export function parseMcpToolName(name: string): McpToolParts | null {
 
 export function isAskUserQuestionToolName(name?: string): boolean {
   if (!name) return false;
-  if (name === LEGACY_ASK_USER_QUESTION_TOOL || name === CUSTOM_ASK_USER_QUESTION_TOOL) {
-    return true;
-  }
-  const parts = parseMcpToolName(name);
-  return parts?.toolName === CUSTOM_ASK_USER_QUESTION_TOOL;
+  return name === LEGACY_ASK_USER_QUESTION_TOOL;
 }
 
 export function isSetFilePreviewToolName(name?: string): boolean {

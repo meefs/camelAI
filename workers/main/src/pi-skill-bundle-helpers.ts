@@ -25,6 +25,8 @@ export function normalizePiSkillBundlePath(rawPath: string): string | null {
     PI_SKILLS_ROOT,
     "/opt/chiridion-host-pi/skills",
     ".agents/skills",
+    "/workspace/.agents/skills",
+    "/workspace/.claude/skills",
     "/home/claude/.agents/skills",
     "/home/claude/.claude/skills",
   ];

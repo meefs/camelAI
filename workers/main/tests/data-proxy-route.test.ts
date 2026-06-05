@@ -116,5 +116,6 @@ describe('data-proxy routes', () => {
       expect(res.status).toBe(200);
       expect(await res.json()).toEqual({ recordset: [{ value: 1 }] });
     });
+
   }
 });

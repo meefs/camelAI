@@ -175,6 +175,56 @@ func TestPositionalArgsConvertsIntegralJSONNumbers(t *testing.T) {
 	}
 }
 
+func TestSQLConnectionStringsCanTargetTunnelEndpoint(t *testing.T) {
+	pg := postgresQueryRequest{
+		Host:     "db.example.com",
+		User:     "u",
+		Password: "p",
+		Database: "app",
+		SSLMode:  "require",
+	}
+	if got := pg.connectionStringFor("127.0.0.1", 15432); !strings.Contains(got, "127.0.0.1:15432") {
+		t.Fatalf("postgres connection string did not use tunnel endpoint: %s", got)
+	}
+
+	mysql := mysqlQueryRequest{
+		Host:     "mysql.example.com",
+		User:     "u",
+		Password: "p",
+		Database: "app",
+	}
+	got, err := mysql.connectionStringFor("127.0.0.1", 13306)
+	if err != nil {
+		t.Fatalf("mysql connectionStringFor returned error: %v", err)
+	}
+	if !strings.Contains(got, "tcp(127.0.0.1:13306)") {
+		t.Fatalf("mysql connection string did not use tunnel endpoint: %s", got)
+	}
+
+	mssql := mssqlQueryRequest{
+		Server:   "sql.example.com",
+		User:     "u",
+		Password: "p",
+		Database: "app",
+	}
+	if got := mssql.connectionStringFor("127.0.0.1", 11433); !strings.Contains(got, "127.0.0.1:11433") {
+		t.Fatalf("mssql connection string did not use tunnel endpoint: %s", got)
+	}
+}
+
+func TestExpandSSHProxyCommand(t *testing.T) {
+	got := expandSSHProxyCommand(
+		"cloudflared access ssh --hostname %h --port %p --user %r --literal %%",
+		"egress.camelai.dev",
+		443,
+		"tunnel",
+	)
+	want := "cloudflared access ssh --hostname egress.camelai.dev --port 443 --user tunnel --literal %"
+	if got != want {
+		t.Fatalf("unexpected proxy command: got=%q want=%q", got, want)
+	}
+}
+
 func TestBeginReadTransactionUsesReadOnlyWhenSupported(t *testing.T) {
 	calls := 0
 	tx, err := beginReadTransaction(func(opts *sql.TxOptions) (*sql.Tx, error) {

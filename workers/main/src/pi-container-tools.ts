@@ -1,33 +1,13 @@
 import { Type } from "typebox";
-import type { WorkspaceContainer } from "./workspace-container";
+import type {
+  WorkspaceFilesystemLike,
+  WorkspaceReadFileResponse,
+} from "./workspace-filesystem-do";
 
-const CONTAINER_CWD = "/home/claude";
+const CONTAINER_CWD = "/workspace";
 const DEFAULT_MAX_LINES = 2000;
 const DEFAULT_MAX_BYTES = 50 * 1024;
 const GREP_MAX_LINE_LENGTH = 500;
-
-type ExecResponse = {
-  success?: boolean;
-  stdout?: string;
-  stderr?: string;
-  exitCode?: number;
-  error?: string;
-};
-
-type FileReadResponse = {
-  success: boolean;
-  content?: string;
-  size?: number;
-  isBinary?: boolean;
-  mimeType?: string;
-  error?: string;
-};
-
-type CommandEnvProvider = Record<string, string> | (() => Promise<Record<string, string>> | Record<string, string>);
-
-export interface PiContainerToolsOptions {
-  commandEnv?: CommandEnvProvider;
-}
 
 type ToolContent =
   | { type: "text"; text: string }
@@ -39,15 +19,30 @@ export type PiContainerToolResult = {
   details?: Record<string, unknown>;
 };
 
+const PI_FILE_LOCATION_PARAMETERS = {
+  location: Type.Optional(Type.Union([
+    Type.Literal("workspace"),
+    Type.Literal("vm"),
+  ], {
+    description:
+      "Where to operate. Use 'workspace' for the outer durable workspace filesystem, or 'vm' for a project VM.",
+  })),
+  project: Type.Optional(Type.String({
+    description: "Unique workspace project name when location is 'vm'. Selects the project's default VM checkout.",
+  })),
+};
+
 export const PI_READ_PARAMETERS = Type.Object({
   path: Type.String({ description: "Path to the file to read (relative or absolute)" }),
   offset: Type.Optional(Type.Number({ description: "1-indexed line offset for large files" })),
   limit: Type.Optional(Type.Number({ description: "Maximum number of lines to return" })),
+  ...PI_FILE_LOCATION_PARAMETERS,
 }, { additionalProperties: false });
 
 export const PI_WRITE_PARAMETERS = Type.Object({
   path: Type.String({ description: "Path to the file to write (relative or absolute)" }),
   content: Type.String({ description: "Content to write" }),
+  ...PI_FILE_LOCATION_PARAMETERS,
 }, { additionalProperties: false });
 
 export const PI_EDIT_PARAMETERS = Type.Object({
@@ -62,16 +57,15 @@ export const PI_EDIT_PARAMETERS = Type.Object({
     description:
       "One or more targeted replacements. Each edit is matched against the original file, not incrementally. Do not include overlapping or nested edits.",
   }),
-}, { additionalProperties: false });
-
-export const PI_BASH_PARAMETERS = Type.Object({
-  command: Type.String({ description: "Bash command to execute" }),
-  timeout: Type.Optional(Type.Number({ description: "Optional timeout in seconds" })),
+  ...PI_FILE_LOCATION_PARAMETERS,
 }, { additionalProperties: false });
 
 export const PI_LS_PARAMETERS = Type.Object({
   path: Type.Optional(Type.String({ description: "Directory to list (default: current directory)" })),
   limit: Type.Optional(Type.Number({ description: "Maximum number of entries to return (default: 500)" })),
+  recursive: Type.Optional(Type.Boolean({ description: "Recursively list VM directories when location is 'vm'." })),
+  includeHidden: Type.Optional(Type.Boolean({ description: "Include hidden VM entries when location is 'vm' (default: true)." })),
+  ...PI_FILE_LOCATION_PARAMETERS,
 }, { additionalProperties: false });
 
 export const PI_GREP_PARAMETERS = Type.Object({
@@ -82,6 +76,7 @@ export const PI_GREP_PARAMETERS = Type.Object({
   literal: Type.Optional(Type.Boolean({ description: "Treat pattern as literal string instead of regex (default: false)" })),
   context: Type.Optional(Type.Number({ description: "Number of lines to show before and after each match (default: 0)" })),
   limit: Type.Optional(Type.Number({ description: "Maximum number of matches to return (default: 100)" })),
+  ...PI_FILE_LOCATION_PARAMETERS,
 }, { additionalProperties: false });
 
 export const PI_FIND_PARAMETERS = Type.Object({
@@ -90,6 +85,7 @@ export const PI_FIND_PARAMETERS = Type.Object({
   }),
   path: Type.Optional(Type.String({ description: "Directory to search in (default: current directory)" })),
   limit: Type.Optional(Type.Number({ description: "Maximum number of results (default: 1000)" })),
+  ...PI_FILE_LOCATION_PARAMETERS,
 }, { additionalProperties: false });
 
 export const PI_CONTAINER_TOOL_DEFINITIONS = {
@@ -97,50 +93,43 @@ export const PI_CONTAINER_TOOL_DEFINITIONS = {
     name: "read",
     label: "read",
     description:
-      `Read the contents of a file from inside the workspace container. Text output is truncated to ${DEFAULT_MAX_LINES} lines or ${DEFAULT_MAX_BYTES / 1024}KB. Images are returned as image content when possible.`,
+      `Read a file from the outer durable workspace by default, or from a project VM with location='vm' plus project. Text output is truncated to ${DEFAULT_MAX_LINES} lines or ${DEFAULT_MAX_BYTES / 1024}KB for workspace files. Images are returned as image content when possible.`,
     parameters: PI_READ_PARAMETERS,
   },
   write: {
     name: "write",
     label: "write",
     description:
-      "Write content to a file from inside the workspace container. Creates the file if it doesn't exist, overwrites if it does, and automatically creates parent directories.",
+      "Write content to the outer durable workspace by default, or to a project VM with location='vm' plus project. Creates parent directories.",
     parameters: PI_WRITE_PARAMETERS,
   },
   edit: {
     name: "edit",
     label: "edit",
     description:
-      "Edit a single file using exact text replacement. Every edits[].oldText must match a unique, non-overlapping region of the original file.",
+      "Edit a single file in the outer durable workspace by default, or in a project VM with location='vm' plus project. Every edits[].oldText must match a unique, non-overlapping region of the original file.",
     parameters: PI_EDIT_PARAMETERS,
   },
   ls: {
     name: "ls",
     label: "ls",
     description:
-      "List directory contents. Returns entries sorted alphabetically, with '/' suffix for directories. Includes dotfiles.",
+      "List directory contents in the outer durable workspace by default, or in a project VM with location='vm' plus project. Returns entries sorted alphabetically, with '/' suffix for directories.",
     parameters: PI_LS_PARAMETERS,
   },
   grep: {
     name: "grep",
     label: "grep",
     description:
-      "Search file contents for a pattern. Returns matching lines with file paths and line numbers. Respects .gitignore.",
+      "Search file contents in the outer durable workspace by default, or in a project VM with location='vm' plus project. Returns matching lines with file paths and line numbers.",
     parameters: PI_GREP_PARAMETERS,
   },
   find: {
     name: "find",
     label: "find",
     description:
-      "Search for files by glob pattern. Returns matching file paths relative to the search directory. Respects .gitignore.",
+      "Search files by glob pattern in the outer durable workspace by default, or in a project VM with location='vm' plus project. Returns matching file paths relative to the search directory.",
     parameters: PI_FIND_PARAMETERS,
-  },
-  bash: {
-    name: "bash",
-    label: "bash",
-    description:
-      `Execute a bash command in the current working directory. Output is truncated to the last ${DEFAULT_MAX_LINES} lines or ${DEFAULT_MAX_BYTES / 1024}KB.`,
-    parameters: PI_BASH_PARAMETERS,
   },
 } as const;
 
@@ -178,42 +167,6 @@ function truncateHead(text: string, maxLines = DEFAULT_MAX_LINES, maxBytes = DEF
       break;
     }
     selected.push(line);
-    usedBytes += lineBytes;
-  }
-  return {
-    content: selected.join("\n"),
-    truncation: truncatedBy
-      ? {
-          truncated: true,
-          truncatedBy,
-          totalLines: lines.length,
-          outputLines: selected.length,
-          outputBytes: usedBytes,
-          totalBytes: bytes(text),
-          maxLines,
-          maxBytes,
-        }
-      : undefined,
-  };
-}
-
-function truncateTail(text: string, maxLines = DEFAULT_MAX_LINES, maxBytes = DEFAULT_MAX_BYTES) {
-  const lines = text.split("\n");
-  const selected: string[] = [];
-  let usedBytes = 0;
-  let truncatedBy: "lines" | "bytes" | null = null;
-  for (let i = lines.length - 1; i >= 0; i -= 1) {
-    if (selected.length >= maxLines) {
-      truncatedBy = "lines";
-      break;
-    }
-    const line = lines[i];
-    const lineBytes = bytes(line) + (selected.length > 0 ? 1 : 0);
-    if (usedBytes + lineBytes > maxBytes) {
-      truncatedBy = "bytes";
-      break;
-    }
-    selected.unshift(line);
     usedBytes += lineBytes;
   }
   return {
@@ -333,118 +286,15 @@ function simpleDiff(before: string, after: string) {
   return { diff: lines.join("\n"), firstChangedLine: start + 1 };
 }
 
-function assertExec(exec: ExecResponse, fallback = "Sandbox command failed") {
-  if (exec.success === false || (typeof exec.exitCode === "number" && exec.exitCode !== 0)) {
-    const message = [exec.stderr, exec.stdout, exec.error].filter(Boolean).join("\n") || fallback;
-    throw new Error(message.length > 100_000 ? `${message.slice(0, 100_000)}\n\n[Truncated]` : message);
-  }
-}
-
-function parseExecJson<T>(exec: ExecResponse, fallback: string): T {
-  assertExec(exec, fallback);
-  try {
-    return JSON.parse(String(exec.stdout || "{}")) as T;
-  } catch (error) {
-    throw new Error(`${fallback}: ${error instanceof Error ? error.message : String(error)}`);
-  }
-}
-
-function utf8Base64(value: string): string {
-  return Buffer.from(value, "utf8").toString("base64");
-}
-
-const READ_FILE_SCRIPT = String.raw`
-import base64
-import json
-import mimetypes
-import sys
-
-path = sys.argv[1]
-with open(path, "rb") as handle:
-    data = handle.read()
-
-is_binary = b"\x00" in data
-content = None
-if not is_binary:
-    try:
-        content = data.decode("utf-8")
-    except UnicodeDecodeError:
-        is_binary = True
-
-if is_binary:
-    content = base64.b64encode(data).decode("ascii")
-
-print(json.dumps({
-    "success": True,
-    "content": content,
-    "size": len(data),
-    "isBinary": is_binary,
-    "mimeType": mimetypes.guess_type(path)[0],
-}))
-`;
-
-const WRITE_FILE_SCRIPT = String.raw`
-import base64
-import os
-import sys
-
-path = sys.argv[1]
-content = base64.b64decode(sys.argv[2])
-parent = os.path.dirname(path)
-if parent:
-    os.makedirs(parent, exist_ok=True)
-with open(path, "wb") as handle:
-    handle.write(content)
-`;
-
-const LIST_FILES_SCRIPT = String.raw`
-import json
-import os
-import sys
-
-path = sys.argv[1]
-entries = []
-for name in os.listdir(path):
-    full = os.path.join(path, name)
-    entries.append({
-        "name": name,
-        "type": "directory" if os.path.isdir(full) else "file",
-    })
-entries.sort(key=lambda entry: entry["name"].lower())
-print(json.dumps({"success": True, "files": entries}))
-`;
-
 export class PiContainerTools {
-  constructor(
-    private readonly workspace: WorkspaceContainer,
-    private readonly options: PiContainerToolsOptions = {},
-  ) {}
+  constructor(private readonly workspace: WorkspaceFilesystemLike) {}
 
-  private async commandEnv(): Promise<Record<string, string> | undefined> {
-    const provider = this.options.commandEnv;
-    if (!provider) return undefined;
-    const env = typeof provider === "function" ? await provider() : provider;
-    const clean: Record<string, string> = {};
-    for (const [key, value] of Object.entries(env)) {
-      if (typeof value === "string" && value.length > 0) {
-        clean[key] = value;
-      }
+  private async readWorkspaceFile(path: string): Promise<WorkspaceReadFileResponse> {
+    const file = await this.workspace.readFile(path);
+    if (!file.success) {
+      throw new Error(file.error || `Failed to read ${path}`);
     }
-    return Object.keys(clean).length > 0 ? clean : undefined;
-  }
-
-  private async readFileInContainer(path: string): Promise<FileReadResponse> {
-    return parseExecJson<FileReadResponse>(
-      await this.workspace.execOnSandbox(["python3", "-c", READ_FILE_SCRIPT, path], { cwd: CONTAINER_CWD }) as ExecResponse,
-      `Failed to read ${path}`,
-    );
-  }
-
-  private async writeFileInContainer(path: string, content: string): Promise<void> {
-    assertExec(
-      await this.workspace.execOnSandbox(["python3", "-c", WRITE_FILE_SCRIPT, path, utf8Base64(content)], { cwd: CONTAINER_CWD }) as ExecResponse,
-      `Failed to write ${path}`,
-    );
+    return file;
   }
 
   async callTool(name: string, args: Record<string, unknown>): Promise<PiContainerToolResult> {
@@ -461,23 +311,21 @@ export class PiContainerTools {
         return this.grep(args);
       case "find":
         return this.find(args);
-      case "bash":
-        return this.bash(args);
       default:
-        throw new Error(`Unknown Pi container tool: ${name}`);
+        throw new Error(`Unknown Pi workspace tool: ${name}`);
     }
   }
 
   private async read(args: Record<string, unknown>): Promise<PiContainerToolResult> {
     const path = normalizePath(args.path);
-    const file = await this.readFileInContainer(path);
+    const file = await this.readWorkspaceFile(path);
     if (file.isBinary) {
       const mimeType = file.mimeType || imageMime(path);
       if (mimeType?.startsWith("image/") && typeof file.content === "string") {
         const text = `[Image: ${path} (${mimeType}, ${formatSize(file.size ?? 0)})]`;
         return { text, content: [{ type: "image", data: file.content, mimeType }], details: { mimeType, size: file.size ?? 0 } };
       }
-      return result("[Binary file omitted. Use bash for binary inspection.]", { isBinary: true, size: file.size ?? 0 });
+      return result("[Binary file omitted. Use js_exec with vm.push/vm.exec for binary inspection.]", { isBinary: true, size: file.size ?? 0 });
     }
 
     const lines = String(file.content ?? "").split("\n");
@@ -499,7 +347,8 @@ export class PiContainerTools {
   private async write(args: Record<string, unknown>): Promise<PiContainerToolResult> {
     if (typeof args.content !== "string") throw new Error("content must be a string");
     const path = normalizePath(args.path);
-    await this.writeFileInContainer(path, args.content);
+    const response = await this.workspace.writeFile(path, args.content);
+    if (!response.success) throw new Error(response.error || `Failed to write ${path}`);
     return result(`Successfully wrote ${args.content.length} bytes to ${path}`);
   }
 
@@ -507,22 +356,25 @@ export class PiContainerTools {
     const path = normalizePath(args.path);
     const edits = normalizeEdits(args);
     if (edits.length === 0) throw new Error("Edit tool input is invalid. edits must contain at least one replacement.");
-    const file = await this.readFileInContainer(path);
+    const file = await this.readWorkspaceFile(path);
     if (file.isBinary) throw new Error(`Cannot edit binary file: ${path}`);
     const before = String(file.content ?? "");
     const after = applyExactEdits(before, edits, path);
-    await this.writeFileInContainer(path, after);
+    const response = await this.workspace.writeFile(path, after);
+    if (!response.success) throw new Error(response.error || `Failed to write ${path}`);
     return result(`Successfully replaced ${edits.length} block(s) in ${path}.`, simpleDiff(before, after));
   }
 
   private async ls(args: Record<string, unknown>): Promise<PiContainerToolResult> {
     const path = normalizePath(args.path);
     const limit = Math.max(1, typeof args.limit === "number" ? args.limit : 500);
-    const listing = parseExecJson<{ success: boolean; files?: Array<{ name: string; type: "file" | "directory" }> }>(
-      await this.workspace.execOnSandbox(["python3", "-c", LIST_FILES_SCRIPT, path], { cwd: CONTAINER_CWD }) as ExecResponse,
-      `Failed to list ${path}`,
-    );
-    const entries = [...(listing.files || [])];
+    const listing = await this.workspace.listFiles(path, {
+      recursive: false,
+      includeHidden: true,
+      limit: limit + 1,
+    });
+    if (!listing.success) throw new Error(listing.error || `Failed to list ${path}`);
+    const entries = [...listing.files];
     const output = entries.slice(0, limit).map((entry) => `${entry.name}${entry.type === "directory" ? "/" : ""}`).join("\n");
     if (!output) return result("(empty directory)");
     const { content, truncation } = truncateHead(output, Number.MAX_SAFE_INTEGER);
@@ -534,43 +386,53 @@ export class PiContainerTools {
     if (typeof args.pattern !== "string" || !args.pattern.trim()) throw new Error("pattern is required");
     const path = normalizePath(args.path);
     const limit = Math.max(1, typeof args.limit === "number" ? args.limit : 100);
-    const rgArgs = ["rg", "--line-number", "--color=never", "--hidden"];
-    if (typeof args.context === "number" && args.context > 0) rgArgs.push("--context", String(Math.floor(args.context)));
-    if (args.ignoreCase) rgArgs.push("--ignore-case");
-    if (args.literal) rgArgs.push("--fixed-strings");
-    if (typeof args.glob === "string" && args.glob.trim()) rgArgs.push("--glob", args.glob);
-    rgArgs.push("--", args.pattern, path);
-
-    const exec = await this.workspace.execOnSandbox(rgArgs, { cwd: CONTAINER_CWD }) as ExecResponse;
-    if (exec.exitCode === 1) return result("No matches found");
-    assertExec(exec, "ripgrep failed");
-
-    let lineTruncated = false;
-    const rawLines = String(exec.stdout || "").split("\n").filter(Boolean);
-    const selected = rawLines.slice(0, limit).map((line) => {
-      const normalized = line.startsWith(`${path}/`)
-        ? line.slice(path.length + 1)
-        : line.startsWith(`${CONTAINER_CWD}/`)
-          ? line.slice(CONTAINER_CWD.length + 1)
-          : line;
-      const match = normalized.match(/^(.+?)([:-])(\d+)([:-])(.*)$/);
-      if (!match) return normalized;
-      const text = match[5].length > GREP_MAX_LINE_LENGTH
-        ? `${match[5].slice(0, GREP_MAX_LINE_LENGTH)}... [truncated]`
-        : match[5];
-      lineTruncated ||= text !== match[5];
-      return `${match[1]}${match[2]}${match[3]}${match[4]} ${text.trimStart()}`;
+    const globRegex = typeof args.glob === "string" && args.glob.trim()
+      ? globToRegex(args.glob.trim())
+      : null;
+    const matcher = args.literal
+      ? null
+      : new RegExp(args.pattern, args.ignoreCase ? "i" : "");
+    const literal = args.ignoreCase ? args.pattern.toLowerCase() : args.pattern;
+    const listing = await this.workspace.listFiles(path, {
+      recursive: true,
+      includeHidden: true,
+      limit: 20_000,
     });
-    if (selected.length === 0) return result("No matches found");
-    const { content, truncation } = truncateHead(selected.join("\n"), Number.MAX_SAFE_INTEGER);
+    if (!listing.success) throw new Error(listing.error || `Failed to search ${path}`);
+    const matches: string[] = [];
+    let lineTruncated = false;
+    for (const entry of listing.files) {
+      if (entry.type !== "file") continue;
+      const displayPath = relativeTo(path, entry.absolutePath).replace(/\\/g, "/");
+      if (globRegex && !globRegex.test(displayPath)) continue;
+      const file = await this.workspace.readFile(entry.absolutePath);
+      if (!file.success || file.isBinary) continue;
+      const lines = String(file.content ?? "").split("\n");
+      for (let index = 0; index < lines.length; index += 1) {
+        const line = lines[index];
+        const haystack = args.ignoreCase ? line.toLowerCase() : line;
+        if (matcher ? matcher.test(line) : haystack.includes(literal)) {
+          const text = line.length > GREP_MAX_LINE_LENGTH
+            ? `${line.slice(0, GREP_MAX_LINE_LENGTH)}... [truncated]`
+            : line;
+          lineTruncated ||= text !== line;
+          matches.push(`${displayPath}:${index + 1}: ${text.trimStart()}`);
+          if (matches.length >= limit) break;
+        }
+        if (matcher) matcher.lastIndex = 0;
+      }
+      if (matches.length >= limit) break;
+    }
+    if (matches.length === 0) return result("No matches found");
+    const { content, truncation } = truncateHead(matches.join("\n"), Number.MAX_SAFE_INTEGER);
     const notices: string[] = [];
-    if (rawLines.length > limit) notices.push(`${limit} matches limit reached. Use limit=${limit * 2} for more, or refine pattern`);
+    if (matches.length >= limit) notices.push(`${limit} matches limit reached. Use limit=${limit * 2} for more, or refine pattern`);
     if (lineTruncated) notices.push(`Some lines truncated to ${GREP_MAX_LINE_LENGTH} chars. Use read tool to see full lines`);
     return result(
       `${content}${notices.length ? `\n\n[${notices.join(". ")}]` : ""}`,
       {
         ...(truncation ? { truncation } : {}),
-        ...(rawLines.length > limit ? { matchLimitReached: limit } : {}),
+        ...(matches.length >= limit ? { matchLimitReached: limit } : {}),
         ...(lineTruncated ? { linesTruncated: true } : {}),
       },
     );
@@ -584,22 +446,23 @@ export class PiContainerTools {
       : typeof args.name === "string" && args.name.trim()
         ? args.name.trim()
         : "*";
-    const fdArgs = (binary: string) => {
-      const out = [binary, "--glob", "--color=never", "--hidden", "--no-require-git", "--max-results", String(limit)];
-      if (pattern.includes("/")) {
-        out.push("--full-path");
-        if (!pattern.startsWith("/") && !pattern.startsWith("**/") && pattern !== "**") pattern = `**/${pattern}`;
-      }
-      return [...out, "--", pattern, path];
-    };
-
-    let exec = await this.workspace.execOnSandbox(fdArgs("fd"), { cwd: CONTAINER_CWD }) as ExecResponse;
-    if (exec.exitCode === 127) exec = await this.workspace.execOnSandbox(fdArgs("fdfind"), { cwd: CONTAINER_CWD }) as ExecResponse;
-    assertExec(exec, "fd failed");
-
-    const lines = String(exec.stdout || "").split("\n").map((line) => line.trim()).filter(Boolean);
+    if (pattern.includes("/") && !pattern.startsWith("/") && !pattern.startsWith("**/") && pattern !== "**") {
+      pattern = `**/${pattern}`;
+    }
+    const regex = globToRegex(pattern);
+    const listing = await this.workspace.listFiles(path, {
+      recursive: true,
+      includeHidden: true,
+      limit: 20_000,
+    });
+    if (!listing.success) throw new Error(listing.error || `Failed to find files in ${path}`);
+    const lines = listing.files
+      .filter((entry) => entry.type === "file")
+      .map((entry) => relativeTo(path, entry.absolutePath).replace(/\\/g, "/"))
+      .filter((line) => regex.test(line))
+      .slice(0, limit);
     if (lines.length === 0) return result("No files found matching pattern");
-    const output = lines.map((line) => relativeTo(path, line).replace(/\\/g, "/")).join("\n");
+    const output = lines.join("\n");
     const { content, truncation } = truncateHead(output, Number.MAX_SAFE_INTEGER);
     const limitReached = lines.length >= limit;
     return result(
@@ -607,22 +470,23 @@ export class PiContainerTools {
       { ...(truncation ? { truncation } : {}), ...(limitReached ? { resultLimitReached: limit } : {}) },
     );
   }
+}
 
-  private async bash(args: Record<string, unknown>): Promise<PiContainerToolResult> {
-    const command = typeof args.command === "string" ? args.command : "";
-    if (!command.trim()) throw new Error("command is required");
-    const timeout = typeof args.timeout === "number" ? args.timeout : undefined;
-    const execArgs = timeout ? ["timeout", `${Math.ceil(timeout)}s`, "bash", "-lc", command] : ["bash", "-lc", command];
-    const exec = await this.workspace.execOnSandbox(execArgs, {
-      cwd: normalizePath(args.cwd),
-      env: await this.commandEnv(),
-    }) as ExecResponse;
-    const output = [exec.stdout || "", exec.stderr || ""].filter(Boolean).join("\n") || "(no output)";
-    const { content, truncation } = truncateTail(output);
-    if (exec.success === false || (typeof exec.exitCode === "number" && exec.exitCode !== 0)) {
-      if (timeout && exec.exitCode === 124) throw new Error(`${content}\n\nCommand timed out after ${timeout} seconds`);
-      throw new Error(`${content}\n\nCommand exited with code ${exec.exitCode ?? 1}`);
+function globToRegex(pattern: string): RegExp {
+  let source = "^";
+  for (let i = 0; i < pattern.length; i += 1) {
+    const char = pattern[i];
+    const next = pattern[i + 1];
+    if (char === "*" && next === "*") {
+      source += ".*";
+      i += 1;
+    } else if (char === "*") {
+      source += "[^/]*";
+    } else if (char === "?") {
+      source += "[^/]";
+    } else {
+      source += char.replace(/[|\\{}()[\]^$+?.]/g, "\\$&");
     }
-    return result(content, { ...(truncation ? { truncation } : {}), ...(timeout ? { timeout } : {}) });
   }
+  return new RegExp(`${source}$`);
 }

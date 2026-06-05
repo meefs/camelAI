@@ -189,6 +189,7 @@ export class AppIndexDatabase {
         script_name TEXT NOT NULL,
         org_id TEXT,
         workspace_id TEXT NOT NULL,
+        project_id TEXT,
         created_by TEXT,
         created_at INTEGER NOT NULL,
         updated_at INTEGER NOT NULL,
@@ -247,6 +248,14 @@ export class AppIndexDatabase {
           .filter(Boolean)
           .map((statement) => this.db.prepare(statement)),
       )
+      .then(async () => {
+        try {
+          await this.db.prepare("ALTER TABLE apps ADD COLUMN project_id TEXT").run();
+        } catch {}
+        await this.db
+          .prepare("CREATE INDEX IF NOT EXISTS idx_apps_project_updated_at ON apps(project_id, updated_at DESC)")
+          .run();
+      })
       .then(() => undefined);
     await this.schemaReady;
   }
@@ -421,12 +430,13 @@ export class AppIndexDatabase {
         const a = event.payload;
         await this.db
           .prepare(`
-            INSERT INTO apps (app_id, script_name, org_id, workspace_id, created_by, created_at, updated_at, is_public, preview_status, preview_error)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO apps (app_id, script_name, org_id, workspace_id, project_id, created_by, created_at, updated_at, is_public, preview_status, preview_error)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(app_id) DO UPDATE SET
               script_name=excluded.script_name,
               org_id=excluded.org_id,
               workspace_id=excluded.workspace_id,
+              project_id=excluded.project_id,
               created_by=excluded.created_by,
               created_at=excluded.created_at,
               updated_at=excluded.updated_at,
@@ -434,7 +444,7 @@ export class AppIndexDatabase {
               preview_status=excluded.preview_status,
               preview_error=excluded.preview_error
           `)
-          .bind(this.getAppId(a.org_id, a.script_name), a.script_name, a.org_id ?? null, a.workspace_id, a.created_by ?? null, a.created_at ?? Date.now(), a.updated_at ?? Date.now(), a.is_public ? 1 : 0, a.preview_status ?? null, a.preview_error ?? null)
+          .bind(this.getAppId(a.org_id, a.script_name), a.script_name, a.org_id ?? null, a.workspace_id, a.project_id ?? null, a.created_by ?? null, a.created_at ?? Date.now(), a.updated_at ?? Date.now(), a.is_public ? 1 : 0, a.preview_status ?? null, a.preview_error ?? null)
           .run();
         break;
       }
@@ -533,6 +543,7 @@ export class AppIndexDatabase {
         o.name AS org_name,
         o.slug AS org_slug,
         a.workspace_id,
+        a.project_id,
         w.name AS workspace_name,
         a.created_by,
         u.name AS created_by_name,
@@ -553,6 +564,7 @@ export class AppIndexDatabase {
       script_name: row.script_name,
       org_id: row.org_id,
       workspace_id: row.workspace_id,
+      project_id: row.project_id ?? null,
       org_name: row.org_name ?? null,
       org_slug: row.org_slug ?? null,
       workspace_name: row.workspace_name ?? null,

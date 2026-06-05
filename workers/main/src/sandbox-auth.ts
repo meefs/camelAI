@@ -1,12 +1,18 @@
 /**
  * Sandbox Proxy Authentication
  *
- * Validates requests forwarded by the sandbox host reverse proxy.
- * The sandbox host adds identity headers (org ID, workspace ID) and a
- * static shared secret so the Worker can trust the request without
- * per-request token signing.
+ * Validates requests forwarded by a trusted runtime proxy.
+ * The proxy adds identity headers (org ID, workspace ID) and authenticates
+ * either with Cloudflare-verified mTLS or a configured bearer/shared secret.
  *
  */
+
+export interface SandboxProxyAuthEnv {
+  SANDBOX_PROXY_SECRET?: string;
+  PROJECT_RUNTIME_PROXY_SECRET?: string;
+  SANDBOX_PROXY_MTLS_CERT_SHA256?: string;
+  PROJECT_RUNTIME_MTLS_CERT_SHA256?: string;
+}
 
 export interface SandboxProxyIdentity {
   valid: true;
@@ -14,6 +20,7 @@ export interface SandboxProxyIdentity {
   workspaceId: string;
   userId?: string;
   threadId?: string;
+  projectId?: string;
 }
 
 export interface SandboxProxyInvalid {
@@ -22,19 +29,26 @@ export interface SandboxProxyInvalid {
 
 export type SandboxProxyResult = SandboxProxyIdentity | SandboxProxyInvalid;
 
+export interface ProjectRuntimeProxyIdentity {
+  valid: true;
+  projectId: string;
+}
+
+export type ProjectRuntimeProxyResult = ProjectRuntimeProxyIdentity | SandboxProxyInvalid;
+
 /**
- * Check if a request was forwarded by the sandbox host proxy.
- * Returns the org/workspace identity if the shared secret matches,
+ * Check if a request was forwarded by a trusted runtime proxy.
+ * Returns the org/workspace identity if mTLS or shared-secret auth succeeds,
  * or { valid: false } if the header is absent or doesn't match.
  */
 export function validateSandboxProxy(
   request: Request,
-  env: { SANDBOX_PROXY_SECRET?: string }
+  env: SandboxProxyAuthEnv,
 ): SandboxProxyResult {
-  const secret = request.headers.get('x-sandbox-secret');
-  if (!secret || !env.SANDBOX_PROXY_SECRET || secret !== env.SANDBOX_PROXY_SECRET) {
+  if (!hasVerifiedClientCertificate(request, env) && !hasValidSharedSecret(request, env)) {
     return { valid: false };
   }
+
   const orgId = request.headers.get('x-chiridion-org-id');
   const workspaceId = request.headers.get('x-chiridion-workspace-id');
   if (!orgId || !workspaceId) {
@@ -42,5 +56,100 @@ export function validateSandboxProxy(
   }
   const userId = request.headers.get('x-chiridion-user-id')?.trim() || undefined;
   const threadId = request.headers.get('x-chiridion-thread-id')?.trim() || undefined;
-  return { valid: true, orgId, workspaceId, userId, threadId };
+  const projectId = request.headers.get('x-chiridion-project-id')?.trim() || undefined;
+  return { valid: true, orgId, workspaceId, userId, threadId, projectId };
+}
+
+export function validateProjectRuntimeProxy(
+  request: Request,
+  env: SandboxProxyAuthEnv,
+): ProjectRuntimeProxyResult {
+  if (!hasVerifiedClientCertificate(request, env) && !hasValidSharedSecret(request, env)) {
+    return { valid: false };
+  }
+  const projectId = request.headers.get("x-chiridion-project-id")?.trim();
+  if (!projectId) return { valid: false };
+  return { valid: true, projectId };
+}
+
+type TlsClientAuth = {
+  certRevoked?: string;
+  certVerified?: string;
+  certFingerprintSHA256?: string;
+};
+
+type RequestWithCloudflareMetadata = Request & {
+  cf?: {
+    tlsClientAuth?: TlsClientAuth;
+  };
+};
+
+function hasVerifiedClientCertificate(request: Request, env: SandboxProxyAuthEnv): boolean {
+  const tlsClientAuth = (request as RequestWithCloudflareMetadata).cf?.tlsClientAuth;
+  if (tlsClientAuth?.certVerified !== "SUCCESS" || tlsClientAuth.certRevoked === "1") {
+    return false;
+  }
+
+  const allowedFingerprints = fingerprintList([
+    env.PROJECT_RUNTIME_MTLS_CERT_SHA256,
+    env.SANDBOX_PROXY_MTLS_CERT_SHA256,
+  ]);
+  if (allowedFingerprints.length === 0) {
+    return true;
+  }
+
+  const fingerprint = normalizeFingerprint(tlsClientAuth.certFingerprintSHA256);
+  return !!fingerprint && allowedFingerprints.includes(fingerprint);
+}
+
+function hasValidSharedSecret(request: Request, env: SandboxProxyAuthEnv): boolean {
+  const providedSecrets = [
+    request.headers.get("x-project-runtime-secret"),
+    request.headers.get("x-sandbox-secret"),
+    bearerToken(request.headers.get("authorization")),
+  ]
+    .map((value) => value?.trim())
+    .filter((value): value is string => !!value);
+
+  const expectedSecrets = secretList([
+    env.PROJECT_RUNTIME_PROXY_SECRET,
+    env.SANDBOX_PROXY_SECRET,
+  ]);
+
+  return providedSecrets.some((provided) =>
+    expectedSecrets.some((expected) => constantTimeEqual(provided, expected)),
+  );
+}
+
+function bearerToken(authorization: string | null): string | null {
+  const match = authorization?.match(/^Bearer\s+(.+?)\s*$/i);
+  return match?.[1] ?? null;
+}
+
+function secretList(values: Array<string | undefined>): string[] {
+  return values
+    .flatMap((value) => value?.split(",") ?? [])
+    .map((value) => value.trim())
+    .filter(Boolean);
+}
+
+function fingerprintList(values: Array<string | undefined>): string[] {
+  return values
+    .flatMap((value) => value?.split(",") ?? [])
+    .map(normalizeFingerprint)
+    .filter((value): value is string => !!value);
+}
+
+function normalizeFingerprint(value: string | undefined): string | undefined {
+  const normalized = value?.replace(/[^a-fA-F0-9]/g, "").toUpperCase();
+  return normalized || undefined;
+}
+
+function constantTimeEqual(a: string, b: string): boolean {
+  let mismatch = a.length ^ b.length;
+  const length = Math.max(a.length, b.length);
+  for (let i = 0; i < length; i += 1) {
+    mismatch |= (a.charCodeAt(i) || 0) ^ (b.charCodeAt(i) || 0);
+  }
+  return mismatch === 0;
 }

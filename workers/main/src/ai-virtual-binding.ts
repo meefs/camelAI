@@ -1,6 +1,5 @@
 import { WorkerEntrypoint } from "cloudflare:workers";
 import type { OrgDO } from "./auth";
-import { ensureLegacyHostUsageBackfilled } from "./legacy-usage-backfill-gate";
 import { decryptCredentials } from "../../../src/lib/integration-crypto";
 import { parseStoredLlmProviderConfig } from "../../../src/lib/llm-provider-config";
 import { chatCompletionToPiCall, runBedrockViaPi } from "./bedrock-pi-adapter";
@@ -9,7 +8,6 @@ export interface AIVirtualBindingEnv {
   ORG: DurableObjectNamespace<OrgDO>;
   AI?: Ai;
   R2_BUCKET?: R2Bucket;
-  SANDBOX_HOST?: Fetcher;
   CF_ACCOUNT_ID?: string;
   CF_GATEWAY_NAME?: string;
   CF_GATEWAY_TOKEN?: string;
@@ -270,7 +268,7 @@ export async function executeVirtualAiRun(
           region: routing.awsRegion,
         })
       : await runViaGatewayHTTP(
-          settings,
+	          settings!,
           scope.props,
           sanitizedInput,
           routing.model,
@@ -379,7 +377,6 @@ async function checkHostedModelAccess(
       "Hosted models require billing access. Choose Pay as you go, start a subscription, or add your own API key in Settings -> AI Provider.",
     );
   }
-  await ensureLegacyHostUsageBackfilled(env, props.orgId);
   const usage = await orgStub.getUsageLogSum(0, Date.now(), true);
   const spentCents = Math.round(Number(usage.total_cost_usd ?? 0) * 100);
   const totalCreditsCents =

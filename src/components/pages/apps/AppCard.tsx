@@ -104,7 +104,7 @@ export function AppCard({
         color: getContrastTextColor(creatorAvatar.color),
       }
     : undefined;
-  // Extract filename from config_path (e.g., "/home/claude/my-app/wrangler.jsonc" -> "wrangler.jsonc")
+  // Extract filename from config_path (e.g., "/workspace/my-app/wrangler.jsonc" -> "wrangler.jsonc")
   const sourceLabel = app.config_path
     ? app.config_path.split('/').pop() ?? 'wrangler.jsonc'
     : null;

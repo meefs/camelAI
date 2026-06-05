@@ -9,10 +9,6 @@ import {
   getAppIndexReadDatabase,
 } from '../../app-index-db.js';
 import { ensureAdminIndexReady } from '../../admin-index-bootstrap.js';
-import {
-  WorkspaceContainer,
-  type WorkspaceContainerEnv,
-} from '../../workspace-container.js';
 
 // ---------------------------------------------------------------------------
 // Shared data access helpers
@@ -33,32 +29,8 @@ type OrgThreadLookup = {
   } | null>;
 };
 type ChatThreadLookup = {
-  getLegacyClaudeSessionId(): Promise<string | null>;
-  getCodexSessionId(): Promise<string | null>;
   getPiCoreParsedMessages(threadId: string): Promise<unknown[]> | unknown[];
 };
-
-async function getOptionalChatThreadSessionId(
-  env: Env,
-  threadId: string,
-  methodName: keyof ChatThreadLookup,
-): Promise<string | null> {
-  if (!('CHAT_THREAD' in env) || !env.CHAT_THREAD) {
-    return null;
-  }
-
-  const chatThread = env.CHAT_THREAD.get(
-    env.CHAT_THREAD.idFromName(threadId),
-  ) as unknown as Partial<ChatThreadLookup>;
-  const method = chatThread[methodName];
-  if (typeof method !== 'function') {
-    return null;
-  }
-
-  const sessionMethod = method as (this: Partial<ChatThreadLookup>) => Promise<string | null> | string | null;
-  const sessionId = await Promise.resolve(sessionMethod.call(chatThread)).catch(() => null);
-  return typeof sessionId === 'string' && sessionId.trim() ? sessionId.trim() : null;
-}
 
 export function getAdminIndexStub(env: AdminIndexEnv) {
   const readIndex = getAppIndexReadDatabase(env);
@@ -145,47 +117,12 @@ export async function loadAdminThreadMessagesResponse(
     }
   }
 
-  const container = new WorkspaceContainer(
-    env as unknown as WorkspaceContainerEnv,
-    threadContext.workspace_id,
-    threadContext.org_id,
+  return Response.json(
+    { success: true, messages: [] },
+    {
+      headers: {
+        'Cache-Control': 'no-cache, no-transform',
+      },
+    },
   );
-
-  const legacyClaudeSessionId = await getOptionalChatThreadSessionId(
-    env,
-    trimmedThreadId,
-    'getLegacyClaudeSessionId',
-  );
-  const codexSessionId = await getOptionalChatThreadSessionId(
-    env,
-    trimmedThreadId,
-    'getCodexSessionId',
-  );
-  const streamResult = await container.readThreadMessagesStream(trimmedThreadId, {
-    claudeSessionId: legacyClaudeSessionId,
-    codexSessionId,
-    skipBanCheck: true,
-  });
-  if (!streamResult.success || !streamResult.response) {
-    const status = streamResult.code?.startsWith('HTTP_')
-      ? Number.parseInt(streamResult.code.slice(5), 10) || 500
-      : 500;
-    return Response.json(
-      { error: streamResult.error || 'Failed to load messages' },
-      { status },
-    );
-  }
-
-  const upstream = streamResult.response;
-  const headers = new Headers(upstream.headers);
-  if (!headers.get('Content-Type')) {
-    headers.set('Content-Type', 'application/json');
-  }
-  headers.set('Cache-Control', 'no-cache, no-transform');
-
-  return new Response(upstream.body, {
-    status: upstream.status,
-    statusText: upstream.statusText,
-    headers,
-  });
 }

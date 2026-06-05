@@ -12,7 +12,6 @@ import type { OrgDO, WorkerScript } from './auth';
 import type { WorkspaceDO } from './workspace';
 import type { ChatThreadDO, PreviewTarget } from './chat-thread-do';
 import type { WorkspaceCronDO } from './workspace-cron';
-import { WorkspaceContainer, type WorkspaceContainerEnv } from './workspace-container';
 import {
   getAllIntegrations,
   getIntegrationsByCategory,
@@ -48,7 +47,9 @@ import {
 import { parseFilePreviewPath } from './preview-paths';
 import { formatDeterministicAutomation } from './code-mode-deterministic-automations';
 
-export interface McpEnv extends WorkspaceContainerEnv {
+export interface McpEnv {
+  ORG: DurableObjectNamespace<OrgDO>;
+  WORKSPACE: DurableObjectNamespace<WorkspaceDO>;
   CHAT_THREAD: DurableObjectNamespace<ChatThreadDO>;
   MCP_OBJECT: DurableObjectNamespace<ChiridionMcp>;
   WORKER_LOGS: DurableObjectNamespace<WorkerLogsDO>;
@@ -63,6 +64,7 @@ export interface McpEnv extends WorkspaceContainerEnv {
   ASSETS?: Fetcher;
   IMAGES?: ImagesBinding;
   NEXTJS_ENV?: string;
+  WORKER_BASE_URL?: string;
   WORKER_SELF_REFERENCE?: Fetcher;
 }
 
@@ -126,10 +128,6 @@ function recommendedIntegrationAccess(
 export class ChiridionMcp extends McpAgent<any, Record<string, unknown>, Record<string, unknown>> {
   declare env: McpEnv;
 
-  // agents currently depends on a nested MCP SDK version, while the Worker uses
-  // the app-level SDK package. Runtime shapes match; keep the app-level import
-  // so tool registration remains strongly typed in this file.
-  // @ts-expect-error SDK private fields differ across package copies.
   server = new McpServer({
     name: 'chiridion-mcp',
     version: '1.0.0',
@@ -401,7 +399,7 @@ export class ChiridionMcp extends McpAgent<any, Record<string, unknown>, Record<
       {
         path: z
           .string()
-          .describe('Path to preview. Examples: "/home/claude/README.md", "src/app.tsx", "/mnt/user-outputs/plot.png", "/mnt/user-uploads/notebook.ipynb"'),
+          .describe('Path to preview. Examples: "/workspace/README.md", "src/app.tsx", "/mnt/user-outputs/plot.png", "/mnt/user-uploads/notebook.ipynb"'),
         content_type: z
           .string()
           .optional()

@@ -229,7 +229,7 @@ describe('Codex todo state integration', () => {
             id: 'tool-ls',
             type: 'dynamicToolCall',
             tool: 'ls',
-            arguments: { path: '/home/claude/src' },
+            arguments: { path: '/workspace/src' },
             status: 'running',
           },
         },
@@ -248,7 +248,7 @@ describe('Codex todo state integration', () => {
             id: 'tool-find',
             type: 'dynamicToolCall',
             tool: 'find',
-            arguments: { pattern: '*.tsx', path: '/home/claude/src' },
+            arguments: { pattern: '*.tsx', path: '/workspace/src' },
             status: 'running',
           },
         },
@@ -291,7 +291,7 @@ describe('Codex todo state integration', () => {
 
     const ls = findToolUse(messages, 'tool-ls');
     expect(ls?.name).toBe('LS');
-    expect(ls?.input.path).toBe('/home/claude/src');
+    expect(ls?.input.path).toBe('/workspace/src');
 
     const find = findToolUse(messages, 'tool-find');
     expect(find?.name).toBe('Find');
@@ -390,7 +390,7 @@ describe('Codex todo state integration', () => {
             type: 'commandExecution',
             command: 'pwd',
             status: 'completed',
-            aggregatedOutput: '/home/claude\n',
+            aggregatedOutput: '/workspace\n',
           },
         },
       },

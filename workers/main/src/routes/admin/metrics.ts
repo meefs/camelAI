@@ -1,8 +1,6 @@
 import type { AdminOrgDirectoryRow } from '../../admin-index-types.js';
 import type { Env } from '../../types.js';
 
-const SANDBOX_HOST_METRICS_TIMEOUT_MS = 5_000;
-
 export interface OrgUsageAnalyticsItem {
   org_id: string;
   total_cost_usd: number;
@@ -80,43 +78,9 @@ export interface DailySpendDashboardResponse
   top_orgs: DailySpendDashboardOrgRow[];
 }
 
-async function fetchSandboxHostJson<T>(
-  env: Env,
-  path: string,
-  init?: RequestInit,
-): Promise<T> {
-  if (!env.SANDBOX_HOST) {
-    throw new Error('SANDBOX_HOST binding not configured');
-  }
-
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), SANDBOX_HOST_METRICS_TIMEOUT_MS);
-  try {
-    const response = await env.SANDBOX_HOST.fetch(`http://sandbox${path}`, {
-      ...init,
-      signal: controller.signal,
-    });
-    if (!response.ok) {
-      throw new Error(`Sandbox host returned ${response.status}`);
-    }
-    const payload = await response.json() as T;
-    return payload;
-  } catch (error) {
-    if (controller.signal.aborted) {
-      throw new Error(`Sandbox host metrics request timed out after ${SANDBOX_HOST_METRICS_TIMEOUT_MS}ms`);
-    }
-    throw error;
-  } finally {
-    clearTimeout(timeout);
-  }
-}
-
 export async function fetchSpamOrgIds(env: Env): Promise<string[]> {
-  const response = await fetchSandboxHostJson<{ org_ids: string[] }>(
-    env,
-    '/v1/usage/analytics/spam-org-ids',
-  );
-  return response.org_ids ?? [];
+  void env;
+  return [];
 }
 
 export async function fetchOrgUsageAnalytics(
@@ -126,6 +90,7 @@ export async function fetchOrgUsageAnalytics(
     includeWindows?: boolean;
   } = {},
 ): Promise<Map<string, OrgUsageAnalyticsItem>> {
+  void env;
   const dedupedOrgIds = Array.from(
     new Set(orgIds.map((orgId) => orgId.trim()).filter((orgId) => orgId.length > 0)),
   );
@@ -133,28 +98,8 @@ export async function fetchOrgUsageAnalytics(
     return new Map();
   }
 
-  const response = await fetchSandboxHostJson<{ items: OrgUsageAnalyticsItem[] }>(
-    env,
-    '/v1/usage/analytics/orgs/query',
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        org_ids: dedupedOrgIds,
-        include_windows: options.includeWindows ?? false,
-      }),
-    },
-  );
-
-  return new Map(
-    (response.items ?? []).map((item) => [
-      item.org_id,
-      {
-        ...item,
-        windows: item.windows ?? [],
-      },
-    ]),
-  );
+  void options;
+  return new Map();
 }
 
 export async function fetchDailySpendAnalytics(
@@ -165,19 +110,31 @@ export async function fetchDailySpendAnalytics(
     topOrgsLimit: number;
   },
 ): Promise<DailySpendAnalyticsHostResponse> {
-  return fetchSandboxHostJson<DailySpendAnalyticsHostResponse>(
-    env,
-    '/v1/usage/analytics/daily-spend/query',
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        date: options.date,
-        org_ids: options.orgIds,
-        top_orgs_limit: options.topOrgsLimit,
-      }),
+  void env;
+  void options.orgIds;
+  void options.topOrgsLimit;
+  return {
+    date: options.date,
+    is_partial: false,
+    total_spend_usd: 0,
+    total_requests: 0,
+    spam_spend_usd: 0,
+    non_spam_spend_usd: 0,
+    spam_org_count: 0,
+    non_spam_org_count: 0,
+    previous_day: {
+      date: options.date,
+      total_spend_usd: 0,
+      total_requests: 0,
+      spam_spend_usd: 0,
+      non_spam_spend_usd: 0,
     },
-  );
+    hourly_series: [],
+    model_breakdown: [],
+    top_orgs: [],
+    other_orgs_spend_usd: 0,
+    other_orgs_count: 0,
+  };
 }
 
 export function normalizeInternalDomains(

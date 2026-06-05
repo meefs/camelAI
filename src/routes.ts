@@ -220,10 +220,6 @@ export default [
     "routes/api/workspaces.$id.chat.threads.ts",
   ),
   route(
-    "api/workspaces/:id/chat/:threadId/messages/stream",
-    "routes/api/workspaces.$id.chat.$threadId.messages.stream.ts",
-  ),
-  route(
     "api/workspaces/:id/chat/:threadId/fork",
     "routes/api/workspaces.$id.chat.$threadId.fork.ts",
   ),
@@ -265,13 +261,7 @@ export default [
 
   // External API routes (CLI + OAuth)
   route("api/ext/health", "routes/api/ext.health.ts"),
-  route("api/ext/bash", "routes/api/ext.bash.ts"),
   route("api/ext/apps", "routes/api/ext.apps.ts"),
-  route("api/ext/files", "routes/api/ext.files.ts"),
-  route("api/ext/files/read", "routes/api/ext.files.read.ts"),
-  route("api/ext/files/write", "routes/api/ext.files.write.ts"),
-  route("api/ext/files/upload", "routes/api/ext.files.upload.ts"),
-  route("api/ext/files/download", "routes/api/ext.files.download.ts"),
   route("api/ext/oauth/authorize", "routes/api/ext.oauth.authorize.tsx"),
   route("api/ext/oauth/token", "routes/api/ext.oauth.token.ts"),
   route("api/ext/oauth/revoke", "routes/api/ext.oauth.revoke.ts"),
