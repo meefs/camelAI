@@ -8,6 +8,7 @@ import type {
 } from "./project-vm-protocol";
 import {
   normalizeGlobalProjectId,
+  projectRuntimeDeployProxyUrl,
   PROJECT_RUNTIME_PROVIDER,
   PROJECT_VM_CHECKOUT_PATH,
   runtimeArtifactsProxyRemote,
@@ -421,6 +422,7 @@ print("\\n".join(matches))
     const remote = project.artifactRemote
       ? runtimeArtifactsProxyRemote(
           this.options.env.PROJECT_RUNTIME_ARTIFACTS_PROXY_BASE,
+          this.options.env.PROJECT_RUNTIME_DOCKER_PROXY_BASE_URL,
           project.id,
           remoteProjectId,
         )
@@ -655,7 +657,7 @@ fi
   }
 
   private deployDockerProxyUrl(): string {
-    return "http://host.docker.internal:8081/deploy/client/v4";
+    return projectRuntimeDeployProxyUrl(this.options.env.PROJECT_RUNTIME_DOCKER_PROXY_BASE_URL);
   }
 
   private async collectWorkspaceFiles(paths: string[]): Promise<Array<{ absolutePath: string; relativePath: string; size?: number }>> {

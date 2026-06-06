@@ -6,6 +6,7 @@ export interface ProjectVmEnv {
   PROJECT_RUNTIME_HOST?: Fetcher;
   PROJECT_RUNTIME_SERVICE_URL?: string;
   PROJECT_RUNTIME_SERVICE_BEARER_TOKEN?: string;
+  PROJECT_RUNTIME_DOCKER_PROXY_BASE_URL?: string;
   PROJECT_RUNTIME_ARTIFACTS_PROXY_BASE?: string;
   PROJECT_RUNTIME_PROXY_SECRET?: string;
 }
@@ -83,12 +84,23 @@ export function workspaceIdFromGlobalProjectId(projectId: string): string | null
 
 export function runtimeArtifactsProxyRemote(
   base: string | undefined,
+  dockerProxyBase: string | undefined,
   projectId: string,
   remoteProjectId: string,
 ): string {
   const cleanBase = (
     base?.trim() ||
-    `http://host.docker.internal:8081/p/${PROJECT_RUNTIME_ARTIFACTS_PROXY_CAPABILITY}`
+    `${projectRuntimeDockerProxyBaseUrl(dockerProxyBase)}/p/${PROJECT_RUNTIME_ARTIFACTS_PROXY_CAPABILITY}`
   ).replace(/\/+$/, "");
   return `${cleanBase}/${encodeURIComponent(projectId)}/git/${encodeURIComponent(remoteProjectId)}.git`;
+}
+
+export function projectRuntimeDockerProxyBaseUrl(value: string | undefined): string {
+  return (value?.trim() || "http://host.docker.internal:8089").replace(/\/+$/, "");
+}
+
+export function projectRuntimeDeployProxyUrl(value: string | undefined): string {
+  const base = projectRuntimeDockerProxyBaseUrl(value);
+  const deployPath = "/deploy/client/v4";
+  return base.endsWith(deployPath) ? base : `${base}${deployPath}`;
 }

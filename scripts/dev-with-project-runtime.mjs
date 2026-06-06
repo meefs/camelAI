@@ -32,6 +32,9 @@ if (useLocalRuntime) {
 const appEnv = { ...process.env };
 if (useLocalRuntime) {
   appEnv.PROJECT_RUNTIME_SERVICE_URL = runtimeUrl;
+  appEnv.PROJECT_RUNTIME_DOCKER_PROXY_BASE_URL =
+    process.env.PROJECT_RUNTIME_DOCKER_PROXY_BASE_URL ||
+    `http://host.docker.internal:${dockerProxyPort}`;
 } else if (!process.env.PROJECT_RUNTIME_SERVICE_URL) {
   delete appEnv.PROJECT_RUNTIME_SERVICE_URL;
 }

@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
-
-import { normalizeGlobalProjectId } from "../src/project-vm-protocol.js";
+import {
+  normalizeGlobalProjectId,
+  projectRuntimeDeployProxyUrl,
+  projectRuntimeDockerProxyBaseUrl,
+  runtimeArtifactsProxyRemote,
+} from "../src/project-vm-protocol.js";
 import { artifactVanityRemote } from "../src/workspace-filesystem-do.js";
 
 describe("project VM protocol IDs", () => {
@@ -10,6 +14,43 @@ describe("project VM protocol IDs", () => {
     expect(normalizeGlobalProjectId(projectId)).toBe(projectId);
     expect(artifactVanityRemote(projectId)).toBe(
       "https://artifacts.camelai.internal/git/ca-aeada699b1234c3d8ab01edf70fdc855-simple-counter-1v0p.git",
+    );
+  });
+});
+
+describe("project VM protocol proxy URLs", () => {
+  it("defaults to the project-runtime Docker proxy port", () => {
+    expect(projectRuntimeDockerProxyBaseUrl(undefined)).toBe("http://host.docker.internal:8089");
+  });
+
+  it("normalizes a configured project-runtime Docker proxy base URL", () => {
+    expect(projectRuntimeDockerProxyBaseUrl("http://host.docker.internal:4411/")).toBe(
+      "http://host.docker.internal:4411",
+    );
+  });
+
+  it("builds Wrangler deploy proxy URLs from the runtime Docker proxy", () => {
+    expect(projectRuntimeDeployProxyUrl(undefined)).toBe(
+      "http://host.docker.internal:8089/deploy/client/v4",
+    );
+    expect(projectRuntimeDeployProxyUrl("http://host.docker.internal:4411")).toBe(
+      "http://host.docker.internal:4411/deploy/client/v4",
+    );
+    expect(projectRuntimeDeployProxyUrl("http://host.docker.internal:4411/deploy/client/v4")).toBe(
+      "http://host.docker.internal:4411/deploy/client/v4",
+    );
+  });
+
+  it("builds artifact proxy remotes from the configured runtime Docker proxy", () => {
+    expect(
+      runtimeArtifactsProxyRemote(
+        undefined,
+        "http://host.docker.internal:4411/",
+        "project one",
+        "remote/two",
+      ),
+    ).toBe(
+      "http://host.docker.internal:4411/p/camelai-artifacts/project%20one/git/remote%2Ftwo.git",
     );
   });
 });

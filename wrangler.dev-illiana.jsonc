@@ -33,6 +33,7 @@
 			"CF_ACCOUNT_ID": "85bbd288051330fb51ee1c86031a299b",
 			"CF_GATEWAY_NAME": "chiridion",
 			"CF_DISPATCH_NAMESPACE": "chiridion-platform-dev-illiana",
+			"PROJECT_RUNTIME_DOCKER_PROXY_BASE_URL": "http://host.docker.internal:8089",
 			"WORKER_BASE_URL": "https://dev-illiana.camelai.dev",
 				"EMAIL_FROM_ADDRESS": "no-reply@mail.camelai.com",
 				"WORKSPACE_EMAIL_DOMAIN": "camelai.dev",
