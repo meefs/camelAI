@@ -205,6 +205,7 @@ export interface WorkspaceEnv {
 export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
   private sql: SqlStorage;
   private lastThreadStatusBroadcasts = new Map<string, string>();
+  private legacyMigrationQueueInFlight: Promise<LegacyWorkspaceMigrationState | null> | null = null;
 
   constructor(ctx: DurableObjectState, env: WorkspaceEnv) {
     super(ctx, env);
@@ -708,7 +709,13 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
     if (this.env.ENABLE_LEGACY_WORKSPACE_MIGRATION !== '1') return null;
     if (!this.env.WORKSPACE_FS || !this.env.LEGACY_WORKSPACE_MIGRATIONS || !this.env.MIGRATION_PLANNING_AGENT) return null;
     if (info.archived) return null;
-    return await this.startLegacyWorkspaceMigrationIfNeeded(info);
+    if (!this.legacyMigrationQueueInFlight) {
+      this.legacyMigrationQueueInFlight = this.startLegacyWorkspaceMigrationIfNeeded(info)
+        .finally(() => {
+          this.legacyMigrationQueueInFlight = null;
+        });
+    }
+    return await this.legacyMigrationQueueInFlight;
   }
 
   private enqueueLegacyWorkspaceMigrationIfNeeded(info: Workspace): void {
