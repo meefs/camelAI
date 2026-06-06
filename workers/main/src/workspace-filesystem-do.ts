@@ -185,6 +185,11 @@ export interface WorkspaceFilesystemLike {
     description?: unknown;
     migratedFrom?: WorkspaceProjectMigrationSource;
   }): Promise<WorkspaceProject>;
+  ensureLegacyMigrationProject(input?: {
+    name?: unknown;
+    description?: unknown;
+    migratedFrom?: WorkspaceProjectMigrationSource;
+  }): Promise<{ projectId: string; projectName: string }>;
   setProjectDescription(input?: { project?: unknown; projectId?: unknown; description?: unknown }): Promise<WorkspaceProject>;
   cloneProject(input?: {
     sourceProject?: unknown;
@@ -446,6 +451,30 @@ export class WorkspaceFilesystemDO extends DurableObject<WorkspaceFilesystemEnv>
     projects.push(project);
     await this.ctx.storage.kv.put(PROJECTS_KEY, projects);
     return toPublicProject(project);
+  }
+
+  async ensureLegacyMigrationProject(input: {
+    name?: unknown;
+    description?: unknown;
+    migratedFrom?: WorkspaceProjectMigrationSource;
+  } = {}): Promise<{ projectId: string; projectName: string }> {
+    const name = requireProjectName(input.name);
+    const nameKey = projectNameKey(name);
+    const migratedFrom = normalizeProjectMigrationSource(input.migratedFrom);
+    const existing = (await this.readProjects()).find((project) => projectNameKey(project.name) === nameKey);
+    if (existing) {
+      if (!migratedFrom || existing.migratedFrom?.workspaceId !== migratedFrom.workspaceId) {
+        throw new Error(`Project already exists and was not created by this migration: ${name}`);
+      }
+      return { projectId: existing.id, projectName: existing.name };
+    }
+
+    const project = await this.createProject({
+      name,
+      description: input.description,
+      migratedFrom,
+    });
+    return { projectId: project.id, projectName: project.name };
   }
 
   async setProjectDescription(input: { project?: unknown; projectId?: unknown; description?: unknown } = {}): Promise<WorkspaceProject> {
@@ -770,6 +799,14 @@ export class WorkspaceFilesystemClient implements WorkspaceFilesystemLike {
     migratedFrom?: WorkspaceProjectMigrationSource;
   }): Promise<WorkspaceProject> {
     return this.stub.createProject({ ...input, workspaceId: this.workspaceId });
+  }
+
+  ensureLegacyMigrationProject(input?: {
+    name?: unknown;
+    description?: unknown;
+    migratedFrom?: WorkspaceProjectMigrationSource;
+  }): Promise<{ projectId: string; projectName: string }> {
+    return this.stub.ensureLegacyMigrationProject(input);
   }
 
   setProjectDescription(input?: { project?: unknown; projectId?: unknown; description?: unknown }): Promise<WorkspaceProject> {

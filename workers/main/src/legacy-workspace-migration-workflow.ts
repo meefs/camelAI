@@ -553,8 +553,7 @@ async function ensureMigrationProject(input: {
 }): Promise<{ projectId: string; projectName: string }> {
   const { env, workspaceId, projectPlan } = input;
   const workspaceFs = new WorkspaceFilesystemClient(env as never, workspaceId);
-  const existingProject = await workspaceFs.getProjectByName(projectPlan.name);
-  const project = existingProject ?? await workspaceFs.createProject({
+  return await workspaceFs.ensureLegacyMigrationProject({
     name: projectPlan.name,
     description: projectPlan.description,
     migratedFrom: {
@@ -564,14 +563,6 @@ async function ensureMigrationProject(input: {
       migratedAt: new Date().toISOString(),
     },
   });
-  if (existingProject && project.migratedFrom?.workspaceId !== workspaceId) {
-    throw new Error(`Project already exists and was not created by this migration: ${projectPlan.name}`);
-  }
-
-  return {
-    projectId: String(project.id),
-    projectName: String(project.name),
-  };
 }
 
 function sanitizeLegacyImportStepResult(
