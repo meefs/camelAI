@@ -1269,14 +1269,20 @@ describe("legacy workspace migration workflow", () => {
     expect(queued.completedAt).toBeUndefined();
   });
 
-  it("migration gate queues any workspace that does not have a current completed migration", async () => {
+  it("migration gate queues a workspace with a legacy source that does not have a current completed migration", async () => {
     const workspaceId = `migration-gate-needed-${crypto.randomUUID()}`;
     const workflowCreateBatch = vi.fn().mockResolvedValue([{ id: "workflow-1" }]);
+    const runtimeFetch = vi.fn().mockResolvedValue(Response.json({
+      files: [{ name: "web-app", type: "directory", absolutePath: "/home/claude/web-app" }],
+      count: 1,
+      nestedWorkerApps: [],
+    }));
 
     const gate = await getWorkspaceMigrationGate({
       ...env,
       ENABLE_LEGACY_WORKSPACE_MIGRATION: "1",
       LEGACY_WORKSPACE_HOST: { fetch: vi.fn() },
+      PROJECT_RUNTIME_HOST: { fetch: runtimeFetch },
       LEGACY_WORKSPACE_MIGRATIONS: {
         createBatch: workflowCreateBatch,
       },
@@ -1305,14 +1311,54 @@ describe("legacy workspace migration workflow", () => {
     });
   });
 
-  it("migration gate treats an existing workflow instance as already queued", async () => {
-    const workspaceId = `migration-gate-existing-${crypto.randomUUID()}`;
-    const workflowCreateBatch = vi.fn().mockResolvedValue([]);
+  it("migration gate completes as a no-op when no legacy workspace source exists", async () => {
+    const workspaceId = `migration-gate-no-legacy-${crypto.randomUUID()}`;
+    const workflowCreateBatch = vi.fn();
+    const runtimeFetch = vi.fn().mockResolvedValue(new Response(
+      "Internal error: open /srv/sandboxes/chiridion-ws-missing: no such file or directory",
+      { status: 500 },
+    ));
 
     const gate = await getWorkspaceMigrationGate({
       ...env,
       ENABLE_LEGACY_WORKSPACE_MIGRATION: "1",
       LEGACY_WORKSPACE_HOST: { fetch: vi.fn() },
+      PROJECT_RUNTIME_HOST: { fetch: runtimeFetch },
+      LEGACY_WORKSPACE_MIGRATIONS: {
+        createBatch: workflowCreateBatch,
+      },
+    } as never, {
+      id: workspaceId,
+      org_id: "org-1",
+    });
+
+    expect(workflowCreateBatch).not.toHaveBeenCalled();
+    expect(gate).toBeNull();
+    await expect(new WorkspaceFilesystemClient(env, workspaceId).getLegacyWorkspaceMigrationState()).resolves.toMatchObject({
+      status: "complete",
+      createdProjects: [],
+      copiedFiles: 0,
+      copiedBytes: 0,
+      diagnostics: {
+        legacyFileCount: 0,
+      },
+    });
+  });
+
+  it("migration gate treats an existing workflow instance as already queued", async () => {
+    const workspaceId = `migration-gate-existing-${crypto.randomUUID()}`;
+    const workflowCreateBatch = vi.fn().mockResolvedValue([]);
+    const runtimeFetch = vi.fn().mockResolvedValue(Response.json({
+      files: [{ name: "web-app", type: "directory", absolutePath: "/home/claude/web-app" }],
+      count: 1,
+      nestedWorkerApps: [],
+    }));
+
+    const gate = await getWorkspaceMigrationGate({
+      ...env,
+      ENABLE_LEGACY_WORKSPACE_MIGRATION: "1",
+      LEGACY_WORKSPACE_HOST: { fetch: vi.fn() },
+      PROJECT_RUNTIME_HOST: { fetch: runtimeFetch },
       LEGACY_WORKSPACE_MIGRATIONS: {
         createBatch: workflowCreateBatch,
       },
@@ -1471,7 +1517,13 @@ describe("legacy workspace migration workflow", () => {
       terminate,
     });
     const workflowCreateBatch = vi.fn().mockResolvedValue([{ id: "workflow-rerun" }]);
-    const runtimeFetch = vi.fn().mockResolvedValue(new Response(""));
+    const runtimeFetch = vi.fn()
+      .mockResolvedValueOnce(Response.json({
+        files: [{ name: "web-app", type: "directory", absolutePath: "/home/claude/web-app" }],
+        count: 1,
+        nestedWorkerApps: [],
+      }))
+      .mockResolvedValueOnce(new Response(""));
 
     const result = await queueLegacyWorkspaceMigrationIfNeeded({
       env: {
@@ -1490,7 +1542,7 @@ describe("legacy workspace migration workflow", () => {
 
     expect(workflowGet).toHaveBeenCalledWith("workflow-active");
     expect(terminate).toHaveBeenCalledOnce();
-    expect(runtimeFetch).toHaveBeenCalledOnce();
+    expect(runtimeFetch).toHaveBeenCalledTimes(2);
     expect(workflowCreateBatch).toHaveBeenCalledOnce();
     expect(workflowCreateBatch.mock.calls[0][0][0].id).toMatch(
       new RegExp(`^legacy-migration-v${CURRENT_LEGACY_WORKSPACE_MIGRATION_VERSION}-${workspaceId}-force-`),

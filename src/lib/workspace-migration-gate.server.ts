@@ -4,7 +4,11 @@ import type {
   LegacyWorkspaceMigrationStatus,
   WorkspaceFilesystemClient,
 } from "../../workers/main/src/workspace-filesystem-do";
-import { queueLegacyWorkspaceMigrationIfNeeded } from "../../workers/main/src/legacy-workspace-migration-queue";
+import {
+  completeLegacyWorkspaceMigrationIfSourceMissing,
+  isMissingLegacyWorkspaceErrorMessage,
+  queueLegacyWorkspaceMigrationIfNeeded,
+} from "../../workers/main/src/legacy-workspace-migration-queue";
 import { CURRENT_LEGACY_WORKSPACE_MIGRATION_VERSION } from "./legacy-workspace-migration-version";
 
 const ACTIVE_MIGRATION_STATUSES = new Set<LegacyWorkspaceMigrationStatus>([
@@ -45,6 +49,20 @@ export async function getWorkspaceMigrationGate(
     const migrationState = await workspaceFs.getLegacyWorkspaceMigrationState();
 
     if (ACTIVE_MIGRATION_STATUSES.has(migrationState.status)) {
+      if (
+        (migrationState.status === "queued" ||
+          migrationState.status === "scanning_legacy" ||
+          migrationState.status === "failed") &&
+        (migrationState.status !== "failed" ||
+          isMissingLegacyWorkspaceErrorMessage(migrationState.error))
+      ) {
+        const noOpState = await completeLegacyWorkspaceMigrationIfSourceMissing({
+          env: env as never,
+          workspaceId,
+          orgId: workspace.org_id,
+        });
+        if (noOpState) return null;
+      }
       return {
         workspaceId,
         status: migrationState.status,
@@ -54,6 +72,7 @@ export async function getWorkspaceMigrationGate(
 
     if (!isCurrentCompletedMigration(migrationState)) {
       const queuedState = await enqueueWorkspaceMigration(env, workspace);
+      if (queuedState?.status === "complete") return null;
       return {
         workspaceId,
         status: queuedState?.status ?? "not_started",
@@ -96,7 +115,10 @@ async function enqueueWorkspaceMigration(
 
 function isLegacyMigrationRuntimeConfigured(env: CloudflareEnv): boolean {
   return Boolean(
-    env.LEGACY_WORKSPACE_HOST ||
+    env.PROJECT_RUNTIME_HOST ||
+      (typeof env.PROJECT_RUNTIME_SERVICE_URL === "string" &&
+        env.PROJECT_RUNTIME_SERVICE_URL.trim()) ||
+      env.LEGACY_WORKSPACE_HOST ||
       (typeof env.LEGACY_WORKSPACE_SERVICE_URL === "string" &&
         env.LEGACY_WORKSPACE_SERVICE_URL.trim()),
   );

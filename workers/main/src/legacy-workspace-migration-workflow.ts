@@ -9,6 +9,7 @@ import type { WorkerScript } from "./auth.js";
 import { getOrgStub } from "./helpers/stubs.js";
 import type { Env } from "./types.js";
 import { runtimeArtifactsProxyRemote } from "./project-vm-protocol.js";
+import { isMissingLegacyWorkspaceErrorMessage } from "./legacy-workspace-migration-queue.js";
 import {
   WorkspaceFilesystemClient,
   type LegacyWorkspaceMigrationDiagnostics,
@@ -252,8 +253,37 @@ export class LegacyWorkspaceMigrationWorkflow extends WorkflowEntrypoint<Env, Le
       }
 
       const tree = await step.do("scan-legacy-workspace", async () => {
-        return runtime.discoverLegacyWorkspaceMigration(payload.orgId, payload.workspaceId);
+        try {
+          return await runtime.discoverLegacyWorkspaceMigration(payload.orgId, payload.workspaceId);
+        } catch (error) {
+          if (!isMissingLegacyWorkspaceErrorMessage(error instanceof Error ? error.message : String(error))) {
+            throw error;
+          }
+          await workspaceFs.setLegacyWorkspaceMigrationState({
+            status: "complete",
+            orgId: payload.orgId,
+            workflowId,
+            plan: { projects: [], workspaceFiles: [], unclassified: [] },
+            createdProjects: [],
+            copiedFiles: 0,
+            copiedBytes: 0,
+            skippedPaths: [],
+            diagnostics: {
+              legacyRoot: LEGACY_ROOT,
+              legacyFileCount: 0,
+              warnings: [
+                "No legacy sandbox directory exists for this workspace; migration completed as a no-op.",
+              ],
+            },
+            completedAt: new Date().toISOString(),
+            error: undefined,
+          });
+          return null;
+        }
       });
+      if (tree === null) {
+        return { success: true, skipped: true, reason: "legacy_workspace_missing" };
+      }
 
       const deployedApps = await step.do("list-deployed-apps", async () => {
         const org = getOrgStub(this.env, payload.orgId);

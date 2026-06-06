@@ -40,6 +40,7 @@ export interface CloudflareEnv {
   // Service bindings
   WORKER_SELF_REFERENCE: Fetcher;
   LEGACY_WORKSPACE_HOST?: Fetcher;
+  PROJECT_RUNTIME_HOST?: Fetcher;
 
   // Other bindings
   ASSETS: Fetcher;
@@ -91,6 +92,8 @@ export interface CloudflareEnv {
   LEGACY_STRIPE_MIGRATION_CUSTOMERS?: string;
   ENABLE_LEGACY_WORKSPACE_MIGRATION?: string;
   LEGACY_WORKSPACE_SERVICE_URL?: string;
+  PROJECT_RUNTIME_SERVICE_URL?: string;
+  PROJECT_RUNTIME_SERVICE_BEARER_TOKEN?: string;
   ADMIN_MCP_CLIENT_ID?: string;
   ADMIN_MCP_REDIRECT_URIS?: string;
   LOCAL_AUTH_BYPASS?: string;

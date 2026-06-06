@@ -32,6 +32,11 @@ export interface CancelLegacyWorkspaceMigrationResult {
   workflowId?: string;
 }
 
+type LegacyWorkspaceSourceProbe =
+  | { status: "exists" }
+  | { status: "empty" }
+  | { status: "missing"; error: string };
+
 const ACTIVE_MIGRATION_STATUSES = new Set<LegacyWorkspaceMigrationState["status"]>([
   "queued",
   "scanning_legacy",
@@ -60,8 +65,23 @@ export async function queueLegacyWorkspaceMigrationIfNeeded(
   const workspaceFs = new WorkspaceFilesystemClient(env as never, workspaceId);
   const workflowId = legacyWorkspaceMigrationWorkflowId(workspaceId, { force: input.force === true });
   const current = await workspaceFs.getLegacyWorkspaceMigrationState();
+  if (input.force !== true && isCurrentCompletedMigration(current)) {
+    return { state: current, queued: false, workflowId };
+  }
 
   try {
+    const source = await probeLegacyWorkspaceSource(env, orgId, workspaceId);
+    if (source.status !== "exists") {
+      const state = await completeLegacyWorkspaceMigrationWithoutSource({
+        workspaceFs,
+        orgId,
+        workspaceId,
+        reason: source.status,
+        error: source.status === "missing" ? source.error : undefined,
+      });
+      return { state, queued: false };
+    }
+
     if (input.force === true) {
       await cancelActiveLegacyWorkspaceMigration({
         env,
@@ -72,7 +92,7 @@ export async function queueLegacyWorkspaceMigrationIfNeeded(
       });
     }
 
-    const instances = await env.LEGACY_WORKSPACE_MIGRATIONS.createBatch([{
+    await env.LEGACY_WORKSPACE_MIGRATIONS.createBatch([{
       id: workflowId,
       params: {
         workspaceId,
@@ -82,18 +102,14 @@ export async function queueLegacyWorkspaceMigrationIfNeeded(
         force: input.force === true,
       },
     }]);
-    const created = instances.length > 0;
-    const alreadyCurrent = isCurrentCompletedMigration(current);
-    const state: LegacyWorkspaceMigrationState = created || !alreadyCurrent
-      ? {
-          ...current,
-          status: "queued",
-          orgId,
-          workflowId,
-          updatedAt: new Date().toISOString(),
-        }
-      : current;
-    return { state, queued: created || !alreadyCurrent, workflowId };
+    const state: LegacyWorkspaceMigrationState = {
+      ...current,
+      status: "queued",
+      orgId,
+      workflowId,
+      updatedAt: new Date().toISOString(),
+    };
+    return { state, queued: true, workflowId };
   } catch (error) {
     await workspaceFs.setLegacyWorkspaceMigrationState({
       status: "failed",
@@ -127,6 +143,27 @@ export async function cancelLegacyWorkspaceMigration(
   return { state, canceled, workflowId: current.workflowId };
 }
 
+export async function completeLegacyWorkspaceMigrationIfSourceMissing(input: {
+  env: Env;
+  orgId: string;
+  workspaceId: string;
+}): Promise<LegacyWorkspaceMigrationState | null> {
+  const { env, orgId, workspaceId } = input;
+  if (!env.WORKSPACE_FS) {
+    throw new Error("Workspace filesystem is not configured");
+  }
+  const source = await probeLegacyWorkspaceSource(env, orgId, workspaceId);
+  if (source.status === "exists") return null;
+  const workspaceFs = new WorkspaceFilesystemClient(env as never, workspaceId);
+  return completeLegacyWorkspaceMigrationWithoutSource({
+    workspaceFs,
+    orgId,
+    workspaceId,
+    reason: source.status,
+    error: source.status === "missing" ? source.error : undefined,
+  });
+}
+
 function legacyWorkspaceMigrationWorkflowId(workspaceId: string, options: { force: boolean }): string {
   const base = `legacy-migration-v${CURRENT_LEGACY_WORKSPACE_MIGRATION_VERSION}-${workspaceId}`;
   return options.force ? `${base}-force-${Date.now().toString(36)}` : base;
@@ -135,6 +172,84 @@ function legacyWorkspaceMigrationWorkflowId(workspaceId: string, options: { forc
 function isCurrentCompletedMigration(state: LegacyWorkspaceMigrationState): boolean {
   return state.status === "complete" &&
     state.migrationVersion >= CURRENT_LEGACY_WORKSPACE_MIGRATION_VERSION;
+}
+
+async function completeLegacyWorkspaceMigrationWithoutSource(input: {
+  workspaceFs: WorkspaceFilesystemClient;
+  orgId: string;
+  workspaceId: string;
+  reason: "missing" | "empty";
+  error?: string;
+}): Promise<LegacyWorkspaceMigrationState> {
+  const warning = input.reason === "missing"
+    ? "No legacy sandbox directory exists for this workspace; migration completed as a no-op."
+    : "Legacy sandbox directory is empty; migration completed as a no-op.";
+  return input.workspaceFs.setLegacyWorkspaceMigrationState({
+    workspaceId: input.workspaceId,
+    orgId: input.orgId,
+    status: "complete",
+    workflowId: undefined,
+    leaseId: undefined,
+    plan: { projects: [], workspaceFiles: [], unclassified: [] },
+    createdProjects: [],
+    copiedFiles: 0,
+    copiedBytes: 0,
+    skippedPaths: [],
+    diagnostics: {
+      legacyRoot: "/home/claude",
+      legacyFileCount: 0,
+      warnings: input.error ? [warning, input.error] : [warning],
+    },
+    error: undefined,
+    startedAt: undefined,
+    completedAt: new Date().toISOString(),
+  });
+}
+
+async function probeLegacyWorkspaceSource(
+  env: Env,
+  orgId: string,
+  workspaceId: string,
+): Promise<LegacyWorkspaceSourceProbe> {
+  const url = new URL(
+    `/v1/workspaces/${encodeURIComponent(orgId)}/${encodeURIComponent(workspaceId)}/migration-discovery`,
+    "http://project-runtime.local",
+  );
+  const init = withRuntimeAuth(env, {});
+  const response = env.PROJECT_RUNTIME_HOST
+    ? await env.PROJECT_RUNTIME_HOST.fetch(new Request(url.toString(), init))
+    : await fetchRuntimeService(env, url, init);
+  const text = await response.text();
+
+  if (!response.ok) {
+    if (isMissingLegacyWorkspaceErrorMessage(text)) {
+      return { status: "missing", error: text || `Legacy workspace source missing: ${response.status}` };
+    }
+    throw new Error(text || `Legacy workspace discovery failed: ${response.status}`);
+  }
+
+  let parsed: unknown = {};
+  try {
+    parsed = text ? JSON.parse(text) : {};
+  } catch {
+    throw new Error("Legacy workspace discovery returned invalid JSON");
+  }
+
+  const files = Array.isArray((parsed as { files?: unknown }).files)
+    ? (parsed as { files: unknown[] }).files
+    : [];
+  const count = typeof (parsed as { count?: unknown }).count === "number"
+    ? (parsed as { count: number }).count
+    : files.length;
+  return count > 0 || files.length > 0 ? { status: "exists" } : { status: "empty" };
+}
+
+export function isMissingLegacyWorkspaceErrorMessage(value: unknown): boolean {
+  const text = typeof value === "string" ? value : String(value ?? "");
+  return (
+    text.includes("no such file or directory") &&
+    (text.includes("/srv/sandboxes/") || text.includes("chiridion-ws-"))
+  );
 }
 
 async function cancelActiveLegacyWorkspaceMigration(input: {
