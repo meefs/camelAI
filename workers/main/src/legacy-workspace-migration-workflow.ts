@@ -16,7 +16,7 @@ import {
 } from "./workspace-filesystem-do.js";
 
 const LEGACY_ROOT = "/home/claude";
-const MIGRATION_LEASE_TTL_MS = 2 * 60 * 60 * 1000;
+const MIGRATION_LEASE_TTL_MS = 6 * 60 * 60 * 1000;
 const MIGRATION_CONTEXT_STEP_TIMEOUT = "15 minutes";
 const MIGRATION_AI_STEP_TIMEOUT = "45 minutes";
 const MIGRATION_IMPORT_STEP_TIMEOUT = "2 hours";
@@ -225,14 +225,6 @@ export class LegacyWorkspaceMigrationWorkflow extends WorkflowEntrypoint<Env, Le
             leaseId: lock.leaseId,
           });
           return lock.leaseId;
-        }, {
-          rollback: async ({ output }) => {
-            if (output) await safeUnlockLegacyWorkspace(runtime, payload.orgId, payload.workspaceId, output);
-          },
-          rollbackConfig: {
-            retries: { limit: 3, delay: "15 seconds", backoff: "linear" },
-            timeout: "2 minutes",
-          },
         });
       }
 
@@ -356,42 +348,12 @@ export class LegacyWorkspaceMigrationWorkflow extends WorkflowEntrypoint<Env, Le
       };
 
       for (const [index, projectPlan] of enrichedPlan.projects.entries()) {
-        leaseId = await step.do(`refresh-legacy-workspace-lock-${index + 1}-${projectPlan.name}`, async () => {
-          const lock = await runtime.lockLegacyWorkspace(payload.orgId, payload.workspaceId, {
-            workflowId,
-            ttlMs: MIGRATION_LEASE_TTL_MS,
-          });
-          await workspaceFs.setLegacyWorkspaceMigrationState({
-            status: "copying",
-            leaseId: lock.leaseId,
-          });
-          return lock.leaseId;
-        }, {
-          rollback: async ({ output }) => {
-            if (output) await safeUnlockLegacyWorkspace(runtime, payload.orgId, payload.workspaceId, output);
-          },
-          rollbackConfig: {
-            retries: { limit: 3, delay: "15 seconds", backoff: "linear" },
-            timeout: "2 minutes",
-          },
-        });
         const project = await step.do(`ensure-project-${index + 1}-${projectPlan.name}`, async () => {
           return await ensureMigrationProject({
             env: this.env,
             workspaceId: payload.workspaceId,
             projectPlan,
           });
-        }, {
-          rollback: async ({ output }) => {
-            if (output?.projectId) {
-              const projectRuntime = new ProjectRuntimeMigrationClient(this.env);
-              await projectRuntime.deleteProject(output.projectId);
-            }
-          },
-          rollbackConfig: {
-            retries: { limit: 3, delay: "30 seconds", backoff: "exponential" },
-            timeout: MIGRATION_IMPORT_STEP_TIMEOUT,
-          },
         });
         const result = await step.do(`import-project-files-${index + 1}-${projectPlan.name}`, {
           timeout: MIGRATION_IMPORT_STEP_TIMEOUT,
@@ -412,30 +374,10 @@ export class LegacyWorkspaceMigrationWorkflow extends WorkflowEntrypoint<Env, Le
         if ((projectPlan.deployedApps ?? []).length > 0) {
           await step.do(`associate-deployed-apps-${index + 1}-${projectPlan.name}`, async () => {
             const org = getOrgStub(this.env, payload.orgId);
-            const previousAssociations = deployedApps
-              .filter((app) => (projectPlan.deployedApps ?? []).includes(app.scriptName))
-              .map((app) => ({ scriptName: app.scriptName, projectId: app.projectId }));
             for (const scriptName of projectPlan.deployedApps ?? []) {
               await org.updateWorkerScriptProject(scriptName, payload.workspaceId, project.projectId, "system:legacy-migration");
             }
-            return { count: projectPlan.deployedApps?.length ?? 0, previousAssociations };
-          }, {
-            rollback: async ({ output }) => {
-              if (!output?.previousAssociations?.length) return;
-              const org = getOrgStub(this.env, payload.orgId);
-              for (const association of output.previousAssociations) {
-                await org.updateWorkerScriptProject(
-                  association.scriptName,
-                  payload.workspaceId,
-                  association.projectId,
-                  "system:legacy-migration-rollback",
-                );
-              }
-            },
-            rollbackConfig: {
-              retries: { limit: 3, delay: "15 seconds", backoff: "linear" },
-              timeout: "2 minutes",
-            },
+            return { count: projectPlan.deployedApps?.length ?? 0 };
           });
         }
         if (!importResults.createdProjects.includes(project.projectName)) {
