@@ -524,7 +524,7 @@ async function ensureMigrationProject(input: {
 }): Promise<{ projectId: string; projectName: string }> {
   const { env, workspaceId, projectPlan } = input;
   const workspaceFs = new WorkspaceFilesystemClient(env as never, workspaceId);
-  return await workspaceFs.ensureLegacyMigrationProject({
+  const project = await workspaceFs.ensureLegacyMigrationProject({
     name: projectPlan.name,
     description: projectPlan.description,
     migratedFrom: {
@@ -534,6 +534,10 @@ async function ensureMigrationProject(input: {
       migratedAt: new Date().toISOString(),
     },
   });
+  return {
+    projectId: String(project.projectId),
+    projectName: String(project.projectName),
+  };
 }
 
 function sanitizeLegacyImportStepResult(
