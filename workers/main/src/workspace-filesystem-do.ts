@@ -999,7 +999,7 @@ function toProjectCloneSummary(project: WorkspaceProject): WorkspaceProjectClone
   };
 }
 
-function globalProjectId(workspaceId: string, value: unknown): string {
+export function globalProjectId(workspaceId: string, value: unknown): string {
   const workspacePart = compactWorkspaceId(workspaceId);
   const slug = normalizeRegistryId(value, "project");
   const slugPart = slug.slice(0, 14) || "project";

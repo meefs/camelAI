@@ -9,6 +9,7 @@ import type { WorkerScript } from "./auth.js";
 import { getOrgStub } from "./helpers/stubs.js";
 import type { Env } from "./types.js";
 import {
+  globalProjectId,
   WorkspaceFilesystemClient,
   type LegacyWorkspaceMigrationDiagnostics,
   type LegacyWorkspaceMigrationPlan,
@@ -463,7 +464,7 @@ async function ensureMigrationProject(input: {
 }): Promise<{ projectId: string; projectName: string }> {
   const { env, workspaceId, projectPlan } = input;
   const workspaceFs = new WorkspaceFilesystemClient(env as never, workspaceId);
-  return workspaceFs.ensureLegacyMigrationProject({
+  await workspaceFs.ensureLegacyMigrationProject({
     name: projectPlan.name,
     description: projectPlan.description,
     migratedFrom: {
@@ -473,6 +474,10 @@ async function ensureMigrationProject(input: {
       migratedAt: new Date().toISOString(),
     },
   });
+  return {
+    projectId: globalProjectId(workspaceId, projectPlan.name),
+    projectName: projectPlan.name,
+  };
 }
 
 function sanitizeLegacyImportStepResult(
