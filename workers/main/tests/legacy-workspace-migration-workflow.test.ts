@@ -17,7 +17,10 @@ import {
 } from "../src/legacy-workspace-migration-workflow";
 import { CURRENT_LEGACY_WORKSPACE_MIGRATION_VERSION } from "../../../src/lib/legacy-workspace-migration-version";
 import { getWorkspaceMigrationGate } from "../../../src/lib/workspace-migration-gate.server";
-import { WorkspaceFilesystemClient } from "../src/workspace-filesystem-do";
+import {
+  normalizeLegacyMigrationProjectReference,
+  WorkspaceFilesystemClient,
+} from "../src/workspace-filesystem-do";
 import {
   cancelLegacyWorkspaceMigration,
   queueLegacyWorkspaceMigrationIfNeeded,
@@ -907,6 +910,25 @@ describe("legacy workspace migration workflow", () => {
       projectId: expect.stringContaining("migrationtest"),
       projectName: "notebook-analysis",
     });
+  });
+
+  it("normalizes migration project references before workflow step cloning", async () => {
+    const rawProjectRef = {
+      projectId: Promise.resolve("project-1"),
+      projectName: Promise.resolve("Notebook analysis"),
+    };
+    expect(() => structuredClone(rawProjectRef)).toThrow();
+
+    const projectRef = await normalizeLegacyMigrationProjectReference({
+      projectId: Promise.resolve("project-1"),
+      projectName: Promise.resolve("Notebook analysis"),
+    });
+
+    expect(projectRef).toEqual({
+      projectId: "project-1",
+      projectName: "Notebook analysis",
+    });
+    expect(structuredClone(projectRef)).toEqual(projectRef);
   });
 
   it("deletes all projects before a migration rerun", async () => {

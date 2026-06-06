@@ -808,7 +808,7 @@ export class WorkspaceFilesystemClient implements WorkspaceFilesystemLike {
     description?: unknown;
     migratedFrom?: WorkspaceProjectMigrationSource;
   }): Promise<{ projectId: string; projectName: string }> {
-    return this.stub.ensureLegacyMigrationProject(input);
+    return normalizeLegacyMigrationProjectReference(this.stub.ensureLegacyMigrationProject(input));
   }
 
   setProjectDescription(input?: { project?: unknown; projectId?: unknown; description?: unknown }): Promise<WorkspaceProject> {
@@ -865,6 +865,18 @@ export function normalizeWorkspacePath(value: unknown, fallback = "/"): string {
     parts.push(part);
   }
   return parts.length > 0 ? `/${parts.join("/")}` : "/";
+}
+
+export async function normalizeLegacyMigrationProjectReference(
+  value: PromiseLike<{ projectId: unknown; projectName: unknown }> | { projectId: unknown; projectName: unknown },
+): Promise<{ projectId: string; projectName: string }> {
+  const project = await value;
+  const projectId = await project.projectId;
+  const projectName = await project.projectName;
+  return {
+    projectId: String(projectId),
+    projectName: String(projectName),
+  };
 }
 
 function normalizeRegistryId(value: unknown, fallback: string): string {
