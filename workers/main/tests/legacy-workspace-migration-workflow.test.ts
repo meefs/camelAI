@@ -18,6 +18,10 @@ import {
 import { CURRENT_LEGACY_WORKSPACE_MIGRATION_VERSION } from "../../../src/lib/legacy-workspace-migration-version";
 import { getWorkspaceMigrationGate } from "../../../src/lib/workspace-migration-gate.server";
 import { WorkspaceFilesystemClient } from "../src/workspace-filesystem-do";
+import {
+  cancelLegacyWorkspaceMigration,
+  queueLegacyWorkspaceMigrationIfNeeded,
+} from "../src/legacy-workspace-migration-queue";
 
 describe("legacy workspace migration workflow", () => {
   it("builds an agent discovery seed plan from top-level legacy paths", () => {
@@ -1190,5 +1194,121 @@ describe("legacy workspace migration workflow", () => {
 
     expect(workflowCreateBatch).not.toHaveBeenCalled();
     expect(gate).toBeNull();
+  });
+
+  it("migration gate keeps canceled migrations blocked until an admin reruns them", async () => {
+    const workspaceId = `migration-gate-canceled-${crypto.randomUUID()}`;
+    const workspace = new WorkspaceFilesystemClient(env, workspaceId);
+    await workspace.setLegacyWorkspaceMigrationState({
+      status: "canceled",
+      error: "Migration canceled by admin",
+      workflowId: "workflow-canceled",
+      completedAt: new Date().toISOString(),
+    });
+    const workflowCreateBatch = vi.fn();
+
+    const gate = await getWorkspaceMigrationGate({
+      ...env,
+      ENABLE_LEGACY_WORKSPACE_MIGRATION: "1",
+      LEGACY_WORKSPACE_HOST: { fetch: vi.fn() },
+      LEGACY_WORKSPACE_MIGRATIONS: {
+        createBatch: workflowCreateBatch,
+      },
+    } as never, {
+      id: workspaceId,
+      org_id: "org-1",
+    });
+
+    expect(workflowCreateBatch).not.toHaveBeenCalled();
+    expect(gate).toEqual({
+      workspaceId,
+      status: "canceled",
+      reason: "active",
+    });
+  });
+
+  it("admin cancellation terminates an active migration workflow and stores canceled state", async () => {
+    const workspaceId = `migration-cancel-${crypto.randomUUID()}`;
+    const workspace = new WorkspaceFilesystemClient(env, workspaceId);
+    await workspace.setLegacyWorkspaceMigrationState({
+      status: "copying",
+      orgId: "org-1",
+      workflowId: "workflow-active",
+      leaseId: "lease-1",
+    });
+    const terminate = vi.fn().mockResolvedValue(undefined);
+    const workflowGet = vi.fn().mockResolvedValue({
+      status: vi.fn().mockResolvedValue({ status: "running" }),
+      terminate,
+    });
+    const runtimeFetch = vi.fn().mockResolvedValue(new Response(""));
+
+    const result = await cancelLegacyWorkspaceMigration({
+      env: {
+        ...env,
+        PROJECT_RUNTIME_HOST: { fetch: runtimeFetch },
+        LEGACY_WORKSPACE_MIGRATIONS: {
+          get: workflowGet,
+        },
+      } as never,
+      workspaceId,
+      requestedBy: "test-admin",
+    });
+
+    expect(workflowGet).toHaveBeenCalledWith("workflow-active");
+    expect(terminate).toHaveBeenCalledOnce();
+    expect(runtimeFetch).toHaveBeenCalledOnce();
+    expect(result.canceled).toBe(true);
+    expect(result.workflowId).toBe("workflow-active");
+    const state = await workspace.getLegacyWorkspaceMigrationState();
+    expect(state).toMatchObject({
+      status: "canceled",
+      workflowId: "workflow-active",
+      error: "Migration canceled by test-admin",
+    });
+    expect(state.leaseId).toBeUndefined();
+  });
+
+  it("forced migration reruns terminate the active migration before queueing a new one", async () => {
+    const workspaceId = `migration-force-terminates-${crypto.randomUUID()}`;
+    const workspace = new WorkspaceFilesystemClient(env, workspaceId);
+    await workspace.setLegacyWorkspaceMigrationState({
+      status: "copying",
+      orgId: "org-1",
+      workflowId: "workflow-active",
+      leaseId: "lease-1",
+    });
+    const terminate = vi.fn().mockResolvedValue(undefined);
+    const workflowGet = vi.fn().mockResolvedValue({
+      status: vi.fn().mockResolvedValue({ status: "running" }),
+      terminate,
+    });
+    const workflowCreateBatch = vi.fn().mockResolvedValue([{ id: "workflow-rerun" }]);
+    const runtimeFetch = vi.fn().mockResolvedValue(new Response(""));
+
+    const result = await queueLegacyWorkspaceMigrationIfNeeded({
+      env: {
+        ...env,
+        PROJECT_RUNTIME_HOST: { fetch: runtimeFetch },
+        LEGACY_WORKSPACE_MIGRATIONS: {
+          get: workflowGet,
+          createBatch: workflowCreateBatch,
+        },
+      } as never,
+      workspaceId,
+      orgId: "org-1",
+      requestedBy: "test-admin",
+      force: true,
+    });
+
+    expect(workflowGet).toHaveBeenCalledWith("workflow-active");
+    expect(terminate).toHaveBeenCalledOnce();
+    expect(runtimeFetch).toHaveBeenCalledOnce();
+    expect(workflowCreateBatch).toHaveBeenCalledOnce();
+    expect(workflowCreateBatch.mock.calls[0][0][0].id).toMatch(
+      new RegExp(`^legacy-migration-v${CURRENT_LEGACY_WORKSPACE_MIGRATION_VERSION}-${workspaceId}-force-`),
+    );
+    expect(result.queued).toBe(true);
+    expect(result.state.status).toBe("queued");
   });
 });

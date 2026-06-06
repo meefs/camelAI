@@ -313,6 +313,8 @@ const ACTIVE_LEGACY_WORKSPACE_MIGRATION_STATUSES = new Set<LegacyWorkspaceMigrat
   "planning",
   "copying",
   "verifying",
+  "failed",
+  "canceled",
 ]);
 
 export interface ChatEnv extends WorkspaceFilesystemEnv, ProjectRuntimeServiceVmEnv {

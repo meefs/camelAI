@@ -13,6 +13,8 @@ const ACTIVE_MIGRATION_STATUSES = new Set<LegacyWorkspaceMigrationStatus>([
   "planning",
   "copying",
   "verifying",
+  "failed",
+  "canceled",
 ]);
 
 export interface WorkspaceMigrationGate {

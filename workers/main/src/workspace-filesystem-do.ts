@@ -94,6 +94,7 @@ export type LegacyWorkspaceMigrationStatus =
   | "verifying"
   | "dry_run_complete"
   | "complete"
+  | "canceled"
   | "failed";
 
 export interface LegacyWorkspaceMigrationProjectPlan {
@@ -598,13 +599,13 @@ export class WorkspaceFilesystemDO extends DurableObject<WorkspaceFilesystemEnv>
       delete next.startedAt;
       delete next.completedAt;
     }
-    if (next.status !== "failed") {
+    if (next.status !== "failed" && next.status !== "canceled") {
       delete next.error;
     }
-    if (!["dry_run_complete", "complete", "failed"].includes(next.status)) {
+    if (!["dry_run_complete", "complete", "failed", "canceled"].includes(next.status)) {
       delete next.completedAt;
     }
-    if ((next.status === "complete" || next.status === "failed") && !next.completedAt) {
+    if ((next.status === "complete" || next.status === "failed" || next.status === "canceled") && !next.completedAt) {
       next.completedAt = now;
     }
     await this.ctx.storage.kv.put(LEGACY_MIGRATION_KEY, next);

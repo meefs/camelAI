@@ -134,6 +134,7 @@ import { waitUntil } from "cloudflare:workers";
 import { refreshOrgCustomDomainHostnamesForAdmin } from "../../../../../src/lib/admin-custom-domain.server.js";
 import { WorkspaceFilesystemClient } from "../../workspace-filesystem-do.js";
 import {
+  cancelLegacyWorkspaceMigration,
   queueLegacyWorkspaceMigrationIfNeeded,
 } from "../../legacy-workspace-migration-queue.js";
 
@@ -403,6 +404,18 @@ const LegacyWorkspaceMigrationTriggerResponseSchema = z.object({
   status: z.literal("queued"),
 });
 
+const LegacyWorkspaceMigrationCancelBodySchema = z.object({
+  requested_by: z.string().trim().min(1).max(128).optional(),
+});
+
+const LegacyWorkspaceMigrationCancelResponseSchema = z.object({
+  success: z.boolean(),
+  org_id: z.string(),
+  workspace_id: z.string(),
+  workflow_id: z.string().optional(),
+  status: z.literal("canceled"),
+});
+
 // ---------------------------------------------------------------------------
 // Cache-Control middleware for GET endpoints
 // ---------------------------------------------------------------------------
@@ -506,6 +519,44 @@ routes.post(
       workflow_id: result.workflowId,
       dry_run: body.dry_run === true,
       status: "queued" as const,
+    });
+  },
+);
+
+routes.post(
+  "/orgs/:orgId/workspaces/:workspaceId/legacy-migration/cancel",
+  openApi({
+    summary: "Cancel active legacy workspace migration",
+    request: { json: LegacyWorkspaceMigrationCancelBodySchema },
+    responses: {
+      200: LegacyWorkspaceMigrationCancelResponseSchema,
+      409: ErrorSchema,
+      503: ErrorSchema,
+    },
+  }),
+  async (c) => {
+    if (!c.env.WORKSPACE_FS || !c.env.LEGACY_WORKSPACE_MIGRATIONS) {
+      return c.json({ error: "Legacy workspace migration is not configured" }, 503);
+    }
+
+    const orgId = c.req.param("orgId");
+    const workspaceId = c.req.param("workspaceId");
+    const body = c.req.valid("json");
+    const result = await cancelLegacyWorkspaceMigration({
+      env: c.env,
+      workspaceId,
+      requestedBy: body.requested_by || "admin-api",
+    });
+    if (!result.canceled) {
+      return c.json({ error: `Migration is not active; current status is ${result.state.status}` }, 409);
+    }
+
+    return c.json({
+      success: true,
+      org_id: orgId,
+      workspace_id: workspaceId,
+      workflow_id: result.workflowId,
+      status: "canceled" as const,
     });
   },
 );
