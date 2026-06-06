@@ -1,9 +1,8 @@
-import { type WorkflowEvent } from "cloudflare:workers";
-import { Think } from "@cloudflare/think";
-import { ThinkWorkflow, type ThinkWorkflowStep } from "@cloudflare/think/workflows";
-import { getAgentByName } from "agents";
-import { tool } from "ai";
-import { createWorkersAI } from "workers-ai-provider";
+import {
+  WorkflowEntrypoint,
+  type WorkflowEvent,
+  type WorkflowStep,
+} from "cloudflare:workers";
 import { z } from "zod";
 import type { WorkerScript } from "./auth.js";
 import { getOrgStub } from "./helpers/stubs.js";
@@ -20,6 +19,9 @@ const MIGRATION_LEASE_TTL_MS = 2 * 60 * 60 * 1000;
 const MIGRATION_CONTEXT_STEP_TIMEOUT = "15 minutes";
 const MIGRATION_AI_STEP_TIMEOUT = "45 minutes";
 const MIGRATION_IMPORT_STEP_TIMEOUT = "2 hours";
+const MIGRATION_AI_REQUEST_TIMEOUT_MS = 15 * 60 * 1000;
+const MIGRATION_AI_MAX_RESPONSES = 12;
+const MIGRATION_AI_MAX_TOOL_CALLS = 40;
 const TOP_LEVEL_SCAN_LIMIT = 2_000;
 const NAMING_CONTEXT_MAX_PROJECTS = 150;
 const NAMING_CONTEXT_MAX_ENTRIES_PER_PROJECT = 80;
@@ -27,7 +29,8 @@ const NAMING_CONTEXT_MAX_SAMPLES_PER_PROJECT = 6;
 const NAMING_CONTEXT_MAX_SAMPLE_BYTES = 8_000;
 const NAMING_CONTEXT_MAX_READ_BYTES = 2_000_000;
 const NAMING_CONTEXT_MAX_TOTAL_CHARS = 80_000;
-const MIGRATION_PLANNING_WORKERS_AI_MODEL = "openai/gpt-5.5";
+const MIGRATION_PLANNING_RESPONSES_MODEL = "gpt-5.5";
+const MIGRATION_PLANNING_RESPONSE_SCHEMA_NAME = "legacy_workspace_migration_plan";
 const DESCRIPTION_MAX_LENGTH = 240;
 const TEXT_CONTEXT_FILE_EXTENSIONS = new Set([
   ".csv",
@@ -99,19 +102,25 @@ const migrationAgentPlanSchema = z.object({
     name: z.string().min(1).max(120),
     description: z.string().min(1).max(1_000),
     sourcePaths: z.array(z.string().min(1)).min(1),
-    deployedApps: z.array(z.string().min(1)).optional(),
-    reason: z.string().max(500).optional(),
+    deployedApps: z.array(z.string().min(1)).nullable().optional(),
+    reason: z.string().max(500).nullable().optional(),
   })).min(1),
 });
 
 export type MigrationAgentPlan = z.infer<typeof migrationAgentPlanSchema>;
 
-interface MigrationPlanningAgentConfig {
-  orgId: string;
-  workspaceId: string;
-}
+const migrationAgentPlanJsonSchema = z.toJSONSchema(migrationAgentPlanSchema);
 
-type MigrationThinkEnv = Env & Cloudflare.Env;
+const listLegacyPathToolInputSchema = z.object({
+  path: z.string().min(1),
+  recursive: z.boolean().nullable().optional(),
+  limit: z.number().int().min(1).max(500).nullable().optional(),
+});
+
+const readLegacyTextToolInputSchema = z.object({
+  path: z.string().min(1),
+  maxBytes: z.number().int().min(1).max(NAMING_CONTEXT_MAX_SAMPLE_BYTES).nullable().optional(),
+});
 
 export interface RuntimeFileEntry {
   name: string;
@@ -168,125 +177,24 @@ export interface MigrationDeployedAppContext {
   isPublic: boolean;
 }
 
-export class MigrationPlanningAgent extends Think<MigrationThinkEnv> {
-  workspaceBash = false;
-  maxSteps = 12;
-
-  getModel() {
-    return createWorkersAI({ binding: this.env.AI })(MIGRATION_PLANNING_WORKERS_AI_MODEL);
-  }
-
-  getSystemPrompt(): string {
-    return [
-      "You plan migrations from a legacy /home/claude workspace into project VMs.",
-      "You may inspect the legacy filesystem with read-only tools.",
-      "Return only the structured project plan requested by the workflow.",
-      "Never include secrets or credential values in names, descriptions, or reasons.",
-      "Prefer stable lowercase slug names and concise descriptions that explain what each project contains.",
-      "Discover projects from the allowed legacy source paths instead of assuming every top-level folder is one project.",
-      "Every allowed source path must be assigned exactly once. Do not invent, omit, or duplicate source paths.",
-    ].join("\n");
-  }
-
-  getTools() {
-    const getConfig = () => {
-      const config = this.getConfig<MigrationPlanningAgentConfig>();
-      if (!config?.orgId || !config.workspaceId) {
-        throw new Error("MigrationPlanningAgent is not configured for a workspace");
-      }
-      return config;
-    };
-
-    return {
-      list_legacy_path: tool({
-        description: "List files or directories from the legacy /home/claude workspace for migration planning.",
-        inputSchema: z.object({
-          path: z.string().min(1),
-          recursive: z.boolean().optional(),
-          limit: z.number().int().min(1).max(500).optional(),
-        }),
-        execute: async ({ path, recursive, limit }) => {
-          const config = getConfig();
-          const runtime = new ProjectRuntimeMigrationClient(this.env);
-          return runtime.listLegacyWorkspace(config.orgId, config.workspaceId, path, {
-            recursive,
-            limit: limit ?? NAMING_CONTEXT_MAX_ENTRIES_PER_PROJECT,
-          });
-        },
-      }),
-      read_legacy_text: tool({
-        description: "Read a sanitized text sample from the legacy workspace. Secret-looking lines are redacted.",
-        inputSchema: z.object({
-          path: z.string().min(1),
-          maxBytes: z.number().int().min(1).max(NAMING_CONTEXT_MAX_SAMPLE_BYTES).optional(),
-        }),
-        execute: async ({ path, maxBytes }) => {
-          if (isSensitiveNamingPath(path)) return null;
-          const config = getConfig();
-          const runtime = new ProjectRuntimeMigrationClient(this.env);
-          const text = await runtime.readLegacyText(
-            config.orgId,
-            config.workspaceId,
-            path,
-            maxBytes ?? NAMING_CONTEXT_MAX_SAMPLE_BYTES,
-          );
-          return sanitizeNamingSample(text);
-        },
-      }),
-      list_deployed_apps: tool({
-        description: "List deployed apps/workers that are currently associated with this legacy workspace.",
-        inputSchema: z.object({}),
-        execute: async () => {
-          const config = getConfig();
-          const org = getOrgStub(this.env, config.orgId);
-          return (await org.listWorkerScriptsByWorkspace(config.workspaceId)).map(toMigrationDeployedAppContext);
-        },
-      }),
-    };
-  }
-
-  async startMigration(input: LegacyWorkspaceMigrationPayload & { workflowId: string }): Promise<{ workflowId: string }> {
-    const payload = migrationPayloadSchema.parse(input);
-    this.configure<MigrationPlanningAgentConfig>({
-      orgId: payload.orgId,
-      workspaceId: payload.workspaceId,
-    });
-    await this.runWorkflow("LEGACY_WORKSPACE_MIGRATIONS", payload, {
-      id: input.workflowId,
-      agentBinding: "MIGRATION_PLANNING_AGENT",
-      metadata: {
-        orgId: payload.orgId,
-        workspaceId: payload.workspaceId,
-        requestedBy: payload.requestedBy,
-      },
-    });
-    return { workflowId: input.workflowId };
-  }
-}
-
 export async function startLegacyWorkspaceMigrationWorkflow(
-  env: Pick<Env, "MIGRATION_PLANNING_AGENT">,
+  env: Pick<Env, "LEGACY_WORKSPACE_MIGRATIONS">,
   input: LegacyWorkspaceMigrationPayload & { workflowId: string },
 ): Promise<void> {
-  if (!env.MIGRATION_PLANNING_AGENT) {
-    throw new Error("MIGRATION_PLANNING_AGENT binding is required");
+  if (!env.LEGACY_WORKSPACE_MIGRATIONS) {
+    throw new Error("LEGACY_WORKSPACE_MIGRATIONS binding is required");
   }
-  const agent = await getAgentByName<MigrationThinkEnv, MigrationPlanningAgent>(
-    env.MIGRATION_PLANNING_AGENT,
-    `legacy-workspace-migration-${input.workspaceId}`,
-  );
-  await agent.startMigration(input);
+  const payload = migrationPayloadSchema.parse(input);
+  await env.LEGACY_WORKSPACE_MIGRATIONS.create({
+    id: input.workflowId,
+    params: payload,
+  });
 }
 
-export class LegacyWorkspaceMigrationWorkflow extends ThinkWorkflow<
-  MigrationPlanningAgent,
-  LegacyWorkspaceMigrationPayload,
-  Record<string, unknown>,
-  MigrationThinkEnv
-> {
+export class LegacyWorkspaceMigrationWorkflow extends WorkflowEntrypoint<Env, LegacyWorkspaceMigrationPayload> {
   override async run(
     event: WorkflowEvent<LegacyWorkspaceMigrationPayload>,
-    step: ThinkWorkflowStep,
+    step: WorkflowStep,
   ): Promise<unknown> {
     const payload = migrationPayloadSchema.parse(event.payload);
     const workspaceFs = new WorkspaceFilesystemClient(this.env, payload.workspaceId);
@@ -366,16 +274,20 @@ export class LegacyWorkspaceMigrationWorkflow extends ThinkWorkflow<
               });
             });
 
-            const agentProposal = await step.prompt("discover-projects-with-ai", {
+            const agentProposal = await step.do("discover-projects-with-ai", {
               timeout: MIGRATION_AI_STEP_TIMEOUT,
-              output: migrationAgentPlanSchema,
+              retries: { limit: 2, delay: "30 seconds", backoff: "exponential" },
+            }, async () => runMigrationPlanningAi(this.env, {
+              orgId: payload.orgId,
+              workspaceId: payload.workspaceId,
               prompt: buildMigrationPlanningPrompt({
                 workspaceId: payload.workspaceId,
                 plan: allowedSourcePlan,
                 context: discoveryContext,
                 deployedApps,
               }),
-            });
+              allowedSourcePaths: allowedSourcePlan.projects.flatMap((project) => project.sourcePaths),
+            }));
 
             return await step.do("validate-agent-discovery-plan", async () => {
               return appendUnclassifiedMiscProject(
@@ -1005,6 +917,398 @@ function entryReferencesWranglerConfig(entry: string): boolean {
   return WRANGLER_CONFIG_FILE_NAMES.has(name);
 }
 
+export async function runMigrationPlanningAi(
+  env: Env,
+  input: {
+    orgId: string;
+    workspaceId: string;
+    prompt: string;
+    allowedSourcePaths: string[];
+  },
+): Promise<MigrationAgentPlan> {
+  let previousResponseId: string | undefined;
+  let nextInput: unknown = input.prompt;
+  let toolCallCount = 0;
+
+  for (let responseIndex = 0; responseIndex < MIGRATION_AI_MAX_RESPONSES; responseIndex++) {
+    const responsePayload = await createMigrationPlanningResponse(env, {
+      input: nextInput,
+      previousResponseId,
+      allowedSourcePaths: input.allowedSourcePaths,
+    });
+    previousResponseId = extractMigrationPlanningResponseId(responsePayload) ?? previousResponseId;
+
+    const toolCalls = extractMigrationPlanningFunctionCalls(responsePayload);
+    if (toolCalls.length === 0) {
+      return parseMigrationPlanningAiResult(responsePayload);
+    }
+    toolCallCount += toolCalls.length;
+    if (toolCallCount > MIGRATION_AI_MAX_TOOL_CALLS) {
+      throw new Error(`Migration planning AI exceeded ${MIGRATION_AI_MAX_TOOL_CALLS} tool calls`);
+    }
+
+    nextInput = await Promise.all(toolCalls.map(async (call) => ({
+      type: "function_call_output",
+      call_id: call.callId,
+      output: JSON.stringify(await executeMigrationPlanningTool(env, input.orgId, input.workspaceId, call)),
+    })));
+  }
+
+  throw new Error(`Migration planning AI did not return a final project plan after ${MIGRATION_AI_MAX_RESPONSES} responses`);
+}
+
+async function createMigrationPlanningResponse(
+  env: Env,
+  input: {
+    input: unknown;
+    previousResponseId?: string;
+    allowedSourcePaths: string[];
+  },
+): Promise<unknown> {
+  const accountId = env.CF_ACCOUNT_ID?.trim();
+  const gatewayName = env.CF_GATEWAY_NAME?.trim();
+  const token = env.AI_GATEWAY_AUTH_TOKEN?.trim() || env.CF_GATEWAY_TOKEN?.trim();
+  if (!accountId || !gatewayName || !token) {
+    throw new Error("Cloudflare AI Gateway Responses API is not configured for legacy workspace migration planning");
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), MIGRATION_AI_REQUEST_TIMEOUT_MS);
+  try {
+    const response = await fetch(
+      `https://gateway.ai.cloudflare.com/v1/${encodeURIComponent(accountId)}/${encodeURIComponent(gatewayName)}/openai/responses`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(buildMigrationPlanningResponsesRequest(input.input, input.allowedSourcePaths, input.previousResponseId)),
+        signal: controller.signal,
+      },
+    );
+    const responseText = await response.text();
+    const payload = responseText ? safeJsonParse(responseText) : undefined;
+    if (!response.ok) {
+      throw new Error(
+        extractCloudflareAiErrorMessage(payload)
+          ?? responseText.trim()
+          ?? `Cloudflare AI Gateway Responses API request failed (${response.status})`,
+      );
+    }
+    if (!payload) {
+      throw new Error("Cloudflare AI Gateway Responses API returned an empty response");
+    }
+    throwIfMigrationPlanningResponseFailed(payload);
+    return payload;
+  } catch (error) {
+    if (controller.signal.aborted) {
+      throw new Error(`Migration planning AI request timed out after ${MIGRATION_AI_REQUEST_TIMEOUT_MS}ms`);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+export function buildMigrationPlanningResponsesRequest(
+  input: unknown,
+  allowedSourcePaths: string[],
+  previousResponseId?: string,
+): Record<string, unknown> {
+  return {
+    model: MIGRATION_PLANNING_RESPONSES_MODEL,
+    stream: false,
+    instructions: getMigrationPlanningSystemPrompt(),
+    input,
+    tools: buildMigrationPlanningToolDefinitions(),
+    text: {
+      format: buildMigrationPlanningTextFormat(allowedSourcePaths),
+    },
+    ...(previousResponseId ? { previous_response_id: previousResponseId } : {}),
+  };
+}
+
+function getMigrationPlanningSystemPrompt(): string {
+  return [
+    "You plan migrations from a legacy /home/claude workspace into project VMs.",
+    "You may inspect the legacy filesystem with read-only tools.",
+    "Return only structured output matching the requested migration project plan schema.",
+    "Never include secrets or credential values in names, descriptions, or reasons.",
+    "Prefer stable lowercase slug names and concise descriptions that explain what each project contains.",
+    "Discover projects from the allowed legacy source paths instead of assuming every top-level folder is one project.",
+    "Every allowed source path must be assigned exactly once. Do not invent, omit, or duplicate source paths.",
+    "The seed plan is discovery context, not the final project list. Cluster related loose files and avoid one-file projects for generated outputs.",
+    "Only associate deployed apps when there is concrete source evidence; never guess from generic app names.",
+    "A source path containing wrangler.toml, wrangler.json, or wrangler.jsonc is a Worker app project boundary. Never group two detected Worker app source paths into one project.",
+    "Use at most one misc/leftover project.",
+  ].join("\n");
+}
+
+function buildMigrationPlanningToolDefinitions(): Array<Record<string, unknown>> {
+  return [
+    {
+      type: "function",
+      name: "list_legacy_path",
+      description: "List files or directories from the legacy /home/claude workspace for migration planning.",
+      strict: true,
+      parameters: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          path: { type: "string", minLength: 1 },
+          recursive: { type: ["boolean", "null"] },
+          limit: { type: ["integer", "null"], minimum: 1, maximum: 500 },
+        },
+        required: ["path", "recursive", "limit"],
+      },
+    },
+    {
+      type: "function",
+      name: "read_legacy_text",
+      description: "Read a sanitized text sample from the legacy workspace. Secret-looking lines are redacted.",
+      strict: true,
+      parameters: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          path: { type: "string", minLength: 1 },
+          maxBytes: { type: ["integer", "null"], minimum: 1, maximum: NAMING_CONTEXT_MAX_SAMPLE_BYTES },
+        },
+        required: ["path", "maxBytes"],
+      },
+    },
+    {
+      type: "function",
+      name: "list_deployed_apps",
+      description: "List deployed apps/workers that are currently associated with this legacy workspace.",
+      strict: true,
+      parameters: {
+        type: "object",
+        additionalProperties: false,
+        properties: {},
+        required: [],
+      },
+    },
+  ];
+}
+
+export function buildMigrationPlanningTextFormat(allowedSourcePaths: string[]): {
+  type: "json_schema";
+  name: string;
+  strict: true;
+  schema: unknown;
+} {
+  return {
+    type: "json_schema",
+    name: MIGRATION_PLANNING_RESPONSE_SCHEMA_NAME,
+    strict: true,
+    schema: buildMigrationAgentPlanJsonSchema(allowedSourcePaths),
+  };
+}
+
+function buildMigrationAgentPlanJsonSchema(allowedSourcePaths: string[]): unknown {
+  const schema = structuredClone(migrationAgentPlanJsonSchema) as Record<string, unknown>;
+  const properties = schema.properties as Record<string, unknown> | undefined;
+  const projects = properties?.projects as Record<string, unknown> | undefined;
+  const projectItems = projects?.items as Record<string, unknown> | undefined;
+  projectItems && ensureStrictObjectSchemaRequiresAllProperties(projectItems);
+  const projectProperties = projectItems?.properties as Record<string, unknown> | undefined;
+  const sourcePaths = projectProperties?.sourcePaths as Record<string, unknown> | undefined;
+  const sourcePathItems = sourcePaths?.items as Record<string, unknown> | undefined;
+  if (allowedSourcePaths.length > 0 && sourcePathItems) {
+    sourcePathItems.enum = allowedSourcePaths;
+  }
+  return schema;
+}
+
+function ensureStrictObjectSchemaRequiresAllProperties(schema: Record<string, unknown>): void {
+  const properties = schema.properties;
+  if (!properties || typeof properties !== "object" || Array.isArray(properties)) return;
+  schema.required = Object.keys(properties as Record<string, unknown>);
+}
+
+interface MigrationPlanningFunctionCall {
+  callId: string;
+  name: string;
+  argumentsJson: string;
+}
+
+function extractMigrationPlanningFunctionCalls(response: unknown): MigrationPlanningFunctionCall[] {
+  if (!response || typeof response !== "object") return [];
+  const output = (response as Record<string, unknown>).output;
+  if (!Array.isArray(output)) return [];
+  return output.flatMap((item) => {
+    if (!item || typeof item !== "object") return [];
+    const record = item as Record<string, unknown>;
+    if (record.type !== "function_call") return [];
+    const callId = typeof record.call_id === "string" ? record.call_id : "";
+    const name = typeof record.name === "string" ? record.name : "";
+    const argumentsJson = typeof record.arguments === "string" ? record.arguments : "{}";
+    if (!callId || !name) {
+      throw new Error("Migration planning AI returned an invalid function call");
+    }
+    return [{ callId, name, argumentsJson }];
+  });
+}
+
+async function executeMigrationPlanningTool(
+  env: Env,
+  orgId: string,
+  workspaceId: string,
+  call: MigrationPlanningFunctionCall,
+): Promise<unknown> {
+  const args = parseMigrationPlanningToolArguments(call);
+  if (call.name === "list_legacy_path") {
+    const input = listLegacyPathToolInputSchema.parse(args);
+    const runtime = new ProjectRuntimeMigrationClient(env);
+    return runtime.listLegacyWorkspace(orgId, workspaceId, input.path, {
+      recursive: input.recursive === true,
+      limit: input.limit ?? NAMING_CONTEXT_MAX_ENTRIES_PER_PROJECT,
+    });
+  }
+  if (call.name === "read_legacy_text") {
+    const input = readLegacyTextToolInputSchema.parse(args);
+    if (isSensitiveNamingPath(input.path)) return null;
+    const runtime = new ProjectRuntimeMigrationClient(env);
+    const text = await runtime.readLegacyText(
+      orgId,
+      workspaceId,
+      input.path,
+      input.maxBytes ?? NAMING_CONTEXT_MAX_SAMPLE_BYTES,
+    );
+    return sanitizeNamingSample(text);
+  }
+  if (call.name === "list_deployed_apps") {
+    const org = getOrgStub(env, orgId);
+    return (await org.listWorkerScriptsByWorkspace(workspaceId)).map(toMigrationDeployedAppContext);
+  }
+  throw new Error(`Migration planning AI requested unknown tool: ${call.name}`);
+}
+
+function parseMigrationPlanningToolArguments(call: MigrationPlanningFunctionCall): unknown {
+  try {
+    return JSON.parse(call.argumentsJson || "{}");
+  } catch (error) {
+    throw new Error(`Migration planning AI returned invalid arguments for ${call.name}: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
+function extractMigrationPlanningResponseId(response: unknown): string | undefined {
+  if (!response || typeof response !== "object") return undefined;
+  const id = (response as Record<string, unknown>).id;
+  return typeof id === "string" && id.trim() ? id : undefined;
+}
+
+function throwIfMigrationPlanningResponseFailed(response: unknown): void {
+  if (!response || typeof response !== "object") return;
+  const record = response as Record<string, unknown>;
+  const status = typeof record.status === "string" ? record.status : "";
+  if (status && !["completed", "in_progress", "requires_action"].includes(status)) {
+    throw new Error(
+      extractCloudflareAiErrorMessage(record)
+        ?? `Migration planning AI response ended with status ${status}`,
+    );
+  }
+}
+
+export function parseMigrationPlanningAiResult(result: unknown): MigrationAgentPlan {
+  const text = extractMigrationPlanningStructuredText(result);
+  if (!text) {
+    throw new Error("Migration planning AI returned no structured output text");
+  }
+  let parsedJson: unknown;
+  try {
+    parsedJson = JSON.parse(text);
+  } catch (error) {
+    throw new Error(`Migration planning AI returned invalid structured output JSON: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  const parsed = migrationAgentPlanSchema.safeParse(parsedJson);
+  if (!parsed.success) {
+    throw new Error(`Migration planning AI returned an invalid project plan: ${parsed.error.message}`);
+  }
+  return parsed.data;
+}
+
+function extractMigrationPlanningStructuredText(value: unknown): string {
+  if (!value || typeof value !== "object") return "";
+  const record = value as Record<string, unknown>;
+  if (typeof record.output_text === "string") return record.output_text;
+  if (typeof record.response === "string") return record.response;
+  if (typeof record.text === "string") return record.text;
+  if (typeof record.content === "string") return record.content;
+  const result = record.result;
+  if (result && typeof result === "object") {
+    const nestedText = extractMigrationPlanningStructuredText(result);
+    if (nestedText) return nestedText;
+  }
+
+  const output = record.output;
+  if (Array.isArray(output)) {
+    return output
+      .map((item) => extractMigrationPlanningOutputText(item))
+      .filter(Boolean)
+      .join("");
+  }
+
+  const choices = record.choices;
+  if (Array.isArray(choices)) {
+    return choices
+      .map((choice) => {
+        if (!choice || typeof choice !== "object") return "";
+        const message = (choice as Record<string, unknown>).message;
+        return extractMigrationPlanningStructuredText(message);
+      })
+      .filter(Boolean)
+      .join("");
+  }
+
+  return "";
+}
+
+function extractMigrationPlanningOutputText(value: unknown): string {
+  if (!value || typeof value !== "object") return "";
+  const record = value as Record<string, unknown>;
+  if (typeof record.text === "string") return record.text;
+  const content = record.content;
+  if (Array.isArray(content)) {
+    return content
+      .map((part) => {
+        if (!part || typeof part !== "object") return "";
+        const partRecord = part as Record<string, unknown>;
+        return typeof partRecord.text === "string" ? partRecord.text : "";
+      })
+      .join("");
+  }
+  return "";
+}
+
+function safeJsonParse(text: string): unknown {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return undefined;
+  }
+}
+
+function extractCloudflareAiErrorMessage(payload: unknown): string | null {
+  if (!payload || typeof payload !== "object") return null;
+  const record = payload as Record<string, unknown>;
+  const error = record.error;
+  if (error && typeof error === "object") {
+    const message = (error as Record<string, unknown>).message;
+    if (typeof message === "string" && message.trim()) return message;
+  }
+  const errors = record.errors;
+  if (Array.isArray(errors)) {
+    const messages = errors
+      .map((item) => item && typeof item === "object" ? (item as Record<string, unknown>).message : undefined)
+      .filter((message): message is string => typeof message === "string" && message.trim().length > 0);
+    if (messages.length > 0) return messages.join("; ");
+  }
+  return null;
+}
+
 export function applyMigrationAgentPlan(
   plan: LegacyWorkspaceMigrationPlan,
   proposal: MigrationAgentPlan,
@@ -1069,7 +1373,7 @@ export function applyMigrationAgentPlan(
       sourcePaths: uniqueSourcePaths,
       ...(uniqueDeployedApps.length > 0 ? { deployedApps: uniqueDeployedApps } : {}),
       ignoreGlobs: LEGACY_IMPORT_IGNORE_GLOBS,
-      reason: sanitizeDescription(project.reason) || "Migration planning agent grouped these legacy workspace paths.",
+      reason: sanitizeDescription(project.reason ?? undefined) || "Migration planning agent grouped these legacy workspace paths.",
     };
   });
 

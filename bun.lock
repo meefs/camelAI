@@ -8,7 +8,6 @@
         "@anthropic-ai/sdk": "^0.71.2",
         "@cloudflare/dynamic-workflows": "^0.1.1",
         "@cloudflare/shell": "0.3.7",
-        "@cloudflare/think": "^0.8.2",
         "@cloudflare/vite-plugin": "^1.39.2",
         "@conform-to/react": "^1.15.1",
         "@conform-to/zod": "^1.15.1",
@@ -49,7 +48,6 @@
         "sonner": "^2.0.7",
         "tailwind-merge": "^3.4.0",
         "unified": "^11.0.5",
-        "workers-ai-provider": "^3.1.14",
         "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz",
         "zod": "^4.3.5",
       },
@@ -240,8 +238,6 @@
     "@cloudflare/puppeteer": ["@cloudflare/puppeteer@1.1.0", "", { "dependencies": { "@puppeteer/browsers": "2.2.4", "debug": "^4.3.5", "devtools-protocol": "0.0.1299070", "ws": "^8.18.0" } }, "sha512-lN10En49avRDQvz8Gpv/WiIoGvjjDiP6P+v2y9bA6rfPT5WHfnlg2O6MwjHc1POm8A9LXf1sMdgrsdW8xWapOw=="],
 
     "@cloudflare/shell": ["@cloudflare/shell@0.3.7", "", { "dependencies": { "@cloudflare/codemode": "^0.3.6", "isomorphic-git": "^1.37.6" } }, "sha512-ZLop8AIMQ3JIKaFEDpgs9WDPULzmxwrvcXYgn2AMvOnzwrfWWKPMP3HAhm9hnBhavQSxpguZN1Z0bIwAjpO89w=="],
-
-    "@cloudflare/think": ["@cloudflare/think@0.8.3", "", { "dependencies": { "@cloudflare/codemode": "^0.3.8", "@cloudflare/shell": "^0.3.8", "chat": "^4.30.0", "just-bash": "^3.0.1" }, "peerDependencies": { "@chat-adapter/telegram": "^4.29.0", "agents": ">=0.14.0 <1.0.0", "ai": "^6.0.182", "zod": "^4.0.0" }, "optionalPeers": ["@chat-adapter/telegram"] }, "sha512-u5HJMrjcSyqISDi+rQAI8EI5oXigff4iO5QH5MX7Xw1P/BGcKm57IPJk37a95I1mjMOWaxZpkyT7tccOWYR5XA=="],
 
     "@cloudflare/unenv-preset": ["@cloudflare/unenv-preset@2.16.1", "", { "peerDependencies": { "unenv": "2.0.0-rc.24", "workerd": ">1.20260305.0 <2.0.0-0" }, "optionalPeers": ["workerd"] }, "sha512-ECxObrMfyTl5bhQf/lZCXwo5G6xX9IAUo+nDMKK4SZ8m4Jvvxp52vilxyySSWh2YTZz8+HQ07qGH/2rEom1vDw=="],
 
@@ -2395,8 +2391,6 @@
 
     "workerd": ["workerd@1.20260603.1", "", { "optionalDependencies": { "@cloudflare/workerd-darwin-64": "1.20260603.1", "@cloudflare/workerd-darwin-arm64": "1.20260603.1", "@cloudflare/workerd-linux-64": "1.20260603.1", "@cloudflare/workerd-linux-arm64": "1.20260603.1", "@cloudflare/workerd-windows-64": "1.20260603.1" }, "bin": { "workerd": "bin/workerd" } }, "sha512-NPcbhI1++CS+fnELyXtsIR52en+5kwr/OrKeiQeYXGy10HxmPdsQBv9N+DU7hJIOOmBHhOGAAsoGDjyiQ2YCaA=="],
 
-    "workers-ai-provider": ["workers-ai-provider@3.1.14", "", { "peerDependencies": { "@ai-sdk/provider": "^3.0.0", "ai": "^6.0.0" } }, "sha512-/umrajFP6OkZVbDAxwkrO9NPdNFG4c+i0fiVqdf4PGsLN+CiDsLJCI6xW0WXDLDR1ZZyjE4T6Xp6O/IKBIWGHQ=="],
-
     "wrangler": ["wrangler@4.98.0", "", { "dependencies": { "@cloudflare/kv-asset-handler": "0.5.0", "@cloudflare/unenv-preset": "2.16.1", "blake3-wasm": "2.1.5", "esbuild": "0.27.3", "miniflare": "4.20260603.0", "path-to-regexp": "6.3.0", "unenv": "2.0.0-rc.24", "workerd": "1.20260603.1" }, "optionalDependencies": { "fsevents": "2.3.3" }, "peerDependencies": { "@cloudflare/workers-types": "^4.20260603.1" }, "optionalPeers": ["@cloudflare/workers-types"], "bin": { "wrangler": "bin/wrangler.js", "wrangler2": "bin/wrangler.js" } }, "sha512-cXfFUuF4rMIvE0hiMnXjEAB27ERryaCgquBJdUoPIjFzYYE1rbRdMUkEdQ18qDPUtsPvhJdqxLntixT9OfSzQw=="],
 
     "wrap-ansi": ["wrap-ansi@9.0.2", "", { "dependencies": { "ansi-styles": "^6.2.1", "string-width": "^7.0.0", "strip-ansi": "^7.1.0" } }, "sha512-42AtmgqjV+X1VpdOfyTGOYRi0/zsoLqtXQckTmqTeybT+BDIbM/Guxo7x3pE2vtpr1ok6xRqM9OpBe+Jyoqyww=="],
@@ -2456,8 +2450,6 @@
     "@babel/helper-compilation-targets/semver": ["semver@6.3.1", "", { "bin": { "semver": "bin/semver.js" } }, "sha512-BR7VvDCVHO+q2xBEWskxS6DJE1qRnb7DxzUrogb71CWoSficBxYsiAGd+Kl0mmq/MprG9yArRkyrQxTO6XjMzA=="],
 
     "@babel/helper-create-class-features-plugin/semver": ["semver@6.3.1", "", { "bin": { "semver": "bin/semver.js" } }, "sha512-BR7VvDCVHO+q2xBEWskxS6DJE1qRnb7DxzUrogb71CWoSficBxYsiAGd+Kl0mmq/MprG9yArRkyrQxTO6XjMzA=="],
-
-    "@cloudflare/think/@cloudflare/shell": ["@cloudflare/shell@0.3.8", "", { "dependencies": { "@cloudflare/codemode": "^0.3.7", "isomorphic-git": "^1.38.1" } }, "sha512-tuseZ2bYEIiiOioGOgD9SqhchUQfHPOaRcifw8fj0YwTZNvcmO/wSvbtWDxxC/CUlnEJ1Y+tvNHub97TyTyoEQ=="],
 
     "@cloudflare/vite-plugin/ws": ["ws@8.20.1", "", { "peerDependencies": { "bufferutil": "^4.0.1", "utf-8-validate": ">=5.0.2" }, "optionalPeers": ["bufferutil", "utf-8-validate"] }, "sha512-It4dO0K5v//JtTXuPkfEOaI3uUN87iYPnqo/ZzqCoG3g8uhA66QUMs/SrM0YK7/NAu+r4LMh/9dq2A7k+rHs+w=="],
 

@@ -6,8 +6,10 @@ import {
   buildLegacyWorkspaceMigrationDiagnostics,
   buildLegacyWorkspaceMigrationSeedPlan,
   detectWorkerAppSourcePaths,
+  buildMigrationPlanningResponsesRequest,
   buildMigrationPlanningPrompt,
   buildLegacyWorkspaceNamingContext,
+  parseMigrationPlanningAiResult,
   resetProjectsForWorkspaceMigration,
   type MigrationDeployedAppContext,
   type LegacyWorkspaceMigrationRuntimeReader,
@@ -134,7 +136,7 @@ describe("legacy workspace migration workflow", () => {
     ]);
   });
 
-  it("applies a Think migration plan while preserving source paths and unique slugs", () => {
+  it("applies a migration AI plan while preserving source paths and unique slugs", () => {
     const plan = {
       workspaceFiles: [],
       projects: [
@@ -184,7 +186,7 @@ describe("legacy workspace migration workflow", () => {
     ]);
   });
 
-  it("applies deployed app associations from a Think migration plan", () => {
+  it("applies deployed app associations from a migration AI plan", () => {
     const deployedApps: MigrationDeployedAppContext[] = [
       {
         scriptName: "customer-dashboard",
@@ -478,7 +480,7 @@ describe("legacy workspace migration workflow", () => {
     ]);
   });
 
-  it("rejects Think migration plans that invent deployed apps", () => {
+  it("rejects migration AI plans that invent deployed apps", () => {
     const plan = {
       workspaceFiles: [],
       projects: [
@@ -601,6 +603,71 @@ describe("legacy workspace migration workflow", () => {
         },
       ],
     })).toEqual(["/home/claude/worker-app"]);
+  });
+
+  it("builds non-streaming Responses requests with planning tools and structured output", () => {
+    const request = buildMigrationPlanningResponsesRequest(
+      "plan this workspace",
+      ["/home/claude/app", "/home/claude/analysis.ipynb"],
+      "resp_previous",
+    );
+
+    expect(request).toMatchObject({
+      model: "gpt-5.5",
+      stream: false,
+      input: "plan this workspace",
+      previous_response_id: "resp_previous",
+    });
+    expect(request.instructions).toEqual(expect.stringContaining("You may inspect the legacy filesystem with read-only tools."));
+    expect(request.tools).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: "function", name: "list_legacy_path", strict: true }),
+      expect.objectContaining({ type: "function", name: "read_legacy_text", strict: true }),
+      expect.objectContaining({ type: "function", name: "list_deployed_apps", strict: true }),
+    ]));
+    expect(request.text).toMatchObject({
+      format: {
+        type: "json_schema",
+        name: "legacy_workspace_migration_plan",
+        strict: true,
+      },
+    });
+    const schema = (request.text as { format: { schema: { properties: { projects: { items: { properties: { sourcePaths: { items: { enum: string[] } } } } } } } } }).format.schema;
+    expect(schema.properties.projects.items.properties.sourcePaths.items.enum).toEqual([
+      "/home/claude/app",
+      "/home/claude/analysis.ipynb",
+    ]);
+  });
+
+  it("parses non-streaming Responses structured output", () => {
+    expect(parseMigrationPlanningAiResult({
+      output: [
+        {
+          type: "message",
+          content: [
+            {
+              type: "output_text",
+              text: JSON.stringify({
+                projects: [
+                  {
+                    name: "analysis",
+                    description: "Notebook analysis.",
+                    sourcePaths: ["/home/claude/analysis.ipynb"],
+                  },
+                ],
+              }),
+            },
+          ],
+        },
+      ],
+    })).toEqual({
+      projects: [
+        {
+          name: "analysis",
+          description: "Notebook analysis.",
+          sourcePaths: ["/home/claude/analysis.ipynb"],
+        },
+      ],
+    });
   });
 
   it("carries 100 Worker app projects plus loose analysis files through planning context", async () => {

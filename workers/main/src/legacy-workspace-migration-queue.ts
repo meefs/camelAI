@@ -50,7 +50,7 @@ export async function queueLegacyWorkspaceMigrationIfNeeded(
   input: QueueLegacyWorkspaceMigrationInput,
 ): Promise<QueueLegacyWorkspaceMigrationResult> {
   const { env, orgId, workspaceId } = input;
-  if (!env.WORKSPACE_FS || !env.LEGACY_WORKSPACE_MIGRATIONS || !env.MIGRATION_PLANNING_AGENT) {
+  if (!env.WORKSPACE_FS || !env.LEGACY_WORKSPACE_MIGRATIONS) {
     throw new Error("Legacy workspace migration is not configured");
   }
 

@@ -481,7 +481,7 @@ routes.post(
     },
   }),
   async (c) => {
-    if (!c.env.WORKSPACE_FS || !c.env.LEGACY_WORKSPACE_MIGRATIONS || !c.env.MIGRATION_PLANNING_AGENT) {
+    if (!c.env.WORKSPACE_FS || !c.env.LEGACY_WORKSPACE_MIGRATIONS) {
       return c.json({ error: "Legacy workspace migration is not configured" }, 503);
     }
 

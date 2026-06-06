@@ -10,7 +10,6 @@ import type { McpEnv } from "./mcp-handler.js";
 import type { WorkspaceDO } from "./workspace.js";
 import type { WorkerLogsDO } from "./worker-logs-do.js";
 import type { EmailHandleDO } from "./email-handle-registry.js";
-import type { MigrationPlanningAgent } from "./legacy-workspace-migration-workflow.js";
 import type {
   SlackTeamRegistryDO,
   TelegramRegistryDO,
@@ -108,7 +107,6 @@ export interface Env
   PROJECT_RUNTIME_PROXY_SECRET?: string;
   PROJECT_RUNTIME_MTLS_CERT_SHA256?: string;
   LEGACY_WORKSPACE_MIGRATIONS?: Workflow;
-  MIGRATION_PLANNING_AGENT?: DurableObjectNamespace<MigrationPlanningAgent>;
   ENABLE_LEGACY_WORKSPACE_MIGRATION?: string;
   // Email handle registry (atomic handle claims)
   EMAIL_HANDLE?: DurableObjectNamespace<EmailHandleDO>;

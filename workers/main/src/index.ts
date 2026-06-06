@@ -91,7 +91,6 @@ export {
 } from './deterministic-automation-workflow.js';
 export {
   LegacyWorkspaceMigrationWorkflow,
-  MigrationPlanningAgent,
 } from './legacy-workspace-migration-workflow.js';
 export { CamelAiService } from './camelai-service.js';
 export { WorkspaceFilesystemDO } from './workspace-filesystem-do.js';
@@ -103,6 +102,11 @@ export class AdminIndexDO extends DurableObject<Env> {}
 // Compatibility shim for deployed migration histories that contain the retired
 // Cloudflare Sandbox SDK experiment. Projects now use PROJECT_RUNTIME_HOST.
 export class CloudflareSandbox extends DurableObject<Env> {}
+
+// Compatibility shim for deployed migration histories that introduced the
+// old Think-based migration planning Durable Object. Planning now runs inside
+// LegacyWorkspaceMigrationWorkflow with direct Responses API calls.
+export class MigrationPlanningAgent extends DurableObject<Env> {}
 
 // Extend React Router's AppLoadContext
 declare module 'react-router' {

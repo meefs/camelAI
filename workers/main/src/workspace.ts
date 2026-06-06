@@ -21,9 +21,6 @@ import {
   type LegacyWorkspaceMigrationState,
   type WorkspaceFilesystemDO,
 } from './workspace-filesystem-do';
-import {
-  type MigrationPlanningAgent,
-} from './legacy-workspace-migration-workflow';
 import { queueLegacyWorkspaceMigrationIfNeeded } from './legacy-workspace-migration-queue';
 
 // Buffer time before token expiry to trigger refresh (10 minutes)
@@ -194,7 +191,6 @@ export interface WorkspaceEnv {
   WORKSPACE_CRON?: DurableObjectNamespace<WorkspaceCronDO>;
   WORKSPACE_FS?: DurableObjectNamespace<WorkspaceFilesystemDO>;
   LEGACY_WORKSPACE_MIGRATIONS?: Workflow;
-  MIGRATION_PLANNING_AGENT?: DurableObjectNamespace<MigrationPlanningAgent>;
   ENABLE_LEGACY_WORKSPACE_MIGRATION?: string;
   TOKEN_SIGNING_SECRET?: string;
 }
@@ -707,7 +703,7 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
     const info = await this.getStoredInfo();
     if (!info) return null;
     if (this.env.ENABLE_LEGACY_WORKSPACE_MIGRATION !== '1') return null;
-    if (!this.env.WORKSPACE_FS || !this.env.LEGACY_WORKSPACE_MIGRATIONS || !this.env.MIGRATION_PLANNING_AGENT) return null;
+    if (!this.env.WORKSPACE_FS || !this.env.LEGACY_WORKSPACE_MIGRATIONS) return null;
     if (info.archived) return null;
     if (!this.legacyMigrationQueueInFlight) {
       this.legacyMigrationQueueInFlight = this.startLegacyWorkspaceMigrationIfNeeded(info)
@@ -720,7 +716,7 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
 
   private enqueueLegacyWorkspaceMigrationIfNeeded(info: Workspace): void {
     if (this.env.ENABLE_LEGACY_WORKSPACE_MIGRATION !== '1') return;
-    if (!this.env.WORKSPACE_FS || !this.env.LEGACY_WORKSPACE_MIGRATIONS || !this.env.MIGRATION_PLANNING_AGENT) return;
+    if (!this.env.WORKSPACE_FS || !this.env.LEGACY_WORKSPACE_MIGRATIONS) return;
     if (info.archived) return;
 
     const task = this.startLegacyWorkspaceMigrationIfNeeded(info).catch((error) => {
@@ -736,7 +732,7 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
   }
 
   private async startLegacyWorkspaceMigrationIfNeeded(info: Workspace): Promise<LegacyWorkspaceMigrationState | null> {
-    if (!this.env.WORKSPACE_FS || !this.env.LEGACY_WORKSPACE_MIGRATIONS || !this.env.MIGRATION_PLANNING_AGENT) return null;
+    if (!this.env.WORKSPACE_FS || !this.env.LEGACY_WORKSPACE_MIGRATIONS) return null;
     const result = await queueLegacyWorkspaceMigrationIfNeeded({
       env: this.env as never,
       workspaceId: info.id,

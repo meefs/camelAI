@@ -47,7 +47,6 @@
 		"@anthropic-ai/sdk": "^0.71.2",
 		"@cloudflare/dynamic-workflows": "^0.1.1",
 		"@cloudflare/shell": "0.3.7",
-		"@cloudflare/think": "^0.8.2",
 		"@cloudflare/vite-plugin": "^1.39.2",
 		"@conform-to/react": "^1.15.1",
 		"@conform-to/zod": "^1.15.1",
@@ -88,7 +87,6 @@
 		"sonner": "^2.0.7",
 		"tailwind-merge": "^3.4.0",
 		"unified": "^11.0.5",
-		"workers-ai-provider": "^3.1.14",
 		"xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz",
 		"zod": "^4.3.5"
 	},
