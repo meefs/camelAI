@@ -138,8 +138,8 @@ interface LegacyWorkspaceMigrationRuntimeResetter {
 }
 
 interface LegacyWorkspaceMigrationWorkspaceResetter {
-  listProjects(): Promise<Array<{ id: string; migratedFrom?: { workspaceId: string } }>>;
-  deleteMigratedProjectsForWorkspace(
+  listProjects(): Promise<Array<{ id: string }>>;
+  deleteProjectsForWorkspace(
     workspaceId?: unknown,
   ): Promise<{ deleted: Array<{ id: string }>; retained: Array<{ id: string }> }>;
 }
@@ -401,7 +401,7 @@ export class LegacyWorkspaceMigrationWorkflow extends ThinkWorkflow<
         timeout: MIGRATION_IMPORT_STEP_TIMEOUT,
         retries: { limit: 3, delay: "30 seconds", backoff: "exponential" },
       }, async () => {
-        await resetMigratedProjectsForWorkspace({
+        await resetProjectsForWorkspaceMigration({
           workspaceFs,
           runtime,
           workspaceId: payload.workspaceId,
@@ -1382,23 +1382,19 @@ export function appendUnclassifiedMiscProject(plan: LegacyWorkspaceMigrationPlan
   };
 }
 
-export async function resetMigratedProjectsForWorkspace(input: {
+export async function resetProjectsForWorkspaceMigration(input: {
   workspaceFs: LegacyWorkspaceMigrationWorkspaceResetter;
   runtime: LegacyWorkspaceMigrationRuntimeResetter;
   workspaceId: string;
 }): Promise<{ deletedProjectIds: string[] }> {
   const projects = await input.workspaceFs.listProjects();
-  const migratedProjectIds = Array.from(new Set(
-    projects
-      .filter((project) => project.migratedFrom?.workspaceId === input.workspaceId)
-      .map((project) => project.id),
-  ));
+  const projectIds = Array.from(new Set(projects.map((project) => project.id)));
 
-  for (const projectId of migratedProjectIds) {
+  for (const projectId of projectIds) {
     await input.runtime.deleteProject(projectId);
   }
 
-  const cleanup = await input.workspaceFs.deleteMigratedProjectsForWorkspace(input.workspaceId);
+  const cleanup = await input.workspaceFs.deleteProjectsForWorkspace(input.workspaceId);
   return { deletedProjectIds: cleanup.deleted.map((project) => project.id) };
 }
 

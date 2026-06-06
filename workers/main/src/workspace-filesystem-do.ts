@@ -177,7 +177,7 @@ export interface WorkspaceFilesystemLike {
   listProjects(): Promise<WorkspaceProject[]>;
   getProject(projectId: unknown): Promise<WorkspaceProject | null>;
   getProjectByName(project: unknown): Promise<WorkspaceProject | null>;
-  deleteMigratedProjectsForWorkspace(workspaceId?: unknown): Promise<{ deleted: WorkspaceProject[]; retained: WorkspaceProject[] }>;
+  deleteProjectsForWorkspace(workspaceId?: unknown): Promise<{ deleted: WorkspaceProject[]; retained: WorkspaceProject[] }>;
   createProject(input?: {
     id?: unknown;
     name?: unknown;
@@ -395,27 +395,16 @@ export class WorkspaceFilesystemDO extends DurableObject<WorkspaceFilesystemEnv>
     return existing ? toPublicProject(await this.ensureProjectArtifactsReady(existing)) : null;
   }
 
-  async deleteMigratedProjectsForWorkspace(workspaceId: unknown = this.ctx.id.toString()): Promise<{ deleted: WorkspaceProject[]; retained: WorkspaceProject[] }> {
-    const id = requireWorkspaceId(workspaceId);
+  async deleteProjectsForWorkspace(workspaceId: unknown = this.ctx.id.toString()): Promise<{ deleted: WorkspaceProject[]; retained: WorkspaceProject[] }> {
+    requireWorkspaceId(workspaceId);
     const projects = await this.readProjects();
-    const deleted: WorkspaceProject[] = [];
-    const retained: WorkspaceProject[] = [];
-
-    for (const project of projects) {
-      if (project.migratedFrom?.workspaceId === id) {
-        deleted.push(project);
-      } else {
-        retained.push(project);
-      }
-    }
-
-    if (deleted.length > 0) {
-      await this.ctx.storage.kv.put(PROJECTS_KEY, retained);
+    if (projects.length > 0) {
+      await this.ctx.storage.kv.put(PROJECTS_KEY, []);
     }
 
     return {
-      deleted: deleted.map(toPublicProject),
-      retained: nestProjectClones(retained.map(toPublicProject)),
+      deleted: projects.map(toPublicProject),
+      retained: [],
     };
   }
 
@@ -761,8 +750,8 @@ export class WorkspaceFilesystemClient implements WorkspaceFilesystemLike {
     return this.stub.getProjectByName(project);
   }
 
-  deleteMigratedProjectsForWorkspace(workspaceId: unknown = this.workspaceId): Promise<{ deleted: WorkspaceProject[]; retained: WorkspaceProject[] }> {
-    return this.stub.deleteMigratedProjectsForWorkspace(workspaceId);
+  deleteProjectsForWorkspace(workspaceId: unknown = this.workspaceId): Promise<{ deleted: WorkspaceProject[]; retained: WorkspaceProject[] }> {
+    return this.stub.deleteProjectsForWorkspace(workspaceId);
   }
 
   createProject(input?: {

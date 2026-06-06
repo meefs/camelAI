@@ -12,7 +12,7 @@ import {
   buildLegacyWorkspaceNamingContext,
   parseMigrationPlanningAiResult,
   readMigrationPlanningResponsesPayload,
-  resetMigratedProjectsForWorkspace,
+  resetProjectsForWorkspaceMigration,
   type MigrationDeployedAppContext,
   type LegacyWorkspaceMigrationRuntimeReader,
   type RuntimeFileEntry,
@@ -1017,7 +1017,7 @@ describe("legacy workspace migration workflow", () => {
     });
   });
 
-  it("deletes only migration-owned projects before a migration rerun", async () => {
+  it("deletes all projects before a migration rerun", async () => {
     const workspaceId = `migration-cleanup-${crypto.randomUUID()}`;
     const workspace = new WorkspaceFilesystemClient(env, workspaceId);
 
@@ -1036,16 +1036,14 @@ describe("legacy workspace migration workflow", () => {
       description: "User-created project.",
     });
 
-    const cleanup = await workspace.deleteMigratedProjectsForWorkspace();
+    const cleanup = await workspace.deleteProjectsForWorkspace();
 
-    expect(cleanup.deleted.map((project) => project.name)).toEqual([migrated.name]);
-    expect(cleanup.retained.map((project) => project.name)).toEqual([manual.name]);
-    await expect(workspace.listProjects()).resolves.toEqual([
-      expect.objectContaining({ name: manual.name }),
-    ]);
+    expect(cleanup.deleted.map((project) => project.name)).toEqual([migrated.name, manual.name]);
+    expect(cleanup.retained).toEqual([]);
+    await expect(workspace.listProjects()).resolves.toEqual([]);
   });
 
-  it("deletes migration-owned runtime projects before removing rerun metadata", async () => {
+  it("deletes all runtime projects before removing rerun metadata", async () => {
     const workspaceId = `migration-runtime-cleanup-${crypto.randomUUID()}`;
     const workspace = new WorkspaceFilesystemClient(env, workspaceId);
     const calls: string[] = [];
@@ -1065,13 +1063,13 @@ describe("legacy workspace migration workflow", () => {
       description: "User-created project.",
     });
 
-    const result = await resetMigratedProjectsForWorkspace({
+    const result = await resetProjectsForWorkspaceMigration({
       workspaceId,
       workspaceFs: {
         listProjects: async () => workspace.listProjects(),
-        deleteMigratedProjectsForWorkspace: async (id) => {
+        deleteProjectsForWorkspace: async (id) => {
           calls.push("metadata");
-          return workspace.deleteMigratedProjectsForWorkspace(id);
+          return workspace.deleteProjectsForWorkspace(id);
         },
       },
       runtime: {
@@ -1081,11 +1079,9 @@ describe("legacy workspace migration workflow", () => {
       },
     });
 
-    expect(result.deletedProjectIds).toEqual([migrated.id]);
-    expect(calls).toEqual([`runtime:${migrated.id}`, "metadata"]);
-    await expect(workspace.listProjects()).resolves.toEqual([
-      expect.objectContaining({ id: manual.id, name: manual.name }),
-    ]);
+    expect(result.deletedProjectIds).toEqual([migrated.id, manual.id]);
+    expect(calls).toEqual([`runtime:${migrated.id}`, `runtime:${manual.id}`, "metadata"]);
+    await expect(workspace.listProjects()).resolves.toEqual([]);
   });
 
   it("clears stale migration errors when a later run succeeds", async () => {
