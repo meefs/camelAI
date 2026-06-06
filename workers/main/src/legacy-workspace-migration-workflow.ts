@@ -79,6 +79,13 @@ const SENSITIVE_CONTEXT_NAME_PATTERNS = [
   /(?:^|[-_.])(secret|token|credential|credentials|private[-_.]?key|api[-_.]?key)(?:[-_.]|$)/i,
 ];
 const LEGACY_IMPORT_IGNORE_GLOBS: string[] = [];
+const ACTIVE_WORKFLOW_INSTANCE_STATUSES = new Set([
+  "queued",
+  "running",
+  "paused",
+  "waiting",
+  "waitingForPause",
+]);
 
 const migrationPayloadSchema = z.object({
   workspaceId: z.string().min(1),
@@ -149,6 +156,12 @@ interface LegacyImportResult {
   files?: number;
   bytes?: number;
   skippedPaths?: string[];
+}
+
+interface LegacyMigrationLock {
+  leaseId: string;
+  owner: string;
+  expiresAt: string;
 }
 
 export interface MigrationDeployedAppContext {
@@ -444,7 +457,7 @@ export class LegacyWorkspaceMigrationWorkflow extends ThinkWorkflow<
           timeout: MIGRATION_IMPORT_STEP_TIMEOUT,
           retries: { limit: 3, delay: "30 seconds", backoff: "exponential" },
         }, async () => {
-          return await importMigrationProject({
+          const importResult = await importMigrationProject({
             workspaceFs,
             runtime,
             env: this.env,
@@ -452,6 +465,7 @@ export class LegacyWorkspaceMigrationWorkflow extends ThinkWorkflow<
             workspaceId: payload.workspaceId,
             projectPlan,
           });
+          return sanitizeLegacyImportStepResult(importResult);
         });
         if (!importResults.createdProjects.includes(result.projectName)) {
           importResults.createdProjects.push(result.projectName);
@@ -549,6 +563,20 @@ async function importMigrationProject(input: {
   return { ...result, projectName: project.name };
 }
 
+function sanitizeLegacyImportStepResult(
+  result: LegacyImportResult & { projectName: string },
+): Required<LegacyImportResult> & { projectName: string } {
+  return {
+    success: result.success === true,
+    files: Number.isFinite(result.files) ? Number(result.files) : 0,
+    bytes: Number.isFinite(result.bytes) ? Number(result.bytes) : 0,
+    skippedPaths: Array.isArray(result.skippedPaths)
+      ? result.skippedPaths.map((path) => String(path))
+      : [],
+    projectName: String(result.projectName),
+  };
+}
+
 class ProjectRuntimeMigrationClient {
   constructor(private readonly env: Env) {}
 
@@ -590,14 +618,25 @@ class ProjectRuntimeMigrationClient {
     workspaceId: string,
     input: { workflowId: string; ttlMs: number },
   ): Promise<{ leaseId: string }> {
-    return this.fetchJson(
-      this.runtimeUrl(`/v1/workspaces/${encodeURIComponent(orgId)}/${encodeURIComponent(workspaceId)}/migration-lock`),
-      {
+    const url = this.runtimeUrl(`/v1/workspaces/${encodeURIComponent(orgId)}/${encodeURIComponent(workspaceId)}/migration-lock`);
+    const init: RequestInit = {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(input),
-      },
-    );
+      };
+    const response = await this.fetchRuntime(url, init);
+    const text = await response.text();
+    if (response.ok) return text ? JSON.parse(text) as { leaseId: string } : { leaseId: "" };
+    if (response.status !== 423) {
+      throw new Error(text || `Runtime request failed: ${response.status}`);
+    }
+
+    const staleLock = await this.getStaleLegacyMigrationLock(orgId, workspaceId, input.workflowId);
+    if (!staleLock) {
+      throw new Error(text || `Runtime request failed: ${response.status}`);
+    }
+    await this.unlockLegacyWorkspace(orgId, workspaceId, staleLock.leaseId);
+    return this.fetchJson(url, init);
   }
 
   async unlockLegacyWorkspace(orgId: string, workspaceId: string, leaseId: string): Promise<void> {
@@ -642,6 +681,42 @@ class ProjectRuntimeMigrationClient {
       const text = await response.text();
       throw new Error(text || `Runtime project delete failed: ${response.status}`);
     }
+  }
+
+  private async getStaleLegacyMigrationLock(
+    orgId: string,
+    workspaceId: string,
+    currentWorkflowId: string,
+  ): Promise<LegacyMigrationLock | null> {
+    if (!this.env.LEGACY_WORKSPACE_MIGRATIONS) return null;
+
+    const lock = await this.getLegacyMigrationLock(orgId, workspaceId);
+    if (!lock?.leaseId || !lock.owner || lock.owner === currentWorkflowId) return null;
+
+    try {
+      const instance = await this.env.LEGACY_WORKSPACE_MIGRATIONS.get(lock.owner);
+      const status = await instance.status();
+      if (ACTIVE_WORKFLOW_INSTANCE_STATUSES.has(status.status)) return null;
+      return lock;
+    } catch (error) {
+      console.warn("Failed to inspect legacy migration lock owner workflow", {
+        workspaceId,
+        owner: lock.owner,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return null;
+    }
+  }
+
+  private async getLegacyMigrationLock(orgId: string, workspaceId: string): Promise<LegacyMigrationLock | null> {
+    const response = await this.fetchRuntime(
+      this.runtimeUrl(`/v1/workspaces/${encodeURIComponent(orgId)}/${encodeURIComponent(workspaceId)}/migration-lock`),
+      { method: "GET" },
+    );
+    const text = await response.text();
+    if (!response.ok) throw new Error(text || `Runtime request failed: ${response.status}`);
+    const result = text ? JSON.parse(text) as { locked?: boolean; lock?: LegacyMigrationLock } : {};
+    return result.locked && result.lock ? result.lock : null;
   }
 
   private async fetchJson<T>(input: string, init?: RequestInit): Promise<T> {
