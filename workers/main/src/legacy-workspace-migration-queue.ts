@@ -57,6 +57,18 @@ export async function queueLegacyWorkspaceMigrationIfNeeded(
   const workspaceFs = new WorkspaceFilesystemClient(env as never, workspaceId);
   const state = await workspaceFs.getLegacyWorkspaceMigrationState();
 
+  if (state.workflowId) {
+    const activeWorkflow = await getActiveMigrationWorkflowStatus(env, state.workflowId);
+    if (activeWorkflow) {
+      if (!input.force) {
+        return { state, queued: false, workflowId: state.workflowId };
+      }
+      throw new LegacyWorkspaceMigrationConflictError(
+        `Migration workflow ${state.workflowId} is still ${activeWorkflow}`,
+      );
+    }
+  }
+
   if (ACTIVE_LEGACY_MIGRATION_STATUSES.has(state.status)) {
     if (!input.force && migrationStateWasRecentlyUpdated(state)) {
       return { state, queued: false, workflowId: state.workflowId };
@@ -116,4 +128,15 @@ function isCurrentCompletedMigration(state: LegacyWorkspaceMigrationState): bool
 function migrationStateWasRecentlyUpdated(state: LegacyWorkspaceMigrationState): boolean {
   const updatedAt = Date.parse(state.updatedAt);
   return Number.isFinite(updatedAt) && Date.now() - updatedAt < ACTIVE_MIGRATION_REQUEUE_GRACE_MS;
+}
+
+async function getActiveMigrationWorkflowStatus(env: Env, workflowId: string): Promise<string | null> {
+  if (!env.LEGACY_WORKSPACE_MIGRATIONS) return null;
+  try {
+    const instance = await env.LEGACY_WORKSPACE_MIGRATIONS.get(workflowId);
+    const workflowStatus = await instance.status();
+    return ACTIVE_WORKFLOW_INSTANCE_STATUSES.has(workflowStatus.status) ? workflowStatus.status : null;
+  } catch {
+    return null;
+  }
 }

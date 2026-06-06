@@ -453,22 +453,41 @@ export class LegacyWorkspaceMigrationWorkflow extends ThinkWorkflow<
           });
           return lock.leaseId;
         });
-        const result = await step.do(`import-project-${index + 1}-${projectPlan.name}`, {
-          timeout: MIGRATION_IMPORT_STEP_TIMEOUT,
-          retries: { limit: 3, delay: "30 seconds", backoff: "exponential" },
-        }, async () => {
-          const importResult = await importMigrationProject({
-            workspaceFs,
-            runtime,
+        const project = await step.do(`ensure-project-${index + 1}-${projectPlan.name}`, async () => {
+          return await ensureMigrationProject({
             env: this.env,
             orgId: payload.orgId,
             workspaceId: payload.workspaceId,
             projectPlan,
           });
+        });
+        const result = await step.do(`import-project-files-${index + 1}-${projectPlan.name}`, {
+          timeout: MIGRATION_IMPORT_STEP_TIMEOUT,
+          retries: { limit: 3, delay: "30 seconds", backoff: "exponential" },
+        }, async () => {
+          const projectRuntime = new ProjectRuntimeMigrationClient(this.env);
+          const importResult = await projectRuntime.importLegacyWorkspace(
+            payload.orgId,
+            payload.workspaceId,
+            project.projectId,
+            {
+              sourcePaths: projectPlan.sourcePaths,
+              ignoreGlobs: projectPlan.ignoreGlobs ?? [],
+            },
+          );
           return sanitizeLegacyImportStepResult(importResult);
         });
-        if (!importResults.createdProjects.includes(result.projectName)) {
-          importResults.createdProjects.push(result.projectName);
+        if ((projectPlan.deployedApps ?? []).length > 0) {
+          await step.do(`associate-deployed-apps-${index + 1}-${projectPlan.name}`, async () => {
+            const org = getOrgStub(this.env, payload.orgId);
+            for (const scriptName of projectPlan.deployedApps ?? []) {
+              await org.updateWorkerScriptProject(scriptName, payload.workspaceId, project.projectId, "system:legacy-migration");
+            }
+            return { count: projectPlan.deployedApps?.length ?? 0 };
+          });
+        }
+        if (!importResults.createdProjects.includes(project.projectName)) {
+          importResults.createdProjects.push(project.projectName);
         }
         importResults.copiedFiles += result.files ?? 0;
         importResults.copiedBytes += result.bytes ?? 0;
@@ -526,16 +545,14 @@ export class LegacyWorkspaceMigrationWorkflow extends ThinkWorkflow<
   }
 }
 
-async function importMigrationProject(input: {
-  workspaceFs: WorkspaceFilesystemClient;
-  runtime: ProjectRuntimeMigrationClient;
+async function ensureMigrationProject(input: {
   env: Env;
   orgId: string;
   workspaceId: string;
   projectPlan: LegacyWorkspaceMigrationProjectPlan;
-}): Promise<LegacyImportResult & { projectName: string }> {
-  const { workspaceFs, runtime, env, orgId, workspaceId, projectPlan } = input;
-  const org = getOrgStub(env, orgId);
+}): Promise<{ projectId: string; projectName: string }> {
+  const { env, workspaceId, projectPlan } = input;
+  const workspaceFs = new WorkspaceFilesystemClient(env as never, workspaceId);
   const existingProject = await workspaceFs.getProjectByName(projectPlan.name);
   const project = existingProject ?? await workspaceFs.createProject({
     name: projectPlan.name,
@@ -551,21 +568,15 @@ async function importMigrationProject(input: {
     throw new Error(`Project already exists and was not created by this migration: ${projectPlan.name}`);
   }
 
-  const result = await runtime.importLegacyWorkspace(orgId, workspaceId, project.id, {
-    sourcePaths: projectPlan.sourcePaths,
-    ignoreGlobs: projectPlan.ignoreGlobs ?? [],
-  });
-
-  for (const scriptName of projectPlan.deployedApps ?? []) {
-    await org.updateWorkerScriptProject(scriptName, workspaceId, project.id, "system:legacy-migration");
-  }
-
-  return { ...result, projectName: project.name };
+  return {
+    projectId: String(project.id),
+    projectName: String(project.name),
+  };
 }
 
 function sanitizeLegacyImportStepResult(
-  result: LegacyImportResult & { projectName: string },
-): Required<LegacyImportResult> & { projectName: string } {
+  result: LegacyImportResult,
+): Required<LegacyImportResult> {
   return {
     success: result.success === true,
     files: Number.isFinite(result.files) ? Number(result.files) : 0,
@@ -573,7 +584,6 @@ function sanitizeLegacyImportStepResult(
     skippedPaths: Array.isArray(result.skippedPaths)
       ? result.skippedPaths.map((path) => String(path))
       : [],
-    projectName: String(result.projectName),
   };
 }
 
