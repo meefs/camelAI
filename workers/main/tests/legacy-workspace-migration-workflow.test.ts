@@ -1015,6 +1015,22 @@ describe("legacy workspace migration workflow", () => {
         sourcePaths: ["/home/claude/web-app"],
       },
     });
+
+    const ensuredProject = await workspace.ensureLegacyMigrationProject({
+      name: "notebook-analysis",
+      description: "Migrated notebook analysis.",
+      migratedFrom: {
+        workspaceId,
+        legacyRoot: "/home/claude",
+        sourcePaths: ["/home/claude/notebook.ipynb"],
+        migratedAt: "2026-06-04T00:00:00.000Z",
+      },
+    });
+
+    expect(ensuredProject).toEqual({
+      projectId: expect.stringContaining("migrationtest"),
+      projectName: "notebook-analysis",
+    });
   });
 
   it("deletes all projects before a migration rerun", async () => {

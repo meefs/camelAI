@@ -472,6 +472,7 @@ export class WorkspaceFilesystemDO extends DurableObject<WorkspaceFilesystemEnv>
     const project = await this.createProject({
       name,
       description: input.description,
+      workspaceId: migratedFrom?.workspaceId,
       migratedFrom,
     });
     return { projectId: project.id, projectName: project.name };
