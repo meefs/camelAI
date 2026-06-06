@@ -22,6 +22,7 @@ const ACTIVE_WORKFLOW_INSTANCE_STATUSES = new Set([
   "waiting",
   "waitingForPause",
 ]);
+const ACTIVE_MIGRATION_REQUEUE_GRACE_MS = 5 * 60 * 1000;
 
 export class LegacyWorkspaceMigrationConflictError extends Error {
   constructor(message: string) {
@@ -57,6 +58,9 @@ export async function queueLegacyWorkspaceMigrationIfNeeded(
   const state = await workspaceFs.getLegacyWorkspaceMigrationState();
 
   if (ACTIVE_LEGACY_MIGRATION_STATUSES.has(state.status)) {
+    if (!input.force && migrationStateWasRecentlyUpdated(state)) {
+      return { state, queued: false, workflowId: state.workflowId };
+    }
     if (state.workflowId) {
       const instance = await env.LEGACY_WORKSPACE_MIGRATIONS.get(state.workflowId);
       const workflowStatus = await instance.status();
@@ -107,4 +111,9 @@ export async function queueLegacyWorkspaceMigrationIfNeeded(
 function isCurrentCompletedMigration(state: LegacyWorkspaceMigrationState): boolean {
   return state.status === "complete" &&
     state.migrationVersion >= CURRENT_LEGACY_WORKSPACE_MIGRATION_VERSION;
+}
+
+function migrationStateWasRecentlyUpdated(state: LegacyWorkspaceMigrationState): boolean {
+  const updatedAt = Date.parse(state.updatedAt);
+  return Number.isFinite(updatedAt) && Date.now() - updatedAt < ACTIVE_MIGRATION_REQUEUE_GRACE_MS;
 }
