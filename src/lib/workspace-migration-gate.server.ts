@@ -35,10 +35,7 @@ export async function getWorkspaceMigrationGate(
 
   try {
     const workspaceFs = await createWorkspaceFilesystemClient(env, workspaceId);
-    const [migrationState, projects] = await Promise.all([
-      workspaceFs.getLegacyWorkspaceMigrationState(),
-      workspaceFs.listProjects(),
-    ]);
+    const migrationState = await workspaceFs.getLegacyWorkspaceMigrationState();
 
     if (ACTIVE_MIGRATION_STATUSES.has(migrationState.status)) {
       return {
@@ -48,16 +45,7 @@ export async function getWorkspaceMigrationGate(
       };
     }
 
-    if (migrationState.status === "not_started" && projects.length === 0) {
-      const queuedState = await enqueueWorkspaceMigration(env, workspaceId);
-      return {
-        workspaceId,
-        status: queuedState?.status ?? migrationState.status,
-        reason: queuedState && ACTIVE_MIGRATION_STATUSES.has(queuedState.status) ? "active" : "needed",
-      };
-    }
-
-    if (isStaleTerminalMigration(migrationState)) {
+    if (!isCurrentCompletedMigration(migrationState)) {
       const queuedState = await enqueueWorkspaceMigration(env, workspaceId);
       return {
         workspaceId,
@@ -101,9 +89,9 @@ function isLegacyMigrationRuntimeConfigured(env: CloudflareEnv): boolean {
   );
 }
 
-function isStaleTerminalMigration(state: LegacyWorkspaceMigrationState): boolean {
+function isCurrentCompletedMigration(state: LegacyWorkspaceMigrationState): boolean {
   return (
-    (state.status === "complete" || state.status === "failed" || state.status === "dry_run_complete") &&
-    state.migrationVersion < CURRENT_LEGACY_WORKSPACE_MIGRATION_VERSION
+    state.status === "complete" &&
+    state.migrationVersion >= CURRENT_LEGACY_WORKSPACE_MIGRATION_VERSION
   );
 }

@@ -132,9 +132,11 @@ import {
 } from "../../ban-list.js";
 import { waitUntil } from "cloudflare:workers";
 import { refreshOrgCustomDomainHostnamesForAdmin } from "../../../../../src/lib/admin-custom-domain.server.js";
-import { CURRENT_LEGACY_WORKSPACE_MIGRATION_VERSION } from "../../../../../src/lib/legacy-workspace-migration-version.js";
 import { WorkspaceFilesystemClient } from "../../workspace-filesystem-do.js";
-import { startLegacyWorkspaceMigrationWorkflow } from "../../legacy-workspace-migration-workflow.js";
+import {
+  LegacyWorkspaceMigrationConflictError,
+  queueLegacyWorkspaceMigrationIfNeeded,
+} from "../../legacy-workspace-migration-queue.js";
 
 type HonoEnv = { Bindings: Env };
 
@@ -402,9 +404,6 @@ const LegacyWorkspaceMigrationTriggerResponseSchema = z.object({
   status: z.literal("queued"),
 });
 
-const ACTIVE_LEGACY_MIGRATION_STATUSES = new Set(["queued", "scanning_legacy", "planning", "copying", "verifying"]);
-const ACTIVE_WORKFLOW_INSTANCE_STATUSES = new Set(["queued", "running", "paused", "waiting", "waitingForPause"]);
-
 // ---------------------------------------------------------------------------
 // Cache-Control middleware for GET endpoints
 // ---------------------------------------------------------------------------
@@ -489,66 +488,32 @@ routes.post(
     const orgId = c.req.param("orgId");
     const workspaceId = c.req.param("workspaceId");
     const body = c.req.valid("json");
-    const workspaceFs = new WorkspaceFilesystemClient(c.env as never, workspaceId);
-    const state = await workspaceFs.getLegacyWorkspaceMigrationState();
-    const force = body.force === true;
-    const dryRun = body.dry_run === true;
-    const migrationIsCurrent = state.migrationVersion >= CURRENT_LEGACY_WORKSPACE_MIGRATION_VERSION;
-
-    if (ACTIVE_LEGACY_MIGRATION_STATUSES.has(state.status)) {
-      if (!force) {
-        return c.json({ error: `Migration is already ${state.status}` }, 409);
-      }
-      if (state.workflowId) {
-        const instance = await c.env.LEGACY_WORKSPACE_MIGRATIONS.get(state.workflowId);
-        const workflowStatus = await instance.status();
-        if (ACTIVE_WORKFLOW_INSTANCE_STATUSES.has(workflowStatus.status)) {
-          return c.json({
-            error: `Migration is already ${state.status} and workflow ${state.workflowId} is ${workflowStatus.status}`,
-          }, 409);
-        }
-      }
-    }
-    if (!dryRun && !force && migrationIsCurrent && state.status !== "not_started" && state.status !== "failed") {
-      return c.json({ error: `Migration is already ${state.status}; pass force to enqueue a rerun` }, 409);
-    }
-
-    const projects = await workspaceFs.listProjects();
-    if (!dryRun && !force && migrationIsCurrent && projects.length > 0) {
-      return c.json({ error: "Workspace already has projects; pass force to enqueue anyway" }, 409);
-    }
-
-    const attempt = state.attempts + 1;
-    const suffix = force ? `-${Date.now().toString(36)}` : "";
-    const workflowId = `legacy-migration-${workspaceId}-${attempt}${suffix}`;
-    await workspaceFs.setLegacyWorkspaceMigrationState({
-      status: "queued",
-      orgId,
-      workflowId,
-    });
+    let result;
     try {
-      await startLegacyWorkspaceMigrationWorkflow(c.env, {
-        workflowId,
+      result = await queueLegacyWorkspaceMigrationIfNeeded({
+        env: c.env,
         workspaceId,
         orgId,
         requestedBy: body.requested_by || "admin-api",
-        dryRun,
+        dryRun: body.dry_run === true,
+        force: body.force === true,
       });
     } catch (error) {
-      await workspaceFs.setLegacyWorkspaceMigrationState({
-        status: "failed",
-        error: error instanceof Error ? error.message : String(error),
-        completedAt: new Date().toISOString(),
-      });
+      if (error instanceof LegacyWorkspaceMigrationConflictError) {
+        return c.json({ error: error.message }, 409);
+      }
       throw error;
+    }
+    if (!result.queued) {
+      return c.json({ error: `Migration is already ${result.state.status}; pass force to enqueue a rerun` }, 409);
     }
 
     return c.json({
       success: true,
       org_id: orgId,
       workspace_id: workspaceId,
-      workflow_id: workflowId,
-      dry_run: dryRun,
+      workflow_id: result.workflowId,
+      dry_run: body.dry_run === true,
       status: "queued" as const,
     });
   },

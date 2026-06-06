@@ -1,5 +1,5 @@
 import { env } from "cloudflare:test";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   applyMigrationAgentPlan,
   appendUnclassifiedMiscProject,
@@ -18,6 +18,7 @@ import {
   type RuntimeFileEntry,
 } from "../src/legacy-workspace-migration-workflow";
 import { CURRENT_LEGACY_WORKSPACE_MIGRATION_VERSION } from "../../../src/lib/legacy-workspace-migration-version";
+import { getWorkspaceMigrationGate } from "../../../src/lib/workspace-migration-gate.server";
 import { WorkspaceFilesystemClient } from "../src/workspace-filesystem-do";
 
 describe("legacy workspace migration workflow", () => {
@@ -1155,5 +1156,56 @@ describe("legacy workspace migration workflow", () => {
     expect(queued.diagnostics).toBeUndefined();
     expect(queued.startedAt).toBeUndefined();
     expect(queued.completedAt).toBeUndefined();
+  });
+
+  it("migration gate queues any workspace that does not have a current completed migration", async () => {
+    const workspaceId = `migration-gate-needed-${crypto.randomUUID()}`;
+    const ensureLegacyWorkspaceMigrationQueued = vi.fn().mockResolvedValue({
+      workspaceId,
+      migrationVersion: CURRENT_LEGACY_WORKSPACE_MIGRATION_VERSION,
+      status: "queued",
+      attempts: 1,
+      updatedAt: new Date().toISOString(),
+    });
+
+    const gate = await getWorkspaceMigrationGate({
+      ...env,
+      ENABLE_LEGACY_WORKSPACE_MIGRATION: "1",
+      LEGACY_WORKSPACE_HOST: { fetch: vi.fn() },
+      WORKSPACE: {
+        idFromName: (name: string) => name,
+        get: () => ({ ensureLegacyWorkspaceMigrationQueued }),
+      },
+    } as never, workspaceId);
+
+    expect(ensureLegacyWorkspaceMigrationQueued).toHaveBeenCalledOnce();
+    expect(gate).toEqual({
+      workspaceId,
+      status: "queued",
+      reason: "active",
+    });
+  });
+
+  it("migration gate does not queue a current completed migration", async () => {
+    const workspaceId = `migration-gate-complete-${crypto.randomUUID()}`;
+    const workspace = new WorkspaceFilesystemClient(env, workspaceId);
+    await workspace.setLegacyWorkspaceMigrationState({
+      status: "complete",
+      completedAt: new Date().toISOString(),
+    });
+    const ensureLegacyWorkspaceMigrationQueued = vi.fn();
+
+    const gate = await getWorkspaceMigrationGate({
+      ...env,
+      ENABLE_LEGACY_WORKSPACE_MIGRATION: "1",
+      LEGACY_WORKSPACE_HOST: { fetch: vi.fn() },
+      WORKSPACE: {
+        idFromName: (name: string) => name,
+        get: () => ({ ensureLegacyWorkspaceMigrationQueued }),
+      },
+    } as never, workspaceId);
+
+    expect(ensureLegacyWorkspaceMigrationQueued).not.toHaveBeenCalled();
+    expect(gate).toBeNull();
   });
 });
