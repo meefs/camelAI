@@ -10,6 +10,7 @@ import {
   buildMigrationPlanningPrompt,
   buildLegacyWorkspaceNamingContext,
   parseMigrationPlanningAiResult,
+  expandNestedWorkerAppSourcePaths,
   resetProjectsForWorkspaceMigration,
   type MigrationDeployedAppContext,
   type LegacyWorkspaceMigrationRuntimeReader,
@@ -55,7 +56,7 @@ describe("legacy workspace migration workflow", () => {
     expect(plan.unclassified).toEqual(["/home/claude/.cache"]);
   });
 
-  it("preserves hidden planning-only paths in a deterministic misc project", () => {
+  it("preserves useful hidden planning-only paths in a deterministic misc project", () => {
     const plan = appendUnclassifiedMiscProject({
       projects: [
         {
@@ -65,7 +66,7 @@ describe("legacy workspace migration workflow", () => {
         },
       ],
       workspaceFiles: [],
-      unclassified: ["/home/claude/.cache", "/home/claude/.claude"],
+      unclassified: ["/home/claude/.cache", "/home/claude/.EasyOCR", "/home/claude/.bun", "/home/claude/.claude"],
     });
 
     expect(plan.projects).toEqual([
@@ -77,11 +78,49 @@ describe("legacy workspace migration workflow", () => {
       {
         name: "legacy-workspace-misc",
         description: "Miscellaneous hidden, cache, tooling, and loose legacy workspace paths preserved during migration.",
-        sourcePaths: ["/home/claude/.cache", "/home/claude/.claude"],
+        sourcePaths: ["/home/claude/.claude"],
         reason: "Preserved automatically outside the AI naming step so hidden/tooling paths are still migrated.",
       },
     ]);
     expect(plan.unclassified).toEqual([]);
+  });
+
+  it("splits nested Wrangler apps out of a broader legacy project folder", async () => {
+    const plan = buildLegacyWorkspaceMigrationSeedPlan({
+      entries: [
+        { name: "projects", type: "directory", absolutePath: "/home/claude/projects" },
+      ],
+    });
+    const expanded = await expandNestedWorkerAppSourcePaths({
+      plan,
+      workerAppSourcePaths: [
+        "/home/claude/projects/hello-world",
+        "/home/claude/projects/sf-muni",
+        "/home/claude/projects/node_modules/fake-worker",
+      ],
+    });
+
+    expect(expanded.projects).toEqual([
+      {
+        name: "projects",
+        description: "Legacy workspace path projects.",
+        sourcePaths: ["/home/claude/projects"],
+        ignoreGlobs: ["hello-world/**", "sf-muni/**"],
+        reason: "Allowed source path for agent-led migration discovery. Nested Worker app directories were split into separate migration projects and excluded from this parent import.",
+      },
+      {
+        name: "hello-world",
+        description: "Worker app project from /home/claude/projects/hello-world.",
+        sourcePaths: ["/home/claude/projects/hello-world"],
+        reason: "Detected nested Wrangler config; Worker app directories are migrated as separate project boundaries.",
+      },
+      {
+        name: "sf-muni",
+        description: "Worker app project from /home/claude/projects/sf-muni.",
+        sourcePaths: ["/home/claude/projects/sf-muni"],
+        reason: "Detected nested Wrangler config; Worker app directories are migrated as separate project boundaries.",
+      },
+    ]);
   });
 
   it("builds AI naming context by traversing readable project files without sampling secrets", async () => {
@@ -184,6 +223,58 @@ describe("legacy workspace migration workflow", () => {
         name: "customer-churn-analysis-2",
         description: "Loose workspace notes.",
         sourcePaths: ["/home/claude/README.md"],
+        reason: "Migration planning agent grouped these legacy workspace paths.",
+      },
+    ]);
+  });
+
+  it("preserves parent ignore globs when validating nested Worker app plans", () => {
+    const plan = {
+      workspaceFiles: [],
+      projects: [
+        {
+          name: "projects",
+          description: "Analysis and scratch files.",
+          sourcePaths: ["/home/claude/projects"],
+          ignoreGlobs: ["hello-world/**"],
+        },
+        {
+          name: "hello-world",
+          description: "Nested Worker app.",
+          sourcePaths: ["/home/claude/projects/hello-world"],
+        },
+      ],
+    };
+
+    const updated = applyMigrationAgentPlan(plan, {
+      projects: [
+        {
+          name: "sf-muni-analysis-workspace",
+          description: "Transit analysis notebooks, scripts, and datasets.",
+          sourcePaths: ["/home/claude/projects"],
+        },
+        {
+          name: "hello-world",
+          description: "React Router Worker app.",
+          sourcePaths: ["/home/claude/projects/hello-world"],
+        },
+      ],
+    }, {
+      workerAppSourcePaths: ["/home/claude/projects/hello-world"],
+    });
+
+    expect(updated.projects).toEqual([
+      {
+        name: "sf-muni-analysis-workspace",
+        description: "Transit analysis notebooks, scripts, and datasets.",
+        sourcePaths: ["/home/claude/projects"],
+        ignoreGlobs: ["hello-world/**"],
+        reason: "Migration planning agent grouped these legacy workspace paths.",
+      },
+      {
+        name: "hello-world",
+        description: "React Router Worker app.",
+        sourcePaths: ["/home/claude/projects/hello-world"],
         reason: "Migration planning agent grouped these legacy workspace paths.",
       },
     ]);
@@ -439,7 +530,7 @@ describe("legacy workspace migration workflow", () => {
     expect(miscProjects).toHaveLength(1);
     expect(miscProjects[0]).toMatchObject({
       name: "legacy-workspace-misc",
-      sourcePaths: ["/home/claude/README.md", "/home/claude/notes.txt", "/home/claude/.cache"],
+      sourcePaths: ["/home/claude/README.md", "/home/claude/notes.txt"],
     });
   });
 
@@ -567,7 +658,13 @@ describe("legacy workspace migration workflow", () => {
       "Do not put two detected_worker_app_paths entries in the same project. Worker app source paths are hard project boundaries, even if they are nearby or have similar names.",
     );
     expect(prompt.hard_requirements).toContain(
-      "Loose top-level files should usually be clustered by topic, notebook/script/data relationship, or put in the single misc project. Do not create one-file projects for images, CSVs, JSON outputs, logs, lockfiles, or generated artifacts unless the file is clearly a standalone user-authored project.",
+      "Loose files and non-deployable data/artifact directories are low risk to group. Prefer fewer coherent projects over many tiny projects for notebooks, scripts, CSVs, JSON outputs, PNGs, HTML reports, markdown notes, logs, and lockfiles.",
+    );
+    expect(prompt.hard_requirements).toContain(
+      "Hello/demo/test/template source paths with no deployed app association should usually be grouped into one demos or experiments project unless they are distinct Worker app boundaries.",
+    );
+    expect(prompt.hard_requirements).toContain(
+      "Clearly different loose-file topics should be separated into distinct named analysis/scratch projects instead of one broad catch-all. For example, unrelated transit notebooks, executive CSV analysis, and Bedrock diagnostics should not be merged together just because they are all loose files.",
     );
     expect(prompt.detected_worker_app_instruction).toBe(
       "Each detected_worker_app_paths entry is a Worker app boundary. Keep every detected Worker app source path in its own project and never group two detected Worker apps together.",
@@ -925,50 +1022,78 @@ describe("legacy workspace migration workflow", () => {
     expect(structuredClone(projectRef)).toEqual(projectRef);
   });
 
-  it("waits for Artifacts repos to expose a Git remote before returning them", async () => {
-    vi.useFakeTimers();
-    try {
-      const create = vi.fn(async () => ({
-        name: "repo-1",
-        status: "creating" as const,
-      }));
-      const get = vi.fn()
-        .mockRejectedValueOnce(new Error("not found"))
-        .mockResolvedValueOnce({
-          id: "repo-id-1",
-          name: "repo-1",
-          remote: "https://artifacts.cloudflare.test/git/repo-1.git",
-          defaultBranch: "main",
-          status: "ready",
-        });
-      const artifacts = { create, get };
+  it("creates the Artifacts repo even when get would return a lazy handle", async () => {
+    const create = vi.fn(async () => ({
+      id: "repo-id-1",
+      name: "repo-1",
+      createToken: vi.fn(),
+    }));
+    const get = vi.fn(async () => ({
+      createToken: vi.fn(),
+    }));
+    const artifacts = { create, get };
 
-      const ready = workspaceFilesystemTesting.createOrGetArtifactRepo(
-        artifacts,
-        "repo-1",
-        {
-          id: "project-1",
-          name: "project-1",
-          description: "Project one.",
-          defaultVmId: "main",
-          createdAt: "2026-06-04T00:00:00.000Z",
-          updatedAt: "2026-06-04T00:00:00.000Z",
-        },
-      );
+    const ready = await workspaceFilesystemTesting.createOrGetArtifactRepo(
+      artifacts,
+      "repo-1",
+      {
+        id: "project-1",
+        name: "project-1",
+        description: "Project one.",
+        defaultVmId: "main",
+        createdAt: "2026-06-04T00:00:00.000Z",
+        updatedAt: "2026-06-04T00:00:00.000Z",
+      },
+      "https://artifacts.cloudflare.test/git/staging/repo-1.git",
+    );
 
-      await vi.advanceTimersByTimeAsync(1_000);
+    expect(ready).toMatchObject({
+      id: "repo-id-1",
+      name: "repo-1",
+      remote: "https://artifacts.cloudflare.test/git/staging/repo-1.git",
+      status: "ready",
+    });
+    expect(create).toHaveBeenCalledOnce();
+    expect(get).not.toHaveBeenCalled();
+  });
 
-      await expect(ready).resolves.toMatchObject({
-        id: "repo-id-1",
-        name: "repo-1",
-        remote: "https://artifacts.cloudflare.test/git/repo-1.git",
-        status: "ready",
-      });
-      expect(create).toHaveBeenCalledOnce();
-      expect(get).toHaveBeenCalledTimes(2);
-    } finally {
-      vi.useRealTimers();
-    }
+  it("recovers an Artifacts repo after a duplicate create race", async () => {
+    const create = vi.fn(async () => {
+      throw new Error("already exists");
+    });
+    const get = vi.fn(async () => ({
+      id: "repo-id-1",
+      name: "repo-1",
+      remote: "https://artifacts.cloudflare.test/git/staging/repo-1.git",
+      defaultBranch: "main",
+      status: "ready",
+      createToken: vi.fn(),
+    }));
+    const artifacts = { create, get };
+
+    const ready = await workspaceFilesystemTesting.createOrGetArtifactRepo(
+      artifacts,
+      "repo-1",
+      {
+        id: "project-1",
+        name: "project-1",
+        description: "Project one.",
+        defaultVmId: "main",
+        createdAt: "2026-06-04T00:00:00.000Z",
+        updatedAt: "2026-06-04T00:00:00.000Z",
+      },
+      "https://artifacts.cloudflare.test/git/staging/repo-1.git",
+    );
+
+    expect(ready).toMatchObject({
+      id: "repo-id-1",
+      name: "repo-1",
+      remote: "https://artifacts.cloudflare.test/git/staging/repo-1.git",
+      defaultBranch: "main",
+      status: "ready",
+    });
+    expect(create).toHaveBeenCalledOnce();
+    expect(get).toHaveBeenCalledOnce();
   });
 
   it("deletes all projects before a migration rerun", async () => {

@@ -1,6 +1,7 @@
 export const PROJECT_RUNTIME_PROVIDER = "project-runtime-service";
 export const PROJECT_VM_CHECKOUT_PATH = "/workspace";
 export const PROJECT_RUNTIME_ARTIFACTS_PROXY_CAPABILITY = "camelai-artifacts";
+export const PROJECT_RUNTIME_CLOUDFLARE_API_PROXY_CAPABILITY = "camelai-cloudflare-api";
 
 export interface ProjectVmEnv {
   PROJECT_RUNTIME_HOST?: Fetcher;
@@ -85,14 +86,12 @@ export function workspaceIdFromGlobalProjectId(projectId: string): string | null
 export function runtimeArtifactsProxyRemote(
   base: string | undefined,
   dockerProxyBase: string | undefined,
-  projectId: string,
-  remoteProjectId: string,
 ): string {
   const cleanBase = (
     base?.trim() ||
     `${projectRuntimeDockerProxyBaseUrl(dockerProxyBase)}/p/${PROJECT_RUNTIME_ARTIFACTS_PROXY_CAPABILITY}`
   ).replace(/\/+$/, "");
-  return `${cleanBase}/${encodeURIComponent(projectId)}/git/${encodeURIComponent(remoteProjectId)}.git`;
+  return `${cleanBase}/git/origin.git`;
 }
 
 export function projectRuntimeDockerProxyBaseUrl(value: string | undefined): string {
@@ -101,6 +100,6 @@ export function projectRuntimeDockerProxyBaseUrl(value: string | undefined): str
 
 export function projectRuntimeDeployProxyUrl(value: string | undefined): string {
   const base = projectRuntimeDockerProxyBaseUrl(value);
-  const deployPath = "/deploy/client/v4";
-  return base.endsWith(deployPath) ? base : `${base}${deployPath}`;
+  const proxyPath = `/p/${PROJECT_RUNTIME_CLOUDFLARE_API_PROXY_CAPABILITY}/client/v4`;
+  return base.endsWith("/client/v4") ? base : `${base}${proxyPath}`;
 }

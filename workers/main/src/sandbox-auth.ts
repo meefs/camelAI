@@ -67,7 +67,9 @@ export function validateProjectRuntimeProxy(
   if (!hasVerifiedClientCertificate(request, env) && !hasValidSharedSecret(request, env)) {
     return { valid: false };
   }
-  const projectId = request.headers.get("x-chiridion-project-id")?.trim();
+  const projectId =
+    request.headers.get("x-project-runtime-project")?.trim() ||
+    request.headers.get("x-chiridion-project-id")?.trim();
   if (!projectId) return { valid: false };
   return { valid: true, projectId };
 }

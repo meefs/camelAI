@@ -167,6 +167,8 @@ export function validateBindings(
 
 const DISPATCH_SCRIPT_UPLOAD =
   /^\/client\/v4\/accounts\/[^/]+\/workers\/dispatch\/namespaces\/[^/]+\/scripts\/[^/]+$/;
+const DISPATCH_SCRIPT_CONTENT_UPLOAD =
+  /^\/client\/v4\/accounts\/[^/]+\/workers\/dispatch\/namespaces\/[^/]+\/scripts\/[^/]+\/content$/;
 const DISPATCH_SCRIPT_BASE =
   /^\/client\/v4\/accounts\/([^/]+)\/workers\/dispatch\/namespaces\/([^/]+)\/scripts\/([^/]+)$/;
 const DISPATCH_SCRIPT_ANY =
@@ -339,7 +341,7 @@ async function getScriptAccessInfo(
 const DISPATCH_SCRIPT_TAILS =
   /^\/client\/v4\/accounts\/[^/]+\/workers\/dispatch\/namespaces\/[^/]+\/scripts\/([^/]+)\/tails$/;
 
-function isAllowedCloudflareApiProxyRequest(
+export function isAllowedCloudflareApiProxyRequest(
   pathname: string,
   method: string,
 ): boolean {
@@ -375,7 +377,9 @@ function isAllowedCloudflareApiProxyRequest(
       );
     case "PUT":
       return (
-        dispatchScript.test(pathname) || dispatchScriptSecrets.test(pathname)
+        dispatchScript.test(pathname) ||
+        DISPATCH_SCRIPT_CONTENT_UPLOAD.test(pathname) ||
+        dispatchScriptSecrets.test(pathname)
       );
     case "PATCH":
       return (
@@ -386,6 +390,7 @@ function isAllowedCloudflareApiProxyRequest(
       return (
         dispatchAssetsUploadSession.test(pathname) ||
         dispatchScriptVersions.test(pathname) ||
+        dispatchScriptDeployments.test(pathname) ||
         DISPATCH_SCRIPT_TAILS.test(pathname) ||
         ASSETS_UPLOAD.test(pathname)
       );
@@ -400,6 +405,7 @@ function isUploadRequest(pathname: string, method: string): boolean {
   const m = method.toUpperCase();
   return (
     (m === "PUT" && DISPATCH_SCRIPT_UPLOAD.test(pathname)) ||
+    (m === "PUT" && DISPATCH_SCRIPT_CONTENT_UPLOAD.test(pathname)) ||
     (m === "POST" && ASSETS_UPLOAD.test(pathname))
   );
 }

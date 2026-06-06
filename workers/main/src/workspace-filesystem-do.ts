@@ -11,6 +11,8 @@ export interface WorkspaceFilesystemEnv {
   WORKSPACE_FS: DurableObjectNamespace<WorkspaceFilesystemDO>;
   R2_BUCKET: R2Bucket;
   ARTIFACTS?: ArtifactsBinding;
+  CF_ACCOUNT_ID?: string;
+  ARTIFACTS_NAMESPACE?: string;
 }
 
 export interface WorkspaceReadFileResponse {
@@ -642,18 +644,30 @@ export class WorkspaceFilesystemDO extends DurableObject<WorkspaceFilesystemEnv>
   ): Promise<ProjectArtifactToken> {
     const id = requireProjectId(projectId, "project");
     const existing = (await this.readProjects()).find((candidate) => candidate.id === id);
-    const project = existing ? await this.ensureProjectArtifactsReady(existing) : null;
+    let project = existing ?? null;
     if (!project) {
       throw new Error(`Project not found: ${String(projectId)}`);
-    }
-    if (!project.artifactRepoName || !project.artifactRemote || project.artifactStatus === "error") {
-      throw new Error(`Project ${project.id} is not backed by an Artifacts repo`);
     }
     const artifacts = this.env.ARTIFACTS;
     if (!artifacts) {
       throw new Error("ARTIFACTS binding is not configured");
     }
-    const repo = await artifacts.get(project.artifactRepoName);
+    if (!project.artifactRepoName || !project.artifactRemote || project.artifactStatus === "error") {
+      project = await this.ensureProjectArtifactRepo(project);
+    }
+    if (!project.artifactRepoName || !project.artifactRemote || project.artifactStatus === "error") {
+      throw new Error(`Project ${project.id} is not backed by an Artifacts repo`);
+    }
+    let repo: ArtifactsRepo;
+    try {
+      repo = await artifacts.get(project.artifactRepoName);
+    } catch {
+      project = await this.ensureProjectArtifactRepo(project);
+      if (!project.artifactRepoName || !project.artifactRemote || project.artifactStatus === "error") {
+        throw new Error(`Project ${project.id} is not backed by an Artifacts repo`);
+      }
+      repo = await artifacts.get(project.artifactRepoName);
+    }
     const result = await repo.createToken(scope, ttlSeconds);
     return {
       project: toPublicProject(project),
@@ -691,8 +705,9 @@ export class WorkspaceFilesystemDO extends DurableObject<WorkspaceFilesystemEnv>
     if (!artifacts) return project;
 
     const repoName = project.artifactRepoName || artifactRepoName(this.ctx.id.toString(), project.id);
+    const artifactRemote = this.artifactRemoteForRepo(repoName);
     try {
-      const repo = await createOrGetArtifactRepo(artifacts, repoName, project);
+      const repo = await createOrGetArtifactRepo(artifacts, repoName, project, artifactRemote);
       const updated: WorkspaceProject = {
         ...project,
         artifactRepoName: repo.name,
@@ -712,6 +727,15 @@ export class WorkspaceFilesystemDO extends DurableObject<WorkspaceFilesystemEnv>
       });
       throw error;
     }
+  }
+
+  private artifactRemoteForRepo(repoName: string): string {
+    const accountId = this.env.CF_ACCOUNT_ID?.trim();
+    const namespace = this.env.ARTIFACTS_NAMESPACE?.trim();
+    if (!accountId || !namespace) {
+      return `https://artifacts.cloudflare.test/git/${encodeURIComponent(repoName)}.git`;
+    }
+    return `https://${accountId}.artifacts.cloudflare.net/git/${encodeURIComponent(namespace)}/${encodeURIComponent(repoName)}.git`;
   }
 
   private async ensureProjectArtifactsReady(project: WorkspaceProject): Promise<WorkspaceProject> {
@@ -961,65 +985,95 @@ async function createOrGetArtifactRepo(
   artifacts: ArtifactsBinding,
   repoName: string,
   project: WorkspaceProject,
+  artifactRemote: string,
 ): Promise<ReadyArtifactsRepoInfo> {
-  let repo: ArtifactsRepoInfo;
   try {
-    repo = await artifacts.get(repoName);
-  } catch {
-    repo = await artifacts.create(repoName, {
+    const created = await artifacts.create(repoName, {
       description: `camelAI project ${project.id}`,
       readOnly: false,
       setDefaultBranch: ARTIFACTS_DEFAULT_BRANCH,
     });
+    return normalizeArtifactCreateInfo(created, repoName, artifactRemote);
+  } catch (error) {
+    if (isArtifactRepoAlreadyExistsError(error)) {
+      try {
+        const repo = await artifacts.get(repoName);
+        return await artifactRepoInfoFromHandle(repo, repoName, artifactRemote);
+      } catch {
+        return readyArtifactRepoInfo(repoName, artifactRemote);
+      }
+    }
+    try {
+      return await waitForArtifactRepoHandleReady(artifacts, repoName, artifactRemote);
+    } catch {
+      throw error;
+    }
   }
-
-  return waitForArtifactRepoReady(artifacts, repoName, repo);
 }
 
-async function waitForArtifactRepoReady(
+async function waitForArtifactRepoHandleReady(
   artifacts: ArtifactsBinding,
   repoName: string,
-  initialRepo: ArtifactsRepoInfo,
+  artifactRemote: string,
 ): Promise<ReadyArtifactsRepoInfo> {
   const deadline = Date.now() + ARTIFACTS_READY_TIMEOUT_MS;
-  let repo = await normalizeArtifactRepoInfo(initialRepo);
 
-  while (!repo.remote && Date.now() < deadline) {
-    await delay(ARTIFACTS_READY_POLL_MS);
-    repo = await normalizeArtifactRepoInfo(await artifacts.get(repoName));
+  while (Date.now() < deadline) {
+    try {
+      const repo = await artifacts.get(repoName);
+      return await artifactRepoInfoFromHandle(repo, repoName, artifactRemote);
+    } catch {
+      await delay(ARTIFACTS_READY_POLL_MS);
+    }
   }
 
-  if (!repo.remote) {
-    const status = repo.status ? ` status=${repo.status}` : "";
-    throw new Error(`Artifacts repo ${repoName} did not expose a Git remote within ${ARTIFACTS_READY_TIMEOUT_MS}ms.${status}`);
-  }
+  throw new Error(`Artifacts repo ${repoName} was not ready within ${ARTIFACTS_READY_TIMEOUT_MS}ms.`);
+}
 
+async function artifactRepoInfoFromHandle(
+  repo: ArtifactsRepo,
+  repoName: string,
+  artifactRemote: string,
+): Promise<ReadyArtifactsRepoInfo> {
   return {
-    ...repo,
-    remote: repo.remote,
+    id: await optionalStringValue(repo.id),
+    name: repoName,
+    remote: await optionalStringValue(repo.remote) || artifactRemote,
+    defaultBranch: await optionalStringValue(repo.defaultBranch) || ARTIFACTS_DEFAULT_BRANCH,
+    status: normalizeArtifactStatus(await optionalStringValue(repo.status)) || "ready",
   };
 }
 
-async function normalizeArtifactRepoInfo(repo: ArtifactsRepoInfo): Promise<ArtifactsRepoInfo> {
+async function normalizeArtifactCreateInfo(
+  repo: ArtifactsCreateRepoResult,
+  repoName: string,
+  artifactRemote: string,
+): Promise<ReadyArtifactsRepoInfo> {
   return {
     id: await optionalStringValue(repo.id),
-    name: await stringValue(repo.name, "artifact repo name"),
-    remote: await optionalStringValue(repo.remote),
+    name: repoName,
+    remote: await optionalStringValue(repo.remote) || artifactRemote,
     defaultBranch: await optionalStringValue(repo.defaultBranch),
-    status: normalizeArtifactStatus(await optionalStringValue(repo.status)),
+    status: normalizeArtifactStatus(await optionalStringValue(repo.status)) || "ready",
+  };
+}
+
+function isArtifactRepoAlreadyExistsError(error: unknown): boolean {
+  const message = errorMessage(error).toLowerCase();
+  return message.includes("already exists") || message.includes("already_exist");
+}
+
+function readyArtifactRepoInfo(repoName: string, artifactRemote: string): ReadyArtifactsRepoInfo {
+  return {
+    name: repoName,
+    remote: artifactRemote,
+    defaultBranch: ARTIFACTS_DEFAULT_BRANCH,
+    status: "ready",
   };
 }
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-async function stringValue(value: unknown, label: string): Promise<string> {
-  const resolved = await Promise.resolve(value);
-  if (typeof resolved !== "string" || !resolved.trim()) {
-    throw new Error(`${label} is missing`);
-  }
-  return resolved;
 }
 
 async function optionalStringValue(value: unknown): Promise<string | undefined> {

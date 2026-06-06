@@ -38,6 +38,7 @@
 			"R2_ACCESS_KEY_ID": "623236fde5ab11f7feef1e8e360c8de1",
 			"BACKUP_BUCKET_NAME": "chiridion-sandbox-vm-backups-dev-miguel",
 			"CF_ACCOUNT_ID": "85bbd288051330fb51ee1c86031a299b",
+			"ARTIFACTS_NAMESPACE": "dev-miguel",
 			"CLOUDFLARE_ACCOUNT_ID": "85bbd288051330fb51ee1c86031a299b",
 			"CF_GATEWAY_NAME": "chiridion",
 			"CF_DISPATCH_NAMESPACE": "chiridion-platform-dev-miguel",

@@ -418,13 +418,10 @@ print("\\n".join(matches))
     }
 
     const branch = project.artifactDefaultBranch || "main";
-    const remoteProjectId = project.artifactRemoteProjectId || project.id;
     const remote = project.artifactRemote
       ? runtimeArtifactsProxyRemote(
           this.options.env.PROJECT_RUNTIME_ARTIFACTS_PROXY_BASE,
           this.options.env.PROJECT_RUNTIME_DOCKER_PROXY_BASE_URL,
-          project.id,
-          remoteProjectId,
         )
       : undefined;
     const script = `

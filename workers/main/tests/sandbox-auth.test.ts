@@ -112,6 +112,21 @@ describe("validateSandboxProxy", () => {
 });
 
 describe("validateProjectRuntimeProxy", () => {
+  it("accepts the runtime-injected project header", () => {
+    const result = validateProjectRuntimeProxy(
+      request({
+        "x-project-runtime-project": "ca-00000000000000000000000000000000-web-app",
+        authorization: "Bearer runtime-secret",
+      }),
+      { PROJECT_RUNTIME_PROXY_SECRET: "runtime-secret" },
+    );
+
+    expect(result).toEqual({
+      valid: true,
+      projectId: "ca-00000000000000000000000000000000-web-app",
+    });
+  });
+
   it("accepts authenticated project-only runtime proxy requests", () => {
     const result = validateProjectRuntimeProxy(
       request({

@@ -31,13 +31,13 @@ describe("project VM protocol proxy URLs", () => {
 
   it("builds Wrangler deploy proxy URLs from the runtime Docker proxy", () => {
     expect(projectRuntimeDeployProxyUrl(undefined)).toBe(
-      "http://host.docker.internal:8089/deploy/client/v4",
+      "http://host.docker.internal:8089/p/camelai-cloudflare-api/client/v4",
     );
     expect(projectRuntimeDeployProxyUrl("http://host.docker.internal:4411")).toBe(
-      "http://host.docker.internal:4411/deploy/client/v4",
+      "http://host.docker.internal:4411/p/camelai-cloudflare-api/client/v4",
     );
-    expect(projectRuntimeDeployProxyUrl("http://host.docker.internal:4411/deploy/client/v4")).toBe(
-      "http://host.docker.internal:4411/deploy/client/v4",
+    expect(projectRuntimeDeployProxyUrl("http://host.docker.internal:4411/p/camelai-cloudflare-api/client/v4")).toBe(
+      "http://host.docker.internal:4411/p/camelai-cloudflare-api/client/v4",
     );
   });
 
@@ -46,11 +46,9 @@ describe("project VM protocol proxy URLs", () => {
       runtimeArtifactsProxyRemote(
         undefined,
         "http://host.docker.internal:4411/",
-        "project one",
-        "remote/two",
       ),
     ).toBe(
-      "http://host.docker.internal:4411/p/camelai-artifacts/project%20one/git/remote%2Ftwo.git",
+      "http://host.docker.internal:4411/p/camelai-artifacts/git/origin.git",
     );
   });
 });

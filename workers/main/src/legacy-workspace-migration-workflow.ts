@@ -8,8 +8,8 @@ import { CURRENT_LEGACY_WORKSPACE_MIGRATION_VERSION } from "../../../src/lib/leg
 import type { WorkerScript } from "./auth.js";
 import { getOrgStub } from "./helpers/stubs.js";
 import type { Env } from "./types.js";
+import { runtimeArtifactsProxyRemote } from "./project-vm-protocol.js";
 import {
-  globalProjectId,
   WorkspaceFilesystemClient,
   type LegacyWorkspaceMigrationDiagnostics,
   type LegacyWorkspaceMigrationPlan,
@@ -21,6 +21,7 @@ const MIGRATION_LEASE_TTL_MS = 6 * 60 * 60 * 1000;
 const MIGRATION_CONTEXT_STEP_TIMEOUT = "15 minutes";
 const MIGRATION_AI_STEP_TIMEOUT = "45 minutes";
 const MIGRATION_IMPORT_STEP_TIMEOUT = "2 hours";
+const MIGRATION_PROJECT_IMPORT_CONCURRENCY = 4;
 const MIGRATION_AI_REQUEST_TIMEOUT_MS = 5 * 60 * 1000;
 const MIGRATION_AI_MAX_RESPONSES = 12;
 const MIGRATION_AI_MAX_TOOL_CALLS = 120;
@@ -31,6 +32,7 @@ const NAMING_CONTEXT_MAX_SAMPLES_PER_PROJECT = 6;
 const NAMING_CONTEXT_MAX_SAMPLE_BYTES = 8_000;
 const NAMING_CONTEXT_MAX_READ_BYTES = 2_000_000;
 const NAMING_CONTEXT_MAX_TOTAL_CHARS = 80_000;
+const LEGACY_WORKSPACE_LIST_TIMEOUT_MS = 5_000;
 const MIGRATION_PLANNING_RESPONSES_MODEL = "gpt-5.5";
 const MIGRATION_PLANNING_RESPONSE_SCHEMA_NAME = "legacy_workspace_migration_plan";
 const DESCRIPTION_MAX_LENGTH = 240;
@@ -132,6 +134,12 @@ export interface RuntimeFileEntry {
   absolutePath?: string;
 }
 
+interface LegacyWorkspaceMigrationDiscovery {
+  files: RuntimeFileEntry[];
+  count: number;
+  nestedWorkerApps?: string[];
+}
+
 export interface LegacyWorkspaceMigrationRuntimeReader {
   listLegacyWorkspace(
     orgId: string,
@@ -152,7 +160,7 @@ interface LegacyWorkspaceMigrationRuntimeResetter {
 }
 
 interface LegacyWorkspaceMigrationWorkspaceResetter {
-  listProjectsForMigrationReset(): Promise<Array<{ id: string; clonedFromProjectId?: string }>>;
+  listProjectsForMigrationReset(): Promise<Array<{ id: string; name?: string; clonedFromProjectId?: string }>>;
   deleteProjectsForWorkspace(
     workspaceId?: unknown,
   ): Promise<{ deleted: Array<{ id: string }>; retained: Array<{ id: string }> }>;
@@ -163,6 +171,20 @@ interface LegacyImportResult {
   files?: number;
   bytes?: number;
   skippedPaths?: string[];
+}
+
+interface MigrationProjectImportResult {
+  index: number;
+  projectName: string;
+  files: number;
+  bytes: number;
+  skippedPaths: string[];
+}
+
+interface MigrationProjectReference {
+  projectId: string;
+  projectName: string;
+  artifactDefaultBranch: string;
 }
 
 interface LegacyMigrationLock {
@@ -230,10 +252,7 @@ export class LegacyWorkspaceMigrationWorkflow extends WorkflowEntrypoint<Env, Le
       }
 
       const tree = await step.do("scan-legacy-workspace", async () => {
-        return runtime.listLegacyWorkspace(payload.orgId, payload.workspaceId, LEGACY_ROOT, {
-          recursive: false,
-          limit: TOP_LEVEL_SCAN_LIMIT,
-        });
+        return runtime.discoverLegacyWorkspaceMigration(payload.orgId, payload.workspaceId);
       });
 
       const deployedApps = await step.do("list-deployed-apps", async () => {
@@ -255,8 +274,18 @@ export class LegacyWorkspaceMigrationWorkflow extends WorkflowEntrypoint<Env, Le
         throw new Error(diagnostics.warnings?.[0] ?? "Legacy workspace scan returned no files");
       }
 
-      const allowedSourcePlan = await step.do("build-agent-discovery-input", async () => {
+      const seedSourcePlan = await step.do("build-agent-discovery-input", async () => {
         return buildLegacyWorkspaceMigrationSeedPlan({ entries: tree.files });
+      });
+
+      const allowedSourcePlan = await step.do("expand-nested-worker-app-source-paths", {
+        timeout: MIGRATION_CONTEXT_STEP_TIMEOUT,
+        retries: { limit: 3, delay: "10 seconds", backoff: "exponential" },
+      }, async () => {
+        return expandNestedWorkerAppSourcePaths({
+          plan: seedSourcePlan,
+          workerAppSourcePaths: tree.nestedWorkerApps ?? [],
+        });
       });
 
       const enrichedPlan = allowedSourcePlan.projects.length === 0
@@ -266,9 +295,7 @@ export class LegacyWorkspaceMigrationWorkflow extends WorkflowEntrypoint<Env, Le
               timeout: MIGRATION_CONTEXT_STEP_TIMEOUT,
               retries: { limit: 3, delay: "10 seconds", backoff: "exponential" },
             }, async () => {
-              return await buildLegacyWorkspaceNamingContext({
-                runtime,
-                orgId: payload.orgId,
+              return buildMinimalLegacyWorkspaceNamingContext({
                 workspaceId: payload.workspaceId,
                 plan: allowedSourcePlan,
               });
@@ -285,6 +312,7 @@ export class LegacyWorkspaceMigrationWorkflow extends WorkflowEntrypoint<Env, Le
                 plan: allowedSourcePlan,
                 context: discoveryContext,
                 deployedApps,
+                workerAppSourcePaths: tree.nestedWorkerApps ?? [],
               }),
               allowedSourcePaths: allowedSourcePlan.projects.flatMap((project) => project.sourcePaths),
             }));
@@ -293,7 +321,7 @@ export class LegacyWorkspaceMigrationWorkflow extends WorkflowEntrypoint<Env, Le
               return appendUnclassifiedMiscProject(
                 applyMigrationAgentPlan(allowedSourcePlan, agentProposal, {
                   deployedApps,
-                  workerAppSourcePaths: detectWorkerAppSourcePaths(discoveryContext),
+                  workerAppSourcePaths: tree.nestedWorkerApps ?? [],
                 }),
               );
             });
@@ -348,46 +376,46 @@ export class LegacyWorkspaceMigrationWorkflow extends WorkflowEntrypoint<Env, Le
         skippedPaths: [] as string[],
       };
 
-      for (const [index, projectPlan] of enrichedPlan.projects.entries()) {
-        const project = await step.do(`ensure-project-${index + 1}-${projectPlan.name}`, async () => {
-          return await ensureMigrationProject({
-            env: this.env,
-            workspaceId: payload.workspaceId,
-            projectPlan,
+      const projectEntries = Array.from(enrichedPlan.projects.entries());
+      for (
+        let batchStart = 0;
+        batchStart < projectEntries.length;
+        batchStart += MIGRATION_PROJECT_IMPORT_CONCURRENCY
+      ) {
+        const batch = projectEntries.slice(batchStart, batchStart + MIGRATION_PROJECT_IMPORT_CONCURRENCY);
+        const ensuredBatch = [];
+        for (const [index, projectPlan] of batch) {
+          const stepIndex = index + 1;
+          const project = await step.do(`ensure-project-${stepIndex}-${projectPlan.name}`, async () => {
+            return await ensureMigrationProject({
+              env: this.env,
+              workspaceId: payload.workspaceId,
+              projectPlan,
+            });
           });
-        });
-        const result = await step.do(`import-project-files-${index + 1}-${projectPlan.name}`, {
-          timeout: MIGRATION_IMPORT_STEP_TIMEOUT,
-          retries: { limit: 3, delay: "30 seconds", backoff: "exponential" },
-        }, async () => {
-          const projectRuntime = new ProjectRuntimeMigrationClient(this.env);
-          const importResult = await projectRuntime.importLegacyWorkspace(
-            payload.orgId,
-            payload.workspaceId,
-            project.projectId,
-            {
-              sourcePaths: projectPlan.sourcePaths,
-              ignoreGlobs: projectPlan.ignoreGlobs ?? [],
-            },
-          );
-          return sanitizeLegacyImportStepResult(importResult);
-        });
-        if ((projectPlan.deployedApps ?? []).length > 0) {
-          await step.do(`associate-deployed-apps-${index + 1}-${projectPlan.name}`, async () => {
-            const org = getOrgStub(this.env, payload.orgId);
-            for (const scriptName of projectPlan.deployedApps ?? []) {
-              await org.updateWorkerScriptProject(scriptName, payload.workspaceId, project.projectId, "system:legacy-migration");
-            }
-            return { count: projectPlan.deployedApps?.length ?? 0 };
-          });
+          ensuredBatch.push({ index, projectPlan, project });
         }
-        if (!importResults.createdProjects.includes(project.projectName)) {
-          importResults.createdProjects.push(project.projectName);
+
+        const batchResults = await Promise.all(ensuredBatch.map(({ index, projectPlan, project }) => importMigrationProject({
+          env: this.env,
+          step,
+          orgId: payload.orgId,
+          workspaceId: payload.workspaceId,
+          index,
+          projectPlan,
+          project,
+        })));
+
+        for (const result of batchResults.sort((a, b) => a.index - b.index)) {
+          if (!importResults.createdProjects.includes(result.projectName)) {
+            importResults.createdProjects.push(result.projectName);
+          }
+          importResults.copiedFiles += result.files;
+          importResults.copiedBytes += result.bytes;
+          importResults.skippedPaths.push(...result.skippedPaths);
         }
-        importResults.copiedFiles += result.files ?? 0;
-        importResults.copiedBytes += result.bytes ?? 0;
-        importResults.skippedPaths.push(...(result.skippedPaths ?? []));
-        await step.do(`record-import-progress-${index + 1}-${projectPlan.name}`, async () => {
+
+        await step.do(`record-import-progress-batch-${Math.floor(batchStart / MIGRATION_PROJECT_IMPORT_CONCURRENCY) + 1}`, async () => {
           await workspaceFs.setLegacyWorkspaceMigrationState({
             status: "copying",
             createdProjects: importResults.createdProjects,
@@ -413,6 +441,18 @@ export class LegacyWorkspaceMigrationWorkflow extends WorkflowEntrypoint<Env, Le
       await step.do("verify-imports", async () => {
         if (enrichedPlan.projects.length > 0 && importResults.createdProjects.length !== enrichedPlan.projects.length) {
           throw new Error("Not all planned projects were created");
+        }
+        const persistedProjects = await workspaceFs.listProjectsForMigrationReset();
+        const persistedProjectNames = new Set(
+          persistedProjects
+            .map((project) => project.name)
+            .filter((name): name is string => typeof name === "string" && name.length > 0),
+        );
+        const missingProjectNames = enrichedPlan.projects
+          .map((project) => project.name)
+          .filter((name) => !persistedProjectNames.has(name));
+        if (missingProjectNames.length > 0) {
+          throw new Error(`Persisted project registry is missing migrated projects: ${missingProjectNames.join(", ")}`);
         }
         await workspaceFs.setLegacyWorkspaceMigrationState({
           status: "complete",
@@ -461,10 +501,10 @@ async function ensureMigrationProject(input: {
   env: Env;
   workspaceId: string;
   projectPlan: LegacyWorkspaceMigrationProjectPlan;
-}): Promise<{ projectId: string; projectName: string }> {
+}): Promise<MigrationProjectReference> {
   const { env, workspaceId, projectPlan } = input;
   const workspaceFs = new WorkspaceFilesystemClient(env as never, workspaceId);
-  await workspaceFs.ensureLegacyMigrationProject({
+  const reference = await workspaceFs.ensureLegacyMigrationProject({
     name: projectPlan.name,
     description: projectPlan.description,
     migratedFrom: {
@@ -474,9 +514,63 @@ async function ensureMigrationProject(input: {
       migratedAt: new Date().toISOString(),
     },
   });
+  const project = await workspaceFs.getProject(reference.projectId);
+  if (!project?.artifactRemote || project.artifactStatus === "error") {
+    throw new Error(`Migrated project ${reference.projectName} does not have a ready Artifacts remote`);
+  }
   return {
-    projectId: globalProjectId(workspaceId, projectPlan.name),
-    projectName: projectPlan.name,
+    projectId: project.id,
+    projectName: project.name,
+    artifactDefaultBranch: project.artifactDefaultBranch || "main",
+  };
+}
+
+async function importMigrationProject(input: {
+  env: Env;
+  step: WorkflowStep;
+  orgId: string;
+  workspaceId: string;
+  index: number;
+  projectPlan: LegacyWorkspaceMigrationProjectPlan;
+  project: MigrationProjectReference;
+}): Promise<MigrationProjectImportResult> {
+  const stepIndex = input.index + 1;
+  const result = await input.step.do(`import-project-files-${stepIndex}-${input.projectPlan.name}`, {
+    timeout: MIGRATION_IMPORT_STEP_TIMEOUT,
+    retries: { limit: 3, delay: "30 seconds", backoff: "exponential" },
+  }, async () => {
+    const projectRuntime = new ProjectRuntimeMigrationClient(input.env);
+    const importResult = await projectRuntime.importLegacyWorkspace(
+      input.orgId,
+      input.workspaceId,
+      input.project.projectId,
+      {
+        sourcePaths: input.projectPlan.sourcePaths,
+        ignoreGlobs: input.projectPlan.ignoreGlobs ?? [],
+        gitRemote: runtimeArtifactsProxyRemote(
+          input.env.PROJECT_RUNTIME_ARTIFACTS_PROXY_BASE,
+          input.env.PROJECT_RUNTIME_DOCKER_PROXY_BASE_URL,
+        ),
+        gitBranch: input.project.artifactDefaultBranch,
+      },
+    );
+    return sanitizeLegacyImportStepResult(importResult);
+  });
+  if ((input.projectPlan.deployedApps ?? []).length > 0) {
+    await input.step.do(`associate-deployed-apps-${stepIndex}-${input.projectPlan.name}`, async () => {
+      const org = getOrgStub(input.env, input.orgId);
+      for (const scriptName of input.projectPlan.deployedApps ?? []) {
+        await org.updateWorkerScriptProject(scriptName, input.workspaceId, input.project.projectId, "system:legacy-migration");
+      }
+      return { count: input.projectPlan.deployedApps?.length ?? 0 };
+    });
+  }
+  return {
+    index: input.index,
+    projectName: input.project.projectName,
+    files: result.files,
+    bytes: result.bytes,
+    skippedPaths: result.skippedPaths,
   };
 }
 
@@ -496,6 +590,24 @@ function sanitizeLegacyImportStepResult(
 class ProjectRuntimeMigrationClient {
   constructor(private readonly env: Env) {}
 
+  async discoverLegacyWorkspaceMigration(
+    orgId: string,
+    workspaceId: string,
+  ): Promise<LegacyWorkspaceMigrationDiscovery> {
+    const result = await this.fetchJson<LegacyWorkspaceMigrationDiscovery>(
+      this.runtimeUrl(`/v1/workspaces/${encodeURIComponent(orgId)}/${encodeURIComponent(workspaceId)}/migration-discovery`),
+    );
+    const files = Array.isArray(result.files) ? result.files.slice(0, TOP_LEVEL_SCAN_LIMIT) : [];
+    const nestedWorkerApps = Array.isArray(result.nestedWorkerApps)
+      ? result.nestedWorkerApps.map((path) => String(path)).filter(Boolean)
+      : [];
+    return {
+      files,
+      count: typeof result.count === "number" ? result.count : files.length,
+      nestedWorkerApps,
+    };
+  }
+
   async listLegacyWorkspace(
     orgId: string,
     workspaceId: string,
@@ -510,7 +622,12 @@ class ProjectRuntimeMigrationClient {
         includeHidden: "true",
       },
     );
-    const result = await this.fetchLegacyJson<{ files?: RuntimeFileEntry[]; count?: number }>(url);
+    const controller = new AbortController();
+    const result = await withTimeout(
+      this.fetchLegacyJson<{ files?: RuntimeFileEntry[]; count?: number }>(url, { signal: controller.signal }),
+      LEGACY_WORKSPACE_LIST_TIMEOUT_MS,
+      () => controller.abort(),
+    );
     const files = Array.isArray(result.files) ? result.files.slice(0, options.limit ?? TOP_LEVEL_SCAN_LIMIT) : [];
     return { files, count: typeof result.count === "number" ? result.count : files.length };
   }
@@ -570,7 +687,7 @@ class ProjectRuntimeMigrationClient {
     orgId: string,
     workspaceId: string,
     projectId: string,
-    input: { sourcePaths: string[]; ignoreGlobs: string[] },
+    input: { sourcePaths: string[]; ignoreGlobs: string[]; gitRemote?: string; gitBranch?: string },
   ): Promise<LegacyImportResult> {
     return this.fetchJson(
       this.runtimeUrl(`/v1/projects/${encodeURIComponent(projectId)}/legacy-import`),
@@ -582,6 +699,8 @@ class ProjectRuntimeMigrationClient {
           workspaceId,
           sourcePaths: input.sourcePaths,
           ignoreGlobs: input.ignoreGlobs,
+          gitRemote: input.gitRemote,
+          gitBranch: input.gitBranch,
         }),
       },
     );
@@ -729,6 +848,81 @@ export function buildLegacyWorkspaceMigrationSeedPlan(input: {
   return { projects, workspaceFiles: [], unclassified };
 }
 
+export async function expandNestedWorkerAppSourcePaths(input: {
+  plan: LegacyWorkspaceMigrationPlan;
+  workerAppSourcePaths: string[];
+}): Promise<LegacyWorkspaceMigrationPlan> {
+  const usedNames = new Set(input.plan.projects.map((project) => project.name));
+  const expandedProjects: LegacyWorkspaceMigrationProjectPlan[] = [];
+  const workerAppSourcePaths = input.workerAppSourcePaths
+    .map(normalizeAbsolutePath)
+    .filter((path) => path.startsWith(`${LEGACY_ROOT}/`));
+
+  for (const project of input.plan.projects) {
+    const nestedAppRoots = workerAppSourcePaths
+      .filter((appRoot) => project.sourcePaths.some((sourcePath) =>
+        appRoot !== normalizeAbsolutePath(sourcePath) &&
+        isSameOrChildPath(appRoot, sourcePath) &&
+        !hasIgnoredNestedAppPathSegment(appRoot, sourcePath)
+      ));
+    if (nestedAppRoots.length === 0) {
+      expandedProjects.push(project);
+      continue;
+    }
+
+    const parentIgnoreGlobs = new Set(project.ignoreGlobs ?? []);
+    for (const appRoot of nestedAppRoots) {
+      for (const sourcePath of project.sourcePaths) {
+        const relativePath = relativeChildPath(sourcePath, appRoot);
+        if (relativePath) {
+          parentIgnoreGlobs.add(`${relativePath}/**`);
+        }
+      }
+    }
+    expandedProjects.push({
+      ...project,
+      ignoreGlobs: Array.from(parentIgnoreGlobs),
+      reason: [
+        project.reason,
+        "Nested Worker app directories were split into separate migration projects and excluded from this parent import.",
+      ].filter(Boolean).join(" "),
+    });
+
+    for (const appRoot of nestedAppRoots) {
+      const name = uniqueNameFromSet(normalizeProjectName(pathBasename(appRoot)), usedNames);
+      usedNames.add(name);
+      expandedProjects.push({
+        name,
+        description: `Worker app project from ${appRoot}.`,
+        sourcePaths: [appRoot],
+        reason: "Detected nested Wrangler config; Worker app directories are migrated as separate project boundaries.",
+      });
+    }
+  }
+
+  return {
+    ...input.plan,
+    projects: expandedProjects,
+  };
+}
+
+function relativeChildPath(parentPath: string, childPath: string): string | null {
+  const parent = normalizeAbsolutePath(parentPath);
+  const child = normalizeAbsolutePath(childPath);
+  if (!child.startsWith(`${parent}/`)) return null;
+  return child.slice(parent.length + 1);
+}
+
+function hasIgnoredNestedAppPathSegment(appRoot: string, sourcePath: string): boolean {
+  const relativePath = relativeChildPath(sourcePath, appRoot);
+  if (!relativePath) return false;
+  return relativePath.split("/").some(isIgnoredNestedAppDirectoryName);
+}
+
+function isIgnoredNestedAppDirectoryName(name: string): boolean {
+  return new Set([".git", ".wrangler", "node_modules", "build", "dist"]).has(name);
+}
+
 export interface LegacyWorkspaceNamingContext {
   workspaceId: string;
   projects: LegacyWorkspaceNamingProjectContext[];
@@ -742,6 +936,24 @@ export interface LegacyWorkspaceNamingProjectContext {
   sourcePaths: string[];
   entries: string[];
   samples: { path: string; text: string }[];
+}
+
+export function buildMinimalLegacyWorkspaceNamingContext(input: {
+  workspaceId: string;
+  plan: LegacyWorkspaceMigrationPlan;
+}): LegacyWorkspaceNamingContext {
+  return {
+    workspaceId: input.workspaceId,
+    projects: input.plan.projects.map((project, index) => ({
+      index,
+      currentName: project.name,
+      currentDescription: project.description,
+      reason: project.reason,
+      sourcePaths: project.sourcePaths,
+      entries: [],
+      samples: [],
+    })),
+  };
 }
 
 export async function buildLegacyWorkspaceNamingContext(input: {
@@ -847,8 +1059,12 @@ export function buildMigrationPlanningPrompt(input: {
   plan: LegacyWorkspaceMigrationPlan;
   context: LegacyWorkspaceNamingContext;
   deployedApps?: MigrationDeployedAppContext[];
+  workerAppSourcePaths?: string[];
 }): string {
-  const detectedWorkerAppPaths = detectWorkerAppSourcePaths(input.context);
+  const detectedWorkerAppPaths = Array.from(new Set([
+    ...detectWorkerAppSourcePaths(input.context),
+    ...(input.workerAppSourcePaths ?? []),
+  ])).filter((path) => input.plan.projects.some((project) => project.sourcePaths.includes(path)));
   return JSON.stringify({
     task:
       "Discover projects in this legacy workspace from the provided scan context. Return a final project plan that groups the allowed top-level source paths into coherent projects, including one misc project for leftovers when needed. Also associate deployed apps/workers with the project that contains their source only when the relationship is directly evidenced.",
@@ -864,8 +1080,13 @@ export function buildMigrationPlanningPrompt(input: {
       "Use lowercase slug names with letters, numbers, and hyphens.",
       "Descriptions should be concise and specific to the project contents.",
       "A project can contain multiple source paths when they clearly belong together.",
-      "Loose top-level files should usually be clustered by topic, notebook/script/data relationship, or put in the single misc project. Do not create one-file projects for images, CSVs, JSON outputs, logs, lockfiles, or generated artifacts unless the file is clearly a standalone user-authored project.",
-      "Prefer grouping a notebook or script with its related data files, output images, JSON exports, markdown notes, or HTML reports when filenames or samples show the same topic.",
+      "Loose files and non-deployable data/artifact directories are low risk to group. Prefer fewer coherent projects over many tiny projects for notebooks, scripts, CSVs, JSON outputs, PNGs, HTML reports, markdown notes, logs, and lockfiles.",
+      "Do not create one-file projects for images, CSVs, JSON outputs, logs, lockfiles, generated artifacts, or other support files unless the file is clearly a standalone user-authored project.",
+      "Prefer grouping a notebook or script with its related data files, output images, JSON exports, markdown notes, or HTML reports when filenames, neighboring paths, or samples show the same topic.",
+      "If several source paths are variants of the same analysis or scratch workflow and none is a Worker app boundary, group them into one analysis/scratch project instead of preserving every directory as a separate project.",
+      "Clearly different loose-file topics should be separated into distinct named analysis/scratch projects instead of one broad catch-all. For example, unrelated transit notebooks, executive CSV analysis, and Bedrock diagnostics should not be merged together just because they are all loose files.",
+      "Nested path prefixes such as projects-, app-, tmp-, scratch-, or test- should not automatically become project names. Preserve original paths in sourcePaths and descriptions, but choose user-facing names based on the actual subject matter.",
+      "Hello/demo/test/template source paths with no deployed app association should usually be grouped into one demos or experiments project unless they are distinct Worker app boundaries.",
       "Do not group unrelated deployable apps into one project just because they are all apps; separate app directories should usually be separate projects unless the context shows they share one repo or product.",
       "Treat a source path with a wrangler.toml, wrangler.json, or wrangler.jsonc file as a Worker app project boundary.",
       "Do not include multiple independent Worker apps in the same project. If multiple source paths each contain a Wrangler config, return them as separate projects.",
@@ -1459,6 +1680,14 @@ export function applyMigrationAgentPlan(
   const allowedApps = new Set((options.deployedApps ?? []).map((app) => app.scriptName));
   const seenApps = new Set<string>();
   const workerAppSourcePaths = new Set(options.workerAppSourcePaths ?? []);
+  const ignoreGlobsBySourcePath = new Map<string, string[]>();
+  for (const seedProject of plan.projects) {
+    for (const sourcePath of seedProject.sourcePaths) {
+      if ((seedProject.ignoreGlobs ?? []).length > 0) {
+        ignoreGlobsBySourcePath.set(sourcePath, seedProject.ignoreGlobs ?? []);
+      }
+    }
+  }
 
   const projects = proposal.projects.flatMap((project) => {
     const uniqueSourcePaths: string[] = [];
@@ -1505,11 +1734,13 @@ export function applyMigrationAgentPlan(
     if (!description) {
       throw new Error(`Migration planning agent returned an empty description for ${name}`);
     }
+    const ignoreGlobs = Array.from(new Set(uniqueSourcePaths.flatMap((sourcePath) => ignoreGlobsBySourcePath.get(sourcePath) ?? [])));
     usedNames.add(name);
     return {
       name,
       description,
       sourcePaths: uniqueSourcePaths,
+      ...(ignoreGlobs.length > 0 ? { ignoreGlobs } : {}),
       ...(uniqueDeployedApps.length > 0 ? { deployedApps: uniqueDeployedApps } : {}),
       reason: sanitizeDescription(project.reason ?? undefined) || "Migration planning agent grouped these legacy workspace paths.",
     };
@@ -1579,7 +1810,8 @@ function pathBasename(path: string): string {
 }
 
 export function appendUnclassifiedMiscProject(plan: LegacyWorkspaceMigrationPlan): LegacyWorkspaceMigrationPlan {
-  const unclassified = Array.from(new Set(plan.unclassified ?? []));
+  const unclassified = Array.from(new Set(plan.unclassified ?? []))
+    .filter((path) => !isLegacyMachineJunkPath(path));
   if (unclassified.length === 0) return { ...plan, projects: coalesceMiscProjects(plan.projects) };
   const existingMisc = plan.projects.find((project) => isMiscProjectName(project.name));
   if (existingMisc) {
@@ -1613,6 +1845,19 @@ export function appendUnclassifiedMiscProject(plan: LegacyWorkspaceMigrationPlan
     ]),
     unclassified: [],
   };
+}
+
+function isLegacyMachineJunkPath(path: string): boolean {
+  const normalized = normalizeAbsolutePath(path);
+  const relative = normalized.startsWith(LEGACY_ROOT)
+    ? normalizeAbsolutePath(normalized.slice(LEGACY_ROOT.length) || "/")
+    : normalized;
+  const parts = relative.split("/").filter(Boolean);
+  if (parts.length === 0) return false;
+  const first = parts[0];
+  if (first === ".EasyOCR" || first === ".cache") return true;
+  if (first === ".bun" && (parts.length === 1 || parts[1] === "install")) return true;
+  return false;
 }
 
 export async function resetProjectsForWorkspaceMigration(input: {

@@ -1,5 +1,6 @@
 import type { RouteContext } from "../types.js";
 import { workspaceIdFromGlobalProjectId } from "../project-vm-protocol.js";
+import { validateProjectRuntimeProxy } from "../sandbox-auth.js";
 import { WorkspaceFilesystemClient } from "../workspace-filesystem-do.js";
 
 const INTERNAL_ARTIFACTS_PREFIX = "/api/internal/project-runtime/artifacts";
@@ -8,11 +9,8 @@ export async function handleProjectRuntimeArtifactsProxy({
   req,
   env,
 }: RouteContext): Promise<Response> {
-  const secret = env.PROJECT_RUNTIME_PROXY_SECRET?.trim() || env.SANDBOX_PROXY_SECRET?.trim();
-  if (!secret) {
-    return new Response("Project runtime proxy secret is not configured", { status: 500 });
-  }
-  if (req.headers.get("X-Project-Runtime-Secret") !== secret) {
+  const proxyAuth = validateProjectRuntimeProxy(req, env);
+  if (!proxyAuth.valid) {
     return new Response("Forbidden", { status: 403 });
   }
 
@@ -22,13 +20,8 @@ export async function handleProjectRuntimeArtifactsProxy({
     return new Response("Not found", { status: 404 });
   }
 
-  if (req.headers.get("X-Project-Runtime-Project") !== parsed.projectId) {
-    return new Response("Project runtime caller does not match requested project", {
-      status: 403,
-    });
-  }
-
-  const workspaceId = workspaceIdFromGlobalProjectId(parsed.projectId);
+  const projectId = proxyAuth.projectId;
+  const workspaceId = workspaceIdFromGlobalProjectId(projectId);
   if (!workspaceId) {
     return new Response("Invalid project id", { status: 403 });
   }
@@ -37,20 +30,13 @@ export async function handleProjectRuntimeArtifactsProxy({
   const scope = isGitReceivePackRequest(requestUrl) ? "write" : "read";
   let artifactAccess: Awaited<ReturnType<WorkspaceFilesystemClient["mintProjectArtifactToken"]>>;
   try {
-    artifactAccess = await workspace.mintProjectArtifactToken(parsed.projectId, scope, 600);
+    artifactAccess = await workspace.mintProjectArtifactToken(projectId, scope, 600);
   } catch (error) {
     console.error("[project-runtime-artifacts] failed to mint Artifacts token", {
-      projectId: parsed.projectId,
-      remoteProjectId: parsed.remoteProjectId,
+      projectId,
       error: error instanceof Error ? error.message : String(error),
     });
     return new Response("Project is not backed by Artifacts", { status: 403 });
-  }
-
-  if (parsed.remoteProjectId !== artifactAccess.artifactRemoteProjectId) {
-    return new Response("Artifacts repository is not allowed for this project", {
-      status: 403,
-    });
   }
 
   const remoteUrl = new URL(artifactAccess.artifactRemote);
@@ -73,8 +59,6 @@ export async function handleProjectRuntimeArtifactsProxy({
 }
 
 interface ParsedArtifactsProxyPath {
-  projectId: string;
-  remoteProjectId: string;
   gitSuffix: string;
 }
 
@@ -88,13 +72,11 @@ function parseArtifactsProxyPath(pathname: string): ParsedArtifactsProxyPath | n
       return "";
     }
   });
-  if (parts.length < 3 || parts[1] !== "git" || !parts[2].endsWith(".git")) {
+  if (parts.length < 2 || parts[0] !== "git" || !parts[1].endsWith(".git")) {
     return null;
   }
   return {
-    projectId: parts[0],
-    remoteProjectId: parts[2].slice(0, -4),
-    gitSuffix: `/${parts.slice(1).join("/")}`,
+    gitSuffix: `/${parts.join("/")}`,
   };
 }
 
