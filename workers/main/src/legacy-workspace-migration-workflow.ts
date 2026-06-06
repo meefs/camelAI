@@ -20,7 +20,7 @@ const MIGRATION_LEASE_TTL_MS = 2 * 60 * 60 * 1000;
 const MIGRATION_CONTEXT_STEP_TIMEOUT = "15 minutes";
 const MIGRATION_AI_STEP_TIMEOUT = "45 minutes";
 const MIGRATION_IMPORT_STEP_TIMEOUT = "2 hours";
-const MIGRATION_AI_REQUEST_TIMEOUT_MS = 15 * 60 * 1000;
+const MIGRATION_AI_REQUEST_TIMEOUT_MS = 5 * 60 * 1000;
 const MIGRATION_AI_MAX_RESPONSES = 12;
 const MIGRATION_AI_MAX_TOOL_CALLS = 40;
 const TOP_LEVEL_SCAN_LIMIT = 2_000;
@@ -995,7 +995,17 @@ export async function runMigrationPlanningAi(
   let toolCallCount = 0;
 
   for (let responseIndex = 0; responseIndex < MIGRATION_AI_MAX_RESPONSES; responseIndex++) {
+    console.log("[legacy-migration] planning AI response request starting", {
+      workspaceId: input.workspaceId,
+      responseIndex: responseIndex + 1,
+      previousResponseId: previousResponseId ? "present" : "absent",
+      inputKind: Array.isArray(nextInput) ? "tool_outputs" : typeof nextInput,
+      allowedSourcePathCount: input.allowedSourcePaths.length,
+      toolCallCount,
+    });
     const responsePayload = await createMigrationPlanningResponse(env, {
+      workspaceId: input.workspaceId,
+      responseIndex: responseIndex + 1,
       input: nextInput,
       previousResponseId,
       allowedSourcePaths: input.allowedSourcePaths,
@@ -1003,6 +1013,14 @@ export async function runMigrationPlanningAi(
     previousResponseId = extractMigrationPlanningResponseId(responsePayload) ?? previousResponseId;
 
     const toolCalls = extractMigrationPlanningFunctionCalls(responsePayload);
+    console.log("[legacy-migration] planning AI response received", {
+      workspaceId: input.workspaceId,
+      responseIndex: responseIndex + 1,
+      responseId: previousResponseId ? "present" : "absent",
+      responseStatus: extractMigrationPlanningStatus(responsePayload),
+      outputTypes: extractMigrationPlanningOutputTypes(responsePayload),
+      toolCallCount: toolCalls.length,
+    });
     if (toolCalls.length === 0) {
       return parseMigrationPlanningAiResult(responsePayload);
     }
@@ -1011,11 +1029,27 @@ export async function runMigrationPlanningAi(
       throw new Error(`Migration planning AI exceeded ${MIGRATION_AI_MAX_TOOL_CALLS} tool calls`);
     }
 
-    nextInput = await Promise.all(toolCalls.map(async (call) => ({
-      type: "function_call_output",
-      call_id: call.callId,
-      output: JSON.stringify(await executeMigrationPlanningTool(env, input.orgId, input.workspaceId, call)),
-    })));
+    nextInput = await Promise.all(toolCalls.map(async (call) => {
+      const toolStartedAt = Date.now();
+      console.log("[legacy-migration] planning AI tool call starting", {
+        workspaceId: input.workspaceId,
+        responseIndex: responseIndex + 1,
+        toolName: call.name,
+      });
+      const output = await executeMigrationPlanningTool(env, input.orgId, input.workspaceId, call);
+      console.log("[legacy-migration] planning AI tool call completed", {
+        workspaceId: input.workspaceId,
+        responseIndex: responseIndex + 1,
+        toolName: call.name,
+        durationMs: Date.now() - toolStartedAt,
+        outputSummary: summarizeMigrationPlanningToolOutput(output),
+      });
+      return {
+        type: "function_call_output",
+        call_id: call.callId,
+        output: JSON.stringify(output),
+      };
+    }));
   }
 
   throw new Error(`Migration planning AI did not return a final project plan after ${MIGRATION_AI_MAX_RESPONSES} responses`);
@@ -1024,6 +1058,8 @@ export async function runMigrationPlanningAi(
 async function createMigrationPlanningResponse(
   env: Env,
   input: {
+    workspaceId: string;
+    responseIndex: number;
     input: unknown;
     previousResponseId?: string;
     allowedSourcePaths: string[];
@@ -1037,22 +1073,45 @@ async function createMigrationPlanningResponse(
   }
 
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), MIGRATION_AI_REQUEST_TIMEOUT_MS);
+  const requestStartedAt = Date.now();
+  const requestBody = JSON.stringify(
+    buildMigrationPlanningResponsesRequest(input.input, input.allowedSourcePaths, input.previousResponseId),
+  );
+  const endpoint = `https://gateway.ai.cloudflare.com/v1/${encodeURIComponent(accountId)}/${encodeURIComponent(gatewayName)}/openai/responses`;
+  console.log("[legacy-migration] planning AI fetch starting", {
+    workspaceId: input.workspaceId,
+    responseIndex: input.responseIndex,
+    model: MIGRATION_PLANNING_RESPONSES_MODEL,
+    previousResponseId: input.previousResponseId ? "present" : "absent",
+    requestBytes: requestBody.length,
+    timeoutMs: MIGRATION_AI_REQUEST_TIMEOUT_MS,
+  });
   try {
-    const response = await fetch(
-      `https://gateway.ai.cloudflare.com/v1/${encodeURIComponent(accountId)}/${encodeURIComponent(gatewayName)}/openai/responses`,
-      {
+    const response = await withTimeout(
+      fetch(endpoint, {
         method: "POST",
         headers: {
           Authorization: `Bearer ${token}`,
           "Content-Type": "application/json",
         },
-        body: JSON.stringify(buildMigrationPlanningResponsesRequest(input.input, input.allowedSourcePaths, input.previousResponseId)),
+        body: requestBody,
         signal: controller.signal,
-      },
+      }),
+      MIGRATION_AI_REQUEST_TIMEOUT_MS,
+      () => controller.abort(),
     );
     const responseText = await response.text();
     const payload = responseText ? safeJsonParse(responseText) : undefined;
+    console.log("[legacy-migration] planning AI fetch completed", {
+      workspaceId: input.workspaceId,
+      responseIndex: input.responseIndex,
+      durationMs: Date.now() - requestStartedAt,
+      status: response.status,
+      ok: response.ok,
+      responseBytes: responseText.length,
+      responseStatus: extractMigrationPlanningStatus(payload),
+      outputTypes: extractMigrationPlanningOutputTypes(payload),
+    });
     if (!response.ok) {
       throw new Error(
         extractCloudflareAiErrorMessage(payload)
@@ -1066,13 +1125,47 @@ async function createMigrationPlanningResponse(
     throwIfMigrationPlanningResponseFailed(payload);
     return payload;
   } catch (error) {
-    if (controller.signal.aborted) {
+    if (controller.signal.aborted || error instanceof TimeoutError) {
+      console.warn("[legacy-migration] planning AI fetch timed out", {
+        workspaceId: input.workspaceId,
+        responseIndex: input.responseIndex,
+        durationMs: Date.now() - requestStartedAt,
+        timeoutMs: MIGRATION_AI_REQUEST_TIMEOUT_MS,
+      });
       throw new Error(`Migration planning AI request timed out after ${MIGRATION_AI_REQUEST_TIMEOUT_MS}ms`);
     }
+    console.warn("[legacy-migration] planning AI fetch failed", {
+      workspaceId: input.workspaceId,
+      responseIndex: input.responseIndex,
+      durationMs: Date.now() - requestStartedAt,
+      error: error instanceof Error ? error.message : String(error),
+    });
     throw error;
-  } finally {
-    clearTimeout(timeout);
   }
+}
+
+class TimeoutError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "TimeoutError";
+  }
+}
+
+function withTimeout<T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+  onTimeout: () => void,
+): Promise<T> {
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timeout = setTimeout(() => {
+      onTimeout();
+      reject(new TimeoutError(`Operation timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
+  });
+  return Promise.race([promise, timeoutPromise]).finally(() => {
+    if (timeout !== undefined) clearTimeout(timeout);
+  });
 }
 
 export function buildMigrationPlanningResponsesRequest(
@@ -1262,6 +1355,41 @@ function extractMigrationPlanningResponseId(response: unknown): string | undefin
   if (!response || typeof response !== "object") return undefined;
   const id = (response as Record<string, unknown>).id;
   return typeof id === "string" && id.trim() ? id : undefined;
+}
+
+function extractMigrationPlanningStatus(response: unknown): string | undefined {
+  if (!response || typeof response !== "object") return undefined;
+  const status = (response as Record<string, unknown>).status;
+  return typeof status === "string" && status.trim() ? status : undefined;
+}
+
+function extractMigrationPlanningOutputTypes(response: unknown): string[] {
+  if (!response || typeof response !== "object") return [];
+  const output = (response as Record<string, unknown>).output;
+  if (!Array.isArray(output)) return [];
+  return output
+    .map((item) => {
+      if (!item || typeof item !== "object") return "unknown";
+      const type = (item as Record<string, unknown>).type;
+      return typeof type === "string" && type.trim() ? type : "unknown";
+    })
+    .slice(0, 20);
+}
+
+function summarizeMigrationPlanningToolOutput(output: unknown): Record<string, unknown> {
+  if (Array.isArray(output)) {
+    return { type: "array", length: output.length };
+  }
+  if (!output || typeof output !== "object") {
+    return { type: output === null ? "null" : typeof output };
+  }
+  const record = output as Record<string, unknown>;
+  return {
+    type: "object",
+    keys: Object.keys(record).slice(0, 10),
+    fileCount: Array.isArray(record.files) ? record.files.length : undefined,
+    count: typeof record.count === "number" ? record.count : undefined,
+  };
 }
 
 function throwIfMigrationPlanningResponseFailed(response: unknown): void {
