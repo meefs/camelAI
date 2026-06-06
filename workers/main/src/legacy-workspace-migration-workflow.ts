@@ -1366,6 +1366,8 @@ function getMigrationPlanningSystemPrompt(): string {
     "The seed plan is discovery context, not the final project list. Cluster related loose files and avoid one-file projects for generated outputs.",
     "Only associate deployed apps when there is concrete source evidence; never guess from generic app names.",
     "A source path containing wrangler.toml, wrangler.json, or wrangler.jsonc is a Worker app project boundary. Never group two detected Worker app source paths into one project.",
+    "A detected Worker app source path must be its own project with exactly that one source path. Do not group loose files, sibling folders, docs, assets, or related non-Worker paths into the Worker app project.",
+    "If loose files or non-Worker folders are related to a Worker app, put them in a separate companion project unless they are already inside the Worker app source path.",
     "Use at most one misc/leftover project.",
   ].join("\n");
 }
@@ -1487,10 +1489,22 @@ async function executeMigrationPlanningTool(
   if (call.name === "list_legacy_path") {
     const input = listLegacyPathToolInputSchema.parse(args);
     const runtime = new ProjectRuntimeMigrationClient(env);
-    return runtime.listLegacyWorkspace(orgId, workspaceId, input.path, {
-      recursive: input.recursive === true,
-      limit: input.limit ?? NAMING_CONTEXT_MAX_ENTRIES_PER_PROJECT,
-    });
+    try {
+      return await runtime.listLegacyWorkspace(orgId, workspaceId, input.path, {
+        recursive: input.recursive === true,
+        limit: input.limit ?? NAMING_CONTEXT_MAX_ENTRIES_PER_PROJECT,
+      });
+    } catch (error) {
+      if (!isLegacyNotDirectoryError(error)) throw error;
+      return {
+        files: [{
+          name: pathBasename(input.path),
+          type: "file",
+          absolutePath: normalizeAbsolutePath(input.path),
+        }],
+        count: 1,
+      };
+    }
   }
   if (call.name === "read_legacy_text") {
     const input = readLegacyTextToolInputSchema.parse(args);
@@ -1509,6 +1523,11 @@ async function executeMigrationPlanningTool(
     return (await org.listWorkerScriptsByWorkspace(workspaceId)).map(toMigrationDeployedAppContext);
   }
   throw new Error(`Migration planning AI requested unknown tool: ${call.name}`);
+}
+
+function isLegacyNotDirectoryError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.includes("not a directory");
 }
 
 function parseMigrationPlanningToolArguments(call: MigrationPlanningFunctionCall): unknown {
