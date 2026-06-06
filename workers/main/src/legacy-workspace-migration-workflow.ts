@@ -28,8 +28,6 @@ const NAMING_CONTEXT_MAX_SAMPLE_BYTES = 8_000;
 const NAMING_CONTEXT_MAX_READ_BYTES = 2_000_000;
 const NAMING_CONTEXT_MAX_TOTAL_CHARS = 80_000;
 const MIGRATION_PLANNING_WORKERS_AI_MODEL = "openai/gpt-5.5";
-const MIGRATION_PLANNING_RESPONSES_MODEL = "gpt-5.5";
-const MIGRATION_PLANNING_RESPONSE_SCHEMA_NAME = "legacy_workspace_migration_plan";
 const DESCRIPTION_MAX_LENGTH = 240;
 const TEXT_CONTEXT_FILE_EXTENSIONS = new Set([
   ".csv",
@@ -107,8 +105,6 @@ const migrationAgentPlanSchema = z.object({
 });
 
 export type MigrationAgentPlan = z.infer<typeof migrationAgentPlanSchema>;
-
-const migrationAgentPlanJsonSchema = z.toJSONSchema(migrationAgentPlanSchema);
 
 interface MigrationPlanningAgentConfig {
   orgId: string;
@@ -370,16 +366,15 @@ export class LegacyWorkspaceMigrationWorkflow extends ThinkWorkflow<
               });
             });
 
-            const agentProposal = await step.do("discover-projects-with-ai", {
+            const agentProposal = await step.prompt("discover-projects-with-ai", {
               timeout: MIGRATION_AI_STEP_TIMEOUT,
-              retries: { limit: 2, delay: "30 seconds", backoff: "exponential" },
-            }, async () => {
-              return await runMigrationPlanningAi(this.env, buildMigrationPlanningPrompt({
+              output: migrationAgentPlanSchema,
+              prompt: buildMigrationPlanningPrompt({
                 workspaceId: payload.workspaceId,
                 plan: allowedSourcePlan,
                 context: discoveryContext,
                 deployedApps,
-              }), allowedSourcePlan.projects.flatMap((project) => project.sourcePaths));
+              }),
             });
 
             return await step.do("validate-agent-discovery-plan", async () => {
@@ -1008,284 +1003,6 @@ function entryReferencesWranglerConfig(entry: string): boolean {
   const path = entry.trim().split(/\s+/).pop() ?? "";
   const name = path.split("/").pop()?.toLowerCase() ?? "";
   return WRANGLER_CONFIG_FILE_NAMES.has(name);
-}
-
-export async function runMigrationPlanningAi(
-  env: Pick<MigrationThinkEnv, "AI_GATEWAY_AUTH_TOKEN" | "CF_ACCOUNT_ID" | "CF_GATEWAY_NAME" | "CF_GATEWAY_TOKEN">,
-  prompt: string,
-  allowedSourcePaths?: string[],
-): Promise<MigrationAgentPlan> {
-  const accountId = env.CF_ACCOUNT_ID?.trim();
-  const gatewayName = env.CF_GATEWAY_NAME?.trim();
-  const token = env.AI_GATEWAY_AUTH_TOKEN?.trim() || env.CF_GATEWAY_TOKEN?.trim();
-  if (!accountId || !gatewayName || !token) {
-    throw new Error("Cloudflare AI Gateway Responses API is not configured for legacy workspace migration planning");
-  }
-  const response = await fetch(
-    `https://gateway.ai.cloudflare.com/v1/${encodeURIComponent(accountId)}/${encodeURIComponent(gatewayName)}/openai/responses`,
-    {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${token}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(buildMigrationPlanningResponsesRequest(prompt, allowedSourcePaths)),
-    },
-  );
-  if (!response.ok) {
-    const responseText = await response.text();
-    const payload = responseText ? safeJsonParse(responseText) : undefined;
-    throw new Error(
-      extractCloudflareAiErrorMessage(payload)
-      ?? responseText.trim()
-      ?? `Cloudflare AI Gateway Responses API request failed (${response.status})`,
-    );
-  }
-  const payload = await readMigrationPlanningResponsesPayload(response);
-  return parseMigrationPlanningAiResult(payload);
-}
-
-export function buildMigrationPlanningResponsesRequest(prompt: string, allowedSourcePaths?: string[]): Record<string, unknown> {
-  return {
-    model: MIGRATION_PLANNING_RESPONSES_MODEL,
-    stream: true,
-    instructions: [
-      "You plan migrations from a legacy /home/claude workspace into project VMs.",
-      "Return only structured output matching the requested migration project plan schema.",
-      "Never include secrets or credential values in names, descriptions, or reasons.",
-      "Prefer stable lowercase slug names and concise descriptions that explain what each project contains.",
-      "Every allowed source path must be assigned exactly once. Do not invent, omit, or duplicate source paths.",
-      "The seed plan is discovery context, not the final project list. Cluster related loose files and avoid one-file projects for generated outputs.",
-      "Only associate deployed apps when there is concrete source evidence; never guess from generic app names.",
-      "A source path containing wrangler.toml, wrangler.json, or wrangler.jsonc is a Worker app project boundary. Never group two detected Worker app source paths into one project.",
-      "Use at most one misc/leftover project.",
-    ].join("\n"),
-    input: prompt,
-    text: {
-      format: buildMigrationPlanningTextFormat(allowedSourcePaths),
-    },
-  };
-}
-
-export function buildMigrationPlanningTextFormat(allowedSourcePaths?: string[]): {
-  type: "json_schema";
-  name: string;
-  strict: true;
-  schema: unknown;
-} {
-  return {
-    type: "json_schema",
-    name: MIGRATION_PLANNING_RESPONSE_SCHEMA_NAME,
-    strict: true,
-    schema: buildMigrationAgentPlanJsonSchema(allowedSourcePaths),
-  };
-}
-
-function buildMigrationAgentPlanJsonSchema(allowedSourcePaths?: string[]): unknown {
-  const schema = structuredClone(migrationAgentPlanJsonSchema) as Record<string, unknown>;
-  const properties = schema.properties as Record<string, unknown> | undefined;
-  const projects = properties?.projects as Record<string, unknown> | undefined;
-  const projectItems = projects?.items as Record<string, unknown> | undefined;
-  projectItems && ensureStrictObjectSchemaRequiresAllProperties(projectItems);
-  const projectProperties = projectItems?.properties as Record<string, unknown> | undefined;
-  const sourcePaths = projectProperties?.sourcePaths as Record<string, unknown> | undefined;
-  const sourcePathItems = sourcePaths?.items as Record<string, unknown> | undefined;
-  if (allowedSourcePaths?.length && sourcePathItems) {
-    sourcePathItems.enum = allowedSourcePaths;
-  }
-  return schema;
-}
-
-function ensureStrictObjectSchemaRequiresAllProperties(schema: Record<string, unknown>): void {
-  const properties = schema.properties;
-  if (!properties || typeof properties !== "object" || Array.isArray(properties)) return;
-  schema.required = Object.keys(properties as Record<string, unknown>);
-}
-
-export async function readMigrationPlanningResponsesPayload(response: Response): Promise<unknown> {
-  const contentType = response.headers.get("content-type") ?? "";
-  if (!contentType.includes("text/event-stream") || !response.body) {
-    const responseText = await response.text();
-    return responseText ? safeJsonParse(responseText) : undefined;
-  }
-
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-  let outputText = "";
-  let completedPayload: unknown;
-
-  const consumeEvent = (rawEvent: string) => {
-    const lines = rawEvent.split(/\r?\n/);
-    let eventName = "";
-    const dataLines: string[] = [];
-    for (const line of lines) {
-      if (line.startsWith("event:")) {
-        eventName = line.slice("event:".length).trim();
-      } else if (line.startsWith("data:")) {
-        dataLines.push(line.slice("data:".length).trimStart());
-      }
-    }
-    if (dataLines.length === 0) return;
-    const dataText = dataLines.join("\n");
-    if (dataText === "[DONE]") return;
-    const eventPayload = safeJsonParse(dataText);
-    if (!eventPayload || typeof eventPayload !== "object") return;
-    const record = eventPayload as Record<string, unknown>;
-    const type = typeof record.type === "string" ? record.type : eventName;
-
-    if (type === "response.output_text.delta" && typeof record.delta === "string") {
-      outputText += record.delta;
-      return;
-    }
-    if (type === "response.output_text.done" && typeof record.text === "string") {
-      outputText = record.text;
-      return;
-    }
-    if (type === "response.completed") {
-      completedPayload = record.response ?? eventPayload;
-      return;
-    }
-    if (type === "response.failed" || type === "response.incomplete" || type === "error") {
-      throw new Error(
-        extractCloudflareAiErrorMessage(record.response)
-          ?? extractCloudflareAiErrorMessage(record)
-          ?? `Migration planning AI stream ended with ${type}`,
-      );
-    }
-  };
-
-  while (true) {
-    const { done, value } = await reader.read();
-    if (value) {
-      buffer += decoder.decode(value, { stream: !done });
-      let separatorIndex = findSseEventSeparator(buffer);
-      while (separatorIndex !== -1) {
-        const rawEvent = buffer.slice(0, separatorIndex);
-        buffer = buffer.slice(separatorIndex + sseSeparatorLength(buffer, separatorIndex));
-        consumeEvent(rawEvent);
-        separatorIndex = findSseEventSeparator(buffer);
-      }
-    }
-    if (done) break;
-  }
-
-  buffer += decoder.decode();
-  if (buffer.trim()) {
-    consumeEvent(buffer);
-  }
-  if (completedPayload !== undefined) return completedPayload;
-  if (outputText) return { output_text: outputText };
-  throw new Error("Migration planning AI stream ended without a completed response");
-}
-
-function findSseEventSeparator(buffer: string): number {
-  const lf = buffer.indexOf("\n\n");
-  const crlf = buffer.indexOf("\r\n\r\n");
-  if (lf === -1) return crlf;
-  if (crlf === -1) return lf;
-  return Math.min(lf, crlf);
-}
-
-function sseSeparatorLength(buffer: string, index: number): number {
-  return buffer.startsWith("\r\n\r\n", index) ? 4 : 2;
-}
-
-export function parseMigrationPlanningAiResult(result: unknown): MigrationAgentPlan {
-  const text = extractMigrationPlanningStructuredText(result);
-  if (!text) {
-    throw new Error("Migration planning AI returned no structured output text");
-  }
-  let parsedJson: unknown;
-  try {
-    parsedJson = JSON.parse(text);
-  } catch (error) {
-    throw new Error(`Migration planning AI returned invalid structured output JSON: ${error instanceof Error ? error.message : String(error)}`);
-  }
-  const parsed = migrationAgentPlanSchema.safeParse(parsedJson);
-  if (!parsed.success) {
-    throw new Error(`Migration planning AI returned an invalid project plan: ${parsed.error.message}`);
-  }
-  return parsed.data;
-}
-
-function extractMigrationPlanningStructuredText(value: unknown): string {
-  if (!value || typeof value !== "object") return "";
-  const record = value as Record<string, unknown>;
-  if (typeof record.output_text === "string") return record.output_text;
-  if (typeof record.response === "string") return record.response;
-  if (typeof record.text === "string") return record.text;
-  if (typeof record.content === "string") return record.content;
-  const result = record.result;
-  if (result && typeof result === "object") {
-    const nestedText = extractMigrationPlanningStructuredText(result);
-    if (nestedText) return nestedText;
-  }
-
-  const output = record.output;
-  if (Array.isArray(output)) {
-    return output
-      .map((item) => extractMigrationPlanningOutputText(item))
-      .filter(Boolean)
-      .join("");
-  }
-
-  const choices = record.choices;
-  if (Array.isArray(choices)) {
-    return choices
-      .map((choice) => {
-        if (!choice || typeof choice !== "object") return "";
-        const message = (choice as Record<string, unknown>).message;
-        return extractMigrationPlanningStructuredText(message);
-      })
-      .filter(Boolean)
-      .join("");
-  }
-
-  return "";
-}
-
-function extractMigrationPlanningOutputText(value: unknown): string {
-  if (!value || typeof value !== "object") return "";
-  const record = value as Record<string, unknown>;
-  if (typeof record.text === "string") return record.text;
-  const content = record.content;
-  if (Array.isArray(content)) {
-    return content
-      .map((part) => {
-        if (!part || typeof part !== "object") return "";
-        const partRecord = part as Record<string, unknown>;
-        return typeof partRecord.text === "string" ? partRecord.text : "";
-      })
-      .join("");
-  }
-  return "";
-}
-
-function safeJsonParse(text: string): unknown {
-  try {
-    return JSON.parse(text);
-  } catch {
-    return undefined;
-  }
-}
-
-function extractCloudflareAiErrorMessage(payload: unknown): string | null {
-  if (!payload || typeof payload !== "object") return null;
-  const record = payload as Record<string, unknown>;
-  const error = record.error;
-  if (error && typeof error === "object") {
-    const message = (error as Record<string, unknown>).message;
-    if (typeof message === "string" && message.trim()) return message;
-  }
-  const errors = record.errors;
-  if (Array.isArray(errors)) {
-    const messages = errors
-      .map((item) => item && typeof item === "object" ? (item as Record<string, unknown>).message : undefined)
-      .filter((message): message is string => typeof message === "string" && message.trim().length > 0);
-    if (messages.length > 0) return messages.join("; ");
-  }
-  return null;
 }
 
 export function applyMigrationAgentPlan(
