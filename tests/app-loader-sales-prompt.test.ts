@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const requireAuthContextMock = vi.fn();
 const getEnvMock = vi.fn();
+const getWorkspaceMigrationGateMock = vi.fn(() => null);
 
 vi.mock("@/lib/auth.server", () => ({
   requireAuthContext: requireAuthContextMock,
@@ -9,6 +10,10 @@ vi.mock("@/lib/auth.server", () => ({
 
 vi.mock("@/lib/cloudflare.server", () => ({
   getEnv: getEnvMock,
+}));
+
+vi.mock("@/lib/workspace-migration-gate.server", () => ({
+  getWorkspaceMigrationGate: getWorkspaceMigrationGateMock,
 }));
 
 vi.mock("@/lib/billing.server", () => ({
@@ -267,6 +272,94 @@ describe("_app loader onboarding redirect", () => {
         currentOrgName: "Payg Org",
       },
     });
+  });
+
+  it("checks computer route workspace for project migration when the user can access it", async () => {
+    const org = {
+      id: "org_123",
+      name: "Org",
+      billing_status: "active",
+    };
+    const orgStub = {
+      getInfo: vi.fn().mockResolvedValue(org),
+      getLlmProviderConfig: vi.fn().mockResolvedValue(null),
+    };
+    getEnvMock.mockReturnValue({
+      ORG: {
+        idFromName: vi.fn((id: string) => id),
+        get: vi.fn(() => orgStub),
+      },
+      APP_KV: {
+        get: vi.fn().mockResolvedValue(null),
+      },
+    });
+    requireAuthContextMock.mockResolvedValue({
+      onboarding: { completed_at: Date.now() },
+      emailVerification: { required: false, verified: true },
+      user: { id: "user_123", email: "ada@example.com" },
+      session: { user_id: "user_123", user_email: "ada@example.com" },
+      currentOrg: org,
+      currentWorkspace: { id: "ws_current" },
+      orgs: [{ org_id: "org_123", org_name: "Org", role: "owner" }],
+      workspaces: [{ id: "ws_current" }],
+      allWorkspaces: [{ id: "ws_current" }, { id: "ws_target" }],
+      orgWorkspaceCount: 2,
+      resignedSessionCookie: null,
+    });
+
+    await loader({
+      request: new Request("https://camelai.dev/computer/ws_target"),
+      context: {},
+    } as never);
+
+    expect(getWorkspaceMigrationGateMock).toHaveBeenCalledWith(
+      expect.anything(),
+      "ws_target",
+    );
+  });
+
+  it("does not check inaccessible computer route workspaces for project migration", async () => {
+    const org = {
+      id: "org_123",
+      name: "Org",
+      billing_status: "active",
+    };
+    const orgStub = {
+      getInfo: vi.fn().mockResolvedValue(org),
+      getLlmProviderConfig: vi.fn().mockResolvedValue(null),
+    };
+    getEnvMock.mockReturnValue({
+      ORG: {
+        idFromName: vi.fn((id: string) => id),
+        get: vi.fn(() => orgStub),
+      },
+      APP_KV: {
+        get: vi.fn().mockResolvedValue(null),
+      },
+    });
+    requireAuthContextMock.mockResolvedValue({
+      onboarding: { completed_at: Date.now() },
+      emailVerification: { required: false, verified: true },
+      user: { id: "user_123", email: "ada@example.com" },
+      session: { user_id: "user_123", user_email: "ada@example.com" },
+      currentOrg: org,
+      currentWorkspace: { id: "ws_current" },
+      orgs: [{ org_id: "org_123", org_name: "Org", role: "owner" }],
+      workspaces: [{ id: "ws_current" }],
+      allWorkspaces: [{ id: "ws_current" }],
+      orgWorkspaceCount: 1,
+      resignedSessionCookie: null,
+    });
+
+    await loader({
+      request: new Request("https://camelai.dev/computer/ws_foreign"),
+      context: {},
+    } as never);
+
+    expect(getWorkspaceMigrationGateMock).toHaveBeenCalledWith(
+      expect.anything(),
+      "ws_current",
+    );
   });
 
 });

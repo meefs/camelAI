@@ -113,9 +113,10 @@ export async function loader({ request, context }: Route.LoaderArgs) {
   };
 
   const currentWorkspaceId = authContext.currentWorkspace?.id ?? null;
+  const migrationGateWorkspaceId = getMigrationGateWorkspaceId(url, authContext);
   const projectMigrationGate = await getWorkspaceMigrationGate(
     env,
-    currentWorkspaceId,
+    migrationGateWorkspaceId,
   );
   const actingUserId =
     authContext.user?.id ?? authContext.session?.user_id ?? null;
@@ -290,6 +291,34 @@ function WorkspaceMigrationInProgress() {
       </Card>
     </div>
   );
+}
+
+function getMigrationGateWorkspaceId(
+  url: URL,
+  authContext: Awaited<ReturnType<typeof requireAuthContext>>,
+): string | null {
+  const currentWorkspaceId = authContext.currentWorkspace?.id ?? null;
+  const computerWorkspaceId = getComputerRouteWorkspaceId(url.pathname);
+  if (!computerWorkspaceId || computerWorkspaceId === currentWorkspaceId) {
+    return currentWorkspaceId;
+  }
+
+  const hasWorkspaceAccess = [
+    ...(authContext.workspaces ?? []),
+    ...(authContext.allWorkspaces ?? []),
+  ].some((workspace) => workspace.id === computerWorkspaceId);
+
+  return hasWorkspaceAccess ? computerWorkspaceId : currentWorkspaceId;
+}
+
+function getComputerRouteWorkspaceId(pathname: string): string | null {
+  const match = /^\/computer\/([^/?#]+)/.exec(pathname);
+  if (!match?.[1]) return null;
+  try {
+    return decodeURIComponent(match[1]);
+  } catch {
+    return match[1];
+  }
 }
 
 type LegacyMigrationData = Awaited<
