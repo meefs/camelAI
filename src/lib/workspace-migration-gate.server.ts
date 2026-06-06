@@ -103,7 +103,7 @@ function isLegacyMigrationRuntimeConfigured(env: CloudflareEnv): boolean {
 
 function isStaleTerminalMigration(state: LegacyWorkspaceMigrationState): boolean {
   return (
-    (state.status === "complete" || state.status === "failed") &&
+    (state.status === "complete" || state.status === "failed" || state.status === "dry_run_complete") &&
     state.migrationVersion < CURRENT_LEGACY_WORKSPACE_MIGRATION_VERSION
   );
 }
