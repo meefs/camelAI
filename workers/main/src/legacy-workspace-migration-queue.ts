@@ -4,7 +4,6 @@ import {
   type LegacyWorkspaceMigrationState,
   type LegacyWorkspaceMigrationStatus,
 } from "./workspace-filesystem-do";
-import { startLegacyWorkspaceMigrationWorkflow } from "./legacy-workspace-migration-workflow";
 import type { Env } from "./types";
 
 const ACTIVE_LEGACY_MIGRATION_STATUSES = new Set<LegacyWorkspaceMigrationStatus>([
@@ -101,12 +100,14 @@ export async function queueLegacyWorkspaceMigrationIfNeeded(
   });
 
   try {
-    await startLegacyWorkspaceMigrationWorkflow(env, {
-      workflowId,
-      workspaceId,
-      orgId,
-      requestedBy: input.requestedBy,
-      dryRun: input.dryRun === true,
+    await env.LEGACY_WORKSPACE_MIGRATIONS.create({
+      id: workflowId,
+      params: {
+        workspaceId,
+        orgId,
+        requestedBy: input.requestedBy,
+        dryRun: input.dryRun === true,
+      },
     });
   } catch (error) {
     await workspaceFs.setLegacyWorkspaceMigrationState({

@@ -4,6 +4,7 @@ import type {
   LegacyWorkspaceMigrationStatus,
   WorkspaceFilesystemClient,
 } from "../../workers/main/src/workspace-filesystem-do";
+import { queueLegacyWorkspaceMigrationIfNeeded } from "../../workers/main/src/legacy-workspace-migration-queue";
 import { CURRENT_LEGACY_WORKSPACE_MIGRATION_VERSION } from "./legacy-workspace-migration-version";
 
 const ACTIVE_MIGRATION_STATUSES = new Set<LegacyWorkspaceMigrationStatus>([
@@ -22,12 +23,16 @@ export interface WorkspaceMigrationGate {
 
 export async function getWorkspaceMigrationGate(
   env: CloudflareEnv,
-  workspaceId: string | null,
+  workspace: { id: string; org_id: string; archived?: boolean } | null,
 ): Promise<WorkspaceMigrationGate | null> {
+  const workspaceId = workspace?.id ?? null;
   if (
     !workspaceId ||
+    !workspace?.org_id ||
+    workspace.archived ||
     env.ENABLE_LEGACY_WORKSPACE_MIGRATION !== "1" ||
     !env.WORKSPACE_FS ||
+    !env.LEGACY_WORKSPACE_MIGRATIONS ||
     !isLegacyMigrationRuntimeConfigured(env)
   ) {
     return null;
@@ -46,7 +51,7 @@ export async function getWorkspaceMigrationGate(
     }
 
     if (!isCurrentCompletedMigration(migrationState)) {
-      const queuedState = await enqueueWorkspaceMigration(env, workspaceId);
+      const queuedState = await enqueueWorkspaceMigration(env, workspace);
       return {
         workspaceId,
         status: queuedState?.status ?? "not_started",
@@ -70,11 +75,17 @@ async function createWorkspaceFilesystemClient(
 
 async function enqueueWorkspaceMigration(
   env: CloudflareEnv,
-  workspaceId: string,
+  workspace: { id: string; org_id: string },
 ): Promise<LegacyWorkspaceMigrationState | null> {
   try {
-    const workspace = env.WORKSPACE.get(env.WORKSPACE.idFromName(workspaceId));
-    return await workspace.ensureLegacyWorkspaceMigrationQueued();
+    const result = await queueLegacyWorkspaceMigrationIfNeeded({
+      env: env as never,
+      workspaceId: workspace.id,
+      orgId: workspace.org_id,
+      requestedBy: "workspace-page-gate",
+      dryRun: false,
+    });
+    return result.state;
   } catch (error) {
     console.error("Failed to enqueue workspace migration:", error);
     return null;

@@ -25,7 +25,7 @@ import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 import { ChatGroupsProvider } from "@/hooks/use-chat-groups";
 import { ChatThreadSnapshotsProvider } from "@/hooks/use-chat-thread-snapshots";
 import type { AuthState } from "@/types";
-import type { ChatGroupView } from "@/types";
+import type { ChatGroupView, WorkspaceWithAccess } from "@/types";
 import {
   getVerifiedLegacyStripeMigrationEligibility,
   isOrgBillingAccessReady,
@@ -113,10 +113,10 @@ export async function loader({ request, context }: Route.LoaderArgs) {
   };
 
   const currentWorkspaceId = authContext.currentWorkspace?.id ?? null;
-  const migrationGateWorkspaceId = getMigrationGateWorkspaceId(url, authContext);
+  const migrationGateWorkspace = getMigrationGateWorkspace(url, authContext);
   const projectMigrationGate = await getWorkspaceMigrationGate(
     env,
-    migrationGateWorkspaceId,
+    migrationGateWorkspace,
   );
   const actingUserId =
     authContext.user?.id ?? authContext.session?.user_id ?? null;
@@ -293,22 +293,23 @@ function WorkspaceMigrationInProgress() {
   );
 }
 
-function getMigrationGateWorkspaceId(
+function getMigrationGateWorkspace(
   url: URL,
   authContext: Awaited<ReturnType<typeof requireAuthContext>>,
-): string | null {
-  const currentWorkspaceId = authContext.currentWorkspace?.id ?? null;
+): WorkspaceWithAccess | null {
+  const currentWorkspace = authContext.currentWorkspace ?? null;
+  const currentWorkspaceId = currentWorkspace?.id ?? null;
   const computerWorkspaceId = getComputerRouteWorkspaceId(url.pathname);
   if (!computerWorkspaceId || computerWorkspaceId === currentWorkspaceId) {
-    return currentWorkspaceId;
+    return currentWorkspace;
   }
 
-  const hasWorkspaceAccess = [
+  const workspace = [
     ...(authContext.workspaces ?? []),
     ...(authContext.allWorkspaces ?? []),
-  ].some((workspace) => workspace.id === computerWorkspaceId);
+  ].find((candidate) => candidate.id === computerWorkspaceId);
 
-  return hasWorkspaceAccess ? computerWorkspaceId : currentWorkspaceId;
+  return workspace ?? currentWorkspace;
 }
 
 function getComputerRouteWorkspaceId(pathname: string): string | null {

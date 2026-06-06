@@ -17,11 +17,6 @@ import {
   parseWorkspaceModelPickerConfig,
 } from '../../../src/lib/model-picker-config';
 import { refreshRemoteMcpOAuthToken } from './remote-mcp-oauth';
-import {
-  type LegacyWorkspaceMigrationState,
-  type WorkspaceFilesystemDO,
-} from './workspace-filesystem-do';
-import { queueLegacyWorkspaceMigrationIfNeeded } from './legacy-workspace-migration-queue';
 
 // Buffer time before token expiry to trigger refresh (10 minutes)
 const TOKEN_REFRESH_BUFFER_MS = 10 * 60 * 1000;
@@ -189,9 +184,6 @@ export interface WorkspaceEnv {
   EMAIL_TO_USER?: KVNamespace;
   CHAT_THREAD?: DurableObjectNamespace;
   WORKSPACE_CRON?: DurableObjectNamespace<WorkspaceCronDO>;
-  WORKSPACE_FS?: DurableObjectNamespace<WorkspaceFilesystemDO>;
-  LEGACY_WORKSPACE_MIGRATIONS?: Workflow;
-  ENABLE_LEGACY_WORKSPACE_MIGRATION?: string;
   TOKEN_SIGNING_SECRET?: string;
 }
 
@@ -201,7 +193,6 @@ export interface WorkspaceEnv {
 export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
   private sql: SqlStorage;
   private lastThreadStatusBroadcasts = new Map<string, string>();
-  private legacyMigrationQueueInFlight: Promise<LegacyWorkspaceMigrationState | null> | null = null;
 
   constructor(ctx: DurableObjectState, env: WorkspaceEnv) {
     super(ctx, env);
@@ -665,10 +656,7 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
     }
   }
   async getInfo(): Promise<Workspace | null> {
-    const info = await this.getStoredInfo();
-    if (!info) return null;
-    this.enqueueLegacyWorkspaceMigrationIfNeeded(info);
-    return info;
+    return await this.getStoredInfo();
   }
 
   private async getStoredInfo(): Promise<Workspace | null> {
@@ -697,50 +685,6 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
       await this.setInfo(info);
     }
     return info;
-  }
-
-  async ensureLegacyWorkspaceMigrationQueued(): Promise<LegacyWorkspaceMigrationState | null> {
-    const info = await this.getStoredInfo();
-    if (!info) return null;
-    if (this.env.ENABLE_LEGACY_WORKSPACE_MIGRATION !== '1') return null;
-    if (!this.env.WORKSPACE_FS || !this.env.LEGACY_WORKSPACE_MIGRATIONS) return null;
-    if (info.archived) return null;
-    if (!this.legacyMigrationQueueInFlight) {
-      this.legacyMigrationQueueInFlight = this.startLegacyWorkspaceMigrationIfNeeded(info)
-        .finally(() => {
-          this.legacyMigrationQueueInFlight = null;
-        });
-    }
-    return await this.legacyMigrationQueueInFlight;
-  }
-
-  private enqueueLegacyWorkspaceMigrationIfNeeded(info: Workspace): void {
-    if (this.env.ENABLE_LEGACY_WORKSPACE_MIGRATION !== '1') return;
-    if (!this.env.WORKSPACE_FS || !this.env.LEGACY_WORKSPACE_MIGRATIONS) return;
-    if (info.archived) return;
-
-    const task = this.startLegacyWorkspaceMigrationIfNeeded(info).catch((error) => {
-      console.error('[WorkspaceDO] failed to enqueue legacy workspace migration', {
-        workspaceId: info.id,
-        error: error instanceof Error ? error.message : String(error),
-      });
-    });
-    const waitUntil = (this.ctx as DurableObjectState & { waitUntil?: (promise: Promise<unknown>) => void }).waitUntil;
-    if (typeof waitUntil === 'function') {
-      waitUntil.call(this.ctx, task);
-    }
-  }
-
-  private async startLegacyWorkspaceMigrationIfNeeded(info: Workspace): Promise<LegacyWorkspaceMigrationState | null> {
-    if (!this.env.WORKSPACE_FS || !this.env.LEGACY_WORKSPACE_MIGRATIONS) return null;
-    const result = await queueLegacyWorkspaceMigrationIfNeeded({
-      env: this.env as never,
-      workspaceId: info.id,
-      orgId: info.org_id,
-      requestedBy: 'workspace-wake',
-      dryRun: false,
-    });
-    return result.state;
   }
 
   private async claimEmailHandle(workspaceId: string): Promise<string> {

@@ -1080,25 +1080,30 @@ describe("legacy workspace migration workflow", () => {
 
   it("migration gate queues any workspace that does not have a current completed migration", async () => {
     const workspaceId = `migration-gate-needed-${crypto.randomUUID()}`;
-    const ensureLegacyWorkspaceMigrationQueued = vi.fn().mockResolvedValue({
-      workspaceId,
-      migrationVersion: CURRENT_LEGACY_WORKSPACE_MIGRATION_VERSION,
-      status: "queued",
-      attempts: 1,
-      updatedAt: new Date().toISOString(),
-    });
+    const workflowCreate = vi.fn().mockResolvedValue({});
 
     const gate = await getWorkspaceMigrationGate({
       ...env,
       ENABLE_LEGACY_WORKSPACE_MIGRATION: "1",
       LEGACY_WORKSPACE_HOST: { fetch: vi.fn() },
-      WORKSPACE: {
-        idFromName: (name: string) => name,
-        get: () => ({ ensureLegacyWorkspaceMigrationQueued }),
+      LEGACY_WORKSPACE_MIGRATIONS: {
+        create: workflowCreate,
       },
-    } as never, workspaceId);
+    } as never, {
+      id: workspaceId,
+      org_id: "org-1",
+    });
 
-    expect(ensureLegacyWorkspaceMigrationQueued).toHaveBeenCalledOnce();
+    expect(workflowCreate).toHaveBeenCalledOnce();
+    expect(workflowCreate.mock.calls[0][0]).toMatchObject({
+      id: expect.stringContaining(`legacy-migration-${workspaceId}-`),
+      params: {
+        workspaceId,
+        orgId: "org-1",
+        requestedBy: "workspace-page-gate",
+        dryRun: false,
+      },
+    });
     expect(gate).toEqual({
       workspaceId,
       status: "queued",
@@ -1113,19 +1118,21 @@ describe("legacy workspace migration workflow", () => {
       status: "copying",
       workflowId: "stale-workflow",
     });
-    const ensureLegacyWorkspaceMigrationQueued = vi.fn();
+    const workflowCreate = vi.fn();
 
     const gate = await getWorkspaceMigrationGate({
       ...env,
       ENABLE_LEGACY_WORKSPACE_MIGRATION: "1",
       LEGACY_WORKSPACE_HOST: { fetch: vi.fn() },
-      WORKSPACE: {
-        idFromName: (name: string) => name,
-        get: () => ({ ensureLegacyWorkspaceMigrationQueued }),
+      LEGACY_WORKSPACE_MIGRATIONS: {
+        create: workflowCreate,
       },
-    } as never, workspaceId);
+    } as never, {
+      id: workspaceId,
+      org_id: "org-1",
+    });
 
-    expect(ensureLegacyWorkspaceMigrationQueued).not.toHaveBeenCalled();
+    expect(workflowCreate).not.toHaveBeenCalled();
     expect(gate).toEqual({
       workspaceId,
       status: "copying",
@@ -1140,19 +1147,21 @@ describe("legacy workspace migration workflow", () => {
       status: "complete",
       completedAt: new Date().toISOString(),
     });
-    const ensureLegacyWorkspaceMigrationQueued = vi.fn();
+    const workflowCreate = vi.fn();
 
     const gate = await getWorkspaceMigrationGate({
       ...env,
       ENABLE_LEGACY_WORKSPACE_MIGRATION: "1",
       LEGACY_WORKSPACE_HOST: { fetch: vi.fn() },
-      WORKSPACE: {
-        idFromName: (name: string) => name,
-        get: () => ({ ensureLegacyWorkspaceMigrationQueued }),
+      LEGACY_WORKSPACE_MIGRATIONS: {
+        create: workflowCreate,
       },
-    } as never, workspaceId);
+    } as never, {
+      id: workspaceId,
+      org_id: "org-1",
+    });
 
-    expect(ensureLegacyWorkspaceMigrationQueued).not.toHaveBeenCalled();
+    expect(workflowCreate).not.toHaveBeenCalled();
     expect(gate).toBeNull();
   });
 });

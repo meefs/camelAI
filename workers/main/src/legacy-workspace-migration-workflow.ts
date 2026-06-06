@@ -177,20 +177,6 @@ export interface MigrationDeployedAppContext {
   isPublic: boolean;
 }
 
-export async function startLegacyWorkspaceMigrationWorkflow(
-  env: Pick<Env, "LEGACY_WORKSPACE_MIGRATIONS">,
-  input: LegacyWorkspaceMigrationPayload & { workflowId: string },
-): Promise<void> {
-  if (!env.LEGACY_WORKSPACE_MIGRATIONS) {
-    throw new Error("LEGACY_WORKSPACE_MIGRATIONS binding is required");
-  }
-  const payload = migrationPayloadSchema.parse(input);
-  await env.LEGACY_WORKSPACE_MIGRATIONS.create({
-    id: input.workflowId,
-    params: payload,
-  });
-}
-
 export class LegacyWorkspaceMigrationWorkflow extends WorkflowEntrypoint<Env, LegacyWorkspaceMigrationPayload> {
   override async run(
     event: WorkflowEvent<LegacyWorkspaceMigrationPayload>,
