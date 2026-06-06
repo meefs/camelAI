@@ -80,7 +80,6 @@ const SENSITIVE_CONTEXT_NAME_PATTERNS = [
   /^id_(?:rsa|dsa|ecdsa|ed25519)$/i,
   /(?:^|[-_.])(secret|token|credential|credentials|private[-_.]?key|api[-_.]?key)(?:[-_.]|$)/i,
 ];
-const LEGACY_IMPORT_IGNORE_GLOBS: string[] = [];
 const ACTIVE_WORKFLOW_INSTANCE_STATUSES = new Set([
   "queued",
   "running",
@@ -379,7 +378,6 @@ export class LegacyWorkspaceMigrationWorkflow extends WorkflowEntrypoint<Env, Le
         const project = await step.do(`ensure-project-${index + 1}-${projectPlan.name}`, async () => {
           return await ensureMigrationProject({
             env: this.env,
-            orgId: payload.orgId,
             workspaceId: payload.workspaceId,
             projectPlan,
           });
@@ -518,13 +516,12 @@ async function safeUnlockLegacyWorkspace(
 
 async function ensureMigrationProject(input: {
   env: Env;
-  orgId: string;
   workspaceId: string;
   projectPlan: LegacyWorkspaceMigrationProjectPlan;
 }): Promise<{ projectId: string; projectName: string }> {
   const { env, workspaceId, projectPlan } = input;
   const workspaceFs = new WorkspaceFilesystemClient(env as never, workspaceId);
-  const project = await workspaceFs.ensureLegacyMigrationProject({
+  return workspaceFs.ensureLegacyMigrationProject({
     name: projectPlan.name,
     description: projectPlan.description,
     migratedFrom: {
@@ -534,10 +531,6 @@ async function ensureMigrationProject(input: {
       migratedAt: new Date().toISOString(),
     },
   });
-  return {
-    projectId: String(project.projectId),
-    projectName: String(project.projectName),
-  };
 }
 
 function sanitizeLegacyImportStepResult(
@@ -751,6 +744,7 @@ export function buildLegacyWorkspaceMigrationSeedPlan(input: {
   entries: RuntimeFileEntry[];
 }): LegacyWorkspaceMigrationPlan {
   const projects: LegacyWorkspaceMigrationProjectPlan[] = [];
+  const usedNames = new Set<string>();
   const looseSourcePaths: string[] = [];
   const unclassified: string[] = [];
 
@@ -764,21 +758,23 @@ export function buildLegacyWorkspaceMigrationSeedPlan(input: {
       looseSourcePaths.push(absolutePath);
       continue;
     }
+    const name = uniqueNameFromSet(normalizeProjectName(entry.name), usedNames);
+    usedNames.add(name);
     projects.push({
-      name: uniqueProjectName(normalizeProjectName(entry.name), projects),
+      name,
       description: `Legacy workspace path ${entry.name}.`,
       sourcePaths: [absolutePath],
-      ignoreGlobs: LEGACY_IMPORT_IGNORE_GLOBS,
       reason: "Allowed source path for agent-led migration discovery.",
     });
   }
 
   if (looseSourcePaths.length > 0) {
+    const name = uniqueNameFromSet("legacy-workspace-loose-files", usedNames);
+    usedNames.add(name);
     projects.push({
-      name: uniqueProjectName("legacy-workspace-loose-files", projects),
+      name,
       description: "Loose top-level legacy workspace files for semantic grouping during migration.",
       sourcePaths: looseSourcePaths,
-      ignoreGlobs: LEGACY_IMPORT_IGNORE_GLOBS,
       reason: "Grouped loose top-level files so the migration planning agent clusters related files instead of treating each file as its own project.",
     });
   }
@@ -1568,7 +1564,6 @@ export function applyMigrationAgentPlan(
       description,
       sourcePaths: uniqueSourcePaths,
       ...(uniqueDeployedApps.length > 0 ? { deployedApps: uniqueDeployedApps } : {}),
-      ignoreGlobs: LEGACY_IMPORT_IGNORE_GLOBS,
       reason: sanitizeDescription(project.reason ?? undefined) || "Migration planning agent grouped these legacy workspace paths.",
     };
   });
@@ -1593,7 +1588,6 @@ export function applyMigrationAgentPlan(
         name: miscName,
         description: "Miscellaneous legacy workspace paths preserved because the migration planning agent did not classify them.",
         sourcePaths: missingPaths,
-        ignoreGlobs: LEGACY_IMPORT_IGNORE_GLOBS,
         reason: "Added automatically so every allowed legacy source path is migrated exactly once.",
       });
     }
@@ -1667,7 +1661,6 @@ export function appendUnclassifiedMiscProject(plan: LegacyWorkspaceMigrationPlan
         name: miscName,
         description: "Miscellaneous hidden, cache, tooling, and loose legacy workspace paths preserved during migration.",
         sourcePaths: unclassified,
-        ignoreGlobs: LEGACY_IMPORT_IGNORE_GLOBS,
         reason: "Preserved automatically outside the AI naming step so hidden/tooling paths are still migrated.",
       },
     ]),
@@ -1719,7 +1712,6 @@ function coalesceMiscProjects(projects: LegacyWorkspaceMigrationProjectPlan[]): 
     name: "legacy-workspace-misc",
     description: "Miscellaneous hidden, cache, tooling, loose, and unclassified legacy workspace paths preserved during migration.",
     sourcePaths: Array.from(new Set(miscProjects.flatMap((project) => project.sourcePaths))),
-    ignoreGlobs: LEGACY_IMPORT_IGNORE_GLOBS,
     reason: miscProjects.map((project) => project.reason).filter(Boolean).join(" "),
   };
   return projects.flatMap((project, index) => {
@@ -1825,17 +1817,6 @@ function normalizeProjectName(value: string): string {
     .replace(/[^a-z0-9-]+/g, "-")
     .replace(/^-+|-+$/g, "")
     .slice(0, 48) || "legacy-project";
-}
-
-function uniqueProjectName(base: string, projects: LegacyWorkspaceMigrationProjectPlan[]): string {
-  const existing = new Set(projects.map((project) => project.name));
-  if (!existing.has(base)) return base;
-  for (let index = 2; index < 100; index++) {
-    const suffix = `-${index}`;
-    const candidate = `${base.slice(0, 48 - suffix.length)}${suffix}`;
-    if (!existing.has(candidate)) return candidate;
-  }
-  return `${base.slice(0, 40)}-${crypto.randomUUID().slice(0, 7)}`;
 }
 
 function isPlanningOnlyPath(name: string): boolean {

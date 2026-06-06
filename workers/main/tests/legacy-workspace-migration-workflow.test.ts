@@ -41,14 +41,12 @@ describe("legacy workspace migration workflow", () => {
         name: "web-app",
         description: "Legacy workspace path web-app.",
         sourcePaths: ["/home/claude/web-app"],
-        ignoreGlobs: [],
         reason: "Allowed source path for agent-led migration discovery.",
       },
       {
         name: "legacy-workspace-loose-files",
         description: "Loose top-level legacy workspace files for semantic grouping during migration.",
         sourcePaths: ["/home/claude/README.md"],
-        ignoreGlobs: [],
         reason: "Grouped loose top-level files so the migration planning agent clusters related files instead of treating each file as its own project.",
       },
     ]);
@@ -79,7 +77,6 @@ describe("legacy workspace migration workflow", () => {
         name: "legacy-workspace-misc",
         description: "Miscellaneous hidden, cache, tooling, and loose legacy workspace paths preserved during migration.",
         sourcePaths: ["/home/claude/.cache", "/home/claude/.claude"],
-        ignoreGlobs: [],
         reason: "Preserved automatically outside the AI naming step so hidden/tooling paths are still migrated.",
       },
     ]);
@@ -180,14 +177,12 @@ describe("legacy workspace migration workflow", () => {
         name: "customer-churn-analysis",
         description: "Notebook and CSV work for customer churn exploration.",
         sourcePaths: ["/home/claude/analysis"],
-        ignoreGlobs: [],
         reason: "Migration planning agent grouped these legacy workspace paths.",
       },
       {
         name: "customer-churn-analysis-2",
         description: "Loose workspace notes.",
         sourcePaths: ["/home/claude/README.md"],
-        ignoreGlobs: [],
         reason: "Migration planning agent grouped these legacy workspace paths.",
       },
     ]);
@@ -390,14 +385,12 @@ describe("legacy workspace migration workflow", () => {
         name: "analysis",
         description: "Notebook and CSV work.",
         sourcePaths: ["/home/claude/analysis"],
-        ignoreGlobs: [],
         reason: "Migration planning agent grouped these legacy workspace paths.",
       },
       {
         name: "legacy-workspace-misc",
         description: "Miscellaneous legacy workspace paths preserved because the migration planning agent did not classify them.",
         sourcePaths: ["/home/claude/README.md"],
-        ignoreGlobs: [],
         reason: "Added automatically so every allowed legacy source path is migrated exactly once.",
       },
     ]);
