@@ -57,17 +57,19 @@ export async function queueLegacyWorkspaceMigrationIfNeeded(
   const state = await workspaceFs.getLegacyWorkspaceMigrationState();
 
   if (ACTIVE_LEGACY_MIGRATION_STATUSES.has(state.status)) {
-    if (!input.force) {
-      return { state, queued: false, workflowId: state.workflowId };
-    }
     if (state.workflowId) {
       const instance = await env.LEGACY_WORKSPACE_MIGRATIONS.get(state.workflowId);
       const workflowStatus = await instance.status();
       if (ACTIVE_WORKFLOW_INSTANCE_STATUSES.has(workflowStatus.status)) {
+        if (!input.force) {
+          return { state, queued: false, workflowId: state.workflowId };
+        }
         throw new LegacyWorkspaceMigrationConflictError(
           `Migration is already ${state.status} and workflow ${state.workflowId} is ${workflowStatus.status}`,
         );
       }
+    } else if (!input.force) {
+      return { state, queued: false, workflowId: state.workflowId };
     }
   } else if (!input.force && isCurrentCompletedMigration(state)) {
     return { state, queued: false, workflowId: state.workflowId };

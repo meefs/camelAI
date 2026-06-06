@@ -1218,6 +1218,39 @@ describe("legacy workspace migration workflow", () => {
     });
   });
 
+  it("migration gate asks active migrations to ensure the workflow is still running", async () => {
+    const workspaceId = `migration-gate-active-${crypto.randomUUID()}`;
+    const workspace = new WorkspaceFilesystemClient(env, workspaceId);
+    await workspace.setLegacyWorkspaceMigrationState({
+      status: "copying",
+      workflowId: "stale-workflow",
+    });
+    const ensureLegacyWorkspaceMigrationQueued = vi.fn().mockResolvedValue({
+      workspaceId,
+      migrationVersion: CURRENT_LEGACY_WORKSPACE_MIGRATION_VERSION,
+      status: "queued",
+      attempts: 2,
+      updatedAt: new Date().toISOString(),
+    });
+
+    const gate = await getWorkspaceMigrationGate({
+      ...env,
+      ENABLE_LEGACY_WORKSPACE_MIGRATION: "1",
+      LEGACY_WORKSPACE_HOST: { fetch: vi.fn() },
+      WORKSPACE: {
+        idFromName: (name: string) => name,
+        get: () => ({ ensureLegacyWorkspaceMigrationQueued }),
+      },
+    } as never, workspaceId);
+
+    expect(ensureLegacyWorkspaceMigrationQueued).toHaveBeenCalledOnce();
+    expect(gate).toEqual({
+      workspaceId,
+      status: "queued",
+      reason: "active",
+    });
+  });
+
   it("migration gate does not queue a current completed migration", async () => {
     const workspaceId = `migration-gate-complete-${crypto.randomUUID()}`;
     const workspace = new WorkspaceFilesystemClient(env, workspaceId);

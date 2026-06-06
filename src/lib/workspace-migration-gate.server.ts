@@ -38,9 +38,10 @@ export async function getWorkspaceMigrationGate(
     const migrationState = await workspaceFs.getLegacyWorkspaceMigrationState();
 
     if (ACTIVE_MIGRATION_STATUSES.has(migrationState.status)) {
+      const queuedState = await enqueueWorkspaceMigration(env, workspaceId);
       return {
         workspaceId,
-        status: migrationState.status,
+        status: queuedState?.status ?? migrationState.status,
         reason: "active",
       };
     }
