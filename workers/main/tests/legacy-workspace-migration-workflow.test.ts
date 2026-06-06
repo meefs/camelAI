@@ -1066,7 +1066,7 @@ describe("legacy workspace migration workflow", () => {
     const result = await resetProjectsForWorkspaceMigration({
       workspaceId,
       workspaceFs: {
-        listProjects: async () => workspace.listProjects(),
+        listProjectsForMigrationReset: async () => workspace.listProjectsForMigrationReset(),
         deleteProjectsForWorkspace: async (id) => {
           calls.push("metadata");
           return workspace.deleteProjectsForWorkspace(id);
@@ -1080,8 +1080,44 @@ describe("legacy workspace migration workflow", () => {
     });
 
     expect(result.deletedProjectIds).toEqual([migrated.id, manual.id]);
-    expect(calls).toEqual([`runtime:${migrated.id}`, `runtime:${manual.id}`, "metadata"]);
+    expect(calls.slice(0, 2).sort()).toEqual([`runtime:${manual.id}`, `runtime:${migrated.id}`].sort());
+    expect(calls[2]).toBe("metadata");
     await expect(workspace.listProjects()).resolves.toEqual([]);
+  });
+
+  it("deletes cloned runtime projects before their sources during migration reset", async () => {
+    const calls: string[] = [];
+
+    const result = await resetProjectsForWorkspaceMigration({
+      workspaceId: "workspace-1",
+      workspaceFs: {
+        listProjectsForMigrationReset: async () => [
+          { id: "source" },
+          { id: "clone", clonedFromProjectId: "source" },
+          { id: "nested-clone", clonedFromProjectId: "clone" },
+        ],
+        deleteProjectsForWorkspace: async () => {
+          calls.push("metadata");
+          return {
+            deleted: [{ id: "source" }, { id: "clone" }, { id: "nested-clone" }],
+            retained: [],
+          };
+        },
+      },
+      runtime: {
+        deleteProject: async (projectId) => {
+          calls.push(`runtime:${projectId}`);
+        },
+      },
+    });
+
+    expect(result.deletedProjectIds).toEqual(["source", "clone", "nested-clone"]);
+    expect(calls).toEqual([
+      "runtime:nested-clone",
+      "runtime:clone",
+      "runtime:source",
+      "metadata",
+    ]);
   });
 
   it("clears stale migration errors when a later run succeeds", async () => {

@@ -138,7 +138,7 @@ interface LegacyWorkspaceMigrationRuntimeResetter {
 }
 
 interface LegacyWorkspaceMigrationWorkspaceResetter {
-  listProjects(): Promise<Array<{ id: string }>>;
+  listProjectsForMigrationReset(): Promise<Array<{ id: string; clonedFromProjectId?: string }>>;
   deleteProjectsForWorkspace(
     workspaceId?: unknown,
   ): Promise<{ deleted: Array<{ id: string }>; retained: Array<{ id: string }> }>;
@@ -1387,8 +1387,8 @@ export async function resetProjectsForWorkspaceMigration(input: {
   runtime: LegacyWorkspaceMigrationRuntimeResetter;
   workspaceId: string;
 }): Promise<{ deletedProjectIds: string[] }> {
-  const projects = await input.workspaceFs.listProjects();
-  const projectIds = Array.from(new Set(projects.map((project) => project.id)));
+  const projects = await input.workspaceFs.listProjectsForMigrationReset();
+  const projectIds = orderProjectsForRuntimeDelete(projects);
 
   for (const projectId of projectIds) {
     await input.runtime.deleteProject(projectId);
@@ -1396,6 +1396,22 @@ export async function resetProjectsForWorkspaceMigration(input: {
 
   const cleanup = await input.workspaceFs.deleteProjectsForWorkspace(input.workspaceId);
   return { deletedProjectIds: cleanup.deleted.map((project) => project.id) };
+}
+
+function orderProjectsForRuntimeDelete(projects: Array<{ id: string; clonedFromProjectId?: string }>): string[] {
+  const byId = new Map(projects.map((project) => [project.id, project]));
+  const depthById = new Map<string, number>();
+  const depth = (project: { id: string; clonedFromProjectId?: string }): number => {
+    const cached = depthById.get(project.id);
+    if (cached !== undefined) return cached;
+    const source = project.clonedFromProjectId ? byId.get(project.clonedFromProjectId) : undefined;
+    const value = source ? depth(source) + 1 : 0;
+    depthById.set(project.id, value);
+    return value;
+  };
+  return Array.from(new Map(projects.map((project) => [project.id, project])).values())
+    .sort((a, b) => depth(b) - depth(a) || a.id.localeCompare(b.id))
+    .map((project) => project.id);
 }
 
 function coalesceMiscProjects(projects: LegacyWorkspaceMigrationProjectPlan[]): LegacyWorkspaceMigrationProjectPlan[] {

@@ -175,6 +175,7 @@ export interface WorkspaceFilesystemLike {
   mkdir(path: string, options?: { recursive?: boolean }): Promise<WorkspaceWriteResponse>;
   deleteFile(path: string, options?: { recursive?: boolean; force?: boolean }): Promise<WorkspaceWriteResponse>;
   listProjects(): Promise<WorkspaceProject[]>;
+  listProjectsForMigrationReset(): Promise<WorkspaceProject[]>;
   getProject(projectId: unknown): Promise<WorkspaceProject | null>;
   getProjectByName(project: unknown): Promise<WorkspaceProject | null>;
   deleteProjectsForWorkspace(workspaceId?: unknown): Promise<{ deleted: WorkspaceProject[]; retained: WorkspaceProject[] }>;
@@ -381,6 +382,10 @@ export class WorkspaceFilesystemDO extends DurableObject<WorkspaceFilesystemEnv>
 
   async listProjects(): Promise<WorkspaceProject[]> {
     return nestProjectClones((await this.readProjects()).map(toPublicProject));
+  }
+
+  async listProjectsForMigrationReset(): Promise<WorkspaceProject[]> {
+    return (await this.readProjects()).map(toPublicProject);
   }
 
   async getProject(projectId: unknown): Promise<WorkspaceProject | null> {
@@ -740,6 +745,10 @@ export class WorkspaceFilesystemClient implements WorkspaceFilesystemLike {
 
   listProjects(): Promise<WorkspaceProject[]> {
     return this.stub.listProjects();
+  }
+
+  listProjectsForMigrationReset(): Promise<WorkspaceProject[]> {
+    return this.stub.listProjectsForMigrationReset();
   }
 
   getProject(projectId: unknown): Promise<WorkspaceProject | null> {
