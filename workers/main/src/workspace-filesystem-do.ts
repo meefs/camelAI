@@ -222,6 +222,8 @@ const PROJECTS_KEY = "projects:v1";
 const LEGACY_MIGRATION_KEY = "legacy-workspace-migration:v1";
 const DEFAULT_PROJECT_VM_ID = "main";
 const ARTIFACTS_DEFAULT_BRANCH = "main";
+const ARTIFACTS_READY_TIMEOUT_MS = 30_000;
+const ARTIFACTS_READY_POLL_MS = 1_000;
 export const ARTIFACTS_VANITY_HOST = "artifacts.camelai.internal";
 
 interface ArtifactsBinding {
@@ -239,7 +241,7 @@ interface ArtifactsBinding {
 interface ArtifactsRepoInfo {
   id?: string;
   name: string;
-  remote: string;
+  remote?: string;
   defaultBranch?: string;
   status?: "ready" | "creating" | "importing" | "forking";
 }
@@ -255,6 +257,10 @@ interface ArtifactsCreateTokenResult {
 
 export interface ArtifactsRepo extends ArtifactsRepoInfo {
   createToken(scope?: "read" | "write", ttl?: number): Promise<ArtifactsCreateTokenResult>;
+}
+
+interface ReadyArtifactsRepoInfo extends ArtifactsRepoInfo {
+  remote: string;
 }
 
 export class WorkspaceFilesystemDO extends DurableObject<WorkspaceFilesystemEnv> {
@@ -699,19 +705,12 @@ export class WorkspaceFilesystemDO extends DurableObject<WorkspaceFilesystemEnv>
       await this.replaceProject(updated);
       return updated;
     } catch (error) {
-      const updated: WorkspaceProject = {
-        ...project,
-        artifactRepoName: repoName,
-        artifactStatus: "error",
-        updatedAt: new Date().toISOString(),
-      };
-      await this.replaceProject(updated);
       console.error("[WorkspaceFilesystemDO] failed to ensure Artifacts repo", {
         projectId: project.id,
         repoName,
         error: errorMessage(error),
       });
-      return updated;
+      throw error;
     }
   }
 
@@ -962,26 +961,57 @@ async function createOrGetArtifactRepo(
   artifacts: ArtifactsBinding,
   repoName: string,
   project: WorkspaceProject,
-): Promise<ArtifactsRepoInfo> {
+): Promise<ReadyArtifactsRepoInfo> {
+  let repo: ArtifactsRepoInfo;
   try {
-    return await normalizeArtifactRepoInfo(await artifacts.get(repoName));
+    repo = await artifacts.get(repoName);
   } catch {
-    return await normalizeArtifactRepoInfo(await artifacts.create(repoName, {
+    repo = await artifacts.create(repoName, {
       description: `camelAI project ${project.id}`,
       readOnly: false,
       setDefaultBranch: ARTIFACTS_DEFAULT_BRANCH,
-    }));
+    });
   }
+
+  return waitForArtifactRepoReady(artifacts, repoName, repo);
+}
+
+async function waitForArtifactRepoReady(
+  artifacts: ArtifactsBinding,
+  repoName: string,
+  initialRepo: ArtifactsRepoInfo,
+): Promise<ReadyArtifactsRepoInfo> {
+  const deadline = Date.now() + ARTIFACTS_READY_TIMEOUT_MS;
+  let repo = await normalizeArtifactRepoInfo(initialRepo);
+
+  while (!repo.remote && Date.now() < deadline) {
+    await delay(ARTIFACTS_READY_POLL_MS);
+    repo = await normalizeArtifactRepoInfo(await artifacts.get(repoName));
+  }
+
+  if (!repo.remote) {
+    const status = repo.status ? ` status=${repo.status}` : "";
+    throw new Error(`Artifacts repo ${repoName} did not expose a Git remote within ${ARTIFACTS_READY_TIMEOUT_MS}ms.${status}`);
+  }
+
+  return {
+    ...repo,
+    remote: repo.remote,
+  };
 }
 
 async function normalizeArtifactRepoInfo(repo: ArtifactsRepoInfo): Promise<ArtifactsRepoInfo> {
   return {
     id: await optionalStringValue(repo.id),
     name: await stringValue(repo.name, "artifact repo name"),
-    remote: await stringValue(repo.remote, "artifact repo remote"),
+    remote: await optionalStringValue(repo.remote),
     defaultBranch: await optionalStringValue(repo.defaultBranch),
     status: normalizeArtifactStatus(await optionalStringValue(repo.status)),
   };
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 async function stringValue(value: unknown, label: string): Promise<string> {
@@ -1002,6 +1032,10 @@ function normalizeArtifactStatus(status: string | undefined): ArtifactsRepoInfo[
     ? status
     : undefined;
 }
+
+export const __testing = {
+  createOrGetArtifactRepo,
+};
 
 function artifactRepoName(_workspaceKey: string, projectId: string): string {
   return normalizeGlobalProjectId(projectId).slice(0, 63);

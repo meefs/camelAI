@@ -18,6 +18,7 @@ import {
 import { CURRENT_LEGACY_WORKSPACE_MIGRATION_VERSION } from "../../../src/lib/legacy-workspace-migration-version";
 import { getWorkspaceMigrationGate } from "../../../src/lib/workspace-migration-gate.server";
 import {
+  __testing as workspaceFilesystemTesting,
   normalizeLegacyMigrationProjectReference,
   WorkspaceFilesystemClient,
 } from "../src/workspace-filesystem-do";
@@ -922,6 +923,52 @@ describe("legacy workspace migration workflow", () => {
       projectName: "Notebook analysis",
     });
     expect(structuredClone(projectRef)).toEqual(projectRef);
+  });
+
+  it("waits for Artifacts repos to expose a Git remote before returning them", async () => {
+    vi.useFakeTimers();
+    try {
+      const create = vi.fn(async () => ({
+        name: "repo-1",
+        status: "creating" as const,
+      }));
+      const get = vi.fn()
+        .mockRejectedValueOnce(new Error("not found"))
+        .mockResolvedValueOnce({
+          id: "repo-id-1",
+          name: "repo-1",
+          remote: "https://artifacts.cloudflare.test/git/repo-1.git",
+          defaultBranch: "main",
+          status: "ready",
+        });
+      const artifacts = { create, get };
+
+      const ready = workspaceFilesystemTesting.createOrGetArtifactRepo(
+        artifacts,
+        "repo-1",
+        {
+          id: "project-1",
+          name: "project-1",
+          description: "Project one.",
+          defaultVmId: "main",
+          createdAt: "2026-06-04T00:00:00.000Z",
+          updatedAt: "2026-06-04T00:00:00.000Z",
+        },
+      );
+
+      await vi.advanceTimersByTimeAsync(1_000);
+
+      await expect(ready).resolves.toMatchObject({
+        id: "repo-id-1",
+        name: "repo-1",
+        remote: "https://artifacts.cloudflare.test/git/repo-1.git",
+        status: "ready",
+      });
+      expect(create).toHaveBeenCalledOnce();
+      expect(get).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("deletes all projects before a migration rerun", async () => {
