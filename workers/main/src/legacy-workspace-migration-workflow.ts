@@ -20,7 +20,6 @@ const MIGRATION_LEASE_TTL_MS = 2 * 60 * 60 * 1000;
 const MIGRATION_CONTEXT_STEP_TIMEOUT = "15 minutes";
 const MIGRATION_AI_STEP_TIMEOUT = "45 minutes";
 const MIGRATION_IMPORT_STEP_TIMEOUT = "2 hours";
-const MIGRATION_AI_REQUEST_TIMEOUT_MS = 15 * 60 * 1000;
 const TOP_LEVEL_SCAN_LIMIT = 2_000;
 const NAMING_CONTEXT_MAX_PROJECTS = 150;
 const NAMING_CONTEXT_MAX_ENTRIES_PER_PROJECT = 80;
@@ -1022,41 +1021,28 @@ export async function runMigrationPlanningAi(
   if (!accountId || !gatewayName || !token) {
     throw new Error("Cloudflare AI Gateway Responses API is not configured for legacy workspace migration planning");
   }
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), MIGRATION_AI_REQUEST_TIMEOUT_MS);
-  let response: Response;
-  try {
-    response = await fetch(
-      `https://gateway.ai.cloudflare.com/v1/${encodeURIComponent(accountId)}/${encodeURIComponent(gatewayName)}/openai/responses`,
-      {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${token}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(buildMigrationPlanningResponsesRequest(prompt, allowedSourcePaths)),
-        signal: controller.signal,
+  const response = await fetch(
+    `https://gateway.ai.cloudflare.com/v1/${encodeURIComponent(accountId)}/${encodeURIComponent(gatewayName)}/openai/responses`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
       },
+      body: JSON.stringify(buildMigrationPlanningResponsesRequest(prompt, allowedSourcePaths)),
+    },
+  );
+  if (!response.ok) {
+    const responseText = await response.text();
+    const payload = responseText ? safeJsonParse(responseText) : undefined;
+    throw new Error(
+      extractCloudflareAiErrorMessage(payload)
+      ?? responseText.trim()
+      ?? `Cloudflare AI Gateway Responses API request failed (${response.status})`,
     );
-    if (!response.ok) {
-      const responseText = await response.text();
-      const payload = responseText ? safeJsonParse(responseText) : undefined;
-      throw new Error(
-        extractCloudflareAiErrorMessage(payload)
-        ?? responseText.trim()
-        ?? `Cloudflare AI Gateway Responses API request failed (${response.status})`,
-      );
-    }
-    const payload = await readMigrationPlanningResponsesPayload(response);
-    return parseMigrationPlanningAiResult(payload);
-  } catch (error) {
-    if (controller.signal.aborted) {
-      throw new Error(`Migration planning AI request timed out after ${MIGRATION_AI_REQUEST_TIMEOUT_MS}ms`);
-    }
-    throw error;
-  } finally {
-    clearTimeout(timeout);
   }
+  const payload = await readMigrationPlanningResponsesPayload(response);
+  return parseMigrationPlanningAiResult(payload);
 }
 
 export function buildMigrationPlanningResponsesRequest(prompt: string, allowedSourcePaths?: string[]): Record<string, unknown> {
@@ -1178,10 +1164,6 @@ export async function readMigrationPlanningResponsesPayload(response: Response):
         const rawEvent = buffer.slice(0, separatorIndex);
         buffer = buffer.slice(separatorIndex + sseSeparatorLength(buffer, separatorIndex));
         consumeEvent(rawEvent);
-        if (completedPayload !== undefined) {
-          await reader.cancel().catch(() => undefined);
-          return completedPayload;
-        }
         separatorIndex = findSseEventSeparator(buffer);
       }
     }
