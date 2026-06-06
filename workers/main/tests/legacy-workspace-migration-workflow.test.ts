@@ -830,6 +830,49 @@ describe("legacy workspace migration workflow", () => {
     });
   });
 
+  it("returns streaming Responses API payload as soon as the response completes", async () => {
+    const completed = {
+      type: "response.completed",
+      response: {
+        output_text: JSON.stringify({
+          projects: [
+            {
+              name: "analysis",
+              description: "Notebook work",
+              sourcePaths: ["/home/claude/analysis"],
+            },
+          ],
+        }),
+      },
+    };
+    const encoded = new TextEncoder().encode(
+      `event: response.completed\ndata: ${JSON.stringify(completed)}\n\n`,
+    );
+    const response = new Response(new ReadableStream({
+      start(controller) {
+        controller.enqueue(encoded);
+      },
+      cancel() {},
+    }), {
+      headers: { "content-type": "text/event-stream" },
+    });
+
+    const payload = await Promise.race([
+      readMigrationPlanningResponsesPayload(response),
+      new Promise((_, reject) => setTimeout(() => reject(new Error("stream did not finish")), 100)),
+    ]);
+
+    expect(parseMigrationPlanningAiResult(payload)).toEqual({
+      projects: [
+        {
+          name: "analysis",
+          description: "Notebook work",
+          sourcePaths: ["/home/claude/analysis"],
+        },
+      ],
+    });
+  });
+
   it("parses Responses API structured output migration planning AI results", () => {
     const plan = parseMigrationPlanningAiResult({
       output: [
