@@ -4,6 +4,7 @@ import {
   type WorkflowStep,
 } from "cloudflare:workers";
 import { z } from "zod";
+import { CURRENT_LEGACY_WORKSPACE_MIGRATION_VERSION } from "../../../src/lib/legacy-workspace-migration-version";
 import type { WorkerScript } from "./auth.js";
 import { getOrgStub } from "./helpers/stubs.js";
 import type { Env } from "./types.js";
@@ -93,6 +94,7 @@ const migrationPayloadSchema = z.object({
   orgId: z.string().min(1),
   requestedBy: z.string().optional(),
   dryRun: z.boolean().optional().default(false),
+  force: z.boolean().optional().default(false),
 });
 
 type LegacyWorkspaceMigrationPayload = z.infer<typeof migrationPayloadSchema>;
@@ -189,8 +191,16 @@ export class LegacyWorkspaceMigrationWorkflow extends WorkflowEntrypoint<Env, Le
     let leaseId: string | undefined;
 
     try {
-      await step.do("mark-scanning", async () => {
+      const prepare = await step.do("prepare-migration", async () => {
         const current = await workspaceFs.getLegacyWorkspaceMigrationState();
+        if (
+          !payload.force &&
+          !payload.dryRun &&
+          current.status === "complete" &&
+          current.migrationVersion >= CURRENT_LEGACY_WORKSPACE_MIGRATION_VERSION
+        ) {
+          return { skip: true, reason: "current_migration_complete" };
+        }
         await workspaceFs.setLegacyWorkspaceMigrationState({
           status: "scanning_legacy",
           orgId: payload.orgId,
@@ -199,7 +209,11 @@ export class LegacyWorkspaceMigrationWorkflow extends WorkflowEntrypoint<Env, Le
           startedAt: new Date().toISOString(),
           error: undefined,
         });
+        return { skip: false };
       });
+      if (prepare.skip) {
+        return { success: true, skipped: true, reason: prepare.reason };
+      }
 
       if (!payload.dryRun) {
         leaseId = await step.do("lock-legacy-workspace", async () => {
@@ -212,6 +226,14 @@ export class LegacyWorkspaceMigrationWorkflow extends WorkflowEntrypoint<Env, Le
             leaseId: lock.leaseId,
           });
           return lock.leaseId;
+        }, {
+          rollback: async ({ output }) => {
+            if (output) await safeUnlockLegacyWorkspace(runtime, payload.orgId, payload.workspaceId, output);
+          },
+          rollbackConfig: {
+            retries: { limit: 3, delay: "15 seconds", backoff: "linear" },
+            timeout: "2 minutes",
+          },
         });
       }
 
@@ -345,6 +367,14 @@ export class LegacyWorkspaceMigrationWorkflow extends WorkflowEntrypoint<Env, Le
             leaseId: lock.leaseId,
           });
           return lock.leaseId;
+        }, {
+          rollback: async ({ output }) => {
+            if (output) await safeUnlockLegacyWorkspace(runtime, payload.orgId, payload.workspaceId, output);
+          },
+          rollbackConfig: {
+            retries: { limit: 3, delay: "15 seconds", backoff: "linear" },
+            timeout: "2 minutes",
+          },
         });
         const project = await step.do(`ensure-project-${index + 1}-${projectPlan.name}`, async () => {
           return await ensureMigrationProject({
@@ -353,6 +383,17 @@ export class LegacyWorkspaceMigrationWorkflow extends WorkflowEntrypoint<Env, Le
             workspaceId: payload.workspaceId,
             projectPlan,
           });
+        }, {
+          rollback: async ({ output }) => {
+            if (output?.projectId) {
+              const projectRuntime = new ProjectRuntimeMigrationClient(this.env);
+              await projectRuntime.deleteProject(output.projectId);
+            }
+          },
+          rollbackConfig: {
+            retries: { limit: 3, delay: "30 seconds", backoff: "exponential" },
+            timeout: MIGRATION_IMPORT_STEP_TIMEOUT,
+          },
         });
         const result = await step.do(`import-project-files-${index + 1}-${projectPlan.name}`, {
           timeout: MIGRATION_IMPORT_STEP_TIMEOUT,
@@ -373,10 +414,30 @@ export class LegacyWorkspaceMigrationWorkflow extends WorkflowEntrypoint<Env, Le
         if ((projectPlan.deployedApps ?? []).length > 0) {
           await step.do(`associate-deployed-apps-${index + 1}-${projectPlan.name}`, async () => {
             const org = getOrgStub(this.env, payload.orgId);
+            const previousAssociations = deployedApps
+              .filter((app) => (projectPlan.deployedApps ?? []).includes(app.scriptName))
+              .map((app) => ({ scriptName: app.scriptName, projectId: app.projectId }));
             for (const scriptName of projectPlan.deployedApps ?? []) {
               await org.updateWorkerScriptProject(scriptName, payload.workspaceId, project.projectId, "system:legacy-migration");
             }
-            return { count: projectPlan.deployedApps?.length ?? 0 };
+            return { count: projectPlan.deployedApps?.length ?? 0, previousAssociations };
+          }, {
+            rollback: async ({ output }) => {
+              if (!output?.previousAssociations?.length) return;
+              const org = getOrgStub(this.env, payload.orgId);
+              for (const association of output.previousAssociations) {
+                await org.updateWorkerScriptProject(
+                  association.scriptName,
+                  payload.workspaceId,
+                  association.projectId,
+                  "system:legacy-migration-rollback",
+                );
+              }
+            },
+            rollbackConfig: {
+              retries: { limit: 3, delay: "15 seconds", backoff: "linear" },
+              timeout: "2 minutes",
+            },
           });
         }
         if (!importResults.createdProjects.includes(project.projectName)) {
@@ -431,10 +492,27 @@ export class LegacyWorkspaceMigrationWorkflow extends WorkflowEntrypoint<Env, Le
       if (leaseId) {
         const unlockLeaseId = leaseId;
         await step.do("unlock-legacy-workspace", async () => {
-          await runtime.unlockLegacyWorkspace(payload.orgId, payload.workspaceId, unlockLeaseId);
+          await safeUnlockLegacyWorkspace(runtime, payload.orgId, payload.workspaceId, unlockLeaseId);
         });
       }
     }
+  }
+}
+
+async function safeUnlockLegacyWorkspace(
+  runtime: ProjectRuntimeMigrationClient,
+  orgId: string,
+  workspaceId: string,
+  leaseId: string,
+): Promise<void> {
+  try {
+    await runtime.unlockLegacyWorkspace(orgId, workspaceId, leaseId);
+  } catch (error) {
+    console.warn("Failed to unlock legacy workspace", {
+      workspaceId,
+      leaseId,
+      error: error instanceof Error ? error.message : String(error),
+    });
   }
 }
 

@@ -134,7 +134,6 @@ import { waitUntil } from "cloudflare:workers";
 import { refreshOrgCustomDomainHostnamesForAdmin } from "../../../../../src/lib/admin-custom-domain.server.js";
 import { WorkspaceFilesystemClient } from "../../workspace-filesystem-do.js";
 import {
-  LegacyWorkspaceMigrationConflictError,
   queueLegacyWorkspaceMigrationIfNeeded,
 } from "../../legacy-workspace-migration-queue.js";
 
@@ -488,22 +487,14 @@ routes.post(
     const orgId = c.req.param("orgId");
     const workspaceId = c.req.param("workspaceId");
     const body = c.req.valid("json");
-    let result;
-    try {
-      result = await queueLegacyWorkspaceMigrationIfNeeded({
-        env: c.env,
-        workspaceId,
-        orgId,
-        requestedBy: body.requested_by || "admin-api",
-        dryRun: body.dry_run === true,
-        force: body.force === true,
-      });
-    } catch (error) {
-      if (error instanceof LegacyWorkspaceMigrationConflictError) {
-        return c.json({ error: error.message }, 409);
-      }
-      throw error;
-    }
+    const result = await queueLegacyWorkspaceMigrationIfNeeded({
+      env: c.env,
+      workspaceId,
+      orgId,
+      requestedBy: body.requested_by || "admin-api",
+      dryRun: body.dry_run === true,
+      force: body.force === true,
+    });
     if (!result.queued) {
       return c.json({ error: `Migration is already ${result.state.status}; pass force to enqueue a rerun` }, 409);
     }
