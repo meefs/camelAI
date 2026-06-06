@@ -272,6 +272,23 @@ export class WorkspaceFilesystemDO extends DurableObject<WorkspaceFilesystemEnv>
     });
   }
 
+  async fetch(request: Request): Promise<Response> {
+    const url = new URL(request.url);
+    if (request.method === "POST" && url.pathname === "/internal/ensure-legacy-migration-project") {
+      try {
+        const input = await request.json().catch(() => ({})) as {
+          name?: unknown;
+          description?: unknown;
+          migratedFrom?: WorkspaceProjectMigrationSource;
+        };
+        return Response.json(await this.ensureLegacyMigrationProject(input));
+      } catch (error) {
+        return Response.json({ error: errorMessage(error) }, { status: 500 });
+      }
+    }
+    return new Response("Not found", { status: 404 });
+  }
+
   async exists(path: string): Promise<WorkspaceExistsResponse> {
     const stat = await this.workspace.stat(normalizeWorkspacePath(path));
     if (!stat) return { exists: false };
@@ -808,7 +825,30 @@ export class WorkspaceFilesystemClient implements WorkspaceFilesystemLike {
     description?: unknown;
     migratedFrom?: WorkspaceProjectMigrationSource;
   }): Promise<{ projectId: string; projectName: string }> {
-    return normalizeLegacyMigrationProjectReference(this.stub.ensureLegacyMigrationProject(input));
+    return this.ensureLegacyMigrationProjectViaFetch(input);
+  }
+
+  private async ensureLegacyMigrationProjectViaFetch(input?: {
+    name?: unknown;
+    description?: unknown;
+    migratedFrom?: WorkspaceProjectMigrationSource;
+  }): Promise<{ projectId: string; projectName: string }> {
+    const response = await this.stub.fetch("https://workspace-fs.internal/internal/ensure-legacy-migration-project", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(input ?? {}),
+    });
+    const payload = await response.json().catch(() => undefined);
+    if (!response.ok) {
+      const message = payload && typeof payload === "object" && "error" in payload
+        ? String((payload as { error?: unknown }).error)
+        : `WorkspaceFilesystemDO ensureLegacyMigrationProject failed (${response.status})`;
+      throw new Error(message);
+    }
+    return normalizeLegacyMigrationProjectReference(payload as {
+      projectId: unknown;
+      projectName: unknown;
+    });
   }
 
   setProjectDescription(input?: { project?: unknown; projectId?: unknown; description?: unknown }): Promise<WorkspaceProject> {
@@ -924,14 +964,43 @@ async function createOrGetArtifactRepo(
   project: WorkspaceProject,
 ): Promise<ArtifactsRepoInfo> {
   try {
-    return await artifacts.get(repoName);
+    return await normalizeArtifactRepoInfo(await artifacts.get(repoName));
   } catch {
-    return artifacts.create(repoName, {
+    return await normalizeArtifactRepoInfo(await artifacts.create(repoName, {
       description: `camelAI project ${project.id}`,
       readOnly: false,
       setDefaultBranch: ARTIFACTS_DEFAULT_BRANCH,
-    });
+    }));
   }
+}
+
+async function normalizeArtifactRepoInfo(repo: ArtifactsRepoInfo): Promise<ArtifactsRepoInfo> {
+  return {
+    id: await optionalStringValue(repo.id),
+    name: await stringValue(repo.name, "artifact repo name"),
+    remote: await stringValue(repo.remote, "artifact repo remote"),
+    defaultBranch: await optionalStringValue(repo.defaultBranch),
+    status: normalizeArtifactStatus(await optionalStringValue(repo.status)),
+  };
+}
+
+async function stringValue(value: unknown, label: string): Promise<string> {
+  const resolved = await Promise.resolve(value);
+  if (typeof resolved !== "string" || !resolved.trim()) {
+    throw new Error(`${label} is missing`);
+  }
+  return resolved;
+}
+
+async function optionalStringValue(value: unknown): Promise<string | undefined> {
+  const resolved = await Promise.resolve(value);
+  return typeof resolved === "string" && resolved.trim() ? resolved : undefined;
+}
+
+function normalizeArtifactStatus(status: string | undefined): ArtifactsRepoInfo["status"] {
+  return status === "ready" || status === "creating" || status === "importing" || status === "forking"
+    ? status
+    : undefined;
 }
 
 function artifactRepoName(_workspaceKey: string, projectId: string): string {
