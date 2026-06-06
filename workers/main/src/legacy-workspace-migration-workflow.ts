@@ -133,6 +133,17 @@ export interface LegacyWorkspaceMigrationRuntimeReader {
   ): Promise<string | null>;
 }
 
+interface LegacyWorkspaceMigrationRuntimeResetter {
+  deleteProject(projectId: string): Promise<void>;
+}
+
+interface LegacyWorkspaceMigrationWorkspaceResetter {
+  listProjects(): Promise<Array<{ id: string; migratedFrom?: { workspaceId: string } }>>;
+  deleteMigratedProjectsForWorkspace(
+    workspaceId?: unknown,
+  ): Promise<{ deleted: Array<{ id: string }>; retained: Array<{ id: string }> }>;
+}
+
 interface LegacyImportResult {
   success?: boolean;
   files?: number;
@@ -386,8 +397,18 @@ export class LegacyWorkspaceMigrationWorkflow extends ThinkWorkflow<
         return { success: true, dryRun: true, plan: enrichedPlan };
       }
 
+      await step.do("reset-previous-migrated-projects", {
+        timeout: MIGRATION_IMPORT_STEP_TIMEOUT,
+        retries: { limit: 3, delay: "30 seconds", backoff: "exponential" },
+      }, async () => {
+        await resetMigratedProjectsForWorkspace({
+          workspaceFs,
+          runtime,
+          workspaceId: payload.workspaceId,
+        });
+      });
+
       await step.do("persist-plan", async () => {
-        await workspaceFs.deleteMigratedProjectsForWorkspace(payload.workspaceId);
         await workspaceFs.setLegacyWorkspaceMigrationState({
           status: "copying",
           plan: enrichedPlan,
@@ -609,6 +630,18 @@ class ProjectRuntimeMigrationClient {
         }),
       },
     );
+  }
+
+  async deleteProject(projectId: string): Promise<void> {
+    const response = await this.fetchRuntime(
+      this.runtimeUrl(`/v1/projects/${encodeURIComponent(projectId)}`),
+      { method: "DELETE" },
+    );
+    if (response.status === 404) return;
+    if (!response.ok) {
+      const text = await response.text();
+      throw new Error(text || `Runtime project delete failed: ${response.status}`);
+    }
   }
 
   private async fetchJson<T>(input: string, init?: RequestInit): Promise<T> {
@@ -1347,6 +1380,26 @@ export function appendUnclassifiedMiscProject(plan: LegacyWorkspaceMigrationPlan
     ]),
     unclassified: [],
   };
+}
+
+export async function resetMigratedProjectsForWorkspace(input: {
+  workspaceFs: LegacyWorkspaceMigrationWorkspaceResetter;
+  runtime: LegacyWorkspaceMigrationRuntimeResetter;
+  workspaceId: string;
+}): Promise<{ deletedProjectIds: string[] }> {
+  const projects = await input.workspaceFs.listProjects();
+  const migratedProjectIds = Array.from(new Set(
+    projects
+      .filter((project) => project.migratedFrom?.workspaceId === input.workspaceId)
+      .map((project) => project.id),
+  ));
+
+  for (const projectId of migratedProjectIds) {
+    await input.runtime.deleteProject(projectId);
+  }
+
+  const cleanup = await input.workspaceFs.deleteMigratedProjectsForWorkspace(input.workspaceId);
+  return { deletedProjectIds: cleanup.deleted.map((project) => project.id) };
 }
 
 function coalesceMiscProjects(projects: LegacyWorkspaceMigrationProjectPlan[]): LegacyWorkspaceMigrationProjectPlan[] {

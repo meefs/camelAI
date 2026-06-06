@@ -12,6 +12,7 @@ import {
   buildLegacyWorkspaceNamingContext,
   parseMigrationPlanningAiResult,
   readMigrationPlanningResponsesPayload,
+  resetMigratedProjectsForWorkspace,
   type MigrationDeployedAppContext,
   type LegacyWorkspaceMigrationRuntimeReader,
   type RuntimeFileEntry,
@@ -1040,6 +1041,49 @@ describe("legacy workspace migration workflow", () => {
     expect(cleanup.retained.map((project) => project.name)).toEqual([manual.name]);
     await expect(workspace.listProjects()).resolves.toEqual([
       expect.objectContaining({ name: manual.name }),
+    ]);
+  });
+
+  it("deletes migration-owned runtime projects before removing rerun metadata", async () => {
+    const workspaceId = `migration-runtime-cleanup-${crypto.randomUUID()}`;
+    const workspace = new WorkspaceFilesystemClient(env, workspaceId);
+    const calls: string[] = [];
+
+    const migrated = await workspace.createProject({
+      name: "old-migrated-project",
+      description: "Old migrated project.",
+      migratedFrom: {
+        workspaceId,
+        legacyRoot: "/home/claude",
+        sourcePaths: ["/home/claude/old"],
+        migratedAt: "2026-06-04T00:00:00.000Z",
+      },
+    });
+    const manual = await workspace.createProject({
+      name: "manual-project",
+      description: "User-created project.",
+    });
+
+    const result = await resetMigratedProjectsForWorkspace({
+      workspaceId,
+      workspaceFs: {
+        listProjects: async () => workspace.listProjects(),
+        deleteMigratedProjectsForWorkspace: async (id) => {
+          calls.push("metadata");
+          return workspace.deleteMigratedProjectsForWorkspace(id);
+        },
+      },
+      runtime: {
+        deleteProject: async (projectId) => {
+          calls.push(`runtime:${projectId}`);
+        },
+      },
+    });
+
+    expect(result.deletedProjectIds).toEqual([migrated.id]);
+    expect(calls).toEqual([`runtime:${migrated.id}`, "metadata"]);
+    await expect(workspace.listProjects()).resolves.toEqual([
+      expect.objectContaining({ id: manual.id, name: manual.name }),
     ]);
   });
 
