@@ -45,8 +45,10 @@ import {
   resolveEffectivePickerConfig,
 } from "@/lib/model-picker-config";
 import {
+  getStoredCustomLlmProviderApi,
   getVisibleLlmModelOptions,
   isLlmModel,
+  type CustomLlmProviderApi,
 } from "@/lib/llm-provider-config";
 import { cn } from "@/lib/utils";
 import type {
@@ -203,6 +205,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
   const visibleModelIds = getVisibleModelIdsForSettings(
     llmProviderConfig?.provider,
     experimentalSettings,
+    getStoredCustomLlmProviderApi(llmProviderConfig),
   );
   const workspaceConfigs = await loadWorkspaceConfigs(authEnv, workspaces);
   const selectedWorkspace =
@@ -267,6 +270,7 @@ async function loadActionTarget(args: {
   const visibleModelIds = getVisibleModelIdsForSettings(
     llmProviderConfig?.provider,
     experimentalSettings,
+    getStoredCustomLlmProviderApi(llmProviderConfig),
   );
 
   if (scope === "org") {
@@ -345,10 +349,12 @@ function addModel(
 function getVisibleModelIdsForSettings(
   llmProvider: string | null | undefined,
   experimentalSettings: import("@/types").OrganizationExperimentalSettings,
+  customApi?: CustomLlmProviderApi | null,
 ): Set<LlmModel> {
   return new Set(
     getVisibleLlmModelOptions(experimentalSettings, null, {
       orgProvider: llmProvider,
+      customApi,
     }).map((option) => option.value),
   );
 }

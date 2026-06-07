@@ -5,7 +5,12 @@ import type {
   OrgModelPickerConfig,
   WorkspaceModelPickerConfig,
 } from "../types";
-import { isLlmModel, replaceLegacyLlmModel } from "./llm-provider-config";
+import {
+  isLlmModel,
+  isOpenAiCompatibleCustomApi,
+  replaceLegacyLlmModel,
+  type CustomLlmProviderApi,
+} from "./llm-provider-config";
 
 export const MODEL_PICKER_MAX_MODELS = 10;
 
@@ -44,10 +49,17 @@ const CLAUDE_DEFAULT_MODEL_ORDER: readonly LlmModel[] = [
 
 function defaultModelOrderForProvider(
   orgProvider?: LlmProvider | string | null,
+  options?: { customApi?: CustomLlmProviderApi | null },
 ): readonly LlmModel[] {
   switch (orgProvider) {
     case "openai":
       return OPENAI_DEFAULT_MODEL_ORDER;
+    case "custom":
+      return isOpenAiCompatibleCustomApi(options?.customApi)
+        ? OPENAI_DEFAULT_MODEL_ORDER
+        : options?.customApi === "anthropic-messages"
+          ? CLAUDE_DEFAULT_MODEL_ORDER
+          : HOSTED_OR_OPENROUTER_DEFAULT_MODEL_ORDER;
     case "anthropic":
     case "bedrock":
       return CLAUDE_DEFAULT_MODEL_ORDER;
@@ -101,9 +113,10 @@ function normalizeDefaultModel(
 
 export function defaultOrgModelPickerConfig(
   orgProvider?: LlmProvider | string | null,
+  options?: { customApi?: CustomLlmProviderApi | null },
 ): OrgModelPickerConfig {
   const now = Date.now();
-  const defaultOrder = defaultModelOrderForProvider(orgProvider);
+  const defaultOrder = defaultModelOrderForProvider(orgProvider, options);
   return {
     default_model: null,
     models: defaultOrder.map((id, index) => ({
@@ -124,15 +137,16 @@ export function defaultWorkspaceModelPickerConfig(): WorkspaceModelPickerConfig 
 export function parseOrgModelPickerConfig(
   raw: unknown,
   orgProvider?: LlmProvider | string | null,
+  options?: { customApi?: CustomLlmProviderApi | null },
 ): OrgModelPickerConfig {
   const parsed = parseMaybeJson(raw);
   if (!parsed || typeof parsed !== "object") {
-    return defaultOrgModelPickerConfig(orgProvider);
+    return defaultOrgModelPickerConfig(orgProvider, options);
   }
 
   const record = parsed as Record<string, unknown>;
   if (!Array.isArray(record.models)) {
-    return defaultOrgModelPickerConfig(orgProvider);
+    return defaultOrgModelPickerConfig(orgProvider, options);
   }
 
   const models = normalizeModelRows(record.models);

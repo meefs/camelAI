@@ -11,8 +11,10 @@ import {
 import { waitUntil } from '@/lib/wait-until';
 import type { LlmProvider, LlmProviderConfigPublic } from '@/types';
 
-const VALID_PROVIDERS: LlmProvider[] = ['anthropic', 'bedrock', 'openai', 'openrouter'];
+const VALID_PROVIDERS: LlmProvider[] = ['anthropic', 'bedrock', 'custom', 'openai', 'openrouter'];
 export const ANTHROPIC_API_KEY_VALIDATION_MODEL = 'claude-sonnet-4-6';
+const VALID_CUSTOM_AUTH_TYPES = ['bearer', 'x-api-key'] as const;
+const VALID_CUSTOM_APIS = ['openai-completions', 'openai-responses', 'anthropic-messages'] as const;
 const VALID_AWS_REGIONS = [
   'us-east-1',
   'us-east-2',
@@ -157,6 +159,60 @@ export async function action({ request, context, params }: Route.ActionArgs) {
       );
       notifyByokChanged();
       return Response.json({ success: true });
+    }
+
+    if (provider === 'custom') {
+      const apiKey = (body.api_key as string)?.trim();
+      const customName = (body.custom_name as string)?.trim();
+      let customBaseUrl = (body.custom_base_url as string)?.trim().replace(/\/+$/, '');
+      const customAuthType = (body.custom_auth_type as string)?.trim();
+      const customApi = (body.custom_api as string)?.trim();
+
+      if (!apiKey) {
+        return Response.json({ error: 'API key is required' }, { status: 400 });
+      }
+      if (!customName) {
+        return Response.json({ error: 'Provider name is required' }, { status: 400 });
+      }
+      if (!customBaseUrl) {
+        return Response.json({ error: 'Base URL is required' }, { status: 400 });
+      }
+      let parsedBaseUrl: URL;
+      try {
+        parsedBaseUrl = new URL(customBaseUrl);
+      } catch {
+        return Response.json({ error: 'Base URL must be a valid URL' }, { status: 400 });
+      }
+      if (parsedBaseUrl.protocol !== 'https:') {
+        return Response.json({ error: 'Base URL must use https' }, { status: 400 });
+      }
+      if (!VALID_CUSTOM_AUTH_TYPES.includes(customAuthType as (typeof VALID_CUSTOM_AUTH_TYPES)[number])) {
+        return Response.json({ error: 'Auth header must be bearer or x-api-key' }, { status: 400 });
+      }
+      if (!VALID_CUSTOM_APIS.includes(customApi as (typeof VALID_CUSTOM_APIS)[number])) {
+        return Response.json(
+          { error: 'API mode must be chat completions, responses, or anthropic messages' },
+          { status: 400 }
+        );
+      }
+      if (customApi === 'anthropic-messages') {
+        customBaseUrl = customBaseUrl.replace(/\/v1$/i, '');
+      }
+
+      const encrypted = await encryptCredentials({ api_key: apiKey }, env.INTEGRATION_SECRET_KEY);
+      await orgStub.setLlmProviderConfig(
+        provider,
+        encrypted,
+        stringifyStoredLlmProviderConfig({
+          custom_name: customName,
+          custom_base_url: customBaseUrl,
+          custom_auth_type: customAuthType as 'bearer' | 'x-api-key',
+          custom_api: customApi as 'openai-completions' | 'openai-responses' | 'anthropic-messages',
+        }),
+        authContext.user.id
+      );
+      notifyByokChanged();
+      return Response.json({ success: true, key_hint: keyHint(apiKey) });
     }
 
     if (provider === 'openai' || provider === 'openrouter') {
@@ -321,6 +377,68 @@ export async function action({ request, context, params }: Route.ActionArgs) {
           {
             success: false,
             message: `${record.provider === 'openrouter' ? 'OpenRouter' : 'OpenAI'} API returned ${resp.status}: ${errorBody.slice(0, 200)}`,
+          },
+          { status: 200 }
+        );
+      }
+
+      if (record.provider === 'custom') {
+        const authType = config.custom_auth_type ?? 'bearer';
+        const baseUrl = config.custom_base_url;
+        if (!baseUrl || !creds.api_key) {
+          return Response.json(
+            { success: false, message: 'Custom provider is missing its base URL or API key.' },
+            { status: 200 }
+          );
+        }
+        const headers: Record<string, string> = {
+          ...(authType === 'x-api-key'
+            ? { 'x-api-key': creds.api_key }
+            : { Authorization: `Bearer ${creds.api_key}` }),
+        };
+        const testUrl =
+          config.custom_api === 'anthropic-messages'
+            ? `${baseUrl}/v1/messages/count_tokens`
+            : `${baseUrl}/models`;
+        const resp = await fetch(testUrl, {
+          method: config.custom_api === 'anthropic-messages' ? 'POST' : 'GET',
+          headers: {
+            ...headers,
+            ...(config.custom_api === 'anthropic-messages'
+              ? {
+                  'Content-Type': 'application/json',
+                  'anthropic-version': '2023-06-01',
+                }
+              : {}),
+          },
+          ...(config.custom_api === 'anthropic-messages'
+            ? {
+                body: JSON.stringify({
+                  model: 'claude-sonnet-4-6',
+                  messages: [{ role: 'user', content: 'test' }],
+                }),
+              }
+            : {}),
+        });
+
+        if (resp.ok) {
+          return Response.json({
+            success: true,
+            message: `${config.custom_name || 'Custom provider'} API key is valid`,
+          });
+        }
+
+        const errorBody = await resp.text();
+        if (resp.status === 401 || resp.status === 403) {
+          return Response.json(
+            { success: false, message: 'Invalid custom provider API key. Please check and try again.' },
+            { status: 200 }
+          );
+        }
+        return Response.json(
+          {
+            success: false,
+            message: `Custom provider API returned ${resp.status}: ${errorBody.slice(0, 200)}`,
           },
           { status: 200 }
         );

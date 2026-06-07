@@ -40,6 +40,10 @@ vi.mock("@/lib/cloudflare.server", () => ({
   getEnv: vi.fn(),
 }));
 
+vi.mock("@/lib/workspace-migration-gate.server", () => ({
+  getWorkspaceMigrationGate: vi.fn(() => null),
+}));
+
 vi.mock("@/lib/cookies.server", () => ({
   parseCookies: vi.fn(() => ({})),
   createSessionCookieHeader: vi.fn(() => "session=mock"),

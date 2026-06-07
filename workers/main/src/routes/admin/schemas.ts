@@ -86,7 +86,7 @@ export const OrgsQuerySchema = PaginationQuerySchema.extend({
 });
 
 export const OrgLlmProvidersQuerySchema = PaginationQuerySchema.extend({
-  provider: z.enum(["anthropic", "bedrock", "openai", "openrouter"]).optional(),
+  provider: z.enum(["anthropic", "bedrock", "custom", "openai", "openrouter"]).optional(),
 });
 
 export const WorkspacesQuerySchema = PaginationQuerySchema.extend({
@@ -236,9 +236,13 @@ export const LlmModelSchema = z.enum([
 ]);
 
 export const LlmProviderConfigSchema = z.object({
-  provider: z.enum(["anthropic", "bedrock", "openai", "openrouter"]),
+  provider: z.enum(["anthropic", "bedrock", "custom", "openai", "openrouter"]),
   config: z.object({
     aws_region: z.string().optional(),
+    custom_name: z.string().optional(),
+    custom_base_url: z.string().optional(),
+    custom_auth_type: z.enum(["bearer", "x-api-key"]).optional(),
+    custom_api: z.enum(["openai-completions", "openai-responses", "anthropic-messages"]).optional(),
   }),
   key_hint: z.string(),
   created_by: z.string(),

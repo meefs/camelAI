@@ -75,7 +75,8 @@ function isOnboardingByokProvider(
     value === "openrouter" ||
     value === "anthropic" ||
     value === "openai" ||
-    value === "bedrock"
+    value === "bedrock" ||
+    value === "custom"
   );
 }
 
@@ -94,6 +95,18 @@ export default function AiProviderPage() {
   const [awsRegion, setAwsRegion] = useState(
     config?.config?.aws_region ?? "us-east-1",
   );
+  const [customName, setCustomName] = useState(
+    config?.config?.custom_name ?? "",
+  );
+  const [customBaseUrl, setCustomBaseUrl] = useState(
+    config?.config?.custom_base_url ?? "",
+  );
+  const [customAuthType, setCustomAuthType] = useState<"bearer" | "x-api-key">(
+    config?.config?.custom_auth_type ?? "bearer",
+  );
+  const [customApi, setCustomApi] = useState<
+    "openai-completions" | "openai-responses" | "anthropic-messages"
+  >(config?.config?.custom_api ?? "openai-completions");
   const [lastIntent, setLastIntent] = useState<FetcherIntent>(null);
   const [removeOpen, setRemoveOpen] = useState(false);
   const [removeTrigger, setRemoveTrigger] = useState<RemoveTrigger>("remove-key");
@@ -108,6 +121,10 @@ export default function AiProviderPage() {
       setSelectedProvider("openrouter");
     }
     setAwsRegion(config?.config?.aws_region ?? "us-east-1");
+    setCustomName(config?.config?.custom_name ?? "");
+    setCustomBaseUrl(config?.config?.custom_base_url ?? "");
+    setCustomAuthType(config?.config?.custom_auth_type ?? "bearer");
+    setCustomApi(config?.config?.custom_api ?? "openai-completions");
   }, [config]);
 
   useEffect(() => {
@@ -172,6 +189,26 @@ export default function AiProviderPage() {
       return;
     }
 
+    if (selectedProvider === "custom") {
+      fetcher.submit(
+        {
+          intent: "setProvider",
+          provider: "custom",
+          api_key: apiKey.trim(),
+          custom_name: customName.trim(),
+          custom_base_url: customBaseUrl.trim(),
+          custom_auth_type: customAuthType,
+          custom_api: customApi,
+        },
+        {
+          method: "POST",
+          action: `/api/orgs/${orgId}/llm-provider`,
+          encType: "application/json",
+        },
+      );
+      return;
+    }
+
     fetcher.submit(
       {
         intent: "setProvider",
@@ -220,12 +257,21 @@ export default function AiProviderPage() {
 
   const configuredProvider = config?.provider ?? null;
   const configuredProviderLabel =
-    configuredProvider && isOnboardingByokProvider(configuredProvider)
+    configuredProvider === "custom" && config?.config?.custom_name
+      ? config.config.custom_name
+      : configuredProvider && isOnboardingByokProvider(configuredProvider)
       ? BYOK_PROVIDERS[configuredProvider].label
       : (configuredProvider ?? "");
 
   const submitDisabled = (() => {
     if (isSubmitting) return true;
+    if (selectedProvider === "custom") {
+      return (
+        apiKey.trim().length === 0 ||
+        customName.trim().length === 0 ||
+        customBaseUrl.trim().length === 0
+      );
+    }
     if (selectedProvider === "bedrock" && config?.provider === "bedrock") {
       const regionUnchanged = awsRegion === config?.config?.aws_region;
       if (apiKey.trim().length === 0 && regionUnchanged) return true;
@@ -320,6 +366,14 @@ export default function AiProviderPage() {
               onApiKeyChange={setApiKey}
               awsRegion={awsRegion}
               onAwsRegionChange={setAwsRegion}
+              customName={customName}
+              onCustomNameChange={setCustomName}
+              customBaseUrl={customBaseUrl}
+              onCustomBaseUrlChange={setCustomBaseUrl}
+              customAuthType={customAuthType}
+              onCustomAuthTypeChange={setCustomAuthType}
+              customApi={customApi}
+              onCustomApiChange={setCustomApi}
               onSubmit={handleSave}
               isSubmitting={isSubmitting && lastIntent === "setProvider"}
               errorMessage={errorMessage ?? null}
@@ -342,6 +396,14 @@ export default function AiProviderPage() {
           onApiKeyChange={setApiKey}
           awsRegion={awsRegion}
           onAwsRegionChange={setAwsRegion}
+          customName={customName}
+          onCustomNameChange={setCustomName}
+          customBaseUrl={customBaseUrl}
+          onCustomBaseUrlChange={setCustomBaseUrl}
+          customAuthType={customAuthType}
+          onCustomAuthTypeChange={setCustomAuthType}
+          customApi={customApi}
+          onCustomApiChange={setCustomApi}
           onSubmit={handleSave}
           isSubmitting={isSubmitting && lastIntent === "setProvider"}
           errorMessage={errorMessage ?? null}

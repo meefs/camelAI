@@ -51,6 +51,12 @@ describe("llm provider config helpers", () => {
     expect(getDefaultLlmModel("anthropic")).toBe(DEFAULT_LLM_MODEL);
     expect(getDefaultLlmModel("openai")).toBe(DEFAULT_CODEX_MODEL);
     expect(getDefaultLlmModel("openrouter")).toBe(DEFAULT_OPENROUTER_MODEL);
+    expect(
+      getDefaultLlmModel("custom", { customApi: "openai-responses" }),
+    ).toBe(DEFAULT_CODEX_MODEL);
+    expect(
+      getDefaultLlmModel("custom", { customApi: "anthropic-messages" }),
+    ).toBe(DEFAULT_LLM_MODEL);
     expect(parseStoredLlmProviderConfig("{}")).toEqual({});
   });
 
@@ -67,6 +73,16 @@ describe("llm provider config helpers", () => {
       ...CLAUDE_MODELS,
       ...CODEX_MODELS,
     ]);
+    expect(
+      getLlmModelOptions("custom", { customApi: "openai-responses" }).map(
+        (option) => option.value,
+      ),
+    ).toEqual(["gpt-5.5", "gpt-5.4", "gpt-5.4-mini"]);
+    expect(
+      getLlmModelOptions("custom", { customApi: "anthropic-messages" }).map(
+        (option) => option.value,
+      ),
+    ).toEqual([...CLAUDE_MODELS]);
     for (const model of CODEX_MODELS) {
       expect(isLlmModel(model)).toBe(true);
     }
@@ -76,6 +92,12 @@ describe("llm provider config helpers", () => {
     );
     expect(normalizeLlmModel("opus")).toBe("opus-4.8");
     expect(normalizeLlmModel("opus-4.7")).toBe("opus-4.8");
+    expect(
+      normalizeLlmModel("sonnet", "custom", { customApi: "openai-completions" }),
+    ).toBe(DEFAULT_CODEX_MODEL);
+    expect(
+      normalizeLlmModel("gpt-5.4", "custom", { customApi: "anthropic-messages" }),
+    ).toBe(DEFAULT_LLM_MODEL);
   });
 
   it("keeps BYOK provider-scoped and defaults hosted orgs to Claude", () => {
@@ -240,6 +262,26 @@ describe("llm provider config helpers", () => {
     expect(parseStoredLlmProviderConfig(serialized)).toEqual({
       aws_region: "us-west-2",
     });
+  });
+
+  it("round-trips custom provider settings", () => {
+    const serialized = stringifyStoredLlmProviderConfig({
+      custom_name: "  Acme AI  ",
+      custom_base_url: "https://api.example.com/v1/",
+      custom_auth_type: "x-api-key",
+      custom_api: "anthropic-messages",
+    });
+
+    expect(parseStoredLlmProviderConfig(serialized)).toEqual({
+      custom_name: "Acme AI",
+      custom_base_url: "https://api.example.com/v1",
+      custom_auth_type: "x-api-key",
+      custom_api: "anthropic-messages",
+    });
+    expect(getLlmModelOptions("custom").map((option) => option.value)).toEqual([
+      ...CLAUDE_MODELS,
+      ...CODEX_MODELS,
+    ]);
   });
 
   it("builds a public config with a redacted key hint", async () => {

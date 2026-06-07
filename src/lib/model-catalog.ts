@@ -3,7 +3,10 @@ import type {
   LlmProvider,
   OrganizationExperimentalSettings,
 } from "../types";
-import { getVisibleLlmModelOptions } from "./llm-provider-config";
+import {
+  getVisibleLlmModelOptions,
+  type CustomLlmProviderApi,
+} from "./llm-provider-config";
 import type { EffectiveModelPickerConfig } from "./model-picker-config";
 
 // Adding a new model - checklist
@@ -231,10 +234,12 @@ export function resolveModelPickerCatalog(args: {
   effectiveConfig: EffectiveModelPickerConfig;
   experimentalSettings?: OrganizationExperimentalSettings | null;
   orgProvider?: LlmProvider | string | null;
+  customApi?: CustomLlmProviderApi | null;
 }): ResolvedModelCatalogEntry[] {
   const visibleModelIds = new Set(
     getVisibleLlmModelOptions(args.experimentalSettings, null, {
       orgProvider: args.orgProvider,
+      customApi: args.customApi,
     }).map((option) => option.value),
   );
 

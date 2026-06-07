@@ -2,8 +2,11 @@ import {
   defaultOrgModelPickerConfig,
   defaultWorkspaceModelPickerConfig,
 } from "../../../src/lib/model-picker-config.js";
+import {
+  getStoredCustomLlmProviderApi,
+  type LlmProviderConfigRecord,
+} from "../../../src/lib/llm-provider-config.js";
 import type {
-  LlmProvider,
   OrgModelPickerConfig,
   WorkspaceModelPickerConfig,
 } from "../../../src/types.js";
@@ -11,8 +14,8 @@ import type {
 interface OrgModelPickerConfigReader {
   getModelPickerConfig(): Promise<OrgModelPickerConfig> | OrgModelPickerConfig;
   getLlmProviderConfig?:
-    | (() => Promise<{ provider: LlmProvider | string } | null>)
-    | (() => { provider: LlmProvider | string } | null);
+    | (() => Promise<Pick<LlmProviderConfigRecord, "provider" | "config"> | null>)
+    | (() => Pick<LlmProviderConfigRecord, "provider" | "config"> | null);
 }
 
 interface WorkspaceModelPickerConfigReader {
@@ -39,17 +42,18 @@ function isMissingModelPickerConfigRpcError(error: unknown): boolean {
 export async function getOrgModelPickerConfigCompat(
   orgStub: OrgModelPickerConfigReader,
 ): Promise<OrgModelPickerConfig> {
-  let provider: LlmProvider | string | null | undefined;
+  let providerConfig: Pick<LlmProviderConfigRecord, "provider" | "config"> | null | undefined;
   try {
-    provider = (await orgStub.getLlmProviderConfig?.())?.provider;
+    providerConfig = await orgStub.getLlmProviderConfig?.();
   } catch {
-    provider = null;
+    providerConfig = null;
   }
+  const customApi = getStoredCustomLlmProviderApi(providerConfig);
   try {
     return await orgStub.getModelPickerConfig();
   } catch (error) {
     if (isMissingModelPickerConfigRpcError(error)) {
-      return defaultOrgModelPickerConfig(provider);
+      return defaultOrgModelPickerConfig(providerConfig?.provider, { customApi });
     }
     throw error;
   }

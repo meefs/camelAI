@@ -5,6 +5,7 @@ import type {
 import { getOrgStub, getWorkspaceStub } from "./helpers/stubs.js";
 import {
   getDefaultLlmModel,
+  getStoredCustomLlmProviderApi,
   isCodexLlmModel,
 } from "../../../src/lib/llm-provider-config.js";
 import { resolveModelPickerCatalog } from "../../../src/lib/model-catalog.js";
@@ -253,6 +254,7 @@ export async function resolveDefaultChannelThreadModel(
     getOrgModelPickerConfigCompat(orgStub),
     getWorkspaceModelPickerConfigCompat(workspaceStub),
   ]);
+  const customApi = getStoredCustomLlmProviderApi(llmProviderConfig);
   const effectiveConfig = resolveEffectivePickerConfig(
     orgPickerConfig,
     workspacePickerConfig,
@@ -261,10 +263,11 @@ export async function resolveDefaultChannelThreadModel(
     effectiveConfig,
     experimentalSettings,
     orgProvider: llmProviderConfig?.provider,
+    customApi,
   });
   const model = resolveDefaultModelForChat({
     effectiveDefaultModel: effectiveConfig.default_model,
-    fallbackModel: getDefaultLlmModel(llmProviderConfig?.provider),
+    fallbackModel: getDefaultLlmModel(llmProviderConfig?.provider, { customApi }),
     visibleCatalog,
   });
   if (!model) {

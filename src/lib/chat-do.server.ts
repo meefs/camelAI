@@ -17,7 +17,9 @@ import {
 import { OrgDO, type OrgThread } from "../../workers/main/src/auth";
 import { WorkspaceDO } from "../../workers/main/src/workspace";
 import {
+  type CustomLlmProviderApi,
   getDefaultLlmModel,
+  getStoredCustomLlmProviderApi,
   isLlmModelAllowedForNewThread,
   isLlmModel,
   normalizeLlmModel,
@@ -113,6 +115,7 @@ async function getWorkspaceInfo(
 export interface WorkspaceModelPickerState {
   orgId: string;
   llmProvider: LlmProvider | null;
+  customApi: CustomLlmProviderApi | null;
   experimentalSettings: import("@/types").OrganizationExperimentalSettings;
   allowedThreadModels: LlmModel[];
   effectivePickerDefaultModel: LlmModel | null;
@@ -123,18 +126,19 @@ export interface WorkspaceModelPickerState {
 async function getOrgModelPickerConfigCompat(
   orgStub: OrgDO,
   orgProvider?: LlmProvider | string | null,
+  options?: { customApi?: CustomLlmProviderApi | null },
 ): Promise<OrgModelPickerConfig> {
   try {
     const maybeStub = orgStub as { getModelPickerConfig?: unknown };
     if (typeof maybeStub.getModelPickerConfig !== "function") {
-      return defaultOrgModelPickerConfig(orgProvider);
+      return defaultOrgModelPickerConfig(orgProvider, options);
     }
     return await orgStub.getModelPickerConfig();
   } catch (error) {
     if (!isMissingModelPickerConfigRpcError(error)) {
       throw error;
     }
-    return defaultOrgModelPickerConfig(orgProvider);
+    return defaultOrgModelPickerConfig(orgProvider, options);
   }
 }
 
@@ -193,8 +197,11 @@ async function getWorkspaceModelPickerStateForOrg(
     orgStub.getLlmProviderConfig(),
     orgStub.getExperimentalSettings(),
   ]);
+  const customApi = getStoredCustomLlmProviderApi(llmProviderConfig);
   const [orgPickerConfig, workspacePickerConfig] = await Promise.all([
-    getOrgModelPickerConfigCompat(orgStub, llmProviderConfig?.provider),
+    getOrgModelPickerConfigCompat(orgStub, llmProviderConfig?.provider, {
+      customApi,
+    }),
     getWorkspaceModelPickerConfigCompat(wsStub),
   ]);
   const effectiveConfig = resolveEffectivePickerConfig(
@@ -205,16 +212,18 @@ async function getWorkspaceModelPickerStateForOrg(
     effectiveConfig,
     experimentalSettings,
     orgProvider: llmProviderConfig?.provider,
+    customApi,
   });
   const defaultModel = resolveDefaultModelForChat({
     effectiveDefaultModel: effectiveConfig.default_model,
-    fallbackModel: getDefaultLlmModel(llmProviderConfig?.provider),
+    fallbackModel: getDefaultLlmModel(llmProviderConfig?.provider, { customApi }),
     visibleCatalog,
   });
 
   return {
     orgId,
     llmProvider: (llmProviderConfig?.provider ?? null) as LlmProvider | null,
+    customApi,
     experimentalSettings,
     allowedThreadModels: visibleCatalog.map((entry) => entry.id),
     effectivePickerDefaultModel: effectiveConfig.default_model,
@@ -249,6 +258,9 @@ async function resolveCreateThreadModel(
       selectedModel,
       pickerState.llmProvider,
       pickerState.experimentalSettings,
+      {
+        customApi: pickerState.customApi,
+      },
     ) ||
     !pickerState.allowedThreadModels.includes(selectedModel)
   ) {
@@ -501,6 +513,7 @@ export async function updateThreadModel(
   const existing = await orgStub.getThread(id);
   if (!existing || existing.workspace_id !== workspaceId) return null;
   const llmProviderConfig = await orgStub.getLlmProviderConfig();
+  const customApi = getStoredCustomLlmProviderApi(llmProviderConfig);
   const experimentalSettings = await orgStub.getExperimentalSettings();
   const pickerState = await getWorkspaceModelPickerState(context, workspaceId);
   if (
@@ -508,6 +521,7 @@ export async function updateThreadModel(
       model,
       llmProviderConfig?.provider,
       experimentalSettings,
+      { customApi },
     ) ||
     !pickerState?.allowedThreadModels.includes(model)
   ) {

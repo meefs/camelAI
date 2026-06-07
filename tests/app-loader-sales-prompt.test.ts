@@ -314,7 +314,7 @@ describe("_app loader onboarding redirect", () => {
 
     expect(getWorkspaceMigrationGateMock).toHaveBeenCalledWith(
       expect.anything(),
-      "ws_target",
+      expect.objectContaining({ id: "ws_target" }),
     );
   });
 
@@ -358,7 +358,7 @@ describe("_app loader onboarding redirect", () => {
 
     expect(getWorkspaceMigrationGateMock).toHaveBeenCalledWith(
       expect.anything(),
-      "ws_current",
+      expect.objectContaining({ id: "ws_current" }),
     );
   });
 

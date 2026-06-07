@@ -119,6 +119,18 @@ const OPENROUTER_ONLY_CODEX_MODELS = new Set<LlmModel>([
 
 export interface LlmProviderStoredConfig {
   aws_region?: string;
+  custom_name?: string;
+  custom_base_url?: string;
+  custom_auth_type?: "bearer" | "x-api-key";
+  custom_api?: "openai-completions" | "openai-responses" | "anthropic-messages";
+}
+
+export type CustomLlmProviderApi = NonNullable<
+  LlmProviderStoredConfig["custom_api"]
+>;
+
+interface LlmProviderModelOptions {
+  customApi?: CustomLlmProviderApi | null;
 }
 
 export const DEFAULT_ORG_EXPERIMENTAL_SETTINGS: OrganizationExperimentalSettings =
@@ -145,21 +157,28 @@ export function isClaudeProxyModelsEnabled(
   return Boolean(settings?.claude_proxy_models);
 }
 
-export function getDefaultLlmModel(orgProvider?: string | null): LlmModel {
+export function getDefaultLlmModel(
+  orgProvider?: string | null,
+  options?: LlmProviderModelOptions,
+): LlmModel {
   if (orgProvider === "openai") return DEFAULT_CODEX_MODEL;
   if (orgProvider === "openrouter") return DEFAULT_OPENROUTER_MODEL;
+  if (orgProvider === "custom" && isOpenAiCompatibleCustomApi(options?.customApi)) {
+    return DEFAULT_CODEX_MODEL;
+  }
   return DEFAULT_LLM_MODEL;
 }
 
 export function getLlmModelOptions(
   orgProvider?: string | null,
+  options?: LlmProviderModelOptions,
 ): ReadonlyArray<{
   value: LlmModel;
   label: string;
   description: string;
 }> {
   return LLM_MODEL_OPTIONS.filter((option) =>
-    isLlmModelAllowedForOrgProvider(option.value, orgProvider),
+    isLlmModelAllowedForOrgProvider(option.value, orgProvider, options),
   );
 }
 
@@ -176,13 +195,16 @@ export function getVisibleLlmModelOptions(
   includeModel?: LlmModel | null,
   options?: {
     orgProvider?: string | null;
+    customApi?: CustomLlmProviderApi | null;
   },
 ): ReadonlyArray<{
   value: LlmModel;
   label: string;
   description: string;
 }> {
-  const baseOptions = getLlmModelOptions(options?.orgProvider);
+  const baseOptions = getLlmModelOptions(options?.orgProvider, {
+    customApi: options?.customApi,
+  });
 
   if (
     !includeModel ||
@@ -203,8 +225,12 @@ export function isLlmModelAllowedForNewThread(
   value: unknown,
   orgProvider: string | null | undefined,
   experimentalSettings?: OrganizationExperimentalSettings | null,
+  options?: LlmProviderModelOptions,
 ): value is LlmModel {
-  return isLlmModel(value) && isLlmModelAllowedForOrgProvider(value, orgProvider);
+  return (
+    isLlmModel(value) &&
+    isLlmModelAllowedForOrgProvider(value, orgProvider, options)
+  );
 }
 
 export function isLlmModel(value: unknown): value is LlmModel {
@@ -214,12 +240,22 @@ export function isLlmModel(value: unknown): value is LlmModel {
 export function isLlmModelAllowedForOrgProvider(
   model: LlmModel,
   orgProvider?: string | null,
+  options?: LlmProviderModelOptions,
 ): boolean {
   if (orgProvider === "openai") {
     return isCodexLlmModel(model) && !OPENROUTER_ONLY_CODEX_MODELS.has(model);
   }
   if (orgProvider === "anthropic" || orgProvider === "bedrock") {
     return isClaudeLlmModel(model);
+  }
+  if (orgProvider === "custom") {
+    if (options?.customApi === "anthropic-messages") {
+      return isClaudeLlmModel(model);
+    }
+    if (isOpenAiCompatibleCustomApi(options?.customApi)) {
+      return isCodexLlmModel(model) && !OPENROUTER_ONLY_CODEX_MODELS.has(model);
+    }
+    return true;
   }
   if (OPENROUTER_ONLY_CODEX_MODELS.has(model)) {
     return orgProvider !== "openai";
@@ -240,18 +276,26 @@ export function isLlmModelCoveredByByokProvider(
   if (provider === "openai") {
     return isCodexLlmModel(model) && !OPENROUTER_ONLY_CODEX_MODELS.has(model);
   }
+  if (provider === "custom") return true;
   return false;
 }
 
 export function normalizeLlmModel(
   value: unknown,
   orgProvider?: string | null,
+  options?: LlmProviderModelOptions,
 ): LlmModel {
   const normalizedValue = replaceLegacyLlmModel(value);
   return isLlmModel(normalizedValue) &&
-    isLlmModelAllowedForOrgProvider(normalizedValue, orgProvider)
+    isLlmModelAllowedForOrgProvider(normalizedValue, orgProvider, options)
     ? normalizedValue
-    : getDefaultLlmModel(orgProvider);
+    : getDefaultLlmModel(orgProvider, options);
+}
+
+export function isOpenAiCompatibleCustomApi(
+  customApi: CustomLlmProviderApi | null | undefined,
+): boolean {
+  return customApi === "openai-completions" || customApi === "openai-responses";
 }
 
 export function parseStoredLlmProviderConfig(
@@ -276,9 +320,31 @@ export function parseStoredLlmProviderConfig(
     typeof config.aws_region === "string" && config.aws_region.trim()
       ? config.aws_region.trim()
       : undefined;
+  const customName =
+    typeof config.custom_name === "string" && config.custom_name.trim()
+      ? config.custom_name.trim().slice(0, 80)
+      : undefined;
+  const customBaseUrl =
+    typeof config.custom_base_url === "string" && config.custom_base_url.trim()
+      ? config.custom_base_url.trim().replace(/\/+$/, "")
+      : undefined;
+  const customAuthType =
+    config.custom_auth_type === "bearer" || config.custom_auth_type === "x-api-key"
+      ? config.custom_auth_type
+      : undefined;
+  const customApi =
+    config.custom_api === "openai-completions" ||
+    config.custom_api === "openai-responses" ||
+    config.custom_api === "anthropic-messages"
+      ? config.custom_api
+      : undefined;
 
   return {
     ...(awsRegion ? { aws_region: awsRegion } : {}),
+    ...(customName ? { custom_name: customName } : {}),
+    ...(customBaseUrl ? { custom_base_url: customBaseUrl } : {}),
+    ...(customAuthType ? { custom_auth_type: customAuthType } : {}),
+    ...(customApi ? { custom_api: customApi } : {}),
   };
 }
 
@@ -294,6 +360,10 @@ export function stringifyStoredLlmProviderConfig(
   const normalized = parseStoredLlmProviderConfig(config);
   return JSON.stringify({
     ...(normalized.aws_region ? { aws_region: normalized.aws_region } : {}),
+    ...(normalized.custom_name ? { custom_name: normalized.custom_name } : {}),
+    ...(normalized.custom_base_url ? { custom_base_url: normalized.custom_base_url } : {}),
+    ...(normalized.custom_auth_type ? { custom_auth_type: normalized.custom_auth_type } : {}),
+    ...(normalized.custom_api ? { custom_api: normalized.custom_api } : {}),
   });
 }
 
@@ -304,6 +374,13 @@ export interface LlmProviderConfigRecord {
   created_by: string;
   created_at: number;
   updated_at: number;
+}
+
+export function getStoredCustomLlmProviderApi(
+  record: Pick<LlmProviderConfigRecord, "provider" | "config"> | null | undefined,
+): CustomLlmProviderApi | null {
+  if (record?.provider !== "custom") return null;
+  return parseStoredLlmProviderConfig(record.config).custom_api ?? null;
 }
 
 export function keyHint(key: string): string {
@@ -325,7 +402,8 @@ export async function buildPublicLlmProviderConfig(
     const primaryKey =
       record.provider === "anthropic" ||
       record.provider === "openai" ||
-      record.provider === "openrouter"
+      record.provider === "openrouter" ||
+      record.provider === "custom"
         ? creds.api_key
         : creds.bearer_token;
     if (primaryKey) {

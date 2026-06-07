@@ -24,6 +24,7 @@ import { getWorkerScript } from "@/lib/auth-do";
 import {
   DEFAULT_ORG_EXPERIMENTAL_SETTINGS,
   getDefaultLlmModel,
+  getStoredCustomLlmProviderApi,
   getVisibleLlmModelOptions,
 } from "@/lib/llm-provider-config";
 import * as chatDO from "@/lib/chat-do.server";
@@ -369,12 +370,16 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     ((llmProviderConfig?.provider ?? null) as
       | import("@/types").LlmProvider
       | null);
-  const fallbackThreadModel = getDefaultLlmModel(llmProviderConfig?.provider);
+  const customApi = getStoredCustomLlmProviderApi(llmProviderConfig);
+  const fallbackThreadModel = getDefaultLlmModel(llmProviderConfig?.provider, {
+    customApi,
+  });
   const fallbackAllowedThreadModels = getVisibleLlmModelOptions(
     experimentalSettings,
     fallbackThreadModel,
     {
       orgProvider: llmProviderConfig?.provider,
+      customApi,
     },
   ).map((option) => option.value);
   const hasModelFallback = Boolean(orgStub && workspaceId);

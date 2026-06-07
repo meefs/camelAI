@@ -2,7 +2,7 @@ import type { LlmProvider } from "@/types";
 
 export type OnboardingByokProvider = Extract<
   LlmProvider,
-  "anthropic" | "bedrock" | "openai" | "openrouter"
+  "anthropic" | "bedrock" | "custom" | "openai" | "openrouter"
 >;
 
 export interface ByokProviderMeta {
@@ -10,8 +10,8 @@ export interface ByokProviderMeta {
   label: string;
   fieldLabel: string;
   placeholder: string;
-  getKeyUrl: string;
-  getKeyLinkLabel: string;
+  getKeyUrl?: string;
+  getKeyLinkLabel?: string;
   settingsLinkLabel?: string;
   requiresRegion: boolean;
   description: string;
@@ -106,6 +106,19 @@ export const BYOK_PROVIDERS: Record<OnboardingByokProvider, ByokProviderMeta> =
         body: "AWS will bill usage on your account automatically, but your key won't return responses until you request Claude model access in the Bedrock console for the region you select below.",
       },
     },
+    custom: {
+      value: "custom",
+      label: "Custom",
+      fieldLabel: "API key",
+      placeholder: "Enter an API key",
+      requiresRegion: false,
+      description:
+        "Connect any OpenAI-compatible or Anthropic-compatible provider endpoint supported by Pi.",
+      warning: {
+        title: "Use a provider endpoint that supports agent traffic",
+        body: "The endpoint must support streaming and tool calls for the API mode you choose below.",
+      },
+    },
   };
 
 export const BYOK_PROVIDER_ORDER: OnboardingByokProvider[] = [
@@ -113,6 +126,7 @@ export const BYOK_PROVIDER_ORDER: OnboardingByokProvider[] = [
   "anthropic",
   "openai",
   "bedrock",
+  "custom",
 ];
 
 export function getByokProviderLabel(

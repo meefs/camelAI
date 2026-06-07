@@ -588,7 +588,7 @@ export interface WorkerScriptWithCreator extends WorkerScript {
 }
 
 // LLM Provider BYOK types
-export type LlmProvider = "anthropic" | "bedrock" | "openai" | "openrouter";
+export type LlmProvider = "anthropic" | "bedrock" | "custom" | "openai" | "openrouter";
 export type LlmModel =
   | "haiku"
   | "sonnet"
@@ -626,6 +626,10 @@ export interface LlmProviderConfigPublic {
   provider: LlmProvider;
   config: {
     aws_region?: string; // Bedrock only
+    custom_name?: string;
+    custom_base_url?: string;
+    custom_auth_type?: "bearer" | "x-api-key";
+    custom_api?: "openai-completions" | "openai-responses" | "anthropic-messages";
   };
   key_hint: string; // First 8 chars of the key
   created_by: string;

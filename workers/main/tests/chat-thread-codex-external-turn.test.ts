@@ -824,6 +824,170 @@ describe('ChatThreadDO Codex turn handling', () => {
     expect(fake.checkHostedPiModelAccess).not.toHaveBeenCalled();
   });
 
+  it('suppresses OpenAI SDK bearer auth for custom OpenAI-compatible x-api-key providers', async () => {
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    fake.env = {};
+    fake.customProviderAuthHeaders = ChatThreadDO.prototype['customProviderAuthHeaders'];
+    fake.resolveCurrentByokCredentials = vi.fn(async () => ({
+      provider: 'custom',
+      apiKey: 'custom-key',
+      baseUrl: 'https://custom.example/v1',
+      authType: 'x-api-key',
+      api: 'openai-completions',
+    }));
+    fake.checkHostedPiModelAccess = vi.fn(async () => {
+      throw new Error('hosted billing should not be checked for BYOK');
+    });
+
+    const model = await ChatThreadDO.prototype['resolvePiModel'].call(
+      fake,
+      { orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1' },
+      { CHIRIDION_CODEX_MODEL: 'gpt-5.5' },
+      vi.fn(() => ({
+        id: 'gpt-5.5',
+        provider: 'openai',
+        api: 'openai-responses',
+        baseUrl: 'https://api.openai.com/v1',
+      })),
+    );
+
+    expect(model.model).toMatchObject({
+      id: 'gpt-5.5',
+      provider: 'custom',
+      api: 'openai-completions',
+      baseUrl: 'https://custom.example/v1',
+    });
+    expect((model.model as any).headers).toEqual({
+      Authorization: null,
+      'x-api-key': 'custom-key',
+    });
+    expect(model.apiKey).toBe('custom-key');
+    expect(model.billingSource).toBe('byok');
+    expect(model.usageProvider).toBe('custom');
+    expect(fake.checkHostedPiModelAccess).not.toHaveBeenCalled();
+  });
+
+  it('suppresses Anthropic SDK x-api-key auth for custom Anthropic-compatible bearer providers', async () => {
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    fake.env = {};
+    fake.customProviderAuthHeaders = ChatThreadDO.prototype['customProviderAuthHeaders'];
+    fake.resolveCurrentByokCredentials = vi.fn(async () => ({
+      provider: 'custom',
+      apiKey: 'custom-key',
+      baseUrl: 'https://custom.example',
+      authType: 'bearer',
+      api: 'anthropic-messages',
+    }));
+    fake.checkHostedPiModelAccess = vi.fn(async () => {
+      throw new Error('hosted billing should not be checked for BYOK');
+    });
+
+    const model = await ChatThreadDO.prototype['resolvePiModel'].call(
+      fake,
+      { provider: 'claude', orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1' },
+      { CHIRIDION_CLAUDE_MODEL: 'sonnet' },
+      vi.fn(() => ({
+        id: 'claude-sonnet-4-6',
+        provider: 'anthropic',
+        api: 'anthropic-messages',
+        baseUrl: 'https://api.anthropic.com',
+      })),
+    );
+
+    expect(model.model).toMatchObject({
+      id: 'claude-sonnet-4-6',
+      provider: 'custom',
+      api: 'anthropic-messages',
+      baseUrl: 'https://custom.example',
+    });
+    expect((model.model as any).headers).toEqual({
+      'x-api-key': null,
+      Authorization: 'Bearer custom-key',
+    });
+    expect(model.apiKey).toBe('custom-key');
+    expect(model.billingSource).toBe('byok');
+    expect(model.usageProvider).toBe('custom');
+    expect(fake.checkHostedPiModelAccess).not.toHaveBeenCalled();
+  });
+
+  it('uses an OpenAI-compatible default when custom OpenAI API mode receives a Claude thread model', async () => {
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    fake.env = {};
+    fake.resolveCurrentByokCredentials = vi.fn(async () => ({
+      provider: 'custom',
+      apiKey: 'custom-key',
+      baseUrl: 'https://custom.example/v1',
+      authType: 'bearer',
+      api: 'openai-responses',
+    }));
+    fake.checkHostedPiModelAccess = vi.fn(async () => {
+      throw new Error('hosted billing should not be checked for BYOK');
+    });
+    const getModel = vi.fn((provider: string, id: string) => ({
+      id,
+      provider,
+      api: provider === 'openai' ? 'openai-responses' : 'anthropic-messages',
+      baseUrl: provider === 'openai'
+        ? 'https://api.openai.com/v1'
+        : 'https://api.anthropic.com',
+    }));
+
+    const model = await ChatThreadDO.prototype['resolvePiModel'].call(
+      fake,
+      { provider: 'claude', orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1' },
+      { CHIRIDION_CLAUDE_MODEL: 'sonnet' },
+      getModel,
+    );
+
+    expect(getModel).toHaveBeenCalledWith('openai', 'gpt-5.4');
+    expect(model.model).toMatchObject({
+      id: 'gpt-5.4',
+      provider: 'custom',
+      api: 'openai-responses',
+      baseUrl: 'https://custom.example/v1',
+    });
+    expect(model.usageProvider).toBe('custom');
+  });
+
+  it('uses an Anthropic-compatible default when custom Anthropic API mode receives an OpenAI thread model', async () => {
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    fake.env = {};
+    fake.resolveCurrentByokCredentials = vi.fn(async () => ({
+      provider: 'custom',
+      apiKey: 'custom-key',
+      baseUrl: 'https://custom.example',
+      authType: 'x-api-key',
+      api: 'anthropic-messages',
+    }));
+    fake.checkHostedPiModelAccess = vi.fn(async () => {
+      throw new Error('hosted billing should not be checked for BYOK');
+    });
+    const getModel = vi.fn((provider: string, id: string) => ({
+      id,
+      provider,
+      api: provider === 'anthropic' ? 'anthropic-messages' : 'openai-responses',
+      baseUrl: provider === 'anthropic'
+        ? 'https://api.anthropic.com'
+        : 'https://api.openai.com/v1',
+    }));
+
+    const model = await ChatThreadDO.prototype['resolvePiModel'].call(
+      fake,
+      { orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1' },
+      { CHIRIDION_CODEX_MODEL: 'gpt-5.4' },
+      getModel,
+    );
+
+    expect(getModel).toHaveBeenCalledWith('anthropic', 'claude-sonnet-4-6');
+    expect(model.model).toMatchObject({
+      id: 'claude-sonnet-4-6',
+      provider: 'custom',
+      api: 'anthropic-messages',
+      baseUrl: 'https://custom.example',
+    });
+    expect(model.usageProvider).toBe('custom');
+  });
+
   it('uses Bedrock BYOK through Pi amazon-bedrock models for Claude Pi models', async () => {
     const fake = Object.create(ChatThreadDO.prototype) as any;
     fake.env = {};

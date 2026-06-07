@@ -23,15 +23,17 @@ export function ByokProviderInfoCard({ provider }: ByokProviderInfoCardProps) {
         <p className="text-muted-foreground">{provider.enterpriseNote}</p>
       ) : null}
 
-      <a
-        href={provider.getKeyUrl}
-        target="_blank"
-        rel="noreferrer"
-        className="inline-flex items-center gap-1 text-sm text-primary hover:underline"
-      >
-        {provider.getKeyLinkLabel}
-        <ArrowRight className="size-3.5" aria-hidden="true" />
-      </a>
+      {provider.getKeyUrl && provider.getKeyLinkLabel ? (
+        <a
+          href={provider.getKeyUrl}
+          target="_blank"
+          rel="noreferrer"
+          className="inline-flex items-center gap-1 text-sm text-primary hover:underline"
+        >
+          {provider.getKeyLinkLabel}
+          <ArrowRight className="size-3.5" aria-hidden="true" />
+        </a>
+      ) : null}
 
       <Separator />
 

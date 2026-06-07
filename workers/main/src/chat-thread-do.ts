@@ -62,6 +62,7 @@ import type {
 import { decryptCredentials } from "../../../src/lib/integration-crypto";
 import {
   DEFAULT_LLM_MODEL,
+  getStoredCustomLlmProviderApi,
   normalizeLlmModel,
   parseStoredLlmProviderConfig,
 } from "../../../src/lib/llm-provider-config";
@@ -179,6 +180,7 @@ export type PreviewTarget =
     };
 
 type PiBillingSource = "hosted" | "byok";
+type PiHeaderValue = string | null;
 
 const PI_USER_STOP_TEXT = "Stopped by user";
 const PI_USER_STOP_METADATA_REASON = "user_stop";
@@ -194,10 +196,12 @@ interface PiResolvedModelReference {
 
 interface PiRequestConfig {
   apiKey: string;
+  api?: string;
   baseUrl?: string;
-  headers?: Record<string, string>;
+  headers?: Record<string, PiHeaderValue>;
   requestProvider?: string;
   requestModelId?: string;
+  modelLookupProvider?: string;
   billingSource: PiBillingSource;
   creditChargeable: boolean;
   usageProvider?: string;
@@ -206,7 +210,7 @@ interface PiRequestConfig {
 interface PiResolvedModelConfig {
   model: Model<any>;
   apiKey: string;
-  headers?: Record<string, string>;
+  headers?: Record<string, PiHeaderValue>;
   provider: string;
   modelId: string;
   billingSource: PiBillingSource;
@@ -8146,10 +8150,11 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         thread && typeof thread === "object" && "workspace_id" in thread
           ? (thread as { workspace_id?: unknown }).workspace_id
           : null;
+      const customApi = getStoredCustomLlmProviderApi(llmProviderRecord);
       const threadModel =
         thread && threadWorkspaceId === context.workspaceId
           ? normalizeLlmModel((thread as { model?: unknown }).model)
-          : normalizeLlmModel(undefined, llmProviderRecord?.provider);
+          : normalizeLlmModel(undefined, llmProviderRecord?.provider, { customApi });
       const envVars = {
         CHIRIDION_MODEL: threadModel,
         CHIRIDION_CLAUDE_MODEL: threadModel,
@@ -9820,17 +9825,25 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       throw new Error(`Unsupported Pi model ${modelId}`);
     }
 
-    const configured = await this.resolvePiRequestConfig(resolved, context);
+    const configured = await this.resolvePiRequestConfig(resolved, context, modelId);
     const configuredModel =
-      configured.requestProvider === "amazon-bedrock" && configured.requestModelId
+      configured.modelLookupProvider && configured.requestModelId
         ? (getModelFn(
-            configured.requestProvider as never,
+            configured.modelLookupProvider as never,
             configured.requestModelId as never,
           ) as Model<any> | null | undefined) ??
-          resolveBedrockModelFallback(configured.requestModelId)
+          (configured.modelLookupProvider === "amazon-bedrock"
+            ? resolveBedrockModelFallback(configured.requestModelId)
+            : resolvePiModelCatalogFallback({
+                provider: configured.modelLookupProvider,
+                modelId: configured.requestModelId,
+                hostedGatewayProvider: resolved.hostedGatewayProvider,
+              }))
         : null;
-    if (configured.requestProvider === "amazon-bedrock" && !configuredModel) {
-      throw new Error(`Unsupported Bedrock Pi model ${configured.requestModelId}`);
+    if (configured.modelLookupProvider && !configuredModel) {
+      throw new Error(
+        `Unsupported ${configured.modelLookupProvider} Pi model ${configured.requestModelId}`,
+      );
     }
     const modelBase = configuredModel ?? model;
     const usageProvider = configured.usageProvider ?? resolved.provider;
@@ -9839,7 +9852,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     this.piCurrentUsageProvider = usageProvider;
     const resolvedModel = {
       ...modelBase,
-      api: resolved.api ?? modelBase.api,
+      api: configured.api ?? resolved.api ?? modelBase.api,
       id: configured.requestModelId ?? modelBase.id,
       provider: configured.requestProvider ?? modelBase.provider,
       baseUrl: configured.baseUrl || modelBase.baseUrl,
@@ -9847,7 +9860,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         ...(modelBase.headers ?? {}),
         ...(configured.headers ?? {}),
       },
-    };
+    } as Model<any>;
     return {
       model:
         resolvedModel.api === "bedrock-converse-stream"
@@ -9930,11 +9943,30 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
   private async resolvePiRequestConfig(
     resolved: PiResolvedModelReference,
     context: ChatContextState,
+    requestedModelId: string,
   ): Promise<PiRequestConfig> {
     const byok = await this.resolveCurrentByokCredentials(context).catch((error) => {
       console.error("[ChatThreadDO] failed to resolve Pi BYOK credentials", error);
       return null;
     });
+    if (byok?.provider === "custom" && byok.apiKey && byok.baseUrl && byok.api) {
+      const customModel = this.resolveCustomProviderModelReference(
+        byok.api,
+        requestedModelId,
+      );
+      return {
+        apiKey: byok.apiKey,
+        api: byok.api,
+        billingSource: "byok",
+        creditChargeable: false,
+        requestProvider: "custom",
+        requestModelId: customModel.modelId,
+        modelLookupProvider: customModel.provider,
+        baseUrl: byok.baseUrl,
+        usageProvider: "custom",
+        headers: this.customProviderAuthHeaders(byok.api, byok.authType ?? "bearer", byok.apiKey),
+      };
+    }
     if (byok?.provider === "openrouter" && byok.apiKey) {
       return {
         apiKey: byok.apiKey,
@@ -9960,6 +9992,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         creditChargeable: false,
         requestProvider: "amazon-bedrock",
         requestModelId: this.bedrockClaudeModel(resolved.modelId),
+        modelLookupProvider: "amazon-bedrock",
         baseUrl: this.bedrockRuntimeBaseUrl(byok.awsRegion),
         usageProvider: "bedrock",
       };
@@ -10015,6 +10048,32 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       "X-OpenRouter-Title": "camelAI",
       "X-OpenRouter-Categories": "cloud-agent,programming-app",
     };
+  }
+
+  private customProviderAuthHeaders(
+    api: "openai-completions" | "openai-responses" | "anthropic-messages",
+    authType: "bearer" | "x-api-key",
+    apiKey: string,
+  ): Record<string, PiHeaderValue> | undefined {
+    if (api === "anthropic-messages") {
+      return authType === "bearer"
+        ? { "x-api-key": null, Authorization: `Bearer ${apiKey}` }
+        : undefined;
+    }
+
+    return authType === "x-api-key"
+      ? { Authorization: null, "x-api-key": apiKey }
+      : undefined;
+  }
+
+  private resolveCustomProviderModelReference(
+    api: "openai-completions" | "openai-responses" | "anthropic-messages",
+    requestedModelId: string,
+  ): PiResolvedModelReference {
+    const model = normalizeLlmModel(this.normalizePiModelId(requestedModelId), "custom", {
+      customApi: api,
+    });
+    return this.resolvePiModelReference(model);
   }
 
   private openRouterClaudeModel(model: string): string {
@@ -10128,7 +10187,14 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
 
   private async resolveCurrentByokCredentials(
     context: ChatContextState,
-  ): Promise<{ provider: string; apiKey?: string; awsRegion?: string } | null> {
+  ): Promise<{
+    provider: string;
+    apiKey?: string;
+    awsRegion?: string;
+    baseUrl?: string;
+    authType?: "bearer" | "x-api-key";
+    api?: "openai-completions" | "openai-responses" | "anthropic-messages";
+  } | null> {
     const orgStub = this.env.ORG.get(this.env.ORG.idFromName(context.orgId));
     const record = await orgStub.getLlmProviderConfig();
     if (!record) {
@@ -10149,6 +10215,15 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     }
     if (record.provider === "openrouter" && creds.api_key) {
       return { provider: "openrouter", apiKey: creds.api_key };
+    }
+    if (record.provider === "custom" && creds.api_key && config.custom_base_url && config.custom_api) {
+      return {
+        provider: "custom",
+        apiKey: creds.api_key,
+        baseUrl: config.custom_base_url,
+        authType: config.custom_auth_type ?? "bearer",
+        api: config.custom_api,
+      };
     }
     if (record.provider === "bedrock" && creds.bearer_token) {
       return {

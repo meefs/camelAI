@@ -195,6 +195,36 @@ describe('MODEL_CATALOG', () => {
     ]);
   });
 
+  it('filters custom provider picker models by API mode', () => {
+    const effectiveConfig = {
+      source: 'org' as const,
+      default_model: null,
+      models: [
+        { id: 'sonnet' as const, added_at: 1 },
+        { id: 'opus-4.8' as const, added_at: 2 },
+        { id: 'gpt-5.5' as const, added_at: 3 },
+        { id: 'gpt-5.4' as const, added_at: 4 },
+        { id: 'gpt-5.4-mini' as const, added_at: 5 },
+        { id: 'kimi-k2.6' as const, added_at: 6 },
+      ],
+    };
+
+    expect(
+      resolveModelPickerCatalog({
+        effectiveConfig,
+        orgProvider: 'custom',
+        customApi: 'openai-responses',
+      }).map((entry) => entry.id),
+    ).toEqual(['gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini']);
+    expect(
+      resolveModelPickerCatalog({
+        effectiveConfig,
+        orgProvider: 'custom',
+        customApi: 'anthropic-messages',
+      }).map((entry) => entry.id),
+    ).toEqual(['opus-4.8', 'sonnet']);
+  });
+
   it('keeps OpenRouter picker models grouped by provider, then model order', () => {
     const visible = resolveModelPickerCatalog({
       effectiveConfig: {
