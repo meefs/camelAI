@@ -2,7 +2,7 @@ import type { Route } from './+types/admin.threads.$id.messages';
 import { requireSuperuser, getAuthEnv } from '@/lib/auth.server';
 import { getEnv } from '@/lib/cloudflare.server';
 import * as authDO from '@/lib/auth-do.server';
-import * as chatDO from '@/lib/chat-do.server';
+import { readThreadMessages } from '@/lib/chat-history.server';
 
 export async function loader({ request, context, params }: Route.LoaderArgs) {
   try {
@@ -27,20 +27,14 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
       return Response.json({ error: 'Thread not found' }, { status: 404 });
     }
 
-    const piMessages = await chatDO.getPiCoreMessages(context, threadId);
-    if (piMessages.length > 0) {
-      return Response.json(
-        { success: true, messages: piMessages },
-        {
-          headers: {
-            'Cache-Control': 'no-cache, no-transform',
-          },
-        },
-      );
-    }
-
+    const messages = await readThreadMessages(context, {
+      orgId: threadContext.org_id,
+      workspaceId: threadContext.workspace_id,
+      threadId,
+      skipBanCheck: true,
+    });
     return Response.json(
-      { success: true, messages: [] },
+      { success: true, messages },
       {
         headers: {
           'Cache-Control': 'no-cache, no-transform',

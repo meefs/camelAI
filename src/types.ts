@@ -96,9 +96,10 @@ export type PreviewTarget =
     }
   | {
       kind: "file";
-      source: "workspace" | "upload" | "output";
+      source: "workspace" | "upload" | "output" | "vm";
       workspaceId: string;
       path: string;
+      project?: string;
       filename?: string;
       contentType?: string;
     }

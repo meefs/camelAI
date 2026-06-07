@@ -1992,6 +1992,8 @@ describe('ChatThreadDO Codex turn handling', () => {
     expect((byName.get('set_project_description') as any).parameters.properties.project).toBeDefined();
     expect((byName.get('set_project_description') as any).parameters.properties.projectId).toBeUndefined();
     expect((byName.get('set_project_description') as any).parameters.properties.description).toBeDefined();
+    expect((byName.get('set_preview') as any).parameters.properties.location).toBeDefined();
+    expect((byName.get('set_preview') as any).parameters.properties.project).toBeDefined();
     expect((byName.get('WebSearch') as any).parameters.properties.query).toBeDefined();
     expect((byName.get('WebFetch') as any).parameters.properties.url).toBeDefined();
     expect((byName.get('r2_read') as any).parameters.properties.key).toBeDefined();

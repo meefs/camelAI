@@ -2,6 +2,7 @@ import { createRef } from "react";
 import { render, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  coercePreviewTarget,
   DEFAULT_NOTEBOOK_PREVIEW_STATE,
   PreviewPanelShell,
   type TabRenderState,
@@ -101,6 +102,39 @@ afterEach(() => {
 });
 
 describe("PreviewPanelShell", () => {
+  it("coerces project VM file preview targets", () => {
+    expect(
+      coercePreviewTarget({
+        kind: "file",
+        source: "vm",
+        workspaceId: "workspace_1",
+        project: "demo-project",
+        path: "/src/App.tsx",
+        filename: "App.tsx",
+        contentType: "application/typescript",
+      }),
+    ).toEqual({
+      kind: "file",
+      source: "vm",
+      workspaceId: "workspace_1",
+      project: "demo-project",
+      path: "/src/App.tsx",
+      filename: "App.tsx",
+      contentType: "application/typescript",
+    });
+  });
+
+  it("rejects VM file preview targets without a project", () => {
+    expect(
+      coercePreviewTarget({
+        kind: "file",
+        source: "vm",
+        workspaceId: "workspace_1",
+        path: "/src/App.tsx",
+      }),
+    ).toBeNull();
+  });
+
   it("mounts only the active app preview body and does not fetch inactive files", () => {
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);

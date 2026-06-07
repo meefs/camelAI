@@ -353,7 +353,7 @@ function useDeferredChatData(chatData: ChatDataValue): {
 function getPreviewTabId(target: PreviewTarget): string {
   if (target.kind === "app") return `app:${target.scriptName}`;
   if (target.kind === "runtime_artifact") return `artifact:${target.artifact.id}`;
-  return `file:${target.workspaceId}:${target.source}:${target.path}`;
+  return `file:${target.workspaceId}:${target.source}:${target.project ?? ""}:${target.path}`;
 }
 
 function buildFallbackActiveChatGroup(params: {

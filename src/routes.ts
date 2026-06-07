@@ -200,6 +200,10 @@ export default [
     "api/workspaces/:id/fs/content/*",
     "routes/api/workspaces.$id.fs.content.$.ts",
   ),
+  route(
+    "api/workspaces/:id/projects/:project/fs/content/*",
+    "routes/api/workspaces.$id.projects.$project.fs.content.$.ts",
+  ),
   route("api/workspaces/:id/fs/write", "routes/api/workspaces.$id.fs.write.ts"),
   route("api/workspaces/:id/fs/mkdir", "routes/api/workspaces.$id.fs.mkdir.ts"),
   route(

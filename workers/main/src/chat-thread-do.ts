@@ -168,9 +168,10 @@ export type PreviewTarget =
     }
   | {
       kind: "file";
-      source: "workspace" | "upload" | "output";
+      source: "workspace" | "upload" | "output" | "vm";
       workspaceId: string;
       path: string;
+      project?: string;
       filename?: string;
       contentType?: string;
     }
@@ -1396,13 +1397,15 @@ const CODE_MODE_TOOL_REGISTRY: CodeModeToolRegistration[] = [
   ),
   codeModePassthroughTool(
     "set_preview",
-    "Set the active preview to an app or file. Arguments: { script_name?, app_name?, is_public?, path?, content_type? }.",
+    "Set the active preview to an app or file. For project VM files, pass { location: 'vm', project, path }. Arguments: { script_name?, app_name?, is_public?, path?, content_type?, location?, project? }.",
     Type.Object({
       script_name: Type.Optional(Type.String()),
       app_name: Type.Optional(Type.String()),
       is_public: Type.Optional(Type.Boolean()),
       path: Type.Optional(Type.String()),
       content_type: Type.Optional(Type.String()),
+      location: Type.Optional(Type.Literal("vm")),
+      project: Type.Optional(Type.String()),
     }),
     {
       category: "apps",
@@ -2789,12 +2792,19 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
     }
     const target: PreviewTarget = {
       kind: "file",
-      source: parsedPath.source,
+      source: args.location === "vm" ? "vm" : parsedPath.source,
       workspaceId: this.ctx.props.workspaceId,
       path: parsedPath.path,
+      project:
+        args.location === "vm" && typeof args.project === "string"
+          ? args.project.trim()
+          : undefined,
       filename: parsedPath.filename,
       contentType: typeof args.content_type === "string" ? args.content_type : undefined,
     };
+    if (target.source === "vm" && !target.project) {
+      throw new Error("project is required when previewing a VM file");
+    }
     await this.chatThreadStub.setPreviewTarget(target);
     return { success: true, target };
   }
@@ -7288,7 +7298,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     if (target.kind === "runtime_artifact") {
       return `artifact:${target.artifact.id}`;
     }
-    return `file:${target.workspaceId}:${target.source}:${target.path}`;
+    return `file:${target.workspaceId}:${target.source}:${target.project ?? ""}:${target.path}`;
   }
 
   private normalizePreviewTarget(
@@ -7321,7 +7331,8 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       if (
         source !== "workspace" &&
         source !== "upload" &&
-        source !== "output"
+        source !== "output" &&
+        source !== "vm"
       ) {
         return null;
       }
@@ -7333,12 +7344,20 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       if (!workspaceId || !path || path.includes("..")) {
         return null;
       }
+      const project =
+        source === "vm" && typeof target.project === "string"
+          ? target.project.trim()
+          : undefined;
+      if (source === "vm" && !project) {
+        return null;
+      }
 
       return {
         kind: "file",
         source,
         workspaceId,
         path,
+        project,
         filename:
           typeof target.filename === "string"
             ? target.filename.trim()

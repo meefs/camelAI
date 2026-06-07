@@ -26,7 +26,7 @@ describe('preview-utils', () => {
       path: '/reports/q1/analysis.ipynb',
     };
 
-    expect(getPreviewTabId(target)).toBe('file:ws_123:upload:/reports/q1/analysis.ipynb');
+    expect(getPreviewTabId(target)).toBe('file:ws_123:upload::/reports/q1/analysis.ipynb');
   });
 
   it('maps toolbar file types by extension', () => {

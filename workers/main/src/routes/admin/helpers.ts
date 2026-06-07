@@ -30,7 +30,81 @@ type OrgThreadLookup = {
 };
 type ChatThreadLookup = {
   getPiCoreParsedMessages(threadId: string): Promise<unknown[]> | unknown[];
+  getLegacyClaudeSessionId(): Promise<string | null> | string | null;
+  getCodexSessionId(): Promise<string | null> | string | null;
 };
+
+function legacyWorkspaceUrl(
+  orgId: string,
+  workspaceId: string,
+  subpath: string,
+  query?: Record<string, string>,
+): string {
+  const url = new URL('http://legacy-workspace');
+  const basePath = url.pathname === '/' ? '' : url.pathname.replace(/\/+$/, '');
+  const cleanedSubpath = subpath.startsWith('/') ? subpath : `/${subpath}`;
+  url.pathname = `${basePath}/v1/workspaces/${encodeURIComponent(orgId)}/${encodeURIComponent(workspaceId)}${cleanedSubpath}`;
+  for (const [key, value] of Object.entries(query ?? {})) {
+    url.searchParams.set(key, value);
+  }
+  return url.toString();
+}
+
+async function fetchLegacyWorkspace(
+  env: Env,
+  url: string,
+  init: RequestInit,
+): Promise<Response> {
+  if (!env.LEGACY_WORKSPACE_HOST) {
+    throw new Error('LEGACY_WORKSPACE_HOST binding is not configured');
+  }
+  return env.LEGACY_WORKSPACE_HOST.fetch(new Request(url, init));
+}
+
+async function loadLegacyThreadMessages(
+  env: Env,
+  chatThread: Partial<ChatThreadLookup> | null,
+  input: {
+    orgId: string;
+    workspaceId: string;
+    threadId: string;
+  },
+): Promise<unknown[]> {
+  if (!env.LEGACY_WORKSPACE_HOST) {
+    return [];
+  }
+
+  const query: Record<string, string> = { threadId: input.threadId };
+  const legacyClaudeSessionId = chatThread?.getLegacyClaudeSessionId
+    ? await Promise.resolve(chatThread.getLegacyClaudeSessionId()).catch(() => null)
+    : null;
+  if (typeof legacyClaudeSessionId === 'string' && legacyClaudeSessionId.trim()) {
+    query.claudeSessionId = legacyClaudeSessionId.trim();
+  }
+  const codexSessionId = chatThread?.getCodexSessionId
+    ? await Promise.resolve(chatThread.getCodexSessionId()).catch(() => null)
+    : null;
+  if (typeof codexSessionId === 'string' && codexSessionId.trim()) {
+    query.codexSessionId = codexSessionId.trim();
+  }
+
+  const response = await fetchLegacyWorkspace(
+    env,
+    legacyWorkspaceUrl(
+      input.orgId,
+      input.workspaceId,
+      '/chat/messages',
+      query,
+    ),
+    { headers: { Accept: 'application/json' } },
+  );
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(body || `Failed to load legacy messages: ${response.status}`);
+  }
+  const payload = await response.json() as { messages?: unknown };
+  return Array.isArray(payload.messages) ? payload.messages : [];
+}
 
 export function getAdminIndexStub(env: AdminIndexEnv) {
   const readIndex = getAppIndexReadDatabase(env);
@@ -96,29 +170,42 @@ export async function loadAdminThreadMessagesResponse(
     return Response.json({ error: 'Thread not found' }, { status: 404 });
   }
 
+  let chatThread: Partial<ChatThreadLookup> | null = null;
+  let piMessages: unknown[] = [];
   if ('CHAT_THREAD' in env && env.CHAT_THREAD) {
-    const chatThread = env.CHAT_THREAD.get(
+    chatThread = env.CHAT_THREAD.get(
       env.CHAT_THREAD.idFromName(trimmedThreadId),
     ) as unknown as Partial<ChatThreadLookup>;
     if (typeof chatThread.getPiCoreParsedMessages === 'function') {
-      const piMessages = await Promise.resolve(
+      piMessages = await Promise.resolve(
         chatThread.getPiCoreParsedMessages(trimmedThreadId),
       ).catch(() => []);
-      if (Array.isArray(piMessages) && piMessages.length > 0) {
-        return Response.json(
-          { success: true, messages: piMessages },
-          {
-            headers: {
-              'Cache-Control': 'no-cache, no-transform',
-            },
-          },
-        );
-      }
+      if (!Array.isArray(piMessages)) piMessages = [];
     }
   }
 
+  const legacyMessages = await loadLegacyThreadMessages(env, chatThread, {
+    orgId: threadContext.org_id,
+    workspaceId: threadContext.workspace_id,
+    threadId: trimmedThreadId,
+  }).catch((error) => {
+    if (piMessages.length > 0) {
+      return [];
+    }
+    throw error;
+  });
+  if (legacyMessages.length === 0 && piMessages.length > 0) {
+    return Response.json(
+      { success: true, messages: piMessages },
+      {
+        headers: {
+          'Cache-Control': 'no-cache, no-transform',
+        },
+      },
+    );
+  }
   return Response.json(
-    { success: true, messages: [] },
+    { success: true, messages: legacyMessages },
     {
       headers: {
         'Cache-Control': 'no-cache, no-transform',

@@ -62,8 +62,16 @@ export function coercePreviewTarget(value: unknown): PreviewTarget | null {
       typeof record.path !== "string" ||
       (record.source !== "workspace" &&
         record.source !== "upload" &&
-        record.source !== "output")
+        record.source !== "output" &&
+        record.source !== "vm")
     ) {
+      return null;
+    }
+    const project =
+      record.source === "vm" && typeof record.project === "string"
+        ? record.project.trim()
+        : undefined;
+    if (record.source === "vm" && !project) {
       return null;
     }
     return {
@@ -71,6 +79,7 @@ export function coercePreviewTarget(value: unknown): PreviewTarget | null {
       source: record.source,
       workspaceId: record.workspaceId,
       path: record.path,
+      project,
       filename:
         typeof record.filename === "string" ? record.filename : undefined,
       contentType:

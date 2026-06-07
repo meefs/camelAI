@@ -240,6 +240,19 @@ export class ProjectRuntimeServiceVmBridge {
     });
   }
 
+  async readFileStream(args: VmFileArgs): Promise<{ response: Response; path: string }> {
+    const target = await this.getReadyTarget(args);
+    const path = this.resolveVmToolPath(args.path, target);
+    const response = await this.fetchRuntime(this.projectUrl(target.projectId, "/fs/read", { path }));
+    if (response.status === 404) {
+      throw new Error(`File not found: ${path}`);
+    }
+    if (!response.ok) {
+      throw new Error((await response.text()) || `Read failed: ${response.status}`);
+    }
+    return { response, path };
+  }
+
   async write(args: VmFileArgs): Promise<unknown> {
     if (typeof args.content !== "string") throw new Error("content must be a string");
     const target = await this.getReadyTarget(args);

@@ -395,17 +395,25 @@ export class ChiridionMcp extends McpAgent<any, Record<string, unknown>, Record<
     // Set preview panel to a file
     this.server.tool(
       'set_file_preview',
-      'Set the chat preview panel to a file path. Supports workspace paths and temp output paths like /mnt/user-uploads/... or /mnt/user-outputs/....',
+      'Set the chat preview panel to a file path. Supports workspace paths, project VM files with location="vm" and project, and temp output paths like /mnt/user-uploads/... or /mnt/user-outputs/....',
       {
         path: z
           .string()
           .describe('Path to preview. Examples: "/workspace/README.md", "src/app.tsx", "/mnt/user-outputs/plot.png", "/mnt/user-uploads/notebook.ipynb"'),
+        location: z
+          .literal('vm')
+          .optional()
+          .describe('Set to "vm" to preview a file from a project VM.'),
+        project: z
+          .string()
+          .optional()
+          .describe('Project name when location is "vm".'),
         content_type: z
           .string()
           .optional()
           .describe('Optional MIME type hint (for example "application/x-ipynb+json" or "image/png").'),
       },
-      async ({ path, content_type }) => {
+      async ({ path, location, project, content_type }) => {
         const { workspaceId } = this.requireAuth();
         if (!workspaceId) {
           return this.textResponse({ success: false, error: 'No workspace context available' });
@@ -430,19 +438,28 @@ export class ChiridionMcp extends McpAgent<any, Record<string, unknown>, Record<
 
         const target: PreviewTarget = {
           kind: 'file',
-          source: parsedPath.source,
+          source: location === 'vm' ? 'vm' : parsedPath.source,
           workspaceId,
           path: parsedPath.path,
+          project: location === 'vm' ? project?.trim() : undefined,
           filename: parsedPath.filename,
           contentType: typeof content_type === 'string' && content_type.trim() ? content_type.trim() : undefined,
         };
+        if (target.source === 'vm' && !target.project) {
+          return this.textResponse({
+            success: false,
+            error: 'project is required when previewing a VM file',
+          });
+        }
 
         const chatThreadStub = this.getChatThreadStub(threadId);
         await chatThreadStub.setPreviewTarget(target);
 
         const normalizedPath = target.path.replace(/^\/+/, '');
         const encodedPath = this.encodePathSegments(normalizedPath);
-        const route = target.source === 'workspace'
+        const route = target.source === 'vm'
+          ? `projects/${encodeURIComponent(target.project ?? '')}/fs/content/${encodedPath}`
+          : target.source === 'workspace'
           ? `fs/content/${encodedPath}`
           : `${target.source === 'upload' ? 'uploads' : 'outputs'}/${encodedPath}`;
         const previewUrl = `/api/workspaces/${workspaceId}/${route}`;

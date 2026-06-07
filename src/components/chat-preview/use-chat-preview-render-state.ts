@@ -21,6 +21,10 @@ function encodePathSegments(path: string) {
 function buildFilePreviewRoute(target: Extract<PreviewTarget, { kind: "file" }>) {
   const normalizedPath = target.path.replace(/^\/+/, "");
   const encodedPath = encodePathSegments(normalizedPath);
+  if (target.source === "vm") {
+    const encodedProject = encodeURIComponent(target.project ?? "");
+    return `projects/${encodedProject}/fs/content/${encodedPath}`;
+  }
   return target.source === "workspace"
     ? `fs/content/${encodedPath}`
     : `${target.source === "upload" ? "uploads" : "outputs"}/${encodedPath}`;
