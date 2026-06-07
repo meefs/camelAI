@@ -20,7 +20,7 @@ import {
   type PaywallTakeoverContext,
 } from "@/components/billing/paywall-takeover";
 import { AppSidebar } from "@/components/sidebar/app-sidebar";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardTitle } from "@/components/ui/card";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 import { ChatGroupsProvider } from "@/hooks/use-chat-groups";
 import { ChatThreadSnapshotsProvider } from "@/hooks/use-chat-thread-snapshots";
@@ -277,16 +277,24 @@ export default function AppLayout() {
 function WorkspaceMigrationInProgress() {
   return (
     <div className="flex min-h-0 flex-1 items-center justify-center bg-background p-6">
-      <Card className="w-full max-w-md text-center">
-        <CardHeader className="items-center gap-3">
-          <div className="flex size-9 items-center justify-center rounded-full bg-muted text-muted-foreground">
-            <Loader2 className="size-4 animate-spin" aria-hidden="true" />
+      <Card className="w-full max-w-md">
+        <CardContent className="flex flex-col items-center gap-5 px-6 py-6 text-center">
+          <div className="flex size-12 items-center justify-center rounded-full bg-muted text-muted-foreground">
+            <Loader2 className="size-5 animate-spin" aria-hidden="true" />
           </div>
-          <CardTitle className="text-base">camelAI migration in progress</CardTitle>
-        </CardHeader>
-        <CardContent className="text-sm text-muted-foreground">
-          We are upgrading camel&apos;s abilities. This page will refresh
-          automatically when migration is complete.
+          <div className="flex flex-col gap-2">
+            <CardTitle className="text-base">
+              camelAI migration in progress
+            </CardTitle>
+            <p className="text-sm text-muted-foreground">
+              We are upgrading camel&apos;s abilities. This page will refresh
+              automatically when migration is complete.
+            </p>
+            <p className="text-sm text-muted-foreground">
+              This may take a few minutes. You&apos;re free to leave this page and
+              come back later.
+            </p>
+          </div>
         </CardContent>
       </Card>
     </div>
