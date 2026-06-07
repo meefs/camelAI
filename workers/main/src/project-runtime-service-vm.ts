@@ -253,6 +253,12 @@ export class ProjectRuntimeServiceVmBridge {
     return { response, path };
   }
 
+  async assertFileReadable(args: VmFileArgs): Promise<{ path: string }> {
+    const stream = await this.readFileStream(args);
+    await stream.response.body?.cancel().catch(() => {});
+    return { path: stream.path };
+  }
+
   async write(args: VmFileArgs): Promise<unknown> {
     if (typeof args.content !== "string") throw new Error("content must be a string");
     const target = await this.getReadyTarget(args);

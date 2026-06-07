@@ -1994,6 +1994,7 @@ describe('ChatThreadDO Codex turn handling', () => {
     expect((byName.get('set_project_description') as any).parameters.properties.description).toBeDefined();
     expect((byName.get('set_preview') as any).parameters.properties.location).toBeDefined();
     expect((byName.get('set_preview') as any).parameters.properties.project).toBeDefined();
+    expect((byName.get('set_preview') as any).parameters.properties.clear).toBeUndefined();
     expect((byName.get('WebSearch') as any).parameters.properties.query).toBeDefined();
     expect((byName.get('WebFetch') as any).parameters.properties.url).toBeDefined();
     expect((byName.get('r2_read') as any).parameters.properties.key).toBeDefined();
@@ -2024,6 +2025,78 @@ describe('ChatThreadDO Codex turn handling', () => {
     });
     expect(byName.has('list_deterministic_automations')).toBe(false);
     expect(byName.has('prompt_connection_setup')).toBe(false);
+  });
+
+  it('requires set_preview to receive an explicit target', async () => {
+    const setPreviewTarget = vi.fn();
+    const fake = Object.create(CodeModeToolsBinding.prototype) as any;
+    Object.defineProperty(fake, 'chatThreadStub', {
+      value: { setPreviewTarget },
+    });
+
+    await expect((CodeModeToolsBinding.prototype as any).setPreview.call(fake, {
+      location: 'vm',
+      project: 'menu-app',
+    })).rejects.toThrow('path is required when previewing a VM file');
+    await expect((CodeModeToolsBinding.prototype as any).setPreview.call(fake, {}))
+      .rejects.toThrow('set_preview requires app_name/script_name or path');
+    expect(setPreviewTarget).not.toHaveBeenCalled();
+  });
+
+  it('validates workspace file previews before changing preview state', async () => {
+    const setPreviewTarget = vi.fn();
+    const exists = vi.fn(async () => ({ exists: false }));
+    const fake = Object.create(CodeModeToolsBinding.prototype) as any;
+    fake.ctx = { props: { workspaceId: 'workspace1' } };
+    Object.defineProperty(fake, 'chatThreadStub', {
+      value: { setPreviewTarget },
+    });
+    Object.defineProperty(fake, 'workspaceFs', {
+      value: { exists },
+    });
+
+    await expect((CodeModeToolsBinding.prototype as any).setPreview.call(fake, {
+      path: '/missing.html',
+    })).rejects.toThrow('Preview file not found: /missing.html');
+    expect(exists).toHaveBeenCalledWith('/missing.html');
+    expect(setPreviewTarget).not.toHaveBeenCalled();
+  });
+
+  it('validates VM file previews before changing preview state', async () => {
+    const setPreviewTarget = vi.fn();
+    const assertFileReadable = vi.fn(async () => ({ path: '/workspace/index.html' }));
+    const fake = Object.create(CodeModeToolsBinding.prototype) as any;
+    fake.ctx = { props: { workspaceId: 'workspace1' } };
+    Object.defineProperty(fake, 'chatThreadStub', {
+      value: { setPreviewTarget },
+    });
+    Object.defineProperty(fake, 'projectVm', {
+      value: { assertFileReadable },
+    });
+
+    const result = await (CodeModeToolsBinding.prototype as any).setPreview.call(fake, {
+      location: 'vm',
+      project: 'menu-app',
+      path: 'index.html',
+    });
+
+    expect(assertFileReadable).toHaveBeenCalledWith({
+      location: 'vm',
+      project: 'menu-app',
+      path: '/index.html',
+    });
+    expect(result).toMatchObject({
+      success: true,
+      target: {
+        kind: 'file',
+        source: 'vm',
+        workspaceId: 'workspace1',
+        path: '/index.html',
+        project: 'menu-app',
+        filename: 'index.html',
+      },
+    });
+    expect(setPreviewTarget).toHaveBeenCalledWith((result as any).target);
   });
 
   it('exposes current workspace email metadata to js_exec', async () => {

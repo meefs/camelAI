@@ -1397,7 +1397,7 @@ const CODE_MODE_TOOL_REGISTRY: CodeModeToolRegistration[] = [
   ),
   codeModePassthroughTool(
     "set_preview",
-    "Set the active preview to an app or file. For project VM files, pass { location: 'vm', project, path }. Arguments: { script_name?, app_name?, is_public?, path?, content_type?, location?, project? }.",
+    "Set the active preview to exactly one real target: an app or a file. App example: { app_name: 'poll-maker' }. Durable workspace file example: { path: '/notes.md' }. Project VM file example: { location: 'vm', project: 'menu-app', path: 'index.html' }. Successful file previews are validated before the preview changes. Arguments: { script_name?, app_name?, is_public?, path?, content_type?, location?, project? }.",
     Type.Object({
       script_name: Type.Optional(Type.String()),
       app_name: Type.Optional(Type.String()),
@@ -2764,12 +2764,30 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
   }
 
   private async setPreview(args: Record<string, unknown>): Promise<unknown> {
-    const scriptName =
-      typeof args.script_name === "string" && args.script_name.trim()
-        ? args.script_name.trim()
-        : typeof args.app_name === "string" && args.app_name.trim()
-          ? args.app_name.trim()
-          : "";
+    const scriptNameArg = typeof args.script_name === "string" ? args.script_name.trim() : "";
+    const appNameArg = typeof args.app_name === "string" ? args.app_name.trim() : "";
+    if (scriptNameArg && appNameArg && scriptNameArg !== appNameArg) {
+      throw new Error("set_preview accepts only one app target; use script_name or app_name, not both");
+    }
+    const scriptName = scriptNameArg || appNameArg;
+    const filePath = typeof args.path === "string" ? args.path.trim() : "";
+    if (args.location === "vm" && !filePath) {
+      throw new Error("path is required when previewing a VM file");
+    }
+    const targetKinds = [scriptName ? "app" : "", filePath ? "file" : ""].filter(Boolean);
+    if (targetKinds.length === 0) {
+      throw new Error("set_preview requires app_name/script_name or path");
+    }
+    if (targetKinds.length > 1) {
+      throw new Error("set_preview accepts exactly one target: app_name/script_name or path");
+    }
+    if (args.location !== "vm" && typeof args.project === "string" && args.project.trim()) {
+      throw new Error("project is only valid with location: 'vm'");
+    }
+    if (filePath && typeof args.is_public === "boolean") {
+      throw new Error("is_public is only valid for app previews");
+    }
+
     if (scriptName) {
       const script = await this.orgStub.getWorkerScript(scriptName);
       if (!script) throw new Error(`App '${scriptName}' not found`);
@@ -2780,11 +2798,6 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
       };
       await this.chatThreadStub.setPreviewTarget(target);
       return { success: true, target, app: { name: scriptName, url: await this.getAppUrl(script), is_public: target.isPublic } };
-    }
-    const filePath = typeof args.path === "string" ? args.path.trim() : "";
-    if (!filePath) {
-      await this.chatThreadStub.setPreviewTarget(null);
-      return { success: true, target: null };
     }
     const parsedPath = parseFilePreviewPath(filePath);
     if (!parsedPath) {
@@ -2805,8 +2818,51 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
     if (target.source === "vm" && !target.project) {
       throw new Error("project is required when previewing a VM file");
     }
+    await this.assertPreviewFileReadable(target);
     await this.chatThreadStub.setPreviewTarget(target);
     return { success: true, target };
+  }
+
+  private async assertPreviewFileReadable(target: Extract<PreviewTarget, { kind: "file" }>): Promise<void> {
+    switch (target.source) {
+      case "workspace": {
+        const exists = await this.workspaceFs.exists(target.path);
+        if (!exists.exists) {
+          throw new Error(`Preview file not found: ${target.path}`);
+        }
+        if (exists.isDirectory) {
+          throw new Error(`Preview path is a directory, not a file: ${target.path}`);
+        }
+        return;
+      }
+      case "upload":
+      case "output": {
+        const { orgId, workspaceId } = this.ctx.props;
+        if (!orgId || !workspaceId) {
+          throw new Error("Code mode tool binding is missing R2 scope");
+        }
+        const bucketDir = target.source === "upload" ? "user-uploads" : "user-outputs";
+        const relativePath = target.path.replace(/^\/+/, "");
+        const object = await this.env.R2_BUCKET.head(
+          buildWorkspaceScopedR2Key(orgId, workspaceId, `${bucketDir}/${relativePath}`),
+        );
+        if (!object) {
+          throw new Error(`Preview file not found: /mnt/${bucketDir}/${relativePath}`);
+        }
+        return;
+      }
+      case "vm": {
+        if (!target.project) {
+          throw new Error("project is required when previewing a VM file");
+        }
+        await this.projectVm.assertFileReadable({
+          location: "vm",
+          project: target.project,
+          path: target.path,
+        });
+        return;
+      }
+    }
   }
 
   private async listApps(): Promise<unknown> {
@@ -8333,7 +8389,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       "Projects are compute + Git work areas backed by one Cloudflare Artifacts repo and one project VM checkout. Project names are unique within the workspace and are the handle to use in tools. File tools default to the outer durable workspace; when a file tool receives `location: \"vm\"` with `project`, it operates on that project's VM filesystem. Use `list_projects`, `create_project`, `set_project_description`, and `clone_project` to discover, create, describe, or quickly clone projects. New projects require a concise description, and `list_projects` includes descriptions for source projects and clones. Cloning copies the source VM filesystem into a fresh project VM, so it includes current uncommitted files and can be used like a lightweight worktree. `list_projects` returns source projects as top-level rows and nests clone projects under each source project's `clones` array.",
       "Shell commands run in project VMs. Use the `bash` tool with `project` for a single direct command, or use `js_exec` with the `vm` facade when orchestrating multiple tool calls in JavaScript. The active checkout in the Go project runtime service is `/workspace`; do not create or use `/home/claude`, which is a legacy path and may not be writable in the current runtime image. The platform prepares a Git remote that reaches Cloudflare Artifacts through the runtime-service proxy, so the VM does not receive Artifacts tokens. Use normal Git commands there for version control (`git status`, `git diff`, selective `git add`, `git commit`, `git push`) and avoid committing build artifacts, dependency folders, caches, or secrets. Project VM files are persisted on the runtime host. Use `vm.exec` for commands and `vm.push`/`vm.pull` only when copying selected files between the durable workspace filesystem and the VM.",
       "Outbound email, Slack, and Telegram messages are opt-in side effects. In ordinary web chats, answer in chat only unless the user explicitly asks you to send an external message. Channel-originated turns include their own hidden routing instruction when an external reply is needed.",
-      `When you create or edit a user-visible file or app, call the \`set_preview\` tool with the relevant file path or app name so the user can inspect the result in the preview pane. When linking to files in \`/mnt/user-outputs/<path>\`, use a relative URL of \`/api/workspaces/${context.workspaceId}/outputs/<path>\`; uploaded files use \`/api/workspaces/${context.workspaceId}/uploads/<path>\`. Do not use \`camelai.com\` or legacy \`/files/output/...\` URLs for workspace file links.`,
+      `When you create or edit a user-visible file or app, call the \`set_preview\` tool with exactly one real preview target so the user can inspect it in the preview pane. Use \`set_preview({ app_name: "poll-maker" })\` for deployed apps, \`set_preview({ path: "/notes.md" })\` for durable workspace files, and \`set_preview({ location: "vm", project: "menu-app", path: "index.html" })\` for files in a project VM. Do not call \`set_preview\` with only \`project\` or \`location\`; VM file previews require \`path\`, \`project\`, and \`location: "vm"\`. Do not call \`set_preview\` to clear the preview. When linking to files in \`/mnt/user-outputs/<path>\`, use a relative URL of \`/api/workspaces/${context.workspaceId}/outputs/<path>\`; uploaded files use \`/api/workspaces/${context.workspaceId}/uploads/<path>\`. Do not use \`camelai.com\` or legacy \`/files/output/...\` URLs for workspace file links.`,
       "For workspace connections, prefer the `js_exec` tool. In `js_exec`, use `await env.CONNECTIONS.find(\"provider-or-type\")` to resolve one connection, then call it through `env.CONNECTIONS[entry.alias].method(input)`, `connections[entry.alias].method(input)`, or `context.cloudflare.connections[entry.alias].method(input)`. Database-style connections expose `query({ query })`; custom `other` connections expose `fetch(input, init)`. Channel side effects such as Telegram sending are virtual actions listed by `tools.list_integrations({ category: \"communication\" })` and `await env.CONNECTIONS.methods()`; call their copyable `tools.<action>(...)` examples from js_exec. Global `fetch()` is also available in `js_exec` for direct HTTP requests; prefer `tools.WebSearch` and `tools.WebFetch` for web lookup. Use `await env.CONNECTIONS.methods()` only when you need the full catalog, schemas, or examples. Connection credentials are intentionally hidden behind the binding.",
       "For hosted AI in `js_exec`, use `env.AI` or `context.cloudflare.env.AI` with `run()` only, for example `await env.AI.run(\"auto\", { messages: [{ role: \"user\", content: \"hello\" }] })`. Model tiers are `cheap`, `fast`, `auto` (default), and `smart`; any OpenRouter model id is also accepted. For images, call `await env.CAMELAI.generateImage(\"prompt\")`; for audio transcription, call `await env.CAMELAI.transcribeAudio({ path: \"/mnt/user-uploads/audio.ogg\" })` or pass base64 audio (same on `context.cloudflare.env.CAMELAI`). Use `await tools.help()` inside js_exec to expand tool categories, `await env.CAMELAI.help()` for CAMELAI methods, and `await env.WORKSPACE.info()` for workspace metadata such as its email address.",
       "Before relying on repository-specific conventions, read /workspace/AGENTS.md, /workspace/CLAUDE.md, /AGENTS.md, or /CLAUDE.md if present.",

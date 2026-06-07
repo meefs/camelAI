@@ -418,6 +418,12 @@ export class ChiridionMcp extends McpAgent<any, Record<string, unknown>, Record<
         if (!workspaceId) {
           return this.textResponse({ success: false, error: 'No workspace context available' });
         }
+        if (location !== 'vm' && project?.trim()) {
+          return this.textResponse({
+            success: false,
+            error: 'project is only valid with location="vm"',
+          });
+        }
 
         // Thread ID comes from the proxy auth headers
         const threadId = this.threadId;
