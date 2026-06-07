@@ -246,10 +246,20 @@ function mergeThreadSummaries(
   activeThreads: ChatGroupThreadSummary[],
   existingThreads: ChatGroupThreadSummary[],
 ): ChatGroupThreadSummary[] {
-  const activeIds = new Set(activeThreads.map((thread) => thread.id));
+  const activeById = new Map(activeThreads.map((thread) => [thread.id, thread]));
+  const existingIds = new Set(existingThreads.map((thread) => thread.id));
+  const activeContainsExistingOrder = existingThreads.every((thread) =>
+    activeById.has(thread.id),
+  );
+  if (activeContainsExistingOrder) {
+    return [
+      ...activeThreads,
+      ...existingThreads.filter((thread) => !activeById.has(thread.id)),
+    ];
+  }
   return [
-    ...activeThreads,
-    ...existingThreads.filter((thread) => !activeIds.has(thread.id)),
+    ...existingThreads.map((thread) => activeById.get(thread.id) ?? thread),
+    ...activeThreads.filter((thread) => !existingIds.has(thread.id)),
   ];
 }
 
@@ -258,9 +268,19 @@ function mergeThreadIds(
   existingThreadIds: string[],
 ): string[] {
   const activeIds = new Set(activeThreadIds);
+  const existingIds = new Set(existingThreadIds);
+  const activeContainsExistingOrder = existingThreadIds.every((threadId) =>
+    activeIds.has(threadId),
+  );
+  if (activeContainsExistingOrder) {
+    return [
+      ...activeThreadIds,
+      ...existingThreadIds.filter((threadId) => !activeIds.has(threadId)),
+    ];
+  }
   return [
-    ...activeThreadIds,
-    ...existingThreadIds.filter((threadId) => !activeIds.has(threadId)),
+    ...existingThreadIds,
+    ...activeThreadIds.filter((threadId) => !existingIds.has(threadId)),
   ];
 }
 

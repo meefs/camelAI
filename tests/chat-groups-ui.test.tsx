@@ -959,16 +959,36 @@ describe("mergeActiveChatGroup", () => {
     expect(merged[0].name).toBe("Launch");
     expect(merged[0].last_active_thread_id).toBe("thread_new");
     expect(merged[0].open_thread_ids).toEqual([
-      "thread_new",
       "thread_1",
       "thread_2",
+      "thread_new",
     ]);
     expect(merged[0].open_threads.map((thread) => thread.id)).toEqual([
-      "thread_new",
       "thread_1",
       "thread_2",
+      "thread_new",
     ]);
     expect(merged[0].member_count).toBe(3);
+  });
+
+  it("uses active route ordering when it has a complete group snapshot", () => {
+    const activeGroup: ChatGroupView = {
+      ...multiChatGroupView,
+      open_thread_ids: ["thread_2", "thread_1"],
+      open_threads: [
+        multiChatGroupView.open_threads[1],
+        multiChatGroupView.open_threads[0],
+      ],
+      last_active_thread_id: "thread_2",
+    };
+
+    const merged = mergeActiveChatGroup([multiChatGroupView], activeGroup);
+
+    expect(merged[0].open_thread_ids).toEqual(["thread_2", "thread_1"]);
+    expect(merged[0].open_threads.map((thread) => thread.id)).toEqual([
+      "thread_2",
+      "thread_1",
+    ]);
   });
 
   it("adds an active group missing from the stale layout list", () => {
