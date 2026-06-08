@@ -289,7 +289,13 @@ function resolveSelectedThreadModel(args: {
   hasEffectivePickerDefault: boolean;
   recentModel?: LlmModel | null;
 }): LlmModel {
-  if (args.threadId && args.threadModel) {
+  const availableModelIds = new Set(
+    args.availableThreadModels.map((entry) => entry.id),
+  );
+  const threadModelIsAvailable =
+    Boolean(args.threadModel) && availableModelIds.has(args.threadModel!);
+
+  if (args.threadId && args.threadModel && threadModelIsAvailable) {
     return args.threadModel;
   }
 
@@ -304,7 +310,7 @@ function resolveSelectedThreadModel(args: {
 
   return (
     resolvedModel ??
-    args.threadModel ??
+    (threadModelIsAvailable ? args.threadModel : null) ??
     args.allowedThreadModels?.[0] ??
     getDefaultLlmModel(args.llmProvider)
   );
