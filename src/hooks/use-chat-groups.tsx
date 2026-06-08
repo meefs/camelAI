@@ -653,9 +653,14 @@ export function ChatGroupsProvider({ children }: { children: ReactNode }) {
     | AppChatGroupsLoaderData
     | undefined;
   const rawChatGroups = data?.chatGroups;
+  const currentWorkspaceId = currentWorkspace?.id ?? null;
   const [resolvedChatGroups, setResolvedChatGroups] = useState<
     ChatGroupView[] | null
   >(() => (Array.isArray(rawChatGroups) ? rawChatGroups : null));
+  const [isChatGroupsLoading, setIsChatGroupsLoading] = useState(() =>
+    isPromiseLike(rawChatGroups),
+  );
+  const previousWorkspaceIdRef = useRef(currentWorkspaceId);
   const matches = useMatches();
   const activeThreadId = getActiveThreadIdFromMatches(matches);
   const activeThreadIdRef = useLatestRef(activeThreadId);
@@ -718,29 +723,43 @@ export function ChatGroupsProvider({ children }: { children: ReactNode }) {
   }, [resolvedChatGroups]);
 
   useEffect(() => {
+    const workspaceChanged = previousWorkspaceIdRef.current !== currentWorkspaceId;
+    previousWorkspaceIdRef.current = currentWorkspaceId;
+
     if (Array.isArray(rawChatGroups)) {
+      setIsChatGroupsLoading(false);
       setResolvedChatGroups(rawChatGroups);
       return;
     }
     if (!isPromiseLike(rawChatGroups)) {
+      setIsChatGroupsLoading(false);
       setResolvedChatGroups([]);
       return;
     }
 
     let cancelled = false;
-    setResolvedChatGroups(null);
+    setIsChatGroupsLoading(true);
+    if (workspaceChanged) {
+      setResolvedChatGroups(null);
+    }
     rawChatGroups
       .then((groups) => {
-        if (!cancelled) setResolvedChatGroups(groups);
+        if (!cancelled) {
+          setResolvedChatGroups(groups);
+          setIsChatGroupsLoading(false);
+        }
       })
       .catch(() => {
-        if (!cancelled) setResolvedChatGroups([]);
+        if (!cancelled) {
+          setResolvedChatGroups([]);
+          setIsChatGroupsLoading(false);
+        }
       });
 
     return () => {
       cancelled = true;
     };
-  }, [rawChatGroups]);
+  }, [currentWorkspaceId, rawChatGroups]);
 
   const markThreadIdle = useCallback((threadId: string) => {
     const normalizedThreadId = threadId.trim();
@@ -1308,14 +1327,14 @@ export function ChatGroupsProvider({ children }: { children: ReactNode }) {
     activeGroupId: getActiveGroupIdFromMatches(matches),
     runningThreadIds,
     hasStatusSnapshot,
-    isLoading: resolvedChatGroups === null,
+    isLoading: isChatGroupsLoading,
     markThreadIdle,
   }), [
     groups,
     hasStatusSnapshot,
+    isChatGroupsLoading,
     markThreadIdle,
     matches,
-    resolvedChatGroups,
     runningThreadIds,
   ]);
 

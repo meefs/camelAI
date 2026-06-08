@@ -28,6 +28,9 @@ import {
   SidebarRail,
 } from "@/components/ui/sidebar"
 
+// Temporarily hidden while the Computer tab fix is in progress.
+const SHOW_COMPUTER_NAV_ITEM = false
+
 type AppSidebarProps = React.ComponentProps<typeof Sidebar>;
 
 export function AppSidebar(props: AppSidebarProps) {
@@ -120,31 +123,18 @@ export function AppSidebar(props: AppSidebarProps) {
           </SidebarMenu>
         </SidebarGroup>
         <SidebarGroup>
-          <SidebarGroupLabel>Chat Groups</SidebarGroupLabel>
-          <ChatGroupsList
-            groups={groups}
-            activeGroupId={activeGroupId}
-            isLoading={isLoading}
-            onSelectGroup={(groupId) => {
-              const group = groups.find((entry) => entry.id === groupId)
-              navigate(group ? getGroupLandingHref(group) : "/chat")
-            }}
-            onCloseGroup={handleCloseGroup}
-            onSelectThread={handleSelectThreadFromHover}
-            onMoveThreadToGroup={handleMoveThreadToGroup}
-          />
-        </SidebarGroup>
-        <SidebarGroup>
           <SidebarGroupLabel>Workspace</SidebarGroupLabel>
           <SidebarMenu>
-            <SidebarMenuItem>
-              <SidebarMenuButton asChild tooltip="Computer" isActive={isComputer}>
-                <Link to={computerHref}>
-                  <AppWindowMac />
-                  <span>Computer</span>
-                </Link>
-              </SidebarMenuButton>
-            </SidebarMenuItem>
+            {SHOW_COMPUTER_NAV_ITEM ? (
+              <SidebarMenuItem>
+                <SidebarMenuButton asChild tooltip="Computer" isActive={isComputer}>
+                  <Link to={computerHref}>
+                    <AppWindowMac />
+                    <span>Computer</span>
+                  </Link>
+                </SidebarMenuButton>
+              </SidebarMenuItem>
+            ) : null}
             <SidebarMenuItem>
               <SidebarMenuButton asChild tooltip="Chat History" isActive={isHistory}>
                 <Link to="/history">
@@ -178,6 +168,21 @@ export function AppSidebar(props: AppSidebarProps) {
               </SidebarMenuButton>
             </SidebarMenuItem>
           </SidebarMenu>
+        </SidebarGroup>
+        <SidebarGroup>
+          <SidebarGroupLabel>Chat Groups</SidebarGroupLabel>
+          <ChatGroupsList
+            groups={groups}
+            activeGroupId={activeGroupId}
+            isLoading={isLoading}
+            onSelectGroup={(groupId) => {
+              const group = groups.find((entry) => entry.id === groupId)
+              navigate(group ? getGroupLandingHref(group) : "/chat")
+            }}
+            onCloseGroup={handleCloseGroup}
+            onSelectThread={handleSelectThreadFromHover}
+            onMoveThreadToGroup={handleMoveThreadToGroup}
+          />
         </SidebarGroup>
       </SidebarContent>
       <SidebarFooter className="[--safe-area-padding-left:0.5rem] [--safe-area-padding-right:0.5rem] [--safe-area-padding-bottom:0.5rem] pl-safe pr-safe pb-safe">

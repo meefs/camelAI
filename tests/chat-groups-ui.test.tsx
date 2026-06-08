@@ -1228,6 +1228,58 @@ describe("ChatGroupsProvider summary patches", () => {
     expect(screen.getByTestId("thread-title")).toHaveTextContent("API plan");
   });
 
+  it("keeps current groups visible while app chat groups revalidate", async () => {
+    let loaderChatGroups: ChatGroupView[] | Promise<ChatGroupView[]> = [groupView];
+    const loader = vi.fn(() => authLoaderState(loaderChatGroups));
+    const router = createMemoryRouter(
+      [
+        {
+          id: "routes/_app",
+          path: "/",
+          loader,
+          element: (
+            <ChatGroupsProvider>
+              <ChatGroupsProviderProbe />
+            </ChatGroupsProvider>
+          ),
+        },
+      ],
+      { initialEntries: ["/"] },
+    );
+
+    render(<RouterProvider router={router} />);
+
+    expect(await screen.findByTestId("groups-loading")).toHaveTextContent(
+      "loaded",
+    );
+    expect(screen.getByTestId("thread-title")).toHaveTextContent("API plan");
+
+    let resolveRefresh: (groups: ChatGroupView[]) => void = () => {};
+    const refreshPromise = new Promise<ChatGroupView[]>((resolve) => {
+      resolveRefresh = resolve;
+    });
+    loaderChatGroups = refreshPromise;
+
+    act(() => {
+      void router.revalidate();
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("groups-loading")).toHaveTextContent("loading");
+    });
+    expect(screen.getByTestId("thread-title")).toHaveTextContent("API plan");
+
+    await act(async () => {
+      resolveRefresh([groupViewWithThreadRevision("Updated plan", 2)]);
+      await refreshPromise;
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("groups-loading")).toHaveTextContent("loaded");
+    });
+    expect(screen.getByTestId("thread-title")).toHaveTextContent("Updated plan");
+  });
+
   it("keeps newer local title patches over older loader group data", async () => {
     let loaderState = authLoaderState([
       {
