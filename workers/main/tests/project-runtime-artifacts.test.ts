@@ -148,4 +148,32 @@ describe("project runtime Artifacts proxy", () => {
     expect(await res.text()).toBe("Forbidden");
     expect(fetchMock).not.toHaveBeenCalled();
   });
+
+  it("rejects sandbox shared secret auth for project runtime artifact requests", async () => {
+    const fetchMock = vi.fn(async () => new Response("ok"));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const req = request(
+      "https://camelai.dev/api/internal/project-runtime/artifacts/git/origin.git/info/refs?service=git-upload-pack",
+      {
+        headers: {
+          "X-Project-Runtime-Project": "ca-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-web-app",
+          "X-Sandbox-Secret": "sandbox-secret",
+        },
+      },
+    );
+
+    const res = await handleProjectRuntimeArtifactsProxy(routeContext(req, {
+      PROJECT_RUNTIME_PROXY_SECRET: "runtime-secret",
+      SANDBOX_PROXY_SECRET: "sandbox-secret",
+      WORKSPACE_FS: {
+        idFromName: vi.fn((name: string) => name),
+        get: vi.fn(() => ({ mintProjectArtifactToken: vi.fn() })),
+      },
+    }));
+
+    expect(res.status).toBe(403);
+    expect(await res.text()).toBe("Forbidden");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
 });

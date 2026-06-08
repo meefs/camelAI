@@ -74,10 +74,7 @@ export async function loader({ context }: Route.LoaderArgs) {
 
 ### Connections Service Binding
 
-The starter includes a `CONNECTIONS` service binding for workspace connections.
-
-- Local dev: binding points to `LocalConnectionsService` (`workers/connections.ts`), which forwards to `CAMELAI_CONNECTIONS_URL` when set
-- camelAI deploy: platform rewrites `CONNECTIONS` to its internal service binding
+The starter includes a `CONNECTIONS` service binding for workspace connections. Local dev binds to `LocalConnectionsService`, which talks to the unified RPC endpoint configured by `CAMELAI_CONNECTIONS_RPC_URL`. camelAI deploys rewrite the binding to the internal `ConnectionsService`.
 
 Use `CONNECTIONS.find()` for the shortest path to a connection, or `CONNECTIONS.methods()` to inspect all available aliases, method names, input schemas, and examples. Use `createConnections()` for method-style calls:
 

@@ -297,10 +297,73 @@ Supported query methods:
 - `DATA_PROXY.mysqlQuery(...)` (positional params array)
 - All query calls require `mode: "read"` or `mode: "modify"` (no auto-detection).
 
-### Direct drivers (preferred local fallback in containers)
+### Workspace connections from notebooks (preferred in project VMs)
 
-For sandbox/container code, native drivers are the primary fallback when proxy access is unnecessary.
-Use this path when the user explicitly asks for direct connectivity or when local direct access is simpler.
+Project VMs expose workspace connections through the stateless RPC endpoint in `CAMELAI_CONNECTIONS_RPC_URL`. Use this from notebooks and Python scripts instead of asking for credentials or looking for connection env vars. The VM receives only the proxy URL; camelAI applies workspace identity and stored auth outside the VM.
+
+Minimal Python helper:
+
+```python
+import json
+import os
+import urllib.request
+
+CONNECTIONS_URL = os.environ["CAMELAI_CONNECTIONS_RPC_URL"]
+
+def connection_rpc(action, **params):
+    payload = {"action": action, **params}
+    request = urllib.request.Request(
+        CONNECTIONS_URL,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "content-type": "application/json",
+            "accept": "application/json",
+        },
+        method="POST",
+    )
+    with urllib.request.urlopen(request, timeout=60) as response:
+        body = json.loads(response.read().decode("utf-8"))
+    if not body.get("ok", False):
+        raise RuntimeError(body["error"])
+    return body["result"]
+
+entry = connection_rpc("find", query="postgres")
+result = connection_rpc(
+    "invoke",
+    connection=entry["connection"]["id"],
+    method="query",
+    input={"query": "SELECT 1 AS ok"},
+)
+```
+
+For dataframe workflows:
+
+```python
+import pandas as pd
+
+entry = connection_rpc("find", query="clickhouse")
+result = connection_rpc(
+    "invoke",
+    connection=entry["connection"]["id"],
+    method="query",
+    input={"query": "SELECT * FROM events LIMIT 1000"},
+)
+
+rows = result.get("rows") or result.get("recordset") or result.get("data", {}).get("rows") or []
+df = pd.DataFrame(rows)
+df.head()
+```
+
+Discover available connections and schemas:
+
+```python
+catalog = connection_rpc("methods")
+[(entry["alias"], entry["connection"]["type"], [m["name"] for m in entry["methods"]]) for entry in catalog]
+```
+
+### Direct drivers (explicit external credentials only)
+
+Use native drivers only when the user explicitly provides direct connection details, asks for direct connectivity, or the data source is not a saved camelAI workspace connection.
 
 ```python
 from sqlalchemy import create_engine

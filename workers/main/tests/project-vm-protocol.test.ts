@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   normalizeGlobalProjectId,
+  projectRuntimeConnectionsRpcUrl,
   projectRuntimeDeployProxyUrl,
   projectRuntimeDockerProxyBaseUrl,
   runtimeArtifactsProxyRemote,
@@ -38,6 +39,18 @@ describe("project VM protocol proxy URLs", () => {
     );
     expect(projectRuntimeDeployProxyUrl("http://host.docker.internal:4411/p/camelai-cloudflare-api/client/v4")).toBe(
       "http://host.docker.internal:4411/p/camelai-cloudflare-api/client/v4",
+    );
+  });
+
+  it("builds connections RPC proxy URLs from the runtime Docker proxy", () => {
+    expect(projectRuntimeConnectionsRpcUrl(undefined)).toBe(
+      "http://host.docker.internal:8089/p/camelai-connections-rpc/rpc/connections",
+    );
+    expect(projectRuntimeConnectionsRpcUrl("http://host.docker.internal:4411")).toBe(
+      "http://host.docker.internal:4411/p/camelai-connections-rpc/rpc/connections",
+    );
+    expect(projectRuntimeConnectionsRpcUrl("http://host.docker.internal:4411/p/camelai-connections-rpc/rpc/connections")).toBe(
+      "http://host.docker.internal:4411/p/camelai-connections-rpc/rpc/connections",
     );
   });
 

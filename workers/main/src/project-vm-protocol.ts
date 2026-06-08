@@ -2,6 +2,7 @@ export const PROJECT_RUNTIME_PROVIDER = "project-runtime-service";
 export const PROJECT_VM_CHECKOUT_PATH = "/workspace";
 export const PROJECT_RUNTIME_ARTIFACTS_PROXY_CAPABILITY = "camelai-artifacts";
 export const PROJECT_RUNTIME_CLOUDFLARE_API_PROXY_CAPABILITY = "camelai-cloudflare-api";
+export const PROJECT_RUNTIME_CONNECTIONS_RPC_PROXY_CAPABILITY = "camelai-connections-rpc";
 
 export interface ProjectVmEnv {
   PROJECT_RUNTIME_HOST?: Fetcher;
@@ -102,4 +103,10 @@ export function projectRuntimeDeployProxyUrl(value: string | undefined): string 
   const base = projectRuntimeDockerProxyBaseUrl(value);
   const proxyPath = `/p/${PROJECT_RUNTIME_CLOUDFLARE_API_PROXY_CAPABILITY}/client/v4`;
   return base.endsWith("/client/v4") ? base : `${base}${proxyPath}`;
+}
+
+export function projectRuntimeConnectionsRpcUrl(value: string | undefined): string {
+  const base = projectRuntimeDockerProxyBaseUrl(value);
+  const proxyPath = `/p/${PROJECT_RUNTIME_CONNECTIONS_RPC_PROXY_CAPABILITY}/rpc/connections`;
+  return base.endsWith("/rpc/connections") ? base : `${base}${proxyPath}`;
 }

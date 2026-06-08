@@ -48,6 +48,9 @@ describe("ProjectRuntimeServiceVmBridge", () => {
     expect(userExecBody).toMatchObject({
       cmd: ["bash", "-lc", "pwd"],
       cwd: "/workspace",
+      env: {
+        CAMELAI_CONNECTIONS_RPC_URL: "http://host.docker.internal:8089/p/camelai-connections-rpc/rpc/connections",
+      },
     });
   });
 

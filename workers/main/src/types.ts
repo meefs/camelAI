@@ -97,7 +97,6 @@ export interface Env
   BEDROCK_REGION?: string;
   // Sandbox proxy shared secret
   SANDBOX_PROXY_SECRET?: string;
-  SANDBOX_PROXY_MTLS_CERT_SHA256?: string;
   PROJECT_RUNTIME_SERVICE_URL?: string;
   PROJECT_RUNTIME_SERVICE_BEARER_TOKEN?: string;
   LEGACY_WORKSPACE_HOST?: Fetcher;
@@ -105,7 +104,6 @@ export interface Env
   PROJECT_RUNTIME_DOCKER_PROXY_BASE_URL?: string;
   PROJECT_RUNTIME_ARTIFACTS_PROXY_BASE?: string;
   PROJECT_RUNTIME_PROXY_SECRET?: string;
-  PROJECT_RUNTIME_MTLS_CERT_SHA256?: string;
   LEGACY_WORKSPACE_MIGRATIONS?: Workflow;
   ENABLE_LEGACY_WORKSPACE_MIGRATION?: string;
   // Email handle registry (atomic handle claims)

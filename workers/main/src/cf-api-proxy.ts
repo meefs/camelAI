@@ -197,9 +197,7 @@ export interface CfApiProxyEnv {
   CHAT_THREAD: DurableObjectNamespace;
   WORKER_BASE_URL?: string;
   SANDBOX_PROXY_SECRET?: string;
-  SANDBOX_PROXY_MTLS_CERT_SHA256?: string;
   PROJECT_RUNTIME_PROXY_SECRET?: string;
-  PROJECT_RUNTIME_MTLS_CERT_SHA256?: string;
   CF_ZONE_ID?: string;
   CF_CUSTOM_HOSTNAME_FALLBACK?: string;
   CF_CUSTOM_HOSTNAME_CNAME_TARGET?: string;
@@ -572,27 +570,32 @@ function parseMultipartUploads(body: ArrayBuffer, contentType: string) {
 function transformVirtualBindings(
   body: ArrayBuffer,
   rawMetadataJson: string,
-  bindings: WorkerBinding[],
+  bindings: WorkerBinding[] | undefined,
   workspaceId: string,
   orgId: string,
   userId: string | undefined,
   workerServiceName: string,
 ): ArrayBuffer {
-  const r2Bindings = bindings.filter((b) => b.type === "r2_bucket");
-  const dataProxyBindings = bindings.filter(
+  const existingBindings = bindings ?? [];
+  const r2Bindings = existingBindings.filter((b) => b.type === "r2_bucket");
+  const dataProxyBindings = existingBindings.filter(
     (b) => b.type === "service" && b.name === VIRTUAL_DATA_PROXY_BINDING_NAME,
   );
-  const connectionsBindings = bindings.filter(
+  const connectionsBindings = existingBindings.filter(
     (b) => b.type === "service" && b.name === VIRTUAL_CONNECTIONS_BINDING_NAME,
   );
-  const aiBindings = bindings.filter((b) => b.type === "ai");
-  const camelaiBindings = bindings.filter(
+  const injectConnectionsBinding = !existingBindings.some(
+    (b) => b.name === VIRTUAL_CONNECTIONS_BINDING_NAME,
+  );
+  const aiBindings = existingBindings.filter((b) => b.type === "ai");
+  const camelaiBindings = existingBindings.filter(
     (b) => b.type === "service" && b.name === VIRTUAL_CAMELAI_BINDING_NAME,
   );
   if (
     r2Bindings.length === 0 &&
     dataProxyBindings.length === 0 &&
     connectionsBindings.length === 0 &&
+    !injectConnectionsBinding &&
     aiBindings.length === 0 &&
     camelaiBindings.length === 0
   )
@@ -609,10 +612,8 @@ function transformVirtualBindings(
     return body;
   }
 
-  if (!metadata.bindings) return body;
-
   metadata.bindings = mapVirtualizedBindings(
-    metadata.bindings,
+    metadata.bindings ?? [],
     workspaceId,
     orgId,
     userId,
@@ -683,7 +684,7 @@ export function mapVirtualizedBindings(
   userId: string | undefined,
   workerServiceName: string,
 ): WorkerBinding[] {
-  return bindings.map((binding) => {
+  const mapped = bindings.map((binding) => {
     if (binding.type === "r2_bucket") {
       return {
         type: "service",
@@ -757,6 +758,24 @@ export function mapVirtualizedBindings(
 
     return binding;
   });
+  if (mapped.some((binding) => binding.name === VIRTUAL_CONNECTIONS_BINDING_NAME)) {
+    return mapped;
+  }
+
+  const props: Record<string, string> = { workspaceId, orgId };
+  if (userId) {
+    props.userId = userId;
+  }
+  return [
+    ...mapped,
+    {
+      type: "service",
+      name: VIRTUAL_CONNECTIONS_BINDING_NAME,
+      service: workerServiceName,
+      entrypoint: "ConnectionsService",
+      props,
+    },
+  ];
 }
 
 async function callCloudflareApi<T>(
@@ -1692,7 +1711,7 @@ export async function proxyCloudflareApi(
     const contentType = request.headers.get("Content-Type") ?? "";
     if (contentType.toLowerCase().includes("multipart/form-data")) {
       const uploadInfo2 = parseMultipartUploads(body, contentType);
-      if (uploadInfo2?.rawMetadataJson && uploadInfo2?.bindings) {
+      if (uploadInfo2?.rawMetadataJson) {
         body = transformVirtualBindings(
           body,
           uploadInfo2.rawMetadataJson,

@@ -25,8 +25,7 @@ import type { SlackEventQueueMessage } from './slack-types.js';
 // Route handlers
 import { handleCfProxy } from './routes/cf-proxy.js';
 import { handleMcp } from './routes/mcp.js';
-import { handleIntegrationsMcp } from './routes/integrations-mcp.js';
-import { handleConnections } from './routes/connections.js';
+import { handleConnectionsRpc } from './routes/connections-rpc.js';
 import { handleAdminMcp } from './routes/admin-mcp.js';
 import { handleThreadPreview } from './routes/threads.js';
 import { handleOAuthStart, handleOAuthCallback } from './routes/oauth.js';
@@ -213,11 +212,8 @@ const routes: Route[] = [
   // Email sending proxy (for sandbox containers)
   { method: 'POST', path: /^\/api\/email\/send$/, handler: handleEmailSendProxy },
 
-  // Connections proxy (for sandbox containers)
-  { method: 'POST', path: /^\/api\/connections$/, handler: handleConnections },
-
-  // Integrations MCP (internal - sandbox tools)
-  { method: 'ALL', path: /^\/mcp\/integrations(\/|$)/, handler: handleIntegrationsMcp },
+  // Connections RPC (internal - sandbox/project-runtime tools)
+  { method: 'ALL', path: /^\/rpc\/connections$/, handler: handleConnectionsRpc },
 
   // MCP (internal - sandbox agent)
   { method: 'ALL', path: /^\/mcp(\/|$)/, handler: handleMcp },

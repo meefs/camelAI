@@ -180,10 +180,7 @@ For local fallback over HTTP, set `DATA_PROXY_URL` in `wrangler.jsonc` vars or `
 
 ### Connections Binding (`CONNECTIONS`)
 
-The template includes a `CONNECTIONS` service binding by default.
-
-- Local dev: `CONNECTIONS` resolves to `LocalConnectionsService` in `workers/connections.ts`
-- camelAI deploy: platform rewrites this binding to the internal `ConnectionsService`
+The starter includes a `CONNECTIONS` service binding for workspace connections. Local dev binds to `LocalConnectionsService`, which talks to the unified RPC endpoint configured by `CAMELAI_CONNECTIONS_RPC_URL`. camelAI deploys rewrite the binding to the internal `ConnectionsService`.
 
 Use `CONNECTIONS.find()` for the shortest path to a connection, or `CONNECTIONS.methods()` to inspect all available aliases, method names, input schemas, and examples. Use `createConnections()` for method-style calls:
 
@@ -243,7 +240,7 @@ In camelAI deploys, this binding is virtualized and rewritten to an internal pla
 
 ### CAMELAI binding (image generation)
 
-The starter includes a `CAMELAI` service binding (same pattern as `CONNECTIONS` / `DATA_PROXY`):
+The starter includes a `CAMELAI` service binding:
 
 - Local dev: `LocalCamelAiService` in `workers/camelai-service.ts` (uses `env.AI.run("auto_image", ...)`)
 - camelAI deploy: platform rewrites to internal `CamelAiService`

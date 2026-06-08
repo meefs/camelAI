@@ -1,0 +1,234 @@
+/**
+ * Stateless workspace connections RPC endpoint.
+ *
+ * This endpoint is scoped by sandbox/project-runtime proxy identity and exposes
+ * workspace connection methods without exposing raw credential material.
+ */
+
+import type { RouteContext } from '../types.js';
+import {
+  validateProjectRuntimeProxy,
+  validateSandboxProxy,
+  type SandboxProxyAuthEnv,
+} from '../sandbox-auth.js';
+import { workspaceIdFromGlobalProjectId } from '../project-vm-protocol.js';
+import {
+  findConnectionMethodEntry,
+  getConnection,
+  invokeConnectionMethod,
+  listConnectionMethods,
+  listConnectionTools,
+  listConnections,
+  testConnectionMethodEntry,
+  type ConnectionsContext,
+  type ConnectionFindQuery,
+} from '../connections-runtime.js';
+
+interface ConnectionsRpcRequest {
+  action?: unknown;
+  connection?: unknown;
+  method?: unknown;
+  input?: unknown;
+  query?: unknown;
+}
+
+type ResolvedConnectionsContext = ConnectionsContext & {
+  valid: true;
+  threadId?: string;
+  projectId?: string;
+};
+
+const ACTIONS = ['list', 'get', 'find', 'tools', 'methods', 'test', 'invoke'] as const;
+
+function jsonResponse(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { 'content-type': 'application/json' },
+  });
+}
+
+function rpcResult(result: unknown): Record<string, unknown> {
+  return { ok: true, result };
+}
+
+function rpcError(
+  message: string,
+  status = 500,
+  data?: Record<string, unknown>,
+): Response {
+  return jsonResponse({
+    ok: false,
+    error: data ? { message, ...data } : { message },
+  }, status);
+}
+
+function requireString(value: unknown, field: string): string {
+  if (typeof value !== 'string' || !value.trim()) {
+    throw Object.assign(new Error(`${field} is required`), { status: 400 });
+  }
+  return value.trim();
+}
+
+function requireFindQuery(value: unknown): ConnectionFindQuery {
+  if (typeof value === 'string' && value.trim()) return value.trim();
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    const raw = value as Record<string, unknown>;
+    const query = {
+      id: typeof raw.id === 'string' ? raw.id : undefined,
+      alias: typeof raw.alias === 'string' ? raw.alias : undefined,
+      type: typeof raw.type === 'string' ? raw.type : undefined,
+      name: typeof raw.name === 'string' ? raw.name : undefined,
+    };
+    if (Object.values(query).some((item) => typeof item === 'string' && item.trim())) {
+      return query;
+    }
+  }
+  throw Object.assign(new Error('query is required'), { status: 400 });
+}
+
+async function resolveConnectionsContext(
+  req: Request,
+  env: RouteContext['env'],
+): Promise<ResolvedConnectionsContext | null> {
+  if (hasProjectRuntimeProjectHeader(req)) {
+    return resolveProjectRuntimeConnectionsContext(req, env);
+  }
+
+  const sandboxAuth = validateSandboxProxy(req, sandboxOnlyAuthEnv(env));
+  if (sandboxAuth.valid) return sandboxAuth;
+
+  return null;
+}
+
+function hasProjectRuntimeProjectHeader(req: Request): boolean {
+  return !!req.headers.get('x-project-runtime-project')?.trim();
+}
+
+function sandboxOnlyAuthEnv(env: RouteContext['env']): SandboxProxyAuthEnv {
+  return {
+    SANDBOX_PROXY_SECRET: env.SANDBOX_PROXY_SECRET,
+  };
+}
+
+async function resolveProjectRuntimeConnectionsContext(
+  req: Request,
+  env: RouteContext['env'],
+): Promise<ResolvedConnectionsContext | null> {
+  const projectAuth = validateProjectRuntimeProxy(req, env);
+  if (!projectAuth.valid) {
+    return null;
+  }
+
+  const workspaceId = workspaceIdFromGlobalProjectId(projectAuth.projectId);
+  if (!workspaceId) {
+    return null;
+  }
+
+  const workspaceStub = env.WORKSPACE.get(
+    env.WORKSPACE.idFromName(workspaceId),
+  );
+  const workspaceFsStub = env.WORKSPACE_FS.get(
+    env.WORKSPACE_FS.idFromName(workspaceId),
+  );
+  const [workspaceInfo, project] = await Promise.all([
+    workspaceStub.getInfo(),
+    workspaceFsStub.getProject(projectAuth.projectId),
+  ]);
+  if (!workspaceInfo || !project) {
+    return null;
+  }
+
+  return {
+    valid: true,
+    orgId: workspaceInfo.org_id,
+    workspaceId,
+    projectId: projectAuth.projectId,
+  };
+}
+
+async function handleRpcAction(
+  request: ConnectionsRpcRequest,
+  env: RouteContext['env'],
+  auth: ConnectionsContext,
+): Promise<Record<string, unknown>> {
+  const action = requireString(request.action, 'action');
+
+  switch (action) {
+    case 'list':
+      return rpcResult(await listConnections(env, auth));
+
+    case 'get':
+      return rpcResult(await getConnection(env, auth, requireString(request.connection, 'connection')));
+
+    case 'find':
+      return rpcResult(await findConnectionMethodEntry(env, auth, requireFindQuery(request.query)));
+
+    case 'tools':
+      return rpcResult(await listConnectionTools(env, auth, requireString(request.connection, 'connection')));
+
+    case 'methods':
+      return rpcResult(await listConnectionMethods(env, auth));
+
+    case 'test':
+      return rpcResult(await testConnectionMethodEntry(env, auth, requireFindQuery(request.query)));
+
+    case 'invoke':
+      return rpcResult(await invokeConnectionMethod(env, auth, {
+        connection: requireString(request.connection, 'connection'),
+        method: requireString(request.method, 'method'),
+        input: request.input,
+      }));
+
+    default:
+      throw Object.assign(new Error(`Unknown action: ${action}`), { status: 404 });
+  }
+}
+
+function errorData(error: unknown): Record<string, unknown> | undefined {
+  const data: Record<string, unknown> = {};
+  const source = error as {
+    code?: unknown;
+    data?: unknown;
+    matches?: unknown;
+    methods?: unknown;
+  };
+  if (source.code !== undefined) data.code = source.code;
+  if (source.data !== undefined) data.data = source.data;
+  if (source.matches !== undefined) data.matches = source.matches;
+  if (source.methods !== undefined) data.methods = source.methods;
+  return Object.keys(data).length > 0 ? data : undefined;
+}
+
+export async function handleConnectionsRpc({ req, env }: RouteContext): Promise<Response> {
+  if (req.method === 'GET') {
+    return jsonResponse({
+      ok: true,
+      endpoint: '/rpc/connections',
+      actions: ACTIONS,
+    });
+  }
+
+  if (req.method !== 'POST') {
+    return rpcError('Method not allowed', 405);
+  }
+
+  const auth = await resolveConnectionsContext(req, env);
+  if (!auth) {
+    return rpcError('Unauthorized', 401);
+  }
+
+  let payload: ConnectionsRpcRequest;
+  try {
+    payload = await req.json() as ConnectionsRpcRequest;
+  } catch {
+    return rpcError('Invalid JSON', 400);
+  }
+
+  try {
+    return jsonResponse(await handleRpcAction(payload, env, auth));
+  } catch (error) {
+    const status = (error as { status?: unknown })?.status;
+    const httpStatus = typeof status === 'number' && status >= 400 && status < 600 ? status : 500;
+    return rpcError(error instanceof Error ? error.message : String(error), httpStatus, errorData(error));
+  }
+}

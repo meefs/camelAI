@@ -8,6 +8,7 @@ import type {
 } from "./project-vm-protocol";
 import {
   normalizeGlobalProjectId,
+  projectRuntimeConnectionsRpcUrl,
   projectRuntimeDeployProxyUrl,
   PROJECT_RUNTIME_PROVIDER,
   PROJECT_VM_CHECKOUT_PATH,
@@ -669,6 +670,9 @@ fi
     }
     env.CLOUDFLARE_API_BASE_URL = this.deployDockerProxyUrl();
     env.CLOUDFLARE_API_TOKEN ||= "project-runtime-proxy";
+    env.CAMELAI_CONNECTIONS_RPC_URL = projectRuntimeConnectionsRpcUrl(
+      this.options.env.PROJECT_RUNTIME_DOCKER_PROXY_BASE_URL,
+    );
     return Object.keys(env).length > 0 ? env : undefined;
   }
 

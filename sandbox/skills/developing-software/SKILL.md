@@ -703,17 +703,7 @@ export async function loader({ context, params }: Route.LoaderArgs) {
 
 User workers can call workspace connections through the platform-virtualized `CONNECTIONS` service binding. Use it when an app needs to call a connected provider such as Stripe, GitHub, Linear, or Notion without putting user credentials in Worker code or env vars.
 
-The starter template includes a local `CONNECTIONS` self-binding:
-
-```jsonc
-{
-  "services": [
-    { "binding": "CONNECTIONS", "service": "my-app", "entrypoint": "LocalConnectionsService" }
-  ]
-}
-```
-
-On camelAI deploys, the platform rewrites this binding to the internal `ConnectionsService` with workspace/org isolation. In local dev, the template shim forwards to `CAMELAI_CONNECTIONS_URL` when that variable is available.
+The starter template includes a local `CONNECTIONS` self-binding backed by `LocalConnectionsService`. That shim calls the unified `/rpc/connections` endpoint configured with `CAMELAI_CONNECTIONS_RPC_URL`. On camelAI deploys, the platform rewrites the `CONNECTIONS` service binding to the internal `ConnectionsService` with workspace/org isolation.
 
 ### Runtime API
 
@@ -740,7 +730,7 @@ Available methods:
 |--------|-------------|
 | `list()` | List workspace connections available to the Worker |
 | `get(connection)` | Resolve one connection by id, name, or type |
-| `tools(connection)` | List MCP-backed tools for a connection |
+| `tools(connection)` | List RPC-backed tools for a connection |
 | `methods()` | List available connection aliases and method schemas |
 | `find(query)` | Resolve one connection method catalog entry by alias, id, type, name, or `{ type }`; throws on missing or ambiguous matches |
 | `test(query)` | Run a quick smoke test; database-style connections run `SELECT 1 AS ok` |
@@ -779,9 +769,11 @@ Inside `js_exec`, these globals are available:
 - `context.cloudflare.env.CONNECTIONS` - the same method-style facade.
 - `connections` and `context.cloudflare.connections` - aliases for the same method-style facade.
 - `env.AI` and `context.cloudflare.env.AI` - the virtual AI binding (`run()` only), matching deployed user workers.
-- `env.CAMELAI` and `context.cloudflare.env.CAMELAI` - image generation service binding (`generateImage(prompt)`), same pattern as `CONNECTIONS`.
+- `env.CAMELAI` and `context.cloudflare.env.CAMELAI` - image generation service binding (`generateImage(prompt)`).
 
 Connection credentials are intentionally hidden behind the virtual binding.
+
+For Python notebooks or scripts running in a project VM, use the RPC endpoint URL from `CAMELAI_CONNECTIONS_RPC_URL` instead of direct credentials. Post JSON actions such as `find`, `methods`, and `invoke`; the project-runtime proxy injects workspace identity outside the VM.
 
 Prefer `find()` and normalized methods for common workflows:
 
@@ -907,7 +899,7 @@ The starter template includes a local `CAMELAI` self-binding (typed via `bun wra
 }
 ```
 
-On camelAI deploys, the platform rewrites this binding to the internal `CamelAiService` entrypoint (same pattern as `CONNECTIONS`).
+On camelAI deploys, the platform rewrites this binding to the internal `CamelAiService` entrypoint.
 
 ### Codemode (Tool Orchestration — Preferred for Agents with Tools)
 

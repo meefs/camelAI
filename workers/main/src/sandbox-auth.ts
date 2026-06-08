@@ -10,8 +10,6 @@
 export interface SandboxProxyAuthEnv {
   SANDBOX_PROXY_SECRET?: string;
   PROJECT_RUNTIME_PROXY_SECRET?: string;
-  SANDBOX_PROXY_MTLS_CERT_SHA256?: string;
-  PROJECT_RUNTIME_MTLS_CERT_SHA256?: string;
 }
 
 export interface SandboxProxyIdentity {
@@ -45,7 +43,7 @@ export function validateSandboxProxy(
   request: Request,
   env: SandboxProxyAuthEnv,
 ): SandboxProxyResult {
-  if (!hasVerifiedClientCertificate(request, env) && !hasValidSharedSecret(request, env)) {
+  if (!hasVerifiedClientCertificate(request) && !hasValidSharedSecret(request, env)) {
     return { valid: false };
   }
 
@@ -64,12 +62,13 @@ export function validateProjectRuntimeProxy(
   request: Request,
   env: SandboxProxyAuthEnv,
 ): ProjectRuntimeProxyResult {
-  if (!hasVerifiedClientCertificate(request, env) && !hasValidSharedSecret(request, env)) {
+  if (
+    !hasVerifiedClientCertificate(request) &&
+    !hasValidProjectRuntimeSharedSecret(request, env)
+  ) {
     return { valid: false };
   }
-  const projectId =
-    request.headers.get("x-project-runtime-project")?.trim() ||
-    request.headers.get("x-chiridion-project-id")?.trim();
+  const projectId = request.headers.get("x-project-runtime-project")?.trim();
   if (!projectId) return { valid: false };
   return { valid: true, projectId };
 }
@@ -77,7 +76,6 @@ export function validateProjectRuntimeProxy(
 type TlsClientAuth = {
   certRevoked?: string;
   certVerified?: string;
-  certFingerprintSHA256?: string;
 };
 
 type RequestWithCloudflareMetadata = Request & {
@@ -86,22 +84,13 @@ type RequestWithCloudflareMetadata = Request & {
   };
 };
 
-function hasVerifiedClientCertificate(request: Request, env: SandboxProxyAuthEnv): boolean {
+function hasVerifiedClientCertificate(request: Request): boolean {
   const tlsClientAuth = (request as RequestWithCloudflareMetadata).cf?.tlsClientAuth;
   if (tlsClientAuth?.certVerified !== "SUCCESS" || tlsClientAuth.certRevoked === "1") {
     return false;
   }
 
-  const allowedFingerprints = fingerprintList([
-    env.PROJECT_RUNTIME_MTLS_CERT_SHA256,
-    env.SANDBOX_PROXY_MTLS_CERT_SHA256,
-  ]);
-  if (allowedFingerprints.length === 0) {
-    return true;
-  }
-
-  const fingerprint = normalizeFingerprint(tlsClientAuth.certFingerprintSHA256);
-  return !!fingerprint && allowedFingerprints.includes(fingerprint);
+  return true;
 }
 
 function hasValidSharedSecret(request: Request, env: SandboxProxyAuthEnv): boolean {
@@ -123,6 +112,23 @@ function hasValidSharedSecret(request: Request, env: SandboxProxyAuthEnv): boole
   );
 }
 
+function hasValidProjectRuntimeSharedSecret(request: Request, env: SandboxProxyAuthEnv): boolean {
+  const providedSecrets = [
+    request.headers.get("x-project-runtime-secret"),
+    bearerToken(request.headers.get("authorization")),
+  ]
+    .map((value) => value?.trim())
+    .filter((value): value is string => !!value);
+
+  const expectedSecrets = secretList([
+    env.PROJECT_RUNTIME_PROXY_SECRET,
+  ]);
+
+  return providedSecrets.some((provided) =>
+    expectedSecrets.some((expected) => constantTimeEqual(provided, expected)),
+  );
+}
+
 function bearerToken(authorization: string | null): string | null {
   const match = authorization?.match(/^Bearer\s+(.+?)\s*$/i);
   return match?.[1] ?? null;
@@ -133,18 +139,6 @@ function secretList(values: Array<string | undefined>): string[] {
     .flatMap((value) => value?.split(",") ?? [])
     .map((value) => value.trim())
     .filter(Boolean);
-}
-
-function fingerprintList(values: Array<string | undefined>): string[] {
-  return values
-    .flatMap((value) => value?.split(",") ?? [])
-    .map(normalizeFingerprint)
-    .filter((value): value is string => !!value);
-}
-
-function normalizeFingerprint(value: string | undefined): string | undefined {
-  const normalized = value?.replace(/[^a-fA-F0-9]/g, "").toUpperCase();
-  return normalized || undefined;
 }
 
 function constantTimeEqual(a: string, b: string): boolean {

@@ -65,7 +65,7 @@
 		// Optional local fallback for template DATA_PROXY shim:
 		// "DATA_PROXY_URL": "https://your-local-data-proxy.example/api"
 		// Optional local fallback for template CONNECTIONS shim:
-		// "CAMELAI_CONNECTIONS_URL": "https://your-local-connections-proxy.example/api/connections"
+		// "CAMELAI_CONNECTIONS_RPC_URL": "https://your-authenticated-connections-proxy.example/rpc/connections"
 	},
 
 	/**
@@ -89,7 +89,7 @@
 	/**
 	 * Service bindings
 	 * - DATA_PROXY: locally binds to LocalDataProxyService; virtualized on camelAI deploy
-	 * - CONNECTIONS: locally binds to LocalConnectionsService; virtualized on camelAI deploy
+	 * - CONNECTIONS: locally binds to LocalConnectionsService over RPC; virtualized on camelAI deploy
 	 * - CAMELAI: locally binds to LocalCamelAiService; virtualized on camelAI deploy
 	 */
 	"services": [

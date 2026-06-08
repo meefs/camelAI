@@ -588,7 +588,7 @@ function summarizeConnection(record: WorkspaceIntegrationRecord, context: Connec
                 ? 'connected_credentials_broker'
                 : nativeMcp.authStrategy
             ),
-            brokerPath: `/mcp/integrations/native/${encodeURIComponent(record.id)}`,
+            brokerPath: '/rpc/connections',
             docsUrl: nativeMcp.broker?.docsUrl ?? nativeMcp.docsUrl,
             notes: nativeMcp.broker?.notes,
           },

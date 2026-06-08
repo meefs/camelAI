@@ -438,5 +438,24 @@ describe('Worker Binding Validation', () => {
       ]);
     });
 
+    it('injects CONNECTIONS when user metadata does not declare it', () => {
+      const bindings: WorkerBinding[] = [
+        { type: 'plain_text', name: 'APP_ENV', text: 'prod' },
+      ];
+
+      const transformed = mapVirtualizedBindings(bindings, 'ws_auto', 'org_auto', 'user_auto', 'chiridion-app');
+
+      expect(transformed).toEqual([
+        { type: 'plain_text', name: 'APP_ENV', text: 'prod' },
+        {
+          type: 'service',
+          name: 'CONNECTIONS',
+          service: 'chiridion-app',
+          entrypoint: 'ConnectionsService',
+          props: { workspaceId: 'ws_auto', orgId: 'org_auto', userId: 'user_auto' },
+        },
+      ]);
+    });
+
   });
 });
