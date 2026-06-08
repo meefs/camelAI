@@ -47,6 +47,44 @@ describe("retryTransientDurableObjectRead", () => {
 
     expect(fn).toHaveBeenCalledTimes(1);
   });
+
+  it("retries Cloudflare retryable Durable Object errors", async () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const error = Object.assign(new Error("Transient internal error"), {
+      retryable: true,
+    });
+    const fn = vi
+      .fn<() => Promise<string>>()
+      .mockRejectedValueOnce(error)
+      .mockResolvedValueOnce("ok");
+
+    await expect(
+      retryTransientDurableObjectRead("TestDO.read", fn, {
+        attempts: 2,
+        initialDelayMs: 0,
+      }),
+    ).resolves.toBe("ok");
+
+    expect(fn).toHaveBeenCalledTimes(2);
+    warnSpy.mockRestore();
+  });
+
+  it("does not retry overloaded Durable Object errors", async () => {
+    const error = Object.assign(new Error("Durable Object is overloaded"), {
+      overloaded: true,
+      retryable: true,
+    });
+    const fn = vi.fn<() => Promise<string>>().mockRejectedValue(error);
+
+    await expect(
+      retryTransientDurableObjectRead("TestDO.read", fn, {
+        attempts: 3,
+        initialDelayMs: 0,
+      }),
+    ).rejects.toBe(error);
+
+    expect(fn).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe("isTransientDurableObjectRpcError", () => {
@@ -59,5 +97,23 @@ describe("isTransientDurableObjectRpcError", () => {
     expect(
       isTransientDurableObjectRpcError(new Error("Network connection lost.")),
     ).toBe(true);
+  });
+
+  it("uses Cloudflare retryable and overloaded error flags", () => {
+    expect(
+      isTransientDurableObjectRpcError(
+        Object.assign(new Error("Transient internal error"), {
+          retryable: true,
+        }),
+      ),
+    ).toBe(true);
+    expect(
+      isTransientDurableObjectRpcError(
+        Object.assign(new Error("Durable Object is overloaded"), {
+          overloaded: true,
+          retryable: true,
+        }),
+      ),
+    ).toBe(false);
   });
 });

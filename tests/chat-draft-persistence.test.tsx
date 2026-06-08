@@ -142,6 +142,8 @@ vi.mock('@/components/message-bubble', () => ({
   isInterruptMessage: () => false,
   parseSlashCommand: () => null,
   parseLocalCommandStdout: () => null,
+  userFacingContentToString: (content: unknown) =>
+    typeof content === 'string' ? content : '',
 }));
 
 vi.mock('@/components/loading-dots', () => ({
@@ -253,6 +255,11 @@ class MockWebSocket {
     this.onclose?.(new CloseEvent('close'));
   });
 
+  emitClose(init: CloseEventInit = {}) {
+    this.readyState = MockWebSocket.CLOSED;
+    this.onclose?.(new CloseEvent('close', init));
+  }
+
   emitOpen() {
     this.readyState = MockWebSocket.OPEN;
     this.onopen?.(new Event('open'));
@@ -290,6 +297,21 @@ function sentMessagePayloads(socket: MockWebSocket): Array<Record<string, unknow
     } catch {
       return [];
     }
+  });
+}
+
+function exhaustMainSocketReconnects() {
+  for (const delayMs of [1_000, 2_000, 4_000, 8_000, 16_000]) {
+    act(() => {
+      getLatestMainSocket().emitClose({ code: 1006 });
+    });
+    act(() => {
+      vi.advanceTimersByTime(delayMs);
+    });
+  }
+
+  act(() => {
+    getLatestMainSocket().emitClose({ code: 1006 });
   });
 }
 
@@ -524,6 +546,82 @@ describe('Chat draft persistence', () => {
     window.removeEventListener('camelai:thread-status', handleStatus);
   });
 
+  it('keeps idle websocket reconnect exhaustion from showing a send failure', () => {
+    vi.useFakeTimers();
+    render(
+      <Chat
+        threadId="thread-1"
+        workspaceId="ws-1"
+        initialMessages={[]}
+      />,
+    );
+
+    act(() => {
+      const socket = getLatestMainSocket();
+      socket.emitOpen();
+      socket.emitMessage({ type: 'ready' });
+    });
+
+    exhaustMainSocketReconnects();
+
+    expect(
+      screen.queryByText(/Connection was lost before your message was sent/i),
+    ).toBeNull();
+
+    const socketCountBeforeBackgroundRetry = MockWebSocket.instances.length;
+    act(() => {
+      vi.advanceTimersByTime(30_000);
+    });
+
+    expect(MockWebSocket.instances.length).toBe(
+      socketCountBeforeBackgroundRetry + 1,
+    );
+  });
+
+  it('gives a new user send a fresh reconnect budget after idle backoff', () => {
+    vi.useFakeTimers();
+    render(
+      <Chat
+        threadId="thread-1"
+        workspaceId="ws-1"
+        initialMessages={[]}
+      />,
+    );
+
+    act(() => {
+      const socket = getLatestMainSocket();
+      socket.emitOpen();
+      socket.emitMessage({ type: 'ready' });
+    });
+    exhaustMainSocketReconnects();
+
+    const input = screen.getByLabelText('Thread prompt');
+    fireEvent.change(input, { target: { value: 'Send after reconnects' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+
+    expect(input).toHaveValue('');
+    expect(screen.getByText('user:Send after reconnects')).toBeInTheDocument();
+    expect(
+      screen.queryByText(/Connection was lost before your message was sent/i),
+    ).toBeNull();
+
+    const socketCountBeforeFirstRetry = MockWebSocket.instances.length;
+    act(() => {
+      getLatestMainSocket().emitClose({ code: 1006 });
+    });
+    act(() => {
+      vi.advanceTimersByTime(1_000);
+    });
+
+    expect(MockWebSocket.instances.length).toBe(
+      socketCountBeforeFirstRetry + 1,
+    );
+    expect(input).toHaveValue('');
+    expect(
+      screen.queryByText(/Connection was lost before your message was sent/i),
+    ).toBeNull();
+  });
+
   it('restores an accepted delivery backup when the turn later fails', async () => {
     const user = userEvent.setup();
     const { unmount } = render(
@@ -623,6 +721,49 @@ describe('Chat draft persistence', () => {
       },
       { timeout: 1500 },
     );
+  });
+
+  it('does not restore an accepted older pending message when a later send is unaccepted', () => {
+    vi.useFakeTimers();
+    render(
+      <Chat
+        threadId="thread-1"
+        workspaceId="ws-1"
+        initialMessages={[]}
+      />,
+    );
+
+    const input = screen.getByLabelText('Thread prompt');
+    const socket = getLatestMainSocket();
+    act(() => {
+      socket.emitOpen();
+      socket.emitMessage({ type: 'ready' });
+    });
+
+    fireEvent.change(input, { target: { value: 'First accepted' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+    const firstPayload = sentMessagePayloads(socket)[0];
+    expect(firstPayload.clientMessageId).toEqual(expect.any(String));
+
+    act(() => {
+      socket.emitMessage({
+        type: 'message_accepted',
+        clientMessageId: firstPayload.clientMessageId,
+      });
+    });
+
+    fireEvent.change(input, { target: { value: 'Second unaccepted' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+    expect(sentMessagePayloads(socket)).toHaveLength(2);
+
+    act(() => {
+      vi.advanceTimersByTime(8_000);
+    });
+
+    expect(input).toHaveValue('Second unaccepted');
+    expect(screen.getByText('user:First accepted')).toBeInTheDocument();
+    expect(screen.queryByText('user:Second unaccepted')).toBeNull();
+    expect(loadDraft('ws-1', 'thread-1')?.text).toBe('Second unaccepted');
   });
 
   it('clears the welcome-screen draft when the route action takes over', async () => {

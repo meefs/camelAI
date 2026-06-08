@@ -174,6 +174,8 @@ const CHAT_PING_MESSAGE = JSON.stringify({ type: "ping" });
 // The backend acknowledges receipt before slow runner enqueue work, so this
 // timeout only covers messages that never make it to ChatThreadDO.
 const MESSAGE_ACCEPTANCE_TIMEOUT_MS = 8_000;
+const CHAT_WS_RECONNECT_ATTEMPTS_BEFORE_BACKOFF = 5;
+const CHAT_WS_BACKGROUND_RETRY_MS = 30_000;
 
 function getThreadRunningState(
   groups: readonly ChatGroupView[] | undefined,
@@ -860,6 +862,7 @@ export default function Chat({
   );
   const pendingMessagesRef = useRef(pendingMessages);
   const sentPendingMessageIdsRef = useRef<Set<string>>(new Set());
+  const acceptedPendingMessageIdsRef = useRef<Set<string>>(new Set());
   const pendingMessageAcceptanceTimeoutsRef = useRef<
     Map<string, ReturnType<typeof setTimeout>>
   >(new Map());
@@ -1670,6 +1673,7 @@ export default function Chat({
 
   const markPendingDeliveryDraftAccepted = useCallback(
     (clientMessageId: string) => {
+      acceptedPendingMessageIdsRef.current.add(clientMessageId);
       const pendingDraft = pendingDeliveryDraftRef.current;
 
       if (pendingDraft?.clientMessageId === clientMessageId) {
@@ -1840,6 +1844,10 @@ export default function Chat({
   }, []);
 
   const isPendingMessageAccepted = useCallback((clientMessageId: string) => {
+    if (acceptedPendingMessageIdsRef.current.has(clientMessageId)) {
+      return true;
+    }
+
     const pendingDraft = pendingDeliveryDraftRef.current;
     if (
       pendingDraft?.clientMessageId === clientMessageId &&
@@ -1855,33 +1863,70 @@ export default function Chat({
     );
   }, [getStoredPendingDeliveryDraft]);
 
+  const getUnacceptedPendingUserMessages = useCallback(
+    () =>
+      pendingMessagesRef.current.filter((message) => {
+        if (message.role !== "user") return false;
+        const deliveryKey = message.clientMessageId ?? message.id;
+        return !isPendingMessageAccepted(deliveryKey);
+      }),
+    [isPendingMessageAccepted],
+  );
+
   const failPendingMessageDelivery = useCallback(
-    (message: string) => {
-      logRunnerClient("pending_delivery_failed", { message });
-      clearAllPendingMessageAcceptanceTimeouts();
-      const unsentIds = new Set(pendingMessagesRef.current.map((msg) => msg.id));
-      if (unsentIds.size > 0) {
-        setMessages((prev) => prev.filter((msg) => !unsentIds.has(msg.id)));
+    (message: string): boolean => {
+      const failedMessages = getUnacceptedPendingUserMessages();
+      if (failedMessages.length === 0) {
+        logRunnerClient("pending_delivery_failed_skipped", {
+          message,
+          reason: "no_unaccepted_pending_message",
+        });
+        return false;
       }
-      sentPendingMessageIdsRef.current.clear();
-      setPendingMessages([]);
+
+      logRunnerClient("pending_delivery_failed", {
+        message,
+        failedMessages: failedMessages.length,
+      });
+      clearAllPendingMessageAcceptanceTimeouts();
+      const failedIds = new Set(failedMessages.map((msg) => msg.id));
+      const failedDeliveryKeys = new Set(
+        failedMessages.map((msg) => msg.clientMessageId ?? msg.id),
+      );
+      setMessages((prev) => prev.filter((msg) => !failedIds.has(msg.id)));
+      for (const deliveryKey of failedDeliveryKeys) {
+        sentPendingMessageIdsRef.current.delete(deliveryKey);
+        acceptedPendingMessageIdsRef.current.delete(deliveryKey);
+      }
+      const remainingPendingMessages = pendingMessagesRef.current.filter(
+        (msg) => !failedIds.has(msg.id),
+      );
+      setPendingMessages(remainingPendingMessages);
       clearQueuedSendReadyTimeout();
-      setLoading(false);
+      setLoading(
+        remainingPendingMessages.length > 0 ||
+          Boolean(streamingMessageIdRef.current),
+      );
       setReady(false);
-      setStreamingMessageId(null);
-      dispatchLocalThreadStatus(pendingThreadContextRef.current.threadId, "idle");
+      if (remainingPendingMessages.length === 0) {
+        dispatchLocalThreadStatus(
+          pendingThreadContextRef.current.threadId,
+          "idle",
+        );
+      }
       restorePendingDeliveryDraft();
       showChatError(message);
+      return true;
     },
     [
       clearAllPendingMessageAcceptanceTimeouts,
       clearQueuedSendReadyTimeout,
+      getUnacceptedPendingUserMessages,
       logRunnerClient,
       restorePendingDeliveryDraft,
       showChatError,
       setMessages,
       setPendingMessages,
-      setStreamingMessageId,
     ],
   );
 
@@ -2679,6 +2724,7 @@ export default function Chat({
               completedTurnId ?? nextStreamingId;
             setStreamingMessageId(null);
             setLoading(false);
+            acceptedPendingMessageIdsRef.current.clear();
             setPendingMessages([]);
             dispatchLocalThreadStatus(id, "idle");
             clearPendingDeliveryDraft();
@@ -3124,6 +3170,7 @@ export default function Chat({
             }
             setStreamingMessageId(null);
             setLoading(false);
+            acceptedPendingMessageIdsRef.current.clear();
             setPendingMessages([]);
             dispatchLocalThreadStatus(id, "idle");
             clearPendingDeliveryDraft();
@@ -3202,6 +3249,7 @@ export default function Chat({
           if (id) {
             flushDeferredMessagesRender();
             clearAllPendingMessageAcceptanceTimeouts();
+            acceptedPendingMessageIdsRef.current.clear();
             setPendingMessages([]);
             dispatchLocalThreadStatus(id, "idle");
             clearPendingDeliveryDraft();
@@ -3248,6 +3296,7 @@ export default function Chat({
           }
           setStreamingMessageId(null);
           setLoading(false);
+          acceptedPendingMessageIdsRef.current.clear();
           setPendingMessages([]);
           dispatchLocalThreadStatus(id, "idle");
           if (id && shouldRefreshBillingAfterError) {
@@ -3296,9 +3345,13 @@ export default function Chat({
           reconnectAttempts: reconnectAttempts.current,
         });
 
-        // Auto-reconnect with exponential backoff
-        const maxAttempts = 5;
-        if (reconnectAttempts.current < maxAttempts) {
+        // Auto-reconnect with exponential backoff, then keep trying quietly in
+        // the background so an idle disconnect does not become a permanent tab
+        // state.
+        if (
+          reconnectAttempts.current <
+          CHAT_WS_RECONNECT_ATTEMPTS_BEFORE_BACKOFF
+        ) {
           const delay = Math.min(
             1000 * Math.pow(2, reconnectAttempts.current),
             30000,
@@ -3315,15 +3368,30 @@ export default function Chat({
             }
           }, delay);
         } else {
-          // Reconnect exhausted — clear stale compaction indicator.
-          failPendingMessageDelivery(
+          const failedPendingMessage = failPendingMessageDelivery(
             "Connection was lost before your message was sent. I restored it as a draft.",
           );
+          logRunnerClient("ws_reconnect_backoff_started", {
+            connectionId: thisConnectionId,
+            failedPendingMessage,
+            reconnectAttempts: reconnectAttempts.current,
+            retryDelayMs: CHAT_WS_BACKGROUND_RETRY_MS,
+          });
           isAutoCompactingRef.current = false;
           compactingPriorMessageIdRef.current = null;
           setCompactingPriorMessageId(null);
           lastCompletedAssistantMessageIdRef.current = null;
           clearManualCompactionQueue();
+          reconnectTimeoutRef.current = setTimeout(() => {
+            if (connectionIdRef.current === thisConnectionId) {
+              reconnectTimeoutRef.current = null;
+              reconnectAttempts.current = 0;
+              logRunnerClient("ws_background_reconnect_attempt", {
+                connectionId: thisConnectionId,
+              });
+              connectWebSocket(id, true);
+            }
+          }, CHAT_WS_BACKGROUND_RETRY_MS);
         }
       };
 
@@ -3397,6 +3465,7 @@ export default function Chat({
       }
 
       clearAllPendingMessageAcceptanceTimeouts();
+      acceptedPendingMessageIdsRef.current.clear();
       clearAllIframeRefreshTimeouts();
     };
   }, [
@@ -4498,6 +4567,7 @@ type SendOptions = {
     }
 
     const wasSentDuringStreaming = assistantTurnActive;
+    reconnectAttempts.current = 0;
     const clientMessageId = `client_${Date.now()}_${Math.random()
       .toString(36)
       .slice(2, 10)}`;
@@ -4640,6 +4710,7 @@ type SendOptions = {
             logRunnerClient("queued_ready_timeout_reconnect", {
               queuedMessages: unsentMessages.length,
             });
+            reconnectAttempts.current = 0;
             connectWebSocketRef.current?.(threadId, true);
           }
         }, 5000);
@@ -4651,6 +4722,7 @@ type SendOptions = {
         socketState === WebSocket.CLOSING ||
         socketState === WebSocket.CLOSED
       ) {
+        reconnectAttempts.current = 0;
         connectWebSocketRef.current?.(threadId, true);
       }
       // If connected but not ready, the message will be sent when ready event arrives

@@ -6,8 +6,14 @@ const TRANSIENT_DO_ERROR_PATTERNS = [
   "network connection lost",
 ];
 
+function getBooleanErrorProperty(error: Error, key: string): boolean {
+  return (error as Error & Record<string, unknown>)[key] === true;
+}
+
 export function isTransientDurableObjectRpcError(error: unknown): boolean {
   if (!error || !(error instanceof Error)) return false;
+  if (getBooleanErrorProperty(error, "overloaded")) return false;
+  if (getBooleanErrorProperty(error, "retryable")) return true;
   const message = error.message.toLowerCase();
   return TRANSIENT_DO_ERROR_PATTERNS.some((pattern) =>
     message.includes(pattern),

@@ -9,13 +9,22 @@ import type {
   AgentTool,
   AgentToolResult,
 } from "@mariozechner/pi-agent-core";
-import { isContextOverflow, setBedrockProviderModule } from "@mariozechner/pi-ai";
+import {
+  createAssistantMessageEventStream,
+  isContextOverflow,
+  setBedrockProviderModule,
+} from "@mariozechner/pi-ai";
 import {
   bedrockProviderModule,
   resolveBedrockModelFallback,
   withBedrockModelMetadata,
 } from "./pi-bedrock-provider";
-import type { Model } from "@mariozechner/pi-ai";
+import type {
+  AssistantMessage,
+  AssistantMessageEvent,
+  AssistantMessageEventStream,
+  Model,
+} from "@mariozechner/pi-ai";
 import type { OrgDO, OrgThread, UserDO, WorkerScript } from "./auth";
 import type { WorkspaceDO } from "./workspace";
 import type { WorkspaceCronDO } from "./workspace-cron";
@@ -113,6 +122,7 @@ import {
   getWorkspaceEmailDomain,
 } from "../../../src/lib/workspace-email";
 import { getBillingPlanLimits } from "../../../src/lib/billing-plans";
+import { retryTransientDurableObjectRpc } from "../../../src/lib/do-rpc-retry.server";
 import { formatMarkdownForTelegram } from "../../../src/lib/telegram-format";
 import { normalizeChannelIndicatorKind } from "../../../src/lib/channel-kinds";
 import {
@@ -185,6 +195,13 @@ type PiHeaderValue = string | null;
 
 const PI_USER_STOP_TEXT = "Stopped by user";
 const PI_USER_STOP_METADATA_REASON = "user_stop";
+const PI_PROVIDER_TRANSIENT_RETRY_ATTEMPTS = 2;
+const PI_PROVIDER_TRANSIENT_RETRY_DELAY_MS = 300;
+const PI_PROVIDER_TRANSIENT_ERROR_PATTERNS = [
+  "network connection lost",
+  "connection lost",
+  "transient issue on remote node",
+];
 const CHAT_ACTIVE_AUTOMATION_RUN_KEY = "activeAutomationRun";
 
 interface PiResolvedModelReference {
@@ -7517,11 +7534,23 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     if (!normalizedWorkspaceId || !normalizedThreadId) {
       return Promise.resolve();
     }
-    return this.getWorkspaceStatusStub(normalizedWorkspaceId).recordThreadStreaming(
-      normalizedThreadId,
-      isStreaming,
-      options,
-    );
+    return retryTransientDurableObjectRpc(
+      "WorkspaceDO.recordThreadStreaming",
+      () =>
+        this.getWorkspaceStatusStub(normalizedWorkspaceId).recordThreadStreaming(
+          normalizedThreadId,
+          isStreaming,
+          options,
+        ),
+      { attempts: 4, initialDelayMs: 150 },
+    ).catch((error) => {
+      console.error("[ChatThreadDO] failed to record workspace thread status", {
+        workspaceId: normalizedWorkspaceId,
+        threadId: normalizedThreadId,
+        isStreaming,
+        error,
+      });
+    });
   }
 
   private normalizeRunningActivityText(text: string | null | undefined): string | null {
@@ -7778,7 +7807,8 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     summaryStatus: ThreadCompletionSummaryStatus | null,
   ): Promise<AssistantCompletionPersistenceResult> {
     try {
-      const orgStub = this.env.ORG.get(this.env.ORG.idFromName(context.orgId)) as unknown as {
+      const orgId = this.env.ORG.idFromName(context.orgId);
+      const getOrgStub = () => this.env.ORG.get(orgId) as unknown as {
         recordThreadAssistantCompletion(
           id: string,
           input: {
@@ -7788,11 +7818,18 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
           },
         ): Promise<number | false> | number | false;
       };
-      const storedCompletedAt = await orgStub.recordThreadAssistantCompletion(context.threadId, {
-        completedAt,
-        summary,
-        summaryStatus,
-      });
+      const storedCompletedAt = await retryTransientDurableObjectRpc(
+        "OrgDO.recordThreadAssistantCompletion",
+        () =>
+          Promise.resolve(
+            getOrgStub().recordThreadAssistantCompletion(context.threadId, {
+              completedAt,
+              summary,
+              summaryStatus,
+            }),
+          ),
+        { attempts: 4, initialDelayMs: 150 },
+      );
       return typeof storedCompletedAt === "number" &&
         Number.isFinite(storedCompletedAt)
         ? { status: "stored", completedAt: storedCompletedAt }
@@ -8213,10 +8250,19 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         contextOrgId: baseContext.orgId,
       });
 
-      const orgStub = this.env.ORG.get(this.env.ORG.idFromName(baseContext.orgId));
+      const orgId = this.env.ORG.idFromName(baseContext.orgId);
+      const getOrgStub = () => this.env.ORG.get(orgId);
       const [thread, llmProviderRecord] = await Promise.all([
-        orgStub.getThread(baseContext.threadId),
-        orgStub.getLlmProviderConfig(),
+        retryTransientDurableObjectRpc(
+          "OrgDO.getThread",
+          () => getOrgStub().getThread(baseContext.threadId),
+          { attempts: 4, initialDelayMs: 150 },
+        ),
+        retryTransientDurableObjectRpc(
+          "OrgDO.getLlmProviderConfig",
+          () => getOrgStub().getLlmProviderConfig(),
+          { attempts: 4, initialDelayMs: 150 },
+        ),
       ]);
       const context: ChatContextState = { ...baseContext };
       this.chatContext = context;
@@ -10270,8 +10316,13 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     authType?: "bearer" | "x-api-key";
     api?: "openai-completions" | "openai-responses" | "anthropic-messages";
   } | null> {
-    const orgStub = this.env.ORG.get(this.env.ORG.idFromName(context.orgId));
-    const record = await orgStub.getLlmProviderConfig();
+    const orgId = this.env.ORG.idFromName(context.orgId);
+    const getOrgStub = () => this.env.ORG.get(orgId);
+    const record = await retryTransientDurableObjectRpc(
+      "OrgDO.getLlmProviderConfig",
+      () => getOrgStub().getLlmProviderConfig(),
+      { attempts: 4, initialDelayMs: 150 },
+    );
     if (!record) {
       return null;
     }
@@ -10345,21 +10396,182 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     streamSimple: typeof import("@mariozechner/pi-ai").streamSimple,
     streamBedrock = bedrockProviderModule.streamBedrock,
   ): ReturnType<typeof import("@mariozechner/pi-ai").streamSimple> {
-    try {
-      if (model.api === "bedrock-converse-stream" && options?.apiKey) {
-        return streamBedrock(
-          model,
-          context,
-          this.buildBedrockByokOptions(model, options),
-        ) as ReturnType<typeof import("@mariozechner/pi-ai").streamSimple>;
+    return this.streamPiModelWithTransientRetry(
+      model,
+      options,
+      () => {
+        if (model.api === "bedrock-converse-stream" && options?.apiKey) {
+          return streamBedrock(
+            model,
+            context,
+            this.buildBedrockByokOptions(model, options),
+          ) as ReturnType<typeof import("@mariozechner/pi-ai").streamSimple>;
+        }
+        return streamSimple(model, context, options);
+      },
+    ) as ReturnType<typeof import("@mariozechner/pi-ai").streamSimple>;
+  }
+
+  private streamPiModelWithTransientRetry(
+    model: Model<any>,
+    options: Parameters<typeof import("@mariozechner/pi-ai").streamSimple>[2],
+    createStream: () => AssistantMessageEventStream,
+  ): AssistantMessageEventStream {
+    const outer = createAssistantMessageEventStream();
+
+    void (async () => {
+      let attempt = 0;
+      while (true) {
+        let forwardedEvent = false;
+        let pendingStartEvent: AssistantMessageEvent | null = null;
+        let retryErrorMessage = "";
+        try {
+          const inner = createStream();
+          for await (const event of inner) {
+            if (event.type === "start") {
+              pendingStartEvent = event;
+              continue;
+            }
+            const errorMessage = this.piProviderStreamErrorMessage(event);
+            if (
+              errorMessage &&
+              !forwardedEvent &&
+              !options?.signal?.aborted &&
+              attempt < PI_PROVIDER_TRANSIENT_RETRY_ATTEMPTS &&
+              this.isTransientPiProviderError(errorMessage)
+            ) {
+              retryErrorMessage = errorMessage;
+              break;
+            }
+            if (pendingStartEvent) {
+              outer.push(pendingStartEvent);
+              pendingStartEvent = null;
+              forwardedEvent = true;
+            }
+            outer.push(event);
+            forwardedEvent = true;
+          }
+        } catch (error) {
+          const errorMessage = error instanceof Error ? error.message : String(error);
+          if (
+            !forwardedEvent &&
+            !options?.signal?.aborted &&
+            attempt < PI_PROVIDER_TRANSIENT_RETRY_ATTEMPTS &&
+            this.isTransientPiProviderError(errorMessage)
+          ) {
+            retryErrorMessage = errorMessage;
+          } else {
+            this.persistPiAgentLoopErrorForDevelopers(error, {
+              source: "pi_stream",
+            });
+            outer.push({
+              type: "error",
+              reason: options?.signal?.aborted ? "aborted" : "error",
+              error: this.createPiProviderStreamErrorMessage(
+                model,
+                errorMessage,
+                options?.signal?.aborted ? "aborted" : "error",
+              ),
+            });
+            outer.end();
+            return;
+          }
+        }
+
+        if (!retryErrorMessage) {
+          outer.end();
+          return;
+        }
+
+        attempt += 1;
+        this.recordChatThreadObservabilityEvent("pi_provider_transient_retry", {
+          operation: "stream_pi_model",
+          status: "retry",
+          provider: this.piCurrentUsageProvider || model.provider,
+          model: model.id,
+          error: new Error(retryErrorMessage),
+          count: attempt,
+        });
+        await this.sleepForPiProviderRetry(options?.signal);
       }
-      return streamSimple(model, context, options);
-    } catch (error) {
+    })().catch((error) => {
       this.persistPiAgentLoopErrorForDevelopers(error, {
-        source: "pi_stream",
+        source: "pi_stream_retry",
       });
-      throw error;
+      outer.push({
+        type: "error",
+        reason: options?.signal?.aborted ? "aborted" : "error",
+        error: this.createPiProviderStreamErrorMessage(
+          model,
+          error instanceof Error ? error.message : String(error),
+          options?.signal?.aborted ? "aborted" : "error",
+        ),
+      });
+      outer.end();
+    });
+
+    return outer;
+  }
+
+  private piProviderStreamErrorMessage(event: AssistantMessageEvent): string {
+    if (event.type !== "error") return "";
+    const message = event.error.errorMessage;
+    return typeof message === "string" ? message.trim() : "";
+  }
+
+  private isTransientPiProviderError(message: string): boolean {
+    const lower = message.toLowerCase();
+    return PI_PROVIDER_TRANSIENT_ERROR_PATTERNS.some((pattern) =>
+      lower.includes(pattern),
+    );
+  }
+
+  private sleepForPiProviderRetry(signal: AbortSignal | undefined): Promise<void> {
+    if (signal?.aborted) {
+      return Promise.reject(new Error("Request was aborted"));
     }
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(resolve, PI_PROVIDER_TRANSIENT_RETRY_DELAY_MS);
+      signal?.addEventListener(
+        "abort",
+        () => {
+          clearTimeout(timeout);
+          reject(new Error("Request was aborted"));
+        },
+        { once: true },
+      );
+    });
+  }
+
+  private createPiProviderStreamErrorMessage(
+    model: Model<any>,
+    errorMessage: string,
+    stopReason: "error" | "aborted",
+  ): AssistantMessage {
+    return {
+      role: "assistant",
+      content: [],
+      api: model.api,
+      provider: model.provider,
+      model: model.id,
+      usage: {
+        input: 0,
+        output: 0,
+        cacheRead: 0,
+        cacheWrite: 0,
+        totalTokens: 0,
+        cost: {
+          input: 0,
+          output: 0,
+          cacheRead: 0,
+          cacheWrite: 0,
+          total: 0,
+        },
+      },
+      stopReason,
+      errorMessage,
+      timestamp: Date.now(),
+    };
   }
 
   private buildBedrockByokOptions(
@@ -11349,6 +11561,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       provider?: string;
       model?: string;
       responseModel?: string;
+      responseId?: string;
       usage?: {
         input?: number;
         output?: number;
@@ -11376,28 +11589,77 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       return;
     }
 
-    const orgStub = this.env.ORG.get(
-      this.env.ORG.idFromName(this.chatContext.orgId),
+    const context = this.chatContext;
+    const usageSourceId = this.piUsageSourceId(
+      context.threadId,
+      assistant,
+      inputTokens,
+      outputTokens,
+      cacheReadTokens,
+      cacheWriteTokens,
     );
-    await orgStub.recordUsage({
-      workspace_id: this.chatContext.workspaceId,
-      user_id: this.chatContext.userId ?? "",
-      thread_id: this.chatContext.threadId,
-      model: assistant.responseModel || assistant.model || "unknown",
-      provider: usageProvider || assistant.provider || "unknown",
-      billing_source: billingSource,
-      credit_chargeable: billingSource === "hosted" && creditChargeable,
-      input_tokens: inputTokens,
-      output_tokens: outputTokens,
-      cache_creation_input_tokens: cacheWriteTokens,
-      cache_read_input_tokens: cacheReadTokens,
-      cost_usd:
-        typeof usage.cost?.total === "number" && usage.cost.total > 0
-          ? usage.cost.total
-          : undefined,
-      duration_ms: durationMs,
-      created_at_ms: Date.now(),
-    });
+    const orgId = this.env.ORG.idFromName(context.orgId);
+    const getOrgStub = () => this.env.ORG.get(orgId);
+    await retryTransientDurableObjectRpc(
+      "OrgDO.recordUsage",
+      () =>
+        getOrgStub().recordUsage({
+          workspace_id: context.workspaceId,
+          user_id: context.userId ?? "",
+          thread_id: context.threadId,
+          model: assistant.responseModel || assistant.model || "unknown",
+          provider: usageProvider || assistant.provider || "unknown",
+          billing_source: billingSource,
+          credit_chargeable: billingSource === "hosted" && creditChargeable,
+          input_tokens: inputTokens,
+          output_tokens: outputTokens,
+          cache_creation_input_tokens: cacheWriteTokens,
+          cache_read_input_tokens: cacheReadTokens,
+          cost_usd:
+            typeof usage.cost?.total === "number" && usage.cost.total > 0
+              ? usage.cost.total
+              : undefined,
+          duration_ms: durationMs,
+          created_at_ms: Date.now(),
+          source: "pi_assistant",
+          source_id: usageSourceId,
+        }),
+      { attempts: 4, initialDelayMs: 150 },
+    );
+  }
+
+  private piUsageSourceId(
+    threadId: string,
+    assistant: {
+      responseId?: string;
+      responseModel?: string;
+      model?: string;
+      timestamp?: number;
+    },
+    inputTokens: number,
+    outputTokens: number,
+    cacheReadTokens: number,
+    cacheWriteTokens: number,
+  ): string {
+    const responseId = assistant.responseId?.trim();
+    if (responseId) {
+      return `${threadId}:response:${responseId}`;
+    }
+    const model = assistant.responseModel || assistant.model || "unknown";
+    const timestamp =
+      typeof assistant.timestamp === "number" && Number.isFinite(assistant.timestamp)
+        ? Math.floor(assistant.timestamp)
+        : Date.now();
+    return [
+      threadId,
+      "assistant",
+      timestamp,
+      model,
+      inputTokens,
+      outputTokens,
+      cacheReadTokens,
+      cacheWriteTokens,
+    ].join(":");
   }
 
   private sendRunnerCommand(message: Record<string, unknown>): boolean {
