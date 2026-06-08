@@ -30,6 +30,8 @@ interface ByokKeyFormProps {
   onCustomNameChange?: (name: string) => void;
   customBaseUrl?: string;
   onCustomBaseUrlChange?: (url: string) => void;
+  customModelId?: string;
+  onCustomModelIdChange?: (modelId: string) => void;
   customAuthType?: "bearer" | "x-api-key";
   onCustomAuthTypeChange?: (authType: "bearer" | "x-api-key") => void;
   customApi?: "openai-completions" | "openai-responses" | "anthropic-messages";
@@ -59,6 +61,8 @@ export function ByokKeyForm({
   onCustomNameChange,
   customBaseUrl = "",
   onCustomBaseUrlChange,
+  customModelId = "",
+  onCustomModelIdChange,
   customAuthType = "bearer",
   onCustomAuthTypeChange,
   customApi = "openai-completions",
@@ -163,6 +167,22 @@ export function ByokKeyForm({
                 <SelectItem value="x-api-key">x-api-key</SelectItem>
               </SelectContent>
             </Select>
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="byok-custom-model-id" className="text-sm">
+              Model ID
+            </Label>
+            <Input
+              id="byok-custom-model-id"
+              value={customModelId}
+              placeholder={
+                customApi === "anthropic-messages"
+                  ? "claude-sonnet-4-6"
+                  : "gpt-4o"
+              }
+              onChange={(event) => onCustomModelIdChange?.(event.target.value)}
+              className="font-mono text-sm"
+            />
           </div>
           <div className="space-y-2">
             <Label htmlFor="byok-custom-api" className="text-sm">

@@ -57,6 +57,12 @@ describe("llm provider config helpers", () => {
     expect(
       getDefaultLlmModel("custom", { customApi: "anthropic-messages" }),
     ).toBe(DEFAULT_LLM_MODEL);
+    expect(
+      getDefaultLlmModel("custom", {
+        customApi: "openai-responses",
+        customModelId: "pi-custom-model",
+      }),
+    ).toBe("custom");
     expect(parseStoredLlmProviderConfig("{}")).toEqual({});
   });
 
@@ -83,6 +89,12 @@ describe("llm provider config helpers", () => {
         (option) => option.value,
       ),
     ).toEqual([...CLAUDE_MODELS]);
+    expect(
+      getLlmModelOptions("custom", {
+        customApi: "openai-responses",
+        customModelId: "pi-custom-model",
+      }).map((option) => option.value),
+    ).toEqual(["custom"]);
     for (const model of CODEX_MODELS) {
       expect(isLlmModel(model)).toBe(true);
     }
@@ -98,6 +110,12 @@ describe("llm provider config helpers", () => {
     expect(
       normalizeLlmModel("gpt-5.4", "custom", { customApi: "anthropic-messages" }),
     ).toBe(DEFAULT_LLM_MODEL);
+    expect(
+      normalizeLlmModel(undefined, "custom", {
+        customApi: "openai-completions",
+        customModelId: "pi-custom-model",
+      }),
+    ).toBe("custom");
   });
 
   it("keeps BYOK provider-scoped and defaults hosted orgs to Claude", () => {
@@ -270,6 +288,7 @@ describe("llm provider config helpers", () => {
       custom_base_url: "https://api.example.com/v1/",
       custom_auth_type: "x-api-key",
       custom_api: "anthropic-messages",
+      custom_model_id: "claude-custom",
     });
 
     expect(parseStoredLlmProviderConfig(serialized)).toEqual({
@@ -277,6 +296,7 @@ describe("llm provider config helpers", () => {
       custom_base_url: "https://api.example.com/v1",
       custom_auth_type: "x-api-key",
       custom_api: "anthropic-messages",
+      custom_model_id: "claude-custom",
     });
     expect(getLlmModelOptions("custom").map((option) => option.value)).toEqual([
       ...CLAUDE_MODELS,

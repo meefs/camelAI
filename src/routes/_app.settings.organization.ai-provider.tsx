@@ -101,6 +101,9 @@ export default function AiProviderPage() {
   const [customBaseUrl, setCustomBaseUrl] = useState(
     config?.config?.custom_base_url ?? "",
   );
+  const [customModelId, setCustomModelId] = useState(
+    config?.config?.custom_model_id ?? "",
+  );
   const [customAuthType, setCustomAuthType] = useState<"bearer" | "x-api-key">(
     config?.config?.custom_auth_type ?? "bearer",
   );
@@ -123,6 +126,7 @@ export default function AiProviderPage() {
     setAwsRegion(config?.config?.aws_region ?? "us-east-1");
     setCustomName(config?.config?.custom_name ?? "");
     setCustomBaseUrl(config?.config?.custom_base_url ?? "");
+    setCustomModelId(config?.config?.custom_model_id ?? "");
     setCustomAuthType(config?.config?.custom_auth_type ?? "bearer");
     setCustomApi(config?.config?.custom_api ?? "openai-completions");
   }, [config]);
@@ -197,6 +201,7 @@ export default function AiProviderPage() {
           api_key: apiKey.trim(),
           custom_name: customName.trim(),
           custom_base_url: customBaseUrl.trim(),
+          custom_model_id: customModelId.trim(),
           custom_auth_type: customAuthType,
           custom_api: customApi,
         },
@@ -269,7 +274,8 @@ export default function AiProviderPage() {
       return (
         apiKey.trim().length === 0 ||
         customName.trim().length === 0 ||
-        customBaseUrl.trim().length === 0
+        customBaseUrl.trim().length === 0 ||
+        customModelId.trim().length === 0
       );
     }
     if (selectedProvider === "bedrock" && config?.provider === "bedrock") {
@@ -370,6 +376,8 @@ export default function AiProviderPage() {
               onCustomNameChange={setCustomName}
               customBaseUrl={customBaseUrl}
               onCustomBaseUrlChange={setCustomBaseUrl}
+              customModelId={customModelId}
+              onCustomModelIdChange={setCustomModelId}
               customAuthType={customAuthType}
               onCustomAuthTypeChange={setCustomAuthType}
               customApi={customApi}
@@ -400,6 +408,8 @@ export default function AiProviderPage() {
           onCustomNameChange={setCustomName}
           customBaseUrl={customBaseUrl}
           onCustomBaseUrlChange={setCustomBaseUrl}
+          customModelId={customModelId}
+          onCustomModelIdChange={setCustomModelId}
           customAuthType={customAuthType}
           onCustomAuthTypeChange={setCustomAuthType}
           customApi={customApi}

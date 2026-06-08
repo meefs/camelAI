@@ -26,6 +26,7 @@ import {
   DEFAULT_ORG_EXPERIMENTAL_SETTINGS,
   getDefaultLlmModel,
   getStoredCustomLlmProviderApi,
+  getStoredCustomLlmProviderModelId,
   getVisibleLlmModelOptions,
   isLlmModel,
 } from "@/lib/llm-provider-config";
@@ -866,15 +867,20 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
     throw redirect("/chat");
   }
   const customApi = getStoredCustomLlmProviderApi(llmProviderConfig);
+  const customModelId = getStoredCustomLlmProviderModelId(llmProviderConfig);
   const fallbackThreadModel =
     thread?.model ??
-    getDefaultLlmModel(llmProviderConfig?.provider, { customApi });
+    getDefaultLlmModel(llmProviderConfig?.provider, {
+      customApi,
+      customModelId,
+    });
   const fallbackAllowedThreadModels = getVisibleLlmModelOptions(
     experimentalSettings,
     fallbackThreadModel,
     {
       orgProvider: llmProviderConfig?.provider,
       customApi,
+      customModelId,
     },
   ).map((option) => option.value);
 
@@ -965,6 +971,7 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
         | import("@/types").LlmProvider
         | null),
     customApi: pickerState?.customApi ?? customApi,
+    customModelId: pickerState?.customModelId ?? customModelId,
     allowedThreadModels:
       pickerState?.allowedThreadModels ?? fallbackAllowedThreadModels,
     effectivePickerDefaultModel:
@@ -1010,6 +1017,7 @@ export default function ChatPage() {
     threadModel,
     llmProvider,
     customApi,
+    customModelId,
     allowedThreadModels,
     effectivePickerDefaultModel,
     hasEffectivePickerDefault,
@@ -1105,6 +1113,7 @@ export default function ChatPage() {
           {
             orgProvider: llmProvider,
             customApi,
+            customModelId,
           },
         ).map((option) => option.value)
       : allowedThreadModels;

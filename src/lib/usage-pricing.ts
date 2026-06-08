@@ -147,6 +147,11 @@ const modelPricingTable: Record<string, ModelPricing> = {
     outputPerToken: 0.0000045,
     cacheReadPerToken: 0.000000075,
   },
+  "custom": {
+    inputPerToken: 0,
+    outputPerToken: 0,
+    cacheReadPerToken: 0,
+  },
   "~moonshotai/kimi-latest": {
     inputPerToken: 0.0000007448,
     outputPerToken: 0.000004655,

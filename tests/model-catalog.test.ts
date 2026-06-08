@@ -223,6 +223,14 @@ describe('MODEL_CATALOG', () => {
         customApi: 'anthropic-messages',
       }).map((entry) => entry.id),
     ).toEqual(['opus-4.8', 'sonnet']);
+    expect(
+      resolveModelPickerCatalog({
+        effectiveConfig,
+        orgProvider: 'custom',
+        customApi: 'openai-responses',
+        customModelId: 'pi-custom-model',
+      }).map((entry) => entry.id),
+    ).toEqual(['custom']);
   });
 
   it('keeps OpenRouter picker models grouped by provider, then model order', () => {

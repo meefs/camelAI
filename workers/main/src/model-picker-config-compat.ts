@@ -4,6 +4,7 @@ import {
 } from "../../../src/lib/model-picker-config.js";
 import {
   getStoredCustomLlmProviderApi,
+  getStoredCustomLlmProviderModelId,
   type LlmProviderConfigRecord,
 } from "../../../src/lib/llm-provider-config.js";
 import type {
@@ -49,11 +50,15 @@ export async function getOrgModelPickerConfigCompat(
     providerConfig = null;
   }
   const customApi = getStoredCustomLlmProviderApi(providerConfig);
+  const customModelId = getStoredCustomLlmProviderModelId(providerConfig);
   try {
     return await orgStub.getModelPickerConfig();
   } catch (error) {
     if (isMissingModelPickerConfigRpcError(error)) {
-      return defaultOrgModelPickerConfig(providerConfig?.provider, { customApi });
+      return defaultOrgModelPickerConfig(providerConfig?.provider, {
+        customApi,
+        customModelId,
+      });
     }
     throw error;
   }

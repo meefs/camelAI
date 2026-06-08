@@ -72,6 +72,7 @@ import { decryptCredentials } from "../../../src/lib/integration-crypto";
 import {
   DEFAULT_LLM_MODEL,
   getStoredCustomLlmProviderApi,
+  getStoredCustomLlmProviderModelId,
   normalizeLlmModel,
   parseStoredLlmProviderConfig,
 } from "../../../src/lib/llm-provider-config";
@@ -220,6 +221,7 @@ interface PiRequestConfig {
   requestProvider?: string;
   requestModelId?: string;
   modelLookupProvider?: string;
+  modelLookupModelId?: string;
   billingSource: PiBillingSource;
   creditChargeable: boolean;
   usageProvider?: string;
@@ -8272,10 +8274,14 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
           ? (thread as { workspace_id?: unknown }).workspace_id
           : null;
       const customApi = getStoredCustomLlmProviderApi(llmProviderRecord);
+      const customModelId = getStoredCustomLlmProviderModelId(llmProviderRecord);
       const threadModel =
         thread && threadWorkspaceId === context.workspaceId
           ? normalizeLlmModel((thread as { model?: unknown }).model)
-          : normalizeLlmModel(undefined, llmProviderRecord?.provider, { customApi });
+          : normalizeLlmModel(undefined, llmProviderRecord?.provider, {
+              customApi,
+              customModelId,
+            });
       const envVars = {
         CHIRIDION_MODEL: threadModel,
         CHIRIDION_CLAUDE_MODEL: threadModel,
@@ -9951,13 +9957,15 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       configured.modelLookupProvider && configured.requestModelId
         ? (getModelFn(
             configured.modelLookupProvider as never,
-            configured.requestModelId as never,
+            (configured.modelLookupModelId ?? configured.requestModelId) as never,
           ) as Model<any> | null | undefined) ??
           (configured.modelLookupProvider === "amazon-bedrock"
-            ? resolveBedrockModelFallback(configured.requestModelId)
+            ? resolveBedrockModelFallback(
+                configured.modelLookupModelId ?? configured.requestModelId,
+              )
             : resolvePiModelCatalogFallback({
                 provider: configured.modelLookupProvider,
-                modelId: configured.requestModelId,
+                modelId: configured.modelLookupModelId ?? configured.requestModelId,
                 hostedGatewayProvider: resolved.hostedGatewayProvider,
               }))
         : null;
@@ -10034,6 +10042,8 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       case "gpt-5.4":
       case "gpt-5.5":
         return openAiReference(normalizedModelId);
+      case "custom":
+        return openAiReference("gpt-5.4");
       case "kimi-k2.6":
         return openRouterReference("~moonshotai/kimi-latest");
       case "grok-4.3":
@@ -10074,6 +10084,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       const customModel = this.resolveCustomProviderModelReference(
         byok.api,
         requestedModelId,
+        byok.modelId,
       );
       return {
         apiKey: byok.apiKey,
@@ -10081,8 +10092,9 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         billingSource: "byok",
         creditChargeable: false,
         requestProvider: "custom",
-        requestModelId: customModel.modelId,
+        requestModelId: customModel.requestModelId,
         modelLookupProvider: customModel.provider,
+        modelLookupModelId: customModel.lookupModelId,
         baseUrl: byok.baseUrl,
         usageProvider: "custom",
         headers: this.customProviderAuthHeaders(byok.api, byok.authType ?? "bearer", byok.apiKey),
@@ -10190,11 +10202,28 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
   private resolveCustomProviderModelReference(
     api: "openai-completions" | "openai-responses" | "anthropic-messages",
     requestedModelId: string,
-  ): PiResolvedModelReference {
+    customModelId: string | undefined,
+  ): { provider: string; lookupModelId: string; requestModelId: string } {
     const model = normalizeLlmModel(this.normalizePiModelId(requestedModelId), "custom", {
       customApi: api,
+      customModelId,
     });
-    return this.resolvePiModelReference(model);
+    if (model === "custom" && customModelId?.trim()) {
+      const lookupModel =
+        api === "anthropic-messages" ? DEFAULT_LLM_MODEL : "gpt-5.4";
+      const lookupReference = this.resolvePiModelReference(lookupModel);
+      return {
+        provider: lookupReference.provider,
+        lookupModelId: lookupReference.modelId,
+        requestModelId: customModelId.trim(),
+      };
+    }
+    const reference = this.resolvePiModelReference(model);
+    return {
+      provider: reference.provider,
+      lookupModelId: reference.modelId,
+      requestModelId: reference.modelId,
+    };
   }
 
   private openRouterClaudeModel(model: string): string {
@@ -10315,6 +10344,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     baseUrl?: string;
     authType?: "bearer" | "x-api-key";
     api?: "openai-completions" | "openai-responses" | "anthropic-messages";
+    modelId?: string;
   } | null> {
     const orgId = this.env.ORG.idFromName(context.orgId);
     const getOrgStub = () => this.env.ORG.get(orgId);
@@ -10349,6 +10379,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         baseUrl: config.custom_base_url,
         authType: config.custom_auth_type ?? "bearer",
         api: config.custom_api,
+        modelId: config.custom_model_id,
       };
     }
     if (record.provider === "bedrock" && creds.bearer_token) {

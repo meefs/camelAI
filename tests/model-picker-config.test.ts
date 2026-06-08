@@ -143,6 +143,13 @@ describe('model picker config parsing', () => {
         { id: 'haiku' },
       ],
     });
+    expect(defaultOrgModelPickerConfig('custom', {
+      customApi: 'openai-responses',
+      customModelId: 'pi-custom-model',
+    })).toMatchObject({
+      default_model: null,
+      models: [{ id: 'custom' }],
+    });
   });
 
   it('uses the provider-aware default for empty or malformed org config values', () => {
@@ -156,6 +163,12 @@ describe('model picker config parsing', () => {
         customApi: 'anthropic-messages',
       }).models.map((model) => model.id),
     ).toEqual(['opus-4.8', 'sonnet', 'haiku']);
+    expect(
+      parseOrgModelPickerConfig(null, 'custom', {
+        customApi: 'openai-responses',
+        customModelId: 'pi-custom-model',
+      }).models.map((model) => model.id),
+    ).toEqual(['custom']);
   });
 
   it('normalizes newly supported models in stored picker configs', () => {

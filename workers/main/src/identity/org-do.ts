@@ -35,6 +35,7 @@ import {
   DEFAULT_LLM_MODEL,
   DEFAULT_ORG_EXPERIMENTAL_SETTINGS,
   getStoredCustomLlmProviderApi,
+  getStoredCustomLlmProviderModelId,
   isClaudeLlmModel,
   isCodexLlmModel,
   normalizeLlmModel,
@@ -1764,17 +1765,22 @@ export class OrgDO extends DurableObject<DOEnv> {
   getModelPickerConfig(): OrgModelPickerConfig {
     const llmProviderConfig = this.getLlmProviderConfig();
     const customApi = getStoredCustomLlmProviderApi(llmProviderConfig);
+    const customModelId = getStoredCustomLlmProviderModelId(llmProviderConfig);
     const rows = this.sql
       .exec<{
         value: string;
       }>("SELECT value FROM org_info WHERE key = ?", ORG_MODEL_PICKER_CONFIG_KEY)
       .toArray();
     if (rows.length === 0) {
-      return defaultOrgModelPickerConfig(llmProviderConfig?.provider, { customApi });
+      return defaultOrgModelPickerConfig(llmProviderConfig?.provider, {
+        customApi,
+        customModelId,
+      });
     }
 
     return parseOrgModelPickerConfig(rows[0]!.value, llmProviderConfig?.provider, {
       customApi,
+      customModelId,
     });
   }
 
@@ -1789,10 +1795,11 @@ export class OrgDO extends DurableObject<DOEnv> {
     const previous = this.getModelPickerConfig();
     const llmProviderConfig = this.getLlmProviderConfig();
     const customApi = getStoredCustomLlmProviderApi(llmProviderConfig);
+    const customModelId = getStoredCustomLlmProviderModelId(llmProviderConfig);
     const next = parseOrgModelPickerConfig(
       config,
       llmProviderConfig?.provider,
-      { customApi },
+      { customApi, customModelId },
     );
 
     this.sql.exec(

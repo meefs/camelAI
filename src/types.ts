@@ -597,6 +597,7 @@ export type LlmModel =
   | "gpt-5.5"
   | "gpt-5.4"
   | "gpt-5.4-mini"
+  | "custom"
   | "kimi-k2.6"
   | "grok-4.3"
   | "gemini-3.5-flash"
@@ -631,6 +632,7 @@ export interface LlmProviderConfigPublic {
     custom_base_url?: string;
     custom_auth_type?: "bearer" | "x-api-key";
     custom_api?: "openai-completions" | "openai-responses" | "anthropic-messages";
+    custom_model_id?: string;
   };
   key_hint: string; // First 8 chars of the key
   created_by: string;

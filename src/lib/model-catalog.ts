@@ -4,6 +4,7 @@ import type {
   OrganizationExperimentalSettings,
 } from "../types";
 import {
+  CUSTOM_LLM_MODEL,
   getVisibleLlmModelOptions,
   type CustomLlmProviderApi,
 } from "./llm-provider-config";
@@ -61,6 +62,7 @@ export const ALL_LLM_MODELS: readonly LlmModel[] = [
   "gpt-5.5",
   "gpt-5.4",
   "gpt-5.4-mini",
+  "custom",
   "gemini-3.5-flash",
   "gemini-3-flash-preview",
   "deepseek-v4-pro",
@@ -76,6 +78,7 @@ export const LLM_MODEL_TO_PRICING_KEY: Readonly<Record<LlmModel, string>> = {
   "gpt-5.5": "gpt-5.5",
   "gpt-5.4": "gpt-5.4",
   "gpt-5.4-mini": "gpt-5.4-mini",
+  custom: "custom",
   "kimi-k2.6": "kimi-k2.6",
   "grok-4.3": "grok-4.3",
   "gemini-3.5-flash": "google/gemini-3.5-flash",
@@ -152,6 +155,16 @@ export const MODEL_CATALOG: Readonly<Record<LlmModel, ModelCatalogEntry>> = {
     cost: "$",
     intelligence: 2.5,
     speed: 5,
+  },
+  custom: {
+    id: "custom",
+    label: "Custom model",
+    providerLogo: "openai",
+    providerOrder: 1,
+    modelOrder: 3,
+    cost: "$",
+    intelligence: 3,
+    speed: 3,
   },
   "gemini-3.5-flash": {
     id: "gemini-3.5-flash",
@@ -235,21 +248,29 @@ export function resolveModelPickerCatalog(args: {
   experimentalSettings?: OrganizationExperimentalSettings | null;
   orgProvider?: LlmProvider | string | null;
   customApi?: CustomLlmProviderApi | null;
+  customModelId?: string | null;
 }): ResolvedModelCatalogEntry[] {
   const visibleModelIds = new Set(
     getVisibleLlmModelOptions(args.experimentalSettings, null, {
       orgProvider: args.orgProvider,
       customApi: args.customApi,
+      customModelId: args.customModelId,
     }).map((option) => option.value),
   );
 
-  return args.effectiveConfig.models
+  const entries = args.effectiveConfig.models
     .filter((model) => visibleModelIds.has(model.id))
     .map((model) => ({
       ...MODEL_CATALOG[model.id],
       addedAt: model.added_at,
     }))
     .sort(compareModelCatalogEntries);
+
+  if (entries.length === 0 && visibleModelIds.has(CUSTOM_LLM_MODEL)) {
+    return [{ ...MODEL_CATALOG[CUSTOM_LLM_MODEL], addedAt: Date.now() }];
+  }
+
+  return entries;
 }
 
 export function modelCatalogEntriesForIds(

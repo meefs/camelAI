@@ -949,6 +949,46 @@ describe('ChatThreadDO Codex turn handling', () => {
     expect(model.usageProvider).toBe('custom');
   });
 
+  it('sends the configured custom model id for custom provider model selections', async () => {
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    fake.env = {};
+    fake.resolveCurrentByokCredentials = vi.fn(async () => ({
+      provider: 'custom',
+      apiKey: 'custom-key',
+      baseUrl: 'https://custom.example/v1',
+      authType: 'bearer',
+      api: 'openai-responses',
+      modelId: 'pi-custom-model',
+    }));
+    fake.checkHostedPiModelAccess = vi.fn(async () => {
+      throw new Error('hosted billing should not be checked for BYOK');
+    });
+    const getModel = vi.fn((provider: string, id: string) => ({
+      id,
+      provider,
+      api: provider === 'openai' ? 'openai-responses' : 'anthropic-messages',
+      baseUrl: provider === 'openai'
+        ? 'https://api.openai.com/v1'
+        : 'https://api.anthropic.com',
+    }));
+
+    const model = await ChatThreadDO.prototype['resolvePiModel'].call(
+      fake,
+      { orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1' },
+      { CHIRIDION_CODEX_MODEL: 'custom' },
+      getModel,
+    );
+
+    expect(getModel).toHaveBeenCalledWith('openai', 'gpt-5.4');
+    expect(model.model).toMatchObject({
+      id: 'pi-custom-model',
+      provider: 'custom',
+      api: 'openai-responses',
+      baseUrl: 'https://custom.example/v1',
+    });
+    expect(model.usageProvider).toBe('custom');
+  });
+
   it('uses an Anthropic-compatible default when custom Anthropic API mode receives an OpenAI thread model', async () => {
     const fake = Object.create(ChatThreadDO.prototype) as any;
     fake.env = {};

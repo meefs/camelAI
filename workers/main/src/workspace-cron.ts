@@ -15,6 +15,7 @@ import type { WorkspaceDO } from "./workspace";
 import {
   getDefaultLlmModel,
   getStoredCustomLlmProviderApi,
+  getStoredCustomLlmProviderModelId,
 } from "../../../src/lib/llm-provider-config";
 import { resolveModelPickerCatalog } from "../../../src/lib/model-catalog";
 import {
@@ -803,6 +804,7 @@ export class WorkspaceCronDO extends DurableObject<WorkspaceCronEnv> {
       getWorkspaceModelPickerConfigCompat(workspaceStub),
     ]);
     const customApi = getStoredCustomLlmProviderApi(llmProviderConfig);
+    const customModelId = getStoredCustomLlmProviderModelId(llmProviderConfig);
     const effectiveConfig = resolveEffectivePickerConfig(
       orgPickerConfig,
       workspacePickerConfig,
@@ -812,10 +814,14 @@ export class WorkspaceCronDO extends DurableObject<WorkspaceCronEnv> {
       experimentalSettings,
       orgProvider: llmProviderConfig?.provider,
       customApi,
+      customModelId,
     });
     const model = resolveDefaultModelForChat({
       effectiveDefaultModel: effectiveConfig.default_model,
-      fallbackModel: getDefaultLlmModel(llmProviderConfig?.provider, { customApi }),
+      fallbackModel: getDefaultLlmModel(llmProviderConfig?.provider, {
+        customApi,
+        customModelId,
+      }),
       visibleCatalog,
     });
     if (!model) {

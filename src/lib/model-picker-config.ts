@@ -9,6 +9,8 @@ import {
   isLlmModel,
   isOpenAiCompatibleCustomApi,
   replaceLegacyLlmModel,
+  CUSTOM_LLM_MODEL,
+  hasCustomModelId,
   type CustomLlmProviderApi,
 } from "./llm-provider-config";
 
@@ -49,12 +51,18 @@ const CLAUDE_DEFAULT_MODEL_ORDER: readonly LlmModel[] = [
 
 function defaultModelOrderForProvider(
   orgProvider?: LlmProvider | string | null,
-  options?: { customApi?: CustomLlmProviderApi | null },
+  options?: {
+    customApi?: CustomLlmProviderApi | null;
+    customModelId?: string | null;
+  },
 ): readonly LlmModel[] {
   switch (orgProvider) {
     case "openai":
       return OPENAI_DEFAULT_MODEL_ORDER;
     case "custom":
+      if (hasCustomModelId(options?.customModelId)) {
+        return [CUSTOM_LLM_MODEL];
+      }
       return isOpenAiCompatibleCustomApi(options?.customApi)
         ? OPENAI_DEFAULT_MODEL_ORDER
         : options?.customApi === "anthropic-messages"
@@ -113,7 +121,10 @@ function normalizeDefaultModel(
 
 export function defaultOrgModelPickerConfig(
   orgProvider?: LlmProvider | string | null,
-  options?: { customApi?: CustomLlmProviderApi | null },
+  options?: {
+    customApi?: CustomLlmProviderApi | null;
+    customModelId?: string | null;
+  },
 ): OrgModelPickerConfig {
   const now = Date.now();
   const defaultOrder = defaultModelOrderForProvider(orgProvider, options);
@@ -137,7 +148,10 @@ export function defaultWorkspaceModelPickerConfig(): WorkspaceModelPickerConfig 
 export function parseOrgModelPickerConfig(
   raw: unknown,
   orgProvider?: LlmProvider | string | null,
-  options?: { customApi?: CustomLlmProviderApi | null },
+  options?: {
+    customApi?: CustomLlmProviderApi | null;
+    customModelId?: string | null;
+  },
 ): OrgModelPickerConfig {
   const parsed = parseMaybeJson(raw);
   if (!parsed || typeof parsed !== "object") {

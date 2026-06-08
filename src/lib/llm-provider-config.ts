@@ -9,6 +9,7 @@ import { decryptCredentials } from "./integration-crypto";
 export const DEFAULT_LLM_MODEL: LlmModel = "sonnet";
 export const DEFAULT_CODEX_MODEL: LlmModel = "gpt-5.4";
 export const DEFAULT_OPENROUTER_MODEL: LlmModel = "kimi-k2.6";
+export const CUSTOM_LLM_MODEL: LlmModel = "custom";
 export const THREAD_MODEL_LOCK_MESSAGE =
   "This thread is locked to its original model. Start a new thread to use a different model.";
 
@@ -102,11 +103,27 @@ export const CODEX_LLM_MODEL_OPTIONS: ReadonlyArray<{
   },
 ];
 
+export const CUSTOM_LLM_MODEL_OPTIONS: ReadonlyArray<{
+  value: LlmModel;
+  label: string;
+  description: string;
+}> = [
+  {
+    value: CUSTOM_LLM_MODEL,
+    label: "Custom model",
+    description: "Model configured on your custom provider",
+  },
+];
+
 export const LLM_MODEL_OPTIONS: ReadonlyArray<{
   value: LlmModel;
   label: string;
   description: string;
-}> = [...CLAUDE_LLM_MODEL_OPTIONS, ...CODEX_LLM_MODEL_OPTIONS];
+}> = [
+  ...CLAUDE_LLM_MODEL_OPTIONS,
+  ...CODEX_LLM_MODEL_OPTIONS,
+  ...CUSTOM_LLM_MODEL_OPTIONS,
+];
 
 const OPENROUTER_ONLY_CODEX_MODELS = new Set<LlmModel>([
   "kimi-k2.6",
@@ -123,6 +140,7 @@ export interface LlmProviderStoredConfig {
   custom_base_url?: string;
   custom_auth_type?: "bearer" | "x-api-key";
   custom_api?: "openai-completions" | "openai-responses" | "anthropic-messages";
+  custom_model_id?: string;
 }
 
 export type CustomLlmProviderApi = NonNullable<
@@ -131,6 +149,7 @@ export type CustomLlmProviderApi = NonNullable<
 
 interface LlmProviderModelOptions {
   customApi?: CustomLlmProviderApi | null;
+  customModelId?: string | null;
 }
 
 export const DEFAULT_ORG_EXPERIMENTAL_SETTINGS: OrganizationExperimentalSettings =
@@ -163,6 +182,9 @@ export function getDefaultLlmModel(
 ): LlmModel {
   if (orgProvider === "openai") return DEFAULT_CODEX_MODEL;
   if (orgProvider === "openrouter") return DEFAULT_OPENROUTER_MODEL;
+  if (orgProvider === "custom" && hasCustomModelId(options?.customModelId)) {
+    return CUSTOM_LLM_MODEL;
+  }
   if (orgProvider === "custom" && isOpenAiCompatibleCustomApi(options?.customApi)) {
     return DEFAULT_CODEX_MODEL;
   }
@@ -177,6 +199,9 @@ export function getLlmModelOptions(
   label: string;
   description: string;
 }> {
+  if (orgProvider === "custom" && hasCustomModelId(options?.customModelId)) {
+    return CUSTOM_LLM_MODEL_OPTIONS;
+  }
   return LLM_MODEL_OPTIONS.filter((option) =>
     isLlmModelAllowedForOrgProvider(option.value, orgProvider, options),
   );
@@ -196,6 +221,7 @@ export function getVisibleLlmModelOptions(
   options?: {
     orgProvider?: string | null;
     customApi?: CustomLlmProviderApi | null;
+    customModelId?: string | null;
   },
 ): ReadonlyArray<{
   value: LlmModel;
@@ -204,6 +230,7 @@ export function getVisibleLlmModelOptions(
 }> {
   const baseOptions = getLlmModelOptions(options?.orgProvider, {
     customApi: options?.customApi,
+    customModelId: options?.customModelId,
   });
 
   if (
@@ -234,7 +261,11 @@ export function isLlmModelAllowedForNewThread(
 }
 
 export function isLlmModel(value: unknown): value is LlmModel {
-  return isCodexLlmModel(value) || isClaudeLlmModel(value);
+  return (
+    isCodexLlmModel(value) ||
+    isClaudeLlmModel(value) ||
+    value === CUSTOM_LLM_MODEL
+  );
 }
 
 export function isLlmModelAllowedForOrgProvider(
@@ -249,6 +280,9 @@ export function isLlmModelAllowedForOrgProvider(
     return isClaudeLlmModel(model);
   }
   if (orgProvider === "custom") {
+    if (model === CUSTOM_LLM_MODEL) {
+      return hasCustomModelId(options?.customModelId);
+    }
     if (options?.customApi === "anthropic-messages") {
       return isClaudeLlmModel(model);
     }
@@ -260,6 +294,7 @@ export function isLlmModelAllowedForOrgProvider(
   if (OPENROUTER_ONLY_CODEX_MODELS.has(model)) {
     return orgProvider !== "openai";
   }
+  if (model === CUSTOM_LLM_MODEL) return false;
   return true;
 }
 
@@ -296,6 +331,10 @@ export function isOpenAiCompatibleCustomApi(
   customApi: CustomLlmProviderApi | null | undefined,
 ): boolean {
   return customApi === "openai-completions" || customApi === "openai-responses";
+}
+
+export function hasCustomModelId(customModelId: string | null | undefined): boolean {
+  return Boolean(customModelId?.trim());
 }
 
 export function parseStoredLlmProviderConfig(
@@ -338,6 +377,10 @@ export function parseStoredLlmProviderConfig(
     config.custom_api === "anthropic-messages"
       ? config.custom_api
       : undefined;
+  const customModelId =
+    typeof config.custom_model_id === "string" && config.custom_model_id.trim()
+      ? config.custom_model_id.trim().slice(0, 200)
+      : undefined;
 
   return {
     ...(awsRegion ? { aws_region: awsRegion } : {}),
@@ -345,6 +388,7 @@ export function parseStoredLlmProviderConfig(
     ...(customBaseUrl ? { custom_base_url: customBaseUrl } : {}),
     ...(customAuthType ? { custom_auth_type: customAuthType } : {}),
     ...(customApi ? { custom_api: customApi } : {}),
+    ...(customModelId ? { custom_model_id: customModelId } : {}),
   };
 }
 
@@ -364,6 +408,7 @@ export function stringifyStoredLlmProviderConfig(
     ...(normalized.custom_base_url ? { custom_base_url: normalized.custom_base_url } : {}),
     ...(normalized.custom_auth_type ? { custom_auth_type: normalized.custom_auth_type } : {}),
     ...(normalized.custom_api ? { custom_api: normalized.custom_api } : {}),
+    ...(normalized.custom_model_id ? { custom_model_id: normalized.custom_model_id } : {}),
   });
 }
 
@@ -381,6 +426,13 @@ export function getStoredCustomLlmProviderApi(
 ): CustomLlmProviderApi | null {
   if (record?.provider !== "custom") return null;
   return parseStoredLlmProviderConfig(record.config).custom_api ?? null;
+}
+
+export function getStoredCustomLlmProviderModelId(
+  record: Pick<LlmProviderConfigRecord, "provider" | "config"> | null | undefined,
+): string | null {
+  if (record?.provider !== "custom") return null;
+  return parseStoredLlmProviderConfig(record.config).custom_model_id ?? null;
 }
 
 export function keyHint(key: string): string {

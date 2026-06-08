@@ -165,6 +165,7 @@ export async function action({ request, context, params }: Route.ActionArgs) {
       const apiKey = (body.api_key as string)?.trim();
       const customName = (body.custom_name as string)?.trim();
       let customBaseUrl = (body.custom_base_url as string)?.trim().replace(/\/+$/, '');
+      const customModelId = (body.custom_model_id as string)?.trim();
       const customAuthType = (body.custom_auth_type as string)?.trim();
       const customApi = (body.custom_api as string)?.trim();
 
@@ -176,6 +177,12 @@ export async function action({ request, context, params }: Route.ActionArgs) {
       }
       if (!customBaseUrl) {
         return Response.json({ error: 'Base URL is required' }, { status: 400 });
+      }
+      if (!customModelId) {
+        return Response.json({ error: 'Model ID is required' }, { status: 400 });
+      }
+      if (customModelId.length > 200) {
+        return Response.json({ error: 'Model ID must be 200 characters or fewer' }, { status: 400 });
       }
       let parsedBaseUrl: URL;
       try {
@@ -206,6 +213,7 @@ export async function action({ request, context, params }: Route.ActionArgs) {
         stringifyStoredLlmProviderConfig({
           custom_name: customName,
           custom_base_url: customBaseUrl,
+          custom_model_id: customModelId,
           custom_auth_type: customAuthType as 'bearer' | 'x-api-key',
           custom_api: customApi as 'openai-completions' | 'openai-responses' | 'anthropic-messages',
         }),
@@ -414,7 +422,7 @@ export async function action({ request, context, params }: Route.ActionArgs) {
           ...(config.custom_api === 'anthropic-messages'
             ? {
                 body: JSON.stringify({
-                  model: 'claude-sonnet-4-6',
+                  model: config.custom_model_id || 'claude-sonnet-4-6',
                   messages: [{ role: 'user', content: 'test' }],
                 }),
               }
