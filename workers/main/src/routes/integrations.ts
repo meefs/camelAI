@@ -354,6 +354,10 @@ function reauthIntegrationId(stateData: IntegrationOAuthState): string | null {
   return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
+function optionalOAuthString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
 function remoteMcpOAuthStateValue(stateData: IntegrationOAuthState, key: string): string | null {
   const value = stateData.extra_config?.[key];
   return typeof value === "string" && value.trim() ? value.trim() : null;
@@ -676,10 +680,10 @@ export async function handleSlackOAuthCallback({
       access_token?: string;
       token_type?: string;
       scope?: string;
-      bot_user_id?: string;
-      app_id?: string;
-      team?: { id: string; name: string };
-      authed_user?: { id: string; access_token?: string };
+      bot_user_id?: string | null;
+      app_id?: string | null;
+      team?: { id?: string | null; name?: string | null };
+      authed_user?: { id?: string | null; access_token?: string | null };
     };
 
     if (!tokenData.ok || !tokenData.access_token) {
@@ -698,17 +702,23 @@ export async function handleSlackOAuthCallback({
     }
 
     const wsStub = getWorkspaceStub(env, stateData.workspace_id);
+    const appId = optionalOAuthString(tokenData.app_id);
+    const botUserId = optionalOAuthString(tokenData.bot_user_id);
+    const teamId = optionalOAuthString(tokenData.team?.id);
+    const teamName = optionalOAuthString(tokenData.team?.name);
+    const authedUserId = optionalOAuthString(tokenData.authed_user?.id);
+    const userAccessToken = optionalOAuthString(tokenData.authed_user?.access_token);
 
     const credentials = {
       access_token: tokenData.access_token,
       token_type: tokenData.token_type,
       scope: tokenData.scope,
-      bot_user_id: tokenData.bot_user_id,
-      app_id: tokenData.app_id,
-      team_id: tokenData.team?.id,
-      team_name: tokenData.team?.name,
-      user_access_token: tokenData.authed_user?.access_token,
-      authed_user_id: tokenData.authed_user?.id,
+      bot_user_id: botUserId,
+      app_id: appId,
+      team_id: teamId,
+      team_name: teamName,
+      user_access_token: userAccessToken,
+      authed_user_id: authedUserId,
     };
 
     const encrypted = await encryptCredentials(
@@ -716,11 +726,11 @@ export async function handleSlackOAuthCallback({
       env.INTEGRATION_SECRET_KEY,
     );
     const slackConfig = {
-      team_id: tokenData.team?.id ?? null,
-      team_name: tokenData.team?.name ?? null,
-      bot_user_id: tokenData.bot_user_id ?? null,
+      team_id: teamId ?? null,
+      team_name: teamName ?? null,
+      bot_user_id: botUserId ?? null,
     };
-    const name = tokenData.team?.name || "Slack";
+    const name = teamName || "Slack";
     const requestedReauthId = reauthIntegrationId(stateData);
     const existingIntegration = requestedReauthId
       ? await wsStub.getIntegration(requestedReauthId)
@@ -749,14 +759,14 @@ export async function handleSlackOAuthCallback({
       );
     }
 
-    if (tokenData.team?.id) {
-      const registry = getSlackTeamRegistryStub(env, tokenData.team.id);
+    if (teamId) {
+      const registry = getSlackTeamRegistryStub(env, teamId);
       await registry.upsertInstallation({
         workspace_id: stateData.workspace_id,
         org_id: access.orgId,
         integration_id: integrationId,
-        team_id: tokenData.team.id,
-        bot_user_id: tokenData.bot_user_id,
+        team_id: teamId,
+        bot_user_id: botUserId,
         updated_at: Date.now(),
       });
     }
@@ -777,7 +787,8 @@ export async function handleSlackOAuthCallback({
     const redirectUrl = new URL(safePath, url.origin);
     redirectUrl.searchParams.set("success", "slack_connected");
     return redirect(redirectUrl.toString());
-  } catch {
+  } catch (err) {
+    console.error("[slack-oauth] OAuth callback failed:", err);
     return redirect(`${url.origin}/connections?error=oauth_failed`);
   }
 }
