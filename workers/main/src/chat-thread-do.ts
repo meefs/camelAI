@@ -6275,6 +6275,39 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     });
   }
 
+  private retryChatDurableObjectRpc<T>(
+    operation: string,
+    fn: () => Promise<T>,
+    options: { attempts?: number; initialDelayMs?: number } = {},
+  ): Promise<T> {
+    return retryTransientDurableObjectRpc(operation, fn, {
+      ...options,
+      onRetry: ({ attempt, attempts, durationMs, error }) => {
+        this.recordChatThreadObservabilityEvent("durable_object_rpc_retry", {
+          operation,
+          status: "retry",
+          severity: "warn",
+          count: attempt,
+          size: attempts,
+          durationMs,
+          error,
+          sampleKey: operation,
+        });
+      },
+      onFailure: ({ attempt, attempts, durationMs, error, transient }) => {
+        this.recordChatThreadObservabilityEvent("durable_object_rpc_failed", {
+          operation,
+          status: transient ? "exhausted" : "non_transient",
+          count: attempt,
+          size: attempts,
+          durationMs,
+          error,
+          sampleKey: operation,
+        });
+      },
+    });
+  }
+
   private persistPiAgentLoopErrorForDevelopers(
     error: unknown,
     options: {
@@ -7536,7 +7569,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     if (!normalizedWorkspaceId || !normalizedThreadId) {
       return Promise.resolve();
     }
-    return retryTransientDurableObjectRpc(
+    return this.retryChatDurableObjectRpc(
       "WorkspaceDO.recordThreadStreaming",
       () =>
         this.getWorkspaceStatusStub(normalizedWorkspaceId).recordThreadStreaming(
@@ -7820,7 +7853,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
           },
         ): Promise<number | false> | number | false;
       };
-      const storedCompletedAt = await retryTransientDurableObjectRpc(
+      const storedCompletedAt = await this.retryChatDurableObjectRpc(
         "OrgDO.recordThreadAssistantCompletion",
         () =>
           Promise.resolve(
@@ -8255,12 +8288,12 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       const orgId = this.env.ORG.idFromName(baseContext.orgId);
       const getOrgStub = () => this.env.ORG.get(orgId);
       const [thread, llmProviderRecord] = await Promise.all([
-        retryTransientDurableObjectRpc(
+        this.retryChatDurableObjectRpc(
           "OrgDO.getThread",
           () => getOrgStub().getThread(baseContext.threadId),
           { attempts: 4, initialDelayMs: 150 },
         ),
-        retryTransientDurableObjectRpc(
+        this.retryChatDurableObjectRpc(
           "OrgDO.getLlmProviderConfig",
           () => getOrgStub().getLlmProviderConfig(),
           { attempts: 4, initialDelayMs: 150 },
@@ -10348,7 +10381,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
   } | null> {
     const orgId = this.env.ORG.idFromName(context.orgId);
     const getOrgStub = () => this.env.ORG.get(orgId);
-    const record = await retryTransientDurableObjectRpc(
+    const record = await this.retryChatDurableObjectRpc(
       "OrgDO.getLlmProviderConfig",
       () => getOrgStub().getLlmProviderConfig(),
       { attempts: 4, initialDelayMs: 150 },
@@ -10474,6 +10507,21 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
               retryErrorMessage = errorMessage;
               break;
             }
+            if (errorMessage) {
+              this.recordPiProviderStreamTerminalError(
+                model,
+                errorMessage,
+                options?.signal?.aborted
+                  ? "aborted"
+                  : forwardedEvent
+                    ? "after_forwarded_event"
+                    : attempt >= PI_PROVIDER_TRANSIENT_RETRY_ATTEMPTS
+                      ? "retry_exhausted"
+                      : "non_transient",
+                attempt + 1,
+                forwardedEvent,
+              );
+            }
             if (pendingStartEvent) {
               outer.push(pendingStartEvent);
               pendingStartEvent = null;
@@ -10495,6 +10543,19 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
             this.persistPiAgentLoopErrorForDevelopers(error, {
               source: "pi_stream",
             });
+            this.recordPiProviderStreamTerminalError(
+              model,
+              errorMessage,
+              options?.signal?.aborted
+                ? "aborted"
+                : forwardedEvent
+                  ? "after_forwarded_event"
+                  : attempt >= PI_PROVIDER_TRANSIENT_RETRY_ATTEMPTS
+                    ? "retry_exhausted"
+                    : "non_transient",
+              attempt + 1,
+              forwardedEvent,
+            );
             outer.push({
               type: "error",
               reason: options?.signal?.aborted ? "aborted" : "error",
@@ -10548,6 +10609,33 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     if (event.type !== "error") return "";
     const message = event.error.errorMessage;
     return typeof message === "string" ? message.trim() : "";
+  }
+
+  private recordPiProviderStreamTerminalError(
+    model: Model<any>,
+    message: string,
+    status: "retry_exhausted" | "after_forwarded_event" | "non_transient" | "aborted",
+    attempt: number,
+    forwardedEvent: boolean,
+  ): void {
+    this.recordChatThreadObservabilityEvent("pi_provider_stream_error", {
+      operation: "stream_pi_model",
+      status,
+      provider: this.piCurrentUsageProvider || model.provider,
+      model: model.id,
+      error: new Error(message),
+      count: attempt,
+      size: PI_PROVIDER_TRANSIENT_RETRY_ATTEMPTS + 1,
+      sampleKey: `${model.provider}:${model.id}:${status}`,
+    });
+    console.warn("[ChatThreadDO] Pi provider stream error", {
+      provider: this.piCurrentUsageProvider || model.provider,
+      model: model.id,
+      status,
+      attempt,
+      forwardedEvent,
+      error: message,
+    });
   }
 
   private isTransientPiProviderError(message: string): boolean {
@@ -11631,7 +11719,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     );
     const orgId = this.env.ORG.idFromName(context.orgId);
     const getOrgStub = () => this.env.ORG.get(orgId);
-    await retryTransientDurableObjectRpc(
+    await this.retryChatDurableObjectRpc(
       "OrgDO.recordUsage",
       () =>
         getOrgStub().recordUsage({

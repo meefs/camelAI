@@ -69,6 +69,49 @@ describe("retryTransientDurableObjectRead", () => {
     warnSpy.mockRestore();
   });
 
+  it("reports retry and terminal failure events", async () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const retryError = new Error("Network connection lost.");
+    const finalError = new Error("Permission denied");
+    const onRetry = vi.fn();
+    const onFailure = vi.fn();
+    const fn = vi
+      .fn<() => Promise<string>>()
+      .mockRejectedValueOnce(retryError)
+      .mockRejectedValueOnce(finalError);
+
+    await expect(
+      retryTransientDurableObjectRead("TestDO.read", fn, {
+        attempts: 3,
+        initialDelayMs: 0,
+        onRetry,
+        onFailure,
+      }),
+    ).rejects.toBe(finalError);
+
+    expect(onRetry).toHaveBeenCalledWith(
+      expect.objectContaining({
+        operation: "TestDO.read",
+        attempt: 1,
+        attempts: 3,
+        error: retryError,
+        transient: true,
+        durationMs: expect.any(Number),
+      }),
+    );
+    expect(onFailure).toHaveBeenCalledWith(
+      expect.objectContaining({
+        operation: "TestDO.read",
+        attempt: 2,
+        attempts: 3,
+        error: finalError,
+        transient: false,
+        durationMs: expect.any(Number),
+      }),
+    );
+    warnSpy.mockRestore();
+  });
+
   it("does not retry overloaded Durable Object errors", async () => {
     const error = Object.assign(new Error("Durable Object is overloaded"), {
       overloaded: true,
