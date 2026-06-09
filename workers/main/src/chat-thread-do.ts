@@ -4332,6 +4332,92 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     return parsed;
   }
 
+  async hydratePiCoreFromParsedMessages(
+    threadId: string,
+    messages: Array<{
+      id?: string;
+      thread_id?: string;
+      role?: string;
+      content?: unknown;
+      created_at?: number;
+      forkEntryId?: string;
+      isMeta?: boolean;
+      isCompactSummary?: boolean;
+      sentDuringStreaming?: boolean;
+    }>,
+  ): Promise<{ hydrated: boolean; count: number; existingCount: number; deferred?: boolean }> {
+    const existingMessages = await this.loadPiCoreMessages();
+    const normalizedThreadId = threadId.trim() || this.chatContext?.threadId || "";
+    const agentMessages = messages.flatMap((message) =>
+      this.parsedChatMessageToPiCoreMessage(message, normalizedThreadId),
+    );
+    if (agentMessages.length === 0) {
+      return {
+        hydrated: false,
+        count: 0,
+        existingCount: existingMessages.length,
+      };
+    }
+
+    const existingKeys = new Set(
+      existingMessages.map((message) => this.piCoreMessageKey(message)),
+    );
+    const missingLegacyMessages = agentMessages.filter((message) => {
+      const key = this.piCoreMessageKey(message);
+      if (existingKeys.has(key)) return false;
+      existingKeys.add(key);
+      return true;
+    });
+    if (missingLegacyMessages.length === 0) {
+      return {
+        hydrated: false,
+        count: 0,
+        existingCount: existingMessages.length,
+      };
+    }
+
+    const inFlightMessages = await this.loadPiInFlightMessages();
+    if (
+      this.chatIsStreaming ||
+      this.piSession?.state.isStreaming ||
+      this.activeTurnUserId ||
+      inFlightMessages.length > 0
+    ) {
+      this.recordChatThreadObservabilityEvent("pi_core_messages_hydrate_deferred", {
+        operation: "merge_from_legacy",
+        status: "active_turn",
+        count: missingLegacyMessages.length,
+        size: existingMessages.length,
+      });
+      return {
+        hydrated: false,
+        count: 0,
+        existingCount: existingMessages.length,
+        deferred: true,
+      };
+    }
+
+    this.disposePiSession();
+    await this.replacePiCoreMessages([
+      ...missingLegacyMessages,
+      ...existingMessages,
+    ]);
+    this.ctx.storage.sql.exec("DELETE FROM pi_core_compaction");
+    this.clearPiInFlightMessages();
+    this.clearPiTurnRecovery();
+    this.recordChatThreadObservabilityEvent("pi_core_messages_hydrated_from_legacy", {
+      operation: "merge_from_legacy",
+      status: "ok",
+      count: missingLegacyMessages.length,
+      size: existingMessages.length,
+    });
+    return {
+      hydrated: true,
+      count: missingLegacyMessages.length,
+      existingCount: existingMessages.length,
+    };
+  }
+
   async appendChannelHistoryEvent(
     input: ChannelHistoryEventRequest,
   ): Promise<ChannelHistoryEventResult> {
@@ -6403,6 +6489,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     created_at: number;
     forkEntryId: string;
     sentDuringStreaming?: boolean;
+    isCompactSummary?: boolean;
   }> {
     const record = message as unknown as Record<string, unknown>;
     const role = record.role;
@@ -6422,6 +6509,10 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       const sentDuringStreaming =
         record.sentDuringStreaming === true ||
         metadata?.sentDuringStreaming === true;
+      const isCompactSummary =
+        record.isCompactSummary === true ||
+        metadata?.compactSummary === true ||
+        metadata?.isCompactSummary === true;
       return [{
         id: `pi_user_${timestamp}_${index}`,
         thread_id: threadId,
@@ -6430,6 +6521,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         created_at: timestamp,
         forkEntryId: `pi_user_${timestamp}_${index}`,
         ...(sentDuringStreaming ? { sentDuringStreaming: true } : {}),
+        ...(isCompactSummary ? { isCompactSummary: true } : {}),
       }];
     }
 
@@ -6450,6 +6542,144 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     }
 
     return [];
+  }
+
+  private parsedChatMessageToPiCoreMessage(
+    message: {
+      id?: string;
+      thread_id?: string;
+      role?: string;
+      content?: unknown;
+      created_at?: number;
+      forkEntryId?: string;
+      isMeta?: boolean;
+      isCompactSummary?: boolean;
+      sentDuringStreaming?: boolean;
+    },
+    threadId: string,
+  ): AgentMessage[] {
+    const role = message.role;
+    if (role !== "user" && role !== "assistant") return [];
+    if (message.isMeta === true) return [];
+    const timestamp =
+      typeof message.created_at === "number" && Number.isFinite(message.created_at)
+        ? message.created_at
+        : Date.now();
+    const content = role === "user"
+      ? this.parsedChatUserContentToPiContent(message.content)
+      : this.parsedChatAssistantContentToPiContent(message.content);
+    if (typeof content === "string" && !content.trim()) return [];
+    if (Array.isArray(content) && content.length === 0) return [];
+
+    if (role === "user") {
+      return [{
+        role: "user",
+        content,
+        timestamp,
+        metadata: {
+          hydratedFromLegacyThread: threadId,
+          legacyMessageId: typeof message.id === "string" ? message.id : undefined,
+          ...(message.isCompactSummary === true ? { compactSummary: true } : {}),
+          ...(message.sentDuringStreaming === true ? { sentDuringStreaming: true } : {}),
+        },
+      } as unknown as AgentMessage];
+    }
+
+    return [{
+      role: "assistant",
+      content,
+      api: "legacy",
+      provider: "legacy",
+      model: "legacy",
+      usage: this.emptyPiUsage(),
+      stopReason: "stop",
+      responseId:
+        typeof message.forkEntryId === "string" && message.forkEntryId.trim()
+          ? message.forkEntryId.trim()
+          : typeof message.id === "string" && message.id.trim()
+            ? message.id.trim()
+            : `legacy_assistant_${timestamp}`,
+      timestamp,
+      metadata: {
+        hydratedFromLegacyThread: threadId,
+        legacyMessageId: typeof message.id === "string" ? message.id : undefined,
+        ...(message.isCompactSummary === true ? { compactSummary: true } : {}),
+      },
+    } as unknown as AgentMessage];
+  }
+
+  private parsedChatUserContentToPiContent(content: unknown): string | Array<Record<string, unknown>> {
+    if (typeof content === "string") return content;
+    const textBlocks = this.extractTextBlocksFromParsedChatContent(content);
+    return textBlocks.length > 0 ? textBlocks : "";
+  }
+
+  private parsedChatAssistantContentToPiContent(content: unknown): Array<Record<string, unknown>> {
+    const textBlocks = this.extractTextBlocksFromParsedChatContent(content);
+    if (textBlocks.length > 0) return textBlocks;
+    if (typeof content === "string" && content.trim()) {
+      return [{ type: "text", text: content }];
+    }
+    return [];
+  }
+
+  private extractTextBlocksFromParsedChatContent(content: unknown): Array<Record<string, unknown>> {
+    if (typeof content === "string") {
+      return content.trim() ? [{ type: "text", text: content }] : [];
+    }
+    if (!Array.isArray(content)) return [];
+    return content.flatMap((part): Array<Record<string, unknown>> => {
+      if (!part || typeof part !== "object") return [];
+      const item = part as Record<string, unknown>;
+      if (item.type === "text" && typeof item.text === "string") {
+        return item.text.trim() ? [{ type: "text", text: item.text }] : [];
+      }
+      if (item.type === "thinking" && typeof item.thinking === "string") {
+        return item.thinking.trim() ? [{ type: "text", text: `[Thinking]\n${item.thinking}` }] : [];
+      }
+      if (item.type === "tool_use") {
+        const name = typeof item.name === "string" && item.name.trim()
+          ? item.name.trim()
+          : "tool";
+        return [{
+          type: "text",
+          text: `[Tool call: ${name}]\n${this.stringifyLegacyChatBlock(item.input ?? {})}`,
+        }];
+      }
+      if (item.type === "tool_result") {
+        return [{
+          type: "text",
+          text: `[Tool result]\n${this.stringifyLegacyChatBlock(item.content ?? "")}`,
+        }];
+      }
+      if (item.type === "error" && typeof item.error === "string") {
+        return item.error.trim() ? [{ type: "text", text: item.error }] : [];
+      }
+      if (item.type === "task_notification") {
+        const summary = this.legacyChatStringField(item.summary ?? item.text);
+        return summary ? [{ type: "text", text: summary }] : [];
+      }
+      if (item.type === "teammate_message") {
+        const content = this.legacyChatStringField(item.content ?? item.text);
+        return content ? [{ type: "text", text: content }] : [];
+      }
+      return [];
+    });
+  }
+
+  private legacyChatStringField(value: unknown): string {
+    if (typeof value === "string") return value.trim();
+    if (value === undefined || value === null) return "";
+    return this.stringifyLegacyChatBlock(value).trim();
+  }
+
+  private stringifyLegacyChatBlock(value: unknown): string {
+    if (typeof value === "string") return value;
+    try {
+      return JSON.stringify(value, null, 2);
+    } catch {
+      return String(value);
+    }
   }
 
   private piCoreForkMessageIds(message: AgentMessage, index: number): string[] {

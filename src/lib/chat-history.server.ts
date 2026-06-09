@@ -167,19 +167,66 @@ export async function readThreadMessages(
       });
 
     if (legacyMessages.length > 0) {
+      const hydration = await chatDO.hydratePiCoreFromParsedMessages(
+        context,
+        threadId,
+        legacyMessages,
+      ).catch((error) => {
+        recordErrorEvent(env, {
+          event: "chat_history_hydrate_legacy_exception",
+          component: "react_router",
+          operation: "hydrate_pi_core_from_legacy",
+          status: "exception",
+          threadId,
+          workspaceId,
+          orgId,
+          durationMs: Date.now() - startedAt,
+          error,
+        });
+        throw error;
+      });
+      const refreshedPiMessages =
+        hydration?.hydrated
+          ? await chatDO.getPiCoreMessages(context, threadId)
+          : piMessages;
+      if (refreshedPiMessages.length === 0) {
+        if (hydration?.deferred) {
+          recordObservabilityEvent(env, {
+            event: "chat_history_read",
+            component: "react_router",
+            operation: "read_thread_messages",
+            status: "pi_core_hydration_deferred_empty",
+            threadId,
+            workspaceId,
+            orgId,
+            count: 0,
+            size: legacyRawCount,
+            durationMs: Date.now() - startedAt,
+          });
+          return [];
+        }
+        throw new Error(
+          `Legacy chat history for thread ${threadId} could not be hydrated into Pi core messages`,
+        );
+      }
       recordObservabilityEvent(env, {
         event: "chat_history_read",
         component: "react_router",
         operation: "read_thread_messages",
-        status: "legacy_hit",
+        status:
+          hydration?.hydrated
+            ? "pi_core_hydrated_hit"
+            : hydration?.deferred
+              ? "pi_core_hydration_deferred_hit"
+            : "pi_core_already_hydrated_hit",
         threadId,
         workspaceId,
         orgId,
-        count: legacyMessages.length,
+        count: refreshedPiMessages.length,
         size: legacyRawCount,
         durationMs: Date.now() - startedAt,
       });
-      return legacyMessages;
+      return refreshedPiMessages as Message[];
     }
 
     if (piMessages.length > 0) {

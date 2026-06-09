@@ -6475,4 +6475,128 @@ describe('ChatThreadDO Codex turn handling', () => {
     expect(recordThreadChannelUsed).toHaveBeenCalledWith('thread1', 'telegram');
   });
 
+  it('defers legacy history hydration without mutating while a Pi turn is active', async () => {
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    fake.chatContext = { threadId: 'thread1' };
+    fake.chatIsStreaming = true;
+    fake.activeTurnUserId = 'user1';
+    fake.piSession = { state: { isStreaming: true } };
+    fake.loadPiCoreMessages = vi.fn(async () => []);
+    fake.loadPiInFlightMessages = vi.fn(async () => []);
+    fake.replacePiCoreMessages = vi.fn();
+    fake.disposePiSession = vi.fn();
+    fake.clearPiInFlightMessages = vi.fn();
+    fake.clearPiTurnRecovery = vi.fn();
+    fake.recordChatThreadObservabilityEvent = vi.fn();
+    fake.ctx = { storage: { sql: { exec: vi.fn() } } };
+
+    const result = await ChatThreadDO.prototype.hydratePiCoreFromParsedMessages.call(fake, 'thread1', [
+      {
+        id: 'legacy-user',
+        role: 'user',
+        content: 'hello',
+        created_at: 123,
+      },
+    ]);
+
+    expect(result).toEqual({
+      hydrated: false,
+      count: 0,
+      existingCount: 0,
+      deferred: true,
+    });
+    expect(fake.disposePiSession).not.toHaveBeenCalled();
+    expect(fake.replacePiCoreMessages).not.toHaveBeenCalled();
+    expect(fake.clearPiInFlightMessages).not.toHaveBeenCalled();
+  });
+
+  it('preserves compact-summary flags when hydrating legacy user messages', async () => {
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    fake.chatContext = { threadId: 'thread1' };
+    fake.chatIsStreaming = false;
+    fake.activeTurnUserId = null;
+    fake.piSession = null;
+    fake.loadPiCoreMessages = vi.fn(async () => []);
+    fake.loadPiInFlightMessages = vi.fn(async () => []);
+    fake.replacePiCoreMessages = vi.fn(async () => undefined);
+    fake.disposePiSession = vi.fn();
+    fake.clearPiInFlightMessages = vi.fn();
+    fake.clearPiTurnRecovery = vi.fn();
+    fake.recordChatThreadObservabilityEvent = vi.fn();
+    fake.ctx = { storage: { sql: { exec: vi.fn() } } };
+
+    await ChatThreadDO.prototype.hydratePiCoreFromParsedMessages.call(fake, 'thread1', [
+        {
+          id: 'legacy-summary',
+          role: 'user',
+          content: 'Compacted thread summary',
+          created_at: 123,
+          isCompactSummary: true,
+          sentDuringStreaming: true,
+        },
+    ]);
+
+    expect(fake.replacePiCoreMessages).toHaveBeenCalledTimes(1);
+    const messages = fake.replacePiCoreMessages.mock.calls[0][0];
+    expect(messages[0].metadata).toMatchObject({
+      compactSummary: true,
+      sentDuringStreaming: true,
+    });
+
+    const parsed = ChatThreadDO.prototype['piCoreMessageToParsedChatMessage'].call(
+      fake,
+      messages[0],
+      0,
+      'thread1',
+    );
+    expect(parsed[0]).toMatchObject({
+      role: 'user',
+      content: 'Compacted thread summary',
+      isCompactSummary: true,
+      sentDuringStreaming: true,
+    });
+  });
+
+  it('preserves task notification summaries and teammate message content during legacy hydration', async () => {
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    fake.chatContext = { threadId: 'thread1' };
+    fake.chatIsStreaming = false;
+    fake.activeTurnUserId = null;
+    fake.piSession = null;
+    fake.loadPiCoreMessages = vi.fn(async () => []);
+    fake.loadPiInFlightMessages = vi.fn(async () => []);
+    fake.replacePiCoreMessages = vi.fn(async () => undefined);
+    fake.disposePiSession = vi.fn();
+    fake.clearPiInFlightMessages = vi.fn();
+    fake.clearPiTurnRecovery = vi.fn();
+    fake.recordChatThreadObservabilityEvent = vi.fn();
+    fake.ctx = { storage: { sql: { exec: vi.fn() } } };
+
+    await ChatThreadDO.prototype.hydratePiCoreFromParsedMessages.call(fake, 'thread1', [
+      {
+        id: 'legacy-assistant',
+        role: 'assistant',
+        content: [
+          {
+            type: 'task_notification',
+            summary: 'Task finished successfully',
+          },
+          {
+            type: 'teammate_message',
+            content: 'Teammate asked for the latest deployment URL',
+          },
+        ],
+        created_at: 123,
+      },
+    ]);
+
+    expect(fake.replacePiCoreMessages).toHaveBeenCalledTimes(1);
+    const messages = fake.replacePiCoreMessages.mock.calls[0][0];
+    expect(messages).toHaveLength(1);
+    expect(messages[0].content).toEqual([
+      { type: 'text', text: 'Task finished successfully' },
+      { type: 'text', text: 'Teammate asked for the latest deployment URL' },
+    ]);
+  });
+
 });

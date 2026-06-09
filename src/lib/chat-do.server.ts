@@ -684,6 +684,35 @@ export async function getPiCoreMessages(
   return Array.isArray(messages) ? messages : [];
 }
 
+export async function hydratePiCoreFromParsedMessages(
+  context: AppLoadContext,
+  threadId: string,
+  messages: ParsedThreadMessage[],
+): Promise<{ hydrated: boolean; count: number; existingCount: number; deferred?: boolean } | null> {
+  if (messages.length === 0) return null;
+  const env = getEnv(context);
+  if (
+    !env ||
+    typeof env !== "object" ||
+    !("CHAT_THREAD" in env) ||
+    !env.CHAT_THREAD
+  ) {
+    return null;
+  }
+  const threadStub = env.CHAT_THREAD.get(env.CHAT_THREAD.idFromName(threadId));
+  const result = await Promise.resolve(
+    (
+      threadStub as unknown as {
+        hydratePiCoreFromParsedMessages(
+          threadId: string,
+          messages: ParsedThreadMessage[],
+        ): Promise<{ hydrated: boolean; count: number; existingCount: number; deferred?: boolean }> | { hydrated: boolean; count: number; existingCount: number; deferred?: boolean };
+      }
+    ).hydratePiCoreFromParsedMessages(threadId, messages),
+  );
+  return result && typeof result === "object" ? result : null;
+}
+
 export async function getTodoState(
   context: AppLoadContext,
   threadId: string,
