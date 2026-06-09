@@ -31,6 +31,8 @@
 		"deploy:bedrock-provider:dev-miguel": "wrangler deploy -c workers/bedrock-provider/wrangler.jsonc --env dev-miguel",
 		"deploy:bedrock-provider:dev-illiana": "wrangler deploy -c workers/bedrock-provider/wrangler.jsonc --env dev-illiana",
 		"cf-typegen": "wrangler types --env-interface CloudflareEnv ./cloudflare-env.d.ts",
+		"print:pi-system-prompt": "bun scripts/print-pi-system-prompt.ts",
+		"generate:pi-system-prompt-doc": "bun scripts/print-pi-system-prompt.ts --output docs/pi-system-prompt.md",
 		"test": "vitest",
 		"test:run": "vitest run",
 		"test:all": "bun run test:run && bun run test:workers",
