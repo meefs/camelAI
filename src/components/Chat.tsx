@@ -4880,6 +4880,7 @@ type SendOptions = {
             forkingMessageId={forkingMessageId}
             runningStartedAt={runningStartedAt}
             activeTurnActionMessageId={activeAssistantMessageId}
+            isAssistantTurnActive={assistantTurnActive}
             completedTurns={completedTurns}
             freshlyCompletedTurnId={freshlyCompletedTurnId}
             onFreshlyCompletedTurnAnimationScheduled={

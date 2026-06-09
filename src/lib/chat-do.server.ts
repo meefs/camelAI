@@ -43,6 +43,7 @@ interface ParsedThreadMessage {
   content: unknown;
   created_at: number;
   forkEntryId?: string;
+  sentDuringStreaming?: boolean;
   isMeta?: boolean;
   sourceToolUseID?: string;
   isCompactSummary?: boolean;

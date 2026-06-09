@@ -78,6 +78,9 @@ function parseLegacyMessages(
           typeof item.forkEntryId === "string" && item.forkEntryId.trim()
             ? item.forkEntryId.trim()
             : undefined,
+        ...(item.sentDuringStreaming === true
+          ? { sentDuringStreaming: true }
+          : {}),
         isMeta: item.isMeta === true,
         sourceToolUseID:
           typeof item.sourceToolUseID === "string"

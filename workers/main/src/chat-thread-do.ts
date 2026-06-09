@@ -4299,6 +4299,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     content: unknown;
     created_at: number;
     forkEntryId: string;
+    sentDuringStreaming?: boolean;
   }>> {
     const normalizedThreadId = threadId.trim() || this.chatContext?.threadId || "";
     const parsed: Array<{
@@ -4308,6 +4309,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       content: unknown;
       created_at: number;
       forkEntryId: string;
+      sentDuringStreaming?: boolean;
     }> = [];
 
     const [coreMessages, inFlightMessages] = await Promise.all([
@@ -6396,6 +6398,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     content: unknown;
     created_at: number;
     forkEntryId: string;
+    sentDuringStreaming?: boolean;
   }> {
     const record = message as unknown as Record<string, unknown>;
     const role = record.role;
@@ -6408,6 +6411,13 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     }
 
     if (role === "user") {
+      const metadata =
+        record.metadata && typeof record.metadata === "object"
+          ? (record.metadata as Record<string, unknown>)
+          : null;
+      const sentDuringStreaming =
+        record.sentDuringStreaming === true ||
+        metadata?.sentDuringStreaming === true;
       return [{
         id: `pi_user_${timestamp}_${index}`,
         thread_id: threadId,
@@ -6415,6 +6425,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         content: this.piUserContentToChatContent(record.content),
         created_at: timestamp,
         forkEntryId: `pi_user_${timestamp}_${index}`,
+        ...(sentDuringStreaming ? { sentDuringStreaming: true } : {}),
       }];
     }
 
@@ -11788,12 +11799,16 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         if (type === "message") {
           const content = typeof message.content === "string" ? message.content : "";
           if (!content.trim()) return false;
+          const wasStreaming = this.piSession.state.isStreaming;
           const userMessage: AgentMessage = {
             role: "user",
             content,
             timestamp: Date.now(),
-          };
-          const shouldStartRecovery = !this.piSession.state.isStreaming;
+            ...(wasStreaming
+              ? { metadata: { sentDuringStreaming: true } }
+              : {}),
+          } as unknown as AgentMessage;
+          const shouldStartRecovery = !wasStreaming;
           this.ctx.waitUntil(
             (async () => {
               if (!this.piSession) return;

@@ -24,8 +24,6 @@ import { cn } from "@/lib/utils";
 
 const MESSAGE_LAYOUT_CONTAINMENT_STYLE = {
   contain: "layout paint style",
-  contentVisibility: "auto",
-  containIntrinsicSize: "auto 180px",
 } satisfies CSSProperties;
 
 /**
@@ -47,6 +45,7 @@ type MessageGroup = {
   messages: Message[];
   isAssistantTurn: boolean;
   actionMessageId: string;
+  turnKey?: string;
   copyContent?: string;
   precedingUserMessageId?: string;
   stepCount: number;
@@ -75,6 +74,7 @@ interface ChatMessagesViewProps {
   forkingMessageId?: string | null;
   runningStartedAt: number | null;
   activeTurnActionMessageId: string | null;
+  isAssistantTurnActive: boolean;
   completedTurns: Map<string, { durationMs: number; completedAtMs: number }>;
   freshlyCompletedTurnId: string | null;
   onFreshlyCompletedTurnAnimationScheduled: () => void;
@@ -108,6 +108,7 @@ export const ChatMessagesView = memo(function ChatMessagesView({
   forkingMessageId,
   runningStartedAt,
   activeTurnActionMessageId,
+  isAssistantTurnActive,
   completedTurns,
   freshlyCompletedTurnId,
   onFreshlyCompletedTurnAnimationScheduled,
@@ -142,6 +143,7 @@ export const ChatMessagesView = memo(function ChatMessagesView({
     const previousGroups = messageGroupCacheRef.current;
     const nextGroups = new Map<string, MessageGroup>();
     let lastDirectUserMessage: Message | undefined;
+    let lastFreshPromptUserMessageId: string | undefined;
 
     for (let index = 0; index < visibleMessages.length;) {
       const firstMessage = visibleMessages[index];
@@ -160,11 +162,15 @@ export const ChatMessagesView = memo(function ChatMessagesView({
       const messages = visibleMessages.slice(index, endIndex);
       const actionMessage = messages[messages.length - 1];
       const key = `${isAssistantTurn ? "assistant" : "message"}-${firstMessage.id}`;
+      const turnKey = isAssistantTurn
+        ? (lastFreshPromptUserMessageId ?? actionMessage.id)
+        : undefined;
       const previousGroup = previousGroups.get(key);
       if (
         previousGroup &&
         previousGroup.isAssistantTurn === isAssistantTurn &&
         previousGroup.actionMessageId === actionMessage.id &&
+        previousGroup.turnKey === turnKey &&
         previousGroup.precedingUserMessageId === lastDirectUserMessage?.id &&
         haveSameMessageRefs(previousGroup.messages, messages)
       ) {
@@ -172,6 +178,9 @@ export const ChatMessagesView = memo(function ChatMessagesView({
         nextGroups.set(key, previousGroup);
         if (!isAssistantTurn && isDirectUserMessage(firstMessage)) {
           lastDirectUserMessage = firstMessage;
+          if (firstMessage.sentDuringStreaming !== true) {
+            lastFreshPromptUserMessageId = firstMessage.id;
+          }
         }
         index = endIndex;
         continue;
@@ -204,6 +213,7 @@ export const ChatMessagesView = memo(function ChatMessagesView({
         messages,
         isAssistantTurn,
         actionMessageId: actionMessage.id,
+        turnKey,
         copyContent,
         precedingUserMessageId,
         stepCount,
@@ -216,6 +226,9 @@ export const ChatMessagesView = memo(function ChatMessagesView({
 
       if (!isAssistantTurn && isDirectUserMessage(firstMessage)) {
         lastDirectUserMessage = firstMessage;
+        if (firstMessage.sentDuringStreaming !== true) {
+          lastFreshPromptUserMessageId = firstMessage.id;
+        }
       }
 
       index = endIndex;
@@ -224,6 +237,38 @@ export const ChatMessagesView = memo(function ChatMessagesView({
     messageGroupCacheRef.current = nextGroups;
     return groups;
   }, [visibleMessages]);
+
+  const lastGroupIndexByTurnKey = useMemo(() => {
+    const map = new Map<string, number>();
+    messageGroups.forEach((group, index) => {
+      if (group.isAssistantTurn && group.turnKey) {
+        map.set(group.turnKey, index);
+      }
+    });
+    return map;
+  }, [messageGroups]);
+
+  const activeTurnKey = useMemo(
+    () =>
+      messageGroups.find(
+        (group) =>
+          group.isAssistantTurn &&
+          group.actionMessageId === activeTurnActionMessageId,
+      )?.turnKey ?? null,
+    [activeTurnActionMessageId, messageGroups],
+  );
+
+  const completedTurnKey = useMemo(
+    () =>
+      freshlyCompletedTurnId != null
+        ? messageGroups.find(
+            (group) =>
+              group.isAssistantTurn &&
+              group.actionMessageId === freshlyCompletedTurnId,
+          )?.turnKey ?? null
+        : null,
+    [freshlyCompletedTurnId, messageGroups],
+  );
 
   return (
     <>
@@ -249,12 +294,25 @@ export const ChatMessagesView = memo(function ChatMessagesView({
         </>
       )}
 
-      {messageGroups.map((messageGroup) => {
+      {messageGroups.map((messageGroup, index) => {
         const isActiveTurn =
           messageGroup.isAssistantTurn &&
           messageGroup.actionMessageId === activeTurnActionMessageId;
+        const isFinalChunkOfTurn =
+          messageGroup.isAssistantTurn &&
+          messageGroup.turnKey != null &&
+          lastGroupIndexByTurnKey.get(messageGroup.turnKey) === index;
+        const isDeferredCurrentTurnChunk =
+          isAssistantTurnActive &&
+          activeTurnKey != null &&
+          messageGroup.isAssistantTurn &&
+          !isActiveTurn &&
+          messageGroup.turnKey === activeTurnKey;
         const shouldShowSummary =
-          messageGroup.isAssistantTurn && !isActiveTurn && messageGroup.stepCount > 0;
+          messageGroup.isAssistantTurn &&
+          !isActiveTurn &&
+          !isDeferredCurrentTurnChunk &&
+          messageGroup.stepCount > 0;
 
         const renderMessage = (
           msg: Message,
@@ -331,16 +389,20 @@ export const ChatMessagesView = memo(function ChatMessagesView({
           const durationMs =
             completed?.durationMs ?? messageGroup.fallbackDurationMs;
           const finalOutputMessage = messageGroup.finalOutputMessage;
+          const renderFinalAnswer =
+            isFinalChunkOfTurn && finalOutputMessage !== null;
+          const showDuration = renderFinalAnswer && durationMs >= 1000;
+          const showSeparator = renderFinalAnswer;
           const isLastAssistantMessage =
             !isAwaitingAssistant &&
             isLastMessageAssistantLike &&
             messageGroup.actionMessageId === lastMessageId;
           const finalMessageRef =
-            finalOutputMessage && isLastAssistantMessage
+            renderFinalAnswer && isLastAssistantMessage
               ? assistantMeasureRef
               : undefined;
           const summaryMessageRef =
-            !finalOutputMessage && isLastAssistantMessage
+            !renderFinalAnswer && isLastAssistantMessage
               ? assistantMeasureRef
               : undefined;
 
@@ -353,30 +415,41 @@ export const ChatMessagesView = memo(function ChatMessagesView({
               <div
                 ref={summaryMessageRef}
                 data-message-id={
-                  !finalOutputMessage ? messageGroup.actionMessageId : undefined
+                  !renderFinalAnswer ? messageGroup.actionMessageId : undefined
                 }
                 style={MESSAGE_LAYOUT_CONTAINMENT_STYLE}
               >
                 <TurnSummaryBar
                   durationMs={durationMs}
                   stepCount={messageGroup.stepCount}
+                  showDuration={showDuration}
+                  showSeparator={showSeparator}
                   animateOnMount={
-                    messageGroup.actionMessageId === freshlyCompletedTurnId
+                    completedTurnKey != null &&
+                    messageGroup.turnKey === completedTurnKey
                   }
                   onAutoCollapseScheduled={
                     onFreshlyCompletedTurnAnimationScheduled
                   }
                 >
-                  {messageGroup.traceMessage
-                    ? renderMessage(messageGroup.traceMessage, {
-                        renderMode: "full",
-                        showActionRow: false,
-                        omitMessageAnchor: true,
-                      })
-                    : null}
+                  {renderFinalAnswer
+                    ? (messageGroup.traceMessage
+                        ? renderMessage(messageGroup.traceMessage, {
+                            renderMode: "full",
+                            showActionRow: false,
+                            omitMessageAnchor: true,
+                          })
+                        : null)
+                    : messageGroup.messages.map((msg) =>
+                        renderMessage(msg, {
+                          renderMode: "full",
+                          showActionRow: false,
+                          omitMessageAnchor: true,
+                        }),
+                      )}
                 </TurnSummaryBar>
               </div>
-              {finalOutputMessage ? (
+              {renderFinalAnswer && finalOutputMessage ? (
                 <div
                   ref={finalMessageRef}
                   data-message-id={finalOutputMessage.id}

@@ -89,6 +89,33 @@ describe('ChatThreadDO Codex turn handling', () => {
     });
   });
 
+  it('preserves sentDuringStreaming metadata on parsed Pi user messages', () => {
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+
+    const result = fake.piCoreMessageToParsedChatMessage(
+      {
+        role: 'user',
+        content: 'also add dark mode',
+        timestamp: 123,
+        metadata: { sentDuringStreaming: true },
+      },
+      0,
+      'thread1',
+    );
+
+    expect(result).toEqual([
+      {
+        id: 'pi_user_123_0',
+        thread_id: 'thread1',
+        role: 'user',
+        content: 'also add dark mode',
+        created_at: 123,
+        forkEntryId: 'pi_user_123_0',
+        sentDuringStreaming: true,
+      },
+    ]);
+  });
+
   it('keeps hosted Claude on Anthropic Messages while routing through OpenRouter AI Gateway', async () => {
     const fake = Object.create(ChatThreadDO.prototype) as any;
     fake.env = {

@@ -18,6 +18,7 @@ type RuntimeMessage = {
   status: 'done' | 'streaming' | 'error';
   isMeta?: boolean;
   sourceToolUseID?: string;
+  sentDuringStreaming?: boolean;
 };
 
 function toUiRole(role: RuntimeMessage['role']): Message['role'] {
@@ -34,6 +35,7 @@ export function runtimeMessageToUiMessage(message: RuntimeMessage): Message {
     isStreaming: message.status === 'streaming',
     isMeta: message.isMeta,
     sourceToolUseID: message.sourceToolUseID,
+    sentDuringStreaming: message.sentDuringStreaming,
   };
 }
 
@@ -51,6 +53,7 @@ export function uiMessageToRuntimeMessage(message: Message, previous?: RuntimeMe
         : 'done',
     isMeta: message.isMeta,
     sourceToolUseID: message.sourceToolUseID,
+    sentDuringStreaming: message.sentDuringStreaming,
   };
 }
 

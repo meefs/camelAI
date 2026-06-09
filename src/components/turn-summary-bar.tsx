@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { ChevronRight } from "lucide-react";
 import {
   Collapsible,
@@ -20,6 +20,10 @@ interface TurnSummaryBarProps {
   defaultExpanded?: boolean;
   animateOnMount?: boolean;
   onAutoCollapseScheduled?: () => void;
+  /** Show the "worked for <time> ·" prefix. */
+  showDuration?: boolean;
+  /** Render the trailing separator that precedes a final answer. */
+  showSeparator?: boolean;
 }
 
 export function TurnSummaryBar({
@@ -29,21 +33,29 @@ export function TurnSummaryBar({
   defaultExpanded = false,
   animateOnMount = false,
   onAutoCollapseScheduled,
+  showDuration = true,
+  showSeparator = true,
 }: TurnSummaryBarProps) {
+  const animateOnMountRef = useRef(animateOnMount);
   const [isExpanded, setIsExpanded] = useState(defaultExpanded || animateOnMount);
   const timeLabel = formatTurnDuration(durationMs);
   const stepLabel = `${stepCount} step${stepCount === 1 ? "" : "s"}`;
   const toggleLabel = isExpanded ? "hide work" : "show work";
-  const a11yLabel = `${isExpanded ? "Hide" : "Show"} work, ${stepLabel}, ${formatTurnDurationForScreenReader(durationMs)}`;
+  const a11yLabel = showDuration
+    ? `${isExpanded ? "Hide" : "Show"} work, ${stepLabel}, ${formatTurnDurationForScreenReader(durationMs)}`
+    : `${isExpanded ? "Hide" : "Show"} work, ${stepLabel}`;
 
   useEffect(() => {
-    if (!animateOnMount) return;
+    if (!animateOnMountRef.current) return;
     const id = requestAnimationFrame(() => {
       setIsExpanded(false);
       onAutoCollapseScheduled?.();
     });
     return () => cancelAnimationFrame(id);
-  }, [animateOnMount, onAutoCollapseScheduled]);
+    // Latched at mount: a later animateOnMount=false must not cancel an
+    // in-flight collapse when multiple summary bars animate together.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   return (
     <Collapsible open={isExpanded} onOpenChange={setIsExpanded}>
@@ -58,9 +70,13 @@ export function TurnSummaryBar({
             "motion-reduce:transition-none",
           )}
         >
-          <span>worked for</span>
-          <span className="text-muted-foreground/80">{timeLabel}</span>
-          <span className="text-muted-foreground/30">·</span>
+          {showDuration ? (
+            <>
+              <span>worked for</span>
+              <span className="text-muted-foreground/80">{timeLabel}</span>
+              <span className="text-muted-foreground/30">·</span>
+            </>
+          ) : null}
           <span className="text-muted-foreground/80">{stepLabel}</span>
           <span className="text-muted-foreground/30">·</span>
           <span>{toggleLabel}</span>
@@ -86,7 +102,9 @@ export function TurnSummaryBar({
         </div>
       </CollapsibleContent>
 
-      <hr className="my-2 border-t border-border/40" />
+      {showSeparator ? (
+        <hr className="my-2 border-t border-border/40" />
+      ) : null}
     </Collapsible>
   );
 }

@@ -8,8 +8,8 @@ describe("TurnSummaryBar", () => {
     vi.unstubAllGlobals();
   });
 
-  it("renders the formatted summary line", () => {
-    render(
+  it("renders the formatted summary line with default final-answer chrome", () => {
+    const { container } = render(
       <TurnSummaryBar durationMs={138_000} stepCount={14}>
         <div>trace row</div>
       </TurnSummaryBar>,
@@ -23,6 +23,28 @@ describe("TurnSummaryBar", () => {
         name: "Show work, 14 steps, 2 minutes 18 seconds",
       }),
     ).toBeInTheDocument();
+    expect(container.querySelector("hr")).toBeInTheDocument();
+  });
+
+  it("can render work-only chrome without duration or separator", () => {
+    const { container } = render(
+      <TurnSummaryBar
+        durationMs={0}
+        stepCount={3}
+        showDuration={false}
+        showSeparator={false}
+      >
+        <div>trace row</div>
+      </TurnSummaryBar>,
+    );
+
+    expect(screen.queryByText("worked for")).not.toBeInTheDocument();
+    expect(screen.queryByText("0:00")).not.toBeInTheDocument();
+    expect(screen.getByText("3 steps")).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Show work, 3 steps" }),
+    ).toBeInTheDocument();
+    expect(container.querySelector("hr")).not.toBeInTheDocument();
   });
 
   it("click toggles expanded state and accessible label", async () => {
@@ -45,16 +67,19 @@ describe("TurnSummaryBar", () => {
     );
   });
 
-  it("mounts expanded then schedules auto-collapse for live completions", () => {
-    const frames: FrameRequestCallback[] = [];
+  it("latches auto-collapse at mount for live completions", () => {
+    const frames: { callback: FrameRequestCallback; cancelled: boolean }[] = [];
     vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
-      frames.push(callback);
+      frames.push({ callback, cancelled: false });
       return frames.length;
     });
-    vi.stubGlobal("cancelAnimationFrame", vi.fn());
+    vi.stubGlobal("cancelAnimationFrame", (id: number) => {
+      const frame = frames[id - 1];
+      if (frame) frame.cancelled = true;
+    });
     const onAutoCollapseScheduled = vi.fn();
 
-    render(
+    const { rerender } = render(
       <TurnSummaryBar
         durationMs={1_000}
         stepCount={1}
@@ -68,8 +93,21 @@ describe("TurnSummaryBar", () => {
     expect(screen.getByRole("button", { name: /hide work/i })).toBeInTheDocument();
     expect(screen.getByText("trace row")).toBeInTheDocument();
 
+    rerender(
+      <TurnSummaryBar
+        durationMs={1_000}
+        stepCount={1}
+        animateOnMount={false}
+        onAutoCollapseScheduled={onAutoCollapseScheduled}
+      >
+        <div>trace row</div>
+      </TurnSummaryBar>,
+    );
+
     act(() => {
-      frames.forEach((frame) => frame(0));
+      frames
+        .filter((frame) => !frame.cancelled)
+        .forEach((frame) => frame.callback(0));
     });
 
     expect(onAutoCollapseScheduled).toHaveBeenCalledTimes(1);

@@ -1,7 +1,7 @@
 import { createRef, type ComponentProps } from "react";
-import { render, screen } from "@testing-library/react";
+import { act, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ChatMessagesView } from "@/components/chat-messages-view";
 import type { ContentBlock, Message } from "@/types";
 
@@ -9,6 +9,7 @@ type MessageBubbleCall = {
   renderMode: string;
   message: Message;
   suppressFinalizedState: boolean;
+  showActionRow?: boolean;
   actionCopyContent?: string;
   copyFallbackContent: string;
 };
@@ -36,17 +37,20 @@ vi.mock("@/components/message-bubble", () => {
       message,
       renderMode = "full",
       suppressFinalizedState = false,
+      showActionRow,
       actionCopyContent,
     }: {
       message: Message;
       renderMode?: string;
       suppressFinalizedState?: boolean;
+      showActionRow?: boolean;
       actionCopyContent?: string;
     }) => {
       bubbleHarness.calls.push({
         renderMode,
         message,
         suppressFinalizedState,
+        showActionRow,
         actionCopyContent,
         copyFallbackContent: textFromContent(message.content),
       });
@@ -70,6 +74,7 @@ function message(
   role: Message["role"],
   content: string | ContentBlock[],
   createdAt: number,
+  overrides: Partial<Message> = {},
 ): Message {
   return {
     id,
@@ -77,6 +82,7 @@ function message(
     role,
     content,
     created_at: createdAt,
+    ...overrides,
   };
 }
 
@@ -94,6 +100,7 @@ function createViewProps(
     copiedMessageId: null,
     runningStartedAt: null,
     activeTurnActionMessageId: null,
+    isAssistantTurnActive: false,
     completedTurns: new Map(),
     freshlyCompletedTurnId: null,
     onFreshlyCompletedTurnAnimationScheduled: vi.fn(),
@@ -140,13 +147,36 @@ function traceMessageWithContent(content: ContentBlock[]): Message | undefined {
   })?.message;
 }
 
+function fullCallForMessage(messageId: string): MessageBubbleCall | undefined {
+  return bubbleHarness.calls.find(
+    (call) => call.renderMode === "full" && call.message.id === messageId,
+  );
+}
+
+function stubAnimationFrames() {
+  const frames: { callback: FrameRequestCallback; cancelled: boolean }[] = [];
+  vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
+    frames.push({ callback, cancelled: false });
+    return frames.length;
+  });
+  vi.stubGlobal("cancelAnimationFrame", (id: number) => {
+    const frame = frames[id - 1];
+    if (frame) frame.cancelled = true;
+  });
+  return frames;
+}
+
 describe("ChatMessagesView collapsed assistant turns", () => {
   beforeEach(() => {
     bubbleHarness.calls.length = 0;
   });
 
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
   it("collapses a finished assistant turn with work rows and keeps final text visible", () => {
-    renderView({
+    const { container } = renderView({
       visibleMessages: [
         message("u1", "user", "read package.json", 1_000),
         message(
@@ -170,9 +200,303 @@ describe("ChatMessagesView collapsed assistant turns", () => {
     expect(screen.getByText("worked for")).toBeInTheDocument();
     expect(screen.getByText("2:18")).toBeInTheDocument();
     expect(screen.getByText("2 steps")).toBeInTheDocument();
+    expect(container.querySelectorAll("hr")).toHaveLength(1);
     expect(screen.getByTestId("message-bubble-final-text-only")).toHaveTextContent(
       "Done",
     );
+  });
+
+  it("collapses an intermediate steered chunk without final-answer chrome", async () => {
+    const user = userEvent.setup();
+    const firstTool: ContentBlock = {
+      type: "tool_use",
+      id: "tool-1",
+      name: "Read",
+      input: {},
+    };
+    const trailingText: ContentBlock = {
+      type: "text",
+      text: "Let me also inspect the config.",
+    };
+    const activeTool: ContentBlock = {
+      type: "tool_use",
+      id: "tool-2",
+      name: "Read",
+      input: {},
+    };
+    const { container } = renderView({
+      visibleMessages: [
+        message("u1", "user", "build a dashboard", 1_000),
+        message("a1", "assistant", [firstTool, trailingText], 2_000),
+        message(
+          "u2",
+          "user",
+          "also add dark mode",
+          2_010,
+          { sentDuringStreaming: true },
+        ),
+        message(
+          "a2",
+          "assistant",
+          [activeTool],
+          2_020,
+          { isStreaming: true },
+        ),
+      ],
+      activeTurnActionMessageId: "a2",
+    });
+
+    expect(screen.getByText("1 step")).toBeInTheDocument();
+    expect(screen.queryByText("worked for")).not.toBeInTheDocument();
+    expect(container.querySelector("hr")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("message-bubble-final-text-only")).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Show work, 1 step" }));
+    expect(fullCallForMessage("a1")?.message.content).toEqual([
+      firstTool,
+      trailingText,
+    ]);
+  });
+
+  it("keeps a steered current-turn chunk expanded while the turn is active", () => {
+    const firstTool: ContentBlock = {
+      type: "tool_use",
+      id: "tool-1",
+      name: "Read",
+      input: {},
+    };
+    const trailingText: ContentBlock = {
+      type: "text",
+      text: "Let me also inspect the config.",
+    };
+    const activeTool: ContentBlock = {
+      type: "tool_use",
+      id: "tool-2",
+      name: "Read",
+      input: {},
+    };
+
+    renderView({
+      visibleMessages: [
+        message("u1", "user", "build a dashboard", 1_000),
+        message("a1", "assistant", [firstTool, trailingText], 2_000),
+        message(
+          "u2",
+          "user",
+          "also add dark mode",
+          2_010,
+          { sentDuringStreaming: true },
+        ),
+        message(
+          "a2",
+          "assistant",
+          [activeTool],
+          2_020,
+          { isStreaming: true },
+        ),
+      ],
+      activeTurnActionMessageId: "a2",
+      isAssistantTurnActive: true,
+    });
+
+    expect(screen.queryByText("show work")).not.toBeInTheDocument();
+    expect(fullCallForMessage("a1")?.message.content).toEqual([
+      firstTool,
+      trailingText,
+    ]);
+    expect(screen.queryByTestId("message-bubble-final-text-only")).not.toBeInTheDocument();
+  });
+
+  it("collapses every steered chunk together when the turn completes", () => {
+    const frames = stubAnimationFrames();
+    const onAutoCollapseScheduled = vi.fn();
+    const firstTool: ContentBlock = {
+      type: "tool_use",
+      id: "tool-1",
+      name: "Read",
+      input: {},
+    };
+    const secondTool: ContentBlock = {
+      type: "tool_use",
+      id: "tool-2",
+      name: "Edit",
+      input: {},
+    };
+    const thirdTool: ContentBlock = {
+      type: "tool_use",
+      id: "tool-3",
+      name: "Write",
+      input: {},
+    };
+    const finalText: ContentBlock = {
+      type: "text",
+      text: "Done with the dashboard, dark mode, and settings page.",
+    };
+    const { container } = renderView({
+      visibleMessages: [
+        message("u1", "user", "build a dashboard", 1_000),
+        message("a1", "assistant", [firstTool], 2_000),
+        message(
+          "u2",
+          "user",
+          "also add dark mode",
+          2_010,
+          { sentDuringStreaming: true },
+        ),
+        message("a2", "assistant", [secondTool], 3_000),
+        message(
+          "u3",
+          "user",
+          "and a settings page",
+          3_010,
+          { sentDuringStreaming: true },
+        ),
+        message("a3", "assistant", [thirdTool, finalText], 4_000),
+      ],
+      completedTurns: new Map([
+        ["a3", { durationMs: 222_000, completedAtMs: 5_000 }],
+      ]),
+      freshlyCompletedTurnId: "a3",
+      onFreshlyCompletedTurnAnimationScheduled: onAutoCollapseScheduled,
+    });
+
+    expect(screen.getAllByRole("button", { name: /hide work/i })).toHaveLength(3);
+    expect(screen.getAllByText("worked for")).toHaveLength(1);
+    expect(screen.getByText("3:42")).toBeInTheDocument();
+    expect(container.querySelectorAll("hr")).toHaveLength(1);
+    expect(screen.getByTestId("message-bubble-final-text-only")).toHaveTextContent(
+      "Done with the dashboard, dark mode, and settings page.",
+    );
+
+    act(() => {
+      frames
+        .filter((frame) => !frame.cancelled)
+        .forEach((frame) => frame.callback(0));
+    });
+
+    expect(onAutoCollapseScheduled).toHaveBeenCalledTimes(3);
+    expect(screen.getAllByRole("button", { name: /show work/i })).toHaveLength(3);
+  });
+
+  it("preserves steered-turn grouping after reload when history carries the steer marker", async () => {
+    const user = userEvent.setup();
+    const firstTool: ContentBlock = {
+      type: "tool_use",
+      id: "tool-1",
+      name: "Read",
+      input: {},
+    };
+    const trailingText: ContentBlock = {
+      type: "text",
+      text: "Let me also inspect the config.",
+    };
+    const finalTool: ContentBlock = {
+      type: "tool_use",
+      id: "tool-2",
+      name: "Edit",
+      input: {},
+    };
+    const finalText: ContentBlock = { type: "text", text: "Done" };
+    const { container } = renderView({
+      visibleMessages: [
+        message("u1", "user", "build a dashboard", 1_000),
+        message("a1", "assistant", [firstTool, trailingText], 2_000),
+        message(
+          "u2",
+          "user",
+          "also add dark mode",
+          3_000,
+          { sentDuringStreaming: true },
+        ),
+        message("a2", "assistant", [finalTool, finalText], 3_000),
+      ],
+    });
+
+    expect(screen.getAllByText("1 step")).toHaveLength(2);
+    expect(screen.queryByText("worked for")).not.toBeInTheDocument();
+    expect(container.querySelectorAll("hr")).toHaveLength(1);
+    expect(screen.getByTestId("message-bubble-final-text-only")).toHaveTextContent(
+      "Done",
+    );
+
+    await user.click(screen.getAllByRole("button", { name: "Show work, 1 step" })[0]);
+    expect(fullCallForMessage("a1")?.message.content).toEqual([
+      firstTool,
+      trailingText,
+    ]);
+  });
+
+  it("does not render a fake 0:00 duration for final chunks without real timing", () => {
+    const firstTool: ContentBlock = {
+      type: "tool_use",
+      id: "tool-1",
+      name: "Read",
+      input: {},
+    };
+    const finalText: ContentBlock = { type: "text", text: "Done" };
+    const { container } = renderView({
+      visibleMessages: [
+        message("u1", "user", "read package.json", 1_000),
+        message("a1", "assistant", [firstTool, finalText], 1_000),
+      ],
+    });
+
+    expect(screen.queryByText("worked for")).not.toBeInTheDocument();
+    expect(screen.queryByText("0:00")).not.toBeInTheDocument();
+    expect(container.querySelectorAll("hr")).toHaveLength(1);
+    expect(screen.getByTestId("message-bubble-final-text-only")).toHaveTextContent(
+      "Done",
+    );
+  });
+
+  it("does not animate unrelated turns when a later turn completes", () => {
+    const frames = stubAnimationFrames();
+    const onAutoCollapseScheduled = vi.fn();
+    const firstTool: ContentBlock = {
+      type: "tool_use",
+      id: "tool-1",
+      name: "Read",
+      input: {},
+    };
+    const secondTool: ContentBlock = {
+      type: "tool_use",
+      id: "tool-2",
+      name: "Edit",
+      input: {},
+    };
+
+    renderView({
+      visibleMessages: [
+        message("u1", "user", "read package.json", 1_000),
+        message(
+          "a1",
+          "assistant",
+          [firstTool, { type: "text", text: "Read complete." }],
+          2_000,
+        ),
+        message("u2", "user", "edit app.tsx", 3_000),
+        message(
+          "a2",
+          "assistant",
+          [secondTool, { type: "text", text: "Edit complete." }],
+          4_000,
+        ),
+      ],
+      completedTurns: new Map([
+        ["a1", { durationMs: 1_000, completedAtMs: 2_000 }],
+        ["a2", { durationMs: 1_000, completedAtMs: 4_000 }],
+      ]),
+      freshlyCompletedTurnId: "a2",
+      onFreshlyCompletedTurnAnimationScheduled: onAutoCollapseScheduled,
+    });
+
+    expect(screen.getAllByRole("button", { name: /hide work/i })).toHaveLength(1);
+    act(() => {
+      frames
+        .filter((frame) => !frame.cancelled)
+        .forEach((frame) => frame.callback(0));
+    });
+
+    expect(onAutoCollapseScheduled).toHaveBeenCalledTimes(1);
   });
 
   it("does not add a summary line to zero-step assistant replies", () => {

@@ -71,6 +71,39 @@ describe("readThreadMessages legacy fallback", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
+  it("hydrates sentDuringStreaming from legacy history messages", async () => {
+    getEnvMock.mockReturnValue({
+      LEGACY_WORKSPACE_HOST: {
+        fetch: vi.fn(async () =>
+          Response.json({
+            messages: [
+              {
+                id: "message-1",
+                thread_id: "thread-1",
+                role: "user",
+                content: "also add dark mode",
+                created_at: 123,
+                sentDuringStreaming: true,
+              },
+            ],
+          }),
+        ),
+      },
+    });
+
+    const messages = await readThreadMessages({} as never, {
+      orgId: "org-1",
+      workspaceId: "workspace-1",
+      threadId: "thread-1",
+    });
+
+    expect(messages[0]).toMatchObject({
+      id: "message-1",
+      role: "user",
+      sentDuringStreaming: true,
+    });
+  });
+
   it("prefers legacy sandbox-host messages over Pi core bug-period messages", async () => {
     getPiCoreMessagesMock.mockResolvedValue([
       {
