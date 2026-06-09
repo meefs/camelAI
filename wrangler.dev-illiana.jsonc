@@ -119,6 +119,11 @@
 			"name": "chiridion-legacy-workspace-migrations-dev-illiana",
 			"binding": "LEGACY_WORKSPACE_MIGRATIONS",
 			"class_name": "LegacyWorkspaceMigrationWorkflow"
+		},
+		{
+			"name": "chiridion-legacy-preview-repairs-dev-illiana",
+			"binding": "LEGACY_PREVIEW_REPAIRS",
+			"class_name": "LegacyPreviewRepairWorkflow"
 		}
 	],
 	"migrations": [

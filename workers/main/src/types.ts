@@ -105,6 +105,7 @@ export interface Env
   PROJECT_RUNTIME_ARTIFACTS_PROXY_BASE?: string;
   PROJECT_RUNTIME_PROXY_SECRET?: string;
   LEGACY_WORKSPACE_MIGRATIONS?: Workflow;
+  LEGACY_PREVIEW_REPAIRS?: Workflow;
   ENABLE_LEGACY_WORKSPACE_MIGRATION?: string;
   // Email handle registry (atomic handle claims)
   EMAIL_HANDLE?: DurableObjectNamespace<EmailHandleDO>;

@@ -91,6 +91,9 @@ export {
 export {
   LegacyWorkspaceMigrationWorkflow,
 } from './legacy-workspace-migration-workflow.js';
+export {
+  LegacyPreviewRepairWorkflow,
+} from './legacy-preview-repair-workflow.js';
 export { CamelAiService } from './camelai-service.js';
 export { WorkspaceFilesystemDO } from './workspace-filesystem-do.js';
 

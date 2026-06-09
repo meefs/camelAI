@@ -176,6 +176,11 @@
 			"name": "chiridion-legacy-workspace-migrations",
 			"binding": "LEGACY_WORKSPACE_MIGRATIONS",
 			"class_name": "LegacyWorkspaceMigrationWorkflow"
+		},
+		{
+			"name": "chiridion-legacy-preview-repairs",
+			"binding": "LEGACY_PREVIEW_REPAIRS",
+			"class_name": "LegacyPreviewRepairWorkflow"
 		}
 	],
 	"migrations": [

@@ -416,6 +416,21 @@ const LegacyWorkspaceMigrationCancelResponseSchema = z.object({
   status: z.literal("canceled"),
 });
 
+const LegacyPreviewRepairTriggerBodySchema = z.object({
+  dry_run: z.boolean().optional().default(false),
+  requested_by: z.string().trim().min(1).max(128).optional(),
+  thread_ids: z.array(z.string().trim().min(1)).max(500).optional(),
+});
+
+const LegacyPreviewRepairTriggerResponseSchema = z.object({
+  success: z.boolean(),
+  org_id: z.string(),
+  workspace_id: z.string(),
+  workflow_id: z.string(),
+  dry_run: z.boolean(),
+  status: z.literal("queued"),
+});
+
 // ---------------------------------------------------------------------------
 // Cache-Control middleware for GET endpoints
 // ---------------------------------------------------------------------------
@@ -557,6 +572,56 @@ routes.post(
       workspace_id: workspaceId,
       workflow_id: result.workflowId,
       status: "canceled" as const,
+    });
+  },
+);
+
+// ---------------------------------------------------------------------------
+// POST /orgs/:orgId/workspaces/:workspaceId/legacy-preview-repair
+// ---------------------------------------------------------------------------
+
+routes.post(
+  "/orgs/:orgId/workspaces/:workspaceId/legacy-preview-repair",
+  openApi({
+    summary: "Queue legacy thread preview repair",
+    request: { json: LegacyPreviewRepairTriggerBodySchema },
+    responses: {
+      200: LegacyPreviewRepairTriggerResponseSchema,
+      503: ErrorSchema,
+    },
+  }),
+  async (c) => {
+    if (!c.env.LEGACY_PREVIEW_REPAIRS) {
+      return c.json({ error: "Legacy preview repair workflow is not configured" }, 503);
+    }
+
+    const orgId = c.req.param("orgId");
+    const workspaceId = c.req.param("workspaceId");
+    const body = c.req.valid("json");
+    const workflowId = [
+      "legacy-preview-repair",
+      workspaceId,
+      Date.now().toString(36),
+    ].join("-");
+
+    await c.env.LEGACY_PREVIEW_REPAIRS.createBatch([{
+      id: workflowId,
+      params: {
+        orgId,
+        workspaceId,
+        requestedBy: body.requested_by || "admin-api",
+        dryRun: body.dry_run === true,
+        threadIds: body.thread_ids,
+      },
+    }]);
+
+    return c.json({
+      success: true,
+      org_id: orgId,
+      workspace_id: workspaceId,
+      workflow_id: workflowId,
+      dry_run: body.dry_run === true,
+      status: "queued" as const,
     });
   },
 );
