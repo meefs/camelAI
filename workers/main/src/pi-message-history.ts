@@ -55,6 +55,9 @@ export function repairPiMessageHistoryForReplay(
       const trimmed = trimAssistantContentAfterLastToolCall(message);
       trimmedAssistantBlocks += trimmed.removedBlocks;
       repaired.push(trimmed.message);
+      if (record.stopReason === "error" || record.stopReason === "aborted") {
+        continue;
+      }
       const collected = collectToolCalls(trimmed.message);
       pendingToolCallIds = collected?.ids ?? null;
       pendingToolCallNames = collected?.names ?? null;

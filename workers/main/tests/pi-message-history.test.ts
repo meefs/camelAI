@@ -72,6 +72,38 @@ describe('repairPiMessageHistoryForReplay', () => {
     expect(result.repairedCount).toBe(1);
   });
 
+  it('does not synthesize missing Pi tool results for aborted assistant turns', () => {
+    const messages = [
+      assistantWithToolCalls([{ id: 'tool1', name: 'read' }], {
+        stopReason: 'aborted',
+      }),
+      { role: 'user', content: 'continue', timestamp: 400 },
+    ] as AgentMessage[];
+
+    const result = repairPiMessageHistoryForReplay(messages);
+
+    expect(result.messages).toBe(messages);
+    expect(result.stats.syntheticToolResults).toBe(0);
+    expect(result.repairedCount).toBe(0);
+  });
+
+  it('drops tool results that belong to aborted assistant turns', () => {
+    const messages = [
+      assistantWithToolCalls([{ id: 'tool1', name: 'read' }], {
+        stopReason: 'aborted',
+      }),
+      toolResult('tool1', 'late result'),
+      { role: 'user', content: 'continue', timestamp: 400 },
+    ] as AgentMessage[];
+
+    const result = repairPiMessageHistoryForReplay(messages);
+
+    expect(result.messages).toEqual([messages[0], messages[2]]);
+    expect(result.stats.droppedToolResults).toBe(1);
+    expect(result.stats.syntheticToolResults).toBe(0);
+    expect(result.repairedCount).toBe(1);
+  });
+
   it('trims assistant blocks that appear after tool calls', () => {
     const messages = [
       {
@@ -124,6 +156,7 @@ describe('repairPiMessageHistoryForReplay', () => {
 
 function assistantWithToolCalls(
   calls: Array<{ id: string; name: string }>,
+  options: { stopReason?: string } = {},
 ): AgentMessage {
   return {
     role: 'assistant',
@@ -139,7 +172,7 @@ function assistantWithToolCalls(
     provider: 'test',
     model: 'test',
     usage: {},
-    stopReason: 'toolUse',
+    stopReason: options.stopReason ?? 'toolUse',
   } as unknown as AgentMessage;
 }
 

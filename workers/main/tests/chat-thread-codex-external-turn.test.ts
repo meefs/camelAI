@@ -545,7 +545,7 @@ describe('ChatThreadDO Codex turn handling', () => {
     );
 
     expect(model.model).toMatchObject({
-      id: 'gpt-5.5:nitro',
+      id: 'openai/gpt-5.5:nitro',
       provider: 'cloudflare-ai-gateway',
       api: 'openai-responses',
       baseUrl: 'https://gateway.ai.cloudflare.com/v1/acct_1/gateway_1/openrouter',
@@ -848,6 +848,42 @@ describe('ChatThreadDO Codex turn handling', () => {
     expect(model.apiKey).toBe('sk-openai-test');
     expect(model.billingSource).toBe('byok');
     expect(model.usageProvider).toBe('openai');
+    expect(fake.checkHostedPiModelAccess).not.toHaveBeenCalled();
+  });
+
+  it('prefixes hosted OpenAI aliases when routing through OpenRouter BYOK', async () => {
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    fake.env = {};
+    fake.openRouterAttributionHeaders = ChatThreadDO.prototype['openRouterAttributionHeaders'];
+    fake.resolveCurrentByokCredentials = vi.fn(async () => ({
+      provider: 'openrouter',
+      apiKey: 'sk-or-test',
+    }));
+    fake.checkHostedPiModelAccess = vi.fn(async () => {
+      throw new Error('hosted billing should not be checked for BYOK');
+    });
+
+    const model = await ChatThreadDO.prototype['resolvePiModel'].call(
+      fake,
+      { orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1' },
+      { CHIRIDION_CODEX_MODEL: 'gpt-5.5' },
+      vi.fn((provider, modelId) => ({
+        id: modelId,
+        provider,
+        api: 'openai-responses',
+        baseUrl: 'https://api.openai.com/v1',
+      })),
+    );
+
+    expect(model.model).toMatchObject({
+      id: 'openai/gpt-5.5:nitro',
+      provider: 'openai',
+      api: 'openai-responses',
+      baseUrl: 'https://openrouter.ai/api/v1',
+    });
+    expect(model.apiKey).toBe('sk-or-test');
+    expect(model.billingSource).toBe('byok');
+    expect(model.usageProvider).toBe('openrouter');
     expect(fake.checkHostedPiModelAccess).not.toHaveBeenCalled();
   });
 
@@ -4523,6 +4559,52 @@ describe('ChatThreadDO Codex turn handling', () => {
     expect(fake.clearPiInFlightMessages).toHaveBeenCalledTimes(1);
   });
 
+  it('suppresses failed turn_end persistence and clears in-flight recovery state', async () => {
+    const { fake, events: _events } = createPiEventFake();
+    void _events;
+    const previousMessage = { role: 'user', content: 'previous turn', timestamp: 50 };
+    const allMessages = [
+      previousMessage,
+      { role: 'user', content: 'current turn', timestamp: 100 },
+      {
+        role: 'assistant',
+        content: [{
+          type: 'toolCall',
+          id: 'call_1|fc_tmp_1',
+          name: 'js_exec',
+          arguments: {},
+        }],
+        stopReason: 'error',
+        errorMessage: 'Provider returned error',
+        responseId: 'resp_error',
+        timestamp: 200,
+      },
+    ];
+    fake.piSession = { state: { messages: allMessages } };
+    fake.piMainBaselineIndex = 1;
+    fake.appendPiCoreMessagesIfMissing = vi.fn();
+    fake.clearPiInFlightMessages = vi.fn();
+
+    await ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, {
+      type: 'turn_end',
+      message: allMessages[2],
+      toolResults: [],
+    });
+
+    expect(fake.appendPiCoreMessagesIfMissing).not.toHaveBeenCalled();
+    expect(fake.piSession.state.messages).toEqual([previousMessage]);
+    expect(fake.piMainBaselineIndex).toBe(1);
+    expect(fake.clearPiInFlightMessages).toHaveBeenCalledTimes(1);
+    expect(fake.recordChatThreadObservabilityEvent).toHaveBeenCalledWith(
+      'pi_failed_turn_end_persistence_suppressed',
+      expect.objectContaining({
+        operation: 'handle_pi_session_event',
+        status: 'turn_end',
+        count: 2,
+      }),
+    );
+  });
+
   it('suppresses aborted turn_end persistence after a user stop request', async () => {
     const { fake, events: _events } = createPiEventFake();
     void _events;
@@ -5392,6 +5474,84 @@ describe('ChatThreadDO Codex turn handling', () => {
     });
 
     expect(events.filter((event) => event.type === 'runtime_event')).toEqual([]);
+  });
+
+  it('does not append failed assistant message_end events to in-flight replay state', async () => {
+    const { fake } = createPiEventFake();
+
+    await ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, { type: 'agent_start' });
+    await ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, {
+      type: 'message_end',
+      message: {
+        role: 'assistant',
+        content: [{
+          type: 'toolCall',
+          id: 'call_1|fc_tmp_1',
+          name: 'js_exec',
+          arguments: {},
+        }],
+        stopReason: 'error',
+        errorMessage: 'Provider returned error',
+        responseId: 'resp_error',
+        timestamp: 200,
+      },
+    });
+
+    expect(fake.appendPiInFlightMessages).not.toHaveBeenCalled();
+    expect(fake.recordChatThreadObservabilityEvent).toHaveBeenCalledWith(
+      'pi_failed_in_flight_append_suppressed',
+      expect.objectContaining({
+        operation: 'handle_pi_session_event',
+        status: 'message_end',
+      }),
+    );
+  });
+
+  it('prunes unpersisted Pi session messages when agent_end arrives without a successful turn_end', async () => {
+    const { fake } = createPiEventFake();
+    const previousMessage = { role: 'user', content: 'previous turn', timestamp: 50 };
+    const failedTurnMessages = [
+      { role: 'user', content: 'current turn', timestamp: 100 },
+      {
+        role: 'assistant',
+        content: [{
+          type: 'toolCall',
+          id: 'call_1|fc_tmp_1',
+          name: 'js_exec',
+          arguments: {},
+        }],
+        stopReason: 'error',
+        errorMessage: 'Provider returned error',
+        responseId: 'resp_error',
+        timestamp: 200,
+      },
+    ];
+    fake.piSession = {
+      state: {
+        model: { api: 'test', provider: 'test', id: 'test-model' },
+        messages: [previousMessage, ...failedTurnMessages],
+      },
+    };
+    fake.piMainBaselineIndex = 1;
+    fake.loadPiInFlightMessages = vi.fn(() => [failedTurnMessages[0]]);
+
+    await ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, {
+      type: 'agent_end',
+      messages: failedTurnMessages,
+    });
+
+    expect(fake.appendPiCoreMessagesIfMissing).not.toHaveBeenCalled();
+    expect(fake.piSession.state.messages).toEqual([previousMessage]);
+    expect(fake.piMainBaselineIndex).toBe(1);
+    expect(fake.recordChatThreadObservabilityEvent).toHaveBeenCalledWith(
+      'pi_in_flight_discarded',
+      expect.objectContaining({
+        operation: 'handle_pi_session_event',
+        status: 'agent_end_without_turn_end',
+        count: 1,
+        size: 2,
+      }),
+    );
   });
 
   it('persists and broadcasts todo state from direct runner events', async () => {

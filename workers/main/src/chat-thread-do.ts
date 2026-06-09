@@ -5691,6 +5691,21 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     }
   }
 
+  private discardUnpersistedPiSessionMessages(): number {
+    const sessionMessages = this.piSession?.state.messages;
+    if (!sessionMessages) return 0;
+    const baselineIndex = Math.max(
+      0,
+      Math.min(this.piMainBaselineIndex, sessionMessages.length),
+    );
+    const droppedCount = sessionMessages.length - baselineIndex;
+    if (droppedCount > 0 && this.piSession) {
+      this.piSession.state.messages = sessionMessages.slice(0, baselineIndex);
+    }
+    this.piMainBaselineIndex = baselineIndex;
+    return droppedCount;
+  }
+
   private loadPiTurnRecovery(): PiTurnRecoveryRow | null {
     this.ensurePiCoreTables();
     const row = this.ctx.storage.sql
@@ -6100,6 +6115,15 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     return (
       record.role === "assistant" &&
       record.stopReason === "aborted"
+    );
+  }
+
+  private isFailedPiAssistantMessage(message: AgentMessage): boolean {
+    if (!message || typeof message !== "object") return false;
+    const record = message as unknown as Record<string, unknown>;
+    return (
+      record.role === "assistant" &&
+      (record.stopReason === "aborted" || record.stopReason === "error")
     );
   }
 
@@ -10286,7 +10310,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       provider: "openai",
       modelId: resolvedModelId,
       hostedGatewayProvider: "openrouter",
-      hostedModelId: this.openRouterNitroModel(resolvedModelId),
+      hostedModelId: this.openRouterNitroModel(`openai/${resolvedModelId}`),
     });
     switch (normalizedModelId) {
       case "haiku":
@@ -11548,6 +11572,17 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         return;
       }
 
+      if (this.isFailedPiAssistantMessage(event.message)) {
+        const droppedSessionMessages = this.discardUnpersistedPiSessionMessages();
+        this.recordChatThreadObservabilityEvent("pi_failed_turn_end_persistence_suppressed", {
+          operation: "handle_pi_session_event",
+          status: "turn_end",
+          count: droppedSessionMessages,
+        });
+        this.clearPiInFlightMessages();
+        return;
+      }
+
       const snapshot = this.piSession?.state.messages ?? [];
       const snapshotMessages = await Promise.all(
         snapshot
@@ -11689,6 +11724,14 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       }
       const record = event.message as unknown as Record<string, unknown>;
       if (record.role === "assistant" || record.role === "toolResult") {
+        if (this.isFailedPiAssistantMessage(event.message)) {
+          this.recordChatThreadObservabilityEvent("pi_failed_in_flight_append_suppressed", {
+            operation: "handle_pi_session_event",
+            status: "message_end",
+            count: 1,
+          });
+          return;
+        }
         const buffered = isAssistant
           ? this.ensurePiAssistantTextMessage([event.message], text)
           : [await this.attachCodeModeArtifactsToToolResult(event.message)];
@@ -11805,12 +11848,16 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         }
       }
       this.clearPiInFlightMessages();
-      if (droppedInFlight > 0 && !stoppedByUser) {
-        this.recordChatThreadObservabilityEvent("pi_in_flight_discarded", {
-          operation: "handle_pi_session_event",
-          status: "agent_end_without_turn_end",
-          count: droppedInFlight,
-        });
+      if (!stoppedByUser) {
+        const droppedSessionMessages = this.discardUnpersistedPiSessionMessages();
+        if (droppedInFlight > 0 || droppedSessionMessages > 0) {
+          this.recordChatThreadObservabilityEvent("pi_in_flight_discarded", {
+            operation: "handle_pi_session_event",
+            status: "agent_end_without_turn_end",
+            count: droppedInFlight,
+            size: droppedSessionMessages,
+          });
+        }
       }
       const completedAtMs = Date.now();
       const turnStartedAtMs =
