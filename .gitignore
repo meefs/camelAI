@@ -104,4 +104,5 @@ workers/main/src/embedded-skills.ts
 # Local keys and state
 .admin_key
 .bedrock_key
+.slack_token
 .claude/

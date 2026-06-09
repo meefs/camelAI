@@ -208,8 +208,141 @@ export interface ConnectionSmokeTestResult {
 
 const NATIVE_MCP_SERVERS = PROVIDER_MCP_REGISTRY;
 const OTHER_CONNECTION_FETCH_TOOL = 'authenticated_fetch';
+const SLACK_CHANNEL_SEND_CAPABILITY = 'channel_send';
+const SLACK_API_CAPABILITY = 'slack_api';
+const SLACK_SEND_TOOL = 'send_slack_message';
+const SLACK_API_TOOL = 'slack_api';
+const SLACK_COMMON_API_METHODS: ConnectionMethodSummary[] = [
+  {
+    name: 'slackApi',
+    tool: SLACK_API_TOOL,
+    invokeVia: 'connections.<alias>.slackApi',
+    description: 'Call any Slack Web API method available to the connected bot token.',
+    example: 'await connections.<alias>.slackApi({ method: "conversations.list", params: { types: "public_channel,private_channel", limit: 100 } })',
+    inputSchema: {
+      type: 'object',
+      required: ['method'],
+      properties: {
+        method: {
+          type: 'string',
+          description: 'Slack Web API method, for example conversations.list, chat.update, reactions.add, or users.info.',
+        },
+        params: {
+          type: 'object',
+          description: 'Slack API parameters. Objects and arrays are sent as JSON for POST requests.',
+        },
+        http_method: {
+          type: 'string',
+          enum: ['GET', 'POST'],
+          description: 'HTTP method for the Slack API call. Defaults to POST.',
+        },
+        encoding: {
+          type: 'string',
+          enum: ['json', 'form'],
+          description: 'POST body encoding. Defaults to JSON.',
+        },
+      },
+    },
+  },
+  {
+    name: 'listSlackChannels',
+    tool: 'list_slack_channels',
+    invokeVia: 'connections.<alias>.listSlackChannels',
+    description: 'List Slack conversations visible to the connected bot.',
+    example: 'await connections.<alias>.listSlackChannels({ types: "public_channel,private_channel", limit: 100 })',
+  },
+  {
+    name: 'listSlackUsers',
+    tool: 'list_slack_users',
+    invokeVia: 'connections.<alias>.listSlackUsers',
+    description: 'List Slack users visible to the connected bot.',
+    example: 'await connections.<alias>.listSlackUsers({ limit: 100 })',
+  },
+  {
+    name: 'getSlackChannelHistory',
+    tool: 'get_slack_channel_history',
+    invokeVia: 'connections.<alias>.getSlackChannelHistory',
+    description: 'Read Slack conversation history for a channel the bot can access.',
+    example: 'await connections.<alias>.getSlackChannelHistory({ channel: "C123", limit: 20 })',
+  },
+  {
+    name: 'getSlackThreadReplies',
+    tool: 'get_slack_thread_replies',
+    invokeVia: 'connections.<alias>.getSlackThreadReplies',
+    description: 'Read replies in a Slack thread.',
+    example: 'await connections.<alias>.getSlackThreadReplies({ channel: "C123", ts: "1712345678.901" })',
+  },
+  {
+    name: 'updateSlackMessage',
+    tool: 'update_slack_message',
+    invokeVia: 'connections.<alias>.updateSlackMessage',
+    description: 'Update a Slack message posted by the connected bot.',
+    example: 'await connections.<alias>.updateSlackMessage({ channel: "C123", ts: "1712345678.901", text: "Updated text" })',
+  },
+  {
+    name: 'deleteSlackMessage',
+    tool: 'delete_slack_message',
+    invokeVia: 'connections.<alias>.deleteSlackMessage',
+    description: 'Delete a Slack message posted by the connected bot.',
+    example: 'await connections.<alias>.deleteSlackMessage({ channel: "C123", ts: "1712345678.901" })',
+  },
+  {
+    name: 'addSlackReaction',
+    tool: 'add_slack_reaction',
+    invokeVia: 'connections.<alias>.addSlackReaction',
+    description: 'Add a reaction to a Slack message as the connected bot.',
+    example: 'await connections.<alias>.addSlackReaction({ channel: "C123", timestamp: "1712345678.901", name: "white_check_mark" })',
+  },
+];
 const TELEGRAM_CHANNEL_SEND_CAPABILITY = 'channel_send';
 const TELEGRAM_SEND_TOOL = 'send_telegram_message';
+const SLACK_SEND_METHOD: ConnectionMethodSummary = {
+  name: 'sendSlackMessage',
+  tool: SLACK_SEND_TOOL,
+  invokeVia: 'tools.send_slack_message',
+  description:
+    'Virtual channel action for sending a Slack message as the connected bot. Call the example from js_exec; this is not a raw Slack API fetch method.',
+  example: 'await tools.send_slack_message({ integration_id: "<integration_id>", channel_id: "C123", text: "Hello" })',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      integration_id: {
+        type: 'string',
+        description:
+          'Slack integration id. Optional only when exactly one Slack connection exists or the current thread originated from Slack.',
+      },
+      team_id: {
+        type: 'string',
+        description: 'Optional Slack team id used to select a connection when multiple Slack workspaces are connected.',
+      },
+      channel_id: {
+        type: 'string',
+        description: 'Slack channel or DM id. Required outside Slack-originated threads.',
+      },
+      thread_ts: {
+        type: 'string',
+        description: 'Optional Slack thread timestamp for replies.',
+      },
+      text: {
+        type: 'string',
+        description: 'Message text to send.',
+      },
+      attachments: {
+        type: 'array',
+        description: 'Optional attachments from workspace paths.',
+        items: {
+          type: 'object',
+          properties: {
+            path: { type: 'string' },
+            filename: { type: 'string' },
+            content_type: { type: 'string' },
+            caption: { type: 'string' },
+          },
+        },
+      },
+    },
+  },
+};
 const TELEGRAM_SEND_METHOD: ConnectionMethodSummary = {
   name: 'sendTelegramMessage',
   tool: TELEGRAM_SEND_TOOL,
@@ -346,6 +479,9 @@ function fallbackCapabilities(integrationType: string, config: Record<string, un
   if (integrationType === 'other' && typeof config.base_url === 'string' && config.base_url.trim()) {
     return ['authenticated_fetch'];
   }
+  if (integrationType === 'slack') {
+    return [SLACK_CHANNEL_SEND_CAPABILITY, SLACK_API_CAPABILITY];
+  }
   if (integrationType === 'telegram') {
     return [TELEGRAM_CHANNEL_SEND_CAPABILITY];
   }
@@ -384,6 +520,17 @@ function recommendedConnectionActions(
   record: WorkspaceIntegrationRecord,
   config: Record<string, unknown>
 ): ConnectionRecommendedAction[] {
+  if (record.integration_type === 'slack') {
+    return [
+      {
+        name: SLACK_SEND_TOOL,
+        tool: `tools.${SLACK_SEND_TOOL}`,
+        usage: `await tools.${SLACK_SEND_TOOL}({ integration_id: ${JSON.stringify(record.id)}, channel_id: "C123", text: "Hello" })`,
+        description: 'Send a Slack message from js_exec through this connected Slack bot.',
+        routing: 'Outside Slack-originated threads, provide channel_id and pass integration_id when more than one Slack connection exists.',
+      },
+    ];
+  }
   if (record.integration_type !== 'telegram') return [];
   return [
     {
@@ -654,6 +801,9 @@ function toolToMethod(tool: unknown): ConnectionMethodSummary | null {
 }
 
 function methodExample(alias: string, method: ConnectionMethodSummary): string {
+  if (method.tool === SLACK_SEND_TOOL) {
+    return method.example?.replace('<integration_id>', alias) ?? `await tools.${SLACK_SEND_TOOL}({ integration_id: "${alias}", channel_id: "C123", text: "Hello" })`;
+  }
   if (method.tool === TELEGRAM_SEND_TOOL) {
     return method.example?.replace('<integration_id>', alias) ?? `await tools.${TELEGRAM_SEND_TOOL}({ integration_id: "${alias}", text: "Hello" })`;
   }
@@ -719,6 +869,15 @@ function otherConnectionMethods(connection: ConnectionSummary): ConnectionMethod
 }
 
 function virtualChannelMethods(connection: ConnectionSummary): ConnectionMethodSummary[] {
+  if (connection.type === 'slack') {
+    return [
+      {
+        ...SLACK_SEND_METHOD,
+        example: `await tools.${SLACK_SEND_TOOL}({ integration_id: ${JSON.stringify(connection.id)}, channel_id: "C123", text: "Hello" })`,
+      },
+      ...SLACK_COMMON_API_METHODS,
+    ];
+  }
   if (connection.type !== 'telegram') return [];
   return [{
     ...TELEGRAM_SEND_METHOD,
@@ -843,6 +1002,16 @@ export async function listConnectionTools(
       status: resolved.status,
       matches: resolved.matches,
     });
+  }
+  if (resolved.record.integration_type === 'slack') {
+    return SLACK_COMMON_API_METHODS.map((method) => ({
+      name: method.tool,
+      description: method.description,
+      inputSchema: method.inputSchema ?? {
+        type: 'object',
+        additionalProperties: true,
+      },
+    }));
   }
   const result = await invokeNativeMcpRpc(env, context, resolved.record, 'tools/list');
   const tools = (result as { tools?: unknown[] })?.tools;
@@ -1026,9 +1195,23 @@ export async function invokeConnectionMethod(
       methods: target.methods,
     });
   }
+  const input = request.input && typeof request.input === 'object' && !Array.isArray(request.input)
+    ? request.input as Record<string, unknown>
+    : {};
 
   if (target.connection.type === 'other' && targetMethod.tool === OTHER_CONNECTION_FETCH_TOOL) {
     return callOtherConnectionFetch(env, context, target.connection.id, request.input);
+  }
+  if (target.connection.type === 'slack' && targetMethod.tool === SLACK_SEND_TOOL) {
+    throw Object.assign(
+      new Error(
+        `Slack send is available in js_exec as tools.${SLACK_SEND_TOOL}(...), not as connections.${target.alias}.${targetMethod.name}(...). Use the method catalog example: await tools.${SLACK_SEND_TOOL}({ integration_id: ${JSON.stringify(target.connection.id)}, channel_id: "C123", text: "Hello" })`
+      ),
+      { status: 400 }
+    );
+  }
+  if (target.connection.type === 'slack') {
+    return callSlackConnectionTool(env, context, target.connection.id, targetMethod.tool, input);
   }
   if (target.connection.type === 'telegram' && targetMethod.tool === TELEGRAM_SEND_TOOL) {
     throw Object.assign(
@@ -1039,9 +1222,6 @@ export async function invokeConnectionMethod(
     );
   }
 
-  const input = request.input && typeof request.input === 'object' && !Array.isArray(request.input)
-    ? request.input as Record<string, unknown>
-    : {};
   return callConnectionTool(env, context, target.connection.id, targetMethod.tool, input);
 }
 
@@ -1096,6 +1276,169 @@ async function callOtherConnectionFetch(
     bodyText: responseBody.text,
     truncated: responseBody.truncated,
   };
+}
+
+async function callSlackConnectionTool(
+  env: ConnectionsRuntimeEnv,
+  context: ConnectionsContext,
+  connection: string,
+  tool: string,
+  input: Record<string, unknown> = {}
+): Promise<unknown> {
+  const records = await getWorkspaceIntegrations(env, context.workspaceId);
+  const resolved = resolveIntegration(records, connection);
+  if (!resolved.ok) {
+    throw Object.assign(new Error(resolved.error), {
+      status: resolved.status,
+      matches: resolved.matches,
+    });
+  }
+  const record = resolved.record;
+  if (record.integration_type !== 'slack') {
+    throw Object.assign(new Error(`Connection "${record.name}" is not a Slack connection.`), { status: 400 });
+  }
+
+  const credentials = record.credentials_encrypted
+    ? await decryptCredentials<Record<string, unknown>>(record.credentials_encrypted, env.INTEGRATION_SECRET_KEY)
+    : {};
+  const token = typeof credentials.access_token === 'string'
+    ? credentials.access_token.trim()
+    : '';
+  if (!token) {
+    throw Object.assign(new Error(`Slack connection "${record.name}" does not have a bot access token.`), { status: 400 });
+  }
+
+  const request = slackApiRequestForTool(tool, input);
+  return callSlackWebApi(token, request);
+}
+
+function slackApiRequestForTool(
+  tool: string,
+  input: Record<string, unknown>
+): { method: string; params: Record<string, unknown>; httpMethod: 'GET' | 'POST'; encoding: 'json' | 'form' } {
+  if (tool === SLACK_API_TOOL) {
+    const method = typeof input.method === 'string' && input.method.trim()
+      ? input.method.trim()
+      : typeof input.api_method === 'string' && input.api_method.trim()
+        ? input.api_method.trim()
+        : '';
+    const params = input.params && typeof input.params === 'object' && !Array.isArray(input.params)
+      ? input.params as Record<string, unknown>
+      : {};
+    return {
+      method,
+      params,
+      httpMethod: slackHttpMethod(input.http_method),
+      encoding: slackEncoding(input.encoding),
+    };
+  }
+
+  const defaults: Record<string, { method: string; params?: Record<string, unknown>; httpMethod?: 'GET' | 'POST' }> = {
+    list_slack_channels: {
+      method: 'conversations.list',
+      params: { types: 'public_channel,private_channel', exclude_archived: true, limit: 100 },
+    },
+    list_slack_users: {
+      method: 'users.list',
+      params: { limit: 100 },
+    },
+    get_slack_channel_history: {
+      method: 'conversations.history',
+      params: { limit: 20 },
+    },
+    get_slack_thread_replies: {
+      method: 'conversations.replies',
+      params: { limit: 20 },
+    },
+    update_slack_message: { method: 'chat.update' },
+    delete_slack_message: { method: 'chat.delete' },
+    add_slack_reaction: { method: 'reactions.add' },
+  };
+  const mapped = defaults[tool];
+  if (!mapped) {
+    throw Object.assign(new Error(`Unsupported Slack connection tool: ${tool}`), { status: 404 });
+  }
+  return {
+    method: mapped.method,
+    params: { ...(mapped.params ?? {}), ...input },
+    httpMethod: mapped.httpMethod ?? 'POST',
+    encoding: 'json',
+  };
+}
+
+function slackHttpMethod(value: unknown): 'GET' | 'POST' {
+  const method = typeof value === 'string' && value.trim()
+    ? value.trim().toUpperCase()
+    : 'POST';
+  if (method === 'GET' || method === 'POST') return method;
+  throw Object.assign(new Error(`Unsupported Slack API HTTP method: ${method}`), { status: 400 });
+}
+
+function slackEncoding(value: unknown): 'json' | 'form' {
+  const encoding = typeof value === 'string' && value.trim()
+    ? value.trim().toLowerCase()
+    : 'json';
+  if (encoding === 'json' || encoding === 'form') return encoding;
+  throw Object.assign(new Error(`Unsupported Slack API encoding: ${encoding}`), { status: 400 });
+}
+
+async function callSlackWebApi(
+  token: string,
+  request: { method: string; params: Record<string, unknown>; httpMethod: 'GET' | 'POST'; encoding: 'json' | 'form' }
+): Promise<unknown> {
+  const method = normalizeSlackApiMethod(request.method);
+  const url = new URL(`https://slack.com/api/${method}`);
+  const headers = new Headers({ Authorization: `Bearer ${token}` });
+  const init: RequestInit = { method: request.httpMethod, headers };
+
+  if (request.httpMethod === 'GET') {
+    for (const [key, value] of Object.entries(request.params)) {
+      if (value === undefined || value === null) continue;
+      url.searchParams.set(key, slackParamValue(value));
+    }
+  } else if (request.encoding === 'form') {
+    headers.set('Content-Type', 'application/x-www-form-urlencoded');
+    const body = new URLSearchParams();
+    for (const [key, value] of Object.entries(request.params)) {
+      if (value === undefined || value === null) continue;
+      body.set(key, slackParamValue(value));
+    }
+    init.body = body;
+  } else {
+    headers.set('Content-Type', 'application/json; charset=utf-8');
+    init.body = JSON.stringify(request.params);
+  }
+
+  const response = await fetch(url, init);
+  const responseJson = await response.json().catch(() => null) as {
+    ok?: boolean;
+    error?: string;
+    [key: string]: unknown;
+  } | null;
+  if (!response.ok || responseJson?.ok !== true) {
+    throw Object.assign(
+      new Error(`Slack API ${method} failed: ${responseJson?.error || response.statusText}`),
+      { status: response.ok ? 400 : response.status }
+    );
+  }
+  return responseJson;
+}
+
+function normalizeSlackApiMethod(value: string): string {
+  const method = value.trim().replace(/^\/?api\//, '');
+  if (!/^[A-Za-z][A-Za-z0-9]*(?:\.[A-Za-z][A-Za-z0-9]*)+$/.test(method)) {
+    throw Object.assign(
+      new Error('Slack API method must look like conversations.list or chat.update.'),
+      { status: 400 }
+    );
+  }
+  return method;
+}
+
+function slackParamValue(value: unknown): string {
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  return JSON.stringify(value);
 }
 
 function requireConfiguredUrl(value: unknown, field: string): URL {
@@ -1286,6 +1629,9 @@ export async function callConnectionTool(
       status: resolved.status,
       matches: resolved.matches,
     });
+  }
+  if (resolved.record.integration_type === 'slack') {
+    return callSlackConnectionTool(env, context, resolved.record.id, tool, input);
   }
   return invokeNativeMcpRpc(env, context, resolved.record, 'tools/call', {
     name: tool,

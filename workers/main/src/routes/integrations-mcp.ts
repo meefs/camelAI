@@ -444,6 +444,9 @@ function fallbackCapabilities(integrationType: string, config: Record<string, un
   if (integrationType === 'other' && typeof config.base_url === 'string' && config.base_url.trim()) {
     return ['authenticated_fetch'];
   }
+  if (integrationType === 'slack') {
+    return ['channel_send', 'slack_api'];
+  }
   if (integrationType === 'telegram') {
     return ['channel_send'];
   }

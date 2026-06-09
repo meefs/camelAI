@@ -525,18 +525,6 @@ export const PROVIDER_MCP_REGISTRY: Record<string, ProviderMcpDefinition> = {
     notes:
       'Official Atlassian Rovo MCP server for Jira and other Atlassian products. camelAI brokers this first-party MCP server using connected credentials where available.',
   },
-  slack: {
-    integrationType: 'slack',
-    serverName: 'slack',
-    url: 'https://mcp.slack.com/mcp',
-    transport: 'streamable_http',
-    authStrategy: 'first_party_oauth_direct',
-    brokered: true,
-    directConnect: false,
-    docsUrl: 'https://slack.com/help/articles/48855576908307-Guide-to-the-Slack-MCP-server',
-    notes:
-      'Official Slack MCP server. Access may depend on Slack MCP client availability; camelAI keeps the existing Slack OAuth integration for bot workflows.',
-  },
   vercel: {
     integrationType: 'vercel',
     serverName: 'vercel',

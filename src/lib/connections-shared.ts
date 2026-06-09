@@ -10,7 +10,8 @@ export type Capability =
   | "query_database"
   | "mcp_tools"
   | "authenticated_fetch"
-  | "channel_send";
+  | "channel_send"
+  | "slack_api";
 
 export interface ConnectionListItem extends Integration {
   auth_status?: string | null;
@@ -65,6 +66,7 @@ export const CAPABILITY_LABEL: Record<Capability, string> = {
   mcp_tools: "MCP tools",
   authenticated_fetch: "Authenticated API calls",
   channel_send: "Channel send",
+  slack_api: "Slack API",
 };
 
 export interface DetailField {
@@ -220,12 +222,16 @@ export function deriveCapabilities(connection: Integration): Capability[] {
   }
 
   if (connection.integration_type === "telegram") caps.push("channel_send");
+  if (connection.integration_type === "slack") {
+    caps.push("channel_send", "slack_api");
+  }
 
   if (
     connection.category !== "databases" &&
     connection.integration_type !== "remote_mcp" &&
     !getProviderMcpDefinition(connection.integration_type) &&
-    connection.integration_type !== "telegram"
+    connection.integration_type !== "telegram" &&
+    connection.integration_type !== "slack"
   ) {
     caps.push("authenticated_fetch");
   }

@@ -119,6 +119,162 @@ describe('connections runtime', () => {
     ]);
   });
 
+  it('treats Slack as a bot channel connection instead of a brokered MCP connection', async () => {
+    const records = [
+      integration({
+        id: 'slack_workspace',
+        integration_type: 'slack',
+        name: 'workspace',
+        category: 'communication',
+        credentials_encrypted: await encryptedCredentials({ access_token: 'xoxb-token' }),
+      }),
+    ];
+
+    await expect(listConnections(envWith(records), context)).resolves.toMatchObject([
+      {
+        id: 'slack_workspace',
+        type: 'slack',
+        capabilities: ['channel_send', 'slack_api'],
+        nativeMcp: null,
+        recommendedActions: [
+          {
+            name: 'send_slack_message',
+            tool: 'tools.send_slack_message',
+          },
+        ],
+      },
+    ]);
+    const catalog = await listConnectionMethods(envWith(records), context);
+    expect(catalog).toMatchObject([
+      {
+        alias: 'slackWorkspace',
+        methods: expect.arrayContaining([
+          expect.objectContaining({
+            name: 'sendSlackMessage',
+            tool: 'send_slack_message',
+            invokeVia: 'tools.send_slack_message',
+          }),
+          expect.objectContaining({
+            name: 'slackApi',
+            tool: 'slack_api',
+          }),
+          expect.objectContaining({
+            name: 'listSlackChannels',
+            tool: 'list_slack_channels',
+          }),
+        ]),
+      },
+    ]);
+    await expect(listConnectionTools(envWith(records), context, 'slack_workspace'))
+      .resolves.toEqual(expect.arrayContaining([
+        expect.objectContaining({ name: 'slack_api' }),
+        expect.objectContaining({ name: 'list_slack_channels' }),
+        expect.objectContaining({ name: 'update_slack_message' }),
+      ]));
+  });
+
+  it('invokes arbitrary Slack Web API methods with the connected bot token', async () => {
+    const fetchMock = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      expect(String(url)).toBe('https://slack.com/api/conversations.info');
+      expect(init?.method).toBe('POST');
+      const headers = new Headers(init?.headers);
+      expect(headers.get('authorization')).toBe('Bearer xoxb-token');
+      expect(headers.get('content-type')).toBe('application/json; charset=utf-8');
+      expect(JSON.parse(String(init?.body))).toEqual({ channel: 'C123' });
+      return new Response(JSON.stringify({
+        ok: true,
+        channel: { id: 'C123', name: 'general' },
+      }));
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const records = [
+      integration({
+        id: 'slack_workspace',
+        integration_type: 'slack',
+        name: 'workspace',
+        category: 'communication',
+        credentials_encrypted: await encryptedCredentials({ access_token: 'xoxb-token' }),
+      }),
+    ];
+
+    await expect(invokeConnectionMethod(envWith(records), context, {
+      connection: 'slackWorkspace',
+      method: 'slackApi',
+      input: {
+        method: 'conversations.info',
+        params: { channel: 'C123' },
+      },
+    })).resolves.toEqual({
+      ok: true,
+      channel: { id: 'C123', name: 'general' },
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('maps common Slack helpers to bot-token Web API calls', async () => {
+    const fetchMock = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      expect(String(url)).toBe('https://slack.com/api/conversations.list');
+      expect(init?.method).toBe('POST');
+      expect(new Headers(init?.headers).get('authorization')).toBe('Bearer xoxb-token');
+      expect(JSON.parse(String(init?.body))).toEqual({
+        types: 'public_channel,private_channel',
+        exclude_archived: true,
+        limit: 2,
+      });
+      return new Response(JSON.stringify({
+        ok: true,
+        channels: [{ id: 'C123', name: 'general' }],
+      }));
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const records = [
+      integration({
+        id: 'slack_workspace',
+        integration_type: 'slack',
+        name: 'workspace',
+        category: 'communication',
+        credentials_encrypted: await encryptedCredentials({ access_token: 'xoxb-token' }),
+      }),
+    ];
+
+    await expect(callConnectionTool(
+      envWith(records),
+      context,
+      'slack_workspace',
+      'list_slack_channels',
+      { limit: 2 }
+    )).resolves.toEqual({
+      ok: true,
+      channels: [{ id: 'C123', name: 'general' }],
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('surfaces Slack Web API errors from bot-token calls', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => (
+      new Response(JSON.stringify({ ok: false, error: 'missing_scope' }))
+    )));
+    const records = [
+      integration({
+        id: 'slack_workspace',
+        integration_type: 'slack',
+        name: 'workspace',
+        category: 'communication',
+        credentials_encrypted: await encryptedCredentials({ access_token: 'xoxb-token' }),
+      }),
+    ];
+
+    await expect(callConnectionTool(
+      envWith(records),
+      context,
+      'slack_workspace',
+      'list_slack_users'
+    )).rejects.toMatchObject({
+      message: 'Slack API users.list failed: missing_scope',
+      status: 400,
+    });
+  });
+
   it('requires ids when a connection query is ambiguous', async () => {
     const records = [
       integration({ id: 'stripe_prod', integration_type: 'stripe', name: 'prod' }),

@@ -1,11 +1,11 @@
 display_information:
-  name: camelAI
-  description: AI coding assistant integration for camelAI workspaces
+  name: camelAI Staging
+  description: Staging AI coding assistant integration for camelAI workspaces
   background_color: "#18181b"
   long_description: |
-    camelAI is an AI coding assistant that can interact with your Slack workspace.
-    This integration allows camelAI to read messages, post updates, manage channels,
-    and help automate workflows in your Slack workspace.
+    camelAI Staging is the staging Slack app for camelAI. Use this app only with
+    staging.camelai.dev so OAuth callbacks and Slack Events API traffic stay out
+    of the production Slack app.
 
 features:
   app_home:
@@ -13,19 +13,14 @@ features:
     messages_tab_enabled: true
     messages_tab_read_only_enabled: false
   bot_user:
-    display_name: camelAI
+    display_name: camelAI Staging
     always_online: true
 
 oauth_config:
   redirect_urls:
-    - https://camelai.dev/api/integrations/slack/callback
     - https://staging.camelai.dev/api/integrations/slack/callback
-    - https://dev-miguel.camelai.dev/api/integrations/slack/callback
-    - https://dev-illiana.camelai.dev/api/integrations/slack/callback
-    - http://localhost:3001/api/integrations/slack/callback
   scopes:
     bot:
-      # Messaging
       - chat:write
       - chat:write.public
       - chat:write.customize
@@ -35,8 +30,6 @@ oauth_config:
       - mpim:write
       - mpim:read
       - mpim:history
-
-      # Channels
       - channels:read
       - channels:history
       - channels:join
@@ -44,62 +37,35 @@ oauth_config:
       - groups:read
       - groups:history
       - groups:write
-
-      # Users & Team
       - users:read
       - users:read.email
       - users.profile:read
       - team:read
-
-      # Files
       - files:read
       - files:write
-
-      # Reactions & Pins
       - reactions:read
       - reactions:write
       - pins:read
       - pins:write
-
-      # Bookmarks
       - bookmarks:read
       - bookmarks:write
-
-      # Reminders
       - reminders:read
       - reminders:write
-
-      # User Groups
       - usergroups:read
       - usergroups:write
-
-      # Calls
       - calls:read
       - calls:write
-
-      # Canvas (newer feature)
       - canvases:read
       - canvases:write
-
-      # Workflows
       - workflow.steps:execute
-
-      # App events
       - app_mentions:read
-
-      # Metadata
       - metadata.message:read
-
-      # Links
       - links:read
       - links:write
-
-      # DND (Do Not Disturb)
       - dnd:read
-
 settings:
   event_subscriptions:
-    request_url: https://camelai.dev/api/integrations/slack/events
+    request_url: https://staging.camelai.dev/api/integrations/slack/events
     bot_events:
       - app_mention
       - message.channels

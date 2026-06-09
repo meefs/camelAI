@@ -1,9 +1,9 @@
 {
   "display_information": {
-    "name": "camelAI",
-    "description": "AI coding assistant integration for camelAI workspaces",
+    "name": "camelAI Staging",
+    "description": "Staging AI coding assistant integration for camelAI workspaces",
     "background_color": "#18181b",
-    "long_description": "camelAI is an AI coding assistant that can interact with your Slack workspace. This integration allows camelAI to read messages, post updates, manage channels, and help automate workflows in your Slack workspace."
+    "long_description": "camelAI Staging is the staging Slack app for camelAI. Use this app only with staging.camelai.dev so OAuth callbacks and Slack Events API traffic stay out of the production Slack app."
   },
   "features": {
     "app_home": {
@@ -12,17 +12,13 @@
       "messages_tab_read_only_enabled": false
     },
     "bot_user": {
-      "display_name": "camelAI",
+      "display_name": "camelAI Staging",
       "always_online": true
     }
   },
   "oauth_config": {
     "redirect_urls": [
-      "https://camelai.dev/api/integrations/slack/callback",
-      "https://staging.camelai.dev/api/integrations/slack/callback",
-      "https://dev-miguel.camelai.dev/api/integrations/slack/callback",
-      "https://dev-illiana.camelai.dev/api/integrations/slack/callback",
-      "http://localhost:3001/api/integrations/slack/callback"
+      "https://staging.camelai.dev/api/integrations/slack/callback"
     ],
     "scopes": {
       "bot": [
@@ -73,7 +69,7 @@
   },
   "settings": {
     "event_subscriptions": {
-      "request_url": "https://camelai.dev/api/integrations/slack/events",
+      "request_url": "https://staging.camelai.dev/api/integrations/slack/events",
       "bot_events": [
         "app_mention",
         "message.channels",
