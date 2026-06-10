@@ -2,13 +2,13 @@
 
 ## Status
 
-June 8, 2026 - planning draft only. Do not create the skill in this change.
+June 10, 2026 - planning draft only. Do not create the skill in this change. Every FAQ answer below has been audited against the codebase; sources are in the audit table.
 
 ## Goal
 
-Add a short built-in Pi skill that helps the agent answer common camelAI product questions accurately. This should be a compact FAQ sheet, not a full support knowledge base. If the user needs current plan details, account-specific help, or wants to report a problem, the agent should direct them to the camelAI docs or the in-app Get Help flow.
+Add a short built-in Pi skill that helps the agent answer common camelAI product questions accurately. This should be a compact FAQ sheet, not a full support knowledge base: short, clear answers to the heaviest-hitting questions.
 
-This plan incorporates the question patterns from `docs/user-questions-audit.md`: users are not only asking generic platform questions; they are asking about public/protected app access, connections, broken links, workspace defaults, and provider/API-key failures.
+The skill must also teach the agent the Get Help flow. The question-mark button at the bottom-left of the side nav opens the Get Help dialog; submitting it starts an email thread with the support team. Whenever a question is not covered by the FAQ, or depends on account/billing state, or reports a platform bug, the agent should prompt the user to submit a Get Help request rather than guess.
 
 Recommended skill name: `camelai-platform-faq`
 
@@ -16,55 +16,29 @@ Recommended path: `sandbox/skills/camelai-platform-faq/SKILL.md`
 
 Recommended system prompt trigger: answer common camelAI platform questions about app access/passwords, workspace resources, deployed links, connections, provider keys/credits, files, and support paths.
 
-## Audit Takeaways
+## Codebase Audit
 
-- The top FAQ should be "public vs private vs password-protected," not only "public vs private." Users are trying to understand whether a public app with an app-level password gate is protected.
-- Connections need clearer language around chat/runtime access versus deployed app access. Users ask whether `js_exec` connections are the same as connections inside Workers/apps.
-- Broken generated report links and app URLs are a real support category. The skill should tell the agent how to explain workspace-scoped links without pretending all app URLs behave the same.
-- Workspace-wide defaults are a recurring mental-model gap. The skill should distinguish current settings/model defaults from broader persistent instructions that may need product support or explicit workspace docs.
-- Provider/model questions are usually diagnostics, not pricing questions: is a key configured, does it have credits/budget, is the provider rate-limiting, or is camelAI out of hosted credits?
-- Admin analytics and system-prompt workflow questions are valuable internally, but they should not bloat the customer-facing FAQ skill. Keep those in separate internal docs or recipes.
+Facts the answers below rest on, with where to re-verify them:
 
-## High-Level FAQ Buckets
+| Fact | Source |
+| --- | --- |
+| App visibility is a single `is_public` boolean; there is no third level and no platform password feature | `workers/main/src/identity/org-do.ts` (`WorkerScript.is_public`), `src/components/pages/apps/AppSettingsDialog.tsx` |
+| Private apps are gated on **org membership**, not workspace access; the dispatcher checks `isOrgMember` against the owning org and never consults workspace access levels | `workers/dispatcher/src/index.ts` (~L655-701) |
+| `mcp-handler.ts` already describes private apps as "org members only" — this matches the dispatcher and needs no change | `workers/main/src/mcp-handler.ts` (`set_app_visibility`) |
+| Get Help button is the `CircleHelp` icon in the sidebar footer (bottom-left); the form collects category, severity, and description, and auto-captures page URL and screen size | `src/components/sidebar/app-sidebar.tsx` (~L190), `src/components/get-help-dialog.tsx` |
+| Submitting Get Help emails the support team and sends the user a confirmation with support reply-to, starting an email thread | `src/routes/api/help.ts`, `src/lib/help.ts` (`SUPPORT_EMAIL`) |
+| Everything in a workspace is shared with members who have access; no resource carries a personal/public marker except app `is_public` | `src/lib/auth-do.ts` (`getWorkspaceAccess`), `migrations/0001_app_index.sql` |
+| Chat (`js_exec`) and deployed apps reach connections through the same `CONNECTIONS` binding mechanism; credentials stay encrypted behind it | `workers/main/src/connections-service.ts`, `workers/main/src/cf-api-proxy.ts` |
+| Channel kinds are email, Slack, and Telegram; workspace email addresses are `{handle}@WORKSPACE_EMAIL_DOMAIN` and only workspace members can start threads by email | `workers/main/src/channels.ts`, `src/lib/workspace-email.ts`, `workers/main/src/email-ingress.ts` |
+| Model picker defaults are org-level with optional per-workspace override | `workers/main/src/workspace.ts` (`setModelPickerConfig`), `src/lib/model-picker-config.ts` |
+| BYOK usage does not consume camelAI credits; hosted usage requires credits; plan/credit balance lives at Settings → Organization → Billing | `src/lib/billing-plans.ts`, `src/routes/_app.settings.organization.billing.tsx` |
+| Generated report/download links are workspace-scoped routes that require sign-in and workspace access | `src/routes/api/workspaces.$id.outputs.$.ts`, `src/lib/workspace-r2-paths.ts` |
+| No docs site or help-center link exists in the product; Get Help is the only support surface | searched `src/` for help/support/docs surfaces |
 
-1. Public app access, passwords, and visibility
-   - Public, private, and app-level password protection.
-   - Who can access workspace-private apps.
-   - What to do before exposing sensitive data.
+Two findings to keep in mind when editing answers:
 
-2. Workspaces, chats, projects, and deployed apps
-   - Difference between a workspace, chat thread, project, and deployed app.
-   - Where source files live versus where published apps live.
-   - What it means to redeploy or publish an app.
-
-3. Connections and integrations
-   - Connections in chat/`js_exec` versus deployed app connections.
-   - Credential handling.
-   - Google Sheets, Apps Script, Slack, email, and custom APIs.
-
-4. Deployed links, report downloads, and routing
-   - `*.camelai.app` app URLs.
-   - Workspace-scoped file/download links.
-   - Custom domains, proxy apps, and default app routing.
-
-5. Workspace defaults and persistent instructions
-   - Workspace-level model settings.
-   - Persistent data-source or formatting preferences.
-   - What to save in docs/app config versus what needs product support.
-
-6. Files and outputs
-   - Uploaded files, workspace files, project VM files, and downloadable outputs.
-   - When to use preview versus download links.
-
-7. Billing, credits, provider keys, and model access
-   - Hosted camelAI credits versus bring-your-own-key providers.
-   - Provider-side rate limits and missing provider credits/budget.
-   - Plan details should point to docs because pricing and limits can change.
-
-8. Help and troubleshooting
-   - When to use docs.
-   - When to use the in-app Get Help flow.
-   - What details to include in a support request.
+- The visibility-toggle permission story is inconsistent in code: the settings dialog restricts the toggle to org admins, but the apps page action and the `set_app_visibility` MCP tool do not enforce a role. The FAQ stays vague on *who* can toggle until that is reconciled.
+- "Proxy apps" are not a first-class platform concept (no schema or settings surface), so the FAQ no longer presents them as one.
 
 ## Proposed Skill Sheet
 
@@ -76,7 +50,17 @@ description: Answer common camelAI platform questions about app access/passwords
 
 # camelAI Platform FAQ
 
-Use this skill for concise product answers. If a question depends on current pricing, account state, policy, or support follow-up, direct the user to the camelAI docs or the in-app Get Help flow.
+Give short, direct answers from this sheet. Do not guess beyond it.
+
+## Getting help
+
+The Get Help button is the question-mark icon at the bottom-left of the side nav. Submitting the form starts an email thread with the camelAI support team; the user gets a confirmation email and can reply to continue the conversation. The current page URL is captured automatically, so the user only needs to describe what they were doing, what happened, and what they expected.
+
+Prompt the user to submit a Get Help request when:
+
+- The question is not answered in this FAQ.
+- The answer depends on their account, plan, or billing state.
+- They are reporting a bug or something looks broken on camelAI's side.
 
 ## FAQs
 
@@ -84,85 +68,68 @@ Use this skill for concise product answers. If a question depends on current pri
 
 A public app can be viewed by anyone on the internet with the app URL.
 
-A private app is not "only visible to you." It can be accessed by members who have access to the current workspace. That means teammates with access to the workspace can access the private app.
+A private app can only be viewed by signed-in members of your organization.
 
-Password protection is separate from camelAI app visibility. If an app has its own password gate, the public URL may still be reachable on the internet, but the app can require a password before showing protected content. Session duration, failed-attempt lockout, notifications, and password storage depend on how that app was implemented.
-
-For sensitive data, prefer private visibility or a carefully reviewed authentication flow. Do not claim that an app-level password gate changes the platform visibility from public to private.
-
-Admins can change app visibility from the app settings surface, or through agent tools when available.
+Password protection is not a camelAI setting. If you want a password gate, I can build one into your app — but the URL is still public, so for sensitive data make the app private instead.
 
 ### What is a workspace?
 
-A workspace is the shared area where chats, files, projects, connections, automations, and deployed apps are organized. Treat workspace resources as available to members with access to that workspace unless the product UI says a resource is personal or public.
+A workspace is a shared space inside your organization that holds chats, files, projects, connections, and deployed apps. Everything in a workspace is shared: any member with access to the workspace can use everything in it.
 
-### What is the difference between a chat, project, and app?
+### What is the difference between a chat, a project, and an app?
 
-A chat is the conversation with the agent. A project is the compute and code area where software is built and run. A deployed app is the published result with a URL. Editing project files does not always mean the published app has changed; the app may need to be redeployed or published.
-
-### Why does a report or download link say "Workspace not found"?
-
-Generated file links are usually scoped to a workspace. A "Workspace not found" error can mean the link is stale, malformed, copied from the wrong workspace, or using an old URL pattern. Ask the agent to regenerate or validate the link in the current workspace. If the link came from a deployed app or external share, include the URL and error text in Get Help.
-
-### How are deployed app URLs, custom domains, and proxy apps different?
-
-A deployed app has a camelAI app URL. A custom domain is an optional hostname mapped to a specific deployed app. A proxy app is a separate deployed Worker/app that forwards or modifies requests before they reach another app. These are different routing layers, so changing one does not automatically change the others.
+A chat is a conversation with the agent. A project is where code is written and run. An app is the published result with its own URL. Changes to project files do not appear in the live app until it is deployed again.
 
 ### Where do my files live?
 
-camelAI has multiple file surfaces. Workspace files are durable files in the workspace. Project files live in a project's VM checkout. User uploads are files the user attached in chat. Generated outputs can be linked for download or shown in preview when supported.
+Files you upload in chat, files saved in the workspace, and files inside a project are separate places; I can copy files between them. Generated reports and downloads are served through workspace links.
+
+### Why doesn't a report or download link work for someone else?
+
+Report and download links are workspace-scoped: they require signing in with access to the workspace. To share something with people outside the workspace, deploy it as an app or send them the file itself.
 
 ### Can camelAI connect to external services?
 
-Yes, through Connections and channel integrations. Credentials are hidden behind connection bindings and should not be exposed in chat, files, or app code. If the user asks to connect a service and a setup flow is available, guide them through that flow.
+Yes. Connections cover databases (Postgres, MySQL, Snowflake, MongoDB, and more), SaaS APIs (Stripe, Notion, GitHub, Slack, and more), and custom APIs. Credentials are stored encrypted and are never exposed in chat or app code — the agent and your apps call connections through secure bindings, so never paste API keys into app code.
 
-### Are connections in chat the same as connections in deployed apps?
+### Are connections in chat the same as in deployed apps?
 
-They are related but not always identical. In chat or `js_exec`, the agent can use workspace connection bindings directly. Deployed apps need the appropriate app/runtime binding or generated code path to access a connection. Do not paste API keys into app code; use camelAI connection bindings when available.
-
-If the user asks whether camelAI can access a service, check whether a connection exists, whether auth is complete, which methods are available, and whether there is a sample call.
+Yes. The agent in chat and your deployed apps use the same workspace connections through the same binding mechanism.
 
 ### Can I use camelAI by email, Slack, or Telegram?
 
-Only when the relevant channel is configured for the workspace. Workspace email messages start threads in that workspace, and only members of the workspace can send to that address. Slack and Telegram behavior depends on the workspace's configured integrations.
+Yes, all three. Each workspace has its own email address; emailing it starts a chat in that workspace, and only workspace members can use it. Slack and Telegram are set up per workspace through integrations.
 
 ### Can I set defaults for everyone in a workspace?
 
-Some workspace or organization settings, such as model picker defaults, can be configured in settings. Broader preferences, such as "use this database by default" or "format reports this way," should be saved in a durable workspace file, project docs, or app configuration if no first-class setting exists. If the user wants defaults to apply across all users and future chats, explain the current limitation and suggest Get Help or product feedback.
+Model defaults can be set for the organization in settings, and a workspace can override them. For working preferences — "always use this database," "format reports this way" — ask me to save them in a workspace file so they persist across chats.
 
-### How do hosted model credits and BYOK differ?
+### How do hosted model credits and bring-your-own-key differ?
 
-Hosted camelAI models use camelAI credits according to the organization's plan and credit balance. Bring-your-own-key providers use the user's connected provider credentials instead of hosted camelAI credits. For exact plan limits, pricing, trials, or credit rules, point the user to the camelAI docs.
+camelAI-hosted models consume your organization's camelAI credits. If you connect your own provider key (OpenAI, Anthropic, OpenRouter, and others), usage bills to that provider instead and does not consume camelAI credits. Your plan and credit balance are in Settings → Organization → Billing.
 
 ### Why is my API key or model provider failing?
 
-First distinguish camelAI hosted credits from provider-side issues. A BYOK provider can fail because the key is missing, invalid, rate-limited, out of provider credits/budget, or lacks access to a requested model. A hosted camelAI request can fail because the organization has no hosted credits or billing access. If the error names OpenAI, Anthropic, OpenRouter, or Bedrock, do not assume camelAI controls the limit.
-
-### How do I get help or report a bug?
-
-Use the in-app Get Help flow from the sidebar. For faster support, include what you were trying to do, the page URL, what happened, what you expected, and any error text or screenshots. For general product or plan questions, check the camelAI docs first.
+Check whose limit it is. If the error names a provider (OpenAI, Anthropic, OpenRouter, Bedrock), the problem is on the provider side — an invalid key, a rate limit, or exhausted provider credits — and is fixed in that provider's dashboard. If camelAI says you are out of credits, check Settings → Organization → Billing. If neither fits, submit a Get Help request.
 
 ### What if I am not sure about a camelAI product answer?
 
-Do not guess. Say what you know, name the uncertainty, and direct the user to the camelAI docs or Get Help. For app-specific technical failures, inspect the available workspace/app state or use the relevant troubleshooting skill before answering.
+Say what you know, name the uncertainty, and prompt the user to submit a Get Help request. For app-specific technical failures, inspect the workspace/app state or use the relevant troubleshooting skill before answering.
 ```
 
 ## Implementation Notes
 
-- Add `sandbox/skills/camelai-platform-faq/SKILL.md` with the proposed short FAQ content.
+- Add `sandbox/skills/camelai-platform-faq/SKILL.md` with the proposed content.
 - Update `workers/main/src/pi-system-prompt.ts` so `SKILL_TRIGGERS` includes `camelai-platform-faq`.
-- Regenerate or refresh `docs/pi-system-prompt.md` with `bun run generate:pi-system-prompt-doc` after updating the runtime prompt source.
+- Regenerate `docs/pi-system-prompt.md` with `bun run generate:pi-system-prompt-doc` after updating the runtime prompt source.
 - Confirm `PI_SKILL_NAMES` picks up the new skill through `workers/main/src/pi-skills-bundle.ts`.
-- Check for stale app-visibility wording outside the new skill. In particular, `workers/main/src/mcp-handler.ts` currently describes private apps as requiring authentication or org-member access; align it with the workspace-member rule to avoid contradicting the FAQ.
-- Do not fold the internal admin analytics recipe from `docs/user-questions-audit.md` into this customer-facing FAQ skill. If needed, create a separate internal admin analytics note covering `searchThreads`, `getThreadMessages`, user-message filtering, and question classification.
+- `workers/main/src/mcp-handler.ts` already states "org members only" for private apps; it matches the dispatcher and the FAQ. Do not rewrite it to a workspace-member rule.
+- Do not fold the internal admin analytics recipe from `docs/user-questions-audit.md` into this customer-facing FAQ skill.
 
 ## Acceptance Criteria
 
-- A user asking "what is the difference between a public and private app?" gets the workspace-member answer for private apps.
-- A user asking whether a public app can be password protected gets the distinction between platform visibility and app-level password gates.
-- A user asking about connections gets the chat/`js_exec` versus deployed-app distinction.
-- A user asking about a broken report/download link gets the workspace-scoped link explanation and a concrete next step.
-- A user asking about OpenRouter/OpenAI/API-key failures gets a provider-side versus camelAI-hosted diagnostic answer.
-- The skill remains short enough for on-demand reading and does not duplicate full docs.
-- The system prompt lists the new skill with a clear trigger.
-- The skill points users to camelAI docs or Get Help for current, account-specific, or unresolved questions.
+- A user asking about public vs private apps gets the org-member answer for private apps and the "password gates are app code, not a platform setting" distinction.
+- A user asking about a broken report/download link gets the workspace-scoped explanation and a concrete next step.
+- A user asking about API-key failures gets the provider-side vs camelAI-hosted diagnostic.
+- A question outside the FAQ produces a prompt to use the Get Help button (bottom-left of the side nav), not a guessed answer.
+- The skill stays short enough for on-demand reading, and the system prompt lists it with a clear trigger.
