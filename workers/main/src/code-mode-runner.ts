@@ -461,7 +461,12 @@ function createToolBackedConnectionsBinding(callTool) {
 
 function createVmFacade(tools) {
   return Object.freeze({
-    exec: (command, options = {}) => tools.vm_exec({ command, ...options }),
+    exec: (commandOrOptions, options = {}) => {
+      if (typeof commandOrOptions === "object" && commandOrOptions !== null && !Array.isArray(commandOrOptions)) {
+        return tools.vm_exec(commandOrOptions);
+      }
+      return tools.vm_exec({ command: commandOrOptions, ...options });
+    },
     push: (options = {}) => tools.vm_push(options),
     pull: (options = {}) => tools.vm_pull(options),
   });
@@ -476,7 +481,7 @@ function createProjectsFacade(tools) {
   });
 }
 
-async function runUserCode(tools, CONNECTIONS, connections, VM, vm, PROJECTS, projects, env, context, ALL_TOOLS, text, store, load) {
+async function runUserCode(tools, CONNECTIONS, connections, VM, vm, env, context, ALL_TOOLS, text, store, load) {
   "use strict";
 `}${executableUserCode}${String.raw`
 }
@@ -513,9 +518,8 @@ export class CodeModeRunner extends WorkerEntrypoint {
     const VM = createVmFacade(tools);
     const vm = VM;
     const PROJECTS = createProjectsFacade(tools);
-    const projects = PROJECTS;
     const env = Object.freeze({ CONNECTIONS, AI, CAMELAI, WORKSPACE, VM, PROJECTS });
-    const context = Object.freeze({ cloudflare: Object.freeze({ env, connections, vm, projects }) });
+    const context = Object.freeze({ cloudflare: Object.freeze({ env, connections, vm, projects: env.PROJECTS }) });
     const text = (value) => {
       output.push(stringifyOutput(value));
     };
@@ -534,8 +538,6 @@ export class CodeModeRunner extends WorkerEntrypoint {
       connections,
       VM,
       vm,
-      PROJECTS,
-      projects,
       env,
       context,
       allTools,

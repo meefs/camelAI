@@ -1930,7 +1930,9 @@ describe('ChatThreadDO Codex turn handling', () => {
     expect(capturedWorkerCode.modules['index.js'].js).toContain('createVmFacade');
     expect(capturedWorkerCode.modules['index.js'].js).toContain('createProjectsFacade');
     expect(capturedWorkerCode.modules['index.js'].js).toContain('const env = Object.freeze({ CONNECTIONS, AI, CAMELAI, WORKSPACE, VM, PROJECTS })');
-    expect(capturedWorkerCode.modules['index.js'].js).toContain('const context = Object.freeze({ cloudflare: Object.freeze({ env, connections, vm, projects }) })');
+    expect(capturedWorkerCode.modules['index.js'].js).toContain('const context = Object.freeze({ cloudflare: Object.freeze({ env, connections, vm, projects: env.PROJECTS }) })');
+    expect(capturedWorkerCode.modules['index.js'].js).not.toContain('const projects = PROJECTS');
+    expect(capturedWorkerCode.modules['index.js'].js).not.toContain('PROJECTS, projects, env');
     expect(capturedWorkerCode.modules['index.js'].js).toContain('parameters: tool.parameters');
     expect(capturedWorkerCode.modules['index.js'].js).toContain('await tools.help(\\"communication\\")');
     expect(capturedWorkerCode.modules['index.js'].js).toContain('await env.CAMELAI.help()');

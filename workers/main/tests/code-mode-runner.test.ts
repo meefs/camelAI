@@ -13,7 +13,60 @@ function loadGeneratedConnectionsFacade(): (binding: unknown) => Record<string, 
   ) => Record<string, unknown>;
 }
 
+function loadGeneratedVmFacade(): (tools: unknown) => Record<string, (...args: any[]) => unknown> {
+  const source = codeModeWorkerModule('');
+  const start = source.indexOf('function createVmFacade(tools)');
+  const end = source.indexOf('\n\nfunction createProjectsFacade', start);
+  expect(start).toBeGreaterThanOrEqual(0);
+  expect(end).toBeGreaterThan(start);
+  const facadeSource = source.slice(start, end);
+  return new Function(`${facadeSource}; return createVmFacade;`)() as (
+    tools: unknown,
+  ) => Record<string, (...args: any[]) => unknown>;
+}
+
 describe('code mode runner connection facade', () => {
+  it('does not inject projects as a standalone user-code binding', () => {
+    const source = codeModeWorkerModule('const projects = ["local"]; return projects.length;');
+
+    expect(source).toContain('const PROJECTS = createProjectsFacade(tools)');
+    expect(source).toContain('projects: env.PROJECTS');
+    expect(source).toContain('const projects = ["local"]; return projects.length;');
+    expect(source).not.toContain('async function runUserCode(tools, CONNECTIONS, connections, VM, vm, PROJECTS, projects');
+    expect(source).not.toContain('const projects = PROJECTS');
+  });
+
+  it('supports object and command/options forms for vm.exec', async () => {
+    const calls: unknown[] = [];
+    const createVmFacade = loadGeneratedVmFacade();
+    const vm = createVmFacade({
+      vm_exec(input: unknown) {
+        calls.push(input);
+        return input;
+      },
+      vm_push: () => undefined,
+      vm_pull: () => undefined,
+    });
+
+    const objectStyle = await vm.exec({
+      command: 'bun run test:run',
+      project: 'web-app',
+      timeoutSeconds: 120,
+    });
+    const splitStyle = await vm.exec('bun run test:run', {
+      project: 'web-app',
+      timeoutSeconds: 120,
+    });
+
+    expect(objectStyle).toEqual({
+      command: 'bun run test:run',
+      project: 'web-app',
+      timeoutSeconds: 120,
+    });
+    expect(splitStyle).toEqual(objectStyle);
+    expect(calls).toEqual([objectStyle, objectStyle]);
+  });
+
   it('supports workflow-style connection method calls in js_exec', async () => {
     const calls: unknown[] = [];
     const connectionsBinding = {
