@@ -95,7 +95,7 @@ export function InviteMemberDialog({
 
   const roleDescriptions: Record<string, string> = {
     admin: "Full access to everything. Can manage team members, workspaces, and all settings.",
-    member: "Can access assigned workspaces — chat, apps, computer, and connections. Cannot manage the team or org settings.",
+    member: "Can access assigned workspaces — chat, apps, and connections. Cannot manage the team or org settings.",
   }
 
   const [form, fields] = useForm({

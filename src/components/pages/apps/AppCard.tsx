@@ -35,7 +35,6 @@ interface AppCardProps {
   now?: number;
   onOpenSettings: (app: WorkerScriptWithCreator) => void;
   onStartChat: (app: WorkerScriptWithCreator) => void;
-  onViewSource: (app: WorkerScriptWithCreator) => void;
 }
 
 function getCreatorLabel(creator: AppCreator | undefined, createdBy: string): string {
@@ -85,7 +84,6 @@ export function AppCard({
   now,
   onOpenSettings,
   onStartChat,
-  onViewSource,
 }: AppCardProps) {
   const [copied, setCopied] = useState(false);
   const [copyMessage, setCopyMessage] = useState('');
@@ -293,18 +291,16 @@ export function AppCard({
           {sourceLabel && (
             <Tooltip>
               <TooltipTrigger asChild>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  className="h-6 gap-1.5 px-2 text-xs text-muted-foreground hover:bg-accent hover:text-foreground cursor-pointer"
-                  onClick={() => onViewSource(app)}
+                <div
+                  tabIndex={0}
+                  aria-label={`Source file: ${app.config_path}`}
+                  className="flex h-6 items-center gap-1.5 rounded-md px-2 text-xs text-muted-foreground outline-none cursor-default focus-visible:border-ring focus-visible:ring-ring/30 focus-visible:ring-[2px]"
                 >
                   <FileCode className="size-3" />
                   <span className="truncate max-w-[80px]">{sourceLabel}</span>
-                </Button>
+                </div>
               </TooltipTrigger>
-              <TooltipContent>View source file</TooltipContent>
+              <TooltipContent>{app.config_path}</TooltipContent>
             </Tooltip>
           )}
         </div>

@@ -67,12 +67,13 @@ This is the "open in new link" button the user mentioned. Today, workspace-file 
 Change: make workspace files behave exactly like the existing temp-file branch (lines 87-158), which already has the right UX. Concretely:
 
 - Delete the `href` construction at line 161 and the entire `<a>` fallback (lines 198-221).
-- Keep the `previewContext` branch (lines 162-196) unchanged — clicking a file link in chat still opens the preview panel.
+- Keep the `previewContext` branch behavior unchanged — clicking a file link in chat still opens the preview panel.
 - For the no-`previewContext` fallback, mirror the temp-file pattern: a `<button>` (same classes as the temp-file button — `inline-flex min-w-0 max-w-full items-center gap-1 hover:underline text-foreground/80 hover:text-foreground`, `font-mono` when `mono`) that opens the existing `FilePreviewPopover` with:
   - `filename` = `getBasename(normalizedPath)`
   - `previewUrl` = `` `/api/workspaces/${currentWorkspace.id}/fs/content/${encodePathSegments(normalizedPath.replace(/^\/+/, ''))}` `` (same path shape `use-chat-preview-render-state.ts` builds — strip leading slashes, then encode per segment)
+- Delete the `showIcon` prop/default, all `ExternalLink` icon renders in this component, and the `ExternalLink` import. There are no current call sites passing `showIcon`, and after this change workspace file links no longer open an external route.
 
-No new components, no new styling — both file flavors now share one interaction model. Keep the `ExternalLink` icon rendering driven by `showIcon` as today.
+No new components, no new styling — both file flavors now share one interaction model.
 
 ### 3.4 Preview panel "Open in Computer" — three files
 
@@ -97,8 +98,8 @@ Today the source-file chip on each app card navigates to the computer tab (and o
 
 Change — demote the chip to informational:
 
-- `AppCard.tsx` (~lines 293-308): replace the `Button` with a static `<div>` chip, keeping the exact same visual treatment minus interactivity: `FileCode` icon (`size-3`) + truncated `sourceLabel` (`truncate max-w-[80px]`), classes `flex items-center gap-1.5 h-6 px-2 text-xs text-muted-foreground cursor-default`. Keep the `Tooltip`, but change its content from "View source file" to the full `app.config_path` so the path is still discoverable. Because the full path now lives only in the tooltip, the chip must stay keyboard-discoverable: give it `tabIndex={0}` and `` aria-label={`Source file: ${app.config_path}`} `` so focus triggers the tooltip and screen readers get the path. Remove the `onViewSource` prop from `AppCardProps`.
-- `apps-client.tsx`: delete `handleViewSource` (lines 134-154), narrow the switch-dialog `action` type from `'chat' | 'viewSource' | null` to `'chat' | null` (line 65), delete the `viewSource` branch in `handleConfirmSwitch` (~lines 196-198), and drop the `onViewSource={handleViewSource}` prop (line 279).
+- `AppCard.tsx` (~lines 293-308): replace the `Button` with a static `<div>` chip, keeping the same compact treatment minus interactivity: `FileCode` icon (`size-3`) + truncated `sourceLabel` (`truncate max-w-[80px]`), classes equivalent to `flex items-center gap-1.5 h-6 px-2 text-xs text-muted-foreground cursor-default rounded-md outline-none focus-visible:border-ring focus-visible:ring-ring/30 focus-visible:ring-[2px]`. Do not keep hover styling that implies clickability. Keep the `Tooltip`, but change its content from "View source file" to the full `app.config_path` so the path is still discoverable. Because the full path now lives only in the tooltip, the chip must stay keyboard-discoverable: give it `tabIndex={0}` and `` aria-label={`Source file: ${app.config_path}`} `` so focus triggers the tooltip and screen readers get the path. Remove the `onViewSource` prop from `AppCardProps`.
+- `apps-client.tsx`: delete `handleViewSource` (lines 134-154), narrow the switch-dialog `action` type from `'chat' | 'viewSource' | null` to `'chat' | null` (line 65), delete the `viewSource` branch in `handleConfirmSwitch` (~lines 196-198), drop the `onViewSource={handleViewSource}` prop (line 279), remove `useNavigate` / `const navigate = useNavigate()` if it has no remaining callers, and simplify the switch-dialog description to the chat-only string.
 - The "work on this app in chat" flow (which injects the config path into the first message) is untouched — that's now the canonical way to inspect an app's source.
 
 ## 4. App shell migration gate — `src/routes/_app.tsx`
@@ -148,7 +149,7 @@ Sole consumer was `computer-page-content.tsx` (plus a mock in the deleted `compu
 - `tests/preview-toolbar-notebook-download.test.tsx`: references `openElsewhereKind="computer"` (line 21) and asserts on the "open in computer" button (lines 69-88). Rewrite those cases: the file-preview toolbar should render *no* open-elsewhere button; keep the download assertions. The fixture URLs pointing at `fs/content/...` are fine (route survives).
 - `tests/workspaces-access-superuser.test.ts`: keep — it tests `requireWorkspaceAccess` directly. The `fs/list` / `fs/write` URLs in its `new Request(...)` fixtures are arbitrary strings; optionally update them to `fs/content/...` paths so they reference a real route, but it's cosmetic.
 - `tests/chat-preview-shell.test.tsx`: unaffected (`fs/content` fixtures), but will catch regressions from the §3.4 type narrowing — run it.
-- `tests/file-link.test.tsx`: rewrite to match §3.3. The "URL generation regression test" and "link behavior" describe blocks (lines 16-31, 74-98) assert on the `/computer` anchor — replace them with assertions that a workspace path with no preview context renders the popover-trigger `<button>` (not an anchor) and that the popover's `previewUrl` targets `/api/workspaces/ws-456/fs/content/...` with the workspaceId (not orgId) and per-segment encoding — those two regressions are still worth pinning, just against the new URL. Keep "falls back to plain text when no workspace is set" and the path-normalization cases (now asserted via the popover URL instead of `href`).
+- `tests/file-link.test.tsx`: rewrite to match §3.3. The "URL generation regression test" and "link behavior" describe blocks (lines 16-31, 74-98) assert on the `/computer` anchor — replace them with assertions that a workspace path with no preview context renders the popover-trigger `<button>` (not an anchor) and that the popover's `previewUrl` targets `/api/workspaces/ws-456/fs/content/...` with the workspaceId (not orgId) and per-segment encoding — those two regressions are still worth pinning, just against the new URL. `FilePreviewPopover` is a controlled `Dialog`, so either mock it and assert the `previewUrl` prop directly, or click the trigger and assert the dialog download link's `href`. Keep "falls back to plain text when no workspace is set" and the path-normalization cases (now asserted via the popover URL instead of `href`).
 - `tests/app-loader-sales-prompt.test.ts`: delete the two computer-route migration-gate cases at lines 277 and 321 ("checks computer route workspace for project migration…" and "does not check inaccessible computer route workspaces…") — they exercise `getComputerRouteWorkspaceId`, which §4 deletes. The rest of the file stands.
 
 ## 10. Verification
@@ -165,7 +166,8 @@ Then sweep for stragglers — each of these should come back empty (or only hit 
 ```bash
 grep -rn '"/computer\|/computer/' src/ --include='*.ts' --include='*.tsx'
 grep -rn 'fs/list\|fs/read\|fs/write\|fs/create\|fs/mkdir\|fs/delete\|fs/move\|fs/upload' src/ tests/
-grep -rn 'monaco' src/ tests/ package.json eslint.config.mjs && ls public/monaco 2>/dev/null
+grep -rn 'monaco' src/ tests/ package.json bun.lock eslint.config.mjs
+test ! -e public/monaco
 grep -rn 'blockFileEdit\|SHOW_COMPUTER_NAV_ITEM\|getComputerRouteWorkspaceId\|fileExternalOpenUrl' src/ tests/
 ```
 

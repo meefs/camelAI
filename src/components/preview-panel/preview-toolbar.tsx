@@ -2,7 +2,6 @@ import { memo, useEffect, useRef, useState } from 'react';
 import type { ComponentProps, ReactNode } from 'react';
 import type { LucideIcon } from 'lucide-react';
 import {
-  AppWindowMac,
   Check,
   ChevronDown,
   Download,
@@ -31,7 +30,7 @@ import {
 } from './preview-utils';
 import { PreviewSourceToggle, type PreviewSourceMode } from './preview-source-toggle';
 
-export type OpenElsewhereKind = 'app' | 'computer';
+export type OpenElsewhereKind = 'app';
 
 interface PreviewToolbarProps {
   activeTarget: PreviewTarget;
@@ -92,12 +91,7 @@ function OpenElsewhereButton({
 }) {
   if (kind === null) return null;
 
-  const { icon, tooltip } =
-    kind === 'app'
-      ? { icon: ExternalLink, tooltip: 'Open live app' }
-      : { icon: AppWindowMac, tooltip: 'Open in Computer' };
-
-  return <ToolbarButton icon={icon} tooltip={tooltip} onClick={onClick} />;
+  return <ToolbarButton icon={ExternalLink} tooltip="Open live app" onClick={onClick} />;
 }
 
 function ClickToCopyUrlBar({

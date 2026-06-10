@@ -48,11 +48,6 @@ export function WorkspaceSwitcher() {
       await switchWorkspace(workspaceId)
       if (location.pathname.startsWith("/chat/")) {
         navigate("/chat")
-      } else if (
-        location.pathname === "/computer" ||
-        location.pathname.startsWith("/computer/")
-      ) {
-        navigate(`/computer/${workspaceId}`)
       }
     } catch (error) {
       if (isWorkspaceSwitchSupersededError(error)) return

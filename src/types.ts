@@ -210,68 +210,13 @@ export interface Message {
   isCompactSummary?: boolean;
 }
 
-export interface SandboxFileInfo {
-  name: string;
-  absolutePath: string;
-  relativePath: string;
-  type: "file" | "directory" | "symlink" | "other";
-  size: number;
-  modifiedAt: string;
-}
-
-export interface SandboxFileListing {
-  path: string;
-  files: SandboxFileInfo[];
-  count: number;
-  timestamp: string;
-}
-
-export interface WorkspaceFileEntry {
-  path: string;
-  name: string;
-  type: SandboxFileInfo["type"];
-  size: number;
-  modifiedAt: string;
-}
-
-export interface WorkspaceListResponse {
-  path: string;
-  entries: WorkspaceFileEntry[];
-  count: number;
-  timestamp: string;
-  recursive: boolean;
-}
-
-export interface WorkspaceFileRead {
-  path: string;
-  content: string;
-  version: string;
-  size: number | null;
-  mtime: string | null;
-  isBinary: boolean;
-  encoding: "utf-8" | "base64";
-  mimeType?: string | null;
-}
-
-export interface WorkspaceFileWrite {
-  path: string;
-  newVersion: string;
-  size: number | null;
-  mtime: string | null;
-}
-
-export interface WorkspaceOperationResult {
-  path: string;
-  timestamp: string;
-}
-
 // Auth types
 // TODO: Viewer role (deferred): Members with viewer access can view any apps that are
 // private to the workspace, including apps that are not published publicly. This is
 // designed for enterprise use cases where a company wants to share internal apps within
 // the org without making them public. Viewers can view apps but cannot: create apps,
-// use chat, access the computer tab, manage team settings, or perform any write
-// operations. They are read-only consumers of workspace output.
+// use chat, manage team settings, or perform any write operations. They are read-only
+// consumers of workspace output.
 export type OrgRole = "owner" | "admin" | "member" | "viewer";
 export type WorkspaceAccessLevel = "full" | "none";
 export type BillingStatus =

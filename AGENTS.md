@@ -151,7 +151,6 @@ live in separate files, and the catalog tests fail if any of them drift apart.
 
 - Chat uploads use multipart R2 upload APIs under `/api/workspaces/:id/upload`.
 - Workspace file API routes live under `/api/workspaces/:id/fs/*`.
-- Computer tab file mutations may be intentionally blocked during beta; check `src/routes/api/workspaces.utils.ts` before changing write behavior.
 - File safety logic lives in `workers/main/src/file-safety.ts` and is applied before agent turns for suspicious uploaded-file/deploy/bridge workflows.
 - The Pi system prompt is assembled in `workers/main/src/chat-thread-do.ts`; keep security-relevant prompt changes explicit and tested.
 

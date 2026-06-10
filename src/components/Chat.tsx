@@ -4752,7 +4752,6 @@ type SendOptions = {
     previewDomains,
     appPreviewVanityUrl,
     filePreviewOpenUrl,
-    fileExternalOpenUrl,
     openElsewhereKind,
   } = useChatPreviewRenderState({
     previewTabs,
@@ -4764,7 +4763,6 @@ type SendOptions = {
     tabFileViewModes,
     hostname,
     orgSlug,
-    readOnly,
   });
 
   const handlePreviewRefresh = useCallback(() => {
@@ -4783,10 +4781,7 @@ type SendOptions = {
       window.open(appPreviewVanityUrl, "_blank", "noopener,noreferrer");
       return;
     }
-    if (previewTarget.source !== "workspace") return;
-    if (!fileExternalOpenUrl) return;
-    window.open(fileExternalOpenUrl, "_blank", "noopener,noreferrer");
-  }, [previewTarget, appPreviewVanityUrl, fileExternalOpenUrl]);
+  }, [previewTarget, appPreviewVanityUrl]);
 
   const showMobilePreview = previewTabs.length > 0 && mobileView === "preview";
   const currentMembership = orgs.find(

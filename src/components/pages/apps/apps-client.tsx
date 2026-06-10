@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useMemo, useState } from 'react';
-import { useNavigation, useSearchParams, useRevalidator, useNavigate, useSubmit } from 'react-router';
+import { useNavigation, useSearchParams, useRevalidator, useSubmit } from 'react-router';
 import { toast } from 'sonner';
 import { useAuthData } from '@/hooks/use-auth-data';
 import {
@@ -46,7 +46,6 @@ export default function AppsClient({
   } = useAuthData();
   const { switchWorkspace } = useSwitchWorkspace();
 
-  const navigate = useNavigate();
   const submit = useSubmit();
   const navigation = useNavigation();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -62,7 +61,7 @@ export default function AppsClient({
     open: boolean;
     app: WorkerScriptWithCreator | null;
     workspace: WorkspaceWithAccess | null;
-    action: 'chat' | 'viewSource' | null;
+    action: 'chat' | null;
   }>({ open: false, app: null, workspace: null, action: null });
   const [switchingWorkspace, setSwitchingWorkspace] = useState(false);
   const workspaceMap = useMemo(
@@ -131,28 +130,6 @@ export default function AppsClient({
     );
   }, [chatLoading, currentWorkspace?.id, hostname, orgCustomDomain, orgSlug, submit, workspaceMap]);
 
-  const handleViewSource = useCallback((app: WorkerScriptWithCreator) => {
-    if (!app.config_path) {
-      toast.error('Source file location not available for this app');
-      return;
-    }
-
-    // Check if app is in a different workspace - open switch dialog
-    if (currentWorkspace?.id && app.workspace_id !== currentWorkspace.id) {
-      const targetWorkspace = workspaceMap.get(app.workspace_id);
-      if (targetWorkspace) {
-        setSwitchDialog({ open: true, app, workspace: targetWorkspace, action: 'viewSource' });
-      } else {
-        toast.error('Could not find target workspace');
-      }
-      return;
-    }
-
-    // Navigate to computer tab with the file path
-    const filePath = encodeURIComponent(app.config_path);
-    navigate(`/computer/${app.workspace_id}?file=${filePath}`);
-  }, [navigate, currentWorkspace?.id, workspaceMap]);
-
   const currentMembership = orgs.find((entry) => entry.org_id === currentOrg?.id);
   const isAdmin = currentMembership?.role === 'owner' || currentMembership?.role === 'admin';
   const currentWorkspaceId = currentWorkspace?.id ?? null;
@@ -193,9 +170,6 @@ export default function AppsClient({
           },
           { method: 'post', action: '/chat' }
         );
-      } else if (targetAction === 'viewSource' && targetApp.config_path) {
-        const filePath = encodeURIComponent(targetApp.config_path);
-        navigate(`/computer/${targetApp.workspace_id}?file=${filePath}`);
       }
     } catch (error) {
       if (isWorkspaceSwitchSupersededError(error)) return;
@@ -204,7 +178,7 @@ export default function AppsClient({
     } finally {
       setSwitchingWorkspace(false);
     }
-  }, [hostname, orgCustomDomain, orgSlug, switchDialog, switchWorkspace, navigate, submit]);
+  }, [hostname, orgCustomDomain, orgSlug, switchDialog, switchWorkspace, submit]);
 
   return (
     <>
@@ -276,7 +250,6 @@ export default function AppsClient({
                       now={referenceTime}
                       onOpenSettings={handleOpenSettings}
                       onStartChat={handleStartChat}
-                      onViewSource={handleViewSource}
                     />
                   ))}
                 </div>
@@ -311,11 +284,7 @@ export default function AppsClient({
           workspace={switchDialog.workspace}
           onConfirm={handleConfirmSwitch}
           loading={switchingWorkspace}
-          description={
-            switchDialog.action === 'chat'
-              ? 'This app belongs to a different workspace. Switch to {workspace} to start a chat about this app.'
-              : 'This app belongs to a different workspace. Switch to {workspace} to view the source file.'
-          }
+          description="This app belongs to a different workspace. Switch to {workspace} to start a chat about this app."
         />
       )}
 

@@ -275,7 +275,7 @@ export function TeamTable({
   const roleDescriptions: Record<OrgRole, string> = {
     owner: "Full access to everything. Only the owner can transfer ownership. One per org.",
     admin: "Full access to everything. Can manage team members, workspaces, and all settings.",
-    member: "Can access assigned workspaces — chat, apps, computer, and connections. Cannot manage the team or org settings.",
+    member: "Can access assigned workspaces — chat, apps, and connections. Cannot manage the team or org settings.",
     viewer: "Read-only access to workspace apps.",
   }
 

@@ -1,6 +1,5 @@
 "use client";
 
-import { ExternalLink } from 'lucide-react';
 import type { ReactNode } from 'react';
 import { useState } from 'react';
 import { useAuthData } from '@/hooks/use-auth-data';
@@ -58,7 +57,6 @@ function getBasename(path: string): string {
 interface FileLinkProps {
   path: string;
   children?: ReactNode;
-  showIcon?: boolean;
   className?: string;
   mono?: boolean;
 }
@@ -66,7 +64,6 @@ interface FileLinkProps {
 export function FileLink({
   path,
   children,
-  showIcon = false,
   className,
   mono = false,
 }: FileLinkProps) {
@@ -118,7 +115,6 @@ export function FileLink({
           }}
         >
           {children ?? displayName}
-          {showIcon ? <ExternalLink className="h-3 w-3 opacity-50" /> : null}
         </button>
       );
     }
@@ -146,7 +142,6 @@ export function FileLink({
           }}
         >
           {children ?? displayName}
-          {showIcon ? <ExternalLink className="h-3 w-3 opacity-50" /> : null}
         </button>
         <FilePreviewPopover
           open={previewOpen}
@@ -158,7 +153,6 @@ export function FileLink({
     );
   }
 
-  const href = `/computer/${currentWorkspace.id}?file=${encodeURIComponent(normalizedPath)}`;
   if (previewContext) {
     const previewTarget: PreviewTarget = {
       kind: 'file',
@@ -190,33 +184,43 @@ export function FileLink({
         }}
       >
         {children ?? path}
-        {showIcon ? <ExternalLink className="h-3 w-3 opacity-50" /> : null}
       </button>
     );
   }
 
+  const displayName = getBasename(normalizedPath);
+  const previewUrl = `/api/workspaces/${currentWorkspace.id}/fs/content/${encodePathSegments(normalizedPath.replace(/^\/+/, ''))}`;
+
   return (
-    <a
-      href={href}
-      target="_blank"
-      rel="noopener noreferrer"
-      className={cn(
-        "inline-flex min-w-0 max-w-full items-center gap-1 hover:underline",
-        "text-foreground/80 hover:text-foreground",
-        mono && "font-mono",
-        className
-      )}
-      onClick={(event) => event.stopPropagation()}
-      onMouseDown={(event) => event.stopPropagation()}
-      onPointerDown={(event) => event.stopPropagation()}
-      onKeyDown={(event) => {
-        if (event.key === 'Enter' || event.key === ' ') {
+    <>
+      <button
+        type="button"
+        className={cn(
+          "inline-flex min-w-0 max-w-full items-center gap-1 hover:underline",
+          "text-foreground/80 hover:text-foreground",
+          mono && "font-mono",
+          className
+        )}
+        onClick={(event) => {
           event.stopPropagation();
-        }
-      }}
-    >
-      {children ?? path}
-      {showIcon ? <ExternalLink className="h-3 w-3 opacity-50" /> : null}
-    </a>
+          setPreviewOpen(true);
+        }}
+        onMouseDown={(event) => event.stopPropagation()}
+        onPointerDown={(event) => event.stopPropagation()}
+        onKeyDown={(event) => {
+          if (event.key === 'Enter' || event.key === ' ') {
+            event.stopPropagation();
+          }
+        }}
+      >
+        {children ?? path}
+      </button>
+      <FilePreviewPopover
+        open={previewOpen}
+        onOpenChange={setPreviewOpen}
+        filename={displayName}
+        previewUrl={previewUrl}
+      />
+    </>
   );
 }

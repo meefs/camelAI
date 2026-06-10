@@ -53,7 +53,7 @@ describe('requireWorkspaceAccess superuser override', () => {
     getWorkspaceAccessMock.mockResolvedValue('full');
 
     const result = await requireWorkspaceAccess(
-      new Request('https://camelai.com/api/workspaces/ws_123/fs/list'),
+      new Request('https://camelai.com/api/workspaces/ws_123/fs/content/app/index.html'),
       {} as never,
       'ws_123'
     );
@@ -76,7 +76,7 @@ describe('requireWorkspaceAccess superuser override', () => {
     });
 
     const result = await requireWorkspaceAccess(
-      new Request('https://camelai.com/api/workspaces/ws_123/fs/list'),
+      new Request('https://camelai.com/api/workspaces/ws_123/fs/content/app/index.html'),
       {} as never,
       'ws_123'
     );
@@ -100,7 +100,7 @@ describe('requireWorkspaceAccess superuser override', () => {
 
     await expect(
       requireWorkspaceAccess(
-        new Request('https://camelai.com/api/workspaces/ws_123/fs/write'),
+        new Request('https://camelai.com/api/workspaces/ws_123/fs/content/app/index.html'),
         {} as never,
         'ws_123',
         { requireWrite: true }
@@ -121,7 +121,7 @@ describe('requireWorkspaceAccess superuser override', () => {
 
     await expect(
       requireWorkspaceAccess(
-        new Request('https://camelai.com/api/workspaces/ws_123/fs/list'),
+        new Request('https://camelai.com/api/workspaces/ws_123/fs/content/app/index.html'),
         {} as never,
         'ws_123'
       )
@@ -139,7 +139,7 @@ describe('requireWorkspaceAccess superuser override', () => {
     });
 
     const result = await requireWorkspaceAccess(
-      new Request('https://camelai.com/api/workspaces/ws_foreign/fs/list'),
+      new Request('https://camelai.com/api/workspaces/ws_foreign/fs/content/app/index.html'),
       {} as never,
       'ws_foreign'
     );
@@ -162,7 +162,7 @@ describe('requireWorkspaceAccess superuser override', () => {
 
     await expect(
       requireWorkspaceAccess(
-        new Request('https://camelai.com/api/workspaces/ws_foreign/fs/write'),
+        new Request('https://camelai.com/api/workspaces/ws_foreign/fs/content/app/index.html'),
         {} as never,
         'ws_foreign',
         { requireWrite: true }
@@ -182,7 +182,7 @@ describe('requireWorkspaceAccess superuser override', () => {
 
     await expect(
       requireWorkspaceAccess(
-        new Request('https://camelai.com/api/workspaces/ws_foreign/fs/list'),
+        new Request('https://camelai.com/api/workspaces/ws_foreign/fs/content/app/index.html'),
         {} as never,
         'ws_foreign'
       )

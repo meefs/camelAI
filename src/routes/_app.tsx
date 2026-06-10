@@ -302,32 +302,10 @@ function WorkspaceMigrationInProgress() {
 }
 
 function getMigrationGateWorkspace(
-  url: URL,
+  _url: URL,
   authContext: Awaited<ReturnType<typeof requireAuthContext>>,
 ): WorkspaceWithAccess | null {
-  const currentWorkspace = authContext.currentWorkspace ?? null;
-  const currentWorkspaceId = currentWorkspace?.id ?? null;
-  const computerWorkspaceId = getComputerRouteWorkspaceId(url.pathname);
-  if (!computerWorkspaceId || computerWorkspaceId === currentWorkspaceId) {
-    return currentWorkspace;
-  }
-
-  const workspace = [
-    ...(authContext.workspaces ?? []),
-    ...(authContext.allWorkspaces ?? []),
-  ].find((candidate) => candidate.id === computerWorkspaceId);
-
-  return workspace ?? currentWorkspace;
-}
-
-function getComputerRouteWorkspaceId(pathname: string): string | null {
-  const match = /^\/computer\/([^/?#]+)/.exec(pathname);
-  if (!match?.[1]) return null;
-  try {
-    return decodeURIComponent(match[1]);
-  } catch {
-    return match[1];
-  }
+  return authContext.currentWorkspace ?? null;
 }
 
 type LegacyMigrationData = Awaited<

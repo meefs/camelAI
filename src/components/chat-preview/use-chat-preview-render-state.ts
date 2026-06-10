@@ -63,7 +63,6 @@ export function useChatPreviewRenderState({
   tabFileViewModes,
   hostname,
   orgSlug,
-  readOnly,
 }: {
   previewTabs: PreviewTab[];
   previewTarget: PreviewTarget | null;
@@ -74,7 +73,6 @@ export function useChatPreviewRenderState({
   tabFileViewModes: Record<string, FileViewMode>;
   hostname?: string;
   orgSlug?: string;
-  readOnly: boolean;
 }) {
   const tabRenderStates = useMemo((): TabRenderState[] => {
     return previewTabs.map((tab) => {
@@ -163,30 +161,14 @@ export function useChatPreviewRenderState({
     return `/api/workspaces/${previewTarget.workspaceId}/${route}`;
   }, [previewTarget]);
 
-  const fileExternalOpenUrl = useMemo(() => {
-    if (previewTarget?.kind !== "file") return "";
-    if (previewTarget.source !== "workspace") return "";
-    const query = new URLSearchParams();
-    query.set("file", previewTarget.path);
-    if (readOnly) {
-      query.set("adminReadonly", "1");
-    }
-    return `/computer/${previewTarget.workspaceId}?${query.toString()}`;
-  }, [previewTarget, readOnly]);
-
   const openElsewhereKind: OpenElsewhereKind | null =
-    previewTarget?.kind === "app"
-      ? "app"
-      : previewTarget?.kind === "file" && previewTarget.source === "workspace"
-        ? "computer"
-        : null;
+    previewTarget?.kind === "app" ? "app" : null;
 
   return {
     tabRenderStates,
     previewDomains,
     appPreviewVanityUrl,
     filePreviewOpenUrl,
-    fileExternalOpenUrl,
     openElsewhereKind,
   };
 }

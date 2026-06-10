@@ -8,7 +8,6 @@ import type {
   WorkspaceFilesystemClient,
   WorkspaceListResponse as DoWorkspaceListResponse,
   WorkspaceReadFileResponse,
-  WorkspaceWriteResponse,
 } from '../../../workers/main/src/workspace-filesystem-do';
 
 interface WorkspaceFileAdapterListResponse extends DoWorkspaceListResponse {
@@ -50,31 +49,11 @@ class WorkspaceFileAdapter {
     });
   }
 
-  async writeFile(path: string, content: string): Promise<WorkspaceWriteResponse> {
-    return (await this.getFs()).writeFile(toWorkspacePath(path), content);
-  }
-
-  async writeBinaryFile(path: string, contentBase64: string): Promise<WorkspaceWriteResponse> {
-    return (await this.getFs()).writeBinaryFile(toWorkspacePath(path), contentBase64);
-  }
-
   async listFiles(
     path: string,
     options?: { recursive?: boolean; includeHidden?: boolean; limit?: number },
   ): Promise<WorkspaceFileAdapterListResponse> {
     return (await this.getFs()).listFiles(toWorkspacePath(path), options) as Promise<WorkspaceFileAdapterListResponse>;
-  }
-
-  async mkdir(path: string, options?: { recursive?: boolean }): Promise<WorkspaceWriteResponse> {
-    return (await this.getFs()).mkdir(toWorkspacePath(path), options);
-  }
-
-  async deleteFile(path: string): Promise<WorkspaceWriteResponse> {
-    return (await this.getFs()).deleteFile(toWorkspacePath(path));
-  }
-
-  async moveFile(_fromPath: string, _toPath: string): Promise<WorkspaceWriteResponse> {
-    return { success: false, error: 'Move is not supported by the workspace filesystem API' };
   }
 }
 
@@ -193,18 +172,6 @@ export async function requireWorkspaceAuth(
   };
 }
 
-/**
- * Returns a 403 response blocking user-initiated file mutations.
- * Remove this function (and all call sites) when file editing is re-enabled
- * as a paid feature.
- */
-export function blockFileEdit(): Response {
-  return Response.json(
-    { error: 'File editing is disabled.' },
-    { status: 403 }
-  );
-}
-
 /** Workspace root directory inside sandbox */
 const WORKSPACE_ROOT = '/workspace';
 const LEGACY_WORKSPACE_ROOT = '/home/claude';
@@ -279,17 +246,6 @@ function base64ToBytes(value: string): Uint8Array {
   return bytes;
 }
 
-function splitWorkspacePath(workspacePath: string): { dir: string; base: string } {
-  const normalized = normalizeWorkspacePath(workspacePath);
-  if (normalized === '/') return { dir: '/', base: '' };
-  const lastSlash = normalized.lastIndexOf('/');
-  if (lastSlash <= 0) return { dir: '/', base: normalized.slice(1) };
-  return {
-    dir: normalized.slice(0, lastSlash),
-    base: normalized.slice(lastSlash + 1),
-  };
-}
-
 function joinContainerPath(dir: string, base: string): string {
   if (!base) return dir;
   if (dir.endsWith('/')) return `${dir}${base}`;
@@ -346,51 +302,4 @@ export async function resolveContainerPath(
   }
 
   return currentPath;
-}
-
-/**
- * Resolve a workspace path for write-like operations. If an existing entry
- * matches via whitespace normalization, that path is used. Otherwise, attempt
- * to resolve the parent directory and join the original basename.
- */
-export async function resolveContainerPathForWrite(
-  container: WorkspaceFileAdapter,
-  workspacePath: string,
-  options: { allowExisting?: boolean } = {}
-): Promise<string> {
-  const normalizedPath = normalizeWorkspacePath(workspacePath);
-  const containerPath = toContainerPath(normalizedPath);
-  if (!hasNormalizableWhitespace(normalizedPath)) return containerPath;
-
-  const allowExisting = options.allowExisting ?? true;
-  if (allowExisting) {
-    const resolvedFull = await resolveContainerPath(container, normalizedPath);
-    if (resolvedFull) return resolvedFull;
-  }
-
-  const { dir, base } = splitWorkspacePath(normalizedPath);
-  const resolvedParent = await resolveContainerPath(container, dir);
-  if (resolvedParent) {
-    return joinContainerPath(resolvedParent, base);
-  }
-
-  return containerPath;
-}
-
-/**
- * Get path parameter from URL search params.
- */
-export function getPathParam(url: URL, key = 'path'): string {
-  const value = url.searchParams.get(key);
-  return normalizeWorkspacePath(value);
-}
-
-/**
- * Parse boolean parameter from URL search params.
- */
-export function parseBooleanParam(value: string | null, defaultValue: boolean): boolean {
-  if (value === null) return defaultValue;
-  if (value === '1' || value.toLowerCase() === 'true') return true;
-  if (value === '0' || value.toLowerCase() === 'false') return false;
-  return defaultValue;
 }

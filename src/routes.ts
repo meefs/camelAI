@@ -37,8 +37,6 @@ export default [
     route("automations", "routes/_app.automations.tsx"),
     route("history", "routes/_app.history.tsx"),
     route("connections", "routes/_app.connections.tsx"),
-    route("computer", "routes/_app.computer.tsx"),
-    route("computer/:workspaceId", "routes/_app.computer.$workspaceId.tsx"),
 
     // Settings nested layout
     layout("routes/_app.settings.tsx", [
@@ -194,8 +192,6 @@ export default [
   route("api/admin/threads/:id/jsonl", "routes/api/admin.threads.$id.jsonl.ts"),
 
   // Workspace filesystem API routes
-  route("api/workspaces/:id/fs/list", "routes/api/workspaces.$id.fs.list.ts"),
-  route("api/workspaces/:id/fs/read", "routes/api/workspaces.$id.fs.read.ts"),
   route(
     "api/workspaces/:id/fs/content/*",
     "routes/api/workspaces.$id.fs.content.$.ts",
@@ -203,21 +199,6 @@ export default [
   route(
     "api/workspaces/:id/projects/:project/fs/content/*",
     "routes/api/workspaces.$id.projects.$project.fs.content.$.ts",
-  ),
-  route("api/workspaces/:id/fs/write", "routes/api/workspaces.$id.fs.write.ts"),
-  route("api/workspaces/:id/fs/mkdir", "routes/api/workspaces.$id.fs.mkdir.ts"),
-  route(
-    "api/workspaces/:id/fs/delete",
-    "routes/api/workspaces.$id.fs.delete.ts",
-  ),
-  route("api/workspaces/:id/fs/move", "routes/api/workspaces.$id.fs.move.ts"),
-  route(
-    "api/workspaces/:id/fs/create",
-    "routes/api/workspaces.$id.fs.create.ts",
-  ),
-  route(
-    "api/workspaces/:id/fs/upload",
-    "routes/api/workspaces.$id.fs.upload.ts",
   ),
   route(
     "api/workspaces/:id/chat/threads",
@@ -279,5 +260,4 @@ export default [
   // route('api/threads', 'routes/api/threads.ts'),
   // route('api/threads/:id', 'routes/api/threads.$id.ts'),
   // route('api/threads/:id/messages', 'routes/api/threads.$id.messages.ts'),
-  // route('api/workspaces/:id/fs/*', 'routes/api/workspaces.$id.fs.$.ts'),
 ] satisfies RouteConfig;

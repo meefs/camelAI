@@ -18,7 +18,7 @@ function renderToolbar(overrides?: Partial<React.ComponentProps<typeof PreviewTo
     <PreviewToolbar
       activeTarget={NOTEBOOK_TARGET}
       onRefresh={() => {}}
-      openElsewhereKind="computer"
+      openElsewhereKind={null}
       onOpenElsewhere={() => {}}
       notebookViewMode="report"
       onNotebookViewModeChange={() => {}}
@@ -66,14 +66,14 @@ describe('PreviewToolbar notebook downloads', () => {
     expect(screen.getByRole('menuitem', { name: /download report as pdf/i })).toBeInTheDocument();
   });
 
-  it('keeps the open-in-computer action for workspace file previews', async () => {
-    const user = userEvent.setup();
+  it('omits open-elsewhere for workspace file previews', () => {
     const onOpenElsewhere = vi.fn();
     renderToolbar({ onOpenElsewhere });
 
-    await user.click(screen.getByRole('button', { name: /open in computer/i }));
-
-    expect(onOpenElsewhere).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole('button', { name: /open in computer/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /open live app/i })).not.toBeInTheDocument();
+    expect(onOpenElsewhere).not.toHaveBeenCalled();
+    expect(screen.getByRole('button', { name: /download/i })).toBeInTheDocument();
   });
 
   it('omits open-elsewhere for upload file previews', () => {

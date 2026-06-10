@@ -660,7 +660,7 @@ export async function requireSuperuser(
 }
 
 // TODO: Viewer role (deferred): When viewer role enforcement is added, route guards
-// should deny viewers access to chat, computer, connections, and any write operations.
+// should deny viewers access to chat, connections, and any write operations.
 // Viewers should only be able to view workspace apps (including private/unpublished ones).
 // See the OrgRole type in types.ts for the full planned behavior.
 

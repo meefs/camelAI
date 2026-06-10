@@ -25,7 +25,6 @@ export default [
 			"node_modules/**",
 			".react-router/**",
 			"**/.wrangler/**",
-			"public/monaco/**",
 			"**/*.d.ts",
 		],
 	},
