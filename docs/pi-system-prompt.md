@@ -4,7 +4,7 @@ Thread ID: {{THREAD_ID}}
 Workspace ID: {{WORKSPACE_ID}}
 Organization ID: {{ORG_ID}}
 Skill root: /opt/chiridion-host-pi/skills
-Skill count: 7
+Skill count: 8
 
 ## Base Agent Prompt
 
@@ -22,6 +22,7 @@ For hosted AI in `js_exec`, use `env.AI` or `context.cloudflare.env.AI` with `ru
 Before relying on repository-specific conventions, read /workspace/AGENTS.md, /workspace/CLAUDE.md, /AGENTS.md, or /CLAUDE.md if present.
 ## Available Skills
 When a task matches a skill, read that skill file with the read tool and follow it. Built-in skills are available at:
+- camelai-platform-faq: /opt/chiridion-host-pi/skills/camelai-platform-faq/SKILL.md — Use when the user asks how camelAI itself works rather than asking you to build, debug, or analyze something.
 - communication-channels: /opt/chiridion-host-pi/skills/communication-channels/SKILL.md — Use camelAI communication channels from js_exec, including email, Slack, Telegram, and the current workspace email address.
 - custom-domain-troubleshooting: /opt/chiridion-host-pi/skills/custom-domain-troubleshooting/SKILL.md — Use when users ask about custom domain setup or troubleshooting.
 - data-analysis: /opt/chiridion-host-pi/skills/data-analysis/SKILL.md — Use when the user asks to process CSVs, Excel, Parquet, PDFs, Word docs, or PowerPoint files, query databases (PostgreSQL, MySQL, SQLite, SQL Server, BigQuery), create charts or visualizations, or perform any data analysis.
@@ -49,6 +50,7 @@ For hosted AI in `js_exec`, use `env.AI` or `context.cloudflare.env.AI` with `ru
 Before relying on repository-specific conventions, read /workspace/AGENTS.md, /workspace/CLAUDE.md, /AGENTS.md, or /CLAUDE.md if present.
 ## Available Skills
 When a task matches a skill, read that skill file with the read tool and follow it. Built-in skills are available at:
+- camelai-platform-faq: /opt/chiridion-host-pi/skills/camelai-platform-faq/SKILL.md — Use when the user asks how camelAI itself works rather than asking you to build, debug, or analyze something.
 - communication-channels: /opt/chiridion-host-pi/skills/communication-channels/SKILL.md — Use camelAI communication channels from js_exec, including email, Slack, Telegram, and the current workspace email address.
 - custom-domain-troubleshooting: /opt/chiridion-host-pi/skills/custom-domain-troubleshooting/SKILL.md — Use when users ask about custom domain setup or troubleshooting.
 - data-analysis: /opt/chiridion-host-pi/skills/data-analysis/SKILL.md — Use when the user asks to process CSVs, Excel, Parquet, PDFs, Word docs, or PowerPoint files, query databases (PostgreSQL, MySQL, SQLite, SQL Server, BigQuery), create charts or visualizations, or perform any data analysis.
@@ -82,6 +84,7 @@ For hosted AI in `js_exec`, use `env.AI` or `context.cloudflare.env.AI` with `ru
 Before relying on repository-specific conventions, read /workspace/AGENTS.md, /workspace/CLAUDE.md, /AGENTS.md, or /CLAUDE.md if present.
 ## Available Skills
 When a task matches a skill, read that skill file with the read tool and follow it. Built-in skills are available at:
+- camelai-platform-faq: /opt/chiridion-host-pi/skills/camelai-platform-faq/SKILL.md — Use when the user asks how camelAI itself works rather than asking you to build, debug, or analyze something.
 - communication-channels: /opt/chiridion-host-pi/skills/communication-channels/SKILL.md — Use camelAI communication channels from js_exec, including email, Slack, Telegram, and the current workspace email address.
 - custom-domain-troubleshooting: /opt/chiridion-host-pi/skills/custom-domain-troubleshooting/SKILL.md — Use when users ask about custom domain setup or troubleshooting.
 - data-analysis: /opt/chiridion-host-pi/skills/data-analysis/SKILL.md — Use when the user asks to process CSVs, Excel, Parquet, PDFs, Word docs, or PowerPoint files, query databases (PostgreSQL, MySQL, SQLite, SQL Server, BigQuery), create charts or visualizations, or perform any data analysis.

@@ -2,7 +2,7 @@
 
 ## Status
 
-June 10, 2026 - planning draft only. Do not create the skill in this change. Every FAQ answer below has been audited against the codebase; sources are in the audit table.
+June 10, 2026 - implemented. The bundled skill lives at `sandbox/skills/camelai-platform-faq/SKILL.md`, and `docs/pi-system-prompt.md` has been regenerated. Every FAQ answer below has been audited against the codebase; sources are in the audit table.
 
 ## Goal
 
@@ -119,10 +119,10 @@ Say what you know, name the uncertainty, and prompt the user to submit a Get Hel
 
 ## Implementation Notes
 
-- Add `sandbox/skills/camelai-platform-faq/SKILL.md` with the proposed content.
-- Update `workers/main/src/pi-system-prompt.ts` so `SKILL_TRIGGERS` includes `camelai-platform-faq`.
-- Regenerate `docs/pi-system-prompt.md` with `bun run generate:pi-system-prompt-doc` after updating the runtime prompt source.
-- Confirm `PI_SKILL_NAMES` picks up the new skill through `workers/main/src/pi-skills-bundle.ts`.
+- Added `sandbox/skills/camelai-platform-faq/SKILL.md` with the proposed content.
+- No `SKILL_TRIGGERS` constant exists in the current prompt source. The runtime prompt lists this skill through `PI_SKILL_NAMES` and `PI_SKILL_DESCRIPTIONS` in `workers/main/src/pi-skills-bundle.ts`.
+- Regenerated `docs/pi-system-prompt.md` with `bun run generate:pi-system-prompt-doc`.
+- Confirmed the generated prompt now lists `camelai-platform-faq` and shows `Skill count: 8`.
 - `workers/main/src/mcp-handler.ts` already states "org members only" for private apps; it matches the dispatcher and the FAQ. Do not rewrite it to a workspace-member rule.
 - Do not fold the internal admin analytics recipe from `docs/user-questions-audit.md` into this customer-facing FAQ skill.
 
