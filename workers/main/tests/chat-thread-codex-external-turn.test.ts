@@ -6761,7 +6761,7 @@ describe('ChatThreadDO Codex turn handling', () => {
     ]);
   });
 
-  it('omits legacy tool blocks while preserving adjacent assistant text during hydration', async () => {
+  it('omits legacy thinking and tool blocks while preserving adjacent assistant text during hydration', async () => {
     const fake = Object.create(ChatThreadDO.prototype) as any;
     fake.chatContext = { threadId: 'thread1' };
     fake.chatIsStreaming = false;
@@ -6782,6 +6782,7 @@ describe('ChatThreadDO Codex turn handling', () => {
         role: 'assistant',
         content: [
           { type: 'text', text: 'I checked the files.' },
+          { type: 'thinking', thinking: 'This internal chain of thought should not be visible.' },
           { type: 'tool_use', id: 'tool-1', name: 'bash', input: { command: 'cat huge.log' } },
           { type: 'tool_result', tool_use_id: 'tool-1', content: 'very long output'.repeat(1000) },
           { type: 'text', text: 'The build is fixed.' },
@@ -6799,7 +6800,7 @@ describe('ChatThreadDO Codex turn handling', () => {
     ]);
   });
 
-  it('does not hydrate assistant messages that only contain legacy tool blocks', async () => {
+  it('does not hydrate assistant messages that only contain legacy hidden blocks', async () => {
     const fake = Object.create(ChatThreadDO.prototype) as any;
     fake.chatContext = { threadId: 'thread1' };
     fake.chatIsStreaming = false;
@@ -6819,6 +6820,7 @@ describe('ChatThreadDO Codex turn handling', () => {
         id: 'legacy-assistant',
         role: 'assistant',
         content: [
+          { type: 'thinking', thinking: 'This internal chain of thought should not be visible.' },
           { type: 'tool_use', id: 'tool-1', name: 'bash', input: { command: 'cat huge.log' } },
           { type: 'tool_result', tool_use_id: 'tool-1', content: 'very long output'.repeat(1000) },
         ],

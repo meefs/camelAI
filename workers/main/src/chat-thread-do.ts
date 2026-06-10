@@ -6658,10 +6658,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       if (item.type === "text" && typeof item.text === "string") {
         return item.text.trim() ? [{ type: "text", text: item.text }] : [];
       }
-      if (item.type === "thinking" && typeof item.thinking === "string") {
-        return item.thinking.trim() ? [{ type: "text", text: `[Thinking]\n${item.thinking}` }] : [];
-      }
-      if (item.type === "tool_use" || item.type === "tool_result") {
+      if (item.type === "thinking" || item.type === "tool_use" || item.type === "tool_result") {
         return [];
       }
       if (item.type === "error" && typeof item.error === "string") {
