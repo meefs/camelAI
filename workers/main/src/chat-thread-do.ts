@@ -6661,20 +6661,8 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       if (item.type === "thinking" && typeof item.thinking === "string") {
         return item.thinking.trim() ? [{ type: "text", text: `[Thinking]\n${item.thinking}` }] : [];
       }
-      if (item.type === "tool_use") {
-        const name = typeof item.name === "string" && item.name.trim()
-          ? item.name.trim()
-          : "tool";
-        return [{
-          type: "text",
-          text: `[Tool call: ${name}]\n${this.stringifyLegacyChatBlock(item.input ?? {})}`,
-        }];
-      }
-      if (item.type === "tool_result") {
-        return [{
-          type: "text",
-          text: `[Tool result]\n${this.stringifyLegacyChatBlock(item.content ?? "")}`,
-        }];
+      if (item.type === "tool_use" || item.type === "tool_result") {
+        return [];
       }
       if (item.type === "error" && typeof item.error === "string") {
         return item.error.trim() ? [{ type: "text", text: item.error }] : [];

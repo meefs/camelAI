@@ -6759,4 +6759,78 @@ describe('ChatThreadDO Codex turn handling', () => {
     ]);
   });
 
+  it('omits legacy tool blocks while preserving adjacent assistant text during hydration', async () => {
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    fake.chatContext = { threadId: 'thread1' };
+    fake.chatIsStreaming = false;
+    fake.activeTurnUserId = null;
+    fake.piSession = null;
+    fake.loadPiCoreMessages = vi.fn(async () => []);
+    fake.loadPiInFlightMessages = vi.fn(async () => []);
+    fake.replacePiCoreMessages = vi.fn(async () => undefined);
+    fake.disposePiSession = vi.fn();
+    fake.clearPiInFlightMessages = vi.fn();
+    fake.clearPiTurnRecovery = vi.fn();
+    fake.recordChatThreadObservabilityEvent = vi.fn();
+    fake.ctx = { storage: { sql: { exec: vi.fn() } } };
+
+    await ChatThreadDO.prototype.hydratePiCoreFromParsedMessages.call(fake, 'thread1', [
+      {
+        id: 'legacy-assistant',
+        role: 'assistant',
+        content: [
+          { type: 'text', text: 'I checked the files.' },
+          { type: 'tool_use', id: 'tool-1', name: 'bash', input: { command: 'cat huge.log' } },
+          { type: 'tool_result', tool_use_id: 'tool-1', content: 'very long output'.repeat(1000) },
+          { type: 'text', text: 'The build is fixed.' },
+        ],
+        created_at: 123,
+      },
+    ]);
+
+    expect(fake.replacePiCoreMessages).toHaveBeenCalledTimes(1);
+    const messages = fake.replacePiCoreMessages.mock.calls[0][0];
+    expect(messages).toHaveLength(1);
+    expect(messages[0].content).toEqual([
+      { type: 'text', text: 'I checked the files.' },
+      { type: 'text', text: 'The build is fixed.' },
+    ]);
+  });
+
+  it('does not hydrate assistant messages that only contain legacy tool blocks', async () => {
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    fake.chatContext = { threadId: 'thread1' };
+    fake.chatIsStreaming = false;
+    fake.activeTurnUserId = null;
+    fake.piSession = null;
+    fake.loadPiCoreMessages = vi.fn(async () => []);
+    fake.loadPiInFlightMessages = vi.fn(async () => []);
+    fake.replacePiCoreMessages = vi.fn(async () => undefined);
+    fake.disposePiSession = vi.fn();
+    fake.clearPiInFlightMessages = vi.fn();
+    fake.clearPiTurnRecovery = vi.fn();
+    fake.recordChatThreadObservabilityEvent = vi.fn();
+    fake.ctx = { storage: { sql: { exec: vi.fn() } } };
+
+    const result = await ChatThreadDO.prototype.hydratePiCoreFromParsedMessages.call(fake, 'thread1', [
+      {
+        id: 'legacy-assistant',
+        role: 'assistant',
+        content: [
+          { type: 'tool_use', id: 'tool-1', name: 'bash', input: { command: 'cat huge.log' } },
+          { type: 'tool_result', tool_use_id: 'tool-1', content: 'very long output'.repeat(1000) },
+        ],
+        created_at: 123,
+      },
+    ]);
+
+    expect(result).toEqual({
+      hydrated: false,
+      count: 0,
+      existingCount: 0,
+    });
+    expect(fake.replacePiCoreMessages).not.toHaveBeenCalled();
+    expect(fake.disposePiSession).not.toHaveBeenCalled();
+  });
+
 });
