@@ -59,7 +59,8 @@ describe('help email delivery', () => {
       orgName: 'Acme Inc',
       orgSlug: 'acme-inc',
       orgId: 'org_123',
-      billingStatus: 'paying',
+      billingPlan: 'Pro',
+      billingStatus: 'active',
       workspaceName: 'My Project',
       workspaceId: 'ws_123',
       pageUrl: 'https://camelai.com/chat/abc123',
@@ -79,6 +80,10 @@ describe('help email delivery', () => {
     expect(payload.subject).toBe(
       '[High] [Bug] Agent freezes on large file upload - Jane Doe (acme-inc)'
     );
+    expect(payload.htmlBody).toContain('Payment tier');
+    expect(payload.htmlBody).toContain('Pro');
+    expect(payload.textBody).toContain('Payment tier');
+    expect(payload.textBody).toContain('Pro');
   });
 
   it('both helpers produce non-empty HTML and plain text bodies', async () => {
@@ -101,6 +106,7 @@ describe('help email delivery', () => {
       orgName: 'Acme Inc',
       orgSlug: 'acme-inc',
       orgId: 'org_123',
+      billingPlan: 'Pay as you go',
       billingStatus: 'free',
       workspaceName: null,
       workspaceId: null,

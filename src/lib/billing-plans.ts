@@ -1,4 +1,4 @@
-import type { BillingPlan, BillingStatus, Organization } from "@/types";
+import type { BillingPlan, Organization } from "@/types";
 
 export const BILLING_PLANS = [
   "free",
@@ -144,12 +144,17 @@ export function isBillingPlan(
 
 export function normalizeBillingPlan(
   plan: string | null | undefined,
-  status?: BillingStatus | null,
+  status?: string | null,
 ): BillingPlan {
   if (status === "enterprise" || plan === "enterprise") return "enterprise";
   if (plan === "free") return "payg";
   if (isBillingPlan(plan)) return plan;
-  if (status === "trialing" || status === "active" || status === "past_due") {
+  if (
+    status === "trialing" ||
+    status === "active" ||
+    status === "past_due" ||
+    status === "paying"
+  ) {
     return "starter";
   }
   return "payg";
@@ -157,7 +162,7 @@ export function normalizeBillingPlan(
 
 export function getBillingPlanLimits(
   plan: string | null | undefined,
-  status?: BillingStatus | null,
+  status?: string | null,
 ): BillingPlanLimits {
   return BILLING_PLAN_LIMITS[normalizeBillingPlan(plan, status)];
 }

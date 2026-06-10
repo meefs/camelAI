@@ -56,6 +56,7 @@ interface HelpSupportEmailArgs {
   orgName: string;
   orgSlug: string;
   orgId: string;
+  billingPlan: string;
   billingStatus: string;
   workspaceName: string | null;
   workspaceId: string | null;
@@ -375,6 +376,7 @@ export async function sendHelpSupportEmail({
   orgName,
   orgSlug,
   orgId,
+  billingPlan,
   billingStatus,
   workspaceName,
   workspaceId,
@@ -409,6 +411,7 @@ export async function sendHelpSupportEmail({
       orgName,
       orgSlug,
       orgId,
+      billingPlan,
       billingStatus,
       workspaceName,
       workspaceId,

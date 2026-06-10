@@ -123,6 +123,10 @@ describe("normalizeBillingPlan", () => {
     expect(normalizeBillingPlan("free", "inactive")).toBe("payg");
   });
 
+  it("treats legacy paying status as a paid subscription fallback", () => {
+    expect(normalizeBillingPlan(undefined, "paying")).toBe("starter");
+  });
+
   it("preserves explicit subscription plans for stale top-level statuses", () => {
     expect(normalizeBillingPlan("team", "inactive")).toBe("team");
   });

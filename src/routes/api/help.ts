@@ -15,6 +15,10 @@ import {
   getHelpFormSchema,
   normalizeHelpDescription,
 } from '@/lib/help';
+import {
+  BILLING_PLAN_LIMITS,
+  getOrgBillingPlan,
+} from '@/lib/billing-plans';
 
 const HELP_SUBJECT_MODEL = '@cf/google/gemma-3-12b-it';
 const HELP_SUBJECT_SYSTEM_PROMPT =
@@ -127,6 +131,8 @@ export async function action({ request, context }: Route.ActionArgs) {
   const userAgent = request.headers.get('user-agent');
   const referer = request.headers.get('referer');
   const firstName = deriveFirstName(authContext.user.name);
+  const billingPlan = getOrgBillingPlan(currentOrg);
+  const billingPlanLabel = BILLING_PLAN_LIMITS[billingPlan].label;
 
   waitUntil(
     (async () => {
@@ -157,6 +163,7 @@ export async function action({ request, context }: Route.ActionArgs) {
           orgName: currentOrg.name,
           orgSlug: currentOrg.slug,
           orgId: currentOrg.id,
+          billingPlan: billingPlanLabel,
           billingStatus: currentOrg.billing_status,
           workspaceName: workspace?.name ?? null,
           workspaceId: workspace?.id ?? null,

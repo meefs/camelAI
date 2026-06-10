@@ -92,7 +92,8 @@ describe('HelpSupportEmailTemplate', () => {
     orgName: 'Acme Inc',
     orgSlug: 'acme-inc',
     orgId: 'org_123',
-    billingStatus: 'paying',
+    billingPlan: 'Pro',
+    billingStatus: 'active',
     workspaceName: 'Main Workspace',
     workspaceId: 'ws_123',
     pageUrl: 'https://camelai.com/chat/thread_1',
@@ -117,6 +118,10 @@ describe('HelpSupportEmailTemplate', () => {
     expect(html).toContain('CONTEXT');
     expect(html).toContain('Jane Doe');
     expect(html).toContain('Acme Inc (acme-inc)');
+    expect(html).toContain('Payment tier');
+    expect(html).toContain('Pro');
+    expect(html).toContain('Billing status');
+    expect(html).toContain('active');
     expect(html).toContain('Agent freezes on large file upload');
     expect(html).toContain('Repro steps:');
     expect(html).toContain('1440x900');

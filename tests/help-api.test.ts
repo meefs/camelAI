@@ -46,7 +46,8 @@ const authContext = {
     id: 'org_123',
     name: 'Acme Inc',
     slug: 'acme-inc',
-    billing_status: 'paying',
+    billing_status: 'active',
+    billing_plan: 'pro',
   },
   currentWorkspace: {
     id: 'ws_123',
@@ -218,6 +219,26 @@ describe('POST /api/help', () => {
     expect(sendHelpSupportEmailMock).toHaveBeenCalledWith(
       expect.objectContaining({
         severity: 'Low',
+      })
+    );
+  });
+
+  it('includes the org billing plan label on the internal support email', async () => {
+    const response = await action({
+      request: makeRequest({
+        category: 'billing',
+        severity: 'medium',
+        description: 'I need help understanding my invoice.',
+      }),
+      context: {},
+    } as never);
+    await flushWaitUntil();
+
+    expect(response.status).toBe(200);
+    expect(sendHelpSupportEmailMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        billingPlan: 'Pro',
+        billingStatus: 'active',
       })
     );
   });

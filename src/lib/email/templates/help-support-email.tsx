@@ -16,6 +16,7 @@ export interface HelpSupportEmailTemplateProps {
   orgName: string;
   orgSlug: string;
   orgId: string;
+  billingPlan: string;
   billingStatus: string;
   workspaceName: string | null;
   workspaceId: string | null;
@@ -109,6 +110,7 @@ export function HelpSupportEmailTemplate({
   orgName,
   orgSlug,
   orgId,
+  billingPlan,
   billingStatus,
   workspaceName,
   workspaceId,
@@ -158,7 +160,8 @@ export function HelpSupportEmailTemplate({
               rows={[
                 { label: 'Org', value: `${orgName} (${orgSlug})` },
                 { label: 'Org ID', value: orgId },
-                { label: 'Plan', value: billingStatus },
+                { label: 'Payment tier', value: billingPlan },
+                { label: 'Billing status', value: billingStatus },
                 { label: 'Workspace', value: workspaceName },
                 { label: 'Workspace ID', value: workspaceId },
                 { label: 'Page URL', value: pageUrl },
