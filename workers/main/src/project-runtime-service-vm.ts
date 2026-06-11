@@ -190,7 +190,7 @@ export class ProjectRuntimeServiceVmBridge {
     const sourceTarget = await this.resolveTarget({ project: sourceProject });
     const project = await this.options.workspace.cloneProject({ ...args, sourceProject });
     const target = this.targetFromProject(project);
-    await this.fetchRuntimeJson(this.projectUrl(sourceTarget.projectId, "/clone"), {
+    await this.fetchRuntimeNoContent(this.projectUrl(sourceTarget.projectId, "/clone"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ targetProjectId: target.projectId }),
@@ -640,6 +640,21 @@ fi
       throw new Error(readErrorMessage(parsed) || `Project runtime service returned ${response.status}`);
     }
     return parsed as T;
+  }
+
+  private async fetchRuntimeNoContent(url: string, init: RequestInit = {}): Promise<void> {
+    const response = await this.fetchRuntime(url, init);
+    if (!response.ok) {
+      const text = await response.text();
+      let parsed: unknown = text;
+      try {
+        parsed = text ? JSON.parse(text) : {};
+      } catch {
+        // Keep text for diagnostics.
+      }
+      throw new Error(readErrorMessage(parsed) || `Project runtime service returned ${response.status}`);
+    }
+    await response.body?.cancel().catch(() => undefined);
   }
 
   private async fetchRuntime(url: string, init: RequestInit = {}): Promise<Response> {
