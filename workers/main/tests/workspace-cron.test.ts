@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { env } from 'cloudflare:test';
 import type { OrgDO } from '../src/auth';
 import { CodeModeDeterministicAutomations } from '../src/code-mode-deterministic-automations';
@@ -20,6 +20,28 @@ export class AutomationWorkflow extends WorkflowEntrypoint {
   }
 }
 `;
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  function useFixedTime(iso: string): void {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date(iso));
+  }
+
+  async function expectRemoteRejectionMessage(
+    promise: Promise<unknown>,
+    expected: string,
+  ): Promise<void> {
+    let error: unknown;
+    try {
+      await promise;
+    } catch (caught) {
+      error = caught;
+    }
+    expect(String(error)).toContain(expected);
+  }
 
   it('creates, lists, updates, and deletes scheduled prompts', async () => {
     const { userId } = await createUser(testEnv, testEmail(), 'password123', 'Cron Owner');
@@ -380,6 +402,499 @@ export class AutomationWorkflow extends WorkflowEntrypoint {
     ]?.find((run) => run.instance_id === first!.dispatch.instance_id);
     expect(firstRunHistory?.status).toBe('success');
     expect(firstRunHistory?.completed_at).toBeTypeOf('number');
+  });
+
+  it('rejects over-frequent scheduled prompts and deterministic automations on payg', async () => {
+    const { userId } = await createUser(testEnv, testEmail(), 'password123', 'Payg Cron Owner');
+    const { org } = await createOrg(testEnv, 'Payg Cron Org', userId, {
+      billingPlan: 'payg',
+    });
+    const workspaces = await listUserWorkspaces(testEnv, userId, org.id);
+    const workspaceId = workspaces[0]?.id;
+    expect(workspaceId).toBeTypeOf('string');
+
+    const cronStub = testEnv.WORKSPACE_CRON.get(
+      testEnv.WORKSPACE_CRON.idFromName(workspaceId!)
+    ) as DurableObjectStub<WorkspaceCronDO>;
+
+    await expectRemoteRejectionMessage(
+      cronStub.createScheduledPrompt({
+        workspaceId: workspaceId!,
+        name: 'Minute digest',
+        prompt: 'Summarize workspace status.',
+        cronExpression: '* * * * *',
+        createdBy: userId,
+      }),
+      'allows automations no more frequent than every 1 day',
+    );
+
+    await expectRemoteRejectionMessage(
+      cronStub.createDeterministicAutomation({
+        workspaceId: workspaceId!,
+        name: 'Minute workflow',
+        description: 'Runs deterministic workflow code.',
+        source: automationSource(),
+        cronExpression: '* * * * *',
+        createdBy: userId,
+      }),
+      'allows automations no more frequent than every 1 day',
+    );
+  });
+
+  it('rejects second enabled daily automation on lower workspace-capped plans', async () => {
+    for (const billingPlan of ['free', 'payg', 'starter'] as const) {
+      const { userId } = await createUser(testEnv, testEmail(), 'password123', `${billingPlan} Count Owner`);
+      const { org } = await createOrg(testEnv, `${billingPlan} Count Org`, userId, {
+        billingPlan,
+      });
+      const workspaces = await listUserWorkspaces(testEnv, userId, org.id);
+      const workspaceId = workspaces[0]?.id;
+      expect(workspaceId).toBeTypeOf('string');
+
+      const cronStub = testEnv.WORKSPACE_CRON.get(
+        testEnv.WORKSPACE_CRON.idFromName(workspaceId!)
+      ) as DurableObjectStub<WorkspaceCronDO>;
+
+      await cronStub.createScheduledPrompt({
+        workspaceId: workspaceId!,
+        name: 'Daily digest',
+        prompt: 'Summarize workspace status.',
+        cronExpression: '0 9 * * *',
+        createdBy: userId,
+      });
+
+      await expectRemoteRejectionMessage(
+        cronStub.createDeterministicAutomation({
+          workspaceId: workspaceId!,
+          name: 'Daily workflow',
+          description: 'Runs deterministic workflow code.',
+          source: automationSource(),
+          cronExpression: '0 10 * * *',
+          createdBy: userId,
+        }),
+        'allows 1 automation per workspace',
+      );
+    }
+  });
+
+  it('allows disabled over-frequency automations without consuming enabled quota', async () => {
+    const { userId } = await createUser(testEnv, testEmail(), 'password123', 'Paused Quota Owner');
+    const { org } = await createOrg(testEnv, 'Paused Quota Org', userId, {
+      billingPlan: 'payg',
+    });
+    const workspaces = await listUserWorkspaces(testEnv, userId, org.id);
+    const workspaceId = workspaces[0]?.id;
+    expect(workspaceId).toBeTypeOf('string');
+
+    const cronStub = testEnv.WORKSPACE_CRON.get(
+      testEnv.WORKSPACE_CRON.idFromName(workspaceId!)
+    ) as DurableObjectStub<WorkspaceCronDO>;
+
+    const pausedPrompt = await cronStub.createScheduledPrompt({
+      workspaceId: workspaceId!,
+      name: 'Paused minute digest',
+      prompt: 'Summarize workspace status.',
+      cronExpression: '* * * * *',
+      createdBy: userId,
+      enabled: false,
+    });
+    const pausedAutomation = await cronStub.createDeterministicAutomation({
+      workspaceId: workspaceId!,
+      name: 'Paused minute workflow',
+      description: 'Runs deterministic workflow code.',
+      source: automationSource(),
+      cronExpression: '* * * * *',
+      createdBy: userId,
+      enabled: false,
+    });
+
+    expect(pausedPrompt.enabled).toBe(false);
+    expect(pausedPrompt.next_run_at).toBeNull();
+    expect(pausedAutomation.enabled).toBe(false);
+    expect(pausedAutomation.next_run_at).toBeNull();
+
+    const enabledPrompt = await cronStub.createScheduledPrompt({
+      workspaceId: workspaceId!,
+      name: 'Daily digest',
+      prompt: 'Summarize workspace status.',
+      cronExpression: '0 9 * * *',
+      createdBy: userId,
+    });
+
+    expect(enabledPrompt.enabled).toBe(true);
+    expect(enabledPrompt.next_run_at).toBeTypeOf('number');
+  });
+
+  it('allows pausing over-frequency legacy automations after downgrade', async () => {
+    const { userId } = await createUser(testEnv, testEmail(), 'password123', 'Pause Legacy Owner');
+    const { org } = await createOrg(testEnv, 'Pause Legacy Org', userId);
+    const workspaces = await listUserWorkspaces(testEnv, userId, org.id);
+    const workspaceId = workspaces[0]?.id;
+    expect(workspaceId).toBeTypeOf('string');
+
+    const orgStub = testEnv.ORG.get(testEnv.ORG.idFromName(org.id)) as DurableObjectStub<OrgDO>;
+    const cronStub = testEnv.WORKSPACE_CRON.get(
+      testEnv.WORKSPACE_CRON.idFromName(workspaceId!)
+    ) as DurableObjectStub<WorkspaceCronDO>;
+
+    const prompt = await cronStub.createScheduledPrompt({
+      workspaceId: workspaceId!,
+      name: 'Legacy minute digest',
+      prompt: 'Summarize workspace status.',
+      cronExpression: '* * * * *',
+      createdBy: userId,
+    });
+    const automation = await cronStub.createDeterministicAutomation({
+      workspaceId: workspaceId!,
+      name: 'Legacy minute workflow',
+      description: 'Runs deterministic workflow code.',
+      source: automationSource(),
+      cronExpression: '* * * * *',
+      createdBy: userId,
+    });
+
+    await orgStub.updateBillingState({
+      billing_plan: 'payg',
+      billing_status: 'inactive',
+    });
+
+    const pausedPrompt = await cronStub.updateScheduledPrompt({
+      workspaceId: workspaceId!,
+      id: prompt.id,
+      enabled: false,
+    });
+    expect(pausedPrompt?.enabled).toBe(false);
+    expect(pausedPrompt?.next_run_at).toBeNull();
+
+    const pausedAutomation = await cronStub.updateDeterministicAutomation({
+      workspaceId: workspaceId!,
+      id: automation.id,
+      enabled: false,
+    });
+    expect(pausedAutomation?.enabled).toBe(false);
+    expect(pausedAutomation?.next_run_at).toBeNull();
+  });
+
+  it('blocks and disables a legacy over-frequent scheduled prompt after downgrade', async () => {
+    useFixedTime('2030-01-01T00:00:00.000Z');
+    const { userId } = await createUser(testEnv, testEmail(), 'password123', 'Legacy Prompt Owner');
+    const { org } = await createOrg(testEnv, 'Legacy Prompt Org', userId);
+    const workspaces = await listUserWorkspaces(testEnv, userId, org.id);
+    const workspaceId = workspaces[0]?.id;
+    expect(workspaceId).toBeTypeOf('string');
+
+    const orgStub = testEnv.ORG.get(testEnv.ORG.idFromName(org.id)) as DurableObjectStub<OrgDO>;
+    const cronStub = testEnv.WORKSPACE_CRON.get(
+      testEnv.WORKSPACE_CRON.idFromName(workspaceId!)
+    ) as DurableObjectStub<WorkspaceCronDO>;
+
+    const created = await cronStub.createScheduledPrompt({
+      workspaceId: workspaceId!,
+      name: 'Legacy minute digest',
+      prompt: 'Summarize workspace status.',
+      cronExpression: '* * * * *',
+      createdBy: userId,
+    });
+
+    await orgStub.updateBillingState({
+      billing_plan: 'payg',
+      billing_status: 'inactive',
+    });
+
+    vi.setSystemTime(new Date(created.next_run_at!));
+    await cronStub.runDueAutomationsForTest(workspaceId!);
+
+    const runs = await cronStub.listAutomationRunsPage(workspaceId!, {
+      kind: 'scheduled_prompt',
+      automationId: created.id,
+      limit: 5,
+    });
+    expect(runs.runs).toHaveLength(1);
+    expect(runs.runs[0]?.status).toBe('error');
+    expect(runs.runs[0]?.thread_id).toBeNull();
+    expect(runs.runs[0]?.message).toContain(
+      'Blocked by billing plan: your current plan allows automations no more frequent than every 1 day.',
+    );
+
+    const afterBlock = (await cronStub.listScheduledPrompts(workspaceId!))[0];
+    expect(afterBlock?.enabled).toBe(false);
+    expect(afterBlock?.next_run_at).toBeNull();
+    expect(afterBlock?.last_run_status).toBe('error');
+    expect(afterBlock?.last_run_error).toContain('Blocked by billing plan');
+
+    vi.setSystemTime(new Date(created.next_run_at! + 60_000));
+    await cronStub.runDueAutomationsForTest(workspaceId!);
+    const runsAfterSecondAlarm = await cronStub.listAutomationRunsPage(workspaceId!, {
+      kind: 'scheduled_prompt',
+      automationId: created.id,
+      limit: 5,
+    });
+    expect(runsAfterSecondAlarm.runs).toHaveLength(1);
+  });
+
+  it('blocks and disables a legacy over-frequent deterministic workflow after downgrade', async () => {
+    useFixedTime('2030-01-02T00:00:00.000Z');
+    const { userId } = await createUser(testEnv, testEmail(), 'password123', 'Legacy Workflow Owner');
+    const { org } = await createOrg(testEnv, 'Legacy Workflow Org', userId);
+    const workspaces = await listUserWorkspaces(testEnv, userId, org.id);
+    const workspaceId = workspaces[0]?.id;
+    expect(workspaceId).toBeTypeOf('string');
+
+    const orgStub = testEnv.ORG.get(testEnv.ORG.idFromName(org.id)) as DurableObjectStub<OrgDO>;
+    const cronStub = testEnv.WORKSPACE_CRON.get(
+      testEnv.WORKSPACE_CRON.idFromName(workspaceId!)
+    ) as DurableObjectStub<WorkspaceCronDO>;
+
+    const created = await cronStub.createDeterministicAutomation({
+      workspaceId: workspaceId!,
+      name: 'Legacy minute workflow',
+      description: 'Runs deterministic workflow code.',
+      source: automationSource(),
+      cronExpression: '* * * * *',
+      createdBy: userId,
+    });
+
+    await orgStub.updateBillingState({
+      billing_plan: 'payg',
+      billing_status: 'inactive',
+    });
+
+    vi.setSystemTime(new Date(created.next_run_at!));
+    await cronStub.runDueAutomationsForTest(workspaceId!);
+
+    const runs = await cronStub.listAutomationRunsPage(workspaceId!, {
+      kind: 'deterministic_automation',
+      automationId: created.id,
+      limit: 5,
+    });
+    expect(runs.runs).toHaveLength(1);
+    expect(runs.runs[0]?.status).toBe('error');
+    expect(runs.runs[0]?.instance_id).toBeNull();
+    expect(runs.runs[0]?.message).toContain(
+      'Blocked by billing plan: your current plan allows automations no more frequent than every 1 day.',
+    );
+
+    const afterBlock = (await cronStub.listDeterministicAutomations(workspaceId!))[0];
+    expect(afterBlock?.enabled).toBe(false);
+    expect(afterBlock?.next_run_at).toBeNull();
+    expect(afterBlock?.last_run_status).toBe('error');
+    expect(afterBlock?.last_run_error).toContain('Blocked by billing plan');
+    expect(afterBlock?.last_instance_id).toBeNull();
+
+    vi.setSystemTime(new Date(created.next_run_at! + 60_000));
+    await cronStub.runDueAutomationsForTest(workspaceId!);
+    const runsAfterSecondAlarm = await cronStub.listAutomationRunsPage(workspaceId!, {
+      kind: 'deterministic_automation',
+      automationId: created.id,
+      limit: 5,
+    });
+    expect(runsAfterSecondAlarm.runs).toHaveLength(1);
+  });
+
+  it('blocks deterministic automations beyond the downgraded workspace count cap', async () => {
+    useFixedTime('2030-01-04T00:00:00.000Z');
+    const { userId } = await createUser(testEnv, testEmail(), 'password123', 'Count Cap Owner');
+    const { org } = await createOrg(testEnv, 'Count Cap Org', userId);
+    const workspaces = await listUserWorkspaces(testEnv, userId, org.id);
+    const workspaceId = workspaces[0]?.id;
+    expect(workspaceId).toBeTypeOf('string');
+
+    const orgStub = testEnv.ORG.get(testEnv.ORG.idFromName(org.id)) as DurableObjectStub<OrgDO>;
+    const cronStub = testEnv.WORKSPACE_CRON.get(
+      testEnv.WORKSPACE_CRON.idFromName(workspaceId!)
+    ) as DurableObjectStub<WorkspaceCronDO>;
+
+    const first = await cronStub.createDeterministicAutomation({
+      workspaceId: workspaceId!,
+      name: 'First workflow',
+      description: 'Runs deterministic workflow code.',
+      source: automationSource('first'),
+      cronExpression: '0 9 * * *',
+      createdBy: userId,
+    });
+    vi.setSystemTime(new Date(Date.now() + 1));
+    const second = await cronStub.createDeterministicAutomation({
+      workspaceId: workspaceId!,
+      name: 'Second workflow',
+      description: 'Runs deterministic workflow code.',
+      source: automationSource('second'),
+      cronExpression: '0 9 * * *',
+      createdBy: userId,
+    });
+
+    await orgStub.updateBillingState({
+      billing_plan: 'payg',
+      billing_status: 'inactive',
+    });
+
+    vi.setSystemTime(new Date(first.next_run_at!));
+    await cronStub.runDueAutomationsForTest(workspaceId!);
+
+    const firstRuns = await cronStub.listAutomationRunsPage(workspaceId!, {
+      kind: 'deterministic_automation',
+      automationId: first.id,
+      limit: 5,
+    });
+    const secondRuns = await cronStub.listAutomationRunsPage(workspaceId!, {
+      kind: 'deterministic_automation',
+      automationId: second.id,
+      limit: 5,
+    });
+
+    expect(firstRuns.runs).toHaveLength(1);
+    expect(firstRuns.runs[0]?.instance_id).toBeTypeOf('string');
+    expect(secondRuns.runs[0]?.status).toBe('error');
+    expect(secondRuns.runs[0]?.instance_id).toBeNull();
+    expect(secondRuns.runs[0]?.message).toContain(
+      'Blocked by billing plan: your current plan allows 1 automation per workspace.',
+    );
+    expect(secondRuns.runs.every((run) => run.instance_id === null)).toBe(true);
+
+    const afterBlock = (await cronStub.listDeterministicAutomations(workspaceId!))
+      .find((automation) => automation.id === second.id);
+    expect(afterBlock?.enabled).toBe(false);
+    expect(afterBlock?.next_run_at).toBeNull();
+
+    await cronStub.runDueAutomationsForTest(workspaceId!);
+    const secondRunsAfterSecondAlarm = await cronStub.listAutomationRunsPage(workspaceId!, {
+      kind: 'deterministic_automation',
+      automationId: second.id,
+      limit: 5,
+    });
+    expect(secondRunsAfterSecondAlarm.runs).toHaveLength(secondRuns.runs.length);
+  });
+
+  it('manual scheduled prompt runs disable noncompliant saved schedules', async () => {
+    useFixedTime('2030-01-05T00:00:00.000Z');
+    const { userId } = await createUser(testEnv, testEmail(), 'password123', 'Manual Cadence Owner');
+    const { org } = await createOrg(testEnv, 'Manual Cadence Org', userId);
+    const workspaces = await listUserWorkspaces(testEnv, userId, org.id);
+    const workspaceId = workspaces[0]?.id;
+    expect(workspaceId).toBeTypeOf('string');
+
+    const orgStub = testEnv.ORG.get(testEnv.ORG.idFromName(org.id)) as DurableObjectStub<OrgDO>;
+    const cronStub = testEnv.WORKSPACE_CRON.get(
+      testEnv.WORKSPACE_CRON.idFromName(workspaceId!)
+    ) as DurableObjectStub<WorkspaceCronDO>;
+
+    const created = await cronStub.createScheduledPrompt({
+      workspaceId: workspaceId!,
+      name: 'Manual legacy digest',
+      prompt: 'Summarize workspace status.',
+      cronExpression: '* * * * *',
+      createdBy: userId,
+    });
+
+    await orgStub.updateBillingState({
+      billing_plan: 'payg',
+      billing_status: 'inactive',
+    });
+
+    vi.setSystemTime(new Date(created.next_run_at!));
+    const run = await cronStub.runScheduledPromptNow(workspaceId!, created.id);
+
+    expect(run?.dispatch.thread_id).toBeTypeOf('string');
+    expect(run?.prompt.enabled).toBe(false);
+    expect(run?.prompt.next_run_at).toBeNull();
+    expect(run?.prompt.last_run_status).toBe('error');
+    expect(run?.prompt.last_run_error).toContain(
+      'Schedule disabled by billing plan:',
+    );
+
+    const runsAfterManual = await cronStub.listAutomationRunsPage(workspaceId!, {
+      kind: 'scheduled_prompt',
+      automationId: created.id,
+      limit: 1,
+    });
+    const runId = runsAfterManual.runs[0]?.id;
+    expect(runId).toBeTypeOf('string');
+
+    await cronStub.recordScheduledPromptRunResult({
+      workspaceId: workspaceId!,
+      promptId: created.id,
+      runId: runId!,
+      status: 'success',
+      completedAt: Date.now(),
+    });
+
+    const afterCompletion = (await cronStub.listScheduledPrompts(workspaceId!))
+      .find((prompt) => prompt.id === created.id);
+    expect(afterCompletion?.enabled).toBe(false);
+    expect(afterCompletion?.next_run_at).toBeNull();
+    expect(afterCompletion?.last_run_status).toBe('error');
+    expect(afterCompletion?.last_run_error).toContain(
+      'Schedule disabled by billing plan:',
+    );
+
+    const runsAfterCompletion = await cronStub.listAutomationRunsPage(workspaceId!, {
+      kind: 'scheduled_prompt',
+      automationId: created.id,
+      limit: 1,
+    });
+    expect(runsAfterCompletion.runs[0]?.status).toBe('success');
+  });
+
+  it('manual deterministic runs disable noncompliant saved schedules', async () => {
+    useFixedTime('2030-01-06T00:00:00.000Z');
+    const { userId } = await createUser(testEnv, testEmail(), 'password123', 'Manual Workflow Owner');
+    const { org } = await createOrg(testEnv, 'Manual Workflow Org', userId);
+    const workspaces = await listUserWorkspaces(testEnv, userId, org.id);
+    const workspaceId = workspaces[0]?.id;
+    expect(workspaceId).toBeTypeOf('string');
+
+    const orgStub = testEnv.ORG.get(testEnv.ORG.idFromName(org.id)) as DurableObjectStub<OrgDO>;
+    const cronStub = testEnv.WORKSPACE_CRON.get(
+      testEnv.WORKSPACE_CRON.idFromName(workspaceId!)
+    ) as DurableObjectStub<WorkspaceCronDO>;
+
+    const created = await cronStub.createDeterministicAutomation({
+      workspaceId: workspaceId!,
+      name: 'Manual legacy workflow',
+      description: 'Runs deterministic workflow code.',
+      source: automationSource(),
+      cronExpression: '* * * * *',
+      createdBy: userId,
+    });
+
+    await orgStub.updateBillingState({
+      billing_plan: 'payg',
+      billing_status: 'inactive',
+    });
+
+    vi.setSystemTime(new Date(created.next_run_at!));
+    const run = await cronStub.runDeterministicAutomationNow(workspaceId!, created.id);
+
+    expect(run?.dispatch.instance_id).toBeTypeOf('string');
+    expect(run?.automation.enabled).toBe(false);
+    expect(run?.automation.next_run_at).toBeNull();
+    expect(run?.automation.last_run_status).toBe('error');
+    expect(run?.automation.last_run_error).toContain(
+      'Schedule disabled by billing plan:',
+    );
+
+    await cronStub.recordDeterministicAutomationRunResult({
+      workspaceId: workspaceId!,
+      automationId: created.id,
+      instanceId: run!.dispatch.instance_id!,
+      status: 'success',
+    });
+
+    const afterCompletion = (await cronStub.listDeterministicAutomations(
+      workspaceId!,
+    )).find((automation) => automation.id === created.id);
+    expect(afterCompletion?.enabled).toBe(false);
+    expect(afterCompletion?.next_run_at).toBeNull();
+    expect(afterCompletion?.last_run_status).toBe('error');
+    expect(afterCompletion?.last_run_error).toContain(
+      'Schedule disabled by billing plan:',
+    );
+
+    const runsAfterCompletion = await cronStub.listAutomationRunsPage(workspaceId!, {
+      kind: 'deterministic_automation',
+      automationId: created.id,
+      limit: 1,
+    });
+    expect(runsAfterCompletion.runs[0]?.status).toBe('success');
   });
 
   it('keyset-paginates retained run history with the 20-row cap', async () => {

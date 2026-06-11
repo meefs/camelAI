@@ -22,7 +22,10 @@ import {
   resolveDefaultModelForChat,
   resolveEffectivePickerConfig,
 } from "../../../src/lib/model-picker-config";
-import { getBillingPlanLimits } from "../../../src/lib/billing-plans";
+import {
+  getBillingPlanLimits,
+  type BillingPlanLimits,
+} from "../../../src/lib/billing-plans";
 import type { LlmModel } from "../../../src/types";
 import {
   getOrgModelPickerConfigCompat,
@@ -32,6 +35,8 @@ import {
 const MAX_DUE_JOBS_PER_ALARM = 20;
 const WORKSPACE_ID_KEY = "workspaceId";
 const AUTOMATION_WORKFLOW_BINDING = "DETERMINISTIC_AUTOMATION_WORKFLOWS";
+const SCHEDULE_DISABLED_BY_BILLING_PREFIX =
+  "Schedule disabled by billing plan:";
 
 function formatInterval(ms: number): string {
   if (ms % (24 * 60 * 60 * 1000) === 0) {
@@ -132,6 +137,13 @@ interface WorkspaceInfo {
   id: string;
   org_id: string;
   archived: boolean;
+}
+
+interface EnabledAutomationLimitRow {
+  kind: AutomationRunKind;
+  id: string;
+  created_by: string;
+  created_at: number;
 }
 
 export interface WorkspaceAutomationInfo {
@@ -785,6 +797,136 @@ export class WorkspaceCronDO extends DurableObject<WorkspaceCronEnv> {
     ) as DurableObjectStub<OrgDO>;
   }
 
+  private async getWorkspaceBillingLimits(
+    workspace: WorkspaceInfo,
+  ): Promise<BillingPlanLimits> {
+    const org = await this.getOrgStub(workspace.org_id).getInfo();
+    return getBillingPlanLimits(org?.billing_plan, org?.billing_status);
+  }
+
+  private formatAutomationCountLimitMessage(
+    limit: number,
+    scope: "user" | "workspace",
+    style: "assert" | "runtime",
+  ): string {
+    const subject =
+      style === "assert" ? "Your current billing plan" : "your current plan";
+    return `${subject} allows ${limit} automation${limit === 1 ? "" : "s"} per ${scope}.`;
+  }
+
+  private getCronBillingIntervalViolation(
+    cronExpression: string,
+    limits: BillingPlanLimits,
+    style: "assert" | "runtime" = "assert",
+  ): string | null {
+    const minIntervalMs = limits.minCronIntervalMs;
+    if (minIntervalMs === null) return null;
+
+    const actualIntervalMs = getCronMinimumIntervalMs(cronExpression);
+    if (actualIntervalMs !== null && actualIntervalMs < minIntervalMs) {
+      const subject =
+        style === "assert" ? "Your current billing plan" : "your current plan";
+      return `${subject} allows automations no more frequent than every ${formatInterval(minIntervalMs)}.`;
+    }
+    return null;
+  }
+
+  private getEnabledAutomationLimitRows(
+    createdBy: string | null,
+  ): EnabledAutomationLimitRow[] {
+    if (createdBy !== null) {
+      return this.sql
+        .exec(
+          `SELECT 'scheduled_prompt' AS kind, id, created_by, created_at
+           FROM scheduled_prompts
+           WHERE enabled = 1 AND created_by = ?
+           UNION ALL
+           SELECT 'deterministic_automation' AS kind, id, created_by, created_at
+           FROM deterministic_automations
+           WHERE enabled = 1 AND created_by = ?
+           ORDER BY created_at ASC, id ASC`,
+          createdBy,
+          createdBy,
+        )
+        .toArray() as unknown as EnabledAutomationLimitRow[];
+    }
+
+    return this.sql
+      .exec(
+        `SELECT 'scheduled_prompt' AS kind, id, created_by, created_at
+         FROM scheduled_prompts
+         WHERE enabled = 1
+         UNION ALL
+         SELECT 'deterministic_automation' AS kind, id, created_by, created_at
+         FROM deterministic_automations
+         WHERE enabled = 1
+         ORDER BY created_at ASC, id ASC`,
+      )
+      .toArray() as unknown as EnabledAutomationLimitRow[];
+  }
+
+  private getAutomationCountViolation(
+    kind: AutomationRunKind,
+    automationId: string,
+    createdBy: string,
+    limits: BillingPlanLimits,
+  ): string | null {
+    const userLimit = limits.maxCronJobsPerUser;
+    if (userLimit !== null) {
+      const rows = this.getEnabledAutomationLimitRows(createdBy);
+      if (rows.length <= userLimit) return null;
+      const index = rows.findIndex(
+        (row) => row.kind === kind && row.id === automationId,
+      );
+      if (index >= 0 && index < userLimit) return null;
+      return this.formatAutomationCountLimitMessage(
+        userLimit,
+        "user",
+        "runtime",
+      );
+    }
+
+    const workspaceLimit = limits.maxCronJobsPerWorkspace;
+    if (workspaceLimit !== null) {
+      const rows = this.getEnabledAutomationLimitRows(null);
+      if (rows.length <= workspaceLimit) return null;
+      const index = rows.findIndex(
+        (row) => row.kind === kind && row.id === automationId,
+      );
+      if (index >= 0 && index < workspaceLimit) return null;
+      return this.formatAutomationCountLimitMessage(
+        workspaceLimit,
+        "workspace",
+        "runtime",
+      );
+    }
+
+    return null;
+  }
+
+  private getRuntimeBillingViolation(
+    kind: AutomationRunKind,
+    automationId: string,
+    cronExpression: string,
+    createdBy: string,
+    limits: BillingPlanLimits,
+  ): string | null {
+    return (
+      this.getCronBillingIntervalViolation(cronExpression, limits, "runtime") ??
+      this.getAutomationCountViolation(kind, automationId, createdBy, limits)
+    );
+  }
+
+  private formatScheduleDisabledByBillingMessage(message: string): string {
+    return `${SCHEDULE_DISABLED_BY_BILLING_PREFIX} ${message}`;
+  }
+
+  private isScheduleDisabledByBillingMessage(
+    message: string | null | undefined,
+  ): boolean {
+    return Boolean(message?.startsWith(SCHEDULE_DISABLED_BY_BILLING_PREFIX));
+  }
+
   private async resolveDefaultThreadModel(
     workspace: WorkspaceInfo,
   ): Promise<LlmModel> {
@@ -836,17 +978,13 @@ export class WorkspaceCronDO extends DurableObject<WorkspaceCronEnv> {
     createdBy: string,
     existingPromptId?: string,
   ): Promise<void> {
-    const orgStub = this.getOrgStub(workspace.org_id);
-    const org = await orgStub.getInfo();
-    const limits = getBillingPlanLimits(org?.billing_plan, org?.billing_status);
-    const minIntervalMs = limits.minCronIntervalMs;
-    if (minIntervalMs !== null) {
-      const actualIntervalMs = getCronMinimumIntervalMs(cronExpression);
-      if (actualIntervalMs !== null && actualIntervalMs < minIntervalMs) {
-        throw new Error(
-          `Your current billing plan allows cron jobs no more frequent than every ${formatInterval(minIntervalMs)}.`,
-        );
-      }
+    const limits = await this.getWorkspaceBillingLimits(workspace);
+    const intervalViolation = this.getCronBillingIntervalViolation(
+      cronExpression,
+      limits,
+    );
+    if (intervalViolation) {
+      throw new Error(intervalViolation);
     }
 
     if (limits.maxCronJobsPerUser !== null) {
@@ -854,7 +992,7 @@ export class WorkspaceCronDO extends DurableObject<WorkspaceCronEnv> {
         this.sql
           .exec<{ count: number }>(
             `SELECT COUNT(*) AS count FROM scheduled_prompts
-           WHERE created_by = ? AND id != ?`,
+           WHERE created_by = ? AND enabled = 1 AND id != ?`,
             createdBy,
             existingPromptId ?? "",
           )
@@ -863,7 +1001,7 @@ export class WorkspaceCronDO extends DurableObject<WorkspaceCronEnv> {
         this.sql
           .exec<{ count: number }>(
             `SELECT COUNT(*) AS count FROM deterministic_automations
-           WHERE created_by = ? AND id != ?`,
+           WHERE created_by = ? AND enabled = 1 AND id != ?`,
             createdBy,
             existingPromptId ?? "",
           )
@@ -871,7 +1009,11 @@ export class WorkspaceCronDO extends DurableObject<WorkspaceCronEnv> {
       const count = scheduledPromptCount + automationCount;
       if (count >= limits.maxCronJobsPerUser) {
         throw new Error(
-          `Your current billing plan allows ${limits.maxCronJobsPerUser} cron jobs per user.`,
+          this.formatAutomationCountLimitMessage(
+            limits.maxCronJobsPerUser,
+            "user",
+            "assert",
+          ),
         );
       }
       return;
@@ -883,7 +1025,7 @@ export class WorkspaceCronDO extends DurableObject<WorkspaceCronEnv> {
           .exec<{
             count: number;
           }>(
-            "SELECT COUNT(*) AS count FROM scheduled_prompts WHERE id != ?",
+            "SELECT COUNT(*) AS count FROM scheduled_prompts WHERE enabled = 1 AND id != ?",
             existingPromptId ?? "",
           )
           .toArray()[0]?.count ?? 0;
@@ -892,14 +1034,18 @@ export class WorkspaceCronDO extends DurableObject<WorkspaceCronEnv> {
           .exec<{
             count: number;
           }>(
-            "SELECT COUNT(*) AS count FROM deterministic_automations WHERE id != ?",
+            "SELECT COUNT(*) AS count FROM deterministic_automations WHERE enabled = 1 AND id != ?",
             existingPromptId ?? "",
           )
           .toArray()[0]?.count ?? 0;
       const count = scheduledPromptCount + automationCount;
       if (count >= limits.maxCronJobsPerWorkspace) {
         throw new Error(
-          `Your current billing plan allows ${limits.maxCronJobsPerWorkspace} cron jobs per workspace.`,
+          this.formatAutomationCountLimitMessage(
+            limits.maxCronJobsPerWorkspace,
+            "workspace",
+            "assert",
+          ),
         );
       }
     }
@@ -1336,11 +1482,13 @@ export class WorkspaceCronDO extends DurableObject<WorkspaceCronEnv> {
       input.scheduledByThreadId,
     );
     const enabled = input.enabled ?? true;
-    await this.assertCronWithinBillingLimits(
-      workspace,
-      cronExpression,
-      createdBy,
-    );
+    if (enabled) {
+      await this.assertCronWithinBillingLimits(
+        workspace,
+        cronExpression,
+        createdBy,
+      );
+    }
 
     const now = Date.now();
     const nextRunAt = enabled ? getNextCronRunAt(cronExpression, now) : null;
@@ -1394,11 +1542,13 @@ export class WorkspaceCronDO extends DurableObject<WorkspaceCronEnv> {
     const cronExpression = this.normalizeCronExpression(input.cronExpression);
     const createdBy = input.createdBy?.trim() || "system";
     const enabled = input.enabled ?? true;
-    await this.assertCronWithinBillingLimits(
-      workspace,
-      cronExpression,
-      createdBy,
-    );
+    if (enabled) {
+      await this.assertCronWithinBillingLimits(
+        workspace,
+        cronExpression,
+        createdBy,
+      );
+    }
 
     const now = Date.now();
     const nextRunAt = enabled ? getNextCronRunAt(cronExpression, now) : null;
@@ -1466,12 +1616,14 @@ export class WorkspaceCronDO extends DurableObject<WorkspaceCronEnv> {
         : existingPrompt.cron_expression;
     const enabled =
       input.enabled !== undefined ? input.enabled : existingPrompt.enabled;
-    await this.assertCronWithinBillingLimits(
-      workspace,
-      cronExpression,
-      existingPrompt.created_by,
-      existingPrompt.id,
-    );
+    if (enabled) {
+      await this.assertCronWithinBillingLimits(
+        workspace,
+        cronExpression,
+        existingPrompt.created_by,
+        existingPrompt.id,
+      );
+    }
 
     const now = Date.now();
     let nextRunAt: number | null;
@@ -1541,12 +1693,14 @@ export class WorkspaceCronDO extends DurableObject<WorkspaceCronEnv> {
         : existingAutomation.cron_expression;
     const enabled =
       input.enabled !== undefined ? input.enabled : existingAutomation.enabled;
-    await this.assertCronWithinBillingLimits(
-      workspace,
-      cronExpression,
-      existingAutomation.created_by,
-      existingAutomation.id,
-    );
+    if (enabled) {
+      await this.assertCronWithinBillingLimits(
+        workspace,
+        cronExpression,
+        existingAutomation.created_by,
+        existingAutomation.id,
+      );
+    }
 
     const now = Date.now();
     const sourceChanged = source !== existingAutomation.source;
@@ -1667,6 +1821,7 @@ export class WorkspaceCronDO extends DurableObject<WorkspaceCronEnv> {
     if (!existingRow) return null;
     const existing = this.toPrompt(existingRow);
     const workspace = await this.getWorkspaceInfo(workspaceId);
+    const limits = await this.getWorkspaceBillingLimits(workspace);
     const runStartedAt = Date.now();
     const runId = crypto.randomUUID();
     const dispatch = await this.dispatchPrompt(
@@ -1686,22 +1841,40 @@ export class WorkspaceCronDO extends DurableObject<WorkspaceCronEnv> {
       });
     }
 
+    const scheduleDisableReason = existing.enabled
+      ? this.getRuntimeBillingViolation(
+          "scheduled_prompt",
+          existing.id,
+          existing.cron_expression,
+          existing.created_by,
+          limits,
+        )
+      : null;
     let nextRunAt = existing.next_run_at;
-    if (existing.enabled && (!nextRunAt || nextRunAt <= runStartedAt)) {
+    if (
+      existing.enabled &&
+      !scheduleDisableReason &&
+      (!nextRunAt || nextRunAt <= runStartedAt)
+    ) {
       nextRunAt = getNextCronRunAt(existing.cron_expression, runStartedAt);
     }
+    const enabledAfterRun = existing.enabled && !scheduleDisableReason;
+    const billingDisabledMessage = scheduleDisableReason
+      ? this.formatScheduleDisabledByBillingMessage(scheduleDisableReason)
+      : null;
 
     this.sql.exec(
       `UPDATE scheduled_prompts
-       SET thread_id = ?, updated_at = ?, next_run_at = ?, last_run_at = ?, last_run_id = ?, last_run_status = ?, last_run_error = ?, run_count = run_count + 1
+       SET thread_id = ?, updated_at = ?, enabled = ?, next_run_at = ?, last_run_at = ?, last_run_id = ?, last_run_status = ?, last_run_error = ?, run_count = run_count + 1
        WHERE id = ?`,
       dispatch.threadId,
       Date.now(),
-      existing.enabled ? nextRunAt : null,
+      enabledAfterRun ? 1 : 0,
+      enabledAfterRun ? nextRunAt : null,
       runStartedAt,
       runId,
-      dispatch.status,
-      dispatch.error ?? null,
+      billingDisabledMessage ? "error" : dispatch.status,
+      billingDisabledMessage ?? dispatch.error ?? null,
       existing.id,
     );
 
@@ -1727,12 +1900,30 @@ export class WorkspaceCronDO extends DurableObject<WorkspaceCronEnv> {
     if (!existingRow) return null;
     const existing = this.toAutomation(existingRow);
     const workspace = await this.getWorkspaceInfo(workspaceId);
+    const limits = await this.getWorkspaceBillingLimits(workspace);
     const runStartedAt = Date.now();
 
+    const scheduleDisableReason = existing.enabled
+      ? this.getRuntimeBillingViolation(
+          "deterministic_automation",
+          existing.id,
+          existing.cron_expression,
+          existing.created_by,
+          limits,
+        )
+      : null;
     let nextRunAt = existing.next_run_at;
-    if (existing.enabled && (!nextRunAt || nextRunAt <= runStartedAt)) {
+    if (
+      existing.enabled &&
+      !scheduleDisableReason &&
+      (!nextRunAt || nextRunAt <= runStartedAt)
+    ) {
       nextRunAt = getNextCronRunAt(existing.cron_expression, runStartedAt);
     }
+    const enabledAfterRun = existing.enabled && !scheduleDisableReason;
+    const billingDisabledMessage = scheduleDisableReason
+      ? this.formatScheduleDisabledByBillingMessage(scheduleDisableReason)
+      : null;
 
     let dispatch: DeterministicAutomationDispatchResult;
     if (!this.env.DETERMINISTIC_AUTOMATION_WORKFLOWS) {
@@ -1752,13 +1943,14 @@ export class WorkspaceCronDO extends DurableObject<WorkspaceCronEnv> {
       });
       this.sql.exec(
         `UPDATE deterministic_automations
-         SET updated_at = ?, next_run_at = ?, last_run_at = ?, last_run_status = ?, last_run_error = ?, last_instance_id = ?, run_count = run_count + 1
+         SET updated_at = ?, enabled = ?, next_run_at = ?, last_run_at = ?, last_run_status = ?, last_run_error = ?, last_instance_id = ?, run_count = run_count + 1
          WHERE id = ?`,
         Date.now(),
-        existing.enabled ? nextRunAt : null,
+        enabledAfterRun ? 1 : 0,
+        enabledAfterRun ? nextRunAt : null,
         runStartedAt,
         dispatch.status,
-        dispatch.error,
+        billingDisabledMessage ?? dispatch.error ?? null,
         null,
         existing.id,
       );
@@ -1775,13 +1967,14 @@ export class WorkspaceCronDO extends DurableObject<WorkspaceCronEnv> {
       });
       this.sql.exec(
         `UPDATE deterministic_automations
-         SET updated_at = ?, next_run_at = ?, last_run_at = ?, last_run_status = ?, last_run_error = ?, last_instance_id = ?, run_count = run_count + 1
+         SET updated_at = ?, enabled = ?, next_run_at = ?, last_run_at = ?, last_run_status = ?, last_run_error = ?, last_instance_id = ?, run_count = run_count + 1
          WHERE id = ?`,
         Date.now(),
-        existing.enabled ? nextRunAt : null,
+        enabledAfterRun ? 1 : 0,
+        enabledAfterRun ? nextRunAt : null,
         runStartedAt,
-        "started",
-        null,
+        billingDisabledMessage ? "error" : "started",
+        billingDisabledMessage,
         instanceId,
         existing.id,
       );
@@ -1799,16 +1992,27 @@ export class WorkspaceCronDO extends DurableObject<WorkspaceCronEnv> {
           status: "error",
           message: dispatch.error ?? "Workflow start failed",
         });
-        this.sql.exec(
-          `UPDATE deterministic_automations
-           SET updated_at = ?, last_run_status = ?, last_run_error = ?, last_instance_id = NULL
-           WHERE id = ? AND last_instance_id = ? AND last_run_status = 'started'`,
-          Date.now(),
-          dispatch.status,
-          dispatch.error ?? "Workflow start failed",
-          existing.id,
-          instanceId,
-        );
+        if (billingDisabledMessage) {
+          this.sql.exec(
+            `UPDATE deterministic_automations
+             SET updated_at = ?, last_instance_id = NULL
+             WHERE id = ? AND last_instance_id = ?`,
+            Date.now(),
+            existing.id,
+            instanceId,
+          );
+        } else {
+          this.sql.exec(
+            `UPDATE deterministic_automations
+             SET updated_at = ?, last_run_status = ?, last_run_error = ?, last_instance_id = NULL
+             WHERE id = ? AND last_instance_id = ? AND last_run_status = 'started'`,
+            Date.now(),
+            dispatch.status,
+            dispatch.error ?? "Workflow start failed",
+            existing.id,
+            instanceId,
+          );
+        }
       }
     }
 
@@ -1863,6 +2067,29 @@ export class WorkspaceCronDO extends DurableObject<WorkspaceCronEnv> {
     if (!runRow) return true;
 
     const now = Date.now();
+    const currentPrompt = this.getPromptRow(promptId);
+    const preserveBillingDisabledSummary =
+      input.status === "success" &&
+      currentPrompt?.enabled === 0 &&
+      currentPrompt.last_run_status === "error" &&
+      this.isScheduleDisabledByBillingMessage(currentPrompt.last_run_error);
+    if (preserveBillingDisabledSummary) {
+      this.sql.exec(
+        `UPDATE scheduled_prompts
+         SET updated_at = ?
+         WHERE id = ?
+           AND (
+             last_run_id = ?
+             OR (last_run_id IS NULL AND last_run_at = ?)
+           )`,
+        now,
+        promptId,
+        runId,
+        runRow.started_at,
+      );
+      return true;
+    }
+
     this.sql.exec(
       `UPDATE scheduled_prompts
        SET updated_at = ?, last_run_status = ?, last_run_error = ?
@@ -1904,18 +2131,44 @@ export class WorkspaceCronDO extends DurableObject<WorkspaceCronEnv> {
       message: input.status === "error" ? input.error ?? "Workflow failed" : null,
     });
 
-    this.sql.exec(
-      `UPDATE deterministic_automations
-       SET updated_at = ?, last_run_status = ?, last_run_error = ?
-       WHERE id = ? AND last_instance_id = ?`,
-      Date.now(),
-      input.status,
-      input.status === "error" ? input.error ?? "Workflow failed" : null,
-      automationId,
-      instanceId,
-    );
+    const now = Date.now();
+    const currentAutomation = this.getAutomationRow(automationId);
+    const preserveBillingDisabledSummary =
+      input.status === "success" &&
+      currentAutomation?.enabled === 0 &&
+      currentAutomation.last_run_status === "error" &&
+      this.isScheduleDisabledByBillingMessage(
+        currentAutomation.last_run_error,
+      );
+
+    if (preserveBillingDisabledSummary) {
+      this.sql.exec(
+        `UPDATE deterministic_automations
+         SET updated_at = ?
+         WHERE id = ? AND last_instance_id = ?`,
+        now,
+        automationId,
+        instanceId,
+      );
+    } else {
+      this.sql.exec(
+        `UPDATE deterministic_automations
+         SET updated_at = ?, last_run_status = ?, last_run_error = ?
+         WHERE id = ? AND last_instance_id = ?`,
+        now,
+        input.status,
+        input.status === "error" ? input.error ?? "Workflow failed" : null,
+        automationId,
+        instanceId,
+      );
+    }
 
     return runUpdated;
+  }
+
+  async runDueAutomationsForTest(workspaceId: string): Promise<void> {
+    this.assertWorkspaceIdentity(workspaceId);
+    await this.alarm();
   }
 
   async alarm(): Promise<void> {
@@ -1943,6 +2196,7 @@ export class WorkspaceCronDO extends DurableObject<WorkspaceCronEnv> {
       return;
     }
 
+    const limits = await this.getWorkspaceBillingLimits(workspace);
     const now = Date.now();
     const dueRows = this.sql
       .exec(
@@ -1962,6 +2216,39 @@ export class WorkspaceCronDO extends DurableObject<WorkspaceCronEnv> {
       const runStartedAt = Date.now();
       const scheduledFor = prompt.next_run_at ?? runStartedAt;
       const runId = crypto.randomUUID();
+      const billingViolation = this.getRuntimeBillingViolation(
+        "scheduled_prompt",
+        prompt.id,
+        prompt.cron_expression,
+        prompt.created_by,
+        limits,
+      );
+      if (billingViolation) {
+        const errorMessage = `Blocked by billing plan: ${billingViolation}`;
+        this.insertAutomationRun({
+          id: runId,
+          kind: "scheduled_prompt",
+          automationId: prompt.id,
+          trigger: "schedule",
+          status: "error",
+          startedAt: scheduledFor,
+          completedAt: Date.now(),
+          message: errorMessage,
+        });
+        this.sql.exec(
+          `UPDATE scheduled_prompts
+           SET updated_at = ?, enabled = 0, next_run_at = NULL, last_run_at = ?, last_run_id = ?, last_run_status = ?, last_run_error = ?, run_count = run_count + 1
+           WHERE id = ?`,
+          Date.now(),
+          runStartedAt,
+          runId,
+          "error",
+          errorMessage,
+          prompt.id,
+        );
+        continue;
+      }
+
       const dispatch = await this.dispatchPrompt(
         prompt,
         workspace,
@@ -2014,6 +2301,39 @@ export class WorkspaceCronDO extends DurableObject<WorkspaceCronEnv> {
       const automation = this.toAutomation(row);
       const runStartedAt = Date.now();
       const scheduledFor = automation.next_run_at ?? runStartedAt;
+      const billingViolation = this.getRuntimeBillingViolation(
+        "deterministic_automation",
+        automation.id,
+        automation.cron_expression,
+        automation.created_by,
+        limits,
+      );
+
+      if (billingViolation) {
+        const errorMessage = `Blocked by billing plan: ${billingViolation}`;
+        this.insertAutomationRun({
+          id: crypto.randomUUID(),
+          kind: "deterministic_automation",
+          automationId: automation.id,
+          trigger: "schedule",
+          status: "error",
+          startedAt: scheduledFor,
+          completedAt: Date.now(),
+          message: errorMessage,
+        });
+        this.sql.exec(
+          `UPDATE deterministic_automations
+           SET updated_at = ?, enabled = 0, next_run_at = NULL, last_run_at = ?, last_run_status = ?, last_run_error = ?, last_instance_id = NULL, run_count = run_count + 1
+           WHERE id = ?`,
+          Date.now(),
+          runStartedAt,
+          "error",
+          errorMessage,
+          automation.id,
+        );
+        continue;
+      }
+
       const nextRunAt = getNextCronRunAt(
         automation.cron_expression,
         runStartedAt,
@@ -2029,7 +2349,8 @@ export class WorkspaceCronDO extends DurableObject<WorkspaceCronEnv> {
           status: "error",
           startedAt: scheduledFor,
           completedAt: Date.now(),
-          message: "Deterministic automation workflow binding is not configured",
+          message:
+            "Deterministic automation workflow binding is not configured",
         });
         this.sql.exec(
           `UPDATE deterministic_automations
