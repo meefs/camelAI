@@ -114,6 +114,7 @@ export default [
       "routes/_admin.orgs.$id.audit-log.tsx",
     ),
     route("qaml-backdoor/threads", "routes/_admin.threads.tsx"),
+    route("qaml-backdoor/chat-explorer", "routes/_admin.chat-explorer.tsx"),
     route("qaml-backdoor/threads/:id", "routes/_admin.threads.$id.tsx"),
     route("qaml-backdoor/workspaces", "routes/_admin.workspaces.tsx"),
     route("qaml-backdoor/workspaces/:id", "routes/_admin.workspaces.$id.tsx"),

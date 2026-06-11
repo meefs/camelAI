@@ -1,10 +1,12 @@
 import type {
   AdminAppListRow,
+  AdminChatExplorerRow,
   AdminEventType,
   AdminOrgDirectoryRow,
   AdminThreadListRow,
   AdminUserSummaryRow,
   AppFilters,
+  ChatExplorerFilters,
   OrgDirectoryFilters,
   OrgFilters,
   ThreadFilters,
@@ -125,6 +127,65 @@ const ORG_SORT_COLS: Record<string, string> = { created_at: 'created_at', name: 
 const ORG_DIRECTORY_SORT_COLS: Record<string, string> = { created_at: 'o.created_at', name: 'o.name' };
 const WORKSPACE_SORT_COLS: Record<string, string> = { created_at: 'w.created_at', name: 'w.name' };
 const APP_SORT_COLS: Record<string, string> = { created_at: 'a.created_at', updated_at: 'a.updated_at' };
+const CHAT_EXPLORER_SORT_COLS: Record<NonNullable<ChatExplorerFilters['sort_by']>, string> = {
+  created_at: 't.created_at',
+  updated_at: 't.updated_at',
+};
+const THREADS_INDEX_VERSION_KEY = 'threads_index_version';
+const THREADS_INDEX_VERSION = '2';
+const THREADS_INDEX_BACKFILL_REQUIRED_KEY = 'threads_index_backfill_required';
+const CHAT_EXPLORER_ORG_PLAN_SQL = `
+  CASE
+    WHEN o.billing_status = 'enterprise' OR o.billing_plan = 'enterprise' THEN 'enterprise'
+    WHEN o.billing_plan = 'free' THEN 'payg'
+    WHEN o.billing_plan IN ('payg','starter','pro','team') THEN o.billing_plan
+    WHEN o.billing_status IN ('trialing','active','past_due') THEN 'starter'
+    ELSE 'payg'
+  END
+`;
+const CHAT_EXPLORER_FIRST_THREAD_SQL = `
+  (u.id IS NOT NULL AND NOT EXISTS (
+    SELECT 1 FROM threads t2
+    WHERE t2.created_by = t.created_by
+      AND (
+        t2.created_at < t.created_at
+        OR (t2.created_at = t.created_at AND t2.id < t.id)
+      )
+  ))
+`;
+const CHAT_EXPLORER_AUTOMATED_THREAD_SQL = `
+  (
+    t.source = 'scheduled'
+    OR t.created_by = 'system'
+    OR t.title LIKE 'Scheduled: %'
+  )
+`;
+
+function truncateIndexPreview(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  return value.length > 300 ? value.slice(0, 300) : value;
+}
+
+function normalizeChannelKindsForIndex(value: unknown): string | null {
+  if (Array.isArray(value)) return JSON.stringify(value);
+  return typeof value === 'string' ? value : null;
+}
+
+function normalizeInternalDomainList(
+  rawValue: string | undefined,
+  defaultDomains: string[] = [],
+): string[] {
+  const source = rawValue && rawValue.trim().length > 0 ? rawValue : defaultDomains.join(',');
+  return Array.from(
+    new Set(
+      source
+        .split(',')
+        .map((domain) => domain.trim().toLowerCase())
+        .map((domain) => domain.replace(/^@+/, '').replace(/\.+$/, ''))
+        .filter((domain) => domain.length > 0),
+    ),
+  );
+}
 
 export class AppIndexDatabase {
   private schemaReady: Promise<void> | null = null;
@@ -152,6 +213,7 @@ export class AppIndexDatabase {
         created_at INTEGER NOT NULL,
         archived INTEGER NOT NULL DEFAULT 0,
         billing_status TEXT,
+        billing_plan TEXT,
         created_by TEXT,
         member_count INTEGER NOT NULL DEFAULT 0,
         workspace_count INTEGER NOT NULL DEFAULT 0,
@@ -182,7 +244,13 @@ export class AppIndexDatabase {
         workspace_id TEXT NOT NULL,
         created_at INTEGER NOT NULL,
         updated_at INTEGER NOT NULL,
-        created_by TEXT
+        created_by TEXT,
+        user_message_count INTEGER,
+        first_user_message TEXT,
+        last_user_message_at INTEGER,
+        source TEXT,
+        channel_kind TEXT,
+        channel_kinds TEXT
       );
       CREATE TABLE IF NOT EXISTS apps (
         app_id TEXT PRIMARY KEY,
@@ -235,6 +303,9 @@ export class AppIndexDatabase {
       CREATE INDEX IF NOT EXISTS idx_workspaces_org_created_at ON workspaces(org_id, created_at DESC);
       CREATE INDEX IF NOT EXISTS idx_threads_org_updated_at ON threads(org_id, updated_at DESC);
       CREATE INDEX IF NOT EXISTS idx_threads_workspace_updated_at ON threads(workspace_id, updated_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_threads_updated_at ON threads(updated_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_threads_created_at ON threads(created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_threads_created_by_created_at ON threads(created_by, created_at, id);
       CREATE INDEX IF NOT EXISTS idx_apps_org_updated_at ON apps(org_id, updated_at DESC);
       CREATE INDEX IF NOT EXISTS idx_apps_workspace_updated_at ON apps(workspace_id, updated_at DESC);
       CREATE INDEX IF NOT EXISTS idx_org_memberships_user_id ON org_memberships(user_id);
@@ -252,9 +323,57 @@ export class AppIndexDatabase {
         try {
           await this.db.prepare("ALTER TABLE apps ADD COLUMN project_id TEXT").run();
         } catch {}
+        try {
+          await this.db.prepare("ALTER TABLE orgs ADD COLUMN billing_plan TEXT").run();
+        } catch {}
+        try {
+          await this.db.prepare("ALTER TABLE threads ADD COLUMN user_message_count INTEGER").run();
+        } catch {}
+        try {
+          await this.db.prepare("ALTER TABLE threads ADD COLUMN first_user_message TEXT").run();
+        } catch {}
+        try {
+          await this.db.prepare("ALTER TABLE threads ADD COLUMN last_user_message_at INTEGER").run();
+        } catch {}
+        try {
+          await this.db.prepare("ALTER TABLE threads ADD COLUMN source TEXT").run();
+        } catch {}
+        try {
+          await this.db.prepare("ALTER TABLE threads ADD COLUMN channel_kind TEXT").run();
+        } catch {}
+        try {
+          await this.db.prepare("ALTER TABLE threads ADD COLUMN channel_kinds TEXT").run();
+        } catch {}
         await this.db
           .prepare("CREATE INDEX IF NOT EXISTS idx_apps_project_updated_at ON apps(project_id, updated_at DESC)")
           .run();
+        await this.db
+          .prepare("CREATE INDEX IF NOT EXISTS idx_threads_updated_at ON threads(updated_at DESC)")
+          .run();
+        await this.db
+          .prepare("CREATE INDEX IF NOT EXISTS idx_threads_created_at ON threads(created_at DESC)")
+          .run();
+        await this.db
+          .prepare("CREATE INDEX IF NOT EXISTS idx_threads_created_by_created_at ON threads(created_by, created_at, id)")
+          .run();
+        const version = await first<{ value: string }>(
+          this.db.prepare("SELECT value FROM app_index_metadata WHERE key = ? LIMIT 1").bind(THREADS_INDEX_VERSION_KEY),
+        );
+        if (version?.value !== THREADS_INDEX_VERSION) {
+          const now = Date.now();
+          // Do not clear bootstrap readiness here: ensureSchema runs in admin
+          // request paths, and rebuilding the full index synchronously can time out
+          // at production scale. The marker lets an explicit backfill workflow pick
+          // up old rows without blocking ordinary admin reads.
+          await this.db.batch([
+            this.db
+              .prepare("INSERT OR REPLACE INTO app_index_metadata (key, value, updated_at) VALUES (?, ?, ?)")
+              .bind(THREADS_INDEX_VERSION_KEY, THREADS_INDEX_VERSION, now),
+            this.db
+              .prepare("INSERT OR REPLACE INTO app_index_metadata (key, value, updated_at) VALUES (?, ?, ?)")
+              .bind(THREADS_INDEX_BACKFILL_REQUIRED_KEY, '1', now),
+          ]);
+        }
       })
       .then(() => undefined);
     await this.schemaReady;
@@ -282,6 +401,22 @@ export class AppIndexDatabase {
     await this.db
       .prepare("INSERT OR REPLACE INTO app_index_metadata (key, value, updated_at) VALUES ('bootstrap_complete', '1', ?)")
       .bind(Date.now())
+      .run();
+  }
+
+  async isThreadsIndexBackfillRequired(): Promise<boolean> {
+    await this.ensureSchema();
+    const row = await first<{ value: string }>(
+      this.db.prepare("SELECT value FROM app_index_metadata WHERE key = ? LIMIT 1").bind(THREADS_INDEX_BACKFILL_REQUIRED_KEY),
+    );
+    return row?.value === '1';
+  }
+
+  async markThreadsIndexBackfillComplete(): Promise<void> {
+    await this.ensureSchema();
+    await this.db
+      .prepare("DELETE FROM app_index_metadata WHERE key = ?")
+      .bind(THREADS_INDEX_BACKFILL_REQUIRED_KEY)
       .run();
   }
 
@@ -367,17 +502,18 @@ export class AppIndexDatabase {
         const workspaceCount = typeof o.workspace_count === 'number' && Number.isFinite(o.workspace_count) ? o.workspace_count : null;
         await this.db
           .prepare(`
-            INSERT INTO orgs (id, name, slug, created_at, archived, billing_status, created_by, member_count, workspace_count)
-            VALUES (?, ?, COALESCE(?, (SELECT slug FROM orgs WHERE id = ?)), ?, ?, ?, ?, COALESCE(?, COALESCE((SELECT member_count FROM orgs WHERE id = ?), 0)), COALESCE(?, COALESCE((SELECT workspace_count FROM orgs WHERE id = ?), 0)))
+            INSERT INTO orgs (id, name, slug, created_at, archived, billing_status, billing_plan, created_by, member_count, workspace_count)
+            VALUES (?, ?, COALESCE(?, (SELECT slug FROM orgs WHERE id = ?)), ?, ?, ?, ?, ?, COALESCE(?, COALESCE((SELECT member_count FROM orgs WHERE id = ?), 0)), COALESCE(?, COALESCE((SELECT workspace_count FROM orgs WHERE id = ?), 0)))
             ON CONFLICT(id) DO UPDATE SET
               name=excluded.name,
               slug=COALESCE(excluded.slug, orgs.slug),
               archived=excluded.archived,
               billing_status=excluded.billing_status,
+              billing_plan=excluded.billing_plan,
               member_count=COALESCE(excluded.member_count, orgs.member_count),
               workspace_count=COALESCE(excluded.workspace_count, orgs.workspace_count)
           `)
-          .bind(o.id, o.name, slug, o.id, o.created_at ?? Date.now(), o.archived ? 1 : 0, o.billing_status ?? null, o.created_by ?? null, memberCount, o.id, workspaceCount, o.id)
+          .bind(o.id, o.name, slug, o.id, o.created_at ?? Date.now(), o.archived ? 1 : 0, o.billing_status ?? null, o.billing_plan ?? null, o.created_by ?? null, memberCount, o.id, workspaceCount, o.id)
           .run();
         break;
       }
@@ -415,13 +551,56 @@ export class AppIndexDatabase {
       }
       case 'thread_upsert': {
         const t = event.payload;
+        const userMessageCount = typeof t.user_message_count === 'number' && Number.isFinite(t.user_message_count) ? t.user_message_count : null;
+        const firstUserMessage = truncateIndexPreview(t.first_user_message);
+        const channelKinds = normalizeChannelKindsForIndex(t.channel_kinds);
         await this.db
           .prepare(`
-            INSERT INTO threads (id, title, model, org_id, workspace_id, created_at, updated_at, created_by)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(id) DO UPDATE SET title=excluded.title, model=excluded.model, updated_at=excluded.updated_at
+            INSERT INTO threads (
+              id,
+              title,
+              model,
+              org_id,
+              workspace_id,
+              created_at,
+              updated_at,
+              created_by,
+              user_message_count,
+              first_user_message,
+              last_user_message_at,
+              source,
+              channel_kind,
+              channel_kinds
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+              title=excluded.title,
+              model=excluded.model,
+              updated_at=excluded.updated_at,
+              created_by=excluded.created_by,
+              user_message_count=excluded.user_message_count,
+              first_user_message=excluded.first_user_message,
+              last_user_message_at=excluded.last_user_message_at,
+              source=excluded.source,
+              channel_kind=excluded.channel_kind,
+              channel_kinds=excluded.channel_kinds
           `)
-          .bind(t.id, t.title ?? null, t.model ?? 'sonnet', t.org_id, t.workspace_id, t.created_at ?? Date.now(), t.updated_at ?? Date.now(), t.created_by ?? null)
+          .bind(
+            t.id,
+            t.title ?? null,
+            t.model ?? 'sonnet',
+            t.org_id,
+            t.workspace_id,
+            t.created_at ?? Date.now(),
+            t.updated_at ?? Date.now(),
+            t.created_by ?? null,
+            userMessageCount,
+            firstUserMessage,
+            t.last_user_message_at ?? null,
+            t.source ?? null,
+            t.channel_kind ?? null,
+            channelKinds,
+          )
           .run();
         await this.db.prepare('UPDATE workspaces SET thread_count = (SELECT COUNT(*) FROM threads WHERE workspace_id = ?) WHERE id = ?').bind(t.workspace_id, t.workspace_id).run();
         break;
@@ -688,6 +867,108 @@ export class AppIndexDatabase {
     const sortDir = filters?.sort_dir === 'asc' ? 'ASC' : 'DESC';
     const items = await this.all<AdminThreadListRow>(`${base}${where} ORDER BY ${sortCol} ${sortDir} LIMIT ? OFFSET ?`, ...params, limit, offset);
     const total = toNumber((await first<{ count: number }>(this.db.prepare(`${countBase}${where}`).bind(...params)))?.count);
+    return { items, total, offset, limit, hasMore: offset + items.length < total };
+  }
+
+  async getChatExplorerThreads(
+    offset: number,
+    limit: number,
+    search?: string,
+    filters?: ChatExplorerFilters,
+  ) {
+    const base = `
+      FROM threads t
+      LEFT JOIN orgs o ON t.org_id = o.id
+      LEFT JOIN workspaces w ON t.workspace_id = w.id
+      LEFT JOIN users u ON t.created_by = u.id
+    `;
+    const conditions: string[] = [];
+    const params: unknown[] = [];
+    const trimmedSearch = search?.trim();
+
+    if (trimmedSearch) {
+      const like = `%${trimmedSearch}%`;
+      conditions.push('(u.email LIKE ? OR o.name LIKE ? OR t.title LIKE ?)');
+      params.push(like, like, like);
+    }
+    if (filters?.plan) {
+      conditions.push(`${CHAT_EXPLORER_ORG_PLAN_SQL} = ?`);
+      params.push(filters.plan);
+    }
+    if (filters?.first_chats_only) {
+      conditions.push(CHAT_EXPLORER_FIRST_THREAD_SQL);
+    }
+    if (filters?.automated_only) {
+      conditions.push(CHAT_EXPLORER_AUTOMATED_THREAD_SQL);
+    }
+    if (filters?.exclude_internal) {
+      for (const domain of normalizeInternalDomainList(undefined, ['camelai.com'])) {
+        conditions.push('(u.email IS NULL OR u.email NOT LIKE ?)');
+        params.push(`%@${domain}`);
+      }
+    }
+
+    const where = conditions.length ? ` WHERE ${conditions.join(' AND ')}` : '';
+    const sortCol = CHAT_EXPLORER_SORT_COLS[filters?.sort_by ?? 'updated_at'] ?? 't.updated_at';
+    const rows = await this.all<any>(`
+      SELECT
+        t.id,
+        t.title,
+        t.model,
+        t.org_id,
+        t.workspace_id,
+        t.created_at,
+        t.updated_at,
+        t.created_by,
+        t.user_message_count,
+        t.first_user_message,
+        t.last_user_message_at,
+        t.source,
+        t.channel_kind,
+        t.channel_kinds,
+        o.name AS org_name,
+        o.billing_plan AS org_billing_plan,
+        o.billing_status AS org_billing_status,
+        ${CHAT_EXPLORER_ORG_PLAN_SQL} AS org_plan,
+        w.name AS workspace_name,
+        u.email AS user_email,
+        u.name AS user_name,
+        ${CHAT_EXPLORER_FIRST_THREAD_SQL} AS is_first_thread
+      ${base}
+      ${where}
+      ORDER BY ${sortCol} DESC, t.id ASC
+      LIMIT ? OFFSET ?
+    `, ...params, limit, offset);
+    const total = toNumber((await first<{ count: number }>(this.db.prepare(`
+      SELECT COUNT(*) AS count
+      ${base}
+      ${where}
+    `).bind(...params)))?.count);
+
+    const items: AdminChatExplorerRow[] = rows.map((row) => ({
+      id: row.id,
+      title: row.title ?? null,
+      model: row.model ?? null,
+      org_id: row.org_id,
+      workspace_id: row.workspace_id,
+      created_at: row.created_at,
+      updated_at: row.updated_at,
+      created_by: row.created_by ?? null,
+      user_message_count: row.user_message_count ?? null,
+      first_user_message: row.first_user_message ?? null,
+      last_user_message_at: row.last_user_message_at ?? null,
+      source: row.source ?? null,
+      channel_kind: row.channel_kind ?? null,
+      channel_kinds: row.channel_kinds ?? null,
+      org_name: row.org_name ?? null,
+      org_billing_plan: row.org_billing_plan ?? null,
+      org_billing_status: row.org_billing_status ?? null,
+      org_plan: row.org_plan ?? 'payg',
+      workspace_name: row.workspace_name ?? null,
+      user_email: row.user_email ?? null,
+      user_name: row.user_name ?? null,
+      is_first_thread: toBoolean(row.is_first_thread),
+    }));
     return { items, total, offset, limit, hasMore: offset + items.length < total };
   }
 

@@ -68,6 +68,60 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     throw redirect("/onboarding");
   }
 
+  // Get sidebar state from cookies
+  const cookies = parseCookies(request);
+  const sidebarValue = cookies[SIDEBAR_COOKIE_NAME];
+  let defaultSidebarOpen = true;
+  if (sidebarValue === "false") {
+    defaultSidebarOpen = false;
+  }
+
+  const embedMode =
+    /^\/chat\/[^/]+$/.test(url.pathname) &&
+    url.searchParams.get("adminReadonly") === "1" &&
+    url.searchParams.get("embed") === "1" &&
+    authContext.user.is_superuser === true;
+
+  if (embedMode) {
+    const authState: AuthState = {
+      user: authContext.user,
+      currentOrg: authContext.currentOrg,
+      currentWorkspace: authContext.currentWorkspace,
+      orgs: authContext.orgs,
+      onboarding: authContext.onboarding,
+      workspaces: authContext.workspaces,
+      allWorkspaces: authContext.allWorkspaces,
+      orgWorkspaceCount: authContext.orgWorkspaceCount,
+      loading: false,
+      error: null,
+    };
+    const responseData = {
+      authState,
+      defaultSidebarOpen,
+      showLegacyBanner: Promise.resolve(false),
+      legacyMigration: Promise.resolve(null),
+      chatGroups: Promise.resolve([] as ChatGroupView[]),
+      billingAccessReady: true,
+      appRouteAccessible: true,
+      paywallContext: null,
+      projectMigrationGate: null,
+      embedMode: true,
+    };
+
+    if (authContext.resignedSessionCookie) {
+      return data(responseData, {
+        headers: {
+          "Set-Cookie": createSessionCookieHeader(
+            authContext.resignedSessionCookie,
+            request,
+          ),
+        },
+      });
+    }
+
+    return responseData;
+  }
+
   const orgStub = env.ORG.get(env.ORG.idFromName(authContext.currentOrg.id));
   const [orgInfo, llmProviderConfig] = await Promise.all([
     orgStub.getInfo().catch(() => null),
@@ -89,14 +143,6 @@ export async function loader({ request, context }: Route.LoaderArgs) {
         multiOrg: authContext.orgs.length > 1,
         byokProviderLabel: getByokProviderLabel(llmProviderConfig?.provider),
       };
-
-  // Get sidebar state from cookies
-  const cookies = parseCookies(request);
-  const sidebarValue = cookies[SIDEBAR_COOKIE_NAME];
-  let defaultSidebarOpen = true;
-  if (sidebarValue === "false") {
-    defaultSidebarOpen = false;
-  }
 
   // Convert auth context to AuthState for the provider
   const authState: AuthState = {
@@ -173,6 +219,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     appRouteAccessible,
     paywallContext,
     projectMigrationGate,
+    embedMode: false,
   };
 
   // Re-sign session cookie if workspace fell back (e.g. workspace removed/access revoked)
@@ -200,6 +247,7 @@ export default function AppLayout() {
     appRouteAccessible,
     paywallContext,
     projectMigrationGate,
+    embedMode,
   } =
     useLoaderData<typeof loader>();
   const navigate = useNavigate();
@@ -217,11 +265,13 @@ export default function AppLayout() {
 
   return (
     <SidebarProvider defaultOpen={defaultSidebarOpen}>
-      <ChatGroupsProvider>
+      <ChatGroupsProvider disableLiveStatus={embedMode}>
         <ChatThreadSnapshotsProvider>
-          <AppSidebar />
+          {embedMode ? null : <AppSidebar />}
           <SidebarInset className="h-svh overflow-hidden flex flex-col">
-            {projectMigrationGate ? (
+            {embedMode ? (
+              <Outlet />
+            ) : projectMigrationGate ? (
               <WorkspaceMigrationInProgress />
             ) : appRouteAccessible ? (
               <Outlet />
@@ -247,29 +297,33 @@ export default function AppLayout() {
           </SidebarInset>
         </ChatThreadSnapshotsProvider>
       </ChatGroupsProvider>
-      <Suspense fallback={null}>
-        <Await resolve={showLegacyBanner}>
-          {(resolvedShowLegacyBanner) => (
-            <LegacyUserBanner
-              show={resolvedShowLegacyBanner}
-              userId={authState.user?.id ?? "legacy-user"}
-            />
-          )}
-        </Await>
-      </Suspense>
-      {billingAccessReady ? (
-        <Suspense fallback={null}>
-          <Await resolve={legacyMigration}>
-            {(resolvedLegacyMigration) => (
-              <LegacyMigrationDisclosure
-                authState={authState}
-                legacyMigration={resolvedLegacyMigration}
-                navigate={navigate}
-              />
-            )}
-          </Await>
-        </Suspense>
-      ) : null}
+      {embedMode ? null : (
+        <>
+          <Suspense fallback={null}>
+            <Await resolve={showLegacyBanner}>
+              {(resolvedShowLegacyBanner) => (
+                <LegacyUserBanner
+                  show={resolvedShowLegacyBanner}
+                  userId={authState.user?.id ?? "legacy-user"}
+                />
+              )}
+            </Await>
+          </Suspense>
+          {billingAccessReady ? (
+            <Suspense fallback={null}>
+              <Await resolve={legacyMigration}>
+                {(resolvedLegacyMigration) => (
+                  <LegacyMigrationDisclosure
+                    authState={authState}
+                    legacyMigration={resolvedLegacyMigration}
+                    navigate={navigate}
+                  />
+                )}
+              </Await>
+            </Suspense>
+          ) : null}
+        </>
+      )}
     </SidebarProvider>
   );
 }

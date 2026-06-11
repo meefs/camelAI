@@ -11,18 +11,21 @@ interface AdminSearchProps {
   placeholder?: string;
   className?: string;
   inputClassName?: string;
+  clearParams?: string[];
 }
 
 export function AdminSearch({
   placeholder = 'Search',
   className,
   inputClassName,
+  clearParams = [],
 }: AdminSearchProps) {
   const [searchParams] = useSearchParams();
   const { pathname } = useLocation();
   const navigate = useNavigate();
   const currentSearch = searchParams.get('search') ?? '';
   const [query, setQuery] = useState(currentSearch);
+  const clearParamKey = clearParams.join('\0');
 
   useEffect(() => {
     setQuery(currentSearch);
@@ -40,12 +43,15 @@ export function AdminSearch({
         params.delete('search');
       }
       params.delete('offset');
+      for (const param of clearParamKey ? clearParamKey.split('\0') : []) {
+        params.delete(param);
+      }
       const queryString = params.toString();
       navigate(queryString ? `${pathname}?${queryString}` : pathname);
     }, 300);
 
     return () => clearTimeout(timeout);
-  }, [query, currentSearch, pathname, navigate, searchParams]);
+  }, [query, currentSearch, pathname, navigate, searchParams, clearParamKey]);
 
   return (
     <InputGroup className={cn("h-8", className)}>

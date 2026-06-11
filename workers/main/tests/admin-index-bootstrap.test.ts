@@ -5,9 +5,25 @@ import { getAppIndexDatabase } from '../src/app-index-db';
 import { createOrg, createUser, type TestEnv } from './test-helpers';
 
 const testEnv = env as unknown as TestEnv;
+const APP_INDEX_BOOTSTRAP_LOCK_KEY = 'admin_index_d1_bootstrap_lock';
+const APP_INDEX_BOOTSTRAP_IN_PROGRESS = 'syncing';
 
 function testEmail() {
   return `admin-index-bootstrap-${Date.now()}-${Math.random().toString(36).slice(2)}@example.com`;
+}
+
+async function waitForCondition(
+  predicate: () => Promise<boolean>,
+  timeoutMs = 10_000,
+): Promise<void> {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    if (await predicate()) {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error('Timed out waiting for condition');
 }
 
 describe('D1 admin index bootstrap', () => {
@@ -67,5 +83,85 @@ describe('D1 admin index bootstrap', () => {
         }),
       ]),
     );
+  });
+
+  it('runs the thread index v2 backfill marker for ready databases', async () => {
+    const email = testEmail();
+    const { userId } = await createUser(
+      testEnv,
+      email,
+      'password123',
+      'Backfill User',
+    );
+    await testEnv.EMAIL_TO_USER.put(`email:${email.toLowerCase()}`, userId);
+    const { org, defaultWorkspaceId } = await createOrg(
+      testEnv,
+      'Backfill Org',
+      userId,
+    );
+    const orgStub = testEnv.ORG.get(testEnv.ORG.idFromName(org.id));
+    const thread = await orgStub.createThread(
+      defaultWorkspaceId,
+      'Backfill Thread',
+      userId,
+    );
+
+    const appIndex = getAppIndexDatabase(testEnv)!;
+    await appIndex.ensureSchema();
+    await appIndex.markBootstrapComplete();
+    await testEnv.APP_DB!.batch([
+      testEnv.APP_DB!.prepare('DELETE FROM threads WHERE id = ?').bind(thread.id),
+      testEnv.APP_DB!.prepare('DELETE FROM workspaces WHERE id = ?')
+        .bind(defaultWorkspaceId),
+      testEnv.APP_DB!.prepare('DELETE FROM orgs WHERE id = ?').bind(org.id),
+      testEnv.APP_DB!.prepare('DELETE FROM users WHERE id = ?').bind(userId),
+      testEnv.APP_DB!.prepare(
+        "INSERT OR REPLACE INTO app_index_metadata (key, value, updated_at) VALUES ('threads_index_backfill_required', '1', ?)",
+      ).bind(Date.now()),
+    ]);
+    await expect(appIndex.isBootstrapComplete()).resolves.toBe(true);
+    await expect(appIndex.isThreadsIndexBackfillRequired()).resolves.toBe(true);
+
+    await ensureAdminIndexReady(testEnv as never);
+
+    await waitForCondition(async () => {
+      const [backfillRequired, context] = await Promise.all([
+        appIndex.isThreadsIndexBackfillRequired(),
+        appIndex.getThreadContextById(thread.id),
+      ]);
+      return !backfillRequired && context?.id === thread.id;
+    });
+
+    await expect(appIndex.getThreadContextById(thread.id)).resolves.toMatchObject({
+      id: thread.id,
+      org_id: org.id,
+      workspace_id: defaultWorkspaceId,
+    });
+  });
+
+  it('does not return partial admin index results while another bootstrap owns the lock', async () => {
+    const appIndex = getAppIndexDatabase(testEnv)!;
+    await appIndex.ensureSchema();
+    await testEnv.APP_DB!.prepare(
+      "DELETE FROM app_index_metadata WHERE key IN ('bootstrap_complete', 'ready')",
+    ).run();
+    await testEnv.APP_KV.put(
+      APP_INDEX_BOOTSTRAP_LOCK_KEY,
+      APP_INDEX_BOOTSTRAP_IN_PROGRESS,
+      { expirationTtl: 60 },
+    );
+
+    try {
+      await expect(
+        ensureAdminIndexReady(testEnv as never, {
+          waitMs: 1,
+          pollMs: 1,
+        }),
+      ).rejects.toThrow('Admin index bootstrap is still in progress');
+      await expect(appIndex.isBootstrapComplete()).resolves.toBe(false);
+    } finally {
+      await testEnv.APP_KV.delete(APP_INDEX_BOOTSTRAP_LOCK_KEY);
+      await appIndex.markBootstrapComplete();
+    }
   });
 });

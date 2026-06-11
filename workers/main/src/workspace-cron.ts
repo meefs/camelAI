@@ -919,6 +919,8 @@ export class WorkspaceCronDO extends DurableObject<WorkspaceCronEnv> {
       createdBy || "system",
       prompt.slice(0, 500),
       model,
+      undefined,
+      { source: "scheduled" },
     )) as OrgThread;
     return created.id;
   }
@@ -942,6 +944,8 @@ export class WorkspaceCronDO extends DurableObject<WorkspaceCronEnv> {
       "system",
       prompt.prompt.slice(0, 500),
       model,
+      undefined,
+      { source: "scheduled" },
     )) as OrgThread;
 
     this.sql.exec(

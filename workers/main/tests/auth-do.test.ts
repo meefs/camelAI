@@ -10,6 +10,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { env } from 'cloudflare:test';
 import { createNewSession, type SessionData } from '../src/session-kv';
+import { getAppIndexDatabase } from '../src/app-index-db';
 import {
   createUser,
   getUserByEmail,
@@ -34,6 +35,20 @@ import {
   switchSessionWorkspace,
   type TestEnv,
 } from './test-helpers';
+
+async function waitForCondition(
+  predicate: () => Promise<boolean>,
+  timeoutMs = 10_000,
+): Promise<void> {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    if (await predicate()) {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error('Timed out waiting for condition');
+}
 
 describe('Auth flow (full-stack with DOs)', () => {
   const testEnv = env as unknown as TestEnv;
@@ -493,6 +508,30 @@ describe('Auth flow (full-stack with DOs)', () => {
       expect(afterIgnored?.channel_kinds).toBe(JSON.stringify(['telegram']));
       expect(updated?.updated_at).toBe(before?.updated_at);
       expect(updated?.user_message_count).toBe(before?.user_message_count);
+    });
+
+    it('syncs first-message previews and channel badges to the admin index', async () => {
+      const email = testEmail();
+      const { userId } = await createUser(testEnv, email, 'password123', 'Thread Owner');
+      const { org, defaultWorkspaceId } = await createOrg(testEnv, 'Explorer Metadata Org', userId);
+      const orgStub = testEnv.ORG.get(testEnv.ORG.idFromName(org.id));
+      const appIndex = getAppIndexDatabase(testEnv)!;
+
+      const thread = await orgStub.createThread(defaultWorkspaceId, 'Explorer metadata', userId);
+      await appIndex.ensureSchema();
+      await testEnv.APP_DB!.prepare('DELETE FROM threads WHERE id = ?').bind(thread.id).run();
+
+      await orgStub.setThreadFirstUserMessage(thread.id, 'Explorer preview prompt');
+      await waitForCondition(async () => {
+        const row = await appIndex.getThreadContextById(thread.id);
+        return row?.first_user_message === 'Explorer preview prompt';
+      });
+
+      await orgStub.recordThreadChannelUsed(thread.id, 'telegram');
+      await waitForCondition(async () => {
+        const row = await appIndex.getThreadContextById(thread.id);
+        return row?.channel_kinds === JSON.stringify(['telegram']);
+      });
     });
 
     it('loads multiple threads for one workspace in a single batch call', async () => {

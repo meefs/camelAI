@@ -1,3 +1,4 @@
+import { waitUntil } from "cloudflare:workers";
 import type { OrgDO, UserDO } from './auth.js';
 import {
   type AppIndexDatabase,
@@ -20,6 +21,11 @@ const APP_INDEX_BOOTSTRAP_LOCK_TTL_SECONDS = 300;
 const APP_INDEX_BOOTSTRAP_WAIT_MS = 10_000;
 const APP_INDEX_BOOTSTRAP_POLL_MS = 200;
 const ORG_INDEX_PREFIX = 'org_index:';
+
+type AdminIndexBootstrapOptions = {
+  waitMs?: number;
+  pollMs?: number;
+};
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -102,13 +108,16 @@ async function getWorkspaceIntegrationCount(
 
 async function waitForAdminIndexBootstrap(
   appIndex: AppIndexDatabase,
+  options: AdminIndexBootstrapOptions = {},
 ): Promise<void> {
   const startedAt = Date.now();
-  while (Date.now() - startedAt < APP_INDEX_BOOTSTRAP_WAIT_MS) {
+  const waitMs = options.waitMs ?? APP_INDEX_BOOTSTRAP_WAIT_MS;
+  const pollMs = options.pollMs ?? APP_INDEX_BOOTSTRAP_POLL_MS;
+  while (Date.now() - startedAt < waitMs) {
     if (await appIndex.isBootstrapComplete()) {
       return;
     }
-    await sleep(APP_INDEX_BOOTSTRAP_POLL_MS);
+    await sleep(pollMs);
   }
 }
 
@@ -223,10 +232,52 @@ async function bootstrapAdminIndexFromDurableObjects(
   }
 
   await appIndex.markBootstrapComplete();
+  await appIndex.markThreadsIndexBackfillComplete();
+}
+
+async function acquireAdminIndexBootstrapLock(
+  env: AdminIndexBootstrapEnv,
+): Promise<boolean> {
+  const bootstrapLock = await env.APP_KV.get(APP_INDEX_BOOTSTRAP_LOCK_KEY);
+  if (bootstrapLock === APP_INDEX_BOOTSTRAP_IN_PROGRESS) {
+    return false;
+  }
+
+  await env.APP_KV.put(
+    APP_INDEX_BOOTSTRAP_LOCK_KEY,
+    APP_INDEX_BOOTSTRAP_IN_PROGRESS,
+    { expirationTtl: APP_INDEX_BOOTSTRAP_LOCK_TTL_SECONDS },
+  );
+  return true;
+}
+
+async function runLockedAdminIndexBackfill(
+  env: AdminIndexBootstrapEnv,
+  appIndex: AppIndexDatabase,
+): Promise<void> {
+  const acquired = await acquireAdminIndexBootstrapLock(env);
+  if (!acquired) {
+    return;
+  }
+
+  const task = (async () => {
+    try {
+      await bootstrapAdminIndexFromDurableObjects(env, appIndex);
+    } finally {
+      await env.APP_KV.delete(APP_INDEX_BOOTSTRAP_LOCK_KEY);
+    }
+  })();
+
+  waitUntil(
+    task.catch((error) => {
+      console.error('[admin-index-bootstrap] background backfill failed', error);
+    }),
+  );
 }
 
 export async function ensureAdminIndexReady(
   env: AdminIndexBootstrapEnv,
+  options: AdminIndexBootstrapOptions = {},
 ): Promise<void> {
   const appIndex = getAppIndexDatabase(env);
   if (!appIndex) {
@@ -235,22 +286,23 @@ export async function ensureAdminIndexReady(
 
   await appIndex.ensureSchema();
   if (await appIndex.isBootstrapComplete()) {
+    if (await appIndex.isThreadsIndexBackfillRequired()) {
+      await runLockedAdminIndexBackfill(env, appIndex);
+    }
     return;
   }
 
-  const bootstrapLock = await env.APP_KV.get(APP_INDEX_BOOTSTRAP_LOCK_KEY);
-  if (bootstrapLock === APP_INDEX_BOOTSTRAP_IN_PROGRESS) {
-    await waitForAdminIndexBootstrap(appIndex);
+  let ownsLock = await acquireAdminIndexBootstrapLock(env);
+  if (!ownsLock) {
+    await waitForAdminIndexBootstrap(appIndex, options);
     if (await appIndex.isBootstrapComplete()) {
       return;
     }
+    ownsLock = await acquireAdminIndexBootstrapLock(env);
+    if (!ownsLock) {
+      throw new Error('Admin index bootstrap is still in progress; retry shortly');
+    }
   }
-
-  await env.APP_KV.put(
-    APP_INDEX_BOOTSTRAP_LOCK_KEY,
-    APP_INDEX_BOOTSTRAP_IN_PROGRESS,
-    { expirationTtl: APP_INDEX_BOOTSTRAP_LOCK_TTL_SECONDS },
-  );
 
   try {
     if (!(await appIndex.isBootstrapComplete())) {

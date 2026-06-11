@@ -50,6 +50,7 @@ export class AutomationWorkflow extends WorkflowEntrypoint {
     expect(created.next_run_at).toBeTypeOf('number');
     const createdThread = await orgStub.getThread(created.thread_id);
     expect(createdThread?.workspace_id).toBe(workspaceId);
+    expect(createdThread?.source).toBe('scheduled');
 
     const listAfterCreate = await cronStub.listScheduledPrompts(workspaceId!);
     expect(listAfterCreate).toHaveLength(1);
@@ -65,8 +66,14 @@ export class AutomationWorkflow extends WorkflowEntrypoint {
     expect(updated?.enabled).toBe(false);
     expect(updated?.next_run_at).toBeNull();
 
+    expect(await orgStub.deleteThread(created.thread_id, userId)).toBe(true);
     const run = await cronStub.runScheduledPromptNow(workspaceId!, created.id);
     expect(run?.prompt.id).toBe(created.id);
+    expect(run?.dispatch.thread_id).not.toBe(created.thread_id);
+    const repairedThread = run?.dispatch.thread_id
+      ? await orgStub.getThread(run.dispatch.thread_id)
+      : null;
+    expect(repairedThread?.source).toBe('scheduled');
     const runsAfterStart = await cronStub.listAutomationRuns(workspaceId!, {
       limitPerAutomation: 5,
     });

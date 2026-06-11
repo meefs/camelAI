@@ -15,6 +15,14 @@ export interface ThreadFilters {
   sort_dir?: 'asc' | 'desc';
 }
 
+export interface ChatExplorerFilters {
+  plan?: 'payg' | 'starter' | 'pro' | 'team' | 'enterprise';
+  first_chats_only?: boolean;
+  automated_only?: boolean;
+  exclude_internal?: boolean;
+  sort_by?: 'updated_at' | 'created_at';
+}
+
 export interface OrgFilters {
   archived?: boolean;
   sort_by?: 'created_at' | 'name';
@@ -68,6 +76,31 @@ export interface AdminThreadListRow {
   org_id: string;
   org_name: string | null;
   workspace_name: string | null;
+}
+
+export interface AdminChatExplorerRow {
+  id: string;
+  title: string | null;
+  model: string | null;
+  org_id: string;
+  workspace_id: string;
+  created_at: number;
+  updated_at: number;
+  created_by: string | null;
+  user_message_count: number | null;
+  first_user_message: string | null;
+  last_user_message_at: number | null;
+  source: string | null;
+  channel_kind: string | null;
+  channel_kinds: string | null;
+  org_name: string | null;
+  org_billing_plan: string | null;
+  org_billing_status: string | null;
+  org_plan: string;
+  workspace_name: string | null;
+  user_email: string | null;
+  user_name: string | null;
+  is_first_thread: boolean;
 }
 
 export interface AdminAppListRow {

@@ -6,6 +6,7 @@ import {
   Home,
   Mail,
   MessageSquare,
+  MessagesSquare,
   Rocket,
   Terminal,
   Users,
@@ -54,6 +55,11 @@ const modelRoutes = [
     label: 'Threads',
     href: '/qaml-backdoor/threads',
     icon: MessageSquare,
+  },
+  {
+    label: 'Chat Explorer',
+    href: '/qaml-backdoor/chat-explorer',
+    icon: MessagesSquare,
   },
   {
     label: 'Apps',

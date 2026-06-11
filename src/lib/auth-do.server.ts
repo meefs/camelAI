@@ -38,6 +38,10 @@ import {
   getAppIndexDatabase,
   getAppIndexReadDatabase,
 } from "../../workers/main/src/app-index-db";
+import type {
+  AdminChatExplorerRow,
+  ChatExplorerFilters,
+} from "../../workers/main/src/admin-index-types";
 import { ensureAdminIndexReady } from "../../workers/main/src/admin-index-bootstrap";
 import {
   type BanRecord,
@@ -505,6 +509,21 @@ export async function adminGetThreadsPaginated(
     search,
   )) as PaginatedResult<AdminThreadWithContext>;
   return normalizeAdminThreadPage(page);
+}
+
+export async function adminGetChatExplorerThreads(
+  context: AppLoadContext,
+  params: PaginationParams & { filters?: ChatExplorerFilters } = {},
+): Promise<PaginatedResult<AdminChatExplorerRow> & { hasMore: boolean }> {
+  const env = getEnv(context);
+  const { offset = 0, limit = 50, search, filters } = params;
+  await ensureAdminIndexReady(env);
+  return getAdminIndex(env).getChatExplorerThreads(
+    offset,
+    limit,
+    search,
+    filters,
+  ) as Promise<PaginatedResult<AdminChatExplorerRow> & { hasMore: boolean }>;
 }
 
 export async function adminGetAppsPaginated(

@@ -641,13 +641,19 @@ export function applyLiveRunningStatuses(
   return changed ? nextGroups : source;
 }
 
-export function ChatGroupsProvider({ children }: { children: ReactNode }) {
+export function ChatGroupsProvider({
+  children,
+  disableLiveStatus = false,
+}: {
+  children: ReactNode;
+  disableLiveStatus?: boolean;
+}) {
   const { currentWorkspace } = useAuthData();
   const revalidator = useRevalidator();
   const chatDebugFlags = getChatDebugFlags();
-  const statusSocketEnabled = chatDebugFlags.statusSocket;
-  const statusRevalidateEnabled = chatDebugFlags.statusRevalidate;
-  const markViewedEnabled = chatDebugFlags.markViewed;
+  const statusSocketEnabled = !disableLiveStatus && chatDebugFlags.statusSocket;
+  const statusRevalidateEnabled = !disableLiveStatus && chatDebugFlags.statusRevalidate;
+  const markViewedEnabled = !disableLiveStatus && chatDebugFlags.markViewed;
   const revalidateRef = useLatestRef(revalidator.revalidate);
   const data = useRouteLoaderData("routes/_app") as
     | AppChatGroupsLoaderData

@@ -3435,6 +3435,21 @@ export class OrgDO extends DurableObject<DOEnv> {
     });
   }
 
+  private syncThreadToAdminIndex(thread: OrgThread, operation: string): void {
+    this.getInfo()
+      .then((info) => {
+        if (info) {
+          dispatchAdminEvent(this.ctx, this.env, {
+            type: "thread_upsert",
+            payload: { ...thread, org_id: info.id },
+          });
+        }
+      })
+      .catch((err) => {
+        console.error(`Failed to sync ${operation} to AdminIndex`, err);
+      });
+  }
+
   private scheduleThreadCreateSideEffects(
     thread: OrgThread,
     actorId: string,
@@ -4566,13 +4581,17 @@ export class OrgDO extends DurableObject<DOEnv> {
       return existing;
     }
 
-    this.sql.exec(
+    const result = this.sql.exec(
       "UPDATE threads SET first_user_message = ? WHERE id = ? AND (first_user_message IS NULL OR first_user_message = '')",
       message,
       id,
     );
 
-    return this.getThread(id);
+    const updated = this.getThread(id);
+    if (updated && result.rowsWritten > 0) {
+      this.syncThreadToAdminIndex(updated, "thread first user message");
+    }
+    return updated;
   }
 
   recordThreadChannelUsed(
@@ -4592,7 +4611,9 @@ export class OrgDO extends DurableObject<DOEnv> {
       nextChannelKinds,
       id,
     );
-    return { ...existing, channel_kinds: nextChannelKinds };
+    const updated = { ...existing, channel_kinds: nextChannelKinds };
+    this.syncThreadToAdminIndex(updated, "thread channel usage");
+    return updated;
   }
 
   /**
