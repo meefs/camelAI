@@ -86,6 +86,7 @@ interface ChatMessagesViewProps {
   isCompacting: boolean;
   compactingPriorMessageId: string | null;
   isLoadingMessages: boolean;
+  deferRendering?: boolean;
   showGlobalAssistantIndicator: boolean;
   shouldRenderSpacer: boolean;
   lastUserMessageRef: RefObject<HTMLDivElement | null>;
@@ -120,6 +121,7 @@ export const ChatMessagesView = memo(function ChatMessagesView({
   isCompacting,
   compactingPriorMessageId,
   isLoadingMessages,
+  deferRendering = false,
   showGlobalAssistantIndicator,
   shouldRenderSpacer,
   lastUserMessageRef,
@@ -269,6 +271,23 @@ export const ChatMessagesView = memo(function ChatMessagesView({
         : null,
     [freshlyCompletedTurnId, messageGroups],
   );
+
+  if (deferRendering) {
+    return (
+      <>
+        <div className="mt-6 flex flex-col items-end gap-1">
+          <Skeleton className="h-16 w-3/4 rounded-3xl" />
+        </div>
+        <div className="mt-4 flex flex-col gap-2">
+          <Skeleton className="h-4 w-full" />
+          <Skeleton className="h-4 w-5/6" />
+          <Skeleton className="h-4 w-4/5" />
+          <Skeleton className="h-4 w-2/3" />
+        </div>
+        <div ref={messagesEndRef} />
+      </>
+    );
+  }
 
   return (
     <>

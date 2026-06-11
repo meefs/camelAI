@@ -159,7 +159,6 @@ import {
   writeDeliveryDraft,
   writeDraft,
   type DeliveryDraftData,
-  type DraftData,
 } from "@/hooks/use-draft-persistence";
 import { useBufferedState } from "@/hooks/use-buffered-state";
 import {
@@ -574,26 +573,6 @@ export default function Chat({
   const isSubmittingNewThread =
     navigation.state !== "idle" &&
     navigation.formData?.get("intent") === "createThreadAndStart";
-  // Compute initial drafts once per mount (Chat is keyed by threadId) to avoid
-  // synchronous localStorage reads on every streaming re-render.
-  const initialDraftsRef = useRef<
-    { thread: DraftData | null; welcome: DraftData | null } | undefined
-  >(undefined);
-  if (initialDraftsRef.current === undefined) {
-    const shouldRestore = !readOnly;
-    initialDraftsRef.current = {
-      thread: shouldRestore
-        ? loadDraft(resolvedWorkspaceId, threadId ?? null)
-        : null,
-      welcome:
-        !readOnly && !threadId && !initialWelcomeInput
-          ? loadDraft(resolvedWorkspaceId, null)
-          : null,
-    };
-  }
-  const initialThreadDraft = initialDraftsRef.current.thread;
-  const initialWelcomeDraft = initialDraftsRef.current.welcome;
-
   useEffect(() => {
     if (readOnly || !isNewThread || !resolvedWorkspaceId || !threadId) {
       return;
@@ -1003,7 +982,7 @@ export default function Chat({
     }
     return map;
   }, [messages]);
-  const [input, setInput] = useState(() => initialThreadDraft?.text ?? "");
+  const [input, setInput] = useState("");
   const [ready, setReady] = useState(false);
   const [error, setError] = useState<ChatApiErrorPresentation | null>(() =>
     initialError
@@ -1014,7 +993,7 @@ export default function Chat({
       : null,
   );
   const [welcomeInput, setWelcomeInput] = useState(
-    () => initialWelcomeInput ?? initialWelcomeDraft?.text ?? "",
+    () => initialWelcomeInput ?? "",
   );
   const appliedRecentModelScopeRef = useRef<string | null>(null);
   const optimisticThreadModelRef = useRef<{
@@ -1127,8 +1106,7 @@ export default function Chat({
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
   const [forkingMessageId, setForkingMessageId] = useState<string | null>(null);
   const [attachments, setAttachments] = useState<Attachment[]>(
-    () =>
-      initialThreadDraft?.attachments ?? initialWelcomeDraft?.attachments ?? [],
+    () => [],
   );
   const [contextUsedPercent, setContextUsedPercent] = useState<number | null>(
     null,
@@ -1149,11 +1127,54 @@ export default function Chat({
   } | null>(null);
   const handledNewChatActionErrorRef = useRef<string | null>(null);
   const pendingDraftCountRef = useRef(0);
+  const restoredDraftKeyRef = useRef<string | null>(null);
   const { saveDraft, flushDraft, clearDraft } = useDraftPersistence(
     resolvedWorkspaceId,
     threadId ?? null,
   );
   const [isDragOver, setIsDragOver] = useState(false);
+
+  useEffect(() => {
+    if (readOnly || !resolvedWorkspaceId) {
+      return;
+    }
+
+    const restoreKey = `${resolvedWorkspaceId}:${threadId ?? "new"}:${initialWelcomeInput ?? ""}`;
+    if (restoredDraftKeyRef.current === restoreKey) {
+      return;
+    }
+    restoredDraftKeyRef.current = restoreKey;
+
+    const draft = threadId
+      ? loadDraft(resolvedWorkspaceId, threadId)
+      : initialWelcomeInput
+        ? null
+        : loadDraft(resolvedWorkspaceId, null);
+    if (!draft) {
+      return;
+    }
+
+    if (threadId) {
+      if (!isComposerVisiblyEmpty(inputRef.current, attachmentsRef.current)) {
+        return;
+      }
+      skipNextEmptyDraftSaveRef.current = true;
+      inputRef.current = draft.text;
+      attachmentsRef.current = draft.attachments;
+      setInput(draft.text);
+      setAttachments(draft.attachments);
+      return;
+    }
+
+    if (!isComposerVisiblyEmpty(welcomeInputRef.current, attachmentsRef.current)) {
+      return;
+    }
+    skipNextEmptyDraftSaveRef.current = true;
+    welcomeInputRef.current = draft.text;
+    attachmentsRef.current = draft.attachments;
+    setWelcomeInput(draft.text);
+    setAttachments(draft.attachments);
+  }, [initialWelcomeInput, readOnly, resolvedWorkspaceId, threadId]);
 
   useEffect(() => {
     setError(
@@ -3482,6 +3503,11 @@ export default function Chat({
 
   // Check if we should show the chat UI
   const shouldShowChat = Boolean(threadId);
+  const [hasHydratedChatTranscript, setHasHydratedChatTranscript] =
+    useState(false);
+  useEffect(() => {
+    setHasHydratedChatTranscript(true);
+  }, []);
   const lastMessage = visibleMessages[visibleMessages.length - 1];
   const visibleMessageCount = visibleMessages.length;
   const lastVisibleMessageId = lastMessage?.id ?? null;
@@ -3701,6 +3727,7 @@ export default function Chat({
 
   useLayoutEffect(() => {
     if (!shouldShowChat || !threadId) return;
+    if (!hasHydratedChatTranscript) return;
     if (initialScrollDoneRef.current) return;
     if (visibleMessages.length === 0) return;
 
@@ -3722,6 +3749,7 @@ export default function Chat({
   }, [
     shouldShowChat,
     threadId,
+    hasHydratedChatTranscript,
     visibleMessages.length,
     scrollToBottom,
     shouldAnchorToLastMessage,
@@ -3917,6 +3945,7 @@ export default function Chat({
   // Auto-scroll on new messages (only if near bottom, or forced after user sends)
   useLayoutEffect(() => {
     if (!shouldShowChat || !threadId) return;
+    if (!hasHydratedChatTranscript) return;
 
     if (!initialScrollDoneRef.current && visibleMessageCount > 0) {
       initialScrollDoneRef.current = true;
@@ -3954,6 +3983,7 @@ export default function Chat({
     shouldShowChat,
     shouldRenderSpacer,
     threadId,
+    hasHydratedChatTranscript,
   ]);
 
   const copyMessage = useCallback(
@@ -4889,6 +4919,7 @@ type SendOptions = {
             isCompacting={isCompacting}
             compactingPriorMessageId={compactingPriorMessageId}
             isLoadingMessages={isLoadingMessages}
+            deferRendering={!hasHydratedChatTranscript}
             showGlobalAssistantIndicator={showGlobalAssistantIndicator}
             shouldRenderSpacer={shouldRenderSpacer}
             lastUserMessageRef={lastUserMessageRef}
