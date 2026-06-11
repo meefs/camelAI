@@ -23,6 +23,8 @@
  * 5. Dispatcher validates token and creates session cookie
  */
 
+import { DurableObject } from 'cloudflare:workers';
+
 import {
   getDispatcherSession,
   createDispatcherSession,
@@ -53,6 +55,18 @@ import {
 import { getSessionCookieName } from '../../main/src/cookies';
 import { parseSignedSession } from '../../main/src/signed-session';
 import type { OrgDO } from '../../main/src/auth';
+import {
+  selfhostWorkerKey,
+  type SelfhostWorkerModule,
+  type SelfhostWorkerRecord,
+} from '../../main/src/selfhost-worker-registry';
+export { AIVirtualBinding } from '../../main/src/ai-virtual-binding';
+export { AssetsVirtualBinding } from '../../main/src/assets-virtual-binding';
+export { CamelAiService } from '../../main/src/camelai-service';
+export { ConnectionsService } from '../../main/src/connections-service';
+export { DataProxyService } from '../../main/src/data-proxy-service';
+export { KVVirtualNamespace } from '../../main/src/kv-virtual-namespace';
+export { R2VirtualBucket } from '../../main/src/r2-virtual-bucket';
 
 interface Env {
   DISPATCHER: {
@@ -67,12 +81,29 @@ interface Env {
   APP_KV: KVNamespace;
   SESSIONS: KVNamespace;
   ORG: DurableObjectNamespace<OrgDO>;
+  SELFHOST_WORKER_LOADER?: WorkerLoader;
+  SELFHOST_APP_RUNNER?: DurableObjectNamespace<SelfhostAppRunner>;
+  SELFHOST_DO_DISPATCH?: Fetcher;
+  SELFHOST_DO_BRIDGE_SECRET?: string;
+  R2_BUCKET?: R2Bucket;
+  AI?: Ai;
+  INTEGRATION_SECRET_KEY?: string;
   TOKEN_SIGNING_SECRET: string;
   // Set to "true" to skip all auth checks (local development only)
   SKIP_AUTH?: string;
   // Policy for workers missing KV access metadata ("open" during migration, "closed" for strict enforcement)
   DISPATCHER_MISSING_REGISTRY_MODE?: string;
   MAIN_APP_URL?: string;
+  CF_ACCOUNT_ID?: string;
+  CF_GATEWAY_NAME?: string;
+  CF_GATEWAY_TOKEN?: string;
+  AI_GATEWAY_AUTH_TOKEN?: string;
+  AI_VIRTUAL_MODEL?: string;
+  SANDBOX_HOST?: Fetcher;
+  SANDBOX_HOST_URL?: string;
+  DATA_PROXY_MAX_RESPONSE_BYTES?: string;
+  LOCAL_APP_VANITY_DOMAIN?: string;
+  LOCAL_APP_IFRAME_DOMAIN?: string;
 }
 
 const USER_WORKER_SUBREQUEST_LIMIT = 10_000_000;
@@ -83,6 +114,511 @@ function getUserWorker(env: Env, dispatchScriptName: string) {
       subRequests: USER_WORKER_SUBREQUEST_LIMIT,
     },
   });
+}
+type UserWorkerBinding = ReturnType<typeof getUserWorker>;
+
+async function fetchUserWorker(worker: UserWorkerBinding, request: Request): Promise<Response> {
+  return worker.fetch(request);
+}
+
+function isSelfhostPublishingMode(env: Env): boolean {
+  const accountId = env.CF_ACCOUNT_ID?.trim().toLowerCase();
+  return accountId === 'selfhost';
+}
+
+function selfhostDoBridgeSecret(env: Env): string {
+  const secret = env.SELFHOST_DO_BRIDGE_SECRET?.trim() || env.TOKEN_SIGNING_SECRET?.trim();
+  if (!secret) {
+    throw new Error('Missing self-host Durable Object bridge secret');
+  }
+  return secret;
+}
+
+function base64ToArrayBuffer(value: string): ArrayBuffer {
+  const binary = atob(value);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index);
+  }
+  return bytes.buffer;
+}
+
+function workerLoaderModule(module: SelfhostWorkerModule): WorkerLoaderModule | string {
+  switch (module.type) {
+    case 'text':
+      return { text: module.content };
+    case 'json':
+      return { json: JSON.parse(module.content) };
+    case 'data':
+      return { data: base64ToArrayBuffer(module.content) };
+    case 'wasm':
+      return { wasm: base64ToArrayBuffer(module.content) };
+    case 'js':
+    default:
+      return module.content;
+  }
+}
+
+function getDoBindings(record: SelfhostWorkerRecord): Record<string, string> {
+  const result: Record<string, string> = {};
+  for (const binding of record.bindings) {
+    if (
+      binding.type === 'durable_object_namespace' &&
+      typeof binding.name === 'string' &&
+      typeof binding.class_name === 'string' &&
+      !binding.script_name
+    ) {
+      result[binding.name] = binding.class_name;
+    }
+  }
+  return result;
+}
+
+function bindingPartName(binding: Record<string, unknown>): string | null {
+  return typeof binding.part === 'string'
+    ? binding.part
+    : typeof binding.name === 'string'
+      ? binding.name
+      : null;
+}
+
+function moduleBytes(module: SelfhostWorkerModule): ArrayBuffer {
+  if (module.type === 'data' || module.type === 'wasm') {
+    return base64ToArrayBuffer(module.content);
+  }
+  return new TextEncoder().encode(module.content).buffer;
+}
+
+function moduleText(module: SelfhostWorkerModule): string {
+  if (module.type === 'data' || module.type === 'wasm') {
+    return new TextDecoder().decode(base64ToArrayBuffer(module.content));
+  }
+  return module.content;
+}
+
+function bindingModule(record: SelfhostWorkerRecord, binding: Record<string, unknown>): SelfhostWorkerModule | null {
+  const partName = bindingPartName(binding);
+  return partName ? record.modules[partName] ?? null : null;
+}
+
+function getPlainEnv(record: SelfhostWorkerRecord): Record<string, unknown> {
+  const result: Record<string, unknown> = {};
+  for (const binding of record.bindings) {
+    if (typeof binding.name !== 'string') continue;
+    if (binding.type === 'plain_text' || binding.type === 'secret_text') {
+      result[binding.name] =
+        typeof binding.text === 'string'
+          ? binding.text
+          : typeof binding.value === 'string'
+            ? binding.value
+            : '';
+    } else if (binding.type === 'json') {
+      if (typeof binding.json === 'string') {
+        result[binding.name] = JSON.parse(binding.json);
+      } else if ('json' in binding) {
+        result[binding.name] = binding.json;
+      }
+    } else if (binding.type === 'text_blob') {
+      const module = bindingModule(record, binding);
+      if (module) result[binding.name] = moduleText(module);
+    } else if (binding.type === 'data_blob') {
+      const module = bindingModule(record, binding);
+      if (module) result[binding.name] = moduleBytes(module);
+    } else if (binding.type === 'wasm_module') {
+      const module = bindingModule(record, binding);
+      if (module) result[binding.name] = new WebAssembly.Module(moduleBytes(module));
+    }
+  }
+  return result;
+}
+
+type SelfhostRuntimeExports = {
+  AIVirtualBinding?: (options: { props: Record<string, unknown> }) => unknown;
+  AssetsVirtualBinding?: (options: { props: Record<string, unknown> }) => unknown;
+  CamelAiService?: (options: { props: Record<string, unknown> }) => unknown;
+  ConnectionsService?: (options: { props: Record<string, unknown> }) => unknown;
+  DataProxyService?: (options: { props: Record<string, unknown> }) => unknown;
+  KVVirtualNamespace?: (options: { props: Record<string, unknown> }) => unknown;
+  R2VirtualBucket?: (options: { props: Record<string, unknown> }) => unknown;
+};
+
+const SELFHOST_STATIC_PATHS = new Set([
+  '/favicon.ico',
+  '/favicon.svg',
+  '/favicon-16x16.png',
+  '/favicon-32x32.png',
+  '/apple-touch-icon.png',
+  '/android-chrome-192x192.png',
+  '/android-chrome-512x512.png',
+  '/site.webmanifest',
+  '/robots.txt',
+]);
+
+function hasFileExtension(pathname: string): boolean {
+  const slash = pathname.lastIndexOf('/');
+  const lastSegment = slash === -1 ? pathname : pathname.slice(slash + 1);
+  return /\.[A-Za-z0-9]{1,16}$/.test(lastSegment);
+}
+
+function shouldTrySelfhostAssets(request: Request, url: URL): boolean {
+  const method = request.method.toUpperCase();
+  if (method !== 'GET' && method !== 'HEAD') return false;
+  return (
+    url.pathname.startsWith('/assets/') ||
+    SELFHOST_STATIC_PATHS.has(url.pathname) ||
+    hasFileExtension(url.pathname)
+  );
+}
+
+function hasAssetsBinding(record: SelfhostWorkerRecord): boolean {
+  return record.bindings.some((binding) =>
+    binding.type === 'assets' ||
+    (binding.type === 'service' && binding.entrypoint === 'AssetsVirtualBinding')
+  );
+}
+
+type FetcherLike = {
+  fetch(request: Request): Promise<Response>;
+};
+
+function isFetcherLike(value: unknown): value is FetcherLike {
+  return Boolean(
+    value &&
+    typeof value === 'object' &&
+    typeof (value as { fetch?: unknown }).fetch === 'function'
+  );
+}
+
+function getServiceBindingProps(binding: Record<string, unknown>): Record<string, unknown> {
+  return binding.props && typeof binding.props === 'object' && !Array.isArray(binding.props)
+    ? binding.props as Record<string, unknown>
+    : {};
+}
+
+function addVirtualServiceBinding(
+  result: Record<string, unknown>,
+  binding: Record<string, unknown>,
+  exports: SelfhostRuntimeExports,
+): void {
+  if (typeof binding.name !== 'string') return;
+  const props = getServiceBindingProps(binding);
+  const entrypoint = typeof binding.entrypoint === 'string' ? binding.entrypoint : '';
+
+  if (entrypoint === 'R2VirtualBucket') {
+    if (!exports.R2VirtualBucket) throw new Error('R2VirtualBucket is not exported');
+    result[binding.name] = exports.R2VirtualBucket({ props });
+    return;
+  }
+  if (entrypoint === 'KVVirtualNamespace') {
+    if (!exports.KVVirtualNamespace) throw new Error('KVVirtualNamespace is not exported');
+    result[binding.name] = exports.KVVirtualNamespace({ props });
+    return;
+  }
+  if (entrypoint === 'AssetsVirtualBinding') {
+    if (!exports.AssetsVirtualBinding) throw new Error('AssetsVirtualBinding is not exported');
+    result[binding.name] = exports.AssetsVirtualBinding({ props });
+    return;
+  }
+  if (entrypoint === 'AIVirtualBinding') {
+    if (!exports.AIVirtualBinding) throw new Error('AIVirtualBinding is not exported');
+    result[binding.name] = exports.AIVirtualBinding({ props });
+    return;
+  }
+  if (entrypoint === 'DataProxyService') {
+    if (!exports.DataProxyService) throw new Error('DataProxyService is not exported');
+    result[binding.name] = exports.DataProxyService({ props });
+    return;
+  }
+  if (entrypoint === 'ConnectionsService') {
+    if (!exports.ConnectionsService) throw new Error('ConnectionsService is not exported');
+    result[binding.name] = exports.ConnectionsService({ props });
+    return;
+  }
+  if (entrypoint === 'CamelAiService') {
+    if (!exports.CamelAiService) throw new Error('CamelAiService is not exported');
+    result[binding.name] = exports.CamelAiService({ props });
+  }
+}
+
+function getVirtualBindingEnv(
+  record: SelfhostWorkerRecord,
+  exports: SelfhostRuntimeExports,
+): Record<string, unknown> {
+  const result: Record<string, unknown> = {};
+  for (const binding of record.bindings) {
+    if (typeof binding.name !== 'string') continue;
+
+    if (binding.type === 'service') {
+      addVirtualServiceBinding(result, binding, exports);
+      continue;
+    }
+
+    if (binding.type === 'r2_bucket') {
+      if (!exports.R2VirtualBucket) throw new Error('R2VirtualBucket is not exported');
+      result[binding.name] = exports.R2VirtualBucket({
+        props: {
+          workspaceId: record.workspaceId,
+          bucketName: typeof binding.bucket_name === 'string' ? binding.bucket_name : binding.name,
+        },
+      });
+      continue;
+    }
+
+    if (binding.type === 'kv_namespace') {
+      if (!exports.KVVirtualNamespace) throw new Error('KVVirtualNamespace is not exported');
+      result[binding.name] = exports.KVVirtualNamespace({
+        props: {
+          workspaceId: record.workspaceId,
+          appId: record.appId,
+          namespaceId: typeof binding.namespace_id === 'string' ? binding.namespace_id : binding.name,
+        },
+      });
+      continue;
+    }
+
+    if (binding.type === 'assets') {
+      if (!exports.AssetsVirtualBinding) throw new Error('AssetsVirtualBinding is not exported');
+      result[binding.name] = exports.AssetsVirtualBinding({
+        props: { appId: record.appId },
+      });
+      continue;
+    }
+
+    if (binding.type === 'ai') {
+      if (!exports.AIVirtualBinding) throw new Error('AIVirtualBinding is not exported');
+      result[binding.name] = exports.AIVirtualBinding({
+        props: {
+          orgId: record.orgId,
+          workspaceId: record.workspaceId,
+        },
+      });
+    }
+  }
+  return result;
+}
+
+function quotedModuleSpecifier(moduleName: string): string {
+  return JSON.stringify(moduleName.startsWith('.') ? moduleName : `./${moduleName}`);
+}
+
+function dynamicWorkerWrapperSource(record: SelfhostWorkerRecord, bridgeSecret: string): string {
+  const classNames = [...new Set(Object.values(getDoBindings(record)))];
+  const reexports = classNames.length > 0
+    ? `export { ${classNames.join(', ')} } from ${quotedModuleSpecifier(record.mainModule)};`
+    : '';
+
+  return `
+${reexports}
+import userDefault from ${quotedModuleSpecifier(record.mainModule)};
+
+const SELFHOST_DO_BRIDGE_SECRET = ${JSON.stringify(bridgeSecret)};
+
+class SelfhostDurableObjectId {
+  constructor(value, name) {
+    this.value = String(value);
+    if (name !== undefined) this.name = name;
+  }
+  toString() {
+    return this.value;
+  }
+  equals(other) {
+    return Boolean(other) && String(other) === this.value;
+  }
+}
+
+class SelfhostDurableObjectStub {
+  constructor(dispatcher, appId, className, id, name) {
+    this.dispatcher = dispatcher;
+    this.appId = appId;
+    this.className = className;
+    this.id = id;
+    if (name !== undefined) this.name = name;
+  }
+  fetch(input, init) {
+    const request = input instanceof Request ? input : new Request(input, init);
+    const url = new URL("http://selfhost.local/__selfhost_do/fetch");
+    url.searchParams.set("appId", this.appId);
+    url.searchParams.set("className", this.className);
+    url.searchParams.set("id", this.id.toString());
+    const headers = new Headers(request.headers);
+    headers.set("x-camelai-selfhost-do-bridge", SELFHOST_DO_BRIDGE_SECRET);
+    headers.set("x-camelai-selfhost-do-original-url", request.url);
+    const forwardedInit = {
+      method: request.method,
+      headers,
+    };
+    if (request.method !== "GET" && request.method !== "HEAD") {
+      forwardedInit.body = request.body;
+    }
+    return this.dispatcher.fetch(new Request(url, forwardedInit));
+  }
+}
+
+class SelfhostDurableObjectNamespace {
+  constructor(dispatcher, appId, className) {
+    this.dispatcher = dispatcher;
+    this.appId = appId;
+    this.className = className;
+  }
+  idFromName(name) {
+    return new SelfhostDurableObjectId("name:" + String(name), String(name));
+  }
+  idFromString(id) {
+    return new SelfhostDurableObjectId(String(id));
+  }
+  newUniqueId() {
+    return new SelfhostDurableObjectId("unique:" + crypto.randomUUID());
+  }
+  get(id) {
+    return new SelfhostDurableObjectStub(this.dispatcher, this.appId, this.className, id, id.name);
+  }
+  getByName(name) {
+    return this.get(this.idFromName(name));
+  }
+  jurisdiction() {
+    return this;
+  }
+}
+
+function withSelfhostNamespaces(env) {
+  const nextEnv = Object.create(env);
+  for (const [bindingName, className] of Object.entries(env.__SELFHOST_DO_BINDINGS || {})) {
+    nextEnv[bindingName] = new SelfhostDurableObjectNamespace(
+      env.__SELFHOST_DO_DISPATCH,
+      env.__SELFHOST_APP_ID,
+      className,
+    );
+  }
+  return nextEnv;
+}
+
+export default {
+  fetch(request, env, ctx) {
+    return userDefault.fetch(request, withSelfhostNamespaces(env), ctx);
+  }
+};
+`;
+}
+
+export class SelfhostAppRunner extends DurableObject<Env> {
+  async fetch(request: Request): Promise<Response> {
+    const url = new URL(request.url);
+    const appId = request.headers.get('x-camelai-selfhost-app-id')?.trim() ||
+      url.searchParams.get('appId')?.trim();
+    if (!appId) {
+      return new Response('Missing self-host app id', { status: 400 });
+    }
+
+    const record = await this.loadRecord(appId);
+    if (!record) {
+      return new Response('Worker not found', {
+        status: 404,
+        headers: { 'x-camelai-selfhost-runner-error': 'worker_not_found' },
+      });
+    }
+
+    if (url.pathname === '/__selfhost_do/facet') {
+      return this.fetchFacet(request, url, record);
+    }
+
+    const assetResponse = await this.fetchStaticAsset(request, url, record);
+    if (assetResponse) return assetResponse;
+
+    const worker = this.loadWorker(record);
+    const headers = new Headers(request.headers);
+    headers.delete('x-camelai-selfhost-app-id');
+    return worker.getEntrypoint().fetch(new Request(request, { headers }));
+  }
+
+  private async fetchFacet(
+    request: Request,
+    url: URL,
+    record: SelfhostWorkerRecord,
+  ): Promise<Response> {
+    const className = url.searchParams.get('className')?.trim();
+    const objectId = url.searchParams.get('id')?.trim();
+    if (!className || !objectId) {
+      return new Response('Missing Durable Object facet target', { status: 400 });
+    }
+
+    const worker = this.loadWorker(record);
+    const facetName = `${record.appId}:${className}:${objectId}`;
+    const facet = this.ctx.facets.get(facetName, () => ({
+      id: objectId,
+      class: worker.getDurableObjectClass(className),
+    }));
+    const originalUrl = request.headers.get('x-camelai-selfhost-do-original-url') || request.url;
+    const headers = new Headers(request.headers);
+    headers.delete('x-camelai-selfhost-do-bridge');
+    headers.delete('x-camelai-selfhost-do-original-url');
+    headers.delete('x-camelai-selfhost-app-id');
+    const forwardedInit: RequestInit = {
+      method: request.method,
+      headers,
+    };
+    if (request.method !== 'GET' && request.method !== 'HEAD') {
+      forwardedInit.body = request.body;
+    }
+    return facet.fetch(new Request(originalUrl, forwardedInit));
+  }
+
+  private async fetchStaticAsset(
+    request: Request,
+    url: URL,
+    record: SelfhostWorkerRecord,
+  ): Promise<Response | null> {
+    if (!shouldTrySelfhostAssets(request, url) || !hasAssetsBinding(record)) {
+      return null;
+    }
+    const exports = this.ctx.exports as unknown as SelfhostRuntimeExports;
+    const binding = exports.AssetsVirtualBinding?.({ props: { appId: record.appId } });
+    if (!isFetcherLike(binding)) {
+      throw new Error('AssetsVirtualBinding is not exported');
+    }
+    const response = await binding.fetch(request);
+    return response.status === 404 ? null : response;
+  }
+
+  private async loadRecord(appId: string): Promise<SelfhostWorkerRecord | null> {
+    const stored = await this.env.APP_KV.get(selfhostWorkerKey(appId));
+    if (!stored) return null;
+    return JSON.parse(stored) as SelfhostWorkerRecord;
+  }
+
+  private loadWorker(record: SelfhostWorkerRecord): WorkerStub {
+    if (!this.env.SELFHOST_WORKER_LOADER) {
+      throw new Error('Missing SELFHOST_WORKER_LOADER binding');
+    }
+    if (!this.env.SELFHOST_DO_DISPATCH) {
+      throw new Error('Missing SELFHOST_DO_DISPATCH binding');
+    }
+
+    return this.env.SELFHOST_WORKER_LOADER.get(
+      `${record.appId}:${record.version}`,
+      () => {
+        const modules: Record<string, WorkerLoaderModule | string> = {
+          'selfhost-wrapper.js': dynamicWorkerWrapperSource(record, selfhostDoBridgeSecret(this.env)),
+        };
+        for (const [moduleName, module] of Object.entries(record.modules)) {
+          modules[moduleName] = workerLoaderModule(module);
+        }
+
+        return {
+          compatibilityDate: record.compatibilityDate,
+          compatibilityFlags: record.compatibilityFlags,
+          mainModule: 'selfhost-wrapper.js',
+          modules,
+          env: {
+            ...getPlainEnv(record),
+            ...getVirtualBindingEnv(record, this.ctx.exports as unknown as SelfhostRuntimeExports),
+            __SELFHOST_APP_ID: record.appId,
+            __SELFHOST_DO_BINDINGS: getDoBindings(record),
+            __SELFHOST_DO_DISPATCH: this.env.SELFHOST_DO_DISPATCH,
+          },
+        };
+      },
+    );
+  }
 }
 
 // Helper functions to replace RPC calls
@@ -125,7 +661,42 @@ interface ParsedWorkerRoute {
   legacyFallback?: { scriptName: string; dispatchScriptName: string };
 }
 
-function parseWorkerRoute(hostname: string): ParsedWorkerRoute | null {
+function getConfiguredDomain(configValue: string | null | undefined): string | null {
+  const trimmed = configValue?.trim().replace(/^https?:\/\//, '').replace(/\/.*$/, '');
+  return trimmed || null;
+}
+
+function getRequestHostname(request: Request, url: URL): string {
+  const host = request.headers.get('Host')?.trim();
+  if (!host) return url.hostname;
+  return host.replace(/:\d+$/, '').toLowerCase();
+}
+
+function parseConfiguredDomainRoute(hostname: string, domain: string): ParsedWorkerRoute | null {
+  if (hostname === domain || !hostname.endsWith(`.${domain}`)) {
+    return null;
+  }
+  const prefix = hostname.slice(0, -(domain.length + 1));
+  const firstPart = prefix.split('.')[0];
+  if (!firstPart) return null;
+  const parsed = parseScriptSlug(firstPart);
+  if (parsed) return parsed;
+  return { scriptName: firstPart, orgSlug: null, dispatchScriptName: firstPart };
+}
+
+function parseWorkerRoute(hostname: string, env?: Pick<Env, 'LOCAL_APP_VANITY_DOMAIN' | 'LOCAL_APP_IFRAME_DOMAIN'>): ParsedWorkerRoute | null {
+  const configuredVanityDomain = getConfiguredDomain(env?.LOCAL_APP_VANITY_DOMAIN);
+  if (configuredVanityDomain) {
+    const route = parseConfiguredDomainRoute(hostname, configuredVanityDomain);
+    if (route) return route;
+  }
+
+  const configuredIframeDomain = getConfiguredDomain(env?.LOCAL_APP_IFRAME_DOMAIN);
+  if (configuredIframeDomain) {
+    const route = parseConfiguredDomainRoute(hostname, configuredIframeDomain);
+    if (route) return route;
+  }
+
   const parts = hostname.split('.');
 
   // .camelai.app domain
@@ -216,29 +787,42 @@ async function getOrgSlug(
  * New-style slugs (6+ alphanumeric) use single hyphen: {script}-{slug}.domain
  * Old-style slugs (contain hyphens) use double hyphen: {script}--{slug}.domain
  */
-function buildNewFormatUrl(url: URL, scriptName: string, orgSlug: string): string {
-  const hostname = url.hostname;
+function appendCurrentPort(url: URL, hostname: string): string {
+  return url.port ? `${hostname}:${url.port}` : hostname;
+}
+
+function buildNewFormatUrl(url: URL, hostname: string, scriptName: string, orgSlug: string, env?: Env): string {
   const parts = hostname.split('.');
   const separator = isNewStyleSlug(orgSlug) ? '-' : '--';
   const label = `${scriptName}${separator}${orgSlug}`;
 
+  const configuredVanityDomain = getConfiguredDomain(env?.LOCAL_APP_VANITY_DOMAIN);
+  if (configuredVanityDomain && parseConfiguredDomainRoute(hostname, configuredVanityDomain)) {
+    return `${url.protocol}//${appendCurrentPort(url, `${label}.${configuredVanityDomain}`)}${url.pathname}${url.search}`;
+  }
+
+  const configuredIframeDomain = getConfiguredDomain(env?.LOCAL_APP_IFRAME_DOMAIN);
+  if (configuredIframeDomain && parseConfiguredDomainRoute(hostname, configuredIframeDomain)) {
+    return `${url.protocol}//${appendCurrentPort(url, `${label}.${configuredIframeDomain}`)}${url.pathname}${url.search}`;
+  }
+
   // For .camelai.app domains
   if (hostname.endsWith('.camelai.app')) {
     if (parts.length === 3) {
-      return `${url.protocol}//${label}.camelai.app${url.pathname}${url.search}`;
+      return `${url.protocol}//${appendCurrentPort(url, `${label}.camelai.app`)}${url.pathname}${url.search}`;
     }
     if (parts.length === 4 && (parts[1]?.startsWith('dev-') || parts[1] === 'staging')) {
-      return `${url.protocol}//${label}.${parts[1]}.camelai.app${url.pathname}${url.search}`;
+      return `${url.protocol}//${appendCurrentPort(url, `${label}.${parts[1]}.camelai.app`)}${url.pathname}${url.search}`;
     }
   }
 
   // For .apps.camelai.dev domains
   if (hostname.endsWith('.camelai.dev') && hostname.includes('.apps.')) {
     if (parts.length === 4 && parts[1] === 'apps') {
-      return `${url.protocol}//${label}.apps.camelai.dev${url.pathname}${url.search}`;
+      return `${url.protocol}//${appendCurrentPort(url, `${label}.apps.camelai.dev`)}${url.pathname}${url.search}`;
     }
     if (parts.length === 5 && parts[1] === 'apps') {
-      return `${url.protocol}//${label}.apps.${parts[2]}.camelai.dev${url.pathname}${url.search}`;
+      return `${url.protocol}//${appendCurrentPort(url, `${label}.apps.${parts[2]}.camelai.dev`)}${url.pathname}${url.search}`;
     }
   }
 
@@ -384,12 +968,36 @@ async function resolveCustomDomainRoute(
 }
 
 export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
+  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
-    const hostname = url.hostname;
+    const hostname = getRequestHostname(request, url);
+
+    if (url.pathname === '/__selfhost_do/fetch') {
+      const bridgeToken = request.headers.get('x-camelai-selfhost-do-bridge')?.trim();
+      if (!bridgeToken || bridgeToken !== selfhostDoBridgeSecret(env)) {
+        return new Response('Not found', { status: 404 });
+      }
+      const appId = url.searchParams.get('appId')?.trim();
+      if (!appId || !env.SELFHOST_APP_RUNNER) {
+        return new Response('Self-host Durable Object dispatch is not configured', { status: 500 });
+      }
+      const facetUrl = new URL(url);
+      facetUrl.pathname = '/__selfhost_do/facet';
+      const headers = new Headers(request.headers);
+      headers.set('x-camelai-selfhost-app-id', appId);
+      const runner = env.SELFHOST_APP_RUNNER.get(env.SELFHOST_APP_RUNNER.idFromName(appId));
+      const forwardedInit: RequestInit = {
+        headers,
+        method: request.method,
+      };
+      if (request.method !== 'GET' && request.method !== 'HEAD') {
+        forwardedInit.body = request.body;
+      }
+      return runner.fetch(new Request(facetUrl.toString(), forwardedInit));
+    }
 
     // Parse worker route from hostname
-    const route = parseWorkerRoute(hostname);
+    const route = parseWorkerRoute(hostname, env);
     if (route) {
       const { scriptName, orgSlug, dispatchScriptName, legacyFallback } = route;
 
@@ -399,7 +1007,7 @@ export default {
       }
 
       // Check worker access
-      return handleWorkerRequest(request, env, scriptName, orgSlug, dispatchScriptName, legacyFallback);
+      return handleWorkerRequest(request, env, ctx, scriptName, orgSlug, dispatchScriptName, legacyFallback);
     }
 
     // Not a known *.camelai.app or *.apps.camelai.dev hostname — try custom domain zone lookup
@@ -410,7 +1018,7 @@ export default {
       if (url.pathname === AUTH_CALLBACK_PATH) {
         return handleAuthCallback(request, env, scriptName, orgSlug, dispatchScriptName, undefined, cookieDomain);
       }
-      return handleWorkerRequest(request, env, scriptName, orgSlug, dispatchScriptName);
+      return handleWorkerRequest(request, env, ctx, scriptName, orgSlug, dispatchScriptName);
     }
 
     // Default response for apex domain or unknown hostname
@@ -447,6 +1055,7 @@ async function handleAuthCallback(
   cookieDomain?: string
 ): Promise<Response> {
   const url = new URL(request.url);
+  const hostname = getRequestHostname(request, url);
   const token = url.searchParams.get('token');
   const state = url.searchParams.get('state');
 
@@ -482,7 +1091,7 @@ async function handleAuthCallback(
   );
 
   // Build redirect URL (remove the callback path and query params)
-  const redirectUrl = new URL(url.origin);
+  const redirectUrl = new URL(`${url.protocol}//${appendCurrentPort(url, hostname)}`);
   redirectUrl.pathname = '/';
 
   // Redirect with session cookie
@@ -490,7 +1099,7 @@ async function handleAuthCallback(
     status: 302,
     headers: {
       'Location': redirectUrl.toString(),
-      'Set-Cookie': createSessionCookie(sessionId, url.hostname, cookieDomain),
+      'Set-Cookie': createSessionCookie(sessionId, hostname, cookieDomain),
     },
   });
 }
@@ -501,18 +1110,20 @@ async function handleAuthCallback(
 async function handleWorkerRequest(
   request: Request,
   env: Env,
+  ctx: ExecutionContext,
   scriptName: string,
   orgSlug: string | null,
   dispatchScriptName: string,
   legacyFallback?: { scriptName: string; dispatchScriptName: string }
 ): Promise<Response> {
   const url = new URL(request.url);
+  const hostname = getRequestHostname(request, url);
   const legacyDispatchScriptName = orgSlug ? scriptName : undefined;
 
   // Skip all auth checks in local development mode
   if (env.SKIP_AUTH === 'true') {
     console.log(`[dispatcher] SKIP_AUTH enabled, dispatching directly to: ${dispatchScriptName}`);
-    return dispatchToWorker(request, env, dispatchScriptName, scriptName, legacyDispatchScriptName);
+    return dispatchToWorker(request, env, ctx, dispatchScriptName, scriptName, legacyDispatchScriptName);
   }
 
   const cookieHeader = request.headers.get('Cookie');
@@ -536,7 +1147,7 @@ async function handleWorkerRequest(
     accessInfo = await getWorkerAccessInfo(env.APP_KV, dispatchScriptName, scriptName, orgSlug);
   } catch (e) {
     console.error(`[dispatcher] Error getting worker access info: ${e}`);
-    return errorResponse(error503Page(getMainAppUrl(url.hostname, env.MAIN_APP_URL)));
+    return errorResponse(error503Page(getMainAppUrl(hostname, env.MAIN_APP_URL)));
   }
 
   // Ambiguity resolution: If the single-hyphen parse found no KV entry, retry
@@ -574,9 +1185,9 @@ async function handleWorkerRequest(
         if (hasScreenshotBearer) {
           forwardHeaders.delete('Authorization');
         }
-        return dispatchToWorker(new Request(request, { headers: forwardHeaders }), env, effectiveDispatchScriptName, effectiveScriptName, effectiveLegacyDispatchScriptName);
+        return dispatchToWorker(new Request(request, { headers: forwardHeaders }), env, ctx, effectiveDispatchScriptName, effectiveScriptName, effectiveLegacyDispatchScriptName);
       }
-      return dispatchToWorker(request, env, effectiveDispatchScriptName, effectiveScriptName, effectiveLegacyDispatchScriptName);
+      return dispatchToWorker(request, env, ctx, effectiveDispatchScriptName, effectiveScriptName, effectiveLegacyDispatchScriptName);
     }
   }
 
@@ -601,6 +1212,7 @@ async function handleWorkerRequest(
     const response = await dispatchToWorker(
       new Request(request, { headers: forwardHeaders }),
       env,
+      ctx,
       effectiveDispatchScriptName,
       effectiveScriptName,
       effectiveLegacyDispatchScriptName
@@ -621,10 +1233,10 @@ async function handleWorkerRequest(
   if (!accessInfo) {
     if (shouldFailOpenForMissingRegistry(missingRegistryMode, effectiveOrgSlug)) {
       console.warn(`[dispatcher] Worker "${effectiveDispatchScriptName}" not in registry, dispatching anyway (fail open)`); // TEMP migration mode
-      return dispatchToWorker(request, env, effectiveDispatchScriptName, effectiveScriptName, effectiveLegacyDispatchScriptName);
+      return dispatchToWorker(request, env, ctx, effectiveDispatchScriptName, effectiveScriptName, effectiveLegacyDispatchScriptName);
     }
     console.warn(`[dispatcher] Worker "${effectiveDispatchScriptName}" not in registry, denying access (fail closed)`);
-    return errorResponse(error404Page(getMainAppUrl(url.hostname, env.MAIN_APP_URL), effectiveScriptName));
+    return errorResponse(error404Page(getMainAppUrl(hostname, env.MAIN_APP_URL), effectiveScriptName));
   }
 
   // Legacy URL redirect: If using old URL format AND the worker was deployed with the
@@ -636,14 +1248,14 @@ async function handleWorkerRequest(
   // 3. is_legacy: true AND has org_slug: Worker was redeployed with new system, redirect to new URL
   // 4. is_legacy: true AND no org_slug: Old worker, serve from legacy dispatch (no redirect)
   if (effectiveOrgSlug === null && accessInfo && accessInfo.org_slug && accessInfo.is_legacy) {
-    const newUrl = buildNewFormatUrl(url, effectiveScriptName, accessInfo.org_slug);
-    console.log(`[dispatcher] Legacy URL redirect: ${url.hostname} -> ${new URL(newUrl).hostname}`);
+    const newUrl = buildNewFormatUrl(url, hostname, effectiveScriptName, accessInfo.org_slug, env);
+    console.log(`[dispatcher] Legacy URL redirect: ${hostname} -> ${new URL(newUrl).hostname}`);
     return Response.redirect(newUrl, 301);
   }
 
   // If public, dispatch directly
   if (accessInfo.is_public) {
-    return dispatchToWorker(request, env, effectiveDispatchScriptName, effectiveScriptName, effectiveLegacyDispatchScriptName);
+    return dispatchToWorker(request, env, ctx, effectiveDispatchScriptName, effectiveScriptName, effectiveLegacyDispatchScriptName);
   }
 
   // Private worker - check session
@@ -654,15 +1266,15 @@ async function handleWorkerRequest(
     const session = await getDispatcherSession(env.SESSIONS, dispatcherSessionId);
     if (session && session.org_id === accessInfo.org_id) {
       // Valid session with matching org - dispatch
-      return dispatchToWorker(request, env, effectiveDispatchScriptName, effectiveScriptName, effectiveLegacyDispatchScriptName);
+      return dispatchToWorker(request, env, ctx, effectiveDispatchScriptName, effectiveScriptName, effectiveLegacyDispatchScriptName);
     }
   }
 
   // For same-site requests (*.camelai.dev), check main app session cookie directly
   // No redirect dance needed - the cookie is already available or the user isn't logged in
-  if (isSameSiteRequest(url.hostname)) {
+  if (isSameSiteRequest(hostname)) {
     // Use the environment-aware cookie name (matches what the main app sets)
-    const currentCookieName = getSessionCookieName(url.hostname);
+    const currentCookieName = getSessionCookieName(hostname);
     const mainSessionId = getCookieValue(cookieHeader, currentCookieName);
 
     console.log(`[dispatcher] Same-site auth for ${effectiveScriptName}: cookie=${currentCookieName}, found=${mainSessionId ? 'yes' : 'no'}`);
@@ -670,14 +1282,14 @@ async function handleWorkerRequest(
     if (!mainSessionId) {
       // No session cookie - user is not logged in
       console.log(`[dispatcher] No session cookie found for ${effectiveScriptName}`);
-      return errorResponse(error401Page(getMainAppUrl(url.hostname, env.MAIN_APP_URL)));
+      return errorResponse(error401Page(getMainAppUrl(hostname, env.MAIN_APP_URL)));
     }
 
     try {
       const session = await parseSignedSession(env.TOKEN_SIGNING_SECRET, mainSessionId);
       if (!session) {
         console.log(`[dispatcher] Session invalid for ${effectiveScriptName}, token prefix: ${mainSessionId.slice(0, 8)}...`);
-        return errorResponse(error401Page(getMainAppUrl(url.hostname, env.MAIN_APP_URL)));
+        return errorResponse(error401Page(getMainAppUrl(hostname, env.MAIN_APP_URL)));
       }
 
       // Check if user is a member of the org that owns this worker
@@ -686,19 +1298,19 @@ async function handleWorkerRequest(
       if (!memberCheck) {
         // User is logged in but not a member of this workspace
         console.log(`[dispatcher] User ${session.user_id} is not a member of org ${accessInfo.org_id}`);
-        return errorResponse(error403Page(getMainAppUrl(url.hostname, env.MAIN_APP_URL)));
+        return errorResponse(error403Page(getMainAppUrl(hostname, env.MAIN_APP_URL)));
       }
 
       console.log(`[dispatcher] Same-site auth: user ${session.user_id} accessing ${effectiveScriptName} via main session`);
-      return dispatchToWorker(request, env, effectiveDispatchScriptName, effectiveScriptName, effectiveLegacyDispatchScriptName);
+      return dispatchToWorker(request, env, ctx, effectiveDispatchScriptName, effectiveScriptName, effectiveLegacyDispatchScriptName);
     } catch (e) {
       console.error(`[dispatcher] Error validating main session: ${e}`);
-      return errorResponse(error503Page(getMainAppUrl(url.hostname, env.MAIN_APP_URL)));
+      return errorResponse(error503Page(getMainAppUrl(hostname, env.MAIN_APP_URL)));
     }
   }
 
   // Cross-site request (*.camelai.app) - redirect to auth
-  return redirectToAuth(env, url, effectiveScriptName, accessInfo.org_id);
+  return redirectToAuth(env, url, hostname, effectiveScriptName, accessInfo.org_id);
 }
 
 /**
@@ -710,23 +1322,52 @@ async function handleWorkerRequest(
 async function dispatchToWorker(
   request: Request,
   env: Env,
+  _ctx: ExecutionContext,
   dispatchScriptName: string,
   userFacingScriptName: string,
   fallbackDispatchScriptName?: string
 ): Promise<Response> {
   try {
     console.log(`[dispatcher] Routing to worker: ${dispatchScriptName}`);
+    if (isSelfhostPublishingMode(env)) {
+      if (!env.SELFHOST_APP_RUNNER) {
+        throw new Error('Self-host app runner is not configured');
+      }
+      const headers = new Headers(request.headers);
+      headers.set('x-camelai-selfhost-app-id', dispatchScriptName);
+      const runner = env.SELFHOST_APP_RUNNER.get(
+        env.SELFHOST_APP_RUNNER.idFromName(dispatchScriptName),
+      );
+      const response = await runner.fetch(
+        new Request(request, { headers }),
+      );
+      if (
+        response.status === 404 &&
+        response.headers.get('x-camelai-selfhost-runner-error') === 'worker_not_found' &&
+        fallbackDispatchScriptName &&
+        fallbackDispatchScriptName !== dispatchScriptName
+      ) {
+        console.log(`[dispatcher] Primary self-host worker not found, retrying legacy worker: ${fallbackDispatchScriptName}`);
+        headers.set('x-camelai-selfhost-app-id', fallbackDispatchScriptName);
+        const legacyRunner = env.SELFHOST_APP_RUNNER.get(
+          env.SELFHOST_APP_RUNNER.idFromName(fallbackDispatchScriptName),
+        );
+        return legacyRunner.fetch(new Request(request, { headers }));
+      }
+      return response;
+    }
+
     const userWorker = getUserWorker(env, dispatchScriptName);
     let response: Response;
 
     try {
-      response = await userWorker.fetch(request);
+      response = await fetchUserWorker(userWorker, request);
     } catch (e) {
       const error = e as Error;
       if (error.message?.startsWith('Worker not found') && fallbackDispatchScriptName && fallbackDispatchScriptName !== dispatchScriptName) {
         console.log(`[dispatcher] Primary worker not found, retrying legacy worker: ${fallbackDispatchScriptName}`);
         const legacyWorker = getUserWorker(env, fallbackDispatchScriptName);
-        response = await legacyWorker.fetch(request);
+        response = await fetchUserWorker(legacyWorker, request);
       } else {
         throw e;
       }
@@ -735,7 +1376,14 @@ async function dispatchToWorker(
     return response;
   } catch (e) {
     const error = e as Error;
-    const pageHomeUrl = getMainAppUrl(new URL(request.url).hostname, env.MAIN_APP_URL);
+    console.error('[dispatcher] failed to route user worker', {
+      dispatchScriptName,
+      userFacingScriptName,
+      error: error.message,
+      stack: error.stack,
+    });
+    const requestUrl = new URL(request.url);
+    const pageHomeUrl = getMainAppUrl(getRequestHostname(request, requestUrl), env.MAIN_APP_URL);
     if (error.message?.startsWith('Worker not found')) {
       return errorResponse(error404Page(pageHomeUrl, userFacingScriptName));
     }
@@ -749,11 +1397,12 @@ async function dispatchToWorker(
 async function redirectToAuth(
   env: Env,
   url: URL,
+  hostname: string,
   scriptName: string,
   requiredOrgId: string
 ): Promise<Response> {
   // Create auth state with return URL
-  const returnUrl = url.origin; // Just the origin, callback will add the path
+  const returnUrl = `${url.protocol}//${appendCurrentPort(url, hostname)}`; // Just the origin, callback will add the path
   const state = await createAuthState(env.APP_KV, {
     return_url: returnUrl,
     script_name: scriptName,
@@ -761,7 +1410,7 @@ async function redirectToAuth(
   });
 
   // Build main app auth URL
-  const mainAppUrl = getMainAppUrl(url.hostname, env.MAIN_APP_URL);
+  const mainAppUrl = getMainAppUrl(hostname, env.MAIN_APP_URL);
   const authUrl = new URL('/auth/worker', mainAppUrl);
   authUrl.searchParams.set('state', state);
 

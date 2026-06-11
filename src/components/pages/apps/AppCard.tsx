@@ -9,7 +9,7 @@ import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { Input } from '@/components/ui/input';
-import { getPreferredAppUrl } from '@/lib/app-url';
+import { type AppUrlInput, getPreferredAppUrl } from '@/lib/app-url';
 import { getContrastTextColor } from '@/lib/avatar';
 import {
   Check,
@@ -29,7 +29,7 @@ interface AppCardProps {
   workspace?: WorkspaceWithAccess | null;
   showWorkspaceBadge?: boolean;
   isAdmin: boolean;
-  hostname?: string;
+  hostname?: AppUrlInput;
   orgSlug?: string;
   orgCustomDomain?: string | null;
   now?: number;

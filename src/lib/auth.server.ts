@@ -21,6 +21,10 @@ import {
   listOrgWorkspaces,
   getWorkspace,
 } from "./auth-do";
+import {
+  tryCloudflareAccessSilentLogin,
+  type CloudflareAccessEnv,
+} from "./cloudflare-access-auth.server";
 import { retryTransientDurableObjectRead } from "./do-rpc-retry.server";
 
 const LOCAL_AUTH_USER_ID = "local-dev-user";
@@ -40,6 +44,7 @@ export type Session = SessionData;
 export interface SessionContext {
   sessionId: string;
   session: Session;
+  createdSessionCookie?: string;
 }
 
 export interface UserContext extends SessionContext {
@@ -89,7 +94,26 @@ export async function getSession(
     request,
     env.TOKEN_SIGNING_SECRET,
   );
-  if (!signedSession) return null;
+  if (!signedSession) {
+    const accessSession = await tryCloudflareAccessSilentLogin(
+      request,
+      env as unknown as CloudflareAccessEnv,
+      getAuthEnv(env),
+    );
+    if (!accessSession) return null;
+
+    await redirectIfBannedSession(request, context, {
+      userId: accessSession.session.user_id,
+      userEmail: accessSession.session.user_email,
+      orgId: accessSession.session.org_id,
+    });
+
+    return {
+      sessionId: `signed:${accessSession.session.user_id}`,
+      session: accessSession.session,
+      createdSessionCookie: accessSession.signedToken,
+    };
+  }
 
   await redirectIfBannedSession(request, context, {
     userId: signedSession.user_id,
@@ -596,7 +620,8 @@ async function getAuthContextUncached(
 
   // Re-sign session cookie if workspace changed (stale session or fallback)
   const newWorkspaceId = currentWorkspace?.id ?? null;
-  let resignedSessionCookie: string | undefined;
+  let resignedSessionCookie: string | undefined =
+    sessionContext.createdSessionCookie;
   if (newWorkspaceId !== sessionWorkspaceId) {
     resignedSessionCookie = await createSignedSession(
       env.TOKEN_SIGNING_SECRET,

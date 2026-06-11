@@ -101,7 +101,7 @@ export function projectRuntimeDockerProxyBaseUrl(value: string | undefined): str
 
 export function projectRuntimeDeployProxyUrl(value: string | undefined): string {
   const base = projectRuntimeDockerProxyBaseUrl(value);
-  const proxyPath = `/p/${PROJECT_RUNTIME_CLOUDFLARE_API_PROXY_CAPABILITY}/client/v4`;
+  const proxyPath = "/deploy/client/v4";
   return base.endsWith("/client/v4") ? base : `${base}${proxyPath}`;
 }
 

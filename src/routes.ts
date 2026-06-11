@@ -237,6 +237,9 @@ export default [
   // Speech API routes
   route("api/speech/transcribe", "routes/api/speech.transcribe.ts"),
 
+  // Self-host health/readiness route
+  route("api/selfhost/health", "routes/api/selfhost.health.ts"),
+
   // Organization & invitation API routes
   route("api/orgs/:id/invite", "routes/api/orgs.$id.invite.ts"),
   route("api/orgs/:id/llm-provider", "routes/api/orgs.$id.llm-provider.ts"),

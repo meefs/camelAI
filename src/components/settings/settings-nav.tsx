@@ -9,6 +9,7 @@ interface NavItem {
   label: string
   href: string
   adminOnly?: boolean
+  hiddenInSelfhost?: boolean
 }
 
 interface NavGroup {
@@ -30,7 +31,11 @@ const navGroups: NavGroup[] = [
       { label: "General", href: "/settings/organization/general" },
       { label: "Team", href: "/settings/organization/team" },
       { label: "Workspaces", href: "/settings/organization/workspaces" },
-      { label: "Billing", href: "/settings/organization/billing" },
+      {
+        label: "Billing",
+        href: "/settings/organization/billing",
+        hiddenInSelfhost: true,
+      },
       { label: "Usage", href: "/settings/organization/usage" },
       { label: "AI Provider", href: "/settings/organization/ai-provider", adminOnly: true },
       { label: "Models", href: "/settings/organization/models", adminOnly: true },
@@ -73,14 +78,19 @@ function NavLink({
 
 interface SettingsNavProps {
   isOrgAdmin?: boolean
+  selfhostRuntime?: boolean
 }
 
-export function SettingsNav({ isOrgAdmin }: SettingsNavProps) {
+export function SettingsNav({ isOrgAdmin, selfhostRuntime }: SettingsNavProps) {
   const { pathname } = useLocation()
 
   const filteredGroups = navGroups.map((group) => ({
     ...group,
-    items: group.items.filter((item) => !item.adminOnly || isOrgAdmin),
+    items: group.items.filter(
+      (item) =>
+        (!item.adminOnly || isOrgAdmin) &&
+        !(selfhostRuntime && item.hiddenInSelfhost),
+    ),
   }))
 
   return (

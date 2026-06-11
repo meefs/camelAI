@@ -4,8 +4,7 @@
 
 import type { CloudflareEnv } from './cloudflare.server';
 import { ExtApiOAuthProvider, type TokenGrantRecord } from '../../workers/main/src/external-api-oauth';
-import { getEnvPrefix } from '../../workers/main/src/cf-api-proxy';
-import type { AppLoadContext } from 'react-router';
+import { getVanityDomain as getAppVanityDomain } from './app-url';
 
 export { OAuthError } from '../../workers/main/src/external-api-oauth';
 export { CLI_REDIRECT_URI } from '../../workers/main/src/external-api-oauth';
@@ -35,10 +34,12 @@ export function getVanityDomain(env: CloudflareEnv): string {
   const u = (env as any).WORKER_BASE_URL;
   if (u) {
     try {
-      const h = new URL(u).hostname;
-      const p = getEnvPrefix(h);
-      if (p) return `${p}.camelai.app`;
-      if (h !== 'camelai.dev' && !h.endsWith('.camelai.dev')) return 'local.camelai.app';
+      const h = new URL(u).host;
+      return getAppVanityDomain({
+        hostname: h,
+        vanityDomain: env.LOCAL_APP_VANITY_DOMAIN,
+        iframeDomain: env.LOCAL_APP_IFRAME_DOMAIN,
+      });
     } catch {}
   }
   return 'camelai.app';

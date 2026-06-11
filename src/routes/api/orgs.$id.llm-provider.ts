@@ -8,6 +8,10 @@ import {
   stringifyStoredLlmProviderConfig,
   keyHint,
 } from '@/lib/llm-provider-config';
+import {
+  getSelfhostAiProviderPublicConfig,
+  getSelfhostAiProviderStatus,
+} from '@/lib/selfhost-ai-provider';
 import { waitUntil } from '@/lib/wait-until';
 import type { LlmProvider, LlmProviderConfigPublic } from '@/types';
 
@@ -36,6 +40,15 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
   await requireOrgAdmin(request, context, orgId);
   const env = getEnv(context);
   const authEnv = getAuthEnv(env);
+  const selfhostAiProvider = getSelfhostAiProviderStatus(env);
+  const selfhostConfig = getSelfhostAiProviderPublicConfig(env);
+  if (selfhostAiProvider.configured) {
+    return Response.json({
+      config: selfhostConfig ?? null,
+      managed_by: 'selfhost-env',
+      error: selfhostAiProvider.valid ? undefined : selfhostAiProvider.message,
+    });
+  }
 
   const orgStub = authEnv.ORG.get(authEnv.ORG.idFromName(orgId));
   const record = await orgStub.getLlmProviderConfig();
@@ -61,6 +74,7 @@ export async function action({ request, context, params }: Route.ActionArgs) {
   const authContext = await requireOrgAdmin(request, context, orgId);
   const env = getEnv(context);
   const authEnv = getAuthEnv(env);
+  const selfhostAiProvider = getSelfhostAiProviderStatus(env);
 
   let body: Record<string, unknown>;
   try {
@@ -70,6 +84,17 @@ export async function action({ request, context, params }: Route.ActionArgs) {
   }
 
   const intent = body.intent as string;
+
+  if (selfhostAiProvider.configured) {
+    return Response.json(
+      {
+        error:
+          selfhostAiProvider.message ??
+          'AI Provider is managed by self-host environment variables.',
+      },
+      { status: 409 },
+    );
+  }
 
   if (intent === 'setProvider') {
     const provider = body.provider as string;

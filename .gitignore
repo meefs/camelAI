@@ -106,3 +106,5 @@ workers/main/src/embedded-skills.ts
 .bedrock_key
 .slack_token
 .claude/
+.selfhost/
+.env.selfhost

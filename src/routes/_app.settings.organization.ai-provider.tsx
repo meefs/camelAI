@@ -3,6 +3,8 @@ import { useFetcher, useLoaderData } from "react-router";
 import { toast } from "sonner";
 import type { Route } from "./+types/_app.settings.organization.ai-provider";
 import { SettingsHeader } from "@/components/settings/settings-header";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
 import { ByokKeyForm } from "@/components/byok/byok-key-form";
@@ -18,6 +20,7 @@ import {
   type OnboardingByokProvider,
 } from "@/lib/byok-providers";
 import { buildPublicLlmProviderConfig } from "@/lib/llm-provider-config";
+import { getSelfhostAiProviderStatus } from "@/lib/selfhost-ai-provider";
 import type { LlmProviderConfigPublic } from "@/types";
 
 type FetcherIntent = "setProvider" | "deleteProvider" | "testProvider" | null;
@@ -50,6 +53,19 @@ export async function loader({ request, context }: Route.LoaderArgs) {
   await requireOrgAdmin(request, context, authContext.currentOrg.id);
   const env = getEnv(context);
   const authEnv = getAuthEnv(env);
+  const selfhostAiProvider = getSelfhostAiProviderStatus(env);
+
+  if (selfhostAiProvider.configured) {
+    return {
+      config: selfhostAiProvider.publicConfig ?? null,
+      orgId: authContext.currentOrg.id,
+      selfhostAiProvider: {
+        configured: true,
+        valid: selfhostAiProvider.valid,
+        message: selfhostAiProvider.message ?? null,
+      },
+    };
+  }
 
   const orgStub = authEnv.ORG.get(
     authEnv.ORG.idFromName(authContext.currentOrg.id),
@@ -57,7 +73,11 @@ export async function loader({ request, context }: Route.LoaderArgs) {
   const record = await orgStub.getLlmProviderConfig();
 
   if (!record) {
-    return { config: null, orgId: authContext.currentOrg.id };
+    return {
+      config: null,
+      orgId: authContext.currentOrg.id,
+      selfhostAiProvider: null,
+    };
   }
 
   const config: LlmProviderConfigPublic = await buildPublicLlmProviderConfig(
@@ -65,7 +85,11 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     env.INTEGRATION_SECRET_KEY,
   );
 
-  return { config, orgId: authContext.currentOrg.id };
+  return {
+    config,
+    orgId: authContext.currentOrg.id,
+    selfhostAiProvider: null,
+  };
 }
 
 function isOnboardingByokProvider(
@@ -81,7 +105,7 @@ function isOnboardingByokProvider(
 }
 
 export default function AiProviderPage() {
-  const { config, orgId } = useLoaderData<typeof loader>();
+  const { config, orgId, selfhostAiProvider } = useLoaderData<typeof loader>();
   const fetcher = useFetcher<ProviderActionResponse>();
 
   const initialProvider: OnboardingByokProvider =
@@ -287,6 +311,51 @@ export default function AiProviderPage() {
   })();
 
   const removeIsRemoving = isSubmitting && lastIntent === "deleteProvider";
+
+  if (selfhostAiProvider?.configured) {
+    return (
+      <div className="space-y-6">
+        <SettingsHeader
+          title="AI Provider"
+          description="AI provider credentials are managed by this self-host deployment."
+        />
+        <Separator />
+
+        <section className="max-w-2xl space-y-4">
+          <Alert variant={selfhostAiProvider.valid ? "default" : "destructive"}>
+            <AlertTitle>Managed by environment variables</AlertTitle>
+            <AlertDescription>
+              Set or rotate this provider through the self-host environment. Org
+              admins cannot replace it from the UI while SELFHOST_AI_PROVIDER is
+              configured.
+            </AlertDescription>
+          </Alert>
+
+          {config ? (
+            <div className="space-y-2 text-sm">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="font-medium">{configuredProviderLabel}</span>
+                <Badge variant="secondary">self-host</Badge>
+                <span className="font-mono text-muted-foreground">
+                  {config.key_hint}
+                </span>
+              </div>
+              {config.provider === "custom" && config.config.custom_base_url ? (
+                <p className="text-muted-foreground">
+                  {config.config.custom_base_url}
+                </p>
+              ) : null}
+            </div>
+          ) : (
+            <p className="text-sm text-destructive">
+              {selfhostAiProvider.message ??
+                "Self-host AI provider environment variables are incomplete."}
+            </p>
+          )}
+        </section>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6">

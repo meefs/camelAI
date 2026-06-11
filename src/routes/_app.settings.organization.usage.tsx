@@ -29,6 +29,8 @@ import {
 } from "@/lib/billing-credit-packs";
 import { BYOK_PROVIDERS } from "@/lib/byok-providers";
 import { buildPublicLlmProviderConfig } from "@/lib/llm-provider-config";
+import { getSelfhostAiProviderPublicConfig } from "@/lib/selfhost-ai-provider";
+import { isSelfhostRuntime } from "@/lib/selfhost-runtime";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { Separator } from "@/components/ui/separator";
@@ -97,8 +99,9 @@ export async function loader({ request, context }: Route.LoaderArgs) {
   const currentUserOrg = authContext.orgs.find((o) => o.org_id === orgId);
   const isOrgAdmin =
     currentUserOrg?.role === "owner" || currentUserOrg?.role === "admin";
+  const selfhostRuntime = isSelfhostRuntime(env);
 
-  const stripeConfigured = isStripeBillingConfigured(env);
+  const stripeConfigured = !selfhostRuntime && isStripeBillingConfigured(env);
 
   const [overview, log, creditPacks, llmProviderConfig] = await Promise.all([
     getOrgBillingOverview(env, authContext.currentOrg).catch(() => null),
@@ -118,6 +121,8 @@ export async function loader({ request, context }: Route.LoaderArgs) {
       : Promise.resolve([]),
     (async () => {
       try {
+        const selfhostConfig = getSelfhostAiProviderPublicConfig(env);
+        if (selfhostConfig) return selfhostConfig;
         const authEnv = getAuthEnv(env);
         const orgStub = authEnv.ORG.get(authEnv.ORG.idFromName(orgId));
         const record = await orgStub.getLlmProviderConfig();
@@ -137,6 +142,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     overview,
     log,
     stripeConfigured,
+    selfhostRuntime,
     isOrgAdmin,
     creditPacks: formatTopUpCreditPacks(creditPacks),
     llmProviderConfig,
@@ -147,6 +153,9 @@ export async function action({ request, context }: Route.ActionArgs) {
   const authContext = await requireAuthContext(request, context);
   await requireOrgAdmin(request, context, authContext.currentOrg.id);
   const env = getEnv(context);
+  if (isSelfhostRuntime(env)) {
+    return { error: "Credit checkout is disabled in self-host mode." };
+  }
   const formData = await request.formData();
   const intent = String(formData.get("intent") || "");
 
@@ -183,6 +192,7 @@ export default function OrganizationUsagePage() {
     overview,
     log,
     stripeConfigured,
+    selfhostRuntime,
     isOrgAdmin,
     creditPacks,
     llmProviderConfig,
@@ -194,17 +204,22 @@ export default function OrganizationUsagePage() {
   const topUpSubmitting = topUpFetcher.state !== "idle";
 
   useEffect(() => {
+    if (selfhostRuntime) return;
     if (searchParams.get("action") !== "topup") return;
     setTopUpOpen(true);
     setSearchParams({}, { replace: true });
-  }, [searchParams, setSearchParams]);
+  }, [searchParams, selfhostRuntime, setSearchParams]);
 
   if (!overview) {
     return (
       <div className="space-y-6">
         <SettingsHeader
           title="Usage"
-          description={`Track camelAI credit consumption for ${orgName}.`}
+          description={
+            selfhostRuntime
+              ? `Track local AI provider usage for ${orgName}.`
+              : `Track camelAI credit consumption for ${orgName}.`
+          }
         />
         <Separator />
         <p className="text-sm text-muted-foreground">
@@ -248,10 +263,32 @@ export default function OrganizationUsagePage() {
     <div className="space-y-6">
       <SettingsHeader
         title="Usage"
-        description={`Track camelAI credit consumption for ${orgName}.`}
+        description={
+          selfhostRuntime
+            ? `Track local AI provider usage for ${orgName}.`
+            : `Track camelAI credit consumption for ${orgName}.`
+        }
       />
       <Separator />
 
+      {selfhostRuntime ? (
+        <section className="space-y-3">
+          <h2 className="text-base font-semibold">Self-host provider</h2>
+          <div className="space-y-1">
+            <p className="text-3xl font-semibold">Billing disabled</p>
+            <p className="text-sm text-muted-foreground">
+              This self-host install does not enforce camelAI plans, credits, or
+              Stripe checkout.
+            </p>
+            {llmProviderConfig ? (
+              <p className="text-sm text-muted-foreground">
+                Using {getByokProviderLabel(llmProviderConfig.provider)} from
+                the self-host environment.
+              </p>
+            ) : null}
+          </div>
+        </section>
+      ) : (
       <section className="space-y-3">
         <h2 className="text-base font-semibold">Credit balance</h2>
         {isEnterprise ? (
@@ -300,8 +337,9 @@ export default function OrganizationUsagePage() {
           </div>
         )}
       </section>
+      )}
 
-      {!isEnterprise && isOrgAdmin ? (
+      {!selfhostRuntime && !isEnterprise && isOrgAdmin ? (
         <>
           <Separator />
           <section className="space-y-3">

@@ -76,6 +76,11 @@ import {
   normalizeLlmModel,
   parseStoredLlmProviderConfig,
 } from "../../../src/lib/llm-provider-config";
+import {
+  getEffectiveLlmProviderConfig,
+  getSelfhostAiProviderCredentials,
+  isSelfhostRuntime,
+} from "../../../src/lib/selfhost-ai-provider";
 import { isOrgBanned } from "./ban-list";
 import type { WorkspaceThreadStreamingOptions } from "./thread-status";
 import { getPreferredAppUrl } from "../../../src/lib/app-url";
@@ -364,6 +369,16 @@ export interface ChatEnv extends WorkspaceFilesystemEnv, ProjectRuntimeServiceVm
   INTEGRATION_SECRET_KEY: string;
   TOKEN_SIGNING_SECRET: string;
   AI_GATEWAY_AUTH_TOKEN?: string;
+  SELFHOST_AI_PROVIDER?: string;
+  SELFHOST_AI_API_KEY?: string;
+  SELFHOST_AI_BASE_URL?: string;
+  SELFHOST_AI_MODEL?: string;
+  SELFHOST_AI_NAME?: string;
+  SELFHOST_AI_AUTH_TYPE?: string;
+  SELFHOST_AI_API?: string;
+  SELFHOST_AI_AWS_REGION?: string;
+  LOCAL_APP_VANITY_DOMAIN?: string;
+  LOCAL_APP_IFRAME_DOMAIN?: string;
   CF_DISPATCH_NAMESPACE?: string;
   ENABLE_LEGACY_WORKSPACE_MIGRATION?: string;
   EMAIL_TO_USER: KVNamespace;
@@ -2415,14 +2430,18 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
     const workerBaseUrl = (this.env as { WORKER_BASE_URL?: string }).WORKER_BASE_URL;
     if (workerBaseUrl) {
       try {
-        appHostname = new URL(workerBaseUrl).hostname;
+        appHostname = new URL(workerBaseUrl).host;
       } catch {
         appHostname = "camelai.dev";
       }
     }
     const orgSlug = await this.getOrgSlug();
     return getPreferredAppUrl(script, {
-      hostname: appHostname,
+      hostname: {
+        hostname: appHostname,
+        vanityDomain: this.env.LOCAL_APP_VANITY_DOMAIN,
+        iframeDomain: this.env.LOCAL_APP_IFRAME_DOMAIN,
+      },
       orgSlug: orgSlug ?? undefined,
       orgCustomDomain: null,
     });
@@ -8309,6 +8328,14 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       if (automationRun && result.status !== "accepted") {
         this.setActiveAutomationRun(null);
       }
+      if (result.status !== "accepted") {
+        this.pushChatEvent(
+          this.chatSendErrorPayload(result.error, {
+            status: result.status,
+            fallbackMessage: "Failed to start initial message",
+          }),
+        );
+      }
       return result;
     } catch (error) {
       if (automationRun) {
@@ -8320,6 +8347,11 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         size: message.length,
         error,
       });
+      this.pushChatEvent(
+        this.chatSendErrorPayload(error, {
+          fallbackMessage: "Failed to start initial message",
+        }),
+      );
       return {
         status: "error",
         error:
@@ -8560,12 +8592,16 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         thread && typeof thread === "object" && "workspace_id" in thread
           ? (thread as { workspace_id?: unknown }).workspace_id
           : null;
-      const customApi = getStoredCustomLlmProviderApi(llmProviderRecord);
-      const customModelId = getStoredCustomLlmProviderModelId(llmProviderRecord);
+      const effectiveLlmProviderRecord = getEffectiveLlmProviderConfig(
+        this.env,
+        llmProviderRecord,
+      );
+      const customApi = getStoredCustomLlmProviderApi(effectiveLlmProviderRecord);
+      const customModelId = getStoredCustomLlmProviderModelId(effectiveLlmProviderRecord);
       const threadModel =
         thread && threadWorkspaceId === context.workspaceId
           ? normalizeLlmModel((thread as { model?: unknown }).model)
-          : normalizeLlmModel(undefined, llmProviderRecord?.provider, {
+          : normalizeLlmModel(undefined, effectiveLlmProviderRecord?.provider, {
               customApi,
               customModelId,
             });
@@ -10344,7 +10380,8 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     context: ChatContextState,
     requestedModelId: string,
   ): Promise<PiRequestConfig> {
-    const byok = await this.resolveCurrentByokCredentials(context).catch((error) => {
+    const selfhostProvider = getSelfhostAiProviderCredentials(this.env);
+    const byok = selfhostProvider ?? await this.resolveCurrentByokCredentials(context).catch((error) => {
       console.error("[ChatThreadDO] failed to resolve Pi BYOK credentials", error);
       return null;
     });
@@ -10412,6 +10449,11 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     const gatewayName = this.env.CF_GATEWAY_NAME?.trim();
     const token = this.env.AI_GATEWAY_AUTH_TOKEN?.trim() || this.env.CF_GATEWAY_TOKEN?.trim();
     if (!accountId || !gatewayName || !token) {
+      if (isSelfhostRuntime(this.env)) {
+        throw new Error(
+          "Self-host chat requires an AI provider. Set SELFHOST_AI_PROVIDER and SELFHOST_AI_API_KEY in the self-host environment, or configure CF_ACCOUNT_ID, CF_GATEWAY_NAME, and AI_GATEWAY_AUTH_TOKEN for a hosted Cloudflare AI Gateway.",
+        );
+      }
       throw new Error("Cloudflare AI Gateway is not configured for DO Pi");
     }
 
@@ -10561,6 +10603,10 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
   private async checkHostedPiModelAccess(
     context: ChatContextState,
   ): Promise<boolean> {
+    if (isSelfhostRuntime(this.env)) {
+      return false;
+    }
+
     const orgStub = this.env.ORG.get(this.env.ORG.idFromName(context.orgId));
     const org = await orgStub.getInfo();
     if (!org) {

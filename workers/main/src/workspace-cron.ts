@@ -22,6 +22,8 @@ import {
   resolveDefaultModelForChat,
   resolveEffectivePickerConfig,
 } from "../../../src/lib/model-picker-config";
+import { getEffectiveLlmProviderConfig } from "../../../src/lib/selfhost-ai-provider";
+import { isSelfhostRuntime } from "../../../src/lib/selfhost-runtime";
 import {
   getBillingPlanLimits,
   type BillingPlanLimits,
@@ -314,6 +316,16 @@ export interface WorkspaceCronEnv {
   CHAT_THREAD: DurableObjectNamespace<ChatThreadDO>;
   CODE_MODE_LOADER?: WorkerLoader;
   DETERMINISTIC_AUTOMATION_WORKFLOWS?: Workflow;
+  CF_ACCOUNT_ID?: string;
+  CF_DISPATCH_NAMESPACE?: string;
+  SELFHOST_AI_PROVIDER?: string;
+  SELFHOST_AI_API_KEY?: string;
+  SELFHOST_AI_BASE_URL?: string;
+  SELFHOST_AI_MODEL?: string;
+  SELFHOST_AI_NAME?: string;
+  SELFHOST_AI_AUTH_TYPE?: string;
+  SELFHOST_AI_API?: string;
+  SELFHOST_AI_AWS_REGION?: string;
 }
 
 export class WorkspaceCronDO extends DurableObject<WorkspaceCronEnv> {
@@ -800,6 +812,10 @@ export class WorkspaceCronDO extends DurableObject<WorkspaceCronEnv> {
   private async getWorkspaceBillingLimits(
     workspace: WorkspaceInfo,
   ): Promise<BillingPlanLimits> {
+    if (isSelfhostRuntime(this.env)) {
+      return getBillingPlanLimits("enterprise", "enterprise");
+    }
+
     const org = await this.getOrgStub(workspace.org_id).getInfo();
     return getBillingPlanLimits(org?.billing_plan, org?.billing_status);
   }
@@ -945,8 +961,12 @@ export class WorkspaceCronDO extends DurableObject<WorkspaceCronEnv> {
       getOrgModelPickerConfigCompat(orgStub),
       getWorkspaceModelPickerConfigCompat(workspaceStub),
     ]);
-    const customApi = getStoredCustomLlmProviderApi(llmProviderConfig);
-    const customModelId = getStoredCustomLlmProviderModelId(llmProviderConfig);
+    const effectiveLlmProviderConfig = getEffectiveLlmProviderConfig(
+      this.env,
+      llmProviderConfig,
+    );
+    const customApi = getStoredCustomLlmProviderApi(effectiveLlmProviderConfig);
+    const customModelId = getStoredCustomLlmProviderModelId(effectiveLlmProviderConfig);
     const effectiveConfig = resolveEffectivePickerConfig(
       orgPickerConfig,
       workspacePickerConfig,
@@ -954,13 +974,13 @@ export class WorkspaceCronDO extends DurableObject<WorkspaceCronEnv> {
     const visibleCatalog = resolveModelPickerCatalog({
       effectiveConfig,
       experimentalSettings,
-      orgProvider: llmProviderConfig?.provider,
+      orgProvider: effectiveLlmProviderConfig?.provider,
       customApi,
       customModelId,
     });
     const model = resolveDefaultModelForChat({
       effectiveDefaultModel: effectiveConfig.default_model,
-      fallbackModel: getDefaultLlmModel(llmProviderConfig?.provider, {
+      fallbackModel: getDefaultLlmModel(effectiveLlmProviderConfig?.provider, {
         customApi,
         customModelId,
       }),

@@ -58,3 +58,13 @@ bun run deploy:dispatcher:staging
 ```
 
 See `AGENTS.md` for full architecture documentation.
+
+## Self-Hosting
+
+See [docs/self-hosting.md](docs/self-hosting.md) for the Docker Compose stack:
+
+```bash
+bun run selfhost:init
+bun run selfhost:doctor
+bun run selfhost:up
+```

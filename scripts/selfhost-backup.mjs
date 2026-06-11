@@ -1,0 +1,113 @@
+#!/usr/bin/env node
+import fs from "node:fs/promises";
+import path from "node:path";
+import process from "node:process";
+import {
+  capture,
+  composeArgs,
+  readSelfhostEnv,
+  repoRoot,
+  run,
+  runtimeHostStateDir,
+  scriptEnv,
+  volumeName,
+  volumeNames,
+} from "./selfhost-common.mjs";
+
+const env = await readSelfhostEnv(true);
+const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+const backupDir = path.resolve(repoRoot, process.argv[2] || `.selfhost/backups/${timestamp}`);
+
+await fs.mkdir(backupDir, { recursive: true });
+
+const ps = await capture("docker", composeArgs(env, ["ps", "--format", "json"]), {
+  env: scriptEnv(env),
+});
+if (ps.code === 0 && ps.stdout.trim()) {
+  console.warn("[selfhost:backup] If the stack is running, this is a live backup. Stop the stack for the most consistent snapshot.");
+}
+
+for (const name of volumeNames) {
+  const dockerVolume = volumeName(name, env);
+  await backupVolume(dockerVolume, `${name}.tgz`);
+}
+await backupDirectory(runtimeHostStateDir(env), "project-runtime-state.tgz");
+
+await fs.writeFile(
+  path.join(backupDir, "manifest.json"),
+  JSON.stringify({
+    createdAt: new Date().toISOString(),
+    composeProject: env.COMPOSE_PROJECT_NAME,
+    volumes: volumeNames.map((name) => ({
+      name,
+      dockerVolume: volumeName(name, env),
+      archive: `${name}.tgz`,
+    })),
+    directories: [
+      {
+        name: "project-runtime-state",
+        path: runtimeHostStateDir(env),
+        archive: "project-runtime-state.tgz",
+      },
+    ],
+    notes: [
+      ".env.selfhost is not included because it contains secrets.",
+      "Restore with: bun run selfhost:restore -- <backup-dir>",
+    ],
+  }, null, 2),
+);
+
+console.log(`Self-host backup written to ${backupDir}`);
+
+async function backupVolume(dockerVolume, archiveName) {
+  const inspect = await capture("docker", ["volume", "inspect", dockerVolume], {
+    env: scriptEnv(env),
+  });
+  if (inspect.code !== 0) {
+    console.warn(`[selfhost:backup] Skipping missing volume ${dockerVolume}.`);
+    return;
+  }
+
+  await run("docker", [
+    "run",
+    "--rm",
+    "-v",
+    `${dockerVolume}:/data:ro`,
+    "-v",
+    `${backupDir}:/backup`,
+    "alpine:3.20",
+    "tar",
+    "-czf",
+    `/backup/${archiveName}`,
+    "-C",
+    "/data",
+    ".",
+  ], { env: scriptEnv(env) });
+}
+
+async function backupDirectory(sourceDir, archiveName) {
+  if (!(await pathExists(sourceDir))) {
+    console.warn(`[selfhost:backup] Skipping missing directory ${sourceDir}.`);
+    return;
+  }
+
+  await run("docker", [
+    "run",
+    "--rm",
+    "-v",
+    `${sourceDir}:/data:ro`,
+    "-v",
+    `${backupDir}:/backup`,
+    "alpine:3.20",
+    "tar",
+    "-czf",
+    `/backup/${archiveName}`,
+    "-C",
+    "/data",
+    ".",
+  ], { env: scriptEnv(env) });
+}
+
+async function pathExists(filePath) {
+  return fs.access(filePath).then(() => true, () => false);
+}

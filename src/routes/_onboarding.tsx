@@ -9,6 +9,7 @@ import {
   isOrgBillingAccessReady,
   resolveOrgBillingAccess,
 } from "@/lib/billing.server";
+import { getEffectiveLlmProviderConfig } from "@/lib/selfhost-ai-provider";
 import { hasCompletedOnboarding } from "@/lib/onboarding";
 import { OnboardingLayout } from "@/components/onboarding/onboarding-layout";
 import { Alert, AlertDescription } from "@/components/ui/alert";
@@ -98,9 +99,14 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     orgStub.getInfo(),
     orgStub.getLlmProviderConfig(),
   ]);
-  const billingAccess = resolveOrgBillingAccess({
-    org: orgInfo,
+  const effectiveLlmProviderConfig = getEffectiveLlmProviderConfig(
+    env,
     llmProviderConfig,
+  );
+  const billingAccess = resolveOrgBillingAccess({
+    env,
+    org: orgInfo,
+    llmProviderConfig: effectiveLlmProviderConfig,
   });
   const billingAccessReady = isOrgBillingAccessReady(billingAccess);
 

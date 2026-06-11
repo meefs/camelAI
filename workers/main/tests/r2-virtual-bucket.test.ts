@@ -92,6 +92,18 @@ describe('R2VirtualBucket', () => {
     expect(Array.from(await byteResult!.bytes())).toEqual([97, 98, 99]);
   });
 
+  it('keeps reader methods usable when the body stream is serialized separately', async () => {
+    const service = makeService({
+      get: vi
+        .fn()
+        .mockResolvedValue(makeR2Object('user-data/ws_123/uploads/raw.txt', 'abc')),
+    });
+
+    const result = await service.get('raw.txt');
+    expect(await new Response(result!.body).text()).toBe('abc');
+    expect(await result!.text()).toBe('abc');
+  });
+
   it('passes get options through to the backing R2 bucket', async () => {
     const get = vi.fn().mockResolvedValue(null);
     const service = makeService({ get });

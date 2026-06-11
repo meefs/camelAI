@@ -49,6 +49,7 @@ import {
   type OnboardingByokProvider,
 } from "@/lib/byok-providers";
 import { formatTopUpCreditPacks } from "@/lib/billing-credit-packs";
+import { getEffectiveLlmProviderConfig } from "@/lib/selfhost-ai-provider";
 import type { OnboardingRouteContext } from "./_onboarding";
 
 interface TeamContext {
@@ -90,7 +91,11 @@ export async function loader({ request, context }: Route.LoaderArgs) {
       ? fetchConfiguredCreditPacks(env).catch(() => [])
       : Promise.resolve([]),
   ]);
-  const byokProviderLabel = getByokProviderLabel(llmProviderConfig?.provider);
+  const effectiveLlmProviderConfig = getEffectiveLlmProviderConfig(
+    env,
+    llmProviderConfig,
+  );
+  const byokProviderLabel = getByokProviderLabel(effectiveLlmProviderConfig?.provider);
   const formattedCreditPacks = formatTopUpCreditPacks(creditPacks);
 
   if (!teamMode) {

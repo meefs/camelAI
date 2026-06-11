@@ -20,6 +20,7 @@ import {
   getBlocklistFromKV,
 } from "./email-domain-blocklist";
 import { getBillingPlanLimits } from "./billing-plans";
+import { isSelfhostRuntime } from "./selfhost-runtime";
 import { generateDefaultAvatar } from "./avatar";
 
 import {
@@ -336,7 +337,7 @@ export async function createUserFromOAuth(
   env: AuthEnv,
   email: string,
   name: string | null,
-  provider: "google" | "github",
+  provider: "google" | "github" | "cloudflare_access",
   providerId: string,
 ): Promise<{ userId: string; user: User }> {
   const blocklist = await getBlocklistFromKV(env.APP_KV);
@@ -406,7 +407,7 @@ export async function createUserFromOAuth(
 export async function linkOAuthProvider(
   env: AuthEnv,
   userId: string,
-  provider: "google" | "github",
+  provider: "google" | "github" | "cloudflare_access",
   providerId: string,
 ): Promise<void> {
   const oauthKvKey = `oauth:${provider}:${providerId}`;
@@ -899,7 +900,9 @@ export async function createWorkspace(
     orgStub.getInfo(),
     listOrgWorkspaces(env, orgId),
   ]);
-  const workspaceLimit = orgInfo
+  const workspaceLimit = isSelfhostRuntime(env)
+    ? null
+    : orgInfo
     ? getBillingPlanLimits(orgInfo.billing_plan, orgInfo.billing_status)
         .includedWorkspaceCount
     : 1;

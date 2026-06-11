@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
+  getAppIframeUrl,
+  getAppUrl,
   getPreferredAppUrl,
   isAppCustomDomainReady,
 } from '@/lib/app-url';
@@ -78,5 +80,20 @@ describe('app URL selection', () => {
         orgSlug: 'abc123',
       })
     ).toBe('https://example.com');
+  });
+
+  it('uses configured self-host app domains', () => {
+    const context = {
+      hostname: 'camel.example.com',
+      vanityDomain: 'apps.example.com',
+      iframeDomain: 'iframe.example.com',
+    };
+
+    expect(getAppUrl('demo-app', context, 'abc123')).toBe(
+      'https://demo-app-abc123.apps.example.com'
+    );
+    expect(getAppIframeUrl('demo-app', context, 'abc123')).toBe(
+      'https://demo-app-abc123.iframe.example.com'
+    );
   });
 });

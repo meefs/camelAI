@@ -34,6 +34,8 @@ import {
 import { listGroupsForWorkspace } from "@/lib/chat-groups.server";
 import { getByokProviderLabel } from "@/lib/byok-providers";
 import { getWorkspaceMigrationGate } from "@/lib/workspace-migration-gate.server";
+import { getEffectiveLlmProviderConfig } from "@/lib/selfhost-ai-provider";
+import { isSelfhostRuntime } from "@/lib/selfhost-runtime";
 
 const SIDEBAR_COOKIE_NAME = "sidebar_state";
 const PROJECT_MIGRATION_POLL_INTERVAL_MS = 5_000;
@@ -127,10 +129,16 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     orgStub.getInfo().catch(() => null),
     orgStub.getLlmProviderConfig(),
   ]);
+  const effectiveLlmProviderConfig = getEffectiveLlmProviderConfig(
+    env,
+    llmProviderConfig,
+  );
+  const selfhostRuntime = isSelfhostRuntime(env);
   const currentOrg = orgInfo ?? authContext.currentOrg;
   const billingAccess = resolveOrgBillingAccess({
+    env,
     org: currentOrg,
-    llmProviderConfig,
+    llmProviderConfig: effectiveLlmProviderConfig,
     pathname: url.pathname,
   });
   const billingAccessReady = isOrgBillingAccessReady(billingAccess);
@@ -141,7 +149,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     : {
         currentOrgName: currentOrg.name,
         multiOrg: authContext.orgs.length > 1,
-        byokProviderLabel: getByokProviderLabel(llmProviderConfig?.provider),
+        byokProviderLabel: getByokProviderLabel(effectiveLlmProviderConfig?.provider),
       };
 
   // Convert auth context to AuthState for the provider
@@ -176,16 +184,18 @@ export async function loader({ request, context }: Route.LoaderArgs) {
         return [];
       })
     : Promise.resolve([]);
-  const legacyMigrationPromise = Promise.resolve(
-    getVerifiedLegacyStripeMigrationEligibility({
-      env,
-      org: currentOrg,
-      userEmail: authContext.user?.email ?? authContext.session?.user_email ?? "",
-    }),
-  ).catch((error) => {
+  const legacyMigrationPromise = selfhostRuntime
+    ? Promise.resolve(null)
+    : Promise.resolve(
+        getVerifiedLegacyStripeMigrationEligibility({
+          env,
+          org: currentOrg,
+          userEmail: authContext.user?.email ?? authContext.session?.user_email ?? "",
+        }),
+      ).catch((error) => {
     console.error("Failed to load legacy migration eligibility:", error);
     return null;
-  });
+      });
   const showLegacyBannerPromise = (async () => {
     const normalizedEmail = (
       authContext.user?.email ??

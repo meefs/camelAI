@@ -12,6 +12,7 @@ import {
 } from "@/lib/auth.server";
 import { APP_BUILD_ID } from "@/lib/app-build-id";
 import { getEnv } from "@/lib/cloudflare.server";
+import { getAppUrlContext } from "@/lib/app-url.server";
 import { getOrgBillingOverview } from "@/lib/billing.server";
 import {
   applyDevBillingCreditStatusOverride,
@@ -28,6 +29,8 @@ import {
   getStoredCustomLlmProviderModelId,
   getVisibleLlmModelOptions,
 } from "@/lib/llm-provider-config";
+import { getEffectiveLlmProviderConfig } from "@/lib/selfhost-ai-provider";
+import { isSelfhostRuntime } from "@/lib/selfhost-runtime";
 import * as chatDO from "@/lib/chat-do.server";
 import {
   addThreadToExistingGroup,
@@ -202,7 +205,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
   const authEnv = getAuthEnv(env);
   const url = new URL(request.url);
   const promptKey = getPromptKeyFromUrl(url);
-  const hostname = request.headers.get("host")?.split(":")[0] || undefined;
+  const hostname = getAppUrlContext(env, request);
   const workspaceId = authContext.currentWorkspace?.id;
   const groupId = url.searchParams.get("group")?.trim() || null;
   const userId = authContext.user?.id ?? null;
@@ -366,14 +369,18 @@ export async function loader({ request, context }: Route.LoaderArgs) {
   ]);
   const experimentalSettings =
     pickerState?.experimentalSettings ?? fallbackExperimentalSettings;
+  const effectiveLlmProviderConfig = getEffectiveLlmProviderConfig(
+    env,
+    llmProviderConfig,
+  );
   const llmProvider =
     pickerState?.llmProvider ??
-    ((llmProviderConfig?.provider ?? null) as
+    ((effectiveLlmProviderConfig?.provider ?? null) as
       | import("@/types").LlmProvider
       | null);
-  const customApi = getStoredCustomLlmProviderApi(llmProviderConfig);
-  const customModelId = getStoredCustomLlmProviderModelId(llmProviderConfig);
-  const fallbackThreadModel = getDefaultLlmModel(llmProviderConfig?.provider, {
+  const customApi = getStoredCustomLlmProviderApi(effectiveLlmProviderConfig);
+  const customModelId = getStoredCustomLlmProviderModelId(effectiveLlmProviderConfig);
+  const fallbackThreadModel = getDefaultLlmModel(effectiveLlmProviderConfig?.provider, {
     customApi,
     customModelId,
   });
@@ -381,13 +388,13 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     experimentalSettings,
     fallbackThreadModel,
     {
-      orgProvider: llmProviderConfig?.provider,
+      orgProvider: effectiveLlmProviderConfig?.provider,
       customApi,
       customModelId,
     },
   ).map((option) => option.value);
   const hasModelFallback = Boolean(orgStub && workspaceId);
-  const billingOverview = orgInfo
+  const billingOverview = !isSelfhostRuntime(env) && orgInfo
     ? await getOrgBillingOverview(env, orgInfo).catch((error) => {
         console.warn("Failed to load billing overview for chat:", error);
         return null;

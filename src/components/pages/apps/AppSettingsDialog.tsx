@@ -18,7 +18,7 @@ import { Alert, AlertDescription } from '@/components/ui/alert';
 import { ConfirmDialog } from '@/components/ui/confirm-dialog';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { AlertCircle, ExternalLink, Trash2 } from 'lucide-react';
-import { getPreferredAppUrl } from '@/lib/app-url';
+import { type AppUrlInput, getPreferredAppUrl } from '@/lib/app-url';
 import { getContrastTextColor } from '@/lib/avatar';
 import { buildSetAppPublicPayload } from '@/lib/app-visibility';
 
@@ -29,7 +29,7 @@ interface AppSettingsDialogProps {
   orgId: string;
   orgSlug: string;
   isAdmin: boolean;
-  hostname?: string;
+  hostname?: AppUrlInput;
   orgCustomDomain?: string | null;
   onSuccess: () => void;
 }

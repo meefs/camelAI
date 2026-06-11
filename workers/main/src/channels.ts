@@ -14,6 +14,7 @@ import {
   resolveDefaultModelForChat,
   resolveEffectivePickerConfig,
 } from "../../../src/lib/model-picker-config.js";
+import { getEffectiveLlmProviderConfig } from "../../../src/lib/selfhost-ai-provider.js";
 import type { LlmModel } from "../../../src/types.js";
 import type { Env } from "./types.js";
 import {
@@ -255,8 +256,12 @@ export async function resolveDefaultChannelThreadModel(
     getOrgModelPickerConfigCompat(orgStub),
     getWorkspaceModelPickerConfigCompat(workspaceStub),
   ]);
-  const customApi = getStoredCustomLlmProviderApi(llmProviderConfig);
-  const customModelId = getStoredCustomLlmProviderModelId(llmProviderConfig);
+  const effectiveLlmProviderConfig = getEffectiveLlmProviderConfig(
+    env,
+    llmProviderConfig,
+  );
+  const customApi = getStoredCustomLlmProviderApi(effectiveLlmProviderConfig);
+  const customModelId = getStoredCustomLlmProviderModelId(effectiveLlmProviderConfig);
   const effectiveConfig = resolveEffectivePickerConfig(
     orgPickerConfig,
     workspacePickerConfig,
@@ -264,13 +269,13 @@ export async function resolveDefaultChannelThreadModel(
   const visibleCatalog = resolveModelPickerCatalog({
     effectiveConfig,
     experimentalSettings,
-    orgProvider: llmProviderConfig?.provider,
+    orgProvider: effectiveLlmProviderConfig?.provider,
     customApi,
     customModelId,
   });
   const model = resolveDefaultModelForChat({
     effectiveDefaultModel: effectiveConfig.default_model,
-    fallbackModel: getDefaultLlmModel(llmProviderConfig?.provider, {
+    fallbackModel: getDefaultLlmModel(effectiveLlmProviderConfig?.provider, {
       customApi,
       customModelId,
     }),

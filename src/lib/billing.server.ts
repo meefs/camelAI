@@ -12,6 +12,7 @@ import {
   normalizeSeatCount,
 } from "@/lib/billing-plans";
 import { canBuyCreditsForBillingState } from "@/lib/billing-credit-packs";
+import { isSelfhostRuntime, type SelfhostRuntimeEnv } from "@/lib/selfhost-runtime";
 
 const STRIPE_API_BASE = "https://api.stripe.com/v1";
 const STRIPE_API_VERSION = "2026-02-25.clover";
@@ -51,6 +52,8 @@ export interface StripeBillingEnv {
   LEGACY_STRIPE_MIGRATION_CUSTOMERS?: string;
   BILLING_TRIAL_CREDIT_CENTS?: string;
   BILLING_SUBSCRIPTION_INCLUDED_CREDIT_CENTS?: string;
+  CF_ACCOUNT_ID?: string;
+  CF_DISPATCH_NAMESPACE?: string;
 }
 
 export interface StripeCustomer {
@@ -868,7 +871,7 @@ const BILLING_SETUP_PATHS = new Set([
 export type OrgBillingAccessState =
   | {
       kind: "ready";
-      mode: "enterprise" | "subscription" | "byok" | "credits";
+      mode: "enterprise" | "subscription" | "byok" | "credits" | "selfhost";
       setupRouteAccessible: true;
     }
   | {
@@ -893,10 +896,14 @@ export function resolveOrgBillingAccess(args: {
     | undefined;
   llmProviderConfig?: unknown;
   pathname?: string;
+  env?: SelfhostRuntimeEnv;
 }): OrgBillingAccessState {
   const setupRouteAccessible = args.pathname
     ? isBillingSetupPath(args.pathname)
     : false;
+  if (args.env && isSelfhostRuntime(args.env)) {
+    return { kind: "ready", mode: "selfhost", setupRouteAccessible: true };
+  }
   const org = args.org;
   if (org?.billing_status === "enterprise") {
     return { kind: "ready", mode: "enterprise", setupRouteAccessible: true };

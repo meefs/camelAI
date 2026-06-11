@@ -1,7 +1,10 @@
 import { Outlet, redirect, data } from 'react-router';
 import type { Route } from './+types/_auth';
 import { getAuthContext, getSession } from '@/lib/auth.server';
-import { createDeleteSessionCookieHeader } from '@/lib/cookies.server';
+import {
+  createDeleteSessionCookieHeader,
+  createSessionCookieHeader,
+} from '@/lib/cookies.server';
 
 /**
  * Auth layout for public routes (login, signup).
@@ -17,6 +20,17 @@ export async function loader({ request, context }: Route.LoaderArgs) {
 
   const sessionContext = await getSession(request, context);
   if (sessionContext) {
+    if (sessionContext.createdSessionCookie) {
+      throw redirect(redirectTo, {
+        headers: {
+          'Set-Cookie': createSessionCookieHeader(
+            sessionContext.createdSessionCookie,
+            request,
+          ),
+        },
+      });
+    }
+
     // Session cookie is valid — check if full auth context can be built
     const authContext = await getAuthContext(request, context);
     if (authContext) {

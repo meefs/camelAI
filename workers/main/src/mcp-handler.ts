@@ -25,14 +25,13 @@ import { getProviderMcpDefinition } from '../../../src/lib/provider-mcp-registry
 import { normalizeRemoteMcpUrl, validateRemoteMcpConnection } from '../../../src/lib/remote-mcp';
 import { validateSandboxProxy } from './sandbox-auth';
 import {
-  getEnvPrefix,
   createOrRefreshCustomHostname,
   deleteCustomHostname,
   findCustomHostnameByHostname,
   getCustomHostnameStatus,
 } from './cf-api-proxy';
 import type { WorkerLogsDO } from './worker-logs-do';
-import { getPreferredAppUrl, isAppCustomDomainReady } from '../../../src/lib/app-url';
+import { getPreferredAppUrl, getVanityDomain as getAppVanityDomain, isAppCustomDomainReady } from '../../../src/lib/app-url';
 import {
   buildCustomDomainDnsCheck,
   getCustomHostnameDnsTarget,
@@ -65,6 +64,8 @@ export interface McpEnv {
   IMAGES?: ImagesBinding;
   NEXTJS_ENV?: string;
   WORKER_BASE_URL?: string;
+  LOCAL_APP_VANITY_DOMAIN?: string;
+  LOCAL_APP_IFRAME_DOMAIN?: string;
   WORKER_SELF_REFERENCE?: Fetcher;
 }
 
@@ -218,14 +219,11 @@ export class ChiridionMcp extends McpAgent<any, Record<string, unknown>, Record<
     const baseUrl = this.env.WORKER_BASE_URL;
     if (baseUrl) {
       try {
-        const hostname = new URL(baseUrl).hostname;
-        const envPrefix = getEnvPrefix(hostname);
-        if (envPrefix) return `${envPrefix}.camelai.app`;
-        // WORKER_BASE_URL is set but not a camelai.dev hostname (e.g. ngrok) → local dev
-        if (hostname !== 'camelai.dev' && !hostname.endsWith('.camelai.dev')) {
-          return 'local.camelai.app';
-        }
-        return 'camelai.app';
+        return getAppVanityDomain({
+          hostname: new URL(baseUrl).host,
+          vanityDomain: this.env.LOCAL_APP_VANITY_DOMAIN,
+          iframeDomain: this.env.LOCAL_APP_IFRAME_DOMAIN,
+        });
       } catch {
         return 'camelai.app';
       }
@@ -297,13 +295,17 @@ export class ChiridionMcp extends McpAgent<any, Record<string, unknown>, Record<
 
     if (this.env.WORKER_BASE_URL) {
       try {
-        appHostname = new URL(this.env.WORKER_BASE_URL).hostname;
+        appHostname = new URL(this.env.WORKER_BASE_URL).host;
       } catch {}
     }
 
     const orgSlug = await this.getOrgSlug();
     return getPreferredAppUrl(refreshedScript, {
-      hostname: appHostname,
+      hostname: {
+        hostname: appHostname,
+        vanityDomain: this.env.LOCAL_APP_VANITY_DOMAIN,
+        iframeDomain: this.env.LOCAL_APP_IFRAME_DOMAIN,
+      },
       orgSlug: orgSlug ?? undefined,
       orgCustomDomain: null,
     });

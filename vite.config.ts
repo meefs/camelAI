@@ -58,13 +58,20 @@ function withLocalDevVars(config: WorkerConfig): Partial<WorkerConfig> | void {
   const localAuthUserName = process.env.LOCAL_AUTH_USER_NAME;
   const workerBaseUrl = process.env.WORKER_BASE_URL;
   const sandboxProxySecret = process.env.SANDBOX_PROXY_SECRET;
+  const projectRuntimeServiceUrl = process.env.PROJECT_RUNTIME_SERVICE_URL;
+  const projectRuntimeDockerProxyBaseUrl =
+    process.env.PROJECT_RUNTIME_DOCKER_PROXY_BASE_URL;
+  const projectRuntimeProxySecret = process.env.PROJECT_RUNTIME_PROXY_SECRET;
 
   if (
     !localAuthBypass &&
     !localAuthUserEmail &&
     !localAuthUserName &&
     !workerBaseUrl &&
-    !sandboxProxySecret
+    !sandboxProxySecret &&
+    !projectRuntimeServiceUrl &&
+    !projectRuntimeDockerProxyBaseUrl &&
+    !projectRuntimeProxySecret
   ) {
     return;
   }
@@ -80,6 +87,15 @@ function withLocalDevVars(config: WorkerConfig): Partial<WorkerConfig> | void {
       ...(workerBaseUrl ? { WORKER_BASE_URL: workerBaseUrl } : {}),
       ...(sandboxProxySecret
         ? { SANDBOX_PROXY_SECRET: sandboxProxySecret }
+        : {}),
+      ...(projectRuntimeServiceUrl
+        ? { PROJECT_RUNTIME_SERVICE_URL: projectRuntimeServiceUrl }
+        : {}),
+      ...(projectRuntimeDockerProxyBaseUrl
+        ? { PROJECT_RUNTIME_DOCKER_PROXY_BASE_URL: projectRuntimeDockerProxyBaseUrl }
+        : {}),
+      ...(projectRuntimeProxySecret
+        ? { PROJECT_RUNTIME_PROXY_SECRET: projectRuntimeProxySecret }
         : {}),
     },
   };

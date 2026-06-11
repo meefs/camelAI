@@ -214,6 +214,44 @@ describe('ChatThreadDO Codex turn handling', () => {
     expect(sentCommands[0].content).toBe('[email message from Miguel (miguel@example.com)]: hello');
   });
 
+  it('publishes initial user message startup failures to chat clients', async () => {
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    const events: any[] = [];
+    const error = new Error('Self-host chat requires an AI provider.');
+
+    fake.chatContext = null;
+    fake.ctx = {
+      storage: { kv: { put: vi.fn(), delete: vi.fn() } },
+      waitUntil: vi.fn(),
+    };
+    fake.recordChatThreadObservabilityEvent = vi.fn();
+    fake.setActiveAutomationRun = vi.fn();
+    fake.pushChatEvent = vi.fn((event: any) => events.push(event));
+    fake.enqueueRunnerUserMessage = vi.fn(async () => {
+      throw error;
+    });
+
+    const result = await ChatThreadDO.prototype.startInitialUserMessage.call(fake, {
+      threadId: 'thread1',
+      workspaceId: 'workspace1',
+      orgId: 'org1',
+      userId: 'user1',
+      message: 'hello',
+      clientMessageId: 'initial:thread1',
+    });
+
+    expect(result).toEqual({
+      status: 'error',
+      error: 'Self-host chat requires an AI provider.',
+    });
+    expect(fake.pushChatEvent).toHaveBeenCalledTimes(1);
+    expect(events[0]).toMatchObject({
+      type: 'error',
+      error: 'Self-host chat requires an AI provider.',
+      status: 500,
+    });
+  });
+
   it('rejects automation starts while another automation run is active', async () => {
     const fake = Object.create(ChatThreadDO.prototype) as any;
     const activeAutomationRun = {
@@ -675,6 +713,48 @@ describe('ChatThreadDO Codex turn handling', () => {
     expect(model.billingSource).toBe('byok');
     expect(model.creditChargeable).toBe(false);
     expect(model.usageProvider).toBe('openrouter');
+    expect(fake.checkHostedPiModelAccess).not.toHaveBeenCalled();
+  });
+
+  it('uses self-host OpenRouter env credentials before org BYOK or hosted gateway', async () => {
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    fake.env = {
+      CF_ACCOUNT_ID: 'selfhost',
+      SELFHOST_AI_PROVIDER: 'openrouter',
+      SELFHOST_AI_API_KEY: 'sk-or-selfhost',
+    };
+    fake.resolveCurrentByokCredentials = vi.fn(async () => ({
+      provider: 'anthropic',
+      apiKey: 'sk-ant-org',
+    }));
+    fake.checkHostedPiModelAccess = vi.fn(async () => {
+      throw new Error('hosted billing should not be checked for self-host env provider');
+    });
+    fake.openRouterAttributionHeaders = ChatThreadDO.prototype['openRouterAttributionHeaders'];
+
+    const model = await ChatThreadDO.prototype['resolvePiModel'].call(
+      fake,
+      { provider: 'claude', orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1' },
+      { CHIRIDION_CLAUDE_MODEL: 'sonnet' },
+      vi.fn(() => ({
+        id: 'claude-sonnet-4-6',
+        provider: 'anthropic',
+        api: 'anthropic-messages',
+        baseUrl: 'https://api.anthropic.com',
+      })),
+    );
+
+    expect(model.model).toMatchObject({
+      id: 'anthropic/claude-sonnet-4.6:nitro',
+      provider: 'anthropic',
+      api: 'anthropic-messages',
+      baseUrl: 'https://openrouter.ai/api',
+    });
+    expect(model.apiKey).toBe('sk-or-selfhost');
+    expect(model.billingSource).toBe('byok');
+    expect(model.creditChargeable).toBe(false);
+    expect(model.usageProvider).toBe('openrouter');
+    expect(fake.resolveCurrentByokCredentials).not.toHaveBeenCalled();
     expect(fake.checkHostedPiModelAccess).not.toHaveBeenCalled();
   });
 

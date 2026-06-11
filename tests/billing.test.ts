@@ -1075,6 +1075,18 @@ describe("billing helpers", () => {
 
     expect(
       resolveOrgBillingAccess({
+        env: { CF_ACCOUNT_ID: "selfhost" },
+        org: {
+          billing_status: "inactive",
+          billing_plan: "free",
+          billing_credit_purchase_total_cents: 0,
+          billing_credit_grant_total_cents: 0,
+        } as Organization,
+      }),
+    ).toMatchObject({ kind: "ready", mode: "selfhost" });
+
+    expect(
+      resolveOrgBillingAccess({
         org: {
           billing_status: "inactive",
           billing_plan: "free",

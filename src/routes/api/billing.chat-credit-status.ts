@@ -7,6 +7,8 @@ import {
 } from "@/lib/chat-credit-status";
 import { getEnv } from "@/lib/cloudflare.server";
 import { isLlmModel } from "@/lib/llm-provider-config";
+import { getEffectiveLlmProviderConfig } from "@/lib/selfhost-ai-provider";
+import { isSelfhostRuntime } from "@/lib/selfhost-runtime";
 
 export async function loader({ request, context }: Route.LoaderArgs) {
   const authContext = await requireAuthContext(request, context);
@@ -16,6 +18,14 @@ export async function loader({ request, context }: Route.LoaderArgs) {
   const rawModel = url.searchParams.get("model");
   const model = isLlmModel(rawModel) ? rawModel : null;
   const orgId = authContext.currentOrg.id;
+
+  if (isSelfhostRuntime(env)) {
+    return {
+      ok: true,
+      billingCreditStatus: null,
+    };
+  }
+
   const orgStub = authEnv.ORG.get(authEnv.ORG.idFromName(orgId));
 
   try {
@@ -23,13 +33,17 @@ export async function loader({ request, context }: Route.LoaderArgs) {
       getOrgBillingOverview(env, authContext.currentOrg),
       orgStub.getLlmProviderConfig().catch(() => null),
     ]);
+    const effectiveLlmProviderConfig = getEffectiveLlmProviderConfig(
+      env,
+      llmProviderConfig,
+    );
 
     return {
       ok: true,
       billingCreditStatus: applyDevBillingCreditStatusOverride(
         buildBillingCreditStatus(
           overview,
-          llmProviderConfig?.provider,
+          effectiveLlmProviderConfig?.provider,
           model,
         ),
         url.searchParams,

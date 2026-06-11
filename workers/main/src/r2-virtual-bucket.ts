@@ -149,32 +149,37 @@ export class R2VirtualBucket extends WorkerEntrypoint<R2VirtualBucketEnv, R2Virt
     };
   }
 
-  private toObjectBody(obj: R2ObjectBody): VirtualR2ObjectBody {
+  private async toObjectBody(obj: R2ObjectBody): Promise<VirtualR2ObjectBody> {
     const metadata = this.toMetadata(obj);
-    const response = new Response(obj.body);
+    const body = await obj.arrayBuffer();
+    let bodyUsed = false;
+    const response = () => {
+      bodyUsed = true;
+      return new Response(body.slice(0));
+    };
 
     return {
       ...metadata,
       get body() {
-        return response.body as ReadableStream;
+        return new Response(body.slice(0)).body as ReadableStream;
       },
       get bodyUsed() {
-        return response.bodyUsed;
+        return bodyUsed;
       },
       arrayBuffer() {
-        return response.arrayBuffer();
+        return response().arrayBuffer();
       },
       async bytes() {
-        return new Uint8Array(await response.arrayBuffer());
+        return new Uint8Array(await response().arrayBuffer());
       },
       text() {
-        return response.text();
+        return response().text();
       },
       json<T>() {
-        return response.json() as Promise<T>;
+        return response().json() as Promise<T>;
       },
       blob() {
-        return response.blob();
+        return response().blob();
       },
     };
   }

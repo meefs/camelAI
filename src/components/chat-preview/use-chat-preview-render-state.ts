@@ -2,9 +2,9 @@ import { useMemo } from "react";
 import type { PreviewTarget, PreviewTab } from "@/types";
 import type { OpenElsewhereKind } from "@/components/preview-panel/preview-toolbar";
 import {
-  buildAppLabel,
-  getIframeDomain,
-  getVanityDomain,
+  type AppUrlInput,
+  getAppIframeUrl,
+  getAppUrl,
 } from "@/lib/app-url";
 import type { TabRenderState } from "./chat-preview-shell";
 
@@ -32,24 +32,19 @@ function buildFilePreviewRoute(target: Extract<PreviewTarget, { kind: "file" }>)
 
 function buildPreviewDomains(
   target: PreviewTarget | null,
-  hostname?: string,
+  hostname?: AppUrlInput,
   orgSlug?: string,
-) {
+): { appPreviewUrl: string; vanityHost: string } {
   if (target?.kind !== "app") {
-    return { iframeHost: "", vanityHost: "" };
+    return { appPreviewUrl: "", vanityHost: "" };
   }
 
   const scriptName = target.scriptName;
-  if (orgSlug) {
-    return {
-      iframeHost: `${buildAppLabel(scriptName, orgSlug)}.${getIframeDomain(hostname)}`,
-      vanityHost: `${buildAppLabel(scriptName, orgSlug)}.${getVanityDomain(hostname)}`,
-    };
-  }
-
+  const appPreviewUrl = getAppIframeUrl(scriptName, hostname, orgSlug);
+  const vanityUrl = getAppUrl(scriptName, hostname, orgSlug);
   return {
-    iframeHost: `${scriptName}.${getIframeDomain(hostname)}`,
-    vanityHost: `${scriptName}.${getVanityDomain(hostname)}`,
+    appPreviewUrl,
+    vanityHost: new URL(vanityUrl).host,
   };
 }
 
@@ -71,7 +66,7 @@ export function useChatPreviewRenderState({
   tabFilePreviewKeys: Record<string, number>;
   tabNotebookViewModes: Record<string, NotebookViewMode>;
   tabFileViewModes: Record<string, FileViewMode>;
-  hostname?: string;
+  hostname?: AppUrlInput;
   orgSlug?: string;
 }) {
   const tabRenderStates = useMemo((): TabRenderState[] => {
@@ -101,7 +96,7 @@ export function useChatPreviewRenderState({
         return {
           tabId,
           target,
-          appPreviewUrl: `https://${domains.iframeHost}`,
+          appPreviewUrl: domains.appPreviewUrl,
           vanityHost: domains.vanityHost,
           iframeKey: tabIframeKeys[tabId] ?? 0,
           isLoading: tabAppLoading[tabId] ?? false,

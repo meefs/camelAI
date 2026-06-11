@@ -33,10 +33,57 @@ export function buildAppLabel(scriptName: string, orgSlug: string): string {
   return `${scriptName}${separator}${orgSlug}`;
 }
 
+export interface AppUrlContext {
+  /**
+   * Host of the main app request. Production/staging Cloudflare domains are
+   * derived from this when explicit app domains are not configured.
+   */
+  hostname?: string;
+  /** Explicit cross-site app domain for self-host deployments. */
+  vanityDomain?: string | null;
+  /** Explicit iframe app domain for self-host deployments. */
+  iframeDomain?: string | null;
+}
+
+export type AppUrlInput = string | AppUrlContext | undefined;
+
 /**
  * Extract the environment prefix from a hostname.
  * Returns empty string for production, otherwise returns the env prefix (e.g., "staging", "dev-miguel", "local").
  */
+function normalizeHost(host?: string | null): string {
+  const fallback = typeof window !== 'undefined' ? window.location.host : 'camelai.dev';
+  const raw = (host ?? fallback).trim();
+  if (!raw) return 'camelai.dev';
+  try {
+    return new URL(raw.includes('://') ? raw : `https://${raw}`).host.toLowerCase();
+  } catch {
+    return raw.replace(/^https?:\/\//, '').replace(/\/.*$/, '').toLowerCase();
+  }
+}
+
+function getHostname(host?: string): string {
+  return normalizeHost(host).replace(/:\d+$/, '');
+}
+
+function getHostInput(input?: AppUrlInput): string | undefined {
+  return typeof input === 'string' ? input : input?.hostname;
+}
+
+function getConfiguredDomain(value?: string | null): string | null {
+  const trimmed = value?.trim();
+  if (!trimmed) return null;
+  return normalizeHost(trimmed);
+}
+
+function getConfiguredVanityDomain(input?: AppUrlInput): string | null {
+  return typeof input === 'string' ? null : getConfiguredDomain(input?.vanityDomain);
+}
+
+function getConfiguredIframeDomain(input?: AppUrlInput): string | null {
+  return typeof input === 'string' ? null : getConfiguredDomain(input?.iframeDomain);
+}
+
 function getEnvPrefix(hostname: string): string {
   // Handle camelai.dev domains (main app)
   // e.g., staging.camelai.dev -> staging
@@ -52,16 +99,6 @@ function getEnvPrefix(hostname: string): string {
     return parts[0];
   }
 
-  // Handle localhost - use "local" environment
-  if (
-    hostname === 'localhost' ||
-    hostname.startsWith('localhost:') ||
-    hostname.startsWith('127.0.0.1') ||
-    hostname.endsWith('.local')
-  ) {
-    return 'local';
-  }
-
   // Default to production
   return '';
 }
@@ -70,13 +107,23 @@ function getEnvPrefix(hostname: string): string {
  * Get the vanity URL domain for deployed apps (cross-site).
  * e.g., "camelai.app" for production, "staging.camelai.app" for staging
  */
-export function getVanityDomain(hostname?: string): string {
-  const host = hostname ?? (typeof window !== 'undefined' ? window.location.hostname : 'camelai.dev');
-  const envPrefix = getEnvPrefix(host);
+export function getVanityDomain(input?: AppUrlInput): string {
+  const configuredDomain = getConfiguredVanityDomain(input);
+  if (configuredDomain) {
+    return configuredDomain;
+  }
+
+  const host = normalizeHost(getHostInput(input));
+  const envPrefix = getEnvPrefix(getHostname(host));
 
   if (envPrefix) {
     return `${envPrefix}.camelai.app`;
   }
+
+  if (getHostname(host) !== 'camelai.dev' && !getHostname(host).endsWith('.camelai.dev')) {
+    return host;
+  }
+
   return 'camelai.app';
 }
 
@@ -84,9 +131,14 @@ export function getVanityDomain(hostname?: string): string {
  * Get the iframe URL domain for deployed apps (same-site).
  * e.g., "apps.camelai.dev" for production, "apps.staging.camelai.dev" for staging
  */
-export function getIframeDomain(hostname?: string): string {
-  const host = hostname ?? (typeof window !== 'undefined' ? window.location.hostname : 'camelai.dev');
-  const envPrefix = getEnvPrefix(host);
+export function getIframeDomain(input?: AppUrlInput): string {
+  const configuredDomain = getConfiguredIframeDomain(input);
+  if (configuredDomain) {
+    return configuredDomain;
+  }
+
+  const host = normalizeHost(getHostInput(input));
+  const envPrefix = getEnvPrefix(getHostname(host));
 
   if (envPrefix) {
     return `apps.${envPrefix}.camelai.dev`;
@@ -98,7 +150,7 @@ export function getIframeDomain(hostname?: string): string {
  * Get the full vanity URL for a deployed app with org slug.
  * New-style slugs use single hyphen, old-style use double hyphen.
  */
-export function getAppUrl(scriptName: string, hostname?: string, orgSlug?: string): string {
+export function getAppUrl(scriptName: string, hostname?: AppUrlInput, orgSlug?: string): string {
   const domain = getVanityDomain(hostname);
   if (orgSlug) {
     return `https://${buildAppLabel(scriptName, orgSlug)}.${domain}`;
@@ -137,7 +189,7 @@ export function isAppCustomDomainReady(
 export function getPreferredAppUrl(
   app: AppCustomDomainState,
   options: {
-    hostname?: string;
+    hostname?: AppUrlInput;
     orgSlug?: string;
     orgCustomDomain?: string | null;
   }
@@ -153,7 +205,7 @@ export function getPreferredAppUrl(
  * Get the full iframe URL for a deployed app (used for same-site embedding).
  * New-style slugs use single hyphen, old-style use double hyphen.
  */
-export function getAppIframeUrl(scriptName: string, hostname?: string, orgSlug?: string): string {
+export function getAppIframeUrl(scriptName: string, hostname?: AppUrlInput, orgSlug?: string): string {
   const domain = getIframeDomain(hostname);
   if (orgSlug) {
     return `https://${buildAppLabel(scriptName, orgSlug)}.${domain}`;

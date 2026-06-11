@@ -26,6 +26,8 @@ export interface AuthEnv {
   EMAIL_TO_USER: KVNamespace;
   APP_KV: KVNamespace;
   TOKEN_SIGNING_SECRET: string;
+  CF_ACCOUNT_ID?: string;
+  CF_DISPATCH_NAMESPACE?: string;
 }
 
 /**
@@ -41,6 +43,8 @@ export function getAuthEnv(env: CloudflareEnv): AuthEnv {
     EMAIL_TO_USER: env.EMAIL_TO_USER,
     APP_KV: env.APP_KV,
     TOKEN_SIGNING_SECRET: env.TOKEN_SIGNING_SECRET,
+    CF_ACCOUNT_ID: env.CF_ACCOUNT_ID,
+    CF_DISPATCH_NAMESPACE: env.CF_DISPATCH_NAMESPACE,
   };
 }
 

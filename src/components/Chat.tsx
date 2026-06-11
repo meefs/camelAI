@@ -118,9 +118,9 @@ import {
 } from "@/lib/runtime-message-state";
 import { parseMessageContent } from "@/lib/chat-message-content";
 import {
+  type AppUrlInput,
   getAppUrl,
-  getIframeDomain,
-  buildAppLabel,
+  getAppIframeUrl,
 } from "@/lib/app-url";
 import { uploadWorkspaceFile } from "@/lib/workspace-upload.client";
 import { isManualCompactCommand } from "@/lib/slash-commands";
@@ -224,7 +224,7 @@ interface ChatProps {
   initialActiveTabId?: string | null;
   isNewThread?: boolean;
   /** Hostname from server for consistent URL generation (avoids hydration mismatch) */
-  hostname?: string;
+  hostname?: AppUrlInput;
   /** Org slug for namespaced app URLs */
   orgSlug?: string;
   /** True when messages are still loading (deferred data) */
@@ -1407,7 +1407,7 @@ export default function Chat({
   const IFRAME_MAX_RETRIES = 3;
   const IFRAME_RETRY_DELAY_MS = 2000;
   useEffect(() => {
-    const iframeDomain = hostname ? getIframeDomain(hostname) : null;
+    const canMatchAppOrigin = Boolean(hostname);
 
     function handlePreviewError(event: MessageEvent) {
       if (
@@ -1421,14 +1421,14 @@ export default function Chat({
 
       // Match the message origin to an app tab
       const tabs = previewTabsRef.current;
-      const matchedTab = iframeDomain
+      const matchedTab = canMatchAppOrigin
         ? tabs.find((tab) => {
             if (tab.target.kind !== "app") return false;
             const s = tab.target.scriptName;
-            const host = orgSlug
-              ? `${buildAppLabel(s, orgSlug)}.${iframeDomain}`
-              : `${s}.${iframeDomain}`;
-            return event.origin === `https://${host}`;
+            const expectedOrigin = new URL(
+              getAppIframeUrl(s, hostname, orgSlug),
+            ).origin;
+            return event.origin === expectedOrigin;
           })
         : null;
       const tabId = matchedTab?.id ?? activeTabIdRef.current;

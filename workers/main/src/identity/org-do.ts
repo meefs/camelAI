@@ -128,7 +128,7 @@ export interface UserAuthBootstrap {
   sessionInvalidatedAt: number | null;
 }
 
-export type OAuthProvider = "google" | "github";
+export type OAuthProvider = "google" | "github" | "cloudflare_access";
 
 export interface UserOAuthProvider {
   provider: OAuthProvider;

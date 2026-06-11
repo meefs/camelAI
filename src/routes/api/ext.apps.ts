@@ -2,6 +2,7 @@ import type { Route } from './+types/ext.apps';
 import { getEnv } from '@/lib/cloudflare.server';
 import { requireBearerAuth } from '@/lib/ext-api.server';
 import { getPreferredAppUrl } from '@/lib/app-url';
+import { getAppUrlContext } from '@/lib/app-url.server';
 import { refreshWorkerScriptCustomDomainStates } from '@/lib/custom-domain.server';
 
 export async function loader({ request, context }: Route.LoaderArgs) {
@@ -10,7 +11,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
   if (auth instanceof Response) return auth;
 
   const orgStub = (env as any).ORG.get((env as any).ORG.idFromName(auth.org_id));
-  const hostname = new URL(request.url).hostname;
+  const hostname = getAppUrlContext(env, request);
   let scripts = await orgStub.listWorkerScriptsByWorkspace(auth.workspace_id);
 
   scripts = await refreshWorkerScriptCustomDomainStates(env as any, auth.org_id, scripts, null);

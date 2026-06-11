@@ -32,13 +32,13 @@ describe("project VM protocol proxy URLs", () => {
 
   it("builds Wrangler deploy proxy URLs from the runtime Docker proxy", () => {
     expect(projectRuntimeDeployProxyUrl(undefined)).toBe(
-      "http://host.docker.internal:8089/p/camelai-cloudflare-api/client/v4",
+      "http://host.docker.internal:8089/deploy/client/v4",
     );
     expect(projectRuntimeDeployProxyUrl("http://host.docker.internal:4411")).toBe(
-      "http://host.docker.internal:4411/p/camelai-cloudflare-api/client/v4",
+      "http://host.docker.internal:4411/deploy/client/v4",
     );
-    expect(projectRuntimeDeployProxyUrl("http://host.docker.internal:4411/p/camelai-cloudflare-api/client/v4")).toBe(
-      "http://host.docker.internal:4411/p/camelai-cloudflare-api/client/v4",
+    expect(projectRuntimeDeployProxyUrl("http://host.docker.internal:4411/deploy/client/v4")).toBe(
+      "http://host.docker.internal:4411/deploy/client/v4",
     );
   });
 

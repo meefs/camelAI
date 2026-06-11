@@ -37,6 +37,8 @@ import {
   normalizeSeatCount,
 } from "@/lib/billing-plans";
 import { getByokProviderLabel } from "@/lib/byok-providers";
+import { getEffectiveLlmProviderConfig } from "@/lib/selfhost-ai-provider";
+import { isSelfhostRuntime } from "@/lib/selfhost-runtime";
 import type { BillingPlan, Organization } from "@/types";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
@@ -162,6 +164,9 @@ export async function loader({ request, context }: Route.LoaderArgs) {
   const authContext = await requireAuthContext(request, context);
   await requireOrgAdmin(request, context, authContext.currentOrg.id);
   const env = getEnv(context);
+  if (isSelfhostRuntime(env)) {
+    throw redirect("/settings/organization/usage");
+  }
   const orgStub = env.ORG.get(env.ORG.idFromName(authContext.currentOrg.id));
 
   const stripeConfigured = isStripeBillingConfigured(env);
@@ -185,6 +190,10 @@ export async function loader({ request, context }: Route.LoaderArgs) {
         : Promise.resolve(null),
       orgStub.getLlmProviderConfig().catch(() => null),
     ]);
+  const effectiveLlmProviderConfig = getEffectiveLlmProviderConfig(
+    env,
+    llmProviderConfig,
+  );
 
   const invoiceRows: InvoiceRow[] = invoices.map((invoice) => ({
     id: invoice.id,
@@ -202,7 +211,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     paymentMethod,
     invoices: invoiceRows,
     subscription,
-    byokProviderLabel: getByokProviderLabel(llmProviderConfig?.provider),
+    byokProviderLabel: getByokProviderLabel(effectiveLlmProviderConfig?.provider),
     legacyMigration: await getVerifiedLegacyStripeMigrationEligibility({
       env,
       org: authContext.currentOrg,
@@ -215,6 +224,9 @@ export async function action({ request, context }: Route.ActionArgs) {
   const authContext = await requireAuthContext(request, context);
   await requireOrgAdmin(request, context, authContext.currentOrg.id);
   const env = getEnv(context);
+  if (isSelfhostRuntime(env)) {
+    return { error: "Billing is disabled in self-host mode." };
+  }
   const formData = await request.formData();
   const intent = String(formData.get("intent") || "");
   const orgStub = env.ORG.get(env.ORG.idFromName(authContext.currentOrg.id));

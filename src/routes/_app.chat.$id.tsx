@@ -16,6 +16,7 @@ import {
 import { createSessionCookieHeader } from "@/lib/cookies.server";
 import { integrationRecordToIntegration } from "@/lib/auth-helpers";
 import { getEnv } from "@/lib/cloudflare.server";
+import { getAppUrlContext } from "@/lib/app-url.server";
 import { getOrgBillingOverview } from "@/lib/billing.server";
 import {
   applyDevBillingCreditStatusOverride,
@@ -30,6 +31,8 @@ import {
   getVisibleLlmModelOptions,
   isLlmModel,
 } from "@/lib/llm-provider-config";
+import { getEffectiveLlmProviderConfig } from "@/lib/selfhost-ai-provider";
+import { isSelfhostRuntime } from "@/lib/selfhost-runtime";
 import { getOrg, getWorkerScript } from "@/lib/auth-do";
 import { switchSessionOrg, switchSessionWorkspace } from "@/lib/auth-do";
 import { getChatDebugFlags } from "@/lib/chat-debug-flags";
@@ -514,8 +517,8 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
   const isAdminReadonly = url.searchParams.get("adminReadonly") === "1";
   const isNewThread = url.searchParams.get("newThread") === "1";
   const useClientMessageCache = url.searchParams.get("chatCache") === "1";
-  const hostname = request.headers.get("host")?.split(":")[0] || undefined;
   const env = getEnv(context);
+  const hostname = getAppUrlContext(env, request);
   const authEnv = getAuthEnv(env);
   const traceContext = createChatThreadRouteLoaderTraceContext(request);
   const traceIds: ChatThreadRouteLoaderTraceIds = {
@@ -823,16 +826,19 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
   const orgStub = authEnv.ORG
     ? authEnv.ORG.get(authEnv.ORG.idFromName(orgId))
     : null;
+  const selfhostRuntime = isSelfhostRuntime(env);
   const orgMetadataPromise = orgStub
     ? Promise.all([
         orgStub
           .getExperimentalSettings()
           .catch(() => DEFAULT_ORG_EXPERIMENTAL_SETTINGS),
         orgStub.getLlmProviderConfig().catch(() => null),
-        getOrgBillingOverview(env, authContext.currentOrg).catch((error) => {
-          console.warn("Failed to load billing overview for chat:", error);
-          return null;
-        }),
+        selfhostRuntime
+          ? Promise.resolve(null)
+          : getOrgBillingOverview(env, authContext.currentOrg).catch((error) => {
+              console.warn("Failed to load billing overview for chat:", error);
+              return null;
+            }),
       ])
     : Promise.resolve([DEFAULT_ORG_EXPERIMENTAL_SETTINGS, null, null] as const);
   const threadPromise = chatDO.getThread(context, params.id, workspaceId);
@@ -866,11 +872,15 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
   if (!isNewThread && !thread) {
     throw redirect("/chat");
   }
-  const customApi = getStoredCustomLlmProviderApi(llmProviderConfig);
-  const customModelId = getStoredCustomLlmProviderModelId(llmProviderConfig);
+  const effectiveLlmProviderConfig = getEffectiveLlmProviderConfig(
+    env,
+    llmProviderConfig,
+  );
+  const customApi = getStoredCustomLlmProviderApi(effectiveLlmProviderConfig);
+  const customModelId = getStoredCustomLlmProviderModelId(effectiveLlmProviderConfig);
   const fallbackThreadModel =
     thread?.model ??
-    getDefaultLlmModel(llmProviderConfig?.provider, {
+    getDefaultLlmModel(effectiveLlmProviderConfig?.provider, {
       customApi,
       customModelId,
     });
@@ -878,7 +888,7 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
     experimentalSettings,
     fallbackThreadModel,
     {
-      orgProvider: llmProviderConfig?.provider,
+      orgProvider: effectiveLlmProviderConfig?.provider,
       customApi,
       customModelId,
     },
@@ -967,7 +977,7 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
     threadModel: resolvedThreadModel,
     llmProvider:
       pickerState?.llmProvider ??
-      ((llmProviderConfig?.provider ?? null) as
+      ((effectiveLlmProviderConfig?.provider ?? null) as
         | import("@/types").LlmProvider
         | null),
     customApi: pickerState?.customApi ?? customApi,
@@ -983,7 +993,7 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
     billingCreditStatus: applyDevBillingCreditStatusOverride(
       buildBillingCreditStatus(
         billingOverview,
-        llmProviderConfig?.provider,
+        effectiveLlmProviderConfig?.provider,
         resolvedThreadModel,
       ),
       url.searchParams,

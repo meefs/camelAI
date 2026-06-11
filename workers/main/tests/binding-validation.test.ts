@@ -87,15 +87,13 @@ describe('Worker Binding Validation', () => {
       expect(result.forbiddenBindings[0]?.reason).toContain('External Durable Object');
     });
 
-    it('blocks KV namespace bindings', () => {
+    it('allows KV namespace bindings (transformed to virtual KV at deploy time)', () => {
       const bindings: WorkerBinding[] = [
         { type: 'kv_namespace', name: 'MY_KV', namespace_id: 'some-id' },
       ];
       const result = validateBindings(bindings);
-      expect(result.valid).toBe(false);
-      expect(result.forbiddenBindings).toHaveLength(1);
-      expect(result.forbiddenBindings[0]?.name).toBe('MY_KV');
-      expect(result.forbiddenBindings[0]?.type).toBe('kv_namespace');
+      expect(result.valid).toBe(true);
+      expect(result.forbiddenBindings).toHaveLength(0);
     });
 
     it('blocks D1 database bindings', () => {
@@ -301,18 +299,17 @@ describe('Worker Binding Validation', () => {
       const bindings: WorkerBinding[] = [
         // Allowed
         { type: 'plain_text', name: 'ENV_VAR' },
+        { type: 'kv_namespace', name: 'KV1', namespace_id: 'id1' },
         { type: 'durable_object_namespace', name: 'LOCAL_DO', class_name: 'MyClass' },
         // Forbidden
-        { type: 'kv_namespace', name: 'KV1', namespace_id: 'id1' },
         { type: 'd1', name: 'DB1', database_id: 'id2' },
         { type: 'durable_object_namespace', name: 'EXTERNAL_DO', class_name: 'Class', script_name: 'other' },
       ];
       const result = validateBindings(bindings);
       expect(result.valid).toBe(false);
-      expect(result.forbiddenBindings).toHaveLength(3);
+      expect(result.forbiddenBindings).toHaveLength(2);
 
       const forbiddenNames = result.forbiddenBindings.map(b => b.name);
-      expect(forbiddenNames).toContain('KV1');
       expect(forbiddenNames).toContain('DB1');
       expect(forbiddenNames).toContain('EXTERNAL_DO');
     });
@@ -345,24 +342,40 @@ describe('Worker Binding Validation', () => {
   });
 
   describe('mapVirtualizedBindings', () => {
-    it('rewrites R2, DATA_PROXY, CONNECTIONS, and AI bindings to internal service entrypoints', () => {
+    it('rewrites KV, R2, assets, DATA_PROXY, CONNECTIONS, and AI bindings to internal service entrypoints', () => {
       const bindings: WorkerBinding[] = [
+        { type: 'kv_namespace', name: 'KV', namespace_id: 'messages' },
         { type: 'r2_bucket', name: 'FILES', bucket_name: 'workspace-files' },
+        { type: 'assets', name: 'ASSETS' },
         { type: 'service', name: 'DATA_PROXY', service: 'placeholder' },
         { type: 'service', name: 'CONNECTIONS', service: 'placeholder' },
         { type: 'ai', name: 'AI' },
         { type: 'plain_text', name: 'APP_ENV', text: 'prod' },
       ];
 
-      const transformed = mapVirtualizedBindings(bindings, 'ws_123', 'org_456', 'user_789', 'chiridion-app');
+      const transformed = mapVirtualizedBindings(bindings, 'ws_123', 'org_456', 'user_789', 'chiridion-app', 'demo--acme');
 
       expect(transformed).toEqual([
+        {
+          type: 'service',
+          name: 'KV',
+          service: 'chiridion-app',
+          entrypoint: 'KVVirtualNamespace',
+          props: { workspaceId: 'ws_123', appId: 'demo--acme', namespaceId: 'messages' },
+        },
         {
           type: 'service',
           name: 'FILES',
           service: 'chiridion-app',
           entrypoint: 'R2VirtualBucket',
           props: { workspaceId: 'ws_123', bucketName: 'workspace-files' },
+        },
+        {
+          type: 'service',
+          name: 'ASSETS',
+          service: 'chiridion-app',
+          entrypoint: 'AssetsVirtualBinding',
+          props: { appId: 'demo--acme' },
         },
         {
           type: 'service',
@@ -411,7 +424,7 @@ describe('Worker Binding Validation', () => {
         },
       ];
 
-      const transformed = mapVirtualizedBindings(bindings, 'ws_abc', 'org_xyz', undefined, 'chiridion-app');
+      const transformed = mapVirtualizedBindings(bindings, 'ws_abc', 'org_xyz', undefined, 'chiridion-app', 'demo--acme');
 
       expect(transformed).toEqual([
         {

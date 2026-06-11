@@ -11,6 +11,7 @@ import {
   chatBillingActionPayload,
   chatStartFailureStatus,
 } from '@/lib/chat-api-errors';
+import { getEffectiveLlmProviderConfig } from '@/lib/selfhost-ai-provider';
 import type { LlmModel } from '@/types';
 
 type OnboardingAccessChoice = 'byok' | 'existing' | null;
@@ -227,9 +228,13 @@ export async function action({ request, context }: Route.ActionArgs) {
     orgStub.getInfo(),
     orgStub.getLlmProviderConfig(),
   ]);
+  const effectiveLlmProviderConfig = getEffectiveLlmProviderConfig(
+    env,
+    llmProviderConfig,
+  );
   let onboardingModel: LlmModel | undefined;
 
-  if (accessChoice === 'byok' && !llmProviderConfig) {
+  if (accessChoice === 'byok' && !effectiveLlmProviderConfig) {
     return Response.json(
       { error: 'Add an API key before continuing with your own provider.' },
       { status: 400 },
@@ -237,8 +242,9 @@ export async function action({ request, context }: Route.ActionArgs) {
   }
 
   const billingAccess = resolveOrgBillingAccess({
+    env,
     org: orgInfo,
-    llmProviderConfig,
+    llmProviderConfig: effectiveLlmProviderConfig,
   });
 
   if (!isOrgBillingAccessReady(billingAccess)) {

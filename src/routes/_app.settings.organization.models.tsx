@@ -51,6 +51,7 @@ import {
   isLlmModel,
   type CustomLlmProviderApi,
 } from "@/lib/llm-provider-config";
+import { getEffectiveLlmProviderConfig } from "@/lib/selfhost-ai-provider";
 import { cn } from "@/lib/utils";
 import type {
   LlmModel,
@@ -203,11 +204,15 @@ export async function loader({ request, context }: Route.LoaderArgs) {
       .getExperimentalSettings()
       .catch(() => ({ claude_proxy_models: false })),
   ]);
+  const effectiveLlmProviderConfig = getEffectiveLlmProviderConfig(
+    env,
+    llmProviderConfig,
+  );
   const visibleModelIds = getVisibleModelIdsForSettings(
-    llmProviderConfig?.provider,
+    effectiveLlmProviderConfig?.provider,
     experimentalSettings,
-    getStoredCustomLlmProviderApi(llmProviderConfig),
-    getStoredCustomLlmProviderModelId(llmProviderConfig),
+    getStoredCustomLlmProviderApi(effectiveLlmProviderConfig),
+    getStoredCustomLlmProviderModelId(effectiveLlmProviderConfig),
   );
   const workspaceConfigs = await loadWorkspaceConfigs(authEnv, workspaces);
   const selectedWorkspace =
@@ -269,11 +274,15 @@ async function loadActionTarget(args: {
       .getExperimentalSettings()
       .catch(() => ({ claude_proxy_models: false })),
   ]);
+  const effectiveLlmProviderConfig = getEffectiveLlmProviderConfig(
+    env,
+    llmProviderConfig,
+  );
   const visibleModelIds = getVisibleModelIdsForSettings(
-    llmProviderConfig?.provider,
+    effectiveLlmProviderConfig?.provider,
     experimentalSettings,
-    getStoredCustomLlmProviderApi(llmProviderConfig),
-    getStoredCustomLlmProviderModelId(llmProviderConfig),
+    getStoredCustomLlmProviderApi(effectiveLlmProviderConfig),
+    getStoredCustomLlmProviderModelId(effectiveLlmProviderConfig),
   );
 
   if (scope === "org") {

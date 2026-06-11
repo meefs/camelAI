@@ -10,7 +10,7 @@ import {
 } from '@/hooks/use-auth-actions';
 import type { WorkspaceWithAccess, WorkerScriptWithCreator } from '@/types';
 import { APP_BUILD_ID } from '@/lib/app-build-id';
-import { getPreferredAppUrl } from '@/lib/app-url';
+import { type AppUrlInput, getPreferredAppUrl } from '@/lib/app-url';
 import { buildAppThreadFallbackTitle } from '@/lib/thread-title';
 import { PageHeader } from '@/components/page-header';
 import { AppCard } from './AppCard';
@@ -25,7 +25,7 @@ interface AppsClientProps {
   initialApps: WorkerScriptWithCreator[];
   orgId: string;
   orgSlug: string;
-  hostname?: string;
+  hostname?: AppUrlInput;
   initialNow: number;
   orgCustomDomain?: string | null;
 }
