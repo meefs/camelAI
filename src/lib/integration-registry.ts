@@ -504,6 +504,26 @@ export const INTEGRATION_REGISTRY: Record<string, IntegrationDefinition> = {
     ],
   },
 
+  resend: {
+    type: 'resend',
+    displayName: 'Resend',
+    description: 'Send transactional emails with Resend',
+    category: 'communication',
+    authMethod: 'api_key',
+    configSchema: [],
+    credentialSchema: [
+      {
+        name: 'api_key',
+        label: 'API Key',
+        type: 'password',
+        required: true,
+        placeholder: 're_...',
+        description:
+          'Create in Resend API Keys. Sending Access is enough for sending email; Full Access may be required when app code calls read/admin endpoints.',
+      },
+    ],
+  },
+
   twilio: {
     type: 'twilio',
     displayName: 'Twilio',

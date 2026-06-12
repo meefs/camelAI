@@ -19,6 +19,7 @@ export const logoRegistry: Record<string, IntegrationLogoVariant> = {
   openai: 'themed',
   openrouter: 'themed',
   remote_mcp: 'themed',
+  resend: 'themed',
   typeform: 'themed',
   x: 'themed',
   // Single (works for both themes)

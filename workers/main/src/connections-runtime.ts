@@ -208,6 +208,25 @@ export interface ConnectionSmokeTestResult {
 
 const NATIVE_MCP_SERVERS = PROVIDER_MCP_REGISTRY;
 const OTHER_CONNECTION_FETCH_TOOL = 'authenticated_fetch';
+type NativeHttpApiConnection = {
+  displayName: string;
+  baseUrl: string;
+  credentialKeys: string[];
+  authHeader: 'bearer';
+  defaultHeaders?: Record<string, string>;
+};
+const NATIVE_HTTP_API_CONNECTIONS: Record<string, NativeHttpApiConnection> = {
+  resend: {
+    displayName: 'Resend',
+    baseUrl: 'https://api.resend.com',
+    credentialKeys: ['api_key'],
+    authHeader: 'bearer',
+    defaultHeaders: {
+      accept: 'application/json',
+      'user-agent': 'camelai-resend-connection/1.0',
+    },
+  },
+};
 const SLACK_CHANNEL_SEND_CAPABILITY = 'channel_send';
 const SLACK_API_CAPABILITY = 'slack_api';
 const SLACK_SEND_TOOL = 'send_slack_message';
@@ -392,7 +411,7 @@ const OTHER_CONNECTION_FETCH_METHOD: ConnectionMethodSummary = {
   name: 'fetch',
   tool: OTHER_CONNECTION_FETCH_TOOL,
   description:
-    'Fetch from this custom API connection like fetch(input, init). Relative URLs are resolved against the connection base_url and camelAI applies the stored auth settings.',
+    'Fetch from this authenticated HTTP connection like fetch(input, init). Relative URLs are resolved against the connection API base URL and camelAI applies the stored auth settings.',
   example: 'await connections.<alias>.fetch("/v1/items", { method: "GET" })',
   inputSchema: {
     type: 'object',
@@ -400,7 +419,7 @@ const OTHER_CONNECTION_FETCH_METHOD: ConnectionMethodSummary = {
       input: {
         type: 'string',
         description:
-          'Fetch input: a relative URL such as "/v1/items" or an absolute http(s) URL. Relative URLs are resolved against the connection base_url.',
+          'Fetch input: a relative URL such as "/v1/items" or an absolute http(s) URL allowed by the connection.',
       },
       init: {
         type: 'object',
@@ -861,8 +880,17 @@ function addNormalizedMethodAliases(
   return output;
 }
 
-function otherConnectionMethods(connection: ConnectionSummary): ConnectionMethodSummary[] {
-  if (connection.type !== 'other' || !connection.capabilities.includes('authenticated_fetch')) {
+function supportsAuthenticatedFetchConnection(connection: ConnectionSummary): boolean {
+  return connection.type === 'other' || Boolean(NATIVE_HTTP_API_CONNECTIONS[connection.type]);
+}
+
+function authenticatedFetchMethods(connection: ConnectionSummary): ConnectionMethodSummary[] {
+  if (
+    !supportsAuthenticatedFetchConnection(connection)
+  ) {
+    return [];
+  }
+  if (connection.type === 'other' && !connection.capabilities.includes('authenticated_fetch')) {
     return [];
   }
   return [OTHER_CONNECTION_FETCH_METHOD];
@@ -1035,7 +1063,7 @@ export async function listConnectionMethods(
         connection,
         [
           ...virtualChannelMethods(connection),
-          ...otherConnectionMethods(connection),
+          ...authenticatedFetchMethods(connection),
         ]
       ));
       return entry;
@@ -1199,8 +1227,11 @@ export async function invokeConnectionMethod(
     ? request.input as Record<string, unknown>
     : {};
 
-  if (target.connection.type === 'other' && targetMethod.tool === OTHER_CONNECTION_FETCH_TOOL) {
-    return callOtherConnectionFetch(env, context, target.connection.id, request.input);
+  if (
+    targetMethod.tool === OTHER_CONNECTION_FETCH_TOOL &&
+    supportsAuthenticatedFetchConnection(target.connection)
+  ) {
+    return callAuthenticatedConnectionFetch(env, context, target.connection.id, request.input);
   }
   if (target.connection.type === 'slack' && targetMethod.tool === SLACK_SEND_TOOL) {
     throw Object.assign(
@@ -1225,7 +1256,7 @@ export async function invokeConnectionMethod(
   return callConnectionTool(env, context, target.connection.id, targetMethod.tool, input);
 }
 
-async function callOtherConnectionFetch(
+async function callAuthenticatedConnectionFetch(
   env: ConnectionsRuntimeEnv,
   context: ConnectionsContext,
   connection: string,
@@ -1240,21 +1271,28 @@ async function callOtherConnectionFetch(
     });
   }
   const record = resolved.record;
-  if (record.integration_type !== 'other') {
-    throw Object.assign(new Error(`Connection "${record.name}" is not a custom API connection.`), { status: 400 });
+  const nativeProvider = NATIVE_HTTP_API_CONNECTIONS[record.integration_type];
+  if (record.integration_type !== 'other' && !nativeProvider) {
+    throw Object.assign(new Error(`Connection "${record.name}" does not support authenticated fetch.`), { status: 400 });
   }
 
   const config = parseJsonObject(record.config);
-  const baseUrl = requireConfiguredUrl(config.base_url, 'base_url');
+  const baseUrl = nativeProvider
+    ? requireNativeProviderUrl(nativeProvider)
+    : requireConfiguredUrl(config.base_url, 'base_url');
   const request = normalizeOtherFetchInput(input);
-  const requestUrl = resolveOtherFetchUrl(baseUrl, request.input);
+  const requestUrl = resolveOtherFetchUrl(baseUrl, request.input, nativeProvider);
 
   const credentials = record.credentials_encrypted
     ? await decryptCredentials<Record<string, unknown>>(record.credentials_encrypted, env.INTEGRATION_SECRET_KEY)
     : {};
   const method = otherFetchMethod(request.init.method);
   const headers = otherFetchHeaders(request.init.headers);
-  applyOtherAuth(headers, config, credentials);
+  if (nativeProvider) {
+    await applyNativeHttpAuth(env, context, record, nativeProvider, headers, credentials);
+  } else {
+    applyOtherAuth(headers, config, credentials);
+  }
 
   const init: RequestInit = { method, headers };
   if (method !== 'GET' && method !== 'HEAD' && Object.prototype.hasOwnProperty.call(request.init, 'body')) {
@@ -1460,6 +1498,14 @@ function requireConfiguredUrl(value: unknown, field: string): URL {
   return url;
 }
 
+function requireNativeProviderUrl(provider: NativeHttpApiConnection): URL {
+  try {
+    return new URL(provider.baseUrl);
+  } catch {
+    throw Object.assign(new Error(`${provider.displayName} API base URL is invalid.`), { status: 500 });
+  }
+}
+
 function normalizeOtherFetchInput(input: unknown): { input: string; init: Record<string, unknown> } {
   if (typeof input === 'string') {
     return { input, init: {} };
@@ -1484,7 +1530,7 @@ function normalizeOtherFetchInput(input: unknown): { input: string; init: Record
   return { input: record.input, init };
 }
 
-function resolveOtherFetchUrl(baseUrl: URL, input: unknown): URL {
+function resolveOtherFetchUrl(baseUrl: URL, input: unknown, nativeProvider?: NativeHttpApiConnection): URL {
   if (typeof input !== 'string' || !input.trim()) {
     throw Object.assign(new Error('fetch input is required'), { status: 400 });
   }
@@ -1502,12 +1548,19 @@ function resolveOtherFetchUrl(baseUrl: URL, input: unknown): URL {
     throw Object.assign(new Error('fetch input must be a relative path or valid URL.'), { status: 400 });
   }
   if (requestUrl.protocol !== 'https:' && requestUrl.protocol !== 'http:') {
-    throw Object.assign(new Error('Custom API fetch input must use http or https.'), { status: 400 });
+    const label = nativeProvider ? nativeProvider.displayName : 'Custom API';
+    throw Object.assign(new Error(`${label} fetch input must use http or https.`), { status: 400 });
   }
   // TODO: Restrict custom API fetches to trusted domains from the connection
   // configuration once existing plaintext-env usage has fully migrated.
   if (requestUrl.username || requestUrl.password) {
     throw Object.assign(new Error('fetch input must not include embedded credentials.'), { status: 400 });
+  }
+  if (nativeProvider && requestUrl.origin !== baseUrl.origin) {
+    throw Object.assign(
+      new Error(`${nativeProvider.displayName} fetch input must resolve to ${baseUrl.origin}.`),
+      { status: 400 }
+    );
   }
   return requestUrl;
 }
@@ -1545,6 +1598,33 @@ function credentialString(credentials: Record<string, unknown>, ...keys: string[
     if (typeof value === 'string' && value.length > 0) return value;
   }
   return null;
+}
+
+async function applyNativeHttpAuth(
+  env: ConnectionsRuntimeEnv,
+  context: ConnectionsContext,
+  record: WorkspaceIntegrationRecord,
+  provider: NativeHttpApiConnection,
+  headers: Headers,
+  credentials: Record<string, unknown>
+): Promise<void> {
+  const token = credentialString(credentials, ...provider.credentialKeys)?.trim();
+  if (!token) {
+    const message = `${provider.displayName} connection "${record.name}" requires ${provider.credentialKeys[0]}.`;
+    const code = 'AUTH_SETUP_INCOMPLETE';
+    await markConnectionAuthStatus(env, context, record, 'setup_incomplete', code, message);
+    throw connectionAuthError(record, context, 'setup_incomplete', code, message, 400);
+  }
+
+  for (const [key, value] of Object.entries(provider.defaultHeaders ?? {})) {
+    headers.set(key, value);
+  }
+
+  switch (provider.authHeader) {
+    case 'bearer':
+      headers.set('authorization', `Bearer ${token}`);
+      return;
+  }
 }
 
 function applyOtherAuth(headers: Headers, config: Record<string, unknown>, credentials: Record<string, unknown>): void {

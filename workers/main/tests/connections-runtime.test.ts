@@ -463,6 +463,81 @@ describe('connections runtime', () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
+  it('does not intercept remote MCP tools named authenticated_fetch as native HTTP fetch', async () => {
+    const methods: string[] = [];
+    const fetchMock = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      expect(String(url)).toBe('https://mcp.example.com/mcp');
+      expect(init?.method).toBe('POST');
+      const headers = new Headers(init?.headers);
+      const body = JSON.parse(String(init?.body));
+      methods.push(body.method);
+
+      if (body.method === 'initialize') {
+        return new Response(JSON.stringify({
+          jsonrpc: '2.0',
+          id: body.id,
+          result: {
+            protocolVersion: '2025-06-18',
+            capabilities: { tools: {} },
+            serverInfo: { name: 'colliding-tools' },
+          },
+        }), {
+          headers: { 'mcp-session-id': `session-${methods.length}` },
+        });
+      }
+
+      expect(headers.get('mcp-session-id')).toMatch(/^session-/);
+      if (body.method === 'tools/list') {
+        return new Response(JSON.stringify({
+          jsonrpc: '2.0',
+          id: body.id,
+          result: {
+            tools: [
+              {
+                name: 'authenticated_fetch',
+                description: 'A real MCP tool that happens to share camelAI fetch tool naming.',
+              },
+            ],
+          },
+        }));
+      }
+
+      expect(body.method).toBe('tools/call');
+      expect(body.params).toEqual({
+        name: 'authenticated_fetch',
+        arguments: { input: '/from-mcp' },
+      });
+      return new Response(JSON.stringify({
+        jsonrpc: '2.0',
+        id: body.id,
+        result: { content: [{ text: 'proxied through MCP' }] },
+      }));
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const records = [
+      integration({
+        id: 'remote_mcp_bridge',
+        integration_type: 'remote_mcp',
+        name: 'bridge',
+        category: 'saas',
+        config: JSON.stringify({
+          server_url: 'https://mcp.example.com/mcp',
+          auth_type: 'none',
+        }),
+      }),
+    ];
+
+    await expect(invokeConnectionMethod(envWith(records), context, {
+      connection: 'remoteMcpBridge',
+      method: 'authenticatedFetch',
+      input: { input: '/from-mcp' },
+    })).resolves.toEqual({
+      content: [{ text: 'proxied through MCP' }],
+    });
+    expect(methods).toEqual(['initialize', 'tools/list', 'initialize', 'tools/call']);
+  });
+
   it('times out stalled remote MCP HTTP calls', async () => {
     vi.useFakeTimers();
     const fetchMock = vi.fn((_url: string | URL | Request, init?: RequestInit) => (
@@ -680,6 +755,38 @@ describe('connections runtime', () => {
     ]);
   });
 
+  it('lists a fetch method for native Resend connections', async () => {
+    const records = [
+      integration({
+        id: 'resend_txn',
+        integration_type: 'resend',
+        name: 'txn',
+        category: 'communication',
+        credentials_encrypted: await encryptedCredentials({ api_key: 're_test' }),
+      }),
+    ];
+
+    await expect(listConnectionMethods(envWith(records), context)).resolves.toMatchObject([
+      {
+        alias: 'resendTxn',
+        connection: {
+          id: 'resend_txn',
+          type: 'resend',
+          name: 'txn',
+          capabilities: ['authenticated_fetch'],
+          nativeMcp: null,
+        },
+        methods: [
+          {
+            name: 'fetch',
+            tool: 'authenticated_fetch',
+            example: 'await connections.resendTxn.fetch("/v1/items", { method: "GET" })',
+          },
+        ],
+      },
+    ]);
+  });
+
   it('lists Telegram as a virtual channel action instead of raw authenticated fetch', async () => {
     const records = [
       integration({
@@ -756,6 +863,106 @@ describe('connections runtime', () => {
     );
   });
 
+  it('invokes native Resend fetch methods with server-side auth and User-Agent', async () => {
+    const fetchMock = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      expect(String(url)).toBe('https://api.resend.com/emails');
+      expect(init?.method).toBe('POST');
+      const headers = new Headers(init?.headers);
+      expect(headers.get('authorization')).toBe('Bearer re_test');
+      expect(headers.get('user-agent')).toBe('camelai-resend-connection/1.0');
+      expect(headers.get('accept')).toBe('application/json');
+      expect(headers.get('content-type')).toBe('application/json');
+      expect(headers.get('host')).toBeNull();
+      expect(JSON.parse(String(init?.body))).toEqual({
+        from: 'Acme <onboarding@example.com>',
+        to: ['customer@example.com'],
+        subject: 'Welcome',
+        html: '<p>Hello</p>',
+      });
+      return new Response(JSON.stringify({ id: 'email_123' }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const records = [
+      integration({
+        id: 'resend_txn',
+        integration_type: 'resend',
+        name: 'txn',
+        category: 'communication',
+        credentials_encrypted: await encryptedCredentials({ api_key: 're_test' }),
+      }),
+    ];
+
+    await expect(invokeConnectionMethod(envWith(records), context, {
+      connection: 'resendTxn',
+      method: 'fetch',
+      input: {
+        input: '/emails',
+        init: {
+          method: 'POST',
+          headers: {
+            authorization: 'Bearer caller-token',
+            'content-type': 'application/json',
+            host: 'evil.example',
+            'user-agent': 'caller-agent',
+          },
+          body: JSON.stringify({
+            from: 'Acme <onboarding@example.com>',
+            to: ['customer@example.com'],
+            subject: 'Welcome',
+            html: '<p>Hello</p>',
+          }),
+        },
+      },
+    })).resolves.toMatchObject({
+      status: 200,
+      bodyText: JSON.stringify({ id: 'email_123' }),
+      truncated: false,
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('marks native Resend fetch setup incomplete when the API key is missing', async () => {
+    const updates: Array<{ id: string; status: string; code: string | null; message: string | null }> = [];
+    const records = [
+      integration({
+        id: 'resend_txn',
+        integration_type: 'resend',
+        name: 'txn',
+        category: 'communication',
+        credentials_encrypted: await encryptedCredentials({}),
+      }),
+    ];
+
+    await expect(invokeConnectionMethod(
+      envWith(records, (id, status, code, message) => updates.push({ id, status, code, message })),
+      context,
+      {
+        connection: 'resendTxn',
+        method: 'fetch',
+        input: { input: '/emails' },
+      }
+    )).rejects.toMatchObject({
+      message: 'Resend connection "txn" requires api_key.',
+      status: 400,
+      code: 'AUTH_SETUP_INCOMPLETE',
+      data: {
+        authStatus: 'setup_incomplete',
+        reauthUrl: '/connections?connection=resend_txn&reauth=1',
+      },
+    });
+    expect(updates).toMatchObject([
+      {
+        id: 'resend_txn',
+        status: 'setup_incomplete',
+        code: 'AUTH_SETUP_INCOMPLETE',
+        message: 'Resend connection "txn" requires api_key.',
+      },
+    ]);
+  });
+
   it('invokes custom API fetch methods with stored auth', async () => {
     const fetchMock = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
       expect(String(url)).toBe('https://api.example.com/v1/items?limit=2&tag=a&tag=b');
@@ -800,6 +1007,65 @@ describe('connections runtime', () => {
       status: 201,
       bodyText: JSON.stringify({ items: [{ id: 1 }] }),
       truncated: false,
+    });
+  });
+
+  it('allows native Resend fetches to absolute URLs on the Resend API origin', async () => {
+    const fetchMock = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      expect(String(url)).toBe('https://api.resend.com/domains');
+      expect(init?.method).toBe('GET');
+      expect(new Headers(init?.headers).get('authorization')).toBe('Bearer re_test');
+      return new Response('restricted_api_key', {
+        status: 403,
+        statusText: 'Forbidden',
+      });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const records = [
+      integration({
+        id: 'resend_txn',
+        integration_type: 'resend',
+        name: 'txn',
+        category: 'communication',
+        credentials_encrypted: await encryptedCredentials({ api_key: 're_test' }),
+      }),
+    ];
+
+    await expect(invokeConnectionMethod(envWith(records), context, {
+      connection: 'resendTxn',
+      method: 'fetch',
+      input: {
+        input: 'https://api.resend.com/domains',
+      },
+    })).resolves.toMatchObject({
+      status: 403,
+      statusText: 'Forbidden',
+      bodyText: 'restricted_api_key',
+      truncated: false,
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects native Resend fetches to non-Resend origins', async () => {
+    const records = [
+      integration({
+        id: 'resend_txn',
+        integration_type: 'resend',
+        name: 'txn',
+        category: 'communication',
+        credentials_encrypted: await encryptedCredentials({ api_key: 're_test' }),
+      }),
+    ];
+
+    await expect(invokeConnectionMethod(envWith(records), context, {
+      connection: 'resendTxn',
+      method: 'fetch',
+      input: {
+        input: 'https://api.example.com/emails',
+      },
+    })).rejects.toMatchObject({
+      message: 'Resend fetch input must resolve to https://api.resend.com.',
+      status: 400,
     });
   });
 

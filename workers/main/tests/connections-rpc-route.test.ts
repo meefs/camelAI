@@ -154,6 +154,14 @@ describe('connections RPC route', () => {
   it('lists connection methods through the stateless RPC endpoint', async () => {
     const records = [
       integration({ id: 'pg_main', integration_type: 'postgres', name: 'main' }),
+      integration({
+        id: 'resend_txn',
+        integration_type: 'resend',
+        name: 'txn',
+        category: 'communication',
+        auth_method: 'api_key',
+        config: '{}',
+      }),
     ];
     const req = rpcRequest({ action: 'methods' });
 
@@ -165,12 +173,20 @@ describe('connections RPC route', () => {
       match: [] as unknown as RegExpMatchArray,
     });
 
-    const body = await response.json() as { result?: Array<{ alias: string; methods: Array<{ name: string }> }> };
+    const body = await response.json() as {
+      result?: Array<{ alias: string; methods: Array<{ name: string; tool?: string }> }>;
+    };
     expect(response.status).toBe(200);
     expect(body.result).toMatchObject([
       {
         alias: 'postgresMain',
         methods: expect.arrayContaining([expect.objectContaining({ name: 'query' })]),
+      },
+      {
+        alias: 'resendTxn',
+        methods: expect.arrayContaining([
+          expect.objectContaining({ name: 'fetch', tool: 'authenticated_fetch' }),
+        ]),
       },
     ]);
   });
