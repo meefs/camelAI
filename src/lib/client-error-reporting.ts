@@ -3,6 +3,17 @@ type ClientErrorSource =
   | 'unhandled_rejection'
   | 'react_error_boundary';
 
+export type ClientEventSource =
+  | 'chat_runner'
+  | 'chat_websocket'
+  | 'chat_new_thread';
+
+export type ClientTelemetrySeverity =
+  | 'debug'
+  | 'info'
+  | 'warn'
+  | 'error';
+
 type ClientErrorInput = {
   source: ClientErrorSource;
   error: unknown;
@@ -10,7 +21,26 @@ type ClientErrorInput = {
   statusCode?: number;
 };
 
+type ClientEventInput = {
+  source: ClientEventSource;
+  event: string;
+  message?: string;
+  details?: unknown;
+  routeId?: string;
+  severity?: ClientTelemetrySeverity;
+  status?: string;
+  statusCode?: number;
+  threadId?: string | null;
+  workspaceId?: string | null;
+  orgId?: string | null;
+  userId?: string | null;
+  durationMs?: number;
+  count?: number;
+  error?: unknown;
+};
+
 type SerializedClientError = {
+  kind: 'error';
   source: ClientErrorSource;
   name: string;
   message: string;
@@ -24,13 +54,47 @@ type SerializedClientError = {
   timestamp: number;
 };
 
+type SerializedClientEvent = {
+  kind: 'event';
+  source: ClientEventSource;
+  event: string;
+  severity: ClientTelemetrySeverity;
+  status?: string;
+  name: string;
+  message: string;
+  stack?: string;
+  details?: string;
+  path: string;
+  url: string;
+  routeId?: string;
+  statusCode?: number;
+  threadId?: string;
+  workspaceId?: string;
+  orgId?: string;
+  userId?: string;
+  durationMs?: number;
+  count?: number;
+  userAgent: string;
+  viewport: string;
+  timestamp: number;
+};
+
 const CLIENT_ERROR_ENDPOINT = '/api/client-errors';
-const MAX_REPORTS_PER_PAGE = 10;
-const MAX_REPORTS_PER_SIGNATURE = 2;
+const MAX_REPORTS_PER_PAGE = {
+  error: 10,
+  event: 40,
+} as const;
+const MAX_REPORTS_PER_SIGNATURE = {
+  error: 2,
+  event: 5,
+} as const;
 const AUTO_RELOAD_DELAY_MS = 250;
 
 let initialized = false;
-let reportCount = 0;
+const reportCounts: Record<'error' | 'event', number> = {
+  error: 0,
+  event: 0,
+};
 const signatureCounts = new Map<string, number>();
 
 export function initClientErrorReporting(): void {
@@ -87,22 +151,36 @@ export function scheduleClientErrorReload(input: {
 }
 
 export function reportClientError(input: ClientErrorInput): void {
-  if (typeof window === 'undefined' || typeof navigator === 'undefined') return;
-  if (reportCount >= MAX_REPORTS_PER_PAGE) return;
+  reportClientTelemetry(serializeClientError(input));
+}
 
-  const payload = serializeClientError(input);
+export function reportClientEvent(input: ClientEventInput): void {
+  reportClientTelemetry(serializeClientEvent(input));
+}
+
+function reportClientTelemetry(
+  payload: SerializedClientError | SerializedClientEvent,
+): void {
+  if (typeof window === 'undefined' || typeof navigator === 'undefined') return;
+  const kind = payload.kind;
+  const maxReportsForKind = MAX_REPORTS_PER_PAGE[kind];
+  const maxReportsPerSignature = MAX_REPORTS_PER_SIGNATURE[kind];
+  if (reportCounts[kind] >= maxReportsForKind) return;
+
   const signature = [
+    payload.kind,
     payload.source,
+    payload.kind === 'event' ? payload.event : 'client_error',
     payload.name,
     payload.message,
     payload.stack?.split('\n', 1)[0] ?? '',
     payload.path,
   ].join('|');
   const signatureCount = signatureCounts.get(signature) ?? 0;
-  if (signatureCount >= MAX_REPORTS_PER_SIGNATURE) return;
+  if (signatureCount >= maxReportsPerSignature) return;
 
   signatureCounts.set(signature, signatureCount + 1);
-  reportCount += 1;
+  reportCounts[kind] += 1;
 
   const body = JSON.stringify(payload);
   const blob = new Blob([body], { type: 'application/json' });
@@ -127,6 +205,7 @@ function serializeClientError(input: ClientErrorInput): SerializedClientError {
   const details = errorDetails(input.error);
   const path = sanitizePath(window.location.pathname);
   return {
+    kind: 'error',
     source: input.source,
     name: limit(details.name, 128),
     message: limit(details.message, 2048),
@@ -135,6 +214,41 @@ function serializeClientError(input: ClientErrorInput): SerializedClientError {
     url: `${window.location.origin}${path}`,
     routeId: input.routeId ? limit(input.routeId, 256) : undefined,
     statusCode: input.statusCode,
+    userAgent: limit(navigator.userAgent, 512),
+    viewport: `${window.innerWidth}x${window.innerHeight}`,
+    timestamp: Date.now(),
+  };
+}
+
+function serializeClientEvent(input: ClientEventInput): SerializedClientEvent {
+  const details = errorDetails(input.error);
+  const path = sanitizePath(window.location.pathname);
+  return {
+    kind: 'event',
+    source: input.source,
+    event: limit(input.event, 128),
+    severity: input.severity ?? 'info',
+    status: input.status ? limit(input.status, 128) : undefined,
+    name: limit(details.name, 128),
+    message: limit(input.message ?? details.message ?? input.event, 2048),
+    stack: details.stack ? limit(redactStack(details.stack), 4096) : undefined,
+    details: input.details === undefined ? undefined : limit(redactStack(stringifyUnknown(input.details)), 4096),
+    path,
+    url: `${window.location.origin}${path}`,
+    routeId: input.routeId ? limit(input.routeId, 256) : undefined,
+    statusCode: input.statusCode,
+    threadId: input.threadId ? limit(input.threadId, 128) : undefined,
+    workspaceId: input.workspaceId ? limit(input.workspaceId, 128) : undefined,
+    orgId: input.orgId ? limit(input.orgId, 128) : undefined,
+    userId: input.userId ? limit(input.userId, 128) : undefined,
+    durationMs:
+      typeof input.durationMs === 'number' && Number.isFinite(input.durationMs)
+        ? input.durationMs
+        : undefined,
+    count:
+      typeof input.count === 'number' && Number.isFinite(input.count)
+        ? input.count
+        : undefined,
     userAgent: limit(navigator.userAgent, 512),
     viewport: `${window.innerWidth}x${window.innerHeight}`,
     timestamp: Date.now(),

@@ -7,6 +7,11 @@ import type { SessionData } from "../session-kv.js";
 import type { WorkspaceDO } from "../workspace.js";
 import type { OrgDO, UserDO } from "../auth.js";
 import { getSignedSessionFromRequest } from "../cookies.js";
+import {
+  normalizePathForObservability,
+  recordErrorEvent,
+  recordObservabilityEvent,
+} from "../observability.js";
 import { text } from "./response.js";
 import { getWorkspaceStub, getOrgStub } from "./stubs.js";
 import { isOrgBanned, isUserBanned } from "../ban-list.js";
@@ -253,14 +258,62 @@ export async function requireChatWebSocketAccess(
   env: Env,
   threadId: string,
 ): Promise<ChatWebSocketAccessResult> {
+  const requestId = req.headers.get("cf-ray") ?? crypto.randomUUID();
+  const path = normalizePathForObservability(new URL(req.url).pathname);
+  const recordDenied = (
+    status: string,
+    statusCode: number,
+    details: {
+      orgId?: string | null;
+      workspaceId?: string | null;
+      userId?: string | null;
+      errorMessage?: string | null;
+    } = {},
+  ) => {
+    recordObservabilityEvent(env, {
+      event: "chat_ws_access_denied",
+      severity: statusCode >= 500 ? "error" : statusCode >= 400 ? "warn" : "info",
+      component: "auth",
+      operation: "requireChatWebSocketAccess",
+      status,
+      method: req.method,
+      path,
+      threadId,
+      workspaceId: details.workspaceId ?? null,
+      orgId: details.orgId ?? null,
+      userId: details.userId ?? null,
+      requestId,
+      statusCode,
+      errorMessage: details.errorMessage ?? null,
+      sampleIndex: threadId,
+    });
+  };
   const auth = await requireSession(req, env);
-  if ("error" in auth) return auth;
+  if ("error" in auth) {
+    const statusCode = auth.error.status || 401;
+    recordDenied(
+      statusCode === 401
+        ? "unauthorized"
+        : statusCode === 403
+          ? "forbidden"
+          : "auth_error",
+      statusCode,
+      { errorMessage: auth.error.statusText || null },
+    );
+    return auth;
+  }
 
   const { session } = auth;
   const { org_id: orgId, workspace_id: workspaceId, user_id: userId } = session;
 
-  if (!orgId) return { error: text("No organization selected", 400) };
-  if (!workspaceId) return { error: text("No workspace selected", 400) };
+  if (!orgId) {
+    recordDenied("missing_org", 400, { userId });
+    return { error: text("No organization selected", 400) };
+  }
+  if (!workspaceId) {
+    recordDenied("missing_workspace", 400, { orgId, userId });
+    return { error: text("No workspace selected", 400) };
+  }
 
   try {
     const wsStub = getWorkspaceStub(env, workspaceId);
@@ -271,13 +324,31 @@ export async function requireChatWebSocketAccess(
     ]);
 
     if (!wsInfo || wsInfo.archived) {
+      recordDenied("workspace_not_found", 404, { orgId, workspaceId, userId });
       return { error: text("Workspace not found", 404) };
     }
     if (wsInfo.org_id !== orgId) {
+      recordDenied("workspace_org_mismatch", 403, { orgId, workspaceId, userId });
       return { error: text("Forbidden", 403) };
     }
 
     if (!orgValidation.ok) {
+      const status =
+        orgValidation.reason === "org_not_found"
+          ? "org_not_found"
+          : orgValidation.reason === "thread_not_found"
+            ? "thread_not_found"
+            : "forbidden";
+      const statusCode =
+        orgValidation.reason === "org_not_found" ||
+        orgValidation.reason === "thread_not_found"
+          ? 404
+          : 403;
+      recordDenied(status, statusCode, {
+        orgId,
+        workspaceId,
+        userId,
+      });
       switch (orgValidation.reason) {
         case "org_not_found":
           return { error: text("Workspace not found", 404) };
@@ -290,6 +361,7 @@ export async function requireChatWebSocketAccess(
     }
 
     if ((memberAccess?.access_level ?? "full") !== "full") {
+      recordDenied("member_access_forbidden", 403, { orgId, workspaceId, userId });
       return { error: text("Forbidden", 403) };
     }
 
@@ -302,7 +374,22 @@ export async function requireChatWebSocketAccess(
       wsStub,
       threadId: orgValidation.threadId,
     };
-  } catch {
+  } catch (error) {
+    recordErrorEvent(env, {
+      event: "chat_ws_access_failed",
+      component: "auth",
+      operation: "requireChatWebSocketAccess",
+      status: "exception",
+      method: req.method,
+      path,
+      threadId,
+      workspaceId,
+      orgId,
+      userId,
+      requestId,
+      sampleIndex: threadId,
+      error,
+    });
     return { error: text("Forbidden", 403) };
   }
 }

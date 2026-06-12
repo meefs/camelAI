@@ -165,6 +165,7 @@ import {
   appendUserUploadReferences,
   isUserUploadMountPath,
 } from "@/lib/chat-attachment-refs";
+import { reportClientEvent } from "@/lib/client-error-reporting";
 
 export { ChatErrorNotice } from "@/components/chat-error-notice";
 export { BillingCreditNotice } from "@/components/chat-billing-credit-notice";
@@ -175,6 +176,7 @@ const CHAT_PING_MESSAGE = JSON.stringify({ type: "ping" });
 const MESSAGE_ACCEPTANCE_TIMEOUT_MS = 8_000;
 const CHAT_WS_RECONNECT_ATTEMPTS_BEFORE_BACKOFF = 5;
 const CHAT_WS_BACKGROUND_RETRY_MS = 30_000;
+const NEW_THREAD_BOOTSTRAP_STALL_TIMEOUT_MS = 10_000;
 
 function getThreadRunningState(
   groups: readonly ChatGroupView[] | undefined,
@@ -649,6 +651,8 @@ export default function Chat({
     useState<BillingCreditStatus | null>(() => billingCreditStatus ?? null);
   const [pendingMessages, setPendingMessagesState] = useState<Message[]>([]);
   const [currentTodos, setCurrentTodos] = useState<TodoItem[]>(initialTodos);
+  const newThreadBootstrapLoggedRef = useRef<string | null>(null);
+  const newThreadBootstrapRecoveredRef = useRef<string | null>(null);
 
   useEffect(() => {
     if (!threadId || readOnly) return;
@@ -1202,6 +1206,24 @@ export default function Chat({
       return;
     }
 
+    if (import.meta.env.MODE !== "test") {
+      reportClientEvent({
+        source: "chat_new_thread",
+        event: "new_thread_submit_failed",
+        severity: "error",
+        status: "action_error",
+        message: newChatActionError,
+        routeId: "chat",
+        threadId: threadId ?? null,
+        workspaceId: resolvedWorkspaceId ?? null,
+        details: {
+          restoredInputLength: pendingSubmission.text.length,
+          restoredAttachmentCount: pendingSubmission.attachments.length,
+          readOnly,
+        },
+      });
+    }
+
     if (
       isComposerVisiblyEmpty(welcomeInputRef.current, attachmentsRef.current)
     ) {
@@ -1214,7 +1236,12 @@ export default function Chat({
       pendingSubmission.text,
       pendingSubmission.attachments,
     );
-  }, [newChatActionError, readOnly, resolvedWorkspaceId, threadId]);
+  }, [
+    newChatActionError,
+    readOnly,
+    resolvedWorkspaceId,
+    threadId,
+  ]);
 
   const [previewTabs, setPreviewTabs] = useState<PreviewTab[]>(
     () => initialPreviewSession.tabs,
@@ -1842,6 +1869,133 @@ export default function Chat({
     [ready, resolvedWorkspaceId, threadId],
   );
 
+  const reportChatClientEvent = useCallback(
+    (
+      event: string,
+      {
+        source = event.startsWith("ws_") ? "chat_websocket" : "chat_runner",
+        severity = "info",
+        status,
+        message,
+        details = {},
+        statusCode,
+        durationMs,
+        count,
+        error,
+      }: {
+        source?: "chat_runner" | "chat_websocket" | "chat_new_thread";
+        severity?: "debug" | "info" | "warn" | "error";
+        status?: string;
+        message?: string;
+        details?: Record<string, unknown>;
+        statusCode?: number;
+        durationMs?: number;
+        count?: number;
+        error?: unknown;
+      } = {},
+    ) => {
+      if (import.meta.env.MODE === "test") return;
+      reportClientEvent({
+        source,
+        event,
+        severity,
+        status,
+        message,
+        routeId: "chat",
+        threadId: threadId ?? null,
+        workspaceId: resolvedWorkspaceId ?? null,
+        details: {
+          clientBuildId: APP_BUILD_ID,
+          ready,
+          wsReadyState: wsRef.current?.readyState ?? null,
+          reconnectAttempts: reconnectAttempts.current,
+          pendingMessages: pendingMessagesRef.current.length,
+          loading,
+          isNewThread,
+          ...details,
+        },
+        statusCode,
+        durationMs,
+        count,
+        error,
+      });
+    },
+    [isNewThread, loading, ready, resolvedWorkspaceId, threadId],
+  );
+
+  useEffect(() => {
+    if (!threadId || readOnly || !isNewThread) {
+      return;
+    }
+    if (newThreadBootstrapLoggedRef.current === threadId) {
+      return;
+    }
+    newThreadBootstrapLoggedRef.current = threadId;
+    reportChatClientEvent("new_thread_bootstrap_loaded", {
+      source: "chat_new_thread",
+      status: deferredInitialMessage?.trim() ? "deferred_initial_message" : "loaded",
+      message: "Mounted the new-thread chat route after createThreadAndStart.",
+      details: {
+        deferredInitialMessageLength: deferredInitialMessage?.length ?? 0,
+        initialMessageCount: parsedInitialMessages.length,
+        hasOptimisticInitialMessage: Boolean(optimisticInitialMessage),
+      },
+    });
+  }, [
+    deferredInitialMessage,
+    isNewThread,
+    optimisticInitialMessage,
+    parsedInitialMessages.length,
+    readOnly,
+    reportChatClientEvent,
+    threadId,
+  ]);
+
+  useEffect(() => {
+    if (
+      !threadId ||
+      readOnly ||
+      !isNewThread ||
+      !deferredInitialMessage?.trim() ||
+      ready
+    ) {
+      return;
+    }
+
+    const timeout = window.setTimeout(() => {
+      if (ready || newThreadBootstrapRecoveredRef.current === threadId) {
+        return;
+      }
+      newThreadBootstrapRecoveredRef.current = threadId;
+      reportChatClientEvent("new_thread_bootstrap_stalled", {
+        source: "chat_new_thread",
+        severity: "warn",
+        status: "waiting_for_realtime",
+        message:
+          "New-thread bootstrap is still waiting for realtime delivery after the route loaded.",
+        details: {
+          deferredInitialMessageLength: deferredInitialMessage.length,
+          initialMessageCount: parsedInitialMessages.length,
+          visibleMessageCount: messagesRef.current.length,
+        },
+      });
+      revalidator.revalidate();
+    }, NEW_THREAD_BOOTSTRAP_STALL_TIMEOUT_MS);
+
+    return () => {
+      window.clearTimeout(timeout);
+    };
+  }, [
+    deferredInitialMessage,
+    isNewThread,
+    parsedInitialMessages.length,
+    readOnly,
+    ready,
+    reportChatClientEvent,
+    revalidator,
+    threadId,
+  ]);
+
   const clearQueuedSendReadyTimeout = useCallback(() => {
     if (queuedSendReadyTimeoutRef.current) {
       clearTimeout(queuedSendReadyTimeoutRef.current);
@@ -1915,6 +2069,15 @@ export default function Chat({
         message,
         failedMessages: failedMessages.length,
       });
+      reportChatClientEvent("pending_delivery_failed", {
+        severity: "warn",
+        status: "failed",
+        message,
+        details: {
+          failedMessages: failedMessages.length,
+          failedMessageIds: failedMessages.map((msg) => msg.id).slice(0, 5),
+        },
+      });
       clearAllPendingMessageAcceptanceTimeouts();
       const failedIds = new Set(failedMessages.map((msg) => msg.id));
       const failedDeliveryKeys = new Set(
@@ -1950,6 +2113,7 @@ export default function Chat({
       clearQueuedSendReadyTimeout,
       getUnacceptedPendingUserMessages,
       logRunnerClient,
+      reportChatClientEvent,
       restorePendingDeliveryDraft,
       showChatError,
       setMessages,
@@ -1976,6 +2140,14 @@ export default function Chat({
         }
 
         logRunnerClient("message_acceptance_timeout", { clientMessageId });
+        reportChatClientEvent("message_acceptance_timeout", {
+          severity: "warn",
+          status: "timeout",
+          message: "Timed out waiting for ChatThreadDO to accept a pending message.",
+          details: {
+            clientMessageId,
+          },
+        });
         failPendingMessageDelivery(
           "The message did not reach the server. I restored it as a draft so you can try again.",
         );
@@ -1987,6 +2159,7 @@ export default function Chat({
       failPendingMessageDelivery,
       isPendingMessageAccepted,
       logRunnerClient,
+      reportChatClientEvent,
     ],
   );
 
@@ -2567,7 +2740,19 @@ export default function Chat({
       const workspaceIdForConnection = resolvedWorkspaceId;
       // One browser WebSocket connects to ChatThreadDO for agent streaming,
       // replay, preview state, prompts, and other realtime chat state.
-      const wsUrl = `${protocol}//${wsHost}/ws/${workspaceIdForConnection}?threadId=${encodeURIComponent(id)}`;
+      const wsUrl = `${protocol}//${wsHost}/ws/${workspaceIdForConnection}?threadId=${encodeURIComponent(id)}&clientBuildId=${encodeURIComponent(APP_BUILD_ID)}`;
+      reportChatClientEvent("ws_connect_started", {
+        source: "chat_websocket",
+        status: isReconnect ? "reconnect" : "connect",
+        message: "Opening chat websocket.",
+        details: {
+          connectionId: thisConnectionId,
+          isReconnect,
+          lastEventId: lastEventIdRef.current,
+          hasSessionId: Boolean(sessionIdRef.current),
+          wsUrl,
+        },
+      });
       const ws = new WebSocket(wsUrl);
       wsRef.current = ws;
 
@@ -2579,6 +2764,21 @@ export default function Chat({
         logRunnerClient("ws_open", {
           connectionId: thisConnectionId,
           isReconnect,
+        });
+        reportChatClientEvent("ws_open", {
+          source: "chat_websocket",
+          status: isReconnect ? "reconnected" : "open",
+          message: "Chat websocket opened.",
+          details: {
+            connectionId: thisConnectionId,
+            isReconnect,
+            openLatencyMs:
+              Date.now() -
+              (connectionStartedAtRef.current.get(thisConnectionId) ?? Date.now()),
+          },
+          durationMs:
+            Date.now() -
+            (connectionStartedAtRef.current.get(thisConnectionId) ?? Date.now()),
         });
         reconnectAttempts.current = 0;
 
@@ -2624,6 +2824,25 @@ export default function Chat({
           logRunnerClient("runner_ready", {
             queuedMessages: pendingMessagesRef.current.length,
           });
+        reportChatClientEvent("runner_ready", {
+          source: "chat_runner",
+          status: "ready",
+          message: "Chat runner reported ready over websocket.",
+            details: {
+              queuedMessages: pendingMessagesRef.current.length,
+            },
+          });
+          if (newThreadBootstrapRecoveredRef.current === id) {
+            reportChatClientEvent("new_thread_bootstrap_recovered", {
+              source: "chat_new_thread",
+              status: "realtime_ready",
+              message:
+                "New-thread bootstrap recovered after waiting for realtime delivery.",
+              details: {
+                recoveryConnectionId: thisConnectionId,
+              },
+            });
+          }
           setReady(true);
 
           const queuedMessages = pendingMessagesRef.current.filter((message) => {
@@ -3285,6 +3504,19 @@ export default function Chat({
         } else if (data.type === "error") {
           flushDeferredMessagesRender();
           console.error("WebSocket error:", data.error);
+          reportChatClientEvent("server_error_frame", {
+            source: "chat_websocket",
+            severity: "error",
+            status: "server_error",
+            message: "Chat websocket delivered an error payload.",
+            details: {
+              error: data.error,
+              status: data.status,
+              errorType: data.errorType,
+              billingSource: data.billingSource,
+              provider: data.provider,
+            },
+          });
           const billingSource =
             data.billingSource === "byok" || data.billingSource === "hosted"
               ? data.billingSource
@@ -3371,6 +3603,23 @@ export default function Chat({
           reason: event.reason || "closed",
           reconnectAttempts: reconnectAttempts.current,
         });
+        reportChatClientEvent("ws_closed", {
+          source: "chat_websocket",
+          severity: reconnectAttempts.current <
+            CHAT_WS_RECONNECT_ATTEMPTS_BEFORE_BACKOFF
+            ? "warn"
+            : "error",
+          status: "closed",
+          message: "Chat websocket closed.",
+          details: {
+            connectionId: thisConnectionId,
+            code: event.code || 1000,
+            reason: event.reason || "closed",
+            reconnectAttempts: reconnectAttempts.current,
+            wasReady: ready,
+            pendingUnacceptedMessages: getUnacceptedPendingUserMessages().length,
+          },
+        });
 
         // Auto-reconnect with exponential backoff, then keep trying quietly in
         // the background so an idle disconnect does not become a permanent tab
@@ -3427,6 +3676,16 @@ export default function Chat({
         if (connectionIdRef.current !== thisConnectionId) {
           return;
         }
+        reportChatClientEvent("ws_error", {
+          source: "chat_websocket",
+          severity: "warn",
+          status: "error",
+          message: "Browser reported a websocket error event.",
+          details: {
+            connectionId: thisConnectionId,
+            readyState: ws.readyState,
+          },
+        });
       };
     },
     [
@@ -3443,6 +3702,7 @@ export default function Chat({
       resolvedWorkspaceId,
       restorePendingDeliveryDraft,
       flushDeferredMessagesRender,
+      reportChatClientEvent,
       setMessages,
       setMessagesDeferred,
       setPendingMessages,
@@ -4454,6 +4714,18 @@ export default function Chat({
       createThreadPayload.firstMessage = finalContent;
     }
 
+    reportChatClientEvent("new_thread_submit_started", {
+      source: "chat_new_thread",
+      status: "submitting",
+      message: "Submitting new-thread creation request with initial message.",
+      details: {
+        model: selectedThreadModel,
+        groupId: chatGroupId,
+        contentLength: finalContent.length,
+        attachmentCount: currentAttachments.length,
+      },
+    });
+
     submit(createThreadPayload, {
       method: "post",
       action: "/chat",
@@ -4745,6 +5017,16 @@ type SendOptions = {
           if (unsentMessages.length > 0 && threadId) {
             logRunnerClient("queued_ready_timeout_reconnect", {
               queuedMessages: unsentMessages.length,
+            });
+            reportChatClientEvent("queued_ready_timeout_reconnect", {
+              source: "chat_runner",
+              severity: "warn",
+              status: "waiting_for_ready",
+              message:
+                "Queued messages were still waiting for a ready event, forcing websocket reconnect.",
+              details: {
+                queuedMessages: unsentMessages.length,
+              },
             });
             reconnectAttempts.current = 0;
             connectWebSocketRef.current?.(threadId, true);

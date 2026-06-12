@@ -3,20 +3,32 @@ import { getSession } from '@/lib/auth.server';
 import { getEnv } from '@/lib/cloudflare.server';
 import {
   normalizePathForObservability,
+  recordObservabilityEvent,
   recordErrorEvent,
 } from '../../../workers/main/src/observability';
 
 const MAX_CLIENT_ERROR_BODY_BYTES = 16 * 1024;
 
 type ClientErrorPayload = {
+  kind?: unknown;
   source?: unknown;
+  event?: unknown;
+  severity?: unknown;
+  status?: unknown;
   name?: unknown;
   message?: unknown;
   stack?: unknown;
+  details?: unknown;
   path?: unknown;
   url?: unknown;
   routeId?: unknown;
   statusCode?: unknown;
+  threadId?: unknown;
+  workspaceId?: unknown;
+  orgId?: unknown;
+  userId?: unknown;
+  durationMs?: unknown;
+  count?: unknown;
   userAgent?: unknown;
   viewport?: unknown;
   timestamp?: unknown;
@@ -48,55 +60,104 @@ export async function action({ request, context }: ActionFunctionArgs) {
 
   const env = getEnv(context);
   const session = await getSession(request, context).catch(() => null);
+  if (!session?.session) {
+    return new Response(null, { status: 204 });
+  }
+
+  const sessionIdentity = session.session;
+  const kind = safeKind(payload.kind);
   const path = normalizeClientPath(payload, request);
   const source = safeString(payload.source, 64) || 'client_error';
+  const event = safeString(payload.event, 128) || (kind === 'event' ? 'client_event' : 'client_error');
+  const severity = safeSeverity(payload.severity) ?? (kind === 'event' ? 'info' : 'error');
+  const status = safeString(payload.status, 128) || undefined;
   const name = safeString(payload.name, 128) || 'Error';
-  const message = safeString(payload.message, 2048) || 'Unknown client error';
+  const message =
+    safeString(payload.message, 2048) ||
+    (kind === 'event' ? event : 'Unknown client error');
   const stack = redactStack(safeString(payload.stack, 4096));
+  const details = redactStack(safeJson(payload.details, 4096));
   const routeId = safeString(payload.routeId, 256);
   const statusCode = safeStatusCode(payload.statusCode);
+  const threadId = safeString(payload.threadId, 128);
+  const workspaceId = sessionIdentity.workspace_id;
+  const orgId = sessionIdentity.org_id;
+  const userId = sessionIdentity.user_id;
+  const durationMs = safeNumber(payload.durationMs);
+  const count = safeNumber(payload.count);
   const timestamp = safeTimestamp(payload.timestamp);
   const userAgent = safeString(payload.userAgent, 512);
   const viewport = safeString(payload.viewport, 64);
 
   const fingerprint = createErrorFingerprint({
-    source,
+    source: kind === 'event' ? `${source}:${event}` : source,
     name,
     message,
     path,
-    stack,
+    stack: [stack, details].filter(Boolean).join('\n'),
   });
-  const stackWithContext = [
+  const contextDetails = [
     stack,
+    details ? `Details: ${details}` : '',
     `Fingerprint: ${fingerprint}`,
     userAgent ? `User agent: ${userAgent}` : '',
     viewport ? `Viewport: ${viewport}` : '',
   ]
     .filter(Boolean)
     .join('\n\n');
+  const requestId = request.headers.get('cf-ray') ?? crypto.randomUUID();
 
-  const error = Object.assign(new Error(message), {
-    name,
-    stack: stackWithContext || undefined,
-  });
+  if (kind === 'event') {
+    recordObservabilityEvent(env, {
+      event,
+      severity,
+      component: 'browser',
+      operation: source,
+      status: status || routeId || 'event',
+      route: routeId,
+      method: request.method,
+      path,
+      threadId: threadId || null,
+      workspaceId: workspaceId || null,
+      orgId: orgId || null,
+      userId: userId || null,
+      requestId,
+      errorName: name,
+      errorMessage: message,
+      errorStack: contextDetails || null,
+      durationMs,
+      statusCode,
+      count,
+      timestamp,
+      sampleIndex: fingerprint,
+    });
+  } else {
+    const error = Object.assign(new Error(message), {
+      name,
+      stack: contextDetails || undefined,
+    });
 
-  recordErrorEvent(env, {
-    event: 'client_error',
-    component: 'browser',
-    operation: source,
-    status: routeId || 'error',
-    route: routeId,
-    method: request.method,
-    path,
-    userId: session?.session.user_id,
-    orgId: session?.session.org_id,
-    workspaceId: session?.session.workspace_id,
-    requestId: request.headers.get('cf-ray') ?? crypto.randomUUID(),
-    statusCode,
-    timestamp,
-    sampleIndex: fingerprint,
-    error,
-  });
+    recordErrorEvent(env, {
+      event: 'client_error',
+      component: 'browser',
+      operation: source,
+      status: status || routeId || 'error',
+      route: routeId,
+      method: request.method,
+      path,
+      threadId: threadId || undefined,
+      userId: userId || undefined,
+      orgId: orgId || undefined,
+      workspaceId: workspaceId || undefined,
+      requestId,
+      statusCode,
+      durationMs,
+      count,
+      timestamp,
+      sampleIndex: fingerprint,
+      error,
+    });
+  }
 
   return new Response(null, { status: 204 });
 }
@@ -243,6 +304,43 @@ function safeStatusCode(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isFinite(value)
     ? Math.trunc(value)
     : undefined;
+}
+
+function safeKind(value: unknown): 'error' | 'event' {
+  return value === 'event' ? 'event' : 'error';
+}
+
+function safeSeverity(
+  value: unknown,
+): 'debug' | 'info' | 'warn' | 'error' | undefined {
+  return value === 'debug' ||
+    value === 'info' ||
+    value === 'warn' ||
+    value === 'error'
+    ? value
+    : undefined;
+}
+
+function safeJson(value: unknown, maxLength: number): string {
+  if (value === undefined || value === null) return '';
+  let normalized = '';
+  if (typeof value === 'string') {
+    normalized = value;
+  } else {
+    try {
+      normalized = JSON.stringify(value);
+    } catch {
+      normalized = String(value);
+    }
+  }
+  normalized = normalized.replace(/\0/g, '').trim();
+  return normalized.length > maxLength
+    ? normalized.slice(0, maxLength)
+    : normalized;
+}
+
+function safeNumber(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
 }
 
 function safeTimestamp(value: unknown): number {

@@ -87,6 +87,68 @@ describe('POST /api/client-errors', () => {
     expect(errorPoint.indexes[0]).toMatch(/^client:[0-9a-f]{8}$/);
   });
 
+  it('records client chat lifecycle events in observability without error analytics', async () => {
+    const response = await action({
+      request: makeRequest({
+        kind: 'event',
+        source: 'chat_websocket',
+        event: 'ws_closed',
+        severity: 'warn',
+        status: 'closed',
+        message: 'Chat websocket closed.',
+        threadId: 'thread_123',
+        workspaceId: 'workspace_client',
+        details: {
+          code: 1006,
+          reason: 'closed',
+          reconnectAttempts: 5,
+        },
+        path: '/chat/018f64b8-0f6a-4b0f-9e70-8a5d9c0d4f5b',
+        routeId: 'chat',
+        timestamp: Date.now(),
+      }),
+      context: {},
+      params: {},
+    } as never);
+
+    expect(response.status).toBe(204);
+    expect(observabilityWrite).toHaveBeenCalledTimes(1);
+    expect(errorWrite).not.toHaveBeenCalled();
+
+    const eventPoint = observabilityWrite.mock.calls[0][0];
+    expect(eventPoint.blobs[0]).toBe('ws_closed');
+    expect(eventPoint.blobs[1]).toBe('warn');
+    expect(eventPoint.blobs[2]).toBe('browser');
+    expect(eventPoint.blobs[3]).toBe('chat_websocket');
+    expect(eventPoint.blobs[4]).toBe('closed');
+    expect(eventPoint.blobs[7]).toBe('/chat/:uuid');
+    expect(eventPoint.blobs[8]).toBe('thread_123');
+    expect(eventPoint.blobs[9]).toBe('workspace_123');
+    expect(eventPoint.blobs[10]).toBe('org_123');
+    expect(eventPoint.blobs[11]).toBe('user_123');
+    expect(eventPoint.blobs[16]).toBe('Chat websocket closed.');
+    expect(eventPoint.blobs[17]).toContain('Details: {"code":1006,"reason":"closed","reconnectAttempts":5}');
+  });
+
+  it('drops unauthenticated telemetry without recording analytics', async () => {
+    getSessionMock.mockResolvedValue(null);
+
+    const response = await action({
+      request: makeRequest({
+        kind: 'event',
+        source: 'chat_websocket',
+        event: 'ws_closed',
+        threadId: 'thread_123',
+      }),
+      context: {},
+      params: {},
+    } as never);
+
+    expect(response.status).toBe(204);
+    expect(observabilityWrite).not.toHaveBeenCalled();
+    expect(errorWrite).not.toHaveBeenCalled();
+  });
+
   it('rejects invalid JSON payloads', async () => {
     const response = await action({
       request: makeRequest('{not-json'),
