@@ -27,7 +27,7 @@
 		"test:selfhost:workerd-config": "bun run build:cf && node scripts/test-selfhost-workerd-config.mjs",
 		"test:selfhost:wfp-facets": "node scripts/selfhost-wfp-facets-smoke.mjs",
 		"test:selfhost:worker-bundle": "node scripts/selfhost-worker-bundle-smoke.mjs",
-		"lint": "eslint .",
+		"lint": "eslint . --cache --cache-location node_modules/.cache/eslint/",
 		"typecheck": "react-router typegen && tsc",
 		"deploy:main:prod": "node scripts/deploy-main.mjs prod",
 		"deploy:main:staging": "node scripts/deploy-main.mjs staging",
