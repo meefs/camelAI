@@ -170,6 +170,10 @@ bun run test  # Run tests with vitest
 
 Tests use `@cloudflare/vitest-pool-workers` for isolated DO testing:
 
+The template disables `remoteBindings` in `vitest.config.ts` so tests run fully
+locally in workerd. This avoids requiring Cloudflare preview API access for
+bindings such as `AI`, which Wrangler otherwise treats as remote by default.
+
 ```typescript
 import { describe, it, expect } from "vitest";
 import { env } from "cloudflare:test";
