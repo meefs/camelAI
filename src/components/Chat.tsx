@@ -176,6 +176,11 @@ const CHAT_PING_MESSAGE = JSON.stringify({ type: "ping" });
 const MESSAGE_ACCEPTANCE_TIMEOUT_MS = 8_000;
 const CHAT_WS_RECONNECT_ATTEMPTS_BEFORE_BACKOFF = 5;
 const CHAT_WS_BACKGROUND_RETRY_MS = 30_000;
+// How long a CONNECTING socket may keep handshaking before a queued send
+// gives up on it and forces a fresh connection. Upgrades legitimately take
+// seconds when the auth chain crosses regions; superseding a live handshake
+// aborts it and restarts from zero.
+const CHAT_WS_CONNECTING_GRACE_MS = 10_000;
 const NEW_THREAD_BOOTSTRAP_STALL_TIMEOUT_MS = 10_000;
 
 function getThreadRunningState(
@@ -3621,6 +3626,16 @@ export default function Chat({
           },
         });
 
+        // Messages sent on this socket that were never accepted must be
+        // eligible for resend on the next ready flush. The server dedupes by
+        // clientMessageId, so retransmitting an actually-delivered message is
+        // safe; never retransmitting a dropped one loses it.
+        for (const message of getUnacceptedPendingUserMessages()) {
+          const deliveryKey = message.clientMessageId ?? message.id;
+          sentPendingMessageIdsRef.current.delete(deliveryKey);
+          clearPendingMessageAcceptanceTimeout(deliveryKey);
+        }
+
         // Auto-reconnect with exponential backoff, then keep trying quietly in
         // the background so an idle disconnect does not become a permanent tab
         // state.
@@ -3694,6 +3709,7 @@ export default function Chat({
       clearAllPendingMessageAcceptanceTimeouts,
       clearQueuedSendReadyTimeout,
       failPendingMessageDelivery,
+      getUnacceptedPendingUserMessages,
       isNewThread,
       logRunnerClient,
       markPendingDeliveryDraftAccepted,
@@ -5007,31 +5023,54 @@ type SendOptions = {
       });
       if (!ready) {
         clearQueuedSendReadyTimeout();
-        queuedSendReadyTimeoutRef.current = setTimeout(() => {
+        const checkQueuedSendReady = () => {
+          queuedSendReadyTimeoutRef.current = null;
           const unsentMessages = pendingMessagesRef.current.filter((message) => {
             if (message.role !== "user") return false;
             return !sentPendingMessageIdsRef.current.has(
               message.clientMessageId ?? message.id,
             );
           });
-          if (unsentMessages.length > 0 && threadId) {
-            logRunnerClient("queued_ready_timeout_reconnect", {
-              queuedMessages: unsentMessages.length,
-            });
-            reportChatClientEvent("queued_ready_timeout_reconnect", {
-              source: "chat_runner",
-              severity: "warn",
-              status: "waiting_for_ready",
-              message:
-                "Queued messages were still waiting for a ready event, forcing websocket reconnect.",
-              details: {
-                queuedMessages: unsentMessages.length,
-              },
-            });
-            reconnectAttempts.current = 0;
-            connectWebSocketRef.current?.(threadId, true);
+          if (unsentMessages.length === 0 || !threadId) {
+            return;
           }
-        }, 5000);
+          // A CONNECTING socket may be a slow-but-live upgrade handshake;
+          // closing it to reconnect aborts the upgrade and starts over.
+          // Give it a grace window before forcing a fresh connection.
+          const connectionStartedAt = connectionStartedAtRef.current.get(
+            connectionIdRef.current,
+          );
+          if (
+            wsRef.current?.readyState === WebSocket.CONNECTING &&
+            connectionStartedAt != null &&
+            Date.now() - connectionStartedAt < CHAT_WS_CONNECTING_GRACE_MS
+          ) {
+            queuedSendReadyTimeoutRef.current = setTimeout(
+              checkQueuedSendReady,
+              1000,
+            );
+            return;
+          }
+          logRunnerClient("queued_ready_timeout_reconnect", {
+            queuedMessages: unsentMessages.length,
+          });
+          reportChatClientEvent("queued_ready_timeout_reconnect", {
+            source: "chat_runner",
+            severity: "warn",
+            status: "waiting_for_ready",
+            message:
+              "Queued messages were still waiting for a ready event, forcing websocket reconnect.",
+            details: {
+              queuedMessages: unsentMessages.length,
+            },
+          });
+          reconnectAttempts.current = 0;
+          connectWebSocketRef.current?.(threadId, true);
+        };
+        queuedSendReadyTimeoutRef.current = setTimeout(
+          checkQueuedSendReady,
+          5000,
+        );
       }
 
       const socketState = wsRef.current?.readyState;

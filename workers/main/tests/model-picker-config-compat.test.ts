@@ -15,8 +15,9 @@ describe('model picker config RPC compatibility', () => {
           ),
       }),
     ).resolves.toMatchObject({
+      use_platform_defaults: true,
       default_model: null,
-      models: expect.arrayContaining([expect.objectContaining({ id: 'sonnet' })]),
+      models: [],
     });
 
     await expect(
@@ -29,6 +30,7 @@ describe('model picker config RPC compatibility', () => {
       }),
     ).resolves.toEqual({
       use_org_defaults: true,
+      use_platform_defaults: true,
       models: [],
       default_model: null,
     });

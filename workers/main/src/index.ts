@@ -252,8 +252,8 @@ const routes: Route[] = [
   // WebSocket routes
   { method: 'GET', path: /^\/ws\/logs$/, handler: handleLogsWebSocket, websocket: true },
   { method: 'GET', path: /^\/ws\/workspaces\/([^/]+)\/status$/, handler: handleWorkspaceStatusWebSocket, websocket: true },
-  { method: 'GET', path: /^\/ws\/runner\/[^/]+$/, handler: handleChatRunnerWebSocket, websocket: true },
-  { method: 'GET', path: /^\/ws\/[^/]+$/, handler: handleChatWebSocket, websocket: true },
+  { method: 'GET', path: /^\/ws\/runner\/([^/]+)$/, handler: handleChatRunnerWebSocket, websocket: true },
+  { method: 'GET', path: /^\/ws\/([^/]+)$/, handler: handleChatWebSocket, websocket: true },
 ];
 
 // =============================================================================

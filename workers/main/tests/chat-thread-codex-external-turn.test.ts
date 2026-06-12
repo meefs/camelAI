@@ -482,6 +482,7 @@ describe('ChatThreadDO Codex turn handling', () => {
     const enqueuePromise = new Promise<{ status: 'accepted' }>((resolve) => {
       resolveEnqueue = resolve;
     });
+    fake.ctx = { storage: { kv: { get: vi.fn(), put: vi.fn() } } };
     fake.recordChatThreadObservabilityEvent = vi.fn();
     fake.enqueueRunnerUserMessage = vi.fn(() => enqueuePromise);
     fake.sendDirect = vi.fn((socket: any, message: any) => socket.send(message));
@@ -536,6 +537,7 @@ describe('ChatThreadDO Codex turn handling', () => {
     const ws = { send: vi.fn() };
     const fake = Object.create(ChatThreadDO.prototype) as any;
     const error = new Error('connection dropped');
+    fake.ctx = { storage: { kv: { get: vi.fn(), put: vi.fn() } } };
     fake.recordChatThreadObservabilityEvent = vi.fn();
     fake.enqueueRunnerUserMessage = vi.fn(async () => {
       throw error;
@@ -571,6 +573,179 @@ describe('ChatThreadDO Codex turn handling', () => {
       error: 'connection dropped',
       status: 500,
     });
+  });
+
+  it('re-acks duplicates of accepted messages without enqueueing again', async () => {
+    const ws = { send: vi.fn() };
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    fake.ctx = {
+      storage: {
+        kv: { get: vi.fn(() => ['client-msg-dup']), put: vi.fn() },
+      },
+    };
+    fake.recordChatThreadObservabilityEvent = vi.fn();
+    fake.enqueueRunnerUserMessage = vi.fn();
+    fake.sendDirect = vi.fn((socket: any, message: any) => socket.send(message));
+
+    await ChatThreadDO.prototype['handleRunnerClientUserMessage'].call(fake, ws, {
+      type: 'message',
+      content: 'hello again',
+      clientMessageId: 'client-msg-dup',
+    });
+
+    expect(ws.send).toHaveBeenCalledTimes(1);
+    expect(ws.send).toHaveBeenCalledWith({
+      type: 'message_accepted',
+      clientMessageId: 'client-msg-dup',
+    });
+    expect(fake.enqueueRunnerUserMessage).not.toHaveBeenCalled();
+    expect(fake.recordChatThreadObservabilityEvent).toHaveBeenCalledWith(
+      'runner_user_message_send_attempt',
+      expect.objectContaining({
+        operation: 'received',
+        status: 'duplicate_ignored',
+      }),
+    );
+  });
+
+  it('relays an in-flight enqueue failure to a retransmitted duplicate instead of acking it', async () => {
+    const ws1 = { send: vi.fn() };
+    const ws2 = { send: vi.fn() };
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    const error = new Error('runner exploded');
+    let rejectEnqueue: (error: Error) => void = () => {};
+    const enqueuePromise = new Promise((_resolve, reject) => {
+      rejectEnqueue = reject;
+    });
+    fake.ctx = { storage: { kv: { get: vi.fn(), put: vi.fn() } } };
+    fake.recordChatThreadObservabilityEvent = vi.fn();
+    fake.enqueueRunnerUserMessage = vi.fn(() => enqueuePromise);
+    fake.setChatIsStreaming = vi.fn();
+    fake.setActiveTurnUserId = vi.fn();
+    fake.sendDirect = vi.fn((socket: any, message: any) => socket.send(message));
+
+    const first = ChatThreadDO.prototype['handleRunnerClientUserMessage'].call(fake, ws1, {
+      type: 'message',
+      content: 'hello',
+      clientMessageId: 'client-msg-3',
+    });
+    await Promise.resolve();
+
+    // Socket drops; the browser reconnects and retransmits on a new socket
+    // while the original enqueue is still unresolved.
+    const second = ChatThreadDO.prototype['handleRunnerClientUserMessage'].call(fake, ws2, {
+      type: 'message',
+      content: 'hello',
+      clientMessageId: 'client-msg-3',
+    });
+    await Promise.resolve();
+
+    // The duplicate must not be acked while the outcome is unknown.
+    expect(ws2.send).not.toHaveBeenCalled();
+    expect(fake.enqueueRunnerUserMessage).toHaveBeenCalledTimes(1);
+
+    rejectEnqueue(error);
+    await Promise.all([first, second]);
+
+    // The retransmitting socket receives the real failure, not an ack.
+    expect(ws2.send).toHaveBeenCalledTimes(1);
+    expect(ws2.send).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'error', error: 'runner exploded' }),
+    );
+    expect(fake.recordChatThreadObservabilityEvent).toHaveBeenCalledWith(
+      'runner_user_message_send_attempt',
+      expect.objectContaining({
+        operation: 'received',
+        status: 'duplicate_in_flight',
+      }),
+    );
+    // Nothing was recorded as accepted, so a later retry re-enqueues.
+    expect(fake.ctx.storage.kv.put).not.toHaveBeenCalled();
+  });
+
+  it('acks a retransmitted duplicate once the in-flight enqueue accepts', async () => {
+    const ws1 = { send: vi.fn() };
+    const ws2 = { send: vi.fn() };
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    let resolveEnqueue: (value: { status: 'accepted' }) => void = () => {};
+    const enqueuePromise = new Promise<{ status: 'accepted' }>((resolve) => {
+      resolveEnqueue = resolve;
+    });
+    fake.ctx = { storage: { kv: { get: vi.fn(), put: vi.fn() } } };
+    fake.recordChatThreadObservabilityEvent = vi.fn();
+    fake.enqueueRunnerUserMessage = vi.fn(() => enqueuePromise);
+    fake.sendDirect = vi.fn((socket: any, message: any) => socket.send(message));
+
+    const first = ChatThreadDO.prototype['handleRunnerClientUserMessage'].call(fake, ws1, {
+      type: 'message',
+      content: 'hello',
+      clientMessageId: 'client-msg-4',
+    });
+    await Promise.resolve();
+    const second = ChatThreadDO.prototype['handleRunnerClientUserMessage'].call(fake, ws2, {
+      type: 'message',
+      content: 'hello',
+      clientMessageId: 'client-msg-4',
+    });
+    await Promise.resolve();
+
+    resolveEnqueue({ status: 'accepted' });
+    await Promise.all([first, second]);
+
+    expect(fake.enqueueRunnerUserMessage).toHaveBeenCalledTimes(1);
+    expect(ws2.send).toHaveBeenCalledTimes(1);
+    expect(ws2.send).toHaveBeenCalledWith({
+      type: 'message_accepted',
+      clientMessageId: 'client-msg-4',
+    });
+    // The id becomes a durable dedupe marker only after acceptance.
+    expect(fake.ctx.storage.kv.put).toHaveBeenCalled();
+  });
+
+  it('bounds degraded-auth grants to the recent full-auth window', () => {
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    let store: unknown;
+    fake.ctx = {
+      storage: {
+        kv: {
+          get: vi.fn(() => store),
+          put: vi.fn((_key: string, value: unknown) => {
+            store = value;
+          }),
+        },
+      },
+    };
+
+    // Never authorized: no grant.
+    expect(
+      ChatThreadDO.prototype['isPreviouslyAuthorizedChatUser'].call(fake, 'user-1'),
+    ).toBe(false);
+
+    // Fresh full auth grants degraded access.
+    ChatThreadDO.prototype['recordAuthorizedChatUser'].call(fake, 'user-1');
+    expect(
+      ChatThreadDO.prototype['isPreviouslyAuthorizedChatUser'].call(fake, 'user-1'),
+    ).toBe(true);
+
+    // Grants expire after the TTL window.
+    store = { 'user-1': Date.now() - 25 * 60 * 60 * 1000 };
+    expect(
+      ChatThreadDO.prototype['isPreviouslyAuthorizedChatUser'].call(fake, 'user-1'),
+    ).toBe(false);
+
+    // Legacy bare-id list format grants nothing.
+    store = ['user-1'];
+    expect(
+      ChatThreadDO.prototype['isPreviouslyAuthorizedChatUser'].call(fake, 'user-1'),
+    ).toBe(false);
+
+    // Recording prunes expired grants from the stored map.
+    store = { 'user-stale': Date.now() - 25 * 60 * 60 * 1000 };
+    ChatThreadDO.prototype['recordAuthorizedChatUser'].call(fake, 'user-2');
+    expect(store).not.toHaveProperty('user-stale');
+    expect(
+      ChatThreadDO.prototype['isPreviouslyAuthorizedChatUser'].call(fake, 'user-2'),
+    ).toBe(true);
   });
 
   it('records enqueue stage exceptions before rethrowing', async () => {

@@ -15,8 +15,45 @@ import {
 import { text } from "./response.js";
 import { getWorkspaceStub, getOrgStub } from "./stubs.js";
 import { isOrgBanned, isUserBanned } from "../ban-list.js";
+import {
+  isTransientDurableObjectRpcError,
+  retryTransientDurableObjectRpc,
+} from "../../../../src/lib/do-rpc-retry.server";
 
 export type AuthResult = { session: SessionData } | { error: Response };
+
+const CHAT_WS_AUTH_RPC_TIMEOUT_MS = 2_000;
+
+class ChatWebSocketAuthRpcTimeoutError extends Error {
+  // Picked up by isTransientDurableObjectRpcError so timeouts retry and
+  // degrade like dropped RPC channels instead of failing closed.
+  retryable = true;
+
+  constructor(operation: string) {
+    super(`Durable Object RPC timed out: ${operation}`);
+    this.name = "ChatWebSocketAuthRpcTimeoutError";
+  }
+}
+
+function chatWsAuthRpc<T>(operation: string, fn: () => Promise<T>): Promise<T> {
+  return retryTransientDurableObjectRpc(operation, () => {
+    return new Promise<T>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        reject(new ChatWebSocketAuthRpcTimeoutError(operation));
+      }, CHAT_WS_AUTH_RPC_TIMEOUT_MS);
+      fn().then(
+        (value) => {
+          clearTimeout(timer);
+          resolve(value);
+        },
+        (error) => {
+          clearTimeout(timer);
+          reject(error);
+        },
+      );
+    });
+  });
+}
 
 const LOCAL_AUTH_USER_ID = "local-dev-user";
 const LOCAL_AUTH_ORG_ID = "local-dev-org";
@@ -26,6 +63,7 @@ const LOCAL_AUTH_NAME = "Local Dev";
 export async function requireSession(
   req: Request,
   env: Env,
+  options: { failOpenOnInvalidationCheckError?: boolean } = {},
 ): Promise<AuthResult> {
   const localBypassSession = await getLocalAuthBypassSession(req, env);
   if (localBypassSession) {
@@ -53,9 +91,43 @@ export async function requireSession(
 
   // Check if this session was created before a logout invalidation
   const userNs = env.USER as DurableObjectNamespace<UserDO>;
-  const invalidatedAt = await userNs
-    .get(userNs.idFromName(signedSession.user_id))
-    .getSessionInvalidatedAt();
+  let invalidatedAt: number | null;
+  if (options.failOpenOnInvalidationCheckError) {
+    try {
+      invalidatedAt = await chatWsAuthRpc("UserDO.getSessionInvalidatedAt", () =>
+        userNs
+          .get(userNs.idFromName(signedSession.user_id))
+          .getSessionInvalidatedAt(),
+      );
+    } catch (error) {
+      if (!isTransientDurableObjectRpcError(error)) {
+        // Only DO unavailability justifies failing open; an application
+        // error must keep the pre-existing fail-closed behavior, or a
+        // "log out everywhere" revocation would be ignored until the bug
+        // is fixed.
+        throw error;
+      }
+      // Fail open: the session cookie signature was already verified locally.
+      // This check only enforces "log out everywhere" revocation, and blocking
+      // every chat connection during a transient DO outage is worse than
+      // honoring a signed session for the duration of the blip.
+      invalidatedAt = null;
+      recordObservabilityEvent(env, {
+        event: "session_invalidation_check_failed_open",
+        severity: "warn",
+        component: "auth",
+        operation: "requireSession",
+        status: "fail_open",
+        userId: signedSession.user_id,
+        errorName: error instanceof Error ? error.name : "Error",
+        errorMessage: error instanceof Error ? error.message : String(error),
+      });
+    }
+  } else {
+    invalidatedAt = await userNs
+      .get(userNs.idFromName(signedSession.user_id))
+      .getSessionInvalidatedAt();
+  }
   if (invalidatedAt && signedSession.created_at < invalidatedAt) {
     return { error: text("Unauthorized", 401) };
   }
@@ -202,8 +274,23 @@ export interface ChatWebSocketAccess {
   threadId: string;
 }
 
+/**
+ * Returned when the user has a valid signed session but the authorization
+ * Durable Objects (WorkspaceDO/OrgDO) were unreachable after retries. The
+ * route may forward the upgrade to ChatThreadDO marked as degraded; the DO
+ * only admits users it has previously seen pass full authorization for the
+ * same thread.
+ */
+export interface ChatWebSocketDegradedAccess {
+  degraded: true;
+  session: SessionData;
+  userId: string;
+  threadId: string;
+}
+
 export type ChatWebSocketAccessResult =
   | ChatWebSocketAccess
+  | ChatWebSocketDegradedAccess
   | { error: Response };
 
 export async function requireWorkspaceAccess(
@@ -257,6 +344,7 @@ export async function requireChatWebSocketAccess(
   req: Request,
   env: Env,
   threadId: string,
+  workspaceIdFromUrl?: string | null,
 ): Promise<ChatWebSocketAccessResult> {
   const requestId = req.headers.get("cf-ray") ?? crypto.randomUUID();
   const path = normalizePathForObservability(new URL(req.url).pathname);
@@ -288,7 +376,9 @@ export async function requireChatWebSocketAccess(
       sampleIndex: threadId,
     });
   };
-  const auth = await requireSession(req, env);
+  const auth = await requireSession(req, env, {
+    failOpenOnInvalidationCheckError: true,
+  });
   if ("error" in auth) {
     const statusCode = auth.error.status || 401;
     recordDenied(
@@ -304,33 +394,53 @@ export async function requireChatWebSocketAccess(
   }
 
   const { session } = auth;
-  const { org_id: orgId, workspace_id: workspaceId, user_id: userId } = session;
+  const { org_id: sessionOrgId, user_id: userId } = session;
 
-  if (!orgId) {
-    recordDenied("missing_org", 400, { userId });
-    return { error: text("No organization selected", 400) };
-  }
+  // Authorize against the workspace the tab is actually connected to (from
+  // the /ws/:workspace URL), not the session's currently-selected workspace.
+  // The session selection is a shared per-browser cookie that other tabs
+  // mutate; using it here breaks open threads in other workspaces/orgs.
+  const workspaceId =
+    workspaceIdFromUrl?.trim() || session.workspace_id || "";
   if (!workspaceId) {
-    recordDenied("missing_workspace", 400, { orgId, userId });
+    recordDenied("missing_workspace", 400, { orgId: sessionOrgId, userId });
     return { error: text("No workspace selected", 400) };
   }
 
   try {
     const wsStub = getWorkspaceStub(env, workspaceId);
-    const orgStub = getOrgStub(env, orgId);
-    const [{ info: wsInfo, memberAccess }, orgValidation] = await Promise.all([
-      wsStub.getInfoAndMemberAccess(userId),
-      orgStub.validateChatThreadAccess(userId, workspaceId, threadId),
-    ]);
+    const { info: wsInfo, memberAccess } = await chatWsAuthRpc(
+      "WorkspaceDO.getInfoAndMemberAccess",
+      () => wsStub.getInfoAndMemberAccess(userId),
+    );
 
     if (!wsInfo || wsInfo.archived) {
-      recordDenied("workspace_not_found", 404, { orgId, workspaceId, userId });
+      recordDenied("workspace_not_found", 404, {
+        orgId: sessionOrgId,
+        workspaceId,
+        userId,
+      });
       return { error: text("Workspace not found", 404) };
     }
-    if (wsInfo.org_id !== orgId) {
-      recordDenied("workspace_org_mismatch", 403, { orgId, workspaceId, userId });
+
+    // Deny on known restricted access before any further RPC: if the org
+    // call below fails transiently we degrade, and a denial we already hold
+    // must never be converted into a degraded (fail-open) upgrade.
+    if ((memberAccess?.access_level ?? "full") !== "full") {
+      recordDenied("member_access_forbidden", 403, {
+        orgId: wsInfo.org_id,
+        workspaceId,
+        userId,
+      });
       return { error: text("Forbidden", 403) };
     }
+
+    const orgId = wsInfo.org_id;
+    const orgStub = getOrgStub(env, orgId);
+    const orgValidation = await chatWsAuthRpc(
+      "OrgDO.validateChatThreadAccess",
+      () => orgStub.validateChatThreadAccess(userId, wsInfo.id, threadId),
+    );
 
     if (!orgValidation.ok) {
       const status =
@@ -360,11 +470,6 @@ export async function requireChatWebSocketAccess(
       }
     }
 
-    if ((memberAccess?.access_level ?? "full") !== "full") {
-      recordDenied("member_access_forbidden", 403, { orgId, workspaceId, userId });
-      return { error: text("Forbidden", 403) };
-    }
-
     return {
       session,
       orgId: orgValidation.orgId,
@@ -375,6 +480,29 @@ export async function requireChatWebSocketAccess(
       threadId: orgValidation.threadId,
     };
   } catch (error) {
+    if (isTransientDurableObjectRpcError(error)) {
+      // The authorization DOs are unreachable, not denying access. Fall back
+      // to degraded auth: the session is verified, and ChatThreadDO will only
+      // admit users it has already seen pass full authorization.
+      recordObservabilityEvent(env, {
+        event: "chat_ws_auth_degraded",
+        severity: "warn",
+        component: "auth",
+        operation: "requireChatWebSocketAccess",
+        status: "degraded",
+        method: req.method,
+        path,
+        threadId,
+        workspaceId,
+        orgId: sessionOrgId,
+        userId,
+        requestId,
+        errorName: error instanceof Error ? error.name : "Error",
+        errorMessage: error instanceof Error ? error.message : String(error),
+        sampleIndex: threadId,
+      });
+      return { degraded: true, session, userId, threadId };
+    }
     recordErrorEvent(env, {
       event: "chat_ws_access_failed",
       component: "auth",
@@ -384,7 +512,7 @@ export async function requireChatWebSocketAccess(
       path,
       threadId,
       workspaceId,
-      orgId,
+      orgId: sessionOrgId,
       userId,
       requestId,
       sampleIndex: threadId,

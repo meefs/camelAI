@@ -3223,6 +3223,22 @@ export interface PiTurnRecoveryRow {
 const HEADER_USER_NAME = "X-Chiridion-User-Name";
 const HEADER_USER_EMAIL = "X-Chiridion-User-Email";
 const HEADER_USER_ID = "X-Chiridion-User-Id";
+const HEADER_AUTH_DEGRADED = "X-Chiridion-Auth-Degraded";
+// Users who have passed full route-side authorization for this thread,
+// mapped to when they last did (ms). Used to admit reconnects when the
+// authorization DOs are unreachable (degraded auth); never admits a user who
+// has not recently connected with full auth, so revoked members age out
+// instead of keeping a permanent fail-open grant.
+const CHAT_AUTHORIZED_USERS_KEY = "chat_authorized_user_ids";
+const CHAT_AUTHORIZED_USERS_MAX = 100;
+const CHAT_DEGRADED_AUTH_GRANT_TTL_MS = 24 * 60 * 60 * 1000;
+// Avoid rewriting the grant map on every reconnect burst.
+const CHAT_DEGRADED_AUTH_GRANT_REFRESH_MS = 5 * 60 * 1000;
+// Recently accepted clientMessageIds, used to drop duplicate sends when the
+// browser retransmits after a reconnect (it cannot know whether a message
+// sent right before a socket drop was received).
+const CHAT_RECENT_CLIENT_MESSAGE_IDS_KEY = "chat_recent_client_message_ids";
+const CHAT_RECENT_CLIENT_MESSAGE_IDS_MAX = 200;
 
 const TRACE_CHAT_THREAD_DO = false;
 const CHAT_CODEX_SESSION_ID_KEY = 'chatCodexSessionId';
@@ -3277,6 +3293,10 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
   private piMainBaselineIndex = 0;
   private piModelResolver: (() => Promise<PiResolvedModelConfig>) | null = null;
   private piUnsubscribe: (() => void) | null = null;
+  private pendingClientMessageEnqueues: Map<
+    string,
+    Promise<InitialUserMessageResult>
+  > | null = null;
   private piEventHandlerChain: Promise<void> = Promise.resolve();
   private piActiveItemId: string | null = null;
   private piActiveItemText = "";
@@ -3735,6 +3755,41 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
           sampleKey: this.chatContext.orgId,
         });
         return new Response("Forbidden", { status: 403 });
+      }
+
+      const upgradeUserId = request.headers.get(HEADER_USER_ID)?.trim() || "";
+      const authDegraded =
+        request.headers.get(HEADER_AUTH_DEGRADED)?.trim() === "1";
+      if (authDegraded) {
+        // The route could not reach the authorization DOs. Fail open only for
+        // users who have previously passed full authorization for this exact
+        // thread; everyone else stays failed closed.
+        if (
+          !upgradeUserId ||
+          !this.chatContext ||
+          !this.isPreviouslyAuthorizedChatUser(upgradeUserId)
+        ) {
+          this.trace("ws_upgrade_rejected_degraded_auth", {
+            userIdPresent: Boolean(upgradeUserId),
+            hadChatContext: Boolean(this.chatContext),
+          });
+          this.recordChatThreadObservabilityEvent("chat_ws_upgrade", {
+            operation:
+              socketTag === RUNNER_CLIENT_SOCKET_TAG ? "runner" : "chat",
+            status: "rejected_degraded_auth",
+            severity: "warn",
+            sampleKey: upgradeUserId || "missing_user",
+          });
+          return new Response("Forbidden", { status: 403 });
+        }
+        this.recordChatThreadObservabilityEvent("chat_ws_upgrade", {
+          operation: socketTag === RUNNER_CLIENT_SOCKET_TAG ? "runner" : "chat",
+          status: "accepted_degraded_auth",
+          severity: "warn",
+          sampleKey: upgradeUserId,
+        });
+      } else if (upgradeUserId) {
+        this.recordAuthorizedChatUser(upgradeUserId);
       }
 
       const pair = new WebSocketPair();
@@ -7073,6 +7128,80 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     return result;
   }
 
+  private readAuthorizedChatUserGrants(): Record<string, number> {
+    const value = this.ctx.storage.kv.get<unknown>(CHAT_AUTHORIZED_USERS_KEY);
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      // Includes the pre-TTL string[] format: discard rather than grant
+      // untimestamped fail-open access.
+      return {};
+    }
+    return value as Record<string, number>;
+  }
+
+  private isPreviouslyAuthorizedChatUser(userId: string): boolean {
+    const grantedAt = this.readAuthorizedChatUserGrants()[userId];
+    return (
+      typeof grantedAt === "number" &&
+      Date.now() - grantedAt < CHAT_DEGRADED_AUTH_GRANT_TTL_MS
+    );
+  }
+
+  private recordAuthorizedChatUser(userId: string): void {
+    const grants = this.readAuthorizedChatUserGrants();
+    const now = Date.now();
+    const existing = grants[userId];
+    if (
+      typeof existing === "number" &&
+      now - existing < CHAT_DEGRADED_AUTH_GRANT_REFRESH_MS
+    ) {
+      return;
+    }
+    grants[userId] = now;
+    const entries = Object.entries(grants)
+      .filter(
+        ([, grantedAt]) =>
+          typeof grantedAt === "number" &&
+          now - grantedAt < CHAT_DEGRADED_AUTH_GRANT_TTL_MS,
+      )
+      .sort(([, a], [, b]) => a - b);
+    while (entries.length > CHAT_AUTHORIZED_USERS_MAX) entries.shift();
+    this.ctx.storage.kv.put(
+      CHAT_AUTHORIZED_USERS_KEY,
+      Object.fromEntries(entries),
+    );
+  }
+
+  private hasRecentlyAcceptedClientMessage(clientMessageId: string): boolean {
+    const ids = this.ctx.storage.kv.get<string[]>(
+      CHAT_RECENT_CLIENT_MESSAGE_IDS_KEY,
+    );
+    return Array.isArray(ids) && ids.includes(clientMessageId);
+  }
+
+  private recordAcceptedClientMessageId(clientMessageId: string): void {
+    const ids = this.ctx.storage.kv.get<string[]>(
+      CHAT_RECENT_CLIENT_MESSAGE_IDS_KEY,
+    );
+    const list = Array.isArray(ids) ? ids : [];
+    list.push(clientMessageId);
+    while (list.length > CHAT_RECENT_CLIENT_MESSAGE_IDS_MAX) list.shift();
+    this.ctx.storage.kv.put(CHAT_RECENT_CLIENT_MESSAGE_IDS_KEY, list);
+  }
+
+  // Lazily created so prototype-based test fakes work; holds enqueues that
+  // have not yet resolved, keyed by clientMessageId. A retransmitted
+  // duplicate awaits the original attempt's outcome instead of enqueueing
+  // again or prematurely acking.
+  private getPendingClientMessageEnqueues(): Map<
+    string,
+    Promise<InitialUserMessageResult>
+  > {
+    if (!this.pendingClientMessageEnqueues) {
+      this.pendingClientMessageEnqueues = new Map();
+    }
+    return this.pendingClientMessageEnqueues;
+  }
+
   private captureChatContextFromRequest(
     url: URL,
     request: Request,
@@ -7409,19 +7538,98 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       sampleKey: sendAttemptId,
     });
 
-    if (data.clientMessageId) {
+    const clientMessageId =
+      typeof data.clientMessageId === "string" && data.clientMessageId
+        ? data.clientMessageId
+        : null;
+
+    if (clientMessageId) {
+      // Duplicate of a send whose enqueue already accepted a turn (the
+      // browser retransmits when the acceptance ack was lost to a socket
+      // drop): re-ack so the client clears its pending state, never enqueue
+      // twice.
+      if (this.hasRecentlyAcceptedClientMessage(clientMessageId)) {
+        this.sendDirect(ws, {
+          type: "message_accepted",
+          clientMessageId,
+        });
+        this.recordChatThreadObservabilityEvent(
+          "runner_user_message_send_attempt",
+          {
+            operation: "received",
+            status: "duplicate_ignored",
+            severity: "warn",
+            durationMs: Date.now() - startedAt,
+            sampleKey: sendAttemptId,
+          },
+        );
+        return;
+      }
+
+      // Duplicate of a send whose enqueue is still in flight (reconnect +
+      // retransmit before the first attempt resolved). Do not ack yet and do
+      // not enqueue again: relay the original attempt's real outcome to this
+      // socket, so a failure reported to the old, dead socket still reaches
+      // the client instead of being masked by a premature ack.
+      const inFlight = this.getPendingClientMessageEnqueues().get(
+        clientMessageId,
+      );
+      if (inFlight) {
+        this.recordChatThreadObservabilityEvent(
+          "runner_user_message_send_attempt",
+          {
+            operation: "received",
+            status: "duplicate_in_flight",
+            severity: "warn",
+            durationMs: Date.now() - startedAt,
+            sampleKey: sendAttemptId,
+          },
+        );
+        let outcome: InitialUserMessageResult;
+        try {
+          outcome = await inFlight;
+        } catch (error) {
+          this.sendDirect(
+            ws,
+            this.chatSendErrorPayload(error, {
+              fallbackMessage: "Failed to send message to sandbox",
+            }),
+          );
+          return;
+        }
+        if (outcome.status === "accepted") {
+          this.sendDirect(ws, {
+            type: "message_accepted",
+            clientMessageId,
+          });
+        } else {
+          this.sendDirect(
+            ws,
+            this.chatSendErrorPayload(outcome.error, {
+              status: outcome.status,
+              fallbackMessage: "Failed to send message",
+            }),
+          );
+        }
+        return;
+      }
+
       this.sendDirect(ws, {
         type: "message_accepted",
-        clientMessageId: data.clientMessageId,
+        clientMessageId,
       });
     }
 
     let result: InitialUserMessageResult;
+    const enqueue = this.enqueueRunnerUserMessage(data, {
+      sendAttemptId,
+      startedAt,
+    });
+    if (clientMessageId) {
+      this.getPendingClientMessageEnqueues().set(clientMessageId, enqueue);
+    }
     try {
-      result = await this.enqueueRunnerUserMessage(data, {
-        sendAttemptId,
-        startedAt,
-      });
+      result = await enqueue;
     } catch (error) {
       this.updateActiveAutomationRun({
         status: "error",
@@ -7446,6 +7654,10 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         }),
       );
       return;
+    } finally {
+      if (clientMessageId) {
+        this.getPendingClientMessageEnqueues().delete(clientMessageId);
+      }
     }
 
     if (result.status !== "accepted") {
@@ -7464,6 +7676,12 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         }),
       );
       return;
+    }
+
+    // Only now is the id a safe dedupe marker: the message has actually
+    // reached an accepted turn, so swallowing retransmits cannot lose it.
+    if (clientMessageId) {
+      this.recordAcceptedClientMessageId(clientMessageId);
     }
 
     this.recordChatThreadObservabilityEvent("runner_user_message_send_attempt", {

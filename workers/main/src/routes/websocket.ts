@@ -6,6 +6,7 @@ import type { RouteContext } from '../types.js';
 import { requireChatWebSocketAccess, requireWorkspaceAccess } from '../helpers/auth.js';
 import { getThreadStub } from '../helpers/stubs.js';
 import { text } from '../helpers/response.js';
+import { retryTransientDurableObjectRpc } from '../../../../src/lib/do-rpc-retry.server';
 import {
   normalizePathForObservability,
   recordErrorEvent,
@@ -18,10 +19,11 @@ import {
 import { injectFileSafetyMessage } from '../file-safety.js';
 import { applyConnectionMentionContext } from '../connection-mention-context.js';
 
-export async function handleChatWebSocket({ req, env, url }: RouteContext): Promise<Response> {
+export async function handleChatWebSocket({ req, env, url, match }: RouteContext): Promise<Response> {
   const requestId = req.headers.get('cf-ray') ?? crypto.randomUUID();
   const path = normalizePathForObservability(url.pathname);
   const clientBuildId = normalizeClientBuildId(url.searchParams.get('clientBuildId'));
+  const workspaceIdFromPath = decodeURIComponent(match?.[1] ?? '').trim() || null;
   const threadIdFromUrl = url.searchParams.get('threadId');
   if (!threadIdFromUrl) {
     recordObservabilityEvent(env, {
@@ -39,7 +41,12 @@ export async function handleChatWebSocket({ req, env, url }: RouteContext): Prom
     return text('Missing threadId', 400);
   }
 
-  const access = await requireChatWebSocketAccess(req, env, threadIdFromUrl);
+  const access = await requireChatWebSocketAccess(
+    req,
+    env,
+    threadIdFromUrl,
+    workspaceIdFromPath,
+  );
   if ('error' in access) {
     recordObservabilityEvent(env, {
       event: 'chat_ws_route_rejected',
@@ -58,24 +65,53 @@ export async function handleChatWebSocket({ req, env, url }: RouteContext): Prom
     return access.error;
   }
 
-  const { session, orgId, workspaceId, threadId, userId } = access;
+  const { session, threadId, userId } = access;
+  const fullAccess = 'degraded' in access ? null : access;
+  const degraded = fullAccess === null;
 
   const headers = new Headers(req.headers);
   headers.delete('X-Chiridion-User-Id');
   headers.delete('X-Chiridion-User-Name');
   headers.delete('X-Chiridion-User-Email');
+  // Never trust this from the client; only the route may mark an upgrade degraded.
+  headers.delete('X-Chiridion-Auth-Degraded');
   headers.set('X-Chiridion-User-Id', userId);
   if (session.user_name) headers.set('X-Chiridion-User-Name', session.user_name);
   if (session.user_email) headers.set('X-Chiridion-User-Email', session.user_email);
 
   const doUrl = new URL('https://chat-thread/chat');
   doUrl.searchParams.set('threadId', threadId);
-  doUrl.searchParams.set('workspaceId', workspaceId);
-  doUrl.searchParams.set('orgId', orgId);
+  if (fullAccess) {
+    doUrl.searchParams.set('workspaceId', fullAccess.workspaceId);
+    doUrl.searchParams.set('orgId', fullAccess.orgId);
+  } else {
+    // Authorization DOs were unreachable; ChatThreadDO admits only users it
+    // has previously seen pass full auth. Omit workspace/org params so the DO
+    // keeps its stored chat context instead of trusting unverified values.
+    headers.set('X-Chiridion-Auth-Degraded', '1');
+    recordObservabilityEvent(env, {
+      event: 'chat_ws_route_degraded',
+      severity: 'warn',
+      component: 'chat_websocket',
+      operation: 'handleChatWebSocket',
+      status: 'forwarded_degraded',
+      method: req.method,
+      path,
+      threadId,
+      userId,
+      requestId,
+      sampleIndex: threadId,
+    });
+  }
 
-  const modifiedReq = new Request(doUrl.toString(), { method: 'GET', headers });
   try {
-    const response = await getThreadStub(env, threadId).fetch(modifiedReq);
+    const response = await retryTransientDurableObjectRpc(
+      'ChatThreadDO.chatWebSocketUpgrade',
+      () =>
+        getThreadStub(env, threadId).fetch(
+          new Request(doUrl.toString(), { method: 'GET', headers }),
+        ),
+    );
     if (response.status !== 101) {
       const responseText = await safeResponseText(response);
       recordObservabilityEvent(env, {
@@ -83,12 +119,12 @@ export async function handleChatWebSocket({ req, env, url }: RouteContext): Prom
         severity: response.status >= 500 ? 'error' : 'warn',
         component: 'chat_websocket',
         operation: 'handleChatWebSocket',
-        status: 'unexpected_status',
+        status: degraded ? 'unexpected_status_degraded' : 'unexpected_status',
         method: req.method,
         path,
         threadId,
-        workspaceId,
-        orgId,
+        workspaceId: fullAccess?.workspaceId ?? null,
+        orgId: fullAccess?.orgId ?? null,
         userId,
         requestId,
         statusCode: response.status,
@@ -109,8 +145,8 @@ export async function handleChatWebSocket({ req, env, url }: RouteContext): Prom
       method: req.method,
       path,
       threadId,
-      workspaceId,
-      orgId,
+      workspaceId: fullAccess?.workspaceId,
+      orgId: fullAccess?.orgId,
       userId,
       requestId,
       sampleIndex: threadId,
@@ -120,10 +156,11 @@ export async function handleChatWebSocket({ req, env, url }: RouteContext): Prom
   }
 }
 
-export async function handleChatRunnerWebSocket({ req, env, url }: RouteContext): Promise<Response> {
+export async function handleChatRunnerWebSocket({ req, env, url, match }: RouteContext): Promise<Response> {
   const requestId = req.headers.get('cf-ray') ?? crypto.randomUUID();
   const path = normalizePathForObservability(url.pathname);
   const clientBuildId = normalizeClientBuildId(url.searchParams.get('clientBuildId'));
+  const workspaceIdFromPath = decodeURIComponent(match?.[1] ?? '').trim() || null;
   const threadIdFromUrl = url.searchParams.get('threadId');
   if (!threadIdFromUrl) {
     recordObservabilityEvent(env, {
@@ -141,7 +178,12 @@ export async function handleChatRunnerWebSocket({ req, env, url }: RouteContext)
     return text('Missing threadId', 400);
   }
 
-  const access = await requireChatWebSocketAccess(req, env, threadIdFromUrl);
+  const access = await requireChatWebSocketAccess(
+    req,
+    env,
+    threadIdFromUrl,
+    workspaceIdFromPath,
+  );
   if ('error' in access) {
     recordObservabilityEvent(env, {
       event: 'chat_runner_ws_route_rejected',
@@ -160,24 +202,50 @@ export async function handleChatRunnerWebSocket({ req, env, url }: RouteContext)
     return access.error;
   }
 
-  const { session, orgId, workspaceId, threadId, userId } = access;
+  const { session, threadId, userId } = access;
+  const fullAccess = 'degraded' in access ? null : access;
+  const degraded = fullAccess === null;
 
   const headers = new Headers(req.headers);
   headers.delete('X-Chiridion-User-Id');
   headers.delete('X-Chiridion-User-Name');
   headers.delete('X-Chiridion-User-Email');
+  // Never trust this from the client; only the route may mark an upgrade degraded.
+  headers.delete('X-Chiridion-Auth-Degraded');
   headers.set('X-Chiridion-User-Id', userId);
   if (session.user_name) headers.set('X-Chiridion-User-Name', session.user_name);
   if (session.user_email) headers.set('X-Chiridion-User-Email', session.user_email);
 
   const doUrl = new URL('https://chat-thread/runner');
   doUrl.searchParams.set('threadId', threadId);
-  doUrl.searchParams.set('workspaceId', workspaceId);
-  doUrl.searchParams.set('orgId', orgId);
+  if (fullAccess) {
+    doUrl.searchParams.set('workspaceId', fullAccess.workspaceId);
+    doUrl.searchParams.set('orgId', fullAccess.orgId);
+  } else {
+    headers.set('X-Chiridion-Auth-Degraded', '1');
+    recordObservabilityEvent(env, {
+      event: 'chat_runner_ws_route_degraded',
+      severity: 'warn',
+      component: 'chat_websocket',
+      operation: 'handleChatRunnerWebSocket',
+      status: 'forwarded_degraded',
+      method: req.method,
+      path,
+      threadId,
+      userId,
+      requestId,
+      sampleIndex: threadId,
+    });
+  }
 
-  const modifiedReq = new Request(doUrl.toString(), { method: 'GET', headers });
   try {
-    const response = await getThreadStub(env, threadId).fetch(modifiedReq);
+    const response = await retryTransientDurableObjectRpc(
+      'ChatThreadDO.runnerWebSocketUpgrade',
+      () =>
+        getThreadStub(env, threadId).fetch(
+          new Request(doUrl.toString(), { method: 'GET', headers }),
+        ),
+    );
     if (response.status !== 101) {
       const responseText = await safeResponseText(response);
       recordObservabilityEvent(env, {
@@ -185,12 +253,12 @@ export async function handleChatRunnerWebSocket({ req, env, url }: RouteContext)
         severity: response.status >= 500 ? 'error' : 'warn',
         component: 'chat_websocket',
         operation: 'handleChatRunnerWebSocket',
-        status: 'unexpected_status',
+        status: degraded ? 'unexpected_status_degraded' : 'unexpected_status',
         method: req.method,
         path,
         threadId,
-        workspaceId,
-        orgId,
+        workspaceId: fullAccess?.workspaceId ?? null,
+        orgId: fullAccess?.orgId ?? null,
         userId,
         requestId,
         statusCode: response.status,
@@ -211,8 +279,8 @@ export async function handleChatRunnerWebSocket({ req, env, url }: RouteContext)
       method: req.method,
       path,
       threadId,
-      workspaceId,
-      orgId,
+      workspaceId: fullAccess?.workspaceId,
+      orgId: fullAccess?.orgId,
       userId,
       requestId,
       sampleIndex: threadId,
