@@ -243,6 +243,14 @@ async function buildUserWorkerBundle(dir) {
 import { DurableObject } from "cloudflare:workers";
 
 export class Counter extends DurableObject {
+  async increment(name = "main") {
+    const key = \`rpc-count:\${name}\`;
+    const current = Number((await this.ctx.storage.kv.get(key)) || 0);
+    const next = current + 1;
+    await this.ctx.storage.kv.put(key, next);
+    return { name, count: next };
+  }
+
   async fetch(request: Request) {
     const url = new URL(request.url);
     if (url.pathname === "/do-url") {
@@ -310,6 +318,10 @@ export default {
       return env.ASSETS.fetch(new Request(new URL("/hello.txt", request.url), request));
     }
     const name = url.searchParams.get("name") || "main";
+    if (url.pathname === "/rpc") {
+      const result = await env.COUNTER.get(env.COUNTER.idFromName(name)).increment(name);
+      return Response.json(result);
+    }
     return env.COUNTER.get(env.COUNTER.idFromName(name)).fetch(request);
   },
 };
@@ -577,6 +589,8 @@ async function main() {
     await assertBody(`http://127.0.0.1:${port}/kv`, appHeaders, "from-kv", child);
     await assertBody(`http://127.0.0.1:${port}/asset`, appHeaders, "hello from asset", child);
     await assertBody(`http://127.0.0.1:${port}/do-url?value=1`, appHeaders, "/do-url?value=1", child);
+    await assertBody(`http://127.0.0.1:${port}/rpc?name=main`, appHeaders, '{"name":"main","count":1}', child);
+    await assertBody(`http://127.0.0.1:${port}/rpc?name=main`, appHeaders, '{"name":"main","count":2}', child);
     await assertBody(`http://127.0.0.1:${port}/?name=main`, appHeaders, "1", child);
     await assertBody(`http://127.0.0.1:${port}/?name=main`, appHeaders, "2", child);
     await assertBody(`http://127.0.0.1:${port}/?name=other`, appHeaders, "1", child);
@@ -587,6 +601,7 @@ async function main() {
     await assertBody(`http://127.0.0.1:${port}/r2-read?key=message.txt`, appHeaders, "from-r2", child);
     await assertBody(`http://127.0.0.1:${port}/kv-read`, appHeaders, "from-kv", child);
     await assertBody(`http://127.0.0.1:${port}/asset`, appHeaders, "hello from asset", child);
+    await assertBody(`http://127.0.0.1:${port}/rpc?name=main`, appHeaders, '{"name":"main","count":3}', child);
     await assertBody(`http://127.0.0.1:${port}/?name=main`, appHeaders, "3", child);
 
     console.log("Self-host worker bundle smoke passed.");

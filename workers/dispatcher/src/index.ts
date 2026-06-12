@@ -452,6 +452,21 @@ class SelfhostDurableObjectStub {
     }
     return this.dispatcher.fetch(new Request(url, forwardedInit));
   }
+  async rpc(method, args) {
+    const url = new URL("http://selfhost.local/__selfhost_do_rpc");
+    url.searchParams.set("payload", JSON.stringify({ method, args }));
+    const response = await this.fetch(new Request(url));
+    let payload;
+    try {
+      payload = await response.json();
+    } catch {
+      throw new Error(await response.text());
+    }
+    if (!response.ok || !payload?.ok) {
+      throw new Error(payload?.error || "Self-host Durable Object RPC failed");
+    }
+    return payload.result;
+  }
 }
 
 class SelfhostDurableObjectNamespace {
@@ -470,7 +485,18 @@ class SelfhostDurableObjectNamespace {
     return new SelfhostDurableObjectId("unique:" + crypto.randomUUID());
   }
   get(id) {
-    return new SelfhostDurableObjectStub(this.dispatcher, this.appId, this.className, id, id.name);
+    const stub = new SelfhostDurableObjectStub(this.dispatcher, this.appId, this.className, id, id.name);
+    return new Proxy(stub, {
+      get(target, property, receiver) {
+        if (typeof property !== "string") {
+          return Reflect.get(target, property, receiver);
+        }
+        if (property in target || property === "then") {
+          return Reflect.get(target, property, receiver);
+        }
+        return (...args) => target.rpc(property, args);
+      },
+    });
   }
   getByName(name) {
     return this.get(this.idFromName(name));
@@ -520,7 +546,6 @@ export class SelfhostAppRunner extends DurableObject<Env> {
     if (url.pathname === '/__selfhost_do/facet') {
       return this.fetchFacet(request, url, record);
     }
-
     const assetResponse = await this.fetchStaticAsset(request, url, record);
     if (assetResponse) return assetResponse;
 
@@ -548,6 +573,10 @@ export class SelfhostAppRunner extends DurableObject<Env> {
       class: worker.getDurableObjectClass(className),
     }));
     const originalUrl = request.headers.get('x-camelai-selfhost-do-original-url') || request.url;
+    const originalParsedUrl = new URL(originalUrl);
+    if (originalParsedUrl.pathname === '/__selfhost_do_rpc') {
+      return this.fetchRpc(originalParsedUrl, facet);
+    }
     const headers = new Headers(request.headers);
     headers.delete('x-camelai-selfhost-do-bridge');
     headers.delete('x-camelai-selfhost-do-original-url');
@@ -560,6 +589,44 @@ export class SelfhostAppRunner extends DurableObject<Env> {
       forwardedInit.body = request.body;
     }
     return facet.fetch(new Request(originalUrl, forwardedInit));
+  }
+
+  private async fetchRpc(
+    url: URL,
+    facet: unknown,
+  ): Promise<Response> {
+    let payload: { method?: unknown; args?: unknown };
+    try {
+      payload = JSON.parse(url.searchParams.get('payload') ?? '') as { method?: unknown; args?: unknown };
+    } catch {
+      return Response.json({ ok: false, error: 'Invalid Durable Object RPC payload' }, { status: 400 });
+    }
+
+    if (typeof payload.method !== 'string' || !payload.method || payload.method === 'fetch') {
+      return Response.json({ ok: false, error: 'Invalid Durable Object RPC method' }, { status: 400 });
+    }
+    if (!Array.isArray(payload.args)) {
+      return Response.json({ ok: false, error: 'Invalid Durable Object RPC arguments' }, { status: 400 });
+    }
+
+    const rpcFacet = facet as Record<string, (...args: unknown[]) => Promise<unknown>>;
+    const method = rpcFacet[payload.method];
+    if (typeof method !== 'function') {
+      return Response.json({
+        ok: false,
+        error: `Durable Object method not found: ${payload.method}`,
+      }, { status: 404 });
+    }
+
+    try {
+      const result = await rpcFacet[payload.method](...payload.args);
+      return Response.json({ ok: true, result });
+    } catch (error) {
+      return Response.json({
+        ok: false,
+        error: error instanceof Error ? error.message : String(error),
+      }, { status: 500 });
+    }
   }
 
   private async fetchStaticAsset(
