@@ -20,6 +20,7 @@ export interface ChatExplorerFilters {
   first_chats_only?: boolean;
   automated_only?: boolean;
   exclude_internal?: boolean;
+  errors_only?: boolean;
   sort_by?: 'updated_at' | 'created_at';
 }
 
@@ -88,11 +89,22 @@ export interface AdminChatExplorerRow {
   updated_at: number;
   created_by: string | null;
   user_message_count: number | null;
+  user_message_count_source?: 'admin_index' | 'org_thread' | 'pi_core_fallback' | 'unknown';
+  user_message_count_capped?: boolean;
   first_user_message: string | null;
   last_user_message_at: number | null;
   source: string | null;
   channel_kind: string | null;
   channel_kinds: string | null;
+  chat_error_count: number;
+  last_chat_error_at: number | null;
+  last_chat_error_message: string | null;
+  last_chat_error_source: string | null;
+  last_chat_error_status: number | null;
+  last_chat_error_provider: string | null;
+  last_chat_error_model: string | null;
+  model_history: string | null;
+  last_model_changed_at: number | null;
   org_name: string | null;
   org_billing_plan: string | null;
   org_billing_status: string | null;
@@ -101,6 +113,40 @@ export interface AdminChatExplorerRow {
   user_email: string | null;
   user_name: string | null;
   is_first_thread: boolean;
+}
+
+export interface AdminChatErrorGroupRow {
+  fingerprint: string;
+  message_sample: string;
+  source: string;
+  error_kind: string | null;
+  provider: string | null;
+  model: string | null;
+  status: number | null;
+  count: number;
+  affected_thread_count: number;
+  first_seen_at: number;
+  last_seen_at: number;
+}
+
+export interface AdminChatErrorThreadRow {
+  thread_id: string;
+  title: string | null;
+  org_id: string;
+  org_name: string | null;
+  workspace_id: string;
+  workspace_name: string | null;
+  user_id: string | null;
+  user_email: string | null;
+  last_seen_at: number;
+  count: number;
+}
+
+export interface AdminChatErrorSummary {
+  total_events: number;
+  affected_threads: number;
+  distinct_groups: number;
+  latest_error_at: number | null;
 }
 
 export interface AdminAppListRow {
@@ -144,6 +190,7 @@ export type AdminEventType =
   | { type: 'org_llm_provider_update'; payload: { org_id: string; provider: string | null; updated_at: number | null } }
   | { type: 'workspace_upsert'; payload: any }
   | { type: 'thread_upsert'; payload: any }
+  | { type: 'thread_error_recorded'; payload: any }
   | { type: 'app_upsert'; payload: any }
   | { type: 'invitation_upsert'; payload: any }
   | { type: 'thread_delete'; payload: { id: string; workspace_id?: string | null } }

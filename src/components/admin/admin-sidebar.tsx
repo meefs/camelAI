@@ -1,6 +1,7 @@
 'use client';
 
 import {
+  Bug,
   Building2,
   FolderKanban,
   Home,
@@ -32,6 +33,11 @@ const adminRoutes = [
     label: 'Dashboard',
     href: '/qaml-backdoor',
     icon: Home,
+  },
+  {
+    label: 'Errors',
+    href: '/qaml-backdoor/errors',
+    icon: Bug,
   },
 ];
 

@@ -534,6 +534,42 @@ describe('Auth flow (full-stack with DOs)', () => {
       });
     });
 
+    it('records thread chat errors idempotently by normalized event id', async () => {
+      const email = testEmail();
+      const { userId } = await createUser(testEnv, email, 'password123', 'Thread Owner');
+      const { org, defaultWorkspaceId } = await createOrg(testEnv, 'Thread Error Org', userId);
+      const orgStub = testEnv.ORG.get(testEnv.ORG.idFromName(org.id));
+
+      const thread = await orgStub.createThread(defaultWorkspaceId, 'Errored thread', userId);
+      const createdAt = Date.now();
+      const input = {
+        message: 'Provider returned 429 for request req_abc123',
+        source: 'runner_send',
+        errorKind: 'rate_limit',
+        status: 429,
+        provider: 'openai',
+        model: 'sonnet',
+        userId,
+        createdAt,
+      };
+
+      const first = await orgStub.recordThreadError(thread.id, input);
+      const duplicate = await orgStub.recordThreadError(thread.id, input);
+      const afterDuplicate = await orgStub.getThread(thread.id);
+
+      expect(first?.chat_error_count).toBe(1);
+      expect(duplicate?.chat_error_count).toBe(1);
+      expect(afterDuplicate?.chat_error_count).toBe(1);
+      expect(afterDuplicate?.last_chat_error_status).toBe(429);
+      expect(afterDuplicate?.last_chat_error_source).toBe('runner_send');
+
+      const next = await orgStub.recordThreadError(thread.id, {
+        ...input,
+        createdAt: createdAt + 1,
+      });
+      expect(next?.chat_error_count).toBe(2);
+    });
+
     it('loads multiple threads for one workspace in a single batch call', async () => {
       const email = testEmail();
       const { userId } = await createUser(testEnv, email, 'password123', 'Thread Owner');

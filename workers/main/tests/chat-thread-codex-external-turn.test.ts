@@ -544,6 +544,7 @@ describe('ChatThreadDO Codex turn handling', () => {
     });
     fake.setChatIsStreaming = vi.fn();
     fake.setActiveTurnUserId = vi.fn();
+    fake.recordCurrentThreadError = vi.fn();
     fake.sendDirect = vi.fn((socket: any, message: any) => socket.send(message));
 
     await ChatThreadDO.prototype['handleRunnerClientUserMessage'].call(fake, ws, {
@@ -573,6 +574,101 @@ describe('ChatThreadDO Codex turn handling', () => {
       error: 'connection dropped',
       status: 500,
     });
+    expect(fake.recordCurrentThreadError).toHaveBeenCalledWith(
+      expect.objectContaining({
+        message: 'connection dropped',
+        source: 'runner_enqueue',
+        status: 500,
+      }),
+    );
+  });
+
+  it('records rejected browser message send attempts before notifying the client', async () => {
+    const ws = { send: vi.fn() };
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    fake.recordChatThreadObservabilityEvent = vi.fn();
+    fake.piCurrentUsageProvider = 'openai';
+    fake.enqueueRunnerUserMessage = vi.fn(async () => ({
+      status: 'busy',
+      error: new Error('Thread is busy with another run'),
+    }));
+    fake.recordCurrentThreadError = vi.fn();
+    fake.sendDirect = vi.fn((socket: any, message: any) => socket.send(message));
+
+    await ChatThreadDO.prototype['handleRunnerClientUserMessage'].call(fake, ws, {
+      type: 'message',
+      content: 'hello',
+      clientMessageId: 'client-msg-rejected',
+    });
+
+    expect(ws.send).toHaveBeenCalledWith({
+      type: 'message_accepted',
+      clientMessageId: 'client-msg-rejected',
+    });
+    expect(ws.send).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: 'error',
+        error: 'Thread is busy with another run',
+        status: 409,
+        provider: 'openai',
+      }),
+    );
+    expect(fake.recordCurrentThreadError).toHaveBeenCalledWith(
+      expect.objectContaining({
+        message: 'Thread is busy with another run',
+        source: 'runner_send',
+        status: 409,
+        provider: 'openai',
+      }),
+    );
+  });
+
+  it('keeps explicit direct-send error sources when provider metadata exists', async () => {
+    const waitUntilPromises: Promise<unknown>[] = [];
+    const recordThreadError = vi.fn(async () => null);
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    fake.chatContext = {
+      threadId: 'thread1',
+      workspaceId: 'workspace1',
+      orgId: 'org1',
+      userId: 'user1',
+      userName: 'User One',
+      userEmail: 'user@example.com',
+    };
+    fake.piCurrentUsageProvider = 'openai';
+    fake.piSession = null;
+    fake.recordedChatErrors = new Map();
+    fake.ctx = {
+      waitUntil: vi.fn((promise: Promise<unknown>) => {
+        waitUntilPromises.push(promise);
+      }),
+    };
+    fake.env = {
+      ORG: {
+        idFromName: vi.fn((id: string) => id),
+        get: vi.fn(() => ({ recordThreadError })),
+      },
+    };
+    fake.retryChatDurableObjectRpc = vi.fn((_name: string, fn: () => Promise<unknown>) => fn());
+
+    ChatThreadDO.prototype['recordCurrentThreadError'].call(fake, {
+      message: 'Hosted model credit limit reached',
+      source: 'runner_send',
+      provider: 'openai',
+      status: 402,
+    });
+    await Promise.all(waitUntilPromises);
+
+    expect(recordThreadError).toHaveBeenCalledWith(
+      'thread1',
+      expect.objectContaining({
+        message: 'Hosted model credit limit reached',
+        source: 'runner_send',
+        provider: 'openai',
+        status: 402,
+        userId: 'user1',
+      }),
+    );
   });
 
   it('re-acks duplicates of accepted messages without enqueueing again', async () => {

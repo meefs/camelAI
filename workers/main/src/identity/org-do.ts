@@ -57,6 +57,11 @@ import { calculateEffectiveUsageCostUsd } from "../../../../src/lib/usage-pricin
 import { dispatchAdminEvent } from "./admin-events";
 import { normalizeOrgBillingFields } from "./billing-state";
 import { recordErrorEvent, recordObservabilityEvent } from "../observability";
+import {
+  buildChatErrorEventPayload,
+  mergeModelHistory,
+  parseModelHistory,
+} from "../chat-error-metadata";
 import { ORG_SLUG_KV_PREFIX, generateUniqueOrgSlug, hashOrgSlug, registerOrgSlug } from "./org-slugs";
 import { normalizeThreadCompletionSummaryStatus } from "./thread-summary";
 import { usageCost, usageInteger, usageText } from "./usage";
@@ -277,6 +282,15 @@ export interface OrgThread {
   channel_connection_id: string | null;
   channel_conversation_id: string | null;
   channel_message_id: string | null;
+  chat_error_count: number;
+  last_chat_error_at: number | null;
+  last_chat_error_message: string | null;
+  last_chat_error_source: string | null;
+  last_chat_error_status: number | null;
+  last_chat_error_provider: string | null;
+  last_chat_error_model: string | null;
+  model_history: string | null;
+  last_model_changed_at: number | null;
 }
 
 export interface CreateThreadOptions {
@@ -285,6 +299,17 @@ export interface CreateThreadOptions {
   channelConnectionId?: string | null;
   channelConversationId?: string | null;
   channelMessageId?: string | null;
+}
+
+export interface RecordThreadErrorInput {
+  message: string;
+  source?: string | null;
+  errorKind?: string | null;
+  status?: number | null;
+  provider?: string | null;
+  model?: string | null;
+  userId?: string | null;
+  createdAt?: number | null;
 }
 
 export type OrgChatThreadAccessResult =
@@ -689,7 +714,16 @@ export class OrgDO extends DurableObject<DOEnv> {
           last_user_message_at INTEGER,
           last_assistant_completed_at INTEGER,
           last_assistant_summary TEXT,
-          last_assistant_summary_status TEXT
+          last_assistant_summary_status TEXT,
+          chat_error_count INTEGER NOT NULL DEFAULT 0,
+          last_chat_error_at INTEGER,
+          last_chat_error_message TEXT,
+          last_chat_error_source TEXT,
+          last_chat_error_status INTEGER,
+          last_chat_error_provider TEXT,
+          last_chat_error_model TEXT,
+          model_history TEXT,
+          last_model_changed_at INTEGER
         )
       `);
       this.sql.exec(
@@ -698,6 +732,14 @@ export class OrgDO extends DurableObject<DOEnv> {
       this.sql.exec(
         "CREATE INDEX IF NOT EXISTS threads_updated_at ON threads(updated_at)",
       );
+      this.sql.exec(`
+        CREATE TABLE IF NOT EXISTS thread_error_events (
+          id TEXT PRIMARY KEY,
+          thread_id TEXT NOT NULL,
+          fingerprint TEXT NOT NULL,
+          created_at INTEGER NOT NULL
+        )
+      `);
     }
 
     if (version < 6) {
@@ -857,7 +899,16 @@ export class OrgDO extends DurableObject<DOEnv> {
           last_user_message_at INTEGER,
           last_assistant_completed_at INTEGER,
           last_assistant_summary TEXT,
-          last_assistant_summary_status TEXT
+          last_assistant_summary_status TEXT,
+          chat_error_count INTEGER NOT NULL DEFAULT 0,
+          last_chat_error_at INTEGER,
+          last_chat_error_message TEXT,
+          last_chat_error_source TEXT,
+          last_chat_error_status INTEGER,
+          last_chat_error_provider TEXT,
+          last_chat_error_model TEXT,
+          model_history TEXT,
+          last_model_changed_at INTEGER
         )
       `);
       this.sql.exec(
@@ -866,6 +917,14 @@ export class OrgDO extends DurableObject<DOEnv> {
       this.sql.exec(
         "CREATE INDEX IF NOT EXISTS threads_updated_at ON threads(updated_at)",
       );
+      this.sql.exec(`
+        CREATE TABLE IF NOT EXISTS thread_error_events (
+          id TEXT PRIMARY KEY,
+          thread_id TEXT NOT NULL,
+          fingerprint TEXT NOT NULL,
+          created_at INTEGER NOT NULL
+        )
+      `);
       this.sql.exec(`
         CREATE TABLE IF NOT EXISTS proxy_usage (
           user_id TEXT PRIMARY KEY,
@@ -1282,7 +1341,41 @@ export class OrgDO extends DurableObject<DOEnv> {
       this.ensureColumn("worker_scripts", "project_id", "TEXT");
     }
 
-    const CURRENT_SCHEMA_VERSION = 32;
+    if (version < 33) {
+      // V33: Thread metadata for admin chat explorer error badges and model history.
+      this.ensureColumn("threads", "chat_error_count", "INTEGER NOT NULL DEFAULT 0");
+      this.ensureColumn("threads", "last_chat_error_at", "INTEGER");
+      this.ensureColumn("threads", "last_chat_error_message", "TEXT");
+      this.ensureColumn("threads", "last_chat_error_source", "TEXT");
+      this.ensureColumn("threads", "last_chat_error_status", "INTEGER");
+      this.ensureColumn("threads", "last_chat_error_provider", "TEXT");
+      this.ensureColumn("threads", "last_chat_error_model", "TEXT");
+      this.ensureColumn("threads", "model_history", "TEXT");
+      this.ensureColumn("threads", "last_model_changed_at", "INTEGER");
+
+      const rows = this.sql
+        .exec<{ id: string; model: string | null; model_history: string | null; created_at: number }>(
+          "SELECT id, model, model_history, created_at FROM threads WHERE model_history IS NULL OR model_history = ''",
+        )
+        .toArray();
+      for (const row of rows) {
+        const history = parseModelHistory(row.model_history, row.model);
+        if (history.length === 0) continue;
+        this.sql.exec(
+          "UPDATE threads SET model_history = ?, last_model_changed_at = COALESCE(last_model_changed_at, ?) WHERE id = ?",
+          JSON.stringify(history),
+          row.created_at,
+          row.id,
+        );
+      }
+    }
+
+    if (version < 34) {
+      // V34: Idempotency keys for user-visible chat error recording.
+      this.ensureThreadErrorEventSchema();
+    }
+
+    const CURRENT_SCHEMA_VERSION = 34;
     if (version < CURRENT_SCHEMA_VERSION) {
       this.ctx.storage.kv.put("schemaVersion", CURRENT_SCHEMA_VERSION);
     }
@@ -1466,8 +1559,82 @@ export class OrgDO extends DurableObject<DOEnv> {
           this.sql.exec("ALTER TABLE threads ADD COLUMN channel_message_id TEXT");
         } catch {}
       }
+
+      if (!names.has("chat_error_count")) {
+        try {
+          this.sql.exec(
+            "ALTER TABLE threads ADD COLUMN chat_error_count INTEGER NOT NULL DEFAULT 0",
+          );
+        } catch {}
+      }
+
+      if (!names.has("last_chat_error_at")) {
+        try {
+          this.sql.exec("ALTER TABLE threads ADD COLUMN last_chat_error_at INTEGER");
+        } catch {}
+      }
+
+      if (!names.has("last_chat_error_message")) {
+        try {
+          this.sql.exec("ALTER TABLE threads ADD COLUMN last_chat_error_message TEXT");
+        } catch {}
+      }
+
+      if (!names.has("last_chat_error_source")) {
+        try {
+          this.sql.exec("ALTER TABLE threads ADD COLUMN last_chat_error_source TEXT");
+        } catch {}
+      }
+
+      if (!names.has("last_chat_error_status")) {
+        try {
+          this.sql.exec("ALTER TABLE threads ADD COLUMN last_chat_error_status INTEGER");
+        } catch {}
+      }
+
+      if (!names.has("last_chat_error_provider")) {
+        try {
+          this.sql.exec("ALTER TABLE threads ADD COLUMN last_chat_error_provider TEXT");
+        } catch {}
+      }
+
+      if (!names.has("last_chat_error_model")) {
+        try {
+          this.sql.exec("ALTER TABLE threads ADD COLUMN last_chat_error_model TEXT");
+        } catch {}
+      }
+
+      if (!names.has("model_history")) {
+        try {
+          this.sql.exec("ALTER TABLE threads ADD COLUMN model_history TEXT");
+        } catch {}
+      }
+
+      if (!names.has("last_model_changed_at")) {
+        try {
+          this.sql.exec("ALTER TABLE threads ADD COLUMN last_model_changed_at INTEGER");
+        } catch {}
+      }
     } catch (err) {
       console.error("[OrgDO] failed to ensure thread schema columns", err);
+    }
+  }
+
+  private ensureThreadErrorEventSchema(): void {
+    try {
+      this.sql.exec(`
+        CREATE TABLE IF NOT EXISTS thread_error_events (
+          id TEXT PRIMARY KEY,
+          thread_id TEXT NOT NULL,
+          fingerprint TEXT NOT NULL,
+          created_at INTEGER NOT NULL
+        )
+      `);
+      this.sql.exec(
+        "CREATE INDEX IF NOT EXISTS idx_thread_error_events_thread_created_at ON thread_error_events(thread_id, created_at DESC)",
+      );
+    } catch (err) {
+      console.error("[OrgDO] failed to ensure thread error event schema", err);
     }
   }
 
@@ -4230,6 +4397,7 @@ export class OrgDO extends DurableObject<DOEnv> {
     const channelConnectionId = options.channelConnectionId?.trim() || null;
     const channelConversationId = options.channelConversationId?.trim() || null;
     const channelMessageId = options.channelMessageId?.trim() || null;
+    const modelHistory = JSON.stringify([normalizedModel]);
     this.recordThreadCreateStage("prepared", startedAt, ids, {
       size: msg?.length ?? 0,
     });
@@ -4254,8 +4422,10 @@ export class OrgDO extends DurableObject<DOEnv> {
            channel_kinds,
            channel_connection_id,
            channel_conversation_id,
-           channel_message_id
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           channel_message_id,
+           model_history,
+           last_model_changed_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         id,
         workspaceId,
         t,
@@ -4273,6 +4443,8 @@ export class OrgDO extends DurableObject<DOEnv> {
         channelConnectionId,
         channelConversationId,
         channelMessageId,
+        modelHistory,
+        now,
       );
       this.recordThreadCreateStage("thread_inserted", insertStartedAt, ids, {
         size: msg?.length ?? 0,
@@ -4304,6 +4476,15 @@ export class OrgDO extends DurableObject<DOEnv> {
       channel_connection_id: channelConnectionId,
       channel_conversation_id: channelConversationId,
       channel_message_id: channelMessageId,
+      chat_error_count: 0,
+      last_chat_error_at: null,
+      last_chat_error_message: null,
+      last_chat_error_source: null,
+      last_chat_error_status: null,
+      last_chat_error_provider: null,
+      last_chat_error_model: null,
+      model_history: modelHistory,
+      last_model_changed_at: now,
     };
 
     const scheduleStartedAt = Date.now();
@@ -4535,9 +4716,12 @@ export class OrgDO extends DurableObject<DOEnv> {
       return existing;
     }
     const now = Date.now();
+    const modelHistory = mergeModelHistory(existing.model_history, normalizedModel);
     this.sql.exec(
-      "UPDATE threads SET model = ?, updated_at = ? WHERE id = ?",
+      "UPDATE threads SET model = ?, updated_at = ?, model_history = ?, last_model_changed_at = ? WHERE id = ?",
       normalizedModel,
+      now,
+      modelHistory,
       now,
       id,
     );
@@ -4550,6 +4734,8 @@ export class OrgDO extends DurableObject<DOEnv> {
       ...existing,
       model: normalizedModel,
       updated_at: now,
+      model_history: modelHistory,
+      last_model_changed_at: now,
     };
     this.getInfo()
       .then((info) => {
@@ -4645,9 +4831,16 @@ export class OrgDO extends DurableObject<DOEnv> {
       setClauses.push("created_by = ?");
       params.push(updates.created_by);
     }
+    const nextModelHistory = shouldPersistModel
+      ? mergeModelHistory(existing.model_history, normalizedModel)
+      : existing.model_history;
     if (shouldPersistModel) {
       setClauses.push("model = ?");
       params.push(normalizedModel);
+      setClauses.push("model_history = ?");
+      params.push(nextModelHistory ?? JSON.stringify([normalizedModel]));
+      setClauses.push("last_model_changed_at = ?");
+      params.push(now);
     }
 
     params.push(id);
@@ -4666,6 +4859,8 @@ export class OrgDO extends DurableObject<DOEnv> {
       created_by: updates.created_by ?? existing.created_by,
       model: normalizedModel,
       updated_at: now,
+      model_history: nextModelHistory,
+      last_model_changed_at: shouldPersistModel ? now : existing.last_model_changed_at,
     };
     this.getInfo()
       .then((info) => {
@@ -4685,7 +4880,14 @@ export class OrgDO extends DurableObject<DOEnv> {
   setThreadModelForTest(id: string, model: string): OrgThread | null {
     const existing = this.getThread(id);
     if (!existing) return null;
-    this.sql.exec("UPDATE threads SET model = ? WHERE id = ?", model, id);
+    const modelHistory = mergeModelHistory(existing.model_history, model);
+    this.sql.exec(
+      "UPDATE threads SET model = ?, model_history = ?, last_model_changed_at = ? WHERE id = ?",
+      model,
+      modelHistory,
+      Date.now(),
+      id,
+    );
     return this.getThread(id);
   }
 
@@ -4788,7 +4990,108 @@ export class OrgDO extends DurableObject<DOEnv> {
       })
       .catch((err) => {
         console.error("Failed to sync thread user message to AdminIndex", err);
-      });
+    });
+    return updated;
+  }
+
+  async recordThreadError(
+    id: string,
+    input: RecordThreadErrorInput,
+  ): Promise<OrgThread | null> {
+    const existing = this.getThread(id);
+    if (!existing) return null;
+    const info = await this.getInfo();
+    if (!info) return null;
+
+    const event = buildChatErrorEventPayload({
+      threadId: id,
+      orgId: info.id,
+      workspaceId: existing.workspace_id,
+      userId: input.userId ?? existing.created_by ?? null,
+      message: input.message,
+      source: input.source,
+      errorKind: input.errorKind,
+      status: input.status,
+      provider: input.provider,
+      model: input.model ?? existing.model,
+      createdAt: input.createdAt,
+    });
+    const now = event.created_at;
+    this.ensureThreadErrorEventSchema();
+    const inserted = this.sql.exec(
+      "INSERT OR IGNORE INTO thread_error_events (id, thread_id, fingerprint, created_at) VALUES (?, ?, ?, ?)",
+      event.id,
+      id,
+      event.fingerprint,
+      now,
+    );
+    if (inserted.rowsWritten === 0) {
+      const current = this.getThread(id);
+      if (current) {
+        dispatchAdminEvent(this.ctx, this.env, {
+          type: "thread_upsert",
+          payload: { ...current, org_id: info.id },
+        });
+        dispatchAdminEvent(this.ctx, this.env, {
+          type: "thread_error_recorded",
+          payload: event,
+        });
+      }
+      return current;
+    }
+
+    const chatErrorCount = (existing.chat_error_count ?? 0) + 1;
+
+    this.sql.exec(
+      `UPDATE threads
+       SET updated_at = ?,
+           chat_error_count = COALESCE(chat_error_count, 0) + 1,
+           last_chat_error_at = ?,
+           last_chat_error_message = ?,
+           last_chat_error_source = ?,
+           last_chat_error_status = ?,
+           last_chat_error_provider = ?,
+           last_chat_error_model = ?
+       WHERE id = ?`,
+      now,
+      now,
+      event.message_sample,
+      event.source,
+      event.status,
+      event.provider,
+      event.model,
+      id,
+    );
+
+    const updated: OrgThread = {
+      ...existing,
+      updated_at: now,
+      chat_error_count: chatErrorCount,
+      last_chat_error_at: now,
+      last_chat_error_message: event.message_sample,
+      last_chat_error_source: event.source,
+      last_chat_error_status: event.status,
+      last_chat_error_provider: event.provider,
+      last_chat_error_model: event.model,
+    };
+
+    dispatchAdminEvent(this.ctx, this.env, {
+      type: "thread_upsert",
+      payload: { ...updated, org_id: info.id },
+    });
+    dispatchAdminEvent(this.ctx, this.env, {
+      type: "thread_error_recorded",
+      payload: event,
+    });
+
+    this.log("thread_chat_error_recorded", input.userId ?? "system", id, {
+      source: event.source,
+      status: event.status,
+      provider: event.provider,
+      model: event.model,
+      fingerprint: event.fingerprint,
+    });
+
     return updated;
   }
 

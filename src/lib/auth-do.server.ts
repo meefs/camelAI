@@ -32,6 +32,7 @@ import {
   normalizeStoredThreadModel,
   getThreadPreviewTarget,
 } from "./chat-do.server";
+import { waitUntil } from "./wait-until";
 import { deriveCheapRecentActivityCounts } from "./admin-recent-activity";
 import { deleteDispatchScript } from "../../workers/main/src/cf-api-proxy";
 import {
@@ -39,6 +40,9 @@ import {
   getAppIndexReadDatabase,
 } from "../../workers/main/src/app-index-db";
 import type {
+  AdminChatErrorGroupRow,
+  AdminChatErrorSummary,
+  AdminChatErrorThreadRow,
   AdminChatExplorerRow,
   ChatExplorerFilters,
 } from "../../workers/main/src/admin-index-types";
@@ -371,6 +375,14 @@ function getAdminIndex(env: CloudflareEnv) {
   return appIndex as any;
 }
 
+function getWritableAdminIndex(env: CloudflareEnv) {
+  const appIndex = getAppIndexDatabase(env);
+  if (!appIndex) {
+    throw new Error("APP_DB binding is not configured");
+  }
+  return appIndex as any;
+}
+
 export async function getAdminOverview(
   context: AppLoadContext,
 ): Promise<AdminOverview> {
@@ -511,6 +523,244 @@ export async function adminGetThreadsPaginated(
   return normalizeAdminThreadPage(page);
 }
 
+const CHAT_EXPLORER_REPAIR_GRACE_MS = 2 * 60 * 1000;
+const CHAT_EXPLORER_MESSAGE_COUNT_DISPLAY_CAP = 20;
+
+type HydratableChatExplorerRow = AdminChatExplorerRow & {
+  chat_error_count?: number;
+  model_history?: string | null;
+};
+
+function shouldRepairChatExplorerRow(row: HydratableChatExplorerRow): boolean {
+  if (row.user_message_count === null || row.user_message_count === undefined) return true;
+  if (
+    row.user_message_count === 0 &&
+    Boolean(row.first_user_message?.trim()) &&
+    Date.now() - row.created_at > CHAT_EXPLORER_REPAIR_GRACE_MS
+  ) {
+    return true;
+  }
+  if (!row.model_history && row.model) return true;
+  if (isSuspectFallbackModelHistory(row)) return true;
+  return false;
+}
+
+function parseExplorerModelHistory(value: unknown): string[] {
+  if (typeof value !== 'string' || !value.trim()) return [];
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((item): item is string => typeof item === 'string' && item.trim().length > 0);
+  } catch {
+    return [];
+  }
+}
+
+function isSuspectFallbackModelHistory(row: HydratableChatExplorerRow): boolean {
+  if (row.last_model_changed_at !== null && row.last_model_changed_at !== undefined) return false;
+  if (!row.model) return false;
+  const history = parseExplorerModelHistory(row.model_history);
+  return history.length === 1 && history[0] === row.model;
+}
+
+function mergeOrgThreadIntoExplorerRow(
+  row: AdminChatExplorerRow,
+  thread: Record<string, any>,
+): AdminChatExplorerRow {
+  const nextCount =
+    typeof thread.user_message_count === 'number' && Number.isFinite(thread.user_message_count)
+      ? thread.user_message_count
+      : row.user_message_count;
+  return {
+    ...row,
+    title: typeof thread.title === 'string' ? thread.title : row.title,
+    model: typeof thread.model === 'string' ? thread.model : row.model,
+    updated_at:
+      typeof thread.updated_at === 'number' && Number.isFinite(thread.updated_at)
+        ? thread.updated_at
+        : row.updated_at,
+    created_by: typeof thread.created_by === 'string' ? thread.created_by : row.created_by,
+    user_message_count: nextCount ?? null,
+    user_message_count_source:
+      nextCount !== row.user_message_count ? 'org_thread' : row.user_message_count_source,
+    user_message_count_capped: false,
+    first_user_message:
+      typeof thread.first_user_message === 'string'
+        ? thread.first_user_message
+        : row.first_user_message,
+    last_user_message_at:
+      typeof thread.last_user_message_at === 'number'
+        ? thread.last_user_message_at
+        : row.last_user_message_at,
+    source: typeof thread.source === 'string' ? thread.source : row.source,
+    channel_kind:
+      typeof thread.channel_kind === 'string' ? thread.channel_kind : row.channel_kind,
+    channel_kinds:
+      typeof thread.channel_kinds === 'string' ? thread.channel_kinds : row.channel_kinds,
+    chat_error_count:
+      typeof thread.chat_error_count === 'number' ? thread.chat_error_count : row.chat_error_count,
+    last_chat_error_at:
+      typeof thread.last_chat_error_at === 'number'
+        ? thread.last_chat_error_at
+        : row.last_chat_error_at,
+    last_chat_error_message:
+      typeof thread.last_chat_error_message === 'string'
+        ? thread.last_chat_error_message
+        : row.last_chat_error_message,
+    last_chat_error_source:
+      typeof thread.last_chat_error_source === 'string'
+        ? thread.last_chat_error_source
+        : row.last_chat_error_source,
+    last_chat_error_status:
+      typeof thread.last_chat_error_status === 'number'
+        ? thread.last_chat_error_status
+        : row.last_chat_error_status,
+    last_chat_error_provider:
+      typeof thread.last_chat_error_provider === 'string'
+        ? thread.last_chat_error_provider
+        : row.last_chat_error_provider,
+    last_chat_error_model:
+      typeof thread.last_chat_error_model === 'string'
+        ? thread.last_chat_error_model
+        : row.last_chat_error_model,
+    model_history:
+      typeof thread.model_history === 'string' && thread.model_history.trim()
+        ? thread.model_history
+        : row.model_history ?? (row.model ? JSON.stringify([row.model]) : null),
+    last_model_changed_at:
+      typeof thread.last_model_changed_at === 'number'
+        ? thread.last_model_changed_at
+        : row.last_model_changed_at,
+  };
+}
+
+async function hydrateMissingChatExplorerThreadMetadata(
+  env: CloudflareEnv,
+  page: PaginatedResult<AdminChatExplorerRow> & { hasMore: boolean },
+): Promise<PaginatedResult<AdminChatExplorerRow> & { hasMore: boolean }> {
+  if (page.items.length === 0) return page;
+
+  const items = page.items.map((row) => ({
+    ...row,
+    chat_error_count: row.chat_error_count ?? 0,
+  }));
+  const repairTargets = items.filter(shouldRepairChatExplorerRow);
+  if (repairTargets.length === 0) {
+    return { ...page, items };
+  }
+
+  const byOrgWorkspace = new Map<string, AdminChatExplorerRow[]>();
+  for (const row of repairTargets) {
+    const key = `${row.org_id}:${row.workspace_id}`;
+    const existing = byOrgWorkspace.get(key) ?? [];
+    existing.push(row);
+    byOrgWorkspace.set(key, existing);
+  }
+
+  const byId = new Map(items.map((row) => [row.id, row]));
+  const repairedForIndex: AdminChatExplorerRow[] = [];
+  const authEnv = getAuthEnv(env);
+
+  await Promise.all(
+    Array.from(byOrgWorkspace.entries()).map(async ([key, rows]) => {
+      const [orgId, workspaceId] = key.split(':');
+      if (!orgId || !workspaceId) return;
+      try {
+        const orgStub = authEnv.ORG.get(authEnv.ORG.idFromName(orgId));
+        const threads = await orgStub.getThreadsByIds(
+          workspaceId,
+          rows.map((row) => row.id),
+        );
+        const threadById = new Map(
+          (threads as Array<Record<string, any>>).map((thread) => [String(thread.id), thread]),
+        );
+        for (const row of rows) {
+          const thread = threadById.get(row.id);
+          if (!thread) continue;
+          const merged = mergeOrgThreadIntoExplorerRow(row, thread);
+          byId.set(row.id, merged);
+          repairedForIndex.push(merged);
+        }
+      } catch (error) {
+        console.error('[admin] failed to hydrate chat explorer metadata from OrgDO', {
+          orgId,
+          workspaceId,
+          error,
+        });
+      }
+    }),
+  );
+
+  const stillMissing = items
+    .map((row) => byId.get(row.id) ?? row)
+    .filter((row) => shouldRepairChatExplorerRow(row));
+
+  await Promise.all(
+    stillMissing.map(async (row) => {
+      try {
+        if (!('CHAT_THREAD' in env) || !env.CHAT_THREAD) return;
+        const chatThread = env.CHAT_THREAD.get(env.CHAT_THREAD.idFromName(row.id));
+        const summary = await chatThread.getAdminExplorerSummary({
+          userMessageCap: CHAT_EXPLORER_MESSAGE_COUNT_DISPLAY_CAP,
+        });
+        const modelHistory = summary.models.length > 0
+          ? JSON.stringify(summary.models)
+          : row.model_history;
+        const merged: AdminChatExplorerRow = {
+          ...row,
+          user_message_count: summary.userMessageCount,
+          user_message_count_source: 'pi_core_fallback',
+          user_message_count_capped: summary.userMessageCountCapped,
+          chat_error_count:
+            row.chat_error_count > 0
+              ? row.chat_error_count
+              : summary.errorCount,
+          last_chat_error_at: row.last_chat_error_at ?? summary.lastErrorAt,
+          last_chat_error_message:
+            row.last_chat_error_message ?? summary.lastErrorMessage,
+          model_history: modelHistory,
+        };
+        byId.set(row.id, merged);
+        repairedForIndex.push(
+          summary.userMessageCountCapped
+            ? {
+                ...merged,
+                user_message_count: row.user_message_count,
+                user_message_count_source: row.user_message_count_source,
+                user_message_count_capped: false,
+              }
+            : merged,
+        );
+      } catch (error) {
+        console.error('[admin] failed to hydrate chat explorer metadata from ChatThreadDO', {
+          threadId: row.id,
+          error,
+        });
+      }
+    }),
+  );
+
+  if (repairedForIndex.length > 0) {
+    waitUntil(
+      Promise.allSettled(
+        repairedForIndex.map((row) =>
+          getWritableAdminIndex(env).applyAdminEvent({
+            type: 'thread_upsert',
+            payload: { ...row, org_id: row.org_id },
+          }),
+        ),
+      ).catch((error) => {
+        console.error('[admin] failed to persist chat explorer metadata repair', error);
+      }),
+    );
+  }
+
+  return {
+    ...page,
+    items: items.map((row) => byId.get(row.id) ?? row),
+  };
+}
+
 export async function adminGetChatExplorerThreads(
   context: AppLoadContext,
   params: PaginationParams & { filters?: ChatExplorerFilters } = {},
@@ -518,12 +768,52 @@ export async function adminGetChatExplorerThreads(
   const env = getEnv(context);
   const { offset = 0, limit = 50, search, filters } = params;
   await ensureAdminIndexReady(env);
-  return getAdminIndex(env).getChatExplorerThreads(
+  const page = (await getAdminIndex(env).getChatExplorerThreads(
     offset,
     limit,
     search,
     filters,
-  ) as Promise<PaginatedResult<AdminChatExplorerRow> & { hasMore: boolean }>;
+  )) as PaginatedResult<AdminChatExplorerRow> & { hasMore: boolean };
+  return hydrateMissingChatExplorerThreadMetadata(env, page);
+}
+
+export async function adminGetChatErrorDashboard(
+  context: AppLoadContext,
+  params: {
+    startAt: number;
+    endAt: number;
+    limit?: number;
+    fingerprint?: string | null;
+  },
+): Promise<{
+  summary: AdminChatErrorSummary;
+  groups: AdminChatErrorGroupRow[];
+  threads: AdminChatErrorThreadRow[];
+}> {
+  const env = getEnv(context);
+  await ensureAdminIndexReady(env);
+  const index = getAdminIndex(env);
+  const [summary, groups] = await Promise.all([
+    index.getChatErrorSummary({
+      startAt: params.startAt,
+      endAt: params.endAt,
+    }) as Promise<AdminChatErrorSummary>,
+    index.getChatErrorGroups({
+      startAt: params.startAt,
+      endAt: params.endAt,
+      limit: params.limit ?? 50,
+    }) as Promise<AdminChatErrorGroupRow[]>,
+  ]);
+  const selectedFingerprint = params.fingerprint?.trim();
+  const threads = selectedFingerprint
+    ? ((await index.getChatErrorThreads({
+        fingerprint: selectedFingerprint,
+        startAt: params.startAt,
+        endAt: params.endAt,
+        limit: 50,
+      })) as AdminChatErrorThreadRow[])
+    : [];
+  return { summary, groups, threads };
 }
 
 export async function adminGetAppsPaginated(

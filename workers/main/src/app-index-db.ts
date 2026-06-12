@@ -1,5 +1,8 @@
 import type {
   AdminAppListRow,
+  AdminChatErrorGroupRow,
+  AdminChatErrorSummary,
+  AdminChatErrorThreadRow,
   AdminChatExplorerRow,
   AdminEventType,
   AdminOrgDirectoryRow,
@@ -13,6 +16,12 @@ import type {
   UserFilters,
   WorkspaceFilters,
 } from './admin-index-types.js';
+import {
+  buildChatErrorEventPayload,
+  normalizeChatErrorMessage,
+  parseModelHistory,
+  truncateChatMetadata,
+} from './chat-error-metadata.js';
 import {
   computeDashboardSummary as computeDashboardSummaryFromSnapshot,
   computeRetentionData as computeRetentionDataFromSnapshot,
@@ -132,7 +141,7 @@ const CHAT_EXPLORER_SORT_COLS: Record<NonNullable<ChatExplorerFilters['sort_by']
   updated_at: 't.updated_at',
 };
 const THREADS_INDEX_VERSION_KEY = 'threads_index_version';
-const THREADS_INDEX_VERSION = '2';
+const THREADS_INDEX_VERSION = '3';
 const THREADS_INDEX_BACKFILL_REQUIRED_KEY = 'threads_index_backfill_required';
 const CHAT_EXPLORER_ORG_PLAN_SQL = `
   CASE
@@ -170,6 +179,54 @@ function normalizeChannelKindsForIndex(value: unknown): string | null {
   if (Array.isArray(value)) return JSON.stringify(value);
   return typeof value === 'string' ? value : null;
 }
+
+function normalizeModelHistoryForIndex(value: unknown, fallbackModel: unknown): string | null {
+  const models = parseModelHistory(value, fallbackModel);
+  return models.length > 0 ? JSON.stringify(models) : null;
+}
+
+function mergeModelHistoryForIndex(
+  existingValue: unknown,
+  incomingValue: unknown,
+  fallbackModel: unknown,
+): string | null {
+  const merged: string[] = [];
+  const add = (model: string) => {
+    if (!merged.includes(model) && merged.length < 12) merged.push(model);
+  };
+  for (const model of parseModelHistory(existingValue)) add(model);
+  for (const model of parseModelHistory(incomingValue, fallbackModel)) add(model);
+  return merged.length > 0 ? JSON.stringify(merged) : null;
+}
+
+function normalizeNullableNumber(value: unknown): number | null {
+  if (typeof value === 'number' && Number.isFinite(value)) return Math.trunc(value);
+  if (typeof value === 'string' && value.trim() && Number.isFinite(Number(value))) {
+    return Math.trunc(Number(value));
+  }
+  return null;
+}
+
+function normalizeNonNegativeInteger(value: unknown): number {
+  const number = normalizeNullableNumber(value);
+  return number !== null && number > 0 ? number : 0;
+}
+
+function hasOwnField(value: unknown, field: string): boolean {
+  return Boolean(value && typeof value === 'object' && Object.prototype.hasOwnProperty.call(value, field));
+}
+
+type ExistingThreadMetadata = {
+  chat_error_count: number | null;
+  last_chat_error_at: number | null;
+  last_chat_error_message: string | null;
+  last_chat_error_source: string | null;
+  last_chat_error_status: number | null;
+  last_chat_error_provider: string | null;
+  last_chat_error_model: string | null;
+  model_history: string | null;
+  last_model_changed_at: number | null;
+};
 
 function normalizeInternalDomainList(
   rawValue: string | undefined,
@@ -250,7 +307,32 @@ export class AppIndexDatabase {
         last_user_message_at INTEGER,
         source TEXT,
         channel_kind TEXT,
-        channel_kinds TEXT
+        channel_kinds TEXT,
+        chat_error_count INTEGER NOT NULL DEFAULT 0,
+        last_chat_error_at INTEGER,
+        last_chat_error_message TEXT,
+        last_chat_error_source TEXT,
+        last_chat_error_status INTEGER,
+        last_chat_error_provider TEXT,
+        last_chat_error_model TEXT,
+        model_history TEXT,
+        last_model_changed_at INTEGER
+      );
+      CREATE TABLE IF NOT EXISTS chat_error_events (
+        id TEXT PRIMARY KEY,
+        fingerprint TEXT NOT NULL,
+        thread_id TEXT NOT NULL,
+        org_id TEXT NOT NULL,
+        workspace_id TEXT NOT NULL,
+        user_id TEXT,
+        created_at INTEGER NOT NULL,
+        source TEXT NOT NULL,
+        error_kind TEXT,
+        status INTEGER,
+        provider TEXT,
+        model TEXT,
+        message_normalized TEXT NOT NULL,
+        message_sample TEXT NOT NULL
       );
       CREATE TABLE IF NOT EXISTS apps (
         app_id TEXT PRIMARY KEY,
@@ -306,6 +388,9 @@ export class AppIndexDatabase {
       CREATE INDEX IF NOT EXISTS idx_threads_updated_at ON threads(updated_at DESC);
       CREATE INDEX IF NOT EXISTS idx_threads_created_at ON threads(created_at DESC);
       CREATE INDEX IF NOT EXISTS idx_threads_created_by_created_at ON threads(created_by, created_at, id);
+      CREATE INDEX IF NOT EXISTS idx_chat_error_events_created_at ON chat_error_events(created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_chat_error_events_fingerprint_created_at ON chat_error_events(fingerprint, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_chat_error_events_thread_created_at ON chat_error_events(thread_id, created_at DESC);
       CREATE INDEX IF NOT EXISTS idx_apps_org_updated_at ON apps(org_id, updated_at DESC);
       CREATE INDEX IF NOT EXISTS idx_apps_workspace_updated_at ON apps(workspace_id, updated_at DESC);
       CREATE INDEX IF NOT EXISTS idx_org_memberships_user_id ON org_memberships(user_id);
@@ -344,6 +429,33 @@ export class AppIndexDatabase {
         try {
           await this.db.prepare("ALTER TABLE threads ADD COLUMN channel_kinds TEXT").run();
         } catch {}
+        try {
+          await this.db.prepare("ALTER TABLE threads ADD COLUMN chat_error_count INTEGER NOT NULL DEFAULT 0").run();
+        } catch {}
+        try {
+          await this.db.prepare("ALTER TABLE threads ADD COLUMN last_chat_error_at INTEGER").run();
+        } catch {}
+        try {
+          await this.db.prepare("ALTER TABLE threads ADD COLUMN last_chat_error_message TEXT").run();
+        } catch {}
+        try {
+          await this.db.prepare("ALTER TABLE threads ADD COLUMN last_chat_error_source TEXT").run();
+        } catch {}
+        try {
+          await this.db.prepare("ALTER TABLE threads ADD COLUMN last_chat_error_status INTEGER").run();
+        } catch {}
+        try {
+          await this.db.prepare("ALTER TABLE threads ADD COLUMN last_chat_error_provider TEXT").run();
+        } catch {}
+        try {
+          await this.db.prepare("ALTER TABLE threads ADD COLUMN last_chat_error_model TEXT").run();
+        } catch {}
+        try {
+          await this.db.prepare("ALTER TABLE threads ADD COLUMN model_history TEXT").run();
+        } catch {}
+        try {
+          await this.db.prepare("ALTER TABLE threads ADD COLUMN last_model_changed_at INTEGER").run();
+        } catch {}
         await this.db
           .prepare("CREATE INDEX IF NOT EXISTS idx_apps_project_updated_at ON apps(project_id, updated_at DESC)")
           .run();
@@ -355,6 +467,18 @@ export class AppIndexDatabase {
           .run();
         await this.db
           .prepare("CREATE INDEX IF NOT EXISTS idx_threads_created_by_created_at ON threads(created_by, created_at, id)")
+          .run();
+        await this.db
+          .prepare("CREATE INDEX IF NOT EXISTS idx_threads_chat_error_updated_at ON threads(chat_error_count, updated_at DESC)")
+          .run();
+        await this.db
+          .prepare("CREATE INDEX IF NOT EXISTS idx_chat_error_events_created_at ON chat_error_events(created_at DESC)")
+          .run();
+        await this.db
+          .prepare("CREATE INDEX IF NOT EXISTS idx_chat_error_events_fingerprint_created_at ON chat_error_events(fingerprint, created_at DESC)")
+          .run();
+        await this.db
+          .prepare("CREATE INDEX IF NOT EXISTS idx_chat_error_events_thread_created_at ON chat_error_events(thread_id, created_at DESC)")
           .run();
         const version = await first<{ value: string }>(
           this.db.prepare("SELECT value FROM app_index_metadata WHERE key = ? LIMIT 1").bind(THREADS_INDEX_VERSION_KEY),
@@ -554,6 +678,51 @@ export class AppIndexDatabase {
         const userMessageCount = typeof t.user_message_count === 'number' && Number.isFinite(t.user_message_count) ? t.user_message_count : null;
         const firstUserMessage = truncateIndexPreview(t.first_user_message);
         const channelKinds = normalizeChannelKindsForIndex(t.channel_kinds);
+        const existingThreadMetadata = await first<ExistingThreadMetadata>(
+          this.db.prepare(`
+            SELECT
+              chat_error_count,
+              last_chat_error_at,
+              last_chat_error_message,
+              last_chat_error_source,
+              last_chat_error_status,
+              last_chat_error_provider,
+              last_chat_error_model,
+              model_history,
+              last_model_changed_at
+            FROM threads
+            WHERE id = ?
+            LIMIT 1
+          `).bind(t.id),
+        );
+        const hasChatErrorSummary = hasOwnField(t, 'chat_error_count');
+        const hasModelHistory = hasOwnField(t, 'model_history');
+        const hasLastModelChangedAt = hasOwnField(t, 'last_model_changed_at');
+        const incomingModelHistory = hasModelHistory
+          ? normalizeModelHistoryForIndex(t.model_history, t.model)
+          : normalizeModelHistoryForIndex(undefined, t.model);
+        const existingErrorCount = normalizeNonNegativeInteger(existingThreadMetadata?.chat_error_count);
+        const incomingErrorCount = hasChatErrorSummary ? normalizeNonNegativeInteger(t.chat_error_count) : 0;
+        const chatErrorCount = hasChatErrorSummary
+          ? Math.max(existingErrorCount, incomingErrorCount)
+          : existingErrorCount;
+        const incomingErrorAt = normalizeNullableNumber(t.last_chat_error_at);
+        const existingErrorAt = normalizeNullableNumber(existingThreadMetadata?.last_chat_error_at);
+        const shouldUseIncomingErrorSummary =
+          hasChatErrorSummary &&
+          incomingErrorAt !== null &&
+          (existingErrorAt === null || incomingErrorAt >= existingErrorAt);
+        const modelHistory = hasModelHistory
+          ? mergeModelHistoryForIndex(existingThreadMetadata?.model_history, incomingModelHistory, t.model)
+          : existingThreadMetadata?.model_history ?? incomingModelHistory;
+        const incomingLastModelChangedAt = normalizeNullableNumber(t.last_model_changed_at);
+        const existingLastModelChangedAt = normalizeNullableNumber(existingThreadMetadata?.last_model_changed_at);
+        const lastModelChangedAt =
+          hasLastModelChangedAt &&
+          incomingLastModelChangedAt !== null &&
+          (existingLastModelChangedAt === null || incomingLastModelChangedAt >= existingLastModelChangedAt)
+            ? incomingLastModelChangedAt
+            : existingLastModelChangedAt;
         await this.db
           .prepare(`
             INSERT INTO threads (
@@ -570,9 +739,18 @@ export class AppIndexDatabase {
               last_user_message_at,
               source,
               channel_kind,
-              channel_kinds
+              channel_kinds,
+              chat_error_count,
+              last_chat_error_at,
+              last_chat_error_message,
+              last_chat_error_source,
+              last_chat_error_status,
+              last_chat_error_provider,
+              last_chat_error_model,
+              model_history,
+              last_model_changed_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
               title=excluded.title,
               model=excluded.model,
@@ -583,7 +761,16 @@ export class AppIndexDatabase {
               last_user_message_at=excluded.last_user_message_at,
               source=excluded.source,
               channel_kind=excluded.channel_kind,
-              channel_kinds=excluded.channel_kinds
+              channel_kinds=excluded.channel_kinds,
+              chat_error_count=excluded.chat_error_count,
+              last_chat_error_at=excluded.last_chat_error_at,
+              last_chat_error_message=excluded.last_chat_error_message,
+              last_chat_error_source=excluded.last_chat_error_source,
+              last_chat_error_status=excluded.last_chat_error_status,
+              last_chat_error_provider=excluded.last_chat_error_provider,
+              last_chat_error_model=excluded.last_chat_error_model,
+              model_history=excluded.model_history,
+              last_model_changed_at=excluded.last_model_changed_at
           `)
           .bind(
             t.id,
@@ -600,9 +787,102 @@ export class AppIndexDatabase {
             t.source ?? null,
             t.channel_kind ?? null,
             channelKinds,
+            chatErrorCount,
+            shouldUseIncomingErrorSummary ? incomingErrorAt : existingErrorAt,
+            shouldUseIncomingErrorSummary
+              ? truncateChatMetadata(t.last_chat_error_message)
+              : existingThreadMetadata?.last_chat_error_message ?? null,
+            shouldUseIncomingErrorSummary
+              ? truncateChatMetadata(t.last_chat_error_source, 64)
+              : existingThreadMetadata?.last_chat_error_source ?? null,
+            shouldUseIncomingErrorSummary
+              ? normalizeNullableNumber(t.last_chat_error_status)
+              : existingThreadMetadata?.last_chat_error_status ?? null,
+            shouldUseIncomingErrorSummary
+              ? truncateChatMetadata(t.last_chat_error_provider, 80)
+              : existingThreadMetadata?.last_chat_error_provider ?? null,
+            shouldUseIncomingErrorSummary
+              ? truncateChatMetadata(t.last_chat_error_model, 160)
+              : existingThreadMetadata?.last_chat_error_model ?? null,
+            modelHistory,
+            lastModelChangedAt,
           )
           .run();
         await this.db.prepare('UPDATE workspaces SET thread_count = (SELECT COUNT(*) FROM threads WHERE workspace_id = ?) WHERE id = ?').bind(t.workspace_id, t.workspace_id).run();
+        break;
+      }
+      case 'thread_error_recorded': {
+        const payload = event.payload ?? {};
+        const normalized = payload?.fingerprint && payload?.message_normalized && payload?.message_sample
+          ? {
+              id: String(payload.id ?? `${payload.thread_id ?? ''}:${payload.created_at ?? ''}:${payload.fingerprint}`),
+              fingerprint: String(payload.fingerprint),
+              thread_id: String(payload.thread_id ?? ''),
+              org_id: String(payload.org_id ?? ''),
+              workspace_id: String(payload.workspace_id ?? ''),
+              user_id: truncateChatMetadata(payload.user_id, 160),
+              created_at: normalizeNullableNumber(payload.created_at) ?? Date.now(),
+              source: truncateChatMetadata(payload.source, 64) ?? 'chat_event',
+              error_kind: truncateChatMetadata(payload.error_kind, 64),
+              status: normalizeNullableNumber(payload.status),
+              provider: truncateChatMetadata(payload.provider, 80),
+              model: truncateChatMetadata(payload.model, 160),
+              message_normalized: normalizeChatErrorMessage(String(payload.message_normalized ?? '')) || 'Unknown chat error',
+              message_sample: normalizeChatErrorMessage(String(payload.message_sample ?? '')) || 'Unknown chat error',
+            }
+          : buildChatErrorEventPayload({
+              threadId: String(payload.thread_id ?? payload.threadId ?? ''),
+              orgId: String(payload.org_id ?? payload.orgId ?? ''),
+              workspaceId: String(payload.workspace_id ?? payload.workspaceId ?? ''),
+              userId: typeof payload.user_id === 'string' ? payload.user_id : payload.userId ?? null,
+              message: String(payload.message ?? payload.error ?? payload.message_sample ?? 'Unknown chat error'),
+              source: payload.source,
+              errorKind: payload.error_kind ?? payload.errorKind,
+              status: payload.status,
+              provider: payload.provider,
+              model: payload.model,
+              createdAt: payload.created_at ?? payload.createdAt,
+            });
+        if (!normalized.thread_id || !normalized.org_id || !normalized.workspace_id) {
+          break;
+        }
+        await this.db
+          .prepare(`
+            INSERT OR IGNORE INTO chat_error_events (
+              id,
+              fingerprint,
+              thread_id,
+              org_id,
+              workspace_id,
+              user_id,
+              created_at,
+              source,
+              error_kind,
+              status,
+              provider,
+              model,
+              message_normalized,
+              message_sample
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          `)
+          .bind(
+            normalized.id,
+            normalized.fingerprint,
+            normalized.thread_id,
+            normalized.org_id,
+            normalized.workspace_id,
+            normalized.user_id,
+            normalized.created_at,
+            normalized.source,
+            normalized.error_kind,
+            normalized.status,
+            normalized.provider,
+            normalized.model,
+            normalized.message_normalized,
+            normalized.message_sample,
+          )
+          .run();
         break;
       }
       case 'app_upsert': {
@@ -907,6 +1187,9 @@ export class AppIndexDatabase {
         params.push(`%@${domain}`);
       }
     }
+    if (filters?.errors_only) {
+      conditions.push('COALESCE(t.chat_error_count, 0) > 0');
+    }
 
     const where = conditions.length ? ` WHERE ${conditions.join(' AND ')}` : '';
     const sortCol = CHAT_EXPLORER_SORT_COLS[filters?.sort_by ?? 'updated_at'] ?? 't.updated_at';
@@ -926,6 +1209,15 @@ export class AppIndexDatabase {
         t.source,
         t.channel_kind,
         t.channel_kinds,
+        t.chat_error_count,
+        t.last_chat_error_at,
+        t.last_chat_error_message,
+        t.last_chat_error_source,
+        t.last_chat_error_status,
+        t.last_chat_error_provider,
+        t.last_chat_error_model,
+        t.model_history,
+        t.last_model_changed_at,
         o.name AS org_name,
         o.billing_plan AS org_billing_plan,
         o.billing_status AS org_billing_status,
@@ -955,11 +1247,22 @@ export class AppIndexDatabase {
       updated_at: row.updated_at,
       created_by: row.created_by ?? null,
       user_message_count: row.user_message_count ?? null,
+      user_message_count_source: row.user_message_count === null || row.user_message_count === undefined ? 'unknown' : 'admin_index',
+      user_message_count_capped: false,
       first_user_message: row.first_user_message ?? null,
       last_user_message_at: row.last_user_message_at ?? null,
       source: row.source ?? null,
       channel_kind: row.channel_kind ?? null,
       channel_kinds: row.channel_kinds ?? null,
+      chat_error_count: toNumber(row.chat_error_count),
+      last_chat_error_at: row.last_chat_error_at ?? null,
+      last_chat_error_message: row.last_chat_error_message ?? null,
+      last_chat_error_source: row.last_chat_error_source ?? null,
+      last_chat_error_status: row.last_chat_error_status ?? null,
+      last_chat_error_provider: row.last_chat_error_provider ?? null,
+      last_chat_error_model: row.last_chat_error_model ?? null,
+      model_history: row.model_history ?? null,
+      last_model_changed_at: row.last_model_changed_at ?? null,
       org_name: row.org_name ?? null,
       org_billing_plan: row.org_billing_plan ?? null,
       org_billing_status: row.org_billing_status ?? null,
@@ -970,6 +1273,201 @@ export class AppIndexDatabase {
       is_first_thread: toBoolean(row.is_first_thread),
     }));
     return { items, total, offset, limit, hasMore: offset + items.length < total };
+  }
+
+  async getChatErrorSummary(options: {
+    startAt: number;
+    endAt: number;
+  }): Promise<AdminChatErrorSummary> {
+    const startAt = Math.max(0, Math.floor(options.startAt));
+    const endAt = Math.max(startAt, Math.floor(options.endAt));
+    const row = await first<any>(
+      this.db.prepare(`
+        SELECT
+          COUNT(*) AS total_events,
+          COUNT(DISTINCT thread_id) AS affected_threads,
+          COUNT(DISTINCT fingerprint) AS distinct_groups,
+          MAX(created_at) AS latest_error_at
+        FROM chat_error_events
+        WHERE created_at >= ? AND created_at < ?
+      `).bind(startAt, endAt),
+    );
+    return {
+      total_events: toNumber(row?.total_events),
+      affected_threads: toNumber(row?.affected_threads),
+      distinct_groups: toNumber(row?.distinct_groups),
+      latest_error_at: row?.latest_error_at ?? null,
+    };
+  }
+
+  async getChatErrorGroups(options: {
+    startAt: number;
+    endAt: number;
+    limit?: number;
+    fingerprint?: string;
+  }): Promise<AdminChatErrorGroupRow[]> {
+    const startAt = Math.max(0, Math.floor(options.startAt));
+    const endAt = Math.max(startAt, Math.floor(options.endAt));
+    const limit = Math.max(1, Math.min(200, Math.floor(options.limit ?? 50)));
+    const conditions = ['created_at >= ?', 'created_at < ?'];
+    const params: unknown[] = [startAt, endAt];
+    if (options.fingerprint?.trim()) {
+      conditions.push('fingerprint = ?');
+      params.push(options.fingerprint.trim());
+    }
+    const where = `WHERE ${conditions.join(' AND ')}`;
+    const rows = await this.all<any>(`
+      SELECT
+        fingerprint,
+        (
+          SELECT message_sample
+          FROM chat_error_events sample
+          WHERE sample.fingerprint = grouped.fingerprint
+            AND sample.created_at >= ?
+            AND sample.created_at < ?
+          ORDER BY sample.created_at DESC
+          LIMIT 1
+        ) AS message_sample,
+        (
+          SELECT source
+          FROM chat_error_events sample
+          WHERE sample.fingerprint = grouped.fingerprint
+            AND sample.created_at >= ?
+            AND sample.created_at < ?
+          ORDER BY sample.created_at DESC
+          LIMIT 1
+        ) AS source,
+        (
+          SELECT error_kind
+          FROM chat_error_events sample
+          WHERE sample.fingerprint = grouped.fingerprint
+            AND sample.created_at >= ?
+            AND sample.created_at < ?
+          ORDER BY sample.created_at DESC
+          LIMIT 1
+        ) AS error_kind,
+        (
+          SELECT status
+          FROM chat_error_events sample
+          WHERE sample.fingerprint = grouped.fingerprint
+            AND sample.created_at >= ?
+            AND sample.created_at < ?
+          ORDER BY sample.created_at DESC
+          LIMIT 1
+        ) AS status,
+        (
+          SELECT provider
+          FROM chat_error_events sample
+          WHERE sample.fingerprint = grouped.fingerprint
+            AND sample.created_at >= ?
+            AND sample.created_at < ?
+          ORDER BY sample.created_at DESC
+          LIMIT 1
+        ) AS provider,
+        (
+          SELECT model
+          FROM chat_error_events sample
+          WHERE sample.fingerprint = grouped.fingerprint
+            AND sample.created_at >= ?
+            AND sample.created_at < ?
+          ORDER BY sample.created_at DESC
+          LIMIT 1
+        ) AS model,
+        COUNT(*) AS count,
+        COUNT(DISTINCT thread_id) AS affected_thread_count,
+        MIN(created_at) AS first_seen_at,
+        MAX(created_at) AS last_seen_at
+      FROM chat_error_events grouped
+      ${where}
+      GROUP BY fingerprint
+      ORDER BY count DESC, affected_thread_count DESC, last_seen_at DESC
+      LIMIT ?
+    `, startAt, endAt, startAt, endAt, startAt, endAt, startAt, endAt, startAt, endAt, startAt, endAt, ...params, limit);
+
+    return rows.map((row) => ({
+      fingerprint: row.fingerprint,
+      message_sample: row.message_sample ?? 'Unknown chat error',
+      source: row.source ?? 'chat_event',
+      error_kind: row.error_kind ?? null,
+      status: row.status ?? null,
+      provider: row.provider ?? null,
+      model: row.model ?? null,
+      count: toNumber(row.count),
+      affected_thread_count: toNumber(row.affected_thread_count),
+      first_seen_at: row.first_seen_at,
+      last_seen_at: row.last_seen_at,
+    }));
+  }
+
+  async getChatErrorThreads(options: {
+    fingerprint: string;
+    startAt: number;
+    endAt: number;
+    limit?: number;
+    offset?: number;
+  }): Promise<AdminChatErrorThreadRow[]> {
+    const fingerprint = options.fingerprint.trim();
+    if (!fingerprint) return [];
+    const startAt = Math.max(0, Math.floor(options.startAt));
+    const endAt = Math.max(startAt, Math.floor(options.endAt));
+    const limit = Math.max(1, Math.min(200, Math.floor(options.limit ?? 50)));
+    const offset = Math.max(0, Math.floor(options.offset ?? 0));
+    const rows = await this.all<any>(`
+      WITH grouped AS (
+        SELECT
+          e.thread_id,
+          MAX(e.created_at) AS last_seen_at,
+          COUNT(*) AS count,
+          MAX(e.org_id) AS org_id,
+          MAX(e.workspace_id) AS workspace_id,
+          (
+            SELECT latest.user_id
+            FROM chat_error_events latest
+            WHERE latest.fingerprint = ?
+              AND latest.thread_id = e.thread_id
+              AND latest.created_at >= ?
+              AND latest.created_at < ?
+            ORDER BY latest.created_at DESC
+            LIMIT 1
+          ) AS latest_user_id
+        FROM chat_error_events e
+        WHERE e.fingerprint = ?
+          AND e.created_at >= ?
+          AND e.created_at < ?
+        GROUP BY e.thread_id
+      )
+      SELECT
+        grouped.thread_id,
+        t.title,
+        COALESCE(t.org_id, grouped.org_id) AS org_id,
+        o.name AS org_name,
+        COALESCE(t.workspace_id, grouped.workspace_id) AS workspace_id,
+        w.name AS workspace_name,
+        COALESCE(t.created_by, grouped.latest_user_id) AS user_id,
+        u.email AS user_email,
+        grouped.last_seen_at,
+        grouped.count
+      FROM grouped
+      LEFT JOIN threads t ON grouped.thread_id = t.id
+      LEFT JOIN orgs o ON o.id = COALESCE(t.org_id, grouped.org_id)
+      LEFT JOIN workspaces w ON w.id = COALESCE(t.workspace_id, grouped.workspace_id)
+      LEFT JOIN users u ON u.id = COALESCE(t.created_by, grouped.latest_user_id)
+      ORDER BY grouped.last_seen_at DESC, grouped.count DESC, grouped.thread_id ASC
+      LIMIT ? OFFSET ?
+    `, fingerprint, startAt, endAt, fingerprint, startAt, endAt, limit, offset);
+
+    return rows.map((row) => ({
+      thread_id: row.thread_id,
+      title: row.title ?? null,
+      org_id: row.org_id,
+      org_name: row.org_name ?? null,
+      workspace_id: row.workspace_id,
+      workspace_name: row.workspace_name ?? null,
+      user_id: row.user_id ?? null,
+      user_email: row.user_email ?? null,
+      last_seen_at: row.last_seen_at,
+      count: toNumber(row.count),
+    }));
   }
 
   async getAllThreads() {

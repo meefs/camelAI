@@ -105,6 +105,7 @@ export default [
   // Admin routes (superuser only)
   layout("routes/_admin.tsx", [
     route("qaml-backdoor", "routes/_admin._index.tsx"),
+    route("qaml-backdoor/errors", "routes/_admin.errors.tsx"),
     route("qaml-backdoor/users", "routes/_admin.users.tsx"),
     route("qaml-backdoor/users/:id", "routes/_admin.users.$id.tsx"),
     route("qaml-backdoor/orgs", "routes/_admin.orgs.tsx"),

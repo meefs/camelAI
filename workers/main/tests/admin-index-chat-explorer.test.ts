@@ -68,12 +68,22 @@ async function upsertThread(params: {
   createdBy: string;
   createdAt: number;
   updatedAt: number;
+  model?: string | null;
+  modelHistory?: string[] | string | null;
+  lastModelChangedAt?: number | null;
   firstUserMessage?: string | null;
   userMessageCount?: number | null;
   lastUserMessageAt?: number | null;
   source?: string | null;
   channelKind?: string | null;
   channelKinds?: string[] | string | null;
+  chatErrorCount?: number | null;
+  lastChatErrorAt?: number | null;
+  lastChatErrorMessage?: string | null;
+  lastChatErrorSource?: string | null;
+  lastChatErrorStatus?: number | null;
+  lastChatErrorProvider?: string | null;
+  lastChatErrorModel?: string | null;
 }) {
   const appIndex = getAppIndexDatabase(testEnv)!;
   await appIndex.applyAdminEvent({
@@ -81,18 +91,27 @@ async function upsertThread(params: {
     payload: {
       id: params.id,
       title: params.title,
-      model: 'sonnet',
+      model: params.model ?? 'sonnet',
       org_id: params.orgId,
       workspace_id: params.workspaceId,
       created_by: params.createdBy,
       created_at: params.createdAt,
       updated_at: params.updatedAt,
+      model_history: params.modelHistory,
+      last_model_changed_at: params.lastModelChangedAt,
       first_user_message: params.firstUserMessage,
       user_message_count: params.userMessageCount,
       last_user_message_at: params.lastUserMessageAt,
       source: params.source,
       channel_kind: params.channelKind,
       channel_kinds: params.channelKinds,
+      chat_error_count: params.chatErrorCount,
+      last_chat_error_at: params.lastChatErrorAt,
+      last_chat_error_message: params.lastChatErrorMessage,
+      last_chat_error_source: params.lastChatErrorSource,
+      last_chat_error_status: params.lastChatErrorStatus,
+      last_chat_error_provider: params.lastChatErrorProvider,
+      last_chat_error_model: params.lastChatErrorModel,
     },
   });
 }
@@ -428,5 +447,373 @@ describe('D1 admin chat explorer index', () => {
       expect(result.items.map((row) => row.id)).toContain(threadId);
       expect(result.items.find((row) => row.id === threadId)?.org_plan).toBe(expectedPlan);
     }
+  });
+
+  it('mirrors model history and filters rows with chat errors', async () => {
+    const appIndex = getAppIndexDatabase(testEnv)!;
+    const prefix = unique('explorer-errors-filter');
+    const userId = `${prefix}-user`;
+    const orgId = `${prefix}-org`;
+    const workspaceId = `${prefix}-workspace`;
+    const erroredThreadId = `${prefix}-errored-thread`;
+    const ordinaryThreadId = `${prefix}-ordinary-thread`;
+
+    await upsertUser(userId, `${prefix}@example.com`);
+    await upsertOrg({
+      id: orgId,
+      name: `${prefix} Org`,
+      createdBy: userId,
+      billingPlan: 'starter',
+      billingStatus: 'active',
+    });
+    await upsertWorkspace(workspaceId, orgId, `${prefix} Workspace`);
+    await upsertThread({
+      id: erroredThreadId,
+      title: `${prefix} errored`,
+      orgId,
+      workspaceId,
+      createdBy: userId,
+      createdAt: 10_000,
+      updatedAt: 20_000,
+      model: 'gpt-5.4-mini',
+      modelHistory: ['sonnet', 'gpt-5.4-mini'],
+      lastModelChangedAt: 19_000,
+      firstUserMessage: 'please fail',
+      userMessageCount: 2,
+      chatErrorCount: 3,
+      lastChatErrorAt: 19_500,
+      lastChatErrorMessage: 'Provider returned 429',
+      lastChatErrorSource: 'pi_provider',
+      lastChatErrorStatus: 429,
+      lastChatErrorProvider: 'openai',
+      lastChatErrorModel: 'gpt-5.4-mini',
+    });
+    await upsertThread({
+      id: ordinaryThreadId,
+      title: `${prefix} ordinary`,
+      orgId,
+      workspaceId,
+      createdBy: userId,
+      createdAt: 11_000,
+      updatedAt: 21_000,
+      model: 'sonnet',
+      firstUserMessage: 'ordinary',
+      userMessageCount: 1,
+    });
+
+    const allRows = await appIndex.getChatExplorerThreads(0, 10, prefix);
+    const errored = allRows.items.find((row) => row.id === erroredThreadId);
+    expect(errored).toMatchObject({
+      chat_error_count: 3,
+      last_chat_error_message: 'Provider returned 429',
+      last_chat_error_source: 'pi_provider',
+      last_chat_error_status: 429,
+      last_chat_error_provider: 'openai',
+      last_chat_error_model: 'gpt-5.4-mini',
+      model_history: JSON.stringify(['sonnet', 'gpt-5.4-mini']),
+      last_model_changed_at: 19_000,
+    });
+
+    const errorsOnly = await appIndex.getChatExplorerThreads(0, 10, prefix, {
+      errors_only: true,
+    });
+    expect(errorsOnly.items.map((row) => row.id)).toEqual([erroredThreadId]);
+
+    const ordinary = allRows.items.find((row) => row.id === ordinaryThreadId);
+    expect(ordinary?.model_history).toBe(JSON.stringify(['sonnet']));
+  });
+
+  it('stores chat error events idempotently and returns grouped dashboard rows', async () => {
+    const appIndex = getAppIndexDatabase(testEnv)!;
+    const prefix = unique('explorer-error-events');
+    const userId = `${prefix}-user`;
+    const orgId = `${prefix}-org`;
+    const workspaceId = `${prefix}-workspace`;
+    const firstThreadId = `${prefix}-thread-a`;
+    const secondThreadId = `${prefix}-thread-b`;
+    const startAt = 50_000;
+    const endAt = 70_000;
+
+    await upsertUser(userId, `${prefix}@example.com`);
+    await upsertOrg({
+      id: orgId,
+      name: `${prefix} Org`,
+      createdBy: userId,
+      billingPlan: 'pro',
+      billingStatus: 'active',
+    });
+    await upsertWorkspace(workspaceId, orgId, `${prefix} Workspace`);
+    await upsertThread({
+      id: firstThreadId,
+      title: `${prefix} first thread`,
+      orgId,
+      workspaceId,
+      createdBy: userId,
+      createdAt: 1_000,
+      updatedAt: 60_000,
+      firstUserMessage: 'first',
+      userMessageCount: 1,
+    });
+    await upsertThread({
+      id: secondThreadId,
+      title: `${prefix} second thread`,
+      orgId,
+      workspaceId,
+      createdBy: userId,
+      createdAt: 2_000,
+      updatedAt: 61_000,
+      firstUserMessage: 'second',
+      userMessageCount: 1,
+    });
+
+    const fingerprint = `${prefix}-fingerprint`;
+    const eventPayload = {
+      id: `${firstThreadId}:60000:${fingerprint}`,
+      fingerprint,
+      thread_id: firstThreadId,
+      org_id: orgId,
+      workspace_id: workspaceId,
+      user_id: userId,
+      created_at: 60_000,
+      source: 'pi_provider',
+      error_kind: 'rate_limit',
+      status: 429,
+      provider: 'openai',
+      model: 'gpt-5.4-mini',
+      message_normalized: 'Provider returned [id]',
+      message_sample: 'Provider returned request id abc123',
+    };
+    await appIndex.applyAdminEvent({
+      type: 'thread_error_recorded',
+      payload: eventPayload,
+    });
+    await appIndex.applyAdminEvent({
+      type: 'thread_error_recorded',
+      payload: eventPayload,
+    });
+    await appIndex.applyAdminEvent({
+      type: 'thread_error_recorded',
+      payload: {
+        ...eventPayload,
+        id: `${secondThreadId}:62000:${fingerprint}`,
+        thread_id: secondThreadId,
+        created_at: 62_000,
+      },
+    });
+
+    const summary = await appIndex.getChatErrorSummary({ startAt, endAt });
+    expect(summary).toMatchObject({
+      total_events: 2,
+      affected_threads: 2,
+      distinct_groups: 1,
+      latest_error_at: 62_000,
+    });
+
+    const groups = await appIndex.getChatErrorGroups({ startAt, endAt, limit: 10 });
+    expect(groups).toEqual([
+      expect.objectContaining({
+        fingerprint,
+        count: 2,
+        affected_thread_count: 2,
+        first_seen_at: 60_000,
+        last_seen_at: 62_000,
+        status: 429,
+        provider: 'openai',
+        model: 'gpt-5.4-mini',
+      }),
+    ]);
+
+    const threads = await appIndex.getChatErrorThreads({
+      fingerprint,
+      startAt,
+      endAt,
+    });
+    expect(threads).toEqual([
+      expect.objectContaining({
+        thread_id: secondThreadId,
+        title: `${prefix} second thread`,
+        org_name: `${prefix} Org`,
+        workspace_name: `${prefix} Workspace`,
+        user_email: `${prefix}@example.com`,
+        count: 1,
+      }),
+      expect.objectContaining({
+        thread_id: firstThreadId,
+        title: `${prefix} first thread`,
+        count: 1,
+      }),
+    ]);
+  });
+
+  it('preserves existing error summary and model history on older partial thread upserts', async () => {
+    const appIndex = getAppIndexDatabase(testEnv)!;
+    const prefix = unique('explorer-preserve');
+    const userId = `${prefix}-user`;
+    const orgId = `${prefix}-org`;
+    const workspaceId = `${prefix}-workspace`;
+    const threadId = `${prefix}-thread`;
+
+    await upsertUser(userId, `${prefix}@example.com`);
+    await upsertOrg({
+      id: orgId,
+      name: `${prefix} Org`,
+      createdBy: userId,
+      billingPlan: 'pro',
+      billingStatus: 'active',
+    });
+    await upsertWorkspace(workspaceId, orgId, `${prefix} Workspace`);
+    await upsertThread({
+      id: threadId,
+      title: `${prefix} original`,
+      orgId,
+      workspaceId,
+      createdBy: userId,
+      createdAt: 1_000,
+      updatedAt: 2_000,
+      model: 'gpt-5.4-mini',
+      modelHistory: ['sonnet', 'gpt-5.4-mini'],
+      lastModelChangedAt: 1_800,
+      firstUserMessage: 'hello',
+      userMessageCount: 1,
+      chatErrorCount: 1,
+      lastChatErrorAt: 1_900,
+      lastChatErrorMessage: 'Provider returned 429',
+      lastChatErrorSource: 'pi_provider',
+      lastChatErrorStatus: 429,
+      lastChatErrorProvider: 'openai',
+      lastChatErrorModel: 'gpt-5.4-mini',
+    });
+
+    await appIndex.applyAdminEvent({
+      type: 'thread_upsert',
+      payload: {
+        id: threadId,
+        title: `${prefix} stale partial`,
+        model: 'gpt-5.4-mini',
+        org_id: orgId,
+        workspace_id: workspaceId,
+        created_by: userId,
+        created_at: 1_000,
+        updated_at: 3_000,
+        first_user_message: 'hello',
+        user_message_count: 2,
+      },
+    });
+
+    await appIndex.applyAdminEvent({
+      type: 'thread_upsert',
+      payload: {
+        id: threadId,
+        title: `${prefix} stale explicit`,
+        model: 'gpt-5.4-mini',
+        org_id: orgId,
+        workspace_id: workspaceId,
+        created_by: userId,
+        created_at: 1_000,
+        updated_at: 4_000,
+        first_user_message: 'hello',
+        user_message_count: 3,
+        chat_error_count: 0,
+        last_chat_error_at: 1_000,
+        last_chat_error_message: 'stale error',
+        last_chat_error_source: 'runner_send',
+        last_chat_error_status: 500,
+        last_chat_error_provider: 'stale-provider',
+        last_chat_error_model: 'sonnet',
+        model_history: ['gpt-5.4-mini'],
+        last_model_changed_at: 500,
+      },
+    });
+
+    const result = await appIndex.getChatExplorerThreads(0, 10, prefix);
+    expect(result.items[0]).toMatchObject({
+      id: threadId,
+      title: `${prefix} stale explicit`,
+      user_message_count: 3,
+      chat_error_count: 1,
+      last_chat_error_message: 'Provider returned 429',
+      last_chat_error_status: 429,
+      model_history: JSON.stringify(['sonnet', 'gpt-5.4-mini']),
+      last_model_changed_at: 1_800,
+    });
+  });
+
+  it('returns one affected-thread row when events in a thread have different users', async () => {
+    const appIndex = getAppIndexDatabase(testEnv)!;
+    const prefix = unique('explorer-thread-dedupe');
+    const userId = `${prefix}-user`;
+    const otherUserId = `${prefix}-other-user`;
+    const orgId = `${prefix}-org`;
+    const workspaceId = `${prefix}-workspace`;
+    const threadId = `${prefix}-thread`;
+    const fingerprint = `${prefix}-fingerprint`;
+
+    await upsertUser(userId, `${prefix}@example.com`);
+    await upsertUser(otherUserId, `${prefix}-other@example.com`);
+    await upsertOrg({
+      id: orgId,
+      name: `${prefix} Org`,
+      createdBy: userId,
+      billingPlan: 'pro',
+      billingStatus: 'active',
+    });
+    await upsertWorkspace(workspaceId, orgId, `${prefix} Workspace`);
+    await upsertThread({
+      id: threadId,
+      title: `${prefix} thread`,
+      orgId,
+      workspaceId,
+      createdBy: userId,
+      createdAt: 1_000,
+      updatedAt: 6_000,
+      firstUserMessage: 'hello',
+      userMessageCount: 1,
+    });
+
+    for (const [index, eventUserId] of [userId, otherUserId].entries()) {
+      await appIndex.applyAdminEvent({
+        type: 'thread_error_recorded',
+        payload: {
+          id: `${threadId}:${6_000 + index}:${fingerprint}`,
+          fingerprint,
+          thread_id: threadId,
+          org_id: orgId,
+          workspace_id: workspaceId,
+          user_id: eventUserId,
+          created_at: 6_000 + index,
+          source: 'runner_send',
+          error_kind: 'billing',
+          status: 402,
+          provider: null,
+          model: 'sonnet',
+          message_normalized: 'Billing failure',
+          message_sample: 'Billing failure',
+        },
+      });
+    }
+
+    const groups = await appIndex.getChatErrorGroups({
+      startAt: 5_000,
+      endAt: 7_000,
+      limit: 10,
+    });
+    expect(groups.find((group) => group.fingerprint === fingerprint)).toMatchObject({
+      affected_thread_count: 1,
+      count: 2,
+    });
+
+    const threads = await appIndex.getChatErrorThreads({
+      fingerprint,
+      startAt: 5_000,
+      endAt: 7_000,
+    });
+    expect(threads).toEqual([
+      expect.objectContaining({
+        thread_id: threadId,
+        user_id: userId,
+        user_email: `${prefix}@example.com`,
+        count: 2,
+      }),
+    ]);
   });
 });

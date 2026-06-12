@@ -116,6 +116,15 @@ import {
   recordObservabilityEvent,
 } from "./observability";
 import {
+  buildChatErrorEventPayload,
+  createChatErrorFingerprint,
+  normalizeChatErrorKind,
+  normalizeChatErrorMessage,
+  normalizeChatErrorSource,
+  normalizeChatErrorStatus,
+  normalizeModelHistoryValue,
+} from "./chat-error-metadata";
+import {
   BrowserPromptCoordinator,
   type ConnectionSetupResponse,
 } from "./chat-thread-browser-prompts";
@@ -459,6 +468,16 @@ export interface ChatThreadForkStateTarget {
   workspaceId: string;
   orgId: string;
   userId?: string | null;
+}
+
+export interface AdminExplorerThreadSummary {
+  userMessageCount: number;
+  userMessageCountCapped: boolean;
+  hasError: boolean;
+  errorCount: number;
+  lastErrorAt: number | null;
+  lastErrorMessage: string | null;
+  models: string[];
 }
 
 export interface ChatThreadPiCoreForkResult {
@@ -3205,6 +3224,7 @@ const PI_TURN_RECOVERY_CONTINUE_PROMPT = "continue";
 const PI_TURN_RECOVERY_PROMPT_OBSERVATION_MS = 5 * 60_000;
 const PI_TURN_KEEP_ALIVE_INTERVAL_MS = 30_000;
 const PI_TURN_KEEP_ALIVE_STALL_MS = 10 * 60_000;
+const CHAT_ERROR_DEDUPE_WINDOW_MS = 10_000;
 
 const MAX_CHAT_EVENT_BUFFER = 500;
 const ASK_USER_QUESTION_UNAVAILABLE_MESSAGE = 'User is not at computer; AskUserQuestion is unavailable in this channel. Continue without asking and use best effort.';
@@ -3318,6 +3338,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
   private piTurnKeepAliveLastProgressAtMs: number = 0;
   private piLastPersistedLoopError: { fingerprint: string; at: number } | null = null;
   private piRecordedProviderErrors = new Set<string>();
+  private recordedChatErrors = new Map<string, number>();
 
   private trace(event: string, details: Record<string, unknown> = {}): void {
     if (!TRACE_CHAT_THREAD_DO) return;
@@ -4472,6 +4493,82 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       parsed.push(...this.piCoreMessageToParsedChatMessage(message, index, normalizedThreadId));
     });
     return parsed;
+  }
+
+  async getAdminExplorerSummary(input: {
+    userMessageCap?: number;
+  } = {}): Promise<AdminExplorerThreadSummary> {
+    const cap = Number.isFinite(input.userMessageCap)
+      ? Math.max(1, Math.min(100, Math.floor(input.userMessageCap as number)))
+      : 20;
+    const [coreMessages, inFlightMessages] = await Promise.all([
+      this.loadPiCoreMessages({ includeUiMetadata: true }),
+      this.loadPiInFlightMessages({ includeUiMetadata: true }),
+    ]);
+    const messages = [...coreMessages, ...inFlightMessages];
+    const models: string[] = [];
+    let userMessageCount = 0;
+    let userMessageCountCapped = false;
+    let errorCount = 0;
+    let lastErrorAt: number | null = null;
+    let lastErrorMessage: string | null = null;
+
+    const addModel = (value: unknown) => {
+      const model = normalizeModelHistoryValue(value);
+      if (model && !models.includes(model)) models.push(model);
+    };
+
+    for (const [index, message] of messages.entries()) {
+      const record = message as unknown as Record<string, unknown>;
+      const timestamp = typeof record.timestamp === "number" && Number.isFinite(record.timestamp)
+        ? record.timestamp
+        : Date.now();
+
+      if (record.role === "user") {
+        if (
+          !this.isInternalPiClientMessage(record) &&
+          !this.isCompactSummaryPiMessage(record)
+        ) {
+          if (!userMessageCountCapped) {
+            userMessageCount += 1;
+            if (userMessageCount > cap) {
+              userMessageCount = cap;
+              userMessageCountCapped = true;
+            }
+          }
+        }
+        continue;
+      }
+
+      if (record.role !== "assistant") continue;
+      addModel(record.responseModel);
+      addModel(record.model);
+      const errorMessage = this.getPiAssistantErrorMessage(message);
+      if (errorMessage) {
+        errorCount += 1;
+        if (lastErrorAt === null || timestamp >= lastErrorAt) {
+          lastErrorAt = timestamp;
+          lastErrorMessage = errorMessage;
+        }
+      }
+
+      if (index > 2000 && userMessageCountCapped) {
+        break;
+      }
+    }
+
+    const sessionModel = this.piSession?.state.model?.id;
+    addModel(sessionModel);
+
+    return {
+      userMessageCount,
+      userMessageCountCapped,
+      hasError: errorCount > 0,
+      errorCount,
+      lastErrorAt,
+      lastErrorMessage,
+      models,
+    };
   }
 
   async hydratePiCoreFromParsedMessages(
@@ -6867,6 +6964,16 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     return meta.purpose === PI_TURN_RECOVERY_CONTEXT_PURPOSE;
   }
 
+  private isCompactSummaryPiMessage(message: unknown): boolean {
+    if (!message || typeof message !== "object") return false;
+    const record = message as Record<string, unknown>;
+    if (record.isCompactSummary === true || record.isMeta === true) return true;
+    const metadata = record.metadata;
+    if (!metadata || typeof metadata !== "object") return false;
+    const meta = metadata as Record<string, unknown>;
+    return meta.compactSummary === true || meta.isCompactSummary === true;
+  }
+
   private piSdkUserEventText(event: unknown): string | null {
     if (!event || typeof event !== "object") return null;
     const record = event as Record<string, unknown>;
@@ -7539,6 +7646,35 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     };
   }
 
+  private sendDirectChatError(
+    ws: WebSocket,
+    error: unknown,
+    options: {
+      status?: "busy" | "error" | string;
+      fallbackMessage: string;
+      source: "runner_enqueue" | "runner_send" | "chat_init" | string;
+    },
+  ): void {
+    const payload = this.chatSendErrorPayload(error, {
+      status: options.status,
+      fallbackMessage: options.fallbackMessage,
+    });
+    const message =
+      typeof payload.error === "string" && payload.error.trim()
+        ? payload.error.trim()
+        : options.fallbackMessage;
+    this.recordCurrentThreadError({
+      message,
+      source: options.source,
+      errorKind: payload.errorType ?? payload.error_kind,
+      status: payload.status ?? payload.statusCode,
+      provider: payload.provider,
+      model: payload.model,
+      createdAt: Date.now(),
+    });
+    this.sendDirect(ws, payload);
+  }
+
   private async handleRunnerClientUserMessage(
     ws: WebSocket,
     data: ChatClientMessage,
@@ -7661,12 +7797,10 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         sampleKey: sendAttemptId,
         error,
       });
-      this.sendDirect(
-        ws,
-        this.chatSendErrorPayload(error, {
-          fallbackMessage: "Failed to send message to sandbox",
-        }),
-      );
+      this.sendDirectChatError(ws, error, {
+        source: "runner_enqueue",
+        fallbackMessage: "Failed to send message to sandbox",
+      });
       return;
     } finally {
       if (clientMessageId) {
@@ -7682,13 +7816,11 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         durationMs: Date.now() - startedAt,
         sampleKey: sendAttemptId,
       });
-      this.sendDirect(
-        ws,
-        this.chatSendErrorPayload(result.error, {
-          status: result.status,
-          fallbackMessage: "Failed to send message",
-        }),
-      );
+      this.sendDirectChatError(ws, result.error, {
+        source: "runner_send",
+        status: result.status,
+        fallbackMessage: "Failed to send message",
+      });
       return;
     }
 
@@ -12521,6 +12653,94 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     this.piSession.state.model = current.model;
   }
 
+  private recordCurrentThreadError(input: {
+    message: string;
+    source?: unknown;
+    errorKind?: unknown;
+    status?: unknown;
+    provider?: unknown;
+    model?: unknown;
+    createdAt?: number;
+  }): void {
+    const context = this.chatContext;
+    const message = input.message.trim();
+    if (!context || !message) return;
+
+    const explicitSource =
+      typeof input.source === "string" && input.source.trim()
+        ? input.source.trim()
+        : "";
+    const sourceCandidate =
+      explicitSource === "chat_thread_do_pi"
+        ? "pi_provider"
+        : explicitSource || (input.provider ? "pi_provider" : undefined);
+    const status = normalizeChatErrorStatus(input.status);
+    const source = normalizeChatErrorSource(sourceCandidate);
+    const messageNormalized = normalizeChatErrorMessage(message) || "Unknown chat error";
+    const errorKind = normalizeChatErrorKind(input.errorKind, messageNormalized, status);
+    const provider =
+      typeof input.provider === "string" && input.provider.trim()
+        ? input.provider.trim()
+        : this.piCurrentUsageProvider;
+    const model =
+      typeof input.model === "string" && input.model.trim()
+        ? input.model.trim()
+        : this.piSession?.state.model?.id ?? null;
+    const previewEvent = buildChatErrorEventPayload({
+      threadId: context.threadId,
+      orgId: context.orgId,
+      workspaceId: context.workspaceId,
+      userId: context.userId,
+      message,
+      source,
+      errorKind,
+      status,
+      provider,
+      model,
+      createdAt: input.createdAt,
+    });
+    const fingerprint = createChatErrorFingerprint({
+      source,
+      messageNormalized,
+      errorKind,
+      status,
+      provider,
+      model,
+    });
+    const key = `${context.threadId}:${fingerprint}`;
+    const now = Date.now();
+    for (const [existingKey, recordedAt] of this.recordedChatErrors.entries()) {
+      if (now - recordedAt > CHAT_ERROR_DEDUPE_WINDOW_MS) {
+        this.recordedChatErrors.delete(existingKey);
+      }
+    }
+    const previous = this.recordedChatErrors.get(key);
+    if (previous && now - previous <= CHAT_ERROR_DEDUPE_WINDOW_MS) return;
+    this.recordedChatErrors.set(key, now);
+
+    this.ctx.waitUntil(
+      this.retryChatDurableObjectRpc(
+        "OrgDO.recordThreadError",
+        () => {
+          const orgStub = this.env.ORG.get(this.env.ORG.idFromName(context.orgId));
+          return orgStub.recordThreadError(context.threadId, {
+            message,
+            source: previewEvent.source,
+            errorKind,
+            status,
+            provider,
+            model,
+            userId: context.userId,
+            createdAt: previewEvent.created_at,
+          });
+        },
+        { attempts: 3, initialDelayMs: 150 },
+      ).catch((error) => {
+        console.error("[ChatThreadDO] failed to record chat error metadata", error);
+      }),
+    );
+  }
+
   private emitChatError(message: string): void {
     this.pushChatEvent({ type: "error", error: message });
   }
@@ -12541,6 +12761,26 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     const sessionId = this.chatContext?.threadId || "";
     const eventId = this.nextChatEventId++;
     this.ctx.storage.kv.put(CHAT_NEXT_EVENT_ID_KEY, this.nextChatEventId);
+
+    if (payload.type === "error") {
+      const message =
+        typeof payload.error === "string" && payload.error.trim()
+          ? payload.error.trim()
+          : typeof payload.message === "string" && payload.message.trim()
+            ? payload.message.trim()
+            : "";
+      if (message) {
+        this.recordCurrentThreadError({
+          message,
+          source: payload.source,
+          errorKind: payload.errorType ?? payload.error_kind,
+          status: payload.status ?? payload.statusCode,
+          provider: payload.provider,
+          model: payload.model,
+          createdAt: Date.now(),
+        });
+      }
+    }
 
     const envelope: Record<string, unknown> = {
       ...payload,

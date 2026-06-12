@@ -12,6 +12,7 @@ import {
   Check,
   ChevronDown,
   ChevronUp,
+  CircleAlert,
   Clock,
   ExternalLink,
   Loader2,
@@ -80,12 +81,14 @@ export async function loader({ request, context }: Route.LoaderArgs) {
   const plan = parsePlan(url.searchParams.get('plan'));
   const first = url.searchParams.get('first') === '1';
   const automated = url.searchParams.get('automated') === '1';
+  const errors = url.searchParams.get('errors') === '1';
   const hideInternal = url.searchParams.get('internal') === '0';
   const sort = url.searchParams.get('sort') === 'created' ? 'created' : 'activity';
   const filters: ChatExplorerFilters = {
     ...(plan ? { plan } : {}),
     ...(first ? { first_chats_only: true } : {}),
     ...(automated ? { automated_only: true } : {}),
+    ...(errors ? { errors_only: true } : {}),
     ...(hideInternal ? { exclude_internal: true } : {}),
     sort_by: sort === 'created' ? 'created_at' : 'updated_at',
   };
@@ -102,6 +105,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     plan,
     first,
     automated,
+    errors,
     internal: hideInternal ? '0' : '1',
     sort,
   };
@@ -153,6 +157,7 @@ export default function AdminChatExplorerPage() {
         loaderData.plan,
         loaderData.first,
         loaderData.automated,
+        loaderData.errors,
         loaderData.internal,
         loaderData.sort,
       ]),
@@ -161,6 +166,7 @@ export default function AdminChatExplorerPage() {
       loaderData.plan,
       loaderData.first,
       loaderData.automated,
+      loaderData.errors,
       loaderData.internal,
       loaderData.sort,
     ],
@@ -204,6 +210,7 @@ export default function AdminChatExplorerPage() {
       fetcherData.plan,
       fetcherData.first,
       fetcherData.automated,
+      fetcherData.errors,
       fetcherData.internal,
       fetcherData.sort,
     ]);
@@ -432,6 +439,16 @@ export default function AdminChatExplorerPage() {
           <Label className="h-7 rounded-md border border-border bg-input/20 px-2">
             <Switch
               size="sm"
+              checked={loaderData.errors}
+              onCheckedChange={(checked) =>
+                updateFilter('errors', checked ? '1' : null)
+              }
+            />
+            Errors only
+          </Label>
+          <Label className="h-7 rounded-md border border-border bg-input/20 px-2">
+            <Switch
+              size="sm"
               checked={hideInternal}
               onCheckedChange={(checked) =>
                 updateFilter('internal', checked ? '0' : null)
@@ -566,6 +583,7 @@ function ThreadListItem({
   const title = thread.title?.trim();
   const channelKinds = getExplorerChannelKinds(thread);
   const sourceBadge = getSourceBadgeLabel(thread, channelKinds);
+  const messageCount = formatUserMessageCount(thread);
   return (
     <button
       ref={refCallback}
@@ -618,11 +636,13 @@ function ThreadListItem({
       </div>
       <div className="flex flex-wrap items-center gap-1.5 pt-1">
         <PlanBadge thread={thread} />
-        {thread.user_message_count !== null ? (
+        {messageCount ? (
           <Badge variant="outline" className="h-4 px-1.5 py-0 text-[10px]">
-            {thread.user_message_count} msgs
+            {messageCount}
           </Badge>
         ) : null}
+        <ModelHistoryBadges thread={thread} />
+        <ThreadErrorBadge thread={thread} />
         {channelKinds.length > 0 ? (
           <ChannelLogoStack
             channels={channelKinds}
@@ -681,10 +701,8 @@ function ReaderPane({
   const title = thread?.title?.trim() || threadId;
   const planLabel = thread ? getPlanLabel(thread.org_plan) : null;
   const channelKinds = thread ? getExplorerChannelKinds(thread) : [];
-  const messageCount =
-    thread?.user_message_count !== null && thread?.user_message_count !== undefined
-      ? `${thread.user_message_count} msgs`
-      : null;
+  const messageCount = thread ? formatUserMessageCount(thread) : null;
+  const modelHistory = thread ? getModelHistory(thread) : [];
   const createdLabel = thread ? `created ${shortDateFormatter.format(new Date(thread.created_at))}` : null;
   const nextDisabled = selectedIndex >= 0 && selectedIndex === loadedCount - 1 && !hasMore;
 
@@ -710,6 +728,9 @@ function ReaderPane({
                 )}
                 {planLabel ? <span> · {planLabel}</span> : null}
                 {messageCount ? <span> · {messageCount}</span> : null}
+                {modelHistory.length > 0 ? (
+                  <span> · models {formatModelHistoryInline(modelHistory, thread.model)}</span>
+                ) : null}
                 {createdLabel ? <span> · {createdLabel}</span> : null}
                 {isAutomatedThread(thread) ? <span> · Automated</span> : null}
               </div>
@@ -721,6 +742,9 @@ function ReaderPane({
                 channels={channelKinds}
                 tooltipFor={(label) => `Contains messages sent via ${label}`}
               />
+            ) : null}
+            {thread && thread.chat_error_count > 0 ? (
+              <ThreadErrorBadge thread={thread} />
             ) : null}
           </div>
         </div>
@@ -789,6 +813,78 @@ function ReaderPane({
           onLoad={onIframeLoad}
         />
       </div>
+    </>
+  );
+}
+
+function ThreadErrorBadge({ thread }: { thread: AdminChatExplorerRow }) {
+  if (!thread.chat_error_count || thread.chat_error_count <= 0) return null;
+  const label = thread.chat_error_count > 1 ? `Error x${thread.chat_error_count}` : 'Error';
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <Badge
+          variant="outline"
+          className="h-4 border-destructive/60 px-1.5 py-0 text-[10px] text-destructive"
+        >
+          <CircleAlert className="size-2.5" />
+          {label}
+        </Badge>
+      </TooltipTrigger>
+      <TooltipContent className="max-w-80">
+        <div className="space-y-1">
+          <div className="font-medium">Last chat error</div>
+          {thread.last_chat_error_message ? (
+            <div className="text-muted-foreground">{thread.last_chat_error_message}</div>
+          ) : null}
+          <div className="text-xs text-muted-foreground">
+            {[
+              thread.last_chat_error_source ? `source ${thread.last_chat_error_source}` : null,
+              thread.last_chat_error_status ? `status ${thread.last_chat_error_status}` : null,
+              thread.last_chat_error_provider ? `provider ${thread.last_chat_error_provider}` : null,
+              thread.last_chat_error_model ? `model ${thread.last_chat_error_model}` : null,
+              thread.last_chat_error_at ? formatDateTime(thread.last_chat_error_at) : null,
+            ]
+              .filter(Boolean)
+              .join(' · ')}
+          </div>
+        </div>
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
+function ModelHistoryBadges({ thread }: { thread: AdminChatExplorerRow }) {
+  const models = getModelHistory(thread);
+  if (models.length === 0) return null;
+  const visible = models.length > 3 ? [...models.slice(0, 2), `+${models.length - 2}`] : models;
+  return (
+    <>
+      {visible.map((model) => (
+        <Tooltip key={model}>
+          <TooltipTrigger asChild>
+            <Badge
+              variant="outline"
+              className={cn(
+                'h-4 max-w-28 px-1.5 py-0 text-[10px]',
+                model === thread.model && 'border-primary/40 text-foreground',
+              )}
+            >
+              <span className="truncate">{model}</span>
+            </Badge>
+          </TooltipTrigger>
+          <TooltipContent className="max-w-80">
+            <div className="space-y-1">
+              <div className="font-medium">Models in thread</div>
+              <div className="text-xs text-muted-foreground">
+                {models
+                  .map((entry) => (entry === thread.model ? `${entry} (current)` : entry))
+                  .join(' · ')}
+              </div>
+            </div>
+          </TooltipContent>
+        </Tooltip>
+      ))}
     </>
   );
 }
@@ -901,6 +997,46 @@ function getPlanBadgeClassName(plan: ExplorerPlan): string {
     default:
       return '';
   }
+}
+
+function formatUserMessageCount(thread: AdminChatExplorerRow): string | null {
+  const count = thread.user_message_count;
+  if (count === null || count === undefined) return null;
+  if (thread.user_message_count_capped || count > 20) return '20+ msgs';
+  if (count === 1) return '1 msg';
+  return `${count} msgs`;
+}
+
+function getModelHistory(thread: AdminChatExplorerRow): string[] {
+  const models: string[] = [];
+  const addModel = (value: unknown) => {
+    if (typeof value !== 'string') return;
+    const model = value.trim();
+    if (model && !models.includes(model)) models.push(model);
+  };
+
+  if (typeof thread.model_history === 'string' && thread.model_history.trim()) {
+    try {
+      const parsed = JSON.parse(thread.model_history) as unknown;
+      if (Array.isArray(parsed)) {
+        parsed.forEach(addModel);
+      } else {
+        addModel(thread.model_history);
+      }
+    } catch {
+      addModel(thread.model_history);
+    }
+  }
+  addModel(thread.model);
+  return models;
+}
+
+function formatModelHistoryInline(models: string[], currentModel: string | null): string {
+  if (models.length === 0) return '';
+  if (models.length <= 3) {
+    return models.map((model) => (model === currentModel ? `${model} current` : model)).join(', ');
+  }
+  return `${models.slice(0, 2).join(', ')}, +${models.length - 2}`;
 }
 
 function getExplorerChannelKinds(thread: AdminChatExplorerRow): string[] {
