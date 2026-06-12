@@ -42,7 +42,7 @@ import {
 } from "./project-runtime-service-vm";
 import { formatAttributedUserMessage } from './chat-author-attribution';
 import { injectFileSafetyMessage } from './file-safety';
-import { applyConnectionMentionContext } from './connection-mention-context';
+import { applyMentionContext } from './mention-context';
 import {
   getThreadTitleSourceMessage,
   isPlaceholderThreadTitle,
@@ -7359,7 +7359,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     });
   }
 
-  private async applyConnectionMentionsForTurn(content: string): Promise<string> {
+  private async applyMentionsForTurn(content: string): Promise<string> {
     if (!content) return content;
     if (!content.includes('@')) return content;
     const workspaceId = this.chatContext?.workspaceId;
@@ -7368,12 +7368,26 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       const workspaceStub = this.env.WORKSPACE.get(
         this.env.WORKSPACE.idFromName(workspaceId),
       );
-      const integrations = await workspaceStub.getIntegrations();
-      const result = applyConnectionMentionContext(content, integrations);
+      const workspaceFs = new WorkspaceFilesystemClient(this.env, workspaceId);
+      const [integrations, projects] = await Promise.all([
+        Promise.resolve()
+          .then(() => workspaceStub.getIntegrations())
+          .catch((err) => {
+            console.error('[ChatThreadDO] getIntegrations for mentions failed', err);
+            return [];
+          }),
+        Promise.resolve()
+          .then(() => workspaceFs.listProjects())
+          .catch((err) => {
+            console.error('[ChatThreadDO] listProjects for mentions failed', err);
+            return [];
+          }),
+      ]);
+      const result = applyMentionContext(content, { integrations, projects });
       return result.content;
     } catch (err) {
       console.error(
-        '[ChatThreadDO] applyConnectionMentionsForTurn failed',
+        '[ChatThreadDO] applyMentionsForTurn failed',
         err,
       );
       return content;
@@ -7778,7 +7792,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     try {
       const safeContent = injectFileSafetyMessage(rawContent);
       const mentionAugmented =
-        await this.applyConnectionMentionsForTurn(safeContent);
+        await this.applyMentionsForTurn(safeContent);
       attributedContent = formatAttributedUserMessage(mentionAugmented, {
         userName: context.userName,
         userEmail: context.userEmail,

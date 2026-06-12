@@ -3,7 +3,7 @@
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Await, useNavigate } from 'react-router';
 import { ChevronUp, Plus } from 'lucide-react';
-import type { WorkerScriptWithCreator, Integration, LlmModel, Thread } from '@/types';
+import type { AtMentionEntity, WorkerScriptWithCreator, Integration, LlmModel, Thread } from '@/types';
 import type { Attachment } from '@/components/attachment-list';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import { PromptInput } from '@/components/prompt-input';
@@ -13,9 +13,10 @@ import { INTEGRATION_REGISTRY } from '@/lib/integration-registry';
 import { IntegrationIcon } from '@/lib/integration-icons';
 import {
   buildSlugMap,
-  filterMentionableConnections,
-  slugForIntegration,
-} from '@/lib/connection-mentions';
+  slugForMentionable,
+  filterMentionables,
+  type MentionableProject,
+} from '@/lib/mentions';
 import { AnimatedPlaceholder } from './animated-placeholder';
 import { createSeededRandom, hashStringToSeed } from './deterministic-random';
 import { WelcomeGreeting } from './welcome-greeting';
@@ -197,6 +198,7 @@ interface WelcomeScreenProps {
   userName: string | null;
   allApps: WorkerScriptWithCreator[] | Promise<WorkerScriptWithCreator[]>;
   connections: Integration[] | Promise<Integration[]>;
+  projects: MentionableProject[] | Promise<MentionableProject[]>;
   recentThreads: Thread[] | Promise<Thread[]>;
   renderedAt?: number;
   onPromptChange: (prompt: string) => void;
@@ -322,6 +324,7 @@ export function WelcomeScreen({
   userName,
   allApps,
   connections,
+  projects,
   recentThreads,
   renderedAt,
   onPromptChange,
@@ -343,6 +346,9 @@ export function WelcomeScreen({
   const [referenceTime] = useState(() => renderedAt ?? Date.now());
   const [resolvedConnections, setResolvedConnections] = useState<Integration[]>(
     () => (Array.isArray(connections) ? connections : EMPTY_INTEGRATIONS),
+  );
+  const [resolvedProjects, setResolvedProjects] = useState<MentionableProject[]>(
+    () => (Array.isArray(projects) ? projects : []),
   );
   useEffect(() => {
     if (Array.isArray(connections)) {
@@ -368,14 +374,46 @@ export function WelcomeScreen({
     };
   }, [connections]);
   const mentionableConnections = useMemo(
-    () => filterMentionableConnections(resolvedConnections),
+    () => filterMentionables(
+      resolvedConnections.map((connection) => ({
+        ...connection,
+        kind: 'connection' as const,
+      })),
+    ),
     [resolvedConnections],
   );
+  useEffect(() => {
+    if (Array.isArray(projects)) {
+      setResolvedProjects(projects);
+      return;
+    }
+    if (!isPromiseLike(projects)) {
+      setResolvedProjects([]);
+      return;
+    }
+
+    let cancelled = false;
+    projects
+      .then((nextProjects) => {
+        if (!cancelled) setResolvedProjects(nextProjects);
+      })
+      .catch(() => {
+        if (!cancelled) setResolvedProjects([]);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [projects]);
+  const mentionEntities = useMemo<AtMentionEntity[]>(() => [
+    ...mentionableConnections,
+    ...resolvedProjects,
+  ], [mentionableConnections, resolvedProjects]);
   const hasConnections = mentionableConnections.length > 0;
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const connectionSlugMap = useMemo(
-    () => buildSlugMap(mentionableConnections) as Map<string, Integration>,
-    [mentionableConnections],
+    () => buildSlugMap(mentionEntities),
+    [mentionEntities],
   );
 
   const focusInput = useCallback(() => {
@@ -422,7 +460,10 @@ export function WelcomeScreen({
   }, [onPromptChange, focusInput]);
 
   const handleConnectionSelect = useCallback((connection: Integration) => {
-    const computedSlug = slugForIntegration(connection, connectionSlugMap);
+    const computedSlug = slugForMentionable(
+      { ...connection, kind: 'connection' as const },
+      connectionSlugMap,
+    );
     if (!computedSlug) return;
     onPromptChange(`@${computedSlug} `);
     focusInput();
@@ -459,7 +500,7 @@ export function WelcomeScreen({
             disabled={Boolean(noModelsMessage)}
             isOrgAdmin={isOrgAdmin}
             recentModelScope={recentModelScope}
-            mentionableConnections={mentionableConnections}
+            mentionables={mentionEntities}
             mentionMenuSide="top"
             onMentionAddNewClick={() => navigate('/connections')}
           />

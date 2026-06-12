@@ -13,12 +13,13 @@ vi.mock('@/lib/shiki-config', () => ({
 
 import { MarkdownRenderer } from '@/components/markdown-renderer';
 import { codeToHtml } from '@/lib/shiki-config';
-import type { Integration } from '@/types';
+import type { AtMentionConnection, Integration } from '@/types';
 
 const codeToHtmlMock = vi.mocked(codeToHtml);
 
-function integration(fields: Pick<Integration, 'id' | 'integration_type' | 'name'>): Integration {
+function integration(fields: Pick<Integration, 'id' | 'integration_type' | 'name'>): AtMentionConnection {
   return {
+    kind: 'connection',
     category: 'databases',
     auth_method: 'api_key',
     config: {},

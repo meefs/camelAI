@@ -1,5 +1,5 @@
 import type { ContentBlock } from '@/types';
-import { stripMentionAnnotations } from '@/lib/connection-mentions';
+import { stripMentionAnnotations } from '@/lib/mentions';
 
 const AUTHOR_PREFIX_WITH_EMAIL_REGEX = /^\[([^\]]+)\s+\(([^)]+)\)\]:\s*/;
 const AUTHOR_PREFIX_SIMPLE_REGEX = /^\[([^\]]+)\]:\s*/;

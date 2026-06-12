@@ -15,6 +15,7 @@ import {
 } from "@/lib/auth.server";
 import { createSessionCookieHeader } from "@/lib/cookies.server";
 import { integrationRecordToIntegration } from "@/lib/auth-helpers";
+import { projectsToMentionables, type MentionableProject } from "@/lib/mentions";
 import { getEnv } from "@/lib/cloudflare.server";
 import { getAppUrlContext } from "@/lib/app-url.server";
 import { getOrgBillingOverview } from "@/lib/billing.server";
@@ -119,6 +120,20 @@ function createChatThreadRouteLoaderTraceContext(
     path: normalizePathForObservability(url.pathname),
     route: "routes/_app.chat.$id.loader",
   };
+}
+
+async function loadWorkspaceMentionProjects(
+  env: unknown,
+  workspaceId: string,
+): Promise<MentionableProject[]> {
+  const { WorkspaceFilesystemClient } = await import(
+    "../../workers/main/src/workspace-filesystem-do"
+  );
+  const projects = await new WorkspaceFilesystemClient(
+    env as never,
+    workspaceId,
+  ).listProjects();
+  return projectsToMentionables(projects);
 }
 
 function recordChatThreadRouteLoaderStage(
@@ -568,6 +583,7 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
       hostname,
       orgSlug: org?.slug,
       connections: [] as Integration[],
+      projects: [] as MentionableProject[],
       isOrgAdmin: false,
       recentModelScope: null,
       readOnly: true,
@@ -747,6 +763,7 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
       hostname,
       orgSlug: orgInfo?.slug,
       connections: [] as Integration[],
+      projects: [] as MentionableProject[],
       isOrgAdmin: false,
       recentModelScope: { orgId, workspaceId },
       readOnly: false,
@@ -777,6 +794,7 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
       isNewThread: false,
       hostname: undefined,
       connections: [] as Integration[],
+      projects: [] as MentionableProject[],
       isOrgAdmin: false,
       recentModelScope: null,
       readOnly: false,
@@ -857,6 +875,12 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
       console.error("Failed to load workspace connections:", error);
       return [] as Integration[];
     });
+  const projectsPromise: Promise<MentionableProject[]> =
+    loadWorkspaceMentionProjects(env, workspaceId)
+      .catch((error) => {
+        console.error("Failed to load workspace projects:", error);
+        return [];
+      });
   const [
     [experimentalSettings, llmProviderConfig, billingOverview],
     thread,
@@ -1003,6 +1027,7 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
     hostname,
     orgSlug: authContext.currentOrg.slug,
     connections: connectionsPromise,
+    projects: projectsPromise,
     isOrgAdmin: authContext.orgs.some(
       (org) =>
         org.org_id === orgId && (org.role === "owner" || org.role === "admin"),
@@ -1038,6 +1063,7 @@ export default function ChatPage() {
     hostname,
     orgSlug,
     connections,
+    projects,
     isOrgAdmin,
     recentModelScope,
     readOnly,
@@ -1376,6 +1402,7 @@ export default function ChatPage() {
             hostname={hostname}
             orgSlug={orgSlug}
             connections={connections}
+            projects={projects}
             onSnapshotChange={handleSnapshotChange}
             isOrgAdmin={isOrgAdmin}
             recentModelScope={recentModelScope}

@@ -202,6 +202,10 @@ export default [
     "routes/api/workspaces.$id.projects.$project.fs.content.$.ts",
   ),
   route(
+    "api/workspaces/:id/projects",
+    "routes/api/workspaces.$id.projects.ts",
+  ),
+  route(
     "api/workspaces/:id/chat/threads",
     "routes/api/workspaces.$id.chat.threads.ts",
   ),

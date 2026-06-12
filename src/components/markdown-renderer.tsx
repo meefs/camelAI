@@ -23,13 +23,13 @@ import type { PluggableList } from 'unified';
 import { cn } from '@/lib/utils';
 import { Check, Copy, ImageOff } from 'lucide-react';
 import { codeToHtml, SHIKI_DEFAULT_THEMES, SUPPORTED_LANGUAGES } from '@/lib/shiki-config';
-import { MentionChip } from '@/components/connection-mention-menu/mention-chip';
+import { MentionChip } from '@/components/at-mention-menu/mention-chip';
 import {
   parseMentions,
   type AnnotatedMentionRef,
   type MentionMatch,
-} from '@/lib/connection-mentions';
-import type { Integration } from '@/types';
+} from '@/lib/mentions';
+import type { AtMentionEntity } from '@/types';
 
 interface MarkdownRendererProps {
   content: string;
@@ -38,7 +38,7 @@ interface MarkdownRendererProps {
   variant?: 'default' | 'user';
   allowInlineHtml?: boolean;
   workspaceId?: string;
-  mentionSlugMap?: Map<string, Integration>;
+  mentionSlugMap?: Map<string, AtMentionEntity>;
   annotatedMentions?: ReadonlyArray<AnnotatedMentionRef>;
 }
 
@@ -263,18 +263,18 @@ class MentionAnnotationCursor {
   }
 }
 
-function resolveMentionChipIntegration(
-  match: MentionMatch,
+function resolveMentionChipTarget(
+  match: MentionMatch<AtMentionEntity>,
   annotatedId: string | null | typeof NO_ANNOTATION,
-): Integration | null {
-  const currentIntegration = match.integration as Integration | null;
+): AtMentionEntity | null {
+  const currentTarget = match.target;
 
   if (annotatedId === NO_ANNOTATION) {
-    return currentIntegration;
+    return currentTarget;
   }
 
-  if (currentIntegration && annotatedId === currentIntegration.id) {
-    return currentIntegration;
+  if (currentTarget && annotatedId === currentTarget.id) {
+    return currentTarget;
   }
 
   return null;
@@ -282,7 +282,7 @@ function resolveMentionChipIntegration(
 
 function replaceMentionsInText(
   text: string,
-  slugMap: Map<string, Integration>,
+  slugMap: Map<string, AtMentionEntity>,
   annotationCursor: MentionAnnotationCursor,
   keyPrefix: string,
 ): ReactNode[] {
@@ -296,7 +296,7 @@ function replaceMentionsInText(
   for (let i = 0; i < matches.length; i++) {
     const m = matches[i]!;
     const annotatedId = annotationCursor.next(m.slug);
-    if (m.integration === null && annotatedId === NO_ANNOTATION) {
+    if (m.target === null && annotatedId === NO_ANNOTATION) {
       continue;
     }
 
@@ -307,7 +307,7 @@ function replaceMentionsInText(
       <MentionChip
         key={`${keyPrefix}-m${i}`}
         slug={m.slug}
-        integration={resolveMentionChipIntegration(m, annotatedId)}
+        target={resolveMentionChipTarget(m, annotatedId)}
       />,
     );
     cursor = m.index + m.length;
@@ -320,7 +320,7 @@ function replaceMentionsInText(
 
 function withMentionChips(
   children: ReactNode,
-  slugMap: Map<string, Integration>,
+  slugMap: Map<string, AtMentionEntity>,
   annotationCursor: MentionAnnotationCursor,
   keyPrefix = 'mc',
 ): ReactNode {
@@ -362,12 +362,12 @@ const createComponents = (
   sourceContent: string,
   isStreaming: boolean,
   workspaceId?: string,
-  mentionSlugMap?: Map<string, Integration>,
+  mentionSlugMap?: Map<string, AtMentionEntity>,
   annotatedMentions?: ReadonlyArray<AnnotatedMentionRef>,
 ): Components => {
   const annotatedIdsBySlug = buildAnnotatedIdsBySlug(annotatedMentions);
   const canRenderMentions = Boolean(mentionSlugMap || annotatedIdsBySlug.size);
-  const slugMap = mentionSlugMap ?? new Map<string, Integration>();
+  const slugMap = mentionSlugMap ?? new Map<string, AtMentionEntity>();
   const annotationCursor = new MentionAnnotationCursor(annotatedIdsBySlug);
   const wrap = (children: ReactNode, keyPrefix: string) =>
     canRenderMentions

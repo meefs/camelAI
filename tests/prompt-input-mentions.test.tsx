@@ -4,7 +4,8 @@ import userEvent from '@testing-library/user-event';
 import { useState } from 'react';
 import type { ReactNode } from 'react';
 import { PromptInput } from '@/components/prompt-input';
-import type { Integration } from '@/types';
+import type { AtMentionEntity, Integration } from '@/types';
+import { projectsToMentionables } from '@/lib/mentions';
 
 vi.mock('@/hooks/use-voice-recording', () => ({
   useVoiceRecording: () => ({
@@ -43,7 +44,33 @@ const connection: Integration = {
   has_credentials: true,
 };
 
-function ControlledPromptInput({ mentionMenuSide }: { mentionMenuSide?: 'top' | 'bottom' }) {
+const project: AtMentionEntity = {
+  kind: 'project',
+  id: 'ca-workspace-alpha-site',
+  name: 'Alpha Site',
+  description: 'Marketing site rebuild',
+  created_at: 2,
+  updated_at: 2,
+};
+
+const lateAlphabetProject: AtMentionEntity = {
+  ...project,
+  id: 'ca-workspace-zebra-site',
+  name: 'Zebra Site',
+};
+
+const mixedMentionables: AtMentionEntity[] = [
+  { ...connection, kind: 'connection' },
+  project,
+];
+
+function ControlledPromptInput({
+  mentionMenuSide,
+  mentionables = mixedMentionables,
+}: {
+  mentionMenuSide?: 'top' | 'bottom';
+  mentionables?: AtMentionEntity[];
+}) {
   const [value, setValue] = useState('');
 
   return (
@@ -52,7 +79,7 @@ function ControlledPromptInput({ mentionMenuSide }: { mentionMenuSide?: 'top' | 
       onChange={setValue}
       onSubmit={vi.fn()}
       enableVoiceRecording={false}
-      mentionableConnections={[connection]}
+      mentionables={mentionables}
       mentionMenuSide={mentionMenuSide}
     />
   );
@@ -66,11 +93,103 @@ describe('PromptInput mentions', () => {
     await user.type(screen.getByRole('textbox'), '@');
 
     expect(await screen.findByText('Customers DB')).toBeInTheDocument();
+    expect(screen.getByText('Alpha Site')).toBeInTheDocument();
+    expect(screen.queryByText('Projects')).not.toBeInTheDocument();
+    expect(screen.queryByText('Connections')).not.toBeInTheDocument();
+    expect(screen.getByText('Project')).toBeInTheDocument();
+    expect(screen.getByText('PostgreSQL')).toBeInTheDocument();
     await waitFor(() => {
       expect(document.querySelector('[data-slot="popover-content"]')).toHaveAttribute(
         'data-side',
         'bottom',
       );
     });
+  });
+
+  it('renders one flat interleaved list across projects and connections', async () => {
+    const user = userEvent.setup();
+    render(<ControlledPromptInput mentionables={[
+      { ...connection, kind: 'connection' },
+      lateAlphabetProject,
+    ]} />);
+
+    await user.type(screen.getByRole('textbox'), '@');
+
+    const connectionRow = await screen.findByText('Customers DB');
+    const projectRow = screen.getByText('Zebra Site');
+    expect(
+      connectionRow.compareDocumentPosition(projectRow) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
+  it('keeps keyboard selection aligned with the flat visual order', async () => {
+    const user = userEvent.setup();
+    render(<ControlledPromptInput mentionables={[
+      { ...connection, kind: 'connection' },
+      lateAlphabetProject,
+    ]} />);
+
+    const textbox = screen.getByRole('textbox');
+    await user.type(textbox, '@');
+    expect(await screen.findByText('Customers DB')).toBeInTheDocument();
+
+    await user.keyboard('{Enter}');
+
+    expect(textbox).toHaveValue('@customers_db ');
+  });
+
+  it('reports mention trigger activity even when stale items have no matches', async () => {
+    const user = userEvent.setup();
+    const onMentionMenuOpenChange = vi.fn();
+    function NoMatchPromptInput() {
+      const [value, setValue] = useState('');
+      return (
+        <PromptInput
+          value={value}
+          onChange={setValue}
+          onSubmit={vi.fn()}
+          enableVoiceRecording={false}
+          mentionables={[{ ...connection, kind: 'connection' }]}
+          onMentionMenuOpenChange={onMentionMenuOpenChange}
+        />
+      );
+    }
+
+    render(<NoMatchPromptInput />);
+    await user.type(screen.getByRole('textbox'), '@new_project');
+
+    expect(screen.queryByText('Customers DB')).not.toBeInTheDocument();
+    expect(onMentionMenuOpenChange).toHaveBeenCalledWith(true);
+  });
+
+  it('renders only source project rows when mapped projects include clones', async () => {
+    const user = userEvent.setup();
+    const sourceProjects = [
+      {
+        id: 'ca-workspace-alpha-site',
+        name: 'Alpha Site',
+        description: 'Marketing site rebuild',
+        createdAt: '2026-06-10T12:00:00.000Z',
+        updatedAt: '2026-06-11T12:00:00.000Z',
+        clones: [
+          {
+            id: 'ca-workspace-alpha-site-v2',
+            name: 'Alpha Site v2',
+            description: 'Clone experiment',
+            createdAt: '2026-06-11T12:00:00.000Z',
+            updatedAt: '2026-06-11T12:00:00.000Z',
+          },
+        ],
+      },
+    ] as const;
+    render(<ControlledPromptInput mentionables={projectsToMentionables(sourceProjects)} />);
+
+    await user.type(screen.getByRole('textbox'), '@');
+
+    expect(await screen.findByText('Alpha Site')).toBeInTheDocument();
+    expect(screen.queryByText('Alpha Site v2')).not.toBeInTheDocument();
+    expect(screen.getByText('Project')).toBeInTheDocument();
+    expect(screen.queryByText('Clone')).not.toBeInTheDocument();
   });
 });

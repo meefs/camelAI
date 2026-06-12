@@ -242,7 +242,7 @@ describe('ChatThreadDO Codex turn handling', () => {
     fake.broadcastRunnerClients = vi.fn();
     fake.emitChatError = vi.fn();
     fake.ensureRunnerConnected = vi.fn(async () => undefined);
-    fake.applyConnectionMentionsForTurn = vi.fn(async (content: string) => content);
+    fake.applyMentionsForTurn = vi.fn(async (content: string) => content);
     fake.updateThreadMetadataForUserMessage = vi.fn(async () => {});
     fake.warmWorkspaceContainerForTurn = vi.fn(async () => undefined);
     fake.sendRunnerCommand = vi.fn((command: any) => {
@@ -445,7 +445,7 @@ describe('ChatThreadDO Codex turn handling', () => {
     fake.publishRunningUserMessageActivity = vi.fn();
     fake.broadcastRunnerClients = vi.fn();
     fake.ensureRunnerConnected = vi.fn(async () => undefined);
-    fake.applyConnectionMentionsForTurn = vi.fn(async (content: string) => content);
+    fake.applyMentionsForTurn = vi.fn(async (content: string) => content);
     fake.updateThreadMetadataForUserMessage = vi.fn(async () => {});
     fake.warmWorkspaceContainerForTurn = vi.fn(async () => undefined);
     fake.sendRunnerCommand = vi.fn((command: any) => {

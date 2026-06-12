@@ -1,5 +1,5 @@
 import type { ContentBlock } from '@/types';
-import { stripMentionAnnotations } from '@/lib/connection-mentions';
+import { stripMentionAnnotations } from '@/lib/mentions';
 
 const SYSTEM_MESSAGE_TAG_REGEX = /<camelai system message>[\s\S]*?<\/camelai system message>/g;
 const TASK_NOTIFICATION_REGEX = /^<task-notification\b[^>]*>([\s\S]*?)<\/task-notification>([\s\S]*)$/;

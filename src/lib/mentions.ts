@@ -1,14 +1,17 @@
 import { getIntegrationDefinition } from './integration-registry';
 
 /**
- * Shared utilities for connection (@-mention) parsing, slugging, and expansion.
+ * Shared utilities for @-mention parsing, slugging, and expansion.
  *
  * This module is intentionally framework-agnostic so it can be imported from
  * the React app (mention menu, message bubble) and from worker / sandbox code
  * (server-side mention expansion).
  */
 
-export interface MentionableIntegration {
+export type MentionKind = 'connection' | 'project';
+
+export interface MentionableConnection {
+  kind: 'connection';
   id: string;
   integration_type: string;
   name: string;
@@ -16,11 +19,31 @@ export interface MentionableIntegration {
   created_at?: number;
 }
 
-export interface MentionMatch {
+export interface MentionableProject {
+  kind: 'project';
+  id: string;
+  name: string;
+  description: string;
+  created_at?: number;
+  updated_at?: number;
+}
+
+export type Mentionable = MentionableConnection | MentionableProject;
+
+export interface MentionProjectSource {
+  id: string;
+  name: string;
+  description?: string;
+  kind?: 'project' | 'clone';
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface MentionMatch<T extends Mentionable = Mentionable> {
   /** The slug as it appeared in the text, without the leading "@". */
   slug: string;
-  /** Resolved integration, or null when no integration matched the slug. */
-  integration: MentionableIntegration | null;
+  /** Resolved target, or null when no item matched the slug. */
+  target: T | null;
   /** Index of the leading "@" in the source string. */
   index: number;
   /** Length of the matched substring including the "@". */
@@ -46,48 +69,53 @@ export function slug(name: string): string {
     .replace(/^_+|_+$/g, '');
 }
 
-export function filterMentionableConnections<T extends MentionableIntegration>(
-  connections: ReadonlyArray<T>,
+export function filterMentionables<T extends Mentionable>(
+  items: ReadonlyArray<T>,
 ): T[] {
-  return connections.filter((connection) => slug(connection.name).length > 0);
+  return items.filter((item) => slug(item.name).length > 0);
 }
 
 /**
- * Rank connections for the live @-mention menu. Empty queries are alphabetic;
+ * Rank items for the live @-mention menu. Empty queries are alphabetic;
  * typed queries prefer natural name prefixes, then slug prefixes, then
- * integration/display-name prefixes, then substring matches.
+ * type/display-name prefixes, then substring matches.
  */
-export function rankMentionableConnections<T extends MentionableIntegration>(
-  connections: ReadonlyArray<T>,
+export function rankMentionables<T extends Mentionable>(
+  items: ReadonlyArray<T>,
   query: string,
 ): T[] {
-  const mentionableConnections = filterMentionableConnections(connections);
+  const mentionableItems = filterMentionables(items);
   const q = normalizeMentionSearch(query);
   const compactQ = compactMentionSearch(query);
   const rawQ = query.toLowerCase().trim();
   if (!q) {
-    return [...mentionableConnections].sort((a, b) =>
+    return [...mentionableItems].sort((a, b) =>
       a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }),
     );
   }
 
   const tiers: [T[], T[], T[], T[]] = [[], [], [], []];
   const slugsById = new Map<string, string>();
-  for (const [connectionSlug, integration] of buildSlugMap(mentionableConnections)) {
-    slugsById.set(integration.id, connectionSlug);
+  for (const [itemSlug, item] of buildSlugMap(mentionableItems)) {
+    slugsById.set(item.id, itemSlug);
   }
 
-  for (const connection of mentionableConnections) {
-    const rawName = connection.name.toLowerCase();
-    const normalizedName = normalizeMentionSearch(connection.name);
-    const compactName = compactMentionSearch(connection.name);
-    const connectionSlug = slugsById.get(connection.id) ?? slug(connection.name);
-    const normalizedSlug = normalizeMentionSearch(connectionSlug);
-    const compactSlug = compactMentionSearch(connectionSlug);
-    const type = normalizeMentionSearch(connection.integration_type);
-    const compactType = compactMentionSearch(connection.integration_type);
-    const displayName = getIntegrationDefinition(connection.integration_type)
-      ?.displayName ?? '';
+  for (const item of mentionableItems) {
+    const rawName = item.name.toLowerCase();
+    const normalizedName = normalizeMentionSearch(item.name);
+    const compactName = compactMentionSearch(item.name);
+    const itemSlug = slugsById.get(item.id) ?? slug(item.name);
+    const normalizedSlug = normalizeMentionSearch(itemSlug);
+    const compactSlug = compactMentionSearch(itemSlug);
+    const type = normalizeMentionSearch(
+      item.kind === 'connection' ? item.integration_type : 'project',
+    );
+    const compactType = compactMentionSearch(
+      item.kind === 'connection' ? item.integration_type : 'project',
+    );
+    const displayName = item.kind === 'connection'
+      ? getIntegrationDefinition(item.integration_type)?.displayName ?? ''
+      : '';
     const normalizedDisplayName = normalizeMentionSearch(displayName);
     const compactDisplayName = compactMentionSearch(displayName);
 
@@ -96,33 +124,38 @@ export function rankMentionableConnections<T extends MentionableIntegration>(
       normalizedName.startsWith(q) ||
       compactName.startsWith(compactQ)
     ) {
-      tiers[0].push(connection);
+      tiers[0].push(item);
     } else if (
-      connectionSlug.startsWith(rawQ) ||
+      itemSlug.startsWith(rawQ) ||
       normalizedSlug.startsWith(q) ||
       compactSlug.startsWith(compactQ)
     ) {
-      tiers[1].push(connection);
+      tiers[1].push(item);
     } else if (
       type.startsWith(q) ||
       compactType.startsWith(compactQ) ||
       normalizedDisplayName.startsWith(q) ||
       compactDisplayName.startsWith(compactQ)
     ) {
-      tiers[2].push(connection);
+      tiers[2].push(item);
     } else if (
       rawName.includes(rawQ) ||
       normalizedName.includes(q) ||
       compactName.includes(compactQ) ||
-      connectionSlug.includes(rawQ) ||
+      itemSlug.includes(rawQ) ||
       normalizedSlug.includes(q) ||
       compactSlug.includes(compactQ) ||
-      type.includes(q) ||
-      compactType.includes(compactQ) ||
-      normalizedDisplayName.includes(q) ||
-      compactDisplayName.includes(compactQ)
+      (
+        item.kind === 'connection' &&
+        (
+          type.includes(q) ||
+          compactType.includes(compactQ) ||
+          normalizedDisplayName.includes(q) ||
+          compactDisplayName.includes(compactQ)
+        )
+      )
     ) {
-      tiers[3].push(connection);
+      tiers[3].push(item);
     }
   }
 
@@ -148,49 +181,84 @@ function compactMentionSearch(value: string): string {
 }
 
 /**
- * Produce a slug → integration map for the given list. Collisions get
- * deterministic `-2`, `-3`, … suffixes, ordered by `created_at` ascending
- * (and stable for unsorted input via the secondary index ordering).
+ * Produce a slug → item map for the given list. Collisions get
+ * deterministic `-2`, `-3`, … suffixes. Connections are assigned first to
+ * preserve their historical connection-only slugs when projects are added;
+ * within each kind, assignment is ordered by `created_at` ascending and id.
  */
-export function buildSlugMap(
-  integrations: ReadonlyArray<MentionableIntegration>,
-): Map<string, MentionableIntegration> {
-  const ordered = [...integrations].sort((a, b) => {
+export function buildSlugMap<T extends Mentionable>(
+  items: ReadonlyArray<T>,
+): Map<string, T> {
+  const ordered = [...items].sort((a, b) => {
+    if (a.kind !== b.kind) {
+      return a.kind === 'connection' ? -1 : 1;
+    }
     const aCreated = a.created_at ?? 0;
     const bCreated = b.created_at ?? 0;
     if (aCreated !== bCreated) return aCreated - bCreated;
     return a.id.localeCompare(b.id);
   });
 
-  const result = new Map<string, MentionableIntegration>();
+  const result = new Map<string, T>();
   const baseCounts = new Map<string, number>();
 
-  for (const integration of ordered) {
-    const base = slug(integration.name);
+  for (const item of ordered) {
+    const base = slug(item.name);
     if (!base) continue;
 
     const count = (baseCounts.get(base) ?? 0) + 1;
     baseCounts.set(base, count);
     const finalSlug = count === 1 ? base : `${base}-${count}`;
-    result.set(finalSlug, integration);
+    result.set(finalSlug, item);
   }
 
   return result;
 }
 
 /**
- * Get the slug an integration will be assigned in the given list. Useful for
+ * Get the slug an item will be assigned in the given list. Useful for
  * components that want to render a chip without rebuilding the whole map by
- * hand. Returns null when the integration's name slugs to an empty string.
+ * hand. Returns null when the item's name slugs to an empty string.
  */
-export function slugForIntegration(
-  integration: MentionableIntegration,
-  slugMap: Map<string, MentionableIntegration>,
+export function slugForMentionable<T extends Mentionable>(
+  item: T,
+  slugMap: ReadonlyMap<string, T>,
 ): string | null {
   for (const [s, found] of slugMap) {
-    if (found.id === integration.id) return s;
+    if (found.kind === item.kind && found.id === item.id) return s;
   }
   return null;
+}
+
+function parseIsoDateMs(value: string | undefined): number | undefined {
+  if (!value) return undefined;
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) ? timestamp : undefined;
+}
+
+export function projectsToMentionables(
+  projects: readonly MentionProjectSource[],
+): MentionableProject[] {
+  const result: MentionableProject[] = [];
+
+  for (const project of projects) {
+    if ((project.kind ?? 'project') === 'clone') {
+      // Clones remain available through project tools, but are deliberately
+      // excluded from @-mentions so client/server slug maps stay identical.
+      continue;
+    }
+
+    result.push({
+      kind: 'project',
+      id: project.id,
+      name: project.name,
+      description: project.description ?? '',
+      created_at: parseIsoDateMs(project.createdAt),
+      updated_at: parseIsoDateMs(project.updatedAt),
+    });
+  }
+
+  return result;
 }
 
 function isWordBoundaryChar(ch: string | undefined): boolean {
@@ -274,11 +342,11 @@ export function stripMentionAnnotations(body: string): string {
  * slug isn't in `slugMap` (so callers can decide whether to render them as
  * plain text). Mid-word `@` (e.g. inside an email address) is ignored.
  */
-export function parseMentions(
+export function parseMentions<T extends Mentionable>(
   body: string,
-  slugMap: Map<string, MentionableIntegration>,
-): MentionMatch[] {
-  const matches: MentionMatch[] = [];
+  slugMap: ReadonlyMap<string, T>,
+): MentionMatch<T>[] {
+  const matches: MentionMatch<T>[] = [];
 
   for (let i = 0; i < body.length; i++) {
     if (body[i] !== '@') continue;
@@ -294,7 +362,7 @@ export function parseMentions(
     const candidate = body.slice(i + 1, end).toLowerCase();
     matches.push({
       slug: candidate,
-      integration: slugMap.get(candidate) ?? null,
+      target: slugMap.get(candidate) ?? null,
       index: i,
       length: end - i,
     });
@@ -311,7 +379,7 @@ export function parseMentions(
  */
 export function expandMentions(
   body: string,
-  slugMap: Map<string, MentionableIntegration>,
+  slugMap: ReadonlyMap<string, Mentionable>,
 ): string {
   if (!body || slugMap.size === 0) return body;
 
@@ -321,8 +389,11 @@ export function expandMentions(
   let result = body;
   for (let i = matches.length - 1; i >= 0; i--) {
     const match = matches[i];
-    if (!match.integration) continue;
-    const annotation = ` ⟦ref: ${match.integration.integration_type} "${match.integration.name}" id=${match.integration.id}⟧`;
+    if (!match.target) continue;
+    const annotationType = match.target.kind === 'connection'
+      ? match.target.integration_type
+      : 'project';
+    const annotation = ` ⟦ref: ${annotationType} "${match.target.name}" id=${match.target.id}⟧`;
     const insertAt = match.index + match.length;
     result = result.slice(0, insertAt) + annotation + result.slice(insertAt);
   }

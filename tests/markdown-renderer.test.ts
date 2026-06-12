@@ -4,10 +4,11 @@ import { createElement } from 'react';
 
 import { MarkdownRenderer, normalizeCodexCitationMarkers } from '@/components/markdown-renderer';
 import { ReportMarkdownCell } from '@/components/chat-file-preview/notebook-preview/report-markdown-cell';
-import type { Integration } from '@/types';
+import type { AtMentionConnection, Integration } from '@/types';
 
-function integration(fields: Pick<Integration, 'id' | 'integration_type' | 'name'>): Integration {
+function integration(fields: Pick<Integration, 'id' | 'integration_type' | 'name'>): AtMentionConnection {
   return {
+    kind: 'connection',
     category: 'databases',
     auth_method: 'api_key',
     config: {},
@@ -70,6 +71,31 @@ describe('MarkdownRenderer mention chips', () => {
     );
 
     const chips = screen.getAllByText('@camel');
+    expect(chips[0]).toHaveClass('bg-muted/60');
+    expect(chips[1]).toHaveClass('bg-muted');
+    expect(chips[1]).not.toHaveClass('bg-muted/60');
+  });
+
+  it('renders project mention chips and honors annotated ids', () => {
+    render(
+      createElement(MarkdownRenderer, {
+        content: '@camel_site then @camel_site',
+        mentionSlugMap: new Map([
+          ['camel_site', {
+            kind: 'project',
+            id: 'ca-workspace-camel-site',
+            name: 'camel-site',
+            description: 'Marketing site rebuild',
+          } as const],
+        ]),
+        annotatedMentions: [
+          { slug: 'camel_site', id: 'old-project' },
+          { slug: 'camel_site', id: 'ca-workspace-camel-site' },
+        ],
+      }),
+    );
+
+    const chips = screen.getAllByText('@camel_site');
     expect(chips[0]).toHaveClass('bg-muted/60');
     expect(chips[1]).toHaveClass('bg-muted');
     expect(chips[1]).not.toHaveClass('bg-muted/60');

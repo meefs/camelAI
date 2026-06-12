@@ -1,12 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import { createElement } from 'react';
-import type { ContentBlock, Integration } from '@/types';
+import type { AtMentionConnection, ContentBlock } from '@/types';
 import { ContentBlockRenderer, contentToString } from '@/components/message-bubble';
 import { BYOK_PROVIDERS } from '@/lib/byok-providers';
 
-function integrationWithId(id: string): Integration {
+function integrationWithId(id: string): AtMentionConnection {
   return {
+    kind: 'connection',
     id,
     integration_type: 'other',
     name: 'Camel',

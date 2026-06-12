@@ -2,20 +2,34 @@ import { describe, expect, it } from 'vitest';
 import {
   buildSlugMap,
   expandMentions,
-  filterMentionableConnections,
+  filterMentionables,
   parseMentions,
-  rankMentionableConnections,
+  projectsToMentionables,
+  rankMentionables,
   slug,
-  slugForIntegration,
+  slugForMentionable,
   stripMentionAnnotationsWithMetadata,
-  type MentionableIntegration,
-} from '@/lib/connection-mentions';
+  type MentionableConnection,
+  type MentionableProject,
+} from '@/lib/mentions';
 
 function fix(
-  fields: Partial<MentionableIntegration> & { id: string; name: string },
-): MentionableIntegration {
+  fields: Partial<MentionableConnection> & { id: string; name: string },
+): MentionableConnection {
   return {
+    kind: 'connection',
     integration_type: 'postgres',
+    created_at: 0,
+    ...fields,
+  };
+}
+
+function project(
+  fields: Partial<MentionableProject> & { id: string; name: string },
+): MentionableProject {
+  return {
+    kind: 'project',
+    description: 'Project description',
     created_at: 0,
     ...fields,
   };
@@ -56,33 +70,59 @@ describe('buildSlugMap', () => {
     const map = buildSlugMap([fix({ id: '1', name: '!!!' })]);
     expect(map.size).toBe(0);
   });
+
+  it('preserves connection slugs when projects collide across kinds', () => {
+    const connection = fix({ id: 'conn', name: 'Stripe', created_at: 2 });
+    const projectItem = project({ id: 'proj', name: 'stripe', created_at: 1 });
+
+    for (const input of [
+      [connection, projectItem],
+      [projectItem, connection],
+    ]) {
+      const map = buildSlugMap(input);
+      expect(map.get('stripe')?.id).toBe('conn');
+      expect(map.get('stripe-2')?.id).toBe('proj');
+    }
+  });
+
+  it('assigns project suffixes after existing duplicate connection slugs', () => {
+    const firstConnection = fix({ id: 'conn_a', name: 'Stripe', created_at: 2 });
+    const secondConnection = fix({ id: 'conn_b', name: 'Stripe', created_at: 3 });
+    const projectItem = project({ id: 'proj', name: 'Stripe', created_at: 1 });
+
+    const map = buildSlugMap([projectItem, secondConnection, firstConnection]);
+
+    expect(map.get('stripe')?.id).toBe('conn_a');
+    expect(map.get('stripe-2')?.id).toBe('conn_b');
+    expect(map.get('stripe-3')?.id).toBe('proj');
+  });
 });
 
-describe('filterMentionableConnections', () => {
+describe('filterMentionables', () => {
   it('removes connections whose names cannot produce mention slugs', () => {
     const integrations = [
       fix({ id: 'valid', name: 'Sales DB' }),
       fix({ id: 'invalid', name: '!!!' }),
     ];
 
-    expect(filterMentionableConnections(integrations).map((item) => item.id))
+    expect(filterMentionables(integrations).map((item) => item.id))
       .toEqual(['valid']);
-    expect(rankMentionableConnections(integrations, '').map((item) => item.id))
+    expect(rankMentionables(integrations, '').map((item) => item.id))
       .toEqual(['valid']);
   });
 });
 
-describe('slugForIntegration', () => {
+describe('slugForMentionable', () => {
   it('returns the slug an integration was assigned in the map', () => {
     const a = fix({ id: 'a', name: 'Prod', created_at: 1 });
     const b = fix({ id: 'b', name: 'Prod', created_at: 2 });
     const map = buildSlugMap([a, b]);
-    expect(slugForIntegration(a, map)).toBe('prod');
-    expect(slugForIntegration(b, map)).toBe('prod-2');
+    expect(slugForMentionable(a, map)).toBe('prod');
+    expect(slugForMentionable(b, map)).toBe('prod-2');
   });
 });
 
-describe('rankMentionableConnections', () => {
+describe('rankMentionables', () => {
   const integrations = [
     fix({ id: 'stripe', name: 'Stripe Live', integration_type: 'stripe' }),
     fix({ id: 'sales', name: 'Sales DB', integration_type: 'postgres' }),
@@ -91,23 +131,23 @@ describe('rankMentionableConnections', () => {
   ];
 
   it('sorts alphabetically for an empty query', () => {
-    expect(rankMentionableConnections(integrations, '').map((item) => item.id))
+    expect(rankMentionables(integrations, '').map((item) => item.id))
       .toEqual(['inventory', 'post', 'sales', 'stripe']);
   });
 
   it('ranks name prefixes before integration type/display name prefixes', () => {
-    expect(rankMentionableConnections(integrations, 'post').map((item) => item.id))
+    expect(rankMentionables(integrations, 'post').map((item) => item.id))
       .toEqual(['post', 'inventory', 'sales']);
   });
 
   it('matches registry display names', () => {
-    expect(rankMentionableConnections(integrations, 'postgresql').map((item) => item.id))
+    expect(rankMentionables(integrations, 'postgresql').map((item) => item.id))
       .toEqual(['inventory', 'sales']);
   });
 
   it('matches natural spaced names through slug and compact queries', () => {
     for (const query of ['sales d', 'sales_db', 'sales-db', 'salesd', 'salesdb']) {
-      expect(rankMentionableConnections(integrations, query).map((item) => item.id))
+      expect(rankMentionables(integrations, query).map((item) => item.id))
         .toContain('sales');
     }
   });
@@ -118,8 +158,70 @@ describe('rankMentionableConnections', () => {
       fix({ id: 'b', name: 'Prod', created_at: 2 }),
     ];
 
-    expect(rankMentionableConnections(duplicates, 'prod-2').map((item) => item.id))
+    expect(rankMentionables(duplicates, 'prod-2').map((item) => item.id))
       .toEqual(['b']);
+  });
+
+  it('sorts an empty query alphabetically across projects and connections', () => {
+    const items = [
+      fix({ id: 'z_conn', name: 'Zebra DB' }),
+      project({ id: 'b_proj', name: 'Beta Site' }),
+      project({ id: 'a_proj', name: 'Alpha Site' }),
+      fix({ id: 'm_conn', name: 'Mailchimp' }),
+    ];
+
+    expect(rankMentionables(items, '').map((item) => item.id))
+      .toEqual(['a_proj', 'b_proj', 'm_conn', 'z_conn']);
+  });
+
+  it('lets name-prefix project matches outrank substring-only connections', () => {
+    const items = [
+      fix({ id: 'conn', name: 'Old Camel DB' }),
+      project({ id: 'proj', name: 'Camel Site' }),
+    ];
+
+    expect(rankMentionables(items, 'camel').map((item) => item.id))
+      .toEqual(['proj', 'conn']);
+  });
+
+  it('lets name-prefix connection matches outrank substring-only projects', () => {
+    const items = [
+      project({ id: 'proj', name: 'Old Camel Site' }),
+      fix({ id: 'conn', name: 'Camel DB' }),
+    ];
+
+    expect(rankMentionables(items, 'camel').map((item) => item.id))
+      .toEqual(['conn', 'proj']);
+  });
+
+  it('sorts same-tier projects and connections alphabetically regardless of kind', () => {
+    const items = [
+      fix({ id: 'conn', name: 'Beta DB' }),
+      project({ id: 'proj', name: 'Alpha Site' }),
+    ];
+
+    expect(rankMentionables(items, 'a').map((item) => item.id))
+      .toEqual(['proj', 'conn']);
+  });
+
+  it('matches projects through the project type keyword only', () => {
+    const items = [
+      project({ id: 'proj', name: 'Marketing Site' }),
+      fix({ id: 'conn', name: 'Analytics DB' }),
+    ];
+
+    expect(rankMentionables(items, 'proj').map((item) => item.id))
+      .toEqual(['proj']);
+    expect(rankMentionables(items, 'clo').map((item) => item.id))
+      .toEqual([]);
+  });
+
+  it('preserves input order for identical names across kinds in the same tier', () => {
+    const connection = fix({ id: 'conn', name: 'Camel', created_at: 1 });
+    const projectItem = project({ id: 'proj', name: 'Camel', created_at: 2 });
+
+    expect(rankMentionables([connection, projectItem], 'camel').map((item) => item.id))
+      .toEqual(['conn', 'proj']);
   });
 });
 
@@ -132,7 +234,7 @@ describe('parseMentions', () => {
   it('matches @<slug> at start of input', () => {
     const matches = parseMentions('@my_db hello', map);
     expect(matches.map((m) => m.slug)).toEqual(['my_db']);
-    expect(matches[0]!.integration?.id).toBe('1');
+    expect(matches[0]!.target?.id).toBe('1');
   });
 
   it('matches @<slug> after whitespace and newlines', () => {
@@ -145,11 +247,11 @@ describe('parseMentions', () => {
     expect(parseMentions('foo@bar', map)).toEqual([]);
   });
 
-  it('returns unmatched slugs with integration=null', () => {
+  it('returns unmatched slugs with target=null', () => {
     const matches = parseMentions('use @unknown_db', map);
     expect(matches).toHaveLength(1);
     expect(matches[0]!.slug).toBe('unknown_db');
-    expect(matches[0]!.integration).toBeNull();
+    expect(matches[0]!.target).toBeNull();
   });
 
   it('returns multiple matches in order', () => {
@@ -172,6 +274,22 @@ describe('expandMentions', () => {
     expect(out).toBe('hi @my_prod_db ⟦ref: postgres "My Prod DB" id=abc123⟧');
   });
 
+  it('keeps connection annotations byte-identical', () => {
+    const out = expandMentions('hi @stripe_live', map);
+    expect(out).toBe('hi @stripe_live ⟦ref: stripe "Stripe Live" id=stripe1⟧');
+  });
+
+  it('annotates project slugs with project refs and exact project names', () => {
+    const projectMap = buildSlugMap([
+      project({ id: 'ca-ws-camel-site', name: 'camel-site' }),
+    ]);
+
+    const out = expandMentions('hi @camel_site', projectMap);
+    expect(out).toBe(
+      'hi @camel_site ⟦ref: project "camel-site" id=ca-ws-camel-site⟧',
+    );
+  });
+
   it('leaves unknown slugs unchanged', () => {
     expect(expandMentions('hi @ghost', map)).toBe('hi @ghost');
   });
@@ -191,6 +309,53 @@ describe('expandMentions', () => {
   it('returns input unchanged for empty body or empty map', () => {
     expect(expandMentions('', map)).toBe('');
     expect(expandMentions('hi @x', new Map())).toBe('hi @x');
+  });
+});
+
+describe('projectsToMentionables', () => {
+  it('ignores nested clones and parses source project dates', () => {
+    const sourceProjects = [
+      {
+        id: 'ca-ws-camel-site',
+        name: 'camel-site',
+        description: 'Marketing site rebuild',
+        createdAt: '2026-06-10T12:00:00.000Z',
+        updatedAt: '2026-06-11T12:00:00.000Z',
+        clones: [
+          {
+            id: 'ca-ws-camel-site-v2',
+            name: 'camel-site-v2',
+            description: 'Hero experiment',
+            createdAt: 'not-a-date',
+            updatedAt: '2026-06-11T13:00:00.000Z',
+          },
+        ],
+      },
+    ];
+
+    const items = projectsToMentionables(sourceProjects);
+
+    expect(items).toEqual([{
+      kind: 'project',
+      id: 'ca-ws-camel-site',
+      name: 'camel-site',
+      description: 'Marketing site rebuild',
+      created_at: Date.parse('2026-06-10T12:00:00.000Z'),
+      updated_at: Date.parse('2026-06-11T12:00:00.000Z'),
+    }]);
+  });
+
+  it('skips top-level clones defensively', () => {
+    const sourceProjects = [
+      {
+        id: 'clone',
+        name: 'camel-site-v2',
+        description: 'Hero experiment',
+        kind: 'clone',
+      },
+    ] as const;
+
+    expect(projectsToMentionables(sourceProjects)).toEqual([]);
   });
 });
 

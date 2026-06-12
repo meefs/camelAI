@@ -36,6 +36,7 @@ import {
 import { getBillingPlanLimits } from '@/lib/billing-plans';
 import type { Avatar, Integration, User } from '@/types';
 import type { ConnectionListItem } from '@/lib/connections-shared';
+import { projectsToMentionables, type MentionableProject } from '@/lib/mentions';
 
 const CONNECTION_MANAGEMENT_INTENTS = new Set([
   'createIntegration',
@@ -46,6 +47,20 @@ const CONNECTION_MANAGEMENT_INTENTS = new Set([
 
 function getWorkspaceStub(env: CloudflareEnv, workspaceId: string): WorkspaceDO {
   return env.WORKSPACE.get(env.WORKSPACE.idFromName(workspaceId)) as unknown as WorkspaceDO;
+}
+
+async function loadWorkspaceMentionProjects(
+  env: unknown,
+  workspaceId: string,
+): Promise<MentionableProject[]> {
+  const { WorkspaceFilesystemClient } = await import(
+    "../../workers/main/src/workspace-filesystem-do"
+  );
+  const projects = await new WorkspaceFilesystemClient(
+    env as never,
+    workspaceId,
+  ).listProjects();
+  return projectsToMentionables(projects);
 }
 
 interface CreatorProfile {
@@ -476,6 +491,12 @@ export async function loader({ request, context }: Route.LoaderArgs) {
           return [];
         })
     : Promise.resolve([]);
+  const projectsPromise: Promise<MentionableProject[]> = workspaceId
+    ? loadWorkspaceMentionProjects(env, workspaceId).catch((error) => {
+        console.error('Failed to load workspace projects:', error);
+        return [];
+      })
+    : Promise.resolve([]);
 
   // Get other workspaces in the org for duplication targets
   const otherWorkspaces = (authContext.workspaces ?? [])
@@ -499,6 +520,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
 
   return {
     connections: connectionsPromise,
+    projects: projectsPromise,
     integrations,
     categories,
     orgId: authContext.currentOrg.id,
@@ -518,6 +540,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
 export default function ConnectionsPage() {
   const {
     connections,
+    projects,
     integrations,
     categories,
     orgId,
@@ -540,11 +563,12 @@ export default function ConnectionsPage() {
 
   return (
     <Suspense fallback={<ConnectionsLoadingSkeleton />}>
-      <Await resolve={connections}>
-        {(resolvedConnections) => (
+      <Await resolve={Promise.all([connections, projects])}>
+        {([resolvedConnections, resolvedProjects]) => (
           <ConnectionsClient
             key={workspaceId}
             initialConnections={resolvedConnections}
+            initialMentionProjects={resolvedProjects}
             connectionTypes={integrations}
             categories={categories}
             orgId={orgId}

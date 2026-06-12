@@ -1,5 +1,5 @@
 import type { ContentBlock, Message } from "@/types";
-import { stripMentionAnnotations } from "@/lib/connection-mentions";
+import { stripMentionAnnotations } from "@/lib/mentions";
 
 export type MessageRenderMode = "full" | "trace-only" | "final-text-only";
 

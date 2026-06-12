@@ -21,16 +21,16 @@ import {
   type ModelCatalogEntry,
 } from '@/lib/model-catalog';
 import type { RecentModelScope } from '@/lib/recent-model';
-import type { Integration, LlmModel } from '@/types';
-import { ConnectionMentionMenu } from '@/components/connection-mention-menu';
-import { ComposerMentionDecorations } from '@/components/connection-mention-menu/composer-mention-overlay';
-import { useMentionTrigger } from '@/components/connection-mention-menu/use-mention-trigger';
+import type { AtMentionEntity, LlmModel } from '@/types';
+import { AtMentionMenu, mentionItemValue } from '@/components/at-mention-menu';
+import { ComposerMentionDecorations } from '@/components/at-mention-menu/composer-mention-overlay';
+import { useMentionTrigger } from '@/components/at-mention-menu/use-mention-trigger';
 import {
   buildSlugMap,
-  filterMentionableConnections,
-  rankMentionableConnections,
-  slugForIntegration,
-} from '@/lib/connection-mentions';
+  rankMentionables,
+  slugForMentionable,
+  filterMentionables,
+} from '@/lib/mentions';
 
 interface PromptInputProps {
   value: string;
@@ -64,10 +64,11 @@ interface PromptInputProps {
   recentModelScope?: RecentModelScope | null;
   // Ref for programmatic focus
   textareaRef?: React.RefObject<HTMLTextAreaElement | null>;
-  // @-mention menu for configured connections
-  mentionableConnections?: Integration[];
+  // @-mention menu for configured connections and projects
+  mentionables?: AtMentionEntity[];
   onMentionAddNewClick?: () => void;
   mentionMenuSide?: 'top' | 'bottom';
+  onMentionMenuOpenChange?: (open: boolean) => void;
 }
 
 interface SendButtonProps {
@@ -136,9 +137,10 @@ export function PromptInput({
   isOrgAdmin = false,
   recentModelScope,
   textareaRef,
-  mentionableConnections,
+  mentionables,
   onMentionAddNewClick,
   mentionMenuSide = 'top',
+  onMentionMenuOpenChange,
 }: PromptInputProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [isDragOver, setIsDragOver] = useState(false);
@@ -152,15 +154,15 @@ export function PromptInput({
   const [caretPos, setCaretPos] = useState(0);
   const [isFocused, setIsFocused] = useState(false);
   const [isComposing, setIsComposing] = useState(false);
-  const [activeMentionId, setActiveMentionId] = useState<string | null>(null);
+  const [activeMentionValue, setActiveMentionValue] = useState<string | null>(null);
   const textareaWrapperRef = useRef<HTMLDivElement | null>(null);
   const [textareaScroll, setTextareaScroll] = useState({ top: 0, left: 0 });
 
-  const mentionableConnectionList = useMemo(
-    () => filterMentionableConnections(mentionableConnections ?? []),
-    [mentionableConnections],
+  const mentionableItems = useMemo(
+    () => filterMentionables(mentionables ?? []),
+    [mentionables],
   );
-  const mentionsEnabled = mentionableConnectionList.length > 0
+  const mentionsEnabled = mentionableItems.length > 0
     || onMentionAddNewClick !== undefined;
   const mentionTrigger = useMentionTrigger({
     value,
@@ -170,16 +172,16 @@ export function PromptInput({
   const mentionMenuOpen = mentionTrigger.open;
 
   const slugMap = useMemo(
-    () => buildSlugMap(mentionableConnectionList) as Map<string, Integration>,
-    [mentionableConnectionList],
+    () => buildSlugMap(mentionableItems),
+    [mentionableItems],
   );
 
-  const filteredMentionConnections = useMemo(() => {
-    return rankMentionableConnections(
-      mentionableConnectionList,
+  const rankedMentionables = useMemo(() => {
+    return rankMentionables(
+      mentionableItems,
       mentionTrigger.query,
     );
-  }, [mentionableConnectionList, mentionTrigger.query]);
+  }, [mentionableItems, mentionTrigger.query]);
 
   // Escape (or outside-click) closes the menu but the trigger conditions
   // still hold, so we lock out re-opening until the user types or moves the
@@ -188,7 +190,7 @@ export function PromptInput({
   const mentionLockoutCaretRef = useRef<number>(-1);
 
   const closeMentionMenu = useCallback(() => {
-    setActiveMentionId(null);
+    setActiveMentionValue(null);
     const ta = effectiveTextareaRef.current;
     if (ta) {
       mentionLockoutValueRef.current = ta.value;
@@ -197,16 +199,24 @@ export function PromptInput({
   }, [effectiveTextareaRef]);
   const isLockedOut = mentionLockoutValueRef.current === value
     && mentionLockoutCaretRef.current === caretPos;
-  const hasAnyConnections = mentionableConnectionList.length > 0;
-  const hasMatches = filteredMentionConnections.length > 0;
-  // When the user has connections but no match for their current query, hide
+  const hasAnyItems = mentionableItems.length > 0;
+  const hasMatches = rankedMentionables.length > 0;
+  // When the user has mentionable items but no match for their current query, hide
   // the menu — Slack-style.
-  const matchesAvailable = !hasAnyConnections || hasMatches;
+  const matchesAvailable = !hasAnyItems || hasMatches;
   const effectiveMenuOpen = mentionMenuOpen && !isLockedOut && matchesAvailable;
+  const mentionRefreshActive = mentionMenuOpen && !isLockedOut;
 
-  const insertMention = useCallback((connection: Integration) => {
+  const lastReportedMentionRefreshActiveRef = useRef(false);
+  useEffect(() => {
+    if (lastReportedMentionRefreshActiveRef.current === mentionRefreshActive) return;
+    lastReportedMentionRefreshActiveRef.current = mentionRefreshActive;
+    onMentionMenuOpenChange?.(mentionRefreshActive);
+  }, [mentionRefreshActive, onMentionMenuOpenChange]);
+
+  const insertMention = useCallback((item: AtMentionEntity) => {
     if (!mentionTrigger.open) return;
-    const computedSlug = slugForIntegration(connection, slugMap);
+    const computedSlug = slugForMentionable(item, slugMap);
     if (!computedSlug) return;
     const before = value.slice(0, mentionTrigger.triggerStart);
     const after = value.slice(mentionTrigger.triggerEnd);
@@ -290,24 +300,29 @@ export function PromptInput({
 
   function handleKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
     // Menu key handling — ↑/↓/Enter/Tab/Escape are intercepted while open.
-    if (effectiveMenuOpen && filteredMentionConnections.length > 0) {
+    if (effectiveMenuOpen && rankedMentionables.length > 0) {
       if (e.key === 'ArrowDown') {
         e.preventDefault();
-        const idx = filteredMentionConnections.findIndex((c) => c.id === activeMentionId);
-        const nextIdx = idx === -1 ? 0 : (idx + 1) % filteredMentionConnections.length;
-        setActiveMentionId(filteredMentionConnections[nextIdx]!.id);
+        const idx = rankedMentionables.findIndex((item) =>
+          mentionItemValue(item) === activeMentionValue
+        );
+        const nextIdx = idx === -1 ? 0 : (idx + 1) % rankedMentionables.length;
+        setActiveMentionValue(mentionItemValue(rankedMentionables[nextIdx]!));
         return;
       }
       if (e.key === 'ArrowUp') {
         e.preventDefault();
-        const idx = filteredMentionConnections.findIndex((c) => c.id === activeMentionId);
-        const prevIdx = idx <= 0 ? filteredMentionConnections.length - 1 : idx - 1;
-        setActiveMentionId(filteredMentionConnections[prevIdx]!.id);
+        const idx = rankedMentionables.findIndex((item) =>
+          mentionItemValue(item) === activeMentionValue
+        );
+        const prevIdx = idx <= 0 ? rankedMentionables.length - 1 : idx - 1;
+        setActiveMentionValue(mentionItemValue(rankedMentionables[prevIdx]!));
         return;
       }
       if (e.key === 'Enter' || e.key === 'Tab') {
-        const target = filteredMentionConnections.find((c) => c.id === activeMentionId)
-          ?? filteredMentionConnections[0]!;
+        const target = rankedMentionables.find((item) =>
+          mentionItemValue(item) === activeMentionValue
+        ) ?? rankedMentionables[0]!;
         e.preventDefault();
         insertMention(target);
         return;
@@ -319,7 +334,7 @@ export function PromptInput({
       }
     }
 
-    if (effectiveMenuOpen && mentionableConnectionList.length === 0) {
+    if (effectiveMenuOpen && mentionableItems.length === 0) {
       if (e.key === 'Enter') {
         e.preventDefault();
         onMentionAddNewClick?.();
@@ -467,14 +482,14 @@ export function PromptInput({
         )}
       >
         {mentionsEnabled && (
-          <ConnectionMentionMenu
+          <AtMentionMenu
             open={effectiveMenuOpen}
             query={mentionTrigger.query}
-            connections={mentionableConnectionList}
+            items={mentionableItems}
             anchorRef={anchorRef}
             side={mentionMenuSide}
-            activeId={activeMentionId}
-            onActiveIdChange={setActiveMentionId}
+            activeValue={activeMentionValue}
+            onActiveValueChange={setActiveMentionValue}
             onSelect={insertMention}
             onClose={closeMentionMenu}
             onAddNewClick={() => onMentionAddNewClick?.()}

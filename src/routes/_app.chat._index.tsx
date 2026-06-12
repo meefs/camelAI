@@ -21,6 +21,7 @@ import {
 } from "@/lib/chat-credit-status";
 import { waitUntil } from "@/lib/wait-until";
 import { getAuthEnv, integrationRecordToIntegration } from "@/lib/auth-helpers";
+import { projectsToMentionables, type MentionableProject } from "@/lib/mentions";
 import { getWorkerScript } from "@/lib/auth-do";
 import {
   DEFAULT_ORG_EXPERIMENTAL_SETTINGS,
@@ -132,6 +133,20 @@ function createChatCreateThreadTraceContext(
     path: normalizePathForObservability(url.pathname),
     route: "routes/_app.chat._index.action",
   };
+}
+
+async function loadWorkspaceMentionProjects(
+  env: unknown,
+  workspaceId: string,
+): Promise<MentionableProject[]> {
+  const { WorkspaceFilesystemClient } = await import(
+    "../../workers/main/src/workspace-filesystem-do"
+  );
+  const projects = await new WorkspaceFilesystemClient(
+    env as never,
+    workspaceId,
+  ).listProjects();
+  return projectsToMentionables(projects);
 }
 
 function recordChatCreateThreadStage(
@@ -314,6 +329,14 @@ export async function loader({ request, context }: Route.LoaderArgs) {
         })
     : Promise.resolve([]);
 
+  const projectsPromise: Promise<MentionableProject[]> = workspaceId
+    ? loadWorkspaceMentionProjects(env, workspaceId)
+        .catch((error) => {
+          console.error("Failed to load workspace projects:", error);
+          return [];
+        })
+    : Promise.resolve([]);
+
   const activeChatGroupPromise =
     workspaceId && userId && groupId
       ? getGroupForWorkspace(context, {
@@ -436,6 +459,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     userName,
     allApps: allAppsPromise,
     connections: connectionsPromise,
+    projects: projectsPromise,
     recentThreads: recentThreadsPromise,
     renderedAt,
     salesPrompt,
@@ -853,6 +877,7 @@ export default function NewChatPage() {
     userName,
     allApps,
     connections,
+    projects,
     recentThreads,
     renderedAt,
     salesPrompt,
@@ -996,6 +1021,7 @@ export default function NewChatPage() {
             userName,
             allApps,
             connections,
+            projects,
             recentThreads,
             renderedAt,
           }}

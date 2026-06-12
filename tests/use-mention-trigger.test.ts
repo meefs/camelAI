@@ -1,6 +1,6 @@
 import { renderHook } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
-import { useMentionTrigger } from '@/components/connection-mention-menu/use-mention-trigger';
+import { useMentionTrigger } from '@/components/at-mention-menu/use-mention-trigger';
 
 function detect(value: string, caretPos = value.length) {
   return renderHook(() =>

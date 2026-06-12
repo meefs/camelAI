@@ -8,7 +8,7 @@ import {
   useState,
   type RefObject,
 } from 'react';
-import { Plus } from 'lucide-react';
+import { FolderGit2, Plus } from 'lucide-react';
 import {
   Command,
   CommandGroup,
@@ -23,68 +23,73 @@ import {
 import { IntegrationIcon } from '@/lib/integration-icons';
 import { getIntegrationDefinition } from '@/lib/integration-registry';
 import {
-  filterMentionableConnections,
-  rankMentionableConnections,
-} from '@/lib/connection-mentions';
-import type { Integration } from '@/types';
+  filterMentionables,
+  rankMentionables,
+} from '@/lib/mentions';
+import type { AtMentionEntity } from '@/types';
 
-export interface ConnectionMentionMenuProps {
+export interface AtMentionMenuProps {
   open: boolean;
   query: string;
-  connections: Integration[];
+  items: AtMentionEntity[];
   anchorRef: RefObject<HTMLElement | null>;
   side?: 'top' | 'bottom';
-  /** Currently highlighted connection id (controlled). */
-  activeId: string | null;
-  onActiveIdChange: (id: string | null) => void;
-  onSelect: (connection: Integration) => void;
+  /** Currently highlighted composite item value (controlled). */
+  activeValue: string | null;
+  onActiveValueChange: (value: string | null) => void;
+  onSelect: (item: AtMentionEntity) => void;
   onClose: () => void;
   onAddNewClick: () => void;
 }
 
 const ADD_CONNECTION_VALUE = '__add_connection__';
 
-export function ConnectionMentionMenu({
+export function mentionItemValue(item: Pick<AtMentionEntity, 'kind' | 'id'>): string {
+  return `${item.kind}:${item.id}`;
+}
+
+export function AtMentionMenu({
   open,
   query,
-  connections,
+  items,
   anchorRef,
   side = 'top',
-  activeId,
-  onActiveIdChange,
+  activeValue,
+  onActiveValueChange,
   onSelect,
   onClose,
   onAddNewClick,
-}: ConnectionMentionMenuProps) {
+}: AtMentionMenuProps) {
   const listRef = useRef<HTMLDivElement | null>(null);
   const [anchorWidth, setAnchorWidth] = useState<number | null>(null);
-  const mentionableConnections = useMemo(
-    () => filterMentionableConnections(connections),
-    [connections],
+  const mentionableItems = useMemo(
+    () => filterMentionables(items),
+    [items],
   );
   const filtered = useMemo(
-    () => rankMentionableConnections(mentionableConnections, query),
-    [mentionableConnections, query],
+    () => rankMentionables(mentionableItems, query),
+    [mentionableItems, query],
   );
 
-  const showAddRow = mentionableConnections.length === 0;
+  const showAddRow = mentionableItems.length === 0;
 
-  // Keep activeId in sync with the visible list — pick the first match when
+  // Keep activeValue in sync with the visible list — pick the first match when
   // the current selection drops out, or when the list opens.
   useEffect(() => {
     if (!open) return;
     if (showAddRow) {
-      if (activeId !== ADD_CONNECTION_VALUE) {
-        onActiveIdChange(ADD_CONNECTION_VALUE);
+      if (activeValue !== ADD_CONNECTION_VALUE) {
+        onActiveValueChange(ADD_CONNECTION_VALUE);
       }
       return;
     }
     if (filtered.length === 0) return;
-    const stillVisible = activeId && filtered.some((c) => c.id === activeId);
+    const stillVisible = activeValue &&
+      filtered.some((item) => mentionItemValue(item) === activeValue);
     if (!stillVisible) {
-      onActiveIdChange(filtered[0]!.id);
+      onActiveValueChange(mentionItemValue(filtered[0]!));
     }
-  }, [open, filtered, activeId, onActiveIdChange, showAddRow]);
+  }, [open, filtered, activeValue, onActiveValueChange, showAddRow]);
 
   useLayoutEffect(() => {
     if (!open) return;
@@ -98,18 +103,49 @@ export function ConnectionMentionMenu({
   }, [open, anchorRef]);
 
   useEffect(() => {
-    if (!open || !activeId) return;
+    if (!open || !activeValue) return;
     const list = listRef.current;
     if (!list) return;
 
     const activeEl = Array.from(
       list.querySelectorAll<HTMLElement>('[data-value]'),
-    ).find((element) => element.getAttribute('data-value') === activeId);
+    ).find((element) => element.getAttribute('data-value') === activeValue);
 
     activeEl?.scrollIntoView({ block: 'nearest' });
-  }, [open, activeId]);
+  }, [open, activeValue]);
 
   if (!open) return null;
+
+  const renderItem = (item: AtMentionEntity) => {
+    const itemValue = mentionItemValue(item);
+    const def = item.kind === 'connection'
+      ? getIntegrationDefinition(item.integration_type)
+      : null;
+    return (
+      <CommandItem
+        key={itemValue}
+        value={itemValue}
+        onSelect={() => onSelect(item)}
+        className="flex items-center gap-2 px-3 py-1.5 text-sm cursor-pointer"
+      >
+        {item.kind === 'connection' ? (
+          <IntegrationIcon
+            type={item.integration_type}
+            size={16}
+            className="size-4 shrink-0"
+          />
+        ) : (
+          <FolderGit2 className="size-4 shrink-0 text-muted-foreground" />
+        )}
+        <span className="min-w-0 flex-1 truncate font-medium">{item.name}</span>
+        <span className="shrink-0 pl-3 text-xs text-muted-foreground">
+          {item.kind === 'connection'
+            ? def?.displayName ?? item.integration_type
+            : 'Project'}
+        </span>
+      </CommandItem>
+    );
+  };
 
   return (
     <Popover
@@ -141,8 +177,8 @@ export function ConnectionMentionMenu({
       >
         <Command
           shouldFilter={false}
-          value={activeId ?? undefined}
-          onValueChange={(v) => onActiveIdChange(v)}
+          value={activeValue ?? undefined}
+          onValueChange={(v) => onActiveValueChange(v)}
           className="bg-transparent p-0 rounded-none"
         >
           <CommandList
@@ -166,29 +202,7 @@ export function ConnectionMentionMenu({
                   <Plus className="size-4 shrink-0" />
                   <span className="font-medium">Add a connection</span>
                 </CommandItem>
-              ) : (
-                filtered.map((c) => {
-                  const def = getIntegrationDefinition(c.integration_type);
-                  return (
-                    <CommandItem
-                      key={c.id}
-                      value={c.id}
-                      onSelect={() => onSelect(c)}
-                      className="flex items-center gap-2 px-3 py-1.5 text-sm cursor-pointer"
-                    >
-                      <IntegrationIcon
-                        type={c.integration_type}
-                        size={16}
-                        className="size-4 shrink-0"
-                      />
-                      <span className="min-w-0 flex-1 truncate font-medium">{c.name}</span>
-                      <span className="shrink-0 pl-3 text-xs text-muted-foreground">
-                        {def?.displayName ?? c.integration_type}
-                      </span>
-                    </CommandItem>
-                  );
-                })
-              )}
+              ) : filtered.map(renderItem)}
             </CommandGroup>
           </CommandList>
         </Command>

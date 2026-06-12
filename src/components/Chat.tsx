@@ -22,6 +22,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import type {
+  AtMentionEntity,
   Message,
   LlmModel,
   LlmProvider,
@@ -94,7 +95,7 @@ import {
   shouldAutoRefreshFilePreview,
 } from "@/components/preview-panel/preview-utils";
 import { cn } from "@/lib/utils";
-import { buildSlugMap } from "@/lib/connection-mentions";
+import { buildSlugMap, type MentionableProject } from "@/lib/mentions";
 import { isFileDrag } from "@/lib/file-drag";
 import {
   type SDKEvent,
@@ -242,6 +243,7 @@ interface ChatProps {
   initialWelcomeInput?: string | null;
   deferredInitialMessage?: string | null;
   connections?: Integration[] | Promise<Integration[]>;
+  projects?: MentionableProject[] | Promise<MentionableProject[]>;
   onSnapshotChange?: (snapshot: {
     messages: Message[];
     todos: TodoItem[];
@@ -251,6 +253,7 @@ interface ChatProps {
     userName: string | null;
     allApps: WorkerScriptWithCreator[] | Promise<WorkerScriptWithCreator[]>;
     connections: Integration[] | Promise<Integration[]>;
+    projects: MentionableProject[] | Promise<MentionableProject[]>;
     recentThreads: Thread[] | Promise<Thread[]>;
     renderedAt: number;
   };
@@ -283,6 +286,7 @@ function isPromiseLike<T>(value: T | Promise<T> | undefined): value is Promise<T
 
 const EMPTY_WORKER_APPS: WorkerScriptWithCreator[] = [];
 const EMPTY_INTEGRATIONS: Integration[] = [];
+const EMPTY_MENTION_PROJECTS: MentionableProject[] = [];
 const EMPTY_RECENT_THREADS: Thread[] = [];
 
 function resolveSelectedThreadModel(args: {
@@ -553,6 +557,7 @@ export default function Chat({
   initialWelcomeInput,
   deferredInitialMessage,
   connections,
+  projects,
   onSnapshotChange,
   welcomeData,
 }: ChatProps) {
@@ -572,6 +577,10 @@ export default function Chat({
   }>();
   const creditPacksFetcher = useFetcher<CreditPacksResourceData>();
   const billingStatusFetcher = useFetcher<BillingCreditStatusResourceData>();
+  const mentionProjectsFetcher = useFetcher<{
+    projects?: MentionableProject[];
+    error?: string;
+  }>();
   const { user, currentWorkspace, currentOrg, orgs } = useAuthData();
   const isMobile = useIsMobile();
   const resolvedWorkspaceId = readOnly
@@ -1607,13 +1616,18 @@ export default function Chat({
     userName: user?.name ?? null,
     allApps: EMPTY_WORKER_APPS,
     connections: EMPTY_INTEGRATIONS,
+    projects: EMPTY_MENTION_PROJECTS,
     recentThreads: EMPTY_RECENT_THREADS,
     renderedAt: fallbackRenderedAtRef.current,
   };
   const rawMentionConnections = connections ?? resolvedWelcomeData.connections;
+  const rawMentionProjects = projects ?? resolvedWelcomeData.projects;
   const [resolvedMentionConnections, setResolvedMentionConnections] = useState<
     Integration[]
   >(() => (Array.isArray(rawMentionConnections) ? rawMentionConnections : []));
+  const [resolvedMentionProjects, setResolvedMentionProjects] = useState<
+    MentionableProject[]
+  >(() => (Array.isArray(rawMentionProjects) ? rawMentionProjects : []));
   useEffect(() => {
     if (Array.isArray(rawMentionConnections)) {
       setResolvedMentionConnections(rawMentionConnections);
@@ -1637,11 +1651,57 @@ export default function Chat({
       cancelled = true;
     };
   }, [rawMentionConnections]);
-  const mentionConnections = resolvedMentionConnections;
+  useEffect(() => {
+    if (Array.isArray(rawMentionProjects)) {
+      setResolvedMentionProjects(rawMentionProjects);
+      return;
+    }
+    if (!isPromiseLike(rawMentionProjects)) {
+      setResolvedMentionProjects([]);
+      return;
+    }
+
+    let cancelled = false;
+    rawMentionProjects
+      .then((nextProjects) => {
+        if (!cancelled) setResolvedMentionProjects(nextProjects);
+      })
+      .catch(() => {
+        if (!cancelled) setResolvedMentionProjects([]);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [rawMentionProjects]);
+  const mentionEntities = useMemo<AtMentionEntity[]>(() => [
+    ...resolvedMentionConnections.map((connection) => ({
+      ...connection,
+      kind: "connection" as const,
+    })),
+    ...resolvedMentionProjects,
+  ], [resolvedMentionConnections, resolvedMentionProjects]);
   const mentionSlugMap = useMemo(
-    () => buildSlugMap(mentionConnections) as Map<string, Integration>,
-    [mentionConnections],
+    () => buildSlugMap(mentionEntities),
+    [mentionEntities],
   );
+  const lastMentionProjectsFetchAtRef = useRef(0);
+  const handleMentionMenuOpenChange = useCallback((open: boolean) => {
+    if (!open || !resolvedWorkspaceId) return;
+    if (mentionProjectsFetcher.state !== "idle") return;
+    const now = Date.now();
+    if (now - lastMentionProjectsFetchAtRef.current < 15_000) return;
+    lastMentionProjectsFetchAtRef.current = now;
+    mentionProjectsFetcher.load(
+      `/api/workspaces/${encodeURIComponent(resolvedWorkspaceId)}/projects`,
+    );
+  }, [mentionProjectsFetcher, resolvedWorkspaceId]);
+  useEffect(() => {
+    const data = mentionProjectsFetcher.data;
+    if (data && Array.isArray(data.projects)) {
+      setResolvedMentionProjects(data.projects);
+    }
+  }, [mentionProjectsFetcher.data]);
   const sessionStorageKey = useCallback(
     (id: string) => {
       const workspaceKey = resolvedWorkspaceId ?? "unknown";
@@ -5342,8 +5402,9 @@ type SendOptions = {
                   isOrgAdmin={isOrgAdmin}
                   recentModelScope={modelRecentScope}
                   textareaRef={composerTextareaRef}
-                  mentionableConnections={mentionConnections}
+                  mentionables={mentionEntities}
                   onMentionAddNewClick={() => navigate("/connections")}
+                  onMentionMenuOpenChange={handleMentionMenuOpenChange}
                 />
                 <TopUpDialog
                   open={topUpOpen}
@@ -5485,6 +5546,7 @@ type SendOptions = {
                   userName={resolvedWelcomeData.userName}
                   allApps={resolvedWelcomeData.allApps}
                   connections={resolvedWelcomeData.connections}
+                  projects={resolvedWelcomeData.projects}
                   recentThreads={resolvedWelcomeData.recentThreads}
                   renderedAt={resolvedWelcomeData.renderedAt}
                   inputValue={welcomeInput}

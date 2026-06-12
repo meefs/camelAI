@@ -18,9 +18,10 @@ import { IntegrationIcon, hasIntegrationIcon } from "@/lib/integration-icons";
 import { getIntegrationAuthLabel } from "@/lib/integration-auth-label";
 import {
   buildSlugMap,
-  filterMentionableConnections,
-  slugForIntegration,
-} from "@/lib/connection-mentions";
+  filterMentionables,
+  slugForMentionable,
+  type MentionableProject,
+} from "@/lib/mentions";
 import { writeDraft } from "@/hooks/use-draft-persistence";
 import {
   buildConnectionGroups,
@@ -40,6 +41,7 @@ import { ConnectionPanel } from "./connection-panel";
 import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import type { AtMentionConnection, AtMentionEntity } from "@/types";
 import {
   Select,
   SelectContent,
@@ -105,6 +107,7 @@ const OAUTH_INTEGRATIONS = ["slack", "notion", "salesforce"];
 
 interface ConnectionsClientProps {
   initialConnections: ConnectionListItem[];
+  initialMentionProjects: MentionableProject[];
   connectionTypes: IntegrationDefinition[];
   categories: string[];
   orgId: string;
@@ -167,6 +170,7 @@ function useMediaQuery(query: string): boolean {
 
 export default function ConnectionsClient({
   initialConnections,
+  initialMentionProjects,
   connectionTypes,
   categories,
   orgId,
@@ -250,12 +254,24 @@ export default function ConnectionsClient({
   const selectedItem = allItems.find((item) => item.id === selectedId) ?? null;
 
   const mentionableConnections = useMemo(
-    () => filterMentionableConnections(connections),
+    () => filterMentionables(
+      connections.map((connection): AtMentionConnection => ({
+        ...connection,
+        kind: "connection",
+      })),
+    ),
     [connections],
   );
-  const connectionSlugMap = useMemo(
-    () => buildSlugMap(mentionableConnections),
-    [mentionableConnections],
+  const mentionSlugItems = useMemo<AtMentionEntity[]>(
+    () => [
+      ...mentionableConnections,
+      ...filterMentionables(initialMentionProjects),
+    ],
+    [mentionableConnections, initialMentionProjects],
+  );
+  const mentionSlugMap = useMemo(
+    () => buildSlugMap(mentionSlugItems),
+    [mentionSlugItems],
   );
   const filteredConnectionTypes = useMemo(() => {
     const query = pickerSearch.trim().toLowerCase();
@@ -402,8 +418,11 @@ export default function ConnectionsClient({
 
   const getMentionSlug = useCallback(
     (connection: ConnectionListItem) =>
-      slugForIntegration(connection, connectionSlugMap),
-    [connectionSlugMap],
+      slugForMentionable(
+        { ...connection, kind: "connection" as const },
+        mentionSlugMap,
+      ),
+    [mentionSlugMap],
   );
   const getItemMentionSlug = useCallback(
     (item: PanelItem) => {

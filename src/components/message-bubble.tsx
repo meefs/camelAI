@@ -1,7 +1,7 @@
 'use client';
 
 import { AlertCircle, Copy, Check, GitFork } from 'lucide-react';
-import type { Message, ContentBlock, ToolResultBlock, ToolUseBlock, Integration, LlmModel, LlmProvider } from '@/types';
+import type { AtMentionEntity, Message, ContentBlock, ToolResultBlock, ToolUseBlock, LlmModel, LlmProvider } from '@/types';
 import { Button } from '@/components/ui/button';
 import {
   Tooltip,
@@ -33,7 +33,7 @@ import {
   type AnnotatedMentionRef,
   stripMentionAnnotations,
   stripMentionAnnotationsWithMetadata,
-} from '@/lib/connection-mentions';
+} from '@/lib/mentions';
 import { cn } from '@/lib/utils';
 import {
   filterContentForRenderMode,
@@ -361,7 +361,7 @@ interface ContentBlockRendererProps {
   isStreaming?: boolean;
   workspaceId?: string;
   skillSheets?: Map<string, string>;
-  mentionSlugMap?: Map<string, Integration>;
+  mentionSlugMap?: Map<string, AtMentionEntity>;
   llmProvider?: LlmProvider | null;
   threadModel?: LlmModel | null;
 }
@@ -653,7 +653,7 @@ interface MessageBubbleProps {
   /** Which subset of a message's content blocks should be rendered. */
   renderMode?: MessageRenderMode;
   skillSheets?: Map<string, string>;
-  mentionSlugMap?: Map<string, Integration>;
+  mentionSlugMap?: Map<string, AtMentionEntity>;
   llmProvider?: LlmProvider | null;
   messageTimeZone?: string;
   threadModel?: LlmModel | null;

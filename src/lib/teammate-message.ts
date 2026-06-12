@@ -1,4 +1,4 @@
-import { stripMentionAnnotations } from '@/lib/connection-mentions';
+import { stripMentionAnnotations } from '@/lib/mentions';
 
 const TEAMMATE_MESSAGE_REGEX = /^<teammate-message\s+teammate_id="([^"]+)">\n?([\s\S]*?)\n?<\/teammate-message>$/;
 

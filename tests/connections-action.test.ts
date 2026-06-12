@@ -17,6 +17,7 @@ const targetCreateIntegrationMock = vi.fn();
 const targetIntegrationNameExistsMock = vi.fn();
 const targetGetInfoMock = vi.fn();
 const putSetupTokenMock = vi.fn();
+const listProjectsMock = vi.fn();
 
 vi.mock("@/lib/auth.server", () => ({
   requireAuthContext: requireAuthContextMock,
@@ -31,6 +32,12 @@ vi.mock("@/lib/cloudflare.server", () => ({
 vi.mock("@/lib/auth-do", () => ({
   getUsersByIds: getUsersByIdsMock,
   isOrgAdmin: isOrgAdminMock,
+}));
+
+vi.mock("../workers/main/src/workspace-filesystem-do", () => ({
+  WorkspaceFilesystemClient: class WorkspaceFilesystemClient {
+    listProjects = listProjectsMock;
+  },
 }));
 
 const { action, loader } = await import("@/routes/_app.connections");
@@ -380,6 +387,7 @@ describe("connections loader", () => {
         avatar: null,
       },
     ]);
+    listProjectsMock.mockResolvedValue([]);
   });
 
   afterEach(() => {
@@ -496,6 +504,43 @@ describe("connections loader", () => {
     expect(result.emailInboxEnabled).toBe(true);
     expect(result.emailHandle).toBe("quiet-river-field");
     expect(result.workspaceCreatedByName).toBe("Creator One");
+  });
+
+  it("loads project mentionables for connection mention slug collisions", async () => {
+    listProjectsMock.mockResolvedValue([
+      {
+        id: "ca-ws_1-primary-db",
+        name: "Primary DB",
+        description: "Project with colliding slug",
+        kind: "project",
+        createdAt: "2026-06-10T12:00:00.000Z",
+        updatedAt: "2026-06-11T12:00:00.000Z",
+        clones: [
+          {
+            id: "ca-ws_1-primary-db-v2",
+            name: "Primary DB v2",
+            description: "Clone excluded from mentions",
+          },
+        ],
+      },
+    ]);
+
+    const result = await loader({
+      request: new Request("https://camelai.test/connections"),
+      context: {},
+      params: {},
+    } as never);
+
+    await expect(result.projects).resolves.toEqual([
+      {
+        kind: "project",
+        id: "ca-ws_1-primary-db",
+        name: "Primary DB",
+        description: "Project with colliding slug",
+        created_at: Date.parse("2026-06-10T12:00:00.000Z"),
+        updated_at: Date.parse("2026-06-11T12:00:00.000Z"),
+      },
+    ]);
   });
 
   it("handles missing email domain and plan-disabled states", async () => {

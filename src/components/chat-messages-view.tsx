@@ -1,6 +1,6 @@
 import { memo, useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, Dispatch, RefObject, SetStateAction } from "react";
-import type { Integration, LlmModel, LlmProvider, Message } from "@/types";
+import type { AtMentionEntity, LlmModel, LlmProvider, Message } from "@/types";
 import { ChatErrorNotice } from "@/components/chat-error-notice";
 import { ChatThreadWorkingIndicator } from "@/components/chat-thread-working-indicator";
 import { CompactingIndicator } from "@/components/compacting-indicator";
@@ -94,7 +94,7 @@ interface ChatMessagesViewProps {
   assistantPendingMeasureRef: RefObject<HTMLDivElement | null>;
   assistantSpacerRef: RefObject<HTMLDivElement | null>;
   messagesEndRef: RefObject<HTMLDivElement | null>;
-  mentionSlugMap?: Map<string, Integration>;
+  mentionSlugMap?: Map<string, AtMentionEntity>;
 }
 
 export const ChatMessagesView = memo(function ChatMessagesView({

@@ -1,4 +1,5 @@
 import type { RuntimeCallArtifact, RuntimeArtifactPreviewTarget } from "@/lib/runtime-artifacts";
+import type { MentionableProject } from "@/lib/mentions";
 
 export interface Thread {
   id: string;
@@ -476,6 +477,9 @@ export interface Integration {
   updated_at: number;
   has_credentials: boolean;
 }
+
+export type AtMentionConnection = Integration & { kind: "connection" };
+export type AtMentionEntity = AtMentionConnection | MentionableProject;
 
 export interface CreateIntegrationInput {
   integration_type: string;

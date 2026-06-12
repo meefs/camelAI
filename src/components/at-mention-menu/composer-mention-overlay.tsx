@@ -9,6 +9,7 @@ import {
   type ReactNode,
   type RefObject,
 } from 'react';
+import { FolderGit2 } from 'lucide-react';
 import {
   HoverCard,
   HoverCardContent,
@@ -17,12 +18,12 @@ import {
 import { CATEGORY_TAB_LABELS } from '@/components/connection-picker/use-connection-filter';
 import { IntegrationIcon } from '@/lib/integration-icons';
 import { getIntegrationDefinition } from '@/lib/integration-registry';
-import { parseMentions } from '@/lib/connection-mentions';
-import type { Integration } from '@/types';
+import { parseMentions } from '@/lib/mentions';
+import type { AtMentionConnection, AtMentionEntity } from '@/types';
 
 interface ComposerMentionDecorationsProps {
   value: string;
-  slugMap: Map<string, Integration>;
+  slugMap: Map<string, AtMentionEntity>;
   textareaRef: RefObject<HTMLTextAreaElement | null>;
   wrapperRef: RefObject<HTMLDivElement | null>;
   scrollTop: number;
@@ -33,7 +34,7 @@ interface ComposerMentionDecorationsProps {
 interface MentionMeasurement {
   key: string;
   slug: string;
-  integration: Integration;
+  target: AtMentionEntity;
   startIndex: number;
   endIndex: number;
 }
@@ -103,7 +104,8 @@ function rectsEqual(
     if (!rightRect) return false;
     return leftRect.rectKey === rightRect.rectKey &&
       leftRect.slug === rightRect.slug &&
-      leftRect.integration.id === rightRect.integration.id &&
+      leftRect.target.kind === rightRect.target.kind &&
+      leftRect.target.id === rightRect.target.id &&
       leftRect.startIndex === rightRect.startIndex &&
       leftRect.endIndex === rightRect.endIndex &&
       Math.abs(leftRect.left - rightRect.left) < RECT_EPSILON &&
@@ -126,7 +128,8 @@ function syncMirrorStyles(
   mirror.style.overflowWrap = 'break-word';
 }
 
-function ChipHoverPreview({ integration }: { integration: Integration }) {
+function ConnectionHoverPreview({ target }: { target: AtMentionConnection }) {
+  const integration = target;
   const def = getIntegrationDefinition(integration.integration_type);
   const category = def?.category ?? integration.category;
 
@@ -155,6 +158,34 @@ function ChipHoverPreview({ integration }: { integration: Integration }) {
       </div>
     </div>
   );
+}
+
+function ProjectHoverPreview({ target }: { target: AtMentionEntity & { kind: 'project' } }) {
+  return (
+    <div className="space-y-1.5">
+      <div className="flex items-center gap-2">
+        <FolderGit2 className="size-4 shrink-0 text-muted-foreground" />
+        <span className="text-sm font-medium">{target.name}</span>
+      </div>
+      <div className="text-xs text-muted-foreground">Project</div>
+      {target.description.trim() ? (
+        <div className="line-clamp-2 text-xs text-muted-foreground">
+          {target.description}
+        </div>
+      ) : null}
+      {typeof target.updated_at === 'number' ? (
+        <div className="text-xs text-muted-foreground">
+          Updated {formatRelative(target.updated_at)}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function ChipHoverPreview({ target }: { target: AtMentionEntity }) {
+  return target.kind === 'connection'
+    ? <ConnectionHoverPreview target={target} />
+    : <ProjectHoverPreview target={target} />;
 }
 
 function renderMirrorTokens(
@@ -200,11 +231,11 @@ export function ComposerMentionDecorations({
 
   const mentions = useMemo<MentionMeasurement[]>(() => {
     return parseMentions(value, slugMap)
-      .filter((match) => match.integration !== null)
+      .filter((match) => match.target !== null)
       .map((match) => ({
         key: `${match.index}-${match.length}-${match.slug}`,
         slug: match.slug,
-        integration: match.integration as Integration,
+        target: match.target as AtMentionEntity,
         startIndex: match.index,
         endIndex: match.index + match.length,
       }));
@@ -346,7 +377,7 @@ export function ComposerMentionDecorations({
                 align="start"
                 className="w-auto min-w-[200px] max-w-[280px] rounded-md border border-border p-2 shadow-md ring-0"
               >
-                <ChipHoverPreview integration={rect.integration} />
+                <ChipHoverPreview target={rect.target} />
               </HoverCardContent>
             </HoverCard>
           ))}

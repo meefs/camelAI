@@ -17,7 +17,8 @@ import {
   type ChatAuthorIdentity,
 } from '../chat-author-attribution.js';
 import { injectFileSafetyMessage } from '../file-safety.js';
-import { applyConnectionMentionContext } from '../connection-mention-context.js';
+import { applyMentionContext } from '../mention-context.js';
+import { WorkspaceFilesystemClient } from '../workspace-filesystem-do.js';
 
 export async function handleChatWebSocket({ req, env, url, match }: RouteContext): Promise<Response> {
   const requestId = req.headers.get('cf-ray') ?? crypto.randomUUID();
@@ -321,22 +322,36 @@ export async function buildRunnerUserMessageContent(
   author?: ChatAuthorIdentity | null,
 ): Promise<string> {
   const safeContent = injectFileSafetyMessage(rawContent);
-  let contentWithConnectionContext = safeContent;
+  let contentWithMentionContext = safeContent;
 
   if (safeContent.includes('@')) {
     try {
       const workspaceStub = env.WORKSPACE.get(env.WORKSPACE.idFromName(workspaceId));
-      const integrations = await workspaceStub.getIntegrations();
-      contentWithConnectionContext = applyConnectionMentionContext(
+      const workspaceFs = new WorkspaceFilesystemClient(env, workspaceId);
+      const [integrations, projects] = await Promise.all([
+        Promise.resolve()
+          .then(() => workspaceStub.getIntegrations())
+          .catch((error) => {
+            console.error('[chat websocket] getIntegrations for mentions failed', error);
+            return [];
+          }),
+        Promise.resolve()
+          .then(() => workspaceFs.listProjects())
+          .catch((error) => {
+            console.error('[chat websocket] listProjects for mentions failed', error);
+            return [];
+          }),
+      ]);
+      contentWithMentionContext = applyMentionContext(
         safeContent,
-        integrations,
+        { integrations, projects },
       ).content;
     } catch (error) {
-      console.error('[chat websocket] apply connection mentions failed', error);
+      console.error('[chat websocket] apply mentions failed', error);
     }
   }
 
-  return formatAttributedUserMessage(contentWithConnectionContext, author);
+  return formatAttributedUserMessage(contentWithMentionContext, author);
 }
 
 function normalizeClientBuildId(value: string | null): string | null {

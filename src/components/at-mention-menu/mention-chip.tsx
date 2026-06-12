@@ -1,11 +1,11 @@
 'use client';
 
 import { cn } from '@/lib/utils';
-import type { Integration } from '@/types';
+import type { AtMentionEntity } from '@/types';
 
 interface MentionChipProps {
   slug: string;
-  integration: Integration | null;
+  target: AtMentionEntity | null;
 }
 
 const CHIP_BASE =
@@ -13,8 +13,8 @@ const CHIP_BASE =
 const CHIP_LIVE = 'bg-muted text-foreground';
 const CHIP_DELETED = 'bg-muted/60 text-muted-foreground';
 
-export function MentionChip({ slug, integration }: MentionChipProps) {
-  const isDeleted = integration === null;
+export function MentionChip({ slug, target }: MentionChipProps) {
+  const isDeleted = target === null;
 
   return (
     <span className={cn(CHIP_BASE, isDeleted ? CHIP_DELETED : CHIP_LIVE)}>
