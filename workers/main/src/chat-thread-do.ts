@@ -223,6 +223,15 @@ const PI_PROVIDER_TRANSIENT_ERROR_PATTERNS = [
 ];
 const CHAT_ACTIVE_AUTOMATION_RUN_KEY = "activeAutomationRun";
 
+type LlmProviderConfigRecord = ReturnType<
+  import("./identity/org-do").OrgDO["getLlmProviderConfig"]
+>;
+
+interface CachedLlmProviderConfig {
+  orgId: string;
+  value: LlmProviderConfigRecord;
+}
+
 interface PiResolvedModelReference {
   provider: string;
   modelId: string;
@@ -3313,6 +3322,13 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
   private piMainBaselineIndex = 0;
   private piModelResolver: (() => Promise<PiResolvedModelConfig>) | null = null;
   private piUnsubscribe: (() => void) | null = null;
+  /**
+   * Turn-scoped cache of OrgDO.getLlmProviderConfig for this thread's org.
+   * Caches both null (no BYOK config, the common hosted case) and non-null
+   * records. Cleared at agent_start so each turn reads the config exactly
+   * once, and on byokChanged() so admin updates apply promptly mid-turn.
+   */
+  private cachedLlmProviderConfig: CachedLlmProviderConfig | null = null;
   private pendingClientMessageEnqueues: Map<
     string,
     Promise<InitialUserMessageResult>
@@ -5070,6 +5086,9 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
   }
 
   async byokChanged(): Promise<void> {
+    // Admin changed this org's BYOK config: drop the cached llm provider
+    // config so the next turn re-reads it instead of waiting out the TTL.
+    this.cachedLlmProviderConfig = null;
     await this.withRunnerTransitionLock('byok_changed', async () => {
       this.disposePiSession();
     });
@@ -9012,11 +9031,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
           () => getOrgStub().getThread(baseContext.threadId),
           { attempts: 4, initialDelayMs: 150 },
         ),
-        this.retryChatDurableObjectRpc(
-          "OrgDO.getLlmProviderConfig",
-          () => getOrgStub().getLlmProviderConfig(),
-          { attempts: 4, initialDelayMs: 150 },
-        ),
+        this.getCachedLlmProviderConfig(baseContext.orgId),
       ]);
       const context: ChatContextState = { ...baseContext };
       this.chatContext = context;
@@ -11087,6 +11102,53 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     );
   }
 
+  /**
+   * Read OrgDO.getLlmProviderConfig with a short TTL cache.
+   *
+   * BYOK provider config changes only on rare admin action but is read on
+   * every turn across all of an org's threads, hammering the single OrgDO
+   * instance. Within the TTL we serve the cached value (including a cached
+   * null) and skip the RPC entirely. On a transient RPC failure we fall back
+   * to any cached value (even an expired one) and emit a "stale_fallback"
+   * observability event; with no cached value we propagate the error exactly
+   * as the underlying retry wrapper would.
+   *
+   * The cache is keyed defensively on orgId: a ChatThreadDO instance belongs
+   * to a single thread/org, so a mismatch indicates a bug and forces a fresh
+   * read rather than serving another org's config.
+   */
+  /**
+   * Read OrgDO.getLlmProviderConfig once per agent turn.
+   *
+   * The Pi agent loop resolves provider credentials on every LLM call
+   * (transformContext), which previously fanned one OrgDO RPC per call into
+   * the single OrgDO instance. The cache is cleared at agent_start and by
+   * byokChanged(), so each turn reads the config exactly once (first LLM
+   * call) and reuses it for the rest of the turn: provider config is
+   * constant within a turn by design. Caches both null and non-null records;
+   * keyed defensively on orgId so a mismatch forces a fresh read. RPC
+   * failures propagate exactly as before (the retry wrapper absorbs
+   * transient blips).
+   */
+  private async getCachedLlmProviderConfig(
+    orgId: string,
+  ): Promise<LlmProviderConfigRecord> {
+    const cached = this.cachedLlmProviderConfig;
+    if (cached && cached.orgId === orgId) {
+      return cached.value;
+    }
+
+    const orgDoId = this.env.ORG.idFromName(orgId);
+    const getOrgStub = () => this.env.ORG.get(orgDoId);
+    const value = await this.retryChatDurableObjectRpc(
+      "OrgDO.getLlmProviderConfig",
+      () => getOrgStub().getLlmProviderConfig(),
+      { attempts: 4, initialDelayMs: 150 },
+    );
+    this.cachedLlmProviderConfig = { orgId, value };
+    return value;
+  }
+
   private async resolveCurrentByokCredentials(
     context: ChatContextState,
   ): Promise<{
@@ -11098,13 +11160,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     api?: "openai-completions" | "openai-responses" | "anthropic-messages";
     modelId?: string;
   } | null> {
-    const orgId = this.env.ORG.idFromName(context.orgId);
-    const getOrgStub = () => this.env.ORG.get(orgId);
-    const record = await this.retryChatDurableObjectRpc(
-      "OrgDO.getLlmProviderConfig",
-      () => getOrgStub().getLlmProviderConfig(),
-      { attempts: 4, initialDelayMs: 150 },
-    );
+    const record = await this.getCachedLlmProviderConfig(context.orgId);
     if (!record) {
       return null;
     }
@@ -12019,6 +12075,9 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       this.piAgentStartedAtMs = Date.now();
       this.piTurnStartedAtMs = Date.now();
       this.piUserStopRequestedAtMs = 0;
+      // Provider config is read once per agent turn: the first LLM call after
+      // this re-reads from OrgDO and every later call in the turn reuses it.
+      this.cachedLlmProviderConfig = null;
       this.resetRunningActivityState();
       this.touchPiTurnRecovery("running");
       this.setChatIsStreaming(true);
