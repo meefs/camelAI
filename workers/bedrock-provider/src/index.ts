@@ -29,6 +29,17 @@ interface BedrockModelMetadata {
 
 const bedrockModels: BedrockModelMetadata[] = [
   {
+    id: 'claude-fable-5',
+    bedrockModelId: 'global.anthropic.claude-fable-5',
+    name: 'Claude Fable 5',
+    reasoning: true,
+    thinkingLevelMap: { xhigh: 'xhigh' },
+    input: ['text', 'image'],
+    cost: { input: 10, output: 50, cacheRead: 1, cacheWrite: 12.5 },
+    contextWindow: 1_000_000,
+    maxTokens: 128_000,
+  },
+  {
     id: 'claude-haiku-4-5-20251001',
     bedrockModelId: 'global.anthropic.claude-haiku-4-5-20251001-v1:0',
     name: 'Claude Haiku 4.5',
@@ -124,6 +135,8 @@ const bedrockModels: BedrockModelMetadata[] = [
 const bedrockModelMap: Record<string, string> = {
   ...Object.fromEntries(bedrockModels.map((model) => [model.id, model.bedrockModelId])),
   ...Object.fromEntries(bedrockModels.map((model) => [model.bedrockModelId, model.bedrockModelId])),
+  'anthropic/claude-fable-5': 'global.anthropic.claude-fable-5',
+  'anthropic.claude-fable-5': 'global.anthropic.claude-fable-5',
   'anthropic/claude-opus-4.8': 'global.anthropic.claude-opus-4-8',
   'anthropic/claude-opus-4-8': 'global.anthropic.claude-opus-4-8',
   'anthropic.claude-opus-4-8': 'global.anthropic.claude-opus-4-8',
@@ -259,6 +272,9 @@ function mapToBedrockModel(model: string): string {
   }
 
   const normalized = model.toLowerCase();
+  if (normalized.includes('fable-5')) {
+    return 'global.anthropic.claude-fable-5';
+  }
   if (normalized.includes('opus-4-8') || normalized.includes('opus-4.8')) {
     return 'global.anthropic.claude-opus-4-8';
   }

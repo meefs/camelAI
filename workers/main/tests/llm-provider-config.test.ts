@@ -29,6 +29,7 @@ const CODEX_MODELS = [
 ] as const;
 
 const CLAUDE_MODELS = [
+  "fable-5",
   "opus-4.8",
   "sonnet",
   "haiku",

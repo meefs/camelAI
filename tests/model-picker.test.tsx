@@ -71,7 +71,12 @@ function renderPicker() {
     <ModelPicker
       value="opus-4.8"
       onValueChange={vi.fn()}
-      options={[MODEL_CATALOG['opus-4.8'], MODEL_CATALOG.sonnet]}
+      options={[
+        MODEL_CATALOG['fable-5'],
+        MODEL_CATALOG['opus-4.8'],
+        MODEL_CATALOG.sonnet,
+        MODEL_CATALOG['deepseek-v4-flash'],
+      ]}
       isOrgAdmin={false}
     />,
   );
@@ -92,8 +97,9 @@ describe('ModelPicker metadata card state', () => {
     fireEvent.focus(getModelItem('Opus 4.8'));
     expect(screen.getByRole('tooltip')).toHaveTextContent('Opus 4.8');
     expect(
-      screen.getByLabelText('Intelligence rating: 5 out of 5'),
+      screen.getByLabelText('Intelligence rating: 4.5 out of 5'),
     ).toBeInTheDocument();
+    expect(screen.getByLabelText('Cost rating: 4 out of 5')).toBeInTheDocument();
     expect(
       screen.getByLabelText('Speed rating: 2 out of 5'),
     ).toBeInTheDocument();
@@ -101,7 +107,7 @@ describe('ModelPicker metadata card state', () => {
     fireEvent.focus(getModelItem('Sonnet 4.6'));
     expect(screen.getByRole('tooltip')).toHaveTextContent('Sonnet 4.6');
     expect(
-      screen.getByLabelText('Intelligence rating: 4 out of 5'),
+      screen.getByLabelText('Intelligence rating: 3.5 out of 5'),
     ).toBeInTheDocument();
     expect(
       screen.getByLabelText('Speed rating: 3.5 out of 5'),
@@ -132,5 +138,21 @@ describe('ModelPicker metadata card state', () => {
     act(() => vi.advanceTimersByTime(150));
     expect(screen.getByRole('tooltip')).toHaveTextContent('Sonnet 4.6');
     expect(screen.getAllByRole('tooltip')).toHaveLength(1);
+  });
+
+  it('renders cost buckets with muted placeholder dollar signs', () => {
+    renderPicker();
+
+    fireEvent.focus(getModelItem('DeepSeek V4 Flash'));
+    expect(screen.getByRole('tooltip')).toHaveTextContent('DeepSeek V4 Flash');
+    expect(screen.getByLabelText('Cost rating: 1 out of 5')).toHaveTextContent(
+      '$$$$$',
+    );
+
+    fireEvent.focus(getModelItem('Fable 5'));
+    expect(screen.getByRole('tooltip')).toHaveTextContent('Fable 5');
+    expect(screen.getByLabelText('Cost rating: 5 out of 5')).toHaveTextContent(
+      '$$$$$',
+    );
   });
 });

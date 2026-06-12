@@ -1,6 +1,6 @@
 import { env } from 'cloudflare:test';
 import { describe, expect, it } from 'vitest';
-import { getModel, streamSimple, type AssistantMessageEvent, type Context } from '@mariozechner/pi-ai';
+import { getModel, streamSimple, type AssistantMessageEvent, type Context } from '@earendil-works/pi-ai';
 
 import { ChatThreadDO } from '../src/chat-thread-do';
 

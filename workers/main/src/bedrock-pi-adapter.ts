@@ -30,7 +30,7 @@ import type {
   Tool,
   ToolCall,
   UserMessage,
-} from "@mariozechner/pi-ai";
+} from "@earendil-works/pi-ai";
 
 const DEFAULT_REGION = "us-east-1";
 

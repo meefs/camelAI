@@ -16,7 +16,12 @@ import {
   HoverCardContent,
   HoverCardTrigger,
 } from '@/components/ui/hover-card';
-import { MODEL_CATALOG, type ModelCatalogEntry } from '@/lib/model-catalog';
+import {
+  COST_BUCKET_MAX,
+  MODEL_CATALOG,
+  type CostBucket,
+  type ModelCatalogEntry,
+} from '@/lib/model-catalog';
 import {
   setRecentModel,
   type RecentModelScope,
@@ -88,17 +93,22 @@ function RatingDots({
   );
 }
 
-function MetadataRow({
-  label,
-  value,
-}: {
-  label: string;
-  value: string;
-}) {
+function CostRow({ cost }: { cost: CostBucket }) {
+  const filled = cost.length;
+
   return (
     <div className="flex items-center justify-between gap-6">
-      <span className="text-muted-foreground">{label}</span>
-      <span className="font-medium">{value}</span>
+      <span className="text-muted-foreground">cost</span>
+      <span
+        role="img"
+        aria-label={`Cost rating: ${filled} out of ${COST_BUCKET_MAX}`}
+        className="font-medium"
+      >
+        {'$'.repeat(filled)}
+        <span className="text-muted-foreground/40">
+          {'$'.repeat(COST_BUCKET_MAX - filled)}
+        </span>
+      </span>
     </div>
   );
 }
@@ -127,7 +137,7 @@ function ModelMetadataCard({ entry }: { entry: ModelCatalogEntry }) {
         <div className="font-medium">{entry.label}</div>
         <div className="h-px bg-border/60" />
         <div className="space-y-1.5">
-          <MetadataRow label="cost" value={entry.cost} />
+          <CostRow cost={entry.cost} />
           <RatingRow
             label="intelligence"
             score={entry.intelligence}

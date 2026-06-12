@@ -8,12 +8,12 @@ import type {
   AgentMessage,
   AgentTool,
   AgentToolResult,
-} from "@mariozechner/pi-agent-core";
+} from "@earendil-works/pi-agent-core";
 import {
   createAssistantMessageEventStream,
   isContextOverflow,
   setBedrockProviderModule,
-} from "@mariozechner/pi-ai";
+} from "@earendil-works/pi-ai";
 import {
   bedrockProviderModule,
   resolveBedrockModelFallback,
@@ -24,7 +24,7 @@ import type {
   AssistantMessageEvent,
   AssistantMessageEventStream,
   Model,
-} from "@mariozechner/pi-ai";
+} from "@earendil-works/pi-ai";
 import type { OrgDO, OrgThread, UserDO, WorkerScript } from "./auth";
 import type { WorkspaceDO } from "./workspace";
 import type { WorkspaceCronDO } from "./workspace-cron";
@@ -253,6 +253,24 @@ type AssistantCompletionPersistenceResult =
   | { status: "failed" };
 
 const PI_MODEL_CATALOG_FALLBACKS: Record<string, Model<any>> = {
+  "anthropic/claude-fable-5": {
+    id: "claude-fable-5",
+    name: "Claude Fable 5",
+    api: "anthropic-messages",
+    provider: "anthropic",
+    baseUrl: "https://api.anthropic.com",
+    reasoning: true,
+    thinkingLevelMap: { xhigh: "xhigh" },
+    input: ["text", "image"],
+    cost: {
+      input: 10,
+      output: 50,
+      cacheRead: 1,
+      cacheWrite: 12.5,
+    },
+    contextWindow: 1_000_000,
+    maxTokens: 128_000,
+  } satisfies Model<"anthropic-messages">,
   "anthropic/claude-opus-4-8": {
     id: "claude-opus-4-8",
     name: "Claude Opus 4.8",
@@ -5836,12 +5854,13 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
   }
 
   private async startPiTurnRecovery(userMessage: AgentMessage): Promise<void> {
-    const content = typeof userMessage.content === "string" ? userMessage.content : "";
+    const userRecord = userMessage as unknown as Record<string, unknown>;
+    const content = typeof userRecord.content === "string" ? userRecord.content : "";
     if (!content.trim()) return;
     const now = Date.now();
     const timestamp =
-      typeof (userMessage as unknown as Record<string, unknown>).timestamp === "number"
-        ? ((userMessage as unknown as Record<string, unknown>).timestamp as number)
+      typeof userRecord.timestamp === "number"
+        ? userRecord.timestamp
         : now;
     this.ensurePiCoreTables();
     this.ctx.storage.sql.exec(
@@ -8709,8 +8728,8 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     context: ChatContextState,
     envVars: Record<string, string>,
   ): Promise<PiCoreAgent> {
-    const { Agent } = await import("@mariozechner/pi-agent-core");
-    const { completeSimple, getModel, streamSimple } = await import("@mariozechner/pi-ai");
+    const { Agent } = await import("@earendil-works/pi-agent-core");
+    const { completeSimple, getModel, streamSimple } = await import("@earendil-works/pi-ai");
 
     this.piUnsubscribe?.();
     this.piUnsubscribe = null;
@@ -9783,7 +9802,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     messages: AgentMessage[],
     model: Model<any>,
     apiKey: string,
-    completeSimple: typeof import("@mariozechner/pi-ai").completeSimple,
+    completeSimple: typeof import("@earendil-works/pi-ai").completeSimple,
     signal?: AbortSignal,
     force = false,
   ): Promise<AgentMessage[]> {
@@ -9943,8 +9962,8 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     );
   }
 
-  private async loadPiCompleteSimple(): Promise<typeof import("@mariozechner/pi-ai").completeSimple> {
-    const { completeSimple } = await import("@mariozechner/pi-ai");
+  private async loadPiCompleteSimple(): Promise<typeof import("@earendil-works/pi-ai").completeSimple> {
+    const { completeSimple } = await import("@earendil-works/pi-ai");
     return completeSimple;
   }
 
@@ -10095,7 +10114,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     messages: AgentMessage[],
     model: Model<any>,
     apiKey: string,
-    completeSimple: typeof import("@mariozechner/pi-ai").completeSimple,
+    completeSimple: typeof import("@earendil-works/pi-ai").completeSimple,
     signal?: AbortSignal,
     previousSummary?: string,
   ): Promise<string> {
@@ -10164,7 +10183,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     messages: AgentMessage[],
     model: Model<any>,
     apiKey: string,
-    completeSimple: typeof import("@mariozechner/pi-ai").completeSimple,
+    completeSimple: typeof import("@earendil-works/pi-ai").completeSimple,
     summaryMaxTokens: number,
     inputTokenBudget: number,
     signal?: AbortSignal,
@@ -10386,6 +10405,8 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     switch (normalizedModelId) {
       case "haiku":
         return claudeReference("claude-haiku-4-5-20251001");
+      case "fable-5":
+        return claudeReference("claude-fable-5");
       case "opus":
       case "opus-4.7":
       case "opus-4.8":
@@ -10592,6 +10613,9 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         return "anthropic/claude-sonnet-4.6";
       case "haiku":
         return "anthropic/claude-haiku-4.5";
+      case "fable-5":
+      case "claude-fable-5":
+        return "anthropic/claude-fable-5";
       case "opus":
       case "opus-4.7":
       case "opus-4.8":
@@ -10766,6 +10790,8 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     switch (modelId) {
       case "claude-haiku-4-5-20251001":
         return "global.anthropic.claude-haiku-4-5-20251001-v1:0";
+      case "claude-fable-5":
+        return "global.anthropic.claude-fable-5";
       case "claude-opus-4-8":
         return "global.anthropic.claude-opus-4-8";
       case "claude-opus-4-6":
@@ -10786,11 +10812,11 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
 
   private streamPiModel(
     model: Model<any>,
-    context: Parameters<typeof import("@mariozechner/pi-ai").streamSimple>[1],
-    options: Parameters<typeof import("@mariozechner/pi-ai").streamSimple>[2],
-    streamSimple: typeof import("@mariozechner/pi-ai").streamSimple,
+    context: Parameters<typeof import("@earendil-works/pi-ai").streamSimple>[1],
+    options: Parameters<typeof import("@earendil-works/pi-ai").streamSimple>[2],
+    streamSimple: typeof import("@earendil-works/pi-ai").streamSimple,
     streamBedrock = bedrockProviderModule.streamBedrock,
-  ): ReturnType<typeof import("@mariozechner/pi-ai").streamSimple> {
+  ): ReturnType<typeof import("@earendil-works/pi-ai").streamSimple> {
     return this.streamPiModelWithTransientRetry(
       model,
       options,
@@ -10800,16 +10826,16 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
             model,
             context,
             this.buildBedrockByokOptions(model, options),
-          ) as ReturnType<typeof import("@mariozechner/pi-ai").streamSimple>;
+          ) as ReturnType<typeof import("@earendil-works/pi-ai").streamSimple>;
         }
         return streamSimple(model, context, options);
       },
-    ) as ReturnType<typeof import("@mariozechner/pi-ai").streamSimple>;
+    ) as ReturnType<typeof import("@earendil-works/pi-ai").streamSimple>;
   }
 
   private streamPiModelWithTransientRetry(
     model: Model<any>,
-    options: Parameters<typeof import("@mariozechner/pi-ai").streamSimple>[2],
+    options: Parameters<typeof import("@earendil-works/pi-ai").streamSimple>[2],
     createStream: () => AssistantMessageEventStream,
   ): AssistantMessageEventStream {
     const outer = createAssistantMessageEventStream();
@@ -11026,7 +11052,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
 
   private buildBedrockByokOptions(
     model: Model<any>,
-    options: Parameters<typeof import("@mariozechner/pi-ai").streamSimple>[2],
+    options: Parameters<typeof import("@earendil-works/pi-ai").streamSimple>[2],
   ): Parameters<typeof bedrockProviderModule.streamBedrock>[2] {
     return {
       ...options,
@@ -11321,8 +11347,8 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       throw new Error(`${toolName} requires a prompt`);
     }
 
-    const { Agent } = await import("@mariozechner/pi-agent-core");
-    const { getModel, streamSimple } = await import("@mariozechner/pi-ai");
+    const { Agent } = await import("@earendil-works/pi-agent-core");
+    const { getModel, streamSimple } = await import("@earendil-works/pi-ai");
     const resolveCurrentModel =
       this.piModelResolver ?? (() => this.resolvePiModel(context, {}, getModel));
     let modelConfig = await resolveCurrentModel();

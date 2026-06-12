@@ -6,8 +6,8 @@ const bedrockProviderModule = {
   streamSimpleBedrock: vi.fn(),
 };
 
-vi.mock('@mariozechner/pi-ai', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@mariozechner/pi-ai')>();
+vi.mock('@earendil-works/pi-ai', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@earendil-works/pi-ai')>();
   return {
     ...actual,
     setBedrockProviderModule,

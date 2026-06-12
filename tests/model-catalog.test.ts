@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { logoRegistry } from '@/lib/integration-logo-registry';
 import {
   ALL_LLM_MODELS,
+  COST_BUCKET_MAX,
   LLM_MODEL_TO_PRICING_KEY,
   MODEL_CATALOG,
   resolveModelPickerCatalog,
@@ -26,8 +27,8 @@ const NEW_OPENROUTER_MODELS: Array<{
     providerOrder: 2,
     modelOrder: 0,
     pricingKey: 'google/gemini-3.5-flash',
-    cost: '$',
-    intelligence: 4.5,
+    cost: '$$$',
+    intelligence: 4,
     speed: 4.5,
   },
   {
@@ -37,8 +38,8 @@ const NEW_OPENROUTER_MODELS: Array<{
     providerOrder: 2,
     modelOrder: 1,
     pricingKey: 'google/gemini-3-flash-preview',
-    cost: '$',
-    intelligence: 2.5,
+    cost: '$$',
+    intelligence: 2,
     speed: 5,
   },
   {
@@ -49,7 +50,7 @@ const NEW_OPENROUTER_MODELS: Array<{
     modelOrder: 0,
     pricingKey: 'deepseek/deepseek-v4-pro',
     cost: '$',
-    intelligence: 3.5,
+    intelligence: 3,
     speed: 3.5,
   },
   {
@@ -60,7 +61,7 @@ const NEW_OPENROUTER_MODELS: Array<{
     modelOrder: 1,
     pricingKey: 'deepseek/deepseek-v4-flash',
     cost: '$',
-    intelligence: 2,
+    intelligence: 1.5,
     speed: 5,
   },
 ];
@@ -77,14 +78,21 @@ const NEW_FRONTIER_MODELS: Array<{
     label: 'GPT-5.5',
     providerLogo: 'openai',
     pricingKey: 'gpt-5.5',
-    cost: '$$$',
+    cost: '$$$$',
+  },
+  {
+    id: 'fable-5',
+    label: 'Fable 5',
+    providerLogo: 'claude',
+    pricingKey: 'claude-fable-5',
+    cost: '$$$$$',
   },
   {
     id: 'opus-4.8',
     label: 'Opus 4.8',
     providerLogo: 'claude',
     pricingKey: 'claude-opus-4-8',
-    cost: '$$$',
+    cost: '$$$$',
   },
 ];
 
@@ -107,7 +115,9 @@ describe('MODEL_CATALOG', () => {
     for (const entry of Object.values(MODEL_CATALOG)) {
       expect([0, 1, 2, 3, 4, 5]).toContain(entry.providerOrder);
       expect(entry.modelOrder).toBeGreaterThanOrEqual(0);
-      expect(['$', '$$', '$$$']).toContain(entry.cost);
+      expect(entry.cost.length).toBeGreaterThanOrEqual(1);
+      expect(entry.cost.length).toBeLessThanOrEqual(COST_BUCKET_MAX);
+      expect(entry.cost).toMatch(/^\$+$/);
       expect(ALLOWED_SCORES).toContain(entry.intelligence);
       expect(ALLOWED_SCORES).toContain(entry.speed);
       expect(entry.label.trim()).not.toBe('');
@@ -115,6 +125,7 @@ describe('MODEL_CATALOG', () => {
   });
 
   it('uses Claude product logos for Anthropic-family models', () => {
+    expect(MODEL_CATALOG['fable-5'].providerLogo).toBe('claude');
     expect(MODEL_CATALOG['opus-4.8'].providerLogo).toBe('claude');
     expect(MODEL_CATALOG.sonnet.providerLogo).toBe('claude');
     expect(MODEL_CATALOG.haiku.providerLogo).toBe('claude');
@@ -150,7 +161,7 @@ describe('MODEL_CATALOG', () => {
     }
   });
 
-  it('adds GPT-5.5 and Opus 4.8 as distinct priced models', () => {
+  it('adds GPT-5.5, Fable 5, and Opus 4.8 as distinct priced models', () => {
     for (const expected of NEW_FRONTIER_MODELS) {
       expect(MODEL_CATALOG[expected.id]).toMatchObject({
         id: expected.id,
@@ -172,6 +183,7 @@ describe('MODEL_CATALOG', () => {
         source: 'org',
         default_model: null,
         models: [
+          { id: 'fable-5', added_at: 13 },
           { id: 'sonnet', added_at: 1 },
           { id: 'opus-4.8', added_at: 11 },
           { id: 'gpt-5.5', added_at: 12 },
@@ -200,6 +212,7 @@ describe('MODEL_CATALOG', () => {
       source: 'org' as const,
       default_model: null,
       models: [
+        { id: 'fable-5' as const, added_at: 1 },
         { id: 'sonnet' as const, added_at: 1 },
         { id: 'opus-4.8' as const, added_at: 2 },
         { id: 'gpt-5.5' as const, added_at: 3 },
@@ -222,7 +235,7 @@ describe('MODEL_CATALOG', () => {
         orgProvider: 'custom',
         customApi: 'anthropic-messages',
       }).map((entry) => entry.id),
-    ).toEqual(['opus-4.8', 'sonnet']);
+    ).toEqual(['fable-5', 'opus-4.8', 'sonnet']);
     expect(
       resolveModelPickerCatalog({
         effectiveConfig,

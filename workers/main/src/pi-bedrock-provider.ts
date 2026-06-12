@@ -15,8 +15,8 @@ import {
   type ToolCall,
   type Tool,
   type Usage,
-} from '@mariozechner/pi-ai';
-import type { BedrockOptions } from '@mariozechner/pi-ai';
+} from '@earendil-works/pi-ai';
+import type { BedrockOptions } from '@earendil-works/pi-ai';
 
 const DEFAULT_BEDROCK_REGION = 'us-east-1';
 const ANTHROPIC_VERSION = 'bedrock-2023-05-31';
@@ -166,6 +166,16 @@ type BedrockClaudeModelMetadata = {
 };
 
 const BEDROCK_CLAUDE_MODEL_METADATA: Record<string, BedrockClaudeModelMetadata> = {
+  'global.anthropic.claude-fable-5': {
+    id: 'global.anthropic.claude-fable-5',
+    name: 'Claude Fable 5 (Global)',
+    reasoning: true,
+    thinkingLevelMap: { xhigh: 'xhigh' },
+    input: ['text', 'image'],
+    cost: { input: 10, output: 50, cacheRead: 1, cacheWrite: 12.5 },
+    contextWindow: 1_000_000,
+    maxTokens: 128_000,
+  },
   'global.anthropic.claude-haiku-4-5-20251001-v1:0': {
     id: 'global.anthropic.claude-haiku-4-5-20251001-v1:0',
     name: 'Claude Haiku 4.5 (Global)',
@@ -447,7 +457,7 @@ function buildBedrockInvokeBody(
         ? { type: options.toolChoice }
         : options.toolChoice;
   }
-  if (model.reasoning && options.reasoning) {
+  if (model.reasoning && (options.reasoning || requiresAdaptiveThinking(model.id))) {
     applyThinkingConfig(payload, model, options);
   } else if (model.reasoning) {
     payload.thinking = { type: 'disabled' };
@@ -470,6 +480,9 @@ function buildBedrockInvokeUrl(
 
 function mapToBedrockModelId(modelId: string): string {
   const normalized = modelId.toLowerCase();
+  if (normalized.includes('fable-5')) {
+    return 'global.anthropic.claude-fable-5';
+  }
   if (normalized.includes('sonnet-4-6') || normalized.includes('sonnet-4.6')) {
     return 'global.anthropic.claude-sonnet-4-6';
   }
@@ -811,7 +824,7 @@ function buildBetaFeatures(
 
 /**
  * Returns true for Claude models that support Bedrock prompt caching.
- * Supported: Claude 3.5 Haiku, Claude 3.7 Sonnet, Claude 4.x models.
+ * Supported: Claude Fable 5, Claude 3.5 Haiku, Claude 3.7 Sonnet, Claude 4.x models.
  */
 function supportsPromptCaching(modelId: string): boolean {
   const id = modelId.toLowerCase();
@@ -819,6 +832,7 @@ function supportsPromptCaching(modelId: string): boolean {
   return (
     id.includes('-4-')     || // Claude 4.x (opus-4-8, sonnet-4-6, haiku-4-5, ...)
     id.includes('-4.')     || // alternate dot notation
+    id.includes('fable-5')  || // Claude Fable 5
     id.includes('-3-7-')   || // Claude 3.7 Sonnet
     id.includes('-3.7-')
   );
@@ -828,7 +842,7 @@ function supportsPromptCaching(modelId: string): boolean {
  * Adds a `cache_control: {type:'ephemeral'}` marker to the last content block
  * of the last user message in the normalised messages array.
  *
- * Mirrors the official @mariozechner/pi-ai Anthropic provider exactly:
+ * Mirrors the official @earendil-works/pi-ai Anthropic provider exactly:
  * cache the last user turn so that on the very next request (or a retry after
  * a 524 timeout) Bedrock serves the full conversation history from cache,
  * dramatically reducing TTFB.
@@ -880,6 +894,7 @@ function applyThinkingConfig(
 function supportsAdaptiveThinking(modelId: string): boolean {
   const normalized = modelId.toLowerCase();
   return (
+    normalized.includes('fable-5') ||
     normalized.includes('opus-4-6') ||
     normalized.includes('opus-4.6') ||
     normalized.includes('opus-4-7') ||
@@ -889,6 +904,10 @@ function supportsAdaptiveThinking(modelId: string): boolean {
     normalized.includes('sonnet-4-6') ||
     normalized.includes('sonnet-4.6')
   );
+}
+
+function requiresAdaptiveThinking(modelId: string): boolean {
+  return modelId.toLowerCase().includes('fable-5');
 }
 
 function mapReasoningEffort(
@@ -907,6 +926,9 @@ function mapReasoningEffort(
       return 'medium';
     case 'high':
     case 'xhigh':
+      return 'high';
+    case undefined:
+      return 'medium';
     default:
       return 'high';
   }

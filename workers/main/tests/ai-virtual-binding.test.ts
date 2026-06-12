@@ -18,7 +18,7 @@ import {
   chatCompletionToPiCall,
   piMessageToChatCompletion,
 } from "../src/bedrock-pi-adapter.js";
-import type { AssistantMessage } from "@mariozechner/pi-ai";
+import type { AssistantMessage } from "@earendil-works/pi-ai";
 
 describe("resolveGatewaySettings", () => {
   it("returns gateway settings from required env vars", () => {

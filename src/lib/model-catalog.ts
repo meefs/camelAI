@@ -29,7 +29,8 @@ export type ProviderLogoType =
   | "grok"
   | "gemini"
   | "deepseek";
-export type CostBucket = "$" | "$$" | "$$$";
+export type CostBucket = "$" | "$$" | "$$$" | "$$$$" | "$$$$$";
+export const COST_BUCKET_MAX = 5;
 // Half-step rating, 0.5 through 5.0. Used for both intelligence and speed.
 // Renders as 5 circles in the model picker hover tooltip.
 export type RatingScore =
@@ -56,6 +57,7 @@ export interface ModelCatalogEntry {
 }
 
 export const ALL_LLM_MODELS: readonly LlmModel[] = [
+  "fable-5",
   "opus-4.8",
   "sonnet",
   "haiku",
@@ -72,6 +74,7 @@ export const ALL_LLM_MODELS: readonly LlmModel[] = [
 ];
 
 export const LLM_MODEL_TO_PRICING_KEY: Readonly<Record<LlmModel, string>> = {
+  "fable-5": "claude-fable-5",
   "opus-4.8": "claude-opus-4-8",
   sonnet: "claude-sonnet-4-6",
   haiku: "claude-haiku-4-5-20251001",
@@ -92,18 +95,30 @@ export const LLM_MODEL_TO_PRICING_KEY: Readonly<Record<LlmModel, string>> = {
 // field below in the same PR.
 //
 // Buckets (USD per million tokens):
-//   $   = input < $2 AND output < $10
-//   $$  = input $2-4 AND output $10-20
-//   $$$ = input >= $5 OR output >= $20
+//   $     = input < $0.50 AND output < $1
+//   $$    = input < $1.50 AND output < $6
+//   $$$   = input < $4    AND output < $20
+//   $$$$  = input < $10   AND output < $50
+//   $$$$$ = input >= $10  OR  output >= $50
 export const MODEL_CATALOG: Readonly<Record<LlmModel, ModelCatalogEntry>> = {
+  "fable-5": {
+    id: "fable-5",
+    label: "Fable 5",
+    providerLogo: "claude",
+    providerOrder: 0,
+    modelOrder: 0,
+    cost: "$$$$$",
+    intelligence: 5,
+    speed: 2,
+  },
   "opus-4.8": {
     id: "opus-4.8",
     label: "Opus 4.8",
     providerLogo: "claude",
     providerOrder: 0,
-    modelOrder: 0,
-    cost: "$$$",
-    intelligence: 5,
+    modelOrder: 1,
+    cost: "$$$$",
+    intelligence: 4.5,
     speed: 2,
   },
   sonnet: {
@@ -111,9 +126,9 @@ export const MODEL_CATALOG: Readonly<Record<LlmModel, ModelCatalogEntry>> = {
     label: "Sonnet 4.6",
     providerLogo: "claude",
     providerOrder: 0,
-    modelOrder: 1,
-    cost: "$$",
-    intelligence: 4,
+    modelOrder: 2,
+    cost: "$$$",
+    intelligence: 3.5,
     speed: 3.5,
   },
   haiku: {
@@ -121,9 +136,9 @@ export const MODEL_CATALOG: Readonly<Record<LlmModel, ModelCatalogEntry>> = {
     label: "Haiku 4.5",
     providerLogo: "claude",
     providerOrder: 0,
-    modelOrder: 2,
-    cost: "$",
-    intelligence: 2.5,
+    modelOrder: 3,
+    cost: "$$",
+    intelligence: 2,
     speed: 5,
   },
   "gpt-5.5": {
@@ -132,7 +147,7 @@ export const MODEL_CATALOG: Readonly<Record<LlmModel, ModelCatalogEntry>> = {
     providerLogo: "openai",
     providerOrder: 1,
     modelOrder: 0,
-    cost: "$$$",
+    cost: "$$$$",
     intelligence: 5,
     speed: 3,
   },
@@ -142,8 +157,8 @@ export const MODEL_CATALOG: Readonly<Record<LlmModel, ModelCatalogEntry>> = {
     providerLogo: "openai",
     providerOrder: 1,
     modelOrder: 1,
-    cost: "$$",
-    intelligence: 4.5,
+    cost: "$$$",
+    intelligence: 4,
     speed: 3.5,
   },
   "gpt-5.4-mini": {
@@ -152,8 +167,8 @@ export const MODEL_CATALOG: Readonly<Record<LlmModel, ModelCatalogEntry>> = {
     providerLogo: "openai",
     providerOrder: 1,
     modelOrder: 2,
-    cost: "$",
-    intelligence: 2.5,
+    cost: "$$",
+    intelligence: 2,
     speed: 5,
   },
   custom: {
@@ -172,8 +187,8 @@ export const MODEL_CATALOG: Readonly<Record<LlmModel, ModelCatalogEntry>> = {
     providerLogo: "gemini",
     providerOrder: 2,
     modelOrder: 0,
-    cost: "$",
-    intelligence: 4.5,
+    cost: "$$$",
+    intelligence: 4,
     speed: 4.5,
   },
   "gemini-3-flash-preview": {
@@ -182,8 +197,8 @@ export const MODEL_CATALOG: Readonly<Record<LlmModel, ModelCatalogEntry>> = {
     providerLogo: "gemini",
     providerOrder: 2,
     modelOrder: 1,
-    cost: "$",
-    intelligence: 2.5,
+    cost: "$$",
+    intelligence: 2,
     speed: 5,
   },
   "deepseek-v4-pro": {
@@ -193,7 +208,7 @@ export const MODEL_CATALOG: Readonly<Record<LlmModel, ModelCatalogEntry>> = {
     providerOrder: 3,
     modelOrder: 0,
     cost: "$",
-    intelligence: 3.5,
+    intelligence: 3,
     speed: 3.5,
   },
   "deepseek-v4-flash": {
@@ -203,7 +218,7 @@ export const MODEL_CATALOG: Readonly<Record<LlmModel, ModelCatalogEntry>> = {
     providerOrder: 3,
     modelOrder: 1,
     cost: "$",
-    intelligence: 2,
+    intelligence: 1.5,
     speed: 5,
   },
   "kimi-k2.6": {
@@ -212,8 +227,8 @@ export const MODEL_CATALOG: Readonly<Record<LlmModel, ModelCatalogEntry>> = {
     providerLogo: "kimi",
     providerOrder: 4,
     modelOrder: 0,
-    cost: "$",
-    intelligence: 3.5,
+    cost: "$$",
+    intelligence: 3,
     speed: 3.5,
   },
   "grok-4.3": {
@@ -222,8 +237,8 @@ export const MODEL_CATALOG: Readonly<Record<LlmModel, ModelCatalogEntry>> = {
     providerLogo: "grok",
     providerOrder: 5,
     modelOrder: 0,
-    cost: "$",
-    intelligence: 3.5,
+    cost: "$$",
+    intelligence: 3,
     speed: 4.5,
   },
 };

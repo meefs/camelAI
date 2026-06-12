@@ -464,7 +464,9 @@ describe('organization model settings loader', () => {
       'sonnet',
       'haiku',
     ]);
-    expect(result.config.additional).toEqual([]);
+    expect(result.config.additional.map((entry) => entry.id)).toEqual([
+      'fable-5',
+    ]);
     expect(result.config.capacity.used).toBe(3);
   });
 });

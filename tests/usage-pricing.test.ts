@@ -34,6 +34,37 @@ describe("calculateEffectiveUsageCostUsd", () => {
 });
 
 describe("calculateUsageCostUsd", () => {
+  it("calculates Fable 5 pricing and hosted prefixes", () => {
+    const usage = {
+      inputTokens: 1_000_000,
+      outputTokens: 1_000_000,
+      cacheCreationInputTokens: 1_000_000,
+      cacheReadInputTokens: 1_000_000,
+    };
+
+    expect(
+      calculateUsageCostUsd({ ...usage, model: "claude-fable-5" }),
+    ).toBeCloseTo(73.5);
+    expect(
+      calculateUsageCostUsd({
+        ...usage,
+        model: "anthropic/claude-fable-5",
+      }),
+    ).toBeCloseTo(73.5);
+    expect(
+      calculateUsageCostUsd({
+        ...usage,
+        model: "camel/anthropic/claude-fable-5:nitro",
+      }),
+    ).toBeCloseTo(73.5);
+    expect(
+      calculateUsageCostUsd({
+        ...usage,
+        model: "openrouter/anthropic/claude-fable-5",
+      }),
+    ).toBeCloseTo(73.5);
+  });
+
   it("calculates current Opus 4.8 pricing and hosted prefixes", () => {
     const usage = {
       inputTokens: 1_000_000,

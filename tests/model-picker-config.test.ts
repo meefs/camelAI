@@ -67,12 +67,12 @@ describe('model picker config parsing', () => {
     expect(MODEL_PICKER_MAX_MODELS).toBe(10);
     expect(config.default_model).toBeNull();
     expect(config.models.map((model) => model.id)).toEqual([
+      'fable-5',
       'opus-4.8',
       'sonnet',
       'gpt-5.5',
       'gpt-5.4-mini',
       'gemini-3.5-flash',
-      'gemini-3-flash-preview',
       'deepseek-v4-pro',
       'deepseek-v4-flash',
       'kimi-k2.6',
@@ -92,12 +92,12 @@ describe('model picker config parsing', () => {
 
   it('uses provider-aware default suites for direct BYOK providers', () => {
     expect(defaultOrgModelPickerConfig('openrouter').models.map((model) => model.id)).toEqual([
+      'fable-5',
       'opus-4.8',
       'sonnet',
       'gpt-5.5',
       'gpt-5.4-mini',
       'gemini-3.5-flash',
-      'gemini-3-flash-preview',
       'deepseek-v4-pro',
       'deepseek-v4-flash',
       'kimi-k2.6',
@@ -114,6 +114,7 @@ describe('model picker config parsing', () => {
     expect(defaultOrgModelPickerConfig('anthropic')).toMatchObject({
       default_model: null,
       models: [
+        { id: 'fable-5' },
         { id: 'opus-4.8' },
         { id: 'sonnet' },
         { id: 'haiku' },
@@ -122,6 +123,7 @@ describe('model picker config parsing', () => {
     expect(defaultOrgModelPickerConfig('bedrock')).toMatchObject({
       default_model: null,
       models: [
+        { id: 'fable-5' },
         { id: 'opus-4.8' },
         { id: 'sonnet' },
         { id: 'haiku' },
@@ -138,6 +140,7 @@ describe('model picker config parsing', () => {
     expect(defaultOrgModelPickerConfig('custom', { customApi: 'anthropic-messages' })).toMatchObject({
       default_model: null,
       models: [
+        { id: 'fable-5' },
         { id: 'opus-4.8' },
         { id: 'sonnet' },
         { id: 'haiku' },
@@ -162,7 +165,7 @@ describe('model picker config parsing', () => {
       parseOrgModelPickerConfig(null, 'custom', {
         customApi: 'anthropic-messages',
       }).models.map((model) => model.id),
-    ).toEqual(['opus-4.8', 'sonnet', 'haiku']);
+    ).toEqual(['fable-5', 'opus-4.8', 'sonnet', 'haiku']);
     expect(
       parseOrgModelPickerConfig(null, 'custom', {
         customApi: 'openai-responses',

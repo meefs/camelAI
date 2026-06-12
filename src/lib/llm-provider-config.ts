@@ -39,9 +39,14 @@ export const CLAUDE_LLM_MODEL_OPTIONS: ReadonlyArray<{
   description: string;
 }> = [
   {
+    value: "fable-5",
+    label: "Fable 5",
+    description: "Most capable Claude model",
+  },
+  {
     value: "opus-4.8",
     label: "Opus 4.8",
-    description: "Smartest Claude model",
+    description: "Flagship coding model",
   },
   {
     value: "sonnet",

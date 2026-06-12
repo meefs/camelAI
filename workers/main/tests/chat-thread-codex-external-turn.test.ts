@@ -89,6 +89,20 @@ describe('ChatThreadDO Codex turn handling', () => {
     });
   });
 
+  it('routes Fable 5 to Anthropic with an OpenRouter hosted model', () => {
+    const result = ChatThreadDO.prototype['resolvePiModelReference'].call(
+      Object.create(ChatThreadDO.prototype),
+      'fable-5',
+    );
+
+    expect(result).toEqual({
+      provider: 'anthropic',
+      modelId: 'claude-fable-5',
+      hostedGatewayProvider: 'openrouter',
+      hostedModelId: 'anthropic/claude-fable-5:nitro',
+    });
+  });
+
   it('preserves sentDuringStreaming metadata on parsed Pi user messages', () => {
     const fake = Object.create(ChatThreadDO.prototype) as any;
 
@@ -152,6 +166,54 @@ describe('ChatThreadDO Codex turn handling', () => {
     expect(model.apiKey).toBe('cf-token');
     expect(model.provider).toBe('anthropic');
     expect(model.billingSource).toBe('hosted');
+    expect(fake.piCurrentUsageProvider).toBe('openrouter');
+  });
+
+  it('uses local Pi model metadata for hosted Fable 5 when the upstream Pi catalog is missing it', async () => {
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    fake.env = {
+      CF_ACCOUNT_ID: 'acct_1',
+      CF_GATEWAY_NAME: 'gateway_1',
+      AI_GATEWAY_AUTH_TOKEN: 'cf-token',
+    };
+    fake.chatContext = {
+      orgId: 'org1',
+      workspaceId: 'workspace1',
+      threadId: 'thread1',
+    };
+    fake.resolveCurrentByokCredentials = vi.fn(async () => null);
+    fake.checkHostedPiModelAccess = vi.fn(async () => true);
+
+    const getModel = vi.fn(() => undefined);
+    const model = await ChatThreadDO.prototype['resolvePiModel'].call(
+      fake,
+      { provider: 'claude', orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1' },
+      { CHIRIDION_CLAUDE_MODEL: 'fable-5' },
+      getModel,
+    );
+
+    expect(getModel).toHaveBeenCalledWith('anthropic', 'claude-fable-5');
+    expect(model.model).toMatchObject({
+      id: 'anthropic/claude-fable-5:nitro',
+      provider: 'cloudflare-ai-gateway',
+      api: 'anthropic-messages',
+      baseUrl: 'https://gateway.ai.cloudflare.com/v1/acct_1/gateway_1/openrouter',
+      name: 'Claude Fable 5',
+      contextWindow: 1_000_000,
+      maxTokens: 128_000,
+      thinkingLevelMap: { xhigh: 'xhigh' },
+      cost: {
+        input: 10,
+        output: 50,
+        cacheRead: 1,
+        cacheWrite: 12.5,
+      },
+    });
+    expect(model.apiKey).toBe('cf-token');
+    expect(model.provider).toBe('anthropic');
+    expect(model.modelId).toBe('claude-fable-5');
+    expect(model.billingSource).toBe('hosted');
+    expect(model.usageProvider).toBe('openrouter');
     expect(fake.piCurrentUsageProvider).toBe('openrouter');
   });
 
@@ -716,6 +778,43 @@ describe('ChatThreadDO Codex turn handling', () => {
     expect(fake.checkHostedPiModelAccess).not.toHaveBeenCalled();
   });
 
+  it('uses OpenRouter BYOK for Fable 5 through the Anthropic Messages API', async () => {
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    fake.env = {};
+    fake.resolveCurrentByokCredentials = vi.fn(async () => ({
+      provider: 'openrouter',
+      apiKey: 'sk-or-test',
+    }));
+    fake.checkHostedPiModelAccess = vi.fn(async () => {
+      throw new Error('hosted billing should not be checked for BYOK');
+    });
+    fake.openRouterAttributionHeaders = ChatThreadDO.prototype['openRouterAttributionHeaders'];
+
+    const model = await ChatThreadDO.prototype['resolvePiModel'].call(
+      fake,
+      { provider: 'claude', orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1' },
+      { CHIRIDION_CLAUDE_MODEL: 'fable-5' },
+      vi.fn(() => ({
+        id: 'claude-fable-5',
+        provider: 'anthropic',
+        api: 'anthropic-messages',
+        baseUrl: 'https://api.anthropic.com',
+      })),
+    );
+
+    expect(model.model).toMatchObject({
+      id: 'anthropic/claude-fable-5:nitro',
+      provider: 'anthropic',
+      api: 'anthropic-messages',
+      baseUrl: 'https://openrouter.ai/api',
+    });
+    expect(model.apiKey).toBe('sk-or-test');
+    expect(model.billingSource).toBe('byok');
+    expect(model.creditChargeable).toBe(false);
+    expect(model.usageProvider).toBe('openrouter');
+    expect(fake.checkHostedPiModelAccess).not.toHaveBeenCalled();
+  });
+
   it('uses self-host OpenRouter env credentials before org BYOK or hosted gateway', async () => {
     const fake = Object.create(ChatThreadDO.prototype) as any;
     fake.env = {
@@ -1241,6 +1340,44 @@ describe('ChatThreadDO Codex turn handling', () => {
       contextWindow: 1_000_000,
       maxTokens: 128_000,
     });
+    expect(model.apiKey).toBe('bedrock-token');
+    expect(model.billingSource).toBe('byok');
+    expect(model.usageProvider).toBe('bedrock');
+    expect(fake.checkHostedPiModelAccess).not.toHaveBeenCalled();
+  });
+
+  it('uses the global Bedrock fallback model for BYOK Fable 5 when Pi catalog lags', async () => {
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    fake.env = {};
+    fake.resolveCurrentByokCredentials = vi.fn(async () => ({
+      provider: 'bedrock',
+      apiKey: 'bedrock-token',
+      awsRegion: 'us-west-2',
+    }));
+    fake.checkHostedPiModelAccess = vi.fn(async () => {
+      throw new Error('hosted billing should not be checked for BYOK');
+    });
+    const getModel = vi.fn(() => undefined);
+
+    const model = await ChatThreadDO.prototype['resolvePiModel'].call(
+      fake,
+      { provider: 'claude', orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1' },
+      { CHIRIDION_CLAUDE_MODEL: 'fable-5' },
+      getModel,
+    );
+
+    expect(getModel).toHaveBeenCalledWith('amazon-bedrock', 'global.anthropic.claude-fable-5');
+    expect(model.model).toMatchObject({
+      id: 'global.anthropic.claude-fable-5',
+      provider: 'amazon-bedrock',
+      api: 'bedrock-converse-stream',
+      baseUrl: 'https://bedrock-runtime.us-west-2.amazonaws.com',
+      name: 'Claude Fable 5 (Global)',
+      contextWindow: 1_000_000,
+      maxTokens: 128_000,
+      thinkingLevelMap: { xhigh: 'xhigh' },
+    });
+    expect(model.model.id).not.toMatch(/-v1:0$/);
     expect(model.apiKey).toBe('bedrock-token');
     expect(model.billingSource).toBe('byok');
     expect(model.usageProvider).toBe('bedrock');

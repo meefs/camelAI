@@ -203,7 +203,13 @@ describe('admin API thread patch route', () => {
     const { userId } = await createUser(testEnv, email, 'password123', 'Admin API Revision User');
     const { org, defaultWorkspaceId } = await createOrg(testEnv, 'Admin API Revision Org', userId);
     const orgStub = testEnv.ORG.get(testEnv.ORG.idFromName(org.id));
-    const thread = await orgStub.createThread(defaultWorkspaceId, 'Patch thread title', userId);
+    const thread = await orgStub.createThread(
+      defaultWorkspaceId,
+      'Patch thread title',
+      userId,
+      undefined,
+      'fable-5',
+    );
     await waitForAdminIndexThreadPresence(thread.id);
 
     const setTitle = vi.fn().mockResolvedValue(undefined);
@@ -221,7 +227,7 @@ describe('admin API thread patch route', () => {
         Authorization: 'Bearer test-admin-api-key',
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ title: 'Renamed through admin API', model: 'sonnet' }),
+      body: JSON.stringify({ title: 'Renamed through admin API', model: 'fable-5' }),
     });
 
     const response = await handleAdminApi({
@@ -249,7 +255,7 @@ describe('admin API thread patch route', () => {
       result.updated_at,
     );
     expect(setModel).toHaveBeenCalledWith(
-      'sonnet',
+      'fable-5',
       undefined,
       result.updated_at,
     );
