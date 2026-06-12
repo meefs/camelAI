@@ -3689,6 +3689,12 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
             : null;
       if (!socketTag) {
         this.trace("ws_upgrade_rejected_path", { path: url.pathname });
+        this.recordChatThreadObservabilityEvent("chat_ws_upgrade", {
+          operation: "unknown",
+          status: "rejected_path",
+          severity: "warn",
+          sampleKey: url.pathname,
+        });
         return new Response("Not found", { status: 404 });
       }
 
@@ -3704,6 +3710,12 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
           storedOrgId: this.chatContext.orgId,
           incomingOrgId,
         });
+        this.recordChatThreadObservabilityEvent("chat_ws_upgrade", {
+          operation: socketTag === RUNNER_CLIENT_SOCKET_TAG ? "runner" : "chat",
+          status: "rejected_org_mismatch",
+          severity: "warn",
+          sampleKey: this.chatContext.orgId,
+        });
         return new Response("Forbidden", { status: 403 });
       }
 
@@ -3717,6 +3729,14 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         queryThreadId: url.searchParams.get("threadId") || "",
         queryWorkspaceId: url.searchParams.get("workspaceId") || "",
         queryOrgId: url.searchParams.get("orgId") || "",
+      });
+      this.recordChatThreadObservabilityEvent("chat_ws_upgrade", {
+        operation: socketTag === RUNNER_CLIENT_SOCKET_TAG ? "runner" : "chat",
+        status: "accepted",
+        size:
+          socketTag === RUNNER_CLIENT_SOCKET_TAG
+            ? this.getRunnerClientSockets().length
+            : this.getChatSockets().length,
       });
       return new Response(null, { status: 101, webSocket: client });
     }
@@ -3864,22 +3884,40 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     wasClean: boolean,
   ): void {
     if (this.isRunnerClientSocket(ws)) {
+      const remainingRunnerSockets = this.getRunnerClientSockets().length;
       this.trace("runner_client_ws_close", {
         code,
         reason,
         wasClean,
-        remainingRunnerSockets: this.getRunnerClientSockets().length,
+        remainingRunnerSockets,
+      });
+      this.recordChatThreadObservabilityEvent("chat_ws_close", {
+        operation: "runner",
+        status: wasClean ? "clean" : "unclean",
+        severity: wasClean ? "info" : "warn",
+        statusCode: code,
+        size: remainingRunnerSockets,
+        sampleKey: String(code),
       });
       return;
     }
 
+    const remainingChatSockets = this.getChatSockets().length;
     this.trace("chat_ws_close", {
       code,
       reason,
       wasClean,
-      remainingChatSockets: this.getChatSockets().length,
+      remainingChatSockets,
     });
-    if (this.getChatSockets().length === 0) {
+    this.recordChatThreadObservabilityEvent("chat_ws_close", {
+      operation: "chat",
+      status: wasClean ? "clean" : "unclean",
+      severity: wasClean ? "info" : "warn",
+      statusCode: code,
+      size: remainingChatSockets,
+      sampleKey: String(code),
+    });
+    if (remainingChatSockets === 0) {
       if (this.browserPrompts.pendingQuestionCount > 0) {
         this.markRunnerActivity("chat_socket_closed_question_unavailable");
         this.ctx.waitUntil(
@@ -3898,10 +3936,22 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       this.trace("runner_client_ws_error", {
         error: String(error),
       });
+      this.recordChatThreadObservabilityEvent("chat_ws_error", {
+        operation: "runner",
+        status: "error",
+        severity: "error",
+        error,
+      });
       return;
     }
     this.trace("chat_ws_error", {
       error: String(error),
+    });
+    this.recordChatThreadObservabilityEvent("chat_ws_error", {
+      operation: "chat",
+      status: "error",
+      severity: "error",
+      error,
     });
   }
 
@@ -12082,12 +12132,19 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
   }
 
   private sendRunnerCommand(message: Record<string, unknown>): boolean {
+    const type = typeof message.type === "string" ? message.type : "unknown";
     if (this.piSession) {
-      const type = typeof message.type === "string" ? message.type : "unknown";
       try {
         if (type === "message") {
           const content = typeof message.content === "string" ? message.content : "";
-          if (!content.trim()) return false;
+          if (!content.trim()) {
+            this.recordChatThreadObservabilityEvent("runner_command_dispatch", {
+              operation: type,
+              status: "empty_content",
+              severity: "warn",
+            });
+            return false;
+          }
           const wasStreaming = this.piSession.state.isStreaming;
           const userMessage: AgentMessage = {
             role: "user",
@@ -12146,6 +12203,13 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
                 });
                 this.setChatIsStreaming(false);
                 this.setActiveTurnUserId(null);
+                this.recordChatThreadObservabilityEvent("runner_command_dispatch", {
+                  operation: type,
+                  status: "pi_prompt_failed",
+                  severity: "error",
+                  error,
+                  count: wasStreaming ? 1 : 0,
+                });
               }),
           );
           return true;
@@ -12173,10 +12237,21 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         }
       } catch (error) {
         console.error("[ChatThreadDO] send Pi command failed", error);
+        this.recordChatThreadObservabilityEvent("runner_command_dispatch", {
+          operation: type,
+          status: "dispatch_failed",
+          severity: "error",
+          error,
+        });
         return false;
       }
     }
 
+    this.recordChatThreadObservabilityEvent("runner_command_dispatch", {
+      operation: type,
+      status: "pi_session_unavailable",
+      severity: "warn",
+    });
     return false;
   }
 
@@ -12259,12 +12334,24 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       bytes: json.length,
       recipients: this.getChatSockets().length,
     });
-    for (const ws of this.getChatSockets()) {
+    let failures = 0;
+    const sockets = this.getChatSockets();
+    for (const ws of sockets) {
       try {
         ws.send(json);
       } catch {
-        // ignore closed sockets
+        failures += 1;
       }
+    }
+    if (failures > 0) {
+      this.recordChatThreadObservabilityEvent("chat_ws_send_failed", {
+        operation: "broadcast_chat",
+        status: "socket_send_failed",
+        severity: "warn",
+        count: failures,
+        size: sockets.length,
+        sampleKey: typeof typed.type === "string" ? typed.type : "unknown",
+      });
     }
   }
 
@@ -12276,12 +12363,24 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       bytes: json.length,
       recipients: this.getRunnerClientSockets().length,
     });
-    for (const ws of this.getRunnerClientSockets()) {
+    let failures = 0;
+    const sockets = this.getRunnerClientSockets();
+    for (const ws of sockets) {
       try {
         ws.send(json);
       } catch {
-        // ignore closed sockets
+        failures += 1;
       }
+    }
+    if (failures > 0) {
+      this.recordChatThreadObservabilityEvent("chat_ws_send_failed", {
+        operation: "broadcast_runner",
+        status: "socket_send_failed",
+        severity: "warn",
+        count: failures,
+        size: sockets.length,
+        sampleKey: typeof typed.type === "string" ? typed.type : "unknown",
+      });
     }
   }
 
@@ -12294,8 +12393,15 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         bytes: json.length,
       });
       ws.send(json);
-    } catch {
-      // ignore socket failures
+    } catch (error) {
+      const typed = message as { type?: unknown };
+      this.recordChatThreadObservabilityEvent("chat_ws_send_failed", {
+        operation: this.isRunnerClientSocket(ws) ? "send_direct_runner" : "send_direct_chat",
+        status: "socket_send_failed",
+        severity: "warn",
+        error,
+        sampleKey: typeof typed.type === "string" ? typed.type : "unknown",
+      });
     }
   }
 
