@@ -15,6 +15,7 @@ const {
   createThreadWithValidatedAccess,
   getThread,
   getWorkspaceModelPickerState,
+  updateThreadModel,
 } = await import('@/lib/chat-do.server');
 
 describe('getWorkspaceModelPickerState rollout compatibility', () => {
@@ -118,6 +119,7 @@ describe('getWorkspaceModelPickerState rollout compatibility', () => {
         .fn()
         .mockResolvedValue({ claude_proxy_models: false }),
       getModelPickerConfig: vi.fn().mockResolvedValue({
+        use_platform_defaults: false,
         models: [{ id: 'sonnet', added_at: 1 }],
         default_model: 'sonnet',
       }),
@@ -171,6 +173,7 @@ describe('getWorkspaceModelPickerState rollout compatibility', () => {
         .fn()
         .mockResolvedValue({ claude_proxy_models: false }),
       getModelPickerConfig: vi.fn().mockResolvedValue({
+        use_platform_defaults: false,
         models: [{ id: 'sonnet', added_at: 1 }],
         default_model: 'sonnet',
       }),
@@ -200,6 +203,148 @@ describe('getWorkspaceModelPickerState rollout compatibility', () => {
       ),
     ).rejects.toThrow('Invalid thread model');
     expect(orgStub.createThread).not.toHaveBeenCalled();
+  });
+
+  it('allows Fable for new threads when the stored picker config is the pre-Fable default suite', async () => {
+    const workspaceStub = {
+      getInfo: vi.fn().mockResolvedValue({ org_id: 'org_123' }),
+      getModelPickerConfig: vi.fn().mockResolvedValue({
+        use_org_defaults: true,
+        models: [],
+        default_model: null,
+      }),
+    };
+    const orgStub = {
+      getLlmProviderConfig: vi.fn().mockResolvedValue(null),
+      getExperimentalSettings: vi
+        .fn()
+        .mockResolvedValue({ claude_proxy_models: false }),
+      getModelPickerConfig: vi.fn().mockResolvedValue({
+        models: [
+          { id: 'opus-4.8', added_at: 10 },
+          { id: 'sonnet', added_at: 9 },
+          { id: 'gpt-5.5', added_at: 8 },
+          { id: 'gpt-5.4-mini', added_at: 7 },
+          { id: 'gemini-3.5-flash', added_at: 6 },
+          { id: 'gemini-3-flash-preview', added_at: 5 },
+          { id: 'deepseek-v4-pro', added_at: 4 },
+          { id: 'deepseek-v4-flash', added_at: 3 },
+          { id: 'kimi-k2.6', added_at: 2 },
+          { id: 'grok-4.3', added_at: 1 },
+        ],
+        default_model: null,
+      }),
+      createThread: vi.fn().mockResolvedValue({
+        id: 'thread_123',
+        workspace_id: 'ws_123',
+        title: 'New Chat',
+        created_by: 'user_123',
+        model: 'fable-5',
+        created_at: 1,
+        updated_at: 2,
+        user_message_count: 0,
+        first_user_message: null,
+      }),
+    };
+
+    getEnvMock.mockReturnValue({
+      WORKSPACE: {
+        idFromName: (id: string) => id,
+        get: () => workspaceStub,
+      },
+      ORG: {
+        idFromName: (id: string) => id,
+        get: () => orgStub,
+      },
+    });
+
+    const state = await getWorkspaceModelPickerState({}, 'ws_123');
+    expect(state?.allowedThreadModels[0]).toBe('fable-5');
+    expect(state?.allowedThreadModels).toContain('opus-4.8');
+
+    await expect(
+      createThread({}, 'ws_123', 'New Chat', 'user_123', undefined, 'fable-5'),
+    ).resolves.toMatchObject({ id: 'thread_123', model: 'fable-5' });
+    expect(orgStub.createThread).toHaveBeenCalledWith(
+      'ws_123',
+      'New Chat',
+      'user_123',
+      undefined,
+      'fable-5',
+    );
+  });
+
+  it('allows switching an existing thread to Fable from the pre-Fable default suite', async () => {
+    const workspaceStub = {
+      getInfo: vi.fn().mockResolvedValue({ org_id: 'org_123' }),
+      getModelPickerConfig: vi.fn().mockResolvedValue({
+        use_org_defaults: true,
+        models: [],
+        default_model: null,
+      }),
+    };
+    const orgStub = {
+      getLlmProviderConfig: vi.fn().mockResolvedValue(null),
+      getExperimentalSettings: vi
+        .fn()
+        .mockResolvedValue({ claude_proxy_models: false }),
+      getModelPickerConfig: vi.fn().mockResolvedValue({
+        models: [
+          { id: 'opus-4.8', added_at: 10 },
+          { id: 'sonnet', added_at: 9 },
+          { id: 'gpt-5.5', added_at: 8 },
+          { id: 'gpt-5.4-mini', added_at: 7 },
+          { id: 'gemini-3.5-flash', added_at: 6 },
+          { id: 'gemini-3-flash-preview', added_at: 5 },
+          { id: 'deepseek-v4-pro', added_at: 4 },
+          { id: 'deepseek-v4-flash', added_at: 3 },
+          { id: 'kimi-k2.6', added_at: 2 },
+          { id: 'grok-4.3', added_at: 1 },
+        ],
+        default_model: null,
+      }),
+      getThread: vi.fn().mockResolvedValue({
+        id: 'thread_123',
+        workspace_id: 'ws_123',
+        title: 'Existing Chat',
+        created_by: 'user_123',
+        model: 'sonnet',
+        created_at: 1,
+        updated_at: 2,
+        user_message_count: 0,
+        first_user_message: null,
+      }),
+      updateThreadModel: vi.fn().mockResolvedValue({
+        id: 'thread_123',
+        workspace_id: 'ws_123',
+        title: 'Existing Chat',
+        created_by: 'user_123',
+        model: 'fable-5',
+        created_at: 1,
+        updated_at: 3,
+        user_message_count: 0,
+        first_user_message: null,
+      }),
+    };
+
+    getEnvMock.mockReturnValue({
+      WORKSPACE: {
+        idFromName: (id: string) => id,
+        get: () => workspaceStub,
+      },
+      ORG: {
+        idFromName: (id: string) => id,
+        get: () => orgStub,
+      },
+    });
+
+    await expect(
+      updateThreadModel({}, 'thread_123', 'fable-5', 'ws_123'),
+    ).resolves.toMatchObject({ id: 'thread_123', model: 'fable-5' });
+    expect(orgStub.updateThreadModel).toHaveBeenCalledWith(
+      'thread_123',
+      'fable-5',
+    );
   });
 
   it('normalizes legacy stored thread models and ignores legacy providers before returning them to React', async () => {

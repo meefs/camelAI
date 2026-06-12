@@ -67,6 +67,7 @@ describe('organization model settings UI', () => {
       ],
       useOrgDefaults: false,
       config: {
+        usePlatformDefaults: true,
         inPicker: [
           {
             entry: MODEL_CATALOG.sonnet,
@@ -102,6 +103,7 @@ describe('organization model settings UI', () => {
       ],
       useOrgDefaults: true,
       config: {
+        usePlatformDefaults: true,
         inPicker: [
           {
             entry: MODEL_CATALOG.sonnet,

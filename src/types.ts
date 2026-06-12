@@ -559,6 +559,7 @@ export interface ModelPickerModelConfig {
 export interface OrgModelPickerConfig {
   models: ModelPickerModelConfig[];
   default_model: LlmModel | null;
+  use_platform_defaults?: boolean;
 }
 
 export interface WorkspaceModelPickerConfig extends OrgModelPickerConfig {

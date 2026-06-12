@@ -18,7 +18,7 @@ import type { EffectiveModelPickerConfig } from "./model-picker-config";
 // 3. Add per-token pricing in src/lib/usage-pricing.ts.
 // 4. Add a MODEL_CATALOG entry below with a version-qualified label, logo type,
 //    provider order, cost bucket, intelligence, and speed.
-// 5. Update defaultOrgModelPickerConfig if it should ship in the default picker.
+// 5. Add or update catalog tests so model picker platform defaults include it.
 // 6. Add or update the catalog tests so the TS catalog, logos, and pricing do
 //    not drift apart.
 
@@ -273,7 +273,12 @@ export function resolveModelPickerCatalog(args: {
     }).map((option) => option.value),
   );
 
-  const entries = args.effectiveConfig.models
+  const sourceModels =
+    args.effectiveConfig.use_platform_defaults === false
+      ? args.effectiveConfig.models
+      : [...visibleModelIds].map((id) => ({ id, added_at: Date.now() }));
+
+  const entries = sourceModels
     .filter((model) => visibleModelIds.has(model.id))
     .map((model) => ({
       ...MODEL_CATALOG[model.id],
@@ -281,7 +286,11 @@ export function resolveModelPickerCatalog(args: {
     }))
     .sort(compareModelCatalogEntries);
 
-  if (entries.length === 0 && visibleModelIds.has(CUSTOM_LLM_MODEL)) {
+  if (
+    entries.length === 0 &&
+    args.effectiveConfig.use_platform_defaults !== false &&
+    visibleModelIds.has(CUSTOM_LLM_MODEL)
+  ) {
     return [{ ...MODEL_CATALOG[CUSTOM_LLM_MODEL], addedAt: Date.now() }];
   }
 

@@ -20,11 +20,6 @@ import {
   ToggleGroup,
   ToggleGroupItem,
 } from "@/components/ui/toggle-group";
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from "@/components/ui/tooltip";
 import { getContrastTextColor } from "@/lib/avatar";
 import {
   getAuthEnv,
@@ -36,14 +31,11 @@ import { getEnv } from "@/lib/cloudflare.server";
 import {
   ALL_LLM_MODELS,
   MODEL_CATALOG,
-  compareModelCatalogEntries,
+  resolveModelPickerCatalog,
   sortAdditionalModelCatalogEntries,
   type ModelCatalogEntry,
 } from "@/lib/model-catalog";
-import {
-  MODEL_PICKER_MAX_MODELS,
-  resolveEffectivePickerConfig,
-} from "@/lib/model-picker-config";
+import { resolveEffectivePickerConfig } from "@/lib/model-picker-config";
 import {
   getStoredCustomLlmProviderApi,
   getStoredCustomLlmProviderModelId,
@@ -127,21 +119,35 @@ function getWorkspaceStub(
 }
 
 function buildPickerRows(
-  config: Pick<OrgModelPickerConfig, "models" | "default_model">,
+  config: OrgModelPickerConfig,
+  visibleModelIds: ReadonlySet<LlmModel>,
+  options: {
+    experimentalSettings: import("@/types").OrganizationExperimentalSettings;
+    llmProvider: string | null | undefined;
+    customApi?: CustomLlmProviderApi | null;
+    customModelId?: string | null;
+  },
 ): PickerModelRow[] {
-  return config.models
-    .map((model) => ({
-      entry: MODEL_CATALOG[model.id],
-      addedAt: model.added_at,
-      isDefault: model.id === config.default_model,
-    }))
-    .sort((a, b) => compareModelCatalogEntries(a.entry, b.entry));
+  return resolveModelPickerCatalog({
+    effectiveConfig: { ...config, source: "org" },
+    experimentalSettings: options.experimentalSettings,
+    orgProvider: options.llmProvider,
+    customApi: options.customApi,
+    customModelId: options.customModelId,
+  })
+    .filter((entry) => visibleModelIds.has(entry.id))
+    .map((entry) => ({
+      entry,
+      addedAt: entry.addedAt,
+      isDefault: entry.id === config.default_model,
+    }));
 }
 
 function buildAdditionalRows(
-  config: Pick<OrgModelPickerConfig, "models">,
+  config: Pick<OrgModelPickerConfig, "models" | "use_platform_defaults">,
   visibleModelIds: ReadonlySet<LlmModel>,
 ): ModelCatalogEntry[] {
+  if (config.use_platform_defaults !== false) return [];
   const inPicker = new Set(config.models.map((model) => model.id));
   return sortAdditionalModelCatalogEntries(
     ALL_LLM_MODELS.filter(
@@ -208,11 +214,15 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     env,
     llmProviderConfig,
   );
+  const customApi = getStoredCustomLlmProviderApi(effectiveLlmProviderConfig);
+  const customModelId = getStoredCustomLlmProviderModelId(
+    effectiveLlmProviderConfig,
+  );
   const visibleModelIds = getVisibleModelIdsForSettings(
     effectiveLlmProviderConfig?.provider,
     experimentalSettings,
-    getStoredCustomLlmProviderApi(effectiveLlmProviderConfig),
-    getStoredCustomLlmProviderModelId(effectiveLlmProviderConfig),
+    customApi,
+    customModelId,
   );
   const workspaceConfigs = await loadWorkspaceConfigs(authEnv, workspaces);
   const selectedWorkspace =
@@ -230,6 +240,12 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     effectiveConfig,
     visibleModelIds,
   );
+  const pickerRows = buildPickerRows(displayConfig, visibleModelIds, {
+    experimentalSettings,
+    llmProvider: effectiveLlmProviderConfig?.provider,
+    customApi,
+    customModelId,
+  });
   const useOrgDefaults =
     scope === "ws" ? (workspaceConfig?.use_org_defaults ?? true) : false;
 
@@ -246,11 +262,12 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     })),
     useOrgDefaults,
     config: {
-      inPicker: buildPickerRows(displayConfig),
+      usePlatformDefaults: displayConfig.use_platform_defaults !== false,
+      inPicker: pickerRows,
       additional: buildAdditionalRows(displayConfig, visibleModelIds),
       capacity: {
-        used: displayConfig.models.length,
-        max: MODEL_PICKER_MAX_MODELS,
+        used: pickerRows.length,
+        max: visibleModelIds.size,
       },
     },
   };
@@ -358,6 +375,23 @@ function addModel(
   return [{ id: model, added_at: Date.now() }, ...models];
 }
 
+function visibleModelRows(
+  config: Pick<OrgModelPickerConfig, "models" | "use_platform_defaults">,
+  visibleModelIds: ReadonlySet<LlmModel>,
+): ModelPickerModelConfig[] {
+  if (config.use_platform_defaults === false) {
+    return config.models
+      .filter((model) => visibleModelIds.has(model.id))
+      .map((model) => ({ ...model }));
+  }
+
+  return sortAdditionalModelCatalogEntries(
+    ALL_LLM_MODELS.filter((id) => visibleModelIds.has(id)).map(
+      (id) => MODEL_CATALOG[id],
+    ),
+  ).map((entry, index) => ({ id: entry.id, added_at: Date.now() - index }));
+}
+
 function getVisibleModelIdsForSettings(
   llmProvider: string | null | undefined,
   experimentalSettings: import("@/types").OrganizationExperimentalSettings,
@@ -380,8 +414,13 @@ function normalizeConfigForVisibleModels<
     .filter((model) => visibleModelIds.has(model.id))
     .map((model) => ({ ...model }));
   let default_model = config.default_model ?? null;
-  if (default_model && !visibleModelIds.has(default_model)) {
-    default_model = models[0]?.id ?? null;
+  if (
+    default_model &&
+    (!visibleModelIds.has(default_model) ||
+      (config.use_platform_defaults === false &&
+        !models.some((model) => model.id === default_model)))
+  ) {
+    default_model = null;
   }
   return { ...config, models, default_model };
 }
@@ -409,6 +448,7 @@ export async function action({ request, context }: Route.ActionArgs) {
         ? normalizeConfigForVisibleModels(
             {
               use_org_defaults: false,
+              use_platform_defaults: target.orgConfig.use_platform_defaults,
               models: target.orgConfig.models,
               default_model: target.orgConfig.default_model,
             },
@@ -451,6 +491,32 @@ export async function action({ request, context }: Route.ActionArgs) {
     target.visibleModelIds,
   );
 
+  if (intent === "setUsePlatformDefaults") {
+    const usePlatformDefaults = formData.get("usePlatformDefaults") === "true";
+    const nextConfig = usePlatformDefaults
+      ? {
+          ...currentConfig,
+          use_platform_defaults: true,
+          models: [],
+          default_model: null,
+        }
+      : {
+          ...currentConfig,
+          use_platform_defaults: false,
+          models: visibleModelRows(currentConfig, target.visibleModelIds),
+        };
+    await saveActionTarget(target, nextConfig, {
+      intent,
+      use_platform_defaults: usePlatformDefaults,
+    });
+    return response({
+      success: true,
+      message: usePlatformDefaults
+        ? "Using platform model defaults"
+        : "Using a custom model list",
+    });
+  }
+
   if (intent === "addModel") {
     if (!model) {
       return response({ error: "A valid model is required" }, { status: 400 });
@@ -462,17 +528,15 @@ export async function action({ request, context }: Route.ActionArgs) {
     if (providerError) {
       return response(providerError, { status: 400 });
     }
-    if (
-      currentConfig.models.length >= MODEL_PICKER_MAX_MODELS &&
-      !currentConfig.models.some((item) => item.id === model)
-    ) {
-      return response({ error: "Picker capacity reached" }, { status: 400 });
-    }
     await saveActionTarget(
       target,
       {
         ...currentConfig,
-        models: addModel(currentConfig.models, model),
+        use_platform_defaults: false,
+        models: addModel(
+          visibleModelRows(currentConfig, target.visibleModelIds),
+          model,
+        ),
       },
       { intent, model },
     );
@@ -486,28 +550,23 @@ export async function action({ request, context }: Route.ActionArgs) {
     if (!model) {
       return response({ error: "A valid model is required" }, { status: 400 });
     }
-    const models = currentConfig.models.filter((item) => item.id !== model);
+    const pickerModels = visibleModelRows(currentConfig, target.visibleModelIds);
+    if (target.visibleModelIds.has(model) && pickerModels.length <= 1) {
+      return response(
+        { error: "Picker must include at least one model available for this provider." },
+        { status: 400 },
+      );
+    }
+    const models = pickerModels.filter((item) => item.id !== model);
     const nextConfig = {
       ...currentConfig,
+      use_platform_defaults: false,
       models,
       default_model:
         currentConfig.default_model === model
           ? null
           : currentConfig.default_model,
     };
-    if (
-      target.visibleModelIds.has(model) &&
-      nextConfig.models.length > 0 &&
-      !nextConfig.models.some((item) => target.visibleModelIds.has(item.id))
-    ) {
-      return response(
-        {
-          error:
-            "Picker must include at least one model available for this provider, or be empty.",
-        },
-        { status: 400 },
-      );
-    }
     await saveActionTarget(
       target,
       nextConfig,
@@ -523,11 +582,12 @@ export async function action({ request, context }: Route.ActionArgs) {
     if (rawModelString && !model) {
       return response({ error: "A valid model is required" }, { status: 400 });
     }
-    const nextDefault = model;
-    if (
-      nextDefault &&
+  const nextDefault = model;
+  if (
+    nextDefault &&
+      currentConfig.use_platform_defaults === false &&
       !currentConfig.models.some((item) => item.id === nextDefault)
-    ) {
+  ) {
       return response({ error: "Default model must be in the picker" }, { status: 400 });
     }
     if (nextDefault) {
@@ -565,8 +625,6 @@ function ModelSettingsRow({
   onDefault,
   readOnly,
   disabled,
-  capacityReached,
-  capacityMax,
 }: {
   row: PickerModelRow | { entry: ModelCatalogEntry };
   actionLabel: "add" | "remove";
@@ -574,8 +632,6 @@ function ModelSettingsRow({
   onDefault?: (model: LlmModel | null) => void;
   readOnly?: boolean;
   disabled?: boolean;
-  capacityReached?: boolean;
-  capacityMax?: number;
 }) {
   const entry = row.entry;
   const isDefault = "isDefault" in row ? row.isDefault : false;
@@ -584,7 +640,7 @@ function ModelSettingsRow({
       type="button"
       variant="outline"
       size="sm"
-      disabled={readOnly || disabled || (actionLabel === "add" && capacityReached)}
+      disabled={readOnly || disabled}
       onClick={() => onAction(entry.id)}
     >
       {actionLabel}
@@ -617,17 +673,7 @@ function ModelSettingsRow({
             />
           </Button>
         )}
-        {actionLabel === "add" && capacityReached ? (
-          <Tooltip>
-            <TooltipTrigger asChild>{actionButton}</TooltipTrigger>
-            <TooltipContent>
-              Picker capacity reached (max{" "}
-              {capacityMax ?? MODEL_PICKER_MAX_MODELS})
-            </TooltipContent>
-          </Tooltip>
-        ) : (
-          actionButton
-        )}
+        {actionButton}
       </div>
     </div>
   );
@@ -640,7 +686,7 @@ export default function OrganizationModelsPage() {
   const location = useLocation();
   const isSubmitting = fetcher.state !== "idle";
   const readOnly = data.scope === "ws" && data.useOrgDefaults;
-  const capacityReached = data.config.capacity.used >= data.config.capacity.max;
+  const editingCustomList = data.config.usePlatformDefaults === false;
   // Intentional: the top-level workspace switcher is only useful when admins
   // can choose between multiple workspaces. Single-workspace orgs can still
   // access workspace override controls directly via scope=ws.
@@ -752,6 +798,26 @@ export default function OrganizationModelsPage() {
         </p>
       )}
 
+      <label className="flex items-center gap-2 text-sm">
+        <Checkbox
+          checked={data.config.usePlatformDefaults}
+          disabled={readOnly || isSubmitting}
+          onCheckedChange={(checked) => {
+            fetcher.submit(
+              {
+                intent: "setUsePlatformDefaults",
+                usePlatformDefaults: checked === true ? "true" : "false",
+              },
+              {
+                method: "post",
+                action: `${location.pathname}${location.search}`,
+              },
+            );
+          }}
+        />
+        Use platform model defaults
+      </label>
+
       <section className="space-y-2">
         <div className="flex items-center justify-between">
           <h2 className="text-sm font-medium">In your picker</h2>
@@ -772,7 +838,7 @@ export default function OrganizationModelsPage() {
               onAction={(model) => submit("removeModel", model)}
               onDefault={(model) => submit("setDefault", model)}
               readOnly={readOnly}
-              disabled={isSubmitting}
+              disabled={isSubmitting || !editingCustomList}
             />
           ))
         )}
@@ -780,26 +846,26 @@ export default function OrganizationModelsPage() {
 
       <Separator />
 
-      <section className="space-y-2">
-        <div className="flex items-center justify-between">
-          <h2 className="text-sm font-medium">Additional models</h2>
-          <span className="text-sm text-muted-foreground">
-            {data.config.additional.length} available
-          </span>
-        </div>
-        {data.config.additional.map((entry) => (
-          <ModelSettingsRow
-            key={entry.id}
-            row={{ entry }}
-            actionLabel="add"
-            onAction={(model) => submit("addModel", model)}
-            readOnly={readOnly}
-            disabled={isSubmitting}
-            capacityReached={capacityReached}
-            capacityMax={data.config.capacity.max}
-          />
-        ))}
-      </section>
+      {editingCustomList && (
+        <section className="space-y-2">
+          <div className="flex items-center justify-between">
+            <h2 className="text-sm font-medium">Additional models</h2>
+            <span className="text-sm text-muted-foreground">
+              {data.config.additional.length} available
+            </span>
+          </div>
+          {data.config.additional.map((entry) => (
+            <ModelSettingsRow
+              key={entry.id}
+              row={{ entry }}
+              actionLabel="add"
+              onAction={(model) => submit("addModel", model)}
+              readOnly={readOnly}
+              disabled={isSubmitting}
+            />
+          ))}
+        </section>
+      )}
     </div>
   );
 }

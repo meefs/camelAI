@@ -1,20 +1,13 @@
 import type {
   LlmModel,
-  LlmProvider,
   ModelPickerModelConfig,
   OrgModelPickerConfig,
   WorkspaceModelPickerConfig,
 } from "../types";
 import {
   isLlmModel,
-  isOpenAiCompatibleCustomApi,
   replaceLegacyLlmModel,
-  CUSTOM_LLM_MODEL,
-  hasCustomModelId,
-  type CustomLlmProviderApi,
 } from "./llm-provider-config";
-
-export const MODEL_PICKER_MAX_MODELS = 10;
 
 export interface EffectiveModelPickerConfig extends OrgModelPickerConfig {
   source: "org" | "workspace";
@@ -22,60 +15,6 @@ export interface EffectiveModelPickerConfig extends OrgModelPickerConfig {
 
 export interface ModelIdEntry {
   id: LlmModel;
-}
-
-const HOSTED_OR_OPENROUTER_DEFAULT_MODEL_ORDER: readonly LlmModel[] = [
-  "fable-5",
-  "opus-4.8",
-  "sonnet",
-  "gpt-5.5",
-  "gpt-5.4-mini",
-  "gemini-3.5-flash",
-  "deepseek-v4-pro",
-  "deepseek-v4-flash",
-  "kimi-k2.6",
-  "grok-4.3",
-];
-
-const OPENAI_DEFAULT_MODEL_ORDER: readonly LlmModel[] = [
-  "gpt-5.5",
-  "gpt-5.4",
-  "gpt-5.4-mini",
-];
-
-const CLAUDE_DEFAULT_MODEL_ORDER: readonly LlmModel[] = [
-  "fable-5",
-  "opus-4.8",
-  "sonnet",
-  "haiku",
-];
-
-function defaultModelOrderForProvider(
-  orgProvider?: LlmProvider | string | null,
-  options?: {
-    customApi?: CustomLlmProviderApi | null;
-    customModelId?: string | null;
-  },
-): readonly LlmModel[] {
-  switch (orgProvider) {
-    case "openai":
-      return OPENAI_DEFAULT_MODEL_ORDER;
-    case "custom":
-      if (hasCustomModelId(options?.customModelId)) {
-        return [CUSTOM_LLM_MODEL];
-      }
-      return isOpenAiCompatibleCustomApi(options?.customApi)
-        ? OPENAI_DEFAULT_MODEL_ORDER
-        : options?.customApi === "anthropic-messages"
-          ? CLAUDE_DEFAULT_MODEL_ORDER
-          : HOSTED_OR_OPENROUTER_DEFAULT_MODEL_ORDER;
-    case "anthropic":
-    case "bedrock":
-      return CLAUDE_DEFAULT_MODEL_ORDER;
-    case "openrouter":
-    default:
-      return HOSTED_OR_OPENROUTER_DEFAULT_MODEL_ORDER;
-  }
 }
 
 function parseMaybeJson(raw: unknown): unknown {
@@ -105,42 +44,29 @@ function normalizeModelRows(raw: unknown): ModelPickerModelConfig[] {
         ? record.added_at
         : now;
     rows.push({ id, added_at: addedAt });
-    if (rows.length >= MODEL_PICKER_MAX_MODELS) break;
   }
 
   return rows;
 }
 
-function normalizeDefaultModel(
-  raw: unknown,
-  models: readonly ModelPickerModelConfig[],
-): LlmModel | null {
+function normalizeDefaultModel(raw: unknown): LlmModel | null {
   const normalized = replaceLegacyLlmModel(raw);
   if (!isLlmModel(normalized)) return null;
-  return models.some((model) => model.id === normalized) ? normalized : null;
+  return normalized;
 }
 
-export function defaultOrgModelPickerConfig(
-  orgProvider?: LlmProvider | string | null,
-  options?: {
-    customApi?: CustomLlmProviderApi | null;
-    customModelId?: string | null;
-  },
-): OrgModelPickerConfig {
-  const now = Date.now();
-  const defaultOrder = defaultModelOrderForProvider(orgProvider, options);
+export function defaultOrgModelPickerConfig(..._unused: unknown[]): OrgModelPickerConfig {
   return {
+    use_platform_defaults: true,
     default_model: null,
-    models: defaultOrder.map((id, index) => ({
-      id,
-      added_at: now - index,
-    })),
+    models: [],
   };
 }
 
 export function defaultWorkspaceModelPickerConfig(): WorkspaceModelPickerConfig {
   return {
     use_org_defaults: true,
+    use_platform_defaults: true,
     models: [],
     default_model: null,
   };
@@ -148,26 +74,28 @@ export function defaultWorkspaceModelPickerConfig(): WorkspaceModelPickerConfig 
 
 export function parseOrgModelPickerConfig(
   raw: unknown,
-  orgProvider?: LlmProvider | string | null,
-  options?: {
-    customApi?: CustomLlmProviderApi | null;
-    customModelId?: string | null;
-  },
+  _orgProvider?: unknown,
+  _options?: unknown,
 ): OrgModelPickerConfig {
   const parsed = parseMaybeJson(raw);
   if (!parsed || typeof parsed !== "object") {
-    return defaultOrgModelPickerConfig(orgProvider, options);
+    return defaultOrgModelPickerConfig();
   }
 
   const record = parsed as Record<string, unknown>;
+  if (typeof record.use_platform_defaults !== "boolean") {
+    return defaultOrgModelPickerConfig();
+  }
   if (!Array.isArray(record.models)) {
-    return defaultOrgModelPickerConfig(orgProvider, options);
+    return defaultOrgModelPickerConfig();
   }
 
-  const models = normalizeModelRows(record.models);
+  const usePlatformDefaults = record.use_platform_defaults !== false;
+  const models = usePlatformDefaults ? [] : normalizeModelRows(record.models);
   return {
+    use_platform_defaults: usePlatformDefaults,
     models,
-    default_model: normalizeDefaultModel(record.default_model, models),
+    default_model: normalizeDefaultModel(record.default_model),
   };
 }
 
@@ -180,11 +108,19 @@ export function parseWorkspaceModelPickerConfig(
   }
 
   const record = parsed as Record<string, unknown>;
-  const models = normalizeModelRows(record.models);
+  if (typeof record.use_platform_defaults !== "boolean") {
+    return {
+      ...defaultWorkspaceModelPickerConfig(),
+      use_org_defaults: record.use_org_defaults !== false,
+    };
+  }
+  const usePlatformDefaults = record.use_platform_defaults !== false;
+  const models = usePlatformDefaults ? [] : normalizeModelRows(record.models);
   return {
     use_org_defaults: record.use_org_defaults !== false,
+    use_platform_defaults: usePlatformDefaults,
     models,
-    default_model: normalizeDefaultModel(record.default_model, models),
+    default_model: normalizeDefaultModel(record.default_model),
   };
 }
 
@@ -197,6 +133,7 @@ export function resolveEffectivePickerConfig(
   }
 
   return {
+    use_platform_defaults: workspace.use_platform_defaults,
     models: workspace.models,
     default_model: workspace.default_model,
     source: "workspace",

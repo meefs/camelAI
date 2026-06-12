@@ -1,7 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   defaultOrgModelPickerConfig,
-  MODEL_PICKER_MAX_MODELS,
   parseOrgModelPickerConfig,
   parseWorkspaceModelPickerConfig,
   resolveDefaultModelForChat,
@@ -27,6 +26,7 @@ describe('model picker config parsing', () => {
 
   it('normalizes org configs', () => {
     const parsed = parseOrgModelPickerConfig({
+      use_platform_defaults: false,
       models: [
         { id: 'opus', added_at: 10 },
         { id: 'gpt-99', added_at: 9 },
@@ -43,14 +43,20 @@ describe('model picker config parsing', () => {
   });
 
   it('allows an intentionally empty org picker', () => {
-    expect(parseOrgModelPickerConfig({ models: [], default_model: 'sonnet' })).toEqual({
+    expect(parseOrgModelPickerConfig({
+      use_platform_defaults: true,
       models: [],
-      default_model: null,
+      default_model: 'sonnet',
+    })).toEqual({
+      use_platform_defaults: true,
+      models: [],
+      default_model: 'sonnet',
     });
   });
 
-  it('caps org picker models at 10', () => {
+  it('keeps all deduped org picker override models', () => {
     const parsed = parseOrgModelPickerConfig({
+      use_platform_defaults: false,
       models: Array.from({ length: 12 }, (_, index) => ({
         id: index % 2 === 0 ? 'sonnet' : 'opus',
         added_at: index,
@@ -61,25 +67,12 @@ describe('model picker config parsing', () => {
     expect(parsed.models.length).toBe(2);
   });
 
-  it('keeps the default picker within the configured capacity', () => {
+  it('uses platform defaults by default', () => {
     const config = defaultOrgModelPickerConfig();
 
-    expect(MODEL_PICKER_MAX_MODELS).toBe(10);
     expect(config.default_model).toBeNull();
-    expect(config.models.map((model) => model.id)).toEqual([
-      'fable-5',
-      'opus-4.8',
-      'sonnet',
-      'gpt-5.5',
-      'gpt-5.4-mini',
-      'gemini-3.5-flash',
-      'deepseek-v4-pro',
-      'deepseek-v4-flash',
-      'kimi-k2.6',
-      'grok-4.3',
-    ]);
-    expect(config.models.length).toBe(MODEL_PICKER_MAX_MODELS);
-    expect(config.models.length).toBeLessThanOrEqual(MODEL_PICKER_MAX_MODELS);
+    expect(config.models).toEqual([]);
+    expect(config.use_platform_defaults).toBe(true);
   });
 
   it('does not set an org default model until a user explicitly chooses one', () => {
@@ -90,92 +83,86 @@ describe('model picker config parsing', () => {
     expect(defaultOrgModelPickerConfig('bedrock').default_model).toBeNull();
   });
 
-  it('uses provider-aware default suites for direct BYOK providers', () => {
-    expect(defaultOrgModelPickerConfig('openrouter').models.map((model) => model.id)).toEqual([
-      'fable-5',
-      'opus-4.8',
-      'sonnet',
-      'gpt-5.5',
-      'gpt-5.4-mini',
-      'gemini-3.5-flash',
-      'deepseek-v4-pro',
-      'deepseek-v4-flash',
-      'kimi-k2.6',
-      'grok-4.3',
-    ]);
-    expect(defaultOrgModelPickerConfig('openai')).toMatchObject({
-      default_model: null,
-      models: [
-        { id: 'gpt-5.5' },
-        { id: 'gpt-5.4' },
-        { id: 'gpt-5.4-mini' },
-      ],
-    });
-    expect(defaultOrgModelPickerConfig('anthropic')).toMatchObject({
-      default_model: null,
-      models: [
-        { id: 'fable-5' },
-        { id: 'opus-4.8' },
-        { id: 'sonnet' },
-        { id: 'haiku' },
-      ],
-    });
-    expect(defaultOrgModelPickerConfig('bedrock')).toMatchObject({
-      default_model: null,
-      models: [
-        { id: 'fable-5' },
-        { id: 'opus-4.8' },
-        { id: 'sonnet' },
-        { id: 'haiku' },
-      ],
-    });
-    expect(defaultOrgModelPickerConfig('custom', { customApi: 'openai-responses' })).toMatchObject({
-      default_model: null,
-      models: [
-        { id: 'gpt-5.5' },
-        { id: 'gpt-5.4' },
-        { id: 'gpt-5.4-mini' },
-      ],
-    });
-    expect(defaultOrgModelPickerConfig('custom', { customApi: 'anthropic-messages' })).toMatchObject({
-      default_model: null,
-      models: [
-        { id: 'fable-5' },
-        { id: 'opus-4.8' },
-        { id: 'sonnet' },
-        { id: 'haiku' },
-      ],
-    });
-    expect(defaultOrgModelPickerConfig('custom', {
-      customApi: 'openai-responses',
-      customModelId: 'pi-custom-model',
-    })).toMatchObject({
-      default_model: null,
-      models: [{ id: 'custom' }],
-    });
-  });
-
-  it('uses the provider-aware default for empty or malformed org config values', () => {
-    expect(parseOrgModelPickerConfig(null, 'openai').models.map((model) => model.id)).toEqual([
-      'gpt-5.5',
-      'gpt-5.4',
-      'gpt-5.4-mini',
-    ]);
+  it('uses platform defaults for empty or malformed org config values', () => {
+    expect(parseOrgModelPickerConfig(null, 'openai')).toEqual(
+      defaultOrgModelPickerConfig(),
+    );
     expect(
       parseOrgModelPickerConfig(null, 'custom', {
         customApi: 'anthropic-messages',
-      }).models.map((model) => model.id),
-    ).toEqual(['fable-5', 'opus-4.8', 'sonnet', 'haiku']);
-    expect(
-      parseOrgModelPickerConfig(null, 'custom', {
-        customApi: 'openai-responses',
-        customModelId: 'pi-custom-model',
-      }).models.map((model) => model.id),
-    ).toEqual(['custom']);
+      }),
+    ).toEqual(defaultOrgModelPickerConfig());
+  });
+
+  it('drops old hosted picker preferences without the explicit override flag', () => {
+    const parsed = parseOrgModelPickerConfig({
+      models: [
+        { id: 'opus-4.8', added_at: 10 },
+        { id: 'sonnet', added_at: 9 },
+        { id: 'gpt-5.5', added_at: 8 },
+        { id: 'gpt-5.4-mini', added_at: 7 },
+        { id: 'gemini-3.5-flash', added_at: 6 },
+        { id: 'gemini-3-flash-preview', added_at: 5 },
+        { id: 'deepseek-v4-pro', added_at: 4 },
+        { id: 'deepseek-v4-flash', added_at: 3 },
+        { id: 'kimi-k2.6', added_at: 2 },
+        { id: 'grok-4.3', added_at: 1 },
+      ],
+      default_model: null,
+    });
+
+    expect(parsed).toEqual(defaultOrgModelPickerConfig());
+  });
+
+  it('keeps explicit custom picker override preferences unchanged', () => {
+    const parsed = parseOrgModelPickerConfig({
+      use_platform_defaults: false,
+      models: [
+        { id: 'opus-4.8', added_at: 10 },
+        { id: 'sonnet', added_at: 9 },
+      ],
+      default_model: null,
+    });
+
+    expect(parsed.models.map((model) => model.id)).toEqual([
+      'opus-4.8',
+      'sonnet',
+    ]);
+    expect(parsed.default_model).toBeNull();
+    expect(parsed.use_platform_defaults).toBe(false);
+  });
+
+  it('drops old Claude picker preferences without the explicit override flag', () => {
+    const parsed = parseOrgModelPickerConfig(
+      {
+        models: [
+          { id: 'opus-4.8', added_at: 3 },
+          { id: 'sonnet', added_at: 2 },
+          { id: 'haiku', added_at: 1 },
+        ],
+        default_model: null,
+      },
+      'anthropic',
+    );
+
+    expect(parsed).toEqual(defaultOrgModelPickerConfig());
+  });
+
+  it('drops old customized picker configs that omitted Fable', () => {
+    const parsed = parseOrgModelPickerConfig({
+      models: [
+        { id: 'opus-4.8', added_at: 2 },
+        { id: 'sonnet', added_at: 1 },
+      ],
+      default_model: null,
+    });
+
+    expect(parsed).toEqual(defaultOrgModelPickerConfig());
   });
 
   it('normalizes newly supported models in stored picker configs', () => {
     const parsed = parseOrgModelPickerConfig({
+      use_platform_defaults: false,
       models: [
         { id: 'gpt-5.5', added_at: 5 },
         { id: 'opus-4.8', added_at: 4 },
@@ -188,6 +175,7 @@ describe('model picker config parsing', () => {
     });
 
     expect(parsed).toEqual({
+      use_platform_defaults: false,
       models: [
         { id: 'gpt-5.5', added_at: 5 },
         { id: 'opus-4.8', added_at: 4 },
@@ -202,6 +190,7 @@ describe('model picker config parsing', () => {
 
   it('remaps legacy Gemini 3.1 Pro Preview rows and defaults', () => {
     const parsed = parseOrgModelPickerConfig({
+      use_platform_defaults: false,
       models: [
         { id: 'gpt-5.5', added_at: 5 },
         { id: 'gemini-3.1-pro-preview', added_at: 4 },
@@ -210,6 +199,7 @@ describe('model picker config parsing', () => {
     });
 
     expect(parsed).toEqual({
+      use_platform_defaults: false,
       models: [
         { id: 'gpt-5.5', added_at: 5 },
         { id: 'gemini-3.5-flash', added_at: 4 },
@@ -221,6 +211,7 @@ describe('model picker config parsing', () => {
   it('dedupes legacy and current Gemini rows after remapping', () => {
     const parsed = parseWorkspaceModelPickerConfig({
       use_org_defaults: false,
+      use_platform_defaults: false,
       models: [
         { id: 'gemini-3.1-pro-preview', added_at: 4 },
         { id: 'gemini-3.5-flash', added_at: 3 },
@@ -231,6 +222,7 @@ describe('model picker config parsing', () => {
 
     expect(parsed).toEqual({
       use_org_defaults: false,
+      use_platform_defaults: false,
       models: [
         { id: 'gemini-3.5-flash', added_at: 4 },
         { id: 'gemini-3-flash-preview', added_at: 2 },
@@ -242,17 +234,20 @@ describe('model picker config parsing', () => {
   it('parses workspace inheritance defaults and remaps legacy Opus fields', () => {
     expect(parseWorkspaceModelPickerConfig(null)).toEqual({
       use_org_defaults: true,
+      use_platform_defaults: true,
       models: [],
       default_model: null,
     });
     expect(
       parseWorkspaceModelPickerConfig({
         use_org_defaults: true,
+        use_platform_defaults: false,
         models: [{ id: 'opus', added_at: 1 }],
         default_model: 'opus',
       }),
     ).toEqual({
       use_org_defaults: true,
+      use_platform_defaults: false,
       models: [{ id: 'opus-4.8', added_at: 1 }],
       default_model: 'opus-4.8',
     });

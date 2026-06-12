@@ -181,6 +181,7 @@ describe('MODEL_CATALOG', () => {
     const visible = resolveModelPickerCatalog({
       effectiveConfig: {
         source: 'org',
+        use_platform_defaults: false,
         default_model: null,
         models: [
           { id: 'fable-5', added_at: 13 },
@@ -210,6 +211,7 @@ describe('MODEL_CATALOG', () => {
   it('filters custom provider picker models by API mode', () => {
     const effectiveConfig = {
       source: 'org' as const,
+      use_platform_defaults: false,
       default_model: null,
       models: [
         { id: 'fable-5' as const, added_at: 1 },
@@ -243,27 +245,41 @@ describe('MODEL_CATALOG', () => {
         customApi: 'openai-responses',
         customModelId: 'pi-custom-model',
       }).map((entry) => entry.id),
+    ).toEqual([]);
+    expect(
+      resolveModelPickerCatalog({
+        effectiveConfig: {
+          source: 'org',
+          use_platform_defaults: true,
+          default_model: null,
+          models: [],
+        },
+        orgProvider: 'custom',
+        customApi: 'openai-responses',
+        customModelId: 'pi-custom-model',
+      }).map((entry) => entry.id),
     ).toEqual(['custom']);
   });
 
-  it('keeps OpenRouter picker models grouped by provider, then model order', () => {
+  it('uses current OpenRouter platform models grouped by provider, then model order', () => {
     const visible = resolveModelPickerCatalog({
       effectiveConfig: {
         source: 'org',
+        use_platform_defaults: true,
         default_model: null,
-        models: [
-          { id: 'deepseek-v4-flash', added_at: 40 },
-          { id: 'gemini-3-flash-preview', added_at: 30 },
-          { id: 'deepseek-v4-pro', added_at: 20 },
-          { id: 'gemini-3.5-flash', added_at: 10 },
-          { id: 'grok-4.3', added_at: 60 },
-          { id: 'kimi-k2.6', added_at: 50 },
-        ],
+        models: [],
       },
       orgProvider: 'openrouter',
     });
 
     expect(visible.map((entry) => entry.id)).toEqual([
+      'fable-5',
+      'opus-4.8',
+      'sonnet',
+      'haiku',
+      'gpt-5.5',
+      'gpt-5.4',
+      'gpt-5.4-mini',
       'gemini-3.5-flash',
       'gemini-3-flash-preview',
       'deepseek-v4-pro',
@@ -271,5 +287,19 @@ describe('MODEL_CATALOG', () => {
       'kimi-k2.6',
       'grok-4.3',
     ]);
+  });
+
+  it('uses explicit custom overrides as an allowlist', () => {
+    const visible = resolveModelPickerCatalog({
+      effectiveConfig: {
+        source: 'org',
+        use_platform_defaults: false,
+        default_model: null,
+        models: [{ id: 'sonnet', added_at: 1 }],
+      },
+      orgProvider: 'openrouter',
+    });
+
+    expect(visible.map((entry) => entry.id)).toEqual(['sonnet']);
   });
 });

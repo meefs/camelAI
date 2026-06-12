@@ -79,11 +79,9 @@ describe('organization model settings actions', () => {
       },
     ]);
     orgGetModelPickerConfigMock.mockResolvedValue({
-      models: [
-        { id: 'sonnet', added_at: 20 },
-        { id: 'gpt-5.4', added_at: 10 },
-      ],
-      default_model: 'sonnet',
+      use_platform_defaults: true,
+      models: [],
+      default_model: null,
     });
     orgGetLlmProviderConfigMock.mockResolvedValue(null);
     orgGetExperimentalSettingsMock.mockResolvedValue({
@@ -91,6 +89,7 @@ describe('organization model settings actions', () => {
     });
     workspaceGetModelPickerConfigMock.mockResolvedValue({
       use_org_defaults: true,
+      use_platform_defaults: true,
       models: [],
       default_model: null,
     });
@@ -98,6 +97,15 @@ describe('organization model settings actions', () => {
   });
 
   it('seeds workspace picker overrides from org config when disabling org defaults', async () => {
+    orgGetModelPickerConfigMock.mockResolvedValue({
+      use_platform_defaults: false,
+      models: [
+        { id: 'sonnet', added_at: 20 },
+        { id: 'gpt-5.4', added_at: 10 },
+      ],
+      default_model: 'sonnet',
+    });
+
     const response = await action({
       request: formRequest({
         intent: 'setUseOrgDefaults',
@@ -114,6 +122,7 @@ describe('organization model settings actions', () => {
     expect(workspaceSetModelPickerConfigMock).toHaveBeenCalledWith(
       {
         use_org_defaults: false,
+        use_platform_defaults: false,
         models: [
           { id: 'sonnet', added_at: 20 },
           { id: 'gpt-5.4', added_at: 10 },
@@ -134,6 +143,7 @@ describe('organization model settings actions', () => {
 
   it('preserves a null org default when seeding workspace overrides', async () => {
     orgGetModelPickerConfigMock.mockResolvedValue({
+      use_platform_defaults: false,
       models: [
         { id: 'sonnet', added_at: 20 },
         { id: 'gpt-5.4', added_at: 10 },
@@ -167,6 +177,7 @@ describe('organization model settings actions', () => {
     orgGetLlmProviderConfigMock.mockResolvedValue({ provider: 'openai' });
     workspaceGetModelPickerConfigMock.mockResolvedValue({
       use_org_defaults: false,
+      use_platform_defaults: false,
       models: [{ id: 'gpt-5.4', added_at: 10 }],
       default_model: 'gpt-5.4',
     });
@@ -190,6 +201,7 @@ describe('organization model settings actions', () => {
   it('rejects adding retired Gemini 3.1 Pro Preview as a new picker model', async () => {
     workspaceGetModelPickerConfigMock.mockResolvedValue({
       use_org_defaults: false,
+      use_platform_defaults: false,
       models: [{ id: 'gpt-5.4', added_at: 10 }],
       default_model: 'gpt-5.4',
     });
@@ -210,7 +222,7 @@ describe('organization model settings actions', () => {
     expect(workspaceSetModelPickerConfigMock).not.toHaveBeenCalled();
   });
 
-  it('drops hidden stored models before checking capacity when adding visible models', async () => {
+  it('materializes platform defaults when adding a model to an old stored list', async () => {
     orgGetLlmProviderConfigMock.mockResolvedValue({ provider: 'openai' });
     workspaceGetModelPickerConfigMock.mockResolvedValue({
       use_org_defaults: false,
@@ -246,12 +258,13 @@ describe('organization model settings actions', () => {
     expect(workspaceSetModelPickerConfigMock).toHaveBeenCalledWith(
       {
         use_org_defaults: false,
+        use_platform_defaults: false,
         models: [
+          { id: 'gpt-5.5', added_at: expect.any(Number) },
           { id: 'gpt-5.4', added_at: expect.any(Number) },
-          { id: 'gpt-5.5', added_at: 98 },
-          { id: 'gpt-5.4-mini', added_at: 97 },
+          { id: 'gpt-5.4-mini', added_at: expect.any(Number) },
         ],
-        default_model: 'gpt-5.5',
+        default_model: null,
       },
       {
         actorId: 'user_123',
@@ -263,21 +276,19 @@ describe('organization model settings actions', () => {
     );
   });
 
-  it('allows removing hidden models even when no visible models remain', async () => {
+  it('removing a model from platform defaults creates a custom override list', async () => {
     orgGetLlmProviderConfigMock.mockResolvedValue({ provider: 'openai' });
     workspaceGetModelPickerConfigMock.mockResolvedValue({
       use_org_defaults: false,
-      models: [
-        { id: 'sonnet', added_at: 20 },
-        { id: 'opus', added_at: 10 },
-      ],
-      default_model: 'sonnet',
+      use_platform_defaults: true,
+      models: [],
+      default_model: null,
     });
 
     const response = await action({
       request: formRequest({
         intent: 'removeModel',
-        model: 'sonnet',
+        model: 'gpt-5.4',
       }),
       context: {},
       params: {},
@@ -290,25 +301,30 @@ describe('organization model settings actions', () => {
     expect(workspaceSetModelPickerConfigMock).toHaveBeenCalledWith(
       {
         use_org_defaults: false,
-        models: [],
+        use_platform_defaults: false,
+        models: [
+          { id: 'gpt-5.5', added_at: expect.any(Number) },
+          { id: 'gpt-5.4-mini', added_at: expect.any(Number) },
+        ],
         default_model: null,
       },
       {
         actorId: 'user_123',
         details: {
           intent: 'removeModel',
-          model: 'sonnet',
+          model: 'gpt-5.4',
         },
       },
     );
   });
 
-  it('allows removing the last visible model and drops hidden models', async () => {
+  it('removes models from an explicit custom override list', async () => {
     orgGetLlmProviderConfigMock.mockResolvedValue({ provider: 'openai' });
     workspaceGetModelPickerConfigMock.mockResolvedValue({
       use_org_defaults: false,
+      use_platform_defaults: false,
       models: [
-        { id: 'sonnet', added_at: 20 },
+        { id: 'gpt-5.5', added_at: 20 },
         { id: 'gpt-5.4', added_at: 10 },
       ],
       default_model: 'gpt-5.4',
@@ -330,7 +346,10 @@ describe('organization model settings actions', () => {
     expect(workspaceSetModelPickerConfigMock).toHaveBeenCalledWith(
       {
         use_org_defaults: false,
-        models: [],
+        use_platform_defaults: false,
+        models: [
+          { id: 'gpt-5.5', added_at: 20 },
+        ],
         default_model: null,
       },
       {
@@ -413,7 +432,30 @@ describe('organization model settings loader', () => {
     expect(result.config.capacity.used).toBe(3);
   });
 
-  it('counts only visible picker models after switching to OpenAI BYOK', async () => {
+  it('shows the synthetic custom model for custom providers with a model id', async () => {
+    orgGetLlmProviderConfigMock.mockResolvedValue({
+      provider: 'custom',
+      config: JSON.stringify({ custom_model_id: 'pi-custom-model' }),
+    });
+    orgGetModelPickerConfigMock.mockResolvedValue({
+      models: [{ id: 'custom', added_at: 30 }],
+      default_model: 'custom',
+    });
+
+    const result = await loader({
+      request: loaderRequest(),
+      context: {},
+      params: {},
+    } as never);
+
+    expect(result.config.inPicker.map((row) => row.entry.id)).toEqual([
+      'custom',
+    ]);
+    expect(result.config.additional).toEqual([]);
+    expect(result.config.capacity).toEqual({ used: 1, max: 1 });
+  });
+
+  it('appends new visible picker models after switching to OpenAI BYOK', async () => {
     orgGetModelPickerConfigMock.mockResolvedValue({
       models: [
         { id: 'sonnet', added_at: 50 },
@@ -432,12 +474,11 @@ describe('organization model settings loader', () => {
 
     expect(result.config.inPicker.map((row) => row.entry.id)).toEqual([
       'gpt-5.5',
+      'gpt-5.4',
       'gpt-5.4-mini',
     ]);
-    expect(result.config.additional.map((entry) => entry.id)).toEqual([
-      'gpt-5.4',
-    ]);
-    expect(result.config.capacity.used).toBe(2);
+    expect(result.config.additional).toEqual([]);
+    expect(result.config.capacity.used).toBe(3);
   });
 
   it('shows only Claude-family models for Anthropic BYOK orgs', async () => {
@@ -460,13 +501,12 @@ describe('organization model settings loader', () => {
     } as never);
 
     expect(result.config.inPicker.map((row) => row.entry.id)).toEqual([
+      'fable-5',
       'opus-4.8',
       'sonnet',
       'haiku',
     ]);
-    expect(result.config.additional.map((entry) => entry.id)).toEqual([
-      'fable-5',
-    ]);
-    expect(result.config.capacity.used).toBe(3);
+    expect(result.config.additional).toEqual([]);
+    expect(result.config.capacity.used).toBe(4);
   });
 });
