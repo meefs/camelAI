@@ -13,6 +13,7 @@ import { deleteDispatchScript } from '../../workers/main/src/cf-api-proxy';
 import * as chatDO from '@/lib/chat-do.server';
 import { refreshWorkerScriptCustomDomainStates } from '@/lib/custom-domain.server';
 import { getAppUrlContext } from '@/lib/app-url.server';
+import { loadUserProfileSummaries } from '@/lib/user-profiles.server';
 import AppsClient from '@/components/pages/apps/apps-client';
 import { AppsLoadingSkeleton } from '@/components/pages/apps/apps-loading';
 import { NoWorkspacesError } from '@/components/no-workspaces-error';
@@ -177,16 +178,11 @@ export async function loader({ request, context }: Route.LoaderArgs) {
           ? refreshedScripts
           : refreshedScripts.filter((script) => script.workspace_id === workspaceId);
 
-        const creatorIds = Array.from(
-          new Set(filteredScripts.map((s) => s.created_by).filter(Boolean)),
+        const creatorMap = await loadUserProfileSummaries(
+          authEnv,
+          filteredScripts.map((s) => s.created_by),
+          { request, preloadedUsers: [authContext.user] },
         );
-        const creatorProfiles = await Promise.all(
-          creatorIds.map(async (id) => {
-            const profile = await authEnv.USER.get(authEnv.USER.idFromName(id)).getProfile();
-            return [id, profile] as const;
-          }),
-        );
-        const creatorMap = new Map(creatorProfiles.filter(([, p]) => p !== null));
 
         return filteredScripts.map((script) => {
           const creator = creatorMap.get(script.created_by);

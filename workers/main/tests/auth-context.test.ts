@@ -22,6 +22,7 @@ import {
   archiveWorkspace,
   createInvitation,
   acceptInvitation,
+  setWorkspaceAccess,
   listOrgWorkspaces,
   type TestEnv,
 } from './test-helpers';
@@ -394,6 +395,39 @@ describe('Auth context building (parallel DO calls)', () => {
       expect(bootstrap.llmProviderConfig).toBeNull();
       expect(bootstrap.experimentalSettings).toEqual({
         claude_proxy_models: false,
+      });
+    });
+
+    it('loads workspace summary counts from OrgDO without route-level workspace fanout', async () => {
+      const ownerEmail = testEmail();
+      const memberEmail = testEmail();
+      const { userId: ownerId } = await createUser(testEnv, ownerEmail, 'password', 'Owner');
+      const { userId: memberId } = await createUser(testEnv, memberEmail, 'password', 'Member');
+      const { org, defaultWorkspaceId } = await createOrg(testEnv, 'Summary Count Org', ownerId);
+      const secondWorkspace = await createWorkspace(testEnv, org.id, 'Second Workspace', ownerId);
+
+      const invitation = await createInvitation(testEnv, org.id, memberEmail, 'member', ownerId);
+      await acceptInvitation(testEnv, org.id, invitation.id, memberId);
+      await setWorkspaceAccess(testEnv, secondWorkspace.id, memberId, 'none', ownerId);
+
+      const orgStub = testEnv.ORG.get(testEnv.ORG.idFromName(org.id));
+      await orgStub.registerWorkerScript('default-app', defaultWorkspaceId, ownerId);
+      await orgStub.registerWorkerScript('second-app-a', secondWorkspace.id, ownerId);
+      await orgStub.registerWorkerScript('second-app-b', secondWorkspace.id, memberId);
+
+      const counts = await orgStub.getWorkspaceSummaryCounts([
+        defaultWorkspaceId,
+        secondWorkspace.id,
+      ]);
+      const countMap = new Map(counts.map((entry) => [entry.workspaceId, entry]));
+
+      expect(countMap.get(defaultWorkspaceId)).toMatchObject({
+        memberCount: 2,
+        publishedApps: 1,
+      });
+      expect(countMap.get(secondWorkspace.id)).toMatchObject({
+        memberCount: 1,
+        publishedApps: 2,
       });
     });
 

@@ -6,7 +6,8 @@ const requireWorkspaceAccessMock = vi.fn();
 const getAuthEnvMock = vi.fn();
 const getEnvMock = vi.fn();
 const isOrgAdminMock = vi.fn();
-const getUsersByIdsMock = vi.fn();
+const authUserGetMock = vi.fn();
+const authUserGetProfileMock = vi.fn();
 const createIntegrationMock = vi.fn();
 const updateIntegrationMock = vi.fn();
 const deleteIntegrationMock = vi.fn();
@@ -30,7 +31,6 @@ vi.mock("@/lib/cloudflare.server", () => ({
 }));
 
 vi.mock("@/lib/auth-do", () => ({
-  getUsersByIds: getUsersByIdsMock,
   isOrgAdmin: isOrgAdminMock,
 }));
 
@@ -377,16 +377,27 @@ describe("connections loader", () => {
         { id: "ws_2", name: "Target" },
       ],
     });
-    getAuthEnvMock.mockReturnValue({ auth: true });
-    setEnv();
-    getUsersByIdsMock.mockResolvedValue([
-      {
-        id: "creator_1",
-        name: "Creator One",
-        email: "creator@example.com",
-        avatar: null,
+    authUserGetMock.mockImplementation((id: string) => ({
+      getProfile: () => authUserGetProfileMock(id),
+    }));
+    authUserGetProfileMock.mockImplementation(async (id: string) =>
+      id === "creator_1"
+        ? {
+            id: "creator_1",
+            name: "Creator One",
+            email: "creator@example.com",
+            avatar: null,
+          }
+        : null,
+    );
+    getAuthEnvMock.mockReturnValue({
+      auth: true,
+      USER: {
+        idFromName: vi.fn((id: string) => id),
+        get: authUserGetMock,
       },
-    ]);
+    });
+    setEnv();
     listProjectsMock.mockResolvedValue([]);
   });
 
@@ -398,7 +409,7 @@ describe("connections loader", () => {
     getIntegrationsMock.mockResolvedValue([
       makeRecord({ id: "pg_1", created_by: "missing_user" }),
     ]);
-    getUsersByIdsMock.mockRejectedValue(new Error("profile lookup failed"));
+    authUserGetProfileMock.mockRejectedValue(new Error("profile lookup failed"));
 
     const result = await loader({
       request: new Request("https://camelai.test/connections"),

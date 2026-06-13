@@ -27,6 +27,7 @@ import { ExternalLink, Trash2 } from 'lucide-react';
 import { NoWorkspacesError } from '@/components/no-workspaces-error';
 import { getPreferredAppUrl } from '@/lib/app-url';
 import { refreshWorkerScriptCustomDomainStates } from '@/lib/custom-domain.server';
+import { loadUserProfileSummaries } from '@/lib/user-profiles.server';
 import type { WorkerScriptWithCreator } from '@/types';
 
 interface AppRow extends WorkerScriptWithCreator {
@@ -155,17 +156,11 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     ? refreshedScripts
     : refreshedScripts.filter((s) => s.workspace_id === workspaceId);
 
-  // Hydrate creators
-  const creatorIds = Array.from(
-    new Set(filteredScripts.map((s) => s.created_by).filter(Boolean))
+  const creatorMap = await loadUserProfileSummaries(
+    authEnv,
+    filteredScripts.map((s) => s.created_by),
+    { request, preloadedUsers: [authContext.user] },
   );
-  const creatorProfiles = await Promise.all(
-    creatorIds.map(async (id) => {
-      const profile = await authEnv.USER.get(authEnv.USER.idFromName(id)).getProfile();
-      return [id, profile] as const;
-    })
-  );
-  const creatorMap = new Map(creatorProfiles.filter(([, p]) => p !== null));
 
   const apps: AppRow[] = filteredScripts.map((script) => {
     const creator = creatorMap.get(script.created_by);

@@ -15,11 +15,70 @@ import { Separator } from "@/components/ui/separator";
 import { SettingsHeader } from "@/components/settings/settings-header";
 import { WorkspacesList } from "@/components/settings/workspaces-list";
 
+type WorkspaceSummaryCounts = {
+  workspaceId: string;
+  memberCount: number;
+  publishedApps: number;
+};
+
 export function meta() {
   return [
     { title: "Workspaces - Settings - camelAI" },
     { name: "description", content: "Manage workspaces" },
   ];
+}
+
+function isMissingRpcMethodError(error: unknown, methodName: string): boolean {
+  return (
+    error instanceof TypeError &&
+    (error.message.includes(`does not implement "${methodName}"`) ||
+      error.message.includes(`${methodName} is not a function`) ||
+      error.message.includes(`.${methodName} is not a function`))
+  );
+}
+
+async function loadWorkspaceSummaryCounts(
+  env: ReturnType<typeof getEnv>,
+  orgStub: ReturnType<ReturnType<typeof getAuthEnv>["ORG"]["get"]>,
+  workspaceIds: string[],
+): Promise<WorkspaceSummaryCounts[]> {
+  try {
+    return await (
+      orgStub as unknown as {
+        getWorkspaceSummaryCounts(
+          workspaceIds: string[],
+        ): Promise<WorkspaceSummaryCounts[]>;
+      }
+    ).getWorkspaceSummaryCounts(workspaceIds);
+  } catch (error) {
+    if (!isMissingRpcMethodError(error, "getWorkspaceSummaryCounts")) {
+      throw error;
+    }
+  }
+
+  const scripts = await orgStub.listWorkerScripts();
+  const appCountMap = new Map<string, number>();
+  for (const script of scripts) {
+    appCountMap.set(
+      script.workspace_id,
+      (appCountMap.get(script.workspace_id) ?? 0) + 1,
+    );
+  }
+
+  return Promise.all(
+    workspaceIds.map(async (workspaceId) => {
+      const workspaceStub = env.WORKSPACE.get(
+        env.WORKSPACE.idFromName(workspaceId),
+      );
+      const members = await workspaceStub.listMembers();
+      return {
+        workspaceId,
+        memberCount: members.filter((member) => member.access_level !== "none")
+          .length,
+        publishedApps: appCountMap.get(workspaceId) ?? 0,
+      };
+    }),
+  );
 }
 
 export async function action({ request, context }: Route.ActionArgs) {
@@ -89,29 +148,14 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     authEnv.ORG.idFromName(authContext.currentOrg.id),
   );
 
-  const scripts = await orgStub.listWorkerScripts();
-  // Aggregate app counts by workspace
-  const appCountMap = new Map<string, number>();
-  for (const script of scripts) {
-    appCountMap.set(
-      script.workspace_id,
-      (appCountMap.get(script.workspace_id) ?? 0) + 1,
-    );
-  }
-
   const workspaces = authContext.workspaces ?? [];
-  const memberCounts = await Promise.all(
-    workspaces.map(async (ws) => {
-      const wsStub = env.WORKSPACE.get(env.WORKSPACE.idFromName(ws.id));
-      const members = await wsStub.listMembers();
-      return {
-        id: ws.id,
-        memberCount: members.filter((m) => m.access_level !== "none").length,
-      };
-    }),
+  const summaryCounts = await loadWorkspaceSummaryCounts(
+    env,
+    orgStub,
+    workspaces.map((ws) => ws.id),
   );
-  const memberCountMap = new Map(
-    memberCounts.map((m) => [m.id, m.memberCount]),
+  const summaryCountMap = new Map(
+    summaryCounts.map((counts) => [counts.workspaceId, counts]),
   );
 
   // Build WorkspaceSummary objects
@@ -122,8 +166,8 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     description: ws.description,
     created_at: ws.created_at,
     avatar: ws.avatar,
-    member_count: memberCountMap.get(ws.id) ?? 0,
-    published_apps: appCountMap.get(ws.id) ?? 0,
+    member_count: summaryCountMap.get(ws.id)?.memberCount ?? 0,
+    published_apps: summaryCountMap.get(ws.id)?.publishedApps ?? 0,
     compute_tier: ws.compute_tier ?? "standard",
   }));
 
