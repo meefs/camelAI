@@ -19,6 +19,7 @@ import { ConfirmDialog } from '@/components/ui/confirm-dialog';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Trash2 } from 'lucide-react';
 import { NoWorkspacesError } from '@/components/no-workspaces-error';
+import { loadUserProfileSummaries } from '@/lib/user-profiles.server';
 import type { Integration, User } from '@/types';
 
 interface ConnectionRow extends Integration {
@@ -135,15 +136,11 @@ export async function loader({ request, context }: Route.LoaderArgs) {
   // Sort by most recently updated
   allRecords.sort((a, b) => b.updated_at - a.updated_at);
 
-  // Hydrate creators
-  const creatorIds = Array.from(new Set(allRecords.map((r) => r.created_by).filter(Boolean)));
-  const creatorProfiles = await Promise.all(
-    creatorIds.map(async (id) => {
-      const profile = await authEnv.USER.get(authEnv.USER.idFromName(id)).getProfile();
-      return [id, profile] as const;
-    })
+  const creatorMap = await loadUserProfileSummaries(
+    authEnv,
+    allRecords.map((r) => r.created_by),
+    { request, preloadedUsers: [authContext.user] },
   );
-  const creatorMap = new Map(creatorProfiles.filter(([, p]) => p !== null));
 
   const connections: ConnectionRow[] = allRecords.map((record) => {
     const creator = creatorMap.get(record.created_by);

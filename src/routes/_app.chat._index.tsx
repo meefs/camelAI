@@ -14,6 +14,7 @@ import { APP_BUILD_ID } from "@/lib/app-build-id";
 import { getEnv } from "@/lib/cloudflare.server";
 import { getAppUrlContext } from "@/lib/app-url.server";
 import { getOrgBillingOverview } from "@/lib/billing.server";
+import { loadUserProfileSummaries } from "@/lib/user-profiles.server";
 import {
   applyDevBillingCreditStatusOverride,
   buildBillingCreditStatus,
@@ -253,23 +254,10 @@ export async function loader({ request, context }: Route.LoaderArgs) {
             .filter((script) => script.workspace_id === workspaceId)
             .sort((a, b) => b.updated_at - a.updated_at);
 
-          const creatorIds = Array.from(
-            new Set(
-              filteredScripts
-                .map((script) => script.created_by)
-                .filter(Boolean),
-            ),
-          );
-          const creatorProfiles = await Promise.all(
-            creatorIds.map(async (id) => {
-              const profile = await authEnv.USER.get(
-                authEnv.USER.idFromName(id),
-              ).getProfile();
-              return [id, profile] as const;
-            }),
-          );
-          const creatorMap = new Map(
-            creatorProfiles.filter(([, profile]) => profile !== null),
+          const creatorMap = await loadUserProfileSummaries(
+            authEnv,
+            filteredScripts.map((script) => script.created_by),
+            { request, preloadedUsers: [authContext.user] },
           );
 
           return filteredScripts.map((script) => {
