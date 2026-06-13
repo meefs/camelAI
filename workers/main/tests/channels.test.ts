@@ -42,6 +42,23 @@ function createMockKvStore(initial?: Record<string, string>) {
   };
 }
 
+function defaultOrgModelPickerConfig() {
+  return {
+    use_platform_defaults: true,
+    default_model: null,
+    models: [],
+  };
+}
+
+function defaultWorkspaceModelPickerConfig() {
+  return {
+    use_org_defaults: true,
+    use_platform_defaults: true,
+    default_model: null,
+    models: [],
+  };
+}
+
 describe("channels", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -203,13 +220,16 @@ describe("channels", () => {
       getExperimentalSettings: vi
         .fn()
         .mockResolvedValue({ claude_proxy_models: false }),
+      getModelPickerConfig: vi.fn().mockResolvedValue(defaultOrgModelPickerConfig()),
       createThread: vi.fn().mockResolvedValue({
         id: "thread-2",
         title: "Recreated channel thread",
       }),
     };
     getOrgStubMock.mockReturnValue(orgStub);
-    getWorkspaceStubMock.mockReturnValue({});
+    getWorkspaceStubMock.mockReturnValue({
+      getModelPickerConfig: vi.fn().mockResolvedValue(defaultWorkspaceModelPickerConfig()),
+    });
 
     const result = await getOrCreateChannelThread(
       { APP_KV: kv } as never,
@@ -240,12 +260,15 @@ describe("channels", () => {
       getExperimentalSettings: vi
         .fn()
         .mockResolvedValue({ claude_proxy_models: false }),
+      getModelPickerConfig: vi.fn().mockResolvedValue(defaultOrgModelPickerConfig()),
       createThread: vi.fn().mockResolvedValue({
         id: "thread-2",
         title: "Telegram chat",
       }),
     };
-    const workspaceStub = {};
+    const workspaceStub = {
+      getModelPickerConfig: vi.fn().mockResolvedValue(defaultWorkspaceModelPickerConfig()),
+    };
     getOrgStubMock.mockReturnValue(orgStub);
     getWorkspaceStubMock.mockReturnValue(workspaceStub);
 

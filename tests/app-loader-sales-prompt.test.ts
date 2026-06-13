@@ -89,6 +89,7 @@ describe("_app loader onboarding redirect", () => {
       workspaces: [],
       allWorkspaces: [],
       orgWorkspaceCount: 1,
+      currentOrgLlmProviderConfig: null,
       resignedSessionCookie: null,
     });
   });
@@ -186,6 +187,7 @@ describe("_app loader onboarding redirect", () => {
       workspaces: [],
       allWorkspaces: [],
       orgWorkspaceCount: 1,
+      currentOrgLlmProviderConfig: null,
       resignedSessionCookie: null,
     });
 
@@ -203,7 +205,7 @@ describe("_app loader onboarding redirect", () => {
         byokProviderLabel: null,
       },
     });
-    expect(orgStub.getLlmProviderConfig).toHaveBeenCalled();
+    expect(orgStub.getLlmProviderConfig).not.toHaveBeenCalled();
   });
 
   it("allows billing setup routes for onboarded users without org billing access", async () => {

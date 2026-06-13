@@ -331,7 +331,12 @@ describe('chat fork route', () => {
     await expect(response.json()).resolves.toEqual({
       error: 'Fork target not found in Durable Object Pi messages',
     });
-    expect(deleteThreadMock).toHaveBeenCalledWith({}, 'thread_fork', 'ws_123');
+    expect(deleteThreadMock).toHaveBeenCalledWith(
+      {},
+      'thread_fork',
+      'ws_123',
+      { orgId: 'org_123' },
+    );
     expect(addThreadToExistingGroupMock).not.toHaveBeenCalled();
   });
 });

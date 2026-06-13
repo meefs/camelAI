@@ -208,7 +208,7 @@ describe('admin API thread patch route', () => {
       'Patch thread title',
       userId,
       undefined,
-      'sonnet',
+      'opus-4.8',
     );
     await waitForAdminIndexThreadPresence(thread.id);
 

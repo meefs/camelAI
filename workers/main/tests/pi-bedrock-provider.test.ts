@@ -156,7 +156,7 @@ describe('Pi Bedrock provider message conversion', () => {
     ]);
     expect(payload.thinking).toEqual({
       type: 'enabled',
-      budget_tokens: 128,
+      budget_tokens: 16384,
       display: 'summarized',
     });
     expect(payload.output_config).toBeUndefined();

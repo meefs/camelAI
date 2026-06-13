@@ -280,6 +280,24 @@ type AssistantCompletionPersistenceResult =
   | { status: "failed" };
 
 const PI_MODEL_CATALOG_FALLBACKS: Record<string, Model<any>> = {
+  "anthropic/claude-sonnet-4-6": {
+    id: "claude-sonnet-4-6",
+    name: "Claude Sonnet 4.6",
+    api: "anthropic-messages",
+    provider: "anthropic",
+    baseUrl: "https://api.anthropic.com",
+    reasoning: true,
+    thinkingLevelMap: { xhigh: "xhigh" },
+    input: ["text", "image"],
+    cost: {
+      input: 3,
+      output: 15,
+      cacheRead: 0.3,
+      cacheWrite: 3.75,
+    },
+    contextWindow: 1_000_000,
+    maxTokens: 64_000,
+  } satisfies Model<"anthropic-messages">,
   "anthropic/claude-opus-4-8": {
     id: "claude-opus-4-8",
     name: "Claude Opus 4.8",
@@ -10788,11 +10806,12 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     envVars: Record<string, string>,
     getModelFn: (provider: never, modelId: never) => Model<any>,
   ): Promise<PiResolvedModelConfig> {
-    const modelId =
+    const requestedModelId =
       envVars.CHIRIDION_MODEL ||
       envVars.CHIRIDION_CODEX_MODEL ||
       envVars.CHIRIDION_CLAUDE_MODEL ||
       DEFAULT_LLM_MODEL;
+    const modelId = this.normalizePiModelId(requestedModelId);
     const resolved = this.resolvePiModelReference(modelId);
     const model =
       (getModelFn(
@@ -10801,10 +10820,14 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       ) as Model<any> | null | undefined) ??
       resolvePiModelCatalogFallback(resolved);
     if (!model) {
-      throw new Error(`Unsupported Pi model ${modelId}`);
+      throw new Error(`Unsupported Pi model ${requestedModelId}`);
     }
 
-    const configured = await this.resolvePiRequestConfig(resolved, context, modelId);
+    const configured = await this.resolvePiRequestConfig(
+      resolved,
+      context,
+      requestedModelId,
+    );
     const configuredModel =
       configured.modelLookupProvider && configured.requestModelId
         ? (getModelFn(

@@ -531,6 +531,16 @@ describe('chat loader workspace mismatch handling', () => {
             user_message_count: 0,
           }),
           getInfo: async () => ({ id: 'org_active', slug: 'acme' }),
+          getThreadWithOrgSlug: async () => ({
+            thread: {
+              id: 'thread_123',
+              workspace_id: 'ws_active',
+              title: 'Workspace Thread',
+              model: 'opus-4.8',
+              user_message_count: 0,
+            },
+            orgSlug: 'acme',
+          }),
         }),
       },
     });
@@ -568,6 +578,16 @@ describe('chat loader workspace mismatch handling', () => {
             user_message_count: 0,
           }),
           getInfo: async () => ({ id: 'org_active', slug: 'acme' }),
+          getThreadWithOrgSlug: async () => ({
+            thread: {
+              id: 'thread_123',
+              workspace_id: 'ws_active',
+              title: 'Workspace Thread',
+              model: 'gpt-5.4-mini',
+              user_message_count: 0,
+            },
+            orgSlug: 'acme',
+          }),
         }),
       },
     });

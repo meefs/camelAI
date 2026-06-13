@@ -62,6 +62,8 @@ describe('new chat loader sales prompt handling', () => {
     requireAuthContextMock.mockResolvedValue({
       currentWorkspace: { id: 'ws_123' },
       currentOrg: { id: 'org_123' },
+      currentOrgLlmProviderConfig: null,
+      currentOrgExperimentalSettings: { claude_proxy_models: false },
       orgs: [{ org_id: 'org_123', role: 'admin' }],
       user: { id: 'user_123', name: 'Illiana' },
       onboarding: { completed_at: Date.now() },
@@ -131,6 +133,15 @@ describe('new chat loader sales prompt handling', () => {
   it('falls back to provider-visible models when picker state loading fails', async () => {
     const kv = new MemoryKvNamespace();
     getWorkspaceModelPickerStateMock.mockRejectedValue(new Error('picker down'));
+    requireAuthContextMock.mockResolvedValue({
+      currentWorkspace: { id: 'ws_123' },
+      currentOrg: { id: 'org_123' },
+      currentOrgLlmProviderConfig: { provider: 'openai' },
+      currentOrgExperimentalSettings: { claude_proxy_models: false },
+      orgs: [{ org_id: 'org_123', role: 'admin' }],
+      user: { id: 'user_123', name: 'Illiana' },
+      onboarding: { completed_at: Date.now() },
+    });
 
     getEnvMock.mockReturnValue({
       APP_KV: kv,
@@ -146,7 +157,9 @@ describe('new chat loader sales prompt handling', () => {
         idFromName: (id: string) => id,
         get: () => ({
           listWorkerScripts: async () => [],
-          getLlmProviderConfig: async () => ({ provider: 'openai' }),
+          getLlmProviderConfig: async () => {
+            throw new Error('unexpected provider config read');
+          },
           getExperimentalSettings: async () => ({
             claude_proxy_models: false,
           }),

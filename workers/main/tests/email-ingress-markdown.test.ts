@@ -87,6 +87,23 @@ function createMockKvWithSlug(): KVNamespace {
   } as unknown as KVNamespace;
 }
 
+function defaultOrgModelPickerConfig() {
+  return {
+    use_platform_defaults: true,
+    default_model: null,
+    models: [],
+  };
+}
+
+function defaultWorkspaceModelPickerConfig() {
+  return {
+    use_org_defaults: true,
+    use_platform_defaults: true,
+    default_model: null,
+    models: [],
+  };
+}
+
 describe('handleWorkspaceEmailIngress channel enqueue', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -96,6 +113,7 @@ describe('handleWorkspaceEmailIngress channel enqueue', () => {
     mockGetWorkspaceStub.mockReturnValue({
       getInfo: vi.fn().mockResolvedValue({ org_id: 'org-1', archived: false }),
       getMemberAccess: vi.fn().mockResolvedValue({ access_level: 'full' }),
+      getModelPickerConfig: vi.fn().mockResolvedValue(defaultWorkspaceModelPickerConfig()),
     });
 
     mockGetOrgStub.mockReturnValue({
@@ -104,6 +122,7 @@ describe('handleWorkspaceEmailIngress channel enqueue', () => {
       getThread: vi.fn().mockResolvedValue(null),
       getLlmProviderConfig: vi.fn().mockResolvedValue(null),
       getExperimentalSettings: vi.fn().mockResolvedValue({ claude_proxy_models: false }),
+      getModelPickerConfig: vi.fn().mockResolvedValue(defaultOrgModelPickerConfig()),
       createThread: vi.fn().mockResolvedValue({
         id: 'thread-1',
         title: 'Build something',

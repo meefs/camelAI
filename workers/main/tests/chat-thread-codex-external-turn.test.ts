@@ -1170,10 +1170,10 @@ describe('ChatThreadDO Codex turn handling', () => {
       ChatThreadDO.prototype['resolvePiModel'].call(
         fake,
         { orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1' },
-        { CHIRIDION_CLAUDE_MODEL: 'sonnet' },
+        { CHIRIDION_CLAUDE_MODEL: 'unknown/provider-model' },
         vi.fn(),
       ),
-    ).rejects.toThrow('Unsupported Pi model sonnet');
+    ).rejects.toThrow('Unsupported Pi model unknown/provider-model');
   });
 
   it('loads the model from the thread record when initializing Pi', async () => {

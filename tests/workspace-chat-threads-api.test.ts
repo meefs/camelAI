@@ -179,6 +179,8 @@ describe("workspace chat threads API", () => {
     await expect(response.json()).resolves.toEqual({
       error: "Chat group not found",
     });
-    expect(deleteThreadMock).toHaveBeenCalledWith({}, "thread_1", "ws_1");
+    expect(deleteThreadMock).toHaveBeenCalledWith({}, "thread_1", "ws_1", {
+      orgId: "org_1",
+    });
   });
 });

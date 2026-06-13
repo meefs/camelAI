@@ -820,6 +820,7 @@ function supportsPromptCaching(modelId: string): boolean {
   const id = modelId.toLowerCase();
   if (!id.includes('claude')) return false;
   return (
+    id.includes('fable-5')  || // retired alias mapped to Claude 4.6 Sonnet
     id.includes('-4-')     || // Claude 4.x (opus-4-8, sonnet-4-6, haiku-4-5, ...)
     id.includes('-4.')     || // alternate dot notation
     id.includes('-3-7-')   || // Claude 3.7 Sonnet

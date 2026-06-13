@@ -236,23 +236,28 @@ describe('Auth context building (parallel DO calls)', () => {
   });
 
   describe('transient workspace RPC failures', () => {
-    it('falls back to the org workspace index row when WorkspaceDO info is unavailable', async () => {
+    it('reads workspace info from the org workspace index', async () => {
       const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
       const env = {
         ORG: {
           idFromName: (id: string) => id,
           get: () => ({
-            getWorkspaces: async () => [
-              { id: 'ws-fallback', name: 'Fallback Workspace', created_at: 123, archived: 0 },
+            getWorkspaceInfos: async () => [
+              {
+                id: 'ws-fallback',
+                org_id: 'org-1',
+                name: 'Fallback Workspace',
+                description: null,
+                created_by: 'user-1',
+                created_at: 123,
+                avatar: { color: '#4F46E5', content: 'FW' },
+                archived: false,
+                archived_at: null,
+                archived_by: null,
+                compute_tier: 'standard',
+                email_handle: null,
+              },
             ],
-          }),
-        },
-        WORKSPACE: {
-          idFromName: (id: string) => id,
-          get: () => ({
-            getInfo: async () => {
-              throw new Error('Network connection lost.');
-            },
           }),
         },
       };
@@ -269,10 +274,7 @@ describe('Auth context building (parallel DO calls)', () => {
         compute_tier: 'standard',
         email_handle: null,
       });
-      expect(warnSpy).toHaveBeenCalledWith(
-        '[auth] failed to load workspace info, using org index row',
-        expect.objectContaining({ orgId: 'org-1', workspaceId: 'ws-fallback' }),
-      );
+      expect(warnSpy).not.toHaveBeenCalled();
 
       warnSpy.mockRestore();
     });
@@ -297,18 +299,12 @@ describe('Auth context building (parallel DO calls)', () => {
         ORG: {
           idFromName: (id: string) => id,
           get: (id: string) => ({
-            getWorkspaces: async () => {
+            getWorkspaceInfos: async () => {
               if (id === 'org-failing') {
                 throw new Error('Durable Object storage operation exceeded timeout');
               }
-              return [{ id: 'ws-ok', name: 'OK Workspace', created_at: 456, archived: 0 }];
+              return [workspace];
             },
-          }),
-        },
-        WORKSPACE: {
-          idFromName: (id: string) => id,
-          get: () => ({
-            getInfo: async () => workspace,
           }),
         },
       };
