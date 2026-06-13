@@ -32,8 +32,6 @@ import { getEffectiveLlmProviderConfig } from "./selfhost-ai-provider";
 import { resolveModelPickerCatalog } from "./model-catalog";
 import { parseChannelIndicatorKindsJson } from "./channel-kinds";
 import {
-  defaultOrgModelPickerConfig,
-  defaultWorkspaceModelPickerConfig,
   resolveDefaultModelForChat,
   resolveEffectivePickerConfig,
 } from "./model-picker-config";
@@ -140,53 +138,18 @@ export interface WorkspaceModelPickerState {
 
 async function getOrgModelPickerConfigCompat(
   orgStub: OrgDO,
-  orgProvider?: LlmProvider | string | null,
-  options?: {
-    customApi?: CustomLlmProviderApi | null;
-    customModelId?: string | null;
-  },
 ): Promise<OrgModelPickerConfig> {
-  try {
-    const maybeStub = orgStub as { getModelPickerConfig?: unknown };
-    if (typeof maybeStub.getModelPickerConfig !== "function") {
-      return defaultOrgModelPickerConfig(orgProvider, options);
-    }
-    return await orgStub.getModelPickerConfig();
-  } catch (error) {
-    if (!isMissingModelPickerConfigRpcError(error)) {
-      throw error;
-    }
-    return defaultOrgModelPickerConfig(orgProvider, options);
-  }
+  return retryTransientDurableObjectRead("OrgDO.getModelPickerConfig", () =>
+    Promise.resolve(orgStub.getModelPickerConfig()),
+  );
 }
 
 async function getWorkspaceModelPickerConfigCompat(
   wsStub: WorkspaceDO,
 ): Promise<WorkspaceModelPickerConfig> {
-  try {
-    const maybeStub = wsStub as { getModelPickerConfig?: unknown };
-    if (typeof maybeStub.getModelPickerConfig !== "function") {
-      return defaultWorkspaceModelPickerConfig();
-    }
-    return await wsStub.getModelPickerConfig();
-  } catch (error) {
-    if (!isMissingModelPickerConfigRpcError(error)) {
-      throw error;
-    }
-    return defaultWorkspaceModelPickerConfig();
-  }
-}
-
-function isMissingModelPickerConfigRpcError(error: unknown): boolean {
-  const message =
-    error instanceof Error
-      ? error.message.toLowerCase()
-      : String(error).toLowerCase();
-  return (
-    message.includes("getmodelpickerconfig") &&
-    (message.includes("no such rpc method") ||
-      message.includes("no such method") ||
-      message.includes("not a function"))
+  return retryTransientDurableObjectRead(
+    "WorkspaceDO.getModelPickerConfig",
+    () => Promise.resolve(wsStub.getModelPickerConfig()),
   );
 }
 
@@ -220,10 +183,14 @@ async function getWorkspaceModelPickerStateForOrg(
   const [llmProviderConfig, experimentalSettings] = await Promise.all([
     options.llmProviderConfig !== undefined
       ? Promise.resolve(options.llmProviderConfig)
-      : orgStub.getLlmProviderConfig(),
+      : retryTransientDurableObjectRead("OrgDO.getLlmProviderConfig", () =>
+          Promise.resolve(orgStub.getLlmProviderConfig()),
+        ),
     options.experimentalSettings !== undefined
       ? Promise.resolve(options.experimentalSettings)
-      : orgStub.getExperimentalSettings(),
+      : retryTransientDurableObjectRead("OrgDO.getExperimentalSettings", () =>
+          Promise.resolve(orgStub.getExperimentalSettings()),
+        ),
   ]);
   const effectiveLlmProviderConfig = getEffectiveLlmProviderConfig(
     env,
@@ -232,10 +199,7 @@ async function getWorkspaceModelPickerStateForOrg(
   const customApi = getStoredCustomLlmProviderApi(effectiveLlmProviderConfig);
   const customModelId = getStoredCustomLlmProviderModelId(effectiveLlmProviderConfig);
   const [orgPickerConfig, workspacePickerConfig] = await Promise.all([
-    getOrgModelPickerConfigCompat(orgStub, effectiveLlmProviderConfig?.provider, {
-      customApi,
-      customModelId,
-    }),
+    getOrgModelPickerConfigCompat(orgStub),
     getWorkspaceModelPickerConfigCompat(wsStub),
   ]);
   const effectiveConfig = resolveEffectivePickerConfig(

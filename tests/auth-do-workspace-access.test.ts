@@ -81,24 +81,42 @@ describe("getWorkspaceAccess", () => {
     expect(orgStub.isMember).toHaveBeenCalledWith("user_123");
   });
 
-  it("falls back when the bootstrap RPC is unavailable", async () => {
-    workspaceStub.getInfoAndMemberAccess.mockRejectedValueOnce(
-      new TypeError('Durable Object does not implement "getInfoAndMemberAccess"'),
-    );
-    workspaceStub.getInfo.mockResolvedValueOnce({
-      id: "ws_123",
-      org_id: "org_123",
-      archived: false,
-    });
-    workspaceStub.getMemberAccess.mockResolvedValueOnce({
-      access_level: "none",
-    });
+  it("fails when the workspace info/access bootstrap RPC is missing", async () => {
+    const error = new Error("No such RPC method getInfoAndMemberAccess");
+    workspaceStub.getInfoAndMemberAccess.mockRejectedValueOnce(error);
+
+    await expect(
+      getWorkspaceAccess(env as never, "ws_123", "user_123"),
+    ).rejects.toBe(error);
+
+    expect(workspaceStub.getInfo).not.toHaveBeenCalled();
+    expect(workspaceStub.getMemberAccess).not.toHaveBeenCalled();
+  });
+
+  it("retries transient workspace info/access bootstrap RPC failures", async () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    workspaceStub.getInfoAndMemberAccess
+      .mockRejectedValueOnce(
+        new Error("Durable Object reset because its code was updated."),
+      )
+      .mockResolvedValueOnce({
+        info: {
+          id: "ws_123",
+          org_id: "org_123",
+          archived: false,
+        },
+        memberAccess: {
+          access_level: "none",
+        },
+      });
 
     await expect(
       getWorkspaceAccess(env as never, "ws_123", "user_123"),
     ).resolves.toBe("none");
 
-    expect(workspaceStub.getInfo).toHaveBeenCalled();
-    expect(workspaceStub.getMemberAccess).toHaveBeenCalledWith("user_123");
+    expect(workspaceStub.getInfoAndMemberAccess).toHaveBeenCalledTimes(2);
+    expect(workspaceStub.getInfo).not.toHaveBeenCalled();
+    expect(workspaceStub.getMemberAccess).not.toHaveBeenCalled();
+    warnSpy.mockRestore();
   });
 });

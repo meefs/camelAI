@@ -118,38 +118,38 @@ describe("requireSessionWorkspaceAccess", () => {
     expect(orgStub.isMember).toHaveBeenCalledWith("user_123");
   });
 
-  it("falls back when the workspace access bootstrap RPC is unavailable", async () => {
-    workspaceStub.getInfoAndMemberAccess.mockRejectedValueOnce(
-      new TypeError('Durable Object does not implement "getInfoAndMemberAccess"'),
-    );
-    workspaceStub.getInfo.mockResolvedValueOnce({
-      id: "ws_123",
-      org_id: "org_123",
-      archived: false,
-    });
-    workspaceStub.getMemberAccess.mockResolvedValueOnce(null);
+  it("fails when the workspace access bootstrap RPC is missing", async () => {
+    const error = new Error("No such RPC method getInfoAndMemberAccess");
+    workspaceStub.getInfoAndMemberAccess.mockRejectedValueOnce(error);
     const request = await makeRequest();
 
     await expect(
       requireSessionWorkspaceAccess(request, {}),
-    ).resolves.toMatchObject({
-      access: "full",
-    });
+    ).rejects.toBe(error);
 
-    expect(workspaceStub.getInfo).toHaveBeenCalled();
-    expect(workspaceStub.getMemberAccess).toHaveBeenCalledWith("user_123");
+    expect(workspaceStub.getInfo).not.toHaveBeenCalled();
+    expect(workspaceStub.getMemberAccess).not.toHaveBeenCalled();
   });
 
-  it("falls back when an older isolate reports a plain missing RPC error", async () => {
-    workspaceStub.getInfoAndMemberAccess.mockRejectedValueOnce(
-      new Error("No such RPC method getInfoAndMemberAccess"),
-    );
-    workspaceStub.getInfo.mockResolvedValueOnce({
-      id: "ws_123",
-      org_id: "org_123",
-      archived: false,
-    });
-    workspaceStub.getMemberAccess.mockResolvedValueOnce(null);
+  it("retries transient workspace access bootstrap RPC failures", async () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    workspaceStub.getInfoAndMemberAccess
+      .mockRejectedValueOnce(
+        new Error("Durable Object reset because its code was updated."),
+      )
+      .mockResolvedValueOnce({
+        info: {
+          id: "ws_123",
+          org_id: "org_123",
+          archived: false,
+        },
+        memberAccess: {
+          user_id: "user_123",
+          access_level: "full",
+          granted_by: "owner_123",
+          granted_at: 1,
+        },
+      });
     const request = await makeRequest();
 
     await expect(
@@ -158,7 +158,9 @@ describe("requireSessionWorkspaceAccess", () => {
       access: "full",
     });
 
-    expect(workspaceStub.getInfo).toHaveBeenCalled();
-    expect(workspaceStub.getMemberAccess).toHaveBeenCalledWith("user_123");
+    expect(workspaceStub.getInfoAndMemberAccess).toHaveBeenCalledTimes(2);
+    expect(workspaceStub.getInfo).not.toHaveBeenCalled();
+    expect(workspaceStub.getMemberAccess).not.toHaveBeenCalled();
+    warnSpy.mockRestore();
   });
 });

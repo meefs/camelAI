@@ -30,21 +30,69 @@ describe('getWorkspaceModelPickerState rollout compatibility', () => {
     vi.restoreAllMocks();
   });
 
-  it('falls back to default picker configs when new DO RPCs are unavailable', async () => {
+  it('fails when model picker config RPCs are missing', async () => {
+    const error = new Error('No such RPC method getModelPickerConfig');
     const workspaceStub = {
       getInfo: vi.fn().mockResolvedValue({ org_id: 'org_123' }),
-      getModelPickerConfig: vi.fn().mockRejectedValue(
-        new Error('No such RPC method getModelPickerConfig'),
-      ),
+      getModelPickerConfig: vi.fn().mockRejectedValue(error),
     };
     const orgStub = {
       getLlmProviderConfig: vi.fn().mockResolvedValue(null),
       getExperimentalSettings: vi
         .fn()
         .mockResolvedValue({ claude_proxy_models: false }),
-      getModelPickerConfig: vi.fn().mockRejectedValue(
-        new Error('No such RPC method getModelPickerConfig'),
-      ),
+      getModelPickerConfig: vi.fn().mockResolvedValue({
+        use_platform_defaults: true,
+        models: [],
+        default_model: null,
+      }),
+    };
+
+    getEnvMock.mockReturnValue({
+      WORKSPACE: {
+        idFromName: (id: string) => id,
+        get: () => workspaceStub,
+      },
+      ORG: {
+        idFromName: (id: string) => id,
+        get: () => orgStub,
+      },
+    });
+
+    await expect(getWorkspaceModelPickerState({}, 'ws_123')).rejects.toBe(
+      error,
+    );
+  });
+
+  it('retries transient model picker config RPC failures', async () => {
+    const workspaceStub = {
+      getInfo: vi.fn().mockResolvedValue({ org_id: 'org_123' }),
+      getModelPickerConfig: vi
+        .fn()
+        .mockRejectedValueOnce(
+          new Error('Durable Object reset because its code was updated.'),
+        )
+        .mockResolvedValueOnce({
+          use_org_defaults: true,
+          models: [],
+          default_model: null,
+        }),
+    };
+    const orgStub = {
+      getLlmProviderConfig: vi.fn().mockResolvedValue(null),
+      getExperimentalSettings: vi
+        .fn()
+        .mockResolvedValue({ claude_proxy_models: false }),
+      getModelPickerConfig: vi
+        .fn()
+        .mockRejectedValueOnce(
+          new Error('Durable Object reset because its code was updated.'),
+        )
+        .mockResolvedValueOnce({
+          use_platform_defaults: true,
+          models: [],
+          default_model: null,
+        }),
     };
 
     getEnvMock.mockReturnValue({
@@ -59,7 +107,6 @@ describe('getWorkspaceModelPickerState rollout compatibility', () => {
     });
 
     const state = await getWorkspaceModelPickerState({}, 'ws_123');
-
     expect(state).toMatchObject({
       orgId: 'org_123',
       llmProvider: null,
@@ -70,6 +117,8 @@ describe('getWorkspaceModelPickerState rollout compatibility', () => {
     expect(state?.allowedThreadModels).toContain('sonnet');
     expect(state?.allowedThreadModels).toContain('gpt-5.5');
     expect(state?.allowedThreadModels).toContain('gpt-5.4-mini');
+    expect(orgStub.getModelPickerConfig).toHaveBeenCalledTimes(2);
+    expect(workspaceStub.getModelPickerConfig).toHaveBeenCalledTimes(2);
   });
 
   it('rethrows picker config errors other than missing RPC rollout errors', async () => {

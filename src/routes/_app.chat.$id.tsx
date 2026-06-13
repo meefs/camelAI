@@ -19,6 +19,7 @@ import { projectsToMentionables, type MentionableProject } from "@/lib/mentions"
 import { getEnv } from "@/lib/cloudflare.server";
 import { getAppUrlContext } from "@/lib/app-url.server";
 import { getOrgBillingOverview } from "@/lib/billing.server";
+import { retryTransientDurableObjectRead } from "@/lib/do-rpc-retry.server";
 import {
   applyDevBillingCreditStatusOverride,
   buildBillingCreditStatus,
@@ -536,25 +537,8 @@ async function findAccessibleGroupWorkspace(
   );
 }
 
-function isMissingRpcMethodError(error: unknown, methodName: string): boolean {
-  const message =
-    error instanceof Error
-      ? error.message.toLowerCase()
-      : String(error).toLowerCase();
-  const normalizedMethod = methodName.toLowerCase();
-  return (
-    message.includes(normalizedMethod) &&
-    (message.includes("does not implement") ||
-      message.includes("no such rpc method") ||
-      message.includes("no such method") ||
-      message.includes("not a function"))
-  );
-}
-
 type OrgThreadSlugStub = {
-  getThread(id: string): OrgThread | null | Promise<OrgThread | null>;
-  getInfo(): Promise<{ slug?: string | null } | null>;
-  getThreadWithOrgSlug?(
+  getThreadWithOrgSlug(
     id: string,
   ): Promise<{ thread: OrgThread | null; orgSlug: string | null }>;
 };
@@ -563,25 +547,14 @@ async function loadThreadWithOrgSlug(
   orgStub: OrgThreadSlugStub,
   threadId: string,
 ): Promise<{ thread: OrgThread | null; orgSlug: string | undefined }> {
-  try {
-    if (typeof orgStub.getThreadWithOrgSlug === "function") {
-      const result = await orgStub.getThreadWithOrgSlug(threadId);
-      return {
-        thread: result.thread,
-        orgSlug: result.orgSlug ?? undefined,
-      };
-    }
-  } catch (error) {
-    if (!isMissingRpcMethodError(error, "getThreadWithOrgSlug")) {
-      throw error;
-    }
-  }
-
-  const [thread, orgInfo] = await Promise.all([
-    orgStub.getThread(threadId),
-    orgStub.getInfo().catch(() => null),
-  ]);
-  return { thread, orgSlug: orgInfo?.slug ?? undefined };
+  const result = await retryTransientDurableObjectRead(
+    "OrgDO.getThreadWithOrgSlug",
+    () => orgStub.getThreadWithOrgSlug(threadId),
+  );
+  return {
+    thread: result.thread,
+    orgSlug: result.orgSlug ?? undefined,
+  };
 }
 
 export async function loader({ request, context, params }: Route.LoaderArgs) {

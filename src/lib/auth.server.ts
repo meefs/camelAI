@@ -26,7 +26,6 @@ import {
   getWorkspace,
 } from "./auth-do";
 import {
-  DEFAULT_ORG_EXPERIMENTAL_SETTINGS,
   type LlmProviderConfigRecord,
 } from "./llm-provider-config";
 import {
@@ -257,23 +256,6 @@ function isLocalhostRequest(request: Request): boolean {
   return hostname === "localhost" || hostname === "127.0.0.1";
 }
 
-function isMissingRpcMethodError(error: unknown, methodName: string): boolean {
-  const message =
-    error instanceof Error
-      ? error.message
-      : typeof error === "string"
-        ? error
-        : "";
-  if (!message.includes(methodName)) return false;
-  const normalized = message.toLowerCase();
-  return (
-    normalized.includes("no such rpc method") ||
-    normalized.includes("no such method") ||
-    normalized.includes("does not implement") ||
-    normalized.includes("not a function")
-  );
-}
-
 async function getLocalAuthBypassSession(
   request: Request,
   context: AppLoadContext,
@@ -404,51 +386,17 @@ async function getOrgAuthContextBootstrap(
   orgId: string,
   userId: string,
 ): Promise<OrgAuthContextBootstrap> {
-  try {
-    return await retryTransientDurableObjectRead(
-      "OrgDO.getAuthContextBootstrap",
-      () =>
-        (
-          orgStub as unknown as {
-            getAuthContextBootstrap(
-              userId: string,
-            ): Promise<OrgAuthContextBootstrap>;
-          }
-        ).getAuthContextBootstrap(userId),
-    );
-  } catch (error) {
-    if (!isMissingRpcMethodError(error, "getAuthContextBootstrap")) {
-      throw error;
-    }
-  }
-
-  const [info, member, workspaces, llmProviderConfig, experimentalSettings] =
-    await Promise.all([
-      retryTransientDurableObjectRead("OrgDO.getInfo", () => orgStub.getInfo()),
-      retryTransientDurableObjectRead("OrgDO.getMember", () =>
-        orgStub.getMember(userId),
-      ),
-      listOrgWorkspaces(authEnv, orgId),
+  return retryTransientDurableObjectRead(
+    "OrgDO.getAuthContextBootstrap",
+    () =>
       (
         orgStub as unknown as {
-          getLlmProviderConfig(): Promise<LlmProviderConfigRecord | null>;
+          getAuthContextBootstrap(
+            userId: string,
+          ): Promise<OrgAuthContextBootstrap>;
         }
-      ).getLlmProviderConfig(),
-      (
-        orgStub as unknown as {
-          getExperimentalSettings(): Promise<OrganizationExperimentalSettings>;
-        }
-      )
-        .getExperimentalSettings()
-        .catch(() => DEFAULT_ORG_EXPERIMENTAL_SETTINGS),
-    ]);
-  return {
-    info,
-    member,
-    workspaces,
-    llmProviderConfig,
-    experimentalSettings,
-  };
+      ).getAuthContextBootstrap(userId),
+  );
 }
 
 async function getWorkspaceAccessBootstrap(
@@ -458,30 +406,22 @@ async function getWorkspaceAccessBootstrap(
   workspaceInfo: Workspace | null;
   memberAccess: WorkspaceMember | null;
 }> {
-  try {
-    const result = await (
-      wsStub as unknown as {
-        getInfoAndMemberAccess(userId: string): Promise<{
-          info: Workspace | null;
-          memberAccess: WorkspaceMember | null;
-        }>;
-      }
-    ).getInfoAndMemberAccess(userId);
-    return {
-      workspaceInfo: result.info,
-      memberAccess: result.memberAccess,
-    };
-  } catch (error) {
-    if (!isMissingRpcMethodError(error, "getInfoAndMemberAccess")) {
-      throw error;
-    }
-  }
-
-  const [workspaceInfo, memberAccess] = await Promise.all([
-    wsStub.getInfo(),
-    wsStub.getMemberAccess(userId),
-  ]);
-  return { workspaceInfo, memberAccess };
+  const result = await retryTransientDurableObjectRead(
+    "WorkspaceDO.getInfoAndMemberAccess",
+    () =>
+      (
+        wsStub as unknown as {
+          getInfoAndMemberAccess(userId: string): Promise<{
+            info: Workspace | null;
+            memberAccess: WorkspaceMember | null;
+          }>;
+        }
+      ).getInfoAndMemberAccess(userId),
+  );
+  return {
+    workspaceInfo: result.info,
+    memberAccess: result.memberAccess,
+  };
 }
 
 /**

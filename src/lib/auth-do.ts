@@ -21,7 +21,7 @@ import {
 } from "./email-domain-blocklist";
 import { getBillingPlanLimits } from "./billing-plans";
 import { isSelfhostRuntime } from "./selfhost-runtime";
-import { generateDefaultAvatar } from "./avatar";
+import { retryTransientDurableObjectRead } from "./do-rpc-retry.server";
 
 import {
   type AuthEnv,
@@ -66,74 +66,14 @@ export interface OrgOnboardingWelcomeContext extends OrgProviderContext {
   integrations: string[];
 }
 
-type OrgWorkspaceRow = {
-  id: string;
-  name: string;
-  created_at: number;
-  archived: number;
-  description?: string | null;
-  created_by?: string | null;
-  avatar_color?: string | null;
-  avatar_content?: string | null;
-  archived_at?: number | null;
-  archived_by?: string | null;
-  compute_tier?: Workspace["compute_tier"] | string | null;
-  email_handle?: string | null;
-};
-
-function fallbackWorkspaceFromOrgRow(
-  orgId: string,
-  row: OrgWorkspaceRow,
-): Workspace {
-  const avatar =
-    row.avatar_color && row.avatar_content
-      ? { color: row.avatar_color, content: row.avatar_content }
-      : generateDefaultAvatar(row.name);
-  return {
-    id: row.id,
-    org_id: orgId,
-    name: row.name,
-    description: row.description ?? null,
-    created_by: row.created_by ?? "",
-    created_at: row.created_at,
-    avatar,
-    archived: Boolean(row.archived),
-    archived_at: row.archived_at ?? null,
-    archived_by: row.archived_by ?? null,
-    compute_tier: "standard",
-    email_handle: row.email_handle ?? null,
-  };
-}
-
-function isMissingRpcMethodError(error: unknown, methodName: string): boolean {
-  return (
-    error instanceof TypeError &&
-    (error.message.includes(`does not implement "${methodName}"`) ||
-      error.message.includes(`${methodName} is not a function`) ||
-      error.message.includes(`.${methodName} is not a function`))
-  );
-}
-
-/**
- * Reset onboarding for a user, with a compatibility fallback for workers that
- * haven't reloaded the newer `resetOnboarding` RPC method yet.
- */
 export async function resetOnboardingForUser(
   env: AuthEnv,
   userId: string,
 ): Promise<void> {
   const stub = env.USER.get(env.USER.idFromName(userId));
-
-  try {
-    await stub.resetOnboarding();
-    return;
-  } catch (error) {
-    if (!isMissingRpcMethodError(error, "resetOnboarding")) {
-      throw error;
-    }
-  }
-
-  await stub.updateOnboarding({ completed_at: null });
+  await retryTransientDurableObjectRead("UserDO.resetOnboarding", () =>
+    stub.resetOnboarding(),
+  );
 }
 
 // Session functions — signed cookies replace KV storage
@@ -580,28 +520,13 @@ export async function getOrgSettingsSummary(
   orgId: string,
 ): Promise<OrgSettingsSummary | null> {
   const stub = env.ORG.get(env.ORG.idFromName(orgId));
-  try {
-    return await (stub as unknown as {
-      getSettingsSummary(): Promise<OrgSettingsSummary | null>;
-    }).getSettingsSummary();
-  } catch (error) {
-    if (!isMissingRpcMethodError(error, "getSettingsSummary")) {
-      throw error;
-    }
-  }
-
-  const [members, workspaces, orgInfo] = await Promise.all([
-    stub.getMembers(),
-    listOrgWorkspaces(env, orgId),
-    stub.getInfo(),
-  ]);
-  if (!orgInfo) return null;
-  return {
-    billing_plan: orgInfo.billing_plan,
-    billing_status: orgInfo.billing_status,
-    member_count: members.length,
-    workspace_count: workspaces.length,
-  };
+  return retryTransientDurableObjectRead("OrgDO.getSettingsSummary", () =>
+    (
+      stub as unknown as {
+        getSettingsSummary(): Promise<OrgSettingsSummary | null>;
+      }
+    ).getSettingsSummary(),
+  );
 }
 
 export async function getOrgProviderContext(
@@ -609,21 +534,13 @@ export async function getOrgProviderContext(
   orgId: string,
 ): Promise<OrgProviderContext> {
   const stub = env.ORG.get(env.ORG.idFromName(orgId));
-  try {
-    return await (stub as unknown as {
-      getProviderContext(): Promise<OrgProviderContext>;
-    }).getProviderContext();
-  } catch (error) {
-    if (!isMissingRpcMethodError(error, "getProviderContext")) {
-      throw error;
-    }
-  }
-
-  const [info, llmProviderConfig] = await Promise.all([
-    stub.getInfo(),
-    stub.getLlmProviderConfig(),
-  ]);
-  return { info, llmProviderConfig };
+  return retryTransientDurableObjectRead("OrgDO.getProviderContext", () =>
+    (
+      stub as unknown as {
+        getProviderContext(): Promise<OrgProviderContext>;
+      }
+    ).getProviderContext(),
+  );
 }
 
 export async function getOrgOnboardingWelcomeContext(
@@ -632,37 +549,17 @@ export async function getOrgOnboardingWelcomeContext(
   workspaceId: string | null,
 ): Promise<OrgOnboardingWelcomeContext> {
   const stub = env.ORG.get(env.ORG.idFromName(orgId));
-  try {
-    return await (stub as unknown as {
-      getOnboardingWelcomeContext(
-        workspaceId: string | null,
-      ): Promise<OrgOnboardingWelcomeContext>;
-    }).getOnboardingWelcomeContext(workspaceId);
-  } catch (error) {
-    if (!isMissingRpcMethodError(error, "getOnboardingWelcomeContext")) {
-      throw error;
-    }
-  }
-
-  const [providerContext, memberCount, scripts, integrations] =
-    await Promise.all([
-      getOrgProviderContext(env, orgId),
-      stub.getMemberCount(),
-      stub.listWorkerScripts(),
-      workspaceId
-        ? env.WORKSPACE.get(env.WORKSPACE.idFromName(workspaceId))
-            .getIntegrations()
-            .then((rows) => rows.map((row) => row.name).slice(0, 4))
-            .catch(() => [] as string[])
-        : Promise.resolve([] as string[]),
-    ]);
-
-  return {
-    ...providerContext,
-    memberCount,
-    appCount: scripts.length,
-    integrations,
-  };
+  return retryTransientDurableObjectRead(
+    "OrgDO.getOnboardingWelcomeContext",
+    () =>
+      (
+        stub as unknown as {
+          getOnboardingWelcomeContext(
+            workspaceId: string | null,
+          ): Promise<OrgOnboardingWelcomeContext>;
+        }
+      ).getOnboardingWelcomeContext(workspaceId),
+  );
 }
 
 export async function archiveOrg(
@@ -878,55 +775,18 @@ export async function listOrgWorkspaces(
   includeArchived = false,
 ): Promise<Workspace[]> {
   const stub = env.ORG.get(env.ORG.idFromName(orgId));
-  try {
-    const workspaces = await (stub as unknown as {
-      getWorkspaceInfos(includeArchived?: boolean): Promise<Workspace[]>;
-    }).getWorkspaceInfos(includeArchived);
-    return includeArchived
-      ? workspaces
-      : workspaces.filter((workspace) => !workspace.archived);
-  } catch (error) {
-    if (!isMissingRpcMethodError(error, "getWorkspaceInfos")) {
-      throw error;
-    }
-  }
-
-  const workspaceIds = (await stub.getWorkspaces(
-    includeArchived,
-  )) as OrgWorkspaceRow[];
-
-  const results = await Promise.allSettled(
-    workspaceIds.map(async (ws): Promise<Workspace | null> => {
-      const wsStub = env.WORKSPACE.get(env.WORKSPACE.idFromName(ws.id));
-      try {
-        return await wsStub.getInfo();
-      } catch (error) {
-        console.warn("[auth] failed to load workspace info, using org index row", {
-          orgId,
-          workspaceId: ws.id,
-          error: error instanceof Error ? error.message : String(error),
-        });
-        return fallbackWorkspaceFromOrgRow(orgId, ws);
-      }
-    }),
+  const workspaces = await retryTransientDurableObjectRead(
+    "OrgDO.getWorkspaceInfos",
+    () =>
+      (
+        stub as unknown as {
+          getWorkspaceInfos(includeArchived?: boolean): Promise<Workspace[]>;
+        }
+      ).getWorkspaceInfos(includeArchived),
   );
-  const infos = results.flatMap((result, index) => {
-    if (result.status === "fulfilled") return [result.value];
-    const ws = workspaceIds[index];
-    if (!ws) return [];
-    console.warn("[auth] failed to load workspace info, using org index row", {
-      orgId,
-      workspaceId: ws.id,
-      error:
-        result.reason instanceof Error ? result.reason.message : String(result.reason),
-    });
-    return [fallbackWorkspaceFromOrgRow(orgId, ws)];
-  });
-
-  if (includeArchived) {
-    return infos.filter((info) => info !== null) as Workspace[];
-  }
-  return infos.filter((info) => info !== null && !info.archived) as Workspace[];
+  return includeArchived
+    ? workspaces
+    : workspaces.filter((workspace) => !workspace.archived);
 }
 
 export async function listUserWorkspaces(
@@ -1142,24 +1002,18 @@ async function getWorkspaceInfoAndMemberAccess(
   info: Workspace | null;
   memberAccess: { access_level: WorkspaceAccessLevel } | null;
 }> {
-  try {
-    return await (wsStub as unknown as {
-      getInfoAndMemberAccess(userId: string): Promise<{
-        info: Workspace | null;
-        memberAccess: { access_level: WorkspaceAccessLevel } | null;
-      }>;
-    }).getInfoAndMemberAccess(userId);
-  } catch (error) {
-    if (!isMissingRpcMethodError(error, "getInfoAndMemberAccess")) {
-      throw error;
-    }
-  }
-
-  const [info, memberAccess] = await Promise.all([
-    wsStub.getInfo(),
-    wsStub.getMemberAccess(userId),
-  ]);
-  return { info, memberAccess };
+  return retryTransientDurableObjectRead(
+    "WorkspaceDO.getInfoAndMemberAccess",
+    () =>
+      (
+        wsStub as unknown as {
+          getInfoAndMemberAccess(userId: string): Promise<{
+            info: Workspace | null;
+            memberAccess: { access_level: WorkspaceAccessLevel } | null;
+          }>;
+        }
+      ).getInfoAndMemberAccess(userId),
+  );
 }
 
 export async function getWorkspaceAccess(

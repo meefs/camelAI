@@ -22,6 +22,7 @@ import {
   resolveDefaultModelForChat,
   resolveEffectivePickerConfig,
 } from "../../../src/lib/model-picker-config";
+import { retryTransientDurableObjectRead } from "../../../src/lib/do-rpc-retry.server";
 import { getEffectiveLlmProviderConfig } from "../../../src/lib/selfhost-ai-provider";
 import { isSelfhostRuntime } from "../../../src/lib/selfhost-runtime";
 import {
@@ -956,8 +957,12 @@ export class WorkspaceCronDO extends DurableObject<WorkspaceCronEnv> {
       orgPickerConfig,
       workspacePickerConfig,
     ] = await Promise.all([
-      orgStub.getLlmProviderConfig(),
-      orgStub.getExperimentalSettings(),
+      retryTransientDurableObjectRead("OrgDO.getLlmProviderConfig", () =>
+        Promise.resolve(orgStub.getLlmProviderConfig()),
+      ),
+      retryTransientDurableObjectRead("OrgDO.getExperimentalSettings", () =>
+        Promise.resolve(orgStub.getExperimentalSettings()),
+      ),
       getOrgModelPickerConfigCompat(orgStub),
       getWorkspaceModelPickerConfigCompat(workspaceStub),
     ]);

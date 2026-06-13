@@ -15,6 +15,7 @@ import {
   resolveDefaultModelForChat,
   resolveEffectivePickerConfig,
 } from "../../../src/lib/model-picker-config.js";
+import { retryTransientDurableObjectRead } from "../../../src/lib/do-rpc-retry.server.js";
 import { getEffectiveLlmProviderConfig } from "../../../src/lib/selfhost-ai-provider.js";
 import type { LlmModel } from "../../../src/types.js";
 import type { Env } from "./types.js";
@@ -252,8 +253,12 @@ export async function resolveDefaultChannelThreadModel(
     orgPickerConfig,
     workspacePickerConfig,
   ] = await Promise.all([
-    orgStub.getLlmProviderConfig(),
-    orgStub.getExperimentalSettings(),
+    retryTransientDurableObjectRead("OrgDO.getLlmProviderConfig", () =>
+      Promise.resolve(orgStub.getLlmProviderConfig()),
+    ),
+    retryTransientDurableObjectRead("OrgDO.getExperimentalSettings", () =>
+      Promise.resolve(orgStub.getExperimentalSettings()),
+    ),
     getOrgModelPickerConfigCompat(orgStub),
     getWorkspaceModelPickerConfigCompat(workspaceStub),
   ]);

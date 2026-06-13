@@ -139,6 +139,12 @@ describe('handleWorkspaceEmailIngress', () => {
     const workspaceStub = {
       getInfo: vi.fn().mockResolvedValue({ org_id: 'org-1', archived: false }),
       getMemberAccess: vi.fn().mockResolvedValue({ access_level: 'full' }),
+      getModelPickerConfig: vi.fn().mockResolvedValue({
+        use_org_defaults: true,
+        use_platform_defaults: true,
+        models: [],
+        default_model: null,
+      }),
     };
     const orgStub = {
       getInfo: vi.fn().mockResolvedValue({ billing_plan: 'starter', billing_status: 'active' }),
@@ -146,6 +152,11 @@ describe('handleWorkspaceEmailIngress', () => {
       getThread: vi.fn().mockResolvedValue(null),
       getLlmProviderConfig: vi.fn().mockResolvedValue(null),
       getExperimentalSettings: vi.fn().mockResolvedValue({ claude_proxy_models: false }),
+      getModelPickerConfig: vi.fn().mockResolvedValue({
+        use_platform_defaults: true,
+        models: [],
+        default_model: null,
+      }),
       createThread: vi.fn().mockResolvedValue({ id: 'thread-1', title: 'Quarterly report' }),
       getWorkspaceBySlug: vi.fn().mockResolvedValue({ id: 'workspace-1', name: 'My Workspace', created_at: 0, archived: 0 }),
     };
@@ -211,15 +222,21 @@ describe('handleWorkspaceEmailIngress', () => {
     expect(startInitialUserMessageMock.mock.calls[0]?.[0].message).toContain('user@example.com');
   });
 
-  it('falls back to default picker configs when model picker RPC methods are missing', async () => {
+  it('retries transient model picker RPC failures before creating a thread', async () => {
     const workspaceStub = {
       getInfo: vi.fn().mockResolvedValue({ org_id: 'org-1', archived: false }),
       getMemberAccess: vi.fn().mockResolvedValue({ access_level: 'full' }),
       getModelPickerConfig: vi
         .fn()
-        .mockRejectedValue(
-          new Error('No such RPC method getModelPickerConfig'),
-        ),
+        .mockRejectedValueOnce(
+          new Error('Durable Object reset because its code was updated.'),
+        )
+        .mockResolvedValueOnce({
+          use_org_defaults: true,
+          use_platform_defaults: true,
+          models: [],
+          default_model: null,
+        }),
     };
     const orgStub = {
       getInfo: vi.fn().mockResolvedValue({ billing_plan: 'pro', billing_status: 'active' }),
@@ -229,9 +246,14 @@ describe('handleWorkspaceEmailIngress', () => {
       getExperimentalSettings: vi.fn().mockResolvedValue({ claude_proxy_models: false }),
       getModelPickerConfig: vi
         .fn()
-        .mockRejectedValue(
-          new Error('No such RPC method getModelPickerConfig'),
-        ),
+        .mockRejectedValueOnce(
+          new Error('Durable Object reset because its code was updated.'),
+        )
+        .mockResolvedValueOnce({
+          use_platform_defaults: true,
+          models: [],
+          default_model: null,
+        }),
       createThread: vi.fn().mockResolvedValue({ id: 'thread-1', title: 'Need help' }),
       getWorkspaceBySlug: vi.fn().mockResolvedValue({ id: 'workspace-1', name: 'My Workspace', created_at: 0, archived: 0 }),
     };
@@ -293,6 +315,12 @@ describe('handleWorkspaceEmailIngress', () => {
     const workspaceStub = {
       getInfo: vi.fn().mockResolvedValue({ org_id: 'org-1', archived: false }),
       getMemberAccess: vi.fn().mockResolvedValue({ access_level: 'full' }),
+      getModelPickerConfig: vi.fn().mockResolvedValue({
+        use_org_defaults: true,
+        use_platform_defaults: true,
+        models: [],
+        default_model: null,
+      }),
     };
     const orgStub = {
       getInfo: vi.fn().mockResolvedValue({ billing_plan: 'pro', billing_status: 'active' }),
@@ -300,6 +328,11 @@ describe('handleWorkspaceEmailIngress', () => {
       getThread: vi.fn().mockResolvedValue(null),
       getLlmProviderConfig: vi.fn().mockResolvedValue(null),
       getExperimentalSettings: vi.fn().mockResolvedValue({ claude_proxy_models: false }),
+      getModelPickerConfig: vi.fn().mockResolvedValue({
+        use_platform_defaults: true,
+        models: [],
+        default_model: null,
+      }),
       createThread: vi.fn().mockResolvedValue({ id: 'thread-1', title: 'Need help' }),
       getWorkspaceBySlug: vi.fn().mockResolvedValue({ id: 'workspace-1', name: 'My Workspace', created_at: 0, archived: 0 }),
     };
@@ -409,6 +442,12 @@ describe('handleWorkspaceEmailIngress', () => {
     const workspaceStub = {
       getInfo: vi.fn().mockResolvedValue({ org_id: 'org-1', archived: false }),
       getMemberAccess: vi.fn().mockResolvedValue({ access_level: 'full' }),
+      getModelPickerConfig: vi.fn().mockResolvedValue({
+        use_org_defaults: true,
+        use_platform_defaults: true,
+        models: [],
+        default_model: null,
+      }),
     };
     const orgStub = {
       getInfo: vi.fn().mockResolvedValue({ billing_plan: 'pro', billing_status: 'active' }),
@@ -416,6 +455,11 @@ describe('handleWorkspaceEmailIngress', () => {
       getThread: vi.fn().mockResolvedValue(null),
       getLlmProviderConfig: vi.fn().mockResolvedValue(null),
       getExperimentalSettings: vi.fn().mockResolvedValue({ claude_proxy_models: false }),
+      getModelPickerConfig: vi.fn().mockResolvedValue({
+        use_platform_defaults: true,
+        models: [],
+        default_model: null,
+      }),
       createThread: vi.fn().mockResolvedValue({ id: 'thread-1', title: 'Need help' }),
       getWorkspaceBySlug: vi.fn().mockResolvedValue({ id: 'workspace-1', name: 'My Workspace', created_at: 0, archived: 0 }),
     };
@@ -451,6 +495,12 @@ describe('handleWorkspaceEmailIngress', () => {
     const workspaceStub = {
       getInfo: vi.fn().mockResolvedValue({ org_id: 'org-1', archived: false }),
       getMemberAccess: vi.fn().mockResolvedValue({ access_level: 'full' }),
+      getModelPickerConfig: vi.fn().mockResolvedValue({
+        use_org_defaults: true,
+        use_platform_defaults: true,
+        models: [],
+        default_model: null,
+      }),
     };
     const orgStub = {
       getInfo: vi.fn().mockResolvedValue({ billing_plan: 'pro', billing_status: 'active' }),
@@ -458,6 +508,11 @@ describe('handleWorkspaceEmailIngress', () => {
       getThread: vi.fn().mockResolvedValue(null),
       getLlmProviderConfig: vi.fn().mockResolvedValue(null),
       getExperimentalSettings: vi.fn().mockResolvedValue({ claude_proxy_models: false }),
+      getModelPickerConfig: vi.fn().mockResolvedValue({
+        use_platform_defaults: true,
+        models: [],
+        default_model: null,
+      }),
       createThread: vi.fn().mockResolvedValue({ id: 'thread-1', title: 'Need help' }),
       getWorkspaceBySlug: vi.fn().mockResolvedValue({ id: 'workspace-1', name: 'My Workspace', created_at: 0, archived: 0 }),
     };

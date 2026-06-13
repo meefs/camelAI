@@ -14,6 +14,7 @@ import {
 import { Separator } from "@/components/ui/separator";
 import { SettingsHeader } from "@/components/settings/settings-header";
 import { WorkspacesList } from "@/components/settings/workspaces-list";
+import { retryTransientDurableObjectRead } from "@/lib/do-rpc-retry.server";
 
 type WorkspaceSummaryCounts = {
   workspaceId: string;
@@ -28,56 +29,20 @@ export function meta() {
   ];
 }
 
-function isMissingRpcMethodError(error: unknown, methodName: string): boolean {
-  return (
-    error instanceof TypeError &&
-    (error.message.includes(`does not implement "${methodName}"`) ||
-      error.message.includes(`${methodName} is not a function`) ||
-      error.message.includes(`.${methodName} is not a function`))
-  );
-}
-
 async function loadWorkspaceSummaryCounts(
-  env: ReturnType<typeof getEnv>,
   orgStub: ReturnType<ReturnType<typeof getAuthEnv>["ORG"]["get"]>,
   workspaceIds: string[],
 ): Promise<WorkspaceSummaryCounts[]> {
-  try {
-    return await (
-      orgStub as unknown as {
-        getWorkspaceSummaryCounts(
-          workspaceIds: string[],
-        ): Promise<WorkspaceSummaryCounts[]>;
-      }
-    ).getWorkspaceSummaryCounts(workspaceIds);
-  } catch (error) {
-    if (!isMissingRpcMethodError(error, "getWorkspaceSummaryCounts")) {
-      throw error;
-    }
-  }
-
-  const scripts = await orgStub.listWorkerScripts();
-  const appCountMap = new Map<string, number>();
-  for (const script of scripts) {
-    appCountMap.set(
-      script.workspace_id,
-      (appCountMap.get(script.workspace_id) ?? 0) + 1,
-    );
-  }
-
-  return Promise.all(
-    workspaceIds.map(async (workspaceId) => {
-      const workspaceStub = env.WORKSPACE.get(
-        env.WORKSPACE.idFromName(workspaceId),
-      );
-      const members = await workspaceStub.listMembers();
-      return {
-        workspaceId,
-        memberCount: members.filter((member) => member.access_level !== "none")
-          .length,
-        publishedApps: appCountMap.get(workspaceId) ?? 0,
-      };
-    }),
+  return retryTransientDurableObjectRead(
+    "OrgDO.getWorkspaceSummaryCounts",
+    () =>
+      (
+        orgStub as unknown as {
+          getWorkspaceSummaryCounts(
+            workspaceIds: string[],
+          ): Promise<WorkspaceSummaryCounts[]>;
+        }
+      ).getWorkspaceSummaryCounts(workspaceIds),
   );
 }
 
@@ -150,7 +115,6 @@ export async function loader({ request, context }: Route.LoaderArgs) {
 
   const workspaces = authContext.workspaces ?? [];
   const summaryCounts = await loadWorkspaceSummaryCounts(
-    env,
     orgStub,
     workspaces.map((ws) => ws.id),
   );
