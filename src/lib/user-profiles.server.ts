@@ -51,31 +51,27 @@ export async function loadUsersById(
     requestCache?.set(user.id, Promise.resolve(user));
   }
 
-  const entries = await Promise.all(
-    ids.map(async (id) => {
-      let profilePromise = requestCache?.get(id) ?? null;
-      if (!profilePromise) {
-        const preloaded = preloadedProfiles.get(id);
-        profilePromise = preloaded
-          ? Promise.resolve(preloaded)
-          : env.USER.get(env.USER.idFromName(id))
-              .getProfile()
-              .then((profile) => profile ?? null);
-        requestCache?.set(id, profilePromise);
-      }
+  const entryPromises = ids.map(async (id) => {
+    let profilePromise = requestCache?.get(id) ?? null;
+    if (!profilePromise) {
+      const preloaded = preloadedProfiles.get(id);
+      profilePromise = preloaded
+        ? Promise.resolve(preloaded)
+        : env.USER.get(env.USER.idFromName(id))
+            .getProfile()
+            .then((profile) => profile ?? null);
+      requestCache?.set(id, profilePromise);
+    }
 
-      let profile: User | null;
-      try {
-        profile = await profilePromise;
-      } catch (error) {
-        if (!options.allowPartialFailures) {
-          throw error;
-        }
-        profile = null;
-      }
-      return [id, profile] as const;
-    }),
-  );
+    const profile = await profilePromise;
+    return [id, profile] as const;
+  });
+
+  const entries = options.allowPartialFailures
+    ? (await Promise.allSettled(entryPromises)).flatMap((result) =>
+        result.status === "fulfilled" ? [result.value] : [],
+      )
+    : await Promise.all(entryPromises);
 
   const profiles = new Map<string, User>();
   for (const [id, profile] of entries) {
