@@ -185,4 +185,18 @@ describe("OnboardingWelcomeRoute Pay as you go action", () => {
       },
     });
   });
+
+  it("propagates unexpected team context load failures", async () => {
+    getOrgOnboardingWelcomeContextMock.mockRejectedValueOnce(
+      new Error("org summary unavailable"),
+    );
+
+    await expect(
+      loader({
+        request: new Request("https://camelai.test/onboarding?team=1"),
+        context: {},
+        params: {},
+      } as never),
+    ).rejects.toThrow("org summary unavailable");
+  });
 });

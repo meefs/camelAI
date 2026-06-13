@@ -97,13 +97,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
         authEnv,
         orgId,
         workspaceId ?? null,
-      ).catch(() => ({
-        info: null,
-        llmProviderConfig: null,
-        memberCount: 0,
-        appCount: 0,
-        integrations: [] as string[],
-      })),
+      ),
       creditPacksPromise,
     ]);
     const effectiveLlmProviderConfig = getEffectiveLlmProviderConfig(
