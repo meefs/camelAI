@@ -3,7 +3,7 @@ import { parseWithZod } from '@conform-to/zod/v4';
 import type { Route } from './+types/_app.settings.organization.general';
 import { requireAuthContext, requireOrgAdmin, getAuthEnv } from '@/lib/auth.server';
 import { getEnv } from '@/lib/cloudflare.server';
-import { archiveOrg, transferOrgOwnership, getOrgMembersWithWorkspaceAccess } from '@/lib/auth-do';
+import { archiveOrg, transferOrgOwnership, getOrgMembers } from '@/lib/auth-do';
 import { Separator } from '@/components/ui/separator';
 import { SettingsHeader } from '@/components/settings/settings-header';
 import { OrgGeneralForm } from '@/components/settings/org-general-form';
@@ -78,7 +78,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
   // Load eligible transfer targets (admins who are not the owner) - only when owner
   let transferCandidates: Array<{ id: string; name: string | null; email: string }> = [];
   if (isOwner) {
-    const members = await getOrgMembersWithWorkspaceAccess(authEnv, authContext.currentOrg.id);
+    const members = await getOrgMembers(authEnv, authContext.currentOrg.id);
     transferCandidates = members
       .filter((m) => m.role === 'admin')
       .map((m) => ({ id: m.user.id, name: m.user.name, email: m.user.email }));

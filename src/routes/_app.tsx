@@ -125,16 +125,13 @@ export async function loader({ request, context }: Route.LoaderArgs) {
   }
 
   const orgStub = env.ORG.get(env.ORG.idFromName(authContext.currentOrg.id));
-  const [orgInfo, llmProviderConfig] = await Promise.all([
-    orgStub.getInfo().catch(() => null),
-    orgStub.getLlmProviderConfig(),
-  ]);
+  const llmProviderConfig = await orgStub.getLlmProviderConfig();
   const effectiveLlmProviderConfig = getEffectiveLlmProviderConfig(
     env,
     llmProviderConfig,
   );
   const selfhostRuntime = isSelfhostRuntime(env);
-  const currentOrg = orgInfo ?? authContext.currentOrg;
+  const currentOrg = authContext.currentOrg;
   const billingAccess = resolveOrgBillingAccess({
     env,
     org: currentOrg,
