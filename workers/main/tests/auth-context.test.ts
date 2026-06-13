@@ -19,6 +19,7 @@ import {
   listUserWorkspaces,
   listUserWorkspacesAcrossOrgs,
   createWorkspace,
+  archiveWorkspace,
   createInvitation,
   acceptInvitation,
   listOrgWorkspaces,
@@ -394,6 +395,38 @@ describe('Auth context building (parallel DO calls)', () => {
       expect(bootstrap.experimentalSettings).toEqual({
         claude_proxy_models: false,
       });
+    });
+
+    it('filters archived workspaces after hydrating stale auth bootstrap rows', async () => {
+      const email = testEmail();
+      const { userId } = await createUser(testEnv, email, 'password', 'Bootstrap Archived User');
+      const { org, defaultWorkspaceId } = await createOrg(testEnv, 'Bootstrap Archived Org', userId);
+      const activeWorkspace = await createWorkspace(testEnv, org.id, 'Active Workspace', userId);
+
+      await archiveWorkspace(testEnv, defaultWorkspaceId, userId);
+
+      const orgStub = testEnv.ORG.get(testEnv.ORG.idFromName(org.id));
+      const workspaceStub = testEnv.WORKSPACE.get(
+        testEnv.WORKSPACE.idFromName(defaultWorkspaceId),
+      );
+      const archivedWorkspaceInfo = await workspaceStub.getInfo();
+      expect(archivedWorkspaceInfo?.archived).toBe(true);
+
+      await orgStub.upsertWorkspaceInfo({
+        ...archivedWorkspaceInfo!,
+        archived: false,
+        archived_at: null,
+        archived_by: null,
+        email_handle: null,
+      });
+
+      const bootstrap = await orgStub.getAuthContextBootstrap(userId);
+      expect(bootstrap.workspaces.map((workspace) => workspace.id)).toContain(
+        activeWorkspace.id,
+      );
+      expect(bootstrap.workspaces.map((workspace) => workspace.id)).not.toContain(
+        defaultWorkspaceId,
+      );
     });
 
     it('rejects sessions invalidated before full auth context loads', async () => {

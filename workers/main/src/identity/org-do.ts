@@ -4008,7 +4008,7 @@ export class OrgDO extends DurableObject<DOEnv> {
     return {
       info,
       member,
-      workspaces,
+      workspaces: workspaces.filter((workspace) => !workspace.archived),
       llmProviderConfig,
       experimentalSettings,
     };
