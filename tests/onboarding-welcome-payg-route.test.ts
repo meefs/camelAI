@@ -6,6 +6,7 @@ const requireSessionMock = vi.fn();
 const getAuthEnvMock = vi.fn();
 const getEnvMock = vi.fn();
 const getOrgProviderContextMock = vi.fn();
+const getOrgOnboardingWelcomeContextMock = vi.fn();
 const activatePayAsYouGoPlanMock = vi.fn();
 const createCreditsCheckoutSessionMock = vi.fn();
 
@@ -21,6 +22,7 @@ vi.mock("@/lib/cloudflare.server", () => ({
 }));
 
 vi.mock("@/lib/auth-do", () => ({
+  getOrgOnboardingWelcomeContext: getOrgOnboardingWelcomeContextMock,
   getOrgProviderContext: getOrgProviderContextMock,
 }));
 
@@ -56,6 +58,17 @@ describe("OnboardingWelcomeRoute Pay as you go action", () => {
         slug: "new-org",
       },
       llmProviderConfig: null,
+    });
+    getOrgOnboardingWelcomeContextMock.mockResolvedValue({
+      info: {
+        id: "org_123",
+        name: "New Org",
+        slug: "new-org",
+      },
+      llmProviderConfig: null,
+      memberCount: 4,
+      appCount: 2,
+      integrations: ["Primary DB", "Slack"],
     });
     requireAuthContextMock.mockResolvedValue({
       user: { id: "user_123", email: "owner@example.com" },
@@ -136,6 +149,7 @@ describe("OnboardingWelcomeRoute Pay as you go action", () => {
       { auth: true },
       "org_123",
     );
+    expect(getOrgOnboardingWelcomeContextMock).not.toHaveBeenCalled();
     expect(result).toMatchObject({
       orgId: "org_123",
       orgName: "camelAI",
@@ -146,5 +160,43 @@ describe("OnboardingWelcomeRoute Pay as you go action", () => {
         integrations: [],
       },
     });
+  });
+
+  it("loads team context through the combined helper", async () => {
+    const result = await loader({
+      request: new Request("https://camelai.test/onboarding?team=1"),
+      context: {},
+      params: {},
+    } as never);
+
+    expect(getOrgProviderContextMock).not.toHaveBeenCalled();
+    expect(getOrgOnboardingWelcomeContextMock).toHaveBeenCalledWith(
+      { auth: true },
+      "org_123",
+      "ws_123",
+    );
+    expect(result).toMatchObject({
+      orgId: "org_123",
+      orgName: "New Org",
+      teamContext: {
+        memberCount: 4,
+        appCount: 2,
+        integrations: ["Primary DB", "Slack"],
+      },
+    });
+  });
+
+  it("propagates unexpected team context load failures", async () => {
+    getOrgOnboardingWelcomeContextMock.mockRejectedValueOnce(
+      new Error("org summary unavailable"),
+    );
+
+    await expect(
+      loader({
+        request: new Request("https://camelai.test/onboarding?team=1"),
+        context: {},
+        params: {},
+      } as never),
+    ).rejects.toThrow("org summary unavailable");
   });
 });

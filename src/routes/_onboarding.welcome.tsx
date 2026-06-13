@@ -21,7 +21,10 @@ import {
   isStripeBillingConfigured,
 } from "@/lib/billing.server";
 import { isBillingPlan } from "@/lib/billing-plans";
-import { getOrgProviderContext } from "@/lib/auth-do";
+import {
+  getOrgOnboardingWelcomeContext,
+  getOrgProviderContext,
+} from "@/lib/auth-do";
 import { getEnv } from "@/lib/cloudflare.server";
 import { OnboardingLayout } from "@/components/onboarding/onboarding-layout";
 import { LegacyMigrationDialog } from "@/components/billing/legacy-migration-dialog";
@@ -84,14 +87,48 @@ export async function loader({ request, context }: Route.LoaderArgs) {
   const orgId = sessionContext.session.org_id;
   const workspaceId = sessionContext.session.workspace_id;
   const stripeConfigured = isStripeBillingConfigured(env);
+  const creditPacksPromise = stripeConfigured
+    ? fetchConfiguredCreditPacks(env).catch(() => [])
+    : Promise.resolve([]);
+
+  if (teamMode) {
+    const [welcomeContext, creditPacks] = await Promise.all([
+      getOrgOnboardingWelcomeContext(
+        authEnv,
+        orgId,
+        workspaceId ?? null,
+      ),
+      creditPacksPromise,
+    ]);
+    const effectiveLlmProviderConfig = getEffectiveLlmProviderConfig(
+      env,
+      welcomeContext.llmProviderConfig,
+    );
+    const byokProviderLabel = getByokProviderLabel(
+      effectiveLlmProviderConfig?.provider,
+    );
+    const formattedCreditPacks = formatTopUpCreditPacks(creditPacks);
+
+    return {
+      orgId,
+      orgName: welcomeContext.info?.name ?? "your team",
+      byokProviderLabel,
+      stripeConfigured,
+      creditPacks: formattedCreditPacks,
+      teamContext: {
+        memberCount: welcomeContext.memberCount,
+        appCount: welcomeContext.appCount,
+        integrations: welcomeContext.integrations,
+      },
+    } satisfies WelcomeLoaderData;
+  }
+
   const [orgProviderContext, creditPacks] = await Promise.all([
     getOrgProviderContext(authEnv, orgId).catch(() => ({
       info: null,
       llmProviderConfig: null,
     })),
-    stripeConfigured
-      ? fetchConfiguredCreditPacks(env).catch(() => [])
-      : Promise.resolve([]),
+    creditPacksPromise,
   ]);
   const effectiveLlmProviderConfig = getEffectiveLlmProviderConfig(
     env,
@@ -100,48 +137,16 @@ export async function loader({ request, context }: Route.LoaderArgs) {
   const byokProviderLabel = getByokProviderLabel(effectiveLlmProviderConfig?.provider);
   const formattedCreditPacks = formatTopUpCreditPacks(creditPacks);
 
-  if (!teamMode) {
-    return {
-      orgId,
-      orgName: "camelAI",
-      byokProviderLabel,
-      stripeConfigured,
-      creditPacks: formattedCreditPacks,
-      teamContext: {
-        memberCount: 0,
-        appCount: 0,
-        integrations: [],
-      },
-    } satisfies WelcomeLoaderData;
-  }
-
-  const orgStub = authEnv.ORG.get(authEnv.ORG.idFromName(orgId));
-  const [orgName, memberCount, workerScripts, integrations] = await Promise.all(
-    [
-      Promise.resolve(orgProviderContext.info?.name ?? "your team"),
-      orgStub.getMemberCount(),
-      orgStub.listWorkerScripts(),
-      workspaceId
-        ? authEnv.WORKSPACE.get(authEnv.WORKSPACE.idFromName(workspaceId))
-            .getIntegrations()
-            .then((rows: Array<{ name: string }>) =>
-              rows.map((row: { name: string }) => row.name),
-            )
-            .catch(() => [] as string[])
-        : Promise.resolve([] as string[]),
-    ],
-  );
-
   return {
     orgId,
-    orgName,
+    orgName: "camelAI",
     byokProviderLabel,
     stripeConfigured,
     creditPacks: formattedCreditPacks,
     teamContext: {
-      memberCount,
-      appCount: workerScripts.length,
-      integrations: integrations.slice(0, 4),
+      memberCount: 0,
+      appCount: 0,
+      integrations: [],
     },
   } satisfies WelcomeLoaderData;
 }

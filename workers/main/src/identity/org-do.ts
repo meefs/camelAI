@@ -178,6 +178,12 @@ export interface OrgProviderContext {
   llmProviderConfig: LlmProviderConfigRecord | null;
 }
 
+export interface OrgOnboardingWelcomeContext extends OrgProviderContext {
+  memberCount: number;
+  appCount: number;
+  integrations: string[];
+}
+
 export interface OrgWorkspaceSummaryCounts {
   workspaceId: string;
   memberCount: number;
@@ -4060,6 +4066,32 @@ export class OrgDO extends DurableObject<DOEnv> {
       this.getLlmProviderConfig(),
     ]);
     return { info, llmProviderConfig };
+  }
+
+  async getOnboardingWelcomeContext(
+    workspaceId: string | null,
+  ): Promise<OrgOnboardingWelcomeContext> {
+    const [providerContext, memberCount, scripts, integrations] =
+      await Promise.all([
+        this.getProviderContext(),
+        this.getMemberCount(),
+        this.listWorkerScripts(),
+        workspaceId
+          ? (this.env.WORKSPACE.get(
+              this.env.WORKSPACE.idFromName(workspaceId),
+            ) as unknown as WorkspaceDO)
+              .getIntegrations()
+              .then((rows) => rows.map((row) => row.name).slice(0, 4))
+              .catch(() => [] as string[])
+          : Promise.resolve([] as string[]),
+      ]);
+
+    return {
+      ...providerContext,
+      memberCount,
+      appCount: scripts.length,
+      integrations,
+    };
   }
 
   async getSettingsSummary(): Promise<OrgSettingsSummary | null> {
