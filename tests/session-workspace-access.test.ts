@@ -1,0 +1,164 @@
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { createSignedSessionCookieHeader } from "@/lib/cookies.server";
+
+const getEnvMock = vi.fn();
+const redirectIfBannedSessionMock = vi.fn();
+
+vi.mock("@/lib/cloudflare.server", () => ({
+  getEnv: getEnvMock,
+}));
+
+vi.mock("@/lib/ban.server", () => ({
+  redirectIfBannedSession: redirectIfBannedSessionMock,
+}));
+
+const { requireSessionWorkspaceAccess } = await import("@/lib/auth.server");
+
+const TOKEN_SIGNING_SECRET = "test-session-secret";
+
+async function makeRequest(): Promise<Request> {
+  const request = new Request("https://camelai.test/api/test");
+  const cookie = await createSignedSessionCookieHeader(
+    {
+      user_id: "user_123",
+      org_id: "org_123",
+      workspace_id: "ws_123",
+      created_at: Date.now(),
+      user_name: "Test User",
+      user_email: "test@example.com",
+      auth_source: null,
+    },
+    TOKEN_SIGNING_SECRET,
+    request,
+  );
+  return new Request(request, {
+    headers: {
+      Cookie: cookie.split(";", 1)[0] ?? cookie,
+    },
+  });
+}
+
+describe("requireSessionWorkspaceAccess", () => {
+  let userStub: {
+    getSessionInvalidatedAt: ReturnType<typeof vi.fn>;
+  };
+  let orgStub: {
+    isMember: ReturnType<typeof vi.fn>;
+  };
+  let workspaceStub: {
+    getInfoAndMemberAccess: ReturnType<typeof vi.fn>;
+    getInfo: ReturnType<typeof vi.fn>;
+    getMemberAccess: ReturnType<typeof vi.fn>;
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    userStub = {
+      getSessionInvalidatedAt: vi.fn().mockResolvedValue(null),
+    };
+    orgStub = {
+      isMember: vi.fn().mockResolvedValue(true),
+    };
+    workspaceStub = {
+      getInfoAndMemberAccess: vi.fn().mockResolvedValue({
+        info: {
+          id: "ws_123",
+          org_id: "org_123",
+          archived: false,
+        },
+        memberAccess: {
+          user_id: "user_123",
+          access_level: "full",
+          granted_by: "owner_123",
+          granted_at: 1,
+        },
+      }),
+      getInfo: vi.fn(async () => {
+        throw new Error("unexpected workspace info read");
+      }),
+      getMemberAccess: vi.fn(async () => {
+        throw new Error("unexpected member access read");
+      }),
+    };
+    getEnvMock.mockReturnValue({
+      TOKEN_SIGNING_SECRET,
+      USER: {
+        idFromName: (id: string) => id,
+        get: () => userStub,
+      },
+      ORG: {
+        idFromName: (id: string) => id,
+        get: () => orgStub,
+      },
+      WORKSPACE: {
+        idFromName: (id: string) => id,
+        get: () => workspaceStub,
+      },
+    });
+    redirectIfBannedSessionMock.mockResolvedValue(undefined);
+  });
+
+  it("uses the workspace access bootstrap RPC", async () => {
+    const request = await makeRequest();
+
+    await expect(
+      requireSessionWorkspaceAccess(request, {}),
+    ).resolves.toMatchObject({
+      orgId: "org_123",
+      workspaceId: "ws_123",
+      userId: "user_123",
+      access: "full",
+    });
+
+    expect(workspaceStub.getInfoAndMemberAccess).toHaveBeenCalledWith(
+      "user_123",
+    );
+    expect(workspaceStub.getInfo).not.toHaveBeenCalled();
+    expect(workspaceStub.getMemberAccess).not.toHaveBeenCalled();
+    expect(orgStub.isMember).toHaveBeenCalledWith("user_123");
+  });
+
+  it("falls back when the workspace access bootstrap RPC is unavailable", async () => {
+    workspaceStub.getInfoAndMemberAccess.mockRejectedValueOnce(
+      new TypeError('Durable Object does not implement "getInfoAndMemberAccess"'),
+    );
+    workspaceStub.getInfo.mockResolvedValueOnce({
+      id: "ws_123",
+      org_id: "org_123",
+      archived: false,
+    });
+    workspaceStub.getMemberAccess.mockResolvedValueOnce(null);
+    const request = await makeRequest();
+
+    await expect(
+      requireSessionWorkspaceAccess(request, {}),
+    ).resolves.toMatchObject({
+      access: "full",
+    });
+
+    expect(workspaceStub.getInfo).toHaveBeenCalled();
+    expect(workspaceStub.getMemberAccess).toHaveBeenCalledWith("user_123");
+  });
+
+  it("falls back when an older isolate reports a plain missing RPC error", async () => {
+    workspaceStub.getInfoAndMemberAccess.mockRejectedValueOnce(
+      new Error("No such RPC method getInfoAndMemberAccess"),
+    );
+    workspaceStub.getInfo.mockResolvedValueOnce({
+      id: "ws_123",
+      org_id: "org_123",
+      archived: false,
+    });
+    workspaceStub.getMemberAccess.mockResolvedValueOnce(null);
+    const request = await makeRequest();
+
+    await expect(
+      requireSessionWorkspaceAccess(request, {}),
+    ).resolves.toMatchObject({
+      access: "full",
+    });
+
+    expect(workspaceStub.getInfo).toHaveBeenCalled();
+    expect(workspaceStub.getMemberAccess).toHaveBeenCalledWith("user_123");
+  });
+});

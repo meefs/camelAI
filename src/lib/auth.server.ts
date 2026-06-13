@@ -11,7 +11,9 @@ import type {
   Organization,
   OrgMembership,
   OrganizationExperimentalSettings,
+  Workspace,
   WorkspaceAccessLevel,
+  WorkspaceMember,
   WorkspaceWithAccess,
 } from "@/types";
 import type { User } from "@/types";
@@ -256,11 +258,19 @@ function isLocalhostRequest(request: Request): boolean {
 }
 
 function isMissingRpcMethodError(error: unknown, methodName: string): boolean {
+  const message =
+    error instanceof Error
+      ? error.message
+      : typeof error === "string"
+        ? error
+        : "";
+  if (!message.includes(methodName)) return false;
+  const normalized = message.toLowerCase();
   return (
-    error instanceof TypeError &&
-    (error.message.includes(`does not implement "${methodName}"`) ||
-      error.message.includes(`${methodName} is not a function`) ||
-      error.message.includes(`.${methodName} is not a function`))
+    normalized.includes("no such rpc method") ||
+    normalized.includes("no such method") ||
+    normalized.includes("does not implement") ||
+    normalized.includes("not a function")
   );
 }
 
@@ -441,6 +451,39 @@ async function getOrgAuthContextBootstrap(
   };
 }
 
+async function getWorkspaceAccessBootstrap(
+  wsStub: ReturnType<AuthEnv["WORKSPACE"]["get"]>,
+  userId: string,
+): Promise<{
+  workspaceInfo: Workspace | null;
+  memberAccess: WorkspaceMember | null;
+}> {
+  try {
+    const result = await (
+      wsStub as unknown as {
+        getInfoAndMemberAccess(userId: string): Promise<{
+          info: Workspace | null;
+          memberAccess: WorkspaceMember | null;
+        }>;
+      }
+    ).getInfoAndMemberAccess(userId);
+    return {
+      workspaceInfo: result.info,
+      memberAccess: result.memberAccess,
+    };
+  } catch (error) {
+    if (!isMissingRpcMethodError(error, "getInfoAndMemberAccess")) {
+      throw error;
+    }
+  }
+
+  const [workspaceInfo, memberAccess] = await Promise.all([
+    wsStub.getInfo(),
+    wsStub.getMemberAccess(userId),
+  ]);
+  return { workspaceInfo, memberAccess };
+}
+
 /**
  * Require authentication - redirects to login if not authenticated
  */
@@ -488,11 +531,11 @@ export async function requireSessionWorkspaceAccess(
   );
   const orgStub = authEnv.ORG.get(authEnv.ORG.idFromName(orgId));
 
-  const [workspaceInfo, memberAccess, isMember] = await Promise.all([
-    wsStub.getInfo(),
-    wsStub.getMemberAccess(userId),
+  const [workspaceAccess, isMember] = await Promise.all([
+    getWorkspaceAccessBootstrap(wsStub, userId),
     orgStub.isMember(userId),
   ]);
+  const { workspaceInfo, memberAccess } = workspaceAccess;
 
   if (
     !workspaceInfo ||
