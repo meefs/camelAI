@@ -426,7 +426,7 @@ function adminTools() {
           thread_id: { type: "string" },
           title: { type: "string" },
           created_by: { type: "string" },
-          model: { type: "string", enum: ["sonnet", "fable-5", "opus-4.8", "gpt-5.4", "gpt-5.4-mini"] },
+          model: { type: "string", enum: ["sonnet", "opus-4.8", "gpt-5.4", "gpt-5.4-mini"] },
         },
         required: ["thread_id"],
         additionalProperties: false,

@@ -501,12 +501,11 @@ describe('organization model settings loader', () => {
     } as never);
 
     expect(result.config.inPicker.map((row) => row.entry.id)).toEqual([
-      'fable-5',
       'opus-4.8',
       'sonnet',
       'haiku',
     ]);
     expect(result.config.additional).toEqual([]);
-    expect(result.config.capacity.used).toBe(4);
+    expect(result.config.capacity.used).toBe(3);
   });
 });

@@ -29,7 +29,6 @@ const CODEX_MODELS = [
 ] as const;
 
 const CLAUDE_MODELS = [
-  "fable-5",
   "opus-4.8",
   "sonnet",
   "haiku",
@@ -100,9 +99,11 @@ describe("llm provider config helpers", () => {
       expect(isLlmModel(model)).toBe(true);
     }
     expect(isLlmModel("gemini-3.1-pro-preview")).toBe(false);
+    expect(isLlmModel("fable-5")).toBe(false);
     expect(normalizeLlmModel("gemini-3.1-pro-preview")).toBe(
       "gemini-3.5-flash",
     );
+    expect(normalizeLlmModel("fable-5")).toBe("sonnet");
     expect(normalizeLlmModel("opus")).toBe("opus-4.8");
     expect(normalizeLlmModel("opus-4.7")).toBe("opus-4.8");
     expect(

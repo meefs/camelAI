@@ -72,7 +72,6 @@ function renderPicker() {
       value="opus-4.8"
       onValueChange={vi.fn()}
       options={[
-        MODEL_CATALOG['fable-5'],
         MODEL_CATALOG['opus-4.8'],
         MODEL_CATALOG.sonnet,
         MODEL_CATALOG['deepseek-v4-flash'],
@@ -149,9 +148,9 @@ describe('ModelPicker metadata card state', () => {
       '$$$$$',
     );
 
-    fireEvent.focus(getModelItem('Fable 5'));
-    expect(screen.getByRole('tooltip')).toHaveTextContent('Fable 5');
-    expect(screen.getByLabelText('Cost rating: 5 out of 5')).toHaveTextContent(
+    fireEvent.focus(getModelItem('Opus 4.8'));
+    expect(screen.getByRole('tooltip')).toHaveTextContent('Opus 4.8');
+    expect(screen.getByLabelText('Cost rating: 4 out of 5')).toHaveTextContent(
       '$$$$$',
     );
   });

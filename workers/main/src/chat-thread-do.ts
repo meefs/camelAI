@@ -279,24 +279,6 @@ type AssistantCompletionPersistenceResult =
   | { status: "failed" };
 
 const PI_MODEL_CATALOG_FALLBACKS: Record<string, Model<any>> = {
-  "anthropic/claude-fable-5": {
-    id: "claude-fable-5",
-    name: "Claude Fable 5",
-    api: "anthropic-messages",
-    provider: "anthropic",
-    baseUrl: "https://api.anthropic.com",
-    reasoning: true,
-    thinkingLevelMap: { xhigh: "xhigh" },
-    input: ["text", "image"],
-    cost: {
-      input: 10,
-      output: 50,
-      cacheRead: 1,
-      cacheWrite: 12.5,
-    },
-    contextWindow: 1_000_000,
-    maxTokens: 128_000,
-  } satisfies Model<"anthropic-messages">,
   "anthropic/claude-opus-4-8": {
     id: "claude-opus-4-8",
     name: "Claude Opus 4.8",
@@ -10892,8 +10874,6 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     switch (normalizedModelId) {
       case "haiku":
         return claudeReference("claude-haiku-4-5-20251001");
-      case "fable-5":
-        return claudeReference("claude-fable-5");
       case "opus":
       case "opus-4.7":
       case "opus-4.8":
@@ -10930,7 +10910,12 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
 
   private normalizePiModelId(modelId: string): string {
     const trimmed = modelId.trim();
-    return trimmed.replace(/^(claude|codex)\//, "");
+    const normalized = trimmed.replace(/^(claude|codex)\//, "");
+    const lower = normalized.toLowerCase();
+    if (lower === "fable-5" || lower === "claude-fable-5") {
+      return "sonnet";
+    }
+    return normalized;
   }
 
   private async resolvePiRequestConfig(
@@ -11100,9 +11085,6 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         return "anthropic/claude-sonnet-4.6";
       case "haiku":
         return "anthropic/claude-haiku-4.5";
-      case "fable-5":
-      case "claude-fable-5":
-        return "anthropic/claude-fable-5";
       case "opus":
       case "opus-4.7":
       case "opus-4.8":
@@ -11318,8 +11300,6 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     switch (modelId) {
       case "claude-haiku-4-5-20251001":
         return "global.anthropic.claude-haiku-4-5-20251001-v1:0";
-      case "claude-fable-5":
-        return "global.anthropic.claude-fable-5";
       case "claude-opus-4-8":
         return "global.anthropic.claude-opus-4-8";
       case "claude-opus-4-6":

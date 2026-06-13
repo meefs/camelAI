@@ -208,7 +208,7 @@ describe('admin API thread patch route', () => {
       'Patch thread title',
       userId,
       undefined,
-      'fable-5',
+      'sonnet',
     );
     await waitForAdminIndexThreadPresence(thread.id);
 
@@ -227,7 +227,7 @@ describe('admin API thread patch route', () => {
         Authorization: 'Bearer test-admin-api-key',
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ title: 'Renamed through admin API', model: 'fable-5' }),
+      body: JSON.stringify({ title: 'Renamed through admin API', model: 'opus-4.8' }),
     });
 
     const response = await handleAdminApi({
@@ -255,7 +255,7 @@ describe('admin API thread patch route', () => {
       result.updated_at,
     );
     expect(setModel).toHaveBeenCalledWith(
-      'fable-5',
+      'opus-4.8',
       undefined,
       result.updated_at,
     );

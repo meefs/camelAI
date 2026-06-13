@@ -205,7 +205,7 @@ describe('getWorkspaceModelPickerState rollout compatibility', () => {
     expect(orgStub.createThread).not.toHaveBeenCalled();
   });
 
-  it('allows Fable for new threads when the stored picker config is the pre-Fable default suite', async () => {
+  it('normalizes Fable to Sonnet for new threads after retirement', async () => {
     const workspaceStub = {
       getInfo: vi.fn().mockResolvedValue({ org_id: 'org_123' }),
       getModelPickerConfig: vi.fn().mockResolvedValue({
@@ -239,7 +239,7 @@ describe('getWorkspaceModelPickerState rollout compatibility', () => {
         workspace_id: 'ws_123',
         title: 'New Chat',
         created_by: 'user_123',
-        model: 'fable-5',
+        model: 'sonnet',
         created_at: 1,
         updated_at: 2,
         user_message_count: 0,
@@ -259,22 +259,23 @@ describe('getWorkspaceModelPickerState rollout compatibility', () => {
     });
 
     const state = await getWorkspaceModelPickerState({}, 'ws_123');
-    expect(state?.allowedThreadModels[0]).toBe('fable-5');
+    expect(state?.allowedThreadModels).not.toContain('fable-5');
+    expect(state?.allowedThreadModels[0]).toBe('opus-4.8');
     expect(state?.allowedThreadModels).toContain('opus-4.8');
 
     await expect(
       createThread({}, 'ws_123', 'New Chat', 'user_123', undefined, 'fable-5'),
-    ).resolves.toMatchObject({ id: 'thread_123', model: 'fable-5' });
+    ).resolves.toMatchObject({ id: 'thread_123', model: 'sonnet' });
     expect(orgStub.createThread).toHaveBeenCalledWith(
       'ws_123',
       'New Chat',
       'user_123',
       undefined,
-      'fable-5',
+      'sonnet',
     );
   });
 
-  it('allows switching an existing thread to Fable from the pre-Fable default suite', async () => {
+  it('rejects switching an existing thread to Fable after retirement', async () => {
     const workspaceStub = {
       getInfo: vi.fn().mockResolvedValue({ org_id: 'org_123' }),
       getModelPickerConfig: vi.fn().mockResolvedValue({
@@ -319,7 +320,7 @@ describe('getWorkspaceModelPickerState rollout compatibility', () => {
         workspace_id: 'ws_123',
         title: 'Existing Chat',
         created_by: 'user_123',
-        model: 'fable-5',
+        model: 'sonnet',
         created_at: 1,
         updated_at: 3,
         user_message_count: 0,
@@ -339,12 +340,9 @@ describe('getWorkspaceModelPickerState rollout compatibility', () => {
     });
 
     await expect(
-      updateThreadModel({}, 'thread_123', 'fable-5', 'ws_123'),
-    ).resolves.toMatchObject({ id: 'thread_123', model: 'fable-5' });
-    expect(orgStub.updateThreadModel).toHaveBeenCalledWith(
-      'thread_123',
-      'fable-5',
-    );
+      updateThreadModel({}, 'thread_123', 'fable-5' as never, 'ws_123'),
+    ).rejects.toThrow('Invalid thread model');
+    expect(orgStub.updateThreadModel).not.toHaveBeenCalled();
   });
 
   it('normalizes legacy stored thread models and ignores legacy providers before returning them to React', async () => {

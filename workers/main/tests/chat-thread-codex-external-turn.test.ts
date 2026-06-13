@@ -89,7 +89,7 @@ describe('ChatThreadDO Codex turn handling', () => {
     });
   });
 
-  it('routes Fable 5 to Anthropic with an OpenRouter hosted model', () => {
+  it('normalizes retired Fable 5 requests to Sonnet', () => {
     const result = ChatThreadDO.prototype['resolvePiModelReference'].call(
       Object.create(ChatThreadDO.prototype),
       'fable-5',
@@ -97,9 +97,9 @@ describe('ChatThreadDO Codex turn handling', () => {
 
     expect(result).toEqual({
       provider: 'anthropic',
-      modelId: 'claude-fable-5',
+      modelId: 'claude-sonnet-4-6',
       hostedGatewayProvider: 'openrouter',
-      hostedModelId: 'anthropic/claude-fable-5:nitro',
+      hostedModelId: 'anthropic/claude-sonnet-4.6:nitro',
     });
   });
 
@@ -169,7 +169,7 @@ describe('ChatThreadDO Codex turn handling', () => {
     expect(fake.piCurrentUsageProvider).toBe('openrouter');
   });
 
-  it('uses local Pi model metadata for hosted Fable 5 when the upstream Pi catalog is missing it', async () => {
+  it('uses Sonnet metadata for hosted requests that still ask for retired Fable 5', async () => {
     const fake = Object.create(ChatThreadDO.prototype) as any;
     fake.env = {
       CF_ACCOUNT_ID: 'acct_1',
@@ -192,26 +192,25 @@ describe('ChatThreadDO Codex turn handling', () => {
       getModel,
     );
 
-    expect(getModel).toHaveBeenCalledWith('anthropic', 'claude-fable-5');
+    expect(getModel).toHaveBeenCalledWith('anthropic', 'claude-sonnet-4-6');
     expect(model.model).toMatchObject({
-      id: 'anthropic/claude-fable-5:nitro',
+      id: 'anthropic/claude-sonnet-4.6:nitro',
       provider: 'cloudflare-ai-gateway',
       api: 'anthropic-messages',
       baseUrl: 'https://gateway.ai.cloudflare.com/v1/acct_1/gateway_1/openrouter',
-      name: 'Claude Fable 5',
+      name: 'Claude Sonnet 4.6',
       contextWindow: 1_000_000,
-      maxTokens: 128_000,
-      thinkingLevelMap: { xhigh: 'xhigh' },
+      maxTokens: 64_000,
       cost: {
-        input: 10,
-        output: 50,
-        cacheRead: 1,
-        cacheWrite: 12.5,
+        input: 3,
+        output: 15,
+        cacheRead: 0.3,
+        cacheWrite: 3.75,
       },
     });
     expect(model.apiKey).toBe('cf-token');
     expect(model.provider).toBe('anthropic');
-    expect(model.modelId).toBe('claude-fable-5');
+    expect(model.modelId).toBe('claude-sonnet-4-6');
     expect(model.billingSource).toBe('hosted');
     expect(model.usageProvider).toBe('openrouter');
     expect(fake.piCurrentUsageProvider).toBe('openrouter');
@@ -1050,7 +1049,7 @@ describe('ChatThreadDO Codex turn handling', () => {
     expect(fake.checkHostedPiModelAccess).not.toHaveBeenCalled();
   });
 
-  it('uses OpenRouter BYOK for Fable 5 through the Anthropic Messages API', async () => {
+  it('uses OpenRouter BYOK with Sonnet when a request still asks for retired Fable 5', async () => {
     const fake = Object.create(ChatThreadDO.prototype) as any;
     fake.env = {};
     fake.resolveCurrentByokCredentials = vi.fn(async () => ({
@@ -1067,7 +1066,7 @@ describe('ChatThreadDO Codex turn handling', () => {
       { provider: 'claude', orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1' },
       { CHIRIDION_CLAUDE_MODEL: 'fable-5' },
       vi.fn(() => ({
-        id: 'claude-fable-5',
+        id: 'claude-sonnet-4-6',
         provider: 'anthropic',
         api: 'anthropic-messages',
         baseUrl: 'https://api.anthropic.com',
@@ -1075,7 +1074,7 @@ describe('ChatThreadDO Codex turn handling', () => {
     );
 
     expect(model.model).toMatchObject({
-      id: 'anthropic/claude-fable-5:nitro',
+      id: 'anthropic/claude-sonnet-4.6:nitro',
       provider: 'anthropic',
       api: 'anthropic-messages',
       baseUrl: 'https://openrouter.ai/api',
@@ -1616,7 +1615,7 @@ describe('ChatThreadDO Codex turn handling', () => {
     expect(fake.checkHostedPiModelAccess).not.toHaveBeenCalled();
   });
 
-  it('uses the global Bedrock fallback model for BYOK Fable 5 when Pi catalog lags', async () => {
+  it('uses the global Bedrock Sonnet fallback for BYOK requests that still ask for retired Fable 5', async () => {
     const fake = Object.create(ChatThreadDO.prototype) as any;
     fake.env = {};
     fake.resolveCurrentByokCredentials = vi.fn(async () => ({
@@ -1636,16 +1635,15 @@ describe('ChatThreadDO Codex turn handling', () => {
       getModel,
     );
 
-    expect(getModel).toHaveBeenCalledWith('amazon-bedrock', 'global.anthropic.claude-fable-5');
+    expect(getModel).toHaveBeenCalledWith('amazon-bedrock', 'global.anthropic.claude-sonnet-4-6');
     expect(model.model).toMatchObject({
-      id: 'global.anthropic.claude-fable-5',
+      id: 'global.anthropic.claude-sonnet-4-6',
       provider: 'amazon-bedrock',
       api: 'bedrock-converse-stream',
       baseUrl: 'https://bedrock-runtime.us-west-2.amazonaws.com',
-      name: 'Claude Fable 5 (Global)',
+      name: 'Claude Sonnet 4.6 (Global)',
       contextWindow: 1_000_000,
-      maxTokens: 128_000,
-      thinkingLevelMap: { xhigh: 'xhigh' },
+      maxTokens: 64_000,
     });
     expect(model.model.id).not.toMatch(/-v1:0$/);
     expect(model.apiKey).toBe('bedrock-token');

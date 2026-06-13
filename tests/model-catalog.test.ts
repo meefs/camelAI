@@ -81,13 +81,6 @@ const NEW_FRONTIER_MODELS: Array<{
     cost: '$$$$',
   },
   {
-    id: 'fable-5',
-    label: 'Fable 5',
-    providerLogo: 'claude',
-    pricingKey: 'claude-fable-5',
-    cost: '$$$$$',
-  },
-  {
     id: 'opus-4.8',
     label: 'Opus 4.8',
     providerLogo: 'claude',
@@ -125,7 +118,6 @@ describe('MODEL_CATALOG', () => {
   });
 
   it('uses Claude product logos for Anthropic-family models', () => {
-    expect(MODEL_CATALOG['fable-5'].providerLogo).toBe('claude');
     expect(MODEL_CATALOG['opus-4.8'].providerLogo).toBe('claude');
     expect(MODEL_CATALOG.sonnet.providerLogo).toBe('claude');
     expect(MODEL_CATALOG.haiku.providerLogo).toBe('claude');
@@ -161,7 +153,7 @@ describe('MODEL_CATALOG', () => {
     }
   });
 
-  it('adds GPT-5.5, Fable 5, and Opus 4.8 as distinct priced models', () => {
+  it('adds GPT-5.5 and Opus 4.8 as distinct priced models', () => {
     for (const expected of NEW_FRONTIER_MODELS) {
       expect(MODEL_CATALOG[expected.id]).toMatchObject({
         id: expected.id,
@@ -173,8 +165,10 @@ describe('MODEL_CATALOG', () => {
     }
     expect(MODEL_CATALOG).not.toHaveProperty('opus');
     expect(MODEL_CATALOG).not.toHaveProperty('opus-4.7');
+    expect(MODEL_CATALOG).not.toHaveProperty('fable-5');
     expect(LLM_MODEL_TO_PRICING_KEY).not.toHaveProperty('opus');
     expect(LLM_MODEL_TO_PRICING_KEY).not.toHaveProperty('opus-4.7');
+    expect(LLM_MODEL_TO_PRICING_KEY).not.toHaveProperty('fable-5');
   });
 
   it('hides Claude and OpenRouter-only models for OpenAI BYOK orgs', () => {
@@ -184,7 +178,6 @@ describe('MODEL_CATALOG', () => {
         use_platform_defaults: false,
         default_model: null,
         models: [
-          { id: 'fable-5', added_at: 13 },
           { id: 'sonnet', added_at: 1 },
           { id: 'opus-4.8', added_at: 11 },
           { id: 'gpt-5.5', added_at: 12 },
@@ -213,8 +206,7 @@ describe('MODEL_CATALOG', () => {
       source: 'org' as const,
       use_platform_defaults: false,
       default_model: null,
-      models: [
-        { id: 'fable-5' as const, added_at: 1 },
+        models: [
         { id: 'sonnet' as const, added_at: 1 },
         { id: 'opus-4.8' as const, added_at: 2 },
         { id: 'gpt-5.5' as const, added_at: 3 },
@@ -237,7 +229,7 @@ describe('MODEL_CATALOG', () => {
         orgProvider: 'custom',
         customApi: 'anthropic-messages',
       }).map((entry) => entry.id),
-    ).toEqual(['fable-5', 'opus-4.8', 'sonnet']);
+    ).toEqual(['opus-4.8', 'sonnet']);
     expect(
       resolveModelPickerCatalog({
         effectiveConfig,
@@ -273,7 +265,6 @@ describe('MODEL_CATALOG', () => {
     });
 
     expect(visible.map((entry) => entry.id)).toEqual([
-      'fable-5',
       'opus-4.8',
       'sonnet',
       'haiku',

@@ -136,7 +136,6 @@ export const UpdateThreadBodySchema = z.object({
     .enum([
       "haiku",
       "sonnet",
-      "fable-5",
       "opus-4.8",
       "gpt-5.5",
       "gpt-5.4",
@@ -224,7 +223,6 @@ export const OrgSchema = z.object({
 export const LlmModelSchema = z.enum([
   "haiku",
   "sonnet",
-  "fable-5",
   "opus-4.8",
   "gpt-5.5",
   "gpt-5.4",

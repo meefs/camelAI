@@ -14,6 +14,7 @@ export const THREAD_MODEL_LOCK_MESSAGE =
   "This thread is locked to its original model. Start a new thread to use a different model.";
 
 const LEGACY_LLM_MODEL_REPLACEMENTS = {
+  "fable-5": "sonnet",
   "gemini-3.1-pro-preview": "gemini-3.5-flash",
   opus: "opus-4.8",
   "opus-4.7": "opus-4.8",
@@ -38,11 +39,6 @@ export const CLAUDE_LLM_MODEL_OPTIONS: ReadonlyArray<{
   label: string;
   description: string;
 }> = [
-  {
-    value: "fable-5",
-    label: "Fable 5",
-    description: "Most capable Claude model",
-  },
   {
     value: "opus-4.8",
     label: "Opus 4.8",

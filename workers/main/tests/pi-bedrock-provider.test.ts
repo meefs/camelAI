@@ -24,7 +24,7 @@ function buildMessages(context: Context) {
   }).messages;
 }
 
-function fableBedrockModel(): Model<'bedrock-converse-stream'> {
+function retiredFableBedrockModel(): Model<'bedrock-converse-stream'> {
   return {
     id: 'global.anthropic.claude-fable-5',
     api: 'bedrock-converse-stream',
@@ -93,7 +93,7 @@ describe('Pi Bedrock provider message conversion', () => {
     });
   });
 
-  it('uses upstream Fable 5 limits and the global Bedrock inference profile', () => {
+  it('maps retired Fable 5 Bedrock aliases to Sonnet limits and profile', () => {
     const sparse = {
       id: 'claude-fable-5',
       api: 'bedrock-converse-stream',
@@ -109,16 +109,15 @@ describe('Pi Bedrock provider message conversion', () => {
 
     expect(__testing.withBedrockModelMetadata(sparse)).toMatchObject({
       id: 'claude-fable-5',
-      name: 'Claude Fable 5 (Global)',
+      name: 'Claude Sonnet 4.6 (Global)',
       reasoning: true,
-      thinkingLevelMap: { xhigh: 'xhigh' },
       contextWindow: 1_000_000,
-      maxTokens: 128_000,
-      cost: { input: 10, output: 50, cacheRead: 1, cacheWrite: 12.5 },
+      maxTokens: 64_000,
+      cost: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 },
     });
     expect(__testing.resolveBedrockModelFallback('anthropic/claude-fable-5')).toMatchObject({
-      id: 'global.anthropic.claude-fable-5',
-      name: 'Claude Fable 5 (Global)',
+      id: 'global.anthropic.claude-sonnet-4-6',
+      name: 'Claude Sonnet 4.6 (Global)',
       api: 'bedrock-converse-stream',
       provider: 'amazon-bedrock',
     });
@@ -126,9 +125,9 @@ describe('Pi Bedrock provider message conversion', () => {
       .not.toMatch(/-v1:0$/);
   });
 
-  it('enables prompt caching and adaptive thinking for Fable 5 Bedrock payloads', () => {
+  it('keeps prompt caching but does not force adaptive thinking for retired Fable 5 Bedrock payloads', () => {
     const payload = __testing.buildBedrockInvokeBody(
-      fableBedrockModel(),
+      retiredFableBedrockModel(),
       {
         systemPrompt: 'You are concise.',
         messages: [{ role: 'user', content: 'hello', timestamp: 1 }],
@@ -155,13 +154,17 @@ describe('Pi Bedrock provider message conversion', () => {
         ],
       },
     ]);
-    expect(payload.thinking).toEqual({ type: 'adaptive', display: 'summarized' });
-    expect(payload.output_config).toEqual({ effort: 'xhigh' });
+    expect(payload.thinking).toEqual({
+      type: 'enabled',
+      budget_tokens: 128,
+      display: 'summarized',
+    });
+    expect(payload.output_config).toBeUndefined();
   });
 
-  it('keeps Fable 5 Bedrock payloads on adaptive thinking without explicit reasoning', () => {
+  it('disables thinking for retired Fable 5 Bedrock payloads without explicit reasoning', () => {
     const payload = __testing.buildBedrockInvokeBody(
-      fableBedrockModel(),
+      retiredFableBedrockModel(),
       {
         messages: [{ role: 'user', content: 'hello', timestamp: 1 }],
       },
@@ -171,8 +174,8 @@ describe('Pi Bedrock provider message conversion', () => {
       },
     );
 
-    expect(payload.thinking).toEqual({ type: 'adaptive', display: 'summarized' });
-    expect(payload.output_config).toEqual({ effort: 'medium' });
+    expect(payload.thinking).toEqual({ type: 'disabled' });
+    expect(payload.output_config).toBeUndefined();
   });
 
   it('synthesizes an immediate tool_result user message for missing Pi tool results', () => {
@@ -402,13 +405,6 @@ describe('Standalone Bedrock provider model metadata', () => {
     expect(payload.data).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          id: 'claude-fable-5',
-          bedrockModelId: 'global.anthropic.claude-fable-5',
-          contextWindow: 1_000_000,
-          maxTokens: 128_000,
-          thinkingLevelMap: { xhigh: 'xhigh' },
-        }),
-        expect.objectContaining({
           id: 'claude-sonnet-4-6',
           contextWindow: 1_000_000,
           context_window: 1_000_000,
@@ -473,7 +469,7 @@ describe('Standalone Bedrock provider model metadata', () => {
     }
   });
 
-  it('routes Fable 5 worker requests through the global Bedrock inference profile', async () => {
+  it('routes retired Fable 5 worker requests through the Sonnet Bedrock profile', async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ ok: true }), {
         status: 200,
@@ -510,10 +506,9 @@ describe('Standalone Bedrock provider model metadata', () => {
       for (const call of fetchMock.mock.calls) {
         const upstreamUrl = decodeURIComponent(String(call[0]));
         expect(upstreamUrl).toContain(
-          '/model/global.anthropic.claude-fable-5/invoke',
+          '/model/global.anthropic.claude-sonnet-4-6/invoke',
         );
-        expect(upstreamUrl).not.toContain('us.anthropic.claude-fable-5');
-        expect(upstreamUrl).not.toContain('claude-fable-5-v1:0');
+        expect(upstreamUrl).not.toContain('claude-fable-5');
       }
     } finally {
       vi.unstubAllGlobals();
