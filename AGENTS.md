@@ -177,6 +177,8 @@ live in separate files, and the catalog tests fail if any of them drift apart.
 - Password auth, OAuth account creation, email verification, onboarding, bans, and blocked signup policies all have tests in `workers/main/tests/`; update or add focused tests when touching these flows.
 - Superuser UI routes live under `/qaml-backdoor`.
 - Bearer-auth admin APIs live under `/api/admin/*`; implementation is in `workers/main/src/routes/admin/` and related route modules in `src/routes/api/`.
+- Admin MCP is served at `/api/admin/mcp` (`https://staging.camelai.dev/api/admin/mcp` in staging) and uses OAuth scope `admin:mcp`. Staging is also behind Cloudflare Access; pass `CF-Access-Token: $(cloudflared access token -app=https://staging.camelai.dev)` when using `npx mcp-remote`. If `mcp-remote` opens an authorize URL with `scope=openid+email+profile`, the flow will fail with `invalid_scope`; force `admin:mcp` with static OAuth client metadata or pre-registered static client info.
+- A reliable staging smoke path for admin MCP is: register or provide an OAuth client for the chosen localhost callback with `scope: "admin:mcp"`, then run `npx -y mcp-remote https://staging.camelai.dev/api/admin/mcp <callback-port> --header "CF-Access-Token: $ACCESS_TOKEN" --resource https://staging.camelai.dev/api/admin/mcp --static-oauth-client-info @client-info.json --static-oauth-client-metadata '{"scope":"admin:mcp"}'`. The browser session must be a camelAI superuser, otherwise authorization fails with `Admin access required`.
 - Admin and moderation flows often involve durable tombstones in KV plus destructive cleanup. Avoid changing ordering without tests.
 
 ## Integrations And Ingress
