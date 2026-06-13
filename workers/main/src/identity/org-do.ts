@@ -156,6 +156,12 @@ export interface OrgAuthContextBootstrap {
   experimentalSettings: OrganizationExperimentalSettings;
 }
 
+export interface OrgWorkspaceSummaryCounts {
+  workspaceId: string;
+  memberCount: number;
+  publishedApps: number;
+}
+
 export interface OrgInvitation {
   id: string;
   email: string;
@@ -4012,6 +4018,62 @@ export class OrgDO extends DurableObject<DOEnv> {
       llmProviderConfig,
       experimentalSettings,
     };
+  }
+
+  async getWorkspaceSummaryCounts(
+    workspaceIds: string[],
+  ): Promise<OrgWorkspaceSummaryCounts[]> {
+    const uniqueWorkspaceIds = Array.from(
+      new Set(workspaceIds.map((id) => id.trim()).filter(Boolean)),
+    );
+    if (uniqueWorkspaceIds.length === 0) return [];
+
+    const orgMembers = await this.getMembers();
+    const orgMemberIds = new Set(orgMembers.map((member) => member.user_id));
+    const defaultMemberCount = orgMemberIds.size;
+
+    const appRows = this.sql
+      .exec<{ workspace_id: string; count: number }>(
+        "SELECT workspace_id, COUNT(*) AS count FROM worker_scripts GROUP BY workspace_id",
+      )
+      .toArray();
+    const appCountByWorkspace = new Map(
+      appRows.map((row) => [row.workspace_id, row.count]),
+    );
+
+    const restrictedRows = await Promise.all(
+      uniqueWorkspaceIds.map(async (workspaceId) => {
+        try {
+          const workspaceStub = this.env.WORKSPACE.get(
+            this.env.WORKSPACE.idFromName(workspaceId),
+          ) as unknown as WorkspaceDO;
+          const restrictedMembers = await workspaceStub.listRestrictedMembers();
+          const restrictedOrgMemberCount = restrictedMembers.filter(
+            (member) =>
+              member.access_level === "none" && orgMemberIds.has(member.user_id),
+          ).length;
+          return { workspaceId, restrictedOrgMemberCount };
+        } catch (error) {
+          console.warn("[OrgDO] failed to load workspace restrictions for summary counts", {
+            workspaceId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+          return { workspaceId, restrictedOrgMemberCount: 0 };
+        }
+      }),
+    );
+    const restrictedCountByWorkspace = new Map(
+      restrictedRows.map((row) => [row.workspaceId, row.restrictedOrgMemberCount]),
+    );
+
+    return uniqueWorkspaceIds.map((workspaceId) => ({
+      workspaceId,
+      memberCount: Math.max(
+        0,
+        defaultMemberCount - (restrictedCountByWorkspace.get(workspaceId) ?? 0),
+      ),
+      publishedApps: appCountByWorkspace.get(workspaceId) ?? 0,
+    }));
   }
 
   async getWorkspaces(
