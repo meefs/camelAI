@@ -217,7 +217,7 @@ describe('ChatThreadDO Codex turn handling', () => {
     expect(fake.piCurrentUsageProvider).toBe('openrouter');
   });
 
-  it('sends initial user messages after connecting the runner', async () => {
+  it('sends initial user messages after preparing the Pi session', async () => {
     const sentCommands: any[] = [];
     const fake = Object.create(ChatThreadDO.prototype) as any;
 
@@ -241,7 +241,7 @@ describe('ChatThreadDO Codex turn handling', () => {
     });
     fake.broadcastRunnerClients = vi.fn();
     fake.emitChatError = vi.fn();
-    fake.ensureRunnerConnected = vi.fn(async () => undefined);
+    fake.ensurePiSessionReady = vi.fn(async () => undefined);
     fake.applyMentionsForTurn = vi.fn(async (content: string) => content);
     fake.updateThreadMetadataForUserMessage = vi.fn(async () => {});
     fake.warmWorkspaceContainerForTurn = vi.fn(async () => undefined);
@@ -263,7 +263,7 @@ describe('ChatThreadDO Codex turn handling', () => {
     });
 
     expect(result).toEqual({ status: 'accepted' });
-    expect(fake.ensureRunnerConnected).toHaveBeenCalledTimes(1);
+    expect(fake.ensurePiSessionReady).toHaveBeenCalledTimes(1);
     expect(fake.setChatIsStreaming).toHaveBeenCalledWith(true);
     expect(fake.warmWorkspaceContainerForTurn).not.toHaveBeenCalled();
     expect(sentCommands).toHaveLength(1);
@@ -444,7 +444,7 @@ describe('ChatThreadDO Codex turn handling', () => {
     });
     fake.publishRunningUserMessageActivity = vi.fn();
     fake.broadcastRunnerClients = vi.fn();
-    fake.ensureRunnerConnected = vi.fn(async () => undefined);
+    fake.ensurePiSessionReady = vi.fn(async () => undefined);
     fake.applyMentionsForTurn = vi.fn(async (content: string) => content);
     fake.updateThreadMetadataForUserMessage = vi.fn(async () => {});
     fake.warmWorkspaceContainerForTurn = vi.fn(async () => undefined);
@@ -460,7 +460,7 @@ describe('ChatThreadDO Codex turn handling', () => {
     });
 
     expect(result).toEqual({ status: 'accepted' });
-    expect(fake.ensureRunnerConnected).toHaveBeenCalledTimes(1);
+    expect(fake.ensurePiSessionReady).toHaveBeenCalledTimes(1);
     expect(fake.setChatIsStreaming).toHaveBeenCalledWith(true);
     expect(fake.publishRunningUserMessageActivity).toHaveBeenCalledWith(
       'please also add tests',
@@ -860,7 +860,7 @@ describe('ChatThreadDO Codex turn handling', () => {
       APP_KV: { get: vi.fn().mockResolvedValue(null) },
     };
     fake.recordChatThreadObservabilityEvent = vi.fn();
-    fake.ensureRunnerConnected = vi.fn(async () => {
+    fake.ensurePiSessionReady = vi.fn(async () => {
       throw error;
     });
 
@@ -879,7 +879,7 @@ describe('ChatThreadDO Codex turn handling', () => {
     expect(fake.recordChatThreadObservabilityEvent).toHaveBeenCalledWith(
       'runner_user_message_enqueue',
       expect.objectContaining({
-        operation: 'ensure_runner_connected',
+        operation: 'ensure_pi_session_ready',
         status: 'exception',
         severity: 'error',
         sampleKey: 'client-msg-3',
@@ -1201,7 +1201,6 @@ describe('ChatThreadDO Codex turn handling', () => {
     fake.ctx = {
       storage: { kv: { put: vi.fn() } },
     };
-    fake.runnerConnectPromise = null;
     fake.runnerTransitionChain = Promise.resolve();
     fake.codexSessionId = null;
     fake.lastRunnerSeq = 0;
@@ -1209,7 +1208,7 @@ describe('ChatThreadDO Codex turn handling', () => {
     fake.getLegacyClaudeSessionId = vi.fn(() => null);
     fake.ensurePiSession = vi.fn(async () => undefined);
 
-    await ChatThreadDO.prototype['ensureRunnerConnected'].call(fake);
+    await ChatThreadDO.prototype['ensurePiSessionReady'].call(fake);
 
     expect(fake.ensurePiSession).toHaveBeenCalledWith(
       expect.objectContaining({ threadId: 'thread1' }),
@@ -1246,7 +1245,6 @@ describe('ChatThreadDO Codex turn handling', () => {
     fake.ctx = {
       storage: { kv: { put: vi.fn() } },
     };
-    fake.runnerConnectPromise = null;
     fake.runnerTransitionChain = Promise.resolve();
     fake.codexSessionId = null;
     fake.lastRunnerSeq = 0;
@@ -1254,7 +1252,7 @@ describe('ChatThreadDO Codex turn handling', () => {
     fake.getLegacyClaudeSessionId = vi.fn(() => null);
     fake.ensurePiSession = vi.fn(async () => undefined);
 
-    await ChatThreadDO.prototype['ensureRunnerConnected'].call(fake);
+    await ChatThreadDO.prototype['ensurePiSessionReady'].call(fake);
 
     expect(fake.ensurePiSession).toHaveBeenCalledWith(
       expect.objectContaining({ threadId: 'thread1' }),

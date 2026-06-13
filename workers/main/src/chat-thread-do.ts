@@ -3337,7 +3337,6 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     coalescedCount: number;
   } | null = null;
   private streamingActivityFlushTimer: ReturnType<typeof setTimeout> | null = null;
-  private runnerConnectPromise: Promise<void> | null = null;
   private lastRunnerSeq: number = 0;
   private runnerTransitionChain: Promise<void> = Promise.resolve();
   private piSessionPromise: Promise<PiCoreAgent> | null = null;
@@ -3388,7 +3387,6 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       workspaceId: context?.workspaceId || "",
       orgId: context?.orgId || "",
       chatSockets: this.getChatSockets().length,
-      hasRunnerConnectPromise: Boolean(this.runnerConnectPromise),
       ...details,
     };
     try {
@@ -6326,7 +6324,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     this.setActiveTurnUserId(pendingPiTurn.active_user_id);
     this.setChatIsStreaming(true);
 
-    await this.ensureRunnerConnected();
+    await this.ensurePiSessionReady();
     if (!this.piSession) {
       throw new Error("Pi session was not available for turn recovery");
     }
@@ -7570,7 +7568,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       return;
     }
 
-    await this.ensureRunnerConnected();
+    await this.ensurePiSessionReady();
     this.sendRunnerCommand({ ...data, threadId: this.chatContext?.threadId });
   }
 
@@ -7615,7 +7613,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       this.ctx.storage.kv.put(CHAT_RUNNER_LAST_SEQ_KEY, this.lastRunnerSeq);
     }
 
-    await this.ensureRunnerConnected();
+    await this.ensurePiSessionReady();
 
     this.sendDirect(ws, {
       type: "session",
@@ -7941,16 +7939,16 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
 
     const runnerConnectStartedAt = Date.now();
     try {
-      await this.ensureRunnerConnected();
+      await this.ensurePiSessionReady();
       this.recordChatThreadObservabilityEvent("runner_user_message_enqueue_stage", {
-        operation: "ensure_runner_connected",
+        operation: "ensure_pi_session_ready",
         durationMs: Date.now() - runnerConnectStartedAt,
         size: rawContent.length,
         sampleKey,
       });
     } catch (error) {
       this.recordChatThreadObservabilityEvent("runner_user_message_enqueue", {
-        operation: "ensure_runner_connected",
+        operation: "ensure_pi_session_ready",
         status: "exception",
         severity: "error",
         durationMs: Date.now() - startedAt,
@@ -9131,36 +9129,19 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     }
   }
 
-  private async ensureRunnerConnected(): Promise<void> {
-    await this.withRunnerTransitionLock("ensure_runner_connected", async () => {
-      await this.ensureRunnerConnectedUnlocked();
-    });
-  }
+  private async ensurePiSessionReady(): Promise<void> {
+    await this.withRunnerTransitionLock("ensure_pi_session_ready", async () => {
+      if (this.piSession) {
+        this.trace("ensure_pi_session_ready_already_connected");
+        return;
+      }
 
-  private async ensureRunnerConnectedUnlocked(): Promise<void> {
-    if (this.piSession) {
-      this.trace("ensure_runner_connected_pi_already_connected");
-      return;
-    }
-    if (this.runnerConnectPromise) {
-      console.log(
-        `[ChatThreadDO] ensureRunnerConnected: waiting on existing connect`,
-      );
-      this.trace("ensure_runner_connected_wait_existing");
-      await this.runnerConnectPromise;
-      return;
-    }
-
-    this.runnerConnectPromise = (async () => {
       const baseContext = this.chatContext;
       if (!baseContext) {
         throw new Error("Missing chat context");
       }
 
-      console.log(
-        `[ChatThreadDO] ensureRunnerConnected: connecting for thread=${baseContext.threadId}`,
-      );
-      this.trace("ensure_runner_connected_start", {
+      this.trace("ensure_pi_session_ready_start", {
         contextThreadId: baseContext.threadId,
         contextWorkspaceId: baseContext.workspaceId,
         contextOrgId: baseContext.orgId,
@@ -9196,31 +9177,15 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
               customApi,
               customModelId,
             });
-      const envVars = {
+      await this.ensurePiSession(context, {
         CHIRIDION_MODEL: threadModel,
         CHIRIDION_CLAUDE_MODEL: threadModel,
         CHIRIDION_CODEX_MODEL: threadModel,
-      };
-      this.trace("ensure_runner_env_built", {
-        envVarCount: Object.keys(envVars).length,
       });
-
-      await this.ensurePiSession(context, envVars);
-      this.trace("ensure_runner_pi_connected");
-
-      console.log(
-        `[ChatThreadDO] ensureRunnerConnected: connected for thread=${context.threadId}`,
-      );
-      this.trace("ensure_runner_connected_complete", {
+      this.trace("ensure_pi_session_ready_complete", {
         lastSeq: this.lastRunnerSeq,
       });
-    })();
-
-    try {
-      await this.runnerConnectPromise;
-    } finally {
-      this.runnerConnectPromise = null;
-    }
+    });
   }
 
   private async ensurePiSession(
