@@ -123,12 +123,15 @@ export function initClientErrorReporting(): void {
 export function scheduleClientErrorReload(input: {
   error: unknown;
   statusCode?: number;
+  recoverableOnly?: boolean;
 }): boolean {
   if (typeof window === 'undefined') return false;
   if (input.statusCode && input.statusCode < 500) return false;
 
   const details = errorDetails(input.error);
-  if (!isAutoReloadRecoverable(details)) return false;
+  if (input.recoverableOnly !== false && !isAutoReloadRecoverable(details)) {
+    return false;
+  }
 
   const key = [
     'camelai:auto-reload',

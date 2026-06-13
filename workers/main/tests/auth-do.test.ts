@@ -858,6 +858,45 @@ describe('Auth flow (full-stack with DOs)', () => {
       const stored = await orgStub.getThread(thread.id);
       expect(stored?.model).toBe('gpt-5.4');
     });
+
+    it('preserves the custom provider model marker when creating a thread', async () => {
+      const email = testEmail();
+      const { userId } = await createUser(testEnv, email, 'password123', 'Thread Owner');
+      const { org, defaultWorkspaceId } = await createOrg(testEnv, 'Thread Org', userId);
+      const orgStub = testEnv.ORG.get(testEnv.ORG.idFromName(org.id));
+
+      const thread = await orgStub.createThread(
+        defaultWorkspaceId,
+        'Custom model thread',
+        userId,
+        undefined,
+        'custom',
+      );
+
+      expect(thread.model).toBe('custom');
+      expect(thread.model_history).toBe(JSON.stringify(['custom']));
+
+      const stored = await orgStub.getThread(thread.id);
+      expect(stored?.model).toBe('custom');
+      expect(stored?.model_history).toBe(JSON.stringify(['custom']));
+    });
+
+    it('preserves the custom provider model marker when updating a thread model', async () => {
+      const email = testEmail();
+      const { userId } = await createUser(testEnv, email, 'password123', 'Thread Owner');
+      const { org, defaultWorkspaceId } = await createOrg(testEnv, 'Thread Org', userId);
+      const orgStub = testEnv.ORG.get(testEnv.ORG.idFromName(org.id));
+
+      const thread = await orgStub.createThread(defaultWorkspaceId, 'Model thread', userId);
+      const updated = await orgStub.updateThreadModel(thread.id, 'custom', userId);
+
+      expect(updated?.model).toBe('custom');
+      expect(updated?.model_history).toBe(JSON.stringify(['sonnet', 'custom']));
+
+      const stored = await orgStub.getThread(thread.id);
+      expect(stored?.model).toBe('custom');
+      expect(stored?.model_history).toBe(JSON.stringify(['sonnet', 'custom']));
+    });
   });
 
   describe('BYOK refresh fan-out', () => {
