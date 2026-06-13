@@ -362,21 +362,19 @@ export async function loader({ request, context }: Route.LoaderArgs) {
       ? authEnv.ORG.get(authEnv.ORG.idFromName(authContext.currentOrg.id))
       : null;
   const pickerAndOrgPromise = orgStub && workspaceId
-    ? Promise.all([
-        chatDO.getWorkspaceModelPickerState(context, workspaceId).catch(
-          (error) => {
-            console.error("Failed to load model picker state:", error);
-            return null;
-          },
-        ),
-        orgStub.getInfo().catch(() => null),
-        orgStub.getLlmProviderConfig().catch(() => null),
-        orgStub
-          .getExperimentalSettings()
-          .catch(() => DEFAULT_ORG_EXPERIMENTAL_SETTINGS),
-      ])
+      ? Promise.all([
+          chatDO.getWorkspaceModelPickerState(context, workspaceId).catch(
+            (error) => {
+              console.error("Failed to load model picker state:", error);
+              return null;
+            },
+          ),
+          orgStub.getLlmProviderConfig().catch(() => null),
+          orgStub
+            .getExperimentalSettings()
+            .catch(() => DEFAULT_ORG_EXPERIMENTAL_SETTINGS),
+        ])
     : Promise.resolve([
-        null,
         null,
         null,
         DEFAULT_ORG_EXPERIMENTAL_SETTINGS,
@@ -384,7 +382,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
   const [
     activeChatGroup,
     moveChatGroups,
-    [pickerState, orgInfo, llmProviderConfig, fallbackExperimentalSettings],
+    [pickerState, llmProviderConfig, fallbackExperimentalSettings],
   ] = await Promise.all([
     activeChatGroupPromise,
     moveChatGroupsPromise,
@@ -417,8 +415,8 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     },
   ).map((option) => option.value);
   const hasModelFallback = Boolean(orgStub && workspaceId);
-  const billingOverview = !isSelfhostRuntime(env) && orgInfo
-    ? await getOrgBillingOverview(env, orgInfo).catch((error) => {
+  const billingOverview = !isSelfhostRuntime(env) && authContext.currentOrg
+    ? await getOrgBillingOverview(env, authContext.currentOrg).catch((error) => {
         console.warn("Failed to load billing overview for chat:", error);
         return null;
       })
