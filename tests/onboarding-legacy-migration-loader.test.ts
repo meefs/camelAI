@@ -48,10 +48,13 @@ describe("onboarding legacy migration loader", () => {
           email: "legacy@example.com",
         },
         onboarding: { completed_at: Date.now() },
+        emailVerification: {
+          required: false,
+          verified: true,
+        },
       }),
-      getEmailVerificationStatus: vi.fn().mockResolvedValue({
-        required: false,
-        verified: true,
+      getEmailVerificationStatus: vi.fn(async () => {
+        throw new Error("unexpected email verification status read");
       }),
     };
     const authEnv = {
@@ -107,6 +110,7 @@ describe("onboarding legacy migration loader", () => {
       );
     });
     expect(userStub.getAuthBootstrap).toHaveBeenCalled();
+    expect(userStub.getEmailVerificationStatus).not.toHaveBeenCalled();
     expect(orgStub.getLlmProviderConfig).toHaveBeenCalled();
   });
 });
