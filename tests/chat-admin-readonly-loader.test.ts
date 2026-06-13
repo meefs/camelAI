@@ -228,7 +228,9 @@ describe('chat loader workspace mismatch handling', () => {
         && response.headers.get('Location') === '/chat';
     });
 
-    expect(getThreadMock).toHaveBeenCalledWith({}, 'thread_123', 'ws_active');
+    expect(getThreadMock).toHaveBeenCalledWith({}, 'thread_123', 'ws_active', {
+      orgId: 'org_active',
+    });
   });
 
   it('returns chat payload when the thread belongs to the active workspace', async () => {
@@ -440,18 +442,29 @@ describe('chat loader workspace mismatch handling', () => {
   });
 
   it('keeps the saved thread model for new-thread navigations', async () => {
+    const orgGetThreadMock = vi.fn(async () => {
+      throw new Error('unexpected separate thread read');
+    });
+    const getInfoMock = vi.fn(async () => {
+      throw new Error('unexpected separate org info read');
+    });
+    const getThreadWithOrgSlugMock = vi.fn(async () => ({
+      thread: {
+        id: 'thread_123',
+        workspace_id: 'ws_active',
+        title: 'Workspace Thread',
+        model: 'opus-4.8',
+        user_message_count: 0,
+      },
+      orgSlug: 'acme',
+    }));
     getAuthEnvMock.mockReturnValue({
       ORG: {
         idFromName: (id: string) => id,
         get: () => ({
-          getThread: async () => ({
-            id: 'thread_123',
-            workspace_id: 'ws_active',
-            title: 'Workspace Thread',
-            model: 'opus-4.8',
-            user_message_count: 0,
-          }),
-          getInfo: async () => ({ id: 'org_active', slug: 'acme' }),
+          getThread: orgGetThreadMock,
+          getInfo: getInfoMock,
+          getThreadWithOrgSlug: getThreadWithOrgSlugMock,
         }),
       },
     });
@@ -477,6 +490,9 @@ describe('chat loader workspace mismatch handling', () => {
     expect(requireSessionWorkspaceAccessMock).toHaveBeenCalledTimes(1);
     expect(requireAuthContextMock).not.toHaveBeenCalled();
     expect(getThreadMock).not.toHaveBeenCalled();
+    expect(orgGetThreadMock).not.toHaveBeenCalled();
+    expect(getThreadWithOrgSlugMock).toHaveBeenCalledWith('thread_123');
+    expect(getInfoMock).not.toHaveBeenCalled();
     expect(ensureGroupForThreadMock).not.toHaveBeenCalled();
     expect(result.activeGroupId).toBe('group_123');
     expect(result.activeChatGroup).toMatchObject({

@@ -75,6 +75,7 @@ import {
   recordErrorEvent,
   recordObservabilityEvent,
 } from "../../workers/main/src/observability";
+import type { OrgThread } from "../../workers/main/src/auth";
 
 export function meta({ data }: Route.MetaArgs) {
   const title = data?.threadTitle || "Chat";
@@ -535,6 +536,54 @@ async function findAccessibleGroupWorkspace(
   );
 }
 
+function isMissingRpcMethodError(error: unknown, methodName: string): boolean {
+  const message =
+    error instanceof Error
+      ? error.message.toLowerCase()
+      : String(error).toLowerCase();
+  const normalizedMethod = methodName.toLowerCase();
+  return (
+    message.includes(normalizedMethod) &&
+    (message.includes("does not implement") ||
+      message.includes("no such rpc method") ||
+      message.includes("no such method") ||
+      message.includes("not a function"))
+  );
+}
+
+type OrgThreadSlugStub = {
+  getThread(id: string): OrgThread | null | Promise<OrgThread | null>;
+  getInfo(): Promise<{ slug?: string | null } | null>;
+  getThreadWithOrgSlug?(
+    id: string,
+  ): Promise<{ thread: OrgThread | null; orgSlug: string | null }>;
+};
+
+async function loadThreadWithOrgSlug(
+  orgStub: OrgThreadSlugStub,
+  threadId: string,
+): Promise<{ thread: OrgThread | null; orgSlug: string | undefined }> {
+  try {
+    if (typeof orgStub.getThreadWithOrgSlug === "function") {
+      const result = await orgStub.getThreadWithOrgSlug(threadId);
+      return {
+        thread: result.thread,
+        orgSlug: result.orgSlug ?? undefined,
+      };
+    }
+  } catch (error) {
+    if (!isMissingRpcMethodError(error, "getThreadWithOrgSlug")) {
+      throw error;
+    }
+  }
+
+  const [thread, orgInfo] = await Promise.all([
+    orgStub.getThread(threadId),
+    orgStub.getInfo().catch(() => null),
+  ]);
+  return { thread, orgSlug: orgInfo?.slug ?? undefined };
+}
+
 export async function loader({ request, context, params }: Route.LoaderArgs) {
   const loaderStartedAt = Date.now();
   const url = new URL(request.url);
@@ -626,10 +675,10 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
     const groupId = url.searchParams.get("group")?.trim() || null;
     const orgStub = authEnv.ORG.get(authEnv.ORG.idFromName(orgId));
     const threadLoadStartedAt = Date.now();
-    const [thread, orgInfo] = await Promise.all([
-      orgStub.getThread(params.id),
-      orgStub.getInfo().catch(() => null),
-    ]);
+    const { thread, orgSlug } = await loadThreadWithOrgSlug(
+      orgStub as unknown as OrgThreadSlugStub,
+      params.id,
+    );
     recordChatThreadRouteLoaderStage(
       env,
       traceContext,
@@ -773,7 +822,7 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
       initialChatError: getDevChatInitialError(url.searchParams),
       isNewThread: true,
       hostname,
-      orgSlug: orgInfo?.slug,
+      orgSlug,
       connections: [] as Integration[],
       projects: [] as MentionableProject[],
       isOrgAdmin: false,
