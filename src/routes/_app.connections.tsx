@@ -2,7 +2,7 @@ import { Suspense } from 'react';
 import { Await, useLoaderData } from 'react-router';
 import type { Route } from './+types/_app.connections';
 import { requireAuthContext, getAuthEnv, requireWorkspaceAccess } from '@/lib/auth.server';
-import { getUsersByIds, isOrgAdmin } from '@/lib/auth-do';
+import { isOrgAdmin } from '@/lib/auth-do';
 import { getEnv, type CloudflareEnv } from '@/lib/cloudflare.server';
 import {
   INTEGRATION_REGISTRY,
@@ -34,9 +34,13 @@ import {
   getWorkspaceEmailDomain,
 } from '@/lib/workspace-email';
 import { getBillingPlanLimits } from '@/lib/billing-plans';
-import type { Avatar, Integration, User } from '@/types';
+import type { Integration } from '@/types';
 import type { ConnectionListItem } from '@/lib/connections-shared';
 import { projectsToMentionables, type MentionableProject } from '@/lib/mentions';
+import {
+  loadUserProfileSummaries,
+  type UserProfileSummary,
+} from '@/lib/user-profiles.server';
 
 const CONNECTION_MANAGEMENT_INTENTS = new Set([
   'createIntegration',
@@ -63,11 +67,6 @@ async function loadWorkspaceMentionProjects(
   return projectsToMentionables(projects);
 }
 
-interface CreatorProfile {
-  name: string | null;
-  avatar: Avatar | null;
-}
-
 function parseIntegrationConfig(rawConfig: string): Record<string, unknown> {
   try {
     const parsed = JSON.parse(rawConfig) as unknown;
@@ -79,32 +78,18 @@ function parseIntegrationConfig(rawConfig: string): Record<string, unknown> {
   }
 }
 
-async function getCreatorProfiles(
-  env: CloudflareEnv,
-  userIds: string[],
-): Promise<Map<string, CreatorProfile>> {
-  const uniqueIds = Array.from(new Set(userIds.filter(Boolean)));
-  if (uniqueIds.length === 0) return new Map();
-
-  const users = await getUsersByIds(getAuthEnv(env), uniqueIds);
-  return new Map(
-    users.map((user: User) => [
-      user.id,
-      {
-        name: user.name || user.email || null,
-        avatar: user.avatar ?? null,
-      },
-    ]),
-  );
-}
-
 async function getOptionalCreatorProfiles(
-  env: CloudflareEnv,
-  userIds: string[],
+  authEnv: ReturnType<typeof getAuthEnv>,
+  userIds: Iterable<string | null | undefined>,
+  request: Request,
+  preloadedUsers: Iterable<UserProfileSummary | null | undefined>,
   label: string,
-): Promise<Map<string, CreatorProfile>> {
+): Promise<Map<string, UserProfileSummary>> {
   try {
-    return await getCreatorProfiles(env, userIds);
+    return await loadUserProfileSummaries(authEnv, userIds, {
+      request,
+      preloadedUsers,
+    });
   } catch (error) {
     console.error(`Failed to load ${label} creator profiles:`, error);
     return new Map();
@@ -145,7 +130,7 @@ async function slackChannelMetadata(
 
 async function recordToIntegration(
   record: WorkspaceIntegrationRecord,
-  creators: Map<string, CreatorProfile>,
+  creators: Map<string, UserProfileSummary>,
   env: CloudflareEnv,
 ): Promise<ConnectionListItem> {
   const config = parseIntegrationConfig(record.config);
@@ -167,7 +152,7 @@ async function recordToIntegration(
     auth_checked_at: record.auth_checked_at,
     reauth_required_at: record.reauth_required_at,
     token_expires_at: record.token_expires_at,
-    created_by_name: creator?.name ?? null,
+    created_by_name: creator ? creator.name || creator.email : null,
     created_by_avatar: creator?.avatar ?? null,
     channelMetadata: await slackChannelMetadata(record, config, env),
   };
@@ -464,6 +449,7 @@ export async function action({ request, context }: Route.ActionArgs) {
 export async function loader({ request, context }: Route.LoaderArgs) {
   const authContext = await requireAuthContext(request, context);
   const env = getEnv(context);
+  const authEnv = getAuthEnv(env);
   const workspaceId = authContext.currentWorkspace?.id;
   const workspace = authContext.currentWorkspace;
 
@@ -478,10 +464,10 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     ? env.WORKSPACE.get(env.WORKSPACE.idFromName(workspaceId))
         .getIntegrations()
         .then(async (records) => {
-          const creators = await getOptionalCreatorProfiles(env, [
+          const creators = await getOptionalCreatorProfiles(authEnv, [
             ...records.map((record) => record.created_by),
             workspace?.created_by ?? '',
-          ], 'workspace connection');
+          ], request, [authContext.user], 'workspace connection');
           return Promise.all(
             records.map((record) => recordToIntegration(record, creators, env)),
           );
@@ -512,8 +498,10 @@ export async function loader({ request, context }: Route.LoaderArgs) {
   ).emailInbox;
   const workspaceCreator = workspace?.created_by
     ? (await getOptionalCreatorProfiles(
-        env,
+        authEnv,
         [workspace.created_by],
+        request,
+        [authContext.user],
         'workspace email',
       )).get(workspace.created_by)
     : null;
