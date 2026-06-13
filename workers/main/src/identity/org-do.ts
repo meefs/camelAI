@@ -162,6 +162,13 @@ export interface OrgWorkspaceSummaryCounts {
   publishedApps: number;
 }
 
+export interface OrgSettingsSummary {
+  billing_plan: Organization["billing_plan"];
+  billing_status: BillingStatus;
+  member_count: number;
+  workspace_count: number;
+}
+
 export interface OrgInvitation {
   id: string;
   email: string;
@@ -4017,6 +4024,30 @@ export class OrgDO extends DurableObject<DOEnv> {
       workspaces,
       llmProviderConfig,
       experimentalSettings,
+    };
+  }
+
+  async getSettingsSummary(): Promise<OrgSettingsSummary | null> {
+    const info = await this.getInfo();
+    if (!info) return null;
+
+    this.ensureOwnerExists("system");
+    const memberCount =
+      this.sql
+        .exec<{ count: number }>("SELECT COUNT(*) AS count FROM members")
+        .one()?.count ?? 0;
+    const workspaceCount =
+      this.sql
+        .exec<{ count: number }>(
+          "SELECT COUNT(*) AS count FROM workspaces WHERE archived = 0",
+        )
+        .one()?.count ?? 0;
+
+    return {
+      billing_plan: info.billing_plan,
+      billing_status: info.billing_status,
+      member_count: Number(memberCount),
+      workspace_count: Number(workspaceCount),
     };
   }
 
