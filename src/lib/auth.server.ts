@@ -38,6 +38,11 @@ const LOCAL_AUTH_NAME = "Local Dev";
 // Request-scoped cache for auth context to avoid duplicate DO RPC calls
 // when multiple loaders call requireAuthContext() in the same request
 const authContextCache = new WeakMap<Request, Promise<AuthContext | null>>();
+const checkedSessionCache = new WeakMap<Request, Promise<SessionContext | null>>();
+const uncheckedSessionCache = new WeakMap<
+  Request,
+  Promise<SessionContext | null>
+>();
 
 // Re-export AuthEnv and getAuthEnv for routes that need them
 export { getAuthEnv, type AuthEnv } from "./auth-helpers";
@@ -112,6 +117,38 @@ export async function getSession(
   request: Request,
   context: AppLoadContext,
 ): Promise<SessionContext | null> {
+  const cached = checkedSessionCache.get(request);
+  if (cached !== undefined) return cached;
+
+  const promise = getSessionUncached(request, context, {
+    checkInvalidation: true,
+  });
+  checkedSessionCache.set(request, promise);
+  return promise;
+}
+
+function getUncheckedSession(
+  request: Request,
+  context: AppLoadContext,
+): Promise<SessionContext | null> {
+  const cached = uncheckedSessionCache.get(request);
+  if (cached !== undefined) return cached;
+
+  const checked = checkedSessionCache.get(request);
+  if (checked !== undefined) return checked;
+
+  const promise = getSessionUncached(request, context, {
+    checkInvalidation: false,
+  });
+  uncheckedSessionCache.set(request, promise);
+  return promise;
+}
+
+async function getSessionUncached(
+  request: Request,
+  context: AppLoadContext,
+  options: { checkInvalidation: boolean },
+): Promise<SessionContext | null> {
   const env = getEnv(context);
   const localBypassSession = await getLocalAuthBypassSession(request, context);
   if (localBypassSession) {
@@ -154,17 +191,19 @@ export async function getSession(
     orgId: signedSession.org_id,
   });
 
-  // Check if this session was created before a logout invalidation
-  const authEnv = getAuthEnv(env);
-  const userStub = authEnv.USER.get(
-    authEnv.USER.idFromName(signedSession.user_id),
-  );
-  const invalidatedAt = await retryTransientDurableObjectRead(
-    "UserDO.getSessionInvalidatedAt",
-    () => userStub.getSessionInvalidatedAt(),
-  );
-  if (invalidatedAt && signedSession.created_at < invalidatedAt) {
-    return null;
+  if (options.checkInvalidation) {
+    // Check if this session was created before a logout invalidation.
+    const authEnv = getAuthEnv(env);
+    const userStub = authEnv.USER.get(
+      authEnv.USER.idFromName(signedSession.user_id),
+    );
+    const invalidatedAt = await retryTransientDurableObjectRead(
+      "UserDO.getSessionInvalidatedAt",
+      () => userStub.getSessionInvalidatedAt(),
+    );
+    if (invalidatedAt && signedSession.created_at < invalidatedAt) {
+      return null;
+    }
   }
 
   // Map signed session data to SessionData format (compatible with existing code)
@@ -484,7 +523,9 @@ async function getAuthContextUncached(
   request: Request,
   context: AppLoadContext,
 ): Promise<AuthContext | null> {
-  const sessionContext = await getSession(request, context);
+  // getAuthBootstrap() below includes sessionInvalidatedAt, so this path
+  // avoids an extra UserDO.getSessionInvalidatedAt() RPC per full auth load.
+  const sessionContext = await getUncheckedSession(request, context);
   if (!sessionContext) {
     console.warn("[auth] getAuthContext returning null: no session");
     return null;

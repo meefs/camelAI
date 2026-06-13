@@ -35,14 +35,19 @@ describe('Auth context building (parallel DO calls)', () => {
 
   const testEmail = () => `test-${Date.now()}-${Math.random().toString(36).slice(2)}@example.com`;
 
-  async function createTestSession(userId: string, orgId: string, userEmail?: string) {
+  async function createTestSession(
+    userId: string,
+    orgId: string,
+    userEmail?: string,
+    createdAt = Date.now(),
+  ) {
     const workspaces = await listOrgWorkspaces(testEnv, orgId);
     const workspaceId = workspaces[0]?.id ?? null;
     const sessionData: SignedSessionData = {
       user_id: userId,
       org_id: orgId,
       workspace_id: workspaceId,
-      created_at: Date.now(),
+      created_at: createdAt,
       user_email: userEmail ?? null,
     };
     const signedToken = await createSignedSession(signingSecret, sessionData);
@@ -312,6 +317,27 @@ describe('Auth context building (parallel DO calls)', () => {
       expect(ws1[0].id).toBe(ws1Id);
       expect(ws2[0].id).toBe(ws2Id);
       expect(ws1[0].id).not.toBe(ws2[0].id);
+    });
+
+    it('rejects sessions invalidated before full auth context loads', async () => {
+      const email = testEmail();
+      const { userId } = await createUser(testEnv, email, 'password', 'Invalidated User');
+      const { org } = await createOrg(testEnv, 'Invalidated Org', userId);
+      const createdAt = Date.now() - 10_000;
+      const { signedToken } = await createTestSession(userId, org.id, email, createdAt);
+
+      const userStub = testEnv.USER.get(testEnv.USER.idFromName(userId));
+      await userStub.invalidateSessions();
+
+      const request = new Request('https://camelai.dev/', {
+        headers: {
+          host: 'camelai.dev',
+          'X-Chiridion-Session-Id': signedToken,
+        },
+      });
+      const context = { cloudflare: { env: testEnv } } as any;
+
+      await expect(getAuthContext(request, context)).resolves.toBeNull();
     });
   });
 
