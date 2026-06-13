@@ -47,6 +47,13 @@ interface ListUserWorkspacesAcrossOrgsOptions {
   >;
 }
 
+export interface OrgSettingsSummary {
+  billing_plan: Organization["billing_plan"];
+  billing_status: Organization["billing_status"];
+  member_count: number;
+  workspace_count: number;
+}
+
 type OrgWorkspaceRow = {
   id: string;
   name: string;
@@ -554,6 +561,35 @@ export async function getOrg(
   const info = await stub.getInfo();
   if (!info) return null;
   return info;
+}
+
+export async function getOrgSettingsSummary(
+  env: AuthEnv,
+  orgId: string,
+): Promise<OrgSettingsSummary | null> {
+  const stub = env.ORG.get(env.ORG.idFromName(orgId));
+  try {
+    return await (stub as unknown as {
+      getSettingsSummary(): Promise<OrgSettingsSummary | null>;
+    }).getSettingsSummary();
+  } catch (error) {
+    if (!isMissingRpcMethodError(error, "getSettingsSummary")) {
+      throw error;
+    }
+  }
+
+  const [members, workspaces, orgInfo] = await Promise.all([
+    stub.getMembers(),
+    listOrgWorkspaces(env, orgId),
+    stub.getInfo(),
+  ]);
+  if (!orgInfo) return null;
+  return {
+    billing_plan: orgInfo.billing_plan,
+    billing_status: orgInfo.billing_status,
+    member_count: members.length,
+    workspace_count: workspaces.length,
+  };
 }
 
 export async function archiveOrg(

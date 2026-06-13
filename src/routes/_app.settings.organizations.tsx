@@ -49,14 +49,10 @@ export async function loader({ request, context }: Route.LoaderArgs) {
   const env = getEnv(context);
   const authEnv = getAuthEnv(env);
 
-  // Fetch member counts, workspace counts, and billing plan for each org in parallel
+  // Fetch each org display summary without hydrating members/workspaces.
   const orgSummaries = await Promise.all(
     authContext.orgs.map(async (org) => {
-      const [members, workspaces, orgInfo] = await Promise.all([
-        authDO.getOrgMembers(authEnv, org.org_id),
-        authDO.listOrgWorkspaces(authEnv, org.org_id),
-        authDO.getOrg(authEnv, org.org_id),
-      ]);
+      const summary = await authDO.getOrgSettingsSummary(authEnv, org.org_id);
 
       return {
         org_id: org.org_id,
@@ -64,11 +60,11 @@ export async function loader({ request, context }: Route.LoaderArgs) {
         role: org.role,
         joined_at: org.joined_at,
         billing_plan: normalizeBillingPlan(
-          orgInfo?.billing_plan,
-          orgInfo?.billing_status ?? "inactive",
+          summary?.billing_plan,
+          summary?.billing_status ?? "inactive",
         ),
-        member_count: members.length,
-        workspace_count: workspaces.length,
+        member_count: summary?.member_count ?? 0,
+        workspace_count: summary?.workspace_count ?? 0,
       };
     }),
   );
