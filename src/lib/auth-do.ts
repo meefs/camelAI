@@ -30,6 +30,7 @@ import {
   type ApiTokenData,
 } from "./auth-helpers";
 import type { UserOrg } from "../../workers/main/src/auth";
+import type { LlmProviderConfigRecord } from "./llm-provider-config";
 import { getAppIndexDatabase, getAppIndexReadDatabase } from "../../workers/main/src/app-index-db";
 
 interface GetUserOrgsOptions {
@@ -52,6 +53,11 @@ export interface OrgSettingsSummary {
   billing_status: Organization["billing_status"];
   member_count: number;
   workspace_count: number;
+}
+
+export interface OrgProviderContext {
+  info: Organization | null;
+  llmProviderConfig: LlmProviderConfigRecord | null;
 }
 
 type OrgWorkspaceRow = {
@@ -590,6 +596,28 @@ export async function getOrgSettingsSummary(
     member_count: members.length,
     workspace_count: workspaces.length,
   };
+}
+
+export async function getOrgProviderContext(
+  env: AuthEnv,
+  orgId: string,
+): Promise<OrgProviderContext> {
+  const stub = env.ORG.get(env.ORG.idFromName(orgId));
+  try {
+    return await (stub as unknown as {
+      getProviderContext(): Promise<OrgProviderContext>;
+    }).getProviderContext();
+  } catch (error) {
+    if (!isMissingRpcMethodError(error, "getProviderContext")) {
+      throw error;
+    }
+  }
+
+  const [info, llmProviderConfig] = await Promise.all([
+    stub.getInfo(),
+    stub.getLlmProviderConfig(),
+  ]);
+  return { info, llmProviderConfig };
 }
 
 export async function archiveOrg(

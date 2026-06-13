@@ -3,6 +3,7 @@ import { Loader2 } from "lucide-react";
 import { Outlet, redirect, useLoaderData, useNavigate } from "react-router";
 import type { Route } from "./+types/_onboarding";
 import { getAuthEnv, requireSession } from "@/lib/auth.server";
+import { getOrgProviderContext } from "@/lib/auth-do";
 import { getEnv } from "@/lib/cloudflare.server";
 import {
   getVerifiedLegacyStripeMigrationEligibility,
@@ -90,13 +91,10 @@ export async function loader({ request, context }: Route.LoaderArgs) {
   const emailVerificationStatus = authBootstrap.emailVerification;
   const emailVerificationRequired =
     emailVerificationStatus.required && !emailVerificationStatus.verified;
-  const orgStub = authEnv.ORG.get(
-    authEnv.ORG.idFromName(sessionContext.session.org_id),
+  const { info: orgInfo, llmProviderConfig } = await getOrgProviderContext(
+    authEnv,
+    sessionContext.session.org_id,
   );
-  const [orgInfo, llmProviderConfig] = await Promise.all([
-    orgStub.getInfo(),
-    orgStub.getLlmProviderConfig(),
-  ]);
   const effectiveLlmProviderConfig = getEffectiveLlmProviderConfig(
     env,
     llmProviderConfig,

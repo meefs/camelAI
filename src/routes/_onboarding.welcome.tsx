@@ -21,6 +21,7 @@ import {
   isStripeBillingConfigured,
 } from "@/lib/billing.server";
 import { isBillingPlan } from "@/lib/billing-plans";
+import { getOrgProviderContext } from "@/lib/auth-do";
 import { getEnv } from "@/lib/cloudflare.server";
 import { OnboardingLayout } from "@/components/onboarding/onboarding-layout";
 import { LegacyMigrationDialog } from "@/components/billing/legacy-migration-dialog";
@@ -82,18 +83,19 @@ export async function loader({ request, context }: Route.LoaderArgs) {
   const authEnv = getAuthEnv(env);
   const orgId = sessionContext.session.org_id;
   const workspaceId = sessionContext.session.workspace_id;
-  const orgStub = authEnv.ORG.get(authEnv.ORG.idFromName(orgId));
   const stripeConfigured = isStripeBillingConfigured(env);
-  const [orgInfo, llmProviderConfig, creditPacks] = await Promise.all([
-    orgStub.getInfo().catch(() => null),
-    orgStub.getLlmProviderConfig().catch(() => null),
+  const [orgProviderContext, creditPacks] = await Promise.all([
+    getOrgProviderContext(authEnv, orgId).catch(() => ({
+      info: null,
+      llmProviderConfig: null,
+    })),
     stripeConfigured
       ? fetchConfiguredCreditPacks(env).catch(() => [])
       : Promise.resolve([]),
   ]);
   const effectiveLlmProviderConfig = getEffectiveLlmProviderConfig(
     env,
-    llmProviderConfig,
+    orgProviderContext.llmProviderConfig,
   );
   const byokProviderLabel = getByokProviderLabel(effectiveLlmProviderConfig?.provider);
   const formattedCreditPacks = formatTopUpCreditPacks(creditPacks);
@@ -113,9 +115,10 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     } satisfies WelcomeLoaderData;
   }
 
+  const orgStub = authEnv.ORG.get(authEnv.ORG.idFromName(orgId));
   const [orgName, memberCount, workerScripts, integrations] = await Promise.all(
     [
-      Promise.resolve(orgInfo?.name ?? "your team"),
+      Promise.resolve(orgProviderContext.info?.name ?? "your team"),
       orgStub.getMemberCount(),
       orgStub.listWorkerScripts(),
       workspaceId

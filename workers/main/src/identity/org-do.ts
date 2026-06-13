@@ -156,6 +156,11 @@ export interface OrgAuthContextBootstrap {
   experimentalSettings: OrganizationExperimentalSettings;
 }
 
+export interface OrgProviderContext {
+  info: Organization | null;
+  llmProviderConfig: LlmProviderConfigRecord | null;
+}
+
 export interface OrgWorkspaceSummaryCounts {
   workspaceId: string;
   memberCount: number;
@@ -4030,6 +4035,14 @@ export class OrgDO extends DurableObject<DOEnv> {
       llmProviderConfig,
       experimentalSettings,
     };
+  }
+
+  async getProviderContext(): Promise<OrgProviderContext> {
+    const [info, llmProviderConfig] = await Promise.all([
+      this.getInfo(),
+      this.getLlmProviderConfig(),
+    ]);
+    return { info, llmProviderConfig };
   }
 
   async getSettingsSummary(): Promise<OrgSettingsSummary | null> {
