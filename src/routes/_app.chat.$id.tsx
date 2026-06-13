@@ -888,7 +888,11 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
     orgId: authContext.currentOrg.id,
   });
   const pickerStatePromise = chatDO
-    .getWorkspaceModelPickerState(context, workspaceId)
+    .getWorkspaceModelPickerState(context, workspaceId, {
+      orgId: authContext.currentOrg.id,
+      llmProviderConfig: authContext.currentOrgLlmProviderConfig,
+      experimentalSettings: authContext.currentOrgExperimentalSettings,
+    })
     .catch((error) => {
       console.error("Failed to load model picker state:", error);
       return null;

@@ -8,6 +8,7 @@ import type {
   LlmProvider,
   LlmModel,
   OrgModelPickerConfig,
+  OrganizationExperimentalSettings,
   PreviewTarget,
   WorkspaceModelPickerConfig,
 } from "@/types";
@@ -18,6 +19,7 @@ import { OrgDO, type OrgThread } from "../../workers/main/src/auth";
 import { WorkspaceDO } from "../../workers/main/src/workspace";
 import {
   type CustomLlmProviderApi,
+  type LlmProviderConfigRecord,
   getDefaultLlmModel,
   getStoredCustomLlmProviderApi,
   getStoredCustomLlmProviderModelId,
@@ -65,6 +67,11 @@ export interface RawThreadCreator {
 
 interface KnownOrgOptions {
   orgId?: string;
+}
+
+interface ModelPickerStateOptions extends KnownOrgOptions {
+  llmProviderConfig?: LlmProviderConfigRecord | null;
+  experimentalSettings?: OrganizationExperimentalSettings;
 }
 
 export function normalizeStoredThreadModel(
@@ -186,18 +193,24 @@ function isMissingModelPickerConfigRpcError(error: unknown): boolean {
 export async function getWorkspaceModelPickerState(
   context: AppLoadContext,
   workspaceId: string,
+  options: ModelPickerStateOptions = {},
 ): Promise<WorkspaceModelPickerState | null> {
   const env = getEnv(context);
-  const wsInfo = await getWorkspaceInfo(env, workspaceId);
-  if (!wsInfo) return null;
+  let orgId = options.orgId;
+  if (!orgId) {
+    const wsInfo = await getWorkspaceInfo(env, workspaceId);
+    if (!wsInfo) return null;
+    orgId = wsInfo.org_id;
+  }
 
-  return getWorkspaceModelPickerStateForOrg(context, wsInfo.org_id, workspaceId);
+  return getWorkspaceModelPickerStateForOrg(context, orgId, workspaceId, options);
 }
 
 async function getWorkspaceModelPickerStateForOrg(
   context: AppLoadContext,
   orgId: string,
   workspaceId: string,
+  options: ModelPickerStateOptions = {},
 ): Promise<WorkspaceModelPickerState> {
   const env = getEnv(context);
   const orgStub = getOrgStub(env, orgId);
@@ -205,8 +218,12 @@ async function getWorkspaceModelPickerStateForOrg(
     env.WORKSPACE.idFromName(workspaceId),
   ) as unknown as WorkspaceDO;
   const [llmProviderConfig, experimentalSettings] = await Promise.all([
-    orgStub.getLlmProviderConfig(),
-    orgStub.getExperimentalSettings(),
+    options.llmProviderConfig !== undefined
+      ? Promise.resolve(options.llmProviderConfig)
+      : orgStub.getLlmProviderConfig(),
+    options.experimentalSettings !== undefined
+      ? Promise.resolve(options.experimentalSettings)
+      : orgStub.getExperimentalSettings(),
   ]);
   const effectiveLlmProviderConfig = getEffectiveLlmProviderConfig(
     env,
