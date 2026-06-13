@@ -4700,9 +4700,10 @@ export class OrgDO extends DurableObject<DOEnv> {
   }
 
   async getThreadWithOrgSlug(id: string): Promise<OrgThreadWithOrgSlug> {
+    const orgInfo = await this.getInfo().catch(() => null);
     return {
       thread: this.getThread(id),
-      orgSlug: (await this.getInfo())?.slug ?? null,
+      orgSlug: orgInfo?.slug ?? null,
     };
   }
 
