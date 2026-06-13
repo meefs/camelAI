@@ -31,6 +31,7 @@ import type {
   ThreadCompletionSummaryStatus,
 } from "../../../../src/types";
 import {
+  CUSTOM_LLM_MODEL,
   DEFAULT_CODEX_MODEL,
   DEFAULT_LLM_MODEL,
   DEFAULT_ORG_EXPERIMENTAL_SETTINGS,
@@ -84,6 +85,22 @@ const ORG_EXPERIMENTAL_SETTINGS_KEY = "experimental_settings";
 const ORG_MODEL_PICKER_CONFIG_KEY = "model_picker_config";
 const ORG_INDEX_PREFIX = "org_index:";
 const CUSTOM_DOMAIN_HOST_PREFIX = "custom_domain_host:";
+
+function normalizeThreadModelForStorage(
+  model: LlmModel | undefined,
+  provider?: "claude" | "codex",
+): LlmModel {
+  if (model === CUSTOM_LLM_MODEL) {
+    return CUSTOM_LLM_MODEL;
+  }
+  if (provider === "claude") {
+    return isClaudeLlmModel(model) ? model : DEFAULT_LLM_MODEL;
+  }
+  if (provider === "codex") {
+    return isCodexLlmModel(model) ? model : DEFAULT_CODEX_MODEL;
+  }
+  return normalizeLlmModel(model);
+}
 
 function parseThreadChannelKinds(
   value: string | null | undefined,
@@ -4524,16 +4541,7 @@ export class OrgDO extends DurableObject<DOEnv> {
     const msg = normalizedUserMessage;
     const lastUserMessage = normalizedUserMessage;
     const lastUserMessageAt = lastUserMessage ? now : null;
-    const normalizedModel =
-      provider === "claude"
-        ? isClaudeLlmModel(model)
-          ? model
-          : DEFAULT_LLM_MODEL
-        : provider === "codex"
-          ? isCodexLlmModel(model)
-            ? model
-            : DEFAULT_CODEX_MODEL
-          : normalizeLlmModel(model);
+    const normalizedModel = normalizeThreadModelForStorage(model, provider);
     const source = options.source?.trim() || "web";
     const channelKind = options.channelKind?.trim() || null;
     const normalizedChannelKind = normalizeChannelIndicatorKind(channelKind);
@@ -4857,7 +4865,7 @@ export class OrgDO extends DurableObject<DOEnv> {
   ): OrgThread | null {
     const existing = this.getThread(id);
     if (!existing) return null;
-    const normalizedModel = normalizeLlmModel(model);
+    const normalizedModel = normalizeThreadModelForStorage(model);
     if (normalizedModel === existing.model) {
       return existing;
     }
@@ -4960,8 +4968,8 @@ export class OrgDO extends DurableObject<DOEnv> {
     if (!existing) return null;
     const normalizedModel =
       updates.model !== undefined
-        ? normalizeLlmModel(updates.model)
-        : normalizeLlmModel(existing.model);
+        ? normalizeThreadModelForStorage(updates.model)
+        : normalizeThreadModelForStorage(existing.model);
     const shouldPersistModel =
       updates.model !== undefined || normalizedModel !== existing.model;
     const now = Date.now();

@@ -4,6 +4,7 @@ import type {
 } from "./chat-thread-do.js";
 import { getOrgStub, getWorkspaceStub } from "./helpers/stubs.js";
 import {
+  CUSTOM_LLM_MODEL,
   getDefaultLlmModel,
   getStoredCustomLlmProviderApi,
   getStoredCustomLlmProviderModelId,
@@ -242,7 +243,7 @@ export function buildChannelReplySystemMessage(
 export async function resolveDefaultChannelThreadModel(
   env: Env,
   args: { orgId: string; workspaceId: string },
-): Promise<{ model: LlmModel; provider: "claude" | "codex" }> {
+): Promise<{ model: LlmModel; provider?: "claude" | "codex" }> {
   const orgStub = getOrgStub(env, args.orgId);
   const workspaceStub = getWorkspaceStub(env, args.workspaceId);
   const [
@@ -286,7 +287,12 @@ export async function resolveDefaultChannelThreadModel(
   }
   return {
     model,
-    provider: isCodexLlmModel(model) ? "codex" : "claude",
+    provider:
+      model === CUSTOM_LLM_MODEL
+        ? undefined
+        : isCodexLlmModel(model)
+          ? "codex"
+          : "claude",
   };
 }
 

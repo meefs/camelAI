@@ -1220,6 +1220,56 @@ describe('ChatThreadDO Codex turn handling', () => {
     );
   });
 
+  it('preserves a stored custom thread model when initializing Pi', async () => {
+    const orgStub = {
+      getThread: vi.fn(async () => ({
+        id: 'thread1',
+        model: 'custom',
+        workspace_id: 'workspace1',
+      })),
+      getLlmProviderConfig: vi.fn(async () => ({
+        provider: 'custom',
+        config: {
+          api: 'anthropic-messages',
+          custom_model_id: 'claude-custom',
+        },
+      })),
+    };
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    fake.chatContext = {
+      threadId: 'thread1',
+      workspaceId: 'workspace1',
+      orgId: 'org1',
+      userId: 'user1',
+    };
+    fake.env = {
+      ORG: {
+        idFromName: vi.fn((name: string) => name),
+        get: vi.fn(() => orgStub),
+      },
+    };
+    fake.ctx = {
+      storage: { kv: { put: vi.fn() } },
+    };
+    fake.runnerTransitionChain = Promise.resolve();
+    fake.codexSessionId = null;
+    fake.lastRunnerSeq = 0;
+    fake.trace = vi.fn();
+    fake.getLegacyClaudeSessionId = vi.fn(() => null);
+    fake.ensurePiSession = vi.fn(async () => undefined);
+
+    await ChatThreadDO.prototype['ensurePiSessionReady'].call(fake);
+
+    expect(fake.ensurePiSession).toHaveBeenCalledWith(
+      expect.objectContaining({ threadId: 'thread1' }),
+      expect.objectContaining({
+        CHIRIDION_MODEL: 'custom',
+        CHIRIDION_CLAUDE_MODEL: 'custom',
+        CHIRIDION_CODEX_MODEL: 'custom',
+      }),
+    );
+  });
+
   it('preserves an existing thread model when org BYOK provider is incompatible', async () => {
     const orgStub = {
       getThread: vi.fn(async () => ({
