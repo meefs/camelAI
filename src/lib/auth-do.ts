@@ -1135,20 +1135,49 @@ export async function updateWorkspace(
   return info;
 }
 
+async function getWorkspaceInfoAndMemberAccess(
+  wsStub: ReturnType<AuthEnv["WORKSPACE"]["get"]>,
+  userId: string,
+): Promise<{
+  info: Workspace | null;
+  memberAccess: { access_level: WorkspaceAccessLevel } | null;
+}> {
+  try {
+    return await (wsStub as unknown as {
+      getInfoAndMemberAccess(userId: string): Promise<{
+        info: Workspace | null;
+        memberAccess: { access_level: WorkspaceAccessLevel } | null;
+      }>;
+    }).getInfoAndMemberAccess(userId);
+  } catch (error) {
+    if (!isMissingRpcMethodError(error, "getInfoAndMemberAccess")) {
+      throw error;
+    }
+  }
+
+  const [info, memberAccess] = await Promise.all([
+    wsStub.getInfo(),
+    wsStub.getMemberAccess(userId),
+  ]);
+  return { info, memberAccess };
+}
+
 export async function getWorkspaceAccess(
   env: AuthEnv,
   workspaceId: string,
   userId: string,
 ): Promise<WorkspaceAccessLevel> {
   const wsStub = env.WORKSPACE.get(env.WORKSPACE.idFromName(workspaceId));
-  const info = await wsStub.getInfo();
+  const { info, memberAccess } = await getWorkspaceInfoAndMemberAccess(
+    wsStub,
+    userId,
+  );
   if (!info || info.archived) return "none";
 
   const isMember = await isOrgMember(env, userId, info.org_id);
   if (!isMember) return "none";
 
-  const access = await wsStub.getMemberAccess(userId);
-  return access?.access_level ?? "full";
+  return memberAccess?.access_level ?? "full";
 }
 
 export async function setWorkspaceAccess(
