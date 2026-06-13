@@ -4014,7 +4014,7 @@ export class OrgDO extends DurableObject<DOEnv> {
     return {
       info,
       member,
-      workspaces,
+      workspaces: workspaces.filter((workspace) => !workspace.archived),
       llmProviderConfig,
       experimentalSettings,
     };
@@ -4043,23 +4043,15 @@ export class OrgDO extends DurableObject<DOEnv> {
 
     const restrictedRows = await Promise.all(
       uniqueWorkspaceIds.map(async (workspaceId) => {
-        try {
-          const workspaceStub = this.env.WORKSPACE.get(
-            this.env.WORKSPACE.idFromName(workspaceId),
-          ) as unknown as WorkspaceDO;
-          const restrictedMembers = await workspaceStub.listRestrictedMembers();
-          const restrictedOrgMemberCount = restrictedMembers.filter(
-            (member) =>
-              member.access_level === "none" && orgMemberIds.has(member.user_id),
-          ).length;
-          return { workspaceId, restrictedOrgMemberCount };
-        } catch (error) {
-          console.warn("[OrgDO] failed to load workspace restrictions for summary counts", {
-            workspaceId,
-            error: error instanceof Error ? error.message : String(error),
-          });
-          return { workspaceId, restrictedOrgMemberCount: 0 };
-        }
+        const workspaceStub = this.env.WORKSPACE.get(
+          this.env.WORKSPACE.idFromName(workspaceId),
+        ) as unknown as WorkspaceDO;
+        const restrictedMembers = await workspaceStub.listRestrictedMembers();
+        const restrictedOrgMemberCount = restrictedMembers.filter(
+          (member) =>
+            member.access_level === "none" && orgMemberIds.has(member.user_id),
+        ).length;
+        return { workspaceId, restrictedOrgMemberCount };
       }),
     );
     const restrictedCountByWorkspace = new Map(

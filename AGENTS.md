@@ -177,8 +177,8 @@ live in separate files, and the catalog tests fail if any of them drift apart.
 - Password auth, OAuth account creation, email verification, onboarding, bans, and blocked signup policies all have tests in `workers/main/tests/`; update or add focused tests when touching these flows.
 - Superuser UI routes live under `/qaml-backdoor`.
 - Bearer-auth admin APIs live under `/api/admin/*`; implementation is in `workers/main/src/routes/admin/` and related route modules in `src/routes/api/`.
-- Admin MCP is served at `/api/admin/mcp` (`https://staging.camelai.dev/api/admin/mcp` in staging) and uses OAuth scope `admin:mcp`. Staging is also behind Cloudflare Access; pass `CF-Access-Token: $(cloudflared access token -app=https://staging.camelai.dev)` when using `npx mcp-remote`. If `mcp-remote` opens an authorize URL with `scope=openid+email+profile`, the flow will fail with `invalid_scope`; force `admin:mcp` with static OAuth client metadata or pre-registered static client info.
-- A reliable staging smoke path for admin MCP is: register or provide an OAuth client for the chosen localhost callback with `scope: "admin:mcp"`, then run `npx -y mcp-remote https://staging.camelai.dev/api/admin/mcp <callback-port> --header "CF-Access-Token: $ACCESS_TOKEN" --resource https://staging.camelai.dev/api/admin/mcp --static-oauth-client-info @client-info.json --static-oauth-client-metadata '{"scope":"admin:mcp"}'`. The browser session must be a camelAI superuser, otherwise authorization fails with `Admin access required`.
+- Admin MCP is served at `/api/admin/mcp` (`https://staging.camelai.dev/api/admin/mcp` in staging) and uses OAuth scope `admin:mcp`. Staging is also behind Cloudflare Access; pass `CF-Access-Token: $(cloudflared access token -app=https://staging.camelai.dev)` when connecting with `mcporter`. If an MCP client opens an authorize URL with `scope=openid+email+profile`, the flow will fail with `invalid_scope`; force `admin:mcp` with `oauthScope` or a pre-registered static OAuth client.
+- A reliable staging smoke path for admin MCP is: register or provide an OAuth client for the chosen localhost callback with `scope: "admin:mcp"`, set `ACCESS_TOKEN=$(cloudflared access token -app=https://staging.camelai.dev)`, then add a private `mcporter` config entry with `baseUrl: "https://staging.camelai.dev/api/admin/mcp"`, `auth: "oauth"`, `oauthScope: "admin:mcp"`, and `headers: { "CF-Access-Token": "$env:ACCESS_TOKEN" }`. Run `npx mcporter auth <server-name>` followed by `npx mcporter list <server-name> --json`. The browser session must be a camelAI superuser, otherwise authorization fails with `Admin access required`.
 - Admin and moderation flows often involve durable tombstones in KV plus destructive cleanup. Avoid changing ordering without tests.
 
 ## Integrations And Ingress
@@ -218,6 +218,8 @@ Common local secret/config files:
 - `.dev.vars` for Worker/dev secrets.
 - `wrangler*.jsonc` for environment-specific Cloudflare config.
 Useful local variables include `CF_GATEWAY_TOKEN`, OAuth client IDs/secrets, `INTEGRATION_SECRET_KEY`, `TOKEN_SIGNING_SECRET`, and email provider settings.
+
+For exe.dev-specific admin MCP setup with mcporter, see `docs/exedev-admin-mcp.md`.
 
 ## Maintenance Rules
 
