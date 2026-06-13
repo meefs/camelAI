@@ -318,6 +318,7 @@ describe("admin MCP OAuth resource", () => {
           expect.objectContaining({ name: "list_bans" }),
           expect.objectContaining({ name: "grant_org_credits" }),
           expect.objectContaining({ name: "set_user_credits" }),
+          expect.objectContaining({ name: "admin_js_exec" }),
         ]),
       },
     });
@@ -327,6 +328,58 @@ describe("admin MCP OAuth resource", () => {
     expect(setCreditsTool.description).toContain(
       "without creating a grant ledger row",
     );
+  });
+
+  it("runs admin JavaScript that can call Durable Object RPC methods", async () => {
+    const { userId } = await createUser(
+      testEnv,
+      `admin-mcp-js-exec-${crypto.randomUUID()}@example.com`,
+      "password123",
+      "JS Exec Admin",
+    );
+    await createOrg(testEnv, "MCP JS Exec Org", userId);
+    await updateUserProfile(testEnv, userId, { is_superuser: true });
+    const token = await issueAdminMcpToken(userId);
+
+    const response = await handleAdminMcp({
+      req: mcpRequest(
+        {
+          jsonrpc: "2.0",
+          id: 1,
+          method: "tools/call",
+          params: {
+            name: "admin_js_exec",
+            arguments: {
+              code: `
+                const profile = await DO.call("USER", ${JSON.stringify(userId)}, "getProfile");
+                text({ available: DO.namespaces.includes("USER") });
+                return { profile };
+              `,
+            },
+          },
+        },
+        token,
+      ),
+      env: testEnv,
+      ctx: {} as ExecutionContext,
+      url: new URL("https://example.com/api/admin/mcp"),
+      match: [] as unknown as RegExpMatchArray,
+    });
+
+    expect(response?.status).toBe(200);
+    const rpc = (await response?.json()) as any;
+    const payload = parseToolText(rpc);
+    expect(payload).toMatchObject({
+      success: true,
+      result: {
+        profile: {
+          id: userId,
+          is_superuser: true,
+        },
+      },
+    });
+    expect(payload.namespaces).toContain("USER");
+    expect(payload.output[0]).toContain('"available": true');
   });
 
   it("grants org credits through MCP with a grant ledger row", async () => {

@@ -65,6 +65,14 @@ const TOOL_UNBLOCK_SIGNUP_IP = "unblock_signup_ip";
 const TOOL_GET_ORG_USAGE = "get_org_usage";
 const TOOL_GRANT_ORG_CREDITS = "grant_org_credits";
 const TOOL_SET_USER_CREDITS = "set_user_credits";
+const TOOL_ADMIN_JS_EXEC = "admin_js_exec";
+
+const ADMIN_JS_EXEC_COMPATIBILITY_DATE = "2025-06-18";
+const ADMIN_JS_EXEC_DEFAULT_TIMEOUT_MS = 30_000;
+const ADMIN_JS_EXEC_MAX_TIMEOUT_MS = 120_000;
+const ADMIN_JS_EXEC_DEFAULT_MAX_OUTPUT_CHARACTERS = 120_000;
+const ADMIN_JS_EXEC_MAX_OUTPUT_CHARACTERS = 1_000_000;
+const ADMIN_JS_EXEC_DO_BINDING_PREFIX = "DO__";
 
 function getBaseUrl(req: Request): string {
   const url = new URL(req.url);
@@ -582,6 +590,36 @@ function adminTools() {
       },
     },
     {
+      name: TOOL_ADMIN_JS_EXEC,
+      description:
+        "Run admin-only JavaScript in an ephemeral Worker with Durable Object RPC helpers. Available globals: DO.namespaces, DO.stub(namespace, id, { idFrom }), DO.call(namespace, id, method, args, { idFrom }), and text(value). idFrom defaults to name and can be name or string.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          code: {
+            type: "string",
+            description:
+              "JavaScript function body. Use return for the final result, for example: return await DO.call('ORG', 'org_id', 'getInfo');",
+          },
+          timeout_ms: {
+            type: "integer",
+            minimum: 100,
+            maximum: ADMIN_JS_EXEC_MAX_TIMEOUT_MS,
+            description: `Wall-clock timeout in milliseconds. Defaults to ${ADMIN_JS_EXEC_DEFAULT_TIMEOUT_MS}.`,
+          },
+          max_output_characters: {
+            type: "integer",
+            minimum: 1000,
+            maximum: ADMIN_JS_EXEC_MAX_OUTPUT_CHARACTERS,
+            description:
+              `Maximum JSON output characters returned by the tool. Defaults to ${ADMIN_JS_EXEC_DEFAULT_MAX_OUTPUT_CHARACTERS}.`,
+          },
+        },
+        required: ["code"],
+        additionalProperties: false,
+      },
+    },
+    {
       name: TOOL_ADMIN_API_REQUEST,
       description:
         "Call a camelAI admin API endpoint. The path must start with /api/admin/ and cannot target OAuth or MCP endpoints.",
@@ -644,6 +682,11 @@ function stringArg(args: Record<string, unknown>, key: string): string | null {
 function integerArg(args: Record<string, unknown>, key: string): number | null {
   const value = args[key];
   return typeof value === "number" && Number.isFinite(value) && Number.isInteger(value) ? value : null;
+}
+
+function clampInteger(value: unknown, fallback: number, min: number, max: number): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) return fallback;
+  return Math.min(max, Math.max(min, Math.floor(value)));
 }
 
 function requiredStringArg(args: Record<string, unknown>, key: string): string | { error: string } {
@@ -754,6 +797,236 @@ function getChatThreadMessageRowsStub(env: Env, threadId: string): ChatThreadMes
 function getChatThreadStub(env: Env, threadId: string): DurableObjectStub | null {
   if (!("CHAT_THREAD" in env) || !env.CHAT_THREAD) return null;
   return env.CHAT_THREAD.get(env.CHAT_THREAD.idFromName(threadId));
+}
+
+function isDurableObjectNamespace(value: unknown): value is DurableObjectNamespace {
+  return isRecord(value) &&
+    typeof value.get === "function" &&
+    typeof value.idFromName === "function" &&
+    typeof value.idFromString === "function";
+}
+
+function adminJsExecNamespaceBindings(env: Env): Record<string, DurableObjectNamespace> {
+  const bindings: Record<string, DurableObjectNamespace> = {};
+  for (const [key, value] of Object.entries(env as unknown as Record<string, unknown>)) {
+    if (isDurableObjectNamespace(value)) bindings[`${ADMIN_JS_EXEC_DO_BINDING_PREFIX}${key}`] = value;
+  }
+  return bindings;
+}
+
+function adminJsExecWorkerModule(userCode: string): string {
+  return `${String.raw`
+import { WorkerEntrypoint } from "cloudflare:workers";
+
+function stringifyOutput(value) {
+  if (typeof value === "string") return value;
+  try {
+    return JSON.stringify(value, null, 2) ?? String(value);
+  } catch {
+    return String(value);
+  }
+}
+
+function stringifyConsoleArg(value) {
+  if (typeof value === "string") return value;
+  if (value instanceof Error) return value.stack || value.message;
+  return stringifyOutput(value);
+}
+
+function serializeResult(value) {
+  if (value === undefined) return undefined;
+  if (typeof value === "bigint") return value.toString();
+  if (value instanceof Error) {
+    return { name: value.name, message: value.message, stack: value.stack };
+  }
+  try {
+    const json = JSON.stringify(value);
+    return json === undefined ? String(value) : JSON.parse(json);
+  } catch {
+    return stringifyOutput(value);
+  }
+}
+
+function createOutputConsole(output) {
+  const originalConsole = globalThis.console || {};
+  const capture = (...args) => {
+    output.push(args.map(stringifyConsoleArg).join(" "));
+  };
+  return Object.freeze({
+    ...originalConsole,
+    log: capture,
+    info: capture,
+    warn: capture,
+    error: capture,
+  });
+}
+
+function createDoFacade(env) {
+  const namespaces = Object.freeze(Object.fromEntries(
+    Object.entries(env)
+      .filter(([key]) => key.startsWith("DO__"))
+      .map(([key, namespace]) => [key.slice("DO__".length), namespace]),
+  ));
+
+  const getNamespace = (namespace) => {
+    if (typeof namespace !== "string" || !namespace) {
+      throw new Error("Durable Object namespace must be a non-empty string");
+    }
+    const binding = namespaces[namespace];
+    if (!binding) {
+      throw new Error("Unknown Durable Object namespace: " + namespace);
+    }
+    return binding;
+  };
+
+  const getStub = (namespace, id, options = {}) => {
+    const binding = getNamespace(namespace);
+    const mode = options.idFrom || "name";
+    if (mode === "name") return binding.get(binding.idFromName(id));
+    if (mode === "string") return binding.get(binding.idFromString(id));
+    throw new Error("idFrom must be one of: name, string");
+  };
+
+  const call = async (namespace, id, method, args = [], options = {}) => {
+    if (typeof method !== "string" || !method) {
+      throw new Error("Durable Object RPC method must be a non-empty string");
+    }
+    const stub = getStub(namespace, id, options);
+    const fn = stub[method];
+    if (typeof fn !== "function") {
+      throw new Error("RPC method not found on " + namespace + ": " + method);
+    }
+    const callArgs = Array.isArray(args) ? args : [args];
+    return await fn.apply(stub, callArgs);
+  };
+
+  return Object.freeze({
+    namespaces: Object.freeze(Object.keys(namespaces)),
+    namespace: getNamespace,
+    stub: getStub,
+    call,
+  });
+}
+
+async function runUserCode(DO, text) {
+  "use strict";
+`}${userCode}${String.raw`
+}
+
+export class AdminJsExecRunner extends WorkerEntrypoint {
+  async run() {
+    const output = [];
+    globalThis.console = createOutputConsole(output);
+    const DO = createDoFacade(this.env);
+    const text = (value) => output.push(stringifyOutput(value));
+    const startedAt = Date.now();
+    const result = await runUserCode(DO, text);
+    return {
+      result: serializeResult(result),
+      output,
+      namespaces: DO.namespaces,
+      duration_ms: Date.now() - startedAt,
+    };
+  }
+}
+`}`;
+}
+
+function truncateText(value: string, maxCharacters: number): string {
+  return value.length > maxCharacters
+    ? `${value.slice(0, maxCharacters)}\n...[truncated]`
+    : value;
+}
+
+function truncateAdminJsExecResult(result: unknown, maxCharacters: number): unknown {
+  const text = JSON.stringify(result, null, 2);
+  if (text.length <= maxCharacters) return result;
+  return {
+    truncated: true,
+    text: truncateText(text, maxCharacters),
+  };
+}
+
+async function adminJsExecTool(env: Env, args: Record<string, unknown>) {
+  const code = stringArg(args, "code");
+  if (!code) {
+    return toolText({ error: "code is required" }, true);
+  }
+
+  const loader = env.CODE_MODE_LOADER as
+    | (WorkerLoader & { load?: (code: WorkerLoaderWorkerCode) => WorkerStub })
+    | undefined;
+  if (!loader) {
+    return toolText({ error: "CODE_MODE_LOADER binding is not configured" }, true);
+  }
+
+  const timeoutMs = clampInteger(
+    args.timeout_ms,
+    ADMIN_JS_EXEC_DEFAULT_TIMEOUT_MS,
+    100,
+    ADMIN_JS_EXEC_MAX_TIMEOUT_MS,
+  );
+  const maxOutputCharacters = clampInteger(
+    args.max_output_characters,
+    ADMIN_JS_EXEC_DEFAULT_MAX_OUTPUT_CHARACTERS,
+    1000,
+    ADMIN_JS_EXEC_MAX_OUTPUT_CHARACTERS,
+  );
+  const namespaceBindings = adminJsExecNamespaceBindings(env);
+  if (!Object.keys(namespaceBindings).length) {
+    return toolText({ error: "No Durable Object namespace bindings are available" }, true);
+  }
+
+  const workerCode: WorkerLoaderWorkerCode = {
+    compatibilityDate: ADMIN_JS_EXEC_COMPATIBILITY_DATE,
+    mainModule: "index.js",
+    modules: {
+      "index.js": { js: adminJsExecWorkerModule(code) },
+    },
+    env: namespaceBindings,
+    globalOutbound: null,
+  };
+  let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const worker = typeof loader.load === "function"
+      ? loader.load(workerCode)
+      : loader.get(`admin-js-exec-${crypto.randomUUID()}`, () => workerCode);
+    const runner = worker.getEntrypoint("AdminJsExecRunner") as unknown as {
+      run(): Promise<{
+        result?: unknown;
+        output?: unknown;
+        namespaces?: unknown;
+        duration_ms?: unknown;
+      }>;
+    };
+    const runPromise = runner.run();
+    const result = await Promise.race([
+      runPromise,
+      new Promise<never>((_, reject) => {
+        timeoutHandle = setTimeout(
+          () => reject(new Error(`JavaScript execution timed out after ${timeoutMs}ms`)),
+          timeoutMs,
+        );
+      }),
+    ]);
+    return toolText(truncateAdminJsExecResult({
+      success: true,
+      duration_ms: result.duration_ms,
+      namespaces: result.namespaces,
+      output: result.output,
+      result: result.result,
+    }, maxOutputCharacters));
+  } catch (error) {
+    return toolText(
+      {
+        error: error instanceof Error ? error.message : "JavaScript execution failed",
+        stack: error instanceof Error ? error.stack : undefined,
+      },
+      true,
+    );
+  } finally {
+    if (timeoutHandle) clearTimeout(timeoutHandle);
+  }
 }
 
 async function getAdminThreadContext(env: Env, threadId: string): Promise<AdminThreadContext | null> {
@@ -1697,6 +1970,9 @@ async function callTool(
         "billing_credit_usage_started_at",
       ]),
     });
+  }
+  if (name === TOOL_ADMIN_JS_EXEC) {
+    return adminJsExecTool(env, input);
   }
   if (name === TOOL_ADMIN_API_REQUEST) {
     return fetchAdminApiTool(req, env, grant, args);
