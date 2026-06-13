@@ -7,8 +7,10 @@ import {
   isRouteErrorResponse,
 } from 'react-router';
 import { useEffect, useState } from 'react';
+import { RefreshCw } from 'lucide-react';
 import { useTheme } from 'next-themes';
 import type { Route } from './+types/root';
+import { Button } from '@/components/ui/button';
 import { Toaster } from '@/components/ui/sonner';
 import { ThemeProvider } from '@/components/theme-provider';
 import { NavigationProgress } from '@/components/ui/navigation-progress';
@@ -45,6 +47,7 @@ const THEME_COLORS = {
   light: '#ffffff',
   dark: '#09090b',
 } as const;
+const SUPPORT_EMAIL = 'support@camelai.com';
 
 function ThemeColorSync() {
   const { resolvedTheme } = useTheme();
@@ -116,18 +119,18 @@ export default function Root() {
 }
 
 export function ErrorBoundary({ error }: Route.ErrorBoundaryProps) {
-  let message = 'Oops!';
-  let details = 'An unexpected error occurred.';
+  let message = 'Something went wrong';
+  let details = `Try reloading the page. If the issue persists, email ${SUPPORT_EMAIL}.`;
   let stack: string | undefined;
   const statusCode = isRouteErrorResponse(error) ? error.status : undefined;
   const [isRecovering, setIsRecovering] = useState(false);
 
   if (isRouteErrorResponse(error)) {
-    message = error.status === 404 ? '404' : 'Error';
+    message = error.status === 404 ? '404' : 'Something went wrong';
     details =
       error.status === 404
         ? 'The requested page could not be found.'
-        : error.statusText || details;
+        : details;
   } else if (import.meta.env.DEV && error && error instanceof Error) {
     details = error.message;
     stack = error.stack;
@@ -141,19 +144,41 @@ export function ErrorBoundary({ error }: Route.ErrorBoundaryProps) {
       routeId: 'root',
       statusCode,
     });
-    setIsRecovering(scheduleClientErrorReload({ error, statusCode }));
+    setIsRecovering(
+      scheduleClientErrorReload({
+        error,
+        statusCode,
+        recoverableOnly: false,
+      }),
+    );
   }, [error, statusCode]);
 
   if (isRecovering) {
-    message = 'Reloading...';
-    details = 'Refreshing the app to recover from a temporary loading error.';
+    message = 'Retrying...';
+    details = 'Reloading the page to recover from a temporary error.';
   }
 
   return (
     <main className="flex min-h-screen flex-col items-center justify-center p-4">
-      <div className="text-center">
+      <div className="max-w-md text-center">
         <h1 className="text-4xl font-bold text-foreground">{message}</h1>
-        <p className="mt-4 text-muted-foreground">{details}</p>
+        <p className="mt-4 text-muted-foreground">
+          {details}
+        </p>
+        {!isRecovering && statusCode !== 404 && (
+          <div className="mt-6 flex flex-wrap items-center justify-center gap-3">
+            <Button
+              type="button"
+              onClick={() => window.location.reload()}
+            >
+              <RefreshCw aria-hidden="true" />
+              Reload
+            </Button>
+            <Button variant="outline" asChild>
+              <a href={`mailto:${SUPPORT_EMAIL}`}>Email support</a>
+            </Button>
+          </div>
+        )}
         {stack && (
           <pre className="mt-4 w-full overflow-auto rounded bg-muted p-4 text-left text-sm">
             <code>{stack}</code>
