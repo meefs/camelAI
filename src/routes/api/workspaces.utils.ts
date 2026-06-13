@@ -2,7 +2,7 @@ import type { AppLoadContext } from 'react-router';
 import { getSession } from '@/lib/auth.server';
 import { getEnv, type CloudflareEnv } from '@/lib/cloudflare.server';
 import { type AuthEnv } from '@/lib/auth-helpers';
-import { getWorkspace, getWorkspaceAccess } from '@/lib/auth-do';
+import { getWorkspaceAccessContext } from '@/lib/auth-do';
 import type { WorkspaceAccessLevel } from '../../../workers/main/src/workspace';
 import type {
   WorkspaceFilesystemClient,
@@ -92,7 +92,11 @@ export async function requireWorkspaceAccess(
   // Cast to AuthEnv for auth-do functions
   const authEnv = env as unknown as AuthEnv;
 
-  const workspace = await getWorkspace(authEnv, workspaceId);
+  const { workspace, access } = await getWorkspaceAccessContext(
+    authEnv,
+    workspaceId,
+    sessionContext.session.user_id,
+  );
   if (!workspace) {
     throw Response.json({ error: 'Workspace not found' }, { status: 404 });
   }
@@ -124,7 +128,6 @@ export async function requireWorkspaceAccess(
     };
   }
 
-  const access = await getWorkspaceAccess(authEnv, workspaceId, sessionContext.session.user_id);
   if (access === 'none') {
     if (!(await isSuperuser())) {
       throw Response.json({ error: 'Workspace not found' }, { status: 404 });

@@ -1167,17 +1167,28 @@ export async function getWorkspaceAccess(
   workspaceId: string,
   userId: string,
 ): Promise<WorkspaceAccessLevel> {
+  return (await getWorkspaceAccessContext(env, workspaceId, userId)).access;
+}
+
+export async function getWorkspaceAccessContext(
+  env: AuthEnv,
+  workspaceId: string,
+  userId: string,
+): Promise<{ workspace: Workspace | null; access: WorkspaceAccessLevel }> {
   const wsStub = env.WORKSPACE.get(env.WORKSPACE.idFromName(workspaceId));
   const { info, memberAccess } = await getWorkspaceInfoAndMemberAccess(
     wsStub,
     userId,
   );
-  if (!info || info.archived) return "none";
+  if (!info || info.archived) return { workspace: null, access: "none" };
 
   const isMember = await isOrgMember(env, userId, info.org_id);
-  if (!isMember) return "none";
+  if (!isMember) return { workspace: info, access: "none" };
 
-  return memberAccess?.access_level ?? "full";
+  return {
+    workspace: info,
+    access: memberAccess?.access_level ?? "full",
+  };
 }
 
 export async function setWorkspaceAccess(

@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const { getWorkspaceAccess } = await import("@/lib/auth-do");
+const { getWorkspaceAccess, getWorkspaceAccessContext } = await import("@/lib/auth-do");
 
 describe("getWorkspaceAccess", () => {
   let workspaceStub: {
@@ -66,6 +66,12 @@ describe("getWorkspaceAccess", () => {
     await expect(
       getWorkspaceAccess(env as never, "ws_123", "user_123"),
     ).resolves.toBe("full");
+    await expect(
+      getWorkspaceAccessContext(env as never, "ws_123", "user_123"),
+    ).resolves.toMatchObject({
+      workspace: { id: "ws_123", org_id: "org_123" },
+      access: "full",
+    });
 
     expect(workspaceStub.getInfoAndMemberAccess).toHaveBeenCalledWith(
       "user_123",
