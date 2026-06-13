@@ -68,7 +68,9 @@ export async function action({ request, context }: Route.ActionArgs) {
     }
 
     try {
-      const deleted = await chatDO.deleteThread(context, threadId, workspaceId);
+      const deleted = await chatDO.deleteThread(context, threadId, workspaceId, {
+        orgId: authContext.currentOrg.id,
+      });
       if (!deleted) {
         return { error: 'Thread not found' };
       }

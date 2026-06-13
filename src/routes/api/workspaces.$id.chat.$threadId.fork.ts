@@ -180,9 +180,9 @@ export async function action({ request, context, params }: Route.ActionArgs) {
       }),
     );
     if (!forkMessages.success || !forkMessages.messages?.length) {
-      await chatDO.deleteThread(context, targetThread.id, workspaceId).catch(
-        () => {},
-      );
+      await chatDO.deleteThread(context, targetThread.id, workspaceId, {
+        orgId,
+      }).catch(() => {});
       return Response.json(
         {
           error:
@@ -211,9 +211,9 @@ export async function action({ request, context, params }: Route.ActionArgs) {
       });
     }
   } catch (error) {
-    await chatDO.deleteThread(context, targetThread.id, workspaceId).catch(
-      () => {},
-    );
+    await chatDO.deleteThread(context, targetThread.id, workspaceId, {
+      orgId,
+    }).catch(() => {});
     const message = normalizeForkError(error);
     return Response.json({ error: message }, { status: 500 });
   }

@@ -13,8 +13,10 @@ vi.mock('@/lib/thread-title-generation.server', () => ({
 const {
   createThread,
   createThreadWithValidatedAccess,
+  deleteThread,
   getThread,
   getWorkspaceModelPickerState,
+  updateThread,
   updateThreadModel,
 } = await import('@/lib/chat-do.server');
 
@@ -378,5 +380,93 @@ describe('getWorkspaceModelPickerState rollout compatibility', () => {
     const thread = await getThread({}, 'thread_123', 'ws_123');
 
     expect(thread?.model).toBe('gemini-3.5-flash');
+  });
+
+  it('uses a known org id for thread reads without loading workspace info', async () => {
+    const workspaceStub = {
+      getInfo: vi.fn(async () => {
+        throw new Error('unexpected workspace info read');
+      }),
+    };
+    const orgStub = {
+      getThread: vi.fn().mockResolvedValue({
+        id: 'thread_123',
+        workspace_id: 'ws_123',
+        title: 'Thread',
+        created_by: 'user_123',
+        model: 'sonnet',
+        created_at: 1,
+        updated_at: 2,
+        user_message_count: 0,
+        first_user_message: null,
+      }),
+    };
+
+    getEnvMock.mockReturnValue({
+      WORKSPACE: {
+        idFromName: (id: string) => id,
+        get: () => workspaceStub,
+      },
+      ORG: {
+        idFromName: (id: string) => id,
+        get: () => orgStub,
+      },
+    });
+
+    const thread = await getThread({}, 'thread_123', 'ws_123', {
+      orgId: 'org_123',
+    });
+
+    expect(workspaceStub.getInfo).not.toHaveBeenCalled();
+    expect(orgStub.getThread).toHaveBeenCalledWith('thread_123');
+    expect(thread?.id).toBe('thread_123');
+  });
+
+  it('still rejects known-org thread reads for the wrong workspace', async () => {
+    const workspaceStub = {
+      getInfo: vi.fn(async () => {
+        throw new Error('unexpected workspace info read');
+      }),
+    };
+    const orgStub = {
+      getThread: vi.fn().mockResolvedValue({
+        id: 'thread_123',
+        workspace_id: 'ws_other',
+        title: 'Thread',
+        created_by: 'user_123',
+        model: 'sonnet',
+        created_at: 1,
+        updated_at: 2,
+        user_message_count: 0,
+        first_user_message: null,
+      }),
+      updateThread: vi.fn(),
+      deleteThread: vi.fn(),
+    };
+
+    getEnvMock.mockReturnValue({
+      WORKSPACE: {
+        idFromName: (id: string) => id,
+        get: () => workspaceStub,
+      },
+      ORG: {
+        idFromName: (id: string) => id,
+        get: () => orgStub,
+      },
+    });
+
+    await expect(
+      getThread({}, 'thread_123', 'ws_123', { orgId: 'org_123' }),
+    ).resolves.toBeNull();
+    await expect(
+      updateThread({}, 'thread_123', 'Title', 'ws_123', { orgId: 'org_123' }),
+    ).resolves.toBeNull();
+    await expect(
+      deleteThread({}, 'thread_123', 'ws_123', { orgId: 'org_123' }),
+    ).resolves.toBe(false);
+
+    expect(workspaceStub.getInfo).not.toHaveBeenCalled();
+    expect(orgStub.updateThread).not.toHaveBeenCalled();
+    expect(orgStub.deleteThread).not.toHaveBeenCalled();
   });
 });

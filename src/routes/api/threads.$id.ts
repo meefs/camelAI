@@ -6,12 +6,14 @@ export async function loader({ request, context, params }: LoaderFunctionArgs) {
   if (request.method !== "GET") {
     return Response.json({ error: "Method not allowed" }, { status: 405 });
   }
-  const { workspaceId } = await requireSessionWorkspaceAccess(request, context);
+  const { orgId, workspaceId } = await requireSessionWorkspaceAccess(request, context);
   const threadId = params.id?.trim();
   if (!threadId) {
     return Response.json({ error: "Thread ID required" }, { status: 400 });
   }
-  const thread = await chatDO.getThread(context, threadId, workspaceId);
+  const thread = await chatDO.getThread(context, threadId, workspaceId, {
+    orgId,
+  });
   if (!thread) {
     return Response.json({ error: "Thread not found" }, { status: 404 });
   }
@@ -22,7 +24,7 @@ export async function action({ request, context, params }: ActionFunctionArgs) {
   if (request.method !== "PATCH") {
     return Response.json({ error: "Method not allowed" }, { status: 405 });
   }
-  const { workspaceId } = await requireSessionWorkspaceAccess(
+  const { orgId, workspaceId } = await requireSessionWorkspaceAccess(
     request,
     context,
     undefined,
@@ -39,7 +41,9 @@ export async function action({ request, context, params }: ActionFunctionArgs) {
   if (!title) {
     return Response.json({ error: "Title required" }, { status: 400 });
   }
-  const thread = await chatDO.updateThread(context, threadId, title, workspaceId);
+  const thread = await chatDO.updateThread(context, threadId, title, workspaceId, {
+    orgId,
+  });
   if (!thread) {
     return Response.json({ error: "Thread not found" }, { status: 404 });
   }

@@ -43,7 +43,9 @@ export async function action({ request, context }: Route.ActionArgs) {
     }
 
     try {
-      await chatDO.updateThread(context, threadId, title, workspaceId);
+      await chatDO.updateThread(context, threadId, title, workspaceId, {
+        orgId: authContext.currentOrg.id,
+      });
       return { success: true };
     } catch (err) {
       return { error: err instanceof Error ? err.message : 'Failed to rename thread' };
@@ -59,7 +61,9 @@ export async function action({ request, context }: Route.ActionArgs) {
     }
 
     try {
-      const deleted = await chatDO.deleteThread(context, threadId, workspaceId);
+      const deleted = await chatDO.deleteThread(context, threadId, workspaceId, {
+        orgId: authContext.currentOrg.id,
+      });
       if (!deleted) {
         return { error: 'Thread not found' };
       }

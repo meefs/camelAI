@@ -19,7 +19,9 @@ export async function action({ request, context, params }: ActionFunctionArgs) {
   if (!groupId || !threadId) {
     return Response.json({ error: "Missing required IDs" }, { status: 400 });
   }
-  const thread = await chatDO.getThread(context, threadId, workspaceId);
+  const thread = await chatDO.getThread(context, threadId, workspaceId, {
+    orgId,
+  });
   if (!thread) {
     return Response.json({ error: "Thread not found" }, { status: 404 });
   }

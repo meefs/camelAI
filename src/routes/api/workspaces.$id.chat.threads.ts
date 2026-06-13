@@ -118,7 +118,9 @@ export async function action({ request, context, params }: Route.ActionArgs) {
         });
     return Response.json({ thread, groupId: group.id, group });
   } catch (error) {
-    await chatDO.deleteThread(context, thread.id, workspaceId).catch(() => {});
+    await chatDO.deleteThread(context, thread.id, workspaceId, { orgId }).catch(
+      () => {},
+    );
     const message = error instanceof Error ? error.message : 'Failed to group thread';
     return Response.json(
       { error: message },
