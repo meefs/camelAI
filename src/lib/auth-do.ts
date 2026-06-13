@@ -60,6 +60,12 @@ export interface OrgProviderContext {
   llmProviderConfig: LlmProviderConfigRecord | null;
 }
 
+export interface OrgOnboardingWelcomeContext extends OrgProviderContext {
+  memberCount: number;
+  appCount: number;
+  integrations: string[];
+}
+
 type OrgWorkspaceRow = {
   id: string;
   name: string;
@@ -618,6 +624,45 @@ export async function getOrgProviderContext(
     stub.getLlmProviderConfig(),
   ]);
   return { info, llmProviderConfig };
+}
+
+export async function getOrgOnboardingWelcomeContext(
+  env: AuthEnv,
+  orgId: string,
+  workspaceId: string | null,
+): Promise<OrgOnboardingWelcomeContext> {
+  const stub = env.ORG.get(env.ORG.idFromName(orgId));
+  try {
+    return await (stub as unknown as {
+      getOnboardingWelcomeContext(
+        workspaceId: string | null,
+      ): Promise<OrgOnboardingWelcomeContext>;
+    }).getOnboardingWelcomeContext(workspaceId);
+  } catch (error) {
+    if (!isMissingRpcMethodError(error, "getOnboardingWelcomeContext")) {
+      throw error;
+    }
+  }
+
+  const [providerContext, memberCount, scripts, integrations] =
+    await Promise.all([
+      getOrgProviderContext(env, orgId),
+      stub.getMemberCount(),
+      stub.listWorkerScripts(),
+      workspaceId
+        ? env.WORKSPACE.get(env.WORKSPACE.idFromName(workspaceId))
+            .getIntegrations()
+            .then((rows) => rows.map((row) => row.name).slice(0, 4))
+            .catch(() => [] as string[])
+        : Promise.resolve([] as string[]),
+    ]);
+
+  return {
+    ...providerContext,
+    memberCount,
+    appCount: scripts.length,
+    integrations,
+  };
 }
 
 export async function archiveOrg(
