@@ -35,3 +35,4 @@ export type {
   ApplyCreditCheckoutResult,
   ApplyManualCreditGrantResult,
 } from "./user-do";
+export type { OrgAuthContextBootstrap } from "./org-do";

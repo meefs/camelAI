@@ -6,9 +6,11 @@ import {
 } from "./cookies.server";
 import { redirectIfBannedSession } from "./ban.server";
 import { createSignedSession } from "../../workers/main/src/signed-session";
+import type { OrgAuthContextBootstrap } from "../../workers/main/src/auth";
 import type {
   Organization,
   OrgMembership,
+  OrganizationExperimentalSettings,
   WorkspaceAccessLevel,
   WorkspaceWithAccess,
 } from "@/types";
@@ -21,6 +23,10 @@ import {
   listOrgWorkspaces,
   getWorkspace,
 } from "./auth-do";
+import {
+  DEFAULT_ORG_EXPERIMENTAL_SETTINGS,
+  type LlmProviderConfigRecord,
+} from "./llm-provider-config";
 import {
   CLOUDFLARE_ACCESS_AUTH_SOURCE,
   tryCloudflareAccessSilentLogin,
@@ -72,6 +78,10 @@ export interface AuthContext extends UserContext {
   orgWorkspaceCount: number;
   /** Email verification status (bundled from UserDO bootstrap) */
   emailVerification: { required: boolean; verified: boolean };
+  /** Current org LLM provider config (bundled from OrgDO bootstrap) */
+  currentOrgLlmProviderConfig: LlmProviderConfigRecord | null;
+  /** Current org experimental settings (bundled from OrgDO bootstrap) */
+  currentOrgExperimentalSettings: OrganizationExperimentalSettings;
   /** When set, the session cookie should be re-signed with this token (e.g. workspace fallback) */
   resignedSessionCookie?: string;
 }
@@ -245,6 +255,15 @@ function isLocalhostRequest(request: Request): boolean {
   return hostname === "localhost" || hostname === "127.0.0.1";
 }
 
+function isMissingRpcMethodError(error: unknown, methodName: string): boolean {
+  return (
+    error instanceof TypeError &&
+    (error.message.includes(`does not implement "${methodName}"`) ||
+      error.message.includes(`${methodName} is not a function`) ||
+      error.message.includes(`.${methodName} is not a function`))
+  );
+}
+
 async function getLocalAuthBypassSession(
   request: Request,
   context: AppLoadContext,
@@ -366,6 +385,59 @@ async function getLocalAuthBypassSession(
       user_name: profile.name,
       user_email: profile.email,
     },
+  };
+}
+
+async function getOrgAuthContextBootstrap(
+  authEnv: AuthEnv,
+  orgStub: ReturnType<AuthEnv["ORG"]["get"]>,
+  orgId: string,
+  userId: string,
+): Promise<OrgAuthContextBootstrap> {
+  try {
+    return await retryTransientDurableObjectRead(
+      "OrgDO.getAuthContextBootstrap",
+      () =>
+        (
+          orgStub as unknown as {
+            getAuthContextBootstrap(
+              userId: string,
+            ): Promise<OrgAuthContextBootstrap>;
+          }
+        ).getAuthContextBootstrap(userId),
+    );
+  } catch (error) {
+    if (!isMissingRpcMethodError(error, "getAuthContextBootstrap")) {
+      throw error;
+    }
+  }
+
+  const [info, member, workspaces, llmProviderConfig, experimentalSettings] =
+    await Promise.all([
+      retryTransientDurableObjectRead("OrgDO.getInfo", () => orgStub.getInfo()),
+      retryTransientDurableObjectRead("OrgDO.getMember", () =>
+        orgStub.getMember(userId),
+      ),
+      listOrgWorkspaces(authEnv, orgId),
+      (
+        orgStub as unknown as {
+          getLlmProviderConfig(): Promise<LlmProviderConfigRecord | null>;
+        }
+      ).getLlmProviderConfig(),
+      (
+        orgStub as unknown as {
+          getExperimentalSettings(): Promise<OrganizationExperimentalSettings>;
+        }
+      )
+        .getExperimentalSettings()
+        .catch(() => DEFAULT_ORG_EXPERIMENTAL_SETTINGS),
+    ]);
+  return {
+    info,
+    member,
+    workspaces,
+    llmProviderConfig,
+    experimentalSettings,
   };
 }
 
@@ -539,21 +611,24 @@ async function getAuthContextUncached(
   const currentOrgStub = authEnv.ORG.get(
     authEnv.ORG.idFromName(sessionContext.session.org_id),
   );
-  const currentOrgInfoPromise = retryTransientDurableObjectRead(
-    "OrgDO.getInfo",
-    () => currentOrgStub.getInfo(),
-  );
-  const currentOrgMemberPromise = retryTransientDurableObjectRead(
-    "OrgDO.getMember",
-    () => currentOrgStub.getMember(sessionContext.session.user_id),
-  );
-  const [authBootstrap, orgInfo, currentOrgMember] = await Promise.all([
+  const [authBootstrap, currentOrgBootstrap] = await Promise.all([
     retryTransientDurableObjectRead("UserDO.getAuthBootstrap", () =>
       userStub.getAuthBootstrap(),
     ),
-    currentOrgInfoPromise,
-    currentOrgMemberPromise,
+    getOrgAuthContextBootstrap(
+      authEnv,
+      currentOrgStub,
+      sessionContext.session.org_id,
+      sessionContext.session.user_id,
+    ),
   ]);
+  const {
+    info: orgInfo,
+    member: currentOrgMember,
+    workspaces: currentOrgWorkspaces,
+    llmProviderConfig: currentOrgLlmProviderConfig,
+    experimentalSettings: currentOrgExperimentalSettings,
+  } = currentOrgBootstrap;
   const profile = authBootstrap.profile;
   if (!profile) {
     console.warn("[auth] getAuthContext returning null: profile is null", {
@@ -588,7 +663,7 @@ async function getAuthContextUncached(
   let orgs = await getUserOrgs(authEnv, sessionContext.session.user_id, {
     preloadedUserOrgs: authBootstrap.orgs,
     preloadedOrgInfoById: new Map([
-      [sessionContext.session.org_id, currentOrgInfoPromise],
+      [sessionContext.session.org_id, currentOrg],
     ]),
   });
 
@@ -632,6 +707,11 @@ async function getAuthContextUncached(
     authEnv,
     sessionContext.session.user_id,
     orgs,
+    {
+      preloadedWorkspacesByOrgId: new Map([
+        [currentOrg.id, currentOrgWorkspaces],
+      ]),
+    },
   );
 
   // Workspaces in the current org only (for settings/management).
@@ -722,6 +802,8 @@ async function getAuthContextUncached(
     allWorkspaces,
     orgWorkspaceCount,
     emailVerification: authBootstrap.emailVerification,
+    currentOrgLlmProviderConfig,
+    currentOrgExperimentalSettings,
     resignedSessionCookie,
   };
 }

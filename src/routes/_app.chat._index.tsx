@@ -24,7 +24,6 @@ import { getAuthEnv, integrationRecordToIntegration } from "@/lib/auth-helpers";
 import { projectsToMentionables, type MentionableProject } from "@/lib/mentions";
 import { getWorkerScript } from "@/lib/auth-do";
 import {
-  DEFAULT_ORG_EXPERIMENTAL_SETTINGS,
   getDefaultLlmModel,
   getStoredCustomLlmProviderApi,
   getStoredCustomLlmProviderModelId,
@@ -357,42 +356,28 @@ export async function loader({ request, context }: Route.LoaderArgs) {
           workspaceId,
         }).catch(() => [])
       : Promise.resolve([]);
-  const orgStub =
-    workspaceId && authContext.currentOrg?.id
-      ? authEnv.ORG.get(authEnv.ORG.idFromName(authContext.currentOrg.id))
-      : null;
-  const pickerAndOrgPromise = orgStub && workspaceId
-      ? Promise.all([
-          chatDO.getWorkspaceModelPickerState(context, workspaceId).catch(
-            (error) => {
-              console.error("Failed to load model picker state:", error);
-              return null;
-            },
-          ),
-          orgStub.getLlmProviderConfig().catch(() => null),
-          orgStub
-            .getExperimentalSettings()
-            .catch(() => DEFAULT_ORG_EXPERIMENTAL_SETTINGS),
-        ])
-    : Promise.resolve([
-        null,
-        null,
-        DEFAULT_ORG_EXPERIMENTAL_SETTINGS,
-      ] as const);
+  const pickerStatePromise = workspaceId
+    ? chatDO.getWorkspaceModelPickerState(context, workspaceId).catch(
+        (error) => {
+          console.error("Failed to load model picker state:", error);
+          return null;
+        },
+      )
+    : Promise.resolve(null);
   const [
     activeChatGroup,
     moveChatGroups,
-    [pickerState, llmProviderConfig, fallbackExperimentalSettings],
+    pickerState,
   ] = await Promise.all([
     activeChatGroupPromise,
     moveChatGroupsPromise,
-    pickerAndOrgPromise,
+    pickerStatePromise,
   ]);
   const experimentalSettings =
-    pickerState?.experimentalSettings ?? fallbackExperimentalSettings;
+    pickerState?.experimentalSettings ?? authContext.currentOrgExperimentalSettings;
   const effectiveLlmProviderConfig = getEffectiveLlmProviderConfig(
     env,
-    llmProviderConfig,
+    authContext.currentOrgLlmProviderConfig,
   );
   const llmProvider =
     pickerState?.llmProvider ??
@@ -414,7 +399,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
       customModelId,
     },
   ).map((option) => option.value);
-  const hasModelFallback = Boolean(orgStub && workspaceId);
+  const hasModelFallback = Boolean(workspaceId);
   const billingOverview = !isSelfhostRuntime(env) && authContext.currentOrg
     ? await getOrgBillingOverview(env, authContext.currentOrg).catch((error) => {
         console.warn("Failed to load billing overview for chat:", error);

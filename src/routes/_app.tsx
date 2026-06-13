@@ -124,11 +124,9 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     return responseData;
   }
 
-  const orgStub = env.ORG.get(env.ORG.idFromName(authContext.currentOrg.id));
-  const llmProviderConfig = await orgStub.getLlmProviderConfig();
   const effectiveLlmProviderConfig = getEffectiveLlmProviderConfig(
     env,
-    llmProviderConfig,
+    authContext.currentOrgLlmProviderConfig,
   );
   const selfhostRuntime = isSelfhostRuntime(env);
   const currentOrg = authContext.currentOrg;

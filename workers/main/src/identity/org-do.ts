@@ -41,6 +41,7 @@ import {
   isCodexLlmModel,
   normalizeLlmModel,
   parseOrganizationExperimentalSettings,
+  type LlmProviderConfigRecord,
 } from "../../../../src/lib/llm-provider-config";
 import {
   defaultOrgModelPickerConfig,
@@ -162,6 +163,14 @@ export interface OrgMember {
   user_id: string;
   role: OrgRole;
   joined_at: number;
+}
+
+export interface OrgAuthContextBootstrap {
+  info: Organization | null;
+  member: OrgMember | null;
+  workspaces: Workspace[];
+  llmProviderConfig: LlmProviderConfigRecord | null;
+  experimentalSettings: OrganizationExperimentalSettings;
 }
 
 export interface OrgInvitation {
@@ -3995,6 +4004,31 @@ export class OrgDO extends DurableObject<DOEnv> {
       rows.map((row) => this.hydrateWorkspaceRow(row)),
     );
     return workspaces.filter((workspace): workspace is Workspace => !!workspace);
+  }
+
+  async getAuthContextBootstrap(
+    userId: string,
+  ): Promise<OrgAuthContextBootstrap> {
+    const [
+      info,
+      member,
+      workspaces,
+      llmProviderConfig,
+      experimentalSettings,
+    ] = await Promise.all([
+      this.getInfo(),
+      this.getMember(userId),
+      this.getWorkspaceInfos(false),
+      this.getLlmProviderConfig(),
+      this.getExperimentalSettings(),
+    ]);
+    return {
+      info,
+      member,
+      workspaces: workspaces.filter((workspace) => !workspace.archived),
+      llmProviderConfig,
+      experimentalSettings,
+    };
   }
 
   async getWorkspaces(
