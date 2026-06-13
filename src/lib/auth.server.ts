@@ -258,11 +258,19 @@ function isLocalhostRequest(request: Request): boolean {
 }
 
 function isMissingRpcMethodError(error: unknown, methodName: string): boolean {
+  const message =
+    error instanceof Error
+      ? error.message
+      : typeof error === "string"
+        ? error
+        : "";
+  if (!message.includes(methodName)) return false;
+  const normalized = message.toLowerCase();
   return (
-    error instanceof TypeError &&
-    (error.message.includes(`does not implement "${methodName}"`) ||
-      error.message.includes(`${methodName} is not a function`) ||
-      error.message.includes(`.${methodName} is not a function`))
+    normalized.includes("no such rpc method") ||
+    normalized.includes("no such method") ||
+    normalized.includes("does not implement") ||
+    normalized.includes("not a function")
   );
 }
 

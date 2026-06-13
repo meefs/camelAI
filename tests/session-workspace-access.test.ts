@@ -139,4 +139,26 @@ describe("requireSessionWorkspaceAccess", () => {
     expect(workspaceStub.getInfo).toHaveBeenCalled();
     expect(workspaceStub.getMemberAccess).toHaveBeenCalledWith("user_123");
   });
+
+  it("falls back when an older isolate reports a plain missing RPC error", async () => {
+    workspaceStub.getInfoAndMemberAccess.mockRejectedValueOnce(
+      new Error("No such RPC method getInfoAndMemberAccess"),
+    );
+    workspaceStub.getInfo.mockResolvedValueOnce({
+      id: "ws_123",
+      org_id: "org_123",
+      archived: false,
+    });
+    workspaceStub.getMemberAccess.mockResolvedValueOnce(null);
+    const request = await makeRequest();
+
+    await expect(
+      requireSessionWorkspaceAccess(request, {}),
+    ).resolves.toMatchObject({
+      access: "full",
+    });
+
+    expect(workspaceStub.getInfo).toHaveBeenCalled();
+    expect(workspaceStub.getMemberAccess).toHaveBeenCalledWith("user_123");
+  });
 });
