@@ -18,7 +18,11 @@ import {
   type AutomationRunSummary,
   sortAutomations,
 } from "@/lib/automations-shared";
-import type { Avatar } from "@/types";
+import type { User } from "@/types";
+import {
+  loadUserProfileSummaries,
+  type UserProfileSummary,
+} from "@/lib/user-profiles.server";
 
 interface BuildAutomationsPageDataInput {
   context: AppLoadContext;
@@ -26,6 +30,8 @@ interface BuildAutomationsPageDataInput {
   orgId: string;
   userId: string;
   canManage: boolean;
+  request?: Request;
+  currentUser?: User;
 }
 
 interface MutateAutomationInput {
@@ -99,34 +105,26 @@ async function getRuntimeStatus(
   }
 }
 
-interface AutomationCreator {
-  name: string | null;
-  avatar: Avatar | null;
-}
+type AutomationCreator = UserProfileSummary;
 
 async function getCreators(
   env: CloudflareEnv,
   creatorIds: string[],
+  options: {
+    request?: Request;
+    preloadedUsers?: Iterable<User | null | undefined>;
+  } = {},
 ): Promise<Map<string, AutomationCreator>> {
   const authEnv = getAuthEnv(env);
-  const entries = await Promise.all(
-    Array.from(new Set(creatorIds.filter(Boolean))).map(async (id) => {
-      try {
-        const profile = await authEnv.USER.get(authEnv.USER.idFromName(id)).getProfile();
-        return [
-          id,
-          {
-            name: profile?.name || profile?.email || null,
-            avatar: profile?.avatar ?? null,
-          },
-        ] as const;
-      } catch (error) {
-        console.error("[automations] Failed to load creator profile", { id, error });
-        return [id, { name: null, avatar: null }] as const;
-      }
-    }),
-  );
-  return new Map(entries);
+  try {
+    return await loadUserProfileSummaries(authEnv, creatorIds, {
+      ...options,
+      allowPartialFailures: true,
+    });
+  } catch (error) {
+    console.error("[automations] Failed to load creator profiles", { error });
+    return new Map();
+  }
 }
 
 function toRunSummary(run: AutomationRunRecord): AutomationRunSummary {
@@ -216,7 +214,9 @@ function normalizeScheduledPrompt(input: {
     thread_id: prompt.thread_id,
     thread_exists: Boolean(input.thread),
     created_by_id: prompt.created_by,
-    created_by_name: input.creator?.name ?? null,
+    created_by_name: input.creator
+      ? input.creator.name || input.creator.email
+      : null,
     created_by_avatar: input.creator?.avatar ?? null,
     model: input.thread?.model ?? null,
     source_version: null,
@@ -251,7 +251,9 @@ function normalizeDeterministicAutomation(input: {
     thread_id: null,
     thread_exists: null,
     created_by_id: automation.created_by,
-    created_by_name: input.creator?.name ?? null,
+    created_by_name: input.creator
+      ? input.creator.name || input.creator.email
+      : null,
     created_by_avatar: input.creator?.avatar ?? null,
     model: null,
     source_version: automation.source_version,
@@ -263,6 +265,8 @@ export async function buildAutomationsPageData({
   workspaceId,
   orgId,
   canManage,
+  request,
+  currentUser,
 }: BuildAutomationsPageDataInput): Promise<{ automations: AutomationListItem[] }> {
   const env = getEnv(context);
   const cronStub = getWorkspaceCronStub(env, workspaceId);
@@ -314,7 +318,10 @@ export async function buildAutomationsPageData({
   const creators = await getCreators(env, [
     ...prompts.map((prompt) => prompt.created_by),
     ...workflows.map((automation) => automation.created_by),
-  ]);
+  ], {
+    request,
+    preloadedUsers: currentUser ? [currentUser] : undefined,
+  });
 
   const normalizedPrompts = prompts.map((prompt) =>
     normalizeScheduledPrompt({

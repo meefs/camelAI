@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
 import type { User } from "@/types";
 import type { AuthEnv } from "@/lib/auth-helpers";
-import { loadUserProfileSummaries } from "@/lib/user-profiles.server";
+import {
+  loadUserProfileSummaries,
+  loadUsersById,
+} from "@/lib/user-profiles.server";
 
 function makeUser(id: string, overrides: Partial<User> = {}): User {
   return {
@@ -18,7 +21,7 @@ function makeUser(id: string, overrides: Partial<User> = {}): User {
   };
 }
 
-function makeAuthEnv(profiles: Map<string, User | null>) {
+function makeAuthEnv(profiles: Map<string, User | null | Error>) {
   const calls: string[] = [];
   const env = {
     USER: {
@@ -29,7 +32,11 @@ function makeAuthEnv(profiles: Map<string, User | null>) {
         return {
           async getProfile() {
             calls.push(id);
-            return profiles.get(id) ?? null;
+            const profile = profiles.get(id);
+            if (profile instanceof Error) {
+              throw profile;
+            }
+            return profile ?? null;
           },
         };
       },
@@ -76,11 +83,54 @@ describe("loadUserProfileSummaries", () => {
     expect(calls).toEqual(["user-1"]);
   });
 
+  it("shares request cache entries between full users and summaries", async () => {
+    const user = makeUser("user-1", { email_verified_at: 123 });
+    const { env, calls } = makeAuthEnv(new Map([["user-1", user]]));
+    const request = new Request("https://example.com/history");
+
+    const summaries = await loadUserProfileSummaries(env, ["user-1"], { request });
+    const users = await loadUsersById(env, ["user-1"], { request });
+
+    expect(calls).toEqual(["user-1"]);
+    expect(summaries.get("user-1")).toEqual({
+      id: "user-1",
+      name: "user-1",
+      email: "user-1@example.com",
+      avatar: user.avatar,
+    });
+    expect(users.get("user-1")?.email_verified_at).toBe(123);
+  });
+
   it("omits profiles that no longer exist", async () => {
     const { env } = makeAuthEnv(new Map([["deleted-user", null]]));
 
     const profiles = await loadUserProfileSummaries(env, ["deleted-user"]);
 
     expect(profiles.has("deleted-user")).toBe(false);
+  });
+
+  it("preserves loaded profiles when partial failures are allowed", async () => {
+    const user = makeUser("user-ok");
+    const { env, calls } = makeAuthEnv(
+      new Map<string, User | null | Error>([
+        ["user-ok", user],
+        ["user-bad", new Error("profile lookup failed")],
+      ]),
+    );
+
+    const profiles = await loadUserProfileSummaries(
+      env,
+      ["user-ok", "user-bad"],
+      { allowPartialFailures: true },
+    );
+
+    expect(calls).toEqual(["user-ok", "user-bad"]);
+    expect(profiles.get("user-ok")).toEqual({
+      id: "user-ok",
+      name: "user-ok",
+      email: "user-ok@example.com",
+      avatar: user.avatar,
+    });
+    expect(profiles.has("user-bad")).toBe(false);
   });
 });
