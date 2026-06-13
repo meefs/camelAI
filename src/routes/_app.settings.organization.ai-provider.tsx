@@ -12,7 +12,6 @@ import { RemoveKeyDialog } from "@/components/byok/remove-key-dialog";
 import {
   requireAuthContext,
   requireOrgAdmin,
-  getAuthEnv,
 } from "@/lib/auth.server";
 import { getEnv } from "@/lib/cloudflare.server";
 import {
@@ -52,7 +51,6 @@ export async function loader({ request, context }: Route.LoaderArgs) {
   const authContext = await requireAuthContext(request, context);
   await requireOrgAdmin(request, context, authContext.currentOrg.id);
   const env = getEnv(context);
-  const authEnv = getAuthEnv(env);
   const selfhostAiProvider = getSelfhostAiProviderStatus(env);
 
   if (selfhostAiProvider.configured) {
@@ -67,10 +65,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     };
   }
 
-  const orgStub = authEnv.ORG.get(
-    authEnv.ORG.idFromName(authContext.currentOrg.id),
-  );
-  const record = await orgStub.getLlmProviderConfig();
+  const record = authContext.currentOrgLlmProviderConfig;
 
   if (!record) {
     return {
