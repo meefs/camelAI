@@ -223,6 +223,14 @@ const PI_PROVIDER_TRANSIENT_ERROR_PATTERNS = [
 ];
 const CHAT_ACTIVE_AUTOMATION_RUN_KEY = "activeAutomationRun";
 
+// Trailing-debounce window for coalescing the high-frequency "thread is still
+// streaming" activity updates that ChatThreadDO fan-in RPCs to the single
+// WorkspaceDO instance. A burst of running-activity updates for the same thread
+// collapses into one RPC carrying the LATEST activity state. Terminal streaming
+// transitions (streaming start/stop) bypass this debounce entirely so a
+// workspace UI is never stuck showing "streaming".
+const WORKSPACE_STREAMING_ACTIVITY_DEBOUNCE_MS = 5_000;
+
 type LlmProviderConfigRecord = ReturnType<
   import("./identity/org-do").OrgDO["getLlmProviderConfig"]
 >;
@@ -3314,6 +3322,21 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
   private codexSessionId: string | null = null;
   private activeTurnUserId: string | null = null;
   private workspaceStatusStubs = new Map<string, DurableObjectStub<WorkspaceDO>>();
+  // Trailing-debounce state for coalescing WorkspaceDO.recordThreadStreaming
+  // running-activity updates. This is a per-thread DO, so a single pending entry
+  // (one timer + the latest payload) is sufficient. Terminal streaming
+  // transitions clear this so a stale activity update can never overwrite the
+  // final state.
+  private pendingStreamingActivity: {
+    workspaceId: string;
+    threadId: string;
+    activityText: string;
+    activityAt: number;
+    // Number of activity updates coalesced into this pending flush, for the
+    // observability counter emitted when it fires.
+    coalescedCount: number;
+  } | null = null;
+  private streamingActivityFlushTimer: ReturnType<typeof setTimeout> | null = null;
   private runnerConnectPromise: Promise<void> | null = null;
   private lastRunnerSeq: number = 0;
   private runnerTransitionChain: Promise<void> = Promise.resolve();
@@ -8268,6 +8291,12 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
   private resetRunningActivityState(): void {
     this.runningActivityLastText = null;
     this.runningActivityLastSentAt = 0;
+    // Any debounced running-activity update queued for the previous activity
+    // state is now stale: the turn is starting, ending, or the streaming state
+    // is flipping. Drop it so it cannot race a terminal transition and resurrect
+    // a "streaming" row. The authoritative streaming state is delivered
+    // un-debounced by setChatIsStreaming / completion recording.
+    this.discardPendingStreamingActivity();
   }
 
   private getWorkspaceStatusStub(workspaceId: string): DurableObjectStub<WorkspaceDO> {
@@ -8313,6 +8342,118 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     });
   }
 
+  /**
+   * Coalesce high-frequency "still streaming" running-activity updates into a
+   * single trailing-debounced RPC to the single WorkspaceDO instance.
+   *
+   * Each call records the LATEST activity payload and (re)arms a trailing timer.
+   * A burst of N updates within {@link WORKSPACE_STREAMING_ACTIVITY_DEBOUNCE_MS}
+   * collapses into one RPC carrying the most recent state.
+   *
+   * This is only used for `isStreaming = true` activity updates. Terminal
+   * streaming transitions (start/stop) and completion-metadata updates bypass
+   * the debounce via {@link flushPendingStreamingActivity} +
+   * {@link recordWorkspaceThreadStreaming}, so the workspace UI is never stuck
+   * showing "streaming".
+   *
+   * Eviction note: if the DO is evicted with a pending debounced update, that
+   * single activity-text update is lost. This is acceptable here because the
+   * value is a transient, best-effort "what is the agent doing right now" label,
+   * not terminal state. The very next activity update re-sends fresh text, and
+   * the turn-end terminal transition (always delivered, un-debounced) carries
+   * the authoritative streaming=false. The WorkspaceDO row also self-prunes
+   * after its TTL, so no permanently-stale "streaming" state can result from a
+   * dropped activity update.
+   */
+  private queueStreamingActivityUpdate(
+    workspaceId: string,
+    threadId: string,
+    activityText: string,
+    activityAt: number,
+  ): void {
+    const normalizedWorkspaceId = workspaceId.trim();
+    const normalizedThreadId = threadId.trim();
+    if (!normalizedWorkspaceId || !normalizedThreadId) return;
+
+    const existing = this.pendingStreamingActivity;
+    // If the pending entry targets a different workspace/thread (extremely rare
+    // for a per-thread DO, but the chat context can be re-pointed), flush the
+    // stale entry first so its latest state is not dropped silently.
+    if (
+      existing &&
+      (existing.workspaceId !== normalizedWorkspaceId ||
+        existing.threadId !== normalizedThreadId)
+    ) {
+      this.flushPendingStreamingActivity();
+    }
+
+    const prior = this.pendingStreamingActivity;
+    this.pendingStreamingActivity = {
+      workspaceId: normalizedWorkspaceId,
+      threadId: normalizedThreadId,
+      activityText,
+      activityAt,
+      coalescedCount: (prior?.coalescedCount ?? 0) + 1,
+    };
+
+    if (this.streamingActivityFlushTimer === null) {
+      this.streamingActivityFlushTimer = setTimeout(() => {
+        this.streamingActivityFlushTimer = null;
+        this.flushPendingStreamingActivity();
+      }, WORKSPACE_STREAMING_ACTIVITY_DEBOUNCE_MS);
+    }
+  }
+
+  /**
+   * Send any pending debounced running-activity update immediately (fire and
+   * forget) and clear the trailing timer. Safe to call when nothing is pending.
+   * Called by the trailing timer, and synchronously by terminal streaming
+   * transitions so the final state always wins over an in-flight activity blip.
+   */
+  private flushPendingStreamingActivity(): void {
+    if (this.streamingActivityFlushTimer !== null) {
+      clearTimeout(this.streamingActivityFlushTimer);
+      this.streamingActivityFlushTimer = null;
+    }
+    const pending = this.pendingStreamingActivity;
+    if (!pending) return;
+    this.pendingStreamingActivity = null;
+
+    if (pending.coalescedCount > 1) {
+      this.recordChatThreadObservabilityEvent("workspace_streaming_activity_coalesced", {
+        operation: "record_thread_streaming",
+        status: "flushed",
+        count: pending.coalescedCount,
+        sampleKey: pending.threadId,
+      });
+    }
+
+    this.ctx.waitUntil(
+      this.recordWorkspaceThreadStreaming(pending.workspaceId, pending.threadId, true, {
+        activityText: pending.activityText,
+        activityAt: pending.activityAt,
+      }).catch((error) => {
+        console.error("[ChatThreadDO] failed to flush running activity", error);
+      }),
+    );
+  }
+
+  /**
+   * Drop any pending debounced running-activity update without sending it.
+   * Used when a terminal streaming transition (streaming -> not streaming)
+   * supersedes the activity update: the activity payload only sets
+   * `isStreaming = true`, so flushing it after we have decided streaming has
+   * ended could resurrect a stale "streaming" row. The caller is responsible
+   * for delivering the authoritative terminal state.
+   */
+  private discardPendingStreamingActivity(): void {
+    if (this.streamingActivityFlushTimer !== null) {
+      clearTimeout(this.streamingActivityFlushTimer);
+      this.streamingActivityFlushTimer = null;
+    }
+    this.pendingStreamingActivity = null;
+  }
+
   private normalizeRunningActivityText(text: string | null | undefined): string | null {
     const normalized = text?.replace(/\s+/g, " ").trim() ?? "";
     if (!normalized) return null;
@@ -8347,15 +8488,17 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     }
     this.runningActivityLastText = activityText;
     this.runningActivityLastSentAt = now;
-    this.ctx.waitUntil(
-      this.recordWorkspaceThreadStreaming(
-        context.workspaceId,
-        context.threadId,
-        true,
-        { activityText, activityAt: now },
-      ).catch((error) => {
-        console.error("[ChatThreadDO] failed to record running activity", error);
-      }),
+    // Coalesce bursts of running-activity updates into a single trailing
+    // debounced RPC carrying the latest state, instead of fanning in one RPC per
+    // update to the single WorkspaceDO instance. Terminal streaming transitions
+    // (see setChatIsStreaming / recordThreadAssistantCompletion) flush or
+    // discard this pending update so the workspace UI never sticks on
+    // "streaming".
+    this.queueStreamingActivityUpdate(
+      context.workspaceId,
+      context.threadId,
+      activityText,
+      now,
     );
   }
 

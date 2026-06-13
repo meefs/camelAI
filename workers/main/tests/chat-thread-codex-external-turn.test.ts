@@ -4692,53 +4692,66 @@ describe('ChatThreadDO Codex turn handling', () => {
   });
 
   it('publishes live Pi running activity for thinking, text, and tools', async () => {
-    const { fake, activityRecords } = createPiEventFake();
+    // Running-activity RPCs are trailing-debounced (one flush per window with
+    // the latest text), so advance past the window after each event to assert
+    // every event's activity text individually.
+    vi.useFakeTimers();
+    try {
+      const { fake, activityRecords } = createPiEventFake();
 
-    await ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, { type: 'agent_start' });
-    await ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, {
-      type: 'message_update',
-      message: { role: 'assistant', content: [] },
-      assistantMessageEvent: {
-        type: 'thinking_start',
-        contentIndex: 0,
-      },
-    });
-    await ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, {
-      type: 'message_update',
-      message: { role: 'assistant', content: [] },
-      assistantMessageEvent: {
-        type: 'text_delta',
-        delta: 'Streaming assistant update.',
-      },
-    });
-    await ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, {
-      type: 'tool_execution_start',
-      toolCallId: 'tool-read',
-      toolName: 'read',
-      args: { file_path: '/workspace/src/App.tsx' },
-    });
-    await ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, {
-      type: 'tool_execution_end',
-      toolCallId: 'tool-read',
-      toolName: 'read',
-      args: { file_path: '/workspace/src/App.tsx' },
-      result: { content: [{ type: 'text', text: 'ok' }] },
-      isError: false,
-    });
+      const piEvents = [
+        { type: 'agent_start' },
+        {
+          type: 'message_update',
+          message: { role: 'assistant', content: [] },
+          assistantMessageEvent: {
+            type: 'thinking_start',
+            contentIndex: 0,
+          },
+        },
+        {
+          type: 'message_update',
+          message: { role: 'assistant', content: [] },
+          assistantMessageEvent: {
+            type: 'text_delta',
+            delta: 'Streaming assistant update.',
+          },
+        },
+        {
+          type: 'tool_execution_start',
+          toolCallId: 'tool-read',
+          toolName: 'read',
+          args: { file_path: '/workspace/src/App.tsx' },
+        },
+        {
+          type: 'tool_execution_end',
+          toolCallId: 'tool-read',
+          toolName: 'read',
+          args: { file_path: '/workspace/src/App.tsx' },
+          result: { content: [{ type: 'text', text: 'ok' }] },
+          isError: false,
+        },
+      ];
+      for (const piEvent of piEvents) {
+        await ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, piEvent);
+        await vi.advanceTimersByTimeAsync(5_001);
+        await flushWaitUntil(fake);
+      }
 
-    await flushWaitUntil(fake);
-
-    expect(
-      activityRecords.map(([, isStreaming, options]) => ({
-        isStreaming,
-        activityText: options.activityText,
-      })),
-    ).toEqual([
-      { isStreaming: true, activityText: 'Thinking' },
-      { isStreaming: true, activityText: 'Streaming assistant update.' },
-      { isStreaming: true, activityText: 'Reading App.tsx' },
-      { isStreaming: true, activityText: 'Read App.tsx' },
-    ]);
+      expect(
+        activityRecords.map(([, isStreaming, options]) => ({
+          isStreaming,
+          activityText: options.activityText,
+        })),
+      ).toEqual([
+        { isStreaming: true, activityText: 'Thinking' },
+        { isStreaming: true, activityText: 'Streaming assistant update.' },
+        { isStreaming: true, activityText: 'Reading App.tsx' },
+        { isStreaming: true, activityText: 'Read App.tsx' },
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('renders persisted Pi tool result messages with their assistant tool calls', async () => {
