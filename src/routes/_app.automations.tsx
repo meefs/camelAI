@@ -79,6 +79,8 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     orgId: authContext.currentOrg.id,
     userId: authContext.user.id,
     canManage: currentWorkspace.access_level === "full",
+    request,
+    currentUser: authContext.user,
   });
 
   return {

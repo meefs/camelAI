@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
 import type { User } from "@/types";
 import type { AuthEnv } from "@/lib/auth-helpers";
-import { loadUserProfileSummaries } from "@/lib/user-profiles.server";
+import {
+  loadUserProfileSummaries,
+  loadUsersById,
+} from "@/lib/user-profiles.server";
 
 function makeUser(id: string, overrides: Partial<User> = {}): User {
   return {
@@ -74,6 +77,24 @@ describe("loadUserProfileSummaries", () => {
     await loadUserProfileSummaries(env, ["user-1"], { request });
 
     expect(calls).toEqual(["user-1"]);
+  });
+
+  it("shares request cache entries between full users and summaries", async () => {
+    const user = makeUser("user-1", { email_verified_at: 123 });
+    const { env, calls } = makeAuthEnv(new Map([["user-1", user]]));
+    const request = new Request("https://example.com/history");
+
+    const summaries = await loadUserProfileSummaries(env, ["user-1"], { request });
+    const users = await loadUsersById(env, ["user-1"], { request });
+
+    expect(calls).toEqual(["user-1"]);
+    expect(summaries.get("user-1")).toEqual({
+      id: "user-1",
+      name: "user-1",
+      email: "user-1@example.com",
+      avatar: user.avatar,
+    });
+    expect(users.get("user-1")?.email_verified_at).toBe(123);
   });
 
   it("omits profiles that no longer exist", async () => {

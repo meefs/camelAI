@@ -117,6 +117,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
       authEnv,
       page.items,
       rawCreators.map((creator) => creator.created_by),
+      { request, preloadedUsers: [authContext.user] },
     );
     const threadCreators = hydrateHistoryThreadCreators(rawCreators, userMap);
 

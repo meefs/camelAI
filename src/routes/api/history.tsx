@@ -52,7 +52,10 @@ export async function loader({
     limit,
     createdBy,
   });
-  const { threads } = await hydrateHistoryThreads(authEnv, page.items);
+  const { threads } = await hydrateHistoryThreads(authEnv, page.items, [], {
+    request,
+    preloadedUsers: [authContext.user],
+  });
 
   return Response.json({
     threads,

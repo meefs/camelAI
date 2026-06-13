@@ -3,6 +3,7 @@ import type { Thread, ThreadCreator, User } from '@/types';
 import type { AuthEnv } from './auth.server';
 import type { RawThreadCreator } from './chat-do.server';
 import * as chatDO from './chat-do.server';
+import { loadUsersById } from './user-profiles.server';
 
 export type HistoryScope = 'this-workspace' | 'all-workspaces';
 
@@ -24,31 +25,13 @@ function toHydratedThread(thread: Thread, creator: User | undefined): Thread {
 
 async function hydrateUserProfiles(
   authEnv: AuthEnv,
-  userIds: string[]
+  userIds: string[],
+  options: {
+    request?: Request;
+    preloadedUsers?: Iterable<User | null | undefined>;
+  } = {},
 ): Promise<Map<string, User>> {
-  const uniqueUserIds = Array.from(new Set(userIds.filter(Boolean)));
-  if (uniqueUserIds.length === 0) {
-    return new Map();
-  }
-
-  const profiles = await Promise.all(
-    uniqueUserIds.map(async (userId) => {
-      const profile = await authEnv.USER
-        .get(authEnv.USER.idFromName(userId))
-        .getProfile();
-      return profile ? ([userId, profile] as const) : null;
-    })
-  );
-
-  const userMap = new Map<string, User>();
-  for (const entry of profiles) {
-    if (!entry) {
-      continue;
-    }
-    userMap.set(entry[0], entry[1]);
-  }
-
-  return userMap;
+  return loadUsersById(authEnv, userIds, options);
 }
 
 function toThreadCreator(
@@ -120,12 +103,16 @@ export async function fetchHistoryThreadCreators(
 export async function hydrateHistoryThreads(
   authEnv: AuthEnv,
   threads: Thread[],
-  additionalUserIds: string[] = []
+  additionalUserIds: string[] = [],
+  options: {
+    request?: Request;
+    preloadedUsers?: Iterable<User | null | undefined>;
+  } = {},
 ): Promise<{ threads: Thread[]; userMap: Map<string, User> }> {
   const userMap = await hydrateUserProfiles(authEnv, [
     ...threads.map((thread) => thread.created_by),
     ...additionalUserIds,
-  ]);
+  ], options);
 
   return {
     threads: threads.map((thread) =>

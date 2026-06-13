@@ -3,14 +3,14 @@ import type { AuthEnv } from "./auth-helpers";
 
 export type UserProfileSummary = Pick<User, "id" | "name" | "email" | "avatar">;
 
-interface LoadUserProfileSummariesOptions {
+interface LoadUserProfilesOptions {
   request?: Request;
-  preloadedUsers?: Iterable<UserProfileSummary | null | undefined>;
+  preloadedUsers?: Iterable<User | null | undefined>;
 }
 
 const requestUserProfileCache = new WeakMap<
   Request,
-  Map<string, Promise<UserProfileSummary | null>>
+  Map<string, Promise<User | null>>
 >();
 
 function toProfileSummary(user: UserProfileSummary): UserProfileSummary {
@@ -24,7 +24,7 @@ function toProfileSummary(user: UserProfileSummary): UserProfileSummary {
 
 function getRequestCache(
   request: Request | undefined,
-): Map<string, Promise<UserProfileSummary | null>> | null {
+): Map<string, Promise<User | null>> | null {
   if (!request) return null;
   let cache = requestUserProfileCache.get(request);
   if (!cache) {
@@ -34,21 +34,20 @@ function getRequestCache(
   return cache;
 }
 
-export async function loadUserProfileSummaries(
+export async function loadUsersById(
   env: AuthEnv,
   userIds: Iterable<string | null | undefined>,
-  options: LoadUserProfileSummariesOptions = {},
-): Promise<Map<string, UserProfileSummary>> {
+  options: LoadUserProfilesOptions = {},
+): Promise<Map<string, User>> {
   const ids = Array.from(new Set(Array.from(userIds).filter((id): id is string => Boolean(id))));
   if (ids.length === 0) return new Map();
 
   const requestCache = getRequestCache(options.request);
-  const preloadedProfiles = new Map<string, UserProfileSummary>();
+  const preloadedProfiles = new Map<string, User>();
   for (const user of options.preloadedUsers ?? []) {
     if (!user?.id) continue;
-    const profile = toProfileSummary(user);
-    preloadedProfiles.set(profile.id, profile);
-    requestCache?.set(profile.id, Promise.resolve(profile));
+    preloadedProfiles.set(user.id, user);
+    requestCache?.set(user.id, Promise.resolve(user));
   }
 
   const entries = await Promise.all(
@@ -60,7 +59,7 @@ export async function loadUserProfileSummaries(
           ? Promise.resolve(preloaded)
           : env.USER.get(env.USER.idFromName(id))
               .getProfile()
-              .then((profile) => (profile ? toProfileSummary(profile) : null));
+              .then((profile) => profile ?? null);
         requestCache?.set(id, profilePromise);
       }
 
@@ -69,11 +68,22 @@ export async function loadUserProfileSummaries(
     }),
   );
 
-  const profiles = new Map<string, UserProfileSummary>();
+  const profiles = new Map<string, User>();
   for (const [id, profile] of entries) {
     if (profile) {
       profiles.set(id, profile);
     }
   }
   return profiles;
+}
+
+export async function loadUserProfileSummaries(
+  env: AuthEnv,
+  userIds: Iterable<string | null | undefined>,
+  options: LoadUserProfilesOptions = {},
+): Promise<Map<string, UserProfileSummary>> {
+  const users = await loadUsersById(env, userIds, options);
+  return new Map(
+    Array.from(users, ([id, user]) => [id, toProfileSummary(user)] as const),
+  );
 }

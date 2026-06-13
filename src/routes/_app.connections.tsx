@@ -34,7 +34,7 @@ import {
   getWorkspaceEmailDomain,
 } from '@/lib/workspace-email';
 import { getBillingPlanLimits } from '@/lib/billing-plans';
-import type { Integration } from '@/types';
+import type { Integration, User } from '@/types';
 import type { ConnectionListItem } from '@/lib/connections-shared';
 import { projectsToMentionables, type MentionableProject } from '@/lib/mentions';
 import {
@@ -82,7 +82,7 @@ async function getOptionalCreatorProfiles(
   authEnv: ReturnType<typeof getAuthEnv>,
   userIds: Iterable<string | null | undefined>,
   request: Request,
-  preloadedUsers: Iterable<UserProfileSummary | null | undefined>,
+  preloadedUsers: Iterable<User | null | undefined>,
   label: string,
 ): Promise<Map<string, UserProfileSummary>> {
   try {
