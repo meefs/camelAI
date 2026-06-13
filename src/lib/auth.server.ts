@@ -22,7 +22,10 @@ import {
   getWorkspace,
 } from "./auth-do";
 import {
+  CLOUDFLARE_ACCESS_AUTH_SOURCE,
   tryCloudflareAccessSilentLogin,
+  validateAccessBackedSignedSession,
+  type AccessValidationEnv,
   type CloudflareAccessEnv,
 } from "./cloudflare-access-auth.server";
 import { retryTransientDurableObjectRead } from "./do-rpc-retry.server";
@@ -75,6 +78,31 @@ export interface SessionWorkspaceAccessContext extends SessionContext {
   access: WorkspaceAccessLevel;
 }
 
+async function tryCreateCloudflareAccessSessionContext(
+  request: Request,
+  context: AppLoadContext,
+  env: ReturnType<typeof getEnv>,
+): Promise<SessionContext | null> {
+  const accessSession = await tryCloudflareAccessSilentLogin(
+    request,
+    env as unknown as CloudflareAccessEnv,
+    getAuthEnv(env),
+  );
+  if (!accessSession) return null;
+
+  await redirectIfBannedSession(request, context, {
+    userId: accessSession.session.user_id,
+    userEmail: accessSession.session.user_email,
+    orgId: accessSession.session.org_id,
+  });
+
+  return {
+    sessionId: `signed:${accessSession.session.user_id}`,
+    session: accessSession.session,
+    createdSessionCookie: accessSession.signedToken,
+  };
+}
+
 /**
  * Get session from request, returns null if not authenticated.
  * Reads session data from HMAC-signed cookie, then checks UserDO
@@ -95,24 +123,29 @@ export async function getSession(
     env.TOKEN_SIGNING_SECRET,
   );
   if (!signedSession) {
-    const accessSession = await tryCloudflareAccessSilentLogin(
+    return tryCreateCloudflareAccessSessionContext(request, context, env);
+  }
+
+  if (signedSession.auth_source === CLOUDFLARE_ACCESS_AUTH_SOURCE) {
+    // Read-only revalidation: confirm the live Access identity still maps to
+    // the session org without re-running the mutating provisioning flow when
+    // the cookie still matches. If it no longer matches, immediately run the
+    // silent login path so the current Access identity can replace the stale
+    // signed cookie.
+    const accessValidation = await validateAccessBackedSignedSession(
       request,
-      env as unknown as CloudflareAccessEnv,
-      getAuthEnv(env),
+      env as unknown as AccessValidationEnv,
+      signedSession,
     );
-    if (!accessSession) return null;
-
-    await redirectIfBannedSession(request, context, {
-      userId: accessSession.session.user_id,
-      userEmail: accessSession.session.user_email,
-      orgId: accessSession.session.org_id,
-    });
-
-    return {
-      sessionId: `signed:${accessSession.session.user_id}`,
-      session: accessSession.session,
-      createdSessionCookie: accessSession.signedToken,
-    };
+    if (accessValidation === "unavailable") {
+      throw new Response(
+        "Cloudflare Access validation is temporarily unavailable",
+        { status: 503 },
+      );
+    }
+    if (accessValidation !== "valid") {
+      return tryCreateCloudflareAccessSessionContext(request, context, env);
+    }
   }
 
   await redirectIfBannedSession(request, context, {
@@ -143,6 +176,7 @@ export async function getSession(
     last_accessed: signedSession.created_at,
     user_name: signedSession.user_name,
     user_email: signedSession.user_email,
+    auth_source: signedSession.auth_source ?? null,
   };
 
   // sessionId is a placeholder — with signed cookies, the cookie IS the session
@@ -632,6 +666,7 @@ async function getAuthContextUncached(
         created_at: sessionContext.session.created_at,
         user_name: sessionContext.session.user_name,
         user_email: sessionContext.session.user_email,
+        auth_source: sessionContext.session.auth_source ?? null,
       },
     );
   }

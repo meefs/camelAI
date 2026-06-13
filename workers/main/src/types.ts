@@ -18,7 +18,7 @@ import type { AppScreenshotJob } from "./screenshot-queue.js";
 import type { SlackEventQueueMessage } from "./slack-types.js";
 import type { ArtifactsRepo } from "./workspace-filesystem-do.js";
 
-export interface ArtifactsBinding {
+interface ArtifactsBinding {
   create(
     name: string,
     options?: {

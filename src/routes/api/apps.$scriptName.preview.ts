@@ -1,7 +1,7 @@
 import type { Route } from './+types/apps.$scriptName.preview';
 import { getEnv, type CloudflareEnv } from '@/lib/cloudflare.server';
-import { getSignedSessionFromRequest } from '@/lib/cookies.server';
 import { type AuthEnv } from '@/lib/auth-helpers';
+import { getSession } from '@/lib/auth.server';
 import { isOrgMember, getWorkerAccessInfo } from '@/lib/auth-do';
 
 interface R2Env extends AuthEnv {
@@ -29,11 +29,13 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
       return Response.json({ error: 'App not found' }, { status: 404 });
     }
 
-    const env = getR2Env(getEnv(context));
-    const session = await getSignedSessionFromRequest(request, env.TOKEN_SIGNING_SECRET);
-    if (!session) {
+    const rawEnv = getEnv(context);
+    const env = getR2Env(rawEnv);
+    const sessionContext = await getSession(request, context);
+    if (!sessionContext) {
       return Response.json({ error: 'Unauthorized' }, { status: 401 });
     }
+    const session = sessionContext.session;
 
     // Pass script name as both dispatch name and legacy name to enable fallback lookup
     const accessInfo = await getWorkerAccessInfo(env, normalized, normalized);
@@ -76,6 +78,7 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
       },
     });
   } catch (error) {
+    if (error instanceof Response) return error;
     console.error('Error loading app preview:', error);
     return Response.json({ error: 'Failed to load app preview' }, { status: 500 });
   }

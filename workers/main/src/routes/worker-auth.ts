@@ -21,6 +21,7 @@ import {
   validateAndConsumeAuthState,
   createWorkerAuthToken,
 } from '../worker-auth.js';
+import { validateAccessBackedSignedSession } from '../helpers/access-session.js';
 import type { OrgDO, UserDO } from '../auth.js';
 
 // Auth callback path on dispatcher domain
@@ -48,6 +49,18 @@ export async function handleWorkerAuth({ req, env, url }: RouteContext): Promise
   const session = await getSignedSessionFromRequest(req, env.TOKEN_SIGNING_SECRET);
 
   if (!session) {
+    const loginUrl = new URL('/login', url.origin);
+    return redirect(loginUrl.toString());
+  }
+  const accessValidation = await validateAccessBackedSignedSession(
+    req,
+    env,
+    session,
+  );
+  if (accessValidation === 'unavailable') {
+    return text('Cloudflare Access validation is temporarily unavailable', 503);
+  }
+  if (accessValidation !== 'valid') {
     const loginUrl = new URL('/login', url.origin);
     return redirect(loginUrl.toString());
   }

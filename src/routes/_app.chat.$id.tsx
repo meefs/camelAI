@@ -36,6 +36,11 @@ import { getEffectiveLlmProviderConfig } from "@/lib/selfhost-ai-provider";
 import { isSelfhostRuntime } from "@/lib/selfhost-runtime";
 import { getOrg, getWorkerScript } from "@/lib/auth-do";
 import { switchSessionOrg, switchSessionWorkspace } from "@/lib/auth-do";
+import {
+  CLOUDFLARE_ACCESS_AUTH_SOURCE,
+  validateAccessIdentityMapsToOrg,
+  type AccessValidationEnv,
+} from "@/lib/cloudflare-access-auth.server";
 import { getChatDebugFlags } from "@/lib/chat-debug-flags";
 import { shouldRevalidateActiveChatRoute } from "@/lib/chat-route-revalidation";
 import { parseChannelIndicatorKindsJson } from "@/lib/channel-kinds";
@@ -820,24 +825,49 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
       return null;
     });
     if (groupWorkspace && groupWorkspace.id !== workspaceId) {
-      const signedToken =
-        groupWorkspace.org_id !== authContext.session.org_id
-          ? await switchSessionOrg(
-              authEnv,
-              authContext.session,
-              groupWorkspace.org_id,
-              groupWorkspace.id,
-            )
-          : await switchSessionWorkspace(
-              authEnv,
-              authContext.session,
-              groupWorkspace.id,
-            );
-      throw redirect(`${url.pathname}${url.search}`, {
-        headers: {
-          "Set-Cookie": createSessionCookieHeader(signedToken, request),
-        },
-      });
+      let canSwitch = true;
+      if (
+        groupWorkspace.org_id !== authContext.session.org_id &&
+        authContext.session.auth_source === CLOUDFLARE_ACCESS_AUTH_SOURCE
+      ) {
+        // An Access-backed cookie is only accepted for orgs the live Access
+        // identity maps to; switching to an unmapped org would mint a cookie
+        // that every subsequent request rejects. Stay in the current
+        // workspace instead.
+        const accessValidation = await validateAccessIdentityMapsToOrg(
+          request,
+          env as unknown as AccessValidationEnv,
+          authContext.session.user_email,
+          groupWorkspace.org_id,
+        );
+        if (accessValidation !== "valid") {
+          canSwitch = false;
+          console.warn(
+            "[cloudflare-access] skipped chat group org switch for unmapped org",
+            { orgId: groupWorkspace.org_id, validation: accessValidation },
+          );
+        }
+      }
+      if (canSwitch) {
+        const signedToken =
+          groupWorkspace.org_id !== authContext.session.org_id
+            ? await switchSessionOrg(
+                authEnv,
+                authContext.session,
+                groupWorkspace.org_id,
+                groupWorkspace.id,
+              )
+            : await switchSessionWorkspace(
+                authEnv,
+                authContext.session,
+                groupWorkspace.id,
+              );
+        throw redirect(`${url.pathname}${url.search}`, {
+          headers: {
+            "Set-Cookie": createSessionCookieHeader(signedToken, request),
+          },
+        });
+      }
     }
   }
 

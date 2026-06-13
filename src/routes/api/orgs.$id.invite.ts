@@ -1,7 +1,7 @@
 import type { Route } from './+types/orgs.$id.invite';
 import { getEnv } from '@/lib/cloudflare.server';
 import { getAuthEnv } from '@/lib/auth-helpers';
-import { getSignedSessionFromRequest } from '@/lib/cookies.server';
+import { getSession } from '@/lib/auth.server';
 import {
   createInvitation,
   getInvitation,
@@ -32,10 +32,11 @@ export async function action({ request, context, params }: Route.ActionArgs) {
   const env = getEnv(context);
   const authEnv = getAuthEnv(env);
 
-  const session = await getSignedSessionFromRequest(request, env.TOKEN_SIGNING_SECRET);
-  if (!session) {
+  const sessionContext = await getSession(request, context);
+  if (!sessionContext) {
     return Response.json({ error: 'Not authenticated' }, { status: 401 });
   }
+  const session = sessionContext.session;
 
   if (request.method === 'POST') {
     try {

@@ -11,7 +11,9 @@ const authHelpersMocks = vi.hoisted(() => ({
   getAuthEnv: vi.fn(),
 }));
 const accessAuthMocks = vi.hoisted(() => ({
+  CLOUDFLARE_ACCESS_AUTH_SOURCE: "cloudflare_access",
   tryCloudflareAccessSilentLogin: vi.fn(),
+  validateAccessBackedSignedSession: vi.fn(),
 }));
 const banMocks = vi.hoisted(() => ({
   redirectIfBannedSession: vi.fn(),
@@ -62,6 +64,153 @@ describe("Cloudflare Access session ban checks", () => {
     expect(banMocks.redirectIfBannedSession).toHaveBeenCalledWith(
       request,
       context,
+      {
+        userId: "user-1",
+        userEmail: "access@example.com",
+        orgId: "org-1",
+      },
+    );
+  });
+
+  it("refreshes Access-created signed sessions that fail revalidation", async () => {
+    const refreshedSession: SessionData = {
+      user_id: "user-2",
+      org_id: "org-2",
+      workspace_id: "workspace-2",
+      created_at: 456,
+      last_accessed: 456,
+      user_name: "Current Access User",
+      user_email: "current@example.com",
+      auth_source: "cloudflare_access",
+    };
+    cookiesMocks.getSignedSessionFromRequest.mockResolvedValue({
+      user_id: "user-1",
+      org_id: "org-1",
+      workspace_id: "workspace-1",
+      created_at: 123,
+      user_name: "Access User",
+      user_email: "access@example.com",
+      auth_source: "cloudflare_access",
+    });
+    accessAuthMocks.validateAccessBackedSignedSession.mockResolvedValue(
+      "invalid",
+    );
+    accessAuthMocks.tryCloudflareAccessSilentLogin.mockResolvedValue({
+      session: refreshedSession,
+      signedToken: "refreshed-token",
+      user: {
+        id: "user-2",
+        email: "current@example.com",
+        name: "Current Access User",
+      },
+      orgs: [{ id: "org-2", name: "Current Access Org" }],
+    });
+    const request = new Request("https://app.example.com/private", {
+      headers: { "Cf-Access-Jwt-Assertion": "token" },
+    });
+    const { getSession } = await import("@/lib/auth.server");
+
+    await expect(getSession(request, {} as never)).resolves.toMatchObject({
+      session: refreshedSession,
+      createdSessionCookie: "refreshed-token",
+    });
+    expect(banMocks.redirectIfBannedSession).toHaveBeenCalledWith(
+      request,
+      {},
+      {
+        userId: "user-2",
+        userEmail: "current@example.com",
+        orgId: "org-2",
+      },
+    );
+    expect(accessAuthMocks.tryCloudflareAccessSilentLogin).toHaveBeenCalled();
+  });
+
+  it("returns null for invalid Access-created signed sessions when silent login is unavailable", async () => {
+    cookiesMocks.getSignedSessionFromRequest.mockResolvedValue({
+      user_id: "user-1",
+      org_id: "org-1",
+      workspace_id: "workspace-1",
+      created_at: 123,
+      user_name: "Access User",
+      user_email: "access@example.com",
+      auth_source: "cloudflare_access",
+    });
+    accessAuthMocks.validateAccessBackedSignedSession.mockResolvedValue(
+      "invalid",
+    );
+    accessAuthMocks.tryCloudflareAccessSilentLogin.mockResolvedValue(null);
+    const request = new Request("https://app.example.com/private");
+    const { getSession } = await import("@/lib/auth.server");
+
+    await expect(getSession(request, {} as never)).resolves.toBeNull();
+    expect(banMocks.redirectIfBannedSession).not.toHaveBeenCalled();
+  });
+
+  it("surfaces a 503 when Access revalidation is temporarily unavailable", async () => {
+    cookiesMocks.getSignedSessionFromRequest.mockResolvedValue({
+      user_id: "user-1",
+      org_id: "org-1",
+      workspace_id: "workspace-1",
+      created_at: 123,
+      user_name: "Access User",
+      user_email: "access@example.com",
+      auth_source: "cloudflare_access",
+    });
+    accessAuthMocks.validateAccessBackedSignedSession.mockResolvedValue(
+      "unavailable",
+    );
+    const request = new Request("https://app.example.com/private", {
+      headers: { "Cf-Access-Jwt-Assertion": "token" },
+    });
+    const { getSession } = await import("@/lib/auth.server");
+
+    await expect(getSession(request, {} as never)).rejects.toMatchObject({
+      status: 503,
+    });
+    expect(banMocks.redirectIfBannedSession).not.toHaveBeenCalled();
+  });
+
+  it("accepts Access-created signed sessions that pass read-only revalidation", async () => {
+    cookiesMocks.getSignedSessionFromRequest.mockResolvedValue({
+      user_id: "user-1",
+      org_id: "org-1",
+      workspace_id: "workspace-1",
+      created_at: 123,
+      user_name: "Access User",
+      user_email: "access@example.com",
+      auth_source: "cloudflare_access",
+    });
+    accessAuthMocks.validateAccessBackedSignedSession.mockResolvedValue(
+      "valid",
+    );
+    const userStub = {
+      getSessionInvalidatedAt: vi.fn(async () => null),
+    };
+    authHelpersMocks.getAuthEnv.mockReturnValue({
+      USER: {
+        idFromName: vi.fn((name: string) => name),
+        get: vi.fn(() => userStub),
+      },
+    });
+    const request = new Request("https://app.example.com/private", {
+      headers: { "Cf-Access-Jwt-Assertion": "token" },
+    });
+    const { getSession } = await import("@/lib/auth.server");
+
+    await expect(getSession(request, {} as never)).resolves.toMatchObject({
+      session: {
+        user_id: "user-1",
+        org_id: "org-1",
+        auth_source: "cloudflare_access",
+      },
+    });
+    // The revalidation path must stay read-only: the mutating silent-login
+    // provisioning flow runs only when no signed cookie exists.
+    expect(accessAuthMocks.tryCloudflareAccessSilentLogin).not.toHaveBeenCalled();
+    expect(banMocks.redirectIfBannedSession).toHaveBeenCalledWith(
+      request,
+      {},
       {
         userId: "user-1",
         userEmail: "access@example.com",

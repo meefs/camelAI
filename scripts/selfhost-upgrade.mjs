@@ -25,4 +25,3 @@ await run("docker", composeArgs(env, ["up", "-d", "--remove-orphans"]), {
 await run(process.execPath, ["scripts/selfhost-doctor.mjs"], { env: scriptEnv(env) });
 
 console.log("Self-host upgrade completed.");
-

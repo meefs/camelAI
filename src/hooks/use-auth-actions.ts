@@ -7,6 +7,7 @@ type AuthActionResponse = {
   success?: boolean;
   error?: string;
   redirect?: string;
+  accessLogoutUrl?: string | null;
 };
 
 async function postJsonAction(
@@ -55,7 +56,11 @@ export function useLogout() {
     setIsLoggingOut(true);
     setError(undefined);
     try {
-      await postJsonAction('/api/auth/logout');
+      const data = await postJsonAction('/api/auth/logout');
+      if (data.accessLogoutUrl) {
+        window.location.assign(data.accessLogoutUrl);
+        return;
+      }
       navigate('/login');
     } catch (caught) {
       const nextError =

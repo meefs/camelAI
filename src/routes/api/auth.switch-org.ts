@@ -1,16 +1,15 @@
 import type { Route } from "./+types/auth.switch-org";
 import { getEnv, type CloudflareEnv } from "@/lib/cloudflare.server";
-import {
-  getSignedSessionFromRequest,
-  createSessionCookieHeader,
-} from "@/lib/cookies.server";
+import { createSessionCookieHeader } from "@/lib/cookies.server";
 import { type AuthEnv } from "@/lib/auth-helpers";
+import { getSession } from "@/lib/auth.server";
 import {
   isOrgMember,
   listUserWorkspaces,
   switchSessionOrg,
 } from "@/lib/auth-do";
 import { getBanForSessionIdentifiers } from "@/lib/ban.server";
+import { requireAccessMappedOrg } from "@/lib/cloudflare-access-auth.server";
 
 function getAuthEnv(env: CloudflareEnv): AuthEnv {
   return {
@@ -33,13 +32,11 @@ export async function action({ request, context }: Route.ActionArgs) {
     const env = getEnv(context);
     const authEnv = getAuthEnv(env);
 
-    const session = await getSignedSessionFromRequest(
-      request,
-      env.TOKEN_SIGNING_SECRET,
-    );
-    if (!session) {
+    const sessionContext = await getSession(request, context);
+    if (!sessionContext) {
       return Response.json({ error: "Not authenticated" }, { status: 401 });
     }
+    const session = sessionContext.session;
 
     const existingBan = await getBanForSessionIdentifiers(context, {
       userId: session.user_id,
@@ -80,6 +77,9 @@ export async function action({ request, context }: Route.ActionArgs) {
       );
     }
 
+    const accessDenied = await requireAccessMappedOrg(request, env, session, orgId);
+    if (accessDenied) return accessDenied;
+
     // Get workspaces for the org
     const workspaces = await listUserWorkspaces(
       authEnv,
@@ -97,6 +97,7 @@ export async function action({ request, context }: Route.ActionArgs) {
       last_accessed: session.created_at,
       user_name: session.user_name,
       user_email: session.user_email,
+      auth_source: session.auth_source ?? null,
     };
     const signedToken = await switchSessionOrg(
       authEnv,
@@ -114,6 +115,7 @@ export async function action({ request, context }: Route.ActionArgs) {
       },
     );
   } catch (error) {
+    if (error instanceof Response) return error;
     console.error("Switch org error:", error);
     return Response.json(
       { error: "Failed to switch organization" },

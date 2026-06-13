@@ -1,6 +1,5 @@
 import type { AppLoadContext } from "react-router";
 import { getEnv } from "@/lib/cloudflare.server";
-import { getSignedSessionFromRequest } from "@/lib/cookies.server";
 import { validateEmailVerificationToken } from "@/lib/email-verification-token";
 
 function redirectWithParams(

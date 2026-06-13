@@ -10,6 +10,9 @@
  *   os_<base64url(payload)>.<base64url(hmac)>  — OAuth state (5-minute expiry)
  */
 
+/** `auth_source` tag for sessions minted from a Cloudflare Access assertion. */
+export const CLOUDFLARE_ACCESS_AUTH_SOURCE = "cloudflare_access";
+
 export interface SignedSessionData {
   user_id: string;
   org_id: string;
@@ -17,6 +20,7 @@ export interface SignedSessionData {
   created_at: number;
   user_name?: string | null;
   user_email?: string | null;
+  auth_source?: typeof CLOUDFLARE_ACCESS_AUTH_SOURCE | null;
 }
 
 export interface SignedOAuthStateData {
@@ -38,7 +42,7 @@ function base64urlEncode(data: Uint8Array): string {
     .replace(/=/g, '');
 }
 
-function base64urlDecode(str: string): Uint8Array {
+export function base64urlDecode(str: string): Uint8Array<ArrayBuffer> {
   const base64 = str.replace(/-/g, '+').replace(/_/g, '/');
   const padded = base64 + '='.repeat((4 - (base64.length % 4)) % 4);
   const binary = atob(padded);

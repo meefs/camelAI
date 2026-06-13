@@ -1,10 +1,8 @@
 import type { Route } from "./+types/auth.switch-workspace";
 import { getEnv, type CloudflareEnv } from "@/lib/cloudflare.server";
-import {
-  getSignedSessionFromRequest,
-  createSessionCookieHeader,
-} from "@/lib/cookies.server";
+import { createSessionCookieHeader } from "@/lib/cookies.server";
 import { type AuthEnv } from "@/lib/auth-helpers";
+import { getSession } from "@/lib/auth.server";
 import {
   getWorkspace,
   getWorkspaceAccess,
@@ -12,6 +10,7 @@ import {
   switchSessionWorkspace,
 } from "@/lib/auth-do";
 import { getBanForSessionIdentifiers } from "@/lib/ban.server";
+import { requireAccessMappedOrg } from "@/lib/cloudflare-access-auth.server";
 
 function getAuthEnv(env: CloudflareEnv): AuthEnv {
   return {
@@ -34,13 +33,11 @@ export async function action({ request, context }: Route.ActionArgs) {
     const env = getEnv(context);
     const authEnv = getAuthEnv(env);
 
-    const session = await getSignedSessionFromRequest(
-      request,
-      env.TOKEN_SIGNING_SECRET,
-    );
-    if (!session) {
+    const sessionContext = await getSession(request, context);
+    if (!sessionContext) {
       return Response.json({ error: "Not authenticated" }, { status: 401 });
     }
+    const session = sessionContext.session;
 
     const existingBan = await getBanForSessionIdentifiers(context, {
       userId: session.user_id,
@@ -101,11 +98,19 @@ export async function action({ request, context }: Route.ActionArgs) {
       last_accessed: session.created_at,
       user_name: session.user_name,
       user_email: session.user_email,
+      auth_source: session.auth_source ?? null,
     };
 
     let signedToken: string;
     // If workspace is in a different org, switch org as well
     if (workspace.org_id !== session.org_id) {
+      const accessDenied = await requireAccessMappedOrg(
+        request,
+        env,
+        session,
+        workspace.org_id,
+      );
+      if (accessDenied) return accessDenied;
       signedToken = await switchSessionOrg(
         authEnv,
         currentSessionData,
@@ -129,6 +134,7 @@ export async function action({ request, context }: Route.ActionArgs) {
       },
     );
   } catch (error) {
+    if (error instanceof Response) return error;
     console.error("Switch workspace error:", error);
     return Response.json(
       { error: "Failed to switch workspace" },

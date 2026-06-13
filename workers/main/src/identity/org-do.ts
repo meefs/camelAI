@@ -506,6 +506,7 @@ export class OrgDO extends DurableObject<DOEnv> {
     "legacyHostUsageBackfillResult";
   private static readonly LEGACY_HOST_USAGE_BACKFILL_ERROR_KEY =
     "legacyHostUsageBackfillError";
+  private static readonly ACCESS_MAPPED_ORG_ID_KEY = "accessMappedOrgId";
 
   constructor(ctx: DurableObjectState, env: DOEnv) {
     super(ctx, env);
@@ -1992,6 +1993,7 @@ export class OrgDO extends DurableObject<DOEnv> {
     id: string,
     name: string,
     createdBy: string,
+    initialRole: OrgRole = "owner",
   ): Promise<{ org: Organization; defaultWorkspaceId: string }> {
     const now = Date.now();
     const slug = await generateUniqueOrgSlug(id, this.env.APP_KV);
@@ -2025,8 +2027,9 @@ export class OrgDO extends DurableObject<DOEnv> {
     try {
       await this.setInfo(info);
 
-      // Add creator as owner
-      await this.addMember(createdBy, "owner", createdBy);
+      // Add creator with the role chosen by the auth flow. Normal app-created
+      // orgs use the default owner role; SSO-created orgs may start as members.
+      await this.addMember(createdBy, initialRole, createdBy);
       this.log("org_created", createdBy, id, { name });
 
       // Create default workspace (WorkspaceDO.createWorkspace registers with org automatically)
@@ -2058,6 +2061,61 @@ export class OrgDO extends DurableObject<DOEnv> {
       }
       throw error;
     }
+  }
+
+  async ensureAccessMappedOrg(
+    kvKey: string,
+    name: string,
+    userId: string,
+    role: OrgRole,
+  ): Promise<{ org: Organization; defaultWorkspaceId: string | null }> {
+    // This lock DO instance (keyed by kvKey) is the authoritative owner of the
+    // mapping: APP_KV is eventually consistent and its write can fail after
+    // the org already exists, so the org id is also recorded in DO storage to
+    // prevent a duplicate org from being created on retry.
+    const locallyMappedOrgId =
+      this.ctx.storage.kv.get<string>(OrgDO.ACCESS_MAPPED_ORG_ID_KEY) ?? null;
+    const kvMappedOrgId = await this.env.APP_KV.get(kvKey);
+    const existingOrgId = kvMappedOrgId ?? locallyMappedOrgId;
+    if (existingOrgId) {
+      const existingOrgStub = this.env.ORG.get(
+        this.env.ORG.idFromName(existingOrgId),
+      );
+      const existingOrg = await existingOrgStub.getInfo();
+      if (existingOrg) {
+        if (!kvMappedOrgId) {
+          // Heal a mapping lost to an earlier APP_KV write failure.
+          await this.env.APP_KV.put(kvKey, existingOrgId);
+        }
+        const workspaces = await existingOrgStub.getWorkspaces();
+        const defaultWorkspaceId =
+          workspaces.find((workspace) => !workspace.archived)?.id ?? null;
+        return { org: existingOrg, defaultWorkspaceId };
+      }
+    }
+    if (role !== "admin") {
+      throw new Error("Cloudflare Access orgs must be initialized by an admin");
+    }
+
+    const orgId = crypto.randomUUID();
+    const orgStub = this.env.ORG.get(this.env.ORG.idFromName(orgId));
+    const created = await orgStub.createOrg(orgId, name, userId, "owner");
+    const userStub = this.env.USER.get(this.env.USER.idFromName(userId));
+    await userStub.addOrg(orgId, "owner", created.defaultWorkspaceId);
+    this.ctx.storage.kv.put(OrgDO.ACCESS_MAPPED_ORG_ID_KEY, orgId);
+    await this.env.APP_KV.put(kvKey, orgId);
+    return created;
+  }
+
+  /**
+   * Strongly consistent read of the Access org mapping owned by this lock DO.
+   * Used by session validators when the eventually consistent APP_KV mapping
+   * is not visible yet.
+   */
+  async getAccessMappedOrgId(): Promise<string | null> {
+    return (
+      this.ctx.storage.kv.get<string>(OrgDO.ACCESS_MAPPED_ORG_ID_KEY) ?? null
+    );
   }
 
   async updateName(name: string, actorId: string): Promise<void> {

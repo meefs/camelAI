@@ -1,7 +1,8 @@
 import type { Route } from './+types/invitations.$orgId.$invitationId';
 import { getEnv } from '@/lib/cloudflare.server';
 import { getAuthEnv } from '@/lib/auth-helpers';
-import { getSignedSessionFromRequest, createSessionCookieHeader } from '@/lib/cookies.server';
+import { getSession } from '@/lib/auth.server';
+import { createSessionCookieHeader } from '@/lib/cookies.server';
 import {
   acceptInvitation,
   getInvitation,
@@ -9,6 +10,7 @@ import {
   switchSessionOrg,
 } from '@/lib/auth-do';
 import { bestEffortSyncTeamSubscriptionSeatCount } from '@/lib/billing.server';
+import { requireAccessMappedOrg } from '@/lib/cloudflare-access-auth.server';
 
 export async function loader({ params, context }: Route.LoaderArgs) {
   try {
@@ -57,10 +59,11 @@ export async function action({ request, context, params }: Route.ActionArgs) {
     const env = getEnv(context);
     const authEnv = getAuthEnv(env);
 
-    const session = await getSignedSessionFromRequest(request, env.TOKEN_SIGNING_SECRET);
-    if (!session) {
+    const sessionContext = await getSession(request, context);
+    if (!sessionContext) {
       return Response.json({ error: 'Not authenticated' }, { status: 401 });
     }
+    const session = sessionContext.session;
 
     const invitation = await getInvitation(authEnv, orgId, invitationId);
     if (!invitation) {
@@ -77,6 +80,11 @@ export async function action({ request, context, params }: Route.ActionArgs) {
     if (user.email.toLowerCase() !== invitation.email.toLowerCase()) {
       return Response.json({ error: 'Invitation email does not match current user' }, { status: 403 });
     }
+
+    // Reject before mutating: accepting an invite to an org outside the live
+    // Access identity would create a membership the user can never use.
+    const accessDenied = await requireAccessMappedOrg(request, env, session, orgId);
+    if (accessDenied) return accessDenied;
 
     await bestEffortSyncTeamSubscriptionSeatCount(env, orgId, {
       reason: 'invitation_accept_before_membership',
@@ -103,6 +111,7 @@ export async function action({ request, context, params }: Route.ActionArgs) {
       last_accessed: session.created_at,
       user_name: session.user_name,
       user_email: session.user_email,
+      auth_source: session.auth_source ?? null,
     };
     const signedToken = await switchSessionOrg(authEnv, currentSessionData, orgId, workspaceId);
 
@@ -115,6 +124,7 @@ export async function action({ request, context, params }: Route.ActionArgs) {
       { headers: { 'Set-Cookie': createSessionCookieHeader(signedToken, request) } }
     );
   } catch (error) {
+    if (error instanceof Response) return error;
     console.error('Accept invitation error:', error);
     return Response.json({ error: 'Failed to accept invitation' }, { status: 500 });
   }

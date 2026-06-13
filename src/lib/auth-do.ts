@@ -122,6 +122,7 @@ export async function createSession(
   orgId: string,
   workspaceId: string | null = null,
   userInfo?: { name?: string | null; email?: string | null },
+  options?: { authSource?: SignedSessionData["auth_source"] },
 ): Promise<{ signedToken: string; sessionData: SessionData }> {
   const now = Date.now();
   const sessionData: SessionData = {
@@ -132,6 +133,7 @@ export async function createSession(
     last_accessed: now,
     user_name: userInfo?.name ?? null,
     user_email: userInfo?.email ?? null,
+    auth_source: options?.authSource ?? null,
   };
   const signedSession: SignedSessionData = {
     user_id: userId,
@@ -140,6 +142,7 @@ export async function createSession(
     created_at: now,
     user_name: userInfo?.name ?? null,
     user_email: userInfo?.email ?? null,
+    auth_source: options?.authSource ?? null,
   };
   const signedToken = await createSignedSession(
     env.TOKEN_SIGNING_SECRET,
@@ -164,6 +167,7 @@ export async function switchSessionOrg(
     created_at: Date.now(),
     user_name: currentSession.user_name,
     user_email: currentSession.user_email,
+    auth_source: currentSession.auth_source ?? null,
   };
   const signedToken = await createSignedSession(
     env.TOKEN_SIGNING_SECRET,
@@ -192,6 +196,7 @@ export async function switchSessionWorkspace(
     created_at: Date.now(),
     user_name: currentSession.user_name,
     user_email: currentSession.user_email,
+    auth_source: currentSession.auth_source ?? null,
   };
   const signedToken = await createSignedSession(
     env.TOKEN_SIGNING_SECRET,

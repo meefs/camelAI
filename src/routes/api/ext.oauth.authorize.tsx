@@ -2,7 +2,7 @@ import type { Route } from './+types/ext.oauth.authorize';
 import { redirect, data } from 'react-router';
 import { getEnv } from '@/lib/cloudflare.server';
 import { getOAuth, err, OAuthError, CLI_REDIRECT_URI, verifyWorkspaceAccess, listUserWorkspaces } from '@/lib/ext-api.server';
-import { getSignedSessionFromRequest } from '../../../workers/main/src/cookies';
+import { getSession } from '@/lib/auth.server';
 
 function parseParams(request: Request, url: URL): URLSearchParams {
   if (request.method === 'POST') {
@@ -40,10 +40,11 @@ export async function loader({ request, context }: Route.LoaderArgs) {
   if (redirectUri !== CLI_REDIRECT_URI)
     return new OAuthError('invalid_request', 'Invalid redirect_uri').toResponse();
 
-  const session = await getSignedSessionFromRequest(request, env.TOKEN_SIGNING_SECRET);
-  if (!session) {
+  const sessionContext = await getSession(request, context);
+  if (!sessionContext) {
     return redirect(`/login?redirect=${encodeURIComponent(url.pathname + url.search)}`);
   }
+  const session = sessionContext.session;
 
   const workspaces = await listUserWorkspaces(env, session.user_id, session.org_id);
 
@@ -81,8 +82,11 @@ export async function action({ request, context }: Route.ActionArgs) {
   if (!workspaceId)
     return new OAuthError('invalid_request', 'No workspace selected').toResponse();
 
-  const session = await getSignedSessionFromRequest(request, env.TOKEN_SIGNING_SECRET);
-  if (!session) return new OAuthError('invalid_request', 'Not authenticated').toResponse(401);
+  const sessionContext = await getSession(request, context);
+  if (!sessionContext) {
+    return new OAuthError('invalid_request', 'Not authenticated').toResponse(401);
+  }
+  const session = sessionContext.session;
 
   const ok = await verifyWorkspaceAccess(env, session.user_id, session.org_id, workspaceId);
   if (!ok) return new OAuthError('access_denied', 'No access to this workspace').toResponse();

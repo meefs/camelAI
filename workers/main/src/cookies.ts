@@ -74,7 +74,7 @@ function buildCookie(name: string, value: string, maxAge: number, secure: boolea
   return parts.join('; ');
 }
 
-function parseCookie(header: string | null, name: string): string | null {
+export function parseCookie(header: string | null, name: string): string | null {
   if (!header) return null;
   let result: string | null = null;
   for (const part of header.split(';')) {

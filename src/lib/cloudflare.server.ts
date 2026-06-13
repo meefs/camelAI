@@ -5,7 +5,6 @@ import type { WorkspaceFilesystemDO } from "../../workers/main/src/workspace-fil
 import type { ChatThreadDO } from "../../workers/main/src/chat-thread-do";
 import type { WorkspaceCronDO } from "../../workers/main/src/workspace-cron";
 import type { WorkerLogsDO } from "../../workers/main/src/worker-logs-do";
-import type { ArtifactsBinding } from "../../workers/main/src/types";
 import type {
   SlackTeamRegistryDO,
   TelegramRegistryDO,
@@ -53,7 +52,7 @@ export interface CloudflareEnv {
   OBSERVABILITY_EVENTS?: AnalyticsEngineDataset;
   ERROR_ANALYTICS?: AnalyticsEngineDataset;
   APP_DB?: D1Database;
-  ARTIFACTS?: ArtifactsBinding;
+  ARTIFACTS?: unknown;
 
   // Environment variables
   NEXTJS_ENV?: string;
@@ -65,14 +64,6 @@ export interface CloudflareEnv {
   CF_GATEWAY_NAME?: string;
   CF_GATEWAY_TOKEN?: string;
   AI_GATEWAY_AUTH_TOKEN?: string;
-  SELFHOST_AI_PROVIDER?: string;
-  SELFHOST_AI_API_KEY?: string;
-  SELFHOST_AI_BASE_URL?: string;
-  SELFHOST_AI_MODEL?: string;
-  SELFHOST_AI_NAME?: string;
-  SELFHOST_AI_AUTH_TYPE?: string;
-  SELFHOST_AI_API?: string;
-  SELFHOST_AI_AWS_REGION?: string;
   CF_DISPATCH_NAMESPACE: string;
   CF_API_TOKEN?: string;
   CF_ZONE_ID?: string;

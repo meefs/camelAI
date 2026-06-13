@@ -15,6 +15,7 @@ import {
 import { text } from "./response.js";
 import { getWorkspaceStub, getOrgStub } from "./stubs.js";
 import { isOrgBanned, isUserBanned } from "../ban-list.js";
+import { validateAccessBackedSignedSession } from "./access-session.js";
 import {
   isTransientDurableObjectRpcError,
   retryTransientDurableObjectRpc,
@@ -75,6 +76,19 @@ export async function requireSession(
     env.TOKEN_SIGNING_SECRET,
   );
   if (!signedSession) return { error: text("Unauthorized", 401) };
+  const accessValidation = await validateAccessBackedSignedSession(
+    req,
+    env,
+    signedSession,
+  );
+  if (accessValidation === "unavailable") {
+    return {
+      error: text("Cloudflare Access validation is temporarily unavailable", 503),
+    };
+  }
+  if (accessValidation !== "valid") {
+    return { error: text("Unauthorized", 401) };
+  }
 
   const [userBan, orgBan] = await Promise.all([
     isUserBanned(env.APP_KV, {
@@ -141,6 +155,7 @@ export async function requireSession(
     last_accessed: signedSession.created_at,
     user_name: signedSession.user_name,
     user_email: signedSession.user_email,
+    auth_source: signedSession.auth_source ?? null,
   };
 
   return { session };

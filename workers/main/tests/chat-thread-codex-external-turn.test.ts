@@ -594,6 +594,7 @@ describe('ChatThreadDO Codex turn handling', () => {
     }));
     fake.recordCurrentThreadError = vi.fn();
     fake.sendDirect = vi.fn((socket: any, message: any) => socket.send(message));
+    fake.ctx = { storage: { kv: { get: vi.fn(), put: vi.fn() } } };
 
     await ChatThreadDO.prototype['handleRunnerClientUserMessage'].call(fake, ws, {
       type: 'message',

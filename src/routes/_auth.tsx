@@ -30,7 +30,6 @@ export async function loader({ request, context }: Route.LoaderArgs) {
         },
       });
     }
-
     // Session cookie is valid — check if full auth context can be built
     const authContext = await getAuthContext(request, context);
     if (authContext) {

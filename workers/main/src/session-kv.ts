@@ -3,6 +3,8 @@
  * Key structure: session:{sessionId} -> SessionData (with TTL)
  */
 
+import type { CLOUDFLARE_ACCESS_AUTH_SOURCE } from "./signed-session.js";
+
 export interface SessionData {
   user_id: string;
   org_id: string;
@@ -11,6 +13,7 @@ export interface SessionData {
   last_accessed: number;
   user_name?: string | null;
   user_email?: string | null;
+  auth_source?: typeof CLOUDFLARE_ACCESS_AUTH_SOURCE | null;
 }
 
 const SESSION_TTL_SECONDS = 30 * 24 * 60 * 60; // 30 days
