@@ -46,6 +46,7 @@ export async function loader({
 
   const page = await fetchHistoryThreadsPage(context, {
     scope,
+    orgId: authContext.currentOrg.id,
     workspaceId,
     accessibleWorkspaceIds,
     offset,

@@ -9,6 +9,7 @@ export type HistoryScope = 'this-workspace' | 'all-workspaces';
 
 interface HistoryPageQuery {
   scope: HistoryScope;
+  orgId: string;
   workspaceId: string;
   accessibleWorkspaceIds: string[];
   offset?: number;
@@ -80,24 +81,32 @@ export async function fetchHistoryThreadsPage(
     return await chatDO.getThreadsPaginatedAllWorkspaces(
       context,
       query.accessibleWorkspaceIds,
-      params
+      params,
+      { orgId: query.orgId },
     );
   }
 
-  return await chatDO.getThreadsPaginated(context, query.workspaceId, params);
+  return await chatDO.getThreadsPaginated(context, query.workspaceId, params, {
+    orgId: query.orgId,
+  });
 }
 
 export async function fetchHistoryThreadCreators(
   context: AppLoadContext,
   scope: HistoryScope,
+  orgId: string,
   workspaceId: string,
   accessibleWorkspaceIds: string[]
 ): Promise<RawThreadCreator[]> {
   if (scope === 'all-workspaces') {
-    return await chatDO.getThreadCreatorsAllWorkspaces(context, accessibleWorkspaceIds);
+    return await chatDO.getThreadCreatorsAllWorkspaces(
+      context,
+      accessibleWorkspaceIds,
+      { orgId },
+    );
   }
 
-  return await chatDO.getThreadCreators(context, workspaceId);
+  return await chatDO.getThreadCreators(context, workspaceId, { orgId });
 }
 
 export async function hydrateHistoryThreads(

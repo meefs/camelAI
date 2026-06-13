@@ -63,6 +63,10 @@ export interface RawThreadCreator {
   latest_updated_at: number;
 }
 
+interface KnownOrgOptions {
+  orgId?: string;
+}
+
 export function normalizeStoredThreadModel(
   rawModel: unknown,
 ): { model: LlmModel } {
@@ -310,15 +314,20 @@ export async function getThreadsPaginated(
   context: AppLoadContext,
   workspaceId: string,
   params: PaginationParams = {},
+  options: KnownOrgOptions = {},
 ): Promise<PaginatedResult<Thread>> {
   const env = getEnv(context);
   const offset = params.offset ?? 0;
   const limit = params.limit ?? 50;
-  const wsInfo = await getWorkspaceInfo(env, workspaceId);
-  if (!wsInfo) {
-    return { items: [], total: 0, offset, limit };
+  let orgId = options.orgId;
+  if (!orgId) {
+    const wsInfo = await getWorkspaceInfo(env, workspaceId);
+    if (!wsInfo) {
+      return { items: [], total: 0, offset, limit };
+    }
+    orgId = wsInfo.org_id;
   }
-  const orgStub = getOrgStub(env, wsInfo.org_id);
+  const orgStub = getOrgStub(env, orgId);
   const result = await orgStub.getThreadsPaginated(
     offset,
     limit,
@@ -337,6 +346,7 @@ export async function getThreadsPaginatedAllWorkspaces(
   context: AppLoadContext,
   workspaceIds: string[],
   params: PaginationParams = {},
+  options: KnownOrgOptions = {},
 ): Promise<PaginatedResult<Thread>> {
   const env = getEnv(context);
   const offset = params.offset ?? 0;
@@ -344,11 +354,15 @@ export async function getThreadsPaginatedAllWorkspaces(
   if (workspaceIds.length === 0) {
     return { items: [], total: 0, offset, limit };
   }
-  const wsInfo = await getWorkspaceInfo(env, workspaceIds[0]);
-  if (!wsInfo) {
-    return { items: [], total: 0, offset, limit };
+  let orgId = options.orgId;
+  if (!orgId) {
+    const wsInfo = await getWorkspaceInfo(env, workspaceIds[0]);
+    if (!wsInfo) {
+      return { items: [], total: 0, offset, limit };
+    }
+    orgId = wsInfo.org_id;
   }
-  const orgStub = getOrgStub(env, wsInfo.org_id);
+  const orgStub = getOrgStub(env, orgId);
   const result = await orgStub.getThreadsAllWorkspacesPaginated(
     workspaceIds,
     offset,
@@ -366,29 +380,39 @@ export async function getThreadsPaginatedAllWorkspaces(
 export async function getThreadCreators(
   context: AppLoadContext,
   workspaceId: string,
+  options: KnownOrgOptions = {},
 ): Promise<RawThreadCreator[]> {
   const env = getEnv(context);
-  const wsInfo = await getWorkspaceInfo(env, workspaceId);
-  if (!wsInfo) {
-    return [];
+  let orgId = options.orgId;
+  if (!orgId) {
+    const wsInfo = await getWorkspaceInfo(env, workspaceId);
+    if (!wsInfo) {
+      return [];
+    }
+    orgId = wsInfo.org_id;
   }
-  const orgStub = getOrgStub(env, wsInfo.org_id);
+  const orgStub = getOrgStub(env, orgId);
   return await orgStub.getThreadCreators(workspaceId);
 }
 
 export async function getThreadCreatorsAllWorkspaces(
   context: AppLoadContext,
   workspaceIds: string[],
+  options: KnownOrgOptions = {},
 ): Promise<RawThreadCreator[]> {
   if (workspaceIds.length === 0) {
     return [];
   }
   const env = getEnv(context);
-  const wsInfo = await getWorkspaceInfo(env, workspaceIds[0]);
-  if (!wsInfo) {
-    return [];
+  let orgId = options.orgId;
+  if (!orgId) {
+    const wsInfo = await getWorkspaceInfo(env, workspaceIds[0]);
+    if (!wsInfo) {
+      return [];
+    }
+    orgId = wsInfo.org_id;
   }
-  const orgStub = getOrgStub(env, wsInfo.org_id);
+  const orgStub = getOrgStub(env, orgId);
   return await orgStub.getThreadCreatorsAllWorkspaces(workspaceIds);
 }
 
@@ -449,11 +473,16 @@ export async function getRecentThreads(
   workspaceId: string,
   limit = 6,
   createdBy?: string,
+  options: KnownOrgOptions = {},
 ): Promise<Thread[]> {
   const env = getEnv(context);
-  const wsInfo = await getWorkspaceInfo(env, workspaceId);
-  if (!wsInfo) return [];
-  const orgStub = env.ORG.get(env.ORG.idFromName(wsInfo.org_id));
+  let orgId = options.orgId;
+  if (!orgId) {
+    const wsInfo = await getWorkspaceInfo(env, workspaceId);
+    if (!wsInfo) return [];
+    orgId = wsInfo.org_id;
+  }
+  const orgStub = env.ORG.get(env.ORG.idFromName(orgId));
   const result = await orgStub.getThreadsPaginated(
     0,
     limit,

@@ -105,13 +105,20 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     const [page, rawCreators] = await Promise.all([
       fetchHistoryThreadsPage(context, {
         scope,
+        orgId: authContext.currentOrg.id,
         workspaceId,
         accessibleWorkspaceIds,
         offset: 0,
         limit: PAGE_SIZE,
         createdBy,
       }),
-      fetchHistoryThreadCreators(context, scope, workspaceId, accessibleWorkspaceIds),
+      fetchHistoryThreadCreators(
+        context,
+        scope,
+        authContext.currentOrg.id,
+        workspaceId,
+        accessibleWorkspaceIds,
+      ),
     ]);
     const { threads, userMap } = await hydrateHistoryThreads(
       authEnv,
