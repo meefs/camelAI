@@ -2,19 +2,26 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const requireAuthContextMock = vi.fn();
 const requireOrgAdminMock = vi.fn();
+const requireSessionMock = vi.fn();
+const getAuthEnvMock = vi.fn();
 const getEnvMock = vi.fn();
+const getOrgProviderContextMock = vi.fn();
 const activatePayAsYouGoPlanMock = vi.fn();
 const createCreditsCheckoutSessionMock = vi.fn();
 
 vi.mock("@/lib/auth.server", () => ({
-  getAuthEnv: vi.fn(),
+  getAuthEnv: getAuthEnvMock,
   requireAuthContext: requireAuthContextMock,
   requireOrgAdmin: requireOrgAdminMock,
-  requireSession: vi.fn(),
+  requireSession: requireSessionMock,
 }));
 
 vi.mock("@/lib/cloudflare.server", () => ({
   getEnv: getEnvMock,
+}));
+
+vi.mock("@/lib/auth-do", () => ({
+  getOrgProviderContext: getOrgProviderContextMock,
 }));
 
 vi.mock("@/lib/billing.server", async (importOriginal) => {
@@ -29,12 +36,27 @@ vi.mock("@/lib/billing.server", async (importOriginal) => {
   };
 });
 
-const { action } = await import("@/routes/_onboarding.welcome");
+const { action, loader } = await import("@/routes/_onboarding.welcome");
 
 describe("OnboardingWelcomeRoute Pay as you go action", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     getEnvMock.mockReturnValue({ STRIPE_MODE: "test" });
+    getAuthEnvMock.mockReturnValue({ auth: true });
+    requireSessionMock.mockResolvedValue({
+      session: {
+        org_id: "org_123",
+        workspace_id: "ws_123",
+      },
+    });
+    getOrgProviderContextMock.mockResolvedValue({
+      info: {
+        id: "org_123",
+        name: "New Org",
+        slug: "new-org",
+      },
+      llmProviderConfig: null,
+    });
     requireAuthContextMock.mockResolvedValue({
       user: { id: "user_123", email: "owner@example.com" },
       currentOrg: {
@@ -100,6 +122,29 @@ describe("OnboardingWelcomeRoute Pay as you go action", () => {
       successUrl: "https://camelai.test/onboarding?checkout=success",
       cancelUrl: "https://camelai.test/onboarding?checkout=cancelled",
       priceId: "price_credit_1000",
+    });
+  });
+
+  it("loads org/provider context through the combined helper", async () => {
+    const result = await loader({
+      request: new Request("https://camelai.test/onboarding"),
+      context: {},
+      params: {},
+    } as never);
+
+    expect(getOrgProviderContextMock).toHaveBeenCalledWith(
+      { auth: true },
+      "org_123",
+    );
+    expect(result).toMatchObject({
+      orgId: "org_123",
+      orgName: "camelAI",
+      byokProviderLabel: null,
+      teamContext: {
+        memberCount: 0,
+        appCount: 0,
+        integrations: [],
+      },
     });
   });
 });

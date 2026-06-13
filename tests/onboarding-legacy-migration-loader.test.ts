@@ -38,8 +38,16 @@ describe("onboarding legacy migration loader", () => {
       billing_subscription_id: null,
     };
     const orgStub = {
-      getInfo: vi.fn().mockResolvedValue(orgInfo),
-      getLlmProviderConfig: vi.fn().mockResolvedValue(null),
+      getProviderContext: vi.fn().mockResolvedValue({
+        info: orgInfo,
+        llmProviderConfig: null,
+      }),
+      getInfo: vi.fn(async () => {
+        throw new Error("unexpected org info read");
+      }),
+      getLlmProviderConfig: vi.fn(async () => {
+        throw new Error("unexpected provider config read");
+      }),
     };
     const userStub = {
       getAuthBootstrap: vi.fn().mockResolvedValue({
@@ -111,6 +119,8 @@ describe("onboarding legacy migration loader", () => {
     });
     expect(userStub.getAuthBootstrap).toHaveBeenCalled();
     expect(userStub.getEmailVerificationStatus).not.toHaveBeenCalled();
-    expect(orgStub.getLlmProviderConfig).toHaveBeenCalled();
+    expect(orgStub.getProviderContext).toHaveBeenCalled();
+    expect(orgStub.getInfo).not.toHaveBeenCalled();
+    expect(orgStub.getLlmProviderConfig).not.toHaveBeenCalled();
   });
 });
