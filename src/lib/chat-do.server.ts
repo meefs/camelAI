@@ -580,30 +580,35 @@ export async function updateThreadModel(
   id: string,
   model: LlmModel,
   workspaceId: string,
+  options: ModelPickerStateOptions = {},
 ): Promise<Thread | null> {
   const env = getEnv(context);
-  const wsInfo = await getWorkspaceInfo(env, workspaceId);
-  if (!wsInfo) return null;
-  const orgStub = env.ORG.get(env.ORG.idFromName(wsInfo.org_id));
+  let orgId = options.orgId;
+  if (!orgId) {
+    const wsInfo = await getWorkspaceInfo(env, workspaceId);
+    if (!wsInfo) return null;
+    orgId = wsInfo.org_id;
+  }
+  const orgStub = env.ORG.get(env.ORG.idFromName(orgId));
   const existing = await orgStub.getThread(id);
   if (!existing || existing.workspace_id !== workspaceId) return null;
-  const llmProviderConfig = await orgStub.getLlmProviderConfig();
-  const effectiveLlmProviderConfig = getEffectiveLlmProviderConfig(
-    env,
-    llmProviderConfig,
+  const pickerState = await getWorkspaceModelPickerState(
+    context,
+    workspaceId,
+    { ...options, orgId },
   );
-  const customApi = getStoredCustomLlmProviderApi(effectiveLlmProviderConfig);
-  const customModelId = getStoredCustomLlmProviderModelId(effectiveLlmProviderConfig);
-  const experimentalSettings = await orgStub.getExperimentalSettings();
-  const pickerState = await getWorkspaceModelPickerState(context, workspaceId);
   if (
+    !pickerState ||
     !isLlmModelAllowedForNewThread(
       model,
-      effectiveLlmProviderConfig?.provider,
-      experimentalSettings,
-      { customApi, customModelId },
+      pickerState.llmProvider,
+      pickerState.experimentalSettings,
+      {
+        customApi: pickerState.customApi,
+        customModelId: pickerState.customModelId,
+      },
     ) ||
-    !pickerState?.allowedThreadModels.includes(model)
+    !pickerState.allowedThreadModels.includes(model)
   ) {
     throw new Error("Invalid thread model");
   }

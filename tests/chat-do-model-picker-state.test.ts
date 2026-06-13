@@ -439,6 +439,93 @@ describe('getWorkspaceModelPickerState rollout compatibility', () => {
     expect(state?.allowedThreadModels).toContain('gpt-5.4');
   });
 
+  it('uses preloaded org model context for thread model updates', async () => {
+    const workspaceStub = {
+      getInfo: vi.fn(async () => {
+        throw new Error('unexpected workspace info read');
+      }),
+      getModelPickerConfig: vi.fn().mockResolvedValue({
+        use_org_defaults: true,
+        models: [],
+        default_model: null,
+      }),
+    };
+    const orgStub = {
+      getThread: vi.fn().mockResolvedValue({
+        id: 'thread_123',
+        workspace_id: 'ws_123',
+        title: 'Existing Chat',
+        created_by: 'user_123',
+        model: 'sonnet',
+        created_at: 1,
+        updated_at: 2,
+        user_message_count: 0,
+        first_user_message: null,
+      }),
+      getLlmProviderConfig: vi.fn(async () => {
+        throw new Error('unexpected provider config read');
+      }),
+      getExperimentalSettings: vi.fn(async () => {
+        throw new Error('unexpected experimental settings read');
+      }),
+      getModelPickerConfig: vi.fn().mockResolvedValue({
+        use_platform_defaults: false,
+        models: [{ id: 'gpt-5.4', added_at: 1 }],
+        default_model: 'gpt-5.4',
+      }),
+      updateThreadModel: vi.fn().mockResolvedValue({
+        id: 'thread_123',
+        workspace_id: 'ws_123',
+        title: 'Existing Chat',
+        created_by: 'user_123',
+        model: 'gpt-5.4',
+        created_at: 1,
+        updated_at: 3,
+        user_message_count: 0,
+        first_user_message: null,
+      }),
+    };
+
+    getEnvMock.mockReturnValue({
+      WORKSPACE: {
+        idFromName: (id: string) => id,
+        get: () => workspaceStub,
+      },
+      ORG: {
+        idFromName: (id: string) => id,
+        get: () => orgStub,
+      },
+    });
+
+    const updated = await updateThreadModel(
+      {},
+      'thread_123',
+      'gpt-5.4',
+      'ws_123',
+      {
+        orgId: 'org_123',
+        llmProviderConfig: {
+          provider: 'openai',
+          credentials_encrypted: 'encrypted',
+          config: '{}',
+          created_by: 'user_123',
+          created_at: 1,
+          updated_at: 1,
+        },
+        experimentalSettings: { claude_proxy_models: false },
+      },
+    );
+
+    expect(workspaceStub.getInfo).not.toHaveBeenCalled();
+    expect(orgStub.getLlmProviderConfig).not.toHaveBeenCalled();
+    expect(orgStub.getExperimentalSettings).not.toHaveBeenCalled();
+    expect(orgStub.updateThreadModel).toHaveBeenCalledWith(
+      'thread_123',
+      'gpt-5.4',
+    );
+    expect(updated?.model).toBe('gpt-5.4');
+  });
+
   it('uses a known org id for thread reads without loading workspace info', async () => {
     const workspaceStub = {
       getInfo: vi.fn(async () => {

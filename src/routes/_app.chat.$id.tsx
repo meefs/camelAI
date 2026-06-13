@@ -246,6 +246,7 @@ export async function action({ request, context, params }: Route.ActionArgs) {
         params.id,
         model,
         workspaceId,
+        { orgId },
       );
     } catch (error) {
       return {
