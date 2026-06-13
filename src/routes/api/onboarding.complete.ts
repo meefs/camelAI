@@ -292,6 +292,8 @@ export async function action({ request, context }: Route.ActionArgs) {
       const { items } = await chatDO.getThreadsPaginated(context, workspaceId, {
         offset: 0,
         limit: 100,
+      }, {
+        orgId: authContext.currentOrg.id,
       });
       existingThread =
         items.find(

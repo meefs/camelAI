@@ -106,14 +106,28 @@ export async function loader({ request, context }: Route.LoaderArgs) {
 
   // Fetch threads using existing paginated methods
   const page = filter === 'all-workspaces'
-    ? await chatDO.getThreadsPaginatedAllWorkspaces(context, accessibleWorkspaceIds, {
-        offset: 0,
-        limit: PAGE_SIZE,
-      })
-    : await chatDO.getThreadsPaginated(context, workspaceId, {
-        offset: 0,
-        limit: PAGE_SIZE,
-      });
+    ? await chatDO.getThreadsPaginatedAllWorkspaces(
+        context,
+        accessibleWorkspaceIds,
+        {
+          offset: 0,
+          limit: PAGE_SIZE,
+        },
+        {
+          orgId: authContext.currentOrg.id,
+        },
+      )
+    : await chatDO.getThreadsPaginated(
+        context,
+        workspaceId,
+        {
+          offset: 0,
+          limit: PAGE_SIZE,
+        },
+        {
+        orgId: authContext.currentOrg.id,
+        },
+      );
 
   const creatorMap = await loadUserProfileSummaries(
     authEnv,

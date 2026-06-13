@@ -299,7 +299,9 @@ export async function loader({ request, context }: Route.LoaderArgs) {
 
   const recentThreadsPromise: Promise<Thread[]> = workspaceId
     ? chatDO
-        .getRecentThreads(context, workspaceId, 6, userId ?? undefined)
+        .getRecentThreads(context, workspaceId, 6, userId ?? undefined, {
+          orgId: authContext.currentOrg.id,
+        })
         .catch((error) => {
           console.error("Failed to load recent threads:", error);
           return [];
