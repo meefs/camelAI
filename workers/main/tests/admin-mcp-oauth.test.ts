@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { env } from "cloudflare:test";
+import { env, SELF } from "cloudflare:test";
 import { AdminMcpOAuthProvider } from "../src/admin-mcp-oauth";
 import { handleAdminMcp } from "../src/routes/admin-mcp";
 import { handleOAuthMetadata, handleResourceMetadata } from "../src/routes/well-known";
@@ -341,8 +341,8 @@ describe("admin MCP OAuth resource", () => {
     await updateUserProfile(testEnv, userId, { is_superuser: true });
     const token = await issueAdminMcpToken(userId);
 
-    const response = await handleAdminMcp({
-      req: mcpRequest(
+    const response = await SELF.fetch(
+      mcpRequest(
         {
           jsonrpc: "2.0",
           id: 1,
@@ -360,11 +360,7 @@ describe("admin MCP OAuth resource", () => {
         },
         token,
       ),
-      env: testEnv,
-      ctx: {} as ExecutionContext,
-      url: new URL("https://example.com/api/admin/mcp"),
-      match: [] as unknown as RegExpMatchArray,
-    });
+    );
 
     expect(response?.status).toBe(200);
     const rpc = (await response?.json()) as any;
@@ -380,6 +376,93 @@ describe("admin MCP OAuth resource", () => {
     });
     expect(payload.namespaces).toContain("USER");
     expect(payload.output[0]).toContain('"available": true');
+  });
+
+  it("runs admin JavaScript through a DO stub proxy", async () => {
+    const { userId } = await createUser(
+      testEnv,
+      `admin-mcp-js-stub-${crypto.randomUUID()}@example.com`,
+      "password123",
+      "JS Stub Admin",
+    );
+    await createOrg(testEnv, "MCP JS Stub Org", userId);
+    await updateUserProfile(testEnv, userId, { is_superuser: true });
+    const token = await issueAdminMcpToken(userId);
+
+    const response = await SELF.fetch(
+      mcpRequest(
+        {
+          jsonrpc: "2.0",
+          id: 1,
+          method: "tools/call",
+          params: {
+            name: "admin_js_exec",
+            arguments: {
+              code: `
+                const user = DO.stub("USER", ${JSON.stringify(userId)});
+                return await user.getProfile();
+              `,
+            },
+          },
+        },
+        token,
+      ),
+    );
+
+    expect(response?.status).toBe(200);
+    const rpc = (await response?.json()) as any;
+    const payload = parseToolText(rpc);
+    expect(payload).toMatchObject({
+      success: true,
+      result: {
+        id: userId,
+        is_superuser: true,
+      },
+    });
+  });
+
+  it("preserves idFromName when using the DO namespace facade", async () => {
+    const { userId } = await createUser(
+      testEnv,
+      `admin-mcp-js-namespace-${crypto.randomUUID()}@example.com`,
+      "password123",
+      "JS Namespace Admin",
+    );
+    await createOrg(testEnv, "MCP JS Namespace Org", userId);
+    await updateUserProfile(testEnv, userId, { is_superuser: true });
+    const token = await issueAdminMcpToken(userId);
+
+    const response = await SELF.fetch(
+      mcpRequest(
+        {
+          jsonrpc: "2.0",
+          id: 1,
+          method: "tools/call",
+          params: {
+            name: "admin_js_exec",
+            arguments: {
+              code: `
+                const users = DO.namespace("USER");
+                const user = users.get(users.idFromName(${JSON.stringify(userId)}));
+                return await user.getProfile();
+              `,
+            },
+          },
+        },
+        token,
+      ),
+    );
+
+    expect(response?.status).toBe(200);
+    const rpc = (await response?.json()) as any;
+    const payload = parseToolText(rpc);
+    expect(payload).toMatchObject({
+      success: true,
+      result: {
+        id: userId,
+        is_superuser: true,
+      },
+    });
   });
 
   it("grants org credits through MCP with a grant ledger row", async () => {

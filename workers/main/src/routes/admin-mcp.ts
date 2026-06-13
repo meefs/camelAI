@@ -2,6 +2,7 @@
  * OAuth-protected remote MCP server for the admin API.
  */
 
+import { WorkerEntrypoint } from "cloudflare:workers";
 import type { Env, RouteContext } from "../types.js";
 import type {
   PiCoreMessageHistoryRepairReport,
@@ -72,7 +73,8 @@ const ADMIN_JS_EXEC_DEFAULT_TIMEOUT_MS = 30_000;
 const ADMIN_JS_EXEC_MAX_TIMEOUT_MS = 120_000;
 const ADMIN_JS_EXEC_DEFAULT_MAX_OUTPUT_CHARACTERS = 120_000;
 const ADMIN_JS_EXEC_MAX_OUTPUT_CHARACTERS = 1_000_000;
-const ADMIN_JS_EXEC_DO_BINDING_PREFIX = "DO__";
+const ADMIN_JS_EXEC_DO_BRIDGE_BINDING = "ADMIN_DO";
+const ADMIN_JS_EXEC_DO_NAMESPACES_BINDING = "ADMIN_DO_NAMESPACES";
 
 function getBaseUrl(req: Request): string {
   const url = new URL(req.url);
@@ -806,12 +808,98 @@ function isDurableObjectNamespace(value: unknown): value is DurableObjectNamespa
     typeof value.idFromString === "function";
 }
 
-function adminJsExecNamespaceBindings(env: Env): Record<string, DurableObjectNamespace> {
-  const bindings: Record<string, DurableObjectNamespace> = {};
+function adminJsExecNamespaceNames(env: Env): string[] {
+  const names: string[] = [];
   for (const [key, value] of Object.entries(env as unknown as Record<string, unknown>)) {
-    if (isDurableObjectNamespace(value)) bindings[`${ADMIN_JS_EXEC_DO_BINDING_PREFIX}${key}`] = value;
+    if (isDurableObjectNamespace(value)) names.push(key);
   }
-  return bindings;
+  return names.sort();
+}
+
+type AdminJsExecDoCallOptions = {
+  idFrom?: "name" | "string";
+};
+
+type AdminJsExecDoBridge = {
+  call(
+    namespace: string,
+    id: string,
+    method: string,
+    args?: unknown[],
+    options?: AdminJsExecDoCallOptions,
+  ): Promise<unknown>;
+};
+
+function getAdminJsExecDoNamespace(env: Env, namespace: string): DurableObjectNamespace {
+  const value = (env as unknown as Record<string, unknown>)[namespace];
+  if (!isDurableObjectNamespace(value)) {
+    throw new Error(`Unknown Durable Object namespace: ${namespace}`);
+  }
+  return value;
+}
+
+function getAdminJsExecDoStub(
+  env: Env,
+  namespace: string,
+  id: string,
+  options: AdminJsExecDoCallOptions = {},
+): DurableObjectStub {
+  if (typeof namespace !== "string" || !namespace) {
+    throw new Error("Durable Object namespace must be a non-empty string");
+  }
+  if (typeof id !== "string" || !id) {
+    throw new Error("Durable Object id must be a non-empty string");
+  }
+  const binding = getAdminJsExecDoNamespace(env, namespace);
+  const mode = options.idFrom || "name";
+  if (mode === "name") return binding.get(binding.idFromName(id));
+  if (mode === "string") return binding.get(binding.idFromString(id));
+  throw new Error("idFrom must be one of: name, string");
+}
+
+export class AdminJsExecDoBinding extends WorkerEntrypoint<Env> {
+  namespaces(): string[] {
+    return adminJsExecNamespaceNames(this.env);
+  }
+
+  async call(
+    namespace: string,
+    id: string,
+    method: string,
+    args: unknown[] = [],
+    options: AdminJsExecDoCallOptions = {},
+  ): Promise<unknown> {
+    if (typeof method !== "string" || !method) {
+      throw new Error("Durable Object RPC method must be a non-empty string");
+    }
+    const stub = getAdminJsExecDoStub(this.env, namespace, id, options);
+    const fn = (stub as unknown as Record<string, unknown>)[method];
+    if (typeof fn !== "function") {
+      throw new Error(`RPC method not found on ${namespace}: ${method}`);
+    }
+    const callArgs = Array.isArray(args) ? args : [args];
+    return await (stub as unknown as Record<string, (...args: unknown[]) => Promise<unknown> | unknown>)[method]!(
+      ...callArgs,
+    );
+  }
+}
+
+function createAdminJsExecDoBridge(
+  ctx: ExecutionContext,
+  env: Env,
+): { binding: AdminJsExecDoBridge; namespaces: string[] } | null {
+  const factory = (ctx as unknown as {
+    exports?: {
+      AdminJsExecDoBinding?: (options?: { props?: Record<string, never> }) => AdminJsExecDoBridge;
+    };
+  }).exports?.AdminJsExecDoBinding;
+  if (typeof factory !== "function") {
+    return null;
+  }
+  return {
+    binding: factory({ props: {} }),
+    namespaces: adminJsExecNamespaceNames(env),
+  };
 }
 
 function adminJsExecWorkerModule(userCode: string): string {
@@ -861,47 +949,82 @@ function createOutputConsole(output) {
   });
 }
 
-function createDoFacade(env) {
-  const namespaces = Object.freeze(Object.fromEntries(
-    Object.entries(env)
-      .filter(([key]) => key.startsWith("DO__"))
-      .map(([key, namespace]) => [key.slice("DO__".length), namespace]),
-  ));
+function createDoFacade(bridge, namespaceNames) {
+  if (!bridge || typeof bridge.call !== "function") {
+    throw new Error("Admin Durable Object bridge is not configured");
+  }
+  const namespaces = Object.freeze(
+    Array.isArray(namespaceNames)
+      ? namespaceNames.filter((name) => typeof name === "string" && name.length > 0)
+      : [],
+  );
 
-  const getNamespace = (namespace) => {
+  const assertNamespace = (namespace) => {
     if (typeof namespace !== "string" || !namespace) {
       throw new Error("Durable Object namespace must be a non-empty string");
     }
-    const binding = namespaces[namespace];
-    if (!binding) {
+    if (!namespaces.includes(namespace)) {
       throw new Error("Unknown Durable Object namespace: " + namespace);
     }
-    return binding;
   };
 
   const getStub = (namespace, id, options = {}) => {
-    const binding = getNamespace(namespace);
-    const mode = options.idFrom || "name";
-    if (mode === "name") return binding.get(binding.idFromName(id));
-    if (mode === "string") return binding.get(binding.idFromString(id));
-    throw new Error("idFrom must be one of: name, string");
+    assertNamespace(namespace);
+    if (typeof id !== "string" || !id) {
+      throw new Error("Durable Object id must be a non-empty string");
+    }
+    return new Proxy({}, {
+      get(_target, property) {
+        if (property === "then") return undefined;
+        if (typeof property !== "string") return undefined;
+        return (...args) => bridge.call(namespace, id, property, args, options);
+      },
+    });
+  };
+
+  const durableObjectId = (id, idFrom) => Object.freeze({
+    __camelAdminDoId: true,
+    id: String(id),
+    idFrom,
+  });
+
+  const normalizeDurableObjectId = (value) => {
+    if (
+      value &&
+      typeof value === "object" &&
+      value.__camelAdminDoId === true &&
+      typeof value.id === "string"
+    ) {
+      return {
+        id: value.id,
+        options: { idFrom: value.idFrom === "name" ? "name" : "string" },
+      };
+    }
+    return { id: String(value), options: { idFrom: "string" } };
   };
 
   const call = async (namespace, id, method, args = [], options = {}) => {
     if (typeof method !== "string" || !method) {
       throw new Error("Durable Object RPC method must be a non-empty string");
     }
-    const stub = getStub(namespace, id, options);
-    const fn = stub[method];
-    if (typeof fn !== "function") {
-      throw new Error("RPC method not found on " + namespace + ": " + method);
-    }
     const callArgs = Array.isArray(args) ? args : [args];
-    return await fn.apply(stub, callArgs);
+    return await bridge.call(namespace, id, method, callArgs, options);
+  };
+
+  const getNamespace = (namespace) => {
+    assertNamespace(namespace);
+    return Object.freeze({
+      idFromName: (id) => durableObjectId(id, "name"),
+      idFromString: (id) => durableObjectId(id, "string"),
+      get: (id) => {
+        const normalized = normalizeDurableObjectId(id);
+        return getStub(namespace, normalized.id, normalized.options);
+      },
+    });
   };
 
   return Object.freeze({
-    namespaces: Object.freeze(Object.keys(namespaces)),
+    namespaces,
     namespace: getNamespace,
     stub: getStub,
     call,
@@ -917,7 +1040,7 @@ export class AdminJsExecRunner extends WorkerEntrypoint {
   async run() {
     const output = [];
     globalThis.console = createOutputConsole(output);
-    const DO = createDoFacade(this.env);
+    const DO = createDoFacade(this.env.${ADMIN_JS_EXEC_DO_BRIDGE_BINDING}, this.env.${ADMIN_JS_EXEC_DO_NAMESPACES_BINDING});
     const text = (value) => output.push(stringifyOutput(value));
     const startedAt = Date.now();
     const result = await runUserCode(DO, text);
@@ -947,7 +1070,11 @@ function truncateAdminJsExecResult(result: unknown, maxCharacters: number): unkn
   };
 }
 
-async function adminJsExecTool(env: Env, args: Record<string, unknown>) {
+async function adminJsExecTool(
+  ctx: ExecutionContext,
+  env: Env,
+  args: Record<string, unknown>,
+) {
   const code = stringArg(args, "code");
   if (!code) {
     return toolText({ error: "code is required" }, true);
@@ -972,8 +1099,11 @@ async function adminJsExecTool(env: Env, args: Record<string, unknown>) {
     1000,
     ADMIN_JS_EXEC_MAX_OUTPUT_CHARACTERS,
   );
-  const namespaceBindings = adminJsExecNamespaceBindings(env);
-  if (!Object.keys(namespaceBindings).length) {
+  const doBridge = createAdminJsExecDoBridge(ctx, env);
+  if (!doBridge) {
+    return toolText({ error: "AdminJsExecDoBinding export is not available" }, true);
+  }
+  if (!doBridge.namespaces.length) {
     return toolText({ error: "No Durable Object namespace bindings are available" }, true);
   }
 
@@ -983,7 +1113,10 @@ async function adminJsExecTool(env: Env, args: Record<string, unknown>) {
     modules: {
       "index.js": { js: adminJsExecWorkerModule(code) },
     },
-    env: namespaceBindings,
+    env: {
+      [ADMIN_JS_EXEC_DO_BRIDGE_BINDING]: doBridge.binding,
+      [ADMIN_JS_EXEC_DO_NAMESPACES_BINDING]: doBridge.namespaces,
+    },
     globalOutbound: null,
   };
   let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
@@ -1747,6 +1880,7 @@ async function grantOrgCreditsTool(
 
 async function callTool(
   req: Request,
+  ctx: ExecutionContext,
   env: Env,
   grant: AdminMcpTokenGrantRecord,
   name: unknown,
@@ -1972,7 +2106,7 @@ async function callTool(
     });
   }
   if (name === TOOL_ADMIN_JS_EXEC) {
-    return adminJsExecTool(env, input);
+    return adminJsExecTool(ctx, env, input);
   }
   if (name === TOOL_ADMIN_API_REQUEST) {
     return fetchAdminApiTool(req, env, grant, args);
@@ -1983,6 +2117,7 @@ async function callTool(
 async function handleJsonRpcRequest(
   rpc: JsonRpcRequest,
   req: Request,
+  ctx: ExecutionContext,
   env: Env,
   grant: AdminMcpTokenGrantRecord,
 ) {
@@ -2010,7 +2145,7 @@ async function handleJsonRpcRequest(
       const params = isRecord(rpc.params) ? rpc.params : {};
       return jsonRpcResult(
         rpc.id,
-        await callTool(req, env, grant, params.name, params.arguments),
+        await callTool(req, ctx, env, grant, params.name, params.arguments),
       );
     }
     default:
@@ -2022,7 +2157,12 @@ function isNotificationOrResponse(rpc: JsonRpcRequest): boolean {
   return rpc.id === undefined;
 }
 
-async function handlePost(req: Request, env: Env, grant: AdminMcpTokenGrantRecord): Promise<Response> {
+async function handlePost(
+  req: Request,
+  ctx: ExecutionContext,
+  env: Env,
+  grant: AdminMcpTokenGrantRecord,
+): Promise<Response> {
   let payload: unknown;
   try {
     payload = await req.json();
@@ -2049,7 +2189,7 @@ async function handlePost(req: Request, env: Env, grant: AdminMcpTokenGrantRecor
   const responses = await Promise.all(
     requests
       .filter((rpc) => !isNotificationOrResponse(rpc))
-      .map((rpc) => handleJsonRpcRequest(rpc, req, env, grant)),
+      .map((rpc) => handleJsonRpcRequest(rpc, req, ctx, env, grant)),
   );
 
   return Response.json(Array.isArray(payload) ? responses : responses[0], {
@@ -2057,7 +2197,7 @@ async function handlePost(req: Request, env: Env, grant: AdminMcpTokenGrantRecor
   });
 }
 
-export async function handleAdminMcp({ req, env }: RouteContext): Promise<Response | null> {
+export async function handleAdminMcp({ req, ctx, env }: RouteContext): Promise<Response | null> {
   if (!validateOrigin(req)) {
     return Response.json(jsonRpcError(null, -32000, "Invalid Origin"), {
       status: 403,
@@ -2076,5 +2216,5 @@ export async function handleAdminMcp({ req, env }: RouteContext): Promise<Respon
   }
   if (req.method !== "POST") return null;
 
-  return handlePost(req, env, auth);
+  return handlePost(req, ctx, env, auth);
 }
