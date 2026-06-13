@@ -221,16 +221,9 @@ export async function action({ request, context }: Route.ActionArgs) {
 
   // Read the sales prompt stored on the UserDO during signup.
   const salesPrompt = await userStub.getPendingSalesPrompt();
-  const orgStub = authEnv.ORG.get(
-    authEnv.ORG.idFromName(authContext.currentOrg.id),
-  );
-  const [orgInfo, llmProviderConfig] = await Promise.all([
-    orgStub.getInfo(),
-    orgStub.getLlmProviderConfig(),
-  ]);
   const effectiveLlmProviderConfig = getEffectiveLlmProviderConfig(
     env,
-    llmProviderConfig,
+    authContext.currentOrgLlmProviderConfig,
   );
   let onboardingModel: LlmModel | undefined;
 
@@ -243,7 +236,7 @@ export async function action({ request, context }: Route.ActionArgs) {
 
   const billingAccess = resolveOrgBillingAccess({
     env,
-    org: orgInfo,
+    org: authContext.currentOrg,
     llmProviderConfig: effectiveLlmProviderConfig,
   });
 

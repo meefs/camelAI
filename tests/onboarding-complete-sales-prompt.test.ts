@@ -80,6 +80,26 @@ describe('onboarding complete sales prompt flow', () => {
     };
   }
 
+  function makeCurrentOrg({
+    billingStatus = 'active',
+    billingPlan = 'starter',
+    purchasedCreditsCents = 0,
+    grantedCreditsCents = 0,
+  }: {
+    billingStatus?: string;
+    billingPlan?: string;
+    purchasedCreditsCents?: number;
+    grantedCreditsCents?: number;
+  } = {}) {
+    return {
+      id: 'org_123',
+      billing_status: billingStatus,
+      billing_plan: billingPlan,
+      billing_credit_purchase_total_cents: purchasedCreditsCents,
+      billing_credit_grant_total_cents: grantedCreditsCents,
+    };
+  }
+
   beforeEach(() => {
     vi.clearAllMocks();
 
@@ -95,7 +115,8 @@ describe('onboarding complete sales prompt flow', () => {
 
     requireAuthContextMock.mockResolvedValue({
       user: { id: 'user_123', name: 'Illiana Reed' },
-      currentOrg: { id: 'org_123' },
+      currentOrg: makeCurrentOrg(),
+      currentOrgLlmProviderConfig: null,
       currentWorkspace: { id: 'ws_123' },
       orgs: [{ org_id: 'org_123' }],
       onboarding: { completed_at: null },
@@ -171,6 +192,9 @@ describe('onboarding complete sales prompt flow', () => {
       message: expect.stringContaining('Build me a CRM'),
       clientMessageId: 'onboarding:thread_123',
     });
+    const orgStub = orgStubs.get('org_123');
+    expect(orgStub?.getInfo).not.toHaveBeenCalled();
+    expect(orgStub?.getLlmProviderConfig).not.toHaveBeenCalled();
 
     await expect(response.json()).resolves.toMatchObject({
       success: true,
@@ -245,20 +269,23 @@ describe('onboarding complete sales prompt flow', () => {
     });
     expect(userStub.updateOnboarding).not.toHaveBeenCalled();
     expect(userStub.clearPendingSalesPrompt).not.toHaveBeenCalled();
-    expect(deleteThreadMock).toHaveBeenCalledWith({}, 'thread_123', 'ws_123');
+    expect(deleteThreadMock).toHaveBeenCalledWith({}, 'thread_123', 'ws_123', {
+      orgId: 'org_123',
+    });
     expect(waitUntilMock).not.toHaveBeenCalled();
   });
 
   it('allows persisted enterprise orgs through the onboarding billing gate', async () => {
-    orgStubs.set('org_123', {
-      ...createOrgStub({ billingStatus: 'enterprise' }),
-      getInfo: vi.fn().mockResolvedValue({
-        id: 'org_123',
-        name: 'Enterprise Customer',
-        slug: 'enterprise-customer',
-        billing_status: 'enterprise',
-        billing_plan: 'enterprise',
+    requireAuthContextMock.mockResolvedValue({
+      user: { id: 'user_123', name: 'Illiana Reed' },
+      currentOrg: makeCurrentOrg({
+        billingStatus: 'enterprise',
+        billingPlan: 'enterprise',
       }),
+      currentOrgLlmProviderConfig: null,
+      currentWorkspace: { id: 'ws_123' },
+      orgs: [{ org_id: 'org_123' }],
+      onboarding: { completed_at: null },
     });
     getEnvMock.mockReturnValue({
       CHAT_THREAD: {
@@ -281,13 +308,17 @@ describe('onboarding complete sales prompt flow', () => {
   });
 
   it('requires a provider choice for PAYG orgs with no credits', async () => {
-    orgStubs.set(
-      'org_123',
-      createOrgStub({
+    requireAuthContextMock.mockResolvedValue({
+      user: { id: 'user_123', name: 'Illiana Reed' },
+      currentOrg: makeCurrentOrg({
         billingStatus: 'inactive',
         billingPlan: 'payg',
       }),
-    );
+      currentOrgLlmProviderConfig: null,
+      currentWorkspace: { id: 'ws_123' },
+      orgs: [{ org_id: 'org_123' }],
+      onboarding: { completed_at: null },
+    });
 
     const response = await action({
       request: new Request('https://camelai.dev/api/onboarding/complete', {
@@ -304,14 +335,18 @@ describe('onboarding complete sales prompt flow', () => {
   });
 
   it('allows PAYG orgs with purchased credits through onboarding', async () => {
-    orgStubs.set(
-      'org_123',
-      createOrgStub({
+    requireAuthContextMock.mockResolvedValue({
+      user: { id: 'user_123', name: 'Illiana Reed' },
+      currentOrg: makeCurrentOrg({
         billingStatus: 'inactive',
         billingPlan: 'payg',
         purchasedCreditsCents: 500,
       }),
-    );
+      currentOrgLlmProviderConfig: null,
+      currentWorkspace: { id: 'ws_123' },
+      orgs: [{ org_id: 'org_123' }],
+      onboarding: { completed_at: null },
+    });
 
     const response = await action({
       request: new Request('https://camelai.dev/api/onboarding/complete', {
@@ -334,7 +369,8 @@ describe('onboarding complete sales prompt flow', () => {
     );
     requireAuthContextMock.mockResolvedValue({
       user: { id: 'user_123', name: 'Illiana Reed' },
-      currentOrg: { id: 'org_123' },
+      currentOrg: makeCurrentOrg(),
+      currentOrgLlmProviderConfig: { provider: 'openai' },
       currentWorkspace: { id: 'ws_123' },
       orgs: [{ org_id: 'org_123' }],
       onboarding: { completed_at: Date.now() },
@@ -367,7 +403,8 @@ describe('onboarding complete sales prompt flow', () => {
     orgStubs.set('org_other', createOrgStub({ threadTotal: 1 }));
     requireAuthContextMock.mockResolvedValue({
       user: { id: 'user_123', name: 'Illiana Reed' },
-      currentOrg: { id: 'org_123' },
+      currentOrg: makeCurrentOrg(),
+      currentOrgLlmProviderConfig: { provider: 'openai' },
       currentWorkspace: { id: 'ws_123' },
       orgs: [{ org_id: 'org_123' }, { org_id: 'org_other' }],
       onboarding: { completed_at: null },
