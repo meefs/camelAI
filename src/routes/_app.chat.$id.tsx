@@ -211,7 +211,7 @@ export async function action({ request, context, params }: Route.ActionArgs) {
     return { error: "Read-only admin view" };
   }
 
-  const { workspaceId } = await requireSessionWorkspaceAccess(
+  const { orgId, workspaceId } = await requireSessionWorkspaceAccess(
     request,
     context,
     undefined,
@@ -228,6 +228,9 @@ export async function action({ request, context, params }: Route.ActionArgs) {
       context,
       params.id,
       workspaceId,
+      {
+        orgId,
+      },
     );
     if (!existingThread) {
       return { error: "Thread not found" };
@@ -560,6 +563,9 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
       context,
       params.id,
       threadContext.workspace_id,
+      {
+        orgId: threadContext.org_id,
+      },
     );
     const org = await getOrg(authEnv, threadContext.org_id);
 
@@ -878,7 +884,9 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
         console.warn("Failed to load billing overview for chat:", error);
         return null;
       });
-  const threadPromise = chatDO.getThread(context, params.id, workspaceId);
+  const threadPromise = chatDO.getThread(context, params.id, workspaceId, {
+    orgId: authContext.currentOrg.id,
+  });
   const pickerStatePromise = chatDO
     .getWorkspaceModelPickerState(context, workspaceId)
     .catch((error) => {

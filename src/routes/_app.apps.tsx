@@ -66,7 +66,12 @@ export async function action({ request, context }: Route.ActionArgs) {
 
       if (threadId && authContext.currentWorkspace?.id) {
         try {
-          const thread = await chatDO.getThread(context, threadId, authContext.currentWorkspace.id);
+          const thread = await chatDO.getThread(
+            context,
+            threadId,
+            authContext.currentWorkspace.id,
+            { orgId: authContext.currentOrg.id },
+          );
           if (thread) {
             await chatDO.setThreadPreviewAppVisibility(context, threadId, scriptName, isPublic);
           }

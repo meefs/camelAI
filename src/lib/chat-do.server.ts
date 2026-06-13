@@ -496,11 +496,16 @@ export async function getThread(
   context: AppLoadContext,
   id: string,
   workspaceId: string,
+  options: KnownOrgOptions = {},
 ): Promise<Thread | null> {
   const env = getEnv(context);
-  const wsInfo = await getWorkspaceInfo(env, workspaceId);
-  if (!wsInfo) return null;
-  const orgStub = env.ORG.get(env.ORG.idFromName(wsInfo.org_id));
+  let orgId = options.orgId;
+  if (!orgId) {
+    const wsInfo = await getWorkspaceInfo(env, workspaceId);
+    if (!wsInfo) return null;
+    orgId = wsInfo.org_id;
+  }
+  const orgStub = env.ORG.get(env.ORG.idFromName(orgId));
   const thread = await retryTransientDurableObjectRead("OrgDO.getThread", () =>
     orgStub.getThread(id),
   );
@@ -535,11 +540,16 @@ export async function updateThread(
   id: string,
   title: string,
   workspaceId: string,
+  options: KnownOrgOptions = {},
 ): Promise<Thread | null> {
   const env = getEnv(context);
-  const wsInfo = await getWorkspaceInfo(env, workspaceId);
-  if (!wsInfo) return null;
-  const orgStub = env.ORG.get(env.ORG.idFromName(wsInfo.org_id));
+  let orgId = options.orgId;
+  if (!orgId) {
+    const wsInfo = await getWorkspaceInfo(env, workspaceId);
+    if (!wsInfo) return null;
+    orgId = wsInfo.org_id;
+  }
+  const orgStub = env.ORG.get(env.ORG.idFromName(orgId));
   // Verify the thread belongs to this workspace first
   const existing = await orgStub.getThread(id);
   if (!existing || existing.workspace_id !== workspaceId) return null;
@@ -606,11 +616,16 @@ export async function deleteThread(
   context: AppLoadContext,
   id: string,
   workspaceId: string,
+  options: KnownOrgOptions = {},
 ): Promise<boolean> {
   const env = getEnv(context);
-  const wsInfo = await getWorkspaceInfo(env, workspaceId);
-  if (!wsInfo) return false;
-  const orgStub = env.ORG.get(env.ORG.idFromName(wsInfo.org_id));
+  let orgId = options.orgId;
+  if (!orgId) {
+    const wsInfo = await getWorkspaceInfo(env, workspaceId);
+    if (!wsInfo) return false;
+    orgId = wsInfo.org_id;
+  }
+  const orgStub = env.ORG.get(env.ORG.idFromName(orgId));
   // Verify the thread belongs to this workspace first
   const existing = await orgStub.getThread(id);
   if (!existing || existing.workspace_id !== workspaceId) return false;

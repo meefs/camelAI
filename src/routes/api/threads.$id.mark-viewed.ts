@@ -8,7 +8,7 @@ export async function action({ request, context, params }: ActionFunctionArgs) {
   if (request.method !== "POST") {
     return Response.json({ error: "Method not allowed" }, { status: 405 });
   }
-  const { workspaceId, userId } = await requireSessionWorkspaceAccess(
+  const { orgId, workspaceId, userId } = await requireSessionWorkspaceAccess(
     request,
     context,
   );
@@ -16,7 +16,9 @@ export async function action({ request, context, params }: ActionFunctionArgs) {
   if (!threadId) {
     return Response.json({ error: "Thread ID required" }, { status: 400 });
   }
-  const thread = await chatDO.getThread(context, threadId, workspaceId);
+  const thread = await chatDO.getThread(context, threadId, workspaceId, {
+    orgId,
+  });
   if (!thread) {
     return Response.json({ error: "Thread not found" }, { status: 404 });
   }

@@ -368,9 +368,9 @@ export async function action({ request, context }: Route.ActionArgs) {
       initialMessageResult,
     );
     if (failureResponse) {
-      await chatDO.deleteThread(context, recoveryThread.id, workspaceId).catch(
-        () => {},
-      );
+      await chatDO.deleteThread(context, recoveryThread.id, workspaceId, {
+        orgId: authContext.currentOrg.id,
+      }).catch(() => {});
       return failureResponse;
     }
     if (salesPrompt) {
@@ -415,7 +415,9 @@ export async function action({ request, context }: Route.ActionArgs) {
     initialMessageResult,
   );
   if (failureResponse) {
-    await chatDO.deleteThread(context, thread.id, workspaceId).catch(() => {});
+    await chatDO.deleteThread(context, thread.id, workspaceId, {
+      orgId: authContext.currentOrg.id,
+    }).catch(() => {});
     return failureResponse;
   }
 
