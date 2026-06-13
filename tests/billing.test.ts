@@ -26,6 +26,7 @@ import {
   getBillableTeamSeatCount,
   getBillableTeamSeatCountForOrg,
   getBillingAllowanceConfig,
+  getOrgBillingOverview,
   getConfiguredSubscriptionPriceId,
   getLegacyStripeMigrationEligibility,
   getStripeDefaultPaymentMethodSummary,
@@ -68,6 +69,14 @@ describe("billing helpers", () => {
       getInfo: vi.fn(async () => org),
       getMemberCount: vi.fn(async () => args.memberCount),
       getInvitations: vi.fn(async () => args.invitations ?? []),
+      getUsageSpend: vi.fn(async () => ({
+        total_cost_usd: 0,
+        total_requests: 0,
+      })),
+      getUsageLogSum: vi.fn(async () => ({
+        total_cost_usd: 0,
+        total_requests: 0,
+      })),
       updateBillingState: vi.fn(async (updates: Partial<Organization>) => {
         Object.assign(org, updates);
         return org;
@@ -184,6 +193,31 @@ describe("billing helpers", () => {
     await expect(
       getBillableTeamSeatCountForOrg(env as never, "org_team"),
     ).resolves.toBe(3);
+  });
+
+  it("builds billing overview from the provided org without rereading org info", async () => {
+    const { env, org, orgStub } = makeBillingOrgEnv({
+      org: {
+        billing_status: "active",
+        billing_plan: "pro",
+        billing_seat_count: 1,
+        billing_credit_purchase_total_cents: 5000,
+        billing_credit_grant_total_cents: 1000,
+      },
+      memberCount: 1,
+    });
+    orgStub.getInfo.mockRejectedValue(new Error("unexpected org info read"));
+    orgStub.getUsageLogSum.mockResolvedValue({
+      total_cost_usd: 12,
+      total_requests: 4,
+    });
+
+    const overview = await getOrgBillingOverview(env as never, org);
+
+    expect(orgStub.getInfo).not.toHaveBeenCalled();
+    expect(overview.billing_plan).toBe("pro");
+    expect(overview.total_credit_limit_cents).toBe(6000);
+    expect(overview.available_credits_cents).toBe(4800);
   });
 
   it("matches the v1 billing design plan matrix", () => {

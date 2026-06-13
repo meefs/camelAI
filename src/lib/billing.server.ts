@@ -1279,6 +1279,12 @@ export async function getBillingAccessSnapshot(
 ): Promise<OrgBillingAccessSnapshot | null> {
   const org = await getOrgStub(env, orgId).getInfo();
   if (!org) return null;
+  return getBillingAccessSnapshotForOrg(org);
+}
+
+export function getBillingAccessSnapshotForOrg(
+  org: Organization,
+): OrgBillingAccessSnapshot {
   const effectiveStatus = normalizeBillingStatus(org.billing_status);
   const effectivePlan = normalizeBillingPlan(
     org.billing_plan,
@@ -1332,10 +1338,7 @@ export async function getOrgBillingOverview(
   env: StripeBillingEnv,
   org: Organization,
 ): Promise<OrgBillingOverview> {
-  const snapshot = await getBillingAccessSnapshot(env, org.id);
-  if (!snapshot) {
-    throw new Error("Organization not found");
-  }
+  const snapshot = getBillingAccessSnapshotForOrg(org);
 
   const now = Date.now();
   const [lifetimeSpend, chargeableUsage] = await Promise.all([
