@@ -40,6 +40,13 @@ interface GetUserOrgsOptions {
   preloadedUserOrgs?: UserOrg[];
 }
 
+interface ListUserWorkspacesAcrossOrgsOptions {
+  preloadedWorkspacesByOrgId?: Map<
+    string,
+    Promise<Workspace[]> | Workspace[]
+  >;
+}
+
 type OrgWorkspaceRow = {
   id: string;
   name: string;
@@ -855,16 +862,28 @@ export async function listUserWorkspacesAcrossOrgs(
   env: AuthEnv,
   userId: string,
   orgs?: OrgMembership[],
+  options?: ListUserWorkspacesAcrossOrgsOptions,
 ): Promise<WorkspaceWithAccess[]> {
   const memberships = orgs ?? (await getUserOrgs(env, userId));
   if (memberships.length === 0) return [];
+  const preloadedWorkspacesByOrgId = options?.preloadedWorkspacesByOrgId;
 
   // When orgs are pre-validated (passed in), skip redundant isOrgMember checks
   const results = await Promise.allSettled(
     orgs
-      ? memberships.map((membership) =>
-          listOrgWorkspacesForMember(env, membership.org_id),
-        )
+      ? memberships.map(async (membership) => {
+          const preloadedWorkspaces = preloadedWorkspacesByOrgId?.get(
+            membership.org_id,
+          );
+          if (preloadedWorkspaces) {
+            const workspaces = await preloadedWorkspaces;
+            return workspaces.map((workspace) => ({
+              ...workspace,
+              access_level: "full" as const,
+            }));
+          }
+          return listOrgWorkspacesForMember(env, membership.org_id);
+        })
       : memberships.map((membership) =>
           listUserWorkspaces(env, userId, membership.org_id),
         ),

@@ -176,6 +176,61 @@ describe('Auth context building (parallel DO calls)', () => {
       // Member should see workspaces from both orgs
       expect(allWorkspaces.length).toBe(2);
     });
+
+    it('uses preloaded workspace lists without re-reading that org', async () => {
+      const preloadedWorkspace = {
+        id: 'ws-preloaded',
+        org_id: 'org-preloaded',
+        name: 'Preloaded Workspace',
+        description: null,
+        created_by: 'user-1',
+        created_at: 123,
+        avatar: { color: '#4F46E5', content: 'PW' },
+        archived: false,
+        archived_at: null,
+        archived_by: null,
+        compute_tier: 'standard' as const,
+        email_handle: null,
+      };
+      const env = {
+        ORG: {
+          idFromName: (id: string) => id,
+          get: () => ({
+            getWorkspaces: async () => {
+              throw new Error('preloaded org should not be read');
+            },
+          }),
+        },
+        WORKSPACE: {
+          idFromName: (id: string) => id,
+          get: () => ({
+            getInfo: async () => null,
+          }),
+        },
+      };
+
+      const workspaces = await prodListUserWorkspacesAcrossOrgs(
+        env as any,
+        'user-1',
+        [
+          {
+            org_id: 'org-preloaded',
+            org_name: 'Preloaded Org',
+            role: 'member',
+            joined_at: 1,
+          },
+        ],
+        {
+          preloadedWorkspacesByOrgId: new Map([
+            ['org-preloaded', [preloadedWorkspace]],
+          ]),
+        },
+      );
+
+      expect(workspaces).toEqual([
+        { ...preloadedWorkspace, access_level: 'full' },
+      ]);
+    });
   });
 
   describe('transient workspace RPC failures', () => {
@@ -317,6 +372,28 @@ describe('Auth context building (parallel DO calls)', () => {
       expect(ws1[0].id).toBe(ws1Id);
       expect(ws2[0].id).toBe(ws2Id);
       expect(ws1[0].id).not.toBe(ws2[0].id);
+    });
+
+    it('loads current org auth bootstrap in one OrgDO RPC', async () => {
+      const email = testEmail();
+      const { userId } = await createUser(testEnv, email, 'password', 'Bootstrap User');
+      const { org, defaultWorkspaceId } = await createOrg(testEnv, 'Bootstrap Org', userId);
+
+      const orgStub = testEnv.ORG.get(testEnv.ORG.idFromName(org.id));
+      const bootstrap = await orgStub.getAuthContextBootstrap(userId);
+
+      expect(bootstrap.info?.id).toBe(org.id);
+      expect(bootstrap.member).toMatchObject({
+        user_id: userId,
+        role: 'owner',
+      });
+      expect(bootstrap.workspaces.map((workspace) => workspace.id)).toContain(
+        defaultWorkspaceId,
+      );
+      expect(bootstrap.llmProviderConfig).toBeNull();
+      expect(bootstrap.experimentalSettings).toEqual({
+        claude_proxy_models: false,
+      });
     });
 
     it('rejects sessions invalidated before full auth context loads', async () => {

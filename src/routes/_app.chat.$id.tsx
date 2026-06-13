@@ -871,24 +871,13 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
     }
   }
 
-  const orgStub = authEnv.ORG
-    ? authEnv.ORG.get(authEnv.ORG.idFromName(orgId))
-    : null;
   const selfhostRuntime = isSelfhostRuntime(env);
-  const orgMetadataPromise = orgStub
-    ? Promise.all([
-        orgStub
-          .getExperimentalSettings()
-          .catch(() => DEFAULT_ORG_EXPERIMENTAL_SETTINGS),
-        orgStub.getLlmProviderConfig().catch(() => null),
-        selfhostRuntime
-          ? Promise.resolve(null)
-          : getOrgBillingOverview(env, authContext.currentOrg).catch((error) => {
-              console.warn("Failed to load billing overview for chat:", error);
-              return null;
-            }),
-      ])
-    : Promise.resolve([DEFAULT_ORG_EXPERIMENTAL_SETTINGS, null, null] as const);
+  const billingOverviewPromise = selfhostRuntime
+    ? Promise.resolve(null)
+    : getOrgBillingOverview(env, authContext.currentOrg).catch((error) => {
+        console.warn("Failed to load billing overview for chat:", error);
+        return null;
+      });
   const threadPromise = chatDO.getThread(context, params.id, workspaceId);
   const pickerStatePromise = chatDO
     .getWorkspaceModelPickerState(context, workspaceId)
@@ -912,11 +901,11 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
         return [];
       });
   const [
-    [experimentalSettings, llmProviderConfig, billingOverview],
+    billingOverview,
     thread,
     pickerState,
   ] = await Promise.all([
-    orgMetadataPromise,
+    billingOverviewPromise,
     threadPromise,
     pickerStatePromise,
   ]);
@@ -926,9 +915,10 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
   if (!isNewThread && !thread) {
     throw redirect("/chat");
   }
+  const experimentalSettings = authContext.currentOrgExperimentalSettings;
   const effectiveLlmProviderConfig = getEffectiveLlmProviderConfig(
     env,
-    llmProviderConfig,
+    authContext.currentOrgLlmProviderConfig,
   );
   const customApi = getStoredCustomLlmProviderApi(effectiveLlmProviderConfig);
   const customModelId = getStoredCustomLlmProviderModelId(effectiveLlmProviderConfig);
