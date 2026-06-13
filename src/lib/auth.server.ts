@@ -11,7 +11,9 @@ import type {
   Organization,
   OrgMembership,
   OrganizationExperimentalSettings,
+  Workspace,
   WorkspaceAccessLevel,
+  WorkspaceMember,
   WorkspaceWithAccess,
 } from "@/types";
 import type { User } from "@/types";
@@ -441,6 +443,39 @@ async function getOrgAuthContextBootstrap(
   };
 }
 
+async function getWorkspaceAccessBootstrap(
+  wsStub: ReturnType<AuthEnv["WORKSPACE"]["get"]>,
+  userId: string,
+): Promise<{
+  workspaceInfo: Workspace | null;
+  memberAccess: WorkspaceMember | null;
+}> {
+  try {
+    const result = await (
+      wsStub as unknown as {
+        getInfoAndMemberAccess(userId: string): Promise<{
+          info: Workspace | null;
+          memberAccess: WorkspaceMember | null;
+        }>;
+      }
+    ).getInfoAndMemberAccess(userId);
+    return {
+      workspaceInfo: result.info,
+      memberAccess: result.memberAccess,
+    };
+  } catch (error) {
+    if (!isMissingRpcMethodError(error, "getInfoAndMemberAccess")) {
+      throw error;
+    }
+  }
+
+  const [workspaceInfo, memberAccess] = await Promise.all([
+    wsStub.getInfo(),
+    wsStub.getMemberAccess(userId),
+  ]);
+  return { workspaceInfo, memberAccess };
+}
+
 /**
  * Require authentication - redirects to login if not authenticated
  */
@@ -488,11 +523,11 @@ export async function requireSessionWorkspaceAccess(
   );
   const orgStub = authEnv.ORG.get(authEnv.ORG.idFromName(orgId));
 
-  const [workspaceInfo, memberAccess, isMember] = await Promise.all([
-    wsStub.getInfo(),
-    wsStub.getMemberAccess(userId),
+  const [workspaceAccess, isMember] = await Promise.all([
+    getWorkspaceAccessBootstrap(wsStub, userId),
     orgStub.isMember(userId),
   ]);
+  const { workspaceInfo, memberAccess } = workspaceAccess;
 
   if (
     !workspaceInfo ||
