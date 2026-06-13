@@ -70,6 +70,7 @@ import type {
 } from '../../../src/types';
 import { decryptCredentials } from "../../../src/lib/integration-crypto";
 import {
+  CUSTOM_LLM_MODEL,
   DEFAULT_LLM_MODEL,
   getStoredCustomLlmProviderApi,
   getStoredCustomLlmProviderModelId,
@@ -9152,9 +9153,18 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       );
       const customApi = getStoredCustomLlmProviderApi(effectiveLlmProviderRecord);
       const customModelId = getStoredCustomLlmProviderModelId(effectiveLlmProviderRecord);
-      const threadModel =
+      const storedThreadModel =
         thread && threadWorkspaceId === context.workspaceId
-          ? normalizeLlmModel((thread as { model?: unknown }).model)
+          ? (thread as { model?: unknown }).model
+          : undefined;
+      const threadModel =
+        storedThreadModel === CUSTOM_LLM_MODEL
+          ? normalizeLlmModel(storedThreadModel, effectiveLlmProviderRecord?.provider, {
+              customApi,
+              customModelId,
+            })
+          : storedThreadModel !== undefined
+            ? normalizeLlmModel(storedThreadModel)
           : normalizeLlmModel(undefined, effectiveLlmProviderRecord?.provider, {
               customApi,
               customModelId,
