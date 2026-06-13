@@ -75,10 +75,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
   const userStub = authEnv.USER.get(
     authEnv.USER.idFromName(sessionContext.session.user_id),
   );
-  const [authBootstrap, emailVerificationStatus] = await Promise.all([
-    userStub.getAuthBootstrap(),
-    userStub.getEmailVerificationStatus(),
-  ]);
+  const authBootstrap = await userStub.getAuthBootstrap();
 
   if (!authBootstrap.profile) {
     const url = new URL(request.url);
@@ -90,6 +87,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
   const teamMode = url.searchParams.get("team") === "1";
   const onboarding = authBootstrap.onboarding;
   const onboardingComplete = hasCompletedOnboarding(onboarding);
+  const emailVerificationStatus = authBootstrap.emailVerification;
   const emailVerificationRequired =
     emailVerificationStatus.required && !emailVerificationStatus.verified;
   const orgStub = authEnv.ORG.get(
