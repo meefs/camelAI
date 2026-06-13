@@ -382,6 +382,63 @@ describe('getWorkspaceModelPickerState rollout compatibility', () => {
     expect(thread?.model).toBe('gemini-3.5-flash');
   });
 
+  it('uses preloaded org model context without rereading workspace info or org provider settings', async () => {
+    const workspaceStub = {
+      getInfo: vi.fn(async () => {
+        throw new Error('unexpected workspace info read');
+      }),
+      getModelPickerConfig: vi.fn().mockResolvedValue({
+        use_org_defaults: true,
+        models: [],
+        default_model: null,
+      }),
+    };
+    const orgStub = {
+      getLlmProviderConfig: vi.fn(async () => {
+        throw new Error('unexpected provider config read');
+      }),
+      getExperimentalSettings: vi.fn(async () => {
+        throw new Error('unexpected experimental settings read');
+      }),
+      getModelPickerConfig: vi.fn().mockResolvedValue({
+        use_platform_defaults: true,
+        models: [],
+        default_model: null,
+      }),
+    };
+
+    getEnvMock.mockReturnValue({
+      WORKSPACE: {
+        idFromName: (id: string) => id,
+        get: () => workspaceStub,
+      },
+      ORG: {
+        idFromName: (id: string) => id,
+        get: () => orgStub,
+      },
+    });
+
+    const state = await getWorkspaceModelPickerState({}, 'ws_123', {
+      orgId: 'org_123',
+      llmProviderConfig: {
+        provider: 'openai',
+        credentials_encrypted: 'encrypted',
+        config: '{}',
+        created_by: 'user_123',
+        created_at: 1,
+        updated_at: 1,
+      },
+      experimentalSettings: { claude_proxy_models: false },
+    });
+
+    expect(workspaceStub.getInfo).not.toHaveBeenCalled();
+    expect(orgStub.getLlmProviderConfig).not.toHaveBeenCalled();
+    expect(orgStub.getExperimentalSettings).not.toHaveBeenCalled();
+    expect(state?.orgId).toBe('org_123');
+    expect(state?.llmProvider).toBe('openai');
+    expect(state?.allowedThreadModels).toContain('gpt-5.4');
+  });
+
   it('uses a known org id for thread reads without loading workspace info', async () => {
     const workspaceStub = {
       getInfo: vi.fn(async () => {
