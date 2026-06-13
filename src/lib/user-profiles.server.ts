@@ -6,6 +6,7 @@ export type UserProfileSummary = Pick<User, "id" | "name" | "email" | "avatar">;
 interface LoadUserProfilesOptions {
   request?: Request;
   preloadedUsers?: Iterable<User | null | undefined>;
+  allowPartialFailures?: boolean;
 }
 
 const requestUserProfileCache = new WeakMap<
@@ -63,7 +64,15 @@ export async function loadUsersById(
         requestCache?.set(id, profilePromise);
       }
 
-      const profile = await profilePromise;
+      let profile: User | null;
+      try {
+        profile = await profilePromise;
+      } catch (error) {
+        if (!options.allowPartialFailures) {
+          throw error;
+        }
+        profile = null;
+      }
       return [id, profile] as const;
     }),
   );

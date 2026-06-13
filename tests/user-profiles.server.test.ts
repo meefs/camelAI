@@ -21,7 +21,7 @@ function makeUser(id: string, overrides: Partial<User> = {}): User {
   };
 }
 
-function makeAuthEnv(profiles: Map<string, User | null>) {
+function makeAuthEnv(profiles: Map<string, User | null | Error>) {
   const calls: string[] = [];
   const env = {
     USER: {
@@ -32,7 +32,11 @@ function makeAuthEnv(profiles: Map<string, User | null>) {
         return {
           async getProfile() {
             calls.push(id);
-            return profiles.get(id) ?? null;
+            const profile = profiles.get(id);
+            if (profile instanceof Error) {
+              throw profile;
+            }
+            return profile ?? null;
           },
         };
       },
@@ -103,5 +107,30 @@ describe("loadUserProfileSummaries", () => {
     const profiles = await loadUserProfileSummaries(env, ["deleted-user"]);
 
     expect(profiles.has("deleted-user")).toBe(false);
+  });
+
+  it("preserves loaded profiles when partial failures are allowed", async () => {
+    const user = makeUser("user-ok");
+    const { env, calls } = makeAuthEnv(
+      new Map<string, User | null | Error>([
+        ["user-ok", user],
+        ["user-bad", new Error("profile lookup failed")],
+      ]),
+    );
+
+    const profiles = await loadUserProfileSummaries(
+      env,
+      ["user-ok", "user-bad"],
+      { allowPartialFailures: true },
+    );
+
+    expect(calls).toEqual(["user-ok", "user-bad"]);
+    expect(profiles.get("user-ok")).toEqual({
+      id: "user-ok",
+      name: "user-ok",
+      email: "user-ok@example.com",
+      avatar: user.avatar,
+    });
+    expect(profiles.has("user-bad")).toBe(false);
   });
 });

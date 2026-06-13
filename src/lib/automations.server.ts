@@ -117,7 +117,10 @@ async function getCreators(
 ): Promise<Map<string, AutomationCreator>> {
   const authEnv = getAuthEnv(env);
   try {
-    return await loadUserProfileSummaries(authEnv, creatorIds, options);
+    return await loadUserProfileSummaries(authEnv, creatorIds, {
+      ...options,
+      allowPartialFailures: true,
+    });
   } catch (error) {
     console.error("[automations] Failed to load creator profiles", { error });
     return new Map();
