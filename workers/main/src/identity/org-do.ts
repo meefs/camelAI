@@ -162,6 +162,11 @@ export interface OrgWorkspaceSummaryCounts {
   publishedApps: number;
 }
 
+export interface OrgThreadWithOrgSlug {
+  thread: OrgThread | null;
+  orgSlug: string | null;
+}
+
 export interface OrgSettingsSummary {
   billing_plan: Organization["billing_plan"];
   billing_status: BillingStatus;
@@ -4692,6 +4697,13 @@ export class OrgDO extends DurableObject<DOEnv> {
       .exec("SELECT * FROM threads WHERE id = ?", id)
       .toArray() as unknown as OrgThread[];
     return rows[0] || null;
+  }
+
+  async getThreadWithOrgSlug(id: string): Promise<OrgThreadWithOrgSlug> {
+    return {
+      thread: this.getThread(id),
+      orgSlug: (await this.getInfo())?.slug ?? null,
+    };
   }
 
   getThreadsByIds(workspaceId: string, ids: string[]): OrgThread[] {
