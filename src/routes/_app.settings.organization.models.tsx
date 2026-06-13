@@ -197,23 +197,15 @@ export async function loader({ request, context }: Route.LoaderArgs) {
   const selectedWorkspaceId = url.searchParams.get("workspaceId");
 
   const orgStub = authEnv.ORG.get(authEnv.ORG.idFromName(orgId));
-  const [
-    orgConfig,
-    workspaces,
-    llmProviderConfig,
-    experimentalSettings,
-  ] = await Promise.all([
+  const [orgConfig, workspaces] = await Promise.all([
     orgStub.getModelPickerConfig(),
     listOrgWorkspaces(authEnv, orgId),
-    orgStub.getLlmProviderConfig().catch(() => null),
-    orgStub
-      .getExperimentalSettings()
-      .catch(() => ({ claude_proxy_models: false })),
   ]);
   const effectiveLlmProviderConfig = getEffectiveLlmProviderConfig(
     env,
-    llmProviderConfig,
+    authContext.currentOrgLlmProviderConfig,
   );
+  const experimentalSettings = authContext.currentOrgExperimentalSettings;
   const customApi = getStoredCustomLlmProviderApi(effectiveLlmProviderConfig);
   const customModelId = getStoredCustomLlmProviderModelId(
     effectiveLlmProviderConfig,
@@ -285,16 +277,11 @@ async function loadActionTarget(args: {
   const url = new URL(args.request.url);
   const scope = getScope(url);
   const orgStub = authEnv.ORG.get(authEnv.ORG.idFromName(orgId));
-  const [llmProviderConfig, experimentalSettings] = await Promise.all([
-    orgStub.getLlmProviderConfig().catch(() => null),
-    orgStub
-      .getExperimentalSettings()
-      .catch(() => ({ claude_proxy_models: false })),
-  ]);
   const effectiveLlmProviderConfig = getEffectiveLlmProviderConfig(
     env,
-    llmProviderConfig,
+    authContext.currentOrgLlmProviderConfig,
   );
+  const experimentalSettings = authContext.currentOrgExperimentalSettings;
   const visibleModelIds = getVisibleModelIdsForSettings(
     effectiveLlmProviderConfig?.provider,
     experimentalSettings,

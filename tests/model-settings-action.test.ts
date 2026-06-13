@@ -45,13 +45,35 @@ function loaderRequest(search = '') {
   return new Request(`https://camelai.com/settings/organization/models${search}`);
 }
 
+function providerRecord(provider: string, config = '{}') {
+  return {
+    provider,
+    credentials_encrypted: 'encrypted',
+    config,
+    created_by: 'user_123',
+    created_at: 1,
+    updated_at: 1,
+  };
+}
+
+function mockAuthContext(
+  overrides: Record<string, unknown> = {},
+) {
+  requireAuthContextMock.mockResolvedValue({
+    currentOrg: { id: 'org_123' },
+    currentOrgLlmProviderConfig: null,
+    currentOrgExperimentalSettings: {
+      claude_proxy_models: false,
+    },
+    user: { id: 'user_123' },
+    ...overrides,
+  });
+}
+
 describe('organization model settings actions', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    requireAuthContextMock.mockResolvedValue({
-      currentOrg: { id: 'org_123' },
-      user: { id: 'user_123' },
-    });
+    mockAuthContext();
     requireOrgAdminMock.mockResolvedValue(undefined);
     getEnvMock.mockReturnValue({});
     getAuthEnvMock.mockReturnValue({
@@ -83,10 +105,12 @@ describe('organization model settings actions', () => {
       models: [],
       default_model: null,
     });
-    orgGetLlmProviderConfigMock.mockResolvedValue(null);
-    orgGetExperimentalSettingsMock.mockResolvedValue({
-      claude_proxy_models: false,
-    });
+    orgGetLlmProviderConfigMock.mockRejectedValue(
+      new Error('unexpected provider config read'),
+    );
+    orgGetExperimentalSettingsMock.mockRejectedValue(
+      new Error('unexpected experimental settings read'),
+    );
     workspaceGetModelPickerConfigMock.mockResolvedValue({
       use_org_defaults: true,
       use_platform_defaults: true,
@@ -174,7 +198,9 @@ describe('organization model settings actions', () => {
   });
 
   it('rejects adding a model that is incompatible with the org provider', async () => {
-    orgGetLlmProviderConfigMock.mockResolvedValue({ provider: 'openai' });
+    mockAuthContext({
+      currentOrgLlmProviderConfig: providerRecord('openai'),
+    });
     workspaceGetModelPickerConfigMock.mockResolvedValue({
       use_org_defaults: false,
       use_platform_defaults: false,
@@ -223,7 +249,9 @@ describe('organization model settings actions', () => {
   });
 
   it('materializes platform defaults when adding a model to an old stored list', async () => {
-    orgGetLlmProviderConfigMock.mockResolvedValue({ provider: 'openai' });
+    mockAuthContext({
+      currentOrgLlmProviderConfig: providerRecord('openai'),
+    });
     workspaceGetModelPickerConfigMock.mockResolvedValue({
       use_org_defaults: false,
       models: [
@@ -277,7 +305,9 @@ describe('organization model settings actions', () => {
   });
 
   it('removing a model from platform defaults creates a custom override list', async () => {
-    orgGetLlmProviderConfigMock.mockResolvedValue({ provider: 'openai' });
+    mockAuthContext({
+      currentOrgLlmProviderConfig: providerRecord('openai'),
+    });
     workspaceGetModelPickerConfigMock.mockResolvedValue({
       use_org_defaults: false,
       use_platform_defaults: true,
@@ -319,7 +349,9 @@ describe('organization model settings actions', () => {
   });
 
   it('removes models from an explicit custom override list', async () => {
-    orgGetLlmProviderConfigMock.mockResolvedValue({ provider: 'openai' });
+    mockAuthContext({
+      currentOrgLlmProviderConfig: providerRecord('openai'),
+    });
     workspaceGetModelPickerConfigMock.mockResolvedValue({
       use_org_defaults: false,
       use_platform_defaults: false,
@@ -366,9 +398,8 @@ describe('organization model settings actions', () => {
 describe('organization model settings loader', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    requireAuthContextMock.mockResolvedValue({
-      currentOrg: { id: 'org_123' },
-      user: { id: 'user_123' },
+    mockAuthContext({
+      currentOrgLlmProviderConfig: providerRecord('openai'),
     });
     requireOrgAdminMock.mockResolvedValue(undefined);
     getEnvMock.mockReturnValue({});
@@ -396,10 +427,12 @@ describe('organization model settings loader', () => {
         avatar: { color: 'blue', content: 'W' },
       },
     ]);
-    orgGetLlmProviderConfigMock.mockResolvedValue({ provider: 'openai' });
-    orgGetExperimentalSettingsMock.mockResolvedValue({
-      claude_proxy_models: false,
-    });
+    orgGetLlmProviderConfigMock.mockRejectedValue(
+      new Error('unexpected provider config read'),
+    );
+    orgGetExperimentalSettingsMock.mockRejectedValue(
+      new Error('unexpected experimental settings read'),
+    );
     workspaceGetModelPickerConfigMock.mockResolvedValue({
       use_org_defaults: true,
       models: [],
@@ -433,9 +466,11 @@ describe('organization model settings loader', () => {
   });
 
   it('shows the synthetic custom model for custom providers with a model id', async () => {
-    orgGetLlmProviderConfigMock.mockResolvedValue({
-      provider: 'custom',
-      config: JSON.stringify({ custom_model_id: 'pi-custom-model' }),
+    mockAuthContext({
+      currentOrgLlmProviderConfig: providerRecord(
+        'custom',
+        JSON.stringify({ custom_model_id: 'pi-custom-model' }),
+      ),
     });
     orgGetModelPickerConfigMock.mockResolvedValue({
       models: [{ id: 'custom', added_at: 30 }],
@@ -482,7 +517,9 @@ describe('organization model settings loader', () => {
   });
 
   it('shows only Claude-family models for Anthropic BYOK orgs', async () => {
-    orgGetLlmProviderConfigMock.mockResolvedValue({ provider: 'anthropic' });
+    mockAuthContext({
+      currentOrgLlmProviderConfig: providerRecord('anthropic'),
+    });
     orgGetModelPickerConfigMock.mockResolvedValue({
       models: [
         { id: 'gpt-5.5', added_at: 60 },
