@@ -123,9 +123,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
       try {
         const selfhostConfig = getSelfhostAiProviderPublicConfig(env);
         if (selfhostConfig) return selfhostConfig;
-        const authEnv = getAuthEnv(env);
-        const orgStub = authEnv.ORG.get(authEnv.ORG.idFromName(orgId));
-        const record = await orgStub.getLlmProviderConfig();
+        const record = authContext.currentOrgLlmProviderConfig;
         if (!record) return null;
         return await buildPublicLlmProviderConfig(
           record,
