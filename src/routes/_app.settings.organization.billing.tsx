@@ -167,32 +167,29 @@ export async function loader({ request, context }: Route.LoaderArgs) {
   if (isSelfhostRuntime(env)) {
     throw redirect("/settings/organization/usage");
   }
-  const orgStub = env.ORG.get(env.ORG.idFromName(authContext.currentOrg.id));
 
   const stripeConfigured = isStripeBillingConfigured(env);
 
-  const [overview, paymentMethod, invoices, subscription, llmProviderConfig] =
-    await Promise.all([
-      getOrgBillingOverview(env, authContext.currentOrg),
-      stripeConfigured
-        ? getStripeDefaultPaymentMethodSummary(
-            env,
-            authContext.currentOrg,
-          ).catch(() => null)
-        : Promise.resolve(null),
-      stripeConfigured
-        ? listStripeInvoicesForOrg(env, authContext.currentOrg).catch(() => [])
-        : Promise.resolve([]),
-      stripeConfigured
-        ? getStripeSubscriptionSummary(env, authContext.currentOrg).catch(
-            () => null,
-          )
-        : Promise.resolve(null),
-      orgStub.getLlmProviderConfig().catch(() => null),
-    ]);
+  const [overview, paymentMethod, invoices, subscription] = await Promise.all([
+    getOrgBillingOverview(env, authContext.currentOrg),
+    stripeConfigured
+      ? getStripeDefaultPaymentMethodSummary(
+          env,
+          authContext.currentOrg,
+        ).catch(() => null)
+      : Promise.resolve(null),
+    stripeConfigured
+      ? listStripeInvoicesForOrg(env, authContext.currentOrg).catch(() => [])
+      : Promise.resolve([]),
+    stripeConfigured
+      ? getStripeSubscriptionSummary(env, authContext.currentOrg).catch(
+          () => null,
+        )
+      : Promise.resolve(null),
+  ]);
   const effectiveLlmProviderConfig = getEffectiveLlmProviderConfig(
     env,
-    llmProviderConfig,
+    authContext.currentOrgLlmProviderConfig,
   );
 
   const invoiceRows: InvoiceRow[] = invoices.map((invoice) => ({

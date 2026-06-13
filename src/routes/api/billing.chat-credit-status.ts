@@ -1,5 +1,5 @@
 import type { Route } from "./+types/billing.chat-credit-status";
-import { getAuthEnv, requireAuthContext } from "@/lib/auth.server";
+import { requireAuthContext } from "@/lib/auth.server";
 import { getOrgBillingOverview } from "@/lib/billing.server";
 import {
   applyDevBillingCreditStatusOverride,
@@ -13,7 +13,6 @@ import { isSelfhostRuntime } from "@/lib/selfhost-runtime";
 export async function loader({ request, context }: Route.LoaderArgs) {
   const authContext = await requireAuthContext(request, context);
   const env = getEnv(context);
-  const authEnv = getAuthEnv(env);
   const url = new URL(request.url);
   const rawModel = url.searchParams.get("model");
   const model = isLlmModel(rawModel) ? rawModel : null;
@@ -26,16 +25,11 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     };
   }
 
-  const orgStub = authEnv.ORG.get(authEnv.ORG.idFromName(orgId));
-
   try {
-    const [overview, llmProviderConfig] = await Promise.all([
-      getOrgBillingOverview(env, authContext.currentOrg),
-      orgStub.getLlmProviderConfig().catch(() => null),
-    ]);
+    const overview = await getOrgBillingOverview(env, authContext.currentOrg);
     const effectiveLlmProviderConfig = getEffectiveLlmProviderConfig(
       env,
-      llmProviderConfig,
+      authContext.currentOrgLlmProviderConfig,
     );
 
     return {
