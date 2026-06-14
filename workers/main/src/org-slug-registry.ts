@@ -1,6 +1,6 @@
 import { DurableObject } from 'cloudflare:workers';
 
-interface SlugOwnerRecord {
+export interface SlugOwnerRecord {
   orgId: string;
   claimedAt: number;
 }
@@ -8,6 +8,12 @@ interface SlugOwnerRecord {
 interface ClaimResult {
   ok: boolean;
   owner: string | null;
+}
+
+export interface OrgSlugD1MigrationExport {
+  exportVersion: 1;
+  exportedAt: number;
+  owner: SlugOwnerRecord | null;
 }
 
 /**
@@ -55,5 +61,13 @@ export class OrgSlugDO extends DurableObject {
 
     this.ctx.storage.kv.delete('owner');
     return true;
+  }
+
+  exportD1MigrationRecord(): OrgSlugD1MigrationExport {
+    return {
+      exportVersion: 1,
+      exportedAt: Date.now(),
+      owner: this.ctx.storage.kv.get<SlugOwnerRecord>('owner') ?? null,
+    };
   }
 }

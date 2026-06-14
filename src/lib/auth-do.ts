@@ -31,7 +31,11 @@ import {
 } from "./auth-helpers";
 import type { UserOrg } from "../../workers/main/src/auth";
 import type { LlmProviderConfigRecord } from "./llm-provider-config";
-import { getAppIndexDatabase, getAppIndexReadDatabase } from "../../workers/main/src/app-index-db";
+import {
+  getAppIndexDatabase,
+  getAppIndexReadDatabase,
+  getAppIndexSessionDatabase,
+} from "../../workers/main/src/app-index-db";
 
 interface GetUserOrgsOptions {
   preloadedOrgInfoById?: Map<
@@ -276,7 +280,7 @@ export async function isSignupIpBlocked(
     return false;
   }
 
-  const appIndex = getAppIndexReadDatabase(env);
+  const appIndex = getAppIndexSessionDatabase(env, "first-primary");
   return appIndex ? appIndex.isSignupIpBlocked(normalizedIp) : false;
 }
 

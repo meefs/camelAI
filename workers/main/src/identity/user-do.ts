@@ -50,6 +50,14 @@ import { calculateEffectiveUsageCostUsd } from "../../../../src/lib/usage-pricin
 import { dispatchAdminEvent } from "./admin-events";
 import { getDefaultOnboardingPreferences, sanitizeOnboardingPreferences, toOnboardingPreferences } from "./onboarding";
 import { isSuperuserEmail } from "./superuser";
+import {
+  compositeTextKeyTableSpec,
+  exportD1MigrationTablePage,
+  singleTextKeyTableSpec,
+  type D1MigrationTableExport,
+  type D1MigrationTableExportInput,
+  type D1MigrationTableSpecs,
+} from "../d1-migration-export";
 
 // Re-export for consumers that import from this module
 export type { OrgRole, BillingStatus } from "../../../../src/types";
@@ -82,6 +90,28 @@ export interface UserAuthBootstrap {
   /** Timestamp when all sessions were invalidated (e.g. on logout). Null if never invalidated. */
   sessionInvalidatedAt: number | null;
 }
+
+export interface UserD1MigrationMetadataExport {
+  exportVersion: 1;
+  exportedAt: number;
+  kv: {
+    sessionInvalidatedAt: number | null;
+    pendingSalesPrompt: string | null;
+  };
+}
+
+const USER_D1_MIGRATION_TABLES: D1MigrationTableSpecs = {
+  profile: singleTextKeyTableSpec("profile", "key"),
+  orgs: singleTextKeyTableSpec("orgs", "org_id"),
+  oauth_providers: singleTextKeyTableSpec("oauth_providers", "provider"),
+  chat_groups: singleTextKeyTableSpec("chat_groups", "id"),
+  chat_group_members: compositeTextKeyTableSpec(
+    "chat_group_members",
+    "group_id",
+    "thread_id",
+  ),
+  chat_thread_views: singleTextKeyTableSpec("chat_thread_views", "thread_id"),
+};
 
 export type OAuthProvider = "google" | "github" | "cloudflare_access";
 
@@ -1565,6 +1595,34 @@ export class UserDO extends DurableObject<DOEnv> {
   // Test helper RPC: expose the current schema version used by migration logic.
   async getSchemaVersion(): Promise<number> {
     return this.getSchemaVersionValue();
+  }
+
+  exportD1MigrationTable(
+    input: D1MigrationTableExportInput,
+  ): D1MigrationTableExport {
+    return exportD1MigrationTablePage(
+      this.sql,
+      USER_D1_MIGRATION_TABLES,
+      input,
+      this.getSchemaVersionValue(),
+    );
+  }
+
+  listD1MigrationTables(): string[] {
+    return Object.keys(USER_D1_MIGRATION_TABLES);
+  }
+
+  exportD1MigrationMetadata(): UserD1MigrationMetadataExport {
+    return {
+      exportVersion: 1,
+      exportedAt: Date.now(),
+      kv: {
+        sessionInvalidatedAt:
+          this.ctx.storage.kv.get<number>("sessionInvalidatedAt") ?? null,
+        pendingSalesPrompt:
+          this.ctx.storage.kv.get<string>("pendingSalesPrompt") ?? null,
+      },
+    };
   }
 }
 

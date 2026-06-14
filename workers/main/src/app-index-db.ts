@@ -38,6 +38,7 @@ import {
 type AppIndexEnv = { APP_DB?: D1Database };
 
 type D1Binding = D1Database | D1DatabaseSession;
+type D1SessionConstraint = 'first-primary' | 'first-unconstrained' | string;
 
 async function first<T = Record<string, unknown>>(stmt: D1PreparedStatement): Promise<T | null> {
   return (await stmt.first<T>()) ?? null;
@@ -228,6 +229,38 @@ type ExistingThreadMetadata = {
   last_model_changed_at: number | null;
 };
 
+export interface D1MigrationImportRowsInput {
+  namespace: string;
+  objectId: string;
+  tableName: string;
+  keyColumns: string[];
+  rows: Array<Record<string, unknown>>;
+  scanId?: string | null;
+}
+
+export interface D1MigrationImportRow {
+  namespace: string;
+  object_id: string;
+  table_name: string;
+  row_key: string;
+  row_json: string;
+  imported_at: number;
+  scan_id: string | null;
+}
+
+export interface D1MigrationImportMetadataInput {
+  namespace: string;
+  objectId: string;
+  metadata: Record<string, unknown>;
+}
+
+export interface D1MigrationImportMetadataRow {
+  namespace: string;
+  object_id: string;
+  metadata_json: string;
+  imported_at: number;
+}
+
 function normalizeInternalDomainList(
   rawValue: string | undefined,
   defaultDomains: string[] = [],
@@ -379,6 +412,23 @@ export class AppIndexDatabase {
         value TEXT NOT NULL,
         updated_at INTEGER NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS d1_migration_import_rows (
+        namespace TEXT NOT NULL,
+        object_id TEXT NOT NULL,
+        table_name TEXT NOT NULL,
+        row_key TEXT NOT NULL,
+        row_json TEXT NOT NULL,
+        imported_at INTEGER NOT NULL,
+        scan_id TEXT,
+        PRIMARY KEY (namespace, object_id, table_name, row_key)
+      );
+      CREATE TABLE IF NOT EXISTS d1_migration_import_metadata (
+        namespace TEXT NOT NULL,
+        object_id TEXT NOT NULL,
+        metadata_json TEXT NOT NULL,
+        imported_at INTEGER NOT NULL,
+        PRIMARY KEY (namespace, object_id)
+      );
       CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
       CREATE INDEX IF NOT EXISTS idx_orgs_created_at ON orgs(created_at DESC);
       CREATE INDEX IF NOT EXISTS idx_orgs_llm_provider_created_at ON orgs(llm_provider, created_at DESC);
@@ -407,6 +457,9 @@ export class AppIndexDatabase {
       .then(async () => {
         try {
           await this.db.prepare("ALTER TABLE apps ADD COLUMN project_id TEXT").run();
+        } catch {}
+        try {
+          await this.db.prepare("ALTER TABLE d1_migration_import_rows ADD COLUMN scan_id TEXT").run();
         } catch {}
         try {
           await this.db.prepare("ALTER TABLE orgs ADD COLUMN billing_plan TEXT").run();
@@ -501,6 +554,151 @@ export class AppIndexDatabase {
       })
       .then(() => undefined);
     await this.schemaReady;
+  }
+
+  private buildD1MigrationRowKey(
+    row: Record<string, unknown>,
+    keyColumns: string[],
+  ): string {
+    if (keyColumns.length === 0) {
+      throw new Error('D1 migration import requires at least one key column');
+    }
+    return JSON.stringify(
+      keyColumns.map((column) => {
+        if (!Object.prototype.hasOwnProperty.call(row, column)) {
+          throw new Error(`D1 migration row is missing key column: ${column}`);
+        }
+        const value = row[column];
+        return value === null || value === undefined ? null : String(value);
+      }),
+    );
+  }
+
+  async importD1MigrationRows(
+    input: D1MigrationImportRowsInput,
+  ): Promise<{ imported: number }> {
+    await this.ensureSchema();
+    if (input.rows.length === 0) return { imported: 0 };
+
+    const now = Date.now();
+    await this.db.batch(
+      input.rows.map((row) =>
+        this.db
+          .prepare(
+            `
+            INSERT INTO d1_migration_import_rows
+              (namespace, object_id, table_name, row_key, row_json, imported_at, scan_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(namespace, object_id, table_name, row_key)
+            DO UPDATE SET
+              row_json = excluded.row_json,
+              imported_at = excluded.imported_at,
+              scan_id = excluded.scan_id
+          `,
+          )
+          .bind(
+            input.namespace,
+            input.objectId,
+            input.tableName,
+            this.buildD1MigrationRowKey(row, input.keyColumns),
+            JSON.stringify(row),
+            now,
+            input.scanId ?? null,
+          ),
+      ),
+    );
+    return { imported: input.rows.length };
+  }
+
+  beginD1MigrationTableScan(): { scanId: string } {
+    return { scanId: crypto.randomUUID() };
+  }
+
+  async completeD1MigrationTableScan(input: {
+    namespace: string;
+    objectId: string;
+    tableName: string;
+    scanId: string;
+  }): Promise<{ deleted: number }> {
+    await this.ensureSchema();
+    const result = await this.db
+      .prepare(
+        `
+        DELETE FROM d1_migration_import_rows
+        WHERE namespace = ?
+          AND object_id = ?
+          AND table_name = ?
+          AND (scan_id IS NULL OR scan_id != ?)
+      `,
+      )
+      .bind(input.namespace, input.objectId, input.tableName, input.scanId)
+      .run();
+    return { deleted: result.meta.changes ?? 0 };
+  }
+
+  async listD1MigrationImportRows(input: {
+    namespace: string;
+    objectId: string;
+    tableName: string;
+  }): Promise<D1MigrationImportRow[]> {
+    await this.ensureSchema();
+    const result = await this.db
+      .prepare(
+        `
+        SELECT namespace, object_id, table_name, row_key, row_json, imported_at, scan_id
+        FROM d1_migration_import_rows
+        WHERE namespace = ? AND object_id = ? AND table_name = ?
+        ORDER BY row_key ASC
+      `,
+      )
+      .bind(input.namespace, input.objectId, input.tableName)
+      .all<D1MigrationImportRow>();
+    return result.results ?? [];
+  }
+
+  async importD1MigrationMetadata(
+    input: D1MigrationImportMetadataInput,
+  ): Promise<{ imported: 1 }> {
+    await this.ensureSchema();
+    await this.db
+      .prepare(
+        `
+        INSERT INTO d1_migration_import_metadata
+          (namespace, object_id, metadata_json, imported_at)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(namespace, object_id)
+        DO UPDATE SET
+          metadata_json = excluded.metadata_json,
+          imported_at = excluded.imported_at
+      `,
+      )
+      .bind(
+        input.namespace,
+        input.objectId,
+        JSON.stringify(input.metadata),
+        Date.now(),
+      )
+      .run();
+    return { imported: 1 };
+  }
+
+  async getD1MigrationImportMetadata(input: {
+    namespace: string;
+    objectId: string;
+  }): Promise<D1MigrationImportMetadataRow | null> {
+    await this.ensureSchema();
+    return first<D1MigrationImportMetadataRow>(
+      this.db
+        .prepare(
+          `
+          SELECT namespace, object_id, metadata_json, imported_at
+          FROM d1_migration_import_metadata
+          WHERE namespace = ? AND object_id = ?
+          LIMIT 1
+        `,
+        )
+        .bind(input.namespace, input.objectId),
+    );
   }
 
   private getAppId(orgId: string | null | undefined, scriptName: string): string {
@@ -1808,6 +2006,16 @@ export function getAppIndexDatabase(env: AppIndexEnv): AppIndexDatabase | null {
   return env.APP_DB ? new AppIndexDatabase(env.APP_DB) : null;
 }
 
-export function getAppIndexReadDatabase(env: AppIndexEnv): AppIndexDatabase | null {
-  return env.APP_DB ? new AppIndexDatabase(env.APP_DB.withSession('first-primary')) : null;
+export function getAppIndexSessionDatabase(
+  env: AppIndexEnv,
+  bookmarkOrConstraint: D1SessionConstraint = 'first-primary',
+): AppIndexDatabase | null {
+  return env.APP_DB ? new AppIndexDatabase(env.APP_DB.withSession(bookmarkOrConstraint)) : null;
+}
+
+export function getAppIndexReadDatabase(
+  env: AppIndexEnv,
+  bookmarkOrConstraint: D1SessionConstraint = 'first-unconstrained',
+): AppIndexDatabase | null {
+  return getAppIndexSessionDatabase(env, bookmarkOrConstraint);
 }

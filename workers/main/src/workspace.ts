@@ -17,6 +17,13 @@ import {
   parseWorkspaceModelPickerConfig,
 } from '../../../src/lib/model-picker-config';
 import { refreshRemoteMcpOAuthToken } from './remote-mcp-oauth';
+import {
+  exportD1MigrationTablePage,
+  singleTextKeyTableSpec,
+  type D1MigrationTableExport,
+  type D1MigrationTableExportInput,
+  type D1MigrationTableSpecs,
+} from './d1-migration-export';
 
 // Buffer time before token expiry to trigger refresh (10 minutes)
 const TOKEN_REFRESH_BUFFER_MS = 10 * 60 * 1000;
@@ -44,6 +51,25 @@ export interface WorkspaceRunningThreadStatus {
   updatedAt: number;
   latestActivityText: string | null;
   latestActivityAt: number | null;
+}
+
+const WORKSPACE_D1_MIGRATION_TABLES: D1MigrationTableSpecs = {
+  workspace_info: singleTextKeyTableSpec('workspace_info', 'key'),
+  members: singleTextKeyTableSpec('members', 'user_id'),
+  integrations: singleTextKeyTableSpec('integrations', 'id'),
+  audit_log: singleTextKeyTableSpec('audit_log', 'id'),
+  thread_streaming_status: singleTextKeyTableSpec(
+    'thread_streaming_status',
+    'thread_id',
+  ),
+};
+
+export interface WorkspaceD1MigrationMetadataExport {
+  exportVersion: 1;
+  exportedAt: number;
+  kv: {
+    modelPickerConfig: unknown | null;
+  };
 }
 
 function normalizeRunningActivityText(value: unknown): string | null {
@@ -1594,4 +1620,30 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
     };
   }
 
+  exportD1MigrationTable(
+    input: D1MigrationTableExportInput,
+  ): D1MigrationTableExport {
+    return exportD1MigrationTablePage(
+      this.sql,
+      WORKSPACE_D1_MIGRATION_TABLES,
+      input,
+      this.ctx.storage.kv.get<number>('schemaVersion') ?? 0,
+    );
+  }
+
+  listD1MigrationTables(): string[] {
+    return Object.keys(WORKSPACE_D1_MIGRATION_TABLES);
+  }
+
+  exportD1MigrationMetadata(): WorkspaceD1MigrationMetadataExport {
+    return {
+      exportVersion: 1,
+      exportedAt: Date.now(),
+      kv: {
+        modelPickerConfig:
+          this.ctx.storage.kv.get<unknown>(WORKSPACE_MODEL_PICKER_CONFIG_KEY) ??
+          null,
+      },
+    };
+  }
 }

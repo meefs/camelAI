@@ -15,12 +15,25 @@ export interface SlackTeamInstallationRecord {
   updated_at: number;
 }
 
-interface StoredTelegramSetupRecord extends TelegramSetupRecord {
+export interface StoredTelegramSetupRecord extends TelegramSetupRecord {
   expiresAt: number;
 }
 
-interface StoredTelegramChatBinding extends TelegramChatBinding {
+export interface StoredTelegramChatBinding extends TelegramChatBinding {
   boundAt: number;
+}
+
+export interface TelegramRegistryD1MigrationExport {
+  exportVersion: 1;
+  exportedAt: number;
+  setupTokens: Array<{ token: string; record: StoredTelegramSetupRecord }>;
+  chatBindings: Array<{ chatId: string; binding: StoredTelegramChatBinding }>;
+}
+
+export interface SlackTeamRegistryD1MigrationExport {
+  exportVersion: 1;
+  exportedAt: number;
+  installations: SlackTeamInstallationRecord[];
 }
 
 const TELEGRAM_SETUP_PREFIX = "setup:";
@@ -97,6 +110,30 @@ export class TelegramRegistryDO extends DurableObject {
     const { boundAt: _boundAt, ...binding } = record;
     return binding;
   }
+
+  exportD1MigrationRecords(): TelegramRegistryD1MigrationExport {
+    const setupTokens: TelegramRegistryD1MigrationExport["setupTokens"] = [];
+    const chatBindings: TelegramRegistryD1MigrationExport["chatBindings"] = [];
+    for (const [key, value] of this.ctx.storage.kv.list<unknown>()) {
+      if (key.startsWith(TELEGRAM_SETUP_PREFIX)) {
+        setupTokens.push({
+          token: key.slice(TELEGRAM_SETUP_PREFIX.length),
+          record: value as StoredTelegramSetupRecord,
+        });
+      } else if (key.startsWith(TELEGRAM_CHAT_PREFIX)) {
+        chatBindings.push({
+          chatId: key.slice(TELEGRAM_CHAT_PREFIX.length),
+          binding: value as StoredTelegramChatBinding,
+        });
+      }
+    }
+    return {
+      exportVersion: 1,
+      exportedAt: Date.now(),
+      setupTokens,
+      chatBindings,
+    };
+  }
 }
 
 export class SlackTeamRegistryDO extends DurableObject {
@@ -123,6 +160,14 @@ export class SlackTeamRegistryDO extends DurableObject {
     );
     deduped.unshift(record);
     this.replaceInstallations(deduped);
+  }
+
+  exportD1MigrationRecords(): SlackTeamRegistryD1MigrationExport {
+    return {
+      exportVersion: 1,
+      exportedAt: Date.now(),
+      installations: this.listInstallations(),
+    };
   }
 }
 

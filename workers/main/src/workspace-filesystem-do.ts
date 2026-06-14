@@ -220,6 +220,16 @@ export interface ProjectArtifactToken {
   artifactRemoteProjectId: string;
 }
 
+export interface WorkspaceFilesystemD1MigrationExport {
+  exportVersion: 1;
+  exportedAt: number;
+  kv: {
+    projects: WorkspaceProject[];
+    legacyWorkspaceMigrationState: LegacyWorkspaceMigrationState;
+  };
+  note: "file contents remain in Workspace durable storage/R2";
+}
+
 const PROJECTS_KEY = "projects:v1";
 const LEGACY_MIGRATION_KEY = "legacy-workspace-migration:v1";
 const DEFAULT_PROJECT_VM_ID = "main";
@@ -675,6 +685,19 @@ export class WorkspaceFilesystemDO extends DurableObject<WorkspaceFilesystemEnv>
       expiresAt: result.expiresAt,
       artifactRemote: project.artifactRemote,
       artifactRemoteProjectId: project.artifactRemoteProjectId || project.id,
+    };
+  }
+
+  async exportD1MigrationMetadata(): Promise<WorkspaceFilesystemD1MigrationExport> {
+    return {
+      exportVersion: 1,
+      exportedAt: Date.now(),
+      kv: {
+        projects: await this.readProjects(),
+        legacyWorkspaceMigrationState:
+          await this.readLegacyWorkspaceMigrationState(),
+      },
+      note: "file contents remain in Workspace durable storage/R2",
     };
   }
 

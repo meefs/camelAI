@@ -75,6 +75,13 @@ import {
   type CustomDomain,
   type CustomDomainStatus,
 } from "./org/custom-domains";
+import {
+  exportD1MigrationTablePage,
+  singleTextKeyTableSpec,
+  type D1MigrationTableExport,
+  type D1MigrationTableExportInput,
+  type D1MigrationTableSpecs,
+} from "../d1-migration-export";
 
 // Re-export for consumers that import from this module
 export type { OrgRole, BillingStatus } from "../../../../src/types";
@@ -85,6 +92,25 @@ const ORG_EXPERIMENTAL_SETTINGS_KEY = "experimental_settings";
 const ORG_MODEL_PICKER_CONFIG_KEY = "model_picker_config";
 const ORG_INDEX_PREFIX = "org_index:";
 const CUSTOM_DOMAIN_HOST_PREFIX = "custom_domain_host:";
+
+const ORG_D1_MIGRATION_TABLES: D1MigrationTableSpecs = {
+  org_info: singleTextKeyTableSpec("org_info", "key"),
+  members: singleTextKeyTableSpec("members", "user_id"),
+  invitations: singleTextKeyTableSpec("invitations", "id"),
+  integrations: singleTextKeyTableSpec("integrations", "id"),
+  workspaces: singleTextKeyTableSpec("workspaces", "id"),
+  audit_log: singleTextKeyTableSpec("audit_log", "id"),
+  worker_scripts: singleTextKeyTableSpec("worker_scripts", "script_name"),
+  threads: singleTextKeyTableSpec("threads", "id"),
+  thread_error_events: singleTextKeyTableSpec("thread_error_events", "id"),
+  llm_provider_config: singleTextKeyTableSpec("llm_provider_config", "id"),
+  custom_domains: singleTextKeyTableSpec("custom_domains", "domain"),
+  stripe_credit_checkouts: singleTextKeyTableSpec(
+    "stripe_credit_checkouts",
+    "session_id",
+  ),
+  admin_credit_grants: singleTextKeyTableSpec("admin_credit_grants", "grant_id"),
+};
 
 function normalizeThreadModelForStorage(
   model: LlmModel | undefined,
@@ -6027,5 +6053,21 @@ export class OrgDO extends DurableObject<DOEnv> {
       org_id: this.getInfoSync()?.id ?? "",
       limits: normalized,
     };
+  }
+
+  exportD1MigrationTable(
+    input: D1MigrationTableExportInput,
+  ): D1MigrationTableExport {
+    this.ensureAdminCreditGrantsTable();
+    return exportD1MigrationTablePage(
+      this.sql,
+      ORG_D1_MIGRATION_TABLES,
+      input,
+      this.ctx.storage.kv.get<number>("schemaVersion") ?? 0,
+    );
+  }
+
+  listD1MigrationTables(): string[] {
+    return Object.keys(ORG_D1_MIGRATION_TABLES);
   }
 }

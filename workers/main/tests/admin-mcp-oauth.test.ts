@@ -378,6 +378,51 @@ describe("admin MCP OAuth resource", () => {
     expect(payload.output[0]).toContain('"available": true');
   });
 
+  it("runs admin JavaScript that can query APP_DB through the DB helper", async () => {
+    const { userId } = await createUser(
+      testEnv,
+      `admin-mcp-js-db-${crypto.randomUUID()}@example.com`,
+      "password123",
+      "JS DB Admin",
+    );
+    await createOrg(testEnv, "MCP JS DB Org", userId);
+    await updateUserProfile(testEnv, userId, { is_superuser: true });
+    const token = await issueAdminMcpToken(userId);
+
+    const response = await SELF.fetch(
+      mcpRequest(
+        {
+          jsonrpc: "2.0",
+          id: 1,
+          method: "tools/call",
+          params: {
+            name: "admin_js_exec",
+            arguments: {
+              code: `
+                const row = await DB.first("SELECT ? AS value", [42]);
+                const session = DB.session("first-unconstrained");
+                await session.first("SELECT 1 AS ok");
+                return { row, bookmark: session.getBookmark() };
+              `,
+            },
+          },
+        },
+        token,
+      ),
+    );
+
+    expect(response?.status).toBe(200);
+    const rpc = (await response?.json()) as any;
+    const payload = parseToolText(rpc);
+    expect(payload).toMatchObject({
+      success: true,
+      result: {
+        row: { value: 42 },
+      },
+    });
+    expect(typeof payload.result.bookmark === "string" || payload.result.bookmark === null).toBe(true);
+  });
+
   it("runs admin JavaScript through a DO stub proxy", async () => {
     const { userId } = await createUser(
       testEnv,

@@ -1,6 +1,6 @@
 import { DurableObject } from 'cloudflare:workers';
 
-interface HandleOwnerRecord {
+export interface HandleOwnerRecord {
   workspaceId: string;
   claimedAt: number;
 }
@@ -8,6 +8,12 @@ interface HandleOwnerRecord {
 interface ClaimResult {
   ok: boolean;
   owner: string | null;
+}
+
+export interface EmailHandleD1MigrationExport {
+  exportVersion: 1;
+  exportedAt: number;
+  owner: HandleOwnerRecord | null;
 }
 
 /**
@@ -52,5 +58,13 @@ export class EmailHandleDO extends DurableObject {
 
     this.ctx.storage.kv.delete('owner');
     return true;
+  }
+
+  exportD1MigrationRecord(): EmailHandleD1MigrationExport {
+    return {
+      exportVersion: 1,
+      exportedAt: Date.now(),
+      owner: this.ctx.storage.kv.get<HandleOwnerRecord>('owner') ?? null,
+    };
   }
 }

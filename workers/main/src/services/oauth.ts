@@ -6,7 +6,7 @@ import type { Env } from '../types.js';
 import type { OAuthProvider } from '../../../../src/lib/oauth-config.js';
 import { assertEmailDomainAllowed, getBlocklistFromKV } from '../../../../src/lib/email-domain-blocklist.js';
 import { getUserStub, getOrgStub, getWorkspaceStub } from '../helpers/stubs.js';
-import { getAppIndexReadDatabase } from '../app-index-db.js';
+import { getAppIndexSessionDatabase } from '../app-index-db.js';
 
 function normalizeSignupIp(ip: string | null | undefined): string | null {
   const normalized = ip?.trim().toLowerCase();
@@ -78,7 +78,7 @@ export async function getOrCreateUserFromOAuth(
 
   // Create new user
   if (normalizedSignupIp) {
-    const appIndex = getAppIndexReadDatabase(env);
+    const appIndex = getAppIndexSessionDatabase(env, 'first-primary');
     if (appIndex && await appIndex.isSignupIpBlocked(normalizedSignupIp)) {
       throw new Error('signup_ip_blocked');
     }
@@ -87,7 +87,7 @@ export async function getOrCreateUserFromOAuth(
   assertEmailDomainAllowed(email, blocklist);
 
   if (normalizedSignupIp) {
-    const appIndex = getAppIndexReadDatabase(env);
+    const appIndex = getAppIndexSessionDatabase(env, 'first-primary');
     if (appIndex && await appIndex.isSignupIpBlocked(normalizedSignupIp)) {
       throw new Error('signup_ip_blocked');
     }
