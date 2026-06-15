@@ -145,6 +145,20 @@ describe('rankMentionables', () => {
       .toEqual(['inventory', 'sales']);
   });
 
+  it('matches BigQuery connections by name, display name, and compact type queries', () => {
+    const items = [
+      fix({ id: 'prod_bigquery', name: 'Prod', integration_type: 'bigquery' }),
+      project({ id: 'prod_project', name: 'Prod Site' }),
+    ];
+
+    expect(rankMentionables(items, 'prod').map((item) => item.id))
+      .toContain('prod_bigquery');
+    expect(rankMentionables(items, 'big query').map((item) => item.id))
+      .toEqual(['prod_bigquery']);
+    expect(rankMentionables(items, 'bigquery').map((item) => item.id))
+      .toEqual(['prod_bigquery']);
+  });
+
   it('matches natural spaced names through slug and compact queries', () => {
     for (const query of ['sales d', 'sales_db', 'sales-db', 'salesd', 'salesdb']) {
       expect(rankMentionables(integrations, query).map((item) => item.id))

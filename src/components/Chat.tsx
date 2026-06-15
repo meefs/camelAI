@@ -577,7 +577,8 @@ export default function Chat({
   }>();
   const creditPacksFetcher = useFetcher<CreditPacksResourceData>();
   const billingStatusFetcher = useFetcher<BillingCreditStatusResourceData>();
-  const mentionProjectsFetcher = useFetcher<{
+  const mentionSourcesFetcher = useFetcher<{
+    connections?: Integration[];
     projects?: MentionableProject[];
     error?: string;
   }>();
@@ -1685,23 +1686,26 @@ export default function Chat({
     () => buildSlugMap(mentionEntities),
     [mentionEntities],
   );
-  const lastMentionProjectsFetchAtRef = useRef(0);
+  const lastMentionSourcesFetchAtRef = useRef(0);
   const handleMentionMenuOpenChange = useCallback((open: boolean) => {
     if (!open || !resolvedWorkspaceId) return;
-    if (mentionProjectsFetcher.state !== "idle") return;
+    if (mentionSourcesFetcher.state !== "idle") return;
     const now = Date.now();
-    if (now - lastMentionProjectsFetchAtRef.current < 15_000) return;
-    lastMentionProjectsFetchAtRef.current = now;
-    mentionProjectsFetcher.load(
-      `/api/workspaces/${encodeURIComponent(resolvedWorkspaceId)}/projects`,
+    if (now - lastMentionSourcesFetchAtRef.current < 15_000) return;
+    lastMentionSourcesFetchAtRef.current = now;
+    mentionSourcesFetcher.load(
+      `/api/workspaces/${encodeURIComponent(resolvedWorkspaceId)}/mentions`,
     );
-  }, [mentionProjectsFetcher, resolvedWorkspaceId]);
+  }, [mentionSourcesFetcher, resolvedWorkspaceId]);
   useEffect(() => {
-    const data = mentionProjectsFetcher.data;
+    const data = mentionSourcesFetcher.data;
+    if (data && Array.isArray(data.connections)) {
+      setResolvedMentionConnections(data.connections);
+    }
     if (data && Array.isArray(data.projects)) {
       setResolvedMentionProjects(data.projects);
     }
-  }, [mentionProjectsFetcher.data]);
+  }, [mentionSourcesFetcher.data]);
   const sessionStorageKey = useCallback(
     (id: string) => {
       const workspaceKey = resolvedWorkspaceId ?? "unknown";

@@ -207,6 +207,10 @@ export default [
     "routes/api/workspaces.$id.projects.ts",
   ),
   route(
+    "api/workspaces/:id/mentions",
+    "routes/api/workspaces.$id.mentions.ts",
+  ),
+  route(
     "api/workspaces/:id/chat/threads",
     "routes/api/workspaces.$id.chat.threads.ts",
   ),

@@ -17,6 +17,7 @@ const readThreadMessagesMock = vi.fn();
 const ensureGroupForThreadMock = vi.fn();
 const getGroupForWorkspaceMock = vi.fn();
 const listGroupsForMoveMock = vi.fn();
+const loadWorkspaceMentionSourcesMock = vi.fn();
 
 vi.mock('@/lib/auth.server', () => ({
   requireSuperuser: requireSuperuserMock,
@@ -54,6 +55,10 @@ vi.mock('@/lib/chat-groups.server', () => ({
   ensureGroupForThread: ensureGroupForThreadMock,
   getGroupForWorkspace: getGroupForWorkspaceMock,
   listGroupsForMove: listGroupsForMoveMock,
+}));
+
+vi.mock('@/lib/mention-sources.server', () => ({
+  loadWorkspaceMentionSources: loadWorkspaceMentionSourcesMock,
 }));
 
 const { loader, shouldRevalidate } = await import('@/routes/_app.chat.$id');
@@ -99,6 +104,10 @@ describe('chat loader admin readonly mode', () => {
     ensureGroupForThreadMock.mockResolvedValue(null);
     getGroupForWorkspaceMock.mockResolvedValue(null);
     listGroupsForMoveMock.mockResolvedValue([]);
+    loadWorkspaceMentionSourcesMock.mockResolvedValue({
+      connections: [],
+      projects: [],
+    });
   });
 
   it('route shouldRevalidate preserves explicit same-thread same-URL revalidation', () => {
@@ -490,6 +499,12 @@ describe('chat loader workspace mismatch handling', () => {
       orgId: 'org_active',
       workspaceId: 'ws_active',
     });
+    await expect(result.connections).resolves.toEqual([]);
+    await expect(result.projects).resolves.toEqual([]);
+    expect(loadWorkspaceMentionSourcesMock).toHaveBeenCalledWith(
+      expect.any(Object),
+      'ws_active',
+    );
     expect(requireSessionWorkspaceAccessMock).toHaveBeenCalledTimes(1);
     expect(requireAuthContextMock).not.toHaveBeenCalled();
     expect(getThreadMock).not.toHaveBeenCalled();

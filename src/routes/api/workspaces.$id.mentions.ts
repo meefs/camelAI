@@ -1,6 +1,6 @@
-import type { Route } from './+types/workspaces.$id.projects';
+import type { Route } from './+types/workspaces.$id.mentions';
 import { getEnv } from '@/lib/cloudflare.server';
-import { loadWorkspaceMentionProjects } from '@/lib/mention-sources.server';
+import { loadWorkspaceMentionSourcesPatch } from '@/lib/mention-sources.server';
 import { requireWorkspaceAccess } from './workspaces.utils';
 
 export async function loader({ request, context, params }: Route.LoaderArgs) {
@@ -12,22 +12,22 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
 
     await requireWorkspaceAccess(request, context, workspaceId);
 
-    const projects = await loadWorkspaceMentionProjects(
+    const mentionSources = await loadWorkspaceMentionSourcesPatch(
       getEnv(context),
       workspaceId,
     );
 
     return Response.json(
-      { projects },
+      mentionSources,
       { headers: { 'Cache-Control': 'private, no-store' } },
     );
   } catch (error) {
     if (error instanceof Response) {
       return error;
     }
-    console.error('Failed to load workspace projects:', error);
+    console.error('Failed to load workspace mention sources:', error);
     return Response.json(
-      { error: 'Failed to load workspace projects' },
+      { error: 'Failed to load workspace mention sources' },
       { status: 500 },
     );
   }

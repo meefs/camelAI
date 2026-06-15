@@ -14,8 +14,8 @@ import {
   getAuthEnv,
 } from "@/lib/auth.server";
 import { createSessionCookieHeader } from "@/lib/cookies.server";
-import { integrationRecordToIntegration } from "@/lib/auth-helpers";
-import { projectsToMentionables, type MentionableProject } from "@/lib/mentions";
+import type { MentionableProject } from "@/lib/mentions";
+import { loadWorkspaceMentionSources } from "@/lib/mention-sources.server";
 import { getEnv } from "@/lib/cloudflare.server";
 import { getAppUrlContext } from "@/lib/app-url.server";
 import { getOrgBillingOverview } from "@/lib/billing.server";
@@ -35,7 +35,7 @@ import {
 } from "@/lib/llm-provider-config";
 import { getEffectiveLlmProviderConfig } from "@/lib/selfhost-ai-provider";
 import { isSelfhostRuntime } from "@/lib/selfhost-runtime";
-import { getOrg, getWorkerScript, listWorkspaceIntegrationRecords } from "@/lib/auth-do";
+import { getOrg, getWorkerScript } from "@/lib/auth-do";
 import { switchSessionOrg, switchSessionWorkspace } from "@/lib/auth-do";
 import {
   CLOUDFLARE_ACCESS_AUTH_SOURCE,
@@ -127,20 +127,6 @@ function createChatThreadRouteLoaderTraceContext(
     path: normalizePathForObservability(url.pathname),
     route: "routes/_app.chat.$id.loader",
   };
-}
-
-async function loadWorkspaceMentionProjects(
-  env: unknown,
-  workspaceId: string,
-): Promise<MentionableProject[]> {
-  const { WorkspaceFilesystemClient } = await import(
-    "../../workers/main/src/workspace-filesystem-do"
-  );
-  const projects = await new WorkspaceFilesystemClient(
-    env as never,
-    workspaceId,
-  ).listProjects();
-  return projectsToMentionables(projects);
 }
 
 function recordChatThreadRouteLoaderStage(
@@ -645,6 +631,12 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
       accessStartedAt,
       { status: "new_thread" },
     );
+    const mentionSourcesPromise = loadWorkspaceMentionSources(env, workspaceId);
+    const connectionsPromise: Promise<Integration[]> = mentionSourcesPromise.then(
+      ({ connections }) => connections,
+    );
+    const projectsPromise: Promise<MentionableProject[]> =
+      mentionSourcesPromise.then(({ projects }) => projects);
     const groupId = url.searchParams.get("group")?.trim() || null;
     const orgStub = authEnv.ORG.get(authEnv.ORG.idFromName(orgId));
     const threadLoadStartedAt = Date.now();
@@ -796,8 +788,8 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
       isNewThread: true,
       hostname,
       orgSlug,
-      connections: [] as Integration[],
-      projects: [] as MentionableProject[],
+      connections: connectionsPromise,
+      projects: projectsPromise,
       isOrgAdmin: false,
       recentModelScope: { orgId, workspaceId },
       readOnly: false,
@@ -920,18 +912,12 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
       console.error("Failed to load model picker state:", error);
       return null;
     });
-  const connectionsPromise = listWorkspaceIntegrationRecords(getAuthEnv(env), workspaceId)
-    .then((records) => records.map(integrationRecordToIntegration))
-    .catch((error) => {
-      console.error("Failed to load workspace connections:", error);
-      return [] as Integration[];
-    });
+  const mentionSourcesPromise = loadWorkspaceMentionSources(env, workspaceId);
+  const connectionsPromise: Promise<Integration[]> = mentionSourcesPromise.then(
+    ({ connections }) => connections,
+  );
   const projectsPromise: Promise<MentionableProject[]> =
-    loadWorkspaceMentionProjects(env, workspaceId)
-      .catch((error) => {
-        console.error("Failed to load workspace projects:", error);
-        return [];
-      });
+    mentionSourcesPromise.then(({ projects }) => projects);
   const [
     billingOverview,
     thread,

@@ -44,6 +44,13 @@ const connection: Integration = {
   has_credentials: true,
 };
 
+const bigQueryConnection: Integration = {
+  ...connection,
+  id: 'integration-bigquery',
+  integration_type: 'bigquery',
+  name: 'Prod',
+};
+
 const project: AtMentionEntity = {
   kind: 'project',
   id: 'ca-workspace-alpha-site',
@@ -138,6 +145,21 @@ describe('PromptInput mentions', () => {
 
     expect(textbox).toHaveValue('@customers_db ');
   });
+
+  it.each(['@prod', '@big query', '@bigquery'])(
+    'shows a BigQuery connection for query %s',
+    async (query) => {
+      const user = userEvent.setup();
+      render(<ControlledPromptInput mentionables={[
+        { ...bigQueryConnection, kind: 'connection' },
+      ]} />);
+
+      await user.type(screen.getByRole('textbox'), query);
+
+      expect(await screen.findByText('Prod')).toBeInTheDocument();
+      expect(screen.getByText('Google BigQuery')).toBeInTheDocument();
+    },
+  );
 
   it('reports mention trigger activity even when stale items have no matches', async () => {
     const user = userEvent.setup();

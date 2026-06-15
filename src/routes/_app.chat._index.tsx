@@ -21,9 +21,10 @@ import {
   getDevChatInitialError,
 } from "@/lib/chat-credit-status";
 import { waitUntil } from "@/lib/wait-until";
-import { getAuthEnv, integrationRecordToIntegration } from "@/lib/auth-helpers";
-import { projectsToMentionables, type MentionableProject } from "@/lib/mentions";
-import { getWorkerScript, listWorkspaceIntegrationRecords } from "@/lib/auth-do";
+import { getAuthEnv } from "@/lib/auth-helpers";
+import type { MentionableProject } from "@/lib/mentions";
+import { getWorkerScript } from "@/lib/auth-do";
+import { loadWorkspaceMentionSources } from "@/lib/mention-sources.server";
 import {
   getDefaultLlmModel,
   getStoredCustomLlmProviderApi,
@@ -133,20 +134,6 @@ function createChatCreateThreadTraceContext(
     path: normalizePathForObservability(url.pathname),
     route: "routes/_app.chat._index.action",
   };
-}
-
-async function loadWorkspaceMentionProjects(
-  env: unknown,
-  workspaceId: string,
-): Promise<MentionableProject[]> {
-  const { WorkspaceFilesystemClient } = await import(
-    "../../workers/main/src/workspace-filesystem-do"
-  );
-  const projects = await new WorkspaceFilesystemClient(
-    env as never,
-    workspaceId,
-  ).listProjects();
-  return projectsToMentionables(projects);
 }
 
 function recordChatCreateThreadStage(
@@ -308,22 +295,15 @@ export async function loader({ request, context }: Route.LoaderArgs) {
         })
     : Promise.resolve([]);
 
-  const connectionsPromise: Promise<Integration[]> = workspaceId
-    ? listWorkspaceIntegrationRecords(getAuthEnv(env), workspaceId)
-        .then((records) => records.map(integrationRecordToIntegration))
-        .catch((error) => {
-          console.error("Failed to load workspace connections:", error);
-          return [];
-        })
-    : Promise.resolve([]);
-
-  const projectsPromise: Promise<MentionableProject[]> = workspaceId
-    ? loadWorkspaceMentionProjects(env, workspaceId)
-        .catch((error) => {
-          console.error("Failed to load workspace projects:", error);
-          return [];
-        })
-    : Promise.resolve([]);
+  const mentionSourcesPromise = workspaceId
+    ? loadWorkspaceMentionSources(env, workspaceId)
+    : Promise.resolve({ connections: [], projects: [] });
+  const connectionsPromise: Promise<Integration[]> = mentionSourcesPromise.then(
+    ({ connections }) => connections,
+  );
+  const projectsPromise: Promise<MentionableProject[]> = mentionSourcesPromise.then(
+    ({ projects }) => projects,
+  );
 
   const activeChatGroupPromise =
     workspaceId && userId && groupId
