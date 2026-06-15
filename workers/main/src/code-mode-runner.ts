@@ -460,13 +460,19 @@ function createToolBackedConnectionsBinding(callTool) {
 }
 
 function createVmFacade(tools) {
+  const normalizeExecArgs = (commandOrOptions, options = {}) => {
+    if (
+      commandOrOptions &&
+      typeof commandOrOptions === "object" &&
+      !Array.isArray(commandOrOptions)
+    ) {
+      return commandOrOptions;
+    }
+    return { command: commandOrOptions, ...options };
+  };
   return Object.freeze({
-    exec: (commandOrOptions, options = {}) => {
-      if (typeof commandOrOptions === "object" && commandOrOptions !== null && !Array.isArray(commandOrOptions)) {
-        return tools.vm_exec(commandOrOptions);
-      }
-      return tools.vm_exec({ command: commandOrOptions, ...options });
-    },
+    exec: (commandOrOptions, options = {}) =>
+      tools.vm_exec(normalizeExecArgs(commandOrOptions, options)),
     push: (options = {}) => tools.vm_push(options),
     pull: (options = {}) => tools.vm_pull(options),
   });
@@ -481,9 +487,31 @@ function createProjectsFacade(tools) {
   });
 }
 
-async function runUserCode(tools, CONNECTIONS, connections, VM, vm, env, context, ALL_TOOLS, text, store, load) {
+async function runUserCode() {
   "use strict";
 `}${executableUserCode}${String.raw`
+}
+
+function installRuntimeGlobals(values) {
+  const previous = new Map();
+  for (const [key, value] of Object.entries(values)) {
+    previous.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
+    Object.defineProperty(globalThis, key, {
+      configurable: true,
+      enumerable: false,
+      writable: true,
+      value,
+    });
+  }
+  return () => {
+    for (const [key, descriptor] of previous.entries()) {
+      if (descriptor) {
+        Object.defineProperty(globalThis, key, descriptor);
+      } else {
+        delete globalThis[key];
+      }
+    }
+  };
 }
 
 export class CodeModeRunner extends WorkerEntrypoint {
@@ -498,12 +526,12 @@ export class CodeModeRunner extends WorkerEntrypoint {
       sideEffect: Boolean(tool.sideEffect),
       externalDelivery: Boolean(tool.externalDelivery),
     })));
-    const allTools = Object.freeze([
+    const ALL_TOOLS = Object.freeze([
       TOOL_HELP_DEFINITION,
       ...registeredTools,
     ]);
     const callTool = (name, args = {}) => this.env.TOOLS.callTool(name, args);
-    const help = createToolHelp(allTools);
+    const help = createToolHelp(ALL_TOOLS);
     const toolEntries = registeredTools.map((tool) => [tool.name, (args = {}) => callTool(tool.name, args)]);
     const tools = Object.freeze(Object.fromEntries([
       ["help", help],
@@ -532,21 +560,28 @@ export class CodeModeRunner extends WorkerEntrypoint {
       store.set(key, value);
     };
 
-    const result = await runUserCode(
+    const cleanupRuntimeGlobals = installRuntimeGlobals({
       tools,
       CONNECTIONS,
       connections,
       VM,
       vm,
+      PROJECTS,
       env,
       context,
-      allTools,
+      ALL_TOOLS,
       text,
+      store: save,
       save,
       load,
-    );
-    if (result !== undefined) output.push(stringifyOutput(result));
-    return { text: output.join("\n") };
+    });
+    try {
+      const result = await runUserCode();
+      if (result !== undefined) output.push(stringifyOutput(result));
+      return { text: output.join("\n") };
+    } finally {
+      cleanupRuntimeGlobals();
+    }
   }
 }
 `}`;

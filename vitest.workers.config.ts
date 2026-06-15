@@ -17,6 +17,22 @@ const bedrockDevVarNames = new Set([
   'BEDROCK_PI_TEST_MODEL',
   'BEDROCK_TEST_MODEL',
   'BEDROCK_TEST_REGION',
+  'AI_GATEWAY_AUTH_TOKEN',
+  'CF_ACCOUNT_ID',
+  'CF_GATEWAY_NAME',
+  'CF_GATEWAY_TOKEN',
+  'EVAL_CUSTOM_API',
+  'EVAL_CUSTOM_API_KEY',
+  'EVAL_CUSTOM_BASE_URL',
+  'EVAL_CUSTOM_MODEL_ID',
+  'EVAL_ENFORCE_SIGNAL',
+  'EVAL_MAX_ASSISTANT_TURNS',
+  'EVAL_MAX_BAD_TOOL_CALLS',
+  'EVAL_MAX_SDK_TURNS',
+  'EVAL_MODEL',
+  'EVAL_TIMEOUT_MS',
+  'RUN_AGENT_EVALS',
+  'RUN_SANDBOX_EVAL_PROTOTYPE',
 ]);
 
 function parseDevVars(source: string): Record<string, string> {
@@ -82,6 +98,13 @@ export default defineConfig({
         bindings: loadBedrockDevVars(),
         compatibilityDate: '2025-12-01',
         compatibilityFlags: ['nodejs_compat'],
+        durableObjects: {
+          EVAL_SANDBOX: {
+            className: 'EvalSandbox',
+            useSQLite: true,
+            container: { imageName: 'camelai-eval-sandbox:latest' },
+          },
+        },
         cachePersist: false,
         d1Persist: false,
         durableObjectsPersist: false,

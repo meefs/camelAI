@@ -2971,6 +2971,10 @@ describe('ChatThreadDO Codex turn handling', () => {
     };
 
     const piTools = ChatThreadDO.prototype['createPiToolDefinitions'].call(fake, context);
+    expect(piTools.find((tool: any) => tool.name === 'list_projects')).toBeTruthy();
+    expect(piTools.find((tool: any) => tool.name === 'create_project')).toBeTruthy();
+    expect(piTools.find((tool: any) => tool.name === 'set_project_description')).toBeTruthy();
+    expect(piTools.find((tool: any) => tool.name === 'clone_project')).toBeTruthy();
     expect(piTools.find((tool: any) => tool.name === 'send_email')).toBeUndefined();
     expect(piTools.find((tool: any) => tool.name === 'send_slack_message')).toBeUndefined();
     expect(piTools.find((tool: any) => tool.name === 'send_telegram_message')).toBeUndefined();

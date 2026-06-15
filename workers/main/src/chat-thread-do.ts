@@ -86,6 +86,12 @@ import { isOrgBanned } from "./ban-list";
 import type { WorkspaceThreadStreamingOptions } from "./thread-status";
 import { getPreferredAppUrl } from "../../../src/lib/app-url";
 import {
+  getEvalDeployApp,
+  isEvalDeployEnabled,
+  listEvalDeployApps,
+  setEvalDeployAppPublic,
+} from "./eval-deploy-registry";
+import {
   findConnectionMethodEntry,
   getConnection,
   invokeConnectionMethod,
@@ -452,6 +458,8 @@ export interface ChatEnv extends WorkspaceFilesystemEnv, ProjectRuntimeServiceVm
   EXA_BASE_URL?: string;
   WEB_PROVIDER_ORDER?: string;
   CHIRIDION_WEB_PROVIDER_ORDER?: string;
+  APP_DB?: D1Database;
+  RUN_AGENT_EVALS?: string;
 }
 
 export interface ChatContextState {
@@ -858,6 +866,27 @@ export interface InitialUserMessageRequest {
 export interface InitialUserMessageResult {
   status: "accepted" | "busy" | "error";
   error?: string;
+}
+
+export interface AgentEvalParsedMessage {
+  id: string;
+  thread_id: string;
+  role: "user" | "assistant";
+  content: unknown;
+  created_at: number;
+  forkEntryId: string;
+}
+
+export interface AgentEvalSessionRequest extends InitialUserMessageRequest {
+  timeoutMs?: number;
+}
+
+export interface AgentEvalSessionResult {
+  status: "completed" | "busy" | "error";
+  error?: string;
+  result?: string;
+  events: Array<Record<string, unknown>>;
+  messages: AgentEvalParsedMessage[];
 }
 
 export interface ChannelHistoryEventRequest {
@@ -1416,11 +1445,11 @@ const CODE_MODE_TOOL_REGISTRY: CodeModeToolRegistration[] = [
       }, { additionalProperties: false }))),
     }),
   ),
-  codeModeTool(
+  codeModePassthroughTool(
     "list_projects",
     "List known git/compute projects for this workspace as a nested tree. Includes project descriptions. Top-level rows are source projects; clone projects are nested under each source project's clones[] with cloneCount, like worktrees attached to the same remote. Arguments: {}.",
   ),
-  codeModeTool(
+  codeModePassthroughTool(
     "create_project",
     "Create a project with one Artifacts Git repo and one default main VM checkout. Project names must be unique within the workspace. New projects require a concise description explaining what the project is for. Arguments: { name, description }.",
     Type.Object({
@@ -1428,7 +1457,7 @@ const CODE_MODE_TOOL_REGISTRY: CodeModeToolRegistration[] = [
       description: Type.String(),
     }, { additionalProperties: false }),
   ),
-  codeModeTool(
+  codeModePassthroughTool(
     "set_project_description",
     "Set the description for an existing project by its unique workspace project name. Use this when the project's purpose changes or needs clarification. Arguments: { project, description }.",
     Type.Object({
@@ -1439,7 +1468,7 @@ const CODE_MODE_TOOL_REGISTRY: CodeModeToolRegistration[] = [
       sideEffect: true,
     },
   ),
-  codeModeTool(
+  codeModePassthroughTool(
     "clone_project",
     "Clone an existing project's VM filesystem into a fresh project VM while keeping the same Artifacts Git remote. This captures current VM files, including uncommitted changes. Optional description overrides the generated clone description. Arguments: { sourceProject, name?, description? }.",
     Type.Object({
@@ -1999,7 +2028,7 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
   }
 
   private async createWorkspaceCommandEnv(): Promise<Record<string, string>> {
-    const { orgId, workspaceId } = this.ctx.props;
+    const { orgId, workspaceId, userId, threadId } = this.ctx.props;
     const env: Record<string, string> = {
       WORKSPACE_ID: workspaceId,
       ORG_ID: orgId,
@@ -2009,6 +2038,12 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
     const dispatchNamespace = this.env.CF_DISPATCH_NAMESPACE?.trim();
     if (dispatchNamespace) {
       env.CF_DISPATCH_NAMESPACE = dispatchNamespace;
+    }
+    if (this.env.RUN_AGENT_EVALS === "1") {
+      env.EVAL_ORG_ID = orgId;
+      env.EVAL_WORKSPACE_ID = workspaceId;
+      if (userId) env.EVAL_USER_ID = userId;
+      if (threadId) env.EVAL_THREAD_ID = threadId;
     }
     Object.assign(env, await this.createAppAccessSession());
     return env;
@@ -2481,6 +2516,9 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
   }
 
   private async getAppUrl(script: WorkerScript): Promise<string> {
+    if ("eval" in script && script.eval === true && typeof (script as { vanity_url?: unknown }).vanity_url === "string") {
+      return (script as unknown as { vanity_url: string }).vanity_url;
+    }
     let appHostname = "camelai.dev";
     const workerBaseUrl = (this.env as { WORKER_BASE_URL?: string }).WORKER_BASE_URL;
     if (workerBaseUrl) {
@@ -2886,8 +2924,15 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
     }
 
     if (scriptName) {
-      const script = await this.orgStub.getWorkerScript(scriptName);
+      const script =
+        (await this.orgStub.getWorkerScript(scriptName)) ??
+        (isEvalDeployEnabled(this.env)
+          ? await getEvalDeployApp(this.env.APP_DB, this.ctx.props.workspaceId, scriptName)
+          : null);
       if (!script) throw new Error(`App '${scriptName}' not found`);
+      if (script.workspace_id !== this.ctx.props.workspaceId) {
+        throw new Error(`App '${scriptName}' belongs to a different workspace`);
+      }
       const target: PreviewTarget = {
         kind: "app",
         scriptName,
@@ -2963,7 +3008,14 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
   }
 
   private async listApps(): Promise<unknown> {
-    const scripts = await this.orgStub.listWorkerScriptsByWorkspace(this.ctx.props.workspaceId);
+    const realScripts = await this.orgStub.listWorkerScriptsByWorkspace(this.ctx.props.workspaceId);
+    const evalScripts = isEvalDeployEnabled(this.env)
+      ? await listEvalDeployApps(this.env.APP_DB, this.ctx.props.workspaceId)
+      : [];
+    const scriptsByName = new Map<string, WorkerScript>();
+    for (const script of evalScripts) scriptsByName.set(script.script_name, script);
+    for (const script of realScripts) scriptsByName.set(script.script_name, script);
+    const scripts = Array.from(scriptsByName.values()).sort((a, b) => b.updated_at - a.updated_at);
     return {
       count: scripts.length,
       apps: await Promise.all(scripts.map(async (script) => ({
@@ -2974,6 +3026,7 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
         created_at: new Date(script.created_at).toISOString(),
         updated_at: new Date(script.updated_at).toISOString(),
         preview_status: script.preview_status,
+        eval: "eval" in script && script.eval === true,
       }))),
     };
   }
@@ -2982,10 +3035,34 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
     const scriptName = typeof args.script_name === "string" ? args.script_name.trim() : "";
     if (!scriptName) throw new Error("script_name is required");
     if (typeof args.is_public !== "boolean") throw new Error("is_public must be a boolean");
-    const script = await this.orgStub.getWorkerScript(scriptName);
+    const script =
+      (await this.orgStub.getWorkerScript(scriptName)) ??
+      (isEvalDeployEnabled(this.env)
+        ? await getEvalDeployApp(this.env.APP_DB, this.ctx.props.workspaceId, scriptName)
+        : null);
     if (!script) return { success: false, error: `App '${scriptName}' not found` };
     if (script.workspace_id !== this.ctx.props.workspaceId) {
       return { success: false, error: `App '${scriptName}' belongs to a different workspace` };
+    }
+    if ("eval" in script && script.eval === true) {
+      const updated = await setEvalDeployAppPublic(
+        this.env.APP_DB,
+        this.ctx.props.workspaceId,
+        scriptName,
+        args.is_public,
+      );
+      if (!updated) return { success: false, error: `Failed to update app '${scriptName}'` };
+      await this.chatThreadStub.setPreviewAppVisibility(scriptName, updated.is_public);
+      return {
+        success: true,
+        app: {
+          name: updated.script_name,
+          url: await this.getAppUrl(updated),
+          is_public: updated.is_public,
+          updated_at: new Date(updated.updated_at).toISOString(),
+        },
+        message: `App '${scriptName}' is now ${updated.is_public ? "public" : "private"}`,
+      };
     }
     const updated = await this.orgStub.setWorkerScriptPublic(
       scriptName,
@@ -3299,6 +3376,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
   // Chat bridge state
   private chatContext: ChatContextState | null = null;
   private chatEventBuffer: Array<Record<string, unknown>> = [];
+  private agentEvalEventCollector: Array<Record<string, unknown>> | null = null;
   private nextChatEventId: number = 1;
   private currentTodos: unknown[] = [];
   // Canonical persisted/replayed value (set on result events only).
@@ -4498,25 +4576,9 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     return typeof value === "string" && value.trim() ? value.trim() : null;
   }
 
-  async getPiCoreParsedMessages(threadId: string): Promise<Array<{
-    id: string;
-    thread_id: string;
-    role: "user" | "assistant";
-    content: unknown;
-    created_at: number;
-    forkEntryId: string;
-    sentDuringStreaming?: boolean;
-  }>> {
+  async getPiCoreParsedMessages(threadId: string): Promise<AgentEvalParsedMessage[]> {
     const normalizedThreadId = threadId.trim() || this.chatContext?.threadId || "";
-    const parsed: Array<{
-      id: string;
-      thread_id: string;
-      role: "user" | "assistant";
-      content: unknown;
-      created_at: number;
-      forkEntryId: string;
-      sentDuringStreaming?: boolean;
-    }> = [];
+    const parsed: AgentEvalParsedMessage[] = [];
 
     const [coreMessages, inFlightMessages] = await Promise.all([
       this.loadPiCoreMessages({ includeUiMetadata: true }),
@@ -8961,6 +9023,204 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     }
   }
 
+  async runAgentEvalSession(
+    body: AgentEvalSessionRequest,
+  ): Promise<AgentEvalSessionResult> {
+    const startedAt = Date.now();
+    const baselineEventId = this.nextChatEventId - 1;
+    this.agentEvalEventCollector = [];
+    const contextError = this.updateExternalChatContext(body);
+    if (contextError) {
+      return await this.agentEvalResult("error", baselineEventId, {
+        error: contextError,
+      });
+    }
+
+    const context = this.chatContext;
+    if (!context) {
+      return await this.agentEvalResult("error", baselineEventId, {
+        error: "Missing chat context for eval",
+      });
+    }
+
+    const rawContent =
+      typeof body.message === "string" ? body.message.trim() : "";
+    if (!rawContent) {
+      return await this.agentEvalResult("error", baselineEventId, {
+        error: "Missing message",
+      });
+    }
+
+    if (this.chatIsStreaming || this.piSession?.state.isStreaming) {
+      return await this.agentEvalResult("busy", baselineEventId, {
+        error: "Thread is busy with another run",
+      });
+    }
+
+    try {
+      const orgBan = await isOrgBanned(this.env.APP_KV, {
+        orgId: context.orgId,
+      });
+      if (orgBan) {
+        return await this.agentEvalResult("error", baselineEventId, {
+          error: "Organization is blocked",
+        });
+      }
+
+      await this.ensurePiSessionReady();
+      if (!this.piSession) {
+        return await this.agentEvalResult("error", baselineEventId, {
+          error: "Pi session was not available for eval",
+        });
+      }
+
+      const safeContent = injectFileSafetyMessage(rawContent);
+      const mentionAugmented =
+        await this.applyMentionsForTurn(safeContent);
+      const attributedContent = formatAttributedUserMessage(mentionAugmented, {
+        userName: context.userName,
+        userEmail: context.userEmail,
+        messageSource:
+          typeof body.messageSource === "string" && body.messageSource.trim()
+            ? body.messageSource.trim()
+            : "eval",
+      });
+      if (!attributedContent.trim()) {
+        return await this.agentEvalResult("error", baselineEventId, {
+          error: "Empty message",
+        });
+      }
+
+      this.setActiveTurnUserId(context.userId);
+      this.setChatIsStreaming(true);
+      this.publishRunningUserMessageActivity(rawContent);
+      await this.updateThreadMetadataForUserMessage(
+        attributedContent,
+        body.messageSource ?? "eval",
+      ).catch((error) => {
+        console.error("[ChatThreadDO] failed to update eval thread metadata", error);
+      });
+
+      const userMessage: AgentMessage = {
+        role: "user",
+        content: attributedContent,
+        timestamp: Date.now(),
+      };
+      await this.startPiTurnRecovery(userMessage);
+      await this.refreshPiSessionModel();
+      await this.withAgentEvalTimeout(
+        this.keepAlivePiTurnWhile(async () => {
+          if (!this.piSession) {
+            throw new Error("Pi session was not available for eval prompt");
+          }
+          await this.piSession.prompt(userMessage);
+        }),
+        body.timeoutMs,
+      );
+      await this.piEventHandlerChain;
+
+      const events = this.chatEventsAfter(baselineEventId);
+      const result = this.latestAgentEvalResult(events);
+      this.recordChatThreadObservabilityEvent("agent_eval_session", {
+        operation: "run_agent_eval_session",
+        status: "completed",
+        durationMs: Date.now() - startedAt,
+        size: rawContent.length,
+        count: events.length,
+      });
+      return await this.agentEvalResult("completed", baselineEventId, {
+        result,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error("[ChatThreadDO] agent eval session failed", error);
+      this.recordChatThreadObservabilityEvent("agent_eval_session", {
+        operation: "run_agent_eval_session",
+        status: "exception",
+        severity: "error",
+        durationMs: Date.now() - startedAt,
+        size: rawContent.length,
+        error,
+      });
+      try {
+        this.piSession?.abort();
+      } catch {
+        // Best effort cleanup; the error below is the actionable eval failure.
+      }
+      this.clearPiTurnRecovery();
+      this.clearPiInFlightMessages();
+      this.pushChatEvent(this.piProviderErrorEvent(message));
+      this.setChatIsStreaming(false);
+      this.setActiveTurnUserId(null);
+      return await this.agentEvalResult("error", baselineEventId, {
+        error: message,
+      });
+    }
+  }
+
+  private async withAgentEvalTimeout<T>(
+    promise: Promise<T>,
+    timeoutMs: unknown,
+  ): Promise<T> {
+    const normalizedTimeoutMs =
+      typeof timeoutMs === "number" && Number.isFinite(timeoutMs)
+        ? Math.max(1_000, Math.floor(timeoutMs))
+        : 120_000;
+    let timeoutId: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        promise,
+        new Promise<T>((_, reject) => {
+          timeoutId = setTimeout(() => {
+            reject(new Error(`Agent eval timed out after ${normalizedTimeoutMs}ms`));
+          }, normalizedTimeoutMs);
+        }),
+      ]);
+    } finally {
+      if (timeoutId !== undefined) clearTimeout(timeoutId);
+    }
+  }
+
+  private chatEventsAfter(eventId: number): Array<Record<string, unknown>> {
+    return this.chatEventBuffer.filter((event) => {
+      const current =
+        typeof event.eventId === "number" && Number.isFinite(event.eventId)
+          ? event.eventId
+          : 0;
+      return current > eventId;
+    });
+  }
+
+  private latestAgentEvalResult(
+    events: Array<Record<string, unknown>>,
+  ): string | undefined {
+    for (let index = events.length - 1; index >= 0; index -= 1) {
+      const event = events[index];
+      if (event?.type !== "result") continue;
+      const result = event.result;
+      return typeof result === "string" ? result : undefined;
+    }
+    return undefined;
+  }
+
+  private async agentEvalResult(
+    status: AgentEvalSessionResult["status"],
+    baselineEventId: number,
+    options: { error?: string; result?: string } = {},
+  ): Promise<AgentEvalSessionResult> {
+    const threadId = this.chatContext?.threadId ?? "";
+    const events = this.agentEvalEventCollector
+      ? [...this.agentEvalEventCollector]
+      : this.chatEventsAfter(baselineEventId);
+    this.agentEvalEventCollector = null;
+    return {
+      status,
+      ...options,
+      events,
+      messages: await this.getPiCoreParsedMessages(threadId),
+    };
+  }
+
   private hasAvailableBrowserUser(): boolean {
     return this.getChatSockets().length > 0;
   }
@@ -12976,6 +13236,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       sessionId,
     };
 
+    this.agentEvalEventCollector?.push(envelope);
     this.chatEventBuffer.push(envelope);
     if (this.chatEventBuffer.length > MAX_CHAT_EVENT_BUFFER) {
       this.chatEventBuffer.shift();

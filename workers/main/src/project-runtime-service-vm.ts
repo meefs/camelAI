@@ -7,6 +7,7 @@ import type {
   VmPushArgs,
 } from "./project-vm-protocol";
 import {
+  EVAL_CLOUDFLARE_API_BASE_URL,
   normalizeGlobalProjectId,
   projectRuntimeConnectionsRpcUrl,
   projectRuntimeDeployProxyUrl,
@@ -434,7 +435,9 @@ print("\\n".join(matches))
   private async ensureProjectCheckout(target: ProjectRuntimeTarget): Promise<void> {
     const project = target.project;
     if (!project.artifactRemote || project.artifactStatus === "error") {
-      throw new Error(`${project.name} does not have a ready Artifacts remote`);
+      if ((this.options.env as { RUN_AGENT_EVALS?: string }).RUN_AGENT_EVALS !== "1") {
+        throw new Error(`${project.name} does not have a ready Artifacts remote`);
+      }
     }
 
     const branch = project.artifactDefaultBranch || "main";
@@ -668,8 +671,12 @@ fi
         env[key] = value;
       }
     }
-    env.CLOUDFLARE_API_BASE_URL = this.deployDockerProxyUrl();
+    env.CLOUDFLARE_API_BASE_URL =
+      (this.options.env as { RUN_AGENT_EVALS?: string }).RUN_AGENT_EVALS === "1"
+        ? EVAL_CLOUDFLARE_API_BASE_URL
+        : this.deployDockerProxyUrl();
     env.CLOUDFLARE_API_TOKEN ||= "project-runtime-proxy";
+    env.CLOUDFLARE_ACCOUNT_ID ||= this.options.env.CF_ACCOUNT_ID?.trim() || "chiridion";
     env.CAMELAI_CONNECTIONS_RPC_URL = projectRuntimeConnectionsRpcUrl(
       this.options.env.PROJECT_RUNTIME_DOCKER_PROXY_BASE_URL,
     );

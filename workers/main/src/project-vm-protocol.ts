@@ -2,6 +2,8 @@ export const PROJECT_RUNTIME_PROVIDER = "project-runtime-service";
 export const PROJECT_VM_CHECKOUT_PATH = "/workspace";
 export const PROJECT_RUNTIME_ARTIFACTS_PROXY_CAPABILITY = "camelai-artifacts";
 export const PROJECT_RUNTIME_CLOUDFLARE_API_PROXY_CAPABILITY = "camelai-cloudflare-api";
+export const EVAL_CLOUDFLARE_API_HOST = "camelai-eval-cloudflare-api.internal";
+export const EVAL_CLOUDFLARE_API_BASE_URL = `http://${EVAL_CLOUDFLARE_API_HOST}/client/v4`;
 export const PROJECT_RUNTIME_CONNECTIONS_RPC_PROXY_CAPABILITY = "camelai-connections-rpc";
 
 export interface ProjectVmEnv {
@@ -11,6 +13,8 @@ export interface ProjectVmEnv {
   PROJECT_RUNTIME_DOCKER_PROXY_BASE_URL?: string;
   PROJECT_RUNTIME_ARTIFACTS_PROXY_BASE?: string;
   PROJECT_RUNTIME_PROXY_SECRET?: string;
+  RUN_AGENT_EVALS?: string;
+  CF_ACCOUNT_ID?: string;
 }
 
 export interface VmExecArgs {

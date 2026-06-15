@@ -90,6 +90,7 @@ export interface Env
   LOCAL_AUTH_BYPASS?: string;
   LOCAL_AUTH_USER_EMAIL?: string;
   LOCAL_AUTH_USER_NAME?: string;
+  RUN_AGENT_EVALS?: string;
   // Claude API Proxy (CF AI Gateway)
   CF_GATEWAY_NAME?: string;
   CF_GATEWAY_TOKEN?: string;

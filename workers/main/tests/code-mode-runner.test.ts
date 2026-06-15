@@ -13,7 +13,9 @@ function loadGeneratedConnectionsFacade(): (binding: unknown) => Record<string, 
   ) => Record<string, unknown>;
 }
 
-function loadGeneratedVmFacade(): (tools: unknown) => Record<string, (...args: any[]) => unknown> {
+function loadGeneratedVmFacade(): (tools: Record<string, (args: unknown) => unknown>) => {
+  exec: (...args: unknown[]) => unknown;
+} {
   const source = codeModeWorkerModule('');
   const start = source.indexOf('function createVmFacade(tools)');
   const end = source.indexOf('\n\nfunction createProjectsFacade', start);
@@ -21,8 +23,8 @@ function loadGeneratedVmFacade(): (tools: unknown) => Record<string, (...args: a
   expect(end).toBeGreaterThan(start);
   const facadeSource = source.slice(start, end);
   return new Function(`${facadeSource}; return createVmFacade;`)() as (
-    tools: unknown,
-  ) => Record<string, (...args: any[]) => unknown>;
+    tools: Record<string, (args: unknown) => unknown>,
+  ) => { exec: (...args: unknown[]) => unknown };
 }
 
 describe('code mode runner connection facade', () => {
@@ -137,5 +139,76 @@ describe('code mode runner connection facade', () => {
     expect(source).toContain('return binding.invoke(request);');
     expect(source).toContain('invoke: (request) => callTool("connections_invoke", request)');
     expect(source).not.toContain('invoke.call(binding');
+  });
+});
+
+describe('code mode runner VM facade', () => {
+  it('accepts both vm.exec(command, options) and vm.exec({ command, project })', async () => {
+    const calls: unknown[] = [];
+    const createVmFacade = loadGeneratedVmFacade();
+    const vm = createVmFacade({
+      vm_exec: (args) => {
+        calls.push(args);
+        return { ok: true, args };
+      },
+    });
+
+    expect(vm.exec('bun run deploy', {
+      project: 'deploy-fake-data',
+      timeoutSeconds: 120,
+    })).toEqual({
+      ok: true,
+      args: {
+        command: 'bun run deploy',
+        project: 'deploy-fake-data',
+        timeoutSeconds: 120,
+      },
+    });
+
+    expect(vm.exec({
+      command: 'bun run build',
+      project: 'deploy-fake-data',
+      timeoutSeconds: 120,
+    })).toEqual({
+      ok: true,
+      args: {
+        command: 'bun run build',
+        project: 'deploy-fake-data',
+        timeoutSeconds: 120,
+      },
+    });
+
+    expect(calls).toEqual([
+      {
+        command: 'bun run deploy',
+        project: 'deploy-fake-data',
+        timeoutSeconds: 120,
+      },
+      {
+        command: 'bun run build',
+        project: 'deploy-fake-data',
+        timeoutSeconds: 120,
+      },
+    ]);
+  });
+
+  it('does not pass runtime helper names as runUserCode parameters', () => {
+    const source = codeModeWorkerModule(
+      'const projects = await tools.list_projects();\nreturn projects;',
+    );
+
+    expect(source).toContain('async function runUserCode()');
+    expect(source).toContain('installRuntimeGlobals');
+    expect(source).not.toContain('async function runUserCode(tools');
+  });
+
+  it('installs the documented store helper as a runtime global', () => {
+    const source = codeModeWorkerModule(
+      'store("lastResult", 42);\nreturn load("lastResult");',
+    );
+
+    expect(source).toContain('store: save');
+    expect(source).toContain('store("lastResult", 42);');
+    expect(source).toContain('load("lastResult")');
   });
 });

@@ -17,6 +17,7 @@
 
 import { createRequestHandler } from 'react-router';
 import { DurableObject } from 'cloudflare:workers';
+export { ContainerProxy, Sandbox } from '@cloudflare/sandbox';
 import type { Env, Route } from './types.js';
 import { handleSlackEventsQueue } from './slack-events-queue.js';
 import type { AppScreenshotJob } from './screenshot-queue.js';
@@ -99,6 +100,8 @@ export {
 } from './legacy-preview-repair-workflow.js';
 export { CamelAiService } from './camelai-service.js';
 export { WorkspaceFilesystemDO } from './workspace-filesystem-do.js';
+export { EvalProjectRuntimeService } from './eval-project-runtime-service.js';
+export { EvalSandbox } from './eval-sandbox.js';
 
 // Compatibility shim for environments whose deployed migration history still
 // references the old AdminIndexDO class. The app uses the D1-backed index now.

@@ -44,6 +44,12 @@ import {
 } from '../../../src/lib/custom-domain-state';
 import { parseFilePreviewPath } from './preview-paths';
 import { formatDeterministicAutomation } from './code-mode-deterministic-automations';
+import {
+  getEvalDeployApp,
+  isEvalDeployEnabled,
+  listEvalDeployApps,
+  setEvalDeployAppPublic,
+} from './eval-deploy-registry';
 
 export interface McpEnv {
   ORG: DurableObjectNamespace<OrgDO>;
@@ -65,6 +71,8 @@ export interface McpEnv {
   LOCAL_APP_VANITY_DOMAIN?: string;
   LOCAL_APP_IFRAME_DOMAIN?: string;
   WORKER_SELF_REFERENCE?: Fetcher;
+  APP_DB?: D1Database;
+  RUN_AGENT_EVALS?: string;
 }
 
 // Headers used to pass auth context to the MCP DO
@@ -278,6 +286,9 @@ export class ChiridionMcp extends McpAgent<any, Record<string, unknown>, Record<
    * New-style slugs (6+ alphanumeric) use single hyphen, old-style use double.
    */
   private async getAppUrl(script: WorkerScript): Promise<string> {
+    if ('eval' in script && script.eval === true && typeof (script as { vanity_url?: unknown }).vanity_url === 'string') {
+      return (script as unknown as { vanity_url: string }).vanity_url;
+    }
     let refreshedScript = script;
     let appHostname = 'camelai.dev';
     try {
@@ -326,7 +337,14 @@ export class ChiridionMcp extends McpAgent<any, Record<string, unknown>, Record<
         }
 
         const orgStub = this.getOrgStub();
-        const scripts: WorkerScript[] = await orgStub.listWorkerScriptsByWorkspace(workspaceId);
+        const realScripts: WorkerScript[] = await orgStub.listWorkerScriptsByWorkspace(workspaceId);
+        const evalScripts = isEvalDeployEnabled(this.env)
+          ? await listEvalDeployApps(this.env.APP_DB, workspaceId)
+          : [];
+        const scriptsByName = new Map<string, WorkerScript>();
+        for (const script of evalScripts) scriptsByName.set(script.script_name, script);
+        for (const script of realScripts) scriptsByName.set(script.script_name, script);
+        const scripts = Array.from(scriptsByName.values()).sort((a, b) => b.updated_at - a.updated_at);
 
         const apps = await Promise.all(scripts.map(async (s: WorkerScript) => ({
           name: s.script_name,
@@ -336,6 +354,7 @@ export class ChiridionMcp extends McpAgent<any, Record<string, unknown>, Record<
           created_at: new Date(s.created_at).toISOString(),
           updated_at: new Date(s.updated_at).toISOString(),
           preview_status: s.preview_status,
+          eval: 'eval' in s && s.eval === true,
         })));
 
         return this.textResponse({ count: apps.length, apps });
@@ -359,12 +378,34 @@ export class ChiridionMcp extends McpAgent<any, Record<string, unknown>, Record<
         const orgStub = this.getOrgStub();
 
         // Verify script belongs to current workspace
-        const script: WorkerScript | null = await orgStub.getWorkerScript(script_name);
+        const script: WorkerScript | null =
+          (await orgStub.getWorkerScript(script_name)) ??
+          (isEvalDeployEnabled(this.env)
+            ? await getEvalDeployApp(this.env.APP_DB, workspaceId, script_name)
+            : null);
         if (!script) {
           return this.textResponse({ success: false, error: `App '${script_name}' not found` });
         }
         if (script.workspace_id !== workspaceId) {
           return this.textResponse({ success: false, error: `App '${script_name}' belongs to a different workspace` });
+        }
+
+        if ('eval' in script && script.eval === true) {
+          const result = await setEvalDeployAppPublic(this.env.APP_DB, workspaceId, script_name, is_public);
+          if (!result) {
+            return this.textResponse({ success: false, error: `Failed to update app '${script_name}'` });
+          }
+
+          return this.textResponse({
+            success: true,
+            app: {
+              name: result.script_name,
+              url: await this.getAppUrl(result),
+              is_public: result.is_public,
+              updated_at: new Date(result.updated_at).toISOString(),
+            },
+            message: `App '${script_name}' is now ${is_public ? 'public' : 'private'}`,
+          });
         }
 
         const result = await orgStub.setWorkerScriptPublic(script_name, is_public, userId);
