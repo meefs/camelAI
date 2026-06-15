@@ -13,7 +13,6 @@ import type {
   OrganizationExperimentalSettings,
   Workspace,
   WorkspaceAccessLevel,
-  WorkspaceMember,
   WorkspaceWithAccess,
 } from "@/types";
 import type { User } from "@/types";
@@ -352,6 +351,21 @@ async function getLocalAuthBypassSession(
     const workspaceStub = authEnv.WORKSPACE.get(
       authEnv.WORKSPACE.idFromName(workspaceId),
     );
+    await (
+      orgStub as unknown as {
+        setWorkspaceAccess(
+          workspaceId: string,
+          userId: string,
+          accessLevel: WorkspaceAccessLevel,
+          actorId: string,
+        ): Promise<void>;
+      }
+    ).setWorkspaceAccess(
+      workspaceId,
+      LOCAL_AUTH_USER_ID,
+      "full",
+      LOCAL_AUTH_USER_ID,
+    );
     await workspaceStub.setMemberAccess(
       LOCAL_AUTH_USER_ID,
       "full",
@@ -400,27 +414,28 @@ async function getOrgAuthContextBootstrap(
 }
 
 async function getWorkspaceAccessBootstrap(
-  wsStub: ReturnType<AuthEnv["WORKSPACE"]["get"]>,
+  orgStub: ReturnType<AuthEnv["ORG"]["get"]>,
+  workspaceId: string,
   userId: string,
 ): Promise<{
   workspaceInfo: Workspace | null;
-  memberAccess: WorkspaceMember | null;
+  access: WorkspaceAccessLevel;
 }> {
   const result = await retryTransientDurableObjectRead(
-    "WorkspaceDO.getInfoAndMemberAccess",
+    "OrgDO.getWorkspaceAccessContext",
     () =>
       (
-        wsStub as unknown as {
-          getInfoAndMemberAccess(userId: string): Promise<{
-            info: Workspace | null;
-            memberAccess: WorkspaceMember | null;
-          }>;
+        orgStub as unknown as {
+          getWorkspaceAccessContext(
+            workspaceId: string,
+            userId: string,
+          ): Promise<{ workspace: Workspace | null; access: WorkspaceAccessLevel }>;
         }
-      ).getInfoAndMemberAccess(userId),
+      ).getWorkspaceAccessContext(workspaceId, userId),
   );
   return {
-    workspaceInfo: result.info,
-    memberAccess: result.memberAccess,
+    workspaceInfo: result.workspace,
+    access: result.access,
   };
 }
 
@@ -466,16 +481,13 @@ export async function requireSessionWorkspaceAccess(
 
   const env = getEnv(context);
   const authEnv = getAuthEnv(env);
-  const wsStub = authEnv.WORKSPACE.get(
-    authEnv.WORKSPACE.idFromName(workspaceId),
-  );
   const orgStub = authEnv.ORG.get(authEnv.ORG.idFromName(orgId));
 
   const [workspaceAccess, isMember] = await Promise.all([
-    getWorkspaceAccessBootstrap(wsStub, userId),
+    getWorkspaceAccessBootstrap(orgStub, workspaceId, userId),
     orgStub.isMember(userId),
   ]);
-  const { workspaceInfo, memberAccess } = workspaceAccess;
+  const { workspaceInfo, access } = workspaceAccess;
 
   if (
     !workspaceInfo ||
@@ -488,7 +500,6 @@ export async function requireSessionWorkspaceAccess(
     throw Response.json({ error: "Workspace not found" }, { status: 404 });
   }
 
-  const access = memberAccess?.access_level ?? "full";
   if (access === "none") {
     throw Response.json({ error: "Workspace not found" }, { status: 404 });
   }
@@ -727,20 +738,37 @@ async function getAuthContextUncached(
     try {
       const sessionWorkspace = await getWorkspace(authEnv, sessionWorkspaceId);
       if (sessionWorkspace?.org_id === currentOrg.id) {
-        const workspaceWithAccess: WorkspaceWithAccess = {
-          ...sessionWorkspace,
-          access_level: "full",
-        };
-        allWorkspaces = [
-          ...allWorkspaces.filter((ws) => ws.id !== workspaceWithAccess.id),
-          workspaceWithAccess,
-        ];
-        workspaces = [
-          ...workspaces.filter((ws) => ws.id !== workspaceWithAccess.id),
-          workspaceWithAccess,
-        ];
-        orgWorkspaceCount = Math.max(orgWorkspaceCount, workspaces.length);
-        sessionWorkspaceStillValid = true;
+        const accessLevel = await retryTransientDurableObjectRead(
+          "OrgDO.getWorkspaceAccess",
+          () =>
+            (
+              currentOrgStub as unknown as {
+                getWorkspaceAccess(
+                  workspaceId: string,
+                  userId: string,
+                ): Promise<WorkspaceAccessLevel>;
+              }
+            ).getWorkspaceAccess(
+              sessionWorkspaceId,
+              sessionContext.session.user_id,
+            ),
+        );
+        if (accessLevel !== "none") {
+          const workspaceWithAccess: WorkspaceWithAccess = {
+            ...sessionWorkspace,
+            access_level: accessLevel,
+          };
+          allWorkspaces = [
+            ...allWorkspaces.filter((ws) => ws.id !== workspaceWithAccess.id),
+            workspaceWithAccess,
+          ];
+          workspaces = [
+            ...workspaces.filter((ws) => ws.id !== workspaceWithAccess.id),
+            workspaceWithAccess,
+          ];
+          orgWorkspaceCount = Math.max(orgWorkspaceCount, workspaces.length);
+          sessionWorkspaceStillValid = true;
+        }
       }
     } catch (error) {
       console.warn("[auth] failed to load session workspace fallback", {
@@ -879,14 +907,20 @@ export async function requireWorkspaceAccess(
     throw redirect("/");
   }
 
-  // Workspace access is assumed 'full' by default during auth context load.
-  // For routes that require workspace access, we check for explicit 'none' restrictions.
-  // Since restrictions are rare (default is 'full'), this single RPC call is cheaper
-  // than checking N workspaces during every auth context load.
   const env = getEnv(context);
-  const wsStub = env.WORKSPACE.get(env.WORKSPACE.idFromName(workspaceId));
-  const memberAccess = await wsStub.getMemberAccess(authContext.user.id);
-  const accessLevel = memberAccess?.access_level ?? "full";
+  const orgStub = env.ORG.get(env.ORG.idFromName(workspace.org_id));
+  const accessLevel = await retryTransientDurableObjectRead(
+    "OrgDO.getWorkspaceAccess",
+    () =>
+      (
+        orgStub as unknown as {
+          getWorkspaceAccess(
+            workspaceId: string,
+            userId: string,
+          ): Promise<WorkspaceAccessLevel>;
+        }
+      ).getWorkspaceAccess(workspaceId, authContext.user.id),
+  );
 
   if (accessLevel === "none") {
     throw redirect("/");

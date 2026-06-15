@@ -295,6 +295,12 @@ async function ensureAccessOrgs(
       const workspaceStub = authEnv.WORKSPACE.get(
         authEnv.WORKSPACE.idFromName(workspaceId),
       );
+      await orgStub.setWorkspaceAccess(
+        workspaceId,
+        userId,
+        "full",
+        "cloudflare-access",
+      );
       await workspaceStub.setMemberAccess(userId, "full", "cloudflare-access");
       await userStub.setOrgLastWorkspace(org.id, workspaceId);
     }

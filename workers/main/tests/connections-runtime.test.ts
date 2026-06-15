@@ -41,8 +41,26 @@ function envWith(
   records: WorkspaceIntegrationRecord[],
   onAuthStatus?: (id: string, status: string, code: string | null, message: string | null) => void
 ): ConnectionsRuntimeEnv {
+  const orgStub = {
+    getWorkspaceIntegrations: async () => records,
+    getWorkspaceIntegration: async (_workspaceId: string, id: string) =>
+      records.find((record) => record.id === id) ?? null,
+    updateWorkspaceIntegrationAuthStatus: async (
+      _workspaceId: string,
+      id: string,
+      status: string,
+      code: string | null,
+      message: string | null
+    ) => {
+      onAuthStatus?.(id, status, code, message);
+    },
+  };
   return {
     INTEGRATION_SECRET_KEY: 'test-secret',
+    ORG: {
+      idFromName: (name: string) => name,
+      get: () => orgStub,
+    } as unknown as ConnectionsRuntimeEnv['ORG'],
     WORKSPACE: {
       idFromName: (name: string) => name,
       get: () => ({

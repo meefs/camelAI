@@ -2,7 +2,11 @@ import { useState } from 'react';
 import { useLoaderData, useSearchParams, useFetcher } from 'react-router';
 import type { Route } from './+types/_app.settings.workspace.connections';
 import { requireAuthContext, requireOrgAdmin, getAuthEnv } from '@/lib/auth.server';
-import { getEnv, type CloudflareEnv } from '@/lib/cloudflare.server';
+import { getEnv } from '@/lib/cloudflare.server';
+import {
+  deleteWorkspaceIntegrationRecord,
+  listWorkspaceIntegrationRecords,
+} from '@/lib/auth-do';
 import { Separator } from '@/components/ui/separator';
 import { SettingsHeader } from '@/components/settings/settings-header';
 import {
@@ -30,10 +34,6 @@ interface ConnectionRow extends Integration {
 
 function formatDate(ts: number) {
   return new Date(ts).toLocaleDateString();
-}
-
-function getWorkspaceStub(env: CloudflareEnv, workspaceId: string) {
-  return env.WORKSPACE.get(env.WORKSPACE.idFromName(workspaceId));
 }
 
 function recordToIntegration(record: {
@@ -85,8 +85,12 @@ export async function action({ request, context }: Route.ActionArgs) {
     }
 
     try {
-      const stub = getWorkspaceStub(env, workspaceId);
-      await stub.deleteIntegration(integrationId, authContext.user.id);
+      await deleteWorkspaceIntegrationRecord(
+        getAuthEnv(env),
+        workspaceId,
+        integrationId,
+        authContext.user.id,
+      );
       return { success: true };
     } catch (err) {
       return { error: err instanceof Error ? err.message : 'Failed to delete connection' };
@@ -121,8 +125,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
   const allRecords: Array<Integration & { workspace_id: string; workspace_name: string }> = [];
   await Promise.all(
     targetWorkspaces.map(async (ws) => {
-      const stub = getWorkspaceStub(env, ws.id);
-      const records = await stub.getIntegrations();
+      const records = await listWorkspaceIntegrationRecords(authEnv, ws.id);
       for (const record of records) {
         allRecords.push({
           ...recordToIntegration(record),

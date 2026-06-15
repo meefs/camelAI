@@ -1,12 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
 import { decryptCredentials } from '../../../src/lib/integration-crypto';
 import { CodeModeIntegrations } from '../src/code-mode-integrations';
-import type { WorkspaceDO } from '../src/workspace';
 
 function integrationsHarness(overrides: Partial<ConstructorParameters<typeof CodeModeIntegrations>[0]> = {}) {
   const createIntegration = vi.fn();
   const updateIntegration = vi.fn();
-  const getIntegration = vi.fn(async (id: string) =>
+  const getIntegration = vi.fn(async (_workspaceId: string, id: string) =>
     id === 'docs_mcp'
       ? {
           id,
@@ -28,12 +27,12 @@ function integrationsHarness(overrides: Partial<ConstructorParameters<typeof Cod
           reauth_required_at: 2,
         }
       : null);
-  const workspaceStub = {
-    getIntegrations: vi.fn(async () => []),
-    getIntegration,
-    createIntegration,
-    updateIntegration,
-  } as unknown as DurableObjectStub<WorkspaceDO>;
+  const orgStub = {
+    getWorkspaceIntegrations: vi.fn(async () => []),
+    getWorkspaceIntegration: getIntegration,
+    createWorkspaceIntegration: createIntegration,
+    updateWorkspaceIntegration: updateIntegration,
+  } as ConstructorParameters<typeof CodeModeIntegrations>[0]['orgStub'];
 
   const promptConnectionSetup = vi.fn(async () => ({
     requestId: 'req_1',
@@ -48,7 +47,8 @@ function integrationsHarness(overrides: Partial<ConstructorParameters<typeof Cod
 
   const options = {
     env: { INTEGRATION_SECRET_KEY: 'test-secret' },
-    workspaceStub,
+    orgStub,
+    workspaceId: 'workspace_1',
     userId: 'user_1',
     promptConnectionSetup,
     ...overrides,
@@ -66,8 +66,8 @@ function integrationsHarness(overrides: Partial<ConstructorParameters<typeof Cod
 
 describe('CodeModeIntegrations', () => {
   it('surfaces Telegram send guidance from list_integrations without a top-level tool', async () => {
-    const workspaceStub = {
-      getIntegrations: vi.fn(async () => [
+    const orgStub = {
+      getWorkspaceIntegrations: vi.fn(async () => [
         {
           id: 'telegram_direct',
           integration_type: 'telegram',
@@ -92,11 +92,11 @@ describe('CodeModeIntegrations', () => {
           reauth_required_at: null,
         },
       ]),
-      getIntegration: vi.fn(),
-      createIntegration: vi.fn(),
-      updateIntegration: vi.fn(),
-    } as unknown as DurableObjectStub<WorkspaceDO>;
-    const { integrations } = integrationsHarness({ workspaceStub });
+      getWorkspaceIntegration: vi.fn(),
+      createWorkspaceIntegration: vi.fn(),
+      updateWorkspaceIntegration: vi.fn(),
+    } as unknown as ConstructorParameters<typeof CodeModeIntegrations>[0]['orgStub'];
+    const { integrations } = integrationsHarness({ orgStub });
 
     await expect(integrations.list({ category: 'communication' })).resolves.toMatchObject({
       count: 1,
@@ -184,6 +184,7 @@ describe('CodeModeIntegrations', () => {
       initialConfig: { server_url: 'https://old.example.com/mcp', auth_type: 'bearer' },
     }));
     expect(updateIntegration).toHaveBeenCalledWith(
+      'workspace_1',
       'docs_mcp',
       expect.objectContaining({
         config: JSON.stringify({ server_url: 'https://mcp.example.com/mcp', auth_type: 'bearer' }),
@@ -216,6 +217,7 @@ describe('CodeModeIntegrations', () => {
     });
 
     expect(updateIntegration).toHaveBeenCalledWith(
+      'workspace_1',
       'docs_mcp',
       expect.not.objectContaining({
         credentialsEncrypted: expect.any(String),
@@ -247,6 +249,7 @@ describe('CodeModeIntegrations', () => {
     });
 
     expect(updateIntegration).toHaveBeenCalledWith(
+      'workspace_1',
       'docs_mcp',
       expect.not.objectContaining({
         credentialsEncrypted: expect.any(String),
@@ -266,7 +269,7 @@ describe('CodeModeIntegrations', () => {
     })).resolves.toMatchObject({ success: true });
 
     expect(createIntegration).toHaveBeenCalledTimes(1);
-    const [, integrationType, , , , configJson, credentialsEncrypted] = createIntegration.mock.calls[0];
+    const [, , integrationType, , , , configJson, credentialsEncrypted] = createIntegration.mock.calls[0];
     expect(integrationType).toBe('remote_mcp');
     expect(JSON.parse(configJson)).toMatchObject({
       server_url: 'https://mcp.example.com/mcp',

@@ -16,7 +16,7 @@ import {
 } from "../../../../src/lib/integration-crypto.js";
 import { requireSession } from "../helpers/auth.js";
 import type { ConnectionSetupResponse } from "../chat-thread-do.js";
-import { getWorkspaceStub, getOrgStub } from "../helpers/stubs.js";
+import { getOrgStub } from "../helpers/stubs.js";
 import { redirect, text } from "../helpers/response.js";
 import type { SlackEventCallbackPayload } from "../slack-types.js";
 import { isOrgBanned } from "../ban-list.js";
@@ -43,6 +43,9 @@ import {
   registerRemoteMcpOAuthClient,
   RemoteMcpOAuthError,
 } from "../remote-mcp-oauth.js";
+import { getAppIndexReadDatabase } from "../app-index-db.js";
+import type { OrgDO } from "../auth.js";
+import type { WorkspaceIntegrationRecord } from "../workspace.js";
 
 interface ChatThreadConnectionSetupRpc {
   receiveConnectionSetupResponse(
@@ -71,6 +74,43 @@ const SLACK_EVENT_DEDUPE_TTL_SECONDS = 10 * 60;
 const SLACK_EVENT_FILE_MAX_BYTES = 25 * 1024 * 1024;
 const TELEGRAM_EVENT_DEDUPE_TTL_SECONDS = 10 * 60;
 const TELEGRAM_FILE_MAX_BYTES = 25 * 1024 * 1024;
+const WORKSPACE_ORG_INDEX_PREFIX = "workspace_org:";
+
+async function getWorkspaceOrgId(
+  env: RouteContext["env"],
+  workspaceId: string,
+): Promise<string | null> {
+  const indexed = await env.APP_KV.get(`${WORKSPACE_ORG_INDEX_PREFIX}${workspaceId}`);
+  if (indexed) return indexed;
+  const appIndex = getAppIndexReadDatabase(env);
+  const orgId = appIndex ? await appIndex.getWorkspaceOrgId(workspaceId) : null;
+  if (orgId) {
+    await env.APP_KV.put(`${WORKSPACE_ORG_INDEX_PREFIX}${workspaceId}`, orgId);
+  }
+  return orgId;
+}
+
+async function getWorkspaceOrgStub(
+  env: RouteContext["env"],
+  workspaceId: string,
+): Promise<{ orgId: string; orgStub: OrgDO } | null> {
+  const orgId = await getWorkspaceOrgId(env, workspaceId);
+  if (!orgId) return null;
+  return {
+    orgId,
+    orgStub: getOrgStub(env, orgId) as unknown as OrgDO,
+  };
+}
+
+async function getWorkspaceIntegration(
+  env: RouteContext["env"],
+  workspaceId: string,
+  integrationId: string,
+): Promise<WorkspaceIntegrationRecord | null> {
+  const owner = await getWorkspaceOrgStub(env, workspaceId);
+  if (!owner) return null;
+  return owner.orgStub.getWorkspaceIntegration(workspaceId, integrationId);
+}
 
 export class SlackChannelBusyError extends Error {
   constructor(message = "Slack channel thread is busy") {
@@ -368,19 +408,22 @@ export async function verifyWorkspaceManageConnectionsAccess(
   workspaceId: string,
   userId: string,
 ): Promise<{ ok: true; orgId: string } | { ok: false; error: string }> {
-  const wsStub = getWorkspaceStub(env, workspaceId);
-  const wsInfo = await wsStub.getInfo();
+  const owner = await getWorkspaceOrgStub(env, workspaceId);
+  if (!owner) {
+    return { ok: false, error: "workspace_not_found" };
+  }
+  const wsInfo = await owner.orgStub.getWorkspaceRecord(workspaceId);
   if (!wsInfo || wsInfo.archived) {
     return { ok: false, error: "workspace_not_found" };
   }
 
-  const orgStub = getOrgStub(env, wsInfo.org_id);
+  const orgStub = owner.orgStub;
   if (!(await orgStub.isMember(userId))) {
     return { ok: false, error: "access_denied" };
   }
 
-  const memberAccess = await wsStub.getMemberAccess(userId);
-  if ((memberAccess?.access_level ?? "full") !== "full") {
+  const workspaceAccess = await orgStub.getWorkspaceAccess(workspaceId, userId);
+  if (workspaceAccess !== "full") {
     return { ok: false, error: "access_denied" };
   }
 
@@ -388,7 +431,7 @@ export async function verifyWorkspaceManageConnectionsAccess(
     return { ok: false, error: "admin_required" };
   }
 
-  return { ok: true, orgId: wsInfo.org_id };
+  return { ok: true, orgId: owner.orgId };
 }
 
 // =============================================================================
@@ -418,8 +461,7 @@ export async function handleRemoteMcpOAuthStart({
     return redirect(`${url.origin}/connections?error=${access.error}`);
   }
 
-  const wsStub = getWorkspaceStub(env, session.workspace_id);
-  const integration = await wsStub.getIntegration(integrationId);
+  const integration = await getWorkspaceIntegration(env, session.workspace_id, integrationId);
   if (!integration || integration.integration_type !== "remote_mcp") {
     return redirect(`${url.origin}/connections?error=reauth_integration_not_found`);
   }
@@ -521,8 +563,14 @@ export async function handleRemoteMcpOAuthCallback({
       return redirect(`${url.origin}/connections?error=${access.error}`);
     }
 
-    const wsStub = getWorkspaceStub(env, stateData.workspace_id);
-    const integration = await wsStub.getIntegration(integrationId);
+    const owner = await getWorkspaceOrgStub(env, stateData.workspace_id);
+    if (!owner) {
+      return redirect(`${url.origin}/connections?error=workspace_not_found`);
+    }
+    const integration = await owner.orgStub.getWorkspaceIntegration(
+      stateData.workspace_id,
+      integrationId,
+    );
     if (!integration || integration.integration_type !== "remote_mcp") {
       return redirect(`${url.origin}/connections?error=reauth_integration_not_found`);
     }
@@ -557,7 +605,8 @@ export async function handleRemoteMcpOAuthCallback({
       env.INTEGRATION_SECRET_KEY,
     );
 
-    await wsStub.updateIntegration(
+    await owner.orgStub.updateWorkspaceIntegration(
+      stateData.workspace_id,
       integrationId,
       {
         credentialsEncrypted: encrypted,
@@ -701,7 +750,10 @@ export async function handleSlackOAuthCallback({
       return redirect(`${url.origin}/connections?error=${access.error}`);
     }
 
-    const wsStub = getWorkspaceStub(env, stateData.workspace_id);
+    const owner = await getWorkspaceOrgStub(env, stateData.workspace_id);
+    if (!owner) {
+      return redirect(`${url.origin}/connections?error=workspace_not_found`);
+    }
     const appId = optionalOAuthString(tokenData.app_id);
     const botUserId = optionalOAuthString(tokenData.bot_user_id);
     const teamId = optionalOAuthString(tokenData.team?.id);
@@ -733,7 +785,10 @@ export async function handleSlackOAuthCallback({
     const name = teamName || "Slack";
     const requestedReauthId = reauthIntegrationId(stateData);
     const existingIntegration = requestedReauthId
-      ? await wsStub.getIntegration(requestedReauthId)
+      ? await owner.orgStub.getWorkspaceIntegration(
+          stateData.workspace_id,
+          requestedReauthId,
+        )
       : null;
     if (requestedReauthId && existingIntegration?.integration_type !== "slack") {
       return redirect(`${url.origin}/connections?error=reauth_integration_not_found`);
@@ -741,13 +796,15 @@ export async function handleSlackOAuthCallback({
     const integrationId = requestedReauthId ?? crypto.randomUUID();
 
     if (requestedReauthId) {
-      await wsStub.updateIntegration(
+      await owner.orgStub.updateWorkspaceIntegration(
+        stateData.workspace_id,
         requestedReauthId,
         { name, config: JSON.stringify(slackConfig), credentialsEncrypted: encrypted },
         stateData.user_id,
       );
     } else {
-      await wsStub.createIntegration(
+      await owner.orgStub.createWorkspaceIntegration(
+        stateData.workspace_id,
         integrationId,
         "slack",
         name,
@@ -815,10 +872,10 @@ async function resolveSlackInstallationForEvent(
   const staleIntegrationIds = new Set<string>();
 
   for (const candidate of candidates) {
-    const wsStub = getWorkspaceStub(env, candidate.workspace_id);
+    const orgStub = getOrgStub(env, candidate.org_id) as unknown as OrgDO;
     const [wsInfo, integration] = await Promise.all([
-      wsStub.getInfo(),
-      wsStub.getIntegration(candidate.integration_id),
+      orgStub.getWorkspaceRecord(candidate.workspace_id),
+      orgStub.getWorkspaceIntegration(candidate.workspace_id, candidate.integration_id),
     ]);
 
     if (!wsInfo || wsInfo.archived) {
@@ -1281,8 +1338,11 @@ async function completeTelegramSetup(
     return;
   }
 
-  const workspaceStub = getWorkspaceStub(env, setup.workspaceId);
-  const integration = await workspaceStub.getIntegration(setup.integrationId);
+  const orgStub = getOrgStub(env, setup.orgId) as unknown as OrgDO;
+  const integration = await orgStub.getWorkspaceIntegration(
+    setup.workspaceId,
+    setup.integrationId,
+  );
   if (!integration || integration.integration_type !== "telegram") {
     return;
   }
@@ -1303,7 +1363,8 @@ async function completeTelegramSetup(
   delete nextConfig.setup_token;
   delete nextConfig.setup_expires_at;
 
-  await workspaceStub.updateIntegration(
+  await orgStub.updateWorkspaceIntegration(
+    setup.workspaceId,
     setup.integrationId,
     { config: JSON.stringify(nextConfig) },
     setup.userId,
@@ -1607,10 +1668,10 @@ async function processTelegramMessage(
 
   const binding = await getTelegramRegistryStub(env).getChatBinding(chatId);
   if (!binding) return;
-  const workspaceStub = getWorkspaceStub(env, binding.workspaceId);
+  const orgStub = getOrgStub(env, binding.orgId) as unknown as OrgDO;
   const [wsInfo, integration] = await Promise.all([
-    workspaceStub.getInfo(),
-    workspaceStub.getIntegration(binding.integrationId),
+    orgStub.getWorkspaceRecord(binding.workspaceId),
+    orgStub.getWorkspaceIntegration(binding.workspaceId, binding.integrationId),
   ]);
   if (!wsInfo || wsInfo.archived) return;
   if (!integration || integration.integration_type !== "telegram") return;
@@ -1957,7 +2018,10 @@ export async function handleNotionOAuthCallback({
       return redirect(`${url.origin}/connections?error=${access.error}`);
     }
 
-    const wsStub = getWorkspaceStub(env, stateData.workspace_id);
+    const owner = await getWorkspaceOrgStub(env, stateData.workspace_id);
+    if (!owner) {
+      return redirect(`${url.origin}/connections?error=workspace_not_found`);
+    }
 
     // Calculate token expiry time (Notion tokens expire after ~1 hour)
     // Default to 1 hour if expires_in not provided
@@ -1984,7 +2048,10 @@ export async function handleNotionOAuthCallback({
     const name = tokenData.workspace_name || "Notion";
     const requestedReauthId = reauthIntegrationId(stateData);
     const existingIntegration = requestedReauthId
-      ? await wsStub.getIntegration(requestedReauthId)
+      ? await owner.orgStub.getWorkspaceIntegration(
+          stateData.workspace_id,
+          requestedReauthId,
+        )
       : null;
     if (requestedReauthId && existingIntegration?.integration_type !== "notion") {
       return redirect(`${url.origin}/connections?error=reauth_integration_not_found`);
@@ -1992,7 +2059,8 @@ export async function handleNotionOAuthCallback({
     const integrationId = requestedReauthId ?? crypto.randomUUID();
 
     if (requestedReauthId) {
-      await wsStub.updateIntegration(
+      await owner.orgStub.updateWorkspaceIntegration(
+        stateData.workspace_id,
         requestedReauthId,
         {
           name,
@@ -2003,7 +2071,8 @@ export async function handleNotionOAuthCallback({
         stateData.user_id,
       );
     } else {
-      await wsStub.createIntegration(
+      await owner.orgStub.createWorkspaceIntegration(
+        stateData.workspace_id,
         integrationId,
         "notion",
         name,
@@ -2169,7 +2238,10 @@ export async function handleSalesforceOAuthCallback({
       return redirect(`${url.origin}/connections?error=${access.error}`);
     }
 
-    const wsStub = getWorkspaceStub(env, stateData.workspace_id);
+    const owner = await getWorkspaceOrgStub(env, stateData.workspace_id);
+    if (!owner) {
+      return redirect(`${url.origin}/connections?error=workspace_not_found`);
+    }
 
     const credentials = {
       access_token: tokenData.access_token,
@@ -2196,7 +2268,10 @@ export async function handleSalesforceOAuthCallback({
     const config = { instance_url: tokenData.instance_url };
     const requestedReauthId = reauthIntegrationId(stateData);
     const existingIntegration = requestedReauthId
-      ? await wsStub.getIntegration(requestedReauthId)
+      ? await owner.orgStub.getWorkspaceIntegration(
+          stateData.workspace_id,
+          requestedReauthId,
+        )
       : null;
     if (requestedReauthId && existingIntegration?.integration_type !== "salesforce") {
       return redirect(`${url.origin}/connections?error=reauth_integration_not_found`);
@@ -2204,13 +2279,15 @@ export async function handleSalesforceOAuthCallback({
     const integrationId = requestedReauthId ?? crypto.randomUUID();
 
     if (requestedReauthId) {
-      await wsStub.updateIntegration(
+      await owner.orgStub.updateWorkspaceIntegration(
+        stateData.workspace_id,
         requestedReauthId,
         { name, config: JSON.stringify(config), credentialsEncrypted: encrypted },
         stateData.user_id,
       );
     } else {
-      await wsStub.createIntegration(
+      await owner.orgStub.createWorkspaceIntegration(
+        stateData.workspace_id,
         integrationId,
         "salesforce",
         name,

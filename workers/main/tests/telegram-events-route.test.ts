@@ -58,6 +58,40 @@ function telegramRequest(body: unknown, secret = 'telegram-secret'): Request {
   });
 }
 
+function createTelegramOrgNamespace({
+  archived = false,
+  config = JSON.stringify({ status: 'active', chat_id: '12345' }),
+  thread = { id: 'thread-1', title: 'Ada' },
+  updateIntegration = vi.fn(async () => undefined),
+}: {
+  archived?: boolean;
+  config?: string;
+  thread?: Record<string, unknown> | null;
+  updateIntegration?: ReturnType<typeof vi.fn>;
+} = {}) {
+  const orgStub = {
+    getWorkspaceRecord: vi.fn(async () => ({
+      id: 'ws-1',
+      org_id: 'org-1',
+      archived,
+    })),
+    getWorkspaceIntegration: vi.fn(async () => ({
+      id: 'telegram-int',
+      integration_type: 'telegram',
+      config,
+    })),
+    updateWorkspaceIntegration: updateIntegration,
+    getThread: vi.fn(async (threadId: string) =>
+      thread && (thread.id === threadId || !thread.id) ? thread : null,
+    ),
+  };
+  return {
+    idFromName: vi.fn((id: string) => id),
+    get: vi.fn(() => orgStub),
+    _stub: orgStub,
+  };
+}
+
 describe('handleTelegramWebhook', () => {
   it('binds a Telegram chat from a setup deep link token', async () => {
     const setup: TelegramSetupRecord = {
@@ -90,6 +124,10 @@ describe('handleTelegramWebhook', () => {
         TELEGRAM_BOT_TOKEN: 'bot-token',
         TELEGRAM_WEBHOOK_SECRET: 'telegram-secret',
         TELEGRAM_REGISTRY: registry.namespace,
+        ORG: createTelegramOrgNamespace({
+          config: JSON.stringify({ status: 'pending', setup_token: 'setup-token' }),
+          updateIntegration,
+        }),
         WORKSPACE: {
           idFromName: vi.fn((id: string) => id),
           get: vi.fn(() => ({
@@ -110,13 +148,14 @@ describe('handleTelegramWebhook', () => {
 
     expect(response.status).toBe(200);
     expect(updateIntegration).toHaveBeenCalledWith(
+      'ws-1',
       'telegram-int',
       {
         config: expect.stringContaining('"status":"active"'),
       },
       'user-1',
     );
-    const updatedConfig = JSON.parse(updateIntegration.mock.calls[0][1].config);
+    const updatedConfig = JSON.parse(updateIntegration.mock.calls[0][2].config);
     expect(updatedConfig).toMatchObject({
       status: 'active',
       chat_id: '12345',
@@ -161,6 +200,7 @@ describe('handleTelegramWebhook', () => {
         TELEGRAM_BOT_TOKEN: 'bot-token',
         TELEGRAM_WEBHOOK_SECRET: 'telegram-secret',
         TELEGRAM_REGISTRY: registry.namespace,
+        ORG: createTelegramOrgNamespace(),
         WORKSPACE: {
           idFromName: vi.fn((id: string) => id),
           get: vi.fn(() => ({
@@ -172,12 +212,7 @@ describe('handleTelegramWebhook', () => {
             })),
           })),
         },
-        ORG: {
-          idFromName: vi.fn((id: string) => id),
-          get: vi.fn(() => ({
-            getThread: vi.fn(async () => ({ id: 'thread-1', title: 'Ada' })),
-          })),
-        },
+        ORG: createTelegramOrgNamespace(),
         CHAT_THREAD: {
           idFromName: vi.fn((id: string) => id),
           get: vi.fn(() => ({ startInitialUserMessage })),
@@ -227,6 +262,9 @@ describe('handleTelegramWebhook', () => {
         TELEGRAM_BOT_TOKEN: 'bot-token',
         TELEGRAM_WEBHOOK_SECRET: 'telegram-secret',
         TELEGRAM_REGISTRY: registry.namespace,
+        ORG: createTelegramOrgNamespace({
+          config: JSON.stringify({ status: 'active', chat_id: '67890' }),
+        }),
         WORKSPACE: {
           idFromName: vi.fn((id: string) => id),
           get: vi.fn(() => ({
@@ -278,6 +316,7 @@ describe('handleTelegramWebhook', () => {
         TELEGRAM_BOT_TOKEN: 'bot-token',
         TELEGRAM_WEBHOOK_SECRET: 'telegram-secret',
         TELEGRAM_REGISTRY: registry.namespace,
+        ORG: createTelegramOrgNamespace({ archived: true }),
         WORKSPACE: {
           idFromName: vi.fn((id: string) => id),
           get: vi.fn(() => ({
@@ -346,6 +385,7 @@ describe('handleTelegramWebhook', () => {
         TELEGRAM_BOT_TOKEN: 'bot-token',
         TELEGRAM_WEBHOOK_SECRET: 'telegram-secret',
         TELEGRAM_REGISTRY: registry.namespace,
+        ORG: createTelegramOrgNamespace(),
         WORKSPACE: {
           idFromName: vi.fn((id: string) => id),
           get: vi.fn(() => ({
@@ -438,12 +478,7 @@ describe('handleTelegramWebhook', () => {
             })),
           })),
         },
-        ORG: {
-          idFromName: vi.fn((id: string) => id),
-          get: vi.fn(() => ({
-            getThread: vi.fn(async () => ({ id: 'thread-1', title: 'Ada' })),
-          })),
-        },
+        ORG: createTelegramOrgNamespace(),
         CHAT_THREAD: {
           idFromName: vi.fn((id: string) => id),
           get: vi.fn(() => ({ startInitialUserMessage })),
@@ -530,12 +565,7 @@ describe('handleTelegramWebhook', () => {
             })),
           })),
         },
-        ORG: {
-          idFromName: vi.fn((id: string) => id),
-          get: vi.fn(() => ({
-            getThread: vi.fn(async () => ({ id: 'thread-1', title: 'Ada' })),
-          })),
-        },
+        ORG: createTelegramOrgNamespace(),
         CHAT_THREAD: {
           idFromName: vi.fn((id: string) => id),
           get: vi.fn(() => ({ startInitialUserMessage })),
@@ -629,12 +659,7 @@ describe('handleTelegramWebhook', () => {
             })),
           })),
         },
-        ORG: {
-          idFromName: vi.fn((id: string) => id),
-          get: vi.fn(() => ({
-            getThread: vi.fn(async () => ({ id: 'thread-1', title: 'Ada' })),
-          })),
-        },
+        ORG: createTelegramOrgNamespace(),
         CHAT_THREAD: {
           idFromName: vi.fn((id: string) => id),
           get: vi.fn(() => ({ startInitialUserMessage })),

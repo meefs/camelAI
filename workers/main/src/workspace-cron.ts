@@ -34,14 +34,6 @@ import {
   getOrgModelPickerConfigCompat,
   getWorkspaceModelPickerConfigCompat,
 } from "./model-picker-config-compat";
-import {
-  compositeTextIntegerKeyTableSpec,
-  exportD1MigrationTablePage,
-  singleTextKeyTableSpec,
-  type D1MigrationTableExport,
-  type D1MigrationTableExportInput,
-  type D1MigrationTableSpecs,
-} from "./d1-migration-export";
 
 const MAX_DUE_JOBS_PER_ALARM = 20;
 const WORKSPACE_ID_KEY = "workspaceId";
@@ -197,20 +189,6 @@ export interface RecordScheduledPromptRunResultInput {
   message?: string | null;
   completedAt?: number | null;
 }
-
-const WORKSPACE_CRON_D1_MIGRATION_TABLES: D1MigrationTableSpecs = {
-  scheduled_prompts: singleTextKeyTableSpec("scheduled_prompts", "id"),
-  deterministic_automations: singleTextKeyTableSpec(
-    "deterministic_automations",
-    "id",
-  ),
-  deterministic_automation_versions: compositeTextIntegerKeyTableSpec(
-    "deterministic_automation_versions",
-    "automation_id",
-    "source_version",
-  ),
-  automation_runs: singleTextKeyTableSpec("automation_runs", "id"),
-};
 
 export interface AutomationRunRecord {
   id: string;
@@ -2466,20 +2444,5 @@ export class WorkspaceCronDO extends DurableObject<WorkspaceCronEnv> {
     }
 
     await this.scheduleNextAlarm();
-  }
-
-  exportD1MigrationTable(
-    input: D1MigrationTableExportInput,
-  ): D1MigrationTableExport {
-    return exportD1MigrationTablePage(
-      this.sql,
-      WORKSPACE_CRON_D1_MIGRATION_TABLES,
-      input,
-      this.ctx.storage.kv.get<number>("schemaVersion") ?? 0,
-    );
-  }
-
-  listD1MigrationTables(): string[] {
-    return Object.keys(WORKSPACE_CRON_D1_MIGRATION_TABLES);
   }
 }

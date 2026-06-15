@@ -19,11 +19,21 @@ function makeEnv({
     getMemberAccess: vi.fn(async () => ({ access_level: accessLevel })),
   };
   const orgStub = {
+    getWorkspaceRecord: vi.fn(async () =>
+      archived ? { id: "ws_1", org_id: "org_1", archived: true } : { id: "ws_1", org_id: "org_1", archived: false },
+    ),
+    getWorkspaceAccess: vi.fn(async () => accessLevel),
     isMember: vi.fn(async () => isMember),
     isAdmin: vi.fn(async () => isAdmin),
   };
 
   return {
+    APP_KV: {
+      get: vi.fn(async (key: string) =>
+        key === "workspace_org:ws_1" ? "org_1" : null,
+      ),
+      put: vi.fn(async () => undefined),
+    },
     WORKSPACE: {
       idFromName: vi.fn((id: string) => id),
       get: vi.fn(() => workspaceStub),
@@ -79,7 +89,8 @@ describe("verifyWorkspaceManageConnectionsAccess", () => {
     ).resolves.toEqual({ ok: false, error: "admin_required" });
 
     expect(env.orgStub.isMember).toHaveBeenCalledWith("user_1");
-    expect(env.workspaceStub.getMemberAccess).toHaveBeenCalledWith("user_1");
+    expect(env.orgStub.getWorkspaceAccess).toHaveBeenCalledWith("ws_1", "user_1");
+    expect(env.workspaceStub.getMemberAccess).not.toHaveBeenCalled();
     expect(env.orgStub.isAdmin).toHaveBeenCalledWith("user_1");
   });
 

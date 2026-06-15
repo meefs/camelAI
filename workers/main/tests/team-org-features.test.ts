@@ -255,7 +255,7 @@ describe('Workspace access restrictions', () => {
     expect(workspaces[0].id).toBe(defaultWorkspaceId);
   });
 
-  it('allows read_only access to workspace', async () => {
+  it('normalizes read_only workspace access to full access', async () => {
     const ownerEmail = testEmail();
     const { userId: ownerId } = await createUser(testEnv, ownerEmail, 'password', 'Owner');
     const { org, defaultWorkspaceId } = await createOrg(testEnv, 'Test Org', ownerId);
@@ -266,16 +266,16 @@ describe('Workspace access restrictions', () => {
     const { id: invId } = await createInvitation(testEnv, org.id, memberEmail, 'member', ownerId);
     await acceptInvitation(testEnv, org.id, invId, memberId);
 
-    // Set read_only access
+    // The workspace access model is now full/none; legacy read_only inputs normalize to full.
     await setWorkspaceAccess(testEnv, defaultWorkspaceId, memberId, 'read_only', ownerId);
 
     const access = await getWorkspaceAccess(testEnv, defaultWorkspaceId, memberId);
-    expect(access).toBe('read_only');
+    expect(access).toBe('full');
 
     // Should still appear in workspace list
     const workspaces = await listUserWorkspaces(testEnv, memberId, org.id);
     expect(workspaces.length).toBe(1);
-    expect(workspaces[0].access_level).toBe('read_only');
+    expect(workspaces[0].access_level).toBe('full');
   });
 });
 

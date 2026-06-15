@@ -23,7 +23,7 @@ import {
 import { waitUntil } from "@/lib/wait-until";
 import { getAuthEnv, integrationRecordToIntegration } from "@/lib/auth-helpers";
 import { projectsToMentionables, type MentionableProject } from "@/lib/mentions";
-import { getWorkerScript } from "@/lib/auth-do";
+import { getWorkerScript, listWorkspaceIntegrationRecords } from "@/lib/auth-do";
 import {
   getDefaultLlmModel,
   getStoredCustomLlmProviderApi,
@@ -309,8 +309,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     : Promise.resolve([]);
 
   const connectionsPromise: Promise<Integration[]> = workspaceId
-    ? env.WORKSPACE.get(env.WORKSPACE.idFromName(workspaceId))
-        .getIntegrations()
+    ? listWorkspaceIntegrationRecords(getAuthEnv(env), workspaceId)
         .then((records) => records.map(integrationRecordToIntegration))
         .catch((error) => {
           console.error("Failed to load workspace connections:", error);

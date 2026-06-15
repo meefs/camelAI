@@ -411,14 +411,14 @@ async function resolveAuthorizedSender(
   if (!workspaceInfo || workspaceInfo.archived) return null;
 
   const orgStub = getOrgStub(env, orgId);
-  const [isOrgMember, memberAccess, profile] = await Promise.all([
+  const [isOrgMember, workspaceAccess, profile] = await Promise.all([
     orgStub.isMember(userId),
-    wsStub.getMemberAccess(userId),
+    orgStub.getWorkspaceAccess(workspaceId, userId),
     getUserStub(env, userId).getProfile(),
   ]);
 
   if (!isOrgMember) return null;
-  if ((memberAccess?.access_level ?? "full") !== "full") return null;
+  if (workspaceAccess !== "full") return null;
 
   return {
     userId,

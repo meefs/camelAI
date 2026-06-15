@@ -32,6 +32,57 @@ vi.mock("@/lib/cloudflare.server", () => ({
 
 vi.mock("@/lib/auth-do", () => ({
   isOrgAdmin: isOrgAdminMock,
+  createWorkspaceIntegrationRecord: vi.fn(
+    (
+      _authEnv,
+      workspaceId: string,
+      ...args: [
+        string,
+        string,
+        string,
+        string,
+        string,
+        string,
+        string,
+        string,
+        number | null | undefined,
+      ]
+    ) => {
+      const spy =
+        workspaceId === "ws_2" ? targetCreateIntegrationMock : createIntegrationMock;
+      return spy(...args);
+    },
+  ),
+  updateWorkspaceIntegrationRecord: vi.fn(
+    (_authEnv, _workspaceId: string, integrationId: string, updates, actorId: string) =>
+      updateIntegrationMock(integrationId, updates, actorId),
+  ),
+  deleteWorkspaceIntegrationRecord: vi.fn(
+    (_authEnv, _workspaceId: string, integrationId: string, actorId: string) =>
+      deleteIntegrationMock(integrationId, actorId),
+  ),
+  getWorkspaceIntegrationRecord: vi.fn(
+    (_authEnv, _workspaceId: string, integrationId: string) =>
+      getIntegrationMock(integrationId),
+  ),
+  listWorkspaceIntegrationRecords: vi.fn((_authEnv, _workspaceId: string) =>
+    getIntegrationsMock(),
+  ),
+  workspaceIntegrationNameExists: vi.fn(
+    (
+      _authEnv,
+      workspaceId: string,
+      integrationType: string,
+      name: string,
+      excludeId?: string,
+    ) => {
+      const spy =
+        workspaceId === "ws_2"
+          ? targetIntegrationNameExistsMock
+          : sourceIntegrationNameExistsMock;
+      return spy(integrationType, name, excludeId);
+    },
+  ),
 }));
 
 vi.mock("../workers/main/src/workspace-filesystem-do", () => ({
@@ -264,7 +315,12 @@ describe("connections action admin guard", () => {
 
   it("rejects duplicate targets outside the current org", async () => {
     isOrgAdminMock.mockResolvedValue(true);
-    targetGetInfoMock.mockResolvedValue({ id: "ws_2", org_id: "other_org" });
+    requireAuthContextMock.mockResolvedValue({
+      currentOrg: { id: "org_1" },
+      currentWorkspace: { id: "ws_1" },
+      user: { id: "user_1" },
+      workspaces: [{ id: "ws_1", name: "Source" }],
+    });
 
     await expect(
       action({

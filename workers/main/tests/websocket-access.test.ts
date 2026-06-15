@@ -58,10 +58,10 @@ describe('WebSocket access guard', () => {
     };
   }
 
-  it('denies WebSocket upgrade for read_only workspace access', async () => {
+  it('denies WebSocket upgrade for denied workspace access', async () => {
     const { ownerId, memberId, workspaceId, threadId, signedToken } = await setupMemberSession();
 
-    await setWorkspaceAccess(testEnv, workspaceId, memberId, 'read_only', ownerId);
+    await setWorkspaceAccess(testEnv, workspaceId, memberId, 'none', ownerId);
 
     const response = await SELF.fetch(`http://example/ws/${workspaceId}?threadId=${threadId}`, {
       headers: {

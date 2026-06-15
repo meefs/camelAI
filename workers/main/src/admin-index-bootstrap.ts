@@ -4,7 +4,6 @@ import {
   type AppIndexDatabase,
   getAppIndexDatabase,
 } from './app-index-db.js';
-import type { WorkspaceDO } from './workspace.js';
 
 type AdminIndexBootstrapEnv = {
   APP_DB?: D1Database;
@@ -12,7 +11,6 @@ type AdminIndexBootstrapEnv = {
   EMAIL_TO_USER: KVNamespace;
   USER: DurableObjectNamespace<UserDO>;
   ORG: DurableObjectNamespace<OrgDO>;
-  WORKSPACE: DurableObjectNamespace<WorkspaceDO>;
 };
 
 const APP_INDEX_BOOTSTRAP_LOCK_KEY = 'admin_index_d1_bootstrap_lock';
@@ -96,11 +94,12 @@ async function collectOrgIdsFromOrgIndex(
 
 async function getWorkspaceIntegrationCount(
   env: AdminIndexBootstrapEnv,
+  orgId: string,
   workspaceId: string,
 ): Promise<number> {
   try {
-    const workspaceStub = env.WORKSPACE.get(env.WORKSPACE.idFromName(workspaceId));
-    return (await workspaceStub.getIntegrations()).length;
+    const orgStub = env.ORG.get(env.ORG.idFromName(orgId));
+    return (await orgStub.getWorkspaceIntegrations(workspaceId)).length;
   } catch {
     return 0;
   }
@@ -193,7 +192,7 @@ async function bootstrapAdminIndexFromDurableObjects(
           async (workspace) =>
             [
               workspace.id,
-              await getWorkspaceIntegrationCount(env, workspace.id),
+              await getWorkspaceIntegrationCount(env, orgId, workspace.id),
             ] as const,
         ),
       ),

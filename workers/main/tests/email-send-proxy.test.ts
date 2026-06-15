@@ -112,6 +112,17 @@ function buildEnv(overrides: {
   // Default: all MEMBERS have full access
   const allMembers = workspaceMembers ?? MEMBERS.map((m) => ({ user_id: m.user_id, access_level: 'full' }));
   const workspaceStub = makeWorkspaceStub(allMembers, rateAllowed !== false);
+  const orgStub = {
+    getInfo: vi.fn(async () => ({
+      id: 'org-1',
+      billing_plan: billingPlan ?? 'starter',
+      billing_status: billingStatus ?? 'active',
+    })),
+    getThread: vi.fn(async (threadId: string) =>
+      thread && (thread.id === threadId || !thread.id) ? thread : null
+    ),
+    listWorkspaceMembers: vi.fn(async () => allMembers),
+  };
   const appKvStore = createMockKvStore(appKvInitial);
 
   const userStubs = new Map<string, ReturnType<typeof makeUserStub>>();
@@ -129,16 +140,7 @@ function buildEnv(overrides: {
     },
     ORG: {
       idFromName: vi.fn((id: string) => id),
-      get: vi.fn(() => ({
-        getInfo: vi.fn(async () => ({
-          id: 'org-1',
-          billing_plan: billingPlan ?? 'starter',
-          billing_status: billingStatus ?? 'active',
-        })),
-        getThread: vi.fn(async (threadId: string) =>
-          thread && (thread.id === threadId || !thread.id) ? thread : null
-        ),
-      })),
+      get: vi.fn(() => orgStub),
     },
     APP_KV: appKvStore,
     USER: {
@@ -147,6 +149,7 @@ function buildEnv(overrides: {
     },
     ...rest,
     _workspaceStub: workspaceStub,
+    _orgStub: orgStub,
     _appKvStore: appKvStore,
   };
 }

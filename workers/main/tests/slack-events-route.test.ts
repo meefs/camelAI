@@ -67,6 +67,25 @@ function slackInstallationRegistry() {
   ]);
 }
 
+function createSlackOrgNamespace(encryptedCredentials: string) {
+  const orgStub = {
+    getWorkspaceRecord: vi.fn(async () => ({
+      id: 'ws-1',
+      org_id: 'org-1',
+      archived: false,
+    })),
+    getWorkspaceIntegration: vi.fn(async () => ({
+      integration_type: 'slack',
+      credentials_encrypted: encryptedCredentials,
+    })),
+    getThread: vi.fn(async () => ({ id: 'thread-1', title: 'Slack' })),
+  };
+  return {
+    idFromName: vi.fn((id: string) => id),
+    get: vi.fn(() => orgStub),
+  };
+}
+
 async function createSlackSignature(secret: string, timestamp: string, body: string): Promise<string> {
   const encoder = new TextEncoder();
   const key = await crypto.subtle.importKey(
@@ -228,6 +247,7 @@ describe('handleSlackEvents', () => {
       SLACK_TEAM_REGISTRY: registry.namespace,
       INTEGRATION_SECRET_KEY: 'secret',
       R2_BUCKET: { put: r2Put },
+      ORG: createSlackOrgNamespace(encrypted),
       WORKSPACE: {
         idFromName: vi.fn((id: string) => id),
         get: vi.fn(() => ({
@@ -318,6 +338,7 @@ describe('handleSlackEvents', () => {
         APP_KV: kv,
         SLACK_TEAM_REGISTRY: registry.namespace,
         INTEGRATION_SECRET_KEY: 'secret',
+        ORG: createSlackOrgNamespace(encrypted),
         WORKSPACE: {
           idFromName: vi.fn((id: string) => id),
           get: vi.fn(() => ({
@@ -363,6 +384,7 @@ describe('handleSlackEvents', () => {
         SLACK_TEAM_REGISTRY: registry.namespace,
         INTEGRATION_SECRET_KEY: 'secret',
         R2_BUCKET: { put: r2Put },
+        ORG: createSlackOrgNamespace(encrypted),
         WORKSPACE: {
           idFromName: vi.fn((id: string) => id),
           get: vi.fn(() => ({

@@ -26,6 +26,13 @@ import {
   archiveOrg as prodArchiveOrg,
   checkUserOrphaned as prodCheckUserOrphaned,
   listOrgWorkspaces as prodListOrgWorkspaces,
+  listUserWorkspaces as prodListUserWorkspaces,
+  listUserWorkspacesAcrossOrgs as prodListUserWorkspacesAcrossOrgs,
+  getWorkspace as prodGetWorkspace,
+  updateWorkspace as prodUpdateWorkspace,
+  getWorkspaceAuditLog as prodGetWorkspaceAuditLog,
+  getWorkspaceAccess as prodGetWorkspaceAccess,
+  setWorkspaceAccess as prodSetWorkspaceAccess,
   transferOrgOwnership as prodTransferOrgOwnership,
 } from '../../../src/lib/auth-do';
 
@@ -477,10 +484,7 @@ export async function getWorkspace(
   env: TestEnv,
   workspaceId: string
 ): Promise<Workspace | null> {
-  const workspaceStub = env.WORKSPACE.get(env.WORKSPACE.idFromName(workspaceId));
-  const info = await workspaceStub.getInfo();
-  if (!info || info.archived) return null;
-  return info;
+  return prodGetWorkspace(env as unknown as AuthEnv, workspaceId);
 }
 
 export async function updateWorkspace(
@@ -489,8 +493,12 @@ export async function updateWorkspace(
   updates: { name?: string; description?: string },
   actorId: string
 ): Promise<Workspace | null> {
-  const workspaceStub = env.WORKSPACE.get(env.WORKSPACE.idFromName(workspaceId));
-  return workspaceStub.updateWorkspace(updates, actorId);
+  return prodUpdateWorkspace(
+    env as unknown as AuthEnv,
+    workspaceId,
+    updates,
+    actorId,
+  );
 }
 
 /**
@@ -510,53 +518,28 @@ export async function listUserWorkspaces(
   userId: string,
   orgId: string
 ): Promise<Array<{ id: string; name: string; access_level: WorkspaceAccessLevelDO }>> {
-  // First check if user is an org member
-  const userStub = env.USER.get(env.USER.idFromName(userId));
-  const isOrgMember = await userStub.hasOrg(orgId);
-  if (!isOrgMember) {
-    return [];
-  }
-
-  const orgStub = env.ORG.get(env.ORG.idFromName(orgId));
-  const workspaces = await orgStub.getWorkspaces();
-
-  const result: Array<{ id: string; name: string; access_level: WorkspaceAccessLevelDO }> = [];
-  for (const ws of workspaces) {
-    if (ws.archived) continue;
-    const workspaceStub = env.WORKSPACE.get(env.WORKSPACE.idFromName(ws.id));
-    const member = await workspaceStub.getMemberAccess(userId);
-    // If no explicit record exists, org members have 'full' access by default
-    const access = member?.access_level ?? 'full';
-    if (access !== 'none') {
-      result.push({ id: ws.id, name: ws.name, access_level: access });
-    }
-  }
-  return result;
+  const workspaces = await prodListUserWorkspaces(env as unknown as AuthEnv, userId, orgId);
+  return workspaces.map((ws) => ({
+    id: ws.id,
+    name: ws.name,
+    access_level: ws.access_level,
+  }));
 }
 
 export async function listUserWorkspacesAcrossOrgs(
   env: TestEnv,
   userId: string
 ): Promise<Array<{ id: string; name: string; org_id: string; access_level: WorkspaceAccessLevelDO }>> {
-  const userStub = env.USER.get(env.USER.idFromName(userId));
-  const orgs = await userStub.getOrgs();
-
-  const result: Array<{ id: string; name: string; org_id: string; access_level: WorkspaceAccessLevelDO }> = [];
-  for (const org of orgs) {
-    const orgStub = env.ORG.get(env.ORG.idFromName(org.org_id));
-    const workspaces = await orgStub.getWorkspaces();
-
-    for (const ws of workspaces) {
-      if (ws.archived) continue;
-      const workspaceStub = env.WORKSPACE.get(env.WORKSPACE.idFromName(ws.id));
-      const member = await workspaceStub.getMemberAccess(userId);
-      const access = member?.access_level ?? 'full';
-      if (access !== 'none') {
-        result.push({ id: ws.id, name: ws.name, org_id: org.org_id, access_level: access });
-      }
-    }
-  }
-  return result;
+  const workspaces = await prodListUserWorkspacesAcrossOrgs(
+    env as unknown as AuthEnv,
+    userId,
+  );
+  return workspaces.map((ws) => ({
+    id: ws.id,
+    name: ws.name,
+    org_id: ws.org_id,
+    access_level: ws.access_level,
+  }));
 }
 
 /**
@@ -577,8 +560,7 @@ export async function tryArchiveWorkspace(
   workspaceId: string,
   actorId: string
 ): Promise<{ ok: true } | { ok: false; error: string }> {
-  const workspaceStub = env.WORKSPACE.get(env.WORKSPACE.idFromName(workspaceId));
-  const info = await workspaceStub.getInfo();
+  const info = await prodGetWorkspace(env as unknown as AuthEnv, workspaceId);
   if (!info) return { ok: false, error: 'Workspace not found' };
 
   // Check if this is the only workspace
@@ -597,8 +579,10 @@ export async function getWorkspaceAuditLog(
   env: TestEnv,
   workspaceId: string
 ): Promise<Array<{ action: string; actor_id: string }>> {
-  const workspaceStub = env.WORKSPACE.get(env.WORKSPACE.idFromName(workspaceId));
-  const audit = await workspaceStub.getAuditLog();
+  const audit = await prodGetWorkspaceAuditLog(
+    env as unknown as AuthEnv,
+    workspaceId,
+  );
   return audit.map((entry) => ({ action: entry.action, actor_id: entry.actor_id }));
 }
 
@@ -611,8 +595,13 @@ export async function setWorkspaceAccess(
   access: WorkspaceAccessLevelDO,
   actorId: string
 ): Promise<void> {
-  const workspaceStub = env.WORKSPACE.get(env.WORKSPACE.idFromName(workspaceId));
-  await workspaceStub.setMemberAccess(userId, access, actorId);
+  await prodSetWorkspaceAccess(
+    env as unknown as AuthEnv,
+    workspaceId,
+    userId,
+    access,
+    actorId,
+  );
 }
 
 export async function getWorkspaceAccess(
@@ -620,28 +609,17 @@ export async function getWorkspaceAccess(
   workspaceId: string,
   userId: string
 ): Promise<WorkspaceAccessLevelDO> {
-  const workspaceStub = env.WORKSPACE.get(env.WORKSPACE.idFromName(workspaceId));
-  const info = await workspaceStub.getInfo();
-  if (!info) return 'none';
-
-  // Check if user is an org member
-  const userStub = env.USER.get(env.USER.idFromName(userId));
-  const isOrgMember = await userStub.hasOrg(info.org_id);
-  if (!isOrgMember) {
-    return 'none';
-  }
-
-  const member = await workspaceStub.getMemberAccess(userId);
-  // If no explicit record exists, org members have 'full' access by default
-  return member?.access_level ?? 'full';
+  return prodGetWorkspaceAccess(env as unknown as AuthEnv, workspaceId, userId);
 }
 
 export async function listWorkspaceMembers(
   env: TestEnv,
   workspaceId: string
 ): Promise<Array<{ user_id: string; access_level: WorkspaceAccessLevelDO }>> {
-  const workspaceStub = env.WORKSPACE.get(env.WORKSPACE.idFromName(workspaceId));
-  return workspaceStub.listMembers();
+  const info = await prodGetWorkspace(env as unknown as AuthEnv, workspaceId);
+  if (!info) return [];
+  const orgStub = env.ORG.get(env.ORG.idFromName(info.org_id));
+  return orgStub.listWorkspaceMembers(workspaceId);
 }
 
 // ============ Workspace Integration Operations ============
@@ -659,7 +637,9 @@ export async function createWorkspaceIntegration(
     auth_method?: string;
   }
 ): Promise<{ id: string; has_credentials: boolean }> {
-  const workspaceStub = env.WORKSPACE.get(env.WORKSPACE.idFromName(workspaceId));
+  const workspace = await prodGetWorkspace(env as unknown as AuthEnv, workspaceId);
+  if (!workspace) throw new Error('Workspace not found');
+  const orgStub = env.ORG.get(env.ORG.idFromName(workspace.org_id));
 
   let credentialsEncrypted: string | null = null;
   if (data.credentials && Object.keys(data.credentials).length > 0) {
@@ -668,7 +648,8 @@ export async function createWorkspaceIntegration(
   }
 
   const integrationId = generateId();
-  await workspaceStub.createIntegration(
+  await orgStub.createWorkspaceIntegration(
+    workspaceId,
     integrationId,
     data.integration_type,
     data.name,
@@ -689,12 +670,12 @@ export async function updateWorkspaceIntegration(
   actorId: string,
   data: { name?: string }
 ): Promise<{ name: string } | null> {
-  const workspaceStub = env.WORKSPACE.get(env.WORKSPACE.idFromName(workspaceId)) as DurableObjectStub<
-    WorkspaceDO & { getIntegration(id: string): Promise<{ name: string } | null> }
-  >;
-  await workspaceStub.updateIntegration(integrationId, data, actorId);
+  const workspace = await prodGetWorkspace(env as unknown as AuthEnv, workspaceId);
+  if (!workspace) throw new Error('Workspace not found');
+  const orgStub = env.ORG.get(env.ORG.idFromName(workspace.org_id));
+  await orgStub.updateWorkspaceIntegration(workspaceId, integrationId, data, actorId);
   // Fetch the updated integration to return the new values
-  const updated = await workspaceStub.getIntegration(integrationId);
+  const updated = await orgStub.getWorkspaceIntegration(workspaceId, integrationId);
   if (!updated) return null;
   return { name: updated.name };
 }
@@ -705,16 +686,20 @@ export async function deleteWorkspaceIntegration(
   integrationId: string,
   actorId: string
 ): Promise<void> {
-  const workspaceStub = env.WORKSPACE.get(env.WORKSPACE.idFromName(workspaceId));
-  await workspaceStub.deleteIntegration(integrationId, actorId);
+  const workspace = await prodGetWorkspace(env as unknown as AuthEnv, workspaceId);
+  if (!workspace) throw new Error('Workspace not found');
+  const orgStub = env.ORG.get(env.ORG.idFromName(workspace.org_id));
+  await orgStub.deleteWorkspaceIntegration(workspaceId, integrationId, actorId);
 }
 
 export async function getWorkspaceIntegrations(
   env: TestEnv,
   workspaceId: string
 ): Promise<Array<{ id: string; name: string }>> {
-  const workspaceStub = env.WORKSPACE.get(env.WORKSPACE.idFromName(workspaceId));
-  const integrations = await workspaceStub.getIntegrations();
+  const workspace = await prodGetWorkspace(env as unknown as AuthEnv, workspaceId);
+  if (!workspace) return [];
+  const orgStub = env.ORG.get(env.ORG.idFromName(workspace.org_id));
+  const integrations = await orgStub.getWorkspaceIntegrations(workspaceId);
   return integrations.map((i) => ({ id: i.id, name: i.name }));
 }
 

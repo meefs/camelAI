@@ -149,6 +149,7 @@ describe('handleWorkspaceEmailIngress', () => {
     const orgStub = {
       getInfo: vi.fn().mockResolvedValue({ billing_plan: 'starter', billing_status: 'active' }),
       isMember: vi.fn().mockResolvedValue(true),
+      getWorkspaceAccess: vi.fn().mockResolvedValue('full'),
       getThread: vi.fn().mockResolvedValue(null),
       getLlmProviderConfig: vi.fn().mockResolvedValue(null),
       getExperimentalSettings: vi.fn().mockResolvedValue({ claude_proxy_models: false }),
@@ -241,6 +242,7 @@ describe('handleWorkspaceEmailIngress', () => {
     const orgStub = {
       getInfo: vi.fn().mockResolvedValue({ billing_plan: 'pro', billing_status: 'active' }),
       isMember: vi.fn().mockResolvedValue(true),
+      getWorkspaceAccess: vi.fn().mockResolvedValue('full'),
       getThread: vi.fn().mockResolvedValue(null),
       getLlmProviderConfig: vi.fn().mockResolvedValue(null),
       getExperimentalSettings: vi.fn().mockResolvedValue({ claude_proxy_models: false }),
@@ -325,6 +327,7 @@ describe('handleWorkspaceEmailIngress', () => {
     const orgStub = {
       getInfo: vi.fn().mockResolvedValue({ billing_plan: 'pro', billing_status: 'active' }),
       isMember: vi.fn().mockResolvedValue(true),
+      getWorkspaceAccess: vi.fn().mockResolvedValue('full'),
       getThread: vi.fn().mockResolvedValue(null),
       getLlmProviderConfig: vi.fn().mockResolvedValue(null),
       getExperimentalSettings: vi.fn().mockResolvedValue({ claude_proxy_models: false }),
@@ -452,6 +455,7 @@ describe('handleWorkspaceEmailIngress', () => {
     const orgStub = {
       getInfo: vi.fn().mockResolvedValue({ billing_plan: 'pro', billing_status: 'active' }),
       isMember: vi.fn().mockResolvedValue(true),
+      getWorkspaceAccess: vi.fn().mockResolvedValue('full'),
       getThread: vi.fn().mockResolvedValue(null),
       getLlmProviderConfig: vi.fn().mockResolvedValue(null),
       getExperimentalSettings: vi.fn().mockResolvedValue({ claude_proxy_models: false }),
@@ -505,6 +509,7 @@ describe('handleWorkspaceEmailIngress', () => {
     const orgStub = {
       getInfo: vi.fn().mockResolvedValue({ billing_plan: 'pro', billing_status: 'active' }),
       isMember: vi.fn().mockResolvedValue(true),
+      getWorkspaceAccess: vi.fn().mockResolvedValue('full'),
       getThread: vi.fn().mockResolvedValue(null),
       getLlmProviderConfig: vi.fn().mockResolvedValue(null),
       getExperimentalSettings: vi.fn().mockResolvedValue({ claude_proxy_models: false }),

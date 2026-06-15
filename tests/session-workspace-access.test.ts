@@ -44,6 +44,7 @@ describe("requireSessionWorkspaceAccess", () => {
   };
   let orgStub: {
     isMember: ReturnType<typeof vi.fn>;
+    getWorkspaceAccessContext: ReturnType<typeof vi.fn>;
   };
   let workspaceStub: {
     getInfoAndMemberAccess: ReturnType<typeof vi.fn>;
@@ -58,6 +59,14 @@ describe("requireSessionWorkspaceAccess", () => {
     };
     orgStub = {
       isMember: vi.fn().mockResolvedValue(true),
+      getWorkspaceAccessContext: vi.fn().mockResolvedValue({
+        workspace: {
+          id: "ws_123",
+          org_id: "org_123",
+          archived: false,
+        },
+        access: "full",
+      }),
     };
     workspaceStub = {
       getInfoAndMemberAccess: vi.fn().mockResolvedValue({
@@ -110,17 +119,19 @@ describe("requireSessionWorkspaceAccess", () => {
       access: "full",
     });
 
-    expect(workspaceStub.getInfoAndMemberAccess).toHaveBeenCalledWith(
+    expect(orgStub.getWorkspaceAccessContext).toHaveBeenCalledWith(
+      "ws_123",
       "user_123",
     );
+    expect(workspaceStub.getInfoAndMemberAccess).not.toHaveBeenCalled();
     expect(workspaceStub.getInfo).not.toHaveBeenCalled();
     expect(workspaceStub.getMemberAccess).not.toHaveBeenCalled();
     expect(orgStub.isMember).toHaveBeenCalledWith("user_123");
   });
 
   it("fails when the workspace access bootstrap RPC is missing", async () => {
-    const error = new Error("No such RPC method getInfoAndMemberAccess");
-    workspaceStub.getInfoAndMemberAccess.mockRejectedValueOnce(error);
+    const error = new Error("No such RPC method getWorkspaceAccessContext");
+    orgStub.getWorkspaceAccessContext.mockRejectedValueOnce(error);
     const request = await makeRequest();
 
     await expect(
@@ -133,22 +144,17 @@ describe("requireSessionWorkspaceAccess", () => {
 
   it("retries transient workspace access bootstrap RPC failures", async () => {
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
-    workspaceStub.getInfoAndMemberAccess
+    orgStub.getWorkspaceAccessContext
       .mockRejectedValueOnce(
         new Error("Durable Object reset because its code was updated."),
       )
       .mockResolvedValueOnce({
-        info: {
+        workspace: {
           id: "ws_123",
           org_id: "org_123",
           archived: false,
         },
-        memberAccess: {
-          user_id: "user_123",
-          access_level: "full",
-          granted_by: "owner_123",
-          granted_at: 1,
-        },
+        access: "full",
       });
     const request = await makeRequest();
 
@@ -158,7 +164,8 @@ describe("requireSessionWorkspaceAccess", () => {
       access: "full",
     });
 
-    expect(workspaceStub.getInfoAndMemberAccess).toHaveBeenCalledTimes(2);
+    expect(orgStub.getWorkspaceAccessContext).toHaveBeenCalledTimes(2);
+    expect(workspaceStub.getInfoAndMemberAccess).not.toHaveBeenCalled();
     expect(workspaceStub.getInfo).not.toHaveBeenCalled();
     expect(workspaceStub.getMemberAccess).not.toHaveBeenCalled();
     warnSpy.mockRestore();

@@ -108,7 +108,11 @@ async function getWorkspaceMemberEmails(
   workspaceId: string
 ): Promise<Set<string>> {
   const workspaceStub = getWorkspaceStub(env, workspaceId);
-  const members = await workspaceStub.listMembers();
+  const workspaceInfo = await workspaceStub.getInfo();
+  if (!workspaceInfo || workspaceInfo.archived) return new Set();
+
+  const orgStub = getOrgStub(env, workspaceInfo.org_id);
+  const members = await orgStub.listWorkspaceMembers(workspaceId);
   const activeMembers = members.filter((m) => m.access_level !== 'none');
 
   console.log(`[EmailSendProxy] workspace=${workspaceId} members=${members.length} active=${activeMembers.length}`);

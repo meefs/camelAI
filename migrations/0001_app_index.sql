@@ -103,25 +103,6 @@ CREATE TABLE IF NOT EXISTS app_index_metadata (
   updated_at INTEGER NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS d1_migration_import_rows (
-  namespace TEXT NOT NULL,
-  object_id TEXT NOT NULL,
-  table_name TEXT NOT NULL,
-  row_key TEXT NOT NULL,
-  row_json TEXT NOT NULL,
-  imported_at INTEGER NOT NULL,
-  scan_id TEXT,
-  PRIMARY KEY (namespace, object_id, table_name, row_key)
-);
-
-CREATE TABLE IF NOT EXISTS d1_migration_import_metadata (
-  namespace TEXT NOT NULL,
-  object_id TEXT NOT NULL,
-  metadata_json TEXT NOT NULL,
-  imported_at INTEGER NOT NULL,
-  PRIMARY KEY (namespace, object_id)
-);
-
 CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
 CREATE INDEX IF NOT EXISTS idx_orgs_created_at ON orgs(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_orgs_llm_provider_created_at ON orgs(llm_provider, created_at DESC);

@@ -6,8 +6,8 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-function createMockKV(): KVNamespace {
-  const store = new Map<string, string>();
+function createMockKV(initial: Record<string, string> = {}): KVNamespace {
+  const store = new Map<string, string>(Object.entries(initial));
 
   return {
     async get(key: string, type?: "text" | "json"): Promise<unknown> {
@@ -36,8 +36,17 @@ function createEnv() {
     updateIntegration: vi.fn(async () => undefined),
   };
   const orgStub = {
+    getWorkspaceRecord: vi.fn(async () => ({
+      id: "ws_1",
+      org_id: "org_1",
+      archived: false,
+    })),
+    getWorkspaceAccess: vi.fn(async () => "full"),
     isMember: vi.fn(async () => true),
     isAdmin: vi.fn(async () => true),
+    getWorkspaceIntegration: vi.fn(async () => null),
+    createWorkspaceIntegration: vi.fn(async () => undefined),
+    updateWorkspaceIntegration: vi.fn(async () => undefined),
   };
   const slackTeamRegistryStub = {
     upsertInstallation: vi.fn(async () => undefined),
@@ -45,6 +54,7 @@ function createEnv() {
 
   return {
     env: {
+      APP_KV: createMockKV({ "workspace_org:ws_1": "org_1" }),
       SESSIONS: createMockKV(),
       SLACK_CLIENT_ID: "slack-client-id",
       SLACK_CLIENT_SECRET: "slack-client-secret",
@@ -70,7 +80,7 @@ function createEnv() {
 
 describe("handleSlackOAuthCallback", () => {
   it("treats a null Slack bot user id as absent when registering an installation", async () => {
-    const { env, workspaceStub, slackTeamRegistryStub } = createEnv();
+    const { env, workspaceStub, orgStub, slackTeamRegistryStub } = createEnv();
     const state = await createIntegrationOAuthState(
       env.SESSIONS,
       "slack",
@@ -105,7 +115,9 @@ describe("handleSlackOAuthCallback", () => {
     expect(response.headers.get("Location")).toBe(
       "https://camelai.dev/connections?success=slack_connected",
     );
-    expect(workspaceStub.createIntegration).toHaveBeenCalledOnce();
+    expect(env.APP_KV.get).toBeDefined();
+    expect(workspaceStub.createIntegration).not.toHaveBeenCalled();
+    expect(orgStub.createWorkspaceIntegration).toHaveBeenCalledOnce();
     expect(slackTeamRegistryStub.upsertInstallation).toHaveBeenCalledWith(
       expect.objectContaining({
         workspace_id: "ws_1",

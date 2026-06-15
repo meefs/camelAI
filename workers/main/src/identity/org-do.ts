@@ -1,7 +1,14 @@
 import { DurableObject } from "cloudflare:workers";
 import type { DOEnv } from "./env";
-import { WorkspaceDO } from "../workspace";
+import {
+  WorkspaceDO,
+  type WorkspaceIntegrationAuthStatus,
+  type WorkspaceIntegrationRecord,
+} from "../workspace";
 import { hashPassword, verifyPassword } from "../password";
+import { decryptCredentials, encryptCredentials } from "../../../../src/lib/integration-crypto";
+import { mintBigQueryAccessTokenFromServiceAccount } from "../google-service-account";
+import { refreshRemoteMcpOAuthToken } from "../remote-mcp-oauth";
 import {
   generateDefaultAvatar,
   validateAvatarContent,
@@ -23,6 +30,8 @@ import type {
   Organization,
   OrganizationExperimentalSettings,
   Workspace,
+  WorkspaceAccessLevel,
+  WorkspaceWithAccess,
   LlmModel,
   OrgModelPickerConfig,
   OnboardingPreferences,
@@ -67,6 +76,8 @@ import {
 import { ORG_SLUG_KV_PREFIX, generateUniqueOrgSlug, hashOrgSlug, registerOrgSlug } from "./org-slugs";
 import { normalizeThreadCompletionSummaryStatus } from "./thread-summary";
 import { usageCost, usageInteger, usageText } from "./usage";
+import { generateEmailHandle } from "../../../../src/lib/workspace-email";
+import type { EmailHandleDO } from "../email-handle-registry";
 import {
   getCustomDomain as getOrgCustomDomain,
   removeCustomDomain as removeOrgCustomDomain,
@@ -75,13 +86,6 @@ import {
   type CustomDomain,
   type CustomDomainStatus,
 } from "./org/custom-domains";
-import {
-  exportD1MigrationTablePage,
-  singleTextKeyTableSpec,
-  type D1MigrationTableExport,
-  type D1MigrationTableExportInput,
-  type D1MigrationTableSpecs,
-} from "../d1-migration-export";
 
 // Re-export for consumers that import from this module
 export type { OrgRole, BillingStatus } from "../../../../src/types";
@@ -91,26 +95,49 @@ const USER_SIGNUP_IP_KEY = "signup_ip";
 const ORG_EXPERIMENTAL_SETTINGS_KEY = "experimental_settings";
 const ORG_MODEL_PICKER_CONFIG_KEY = "model_picker_config";
 const ORG_INDEX_PREFIX = "org_index:";
+const WORKSPACE_ORG_INDEX_PREFIX = "workspace_org:";
 const CUSTOM_DOMAIN_HOST_PREFIX = "custom_domain_host:";
+const BIGQUERY_INTEGRATION_TYPE = "bigquery";
+const TOKEN_REFRESH_BUFFER_MS = 10 * 60 * 1000;
+const TOKEN_BATCH_WINDOW_MS = 15 * 60 * 1000;
+const TOKEN_REFRESH_FALLBACK_MS = 60 * 60 * 1000;
+const TOKEN_REFRESH_RETRY_MS = 15 * 60 * 1000;
+const TOKEN_REFRESH_RETRY_MIN_MS = 30 * 1000;
+const TOKEN_REFRESH_RETRY_MAX_MS = 60 * 60 * 1000;
+const TOKEN_REFRESH_RATE_LIMIT_DEFAULT_MS = 2 * 60 * 1000;
 
-const ORG_D1_MIGRATION_TABLES: D1MigrationTableSpecs = {
-  org_info: singleTextKeyTableSpec("org_info", "key"),
-  members: singleTextKeyTableSpec("members", "user_id"),
-  invitations: singleTextKeyTableSpec("invitations", "id"),
-  integrations: singleTextKeyTableSpec("integrations", "id"),
-  workspaces: singleTextKeyTableSpec("workspaces", "id"),
-  audit_log: singleTextKeyTableSpec("audit_log", "id"),
-  worker_scripts: singleTextKeyTableSpec("worker_scripts", "script_name"),
-  threads: singleTextKeyTableSpec("threads", "id"),
-  thread_error_events: singleTextKeyTableSpec("thread_error_events", "id"),
-  llm_provider_config: singleTextKeyTableSpec("llm_provider_config", "id"),
-  custom_domains: singleTextKeyTableSpec("custom_domains", "domain"),
-  stripe_credit_checkouts: singleTextKeyTableSpec(
-    "stripe_credit_checkouts",
-    "session_id",
-  ),
-  admin_credit_grants: singleTextKeyTableSpec("admin_credit_grants", "grant_id"),
-};
+class PermanentRefreshError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "PermanentRefreshError";
+  }
+}
+
+class RetryableRefreshError extends Error {
+  retryAtMs: number;
+
+  constructor(message: string, retryAtMs: number) {
+    super(message);
+    this.name = "RetryableRefreshError";
+    this.retryAtMs = retryAtMs;
+  }
+}
+
+function parseRetryAfterToRetryAtMs(retryAfterHeader: string | null, nowMs: number): number | null {
+  if (!retryAfterHeader) return null;
+  const trimmed = retryAfterHeader.trim();
+  if (!trimmed) return null;
+  const seconds = Number(trimmed);
+  if (Number.isFinite(seconds) && seconds >= 0) return nowMs + Math.floor(seconds * 1000);
+  const absolute = Date.parse(trimmed);
+  return Number.isFinite(absolute) ? absolute : null;
+}
+
+function clampRetryAtMs(retryAtMs: number, nowMs: number): number {
+  const min = nowMs + TOKEN_REFRESH_RETRY_MIN_MS;
+  const max = nowMs + TOKEN_REFRESH_RETRY_MAX_MS;
+  return Math.max(min, Math.min(max, Math.floor(retryAtMs)));
+}
 
 function normalizeThreadModelForStorage(
   model: LlmModel | undefined,
@@ -194,9 +221,17 @@ export interface OrgMember {
 export interface OrgAuthContextBootstrap {
   info: Organization | null;
   member: OrgMember | null;
-  workspaces: Workspace[];
+  workspaces: WorkspaceWithAccess[];
   llmProviderConfig: LlmProviderConfigRecord | null;
   experimentalSettings: OrganizationExperimentalSettings;
+}
+
+export interface OrgWorkspaceAccessRow {
+  workspace_id: string;
+  user_id: string;
+  access_level: WorkspaceAccessLevel;
+  granted_by: string;
+  granted_at: number;
 }
 
 export interface OrgProviderContext {
@@ -602,12 +637,95 @@ export class OrgDO extends DurableObject<DOEnv> {
     return `${ORG_INDEX_PREFIX}${orgId}`;
   }
 
+  private getWorkspaceOrgIndexKey(workspaceId: string): string {
+    return `${WORKSPACE_ORG_INDEX_PREFIX}${workspaceId}`;
+  }
+
   private async indexOrg(orgId: string): Promise<void> {
     await this.env.APP_KV.put(this.getOrgIndexKey(orgId), "1");
   }
 
   private async unindexOrg(orgId: string): Promise<void> {
     await this.env.APP_KV.delete(this.getOrgIndexKey(orgId));
+  }
+
+  async indexWorkspace(workspaceId: string): Promise<void> {
+    const orgId = this.getInfoSync()?.id;
+    if (!orgId) return;
+    await this.env.APP_KV.put(this.getWorkspaceOrgIndexKey(workspaceId), orgId);
+  }
+
+  async unindexWorkspace(workspaceId: string): Promise<void> {
+    await this.env.APP_KV.delete(this.getWorkspaceOrgIndexKey(workspaceId));
+  }
+
+  static workspaceOrgIndexKey(workspaceId: string): string {
+    return `${WORKSPACE_ORG_INDEX_PREFIX}${workspaceId}`;
+  }
+
+  private getActiveWorkspaceIntegrationCount(workspaceId: string): number {
+    try {
+      const rawCount = this.sql
+        .exec<{ count: number }>(
+          "SELECT COUNT(*) as count FROM integrations WHERE workspace_id = ? AND deleted_at IS NULL",
+          workspaceId,
+        )
+        .next().value?.count;
+      const count = typeof rawCount === "number" ? rawCount : Number(rawCount ?? 0);
+      return Number.isFinite(count) ? count : 0;
+    } catch {
+      return 0;
+    }
+  }
+
+  private dispatchWorkspaceUpsert(info: Workspace): void {
+    dispatchAdminEvent(this.ctx, this.env, {
+      type: "workspace_upsert",
+      payload: {
+        ...info,
+        integration_count: this.getActiveWorkspaceIntegrationCount(info.id),
+      },
+    });
+  }
+
+  private async syncWorkspaceInfoToWorkspaceDO(info: Workspace): Promise<void> {
+    try {
+      const workspaceStub = this.env.WORKSPACE.get(
+        this.env.WORKSPACE.idFromName(info.id),
+      ) as unknown as {
+        syncWorkspaceInfoFromOrg(info: Workspace): Promise<void>;
+      };
+      await workspaceStub.syncWorkspaceInfoFromOrg(info);
+    } catch (error) {
+      console.warn("[OrgDO] failed to mirror workspace metadata to WorkspaceDO", {
+        workspaceId: info.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  private async disableScheduledPromptsForWorkspace(
+    workspaceId: string,
+    reason: string,
+  ): Promise<void> {
+    if (!this.env.WORKSPACE_CRON) return;
+    try {
+      const schedulerStub = this.env.WORKSPACE_CRON.get(
+        this.env.WORKSPACE_CRON.idFromName(workspaceId),
+      ) as unknown as {
+        disableAllScheduledPrompts(
+          workspaceId: string,
+          reason: string,
+        ): Promise<void>;
+      };
+      await schedulerStub.disableAllScheduledPrompts(workspaceId, reason);
+    } catch (error) {
+      console.warn("[OrgDO] Failed to disable workspace scheduled prompts", {
+        workspaceId,
+        reason,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
 
   private migrate() {
@@ -945,6 +1063,19 @@ export class OrgDO extends DurableObject<DOEnv> {
           archived INTEGER NOT NULL DEFAULT 0
         )
       `);
+      this.sql.exec(`
+        CREATE TABLE IF NOT EXISTS workspace_memberships (
+          workspace_id TEXT NOT NULL,
+          user_id TEXT NOT NULL,
+          access_level TEXT NOT NULL,
+          granted_by TEXT NOT NULL,
+          granted_at INTEGER NOT NULL,
+          PRIMARY KEY (workspace_id, user_id)
+        )
+      `);
+      this.sql.exec(
+        "CREATE INDEX IF NOT EXISTS idx_workspace_memberships_user ON workspace_memberships(user_id)",
+      );
       this.sql.exec(`
         CREATE TABLE IF NOT EXISTS audit_log (
           id TEXT PRIMARY KEY,
@@ -1457,7 +1588,30 @@ export class OrgDO extends DurableObject<DOEnv> {
       this.ensureThreadErrorEventSchema();
     }
 
-    const CURRENT_SCHEMA_VERSION = 34;
+    if (version < 35) {
+      // V35: Tenant-local workspace access lives in OrgDO alongside workspace rows.
+      this.ensureWorkspaceMembershipSchema();
+    }
+
+    if (version < 36) {
+      // V36: Workspace-scoped integrations move from WorkspaceDO into OrgDO.
+      this.ensureColumn("integrations", "workspace_id", "TEXT NOT NULL DEFAULT ''");
+      this.ensureColumn("integrations", "deleted_at", "INTEGER");
+      this.ensureColumn("integrations", "token_expires_at", "INTEGER");
+      this.ensureColumn("integrations", "auth_status", "TEXT DEFAULT 'connected'");
+      this.ensureColumn("integrations", "auth_error_code", "TEXT");
+      this.ensureColumn("integrations", "auth_error_message", "TEXT");
+      this.ensureColumn("integrations", "auth_checked_at", "INTEGER");
+      this.ensureColumn("integrations", "reauth_required_at", "INTEGER");
+      this.sql.exec(
+        "CREATE INDEX IF NOT EXISTS idx_integrations_workspace_active ON integrations(workspace_id, deleted_at)",
+      );
+      this.sql.exec(
+        "CREATE INDEX IF NOT EXISTS idx_integrations_token_expires ON integrations(token_expires_at) WHERE token_expires_at IS NOT NULL AND deleted_at IS NULL",
+      );
+    }
+
+    const CURRENT_SCHEMA_VERSION = 36;
     if (version < CURRENT_SCHEMA_VERSION) {
       this.ctx.storage.kv.put("schemaVersion", CURRENT_SCHEMA_VERSION);
     }
@@ -1506,6 +1660,22 @@ export class OrgDO extends DurableObject<DOEnv> {
       return;
     }
     this.sql.exec(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${columnDef}`);
+  }
+
+  private ensureWorkspaceMembershipSchema(): void {
+    this.sql.exec(`
+      CREATE TABLE IF NOT EXISTS workspace_memberships (
+        workspace_id TEXT NOT NULL,
+        user_id TEXT NOT NULL,
+        access_level TEXT NOT NULL,
+        granted_by TEXT NOT NULL,
+        granted_at INTEGER NOT NULL,
+        PRIMARY KEY (workspace_id, user_id)
+      )
+    `);
+    this.sql.exec(
+      "CREATE INDEX IF NOT EXISTS idx_workspace_memberships_user ON workspace_memberships(user_id)",
+    );
   }
 
   private ensureThreadSchemaColumns(): void {
@@ -2113,19 +2283,14 @@ export class OrgDO extends DurableObject<DOEnv> {
       await this.addMember(createdBy, initialRole, createdBy);
       this.log("org_created", createdBy, id, { name });
 
-      // Create default workspace (WorkspaceDO.createWorkspace registers with org automatically)
       const workspaceId = crypto.randomUUID();
-      const workspaceStub = this.env.WORKSPACE.get(
-        this.env.WORKSPACE.idFromName(workspaceId),
-      ) as unknown as WorkspaceDO;
-      await workspaceStub.createWorkspace(
+      await this.createWorkspaceRecord(
         workspaceId,
-        id,
         "Default Workspace",
         createdBy,
         null,
       );
-      await workspaceStub.setMemberAccess(createdBy, "full", createdBy);
+      await this.setWorkspaceAccess(workspaceId, createdBy, "full", createdBy);
 
       try {
         await this.indexOrg(id);
@@ -2681,6 +2846,7 @@ export class OrgDO extends DurableObject<DOEnv> {
       );
     }
     this.sql.exec("DELETE FROM members WHERE user_id = ?", userId);
+    this.sql.exec("DELETE FROM workspace_memberships WHERE user_id = ?", userId);
     if (existing) {
       this.log("member_removed", actorId, userId, { role: existing.role });
       const info = await this.getInfo();
@@ -3046,6 +3212,632 @@ export class OrgDO extends DurableObject<DOEnv> {
       payload: { id: invitationId },
     });
     return invitation;
+  }
+
+  async getWorkspaceIntegrations(
+    workspaceId: string,
+  ): Promise<WorkspaceIntegrationRecord[]> {
+    await this.hydrateWorkspaceIntegrationsFromWorkspaceDO(workspaceId);
+    return this.sql
+      .exec<WorkspaceIntegrationRecord & Record<string, SqlStorageValue>>(
+        `SELECT id, integration_type, name, category, auth_method, config,
+                credentials_encrypted, created_by, created_at, updated_at,
+                deleted_at, token_expires_at, auth_status, auth_error_code,
+                auth_error_message, auth_checked_at, reauth_required_at
+           FROM integrations
+          WHERE workspace_id = ? AND deleted_at IS NULL
+          ORDER BY created_at DESC`,
+        workspaceId,
+      )
+      .toArray();
+  }
+
+  async getWorkspaceIntegration(
+    workspaceId: string,
+    id: string,
+  ): Promise<WorkspaceIntegrationRecord | null> {
+    await this.hydrateWorkspaceIntegrationsFromWorkspaceDO(workspaceId);
+    return (
+      this.sql
+        .exec<WorkspaceIntegrationRecord & Record<string, SqlStorageValue>>(
+          `SELECT id, integration_type, name, category, auth_method, config,
+                  credentials_encrypted, created_by, created_at, updated_at,
+                  deleted_at, token_expires_at, auth_status, auth_error_code,
+                  auth_error_message, auth_checked_at, reauth_required_at
+             FROM integrations
+            WHERE workspace_id = ? AND id = ? AND deleted_at IS NULL`,
+          workspaceId,
+          id,
+        )
+        .toArray()[0] ?? null
+    );
+  }
+
+  async workspaceIntegrationNameExists(
+    workspaceId: string,
+    integrationType: string,
+    name: string,
+    excludeId?: string,
+  ): Promise<boolean> {
+    await this.hydrateWorkspaceIntegrationsFromWorkspaceDO(workspaceId);
+    const query = excludeId
+      ? `SELECT 1 FROM integrations WHERE workspace_id = ? AND integration_type = ? AND name = ? AND deleted_at IS NULL AND id != ? LIMIT 1`
+      : `SELECT 1 FROM integrations WHERE workspace_id = ? AND integration_type = ? AND name = ? AND deleted_at IS NULL LIMIT 1`;
+    const args = excludeId
+      ? [workspaceId, integrationType, name, excludeId]
+      : [workspaceId, integrationType, name];
+    return this.sql.exec(query, ...args).toArray().length > 0;
+  }
+
+  private async hydrateWorkspaceIntegrationsFromWorkspaceDO(
+    workspaceId: string,
+  ): Promise<number> {
+    try {
+      const existingIds = new Set(
+        this.sql
+          .exec<{ id: string }>(
+            "SELECT id FROM integrations WHERE workspace_id = ?",
+            workspaceId,
+          )
+          .toArray()
+          .map((row) => row.id),
+      );
+      const workspaceStub = this.env.WORKSPACE.get(
+        this.env.WORKSPACE.idFromName(workspaceId),
+      ) as unknown as {
+        getIntegrations(): Promise<WorkspaceIntegrationRecord[]>;
+      };
+      const records = await workspaceStub.getIntegrations();
+      if (records.length === 0) return 0;
+
+      let copiedExpiringToken = false;
+      let copiedCount = 0;
+      for (const record of records) {
+        this.sql.exec(
+          `INSERT INTO integrations
+           (id, workspace_id, integration_type, name, category, auth_method, config,
+            credentials_encrypted, created_by, created_at, updated_at, deleted_at,
+            token_expires_at, auth_status, auth_error_code, auth_error_message,
+            auth_checked_at, reauth_required_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(id) DO NOTHING`,
+          record.id,
+          workspaceId,
+          record.integration_type,
+          record.name,
+          record.category,
+          record.auth_method,
+          record.config,
+          record.credentials_encrypted,
+          record.created_by,
+          record.created_at,
+          record.updated_at,
+          record.deleted_at ?? null,
+          record.token_expires_at ?? null,
+          record.auth_status ?? "connected",
+          record.auth_error_code ?? null,
+          record.auth_error_message ?? null,
+          record.auth_checked_at ?? null,
+          record.reauth_required_at ?? null,
+        );
+        if (!existingIds.has(record.id)) {
+          copiedCount++;
+          existingIds.add(record.id);
+        }
+        if (record.token_expires_at != null && record.deleted_at == null) {
+          copiedExpiringToken = true;
+        }
+      }
+      if (copiedExpiringToken) {
+        await this.scheduleNextTokenRefresh();
+      }
+      return copiedCount;
+    } catch (error) {
+      console.warn("[OrgDO] failed to hydrate workspace integrations", {
+        workspaceId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      throw error;
+    }
+  }
+
+  private getIntegrationSecretKey(): string {
+    const secret = this.env.INTEGRATION_SECRET_KEY;
+    if (!secret) {
+      throw new Error("INTEGRATION_SECRET_KEY binding is not configured");
+    }
+    return secret;
+  }
+
+  private async hydrateBigQueryCredentials(
+    credentialsEncrypted: string,
+  ): Promise<{ credentialsEncrypted: string; tokenExpiresAt: number }> {
+    const credentials = await decryptCredentials(
+      credentialsEncrypted,
+      this.getIntegrationSecretKey(),
+    );
+    const serviceAccountJson = credentials.service_account_json;
+    if (typeof serviceAccountJson !== "string" || serviceAccountJson.trim().length === 0) {
+      throw new Error("BigQuery integration requires service_account_json");
+    }
+    const token = await mintBigQueryAccessTokenFromServiceAccount(serviceAccountJson);
+    const hydratedCredentials: Record<string, unknown> = {
+      ...credentials,
+      access_token: token.accessToken,
+      token_type: token.tokenType,
+      expires_at: token.expiresAt,
+    };
+    return {
+      credentialsEncrypted: await encryptCredentials(
+        hydratedCredentials,
+        this.getIntegrationSecretKey(),
+      ),
+      tokenExpiresAt: token.expiresAt,
+    };
+  }
+
+  async createWorkspaceIntegration(
+    workspaceId: string,
+    id: string,
+    integrationType: string,
+    name: string,
+    category: string,
+    authMethod: string,
+    config: string,
+    credentialsEncrypted: string,
+    createdBy: string,
+    tokenExpiresAt?: number | null,
+  ): Promise<void> {
+    if (await this.workspaceIntegrationNameExists(workspaceId, integrationType, name)) {
+      throw new Error(
+        `An integration named "${name}" already exists for type "${integrationType}". Please choose a different name.`,
+      );
+    }
+
+    let resolvedCredentialsEncrypted = credentialsEncrypted;
+    let resolvedTokenExpiresAt = tokenExpiresAt ?? null;
+    if (integrationType === BIGQUERY_INTEGRATION_TYPE) {
+      const hydrated = await this.hydrateBigQueryCredentials(credentialsEncrypted);
+      resolvedCredentialsEncrypted = hydrated.credentialsEncrypted;
+      resolvedTokenExpiresAt = hydrated.tokenExpiresAt;
+    }
+
+    const now = Date.now();
+    const initialAuthStatus: WorkspaceIntegrationAuthStatus =
+      resolvedCredentialsEncrypted ? "connected" : "setup_incomplete";
+    const initialAuthErrorCode =
+      initialAuthStatus === "connected" ? null : "AUTH_SETUP_INCOMPLETE";
+    const initialAuthErrorMessage =
+      initialAuthStatus === "connected"
+        ? null
+        : "Connection setup is incomplete; credentials are required before tools can be used.";
+
+    this.sql.exec(
+      `INSERT INTO integrations
+       (id, workspace_id, integration_type, name, category, auth_method, config,
+        credentials_encrypted, created_by, created_at, updated_at, deleted_at,
+        token_expires_at, auth_status, auth_error_code, auth_error_message,
+        auth_checked_at, reauth_required_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?)`,
+      id,
+      workspaceId,
+      integrationType,
+      name,
+      category,
+      authMethod,
+      config,
+      resolvedCredentialsEncrypted,
+      createdBy,
+      now,
+      now,
+      resolvedTokenExpiresAt,
+      initialAuthStatus,
+      initialAuthErrorCode,
+      initialAuthErrorMessage,
+      now,
+      initialAuthStatus === "connected" ? null : now,
+    );
+    this.log("integration_created", createdBy, id, {
+      workspace_id: workspaceId,
+      integration_type: integrationType,
+      name,
+    });
+    const workspace = await this.getWorkspaceInfo(workspaceId);
+    if (workspace) this.dispatchWorkspaceUpsert(workspace);
+    if (resolvedTokenExpiresAt !== null) {
+      await this.scheduleNextTokenRefresh();
+    }
+  }
+
+  async updateWorkspaceIntegration(
+    workspaceId: string,
+    id: string,
+    updates: {
+      name?: string;
+      config?: string;
+      credentialsEncrypted?: string;
+      tokenExpiresAt?: number | null;
+    },
+    actorId: string,
+  ): Promise<void> {
+    const existing = await this.getWorkspaceIntegration(workspaceId, id);
+    if (
+      updates.name !== undefined &&
+      existing &&
+      (await this.workspaceIntegrationNameExists(
+        workspaceId,
+        existing.integration_type,
+        updates.name,
+        id,
+      ))
+    ) {
+      throw new Error(
+        `An integration named "${updates.name}" already exists for type "${existing.integration_type}". Please choose a different name.`,
+      );
+    }
+
+    if (
+      updates.credentialsEncrypted !== undefined &&
+      existing?.integration_type === BIGQUERY_INTEGRATION_TYPE
+    ) {
+      const hydrated = await this.hydrateBigQueryCredentials(updates.credentialsEncrypted);
+      updates.credentialsEncrypted = hydrated.credentialsEncrypted;
+      updates.tokenExpiresAt = hydrated.tokenExpiresAt;
+    }
+
+    const now = Date.now();
+    const setClauses: string[] = ["updated_at = ?"];
+    const params: (string | number | null)[] = [now];
+    if (updates.name !== undefined) {
+      setClauses.push("name = ?");
+      params.push(updates.name);
+    }
+    if (updates.config !== undefined) {
+      setClauses.push("config = ?");
+      params.push(updates.config);
+    }
+    if (updates.credentialsEncrypted !== undefined) {
+      setClauses.push("credentials_encrypted = ?");
+      params.push(updates.credentialsEncrypted);
+      setClauses.push(
+        "auth_status = 'connected'",
+        "auth_error_code = NULL",
+        "auth_error_message = NULL",
+        "auth_checked_at = ?",
+        "reauth_required_at = NULL",
+      );
+      params.push(now);
+    }
+    if (updates.tokenExpiresAt !== undefined) {
+      setClauses.push("token_expires_at = ?");
+      params.push(updates.tokenExpiresAt);
+    }
+    params.push(workspaceId, id);
+    this.sql.exec(
+      `UPDATE integrations SET ${setClauses.join(", ")} WHERE workspace_id = ? AND id = ?`,
+      ...params,
+    );
+    this.log("integration_updated", actorId, id, {
+      workspace_id: workspaceId,
+      changes: Object.keys(updates),
+    });
+    const workspace = await this.getWorkspaceInfo(workspaceId);
+    if (workspace) this.dispatchWorkspaceUpsert(workspace);
+    if (updates.tokenExpiresAt !== undefined) {
+      await this.scheduleNextTokenRefresh();
+    }
+  }
+
+  async updateWorkspaceIntegrationAuthStatus(
+    workspaceId: string,
+    id: string,
+    authStatus: WorkspaceIntegrationAuthStatus,
+    errorCode?: string | null,
+    errorMessage?: string | null,
+    actorId = "system",
+  ): Promise<void> {
+    const now = Date.now();
+    const requiresReauth =
+      authStatus === "needs_reauth" ||
+      authStatus === "missing_scopes" ||
+      authStatus === "setup_incomplete";
+    this.sql.exec(
+      `UPDATE integrations
+       SET auth_status = ?,
+           auth_error_code = ?,
+           auth_error_message = ?,
+           auth_checked_at = ?,
+           reauth_required_at = ?,
+           updated_at = ?
+       WHERE workspace_id = ? AND id = ? AND deleted_at IS NULL`,
+      authStatus,
+      authStatus === "connected" ? null : errorCode ?? null,
+      authStatus === "connected" ? null : errorMessage ?? null,
+      now,
+      requiresReauth ? now : null,
+      now,
+      workspaceId,
+      id,
+    );
+    this.log("integration_auth_status_updated", actorId, id, {
+      workspace_id: workspaceId,
+      auth_status: authStatus,
+      error_code: authStatus === "connected" ? null : errorCode ?? null,
+    });
+  }
+
+  async deleteWorkspaceIntegration(
+    workspaceId: string,
+    id: string,
+    actorId: string,
+  ): Promise<void> {
+    const now = Date.now();
+    this.sql.exec(
+      "UPDATE integrations SET deleted_at = ?, updated_at = ? WHERE workspace_id = ? AND id = ?",
+      now,
+      now,
+      workspaceId,
+      id,
+    );
+    this.log("integration_deleted", actorId, id, { workspace_id: workspaceId });
+    const workspace = await this.getWorkspaceInfo(workspaceId);
+    if (workspace) this.dispatchWorkspaceUpsert(workspace);
+    await this.scheduleNextTokenRefresh();
+  }
+
+  private async scheduleNextTokenRefresh(): Promise<void> {
+    const rows = this.sql
+      .exec<{ token_expires_at: number | null }>(
+        `SELECT MIN(token_expires_at) as token_expires_at
+           FROM integrations
+          WHERE token_expires_at IS NOT NULL
+            AND deleted_at IS NULL
+            AND (auth_method = 'oauth2' OR integration_type = ? OR integration_type = 'remote_mcp')`,
+        BIGQUERY_INTEGRATION_TYPE,
+      )
+      .toArray();
+    const nextExpiry = rows[0]?.token_expires_at ?? null;
+    if (!nextExpiry) {
+      await this.ctx.storage.deleteAlarm();
+      return;
+    }
+    const alarmTime = nextExpiry - TOKEN_REFRESH_BUFFER_MS;
+    const now = Date.now();
+    await this.ctx.storage.setAlarm(alarmTime <= now ? now + 1000 : alarmTime);
+  }
+
+  async alarm(): Promise<void> {
+    const now = Date.now();
+    await this.ctx.storage.setAlarm(now + TOKEN_REFRESH_FALLBACK_MS);
+
+    try {
+      const batchCutoff = now + TOKEN_BATCH_WINDOW_MS;
+      const expiringIntegrations = this.sql
+        .exec<WorkspaceIntegrationRecord & Record<string, SqlStorageValue>>(
+          `SELECT id, integration_type, name, category, auth_method, config,
+                  credentials_encrypted, created_by, created_at, updated_at,
+                  deleted_at, token_expires_at, auth_status, auth_error_code,
+                  auth_error_message, auth_checked_at, reauth_required_at,
+                  workspace_id
+             FROM integrations
+            WHERE token_expires_at IS NOT NULL
+              AND token_expires_at <= ?
+              AND deleted_at IS NULL
+              AND (auth_method = 'oauth2' OR integration_type = ? OR integration_type = 'remote_mcp')
+            ORDER BY token_expires_at ASC`,
+          batchCutoff,
+          BIGQUERY_INTEGRATION_TYPE,
+        )
+        .toArray();
+
+      for (const integration of expiringIntegrations) {
+        try {
+          await this.refreshIntegrationToken(integration);
+        } catch (error) {
+          console.error("[OrgDO] Failed to refresh integration token", {
+            integrationId: integration.id,
+            integrationType: integration.integration_type,
+            error,
+          });
+          if (error instanceof PermanentRefreshError) {
+            const failureAt = Date.now();
+            this.sql.exec(
+              `UPDATE integrations
+                  SET token_expires_at = NULL,
+                      auth_status = 'needs_reauth',
+                      auth_error_code = 'AUTH_REAUTH_REQUIRED',
+                      auth_error_message = ?,
+                      auth_checked_at = ?,
+                      reauth_required_at = ?,
+                      updated_at = ?
+                WHERE workspace_id = ? AND id = ?`,
+              error.message,
+              failureAt,
+              failureAt,
+              failureAt,
+              integration.workspace_id ?? "",
+              integration.id,
+            );
+          } else {
+            const retryAtMs =
+              error instanceof RetryableRefreshError
+                ? clampRetryAtMs(error.retryAtMs, now)
+                : now + TOKEN_REFRESH_RETRY_MS;
+            this.sql.exec(
+              `UPDATE integrations
+                  SET token_expires_at = ?, updated_at = ?
+                WHERE workspace_id = ? AND id = ?`,
+              retryAtMs,
+              Date.now(),
+              integration.workspace_id ?? "",
+              integration.id,
+            );
+          }
+        }
+      }
+
+      await this.scheduleNextTokenRefresh();
+    } catch (error) {
+      console.error("[OrgDO] Alarm handler failed, will retry in 1 hour:", error);
+    }
+  }
+
+  private async refreshIntegrationToken(
+    integration: WorkspaceIntegrationRecord & { workspace_id?: string },
+  ): Promise<void> {
+    const credentials = await decryptCredentials(
+      integration.credentials_encrypted,
+      this.getIntegrationSecretKey(),
+    );
+
+    let newCredentials: Record<string, unknown>;
+    let newExpiresAt: number;
+    switch (integration.integration_type) {
+      case "notion": {
+        const refreshToken = credentials.refresh_token as string | undefined;
+        if (!refreshToken) {
+          throw new PermanentRefreshError(
+            `No refresh token for Notion integration ${integration.id}`,
+          );
+        }
+        ({ credentials: newCredentials, expiresAt: newExpiresAt } =
+          await this.refreshNotionToken(refreshToken));
+        break;
+      }
+      case BIGQUERY_INTEGRATION_TYPE: {
+        const serviceAccountJson = credentials.service_account_json;
+        if (
+          typeof serviceAccountJson !== "string" ||
+          serviceAccountJson.trim().length === 0
+        ) {
+          console.warn("[OrgDO] Missing service_account_json for BigQuery integration", {
+            integrationId: integration.id,
+          });
+          return;
+        }
+        const token = await mintBigQueryAccessTokenFromServiceAccount(serviceAccountJson);
+        newCredentials = {
+          ...credentials,
+          access_token: token.accessToken,
+          token_type: token.tokenType,
+          expires_at: token.expiresAt,
+        };
+        newExpiresAt = token.expiresAt;
+        break;
+      }
+      case "remote_mcp": {
+        if ((credentials.auth_type as string | undefined) && credentials.auth_type !== "oauth") {
+          return;
+        }
+        ({ credentials: newCredentials, expiresAt: newExpiresAt } =
+          await refreshRemoteMcpOAuthToken(credentials));
+        break;
+      }
+      default:
+        console.warn("[OrgDO] Unknown integration type for token refresh", {
+          integrationId: integration.id,
+          integrationType: integration.integration_type,
+        });
+        return;
+    }
+
+    const encrypted = await encryptCredentials(newCredentials, this.getIntegrationSecretKey());
+    const now = Date.now();
+    this.sql.exec(
+      `UPDATE integrations
+          SET credentials_encrypted = ?,
+              token_expires_at = ?,
+              auth_status = 'connected',
+              auth_error_code = NULL,
+              auth_error_message = NULL,
+              auth_checked_at = ?,
+              reauth_required_at = NULL,
+              updated_at = ?
+        WHERE workspace_id = ? AND id = ?`,
+      encrypted,
+      newExpiresAt,
+      now,
+      now,
+      integration.workspace_id ?? "",
+      integration.id,
+    );
+    this.log("token_refreshed", "system", integration.id, {
+      workspace_id: integration.workspace_id ?? "",
+      integration_type: integration.integration_type,
+    });
+  }
+
+  private async refreshNotionToken(refreshToken: string): Promise<{
+    credentials: Record<string, unknown>;
+    expiresAt: number;
+  }> {
+    if (!this.env.NOTION_CLIENT_ID || !this.env.NOTION_CLIENT_SECRET) {
+      throw new Error("Notion OAuth credentials not configured");
+    }
+
+    const basicAuth = btoa(`${this.env.NOTION_CLIENT_ID}:${this.env.NOTION_CLIENT_SECRET}`);
+    const response = await fetch("https://api.notion.com/v1/oauth/token", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Basic ${basicAuth}`,
+      },
+      body: JSON.stringify({
+        grant_type: "refresh_token",
+        refresh_token: refreshToken,
+      }),
+    });
+
+    if (!response.ok) {
+      const now = Date.now();
+      const errorText = await response.text();
+      const message = `Notion token refresh failed: ${response.status} ${errorText}`;
+      if (response.status >= 400 && response.status < 500 && response.status !== 429) {
+        throw new PermanentRefreshError(message);
+      }
+      if (response.status === 429) {
+        const retryAfter = parseRetryAfterToRetryAtMs(response.headers.get("Retry-After"), now);
+        const retryAtMs = clampRetryAtMs(
+          retryAfter ?? now + TOKEN_REFRESH_RATE_LIMIT_DEFAULT_MS,
+          now,
+        );
+        throw new RetryableRefreshError(message, retryAtMs);
+      }
+      throw new Error(message);
+    }
+
+    const data = (await response.json()) as {
+      access_token: string;
+      expires_in: number;
+      refresh_token?: string;
+      token_type: string;
+      bot_id?: string;
+      workspace_id?: string;
+      workspace_name?: string;
+      owner?: {
+        user?: {
+          id: string;
+          name?: string;
+          person?: { email?: string };
+        };
+      };
+    };
+    const expiresAt = Date.now() + data.expires_in * 1000;
+    return {
+      credentials: {
+        access_token: data.access_token,
+        refresh_token: data.refresh_token || refreshToken,
+        expires_at: expiresAt,
+        token_type: data.token_type,
+        bot_id: data.bot_id,
+        notion_workspace_id: data.workspace_id,
+        notion_workspace_name: data.workspace_name,
+        owner_user_id: data.owner?.user?.id,
+        owner_user_name: data.owner?.user?.name,
+        owner_user_email: data.owner?.user?.person?.email,
+      },
+      expiresAt,
+    };
   }
 
   // Integration methods
@@ -3917,6 +4709,69 @@ export class OrgDO extends DurableObject<DOEnv> {
       avatar.content,
     );
     this.log("workspace_created", actorId, workspaceId, { name });
+    await this.indexWorkspace(workspaceId);
+  }
+
+  private async claimWorkspaceEmailHandle(workspaceId: string): Promise<string> {
+    const registry = this.env.EMAIL_HANDLE;
+    for (let attempt = 0; attempt < 20; attempt++) {
+      const handle = generateEmailHandle();
+      if (registry) {
+        const stub = registry.get(
+          registry.idFromName(handle),
+        ) as unknown as EmailHandleDO;
+        const result = await stub.claim(workspaceId);
+        if (!result.ok) continue;
+      }
+      return handle;
+    }
+    const suffix = workspaceId.replace(/-/g, "").slice(0, 12);
+    const handle = `${generateEmailHandle()}-${suffix}`;
+    if (registry) {
+      const stub = registry.get(
+        registry.idFromName(handle),
+      ) as unknown as EmailHandleDO;
+      await stub.claim(workspaceId);
+    }
+    return handle;
+  }
+
+  async createWorkspaceRecord(
+    workspaceId: string,
+    name: string,
+    createdBy: string,
+    description?: string | null,
+  ): Promise<Workspace> {
+    const now = Date.now();
+    const available = await this.checkWorkspaceNameAvailable(name, workspaceId);
+    if (!available) {
+      throw new Error(
+        `A workspace named "${name}" already exists in this organization`,
+      );
+    }
+    const orgId = this.getInfoSync()?.id;
+    if (!orgId) {
+      throw new Error("Organization not found");
+    }
+    const avatar = generateDefaultAvatar(name);
+    const info: Workspace = {
+      id: workspaceId,
+      org_id: orgId,
+      name,
+      description: description ?? null,
+      created_by: createdBy,
+      created_at: now,
+      avatar,
+      archived: false,
+      archived_at: null,
+      archived_by: null,
+      compute_tier: "standard",
+      email_handle: await this.claimWorkspaceEmailHandle(workspaceId),
+    };
+    await this.upsertWorkspaceInfo(info);
+    await this.syncWorkspaceInfoToWorkspaceDO(info);
+    this.log("workspace_created", createdBy, workspaceId, { name });
+    return info;
   }
 
   async upsertWorkspaceInfo(info: Workspace): Promise<void> {
@@ -3962,6 +4817,8 @@ export class OrgDO extends DurableObject<DOEnv> {
       info.compute_tier ?? "standard",
       info.email_handle ?? null,
     );
+    await this.indexWorkspace(info.id);
+    this.dispatchWorkspaceUpsert(info);
   }
 
   async updateWorkspaceName(workspaceId: string, name: string): Promise<void> {
@@ -3978,11 +4835,87 @@ export class OrgDO extends DurableObject<DOEnv> {
     );
   }
 
+  async updateWorkspaceRecord(
+    workspaceId: string,
+    updates: {
+      name?: string;
+      description?: string | null;
+      avatar?: { color?: string; content?: string };
+    },
+    actorId: string,
+  ): Promise<Workspace | null> {
+    const info = await this.getWorkspaceInfo(workspaceId);
+    if (!info) return null;
+
+    const changes: Record<string, [unknown, unknown]> = {};
+    if (
+      typeof updates.name === "string" &&
+      updates.name.trim() &&
+      updates.name !== info.name
+    ) {
+      await this.updateWorkspaceName(info.id, updates.name);
+      changes.name = [info.name, updates.name];
+      info.name = updates.name;
+    }
+    if (
+      updates.description !== undefined &&
+      updates.description !== info.description
+    ) {
+      changes.description = [info.description, updates.description];
+      info.description = updates.description ?? null;
+    }
+    if (updates.avatar?.color && updates.avatar.color !== info.avatar.color) {
+      changes.avatar_color = [info.avatar.color, updates.avatar.color];
+      info.avatar.color = updates.avatar.color;
+    }
+    if (
+      updates.avatar?.content &&
+      updates.avatar.content !== info.avatar.content
+    ) {
+      if (!validateAvatarContent(updates.avatar.content)) {
+        throw new Error("Invalid avatar content");
+      }
+      changes.avatar_content = [info.avatar.content, updates.avatar.content];
+      info.avatar.content = updates.avatar.content;
+    }
+
+    await this.upsertWorkspaceInfo(info);
+    await this.syncWorkspaceInfoToWorkspaceDO(info);
+    if (Object.keys(changes).length > 0) {
+      this.log("workspace_updated", actorId, workspaceId, { changes });
+    }
+    return info;
+  }
+
   async archiveWorkspace(workspaceId: string): Promise<void> {
     this.sql.exec(
       "UPDATE workspaces SET archived = 1 WHERE id = ?",
       workspaceId,
     );
+  }
+
+  async archiveWorkspaceRecord(
+    workspaceId: string,
+    archivedBy: string,
+  ): Promise<Workspace | null> {
+    const info = await this.getWorkspaceInfo(workspaceId);
+    if (!info) return null;
+    if (info.archived) return info;
+
+    const archived: Workspace = {
+      ...info,
+      archived: true,
+      archived_at: Date.now(),
+      archived_by: archivedBy,
+    };
+    await this.upsertWorkspaceInfo(archived);
+    await this.syncWorkspaceInfoToWorkspaceDO(archived);
+    await this.disableScheduledPromptsForWorkspace(workspaceId, "workspace_archived");
+    this.log("workspace_archived", archivedBy, workspaceId, {
+      workspace_id: workspaceId,
+      name: info.name,
+    });
+    return archived;
   }
 
   private workspaceFromRow(row: OrgWorkspaceInfoRow): Workspace {
@@ -4058,7 +4991,380 @@ export class OrgDO extends DurableObject<DOEnv> {
     const workspaces = await Promise.all(
       rows.map((row) => this.hydrateWorkspaceRow(row)),
     );
-    return workspaces.filter((workspace): workspace is Workspace => !!workspace);
+    return workspaces.filter(
+      (workspace): workspace is Workspace =>
+        !!workspace && (includeArchived || !workspace.archived),
+    );
+  }
+
+  private async getWorkspaceInfo(workspaceId: string): Promise<Workspace | null> {
+    const row = this.sql
+      .exec<OrgWorkspaceInfoRow>(
+        `SELECT id, name, created_at, archived, description, created_by,
+                avatar_color, avatar_content, archived_at, archived_by,
+                compute_tier, email_handle
+           FROM workspaces
+          WHERE id = ?`,
+        workspaceId,
+      )
+      .one();
+    return row ? this.hydrateWorkspaceRow(row) : null;
+  }
+
+  async getWorkspaceRecord(workspaceId: string): Promise<Workspace | null> {
+    return this.getWorkspaceInfo(workspaceId);
+  }
+
+  async migrateWorkspaceTenantDataFromWorkspaceDO(
+    workspaceId: string,
+  ): Promise<{
+    workspace_id: string;
+    metadata_migrated: boolean;
+    workspace_found: boolean;
+    archived: boolean | null;
+    access_rows_migrated: number;
+    integrations_copied: number;
+    integrations_total: number;
+  }> {
+    const orgId = this.getInfoSync()?.id;
+    if (!orgId) {
+      throw new Error("Organization not found");
+    }
+
+    let metadataMigrated = false;
+    const workspaceStub = this.env.WORKSPACE.get(
+      this.env.WORKSPACE.idFromName(workspaceId),
+    ) as unknown as WorkspaceDO;
+    const legacyInfo = await workspaceStub.getInfo();
+    if (legacyInfo) {
+      if (legacyInfo.org_id !== orgId) {
+        throw new Error(
+          `Workspace ${workspaceId} belongs to org ${legacyInfo.org_id}, not ${orgId}`,
+        );
+      }
+      await this.upsertWorkspaceInfo(legacyInfo);
+      metadataMigrated = true;
+    }
+
+    const workspace = await this.getWorkspaceInfo(workspaceId);
+    let accessRowsMigrated = 0;
+    if (workspace) {
+      const members = await this.getMembers();
+      for (const member of members) {
+        const legacyAccess = await workspaceStub.getMemberAccess(member.user_id);
+        if (!legacyAccess) continue;
+        await this.setWorkspaceAccess(
+          workspaceId,
+          member.user_id,
+          this.normalizeWorkspaceAccess(legacyAccess.access_level),
+          legacyAccess.granted_by || "admin-workspace-do-migration",
+        );
+        accessRowsMigrated++;
+      }
+    }
+
+    const integrationsCopied = await this.hydrateWorkspaceIntegrationsFromWorkspaceDO(
+      workspaceId,
+    );
+    const integrationsTotal = this.getActiveWorkspaceIntegrationCount(workspaceId);
+
+    return {
+      workspace_id: workspaceId,
+      metadata_migrated: metadataMigrated,
+      workspace_found: Boolean(workspace),
+      archived: workspace?.archived ?? legacyInfo?.archived ?? null,
+      access_rows_migrated: accessRowsMigrated,
+      integrations_copied: integrationsCopied,
+      integrations_total: integrationsTotal,
+    };
+  }
+
+  private normalizeWorkspaceAccess(
+    accessLevel: WorkspaceAccessLevel | string | null | undefined,
+  ): WorkspaceAccessLevel {
+    return accessLevel === "none" ? "none" : "full";
+  }
+
+  private getStoredWorkspaceAccess(
+    workspaceId: string,
+    userId: string,
+  ): WorkspaceAccessLevel | null {
+    const row = this.sql
+      .exec<{ access_level: string }>(
+        "SELECT access_level FROM workspace_memberships WHERE workspace_id = ? AND user_id = ?",
+        workspaceId,
+        userId,
+      )
+      .toArray()[0];
+    return row ? this.normalizeWorkspaceAccess(row.access_level) : null;
+  }
+
+  private async hydrateWorkspaceAccessFromWorkspaceDO(
+    workspaceId: string,
+    userId: string,
+    actorId = "system",
+  ): Promise<WorkspaceAccessLevel | null> {
+    try {
+      const workspaceStub = this.env.WORKSPACE.get(
+        this.env.WORKSPACE.idFromName(workspaceId),
+      ) as unknown as WorkspaceDO;
+      const memberAccess = await workspaceStub.getMemberAccess(userId);
+      if (!memberAccess) return null;
+
+      const accessLevel = this.normalizeWorkspaceAccess(memberAccess.access_level);
+      await this.setWorkspaceAccess(
+        workspaceId,
+        userId,
+        accessLevel,
+        memberAccess.granted_by || actorId,
+      );
+      return accessLevel;
+    } catch (error) {
+      console.warn("[OrgDO] failed to hydrate workspace access", {
+        workspaceId,
+        userId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      throw error;
+    }
+  }
+
+  private async hydrateWorkspaceRestrictedMembersFromWorkspaceDO(
+    workspaceId: string,
+    orgMemberIds: Set<string>,
+  ): Promise<void> {
+    try {
+      const workspaceStub = this.env.WORKSPACE.get(
+        this.env.WORKSPACE.idFromName(workspaceId),
+      ) as unknown as WorkspaceDO;
+      const restrictedMembers = await workspaceStub.listRestrictedMembers();
+      for (const member of restrictedMembers) {
+        if (!orgMemberIds.has(member.user_id)) continue;
+        const accessLevel = this.normalizeWorkspaceAccess(member.access_level);
+        if (accessLevel !== "none") continue;
+        this.sql.exec(
+          `INSERT INTO workspace_memberships (
+            workspace_id,
+            user_id,
+            access_level,
+            granted_by,
+            granted_at
+          )
+          VALUES (?, ?, ?, ?, ?)
+          ON CONFLICT(workspace_id, user_id) DO NOTHING`,
+          workspaceId,
+          member.user_id,
+          accessLevel,
+          member.granted_by || "system",
+          Number.isFinite(member.granted_at) ? member.granted_at : Date.now(),
+        );
+      }
+    } catch (error) {
+      console.warn("[OrgDO] failed to hydrate workspace restrictions", {
+        workspaceId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      throw error;
+    }
+  }
+
+  async getWorkspaceAccess(
+    workspaceId: string,
+    userId: string,
+  ): Promise<WorkspaceAccessLevel> {
+    const [member, workspace] = await Promise.all([
+      this.getMember(userId),
+      this.getWorkspaceInfo(workspaceId),
+    ]);
+    if (!member || !workspace || workspace.archived) return "none";
+
+    const storedAccess = this.getStoredWorkspaceAccess(workspaceId, userId);
+    if (storedAccess) return storedAccess;
+
+    const hydratedAccess = await this.hydrateWorkspaceAccessFromWorkspaceDO(
+      workspaceId,
+      userId,
+    );
+    return hydratedAccess ?? "full";
+  }
+
+  async setWorkspaceAccess(
+    workspaceId: string,
+    userId: string,
+    accessLevel: WorkspaceAccessLevel,
+    actorId: string,
+  ): Promise<void> {
+    const workspace = await this.getWorkspaceInfo(workspaceId);
+    if (!workspace) {
+      throw new Error("Workspace not found");
+    }
+
+    const normalizedAccess = this.normalizeWorkspaceAccess(accessLevel);
+    if (normalizedAccess === "full") {
+      const storedAccess = this.getStoredWorkspaceAccess(workspaceId, userId);
+      let shouldStoreFullOverride = storedAccess !== null;
+      if (!shouldStoreFullOverride) {
+        try {
+          const workspaceStub = this.env.WORKSPACE.get(
+            this.env.WORKSPACE.idFromName(workspaceId),
+          ) as unknown as WorkspaceDO;
+          const legacyAccess = await workspaceStub.getMemberAccess(userId);
+          shouldStoreFullOverride =
+            this.normalizeWorkspaceAccess(legacyAccess?.access_level) === "none";
+        } catch (error) {
+          console.warn("[OrgDO] failed to inspect legacy workspace access", {
+            workspaceId,
+            userId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+          throw error;
+        }
+      }
+      if (!shouldStoreFullOverride) {
+        this.sql.exec(
+          "DELETE FROM workspace_memberships WHERE workspace_id = ? AND user_id = ?",
+          workspaceId,
+          userId,
+        );
+        this.log("workspace_access_changed", actorId, userId, {
+          workspace_id: workspaceId,
+          access_level: "full",
+        });
+        return;
+      }
+    }
+
+    const now = Date.now();
+    this.sql.exec(
+      `INSERT INTO workspace_memberships (
+        workspace_id,
+        user_id,
+        access_level,
+        granted_by,
+        granted_at
+      )
+      VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(workspace_id, user_id) DO UPDATE SET
+        access_level = excluded.access_level,
+        granted_by = excluded.granted_by,
+        granted_at = excluded.granted_at`,
+      workspaceId,
+      userId,
+      normalizedAccess,
+      actorId,
+      now,
+    );
+    this.log("workspace_access_changed", actorId, userId, {
+      workspace_id: workspaceId,
+      access_level: normalizedAccess,
+    });
+  }
+
+  async listWorkspaceAccessRows(): Promise<OrgWorkspaceAccessRow[]> {
+    return this.sql
+      .exec<{
+        workspace_id: string;
+        user_id: string;
+        access_level: string;
+        granted_by: string;
+        granted_at: number;
+      }>(
+        `SELECT workspace_id, user_id, access_level, granted_by, granted_at
+           FROM workspace_memberships
+          ORDER BY granted_at ASC`,
+      )
+      .toArray()
+      .map((row) => ({
+        ...row,
+        access_level: this.normalizeWorkspaceAccess(row.access_level),
+      }));
+  }
+
+  async listWorkspaceMembers(
+    workspaceId: string,
+  ): Promise<Array<{ user_id: string; access_level: WorkspaceAccessLevel }>> {
+    const workspace = await this.getWorkspaceInfo(workspaceId);
+    if (!workspace || workspace.archived) return [];
+
+    const rows = this.sql
+      .exec<{ user_id: string; access_level: string | null }>(
+        `SELECT members.user_id,
+                workspace_memberships.access_level AS access_level
+           FROM members
+           LEFT JOIN workspace_memberships
+             ON workspace_memberships.user_id = members.user_id
+            AND workspace_memberships.workspace_id = ?
+          ORDER BY members.joined_at ASC`,
+        workspaceId,
+      )
+      .toArray();
+
+    const members: Array<{ user_id: string; access_level: WorkspaceAccessLevel }> = [];
+    for (const row of rows) {
+      const storedAccess = row.access_level
+        ? this.normalizeWorkspaceAccess(row.access_level)
+        : null;
+      const hydratedAccess =
+        storedAccess ??
+        (await this.hydrateWorkspaceAccessFromWorkspaceDO(
+          workspaceId,
+          row.user_id,
+        ));
+      members.push({
+        user_id: row.user_id,
+        access_level: hydratedAccess ?? "full",
+      });
+    }
+    return members;
+  }
+
+  async listUserWorkspaces(
+    userId: string,
+    includeArchived = false,
+  ): Promise<WorkspaceWithAccess[]> {
+    const member = await this.getMember(userId);
+    if (!member) return [];
+
+    const workspaces = await this.getWorkspaceInfos(includeArchived);
+    const accessRows = this.sql
+      .exec<{ workspace_id: string; access_level: string }>(
+        "SELECT workspace_id, access_level FROM workspace_memberships WHERE user_id = ?",
+        userId,
+      )
+      .toArray();
+    const accessByWorkspace = new Map(
+      accessRows.map((row) => [
+        row.workspace_id,
+        this.normalizeWorkspaceAccess(row.access_level),
+      ]),
+    );
+
+    const result: WorkspaceWithAccess[] = [];
+    for (const workspace of workspaces) {
+      let accessLevel = accessByWorkspace.get(workspace.id) ?? null;
+      if (!accessLevel) {
+        accessLevel = await this.hydrateWorkspaceAccessFromWorkspaceDO(
+          workspace.id,
+          userId,
+        );
+      }
+      const effectiveAccess = accessLevel ?? "full";
+      if (effectiveAccess === "none") continue;
+      result.push({ ...workspace, access_level: effectiveAccess });
+    }
+    return result;
+  }
+
+  async getWorkspaceAccessContext(
+    workspaceId: string,
+    userId: string,
+  ): Promise<{ workspace: Workspace | null; access: WorkspaceAccessLevel }> {
+    const workspace = await this.getWorkspaceInfo(workspaceId);
+    if (!workspace || workspace.archived) {
+      return { workspace: workspace ?? null, access: "none" };
+    }
+    const access = await this.getWorkspaceAccess(workspaceId, userId);
+    return { workspace, access };
   }
 
   async getAuthContextBootstrap(
@@ -4073,7 +5379,7 @@ export class OrgDO extends DurableObject<DOEnv> {
     ] = await Promise.all([
       this.getInfo(),
       this.getMember(userId),
-      this.getWorkspaceInfos(false),
+      this.listUserWorkspaces(userId),
       this.getLlmProviderConfig(),
       this.getExperimentalSettings(),
     ]);
@@ -4103,10 +5409,7 @@ export class OrgDO extends DurableObject<DOEnv> {
         this.getMemberCount(),
         this.listWorkerScripts(),
         workspaceId
-          ? (this.env.WORKSPACE.get(
-              this.env.WORKSPACE.idFromName(workspaceId),
-            ) as unknown as WorkspaceDO)
-              .getIntegrations()
+          ? this.getWorkspaceIntegrations(workspaceId)
               .then((rows) => rows.map((row) => row.name).slice(0, 4))
               .catch(() => [] as string[])
           : Promise.resolve([] as string[]),
@@ -4156,6 +5459,15 @@ export class OrgDO extends DurableObject<DOEnv> {
     const orgMemberIds = new Set(orgMembers.map((member) => member.user_id));
     const defaultMemberCount = orgMemberIds.size;
 
+    await Promise.all(
+      uniqueWorkspaceIds.map((workspaceId) =>
+        this.hydrateWorkspaceRestrictedMembersFromWorkspaceDO(
+          workspaceId,
+          orgMemberIds,
+        ),
+      ),
+    );
+
     const appRows = this.sql
       .exec<{ workspace_id: string; count: number }>(
         "SELECT workspace_id, COUNT(*) AS count FROM worker_scripts GROUP BY workspace_id",
@@ -4165,21 +5477,17 @@ export class OrgDO extends DurableObject<DOEnv> {
       appRows.map((row) => [row.workspace_id, row.count]),
     );
 
-    const restrictedRows = await Promise.all(
-      uniqueWorkspaceIds.map(async (workspaceId) => {
-        const workspaceStub = this.env.WORKSPACE.get(
-          this.env.WORKSPACE.idFromName(workspaceId),
-        ) as unknown as WorkspaceDO;
-        const restrictedMembers = await workspaceStub.listRestrictedMembers();
-        const restrictedOrgMemberCount = restrictedMembers.filter(
-          (member) =>
-            member.access_level === "none" && orgMemberIds.has(member.user_id),
-        ).length;
-        return { workspaceId, restrictedOrgMemberCount };
-      }),
-    );
+    const restrictedRows = this.sql
+      .exec<{ workspace_id: string; user_id: string }>(
+        "SELECT workspace_id, user_id FROM workspace_memberships WHERE access_level = 'none'",
+      )
+      .toArray()
+      .filter((row) => orgMemberIds.has(row.user_id));
     const restrictedCountByWorkspace = new Map(
-      restrictedRows.map((row) => [row.workspaceId, row.restrictedOrgMemberCount]),
+      uniqueWorkspaceIds.map((workspaceId) => [
+        workspaceId,
+        restrictedRows.filter((row) => row.workspace_id === workspaceId).length,
+      ]),
     );
 
     return uniqueWorkspaceIds.map((workspaceId) => ({
@@ -4380,6 +5688,7 @@ export class OrgDO extends DurableObject<DOEnv> {
 
     this.sql.exec("DELETE FROM org_info WHERE key = ?", "data");
     this.sql.exec("DELETE FROM members");
+    this.sql.exec("DELETE FROM workspace_memberships");
     this.sql.exec("DELETE FROM invitations");
     this.sql.exec("DELETE FROM integrations");
     this.sql.exec("DELETE FROM workspaces");
@@ -4412,6 +5721,45 @@ export class OrgDO extends DurableObject<DOEnv> {
     return this.sql
       .exec(
         "SELECT * FROM audit_log ORDER BY created_at DESC LIMIT ? OFFSET ?",
+        resolvedLimit,
+        resolvedOffset,
+      )
+      .toArray() as unknown as Array<{
+      id: string;
+      action: string;
+      actor_id: string;
+      target_id: string | null;
+      details: string | null;
+      created_at: number;
+    }>;
+  }
+
+  async getWorkspaceAuditLog(
+    workspaceId: string,
+    limit = 100,
+    offset = 0,
+  ): Promise<
+    Array<{
+      id: string;
+      action: string;
+      actor_id: string;
+      target_id: string | null;
+      details: string | null;
+      created_at: number;
+    }>
+  > {
+    const resolvedLimit = Math.max(1, Math.min(500, Math.floor(limit)));
+    const resolvedOffset = Math.max(0, Math.floor(offset));
+    return this.sql
+      .exec(
+        `SELECT *
+           FROM audit_log
+          WHERE target_id = ?
+             OR json_extract(details, '$.workspace_id') = ?
+          ORDER BY created_at DESC
+          LIMIT ? OFFSET ?`,
+        workspaceId,
+        workspaceId,
         resolvedLimit,
         resolvedOffset,
       )
@@ -6053,21 +7401,5 @@ export class OrgDO extends DurableObject<DOEnv> {
       org_id: this.getInfoSync()?.id ?? "",
       limits: normalized,
     };
-  }
-
-  exportD1MigrationTable(
-    input: D1MigrationTableExportInput,
-  ): D1MigrationTableExport {
-    this.ensureAdminCreditGrantsTable();
-    return exportD1MigrationTablePage(
-      this.sql,
-      ORG_D1_MIGRATION_TABLES,
-      input,
-      this.ctx.storage.kv.get<number>("schemaVersion") ?? 0,
-    );
-  }
-
-  listD1MigrationTables(): string[] {
-    return Object.keys(ORG_D1_MIGRATION_TABLES);
   }
 }

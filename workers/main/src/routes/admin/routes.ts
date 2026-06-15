@@ -431,6 +431,34 @@ const LegacyPreviewRepairTriggerResponseSchema = z.object({
   status: z.literal("queued"),
 });
 
+const WorkspaceDoTenantMigrationBodySchema = z.object({
+  workspace_id: z.string().trim().min(1).optional(),
+  limit: z.number().int().min(1).max(100).optional().default(25),
+  offset: z.number().int().min(0).optional().default(0),
+  include_archived: z.boolean().optional().default(true),
+});
+
+const WorkspaceDoTenantMigrationWorkspaceResultSchema = z.object({
+  workspace_id: z.string(),
+  metadata_migrated: z.boolean(),
+  workspace_found: z.boolean(),
+  archived: z.boolean().nullable(),
+  access_rows_migrated: z.number().int(),
+  integrations_copied: z.number().int(),
+  integrations_total: z.number().int(),
+});
+
+const WorkspaceDoTenantMigrationResponseSchema = z.object({
+  success: z.boolean(),
+  org_id: z.string(),
+  processed: z.number().int(),
+  total_candidates: z.number().int(),
+  limit: z.number().int(),
+  offset: z.number().int(),
+  next_offset: z.number().int().nullable(),
+  workspaces: z.array(WorkspaceDoTenantMigrationWorkspaceResultSchema),
+});
+
 // ---------------------------------------------------------------------------
 // Cache-Control middleware for GET endpoints
 // ---------------------------------------------------------------------------
@@ -572,6 +600,66 @@ routes.post(
       workspace_id: workspaceId,
       workflow_id: result.workflowId,
       status: "canceled" as const,
+    });
+  },
+);
+
+// ---------------------------------------------------------------------------
+// POST /orgs/:orgId/workspace-do-migration
+// ---------------------------------------------------------------------------
+
+routes.post(
+  "/orgs/:orgId/workspace-do-migration",
+  openApi({
+    summary: "Migrate workspace tenant data from WorkspaceDO into OrgDO",
+    request: { json: WorkspaceDoTenantMigrationBodySchema },
+    responses: {
+      200: WorkspaceDoTenantMigrationResponseSchema,
+      404: ErrorSchema,
+    },
+  }),
+  async (c) => {
+    const orgId = c.req.param("orgId");
+    const body = c.req.valid("json");
+    const orgStub = getOrgStub(c.env, orgId);
+    const orgInfo = await orgStub.getInfo();
+    if (!orgInfo) {
+      return c.json({ error: "Organization not found" }, 404);
+    }
+
+    const allWorkspaces = body.workspace_id
+      ? [{ id: body.workspace_id }]
+      : (await orgStub.getWorkspaceInfos(body.include_archived === true)).map((workspace) => ({
+          id: workspace.id,
+        }));
+    const candidates = body.workspace_id
+      ? allWorkspaces
+      : allWorkspaces.slice(body.offset, body.offset + body.limit);
+    const workspaces = await Promise.all(
+      candidates.map((workspace) =>
+        (
+          orgStub as unknown as {
+            migrateWorkspaceTenantDataFromWorkspaceDO(
+              workspaceId: string,
+            ): Promise<z.infer<typeof WorkspaceDoTenantMigrationWorkspaceResultSchema>>;
+          }
+        ).migrateWorkspaceTenantDataFromWorkspaceDO(workspace.id),
+      ),
+    );
+    const nextOffset =
+      body.workspace_id || body.offset + body.limit >= allWorkspaces.length
+        ? null
+        : body.offset + body.limit;
+
+    return c.json({
+      success: true,
+      org_id: orgId,
+      processed: workspaces.length,
+      total_candidates: allWorkspaces.length,
+      limit: body.limit,
+      offset: body.offset,
+      next_offset: nextOffset,
+      workspaces,
     });
   },
 );

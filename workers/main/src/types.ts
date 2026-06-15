@@ -128,8 +128,7 @@ export interface Env
   SLACK_TEAM_REGISTRY?: DurableObjectNamespace<SlackTeamRegistryDO>;
   // Admin CLI API key (set via wrangler secret)
   ADMIN_API_KEY?: string;
-  // Global D1 app database. Currently backs the admin/app index and is the
-  // cutover target for tenant-owned state that no longer needs DO locality.
+  // Derived global admin/index read model. Tenant-owned state remains authoritative in DOs.
   APP_DB?: D1Database;
   // Optional static OAuth client id for the remote admin MCP server.
   ADMIN_MCP_CLIENT_ID?: string;

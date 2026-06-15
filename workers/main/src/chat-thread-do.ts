@@ -3113,7 +3113,8 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
   private get integrations(): CodeModeIntegrations {
     return new CodeModeIntegrations({
       env: this.env,
-      workspaceStub: this.workspaceStub,
+      orgStub: this.orgStub,
+      workspaceId: this.ctx.props.workspaceId,
       userId: this.ctx.props.userId,
       promptConnectionSetup: (input) =>
         (this.chatThreadStub as unknown as {
@@ -7511,15 +7512,14 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     if (!content) return content;
     if (!content.includes('@')) return content;
     const workspaceId = this.chatContext?.workspaceId;
-    if (!workspaceId) return content;
+    const orgId = this.chatContext?.orgId;
+    if (!workspaceId || !orgId) return content;
     try {
-      const workspaceStub = this.env.WORKSPACE.get(
-        this.env.WORKSPACE.idFromName(workspaceId),
-      );
+      const orgStub = this.getOrgStub(orgId);
       const workspaceFs = new WorkspaceFilesystemClient(this.env, workspaceId);
       const [integrations, projects] = await Promise.all([
         Promise.resolve()
-          .then(() => workspaceStub.getIntegrations())
+          .then(() => orgStub.getWorkspaceIntegrations(workspaceId))
           .catch((err) => {
             console.error('[ChatThreadDO] getIntegrations for mentions failed', err);
             return [];
@@ -7540,6 +7540,11 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       );
       return content;
     }
+  }
+
+  private getOrgStub(orgId: string): DurableObjectStub<OrgDO> {
+    if (!orgId) throw new Error("Missing org scope");
+    return this.env.ORG.get(this.env.ORG.idFromName(orgId));
   }
 
   private async handleRunnerClientMessage(
@@ -9624,10 +9629,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     const fallbackFrom = originatingEmailThread?.channel_connection_id?.trim() || "";
     let from = fallbackFrom;
     const emailDomain = getWorkspaceEmailDomain(this.env);
-    const workspaceStub = this.env.WORKSPACE.get(
-      this.env.WORKSPACE.idFromName(context.workspaceId),
-    ) as unknown as WorkspaceDO;
-    const workspaceInfo = await workspaceStub.getInfo();
+    const workspaceInfo = await orgStub.getWorkspaceRecord(context.workspaceId);
     const emailHandle = workspaceInfo?.email_handle?.trim();
     if (emailDomain && emailHandle) {
       from = buildWorkspaceEmailSenderAddress(
@@ -9743,13 +9745,13 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       throw new Error("Slack channel_id is required outside Slack-originated threads");
     }
 
-    const wsStub = this.env.WORKSPACE.get(
-      this.env.WORKSPACE.idFromName(context.workspaceId),
-    ) as unknown as WorkspaceDO;
     const explicitIntegrationId = this.optionalToolString(raw, "integration_id");
     const explicitTeamId = this.optionalToolString(raw, "team_id") || conversation.teamId;
     const integrationId = explicitIntegrationId || thread?.channel_connection_id?.trim() || "";
-    const integrations = integrationId ? [] : await wsStub.getIntegrations();
+    const orgStub = this.getOrgStub(context.orgId);
+    const integrations = integrationId
+      ? []
+      : await orgStub.getWorkspaceIntegrations(context.workspaceId);
     const slackIntegrations = integrations.filter((candidate) => candidate.integration_type === "slack");
     if (!integrationId && slackIntegrations.length === 0) {
       throw new Error("Slack integration_id is required because no Slack connection is available");
@@ -9759,10 +9761,10 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     }
 
     const candidates = integrationId
-      ? [await wsStub.getIntegration(integrationId)]
+      ? [await orgStub.getWorkspaceIntegration(context.workspaceId, integrationId)]
       : slackIntegrations;
     let selected: {
-      integration: Awaited<ReturnType<WorkspaceDO["getIntegration"]>>;
+      integration: Awaited<ReturnType<OrgDO["getWorkspaceIntegration"]>>;
       credentials: Record<string, unknown>;
     } | null = null;
     for (const candidate of candidates) {
@@ -9875,11 +9877,11 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     let telegramTitle = thread?.title || "Telegram chat";
     let recordChannelHistory = false;
     if (!chatId) {
-      const wsStub = this.env.WORKSPACE.get(
-        this.env.WORKSPACE.idFromName(context.workspaceId),
-      ) as unknown as WorkspaceDO;
+      const orgStub = this.getOrgStub(context.orgId);
       if (!integrationId) {
-        const integrations = await wsStub.getIntegrations();
+        const integrations = await orgStub.getWorkspaceIntegrations(
+          context.workspaceId,
+        );
         const connectedTelegramIntegrations = integrations.filter((candidate) => {
           if (candidate.integration_type !== "telegram") return false;
           try {
@@ -9901,7 +9903,13 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         }
         integrationId = connectedTelegramIntegrations[0].id;
       }
-      const integration = await wsStub.getIntegration(integrationId);
+      if (!integrationId) {
+        throw new Error("Telegram integration_id is required");
+      }
+      const integration = await orgStub.getWorkspaceIntegration(
+        context.workspaceId,
+        integrationId,
+      );
       if (!integration || integration.integration_type !== "telegram") {
         throw new Error("Telegram integration is no longer available");
       }

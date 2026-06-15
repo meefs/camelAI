@@ -35,7 +35,7 @@ import {
 } from "@/lib/llm-provider-config";
 import { getEffectiveLlmProviderConfig } from "@/lib/selfhost-ai-provider";
 import { isSelfhostRuntime } from "@/lib/selfhost-runtime";
-import { getOrg, getWorkerScript } from "@/lib/auth-do";
+import { getOrg, getWorkerScript, listWorkspaceIntegrationRecords } from "@/lib/auth-do";
 import { switchSessionOrg, switchSessionWorkspace } from "@/lib/auth-do";
 import {
   CLOUDFLARE_ACCESS_AUTH_SOURCE,
@@ -920,10 +920,7 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
       console.error("Failed to load model picker state:", error);
       return null;
     });
-  const connectionsPromise = env.WORKSPACE.get(
-    env.WORKSPACE.idFromName(workspaceId),
-  )
-    .getIntegrations()
+  const connectionsPromise = listWorkspaceIntegrationRecords(getAuthEnv(env), workspaceId)
     .then((records) => records.map(integrationRecordToIntegration))
     .catch((error) => {
       console.error("Failed to load workspace connections:", error);

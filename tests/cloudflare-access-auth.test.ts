@@ -42,6 +42,7 @@ function authEnvWithExistingOrg() {
     getMember: vi.fn(async () => ({ role: "member" })),
     addMember: vi.fn(async () => undefined),
     updateMemberRole: vi.fn(async () => undefined),
+    setWorkspaceAccess: vi.fn(async () => undefined),
   };
   const userStub = {
     hasOrg: vi.fn(async () => true),
@@ -86,6 +87,7 @@ function authEnvWithMissingOrg() {
     getMember: vi.fn(async () => ({ role: "member" })),
     addMember: vi.fn(async () => undefined),
     updateMemberRole: vi.fn(async () => undefined),
+    setWorkspaceAccess: vi.fn(async () => undefined),
   };
   const lockStub = {
     ensureAccessMappedOrg: vi.fn(async () => ({

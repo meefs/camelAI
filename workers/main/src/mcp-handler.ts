@@ -9,7 +9,6 @@ import { McpAgent } from 'agents/mcp';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import type { OrgDO, WorkerScript } from './auth';
-import type { WorkspaceDO } from './workspace';
 import type { ChatThreadDO, PreviewTarget } from './chat-thread-do';
 import type { WorkspaceCronDO } from './workspace-cron';
 import {
@@ -48,7 +47,6 @@ import { formatDeterministicAutomation } from './code-mode-deterministic-automat
 
 export interface McpEnv {
   ORG: DurableObjectNamespace<OrgDO>;
-  WORKSPACE: DurableObjectNamespace<WorkspaceDO>;
   CHAT_THREAD: DurableObjectNamespace<ChatThreadDO>;
   MCP_OBJECT: DurableObjectNamespace<ChiridionMcp>;
   WORKER_LOGS: DurableObjectNamespace<WorkerLogsDO>;
@@ -164,13 +162,6 @@ export class ChiridionMcp extends McpAgent<any, Record<string, unknown>, Record<
   private getOrgStub(): DurableObjectStub<OrgDO> {
     if (!this.orgId) throw new Error('No org context');
     return this.env.ORG.get(this.env.ORG.idFromName(this.orgId)) as DurableObjectStub<OrgDO>;
-  }
-
-  /**
-   * Get WorkspaceDO stub for a workspace
-   */
-  private getWorkspaceStub(workspaceId: string): DurableObjectStub<WorkspaceDO> {
-    return this.env.WORKSPACE.get(this.env.WORKSPACE.idFromName(workspaceId)) as DurableObjectStub<WorkspaceDO>;
   }
 
   /**
@@ -1131,8 +1122,7 @@ export class ChiridionMcp extends McpAgent<any, Record<string, unknown>, Record<
           return this.textResponse({ error: 'No workspace context available' });
         }
 
-        const workspaceStub = this.getWorkspaceStub(workspaceId);
-        const rawIntegrations = await workspaceStub.getIntegrations();
+        const rawIntegrations = await this.getOrgStub().getWorkspaceIntegrations(workspaceId);
 
         // Map from DO format to Integration type (including config for dynamic field detection)
         const integrations = rawIntegrations.map(r => {
@@ -1322,9 +1312,8 @@ export class ChiridionMcp extends McpAgent<any, Record<string, unknown>, Record<
 
           // Generate ID and create integration
           const integrationId = crypto.randomUUID();
-          const workspaceStub = this.getWorkspaceStub(workspaceId);
-
-          await workspaceStub.createIntegration(
+          await this.getOrgStub().createWorkspaceIntegration(
+            workspaceId,
             integrationId,
             integration_type,
             name,

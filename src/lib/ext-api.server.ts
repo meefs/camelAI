@@ -54,26 +54,19 @@ export async function verifyWorkspaceAccess(env: CloudflareEnv, userId: string, 
     const ws = (env as any).WORKSPACE.get((env as any).WORKSPACE.idFromName(workspaceId));
     const meta = await ws.getMetadata();
     if (!meta || meta.org_id !== orgId) return false;
-    const access = await ws.getMemberAccess(userId);
-    return access && access !== 'none';
+    const access = await org.getWorkspaceAccess(workspaceId, userId);
+    return access !== 'none';
   } catch { return false; }
 }
 
 export async function listUserWorkspaces(env: CloudflareEnv, userId: string, orgId: string): Promise<WorkspaceInfo[]> {
   try {
     const orgStub = (env as any).ORG.get((env as any).ORG.idFromName(orgId));
-    const workspaceRows: { id: string }[] = await orgStub.getWorkspaces();
-    const out: WorkspaceInfo[] = [];
-    for (const row of workspaceRows) {
-      try {
-        const wsStub = (env as any).WORKSPACE.get((env as any).WORKSPACE.idFromName(row.id));
-        const info = await wsStub.getInfo();
-        const memberAccess = await wsStub.getMemberAccess(userId);
-        if (info && (!memberAccess || (memberAccess.access_level ?? 'full') !== 'none')) {
-          out.push({ id: row.id, name: info.name ?? row.id });
-        }
-      } catch {}
-    }
-    return out;
+    const workspaces: Array<{ id: string; name: string }> =
+      await orgStub.listUserWorkspaces(userId);
+    return workspaces.map((workspace) => ({
+      id: workspace.id,
+      name: workspace.name ?? workspace.id,
+    }));
   } catch { return []; }
 }

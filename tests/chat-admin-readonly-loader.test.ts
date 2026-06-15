@@ -12,6 +12,7 @@ const getTodoStateMock = vi.fn();
 const getWorkspaceModelPickerStateMock = vi.fn();
 const getOrgMock = vi.fn();
 const getWorkerScriptMock = vi.fn();
+const listWorkspaceIntegrationRecordsMock = vi.fn();
 const readThreadMessagesMock = vi.fn();
 const ensureGroupForThreadMock = vi.fn();
 const getGroupForWorkspaceMock = vi.fn();
@@ -42,6 +43,7 @@ vi.mock('@/lib/chat-do.server', () => ({
 vi.mock('@/lib/auth-do', () => ({
   getOrg: getOrgMock,
   getWorkerScript: getWorkerScriptMock,
+  listWorkspaceIntegrationRecords: listWorkspaceIntegrationRecordsMock,
 }));
 
 vi.mock('@/lib/chat-history.server', () => ({
@@ -92,6 +94,7 @@ describe('chat loader admin readonly mode', () => {
       defaultModel: 'sonnet',
     });
     getWorkerScriptMock.mockResolvedValue(null);
+    listWorkspaceIntegrationRecordsMock.mockResolvedValue([]);
     readThreadMessagesMock.mockResolvedValue([]);
     ensureGroupForThreadMock.mockResolvedValue(null);
     getGroupForWorkspaceMock.mockResolvedValue(null);

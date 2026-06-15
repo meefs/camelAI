@@ -11,13 +11,6 @@
 
 import { DurableObject } from 'cloudflare:workers';
 import type { Env } from './types.js';
-import {
-  exportD1MigrationTablePage,
-  singleIntegerKeyTableSpec,
-  type D1MigrationTableExport,
-  type D1MigrationTableExportInput,
-  type D1MigrationTableSpecs,
-} from './d1-migration-export';
 
 export interface LogEvent {
   timestamp: number;
@@ -62,9 +55,6 @@ const REPLAY_LIMIT = 100;
 const LOG_WRITE_WINDOW_MS = 5_000;
 const MAX_LOG_WRITES_PER_WINDOW = 200;
 const LOG_SAMPLING_WARNING_LEVEL = 'warn';
-const WORKER_LOGS_D1_MIGRATION_TABLES: D1MigrationTableSpecs = {
-  logs: singleIntegerKeyTableSpec('logs', 'id'),
-};
 
 function createLogSamplingWarning(now: number): LogEvent {
   return {
@@ -283,21 +273,6 @@ export class WorkerLogsDO extends DurableObject<Env> {
     this.sql.exec('DELETE FROM logs');
   }
 
-  exportD1MigrationTable(
-    input: D1MigrationTableExportInput,
-  ): D1MigrationTableExport {
-    return exportD1MigrationTablePage(
-      this.sql,
-      WORKER_LOGS_D1_MIGRATION_TABLES,
-      input,
-      this.ctx.storage.kv.get<number>('schemaVersion') ?? null,
-    );
-  }
-
-  listD1MigrationTables(): string[] {
-    return Object.keys(WORKER_LOGS_D1_MIGRATION_TABLES);
-  }
-
   /**
    * Prune old logs to keep storage bounded (circular buffer).
    */
@@ -466,37 +441,6 @@ export class EphemeralWorkerLogsDO extends DurableObject<Env> {
     this.logs = [];
     this.nextId = 1;
     this.lastLogAt = null;
-  }
-
-  exportD1MigrationTable(
-    input: D1MigrationTableExportInput,
-  ): D1MigrationTableExport {
-    if (input.table !== 'logs') {
-      throw new Error(`Unsupported D1 migration export table: ${input.table}`);
-    }
-    const limit = Math.max(1, Math.min(1000, Math.floor(input.limit ?? 500)));
-    const cursor = Math.max(0, Math.floor(Number(input.cursor ?? 0)));
-    const page = this.logs
-      .filter((entry) => entry.id > cursor)
-      .sort((left, right) => left.id - right.id)
-      .slice(0, limit + 1);
-    const rows = page.slice(0, limit).map((entry) => ({ ...entry }));
-    const hasMore = page.length > limit;
-    return {
-      exportVersion: 1,
-      exportedAt: Date.now(),
-      schemaVersion: null,
-      table: 'logs',
-      keyColumns: ['id'],
-      cursor: String(cursor),
-      nextCursor: hasMore && rows.length > 0 ? String(rows[rows.length - 1]!.id) : null,
-      hasMore,
-      rows,
-    };
-  }
-
-  listD1MigrationTables(): string[] {
-    return Object.keys(WORKER_LOGS_D1_MIGRATION_TABLES);
   }
 
   private pruneOldLogs(): void {

@@ -7,7 +7,7 @@
 import { describe, it, expect } from 'vitest';
 import { env } from 'cloudflare:test';
 import { createNewSession, type SessionData } from '../src/session-kv';
-import type { Workspace, WorkspaceIntegrationRecord } from '../src/workspace';
+import type { Workspace } from '../src/workspace';
 import {
   createUser,
   createOrg,
@@ -61,6 +61,12 @@ describe('Workspace DO (full-stack with DOs)', () => {
     expect(workspace.id).toBeDefined();
     expect(workspace.org_id).toBe(org.id);
     expect(workspace.name).toBe('Design');
+    const workspaceStub = testEnv.WORKSPACE.get(testEnv.WORKSPACE.idFromName(workspace.id));
+    await expect(workspaceStub.getInfo()).resolves.toMatchObject({
+      id: workspace.id,
+      org_id: org.id,
+      name: 'Design',
+    });
 
     const orgWorkspaces = await listOrgWorkspaces(testEnv, org.id);
     expect(orgWorkspaces.some((entry) => entry.id === workspace.id)).toBe(true);
@@ -87,6 +93,59 @@ describe('Workspace DO (full-stack with DOs)', () => {
     const actions = audit.map((entry) => entry.action);
     expect(actions).toContain('workspace_created');
     expect(actions).toContain('workspace_updated');
+  });
+
+  it('merges legacy WorkspaceDO audit log entries into workspace audit reads', async () => {
+    const ownerEmail = testEmail();
+    const memberEmail = testEmail();
+    const { userId: ownerId } = await createUser(testEnv, ownerEmail, 'password123', 'Workspace Owner');
+    const { userId: memberId } = await createUser(testEnv, memberEmail, 'password123', 'Workspace Member');
+    const { org } = await createOrg(testEnv, 'Legacy Audit Org', ownerId);
+    const workspace = await createWorkspace(testEnv, org.id, 'Legacy Audit', ownerId);
+
+    const workspaceStub = testEnv.WORKSPACE.get(
+      testEnv.WORKSPACE.idFromName(workspace.id),
+    ) as DurableObjectStub<{
+      setMemberAccess(
+        userId: string,
+        accessLevel: 'none',
+        actorId: string,
+      ): Promise<void>;
+    }>;
+    await workspaceStub.setMemberAccess(memberId, 'none', ownerId);
+
+    const audit = await getWorkspaceAuditLog(testEnv, workspace.id);
+    expect(audit).toContainEqual({
+      action: 'access_granted',
+      actor_id: ownerId,
+    });
+  });
+
+  it('filters OrgDO workspace audit rows before applying pagination', async () => {
+    const email = testEmail();
+    const { userId } = await createUser(testEnv, email, 'password123', 'Workspace Owner');
+    const { org } = await createOrg(testEnv, 'Busy Audit Org', userId);
+    const workspace = await createWorkspace(testEnv, org.id, 'Quiet Workspace', userId);
+    const orgStub = testEnv.ORG.get(testEnv.ORG.idFromName(org.id)) as DurableObjectStub<{
+      updateName(name: string, actorId: string): Promise<void>;
+      getWorkspaceAuditLog(
+        workspaceId: string,
+        limit?: number,
+        offset?: number,
+      ): Promise<Array<{ action: string; target_id: string | null }>>;
+    }>;
+
+    for (let i = 0; i < 125; i++) {
+      await orgStub.updateName(`Busy Audit Org ${i}`, userId);
+    }
+
+    const audit = await orgStub.getWorkspaceAuditLog(workspace.id, 10, 0);
+    expect(audit).toContainEqual(
+      expect.objectContaining({
+        action: 'workspace_created',
+        target_id: workspace.id,
+      }),
+    );
   });
 
   it('serves full workspace metadata from OrgDO without per-workspace reads', async () => {
@@ -163,10 +222,10 @@ describe('Workspace DO (full-stack with DOs)', () => {
     const orgWorkspaces = await listOrgWorkspaces(testEnv, org.id);
     expect(orgWorkspaces.some((entry) => entry.id === workspace.id)).toBe(false);
 
-    const workspaceStub = testEnv.WORKSPACE.get(testEnv.WORKSPACE.idFromName(workspace.id)) as DurableObjectStub<{
-      getInfo: () => Promise<Workspace | null>;
+    const orgStub = testEnv.ORG.get(testEnv.ORG.idFromName(org.id)) as DurableObjectStub<{
+      getWorkspaceRecord(workspaceId: string): Promise<Workspace | null>;
     }>;
-    const info = await workspaceStub.getInfo();
+    const info = await orgStub.getWorkspaceRecord(workspace.id);
     expect(info?.archived).toBe(true);
     expect(info?.name).toBe('Archive Workspace');
 
@@ -260,18 +319,125 @@ describe('Workspace DO (full-stack with DOs)', () => {
     const workspace = workspaces[0];
     expect(workspace).toBeDefined();
 
-    await setWorkspaceAccess(testEnv, workspace.id, memberId, 'read_only', ownerId);
+    await setWorkspaceAccess(testEnv, workspace.id, memberId, 'full', ownerId);
     const access = await getWorkspaceAccess(testEnv, workspace.id, memberId);
-    expect(access).toBe('read_only');
+    expect(access).toBe('full');
 
     const memberWorkspaces = await listUserWorkspaces(testEnv, memberId, org.id);
-    expect(memberWorkspaces.some((entry) => entry.id === workspace.id && entry.access_level === 'read_only')).toBe(true);
+    expect(memberWorkspaces.some((entry) => entry.id === workspace.id && entry.access_level === 'full')).toBe(true);
 
     await setWorkspaceAccess(testEnv, workspace.id, memberId, 'none', ownerId);
     const removedAccess = await getWorkspaceAccess(testEnv, workspace.id, memberId);
     expect(removedAccess).toBe('none');
     const afterRemoval = await listUserWorkspaces(testEnv, memberId, org.id);
     expect(afterRemoval.some((entry) => entry.id === workspace.id)).toBe(false);
+  });
+
+  it('uses OrgDO workspace access as the authoritative read path', async () => {
+    const ownerEmail = testEmail();
+    const memberEmail = testEmail();
+    const { userId: ownerId } = await createUser(testEnv, ownerEmail, 'password123', 'Owner');
+    const { userId: memberId } = await createUser(testEnv, memberEmail, 'password123', 'Member');
+    const { org } = await createOrg(testEnv, 'Org Access Source Org', ownerId);
+
+    const invitation = await createInvitation(testEnv, org.id, memberEmail, 'member', ownerId);
+    await acceptInvitation(testEnv, org.id, invitation.id, memberId);
+
+    const [workspace] = await listUserWorkspaces(testEnv, ownerId, org.id);
+    expect(workspace).toBeDefined();
+
+    const orgStub = testEnv.ORG.get(testEnv.ORG.idFromName(org.id));
+    await orgStub.setWorkspaceAccess(workspace.id, memberId, 'none', ownerId);
+
+    const access = await getWorkspaceAccess(testEnv, workspace.id, memberId);
+    expect(access).toBe('none');
+
+    const memberWorkspaces = await listUserWorkspaces(testEnv, memberId, org.id);
+    expect(memberWorkspaces.some((entry) => entry.id === workspace.id)).toBe(false);
+  });
+
+  it('hydrates legacy WorkspaceDO access rows into OrgDO on read', async () => {
+    const ownerEmail = testEmail();
+    const memberEmail = testEmail();
+    const { userId: ownerId } = await createUser(testEnv, ownerEmail, 'password123', 'Owner');
+    const { userId: memberId } = await createUser(testEnv, memberEmail, 'password123', 'Member');
+    const { org } = await createOrg(testEnv, 'Access Hydration Org', ownerId);
+
+    const invitation = await createInvitation(testEnv, org.id, memberEmail, 'member', ownerId);
+    await acceptInvitation(testEnv, org.id, invitation.id, memberId);
+
+    const [workspace] = await listUserWorkspaces(testEnv, ownerId, org.id);
+    expect(workspace).toBeDefined();
+
+    const workspaceStub = testEnv.WORKSPACE.get(testEnv.WORKSPACE.idFromName(workspace.id));
+    await workspaceStub.setMemberAccess(memberId, 'none', ownerId);
+
+    const memberWorkspaces = await listUserWorkspaces(testEnv, memberId, org.id);
+    expect(memberWorkspaces.some((entry) => entry.id === workspace.id)).toBe(false);
+
+    const orgStub = testEnv.ORG.get(testEnv.ORG.idFromName(org.id));
+    const accessRows = await orgStub.listWorkspaceAccessRows();
+    expect(accessRows).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          workspace_id: workspace.id,
+          user_id: memberId,
+          access_level: 'none',
+        }),
+      ]),
+    );
+
+    await setWorkspaceAccess(testEnv, workspace.id, memberId, 'full', ownerId);
+    await expect(getWorkspaceAccess(testEnv, workspace.id, memberId)).resolves.toBe('full');
+    const rowsAfterGrant = await orgStub.listWorkspaceAccessRows();
+    expect(rowsAfterGrant).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          workspace_id: workspace.id,
+          user_id: memberId,
+          access_level: 'full',
+        }),
+      ]),
+    );
+  });
+
+  it('hydrates legacy WorkspaceDO integrations into OrgDO on read', async () => {
+    const email = testEmail();
+    const { userId } = await createUser(testEnv, email, 'password123', 'Legacy Integration Owner');
+    const { org } = await createOrg(testEnv, 'Legacy Integration Org', userId);
+    const [workspace] = await listUserWorkspaces(testEnv, userId, org.id);
+    expect(workspace).toBeDefined();
+
+    const workspaceStub = testEnv.WORKSPACE.get(testEnv.WORKSPACE.idFromName(workspace.id));
+    const integrationId = crypto.randomUUID();
+    await workspaceStub.createIntegration(
+      integrationId,
+      'airtable',
+      'Legacy Airtable',
+      'saas',
+      'api_key',
+      JSON.stringify({ base_id: 'app123' }),
+      'encrypted-secret',
+      userId,
+    );
+
+    const integrations = await getWorkspaceIntegrations(testEnv, workspace.id);
+    expect(integrations).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: integrationId,
+          name: 'Legacy Airtable',
+        }),
+      ]),
+    );
+
+    const orgStub = testEnv.ORG.get(testEnv.ORG.idFromName(org.id));
+    await expect(
+      orgStub.getWorkspaceIntegration(workspace.id, integrationId),
+    ).resolves.toMatchObject({
+      id: integrationId,
+      name: 'Legacy Airtable',
+    });
   });
 
   it('revokes workspace access when org membership is removed', async () => {
@@ -317,10 +483,8 @@ describe('Workspace DO (full-stack with DOs)', () => {
 
     expect(integration.has_credentials).toBe(true);
 
-    const workspaceStub = testEnv.WORKSPACE.get(testEnv.WORKSPACE.idFromName(workspace.id)) as DurableObjectStub<{
-      getIntegration: (id: string) => Promise<WorkspaceIntegrationRecord | null>;
-    }>;
-    const record = await workspaceStub.getIntegration(integration.id);
+    const orgStub = testEnv.ORG.get(testEnv.ORG.idFromName(org.id));
+    const record = await orgStub.getWorkspaceIntegration(workspace.id, integration.id);
     expect(record?.credentials_encrypted).toBeTruthy();
     expect(record?.credentials_encrypted).not.toBe('secret-key');
 
@@ -343,10 +507,8 @@ describe('Workspace DO (full-stack with DOs)', () => {
       config: {},
     });
 
-    const workspaceStub = testEnv.WORKSPACE.get(testEnv.WORKSPACE.idFromName(workspace.id)) as DurableObjectStub<{
-      getIntegration: (id: string) => Promise<WorkspaceIntegrationRecord | null>;
-    }>;
-    const record = await workspaceStub.getIntegration(integration.id);
+    const orgStub = testEnv.ORG.get(testEnv.ORG.idFromName(org.id));
+    const record = await orgStub.getWorkspaceIntegration(workspace.id, integration.id);
     expect(record?.credentials_encrypted).toBe('');
     expect(record?.auth_status).toBe('setup_incomplete');
     expect(record?.auth_error_code).toBe('AUTH_SETUP_INCOMPLETE');
@@ -435,10 +597,10 @@ describe('Workspace DO (full-stack with DOs)', () => {
     const workspace = workspaces[0];
     expect(workspace).toBeDefined();
 
-    await setWorkspaceAccess(testEnv, workspace.id, memberId, 'read_only', ownerId);
+    await setWorkspaceAccess(testEnv, workspace.id, memberId, 'none', ownerId);
     const members = await listWorkspaceMembers(testEnv, workspace.id);
     const record = members.find((entry) => entry.user_id === memberId);
-    expect(record?.access_level).toBe('read_only');
+    expect(record?.access_level).toBe('none');
   });
 
   it('logs access changes in workspace audit log', async () => {
@@ -455,13 +617,11 @@ describe('Workspace DO (full-stack with DOs)', () => {
     const workspace = workspaces[0];
     expect(workspace).toBeDefined();
 
-    await setWorkspaceAccess(testEnv, workspace.id, memberId, 'read_only', ownerId);
     await setWorkspaceAccess(testEnv, workspace.id, memberId, 'none', ownerId);
     await setWorkspaceAccess(testEnv, workspace.id, memberId, 'full', ownerId);
 
     const audit = await getWorkspaceAuditLog(testEnv, workspace.id);
     const actions = audit.map((entry) => entry.action);
-    expect(actions).toContain('access_granted');
-    expect(actions).toContain('access_changed');
+    expect(actions.filter((action) => action === 'workspace_access_changed').length).toBeGreaterThanOrEqual(2);
   });
 });

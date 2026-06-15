@@ -86,10 +86,10 @@ import {
   teamsMcpRpc,
 } from './teams-mcp.js';
 import type {
-  WorkspaceDO,
   WorkspaceIntegrationAuthStatus,
   WorkspaceIntegrationRecord,
 } from './workspace.js';
+import type { OrgDO } from './auth.js';
 import type { DataProxyEnv } from './data-proxy.js';
 
 type JsonValue =
@@ -102,7 +102,7 @@ type JsonValue =
 
 export interface ConnectionsRuntimeEnv extends DataProxyEnv {
   INTEGRATION_SECRET_KEY: string;
-  WORKSPACE: DurableObjectNamespace<WorkspaceDO>;
+  ORG: DurableObjectNamespace<OrgDO>;
 }
 
 export interface ConnectionsContext {
@@ -658,10 +658,9 @@ async function markConnectionAuthStatus(
   message: string
 ): Promise<void> {
   try {
-    const workspaceStub = env.WORKSPACE.get(
-      env.WORKSPACE.idFromName(context.workspaceId)
-    ) as DurableObjectStub<WorkspaceDO>;
-    await workspaceStub.updateIntegrationAuthStatus(
+    const orgStub = env.ORG.get(env.ORG.idFromName(context.orgId)) as unknown as OrgDO;
+    await orgStub.updateWorkspaceIntegrationAuthStatus(
+      context.workspaceId,
       record.id,
       status,
       code,
@@ -956,19 +955,17 @@ function resolveIntegration(records: WorkspaceIntegrationRecord[], query: string
 
 async function getWorkspaceIntegrations(
   env: ConnectionsRuntimeEnv,
-  workspaceId: string
+  context: ConnectionsContext
 ): Promise<WorkspaceIntegrationRecord[]> {
-  const workspaceStub = env.WORKSPACE.get(
-    env.WORKSPACE.idFromName(workspaceId)
-  ) as DurableObjectStub<WorkspaceDO>;
-  return workspaceStub.getIntegrations();
+  const orgStub = env.ORG.get(env.ORG.idFromName(context.orgId)) as unknown as OrgDO;
+  return orgStub.getWorkspaceIntegrations(context.workspaceId);
 }
 
 export async function listConnections(
   env: ConnectionsRuntimeEnv,
   context: ConnectionsContext
 ): Promise<ConnectionSummary[]> {
-  const records = await getWorkspaceIntegrations(env, context.workspaceId);
+  const records = await getWorkspaceIntegrations(env, context);
   return records.map((record) => summarizeConnection(record, context));
 }
 
@@ -977,7 +974,7 @@ export async function getConnection(
   context: ConnectionsContext,
   connection: string
 ): Promise<ConnectionSummary> {
-  const records = await getWorkspaceIntegrations(env, context.workspaceId);
+  const records = await getWorkspaceIntegrations(env, context);
   const resolved = resolveIntegration(records, connection);
   if (!resolved.ok) {
     throw Object.assign(new Error(resolved.error), {
@@ -1023,7 +1020,7 @@ export async function listConnectionTools(
   context: ConnectionsContext,
   connection: string
 ): Promise<unknown[]> {
-  const records = await getWorkspaceIntegrations(env, context.workspaceId);
+  const records = await getWorkspaceIntegrations(env, context);
   const resolved = resolveIntegration(records, connection);
   if (!resolved.ok) {
     throw Object.assign(new Error(resolved.error), {
@@ -1262,7 +1259,7 @@ async function callAuthenticatedConnectionFetch(
   connection: string,
   input: unknown
 ): Promise<unknown> {
-  const records = await getWorkspaceIntegrations(env, context.workspaceId);
+  const records = await getWorkspaceIntegrations(env, context);
   const resolved = resolveIntegration(records, connection);
   if (!resolved.ok) {
     throw Object.assign(new Error(resolved.error), {
@@ -1323,7 +1320,7 @@ async function callSlackConnectionTool(
   tool: string,
   input: Record<string, unknown> = {}
 ): Promise<unknown> {
-  const records = await getWorkspaceIntegrations(env, context.workspaceId);
+  const records = await getWorkspaceIntegrations(env, context);
   const resolved = resolveIntegration(records, connection);
   if (!resolved.ok) {
     throw Object.assign(new Error(resolved.error), {
@@ -1702,7 +1699,7 @@ export async function callConnectionTool(
   tool: string,
   input: Record<string, unknown> = {}
 ): Promise<unknown> {
-  const records = await getWorkspaceIntegrations(env, context.workspaceId);
+  const records = await getWorkspaceIntegrations(env, context);
   const resolved = resolveIntegration(records, connection);
   if (!resolved.ok) {
     throw Object.assign(new Error(resolved.error), {

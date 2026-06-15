@@ -20,10 +20,26 @@ import {
   isTransientDurableObjectRpcError,
   retryTransientDurableObjectRpc,
 } from "../../../../src/lib/do-rpc-retry.server";
+import { getAppIndexReadDatabase } from "../app-index-db.js";
 
 export type AuthResult = { session: SessionData } | { error: Response };
 
 const CHAT_WS_AUTH_RPC_TIMEOUT_MS = 2_000;
+const WORKSPACE_ORG_INDEX_PREFIX = "workspace_org:";
+
+async function getWorkspaceOrgId(
+  env: Env,
+  workspaceId: string,
+): Promise<string | null> {
+  const indexed = await env.APP_KV.get(`${WORKSPACE_ORG_INDEX_PREFIX}${workspaceId}`);
+  if (indexed) return indexed;
+  const appIndex = getAppIndexReadDatabase(env);
+  const orgId = appIndex ? await appIndex.getWorkspaceOrgId(workspaceId) : null;
+  if (orgId) {
+    await env.APP_KV.put(`${WORKSPACE_ORG_INDEX_PREFIX}${workspaceId}`, orgId);
+  }
+  return orgId;
+}
 
 class ChatWebSocketAuthRpcTimeoutError extends Error {
   // Picked up by isTransientDurableObjectRpcError so timeouts retry and
@@ -227,6 +243,12 @@ async function getLocalAuthBypassSession(
 
   if (workspaceId) {
     const workspaceStub = workspaceNs.get(workspaceNs.idFromName(workspaceId));
+    await orgStub.setWorkspaceAccess(
+      workspaceId,
+      LOCAL_AUTH_USER_ID,
+      "full",
+      LOCAL_AUTH_USER_ID,
+    );
     await workspaceStub.setMemberAccess(
       LOCAL_AUTH_USER_ID,
       "full",
@@ -335,8 +357,8 @@ export async function requireWorkspaceAccess(
     if (!(await orgStub.isMember(userId)))
       return { error: text("Forbidden", 403) };
 
-    const memberAccess = await wsStub.getMemberAccess(userId);
-    if ((memberAccess?.access_level ?? "full") !== "full") {
+    const workspaceAccess = await orgStub.getWorkspaceAccess(workspaceId, userId);
+    if (workspaceAccess !== "full") {
       return { error: text("Forbidden", 403) };
     }
 
@@ -424,24 +446,37 @@ export async function requireChatWebSocketAccess(
 
   try {
     const wsStub = getWorkspaceStub(env, workspaceId);
-    const { info: wsInfo, memberAccess } = await chatWsAuthRpc(
-      "WorkspaceDO.getInfoAndMemberAccess",
-      () => wsStub.getInfoAndMemberAccess(userId),
+    const resolvedOrgId = await chatWsAuthRpc(
+      "workspace_org_index.get",
+      () => getWorkspaceOrgId(env, workspaceId),
+    );
+    const workspaceOrgId = resolvedOrgId || sessionOrgId;
+    const workspaceOrgStub = getOrgStub(env, workspaceOrgId);
+    const wsInfo = await chatWsAuthRpc(
+      "OrgDO.getWorkspaceRecord",
+      () => workspaceOrgStub.getWorkspaceRecord(workspaceId),
     );
 
     if (!wsInfo || wsInfo.archived) {
       recordDenied("workspace_not_found", 404, {
-        orgId: sessionOrgId,
+        orgId: workspaceOrgId,
         workspaceId,
         userId,
       });
       return { error: text("Workspace not found", 404) };
     }
 
+    const orgId = wsInfo.org_id;
+    const orgStub = orgId === workspaceOrgId ? workspaceOrgStub : getOrgStub(env, orgId);
+    const workspaceAccess = await chatWsAuthRpc(
+      "OrgDO.getWorkspaceAccess",
+      () => orgStub.getWorkspaceAccess(wsInfo.id, userId),
+    );
+
     // Deny on known restricted access before any further RPC: if the org
     // call below fails transiently we degrade, and a denial we already hold
     // must never be converted into a degraded (fail-open) upgrade.
-    if ((memberAccess?.access_level ?? "full") !== "full") {
+    if (workspaceAccess !== "full") {
       recordDenied("member_access_forbidden", 403, {
         orgId: wsInfo.org_id,
         workspaceId,
@@ -450,8 +485,6 @@ export async function requireChatWebSocketAccess(
       return { error: text("Forbidden", 403) };
     }
 
-    const orgId = wsInfo.org_id;
-    const orgStub = getOrgStub(env, orgId);
     const orgValidation = await chatWsAuthRpc(
       "OrgDO.validateChatThreadAccess",
       () => orgStub.validateChatThreadAccess(userId, wsInfo.id, threadId),

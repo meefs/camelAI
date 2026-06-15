@@ -35,19 +35,23 @@ function buildEnv(overrides: {
   orgStub?: Record<string, unknown>;
   userStub?: Record<string, unknown>;
 }) {
-  const workspaceStub = overrides.workspaceStub ?? {
-    getInfoAndMemberAccess: vi.fn().mockResolvedValue({
-      info: { id: URL_WORKSPACE_ID, org_id: URL_ORG_ID, archived: false },
-      memberAccess: { access_level: 'full' },
-    }),
+  const workspaceStub = {
+    ...overrides.workspaceStub,
   };
-  const orgStub = overrides.orgStub ?? {
+  const orgStub = {
+    getWorkspaceRecord: vi.fn().mockResolvedValue({
+      id: URL_WORKSPACE_ID,
+      org_id: URL_ORG_ID,
+      archived: false,
+    }),
+    getWorkspaceAccess: vi.fn().mockResolvedValue('full'),
     validateChatThreadAccess: vi.fn().mockResolvedValue({
       ok: true,
       orgId: URL_ORG_ID,
       orgSlug: 'url-org',
       threadId: THREAD_ID,
     }),
+    ...overrides.orgStub,
   };
   const userStub = overrides.userStub ?? {
     getSessionInvalidatedAt: vi.fn().mockResolvedValue(null),
@@ -120,14 +124,15 @@ describe('requireChatWebSocketAccess', () => {
   });
 
   it('retries transient workspace RPC failures before succeeding', async () => {
-    const getInfoAndMemberAccess = vi
+    const getWorkspaceRecord = vi
       .fn()
       .mockRejectedValueOnce(transientError())
       .mockResolvedValue({
-        info: { id: URL_WORKSPACE_ID, org_id: URL_ORG_ID, archived: false },
-        memberAccess: { access_level: 'full' },
+        id: URL_WORKSPACE_ID,
+        org_id: URL_ORG_ID,
+        archived: false,
       });
-    const { env } = buildEnv({ workspaceStub: { getInfoAndMemberAccess } });
+    const { env } = buildEnv({ orgStub: { getWorkspaceRecord } });
     const req = await buildRequest();
 
     const access = await requireChatWebSocketAccess(
@@ -139,13 +144,13 @@ describe('requireChatWebSocketAccess', () => {
 
     expect('error' in access).toBe(false);
     expect('degraded' in access).toBe(false);
-    expect(getInfoAndMemberAccess).toHaveBeenCalledTimes(2);
+    expect(getWorkspaceRecord).toHaveBeenCalledTimes(2);
   });
 
   it('returns degraded access when authorization RPCs stay unreachable', async () => {
     const { env } = buildEnv({
-      workspaceStub: {
-        getInfoAndMemberAccess: vi.fn().mockRejectedValue(transientError()),
+      orgStub: {
+        getWorkspaceRecord: vi.fn().mockRejectedValue(transientError()),
       },
     });
     const req = await buildRequest();
@@ -165,8 +170,8 @@ describe('requireChatWebSocketAccess', () => {
 
   it('fails closed on non-transient authorization errors', async () => {
     const { env } = buildEnv({
-      workspaceStub: {
-        getInfoAndMemberAccess: vi
+      orgStub: {
+        getWorkspaceRecord: vi
           .fn()
           .mockRejectedValue(new Error('boom')),
       },
@@ -187,13 +192,8 @@ describe('requireChatWebSocketAccess', () => {
 
   it('denies known restricted member access even when the org RPC stays unreachable', async () => {
     const { env } = buildEnv({
-      workspaceStub: {
-        getInfoAndMemberAccess: vi.fn().mockResolvedValue({
-          info: { id: URL_WORKSPACE_ID, org_id: URL_ORG_ID, archived: false },
-          memberAccess: { access_level: 'restricted' },
-        }),
-      },
       orgStub: {
+        getWorkspaceAccess: vi.fn().mockResolvedValue('none'),
         validateChatThreadAccess: vi.fn().mockRejectedValue(transientError()),
       },
     });

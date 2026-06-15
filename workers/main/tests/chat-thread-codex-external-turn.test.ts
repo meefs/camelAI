@@ -23,6 +23,53 @@ function r2Object(content: string, contentType: string) {
   };
 }
 
+function createChannelOrgNamespace({
+  billingPlan = 'starter',
+  billingStatus = 'active',
+  thread = {
+    id: 'thread1',
+    source: 'web',
+    channel_kind: null,
+    channel_connection_id: null,
+  },
+  recordThreadChannelUsed = vi.fn(async () => null),
+  workspaceInfo = {
+    id: 'workspace1',
+    name: 'Test Workspace',
+    email_handle: 'workspace-agent',
+    archived: false,
+  },
+  integrations = [] as any[],
+  integration = null as any,
+}: {
+  billingPlan?: string;
+  billingStatus?: string;
+  thread?: any;
+  recordThreadChannelUsed?: ReturnType<typeof vi.fn>;
+  workspaceInfo?: any;
+  integrations?: any[];
+  integration?: any;
+} = {}) {
+  const orgStub = {
+    getInfo: vi.fn(async () => ({
+      billing_plan: billingPlan,
+      billing_status: billingStatus,
+    })),
+    getThread: vi.fn(async () => thread),
+    recordThreadChannelUsed,
+    getWorkspaceRecord: vi.fn(async () => workspaceInfo),
+    getWorkspaceIntegrations: vi.fn(async () => integrations),
+    getWorkspaceIntegration: vi.fn(async (_workspaceId: string, integrationId: string) =>
+      integration ?? integrations.find((candidate) => candidate.id === integrationId) ?? null,
+    ),
+  };
+  return {
+    idFromName: vi.fn((id: string) => id),
+    get: vi.fn(() => orgStub),
+    _stub: orgStub,
+  };
+}
+
 describe('ChatThreadDO Codex turn handling', () => {
   function createPiEventFake() {
     const events: any[] = [];
@@ -3339,22 +3386,7 @@ describe('ChatThreadDO Codex turn handling', () => {
       EMAIL: { send: sendEmailMock },
       WORKSPACE_EMAIL_DOMAIN: 'camelai.dev',
       APP_KV: { get: vi.fn(async () => null), put: kvPutMock },
-      ORG: {
-        idFromName: vi.fn((id: string) => id),
-        get: vi.fn(() => ({
-          getInfo: vi.fn(async () => ({
-            billing_plan: 'starter',
-            billing_status: 'active',
-          })),
-          getThread: vi.fn(async () => ({
-            id: 'thread1',
-            source: 'web',
-            channel_kind: null,
-            channel_connection_id: null,
-          })),
-          recordThreadChannelUsed,
-        })),
-      },
+      ORG: createChannelOrgNamespace({ recordThreadChannelUsed }),
       WORKSPACE: {
         idFromName: vi.fn((id: string) => id),
         get: vi.fn(() => ({
@@ -3431,17 +3463,7 @@ describe('ChatThreadDO Codex turn handling', () => {
       EMAIL: { send: sendEmailMock },
       WORKSPACE_EMAIL_DOMAIN: 'camelai.dev',
       APP_KV: { get: kvGetMock, put: kvPutMock },
-      ORG: {
-        idFromName: vi.fn((id: string) => id),
-        get: vi.fn(() => ({
-          getInfo: vi.fn(async () => ({
-            billing_plan: 'starter',
-            billing_status: 'active',
-          })),
-          getThread: vi.fn(async () => thread),
-          recordThreadChannelUsed,
-        })),
-      },
+      ORG: createChannelOrgNamespace({ thread, recordThreadChannelUsed }),
       WORKSPACE: {
         idFromName: vi.fn((id: string) => id),
         get: vi.fn(() => ({
@@ -3522,17 +3544,7 @@ describe('ChatThreadDO Codex turn handling', () => {
       EMAIL: { send: sendEmailMock },
       WORKSPACE_EMAIL_DOMAIN: 'camelai.dev',
       APP_KV: { get: kvGetMock, put: kvPutMock },
-      ORG: {
-        idFromName: vi.fn((id: string) => id),
-        get: vi.fn(() => ({
-          getInfo: vi.fn(async () => ({
-            billing_plan: 'starter',
-            billing_status: 'active',
-          })),
-          getThread: vi.fn(async () => thread),
-          recordThreadChannelUsed,
-        })),
-      },
+      ORG: createChannelOrgNamespace({ thread, recordThreadChannelUsed }),
       WORKSPACE: {
         idFromName: vi.fn((id: string) => id),
         get: vi.fn(() => ({
@@ -3605,17 +3617,7 @@ describe('ChatThreadDO Codex turn handling', () => {
       EMAIL: { send: sendEmailMock },
       WORKSPACE_EMAIL_DOMAIN: 'camelai.dev',
       APP_KV: { get: vi.fn(async () => null), put: kvPutMock },
-      ORG: {
-        idFromName: vi.fn((id: string) => id),
-        get: vi.fn(() => ({
-          getInfo: vi.fn(async () => ({
-            billing_plan: 'starter',
-            billing_status: 'active',
-          })),
-          getThread: vi.fn(async () => thread),
-          recordThreadChannelUsed,
-        })),
-      },
+      ORG: createChannelOrgNamespace({ thread, recordThreadChannelUsed }),
       WORKSPACE: {
         idFromName: vi.fn((id: string) => id),
         get: vi.fn(() => ({
@@ -3689,17 +3691,7 @@ describe('ChatThreadDO Codex turn handling', () => {
         }),
         put: vi.fn(async () => undefined),
       },
-      ORG: {
-        idFromName: vi.fn((id: string) => id),
-        get: vi.fn(() => ({
-          getInfo: vi.fn(async () => ({
-            billing_plan: 'starter',
-            billing_status: 'active',
-          })),
-          getThread: vi.fn(async () => thread),
-          recordThreadChannelUsed,
-        })),
-      },
+      ORG: createChannelOrgNamespace({ thread, recordThreadChannelUsed }),
       WORKSPACE: {
         idFromName: vi.fn((id: string) => id),
         get: vi.fn(() => ({
@@ -3767,17 +3759,7 @@ describe('ChatThreadDO Codex turn handling', () => {
       EMAIL: { send: sendEmailMock },
       WORKSPACE_EMAIL_DOMAIN: 'camelai.dev',
       APP_KV: { get: vi.fn(async () => null), put: kvPutMock },
-      ORG: {
-        idFromName: vi.fn((id: string) => id),
-        get: vi.fn(() => ({
-          getInfo: vi.fn(async () => ({
-            billing_plan: 'starter',
-            billing_status: 'active',
-          })),
-          getThread: vi.fn(async () => thread),
-          recordThreadChannelUsed,
-        })),
-      },
+      ORG: createChannelOrgNamespace({ thread, recordThreadChannelUsed }),
       WORKSPACE: {
         idFromName: vi.fn((id: string) => id),
         get: vi.fn(() => ({
@@ -3834,17 +3816,7 @@ describe('ChatThreadDO Codex turn handling', () => {
       EMAIL: { send: sendEmailMock },
       WORKSPACE_EMAIL_DOMAIN: 'camelai.dev',
       APP_KV: { get: vi.fn(async () => null), put: kvPutMock },
-      ORG: {
-        idFromName: vi.fn((id: string) => id),
-        get: vi.fn(() => ({
-          getInfo: vi.fn(async () => ({
-            billing_plan: 'starter',
-            billing_status: 'active',
-          })),
-          getThread: vi.fn(async () => thread),
-          recordThreadChannelUsed,
-        })),
-      },
+      ORG: createChannelOrgNamespace({ thread, recordThreadChannelUsed }),
       WORKSPACE: {
         idFromName: vi.fn((id: string) => id),
         get: vi.fn(() => ({
@@ -3965,15 +3937,18 @@ describe('ChatThreadDO Codex turn handling', () => {
         put: vi.fn(async () => undefined),
         delete: vi.fn(async () => undefined),
       },
-      ORG: {
-        idFromName: vi.fn((id: string) => id),
-        get: vi.fn(() => ({
-          getThread: vi.fn(async () => ({
-            id: 'telegram-thread',
-            title: 'Product team',
-          })),
-        })),
-      },
+      ORG: createChannelOrgNamespace({
+        thread: { id: 'telegram-thread', title: 'Product team' },
+        integration: {
+          id: 'telegram-int',
+          integration_type: 'telegram',
+          name: 'Product Telegram',
+          config: JSON.stringify({
+            chat_id: '12345',
+            chat_title: 'Product team',
+          }),
+        },
+      }),
       CHAT_THREAD: {
         idFromName: vi.fn((id: string) => id),
         get: vi.fn(() => ({ appendChannelHistoryEvent })),
@@ -6392,17 +6367,7 @@ describe('ChatThreadDO Codex turn handling', () => {
       EMAIL: { send },
       APP_KV: { get: vi.fn(async () => null), put: kvPutMock },
       R2_BUCKET: { get },
-      ORG: {
-        idFromName: vi.fn((id: string) => id),
-        get: vi.fn(() => ({
-          getInfo: vi.fn(async () => ({
-            billing_plan: 'starter',
-            billing_status: 'active',
-          })),
-          getThread: vi.fn(async () => thread),
-          recordThreadChannelUsed,
-        })),
-      },
+      ORG: createChannelOrgNamespace({ thread, recordThreadChannelUsed }),
       WORKSPACE_EMAIL_DOMAIN: 'camelai.dev',
       WORKSPACE: {
         idFromName: vi.fn((id: string) => id),
@@ -6526,10 +6491,15 @@ describe('ChatThreadDO Codex turn handling', () => {
     }));
     fake.env = {
       INTEGRATION_SECRET_KEY: 'secret',
-      ORG: {
-        idFromName: vi.fn((id: string) => id),
-        get: vi.fn(() => ({ recordThreadChannelUsed })),
-      },
+      ORG: createChannelOrgNamespace({
+        recordThreadChannelUsed,
+        integration: {
+          id: 'slack-int',
+          integration_type: 'slack',
+          config: JSON.stringify({ team_id: 'T1' }),
+          credentials_encrypted: encrypted,
+        },
+      }),
       R2_BUCKET: { get },
       WORKSPACE: {
         idFromName: vi.fn((id: string) => id),
@@ -6600,10 +6570,14 @@ describe('ChatThreadDO Codex turn handling', () => {
     }));
     fake.env = {
       TELEGRAM_BOT_TOKEN: 'bot-token',
-      ORG: {
-        idFromName: vi.fn((id: string) => id),
-        get: vi.fn(() => ({ recordThreadChannelUsed })),
-      },
+      ORG: createChannelOrgNamespace({
+        recordThreadChannelUsed,
+        integration: {
+          id: 'telegram-int',
+          integration_type: 'telegram',
+          config: JSON.stringify({ chat_id: '12345' }),
+        },
+      }),
       R2_BUCKET: { get },
     };
 
@@ -6653,10 +6627,13 @@ describe('ChatThreadDO Codex turn handling', () => {
     fake.getOriginatingChannelThread = vi.fn(async () => null);
     fake.env = {
       INTEGRATION_SECRET_KEY: 'secret',
-      ORG: {
-        idFromName: vi.fn((id: string) => id),
-        get: vi.fn(() => ({ recordThreadChannelUsed })),
-      },
+      ORG: createChannelOrgNamespace({
+        recordThreadChannelUsed,
+        integrations: [
+          { id: 'wrong', integration_type: 'slack', credentials_encrypted: wrongEncrypted },
+          { id: 'right', integration_type: 'slack', credentials_encrypted: rightEncrypted },
+        ],
+      }),
       R2_BUCKET: { get: vi.fn() },
       WORKSPACE: {
         idFromName: vi.fn((id: string) => id),
@@ -6699,6 +6676,7 @@ describe('ChatThreadDO Codex turn handling', () => {
     fake.getOriginatingChannelThread = vi.fn(async () => null);
     fake.env = {
       TELEGRAM_BOT_TOKEN: 'bot-token',
+      ORG: createChannelOrgNamespace({ integrations: [] }),
       R2_BUCKET: { get: vi.fn() },
       WORKSPACE: {
         idFromName: vi.fn((id: string) => id),
@@ -6737,6 +6715,13 @@ describe('ChatThreadDO Codex turn handling', () => {
       fake.getOriginatingChannelThread = vi.fn(async () => null);
       fake.env = {
         TELEGRAM_BOT_TOKEN: 'bot-token',
+        ORG: createChannelOrgNamespace({
+          integration: {
+            id: 'telegram-int',
+            integration_type: 'telegram',
+            config: JSON.stringify({ chat_id: '12345' }),
+          },
+        }),
         R2_BUCKET: { get: vi.fn() },
         WORKSPACE: {
           idFromName: vi.fn((id: string) => id),
@@ -6794,6 +6779,24 @@ describe('ChatThreadDO Codex turn handling', () => {
     fake.getOriginatingChannelThread = vi.fn(async () => null);
     fake.env = {
       TELEGRAM_BOT_TOKEN: 'bot-token',
+      ORG: createChannelOrgNamespace({
+        thread: { id: 'telegram-thread', title: 'Product team' },
+        recordThreadChannelUsed,
+        integration: {
+          id: 'telegram-int',
+          integration_type: 'telegram',
+          name: 'Product Telegram',
+          config: JSON.stringify({
+            chat_id: '12345',
+            chat_title: 'Product team',
+          }),
+        },
+        integrations: [{
+          id: 'telegram-int',
+          integration_type: 'telegram',
+          config: JSON.stringify({ chat_id: '12345' }),
+        }],
+      }),
       R2_BUCKET: { get: vi.fn() },
       WORKSPACE: {
         idFromName: vi.fn((id: string) => id),
@@ -6815,16 +6818,6 @@ describe('ChatThreadDO Codex turn handling', () => {
         put: vi.fn(async () => undefined),
         delete: vi.fn(async () => undefined),
       },
-      ORG: {
-        idFromName: vi.fn((id: string) => id),
-        get: vi.fn(() => ({
-          getThread: vi.fn(async () => ({
-            id: 'telegram-thread',
-            title: 'Product team',
-          })),
-          recordThreadChannelUsed,
-        })),
-      },
       CHAT_THREAD: {
         idFromName: vi.fn((id: string) => id),
         get: vi.fn(() => ({ appendChannelHistoryEvent })),
@@ -6837,7 +6830,7 @@ describe('ChatThreadDO Codex turn handling', () => {
       { text: 'Hello' },
     );
 
-    expect(getIntegration).toHaveBeenCalledWith('telegram-int');
+    expect(getIntegration).not.toHaveBeenCalled();
     expect(result.details).toMatchObject({
       status: 'sent',
       channel: 'telegram',
@@ -6870,6 +6863,19 @@ describe('ChatThreadDO Codex turn handling', () => {
     fake.getOriginatingChannelThread = vi.fn(async () => null);
     fake.env = {
       TELEGRAM_BOT_TOKEN: 'bot-token',
+      ORG: createChannelOrgNamespace({
+        thread: { id: 'telegram-thread', title: 'Product team' },
+        recordThreadChannelUsed,
+        integration: {
+          id: 'telegram-int',
+          integration_type: 'telegram',
+          name: 'Product Telegram',
+          config: JSON.stringify({
+            chat_id: '12345',
+            chat_title: 'Product team',
+          }),
+        },
+      }),
       R2_BUCKET: { get: vi.fn() },
       WORKSPACE: {
         idFromName: vi.fn((id: string) => id),
@@ -6893,16 +6899,6 @@ describe('ChatThreadDO Codex turn handling', () => {
         ),
         put: vi.fn(async () => undefined),
         delete: vi.fn(async () => undefined),
-      },
-      ORG: {
-        idFromName: vi.fn((id: string) => id),
-        get: vi.fn(() => ({
-          getThread: vi.fn(async () => ({
-            id: 'telegram-thread',
-            title: 'Product team',
-          })),
-          recordThreadChannelUsed,
-        })),
       },
       CHAT_THREAD: {
         idFromName: vi.fn((id: string) => id),
@@ -6996,10 +6992,16 @@ describe('ChatThreadDO Codex turn handling', () => {
 
     const fake = Object.create(ChatThreadDO.prototype) as any;
     fake.getOriginatingChannelThread = vi.fn(async () => null);
-    fake.env = {
-      TELEGRAM_BOT_TOKEN: 'bot-token',
-      R2_BUCKET: { get: vi.fn() },
-      WORKSPACE: {
+      fake.env = {
+        TELEGRAM_BOT_TOKEN: 'bot-token',
+        ORG: createChannelOrgNamespace({
+          integration: {
+            integration_type: 'telegram',
+            config: JSON.stringify({ chat_id: '12345' }),
+          },
+        }),
+        R2_BUCKET: { get: vi.fn() },
+        WORKSPACE: {
         idFromName: vi.fn((id: string) => id),
         get: vi.fn(() => ({
           getIntegration: vi.fn(async () => ({

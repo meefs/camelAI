@@ -6,6 +6,7 @@ const getAuthEnvMock = vi.fn();
 const getRecentThreadsMock = vi.fn();
 const getWorkspaceModelPickerStateMock = vi.fn();
 const getOrgBillingOverviewMock = vi.fn();
+const listWorkspaceIntegrationRecordsMock = vi.fn();
 
 vi.mock('@/lib/wait-until', () => ({
   waitUntil: vi.fn(),
@@ -31,6 +32,7 @@ vi.mock('@/lib/auth-helpers', () => ({
 
 vi.mock('@/lib/auth-do', () => ({
   getWorkerScript: vi.fn(),
+  listWorkspaceIntegrationRecords: listWorkspaceIntegrationRecordsMock,
 }));
 
 vi.mock('@/lib/chat-do.server', () => ({
@@ -78,6 +80,7 @@ describe('new chat loader sales prompt handling', () => {
       defaultModel: 'sonnet',
     });
     getOrgBillingOverviewMock.mockResolvedValue(null);
+    listWorkspaceIntegrationRecordsMock.mockResolvedValue([]);
   });
 
   it('consumes prompt_key from KV and returns a normalized welcome prompt', async () => {

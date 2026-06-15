@@ -29,23 +29,36 @@ function integration(overrides: Partial<WorkspaceIntegrationRecord>): WorkspaceI
 function envWith(records: WorkspaceIntegrationRecord[]): ConnectionsRuntimeEnv & {
   SANDBOX_PROXY_SECRET: string;
   PROJECT_RUNTIME_PROXY_SECRET: string;
+  WORKSPACE: {
+    idFromName(name: string): string;
+    get(): { getInfo(): Promise<{ id: string; org_id: string }> };
+  };
   WORKSPACE_FS: {
     idFromName(name: string): string;
     get(): { getProject(projectId: string): Promise<{ id: string } | null> };
   };
 } {
+  const orgStub = {
+    getWorkspaceIntegrations: async () => records,
+    getWorkspaceIntegration: async (_workspaceId: string, integrationId: string) =>
+      records.find((record) => record.id === integrationId) ?? null,
+    updateWorkspaceIntegrationAuthStatus: async () => {},
+  };
+
   return {
     INTEGRATION_SECRET_KEY: 'test-secret',
     SANDBOX_PROXY_SECRET: 'sandbox-secret',
     PROJECT_RUNTIME_PROXY_SECRET: 'runtime-secret',
+    ORG: {
+      idFromName: (name: string) => name,
+      get: () => orgStub,
+    } as unknown as ConnectionsRuntimeEnv['ORG'],
     WORKSPACE: {
       idFromName: (name: string) => name,
       get: () => ({
         getInfo: async () => ({ id: '00000000-0000-0000-0000-000000000001', org_id: 'org_project' }),
-        getIntegrations: async () => records,
-        updateIntegrationAuthStatus: async () => {},
       }),
-    } as unknown as ConnectionsRuntimeEnv['WORKSPACE'],
+    },
     WORKSPACE_FS: {
       idFromName: (name: string) => name,
       get: () => ({
@@ -61,6 +74,10 @@ function trackingEnvWith(
 ): ConnectionsRuntimeEnv & {
   SANDBOX_PROXY_SECRET: string;
   PROJECT_RUNTIME_PROXY_SECRET: string;
+  WORKSPACE: {
+    idFromName(name: string): string;
+    get(): { getInfo(): Promise<{ id: string; org_id: string }> };
+  };
   WORKSPACE_FS: {
     idFromName(name: string): string;
     get(): { getProject(projectId: string): Promise<{ id: string } | null> };
@@ -76,10 +93,8 @@ function trackingEnvWith(
       },
       get: () => ({
         getInfo: async () => ({ id: '00000000-0000-0000-0000-000000000001', org_id: 'org_project' }),
-        getIntegrations: async () => records,
-        updateIntegrationAuthStatus: async () => {},
       }),
-    } as unknown as ConnectionsRuntimeEnv['WORKSPACE'],
+    },
   };
 }
 
@@ -264,7 +279,6 @@ describe('connections RPC route', () => {
 
     expect(response.status).toBe(200);
     expect(workspaceNames).toEqual([
-      '00000000-0000-0000-0000-000000000001',
       '00000000-0000-0000-0000-000000000001',
     ]);
     expect(workspaceNames).not.toContain('ws_forged');

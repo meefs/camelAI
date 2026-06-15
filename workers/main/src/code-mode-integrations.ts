@@ -1,4 +1,4 @@
-import type { WorkspaceDO } from "./workspace";
+import type { OrgDO } from "./auth";
 import type { ConnectionSetupResponse } from "./chat-thread-browser-prompts";
 import type { IntegrationCategory } from "../../../src/types";
 import { encryptCredentials } from "../../../src/lib/integration-crypto";
@@ -24,7 +24,8 @@ interface CodeModeIntegrationsEnv {
 
 interface CodeModeIntegrationsOptions {
   env: CodeModeIntegrationsEnv;
-  workspaceStub: DurableObjectStub<WorkspaceDO>;
+  orgStub: DurableObjectStub<OrgDO>;
+  workspaceId: string;
   userId?: string;
   promptConnectionSetup: (input: {
     integrationId?: string;
@@ -123,7 +124,9 @@ export class CodeModeIntegrations {
 
   async list(args: Record<string, unknown>): Promise<unknown> {
     const category = typeof args.category === "string" ? args.category : "";
-    const rawIntegrations = await this.options.workspaceStub.getIntegrations();
+    const rawIntegrations = await this.options.orgStub.getWorkspaceIntegrations(
+      this.options.workspaceId,
+    );
     const integrations = rawIntegrations.map((record) => {
       let parsedConfig: Record<string, unknown> = {};
       try {
@@ -268,7 +271,8 @@ export class CodeModeIntegrations {
       ? await encryptCredentials(credentials, this.options.env.INTEGRATION_SECRET_KEY)
       : "";
     const integrationId = crypto.randomUUID();
-    await this.options.workspaceStub.createIntegration(
+    await this.options.orgStub.createWorkspaceIntegration(
+      this.options.workspaceId,
       integrationId,
       integrationType,
       name,
@@ -311,7 +315,10 @@ export class CodeModeIntegrations {
       credentials: Record<string, unknown>;
     },
   ): Promise<unknown> {
-    const existing = await this.options.workspaceStub.getIntegration(integrationId);
+    const existing = await this.options.orgStub.getWorkspaceIntegration(
+      this.options.workspaceId,
+      integrationId,
+    );
     if (!existing) {
       return { success: false, error: `Connection not found: ${integrationId}` };
     }
@@ -368,7 +375,8 @@ export class CodeModeIntegrations {
         : "";
     }
 
-    await this.options.workspaceStub.updateIntegration(
+    await this.options.orgStub.updateWorkspaceIntegration(
+      this.options.workspaceId,
       integrationId,
       updates,
       this.options.userId || "system",
@@ -405,7 +413,10 @@ export class CodeModeIntegrations {
         ? args.connection_id.trim()
         : "";
     const existing = integrationId
-      ? await this.options.workspaceStub.getIntegration(integrationId)
+      ? await this.options.orgStub.getWorkspaceIntegration(
+          this.options.workspaceId,
+          integrationId,
+        )
       : null;
     if (integrationId && !existing) {
       return { success: false, error: `Connection not found: ${integrationId}` };

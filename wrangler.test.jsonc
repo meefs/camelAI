@@ -46,8 +46,7 @@
 				{ "name": "SLACK_TEAM_REGISTRY", "class_name": "SlackTeamRegistryDO" },
 				{ "name": "WORKSPACE", "class_name": "WorkspaceDO" },
 				{ "name": "WORKSPACE_CRON", "class_name": "WorkspaceCronDO" },
-				{ "name": "WORKSPACE_FS", "class_name": "WorkspaceFilesystemDO" },
-				{ "name": "WORKER_LOGS", "class_name": "WorkerLogsDO" }
+				{ "name": "WORKSPACE_FS", "class_name": "WorkspaceFilesystemDO" }
 			]
 		},
 	"workflows": [
@@ -76,7 +75,6 @@
 		{ "tag": "v6", "deleted_classes": ["AdminIndexDO"] },
 		{ "tag": "v7", "new_sqlite_classes": ["TelegramRegistryDO", "SlackTeamRegistryDO"] },
 			{ "tag": "v8", "new_sqlite_classes": ["WorkspaceFilesystemDO"] },
-			{ "tag": "v9", "new_sqlite_classes": ["MigrationPlanningAgent"] },
-			{ "tag": "v10", "new_sqlite_classes": ["WorkerLogsDO"] }
+			{ "tag": "v9", "new_sqlite_classes": ["MigrationPlanningAgent"] }
 		]
 	}

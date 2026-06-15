@@ -99,10 +99,10 @@ import {
   teamsMcpRpc,
 } from '../teams-mcp.js';
 import type {
-  WorkspaceDO,
   WorkspaceIntegrationAuthStatus,
   WorkspaceIntegrationRecord,
 } from '../workspace.js';
+import type { OrgDO } from '../auth.js';
 
 type JsonValue =
   | null
@@ -416,7 +416,8 @@ function providerSetupStatus(httpStatus: number, message: string): WorkspaceInte
 }
 
 async function markIntegrationAuthStatus(
-  workspaceStub: DurableObjectStub<WorkspaceDO>,
+  orgStub: DurableObjectStub<OrgDO>,
+  workspaceId: string,
   record: WorkspaceIntegrationRecord,
   status: WorkspaceIntegrationAuthStatus,
   code: string,
@@ -424,7 +425,8 @@ async function markIntegrationAuthStatus(
   actorId?: string
 ): Promise<void> {
   try {
-    await workspaceStub.updateIntegrationAuthStatus(
+    await orgStub.updateWorkspaceIntegrationAuthStatus(
+      workspaceId,
       record.id,
       status,
       code,
@@ -596,13 +598,14 @@ function resolveIntegration(records: WorkspaceIntegrationRecord[], query: string
 }
 
 async function resolveConnectedIntegration(
-  workspaceStub: DurableObjectStub<WorkspaceDO>,
+  orgStub: DurableObjectStub<OrgDO>,
+  workspaceId: string,
   integration: string
 ): Promise<
   | { ok: true; record: WorkspaceIntegrationRecord }
   | { ok: false; status: number; payload: Record<string, unknown> }
 > {
-  const records = await workspaceStub.getIntegrations();
+  const records = await orgStub.getWorkspaceIntegrations(workspaceId);
   const { record, ambiguous } = resolveIntegration(records, integration);
   if (ambiguous.length > 0) {
     return {
@@ -628,11 +631,11 @@ async function resolveConnectedIntegration(
 }
 
 async function listConnectedIntegrations(
-  workspaceStub: DurableObjectStub<WorkspaceDO>,
+  orgStub: DurableObjectStub<OrgDO>,
   args: IntegrationToolArgs,
-  workspaceId?: string
+  workspaceId: string
 ): Promise<Record<string, unknown>> {
-  const records = await workspaceStub.getIntegrations();
+  const records = await orgStub.getWorkspaceIntegrations(workspaceId);
   const integrations = records
     .map((record) => summarizeIntegration(record, workspaceId))
     .filter((integration) => !args.category || integration.category === args.category);
@@ -644,15 +647,15 @@ async function listConnectedIntegrations(
 }
 
 async function getConnectedIntegration(
-  workspaceStub: DurableObjectStub<WorkspaceDO>,
+  orgStub: DurableObjectStub<OrgDO>,
   args: IntegrationToolArgs,
-  workspaceId?: string
+  workspaceId: string
 ): Promise<Record<string, unknown>> {
   if (!args.integration) {
     throw new Error('integration is required');
   }
 
-  const records = await workspaceStub.getIntegrations();
+  const records = await orgStub.getWorkspaceIntegrations(workspaceId);
   const { record, ambiguous } = resolveIntegration(records, args.integration);
   if (ambiguous.length > 0) {
     return {
@@ -677,11 +680,11 @@ async function getConnectedIntegration(
 }
 
 async function listMcpServers(
-  workspaceStub: DurableObjectStub<WorkspaceDO>,
+  orgStub: DurableObjectStub<OrgDO>,
   args: IntegrationToolArgs,
-  workspaceId?: string
+  workspaceId: string
 ): Promise<Record<string, unknown>> {
-  const records = await workspaceStub.getIntegrations();
+  const records = await orgStub.getWorkspaceIntegrations(workspaceId);
   const servers = records
     .filter((record) => !args.category || record.category === args.category)
     .map((record) => nativeMcpConnection(record, workspaceId))
@@ -694,11 +697,11 @@ async function listMcpServers(
 }
 
 async function getMcpServer(
-  workspaceStub: DurableObjectStub<WorkspaceDO>,
+  orgStub: DurableObjectStub<OrgDO>,
   args: IntegrationToolArgs,
-  workspaceId?: string
+  workspaceId: string
 ): Promise<Record<string, unknown>> {
-  const result = await getConnectedIntegration(workspaceStub, args, workspaceId);
+  const result = await getConnectedIntegration(orgStub, args, workspaceId);
   if (!result.found) return result;
 
   const integration = result.integration as Record<string, unknown>;
@@ -743,9 +746,9 @@ function listAvailableIntegrationTypes(args: IntegrationToolArgs): Record<string
 }
 
 async function callTool(
-  workspaceStub: DurableObjectStub<WorkspaceDO>,
+  orgStub: DurableObjectStub<OrgDO>,
   params: ToolCallParams,
-  workspaceId?: string
+  workspaceId: string
 ): Promise<Record<string, unknown>> {
   const args = (params.arguments && typeof params.arguments === 'object'
     ? params.arguments
@@ -753,13 +756,13 @@ async function callTool(
 
   switch (params.name) {
     case 'list_connected_integrations':
-      return textToolResult(await listConnectedIntegrations(workspaceStub, args, workspaceId));
+      return textToolResult(await listConnectedIntegrations(orgStub, args, workspaceId));
     case 'get_connected_integration':
-      return textToolResult(await getConnectedIntegration(workspaceStub, args, workspaceId));
+      return textToolResult(await getConnectedIntegration(orgStub, args, workspaceId));
     case 'list_mcp_servers':
-      return textToolResult(await listMcpServers(workspaceStub, args, workspaceId));
+      return textToolResult(await listMcpServers(orgStub, args, workspaceId));
     case 'get_mcp_server':
-      return textToolResult(await getMcpServer(workspaceStub, args, workspaceId));
+      return textToolResult(await getMcpServer(orgStub, args, workspaceId));
     case 'list_available_integration_types':
       return textToolResult(listAvailableIntegrationTypes(args));
     default:
@@ -769,8 +772,8 @@ async function callTool(
 
 async function handleJsonRpcRequest(
   request: JsonRpcRequest,
-  workspaceStub: DurableObjectStub<WorkspaceDO>,
-  workspaceId?: string
+  orgStub: DurableObjectStub<OrgDO>,
+  workspaceId: string
 ): Promise<Record<string, unknown>> {
   try {
     switch (request.method) {
@@ -787,7 +790,7 @@ async function handleJsonRpcRequest(
       case 'tools/call':
         return jsonRpcResult(
           request.id,
-          await callTool(workspaceStub, (request.params ?? {}) as ToolCallParams, workspaceId)
+          await callTool(orgStub, (request.params ?? {}) as ToolCallParams, workspaceId)
         );
       default:
         return jsonRpcError(request.id, -32601, `Method not found: ${request.method ?? ''}`);
@@ -834,18 +837,16 @@ export async function handleIntegrationsMcp({ req, env }: RouteContext): Promise
     return jsonResponse(jsonRpcError(null, -32700, 'Parse error'), 400);
   }
 
-  const workspaceStub = env.WORKSPACE.get(
-    env.WORKSPACE.idFromName(proxyAuth.workspaceId)
-  ) as DurableObjectStub<WorkspaceDO>;
+  const orgStub = env.ORG.get(env.ORG.idFromName(proxyAuth.orgId)) as DurableObjectStub<OrgDO>;
 
   if (Array.isArray(payload)) {
     const results = await Promise.all(
-      payload.map((item) => handleJsonRpcRequest(item, workspaceStub, proxyAuth.workspaceId))
+      payload.map((item) => handleJsonRpcRequest(item, orgStub, proxyAuth.workspaceId))
     );
     return jsonResponse(results);
   }
 
-  return jsonResponse(await handleJsonRpcRequest(payload, workspaceStub, proxyAuth.workspaceId));
+  return jsonResponse(await handleJsonRpcRequest(payload, orgStub, proxyAuth.workspaceId));
 }
 
 async function handleNativeMcpProxy(
@@ -862,10 +863,12 @@ async function handleNativeMcpProxy(
     return jsonResponse({ error: 'Unauthorized' }, 401);
   }
 
-  const workspaceStub = env.WORKSPACE.get(
-    env.WORKSPACE.idFromName(proxyAuth.workspaceId)
-  ) as DurableObjectStub<WorkspaceDO>;
-  const resolved = await resolveConnectedIntegration(workspaceStub, integrationQuery);
+  const orgStub = env.ORG.get(env.ORG.idFromName(proxyAuth.orgId)) as DurableObjectStub<OrgDO>;
+  const resolved = await resolveConnectedIntegration(
+    orgStub,
+    proxyAuth.workspaceId,
+    integrationQuery,
+  );
   if (!resolved.ok) {
     return jsonResponse(resolved.payload, resolved.status);
   }
@@ -880,7 +883,7 @@ async function handleNativeMcpProxy(
   }
 
   const hostedAuthContext = {
-    workspaceStub,
+    orgStub,
     record: resolved.record,
     workspaceId: proxyAuth.workspaceId,
     userId: proxyAuth.userId,
@@ -1010,7 +1013,8 @@ async function handleNativeMcpProxy(
     const code = status === 'needs_reauth' ? 'AUTH_REAUTH_REQUIRED' : 'AUTH_SETUP_INCOMPLETE';
     const message = authHeaders.error;
     await markIntegrationAuthStatus(
-      workspaceStub,
+      orgStub,
+      proxyAuth.workspaceId,
       resolved.record,
       status,
       code,
@@ -1053,7 +1057,8 @@ async function handleNativeMcpProxy(
       ? `Native MCP provider rejected credentials: ${upstreamText.slice(0, 500)}`
       : `Native MCP provider rejected credentials with HTTP ${upstream.status}.`;
     await markIntegrationAuthStatus(
-      workspaceStub,
+      orgStub,
+      proxyAuth.workspaceId,
       resolved.record,
       upstreamAuthStatus,
       code,
@@ -1138,7 +1143,7 @@ async function handleBigQueryMcpBroker(
 }
 
 interface HostedMcpAuthContext {
-  workspaceStub: DurableObjectStub<WorkspaceDO>;
+  orgStub: DurableObjectStub<OrgDO>;
   record: WorkspaceIntegrationRecord;
   workspaceId: string;
   userId?: string;
@@ -1180,7 +1185,8 @@ async function handleHostedMcpBroker(
             ? 'AUTH_SETUP_INCOMPLETE'
             : 'AUTH_REAUTH_REQUIRED';
         await markIntegrationAuthStatus(
-          authContext.workspaceStub,
+          authContext.orgStub,
+          authContext.workspaceId,
           authContext.record,
           hostedAuthStatus,
           code,

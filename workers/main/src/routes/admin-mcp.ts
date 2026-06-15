@@ -75,7 +75,6 @@ const ADMIN_JS_EXEC_DEFAULT_MAX_OUTPUT_CHARACTERS = 120_000;
 const ADMIN_JS_EXEC_MAX_OUTPUT_CHARACTERS = 1_000_000;
 const ADMIN_JS_EXEC_DO_BRIDGE_BINDING = "ADMIN_DO";
 const ADMIN_JS_EXEC_DO_NAMESPACES_BINDING = "ADMIN_DO_NAMESPACES";
-const ADMIN_JS_EXEC_DB_BRIDGE_BINDING = "ADMIN_DB";
 
 function getBaseUrl(req: Request): string {
   const url = new URL(req.url);
@@ -595,7 +594,7 @@ function adminTools() {
     {
       name: TOOL_ADMIN_JS_EXEC,
       description:
-        "Run admin-only JavaScript in an ephemeral Worker with Durable Object RPC helpers and APP_DB D1 helpers. Available globals: DO.namespaces, DO.stub(namespace, id, { idFrom }), DO.call(namespace, id, method, args, { idFrom }), DB.query(sql, params), DB.first(sql, params), DB.run(sql, params), DB.batch([{ sql, params }]), DB.session(bookmarkOrConstraint), and text(value). idFrom defaults to name and can be name or string.",
+        "Run admin-only JavaScript in an ephemeral Worker with Durable Object RPC helpers. Available globals: DO.namespaces, DO.stub(namespace, id, { idFrom }), DO.call(namespace, id, method, args, { idFrom }), and text(value). idFrom defaults to name and can be name or string.",
       inputSchema: {
         type: "object",
         properties: {
@@ -831,27 +830,6 @@ type AdminJsExecDoBridge = {
   ): Promise<unknown>;
 };
 
-type AdminJsExecDbStatement = {
-  sql: string;
-  params?: unknown[];
-};
-
-type AdminJsExecDbSessionResult = {
-  result: unknown;
-  bookmark: string | null;
-};
-
-type AdminJsExecDbBridge = {
-  query(sql: string, params?: unknown[]): Promise<unknown>;
-  first(sql: string, params?: unknown[]): Promise<unknown>;
-  run(sql: string, params?: unknown[]): Promise<unknown>;
-  batch(statements: AdminJsExecDbStatement[]): Promise<unknown>;
-  sessionQuery(bookmarkOrConstraint: string, sql: string, params?: unknown[]): Promise<AdminJsExecDbSessionResult>;
-  sessionFirst(bookmarkOrConstraint: string, sql: string, params?: unknown[]): Promise<AdminJsExecDbSessionResult>;
-  sessionRun(bookmarkOrConstraint: string, sql: string, params?: unknown[]): Promise<AdminJsExecDbSessionResult>;
-  sessionBatch(bookmarkOrConstraint: string, statements: AdminJsExecDbStatement[]): Promise<AdminJsExecDbSessionResult>;
-};
-
 function getAdminJsExecDoNamespace(env: Env, namespace: string): DurableObjectNamespace {
   const value = (env as unknown as Record<string, unknown>)[namespace];
   if (!isDurableObjectNamespace(value)) {
@@ -906,114 +884,6 @@ export class AdminJsExecDoBinding extends WorkerEntrypoint<Env> {
   }
 }
 
-function normalizeAdminJsExecDbParams(params: unknown[] | undefined): unknown[] {
-  if (params === undefined) return [];
-  if (!Array.isArray(params)) {
-    throw new Error("D1 params must be an array");
-  }
-  return params;
-}
-
-function normalizeAdminJsExecDbSql(sql: string): string {
-  if (typeof sql !== "string" || !sql.trim()) {
-    throw new Error("D1 SQL must be a non-empty string");
-  }
-  return sql;
-}
-
-function prepareAdminJsExecDbStatement(
-  db: D1Database | D1DatabaseSession,
-  sql: string,
-  params?: unknown[],
-): D1PreparedStatement {
-  return db.prepare(normalizeAdminJsExecDbSql(sql)).bind(
-    ...normalizeAdminJsExecDbParams(params),
-  );
-}
-
-function prepareAdminJsExecDbBatch(
-  db: D1Database | D1DatabaseSession,
-  statements: AdminJsExecDbStatement[],
-): D1PreparedStatement[] {
-  if (!Array.isArray(statements)) {
-    throw new Error("D1 batch expects an array of { sql, params }");
-  }
-  return statements.map((statement) => {
-    if (!isRecord(statement)) {
-      throw new Error("D1 batch statement must be an object");
-    }
-    return prepareAdminJsExecDbStatement(
-      db,
-      String(statement.sql ?? ""),
-      Array.isArray(statement.params) ? statement.params : undefined,
-    );
-  });
-}
-
-export class AdminJsExecDbBinding extends WorkerEntrypoint<Env> {
-  private getDb(): D1Database {
-    if (!this.env.APP_DB) {
-      throw new Error("APP_DB D1 binding is not configured");
-    }
-    return this.env.APP_DB;
-  }
-
-  async query(sql: string, params?: unknown[]): Promise<unknown> {
-    return await prepareAdminJsExecDbStatement(this.getDb(), sql, params).all();
-  }
-
-  async first(sql: string, params?: unknown[]): Promise<unknown> {
-    return await prepareAdminJsExecDbStatement(this.getDb(), sql, params).first();
-  }
-
-  async run(sql: string, params?: unknown[]): Promise<unknown> {
-    return await prepareAdminJsExecDbStatement(this.getDb(), sql, params).run();
-  }
-
-  async batch(statements: AdminJsExecDbStatement[]): Promise<unknown> {
-    return await this.getDb().batch(prepareAdminJsExecDbBatch(this.getDb(), statements));
-  }
-
-  async sessionQuery(
-    bookmarkOrConstraint: string,
-    sql: string,
-    params?: unknown[],
-  ): Promise<AdminJsExecDbSessionResult> {
-    const session = this.getDb().withSession(bookmarkOrConstraint);
-    const result = await prepareAdminJsExecDbStatement(session, sql, params).all();
-    return { result, bookmark: session.getBookmark() ?? null };
-  }
-
-  async sessionFirst(
-    bookmarkOrConstraint: string,
-    sql: string,
-    params?: unknown[],
-  ): Promise<AdminJsExecDbSessionResult> {
-    const session = this.getDb().withSession(bookmarkOrConstraint);
-    const result = await prepareAdminJsExecDbStatement(session, sql, params).first();
-    return { result, bookmark: session.getBookmark() ?? null };
-  }
-
-  async sessionRun(
-    bookmarkOrConstraint: string,
-    sql: string,
-    params?: unknown[],
-  ): Promise<AdminJsExecDbSessionResult> {
-    const session = this.getDb().withSession(bookmarkOrConstraint);
-    const result = await prepareAdminJsExecDbStatement(session, sql, params).run();
-    return { result, bookmark: session.getBookmark() ?? null };
-  }
-
-  async sessionBatch(
-    bookmarkOrConstraint: string,
-    statements: AdminJsExecDbStatement[],
-  ): Promise<AdminJsExecDbSessionResult> {
-    const session = this.getDb().withSession(bookmarkOrConstraint);
-    const result = await session.batch(prepareAdminJsExecDbBatch(session, statements));
-    return { result, bookmark: session.getBookmark() ?? null };
-  }
-}
-
 function createAdminJsExecDoBridge(
   ctx: ExecutionContext,
   env: Env,
@@ -1030,15 +900,6 @@ function createAdminJsExecDoBridge(
     binding: factory({ props: {} }),
     namespaces: adminJsExecNamespaceNames(env),
   };
-}
-
-function createAdminJsExecDbBridge(ctx: ExecutionContext): AdminJsExecDbBridge | null {
-  const factory = (ctx as unknown as {
-    exports?: {
-      AdminJsExecDbBinding?: (options?: { props?: Record<string, never> }) => AdminJsExecDbBridge;
-    };
-  }).exports?.AdminJsExecDbBinding;
-  return typeof factory === "function" ? factory({ props: {} }) : null;
 }
 
 function adminJsExecWorkerModule(userCode: string): string {
@@ -1170,88 +1031,7 @@ function createDoFacade(bridge, namespaceNames) {
   });
 }
 
-function createD1Facade(bridge) {
-  const assertBridge = () => {
-    if (!bridge || typeof bridge.first !== "function") {
-      throw new Error("Admin D1 bridge is not configured");
-    }
-  };
-  const normalizeParams = (params = []) => {
-    if (params === undefined || params === null) return [];
-    if (!Array.isArray(params)) {
-      throw new Error("D1 params must be an array");
-    }
-    return params;
-  };
-  const normalizeSql = (sql) => {
-    if (typeof sql !== "string" || !sql.trim()) {
-      throw new Error("D1 SQL must be a non-empty string");
-    }
-    return sql;
-  };
-  const facade = {
-    async query(sql, params = []) {
-      assertBridge();
-      return await bridge.query(normalizeSql(sql), normalizeParams(params));
-    },
-    async first(sql, params = []) {
-      assertBridge();
-      return await bridge.first(normalizeSql(sql), normalizeParams(params));
-    },
-    async run(sql, params = []) {
-      assertBridge();
-      return await bridge.run(normalizeSql(sql), normalizeParams(params));
-    },
-    async batch(statements) {
-      assertBridge();
-      if (!Array.isArray(statements)) {
-        throw new Error("D1 batch expects an array of { sql, params }");
-      }
-      return await bridge.batch(statements.map((statement) => {
-        if (!statement || typeof statement !== "object") {
-          throw new Error("D1 batch statement must be an object");
-        }
-        return { sql: normalizeSql(statement.sql), params: normalizeParams(statement.params ?? []) };
-      }));
-    },
-    session(bookmarkOrConstraint = "first-primary") {
-      assertBridge();
-      let bookmark = String(bookmarkOrConstraint || "first-primary");
-      const update = (response) => {
-        bookmark = response?.bookmark || bookmark;
-        return response?.result;
-      };
-      return Object.freeze({
-        async query(sql, params = []) {
-          return update(await bridge.sessionQuery(bookmark, normalizeSql(sql), normalizeParams(params)));
-        },
-        async first(sql, params = []) {
-          return update(await bridge.sessionFirst(bookmark, normalizeSql(sql), normalizeParams(params)));
-        },
-        async run(sql, params = []) {
-          return update(await bridge.sessionRun(bookmark, normalizeSql(sql), normalizeParams(params)));
-        },
-        async batch(statements) {
-          if (!Array.isArray(statements)) {
-            throw new Error("D1 batch expects an array of { sql, params }");
-          }
-          return update(await bridge.sessionBatch(bookmark, statements.map((statement) => {
-            if (!statement || typeof statement !== "object") {
-              throw new Error("D1 batch statement must be an object");
-            }
-            return { sql: normalizeSql(statement.sql), params: normalizeParams(statement.params ?? []) };
-          })));
-        },
-        getBookmark() {
-          return bookmark || null;
-        },
-      });
-    },
-  };
-  return Object.freeze(facade);
-}
-
-async function runUserCode(DO, DB, text) {
+async function runUserCode(DO, text) {
   "use strict";
 `}${userCode}${String.raw`
 }
@@ -1261,10 +1041,9 @@ export class AdminJsExecRunner extends WorkerEntrypoint {
     const output = [];
     globalThis.console = createOutputConsole(output);
     const DO = createDoFacade(this.env.${ADMIN_JS_EXEC_DO_BRIDGE_BINDING}, this.env.${ADMIN_JS_EXEC_DO_NAMESPACES_BINDING});
-    const DB = createD1Facade(this.env.${ADMIN_JS_EXEC_DB_BRIDGE_BINDING});
     const text = (value) => output.push(stringifyOutput(value));
     const startedAt = Date.now();
-    const result = await runUserCode(DO, DB, text);
+    const result = await runUserCode(DO, text);
     return {
       result: serializeResult(result),
       output,
@@ -1327,10 +1106,6 @@ async function adminJsExecTool(
   if (!doBridge.namespaces.length) {
     return toolText({ error: "No Durable Object namespace bindings are available" }, true);
   }
-  const dbBridge = createAdminJsExecDbBridge(ctx);
-  if (!dbBridge) {
-    return toolText({ error: "AdminJsExecDbBinding export is not available" }, true);
-  }
 
   const workerCode: WorkerLoaderWorkerCode = {
     compatibilityDate: ADMIN_JS_EXEC_COMPATIBILITY_DATE,
@@ -1341,7 +1116,6 @@ async function adminJsExecTool(
     env: {
       [ADMIN_JS_EXEC_DO_BRIDGE_BINDING]: doBridge.binding,
       [ADMIN_JS_EXEC_DO_NAMESPACES_BINDING]: doBridge.namespaces,
-      [ADMIN_JS_EXEC_DB_BRIDGE_BINDING]: dbBridge,
     },
     globalOutbound: null,
   };

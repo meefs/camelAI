@@ -30,12 +30,9 @@ import {
   type ApiTokenData,
 } from "./auth-helpers";
 import type { UserOrg } from "../../workers/main/src/auth";
+import type { WorkspaceIntegrationRecord } from "../../workers/main/src/workspace";
 import type { LlmProviderConfigRecord } from "./llm-provider-config";
-import {
-  getAppIndexDatabase,
-  getAppIndexReadDatabase,
-  getAppIndexSessionDatabase,
-} from "../../workers/main/src/app-index-db";
+import { getAppIndexDatabase, getAppIndexReadDatabase } from "../../workers/main/src/app-index-db";
 
 interface GetUserOrgsOptions {
   preloadedOrgInfoById?: Map<
@@ -50,6 +47,67 @@ interface ListUserWorkspacesAcrossOrgsOptions {
     string,
     Promise<Workspace[]> | Workspace[]
   >;
+}
+
+const WORKSPACE_ORG_INDEX_PREFIX = "workspace_org:";
+
+async function getWorkspaceOrgId(
+  env: AuthEnv,
+  workspaceId: string,
+): Promise<string | null> {
+  const indexed = await env.APP_KV.get(`${WORKSPACE_ORG_INDEX_PREFIX}${workspaceId}`);
+  if (indexed) return indexed;
+  const appIndex = getAppIndexReadDatabase(env);
+  const orgId = appIndex ? await appIndex.getWorkspaceOrgId(workspaceId) : null;
+  if (orgId) {
+    await env.APP_KV.put(`${WORKSPACE_ORG_INDEX_PREFIX}${workspaceId}`, orgId);
+    return orgId;
+  }
+  const workspaceStub = env.WORKSPACE.get(env.WORKSPACE.idFromName(workspaceId));
+  const workspace = await retryTransientDurableObjectRead(
+    "WorkspaceDO.getInfo",
+    () =>
+      (
+        workspaceStub as unknown as {
+          getInfo(): Promise<Workspace | null>;
+        }
+      ).getInfo(),
+  );
+  if (workspace?.org_id) {
+    await env.APP_KV.put(
+      `${WORKSPACE_ORG_INDEX_PREFIX}${workspaceId}`,
+      workspace.org_id,
+    );
+    return workspace.org_id;
+  }
+  return null;
+}
+
+async function getWorkspaceRecord(
+  env: AuthEnv,
+  workspaceId: string,
+): Promise<Workspace | null> {
+  const orgId = await getWorkspaceOrgId(env, workspaceId);
+  if (!orgId) return null;
+  const orgStub = env.ORG.get(env.ORG.idFromName(orgId));
+  return retryTransientDurableObjectRead(
+    "OrgDO.getWorkspaceRecord",
+    () =>
+      (
+        orgStub as unknown as {
+          getWorkspaceRecord(workspaceId: string): Promise<Workspace | null>;
+        }
+      ).getWorkspaceRecord(workspaceId),
+  );
+}
+
+async function getWorkspaceOrgStub(
+  env: AuthEnv,
+  workspaceId: string,
+): Promise<DurableObjectStub | null> {
+  const orgId = await getWorkspaceOrgId(env, workspaceId);
+  if (!orgId) return null;
+  return env.ORG.get(env.ORG.idFromName(orgId));
 }
 
 export interface OrgSettingsSummary {
@@ -280,7 +338,7 @@ export async function isSignupIpBlocked(
     return false;
   }
 
-  const appIndex = getAppIndexSessionDatabase(env, "first-primary");
+  const appIndex = getAppIndexReadDatabase(env);
   return appIndex ? appIndex.isSignupIpBlocked(normalizedIp) : false;
 }
 
@@ -660,27 +718,43 @@ export async function getOrgMembersWithWorkspaceAccess(
     workspaceAccess: Record<string, WorkspaceAccessLevel>;
   }>
 > {
+  const orgStub = env.ORG.get(env.ORG.idFromName(orgId));
   const [members, workspaces] = await Promise.all([
     getOrgMembers(env, orgId),
     listOrgWorkspaces(env, orgId),
   ]);
-
-  const workspaceMembers = await Promise.all(
-    workspaces.map(async (ws) => {
-      const wsStub = env.WORKSPACE.get(env.WORKSPACE.idFromName(ws.id));
-      const allMembers = await wsStub.listMembers();
-      const accessMap = new Map(
-        allMembers.map((m) => [m.user_id, m.access_level]),
+  const accessByWorkspace = new Map<string, Map<string, WorkspaceAccessLevel>>();
+  await Promise.all(
+    workspaces.map(async (workspace) => {
+      const rows = await retryTransientDurableObjectRead(
+        "OrgDO.listWorkspaceMembers",
+        () =>
+          (
+            orgStub as unknown as {
+              listWorkspaceMembers(
+                workspaceId: string,
+              ): Promise<
+                Array<{
+                  user_id: string;
+                  access_level: WorkspaceAccessLevel;
+                }>
+              >;
+            }
+          ).listWorkspaceMembers(workspace.id),
       );
-      return { workspaceId: ws.id, accessMap };
+      const accessMap = new Map<string, WorkspaceAccessLevel>();
+      for (const row of rows) {
+        accessMap.set(row.user_id, row.access_level);
+      }
+      accessByWorkspace.set(workspace.id, accessMap);
     }),
   );
 
   return members.map((member) => {
     const workspaceAccess: Record<string, WorkspaceAccessLevel> = {};
-    for (const ws of workspaceMembers) {
-      workspaceAccess[ws.workspaceId] =
-        ws.accessMap.get(member.user.id) ?? "full";
+    for (const workspace of workspaces) {
+      workspaceAccess[workspace.id] =
+        accessByWorkspace.get(workspace.id)?.get(member.user.id) ?? "full";
     }
     return {
       ...member,
@@ -798,22 +872,14 @@ export async function listUserWorkspaces(
   userId: string,
   orgId: string,
 ): Promise<WorkspaceWithAccess[]> {
-  const isMember = await isOrgMember(env, userId, orgId);
-  if (!isMember) return [];
-
-  const workspaces = await listOrgWorkspaces(env, orgId);
-
-  // Assume 'full' access for all workspaces. The default is 'full' (no record = full access),
-  // and explicit 'none' restrictions are rare. Actual access is verified lazily by
-  // requireWorkspaceAccess() when the user tries to access a specific workspace.
-  //
-  // NOTE: This optimization assumes binary access ('full' or 'none'). If we add granular
-  // access levels (e.g., 'viewer', 'editor'), we should store access info in OrgDO for
-  // batch loading, or add a listUserWorkspaceAccess() method to avoid N RPC calls.
-  return workspaces.map((workspace) => ({
-    ...workspace,
-    access_level: "full" as const,
-  }));
+  const stub = env.ORG.get(env.ORG.idFromName(orgId));
+  return retryTransientDurableObjectRead("OrgDO.listUserWorkspaces", () =>
+    (
+      stub as unknown as {
+        listUserWorkspaces(userId: string): Promise<WorkspaceWithAccess[]>;
+      }
+    ).listUserWorkspaces(userId),
+  );
 }
 
 /**
@@ -822,13 +888,10 @@ export async function listUserWorkspaces(
  */
 async function listOrgWorkspacesForMember(
   env: AuthEnv,
+  userId: string,
   orgId: string,
 ): Promise<WorkspaceWithAccess[]> {
-  const workspaces = await listOrgWorkspaces(env, orgId);
-  return workspaces.map((workspace) => ({
-    ...workspace,
-    access_level: "full" as const,
-  }));
+  return listUserWorkspaces(env, userId, orgId);
 }
 
 export async function listUserWorkspacesAcrossOrgs(
@@ -850,12 +913,13 @@ export async function listUserWorkspacesAcrossOrgs(
           );
           if (preloadedWorkspaces) {
             const workspaces = await preloadedWorkspaces;
-            return workspaces.map((workspace) => ({
-              ...workspace,
-              access_level: "full" as const,
-            }));
+            return workspaces.map((workspace) =>
+              "access_level" in workspace
+                ? (workspace as WorkspaceWithAccess)
+                : { ...workspace, access_level: "full" as const },
+            );
           }
-          return listOrgWorkspacesForMember(env, membership.org_id);
+          return listOrgWorkspacesForMember(env, userId, membership.org_id);
         })
       : memberships.map((membership) =>
           listUserWorkspaces(env, userId, membership.org_id),
@@ -879,8 +943,7 @@ export async function getWorkspace(
   env: AuthEnv,
   workspaceId: string,
 ): Promise<Workspace | null> {
-  const stub = env.WORKSPACE.get(env.WORKSPACE.idFromName(workspaceId));
-  const info = await stub.getInfo();
+  const info = await getWorkspaceRecord(env, workspaceId);
   if (!info || info.archived) return null;
   return info;
 }
@@ -910,21 +973,31 @@ export async function createWorkspace(
   }
 
   const workspaceId = crypto.randomUUID();
-  const stub = env.WORKSPACE.get(env.WORKSPACE.idFromName(workspaceId));
-  // WorkspaceDO.createWorkspace registers with OrgDO internally (addWorkspace)
-  const info = await stub.createWorkspace(
-    workspaceId,
-    orgId,
-    name,
-    createdBy,
-    description ?? null,
-  );
+  const info = await (
+    orgStub as unknown as {
+      createWorkspaceRecord(
+        workspaceId: string,
+        name: string,
+        createdBy: string,
+        description?: string | null,
+      ): Promise<Workspace>;
+    }
+  ).createWorkspaceRecord(workspaceId, name, createdBy, description ?? null);
 
   // Grant full access to all existing org members
   const members = await orgStub.getMembers();
   await Promise.all(
     members.map(async (member) => {
-      await stub.setMemberAccess(member.user_id, "full", createdBy);
+      await (
+        orgStub as unknown as {
+          setWorkspaceAccess(
+            workspaceId: string,
+            userId: string,
+            accessLevel: WorkspaceAccessLevel,
+            actorId: string,
+          ): Promise<void>;
+        }
+      ).setWorkspaceAccess(workspaceId, member.user_id, "full", createdBy);
     }),
   );
 
@@ -936,16 +1009,18 @@ export async function archiveWorkspace(
   workspaceId: string,
   actorId: string,
 ): Promise<void> {
-  const wsStub = env.WORKSPACE.get(env.WORKSPACE.idFromName(workspaceId));
-  const info = await wsStub.getInfo();
+  const info = await getWorkspaceRecord(env, workspaceId);
   if (!info) return;
 
-  // Archive in WorkspaceDO
-  await wsStub.archive(actorId);
-
-  // Update org's workspace list
   const orgStub = env.ORG.get(env.ORG.idFromName(info.org_id));
-  await orgStub.archiveWorkspace(workspaceId);
+  await (
+    orgStub as unknown as {
+      archiveWorkspaceRecord(
+        workspaceId: string,
+        actorId: string,
+      ): Promise<Workspace | null>;
+    }
+  ).archiveWorkspaceRecord(workspaceId, actorId);
 
   // Clear last_workspace_id for users who had this as their active workspace
   const members = await orgStub.getMembers();
@@ -959,13 +1034,15 @@ export async function archiveWorkspace(
         const workspaceRows = await orgStub.getWorkspaces();
         let newWorkspaceId: string | null = null;
         for (const workspace of workspaceRows) {
-          const candidateStub = env.WORKSPACE.get(
-            env.WORKSPACE.idFromName(workspace.id),
-          );
-          const memberAccess = await candidateStub.getMemberAccess(
-            member.user_id,
-          );
-          if ((memberAccess?.access_level ?? "full") !== "none") {
+          const access = await (
+            orgStub as unknown as {
+              getWorkspaceAccess(
+                workspaceId: string,
+                userId: string,
+              ): Promise<WorkspaceAccessLevel>;
+            }
+          ).getWorkspaceAccess(workspace.id, member.user_id);
+          if (access !== "none") {
             newWorkspaceId = workspace.id;
             break;
           }
@@ -986,38 +1063,24 @@ export async function updateWorkspace(
   },
   actorId: string,
 ): Promise<Workspace | null> {
-  const stub = env.WORKSPACE.get(env.WORKSPACE.idFromName(workspaceId));
-  const info = await stub.updateWorkspace(
-    {
-      name: updates.name,
-      description: updates.description,
-      avatar: updates.avatar,
-    },
-    actorId,
-  );
+  const existing = await getWorkspaceRecord(env, workspaceId);
+  if (!existing) return null;
+  const orgStub = env.ORG.get(env.ORG.idFromName(existing.org_id));
+  const info = await (
+    orgStub as unknown as {
+      updateWorkspaceRecord(
+        workspaceId: string,
+        updates: {
+          name?: string;
+          description?: string | null;
+          avatar?: { color?: string; content?: string };
+        },
+        actorId: string,
+      ): Promise<Workspace | null>;
+    }
+  ).updateWorkspaceRecord(workspaceId, updates, actorId);
   if (!info) return null;
   return info;
-}
-
-async function getWorkspaceInfoAndMemberAccess(
-  wsStub: ReturnType<AuthEnv["WORKSPACE"]["get"]>,
-  userId: string,
-): Promise<{
-  info: Workspace | null;
-  memberAccess: { access_level: WorkspaceAccessLevel } | null;
-}> {
-  return retryTransientDurableObjectRead(
-    "WorkspaceDO.getInfoAndMemberAccess",
-    () =>
-      (
-        wsStub as unknown as {
-          getInfoAndMemberAccess(userId: string): Promise<{
-            info: Workspace | null;
-            memberAccess: { access_level: WorkspaceAccessLevel } | null;
-          }>;
-        }
-      ).getInfoAndMemberAccess(userId),
-  );
 }
 
 export async function getWorkspaceAccess(
@@ -1033,20 +1096,20 @@ export async function getWorkspaceAccessContext(
   workspaceId: string,
   userId: string,
 ): Promise<{ workspace: Workspace | null; access: WorkspaceAccessLevel }> {
-  const wsStub = env.WORKSPACE.get(env.WORKSPACE.idFromName(workspaceId));
-  const { info, memberAccess } = await getWorkspaceInfoAndMemberAccess(
-    wsStub,
-    userId,
-  );
+  const info = await getWorkspace(env, workspaceId);
   if (!info || info.archived) return { workspace: null, access: "none" };
 
-  const isMember = await isOrgMember(env, userId, info.org_id);
-  if (!isMember) return { workspace: info, access: "none" };
-
-  return {
-    workspace: info,
-    access: memberAccess?.access_level ?? "full",
-  };
+  const orgStub = env.ORG.get(env.ORG.idFromName(info.org_id));
+  return retryTransientDurableObjectRead("OrgDO.getWorkspaceAccessContext", () =>
+    (
+      orgStub as unknown as {
+        getWorkspaceAccessContext(
+          workspaceId: string,
+          userId: string,
+        ): Promise<{ workspace: Workspace | null; access: WorkspaceAccessLevel }>;
+      }
+    ).getWorkspaceAccessContext(workspaceId, userId),
+  );
 }
 
 export async function setWorkspaceAccess(
@@ -1056,16 +1119,30 @@ export async function setWorkspaceAccess(
   accessLevel: WorkspaceAccessLevel,
   actorId: string,
 ): Promise<void> {
-  const stub = env.WORKSPACE.get(env.WORKSPACE.idFromName(workspaceId));
-  await stub.setMemberAccess(userId, accessLevel, actorId);
+  const info = await getWorkspace(env, workspaceId);
+  if (!info) {
+    throw new Error("Workspace not found");
+  }
+  const orgStub = env.ORG.get(env.ORG.idFromName(info.org_id));
+  await retryTransientDurableObjectRead("OrgDO.setWorkspaceAccess", () =>
+    (
+      orgStub as unknown as {
+        setWorkspaceAccess(
+          workspaceId: string,
+          userId: string,
+          accessLevel: WorkspaceAccessLevel,
+          actorId: string,
+        ): Promise<void>;
+      }
+    ).setWorkspaceAccess(workspaceId, userId, accessLevel, actorId),
+  );
 }
 
 export async function listWorkspaceIntegrations(
   env: AuthEnv,
   workspaceId: string,
 ): Promise<Integration[]> {
-  const stub = env.WORKSPACE.get(env.WORKSPACE.idFromName(workspaceId));
-  const records = await stub.getIntegrations();
+  const records = await listWorkspaceIntegrationRecords(env, workspaceId);
   return records.map((r) => ({
     id: r.id,
     integration_type: r.integration_type,
@@ -1078,6 +1155,153 @@ export async function listWorkspaceIntegrations(
     updated_at: r.updated_at,
     has_credentials: !!r.credentials_encrypted,
   }));
+}
+
+export async function listWorkspaceIntegrationRecords(
+  env: AuthEnv,
+  workspaceId: string,
+): Promise<WorkspaceIntegrationRecord[]> {
+  const stub = await getWorkspaceOrgStub(env, workspaceId);
+  if (!stub) return [];
+  return (
+    stub as unknown as {
+      getWorkspaceIntegrations(
+        workspaceId: string,
+      ): Promise<WorkspaceIntegrationRecord[]>;
+    }
+  ).getWorkspaceIntegrations(workspaceId);
+}
+
+export async function getWorkspaceIntegrationRecord(
+  env: AuthEnv,
+  workspaceId: string,
+  integrationId: string,
+): Promise<WorkspaceIntegrationRecord | null> {
+  const stub = await getWorkspaceOrgStub(env, workspaceId);
+  if (!stub) return null;
+  return (
+    stub as unknown as {
+      getWorkspaceIntegration(
+        workspaceId: string,
+        integrationId: string,
+      ): Promise<WorkspaceIntegrationRecord | null>;
+    }
+  ).getWorkspaceIntegration(workspaceId, integrationId);
+}
+
+export async function workspaceIntegrationNameExists(
+  env: AuthEnv,
+  workspaceId: string,
+  integrationType: string,
+  name: string,
+  excludeId?: string,
+): Promise<boolean> {
+  const stub = await getWorkspaceOrgStub(env, workspaceId);
+  if (!stub) return false;
+  return (
+    stub as unknown as {
+      workspaceIntegrationNameExists(
+        workspaceId: string,
+        integrationType: string,
+        name: string,
+        excludeId?: string,
+      ): Promise<boolean>;
+    }
+  ).workspaceIntegrationNameExists(workspaceId, integrationType, name, excludeId);
+}
+
+export async function createWorkspaceIntegrationRecord(
+  env: AuthEnv,
+  workspaceId: string,
+  id: string,
+  integrationType: string,
+  name: string,
+  category: string,
+  authMethod: string,
+  config: string,
+  credentialsEncrypted: string,
+  createdBy: string,
+  tokenExpiresAt?: number | null,
+): Promise<void> {
+  const stub = await getWorkspaceOrgStub(env, workspaceId);
+  if (!stub) throw new Error("Workspace not found");
+  await (
+    stub as unknown as {
+      createWorkspaceIntegration(
+        workspaceId: string,
+        id: string,
+        integrationType: string,
+        name: string,
+        category: string,
+        authMethod: string,
+        config: string,
+        credentialsEncrypted: string,
+        createdBy: string,
+        tokenExpiresAt?: number | null,
+      ): Promise<void>;
+    }
+  ).createWorkspaceIntegration(
+    workspaceId,
+    id,
+    integrationType,
+    name,
+    category,
+    authMethod,
+    config,
+    credentialsEncrypted,
+    createdBy,
+    tokenExpiresAt,
+  );
+}
+
+export async function updateWorkspaceIntegrationRecord(
+  env: AuthEnv,
+  workspaceId: string,
+  integrationId: string,
+  updates: {
+    name?: string;
+    config?: string;
+    credentialsEncrypted?: string;
+    tokenExpiresAt?: number | null;
+  },
+  actorId: string,
+): Promise<void> {
+  const stub = await getWorkspaceOrgStub(env, workspaceId);
+  if (!stub) throw new Error("Workspace not found");
+  await (
+    stub as unknown as {
+      updateWorkspaceIntegration(
+        workspaceId: string,
+        integrationId: string,
+        updates: {
+          name?: string;
+          config?: string;
+          credentialsEncrypted?: string;
+          tokenExpiresAt?: number | null;
+        },
+        actorId: string,
+      ): Promise<void>;
+    }
+  ).updateWorkspaceIntegration(workspaceId, integrationId, updates, actorId);
+}
+
+export async function deleteWorkspaceIntegrationRecord(
+  env: AuthEnv,
+  workspaceId: string,
+  integrationId: string,
+  actorId: string,
+): Promise<void> {
+  const stub = await getWorkspaceOrgStub(env, workspaceId);
+  if (!stub) throw new Error("Workspace not found");
+  await (
+    stub as unknown as {
+      deleteWorkspaceIntegration(
+        workspaceId: string,
+        integrationId: string,
+        actorId: string,
+      ): Promise<void>;
+    }
+  ).deleteWorkspaceIntegration(workspaceId, integrationId, actorId);
 }
 
 export async function checkUserOrphaned(
@@ -1148,8 +1372,42 @@ export async function getWorkspaceAuditLog(
   limit = 100,
   offset = 0,
 ): Promise<AuditLogEntry[]> {
-  const stub = env.WORKSPACE.get(env.WORKSPACE.idFromName(workspaceId));
-  const entries = await stub.getAuditLog(limit, offset);
+  const orgId = await getWorkspaceOrgId(env, workspaceId);
+  if (!orgId) return [];
+  const stub = env.ORG.get(env.ORG.idFromName(orgId));
+  const resolvedLimit = Math.max(1, Math.min(500, Math.floor(limit)));
+  const resolvedOffset = Math.max(0, Math.floor(offset));
+  const fetchLimit = Math.min(500, resolvedLimit + resolvedOffset + 100);
+  type RawAuditLogEntry = {
+    id: string;
+    action: string;
+    actor_id: string;
+    target_id: string | null;
+    details: string | null;
+    created_at: number;
+  };
+  const orgEntries = await (
+    stub as unknown as {
+      getWorkspaceAuditLog(
+        workspaceId: string,
+        limit?: number,
+        offset?: number,
+      ): Promise<RawAuditLogEntry[]>;
+    }
+  ).getWorkspaceAuditLog(workspaceId, fetchLimit, 0);
+  const workspaceStub = env.WORKSPACE.get(env.WORKSPACE.idFromName(workspaceId));
+  const legacyEntries = await (
+    workspaceStub as unknown as {
+      getAuditLog(limit?: number, offset?: number): Promise<RawAuditLogEntry[]>;
+    }
+  ).getAuditLog(fetchLimit, 0);
+  const mergedById = new Map<string, RawAuditLogEntry>();
+  for (const entry of [...orgEntries, ...legacyEntries]) {
+    mergedById.set(entry.id, entry);
+  }
+  const entries = Array.from(mergedById.values())
+    .sort((a, b) => b.created_at - a.created_at)
+    .slice(resolvedOffset, resolvedOffset + resolvedLimit);
   return entries.map((entry) => ({
     id: entry.id,
     action: entry.action,
@@ -1249,6 +1507,16 @@ export async function acceptInvitation(
     workspaces.map(async (ws) => {
       const wsStub = env.WORKSPACE.get(env.WORKSPACE.idFromName(ws.id));
       const access = presetAccess?.[ws.id] ?? "full";
+      await (
+        orgStub as unknown as {
+          setWorkspaceAccess(
+            workspaceId: string,
+            userId: string,
+            accessLevel: WorkspaceAccessLevel,
+            actorId: string,
+          ): Promise<void>;
+        }
+      ).setWorkspaceAccess(ws.id, userId, access, userId);
       await wsStub.setMemberAccess(userId, access, userId);
     }),
   );

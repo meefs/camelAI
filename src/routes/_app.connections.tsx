@@ -2,7 +2,15 @@ import { Suspense } from 'react';
 import { Await, useLoaderData } from 'react-router';
 import type { Route } from './+types/_app.connections';
 import { requireAuthContext, getAuthEnv, requireWorkspaceAccess } from '@/lib/auth.server';
-import { isOrgAdmin } from '@/lib/auth-do';
+import {
+  createWorkspaceIntegrationRecord,
+  deleteWorkspaceIntegrationRecord,
+  getWorkspaceIntegrationRecord,
+  isOrgAdmin,
+  listWorkspaceIntegrationRecords,
+  updateWorkspaceIntegrationRecord,
+  workspaceIntegrationNameExists,
+} from '@/lib/auth-do';
 import { getEnv, type CloudflareEnv } from '@/lib/cloudflare.server';
 import {
   INTEGRATION_REGISTRY,
@@ -22,10 +30,7 @@ import {
   TELEGRAM_SETUP_TTL_SECONDS,
   type TelegramSetupRecord,
 } from '@/lib/telegram-channel';
-import type {
-  WorkspaceDO,
-  WorkspaceIntegrationRecord,
-} from '../../workers/main/src/workspace';
+import type { WorkspaceIntegrationRecord } from '../../workers/main/src/workspace';
 import ConnectionsClient from '@/components/pages/connections/connections-client';
 import { ConnectionsLoadingSkeleton } from '@/components/pages/connections/connections-loading';
 import { NoWorkspacesError } from '@/components/no-workspaces-error';
@@ -48,10 +53,6 @@ const CONNECTION_MANAGEMENT_INTENTS = new Set([
   'deleteIntegration',
   'duplicateIntegration',
 ]);
-
-function getWorkspaceStub(env: CloudflareEnv, workspaceId: string): WorkspaceDO {
-  return env.WORKSPACE.get(env.WORKSPACE.idFromName(workspaceId)) as unknown as WorkspaceDO;
-}
 
 async function loadWorkspaceMentionProjects(
   env: unknown,
@@ -182,7 +183,7 @@ export async function action({ request, context }: Route.ActionArgs) {
   }
   await requireWorkspaceAccess(request, context, workspaceId, 'full');
 
-  const stub = env.WORKSPACE.get(env.WORKSPACE.idFromName(workspaceId));
+  const authEnv = getAuthEnv(env);
   const formData = await request.formData();
   const intent = formData.get('intent');
 
@@ -246,7 +247,9 @@ export async function action({ request, context }: Route.ActionArgs) {
           env.INTEGRATION_SECRET_KEY,
         );
 
-        await stub.createIntegration(
+        await createWorkspaceIntegrationRecord(
+          authEnv,
+          workspaceId,
           integrationId,
           integrationType,
           name,
@@ -286,10 +289,12 @@ export async function action({ request, context }: Route.ActionArgs) {
         : '';
 
       const integrationId = crypto.randomUUID();
-      await stub.createIntegration(
-        integrationId,
-        integrationType,
-        name,
+        await createWorkspaceIntegrationRecord(
+          authEnv,
+          workspaceId,
+          integrationId,
+          integrationType,
+          name,
         definition.category,
         definition.authMethod,
         JSON.stringify(config),
@@ -320,7 +325,7 @@ export async function action({ request, context }: Route.ActionArgs) {
     }
 
     try {
-      const existing = await stub.getIntegration(integrationId);
+      const existing = await getWorkspaceIntegrationRecord(authEnv, workspaceId, integrationId);
       if (!existing) {
         return { error: 'Integration not found' };
       }
@@ -371,7 +376,13 @@ export async function action({ request, context }: Route.ActionArgs) {
           : '';
       }
 
-      await stub.updateIntegration(integrationId, updates, authContext.user.id);
+      await updateWorkspaceIntegrationRecord(
+        authEnv,
+        workspaceId,
+        integrationId,
+        updates,
+        authContext.user.id,
+      );
       return { success: true };
     } catch (err) {
       return { error: err instanceof Error ? err.message : 'Failed to update integration' };
@@ -386,7 +397,12 @@ export async function action({ request, context }: Route.ActionArgs) {
     }
 
     try {
-      await stub.deleteIntegration(integrationId, authContext.user.id);
+      await deleteWorkspaceIntegrationRecord(
+        authEnv,
+        workspaceId,
+        integrationId,
+        authContext.user.id,
+      );
       return { success: true };
     } catch (err) {
       return { error: err instanceof Error ? err.message : 'Failed to delete integration' };
@@ -401,31 +417,38 @@ export async function action({ request, context }: Route.ActionArgs) {
       return { error: 'Integration ID and target workspace are required' };
     }
 
-    // Verify target workspace belongs to the same org
-    const targetStub = env.WORKSPACE.get(env.WORKSPACE.idFromName(targetWorkspaceId));
-    const targetInfo = await targetStub.getInfo();
-    if (!targetInfo || targetInfo.org_id !== authContext.currentOrg.id) {
+    const targetInfo = authContext.workspaces?.find((ws) => ws.id === targetWorkspaceId);
+    if (!targetInfo) {
       return { error: 'Target workspace must belong to the same organization' };
     }
 
     try {
       // Get the source integration record (including encrypted credentials)
-      const sourceRecord = await stub.getIntegration(integrationId);
+      const sourceRecord = await getWorkspaceIntegrationRecord(
+        authEnv,
+        workspaceId,
+        integrationId,
+      );
       if (!sourceRecord) {
         return { error: 'Integration not found' };
       }
 
       // Deduplicate name: append " (copy)" if the name already exists on target
       let copyName = sourceRecord.name;
-      const nameExists = await (targetStub as unknown as WorkspaceDO).integrationNameExists(
-        sourceRecord.integration_type, copyName
+      const nameExists = await workspaceIntegrationNameExists(
+        authEnv,
+        targetWorkspaceId,
+        sourceRecord.integration_type,
+        copyName,
       );
       if (nameExists) {
         copyName = `${copyName} (copy)`;
       }
 
       // Copy to target workspace with new ID
-      await targetStub.createIntegration(
+      await createWorkspaceIntegrationRecord(
+        authEnv,
+        targetWorkspaceId,
         crypto.randomUUID(),
         sourceRecord.integration_type,
         copyName,
@@ -461,8 +484,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
 
   // Get workspace integrations
   const connectionsPromise: Promise<ConnectionListItem[]> = workspaceId
-    ? env.WORKSPACE.get(env.WORKSPACE.idFromName(workspaceId))
-        .getIntegrations()
+    ? listWorkspaceIntegrationRecords(authEnv, workspaceId)
         .then(async (records) => {
           const creators = await getOptionalCreatorProfiles(authEnv, [
             ...records.map((record) => record.created_by),
