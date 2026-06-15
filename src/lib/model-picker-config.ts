@@ -91,7 +91,7 @@ export function parseOrgModelPickerConfig(
   }
 
   const usePlatformDefaults = record.use_platform_defaults !== false;
-  const models = usePlatformDefaults ? [] : normalizeModelRows(record.models);
+  const models = normalizeModelRows(record.models);
   return {
     use_platform_defaults: usePlatformDefaults,
     models,
@@ -115,7 +115,7 @@ export function parseWorkspaceModelPickerConfig(
     };
   }
   const usePlatformDefaults = record.use_platform_defaults !== false;
-  const models = usePlatformDefaults ? [] : normalizeModelRows(record.models);
+  const models = normalizeModelRows(record.models);
   return {
     use_org_defaults: record.use_org_defaults !== false,
     use_platform_defaults: usePlatformDefaults,
@@ -129,13 +129,21 @@ export function resolveEffectivePickerConfig(
   workspace: WorkspaceModelPickerConfig | null | undefined,
 ): EffectiveModelPickerConfig {
   if (!workspace || workspace.use_org_defaults) {
-    return { ...org, source: "org" };
+    return {
+      ...org,
+      default_model:
+        org.use_platform_defaults === false ? org.default_model : null,
+      source: "org",
+    };
   }
 
   return {
     use_platform_defaults: workspace.use_platform_defaults,
     models: workspace.models,
-    default_model: workspace.default_model,
+    default_model:
+      workspace.use_platform_defaults === false
+        ? workspace.default_model
+        : null,
     source: "workspace",
   };
 }

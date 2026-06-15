@@ -6,6 +6,7 @@ const getAuthEnvMock = vi.fn();
 const getEnvMock = vi.fn();
 const listOrgWorkspacesMock = vi.fn();
 const orgGetModelPickerConfigMock = vi.fn();
+const orgSetModelPickerConfigMock = vi.fn();
 const orgGetLlmProviderConfigMock = vi.fn();
 const orgGetExperimentalSettingsMock = vi.fn();
 const workspaceGetModelPickerConfigMock = vi.fn();
@@ -27,13 +28,16 @@ vi.mock('@/lib/auth-do', () => ({
 
 const { action, loader } = await import('@/routes/_app.settings.organization.models');
 
-function formRequest(fields: Record<string, string>) {
+function formRequest(
+  fields: Record<string, string>,
+  search = '?scope=ws&workspaceId=ws_123',
+) {
   const formData = new FormData();
   for (const [key, value] of Object.entries(fields)) {
     formData.set(key, value);
   }
   return new Request(
-    'https://camelai.com/settings/organization/models?scope=ws&workspaceId=ws_123',
+    `https://camelai.com/settings/organization/models${search}`,
     {
       method: 'POST',
       body: formData,
@@ -81,6 +85,7 @@ describe('organization model settings actions', () => {
         idFromName: (id: string) => id,
         get: () => ({
           getModelPickerConfig: orgGetModelPickerConfigMock,
+          setModelPickerConfig: orgSetModelPickerConfigMock,
           getLlmProviderConfig: orgGetLlmProviderConfigMock,
           getExperimentalSettings: orgGetExperimentalSettingsMock,
         }),
@@ -105,6 +110,7 @@ describe('organization model settings actions', () => {
       models: [],
       default_model: null,
     });
+    orgSetModelPickerConfigMock.mockImplementation(async (config) => config);
     orgGetLlmProviderConfigMock.mockRejectedValue(
       new Error('unexpected provider config read'),
     );
@@ -120,8 +126,258 @@ describe('organization model settings actions', () => {
     workspaceSetModelPickerConfigMock.mockImplementation(async (config) => config);
   });
 
-  it('seeds workspace picker overrides from org config when disabling org defaults', async () => {
+  it('seeds frozen workspace picker overrides from platform defaults when disabling org defaults', async () => {
+    mockAuthContext({
+      currentOrgLlmProviderConfig: providerRecord('openai'),
+    });
     orgGetModelPickerConfigMock.mockResolvedValue({
+      use_platform_defaults: true,
+      models: [],
+      default_model: null,
+    });
+
+    const response = await action({
+      request: formRequest({
+        intent: 'setUseOrgDefaults',
+        useOrgDefaults: 'false',
+      }),
+      context: {},
+      params: {},
+    } as never);
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      success: true,
+    });
+    expect(workspaceSetModelPickerConfigMock).toHaveBeenCalledWith(
+      {
+        use_org_defaults: false,
+        use_platform_defaults: false,
+        models: [
+          { id: 'gpt-5.5', added_at: expect.any(Number) },
+          { id: 'gpt-5.4', added_at: expect.any(Number) },
+          { id: 'gpt-5.4-mini', added_at: expect.any(Number) },
+        ],
+        default_model: null,
+      },
+      {
+        actorId: 'user_123',
+        details: {
+          intent: 'setUseOrgDefaults',
+          workspace_id: 'ws_123',
+          use_org_defaults: false,
+          restored_retained_list: false,
+          seeded_from_org_defaults: true,
+        },
+      },
+    );
+  });
+
+  it('does not seed retained platform-default org defaults into workspace custom snapshots', async () => {
+    mockAuthContext({
+      currentOrgLlmProviderConfig: providerRecord('openai'),
+    });
+    orgGetModelPickerConfigMock.mockResolvedValue({
+      use_platform_defaults: true,
+      models: [
+        { id: 'gpt-5.4', added_at: 20 },
+      ],
+      default_model: 'gpt-5.4',
+    });
+
+    const response = await action({
+      request: formRequest({
+        intent: 'setUseOrgDefaults',
+        useOrgDefaults: 'false',
+      }),
+      context: {},
+      params: {},
+    } as never);
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      success: true,
+    });
+    expect(workspaceSetModelPickerConfigMock).toHaveBeenCalledWith(
+      {
+        use_org_defaults: false,
+        use_platform_defaults: false,
+        models: [
+          { id: 'gpt-5.5', added_at: expect.any(Number) },
+          { id: 'gpt-5.4', added_at: expect.any(Number) },
+          { id: 'gpt-5.4-mini', added_at: expect.any(Number) },
+        ],
+        default_model: null,
+      },
+      {
+        actorId: 'user_123',
+        details: {
+          intent: 'setUseOrgDefaults',
+          workspace_id: 'ws_123',
+          use_org_defaults: false,
+          restored_retained_list: false,
+          seeded_from_org_defaults: true,
+        },
+      },
+    );
+  });
+
+  it('preserves a null org default when seeding workspace overrides', async () => {
+    orgGetModelPickerConfigMock.mockResolvedValue({
+      use_platform_defaults: false,
+      models: [
+        { id: 'sonnet', added_at: 20 },
+        { id: 'gpt-5.4', added_at: 10 },
+      ],
+      default_model: null,
+    });
+
+    const response = await action({
+      request: formRequest({
+        intent: 'setUseOrgDefaults',
+        useOrgDefaults: 'false',
+      }),
+      context: {},
+      params: {},
+    } as never);
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      success: true,
+    });
+    expect(workspaceSetModelPickerConfigMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        use_org_defaults: false,
+        default_model: null,
+      }),
+      expect.anything(),
+    );
+  });
+
+  it('retains org custom lists when switching to platform defaults', async () => {
+    orgGetModelPickerConfigMock.mockResolvedValue({
+      use_platform_defaults: false,
+      models: [
+        { id: 'sonnet', added_at: 20 },
+        { id: 'gpt-5.4', added_at: 10 },
+      ],
+      default_model: 'sonnet',
+    });
+
+    const response = await action({
+      request: formRequest({
+        intent: 'setUsePlatformDefaults',
+        usePlatformDefaults: 'true',
+      }, ''),
+      context: {},
+      params: {},
+    } as never);
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      success: true,
+    });
+    expect(orgSetModelPickerConfigMock).toHaveBeenCalledWith(
+      {
+        use_platform_defaults: true,
+        models: [
+          { id: 'sonnet', added_at: 20 },
+          { id: 'gpt-5.4', added_at: 10 },
+        ],
+        default_model: 'sonnet',
+      },
+      {
+        actorId: 'user_123',
+        details: {
+          intent: 'setUsePlatformDefaults',
+          use_platform_defaults: true,
+        },
+      },
+    );
+  });
+
+  it('retains provider-hidden custom rows when switching to platform defaults', async () => {
+    orgGetLlmProviderConfigMock.mockResolvedValue({ provider: 'openai' });
+    orgGetModelPickerConfigMock.mockResolvedValue({
+      use_platform_defaults: false,
+      models: [
+        { id: 'sonnet', added_at: 20 },
+        { id: 'gpt-5.4', added_at: 10 },
+      ],
+      default_model: 'sonnet',
+    });
+
+    const response = await action({
+      request: formRequest({
+        intent: 'setUsePlatformDefaults',
+        usePlatformDefaults: 'true',
+      }, ''),
+      context: {},
+      params: {},
+    } as never);
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      success: true,
+    });
+    expect(orgSetModelPickerConfigMock).toHaveBeenCalledWith(
+      {
+        use_platform_defaults: true,
+        models: [
+          { id: 'sonnet', added_at: 20 },
+          { id: 'gpt-5.4', added_at: 10 },
+        ],
+        default_model: 'sonnet',
+      },
+      expect.anything(),
+    );
+  });
+
+  it('restores retained org custom lists when switching off platform defaults', async () => {
+    orgGetModelPickerConfigMock.mockResolvedValue({
+      use_platform_defaults: true,
+      models: [
+        { id: 'sonnet', added_at: 20 },
+        { id: 'gpt-5.4', added_at: 10 },
+      ],
+      default_model: 'sonnet',
+    });
+
+    const response = await action({
+      request: formRequest({
+        intent: 'setUsePlatformDefaults',
+        usePlatformDefaults: 'false',
+      }, ''),
+      context: {},
+      params: {},
+    } as never);
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      success: true,
+    });
+    expect(orgSetModelPickerConfigMock).toHaveBeenCalledWith(
+      {
+        use_platform_defaults: false,
+        models: [
+          { id: 'sonnet', added_at: 20 },
+          { id: 'gpt-5.4', added_at: 10 },
+        ],
+        default_model: 'sonnet',
+      },
+      {
+        actorId: 'user_123',
+        details: {
+          intent: 'setUsePlatformDefaults',
+          use_platform_defaults: false,
+        },
+      },
+    );
+  });
+
+  it('restores retained workspace custom lists when disabling org defaults', async () => {
+    workspaceGetModelPickerConfigMock.mockResolvedValue({
+      use_org_defaults: true,
       use_platform_defaults: false,
       models: [
         { id: 'sonnet', added_at: 20 },
@@ -159,20 +415,24 @@ describe('organization model settings actions', () => {
           intent: 'setUseOrgDefaults',
           workspace_id: 'ws_123',
           use_org_defaults: false,
-          seeded_from_org_defaults: true,
+          restored_retained_list: true,
+          seeded_from_org_defaults: false,
         },
       },
     );
   });
 
-  it('preserves a null org default when seeding workspace overrides', async () => {
-    orgGetModelPickerConfigMock.mockResolvedValue({
+  it('falls back to a fresh workspace snapshot when retained models are no longer visible', async () => {
+    mockAuthContext({
+      currentOrgLlmProviderConfig: providerRecord('openai'),
+    });
+    workspaceGetModelPickerConfigMock.mockResolvedValue({
+      use_org_defaults: true,
       use_platform_defaults: false,
       models: [
         { id: 'sonnet', added_at: 20 },
-        { id: 'gpt-5.4', added_at: 10 },
       ],
-      default_model: null,
+      default_model: 'sonnet',
     });
 
     const response = await action({
@@ -189,11 +449,26 @@ describe('organization model settings actions', () => {
       success: true,
     });
     expect(workspaceSetModelPickerConfigMock).toHaveBeenCalledWith(
-      expect.objectContaining({
+      {
         use_org_defaults: false,
+        use_platform_defaults: false,
+        models: [
+          { id: 'gpt-5.5', added_at: expect.any(Number) },
+          { id: 'gpt-5.4', added_at: expect.any(Number) },
+          { id: 'gpt-5.4-mini', added_at: expect.any(Number) },
+        ],
         default_model: null,
-      }),
-      expect.anything(),
+      },
+      {
+        actorId: 'user_123',
+        details: {
+          intent: 'setUseOrgDefaults',
+          workspace_id: 'ws_123',
+          use_org_defaults: false,
+          restored_retained_list: false,
+          seeded_from_org_defaults: true,
+        },
+      },
     );
   });
 
@@ -463,6 +738,28 @@ describe('organization model settings loader', () => {
     ]);
     expect(result.config.additional).toEqual([]);
     expect(result.config.capacity.used).toBe(3);
+  });
+
+  it('does not mark retained defaults as active in platform-default settings', async () => {
+    orgGetModelPickerConfigMock.mockResolvedValue({
+      use_platform_defaults: true,
+      models: [
+        { id: 'gpt-5.4', added_at: 20 },
+      ],
+      default_model: 'gpt-5.4',
+    });
+
+    const result = await loader({
+      request: loaderRequest(),
+      context: {},
+      params: {},
+    } as never);
+
+    expect(result.config.usePlatformDefaults).toBe(true);
+    expect(
+      result.config.inPicker.find((row) => row.entry.id === 'gpt-5.4')
+        ?.isDefault,
+    ).toBe(false);
   });
 
   it('shows the synthetic custom model for custom providers with a model id', async () => {

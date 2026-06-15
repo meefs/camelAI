@@ -210,6 +210,50 @@ describe('getWorkspaceModelPickerState rollout compatibility', () => {
     );
   });
 
+  it('ignores retained picker defaults while platform defaults are active', async () => {
+    const workspaceStub = {
+      getInfo: vi.fn().mockResolvedValue({ org_id: 'org_123' }),
+      getModelPickerConfig: vi.fn().mockResolvedValue({
+        use_org_defaults: true,
+        use_platform_defaults: true,
+        models: [],
+        default_model: null,
+      }),
+    };
+    const orgStub = {
+      getLlmProviderConfig: vi.fn().mockResolvedValue(null),
+      getExperimentalSettings: vi
+        .fn()
+        .mockResolvedValue({ claude_proxy_models: false }),
+      getModelPickerConfig: vi.fn().mockResolvedValue({
+        use_platform_defaults: true,
+        models: [
+          { id: 'gpt-5.4', added_at: 1 },
+        ],
+        default_model: 'gpt-5.4',
+      }),
+    };
+
+    getEnvMock.mockReturnValue({
+      WORKSPACE: {
+        idFromName: (id: string) => id,
+        get: () => workspaceStub,
+      },
+      ORG: {
+        idFromName: (id: string) => id,
+        get: () => orgStub,
+      },
+    });
+
+    const state = await getWorkspaceModelPickerState({}, 'ws_123');
+
+    expect(state).toMatchObject({
+      effectivePickerDefaultModel: null,
+      hasEffectivePickerDefault: false,
+      defaultModel: 'sonnet',
+    });
+  });
+
   it('applies model picker validation on the validated-access create fast path', async () => {
     const workspaceStub = {
       getModelPickerConfig: vi.fn().mockResolvedValue({

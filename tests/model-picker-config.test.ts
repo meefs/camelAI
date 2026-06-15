@@ -54,6 +54,42 @@ describe('model picker config parsing', () => {
     });
   });
 
+  it('retains org picker models while platform defaults are active', () => {
+    expect(parseOrgModelPickerConfig({
+      use_platform_defaults: true,
+      models: [
+        { id: 'sonnet', added_at: 10 },
+        { id: 'opus', added_at: 9 },
+      ],
+      default_model: 'sonnet',
+    })).toEqual({
+      use_platform_defaults: true,
+      models: [
+        { id: 'sonnet', added_at: 10 },
+        { id: 'opus-4.8', added_at: 9 },
+      ],
+      default_model: 'sonnet',
+    });
+  });
+
+  it('retains workspace picker models while platform defaults are active', () => {
+    expect(parseWorkspaceModelPickerConfig({
+      use_org_defaults: false,
+      use_platform_defaults: true,
+      models: [
+        { id: 'gpt-5.4', added_at: 10 },
+      ],
+      default_model: 'gpt-5.4',
+    })).toEqual({
+      use_org_defaults: false,
+      use_platform_defaults: true,
+      models: [
+        { id: 'gpt-5.4', added_at: 10 },
+      ],
+      default_model: 'gpt-5.4',
+    });
+  });
+
   it('keeps all deduped org picker override models', () => {
     const parsed = parseOrgModelPickerConfig({
       use_platform_defaults: false,
@@ -255,11 +291,13 @@ describe('model picker config parsing', () => {
 
   it('resolves org vs workspace effective config', () => {
     const org = {
+      use_platform_defaults: false,
       models: [{ id: 'sonnet' as const, added_at: 1 }],
       default_model: 'sonnet' as const,
     };
     const workspace = {
       use_org_defaults: false,
+      use_platform_defaults: false,
       models: [{ id: 'opus-4.8' as const, added_at: 2 }],
       default_model: 'opus-4.8' as const,
     };
@@ -272,6 +310,29 @@ describe('model picker config parsing', () => {
     expect(resolveEffectivePickerConfig(org, workspace)).toMatchObject({
       source: 'workspace',
       default_model: 'opus-4.8',
+    });
+  });
+
+  it('ignores retained defaults while platform defaults are active', () => {
+    const org = {
+      use_platform_defaults: true,
+      models: [{ id: 'sonnet' as const, added_at: 1 }],
+      default_model: 'sonnet' as const,
+    };
+    const workspace = {
+      use_org_defaults: false,
+      use_platform_defaults: true,
+      models: [{ id: 'opus-4.8' as const, added_at: 2 }],
+      default_model: 'opus-4.8' as const,
+    };
+
+    expect(resolveEffectivePickerConfig(org, null)).toMatchObject({
+      source: 'org',
+      default_model: null,
+    });
+    expect(resolveEffectivePickerConfig(org, workspace)).toMatchObject({
+      source: 'workspace',
+      default_model: null,
     });
   });
 });
