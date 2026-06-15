@@ -706,6 +706,14 @@ export class UserDO extends DurableObject<DOEnv> {
     this.ctx.storage.kv.delete("pendingSalesPrompt");
   }
 
+  consumePendingSalesPrompt(): string | null {
+    const prompt = this.getPendingSalesPrompt();
+    if (prompt !== null) {
+      this.clearPendingSalesPrompt();
+    }
+    return prompt;
+  }
+
   async setProfile(profile: User): Promise<void> {
     this.sql.exec(
       "INSERT OR REPLACE INTO profile (key, value) VALUES (?, ?)",

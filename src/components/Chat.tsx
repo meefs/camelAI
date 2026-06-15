@@ -55,7 +55,6 @@ import {
   ConnectionSetupPrompt,
   type ConnectionSetupPromptData,
 } from "@/components/connection-setup-prompt";
-import { OnboardingLoadingModal } from "@/components/onboarding-loading-modal";
 import type { Attachment } from "@/components/attachment-list";
 import { Button } from "@/components/ui/button";
 import {
@@ -365,16 +364,6 @@ function dispatchLocalThreadSummaryUpdate(
   );
 }
 
-function shouldShowBootModalFromStorage(isNewThread: boolean): boolean {
-  if (typeof window === "undefined" || !isNewThread) return false;
-
-  try {
-    return Boolean(sessionStorage.getItem("showBootModal"));
-  } catch {
-    return false;
-  }
-}
-
 function messagesHaveSameContent(left: Message[], right: Message[]): boolean {
   if (left.length !== right.length) return false;
   for (let index = 0; index < left.length; index += 1) {
@@ -678,9 +667,6 @@ export default function Chat({
   }, [currentTodos, messages, onSnapshotChange, readOnly, threadId]);
   const [pendingQuestion, setPendingQuestion] =
     useState<AskUserQuestionData | null>(null);
-  const [bootModalOpen, setBootModalOpen] = useState(() =>
-    shouldShowBootModalFromStorage(isNewThread),
-  );
   const currentChatPath = useMemo(
     () => `${location.pathname}${location.search}${location.hash}`,
     [location.hash, location.pathname, location.search],
@@ -709,15 +695,6 @@ export default function Chat({
       { replace: true },
     );
   }, [location.hash, location.pathname, location.search, navigate]);
-
-  useEffect(() => {
-    if (!bootModalOpen) return;
-    try {
-      sessionStorage.removeItem("showBootModal");
-    } catch {
-      // Ignore storage failures; modal behavior should stay resilient.
-    }
-  }, [bootModalOpen]);
 
   useEffect(() => {
     if (!initialWelcomeInput) {
@@ -5583,13 +5560,6 @@ type SendOptions = {
         />
       )}
 
-      {/* Post-onboarding boot sequence modal */}
-      {bootModalOpen && (
-        <OnboardingLoadingModal
-          open={bootModalOpen}
-          onDismiss={() => setBootModalOpen(false)}
-        />
-      )}
     </TooltipProvider>
   );
 }

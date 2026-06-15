@@ -754,7 +754,7 @@ export default function OnboardingWelcomeRoute() {
                 }
               }}
             >
-              {isCompleting ? "Getting Started..." : "Get Started"}
+              {isCompleting ? "Opening chat..." : "Continue to chat"}
             </Button>
           </div>
         )}

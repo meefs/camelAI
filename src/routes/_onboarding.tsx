@@ -179,24 +179,7 @@ export default function OnboardingRoute() {
 
         const data = (await response.json()) as {
           redirectTo?: string;
-          threadId?: string;
-          salesPrompt?: string | null;
-          showBootModal?: boolean;
         };
-
-        if (data.showBootModal) {
-          try {
-            sessionStorage.setItem("showBootModal", "1");
-          } catch {
-            // Ignore storage failures.
-          }
-        } else {
-          try {
-            sessionStorage.removeItem("showBootModal");
-          } catch {
-            // Ignore storage failures.
-          }
-        }
 
         navigate(data.redirectTo || "/chat");
       })();
@@ -279,7 +262,7 @@ export default function OnboardingRoute() {
                 We couldn&apos;t finish onboarding
               </h1>
               <p className="text-muted-foreground">
-                Retry and we&apos;ll set up your first chat.
+                Retry and we&apos;ll take you to chat.
               </p>
             </div>
             <Alert variant="destructive" className="text-left">

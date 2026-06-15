@@ -1,88 +1,32 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const waitUntilMock = vi.fn();
 const requireAuthContextMock = vi.fn();
 const getEnvMock = vi.fn();
 const getAuthEnvMock = vi.fn();
-const createThreadMock = vi.fn();
-const deleteThreadMock = vi.fn();
-const generateThreadTitleMock = vi.fn();
-const getThreadsPaginatedMock = vi.fn();
-const startInitialUserMessageMock = vi.fn();
 
-vi.mock('@/lib/wait-until', () => ({
-  waitUntil: waitUntilMock,
-}));
-
-vi.mock('@/lib/auth.server', () => ({
+vi.mock("@/lib/auth.server", () => ({
   requireAuthContext: requireAuthContextMock,
   getAuthEnv: getAuthEnvMock,
 }));
 
-vi.mock('@/lib/cloudflare.server', () => ({
+vi.mock("@/lib/cloudflare.server", () => ({
   getEnv: getEnvMock,
 }));
 
-vi.mock('@/lib/chat-do.server', () => ({
-  createThread: createThreadMock,
-  deleteThread: deleteThreadMock,
-  generateThreadTitle: generateThreadTitleMock,
-  getThreadsPaginated: getThreadsPaginatedMock,
-}));
+const { action } = await import("@/routes/api/onboarding.complete");
 
-const { action } = await import('@/routes/api/onboarding.complete');
-
-describe('onboarding complete sales prompt flow', () => {
+describe("onboarding complete flow", () => {
   let userStub: {
     getEmailVerificationStatus: ReturnType<typeof vi.fn>;
     updateOnboarding: ReturnType<typeof vi.fn>;
     getPendingSalesPrompt: ReturnType<typeof vi.fn>;
     clearPendingSalesPrompt: ReturnType<typeof vi.fn>;
+    consumePendingSalesPrompt: ReturnType<typeof vi.fn>;
   };
-  let orgStubs: Map<
-    string,
-    {
-      getInfo: ReturnType<typeof vi.fn>;
-      getLlmProviderConfig: ReturnType<typeof vi.fn>;
-      getThreadsPaginated: ReturnType<typeof vi.fn>;
-    }
-  >;
-
-  function createOrgStub({
-    billingStatus = 'active',
-    billingPlan = 'starter',
-    purchasedCreditsCents = 0,
-    grantedCreditsCents = 0,
-    llmProviderConfig = null,
-    threadTotal = 0,
-  }: {
-    billingStatus?: string;
-    billingPlan?: string;
-    purchasedCreditsCents?: number;
-    grantedCreditsCents?: number;
-    llmProviderConfig?: unknown;
-    threadTotal?: number;
-  } = {}) {
-    return {
-      getInfo: vi.fn().mockResolvedValue({
-        billing_status: billingStatus,
-        billing_plan: billingPlan,
-        billing_credit_purchase_total_cents: purchasedCreditsCents,
-        billing_credit_grant_total_cents: grantedCreditsCents,
-      }),
-      getLlmProviderConfig: vi.fn().mockResolvedValue(llmProviderConfig),
-      getThreadsPaginated: vi.fn().mockResolvedValue({
-        items: [],
-        total: threadTotal,
-        offset: 0,
-        limit: 1,
-      }),
-    };
-  }
 
   function makeCurrentOrg({
-    billingStatus = 'active',
-    billingPlan = 'starter',
+    billingStatus = "active",
+    billingPlan = "starter",
     purchasedCreditsCents = 0,
     grantedCreditsCents = 0,
   }: {
@@ -92,12 +36,33 @@ describe('onboarding complete sales prompt flow', () => {
     grantedCreditsCents?: number;
   } = {}) {
     return {
-      id: 'org_123',
+      id: "org_123",
       billing_status: billingStatus,
       billing_plan: billingPlan,
       billing_credit_purchase_total_cents: purchasedCreditsCents,
       billing_credit_grant_total_cents: grantedCreditsCents,
     };
+  }
+
+  function setAuthContext(
+    overrides: Partial<Awaited<ReturnType<typeof requireAuthContextMock>>> = {},
+  ) {
+    requireAuthContextMock.mockResolvedValue({
+      user: { id: "user_123", name: "Illiana Reed" },
+      currentOrg: makeCurrentOrg(),
+      currentOrgLlmProviderConfig: null,
+      currentWorkspace: { id: "ws_123" },
+      orgs: [{ org_id: "org_123" }],
+      onboarding: { completed_at: null },
+      ...overrides,
+    });
+  }
+
+  function completeRequest(init?: RequestInit) {
+    return new Request("https://camelai.dev/api/onboarding/complete", {
+      method: "POST",
+      ...init,
+    });
   }
 
   beforeEach(() => {
@@ -109,312 +74,186 @@ describe('onboarding complete sales prompt flow', () => {
         verified: true,
       }),
       updateOnboarding: vi.fn().mockResolvedValue(undefined),
-      getPendingSalesPrompt: vi.fn().mockReturnValue(null),
+      getPendingSalesPrompt: vi.fn().mockReturnValue("Build me a CRM"),
       clearPendingSalesPrompt: vi.fn(),
+      consumePendingSalesPrompt: vi.fn(),
     };
 
-    requireAuthContextMock.mockResolvedValue({
-      user: { id: 'user_123', name: 'Illiana Reed' },
-      currentOrg: makeCurrentOrg(),
-      currentOrgLlmProviderConfig: null,
-      currentWorkspace: { id: 'ws_123' },
-      orgs: [{ org_id: 'org_123' }],
-      onboarding: { completed_at: null },
-    });
-    orgStubs = new Map([['org_123', createOrgStub()]]);
+    setAuthContext();
     getAuthEnvMock.mockReturnValue({
       USER: {
         idFromName: (id: string) => id,
         get: () => userStub,
       },
-      ORG: {
-        idFromName: (id: string) => id,
-        get: (id: string) => {
-          let stub = orgStubs.get(id);
-          if (!stub) {
-            stub = createOrgStub();
-            orgStubs.set(id, stub);
-          }
-          return stub;
-        },
-      },
     });
-    getEnvMock.mockReturnValue({
-      CHAT_THREAD: {
-        idFromName: (id: string) => id,
-        get: () => ({
-          startInitialUserMessage: startInitialUserMessageMock,
-        }),
-      },
-    });
-    createThreadMock.mockResolvedValue({
-      id: 'thread_123',
-    });
-    deleteThreadMock.mockResolvedValue(undefined);
-    generateThreadTitleMock.mockResolvedValue(undefined);
-    getThreadsPaginatedMock.mockResolvedValue({ items: [] });
-    startInitialUserMessageMock.mockResolvedValue({ status: 'accepted' });
-    waitUntilMock.mockImplementation(() => undefined);
+    getEnvMock.mockReturnValue({});
   });
 
-  it('reads the sales prompt from UserDO, returns it, and generates a title', async () => {
-    userStub.getPendingSalesPrompt.mockReturnValue('Build me a CRM');
-
+  it("requires POST", async () => {
     const response = await action({
-      request: new Request('https://camelai.dev/api/onboarding/complete', {
-        method: 'POST',
-      }),
+      request: completeRequest({ method: "GET" }),
       context: {},
     } as never);
 
-    expect(response.status).toBe(200);
-    expect(userStub.clearPendingSalesPrompt).toHaveBeenCalled();
-    expect(createThreadMock).toHaveBeenCalledWith(
-      {},
-      'ws_123',
-      "Illiana's first chat",
-      'user_123',
-      'Build me a CRM',
-      undefined,
-    );
-    expect(generateThreadTitleMock).toHaveBeenCalledWith(
-      {},
-      'thread_123',
-      'ws_123',
-      'Build me a CRM'
-    );
-    expect(waitUntilMock).toHaveBeenCalledTimes(1);
-    expect(startInitialUserMessageMock).toHaveBeenCalledWith({
-      threadId: 'thread_123',
-      workspaceId: 'ws_123',
-      orgId: 'org_123',
-      userId: 'user_123',
-      message: expect.stringContaining('Build me a CRM'),
-      clientMessageId: 'onboarding:thread_123',
-    });
-    const orgStub = orgStubs.get('org_123');
-    expect(orgStub?.getInfo).not.toHaveBeenCalled();
-    expect(orgStub?.getLlmProviderConfig).not.toHaveBeenCalled();
-
-    await expect(response.json()).resolves.toMatchObject({
-      success: true,
-      threadId: 'thread_123',
-      salesPrompt: 'Build me a CRM',
-      redirectTo: '/chat/thread_123?newThread=1',
-      showBootModal: true,
+    expect(response.status).toBe(405);
+    expect(requireAuthContextMock).not.toHaveBeenCalled();
+    await expect(response.json()).resolves.toEqual({
+      error: "Method not allowed",
     });
   });
 
-  it('does not consume the sales prompt before email verification passes', async () => {
-    userStub.getPendingSalesPrompt.mockReturnValue('Build me an admin panel');
+  it("blocks completion until required email verification passes", async () => {
     userStub.getEmailVerificationStatus.mockResolvedValue({
       required: true,
       verified: false,
     });
 
     const response = await action({
-      request: new Request('https://camelai.dev/api/onboarding/complete', {
-        method: 'POST',
-      }),
+      request: completeRequest(),
       context: {},
     } as never);
 
     expect(response.status).toBe(403);
+    expect(userStub.updateOnboarding).not.toHaveBeenCalled();
+    expect(userStub.getPendingSalesPrompt).not.toHaveBeenCalled();
     expect(userStub.clearPendingSalesPrompt).not.toHaveBeenCalled();
-    expect(createThreadMock).not.toHaveBeenCalled();
-    expect(waitUntilMock).not.toHaveBeenCalled();
+    expect(userStub.consumePendingSalesPrompt).not.toHaveBeenCalled();
+    await expect(response.json()).resolves.toEqual({
+      error: "Please verify your email before completing onboarding.",
+    });
   });
 
-  it('works normally when no sales prompt is stored', async () => {
+  it("requires a selected workspace", async () => {
+    setAuthContext({ currentWorkspace: null });
+
     const response = await action({
-      request: new Request('https://camelai.dev/api/onboarding/complete', {
-        method: 'POST',
+      request: completeRequest(),
+      context: {},
+    } as never);
+
+    expect(response.status).toBe(400);
+    expect(userStub.getEmailVerificationStatus).not.toHaveBeenCalled();
+    expect(userStub.updateOnboarding).not.toHaveBeenCalled();
+    await expect(response.json()).resolves.toEqual({
+      error: "No workspace selected",
+    });
+  });
+
+  it("requires an effective provider config when choosing BYOK", async () => {
+    const response = await action({
+      request: completeRequest({
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ accessChoice: "byok" }),
       }),
       context: {},
     } as never);
 
-    expect(response.status).toBe(200);
-    expect(userStub.clearPendingSalesPrompt).not.toHaveBeenCalled();
-
-    await expect(response.json()).resolves.toMatchObject({
-      success: true,
-      threadId: 'thread_123',
-      salesPrompt: null,
-      redirectTo: '/chat/thread_123?newThread=1',
-      showBootModal: true,
+    expect(response.status).toBe(400);
+    expect(userStub.updateOnboarding).not.toHaveBeenCalled();
+    await expect(response.json()).resolves.toEqual({
+      error: "Add an API key before continuing with your own provider.",
     });
   });
 
-  it('does not complete onboarding when the initial hosted turn is blocked by credits', async () => {
-    userStub.getPendingSalesPrompt.mockReturnValue('Build me a CRM');
-    startInitialUserMessageMock.mockResolvedValueOnce({
-      status: 'error',
-      error:
-        'Hosted model credits are used up. You have used 0.00 credits of 0.00 credits.',
+  it("requires billing access before completing onboarding", async () => {
+    setAuthContext({
+      currentOrg: makeCurrentOrg({
+        billingStatus: "inactive",
+        billingPlan: "free",
+      }),
     });
 
     const response = await action({
-      request: new Request('https://camelai.dev/api/onboarding/complete', {
-        method: 'POST',
-      }),
+      request: completeRequest(),
       context: {},
     } as never);
 
     expect(response.status).toBe(402);
-    await expect(response.json()).resolves.toMatchObject({
-      error:
-        'Hosted model credits are used up. You have used 0.00 credits of 0.00 credits.',
-      actionHref: '/settings/organization/usage?action=topup',
-      actionLabel: 'Top up credits',
-    });
     expect(userStub.updateOnboarding).not.toHaveBeenCalled();
+    await expect(response.json()).resolves.toEqual({
+      error: "Choose a billing option before continuing.",
+    });
+  });
+
+  it("marks onboarding complete for ready hosted billing and redirects to chat", async () => {
+    const response = await action({
+      request: completeRequest(),
+      context: {},
+    } as never);
+
+    expect(response.status).toBe(200);
+    expect(userStub.updateOnboarding).toHaveBeenCalledWith({
+      completed_at: expect.any(Number),
+    });
+    expect(userStub.getPendingSalesPrompt).not.toHaveBeenCalled();
     expect(userStub.clearPendingSalesPrompt).not.toHaveBeenCalled();
-    expect(deleteThreadMock).toHaveBeenCalledWith({}, 'thread_123', 'ws_123', {
-      orgId: 'org_123',
-    });
-    expect(waitUntilMock).not.toHaveBeenCalled();
-  });
-
-  it('allows persisted enterprise orgs through the onboarding billing gate', async () => {
-    requireAuthContextMock.mockResolvedValue({
-      user: { id: 'user_123', name: 'Illiana Reed' },
-      currentOrg: makeCurrentOrg({
-        billingStatus: 'enterprise',
-        billingPlan: 'enterprise',
-      }),
-      currentOrgLlmProviderConfig: null,
-      currentWorkspace: { id: 'ws_123' },
-      orgs: [{ org_id: 'org_123' }],
-      onboarding: { completed_at: null },
-    });
-    getEnvMock.mockReturnValue({
-      CHAT_THREAD: {
-        idFromName: (id: string) => id,
-        get: () => ({
-          startInitialUserMessage: startInitialUserMessageMock,
-        }),
-      },
-    });
-
-    const response = await action({
-      request: new Request('https://camelai.dev/api/onboarding/complete', {
-        method: 'POST',
-      }),
-      context: {},
-    } as never);
-
-    expect(response.status).toBe(200);
-    expect(createThreadMock).toHaveBeenCalled();
-  });
-
-  it('requires a provider choice for PAYG orgs with no credits', async () => {
-    requireAuthContextMock.mockResolvedValue({
-      user: { id: 'user_123', name: 'Illiana Reed' },
-      currentOrg: makeCurrentOrg({
-        billingStatus: 'inactive',
-        billingPlan: 'payg',
-      }),
-      currentOrgLlmProviderConfig: null,
-      currentWorkspace: { id: 'ws_123' },
-      orgs: [{ org_id: 'org_123' }],
-      onboarding: { completed_at: null },
-    });
-
-    const response = await action({
-      request: new Request('https://camelai.dev/api/onboarding/complete', {
-        method: 'POST',
-      }),
-      context: {},
-    } as never);
-
-    expect(response.status).toBe(402);
-    expect(createThreadMock).not.toHaveBeenCalled();
-    await expect(response.json()).resolves.toMatchObject({
-      error: 'Choose a billing option before continuing.',
-    });
-  });
-
-  it('allows PAYG orgs with purchased credits through onboarding', async () => {
-    requireAuthContextMock.mockResolvedValue({
-      user: { id: 'user_123', name: 'Illiana Reed' },
-      currentOrg: makeCurrentOrg({
-        billingStatus: 'inactive',
-        billingPlan: 'payg',
-        purchasedCreditsCents: 500,
-      }),
-      currentOrgLlmProviderConfig: null,
-      currentWorkspace: { id: 'ws_123' },
-      orgs: [{ org_id: 'org_123' }],
-      onboarding: { completed_at: null },
-    });
-
-    const response = await action({
-      request: new Request('https://camelai.dev/api/onboarding/complete', {
-        method: 'POST',
-      }),
-      context: {},
-    } as never);
-
-    expect(response.status).toBe(200);
-    expect(createThreadMock).toHaveBeenCalled();
-  });
-
-  it('does not start the first-chat flow for BYOK when the user already has a chat', async () => {
-    orgStubs.set(
-      'org_123',
-      createOrgStub({
-        llmProviderConfig: { provider: 'openai' },
-        threadTotal: 1,
-      }),
-    );
-    requireAuthContextMock.mockResolvedValue({
-      user: { id: 'user_123', name: 'Illiana Reed' },
-      currentOrg: makeCurrentOrg(),
-      currentOrgLlmProviderConfig: { provider: 'openai' },
-      currentWorkspace: { id: 'ws_123' },
-      orgs: [{ org_id: 'org_123' }],
-      onboarding: { completed_at: Date.now() },
-    });
-
-    const response = await action({
-      request: new Request('https://camelai.dev/api/onboarding/complete', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ accessChoice: 'byok' }),
-      }),
-      context: {},
-    } as never);
-
-    expect(response.status).toBe(200);
-    expect(createThreadMock).not.toHaveBeenCalled();
-    expect(userStub.updateOnboarding).not.toHaveBeenCalled();
-    expect(userStub.clearPendingSalesPrompt).not.toHaveBeenCalled();
+    expect(userStub.consumePendingSalesPrompt).not.toHaveBeenCalled();
     await expect(response.json()).resolves.toEqual({
       success: true,
-      redirectTo: '/chat',
+      redirectTo: "/chat",
     });
   });
 
-  it('marks onboarding complete without first-chat flow when prior chats exist in another org', async () => {
-    orgStubs.set(
-      'org_123',
-      createOrgStub({ llmProviderConfig: { provider: 'openai' } }),
-    );
-    orgStubs.set('org_other', createOrgStub({ threadTotal: 1 }));
-    requireAuthContextMock.mockResolvedValue({
-      user: { id: 'user_123', name: 'Illiana Reed' },
-      currentOrg: makeCurrentOrg(),
-      currentOrgLlmProviderConfig: { provider: 'openai' },
-      currentWorkspace: { id: 'ws_123' },
-      orgs: [{ org_id: 'org_123' }, { org_id: 'org_other' }],
-      onboarding: { completed_at: null },
+  it("marks onboarding complete for hosted credit access and redirects to chat", async () => {
+    setAuthContext({
+      currentOrg: makeCurrentOrg({
+        billingStatus: "inactive",
+        billingPlan: "payg",
+        purchasedCreditsCents: 500,
+      }),
     });
 
     const response = await action({
-      request: new Request('https://camelai.dev/api/onboarding/complete', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ accessChoice: 'byok' }),
+      request: completeRequest(),
+      context: {},
+    } as never);
+
+    expect(response.status).toBe(200);
+    expect(userStub.updateOnboarding).toHaveBeenCalledWith({
+      completed_at: expect.any(Number),
+    });
+    await expect(response.json()).resolves.toEqual({
+      success: true,
+      redirectTo: "/chat",
+    });
+  });
+
+  it("marks onboarding complete for enterprise orgs and redirects to chat", async () => {
+    setAuthContext({
+      currentOrg: makeCurrentOrg({
+        billingStatus: "enterprise",
+        billingPlan: "enterprise",
+      }),
+    });
+
+    const response = await action({
+      request: completeRequest(),
+      context: {},
+    } as never);
+
+    expect(response.status).toBe(200);
+    expect(userStub.updateOnboarding).toHaveBeenCalledWith({
+      completed_at: expect.any(Number),
+    });
+    await expect(response.json()).resolves.toEqual({
+      success: true,
+      redirectTo: "/chat",
+    });
+  });
+
+  it("marks onboarding complete for BYOK access and redirects to chat", async () => {
+    setAuthContext({
+      currentOrg: makeCurrentOrg({
+        billingStatus: "inactive",
+        billingPlan: "free",
+      }),
+      currentOrgLlmProviderConfig: { provider: "openai" },
+    });
+
+    const response = await action({
+      request: completeRequest({
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ accessChoice: "byok" }),
       }),
       context: {},
     } as never);
@@ -423,10 +262,30 @@ describe('onboarding complete sales prompt flow', () => {
     expect(userStub.updateOnboarding).toHaveBeenCalledWith({
       completed_at: expect.any(Number),
     });
-    expect(createThreadMock).not.toHaveBeenCalled();
     await expect(response.json()).resolves.toEqual({
       success: true,
-      redirectTo: '/chat',
+      redirectTo: "/chat",
+    });
+  });
+
+  it("returns chat for already-completed onboarding without updating or recovering a thread", async () => {
+    setAuthContext({
+      onboarding: { completed_at: Date.now() },
+    });
+
+    const response = await action({
+      request: completeRequest(),
+      context: {},
+    } as never);
+
+    expect(response.status).toBe(200);
+    expect(userStub.updateOnboarding).not.toHaveBeenCalled();
+    expect(userStub.getPendingSalesPrompt).not.toHaveBeenCalled();
+    expect(userStub.clearPendingSalesPrompt).not.toHaveBeenCalled();
+    expect(userStub.consumePendingSalesPrompt).not.toHaveBeenCalled();
+    await expect(response.json()).resolves.toEqual({
+      success: true,
+      redirectTo: "/chat",
     });
   });
 });

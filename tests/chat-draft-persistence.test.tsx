@@ -162,10 +162,6 @@ vi.mock('@/components/connection-setup-prompt', () => ({
   ConnectionSetupPrompt: () => null,
 }));
 
-vi.mock('@/components/onboarding-loading-modal', () => ({
-  OnboardingLoadingModal: () => null,
-}));
-
 vi.mock('@/components/chat-file-preview', () => ({
   FilePreviewContent: () => null,
   isImageFile: () => false,

@@ -45,6 +45,7 @@ import {
 import {
   consumeSalesPrompt,
   getPromptKeyFromUrl,
+  sanitizeSalesPrompt,
 } from "@/lib/sales-prompt.server";
 import {
   isTransientDurableObjectRpcError,
@@ -227,6 +228,21 @@ export async function loader({ request, context }: Route.LoaderArgs) {
         "Failed to consume sales prompt for welcome screen:",
         error,
       );
+    }
+  }
+
+  if (
+    authContext.onboarding?.completed_at &&
+    !salesPrompt &&
+    authContext.user?.id
+  ) {
+    try {
+      const pendingPrompt = await authEnv.USER.get(
+        authEnv.USER.idFromName(authContext.user.id),
+      ).consumePendingSalesPrompt();
+      salesPrompt = pendingPrompt ? sanitizeSalesPrompt(pendingPrompt) : null;
+    } catch (error) {
+      console.error("Failed to consume pending sales prompt:", error);
     }
   }
 

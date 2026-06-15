@@ -123,8 +123,9 @@ export async function action({ request, context }: Route.ActionArgs) {
       },
     );
 
-    // Consume the sales prompt from KV immediately and store on the UserDO.
-    // This avoids the 30-minute KV TTL expiring during email verification.
+    // Consume the sales prompt from KV immediately and store it on the UserDO
+    // for the /chat welcome loader after onboarding. This avoids the 30-minute
+    // KV TTL expiring during email verification.
     const promptKey = getPromptKeyFromRedirectPath(redirectTo);
     if (promptKey) {
       waitUntil(
