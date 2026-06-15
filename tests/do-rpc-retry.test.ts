@@ -140,6 +140,13 @@ describe("isTransientDurableObjectRpcError", () => {
     expect(
       isTransientDurableObjectRpcError(new Error("Network connection lost.")),
     ).toBe(true);
+    expect(
+      isTransientDurableObjectRpcError(
+        new Error(
+          "Durable Object storage operation exceeded timeout which caused object to be reset.",
+        ),
+      ),
+    ).toBe(true);
   });
 
   it("uses Cloudflare retryable and overloaded error flags", () => {

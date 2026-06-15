@@ -3,6 +3,8 @@ const DEFAULT_INITIAL_DELAY_MS = 75;
 
 const TRANSIENT_DO_ERROR_PATTERNS = [
   "durable object reset because its code was updated",
+  "durable object storage operation exceeded timeout",
+  "caused object to be reset",
   "network connection lost",
 ];
 

@@ -1,7 +1,8 @@
 type ClientErrorSource =
   | 'window_error'
   | 'unhandled_rejection'
-  | 'react_error_boundary';
+  | 'react_error_boundary'
+  | 'react_recoverable_error';
 
 export type ClientEventSource =
   | 'chat_runner'
@@ -17,6 +18,7 @@ export type ClientTelemetrySeverity =
 type ClientErrorInput = {
   source: ClientErrorSource;
   error: unknown;
+  componentStack?: string;
   routeId?: string;
   statusCode?: number;
 };
@@ -207,12 +209,13 @@ function reportClientTelemetry(
 function serializeClientError(input: ClientErrorInput): SerializedClientError {
   const details = errorDetails(input.error);
   const path = sanitizePath(window.location.pathname);
+  const stack = appendComponentStack(details.stack, input.componentStack);
   return {
     kind: 'error',
     source: input.source,
     name: limit(details.name, 128),
     message: limit(details.message, 2048),
-    stack: details.stack ? limit(redactStack(details.stack), 4096) : undefined,
+    stack: stack ? limit(redactStack(stack), 4096) : undefined,
     path,
     url: `${window.location.origin}${path}`,
     routeId: input.routeId ? limit(input.routeId, 256) : undefined,
@@ -221,6 +224,15 @@ function serializeClientError(input: ClientErrorInput): SerializedClientError {
     viewport: `${window.innerWidth}x${window.innerHeight}`,
     timestamp: Date.now(),
   };
+}
+
+function appendComponentStack(
+  stack: string | undefined,
+  componentStack: string | undefined,
+): string | undefined {
+  const trimmedComponentStack = componentStack?.trim();
+  if (!trimmedComponentStack) return stack;
+  return `${stack ?? ''}\n\nReact component stack:\n${trimmedComponentStack}`;
 }
 
 function serializeClientEvent(input: ClientEventInput): SerializedClientEvent {
@@ -307,11 +319,14 @@ function isAutoReloadRecoverable(error: {
   const text = `${error.name}\n${error.message}\n${error.stack ?? ''}`.toLowerCase();
   return [
     'chunkloaderror',
+    'hydration failed',
     'loading chunk',
     'failed to fetch dynamically imported module',
     'error loading dynamically imported module',
     'importing a module script failed',
+    'minified react error #418',
     'module script load failed',
+    'react error #418',
     'unable to preload css',
     'loading css chunk',
   ].some((needle) => text.includes(needle));
