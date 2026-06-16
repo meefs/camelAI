@@ -512,11 +512,23 @@ function installRuntimeGlobals(values) {
   };
 }
 
+function installSecureFetch(secureFetchBinding) {
+  if (!secureFetchBinding || typeof secureFetchBinding.fetch !== "function") {
+    return () => {};
+  }
+  const nativeFetch = globalThis.fetch.bind(globalThis);
+  globalThis.fetch = (input, init) => secureFetchBinding.fetch(input, init);
+  return () => {
+    globalThis.fetch = nativeFetch;
+  };
+}
+
 export class CodeModeRunner extends WorkerEntrypoint {
   async run() {
     hardenTimingSurface();
     const output = [];
     globalThis.console = createOutputConsole(output);
+    const cleanupSecureFetch = installSecureFetch(this.env.SECURE_FETCH);
     const registeredTools = Object.freeze((await this.env.TOOLS.listTools()).map((tool) => Object.freeze({
       ...tool,
       parameters: tool.parameters,
@@ -578,6 +590,7 @@ export class CodeModeRunner extends WorkerEntrypoint {
       if (result !== undefined) output.push(stringifyOutput(result));
       return { text: output.join("\n") };
     } finally {
+      cleanupSecureFetch();
       cleanupRuntimeGlobals();
     }
   }

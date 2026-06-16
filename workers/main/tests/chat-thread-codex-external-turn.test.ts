@@ -2511,6 +2511,7 @@ describe('ChatThreadDO Codex turn handling', () => {
         CodeModeToolsBinding: vi.fn(() => toolsBinding),
         AIVirtualBinding: vi.fn(() => aiBinding),
         CamelAiService: vi.fn(() => aiBinding),
+        SecureFetchBinding: vi.fn(() => ({ fetch: vi.fn() })),
       },
     };
 
@@ -2546,11 +2547,18 @@ describe('ChatThreadDO Codex turn handling', () => {
         userId: 'user_1',
       },
     });
+    expect(fake.ctx.exports.SecureFetchBinding).toHaveBeenCalledWith({
+      props: {
+        orgId: 'org_1',
+        workspaceId: 'ws_1',
+      },
+    });
     expect(capturedWorkerCode.globalOutbound).toBeUndefined();
     expect(capturedWorkerCode.env.TOOLS).toBe(toolsBinding);
     expect(capturedWorkerCode.env.CONNECTIONS).toBeUndefined();
     expect(capturedWorkerCode.env.AI).toBe(aiBinding);
     expect(capturedWorkerCode.env.CAMELAI).toBe(aiBinding);
+    expect(capturedWorkerCode.env.SECURE_FETCH).toEqual({ fetch: expect.any(Function) });
     expect(capturedWorkerCode.modules['index.js'].js).toContain('class CodeModeRunner');
     expect(capturedWorkerCode.modules['index.js'].js).toContain('createConnectionsFacade');
     expect(capturedWorkerCode.modules['index.js'].js).toContain('if (connectionName === "$find") return (query) => binding.find(query)');
@@ -2601,6 +2609,7 @@ describe('ChatThreadDO Codex turn handling', () => {
         ConnectionsService: vi.fn(() => ({})),
         AIVirtualBinding: vi.fn(() => ({})),
         CamelAiService: vi.fn(() => ({})),
+        SecureFetchBinding: vi.fn(() => ({ fetch: vi.fn() })),
       },
     };
 
@@ -2638,6 +2647,7 @@ describe('ChatThreadDO Codex turn handling', () => {
         ConnectionsService: vi.fn(() => ({})),
         AIVirtualBinding: vi.fn(() => ({})),
         CamelAiService: vi.fn(() => ({})),
+        SecureFetchBinding: vi.fn(() => ({ fetch: vi.fn() })),
       },
     };
 

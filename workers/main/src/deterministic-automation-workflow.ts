@@ -45,6 +45,7 @@ interface WorkerEntrypointFactories {
   CodeModeToolsBinding?: (options: { props: CodeModeToolsProps }) => unknown;
   AIVirtualBinding?: (options: { props: AIVirtualBindingProps }) => unknown;
   CamelAiService?: (options: { props: AIVirtualBindingProps }) => unknown;
+  SecureFetchBinding?: (options: { props: Pick<CodeModeToolsProps, "orgId" | "workspaceId"> }) => unknown;
 }
 
 function requireMetadataString(
@@ -280,7 +281,15 @@ function __camelAiCreateConnectionsFacade(binding, tools) {
   });
 }
 
+function __camelAiInstallWorkflowSecureFetch(instance) {
+  if (!instance.env?.SECURE_FETCH || typeof instance.env.SECURE_FETCH.fetch !== "function") {
+    return;
+  }
+  globalThis.fetch = (input, init) => instance.env.SECURE_FETCH.fetch(input, init);
+}
+
 function __camelAiInstallWorkflowConnectionsFacade(instance) {
+  __camelAiInstallWorkflowSecureFetch(instance);
   const originalEnv = instance.env;
   if (!originalEnv || typeof originalEnv !== "object" || (!originalEnv.CONNECTIONS && !originalEnv.TOOLS)) {
     return;
@@ -342,11 +351,13 @@ export function createDeterministicAutomationRuntimeBindings(input: {
     CodeModeToolsBinding,
     AIVirtualBinding,
     CamelAiService,
+    SecureFetchBinding,
   } = exports;
   if (
     !CodeModeToolsBinding ||
     !AIVirtualBinding ||
-    !CamelAiService
+    !CamelAiService ||
+    !SecureFetchBinding
   ) {
     throw new Error("Automation runtime bindings are not exported");
   }
@@ -354,6 +365,12 @@ export function createDeterministicAutomationRuntimeBindings(input: {
     TOOLS: CodeModeToolsBinding({ props: scopedProps }),
     AI: AIVirtualBinding({ props: scopedProps }),
     CAMELAI: CamelAiService({ props: scopedProps }),
+    SECURE_FETCH: SecureFetchBinding({
+      props: {
+        orgId: input.orgId,
+        workspaceId: input.workspaceId,
+      },
+    }),
   };
 }
 

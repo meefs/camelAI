@@ -28,6 +28,14 @@ function loadGeneratedVmFacade(): (tools: Record<string, (args: unknown) => unkn
 }
 
 describe('code mode runner connection facade', () => {
+  it('wraps global fetch through the secure fetch binding', () => {
+    const source = codeModeWorkerModule('await fetch("https://example.com");');
+
+    expect(source).toContain('function installSecureFetch(secureFetchBinding)');
+    expect(source).toContain('const cleanupSecureFetch = installSecureFetch(this.env.SECURE_FETCH);');
+    expect(source).toContain('cleanupSecureFetch();');
+  });
+
   it('does not inject projects as a standalone user-code binding', () => {
     const source = codeModeWorkerModule('const projects = ["local"]; return projects.length;');
 

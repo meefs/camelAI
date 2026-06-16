@@ -29,10 +29,12 @@ describe("DeterministicAutomationWorkflow", () => {
     const tools = {};
     const ai = {};
     const camelai = {};
+    const secureFetch = {};
     const exports = {
       CodeModeToolsBinding: vi.fn(() => tools),
       AIVirtualBinding: vi.fn(() => ai),
       CamelAiService: vi.fn(() => camelai),
+      SecureFetchBinding: vi.fn(() => secureFetch),
     };
     const bindings = createDeterministicAutomationRuntimeBindings({
       ctx: { exports },
@@ -48,10 +50,14 @@ describe("DeterministicAutomationWorkflow", () => {
       TOOLS: tools,
       AI: ai,
       CAMELAI: camelai,
+      SECURE_FETCH: secureFetch,
     });
     expect(exports.CodeModeToolsBinding).toHaveBeenCalledWith(props);
     expect(exports.AIVirtualBinding).toHaveBeenCalledWith(props);
     expect(exports.CamelAiService).toHaveBeenCalledWith(props);
+    expect(exports.SecureFetchBinding).toHaveBeenCalledWith({
+      props: { orgId: "org1", workspaceId: "workspace1" },
+    });
   });
 
   it("wraps workflow source with a local connection method facade", () => {
@@ -72,6 +78,7 @@ export class AutomationWorkflow extends WorkflowEntrypoint {
     const wrapped = prepareDeterministicAutomationRuntimeSource(source);
 
     expect(wrapped).toContain("function __camelAiCreateToolsFacade(binding)");
+    expect(wrapped).toContain("function __camelAiInstallWorkflowSecureFetch(instance)");
     expect(wrapped).toContain("function __camelAiCreateConnectionsFacade(binding, tools)");
     expect(wrapped).toContain(
       "class __CamelAiUserAutomationWorkflow extends WorkflowEntrypoint",
