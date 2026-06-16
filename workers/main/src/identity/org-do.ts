@@ -623,6 +623,10 @@ export class OrgDO extends DurableObject<DOEnv> {
   private static readonly LEGACY_HOST_USAGE_BACKFILL_ERROR_KEY =
     "legacyHostUsageBackfillError";
   private static readonly ACCESS_MAPPED_ORG_ID_KEY = "accessMappedOrgId";
+  private static readonly WORKSPACE_ACCESS_MIGRATION_PREFIX =
+    "workspaceTenantDataMigrated:access:";
+  private static readonly WORKSPACE_INTEGRATIONS_MIGRATION_PREFIX =
+    "workspaceTenantDataMigrated:integrations:";
 
   constructor(ctx: DurableObjectState, env: DOEnv) {
     super(ctx, env);
@@ -3217,7 +3221,7 @@ export class OrgDO extends DurableObject<DOEnv> {
   async getWorkspaceIntegrations(
     workspaceId: string,
   ): Promise<WorkspaceIntegrationRecord[]> {
-    await this.hydrateWorkspaceIntegrationsFromWorkspaceDO(workspaceId);
+    await this.ensureWorkspaceIntegrationsMigrated(workspaceId);
     return this.sql
       .exec<WorkspaceIntegrationRecord & Record<string, SqlStorageValue>>(
         `SELECT id, integration_type, name, category, auth_method, config,
@@ -3236,7 +3240,7 @@ export class OrgDO extends DurableObject<DOEnv> {
     workspaceId: string,
     id: string,
   ): Promise<WorkspaceIntegrationRecord | null> {
-    await this.hydrateWorkspaceIntegrationsFromWorkspaceDO(workspaceId);
+    await this.ensureWorkspaceIntegrationsMigrated(workspaceId);
     return (
       this.sql
         .exec<WorkspaceIntegrationRecord & Record<string, SqlStorageValue>>(
@@ -3259,7 +3263,7 @@ export class OrgDO extends DurableObject<DOEnv> {
     name: string,
     excludeId?: string,
   ): Promise<boolean> {
-    await this.hydrateWorkspaceIntegrationsFromWorkspaceDO(workspaceId);
+    await this.ensureWorkspaceIntegrationsMigrated(workspaceId);
     const query = excludeId
       ? `SELECT 1 FROM integrations WHERE workspace_id = ? AND integration_type = ? AND name = ? AND deleted_at IS NULL AND id != ? LIMIT 1`
       : `SELECT 1 FROM integrations WHERE workspace_id = ? AND integration_type = ? AND name = ? AND deleted_at IS NULL LIMIT 1`;
@@ -3339,6 +3343,28 @@ export class OrgDO extends DurableObject<DOEnv> {
       });
       throw error;
     }
+  }
+
+  private workspaceIntegrationsMigrationKey(workspaceId: string): string {
+    return `${OrgDO.WORKSPACE_INTEGRATIONS_MIGRATION_PREFIX}${workspaceId}`;
+  }
+
+  private isWorkspaceIntegrationsMigrated(workspaceId: string): boolean {
+    return this.ctx.storage.kv.get<number>(
+      this.workspaceIntegrationsMigrationKey(workspaceId),
+    ) === 1;
+  }
+
+  private markWorkspaceIntegrationsMigrated(workspaceId: string): void {
+    this.ctx.storage.kv.put(this.workspaceIntegrationsMigrationKey(workspaceId), 1);
+  }
+
+  private async ensureWorkspaceIntegrationsMigrated(
+    workspaceId: string,
+  ): Promise<void> {
+    if (this.isWorkspaceIntegrationsMigrated(workspaceId)) return;
+    await this.hydrateWorkspaceIntegrationsFromWorkspaceDO(workspaceId);
+    this.markWorkspaceIntegrationsMigrated(workspaceId);
   }
 
   private getIntegrationSecretKey(): string {
@@ -5061,11 +5087,13 @@ export class OrgDO extends DurableObject<DOEnv> {
         );
         accessRowsMigrated++;
       }
+      this.markWorkspaceAccessMigrated(workspaceId);
     }
 
     const integrationsCopied = await this.hydrateWorkspaceIntegrationsFromWorkspaceDO(
       workspaceId,
     );
+    this.markWorkspaceIntegrationsMigrated(workspaceId);
     const integrationsTotal = this.getActiveWorkspaceIntegrationCount(workspaceId);
 
     return {
@@ -5099,34 +5127,33 @@ export class OrgDO extends DurableObject<DOEnv> {
     return row ? this.normalizeWorkspaceAccess(row.access_level) : null;
   }
 
-  private async hydrateWorkspaceAccessFromWorkspaceDO(
-    workspaceId: string,
-    userId: string,
-    actorId = "system",
-  ): Promise<WorkspaceAccessLevel | null> {
-    try {
-      const workspaceStub = this.env.WORKSPACE.get(
-        this.env.WORKSPACE.idFromName(workspaceId),
-      ) as unknown as WorkspaceDO;
-      const memberAccess = await workspaceStub.getMemberAccess(userId);
-      if (!memberAccess) return null;
+  private workspaceAccessMigrationKey(workspaceId: string): string {
+    return `${OrgDO.WORKSPACE_ACCESS_MIGRATION_PREFIX}${workspaceId}`;
+  }
 
-      const accessLevel = this.normalizeWorkspaceAccess(memberAccess.access_level);
-      await this.setWorkspaceAccess(
-        workspaceId,
-        userId,
-        accessLevel,
-        memberAccess.granted_by || actorId,
-      );
-      return accessLevel;
-    } catch (error) {
-      console.warn("[OrgDO] failed to hydrate workspace access", {
-        workspaceId,
-        userId,
-        error: error instanceof Error ? error.message : String(error),
-      });
-      throw error;
-    }
+  private isWorkspaceAccessMigrated(workspaceId: string): boolean {
+    return this.ctx.storage.kv.get<number>(
+      this.workspaceAccessMigrationKey(workspaceId),
+    ) === 1;
+  }
+
+  private markWorkspaceAccessMigrated(workspaceId: string): void {
+    this.ctx.storage.kv.put(this.workspaceAccessMigrationKey(workspaceId), 1);
+  }
+
+  private async ensureWorkspaceAccessMigrated(
+    workspaceId: string,
+    orgMemberIds?: Set<string>,
+  ): Promise<void> {
+    if (this.isWorkspaceAccessMigrated(workspaceId)) return;
+    const memberIds =
+      orgMemberIds ??
+      new Set((await this.getMembers()).map((member) => member.user_id));
+    await this.hydrateWorkspaceRestrictedMembersFromWorkspaceDO(
+      workspaceId,
+      memberIds,
+    );
+    this.markWorkspaceAccessMigrated(workspaceId);
   }
 
   private async hydrateWorkspaceRestrictedMembersFromWorkspaceDO(
@@ -5181,11 +5208,8 @@ export class OrgDO extends DurableObject<DOEnv> {
     const storedAccess = this.getStoredWorkspaceAccess(workspaceId, userId);
     if (storedAccess) return storedAccess;
 
-    const hydratedAccess = await this.hydrateWorkspaceAccessFromWorkspaceDO(
-      workspaceId,
-      userId,
-    );
-    return hydratedAccess ?? "full";
+    await this.ensureWorkspaceAccessMigrated(workspaceId);
+    return this.getStoredWorkspaceAccess(workspaceId, userId) ?? "full";
   }
 
   async setWorkspaceAccess(
@@ -5201,25 +5225,9 @@ export class OrgDO extends DurableObject<DOEnv> {
 
     const normalizedAccess = this.normalizeWorkspaceAccess(accessLevel);
     if (normalizedAccess === "full") {
+      await this.ensureWorkspaceAccessMigrated(workspaceId);
       const storedAccess = this.getStoredWorkspaceAccess(workspaceId, userId);
-      let shouldStoreFullOverride = storedAccess !== null;
-      if (!shouldStoreFullOverride) {
-        try {
-          const workspaceStub = this.env.WORKSPACE.get(
-            this.env.WORKSPACE.idFromName(workspaceId),
-          ) as unknown as WorkspaceDO;
-          const legacyAccess = await workspaceStub.getMemberAccess(userId);
-          shouldStoreFullOverride =
-            this.normalizeWorkspaceAccess(legacyAccess?.access_level) === "none";
-        } catch (error) {
-          console.warn("[OrgDO] failed to inspect legacy workspace access", {
-            workspaceId,
-            userId,
-            error: error instanceof Error ? error.message : String(error),
-          });
-          throw error;
-        }
-      }
+      const shouldStoreFullOverride = storedAccess !== null;
       if (!shouldStoreFullOverride) {
         this.sql.exec(
           "DELETE FROM workspace_memberships WHERE workspace_id = ? AND user_id = ?",
@@ -5286,6 +5294,8 @@ export class OrgDO extends DurableObject<DOEnv> {
     const workspace = await this.getWorkspaceInfo(workspaceId);
     if (!workspace || workspace.archived) return [];
 
+    await this.ensureWorkspaceAccessMigrated(workspaceId);
+
     const rows = this.sql
       .exec<{ user_id: string; access_level: string | null }>(
         `SELECT members.user_id,
@@ -5304,15 +5314,9 @@ export class OrgDO extends DurableObject<DOEnv> {
       const storedAccess = row.access_level
         ? this.normalizeWorkspaceAccess(row.access_level)
         : null;
-      const hydratedAccess =
-        storedAccess ??
-        (await this.hydrateWorkspaceAccessFromWorkspaceDO(
-          workspaceId,
-          row.user_id,
-        ));
       members.push({
         user_id: row.user_id,
-        access_level: hydratedAccess ?? "full",
+        access_level: storedAccess ?? "full",
       });
     }
     return members;
@@ -5326,6 +5330,19 @@ export class OrgDO extends DurableObject<DOEnv> {
     if (!member) return [];
 
     const workspaces = await this.getWorkspaceInfos(includeArchived);
+    const workspacesNeedingAccessMigration = workspaces.filter(
+      (workspace) => !this.isWorkspaceAccessMigrated(workspace.id),
+    );
+    if (workspacesNeedingAccessMigration.length > 0) {
+      const orgMemberIds = new Set(
+        (await this.getMembers()).map((member) => member.user_id),
+      );
+      await Promise.all(
+        workspacesNeedingAccessMigration.map((workspace) =>
+          this.ensureWorkspaceAccessMigrated(workspace.id, orgMemberIds),
+        ),
+      );
+    }
     const accessRows = this.sql
       .exec<{ workspace_id: string; access_level: string }>(
         "SELECT workspace_id, access_level FROM workspace_memberships WHERE user_id = ?",
@@ -5341,13 +5358,7 @@ export class OrgDO extends DurableObject<DOEnv> {
 
     const result: WorkspaceWithAccess[] = [];
     for (const workspace of workspaces) {
-      let accessLevel = accessByWorkspace.get(workspace.id) ?? null;
-      if (!accessLevel) {
-        accessLevel = await this.hydrateWorkspaceAccessFromWorkspaceDO(
-          workspace.id,
-          userId,
-        );
-      }
+      const accessLevel = accessByWorkspace.get(workspace.id) ?? null;
       const effectiveAccess = accessLevel ?? "full";
       if (effectiveAccess === "none") continue;
       result.push({ ...workspace, access_level: effectiveAccess });
@@ -5461,7 +5472,7 @@ export class OrgDO extends DurableObject<DOEnv> {
 
     await Promise.all(
       uniqueWorkspaceIds.map((workspaceId) =>
-        this.hydrateWorkspaceRestrictedMembersFromWorkspaceDO(
+        this.ensureWorkspaceAccessMigrated(
           workspaceId,
           orgMemberIds,
         ),
@@ -6284,6 +6295,15 @@ export class OrgDO extends DurableObject<DOEnv> {
   // Test helper RPC: simulate constructor migration path on an existing OrgDO.
   async remigrate(): Promise<void> {
     this.migrate();
+  }
+
+  // Test helper RPC: simulate a workspace that has not crossed the tenant-data
+  // migration boundary yet.
+  async clearWorkspaceTenantMigrationMarkersForTest(
+    workspaceId: string,
+  ): Promise<void> {
+    this.ctx.storage.kv.delete(this.workspaceAccessMigrationKey(workspaceId));
+    this.ctx.storage.kv.delete(this.workspaceIntegrationsMigrationKey(workspaceId));
   }
 
   /**

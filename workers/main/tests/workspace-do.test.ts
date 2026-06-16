@@ -361,13 +361,14 @@ describe('Workspace DO (full-stack with DOs)', () => {
     const memberEmail = testEmail();
     const { userId: ownerId } = await createUser(testEnv, ownerEmail, 'password123', 'Owner');
     const { userId: memberId } = await createUser(testEnv, memberEmail, 'password123', 'Member');
-    const { org } = await createOrg(testEnv, 'Access Hydration Org', ownerId);
+    const { org, defaultWorkspaceId } = await createOrg(testEnv, 'Access Hydration Org', ownerId);
 
     const invitation = await createInvitation(testEnv, org.id, memberEmail, 'member', ownerId);
     await acceptInvitation(testEnv, org.id, invitation.id, memberId);
 
-    const [workspace] = await listUserWorkspaces(testEnv, ownerId, org.id);
-    expect(workspace).toBeDefined();
+    const workspace = { id: defaultWorkspaceId };
+    const orgStub = testEnv.ORG.get(testEnv.ORG.idFromName(org.id));
+    await orgStub.clearWorkspaceTenantMigrationMarkersForTest(workspace.id);
 
     const workspaceStub = testEnv.WORKSPACE.get(testEnv.WORKSPACE.idFromName(workspace.id));
     await workspaceStub.setMemberAccess(memberId, 'none', ownerId);
@@ -375,7 +376,6 @@ describe('Workspace DO (full-stack with DOs)', () => {
     const memberWorkspaces = await listUserWorkspaces(testEnv, memberId, org.id);
     expect(memberWorkspaces.some((entry) => entry.id === workspace.id)).toBe(false);
 
-    const orgStub = testEnv.ORG.get(testEnv.ORG.idFromName(org.id));
     const accessRows = await orgStub.listWorkspaceAccessRows();
     expect(accessRows).toEqual(
       expect.arrayContaining([
@@ -399,6 +399,29 @@ describe('Workspace DO (full-stack with DOs)', () => {
         }),
       ]),
     );
+
+    await workspaceStub.setMemberAccess(memberId, 'none', ownerId);
+    await expect(getWorkspaceAccess(testEnv, workspace.id, memberId)).resolves.toBe('full');
+  });
+
+  it('does not keep reading WorkspaceDO for default full workspace access after migration', async () => {
+    const ownerEmail = testEmail();
+    const memberEmail = testEmail();
+    const { userId: ownerId } = await createUser(testEnv, ownerEmail, 'password123', 'Owner');
+    const { userId: memberId } = await createUser(testEnv, memberEmail, 'password123', 'Member');
+    const { org } = await createOrg(testEnv, 'Default Access Migration Org', ownerId);
+
+    const invitation = await createInvitation(testEnv, org.id, memberEmail, 'member', ownerId);
+    await acceptInvitation(testEnv, org.id, invitation.id, memberId);
+
+    const [workspace] = await listUserWorkspaces(testEnv, memberId, org.id);
+    expect(workspace).toBeDefined();
+
+    const workspaceStub = testEnv.WORKSPACE.get(testEnv.WORKSPACE.idFromName(workspace.id));
+    await workspaceStub.setMemberAccess(memberId, 'none', ownerId);
+
+    const memberWorkspaces = await listUserWorkspaces(testEnv, memberId, org.id);
+    expect(memberWorkspaces.some((entry) => entry.id === workspace.id)).toBe(true);
   });
 
   it('hydrates legacy WorkspaceDO integrations into OrgDO on read', async () => {
@@ -438,6 +461,22 @@ describe('Workspace DO (full-stack with DOs)', () => {
       id: integrationId,
       name: 'Legacy Airtable',
     });
+
+    const secondLegacyIntegrationId = crypto.randomUUID();
+    await workspaceStub.createIntegration(
+      secondLegacyIntegrationId,
+      'airtable',
+      'Late Legacy Airtable',
+      'saas',
+      'api_key',
+      JSON.stringify({ base_id: 'app456' }),
+      'encrypted-secret',
+      userId,
+    );
+
+    await expect(
+      orgStub.getWorkspaceIntegration(workspace.id, secondLegacyIntegrationId),
+    ).resolves.toBeNull();
   });
 
   it('revokes workspace access when org membership is removed', async () => {
