@@ -39,7 +39,7 @@ describe('mergeTaskNotifications', () => {
         role: 'user',
         content: makeTaskNotification({
           taskId: 'task_1',
-          outputFile: '/mnt/user-outputs/task_1.md',
+          outputFile: 'outputs/task_1.md',
           status: 'completed',
           summary: 'Task finished successfully.',
         }),
@@ -58,7 +58,7 @@ describe('mergeTaskNotifications', () => {
     expect(blocks[1]).toEqual({
       type: 'task_notification',
       taskId: 'task_1',
-      outputFile: '/mnt/user-outputs/task_1.md',
+      outputFile: 'outputs/task_1.md',
       status: 'completed',
       summary: 'Task finished successfully.',
     });
@@ -67,7 +67,7 @@ describe('mergeTaskNotifications', () => {
   it('merges meta task notification into preceding assistant message', () => {
     const notificationText = makeTaskNotification({
       taskId: 'task_2',
-      outputFile: '/mnt/user-outputs/task_2.md',
+      outputFile: 'outputs/task_2.md',
       status: 'failed',
       summary: 'Task failed to complete.',
     });
@@ -101,7 +101,7 @@ describe('mergeTaskNotifications', () => {
     expect(blocks[2]).toEqual({
       type: 'task_notification',
       taskId: 'task_2',
-      outputFile: '/mnt/user-outputs/task_2.md',
+      outputFile: 'outputs/task_2.md',
       status: 'failed',
       summary: 'Task failed to complete.',
     });
@@ -110,7 +110,7 @@ describe('mergeTaskNotifications', () => {
   it('uses sourceToolUseID to target the correct assistant turn when newer assistant messages exist', () => {
     const notificationText = makeTaskNotification({
       taskId: 'task_old',
-      outputFile: '/mnt/user-outputs/task_old.md',
+      outputFile: 'outputs/task_old.md',
       status: 'completed',
       summary: 'Older task finished.',
     });
@@ -155,7 +155,7 @@ describe('mergeTaskNotifications', () => {
     expect(oldBlocks[2]).toEqual({
       type: 'task_notification',
       taskId: 'task_old',
-      outputFile: '/mnt/user-outputs/task_old.md',
+      outputFile: 'outputs/task_old.md',
       status: 'completed',
       summary: 'Older task finished.',
     });
@@ -169,7 +169,7 @@ describe('mergeTaskNotifications', () => {
   it('attaches notification to a later assistant turn when source tool_use appears after the notification', () => {
     const notificationText = makeTaskNotification({
       taskId: 'task_future',
-      outputFile: '/mnt/user-outputs/task_future.md',
+      outputFile: 'outputs/task_future.md',
       status: 'completed',
       summary: 'Future task finished.',
     });
@@ -218,7 +218,7 @@ describe('mergeTaskNotifications', () => {
     expect(secondAssistantBlocks[2]).toEqual({
       type: 'task_notification',
       taskId: 'task_future',
-      outputFile: '/mnt/user-outputs/task_future.md',
+      outputFile: 'outputs/task_future.md',
       status: 'completed',
       summary: 'Future task finished.',
     });
@@ -232,7 +232,7 @@ describe('mergeTaskNotifications', () => {
         role: 'user',
         content: makeTaskNotification({
           taskId: 'task_3',
-          outputFile: '/mnt/user-outputs/task_3.md',
+          outputFile: 'outputs/task_3.md',
           status: 'success',
           summary: 'Done.',
         }),
@@ -250,7 +250,7 @@ describe('mergeTaskNotifications', () => {
       {
         type: 'task_notification',
         taskId: 'task_3',
-        outputFile: '/mnt/user-outputs/task_3.md',
+        outputFile: 'outputs/task_3.md',
         status: 'success',
         summary: 'Done.',
       },

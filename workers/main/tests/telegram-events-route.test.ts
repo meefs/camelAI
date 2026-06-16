@@ -496,7 +496,7 @@ describe('handleTelegramWebhook', () => {
     expect(startInitialUserMessage).toHaveBeenCalledTimes(1);
     const enqueued = startInitialUserMessage.mock.calls[0][0];
     expect(enqueued.message).toContain('see report');
-    expect(enqueued.message).toContain('(user uploaded file to /mnt/user-uploads/report-');
+    expect(enqueued.message).toContain('(user uploaded file to uploads/report-');
   });
 
   it('transcribes and uploads Telegram voice messages before enqueueing', async () => {
@@ -588,7 +588,7 @@ describe('handleTelegramWebhook', () => {
     expect(enqueued.message).toContain('already transcribed automatically');
     expect(enqueued.message).toContain('do not transcribe the attached audio file again');
     expect(enqueued.message).toContain('Voice message transcript:\nplease summarize the attached voice note');
-    expect(enqueued.message).toContain('(user uploaded file to /mnt/user-uploads/telegram-voice-103-');
+    expect(enqueued.message).toContain('(user uploaded file to uploads/telegram-voice-103-');
   });
 
   it('uploads Telegram videos before enqueueing channel messages', async () => {
@@ -677,6 +677,6 @@ describe('handleTelegramWebhook', () => {
     expect(startInitialUserMessage).toHaveBeenCalledTimes(1);
     const enqueued = startInitialUserMessage.mock.calls[0][0];
     expect(enqueued.message).toContain('demo clip');
-    expect(enqueued.message).toContain('(user uploaded file to /mnt/user-uploads/demo-');
+    expect(enqueued.message).toContain('(user uploaded file to uploads/demo-');
   });
 });

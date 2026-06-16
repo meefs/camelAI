@@ -114,7 +114,7 @@ describe('contentToString', () => {
       {
         type: 'task_notification',
         taskId: 'task_123',
-        outputFile: '/mnt/user-outputs/task_123.md',
+        outputFile: 'outputs/task_123.md',
         status: 'completed',
         summary: 'Report generation finished.',
       },

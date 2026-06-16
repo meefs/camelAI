@@ -197,7 +197,7 @@ const RUNTIME_HELP_ENTRIES = Object.freeze([
       "camelAI media helpers for image generation and audio transcription.",
     examples: [
       "await env.CAMELAI.generateImage(\"A product screenshot style hero image\")",
-      "await env.CAMELAI.transcribeAudio({ path: \"/mnt/user-uploads/audio.ogg\" })",
+      "await env.CAMELAI.transcribeAudio({ path: \"uploads/audio.ogg\" })",
       "await env.CAMELAI.help()",
     ],
     methods: [
@@ -473,8 +473,6 @@ function createVmFacade(tools) {
   return Object.freeze({
     exec: (commandOrOptions, options = {}) =>
       tools.vm_exec(normalizeExecArgs(commandOrOptions, options)),
-    push: (options = {}) => tools.vm_push(options),
-    pull: (options = {}) => tools.vm_pull(options),
   });
 }
 

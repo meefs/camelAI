@@ -27,7 +27,7 @@ const MAX_FILENAME_LENGTH = 255;
 const VALID_STORED_FILENAME = /^[a-zA-Z0-9._-]+$/;
 
 function toMountPath(filename: string): string {
-  return `/mnt/user-uploads/${filename}`;
+  return `uploads/${filename}`;
 }
 
 function buildUploadKey(orgId: string, workspaceId: string, filename: string): string {

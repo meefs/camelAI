@@ -1,4 +1,4 @@
-export const USER_UPLOAD_MOUNT_PREFIX = "/mnt/user-uploads/";
+export const USER_UPLOAD_MOUNT_PREFIX = "uploads/";
 
 export function isUserUploadMountPath(path: string): boolean {
   return (

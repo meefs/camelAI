@@ -3,8 +3,6 @@ import type {
   VmCloneProjectArgs,
   VmExecArgs,
   VmFileArgs,
-  VmPullArgs,
-  VmPushArgs,
 } from "./project-vm-protocol";
 import {
   EVAL_CLOUDFLARE_API_BASE_URL,
@@ -16,12 +14,18 @@ import {
   runtimeArtifactsProxyRemote,
 } from "./project-vm-protocol";
 import {
-  normalizeWorkspacePath as normalizeDurableWorkspacePath,
   type WorkspaceProject,
   type WorkspaceFilesystemLike,
 } from "./workspace-filesystem-do";
+import {
+  detectSupportedImageMimeType,
+  inlineImageMaxBase64Chars,
+  prepareInlineImageFromStream,
+  readImageSniffBytesAndReplayStream,
+  readStreamBytes,
+  type PreparedInlineImage,
+} from "./image-tool-content";
 
-const WORKSPACE_ROOT = "/";
 const PROJECT_ROOT = PROJECT_VM_CHECKOUT_PATH;
 
 export type ProjectRuntimeServiceVmEnv = ProjectVmEnv;
@@ -63,6 +67,12 @@ interface RuntimeExistsResult {
   size?: number;
 }
 
+export interface ProjectVmTransferFile {
+  path: string;
+  relativePath: string;
+  size?: number;
+}
+
 export class ProjectRuntimeServiceVmBridge {
   constructor(
     private readonly options: {
@@ -85,105 +95,6 @@ export class ProjectRuntimeServiceVmBridge {
       timeoutMs: normalizeTimeoutMs(args),
       env: normalizeStringMap(args.env),
     });
-  }
-
-  async push(args: VmPushArgs): Promise<unknown> {
-    const paths = normalizeStringArray(args.paths, "paths");
-    const target = await this.getReadyTarget(args);
-    const vmRoot = typeof args.vmRoot === "string" && args.vmRoot.trim()
-      ? this.resolveVmToolPath(args.vmRoot, target)
-      : target.projectRoot;
-
-    if (args.clean === true) {
-      await this.mustExec(target, `rm -rf ${shellQuote(vmRoot)} && mkdir -p ${shellQuote(vmRoot)}`);
-    } else {
-      await this.mkdir(target, vmRoot);
-    }
-
-    const files = await this.collectWorkspaceFiles(paths);
-    let bytes = 0;
-    for (const file of files) {
-      const read = await this.options.workspace.readFile(file.absolutePath);
-      if (!read.success || typeof read.content !== "string") {
-        throw new Error(read.error || `Failed to read ${file.absolutePath}`);
-      }
-      const base64Content =
-        read.encoding === "base64"
-          ? read.content
-          : bytesToBase64(new TextEncoder().encode(read.content));
-      bytes += base64ByteLength(base64Content);
-      const vmPath = joinAbsolutePath(vmRoot, file.relativePath);
-      await this.writeBytes(target, vmPath, base64ToBytes(base64Content));
-    }
-
-    return {
-      success: true,
-      provider: PROJECT_RUNTIME_PROVIDER,
-      target: target.summary,
-      vmRoot,
-      files: files.length,
-      bytes,
-    };
-  }
-
-  async pull(args: VmPullArgs): Promise<unknown> {
-    const target = await this.getReadyTarget(args);
-    const vmRoot = typeof args.vmRoot === "string" && args.vmRoot.trim()
-      ? this.resolveVmToolPath(args.vmRoot, target)
-      : target.projectRoot;
-    const workspaceRoot = typeof args.workspaceRoot === "string" && args.workspaceRoot.trim()
-      ? normalizeWorkspacePath(args.workspaceRoot)
-      : WORKSPACE_ROOT;
-
-    const mappings = normalizeVmFileMappings(args.files);
-    const paths = normalizeOptionalStringArray(args.paths, "paths").map((path) =>
-      this.resolveVmToolPath(path, target, target.projectRoot),
-    );
-    if (paths.length > 0) {
-      for (const vmPath of await this.listVmFiles(paths, target)) {
-        mappings.push({
-          vmPath,
-          workspacePath: joinAbsolutePath(
-            workspaceRoot,
-            relativeUnderRoot(vmRoot, vmPath),
-          ),
-        });
-      }
-    }
-    if (mappings.length === 0) {
-      throw new Error("Provide paths or files to pull from the VM");
-    }
-
-    let bytes = 0;
-    const written: Array<{ vmPath: string; workspacePath: string; bytes: number }> = [];
-    for (const mapping of mappings) {
-      const response = await this.fetchRuntime(
-        this.projectUrl(target.projectId, "/fs/read", { path: mapping.vmPath }),
-      );
-      if (!response.ok) {
-        throw new Error((await response.text()) || `Failed to read ${mapping.vmPath}`);
-      }
-      const content = bytesToBase64(new Uint8Array(await response.arrayBuffer()));
-      const result = await this.options.workspace.writeBinaryFile(
-        normalizeWorkspacePath(mapping.workspacePath),
-        content,
-      );
-      if (!result.success) {
-        throw new Error(result.error || `Failed to write ${mapping.workspacePath}`);
-      }
-      const size = base64ByteLength(content);
-      bytes += size;
-      written.push({ ...mapping, bytes: size });
-    }
-
-    return {
-      success: true,
-      provider: PROJECT_RUNTIME_PROVIDER,
-      target: target.summary,
-      files: written.length,
-      bytes,
-      written,
-    };
   }
 
   async cloneProject(args: VmCloneProjectArgs = {}): Promise<unknown> {
@@ -213,7 +124,33 @@ export class ProjectRuntimeServiceVmBridge {
     if (!response.ok) {
       throw new Error((await response.text()) || `Read failed: ${response.status}`);
     }
-    const bytes = new Uint8Array(await response.arrayBuffer());
+
+    const images = (this.options.env as { IMAGES: ImagesBinding }).IMAGES;
+    if (!response.body) {
+      throw new Error(`Read failed: ${path} response body is not streamable`);
+    }
+    const sniffed = await readImageSniffBytesAndReplayStream(response.body);
+    const imageMimeType = detectSupportedImageMimeType(sniffed.prefix);
+    if (imageMimeType) {
+      const contentLength = Number(response.headers.get("content-length") || "0") || undefined;
+      const prepared = await prepareInlineImageFromStream(sniffed.stream, imageMimeType, images, {
+        createRetryStream: async () => {
+          const retryResponse = await this.fetchRuntime(this.projectUrl(target.projectId, "/fs/read", { path }));
+          if (!retryResponse.ok) throw new Error((await retryResponse.text()) || `Read failed: ${retryResponse.status}`);
+          if (!retryResponse.body) throw new Error(`Read failed: ${path} response body is not streamable`);
+          return retryResponse.body;
+        },
+      });
+      return projectVmImageResult({
+        target: target.summary,
+        path,
+        size: contentLength ?? null,
+        imageMimeType,
+        prepared,
+      });
+    }
+    const bytes = await readStreamBytes(sniffed.stream);
+
     if (isLikelyBinary(bytes)) {
       return {
         text: `[Binary file omitted: ${path}]`,
@@ -259,6 +196,80 @@ export class ProjectRuntimeServiceVmBridge {
     const stream = await this.readFileStream(args);
     await stream.response.body?.cancel().catch(() => {});
     return { path: stream.path };
+  }
+
+  async readFileBytesForTransfer(args: VmFileArgs): Promise<{ path: string; bytes: Uint8Array; contentType?: string }> {
+    const { response, path } = await this.readFileStream(args);
+    return {
+      path,
+      bytes: new Uint8Array(await response.arrayBuffer()),
+      contentType: response.headers.get("content-type") || undefined,
+    };
+  }
+
+  async writeFileBytesForTransfer(args: VmFileArgs, bytes: Uint8Array): Promise<{ path: string; bytes: number }> {
+    const target = await this.getReadyTarget(args);
+    const path = this.resolveVmToolPath(args.path, target);
+    await this.writeBytes(target, path, bytes);
+    return { path, bytes: bytes.byteLength };
+  }
+
+  async resolvePathForTransfer(args: VmFileArgs): Promise<{ path: string }> {
+    const target = await this.getReadyTarget(args);
+    return { path: this.resolveVmToolPath(args.path, target) };
+  }
+
+  async statPathForTransfer(args: VmFileArgs): Promise<{ path: string; isFile: boolean; isDirectory: boolean; size?: number }> {
+    const target = await this.getReadyTarget(args);
+    const path = this.resolveVmToolPath(args.path, target, target.projectRoot);
+    const exists = await this.fetchRuntimeJson<RuntimeExistsResult>(
+      this.projectUrl(target.projectId, "/fs/exists", { path }),
+    );
+    if (!exists.exists) throw new Error(`Path not found: ${path}`);
+    return {
+      path,
+      isFile: exists.isFile === true,
+      isDirectory: exists.isDirectory === true,
+      size: exists.size,
+    };
+  }
+
+  async collectFilesForTransfer(args: VmFileArgs): Promise<ProjectVmTransferFile[]> {
+    const target = await this.getReadyTarget(args);
+    const path = this.resolveVmToolPath(args.path, target, target.projectRoot);
+    const exists = await this.fetchRuntimeJson<RuntimeExistsResult>(
+      this.projectUrl(target.projectId, "/fs/exists", { path }),
+    );
+    if (exists.isFile) {
+      return [{ path, relativePath: basenamePath(path), size: exists.size }];
+    }
+    if (!exists.isDirectory) {
+      throw new Error(`Path not found: ${path}`);
+    }
+    const listing = await this.listRuntimeFiles(target, path, {
+      recursive: true,
+      includeHidden: true,
+    });
+    return listing.files
+      .filter((entry) => entry.type === "file")
+      .map((entry) => {
+        const relativePath = entry.relativePath || entry.name;
+        const childPath = joinAbsolutePath(path, relativePath);
+        return {
+          path: childPath,
+          relativePath,
+          size: entry.size,
+        };
+      })
+      .sort((a, b) => a.relativePath.localeCompare(b.relativePath));
+  }
+
+  async deletePathForTransfer(args: VmFileArgs, options: { recursive?: boolean; force?: boolean } = {}): Promise<{ path: string }> {
+    const target = await this.getReadyTarget(args);
+    const path = this.resolveVmToolPath(args.path, target);
+    const flags = `${options.recursive ? "r" : ""}${options.force ? "f" : ""}`;
+    await this.mustExec(target, `rm ${flags ? `-${flags} ` : ""}${shellQuote(path)}`);
+    return { path };
   }
 
   async write(args: VmFileArgs): Promise<unknown> {
@@ -562,15 +573,6 @@ fi
     }
   }
 
-  private async mkdir(target: ProjectRuntimeTarget, path: string): Promise<void> {
-    const response = await this.fetchRuntime(this.projectUrl(target.projectId, "/fs/mkdir", { path }), {
-      method: "POST",
-    });
-    if (!response.ok) {
-      throw new Error((await response.text()) || `Failed to create directory ${path}`);
-    }
-  }
-
   private async listRuntimeFiles(
     target: ProjectRuntimeTarget,
     path: string,
@@ -687,56 +689,6 @@ fi
     return projectRuntimeDeployProxyUrl(this.options.env.PROJECT_RUNTIME_DOCKER_PROXY_BASE_URL);
   }
 
-  private async collectWorkspaceFiles(paths: string[]): Promise<Array<{ absolutePath: string; relativePath: string; size?: number }>> {
-    const files: Array<{ absolutePath: string; relativePath: string; size?: number }> = [];
-    const seen = new Set<string>();
-
-    for (const rawPath of paths) {
-      const absolutePath = normalizeWorkspacePath(rawPath);
-      const exists = await this.options.workspace.exists(absolutePath);
-      if (!exists.exists) throw new Error(`Workspace path not found: ${rawPath}`);
-
-      if (exists.isDirectory) {
-        const listing = await this.options.workspace.listFiles(absolutePath, {
-          recursive: true,
-          includeHidden: true,
-        });
-        if (listing.success === false) {
-          throw new Error(listing.error || `Failed to list ${absolutePath}`);
-        }
-        for (const entry of listing.files) {
-          if (entry.type !== "file") continue;
-          const entryAbsolutePath = normalizeWorkspacePath(
-            entry.absolutePath || joinAbsolutePath(absolutePath, entry.relativePath),
-          );
-          if (seen.has(entryAbsolutePath)) continue;
-          seen.add(entryAbsolutePath);
-          files.push({
-            absolutePath: entryAbsolutePath,
-            relativePath: relativeUnderRoot(WORKSPACE_ROOT, entryAbsolutePath),
-            size: entry.size,
-          });
-        }
-        continue;
-      }
-
-      if (!exists.isFile) continue;
-      if (seen.has(absolutePath)) continue;
-      seen.add(absolutePath);
-      files.push({
-        absolutePath,
-        relativePath: relativeUnderRoot(WORKSPACE_ROOT, absolutePath),
-        size: exists.size,
-      });
-    }
-
-    files.sort((a, b) => a.relativePath.localeCompare(b.relativePath));
-    return files;
-  }
-}
-
-function normalizeWorkspacePath(path: string): string {
-  return normalizeDurableWorkspacePath(path);
 }
 
 function normalizeVmPath(path: string): string {
@@ -758,23 +710,6 @@ function normalizeAbsolutePath(path: string): string {
   return `/${parts.join("/")}`;
 }
 
-function normalizeStringArray(value: unknown, name: string): string[] {
-  if (!Array.isArray(value) || value.length === 0) {
-    throw new Error(`${name} must be a non-empty array`);
-  }
-  return value.map((entry) => {
-    if (typeof entry !== "string" || !entry.trim()) {
-      throw new Error(`${name} entries must be non-empty strings`);
-    }
-    return entry.trim();
-  });
-}
-
-function normalizeOptionalStringArray(value: unknown, name: string): string[] {
-  if (value === undefined || value === null) return [];
-  return normalizeStringArray(value, name);
-}
-
 function normalizeOptionalRegistryId(value: unknown): string | undefined {
   if (typeof value !== "string" || !value.trim()) return undefined;
   const normalized = normalizeGlobalProjectId(value.trim());
@@ -790,24 +725,6 @@ function requireProjectName(value: unknown, name: string): string {
   const normalized = normalizeOptionalProjectName(value);
   if (!normalized) throw new Error(`${name} is required`);
   return normalized;
-}
-
-function normalizeVmFileMappings(value: unknown): Array<{ vmPath: string; workspacePath: string }> {
-  if (value === undefined || value === null) return [];
-  if (!Array.isArray(value)) throw new Error("files must be an array");
-  return value.map((entry) => {
-    if (!entry || typeof entry !== "object") {
-      throw new Error("files entries must be objects");
-    }
-    const record = entry as Record<string, unknown>;
-    if (typeof record.vmPath !== "string" || typeof record.workspacePath !== "string") {
-      throw new Error("files entries require vmPath and workspacePath");
-    }
-    return {
-      vmPath: normalizeVmPath(record.vmPath),
-      workspacePath: normalizeWorkspacePath(record.workspacePath),
-    };
-  });
 }
 
 function normalizeTimeoutMs(args: VmExecArgs): number | undefined {
@@ -859,17 +776,13 @@ function relativeUnderRoot(root: string, path: string): string {
   return cleanPath.replace(/^\/+/, "");
 }
 
-function shellQuote(value: string): string {
-  return `'${value.replace(/'/g, `'\\''`)}'`;
+function basenamePath(path: string): string {
+  return path.split("/").filter(Boolean).pop() || "";
 }
 
-function bytesToBase64(bytes: Uint8Array): string {
-  let binary = "";
-  const chunkSize = 0x8000;
-  for (let i = 0; i < bytes.length; i += chunkSize) {
-    binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
-  }
-  return btoa(binary);
+
+function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
 function toArrayBuffer(bytes: Uint8Array): ArrayBuffer {
@@ -878,20 +791,57 @@ function toArrayBuffer(bytes: Uint8Array): ArrayBuffer {
   return copy.buffer;
 }
 
-function base64ToBytes(value: string): Uint8Array {
-  const binary = atob(value.replace(/\s/g, ""));
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i += 1) {
-    bytes[i] = binary.charCodeAt(i);
-  }
-  return bytes;
+function formatSize(value: number): string {
+  if (value < 1024) return `${value}B`;
+  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)}KB`;
+  return `${(value / (1024 * 1024)).toFixed(1)}MB`;
 }
 
-function base64ByteLength(value: string): number {
-  const normalized = value.replace(/\s/g, "");
-  if (!normalized) return 0;
-  const padding = normalized.endsWith("==") ? 2 : normalized.endsWith("=") ? 1 : 0;
-  return Math.floor((normalized.length * 3) / 4) - padding;
+function projectVmImageResult({
+  target,
+  path,
+  size,
+  imageMimeType,
+  prepared,
+}: {
+  target: Record<string, string>;
+  path: string;
+  size: number | null;
+  imageMimeType: string;
+  prepared: PreparedInlineImage | null;
+}) {
+  let text = `Read image file [${prepared?.mimeType ?? imageMimeType}]\n[Image: ${path}${typeof size === "number" ? ` (${formatSize(size)})` : ""}]`;
+  if (prepared?.optimizedForInlineView) {
+    text += `\n[Image optimized for inline model context and may be scaled/compressed from the source.]`;
+  }
+  const content: Array<{ type: "text"; text: string } | { type: "image"; data: string; mimeType: string }> = [
+    { type: "text", text },
+  ];
+  if (prepared) {
+    content.push({ type: "image", data: prepared.data, mimeType: prepared.mimeType });
+  } else {
+    text += `\n[Image omitted: could not be resized below the inline image size limit of ${inlineImageMaxBase64Chars()} base64 chars.]`;
+    content[0] = { type: "text", text };
+  }
+  return {
+    text,
+    content,
+    details: {
+      provider: PROJECT_RUNTIME_PROVIDER,
+      target,
+      path,
+      size,
+      image: true,
+      mimeType: prepared?.mimeType ?? imageMimeType,
+      originalMimeType: imageMimeType,
+      inlineImage: Boolean(prepared),
+      optimizedForInlineView: prepared?.optimizedForInlineView ?? false,
+      maxInlineDimension: prepared?.maxInlineDimension ?? null,
+      usedImagesBinding: prepared?.usedImagesBinding ?? false,
+      base64Chars: prepared?.base64Chars ?? null,
+      encoding: "base64",
+    },
+  };
 }
 
 function isLikelyBinary(bytes: Uint8Array): boolean {

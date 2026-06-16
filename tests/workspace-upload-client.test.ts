@@ -31,7 +31,7 @@ describe('uploadWorkspaceFile', () => {
         return jsonResponse({
           uploadId: 'upload-1',
           filename: 'file-1.txt',
-          path: '/mnt/user-uploads/file-1.txt',
+          path: 'uploads/file-1.txt',
         });
       }
       if (action === 'mpu-uploadpart') {
@@ -39,7 +39,7 @@ describe('uploadWorkspaceFile', () => {
       }
       if (action === 'mpu-complete') {
         return jsonResponse({
-          path: '/mnt/user-uploads/file-1.txt',
+          path: 'uploads/file-1.txt',
           filename: 'file-1.txt',
           size: 3,
         });
@@ -52,7 +52,7 @@ describe('uploadWorkspaceFile', () => {
     const result = await uploadWorkspaceFile('ws-1', file);
 
     expect(result).toMatchObject({
-      path: '/mnt/user-uploads/file-1.txt',
+      path: 'uploads/file-1.txt',
       filename: 'file-1.txt',
       originalName: 'demo.txt',
       size: 3,
@@ -70,7 +70,7 @@ describe('uploadWorkspaceFile', () => {
         return jsonResponse({
           uploadId: 'upload-2',
           filename: 'file-2.bin',
-          path: '/mnt/user-uploads/file-2.bin',
+          path: 'uploads/file-2.bin',
         });
       }
       if (action === 'mpu-uploadpart') {
@@ -80,7 +80,7 @@ describe('uploadWorkspaceFile', () => {
       }
       if (action === 'mpu-complete') {
         return jsonResponse({
-          path: '/mnt/user-uploads/file-2.bin',
+          path: 'uploads/file-2.bin',
           filename: 'file-2.bin',
           size: 12 * 1024 * 1024,
         });
@@ -111,7 +111,7 @@ describe('uploadWorkspaceFile', () => {
         return jsonResponse({
           uploadId: 'upload-4',
           filename: 'file-4.bin',
-          path: '/mnt/user-uploads/file-4.bin',
+          path: 'uploads/file-4.bin',
         });
       }
       if (action === 'mpu-uploadpart') {
@@ -120,7 +120,7 @@ describe('uploadWorkspaceFile', () => {
       }
       if (action === 'mpu-complete') {
         return jsonResponse({
-          path: '/mnt/user-uploads/file-4.bin',
+          path: 'uploads/file-4.bin',
           filename: 'file-4.bin',
           size: 12 * 1024 * 1024,
         });
@@ -157,7 +157,7 @@ describe('uploadWorkspaceFile', () => {
         return jsonResponse({
           uploadId: 'upload-3',
           filename: 'file-3.bin',
-          path: '/mnt/user-uploads/file-3.bin',
+          path: 'uploads/file-3.bin',
         });
       }
       if (action === 'mpu-uploadpart') {
@@ -202,7 +202,7 @@ describe('uploadWorkspaceFile', () => {
         return jsonResponse({
           uploadId: 'upload-bad-path',
           filename: 'file.txt',
-          path: '/mnt/user-uploads/file.txt',
+          path: 'uploads/file.txt',
         });
       }
       if (action === 'mpu-uploadpart') {

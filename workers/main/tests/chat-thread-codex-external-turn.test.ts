@@ -2626,7 +2626,7 @@ describe('ChatThreadDO Codex turn handling', () => {
     };
 
     const result = await CamelAiService.prototype.transcribeAudio.call(fake, {
-      path: '/mnt/user-uploads/note.ogg',
+      path: 'uploads/note.ogg',
     });
 
     expect(r2Get).toHaveBeenCalledWith('org-1/workspace-1/user-uploads/note.ogg');
@@ -2645,6 +2645,8 @@ describe('ChatThreadDO Codex turn handling', () => {
       'read',
       'write',
       'edit',
+      'delete',
+      'move',
       'grep',
       'find',
       'AskUserQuestion',
@@ -2656,10 +2658,6 @@ describe('ChatThreadDO Codex turn handling', () => {
       'list_integrations',
       'create_project',
       'set_project_description',
-      'r2_read',
-      'r2_write',
-      'r2_list',
-      'r2_delete',
       'get_custom_domain',
       'Agent',
       'Explore',
@@ -2680,12 +2678,27 @@ describe('ChatThreadDO Codex turn handling', () => {
     expect((byName.get('set_project_description') as any).parameters.properties.projectId).toBeUndefined();
     expect((byName.get('set_project_description') as any).parameters.properties.description).toBeDefined();
     expect((byName.get('set_preview') as any).parameters.properties.location).toBeDefined();
+    expect(JSON.stringify((byName.get('set_preview') as any).parameters.properties.location)).toContain('workspace');
+    expect(JSON.stringify((byName.get('set_preview') as any).parameters.properties.location)).toContain('vm');
+    expect(JSON.stringify((byName.get('set_preview') as any).parameters.properties.location)).toContain('r2');
     expect((byName.get('set_preview') as any).parameters.properties.project).toBeDefined();
     expect((byName.get('set_preview') as any).parameters.properties.clear).toBeUndefined();
     expect((byName.get('WebSearch') as any).parameters.properties.query).toBeDefined();
     expect((byName.get('WebFetch') as any).parameters.properties.url).toBeDefined();
-    expect((byName.get('r2_read') as any).parameters.properties.key).toBeDefined();
-    expect((byName.get('r2_write') as any).parameters.properties.path).toBeDefined();
+    expect((byName.get('read') as any).parameters.properties.key).toBeUndefined();
+    expect((byName.get('read') as any).parameters.properties.location).toBeDefined();
+    expect((byName.get('read') as any).parameters.required).toEqual(expect.arrayContaining(['location', 'path']));
+    expect((byName.get('write') as any).parameters.properties.content_type).toBeDefined();
+    expect((byName.get('ls') as any).parameters.properties.cursor).toBeDefined();
+    expect((byName.get('delete') as any).parameters.properties.location).toBeDefined();
+    expect((byName.get('move') as any).parameters.properties.source).toBeDefined();
+    expect((byName.get('move') as any).parameters.properties.destination).toBeDefined();
+    expect(byName.has('vm_push')).toBe(false);
+    expect(byName.has('vm_pull')).toBe(false);
+    expect(byName.has('r2_read')).toBe(false);
+    expect(byName.has('r2_write')).toBe(false);
+    expect(byName.has('r2_list')).toBe(false);
+    expect(byName.has('r2_delete')).toBe(false);
     expect(byName.has('workspace_info')).toBe(false);
     expect((byName.get('connections_get') as any).parameters.properties.connection).toBeDefined();
     expect(byName.get('send_email')).toMatchObject({
@@ -2743,10 +2756,71 @@ describe('ChatThreadDO Codex turn handling', () => {
     });
 
     await expect((CodeModeToolsBinding.prototype as any).setPreview.call(fake, {
+      location: 'workspace',
       path: '/missing.html',
     })).rejects.toThrow('Preview file not found: /missing.html');
     expect(exists).toHaveBeenCalledWith('/missing.html');
     expect(setPreviewTarget).not.toHaveBeenCalled();
+  });
+
+  it('sets explicit workspace file previews', async () => {
+    const setPreviewTarget = vi.fn();
+    const exists = vi.fn(async () => ({ exists: true, isDirectory: false }));
+    const fake = Object.create(CodeModeToolsBinding.prototype) as any;
+    fake.ctx = { props: { workspaceId: 'workspace1' } };
+    Object.defineProperty(fake, 'chatThreadStub', {
+      value: { setPreviewTarget },
+    });
+    Object.defineProperty(fake, 'workspaceFs', {
+      value: { exists },
+    });
+
+    const result = await (CodeModeToolsBinding.prototype as any).setPreview.call(fake, {
+      location: 'workspace',
+      path: 'outputs/report.html',
+    });
+
+    expect(exists).toHaveBeenCalledWith('/outputs/report.html');
+    expect(result).toMatchObject({
+      success: true,
+      target: {
+        kind: 'file',
+        source: 'workspace',
+        workspaceId: 'workspace1',
+        path: '/outputs/report.html',
+        filename: 'report.html',
+      },
+    });
+    expect(setPreviewTarget).toHaveBeenCalledWith((result as any).target);
+  });
+
+  it('sets explicit R2 file previews', async () => {
+    const setPreviewTarget = vi.fn();
+    const head = vi.fn(async () => ({ size: 42 }));
+    const fake = Object.create(CodeModeToolsBinding.prototype) as any;
+    fake.ctx = { props: { orgId: 'org1', workspaceId: 'workspace1' } };
+    fake.env = { R2_BUCKET: { head } };
+    Object.defineProperty(fake, 'chatThreadStub', {
+      value: { setPreviewTarget },
+    });
+
+    const result = await (CodeModeToolsBinding.prototype as any).setPreview.call(fake, {
+      location: 'r2',
+      path: 'outputs/report.html',
+    });
+
+    expect(head).toHaveBeenCalledWith('org1/workspace1/user-outputs/report.html');
+    expect(result).toMatchObject({
+      success: true,
+      target: {
+        kind: 'file',
+        source: 'output',
+        workspaceId: 'workspace1',
+        path: 'report.html',
+        filename: 'report.html',
+      },
+    });
+    expect(setPreviewTarget).toHaveBeenCalledWith((result as any).target);
   });
 
   it('validates VM file previews before changing preview state', async () => {
@@ -2844,11 +2918,13 @@ describe('ChatThreadDO Codex turn handling', () => {
     const ls = tools.find((tool: any) => tool.name === 'ls');
 
     const listing = await ls.execute('tool1', {
+      location: 'workspace',
       path: '/opt/chiridion-host-pi/skills',
     });
     expect(listing.content[0].text).toContain('developing-software');
 
     const skill = await read.execute('tool2', {
+      location: 'workspace',
       path: '/opt/chiridion-host-pi/skills/developing-software/SKILL.md',
     });
     expect(skill.content[0].text).toContain('name: developing-software');
@@ -2904,6 +2980,8 @@ describe('ChatThreadDO Codex turn handling', () => {
     expect(text.length).toBeLessThan(big.length);
     expect(text).toMatch(/^a+/);
     expect(text).toContain('[Output truncated: showing first');
+    expect(text).toContain('Full output stored in R2 at tmp/');
+    expect(text).toContain('read({ location: "r2", path: "tmp/');
     expect(text).not.toContain('final-line');
     expect(result?.details).toMatchObject({
       source: 'test',
@@ -2916,7 +2994,11 @@ describe('ChatThreadDO Codex turn handling', () => {
     expect(puts).toHaveLength(1);
     expect(puts[0].key).toContain('chat-sessions/thread1/pi-tool-results/tmp/');
     expect(puts[0].value).toBe(big);
-    expect((result?.details as any).chiridionR2ToolResult.key).toBe(puts[0].key);
+    const storedPath = (result?.details as any).chiridionR2ToolResult.path;
+    expect(storedPath).toMatch(/^tmp\/.+\.txt$/);
+    expect(puts[0].key.endsWith(storedPath.replace(/^tmp\//, ''))).toBe(true);
+    expect((result?.details as any).chiridionR2ToolResult.key).toBeUndefined();
+    expect((result?.details as any).truncation.fullOutput.path).toBe(storedPath);
   });
 
   it('keeps the tail for oversized bash tool results', async () => {
@@ -2985,7 +3067,112 @@ describe('ChatThreadDO Codex turn handling', () => {
     expect(codeModeTools.find((tool: any) => tool.name === 'send_telegram_message')).toBeTruthy();
   });
 
-  it('reads stored R2 tool result keys with Pi-style line offsets', async () => {
+  it('moves files between explicit locations without vm_push/vm_pull', async () => {
+    const get = vi.fn(async () => r2Object('hello from r2', 'text/plain'));
+    const head = vi.fn(async () => ({
+      size: 13,
+      etag: 'etag',
+      uploaded: new Date('2026-01-01T00:00:00.000Z'),
+      httpMetadata: { contentType: 'text/plain' },
+      customMetadata: {},
+    }));
+    const writeFileBytesForTransfer = vi.fn(async ({ path }: any, bytes: Uint8Array) => ({
+      path,
+      bytes: bytes.byteLength,
+    }));
+    const fake = Object.create(CodeModeToolsBinding.prototype) as any;
+    fake.env = { R2_BUCKET: { head, get } };
+    fake.ctx = { props: { orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1' } };
+    Object.defineProperty(fake, 'projectVm', {
+      value: { writeFileBytesForTransfer },
+    });
+
+    const result = await (CodeModeToolsBinding.prototype as any).moveFile.call(fake, {
+      source: { location: 'r2', path: 'outputs/report.txt' },
+      destination: { location: 'vm', project: 'web-app', path: '/workspace/report.txt' },
+    });
+
+    expect(head).toHaveBeenCalledWith('org1/workspace1/user-outputs/report.txt');
+    expect(get).toHaveBeenCalledWith('org1/workspace1/user-outputs/report.txt');
+    expect(writeFileBytesForTransfer).toHaveBeenCalledWith(
+      { location: 'vm', path: '/workspace/report.txt', project: 'web-app', contentType: undefined },
+      new TextEncoder().encode('hello from r2'),
+    );
+    expect(result.text).toBe('Copied 1 file (13 bytes)');
+    expect(result.details.files).toEqual([
+      { from: 'outputs/report.txt', to: '/workspace/report.txt', bytes: 13 },
+    ]);
+  });
+
+  it('rejects destructive moves with equal or descendant destinations', async () => {
+    const fake = Object.create(CodeModeToolsBinding.prototype) as any;
+    fake.ctx = { props: { orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1' } };
+    const writeBinaryFile = vi.fn();
+    Object.defineProperty(fake, 'workspaceFs', {
+      value: {
+        exists: vi.fn(async (path: string) => path === '/dir'
+          ? { exists: true, isFile: false, isDirectory: true }
+          : { exists: true, isFile: true, isDirectory: false, size: 4, mimeType: 'text/plain' }),
+        listFiles: vi.fn(async () => ({
+          success: true,
+          files: [{ type: 'file', absolutePath: '/dir/file.txt', relativePath: 'file.txt', size: 4, mimeType: 'text/plain' }],
+        })),
+        writeBinaryFile,
+      },
+    });
+
+    await expect((CodeModeToolsBinding.prototype as any).moveFile.call(fake, {
+      source: { location: 'workspace', path: '/same.txt' },
+      destination: { location: 'workspace', path: '/same.txt' },
+      deleteSource: true,
+    })).rejects.toThrow('equal or descendant destination');
+
+    await expect((CodeModeToolsBinding.prototype as any).moveFile.call(fake, {
+      source: { location: 'workspace', path: '/dir' },
+      destination: { location: 'workspace', path: '/dir/nested' },
+      deleteSource: true,
+    })).rejects.toThrow('equal or descendant destination');
+
+    const r2Delete = vi.fn();
+    const r2Get = vi.fn();
+    fake.env = {
+      R2_BUCKET: {
+        head: vi.fn(async () => ({ size: 4, httpMetadata: { contentType: 'text/plain' } })),
+        get: r2Get,
+        delete: r2Delete,
+      },
+    };
+    await expect((CodeModeToolsBinding.prototype as any).moveFile.call(fake, {
+      source: { location: 'r2', path: 'outputs/same.txt' },
+      destination: { location: 'r2', path: 'outputs/same.txt' },
+      deleteSource: true,
+    })).rejects.toThrow('equal or descendant destination');
+
+    expect(writeBinaryFile).not.toHaveBeenCalled();
+    expect(r2Get).not.toHaveBeenCalled();
+    expect(r2Delete).not.toHaveBeenCalled();
+  });
+
+  it('requires explicit file locations and rejects legacy R2 paths', async () => {
+    const fake = Object.create(CodeModeToolsBinding.prototype) as any;
+    fake.assertWorkspaceNotMigrating = vi.fn(async () => undefined);
+    fake.recordCodeModeArtifactBestEffort = vi.fn();
+    fake.ctx = { props: { orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1' } };
+
+    await expect(CodeModeToolsBinding.prototype.callTool.call(fake, 'read', {
+      path: 'outputs/report.txt',
+    })).rejects.toThrow('read requires an explicit location');
+    expect(() => CodeModeToolsBinding.prototype['resolveCodeModeR2Path'].call(fake, {
+      location: 'r2',
+      path: '/mnt/user-outputs/report.txt',
+    })).toThrow('R2 paths must be relative');
+    expect(() => CodeModeToolsBinding.prototype['resolveCodeModeR2Path'].call(fake, {
+      location: 'r2',
+      key: 'org1/workspace1/user-outputs/report.txt',
+    })).toThrow('R2 path is required');
+  });
+
+  it('reads stored R2 tool result paths with Pi-style line offsets', async () => {
     const raw = Array.from({ length: 3000 }, (_, index) => `line-${index + 1}`).join('\n');
     const bytes = new TextEncoder().encode(raw);
     const key = 'org1/workspace1/chat-sessions/thread1/pi-tool-results/tmp/result.txt';
@@ -3012,6 +3199,7 @@ describe('ChatThreadDO Codex turn handling', () => {
       },
     };
     fake.env = {
+      IMAGES: { input: vi.fn() },
       R2_BUCKET: {
         head: vi.fn(async () => head),
         get,
@@ -3019,8 +3207,9 @@ describe('ChatThreadDO Codex turn handling', () => {
     };
     fake.recordCodeModeArtifactBestEffort = vi.fn();
 
-    const result = await CodeModeToolsBinding.prototype.callTool.call(fake, 'r2_read', {
-      key,
+    const result = await CodeModeToolsBinding.prototype.callTool.call(fake, 'read', {
+      location: 'r2',
+      path: 'tmp/result.txt',
       offset: 2,
       limit: 3,
     });
@@ -3029,8 +3218,8 @@ describe('ChatThreadDO Codex turn handling', () => {
     expect((result as any).text).toContain('line-2\nline-3\nline-4');
     expect((result as any).text).toContain('Use offset=5 to continue');
     expect((result as any).details).toMatchObject({
-      key,
-      path: '/r2/tmp/result.txt',
+      location: 'r2',
+      path: 'tmp/result.txt',
       offset: 2,
       nextOffset: 5,
       totalLines: 3000,
@@ -3039,6 +3228,265 @@ describe('ChatThreadDO Codex turn handling', () => {
         outputLines: 3,
       },
     });
+  });
+
+  it('returns R2 image objects as Pi image tool content', async () => {
+    const key = 'org1/workspace1/user-outputs/chart.png';
+    const pngBytes = new Uint8Array([
+      0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+      0x00, 0x00, 0x00, 0x0d,
+      0x49, 0x48, 0x44, 0x52,
+      0x00, 0x00, 0x00, 0x01,
+      0x00, 0x00, 0x00, 0x01,
+    ]);
+    const head = {
+      key,
+      size: pngBytes.byteLength,
+      etag: 'etag1',
+      uploaded: new Date('2026-01-01T00:00:00Z'),
+      httpMetadata: { contentType: 'application/octet-stream' },
+      customMetadata: { type: 'code-mode-r2-file' },
+    };
+    const fake = Object.create(CodeModeToolsBinding.prototype) as any;
+    fake.ctx = {
+      props: {
+        orgId: 'org1',
+        workspaceId: 'workspace1',
+        threadId: 'thread1',
+      },
+    };
+    const arrayBuffer = vi.fn(async () => {
+      throw new Error('arrayBuffer should not be used for streamed image reads');
+    });
+    const output = vi.fn(async () => ({
+      contentType: () => 'image/png',
+      image: () => new ReadableStream({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode('transformed-base64'));
+          controller.close();
+        },
+      }),
+    }));
+    const transform = vi.fn(() => ({ output }));
+    const images = {
+      info: vi.fn(),
+      input: vi.fn(() => ({ transform, output })),
+    };
+    fake.env = {
+      IMAGES: images,
+      R2_BUCKET: {
+        head: vi.fn(async () => head),
+        get: vi.fn(async () => ({
+          ...head,
+          body: new ReadableStream({
+            start(controller) {
+              controller.enqueue(pngBytes);
+              controller.close();
+            },
+          }),
+          arrayBuffer,
+        })),
+      },
+    };
+
+    fake.recordCodeModeArtifactBestEffort = vi.fn();
+
+    const result = await CodeModeToolsBinding.prototype.callTool.call(fake, 'read', { location: 'r2', path: 'outputs/chart.png' });
+
+    expect((result as any).text).toContain('Read R2 image object [image/png]');
+    expect((result as any).content).toEqual([
+      { type: 'text', text: 'Read R2 image object [image/png]\n[Image optimized for inline model context and may be scaled/compressed from the source.]' },
+      {
+        type: 'image',
+        data: 'transformed-base64',
+        mimeType: 'image/png',
+      },
+    ]);
+    expect(arrayBuffer).not.toHaveBeenCalled();
+    expect(images.input).toHaveBeenCalled();
+    expect(transform).toHaveBeenCalledWith({ width: 2000, height: 2000, fit: 'scale-down' });
+    expect((result as any).details).toMatchObject({
+      location: 'r2',
+      path: 'outputs/chart.png',
+      image: true,
+      mimeType: 'image/png',
+      inlineImage: true,
+      optimizedForInlineView: true,
+      maxInlineDimension: 2000,
+      usedImagesBinding: true,
+      offset: null,
+      nextOffset: null,
+      totalLines: null,
+      truncation: null,
+    });
+  });
+
+  it('rejects large non-image R2 objects after sniffing without draining the body', async () => {
+    const key = 'org1/workspace1/user-outputs/large.bin';
+    const head = {
+      key,
+      size: 11 * 1024 * 1024,
+      etag: 'etag1',
+      uploaded: new Date('2026-01-01T00:00:00Z'),
+      httpMetadata: { contentType: 'application/octet-stream' },
+      customMetadata: { type: 'code-mode-r2-file' },
+    };
+    const fake = Object.create(CodeModeToolsBinding.prototype) as any;
+    fake.ctx = { props: { orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1' } };
+    let pulls = 0;
+    let cancelled = false;
+    fake.env = {
+      IMAGES: { input: vi.fn() },
+      R2_BUCKET: {
+        head: vi.fn(async () => head),
+        get: vi.fn(async () => ({
+          ...head,
+          body: new ReadableStream({
+            pull(controller) {
+              pulls += 1;
+              if (pulls === 1) {
+                controller.enqueue(new Uint8Array(4100));
+                return;
+              }
+              throw new Error('body should not be drained after non-image sniff');
+            },
+            cancel() {
+              cancelled = true;
+            },
+          }),
+          arrayBuffer: vi.fn(async () => {
+            throw new Error('arrayBuffer should not be used for streamed R2 reads');
+          }),
+        })),
+      },
+    };
+    fake.recordCodeModeArtifactBestEffort = vi.fn();
+
+    await expect(CodeModeToolsBinding.prototype.callTool.call(fake, 'read', {
+      location: 'r2',
+      path: 'outputs/large.bin',
+    })).rejects.toThrow('R2 object is too large for text read');
+
+    expect(pulls).toBe(1);
+    expect(cancelled).toBe(true);
+  });
+
+  it('sniffs large generic R2 images and optimizes streamed image content', async () => {
+    const key = 'org1/workspace1/user-outputs/large-chart.png';
+    const pngBytes = new Uint8Array([
+      0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+      0x00, 0x00, 0x00, 0x0d,
+      0x49, 0x48, 0x44, 0x52,
+      0x00, 0x00, 0x0b, 0xb8,
+      0x00, 0x00, 0x03, 0xe8,
+    ]);
+    const head = {
+      key,
+      size: 11 * 1024 * 1024,
+      etag: 'etag1',
+      uploaded: new Date('2026-01-01T00:00:00Z'),
+      httpMetadata: { contentType: 'application/octet-stream' },
+      customMetadata: { type: 'code-mode-r2-file' },
+    };
+    const fake = Object.create(CodeModeToolsBinding.prototype) as any;
+    fake.ctx = { props: { orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1' } };
+    const arrayBuffer = vi.fn(async () => {
+      throw new Error('arrayBuffer should not be used for streamed image reads');
+    });
+    const output = vi.fn(async () => ({
+      contentType: () => 'image/png',
+      image: () => new ReadableStream({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode('large-transformed-base64'));
+          controller.close();
+        },
+      }),
+    }));
+    const transform = vi.fn(() => ({ output }));
+    fake.env = {
+      IMAGES: {
+        input: vi.fn(() => ({ transform, output })),
+      },
+      R2_BUCKET: {
+        head: vi.fn(async () => head),
+        get: vi.fn(async () => ({
+          ...head,
+          body: new ReadableStream({
+            start(controller) {
+              controller.enqueue(pngBytes);
+              controller.close();
+            },
+          }),
+          arrayBuffer,
+        })),
+      },
+    };
+    fake.recordCodeModeArtifactBestEffort = vi.fn();
+
+    const result = await CodeModeToolsBinding.prototype.callTool.call(fake, 'read', { location: 'r2', path: 'outputs/large-chart.png' });
+
+    expect(arrayBuffer).not.toHaveBeenCalled();
+    expect(transform).toHaveBeenCalledWith({ width: 2000, height: 2000, fit: 'scale-down' });
+    expect((result as any).text).toContain('Read R2 image object [image/png]');
+    expect((result as any).text).toContain('optimized for inline model context');
+    expect((result as any).text).not.toContain('displayed at');
+    expect((result as any).details).toMatchObject({
+      image: true,
+      inlineImage: true,
+      optimizedForInlineView: true,
+      maxInlineDimension: 2000,
+      usedImagesBinding: true,
+    });
+  });
+
+  it('does not trust R2 image metadata after sniffing an unsupported image variant', async () => {
+    const key = 'org1/workspace1/user-outputs/animated.png';
+    const apngBytes = new Uint8Array([
+      0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+      0x00, 0x00, 0x00, 0x0d,
+      0x49, 0x48, 0x44, 0x52,
+      0x00, 0x00, 0x00, 0x01,
+      0x00, 0x00, 0x00, 0x01,
+      0x08, 0x06, 0x00, 0x00, 0x00,
+      0x1f, 0x15, 0xc4, 0x89,
+      0x00, 0x00, 0x00, 0x08,
+      0x61, 0x63, 0x54, 0x4c,
+      0x00, 0x00, 0x00, 0x01,
+      0x00, 0x00, 0x00, 0x00,
+    ]);
+    const head = {
+      key,
+      size: apngBytes.byteLength,
+      etag: 'etag1',
+      uploaded: new Date('2026-01-01T00:00:00Z'),
+      httpMetadata: { contentType: 'image/png' },
+      customMetadata: { type: 'code-mode-r2-file' },
+    };
+    const fake = Object.create(CodeModeToolsBinding.prototype) as any;
+    fake.ctx = { props: { orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1' } };
+    const images = { input: vi.fn() };
+    fake.env = {
+      IMAGES: images,
+      R2_BUCKET: {
+        head: vi.fn(async () => head),
+        get: vi.fn(async () => ({
+          ...head,
+          body: new ReadableStream({
+            start(controller) {
+              controller.enqueue(apngBytes);
+              controller.close();
+            },
+          }),
+        })),
+      },
+    };
+    fake.recordCodeModeArtifactBestEffort = vi.fn();
+
+    const result = await CodeModeToolsBinding.prototype.callTool.call(fake, 'read', { location: 'r2', path: 'outputs/animated.png' });
+
+    expect(images.input).not.toHaveBeenCalled();
+    expect((result as any).text).not.toContain('Read R2 image object');
+    expect((result as any).details?.image).toBeUndefined();
   });
 
   it('truncates R2 reads by line count with an offset continuation', async () => {
@@ -3062,6 +3510,7 @@ describe('ChatThreadDO Codex turn handling', () => {
       },
     };
     fake.env = {
+      IMAGES: { input: vi.fn() },
       R2_BUCKET: {
         head: vi.fn(async () => head),
         get: vi.fn(async () => ({
@@ -3074,7 +3523,7 @@ describe('ChatThreadDO Codex turn handling', () => {
     };
     fake.recordCodeModeArtifactBestEffort = vi.fn();
 
-    const result = await CodeModeToolsBinding.prototype.callTool.call(fake, 'r2_read', { key });
+    const result = await CodeModeToolsBinding.prototype.callTool.call(fake, 'read', { location: 'r2', path: 'tmp/many-lines.txt' });
 
     expect((result as any).text).toContain('line-1');
     expect((result as any).text).toContain('line-2000');
@@ -3114,6 +3563,7 @@ describe('ChatThreadDO Codex turn handling', () => {
       },
     };
     fake.env = {
+      IMAGES: { input: vi.fn() },
       R2_BUCKET: {
         head: vi.fn(async () => head),
         get: vi.fn(async () => ({
@@ -3126,16 +3576,53 @@ describe('ChatThreadDO Codex turn handling', () => {
     };
     fake.recordCodeModeArtifactBestEffort = vi.fn();
 
-    const result = await CodeModeToolsBinding.prototype.callTool.call(fake, 'r2_read', { key });
+    const result = await CodeModeToolsBinding.prototype.callTool.call(fake, 'read', { location: 'r2', path: 'tmp/one-long-line.txt' });
 
     expect((result as any).text).toContain('exceeds 50176 byte read budget');
-    expect((result as any).text).toContain(key);
+    expect((result as any).text).toContain('tmp/one-long-line.txt');
     expect((result as any).text).not.toContain('second-line');
     expect((result as any).details.truncation).toMatchObject({
       truncated: true,
       truncatedBy: 'bytes',
       firstLineExceedsLimit: true,
     });
+  });
+
+  it('validates R2 edits against the original content before writing', async () => {
+    const key = 'org1/workspace1/user-outputs/edit.txt';
+    const head = {
+      key,
+      size: 5,
+      etag: 'etag1',
+      uploaded: new Date('2026-01-01T00:00:00Z'),
+      httpMetadata: { contentType: 'text/plain' },
+      customMetadata: { type: 'code-mode-r2-file' },
+    };
+    const put = vi.fn();
+    const fake = Object.create(CodeModeToolsBinding.prototype) as any;
+    fake.ctx = { props: { orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1' } };
+    fake.env = {
+      R2_BUCKET: {
+        head: vi.fn(async () => head),
+        get: vi.fn(async () => ({
+          ...head,
+          text: async () => 'abcde',
+        })),
+        put,
+      },
+    };
+    fake.recordCodeModeArtifactBestEffort = vi.fn();
+
+    await expect(CodeModeToolsBinding.prototype.callTool.call(fake, 'edit', {
+      location: 'r2',
+      path: 'outputs/edit.txt',
+      edits: [
+        { oldText: 'a', newText: 'x' },
+        { oldText: 'x', newText: 'y' },
+      ],
+    })).rejects.toThrow('edits[1].oldText not found in outputs/edit.txt');
+
+    expect(put).not.toHaveBeenCalled();
   });
 
   it('writes and deletes R2 output files but keeps uploads read-only', async () => {
@@ -3164,8 +3651,9 @@ describe('ChatThreadDO Codex turn handling', () => {
     };
     fake.recordCodeModeArtifactBestEffort = vi.fn();
 
-    const write = await CodeModeToolsBinding.prototype.callTool.call(fake, 'r2_write', {
-      path: '/mnt/user-outputs/reports/result.txt',
+    const write = await CodeModeToolsBinding.prototype.callTool.call(fake, 'write', {
+      location: 'r2',
+      path: 'outputs/reports/result.txt',
       content: 'hello',
     });
 
@@ -3177,18 +3665,16 @@ describe('ChatThreadDO Codex turn handling', () => {
       }),
     );
     expect((write as any).details).toMatchObject({
-      key: 'org1/workspace1/user-outputs/reports/result.txt',
-      path: '/mnt/user-outputs/reports/result.txt',
+      location: 'r2',
+      path: 'outputs/reports/result.txt',
+      namespace: 'outputs',
+      publicUrl: '/api/workspaces/workspace1/outputs/reports/result.txt',
       bytesWritten: 5,
     });
 
-    await expect(CodeModeToolsBinding.prototype.callTool.call(fake, 'r2_write', {
-      path: '/mnt/user-uploads/input.txt',
-      content: 'nope',
-    })).rejects.toThrow('/mnt/user-uploads is read-only');
-
-    await CodeModeToolsBinding.prototype.callTool.call(fake, 'r2_delete', {
-      path: '/mnt/user-outputs/reports/result.txt',
+    await CodeModeToolsBinding.prototype.callTool.call(fake, 'delete', {
+      location: 'r2',
+      path: 'outputs/reports/result.txt',
     });
     expect(del).toHaveBeenCalledWith('org1/workspace1/user-outputs/reports/result.txt');
   });
@@ -3368,6 +3854,8 @@ describe('ChatThreadDO Codex turn handling', () => {
 
     const prompt = ChatThreadDO.prototype['createPiSystemPrompt'].call(fake, context);
     expect(prompt).toContain('answer in chat only');
+    expect(prompt).toContain('set_preview({ location: "workspace", path: "/notes.md" })');
+    expect(prompt).toContain('set_preview({ location: "r2", path: "outputs/report.html" })');
     expect(prompt).not.toContain('tools.send_email');
     expect(prompt).not.toContain('tools.send_slack_message');
     expect(prompt).not.toContain('tools.send_telegram_message');
@@ -3993,12 +4481,14 @@ describe('ChatThreadDO Codex turn handling', () => {
     });
 
     const skill = await CodeModeToolsBinding.prototype.callTool.call(fake, 'read', {
+      location: 'workspace',
       path: '/opt/chiridion-host-pi/skills/data-analysis/SKILL.md',
     });
     expect((skill as any).text).toContain('name: data-analysis');
     expect((skill as any).details.source).toBe('bundled_skill');
 
     const listing = await CodeModeToolsBinding.prototype.callTool.call(fake, 'ls', {
+      location: 'workspace',
       path: '/opt/chiridion-host-pi/skills',
     });
     expect((listing as any).text).toContain('data-analysis');
@@ -4065,16 +4555,19 @@ describe('ChatThreadDO Codex turn handling', () => {
     });
 
     const listing = await CodeModeToolsBinding.prototype.callTool.call(fake, 'ls', {
+      location: 'workspace',
       path: '/workspace/.camelai/automations',
     });
     expect((listing as any).text).toContain('automation-1.js');
 
     const read = await CodeModeToolsBinding.prototype.callTool.call(fake, 'read', {
+      location: 'workspace',
       path: '/workspace/.camelai/automations/automation-1.js',
     });
     expect((read as any).text).toContain('AutomationWorkflow');
 
     const edit = await CodeModeToolsBinding.prototype.callTool.call(fake, 'edit', {
+      location: 'workspace',
       path: '/workspace/.camelai/automations/automation-1.js',
       edits: [{ oldText: 'WorkflowEntrypoint {}', newText: 'WorkflowEntrypoint { async run() { return { ok: true }; } }' }],
     });
@@ -4475,6 +4968,7 @@ describe('ChatThreadDO Codex turn handling', () => {
     });
 
     const result = await CodeModeToolsBinding.prototype.callTool.call(fake, 'grep', {
+      location: 'workspace',
       pattern: 'hello',
       path: 'src',
       literal: true,
@@ -4483,6 +4977,7 @@ describe('ChatThreadDO Codex turn handling', () => {
 
     expect(result.text).toBe('app.ts:1: hello');
     expect(callTool).toHaveBeenCalledWith('grep', {
+      location: 'workspace',
       pattern: 'hello',
       path: 'src',
       literal: true,
@@ -6392,7 +6887,7 @@ describe('ChatThreadDO Codex turn handling', () => {
         to: 'sender@example.com',
         subject: 'Report',
         text: 'Attached.',
-        attachments: [{ path: '/mnt/user-outputs/report.pdf' }],
+        attachments: [{ path: 'outputs/report.pdf' }],
       },
     );
 
@@ -6438,7 +6933,7 @@ describe('ChatThreadDO Codex turn handling', () => {
       ChatThreadDO.prototype['resolveChannelOutboundAttachments'].call(
         fake,
         { orgId: 'org1', workspaceId: 'workspace1' },
-        { attachments: [{ path: '/mnt/user-outputs/large.bin' }] },
+        { attachments: [{ path: 'outputs/large.bin' }] },
       ),
     ).rejects.toThrow('Attachment size must be 25 MB or less');
     expect(arrayBuffer).not.toHaveBeenCalled();
@@ -6526,7 +7021,7 @@ describe('ChatThreadDO Codex turn handling', () => {
       { orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1' },
       {
         text: 'Attached.',
-        attachments: [{ path: '/mnt/user-outputs/chart.png' }],
+        attachments: [{ path: 'outputs/chart.png' }],
       },
     );
 
@@ -6590,7 +7085,7 @@ describe('ChatThreadDO Codex turn handling', () => {
       { orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1' },
       {
         text: 'Attached.',
-        attachments: [{ path: '/mnt/user-outputs/report.csv', caption: 'CSV' }],
+        attachments: [{ path: 'outputs/report.csv', caption: 'CSV' }],
       },
     );
 
@@ -7071,7 +7566,7 @@ describe('ChatThreadDO Codex turn handling', () => {
       fake,
       { orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1' },
       {
-        attachments: [{ path: '/mnt/user-outputs/chart.png', caption: 'Chart' }],
+        attachments: [{ path: 'outputs/chart.png', caption: 'Chart' }],
       },
     );
 
@@ -7129,7 +7624,7 @@ describe('ChatThreadDO Codex turn handling', () => {
         fake,
         { orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1' },
         {
-          attachments: [{ path: '/mnt/user-outputs/large-photo.png' }],
+          attachments: [{ path: 'outputs/large-photo.png' }],
         },
       );
 
@@ -7182,7 +7677,7 @@ describe('ChatThreadDO Codex turn handling', () => {
       fake,
       { orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1' },
       {
-        attachments: [{ path: '/mnt/user-outputs/chart.png', send_as: 'document' }],
+        attachments: [{ path: 'outputs/chart.png', send_as: 'document' }],
       },
     );
 

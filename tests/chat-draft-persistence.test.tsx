@@ -335,7 +335,7 @@ describe('Chat draft persistence', () => {
   const attachmentDraft = {
     id: 'attachment-1',
     name: 'pasted-text.txt',
-    path: '/mnt/user-uploads/pasted-text-123.txt',
+    path: 'uploads/pasted-text-123.txt',
     size: 42,
     status: 'complete' as const,
   };

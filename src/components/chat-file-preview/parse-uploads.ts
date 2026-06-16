@@ -5,7 +5,7 @@ export interface ParsedUploadRef {
   originalName: string;
 }
 
-const UPLOAD_REF_REGEX = /\(user uploaded file to (\/mnt\/user-uploads\/([^\s)]+))\)/g;
+const UPLOAD_REF_REGEX = /\(user uploaded file to ((?:uploads\/|\/mnt\/user-uploads\/)([^\s)]+))\)/g;
 
 function deriveOriginalName(filename: string): string {
   const lastDot = filename.lastIndexOf('.');

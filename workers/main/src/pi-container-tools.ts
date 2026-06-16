@@ -3,6 +3,10 @@ import type {
   WorkspaceFilesystemLike,
   WorkspaceReadFileResponse,
 } from "./workspace-filesystem-do";
+import {
+  inlineImageMaxBase64Chars,
+  prepareInlineImageFromBytes,
+} from "./image-tool-content";
 
 const CONTAINER_CWD = "/workspace";
 const DEFAULT_MAX_LINES = 2000;
@@ -20,20 +24,21 @@ export type PiContainerToolResult = {
 };
 
 const PI_FILE_LOCATION_PARAMETERS = {
-  location: Type.Optional(Type.Union([
+  location: Type.Union([
     Type.Literal("workspace"),
     Type.Literal("vm"),
+    Type.Literal("r2"),
   ], {
     description:
-      "Where to operate. Use 'workspace' for the outer durable workspace filesystem, or 'vm' for a project VM.",
-  })),
+      "Required. Use 'workspace' for loose durable workspace files, 'vm' for a named project VM checkout, or 'r2' for workspace-scoped R2 paths (uploads/..., outputs/..., tmp/...).",
+  }),
   project: Type.Optional(Type.String({
     description: "Unique workspace project name when location is 'vm'. Selects the project's default VM checkout.",
   })),
 };
 
 export const PI_READ_PARAMETERS = Type.Object({
-  path: Type.String({ description: "Path to the file to read (relative or absolute)" }),
+  path: Type.String({ description: "Path to the file to read. For location='r2', use uploads/<path>, outputs/<path>, or tmp/<path> with no leading slash." }),
   offset: Type.Optional(Type.Number({ description: "1-indexed line offset for large files" })),
   limit: Type.Optional(Type.Number({ description: "Maximum number of lines to return" })),
   ...PI_FILE_LOCATION_PARAMETERS,
@@ -42,6 +47,7 @@ export const PI_READ_PARAMETERS = Type.Object({
 export const PI_WRITE_PARAMETERS = Type.Object({
   path: Type.String({ description: "Path to the file to write (relative or absolute)" }),
   content: Type.String({ description: "Content to write" }),
+  content_type: Type.Optional(Type.String({ description: "R2 object content type when location is 'r2'." })),
   ...PI_FILE_LOCATION_PARAMETERS,
 }, { additionalProperties: false });
 
@@ -60,9 +66,17 @@ export const PI_EDIT_PARAMETERS = Type.Object({
   ...PI_FILE_LOCATION_PARAMETERS,
 }, { additionalProperties: false });
 
+export const PI_DELETE_PARAMETERS = Type.Object({
+  path: Type.String({ description: "Path to the file or directory to delete (relative or absolute)" }),
+  recursive: Type.Optional(Type.Boolean({ description: "Delete directories recursively when supported." })),
+  force: Type.Optional(Type.Boolean({ description: "Do not fail if the path does not exist when supported." })),
+  ...PI_FILE_LOCATION_PARAMETERS,
+}, { additionalProperties: false });
+
 export const PI_LS_PARAMETERS = Type.Object({
   path: Type.Optional(Type.String({ description: "Directory to list (default: current directory)" })),
   limit: Type.Optional(Type.Number({ description: "Maximum number of entries to return (default: 500)" })),
+  cursor: Type.Optional(Type.String({ description: "Continuation cursor for paged R2 listings when location is 'r2'." })),
   recursive: Type.Optional(Type.Boolean({ description: "Recursively list VM directories when location is 'vm'." })),
   includeHidden: Type.Optional(Type.Boolean({ description: "Include hidden VM entries when location is 'vm' (default: true)." })),
   ...PI_FILE_LOCATION_PARAMETERS,
@@ -93,48 +107,64 @@ export const PI_CONTAINER_TOOL_DEFINITIONS = {
     name: "read",
     label: "read",
     description:
-      `Read a file from the outer durable workspace by default, or from a project VM with location='vm' plus project. Text output is truncated to ${DEFAULT_MAX_LINES} lines or ${DEFAULT_MAX_BYTES / 1024}KB for workspace files. Images are returned as image content when possible.`,
+      `Read a file. Required location: use location='workspace' for loose durable workspace files, location='vm' plus project for project VM files, or location='r2' for workspace-scoped R2. R2 paths must be uploads/<path> for read-only user uploads, outputs/<path> for user-visible outputs, or tmp/<path> for temporary objects; do not use leading slashes, /mnt paths, /r2 paths, or raw R2 keys. Text output is truncated to ${DEFAULT_MAX_LINES} lines or ${DEFAULT_MAX_BYTES / 1024}KB for workspace files. Images are returned as image content when possible.`,
     parameters: PI_READ_PARAMETERS,
   },
   write: {
     name: "write",
     label: "write",
     description:
-      "Write content to the outer durable workspace by default, or to a project VM with location='vm' plus project. Creates parent directories.",
+      "Write content to a required location: use location='workspace' for loose durable workspace files, location='vm' plus project for project VM files, or location='r2' for workspace-scoped R2. R2 writable paths are outputs/<path> and tmp/<path>; uploads/<path> is read-only. Do not use leading slashes, /mnt paths, /r2 paths, or raw R2 keys. Creates parent directories for workspace/VM writes.",
     parameters: PI_WRITE_PARAMETERS,
   },
   edit: {
     name: "edit",
     label: "edit",
     description:
-      "Edit a single file in the outer durable workspace by default, or in a project VM with location='vm' plus project. Every edits[].oldText must match a unique, non-overlapping region of the original file.",
+      "Edit a single text file at a required location: use location='workspace' for loose durable workspace files, location='vm' plus project for project VM files, or location='r2' for workspace-scoped R2. Every edits[].oldText must match a unique, non-overlapping region of the original file.",
     parameters: PI_EDIT_PARAMETERS,
+  },
+  delete: {
+    name: "delete",
+    label: "delete",
+    description:
+      "Delete a file at a required location: use location='workspace' for loose durable workspace files, or location='r2' for workspace-scoped R2. For project VM files, use bash/vm_exec with rm so deletion is explicit in the shell command.",
+    parameters: PI_DELETE_PARAMETERS,
   },
   ls: {
     name: "ls",
     label: "ls",
     description:
-      "List directory contents in the outer durable workspace by default, or in a project VM with location='vm' plus project. Returns entries sorted alphabetically, with '/' suffix for directories.",
+      "List directory contents at a required location: use location='workspace' for loose durable workspace files, location='vm' plus project for project VM files, or location='r2' for workspace-scoped R2. For R2, path must be uploads, outputs, tmp, or a path under one of them with no leading slash. Returns entries sorted alphabetically, with '/' suffix for directories where applicable.",
     parameters: PI_LS_PARAMETERS,
   },
   grep: {
     name: "grep",
     label: "grep",
     description:
-      "Search file contents in the outer durable workspace by default, or in a project VM with location='vm' plus project. Returns matching lines with file paths and line numbers.",
+      "Search file contents at a required location: use location='workspace' for loose durable workspace files or location='vm' plus project for project VM files. R2 search is not supported. Returns matching lines with file paths and line numbers.",
     parameters: PI_GREP_PARAMETERS,
   },
   find: {
     name: "find",
     label: "find",
     description:
-      "Search files by glob pattern in the outer durable workspace by default, or in a project VM with location='vm' plus project. Returns matching file paths relative to the search directory.",
+      "Search files by glob pattern at a required location: use location='workspace' for loose durable workspace files or location='vm' plus project for project VM files. R2 search is not supported. Returns matching file paths relative to the search directory.",
     parameters: PI_FIND_PARAMETERS,
   },
 } as const;
 
 function bytes(value: string): number {
   return new TextEncoder().encode(value).byteLength;
+}
+
+function base64ToBytes(value: string): Uint8Array {
+  const binary = atob(value.replace(/\s/g, ""));
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index);
+  }
+  return bytes;
 }
 
 function formatSize(value: number): string {
@@ -287,7 +317,10 @@ function simpleDiff(before: string, after: string) {
 }
 
 export class PiContainerTools {
-  constructor(private readonly workspace: WorkspaceFilesystemLike) {}
+  constructor(
+    private readonly workspace: WorkspaceFilesystemLike,
+    private readonly options: { images?: ImagesBinding } = {},
+  ) {}
 
   private async readWorkspaceFile(path: string): Promise<WorkspaceReadFileResponse> {
     const file = await this.workspace.readFile(path);
@@ -305,6 +338,8 @@ export class PiContainerTools {
         return this.write(args);
       case "edit":
         return this.edit(args);
+      case "delete":
+        return this.delete(args);
       case "ls":
         return this.ls(args);
       case "grep":
@@ -322,10 +357,37 @@ export class PiContainerTools {
     if (file.isBinary) {
       const mimeType = file.mimeType || imageMime(path);
       if (mimeType?.startsWith("image/") && typeof file.content === "string") {
-        const text = `[Image: ${path} (${mimeType}, ${formatSize(file.size ?? 0)})]`;
-        return { text, content: [{ type: "image", data: file.content, mimeType }], details: { mimeType, size: file.size ?? 0 } };
+        const imageBytes = base64ToBytes(file.content);
+        if (!this.options.images) throw new Error("IMAGES binding is required for image reads");
+        const prepared = await prepareInlineImageFromBytes(imageBytes, mimeType, this.options.images);
+        let text = `Read image file [${prepared?.mimeType ?? mimeType}]\n[Image: ${path} (${formatSize(file.size ?? imageBytes.byteLength)})]`;
+        if (prepared?.optimizedForInlineView) {
+          text += `\n[Image optimized for inline model context and may be scaled/compressed from the source.]`;
+        }
+        const content: ToolContent[] = [{ type: "text", text }];
+        if (prepared) {
+          content.push({ type: "image", data: prepared.data, mimeType: prepared.mimeType });
+        } else {
+          text += `\n[Image omitted: could not be resized below the inline image size limit of ${inlineImageMaxBase64Chars()} base64 chars.]`;
+          content[0] = { type: "text", text };
+        }
+        return {
+          text,
+          content,
+          details: {
+            mimeType: prepared?.mimeType ?? mimeType,
+            originalMimeType: mimeType,
+            size: file.size ?? imageBytes.byteLength,
+            image: true,
+            inlineImage: Boolean(prepared),
+            optimizedForInlineView: prepared?.optimizedForInlineView ?? false,
+            maxInlineDimension: prepared?.maxInlineDimension ?? null,
+            usedImagesBinding: prepared?.usedImagesBinding ?? false,
+            base64Chars: prepared?.base64Chars ?? null,
+          },
+        };
       }
-      return result("[Binary file omitted. Use js_exec with vm.push/vm.exec for binary inspection.]", { isBinary: true, size: file.size ?? 0 });
+      return result("[Binary file omitted. Use js_exec with tools.move/vm.exec for binary inspection.]", { isBinary: true, size: file.size ?? 0 });
     }
 
     const lines = String(file.content ?? "").split("\n");
@@ -363,6 +425,17 @@ export class PiContainerTools {
     const response = await this.workspace.writeFile(path, after);
     if (!response.success) throw new Error(response.error || `Failed to write ${path}`);
     return result(`Successfully replaced ${edits.length} block(s) in ${path}.`, simpleDiff(before, after));
+  }
+
+  private async delete(args: Record<string, unknown>): Promise<PiContainerToolResult> {
+    const path = normalizePath(args.path);
+    const response = await this.workspace.deleteFile(path, {
+      recursive: args.recursive === true,
+      force: args.force === true,
+    });
+    if (!response.success) throw new Error(response.error || `Failed to delete ${path}`);
+    const text = `Deleted ${path}`;
+    return result(text, { path, deleted: true });
   }
 
   private async ls(args: Record<string, unknown>): Promise<PiContainerToolResult> {

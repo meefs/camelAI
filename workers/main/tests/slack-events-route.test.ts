@@ -292,7 +292,7 @@ describe('handleSlackEvents', () => {
     const enqueued = startInitialUserMessage.mock.calls[0][0];
     expect(enqueued.threadId).toBe('thread-1');
     expect(enqueued.message).toContain('see attached');
-    expect(enqueued.message).toContain('(user uploaded file to /mnt/user-uploads/sheet-');
+    expect(enqueued.message).toContain('(user uploaded file to uploads/sheet-');
   });
 
   it('retries busy Slack channel enqueue results as backpressure', async () => {

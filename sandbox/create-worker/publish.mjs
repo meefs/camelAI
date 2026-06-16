@@ -26,7 +26,7 @@ Options:
 Examples:
   publish sales-report --file ./analysis.ipynb
   publish readme-site --file ./README.md
-  publish data-download --file /mnt/user-outputs/results.csv
+  publish data-download --file outputs/results.csv
 `);
 }
 

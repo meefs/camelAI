@@ -31,6 +31,7 @@ import type { WorkspaceCronDO } from "./workspace-cron";
 import type { WorkerLogsDO } from "./worker-logs-do";
 import {
   WorkspaceFilesystemClient,
+  normalizeWorkspacePath as normalizeDurableWorkspacePath,
   type LegacyWorkspaceMigrationStatus,
   type WorkspaceFilesystemEnv,
   type WorkspaceProject,
@@ -161,6 +162,15 @@ import {
 } from "./channels";
 import { codeModeWorkerModule } from "./code-mode-runner";
 import { CodeModeCustomDomains } from "./code-mode-custom-domains";
+import {
+  detectImageMimeType as detectSharedImageMimeType,
+  getSupportedImageMimeTypeFromContentType,
+  inlineImageMaxBase64Chars,
+  prepareInlineImageFromStream,
+  readImageSniffBytesAndReplayStream,
+  type PreparedInlineImage,
+  readStreamBytes,
+} from "./image-tool-content";
 import { CodeModeScheduledPrompts } from "./code-mode-scheduled-prompts";
 import { CodeModeDeterministicAutomations } from "./code-mode-deterministic-automations";
 import { CodeModeIntegrations } from "./code-mode-integrations";
@@ -412,6 +422,7 @@ export interface ChatEnv extends WorkspaceFilesystemEnv, ProjectRuntimeServiceVm
   MCP_OBJECT: DurableObjectNamespace;
   APP_KV: KVNamespace;
   R2_BUCKET: R2Bucket;
+  IMAGES?: ImagesBinding;
   AI: Ai;
   ANTHROPIC_API_KEY: string;
   CF_ACCOUNT_ID?: string;
@@ -595,7 +606,7 @@ interface PiR2ImageReference {
 }
 
 interface PiR2ToolResultReference {
-  key: string;
+  path: string;
   size: number;
   sha256: string;
   storedAt: number;
@@ -993,7 +1004,22 @@ interface CodeModeR2Path {
   key: string;
   path: string;
   relativePath: string;
-  writable: boolean;
+}
+
+type CodeModeFileLocation = "workspace" | "vm" | "r2";
+
+interface CodeModeMoveEndpoint {
+  location: CodeModeFileLocation;
+  path: string;
+  project?: string;
+  contentType?: string;
+}
+
+interface CodeModeMoveFile {
+  path: string;
+  relativePath: string;
+  size?: number;
+  contentType?: string;
 }
 
 interface LegacyParsedChatMessageForPi {
@@ -1032,6 +1058,47 @@ function truncateCodeModeText(value: unknown, maxCharacters: number): string {
   const text = String(value ?? "");
   if (text.length <= maxCharacters) return text;
   return `${text.slice(0, maxCharacters)}\n\n[Truncated: ${maxCharacters} of ${text.length} characters]`;
+}
+
+function basenameForMove(path: string): string {
+  return path.split("/").filter(Boolean).pop() || "";
+}
+
+function joinRelativeMovePath(root: string, child: string): string {
+  const cleanRoot = root.replace(/^\/+|\/+$/g, "");
+  const cleanChild = child.replace(/^\/+|\/+$/g, "");
+  if (!cleanRoot) return cleanChild;
+  if (!cleanChild) return cleanRoot;
+  return `${cleanRoot}/${cleanChild}`;
+}
+
+function joinMoveDestinationPath(location: CodeModeFileLocation, root: string, child: string): string {
+  const cleanChild = child.replace(/^\/+/, "");
+  if (location === "r2") {
+    const cleanRoot = root.replace(/^\/+|\/+$/g, "");
+    return cleanRoot ? `${cleanRoot}/${cleanChild}` : cleanChild;
+  }
+  const cleanRoot = root.replace(/\/+$/g, "");
+  if (!cleanRoot || cleanRoot === "/") return `/${cleanChild}`;
+  return `${cleanRoot}/${cleanChild}`;
+}
+
+function bytesToBase64ForMove(bytes: Uint8Array): string {
+  let binary = "";
+  const chunkSize = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
+  }
+  return btoa(binary);
+}
+
+function base64ToBytesForMove(value: string): Uint8Array {
+  const binary = atob(value.replace(/\s/g, ""));
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i += 1) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return bytes;
 }
 
 function normalizeTodoStatus(value: unknown): NormalizedTodoStatus {
@@ -1168,6 +1235,7 @@ const CODE_MODE_CONTAINER_TOOL_NAMES = [
   "edit",
   "grep",
   "find",
+  "delete",
 ] as const;
 
 const CODE_MODE_CONTAINER_TOOL_DEFINITIONS = CODE_MODE_CONTAINER_TOOL_NAMES.map(
@@ -1179,6 +1247,25 @@ const CODE_MODE_CONTAINER_TOOL_DEFINITIONS = CODE_MODE_CONTAINER_TOOL_NAMES.map(
     });
   },
 );
+
+const MOVE_ENDPOINT_PARAMETERS = Type.Object({
+  location: Type.Union([
+    Type.Literal("workspace"),
+    Type.Literal("vm"),
+    Type.Literal("r2"),
+  ], {
+    description: "Required filesystem location: workspace, vm, or r2.",
+  }),
+  path: Type.String({
+    description: "Path at that location. R2 paths must be uploads/<path>, outputs/<path>, or tmp/<path> with no leading slash.",
+  }),
+  project: Type.Optional(Type.String({
+    description: "Required when location is vm; unique workspace project name.",
+  })),
+  content_type: Type.Optional(Type.String({
+    description: "Destination R2 content type override.",
+  })),
+}, { additionalProperties: false });
 
 const BASH_TOOL = codeModeTool(
   "bash",
@@ -1233,7 +1320,7 @@ const SEND_EMAIL_TOOL = codeModeTool(
     category: "communication",
     examples: [
       `await tools.send_email({ to: "person@example.com", subject: "Update", text: "Here is the update." })`,
-      `await tools.send_email({ to: "person@example.com", subject: "Files", text: "Attached.", attachments: [{ path: "/mnt/user-uploads/report.pdf" }] })`,
+      `await tools.send_email({ to: "person@example.com", subject: "Files", text: "Attached.", attachments: [{ path: "uploads/report.pdf" }] })`,
     ],
     sideEffect: true,
     externalDelivery: true,
@@ -1273,75 +1360,10 @@ const SEND_TELEGRAM_MESSAGE_TOOL = codeModeTool(
     category: "communication",
     examples: [
       `await tools.send_telegram_message({ integration_id: "telegram_direct", text: "Here is the update." })`,
-      `await tools.send_telegram_message({ integration_id: "telegram_direct", text: "Attached.", attachments: [{ path: "/mnt/user-uploads/photo.jpg" }] })`,
+      `await tools.send_telegram_message({ integration_id: "telegram_direct", text: "Attached.", attachments: [{ path: "uploads/photo.jpg" }] })`,
     ],
     sideEffect: true,
     externalDelivery: true,
-  },
-);
-const R2_READ_TOOL = codeModePassthroughTool(
-  "r2_read",
-  "Read workspace-scoped R2 text like the Pi read tool. Arguments: { path? or key?, offset?, limit? }. Offset is a 1-indexed line number; use returned nextOffset to continue. Paths support /mnt/user-uploads/..., /mnt/user-outputs/..., and /r2/tmp/...; key may be a full scoped R2 key returned by tool-result truncation metadata.",
-  Type.Object({
-    path: Type.Optional(Type.String()),
-    key: Type.Optional(Type.String()),
-    offset: Type.Optional(Type.Number()),
-    limit: Type.Optional(Type.Number()),
-  }),
-  {
-    category: "workspace",
-    examples: [
-      `await tools.r2_read({ path: "/r2/tmp/tool-output.txt" })`,
-      `await tools.r2_read({ key: result.details.chiridionR2ToolResult.key, offset: 2001 })`,
-    ],
-  },
-);
-const R2_WRITE_TOOL = codeModePassthroughTool(
-  "r2_write",
-  "Write text to workspace-scoped R2. Arguments: { path, content, content_type? }. Writable paths are /mnt/user-outputs/... and /r2/tmp/...; /mnt/user-uploads/... is read-only.",
-  Type.Object({
-    path: Type.String(),
-    content: Type.String(),
-    content_type: Type.Optional(Type.String()),
-  }),
-  {
-    category: "workspace",
-    examples: [
-      `await tools.r2_write({ path: "/r2/tmp/large-result.txt", content })`,
-      `await tools.r2_write({ path: "/mnt/user-outputs/report.txt", content: "Done" })`,
-    ],
-    sideEffect: true,
-  },
-);
-const R2_LIST_TOOL = codeModePassthroughTool(
-  "r2_list",
-  "List workspace-scoped R2 objects like a directory. Arguments: { path?, limit?, cursor? }. Paths support /mnt/user-uploads, /mnt/user-outputs, and /r2/tmp.",
-  Type.Object({
-    path: Type.Optional(Type.String()),
-    limit: Type.Optional(Type.Number()),
-    cursor: Type.Optional(Type.String()),
-  }),
-  {
-    category: "workspace",
-    examples: [
-      `await tools.r2_list({ path: "/mnt/user-outputs" })`,
-      `await tools.r2_list({ path: "/r2/tmp" })`,
-    ],
-  },
-);
-const R2_DELETE_TOOL = codeModePassthroughTool(
-  "r2_delete",
-  "Delete one workspace-scoped R2 object. Arguments: { path? or key? }. Writable paths are /mnt/user-outputs/... and /r2/tmp/...; /mnt/user-uploads/... is read-only.",
-  Type.Object({
-    path: Type.Optional(Type.String()),
-    key: Type.Optional(Type.String()),
-  }),
-  {
-    category: "workspace",
-    examples: [
-      `await tools.r2_delete({ path: "/r2/tmp/large-result.txt" })`,
-    ],
-    sideEffect: true,
   },
 );
 const WEB_SEARCH_TOOL = codeModePassthroughTool(
@@ -1422,28 +1444,16 @@ const CODE_MODE_TOOL_REGISTRY: CodeModeToolRegistration[] = [
     }),
   ),
   codeModeTool(
-    "vm_push",
-    "Copy selected files or directories from the durable workspace into a project VM. Prefer the js_exec vm.push({ paths, location: 'vm', project, vmRoot?, clean? }) facade. Arguments: { paths, project, location?: 'vm', vmRoot?, clean? }.",
+    "move",
+    "Transfer files between any two explicit locations: workspace, vm, or r2. Copies by default and overwrites the destination. Use deleteSource: true only when you intentionally want a destructive move after a successful copy. Arguments: { source: { location, path, project? }, destination: { location, path, project?, content_type? }, deleteSource? }.",
     Type.Object({
-      paths: Type.Array(Type.String()),
-      ...vmTargetParameters(),
-      vmRoot: Type.Optional(Type.String()),
-      clean: Type.Optional(Type.Boolean()),
-    }),
-  ),
-  codeModeTool(
-    "vm_pull",
-    "Copy selected files or directories from a project VM back into the durable workspace. Prefer the js_exec vm.pull({ paths?, location: 'vm', project, vmRoot?, workspaceRoot?, files? }) facade. Arguments: { paths?, project, location?: 'vm', vmRoot?, workspaceRoot?, files? }.",
-    Type.Object({
-      paths: Type.Optional(Type.Array(Type.String())),
-      ...vmTargetParameters(),
-      vmRoot: Type.Optional(Type.String()),
-      workspaceRoot: Type.Optional(Type.String()),
-      files: Type.Optional(Type.Array(Type.Object({
-        vmPath: Type.String(),
-        workspacePath: Type.String(),
-      }, { additionalProperties: false }))),
-    }),
+      source: MOVE_ENDPOINT_PARAMETERS,
+      destination: MOVE_ENDPOINT_PARAMETERS,
+      deleteSource: Type.Optional(Type.Boolean({
+        description: "Delete the source after all destination writes succeed. Defaults to false.",
+      })),
+    }, { additionalProperties: false }),
+    { category: "workspace", sideEffect: true },
   ),
   codeModePassthroughTool(
     "list_projects",
@@ -1484,10 +1494,6 @@ const CODE_MODE_TOOL_REGISTRY: CodeModeToolRegistration[] = [
   SEND_EMAIL_TOOL,
   SEND_SLACK_MESSAGE_TOOL,
   SEND_TELEGRAM_MESSAGE_TOOL,
-  R2_READ_TOOL,
-  R2_WRITE_TOOL,
-  R2_LIST_TOOL,
-  R2_DELETE_TOOL,
   codeModePassthroughTool(
     "TodoWrite",
     "Update the visible task list in the chat UI. Arguments: { todos: [{ content, status, activeForm? }] }. Status is pending, in_progress, or completed.",
@@ -1519,14 +1525,18 @@ const CODE_MODE_TOOL_REGISTRY: CodeModeToolRegistration[] = [
   ),
   codeModePassthroughTool(
     "set_preview",
-    "Set the active preview to exactly one real target: an app or a file. App example: { app_name: 'poll-maker' }. Durable workspace file example: { path: '/notes.md' }. Project VM file example: { location: 'vm', project: 'menu-app', path: 'index.html' }. Successful file previews are validated before the preview changes. Arguments: { script_name?, app_name?, is_public?, path?, content_type?, location?, project? }.",
+    "Set the active preview to exactly one real target: an app or a file. App example: { app_name: 'poll-maker' }. Durable workspace file example: { location: 'workspace', path: '/notes.md' }. Project VM file example: { location: 'vm', project: 'menu-app', path: 'index.html' }. R2 file example: { location: 'r2', path: 'outputs/report.html' }. Successful file previews are validated before the preview changes. Arguments: { script_name?, app_name?, is_public?, path?, content_type?, location?, project? }.",
     Type.Object({
       script_name: Type.Optional(Type.String()),
       app_name: Type.Optional(Type.String()),
       is_public: Type.Optional(Type.Boolean()),
       path: Type.Optional(Type.String()),
       content_type: Type.Optional(Type.String()),
-      location: Type.Optional(Type.Literal("vm")),
+      location: Type.Optional(Type.Union([
+        Type.Literal("workspace"),
+        Type.Literal("vm"),
+        Type.Literal("r2"),
+      ])),
       project: Type.Optional(Type.String()),
     }),
     {
@@ -1828,10 +1838,28 @@ const CODE_MODE_PI_PASSTHROUGH_TOOL_DEFINITIONS: CodeModeToolDefinition[] =
     .filter((registration) => registration.piPassthrough)
     .map(codeModeDefinition);
 
+const FILE_TOOL_NAMES = new Set(["read", "write", "edit", "ls", "delete", "grep", "find"]);
+
+function requireFileLocation(toolName: string, args: Record<string, unknown>): "workspace" | "vm" | "r2" {
+  const location = args.location;
+  if (location !== "workspace" && location !== "vm" && location !== "r2") {
+    throw new Error(`${toolName} requires an explicit location: "workspace", "vm", or "r2"`);
+  }
+  if (location === "vm" && (typeof args.project !== "string" || args.project.trim().length === 0)) {
+    throw new Error(`${toolName} with location "vm" requires a project name`);
+  }
+  if ((toolName === "grep" || toolName === "find") && location === "r2") {
+    throw new Error(`${toolName} does not support location "r2"; use ls/read for R2 objects`);
+  }
+  return location;
+}
+
 function hasVmTarget(args: Record<string, unknown>): boolean {
-  if (args.location === "workspace") return false;
-  return args.location === "vm" ||
-    (typeof args.project === "string" && args.project.trim().length > 0);
+  return args.location === "vm";
+}
+
+function hasR2Target(args: Record<string, unknown>): boolean {
+  return args.location === "r2";
 }
 
 function projectForAgent(project: WorkspaceProject): Record<string, unknown> {
@@ -1901,10 +1929,6 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
     send_email: (binding, args) => binding.sendEmail(args),
     send_slack_message: (binding, args) => binding.sendSlackMessage(args),
     send_telegram_message: (binding, args) => binding.sendTelegramMessage(args),
-    r2_read: (binding, args) => binding.readR2File(args),
-    r2_write: (binding, args) => binding.writeR2File(args),
-    r2_list: (binding, args) => binding.listR2Files(args),
-    r2_delete: (binding, args) => binding.deleteR2File(args),
     get_custom_domain: (binding) => binding.getCustomDomain(),
     set_custom_domain: (binding, args) => binding.setCustomDomain(args),
     remove_custom_domain: (binding, args) => binding.removeCustomDomain(args),
@@ -1953,7 +1977,7 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
   }
 
   private get piContainerTools(): PiContainerTools {
-    return new PiContainerTools(this.workspaceFs);
+    return new PiContainerTools(this.workspaceFs, { images: this.env.IMAGES });
   }
 
   private get projectVm(): ProjectRuntimeServiceVmBridge {
@@ -2109,14 +2133,6 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
     return threadId.replace(/[^a-zA-Z0-9_-]/g, "_");
   }
 
-  private workspaceR2Prefix(): string {
-    const { orgId, workspaceId } = this.ctx.props;
-    if (!orgId || !workspaceId) {
-      throw new Error("Code mode tool binding is missing R2 scope");
-    }
-    return buildWorkspaceScopedR2Key(orgId, workspaceId, "");
-  }
-
   private r2MountBaseKey(mount: CodeModeR2Mount): string {
     const { orgId, workspaceId } = this.ctx.props;
     if (!orgId || !workspaceId) {
@@ -2136,20 +2152,11 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
     }
   }
 
-  private r2MountPath(mount: CodeModeR2Mount): string {
-    switch (mount) {
-      case "uploads":
-        return "/mnt/user-uploads";
-      case "outputs":
-        return "/mnt/user-outputs";
-      case "tmp":
-        return "/r2/tmp";
-    }
-  }
-
   private normalizeR2RelativePath(path: string, allowDirectory: boolean): string {
-    const normalized = path.replace(/^\/+/, "");
-    const relativePath = allowDirectory ? normalized.replace(/\/+$/, "") : normalized;
+    if (path.startsWith("/")) {
+      throw new Error("R2 paths must be relative: use uploads/<path>, outputs/<path>, or tmp/<path>");
+    }
+    const relativePath = allowDirectory ? path.replace(/\/+$/, "") : path;
     if (relativePath.length > 1024) {
       throw new Error("R2 path exceeds the maximum length of 1024 characters");
     }
@@ -2162,73 +2169,42 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
   }
 
   private r2PathFromRelative(mount: CodeModeR2Mount, relativePath: string): string {
-    const root = this.r2MountPath(mount);
-    return relativePath ? `${root}/${relativePath}` : root;
+    return relativePath ? `${mount}/${relativePath}` : mount;
   }
 
   private resolveCodeModeR2Path(
     raw: Record<string, unknown>,
     options: { allowDirectory?: boolean; requireWritable?: boolean } = {},
   ): CodeModeR2Path {
-    const allowDirectory = options.allowDirectory ?? false;
-    const rawKey = typeof raw.key === "string" ? raw.key.trim() : "";
-    const rawPath = typeof raw.path === "string" ? raw.path.trim() : "";
-
-    const fromParts = (
-      mount: CodeModeR2Mount,
-      relativePath: string,
-    ): CodeModeR2Path => {
-      const normalizedRelativePath = this.normalizeR2RelativePath(relativePath, allowDirectory);
-      if (!allowDirectory && !normalizedRelativePath) {
-        throw new Error("R2 object path is required");
-      }
-      const writable = mount !== "uploads";
-      if (options.requireWritable && !writable) {
-        throw new Error("/mnt/user-uploads is read-only");
-      }
-      return {
-        mount,
-        key: `${this.r2MountBaseKey(mount)}${normalizedRelativePath}`,
-        path: this.r2PathFromRelative(mount, normalizedRelativePath),
-        relativePath: normalizedRelativePath,
-        writable,
-      };
+    const rawPath = typeof raw.path === "string" ? raw.path.trim().replace(/\\/g, "/") : "";
+    if (!rawPath) throw new Error("R2 path is required");
+    const normalizedPath = this.normalizeR2RelativePath(rawPath, options.allowDirectory ?? false);
+    const [mountPart, ...rest] = normalizedPath.split("/");
+    if (mountPart !== "uploads" && mountPart !== "outputs" && mountPart !== "tmp") {
+      throw new Error("R2 path must start with uploads/, outputs/, or tmp/");
+    }
+    const relativePath = rest.join("/");
+    if (!options.allowDirectory && !relativePath) throw new Error("R2 object path is required");
+    if (options.requireWritable && mountPart === "uploads") throw new Error("uploads/ is read-only");
+    return {
+      mount: mountPart,
+      key: `${this.r2MountBaseKey(mountPart)}${relativePath}`,
+      path: this.r2PathFromRelative(mountPart, relativePath),
+      relativePath,
     };
-
-    if (rawKey) {
-      const workspacePrefix = this.workspaceR2Prefix();
-      if (!rawKey.startsWith(workspacePrefix)) {
-        throw new Error("R2 key is outside the current workspace");
-      }
-      for (const mount of ["uploads", "outputs", "tmp"] as const) {
-        const baseKey = this.r2MountBaseKey(mount);
-        if (rawKey === baseKey || rawKey.startsWith(baseKey)) {
-          return fromParts(mount, rawKey.slice(baseKey.length));
-        }
-      }
-      throw new Error("R2 key is outside the allowed workspace file prefixes");
-    }
-
-    const path = rawPath.replace(/\\/g, "/");
-    if (!path) {
-      throw new Error("R2 path or key is required");
-    }
-    for (const mount of ["uploads", "outputs", "tmp"] as const) {
-      const mountPath = this.r2MountPath(mount);
-      if (path === mountPath) {
-        return fromParts(mount, "");
-      }
-      if (path.startsWith(`${mountPath}/`)) {
-        return fromParts(mount, path.slice(mountPath.length + 1));
-      }
-    }
-    throw new Error("R2 path must be under /mnt/user-uploads, /mnt/user-outputs, or /r2/tmp");
   }
 
-  private formatR2ObjectMetadata(obj: R2Object, path: string): Record<string, unknown> {
+  private r2PublicUrl(target: CodeModeR2Path): string | null {
+    if (target.mount === "tmp") return null;
+    return `/api/workspaces/${this.ctx.props.workspaceId}/${target.mount}/${target.relativePath}`;
+  }
+
+  private formatR2ObjectMetadata(obj: R2Object, target: CodeModeR2Path): Record<string, unknown> {
     return {
-      key: obj.key,
-      path,
+      location: "r2",
+      path: target.path,
+      namespace: target.mount,
+      publicUrl: this.r2PublicUrl(target),
       size: obj.size,
       etag: obj.etag,
       uploaded: obj.uploaded instanceof Date ? obj.uploaded.toISOString() : String(obj.uploaded),
@@ -2322,6 +2298,47 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
     };
   }
 
+  private r2ImageReadResult(
+    head: R2Object,
+    target: CodeModeR2Path,
+    imageMimeType: string,
+    inlineImage: PreparedInlineImage | null,
+  ): Record<string, unknown> {
+    const metadata = this.formatR2ObjectMetadata(head, target);
+    let text = `Read R2 image object [${inlineImage?.mimeType ?? imageMimeType}]`;
+    if (inlineImage?.optimizedForInlineView) {
+      text += `\n[Image optimized for inline model context and may be scaled/compressed from the source.]`;
+    }
+    const content: Array<{ type: "text"; text: string } | { type: "image"; data: string; mimeType: string }> = [
+      { type: "text", text },
+    ];
+    if (inlineImage) {
+      content.push({ type: "image", data: inlineImage.data, mimeType: inlineImage.mimeType });
+    } else {
+      text += `\n[Image omitted: could not be resized below the inline image size limit of ${inlineImageMaxBase64Chars()} base64 chars.]`;
+      content[0] = { type: "text", text };
+    }
+    return {
+      text,
+      content,
+      details: {
+        ...metadata,
+        image: true,
+        mimeType: inlineImage?.mimeType ?? imageMimeType,
+        originalMimeType: imageMimeType,
+        inlineImage: Boolean(inlineImage),
+        optimizedForInlineView: inlineImage?.optimizedForInlineView ?? false,
+        maxInlineDimension: inlineImage?.maxInlineDimension ?? null,
+        usedImagesBinding: inlineImage?.usedImagesBinding ?? false,
+        base64Chars: inlineImage?.base64Chars ?? null,
+        offset: null,
+        nextOffset: null,
+        totalLines: null,
+        truncation: null,
+      },
+    };
+  }
+
   private async readR2File(args: Record<string, unknown>): Promise<Record<string, unknown>> {
     const target = this.resolveCodeModeR2Path(args);
     const offset = clampCodeModeInteger(args.offset, 1, 1, Number.MAX_SAFE_INTEGER);
@@ -2332,16 +2349,59 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
     if (!head) {
       throw new Error(`R2 object not found: ${target.path}`);
     }
-    if (head.size > CODE_MODE_R2_MAX_TEXT_OBJECT_BYTES) {
-      throw new Error(
-        `R2 object is too large for text r2_read (${head.size} bytes; max ${CODE_MODE_R2_MAX_TEXT_OBJECT_BYTES} bytes)`,
-      );
-    }
+    const contentTypeImageMimeType = getSupportedImageMimeTypeFromContentType(
+      head.httpMetadata?.contentType,
+    );
     const object = await this.env.R2_BUCKET.get(target.key);
     if (!object) {
       throw new Error(`R2 object not found: ${target.path}`);
     }
-    const fullText = await object.text();
+    const images = this.env.IMAGES;
+    if (!images) throw new Error("IMAGES binding is required for image reads");
+    let bytes: Uint8Array;
+    if (object.body) {
+      const sniffed = await readImageSniffBytesAndReplayStream(object.body);
+      const imageDetection = detectSharedImageMimeType(sniffed.prefix);
+      const imageMimeType = imageDetection.kind === "supported"
+        ? imageDetection.mimeType
+        : imageDetection.kind === "unknown"
+          ? contentTypeImageMimeType
+          : null;
+      if (imageMimeType) {
+        const inlineImage = await prepareInlineImageFromStream(sniffed.stream, imageMimeType, images, {
+          createRetryStream: async () => {
+            const retryObject = await this.env.R2_BUCKET.get(target.key);
+            if (!retryObject?.body) throw new Error(`R2 image object is not streamable: ${target.path}`);
+            return retryObject.body;
+          },
+        });
+        return this.r2ImageReadResult(head, target, imageMimeType, inlineImage);
+      }
+      if (head.size > CODE_MODE_R2_MAX_TEXT_OBJECT_BYTES) {
+        await sniffed.stream.cancel("R2 object exceeds text read limit").catch(() => undefined);
+        throw new Error(
+          `R2 object is too large for text read (${head.size} bytes; max ${CODE_MODE_R2_MAX_TEXT_OBJECT_BYTES} bytes)`,
+        );
+      }
+      bytes = await readStreamBytes(sniffed.stream);
+    } else {
+      bytes = typeof object.arrayBuffer === "function"
+        ? new Uint8Array(await object.arrayBuffer())
+        : new TextEncoder().encode(await object.text());
+      const imageDetection = detectSharedImageMimeType(bytes);
+      const imageMimeType = imageDetection.kind === "supported"
+        ? imageDetection.mimeType
+        : imageDetection.kind === "unknown"
+          ? contentTypeImageMimeType
+          : null;
+      if (imageMimeType) throw new Error(`R2 image object is not streamable: ${target.path}`);
+    }
+    if (head.size > CODE_MODE_R2_MAX_TEXT_OBJECT_BYTES) {
+      throw new Error(
+        `R2 object is too large for text read (${head.size} bytes; max ${CODE_MODE_R2_MAX_TEXT_OBJECT_BYTES} bytes)`,
+      );
+    }
+    const fullText = new TextDecoder().decode(bytes);
     const allLines = fullText.split("\n");
     const startLine = offset - 1;
     if (startLine >= allLines.length) {
@@ -2363,7 +2423,7 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
     let nextOffset: number | null = null;
     if (truncation.firstLineExceedsLimit) {
       text =
-        `[Line ${startLineDisplay} is ${this.textByteLength(allLines[startLine] ?? "")} bytes, exceeds ${maxBytes} byte read budget. Stored R2 key: ${target.key}]`;
+        `[Line ${startLineDisplay} is ${this.textByteLength(allLines[startLine] ?? "")} bytes, exceeds ${maxBytes} byte read budget. R2 path: ${target.path}]`;
     } else if (truncation.truncated) {
       const endLineDisplay = startLine + truncation.outputLines;
       nextOffset = endLineDisplay + 1;
@@ -2386,7 +2446,7 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
       text,
       content: [{ type: "text", text }],
       details: {
-        ...this.formatR2ObjectMetadata(head, target.path),
+        ...this.formatR2ObjectMetadata(head, target),
         offset,
         nextOffset,
         totalLines: allLines.length,
@@ -2419,9 +2479,11 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
       text,
       content: [{ type: "text", text }],
       details: {
-        ...(object ? this.formatR2ObjectMetadata(object, target.path) : {
-          key: target.key,
+        ...(object ? this.formatR2ObjectMetadata(object, target) : {
+          location: "r2",
           path: target.path,
+          namespace: target.mount,
+          publicUrl: this.r2PublicUrl(target),
           size: contentBytes,
           contentType,
         }),
@@ -2430,23 +2492,76 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
     };
   }
 
-  private async listR2Files(args: Record<string, unknown>): Promise<Record<string, unknown>> {
-    if (typeof args.path !== "string" || !args.path.trim()) {
-      const mounts = (["uploads", "outputs", "tmp"] as const).map((mount) => ({
-        path: this.r2MountPath(mount),
-        keyPrefix: this.r2MountBaseKey(mount),
-        writable: mount !== "uploads",
-      }));
-      const text = mounts
-        .map((mount) => `${mount.writable ? "rw" : "ro"} ${mount.path}`)
-        .join("\n");
+  private async editR2File(args: Record<string, unknown>): Promise<Record<string, unknown>> {
+    const target = this.resolveCodeModeR2Path(args, { requireWritable: true });
+    const edits = Array.isArray(args.edits)
+      ? args.edits.map((entry, index) => {
+          if (!entry || typeof entry !== "object") {
+            throw new Error(`edits[${index}] must be an object`);
+          }
+          const raw = entry as Record<string, unknown>;
+          const oldText = typeof raw.oldText === "string"
+            ? raw.oldText
+            : typeof raw.old_string === "string"
+              ? raw.old_string
+              : "";
+          const newText = typeof raw.newText === "string"
+            ? raw.newText
+            : typeof raw.new_string === "string"
+              ? raw.new_string
+              : "";
+          if (!oldText) throw new Error(`edits[${index}].oldText is required`);
+          return { oldText, newText };
+        })
+      : [];
+    if (edits.length === 0) throw new Error("edits must be a non-empty array");
+
+    const head = await this.env.R2_BUCKET.head(target.key);
+    if (!head) throw new Error(`R2 object not found: ${target.path}`);
+    if (head.size > CODE_MODE_R2_MAX_TEXT_OBJECT_BYTES) {
+      throw new Error(
+        `R2 object is too large for text edit (${head.size} bytes; max ${CODE_MODE_R2_MAX_TEXT_OBJECT_BYTES} bytes)`,
+      );
+    }
+    const object = await this.env.R2_BUCKET.get(target.key);
+    if (!object) throw new Error(`R2 object not found: ${target.path}`);
+    const originalContent = await object.text();
+    const replacements = edits.map((edit, index) => {
+      const start = originalContent.indexOf(edit.oldText);
+      if (start === -1) throw new Error(`edits[${index}].oldText not found in ${target.path}`);
+      if (originalContent.indexOf(edit.oldText, start + edit.oldText.length) !== -1) {
+        throw new Error(`edits[${index}].oldText is not unique in ${target.path}`);
+      }
       return {
-        text,
-        content: [{ type: "text", text }],
-        details: { mounts },
+        index,
+        start,
+        end: start + edit.oldText.length,
+        newText: edit.newText,
       };
+    }).sort((a, b) => a.start - b.start);
+
+    for (let index = 1; index < replacements.length; index += 1) {
+      const previous = replacements[index - 1]!;
+      const current = replacements[index]!;
+      if (current.start < previous.end) {
+        throw new Error(`edits[${current.index}].oldText overlaps another edit in ${target.path}`);
+      }
     }
 
+    let content = originalContent;
+    for (const replacement of replacements.slice().reverse()) {
+      content = `${content.slice(0, replacement.start)}${replacement.newText}${content.slice(replacement.end)}`;
+    }
+
+    return this.writeR2File({
+      ...args,
+      path: target.path,
+      content,
+      content_type: head.httpMetadata?.contentType ?? "text/plain; charset=utf-8",
+    });
+  }
+
+  private async listR2Files(args: Record<string, unknown>): Promise<Record<string, unknown>> {
     const target = this.resolveCodeModeR2Path(args, { allowDirectory: true });
     const limit = clampCodeModeInteger(args.limit, 100, 1, 1000);
     const cursor = typeof args.cursor === "string" && args.cursor.trim()
@@ -2467,19 +2582,18 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
       const relativePath = object.key.startsWith(baseKey)
         ? object.key.slice(baseKey.length)
         : object.key;
-      return this.formatR2ObjectMetadata(
-        object,
-        this.r2PathFromRelative(target.mount, relativePath),
-      );
+      return this.formatR2ObjectMetadata(object, {
+        ...target,
+        relativePath,
+        path: this.r2PathFromRelative(target.mount, relativePath),
+        key: object.key,
+      });
     });
     const prefixes = result.delimitedPrefixes.map((prefix) => {
       const relativePath = prefix.startsWith(baseKey)
         ? prefix.slice(baseKey.length).replace(/\/+$/, "")
         : prefix.replace(/\/+$/, "");
-      return {
-        keyPrefix: prefix,
-        path: this.r2PathFromRelative(target.mount, relativePath),
-      };
+      return { path: this.r2PathFromRelative(target.mount, relativePath) };
     });
     const lines = [
       ...prefixes.map((prefix) => `dir  ${prefix.path}/`),
@@ -2490,8 +2604,9 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
       text,
       content: [{ type: "text", text }],
       details: {
+        location: "r2",
         path: target.path,
-        keyPrefix: `${baseKey}${directoryRelativePath}`,
+        namespace: target.mount,
         objects,
         prefixes,
         truncated: result.truncated,
@@ -2508,9 +2623,278 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
       text,
       content: [{ type: "text", text }],
       details: {
-        key: target.key,
+        location: "r2",
         path: target.path,
+        namespace: target.mount,
+        publicUrl: this.r2PublicUrl(target),
         deleted: true,
+      },
+    };
+  }
+
+  private normalizeMoveEndpoint(value: unknown, label: "source" | "destination"): CodeModeMoveEndpoint {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      throw new Error(`${label} must be an object`);
+    }
+    const raw = value as Record<string, unknown>;
+    const location = raw.location;
+    if (location !== "workspace" && location !== "vm" && location !== "r2") {
+      throw new Error(`${label}.location must be "workspace", "vm", or "r2"`);
+    }
+    const path = typeof raw.path === "string" ? raw.path.trim().replace(/\\/g, "/") : "";
+    if (!path) throw new Error(`${label}.path is required`);
+    const project = typeof raw.project === "string" && raw.project.trim()
+      ? raw.project.trim()
+      : undefined;
+    if (location === "vm" && !project) {
+      throw new Error(`${label}.project is required when ${label}.location is "vm"`);
+    }
+    const contentType = typeof raw.content_type === "string" && raw.content_type.trim()
+      ? raw.content_type.trim()
+      : undefined;
+    return { location, path, project, contentType };
+  }
+
+  private async collectMoveSourceFiles(source: CodeModeMoveEndpoint): Promise<{ files: CodeModeMoveFile[]; sourceIsDirectory: boolean }> {
+    if (source.location === "workspace") return this.collectWorkspaceMoveFiles(source);
+    if (source.location === "vm") {
+      const stat = await this.projectVm.statPathForTransfer(source);
+      const files = await this.projectVm.collectFilesForTransfer(source);
+      return { files, sourceIsDirectory: stat.isDirectory };
+    }
+    return this.collectR2MoveFiles(source);
+  }
+
+  private async collectWorkspaceMoveFiles(source: CodeModeMoveEndpoint): Promise<{ files: CodeModeMoveFile[]; sourceIsDirectory: boolean }> {
+    const path = normalizeDurableWorkspacePath(source.path);
+    const exists = await this.workspaceFs.exists(path);
+    if (!exists.exists) throw new Error(`Workspace path not found: ${path}`);
+    if (exists.isFile) {
+      return {
+        files: [{ path, relativePath: basenameForMove(path), size: exists.size, contentType: exists.mimeType }],
+        sourceIsDirectory: false,
+      };
+    }
+    if (!exists.isDirectory) throw new Error(`Workspace path is not a file or directory: ${path}`);
+    const listing = await this.workspaceFs.listFiles(path, { recursive: true, includeHidden: true });
+    if (!listing.success) throw new Error(listing.error || `Failed to list ${path}`);
+    const rootName = basenameForMove(path);
+    const files = listing.files
+      .filter((entry) => entry.type === "file")
+      .map((entry) => ({
+        path: normalizeDurableWorkspacePath(entry.absolutePath),
+        relativePath: joinRelativeMovePath(rootName, entry.relativePath),
+        size: entry.size,
+        contentType: entry.mimeType,
+      }))
+      .sort((a, b) => a.relativePath.localeCompare(b.relativePath));
+    return { files, sourceIsDirectory: true };
+  }
+
+  private async collectR2MoveFiles(source: CodeModeMoveEndpoint): Promise<{ files: CodeModeMoveFile[]; sourceIsDirectory: boolean }> {
+    const target = this.resolveCodeModeR2Path(source as unknown as Record<string, unknown>, { allowDirectory: true });
+    if (target.relativePath) {
+      const head = await this.env.R2_BUCKET.head(target.key);
+      if (head) {
+        return {
+          files: [{
+            path: target.path,
+            relativePath: basenameForMove(target.path),
+            size: head.size,
+            contentType: head.httpMetadata?.contentType,
+          }],
+          sourceIsDirectory: false,
+        };
+      }
+    }
+
+    const baseKey = this.r2MountBaseKey(target.mount);
+    const directoryRelativePath = target.relativePath ? `${target.relativePath}/` : "";
+    const prefix = `${baseKey}${directoryRelativePath}`;
+    const rootName = basenameForMove(target.path);
+    const files: CodeModeMoveFile[] = [];
+    let cursor: string | undefined;
+    do {
+      const listed = await this.env.R2_BUCKET.list({
+        prefix,
+        cursor,
+        limit: 1000,
+        include: ["httpMetadata"],
+      });
+      for (const object of listed.objects) {
+        const objectRelativePath = object.key.startsWith(prefix)
+          ? object.key.slice(prefix.length)
+          : object.key.slice(baseKey.length);
+        if (!objectRelativePath) continue;
+        files.push({
+          path: this.r2PathFromRelative(target.mount, target.relativePath
+            ? `${target.relativePath}/${objectRelativePath}`
+            : objectRelativePath),
+          relativePath: joinRelativeMovePath(rootName, objectRelativePath),
+          size: object.size,
+          contentType: object.httpMetadata?.contentType,
+        });
+      }
+      cursor = listed.truncated ? listed.cursor : undefined;
+    } while (cursor);
+
+    if (files.length === 0) throw new Error(`R2 path not found: ${target.path}`);
+    files.sort((a, b) => a.relativePath.localeCompare(b.relativePath));
+    return { files, sourceIsDirectory: true };
+  }
+
+  private async readMoveSourceFile(source: CodeModeMoveEndpoint, file: CodeModeMoveFile): Promise<{ bytes: Uint8Array; contentType?: string }> {
+    if (source.location === "workspace") {
+      const read = await this.workspaceFs.readFile(file.path);
+      if (!read.success || typeof read.content !== "string") {
+        throw new Error(read.error || `Failed to read ${file.path}`);
+      }
+      return {
+        bytes: read.encoding === "base64"
+          ? base64ToBytesForMove(read.content)
+          : new TextEncoder().encode(read.content),
+        contentType: read.mimeType ?? file.contentType,
+      };
+    }
+    if (source.location === "vm") {
+      const read = await this.projectVm.readFileBytesForTransfer({ ...source, path: file.path });
+      return { bytes: read.bytes, contentType: read.contentType ?? file.contentType };
+    }
+    const target = this.resolveCodeModeR2Path({ ...source, path: file.path });
+    const object = await this.env.R2_BUCKET.get(target.key);
+    if (!object) throw new Error(`R2 object not found: ${target.path}`);
+    return {
+      bytes: new Uint8Array(await object.arrayBuffer()),
+      contentType: object.httpMetadata?.contentType ?? file.contentType,
+    };
+  }
+
+  private async writeMoveDestinationFile(
+    destination: CodeModeMoveEndpoint,
+    path: string,
+    bytes: Uint8Array,
+    contentType?: string,
+  ): Promise<{ path: string; bytes: number }> {
+    if (destination.location === "workspace") {
+      const normalizedPath = normalizeDurableWorkspacePath(path);
+      const result = await this.workspaceFs.writeBinaryFile(normalizedPath, bytesToBase64ForMove(bytes));
+      if (!result.success) throw new Error(result.error || `Failed to write ${normalizedPath}`);
+      return { path: normalizedPath, bytes: bytes.byteLength };
+    }
+    if (destination.location === "vm") {
+      return this.projectVm.writeFileBytesForTransfer({ ...destination, path }, bytes);
+    }
+    const target = this.resolveCodeModeR2Path({ ...destination, path }, { requireWritable: true });
+    await this.env.R2_BUCKET.put(target.key, bytes, {
+      httpMetadata: { contentType: destination.contentType ?? contentType ?? "application/octet-stream" },
+      customMetadata: {
+        type: "code-mode-move-file",
+        orgId: this.ctx.props.orgId,
+        workspaceId: this.ctx.props.workspaceId,
+        threadId: this.ctx.props.threadId ?? "",
+      },
+    });
+    return { path: target.path, bytes: bytes.byteLength };
+  }
+
+  private async deleteMoveSource(source: CodeModeMoveEndpoint, files: CodeModeMoveFile[]): Promise<void> {
+    if (source.location === "workspace") {
+      const result = await this.workspaceFs.deleteFile(source.path, { recursive: true });
+      if (!result.success) throw new Error(result.error || `Failed to delete ${source.path}`);
+      return;
+    }
+    if (source.location === "vm") {
+      await this.projectVm.deletePathForTransfer(source, { recursive: true });
+      return;
+    }
+    const target = this.resolveCodeModeR2Path(source as unknown as Record<string, unknown>, { allowDirectory: true });
+    if (target.mount === "uploads") throw new Error("uploads/ is read-only");
+    for (const file of files) {
+      const fileTarget = this.resolveCodeModeR2Path({ ...source, path: file.path }, { requireWritable: true });
+      await this.env.R2_BUCKET.delete(fileTarget.key);
+    }
+  }
+
+  private async comparableMovePath(endpoint: CodeModeMoveEndpoint): Promise<string> {
+    if (endpoint.location === "workspace") {
+      return normalizeDurableWorkspacePath(endpoint.path).replace(/\/+$/g, "") || "/";
+    }
+    if (endpoint.location === "r2") {
+      return this.resolveCodeModeR2Path(endpoint as unknown as Record<string, unknown>, { allowDirectory: true }).path.replace(/\/+$/g, "");
+    }
+    const resolved = await this.projectVm.resolvePathForTransfer(endpoint);
+    return resolved.path.replace(/\/+$/g, "") || "/";
+  }
+
+  private isMovePathEqualOrDescendant(sourcePath: string, destinationPath: string): boolean {
+    if (destinationPath === sourcePath) return true;
+    const prefix = sourcePath.endsWith("/") ? sourcePath : `${sourcePath}/`;
+    return destinationPath.startsWith(prefix);
+  }
+
+  private async assertSafeMoveDeleteDestination(
+    source: CodeModeMoveEndpoint,
+    destination: CodeModeMoveEndpoint,
+    sourceIsDirectory: boolean,
+  ): Promise<void> {
+    if (source.location !== destination.location) return;
+    if (source.location === "vm" && source.project !== destination.project) return;
+
+    const sourcePath = await this.comparableMovePath(source);
+    const destinationPath = await this.comparableMovePath(destination);
+    const overlaps = sourceIsDirectory
+      ? this.isMovePathEqualOrDescendant(sourcePath, destinationPath)
+      : sourcePath === destinationPath;
+    if (overlaps) {
+      throw new Error("move with deleteSource cannot use an equal or descendant destination in the same location");
+    }
+  }
+
+  private async moveFile(args: Record<string, unknown>): Promise<Record<string, unknown>> {
+    const source = this.normalizeMoveEndpoint(args.source, "source");
+    const destination = this.normalizeMoveEndpoint(args.destination, "destination");
+    const deleteSource = args.deleteSource === true || args.delete_source === true;
+    if (deleteSource && source.location === "r2") {
+      const sourceTarget = this.resolveCodeModeR2Path(source as unknown as Record<string, unknown>, { allowDirectory: true });
+      if (sourceTarget.mount === "uploads") throw new Error("uploads/ is read-only");
+    }
+    if (destination.location === "r2") {
+      this.resolveCodeModeR2Path(destination as unknown as Record<string, unknown>, { allowDirectory: true, requireWritable: true });
+    }
+
+    const { files, sourceIsDirectory } = await this.collectMoveSourceFiles(source);
+    if (files.length === 0) throw new Error(`No files found at ${source.path}`);
+    if (deleteSource) {
+      await this.assertSafeMoveDeleteDestination(source, destination, sourceIsDirectory);
+    }
+
+    const copied: Array<{ from: string; to: string; bytes: number }> = [];
+    let totalBytes = 0;
+    const useDestinationAsRoot = sourceIsDirectory || files.length > 1;
+    for (const file of files) {
+      const destinationPath = useDestinationAsRoot
+        ? joinMoveDestinationPath(destination.location, destination.path, file.relativePath)
+        : destination.path;
+      const read = await this.readMoveSourceFile(source, file);
+      const written = await this.writeMoveDestinationFile(destination, destinationPath, read.bytes, read.contentType);
+      totalBytes += written.bytes;
+      copied.push({ from: file.path, to: written.path, bytes: written.bytes });
+    }
+
+    if (deleteSource) await this.deleteMoveSource(source, files);
+
+    const verb = deleteSource ? "Moved" : "Copied";
+    const text = `${verb} ${copied.length} file${copied.length === 1 ? "" : "s"} (${totalBytes} bytes)`;
+    return {
+      text,
+      content: [{ type: "text", text }],
+      details: {
+        source: { location: source.location, path: source.path, project: source.project ?? null },
+        destination: { location: destination.location, path: destination.path, project: destination.project ?? null },
+        deleteSource,
+        files: copied,
+        count: copied.length,
+        bytes: totalBytes,
       },
     };
   }
@@ -2557,11 +2941,13 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
     }
 
     return this.callToolWithArtifactCapture(name, args, async () => {
+      if (FILE_TOOL_NAMES.has(name)) requireFileLocation(name, args);
       switch (name) {
         case "bash":
           return this.projectVm.exec({ ...args, location: "vm" });
 
         case "read":
+          if (hasR2Target(args)) return this.readR2File(args);
           if (hasVmTarget(args)) return this.projectVm.read(args);
         {
           const path = typeof args.path === "string" ? args.path : "";
@@ -2590,6 +2976,7 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
         return this.piContainerTools.callTool("read", args);
 
         case "write":
+          if (hasR2Target(args)) return this.writeR2File(args);
           if (hasVmTarget(args)) return this.projectVm.write(args);
         {
           const path = typeof args.path === "string" ? args.path : "";
@@ -2607,6 +2994,7 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
         return this.piContainerTools.callTool("write", args);
 
         case "ls":
+          if (hasR2Target(args)) return this.listR2Files(args);
           if (hasVmTarget(args)) return this.projectVm.ls(args);
         {
           if (typeof args.path === "string") {
@@ -2635,6 +3023,7 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
         return this.piContainerTools.callTool("ls", args);
 
         case "edit":
+          if (hasR2Target(args)) return this.editR2File(args);
           if (hasVmTarget(args)) return this.projectVm.edit(args);
         {
           const path = typeof args.path === "string" ? args.path : "";
@@ -2660,6 +3049,13 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
         }
         return this.piContainerTools.callTool("edit", args);
 
+        case "delete":
+          if (hasR2Target(args)) return this.deleteR2File(args);
+          if (hasVmTarget(args)) {
+            throw new Error("delete does not support project VM files; use bash or vm_exec with rm for explicit VM deletion");
+          }
+          return this.piContainerTools.callTool("delete", args);
+
         case "grep":
           if (hasVmTarget(args)) return this.projectVm.grep(args);
           return this.piContainerTools.callTool("grep", args);
@@ -2671,11 +3067,8 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
         case "vm_exec":
           return this.projectVm.exec(args);
 
-        case "vm_push":
-          return this.projectVm.push(args);
-
-        case "vm_pull":
-          return this.projectVm.pull(args);
+        case "move":
+          return this.moveFile(args);
 
         case "list_projects":
           return (await this.workspaceFs.listProjects()).map(projectForAgent);
@@ -2941,21 +3334,40 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
       await this.chatThreadStub.setPreviewTarget(target);
       return { success: true, target, app: { name: scriptName, url: await this.getAppUrl(script), is_public: target.isPublic } };
     }
-    const parsedPath = parseFilePreviewPath(filePath);
-    if (!parsedPath) {
-      throw new Error("Invalid preview file path");
+    const location = typeof args.location === "string" ? args.location.trim() : "";
+    if (location && location !== "workspace" && location !== "vm" && location !== "r2") {
+      throw new Error('set_preview location must be "workspace", "vm", or "r2"');
+    }
+    let parsedPath = parseFilePreviewPath(filePath);
+    let source: Extract<PreviewTarget, { kind: "file" }>["source"];
+    if (location === "workspace" || location === "vm") {
+      parsedPath = parseFilePreviewPath(filePath.startsWith("/") ? filePath : `/${filePath}`);
+      if (!parsedPath || parsedPath.source !== "workspace") {
+        throw new Error("Invalid preview file path");
+      }
+      source = location;
+    } else if (location === "r2") {
+      if (!parsedPath || parsedPath.source === "workspace") {
+        throw new Error("R2 preview path must start with uploads/ or outputs/");
+      }
+      source = parsedPath.source;
+    } else {
+      if (!parsedPath) {
+        throw new Error("Invalid preview file path");
+      }
+      source = parsedPath.source;
     }
     const target: PreviewTarget = {
       kind: "file",
-      source: args.location === "vm" ? "vm" : parsedPath.source,
+      source,
       workspaceId: this.ctx.props.workspaceId,
       path: parsedPath.path,
       project:
-        args.location === "vm" && typeof args.project === "string"
+        source === "vm" && typeof args.project === "string"
           ? args.project.trim()
           : undefined,
       filename: parsedPath.filename,
-      contentType: typeof args.content_type === "string" ? args.content_type : undefined,
+      contentType: typeof args.content_type === "string" ? args.content_type.trim() : undefined,
     };
     if (target.source === "vm" && !target.project) {
       throw new Error("project is required when previewing a VM file");
@@ -2989,7 +3401,8 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
           buildWorkspaceScopedR2Key(orgId, workspaceId, `${bucketDir}/${relativePath}`),
         );
         if (!object) {
-          throw new Error(`Preview file not found: /mnt/${bucketDir}/${relativePath}`);
+          const publicPath = `${target.source === "upload" ? "uploads" : "outputs"}/${relativePath}`;
+          throw new Error(`Preview file not found: ${publicPath}`);
         }
         return;
       }
@@ -5257,11 +5670,11 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     );
   }
 
-  private piStoredToolResultR2Key(
+  private piStoredToolResultR2Location(
     toolName: string,
     toolCallId: string,
     sha256: string,
-  ): string | null {
+  ): { key: string; path: string } | null {
     const context = this.chatContext;
     if (!context?.orgId || !context.workspaceId || !context.threadId) {
       return null;
@@ -5273,11 +5686,15 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     const safeToolCallId = (toolCallId || "call")
       .replace(/[^a-zA-Z0-9_-]/g, "_")
       .slice(0, 64) || "call";
-    return buildWorkspaceScopedR2Key(
-      context.orgId,
-      context.workspaceId,
-      `chat-sessions/${safeSessionId}/pi-tool-results/tmp/${Date.now()}-${safeToolName}-${safeToolCallId}-${sha256.slice(0, 16)}.txt`,
-    );
+    const filename = `${Date.now()}-${safeToolName}-${safeToolCallId}-${sha256.slice(0, 16)}.txt`;
+    return {
+      key: buildWorkspaceScopedR2Key(
+        context.orgId,
+        context.workspaceId,
+        `chat-sessions/${safeSessionId}/pi-tool-results/tmp/${filename}`,
+      ),
+      path: `tmp/${filename}`,
+    };
   }
 
   private piTextBytes(value: string): number {
@@ -5389,9 +5806,9 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     text: string,
   ): Promise<PiR2ToolResultReference | undefined> {
     const sha256 = await this.sha256Hex(text);
-    const key = this.piStoredToolResultR2Key(toolName, toolCallId, sha256);
-    if (!key) return undefined;
-    await this.env.R2_BUCKET.put(key, text, {
+    const location = this.piStoredToolResultR2Location(toolName, toolCallId, sha256);
+    if (!location) return undefined;
+    await this.env.R2_BUCKET.put(location.key, text, {
       httpMetadata: { contentType: "text/plain; charset=utf-8" },
       customMetadata: {
         type: "pi-tool-result-text",
@@ -5405,7 +5822,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       },
     });
     return {
-      key,
+      path: location.path,
       sha256,
       size: this.piTextBytes(text),
       storedAt: Date.now(),
@@ -5419,8 +5836,8 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       truncation.truncatedBy === "lines"
         ? `${truncation.outputLines} of ${truncation.totalLines} lines`
         : `${truncation.outputBytes} of ${truncation.totalBytes} bytes`;
-    const source = truncation.fullOutput?.key
-      ? ` Full output stored in R2 at ${truncation.fullOutput.key}.`
+    const source = truncation.fullOutput?.path
+      ? ` Full output stored in R2 at ${truncation.fullOutput.path}. Read it with read({ location: "r2", path: "${truncation.fullOutput.path}" }).`
       : "";
     return `[Output truncated: showing ${truncation.direction === "tail" ? "last" : "first"} ${shown}.${source}]`;
   }
@@ -9749,7 +10166,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     const resolved = this.resolveMountedAttachmentPath(input.path);
     if (!resolved) {
       throw new Error(
-        "attachments[].path must be under /mnt/user-uploads/ or /mnt/user-outputs/",
+        "attachments[].path must start with uploads/ or outputs/",
       );
     }
 
@@ -9802,8 +10219,8 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       prefix: string;
       bucketDir: "user-uploads" | "user-outputs";
     }> = [
-      { prefix: "/mnt/user-uploads/", bucketDir: "user-uploads" },
-      { prefix: "/mnt/user-outputs/", bucketDir: "user-outputs" },
+      { prefix: "uploads/", bucketDir: "user-uploads" },
+      { prefix: "outputs/", bucketDir: "user-outputs" },
     ];
     for (const { prefix, bucketDir } of prefixes) {
       if (!normalized.startsWith(prefix)) continue;
@@ -11991,6 +12408,14 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         executionMode: "sequential",
       },
       {
+        name: PI_CONTAINER_TOOL_DEFINITIONS.delete.name,
+        label: PI_CONTAINER_TOOL_DEFINITIONS.delete.label,
+        description: PI_CONTAINER_TOOL_DEFINITIONS.delete.description,
+        parameters: PI_CONTAINER_TOOL_DEFINITIONS.delete.parameters,
+        execute: async (_id, params) => call("delete", params as Record<string, unknown>),
+        executionMode: "sequential",
+      },
+      {
         name: PI_CONTAINER_TOOL_DEFINITIONS.ls.name,
         label: PI_CONTAINER_TOOL_DEFINITIONS.ls.label,
         description: `${PI_CONTAINER_TOOL_DEFINITIONS.ls.description} Also supports bundled skill directories.`,
@@ -12018,8 +12443,8 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
           "Custom `other` connections expose `fetch`, for example `const response = await connections[entry.alias].fetch(\"/v1/items\", { method: \"GET\" }); return await response.json();`; camelAI applies the stored auth settings. " +
           "Global `fetch()` is also available for direct HTTP requests to public URLs. For web search and page retrieval, prefer `await tools.WebSearch({ query: \"...\" })` and `await tools.WebFetch({ url: \"...\" })`. " +
           "Connection credentials are intentionally hidden behind the binding. " +
-          "For workflows that need a project VM, use `env.PROJECTS` to list/create/describe/clone projects and the `vm` facade for project VM execution and file transfer. Project names are unique within the workspace and are the handle to use in tools: `const project = await env.PROJECTS.create({ name: \"web-app\", description: \"Customer-facing React app for tracking pizza orders.\" }); await vm.exec({ command: \"git status && bun install && bun run build\", project: project.name, timeoutSeconds: 120 }); await env.PROJECTS.setDescription({ project: project.name, description: \"Updated project purpose.\" }); const clone = await env.PROJECTS.clone({ sourceProject: project.name, name: \"web-app-experiment\" });`. Each project has one default VM checkout; cloning a project copies the source project VM filesystem, so it can include uncommitted files and be used like a lightweight worktree. When commands are independent, especially across different project VMs or clones, run them concurrently with `const rows = await env.PROJECTS.list(); const targets = rows.flatMap((project) => [project, ...(project.clones ?? [])]); await Promise.all(targets.map((project) => vm.exec({ command: \"bun run test:run\", project: project.name, timeoutSeconds: 120 })))`; this is explicitly better than looping through `await vm.exec(...)` calls synchronously. `vm.exec(command, options)` also works. The active project VM checkout is `/workspace`, and `vm.exec`/`bash` commands run there by default; do not prepend `cd /workspace &&`. Pass `cwd` only for subdirectories in that checkout. Do not use `/home/claude`; it is a legacy path and can fail with permission errors in the current runtime image. The platform configures the Git remote outside the VM so Artifacts credentials stay outside the VM; use normal Git commands in the VM for selective commits and pushes. The normal file tools accept `location` and `project`: `await tools.read({ location: \"vm\", project: project.name, path: \"/src/App.tsx\" })` reads from the project VM while `await tools.read({ location: \"workspace\", path: \"/notes.md\" })` reads from durable workspace files. Search tools are also available inside js_exec: `await tools.grep({ location: \"vm\", project: project.name, pattern: \"TODO\", path: \"/workspace\" })` searches file contents and `await tools.find({ location: \"vm\", project: project.name, pattern: \"**/*.tsx\" })` finds files by glob. Copy selected durable workspace files with `vm.push({ project: project.name, paths: [\"/package.json\", \"/src\"], clean: true })` and `vm.pull({ project: project.name, paths: [\"/workspace/dist\"], workspaceRoot: \"/\" })`. The durable workspace filesystem remains separate. " +
-          "AI globals: `env.AI` and `context.cloudflare.env.AI` expose the virtual AI binding (`run()` only). Call `await env.AI.run(\"auto\", { messages: [{ role: \"user\", content: \"hello\" }] })`; model tiers are `cheap`, `fast`, `auto` (default), and `smart`, and any OpenRouter model id is also accepted. For images, call `await env.CAMELAI.generateImage(\"prompt\")` or `await env.CAMELAI.generateImage({ prompt, referenceImageUrl })` on `context.cloudflare.env.CAMELAI`. Returns `{ text, imageDataUrl, images }`. For audio transcription, call `await env.CAMELAI.transcribeAudio({ path: \"/mnt/user-uploads/audio.ogg\" })` or pass base64 audio; it returns `{ text }`. Use `await env.CAMELAI.help()` for its method catalog. " +
+          "For workflows that need a project VM, use `env.PROJECTS` to list/create/describe/clone projects and the `vm` facade for project VM execution and file transfer. Project names are unique within the workspace and are the handle to use in tools: `const project = await env.PROJECTS.create({ name: \"web-app\", description: \"Customer-facing React app for tracking pizza orders.\" }); await vm.exec({ command: \"git status && bun install && bun run build\", project: project.name, timeoutSeconds: 120 }); await env.PROJECTS.setDescription({ project: project.name, description: \"Updated project purpose.\" }); const clone = await env.PROJECTS.clone({ sourceProject: project.name, name: \"web-app-experiment\" });`. Each project has one default VM checkout; cloning a project copies the source project VM filesystem, so it can include uncommitted files and be used like a lightweight worktree. When commands are independent, especially across different project VMs or clones, run them concurrently with `const rows = await env.PROJECTS.list(); const targets = rows.flatMap((project) => [project, ...(project.clones ?? [])]); await Promise.all(targets.map((project) => vm.exec({ command: \"bun run test:run\", project: project.name, timeoutSeconds: 120 })))`; this is explicitly better than looping through `await vm.exec(...)` calls synchronously. `vm.exec(command, options)` also works. The active project VM checkout is `/workspace`, and `vm.exec`/`bash` commands run there by default; do not prepend `cd /workspace &&`. Pass `cwd` only for subdirectories in that checkout. Do not use `/home/claude`; it is a legacy path and can fail with permission errors in the current runtime image. The platform configures the Git remote outside the VM so Artifacts credentials stay outside the VM; use normal Git commands in the VM for selective commits and pushes. The normal file tools require an explicit `location` every time: `await tools.read({ location: \"vm\", project: project.name, path: \"/src/App.tsx\" })` reads from the project VM, `await tools.read({ location: \"workspace\", path: \"/notes.md\" })` reads from durable workspace files, and `await tools.read({ location: \"r2\", path: \"outputs/chart.png\" })` reads workspace-scoped R2 objects including images; use `tools.write({ location: \"r2\", path: \"tmp/result.txt\", content })`, `tools.edit({ location: \"r2\", path, edits })`, `tools.ls({ location: \"r2\", path: \"outputs\" })`, or `tools.delete({ location: \"r2\", path })` for R2 writes/edits/listing/deletion. R2 paths are relative: `uploads/<path>` for read-only uploads, `outputs/<path>` for user-visible outputs, and `tmp/<path>` for temporary objects. Search tools are also available inside js_exec: `await tools.grep({ location: \"vm\", project: project.name, pattern: \"TODO\", path: \"/workspace\" })` searches file contents and `await tools.find({ location: \"vm\", project: project.name, pattern: \"**/*.tsx\" })` finds files by glob. Copy files between durable workspace files, project VM files, and R2 objects with `await tools.move({ source: { location: \"workspace\", path: \"/package.json\" }, destination: { location: \"vm\", project: project.name, path: \"/workspace/package.json\" } })` or `await tools.move({ source: { location: \"vm\", project: project.name, path: \"/workspace/dist\" }, destination: { location: \"r2\", path: \"outputs/dist\" } })`. The durable workspace filesystem remains separate. " +
+          "AI globals: `env.AI` and `context.cloudflare.env.AI` expose the virtual AI binding (`run()` only). Call `await env.AI.run(\"auto\", { messages: [{ role: \"user\", content: \"hello\" }] })`; model tiers are `cheap`, `fast`, `auto` (default), and `smart`, and any OpenRouter model id is also accepted. For images, call `await env.CAMELAI.generateImage(\"prompt\")` or `await env.CAMELAI.generateImage({ prompt, referenceImageUrl })` on `context.cloudflare.env.CAMELAI`. Returns `{ text, imageDataUrl, images }`. For audio transcription, call `await env.CAMELAI.transcribeAudio({ path: \"uploads/audio.ogg\" })` or pass base64 audio; it returns `{ text }`. Use `await env.CAMELAI.help()` for its method catalog. " +
           "Workspace metadata: call `await env.WORKSPACE.emailAddress()` when users want to email the current workspace; it returns the address string or null. `await env.WORKSPACE.info()` also includes `email_address`. " +
           "Every registered harness tool is also available on the global `tools` object. Start with `await tools.help()` for expandable categories, `await tools.help(\"communication\")` for a category, or `await tools.help(\"send_email\")` for one tool. `ALL_TOOLS` contains the same names, descriptions, schemas, categories, examples, and side-effect metadata. Provider-specific outbound channel tools are intentionally available only here; use them only when the current turn's channel instructions require an external reply or the user explicitly asks for external delivery. " +
           "Interactive tools that wait for the user, such as `prompt_connection_setup` and `AskUserQuestion`, must be called as top-level tools instead of from js_exec.",

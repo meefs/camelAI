@@ -429,15 +429,15 @@ export class ChiridionMcp extends McpAgent<any, Record<string, unknown>, Record<
     // Set preview panel to a file
     this.server.tool(
       'set_file_preview',
-      'Set the chat preview panel to a file path. Supports workspace paths, project VM files with location="vm" and project, and temp output paths like /mnt/user-uploads/... or /mnt/user-outputs/....',
+      'Set the chat preview panel to a file path. Supports explicit location="workspace", location="vm" with project, and location="r2" for R2 paths like uploads/... or outputs/....',
       {
         path: z
           .string()
-          .describe('Path to preview. Examples: "/workspace/README.md", "src/app.tsx", "/mnt/user-outputs/plot.png", "/mnt/user-uploads/notebook.ipynb"'),
+          .describe('Path to preview. Examples: "/workspace/README.md", "src/app.tsx", "outputs/plot.png", "uploads/notebook.ipynb"'),
         location: z
-          .literal('vm')
+          .enum(['workspace', 'vm', 'r2'])
           .optional()
-          .describe('Set to "vm" to preview a file from a project VM.'),
+          .describe('Set to "workspace" for durable workspace files, "vm" for project VM files, or "r2" for uploads/... / outputs/... paths.'),
         project: z
           .string()
           .optional()
@@ -468,20 +468,41 @@ export class ChiridionMcp extends McpAgent<any, Record<string, unknown>, Record<
           });
         }
 
-        const parsedPath = parseFilePreviewPath(path);
-        if (!parsedPath) {
-          return this.textResponse({
-            success: false,
-            error: 'Invalid file path. Use a workspace path, /mnt/user-uploads/..., or /mnt/user-outputs/... without ".." segments.',
-          });
+        let parsedPath = parseFilePreviewPath(path);
+        let source: Extract<PreviewTarget, { kind: 'file' }>['source'];
+        if (location === 'workspace' || location === 'vm') {
+          parsedPath = parseFilePreviewPath(path.startsWith('/') ? path : `/${path}`);
+          if (!parsedPath || parsedPath.source !== 'workspace') {
+            return this.textResponse({
+              success: false,
+              error: 'Invalid file path. Use a workspace path without ".." segments.',
+            });
+          }
+          source = location;
+        } else if (location === 'r2') {
+          if (!parsedPath || parsedPath.source === 'workspace') {
+            return this.textResponse({
+              success: false,
+              error: 'R2 preview path must start with uploads/... or outputs/... without ".." segments.',
+            });
+          }
+          source = parsedPath.source;
+        } else {
+          if (!parsedPath) {
+            return this.textResponse({
+              success: false,
+              error: 'Invalid file path. Use a workspace path, uploads/..., or outputs/... without ".." segments.',
+            });
+          }
+          source = parsedPath.source;
         }
 
         const target: PreviewTarget = {
           kind: 'file',
-          source: location === 'vm' ? 'vm' : parsedPath.source,
+          source,
           workspaceId,
           path: parsedPath.path,
-          project: location === 'vm' ? project?.trim() : undefined,
+          project: source === 'vm' ? project?.trim() : undefined,
           filename: parsedPath.filename,
           contentType: typeof content_type === 'string' && content_type.trim() ? content_type.trim() : undefined,
         };

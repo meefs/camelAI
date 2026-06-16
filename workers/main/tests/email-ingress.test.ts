@@ -216,7 +216,7 @@ describe('handleWorkspaceEmailIngress', () => {
     expect(startInitialUserMessageMock).toHaveBeenCalledWith(
       expect.objectContaining({
         threadId: 'thread-1',
-        message: expect.stringContaining(`Here is the report.\n\n(user uploaded file to /mnt/user-uploads/${storedFilename})`),
+        message: expect.stringContaining(`Here is the report.\n\n(user uploaded file to uploads/${storedFilename})`),
       })
     );
     expect(startInitialUserMessageMock.mock.calls[0]?.[0].message).toContain('send_email');

@@ -1108,7 +1108,7 @@ async function uploadSlackEventFiles(
           slackFileId: typeof file.id === "string" ? file.id : "",
         },
       });
-      uploadPaths.push(`/mnt/user-uploads/${storedFilename}`);
+      uploadPaths.push(`uploads/${storedFilename}`);
     } catch (error) {
       console.error("[slack-events] failed to upload Slack file", {
         fileId: file.id || null,
@@ -1503,7 +1503,7 @@ async function uploadTelegramFile(args: {
     },
   });
   return {
-    path: `/mnt/user-uploads/${storedFilename}`,
+    path: `uploads/${storedFilename}`,
     filename: storedFilename,
     contentType,
     content: body,

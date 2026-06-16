@@ -28,25 +28,6 @@ export interface VmExecArgs {
   projectId?: unknown;
 }
 
-export interface VmPushArgs {
-  paths?: unknown;
-  vmRoot?: unknown;
-  clean?: unknown;
-  location?: unknown;
-  project?: unknown;
-  projectId?: unknown;
-}
-
-export interface VmPullArgs {
-  paths?: unknown;
-  vmRoot?: unknown;
-  workspaceRoot?: unknown;
-  files?: unknown;
-  location?: unknown;
-  project?: unknown;
-  projectId?: unknown;
-}
-
 export interface VmFileArgs {
   path?: unknown;
   content?: unknown;

@@ -4404,7 +4404,7 @@ export default function Chat({
           });
           if (!isUserUploadMountPath(data.path)) {
             throw new Error(
-              `Upload completed without a readable /mnt/user-uploads/ path`,
+              `Upload completed without a readable uploads/ path`,
             );
           }
 

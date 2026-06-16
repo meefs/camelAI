@@ -5,9 +5,9 @@ export interface ParsedFilePreviewPath {
 }
 
 const WORKSPACE_ROOT_PREFIXES = ['/home/claude', '/workspace', '/root'];
-const TEMP_PREVIEW_PREFIXES = [
-  { prefix: '/mnt/user-uploads/', source: 'upload' as const },
-  { prefix: '/mnt/user-outputs/', source: 'output' as const },
+const R2_PREVIEW_PREFIXES = [
+  { prefix: 'uploads/', source: 'upload' as const },
+  { prefix: 'outputs/', source: 'output' as const },
 ];
 
 function sanitizePathInput(path: string): string {
@@ -38,11 +38,9 @@ export function parseFilePreviewPath(rawPath: string): ParsedFilePreviewPath | n
   const trimmed = sanitizePathInput(rawPath);
   if (!trimmed) return null;
 
-  const absoluteInput = trimmed.startsWith('/') ? trimmed : `/${trimmed}`;
-
-  for (const { prefix, source } of TEMP_PREVIEW_PREFIXES) {
-    if (!absoluteInput.startsWith(prefix)) continue;
-    const relative = absoluteInput.slice(prefix.length);
+  for (const { prefix, source } of R2_PREVIEW_PREFIXES) {
+    if (!trimmed.startsWith(prefix)) continue;
+    const relative = trimmed.slice(prefix.length);
     const normalized = normalizePathSegments(relative, false);
     if (!normalized) return null;
     return {
@@ -52,6 +50,7 @@ export function parseFilePreviewPath(rawPath: string): ParsedFilePreviewPath | n
     };
   }
 
+  const absoluteInput = trimmed.startsWith('/') ? trimmed : `/${trimmed}`;
   let workspacePath = absoluteInput;
   for (const prefix of WORKSPACE_ROOT_PREFIXES) {
     if (workspacePath === prefix) {

@@ -39,5 +39,5 @@ Do not invent Telegram chat IDs. Outside Telegram-originated threads, pass `inte
 Channel tools accept attachments by file path:
 
 ```js
-attachments: [{ path: "/mnt/user-uploads/file.pdf" }]
+attachments: [{ path: "uploads/file.pdf" }]
 ```

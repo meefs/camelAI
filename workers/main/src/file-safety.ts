@@ -1,5 +1,5 @@
 const UPLOAD_REF_REGEX = /\(user uploaded file to ([^)]+)\)/g;
-const RAW_UPLOAD_PATH_REGEX = /\/mnt\/user-uploads\/[A-Za-z0-9._-]+/g;
+const RAW_UPLOAD_PATH_REGEX = /(?:^|[^A-Za-z0-9._/-])((?:uploads\/|\/mnt\/user-uploads\/)[A-Za-z0-9._-]+)/g;
 const STORED_UPLOAD_SUFFIX_REGEX = /-\d+-[a-z0-9]{6}$/;
 const GENERIC_UPLOAD_REFERENCE_REGEX = /\b(?:upload(?:ed|ing)?|attachment|attached|bundle|payload)\b/i;
 const ARCHIVE_REFERENCE_REGEX = /\b(?:archive|tarball|zip(?:file)?|compressed archive|[A-Za-z0-9._-]+\.(?:zip|tar|tgz|gz|bz2|xz|rar|7z))\b/i;
@@ -122,7 +122,7 @@ function getUploadedFilePaths(content: string): string[] {
   }
 
   for (const match of content.matchAll(RAW_UPLOAD_PATH_REGEX)) {
-    const filePath = match[0]?.trim();
+    const filePath = (match[1] ?? match[0])?.trim();
     if (filePath) {
       paths.add(filePath);
     }

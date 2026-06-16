@@ -21,15 +21,15 @@ describe('injectFileSafetyMessage', () => {
     const content = [
       'Please analyze these.',
       '',
-      '(user uploaded file to /mnt/user-uploads/data-1710000000-abc123.csv)',
-      '(user uploaded file to /mnt/user-uploads/chart-1710000000-abc123.PNG)',
+      '(user uploaded file to uploads/data-1710000000-abc123.csv)',
+      '(user uploaded file to uploads/chart-1710000000-abc123.PNG)',
     ].join('\n');
 
     expect(injectFileSafetyMessage(content)).toBe(content);
   });
 
   it('prepends the warning for unsafe file extensions', () => {
-    const content = withUploadRef('/mnt/user-uploads/script-1710000000-abc123.sh');
+    const content = withUploadRef('uploads/script-1710000000-abc123.sh');
     expect(injectFileSafetyMessage(content)).toBe(`${FILE_SAFETY_SYSTEM_MESSAGE}\n\n${content}`);
   });
 
@@ -37,21 +37,26 @@ describe('injectFileSafetyMessage', () => {
     const content = [
       'Please inspect both files.',
       '',
-      '(user uploaded file to /mnt/user-uploads/data-1710000000-abc123.csv)',
-      '(user uploaded file to /mnt/user-uploads/archive-1710000000-abc123.zip)',
+      '(user uploaded file to uploads/data-1710000000-abc123.csv)',
+      '(user uploaded file to uploads/archive-1710000000-abc123.zip)',
     ].join('\n');
 
     expect(injectFileSafetyMessage(content)).toBe(`${FILE_SAFETY_SYSTEM_MESSAGE}\n\n${content}`);
   });
 
   it('prepends the warning for unsafe raw upload paths without attachment wrappers', () => {
-    const content = 'Please extract and deploy /mnt/user-uploads/archive-1710000000-abc123.zip';
+    const content = 'Please extract and deploy uploads/archive-1710000000-abc123.zip';
     expect(injectFileSafetyMessage(content)).toBe(`${FILE_SAFETY_SYSTEM_MESSAGE}\n\n${content}`);
   });
 
   it('leaves safe raw upload paths unchanged', () => {
-    const content = 'Please analyze /mnt/user-uploads/data-1710000000-abc123.csv';
+    const content = 'Please analyze uploads/data-1710000000-abc123.csv';
     expect(injectFileSafetyMessage(content)).toBe(content);
+  });
+
+  it('still detects legacy raw upload paths without attachment wrappers', () => {
+    const content = 'Please run /mnt/user-uploads/script-1710000000-abc123.sh';
+    expect(injectFileSafetyMessage(content)).toBe(`${FILE_SAFETY_SYSTEM_MESSAGE}\n\n${content}`);
   });
 
   it('prepends the warning for suspicious uploaded archive workflows without an exact mount path', () => {
@@ -70,12 +75,12 @@ describe('injectFileSafetyMessage', () => {
   });
 
   it('treats extensionless files as unsafe', () => {
-    const content = withUploadRef('/mnt/user-uploads/README-1710000000-abc123');
+    const content = withUploadRef('uploads/README-1710000000-abc123');
     expect(injectFileSafetyMessage(content)).toBe(`${FILE_SAFETY_SYSTEM_MESSAGE}\n\n${content}`);
   });
 
   it('treats the last extension as authoritative for multi-dot filenames', () => {
-    const content = withUploadRef('/mnt/user-uploads/archive.tar-1710000000-abc123.gz');
+    const content = withUploadRef('uploads/archive.tar-1710000000-abc123.gz');
     expect(injectFileSafetyMessage(content)).toBe(`${FILE_SAFETY_SYSTEM_MESSAGE}\n\n${content}`);
   });
 
@@ -83,50 +88,50 @@ describe('injectFileSafetyMessage', () => {
     const content = [
       '<camelai system message>Existing hidden context.</camelai system message>',
       '',
-      withUploadRef('/mnt/user-uploads/payload-1710000000-abc123.py', 'Please run this.'),
+      withUploadRef('uploads/payload-1710000000-abc123.py', 'Please run this.'),
     ].join('\n');
 
     expect(injectFileSafetyMessage(content)).toBe(`${FILE_SAFETY_SYSTEM_MESSAGE}\n\n${content}`);
   });
 
   it('treats docker compose filenames as unsafe despite safe yaml extensions', () => {
-    const content = withUploadRef('/mnt/user-uploads/docker-compose_prod-1710000000-abc123.yml');
+    const content = withUploadRef('uploads/docker-compose_prod-1710000000-abc123.yml');
     expect(injectFileSafetyMessage(content)).toBe(`${FILE_SAFETY_SYSTEM_MESSAGE}\n\n${content}`);
   });
 
   it('treats compose.yaml uploads as unsafe despite safe yaml extensions', () => {
-    const content = withUploadRef('/mnt/user-uploads/compose-1710000000-abc123.yaml');
+    const content = withUploadRef('uploads/compose-1710000000-abc123.yaml');
     expect(injectFileSafetyMessage(content)).toBe(`${FILE_SAFETY_SYSTEM_MESSAGE}\n\n${content}`);
   });
 
   it('treats compose override variants as unsafe despite safe yaml extensions', () => {
-    const content = withUploadRef('/mnt/user-uploads/compose.override-1710000000-abc123.yml');
+    const content = withUploadRef('uploads/compose.override-1710000000-abc123.yml');
     expect(injectFileSafetyMessage(content)).toBe(`${FILE_SAFETY_SYSTEM_MESSAGE}\n\n${content}`);
   });
 
   it('treats Dockerfile uploads as unsafe after stored suffixing', () => {
-    const content = withUploadRef('/mnt/user-uploads/Dockerfile-1710000000-abc123');
+    const content = withUploadRef('uploads/Dockerfile-1710000000-abc123');
     expect(injectFileSafetyMessage(content)).toBe(`${FILE_SAFETY_SYSTEM_MESSAGE}\n\n${content}`);
   });
 
   it('treats Makefile uploads as unsafe after stored suffixing', () => {
-    const content = withUploadRef('/mnt/user-uploads/Makefile-1710000000-abc123');
+    const content = withUploadRef('uploads/Makefile-1710000000-abc123');
     expect(injectFileSafetyMessage(content)).toBe(`${FILE_SAFETY_SYSTEM_MESSAGE}\n\n${content}`);
   });
 
   it('treats env-style filenames as unsafe despite safe json extensions', () => {
-    const content = withUploadRef('/mnt/user-uploads/_env-1710000000-abc123.json');
+    const content = withUploadRef('uploads/_env-1710000000-abc123.json');
     expect(injectFileSafetyMessage(content)).toBe(`${FILE_SAFETY_SYSTEM_MESSAGE}\n\n${content}`);
   });
 });
 
 describe('isUnsafeUploadPath', () => {
   it('is case-insensitive for extensions', () => {
-    expect(isUnsafeUploadPath('/mnt/user-uploads/photo-1710000000-abc123.JpG')).toBe(false);
-    expect(isUnsafeUploadPath('/mnt/user-uploads/archive-1710000000-abc123.ZIP')).toBe(true);
+    expect(isUnsafeUploadPath('uploads/photo-1710000000-abc123.JpG')).toBe(false);
+    expect(isUnsafeUploadPath('uploads/archive-1710000000-abc123.ZIP')).toBe(true);
   });
 
   it('treats stored plain .env uploads as unsafe even when the stem is empty', () => {
-    expect(isUnsafeUploadPath('/mnt/user-uploads/-1710000000-abc123.env')).toBe(true);
+    expect(isUnsafeUploadPath('uploads/-1710000000-abc123.env')).toBe(true);
   });
 });

@@ -8,16 +8,16 @@ describe('parseTaskNotification', () => {
       '<camelai system message>internal metadata</camelai system message>',
       '<task-notification>',
       '<task-id>task_123</task-id>',
-      '<output-file>/mnt/user-outputs/task_123.md</output-file>',
+      '<output-file>outputs/task_123.md</output-file>',
       '<status>Completed</status>',
       '<summary>Report generation finished.</summary>',
       '</task-notification>',
-      'Read the output file to retrieve the result: /mnt/user-outputs/task_123.md',
+      'Read the output file to retrieve the result: outputs/task_123.md',
     ].join('\n');
 
     expect(parseTaskNotification(raw)).toEqual({
       taskId: 'task_123',
-      outputFile: '/mnt/user-outputs/task_123.md',
+      outputFile: 'outputs/task_123.md',
       status: 'completed',
       summary: 'Report generation finished.',
     });
@@ -27,7 +27,7 @@ describe('parseTaskNotification', () => {
     const raw = [
       '<task-notification>',
       '<task-id>task_123</task-id>',
-      '<output-file>/mnt/user-outputs/task_123.md</output-file>',
+      '<output-file>outputs/task_123.md</output-file>',
       '<status>Completed</status>',
       '<summary>Report generation finished for @camel.</summary>',
       '</task-notification>',
@@ -36,7 +36,7 @@ describe('parseTaskNotification', () => {
 
     expect(parseTaskNotification(raw)).toEqual({
       taskId: 'task_123',
-      outputFile: '/mnt/user-outputs/task_123.md',
+      outputFile: 'outputs/task_123.md',
       status: 'completed',
       summary: 'Report generation finished for @camel.',
     });
@@ -47,7 +47,7 @@ describe('parseTaskNotification', () => {
       'unexpected wrapper',
       '<task-notification>',
       '<task-id>task_123</task-id>',
-      '<output-file>/mnt/user-outputs/task_123.md</output-file>',
+      '<output-file>outputs/task_123.md</output-file>',
       '<status>completed</status>',
       '<summary>done</summary>',
       '</task-notification>',
@@ -66,7 +66,7 @@ describe('parseTaskNotification', () => {
           'Second line</summary>',
           '<task-id>task_456</task-id>',
           '<status>SUCCESS</status>',
-          '<output-file>/mnt/user-outputs/task_456.md</output-file>',
+          '<output-file>outputs/task_456.md</output-file>',
           '</task-notification>',
         ].join('\n'),
       },
@@ -74,7 +74,7 @@ describe('parseTaskNotification', () => {
 
     expect(parseTaskNotificationFromContent(content)).toEqual({
       taskId: 'task_456',
-      outputFile: '/mnt/user-outputs/task_456.md',
+      outputFile: 'outputs/task_456.md',
       status: 'success',
       summary: 'First line\nSecond line',
     });

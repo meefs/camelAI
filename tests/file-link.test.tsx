@@ -97,6 +97,52 @@ describe('FileLink', () => {
         '/api/workspaces/ws-456/fs/content/app/style.css',
       );
     });
+
+    it('routes relative R2 output and upload paths to preview endpoints', () => {
+      mockUseAuthData.mockReturnValue({
+        currentWorkspace: { id: 'ws-456' },
+      });
+
+      const { rerender } = render(<FileLink path="outputs/report.md" />);
+
+      expect(screen.getByRole('button', { name: 'report.md' })).toBeInTheDocument();
+      expect(screen.getByTestId('file-preview-popover')).toHaveAttribute(
+        'data-preview-url',
+        '/api/workspaces/ws-456/outputs/report.md',
+      );
+
+      filePreviewPopoverMock.mockClear();
+      rerender(<FileLink path="uploads/photos/cat pic.png" />);
+
+      expect(screen.getByRole('button', { name: 'cat pic.png' })).toBeInTheDocument();
+      expect(screen.getByTestId('file-preview-popover')).toHaveAttribute(
+        'data-preview-url',
+        '/api/workspaces/ws-456/uploads/photos/cat%20pic.png',
+      );
+    });
+
+    it('keeps legacy R2 mount links previewable for persisted chat history', () => {
+      mockUseAuthData.mockReturnValue({
+        currentWorkspace: { id: 'ws-456' },
+      });
+
+      const { rerender } = render(<FileLink path="/mnt/user-outputs/report.pdf" />);
+
+      expect(screen.getByRole('button', { name: 'report.pdf' })).toBeInTheDocument();
+      expect(screen.getByTestId('file-preview-popover')).toHaveAttribute(
+        'data-preview-url',
+        '/api/workspaces/ws-456/outputs/report.pdf',
+      );
+
+      filePreviewPopoverMock.mockClear();
+      rerender(<FileLink path="/mnt/user-uploads/photos/cat.png" />);
+
+      expect(screen.getByRole('button', { name: 'cat.png' })).toBeInTheDocument();
+      expect(screen.getByTestId('file-preview-popover')).toHaveAttribute(
+        'data-preview-url',
+        '/api/workspaces/ws-456/uploads/photos/cat.png',
+      );
+    });
   });
 
   describe('link behavior', () => {

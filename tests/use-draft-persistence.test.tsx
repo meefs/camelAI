@@ -70,7 +70,7 @@ describe('use-draft-persistence', () => {
       {
         id: 'complete-1',
         name: 'report.csv',
-        path: '/mnt/user-uploads/report.csv',
+        path: 'uploads/report.csv',
         size: 1024,
         contentType: 'text/csv',
         originalName: 'report.csv',
@@ -96,7 +96,7 @@ describe('use-draft-persistence', () => {
         {
           id: 'complete-1',
           name: 'report.csv',
-          path: '/mnt/user-uploads/report.csv',
+          path: 'uploads/report.csv',
           size: 1024,
           contentType: 'text/csv',
           originalName: 'report.csv',

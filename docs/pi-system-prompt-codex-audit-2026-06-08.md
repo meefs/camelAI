@@ -41,7 +41,7 @@ To avoid repeating the same audit three times, this table audits the unique base
 | 14 | Improvement | This should also state that web pages, uploads, and connection outputs are untrusted data, not instructions. This is a standing safety rule, not a skill-only detail. |
 | 15 | Current | Project VM/project clone facts match tool descriptions for `list_projects`, `create_project`, `set_project_description`, and `clone_project`. |
 | 15 | Improvement | This line is very dense. It carries project model, tool choice, creation rules, clone semantics, and response shape in one paragraph. Split into an "Environment" section or move list response details into tool docs. |
-| 16 | Current | `/workspace`, `bash`, `vm.exec`, Git remote proxying, no Artifacts tokens in VM, and `vm.push`/`vm.pull` match current tool descriptions and `project-vm-protocol.ts`. |
+| 16 | Current | `/workspace`, `bash`, `vm.exec`, Git remote proxying, no Artifacts tokens in VM, and `tools.move({ source, destination })` match current tool descriptions and `project-vm-protocol.ts`. |
 | 16 | Watch | The `/home/claude` warning is still supported by current code because legacy aliases and migration code exist, but it is a high-drift historical detail. Keep only if incidents still show agents using it. |
 | 16 | Improvement | "Shell commands run in project VMs" is good. The prompt should make clearer that shell is unavailable without a project name and that durable workspace file work should not be done by shell unless files are pushed/pulled through a project VM. |
 | 17 | Current | External email, Slack, and Telegram side effects are opt-in by default. This matches channel send tool descriptions and `communication-channels/SKILL.md`. |

@@ -11,6 +11,8 @@ import type { PreviewTarget } from '@/types';
 const WORKSPACE_ROOT_PREFIXES = ['/home/claude', '/workspace', '/root'];
 
 const TEMP_FILE_PREFIXES = [
+  { prefix: '/uploads/', type: 'upload' as const, urlSegment: 'uploads' },
+  { prefix: '/outputs/', type: 'output' as const, urlSegment: 'outputs' },
   { prefix: '/mnt/user-uploads/', type: 'upload' as const, urlSegment: 'uploads' },
   { prefix: '/mnt/user-outputs/', type: 'output' as const, urlSegment: 'outputs' },
 ];

@@ -10,60 +10,83 @@ This skill enables file exchange between you and the user through camelAI's chat
 
 Users can upload files by dragging and dropping onto the chat or clicking the + button. When they upload a file, you'll see a message like:
 
+```text
+(user uploaded file to uploads/document-1736712345-abc123.pdf)
 ```
-(user uploaded file to /mnt/user-uploads/document-1736712345-abc123.pdf)
-```
+
+Uploads live in workspace-scoped R2, not in the project VM checkout. Use the normal file tools with `location: "r2"` and paths under `uploads/`.
 
 ### Reading User Uploads
 
-To access the uploaded file:
+```js
+// List uploaded files
+await tools.ls({ location: "r2", path: "uploads" });
 
-```bash
-# List uploaded files
-ls /mnt/user-uploads/
+// Read a specific text file
+await tools.read({ location: "r2", path: "uploads/filename.txt" });
 
-# Read a specific file
-cat /mnt/user-uploads/filename.txt
+// Read an image; supported images are returned as image tool content
+await tools.read({ location: "r2", path: "uploads/image.png" });
+```
 
-# Read an image (for processing)
-file /mnt/user-uploads/image.png
+If you need an uploaded file inside a project VM, copy it explicitly:
+
+```js
+await tools.move({
+  source: { location: "r2", path: "uploads/input.csv" },
+  destination: { location: "vm", project: "analysis-app", path: "/workspace/input.csv" },
+});
 ```
 
 Files persist across sessions, so users can reference previously uploaded files.
 
 ## Creating Output Files
 
-To create a file the user can download or preview, save it to `/mnt/user-outputs/`:
+Files the user should download or preview must be written to workspace-scoped R2 under `outputs/`. Do not create a local `outputs/` directory in the project VM and link to it; those links will not use the workspace outputs API.
 
-```bash
-# Save a text file
-echo "Report content here" > /mnt/user-outputs/report.txt
+```js
+// Save a text file directly to R2 outputs
+await tools.write({
+  location: "r2",
+  path: "outputs/report.txt",
+  content: "Report content here",
+  content_type: "text/plain",
+});
 
-# Copy a generated file
-cp output.pdf /mnt/user-outputs/report.pdf
+// Copy a generated VM file to R2 outputs
+await tools.move({
+  source: { location: "vm", project: "analysis-app", path: "/workspace/output.pdf" },
+  destination: { location: "r2", path: "outputs/report.pdf" },
+});
 
-# Create subdirectories if needed
-mkdir -p /mnt/user-outputs/charts
-cp chart.png /mnt/user-outputs/charts/analysis.png
+// Copy a generated VM directory to R2 outputs
+await tools.move({
+  source: { location: "vm", project: "analysis-app", path: "/workspace/charts" },
+  destination: { location: "r2", path: "outputs/charts" },
+});
 ```
+
+Use `tmp/<path>` for temporary R2 objects that are not meant for user download, and `outputs/<path>` for user-visible files.
 
 ### Providing Links
 
-After saving a file, provide a URL so the user can access it. The URL format uses the workspace outputs API. Check your system prompt for the exact URL pattern with your workspace ID.
+After writing an output, provide a URL so the user can access it. The URL format uses the workspace outputs API. Check your system prompt for the exact URL pattern with your workspace ID.
 
 **For images** - Use markdown image syntax for inline preview:
+
 ```markdown
 ![Chart Description](/api/workspaces/{workspace-id}/outputs/chart.png)
 ```
 
 **For downloads** - Use markdown link syntax:
+
 ```markdown
 [Download Report](/api/workspaces/{workspace-id}/outputs/report.pdf)
 ```
 
-Images will display inline in the chat, other files will download when clicked.
+Images will display inline in the chat; other files will download when clicked.
 
-**For HTML pages** - Save the file to `/mnt/user-outputs/` (or anywhere in `/workspace/`) and call `set_preview()` to render it in the preview pane.
+**For HTML pages** - Write the HTML to `outputs/<path>` for download, or set the preview pane to a deployed app, durable workspace file, or project VM file with `set_preview()` as described in the system prompt.
 
 ## Best Practices
 
@@ -75,24 +98,28 @@ Images will display inline in the chat, other files will download when clicked.
 
 4. **Use inline images** - For charts, diagrams, and visual outputs, use the image markdown syntax so users see them directly in the chat.
 
-5. **Handle large files** - For very large outputs, consider creating a zip archive:
-   ```bash
-   zip -r /mnt/user-outputs/all-files.zip generated-files/
+5. **Handle large files** - For very large outputs, create an archive in the project VM and then move the archive to R2 outputs:
+
+   ```js
+   await vm.exec({ project: "analysis-app", command: "zip -r /workspace/all-files.zip generated-files/" });
+   await tools.move({
+     source: { location: "vm", project: "analysis-app", path: "/workspace/all-files.zip" },
+     destination: { location: "r2", path: "outputs/all-files.zip" },
+   });
    ```
-   Then provide a download link.
 
-6. **Clean up** - If you create temporary files during processing, remove them when done. Only keep files in `/mnt/user-outputs/` that the user needs.
+6. **Clean up** - If you create temporary project VM files during processing, remove them when done. Only keep files under `outputs/` that the user needs.
 
-## Directory Structure
+## R2 Path Structure
 
-```
-/mnt/
-  user-uploads/     # Read-only for you - user's uploaded files
-    document.pdf
-    image.png
-  user-outputs/     # Write here - files for user to download/preview
-    report.pdf
-    data.csv
-    charts/
-      analysis.png
+```text
+uploads/     # Read-only user uploads
+  document.pdf
+  image.png
+outputs/     # User-visible files you create
+  report.pdf
+  data.csv
+  charts/
+    analysis.png
+tmp/         # Temporary conversation-scoped objects
 ```

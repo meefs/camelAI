@@ -46,8 +46,6 @@ describe('code mode runner connection facade', () => {
         calls.push(input);
         return input;
       },
-      vm_push: () => undefined,
-      vm_pull: () => undefined,
     });
 
     const objectStyle = await vm.exec({

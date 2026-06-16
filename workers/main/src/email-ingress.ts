@@ -178,7 +178,7 @@ function buildUploadKey(
 }
 
 function toUploadMountPath(filename: string): string {
-  return `/mnt/user-uploads/${filename}`;
+  return `uploads/${filename}`;
 }
 
 function generateUniqueFilename(originalName: string): string {

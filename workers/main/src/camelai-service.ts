@@ -86,7 +86,7 @@ export class CamelAiService extends WorkerEntrypoint<
     const resolved = resolveMountedAudioPath(path);
     if (!resolved) {
       throw new Error(
-        "path must be under /mnt/user-uploads/ or /mnt/user-outputs/",
+        "path must start with uploads/ or outputs/",
       );
     }
     const object = await bucket.get(
@@ -112,8 +112,8 @@ function resolveMountedAudioPath(path: string): {
     prefix: string;
     bucketDir: "user-uploads" | "user-outputs";
   }> = [
-    { prefix: "/mnt/user-uploads/", bucketDir: "user-uploads" },
-    { prefix: "/mnt/user-outputs/", bucketDir: "user-outputs" },
+    { prefix: "uploads/", bucketDir: "user-uploads" },
+    { prefix: "outputs/", bucketDir: "user-outputs" },
   ];
   for (const { prefix, bucketDir } of prefixes) {
     if (!normalized.startsWith(prefix)) continue;
