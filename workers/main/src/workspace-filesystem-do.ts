@@ -26,6 +26,15 @@ export interface WorkspaceReadFileResponse {
   code?: string;
 }
 
+export interface WorkspaceReadFileStreamResponse {
+  success: boolean;
+  stream?: ReadableStream<Uint8Array>;
+  size?: number;
+  mimeType?: string;
+  error?: string;
+  code?: string;
+}
+
 export interface WorkspaceWriteResponse {
   success: boolean;
   error?: string;
@@ -169,6 +178,7 @@ export interface WorkspaceProjectCloneSummary {
 export interface WorkspaceFilesystemLike {
   exists(path: string): Promise<WorkspaceExistsResponse>;
   readFile(path: string): Promise<WorkspaceReadFileResponse>;
+  readFileStream(path: string): Promise<WorkspaceReadFileStreamResponse>;
   writeFile(path: string, content: string): Promise<WorkspaceWriteResponse>;
   writeBinaryFile(path: string, base64Content: string): Promise<WorkspaceWriteResponse>;
   listFiles(
@@ -323,6 +333,21 @@ export class WorkspaceFilesystemDO extends DurableObject<WorkspaceFilesystemEnv>
       size: bytes.byteLength,
       isBinary: decoded.isBinary,
       encoding: decoded.isBinary ? "base64" : "utf8",
+      mimeType: stat?.mimeType,
+    };
+  }
+
+  async readFileStream(path: string): Promise<WorkspaceReadFileStreamResponse> {
+    const normalizedPath = normalizeWorkspacePath(path);
+    const stream = await this.workspace.readFileStream(normalizedPath);
+    if (!stream) {
+      return { success: false, error: "File not found", code: "ENOENT" };
+    }
+    const stat = await this.workspace.stat(normalizedPath);
+    return {
+      success: true,
+      stream,
+      size: stat?.size,
       mimeType: stat?.mimeType,
     };
   }
@@ -789,6 +814,10 @@ export class WorkspaceFilesystemClient implements WorkspaceFilesystemLike {
 
   readFile(path: string): Promise<WorkspaceReadFileResponse> {
     return this.stub.readFile(path);
+  }
+
+  readFileStream(path: string): Promise<WorkspaceReadFileStreamResponse> {
+    return this.stub.readFileStream(path);
   }
 
   writeFile(path: string, content: string): Promise<WorkspaceWriteResponse> {

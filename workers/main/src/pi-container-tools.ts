@@ -2,10 +2,16 @@ import { Type } from "typebox";
 import type {
   WorkspaceFilesystemLike,
   WorkspaceReadFileResponse,
+  WorkspaceReadFileStreamResponse,
 } from "./workspace-filesystem-do";
 import {
+  detectSupportedImageMimeType,
   inlineImageMaxBase64Chars,
+  isSupportedImageMimeType,
   prepareInlineImageFromBytes,
+  prepareInlineImageFromStream,
+  readImageSniffBytesAndReplayStream,
+  readStreamBytes,
 } from "./image-tool-content";
 
 const CONTAINER_CWD = "/workspace";
@@ -167,6 +173,15 @@ function base64ToBytes(value: string): Uint8Array {
   return bytes;
 }
 
+function decodeMaybeText(bytes: Uint8Array): { content: string; isBinary: boolean } {
+  if (bytes.includes(0)) return { content: "", isBinary: true };
+  try {
+    return { content: new TextDecoder("utf-8", { fatal: true }).decode(bytes), isBinary: false };
+  } catch {
+    return { content: "", isBinary: true };
+  }
+}
+
 function formatSize(value: number): string {
   if (value < 1024) return `${value}B`;
   if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)}KB`;
@@ -239,6 +254,45 @@ function imageMime(path: string): string | null {
   if (lower.endsWith(".gif")) return "image/gif";
   if (lower.endsWith(".webp")) return "image/webp";
   return null;
+}
+
+function workspaceImageResult({
+  path,
+  size,
+  mimeType,
+  prepared,
+}: {
+  path: string;
+  size: number | null;
+  mimeType: string;
+  prepared: Awaited<ReturnType<typeof prepareInlineImageFromStream>>;
+}): PiContainerToolResult {
+  let text = `Read image file [${prepared?.mimeType ?? mimeType}]\n[Image: ${path}${typeof size === "number" ? ` (${formatSize(size)})` : ""}]`;
+  if (prepared?.optimizedForInlineView) {
+    text += `\n[Image optimized for inline model context and may be scaled/compressed from the source.]`;
+  }
+  const content: ToolContent[] = [{ type: "text", text }];
+  if (prepared) {
+    content.push({ type: "image", data: prepared.data, mimeType: prepared.mimeType });
+  } else {
+    text += `\n[Image omitted: could not be resized below the inline image size limit of ${inlineImageMaxBase64Chars()} base64 chars.]`;
+    content[0] = { type: "text", text };
+  }
+  return {
+    text,
+    content,
+    details: {
+      mimeType: prepared?.mimeType ?? mimeType,
+      originalMimeType: mimeType,
+      size,
+      image: true,
+      inlineImage: Boolean(prepared),
+      optimizedForInlineView: prepared?.optimizedForInlineView ?? false,
+      maxInlineDimension: prepared?.maxInlineDimension ?? null,
+      usedImagesBinding: prepared?.usedImagesBinding ?? false,
+      base64Chars: prepared?.base64Chars ?? null,
+    },
+  };
 }
 
 function normalizeEdits(args: Record<string, unknown>): Array<{ oldText: string; newText: string }> {
@@ -330,6 +384,14 @@ export class PiContainerTools {
     return file;
   }
 
+  private async readWorkspaceFileStream(path: string): Promise<WorkspaceReadFileStreamResponse> {
+    const file = await this.workspace.readFileStream(path);
+    if (!file.success || !file.stream) {
+      throw new Error(file.error || `Failed to read ${path}`);
+    }
+    return file;
+  }
+
   async callTool(name: string, args: Record<string, unknown>): Promise<PiContainerToolResult> {
     switch (name) {
       case "read":
@@ -353,40 +415,58 @@ export class PiContainerTools {
 
   private async read(args: Record<string, unknown>): Promise<PiContainerToolResult> {
     const path = normalizePath(args.path);
-    const file = await this.readWorkspaceFile(path);
-    if (file.isBinary) {
-      const mimeType = file.mimeType || imageMime(path);
-      if (mimeType?.startsWith("image/") && typeof file.content === "string") {
-        const imageBytes = base64ToBytes(file.content);
+    let file: WorkspaceReadFileResponse;
+    if (typeof this.workspace.readFileStream === "function") {
+      const streamed = await this.readWorkspaceFileStream(path);
+      const sniffed = await readImageSniffBytesAndReplayStream(streamed.stream!);
+      const mimeType = detectSupportedImageMimeType(sniffed.prefix)
+        || (streamed.mimeType && isSupportedImageMimeType(streamed.mimeType) ? streamed.mimeType : null)
+        || imageMime(path);
+      if (mimeType?.startsWith("image/")) {
         if (!this.options.images) throw new Error("IMAGES binding is required for image reads");
-        const prepared = await prepareInlineImageFromBytes(imageBytes, mimeType, this.options.images);
-        let text = `Read image file [${prepared?.mimeType ?? mimeType}]\n[Image: ${path} (${formatSize(file.size ?? imageBytes.byteLength)})]`;
-        if (prepared?.optimizedForInlineView) {
-          text += `\n[Image optimized for inline model context and may be scaled/compressed from the source.]`;
-        }
-        const content: ToolContent[] = [{ type: "text", text }];
-        if (prepared) {
-          content.push({ type: "image", data: prepared.data, mimeType: prepared.mimeType });
-        } else {
-          text += `\n[Image omitted: could not be resized below the inline image size limit of ${inlineImageMaxBase64Chars()} base64 chars.]`;
-          content[0] = { type: "text", text };
-        }
-        return {
-          text,
-          content,
-          details: {
-            mimeType: prepared?.mimeType ?? mimeType,
-            originalMimeType: mimeType,
-            size: file.size ?? imageBytes.byteLength,
-            image: true,
-            inlineImage: Boolean(prepared),
-            optimizedForInlineView: prepared?.optimizedForInlineView ?? false,
-            maxInlineDimension: prepared?.maxInlineDimension ?? null,
-            usedImagesBinding: prepared?.usedImagesBinding ?? false,
-            base64Chars: prepared?.base64Chars ?? null,
+        const prepared = await prepareInlineImageFromStream(sniffed.stream, mimeType, this.options.images, {
+          createRetryStream: async () => {
+            const retry = await this.readWorkspaceFileStream(path);
+            return retry.stream!;
           },
-        };
+        });
+        return workspaceImageResult({
+          path,
+          size: streamed.size ?? null,
+          mimeType,
+          prepared,
+        });
       }
+      const bytes = await readStreamBytes(sniffed.stream);
+      const decoded = decodeMaybeText(bytes);
+      file = {
+        success: true,
+        content: decoded.content,
+        size: streamed.size ?? bytes.byteLength,
+        isBinary: decoded.isBinary,
+        encoding: decoded.isBinary ? "base64" : "utf8",
+        mimeType: streamed.mimeType,
+      };
+    } else {
+      file = await this.readWorkspaceFile(path);
+      if (file.isBinary && typeof file.content === "string") {
+        const imageBytes = base64ToBytes(file.content);
+        const mimeType = detectSupportedImageMimeType(imageBytes)
+          || (file.mimeType && isSupportedImageMimeType(file.mimeType) ? file.mimeType : null)
+          || imageMime(path);
+        if (mimeType?.startsWith("image/")) {
+          if (!this.options.images) throw new Error("IMAGES binding is required for image reads");
+          const prepared = await prepareInlineImageFromBytes(imageBytes, mimeType, this.options.images);
+          return workspaceImageResult({
+            path,
+            size: file.size ?? imageBytes.byteLength,
+            mimeType,
+            prepared,
+          });
+        }
+      }
+    }
+    if (file.isBinary) {
       return result("[Binary file omitted. Use js_exec with tools.move/vm.exec for binary inspection.]", { isBinary: true, size: file.size ?? 0 });
     }
 
