@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { env, SELF } from "cloudflare:test";
 import { AdminMcpOAuthProvider } from "../src/admin-mcp-oauth";
+import { getAppIndexDatabase } from "../src/app-index-db";
 import { handleAdminMcp } from "../src/routes/admin-mcp";
 import { handleOAuthMetadata, handleResourceMetadata } from "../src/routes/well-known";
 import type { Env as WorkerEnv } from "../src/types";
@@ -309,6 +310,7 @@ describe("admin MCP OAuth resource", () => {
           expect.objectContaining({ name: "search_users" }),
           expect.objectContaining({ name: "search_orgs" }),
           expect.objectContaining({ name: "search_threads" }),
+          expect.objectContaining({ name: "get_thread_jsonl" }),
           expect.objectContaining({ name: "manage_thread_recovery" }),
           expect.objectContaining({ name: "inspect_thread_previews" }),
           expect.objectContaining({ name: "override_thread_previews" }),
@@ -643,6 +645,126 @@ describe("admin MCP OAuth resource", () => {
     const text = rpc.result.content[0].text as string;
     expect(text).toContain("body_json");
     expect(text).toContain("total_users");
+  });
+
+  it("surfaces reconstructed thread JSONL through the admin MCP server", async () => {
+    const { userId } = await createUser(
+      testEnv,
+      `admin-mcp-jsonl-${crypto.randomUUID()}@example.com`,
+      "password123",
+      "JSONL Admin",
+    );
+    const { org, defaultWorkspaceId } = await createOrg(
+      testEnv,
+      "JSONL Admin Org",
+      userId,
+    );
+    await updateUserProfile(testEnv, userId, { is_superuser: true });
+    const token = await issueAdminMcpToken(userId);
+
+    const orgStub = testEnv.ORG.get(testEnv.ORG.idFromName(org.id));
+    const thread = await orgStub.createThread(
+      defaultWorkspaceId,
+      "JSONL Thread",
+      userId,
+    );
+    const appIndex = getAppIndexDatabase(testEnv)!;
+    await appIndex.ensureSchema();
+    await appIndex.applyAdminEvent({
+      type: "thread_upsert",
+      payload: { ...thread, org_id: org.id },
+    });
+
+    const chatThread = testEnv.CHAT_THREAD.get(
+      testEnv.CHAT_THREAD.idFromName(thread.id),
+    ) as unknown as {
+      replacePiCoreForkMessages(messages: unknown[]): Promise<void>;
+    };
+    await chatThread.replacePiCoreForkMessages([
+      {
+        role: "user",
+        content: "run the command",
+        timestamp: 100,
+      },
+      {
+        role: "assistant",
+        content: [
+          {
+            type: "toolCall",
+            id: "tool-1",
+            name: "bash",
+            arguments: { command: "false" },
+          },
+        ],
+        responseId: "resp-tool",
+        timestamp: 200,
+        api: "test",
+        provider: "test",
+        model: "test",
+        usage: {},
+        stopReason: "toolUse",
+      },
+      {
+        role: "toolResult",
+        toolCallId: "tool-1",
+        toolName: "bash",
+        content: [{ type: "text", text: "exit 1\n" }],
+        isError: true,
+        timestamp: 300,
+      },
+    ]);
+
+    const response = await handleAdminMcp({
+      req: mcpRequest(
+        {
+          jsonrpc: "2.0",
+          id: 1,
+          method: "tools/call",
+          params: {
+            name: "get_thread_jsonl",
+            arguments: { thread_id: thread.id },
+          },
+        },
+        token,
+      ),
+      env: testEnv,
+      ctx: {} as ExecutionContext,
+      url: new URL("https://example.com/api/admin/mcp"),
+      match: [] as unknown as RegExpMatchArray,
+    });
+
+    expect(response?.status).toBe(200);
+    const rpc = (await response?.json()) as any;
+    expect(rpc.result.structuredContent).toMatchObject({
+      success: true,
+      thread_id: thread.id,
+      org_id: org.id,
+      workspace_id: defaultWorkspaceId,
+      filename: `${thread.id}.jsonl`,
+      content_type: "application/x-ndjson; charset=utf-8",
+      message_count: 2,
+    });
+
+    const jsonl = rpc.result.content[0].text as string;
+    const lines = jsonl.trim().split("\n").map((line) => JSON.parse(line));
+    expect(lines).toHaveLength(2);
+    expect(lines[0]).toMatchObject({
+      role: "user",
+      content: "run the command",
+    });
+    expect(lines[1]).toMatchObject({
+      id: "resp-tool",
+      role: "assistant",
+      content: expect.arrayContaining([
+        expect.objectContaining({
+          type: "tool_result",
+          tool_use_id: "tool-1",
+          content: "exit 1\n",
+          is_error: true,
+          status: "failed",
+        }),
+      ]),
+    });
   });
 
 });

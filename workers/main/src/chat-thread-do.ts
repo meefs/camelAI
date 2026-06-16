@@ -7639,10 +7639,13 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     if (!toolCallId) return;
 
     const uiMetadata = normalizePiUiMetadata(toolResult.uiMetadata);
+    const isError = toolResult.isError === true;
     const block: ToolResultBlock = {
       type: "tool_result",
       tool_use_id: toolCallId,
       content: this.piToolResultContentToChatContent(toolResult.content),
+      is_error: isError,
+      status: isError ? "failed" : "succeeded",
       itemId: toolCallId,
       itemKind:
         typeof toolResult.toolName === "string" &&

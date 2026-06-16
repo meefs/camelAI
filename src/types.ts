@@ -133,6 +133,10 @@ export interface ToolResultBlock {
   type: "tool_result";
   tool_use_id: string;
   content: string | ContentBlock[];
+  /** True when the backing tool execution failed. */
+  is_error?: boolean;
+  /** Human-readable execution outcome for exported/audited transcripts. */
+  status?: "succeeded" | "failed";
   /** Marks a Task progress update (not the final Task result). */
   isTaskUpdate?: boolean;
   itemId?: string;

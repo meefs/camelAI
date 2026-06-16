@@ -3824,12 +3824,15 @@ describe('ChatThreadDO Codex turn handling', () => {
       toolCallId: 'tool_js_exec_1',
       toolName: 'js_exec',
       content: 'ok',
+      isError: true,
       uiMetadata: { codeModeArtifacts: [artifact] },
     });
 
     expect(messages[0].content[1]).toMatchObject({
       type: 'tool_result',
       tool_use_id: 'tool_js_exec_1',
+      is_error: true,
+      status: 'failed',
       artifacts: [artifact],
     });
   });
@@ -5324,6 +5327,8 @@ describe('ChatThreadDO Codex turn handling', () => {
         type: 'tool_result',
         tool_use_id: 'tool1',
         content: 'hi\n',
+        is_error: false,
+        status: 'succeeded',
         itemId: 'tool1',
         itemKind: 'commandExecution',
       },

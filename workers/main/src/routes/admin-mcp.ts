@@ -48,6 +48,7 @@ const TOOL_GET_ORG_DETAIL = "get_org_detail";
 const TOOL_UPDATE_ORG_MODEL_ACCESS = "update_org_model_access";
 const TOOL_SEARCH_THREADS = "search_threads";
 const TOOL_GET_THREAD_MESSAGES = "get_thread_messages";
+const TOOL_GET_THREAD_JSONL = "get_thread_jsonl";
 const TOOL_MANAGE_THREAD_MESSAGE_ROWS = "manage_thread_message_rows";
 const TOOL_REPAIR_PI_MESSAGE_HISTORY = "repair_pi_message_history";
 const TOOL_MANAGE_THREAD_RECOVERY = "manage_thread_recovery";
@@ -310,6 +311,17 @@ function adminTools() {
     {
       name: TOOL_GET_THREAD_MESSAGES,
       description: "Get parsed messages for one thread.",
+      inputSchema: {
+        type: "object",
+        properties: { thread_id: { type: "string" } },
+        required: ["thread_id"],
+        additionalProperties: false,
+      },
+    },
+    {
+      name: TOOL_GET_THREAD_JSONL,
+      description:
+        "Get a reconstructed JSONL transcript for one Pi-backed thread. The text content is raw JSONL with one parsed message per line.",
       inputSchema: {
         type: "object",
         properties: { thread_id: { type: "string" } },
@@ -740,6 +752,10 @@ type ChatThreadMessageRowsStub = {
   }): Promise<{ ok: true; inserted: boolean; idx: number }> | { ok: true; inserted: boolean; idx: number };
 };
 
+type ChatThreadParsedMessagesStub = {
+  getPiCoreParsedMessages(threadId: string): Promise<unknown[]> | unknown[];
+};
+
 type ThreadPreviewState = {
   target: PreviewTarget | null;
   tabs: PreviewTarget[];
@@ -794,6 +810,13 @@ function getChatThreadMessageRowsStub(env: Env, threadId: string): ChatThreadMes
   return env.CHAT_THREAD.get(
     env.CHAT_THREAD.idFromName(threadId),
   ) as unknown as ChatThreadMessageRowsStub;
+}
+
+function getChatThreadParsedMessagesStub(env: Env, threadId: string): ChatThreadParsedMessagesStub | null {
+  if (!("CHAT_THREAD" in env) || !env.CHAT_THREAD) return null;
+  return env.CHAT_THREAD.get(
+    env.CHAT_THREAD.idFromName(threadId),
+  ) as unknown as ChatThreadParsedMessagesStub;
 }
 
 function getChatThreadStub(env: Env, threadId: string): DurableObjectStub | null {
@@ -1165,6 +1188,55 @@ async function adminJsExecTool(
 async function getAdminThreadContext(env: Env, threadId: string): Promise<AdminThreadContext | null> {
   const adminIndex = getAdminIndexStub(env) as unknown as AdminThreadContextLookup;
   return adminIndex.getThreadContextById(threadId);
+}
+
+function messagesToJsonl(messages: unknown[]): string {
+  if (messages.length === 0) return "";
+  return `${messages.map((message) => JSON.stringify(message)).join("\n")}\n`;
+}
+
+function sanitizeFilename(value: string): string {
+  const sanitized = value.replace(/[^a-zA-Z0-9._-]/g, "_");
+  return sanitized || "thread";
+}
+
+async function getThreadJsonlTool(env: Env, args: Record<string, unknown>) {
+  const threadId = requiredStringArg(args, "thread_id");
+  if (typeof threadId !== "string") return toolText(threadId, true);
+
+  const threadContext = await getAdminThreadContext(env, threadId);
+  if (!threadContext) {
+    return toolText({ error: "Thread not found" }, true);
+  }
+
+  const orgStub = env.ORG.get(env.ORG.idFromName(threadContext.org_id)) as unknown as {
+    getThread(threadId: string): Promise<{ workspace_id?: string | null } | null> | { workspace_id?: string | null } | null;
+  };
+  const thread = await Promise.resolve(orgStub.getThread(threadId));
+  if (!thread || thread.workspace_id !== threadContext.workspace_id) {
+    return toolText({ error: "Thread not found" }, true);
+  }
+
+  const chatThreadStub = getChatThreadParsedMessagesStub(env, threadId);
+  if (!chatThreadStub || typeof chatThreadStub.getPiCoreParsedMessages !== "function") {
+    return toolText({ error: "CHAT_THREAD binding is not available" }, true);
+  }
+
+  const messages = await Promise.resolve(chatThreadStub.getPiCoreParsedMessages(threadId));
+  const parsedMessages = Array.isArray(messages) ? messages : [];
+  const jsonl = messagesToJsonl(parsedMessages);
+  return {
+    content: [{ type: "text", text: jsonl }],
+    structuredContent: {
+      success: true,
+      thread_id: threadId,
+      org_id: threadContext.org_id,
+      workspace_id: threadContext.workspace_id,
+      filename: `${sanitizeFilename(threadId)}.jsonl`,
+      content_type: "application/x-ndjson; charset=utf-8",
+      message_count: parsedMessages.length,
+    },
+  };
 }
 
 async function readThreadPreviewState(env: Env, threadId: string): Promise<ThreadPreviewState> {
@@ -1964,6 +2036,9 @@ async function callTool(
       method: "GET",
       path: `/api/admin/threads/${encodeURIComponent(threadId)}/messages`,
     });
+  }
+  if (name === TOOL_GET_THREAD_JSONL) {
+    return getThreadJsonlTool(env, input);
   }
   if (name === TOOL_MANAGE_THREAD_MESSAGE_ROWS) {
     return manageThreadMessageRowsTool(env, input);

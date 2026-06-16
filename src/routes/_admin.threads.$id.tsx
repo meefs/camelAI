@@ -245,9 +245,6 @@ export default function AdminThreadDetailPage() {
                       Download JSONL
                     </a>
                   </Button>
-                  <span className="text-xs text-muted-foreground">
-                    Streamed directly from sandbox storage
-                  </span>
                 </div>
               </CardContent>
             </Card>
