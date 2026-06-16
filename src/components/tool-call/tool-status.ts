@@ -22,6 +22,16 @@ export function ratchetToolStatusForIdentity(
   return ratchetToolStatus(previousStatus, nextStatus);
 }
 
+function isFailedToolResult(result?: ToolResultBlock): boolean {
+  return Boolean(
+    result &&
+      (
+        result.is_error === true ||
+        (result as { status?: unknown }).status === 'failed'
+      )
+  );
+}
+
 export function getToolStatus(
   tool?: ToolUseBlock,
   result?: ToolResultBlock,
@@ -32,14 +42,14 @@ export function getToolStatus(
   if (isSubAgentTool(tool?.name)) {
     const finalResult = results?.find(block => !block.isTaskUpdate) ??
       (result && !result.isTaskUpdate ? result : undefined);
-    if (finalResult && (finalResult as { is_error?: boolean }).is_error) return 'error';
+    if (isFailedToolResult(finalResult)) return 'error';
     if (finalResult) return 'complete';
     if (agentContinued) return 'complete';
     if (isStreaming === false) return 'complete';
     return 'running';
   }
 
-  if (result && (result as { is_error?: boolean }).is_error) return 'error';
+  if (isFailedToolResult(result)) return 'error';
   if (result) return 'complete';
   // No result object, but the agent produced content after this tool call —
   // the tool must have completed since the agent can't continue without its result.

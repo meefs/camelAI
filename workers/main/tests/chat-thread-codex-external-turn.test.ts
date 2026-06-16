@@ -5269,7 +5269,67 @@ describe('ChatThreadDO Codex turn handling', () => {
       command: 'echo hi',
       cwd: '/workspace',
       status: 'completed',
+      isError: false,
       aggregatedOutput: 'hi\n',
+    });
+  });
+
+  it('marks failed Pi runtime tool completion items with isError', async () => {
+    const { fake, events } = createPiEventFake();
+
+    await ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, {
+      type: 'tool_execution_start',
+      toolCallId: 'tool1',
+      toolName: 'bash',
+      args: { command: 'bun run validate', cwd: '/workspace' },
+    });
+    await ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, {
+      type: 'tool_execution_end',
+      toolCallId: 'tool1',
+      toolName: 'bash',
+      result: { content: [{ type: 'text', text: 'validation failed\n' }], details: {} },
+      isError: true,
+    });
+
+    const runtimeEvents = events.filter((event) => event.type === 'runtime_event');
+    const completedEvent = runtimeEvents.find(
+      (event) => event.event.method === 'item/completed',
+    );
+    expect(completedEvent?.event.params.item).toMatchObject({
+      id: 'tool1',
+      type: 'commandExecution',
+      command: 'bun run validate',
+      status: 'failed',
+      isError: true,
+      aggregatedOutput: 'validation failed\n',
+    });
+  });
+
+  it('marks failed Pi runtime dynamic tool completion items with isError', async () => {
+    const { fake, events } = createPiEventFake();
+
+    await ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, {
+      type: 'tool_execution_end',
+      toolCallId: 'tool-validate',
+      toolName: 'validate_workflow',
+      args: { name: 'daily-sync' },
+      result: { content: [{ type: 'text', text: 'invalid workflow' }], details: {} },
+      isError: true,
+    });
+
+    const completedEvent = events.find(
+      (event) =>
+        event.type === 'runtime_event' &&
+        event.event.method === 'item/completed',
+    );
+    expect(completedEvent?.event.params.item).toMatchObject({
+      id: 'tool-validate',
+      type: 'dynamicToolCall',
+      tool: 'validate_workflow',
+      arguments: { name: 'daily-sync' },
+      status: 'failed',
+      isError: true,
+      result: { content: [{ type: 'text', text: 'invalid workflow' }] },
     });
   });
 

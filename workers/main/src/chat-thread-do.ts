@@ -13119,13 +13119,15 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       const toolName = event.toolName || "tool";
       const eventWithArgs = event as typeof event & { args?: unknown };
       const args = this.recallPiToolArgs(toolCallId, this.piEventArgs(eventWithArgs.args));
-      const status = event.isError ? "failed" : "completed";
+      const isError = event.isError === true;
+      const status = isError ? "failed" : "completed";
       let item: Record<string, unknown> = {
         id: toolCallId,
         type: "dynamicToolCall",
         tool: toolName,
         arguments: args,
         status,
+        isError,
         result: event.result,
       };
       const contentItems = this.piRuntimeContentItems(event.result);
@@ -13134,6 +13136,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       }
       if (toolName.toLowerCase() === "bash") {
         item = this.piRuntimeToolItem(toolCallId, toolName, args, status);
+        item.isError = isError;
         item.aggregatedOutput = this.piToolResultText(event.result);
         item.result = event.result;
       }
@@ -13141,7 +13144,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         toolCallId,
         toolName,
         args,
-        event.isError ? "error" : "complete",
+        isError ? "error" : "complete",
         event.result,
       );
       this.pushPiRuntimeEvent("item/completed", {

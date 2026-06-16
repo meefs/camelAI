@@ -38,6 +38,37 @@ describe('getToolStatus', () => {
     expect(getToolStatus(makeTool(), errorResult, [errorResult], false)).toBe('error');
   });
 
+  it('returns error when result status is failed without is_error', () => {
+    const errorResult = makeResult({ status: 'failed' });
+    expect(getToolStatus(makeTool(), errorResult, [errorResult], false)).toBe('error');
+  });
+
+  it('returns error when a sub-agent final result status is failed without is_error', () => {
+    const progressResult = makeResult({
+      tool_use_id: 'tool-agent',
+      content: 'working',
+      isTaskUpdate: true,
+    });
+    const finalResult = makeResult({
+      tool_use_id: 'tool-agent',
+      content: 'failed',
+      status: 'failed',
+    });
+    expect(
+      getToolStatus(
+        makeTool('Agent'),
+        undefined,
+        [progressResult, finalResult],
+        false
+      )
+    ).toBe('error');
+  });
+
+  it('returns complete when result status is succeeded', () => {
+    const result = makeResult({ status: 'succeeded' });
+    expect(getToolStatus(makeTool(), result, [result], false)).toBe('complete');
+  });
+
   it('treats agent continuation as completion when result is temporarily missing', () => {
     expect(getToolStatus(makeTool(), undefined, [], true)).toBe('complete');
   });

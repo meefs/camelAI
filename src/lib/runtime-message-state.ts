@@ -299,6 +299,11 @@ type CodexThreadItem = {
   [key: string]: unknown;
 };
 
+type RuntimeToolResult = {
+  content: string | ContentBlock[];
+  isError: boolean;
+};
+
 type CodexTodoStatus = 'pending' | 'in_progress' | 'completed';
 
 type CodexTodoItem = {
@@ -815,7 +820,8 @@ function upsertToolResultBlock(
   blocks: ContentBlock[],
   itemId: string,
   content: string | ContentBlock[],
-  itemKind: string
+  itemKind: string,
+  options: { isError?: boolean } = {}
 ): ContentBlock[] {
   return upsertBlock(
     blocks,
@@ -823,6 +829,9 @@ function upsertToolResultBlock(
       type: 'tool_result',
       tool_use_id: itemId,
       content,
+      ...(options.isError === true
+        ? { is_error: true, status: 'failed' as const }
+        : { status: 'succeeded' as const }),
       itemId,
       itemKind,
     },
@@ -835,7 +844,8 @@ function appendToolResultText(
   blocks: ContentBlock[],
   itemId: string,
   delta: string,
-  itemKind: string
+  itemKind: string,
+  options: { isError?: boolean } = {}
 ): ContentBlock[] {
   const existingIndex = findBlockIndex(
     blocks,
@@ -845,16 +855,23 @@ function appendToolResultText(
     const nextBlocks = [...blocks];
     const existing = nextBlocks[existingIndex];
     if (existing.type === 'tool_result' && typeof existing.content === 'string') {
+      const isError =
+        options.isError === true ||
+        existing.is_error === true ||
+        existing.status === 'failed';
       nextBlocks[existingIndex] = {
         ...existing,
         content: `${existing.content}${delta}`,
+        ...(isError
+          ? { is_error: true, status: 'failed' as const }
+          : { status: 'succeeded' as const }),
         itemKind,
       };
       return nextBlocks;
     }
   }
 
-  return upsertToolResultBlock(blocks, itemId, delta, itemKind);
+  return upsertToolResultBlock(blocks, itemId, delta, itemKind, options);
 }
 
 function stringifyCodexValue(value: unknown): string {
@@ -1020,10 +1037,14 @@ function applyAgentOsRuntimeEvent(
           );
         }
         if (text) {
-          return appendToolResultText(nextBlocks, toolCallId, text, 'agentos');
+          return appendToolResultText(nextBlocks, toolCallId, text, 'agentos', {
+            isError: status === 'failed',
+          });
         }
         if (status === 'failed') {
-          return upsertToolResultBlock(nextBlocks, toolCallId, 'Tool failed.', 'agentos');
+          return upsertToolResultBlock(nextBlocks, toolCallId, 'Tool failed.', 'agentos', {
+            isError: true,
+          });
         }
         return nextBlocks;
       }
@@ -1205,6 +1226,46 @@ function formatImageResult(item: CodexThreadItem): string {
     typeof item.path === 'string' ? item.path : '',
     typeof item.revisedPrompt === 'string' ? `prompt: ${item.revisedPrompt}` : '',
   ]);
+}
+
+function isFailedRuntimeItem(item: CodexThreadItem): boolean {
+  const status = typeof item.status === 'string' ? item.status : '';
+  const result = item.result && typeof item.result === 'object'
+    ? item.result as { details?: unknown }
+    : null;
+  const details = result?.details && typeof result.details === 'object'
+    ? result.details as { success?: unknown; exitCode?: unknown }
+    : null;
+  return (
+    item.isError === true ||
+    status === 'failed' ||
+    status === 'error' ||
+    item.error != null ||
+    item.success === false ||
+    details?.success === false ||
+    (typeof details?.exitCode === 'number' && details.exitCode !== 0) ||
+    (
+      item.type === 'commandExecution' &&
+      typeof item.exitCode === 'number' &&
+      item.exitCode !== 0
+    )
+  );
+}
+
+function buildRuntimeToolResult(
+  item: CodexThreadItem,
+  content: string | ContentBlock[]
+): RuntimeToolResult | null {
+  if (typeof content === 'string' && content.length === 0) {
+    return null;
+  }
+  if (Array.isArray(content) && content.length === 0) {
+    return null;
+  }
+  return {
+    content,
+    isError: isFailedRuntimeItem(item),
+  };
 }
 
 function canonicalizeDynamicToolName(tool: unknown): string {
@@ -1468,33 +1529,42 @@ function buildToolUseFromCodexItem(item: CodexThreadItem): {
   }
 }
 
-function buildToolResultFromCodexItem(item: CodexThreadItem): string | null {
+function buildToolResultFromCodexItem(item: CodexThreadItem): RuntimeToolResult | null {
   switch (item.type) {
     case 'commandExecution':
-      return formatCommandResult(item);
+      return buildRuntimeToolResult(item, formatCommandResult(item));
     case 'fileChange':
-      return formatFileChangeResult(item);
+      return buildRuntimeToolResult(item, formatFileChangeResult(item));
     case 'mcpToolCall':
-      return formatMcpToolResult(item);
+      return buildRuntimeToolResult(item, formatMcpToolResult(item));
     case 'dynamicToolCall':
-      return formatDynamicToolResult(item);
+      return buildRuntimeToolResult(item, formatDynamicToolResult(item));
     case 'collabAgentToolCall':
-      return formatCollabAgentResult(item);
+      return buildRuntimeToolResult(item, formatCollabAgentResult(item));
     case 'webSearch':
-      return formatWebSearchResult(item);
+      return buildRuntimeToolResult(item, formatWebSearchResult(item));
     case 'imageView':
     case 'imageGeneration':
-      return formatImageResult(item);
+      return buildRuntimeToolResult(item, formatImageResult(item));
     case 'enteredReviewMode':
-      return typeof item.review === 'string' ? item.review : 'Entered review mode.';
+      return buildRuntimeToolResult(
+        item,
+        typeof item.review === 'string' ? item.review : 'Entered review mode.'
+      );
     case 'exitedReviewMode':
-      return typeof item.review === 'string' ? item.review : 'Exited review mode.';
+      return buildRuntimeToolResult(
+        item,
+        typeof item.review === 'string' ? item.review : 'Exited review mode.'
+      );
     case 'contextCompaction':
-      return 'Context compacted.';
+      return buildRuntimeToolResult(item, 'Context compacted.');
     default:
-      return stringifyCodexValue(
-        Object.fromEntries(
-          Object.entries(item).filter(([key]) => key !== 'id' && key !== 'type')
+      return buildRuntimeToolResult(
+        item,
+        stringifyCodexValue(
+          Object.fromEntries(
+            Object.entries(item).filter(([key]) => key !== 'id' && key !== 'type')
+          )
         )
       );
   }
@@ -1562,7 +1632,13 @@ function applyCodexItemCompleted(
       }
       const result = buildToolResultFromCodexItem(item);
       if (result) {
-        nextBlocks = upsertToolResultBlock(nextBlocks, item.id, result, item.type);
+        nextBlocks = upsertToolResultBlock(
+          nextBlocks,
+          item.id,
+          result.content,
+          item.type,
+          { isError: result.isError }
+        );
       }
       return nextBlocks;
     }
