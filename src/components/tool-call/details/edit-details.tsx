@@ -2,6 +2,7 @@
 
 import type { ToolUseBlock } from '@/types';
 import { cn } from '@/lib/utils';
+import { buildFilePreviewLinkTarget } from '@/lib/file-preview-target';
 import { DetailRow } from './shared';
 
 interface EditDetailsProps {
@@ -43,6 +44,13 @@ export function EditDetails({ tool }: EditDetailsProps) {
     (typeof input.file_path === 'string' && input.file_path) ||
     (typeof input.path === 'string' && input.path) ||
     '';
+  const filePreview = buildFilePreviewLinkTarget({
+    path,
+    location: input.location,
+    project: input.project,
+    contentType: input.contentType,
+    content_type: input.content_type,
+  });
   const edits: EditEntry[] = Array.isArray(input.edits)
     ? (input.edits as EditEntry[])
     : [
@@ -57,7 +65,14 @@ export function EditDetails({ tool }: EditDetailsProps) {
 
   return (
     <div className="space-y-1">
-      <DetailRow label="Path:" value={path} copyValue={path} mono asFileLink />
+      <DetailRow
+        label="Path:"
+        value={path}
+        copyValue={path}
+        mono
+        asFileLink
+        filePreview={filePreview}
+      />
       <DetailRow label="Changes:" value={replacementCount ? `${replacementCount} replacements` : '0'} />
       {diffLines.length > 0 ? (
         <div className="mt-2 font-mono text-xs bg-muted/30 rounded p-2 max-h-32 overflow-auto">

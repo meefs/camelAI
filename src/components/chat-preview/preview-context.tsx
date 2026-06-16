@@ -7,6 +7,7 @@ interface ChatPreviewContextValue {
   openPreviewTarget: (target: PreviewTarget) => void;
   clearPreviewTarget: () => void;
   resolveAppVisibility?: (scriptName: string) => Promise<boolean | null>;
+  workspaceId?: string | null;
 }
 
 const ChatPreviewContext = createContext<ChatPreviewContextValue | null>(null);

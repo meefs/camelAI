@@ -6,44 +6,11 @@ import { useAuthData } from '@/hooks/use-auth-data';
 import { cn } from '@/lib/utils';
 import { FilePreviewPopover } from '@/components/chat-file-preview';
 import { useChatPreviewContext } from '@/components/chat-preview/preview-context';
+import {
+  buildFilePreviewLinkTarget,
+  type FilePreviewLinkTarget,
+} from '@/lib/file-preview-target';
 import type { PreviewTarget } from '@/types';
-
-const WORKSPACE_ROOT_PREFIXES = ['/home/claude', '/workspace', '/root'];
-
-const TEMP_FILE_PREFIXES = [
-  { prefix: '/uploads/', type: 'upload' as const, urlSegment: 'uploads' },
-  { prefix: '/outputs/', type: 'output' as const, urlSegment: 'outputs' },
-  { prefix: '/mnt/user-uploads/', type: 'upload' as const, urlSegment: 'uploads' },
-  { prefix: '/mnt/user-outputs/', type: 'output' as const, urlSegment: 'outputs' },
-];
-
-function normalizeWorkspacePath(input: string): string {
-  const trimmed = input?.trim?.() ?? '';
-  if (!trimmed) return '';
-  const normalized = trimmed.startsWith('/') ? trimmed : `/${trimmed}`;
-  for (const prefix of WORKSPACE_ROOT_PREFIXES) {
-    if (normalized === prefix) return '/';
-    if (normalized.startsWith(`${prefix}/`)) {
-      const remainder = normalized.slice(prefix.length);
-      return remainder.startsWith('/') ? remainder : `/${remainder}`;
-    }
-  }
-  return normalized;
-}
-
-function getTempFileInfo(input: string) {
-  const trimmed = input?.trim?.() ?? '';
-  if (!trimmed) return null;
-  const normalized = trimmed.startsWith('/') ? trimmed : `/${trimmed}`;
-  for (const { prefix, type, urlSegment } of TEMP_FILE_PREFIXES) {
-    if (normalized.startsWith(prefix)) {
-      const relativePath = normalized.slice(prefix.length);
-      if (!relativePath) return null;
-      return { type, relativePath, urlSegment };
-    }
-  }
-  return null;
-}
 
 function encodePathSegments(path: string): string {
   return path
@@ -52,12 +19,40 @@ function encodePathSegments(path: string): string {
     .join('/');
 }
 
-function getBasename(path: string): string {
-  return path.split('/').filter(Boolean).pop() || path;
+function getSourceRouteSegment(source: FilePreviewLinkTarget['source']): string {
+  return source === 'upload' ? 'uploads' : 'outputs';
+}
+
+function getPopoverPreviewUrl(workspaceId: string, target: FilePreviewLinkTarget): string | null {
+  if (target.source === 'vm') return null;
+
+  if (target.source === 'workspace') {
+    return `/api/workspaces/${workspaceId}/fs/content/${encodePathSegments(target.path.replace(/^\/+/, ''))}`;
+  }
+
+  return `/api/workspaces/${workspaceId}/${getSourceRouteSegment(target.source)}/${encodePathSegments(target.path)}`;
+}
+
+function buildPreviewTarget(
+  workspaceId: string,
+  target: FilePreviewLinkTarget,
+): PreviewTarget | null {
+  if (target.source === 'vm' && !target.project) return null;
+  return {
+    kind: 'file',
+    source: target.source,
+    workspaceId,
+    path: target.path,
+    filename: target.filename,
+    ...(target.project ? { project: target.project } : {}),
+    ...(target.contentType ? { contentType: target.contentType } : {}),
+  };
 }
 
 interface FileLinkProps {
   path: string;
+  previewTarget?: FilePreviewLinkTarget;
+  workspaceId?: string;
   children?: ReactNode;
   className?: string;
   mono?: boolean;
@@ -65,6 +60,8 @@ interface FileLinkProps {
 
 export function FileLink({
   path,
+  previewTarget,
+  workspaceId,
   children,
   className,
   mono = false,
@@ -72,10 +69,19 @@ export function FileLink({
   const { currentWorkspace } = useAuthData();
   const [previewOpen, setPreviewOpen] = useState(false);
   const previewContext = useChatPreviewContext();
-  const tempInfo = getTempFileInfo(path);
-  const normalizedPath = normalizeWorkspacePath(path);
+  const resolvedWorkspaceId =
+    workspaceId ?? previewContext?.workspaceId ?? currentWorkspace?.id;
+  const resolvedTarget = previewTarget ?? buildFilePreviewLinkTarget({ path });
+  const previewTargetForContext = resolvedWorkspaceId && resolvedTarget
+    ? buildPreviewTarget(resolvedWorkspaceId, resolvedTarget)
+    : null;
+  const displayContent = children ?? (
+    resolvedTarget?.source === 'workspace' && !previewTarget
+      ? path
+      : resolvedTarget?.filename
+  );
 
-  if (!normalizedPath || !currentWorkspace?.id) {
+  if (!resolvedTarget || !resolvedWorkspaceId) {
     return (
       <span className={cn(mono && "font-mono", className)}>
         {children ?? path}
@@ -83,87 +89,7 @@ export function FileLink({
     );
   }
 
-  if (tempInfo) {
-    const previewUrl = `/api/workspaces/${currentWorkspace.id}/${tempInfo.urlSegment}/${encodePathSegments(tempInfo.relativePath)}`;
-    const displayName = tempInfo.relativePath.split('/').pop() || tempInfo.relativePath;
-    const previewTarget: PreviewTarget = {
-      kind: 'file',
-      source: tempInfo.type,
-      workspaceId: currentWorkspace.id,
-      path: tempInfo.relativePath,
-      filename: displayName,
-    };
-
-    if (previewContext) {
-      return (
-        <button
-          type="button"
-          className={cn(
-            "inline-flex min-w-0 max-w-full items-center gap-1 hover:underline",
-            "text-foreground/80 hover:text-foreground",
-            mono && "font-mono",
-            className
-          )}
-          onClick={(event) => {
-            event.stopPropagation();
-            previewContext.openPreviewTarget(previewTarget);
-          }}
-          onMouseDown={(event) => event.stopPropagation()}
-          onPointerDown={(event) => event.stopPropagation()}
-          onKeyDown={(event) => {
-            if (event.key === 'Enter' || event.key === ' ') {
-              event.stopPropagation();
-            }
-          }}
-        >
-          {children ?? displayName}
-        </button>
-      );
-    }
-
-    return (
-      <>
-        <button
-          type="button"
-          className={cn(
-            "inline-flex min-w-0 max-w-full items-center gap-1 hover:underline",
-            "text-foreground/80 hover:text-foreground",
-            mono && "font-mono",
-            className
-          )}
-          onClick={(event) => {
-            event.stopPropagation();
-            setPreviewOpen(true);
-          }}
-          onMouseDown={(event) => event.stopPropagation()}
-          onPointerDown={(event) => event.stopPropagation()}
-          onKeyDown={(event) => {
-            if (event.key === 'Enter' || event.key === ' ') {
-              event.stopPropagation();
-            }
-          }}
-        >
-          {children ?? displayName}
-        </button>
-        <FilePreviewPopover
-          open={previewOpen}
-          onOpenChange={setPreviewOpen}
-          filename={displayName}
-          previewUrl={previewUrl}
-        />
-      </>
-    );
-  }
-
-  if (previewContext) {
-    const previewTarget: PreviewTarget = {
-      kind: 'file',
-      source: 'workspace',
-      workspaceId: currentWorkspace.id,
-      path: normalizedPath,
-      filename: getBasename(normalizedPath),
-    };
-
+  if (previewContext && previewTargetForContext) {
     return (
       <button
         type="button"
@@ -175,7 +101,7 @@ export function FileLink({
         )}
         onClick={(event) => {
           event.stopPropagation();
-          previewContext.openPreviewTarget(previewTarget);
+          previewContext.openPreviewTarget(previewTargetForContext);
         }}
         onMouseDown={(event) => event.stopPropagation()}
         onPointerDown={(event) => event.stopPropagation()}
@@ -185,13 +111,19 @@ export function FileLink({
           }
         }}
       >
-        {children ?? path}
+        {displayContent}
       </button>
     );
   }
 
-  const displayName = getBasename(normalizedPath);
-  const previewUrl = `/api/workspaces/${currentWorkspace.id}/fs/content/${encodePathSegments(normalizedPath.replace(/^\/+/, ''))}`;
+  const previewUrl = getPopoverPreviewUrl(resolvedWorkspaceId, resolvedTarget);
+  if (!previewUrl) {
+    return (
+      <span className={cn(mono && "font-mono", className)}>
+        {children ?? path}
+      </span>
+    );
+  }
 
   return (
     <>
@@ -215,12 +147,12 @@ export function FileLink({
           }
         }}
       >
-        {children ?? path}
+        {displayContent}
       </button>
       <FilePreviewPopover
         open={previewOpen}
         onOpenChange={setPreviewOpen}
-        filename={displayName}
+        filename={resolvedTarget.filename}
         previewUrl={previewUrl}
       />
     </>

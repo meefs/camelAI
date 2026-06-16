@@ -5,6 +5,7 @@ import { Check, Copy } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { cn } from '@/lib/utils';
+import type { FilePreviewLinkTarget } from '@/lib/file-preview-target';
 import { FileLink } from '../file-link';
 import { stripAnsi } from '../tool-utils';
 
@@ -79,6 +80,7 @@ interface DetailRowProps {
   tooltipThreshold?: number;
   asFileLink?: boolean;
   filePath?: string;
+  filePreview?: FilePreviewLinkTarget | null;
 }
 
 export function DetailRow({
@@ -90,6 +92,7 @@ export function DetailRow({
   tooltipThreshold = 48,
   asFileLink = false,
   filePath,
+  filePreview,
 }: DetailRowProps) {
   if (value === undefined || value === null || value === '') return null;
 
@@ -97,8 +100,15 @@ export function DetailRow({
     if (typeof value !== 'string') return value;
 
     if (asFileLink) {
-      const linkNode = (
-        <FileLink path={filePath ?? value} mono={mono} className="truncate block">
+      const linkNode = filePreview === null ? (
+        <span className={cn("truncate block", mono && "font-mono")}>{value}</span>
+      ) : (
+        <FileLink
+          path={filePath ?? value}
+          previewTarget={filePreview}
+          mono={mono}
+          className="truncate block"
+        >
           {value}
         </FileLink>
       );

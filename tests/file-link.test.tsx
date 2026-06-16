@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
+import { ChatPreviewProvider } from '@/components/chat-preview/preview-context';
 import { FileLink } from '@/components/tool-call/file-link';
 
 const { mockUseAuthData, filePreviewPopoverMock } = vi.hoisted(() => ({
@@ -168,6 +169,113 @@ describe('FileLink', () => {
         'data-preview-url',
         '/api/workspaces/ws-456/fs/content/app/my%20file%20%231.html',
       );
+    });
+
+    it('uses the thread workspace id from preview context before auth state', () => {
+      mockUseAuthData.mockReturnValue({
+        currentWorkspace: { id: 'other-ws' },
+      });
+      const openPreviewTarget = vi.fn();
+
+      render(
+        <ChatPreviewProvider
+          value={{
+            workspaceId: 'thread-ws',
+            openPreviewTarget,
+            clearPreviewTarget: vi.fn(),
+          }}
+        >
+          <FileLink path="/notes.md">notes.md</FileLink>
+        </ChatPreviewProvider>,
+      );
+
+      fireEvent.click(screen.getByRole('button', { name: 'notes.md' }));
+
+      expect(openPreviewTarget).toHaveBeenCalledWith({
+        kind: 'file',
+        source: 'workspace',
+        workspaceId: 'thread-ws',
+        path: '/notes.md',
+        filename: 'notes.md',
+      });
+    });
+
+    it('opens VM targets with their project metadata', () => {
+      mockUseAuthData.mockReturnValue({
+        currentWorkspace: { id: 'other-ws' },
+      });
+      const openPreviewTarget = vi.fn();
+
+      render(
+        <ChatPreviewProvider
+          value={{
+            workspaceId: 'thread-ws',
+            openPreviewTarget,
+            clearPreviewTarget: vi.fn(),
+          }}
+        >
+          <FileLink
+            path="/src/App.tsx"
+            previewTarget={{
+              source: 'vm',
+              project: 'demo-app',
+              path: '/src/App.tsx',
+              filename: 'App.tsx',
+            }}
+          >
+            App.tsx
+          </FileLink>
+        </ChatPreviewProvider>,
+      );
+
+      fireEvent.click(screen.getByRole('button', { name: 'App.tsx' }));
+
+      expect(openPreviewTarget).toHaveBeenCalledWith({
+        kind: 'file',
+        source: 'vm',
+        workspaceId: 'thread-ws',
+        project: 'demo-app',
+        path: '/src/App.tsx',
+        filename: 'App.tsx',
+      });
+    });
+
+    it('does not double-prefix output targets passed as canonical preview metadata', () => {
+      mockUseAuthData.mockReturnValue({
+        currentWorkspace: { id: 'other-ws' },
+      });
+      const openPreviewTarget = vi.fn();
+
+      render(
+        <ChatPreviewProvider
+          value={{
+            workspaceId: 'thread-ws',
+            openPreviewTarget,
+            clearPreviewTarget: vi.fn(),
+          }}
+        >
+          <FileLink
+            path="outputs/report.html"
+            previewTarget={{
+              source: 'output',
+              path: 'report.html',
+              filename: 'report.html',
+            }}
+          >
+            report.html
+          </FileLink>
+        </ChatPreviewProvider>,
+      );
+
+      fireEvent.click(screen.getByRole('button', { name: 'report.html' }));
+
+      expect(openPreviewTarget).toHaveBeenCalledWith({
+        kind: 'file',
+        source: 'output',
+        workspaceId: 'thread-ws',
+        path: 'report.html',
+        filename: 'report.html',
+      });
     });
   });
 });

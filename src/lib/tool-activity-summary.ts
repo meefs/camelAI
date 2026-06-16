@@ -8,6 +8,11 @@ import {
   parseMcpToolName,
 } from './tool-activity-mcp-utils';
 import { getResultText } from './tool-activity-tool-utils';
+import {
+  buildFilePreviewLinkTarget,
+  parseFilePreviewTargetFromToolResultText,
+  type FilePreviewLinkTarget,
+} from './file-preview-target';
 
 function getFilename(path: string): string {
   const trimmed = path.trim();
@@ -173,25 +178,95 @@ export interface ToolSummaryParts {
   filename?: string;
   path?: string;
   appPreview?: { scriptName: string; isPublic?: boolean };
+  filePreview?: FilePreviewLinkTarget;
 }
 
-function getFilePreviewSummary(path: string, isRunning: boolean, isError: boolean): ToolSummaryParts {
+function getInputPath(inputRecord: Record<string, unknown>): string {
+  if (typeof inputRecord.file_path === 'string') return inputRecord.file_path;
+  if (typeof inputRecord.path === 'string') return inputRecord.path;
+  return '';
+}
+
+function buildFilePreviewFromInput(inputRecord: Record<string, unknown>): FilePreviewLinkTarget | null {
+  return buildFilePreviewLinkTarget({
+    path: getInputPath(inputRecord),
+    location: inputRecord.location,
+    project: inputRecord.project,
+    contentType: inputRecord.contentType,
+    content_type: inputRecord.content_type,
+  });
+}
+
+function getDisplayPathForTarget(target: FilePreviewLinkTarget): string {
+  if (target.source === 'upload') return `uploads/${target.path}`;
+  if (target.source === 'output') return `outputs/${target.path}`;
+  return target.path;
+}
+
+function getFilePreviewSummary(
+  filePreview: FilePreviewLinkTarget | null,
+  displayPath: string,
+  isRunning: boolean,
+  isError: boolean,
+): ToolSummaryParts {
+  const path = displayPath || (filePreview ? getDisplayPathForTarget(filePreview) : '');
+  const filename = filePreview?.filename ?? (path ? getFilename(path) : undefined);
+  const fileParts = filePreview ? { path, filename: filePreview.filename, filePreview } : {
+    ...(filename ? { filename } : {}),
+  };
+
   if (isRunning) {
-    if (!path) return { action: 'Opening preview...' };
-    return { action: 'Opening preview', filename: getFilename(path), path };
+    if (!path && !filename) return { action: 'Opening preview...' };
+    return { action: 'Opening preview', ...fileParts };
   }
   if (isError) {
     return {
       action: 'Failed to preview',
-      filename: path ? getFilename(path) : undefined,
-      path: path || undefined,
+      ...fileParts,
     };
   }
   return {
     action: 'Previewed',
-    filename: path ? getFilename(path) : undefined,
-    path: path || undefined,
+    ...fileParts,
   };
+}
+
+function getFileToolSummary(
+  inputRecord: Record<string, unknown>,
+  labels: { running: string; runningGeneric: string; error: string; complete: string },
+  isRunning: boolean,
+  isError: boolean,
+): ToolSummaryParts {
+  const path = getInputPath(inputRecord);
+  const filePreview = buildFilePreviewFromInput(inputRecord);
+  const filename = filePreview?.filename ?? (path ? getFilename(path) : undefined);
+  const fileParts = filePreview
+    ? { filename: filePreview.filename, path, filePreview }
+    : {
+        ...(filename ? { filename } : {}),
+      };
+
+  if (isRunning) {
+    if (!path && !filename) return { action: labels.runningGeneric };
+    return {
+      action: labels.running,
+      ...fileParts,
+    };
+  }
+  if (isError) {
+    return {
+      action: labels.error,
+      ...fileParts,
+    };
+  }
+  return {
+    action: labels.complete,
+    ...fileParts,
+  };
+}
+
+function getResultFilePreview(result?: ToolResultBlock): FilePreviewLinkTarget | null {
+  return parseFilePreviewTargetFromToolResultText(getResultText(result));
 }
 
 function getAppPreviewSummary(
@@ -282,16 +357,22 @@ export function getToolSummaryParts(
 
   if (isSetPreviewToolName(name)) {
     const kind = inputRecord.kind === 'app' || inputRecord.kind === 'file' ? inputRecord.kind : undefined;
-    const path = typeof inputRecord.path === 'string' ? inputRecord.path : '';
+    const path = getInputPath(inputRecord);
     const scriptName = getPreviewScriptName(inputRecord);
     const fallbackIsPublic = typeof inputRecord.is_public === 'boolean' ? inputRecord.is_public : null;
+    const resultFilePreview = getResultFilePreview(result);
 
     if (kind === 'app' || (!kind && scriptName)) {
       return getAppPreviewSummary(scriptName, result, isRunning, isError, fallbackIsPublic);
     }
 
-    if (kind === 'file' || (!kind && path)) {
-      return getFilePreviewSummary(path, isRunning, isError);
+    if (resultFilePreview || kind === 'file' || (!kind && path)) {
+      return getFilePreviewSummary(
+        resultFilePreview ?? buildFilePreviewFromInput(inputRecord),
+        resultFilePreview ? getDisplayPathForTarget(resultFilePreview) : path,
+        isRunning,
+        isError,
+      );
     }
 
     if (isRunning) return { action: 'Opening preview...' };
@@ -300,8 +381,13 @@ export function getToolSummaryParts(
   }
 
   if (isSetFilePreviewToolName(name)) {
-    const path = typeof inputRecord.path === 'string' ? inputRecord.path : '';
-    return getFilePreviewSummary(path, isRunning, isError);
+    const resultFilePreview = getResultFilePreview(result);
+    return getFilePreviewSummary(
+      resultFilePreview ?? buildFilePreviewFromInput(inputRecord),
+      resultFilePreview ? getDisplayPathForTarget(resultFilePreview) : getInputPath(inputRecord),
+      isRunning,
+      isError,
+    );
   }
 
   if (isSetAppPreviewToolName(name)) {
@@ -325,88 +411,43 @@ export function getToolSummaryParts(
 
   switch (summaryName) {
     case 'Read': {
-      const path =
-        typeof inputRecord.file_path === 'string'
-          ? inputRecord.file_path
-          : typeof inputRecord.path === 'string'
-            ? inputRecord.path
-            : '';
-      if (isRunning) {
-        if (!path) return { action: 'Reading file...' };
-        return {
-          action: 'Reading',
-          filename: getFilename(path),
-          path,
-        };
-      }
-      if (isError) {
-        return {
-          action: 'Failed to read',
-          filename: path ? getFilename(path) : undefined,
-          path: path || undefined,
-        };
-      }
-      return {
-        action: 'Read',
-        filename: path ? getFilename(path) : undefined,
-        path: path || undefined,
-      };
+      return getFileToolSummary(
+        inputRecord,
+        {
+          running: 'Reading',
+          runningGeneric: 'Reading file...',
+          error: 'Failed to read',
+          complete: 'Read',
+        },
+        isRunning,
+        isError,
+      );
     }
     case 'Write': {
-      const path =
-        typeof inputRecord.file_path === 'string'
-          ? inputRecord.file_path
-          : typeof inputRecord.path === 'string'
-            ? inputRecord.path
-            : '';
-      if (isRunning) {
-        if (!path) return { action: 'Creating file...' };
-        return {
-          action: 'Creating',
-          filename: getFilename(path),
-          path,
-        };
-      }
-      if (isError) {
-        return {
-          action: 'Failed to create',
-          filename: path ? getFilename(path) : undefined,
-          path: path || undefined,
-        };
-      }
-      return {
-        action: 'Created',
-        filename: path ? getFilename(path) : undefined,
-        path: path || undefined,
-      };
+      return getFileToolSummary(
+        inputRecord,
+        {
+          running: 'Creating',
+          runningGeneric: 'Creating file...',
+          error: 'Failed to create',
+          complete: 'Created',
+        },
+        isRunning,
+        isError,
+      );
     }
     case 'Edit': {
-      const path =
-        typeof inputRecord.file_path === 'string'
-          ? inputRecord.file_path
-          : typeof inputRecord.path === 'string'
-            ? inputRecord.path
-            : '';
-      if (isRunning) {
-        if (!path) return { action: 'Editing file...' };
-        return {
-          action: 'Editing',
-          filename: getFilename(path),
-          path,
-        };
-      }
-      if (isError) {
-        return {
-          action: 'Failed to edit',
-          filename: path ? getFilename(path) : undefined,
-          path: path || undefined,
-        };
-      }
-      return {
-        action: 'Edited',
-        filename: path ? getFilename(path) : undefined,
-        path: path || undefined,
-      };
+      return getFileToolSummary(
+        inputRecord,
+        {
+          running: 'Editing',
+          runningGeneric: 'Editing file...',
+          error: 'Failed to edit',
+          complete: 'Edited',
+        },
+        isRunning,
+        isError,
+      );
     }
     case 'Bash': {
       const description = typeof inputRecord.description === 'string' ? inputRecord.description : '';
@@ -687,18 +728,30 @@ export function getToolSummaryParts(
         typeof change === 'object' &&
         typeof (change as { path?: unknown }).path === 'string'
       ))?.path;
+      const filePreview = buildFilePreviewLinkTarget({
+        path: firstPath,
+        location: inputRecord.location,
+        project: inputRecord.project,
+        contentType: inputRecord.contentType,
+        content_type: inputRecord.content_type,
+      });
+      const fileParts = filePreview
+        ? { filename: filePreview.filename, path: firstPath, filePreview }
+        : firstPath
+          ? { filename: getFilename(firstPath) }
+          : {};
       if (isRunning) {
         return firstPath
-          ? { action: 'Updating', filename: getFilename(firstPath), path: firstPath }
+          ? { action: 'Updating', ...fileParts }
           : { action: 'Applying file changes...' };
       }
       if (isError) {
         return firstPath
-          ? { action: 'Failed to update', filename: getFilename(firstPath), path: firstPath }
+          ? { action: 'Failed to update', ...fileParts }
           : { action: 'Failed to apply file changes' };
       }
       return firstPath
-        ? { action: 'Updated', filename: getFilename(firstPath), path: firstPath }
+        ? { action: 'Updated', ...fileParts }
         : { action: 'Applied file changes' };
     }
     case 'CodexReviewMode':
@@ -711,18 +764,24 @@ export function getToolSummaryParts(
       return { action: 'Cleaned up conversation history' };
     case 'CodexImageView': {
       const path = typeof inputRecord.path === 'string' ? inputRecord.path : '';
+      const filePreview = buildFilePreviewFromInput(inputRecord);
+      const fileParts = filePreview
+        ? { filename: filePreview.filename, path, filePreview }
+        : path
+          ? { filename: getFilename(path) }
+          : {};
       if (isRunning) {
         return path
-          ? { action: 'Viewing', filename: getFilename(path), path }
+          ? { action: 'Viewing', ...fileParts }
           : { action: 'Viewing image...' };
       }
       if (isError) {
         return path
-          ? { action: 'Failed to view', filename: getFilename(path), path }
+          ? { action: 'Failed to view', ...fileParts }
           : { action: 'Failed to view image' };
       }
       return path
-        ? { action: 'Viewed', filename: getFilename(path), path }
+        ? { action: 'Viewed', ...fileParts }
         : { action: 'Viewed image' };
     }
     case 'CodexImageGeneration':

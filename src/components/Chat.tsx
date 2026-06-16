@@ -5413,7 +5413,14 @@ type SendOptions = {
 
   return (
     <TooltipProvider>
-      <ChatPreviewProvider value={{ openPreviewTarget, clearPreviewTarget, resolveAppVisibility }}>
+      <ChatPreviewProvider
+        value={{
+          openPreviewTarget,
+          clearPreviewTarget,
+          resolveAppVisibility,
+          workspaceId: resolvedWorkspaceId,
+        }}
+      >
         <>
           {shouldShowChat ? (
             <div

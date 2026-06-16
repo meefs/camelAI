@@ -51,6 +51,15 @@ function makeWriteTool(input: Record<string, unknown> = {}): ToolUseBlock {
   };
 }
 
+function makeEditTool(input: Record<string, unknown> = {}): ToolUseBlock {
+  return {
+    type: 'tool_use',
+    id: 'tool_edit',
+    name: 'Edit',
+    input,
+  };
+}
+
 function makeMcpTool(name: string, input: Record<string, unknown> = {}): ToolUseBlock {
   return {
     type: 'tool_use',
@@ -358,6 +367,104 @@ describe('getToolSummaryParts friendly dynamic tool labels', () => {
   });
 });
 
+describe('getToolSummaryParts file preview metadata', () => {
+  it('includes workspace file targets for read calls', () => {
+    const summary = getToolSummaryParts(
+      makeReadTool({ location: 'workspace', path: '/notes.md' }),
+      undefined,
+      false,
+      'complete',
+    );
+
+    expect(summary.filePreview).toEqual({
+      source: 'workspace',
+      path: '/notes.md',
+      filename: 'notes.md',
+    });
+    expect(summary.path).toBe('/notes.md');
+  });
+
+  it('includes VM file targets with the project for read calls', () => {
+    const summary = getToolSummaryParts(
+      makeReadTool({ location: 'vm', project: 'demo-app', path: '/src/App.tsx' }),
+      undefined,
+      false,
+      'complete',
+    );
+
+    expect(summary.filePreview).toEqual({
+      source: 'vm',
+      project: 'demo-app',
+      path: '/src/App.tsx',
+      filename: 'App.tsx',
+    });
+  });
+
+  it('maps R2 output paths to output preview targets without the outputs prefix', () => {
+    const summary = getToolSummaryParts(
+      makeWriteTool({ location: 'r2', path: 'outputs/report.html' }),
+      undefined,
+      false,
+      'complete',
+    );
+
+    expect(summary.filePreview).toEqual({
+      source: 'output',
+      path: 'report.html',
+      filename: 'report.html',
+    });
+    expect(summary.path).toBe('outputs/report.html');
+  });
+
+  it('maps R2 upload paths to upload preview targets without the uploads prefix', () => {
+    const summary = getToolSummaryParts(
+      makeReadTool({ location: 'r2', path: 'uploads/data.csv' }),
+      undefined,
+      false,
+      'complete',
+    );
+
+    expect(summary.filePreview).toEqual({
+      source: 'upload',
+      path: 'data.csv',
+      filename: 'data.csv',
+    });
+    expect(summary.path).toBe('uploads/data.csv');
+  });
+
+  it('does not create a misleading preview target for R2 tmp paths', () => {
+    const summary = getToolSummaryParts(
+      makeReadTool({ location: 'r2', path: 'tmp/private.txt' }),
+      undefined,
+      false,
+      'complete',
+    );
+
+    expect(summary.filePreview).toBeUndefined();
+    expect(summary.path).toBeUndefined();
+    expect(summary.filename).toBe('private.txt');
+  });
+
+  it('includes workspace file targets for edit calls', () => {
+    const summary = getToolSummaryParts(
+      makeEditTool({
+        location: 'workspace',
+        path: '/notes.md',
+        edits: [{ old_string: 'old', new_string: 'new' }],
+      }),
+      undefined,
+      false,
+      'complete',
+    );
+
+    expect(summary.filePreview).toEqual({
+      source: 'workspace',
+      path: '/notes.md',
+      filename: 'notes.md',
+    });
+  });
+});
+
 describe('getToolSummaryParts set-preview MCP tools', () => {
   it('renders unified set_preview with a file path as a clickable file summary source', () => {
     const tool = makeMcpTool('set_preview', {
@@ -369,6 +476,60 @@ describe('getToolSummaryParts set-preview MCP tools', () => {
       action: 'Previewed',
       filename: 'app.tsx',
       path: '/workspace/src/app.tsx',
+      filePreview: {
+        source: 'workspace',
+        path: '/src/app.tsx',
+        filename: 'app.tsx',
+      },
+    });
+  });
+
+  it('renders unified set_preview VM file targets', () => {
+    const tool = makeMcpTool('set_preview', {
+      location: 'vm',
+      project: 'demo-app',
+      path: 'index.html',
+    });
+    const summary = getToolSummaryParts(tool, undefined, false, 'complete');
+
+    expect(summary).toEqual({
+      action: 'Previewed',
+      filename: 'index.html',
+      path: 'index.html',
+      filePreview: {
+        source: 'vm',
+        project: 'demo-app',
+        path: '/index.html',
+        filename: 'index.html',
+      },
+    });
+  });
+
+  it('prefers completed set_preview result file targets over input fallback', () => {
+    const tool = makeMcpTool('set_preview', {
+      location: 'workspace',
+      path: '/wrong.md',
+    });
+    const result = makeToolResult(JSON.stringify({
+      success: true,
+      target: {
+        kind: 'file',
+        source: 'output',
+        path: 'plot.png',
+        filename: 'plot.png',
+      },
+    }));
+    const summary = getToolSummaryParts(tool, result, false, 'complete');
+
+    expect(summary).toEqual({
+      action: 'Previewed',
+      filename: 'plot.png',
+      path: 'outputs/plot.png',
+      filePreview: {
+        source: 'output',
+        path: 'plot.png',
+        filename: 'plot.png',
+      },
     });
   });
 
@@ -439,6 +600,11 @@ describe('getToolSummaryParts set-preview MCP tools', () => {
       action: 'Opening preview',
       filename: 'app.tsx',
       path: '/workspace/src/app.tsx',
+      filePreview: {
+        source: 'workspace',
+        path: '/src/app.tsx',
+        filename: 'app.tsx',
+      },
     });
   });
 
@@ -452,6 +618,38 @@ describe('getToolSummaryParts set-preview MCP tools', () => {
       action: 'Previewed',
       filename: 'app.tsx',
       path: '/workspace/src/app.tsx',
+      filePreview: {
+        source: 'workspace',
+        path: '/src/app.tsx',
+        filename: 'app.tsx',
+      },
+    });
+  });
+
+  it('prefers completed set_file_preview result file targets over input fallback', () => {
+    const tool = makeMcpTool('mcp__chiridion-mcp__set_file_preview', {
+      location: 'workspace',
+      path: '/wrong.md',
+    });
+    const result = makeToolResult(JSON.stringify({
+      success: true,
+      target: {
+        kind: 'file',
+        source: 'output',
+        path: 'plot.png',
+      },
+    }));
+    const summary = getToolSummaryParts(tool, result, false, 'complete');
+
+    expect(summary).toEqual({
+      action: 'Previewed',
+      filename: 'plot.png',
+      path: 'outputs/plot.png',
+      filePreview: {
+        source: 'output',
+        path: 'plot.png',
+        filename: 'plot.png',
+      },
     });
   });
 
@@ -465,6 +663,11 @@ describe('getToolSummaryParts set-preview MCP tools', () => {
       action: 'Failed to preview',
       filename: 'app.tsx',
       path: '/workspace/src/app.tsx',
+      filePreview: {
+        source: 'workspace',
+        path: '/src/app.tsx',
+        filename: 'app.tsx',
+      },
     });
   });
 

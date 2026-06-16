@@ -71,7 +71,9 @@ function ToolCallSummary({
     );
   }
 
-  if (!parts.path || !parts.filename) {
+  const fileLinkPath = parts.path ?? parts.filePreview?.path;
+
+  if (!fileLinkPath || !parts.filename) {
     if (parts.filename && !parts.path) {
       return (
         <span className="tool-call__text min-w-0 flex-1 truncate">
@@ -91,7 +93,11 @@ function ToolCallSummary({
   return (
     <span className="tool-call__text min-w-0 flex-1 truncate">
       {parts.action}{' '}
-      <FileLink path={parts.path} className="inline-flex max-w-full min-w-0">
+      <FileLink
+        path={fileLinkPath}
+        previewTarget={parts.filePreview}
+        className="inline-flex max-w-full min-w-0"
+      >
         <span className="truncate">{parts.filename}</span>
       </FileLink>
     </span>
