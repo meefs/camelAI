@@ -86,7 +86,8 @@ export class ProjectRuntimeServiceVmBridge {
     const command = typeof args.command === "string" ? args.command.trim() : "";
     if (!command) throw new Error("command is required");
 
-    const target = await this.getReadyTarget(args);
+    const target = await this.resolveTarget(args);
+    await this.ensureProjectCheckout(target);
     return this.execRaw(target, command, {
       cwd:
         typeof args.cwd === "string" && args.cwd.trim()
@@ -115,7 +116,7 @@ export class ProjectRuntimeServiceVmBridge {
   }
 
   async read(args: VmFileArgs): Promise<unknown> {
-    const target = await this.getReadyTarget(args);
+    const target = await this.resolveTarget(args);
     const path = this.resolveVmToolPath(args.path, target);
     const response = await this.fetchRuntime(this.projectUrl(target.projectId, "/fs/read", { path }));
     if (response.status === 404) {
@@ -180,7 +181,7 @@ export class ProjectRuntimeServiceVmBridge {
   }
 
   async readFileStream(args: VmFileArgs): Promise<{ response: Response; path: string }> {
-    const target = await this.getReadyTarget(args);
+    const target = await this.resolveTarget(args);
     const path = this.resolveVmToolPath(args.path, target);
     const response = await this.fetchRuntime(this.projectUrl(target.projectId, "/fs/read", { path }));
     if (response.status === 404) {
@@ -208,19 +209,19 @@ export class ProjectRuntimeServiceVmBridge {
   }
 
   async writeFileBytesForTransfer(args: VmFileArgs, bytes: Uint8Array): Promise<{ path: string; bytes: number }> {
-    const target = await this.getReadyTarget(args);
+    const target = await this.resolveTarget(args);
     const path = this.resolveVmToolPath(args.path, target);
     await this.writeBytes(target, path, bytes);
     return { path, bytes: bytes.byteLength };
   }
 
   async resolvePathForTransfer(args: VmFileArgs): Promise<{ path: string }> {
-    const target = await this.getReadyTarget(args);
+    const target = await this.resolveTarget(args);
     return { path: this.resolveVmToolPath(args.path, target) };
   }
 
   async statPathForTransfer(args: VmFileArgs): Promise<{ path: string; isFile: boolean; isDirectory: boolean; size?: number }> {
-    const target = await this.getReadyTarget(args);
+    const target = await this.resolveTarget(args);
     const path = this.resolveVmToolPath(args.path, target, target.projectRoot);
     const exists = await this.fetchRuntimeJson<RuntimeExistsResult>(
       this.projectUrl(target.projectId, "/fs/exists", { path }),
@@ -235,7 +236,7 @@ export class ProjectRuntimeServiceVmBridge {
   }
 
   async collectFilesForTransfer(args: VmFileArgs): Promise<ProjectVmTransferFile[]> {
-    const target = await this.getReadyTarget(args);
+    const target = await this.resolveTarget(args);
     const path = this.resolveVmToolPath(args.path, target, target.projectRoot);
     const exists = await this.fetchRuntimeJson<RuntimeExistsResult>(
       this.projectUrl(target.projectId, "/fs/exists", { path }),
@@ -265,7 +266,7 @@ export class ProjectRuntimeServiceVmBridge {
   }
 
   async deletePathForTransfer(args: VmFileArgs, options: { recursive?: boolean; force?: boolean } = {}): Promise<{ path: string }> {
-    const target = await this.getReadyTarget(args);
+    const target = await this.resolveTarget(args);
     const path = this.resolveVmToolPath(args.path, target);
     const flags = `${options.recursive ? "r" : ""}${options.force ? "f" : ""}`;
     await this.mustExec(target, `rm ${flags ? `-${flags} ` : ""}${shellQuote(path)}`);
@@ -274,7 +275,7 @@ export class ProjectRuntimeServiceVmBridge {
 
   async write(args: VmFileArgs): Promise<unknown> {
     if (typeof args.content !== "string") throw new Error("content must be a string");
-    const target = await this.getReadyTarget(args);
+    const target = await this.resolveTarget(args);
     const path = this.resolveVmToolPath(args.path, target);
     await this.writeBytes(target, path, new TextEncoder().encode(args.content));
     return vmTextResult(`Successfully wrote ${args.content.length} bytes to ${path}`, {
@@ -287,7 +288,7 @@ export class ProjectRuntimeServiceVmBridge {
   async edit(args: VmFileArgs): Promise<unknown> {
     const edits = normalizeEdits(args.edits);
     if (edits.length === 0) throw new Error("edits must contain at least one replacement");
-    const target = await this.getReadyTarget(args);
+    const target = await this.resolveTarget(args);
     const path = this.resolveVmToolPath(args.path, target);
     const file = await this.readTextFile(target, path);
     const after = applyExactEdits(file, edits, path);
@@ -301,7 +302,7 @@ export class ProjectRuntimeServiceVmBridge {
   }
 
   async ls(args: VmFileArgs): Promise<unknown> {
-    const target = await this.getReadyTarget(args);
+    const target = await this.resolveTarget(args);
     const path = this.resolveVmToolPath(args.path, target, target.projectRoot);
     const response = await this.listRuntimeFiles(target, path, {
       recursive: args.recursive === true,
@@ -325,7 +326,7 @@ export class ProjectRuntimeServiceVmBridge {
     if (typeof args.pattern !== "string" || !args.pattern.trim()) {
       throw new Error("pattern is required");
     }
-    const target = await this.getReadyTarget(args);
+    const target = await this.resolveTarget(args);
     const path = this.resolveVmToolPath(args.path, target, target.projectRoot);
     const script = `
 import fnmatch, json, os, re, sys
@@ -384,7 +385,7 @@ print("\\n".join(matches))
   }
 
   async find(args: VmFileArgs): Promise<unknown> {
-    const target = await this.getReadyTarget(args);
+    const target = await this.resolveTarget(args);
     const path = this.resolveVmToolPath(args.path, target, target.projectRoot);
     const pattern = typeof args.pattern === "string" && args.pattern.trim() ? args.pattern.trim() : "*";
     const limit = Math.max(1, typeof args.limit === "number" ? Math.floor(args.limit) : 1000);
@@ -405,12 +406,6 @@ print("\\n".join(matches))
       path,
       pattern,
     });
-  }
-
-  private async getReadyTarget(args: { location?: unknown; project?: unknown; projectId?: unknown }): Promise<ProjectRuntimeTarget> {
-    const target = await this.resolveTarget(args);
-    await this.ensureProjectCheckout(target);
-    return target;
   }
 
   private async resolveTarget(args: { location?: unknown; project?: unknown; projectId?: unknown }): Promise<ProjectRuntimeTarget> {

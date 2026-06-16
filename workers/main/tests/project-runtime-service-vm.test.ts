@@ -55,6 +55,45 @@ describe("ProjectRuntimeServiceVmBridge", () => {
     });
   });
 
+  it("does not prepare Git checkout for VM source transfer reads", async () => {
+    const project = {
+      id: "ca-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-web-app",
+      name: "web-app",
+      description: "Web app.",
+      defaultVmId: "main",
+      artifactRemote: "https://artifacts.camelai.internal/git/web-app.git",
+      artifactStatus: "ready",
+      artifactDefaultBranch: "main",
+      createdAt: "2026-06-06T00:00:00.000Z",
+      updatedAt: "2026-06-06T00:00:00.000Z",
+    };
+    const bytes = new TextEncoder().encode("artifact");
+    const fetchMock = vi.fn(async () => new Response(bytes, {
+      headers: { "content-type": "text/plain" },
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const bridge = new ProjectRuntimeServiceVmBridge({
+      env: {
+        PROJECT_RUNTIME_SERVICE_URL: "http://runtime.test",
+      },
+      workspace: {
+        getProjectByName: vi.fn(async (name: string) =>
+          name === "web-app" ? project : null
+        ),
+      } as never,
+    });
+
+    const result = await bridge.readFileBytesForTransfer({ project: "web-app", path: "/workspace/out.txt" });
+
+    expect(new TextDecoder().decode(result.bytes)).toBe("artifact");
+    expect(result.contentType).toBe("text/plain");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const url = new URL(String(fetchMock.mock.calls[0]![0]));
+    expect(url.pathname).toBe("/v1/projects/ca-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-web-app/fs/read");
+    expect(url.searchParams.get("path")).toBe("/workspace/out.txt");
+  });
+
   it("returns project VM images as image tool content", async () => {
     const project = {
       id: "ca-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-web-app",
@@ -80,12 +119,6 @@ describe("ProjectRuntimeServiceVmBridge", () => {
     const arrayBuffer = vi.spyOn(imageResponse, "arrayBuffer");
     const fetchMock = vi
       .fn()
-      .mockResolvedValueOnce(Response.json({
-        success: true,
-        stdout: "",
-        stderr: "",
-        exitCode: 0,
-      }))
       .mockResolvedValueOnce(imageResponse);
     vi.stubGlobal("fetch", fetchMock);
     const output = vi.fn(async () => ({
@@ -164,7 +197,6 @@ describe("ProjectRuntimeServiceVmBridge", () => {
     ]);
     const fetchMock = vi
       .fn()
-      .mockResolvedValueOnce(Response.json({ success: true, stdout: "", stderr: "", exitCode: 0 }))
       .mockResolvedValueOnce(new Response(pngBytes, {
         headers: { "content-length": String(pngBytes.byteLength) },
       }))
@@ -210,7 +242,7 @@ describe("ProjectRuntimeServiceVmBridge", () => {
 
     const result = await bridge.read({ project: "web-app", path: "/workspace/retry.png" }) as any;
 
-    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(transform).toHaveBeenNthCalledWith(1, { width: 2000, height: 2000, fit: "scale-down" });
     expect(transform).toHaveBeenNthCalledWith(2, { width: 1500, height: 1500, fit: "scale-down" });
     expect(output).toHaveBeenCalledTimes(2);
@@ -247,7 +279,6 @@ describe("ProjectRuntimeServiceVmBridge", () => {
     ]);
     const fetchMock = vi
       .fn()
-      .mockResolvedValueOnce(Response.json({ success: true, stdout: "", stderr: "", exitCode: 0 }))
       .mockResolvedValueOnce(new Response(pngBytes, {
         headers: { "content-length": String(pngBytes.byteLength) },
       }));
