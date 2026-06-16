@@ -306,6 +306,7 @@ Minimal Python helper:
 ```python
 import json
 import os
+import urllib.error
 import urllib.request
 
 CONNECTIONS_URL = os.environ["CAMELAI_CONNECTIONS_RPC_URL"]
@@ -321,10 +322,17 @@ def connection_rpc(action, **params):
         },
         method="POST",
     )
-    with urllib.request.urlopen(request, timeout=60) as response:
-        body = json.loads(response.read().decode("utf-8"))
+    try:
+        with urllib.request.urlopen(request, timeout=60) as response:
+            body = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as error:
+        text = error.read().decode("utf-8", errors="replace")
+        try:
+            body = json.loads(text)
+        except json.JSONDecodeError:
+            raise RuntimeError(f"connections RPC HTTP {error.code}: {text}") from error
     if not body.get("ok", False):
-        raise RuntimeError(body["error"])
+        raise RuntimeError(body.get("error", body))
     return body["result"]
 
 entry = connection_rpc("find", query="postgres")
@@ -341,6 +349,35 @@ For dataframe workflows:
 ```python
 import pandas as pd
 
+def connection_rows(result):
+    for candidate in (
+        result.get("data"),
+        result.get("data", {}).get("rows") if isinstance(result.get("data"), dict) else None,
+        result.get("rows"),
+        result.get("recordset"),
+    ):
+        if isinstance(candidate, list):
+            return candidate
+    for item in result.get("content", []):
+        if item.get("type") != "text":
+            continue
+        try:
+            parsed = json.loads(item.get("text", ""))
+        except json.JSONDecodeError:
+            continue
+        if isinstance(parsed, list):
+            return parsed
+        if isinstance(parsed, dict):
+            for candidate in (
+                parsed.get("data"),
+                parsed.get("data", {}).get("rows") if isinstance(parsed.get("data"), dict) else None,
+                parsed.get("rows"),
+                parsed.get("recordset"),
+            ):
+                if isinstance(candidate, list):
+                    return candidate
+    return []
+
 entry = connection_rpc("find", query="clickhouse")
 result = connection_rpc(
     "invoke",
@@ -349,7 +386,7 @@ result = connection_rpc(
     input={"query": "SELECT * FROM events LIMIT 1000"},
 )
 
-rows = result.get("rows") or result.get("recordset") or result.get("data", {}).get("rows") or []
+rows = connection_rows(result)
 df = pd.DataFrame(rows)
 df.head()
 ```
