@@ -327,7 +327,7 @@ export async function getOrCreateChannelThread(
     input.workspaceId,
     input.title.trim().slice(0, 100) || "Conversation",
     input.createdBy?.trim() || input.kind,
-    input.firstUserMessage?.trim().slice(0, 500) || undefined,
+    input.firstUserMessage?.trim() || undefined,
     model,
     provider,
     {

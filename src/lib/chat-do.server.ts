@@ -36,6 +36,7 @@ import {
   resolveEffectivePickerConfig,
 } from "./model-picker-config";
 import { retryTransientDurableObjectRead } from "./do-rpc-retry.server";
+import { truncateThreadPreviewText } from "./thread-preview";
 
 interface ParsedThreadMessage {
   id: string;
@@ -81,7 +82,8 @@ export function normalizeStoredThreadModel(
   };
 }
 
-// Helper to convert OrgThread to Thread
+// Full thread records are used by single-thread loaders and new-thread
+// transcript hydration, so canonical message metadata must remain unbounded.
 function toThread(orgThread: OrgThread): Thread {
   const { model } = normalizeStoredThreadModel(orgThread.model);
   return {
@@ -106,6 +108,17 @@ function toThread(orgThread: OrgThread): Thread {
     channel_connection_id: orgThread.channel_connection_id ?? null,
     channel_conversation_id: orgThread.channel_conversation_id ?? null,
     channel_message_id: orgThread.channel_message_id ?? null,
+  };
+}
+
+// List and history surfaces should not serialize full prompt text. Keep this
+// mapper separate from toThread so transcript hydration keeps full metadata.
+function toThreadListPreview(orgThread: OrgThread): Thread {
+  const thread = toThread(orgThread);
+  return {
+    ...thread,
+    first_user_message: truncateThreadPreviewText(thread.first_user_message, 500),
+    last_user_message: truncateThreadPreviewText(thread.last_user_message, 500),
   };
 }
 
@@ -288,7 +301,7 @@ export async function getThreads(
   if (!wsInfo) return [];
   const orgStub = env.ORG.get(env.ORG.idFromName(wsInfo.org_id));
   const threads = await orgStub.getThreadsByWorkspace(workspaceId);
-  return threads.map((t) => toThread(t));
+  return threads.map((t) => toThreadListPreview(t));
 }
 
 export async function getThreadsPaginated(
@@ -316,7 +329,7 @@ export async function getThreadsPaginated(
     params.createdBy,
   );
   return {
-    items: result.items.map((t) => toThread(t)),
+    items: result.items.map((t) => toThreadListPreview(t)),
     total: result.total,
     offset: result.offset,
     limit: result.limit,
@@ -351,7 +364,7 @@ export async function getThreadsPaginatedAllWorkspaces(
     params.createdBy,
   );
   return {
-    items: result.items.map((t) => toThread(t)),
+    items: result.items.map((t) => toThreadListPreview(t)),
     total: result.total,
     offset: result.offset,
     limit: result.limit,
@@ -470,7 +483,7 @@ export async function getRecentThreads(
     workspaceId,
     createdBy,
   );
-  return result.items.map((t) => toThread(t));
+  return result.items.map((t) => toThreadListPreview(t));
 }
 
 export async function getThread(
@@ -513,7 +526,7 @@ export async function getThreadsByIds(
     "OrgDO.getThreadsByIds",
     () => orgStub.getThreadsByIds(workspaceId, uniqueThreadIds),
   );
-  return threads.map((thread) => toThread(thread));
+  return threads.map((thread) => toThreadListPreview(thread));
 }
 
 export async function updateThread(

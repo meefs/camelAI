@@ -1,5 +1,8 @@
 import { isSupportedSlashCommand } from './slash-commands';
-import { normalizeThreadPreviewUserMessage } from './thread-preview';
+import {
+  normalizeThreadUserMessageText,
+  truncateThreadPreviewText,
+} from './thread-preview';
 
 export const DEFAULT_THREAD_TITLE = 'New Chat';
 export const APP_THREAD_FALLBACK_TITLE_PREFIX = 'Working on ';
@@ -44,15 +47,26 @@ export function getInitialChatGroupNameFromThreadTitle(
   return normalized;
 }
 
+export function getThreadUserMessageSources(content: string): {
+  metadataSourceMessage: string;
+  titleSourceMessage: string;
+} | null {
+  const metadataSourceMessage = normalizeThreadUserMessageText(content);
+  if (!metadataSourceMessage) {
+    return null;
+  }
+
+  const titleSourceMessage = truncateThreadPreviewText(metadataSourceMessage, 500);
+  if (!titleSourceMessage || isSupportedSlashCommand(titleSourceMessage)) {
+    return null;
+  }
+
+  return {
+    metadataSourceMessage,
+    titleSourceMessage,
+  };
+}
+
 export function getThreadTitleSourceMessage(content: string): string | null {
-  const normalized = normalizeThreadPreviewUserMessage(content);
-  if (!normalized) {
-    return null;
-  }
-
-  if (isSupportedSlashCommand(normalized)) {
-    return null;
-  }
-
-  return normalized;
+  return getThreadUserMessageSources(content)?.titleSourceMessage ?? null;
 }

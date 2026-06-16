@@ -45,7 +45,7 @@ import { formatAttributedUserMessage } from './chat-author-attribution';
 import { injectFileSafetyMessage } from './file-safety';
 import { applyMentionContext } from './mention-context';
 import {
-  getThreadTitleSourceMessage,
+  getThreadUserMessageSources,
   isPlaceholderThreadTitle,
 } from '../../../src/lib/thread-title';
 import { generateThreadTitleWithOpenAI } from '../../../src/lib/thread-title-generation.server';
@@ -9747,10 +9747,11 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       await userStub.touchGroupForThread(context.threadId);
     }
 
-    const titleSourceMessage = getThreadTitleSourceMessage(messageContent);
-    if (!titleSourceMessage) {
+    const messageSources = getThreadUserMessageSources(messageContent);
+    if (!messageSources) {
       return;
     }
+    const { metadataSourceMessage, titleSourceMessage } = messageSources;
 
     const hasFirstUserMessage = typeof thread.first_user_message === 'string'
       && thread.first_user_message.trim().length > 0;
@@ -9758,7 +9759,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       return;
     }
 
-    await orgStub.setThreadFirstUserMessage(context.threadId, titleSourceMessage);
+    await orgStub.setThreadFirstUserMessage(context.threadId, metadataSourceMessage);
 
     if (!isPlaceholderThreadTitle(thread.title) || this.titleGenerationInFlight) {
       return;

@@ -14,6 +14,7 @@ const {
   createThread,
   createThreadWithValidatedAccess,
   deleteThread,
+  getRecentThreads,
   getThread,
   getWorkspaceModelPickerState,
   updateThread,
@@ -473,6 +474,56 @@ describe('getWorkspaceModelPickerState rollout compatibility', () => {
     const thread = await getThread({}, 'thread_123', 'ws_123');
 
     expect(thread?.model).toBe('gemini-3.5-flash');
+  });
+
+  it('keeps full prompts for single thread reads but bounds recent-thread previews', async () => {
+    const longFirstMessage = `first ${'x'.repeat(700)}`;
+    const longLastMessage = `last ${'y'.repeat(700)}`;
+    const orgThread = {
+      id: 'thread_123',
+      workspace_id: 'ws_123',
+      title: 'Long prompt thread',
+      created_by: 'user_123',
+      provider: 'claude',
+      model: 'sonnet',
+      created_at: 1,
+      updated_at: 2,
+      user_message_count: 1,
+      first_user_message: longFirstMessage,
+      last_user_message: longLastMessage,
+      last_user_message_at: 2,
+    };
+    const workspaceStub = {
+      getInfo: vi.fn().mockResolvedValue({ org_id: 'org_123' }),
+    };
+    const orgStub = {
+      getThread: vi.fn().mockResolvedValue(orgThread),
+      getThreadsPaginated: vi.fn().mockResolvedValue({
+        items: [orgThread],
+        total: 1,
+        offset: 0,
+        limit: 6,
+      }),
+    };
+
+    getEnvMock.mockReturnValue({
+      WORKSPACE: {
+        idFromName: (id: string) => id,
+        get: () => workspaceStub,
+      },
+      ORG: {
+        idFromName: (id: string) => id,
+        get: () => orgStub,
+      },
+    });
+
+    const fullThread = await getThread({}, 'thread_123', 'ws_123');
+    const [recentThread] = await getRecentThreads({}, 'ws_123', 6);
+
+    expect(fullThread?.first_user_message).toBe(longFirstMessage);
+    expect(fullThread?.last_user_message).toBe(longLastMessage);
+    expect(recentThread?.first_user_message).toBe(longFirstMessage.slice(0, 500));
+    expect(recentThread?.last_user_message).toBe(longLastMessage.slice(0, 500));
   });
 
   it('uses preloaded org model context without rereading workspace info or org provider settings', async () => {

@@ -44,6 +44,7 @@ import {
   normalizeChannelIndicatorKind,
   parseChannelIndicatorKindsJson,
 } from '@/lib/channel-kinds';
+import { truncateThreadPreviewText } from '@/lib/thread-preview';
 import { cn } from '@/lib/utils';
 import type {
   AdminChatExplorerRow,
@@ -584,6 +585,10 @@ function ThreadListItem({
   const channelKinds = getExplorerChannelKinds(thread);
   const sourceBadge = getSourceBadgeLabel(thread, channelKinds);
   const messageCount = formatUserMessageCount(thread);
+  const firstUserMessagePreview = truncateThreadPreviewText(
+    thread.first_user_message,
+    300,
+  );
   return (
     <button
       ref={refCallback}
@@ -625,9 +630,9 @@ function ThreadListItem({
           </TooltipContent>
         </Tooltip>
       </div>
-      {thread.first_user_message ? (
+      {firstUserMessagePreview ? (
         <div className="mt-1 line-clamp-2 text-xs leading-snug text-muted-foreground">
-          “{thread.first_user_message}”
+          “{firstUserMessagePreview}”
         </div>
       ) : null}
       <div className="mt-1 truncate text-xs text-muted-foreground">

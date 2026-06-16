@@ -32,6 +32,7 @@ import {
   normalizeStoredThreadModel,
   getThreadPreviewTarget,
 } from "./chat-do.server";
+import { truncateThreadPreviewText } from "./thread-preview";
 import { waitUntil } from "./wait-until";
 import { deriveCheapRecentActivityCounts } from "./admin-recent-activity";
 import { deleteDispatchScript } from "../../workers/main/src/cf-api-proxy";
@@ -584,10 +585,12 @@ function mergeOrgThreadIntoExplorerRow(
     user_message_count_source:
       nextCount !== row.user_message_count ? 'org_thread' : row.user_message_count_source,
     user_message_count_capped: false,
-    first_user_message:
+    first_user_message: truncateThreadPreviewText(
       typeof thread.first_user_message === 'string'
         ? thread.first_user_message
         : row.first_user_message,
+      300,
+    ),
     last_user_message_at:
       typeof thread.last_user_message_at === 'number'
         ? thread.last_user_message_at
@@ -1064,8 +1067,8 @@ export async function adminGetWorkspaceDetail(
       created_at: t.created_at,
       updated_at: t.updated_at,
       user_message_count: t.user_message_count ?? 0,
-      first_user_message: t.first_user_message ?? null,
-      last_user_message: t.last_user_message ?? null,
+      first_user_message: truncateThreadPreviewText(t.first_user_message, 500),
+      last_user_message: truncateThreadPreviewText(t.last_user_message, 500),
       last_user_message_at: t.last_user_message_at ?? null,
       last_assistant_completed_at: t.last_assistant_completed_at ?? null,
       last_assistant_summary: t.last_assistant_summary ?? null,

@@ -45,6 +45,7 @@ import {
 import { getChatDebugFlags } from "@/lib/chat-debug-flags";
 import { shouldRevalidateActiveChatRoute } from "@/lib/chat-route-revalidation";
 import { parseChannelIndicatorKindsJson } from "@/lib/channel-kinds";
+import { truncateThreadPreviewText } from "@/lib/thread-preview";
 import * as authDO from "@/lib/auth-do.server";
 import * as chatDO from "@/lib/chat-do.server";
 import {
@@ -381,6 +382,10 @@ function buildFallbackActiveChatGroup(params: {
   if (!params.groupId) return null;
   const now = Date.now();
   const threadUpdatedAt = params.thread.updated_at || now;
+  const firstUserMessagePreview = truncateThreadPreviewText(
+    params.thread.first_user_message,
+    500,
+  );
   const threadSummary = {
     id: params.thread.id,
     title: params.thread.title || "New Chat",
@@ -392,11 +397,11 @@ function buildFallbackActiveChatGroup(params: {
     status: "running" as const,
     membership: "open" as const,
     last_active_at: threadUpdatedAt,
-    latest_user_message: params.thread.first_user_message ?? null,
-    latest_user_message_at: params.thread.first_user_message
+    latest_user_message: firstUserMessagePreview,
+    latest_user_message_at: firstUserMessagePreview
       ? threadUpdatedAt
       : null,
-    running_activity_text: params.thread.first_user_message ?? null,
+    running_activity_text: firstUserMessagePreview,
     running_activity_at: now,
     last_assistant_completed_at: null,
     last_assistant_summary: null,

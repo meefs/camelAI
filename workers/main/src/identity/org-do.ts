@@ -20,7 +20,7 @@ import {
 } from "../../../../src/lib/channel-kinds";
 import {
   normalizeThreadCompletionSummary,
-  normalizeThreadPreviewUserMessage,
+  normalizeThreadUserMessageText,
 } from "../../../../src/lib/thread-preview";
 import { slugifyWorkspaceName } from "../../../../src/lib/workspace-email";
 import type {
@@ -6002,7 +6002,7 @@ export class OrgDO extends DurableObject<DOEnv> {
       userId: creator,
     };
     const normalizedUserMessage = firstUserMessage
-      ? normalizeThreadPreviewUserMessage(firstUserMessage)
+      ? normalizeThreadUserMessageText(firstUserMessage)
       : null;
     const msg = normalizedUserMessage;
     const lastUserMessage = normalizedUserMessage;
@@ -6389,7 +6389,7 @@ export class OrgDO extends DurableObject<DOEnv> {
   }
 
   /**
-   * Set first user message used for welcome-screen previews.
+   * Set the canonical first user message used to hydrate new thread transcripts.
    * This intentionally does not modify updated_at to avoid reordering threads.
    */
   setThreadFirstUserMessage(
@@ -6399,7 +6399,7 @@ export class OrgDO extends DurableObject<DOEnv> {
     const existing = this.getThread(id);
     if (!existing) return null;
 
-    const message = normalizeThreadPreviewUserMessage(firstUserMessage);
+    const message = normalizeThreadUserMessageText(firstUserMessage);
     if (!message) {
       return existing;
     }
@@ -6587,7 +6587,7 @@ export class OrgDO extends DurableObject<DOEnv> {
     const existing = this.getThread(id);
     if (!existing) return null;
     const now = Date.now();
-    const lastUserMessage = normalizeThreadPreviewUserMessage(message);
+    const lastUserMessage = normalizeThreadUserMessageText(message);
     const userMessageCount = (existing.user_message_count ?? 0) + 1;
     const nextChannelKinds = mergeThreadChannelKinds(
       existing.channel_kinds,

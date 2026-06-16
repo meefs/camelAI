@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import {
   normalizeThreadCompletionSummary,
   normalizeThreadPreviewUserMessage,
+  normalizeThreadUserMessageText,
+  truncateThreadPreviewText,
 } from '@/lib/thread-preview';
 
 describe('normalizeThreadPreviewUserMessage', () => {
@@ -33,6 +35,23 @@ describe('normalizeThreadPreviewUserMessage', () => {
   it('truncates to 500 characters', () => {
     const content = 'a'.repeat(800);
     expect(normalizeThreadPreviewUserMessage(content)?.length).toBe(500);
+  });
+});
+
+describe('normalizeThreadUserMessageText', () => {
+  it('normalizes user-authored text without truncating it', () => {
+    const content = `[Illiana Reed (illiana@example.com)]: <camelai system message>hidden</camelai system message>\n\n${'a'.repeat(800)}`;
+    expect(normalizeThreadUserMessageText(content)).toBe('a'.repeat(800));
+  });
+});
+
+describe('truncateThreadPreviewText', () => {
+  it('truncates preview text to the requested limit', () => {
+    expect(truncateThreadPreviewText('a'.repeat(800), 300)).toBe('a'.repeat(300));
+  });
+
+  it('returns null for blank text', () => {
+    expect(truncateThreadPreviewText('  \n\t  ')).toBeNull();
   });
 });
 

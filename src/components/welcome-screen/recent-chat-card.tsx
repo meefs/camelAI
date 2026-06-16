@@ -1,6 +1,7 @@
 'use client';
 
 import type { Thread } from '@/types';
+import { truncateThreadPreviewText } from '@/lib/thread-preview';
 import { cn } from '@/lib/utils';
 
 interface RecentChatCardProps {
@@ -22,6 +23,8 @@ function getRelativeTime(timestamp: number, referenceTime: number): string {
 }
 
 export function RecentChatCard({ thread, renderedAt, onClick }: RecentChatCardProps) {
+  const firstUserMessagePreview = truncateThreadPreviewText(thread.first_user_message, 500);
+
   return (
     <button
       type="button"
@@ -37,9 +40,9 @@ export function RecentChatCard({ thread, renderedAt, onClick }: RecentChatCardPr
       <p className="text-sm font-medium text-foreground truncate min-w-0">
         {thread.title || 'Untitled Chat'}
       </p>
-      {thread.first_user_message && (
+      {firstUserMessagePreview && (
         <p className="text-xs text-muted-foreground line-clamp-2 leading-relaxed">
-          {thread.first_user_message}
+          {firstUserMessagePreview}
         </p>
       )}
       <div className="flex items-center gap-1.5 mt-auto pt-1">

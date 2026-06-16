@@ -409,13 +409,12 @@ describe('Auth flow (full-stack with DOs)', () => {
       expect(stored?.last_user_message).toBe('Build the welcome preview');
     });
 
-    it('keeps first user messages bounded for preview surfaces', async () => {
+    it('stores full first user messages for initial transcript hydration', async () => {
       const email = testEmail();
       const { userId } = await createUser(testEnv, email, 'password123', 'Thread Owner');
       const { org, defaultWorkspaceId } = await createOrg(testEnv, 'Long First Message Org', userId);
       const orgStub = testEnv.ORG.get(testEnv.ORG.idFromName(org.id));
       const longMessage = `Please keep all of this prompt ${'x'.repeat(900)}`;
-      const previewMessage = longMessage.slice(0, 500);
 
       const thread = await orgStub.createThread(
         defaultWorkspaceId,
@@ -425,14 +424,16 @@ describe('Auth flow (full-stack with DOs)', () => {
       );
       const stored = await orgStub.getThread(thread.id);
 
-      expect(thread.first_user_message).toBe(previewMessage);
-      expect(stored?.first_user_message).toBe(previewMessage);
+      expect(thread.first_user_message).toBe(longMessage);
+      expect(thread.last_user_message).toBe(longMessage);
+      expect(stored?.first_user_message).toBe(longMessage);
+      expect(stored?.last_user_message).toBe(longMessage);
 
       const backfilled = await orgStub.createThread(defaultWorkspaceId, undefined, userId);
       await orgStub.setThreadFirstUserMessage(backfilled.id, longMessage);
       const storedBackfill = await orgStub.getThread(backfilled.id);
 
-      expect(storedBackfill?.first_user_message).toBe(previewMessage);
+      expect(storedBackfill?.first_user_message).toBe(longMessage);
     });
 
     it('records normalized latest user messages and increments the user message count', async () => {
@@ -456,6 +457,26 @@ describe('Auth flow (full-stack with DOs)', () => {
       expect(stored?.last_user_message).toBe('Build the hover card');
       expect(stored?.last_user_message_at).toEqual(expect.any(Number));
       expect(stored?.first_user_message).toBeNull();
+    });
+
+    it('records full latest user messages after normalization', async () => {
+      const email = testEmail();
+      const { userId } = await createUser(testEnv, email, 'password123', 'Thread Owner');
+      const { org, defaultWorkspaceId } = await createOrg(testEnv, 'Long Latest Message Org', userId);
+      const orgStub = testEnv.ORG.get(testEnv.ORG.idFromName(org.id));
+      const longMessage = `Please keep this latest message ${'z'.repeat(900)}`;
+
+      const thread = await orgStub.createThread(defaultWorkspaceId, 'Latest long message', userId);
+      const updated = await orgStub.recordThreadUserMessage(
+        thread.id,
+        `[Thread Owner (owner@example.com)]: ${longMessage}`,
+      );
+
+      expect(updated?.last_user_message).toBe(longMessage);
+      expect(updated?.last_user_message?.length).toBeGreaterThan(500);
+
+      const stored = await orgStub.getThread(thread.id);
+      expect(stored?.last_user_message).toBe(longMessage);
     });
 
     it('merges and dedupes channel_kinds while recording user messages', async () => {

@@ -34,6 +34,7 @@ import {
   type DashboardSummaryResponse,
   type DashboardWorkspaceMetricsRow,
 } from './admin-dashboard-metrics.js';
+import { truncateThreadPreviewText } from '../../../src/lib/thread-preview';
 
 type AppIndexEnv = { APP_DB?: D1Database };
 
@@ -169,11 +170,7 @@ const CHAT_EXPLORER_AUTOMATED_THREAD_SQL = `
     OR t.title LIKE 'Scheduled: %'
   )
 `;
-
-function truncateIndexPreview(value: unknown): string | null {
-  if (typeof value !== 'string') return null;
-  return value.length > 300 ? value.slice(0, 300) : value;
-}
+const CHAT_EXPLORER_FIRST_USER_MESSAGE_PREVIEW_LENGTH = 300;
 
 function normalizeChannelKindsForIndex(value: unknown): string | null {
   if (Array.isArray(value)) return JSON.stringify(value);
@@ -676,7 +673,10 @@ export class AppIndexDatabase {
       case 'thread_upsert': {
         const t = event.payload;
         const userMessageCount = typeof t.user_message_count === 'number' && Number.isFinite(t.user_message_count) ? t.user_message_count : null;
-        const firstUserMessage = truncateIndexPreview(t.first_user_message);
+        const firstUserMessage = truncateThreadPreviewText(
+          typeof t.first_user_message === 'string' ? t.first_user_message : null,
+          CHAT_EXPLORER_FIRST_USER_MESSAGE_PREVIEW_LENGTH,
+        );
         const channelKinds = normalizeChannelKindsForIndex(t.channel_kinds);
         const existingThreadMetadata = await first<ExistingThreadMetadata>(
           this.db.prepare(`
@@ -1249,7 +1249,10 @@ export class AppIndexDatabase {
       user_message_count: row.user_message_count ?? null,
       user_message_count_source: row.user_message_count === null || row.user_message_count === undefined ? 'unknown' : 'admin_index',
       user_message_count_capped: false,
-      first_user_message: row.first_user_message ?? null,
+      first_user_message: truncateThreadPreviewText(
+        row.first_user_message,
+        CHAT_EXPLORER_FIRST_USER_MESSAGE_PREVIEW_LENGTH,
+      ),
       last_user_message_at: row.last_user_message_at ?? null,
       source: row.source ?? null,
       channel_kind: row.channel_kind ?? null,

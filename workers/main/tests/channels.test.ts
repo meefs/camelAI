@@ -314,6 +314,52 @@ describe("channels", () => {
     ).toBe("thread-2");
   });
 
+  it("passes full first user messages when creating channel threads", async () => {
+    const kv = createMockKvStore();
+    const longMessage = `${"x".repeat(700)} tail`;
+    const orgStub = {
+      getLlmProviderConfig: vi.fn().mockResolvedValue(null),
+      getExperimentalSettings: vi
+        .fn()
+        .mockResolvedValue({ claude_proxy_models: false }),
+      getModelPickerConfig: vi.fn().mockResolvedValue(defaultOrgModelPickerConfig()),
+      createThread: vi.fn().mockResolvedValue({
+        id: "thread-long",
+        title: "Long Slack chat",
+      }),
+    };
+    getOrgStubMock.mockReturnValue(orgStub);
+    getWorkspaceStubMock.mockReturnValue({
+      getModelPickerConfig: vi.fn().mockResolvedValue(defaultWorkspaceModelPickerConfig()),
+    });
+
+    await getOrCreateChannelThread(
+      { APP_KV: kv } as never,
+      {
+        kind: "slack",
+        workspaceId: "workspace-1",
+        orgId: "org-1",
+        remoteConversationId: "T1:C1:1700.0002",
+        connectionId: "slack-int",
+        title: "Long Slack chat",
+        firstUserMessage: `  ${longMessage}  `,
+      },
+    );
+
+    expect(orgStub.createThread).toHaveBeenCalledWith(
+      "workspace-1",
+      "Long Slack chat",
+      "slack",
+      longMessage,
+      "sonnet",
+      "claude",
+      expect.objectContaining({
+        source: "channel",
+        channelKind: "slack",
+      }),
+    );
+  });
+
   it("enqueues channel messages through the normal initial message path", async () => {
     startInitialUserMessageMock.mockResolvedValue({ status: "accepted" });
 

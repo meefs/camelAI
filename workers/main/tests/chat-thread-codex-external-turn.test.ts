@@ -177,6 +177,64 @@ describe('ChatThreadDO Codex turn handling', () => {
     ]);
   });
 
+  it('backfills full first user message metadata while bounding title generation input', async () => {
+    const longMessage = `Please keep this entire first prompt ${'x'.repeat(900)}`;
+    const attributedMessage = `[Miguel (miguel@example.com)]: ${longMessage}`;
+    const orgStub = {
+      getThread: vi.fn(async () => ({
+        id: 'thread1',
+        workspace_id: 'workspace1',
+        title: 'New Chat',
+        first_user_message: null,
+      })),
+      recordThreadUserMessage: vi.fn(async () => null),
+      setThreadFirstUserMessage: vi.fn(async () => null),
+    };
+    const userStub = {
+      touchGroupForThread: vi.fn(async () => undefined),
+    };
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    fake.chatContext = {
+      threadId: 'thread1',
+      workspaceId: 'workspace1',
+      orgId: 'org1',
+      userId: 'user1',
+    };
+    fake.env = {
+      ORG: {
+        idFromName: vi.fn((id: string) => id),
+        get: vi.fn(() => orgStub),
+      },
+      USER: {
+        idFromName: vi.fn((id: string) => id),
+        get: vi.fn(() => userStub),
+      },
+    };
+    fake.titleGenerationInFlight = false;
+    fake.generateThreadTitleFromMessage = vi.fn(async () => undefined);
+
+    await ChatThreadDO.prototype['updateThreadMetadataForUserMessage'].call(
+      fake,
+      attributedMessage,
+      'web',
+    );
+
+    expect(orgStub.recordThreadUserMessage).toHaveBeenCalledWith(
+      'thread1',
+      attributedMessage,
+      'web',
+    );
+    expect(userStub.touchGroupForThread).toHaveBeenCalledWith('thread1');
+    expect(orgStub.setThreadFirstUserMessage).toHaveBeenCalledWith(
+      'thread1',
+      longMessage,
+    );
+    expect(fake.generateThreadTitleFromMessage).toHaveBeenCalledWith(
+      'thread1',
+      longMessage.slice(0, 500),
+    );
+  });
+
   it('keeps hosted Claude on Anthropic Messages while routing through OpenRouter AI Gateway', async () => {
     const fake = Object.create(ChatThreadDO.prototype) as any;
     fake.env = {

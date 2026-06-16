@@ -8,6 +8,7 @@ import {
   formatHoverRelativeTime,
   formatRunningElapsed,
 } from "@/lib/chat-group-hover-time";
+import { truncateThreadPreviewText } from "@/lib/thread-preview";
 import { cn } from "@/lib/utils";
 
 interface ChatGroupHoverCardProps {
@@ -179,7 +180,9 @@ function HoverRow({
 
 function InProgressRow({ thread, onSelect, isPending }: RowProps) {
   const activityText =
-    thread.running_activity_text?.trim() || thread.latest_user_message?.trim() || "";
+    truncateThreadPreviewText(thread.running_activity_text, 500) ||
+    truncateThreadPreviewText(thread.latest_user_message, 500) ||
+    "";
 
   return (
     <HoverRow onClick={() => void onSelect(thread)} isPending={isPending}>

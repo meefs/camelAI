@@ -13,6 +13,7 @@ import type { OrgDO, UserDO } from "../../workers/main/src/auth";
 import type { WorkspaceRunningThreadStatus } from "../../workers/main/src/workspace";
 import { maxThreadStatus } from "@/lib/thread-status";
 import { getInitialChatGroupNameFromThreadTitle } from "@/lib/thread-title";
+import { truncateThreadPreviewText } from "@/lib/thread-preview";
 
 interface UserScopedArgs {
   userId: string;
@@ -46,9 +47,13 @@ function threadToGroupThreadSummary(
 ): ChatGroupThreadSummary {
   const status = options.status ?? "idle";
   const now = Date.now();
+  const latestUserMessage = truncateThreadPreviewText(
+    thread.last_user_message,
+    500,
+  );
   const latestUserMessageAt =
     thread.last_user_message_at ??
-    (thread.last_user_message ? thread.updated_at : null);
+    (latestUserMessage ? thread.updated_at : null);
   return {
     id: thread.id,
     title: thread.title,
@@ -59,10 +64,10 @@ function threadToGroupThreadSummary(
     is_unread: status === "unread",
     membership,
     last_active_at: Math.max(thread.updated_at, thread.last_assistant_completed_at ?? 0),
-    latest_user_message: thread.last_user_message ?? null,
+    latest_user_message: latestUserMessage,
     latest_user_message_at: latestUserMessageAt,
     running_activity_text:
-      status === "running" ? (thread.last_user_message ?? null) : null,
+      status === "running" ? latestUserMessage : null,
     running_activity_at: status === "running" ? (latestUserMessageAt ?? now) : null,
     last_assistant_completed_at: thread.last_assistant_completed_at ?? null,
     last_assistant_summary: thread.last_assistant_summary ?? null,
@@ -175,9 +180,17 @@ export async function hydrateChatGroups(
     const viewedAt = viewedAtByThreadId[threadId] ?? 0;
     const completedAt = thread.last_assistant_completed_at ?? null;
     const lastActiveAt = Math.max(thread.updated_at, completedAt ?? 0);
+    const latestUserMessage = truncateThreadPreviewText(
+      thread.last_user_message,
+      500,
+    );
+    const runningActivityText = truncateThreadPreviewText(
+      runningThreadStatus?.latestActivityText,
+      500,
+    );
     const latestUserMessageAt =
       thread.last_user_message_at ??
-      (thread.last_user_message
+      (latestUserMessage
         ? runningThreadStatus?.startedAt ?? thread.updated_at
         : null);
     const isUnread =
@@ -194,9 +207,9 @@ export async function hydrateChatGroups(
       is_unread: isUnread,
       membership,
       last_active_at: lastActiveAt,
-      latest_user_message: thread.last_user_message ?? null,
+      latest_user_message: latestUserMessage,
       latest_user_message_at: latestUserMessageAt,
-      running_activity_text: runningThreadStatus?.latestActivityText ?? null,
+      running_activity_text: runningActivityText,
       running_activity_at: runningThreadStatus?.latestActivityAt ?? null,
       last_assistant_completed_at: completedAt,
       last_assistant_summary: thread.last_assistant_summary ?? null,

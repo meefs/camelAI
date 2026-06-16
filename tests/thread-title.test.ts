@@ -3,6 +3,7 @@ import {
   buildAppThreadFallbackTitle,
   getInitialChatGroupNameFromThreadTitle,
   getThreadTitleSourceMessage,
+  getThreadUserMessageSources,
   isPlaceholderThreadTitle,
 } from '@/lib/thread-title';
 
@@ -34,6 +35,17 @@ describe('thread title helpers', () => {
     expect(getThreadTitleSourceMessage(content)).toBe('Fix the broken login form');
   });
 
+  it('separates full metadata source text from bounded title source text', () => {
+    const longMessage = `Build the dashboard ${'x'.repeat(700)}`;
+    const content = `[Jane Doe (jane@example.com)]: ${longMessage}`;
+
+    expect(getThreadUserMessageSources(content)).toEqual({
+      metadataSourceMessage: longMessage,
+      titleSourceMessage: longMessage.slice(0, 500),
+    });
+    expect(getThreadTitleSourceMessage(content)).toBe(longMessage.slice(0, 500));
+  });
+
   it('ignores system-only content and slash commands', () => {
     expect(
       getThreadTitleSourceMessage(
@@ -41,5 +53,11 @@ describe('thread title helpers', () => {
       )
     ).toBeNull();
     expect(getThreadTitleSourceMessage('[Jane Doe]: /compact')).toBeNull();
+    expect(
+      getThreadUserMessageSources(
+        '<camelai system message>Research the app first.</camelai system message>'
+      )
+    ).toBeNull();
+    expect(getThreadUserMessageSources('[Jane Doe]: /compact')).toBeNull();
   });
 });

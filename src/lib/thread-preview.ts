@@ -4,7 +4,7 @@ import { stripMentionAnnotations } from '@/lib/mentions';
 const AUTHOR_PREFIX_WITH_EMAIL_REGEX = /^\[([^\]]+)\s+\(([^)]+)\)\]:\s*/;
 const AUTHOR_PREFIX_SIMPLE_REGEX = /^\[([^\]]+)\]:\s*/;
 const SYSTEM_MESSAGE_TAG_REGEX = /<camelai system message>[\s\S]*?<\/camelai system message>/g;
-const MAX_FIRST_USER_MESSAGE_LENGTH = 500;
+const MAX_THREAD_PREVIEW_TEXT_LENGTH = 500;
 const MAX_ASSISTANT_COMPLETION_SUMMARY_LENGTH = 240;
 
 function stripSystemMessageTags(text: string): string {
@@ -37,9 +37,9 @@ function contentToText(content: string | ContentBlock[]): string {
 }
 
 /**
- * Convert a user message into the normalized text shown in recent-chat cards.
+ * Convert a user message into normalized user-authored text for thread metadata.
  */
-export function normalizeThreadPreviewUserMessage(content: string | ContentBlock[]): string | null {
+export function normalizeThreadUserMessageText(content: string | ContentBlock[]): string | null {
   const rawText = contentToText(content);
   const withoutSystemTags = stripSystemMessageTags(rawText);
   if (!withoutSystemTags) {
@@ -51,7 +51,28 @@ export function normalizeThreadPreviewUserMessage(content: string | ContentBlock
     return null;
   }
 
-  return withoutAuthor.slice(0, MAX_FIRST_USER_MESSAGE_LENGTH);
+  return withoutAuthor;
+}
+
+export function truncateThreadPreviewText(
+  value: string | null | undefined,
+  limit = MAX_THREAD_PREVIEW_TEXT_LENGTH,
+): string | null {
+  const text = value?.trim();
+  if (!text) {
+    return null;
+  }
+  const boundedLimit = Number.isFinite(limit) && limit > 0
+    ? Math.floor(limit)
+    : MAX_THREAD_PREVIEW_TEXT_LENGTH;
+  return text.length > boundedLimit ? text.slice(0, boundedLimit) : text;
+}
+
+/**
+ * Convert a user message into bounded text for preview-only UI surfaces.
+ */
+export function normalizeThreadPreviewUserMessage(content: string | ContentBlock[]): string | null {
+  return truncateThreadPreviewText(normalizeThreadUserMessageText(content));
 }
 
 export function normalizeThreadCompletionSummary(content: string | null | undefined): string | null {

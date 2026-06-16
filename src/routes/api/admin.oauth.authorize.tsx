@@ -186,7 +186,7 @@ export default function AdminMcpAuthorizePage({ loaderData }: Route.ComponentPro
           </CardDescription>
         </CardHeader>
         <form method="POST" action={data.authorizeUrl}>
-          <CardContent className="space-y-4">
+          <CardContent className="space-y-4 pb-4">
             <input type="hidden" name="client_id" value={data.clientId} />
             <input type="hidden" name="redirect_uri" value={data.redirectUri} />
             <input type="hidden" name="response_type" value={data.responseType} />
@@ -196,7 +196,7 @@ export default function AdminMcpAuthorizePage({ loaderData }: Route.ComponentPro
             <input type="hidden" name="scope" value={data.scope} />
             <input type="hidden" name="resource" value={data.resource} />
 
-            <div className="rounded-lg border bg-muted/50 p-3 text-sm text-muted-foreground">
+            <div className="rounded-lg border bg-muted/50 p-3 text-xs/relaxed text-muted-foreground">
               The MCP client will be able to list and call admin API endpoints. Admin status is checked again on every request.
             </div>
           </CardContent>
