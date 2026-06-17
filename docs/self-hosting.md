@@ -166,7 +166,13 @@ SELFHOST_WORKERD_SOCKET=127.0.0.1:3001 bun run selfhost:workerd:serve
 This runs `node_modules/workerd/bin/workerd serve` directly against the generated
 Cap'n Proto config at `.selfhost/workerd/camelai.capnp`. `selfhost:workerd:serve`
 applies local D1 migrations before starting the app unless
-`SELFHOST_SKIP_D1_MIGRATIONS=1` is set.
+`SELFHOST_SKIP_D1_MIGRATIONS=1` is set. When Browser Rendering is enabled, it also
+starts a local loopback HTTP server that launches headless Chrome through Miniflare's
+`launchBrowser()` helper and passes `--external-addr=loopback=...` to `workerd`.
+
+Browser Rendering downloads Chrome for Testing on first use. Docker installs the
+required system libraries in `infra/selfhost/app.Dockerfile`, and
+`docker-compose.selfhost.yml` sets `SELFHOST_BROWSER_NO_SANDBOX=1` by default.
 
 The generator reads `build/server/wrangler.json`, embeds the built Worker modules,
 and wires local services for:
@@ -178,6 +184,8 @@ and wires local services for:
   `Engine` Durable Objects
 - static assets through a disk-backed `ASSETS` service
 - the local git Artifacts replacement as an `ARTIFACTS` wrapped binding
+- Browser Rendering through Miniflare's local `BROWSER` binding (headless Chrome launched by a
+  companion Node loopback server)
 - the project runtime through normal outbound fetches
 
 Published user app bundles are served through the self-host dynamic dispatcher.

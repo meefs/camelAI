@@ -84,6 +84,12 @@ async function main() {
   assert(!config.includes('LocalDynamicAppRunner'), 'config must not contain local Dynamic Workers app runner DO');
   assert(config.includes('infra/selfhost/artifacts-binding.worker.js'), 'config should embed the local Artifacts binding module');
   assert(config.includes('workflows:local-wrapped-binding'), 'config should contain local Workflows wrapped binding');
+  assert(config.includes('name = "BROWSER"'), 'config should contain BROWSER binding');
+  assert(config.includes('browser-rendering:service'), 'config should contain Miniflare browser rendering service');
+  assert(config.includes('name = "loopback", external = (http = ()))'), 'config should use external loopback for browser rendering');
+  assert(config.includes('name = "local", network = (allow = ["local"]'), 'config should expose local outbound for Chrome');
+  assert(manifest.loopback?.mode === 'external', 'manifest should request external loopback for browser rendering');
+  includesAll(bindings.browser ?? [], ['BROWSER'], 'browser');
   assert(config.includes('selfhost-app-db'), 'config should contain self-host D1 database id');
   assert(config.includes('chiridion-selfhost-deterministic-automations'), 'config should contain self-host workflow names');
   assert(!config.includes('PROJECT_REPO_PROVIDER'), 'config must not contain PROJECT_REPO_PROVIDER');

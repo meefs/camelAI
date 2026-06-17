@@ -111,6 +111,8 @@ const SELFHOST_WORKFLOW_NAMES = {
   LEGACY_WORKSPACE_MIGRATIONS: 'chiridion-selfhost-legacy-workspace-migrations',
 };
 
+const BROWSER_RENDERING_SERVICE_NAME = 'browser-rendering:service';
+
 function q(value) {
   return JSON.stringify(String(value));
 }
@@ -451,6 +453,32 @@ function serviceWorkflow({ workflow, mainServiceName, storageServiceName }) {
   `))`;
 }
 
+function serviceBrowserRendering() {
+  const bindings = [
+    bindingService('MINIFLARE_LOOPBACK', 'loopback'),
+    bindingDurableObject('BrowserSession', 'BrowserSession'),
+  ];
+  return `(name = ${q(BROWSER_RENDERING_SERVICE_NAME)}, worker = (` +
+    `compatibilityDate = "2025-05-01", ` +
+    `compatibilityFlags = ["nodejs_compat"], ` +
+    `modules = [` +
+      [
+        capnpModule(
+          'binding.worker.js',
+          path.join(MINIFLARE_WORKERS_DIR, 'browser-rendering/binding.worker.js'),
+        ),
+        ...miniflareSupportModules(),
+      ].join(', ') +
+    `], ` +
+    `bindings = [${bindings.join(', ')}], ` +
+    `durableObjectNamespaces = [` +
+      `(className = "BrowserSession", uniqueKey = "miniflare-BrowserSession")` +
+    `], ` +
+    `durableObjectStorage = (inMemory = void), ` +
+    `globalOutbound = "local"` +
+  `))`;
+}
+
 function serviceEntryWorker(mainServiceName, dispatcherServiceName, vars) {
   const source = `
 const STATIC_PATHS = new Set([
@@ -652,6 +680,12 @@ async function main() {
     bindings.push(bindingService(wrangler.assets.binding, 'assets'));
   }
 
+  const browserBindingName = wrangler.browser?.binding;
+  const enableBrowserBinding = Boolean(browserBindingName);
+  if (enableBrowserBinding) {
+    bindings.push(bindingService(browserBindingName, BROWSER_RENDERING_SERVICE_NAME));
+  }
+
   const workflows = (wrangler.workflows ?? []).map((workflow) => ({
     binding: workflow.binding,
     name: SELFHOST_WORKFLOW_NAMES[workflow.binding] ?? workflow.name,
@@ -764,9 +798,15 @@ async function main() {
   if (producers.size > 0) {
     services.push(serviceQueueBroker({ producers, consumers, workerName, mainServiceName }));
   }
+  if (enableBrowserBinding) {
+    services.push(serviceBrowserRendering());
+    services.push('(name = "loopback", external = (http = ()))');
+    services.push('(name = "local", network = (allow = ["local"], tlsOptions = (trustBrowserCas = true)))');
+  } else {
+    services.push('(name = "loopback", network = (allow = ["local"], tlsOptions = (trustBrowserCas = true)))');
+  }
   services.push(`(name = "assets", disk = (path = ${q(path.resolve(serverDir, wrangler.assets?.directory ?? '../client'))}, writable = false))`);
   services.push('(name = "internet", network = (allow = ["public", "private"], tlsOptions = (trustBrowserCas = true)))');
-  services.push('(name = "loopback", network = (allow = ["local"], tlsOptions = (trustBrowserCas = true)))');
 
   const config = `using Workerd = import "/workerd/workerd.capnp";
 
@@ -808,7 +848,11 @@ const camelai :Workerd.Config = (
         'SELFHOST_WORKER_LOADER',
       ],
       assets: wrangler.assets?.binding,
+      browser: enableBrowserBinding ? [browserBindingName] : [],
     },
+    loopback: enableBrowserBinding
+      ? { mode: 'external', hostname: '127.0.0.1' }
+      : { mode: 'network' },
     omittedBindings: {
       sendEmail: (wrangler.send_email ?? []).map((item) => item.name),
     },
