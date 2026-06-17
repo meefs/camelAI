@@ -131,12 +131,11 @@
 		{
 			"binding": "WORKER_SELF_REFERENCE",
 			"service": "chiridion-app"
-		}
-	],
-	"dispatch_namespaces": [
+		},
 		{
 			"binding": "DISPATCHER",
-			"namespace": "chiridion-platform-local"
+			"service": "chiridion-dispatcher-local",
+			"entrypoint": "PlatformAppFetchBinding"
 		}
 	],
 	"vpc_services": [
@@ -327,12 +326,11 @@
 				{
 					"binding": "WORKER_SELF_REFERENCE",
 					"service": "chiridion-app"
-				}
-			],
-			"dispatch_namespaces": [
+				},
 				{
 					"binding": "DISPATCHER",
-					"namespace": "chiridion-platform"
+					"service": "chiridion-dispatcher",
+					"entrypoint": "PlatformAppFetchBinding"
 				}
 			],
 			"analytics_engine_datasets": [
@@ -466,12 +464,11 @@
 				{
 					"binding": "WORKER_SELF_REFERENCE",
 					"service": "chiridion-app-staging"
-				}
-			],
-			"dispatch_namespaces": [
+				},
 				{
 					"binding": "DISPATCHER",
-					"namespace": "chiridion-platform-staging"
+					"service": "chiridion-dispatcher-staging",
+					"entrypoint": "PlatformAppFetchBinding"
 				}
 			],
 			"durable_objects": {
@@ -596,12 +593,11 @@
 				{
 					"binding": "WORKER_SELF_REFERENCE",
 					"service": "chiridion-app-dev-miguel"
-				}
-			],
-			"dispatch_namespaces": [
+				},
 				{
 					"binding": "DISPATCHER",
-					"namespace": "chiridion-platform-dev-miguel"
+					"service": "chiridion-dispatcher-dev-miguel",
+					"entrypoint": "PlatformAppFetchBinding"
 				}
 			],
 			"durable_objects": {
@@ -726,12 +722,11 @@
 				{
 					"binding": "WORKER_SELF_REFERENCE",
 					"service": "chiridion-app-dev-illiana"
-				}
-			],
-			"dispatch_namespaces": [
+				},
 				{
 					"binding": "DISPATCHER",
-					"namespace": "chiridion-platform-dev-illiana"
+					"service": "chiridion-dispatcher-dev-illiana",
+					"entrypoint": "PlatformAppFetchBinding"
 				}
 			],
 			"durable_objects": {

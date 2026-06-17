@@ -1,4 +1,4 @@
-import { WorkerEntrypoint } from 'cloudflare:workers';
+import { WorkerEntrypoint, env as cloudflareEnv } from 'cloudflare:workers';
 import type { CodeModeToolsProps } from './chat-thread-do.js';
 import {
   buildWorkspaceAppHostIndex,
@@ -11,7 +11,7 @@ export type SecureFetchBindingProps = Pick<CodeModeToolsProps, 'orgId' | 'worksp
 
 /**
  * Virtual binding used by js_exec and deterministic automations to fetch
- * workspace deployed apps via the WfP dispatch namespace.
+ * workspace deployed apps through the dispatcher worker service binding.
  */
 export class SecureFetchBinding extends WorkerEntrypoint<
   SecureFetchEnv,
@@ -30,8 +30,13 @@ export class SecureFetchBinding extends WorkerEntrypoint<
     return this.hostIndexPromise;
   }
 
+  private resolveEnv(): SecureFetchEnv {
+    const dispatcher = this.env.DISPATCHER ?? (cloudflareEnv as SecureFetchEnv).DISPATCHER;
+    return dispatcher ? { ...this.env, DISPATCHER: dispatcher } : this.env;
+  }
+
   async fetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
-    return performSecureFetch(this.env, this.context, input, init, {
+    return performSecureFetch(this.resolveEnv(), this.context, input, init, {
       getHostIndex: () => this.getHostIndex(),
     });
   }

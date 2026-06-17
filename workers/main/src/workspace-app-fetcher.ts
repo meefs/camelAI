@@ -11,15 +11,7 @@ export interface WorkspaceAppContext {
   workspaceId: string;
 }
 
-export type DispatchNamespaceBinding = {
-  get(
-    name: string,
-    args?: Record<string, unknown>,
-    options?: { limits?: { subRequests?: number } },
-  ): { fetch(request: Request): Promise<Response> };
-};
-
-export type DispatcherBinding = DispatchNamespaceBinding | Fetcher;
+export type DispatcherBinding = Fetcher;
 
 export interface WorkspaceAppFetcherEnv {
   DISPATCHER?: DispatcherBinding;
@@ -44,7 +36,6 @@ export interface WorkspaceAppHostIndex {
   hostnames: ReadonlySet<string>;
 }
 
-const USER_WORKER_SUBREQUEST_LIMIT = 10_000_000;
 const MAX_REDIRECTS = 20;
 const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
 
@@ -59,6 +50,35 @@ const CROSS_ORIGIN_REDIRECT_HEADERS = [
   'proxy-authorization',
 ];
 
+export const PLATFORM_DISPATCH_SCRIPT_HEADER = 'x-camelai-platform-dispatch-script';
+export const PLATFORM_DISPATCH_SCRIPT_NAME_HEADER = 'x-camelai-platform-script-name';
+export const PLATFORM_DISPATCH_LEGACY_SCRIPT_HEADER = 'x-camelai-platform-legacy-dispatch-script';
+
+const PLATFORM_DISPATCH_HEADERS = [
+  PLATFORM_DISPATCH_SCRIPT_HEADER,
+  PLATFORM_DISPATCH_SCRIPT_NAME_HEADER,
+  PLATFORM_DISPATCH_LEGACY_SCRIPT_HEADER,
+] as const;
+
+function stripPlatformDispatchHeaders(headers: Headers): void {
+  for (const name of PLATFORM_DISPATCH_HEADERS) {
+    headers.delete(name);
+  }
+}
+
+function syncRequestHostHeader(headers: Headers, url: URL): void {
+  const host = url.port ? `${url.hostname}:${url.port}` : url.hostname;
+  headers.set('Host', host);
+}
+
+function applyPlatformDispatchRoute(headers: Headers, route: WorkspaceAppRoute): void {
+  headers.set(PLATFORM_DISPATCH_SCRIPT_HEADER, route.dispatchScriptName);
+  headers.set(PLATFORM_DISPATCH_SCRIPT_NAME_HEADER, route.scriptName);
+  if (route.legacyDispatchScriptName !== route.dispatchScriptName) {
+    headers.set(PLATFORM_DISPATCH_LEGACY_SCRIPT_HEADER, route.legacyDispatchScriptName);
+  }
+}
+
 function normalizeHostname(hostname: string): string {
   return hostname.trim().toLowerCase().replace(/:\d+$/, '');
 }
@@ -69,12 +89,6 @@ function appUrlContext(env: WorkspaceAppFetcherEnv) {
     vanityDomain: env.LOCAL_APP_VANITY_DOMAIN,
     iframeDomain: env.LOCAL_APP_IFRAME_DOMAIN,
   };
-}
-
-export function isDispatchNamespaceBinding(
-  dispatcher: DispatcherBinding,
-): dispatcher is DispatchNamespaceBinding {
-  return typeof (dispatcher as DispatchNamespaceBinding).get === 'function';
 }
 
 export async function buildWorkspaceAppHostIndex(
@@ -253,7 +267,9 @@ export async function buildWorkspaceAppUrl(
 }
 
 function sanitizeWorkspaceAppRequest(request: Request): Request {
+  const url = new URL(request.url);
   const headers = new Headers(request.headers);
+  stripPlatformDispatchHeaders(headers);
   const cookieHeader = headers.get('Cookie');
   if (cookieHeader) {
     const filtered = cookieHeader
@@ -269,6 +285,7 @@ function sanitizeWorkspaceAppRequest(request: Request): Request {
       headers.delete('Cookie');
     }
   }
+  syncRequestHostHeader(headers, url);
   return new Request(request, { headers });
 }
 
@@ -332,58 +349,19 @@ function buildRedirectRequest(
   return new Request(nextUrl, init);
 }
 
-async function fetchViaDispatchNamespace(
-  env: WorkspaceAppFetcherEnv,
-  request: Request,
-  route: WorkspaceAppRoute,
-): Promise<Response> {
-  const dispatcher = env.DISPATCHER;
-  if (!dispatcher || !isDispatchNamespaceBinding(dispatcher)) {
-    throw new Error('DISPATCHER dispatch namespace binding is not configured');
-  }
-  const worker = dispatcher.get(route.dispatchScriptName, {}, {
-    limits: { subRequests: USER_WORKER_SUBREQUEST_LIMIT },
-  });
-  try {
-    return await worker.fetch(request);
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    if (
-      message.startsWith('Worker not found')
-      && route.legacyDispatchScriptName !== route.dispatchScriptName
-    ) {
-      return dispatcher.get(route.legacyDispatchScriptName, {}, {
-        limits: { subRequests: USER_WORKER_SUBREQUEST_LIMIT },
-      }).fetch(request);
-    }
-    throw error;
-  }
-}
-
-async function fetchViaDispatchService(
-  env: WorkspaceAppFetcherEnv,
-  request: Request,
-): Promise<Response> {
-  const dispatcher = env.DISPATCHER;
-  if (!dispatcher || isDispatchNamespaceBinding(dispatcher)) {
-    throw new Error('DISPATCHER service binding is not configured');
-  }
-  return dispatcher.fetch(request);
-}
-
 async function fetchWorkspaceAppOnce(
   env: WorkspaceAppFetcherEnv,
   request: Request,
   route: WorkspaceAppRoute,
 ): Promise<Response> {
   const sanitized = sanitizeWorkspaceAppRequest(request);
-  if (env.DISPATCHER && isDispatchNamespaceBinding(env.DISPATCHER)) {
-    return fetchViaDispatchNamespace(env, sanitized, route);
+  const headers = new Headers(sanitized.headers);
+  applyPlatformDispatchRoute(headers, route);
+  const forwarded = new Request(sanitized, { headers });
+  if (!env.DISPATCHER || typeof env.DISPATCHER.fetch !== 'function') {
+    throw new Error('DISPATCHER service binding is not configured');
   }
-  if (env.DISPATCHER) {
-    return fetchViaDispatchService(env, sanitized);
-  }
-  throw new Error('DISPATCHER binding is not configured');
+  return env.DISPATCHER.fetch(forwarded);
 }
 
 async function followWorkspaceAppRedirects(

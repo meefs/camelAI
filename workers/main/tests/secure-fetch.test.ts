@@ -57,7 +57,7 @@ describe('secure fetch', () => {
     };
     const env = {
       DISPATCHER: {
-        get: vi.fn(() => ({ fetch: fetchMock })),
+        fetch: fetchMock,
       },
       ORG: {
         idFromName: () => 'org-id',
@@ -76,11 +76,9 @@ describe('secure fetch', () => {
     );
 
     expect(response.status).toBe(200);
-    expect(env.DISPATCHER.get).toHaveBeenCalledWith(
-      'private-app--alpha12',
-      {},
-      expect.objectContaining({ limits: { subRequests: 10_000_000 } }),
-    );
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const forwarded = fetchMock.mock.calls[0]?.[0] as Request;
+    expect(forwarded.url).toBe('https://private-app-alpha12.staging.camelai.app/api/webhook');
   });
 
   it('passes through non-workspace URLs without dispatch', async () => {

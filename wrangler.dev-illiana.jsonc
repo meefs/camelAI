@@ -91,10 +91,12 @@
 		]
 	},
 	"services": [
-		{ "binding": "WORKER_SELF_REFERENCE", "service": "chiridion-app-dev-illiana" }
-	],
-	"dispatch_namespaces": [
-		{ "binding": "DISPATCHER", "namespace": "chiridion-platform-dev-illiana" }
+		{ "binding": "WORKER_SELF_REFERENCE", "service": "chiridion-app-dev-illiana" },
+		{
+			"binding": "DISPATCHER",
+			"service": "chiridion-dispatcher-dev-illiana",
+			"entrypoint": "PlatformAppFetchBinding"
+		}
 	],
 	"durable_objects": {
 		"bindings": [

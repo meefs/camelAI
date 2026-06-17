@@ -23,7 +23,7 @@
  * 5. Dispatcher validates token and creates session cookie
  */
 
-import { DurableObject } from 'cloudflare:workers';
+import { DurableObject, WorkerEntrypoint } from 'cloudflare:workers';
 
 import {
   getDispatcherSession,
@@ -55,6 +55,11 @@ import {
   type SelfhostWorkerModule,
   type SelfhostWorkerRecord,
 } from '../../main/src/selfhost-worker-registry';
+import {
+  PLATFORM_DISPATCH_LEGACY_SCRIPT_HEADER,
+  PLATFORM_DISPATCH_SCRIPT_HEADER,
+  PLATFORM_DISPATCH_SCRIPT_NAME_HEADER,
+} from '../../main/src/workspace-app-fetcher.js';
 export { AIVirtualBinding } from '../../main/src/ai-virtual-binding';
 export { AssetsVirtualBinding } from '../../main/src/assets-virtual-binding';
 export { CamelAiService } from '../../main/src/camelai-service';
@@ -820,6 +825,29 @@ function getRequestHostname(request: Request, url: URL): string {
   return host.replace(/:\d+$/, '').toLowerCase();
 }
 
+function preparePlatformDispatchRequest(request: Request): Request {
+  const url = new URL(request.url);
+  const headers = new Headers(request.headers);
+  for (const name of [
+    PLATFORM_DISPATCH_SCRIPT_HEADER,
+    PLATFORM_DISPATCH_SCRIPT_NAME_HEADER,
+    PLATFORM_DISPATCH_LEGACY_SCRIPT_HEADER,
+  ]) {
+    headers.delete(name);
+  }
+  const host = url.port ? `${url.hostname}:${url.port}` : url.hostname;
+  headers.set('Host', host);
+  const init: RequestInit = {
+    headers,
+    method: request.method,
+    redirect: request.redirect,
+  };
+  if (request.method !== 'GET' && request.method !== 'HEAD') {
+    init.body = request.body;
+  }
+  return new Request(request.url, init);
+}
+
 function parseConfiguredDomainRoute(hostname: string, domain: string): ParsedWorkerRoute | null {
   if (hostname === domain || !hostname.endsWith(`.${domain}`)) {
     return null;
@@ -1100,6 +1128,63 @@ async function resolveCustomDomainRoute(
     console.error(`[dispatcher] Error parsing custom domain host data for ${hostname}:`, e);
   }
   return null;
+}
+
+/**
+ * Trusted platform RPC entrypoint for js_exec/screenshot fetches from the main app worker.
+ * Service bindings are only invocable from workers we configure, so this skips browser auth.
+ */
+export class PlatformAppFetchBinding extends WorkerEntrypoint<Env> {
+  async fetch(request: Request): Promise<Response> {
+    const url = new URL(request.url);
+    const hostname = url.hostname;
+
+    const dispatchScriptName = request.headers.get(PLATFORM_DISPATCH_SCRIPT_HEADER)?.trim();
+    const scriptName = request.headers.get(PLATFORM_DISPATCH_SCRIPT_NAME_HEADER)?.trim();
+    const legacyDispatchScriptName = request.headers.get(PLATFORM_DISPATCH_LEGACY_SCRIPT_HEADER)?.trim();
+    const forwardedRequest = preparePlatformDispatchRequest(request);
+
+    if (dispatchScriptName && scriptName) {
+      return dispatchToWorker(
+        forwardedRequest,
+        this.env,
+        this.ctx,
+        dispatchScriptName,
+        scriptName,
+        legacyDispatchScriptName && legacyDispatchScriptName !== dispatchScriptName
+          ? legacyDispatchScriptName
+          : undefined,
+      );
+    }
+
+    const route = parseWorkerRoute(hostname, this.env);
+    if (route) {
+      return dispatchToWorker(
+        forwardedRequest,
+        this.env,
+        this.ctx,
+        route.dispatchScriptName,
+        route.scriptName,
+        route.legacyFallback?.dispatchScriptName,
+      );
+    }
+
+    const customDomainRoute = await resolveCustomDomainRoute(this.env, hostname);
+    if (customDomainRoute) {
+      return dispatchToWorker(
+        forwardedRequest,
+        this.env,
+        this.ctx,
+        customDomainRoute.dispatchScriptName,
+        customDomainRoute.scriptName,
+      );
+    }
+
+    return new Response(
+      JSON.stringify({ error: 'Not a workspace deployed app hostname' }),
+      { status: 400, headers: { 'Content-Type': 'application/json' } },
+    );
+  }
 }
 
 export default {

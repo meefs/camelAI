@@ -7,6 +7,9 @@ import {
   isLocalAppHostname,
   isWorkspaceAppHostname,
   performWorkspaceAppFetch,
+  PLATFORM_DISPATCH_LEGACY_SCRIPT_HEADER,
+  PLATFORM_DISPATCH_SCRIPT_HEADER,
+  PLATFORM_DISPATCH_SCRIPT_NAME_HEADER,
   shouldUseDispatchInterceptionForScreenshot,
 } from '../src/workspace-app-fetcher';
 
@@ -44,7 +47,7 @@ describe('workspace app fetcher', () => {
     expect(isWorkspaceAppHostname(index, 'other-org-app-beta99.staging.camelai.app')).toBe(false);
   });
 
-  it('routes workspace app requests through the dispatch namespace binding', async () => {
+  it('routes workspace app requests through the dispatcher service binding', async () => {
     const fetchMock = vi.fn(async () => new Response('ok', { status: 200 }));
     const index = {
       hostnames: new Set(['private-app-alpha12.staging.camelai.app']),
@@ -62,7 +65,7 @@ describe('workspace app fetcher', () => {
     };
     const env = {
       DISPATCHER: {
-        get: vi.fn(() => ({ fetch: fetchMock })),
+        fetch: fetchMock,
       },
       ORG: {
         idFromName: () => 'org-id',
@@ -81,20 +84,58 @@ describe('workspace app fetcher', () => {
     );
 
     expect(response.status).toBe(200);
-    expect(env.DISPATCHER.get).toHaveBeenCalledWith(
-      'private-app--alpha12',
-      {},
-      expect.objectContaining({ limits: { subRequests: 10_000_000 } }),
-    );
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const forwarded = fetchMock.mock.calls[0]?.[0] as Request;
     expect(forwarded.url).toBe('https://private-app-alpha12.staging.camelai.app/api/webhook');
     expect(forwarded.method).toBe('POST');
+    expect(forwarded.headers.get(PLATFORM_DISPATCH_SCRIPT_HEADER)).toBe('private-app--alpha12');
+    expect(forwarded.headers.get(PLATFORM_DISPATCH_SCRIPT_NAME_HEADER)).toBe('private-app');
+    expect(forwarded.headers.get(PLATFORM_DISPATCH_LEGACY_SCRIPT_HEADER)).toBe('private-app');
+    expect(forwarded.headers.get('Host')).toBe('private-app-alpha12.staging.camelai.app');
   });
 
-  it('does not retry legacy workers when the namespaced worker returns 404', async () => {
+  it('strips caller Host spoofing and forged platform dispatch headers', async () => {
+    const fetchMock = vi.fn(async () => new Response('ok', { status: 200 }));
+    const index = {
+      hostnames: new Set(['private-app-alpha12.staging.camelai.app']),
+      routesByHostname: new Map([
+        ['private-app-alpha12.staging.camelai.app', {
+          scriptName: 'private-app',
+          orgSlug: 'alpha12',
+          dispatchScriptName: 'private-app--alpha12',
+          legacyDispatchScriptName: 'private-app',
+          workspaceId: 'workspace1',
+          orgId: 'org1',
+          isPublic: false,
+        }],
+      ]),
+    };
+    const env = {
+      DISPATCHER: { fetch: fetchMock },
+      ORG: { idFromName: () => 'org-id', get: () => ({}) },
+    };
+
+    await fetchWorkspaceAppViaDispatch(
+      env as any,
+      { orgId: 'org1', workspaceId: 'workspace1' },
+      new Request('https://private-app-alpha12.staging.camelai.app/api/webhook', {
+        headers: {
+          Host: 'victim-app-beta99.staging.camelai.app',
+          [PLATFORM_DISPATCH_SCRIPT_HEADER]: 'victim-app--beta99',
+          [PLATFORM_DISPATCH_SCRIPT_NAME_HEADER]: 'victim-app',
+        },
+      }),
+      index,
+    );
+
+    const forwarded = fetchMock.mock.calls[0]?.[0] as Request;
+    expect(forwarded.headers.get('Host')).toBe('private-app-alpha12.staging.camelai.app');
+    expect(forwarded.headers.get(PLATFORM_DISPATCH_SCRIPT_HEADER)).toBe('private-app--alpha12');
+    expect(forwarded.headers.get(PLATFORM_DISPATCH_SCRIPT_NAME_HEADER)).toBe('private-app');
+  });
+
+  it('returns dispatcher 404 responses without legacy fallback in the main worker', async () => {
     const fetchMock = vi.fn(async () => new Response('not found', { status: 404 }));
-    const legacyFetchMock = vi.fn(async () => new Response('legacy', { status: 200 }));
     const index = {
       hostnames: new Set(['private-app-alpha12.staging.camelai.app']),
       routesByHostname: new Map([
@@ -111,9 +152,7 @@ describe('workspace app fetcher', () => {
     };
     const env = {
       DISPATCHER: {
-        get: vi.fn((name: string) => ({
-          fetch: name === 'private-app--alpha12' ? fetchMock : legacyFetchMock,
-        })),
+        fetch: fetchMock,
       },
       ORG: {
         idFromName: () => 'org-id',
@@ -130,50 +169,6 @@ describe('workspace app fetcher', () => {
 
     expect(response.status).toBe(404);
     expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(legacyFetchMock).not.toHaveBeenCalled();
-  });
-
-  it('retries legacy workers only when the namespaced worker is missing', async () => {
-    const fetchMock = vi.fn(async () => {
-      throw new Error('Worker not found: private-app--alpha12');
-    });
-    const legacyFetchMock = vi.fn(async () => new Response('legacy', { status: 200 }));
-    const index = {
-      hostnames: new Set(['private-app-alpha12.staging.camelai.app']),
-      routesByHostname: new Map([
-        ['private-app-alpha12.staging.camelai.app', {
-          scriptName: 'private-app',
-          orgSlug: 'alpha12',
-          dispatchScriptName: 'private-app--alpha12',
-          legacyDispatchScriptName: 'private-app',
-          workspaceId: 'workspace1',
-          orgId: 'org1',
-          isPublic: false,
-        }],
-      ]),
-    };
-    const env = {
-      DISPATCHER: {
-        get: vi.fn((name: string) => ({
-          fetch: name === 'private-app--alpha12' ? fetchMock : legacyFetchMock,
-        })),
-      },
-      ORG: {
-        idFromName: () => 'org-id',
-        get: () => ({}),
-      },
-    };
-
-    const response = await fetchWorkspaceAppViaDispatch(
-      env as any,
-      { orgId: 'org1', workspaceId: 'workspace1' },
-      new Request('https://private-app-alpha12.staging.camelai.app/'),
-      index,
-    );
-
-    expect(response.status).toBe(200);
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(legacyFetchMock).toHaveBeenCalledTimes(1);
   });
 
   it('follows redirects within workspace app hostnames', async () => {
@@ -199,7 +194,7 @@ describe('workspace app fetcher', () => {
     };
     const env = {
       DISPATCHER: {
-        get: vi.fn(() => ({ fetch: fetchMock })),
+        fetch: fetchMock,
       },
       ORG: {
         idFromName: () => 'org-id',
@@ -356,7 +351,7 @@ describe('workspace app fetcher', () => {
     };
     const env = {
       DISPATCHER: {
-        get: vi.fn(() => ({ fetch: dispatchFetchMock })),
+        fetch: dispatchFetchMock,
       },
       ORG: {
         idFromName: () => 'org-id',

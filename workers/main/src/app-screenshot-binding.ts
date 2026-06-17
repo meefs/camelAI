@@ -34,7 +34,7 @@ export interface AppScreenshotCaptureResult {
 
 /**
  * Virtual binding for capturing deployed workspace app screenshots via Browser
- * Rendering. Uses the WfP dispatch namespace for private app auth.
+ * Rendering. Private apps route through the dispatcher service binding.
  */
 export class AppScreenshotBinding extends WorkerEntrypoint<
   AppScreenshotBindingEnv,
