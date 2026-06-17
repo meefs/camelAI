@@ -702,7 +702,7 @@ async function main() {
     )}])`);
   }
 
-  bindings.push(bindingServiceEntrypoint('DISPATCHER', dispatcherServiceName, 'PlatformAppFetchBinding'));
+  bindings.push(bindingService('DISPATCHER', dispatcherServiceName));
 
   const compatibilityFlags = (wrangler.compatibility_flags ?? []).filter((flag) => {
     if (process.env.SELFHOST_WORKERD_STRICT_PUBLIC === '1') return true;

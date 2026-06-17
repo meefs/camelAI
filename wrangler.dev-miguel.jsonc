@@ -103,8 +103,7 @@
 		{ "binding": "WORKER_SELF_REFERENCE", "service": "chiridion-app-dev-miguel" },
 		{
 			"binding": "DISPATCHER",
-			"service": "chiridion-dispatcher-dev-miguel",
-			"entrypoint": "PlatformAppFetchBinding"
+			"service": "chiridion-dispatcher-dev-miguel"
 		}
 	],
 	"durable_objects": {

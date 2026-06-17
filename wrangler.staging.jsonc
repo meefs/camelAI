@@ -119,8 +119,7 @@
     { "binding": "WORKER_SELF_REFERENCE", "service": "chiridion-app-staging" },
     {
       "binding": "DISPATCHER",
-      "service": "chiridion-dispatcher-staging",
-      "entrypoint": "PlatformAppFetchBinding"
+      "service": "chiridion-dispatcher-staging"
     }
   ],
   "durable_objects": {

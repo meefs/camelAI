@@ -94,8 +94,7 @@
 		{ "binding": "WORKER_SELF_REFERENCE", "service": "chiridion-app-dev-illiana" },
 		{
 			"binding": "DISPATCHER",
-			"service": "chiridion-dispatcher-dev-illiana",
-			"entrypoint": "PlatformAppFetchBinding"
+			"service": "chiridion-dispatcher-dev-illiana"
 		}
 	],
 	"durable_objects": {

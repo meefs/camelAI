@@ -135,7 +135,6 @@
 		{
 			"binding": "DISPATCHER",
 			"service": "chiridion-dispatcher-local",
-			"entrypoint": "PlatformAppFetchBinding"
 		}
 	],
 	"vpc_services": [
@@ -330,7 +329,6 @@
 				{
 					"binding": "DISPATCHER",
 					"service": "chiridion-dispatcher",
-					"entrypoint": "PlatformAppFetchBinding"
 				}
 			],
 			"analytics_engine_datasets": [
@@ -468,7 +466,6 @@
 				{
 					"binding": "DISPATCHER",
 					"service": "chiridion-dispatcher-staging",
-					"entrypoint": "PlatformAppFetchBinding"
 				}
 			],
 			"durable_objects": {
@@ -597,7 +594,6 @@
 				{
 					"binding": "DISPATCHER",
 					"service": "chiridion-dispatcher-dev-miguel",
-					"entrypoint": "PlatformAppFetchBinding"
 				}
 			],
 			"durable_objects": {
@@ -726,7 +722,6 @@
 				{
 					"binding": "DISPATCHER",
 					"service": "chiridion-dispatcher-dev-illiana",
-					"entrypoint": "PlatformAppFetchBinding"
 				}
 			],
 			"durable_objects": {

@@ -6,7 +6,7 @@ import { performWorkspaceAppFetch } from '../src/workspace-app-fetcher';
  * Regression tests for js_exec workspace-app auto-auth via SecureFetchBinding.
  *
  * Main app workers route workspace-app fetches through the dispatcher service
- * binding (PlatformAppFetchBinding), not a dispatch namespace on the main worker.
+ * dispatcher default entrypoint RPC, not a dispatch namespace on the main worker.
  */
 
 const WORKSPACE_APP_HOST = 'water-tracker--ms-workspace-d05.staging.camelai.app';

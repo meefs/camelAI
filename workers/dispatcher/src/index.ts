@@ -1186,20 +1186,21 @@ async function fetchPlatformWorkspaceApp(
 }
 
 /**
- * Trusted platform RPC entrypoint for js_exec/screenshot fetches from the main app worker.
- * Service bindings are only invocable from workers we configure, so this skips browser auth.
+ * Default dispatcher entrypoint: public HTTP routing via fetch(), trusted platform
+ * workspace-app fetches via fetchWorkspaceApp() RPC from the main app worker.
  *
- * Callers must use fetchWorkspaceApp(), not fetch(). Fetch semantics on a named
- * WorkerEntrypoint propagate the entrypoint name into dispatch-namespace subrequests.
+ * Service bindings are only invocable from workers we configure, so fetchWorkspaceApp
+ * skips browser auth. Use the default export (no named service-binding entrypoint) so
+ * dispatch-namespace subrequests do not inherit a named entrypoint context.
  */
-export class PlatformAppFetchBinding extends WorkerEntrypoint<Env> {
+export default class DispatcherEntrypoint extends WorkerEntrypoint<Env> {
   async fetchWorkspaceApp(request: Request): Promise<Response> {
     return fetchPlatformWorkspaceApp(request, this.env, this.ctx);
   }
-}
 
-export default {
-  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+  async fetch(request: Request): Promise<Response> {
+    const env = this.env;
+    const ctx = this.ctx;
     const url = new URL(request.url);
     const hostname = getRequestHostname(request, url);
 
@@ -1270,8 +1271,8 @@ export default {
         headers: { 'Content-Type': 'application/json' },
       }
     );
-  },
-};
+  }
+}
 
 /**
  * Handle auth callback - validates token and creates session

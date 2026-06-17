@@ -119,8 +119,7 @@
     { "binding": "WORKER_SELF_REFERENCE", "service": "chiridion-app" },
     {
       "binding": "DISPATCHER",
-      "service": "chiridion-dispatcher",
-      "entrypoint": "PlatformAppFetchBinding"
+      "service": "chiridion-dispatcher"
     }
   ],
   "durable_objects": {
