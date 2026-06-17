@@ -11708,6 +11708,23 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         usageProvider: "bedrock",
       };
     }
+    if (byok?.provider === "bedrock" && byok.apiKey && resolved.provider === "openai") {
+      const bedrockOpenAi = this.bedrockOpenAiModelConfig(resolved.modelId, byok.awsRegion);
+      if (bedrockOpenAi) {
+        return {
+          apiKey: byok.apiKey,
+          api: "openai-responses",
+          billingSource: "byok",
+          creditChargeable: false,
+          requestProvider: "custom",
+          requestModelId: bedrockOpenAi.modelId,
+          modelLookupProvider: "openai",
+          modelLookupModelId: resolved.modelId,
+          baseUrl: bedrockOpenAi.baseUrl,
+          usageProvider: "bedrock",
+        };
+      }
+    }
     if (byok?.provider === resolved.provider && byok.apiKey) {
       return {
         apiKey: byok.apiKey,
@@ -12046,6 +12063,34 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     if (!normalized) return undefined;
     if (!/^[a-z0-9-]+$/.test(normalized)) return undefined;
     return `https://bedrock-runtime.${normalized}.amazonaws.com`;
+  }
+
+  private bedrockOpenAiModelConfig(
+    modelId: string,
+    region: string | undefined,
+  ): { modelId: string; baseUrl: string } | null {
+    const normalizedModel = modelId.trim().toLowerCase();
+    const supportedRegionsByModel: Record<string, readonly string[]> = {
+      "gpt-5.5": ["us-east-1", "us-east-2"],
+      "gpt-5.4": ["us-east-1", "us-east-2", "us-west-2", "us-gov-west-1"],
+    };
+    const supportedRegions = supportedRegionsByModel[normalizedModel];
+    if (!supportedRegions) return null;
+
+    const normalizedRegion = region?.trim() || "us-east-1";
+    if (!/^[a-z0-9-]+$/.test(normalizedRegion)) {
+      throw new Error(`Invalid Bedrock AWS region: ${normalizedRegion}`);
+    }
+    if (!supportedRegions.includes(normalizedRegion)) {
+      throw new Error(
+        `OpenAI ${modelId} on Amazon Bedrock is not available in ${normalizedRegion}. Supported regions: ${supportedRegions.join(", ")}.`,
+      );
+    }
+
+    return {
+      modelId: `openai.${normalizedModel}`,
+      baseUrl: `https://bedrock-mantle.${normalizedRegion}.api.aws/openai/v1`,
+    };
   }
 
   private streamPiModel(

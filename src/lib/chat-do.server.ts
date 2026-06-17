@@ -23,6 +23,7 @@ import {
   getDefaultLlmModel,
   getStoredCustomLlmProviderApi,
   getStoredCustomLlmProviderModelId,
+  getStoredBedrockAwsRegion,
   isLlmModelAllowedForNewThread,
   isLlmModel,
   normalizeLlmModel,
@@ -142,6 +143,7 @@ export interface WorkspaceModelPickerState {
   llmProvider: LlmProvider | null;
   customApi: CustomLlmProviderApi | null;
   customModelId: string | null;
+  awsRegion: string | null;
   experimentalSettings: import("@/types").OrganizationExperimentalSettings;
   allowedThreadModels: LlmModel[];
   effectivePickerDefaultModel: LlmModel | null;
@@ -211,6 +213,7 @@ async function getWorkspaceModelPickerStateForOrg(
   );
   const customApi = getStoredCustomLlmProviderApi(effectiveLlmProviderConfig);
   const customModelId = getStoredCustomLlmProviderModelId(effectiveLlmProviderConfig);
+  const awsRegion = getStoredBedrockAwsRegion(effectiveLlmProviderConfig);
   const [orgPickerConfig, workspacePickerConfig] = await Promise.all([
     getOrgModelPickerConfigCompat(orgStub),
     getWorkspaceModelPickerConfigCompat(wsStub),
@@ -225,6 +228,7 @@ async function getWorkspaceModelPickerStateForOrg(
     orgProvider: effectiveLlmProviderConfig?.provider,
     customApi,
     customModelId,
+    awsRegion,
   });
   const defaultModel = resolveDefaultModelForChat({
     effectiveDefaultModel: effectiveConfig.default_model,
@@ -240,6 +244,7 @@ async function getWorkspaceModelPickerStateForOrg(
     llmProvider: (effectiveLlmProviderConfig?.provider ?? null) as LlmProvider | null,
     customApi,
     customModelId,
+    awsRegion,
     experimentalSettings,
     allowedThreadModels: visibleCatalog.map((entry) => entry.id),
     effectivePickerDefaultModel: effectiveConfig.default_model,
@@ -277,6 +282,7 @@ async function resolveCreateThreadModel(
       {
         customApi: pickerState.customApi,
         customModelId: pickerState.customModelId,
+        awsRegion: pickerState.awsRegion,
       },
     ) ||
     !pickerState.allowedThreadModels.includes(selectedModel)
@@ -583,6 +589,7 @@ export async function updateThreadModel(
       {
         customApi: pickerState.customApi,
         customModelId: pickerState.customModelId,
+        awsRegion: pickerState.awsRegion,
       },
     ) ||
     !pickerState.allowedThreadModels.includes(model)

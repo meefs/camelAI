@@ -30,6 +30,7 @@ import {
   getDefaultLlmModel,
   getStoredCustomLlmProviderApi,
   getStoredCustomLlmProviderModelId,
+  getStoredBedrockAwsRegion,
   getVisibleLlmModelOptions,
   isLlmModel,
 } from "@/lib/llm-provider-config";
@@ -945,6 +946,7 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
   );
   const customApi = getStoredCustomLlmProviderApi(effectiveLlmProviderConfig);
   const customModelId = getStoredCustomLlmProviderModelId(effectiveLlmProviderConfig);
+  const awsRegion = getStoredBedrockAwsRegion(effectiveLlmProviderConfig);
   const fallbackThreadModel =
     thread?.model ??
     getDefaultLlmModel(effectiveLlmProviderConfig?.provider, {
@@ -958,6 +960,7 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
       orgProvider: effectiveLlmProviderConfig?.provider,
       customApi,
       customModelId,
+      awsRegion,
     },
   ).map((option) => option.value);
 
@@ -1049,6 +1052,7 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
         | null),
     customApi: pickerState?.customApi ?? customApi,
     customModelId: pickerState?.customModelId ?? customModelId,
+    awsRegion: pickerState?.awsRegion ?? awsRegion,
     allowedThreadModels:
       pickerState?.allowedThreadModels ?? fallbackAllowedThreadModels,
     effectivePickerDefaultModel:
@@ -1096,6 +1100,7 @@ export default function ChatPage() {
     llmProvider,
     customApi,
     customModelId,
+    awsRegion,
     allowedThreadModels,
     effectivePickerDefaultModel,
     hasEffectivePickerDefault,
@@ -1193,6 +1198,7 @@ export default function ChatPage() {
             orgProvider: llmProvider,
             customApi,
             customModelId,
+            awsRegion,
           },
         ).map((option) => option.value)
       : allowedThreadModels;

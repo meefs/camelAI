@@ -1734,6 +1734,110 @@ describe('ChatThreadDO Codex turn handling', () => {
     expect(fake.checkHostedPiModelAccess).not.toHaveBeenCalled();
   });
 
+  it('uses Bedrock Mantle Responses API for supported OpenAI Pi models', async () => {
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    fake.env = {};
+    fake.resolveCurrentByokCredentials = vi.fn(async () => ({
+      provider: 'bedrock',
+      apiKey: 'bedrock-token',
+      awsRegion: 'us-east-2',
+    }));
+    fake.checkHostedPiModelAccess = vi.fn(async () => {
+      throw new Error('hosted billing should not be checked for BYOK');
+    });
+    const getModel = vi.fn((provider: string, id: string) => ({
+      id,
+      provider,
+      api: provider === 'openai' ? 'openai-responses' : 'anthropic-messages',
+      baseUrl: provider === 'openai'
+        ? 'https://api.openai.com/v1'
+        : 'https://api.anthropic.com',
+    }));
+
+    const model = await ChatThreadDO.prototype['resolvePiModel'].call(
+      fake,
+      { provider: 'codex', orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1' },
+      { CHIRIDION_CODEX_MODEL: 'gpt-5.5' },
+      getModel,
+    );
+
+    expect(getModel).toHaveBeenCalledWith('openai', 'gpt-5.5');
+    expect(model.model).toMatchObject({
+      id: 'openai.gpt-5.5',
+      provider: 'custom',
+      api: 'openai-responses',
+      baseUrl: 'https://bedrock-mantle.us-east-2.api.aws/openai/v1',
+    });
+    expect(model.apiKey).toBe('bedrock-token');
+    expect(model.billingSource).toBe('byok');
+    expect(model.usageProvider).toBe('bedrock');
+    expect(fake.checkHostedPiModelAccess).not.toHaveBeenCalled();
+  });
+
+  it('lets unsupported Bedrock OpenAI models fall through to hosted routing', async () => {
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    fake.env = {
+      CF_ACCOUNT_ID: 'acct_1',
+      CF_GATEWAY_NAME: 'gateway_1',
+      AI_GATEWAY_AUTH_TOKEN: 'cf-token',
+    };
+    fake.chatContext = {
+      orgId: 'org1',
+      workspaceId: 'workspace1',
+      threadId: 'thread1',
+    };
+    fake.resolveCurrentByokCredentials = vi.fn(async () => ({
+      provider: 'bedrock',
+      apiKey: 'bedrock-token',
+      awsRegion: 'us-east-2',
+    }));
+    fake.checkHostedPiModelAccess = vi.fn(async () => true);
+    const getModel = vi.fn((provider: string, id: string) => ({
+      id,
+      provider,
+      api: 'openai-responses',
+      baseUrl: 'https://api.openai.com/v1',
+    }));
+
+    const model = await ChatThreadDO.prototype['resolvePiModel'].call(
+      fake,
+      { provider: 'codex', orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1' },
+      { CHIRIDION_CODEX_MODEL: 'gpt-5.4-mini' },
+      getModel,
+    );
+
+    expect(model.model).toMatchObject({
+      id: 'openai/gpt-5.4-mini:nitro',
+      provider: 'cloudflare-ai-gateway',
+      api: 'openai-responses',
+      baseUrl: 'https://gateway.ai.cloudflare.com/v1/acct_1/gateway_1/openrouter',
+    });
+    expect(model.apiKey).toBe('cf-token');
+    expect(model.billingSource).toBe('hosted');
+    expect(model.usageProvider).toBe('openrouter');
+  });
+
+  it('rejects Bedrock OpenAI models in unsupported regions before falling back to hosted', async () => {
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    fake.env = {};
+    fake.resolveCurrentByokCredentials = vi.fn(async () => ({
+      provider: 'bedrock',
+      apiKey: 'bedrock-token',
+      awsRegion: 'eu-west-1',
+    }));
+    fake.checkHostedPiModelAccess = vi.fn(async () => {
+      throw new Error('hosted billing should not be checked for BYOK');
+    });
+
+    await expect(ChatThreadDO.prototype['resolvePiModel'].call(
+      fake,
+      { provider: 'codex', orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1' },
+      { CHIRIDION_CODEX_MODEL: 'gpt-5.5' },
+      vi.fn((provider: string, id: string) => ({ id, provider, api: 'openai-responses' })),
+    )).rejects.toThrow('OpenAI gpt-5.5 on Amazon Bedrock is not available in eu-west-1');
+    expect(fake.checkHostedPiModelAccess).not.toHaveBeenCalled();
+  });
+
   it('uses the local Bedrock fallback model for BYOK Opus 4.8 when Pi catalog lags', async () => {
     const fake = Object.create(ChatThreadDO.prototype) as any;
     fake.env = {};

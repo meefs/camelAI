@@ -135,6 +135,21 @@ const OPENROUTER_ONLY_CODEX_MODELS = new Set<LlmModel>([
   "deepseek-v4-flash",
 ]);
 
+const BEDROCK_OPENAI_MODEL_REGIONS: Readonly<Record<string, readonly string[]>> = {
+  "gpt-5.5": ["us-east-1", "us-east-2"],
+  "gpt-5.4": ["us-east-1", "us-east-2", "us-west-2", "us-gov-west-1"],
+};
+
+export function isBedrockOpenAiModelAllowedInRegion(
+  model: LlmModel,
+  awsRegion: string | null | undefined,
+): boolean {
+  const supportedRegions = BEDROCK_OPENAI_MODEL_REGIONS[model];
+  if (!supportedRegions) return false;
+  const normalizedRegion = awsRegion?.trim() || "us-east-1";
+  return supportedRegions.includes(normalizedRegion);
+}
+
 export interface LlmProviderStoredConfig {
   aws_region?: string;
   custom_name?: string;
@@ -151,6 +166,7 @@ export type CustomLlmProviderApi = NonNullable<
 interface LlmProviderModelOptions {
   customApi?: CustomLlmProviderApi | null;
   customModelId?: string | null;
+  awsRegion?: string | null;
 }
 
 export const DEFAULT_ORG_EXPERIMENTAL_SETTINGS: OrganizationExperimentalSettings =
@@ -223,6 +239,7 @@ export function getVisibleLlmModelOptions(
     orgProvider?: string | null;
     customApi?: CustomLlmProviderApi | null;
     customModelId?: string | null;
+    awsRegion?: string | null;
   },
 ): ReadonlyArray<{
   value: LlmModel;
@@ -232,6 +249,7 @@ export function getVisibleLlmModelOptions(
   const baseOptions = getLlmModelOptions(options?.orgProvider, {
     customApi: options?.customApi,
     customModelId: options?.customModelId,
+    awsRegion: options?.awsRegion,
   });
 
   if (
@@ -277,8 +295,11 @@ export function isLlmModelAllowedForOrgProvider(
   if (orgProvider === "openai") {
     return isCodexLlmModel(model) && !OPENROUTER_ONLY_CODEX_MODELS.has(model);
   }
-  if (orgProvider === "anthropic" || orgProvider === "bedrock") {
+  if (orgProvider === "anthropic") {
     return isClaudeLlmModel(model);
+  }
+  if (orgProvider === "bedrock") {
+    return isClaudeLlmModel(model) || isBedrockOpenAiModelAllowedInRegion(model, options?.awsRegion);
   }
   if (orgProvider === "custom") {
     if (model === CUSTOM_LLM_MODEL) {
@@ -306,8 +327,11 @@ export function isLlmModelCoveredByByokProvider(
   if (!provider) return false;
   if (!model) return true;
   if (provider === "openrouter") return true;
-  if (provider === "anthropic" || provider === "bedrock") {
+  if (provider === "anthropic") {
     return isClaudeLlmModel(model);
+  }
+  if (provider === "bedrock") {
+    return isClaudeLlmModel(model) || isBedrockOpenAiModelAllowedInRegion(model, undefined);
   }
   if (provider === "openai") {
     return isCodexLlmModel(model) && !OPENROUTER_ONLY_CODEX_MODELS.has(model);
@@ -434,6 +458,13 @@ export function getStoredCustomLlmProviderModelId(
 ): string | null {
   if (record?.provider !== "custom") return null;
   return parseStoredLlmProviderConfig(record.config).custom_model_id ?? null;
+}
+
+export function getStoredBedrockAwsRegion(
+  record: Pick<LlmProviderConfigRecord, "provider" | "config"> | null | undefined,
+): string | null {
+  if (record?.provider !== "bedrock") return null;
+  return parseStoredLlmProviderConfig(record.config).aws_region ?? null;
 }
 
 export function keyHint(key: string): string {

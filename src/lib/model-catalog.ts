@@ -252,12 +252,14 @@ export function resolveModelPickerCatalog(args: {
   orgProvider?: LlmProvider | string | null;
   customApi?: CustomLlmProviderApi | null;
   customModelId?: string | null;
+  awsRegion?: string | null;
 }): ResolvedModelCatalogEntry[] {
   const visibleModelIds = new Set(
     getVisibleLlmModelOptions(args.experimentalSettings, null, {
       orgProvider: args.orgProvider,
       customApi: args.customApi,
       customModelId: args.customModelId,
+      awsRegion: args.awsRegion,
     }).map((option) => option.value),
   );
 

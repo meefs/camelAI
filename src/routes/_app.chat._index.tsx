@@ -29,6 +29,7 @@ import {
   getDefaultLlmModel,
   getStoredCustomLlmProviderApi,
   getStoredCustomLlmProviderModelId,
+  getStoredBedrockAwsRegion,
   getVisibleLlmModelOptions,
 } from "@/lib/llm-provider-config";
 import { getEffectiveLlmProviderConfig } from "@/lib/selfhost-ai-provider";
@@ -375,6 +376,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
       | null);
   const customApi = getStoredCustomLlmProviderApi(effectiveLlmProviderConfig);
   const customModelId = getStoredCustomLlmProviderModelId(effectiveLlmProviderConfig);
+  const awsRegion = getStoredBedrockAwsRegion(effectiveLlmProviderConfig);
   const fallbackThreadModel = getDefaultLlmModel(effectiveLlmProviderConfig?.provider, {
     customApi,
     customModelId,
@@ -386,6 +388,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
       orgProvider: effectiveLlmProviderConfig?.provider,
       customApi,
       customModelId,
+      awsRegion,
     },
   ).map((option) => option.value);
   const hasModelFallback = Boolean(workspaceId);

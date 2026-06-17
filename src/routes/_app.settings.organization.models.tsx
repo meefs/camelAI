@@ -38,6 +38,7 @@ import { resolveEffectivePickerConfig } from "@/lib/model-picker-config";
 import {
   getStoredCustomLlmProviderApi,
   getStoredCustomLlmProviderModelId,
+  getStoredBedrockAwsRegion,
   getVisibleLlmModelOptions,
   isLlmModel,
   type CustomLlmProviderApi,
@@ -137,6 +138,7 @@ function buildPickerRows(
     llmProvider: string | null | undefined;
     customApi?: CustomLlmProviderApi | null;
     customModelId?: string | null;
+    awsRegion?: string | null;
   },
 ): PickerModelRow[] {
   return resolveModelPickerCatalog({
@@ -145,6 +147,7 @@ function buildPickerRows(
     orgProvider: options.llmProvider,
     customApi: options.customApi,
     customModelId: options.customModelId,
+    awsRegion: options.awsRegion,
   })
     .filter((entry) => visibleModelIds.has(entry.id))
     .map((entry) => ({
@@ -223,11 +226,13 @@ export async function loader({ request, context }: Route.LoaderArgs) {
   const customModelId = getStoredCustomLlmProviderModelId(
     effectiveLlmProviderConfig,
   );
+  const awsRegion = getStoredBedrockAwsRegion(effectiveLlmProviderConfig);
   const visibleModelIds = getVisibleModelIdsForSettings(
     effectiveLlmProviderConfig?.provider,
     experimentalSettings,
     customApi,
     customModelId,
+    awsRegion,
   );
   const workspaceConfigs = await loadWorkspaceConfigs(authEnv, workspaces);
   const selectedWorkspace =
@@ -250,6 +255,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     llmProvider: effectiveLlmProviderConfig?.provider,
     customApi,
     customModelId,
+    awsRegion,
   });
   const useOrgDefaults =
     scope === "ws" ? (workspaceConfig?.use_org_defaults ?? true) : false;
@@ -300,6 +306,7 @@ async function loadActionTarget(args: {
     experimentalSettings,
     getStoredCustomLlmProviderApi(effectiveLlmProviderConfig),
     getStoredCustomLlmProviderModelId(effectiveLlmProviderConfig),
+    getStoredBedrockAwsRegion(effectiveLlmProviderConfig),
   );
 
   if (scope === "org") {
@@ -397,12 +404,14 @@ function getVisibleModelIdsForSettings(
   experimentalSettings: import("@/types").OrganizationExperimentalSettings,
   customApi?: CustomLlmProviderApi | null,
   customModelId?: string | null,
+  awsRegion?: string | null,
 ): Set<LlmModel> {
   return new Set(
     getVisibleLlmModelOptions(experimentalSettings, null, {
       orgProvider: llmProvider,
       customApi,
       customModelId,
+      awsRegion,
     }).map((option) => option.value),
   );
 }

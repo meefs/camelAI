@@ -43,6 +43,8 @@ const OPENROUTER_ONLY_MODELS = [
   "grok-4.3",
 ] as const;
 
+const BEDROCK_OPENAI_MODELS = ["gpt-5.5", "gpt-5.4"] as const;
+
 describe("llm provider config helpers", () => {
   it("defaults missing thread model to sonnet", () => {
     expect(normalizeLlmModel(undefined)).toBe(DEFAULT_LLM_MODEL);
@@ -150,6 +152,18 @@ describe("llm provider config helpers", () => {
     expect(
       getVisibleLlmModelOptions({ claude_proxy_models: false }, null, {
         orgProvider: "bedrock",
+      }).map((option) => option.value),
+    ).toEqual([...CLAUDE_MODELS, ...BEDROCK_OPENAI_MODELS]);
+    expect(
+      getVisibleLlmModelOptions({ claude_proxy_models: false }, null, {
+        orgProvider: "bedrock",
+        awsRegion: "us-west-2",
+      }).map((option) => option.value),
+    ).toEqual([...CLAUDE_MODELS, "gpt-5.4"]);
+    expect(
+      getVisibleLlmModelOptions({ claude_proxy_models: false }, null, {
+        orgProvider: "bedrock",
+        awsRegion: "eu-west-1",
       }).map((option) => option.value),
     ).toEqual([...CLAUDE_MODELS]);
     expect(

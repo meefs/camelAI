@@ -98,12 +98,12 @@ export const BYOK_PROVIDERS: Record<OnboardingByokProvider, ByokProviderMeta> =
       settingsLinkLabel: "Open the AWS Bedrock console",
       requiresRegion: true,
       description:
-        "Bedrock runs Claude models inside your own AWS account, billed through your existing AWS bill.",
+        "Bedrock runs Claude plus supported GPT models inside your own AWS account, billed through your existing AWS bill.",
       enterpriseNote:
-        "Best suited for teams already using AWS. Setting up Bedrock involves an AWS account, IAM permissions, and granting Claude model access in the region you'll use.",
+        "Best suited for teams already using AWS. Setting up Bedrock involves an AWS account, IAM permissions, and granting model access in the region you'll use. GPT-5.5/GPT-5.4 use Bedrock's bedrock-mantle Responses endpoint and have narrower regional availability than Claude.",
       warning: {
         title: "Bedrock requires model access",
-        body: "AWS will bill usage on your account automatically, but your key won't return responses until you request Claude model access in the Bedrock console for the region you select below.",
+        body: "AWS will bill usage on your account automatically, but your key won't return responses until you request model access in the Bedrock console for the region you select below. GPT-5.5 is currently available only in us-east-1/us-east-2; GPT-5.4 is available in us-east-1/us-east-2/us-west-2/us-gov-west-1.",
       },
     },
     custom: {
@@ -158,6 +158,7 @@ export const AWS_REGIONS = [
   { value: "us-east-1", label: "US East (N. Virginia)" },
   { value: "us-east-2", label: "US East (Ohio)" },
   { value: "us-west-2", label: "US West (Oregon)" },
+  { value: "us-gov-west-1", label: "AWS GovCloud (US-West)" },
   { value: "eu-west-1", label: "EU (Ireland)" },
   { value: "eu-west-2", label: "EU (London)" },
   { value: "eu-west-3", label: "EU (Paris)" },
