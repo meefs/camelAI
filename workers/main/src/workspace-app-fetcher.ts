@@ -50,7 +50,6 @@ const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
 
 const STRIPPED_COOKIE_NAMES = new Set([
   'chiridion_run_session',
-  'chiridion_screenshot_session',
 ]);
 
 const CROSS_ORIGIN_REDIRECT_HEADERS = [
@@ -58,7 +57,6 @@ const CROSS_ORIGIN_REDIRECT_HEADERS = [
   'cookie',
   'cookie2',
   'proxy-authorization',
-  'x-chiridion-screenshot-token',
 ];
 
 function normalizeHostname(hostname: string): string {
@@ -256,11 +254,6 @@ export async function buildWorkspaceAppUrl(
 
 function sanitizeWorkspaceAppRequest(request: Request): Request {
   const headers = new Headers(request.headers);
-  headers.delete('x-chiridion-screenshot-token');
-  const authorization = headers.get('Authorization');
-  if (authorization?.match(/^Bearer\s+stkn_/i)) {
-    headers.delete('Authorization');
-  }
   const cookieHeader = headers.get('Cookie');
   if (cookieHeader) {
     const filtered = cookieHeader

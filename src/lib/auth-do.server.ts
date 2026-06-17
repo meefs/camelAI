@@ -1447,7 +1447,7 @@ export interface AdminHardDeleteUserResult {
  *  5. Remove user from every org membership found in OrgDO.
  *  6. Wipe the UserDO Durable Object storage.
  *  7. Delete EMAIL_TO_USER KV entries (email + oauth provider keys).
- *  8. Delete user sessions from SESSIONS KV and user-bound screenshot sessions.
+ *  8. Delete user sessions from SESSIONS KV.
  *  9. Delete workspace-level ACL rows for this user across all org workspaces.
  *  10. Delete user-scoped worker auth one-time tokens from APP_KV.
  */
