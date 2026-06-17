@@ -59,6 +59,9 @@
 		"test:workers:codex-web": "vitest run --config vitest.workers.config.ts workers/main/tests/web-codex-provider.test.ts",
 		"test:eval:dashboard": "node scripts/run-agent-eval.mjs dashboard-fake-data-live",
 		"test:eval:deploy": "node scripts/run-agent-eval.mjs deploy-fake-data-live",
+		"test:eval:sandbox": "node scripts/run-agent-eval.mjs sandbox-write-file-live",
+		"test:eval:ec2": "node scripts/run-agent-eval-ec2.mjs",
+		"test:eval:ec2:setup": "node scripts/setup-agent-eval-ec2.mjs",
 		"test:e2e": "playwright test",
 		"test:e2e:ui": "playwright test --ui",
 		"build:renderer": "vite build --config vite.renderer.config.ts"

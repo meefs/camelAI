@@ -13,6 +13,11 @@ const evals = {
     startMarker: "DEPLOY_EVAL_TRANSCRIPT_START ",
     endMarker: " DEPLOY_EVAL_TRANSCRIPT_END",
   },
+  "sandbox-write-file-live": {
+    testFile: "workers/main/tests/evals/sandbox-write-file-live.test.ts",
+    startMarker: "SANDBOX_WRITE_EVAL_TRANSCRIPT_START ",
+    endMarker: " SANDBOX_WRITE_EVAL_TRANSCRIPT_END",
+  },
 };
 
 const firstArg = process.argv[2];
@@ -98,6 +103,22 @@ function printSignalSummary(transcript) {
       `harnessErrors=${signal.harnessErrorCount ?? 0}`,
     ].join(" "),
   );
+
+  if (signal.tokenUsage) {
+    const usage = signal.tokenUsage;
+    const tokenParts = [
+      `tokens=${usage.totalTokens}`,
+      `input=${usage.inputTokens}`,
+      `output=${usage.outputTokens}`,
+      `cacheRead=${usage.cacheReadInputTokens}`,
+      `cacheWrite=${usage.cacheCreationInputTokens}`,
+      `turns=${usage.turnCount}`,
+    ];
+    if (typeof usage.costUsd === "number") {
+      tokenParts.push(`costUsd=${usage.costUsd}`);
+    }
+    console.log(`Eval token usage: ${tokenParts.join(" ")}`);
+  }
 
   if (signal.violations?.length) {
     console.warn("Eval signal violations:");

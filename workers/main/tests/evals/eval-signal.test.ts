@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { evaluateAgentEvalSignal } from "./eval-signal";
+import { countEvalTokenUsage, evaluateAgentEvalSignal } from "./eval-signal";
 
 describe("eval signal scoring", () => {
   it("counts turns and flags failed or suspicious tool calls", () => {
@@ -143,5 +143,73 @@ describe("eval signal scoring", () => {
       "sdk turns 2 exceeded max 1",
       "bad tool calls 3 exceeded max 1",
     ]);
+    expect(signal.tokenUsage).toEqual({
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheReadInputTokens: 0,
+      cacheCreationInputTokens: 0,
+      totalTokens: 0,
+      turnCount: 0,
+    });
+  });
+
+  it("sums token usage from sdk turn_end events", () => {
+    const tokenUsage = countEvalTokenUsage({
+      events: [
+        {
+          type: "sdk_event",
+          event: {
+            type: "turn_end",
+            message: {
+              role: "assistant",
+              usage: {
+                input: 1200,
+                output: 340,
+                cacheRead: 50,
+                cacheWrite: 10,
+                cost: { total: 0.0042 },
+              },
+            },
+          },
+        },
+        {
+          type: "sdk_event",
+          event: {
+            type: "turn_end",
+            message: {
+              role: "assistant",
+              usage: {
+                input_tokens: 800,
+                output_tokens: 120,
+                cache_read_input_tokens: 0,
+                cache_creation_input_tokens: 0,
+              },
+            },
+          },
+        },
+        {
+          type: "sdk_event",
+          event: {
+            type: "turn_end",
+            message: {
+              role: "assistant",
+              usage: {
+                totalTokens: 256,
+              },
+            },
+          },
+        },
+      ],
+    });
+
+    expect(tokenUsage).toEqual({
+      inputTokens: 2256,
+      outputTokens: 460,
+      cacheReadInputTokens: 50,
+      cacheCreationInputTokens: 10,
+      totalTokens: 2776,
+      turnCount: 3,
+      costUsd: 0.0042,
+    });
   });
 });

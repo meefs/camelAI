@@ -21,6 +21,16 @@ export type EvalToolCallSummary = {
   output?: string;
 };
 
+export type EvalTokenUsage = {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadInputTokens: number;
+  cacheCreationInputTokens: number;
+  totalTokens: number;
+  turnCount: number;
+  costUsd?: number;
+};
+
 export type EvalSignal = {
   assistantTurnCount: number;
   sdkTurnStartCount: number;
@@ -31,6 +41,7 @@ export type EvalSignal = {
   harnessErrors: EvalToolCallSummary[];
   badToolCallCount: number;
   badToolCalls: EvalToolCallSummary[];
+  tokenUsage: EvalTokenUsage;
   thresholds: EvalSignalThresholds;
   violations: string[];
 };
@@ -77,6 +88,109 @@ function classifyFailedToolCall(
     return "js_runtime_helper_name_collision";
   }
   return undefined;
+}
+
+function parseNonNegativeInt(value: unknown): number {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed < 0) return 0;
+  return Math.floor(parsed);
+}
+
+function extractEvalTurnUsage(usage: RecordValue): {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadInputTokens: number;
+  cacheCreationInputTokens: number;
+  costUsd?: number;
+} {
+  const inputTokens = parseNonNegativeInt(
+    usage.input ?? usage.input_tokens ?? usage.inputTokens,
+  );
+  const outputTokens = parseNonNegativeInt(
+    usage.output ?? usage.output_tokens ?? usage.outputTokens,
+  );
+  const cacheReadInputTokens = parseNonNegativeInt(
+    usage.cacheRead ??
+      usage.cache_read_input_tokens ??
+      usage.cacheReadInputTokens,
+  );
+  const cacheCreationInputTokens = parseNonNegativeInt(
+    usage.cacheWrite ??
+      usage.cache_creation_input_tokens ??
+      usage.cacheCreationInputTokens,
+  );
+  const costRecord = asRecord(usage.cost);
+  const rawCost = Number(costRecord?.total);
+  const costUsd =
+    Number.isFinite(rawCost) && rawCost > 0 ? rawCost : undefined;
+  return {
+    inputTokens,
+    outputTokens,
+    cacheReadInputTokens,
+    cacheCreationInputTokens,
+    ...(costUsd !== undefined ? { costUsd } : {}),
+  };
+}
+
+export function countEvalTokenUsage(
+  result: Pick<AgentEvalSessionResult, "events">,
+): EvalTokenUsage {
+  let inputTokens = 0;
+  let outputTokens = 0;
+  let cacheReadInputTokens = 0;
+  let cacheCreationInputTokens = 0;
+  let turnCount = 0;
+  let costUsd = 0;
+  let hasCost = false;
+
+  for (const rawEvent of result.events) {
+    const event = asRecord(rawEvent);
+    if (event?.type !== "sdk_event") continue;
+    const sdkEvent = asRecord(event.event);
+    if (sdkEvent?.type !== "turn_end") continue;
+
+    const message = asRecord(sdkEvent.message);
+    const usage = asRecord(message?.usage);
+    if (!usage) continue;
+
+    const parsed = extractEvalTurnUsage(usage);
+    const hasDetailedUsage =
+      parsed.inputTokens > 0 ||
+      parsed.outputTokens > 0 ||
+      parsed.cacheReadInputTokens > 0 ||
+      parsed.cacheCreationInputTokens > 0;
+
+    if (!hasDetailedUsage) {
+      const totalTokens = parseNonNegativeInt(
+        usage.totalTokens ?? usage.total_tokens,
+      );
+      if (totalTokens <= 0) continue;
+      inputTokens += totalTokens;
+      turnCount += 1;
+      continue;
+    }
+
+    inputTokens += parsed.inputTokens;
+    outputTokens += parsed.outputTokens;
+    cacheReadInputTokens += parsed.cacheReadInputTokens;
+    cacheCreationInputTokens += parsed.cacheCreationInputTokens;
+    if (parsed.costUsd !== undefined) {
+      costUsd += parsed.costUsd;
+      hasCost = true;
+    }
+    turnCount += 1;
+  }
+
+  return {
+    inputTokens,
+    outputTokens,
+    cacheReadInputTokens,
+    cacheCreationInputTokens,
+    totalTokens:
+      inputTokens + outputTokens + cacheReadInputTokens + cacheCreationInputTokens,
+    turnCount,
+    ...(hasCost ? { costUsd } : {}),
+  };
 }
 
 function parsePositiveInt(value: string | undefined, name: string): number | undefined {
@@ -252,6 +366,7 @@ export function evaluateAgentEvalSignal(
     harnessErrors: [],
     badToolCallCount: badToolCalls.length,
     badToolCalls,
+    tokenUsage: countEvalTokenUsage(result),
     thresholds,
     violations,
   };
