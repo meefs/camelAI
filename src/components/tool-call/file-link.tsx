@@ -5,6 +5,10 @@ import { useState } from 'react';
 import { useAuthData } from '@/hooks/use-auth-data';
 import { cn } from '@/lib/utils';
 import { FilePreviewPopover } from '@/components/chat-file-preview';
+import {
+  buildRawFilePreviewRoute,
+  buildTextPreviewUrls,
+} from '@/components/chat-file-preview/file-preview-urls';
 import { useChatPreviewContext } from '@/components/chat-preview/preview-context';
 import {
   buildFilePreviewLinkTarget,
@@ -12,25 +16,17 @@ import {
 } from '@/lib/file-preview-target';
 import type { PreviewTarget } from '@/types';
 
-function encodePathSegments(path: string): string {
-  return path
-    .split('/')
-    .map(segment => encodeURIComponent(segment))
-    .join('/');
-}
-
-function getSourceRouteSegment(source: FilePreviewLinkTarget['source']): string {
-  return source === 'upload' ? 'uploads' : 'outputs';
-}
-
-function getPopoverPreviewUrl(workspaceId: string, target: FilePreviewLinkTarget): string | null {
+function getPopoverPreviewDescriptor(
+  workspaceId: string,
+  target: FilePreviewLinkTarget,
+) {
   if (target.source === 'vm') return null;
 
-  if (target.source === 'workspace') {
-    return `/api/workspaces/${workspaceId}/fs/content/${encodePathSegments(target.path.replace(/^\/+/, ''))}`;
-  }
-
-  return `/api/workspaces/${workspaceId}/${getSourceRouteSegment(target.source)}/${encodePathSegments(target.path)}`;
+  return {
+    workspaceId,
+    source: target.source,
+    path: target.path,
+  };
 }
 
 function buildPreviewTarget(
@@ -116,14 +112,20 @@ export function FileLink({
     );
   }
 
-  const previewUrl = getPopoverPreviewUrl(resolvedWorkspaceId, resolvedTarget);
-  if (!previewUrl) {
+  const previewDescriptor = getPopoverPreviewDescriptor(
+    resolvedWorkspaceId,
+    resolvedTarget,
+  );
+  if (!previewDescriptor) {
     return (
       <span className={cn(mono && "font-mono", className)}>
         {children ?? path}
       </span>
     );
   }
+
+  const previewUrl = buildRawFilePreviewRoute(previewDescriptor);
+  const textPreviewUrls = buildTextPreviewUrls(previewDescriptor);
 
   return (
     <>
@@ -154,6 +156,8 @@ export function FileLink({
         onOpenChange={setPreviewOpen}
         filename={resolvedTarget.filename}
         previewUrl={previewUrl}
+        textPreviewUrl={textPreviewUrls.initialUrl}
+        fullTextPreviewUrl={textPreviewUrls.fullUrl}
       />
     </>
   );

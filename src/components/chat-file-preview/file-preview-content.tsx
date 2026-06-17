@@ -1,23 +1,23 @@
 'use client';
 
-import { lazy, memo, Suspense, useEffect, useMemo, useRef, useState } from 'react';
+import { lazy, memo, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Loader2 } from 'lucide-react';
+import { PREVIEW_INITIAL_MAX_LINES } from '@/lib/file-preview-limits';
 import { cn } from '@/lib/utils';
 import { MarkdownRenderer } from '@/components/markdown-renderer';
 import { CodePreview, SourcePreview } from './code-preview';
 import { getPreviewType, isBinarySpreadsheet } from './file-type-utils';
 import { NotebookPreview } from './notebook-preview';
 import type { NotebookFile } from './notebook-preview';
+import { PreviewTruncationFooter } from './preview-truncation-footer';
 import type { SpreadsheetToolbarState } from './spreadsheet';
 
-const MAX_TEXT_LINES = 500;
-const MAX_SPREADSHEET_LINES = 500;
 const HTML_PREVIEW_SANDBOX =
   'allow-scripts allow-forms allow-modals allow-popups allow-downloads';
 const HTML_SOURCE_CACHE_LIMIT = 20;
 const htmlSourceCache = new Map<
   string,
-  { text: string; truncated: boolean; totalLines: number }
+  { text: string; lineInfo: PreviewLineInfo }
 >();
 const SpreadsheetPreview = lazy(() =>
   import('./spreadsheet').then((module) => ({ default: module.SpreadsheetPreview }))
@@ -26,12 +26,40 @@ const SpreadsheetPreview = lazy(() =>
 type PreviewLayout = 'dialog' | 'panel';
 
 type TextStatus = 'idle' | 'loading' | 'ready' | 'error';
+type FullLoadStatus = 'idle' | 'loading' | 'error' | 'unavailable';
+type PreviewTruncationReason = 'lines' | 'bytes';
+
+interface PreviewLineInfo {
+  truncated: boolean;
+  truncatedBy?: PreviewTruncationReason;
+  totalLines: number | null;
+  maxLines: number;
+  sizeBytes?: number;
+}
+
+interface TextPreviewResponse {
+  text: string;
+  truncated: boolean;
+  truncatedBy?: PreviewTruncationReason;
+  totalLines: number | null;
+  maxLines: number;
+  contentType?: string;
+  size?: number;
+}
 
 type FormattedTextResult =
   | { ok: true; text: string; truncated: boolean; totalLines: number }
   | { ok: false; message: string };
 
-function truncateTextLines(text: string, maxLines = MAX_TEXT_LINES) {
+function createInitialLineInfo(): PreviewLineInfo {
+  return {
+    truncated: false,
+    totalLines: 0,
+    maxLines: PREVIEW_INITIAL_MAX_LINES,
+  };
+}
+
+function truncateTextLines(text: string, maxLines = PREVIEW_INITIAL_MAX_LINES) {
   const lines = text.split('\n');
   const totalLines = lines.length;
   if (totalLines <= maxLines) {
@@ -44,9 +72,35 @@ function truncateTextLines(text: string, maxLines = MAX_TEXT_LINES) {
   };
 }
 
+function lineInfoFromTextPreview(data: TextPreviewResponse): PreviewLineInfo {
+  return {
+    truncated: data.truncated,
+    ...(data.truncatedBy ? { truncatedBy: data.truncatedBy } : {}),
+    totalLines: data.totalLines,
+    maxLines: data.maxLines || PREVIEW_INITIAL_MAX_LINES,
+    sizeBytes: data.size,
+  };
+}
+
+function lineInfoFromTruncation(
+  result: ReturnType<typeof truncateTextLines>,
+  maxLines = PREVIEW_INITIAL_MAX_LINES
+): PreviewLineInfo {
+  return {
+    truncated: result.truncated,
+    ...(result.truncated ? { truncatedBy: 'lines' as const } : {}),
+    totalLines: result.totalLines,
+    maxLines,
+  };
+}
+
+function getTextLineCount(text: string): number {
+  return text.split('\n').length;
+}
+
 function cacheHtmlSource(
   previewUrl: string,
-  entry: { text: string; truncated: boolean; totalLines: number }
+  entry: { text: string; lineInfo: PreviewLineInfo }
 ) {
   htmlSourceCache.delete(previewUrl);
   htmlSourceCache.set(previewUrl, entry);
@@ -56,16 +110,28 @@ function cacheHtmlSource(
   }
 }
 
-function formatJsonPreview(raw: string): FormattedTextResult {
+function formatJsonPreview(
+  raw: string,
+  maxLines: number | null = PREVIEW_INITIAL_MAX_LINES
+): FormattedTextResult {
   try {
     const formatted = JSON.stringify(JSON.parse(raw), null, 2);
-    return { ok: true, ...truncateTextLines(formatted ?? 'null', MAX_TEXT_LINES) };
+    const text = formatted ?? 'null';
+    return {
+      ok: true,
+      ...(maxLines == null
+        ? { text, truncated: false, totalLines: getTextLineCount(text) }
+        : truncateTextLines(text, maxLines)),
+    };
   } catch {
     return { ok: false, message: 'Invalid JSON. Showing raw source.' };
   }
 }
 
-function formatJsonLinesPreview(raw: string): FormattedTextResult {
+function formatJsonLinesPreview(
+  raw: string,
+  maxLines: number | null = PREVIEW_INITIAL_MAX_LINES
+): FormattedTextResult {
   const formattedValues: string[] = [];
   const lines = raw.split('\n');
 
@@ -82,9 +148,12 @@ function formatJsonLinesPreview(raw: string): FormattedTextResult {
     }
   }
 
+  const text = formattedValues.join('\n\n');
   return {
     ok: true,
-    ...truncateTextLines(formattedValues.join('\n\n'), MAX_TEXT_LINES),
+    ...(maxLines == null
+      ? { text, truncated: false, totalLines: getTextLineCount(text) }
+      : truncateTextLines(text, maxLines)),
   };
 }
 
@@ -174,6 +243,8 @@ function HtmlPreview({
 export interface FilePreviewContentProps {
   filename: string;
   previewUrl: string;
+  fileTextPreviewUrl?: string;
+  fileFullTextPreviewUrl?: string;
   contentType?: string;
   layout?: PreviewLayout;
   notebookViewMode?: 'report' | 'notebook';
@@ -190,6 +261,8 @@ export interface NotebookPreviewLoadState {
 function FilePreviewContentComponent({
   filename,
   previewUrl,
+  fileTextPreviewUrl,
+  fileFullTextPreviewUrl,
   contentType,
   layout = 'dialog',
   notebookViewMode,
@@ -208,26 +281,22 @@ function FilePreviewContentComponent({
   const [textErrorMessage, setTextErrorMessage] = useState('Unable to preview this file.');
   const [formattedTextPreview, setFormattedTextPreview] = useState('');
   const [formattedTextError, setFormattedTextError] = useState<string | null>(null);
-  const [formattedLineInfo, setFormattedLineInfo] = useState<{
-    truncated: boolean;
-    totalLines: number;
-  }>({
-    truncated: false,
-    totalLines: 0,
-  });
+  const [formattedLineInfo, setFormattedLineInfo] =
+    useState<PreviewLineInfo>(createInitialLineInfo);
+  const [fullLoadStatus, setFullLoadStatus] = useState<FullLoadStatus>('idle');
+  const [loadedFull, setLoadedFull] = useState(false);
   const [notebook, setNotebook] = useState<NotebookFile | null>(null);
   const [mediaLoading, setMediaLoading] = useState(false);
   const [mediaError, setMediaError] = useState(false);
-  const [lineInfo, setLineInfo] = useState<{ truncated: boolean; totalLines: number }>({
-    truncated: false,
-    totalLines: 0,
-  });
+  const [lineInfo, setLineInfo] = useState<PreviewLineInfo>(createInitialLineInfo);
   const notebookStateChangeRef = useRef(onNotebookStateChange);
+  const fullLoadControllerRef = useRef<AbortController | null>(null);
   const binarySpreadsheet = useMemo(
     () => previewType === 'spreadsheet' && isBinarySpreadsheet(filename, contentType),
     [contentType, filename, previewType]
   );
   const currentFileViewMode = fileViewMode ?? 'preview';
+  const canLoadFull = Boolean(fileFullTextPreviewUrl) && lineInfo.truncated && !loadedFull;
 
   useEffect(() => {
     notebookStateChangeRef.current = onNotebookStateChange;
@@ -249,46 +318,85 @@ function FilePreviewContentComponent({
       previewType === 'notebook' ||
       previewType === 'markdown' ||
       (previewType === 'html' && currentFileViewMode === 'source') ||
-      previewType === 'svg' ||
+      (previewType === 'svg' && currentFileViewMode === 'source') ||
       previewType === 'json' ||
       previewType === 'jsonl';
     if (!shouldFetchText) return;
 
     const controller = new AbortController();
     let cancelled = false;
+    const shouldUseTextPreviewRoute = Boolean(
+      fileTextPreviewUrl &&
+        previewType !== 'notebook' &&
+        !(previewType === 'spreadsheet' && binarySpreadsheet)
+    );
+    const fetchUrl = shouldUseTextPreviewRoute ? fileTextPreviewUrl! : previewUrl;
 
+    fullLoadControllerRef.current?.abort();
+    fullLoadControllerRef.current = null;
     setTextStatus('loading');
     setTextErrorMessage(getPreviewErrorMessage(previewType));
     setTextPreview('');
     setSpreadsheetBinary(null);
-    setLineInfo({ truncated: false, totalLines: 0 });
+    setLineInfo(createInitialLineInfo());
     setFormattedTextPreview('');
     setFormattedTextError(null);
-    setFormattedLineInfo({ truncated: false, totalLines: 0 });
+    setFormattedLineInfo(createInitialLineInfo());
+    setFullLoadStatus('idle');
+    setLoadedFull(false);
     setNotebook(null);
     if (previewType === 'notebook') {
       notebookStateChangeRef.current?.({ notebook: null, status: 'loading' });
     }
 
     if (previewType === 'html') {
-      const cached = htmlSourceCache.get(previewUrl);
+      const cached = htmlSourceCache.get(fetchUrl);
       if (cached) {
         setTextPreview(cached.text);
-        setLineInfo({
-          truncated: cached.truncated,
-          totalLines: cached.totalLines,
-        });
+        setLineInfo(cached.lineInfo);
         setTextStatus('ready');
       }
     }
 
-    fetch(previewUrl, { signal: controller.signal })
+    fetch(fetchUrl, { signal: controller.signal })
       .then(async (response) => {
         if (!response.ok) {
           const error = new Error('Failed to load preview') as Error & { status?: number };
           error.status = response.status;
           throw error;
         }
+
+        if (shouldUseTextPreviewRoute) {
+          const data = (await response.json()) as TextPreviewResponse;
+          if (cancelled) return;
+          const nextLineInfo = lineInfoFromTextPreview(data);
+          setTextPreview(data.text);
+          setLineInfo(nextLineInfo);
+          if (previewType === 'html') {
+            cacheHtmlSource(fetchUrl, {
+              text: data.text,
+              lineInfo: nextLineInfo,
+            });
+          }
+          if ((previewType === 'json' || previewType === 'jsonl') && !data.truncated) {
+            const formatted =
+              previewType === 'json'
+                ? formatJsonPreview(data.text)
+                : formatJsonLinesPreview(data.text);
+            if (formatted.ok) {
+              setFormattedTextPreview(formatted.text);
+              setFormattedLineInfo(lineInfoFromTruncation(formatted));
+              setFormattedTextError(null);
+            } else {
+              setFormattedTextPreview('');
+              setFormattedLineInfo(createInitialLineInfo());
+              setFormattedTextError(formatted.message);
+            }
+          }
+          setTextStatus('ready');
+          return;
+        }
+
         if (previewType === 'spreadsheet' && binarySpreadsheet) {
           const bodyBuffer = await response.arrayBuffer();
           if (cancelled) return;
@@ -314,25 +422,24 @@ function FilePreviewContentComponent({
 
         if (previewType === 'spreadsheet') {
           if (cancelled) return;
-          const { text: truncatedText, truncated, totalLines } = truncateTextLines(
+          const truncated = truncateTextLines(
             bodyText,
-            MAX_SPREADSHEET_LINES
+            PREVIEW_INITIAL_MAX_LINES
           );
-          setTextPreview(truncatedText);
-          setLineInfo({ truncated, totalLines });
+          setTextPreview(truncated.text);
+          setLineInfo(lineInfoFromTruncation(truncated, PREVIEW_INITIAL_MAX_LINES));
           setTextStatus('ready');
           return;
         }
 
         if (cancelled) return;
-        const { text: truncatedText, truncated, totalLines } = truncateTextLines(bodyText);
-        setTextPreview(truncatedText);
-        setLineInfo({ truncated, totalLines });
+        const truncated = truncateTextLines(bodyText);
+        setTextPreview(truncated.text);
+        setLineInfo(lineInfoFromTruncation(truncated));
         if (previewType === 'html') {
-          cacheHtmlSource(previewUrl, {
-            text: truncatedText,
-            truncated,
-            totalLines,
+          cacheHtmlSource(fetchUrl, {
+            text: truncated.text,
+            lineInfo: lineInfoFromTruncation(truncated),
           });
         }
         if (previewType === 'json' || previewType === 'jsonl') {
@@ -342,14 +449,11 @@ function FilePreviewContentComponent({
               : formatJsonLinesPreview(bodyText);
           if (formatted.ok) {
             setFormattedTextPreview(formatted.text);
-            setFormattedLineInfo({
-              truncated: formatted.truncated,
-              totalLines: formatted.totalLines,
-            });
+            setFormattedLineInfo(lineInfoFromTruncation(formatted));
             setFormattedTextError(null);
           } else {
             setFormattedTextPreview('');
-            setFormattedLineInfo({ truncated: false, totalLines: 0 });
+            setFormattedLineInfo(createInitialLineInfo());
             setFormattedTextError(formatted.message);
           }
         }
@@ -368,8 +472,77 @@ function FilePreviewContentComponent({
     return () => {
       cancelled = true;
       controller.abort();
+      fullLoadControllerRef.current?.abort();
+      fullLoadControllerRef.current = null;
     };
-  }, [binarySpreadsheet, currentFileViewMode, previewType, previewUrl]);
+  }, [
+    binarySpreadsheet,
+    currentFileViewMode,
+    fileFullTextPreviewUrl,
+    fileTextPreviewUrl,
+    previewType,
+    previewUrl,
+  ]);
+
+  const handleLoadFull = useCallback(async () => {
+    if (!fileFullTextPreviewUrl) return;
+
+    fullLoadControllerRef.current?.abort();
+    const controller = new AbortController();
+    fullLoadControllerRef.current = controller;
+    setFullLoadStatus('loading');
+
+    try {
+      const response = await fetch(fileFullTextPreviewUrl, {
+        signal: controller.signal,
+      });
+      if (!response.ok) {
+        throw Object.assign(new Error('Failed to load full preview'), {
+          unavailable: response.status === 413 || response.status === 415,
+        });
+      }
+
+      const data = (await response.json()) as TextPreviewResponse;
+      if (controller.signal.aborted) return;
+
+      setTextPreview(data.text);
+      setLineInfo({
+        ...lineInfoFromTextPreview(data),
+        truncated: false,
+      });
+
+      if (previewType === 'json' || previewType === 'jsonl') {
+        const formatted =
+          previewType === 'json'
+            ? formatJsonPreview(data.text, null)
+            : formatJsonLinesPreview(data.text, null);
+        if (formatted.ok) {
+          setFormattedTextPreview(formatted.text);
+          setFormattedLineInfo({
+            truncated: false,
+            totalLines: formatted.totalLines,
+            maxLines: PREVIEW_INITIAL_MAX_LINES,
+            sizeBytes: data.size,
+          });
+          setFormattedTextError(null);
+        } else {
+          setFormattedTextPreview('');
+          setFormattedLineInfo(createInitialLineInfo());
+          setFormattedTextError(formatted.message);
+        }
+      }
+
+      setLoadedFull(true);
+      setFullLoadStatus('idle');
+    } catch (error) {
+      if (controller.signal.aborted || (error as Error)?.name === 'AbortError') return;
+      setFullLoadStatus((error as { unavailable?: boolean })?.unavailable ? 'unavailable' : 'error');
+    } finally {
+      if (fullLoadControllerRef.current === controller) {
+        fullLoadControllerRef.current = null;
+      }
+    }
+  }, [fileFullTextPreviewUrl, previewType]);
 
   useEffect(() => {
     if (previewType === 'pdf' || previewType === 'audio' || previewType === 'video') {
@@ -412,9 +585,16 @@ function FilePreviewContentComponent({
                   filename={filename}
                   layout={layout}
                   truncated={lineInfo.truncated}
+                  truncatedBy={lineInfo.truncatedBy}
                   totalLines={lineInfo.totalLines}
-                  maxLines={MAX_TEXT_LINES}
+                  maxLines={lineInfo.maxLines}
                   languageOverride="html"
+                  onLoadFull={handleLoadFull}
+                  loadFullStatus={fullLoadStatus}
+                  canLoadFull={canLoadFull}
+                  sizeBytes={lineInfo.sizeBytes}
+                  downloadUrl={previewUrl}
+                  downloadFilename={filename}
                 />
               )}
             </>
@@ -424,28 +604,36 @@ function FilePreviewContentComponent({
 
       {previewType === 'svg' && (
         <div className={cn(layout === 'panel' && 'h-full overflow-auto')}>
-          {(textStatus === 'loading' || textStatus === 'idle') && (
+          {currentFileViewMode === 'source' && (textStatus === 'loading' || textStatus === 'idle') && (
             <p className="p-4 text-sm text-muted-foreground">Loading preview...</p>
           )}
-          {textStatus === 'error' && (
+          {currentFileViewMode === 'source' && textStatus === 'error' && (
             <p className="p-4 text-sm text-muted-foreground">{textErrorMessage}</p>
           )}
-          {textStatus === 'ready' &&
-            (currentFileViewMode === 'preview' ? (
-              <div className={cn(layout === 'panel' && 'p-3')}>
-                <ImagePreview src={previewUrl} alt={filename} layout={layout} />
-              </div>
-            ) : (
+          {currentFileViewMode === 'preview' ? (
+            <div className={cn(layout === 'panel' && 'p-3')}>
+              <ImagePreview src={previewUrl} alt={filename} layout={layout} />
+            </div>
+          ) : (
+            textStatus === 'ready' && (
               <SourcePreview
                 code={textPreview}
                 filename={filename}
                 layout={layout}
                 truncated={lineInfo.truncated}
+                truncatedBy={lineInfo.truncatedBy}
                 totalLines={lineInfo.totalLines}
-                maxLines={MAX_TEXT_LINES}
+                maxLines={lineInfo.maxLines}
                 languageOverride="html"
+                onLoadFull={handleLoadFull}
+                loadFullStatus={fullLoadStatus}
+                canLoadFull={canLoadFull}
+                sizeBytes={lineInfo.sizeBytes}
+                downloadUrl={previewUrl}
+                downloadFilename={filename}
               />
-            ))}
+            )
+          )}
         </div>
       )}
 
@@ -459,7 +647,24 @@ function FilePreviewContentComponent({
           )}
           {textStatus === 'ready' &&
             (currentFileViewMode === 'preview' ? (
-              formattedTextError ? (
+              lineInfo.truncated ? (
+                <SourcePreview
+                  code={textPreview}
+                  filename={filename}
+                  layout={layout}
+                  truncated={lineInfo.truncated}
+                  truncatedBy={lineInfo.truncatedBy}
+                  totalLines={lineInfo.totalLines}
+                  maxLines={lineInfo.maxLines}
+                  languageOverride="json"
+                  onLoadFull={handleLoadFull}
+                  loadFullStatus={fullLoadStatus}
+                  canLoadFull={canLoadFull}
+                  sizeBytes={lineInfo.sizeBytes}
+                  downloadUrl={previewUrl}
+                  downloadFilename={filename}
+                />
+              ) : formattedTextError ? (
                 <>
                   <p className="p-3 text-sm text-muted-foreground">{formattedTextError}</p>
                   <SourcePreview
@@ -467,9 +672,16 @@ function FilePreviewContentComponent({
                     filename={filename}
                     layout={layout}
                     truncated={lineInfo.truncated}
+                    truncatedBy={lineInfo.truncatedBy}
                     totalLines={lineInfo.totalLines}
-                    maxLines={MAX_TEXT_LINES}
+                    maxLines={lineInfo.maxLines}
                     languageOverride="json"
+                    onLoadFull={handleLoadFull}
+                    loadFullStatus={fullLoadStatus}
+                    canLoadFull={canLoadFull}
+                    sizeBytes={lineInfo.sizeBytes}
+                    downloadUrl={previewUrl}
+                    downloadFilename={filename}
                   />
                 </>
               ) : (
@@ -478,9 +690,16 @@ function FilePreviewContentComponent({
                   filename={filename}
                   layout={layout}
                   truncated={formattedLineInfo.truncated}
+                  truncatedBy={formattedLineInfo.truncatedBy}
                   totalLines={formattedLineInfo.totalLines}
-                  maxLines={MAX_TEXT_LINES}
+                  maxLines={formattedLineInfo.maxLines}
                   languageOverride="json"
+                  onLoadFull={handleLoadFull}
+                  loadFullStatus={fullLoadStatus}
+                  canLoadFull={canLoadFull}
+                  sizeBytes={formattedLineInfo.sizeBytes ?? lineInfo.sizeBytes}
+                  downloadUrl={previewUrl}
+                  downloadFilename={filename}
                 />
               )
             ) : (
@@ -489,9 +708,16 @@ function FilePreviewContentComponent({
                 filename={filename}
                 layout={layout}
                 truncated={lineInfo.truncated}
+                truncatedBy={lineInfo.truncatedBy}
                 totalLines={lineInfo.totalLines}
-                maxLines={MAX_TEXT_LINES}
+                maxLines={lineInfo.maxLines}
                 languageOverride="json"
+                onLoadFull={handleLoadFull}
+                loadFullStatus={fullLoadStatus}
+                canLoadFull={canLoadFull}
+                sizeBytes={lineInfo.sizeBytes}
+                downloadUrl={previewUrl}
+                downloadFilename={filename}
               />
             ))}
         </div>
@@ -590,8 +816,15 @@ function FilePreviewContentComponent({
               filename={filename}
               layout={layout}
               truncated={lineInfo.truncated}
+              truncatedBy={lineInfo.truncatedBy}
               totalLines={lineInfo.totalLines}
-              maxLines={MAX_TEXT_LINES}
+              maxLines={lineInfo.maxLines}
+              onLoadFull={handleLoadFull}
+              loadFullStatus={fullLoadStatus}
+              canLoadFull={canLoadFull}
+              sizeBytes={lineInfo.sizeBytes}
+              downloadUrl={previewUrl}
+              downloadFilename={filename}
             />
           )}
         </div>
@@ -611,8 +844,15 @@ function FilePreviewContentComponent({
               filename={filename}
               layout={layout}
               truncated={lineInfo.truncated}
+              truncatedBy={lineInfo.truncatedBy}
               totalLines={lineInfo.totalLines}
-              maxLines={MAX_TEXT_LINES}
+              maxLines={lineInfo.maxLines}
+              onLoadFull={handleLoadFull}
+              loadFullStatus={fullLoadStatus}
+              canLoadFull={canLoadFull}
+              sizeBytes={lineInfo.sizeBytes}
+              downloadUrl={previewUrl}
+              downloadFilename={filename}
             />
           )}
         </div>
@@ -632,8 +872,15 @@ function FilePreviewContentComponent({
               filename={filename}
               layout={layout}
               truncated={lineInfo.truncated}
+              truncatedBy={lineInfo.truncatedBy}
               totalLines={lineInfo.totalLines}
-              maxLines={MAX_SPREADSHEET_LINES}
+              maxLines={lineInfo.maxLines}
+              onLoadFull={handleLoadFull}
+              loadFullStatus={fullLoadStatus}
+              canLoadFull={canLoadFull}
+              sizeBytes={lineInfo.sizeBytes}
+              downloadUrl={previewUrl}
+              downloadFilename={filename}
             />
           ) : textStatus === 'ready' ? (
             <Suspense
@@ -656,15 +903,29 @@ function FilePreviewContentComponent({
             currentFileViewMode === 'preview' &&
             !binarySpreadsheet &&
             lineInfo.truncated && (
-            <p className="mt-2 px-4 text-xs text-muted-foreground">
-              Showing first {MAX_SPREADSHEET_LINES} of {lineInfo.totalLines} lines.
-            </p>
+            <PreviewTruncationFooter
+              shownLines={lineInfo.maxLines}
+              totalLines={lineInfo.totalLines}
+              truncatedBy={lineInfo.truncatedBy}
+              canLoadFull={false}
+              status="idle"
+              onLoadFull={() => {}}
+              hint="Switch to source or download for all rows."
+            />
           )}
         </div>
       )}
 
       {previewType === 'markdown' && (
-        <div className={cn(layout === 'panel' && 'h-full overflow-auto')}>
+        <div
+          className={cn(
+            currentFileViewMode === 'preview'
+              ? layout === 'panel'
+                ? 'h-full overflow-auto'
+                : 'max-h-[60vh] overflow-auto'
+              : layout === 'panel' && 'h-full overflow-auto'
+          )}
+        >
           {(textStatus === 'loading' || textStatus === 'idle') && (
             <p className="text-sm text-muted-foreground">Loading preview...</p>
           )}
@@ -674,21 +935,21 @@ function FilePreviewContentComponent({
           {textStatus === 'ready' && (
             currentFileViewMode === 'preview' ? (
               <>
-                <div
-                  className={cn(
-                    layout === 'panel'
-                      ? 'h-full overflow-auto'
-                      : 'max-h-[60vh] overflow-auto'
-                  )}
-                >
-                  <div className="px-6 py-6">
-                    <MarkdownRenderer content={textPreview} />
-                  </div>
+                <div className="px-6 py-6">
+                  <MarkdownRenderer content={textPreview} />
                 </div>
                 {lineInfo.truncated && (
-                  <p className="mt-2 px-3 text-xs text-muted-foreground">
-                    Showing first {MAX_TEXT_LINES} of {lineInfo.totalLines} lines.
-                  </p>
+                  <PreviewTruncationFooter
+                    shownLines={lineInfo.maxLines}
+                    totalLines={lineInfo.totalLines}
+                    truncatedBy={lineInfo.truncatedBy}
+                    canLoadFull={canLoadFull}
+                    status={fullLoadStatus}
+                    onLoadFull={handleLoadFull}
+                    sizeBytes={lineInfo.sizeBytes}
+                    downloadUrl={previewUrl}
+                    downloadFilename={filename}
+                  />
                 )}
               </>
             ) : (
@@ -697,9 +958,16 @@ function FilePreviewContentComponent({
                 filename={filename}
                 layout={layout}
                 truncated={lineInfo.truncated}
+                truncatedBy={lineInfo.truncatedBy}
                 totalLines={lineInfo.totalLines}
-                maxLines={MAX_TEXT_LINES}
+                maxLines={lineInfo.maxLines}
                 languageOverride="markdown"
+                onLoadFull={handleLoadFull}
+                loadFullStatus={fullLoadStatus}
+                canLoadFull={canLoadFull}
+                sizeBytes={lineInfo.sizeBytes}
+                downloadUrl={previewUrl}
+                downloadFilename={filename}
               />
             )
           )}
@@ -740,6 +1008,8 @@ function areFilePreviewContentPropsEqual(
   return (
     prev.filename === next.filename &&
     prev.previewUrl === next.previewUrl &&
+    prev.fileTextPreviewUrl === next.fileTextPreviewUrl &&
+    prev.fileFullTextPreviewUrl === next.fileFullTextPreviewUrl &&
     prev.contentType === next.contentType &&
     prev.layout === next.layout &&
     prev.notebookViewMode === next.notebookViewMode &&

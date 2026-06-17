@@ -48,6 +48,8 @@ const tabRenderStates: TabRenderState[] = [
     isLoading: false,
     filePreviewUrl: "",
     filePreviewOpenUrl: "",
+    fileTextPreviewUrl: "",
+    fileFullTextPreviewUrl: "",
     previewFileName: "",
     notebookViewMode: "report",
     fileViewMode: "preview",
@@ -62,6 +64,8 @@ const tabRenderStates: TabRenderState[] = [
     isLoading: false,
     filePreviewUrl: "/api/workspaces/workspace_1/fs/content/index.html?v=0",
     filePreviewOpenUrl: "/api/workspaces/workspace_1/fs/content/index.html",
+    fileTextPreviewUrl: "/api/workspaces/workspace_1/file-preview/text?source=workspace&path=index.html&mode=initial&maxLines=1000&v=0",
+    fileFullTextPreviewUrl: "/api/workspaces/workspace_1/file-preview/text?source=workspace&path=index.html&mode=full",
     previewFileName: "index.html",
     notebookViewMode: "report",
     fileViewMode: "source",
@@ -153,7 +157,12 @@ describe("PreviewPanelShell", () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
       status: 200,
-      text: vi.fn().mockResolvedValue("<!doctype html><h1>Active file</h1>"),
+      json: vi.fn().mockResolvedValue({
+        text: "<!doctype html><h1>Active file</h1>",
+        truncated: false,
+        totalLines: 1,
+        maxLines: 1000,
+      }),
     });
     vi.stubGlobal("fetch", fetchMock);
 
@@ -167,7 +176,7 @@ describe("PreviewPanelShell", () => {
       expect(fetchMock).toHaveBeenCalledTimes(1);
     });
     expect(fetchMock.mock.calls[0][0]).toBe(
-      "/api/workspaces/workspace_1/fs/content/index.html?v=0",
+      "/api/workspaces/workspace_1/file-preview/text?source=workspace&path=index.html&mode=initial&maxLines=1000&v=0",
     );
   });
 });

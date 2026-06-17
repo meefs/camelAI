@@ -21,6 +21,8 @@ export interface FilePreviewPopoverProps {
   filename: string;
   previewUrl: string;
   contentType?: string;
+  textPreviewUrl?: string;
+  fullTextPreviewUrl?: string;
 }
 
 export function FilePreviewPopover({
@@ -29,6 +31,8 @@ export function FilePreviewPopover({
   filename,
   previewUrl,
   contentType,
+  textPreviewUrl,
+  fullTextPreviewUrl,
 }: FilePreviewPopoverProps) {
   const [refreshVersion, setRefreshVersion] = useState(0);
   const [filenameCopied, setFilenameCopied] = useState(false);
@@ -43,7 +47,7 @@ export function FilePreviewPopover({
     }
     setFilenameCopied(false);
     setSpreadsheetToolbarState(null);
-  }, [contentType, filename, previewUrl]);
+  }, [contentType, filename, fullTextPreviewUrl, previewUrl, textPreviewUrl]);
 
   useEffect(() => {
     return () => {
@@ -167,6 +171,8 @@ export function FilePreviewPopover({
             key={`${previewUrl}:${refreshVersion}`}
             filename={filename}
             previewUrl={previewUrl}
+            fileTextPreviewUrl={textPreviewUrl}
+            fileFullTextPreviewUrl={fullTextPreviewUrl}
             contentType={contentType}
             layout="dialog"
             onSpreadsheetToolbarStateChange={handleToolbarStateChange}

@@ -6,29 +6,15 @@ import {
   getAppIframeUrl,
   getAppUrl,
 } from "@/lib/app-url";
+import {
+  buildRawFilePreviewRoute,
+  buildTextPreviewUrls,
+  getFilePreviewUrlDescriptor,
+} from "@/components/chat-file-preview/file-preview-urls";
 import type { TabRenderState } from "./chat-preview-shell";
 
 type NotebookViewMode = "report" | "notebook";
 type FileViewMode = "preview" | "source";
-
-function encodePathSegments(path: string) {
-  return path
-    .split("/")
-    .map((segment) => encodeURIComponent(segment))
-    .join("/");
-}
-
-function buildFilePreviewRoute(target: Extract<PreviewTarget, { kind: "file" }>) {
-  const normalizedPath = target.path.replace(/^\/+/, "");
-  const encodedPath = encodePathSegments(normalizedPath);
-  if (target.source === "vm") {
-    const encodedProject = encodeURIComponent(target.project ?? "");
-    return `projects/${encodedProject}/fs/content/${encodedPath}`;
-  }
-  return target.source === "workspace"
-    ? `fs/content/${encodedPath}`
-    : `${target.source === "upload" ? "uploads" : "outputs"}/${encodedPath}`;
-}
 
 function buildPreviewDomains(
   target: PreviewTarget | null,
@@ -84,6 +70,8 @@ export function useChatPreviewRenderState({
           isLoading: false,
           filePreviewUrl: "",
           filePreviewOpenUrl: "",
+          fileTextPreviewUrl: "",
+          fileFullTextPreviewUrl: "",
           previewFileName: "",
           notebookViewMode: "report",
           fileViewMode: "preview",
@@ -102,6 +90,8 @@ export function useChatPreviewRenderState({
           isLoading: tabAppLoading[tabId] ?? false,
           filePreviewUrl: "",
           filePreviewOpenUrl: "",
+          fileTextPreviewUrl: "",
+          fileFullTextPreviewUrl: "",
           previewFileName: "",
           notebookViewMode: "report",
           fileViewMode: "preview",
@@ -109,8 +99,12 @@ export function useChatPreviewRenderState({
         };
       }
 
-      const route = buildFilePreviewRoute(target);
+      const descriptor = getFilePreviewUrlDescriptor(target);
+      const rawPreviewUrl = buildRawFilePreviewRoute(descriptor);
       const fileKey = tabFilePreviewKeys[tabId] ?? 0;
+      const textPreviewUrls = buildTextPreviewUrls(descriptor, {
+        refreshKey: fileKey,
+      });
       const filename =
         target.filename ||
         target.path.split("/").filter(Boolean).pop() ||
@@ -123,8 +117,10 @@ export function useChatPreviewRenderState({
         vanityHost: "",
         iframeKey: 0,
         isLoading: false,
-        filePreviewUrl: `/api/workspaces/${target.workspaceId}/${route}?v=${fileKey}`,
-        filePreviewOpenUrl: `/api/workspaces/${target.workspaceId}/${route}`,
+        filePreviewUrl: `${rawPreviewUrl}?v=${fileKey}`,
+        filePreviewOpenUrl: rawPreviewUrl,
+        fileTextPreviewUrl: textPreviewUrls.initialUrl,
+        fileFullTextPreviewUrl: textPreviewUrls.fullUrl,
         previewFileName: filename,
         notebookViewMode: tabNotebookViewModes[tabId] ?? "report",
         fileViewMode: tabFileViewModes[tabId] ?? "preview",
@@ -152,8 +148,7 @@ export function useChatPreviewRenderState({
 
   const filePreviewOpenUrl = useMemo(() => {
     if (previewTarget?.kind !== "file") return "";
-    const route = buildFilePreviewRoute(previewTarget);
-    return `/api/workspaces/${previewTarget.workspaceId}/${route}`;
+    return buildRawFilePreviewRoute(getFilePreviewUrlDescriptor(previewTarget));
   }, [previewTarget]);
 
   const openElsewhereKind: OpenElsewhereKind | null =

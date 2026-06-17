@@ -195,6 +195,10 @@ export default [
 
   // Workspace filesystem API routes
   route(
+    "api/workspaces/:id/file-preview/text",
+    "routes/api/workspaces.$id.file-preview.text.ts",
+  ),
+  route(
     "api/workspaces/:id/fs/content/*",
     "routes/api/workspaces.$id.fs.content.$.ts",
   ),

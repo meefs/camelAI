@@ -249,6 +249,8 @@ export type TabRenderState = {
   isLoading: boolean;
   filePreviewUrl: string;
   filePreviewOpenUrl: string;
+  fileTextPreviewUrl: string;
+  fileFullTextPreviewUrl: string;
   previewFileName: string;
   notebookViewMode: "report" | "notebook";
   fileViewMode: "preview" | "source";
@@ -376,6 +378,8 @@ export const PreviewPanelShell = memo(function PreviewPanelShell({
               <FilePreviewContent
                 filename={activeTabState.previewFileName}
                 previewUrl={activeTabState.filePreviewUrl}
+                fileTextPreviewUrl={activeTabState.fileTextPreviewUrl}
+                fileFullTextPreviewUrl={activeTabState.fileFullTextPreviewUrl}
                 contentType={activeTabState.target.contentType}
                 layout="panel"
                 notebookViewMode={

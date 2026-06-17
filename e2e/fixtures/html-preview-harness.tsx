@@ -88,6 +88,8 @@ function toRenderState(tab: PreviewTab, fileKey: number): TabRenderState {
     isLoading: false,
     filePreviewUrl: `/e2e/fixtures/${fixtureName}?v=${fileKey}`,
     filePreviewOpenUrl: `/e2e/fixtures/${fixtureName}`,
+    fileTextPreviewUrl: '',
+    fileFullTextPreviewUrl: '',
     previewFileName:
       tab.target.kind === 'file' ? (tab.target.filename ?? tab.target.path) : '',
     notebookViewMode: 'report',

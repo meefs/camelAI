@@ -16,6 +16,8 @@ vi.mock('@/components/chat-file-preview', () => ({
   FilePreviewPopover: (props: {
     filename: string;
     previewUrl: string;
+    textPreviewUrl?: string;
+    fullTextPreviewUrl?: string;
     open: boolean;
     onOpenChange: (open: boolean) => void;
   }) => {
@@ -25,6 +27,8 @@ vi.mock('@/components/chat-file-preview', () => ({
         data-testid="file-preview-popover"
         data-filename={props.filename}
         data-preview-url={props.previewUrl}
+        data-text-preview-url={props.textPreviewUrl}
+        data-full-text-preview-url={props.fullTextPreviewUrl}
       />
     );
   },
@@ -52,6 +56,14 @@ describe('FileLink', () => {
       expect(popover).toHaveAttribute(
         'data-preview-url',
         '/api/workspaces/ws-456/fs/content/app/index.html',
+      );
+      expect(popover).toHaveAttribute(
+        'data-text-preview-url',
+        '/api/workspaces/ws-456/file-preview/text?source=workspace&path=%2Fapp%2Findex.html&mode=initial&maxLines=1000',
+      );
+      expect(popover).toHaveAttribute(
+        'data-full-text-preview-url',
+        '/api/workspaces/ws-456/file-preview/text?source=workspace&path=%2Fapp%2Findex.html&mode=full',
       );
       expect(popover.getAttribute('data-preview-url')).not.toContain('org-123');
     });

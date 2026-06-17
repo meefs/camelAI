@@ -321,6 +321,11 @@
   display: block;
 }
 
+.source-preview-lines.source-preview-plain pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .source-preview-lines .line,
 .code-preview-lines .line {
   display: block;

@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { cn } from '@/lib/utils';
 import { isImageFile } from './file-type-utils';
 import { FilePreviewPopover } from './file-preview-popover';
+import { buildTextPreviewUrls, getFilePreviewUrlDescriptor } from './file-preview-urls';
 import type { PreviewTarget } from '@/types';
 import { useChatPreviewContext } from '@/components/chat-preview/preview-context';
 import { FileCard } from '@/components/file-card';
@@ -30,6 +31,10 @@ export function FilePreviewChip({
   const previewContext = useChatPreviewContext();
   const showImage = isImageFile(filename, contentType) && !imageError;
   const shouldUseChatPanel = Boolean(previewContext && previewTarget);
+  const textPreviewUrls =
+    previewTarget?.kind === 'file'
+      ? buildTextPreviewUrls(getFilePreviewUrlDescriptor(previewTarget))
+      : null;
 
   const handleOpen = () => {
     if (previewContext && previewTarget) {
@@ -65,6 +70,8 @@ export function FilePreviewChip({
             onOpenChange={setPreviewOpen}
             filename={filename}
             previewUrl={previewUrl}
+            textPreviewUrl={textPreviewUrls?.initialUrl}
+            fullTextPreviewUrl={textPreviewUrls?.fullUrl}
             contentType={contentType}
           />
         )}
@@ -87,6 +94,8 @@ export function FilePreviewChip({
           onOpenChange={setPreviewOpen}
           filename={filename}
           previewUrl={previewUrl}
+          textPreviewUrl={textPreviewUrls?.initialUrl}
+          fullTextPreviewUrl={textPreviewUrls?.fullUrl}
           contentType={contentType}
         />
       )}

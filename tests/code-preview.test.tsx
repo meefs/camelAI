@@ -1,4 +1,4 @@
-import { render, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { SourcePreview } from '@/components/chat-file-preview/code-preview';
 import { FilePreviewContent } from '@/components/chat-file-preview/file-preview-content';
@@ -25,6 +25,14 @@ function mockFetchText(text: string) {
       text: vi.fn().mockResolvedValue(text),
     })
   );
+}
+
+function createJsonResponse(data: unknown) {
+  return {
+    ok: true,
+    status: 200,
+    json: vi.fn().mockResolvedValue(data),
+  };
 }
 
 describe('SourcePreview', () => {
@@ -104,6 +112,53 @@ describe('SourcePreview', () => {
     });
   });
 
+  it('skips Shiki highlighting for very large source previews', () => {
+    const code = Array.from({ length: 5001 }, (_, index) => `line ${index + 1}`).join('\n');
+
+    const { container } = render(
+      <SourcePreview
+        code={code}
+        filename="large.js"
+        layout="panel"
+        truncated={false}
+        totalLines={5001}
+      />
+    );
+
+    expect(codeToHtmlMock).not.toHaveBeenCalled();
+    expect(container.querySelectorAll('.source-preview-lines .line')).toHaveLength(0);
+    expect(container.querySelector('.source-preview-plain')).not.toBeNull();
+    expect(container).toHaveTextContent('line 5001');
+  });
+
+  it('copies the complete source from the large plain fallback', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      writable: true,
+      value: {
+        writeText,
+      },
+    });
+    const code = Array.from({ length: 5001 }, (_, index) => `line ${index + 1}`).join('\n');
+
+    render(
+      <SourcePreview
+        code={code}
+        filename="large.js"
+        layout="panel"
+        truncated={false}
+        totalLines={5001}
+      />
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Copy source' }));
+
+    await waitFor(() => {
+      expect(writeText).toHaveBeenCalledWith(code);
+    });
+  });
+
   it('renders plain text file previews through SourcePreview', async () => {
     const originalFetch = globalThis.fetch;
     Object.defineProperty(globalThis, 'fetch', {
@@ -137,6 +192,160 @@ describe('SourcePreview', () => {
         value: originalFetch,
       });
     }
+  });
+
+  it('loads the full file on demand when text preview URLs are provided', async () => {
+    let resolveFull: (value: unknown) => void = () => {};
+    const fullResponse = new Promise((resolve) => {
+      resolveFull = resolve;
+    });
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        createJsonResponse({
+          text: 'line 1\nline 2',
+          truncated: true,
+          totalLines: null,
+          maxLines: 2,
+          size: 2048,
+        })
+      )
+      .mockReturnValueOnce(fullResponse);
+    vi.stubGlobal('fetch', fetchMock);
+
+    const { container } = render(
+      <FilePreviewContent
+        filename="notes.txt"
+        previewUrl="/preview/notes.txt"
+        fileTextPreviewUrl="/preview/text?mode=initial"
+        fileFullTextPreviewUrl="/preview/text?mode=full"
+        contentType="text/plain"
+        layout="panel"
+      />
+    );
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/preview/text?mode=initial',
+        expect.objectContaining({ signal: expect.any(AbortSignal) })
+      );
+      expect(screen.getByText('Showing first 2 lines.')).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: /Show all lines/ }));
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: /Loading/ })).toBeDisabled();
+    });
+
+    resolveFull(
+      createJsonResponse({
+        text: 'line 1\nline 2\nline 3',
+        truncated: false,
+        totalLines: 3,
+        maxLines: 2,
+        size: 2048,
+      })
+    );
+
+    await waitFor(() => {
+      expect(container).toHaveTextContent('line 3');
+      expect(screen.queryByRole('button', { name: /Show all lines/ })).not.toBeInTheDocument();
+    });
+  });
+
+  it('keeps the truncated preview visible and allows retry after full-load failure', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        createJsonResponse({
+          text: 'line 1\nline 2',
+          truncated: true,
+          totalLines: 3,
+          maxLines: 2,
+        })
+      )
+      .mockRejectedValueOnce(new Error('network failed'))
+      .mockResolvedValueOnce(
+        createJsonResponse({
+          text: 'line 1\nline 2\nline 3',
+          truncated: false,
+          totalLines: 3,
+          maxLines: 2,
+        })
+      );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const { container } = render(
+      <FilePreviewContent
+        filename="notes.txt"
+        previewUrl="/preview/notes.txt"
+        fileTextPreviewUrl="/preview/text?mode=initial"
+        fileFullTextPreviewUrl="/preview/text?mode=full"
+        contentType="text/plain"
+        layout="panel"
+      />
+    );
+
+    await screen.findByRole('button', { name: /Show all lines/ });
+    fireEvent.click(screen.getByRole('button', { name: /Show all lines/ }));
+
+    await waitFor(() => {
+      expect(screen.getByText("Couldn't load the full file.")).toBeInTheDocument();
+      expect(container).toHaveTextContent('line 2');
+      expect(container).not.toHaveTextContent('line 3');
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
+
+    await waitFor(() => {
+      expect(container).toHaveTextContent('line 3');
+      expect(screen.queryByRole('button', { name: 'Try again' })).not.toBeInTheDocument();
+    });
+  });
+
+  it('shows a non-retryable download path when full preview is too large', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        createJsonResponse({
+          text: 'line 1\nline 2',
+          truncated: true,
+          totalLines: null,
+          maxLines: 2,
+        })
+      )
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 413,
+        json: vi.fn().mockResolvedValue({
+          error: 'File is too large to preview in full',
+          code: 'FULL_PREVIEW_TOO_LARGE',
+        }),
+      });
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(
+      <FilePreviewContent
+        filename="large.txt"
+        previewUrl="/preview/large.txt"
+        fileTextPreviewUrl="/preview/text?mode=initial"
+        fileFullTextPreviewUrl="/preview/text?mode=full"
+        contentType="text/plain"
+        layout="panel"
+      />
+    );
+
+    fireEvent.click(await screen.findByRole('button', { name: /Show all lines/ }));
+
+    await waitFor(() => {
+      expect(screen.getByText('Too large to show in full.')).toBeInTheDocument();
+      expect(screen.getByRole('link', { name: 'Download' })).toHaveAttribute(
+        'href',
+        '/preview/large.txt'
+      );
+      expect(screen.queryByRole('button', { name: 'Try again' })).not.toBeInTheDocument();
+    });
   });
 
   it('does not apply horizontal-scroll-only classes to the source wrapper', () => {
@@ -420,6 +629,53 @@ describe('SourcePreview', () => {
         layout="panel"
       />
     );
+
+    await waitFor(() => {
+      const lines = container.querySelectorAll('.source-preview-lines .line');
+      expect(lines.length).toBeGreaterThan(1);
+      expect(lines[1]?.textContent).toBe('  "value": 1,');
+    });
+  });
+
+  it('shows truncated JSON text-preview responses as raw source until full load', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        createJsonResponse({
+          text: '{"value":1}',
+          truncated: true,
+          totalLines: null,
+          maxLines: 1000,
+        })
+      )
+      .mockResolvedValueOnce(
+        createJsonResponse({
+          text: '{"value":1,"nested":{"ok":true}}',
+          truncated: false,
+          totalLines: 1,
+          maxLines: 1000,
+        })
+      );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const { container } = render(
+      <FilePreviewContent
+        filename="config.json"
+        previewUrl="/preview/config.json"
+        fileTextPreviewUrl="/preview/text?mode=initial"
+        fileFullTextPreviewUrl="/preview/text?mode=full"
+        contentType="application/json"
+        layout="panel"
+      />
+    );
+
+    await waitFor(() => {
+      const lines = container.querySelectorAll('.source-preview-lines .line');
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).toHaveTextContent('{"value":1}');
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: /Show all lines/ }));
 
     await waitFor(() => {
       const lines = container.querySelectorAll('.source-preview-lines .line');
