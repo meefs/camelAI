@@ -25,7 +25,6 @@ cloudflare_access_team_domain = "https://your-team.cloudflareaccess.com"
 cloudflare_access_aud = "your-access-aud"
 cloudflare_access_default_org_name = "Your Organization"
 # cloudflare_access_required_email_domain = "example.com"
-local_auth_bypass = "0"
 enable_public_ingress = false
 
 # AI provider. AWS defaults to Bedrock through the EC2 instance role, so no

@@ -69,10 +69,6 @@ variable "associate_public_ip_for_outbound" {
   type        = bool
   default     = true
 }
-variable "local_auth_bypass" {
-  type    = string
-  default = "0"
-}
 variable "cloudflared_tunnel_token" {
   description = "Optional Cloudflare Tunnel token. When set, cloud-init installs and connects cloudflared."
   type        = string

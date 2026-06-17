@@ -62,7 +62,6 @@ To put Cloudflare Access in front of a local Cloudflare Tunnel and automatically
 log users in, configure an Access application for the app hostname and set:
 
 ```bash
-LOCAL_AUTH_BYPASS=0
 CLOUDFLARE_ACCESS_TEAM_DOMAIN=https://your-team.cloudflareaccess.com
 CLOUDFLARE_ACCESS_AUD=your-access-application-aud
 CLOUDFLARE_ACCESS_DEFAULT_ORG_NAME="Your Organization"

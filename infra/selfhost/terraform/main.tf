@@ -21,7 +21,6 @@ locals {
     app_vanity_domain                       = var.app_vanity_domain
     app_iframe_domain                       = var.app_iframe_domain
     enable_caddy                            = tostring(var.enable_caddy)
-    local_auth_bypass                       = var.local_auth_bypass
     cloudflared_tunnel_token                = var.cloudflared_tunnel_token
     cloudflare_access_team_domain           = var.cloudflare_access_team_domain
     cloudflare_access_aud                   = var.cloudflare_access_aud

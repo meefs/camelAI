@@ -52,7 +52,6 @@ async function main() {
 
   assert(manifest.source === 'build/server/wrangler.json', 'manifest should use the built Wrangler config');
   includesAll(bindings.vars, [
-    'LOCAL_AUTH_BYPASS',
     'LOCAL_ARTIFACTS_BASE_URL',
     'LOCAL_ARTIFACTS_SECRET',
     'PROJECT_RUNTIME_SERVICE_URL',

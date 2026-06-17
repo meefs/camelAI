@@ -72,10 +72,6 @@ Parameters:
   SelfhostAiModel:
     Type: String
     Default: ''
-  LocalAuthBypass:
-    Type: String
-    Default: '0'
-    AllowedValues: ['0', '1']
   EnablePublicIngress:
     Type: String
     Default: 'false'
@@ -288,7 +284,6 @@ Resources:
           PROJECT_RUNTIME_CONTAINER_NETWORK_MODE=camelai-selfhost_default
           PROJECT_RUNTIME_DOCKER_PROXY_BASE_URL=http://project-runtime:4411
           CONTAINER_RUNTIME=runc
-          LOCAL_AUTH_BYPASS=${LocalAuthBypass}
           TOKEN_SIGNING_SECRET=$TOKEN_SIGNING_SECRET
           INTEGRATION_SECRET_KEY=$INTEGRATION_SECRET_KEY
           PROJECT_RUNTIME_PROXY_SECRET=$PROJECT_RUNTIME_PROXY_SECRET
@@ -318,7 +313,6 @@ Resources:
                   ipv4_address: 172.30.0.10
               environment:
                 NODE_ENV: production
-                LOCAL_AUTH_BYPASS: __DOLLAR__{LOCAL_AUTH_BYPASS:-1}
                 TOKEN_SIGNING_SECRET: __DOLLAR__{TOKEN_SIGNING_SECRET:?missing}
                 INTEGRATION_SECRET_KEY: __DOLLAR__{INTEGRATION_SECRET_KEY:?missing}
                 WORKER_BASE_URL: __DOLLAR__{SELFHOST_PUBLIC_BASE_URL:?missing}
