@@ -85,6 +85,7 @@ export class AutomationWorkflow extends WorkflowEntrypoint {
 
     expect(wrapped).toContain("function __camelAiCreateToolsFacade(binding)");
     expect(wrapped).toContain("function __camelAiInstallWorkflowSecureFetch(instance)");
+    expect(wrapped).toContain("function __camelAiWrapWorkflowStepForSecureFetch(step, secureFetch)");
     expect(wrapped).toContain("function __camelAiCreateConnectionsFacade(binding, tools)");
     expect(wrapped).toContain(
       "class __CamelAiUserAutomationWorkflow extends WorkflowEntrypoint",
@@ -94,6 +95,7 @@ export class AutomationWorkflow extends WorkflowEntrypoint {
     );
     expect(wrapped).toContain("method: methodName");
     expect(wrapped).toContain("connection: connectionName");
+    expect(wrapped).toContain("__camelAiWrapWorkflowStepForSecureFetch(step, this.env?.SECURE_FETCH)");
     expect(wrapped).toContain("return binding.invoke(request)");
     expect(wrapped).not.toContain("invoke.call(binding");
     expect(wrapped).toContain("getDashboardSummary");

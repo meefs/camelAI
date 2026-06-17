@@ -281,18 +281,64 @@ function __camelAiCreateConnectionsFacade(binding, tools) {
   });
 }
 
-function __camelAiInstallWorkflowSecureFetch(instance) {
-  if (!instance.env?.SECURE_FETCH || typeof instance.env.SECURE_FETCH.fetch !== "function") {
-    return;
+function __camelAiPatchGlobalFetch(secureFetch) {
+  if (!secureFetch || typeof secureFetch.fetch !== "function") {
+    return () => {};
   }
-  globalThis.fetch = (input, init) => instance.env.SECURE_FETCH.fetch(input, init);
+  const nativeFetch = typeof globalThis.fetch === "function"
+    ? globalThis.fetch.bind(globalThis)
+    : undefined;
+  globalThis.fetch = (input, init) => secureFetch.fetch(input, init);
+  return () => {
+    if (nativeFetch) {
+      globalThis.fetch = nativeFetch;
+    }
+  };
+}
+
+function __camelAiInstallWorkflowSecureFetch(instance) {
+  return __camelAiPatchGlobalFetch(instance.env?.SECURE_FETCH);
+}
+
+function __camelAiWrapWorkflowStepForSecureFetch(step, secureFetch) {
+  if (!step || typeof step.do !== "function" || !secureFetch || typeof secureFetch.fetch !== "function") {
+    return step;
+  }
+  const wrapCallback = (callback) => {
+    if (typeof callback !== "function") return callback;
+    return async (...args) => {
+      const restoreFetch = __camelAiPatchGlobalFetch(secureFetch);
+      try {
+        return await callback(...args);
+      } finally {
+        restoreFetch();
+      }
+    };
+  };
+  return new Proxy(step, {
+    get(target, prop, receiver) {
+      if (prop === "do") {
+        return (name, configOrCallback, maybeCallback) => {
+          if (typeof configOrCallback === "function") {
+            return target.do(name, wrapCallback(configOrCallback));
+          }
+          if (typeof maybeCallback === "function") {
+            return target.do(name, configOrCallback, wrapCallback(maybeCallback));
+          }
+          return target.do(name, configOrCallback, maybeCallback);
+        };
+      }
+      const value = Reflect.get(target, prop, receiver);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
 }
 
 function __camelAiInstallWorkflowConnectionsFacade(instance) {
-  __camelAiInstallWorkflowSecureFetch(instance);
+  const restoreFetch = __camelAiInstallWorkflowSecureFetch(instance);
   const originalEnv = instance.env;
   if (!originalEnv || typeof originalEnv !== "object" || (!originalEnv.CONNECTIONS && !originalEnv.TOOLS)) {
-    return;
+    return restoreFetch;
   }
   const tools = originalEnv.TOOLS ? __camelAiCreateToolsFacade(originalEnv.TOOLS) : undefined;
   const connections = __camelAiCreateConnectionsFacade(originalEnv.CONNECTIONS || {}, tools);
@@ -308,6 +354,7 @@ function __camelAiInstallWorkflowConnectionsFacade(instance) {
     enumerable: true,
     value: wrappedEnv,
   });
+  return restoreFetch;
 }
 `;
 
@@ -322,8 +369,13 @@ export function prepareDeterministicAutomationRuntimeSource(source: string): str
     String.raw`
 export class AutomationWorkflow extends __CamelAiUserAutomationWorkflow {
   async run(event, step) {
-    __camelAiInstallWorkflowConnectionsFacade(this);
-    return await super.run(event, step);
+    const restoreFetch = __camelAiInstallWorkflowConnectionsFacade(this);
+    const secureStep = __camelAiWrapWorkflowStepForSecureFetch(step, this.env?.SECURE_FETCH);
+    try {
+      return await super.run(event, secureStep);
+    } finally {
+      restoreFetch();
+    }
   }
 }
 `,
