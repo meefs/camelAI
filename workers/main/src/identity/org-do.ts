@@ -5472,10 +5472,7 @@ export class OrgDO extends DurableObject<DOEnv> {
 
     await Promise.all(
       uniqueWorkspaceIds.map((workspaceId) =>
-        this.ensureWorkspaceAccessMigrated(
-          workspaceId,
-          orgMemberIds,
-        ),
+        this.ensureWorkspaceAccessMigrated(workspaceId, orgMemberIds),
       ),
     );
 

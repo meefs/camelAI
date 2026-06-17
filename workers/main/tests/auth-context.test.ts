@@ -427,13 +427,46 @@ describe('Auth context building (parallel DO calls)', () => {
       });
     });
 
-    it('hydrates legacy WorkspaceDO restrictions before workspace summary counts', async () => {
+    it('hydrates legacy WorkspaceDO restrictions when workspace access has not been migrated', async () => {
       const ownerEmail = testEmail();
       const memberEmail = testEmail();
       const { userId: ownerId } = await createUser(testEnv, ownerEmail, 'password', 'Owner');
       const { userId: memberId } = await createUser(testEnv, memberEmail, 'password', 'Member');
       const { org } = await createOrg(testEnv, 'Legacy Summary Count Org', ownerId);
       const workspace = await createWorkspace(testEnv, org.id, 'Legacy Restricted Workspace', ownerId);
+
+      const orgStub = testEnv.ORG.get(testEnv.ORG.idFromName(org.id));
+      await orgStub.addMember(memberId, 'member', ownerId);
+
+      const workspaceStub = testEnv.WORKSPACE.get(
+        testEnv.WORKSPACE.idFromName(workspace.id),
+      ) as DurableObjectStub<{
+        setMemberAccess(
+          userId: string,
+          accessLevel: 'none',
+          actorId: string,
+        ): Promise<void>;
+      }>;
+      await workspaceStub.setMemberAccess(memberId, 'none', ownerId);
+      await orgStub.clearWorkspaceTenantMigrationMarkersForTest(workspace.id);
+
+      const counts = await orgStub.getWorkspaceSummaryCounts([workspace.id]);
+
+      expect(counts).toEqual([
+        expect.objectContaining({
+          workspaceId: workspace.id,
+          memberCount: 1,
+        }),
+      ]);
+    });
+
+    it('does not lower workspace summary member counts from stale WorkspaceDO restrictions after migration', async () => {
+      const ownerEmail = testEmail();
+      const memberEmail = testEmail();
+      const { userId: ownerId } = await createUser(testEnv, ownerEmail, 'password', 'Owner');
+      const { userId: memberId } = await createUser(testEnv, memberEmail, 'password', 'Member');
+      const { org } = await createOrg(testEnv, 'Stale Summary Count Org', ownerId);
+      const workspace = await createWorkspace(testEnv, org.id, 'Migrated Workspace', ownerId);
 
       const invitation = await createInvitation(testEnv, org.id, memberEmail, 'member', ownerId);
       await acceptInvitation(testEnv, org.id, invitation.id, memberId);
@@ -451,13 +484,15 @@ describe('Auth context building (parallel DO calls)', () => {
 
       const orgStub = testEnv.ORG.get(testEnv.ORG.idFromName(org.id));
       const counts = await orgStub.getWorkspaceSummaryCounts([workspace.id]);
+      const memberWorkspaces = await listUserWorkspaces(testEnv, memberId, org.id);
 
       expect(counts).toEqual([
         expect.objectContaining({
           workspaceId: workspace.id,
-          memberCount: 1,
+          memberCount: 2,
         }),
       ]);
+      expect(memberWorkspaces.some((entry) => entry.id === workspace.id)).toBe(true);
     });
 
     it('filters archived workspaces after hydrating stale auth bootstrap rows', async () => {
