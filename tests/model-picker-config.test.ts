@@ -267,6 +267,29 @@ describe('model picker config parsing', () => {
     });
   });
 
+  it('remaps legacy Kimi rows and defaults to K2.7 Code', () => {
+    const parsed = parseWorkspaceModelPickerConfig({
+      use_org_defaults: false,
+      use_platform_defaults: false,
+      models: [
+        { id: 'kimi-k2.6', added_at: 4 },
+        { id: 'kimi-k2.7-code', added_at: 3 },
+        { id: 'grok-4.3', added_at: 2 },
+      ],
+      default_model: 'kimi-k2.6',
+    });
+
+    expect(parsed).toEqual({
+      use_org_defaults: false,
+      use_platform_defaults: false,
+      models: [
+        { id: 'kimi-k2.7-code', added_at: 4 },
+        { id: 'grok-4.3', added_at: 2 },
+      ],
+      default_model: 'kimi-k2.7-code',
+    });
+  });
+
   it('parses workspace inheritance defaults and remaps legacy Opus fields', () => {
     expect(parseWorkspaceModelPickerConfig(null)).toEqual({
       use_org_defaults: true,

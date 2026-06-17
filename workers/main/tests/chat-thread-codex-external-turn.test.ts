@@ -130,9 +130,9 @@ describe('ChatThreadDO Codex turn handling', () => {
 
     expect(result).toEqual({
       provider: 'openrouter',
-      modelId: '~moonshotai/kimi-latest',
+      modelId: 'moonshotai/kimi-k2.7-code',
       hostedGatewayProvider: 'openrouter',
-      hostedModelId: '~moonshotai/kimi-latest:nitro',
+      hostedModelId: 'moonshotai/kimi-k2.7-code:nitro',
     });
   });
 

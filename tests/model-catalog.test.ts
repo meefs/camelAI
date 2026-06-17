@@ -183,7 +183,7 @@ describe('MODEL_CATALOG', () => {
           { id: 'gpt-5.5', added_at: 12 },
           { id: 'gpt-5.4', added_at: 3 },
           { id: 'gpt-5.4-mini', added_at: 4 },
-          { id: 'kimi-k2.6', added_at: 5 },
+          { id: 'kimi-k2.7-code', added_at: 5 },
           { id: 'grok-4.3', added_at: 6 },
           { id: 'gemini-3-flash-preview', added_at: 7 },
           { id: 'gemini-3.5-flash', added_at: 8 },
@@ -212,7 +212,7 @@ describe('MODEL_CATALOG', () => {
         { id: 'gpt-5.5' as const, added_at: 3 },
         { id: 'gpt-5.4' as const, added_at: 4 },
         { id: 'gpt-5.4-mini' as const, added_at: 5 },
-        { id: 'kimi-k2.6' as const, added_at: 6 },
+        { id: 'kimi-k2.7-code' as const, added_at: 6 },
       ],
     };
 
@@ -275,7 +275,7 @@ describe('MODEL_CATALOG', () => {
       'gemini-3-flash-preview',
       'deepseek-v4-pro',
       'deepseek-v4-flash',
-      'kimi-k2.6',
+      'kimi-k2.7-code',
       'grok-4.3',
     ]);
   });

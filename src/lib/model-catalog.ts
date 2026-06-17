@@ -68,7 +68,7 @@ export const ALL_LLM_MODELS: readonly LlmModel[] = [
   "gemini-3-flash-preview",
   "deepseek-v4-pro",
   "deepseek-v4-flash",
-  "kimi-k2.6",
+  "kimi-k2.7-code",
   "grok-4.3",
 ];
 
@@ -80,7 +80,7 @@ export const LLM_MODEL_TO_PRICING_KEY: Readonly<Record<LlmModel, string>> = {
   "gpt-5.4": "gpt-5.4",
   "gpt-5.4-mini": "gpt-5.4-mini",
   custom: "custom",
-  "kimi-k2.6": "kimi-k2.6",
+  "kimi-k2.7-code": "moonshotai/kimi-k2.7-code",
   "grok-4.3": "grok-4.3",
   "gemini-3.5-flash": "google/gemini-3.5-flash",
   "gemini-3-flash-preview": "google/gemini-3-flash-preview",
@@ -209,9 +209,9 @@ export const MODEL_CATALOG: Readonly<Record<LlmModel, ModelCatalogEntry>> = {
     intelligence: 1.5,
     speed: 5,
   },
-  "kimi-k2.6": {
-    id: "kimi-k2.6",
-    label: "Kimi K2.6",
+  "kimi-k2.7-code": {
+    id: "kimi-k2.7-code",
+    label: "Kimi K2.7 Code",
     providerLogo: "kimi",
     providerOrder: 4,
     modelOrder: 0,

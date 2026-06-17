@@ -138,4 +138,45 @@ describe("calculateUsageCostUsd", () => {
       }),
     ).toBeCloseTo(14.575);
   });
+
+  it("calculates Kimi K2.7 Code pricing and hosted prefixes", () => {
+    const usage = {
+      inputTokens: 1_000_000,
+      outputTokens: 1_000_000,
+      cacheCreationInputTokens: 1_000_000,
+      cacheReadInputTokens: 1_000_000,
+    };
+
+    expect(
+      calculateUsageCostUsd({ ...usage, model: "kimi-k2.7-code" }),
+    ).toBeCloseTo(4.39);
+    expect(
+      calculateUsageCostUsd({
+        ...usage,
+        model: "moonshotai/kimi-k2.7-code",
+      }),
+    ).toBeCloseTo(4.39);
+    expect(
+      calculateUsageCostUsd({
+        ...usage,
+        model: "camelai-openrouter/moonshotai/kimi-k2.7-code:nitro",
+      }),
+    ).toBeCloseTo(4.39);
+  });
+
+  it("keeps historical Kimi K2.6 and latest pricing available", () => {
+    const usage = {
+      inputTokens: 1_000_000,
+      outputTokens: 1_000_000,
+      cacheCreationInputTokens: 1_000_000,
+      cacheReadInputTokens: 1_000_000,
+    };
+
+    expect(
+      calculateUsageCostUsd({ ...usage, model: "moonshotai/kimi-k2.6" }),
+    ).toBeCloseTo(5.3998);
+    expect(
+      calculateUsageCostUsd({ ...usage, model: "~moonshotai/kimi-latest" }),
+    ).toBeCloseTo(5.3998);
+  });
 });

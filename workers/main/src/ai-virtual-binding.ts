@@ -54,7 +54,7 @@ const TIER_MODELS: Readonly<Record<ProviderKind, Readonly<Record<TierName, strin
   openrouter: {
     cheap: "deepseek/deepseek-v4-flash",
     fast: "deepseek/deepseek-v4-flash",
-    auto: "moonshotai/kimi-k2.6",
+    auto: "moonshotai/kimi-k2.7-code",
     smart: "anthropic/claude-sonnet-4.6",
   },
 };
@@ -86,8 +86,8 @@ const LEGACY_MODEL_ALIASES: Readonly<Record<string, string>> = {
   "dynamic/auto_search": "auto",
   "dynamic/auto_image": "auto_image",
   "gpt-5.5": "openai/gpt-5.5",
-  "kimi-k2.6": "moonshotai/kimi-k2.6",
-  "kimi-latest": "moonshotai/kimi-k2.6",
+  "kimi-k2.6": "moonshotai/kimi-k2.7-code",
+  "kimi-latest": "moonshotai/kimi-k2.7-code",
   opus: "anthropic/claude-opus-4.8",
   "opus-4.7": "anthropic/claude-opus-4.8",
   "opus-4.8": "anthropic/claude-opus-4.8",

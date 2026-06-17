@@ -164,6 +164,16 @@ const modelPricingTable: Record<string, ModelPricing> = {
     outputPerToken: 0,
     cacheReadPerToken: 0,
   },
+  "moonshotai/kimi-k2.7-code": {
+    inputPerToken: 0.00000074,
+    outputPerToken: 0.0000035,
+    cacheReadPerToken: 0.00000015,
+  },
+  "kimi-k2.7-code": {
+    inputPerToken: 0.00000074,
+    outputPerToken: 0.0000035,
+    cacheReadPerToken: 0.00000015,
+  },
   "~moonshotai/kimi-latest": {
     inputPerToken: 0.0000007448,
     outputPerToken: 0.000004655,
@@ -299,6 +309,9 @@ export function lookupPricing(model: string): ModelPricing {
     normalized.includes("claude-sonnet-4-6")
   ) {
     return modelPricingTable["claude-sonnet-4-6"];
+  }
+  if (normalized.includes("kimi-k2.7-code")) {
+    return modelPricingTable["moonshotai/kimi-k2.7-code"];
   }
   if (normalized.includes("kimi-k2.6") || normalized.includes("kimi-latest")) {
     return modelPricingTable["~moonshotai/kimi-latest"];

@@ -24,7 +24,7 @@ const CODEX_MODELS = [
   "gemini-3-flash-preview",
   "deepseek-v4-pro",
   "deepseek-v4-flash",
-  "kimi-k2.6",
+  "kimi-k2.7-code",
   "grok-4.3",
 ] as const;
 
@@ -39,7 +39,7 @@ const OPENROUTER_ONLY_MODELS = [
   "gemini-3-flash-preview",
   "deepseek-v4-pro",
   "deepseek-v4-flash",
-  "kimi-k2.6",
+  "kimi-k2.7-code",
   "grok-4.3",
 ] as const;
 
@@ -106,6 +106,8 @@ describe("llm provider config helpers", () => {
       "gemini-3.5-flash",
     );
     expect(normalizeLlmModel("fable-5")).toBe("sonnet");
+    expect(normalizeLlmModel("kimi-k2.6")).toBe("kimi-k2.7-code");
+    expect(normalizeLlmModel("kimi-latest")).toBe("kimi-k2.7-code");
     expect(normalizeLlmModel("opus")).toBe("opus-4.8");
     expect(normalizeLlmModel("opus-4.7")).toBe("opus-4.8");
     expect(

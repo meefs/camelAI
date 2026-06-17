@@ -110,8 +110,8 @@ describe("normalizeLegacyModel (back-compat shim)", () => {
 
   it("maps old friendly model names to their OpenRouter ids", () => {
     expect(normalizeLegacyModel("gpt-5.5")).toBe("openai/gpt-5.5");
-    expect(normalizeLegacyModel("kimi-k2.6")).toBe("moonshotai/kimi-k2.6");
-    expect(normalizeLegacyModel("kimi-latest")).toBe("moonshotai/kimi-k2.6");
+    expect(normalizeLegacyModel("kimi-k2.6")).toBe("moonshotai/kimi-k2.7-code");
+    expect(normalizeLegacyModel("kimi-latest")).toBe("moonshotai/kimi-k2.7-code");
     expect(normalizeLegacyModel("opus")).toBe("anthropic/claude-opus-4.8");
     expect(normalizeLegacyModel("opus-4.7")).toBe("anthropic/claude-opus-4.8");
     expect(normalizeLegacyModel("opus-4.8")).toBe("anthropic/claude-opus-4.8");
@@ -260,8 +260,8 @@ describe("appendNitro", () => {
     expect(appendNitro("deepseek/deepseek-v4-flash")).toBe(
       "deepseek/deepseek-v4-flash:nitro",
     );
-    expect(appendNitro("moonshotai/kimi-k2.6")).toBe(
-      "moonshotai/kimi-k2.6:nitro",
+    expect(appendNitro("moonshotai/kimi-k2.7-code")).toBe(
+      "moonshotai/kimi-k2.7-code:nitro",
     );
   });
 

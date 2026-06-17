@@ -348,6 +348,23 @@ const PI_MODEL_CATALOG_FALLBACKS: Record<string, Model<any>> = {
     contextWindow: 1048576,
     maxTokens: 65536,
   } satisfies Model<"openai-completions">,
+  "openrouter/moonshotai/kimi-k2.7-code": {
+    id: "moonshotai/kimi-k2.7-code",
+    name: "MoonshotAI: Kimi K2.7 Code",
+    api: "openai-completions",
+    provider: "openrouter",
+    baseUrl: "https://openrouter.ai/api/v1",
+    reasoning: true,
+    input: ["text", "image"],
+    cost: {
+      input: 0.74,
+      output: 3.5,
+      cacheRead: 0.15,
+      cacheWrite: 0,
+    },
+    contextWindow: 262144,
+    maxTokens: 16384,
+  } satisfies Model<"openai-completions">,
 };
 
 function resolvePiModelCatalogFallback(
@@ -11649,8 +11666,8 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         return openAiReference(normalizedModelId);
       case "custom":
         return openAiReference("gpt-5.4");
-      case "kimi-k2.6":
-        return openRouterReference("~moonshotai/kimi-latest");
+      case "kimi-k2.7-code":
+        return openRouterReference("moonshotai/kimi-k2.7-code");
       case "grok-4.3":
         return openRouterResponsesReference("x-ai/grok-4.3");
       case "gemini-3.5-flash":
@@ -11677,6 +11694,15 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     const lower = normalized.toLowerCase();
     if (lower === "fable-5" || lower === "claude-fable-5") {
       return "sonnet";
+    }
+    if (
+      lower === "kimi-k2.6" ||
+      lower === "kimi-latest" ||
+      lower === "~moonshotai/kimi-latest" ||
+      lower === "moonshotai/kimi-latest" ||
+      lower === "moonshotai/kimi-k2.6"
+    ) {
+      return "kimi-k2.7-code";
     }
     return normalized;
   }

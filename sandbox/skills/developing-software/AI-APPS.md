@@ -309,7 +309,7 @@ Pass one of four tier names to `workersai(tier, {})`. The platform resolves the 
 | `auto` | Balanced default | General-purpose AI features — the right pick when you're unsure |
 | `smart` | Strongest reasoning model | Complex reasoning, long-context analysis, agentic tool use |
 
-**Always default to `auto`** unless the use case clearly needs a smaller/cheaper tier or the strongest reasoning. Tier resolution is per-provider, so the same `auto` call lands on Sonnet for an Anthropic org, GPT mini for an OpenAI org, Claude on Bedrock for a Bedrock org, and Kimi K2.6 (via OpenRouter) for hosted-credit orgs.
+**Always default to `auto`** unless the use case clearly needs a smaller/cheaper tier or the strongest reasoning. Tier resolution is per-provider, so the same `auto` call lands on Sonnet for an Anthropic org, GPT mini for an OpenAI org, Claude on Bedrock for a Bedrock org, and Kimi K2.7 Code (via OpenRouter) for hosted-credit orgs.
 
 ### Specific OpenRouter Models (Only When User Explicitly Requests)
 

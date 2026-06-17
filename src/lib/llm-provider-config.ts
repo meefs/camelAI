@@ -8,7 +8,7 @@ import { decryptCredentials } from "./integration-crypto";
 
 export const DEFAULT_LLM_MODEL: LlmModel = "sonnet";
 export const DEFAULT_CODEX_MODEL: LlmModel = "gpt-5.4";
-export const DEFAULT_OPENROUTER_MODEL: LlmModel = "kimi-k2.6";
+export const DEFAULT_OPENROUTER_MODEL: LlmModel = "kimi-k2.7-code";
 export const CUSTOM_LLM_MODEL: LlmModel = "custom";
 export const THREAD_MODEL_LOCK_MESSAGE =
   "This thread is locked to its original model. Start a new thread to use a different model.";
@@ -16,6 +16,8 @@ export const THREAD_MODEL_LOCK_MESSAGE =
 const LEGACY_LLM_MODEL_REPLACEMENTS = {
   "fable-5": "sonnet",
   "gemini-3.1-pro-preview": "gemini-3.5-flash",
+  "kimi-k2.6": "kimi-k2.7-code",
+  "kimi-latest": "kimi-k2.7-code",
   opus: "opus-4.8",
   "opus-4.7": "opus-4.8",
 } as const satisfies Record<string, LlmModel>;
@@ -93,8 +95,8 @@ export const CODEX_LLM_MODEL_OPTIONS: ReadonlyArray<{
     description: "OpenRouter/camelAI hosted faster and cheaper model",
   },
   {
-    value: "kimi-k2.6",
-    label: "Kimi K2.6",
+    value: "kimi-k2.7-code",
+    label: "Kimi K2.7 Code",
     description: "OpenRouter/camelAI hosted model",
   },
   {
@@ -127,7 +129,7 @@ export const LLM_MODEL_OPTIONS: ReadonlyArray<{
 ];
 
 const OPENROUTER_ONLY_CODEX_MODELS = new Set<LlmModel>([
-  "kimi-k2.6",
+  "kimi-k2.7-code",
   "grok-4.3",
   "gemini-3.5-flash",
   "gemini-3-flash-preview",
