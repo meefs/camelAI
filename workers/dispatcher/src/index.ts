@@ -403,14 +403,14 @@ function quotedModuleSpecifier(moduleName: string): string {
 
 function dynamicWorkerWrapperSource(record: SelfhostWorkerRecord, bridgeSecret: string): string {
   const classNames = [...new Set(Object.values(getDoBindings(record)))];
-  const reexports = classNames.length > 0
-    ? `export { ${classNames.join(', ')} } from ${quotedModuleSpecifier(record.mainModule)};`
-    : '';
+  const durableObjectExports = classNames.map((className) => (
+    `export class ${className} extends SelfhostUserDurableObject { ` +
+      `static selfhostClassName = ${JSON.stringify(className)}; ` +
+    `}`
+  )).join('\n');
 
   return `
-${reexports}
-import userDefault from ${quotedModuleSpecifier(record.mainModule)};
-
+const SELFHOST_USER_MAIN_MODULE = ${quotedModuleSpecifier(record.mainModule)};
 const SELFHOST_DO_BRIDGE_SECRET = ${JSON.stringify(bridgeSecret)};
 
 class SelfhostDurableObjectId {
@@ -506,7 +506,30 @@ class SelfhostDurableObjectNamespace {
   }
 }
 
+function unsupportedCacheError() {
+  return new Error("Cache API is not supported for self-host deployed apps.");
+}
+
+function installUnsupportedCaches() {
+  const unsupportedCache = {
+    match() { return Promise.reject(unsupportedCacheError()); },
+    put() { return Promise.reject(unsupportedCacheError()); },
+    delete() { return Promise.reject(unsupportedCacheError()); },
+  };
+  Object.defineProperty(globalThis, "caches", {
+    configurable: true,
+    value: {
+      default: unsupportedCache,
+      open() { return Promise.reject(unsupportedCacheError()); },
+      has() { return Promise.resolve(false); },
+      delete() { return Promise.resolve(false); },
+      keys() { return Promise.resolve([]); },
+    },
+  });
+}
+
 function withSelfhostNamespaces(env) {
+  installUnsupportedCaches();
   const nextEnv = Object.create(env);
   for (const [bindingName, className] of Object.entries(env.__SELFHOST_DO_BINDINGS || {})) {
     nextEnv[bindingName] = new SelfhostDurableObjectNamespace(
@@ -518,9 +541,72 @@ function withSelfhostNamespaces(env) {
   return nextEnv;
 }
 
+let userModulePromise;
+function getUserModule() {
+  installUnsupportedCaches();
+  userModulePromise ||= import(SELFHOST_USER_MAIN_MODULE);
+  return userModulePromise;
+}
+
+async function getUserDefault() {
+  return (await getUserModule()).default;
+}
+
+class SelfhostUserDurableObject {
+  constructor(ctx, env) {
+    installUnsupportedCaches();
+    this.ctx = ctx;
+    this.env = withSelfhostNamespaces(env);
+    this.instancePromise = undefined;
+    return new Proxy(this, {
+      get(target, property, receiver) {
+        if (typeof property !== "string") {
+          return Reflect.get(target, property, receiver);
+        }
+        if (property in target || property === "then") {
+          return Reflect.get(target, property, receiver);
+        }
+        return (...args) => target.callUserMethod(property, args);
+      },
+    });
+  }
+  async getUserInstance() {
+    if (!this.instancePromise) {
+      this.instancePromise = getUserModule().then((module) => {
+        const className = this.constructor.selfhostClassName;
+        const UserDurableObject = module[className];
+        if (typeof UserDurableObject !== "function") {
+          throw new Error("Self-host Durable Object class not found: " + className);
+        }
+        return new UserDurableObject(this.ctx, this.env);
+      });
+    }
+    return this.instancePromise;
+  }
+  async fetch(request) {
+    const instance = await this.getUserInstance();
+    if (typeof instance.fetch !== "function") {
+      return new Response("Durable Object fetch handler not found", { status: 404 });
+    }
+    return instance.fetch(request);
+  }
+  async callUserMethod(method, args) {
+    const instance = await this.getUserInstance();
+    const fn = instance?.[method];
+    if (typeof fn !== "function") {
+      throw new Error("Durable Object method not found: " + method);
+    }
+    return fn.apply(instance, args);
+  }
+}
+
+${durableObjectExports}
+
 export default {
-  fetch(request, env, ctx) {
-    return userDefault.fetch(request, withSelfhostNamespaces(env), ctx);
+  async fetch(request, env, ctx) {
+    const nextEnv = withSelfhostNamespaces(env);
+    const userDefault = await getUserDefault();
+    return userDefault.fetch(request, nextEnv, ctx);
   }
 };
 `;

@@ -8,8 +8,19 @@ sandbox/skills/developing-software/templates/*/.pnp.loader.mjs
 node_modules
 .wrangler
 .react-router
+.sandbox-host
+.claude
+.selfhost
+playwright-report
+test-results
 build
 dist
+infra/.terraform
+infra/**/*.tfvars
+infra/**/*.tfstate
+infra/**/*.tfstate.backup
+infra/**/.terraform
+infra/**/.terraform.lock.hcl
 
 # Ignore git and IDE files
 .git

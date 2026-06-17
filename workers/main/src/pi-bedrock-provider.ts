@@ -25,6 +25,8 @@ const INTERLEAVED_THINKING_BETA = 'interleaved-thinking-2025-05-14';
 const PROMPT_CACHING_BETA = 'prompt-caching-2024-07-31';
 const BEDROCK_TRANSIENT_RETRY_ATTEMPTS = 1;
 const BEDROCK_TRANSIENT_RETRY_DELAY_MS = 750;
+const AWS_IAM_BEDROCK_SENTINEL = 'aws-iam';
+const EC2_METADATA_BASE_URL = 'http://169.254.169.254/latest';
 
 type AnthropicStopReason =
   | 'end_turn'
@@ -265,9 +267,7 @@ export const streamBedrock: StreamFunction<'bedrock-converse-stream', BedrockOpt
       }
 
       const bearerToken = options?.bearerToken?.trim() || options?.apiKey?.trim();
-      if (!bearerToken) {
-        throw new Error('Bedrock API key is missing');
-      }
+      const useAwsIam = !bearerToken || bearerToken === AWS_IAM_BEDROCK_SENTINEL;
 
       let payload = buildBedrockInvokeBody(resolvedModel, context, options);
       const nextPayload = await options?.onPayload?.(payload, resolvedModel);
@@ -275,18 +275,29 @@ export const streamBedrock: StreamFunction<'bedrock-converse-stream', BedrockOpt
         payload = nextPayload as BedrockInvokeBody;
       }
 
+      const requestUrl = buildBedrockInvokeUrl(resolvedModel, options);
+      const requestBody = JSON.stringify(payload);
+      const requestHeaders: Record<string, string> = {
+        accept: 'application/json',
+        'content-type': 'application/json',
+        ...resolvedModel.headers,
+        ...options?.headers,
+      };
+      if (useAwsIam) {
+        Object.assign(
+          requestHeaders,
+          await signBedrockRequestWithAwsIam(requestUrl, requestBody, options),
+        );
+      } else {
+        requestHeaders.authorization = `Bearer ${bearerToken}`;
+      }
+
       const response = await fetchBedrockWithTransientRetry(
-        buildBedrockInvokeUrl(resolvedModel, options),
+        requestUrl,
         {
           method: 'POST',
-          headers: {
-            authorization: `Bearer ${bearerToken}`,
-            accept: 'application/json',
-            'content-type': 'application/json',
-            ...resolvedModel.headers,
-            ...options?.headers,
-          },
-          body: JSON.stringify(payload),
+          headers: requestHeaders,
+          body: requestBody,
           signal: options?.signal,
         },
         resolvedModel,
@@ -1193,6 +1204,152 @@ function headersToRecord(headers: Headers): Record<string, string> {
     record[key] = value;
   });
   return record;
+}
+
+type AwsCredentials = {
+  accessKeyId: string;
+  secretAccessKey: string;
+  sessionToken?: string;
+};
+
+async function signBedrockRequestWithAwsIam(
+  url: string,
+  body: string,
+  options?: BedrockOptions,
+): Promise<Record<string, string>> {
+  const region = regionFromBaseUrl(url) || DEFAULT_BEDROCK_REGION;
+  const credentials = await resolveAwsCredentials(options?.signal);
+  const parsed = new URL(url);
+  const amzDate = new Date().toISOString().replace(/[:-]|\.\d{3}/g, '');
+  const dateStamp = amzDate.slice(0, 8);
+  const payloadHash = await sha256Hex(body);
+  const canonicalHeaders = [
+    ['content-type', 'application/json'],
+    ['host', parsed.host],
+    ['x-amz-date', amzDate],
+    ...(credentials.sessionToken ? [['x-amz-security-token', credentials.sessionToken]] : []),
+  ] as Array<[string, string]>;
+  const signedHeaders = canonicalHeaders.map(([name]) => name).join(';');
+  const canonicalRequest = [
+    'POST',
+    awsSigV4CanonicalUri(parsed.pathname),
+    parsed.searchParams.toString(),
+    canonicalHeaders.map(([name, value]) => `${name}:${value.trim()}\n`).join(''),
+    signedHeaders,
+    payloadHash,
+  ].join('\n');
+  const credentialScope = `${dateStamp}/${region}/bedrock/aws4_request`;
+  const stringToSign = [
+    'AWS4-HMAC-SHA256',
+    amzDate,
+    credentialScope,
+    await sha256Hex(canonicalRequest),
+  ].join('\n');
+  const signingKey = await getAwsSigV4SigningKey(credentials.secretAccessKey, dateStamp, region, 'bedrock');
+  const signature = toHex(await hmacRaw(signingKey, stringToSign));
+
+  return {
+    Authorization:
+      `AWS4-HMAC-SHA256 Credential=${credentials.accessKeyId}/${credentialScope}, ` +
+      `SignedHeaders=${signedHeaders}, Signature=${signature}`,
+    'x-amz-date': amzDate,
+    ...(credentials.sessionToken ? { 'x-amz-security-token': credentials.sessionToken } : {}),
+  };
+}
+
+async function resolveAwsCredentials(signal?: AbortSignal): Promise<AwsCredentials> {
+  const accessKeyId = envValue('AWS_ACCESS_KEY_ID');
+  const secretAccessKey = envValue('AWS_SECRET_ACCESS_KEY');
+  if (accessKeyId && secretAccessKey) {
+    return {
+      accessKeyId,
+      secretAccessKey,
+      ...(envValue('AWS_SESSION_TOKEN') ? { sessionToken: envValue('AWS_SESSION_TOKEN') } : {}),
+    };
+  }
+
+  const metadataToken = await fetch(`${EC2_METADATA_BASE_URL}/api/token`, {
+    method: 'PUT',
+    headers: { 'x-aws-ec2-metadata-token-ttl-seconds': '21600' },
+    signal,
+  })
+    .then((response) => (response.ok ? response.text() : ''))
+    .catch(() => '');
+  const metadataHeaders = metadataToken
+    ? { 'x-aws-ec2-metadata-token': metadataToken }
+    : undefined;
+  const roleName = await fetch(`${EC2_METADATA_BASE_URL}/meta-data/iam/security-credentials/`, {
+    headers: metadataHeaders,
+    signal,
+  }).then(async (response) => {
+    if (!response.ok) throw new Error(`EC2 metadata role lookup failed with HTTP ${response.status}`);
+    return (await response.text()).trim();
+  });
+  if (!roleName) throw new Error('EC2 metadata did not return an IAM role name');
+  const credentials = await fetch(
+    `${EC2_METADATA_BASE_URL}/meta-data/iam/security-credentials/${encodeURIComponent(roleName)}`,
+    { headers: metadataHeaders, signal },
+  ).then(async (response) => {
+    if (!response.ok) throw new Error(`EC2 metadata credential lookup failed with HTTP ${response.status}`);
+    return (await response.json()) as {
+      AccessKeyId?: string;
+      SecretAccessKey?: string;
+      Token?: string;
+    };
+  });
+  if (!credentials.AccessKeyId || !credentials.SecretAccessKey) {
+    throw new Error('EC2 metadata returned incomplete IAM credentials');
+  }
+  return {
+    accessKeyId: credentials.AccessKeyId,
+    secretAccessKey: credentials.SecretAccessKey,
+    ...(credentials.Token ? { sessionToken: credentials.Token } : {}),
+  };
+}
+
+function awsSigV4CanonicalUri(pathname: string): string {
+  return pathname
+    .split('/')
+    .map((segment) => encodeURIComponent(segment).replace(/[!'()*]/g, (char) => `%${char.charCodeAt(0).toString(16).toUpperCase()}`))
+    .join('/');
+}
+
+function envValue(name: string): string | undefined {
+  const value = (globalThis as unknown as { process?: { env?: Record<string, string | undefined> } })
+    .process?.env?.[name]?.trim();
+  return value || undefined;
+}
+
+async function getAwsSigV4SigningKey(
+  secretAccessKey: string,
+  dateStamp: string,
+  region: string,
+  service: string,
+): Promise<ArrayBuffer> {
+  const kDate = await hmacRaw(`AWS4${secretAccessKey}`, dateStamp);
+  const kRegion = await hmacRaw(kDate, region);
+  const kService = await hmacRaw(kRegion, service);
+  return hmacRaw(kService, 'aws4_request');
+}
+
+async function hmacRaw(key: string | ArrayBuffer, data: string): Promise<ArrayBuffer> {
+  const cryptoKey = await crypto.subtle.importKey(
+    'raw',
+    typeof key === 'string' ? new TextEncoder().encode(key) : key,
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign'],
+  );
+  return crypto.subtle.sign('HMAC', cryptoKey, new TextEncoder().encode(data));
+}
+
+async function sha256Hex(data: string): Promise<string> {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(data));
+  return toHex(digest);
+}
+
+function toHex(buffer: ArrayBuffer): string {
+  return [...new Uint8Array(buffer)].map((byte) => byte.toString(16).padStart(2, '0')).join('');
 }
 
 async function fetchBedrockWithTransientRetry(

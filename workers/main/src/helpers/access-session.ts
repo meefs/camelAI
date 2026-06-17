@@ -325,8 +325,16 @@ export async function verifyAccessJwt(
 
 /** Edge cache for the team-domain JWKS; null outside the Workers runtime. */
 function defaultCache(): Cache | null {
-  const cacheStorage = (globalThis as { caches?: { default?: Cache } }).caches;
-  return cacheStorage?.default ?? null;
+  try {
+    const cacheStorage = (globalThis as { caches?: { default?: Cache } }).caches;
+    return cacheStorage?.default ?? null;
+  } catch {
+    // Direct workerd self-host runs may expose CacheStorage without a configured
+    // default cache binding. Accessing caches.default throws "No Cache was
+    // configured" in that runtime; JWKS caching is an optimization, so fall
+    // back to fetching the certs directly.
+    return null;
+  }
 }
 
 async function loadJwks(
@@ -335,8 +343,14 @@ async function loadJwks(
 ): Promise<{ keys?: JsonObject[] }> {
   const cache = defaultCache();
   if (cache && !options.bypassCache) {
-    const cached = await cache.match(certsUrl);
-    if (cached) return (await cached.json()) as { keys?: JsonObject[] };
+    try {
+      const cached = await cache.match(certsUrl);
+      if (cached) return (await cached.json()) as { keys?: JsonObject[] };
+    } catch {
+      // Direct workerd self-host may expose a Cache object whose operations
+      // throw when no default cache binding is configured. Treat cache as an
+      // optional optimization and continue to origin fetch.
+    }
   }
   let response: Response;
   try {
@@ -355,15 +369,20 @@ async function loadJwks(
   }
   const body = await response.text();
   if (cache) {
-    await cache.put(
-      certsUrl,
-      new Response(body, {
-        headers: {
-          "Content-Type": "application/json",
-          "Cache-Control": `public, max-age=${JWKS_CACHE_TTL_SECONDS}`,
-        },
-      }),
-    );
+    try {
+      await cache.put(
+        certsUrl,
+        new Response(body, {
+          headers: {
+            "Content-Type": "application/json",
+            "Cache-Control": `public, max-age=${JWKS_CACHE_TTL_SECONDS}`,
+          },
+        }),
+      );
+    } catch {
+      // Cache writes are best-effort only; self-host direct workerd may not
+      // configure Cache API storage.
+    }
   }
   return JSON.parse(body) as { keys?: JsonObject[] };
 }

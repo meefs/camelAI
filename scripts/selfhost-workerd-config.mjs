@@ -330,6 +330,45 @@ function serviceStorageObject({
   `))`;
 }
 
+function serviceCacheEntry() {
+  return `(name = "cache:0", worker = (` +
+    `compatibilityDate = "2023-07-24", ` +
+    `compatibilityFlags = ["nodejs_compat", "experimental"], ` +
+    `modules = [` +
+      [
+        capnpModule('cache-entry.worker.js', path.join(MINIFLARE_WORKERS_DIR, 'cache/cache-entry.worker.js')),
+        ...miniflareSupportModules(),
+      ].join(', ') +
+    `], ` +
+    `bindings = [` +
+      [
+        `(name = "MINIFLARE_OBJECT", durableObjectNamespace = (` +
+          `className = "CacheObject", serviceName = "cache:cache"` +
+        `))`,
+        bindingJson('MINIFLARE_CACHE_WARN_USAGE', false),
+      ].join(', ') +
+    `]` +
+  `))`;
+}
+
+function serviceCacheObject() {
+  return `(name = "cache:cache", worker = (` +
+    `compatibilityDate = "2023-07-24", ` +
+    `compatibilityFlags = ["nodejs_compat", "experimental"], ` +
+    `modules = [` +
+      [
+        capnpModule('cache.worker.js', path.join(MINIFLARE_WORKERS_DIR, 'cache/cache.worker.js')),
+        ...miniflareSupportModules(),
+      ].join(', ') +
+    `], ` +
+    `durableObjectNamespaces = [(` +
+      `className = "CacheObject", uniqueKey = "miniflare-CacheObject", enableSql = true` +
+    `)], ` +
+    `durableObjectStorage = (localDisk = "cache:storage"), ` +
+    `bindings = [${storageObjectBindings('cache:storage').join(', ')}]` +
+  `))`;
+}
+
 function selfhostQueueName(queue, binding) {
   if (binding && SELFHOST_QUEUE_NAMES[binding]) return SELFHOST_QUEUE_NAMES[binding];
   return SELFHOST_QUEUE_NAME_BY_SOURCE[queue] ?? queue;
@@ -532,6 +571,7 @@ async function main() {
   await fs.mkdir(path.join(stateDir, 'kv'), { recursive: true });
   await fs.mkdir(path.join(stateDir, 'r2'), { recursive: true });
   await fs.mkdir(path.join(stateDir, 'd1'), { recursive: true });
+  await fs.mkdir(path.join(stateDir, 'cache'), { recursive: true });
   await fs.mkdir(path.join(stateDir, 'workflows'), { recursive: true });
 
   const mainServiceName = 'camelai';
@@ -640,6 +680,7 @@ async function main() {
     `modules = [${modules.map(({ name, file }) => capnpModule(name, file)).join(', ')}], ` +
     `bindings = [${bindings.join(', ')}], ` +
     `globalOutbound = "internet", ` +
+    `cacheApiOutbound = "cache:0", ` +
     `durableObjectNamespaces = [` +
       durableObjectClasses.map((className) => (
         `(className = ${q(className)}, uniqueKey = ${q(`camelai-selfhost-${className}`)}, enableSql = true)`
@@ -665,6 +706,7 @@ async function main() {
     `compatibilityFlags = ["nodejs_compat"], ` +
     `modules = [${capnpModule('index.js', dispatcherBundle)}], ` +
     `bindings = [${dispatcherBindings.join(', ')}], ` +
+    `cacheApiOutbound = "cache:0", ` +
     `durableObjectNamespaces = [` +
       `(className = "SelfhostAppRunner", uniqueKey = "camelai-selfhost-SelfhostAppRunner", enableSql = true)` +
     `], ` +
@@ -679,6 +721,7 @@ async function main() {
   services.push(serviceDisk('kv:storage', path.join(stateDir, 'kv')));
   services.push(serviceDisk('r2:storage', path.join(stateDir, 'r2')));
   services.push(serviceDisk('d1:storage', path.join(stateDir, 'd1')));
+  services.push(serviceDisk('cache:storage', path.join(stateDir, 'cache')));
   for (const workflow of workflows) {
     const workflowStorageServiceName = `workflows:storage-${workflow.name}`;
     const workflowStoragePath = path.join(stateDir, 'workflows', workflow.name);
@@ -714,6 +757,8 @@ async function main() {
     uniqueKey: 'miniflare-D1DatabaseObject',
     storageServiceName: 'd1:storage',
   }));
+  services.push(serviceCacheEntry());
+  services.push(serviceCacheObject());
   if (producers.size > 0) {
     services.push(serviceQueueBroker({ producers, consumers, workerName, mainServiceName }));
   }
@@ -752,6 +797,7 @@ const camelai :Workerd.Config = (
       kv: (wrangler.kv_namespaces ?? []).map((item) => item.binding),
       r2: (wrangler.r2_buckets ?? []).map((item) => item.binding),
       d1: (wrangler.d1_databases ?? []).map((item) => item.binding),
+      cache: ['default'],
       queues: (wrangler.queues?.producers ?? []).map((item) => item.binding),
       workflows: workflows.map((item) => item.binding),
       artifacts: useLocalArtifactsBinding ? ['ARTIFACTS'] : (wrangler.artifacts ?? []).map((item) => item.binding),

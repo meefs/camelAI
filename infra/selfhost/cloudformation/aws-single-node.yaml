@@ -1,0 +1,537 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Single-node camelAI self-host deployment on AWS EC2 using prebuilt ECR images for app services.
+
+Parameters:
+  AppImageUri:
+    Type: String
+    Description: ECR image URI for the bundled camelAI app container.
+  LocalArtifactsImageUri:
+    Type: String
+    Description: ECR image URI for the local artifacts service container.
+  RuntimeRepositoryUrl:
+    Type: String
+    Description: Git URL for the project-runtime-service repository. The instance must be able to clone it.
+  RuntimeRepositoryRef:
+    Type: String
+    Default: main
+  PublicBaseUrl:
+    Type: String
+    Description: Public base URL for the main app, for example https://camel.example.com.
+  AppVanityDomain:
+    Type: String
+    Description: Wildcard user app domain root, for example apps.example.com.
+  AppIframeDomain:
+    Type: String
+    Default: ''
+  InstanceType:
+    Type: String
+    Default: t3a.xlarge
+  LatestUbuntuAmiId:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+  SubnetId:
+    Type: AWS::EC2::Subnet::Id
+  KeyName:
+    Type: String
+    Default: ''
+  SshCidr:
+    Type: String
+    Default: ''
+  VolumeSizeGiB:
+    Type: Number
+    Default: 200
+    MinValue: 80
+  ExistingElasticIpAllocationId:
+    Type: String
+    Default: ''
+    Description: Optional existing Elastic IP allocation id. Useful when the public URL embeds a preallocated IP.
+  ExistingElasticIpPublicIp:
+    Type: String
+    Default: ''
+    Description: Public IP for ExistingElasticIpAllocationId. Required when Route53 DNS creation is enabled with an existing Elastic IP.
+  HostedZoneId:
+    Type: String
+    Default: ''
+  MainHostName:
+    Type: String
+    Default: ''
+  SelfhostAiProvider:
+    Type: String
+    Default: bedrock
+    AllowedValues: ['', openrouter, anthropic, openai, bedrock, custom]
+    Description: AI provider for the self-host deployment. On AWS, bedrock works by default through the EC2 instance role when SelfhostAiApiKey is empty.
+  SelfhostAiApiKey:
+    Type: String
+    Default: ''
+    NoEcho: true
+  SelfhostAiBaseUrl:
+    Type: String
+    Default: ''
+  SelfhostAiModel:
+    Type: String
+    Default: ''
+  LocalAuthBypass:
+    Type: String
+    Default: '0'
+    AllowedValues: ['0', '1']
+  EnablePublicIngress:
+    Type: String
+    Default: 'false'
+    AllowedValues: ['true', 'false']
+    Description: Open public HTTP/HTTPS to Caddy. Set false when using Cloudflare Tunnel.
+  AssociatePublicIpForOutbound:
+    Type: String
+    Default: 'true'
+    AllowedValues: ['true', 'false']
+    Description: Attach an ephemeral public IPv4 for outbound internet in public subnets. No inbound ports are opened unless EnablePublicIngress is true.
+  CloudflaredTunnelToken:
+    Type: String
+    Default: ''
+    NoEcho: true
+    Description: Optional Cloudflare Tunnel token. When set, cloudflared is installed and connected.
+  CloudflareAccessTeamDomain:
+    Type: String
+    Default: ''
+    Description: Cloudflare Access team domain, for example https://your-team.cloudflareaccess.com.
+  CloudflareAccessAud:
+    Type: String
+    Default: ''
+    Description: Cloudflare Access application audience tag.
+  CloudflareAccessDefaultOrgName:
+    Type: String
+    Default: ''
+  CloudflareAccessOrgClaims:
+    Type: String
+    Default: __selfhost_org__
+    Description: Comma-separated Access identity claim paths for org mapping. Default intentionally points at a missing claim so self-host falls back to CloudflareAccessDefaultOrgName.
+  CloudflareAccessRequiredEmailDomain:
+    Type: String
+    Default: ''
+
+Rules:
+  ExistingEipDnsRequiresPublicIp:
+    RuleCondition: !And
+      - !Equals [!Ref EnablePublicIngress, 'true']
+      - !Not [!Equals [!Ref ExistingElasticIpAllocationId, '']]
+      - !Not [!Equals [!Ref HostedZoneId, '']]
+      - !Not [!Equals [!Ref MainHostName, '']]
+    Assertions:
+      - Assert: !Not [!Equals [!Ref ExistingElasticIpPublicIp, '']]
+        AssertDescription: ExistingElasticIpPublicIp is required when creating Route53 records for an existing Elastic IP.
+
+Conditions:
+  HasKeyName: !Not [!Equals [!Ref KeyName, '']]
+  EnableSsh: !Not [!Equals [!Ref SshCidr, '']]
+  PublicIngressEnabled: !Equals [!Ref EnablePublicIngress, 'true']
+  PublicIpForOutboundEnabled: !Equals [!Ref AssociatePublicIpForOutbound, 'true']
+  CreateDns: !And [!Condition PublicIngressEnabled, !Not [!Equals [!Ref HostedZoneId, '']], !Not [!Equals [!Ref MainHostName, '']]]
+  HasCloudflaredTunnel: !Not [!Equals [!Ref CloudflaredTunnelToken, '']]
+  UseExistingEip: !And [!Condition PublicIngressEnabled, !Not [!Equals [!Ref ExistingElasticIpAllocationId, '']]]
+  UseNewEip: !And [!Condition PublicIngressEnabled, !Equals [!Ref ExistingElasticIpAllocationId, '']]
+  HasAnyEip: !Or [!Condition UseExistingEip, !Condition UseNewEip]
+
+Resources:
+  SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: camelAI self-host ingress
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - !If
+          - PublicIngressEnabled
+          - IpProtocol: tcp
+            FromPort: 80
+            ToPort: 80
+            CidrIp: 0.0.0.0/0
+          - !Ref AWS::NoValue
+        - !If
+          - PublicIngressEnabled
+          - IpProtocol: tcp
+            FromPort: 443
+            ToPort: 443
+            CidrIp: 0.0.0.0/0
+          - !Ref AWS::NoValue
+        - !If
+          - EnableSsh
+          - IpProtocol: tcp
+            FromPort: 22
+            ToPort: 22
+            CidrIp: !Ref SshCidr
+          - !Ref AWS::NoValue
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+
+  InstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+      Policies:
+        - PolicyName: BedrockInference
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - bedrock:InvokeModel
+                  - bedrock:InvokeModelWithResponseStream
+                Resource: '*'
+
+  InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles: [!Ref InstanceRole]
+
+  ElasticIp:
+    Condition: UseNewEip
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+
+  Instance:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !Ref LatestUbuntuAmiId
+      InstanceType: !Ref InstanceType
+      IamInstanceProfile: !Ref InstanceProfile
+      MetadataOptions:
+        HttpEndpoint: enabled
+        HttpTokens: optional
+        HttpPutResponseHopLimit: 2
+      KeyName: !If [HasKeyName, !Ref KeyName, !Ref AWS::NoValue]
+      NetworkInterfaces:
+        - AssociatePublicIpAddress: !If [PublicIngressEnabled, true, !If [PublicIpForOutboundEnabled, true, false]]
+          DeviceIndex: '0'
+          SubnetId: !Ref SubnetId
+          GroupSet: [!Ref SecurityGroup]
+      BlockDeviceMappings:
+        - DeviceName: /dev/sda1
+          Ebs:
+            VolumeSize: !Ref VolumeSizeGiB
+            VolumeType: gp3
+            DeleteOnTermination: false
+      Tags:
+        - Key: Name
+          Value: camelai-selfhost
+      UserData:
+        Fn::Base64: !Sub |
+          #!/usr/bin/env bash
+          set -euxo pipefail
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get update
+          apt-get install -y ca-certificates curl gnupg git openssl unzip
+          install -m 0755 -d /etc/apt/keyrings
+          curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+          chmod a+r /etc/apt/keyrings/docker.asc
+          . /etc/os-release
+          echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu ${!VERSION_CODENAME} stable" > /etc/apt/sources.list.d/docker.list
+          curl -fsSL https://dl.cloudsmith.io/public/caddy/stable/gpg.key -o /etc/apt/keyrings/caddy.asc
+          chmod a+r /etc/apt/keyrings/caddy.asc
+          echo "deb [signed-by=/etc/apt/keyrings/caddy.asc] https://dl.cloudsmith.io/public/caddy/stable/deb/debian any-version main" > /etc/apt/sources.list.d/caddy.list
+          apt-get update
+          apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin caddy
+          curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscliv2.zip
+          unzip -q /tmp/awscliv2.zip -d /tmp
+          /tmp/aws/install
+          if [ -n "${CloudflaredTunnelToken}" ]; then
+            curl -fsSL -o /tmp/cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
+            apt-get install -y /tmp/cloudflared.deb
+            cloudflared service install "${CloudflaredTunnelToken}"
+            systemctl restart cloudflared
+          fi
+          usermod -aG docker ubuntu || true
+
+          printf '%s\n%s\n' "${AppImageUri}" "${LocalArtifactsImageUri}" | cut -d/ -f1 | sort -u | while read -r REGISTRY; do
+            if printf '%s' "$REGISTRY" | grep -Eq '^[0-9]+\.dkr\.ecr\.[a-z0-9-]+\.amazonaws\.com$'; then
+              ECR_REGION=$(printf '%s' "$REGISTRY" | sed -E 's#^[0-9]+\.dkr\.ecr\.([a-z0-9-]+)\.amazonaws\.com$#\1#')
+              aws ecr get-login-password --region "$ECR_REGION" | docker login --username AWS --password-stdin "$REGISTRY"
+            fi
+          done
+          docker pull "${AppImageUri}"
+          docker pull "${LocalArtifactsImageUri}"
+
+          mkdir -p /opt/camelai/selfhost /srv/camelai/project-runtime /srv/camelai/runtime-state
+          if [ ! -d /srv/camelai/project-runtime/.git ]; then git clone "${RuntimeRepositoryUrl}" /srv/camelai/project-runtime; fi
+          cd /srv/camelai/project-runtime
+          git fetch --all --tags
+          git checkout "${RuntimeRepositoryRef}"
+          cd /opt/camelai/selfhost
+
+          TOKEN_SIGNING_SECRET=$(openssl rand -base64 48 | tr -d '\n')
+          INTEGRATION_SECRET_KEY=$(openssl rand -base64 48 | tr -d '\n')
+          PROJECT_RUNTIME_PROXY_SECRET=$(openssl rand -base64 48 | tr -d '\n')
+          LOCAL_ARTIFACTS_SECRET=$(openssl rand -base64 48 | tr -d '\n')
+          APP_IFRAME_DOMAIN="${AppIframeDomain}"
+          if [ -z "$APP_IFRAME_DOMAIN" ]; then APP_IFRAME_DOMAIN="${AppVanityDomain}"; fi
+          cat > .env.selfhost <<EOF
+          COMPOSE_PROJECT_NAME=camelai-selfhost
+          SELFHOST_PUBLIC_BASE_URL=${PublicBaseUrl}
+          LOCAL_APP_VANITY_DOMAIN=${AppVanityDomain}
+          LOCAL_APP_IFRAME_DOMAIN=$APP_IFRAME_DOMAIN
+          PROJECT_RUNTIME_HOST_STATE_DIR=/srv/camelai/runtime-state
+          PROJECT_RUNTIME_IMAGE=project-runtime-basic:latest
+          PROJECT_RUNTIME_ENABLE_PROJECT_QUOTA=0
+          PROJECT_RUNTIME_CONTAINER_USER=claude
+          PROJECT_RUNTIME_CONTAINER_HOME=/workspace
+          PROJECT_RUNTIME_CONTAINER_WORKDIR=/workspace
+          PROJECT_RUNTIME_CONTAINER_NETWORK_MODE=camelai-selfhost_default
+          PROJECT_RUNTIME_DOCKER_PROXY_BASE_URL=http://project-runtime:4411
+          CONTAINER_RUNTIME=runc
+          LOCAL_AUTH_BYPASS=${LocalAuthBypass}
+          TOKEN_SIGNING_SECRET=$TOKEN_SIGNING_SECRET
+          INTEGRATION_SECRET_KEY=$INTEGRATION_SECRET_KEY
+          PROJECT_RUNTIME_PROXY_SECRET=$PROJECT_RUNTIME_PROXY_SECRET
+          LOCAL_ARTIFACTS_SECRET=$LOCAL_ARTIFACTS_SECRET
+          SELFHOST_AI_PROVIDER=${SelfhostAiProvider}
+          SELFHOST_AI_API_KEY=${SelfhostAiApiKey}
+          SELFHOST_AI_BASE_URL=${SelfhostAiBaseUrl}
+          SELFHOST_AI_MODEL=${SelfhostAiModel}
+          SELFHOST_AI_AUTH_TYPE=bearer
+          SELFHOST_AI_API=openai-completions
+          SELFHOST_AI_AWS_REGION=${AWS::Region}
+          CLOUDFLARE_ACCESS_TEAM_DOMAIN=${CloudflareAccessTeamDomain}
+          CLOUDFLARE_ACCESS_AUD=${CloudflareAccessAud}
+          CLOUDFLARE_ACCESS_DEFAULT_ORG_NAME=${CloudflareAccessDefaultOrgName}
+          CLOUDFLARE_ACCESS_ORG_CLAIMS=${CloudflareAccessOrgClaims}
+          CLOUDFLARE_ACCESS_REQUIRED_EMAIL_DOMAIN=${CloudflareAccessRequiredEmailDomain}
+          EOF
+          chmod 600 .env.selfhost
+
+          cat > docker-compose.yml <<'EOF'
+          services:
+            app:
+              image: ${AppImageUri}
+              restart: unless-stopped
+              networks:
+                default:
+                  ipv4_address: 172.30.0.10
+              environment:
+                NODE_ENV: production
+                LOCAL_AUTH_BYPASS: __DOLLAR__{LOCAL_AUTH_BYPASS:-1}
+                TOKEN_SIGNING_SECRET: __DOLLAR__{TOKEN_SIGNING_SECRET:?missing}
+                INTEGRATION_SECRET_KEY: __DOLLAR__{INTEGRATION_SECRET_KEY:?missing}
+                WORKER_BASE_URL: __DOLLAR__{SELFHOST_PUBLIC_BASE_URL:?missing}
+                PROJECT_RUNTIME_SERVICE_URL: http://project-runtime:4410
+                PROJECT_RUNTIME_DOCKER_PROXY_BASE_URL: __DOLLAR__{PROJECT_RUNTIME_DOCKER_PROXY_BASE_URL:-http://project-runtime:4411}
+                PROJECT_RUNTIME_PROXY_SECRET: __DOLLAR__{PROJECT_RUNTIME_PROXY_SECRET:?missing}
+                LOCAL_ARTIFACTS_BASE_URL: http://local-artifacts:7001
+                LOCAL_ARTIFACTS_SECRET: __DOLLAR__{LOCAL_ARTIFACTS_SECRET:?missing}
+                CF_ACCOUNT_ID: selfhost
+                CF_DISPATCH_NAMESPACE: selfhost
+                CF_WORKER_NAME: chiridion-selfhost
+                AI_VIRTUAL_MODEL: dynamic/auto
+                SELFHOST_AI_PROVIDER: __DOLLAR__{SELFHOST_AI_PROVIDER:-}
+                SELFHOST_AI_API_KEY: __DOLLAR__{SELFHOST_AI_API_KEY:-}
+                SELFHOST_AI_BASE_URL: __DOLLAR__{SELFHOST_AI_BASE_URL:-}
+                SELFHOST_AI_MODEL: __DOLLAR__{SELFHOST_AI_MODEL:-}
+                SELFHOST_AI_AUTH_TYPE: __DOLLAR__{SELFHOST_AI_AUTH_TYPE:-bearer}
+                SELFHOST_AI_API: __DOLLAR__{SELFHOST_AI_API:-openai-completions}
+                SELFHOST_AI_AWS_REGION: __DOLLAR__{SELFHOST_AI_AWS_REGION:-us-east-1}
+                EMAIL_FROM_ADDRESS: no-reply@localhost
+                WORKSPACE_EMAIL_DOMAIN: localhost
+                LOCAL_APP_VANITY_DOMAIN: __DOLLAR__{LOCAL_APP_VANITY_DOMAIN:-}
+                LOCAL_APP_IFRAME_DOMAIN: __DOLLAR__{LOCAL_APP_IFRAME_DOMAIN:-}
+                CLOUDFLARE_ACCESS_TEAM_DOMAIN: __DOLLAR__{CLOUDFLARE_ACCESS_TEAM_DOMAIN:-}
+                CLOUDFLARE_ACCESS_AUD: __DOLLAR__{CLOUDFLARE_ACCESS_AUD:-}
+                CLOUDFLARE_ACCESS_DEFAULT_ORG_NAME: __DOLLAR__{CLOUDFLARE_ACCESS_DEFAULT_ORG_NAME:-}
+                CLOUDFLARE_ACCESS_ORG_CLAIMS: __DOLLAR__{CLOUDFLARE_ACCESS_ORG_CLAIMS:-}
+                CLOUDFLARE_ACCESS_REQUIRED_EMAIL_DOMAIN: __DOLLAR__{CLOUDFLARE_ACCESS_REQUIRED_EMAIL_DOMAIN:-}
+              ports:
+                - "127.0.0.1:3001:3001"
+              volumes:
+                - app-state:/workspace/.selfhost/workerd/state
+              depends_on:
+                local-artifacts:
+                  condition: service_healthy
+                project-runtime:
+                  condition: service_healthy
+              healthcheck:
+                test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3001/api/selfhost/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+                interval: 10s
+                timeout: 5s
+                retries: 30
+            project-runtime:
+              image: golang:1.24-bookworm
+              restart: unless-stopped
+              working_dir: /runtime
+              command: go run ./cmd/project-runtime
+              environment:
+                PORT: "4410"
+                PROJECT_RUNTIME_DOCKER_PROXY_PORT: "4411"
+                CONTAINER_RUNTIME: __DOLLAR__{CONTAINER_RUNTIME:-runc}
+                PROJECT_RUNTIME_HOST_STATE_DIR: __DOLLAR__{PROJECT_RUNTIME_HOST_STATE_DIR:?missing}
+                WORKSPACES_ROOT: __DOLLAR__{PROJECT_RUNTIME_HOST_STATE_DIR:?missing}/workspaces
+                PROJECT_RUNTIME_USAGE_DB_DIR: __DOLLAR__{PROJECT_RUNTIME_HOST_STATE_DIR:?missing}/usage
+                PROJECT_RUNTIME_STATE_ROOT: __DOLLAR__{PROJECT_RUNTIME_HOST_STATE_DIR:?missing}/state
+                PROJECT_RUNTIME_BACKUP_ROOT: __DOLLAR__{PROJECT_RUNTIME_HOST_STATE_DIR:?missing}/backups
+                PROJECT_RUNTIME_IMAGE: __DOLLAR__{PROJECT_RUNTIME_IMAGE:-project-runtime-basic:latest}
+                PROJECT_RUNTIME_ENABLE_PROJECT_QUOTA: __DOLLAR__{PROJECT_RUNTIME_ENABLE_PROJECT_QUOTA:-0}
+                PROJECT_RUNTIME_CONTAINER_USER: __DOLLAR__{PROJECT_RUNTIME_CONTAINER_USER:-claude}
+                PROJECT_RUNTIME_CONTAINER_HOME: __DOLLAR__{PROJECT_RUNTIME_CONTAINER_HOME:-/workspace}
+                PROJECT_RUNTIME_CONTAINER_WORKDIR: __DOLLAR__{PROJECT_RUNTIME_CONTAINER_WORKDIR:-/workspace}
+                PROJECT_RUNTIME_CONTAINER_NETWORK_MODE: __DOLLAR__{PROJECT_RUNTIME_CONTAINER_NETWORK_MODE:-camelai-selfhost_default}
+                PROJECT_RUNTIME_PROXY_SECRET: __DOLLAR__{PROJECT_RUNTIME_PROXY_SECRET:?missing}
+                WORKER_BASE_URL: http://app:3001
+                PROJECT_RUNTIME_PROXY_CAPABILITIES_JSON: '{"capabilities":[{"name":"camelai-artifacts","target":"http://app:3001/api/internal/project-runtime/artifacts"},{"name":"camelai-cloudflare-api","target":"http://app:3001"}]}'
+              ports:
+                - "127.0.0.1:4410:4410"
+                - "127.0.0.1:4411:4411"
+              extra_hosts:
+                - "host.docker.internal:host-gateway"
+              volumes:
+                - /srv/camelai/project-runtime:/runtime
+                - /srv/camelai/runtime-state:/srv/camelai/runtime-state
+                - /var/run/docker.sock:/var/run/docker.sock
+              healthcheck:
+                test: ["CMD", "bash", "-lc", "exec 3<>/dev/tcp/127.0.0.1/4410; printf 'GET /health HTTP/1.1\\r\\nHost: 127.0.0.1\\r\\nConnection: close\\r\\n\\r\\n' >&3; cat <&3 | grep project-runtime-service"]
+                interval: 5s
+                timeout: 3s
+                retries: 30
+            local-artifacts:
+              image: ${LocalArtifactsImageUri}
+              restart: unless-stopped
+              environment:
+                LOCAL_ARTIFACTS_PORT: "7001"
+                LOCAL_ARTIFACTS_REPO_ROOT: /data/repos
+                LOCAL_ARTIFACTS_PUBLIC_BASE_URL: http://local-artifacts:7001
+                LOCAL_ARTIFACTS_SECRET: __DOLLAR__{LOCAL_ARTIFACTS_SECRET:?missing}
+              ports:
+                - "127.0.0.1:7001:7001"
+              volumes:
+                - local-artifacts-repos:/data/repos
+              healthcheck:
+                test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:7001/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+                interval: 5s
+                timeout: 3s
+                retries: 20
+          volumes:
+            app-state:
+            local-artifacts-repos:
+          networks:
+            default:
+              ipam:
+                config:
+                  - subnet: 172.30.0.0/24
+          EOF
+          perl -pi -e 's/__DOLLAR__/\$/g' docker-compose.yml
+
+          cat > /etc/systemd/system/camelai-selfhost.service <<'EOF'
+          [Unit]
+          Description=camelAI self-host Docker Compose stack
+          After=docker.service network-online.target
+          Wants=network-online.target
+          Requires=docker.service
+          [Service]
+          Type=oneshot
+          RemainAfterExit=yes
+          WorkingDirectory=/opt/camelai/selfhost
+          ExecStartPre=/usr/bin/docker build -t project-runtime-basic:latest -f /srv/camelai/project-runtime/Dockerfile.sandbox /srv/camelai/project-runtime
+          ExecStart=/usr/bin/docker compose --env-file .env.selfhost -f docker-compose.yml up -d
+          ExecStop=/usr/bin/docker compose --env-file .env.selfhost -f docker-compose.yml down
+          TimeoutStartSec=0
+          [Install]
+          WantedBy=multi-user.target
+          EOF
+
+          cat > /usr/local/sbin/camelai-imds-firewall <<'EOF'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          iptables -N DOCKER-USER 2>/dev/null || true
+          iptables -D DOCKER-USER -s 172.30.0.10/32 -d 169.254.169.254/32 -j RETURN 2>/dev/null || true
+          iptables -D DOCKER-USER -d 169.254.169.254/32 -j REJECT 2>/dev/null || true
+          iptables -I DOCKER-USER 1 -s 172.30.0.10/32 -d 169.254.169.254/32 -j RETURN
+          iptables -I DOCKER-USER 2 -d 169.254.169.254/32 -j REJECT
+          EOF
+          chmod 755 /usr/local/sbin/camelai-imds-firewall
+          cat > /etc/systemd/system/camelai-imds-firewall.service <<'EOF'
+          [Unit]
+          Description=Restrict EC2 IMDS access to the camelAI app container
+          After=docker.service
+          Requires=docker.service
+          [Service]
+          Type=oneshot
+          ExecStart=/usr/local/sbin/camelai-imds-firewall
+          RemainAfterExit=yes
+          [Install]
+          WantedBy=multi-user.target
+          EOF
+
+          systemctl daemon-reload
+          systemctl enable --now camelai-imds-firewall.service
+          systemctl enable --now camelai-selfhost.service
+
+          MAIN_HOST=$(printf '%s' "${PublicBaseUrl}" | sed -E 's#^https?://##; s#/.*$##')
+          APPS_HOST="${AppVanityDomain}"
+          if [ "${EnablePublicIngress}" != "true" ]; then
+            systemctl stop caddy || true
+            systemctl disable caddy || true
+          elif printf '%s' "${PublicBaseUrl}" | grep -q '^http://'; then
+            cat > /etc/caddy/Caddyfile <<EOF
+          :80 {
+            reverse_proxy 127.0.0.1:3001
+          }
+          EOF
+            systemctl reload caddy || systemctl restart caddy
+          elif [ -n "$MAIN_HOST" ] && [ "$MAIN_HOST" != localhost ]; then
+            cat > /etc/caddy/Caddyfile <<EOF
+          $MAIN_HOST {
+            reverse_proxy 127.0.0.1:3001
+          }
+
+          http://*.$APPS_HOST {
+            reverse_proxy 127.0.0.1:3001
+          }
+          EOF
+            systemctl reload caddy || systemctl restart caddy
+          fi
+
+  EipAssociation:
+    Condition: HasAnyEip
+    Type: AWS::EC2::EIPAssociation
+    Properties:
+      AllocationId: !If [UseExistingEip, !Ref ExistingElasticIpAllocationId, !GetAtt ElasticIp.AllocationId]
+      InstanceId: !Ref Instance
+
+  MainRecord:
+    Condition: CreateDns
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId: !Ref HostedZoneId
+      Name: !Ref MainHostName
+      Type: A
+      TTL: '60'
+      ResourceRecords: [!If [UseExistingEip, !Ref ExistingElasticIpPublicIp, !Ref ElasticIp]]
+
+  WildcardAppsRecord:
+    Condition: CreateDns
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId: !Ref HostedZoneId
+      Name: !Sub '*.${AppVanityDomain}'
+      Type: A
+      TTL: '60'
+      ResourceRecords: [!If [UseExistingEip, !Ref ExistingElasticIpPublicIp, !Ref ElasticIp]]
+
+Outputs:
+  PublicIp:
+    Condition: HasAnyEip
+    Value: !If [UseExistingEip, !Ref ExistingElasticIpPublicIp, !Ref ElasticIp]
+  AppUrl:
+    Value: !Ref PublicBaseUrl
+  InstanceId:
+    Value: !Ref Instance
+  AppImage:
+    Value: !Ref AppImageUri
+  LocalArtifactsImage:
+    Value: !Ref LocalArtifactsImageUri

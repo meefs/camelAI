@@ -1,5 +1,6 @@
 import type { User, Organization } from "@/types";
 import type { AuthEnv, SessionData } from "./auth-helpers";
+import { isSelfhostRuntime } from "./selfhost-runtime";
 import {
   createSession,
   createUserFromOAuth,
@@ -252,6 +253,14 @@ async function ensureAccessOrgs(
       });
     }
     const orgStub = authEnv.ORG.get(authEnv.ORG.idFromName(org.id));
+    if (isSelfhostRuntime(authEnv) && org.billing_status !== "enterprise") {
+      const updatedOrg = await orgStub.updateBillingState({
+        billing_status: "enterprise",
+        billing_plan: "enterprise",
+        billing_seat_count: Math.max(org.billing_seat_count ?? 1, 1),
+      });
+      if (updatedOrg) org = updatedOrg;
+    }
     const userStub = authEnv.USER.get(authEnv.USER.idFromName(userId));
     if (!workspaceId) {
       const [workspaces, userOrgs] = await Promise.all([
