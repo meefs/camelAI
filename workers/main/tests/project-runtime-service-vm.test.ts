@@ -436,4 +436,150 @@ describe("ProjectRuntimeServiceVmBridge", () => {
     );
     expect(userExecBody.cwd).toBe("/workspace/src");
   });
+
+  it("deletes runtime projects deepest-first before removing workspace metadata", async () => {
+    const source = {
+      id: "ca-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-web-app",
+      name: "web-app",
+      description: "Web app.",
+      defaultVmId: "main",
+      artifactRemote: "https://artifacts.camelai.internal/git/web-app.git",
+      artifactStatus: "ready",
+      artifactDefaultBranch: "main",
+      createdAt: "2026-06-06T00:00:00.000Z",
+      updatedAt: "2026-06-06T00:00:00.000Z",
+    };
+    const clone = {
+      id: "ca-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-web-app-clone",
+      name: "web-app-clone",
+      description: "Clone.",
+      defaultVmId: "main",
+      clonedFromProjectId: source.id,
+      artifactRemoteProjectId: source.id,
+      artifactRemote: source.artifactRemote,
+      artifactStatus: "ready",
+      artifactDefaultBranch: "main",
+      createdAt: "2026-06-07T00:00:00.000Z",
+      updatedAt: "2026-06-07T00:00:00.000Z",
+    };
+    const fetchMock = vi.fn(async () => new Response(null, { status: 204 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const removeProjects = vi.fn(async () => ({
+      deleted: [clone, source],
+      retained: [],
+    }));
+
+    const bridge = new ProjectRuntimeServiceVmBridge({
+      env: {
+        PROJECT_RUNTIME_SERVICE_URL: "http://runtime.test",
+      },
+      workspace: {
+        listProjectsForMigrationReset: vi.fn(async () => [source, clone]),
+        removeProjects,
+      } as never,
+    });
+
+    const result = await bridge.deleteProject({ project: source.name });
+
+    expect(result).toMatchObject({
+      success: true,
+      deleted: ["web-app-clone", "web-app"],
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(new URL(String(fetchMock.mock.calls[0]![0])).pathname)
+      .toBe(`/v1/projects/${encodeURIComponent(clone.id)}`);
+    expect(new URL(String(fetchMock.mock.calls[1]![0])).pathname)
+      .toBe(`/v1/projects/${encodeURIComponent(source.id)}`);
+    expect(removeProjects).toHaveBeenCalledWith([clone.id, source.id]);
+  });
+
+  it("deletes only the explicit project ids without expanding clone descendants", async () => {
+    const source = {
+      id: "ca-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-web-app",
+      name: "web-app",
+      description: "Web app.",
+      defaultVmId: "main",
+      artifactRemote: "https://artifacts.camelai.internal/git/web-app.git",
+      artifactStatus: "ready",
+      artifactDefaultBranch: "main",
+      createdAt: "2026-06-06T00:00:00.000Z",
+      updatedAt: "2026-06-06T00:00:00.000Z",
+    };
+    const clone = {
+      id: "ca-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-web-app-clone",
+      name: "web-app-clone",
+      description: "Clone.",
+      defaultVmId: "main",
+      clonedFromProjectId: source.id,
+      artifactRemoteProjectId: source.id,
+      artifactRemote: source.artifactRemote,
+      artifactStatus: "ready",
+      artifactDefaultBranch: "main",
+      createdAt: "2026-06-07T00:00:00.000Z",
+      updatedAt: "2026-06-07T00:00:00.000Z",
+    };
+    const fetchMock = vi.fn(async () => new Response(null, { status: 204 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const removeProjects = vi.fn(async () => ({
+      deleted: [source],
+      retained: [clone],
+    }));
+
+    const bridge = new ProjectRuntimeServiceVmBridge({
+      env: {
+        PROJECT_RUNTIME_SERVICE_URL: "http://runtime.test",
+      },
+      workspace: {
+        listProjectsForMigrationReset: vi.fn(async () => [source, clone]),
+        removeProjects,
+      } as never,
+    });
+
+    const result = await bridge.deleteProject({ projectIds: [source.id] });
+
+    expect(result).toMatchObject({
+      success: true,
+      deleted: ["web-app"],
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(removeProjects).toHaveBeenCalledWith([source.id]);
+  });
+
+  it("resolves project deletes by normalized project name key", async () => {
+    const source = {
+      id: "ca-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-web-app",
+      name: "Web App",
+      description: "Web app.",
+      defaultVmId: "main",
+      artifactRemote: "https://artifacts.camelai.internal/git/web-app.git",
+      artifactStatus: "ready",
+      artifactDefaultBranch: "main",
+      createdAt: "2026-06-06T00:00:00.000Z",
+      updatedAt: "2026-06-06T00:00:00.000Z",
+    };
+    const fetchMock = vi.fn(async () => new Response(null, { status: 204 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const removeProjects = vi.fn(async () => ({
+      deleted: [source],
+      retained: [],
+    }));
+
+    const bridge = new ProjectRuntimeServiceVmBridge({
+      env: {
+        PROJECT_RUNTIME_SERVICE_URL: "http://runtime.test",
+      },
+      workspace: {
+        listProjectsForMigrationReset: vi.fn(async () => [source]),
+        removeProjects,
+      } as never,
+    });
+
+    const result = await bridge.deleteProject({ project: "web-app" });
+
+    expect(result).toMatchObject({
+      success: true,
+      deleted: ["Web App"],
+    });
+    expect(removeProjects).toHaveBeenCalledWith([source.id]);
+  });
 });

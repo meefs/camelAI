@@ -192,6 +192,7 @@ export interface WorkspaceFilesystemLike {
   getProject(projectId: unknown): Promise<WorkspaceProject | null>;
   getProjectByName(project: unknown): Promise<WorkspaceProject | null>;
   deleteProjectsForWorkspace(workspaceId?: unknown): Promise<{ deleted: WorkspaceProject[]; retained: WorkspaceProject[] }>;
+  removeProjects(projectIds: string[]): Promise<{ deleted: WorkspaceProject[]; retained: WorkspaceProject[] }>;
   createProject(input?: {
     id?: unknown;
     name?: unknown;
@@ -466,6 +467,27 @@ export class WorkspaceFilesystemDO extends DurableObject<WorkspaceFilesystemEnv>
     return {
       deleted: projects.map(toPublicProject),
       retained: [],
+    };
+  }
+
+  async removeProjects(projectIds: string[]): Promise<{ deleted: WorkspaceProject[]; retained: WorkspaceProject[] }> {
+    const idSet = new Set(
+      projectIds
+        .map((projectId) => (typeof projectId === "string" ? projectId.trim() : ""))
+        .filter(Boolean),
+    );
+    if (idSet.size === 0) {
+      return { deleted: [], retained: (await this.readProjects()).map(toPublicProject) };
+    }
+    const projects = await this.readProjects();
+    const deleted = projects.filter((project) => idSet.has(project.id));
+    const retained = projects.filter((project) => !idSet.has(project.id));
+    if (deleted.length > 0) {
+      await this.ctx.storage.kv.put(PROJECTS_KEY, retained);
+    }
+    return {
+      deleted: deleted.map(toPublicProject),
+      retained: retained.map(toPublicProject),
     };
   }
 
@@ -863,6 +885,10 @@ export class WorkspaceFilesystemClient implements WorkspaceFilesystemLike {
     return this.stub.deleteProjectsForWorkspace(workspaceId);
   }
 
+  removeProjects(projectIds: string[]): Promise<{ deleted: WorkspaceProject[]; retained: WorkspaceProject[] }> {
+    return this.stub.removeProjects(projectIds);
+  }
+
   createProject(input?: {
     id?: unknown;
     name?: unknown;
@@ -1215,6 +1241,8 @@ function requireProjectNameKey(value: unknown, label: string): string {
 function projectNameKey(value: unknown): string {
   return normalizeRegistryId(value, "project");
 }
+
+export { projectNameKey };
 
 function requireWorkspaceId(value: unknown): string {
   if (typeof value !== "string" || !value.trim()) {

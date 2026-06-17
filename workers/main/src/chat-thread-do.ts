@@ -36,6 +36,7 @@ import {
   type WorkspaceFilesystemEnv,
   type WorkspaceProject,
   type WorkspaceProjectCloneSummary,
+  projectNameKey,
 } from "./workspace-filesystem-do";
 import {
   ProjectRuntimeServiceVmBridge,
@@ -101,6 +102,8 @@ import {
   listConnectionTools,
   testConnectionMethodEntry,
 } from "./connections-runtime";
+import { confirmDestructiveAction, DESTRUCTIVE_CONFIRM_LABEL } from "./confirmed-destructive-action";
+import { collectProjectDeletionTargets, orderProjectsForRuntimeDelete } from "./project-deletion";
 import {
   PI_SKILL_DESCRIPTIONS,
   PI_SKILL_NAMES,
@@ -1059,6 +1062,8 @@ const JS_EXEC_EXCLUDED_TOOL_NAMES = new Set([
   // This tool waits for human input and can outlive js_exec's short sandbox
   // timeout. Keep it as a top-level Pi tool so the agent sees the submission.
   "prompt_connection_setup",
+  "delete_connection",
+  "delete_project",
   // Backing tool for env.WORKSPACE.*. Keep the user-facing runtime facade in
   // tools.help(), not the implementation detail.
   "workspace_info",
@@ -1506,6 +1511,16 @@ const CODE_MODE_TOOL_REGISTRY: CodeModeToolRegistration[] = [
       sideEffect: true,
     },
   ),
+  codeModePassthroughTool(
+    "delete_project",
+    "Delete a project after the user confirms in chat. Use this as a top-level tool, not from js_exec. Accepts the unique workspace project name. Deleting a source project also deletes its clone projects. Arguments: { project }.",
+    Type.Object({
+      project: Type.String(),
+    }, { additionalProperties: false }),
+    {
+      sideEffect: true,
+    },
+  ),
   ASK_USER_QUESTION_TOOL,
   SEND_EMAIL_TOOL,
   SEND_SLACK_MESSAGE_TOOL,
@@ -1768,6 +1783,17 @@ const CODE_MODE_TOOL_REGISTRY: CodeModeToolRegistration[] = [
       sideEffect: true,
     },
   ),
+  codeModePassthroughTool(
+    "delete_connection",
+    "Delete a workspace connection after the user confirms in chat. Use this as a top-level tool, not from js_exec. Accepts a connection id, alias, type, or name. Arguments: { connection }.",
+    Type.Object({
+      connection: Type.String(),
+    }, { additionalProperties: false }),
+    {
+      category: "integrations",
+      sideEffect: true,
+    },
+  ),
   codeModePassthroughTool("get_custom_domain", "Get custom domain diagnostics for deployed apps.", EMPTY_PARAMETERS, {
     category: "domains",
   }),
@@ -1957,6 +1983,8 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
     list_integration_types: (binding, args) => binding.listIntegrationTypes(args),
     create_integration: (binding, args) => binding.createIntegration(args),
     prompt_connection_setup: (binding, args) => binding.promptConnectionSetup(args),
+    delete_connection: (binding, args) => binding.deleteConnection(args),
+    delete_project: (binding, args) => binding.deleteProject(args),
     send_email: (binding, args) => binding.sendEmail(args),
     send_slack_message: (binding, args) => binding.sendSlackMessage(args),
     send_telegram_message: (binding, args) => binding.sendTelegramMessage(args),
@@ -3096,6 +3124,12 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
         case "clone_project":
           return this.projectVm.cloneProject(args);
 
+        case "delete_project":
+          return this.deleteProject(args);
+
+        case "delete_connection":
+          return this.deleteConnection(args);
+
         default:
           throw new Error(`Unknown code mode tool: ${name}`);
       }
@@ -3678,6 +3712,97 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
 
   private async promptConnectionSetup(args: Record<string, unknown>): Promise<unknown> {
     return this.integrations.promptConnectionSetup(args);
+  }
+
+  private async deleteConnection(args: Record<string, unknown>): Promise<unknown> {
+    const connection = typeof args.connection === "string" ? args.connection.trim() : "";
+    if (!connection) throw new Error("connection is required");
+
+    const entry = await findConnectionMethodEntry(this.env, this.connectionsContext, connection);
+    const summary = entry.connection;
+    const question =
+      `Delete connection "${summary.name}" (${summary.type})? This removes its stored configuration and cannot be undone.`;
+    const confirmation = await confirmDestructiveAction(
+      (questionArgs) => this.askUserQuestion(questionArgs),
+      {
+        question,
+        header: "Delete connection?",
+        confirmLabel: DESTRUCTIVE_CONFIRM_LABEL,
+      },
+    );
+    if (confirmation.unavailableReason) {
+      return {
+        success: false,
+        cancelled: true,
+        unavailable_reason: confirmation.unavailableReason,
+        message: confirmation.unavailableReason,
+      };
+    }
+    if (!confirmation.confirmed) {
+      return {
+        success: false,
+        cancelled: true,
+        message: "Connection deletion cancelled.",
+      };
+    }
+
+    const actorId = this.ctx.props.userId?.trim() || "system";
+    await this.orgStub.deleteWorkspaceIntegration(
+      this.ctx.props.workspaceId,
+      summary.id,
+      actorId,
+    );
+    return {
+      success: true,
+      connection: summary.name,
+      message: `Deleted connection "${summary.name}"`,
+    };
+  }
+
+  private async deleteProject(args: Record<string, unknown>): Promise<unknown> {
+    const projectName = typeof args.project === "string" ? args.project.trim() : "";
+    if (!projectName) throw new Error("project is required");
+
+    const projects = await this.workspaceFs.listProjectsForMigrationReset();
+    const nameKey = projectNameKey(projectName);
+    const target = projects.find((project) => projectNameKey(project.name) === nameKey);
+    if (!target) {
+      throw new Error(`Project not found: ${projectName}`);
+    }
+
+    const confirmedTargets = collectProjectDeletionTargets(projects, target);
+    const cloneNames = confirmedTargets
+      .filter((project) => project.id !== target.id)
+      .map((project) => project.name);
+    const question = cloneNames.length > 0
+      ? `Delete project "${target.name}" and its ${cloneNames.length} clone project(s) (${cloneNames.join(", ")})? This removes their VM checkouts and metadata. This cannot be undone.`
+      : `Delete project "${target.name}"? This removes its VM checkout and metadata. This cannot be undone.`;
+    const confirmation = await confirmDestructiveAction(
+      (questionArgs) => this.askUserQuestion(questionArgs),
+      {
+        question,
+        header: "Delete project?",
+        confirmLabel: DESTRUCTIVE_CONFIRM_LABEL,
+      },
+    );
+    if (confirmation.unavailableReason) {
+      return {
+        success: false,
+        cancelled: true,
+        unavailable_reason: confirmation.unavailableReason,
+        message: confirmation.unavailableReason,
+      };
+    }
+    if (!confirmation.confirmed) {
+      return {
+        success: false,
+        cancelled: true,
+        message: "Project deletion cancelled.",
+      };
+    }
+
+    const confirmedProjectIds = orderProjectsForRuntimeDelete(confirmedTargets);
+    return this.projectVm.deleteProject({ projectIds: confirmedProjectIds });
   }
 
   private chatContextFromProps(): ChatContextState {
@@ -12563,7 +12688,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
           "AI globals: `env.AI` and `context.cloudflare.env.AI` expose the virtual AI binding (`run()` only). Call `await env.AI.run(\"auto\", { messages: [{ role: \"user\", content: \"hello\" }] })`; model tiers are `cheap`, `fast`, `auto` (default), and `smart`, and any OpenRouter model id is also accepted. For images, call `await env.CAMELAI.generateImage(\"prompt\")` or `await env.CAMELAI.generateImage({ prompt, referenceImageUrl })` on `context.cloudflare.env.CAMELAI`. Returns `{ text, imageDataUrl, images }`. For audio transcription, call `await env.CAMELAI.transcribeAudio({ path: \"uploads/audio.ogg\" })` or pass base64 audio; it returns `{ text }`. Use `await env.CAMELAI.help()` for its method catalog. " +
           "Workspace metadata: call `await env.WORKSPACE.emailAddress()` when users want to email the current workspace; it returns the address string or null. `await env.WORKSPACE.info()` also includes `email_address`. " +
           "Every registered harness tool is also available on the global `tools` object. Start with `await tools.help()` for expandable categories, `await tools.help(\"communication\")` for a category, or `await tools.help(\"send_email\")` for one tool. `ALL_TOOLS` contains the same names, descriptions, schemas, categories, examples, and side-effect metadata. Provider-specific outbound channel tools are intentionally available only here; use them only when the current turn's channel instructions require an external reply or the user explicitly asks for external delivery. " +
-          "Interactive tools that wait for the user, such as `prompt_connection_setup` and `AskUserQuestion`, must be called as top-level tools instead of from js_exec.",
+          "Interactive tools that wait for the user, such as `prompt_connection_setup`, `delete_connection`, `delete_project`, and `AskUserQuestion`, must be called as top-level tools instead of from js_exec.",
         parameters: Type.Object({
           description: Type.String({
             description:

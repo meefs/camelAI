@@ -14,8 +14,13 @@ import {
   runtimeArtifactsProxyRemote,
 } from "./project-vm-protocol";
 import {
+  collectProjectDeletionTargets,
+  orderProjectsForRuntimeDelete,
+} from "./project-deletion";
+import {
   type WorkspaceProject,
   type WorkspaceFilesystemLike,
+  projectNameKey,
 } from "./workspace-filesystem-do";
 import {
   detectSupportedImageMimeType,
@@ -113,6 +118,75 @@ export class ProjectRuntimeServiceVmBridge {
       success: true,
       project: project.name,
     };
+  }
+
+  async deleteProject(args: { project?: unknown; projectId?: unknown; projectIds?: unknown } = {}): Promise<unknown> {
+    const explicitProjectIds = Array.isArray(args.projectIds)
+      ? args.projectIds
+        .map((projectId) => (typeof projectId === "string" ? projectId.trim() : ""))
+        .filter(Boolean)
+      : [];
+
+    if (explicitProjectIds.length > 0) {
+      const listed = await this.options.workspace.listProjectsForMigrationReset();
+      const targets = explicitProjectIds
+        .map((projectId) => listed.find((project) => project.id === projectId))
+        .filter((project): project is WorkspaceProject => Boolean(project));
+      if (targets.length === 0) {
+        throw new Error(`Project not found: ${explicitProjectIds.join(", ")}`);
+      }
+      const orderedIds = orderProjectsForRuntimeDelete(targets);
+      for (const id of orderedIds) {
+        await this.deleteRuntimeProject(id);
+      }
+      const cleanup = await this.options.workspace.removeProjects(orderedIds);
+      return {
+        success: true,
+        deleted: cleanup.deleted.map((project) => project.name),
+        message:
+          cleanup.deleted.length === 1
+            ? `Deleted project "${cleanup.deleted[0]!.name}"`
+            : `Deleted ${cleanup.deleted.length} projects: ${cleanup.deleted.map((project) => project.name).join(", ")}`,
+      };
+    }
+
+    const projectName = typeof args.project === "string" ? args.project.trim() : "";
+    const projectId = typeof args.projectId === "string" ? args.projectId.trim() : "";
+    if (!projectName && !projectId) {
+      throw new Error("project, projectId, or projectIds is required");
+    }
+
+    const listed = await this.options.workspace.listProjectsForMigrationReset();
+    const target = projectName
+      ? listed.find((project) => projectNameKey(project.name) === projectNameKey(projectName))
+      : listed.find((project) => project.id === projectId);
+    if (!target) {
+      throw new Error(`Project not found: ${projectName || projectId}`);
+    }
+
+    const targets = collectProjectDeletionTargets(listed, target);
+    const orderedIds = orderProjectsForRuntimeDelete(targets);
+    for (const id of orderedIds) {
+      await this.deleteRuntimeProject(id);
+    }
+    const cleanup = await this.options.workspace.removeProjects(orderedIds);
+    return {
+      success: true,
+      deleted: cleanup.deleted.map((project) => project.name),
+      message:
+        cleanup.deleted.length === 1
+          ? `Deleted project "${cleanup.deleted[0]!.name}"`
+          : `Deleted ${cleanup.deleted.length} projects: ${cleanup.deleted.map((project) => project.name).join(", ")}`,
+    };
+  }
+
+  private async deleteRuntimeProject(projectId: string): Promise<void> {
+    const response = await this.fetchRuntime(this.projectUrl(projectId, ""), { method: "DELETE" });
+    if (response.status === 404) return;
+    if (!response.ok) {
+      const text = await response.text();
+      throw new Error(text || `Runtime project delete failed: ${response.status}`);
+    }
   }
 
   async read(args: VmFileArgs): Promise<unknown> {
