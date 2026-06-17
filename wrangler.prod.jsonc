@@ -118,6 +118,9 @@
   "services": [
     { "binding": "WORKER_SELF_REFERENCE", "service": "chiridion-app" },
   ],
+  "dispatch_namespaces": [
+    { "binding": "DISPATCHER", "namespace": "chiridion-platform" },
+  ],
   "durable_objects": {
     "bindings": [
       { "name": "CHAT_THREAD", "class_name": "ChatThreadDO" },

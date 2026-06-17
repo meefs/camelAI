@@ -104,7 +104,6 @@ export default function MyComponent({ loaderData }: Route.ComponentProps) {
 | `workers/chat-sessions.ts` | Session index DO for chat history sidebar |
 | `workers/camelai-service.ts` | `CAMELAI` service binding (`generateImage`; virtualized on deploy) |
 | `workers/camelai-ai.ts` | Image helper implementation used by the local shim |
-| `e2e/smoke.test.mjs` | Playwright E2E smoke tests (commented out) |
 | `app/routes/` | React Router routes with loaders/actions |
 | `app/schemas/` | Zod schemas shared between routes and DOs |
 
@@ -114,7 +113,6 @@ export default function MyComponent({ loaderData }: Route.ComponentProps) {
 bun dev                    # Local development
 bun run deploy             # Deploy to Cloudflare
 bun run test               # Run Vitest tests
-bun run test:e2e           # Run Playwright E2E tests (uncomment tests first)
 bunx --bun shadcn@latest add <name>  # Add UI components
 ```
 
@@ -291,16 +289,6 @@ export async function loader({ context }: Route.LoaderArgs) {
 3. Add binding to `wrangler.jsonc`
 4. Add migration with incremented tag
 5. Run `bun wrangler types` to update Env
-
-### E2E Testing with Playwright (commented out)
-
-Scaffolding for browser-based E2E tests is in `e2e/smoke.test.mjs`. Uncomment the tests and update `APP_URL` to your deployed app URL.
-
-```bash
-bun run test:e2e
-```
-
-**Private app auth:** The `CHIRIDION_APP_SESSION` env var is automatically available in the sandbox. Set it as a `chiridion_run_session` cookie on the browser context to authenticate with private `*.camelai.app` deployments. See the commented-out boilerplate in `e2e/smoke.test.mjs` for the full pattern.
 
 ## Design Defaults
 

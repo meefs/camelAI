@@ -86,7 +86,7 @@ const TOOL_CATEGORY_DESCRIPTIONS = Object.freeze({
   workspace: "Read, edit, search, and run commands in the workspace.",
   user_interaction: "Ask the user questions or update visible chat state.",
   communication: "Send external channel messages. These are side-effecting delivery actions.",
-  apps: "Inspect deployed apps, previews, visibility, and logs.",
+  apps: "Inspect deployed apps, previews, visibility, logs, and screenshots.",
   schedules: "Manage scheduled prompts.",
   workflows: "Manage deterministic JavaScript workflows.",
   integrations: "List, create, and set up workspace integrations.",
@@ -221,6 +221,24 @@ const RUNTIME_HELP_ENTRIES = Object.freeze([
     ],
   }),
   Object.freeze({
+    name: "env.SCREENSHOT",
+    category: "apps",
+    kind: "runtime_binding",
+    description:
+      "Capture screenshots of deployed workspace apps, including private apps, via Browser Rendering.",
+    examples: [
+      "await env.SCREENSHOT.capture({ scriptName: \"web-app\", path: \"/\" })",
+      "await tools.take_screenshot({ script_name: \"web-app\", path: \"/dashboard\" })",
+    ],
+    methods: [
+      {
+        name: "capture",
+        usage: "await env.SCREENSHOT.capture({ scriptName, path?, width?, height?, waitMs? })",
+        returns: "{ imageDataUrl, width, height }",
+      },
+    ],
+  }),
+  Object.freeze({
     name: "text/store/load",
     category: "runtime",
     kind: "runtime_helper",
@@ -324,6 +342,12 @@ function createToolHelp(allTools) {
       categories: categorySummary(),
     };
   };
+}
+
+function createScreenshotFacade(binding) {
+  return Object.freeze({
+    capture: (...args) => binding.capture.call(binding, ...args),
+  });
 }
 
 function createCamelAiFacade(binding) {
@@ -552,11 +576,12 @@ export class CodeModeRunner extends WorkerEntrypoint {
     const CONNECTIONS = connections;
     const AI = this.env.AI;
     const CAMELAI = createCamelAiFacade(this.env.CAMELAI);
+    const SCREENSHOT = createScreenshotFacade(this.env.SCREENSHOT);
     const WORKSPACE = createWorkspaceFacade(callTool);
     const VM = createVmFacade(tools);
     const vm = VM;
     const PROJECTS = createProjectsFacade(tools);
-    const env = Object.freeze({ CONNECTIONS, AI, CAMELAI, WORKSPACE, VM, PROJECTS });
+    const env = Object.freeze({ CONNECTIONS, AI, CAMELAI, SCREENSHOT, WORKSPACE, VM, PROJECTS });
     const context = Object.freeze({ cloudflare: Object.freeze({ env, connections, vm, projects: env.PROJECTS }) });
     const text = (value) => {
       output.push(stringifyOutput(value));

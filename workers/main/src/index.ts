@@ -100,6 +100,7 @@ export {
 } from './legacy-preview-repair-workflow.js';
 export { CamelAiService } from './camelai-service.js';
 export { SecureFetchBinding } from './secure-fetch-service.js';
+export { AppScreenshotBinding } from './app-screenshot-binding.js';
 export { WorkspaceFilesystemDO } from './workspace-filesystem-do.js';
 export { EvalProjectRuntimeService } from './eval-project-runtime-service.js';
 export { EvalSandbox } from './eval-sandbox.js';

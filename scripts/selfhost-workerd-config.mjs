@@ -668,6 +668,8 @@ async function main() {
     )}])`);
   }
 
+  bindings.push(bindingService('DISPATCHER', dispatcherServiceName));
+
   const compatibilityFlags = (wrangler.compatibility_flags ?? []).filter((flag) => {
     if (process.env.SELFHOST_WORKERD_STRICT_PUBLIC === '1') return true;
     return flag !== 'global_fetch_strictly_public';

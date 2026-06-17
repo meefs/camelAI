@@ -253,58 +253,27 @@ bun test -t "discount"
 bun test --coverage
 ```
 
-## E2E Testing with Playwright
+## Visual Verification
 
-Playwright is available as a project dependency in the starter template. Install browser binaries on demand before running end-to-end tests, for example with `bunx playwright install chromium`.
-
-### Basic Usage
+For deployed app UI checks, use js_exec:
 
 ```javascript
-import { chromium } from "playwright";
-
-const browser = await chromium.launch();
-const page = await browser.newPage();
-
-await page.goto("https://my-app.camelai.app");
-await page.click('button:text("Sign Up")');
-await page.fill('input[name="email"]', "test@example.com");
-await page.click('button[type="submit"]');
-
-await expect(page.locator(".success-message")).toBeVisible();
-await browser.close();
+await env.SCREENSHOT.capture({ scriptName: "my-app", path: "/" });
+// or
+await tools.take_screenshot({ script_name: "my-app", path: "/" });
 ```
 
-### Accessing Private Deployed Apps
+This uses Cloudflare Browser Rendering through the platform binding, including for private apps. Prefer unit/integration tests with Vitest for logic and API behavior.
 
-Private apps require authentication. Use the `CHIRIDION_APP_SESSION` env var (automatically available in the sandbox) to set the dispatcher session cookie:
-
-```javascript
-import { chromium } from "playwright";
-
-const browser = await chromium.launch();
-const context = await browser.newContext();
-
-if (process.env.CHIRIDION_APP_SESSION) {
-  await context.addCookies([
-    { name: "chiridion_run_session", value: process.env.CHIRIDION_APP_SESSION, domain: ".camelai.app", path: "/", httpOnly: true },
-  ]);
-}
-
-const page = await context.newPage();
-await page.goto("https://my-private-app.camelai.app");
-```
-
-### When to Use E2E vs Unit Tests
+### When to Use Visual Checks vs Unit Tests
 
 | Scenario | Approach |
 |----------|----------|
 | Logic bug in a function | Unit test (faster) |
-| Visual layout issue | E2E with screenshot |
-| Form submission flow | E2E |
+| Visual layout issue | js_exec screenshot |
+| Form submission flow | Unit/integration test where possible |
 | API response handling | Unit test with mocks |
-| Full user journey | E2E |
-
-Prefer unit tests for speed. Use Playwright when you need to verify browser behavior, navigation flows, or visual rendering.
+| Deployed app smoke check | `env.SCREENSHOT.capture` |
 
 ## Debugging Checklist
 

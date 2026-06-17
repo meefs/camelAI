@@ -27,6 +27,18 @@ function loadGeneratedVmFacade(): (tools: Record<string, (args: unknown) => unkn
   ) => { exec: (...args: unknown[]) => unknown };
 }
 
+function loadGeneratedToolHelp(): (allTools: Array<{ name: string; category?: string }>) => (input?: unknown) => unknown {
+  const source = codeModeWorkerModule('');
+  const start = source.indexOf('const RUNTIME_HELP_ENTRIES');
+  const end = source.indexOf('\n\nfunction createCamelAiFacade', start);
+  expect(start).toBeGreaterThanOrEqual(0);
+  expect(end).toBeGreaterThan(start);
+  const helpSource = source.slice(start, end);
+  return new Function(`${helpSource}; return createToolHelp;`)() as (
+    allTools: Array<{ name: string; category?: string }>,
+  ) => (input?: unknown) => unknown;
+}
+
 describe('code mode runner connection facade', () => {
   it('wraps global fetch through the secure fetch binding', () => {
     const source = codeModeWorkerModule('await fetch("https://example.com");');
@@ -216,5 +228,20 @@ describe('code mode runner VM facade', () => {
     expect(source).toContain('store: save');
     expect(source).toContain('store("lastResult", 42);');
     expect(source).toContain('load("lastResult")');
+  });
+
+  it('keeps names on every runtime help entry so js_exec can initialize', () => {
+    const source = codeModeWorkerModule('');
+    expect(source).toContain('name: "text/store/load"');
+    expect(source).toContain('name: "env.SCREENSHOT"');
+
+    const createToolHelp = loadGeneratedToolHelp();
+    const help = createToolHelp([{ name: 'help', category: 'runtime' }]);
+    expect(help({ runtime: 'text/store/load' })).toEqual({
+      runtime: expect.objectContaining({
+        name: 'text/store/load',
+        category: 'runtime',
+      }),
+    });
   });
 });

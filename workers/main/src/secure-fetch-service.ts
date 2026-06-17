@@ -2,7 +2,6 @@ import { WorkerEntrypoint } from 'cloudflare:workers';
 import type { CodeModeToolsProps } from './chat-thread-do.js';
 import {
   buildWorkspaceAppHostIndex,
-  createSecureFetchDispatcherSession,
   performSecureFetch,
   type SecureFetchEnv,
   type WorkspaceAppHostIndex,
@@ -12,14 +11,13 @@ export type SecureFetchBindingProps = Pick<CodeModeToolsProps, 'orgId' | 'worksp
 
 /**
  * Virtual binding used by js_exec and deterministic automations to fetch
- * workspace deployed apps, including private apps that require dispatcher auth.
+ * workspace deployed apps via the WfP dispatch namespace.
  */
 export class SecureFetchBinding extends WorkerEntrypoint<
   SecureFetchEnv,
   SecureFetchBindingProps
 > {
   private hostIndexPromise?: Promise<WorkspaceAppHostIndex>;
-  private sessionIdPromise?: Promise<string>;
 
   private get context(): SecureFetchBindingProps {
     return this.ctx.props;
@@ -32,17 +30,9 @@ export class SecureFetchBinding extends WorkerEntrypoint<
     return this.hostIndexPromise;
   }
 
-  private getSessionId(): Promise<string> {
-    if (!this.sessionIdPromise) {
-      this.sessionIdPromise = createSecureFetchDispatcherSession(this.env, this.context);
-    }
-    return this.sessionIdPromise;
-  }
-
   async fetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
     return performSecureFetch(this.env, this.context, input, init, {
       getHostIndex: () => this.getHostIndex(),
-      getSessionId: () => this.getSessionId(),
     });
   }
 }

@@ -17,6 +17,7 @@ import type {
 import type { AppScreenshotJob } from "./screenshot-queue.js";
 import type { SlackEventQueueMessage } from "./slack-types.js";
 import type { ArtifactsRepo } from "./workspace-filesystem-do.js";
+import type { DispatchNamespaceBinding, DispatcherBinding } from "./workspace-app-fetcher.js";
 
 interface ArtifactsBinding {
   create(
@@ -53,6 +54,7 @@ export interface Env
   APP_SCREENSHOT_QUEUE?: Queue<AppScreenshotJob>;
   SLACK_EVENTS_QUEUE?: Queue<SlackEventQueueMessage>;
   BROWSER?: Fetcher;
+  DISPATCHER?: DispatcherBinding;
   ARTIFACTS?: ArtifactsBinding;
   GOOGLE_CLIENT_ID?: string;
   GOOGLE_CLIENT_SECRET?: string;

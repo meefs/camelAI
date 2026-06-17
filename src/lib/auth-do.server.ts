@@ -156,8 +156,6 @@ const ORG_INDEX_PREFIX = "org_index:";
 const API_TOKEN_PREFIX = "tok_";
 const SESSION_PREFIX = "session:";
 const WORKER_SESSION_PREFIX = "worker_session:";
-const SCREENSHOT_SESSION_PREFIX = "screenshot_session:";
-const SCREENSHOT_TOKEN_PREFIX = "screenshot_token:";
 const WORKER_AUTH_STATE_PREFIX = "wauth_state:";
 const WORKER_AUTH_TOKEN_PREFIX = "wauth_token:";
 const PREVIEW_PREFIX = "app-previews/";
@@ -1338,21 +1336,6 @@ export async function hardDeleteAdminOrgWithEnv(
   try {
     await deleteKvEntriesWithPrefix(
       authEnv.APP_KV,
-      SCREENSHOT_TOKEN_PREFIX,
-      (_key, value) => {
-        const parsed = parseJsonSafely(value);
-        return parsed?.org_id === orgId;
-      },
-    );
-  } catch (error) {
-    warnings.push(
-      `Failed to clean screenshot tokens: ${toErrorMessage(error)}`,
-    );
-  }
-
-  try {
-    await deleteKvEntriesWithPrefix(
-      authEnv.APP_KV,
       WORKER_AUTH_STATE_PREFIX,
       (_key, value) => {
         const parsed = parseJsonSafely(value);
@@ -1404,21 +1387,6 @@ export async function hardDeleteAdminOrgWithEnv(
     );
   } catch (error) {
     warnings.push(`Failed to clean worker sessions: ${toErrorMessage(error)}`);
-  }
-
-  try {
-    await deleteKvEntriesWithPrefix(
-      authEnv.SESSIONS,
-      SCREENSHOT_SESSION_PREFIX,
-      (_key, value) => {
-        const parsed = parseJsonSafely(value);
-        return parsed?.org_id === orgId;
-      },
-    );
-  } catch (error) {
-    warnings.push(
-      `Failed to clean screenshot sessions: ${toErrorMessage(error)}`,
-    );
   }
 
   // Best-effort cleanup of R2 artifacts (uploads/outputs/previews/workspace storage).
@@ -1788,9 +1756,7 @@ export async function hardDeleteAdminUserWithEnv(
   }
 
   // 8. Best-effort cleanup of user sessions.
-  // Screenshot sessions may be org-scoped and shared across users. Only
-  // delete screenshot sessions explicitly bound to this user_id.
-  const screenshotSessionOrgIds = new Set<string>(
+  const sessionOrgIds = new Set<string>(
     orgMemberships.map((org) => org.org_id),
   );
   const sessionPrefixes = [SESSION_PREFIX, WORKER_SESSION_PREFIX] as const;
@@ -1805,7 +1771,7 @@ export async function hardDeleteAdminUserWithEnv(
             return false;
           }
           if (typeof parsed?.org_id === "string") {
-            screenshotSessionOrgIds.add(parsed.org_id);
+            sessionOrgIds.add(parsed.org_id);
           }
           return true;
         },
@@ -1817,26 +1783,11 @@ export async function hardDeleteAdminUserWithEnv(
     }
   }
 
-  try {
-    await deleteKvEntriesWithPrefix(
-      authEnv.SESSIONS,
-      SCREENSHOT_SESSION_PREFIX,
-      (_key, value) => {
-        const parsed = parseJsonSafely(value);
-        return parsed?.user_id === userId;
-      },
-    );
-  } catch (error) {
-    warnings.push(
-      `Failed to clean user-bound ${SCREENSHOT_SESSION_PREFIX}* sessions: ${toErrorMessage(error)}`,
-    );
-  }
-
   // 9. Best-effort cleanup of workspace member rows for this user.
   const workspaceAclOrgIds = new Set<string>(
     orgMemberships.map((org) => org.org_id),
   );
-  for (const orgId of screenshotSessionOrgIds) {
+  for (const orgId of sessionOrgIds) {
     workspaceAclOrgIds.add(orgId);
   }
   for (const orgId of userScopedOrgHints) {

@@ -30,11 +30,13 @@ describe("DeterministicAutomationWorkflow", () => {
     const ai = {};
     const camelai = {};
     const secureFetch = {};
+    const screenshot = {};
     const exports = {
       CodeModeToolsBinding: vi.fn(() => tools),
       AIVirtualBinding: vi.fn(() => ai),
       CamelAiService: vi.fn(() => camelai),
       SecureFetchBinding: vi.fn(() => secureFetch),
+      AppScreenshotBinding: vi.fn(() => screenshot),
     };
     const bindings = createDeterministicAutomationRuntimeBindings({
       ctx: { exports },
@@ -51,11 +53,15 @@ describe("DeterministicAutomationWorkflow", () => {
       AI: ai,
       CAMELAI: camelai,
       SECURE_FETCH: secureFetch,
+      SCREENSHOT: screenshot,
     });
     expect(exports.CodeModeToolsBinding).toHaveBeenCalledWith(props);
     expect(exports.AIVirtualBinding).toHaveBeenCalledWith(props);
     expect(exports.CamelAiService).toHaveBeenCalledWith(props);
     expect(exports.SecureFetchBinding).toHaveBeenCalledWith({
+      props: { orgId: "org1", workspaceId: "workspace1" },
+    });
+    expect(exports.AppScreenshotBinding).toHaveBeenCalledWith({
       props: { orgId: "org1", workspaceId: "workspace1" },
     });
   });

@@ -106,21 +106,22 @@ After deploying a worker, use MCP tools to verify the deployment and get the liv
 
 1. **Get the deployed app URL** - Use the `list_apps` MCP tool to retrieve the URL of deployed workers
 2. **Set the active preview** - Always call `set_preview` for the newly deployed app so the user immediately sees the live site in the chat preview pane
-3. **Take a screenshot** - Use the `take_screenshot` MCP tool (local Playwright) with the full URL to capture the deployed app and verify it looks correct
+3. **Take a screenshot** - Use js_exec with `await env.SCREENSHOT.capture({ scriptName, path: "/" })` or `await tools.take_screenshot({ script_name, path: "/" })` to capture the deployed app and verify it looks correct
 
 ```bash
 # Example workflow after bun run deploy
-# 1. List apps to get the URL
+# 1. List apps to get the script name
 #    → Use MCP tool: list_apps
 
 # 2. Set the deployed app as the active preview
 #    → Use MCP tool: set_preview with the deployed script/app name
 
 # 3. Take a screenshot to verify the UI
-#    → Use MCP tool: take_screenshot with the app URL from step 1
+#    → Use js_exec:
+#      await env.SCREENSHOT.capture({ scriptName: "my-app", path: "/" })
 ```
 
-The `take_screenshot` tool runs Playwright locally inside the container for fast, reliable screenshots. It accepts a full URL and optional viewport dimensions (`width`, `height`) and `wait_for_timeout` (extra ms to wait after page load).
+Screenshots run on Cloudflare Browser Rendering through the platform `env.SCREENSHOT` binding, including for private apps. No container browser or auth tokens are required.
 
 This ensures the user can inspect the newly deployed app in the preview pane, the deployment succeeded, and the app renders correctly before sharing the URL with the user.
 
@@ -916,17 +917,13 @@ Use `createCodeTool` + `DynamicWorkerExecutor` and add `outputSchema` to tools f
 
 **See [AI-APPS.md](AI-APPS.md) for full codemode setup, frontend rendering patterns, and common pitfalls.**
 
-## E2E Testing with Playwright
-
-The starter template includes Playwright as a devDependency and scaffolded E2E smoke tests in `e2e/smoke.test.mjs` (commented out). Browser binaries are installed on demand by the project when E2E tests are needed. Uncomment the tests, update the `APP_URL`, install the browser with `bunx playwright install chromium` if needed, and run with `bun run test:e2e`. The test file includes auth cookie boilerplate for accessing private deployed apps.
-
 ## Troubleshooting
 
 ### Recharts SSR Warnings
 Recharts `ResponsiveContainer` emits width/height warnings during SSR — these are **expected and benign**. Do not add `ClientOnly` wrappers or other workarounds to suppress them; the extra complexity is not worth it.
 
-### Screenshot Tool Timeouts
-If `take_screenshot` times out after deployment, consider **server-side data fetching latency** as the likely cause before blaming the rendering layer. Slow loaders or API calls delay the initial page render, which causes the screenshot to time out. Fix by adding React `<Suspense>` boundaries with skeleton fallbacks around data-dependent sections so the page shell renders immediately while data loads.
+### Screenshot Timeouts
+If `env.SCREENSHOT.capture(...)` times out after deployment, consider **server-side data fetching latency** as the likely cause before blaming the rendering layer. Slow loaders or API calls delay the initial page render, which causes the screenshot to time out. Fix by adding React `<Suspense>` boundaries with skeleton fallbacks around data-dependent sections so the page shell renders immediately while data loads.
 
 ## Design Defaults
 

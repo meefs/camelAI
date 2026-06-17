@@ -8,7 +8,6 @@ import type { AppScreenshotJob } from '../screenshot-queue.js';
 import {
   resolveEnvPrefix,
 } from '../cf-api-proxy.js';
-import { createScreenshotToken } from '../worker-auth.js';
 import { getOrgStub } from '../helpers/stubs.js';
 
 // KV key prefix for script access info (namespaced by org-slug)
@@ -75,19 +74,12 @@ export async function handleDeploySideEffects(env: Env, info: DeploySideEffectsI
     is_public: script.is_public,
   };
 
-  const screenshotToken = script.is_public
-    ? undefined
-    : await createScreenshotToken(env.APP_KV, { script_name: scriptName, org_id: orgId });
-
   try {
     const sendOptions = {
       contentType: 'json',
       messageId: `${scriptName}:${script.updated_at}`,
     } as unknown as QueueSendOptions;
-    await env.APP_SCREENSHOT_QUEUE.send(
-      { ...jobBase, ...(screenshotToken ? { screenshot_token: screenshotToken } : {}) },
-      sendOptions
-    );
+    await env.APP_SCREENSHOT_QUEUE.send(jobBase, sendOptions);
   } catch (err) {
     await orgStub.updateWorkerScriptPreview(scriptName, {
       status: 'failed',

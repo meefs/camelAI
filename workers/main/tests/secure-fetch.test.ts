@@ -5,7 +5,6 @@ import {
   normalizeSecureFetchRequest,
   performSecureFetch,
 } from '../src/secure-fetch';
-import { DISPATCHER_SESSION_COOKIE } from '../src/worker-auth';
 
 describe('secure fetch', () => {
   it('indexes vanity, iframe, legacy, and custom app hostnames for a workspace', async () => {
@@ -40,42 +39,52 @@ describe('secure fetch', () => {
     expect(isWorkspaceAppHostname(index, 'other-org-app-beta99.staging.camelai.app')).toBe(false);
   });
 
-  it('adds a dispatcher session cookie when fetching a workspace app URL', async () => {
+  it('uses dispatch binding when fetching a workspace app URL', async () => {
+    const fetchMock = vi.fn(async () => new Response('ok', { status: 200 }));
     const hostIndex = {
       hostnames: new Set(['private-app-alpha12.staging.camelai.app']),
+      routesByHostname: new Map([
+        ['private-app-alpha12.staging.camelai.app', {
+          scriptName: 'private-app',
+          orgSlug: 'alpha12',
+          dispatchScriptName: 'private-app--alpha12',
+          legacyDispatchScriptName: 'private-app',
+          workspaceId: 'workspace1',
+          orgId: 'org1',
+          isPublic: false,
+        }],
+      ]),
     };
-    const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
-      const headers = new Headers(init?.headers);
-      return new Response(headers.get('Cookie') ?? '', { status: 200 });
-    });
-    vi.stubGlobal('fetch', fetchMock);
+    const env = {
+      DISPATCHER: {
+        get: vi.fn(() => ({ fetch: fetchMock })),
+      },
+      ORG: {
+        idFromName: () => 'org-id',
+        get: () => ({}),
+      },
+    };
 
     const response = await performSecureFetch(
-      {} as any,
+      env as any,
       { orgId: 'org1', workspaceId: 'workspace1' },
       'https://private-app-alpha12.staging.camelai.app/api/webhook',
       { method: 'POST', body: '{"ok":true}' },
       {
         getHostIndex: async () => hostIndex,
-        getSessionId: async () => 'session_123',
       },
     );
 
     expect(response.status).toBe(200);
-    expect(await response.text()).toBe(`${DISPATCHER_SESSION_COOKIE}=session_123`);
-    expect(fetchMock).toHaveBeenCalledWith(
-      'https://private-app-alpha12.staging.camelai.app/api/webhook',
-      expect.objectContaining({
-        method: 'POST',
-        headers: expect.any(Headers),
-      }),
+    expect(env.DISPATCHER.get).toHaveBeenCalledWith(
+      'private-app--alpha12',
+      {},
+      expect.objectContaining({ limits: { subRequests: 10_000_000 } }),
     );
-
-    vi.unstubAllGlobals();
   });
 
-  it('passes through non-workspace URLs without adding auth cookies', async () => {
-    const hostIndex = { hostnames: new Set(['private-app-alpha12.staging.camelai.app']) };
+  it('passes through non-workspace URLs without dispatch', async () => {
+    const hostIndex = { hostnames: new Set(['private-app-alpha12.staging.camelai.app']), routesByHostname: new Map() };
     const fetchMock = vi.fn(async () => new Response('ok', { status: 200 }));
     vi.stubGlobal('fetch', fetchMock);
 
@@ -86,14 +95,10 @@ describe('secure fetch', () => {
       undefined,
       {
         getHostIndex: async () => hostIndex,
-        getSessionId: async () => 'session_123',
       },
     );
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
-    const [, init] = fetchMock.mock.calls[0] ?? [];
-    expect(new Headers((init as RequestInit | undefined)?.headers).get('Cookie')).toBeNull();
-
     vi.unstubAllGlobals();
   });
 

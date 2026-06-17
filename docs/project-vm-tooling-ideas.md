@@ -59,6 +59,9 @@ This would separate two concerns cleanly:
 The Cloudflare Sandbox VM image should stay small by default. The first trimmed
 image removed Python/uv caches, Jupyter/data-science packages, and
 Playwright/Chromium, dropping the image from roughly 4.7 GB to roughly 1.0 GB.
+Deploy verification and private-app UI checks now run through js_exec
+`env.SCREENSHOT.capture()` on the main worker (Browser Rendering + dispatch
+binding), not container Playwright.
 
 Instead of baking heavyweight tooling into every VM:
 
@@ -67,7 +70,8 @@ Instead of baking heavyweight tooling into every VM:
 - Let the agent install Python/data-analysis/browser tooling only when a project
   actually needs it.
 - Update skill prompts that currently assume Python, uv, Playwright, or browser
-  dependencies are preinstalled.
+  dependencies are preinstalled in the VM. Prefer js_exec screenshot capture for
+  post-deploy visual checks.
 - Prefer per-project setup scripts or cached project-level installs over a
   large global image layer.
 

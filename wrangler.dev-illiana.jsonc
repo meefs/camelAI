@@ -93,6 +93,9 @@
 	"services": [
 		{ "binding": "WORKER_SELF_REFERENCE", "service": "chiridion-app-dev-illiana" }
 	],
+	"dispatch_namespaces": [
+		{ "binding": "DISPATCHER", "namespace": "chiridion-platform-dev-illiana" }
+	],
 	"durable_objects": {
 		"bindings": [
 			{ "name": "CHAT_THREAD", "class_name": "ChatThreadDO" },

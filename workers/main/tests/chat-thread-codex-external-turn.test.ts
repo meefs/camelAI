@@ -2616,6 +2616,7 @@ describe('ChatThreadDO Codex turn handling', () => {
         AIVirtualBinding: vi.fn(() => aiBinding),
         CamelAiService: vi.fn(() => aiBinding),
         SecureFetchBinding: vi.fn(() => ({ fetch: vi.fn() })),
+        AppScreenshotBinding: vi.fn(() => ({ capture: vi.fn() })),
       },
     };
 
@@ -2657,12 +2658,19 @@ describe('ChatThreadDO Codex turn handling', () => {
         workspaceId: 'ws_1',
       },
     });
+    expect(fake.ctx.exports.AppScreenshotBinding).toHaveBeenCalledWith({
+      props: {
+        orgId: 'org_1',
+        workspaceId: 'ws_1',
+      },
+    });
     expect(capturedWorkerCode.globalOutbound).toBeUndefined();
     expect(capturedWorkerCode.env.TOOLS).toBe(toolsBinding);
     expect(capturedWorkerCode.env.CONNECTIONS).toBeUndefined();
     expect(capturedWorkerCode.env.AI).toBe(aiBinding);
     expect(capturedWorkerCode.env.CAMELAI).toBe(aiBinding);
     expect(capturedWorkerCode.env.SECURE_FETCH).toEqual({ fetch: expect.any(Function) });
+    expect(capturedWorkerCode.env.SCREENSHOT).toEqual({ capture: expect.any(Function) });
     expect(capturedWorkerCode.modules['index.js'].js).toContain('class CodeModeRunner');
     expect(capturedWorkerCode.modules['index.js'].js).toContain('createConnectionsFacade');
     expect(capturedWorkerCode.modules['index.js'].js).toContain('if (connectionName === "$find") return (query) => binding.find(query)');
@@ -2681,7 +2689,7 @@ describe('ChatThreadDO Codex turn handling', () => {
     expect(capturedWorkerCode.modules['index.js'].js).toContain('const WORKSPACE = createWorkspaceFacade(callTool)');
     expect(capturedWorkerCode.modules['index.js'].js).toContain('createVmFacade');
     expect(capturedWorkerCode.modules['index.js'].js).toContain('createProjectsFacade');
-    expect(capturedWorkerCode.modules['index.js'].js).toContain('const env = Object.freeze({ CONNECTIONS, AI, CAMELAI, WORKSPACE, VM, PROJECTS })');
+    expect(capturedWorkerCode.modules['index.js'].js).toContain('const env = Object.freeze({ CONNECTIONS, AI, CAMELAI, SCREENSHOT, WORKSPACE, VM, PROJECTS })');
     expect(capturedWorkerCode.modules['index.js'].js).toContain('const context = Object.freeze({ cloudflare: Object.freeze({ env, connections, vm, projects: env.PROJECTS }) })');
     expect(capturedWorkerCode.modules['index.js'].js).not.toContain('const projects = PROJECTS');
     expect(capturedWorkerCode.modules['index.js'].js).not.toContain('PROJECTS, projects, env');
@@ -2714,6 +2722,7 @@ describe('ChatThreadDO Codex turn handling', () => {
         AIVirtualBinding: vi.fn(() => ({})),
         CamelAiService: vi.fn(() => ({})),
         SecureFetchBinding: vi.fn(() => ({ fetch: vi.fn() })),
+        AppScreenshotBinding: vi.fn(() => ({ capture: vi.fn() })),
       },
     };
 
@@ -2752,6 +2761,7 @@ describe('ChatThreadDO Codex turn handling', () => {
         AIVirtualBinding: vi.fn(() => ({})),
         CamelAiService: vi.fn(() => ({})),
         SecureFetchBinding: vi.fn(() => ({ fetch: vi.fn() })),
+        AppScreenshotBinding: vi.fn(() => ({ capture: vi.fn() })),
       },
     };
 
@@ -4871,7 +4881,6 @@ describe('ChatThreadDO Codex turn handling', () => {
       WRANGLER_SEND_METRICS: 'false',
       CI: '1',
       CF_DISPATCH_NAMESPACE: 'staging',
-      CHIRIDION_APP_SESSION: 'session_1',
     }));
     fake.createWranglerDeployEnv = vi.fn(async () => ({
       CLOUDFLARE_API_BASE_URL: 'https://staging.camelai.dev/client/v4',
@@ -4887,7 +4896,6 @@ describe('ChatThreadDO Codex turn handling', () => {
       WRANGLER_SEND_METRICS: 'false',
       CI: '1',
       CF_DISPATCH_NAMESPACE: 'staging',
-      CHIRIDION_APP_SESSION: 'session_1',
       CLOUDFLARE_API_BASE_URL: 'https://staging.camelai.dev/client/v4',
       CLOUDFLARE_API_TOKEN: 'st_token',
       CLOUDFLARE_ACCOUNT_ID: 'acct_1',

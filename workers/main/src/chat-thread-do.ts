@@ -174,7 +174,6 @@ import {
 import { CodeModeScheduledPrompts } from "./code-mode-scheduled-prompts";
 import { CodeModeDeterministicAutomations } from "./code-mode-deterministic-automations";
 import { CodeModeIntegrations } from "./code-mode-integrations";
-import { createDispatcherSession } from "./worker-auth";
 import { createSignedToken } from "./signed-tokens";
 import {
   editAutomationVirtualFile,
@@ -1571,6 +1570,20 @@ const CODE_MODE_TOOL_REGISTRY: CodeModeToolRegistration[] = [
       category: "apps",
     },
   ),
+  codeModePassthroughTool(
+    "take_screenshot",
+    "Capture a screenshot of a deployed workspace app. Arguments: { script_name, path?, width?, height?, wait_ms? }.",
+    Type.Object({
+      script_name: Type.String(),
+      path: Type.Optional(Type.String()),
+      width: Type.Optional(Type.Number()),
+      height: Type.Optional(Type.Number()),
+      wait_ms: Type.Optional(Type.Number()),
+    }),
+    {
+      category: "apps",
+    },
+  ),
   codeModePassthroughTool("list_scheduled_prompts", "List scheduled prompts for the current workspace.", EMPTY_PARAMETERS, {
     category: "schedules",
   }),
@@ -1904,6 +1917,7 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
     list_apps: (binding) => binding.listApps(),
     set_app_visibility: (binding, args) => binding.setAppVisibility(args),
     get_latest_logs: (binding, args) => binding.getLatestLogs(args),
+    take_screenshot: (binding, args) => binding.takeScreenshot(args),
     list_scheduled_prompts: (binding) => binding.listScheduledPrompts(),
     create_scheduled_prompt: (binding, args) => binding.createScheduledPrompt(args),
     update_scheduled_prompt: (binding, args) => binding.updateScheduledPrompt(args),
@@ -2069,24 +2083,7 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
       if (userId) env.EVAL_USER_ID = userId;
       if (threadId) env.EVAL_THREAD_ID = threadId;
     }
-    Object.assign(env, await this.createAppAccessSession());
     return env;
-  }
-
-  private async createAppAccessSession(): Promise<Record<string, string>> {
-    const { orgId, workspaceId } = this.ctx.props;
-    if (!this.env.SESSIONS || !orgId || !workspaceId) return {};
-    try {
-      const { sessionId } = await createDispatcherSession(
-        this.env.SESSIONS,
-        `sandbox:${workspaceId}`,
-        orgId,
-      );
-      return { CHIRIDION_APP_SESSION: sessionId };
-    } catch (error) {
-      console.error("[CodeModeToolsBinding] createAppAccessSession failed:", error);
-      return {};
-    }
   }
 
   private async createWranglerDeployEnv(): Promise<Record<string, string>> {
@@ -3539,6 +3536,34 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
     };
   }
 
+  private async takeScreenshot(args: Record<string, unknown>): Promise<unknown> {
+    const scriptName = typeof args.script_name === "string" ? args.script_name.trim() : "";
+    if (!scriptName) throw new Error("script_name is required");
+    const screenshotBinding = (this.ctx.exports as unknown as {
+      AppScreenshotBinding: (options: { props: Pick<CodeModeToolsProps, "orgId" | "workspaceId"> }) => {
+        capture(input: {
+          scriptName: string;
+          path?: string;
+          width?: number;
+          height?: number;
+          waitMs?: number;
+        }): Promise<{ imageDataUrl: string; width: number; height: number }>;
+      };
+    }).AppScreenshotBinding({
+      props: {
+        orgId: this.ctx.props.orgId,
+        workspaceId: this.ctx.props.workspaceId,
+      },
+    });
+    return screenshotBinding.capture({
+      scriptName,
+      path: typeof args.path === "string" ? args.path : undefined,
+      width: typeof args.width === "number" ? args.width : undefined,
+      height: typeof args.height === "number" ? args.height : undefined,
+      waitMs: typeof args.wait_ms === "number" ? args.wait_ms : undefined,
+    });
+  }
+
   private get scheduledPrompts(): CodeModeScheduledPrompts {
     return new CodeModeScheduledPrompts({
       cronStub: this.cronStub,
@@ -4188,6 +4213,14 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         workspaceId: request.workspaceId,
       },
     });
+    const screenshot = (this.ctx.exports as unknown as {
+      AppScreenshotBinding: (options: { props: Pick<CodeModeToolsProps, "orgId" | "workspaceId"> }) => unknown;
+    }).AppScreenshotBinding({
+      props: {
+        orgId: request.orgId,
+        workspaceId: request.workspaceId,
+      },
+    });
 
     const workerCode: WorkerLoaderWorkerCode = {
       compatibilityDate: CODE_MODE_COMPATIBILITY_DATE,
@@ -4195,7 +4228,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       modules: {
         "index.js": { js: codeModeWorkerModule(code) },
       },
-      env: { TOOLS: tools, AI: ai, CAMELAI: camelai, SECURE_FETCH: secureFetch },
+      env: { TOOLS: tools, AI: ai, CAMELAI: camelai, SECURE_FETCH: secureFetch, SCREENSHOT: screenshot },
     };
     const worker = typeof loader.load === "function"
       ? loader.load(workerCode)

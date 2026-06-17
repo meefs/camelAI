@@ -133,6 +133,12 @@
 			"service": "chiridion-app"
 		}
 	],
+	"dispatch_namespaces": [
+		{
+			"binding": "DISPATCHER",
+			"namespace": "chiridion-platform-local"
+		}
+	],
 	"vpc_services": [
 		{
 			"binding": "PROJECT_RUNTIME_HOST",
@@ -323,6 +329,12 @@
 					"service": "chiridion-app"
 				}
 			],
+			"dispatch_namespaces": [
+				{
+					"binding": "DISPATCHER",
+					"namespace": "chiridion-platform"
+				}
+			],
 			"analytics_engine_datasets": [
 				{
 					"binding": "ERROR_ANALYTICS",
@@ -456,6 +468,12 @@
 					"service": "chiridion-app-staging"
 				}
 			],
+			"dispatch_namespaces": [
+				{
+					"binding": "DISPATCHER",
+					"namespace": "chiridion-platform-staging"
+				}
+			],
 			"durable_objects": {
 				"bindings": [
 					{ "name": "CHAT_THREAD", "class_name": "ChatThreadDO" },
@@ -580,6 +598,12 @@
 					"service": "chiridion-app-dev-miguel"
 				}
 			],
+			"dispatch_namespaces": [
+				{
+					"binding": "DISPATCHER",
+					"namespace": "chiridion-platform-dev-miguel"
+				}
+			],
 			"durable_objects": {
 				"bindings": [
 					{ "name": "CHAT_THREAD", "class_name": "ChatThreadDO" },
@@ -702,6 +726,12 @@
 				{
 					"binding": "WORKER_SELF_REFERENCE",
 					"service": "chiridion-app-dev-illiana"
+				}
+			],
+			"dispatch_namespaces": [
+				{
+					"binding": "DISPATCHER",
+					"namespace": "chiridion-platform-dev-illiana"
 				}
 			],
 			"durable_objects": {
