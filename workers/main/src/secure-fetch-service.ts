@@ -11,7 +11,7 @@ export type SecureFetchBindingProps = Pick<CodeModeToolsProps, 'orgId' | 'worksp
 
 /**
  * Virtual binding used by js_exec and deterministic automations to fetch
- * workspace deployed apps through the dispatcher worker service binding.
+ * workspace deployed apps through the dispatcher worker RPC service binding.
  */
 export class SecureFetchBinding extends WorkerEntrypoint<
   SecureFetchEnv,

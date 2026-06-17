@@ -11,7 +11,9 @@ export interface WorkspaceAppContext {
   workspaceId: string;
 }
 
-export type DispatcherBinding = Fetcher;
+export type DispatcherBinding = {
+  fetchWorkspaceApp(request: Request): Promise<Response>;
+};
 
 export interface WorkspaceAppFetcherEnv {
   DISPATCHER?: DispatcherBinding;
@@ -358,10 +360,10 @@ async function fetchWorkspaceAppOnce(
   const headers = new Headers(sanitized.headers);
   applyPlatformDispatchRoute(headers, route);
   const forwarded = new Request(sanitized, { headers });
-  if (!env.DISPATCHER || typeof env.DISPATCHER.fetch !== 'function') {
+  if (!env.DISPATCHER || typeof env.DISPATCHER.fetchWorkspaceApp !== 'function') {
     throw new Error('DISPATCHER service binding is not configured');
   }
-  return env.DISPATCHER.fetch(forwarded);
+  return env.DISPATCHER.fetchWorkspaceApp(forwarded);
 }
 
 async function followWorkspaceAppRedirects(

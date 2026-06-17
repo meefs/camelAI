@@ -65,7 +65,7 @@ describe('workspace app fetcher', () => {
     };
     const env = {
       DISPATCHER: {
-        fetch: fetchMock,
+        fetchWorkspaceApp: fetchMock,
       },
       ORG: {
         idFromName: () => 'org-id',
@@ -111,7 +111,7 @@ describe('workspace app fetcher', () => {
       ]),
     };
     const env = {
-      DISPATCHER: { fetch: fetchMock },
+      DISPATCHER: { fetchWorkspaceApp: fetchMock },
       ORG: { idFromName: () => 'org-id', get: () => ({}) },
     };
 
@@ -152,7 +152,7 @@ describe('workspace app fetcher', () => {
     };
     const env = {
       DISPATCHER: {
-        fetch: fetchMock,
+        fetchWorkspaceApp: fetchMock,
       },
       ORG: {
         idFromName: () => 'org-id',
@@ -194,7 +194,7 @@ describe('workspace app fetcher', () => {
     };
     const env = {
       DISPATCHER: {
-        fetch: fetchMock,
+        fetchWorkspaceApp: fetchMock,
       },
       ORG: {
         idFromName: () => 'org-id',
@@ -234,7 +234,7 @@ describe('workspace app fetcher', () => {
     };
     const env = {
       DISPATCHER: {
-        fetch: fetchMock,
+        fetchWorkspaceApp: fetchMock,
       },
       ORG: {
         idFromName: () => 'org-id',
@@ -297,9 +297,9 @@ describe('workspace app fetcher', () => {
   });
 
   it('uses dispatch interception for private local apps when DISPATCHER is configured', () => {
-    expect(shouldUseDispatchInterceptionForScreenshot(false, { DISPATCHER: { fetch: vi.fn() } })).toBe(true);
+    expect(shouldUseDispatchInterceptionForScreenshot(false, { DISPATCHER: { fetchWorkspaceApp: vi.fn() } })).toBe(true);
     expect(shouldUseDispatchInterceptionForScreenshot(false, {})).toBe(false);
-    expect(shouldUseDispatchInterceptionForScreenshot(true, { DISPATCHER: { fetch: vi.fn() } })).toBe(false);
+    expect(shouldUseDispatchInterceptionForScreenshot(true, { DISPATCHER: { fetchWorkspaceApp: vi.fn() } })).toBe(false);
   });
 
   it('detects local app hostnames for platform URL finalization', () => {
@@ -351,7 +351,7 @@ describe('workspace app fetcher', () => {
     };
     const env = {
       DISPATCHER: {
-        fetch: dispatchFetchMock,
+        fetchWorkspaceApp: dispatchFetchMock,
       },
       ORG: {
         idFromName: () => 'org-id',

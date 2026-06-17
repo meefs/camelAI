@@ -1130,60 +1130,71 @@ async function resolveCustomDomainRoute(
   return null;
 }
 
+async function fetchPlatformWorkspaceApp(
+  request: Request,
+  env: Env,
+  ctx: ExecutionContext,
+): Promise<Response> {
+  const url = new URL(request.url);
+  const hostname = url.hostname;
+
+  const dispatchScriptName = request.headers.get(PLATFORM_DISPATCH_SCRIPT_HEADER)?.trim();
+  const scriptName = request.headers.get(PLATFORM_DISPATCH_SCRIPT_NAME_HEADER)?.trim();
+  const legacyDispatchScriptName = request.headers.get(PLATFORM_DISPATCH_LEGACY_SCRIPT_HEADER)?.trim();
+  const forwardedRequest = preparePlatformDispatchRequest(request);
+
+  if (dispatchScriptName && scriptName) {
+    return dispatchToWorker(
+      forwardedRequest,
+      env,
+      ctx,
+      dispatchScriptName,
+      scriptName,
+      legacyDispatchScriptName && legacyDispatchScriptName !== dispatchScriptName
+        ? legacyDispatchScriptName
+        : undefined,
+    );
+  }
+
+  const route = parseWorkerRoute(hostname, env);
+  if (route) {
+    return dispatchToWorker(
+      forwardedRequest,
+      env,
+      ctx,
+      route.dispatchScriptName,
+      route.scriptName,
+      route.legacyFallback?.dispatchScriptName,
+    );
+  }
+
+  const customDomainRoute = await resolveCustomDomainRoute(env, hostname);
+  if (customDomainRoute) {
+    return dispatchToWorker(
+      forwardedRequest,
+      env,
+      ctx,
+      customDomainRoute.dispatchScriptName,
+      customDomainRoute.scriptName,
+    );
+  }
+
+  return new Response(
+    JSON.stringify({ error: 'Not a workspace deployed app hostname' }),
+    { status: 400, headers: { 'Content-Type': 'application/json' } },
+  );
+}
+
 /**
  * Trusted platform RPC entrypoint for js_exec/screenshot fetches from the main app worker.
  * Service bindings are only invocable from workers we configure, so this skips browser auth.
+ *
+ * Callers must use fetchWorkspaceApp(), not fetch(). Fetch semantics on a named
+ * WorkerEntrypoint propagate the entrypoint name into dispatch-namespace subrequests.
  */
 export class PlatformAppFetchBinding extends WorkerEntrypoint<Env> {
-  async fetch(request: Request): Promise<Response> {
-    const url = new URL(request.url);
-    const hostname = url.hostname;
-
-    const dispatchScriptName = request.headers.get(PLATFORM_DISPATCH_SCRIPT_HEADER)?.trim();
-    const scriptName = request.headers.get(PLATFORM_DISPATCH_SCRIPT_NAME_HEADER)?.trim();
-    const legacyDispatchScriptName = request.headers.get(PLATFORM_DISPATCH_LEGACY_SCRIPT_HEADER)?.trim();
-    const forwardedRequest = preparePlatformDispatchRequest(request);
-
-    if (dispatchScriptName && scriptName) {
-      return dispatchToWorker(
-        forwardedRequest,
-        this.env,
-        this.ctx,
-        dispatchScriptName,
-        scriptName,
-        legacyDispatchScriptName && legacyDispatchScriptName !== dispatchScriptName
-          ? legacyDispatchScriptName
-          : undefined,
-      );
-    }
-
-    const route = parseWorkerRoute(hostname, this.env);
-    if (route) {
-      return dispatchToWorker(
-        forwardedRequest,
-        this.env,
-        this.ctx,
-        route.dispatchScriptName,
-        route.scriptName,
-        route.legacyFallback?.dispatchScriptName,
-      );
-    }
-
-    const customDomainRoute = await resolveCustomDomainRoute(this.env, hostname);
-    if (customDomainRoute) {
-      return dispatchToWorker(
-        forwardedRequest,
-        this.env,
-        this.ctx,
-        customDomainRoute.dispatchScriptName,
-        customDomainRoute.scriptName,
-      );
-    }
-
-    return new Response(
-      JSON.stringify({ error: 'Not a workspace deployed app hostname' }),
-      { status: 400, headers: { 'Content-Type': 'application/json' } },
-    );
+  async fetchWorkspaceApp(request: Request): Promise<Response> {
+    return fetchPlatformWorkspaceApp(request, this.env, this.ctx);
   }
 }
 

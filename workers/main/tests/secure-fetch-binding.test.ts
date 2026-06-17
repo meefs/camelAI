@@ -31,14 +31,14 @@ function workspaceHostIndex() {
 
 function dispatcherServiceEnv(fetchMock = vi.fn(async () => new Response('{"ok":true}', { status: 200 }))) {
   return {
-    DISPATCHER: { fetch: fetchMock },
+    DISPATCHER: { fetchWorkspaceApp: fetchMock },
     ORG: env.ORG,
     WORKER_BASE_URL: 'https://staging.camelai.dev',
   };
 }
 
 describe('secure fetch binding regression', () => {
-  it('requires DISPATCHER to be a service binding with fetch()', () => {
+  it('requires DISPATCHER to be a service binding with fetchWorkspaceApp()', () => {
     return expect(performWorkspaceAppFetch(
       {
         DISPATCHER: { get: vi.fn() } as never,

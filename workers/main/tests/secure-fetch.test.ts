@@ -57,7 +57,7 @@ describe('secure fetch', () => {
     };
     const env = {
       DISPATCHER: {
-        fetch: fetchMock,
+        fetchWorkspaceApp: fetchMock,
       },
       ORG: {
         idFromName: () => 'org-id',
