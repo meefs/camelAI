@@ -7,12 +7,25 @@ describe("ChatThreadDO completion summaries", () => {
     vi.restoreAllMocks();
   });
 
-  function createFakeThread() {
+  function createFakeThread(options?: {
+    aiResponse?: unknown;
+    aiError?: Error;
+  }) {
     const waitUntilPromises: Promise<unknown>[] = [];
     const recordThreadAssistantCompletion = vi.fn(
       async (_threadId: string, input: { completedAt: number }) => input.completedAt,
     );
     const recordThreadStreaming = vi.fn(async () => undefined);
+    const aiRun = vi.fn();
+    if (options?.aiError) {
+      aiRun.mockRejectedValue(options.aiError);
+    } else {
+      aiRun.mockResolvedValue(
+        options?.aiResponse ?? {
+          choices: [{ message: { content: "Generated hover summary." } }],
+        },
+      );
+    }
     const fake = Object.create(ChatThreadDO.prototype) as any;
 
     fake.chatContext = {
@@ -36,9 +49,8 @@ describe("ChatThreadDO completion summaries", () => {
       getWebSockets: vi.fn(() => [] as WebSocket[]),
     };
     fake.env = {
-      CF_ACCOUNT_ID: "acct_1",
       CF_GATEWAY_NAME: "gw_1",
-      CF_GATEWAY_TOKEN: "tok_1",
+      AI: { run: aiRun },
       ORG: {
         idFromName: vi.fn((id: string) => id),
         get: vi.fn(() => ({
@@ -55,6 +67,7 @@ describe("ChatThreadDO completion summaries", () => {
 
     return {
       fake,
+      aiRun,
       waitUntilPromises,
       recordThreadAssistantCompletion,
       recordThreadStreaming,
@@ -62,31 +75,6 @@ describe("ChatThreadDO completion summaries", () => {
   }
 
   it("stores generated completion summaries instead of raw final text", async () => {
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      new Response(
-        JSON.stringify({
-          id: "resp_1",
-          object: "response",
-          status: "completed",
-          output: [
-            {
-              id: "msg_1",
-              type: "message",
-              status: "completed",
-              role: "assistant",
-              content: [
-                {
-                  type: "output_text",
-                  text: "Generated hover summary.",
-                  annotations: [],
-                },
-              ],
-            },
-          ],
-        }),
-        { status: 200, headers: { "Content-Type": "application/json" } },
-      ),
-    );
     const {
       fake,
       waitUntilPromises,
@@ -139,18 +127,12 @@ describe("ChatThreadDO completion summaries", () => {
 
   it("marks summary generation failures as failed after completion is persisted", async () => {
     vi.spyOn(console, "error").mockImplementation(() => undefined);
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      new Response(JSON.stringify({ error: { message: "Unauthorized" } }), {
-        status: 401,
-        headers: { "Content-Type": "application/json" },
-      }),
-    );
     const {
       fake,
       waitUntilPromises,
       recordThreadAssistantCompletion,
       recordThreadStreaming,
-    } = createFakeThread();
+    } = createFakeThread({ aiError: new Error("Unauthorized") });
 
     ChatThreadDO.prototype["setChatIsStreaming"].call(fake, false, {
       markUnread: true,
@@ -189,37 +171,14 @@ describe("ChatThreadDO completion summaries", () => {
   });
 
   it("uses the stored completion timestamp for generated summaries", async () => {
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      new Response(
-        JSON.stringify({
-          id: "resp_1",
-          object: "response",
-          status: "completed",
-          output: [
-            {
-              id: "msg_1",
-              type: "message",
-              status: "completed",
-              role: "assistant",
-              content: [
-                {
-                  type: "output_text",
-                  text: "Stored timestamp summary.",
-                  annotations: [],
-                },
-              ],
-            },
-          ],
-        }),
-        { status: 200, headers: { "Content-Type": "application/json" } },
-      ),
-    );
     const {
       fake,
       waitUntilPromises,
       recordThreadAssistantCompletion,
       recordThreadStreaming,
-    } = createFakeThread();
+    } = createFakeThread({
+      aiResponse: { choices: [{ message: { content: "Stored timestamp summary." } }] },
+    });
     const storedCompletedAt = 123456;
     recordThreadAssistantCompletion.mockImplementation(
       async (
@@ -308,37 +267,12 @@ describe("ChatThreadDO completion summaries", () => {
   });
 
   it("marks empty generated summaries as failed", async () => {
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      new Response(
-        JSON.stringify({
-          id: "resp_1",
-          object: "response",
-          status: "completed",
-          output: [
-            {
-              id: "msg_1",
-              type: "message",
-              status: "completed",
-              role: "assistant",
-              content: [
-                {
-                  type: "output_text",
-                  text: "   ",
-                  annotations: [],
-                },
-              ],
-            },
-          ],
-        }),
-        { status: 200, headers: { "Content-Type": "application/json" } },
-      ),
-    );
     const {
       fake,
       waitUntilPromises,
       recordThreadAssistantCompletion,
       recordThreadStreaming,
-    } = createFakeThread();
+    } = createFakeThread({ aiResponse: { choices: [{ message: { content: "   " } }] } });
 
     ChatThreadDO.prototype["setChatIsStreaming"].call(fake, false, {
       markUnread: true,
@@ -433,31 +367,6 @@ describe("ChatThreadDO completion summaries", () => {
   });
 
   it("reuses one WorkspaceDO stub for ordered status writes", async () => {
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      new Response(
-        JSON.stringify({
-          id: "resp_1",
-          object: "response",
-          status: "completed",
-          output: [
-            {
-              id: "msg_1",
-              type: "message",
-              status: "completed",
-              role: "assistant",
-              content: [
-                {
-                  type: "output_text",
-                  text: "Generated hover summary.",
-                  annotations: [],
-                },
-              ],
-            },
-          ],
-        }),
-        { status: 200, headers: { "Content-Type": "application/json" } },
-      ),
-    );
     const { fake, waitUntilPromises } = createFakeThread();
 
     ChatThreadDO.prototype["publishRunningActivity"].call(fake, "Thinking", {

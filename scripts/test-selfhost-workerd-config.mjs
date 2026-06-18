@@ -37,7 +37,12 @@ async function main() {
     '127.0.0.1:0',
   ], {
     cwd: repoRoot,
-    env: process.env,
+    env: {
+      ...process.env,
+      SELFHOST_AI_PROVIDER: 'bedrock',
+      SELFHOST_AI_API_KEY: 'test-bedrock-key',
+      SELFHOST_AI_AWS_REGION: 'us-east-1',
+    },
     encoding: 'utf8',
   });
   if (result.status !== 0) {
@@ -69,12 +74,15 @@ async function main() {
   includesAll(bindings.queues, ['APP_SCREENSHOT_QUEUE', 'SLACK_EVENTS_QUEUE'], 'queues');
   includesAll(bindings.workflows, ['DETERMINISTIC_AUTOMATION_WORKFLOWS', 'LEGACY_WORKSPACE_MIGRATIONS'], 'workflows');
   includesAll(bindings.artifacts, ['ARTIFACTS'], 'artifacts');
+  includesAll(bindings.ai, ['AI'], 'ai');
   includesAll(bindings.workerLoaders, ['CODE_MODE_LOADER', 'SELFHOST_WORKER_LOADER'], 'workerLoaders');
   assert(!bindings.workerLoaders.includes('LOADER'), 'dispatcher must not include the obsolete generic local Dynamic Worker loader');
   includesAll(manifest.omittedBindings.sendEmail, ['EMAIL'], 'omitted sendEmail bindings');
 
   assert(manifest.dispatcherServiceName === 'dispatcher', 'manifest should include dispatcher service');
   assert(config.includes('name = "ARTIFACTS"'), 'config should contain ARTIFACTS binding');
+  assert(config.includes('name = "AI"'), 'config should contain AI binding');
+  assert(config.includes('infra/selfhost/ai-binding.worker.js'), 'config should embed the self-host AI binding module');
   assert(config.includes('name = "dispatcher"'), 'config should contain dispatcher service');
   assert(config.includes('name = "SELFHOST_WORKER_LOADER"'), 'config should contain self-host worker loader binding');
   assert(config.includes('name = "SELFHOST_APP_RUNNER"'), 'config should contain self-host app runner binding');

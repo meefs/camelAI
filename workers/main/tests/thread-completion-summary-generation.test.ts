@@ -4,7 +4,6 @@ import {
   extractThreadCompletionSummarySource,
   generateThreadCompletionSummaryWithOpenAI,
   THREAD_COMPLETION_SUMMARY_GENERATION_MODEL,
-  THREAD_COMPLETION_SUMMARY_REASONING_EFFORT,
   THREAD_COMPLETION_SUMMARY_SYSTEM_PROMPT,
 } from "../../../src/lib/thread-completion-summary-generation.server";
 
@@ -98,75 +97,39 @@ describe("thread completion summary generation", () => {
     expect(source).toBe("Identified the account-level BYOK configuration issue.");
   });
 
-  it("uses the OpenAI Responses API through Cloudflare AI Gateway", async () => {
-    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      new Response(
-        JSON.stringify({
-          id: "resp_1",
-          object: "response",
-          status: "completed",
-          output: [
-            {
-              id: "msg_1",
-              type: "message",
-              status: "completed",
-              role: "assistant",
-              content: [
-                {
-                  type: "output_text",
-                  text: "  Generated concise summary.  ",
-                  annotations: [],
-                },
-              ],
-            },
-          ],
-        }),
-        { status: 200, headers: { "Content-Type": "application/json" } },
-      ),
-    );
+  it("uses Workers AI with GLM 4.7 Flash", async () => {
+    const run = vi.fn().mockResolvedValue({
+      choices: [{ message: { content: "  Generated concise summary.  " } }],
+    });
 
     const summary = await generateThreadCompletionSummaryWithOpenAI(
-      {
-        CF_ACCOUNT_ID: "acct_1",
-        CF_GATEWAY_NAME: "gw_1",
-        CF_GATEWAY_TOKEN: "tok_1",
-      },
+      { run },
       "Final answer: This is a much longer raw assistant response with details.",
       {
         orgId: "org_1",
         workspaceId: "ws_1",
         threadId: "thread_1",
       },
+      { gatewayName: "gw_1" },
     );
 
     expect(summary).toBe("Generated concise summary.");
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-
-    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
-    expect(url).toBe(
-      "https://gateway.ai.cloudflare.com/v1/acct_1/gw_1/openai/responses",
+    expect(run).toHaveBeenCalledWith(
+      THREAD_COMPLETION_SUMMARY_GENERATION_MODEL,
+      {
+        messages: [
+          { role: "system", content: THREAD_COMPLETION_SUMMARY_SYSTEM_PROMPT },
+          {
+            role: "user",
+            content:
+              "Final answer: This is a much longer raw assistant response with details.",
+          },
+        ],
+        max_tokens: 80,
+      },
+      expect.objectContaining({
+        gateway: expect.objectContaining({ id: "gw_1" }),
+      }),
     );
-    const headers = new Headers(init.headers);
-    expect(headers.get("authorization")).toBe("Bearer tok_1");
-    expect(headers.get("cf-aig-metadata")).toContain(
-      '"uid":"org_1:ws_1:thread_1"',
-    );
-
-    const body = JSON.parse(String(init.body)) as {
-      model?: string;
-      instructions?: string;
-      input?: string;
-      reasoning?: { effort?: string };
-      max_output_tokens?: number;
-      store?: boolean;
-    };
-    expect(body).toMatchObject({
-      model: THREAD_COMPLETION_SUMMARY_GENERATION_MODEL,
-      instructions: THREAD_COMPLETION_SUMMARY_SYSTEM_PROMPT,
-      input: "Final answer: This is a much longer raw assistant response with details.",
-      reasoning: { effort: THREAD_COMPLETION_SUMMARY_REASONING_EFFORT },
-      max_output_tokens: 80,
-      store: false,
-    });
   });
 });

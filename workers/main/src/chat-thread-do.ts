@@ -9451,13 +9451,14 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
   ): Promise<void> {
     try {
       const summary = await generateThreadCompletionSummaryWithOpenAI(
-        this.env,
+        this.env.AI,
         sourceText,
         {
           orgId: context.orgId,
           workspaceId: context.workspaceId,
           threadId: context.threadId,
         },
+        { gatewayName: this.env.CF_GATEWAY_NAME },
       );
       if (!summary) {
         await this.recordCompletionSummaryStatus(context, completedAt, "failed");
@@ -9976,11 +9977,16 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         return;
       }
 
-      const title = await generateThreadTitleWithOpenAI(this.env, message, {
-        orgId: context.orgId,
-        workspaceId: context.workspaceId,
-        threadId,
-      });
+      const title = await generateThreadTitleWithOpenAI(
+        this.env.AI,
+        message,
+        {
+          orgId: context.orgId,
+          workspaceId: context.workspaceId,
+          threadId,
+        },
+        { gatewayName: this.env.CF_GATEWAY_NAME },
+      );
       if (!title) {
         return;
       }

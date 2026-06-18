@@ -652,11 +652,16 @@ export async function generateThreadTitle(
     const wsInfo = await getWorkspaceInfo(env, workspaceId);
     if (!wsInfo) return;
 
-    const title = await generateThreadTitleWithOpenAI(env, message, {
-      orgId: wsInfo.org_id,
-      workspaceId,
-      threadId,
-    });
+    const title = await generateThreadTitleWithOpenAI(
+      env.AI as never,
+      message,
+      {
+        orgId: wsInfo.org_id,
+        workspaceId,
+        threadId,
+      },
+      { gatewayName: env.CF_GATEWAY_NAME },
+    );
     if (!title) return;
 
     // Update title in OrgDO

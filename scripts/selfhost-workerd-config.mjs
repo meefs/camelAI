@@ -205,6 +205,19 @@ function bindingArtifacts(name, { baseUrl, secret, defaultBranch }) {
   `))`;
 }
 
+function bindingAi(name, { provider, apiKey, awsRegion }) {
+  return `(name = ${q(name)}, wrapped = (` +
+    `moduleName = "selfhost:ai-binding", ` +
+    `innerBindings = [` +
+      [
+        bindingText('provider', provider),
+        bindingText('apiKey', apiKey),
+        bindingText('awsRegion', awsRegion),
+      ].join(', ') +
+    `]` +
+  `))`;
+}
+
 async function readJson(filePath) {
   return JSON.parse(await fs.readFile(filePath, 'utf8'));
 }
@@ -632,6 +645,22 @@ async function main() {
     )}])`);
   }
 
+  const selfhostAiProvider = String(vars.SELFHOST_AI_PROVIDER ?? '').trim().toLowerCase();
+  const selfhostAiApiKey = String(vars.SELFHOST_AI_API_KEY ?? '').trim();
+  const useSelfhostAiBinding = selfhostAiProvider === 'bedrock' && Boolean(selfhostAiApiKey);
+  if (useSelfhostAiBinding) {
+    bindings.push(bindingAi('AI', {
+      provider: selfhostAiProvider,
+      apiKey: selfhostAiApiKey,
+      awsRegion: vars.SELFHOST_AI_AWS_REGION || 'us-east-1',
+    }));
+    extensions.push(`(modules = [${capnpExtensionModule(
+      'selfhost:ai-binding',
+      path.join(repoRoot, 'infra/selfhost/ai-binding.worker.js'),
+      true,
+    )}])`);
+  }
+
   for (const binding of wrangler.durable_objects?.bindings ?? []) {
     bindings.push(bindingDurableObject(binding.name, binding.class_name));
   }
@@ -842,6 +871,7 @@ const camelai :Workerd.Config = (
       queues: (wrangler.queues?.producers ?? []).map((item) => item.binding),
       workflows: workflows.map((item) => item.binding),
       artifacts: useLocalArtifactsBinding ? ['ARTIFACTS'] : (wrangler.artifacts ?? []).map((item) => item.binding),
+      ai: useSelfhostAiBinding ? ['AI'] : [],
       workerLoaders: [
         ...(wrangler.worker_loaders ?? []).map((item) => item.binding),
         'SELFHOST_WORKER_LOADER',
