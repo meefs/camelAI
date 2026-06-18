@@ -2018,10 +2018,10 @@ export default function Chat({
   );
 
   const persistSessionState = useCallback(
-    (id: string) => {
+    (id: string, eventId = lastEventIdRef.current) => {
       try {
         const payload = {
-            lastEventId: lastEventIdRef.current,
+          lastEventId: eventId,
         };
         sessionStorage.setItem(sessionStorageKey(id), JSON.stringify(payload));
       } catch (e) {
@@ -2489,11 +2489,16 @@ export default function Chat({
       if (!id) return;
       const data = JSON.parse(event.data);
 
-      if (typeof data?.eventId === "number") {
-        lastEventIdRef.current = Math.max(lastEventIdRef.current, data.eventId);
-        if (id) {
-          persistSessionState(id);
-        }
+      const incomingEventId =
+        typeof data?.eventId === "number" && Number.isFinite(data.eventId)
+          ? data.eventId
+          : null;
+
+      if (incomingEventId !== null) {
+        lastEventIdRef.current = Math.max(
+          lastEventIdRef.current,
+          incomingEventId,
+        );
       }
 
       if (data.type === "ready") {
@@ -3036,6 +3041,9 @@ export default function Chat({
               ),
             );
           }
+          if (incomingEventId !== null) {
+            persistSessionState(id, incomingEventId);
+          }
           setStreamingMessageId(null);
           setLoading(false);
           acceptedPendingMessageIdsRef.current.clear();
@@ -3055,6 +3063,9 @@ export default function Chat({
       } else if (data.type === "result") {
         if (id) {
           flushDeferredMessagesRender();
+          if (incomingEventId !== null) {
+            persistSessionState(id, incomingEventId);
+          }
           acceptedPendingMessageIdsRef.current.clear();
           setPendingMessages([]);
           dispatchLocalThreadStatus(id, "idle");
@@ -3099,6 +3110,9 @@ export default function Chat({
               msg.id === msgId ? finalizeStreamingMessage(msg) : msg,
             ),
           );
+        }
+        if (incomingEventId !== null) {
+          persistSessionState(id, incomingEventId);
         }
         setStreamingMessageId(null);
         setLoading(false);
