@@ -881,8 +881,7 @@ interface ChatClientInitMessage {
   lastEventId?: number;
 }
 
-interface ChatClientMessage {
-  type: "message";
+interface ChatUserMessageInput {
   content?: string;
   clientMessageId?: string;
 }
@@ -4052,6 +4051,7 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
     callable()(this.prototype.answerQuestion, context);
     callable()(this.prototype.submitConnectionSetupResponse, context);
     callable()(this.prototype.refreshModel, context);
+    callable()(this.prototype.sendMessage, context);
   }
 
   private agentState(
@@ -4543,11 +4543,6 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
         return;
       }
 
-      if (data.type === "message") {
-        await this.handleRunnerClientMessage(ws, data);
-        return;
-      }
-
     } catch (err) {
       this.emitChatError(
         `Internal error handling ${data.type}: ${err instanceof Error ? err.message : String(err)}`,
@@ -4786,6 +4781,13 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
 
   async refreshModel(): Promise<void> {
     await this.refreshPiSessionModel();
+  }
+
+  async sendMessage(
+    content: string,
+    clientMessageId: string,
+  ): Promise<InitialUserMessageResult> {
+    return this.handleClientUserMessage({ content, clientMessageId });
   }
 
   private async setPreviewTabsStateInternal(
@@ -7676,19 +7678,6 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
     return this.env.ORG.get(this.env.ORG.idFromName(orgId));
   }
 
-  private async handleRunnerClientMessage(
-    ws: WebSocket,
-    data: { type: string; [key: string]: unknown },
-  ): Promise<void> {
-    if (data.type === "message") {
-      await this.handleRunnerClientUserMessage(ws, data as unknown as ChatClientMessage);
-      return;
-    }
-
-    await this.ensurePiSessionReady();
-    this.sendRunnerCommand({ ...data, threadId: this.chatContext?.threadId });
-  }
-
   private chatSendFailureStatus(
     status: "busy" | "error" | string,
     error: unknown,
@@ -7748,39 +7737,9 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
     };
   }
 
-  private sendDirectChatError(
-    ws: WebSocket,
-    error: unknown,
-    options: {
-      status?: "busy" | "error" | string;
-      fallbackMessage: string;
-      source: "runner_enqueue" | "runner_send" | "chat_init" | string;
-    },
-  ): void {
-    const payload = this.chatSendErrorPayload(error, {
-      status: options.status,
-      fallbackMessage: options.fallbackMessage,
-    });
-    const message =
-      typeof payload.error === "string" && payload.error.trim()
-        ? payload.error.trim()
-        : options.fallbackMessage;
-    this.recordCurrentThreadError({
-      message,
-      source: options.source,
-      errorKind: payload.errorType ?? payload.error_kind,
-      status: payload.status ?? payload.statusCode,
-      provider: payload.provider,
-      model: payload.model,
-      createdAt: Date.now(),
-    });
-    this.sendDirect(ws, payload);
-  }
-
-  private async handleRunnerClientUserMessage(
-    ws: WebSocket,
-    data: ChatClientMessage,
-  ): Promise<void> {
+  private async handleClientUserMessage(
+    data: ChatUserMessageInput,
+  ): Promise<InitialUserMessageResult> {
     const startedAt = Date.now();
     const sendAttemptId = data.clientMessageId || crypto.randomUUID();
 
@@ -7795,11 +7754,7 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
       // drop): re-ack so the client clears its pending state, never enqueue
       // twice.
       if (this.hasRecentlyAcceptedClientMessage(clientMessageId)) {
-        this.sendDirect(ws, {
-          type: "message_accepted",
-          clientMessageId,
-        });
-        return;
+        return { status: "accepted" };
       }
 
       // Duplicate of a send whose enqueue is still in flight (reconnect +
@@ -7815,35 +7770,17 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
         try {
           outcome = await inFlight;
         } catch (error) {
-          this.sendDirect(
-            ws,
-            this.chatSendErrorPayload(error, {
-              fallbackMessage: "Failed to send message to sandbox",
-            }),
-          );
-          return;
+          return {
+            status: "error",
+            error: error instanceof Error ? error.message : "Failed to send message to sandbox",
+          };
         }
         if (outcome.status === "accepted") {
-          this.sendDirect(ws, {
-            type: "message_accepted",
-            clientMessageId,
-          });
-        } else {
-          this.sendDirect(
-            ws,
-            this.chatSendErrorPayload(outcome.error, {
-              status: outcome.status,
-              fallbackMessage: "Failed to send message",
-            }),
-          );
+          return { status: "accepted" };
         }
-        return;
+        return outcome;
       }
 
-      this.sendDirect(ws, {
-        type: "message_accepted",
-        clientMessageId,
-      });
     }
 
     let result: InitialUserMessageResult;
@@ -7865,11 +7802,10 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
       this.setChatIsStreaming(false);
       this.setActiveTurnUserId(null);
       console.error("[ChatThreadDO] failed to enqueue browser user message", error);
-      this.sendDirectChatError(ws, error, {
-        source: "runner_enqueue",
-        fallbackMessage: "Failed to send message to sandbox",
-      });
-      return;
+      return {
+        status: "error",
+        error: error instanceof Error ? error.message : "Failed to send message to sandbox",
+      };
     } finally {
       if (clientMessageId) {
         this.getPendingClientMessageEnqueues().delete(clientMessageId);
@@ -7877,12 +7813,7 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
     }
 
     if (result.status !== "accepted") {
-      this.sendDirectChatError(ws, result.error, {
-        source: "runner_send",
-        status: result.status,
-        fallbackMessage: "Failed to send message",
-      });
-      return;
+      return result;
     }
 
     // Only now is the id a safe dedupe marker: the message has actually
@@ -7891,11 +7822,11 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
       this.recordAcceptedClientMessageId(clientMessageId);
     }
 
-
+    return result;
   }
 
   private async enqueueRunnerUserMessage(
-    data: ChatClientMessage,
+    data: ChatUserMessageInput,
     options: {
       sendAttemptId?: string;
       startedAt?: number;
@@ -7953,7 +7884,6 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
       this.setActiveTurnUserId(context.userId);
       this.setChatIsStreaming(true);
       this.publishRunningUserMessageActivity(rawContent);
-      this.broadcastChat({ type: "streaming_state", isStreaming: true });
       this.ctx.waitUntil(
         this.updateThreadMetadataForUserMessage(
           attributedContent,
@@ -8698,7 +8628,6 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
 
     try {
       const result = await this.enqueueRunnerUserMessage({
-        type: "message",
         content: message,
         clientMessageId:
           typeof body.clientMessageId === "string" &&
@@ -12707,10 +12636,6 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
         if (type === "stop") {
           this.piUserStopRequestedAtMs = Date.now();
           this.piSession.abort();
-          return true;
-        }
-        if (type === "ping") {
-          this.pushChatEvent({ type: "pong", ts: message.ts });
           return true;
         }
         if (type === "question_response") {

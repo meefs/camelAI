@@ -193,13 +193,15 @@ type ChatAgentClient = {
   call<T = unknown>(method: string, args?: unknown[]): Promise<T>;
 };
 
+type SendMessageResult = {
+  status: "accepted" | "busy" | "error";
+  error?: string;
+};
+
 function sameJson(left: unknown, right: unknown): boolean {
   return left === right || JSON.stringify(left) === JSON.stringify(right);
 }
 
-// The backend acknowledges receipt before slow runner enqueue work, so this
-// timeout only covers messages that never make it to ChatThreadDO.
-const MESSAGE_ACCEPTANCE_TIMEOUT_MS = 8_000;
 const NEW_THREAD_BOOTSTRAP_STALL_TIMEOUT_MS = 10_000;
 
 function getThreadRunningState(
@@ -862,11 +864,7 @@ export default function Chat({
     new Map(),
   );
   const pendingMessagesRef = useRef(pendingMessages);
-  const sentPendingMessageIdsRef = useRef<Set<string>>(new Set());
   const acceptedPendingMessageIdsRef = useRef<Set<string>>(new Set());
-  const pendingMessageAcceptanceTimeoutsRef = useRef<
-    Map<string, ReturnType<typeof setTimeout>>
-  >(new Map());
   const pendingThreadContextRef = useRef({
     workspaceId: resolvedWorkspaceId,
     threadId,
@@ -1926,27 +1924,6 @@ export default function Chat({
     };
   }, [deferredInitialMessage, isNewThread, readOnly, ready, revalidator, threadId]);
 
-  const clearPendingMessageAcceptanceTimeout = useCallback(
-    (clientMessageId: string) => {
-      const timeout = pendingMessageAcceptanceTimeoutsRef.current.get(
-        clientMessageId,
-      );
-      if (!timeout) {
-        return;
-      }
-      clearTimeout(timeout);
-      pendingMessageAcceptanceTimeoutsRef.current.delete(clientMessageId);
-    },
-    [],
-  );
-
-  const clearAllPendingMessageAcceptanceTimeouts = useCallback(() => {
-    for (const timeout of pendingMessageAcceptanceTimeoutsRef.current.values()) {
-      clearTimeout(timeout);
-    }
-    pendingMessageAcceptanceTimeoutsRef.current.clear();
-  }, []);
-
   const isPendingMessageAccepted = useCallback((clientMessageId: string) => {
     if (acceptedPendingMessageIdsRef.current.has(clientMessageId)) {
       return true;
@@ -1978,20 +1955,18 @@ export default function Chat({
   );
 
   const failPendingMessageDelivery = useCallback(
-    (message: string): boolean => {
+    (message: string, options?: { preserveReady?: boolean }): boolean => {
       const failedMessages = getUnacceptedPendingUserMessages();
       if (failedMessages.length === 0) {
         return false;
       }
 
-      clearAllPendingMessageAcceptanceTimeouts();
       const failedIds = new Set(failedMessages.map((msg) => msg.id));
       const failedDeliveryKeys = new Set(
         failedMessages.map((msg) => msg.clientMessageId ?? msg.id),
       );
       setMessages((prev) => prev.filter((msg) => !failedIds.has(msg.id)));
       for (const deliveryKey of failedDeliveryKeys) {
-        sentPendingMessageIdsRef.current.delete(deliveryKey);
         acceptedPendingMessageIdsRef.current.delete(deliveryKey);
       }
       const remainingPendingMessages = pendingMessagesRef.current.filter(
@@ -2002,7 +1977,9 @@ export default function Chat({
         remainingPendingMessages.length > 0 ||
           Boolean(streamingMessageIdRef.current),
       );
-      setReady(false);
+      if (!options?.preserveReady) {
+        setReady(false);
+      }
       if (remainingPendingMessages.length === 0) {
         dispatchLocalThreadStatus(
           pendingThreadContextRef.current.threadId,
@@ -2014,43 +1991,11 @@ export default function Chat({
       return true;
     },
     [
-      clearAllPendingMessageAcceptanceTimeouts,
       getUnacceptedPendingUserMessages,
-          restorePendingDeliveryDraft,
+      restorePendingDeliveryDraft,
       showChatError,
       setMessages,
       setPendingMessages,
-    ],
-  );
-
-  const startPendingMessageAcceptanceTimeout = useCallback(
-    (clientMessageId: string) => {
-      clearPendingMessageAcceptanceTimeout(clientMessageId);
-      const timeout = setTimeout(() => {
-        pendingMessageAcceptanceTimeoutsRef.current.delete(clientMessageId);
-        if (isPendingMessageAccepted(clientMessageId)) {
-          return;
-        }
-
-        const stillPending = pendingMessagesRef.current.some(
-          (message) =>
-            message.id === clientMessageId ||
-            message.clientMessageId === clientMessageId,
-        );
-        if (!stillPending) {
-          return;
-        }
-
-        failPendingMessageDelivery(
-          "The message did not reach the server. I restored it as a draft so you can try again.",
-        );
-      }, MESSAGE_ACCEPTANCE_TIMEOUT_MS);
-      pendingMessageAcceptanceTimeoutsRef.current.set(clientMessageId, timeout);
-    },
-    [
-      clearPendingMessageAcceptanceTimeout,
-      failPendingMessageDelivery,
-      isPendingMessageAccepted,
     ],
   );
 
@@ -2478,6 +2423,52 @@ export default function Chat({
     ],
   );
 
+  const sendPendingMessageToAgent = useCallback(
+    (message: Message, activeThreadId: string) => {
+      const agent = chatAgentRef.current;
+      const content =
+        typeof message.content === "string"
+          ? message.content
+          : JSON.stringify(message.content);
+      const clientMessageId = message.clientMessageId ?? message.id;
+
+      if (!agent || agent.readyState !== WebSocket.OPEN) {
+        return;
+      }
+
+      void agent
+        .call<SendMessageResult>("sendMessage", [content, clientMessageId])
+        .then((result) => {
+          if (activeThreadId !== pendingThreadContextRef.current.threadId) {
+            return;
+          }
+          if (result.status === "accepted") {
+            markPendingDeliveryDraftAccepted(clientMessageId);
+            return;
+          }
+
+          failPendingMessageDelivery(
+            result.error ||
+              (result.status === "busy"
+                ? "The agent is busy. I restored your message as a draft so you can try again."
+                : "Failed to send message"),
+            { preserveReady: agent.readyState === WebSocket.OPEN },
+          );
+        })
+        .catch((error) => {
+          if (activeThreadId !== pendingThreadContextRef.current.threadId) {
+            return;
+          }
+          failPendingMessageDelivery(
+            error instanceof Error
+              ? error.message
+              : "The message did not reach the server. I restored it as a draft so you can try again.",
+          );
+        });
+    },
+    [failPendingMessageDelivery, markPendingDeliveryDraftAccepted],
+  );
+
   // Agent connection
   const agentEnabled = !readOnly && Boolean(threadId && resolvedWorkspaceId);
 
@@ -2511,7 +2502,7 @@ export default function Chat({
         const queuedMessages = pendingMessagesRef.current.filter((message) => {
           if (message.role !== "user") return false;
           const deliveryKey = message.clientMessageId ?? message.id;
-          return !sentPendingMessageIdsRef.current.has(deliveryKey);
+          return !isPendingMessageAccepted(deliveryKey);
         });
         if (queuedMessages.length > 0) {
           setLoading(true);
@@ -2526,23 +2517,8 @@ export default function Chat({
             setMessages([...currentMessages, ...missing]);
           }
 
-          // Send all queued messages
           for (const msg of queuedMessages) {
-            const content =
-              typeof msg.content === "string"
-                ? msg.content
-                : JSON.stringify(msg.content);
-            const clientMessageId = msg.clientMessageId ?? msg.id;
-            sentPendingMessageIdsRef.current.add(clientMessageId);
-            startPendingMessageAcceptanceTimeout(clientMessageId);
-            chatAgentRef.current?.send(
-              JSON.stringify({
-                type: "message",
-                content,
-                clientMessageId,
-                        threadId: id,
-              }),
-            );
+            sendPendingMessageToAgent(msg, id);
           }
           setPendingMessages((prev) => prev);
         }
@@ -3076,18 +3052,9 @@ export default function Chat({
           hasCapturedCompactionSummaryRef.current = false;
           refreshBillingCreditStatusAfterTurn(msgId ?? id);
         }
-      } else if (data.type === "message_accepted") {
-        const clientMessageId =
-          typeof data.clientMessageId === "string" ? data.clientMessageId : "";
-        if (clientMessageId) {
-          sentPendingMessageIdsRef.current.add(clientMessageId);
-          clearPendingMessageAcceptanceTimeout(clientMessageId);
-                markPendingDeliveryDraftAccepted(clientMessageId);
-        }
       } else if (data.type === "result") {
         if (id) {
           flushDeferredMessagesRender();
-          clearAllPendingMessageAcceptanceTimeouts();
           acceptedPendingMessageIdsRef.current.clear();
           setPendingMessages([]);
           dispatchLocalThreadStatus(id, "idle");
@@ -3155,10 +3122,8 @@ export default function Chat({
     },
     [
       clearPendingDeliveryDraft,
-      clearPendingMessageAcceptanceTimeout,
-      clearAllPendingMessageAcceptanceTimeouts,
       getUnacceptedPendingUserMessages,
-      markPendingDeliveryDraftAccepted,
+      isPendingMessageAccepted,
       persistSessionState,
       refreshBillingCreditStatusAfterTurn,
       restorePendingDeliveryDraft,
@@ -3167,7 +3132,7 @@ export default function Chat({
       setMessagesDeferred,
       setPendingMessages,
       setStreamingMessageId,
-      startPendingMessageAcceptanceTimeout,
+      sendPendingMessageToAgent,
       handleRealtimeSideChannelEvent,
       showChatError,
       threadId,
@@ -3176,23 +3141,7 @@ export default function Chat({
 
   const handleAgentClose = useCallback(() => {
     setReady(false);
-
-    // Messages sent on this Agent connection that were never accepted must be
-    // eligible for resend on the next ready flush. The server dedupes by
-    // clientMessageId, so retransmitting an actually-delivered message is
-    // safe; never retransmitting a dropped one loses it.
-    for (const message of getUnacceptedPendingUserMessages()) {
-      const deliveryKey = message.clientMessageId ?? message.id;
-      sentPendingMessageIdsRef.current.delete(deliveryKey);
-      clearPendingMessageAcceptanceTimeout(deliveryKey);
-    }
-
-    // Agents SDK reconnects automatically. When it reopens, our onopen
-    // init path replays missed events and flushes queued user messages.
-  }, [
-    clearPendingMessageAcceptanceTimeout,
-    getUnacceptedPendingUserMessages,
-  ]);
+  }, []);
 
   const handleAgentStateUpdate = useCallback(
     (state: ChatAgentState) => {
@@ -3302,14 +3251,10 @@ export default function Chat({
         URL.revokeObjectURL(previewUrl);
       }
       attachmentPreviewUrlsRef.current.clear();
-      clearAllPendingMessageAcceptanceTimeouts();
       acceptedPendingMessageIdsRef.current.clear();
       clearAllIframeRefreshTimeouts();
     };
-  }, [
-    clearAllIframeRefreshTimeouts,
-    clearAllPendingMessageAcceptanceTimeouts,
-  ]);
+  }, [clearAllIframeRefreshTimeouts]);
 
   // Check if we should show the chat UI
   const shouldShowChat = Boolean(threadId);
@@ -4344,16 +4289,7 @@ type SendOptions = {
     });
     if (chatAgentRef.current?.readyState === WebSocket.OPEN && ready) {
       setLoading(true);
-      sentPendingMessageIdsRef.current.add(clientMessageId);
-      startPendingMessageAcceptanceTimeout(clientMessageId);
-      chatAgentRef.current.send(
-        JSON.stringify({
-          type: "message",
-          content: finalContent,
-          clientMessageId,
-            threadId,
-        }),
-      );
+      sendPendingMessageToAgent(userMsg, threadId);
       setPendingMessages((prev) => prev);
     } else {
       // Queue the full message object for later delivery (with file refs in content).
