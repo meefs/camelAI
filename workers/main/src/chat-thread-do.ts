@@ -144,6 +144,8 @@ import {
 import {
   BrowserPromptCoordinator,
   type ConnectionSetupResponse,
+  type PendingConnectionSetupPromptData,
+  type PendingQuestionInfo,
 } from "./chat-thread-browser-prompts";
 import {
   applyContextUsageSdkEvent,
@@ -541,6 +543,12 @@ interface ChatThreadAgentState {
   previewRefreshTabId: string | null;
   currentTodos: unknown[];
   contextUsedPercent: number | null;
+  pendingQuestion: PendingQuestionInfo | null;
+  connectionSetupPrompt: PendingConnectionSetupPromptData | null;
+  title: string | null;
+  titleUpdatedAt: number | null;
+  model: LlmModel | null;
+  modelUpdatedAt: number | null;
 }
 
 export interface AdminExplorerThreadSummary {
@@ -877,12 +885,6 @@ interface ChatClientMessage {
   type: "message";
   content?: string;
   clientMessageId?: string;
-}
-
-interface ChatClientQuestionResponse {
-  type: "question_response";
-  questionId?: string;
-  answers?: Record<string, unknown>;
 }
 
 export interface InitialUserMessageRequest {
@@ -3958,12 +3960,15 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
   private cachedContextWindowByModel: Record<string, number> = {};
   private chatIsStreaming: boolean = false;
   private activeAutomationRun: ActiveAutomationRunState | null = null;
+  private currentTitle: string | null = null;
+  private currentTitleUpdatedAt: number | null = null;
+  private currentThreadModel: LlmModel | null = null;
+  private currentThreadModelUpdatedAt: number | null = null;
   private assistantCompletionRecordedAt: number | null = null;
   private assistantCompletionSummaryRequestedAt: number | null = null;
   private readonly browserPrompts = new BrowserPromptCoordinator({
     hasAvailableBrowserUser: () => this.hasAvailableBrowserUser(),
-    broadcast: (message) => this.broadcastChat(message),
-    sendDirect: (ws, message) => this.sendDirect(ws, message),
+    broadcast: (message) => this.handleBrowserPromptStateChange(message),
     askUserQuestionUnavailableMessage:
       ASK_USER_QUESTION_UNAVAILABLE_MESSAGE,
     questionTimeoutMs: 30 * 60 * 1000,
@@ -4032,12 +4037,21 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
     previewRefreshTabId: null,
     currentTodos: [],
     contextUsedPercent: null,
+    pendingQuestion: null,
+    connectionSetupPrompt: null,
+    title: null,
+    titleUpdatedAt: null,
+    model: null,
+    modelUpdatedAt: null,
   };
 
   static {
     const context = {} as ClassMethodDecoratorContext;
     callable()(this.prototype.requestStop, context);
     callable()(this.prototype.setPreviewTabsState, context);
+    callable()(this.prototype.answerQuestion, context);
+    callable()(this.prototype.submitConnectionSetupResponse, context);
+    callable()(this.prototype.refreshModel, context);
   }
 
   private agentState(
@@ -4055,12 +4069,37 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
         this.contextUsedPercent,
         this.chatIsStreaming,
       ),
+      pendingQuestion: cloneDurableState(
+        this.browserPrompts.getOldestPendingQuestion(),
+      ),
+      connectionSetupPrompt: cloneDurableState(
+        this.browserPrompts.pendingConnectionSetupPrompts()[0] ?? null,
+      ),
+      title: this.currentTitle,
+      titleUpdatedAt: this.currentTitleUpdatedAt,
+      model: this.currentThreadModel,
+      modelUpdatedAt: this.currentThreadModelUpdatedAt,
       ...overrides,
     };
   }
 
   private syncAgentState(overrides?: Partial<ChatThreadAgentState>): void {
     this.setState(this.agentState(overrides));
+  }
+
+  private handleBrowserPromptStateChange(
+    message: Record<string, unknown>,
+  ): void {
+    if (
+      message.type === "ask_user_question" ||
+      message.type === "question_answered" ||
+      message.type === "connection_setup_prompt" ||
+      message.type === "connection_setup_answered"
+    ) {
+      this.syncAgentState();
+      return;
+    }
+    this.broadcastChat(message);
   }
 
   private async withRunnerTransitionLock<T>(
@@ -4488,36 +4527,14 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
     }
 
     try {
-      if (data.type === "connection_setup_response") {
-        const result = await this.handleConnectionSetupResponse(
-          data as unknown as ConnectionSetupResponse,
-        );
-        if (!result.accepted) {
-          this.sendDirect(ws, {
-            type: "connection_setup_error",
-            requestId: typeof data.requestId === "string" ? data.requestId : "",
-            error: "Connection setup request is no longer pending. Please ask the agent to start connection setup again.",
-          });
-        }
-        return;
-      }
-
       // Chat transport messages
       if (data.type === "init") {
         await this.handleChatInit(ws, data as unknown as ChatClientInitMessage);
         return;
       }
 
-      if (data.type === "message" || data.type === "set_model") {
+      if (data.type === "message") {
         await this.handleRunnerClientMessage(ws, data);
-        return;
-      }
-
-      if (data.type === "question_response") {
-        await this.handleQuestionResponse(
-          ws,
-          data as unknown as ChatClientQuestionResponse,
-        );
         return;
       }
 
@@ -4726,6 +4743,41 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
     this.sendRunnerCommand({ type: "stop", threadId: this.chatContext?.threadId });
   }
 
+  async answerQuestion(
+    questionId: string,
+    answers: Record<string, unknown>,
+  ): Promise<void> {
+    if (!questionId || !answers || typeof answers !== "object") {
+      throw new Error("Missing questionId or answers");
+    }
+
+    if (this.browserPrompts.answerQuestion({ questionId, answers })) {
+      return;
+    }
+
+    this.sendRunnerCommand({
+      type: "question_response",
+      questionId,
+      answers,
+      userId: this.chatContext?.userId ?? undefined,
+    });
+  }
+
+  async submitConnectionSetupResponse(
+    response: ConnectionSetupResponse,
+  ): Promise<void> {
+    const result = await this.handleConnectionSetupResponse(response);
+    if (!result.accepted) {
+      throw new Error(
+        "Connection setup request is no longer pending. Please ask the agent to start connection setup again.",
+      );
+    }
+  }
+
+  async refreshModel(): Promise<void> {
+    await this.refreshPiSessionModel();
+  }
+
   private async setPreviewTabsStateInternal(
     tabs: PreviewTarget[],
     activeTabId: string | null,
@@ -4794,21 +4846,25 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
     this.syncAgentState();
   }
 
-  // Set thread title and broadcast to connected chat clients
+  // Set latest thread metadata for connected chat clients.
   async setTitle(title: string, updatedAt?: number): Promise<void> {
     const normalizedTitle = title.trim();
     if (!normalizedTitle) return;
-    this.pushChatEvent({
-      type: "title_updated",
-      title: normalizedTitle,
-      ...(typeof updatedAt === "number" && Number.isFinite(updatedAt)
-        ? { updatedAt }
-        : {}),
-    });
+    this.currentTitle = normalizedTitle;
+    this.currentTitleUpdatedAt =
+      typeof updatedAt === "number" && Number.isFinite(updatedAt)
+        ? updatedAt
+        : Date.now();
+    this.syncAgentState();
   }
 
   async setModel(model: LlmModel, updatedAt?: number): Promise<void> {
-    this.broadcastChat({ type: 'thread_model_updated', model, updatedAt });
+    this.currentThreadModel = model;
+    this.currentThreadModelUpdatedAt =
+      typeof updatedAt === "number" && Number.isFinite(updatedAt)
+        ? updatedAt
+        : Date.now();
+    this.syncAgentState();
   }
 
   async setTodoState(todos: unknown[]): Promise<void> {
@@ -7543,16 +7599,6 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
         : 0;
 
     this.sendDirect(ws, { type: "ready" });
-    this.browserPrompts.sendPendingPromptsToWebSocket(ws);
-
-    for (const pending of this.browserPrompts.pendingQuestionPrompts()) {
-      this.sendDirect(ws, {
-        type: "ask_user_question",
-        questionId: pending.questionId,
-        toolUseId: pending.toolUseId,
-        questions: pending.questions,
-      });
-    }
 
     this.replayChatEvents(ws, lastEventId);
 
@@ -7915,29 +7961,6 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
     }
 
     return { status: "accepted" };
-  }
-
-  private async handleQuestionResponse(
-    ws: WebSocket,
-    data: ChatClientQuestionResponse,
-  ): Promise<void> {
-    if (!data.questionId || !data.answers || typeof data.answers !== "object") {
-      this.emitChatError("Missing questionId or answers");
-      return;
-    }
-
-    if (this.browserPrompts.answerQuestion(data)) {
-      return;
-    }
-
-    const answeringUserId =
-      this.getSocketChatContext(ws)?.userId ?? this.chatContext?.userId ?? null;
-    this.sendRunnerCommand({
-      type: "question_response",
-      questionId: data.questionId,
-      answers: data.answers,
-      userId: answeringUserId ?? undefined,
-    });
   }
 
   private getPreviewTabId(target: PreviewTarget): string {
@@ -8931,6 +8954,7 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
     });
     if (sent) {
       this.browserPrompts.deletePendingQuestion(questionId);
+      this.syncAgentState();
     }
     return sent;
   }
@@ -12657,14 +12681,6 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
         }
         if (type === "ping") {
           this.pushChatEvent({ type: "pong", ts: message.ts });
-          return true;
-        }
-        if (type === "set_model") {
-          this.ctx.waitUntil(
-            this.refreshPiSessionModel().catch((error) => {
-              console.error("[ChatThreadDO] failed to refresh Pi model", error);
-            }),
-          );
           return true;
         }
         if (type === "question_response") {

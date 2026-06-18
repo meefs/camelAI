@@ -4,36 +4,31 @@ import type {
   ConnectionSetupResponse,
 } from "@/components/connection-setup-prompt";
 
-type ChatSocketLike = {
+type ChatAgentClientLike = {
   readyState: number;
-  send(data: string): void;
+  call<T = unknown>(method: string, args?: unknown[]): Promise<T>;
 };
 
 export function useConnectionSetupResponse({
-  wsRef,
+  chatAgentRef,
 }: {
-  wsRef: RefObject<ChatSocketLike | null>;
+  chatAgentRef: RefObject<ChatAgentClientLike | null>;
 }) {
   const [connectionSetupPrompt, setConnectionSetupPrompt] =
     useState<ConnectionSetupPromptData | null>(null);
 
   const handleConnectionSetupResponse = useCallback(
     async (response: ConnectionSetupResponse) => {
-      const socket = wsRef.current;
-      if (!socket || socket.readyState !== WebSocket.OPEN) {
+      const agent = chatAgentRef.current;
+      if (!agent || agent.readyState !== WebSocket.OPEN) {
         throw new Error(
           "The chat connection disconnected before the connection details could be submitted. Please try again.",
         );
       }
 
-      socket.send(
-        JSON.stringify({
-          type: "connection_setup_response",
-          ...response,
-        }),
-      );
+      await agent.call("submitConnectionSetupResponse", [response]);
     },
-    [wsRef],
+    [chatAgentRef],
   );
 
   const handleConnectionSetupCancel = useCallback(() => {

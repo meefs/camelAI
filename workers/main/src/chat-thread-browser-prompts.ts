@@ -48,6 +48,11 @@ interface PendingConnectionSetupPromptInfo {
   dynamicSchema?: DynamicIntegrationSchema;
 }
 
+export interface PendingConnectionSetupPromptData
+  extends PendingConnectionSetupPromptInfo {
+  requestId: string;
+}
+
 interface PendingConnectionSetupWaiter {
   resolve: (response: ConnectionSetupResponse) => void;
   reject: (error: Error) => void;
@@ -58,7 +63,6 @@ interface PendingConnectionSetupWaiter {
 interface BrowserPromptCoordinatorOptions {
   hasAvailableBrowserUser: () => boolean;
   broadcast: (message: Record<string, unknown>) => void;
-  sendDirect: (ws: WebSocket, message: Record<string, unknown>) => void;
   askUserQuestionUnavailableMessage: string;
   questionTimeoutMs: number;
   connectionSetupTimeoutMs: number;
@@ -141,6 +145,12 @@ export class BrowserPromptCoordinator {
 
   pendingQuestionPrompts(): PendingQuestionInfo[] {
     return [...this.pendingQuestions.values()];
+  }
+
+  pendingConnectionSetupPrompts(): PendingConnectionSetupPromptData[] {
+    return Array.from(this.pendingConnectionSetupWaiters.entries())
+      .sort(([, a], [, b]) => a.info.createdAt - b.info.createdAt)
+      .map(([requestId, waiter]) => ({ requestId, ...waiter.info }));
   }
 
   deletePendingQuestion(questionId: string): void {
@@ -291,26 +301,5 @@ export class BrowserPromptCoordinator {
       requestId: response.requestId,
     });
     return { accepted: true };
-  }
-
-  sendPendingPromptsToWebSocket(ws: WebSocket): void {
-    const connectionPrompts = Array.from(
-      this.pendingConnectionSetupWaiters.entries(),
-    ).sort(([, a], [, b]) => a.info.createdAt - b.info.createdAt);
-    for (const [requestId, waiter] of connectionPrompts) {
-      const info = waiter.info;
-      this.options.sendDirect(ws, {
-        type: "connection_setup_prompt",
-        requestId,
-        integrationId: info.integrationId,
-        integrationType: info.integrationType,
-        suggestedName: info.suggestedName,
-        message: info.message,
-        instructions: info.instructions,
-        initialConfig: info.initialConfig,
-        initialCredentials: info.initialCredentials,
-        dynamicSchema: info.dynamicSchema,
-      });
-    }
   }
 }

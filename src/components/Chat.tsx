@@ -178,15 +178,52 @@ type ChatAgentState = {
   previewRefreshTabId?: string | null;
   currentTodos?: unknown[];
   contextUsedPercent?: number | null;
+  pendingQuestion?: AskUserQuestionData | null;
+  connectionSetupPrompt?: ConnectionSetupPromptData | null;
+  title?: string | null;
+  titleUpdatedAt?: number | null;
+  model?: LlmModel | null;
+  modelUpdatedAt?: number | null;
 };
 
-type ChatAgentSocket = {
+type ChatAgentClient = {
   readyState: number;
   send(data: string): void;
   close(): void;
   reconnect(): void;
   call<T = unknown>(method: string, args?: unknown[]): Promise<T>;
 };
+
+function jsonEqual(left: unknown, right: unknown): boolean {
+  if (left === right) return true;
+  try {
+    return JSON.stringify(left) === JSON.stringify(right);
+  } catch {
+    return false;
+  }
+}
+
+function samePendingQuestion(
+  left: AskUserQuestionData | null,
+  right: AskUserQuestionData | null,
+): boolean {
+  if (left === right) return true;
+  if (!left || !right) return false;
+  return (
+    left.questionId === right.questionId &&
+    left.toolUseId === right.toolUseId &&
+    jsonEqual(left.questions, right.questions)
+  );
+}
+
+function sameConnectionSetupPrompt(
+  left: ConnectionSetupPromptData | null,
+  right: ConnectionSetupPromptData | null,
+): boolean {
+  if (left === right) return true;
+  if (!left || !right) return false;
+  return left.requestId === right.requestId && jsonEqual(left, right);
+}
 
 // The backend acknowledges receipt before slow runner enqueue work, so this
 // timeout only covers messages that never make it to ChatThreadDO.
@@ -677,6 +714,7 @@ export default function Chat({
   }, [currentTodos, messages, onSnapshotChange, readOnly, threadId]);
   const [pendingQuestion, setPendingQuestion] =
     useState<AskUserQuestionData | null>(null);
+  const optimisticallyAnsweredQuestionIdRef = useRef<string | null>(null);
   const currentChatPath = useMemo(
     () => `${location.pathname}${location.search}${location.hash}`,
     [location.hash, location.pathname, location.search],
@@ -1294,15 +1332,25 @@ export default function Chat({
   const stickToBottomRef = useRef(true);
   const forceScrollOnNextUpdate = useRef(false);
   const splitStreamingMessageOnNextPartRef = useRef(false);
-  const wsRef = useRef<ChatAgentSocket | null>(null);
+  const chatAgentRef = useRef<ChatAgentClient | null>(null);
+  const optimisticallyClearedConnectionSetupRequestIdRef = useRef<string | null>(
+    null,
+  );
   const {
     connectionSetupPrompt,
-    handleConnectionSetupCancel,
+    handleConnectionSetupCancel: handleConnectionSetupCancelBase,
     handleConnectionSetupResponse,
     setConnectionSetupPrompt,
   } = useConnectionSetupResponse({
-    wsRef,
+    chatAgentRef,
   });
+  const handleConnectionSetupCancel = useCallback(() => {
+    if (connectionSetupPrompt?.requestId) {
+      optimisticallyClearedConnectionSetupRequestIdRef.current =
+        connectionSetupPrompt.requestId;
+    }
+    handleConnectionSetupCancelBase();
+  }, [connectionSetupPrompt?.requestId, handleConnectionSetupCancelBase]);
   const lastRunnerModelSelectionRef = useRef<string | null>(null);
   const iframeRefreshTimeoutsRef = useRef<
     Record<string, ReturnType<typeof setTimeout>>
@@ -2162,10 +2210,10 @@ export default function Chat({
   const syncPreviewTabsStateBestEffort = useCallback(
     (nextTabs: PreviewTab[], nextActiveTabId: string | null) => {
       if (!threadId) return;
-      const socket = wsRef.current;
-      if (!socket || socket.readyState !== WebSocket.OPEN) return;
+      const agent = chatAgentRef.current;
+      if (!agent || agent.readyState !== WebSocket.OPEN) return;
 
-      void socket
+      void agent
         .call("setPreviewTabsState", [
           nextTabs.map((tab) => tab.target),
           nextActiveTabId,
@@ -2441,77 +2489,8 @@ export default function Chat({
 
   const handleRealtimeSideChannelEvent = useCallback(
     (data: any) => {
-      if (data.type === "title_updated" && typeof data.title === "string") {
-        if (typeof document !== "undefined") {
-          document.title = `${data.title || "Chat"} - camelAI`;
-        }
-        const updatedAt =
-          typeof data.updatedAt === "number" && Number.isFinite(data.updatedAt)
-            ? data.updatedAt
-            : Date.now();
-        dispatchLocalThreadSummaryUpdate(threadId, {
-          title: data.title,
-          updatedAt,
-        });
-        return;
-      }
-
-      if (data.type === "thread_model_updated" && isLlmModel(data.model)) {
-        const updatedAt =
-          typeof data.updatedAt === "number" && Number.isFinite(data.updatedAt)
-            ? data.updatedAt
-            : Date.now();
-        setSelectedThreadModel(data.model);
-        dispatchLocalThreadSummaryUpdate(threadId, {
-          model: data.model,
-          updatedAt,
-        });
-        return;
-      }
-
       if (data.type === "code_mode_artifact") {
         handleCodeModeArtifactEvent(data);
-        return;
-      }
-
-      if (
-        data.type === "connection_setup_prompt" &&
-        data.requestId &&
-        data.integrationType
-      ) {
-        setConnectionSetupPrompt({
-          requestId: data.requestId as string,
-          integrationId: data.integrationId as string | undefined,
-          integrationType: data.integrationType as string,
-          suggestedName: data.suggestedName as string | undefined,
-          message: data.message as string | undefined,
-          instructions: data.instructions as string | undefined,
-          initialConfig:
-            data.initialConfig as ConnectionSetupPromptData["initialConfig"],
-          initialCredentials:
-            data.initialCredentials as ConnectionSetupPromptData["initialCredentials"],
-          dynamicSchema:
-            data.dynamicSchema as ConnectionSetupPromptData["dynamicSchema"],
-        });
-        return;
-      }
-
-      if (data.type === "connection_setup_answered" && data.requestId) {
-        setConnectionSetupPrompt((prev) =>
-          prev?.requestId === data.requestId ? null : prev,
-        );
-        return;
-      }
-
-      if (data.type === "connection_setup_error" && data.requestId) {
-        setConnectionSetupPrompt((prev) =>
-          prev?.requestId === data.requestId ? null : prev,
-        );
-        showChatError(
-          typeof data.error === "string"
-            ? data.error
-            : "Connection setup failed. Please ask the agent to start connection setup again.",
-        );
         return;
       }
 
@@ -2532,7 +2511,7 @@ export default function Chat({
 
   const handleAgentOpen = useCallback(() => {
     if (!threadId) return;
-    wsRef.current?.send(
+    chatAgentRef.current?.send(
       JSON.stringify({
         type: "init",
         threadId,
@@ -2584,7 +2563,7 @@ export default function Chat({
             const clientMessageId = msg.clientMessageId ?? msg.id;
             sentPendingMessageIdsRef.current.add(clientMessageId);
             startPendingMessageAcceptanceTimeout(clientMessageId);
-            wsRef.current?.send(
+            chatAgentRef.current?.send(
               JSON.stringify({
                 type: "message",
                 content,
@@ -3125,23 +3104,6 @@ export default function Chat({
           hasCapturedCompactionSummaryRef.current = false;
           refreshBillingCreditStatusAfterTurn(msgId ?? id);
         }
-      } else if (data.type === "ask_user_question") {
-        // Claude is asking the user a question
-        if (data.questionId && Array.isArray(data.questions)) {
-          setPendingQuestion({
-            questionId: data.questionId,
-            toolUseId: data.toolUseId,
-            questions: data.questions,
-          });
-        }
-      } else if (data.type === "question_answered") {
-        // Clear the pending question
-        setPendingQuestion((prev) => {
-          if (prev?.questionId === data.questionId) {
-            return null;
-          }
-          return prev;
-        });
       } else if (data.type === "message_accepted") {
         const clientMessageId =
           typeof data.clientMessageId === "string" ? data.clientMessageId : "";
@@ -3215,14 +3177,7 @@ export default function Chat({
         setCompactingPriorMessageId(null);
         clearManualCompactionQueue();
         hasCapturedCompactionSummaryRef.current = false;
-      } else if (
-        data.type === "title_updated" ||
-        data.type === "thread_model_updated" ||
-        data.type === "code_mode_artifact" ||
-        data.type === "connection_setup_prompt" ||
-        data.type === "connection_setup_answered" ||
-        data.type === "connection_setup_error"
-      ) {
+      } else if (data.type === "code_mode_artifact") {
         handleRealtimeSideChannelEvent(data);
       }
     },
@@ -3250,7 +3205,7 @@ export default function Chat({
   const handleAgentClose = useCallback(() => {
     setReady(false);
 
-    // Messages sent on this socket that were never accepted must be
+    // Messages sent on this Agent connection that were never accepted must be
     // eligible for resend on the next ready flush. The server dedupes by
     // clientMessageId, so retransmitting an actually-delivered message is
     // safe; never retransmitting a dropped one loses it.
@@ -3274,6 +3229,58 @@ export default function Chat({
       if (Array.isArray(state.currentTodos)) {
         setCurrentTodos(state.currentTodos as TodoItem[]);
       }
+      setPendingQuestion((previous) => {
+        const next = state.pendingQuestion ?? null;
+        const suppressedId = optimisticallyAnsweredQuestionIdRef.current;
+        if (!next) {
+          if (suppressedId) optimisticallyAnsweredQuestionIdRef.current = null;
+          return previous === null ? previous : null;
+        }
+        if (suppressedId === next.questionId) return previous;
+        if (suppressedId) optimisticallyAnsweredQuestionIdRef.current = null;
+        return samePendingQuestion(previous, next) ? previous : next;
+      });
+      setConnectionSetupPrompt((previous) => {
+        const next = state.connectionSetupPrompt ?? null;
+        const suppressedId =
+          optimisticallyClearedConnectionSetupRequestIdRef.current;
+        if (!next) {
+          if (suppressedId) {
+            optimisticallyClearedConnectionSetupRequestIdRef.current = null;
+          }
+          return previous === null ? previous : null;
+        }
+        if (suppressedId === next.requestId) return previous;
+        if (suppressedId) {
+          optimisticallyClearedConnectionSetupRequestIdRef.current = null;
+        }
+        return sameConnectionSetupPrompt(previous, next) ? previous : next;
+      });
+      if (typeof state.title === "string") {
+        if (typeof document !== "undefined") {
+          document.title = `${state.title || "Chat"} - camelAI`;
+        }
+        dispatchLocalThreadSummaryUpdate(threadId, {
+          title: state.title,
+          updatedAt:
+            typeof state.titleUpdatedAt === "number" &&
+            Number.isFinite(state.titleUpdatedAt)
+              ? state.titleUpdatedAt
+              : Date.now(),
+        });
+      }
+      if (isLlmModel(state.model)) {
+        const updatedAt =
+          typeof state.modelUpdatedAt === "number" &&
+          Number.isFinite(state.modelUpdatedAt)
+            ? state.modelUpdatedAt
+            : Date.now();
+        setSelectedThreadModel(state.model);
+        dispatchLocalThreadSummaryUpdate(threadId, {
+          model: state.model,
+          updatedAt,
+        });
+      }
       const usedPercent = state.contextUsedPercent;
       setContextUsedPercent(
         typeof usedPercent === "number" && Number.isFinite(usedPercent)
@@ -3281,7 +3288,7 @@ export default function Chat({
           : null,
       );
     },
-    [applyAgentPreviewState],
+    [applyAgentPreviewState, setConnectionSetupPrompt, threadId],
   );
 
   const agentSocket = useAgent<ChatAgentState>({
@@ -3299,9 +3306,9 @@ export default function Chat({
   });
 
   useEffect(() => {
-    wsRef.current = agentEnabled ? agentSocket : null;
+    chatAgentRef.current = agentEnabled ? agentSocket : null;
     return () => {
-      if (wsRef.current === agentSocket) wsRef.current = null;
+      if (chatAgentRef.current === agentSocket) chatAgentRef.current = null;
     };
   }, [agentEnabled, agentSocket]);
 
@@ -3883,19 +3890,14 @@ export default function Chat({
         model: nextModel,
         updatedAt,
       });
+      const agent = chatAgentRef.current;
       if (
         lastRunnerModelSelectionRef.current !== nextSelectionKey &&
-        wsRef.current?.readyState === WebSocket.OPEN &&
+        agent?.readyState === WebSocket.OPEN &&
         ready
       ) {
         lastRunnerModelSelectionRef.current = nextSelectionKey;
-        wsRef.current.send(
-          JSON.stringify({
-            type: "set_model",
-            model: nextModel,
-            threadId,
-              }),
-        );
+        void agent.call("refreshModel").catch(() => {});
       }
     }
   }, [
@@ -4128,24 +4130,19 @@ export default function Chat({
   }
 
   function stopGeneration() {
-    if (wsRef.current?.readyState !== WebSocket.OPEN) return;
-    void wsRef.current.call("requestStop").catch(() => {});
+    if (chatAgentRef.current?.readyState !== WebSocket.OPEN) return;
+    void chatAgentRef.current.call("requestStop").catch(() => {});
   }
 
   const handleQuestionResponse = useCallback(
     (answers: Record<string, string>) => {
-      const socket = wsRef.current;
-      if (!pendingQuestion || !socket || socket.readyState !== WebSocket.OPEN) {
+      const agent = chatAgentRef.current;
+      if (!pendingQuestion || !agent || agent.readyState !== WebSocket.OPEN) {
         return;
       }
 
-      socket.send(
-        JSON.stringify({
-          type: "question_response",
-          questionId: pendingQuestion.questionId,
-          answers,
-        }),
-      );
+      optimisticallyAnsweredQuestionIdRef.current = pendingQuestion.questionId;
+      void agent.call("answerQuestion", [pendingQuestion.questionId, answers]);
 
       // Optimistically clear the question
       setPendingQuestion(null);
@@ -4179,8 +4176,8 @@ export default function Chat({
         return;
       }
 
-      const socket = wsRef.current;
-      if (!socket || socket.readyState !== WebSocket.OPEN) {
+      const agent = chatAgentRef.current;
+      if (!agent || agent.readyState !== WebSocket.OPEN) {
         if (target === null) {
           resetPreviewTabsState();
           setMobileView("chat");
@@ -4373,11 +4370,11 @@ type SendOptions = {
       runningActivityAt: userMessageAt,
       runningStartedAt: userMessageAt,
     });
-    if (wsRef.current?.readyState === WebSocket.OPEN && ready) {
+    if (chatAgentRef.current?.readyState === WebSocket.OPEN && ready) {
       setLoading(true);
       sentPendingMessageIdsRef.current.add(clientMessageId);
       startPendingMessageAcceptanceTimeout(clientMessageId);
-      wsRef.current.send(
+      chatAgentRef.current.send(
         JSON.stringify({
           type: "message",
           content: finalContent,
@@ -4389,13 +4386,13 @@ type SendOptions = {
     } else {
       // Queue the full message object for later delivery (with file refs in content)
       setLoading(true);
-      const socketState = wsRef.current?.readyState;
+      const agentState = chatAgentRef.current?.readyState;
       if (
-        socketState == null ||
-        socketState === WebSocket.CLOSING ||
-        socketState === WebSocket.CLOSED
+        agentState == null ||
+        agentState === WebSocket.CLOSING ||
+        agentState === WebSocket.CLOSED
       ) {
-        if (wsRef.current) wsRef.current.reconnect();
+        if (chatAgentRef.current) chatAgentRef.current.reconnect();
 
       }
       // If connected but not ready, the message will be sent when ready event arrives
