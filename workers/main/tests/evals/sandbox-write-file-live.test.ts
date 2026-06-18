@@ -85,7 +85,6 @@ describe("sandbox write file agent eval", () => {
         getEvalSignalThresholds(testEnv, {
           maxAssistantTurns: 4,
           maxBadToolCalls: 0,
-          maxSdkTurns: 4,
         }),
       );
 

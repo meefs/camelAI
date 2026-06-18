@@ -12,7 +12,7 @@ vi.mock('../src/admin-index-bootstrap', () => ({
 import { loadAdminThreadMessagesResponse } from '../src/routes/admin/helpers';
 
 describe('loadAdminThreadMessagesResponse', () => {
-  it('returns Pi messages when legacy lookup fails for a migrated thread', async () => {
+  it('returns Pi messages directly', async () => {
     const piMessages = [
       {
         id: 'message-1',
@@ -22,7 +22,6 @@ describe('loadAdminThreadMessagesResponse', () => {
         created_at: 123,
       },
     ];
-    const legacyFetch = vi.fn(async () => new Response('legacy down', { status: 503 }));
     const env = {
       APP_DB: {
         getThreadContextById: vi.fn(async () => ({
@@ -46,12 +45,7 @@ describe('loadAdminThreadMessagesResponse', () => {
         idFromName: (id: string) => id,
         get: vi.fn(() => ({
           getPiCoreParsedMessages: vi.fn(async () => piMessages),
-          getLegacyClaudeSessionId: vi.fn(async () => null),
-          getCodexSessionId: vi.fn(async () => null),
         })),
-      },
-      LEGACY_WORKSPACE_HOST: {
-        fetch: legacyFetch,
       },
     };
 
@@ -61,6 +55,5 @@ describe('loadAdminThreadMessagesResponse', () => {
     expect(response.status).toBe(200);
     expect(body.success).toBe(true);
     expect(body.messages).toEqual(piMessages);
-    expect(legacyFetch).toHaveBeenCalledTimes(1);
   });
 });

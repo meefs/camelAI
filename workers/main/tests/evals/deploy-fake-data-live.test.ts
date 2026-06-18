@@ -113,7 +113,6 @@ describe("deploy fake data agent eval", () => {
         getEvalSignalThresholds(testEnv, {
           maxAssistantTurns: 14,
           maxBadToolCalls: 0,
-          maxSdkTurns: 14,
         }),
       );
       const deployedApps = await listEvalDeployApps(

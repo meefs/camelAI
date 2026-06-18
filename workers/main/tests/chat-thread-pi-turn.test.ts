@@ -70,7 +70,7 @@ function createChannelOrgNamespace({
   };
 }
 
-describe('ChatThreadDO Codex turn handling', () => {
+describe('ChatThreadDO Pi turn handling', () => {
   function createPiEventFake() {
     const events: any[] = [];
     const activityRecords: any[] = [];
@@ -137,20 +137,6 @@ describe('ChatThreadDO Codex turn handling', () => {
     fake.browserPrompts.pendingConnectionSetupPrompts ??= vi.fn(() => []);
     fake.setState = vi.fn();
   }
-
-  it('resolves legacy-prefixed model ids before selecting the Pi model', () => {
-    const result = ChatThreadDO.prototype['resolvePiModelReference'].call(
-      Object.create(ChatThreadDO.prototype),
-      'codex/kimi-k2.6',
-    );
-
-    expect(result).toEqual({
-      provider: 'openrouter',
-      modelId: 'moonshotai/kimi-k2.7-code',
-      hostedGatewayProvider: 'openrouter',
-      hostedModelId: 'moonshotai/kimi-k2.7-code:nitro',
-    });
-  });
 
   it('normalizes retired Fable 5 requests to Sonnet', () => {
     const result = ChatThreadDO.prototype['resolvePiModelReference'].call(
@@ -1245,10 +1231,8 @@ describe('ChatThreadDO Codex turn handling', () => {
       storage: { kv: { put: vi.fn() } },
     };
     fake.runnerTransitionChain = Promise.resolve();
-    fake.codexSessionId = null;
     fake.lastRunnerSeq = 0;
     fake.trace = vi.fn();
-    fake.getLegacyClaudeSessionId = vi.fn(() => null);
     fake.ensurePiSession = vi.fn(async () => undefined);
 
     await ChatThreadDO.prototype['ensurePiSessionReady'].call(fake);
@@ -1295,10 +1279,8 @@ describe('ChatThreadDO Codex turn handling', () => {
       storage: { kv: { put: vi.fn() } },
     };
     fake.runnerTransitionChain = Promise.resolve();
-    fake.codexSessionId = null;
     fake.lastRunnerSeq = 0;
     fake.trace = vi.fn();
-    fake.getLegacyClaudeSessionId = vi.fn(() => null);
     fake.ensurePiSession = vi.fn(async () => undefined);
 
     await ChatThreadDO.prototype['ensurePiSessionReady'].call(fake);
@@ -1339,10 +1321,8 @@ describe('ChatThreadDO Codex turn handling', () => {
       storage: { kv: { put: vi.fn() } },
     };
     fake.runnerTransitionChain = Promise.resolve();
-    fake.codexSessionId = null;
     fake.lastRunnerSeq = 0;
     fake.trace = vi.fn();
-    fake.getLegacyClaudeSessionId = vi.fn(() => null);
     fake.ensurePiSession = vi.fn(async () => undefined);
 
     await ChatThreadDO.prototype['ensurePiSessionReady'].call(fake);
@@ -1694,7 +1674,7 @@ describe('ChatThreadDO Codex turn handling', () => {
 
     const model = await ChatThreadDO.prototype['resolvePiModel'].call(
       fake,
-      { provider: 'codex', orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1' },
+      { provider: 'pi', orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1' },
       { CHIRIDION_CODEX_MODEL: 'gpt-5.5' },
       getModel,
     );
@@ -1739,7 +1719,7 @@ describe('ChatThreadDO Codex turn handling', () => {
 
     const model = await ChatThreadDO.prototype['resolvePiModel'].call(
       fake,
-      { provider: 'codex', orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1' },
+      { provider: 'pi', orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1' },
       { CHIRIDION_CODEX_MODEL: 'gpt-5.4-mini' },
       getModel,
     );
@@ -1769,7 +1749,7 @@ describe('ChatThreadDO Codex turn handling', () => {
 
     await expect(ChatThreadDO.prototype['resolvePiModel'].call(
       fake,
-      { provider: 'codex', orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1' },
+      { provider: 'pi', orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1' },
       { CHIRIDION_CODEX_MODEL: 'gpt-5.5' },
       vi.fn((provider: string, id: string) => ({ id, provider, api: 'openai-responses' })),
     )).rejects.toThrow('OpenAI gpt-5.5 on Amazon Bedrock is not available in eu-west-1');
@@ -5677,8 +5657,7 @@ describe('ChatThreadDO Codex turn handling', () => {
       },
     });
 
-    expect(events).toHaveLength(1);
-    expect(events[0]).toMatchObject({ type: 'sdk_event' });
+    expect(events).toEqual([]);
   });
 
   it('does not broadcast internal recovery context SDK user events', async () => {
@@ -7831,201 +7810,6 @@ describe('ChatThreadDO Codex turn handling', () => {
     expect(result.details.messageIds).toEqual([22]);
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(recordThreadChannelUsed).toHaveBeenCalledWith('thread1', 'telegram');
-  });
-
-  it('defers legacy history hydration without mutating while a Pi turn is active', async () => {
-    const fake = Object.create(ChatThreadDO.prototype) as any;
-    fake.chatContext = { threadId: 'thread1' };
-    fake.chatIsStreaming = true;
-    fake.activeTurnUserId = 'user1';
-    fake.piSession = { state: { isStreaming: true } };
-    fake.loadPiCoreMessages = vi.fn(async () => []);
-    fake.loadPiInFlightMessages = vi.fn(async () => []);
-    fake.replacePiCoreMessages = vi.fn();
-    fake.disposePiSession = vi.fn();
-    fake.clearPiInFlightMessages = vi.fn();
-    fake.recordChatThreadObservabilityEvent = vi.fn();
-    fake.ctx = { storage: { sql: { exec: vi.fn() } } };
-
-    const result = await ChatThreadDO.prototype.hydratePiCoreFromParsedMessages.call(fake, 'thread1', [
-      {
-        id: 'legacy-user',
-        role: 'user',
-        content: 'hello',
-        created_at: 123,
-      },
-    ]);
-
-    expect(result).toEqual({
-      hydrated: false,
-      count: 0,
-      existingCount: 0,
-      deferred: true,
-    });
-    expect(fake.disposePiSession).not.toHaveBeenCalled();
-    expect(fake.replacePiCoreMessages).not.toHaveBeenCalled();
-    expect(fake.clearPiInFlightMessages).not.toHaveBeenCalled();
-  });
-
-  it('preserves compact-summary flags when hydrating legacy user messages', async () => {
-    const fake = Object.create(ChatThreadDO.prototype) as any;
-    fake.chatContext = { threadId: 'thread1' };
-    fake.chatIsStreaming = false;
-    fake.activeTurnUserId = null;
-    fake.piSession = null;
-    fake.loadPiCoreMessages = vi.fn(async () => []);
-    fake.loadPiInFlightMessages = vi.fn(async () => []);
-    fake.replacePiCoreMessages = vi.fn(async () => undefined);
-    fake.disposePiSession = vi.fn();
-    fake.clearPiInFlightMessages = vi.fn();
-    fake.recordChatThreadObservabilityEvent = vi.fn();
-    fake.ctx = { storage: { sql: { exec: vi.fn() } } };
-
-    await ChatThreadDO.prototype.hydratePiCoreFromParsedMessages.call(fake, 'thread1', [
-        {
-          id: 'legacy-summary',
-          role: 'user',
-          content: 'Compacted thread summary',
-          created_at: 123,
-          isCompactSummary: true,
-          sentDuringStreaming: true,
-        },
-    ]);
-
-    expect(fake.replacePiCoreMessages).toHaveBeenCalledTimes(1);
-    const messages = fake.replacePiCoreMessages.mock.calls[0][0];
-    expect(messages[0].metadata).toMatchObject({
-      compactSummary: true,
-      sentDuringStreaming: true,
-    });
-
-    const parsed = ChatThreadDO.prototype['piCoreMessageToParsedChatMessage'].call(
-      fake,
-      messages[0],
-      0,
-      'thread1',
-    );
-    expect(parsed[0]).toMatchObject({
-      role: 'user',
-      content: 'Compacted thread summary',
-      isCompactSummary: true,
-      sentDuringStreaming: true,
-    });
-  });
-
-  it('preserves task notification summaries and teammate message content during legacy hydration', async () => {
-    const fake = Object.create(ChatThreadDO.prototype) as any;
-    fake.chatContext = { threadId: 'thread1' };
-    fake.chatIsStreaming = false;
-    fake.activeTurnUserId = null;
-    fake.piSession = null;
-    fake.loadPiCoreMessages = vi.fn(async () => []);
-    fake.loadPiInFlightMessages = vi.fn(async () => []);
-    fake.replacePiCoreMessages = vi.fn(async () => undefined);
-    fake.disposePiSession = vi.fn();
-    fake.clearPiInFlightMessages = vi.fn();
-    fake.recordChatThreadObservabilityEvent = vi.fn();
-    fake.ctx = { storage: { sql: { exec: vi.fn() } } };
-
-    await ChatThreadDO.prototype.hydratePiCoreFromParsedMessages.call(fake, 'thread1', [
-      {
-        id: 'legacy-assistant',
-        role: 'assistant',
-        content: [
-          {
-            type: 'task_notification',
-            summary: 'Task finished successfully',
-          },
-          {
-            type: 'teammate_message',
-            content: 'Teammate asked for the latest deployment URL',
-          },
-        ],
-        created_at: 123,
-      },
-    ]);
-
-    expect(fake.replacePiCoreMessages).toHaveBeenCalledTimes(1);
-    const messages = fake.replacePiCoreMessages.mock.calls[0][0];
-    expect(messages).toHaveLength(1);
-    expect(messages[0].content).toEqual([
-      { type: 'text', text: 'Task finished successfully' },
-      { type: 'text', text: 'Teammate asked for the latest deployment URL' },
-    ]);
-  });
-
-  it('omits legacy thinking and tool blocks while preserving adjacent assistant text during hydration', async () => {
-    const fake = Object.create(ChatThreadDO.prototype) as any;
-    fake.chatContext = { threadId: 'thread1' };
-    fake.chatIsStreaming = false;
-    fake.activeTurnUserId = null;
-    fake.piSession = null;
-    fake.loadPiCoreMessages = vi.fn(async () => []);
-    fake.loadPiInFlightMessages = vi.fn(async () => []);
-    fake.replacePiCoreMessages = vi.fn(async () => undefined);
-    fake.disposePiSession = vi.fn();
-    fake.clearPiInFlightMessages = vi.fn();
-    fake.recordChatThreadObservabilityEvent = vi.fn();
-    fake.ctx = { storage: { sql: { exec: vi.fn() } } };
-
-    await ChatThreadDO.prototype.hydratePiCoreFromParsedMessages.call(fake, 'thread1', [
-      {
-        id: 'legacy-assistant',
-        role: 'assistant',
-        content: [
-          { type: 'text', text: 'I checked the files.' },
-          { type: 'thinking', thinking: 'This internal chain of thought should not be visible.' },
-          { type: 'tool_use', id: 'tool-1', name: 'bash', input: { command: 'cat huge.log' } },
-          { type: 'tool_result', tool_use_id: 'tool-1', content: 'very long output'.repeat(1000) },
-          { type: 'text', text: 'The build is fixed.' },
-        ],
-        created_at: 123,
-      },
-    ]);
-
-    expect(fake.replacePiCoreMessages).toHaveBeenCalledTimes(1);
-    const messages = fake.replacePiCoreMessages.mock.calls[0][0];
-    expect(messages).toHaveLength(1);
-    expect(messages[0].content).toEqual([
-      { type: 'text', text: 'I checked the files.' },
-      { type: 'text', text: 'The build is fixed.' },
-    ]);
-  });
-
-  it('does not hydrate assistant messages that only contain legacy hidden blocks', async () => {
-    const fake = Object.create(ChatThreadDO.prototype) as any;
-    fake.chatContext = { threadId: 'thread1' };
-    fake.chatIsStreaming = false;
-    fake.activeTurnUserId = null;
-    fake.piSession = null;
-    fake.loadPiCoreMessages = vi.fn(async () => []);
-    fake.loadPiInFlightMessages = vi.fn(async () => []);
-    fake.replacePiCoreMessages = vi.fn(async () => undefined);
-    fake.disposePiSession = vi.fn();
-    fake.clearPiInFlightMessages = vi.fn();
-    fake.recordChatThreadObservabilityEvent = vi.fn();
-    fake.ctx = { storage: { sql: { exec: vi.fn() } } };
-
-    const result = await ChatThreadDO.prototype.hydratePiCoreFromParsedMessages.call(fake, 'thread1', [
-      {
-        id: 'legacy-assistant',
-        role: 'assistant',
-        content: [
-          { type: 'thinking', thinking: 'This internal chain of thought should not be visible.' },
-          { type: 'tool_use', id: 'tool-1', name: 'bash', input: { command: 'cat huge.log' } },
-          { type: 'tool_result', tool_use_id: 'tool-1', content: 'very long output'.repeat(1000) },
-        ],
-        created_at: 123,
-      },
-    ]);
-
-    expect(result).toEqual({
-      hydrated: false,
-      count: 0,
-      existingCount: 0,
-    });
-    expect(fake.replacePiCoreMessages).not.toHaveBeenCalled();
-    expect(fake.disposePiSession).not.toHaveBeenCalled();
   });
 
 });

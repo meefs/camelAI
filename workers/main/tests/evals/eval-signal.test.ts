@@ -54,14 +54,6 @@ describe("eval signal scoring", () => {
         ],
         events: [
           {
-            type: "sdk_event",
-            event: { type: "turn_start" },
-          },
-          {
-            type: "sdk_event",
-            event: { type: "turn_start" },
-          },
-          {
             type: "runtime_event",
             event: {
               method: "item/completed",
@@ -124,12 +116,10 @@ describe("eval signal scoring", () => {
       {
         maxAssistantTurns: 1,
         maxBadToolCalls: 1,
-        maxSdkTurns: 1,
       },
     );
 
     expect(signal.assistantTurnCount).toBe(2);
-    expect(signal.sdkTurnStartCount).toBe(2);
     expect(signal.toolCallCount).toBe(2);
     expect(signal.toolCallsByName).toEqual({ bash: 1, ls: 1 });
     expect(signal.harnessErrorCount).toBe(0);
@@ -140,7 +130,6 @@ describe("eval signal scoring", () => {
     ]);
     expect(signal.violations).toEqual([
       "assistant turns 2 exceeded max 1",
-      "sdk turns 2 exceeded max 1",
       "bad tool calls 3 exceeded max 1",
     ]);
     expect(signal.tokenUsage).toEqual({
@@ -153,15 +142,14 @@ describe("eval signal scoring", () => {
     });
   });
 
-  it("sums token usage from sdk turn_end events", () => {
+  it("sums token usage from Pi turn completion events", () => {
     const tokenUsage = countEvalTokenUsage({
       events: [
         {
-          type: "sdk_event",
+          type: "runtime_event",
           event: {
-            type: "turn_end",
-            message: {
-              role: "assistant",
+            method: "turn/completed",
+            params: {
               usage: {
                 input: 1200,
                 output: 340,
@@ -173,11 +161,10 @@ describe("eval signal scoring", () => {
           },
         },
         {
-          type: "sdk_event",
+          type: "runtime_event",
           event: {
-            type: "turn_end",
-            message: {
-              role: "assistant",
+            method: "turn/completed",
+            params: {
               usage: {
                 input_tokens: 800,
                 output_tokens: 120,
@@ -188,11 +175,10 @@ describe("eval signal scoring", () => {
           },
         },
         {
-          type: "sdk_event",
+          type: "runtime_event",
           event: {
-            type: "turn_end",
-            message: {
-              role: "assistant",
+            method: "turn/completed",
+            params: {
               usage: {
                 totalTokens: 256,
               },
@@ -203,7 +189,7 @@ describe("eval signal scoring", () => {
     });
 
     expect(tokenUsage).toEqual({
-      inputTokens: 2256,
+      inputTokens: 2000,
       outputTokens: 460,
       cacheReadInputTokens: 50,
       cacheCreationInputTokens: 10,

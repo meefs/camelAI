@@ -98,11 +98,7 @@ import { cn } from "@/lib/utils";
 import { buildSlugMap, type MentionableProject } from "@/lib/mentions";
 import { isFileDrag } from "@/lib/file-drag";
 import {
-  type SDKEvent,
   attachArtifactsToToolResultMessages,
-  applyStreamingEventToMessage,
-  attachToolResultsToMessages,
-  extractToolEventMetaInfo,
   finalizeStreamingMessage,
   mergeToolResultArtifacts,
   mergeTaskNotifications,
@@ -522,23 +518,6 @@ const STREAM_MESSAGE_RENDER_THROTTLE_MS = 50;
 const CHAT_SCROLL_CONTAINER_STYLE = {
   overflowAnchor: "none",
 } as CSSProperties;
-
-function getLastToolUseId(message?: Message): string | undefined {
-  if (!message || !Array.isArray(message.content)) return undefined;
-  for (let i = message.content.length - 1; i >= 0; i -= 1) {
-    const block = message.content[i];
-    if (block && block.type === "tool_use" && block.id) return block.id;
-  }
-  return undefined;
-}
-
-function getLastToolUseIdFromMessages(messages: Message[]): string | undefined {
-  for (let i = messages.length - 1; i >= 0; i -= 1) {
-    const id = getLastToolUseId(messages[i]);
-    if (id) return id;
-  }
-  return undefined;
-}
 
 export default function Chat({
   threadId,
@@ -2557,7 +2536,6 @@ export default function Chat({
           const next = applyRuntimeEventToMessages(
             prev,
             id,
-            "codex",
             runtimeEvent,
             runtimeStreamingMessageIdsRef.current,
           );
@@ -2597,6 +2575,7 @@ export default function Chat({
             completedTurnId ?? nextStreamingId;
           setStreamingMessageId(null);
           setLoading(false);
+          completeActiveManualCompaction();
           acceptedPendingMessageIdsRef.current.clear();
           setPendingMessages([]);
           dispatchLocalThreadStatus(id, "idle");
@@ -2604,461 +2583,6 @@ export default function Chat({
           refreshBillingCreditStatusAfterTurn(
             completedTurnId ?? nextStreamingId ?? id,
           );
-        }
-      } else if (data.type === "sdk_event") {
-        // Handle SDK events for streaming
-        const sdkEvent = data.event as SDKEvent;
-        const currentStreamingId = streamingMessageIdRef.current;
-
-        if (sdkEvent.type === "stream_event") {
-          const evt = sdkEvent.event;
-
-          // ── Compaction content block interception ──
-          // The API streams the compaction summary as a content block of type
-          // 'compaction' with a single 'compaction_delta' containing the full
-          // summary text. Intercept these events before they reach the normal
-          // streaming pipeline so the summary is rendered as a standalone
-          // CompactSummaryCard instead of being appended to the assistant message.
-          if (
-            evt?.type === "content_block_start" &&
-            evt?.content_block?.type === "compaction"
-          ) {
-            isInCompactionBlockRef.current = true;
-            compactionContentRef.current = "";
-            hasCapturedCompactionSummaryRef.current = false;
-            // Fallback trigger when system/status events are unavailable.
-            isAutoCompactingRef.current = true;
-            syncCompactionIndicator();
-            // Only capture once: status events are the primary source and this is
-            // a fallback path when those events are missing.
-            if (compactingPriorMessageIdRef.current === null) {
-              const priorId =
-                streamingMessageIdRef.current ??
-                lastCompletedAssistantMessageIdRef.current ??
-                null;
-              compactingPriorMessageIdRef.current = priorId;
-              setCompactingPriorMessageId(priorId);
-            }
-            if (streamingMessageIdRef.current) {
-              setStreamingMessageId(null);
-            }
-            return;
-          }
-          if (isInCompactionBlockRef.current) {
-            if (
-              evt?.type === "content_block_delta" &&
-              evt?.delta?.type === "compaction_delta"
-            ) {
-              compactionContentRef.current += evt.delta.content || "";
-              return;
-            }
-            if (evt?.type === "content_block_stop") {
-              const summary = compactionContentRef.current;
-              isInCompactionBlockRef.current = false;
-              compactionContentRef.current = "";
-              compactingPriorMessageIdRef.current = null;
-              setCompactingPriorMessageId(null);
-              if (summary) {
-                hasCapturedCompactionSummaryRef.current = true;
-                completeActiveManualCompaction();
-                isAutoCompactingRef.current = false;
-                syncCompactionIndicator();
-                const existingPlaceholderId =
-                  pendingCompactionPlaceholderIdRef.current;
-                const compactMsg: Message = {
-                  id: existingPlaceholderId || `compact_${Date.now()}`,
-                  thread_id: id,
-                  role: "user",
-                  content: summary,
-                  created_at: Date.now(),
-                  isCompactSummary: true,
-                };
-                pendingCompactionPlaceholderIdRef.current = compactMsg.id;
-                setMessages((prev) => {
-                  if (existingPlaceholderId) {
-                    const placeholderIndex = prev.findIndex(
-                      (m) => m.id === existingPlaceholderId,
-                    );
-                    if (placeholderIndex !== -1) {
-                      const next = [...prev];
-                      next[placeholderIndex] = compactMsg;
-                      return next;
-                    }
-                  }
-                  const existingSummaryIndex = prev.findIndex(
-                    (m) => m.id === compactMsg.id,
-                  );
-                  if (existingSummaryIndex !== -1) {
-                    const next = [...prev];
-                    next[existingSummaryIndex] = compactMsg;
-                    return next;
-                  }
-                  return [...prev, compactMsg];
-                });
-              }
-              return;
-            }
-          }
-
-          if (evt?.type === "message_start") {
-            const currentMsgs = messagesRef.current;
-            const existingStreamingId = streamingMessageIdRef.current;
-            const existingStreamingMsg = existingStreamingId
-              ? currentMsgs.find((msg) => msg.id === existingStreamingId)
-              : undefined;
-            const fallbackStreamingMsg = existingStreamingMsg
-              ? undefined
-              : currentMsgs.find((msg) => msg.isStreaming);
-            const activeStreamingMsg =
-              existingStreamingMsg ?? fallbackStreamingMsg;
-
-            if (
-              splitStreamingMessageOnNextPartRef.current &&
-              activeStreamingMsg
-            ) {
-              splitStreamingMessageOnNextPartRef.current = false;
-              const nextMsgIdBase =
-                evt.message?.id ||
-                (sdkEvent as { uuid?: string }).uuid ||
-                `stream_${Date.now()}`;
-              const nextMsgId = currentMsgs.some(
-                (msg) => msg.id === nextMsgIdBase,
-              )
-                ? `${nextMsgIdBase}_${Date.now()}`
-                : nextMsgIdBase;
-
-              setStreamingMessageId(nextMsgId);
-              setMessages((prev) => {
-                const finalized = prev.map((msg) =>
-                  msg.id === activeStreamingMsg.id
-                    ? finalizeStreamingMessage(msg)
-                    : msg,
-                );
-                const newMsg: Message = {
-                  id: nextMsgId,
-                  thread_id: id,
-                  role: "assistant",
-                  content: [],
-                  created_at: Date.now(),
-                  isStreaming: true,
-                };
-                if (finalized.some((msg) => msg.id === nextMsgId)) {
-                  return finalized.map((msg) =>
-                    msg.id === nextMsgId
-                      ? applyStreamingEventToMessage(msg, sdkEvent)
-                      : msg,
-                  );
-                }
-                const withNew = [...finalized, newMsg];
-                return withNew.map((msg) =>
-                  msg.id === nextMsgId
-                    ? applyStreamingEventToMessage(msg, sdkEvent)
-                    : msg,
-                );
-              });
-              return;
-            }
-
-            if (existingStreamingMsg) {
-              // Claude emits a new message_start after each tool call; append to the active turn.
-              setMessages((prev) =>
-                prev.map((msg) =>
-                  msg.id === existingStreamingId
-                    ? applyStreamingEventToMessage(msg, sdkEvent)
-                    : msg,
-                ),
-              );
-              return;
-            }
-
-            if (fallbackStreamingMsg) {
-              setStreamingMessageId(fallbackStreamingMsg.id);
-              setMessages((prev) =>
-                prev.map((msg) =>
-                  msg.id === fallbackStreamingMsg.id
-                    ? applyStreamingEventToMessage(msg, sdkEvent)
-                    : msg,
-                ),
-              );
-              return;
-            }
-
-            // Add new assistant message with isStreaming: true
-            const msgId =
-              evt.message?.id ||
-              (sdkEvent as { uuid?: string }).uuid ||
-              `stream_${Date.now()}`;
-            setStreamingMessageId(msgId);
-            const newMsg: Message = {
-              id: msgId,
-              thread_id: id,
-              role: "assistant",
-              content: [],
-              created_at: Date.now(),
-              isStreaming: true,
-            };
-            // Use functional update to avoid race conditions with rapid events
-            setMessages((prev) => {
-              if (prev.some((m) => m.id === msgId)) {
-                return prev;
-              }
-              return [...prev, newMsg];
-            });
-          } else if (currentStreamingId) {
-            // Apply streaming delta to the current message
-            setMessagesDeferred((prev) =>
-              prev.map((msg) =>
-                msg.id === currentStreamingId
-                  ? applyStreamingEventToMessage(msg, sdkEvent)
-                  : msg,
-              ),
-            );
-          } else {
-            // No streamingMessageId - try to restore from streaming message (reconnect scenario)
-            const currentMessages = messagesRef.current;
-            const streamingMsg = currentMessages.find((m) => m.isStreaming);
-            if (streamingMsg) {
-              setStreamingMessageId(streamingMsg.id);
-              setMessagesDeferred((prev) =>
-                prev.map((msg) =>
-                  msg.id === streamingMsg.id
-                    ? applyStreamingEventToMessage(msg, sdkEvent)
-                    : msg,
-                ),
-              );
-            }
-          }
-        } else if (
-          sdkEvent.type === "system" &&
-          sdkEvent.subtype === "init"
-        ) {
-          // System init - reset the streaming message ID
-          splitStreamingMessageOnNextPartRef.current = false;
-          setStreamingMessageId(null);
-          startQueuedManualCompactionIfNeeded();
-        } else if (
-          sdkEvent.type === "system" &&
-          sdkEvent.subtype === "status"
-        ) {
-          const status = (sdkEvent as unknown as Record<string, unknown>)
-            .status;
-          if (status === "compacting") {
-            isAutoCompactingRef.current = true;
-            syncCompactionIndicator();
-            const priorId =
-              streamingMessageIdRef.current ??
-              lastCompletedAssistantMessageIdRef.current ??
-              null;
-            compactingPriorMessageIdRef.current = priorId;
-            setCompactingPriorMessageId(priorId);
-            if (streamingMessageIdRef.current) {
-              setStreamingMessageId(null);
-            }
-          } else if (status === null) {
-            isAutoCompactingRef.current = false;
-            syncCompactionIndicator();
-            compactingPriorMessageIdRef.current = null;
-            setCompactingPriorMessageId(null);
-          }
-        } else if (
-          sdkEvent.type === "system" &&
-          sdkEvent.subtype === "compact_boundary"
-        ) {
-          // Compaction is complete — the compact_boundary event arrives AFTER the
-          // SDK finishes generating the summary (not before). Insert a compact
-          // summary card immediately. If the control plane later forwards the full
-          // summary (isCompactSummary user event), it will replace this placeholder.
-          completeActiveManualCompaction();
-          isAutoCompactingRef.current = false;
-          syncCompactionIndicator();
-          compactingPriorMessageIdRef.current = null;
-          setCompactingPriorMessageId(null);
-          if (hasCapturedCompactionSummaryRef.current) {
-            hasCapturedCompactionSummaryRef.current = false;
-            return;
-          }
-          const compactMsg: Message = {
-            id: `compact_${Date.now()}`,
-            thread_id: id,
-            role: "user",
-            content:
-              "The conversation context was compacted to continue this session.",
-            created_at: Date.now(),
-            isCompactSummary: true,
-          };
-          pendingCompactionPlaceholderIdRef.current = compactMsg.id;
-          setMessages((prev) => [...prev, compactMsg]);
-        } else if (
-          sdkEvent.type === "assistant" &&
-          sdkEvent.message?.content
-        ) {
-          // Track message ID as fallback
-          if (!currentStreamingId) {
-            const sdkUuid = (sdkEvent as { uuid?: string }).uuid;
-            const sdkMsgId = (sdkEvent.message as { id?: string }).id;
-            if (sdkUuid || sdkMsgId) {
-              setStreamingMessageId(sdkUuid || sdkMsgId || null);
-            }
-          }
-        } else if (sdkEvent.type === "user" && sdkEvent.message?.content) {
-          // Compact summary — system-generated context recap
-          const isCompactSummary = Boolean(
-            (sdkEvent as unknown as Record<string, unknown>).isCompactSummary,
-          );
-          if (isCompactSummary) {
-            completeActiveManualCompaction();
-            isAutoCompactingRef.current = false;
-            syncCompactionIndicator();
-            compactingPriorMessageIdRef.current = null;
-            setCompactingPriorMessageId(null);
-            hasCapturedCompactionSummaryRef.current = false;
-            const placeholderId = pendingCompactionPlaceholderIdRef.current;
-            pendingCompactionPlaceholderIdRef.current = null;
-            const content = sdkEvent.message.content;
-            const compactMsg: Message = {
-              id:
-                (sdkEvent as { uuid?: string }).uuid ||
-                `compact_${Date.now()}`,
-              thread_id: id,
-              role: "user",
-              content,
-              created_at: Date.now(),
-              isCompactSummary: true,
-            };
-            // Replace only the currently tracked provisional compact card
-            // with the forwarded full summary.
-            setMessages((prev) => {
-              const existingSummaryIndex = prev.findIndex(
-                (m) => m.id === compactMsg.id,
-              );
-              const upsertBySummaryId = () => {
-                if (existingSummaryIndex === -1) {
-                  return [...prev, compactMsg];
-                }
-                const next = [...prev];
-                next[existingSummaryIndex] = compactMsg;
-                return next;
-              };
-              if (!placeholderId) {
-                return upsertBySummaryId();
-              }
-              const placeholderIndex = prev.findIndex(
-                (m) => m.id === placeholderId,
-              );
-              if (placeholderIndex === -1) {
-                return upsertBySummaryId();
-              }
-              const next = [...prev];
-              next[placeholderIndex] = compactMsg;
-              return next;
-            });
-            return;
-          }
-
-          const contentBlocks = sdkEvent.message.content;
-          const isToolResultEvent =
-            Array.isArray(contentBlocks) &&
-            contentBlocks.length > 0 &&
-            contentBlocks.every((block) => block?.type === "tool_result");
-          const { sourceToolUseID } = extractToolEventMetaInfo(sdkEvent);
-
-          if (!isToolResultEvent) {
-            const shouldBeMeta = true;
-            const streamingMessage = streamingMessageIdRef.current
-              ? messagesRef.current.find(
-                  (msg) => msg.id === streamingMessageIdRef.current,
-                )
-              : undefined;
-            const fallbackToolUseId =
-              shouldBeMeta && !sourceToolUseID
-                ? getLastToolUseId(streamingMessage) ||
-                  getLastToolUseIdFromMessages(messagesRef.current)
-                : undefined;
-            const resolvedToolUseId = sourceToolUseID || fallbackToolUseId;
-            const metaMsg: Message = {
-              id: `meta_${resolvedToolUseId ?? Date.now()}_${Date.now()}`,
-              thread_id: id,
-              role: "user",
-              content: contentBlocks,
-              created_at: Date.now(),
-              isMeta: shouldBeMeta,
-              sourceToolUseID: resolvedToolUseId,
-            };
-            setMessages((prev) => [...prev, metaMsg]);
-            return;
-          }
-
-          const toolResults = contentBlocks.filter(
-            (block): block is ToolResultBlock =>
-              block?.type === "tool_result",
-          );
-          if (toolResults.length === 0) return;
-          const toolResultsWithArtifacts = toolResults.map((toolResult) => {
-            const pendingArtifacts = pendingCodeModeArtifactsRef.current.get(
-              toolResult.tool_use_id,
-            );
-            if (!pendingArtifacts?.length) return toolResult;
-            pendingCodeModeArtifactsRef.current.delete(toolResult.tool_use_id);
-            return mergeToolResultArtifacts(toolResult, pendingArtifacts);
-          });
-          const toolUseResultPrompt = (() => {
-            const toolUseResult =
-              sdkEvent.toolUseResult ?? sdkEvent.tool_use_result;
-            return typeof toolUseResult?.prompt === "string"
-              ? toolUseResult.prompt
-              : undefined;
-          })();
-          setMessages((prev) =>
-            attachToolResultsToMessages(prev, toolResultsWithArtifacts, {
-              threadId: id,
-              parentToolUseId: sourceToolUseID,
-              parentToolPrompt: toolUseResultPrompt,
-            }),
-          );
-        } else if (sdkEvent.type === "result") {
-          flushDeferredMessagesRender();
-          // Query complete - mark message as not streaming
-          // Finish streaming
-          splitStreamingMessageOnNextPartRef.current = false;
-          const msgId = streamingMessageIdRef.current;
-          lastCompletedAssistantMessageIdRef.current = msgId;
-          if (msgId) {
-            const parsedResultTimestamp =
-              typeof sdkEvent.timestamp === "string"
-                ? new Date(sdkEvent.timestamp).getTime()
-                : NaN;
-            const completedAt = Number.isFinite(parsedResultTimestamp)
-              ? parsedResultTimestamp
-              : Date.now();
-            setMessages((prev) =>
-              prev.map((msg) =>
-                msg.id === msgId
-                  ? {
-                      ...finalizeStreamingMessage(msg),
-                      created_at: completedAt,
-                    }
-                  : msg,
-              ),
-            );
-          }
-          if (incomingEventId !== null) {
-            persistSessionState(id, incomingEventId);
-          }
-          setStreamingMessageId(null);
-          setLoading(false);
-          acceptedPendingMessageIdsRef.current.clear();
-          setPendingMessages([]);
-          dispatchLocalThreadStatus(id, "idle");
-          clearPendingDeliveryDraft();
-          isAutoCompactingRef.current = false;
-          syncCompactionIndicator();
-          compactingPriorMessageIdRef.current = null;
-          setCompactingPriorMessageId(null);
-          if (activeManualCompactionTurnRef.current) {
-            completeActiveManualCompaction();
-          }
-          hasCapturedCompactionSummaryRef.current = false;
-          refreshBillingCreditStatusAfterTurn(msgId ?? id);
         }
       } else if (data.type === "result") {
         if (id) {
@@ -3069,6 +2593,7 @@ export default function Chat({
           acceptedPendingMessageIdsRef.current.clear();
           setPendingMessages([]);
           dispatchLocalThreadStatus(id, "idle");
+          completeActiveManualCompaction();
           clearPendingDeliveryDraft();
           refreshBillingCreditStatusAfterTurn(id);
         }
@@ -3136,6 +2661,7 @@ export default function Chat({
     },
     [
       clearPendingDeliveryDraft,
+      completeActiveManualCompaction,
       getUnacceptedPendingUserMessages,
       isPendingMessageAccepted,
       persistSessionState,

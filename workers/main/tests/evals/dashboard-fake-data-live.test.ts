@@ -87,7 +87,6 @@ describe("dashboard fake data agent eval", () => {
         getEvalSignalThresholds(testEnv, {
           maxAssistantTurns: 6,
           maxBadToolCalls: 0,
-          maxSdkTurns: 6,
         }),
       );
 

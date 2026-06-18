@@ -21,7 +21,6 @@ describe('runtime tool status metadata', () => {
     let messages = applyRuntimeEventToMessages(
       [],
       'thread-1',
-      'codex',
       {
         method: 'item/started',
         params: {
@@ -39,7 +38,6 @@ describe('runtime tool status metadata', () => {
     messages = applyRuntimeEventToMessages(
       messages,
       'thread-1',
-      'codex',
       {
         method: 'item/completed',
         params: {
@@ -69,7 +67,6 @@ describe('runtime tool status metadata', () => {
     const messages = applyRuntimeEventToMessages(
       [],
       'thread-1',
-      'codex',
       {
         method: 'item/completed',
         params: {
@@ -100,7 +97,6 @@ describe('runtime tool status metadata', () => {
     let messages = applyRuntimeEventToMessages(
       [],
       'thread-1',
-      'codex',
       {
         method: 'item/completed',
         params: {
@@ -121,7 +117,6 @@ describe('runtime tool status metadata', () => {
     messages = applyRuntimeEventToMessages(
       messages,
       'thread-1',
-      'codex',
       {
         method: 'item/completed',
         params: {
@@ -158,7 +153,6 @@ describe('runtime tool status metadata', () => {
     const messages = applyRuntimeEventToMessages(
       [],
       'thread-1',
-      'codex',
       {
         method: 'item/completed',
         params: {
@@ -182,51 +176,4 @@ describe('runtime tool status metadata', () => {
     });
   });
 
-  it('marks AgentOS tool_call_update text as failed when status is failed', () => {
-    const streamingIds: Record<string, string | null> = {};
-
-    let messages = applyRuntimeEventToMessages(
-      [],
-      'thread-1',
-      'agentos',
-      {
-        method: 'session/update',
-        params: {
-          update: {
-            sessionUpdate: 'tool_call',
-            toolCallId: 'tool-agentos',
-            title: 'validate',
-            rawInput: { target: 'workflow' },
-          },
-        },
-      },
-      streamingIds,
-    );
-
-    messages = applyRuntimeEventToMessages(
-      messages,
-      'thread-1',
-      'agentos',
-      {
-        method: 'session/update',
-        params: {
-          update: {
-            sessionUpdate: 'tool_call_update',
-            toolCallId: 'tool-agentos',
-            content: 'Validation failed',
-            status: 'failed',
-          },
-        },
-      },
-      streamingIds,
-    );
-
-    expect(findToolResult(messages, 'tool-agentos')).toMatchObject({
-      type: 'tool_result',
-      tool_use_id: 'tool-agentos',
-      content: 'Validation failed',
-      is_error: true,
-      status: 'failed',
-    });
-  });
 });

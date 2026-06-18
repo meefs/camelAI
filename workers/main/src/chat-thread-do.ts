@@ -3901,7 +3901,6 @@ const PI_TURN_INACTIVITY_TIMEOUT_MS = 10 * 60_000;
 const PI_TURN_PROGRESS_INTERVAL_MS = 30_000;
 const PI_TURN_RECOVERY_CONTEXT_PURPOSE = "pi_turn_recovery_context";
 const PI_TURN_RECOVERY_CONTINUE_PROMPT = "continue";
-const PI_TURN_RECOVERY_PROMPT_OBSERVATION_MS = 5 * 60_000;
 const CHAT_ERROR_DEDUPE_WINDOW_MS = 10_000;
 
 const MAX_CHAT_EVENT_BUFFER = 500;
@@ -3929,7 +3928,6 @@ const CHAT_RECENT_CLIENT_MESSAGE_IDS_MAX = 200;
 
 type ChatAgentEnv = Cloudflare.Env & Omit<ChatEnv, keyof Cloudflare.Env>;
 
-const CHAT_CODEX_SESSION_ID_KEY = 'chatCodexSessionId';
 const CODE_MODE_ARTIFACTS_KEY_PREFIX = 'codeModeArtifacts:';
 
 /**
@@ -3974,7 +3972,6 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
     connectionSetupTimeoutMs: ChatThreadDO.CONNECTION_SETUP_TIMEOUT_MS,
   });
   private titleGenerationInFlight: boolean = false;
-  private codexSessionId: string | null = null;
   private activeTurnUserId: string | null = null;
   private workspaceStatusStubs = new Map<string, DurableObjectStub<WorkspaceDO>>();
   // Trailing-debounce state for coalescing WorkspaceDO.recordThreadStreaming
@@ -4017,9 +4014,8 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
   private runningActivityLastSentAt = 0;
   private piTurnStartedAtMs: number = 0;
   private piAgentStartedAtMs: number = 0;
-  private suppressNextPiRecoveryPromptEvent = false;
-  private piRecoveryContinuePromptSentAtMs: number = 0;
   private piUserStopRequestedAtMs: number = 0;
+  private piLastTurnUsage: Record<string, unknown> | null = null;
   private piCurrentBillingSource: PiBillingSource = "hosted";
   private piCurrentCreditChargeable: boolean = false;
   private piCurrentUsageProvider: string | null = null;
@@ -4233,11 +4229,6 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
     this.activeAutomationRun = this.normalizeActiveAutomationRun(
       ctx.storage.kv.get<unknown>(CHAT_ACTIVE_AUTOMATION_RUN_KEY),
     );
-
-    const storedCodexSessionId = ctx.storage.kv.get<string>(CHAT_CODEX_SESSION_ID_KEY);
-    if (typeof storedCodexSessionId === 'string' && storedCodexSessionId.trim()) {
-      this.codexSessionId = storedCodexSessionId.trim();
-    }
 
     this.syncAgentState();
 
@@ -5005,26 +4996,6 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
     this.syncAgentState({ currentTodos: completedTodos });
   }
 
-  getLegacyClaudeSessionId(): string | null {
-    try {
-      const rows = this.ctx.storage.sql
-        .exec<{ value: string }>(
-          "SELECT value FROM metadata WHERE key = ?",
-          "claude_session_id",
-        )
-        .toArray();
-      const value = rows[0]?.value;
-      return typeof value === "string" && value.trim() ? value.trim() : null;
-    } catch {
-      return null;
-    }
-  }
-
-  getCodexSessionId(): string | null {
-    const value = this.codexSessionId;
-    return typeof value === "string" && value.trim() ? value.trim() : null;
-  }
-
   async getPiCoreParsedMessages(threadId: string): Promise<AgentEvalParsedMessage[]> {
     const normalizedThreadId = threadId.trim() || this.chatContext?.threadId || "";
     const parsed: AgentEvalParsedMessage[] = [];
@@ -5118,79 +5089,6 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
       lastErrorAt,
       lastErrorMessage,
       models,
-    };
-  }
-
-  async hydratePiCoreFromParsedMessages(
-    threadId: string,
-    messages: Array<{
-      id?: string;
-      thread_id?: string;
-      role?: string;
-      content?: unknown;
-      created_at?: number;
-      forkEntryId?: string;
-      isMeta?: boolean;
-      isCompactSummary?: boolean;
-      sentDuringStreaming?: boolean;
-    }>,
-  ): Promise<{ hydrated: boolean; count: number; existingCount: number; deferred?: boolean }> {
-    const existingMessages = await this.loadPiCoreMessages();
-    const normalizedThreadId = threadId.trim() || this.chatContext?.threadId || "";
-    const agentMessages = messages.flatMap((message) =>
-      this.parsedChatMessageToPiCoreMessage(message, normalizedThreadId),
-    );
-    if (agentMessages.length === 0) {
-      return {
-        hydrated: false,
-        count: 0,
-        existingCount: existingMessages.length,
-      };
-    }
-
-    const existingKeys = new Set(
-      existingMessages.map((message) => this.piCoreMessageKey(message)),
-    );
-    const missingLegacyMessages = agentMessages.filter((message) => {
-      const key = this.piCoreMessageKey(message);
-      if (existingKeys.has(key)) return false;
-      existingKeys.add(key);
-      return true;
-    });
-    if (missingLegacyMessages.length === 0) {
-      return {
-        hydrated: false,
-        count: 0,
-        existingCount: existingMessages.length,
-      };
-    }
-
-    const inFlightMessages = await this.loadPiInFlightMessages();
-    if (
-      this.chatIsStreaming ||
-      this.piSession?.state.isStreaming ||
-      this.activeTurnUserId ||
-      inFlightMessages.length > 0
-    ) {
-      return {
-        hydrated: false,
-        count: 0,
-        existingCount: existingMessages.length,
-        deferred: true,
-      };
-    }
-
-    this.disposePiSession();
-    await this.replacePiCoreMessages([
-      ...missingLegacyMessages,
-      ...existingMessages,
-    ]);
-    this.ctx.storage.sql.exec("DELETE FROM pi_core_compaction");
-    this.clearPiInFlightMessages();
-    return {
-      hydrated: true,
-      count: missingLegacyMessages.length,
-      existingCount: existingMessages.length,
     };
   }
 
@@ -6646,24 +6544,19 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
     await this.ensurePiSessionReady();
     if (!this.piSession) throw new Error("Pi session was not available for turn recovery");
     await this.refreshPiSessionModel();
-    this.suppressNextPiRecoveryPromptEvent = true;
-    this.piRecoveryContinuePromptSentAtMs = Date.now();
-    try {
-      await this.withPiTurnInactivityTimeout(async () => {
-        if (!this.piSession) throw new Error("Pi session was not available for turn recovery");
-        await this.piSession.prompt({
-          role: "user",
-          content: PI_TURN_RECOVERY_CONTINUE_PROMPT,
-          timestamp: this.piRecoveryContinuePromptSentAtMs,
-          visibility: "hidden",
-          metadata: {
-            purpose: PI_TURN_RECOVERY_CONTEXT_PURPOSE,
-          },
-        } as unknown as AgentMessage);
-      });
-    } finally {
-      this.suppressNextPiRecoveryPromptEvent = false;
-    }
+    const recoveryPromptSentAtMs = Date.now();
+    await this.withPiTurnInactivityTimeout(async () => {
+      if (!this.piSession) throw new Error("Pi session was not available for turn recovery");
+      await this.piSession.prompt({
+        role: "user",
+        content: PI_TURN_RECOVERY_CONTINUE_PROMPT,
+        timestamp: recoveryPromptSentAtMs,
+        visibility: "hidden",
+        metadata: {
+          purpose: PI_TURN_RECOVERY_CONTEXT_PURPOSE,
+        },
+      } as unknown as AgentMessage);
+    });
   }
 
   private emptyPiUsage() {
@@ -7060,129 +6953,6 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
     return [];
   }
 
-  private parsedChatMessageToPiCoreMessage(
-    message: {
-      id?: string;
-      thread_id?: string;
-      role?: string;
-      content?: unknown;
-      created_at?: number;
-      forkEntryId?: string;
-      isMeta?: boolean;
-      isCompactSummary?: boolean;
-      sentDuringStreaming?: boolean;
-    },
-    threadId: string,
-  ): AgentMessage[] {
-    const role = message.role;
-    if (role !== "user" && role !== "assistant") return [];
-    if (message.isMeta === true) return [];
-    const timestamp =
-      typeof message.created_at === "number" && Number.isFinite(message.created_at)
-        ? message.created_at
-        : Date.now();
-    const content = role === "user"
-      ? this.parsedChatUserContentToPiContent(message.content)
-      : this.parsedChatAssistantContentToPiContent(message.content);
-    if (typeof content === "string" && !content.trim()) return [];
-    if (Array.isArray(content) && content.length === 0) return [];
-
-    if (role === "user") {
-      return [{
-        role: "user",
-        content,
-        timestamp,
-        metadata: {
-          hydratedFromLegacyThread: threadId,
-          legacyMessageId: typeof message.id === "string" ? message.id : undefined,
-          ...(message.isCompactSummary === true ? { compactSummary: true } : {}),
-          ...(message.sentDuringStreaming === true ? { sentDuringStreaming: true } : {}),
-        },
-      } as unknown as AgentMessage];
-    }
-
-    return [{
-      role: "assistant",
-      content,
-      api: "legacy",
-      provider: "legacy",
-      model: "legacy",
-      usage: this.emptyPiUsage(),
-      stopReason: "stop",
-      responseId:
-        typeof message.forkEntryId === "string" && message.forkEntryId.trim()
-          ? message.forkEntryId.trim()
-          : typeof message.id === "string" && message.id.trim()
-            ? message.id.trim()
-            : `legacy_assistant_${timestamp}`,
-      timestamp,
-      metadata: {
-        hydratedFromLegacyThread: threadId,
-        legacyMessageId: typeof message.id === "string" ? message.id : undefined,
-        ...(message.isCompactSummary === true ? { compactSummary: true } : {}),
-      },
-    } as unknown as AgentMessage];
-  }
-
-  private parsedChatUserContentToPiContent(content: unknown): string | Array<Record<string, unknown>> {
-    if (typeof content === "string") return content;
-    const textBlocks = this.extractTextBlocksFromParsedChatContent(content);
-    return textBlocks.length > 0 ? textBlocks : "";
-  }
-
-  private parsedChatAssistantContentToPiContent(content: unknown): Array<Record<string, unknown>> {
-    const textBlocks = this.extractTextBlocksFromParsedChatContent(content);
-    if (textBlocks.length > 0) return textBlocks;
-    if (typeof content === "string" && content.trim()) {
-      return [{ type: "text", text: content }];
-    }
-    return [];
-  }
-
-  private extractTextBlocksFromParsedChatContent(content: unknown): Array<Record<string, unknown>> {
-    if (typeof content === "string") {
-      return content.trim() ? [{ type: "text", text: content }] : [];
-    }
-    if (!Array.isArray(content)) return [];
-    return content.flatMap((part): Array<Record<string, unknown>> => {
-      if (!part || typeof part !== "object") return [];
-      const item = part as Record<string, unknown>;
-      if (item.type === "text" && typeof item.text === "string") {
-        return item.text.trim() ? [{ type: "text", text: item.text }] : [];
-      }
-      if (item.type === "thinking" || item.type === "tool_use" || item.type === "tool_result") {
-        return [];
-      }
-      if (item.type === "error" && typeof item.error === "string") {
-        return item.error.trim() ? [{ type: "text", text: item.error }] : [];
-      }
-      if (item.type === "task_notification") {
-        const summary = this.legacyChatStringField(item.summary ?? item.text);
-        return summary ? [{ type: "text", text: summary }] : [];
-      }
-      if (item.type === "teammate_message") {
-        const content = this.legacyChatStringField(item.content ?? item.text);
-        return content ? [{ type: "text", text: content }] : [];
-      }
-      return [];
-    });
-  }
-
-  private legacyChatStringField(value: unknown): string {
-    if (typeof value === "string") return value.trim();
-    if (value === undefined || value === null) return "";
-    return this.stringifyLegacyChatBlock(value).trim();
-  }
-
-  private stringifyLegacyChatBlock(value: unknown): string {
-    if (typeof value === "string") return value;
-    try {
-      return JSON.stringify(value, null, 2);
-    } catch {
-      return String(value);
-    }
-  }
-
   private piCoreForkMessageIds(message: AgentMessage, index: number): string[] {
     const record = message as unknown as Record<string, unknown>;
     const role = record.role;
@@ -7224,51 +6994,6 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
     if (!metadata || typeof metadata !== "object") return false;
     const meta = metadata as Record<string, unknown>;
     return meta.compactSummary === true || meta.isCompactSummary === true;
-  }
-
-  private piSdkUserEventText(event: unknown): string | null {
-    if (!event || typeof event !== "object") return null;
-    const record = event as Record<string, unknown>;
-    if (record.type !== "user") return null;
-    const message = record.message;
-    if (!message || typeof message !== "object") return null;
-    const content = (message as Record<string, unknown>).content;
-    if (typeof content === "string") return content;
-    if (!Array.isArray(content)) return null;
-    return content
-      .flatMap((part): string[] => {
-        if (!part || typeof part !== "object") return [];
-        const item = part as Record<string, unknown>;
-        return item.type === "text" && typeof item.text === "string"
-          ? [item.text]
-          : [];
-      })
-      .join("\n");
-  }
-
-  private shouldSuppressPiSdkEventForChat(event: unknown): boolean {
-    if (event && typeof event === "object") {
-      const record = event as Record<string, unknown>;
-      if (record.type === "user" && this.isInternalPiClientMessage(record.message)) {
-        return true;
-      }
-    }
-    const userText = this.piSdkUserEventText(event)?.trim();
-    if (!this.suppressNextPiRecoveryPromptEvent) {
-      if (
-        userText === PI_TURN_RECOVERY_CONTINUE_PROMPT &&
-        this.piRecoveryContinuePromptSentAtMs > 0 &&
-        Date.now() - this.piRecoveryContinuePromptSentAtMs <= PI_TURN_RECOVERY_PROMPT_OBSERVATION_MS
-      ) {
-        return true;
-      }
-      return false;
-    }
-    if (userText !== PI_TURN_RECOVERY_CONTINUE_PROMPT) {
-      return false;
-    }
-    this.suppressNextPiRecoveryPromptEvent = false;
-    return true;
   }
 
   private piUserContentToChatContent(content: unknown): unknown {
@@ -10800,7 +10525,7 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
 
   private normalizePiModelId(modelId: string): string {
     const trimmed = modelId.trim();
-    const normalized = trimmed.replace(/^(claude|codex)\//, "");
+    const normalized = trimmed;
     const lower = normalized.toLowerCase();
     if (lower === "fable-5" || lower === "claude-fable-5") {
       return "sonnet";
@@ -12089,6 +11814,7 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
       this.piAgentStartedAtMs = Date.now();
       this.piTurnStartedAtMs = Date.now();
       this.piUserStopRequestedAtMs = 0;
+      this.piLastTurnUsage = null;
       // Provider config is read once per agent turn: the first LLM call after
       // this re-reads from OrgDO and every later call in the turn reuses it.
       this.cachedLlmProviderConfig = null;
@@ -12133,6 +11859,7 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
       const billingSource = this.piCurrentBillingSource;
       const creditChargeable = this.piCurrentCreditChargeable;
       const usageProvider = this.piCurrentUsageProvider;
+      this.piLastTurnUsage = this.piRuntimeUsageSummary(event.message);
       this.ctx.waitUntil(
         this.recordPiAssistantUsage(
           event.message,
@@ -12403,6 +12130,7 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
         ...(forkEntryId ? { forkEntryId } : {}),
         completedAtMs,
         turnDurationMs,
+        ...(this.piLastTurnUsage ? { usage: this.piLastTurnUsage } : {}),
       });
       this.pushChatEvent({
         type: "result",
@@ -12444,9 +12172,43 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
       return;
     }
 
-    if (!this.shouldSuppressPiSdkEventForChat(event)) {
-      this.pushChatEvent({ type: "sdk_event", event });
-    }
+  }
+
+  private piRuntimeUsageSummary(message: AgentMessage): Record<string, unknown> | null {
+    if (message.role !== "assistant") return null;
+    const usage = (message as AgentMessage & {
+      usage?: {
+        input?: number;
+        output?: number;
+        cacheRead?: number;
+        cacheWrite?: number;
+        totalTokens?: number;
+        cost?: { total?: number };
+      };
+    }).usage;
+    if (!usage) return null;
+
+    const input = Math.max(0, Math.floor(Number(usage.input ?? 0)));
+    const output = Math.max(0, Math.floor(Number(usage.output ?? 0)));
+    const cacheRead = Math.max(0, Math.floor(Number(usage.cacheRead ?? 0)));
+    const cacheWrite = Math.max(0, Math.floor(Number(usage.cacheWrite ?? 0)));
+    const totalTokens = Math.max(
+      input + output + cacheRead + cacheWrite,
+      Math.floor(Number(usage.totalTokens ?? 0)),
+    );
+    if (totalTokens <= 0) return null;
+
+    const costTotal = Number(usage.cost?.total);
+    return {
+      input,
+      output,
+      cacheRead,
+      cacheWrite,
+      totalTokens,
+      ...(Number.isFinite(costTotal) && costTotal > 0
+        ? { cost: { total: costTotal } }
+        : {}),
+    };
   }
 
   private async recordPiAssistantUsage(

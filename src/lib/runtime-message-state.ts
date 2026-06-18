@@ -1,13 +1,5 @@
-import type { ContentBlock, Message, ToolResultBlock } from '../types';
-import {
-  applyStreamingEventToMessage,
-  attachToolResultsToMessages,
-  extractToolEventMetaInfo,
-  finalizeStreamingMessage,
-  type SDKEvent,
-} from './streaming';
-
-type RuntimeProvider = 'codex' | 'agentos';
+import type { ContentBlock, Message } from '../types';
+import { finalizeStreamingMessage } from './streaming';
 
 type RuntimeMessage = {
   id: string;
@@ -175,125 +167,12 @@ export function mergeSnapshotMessages(
   return nextMessages;
 }
 
-export function applySdkEventToMessages(
-  currentMessages: Message[],
-  threadId: string,
-  sdkEvent: SDKEvent,
-  streamingMessageIds: Record<string, string | null>
-): Message[] {
-  if (sdkEvent.type === 'system' && sdkEvent.subtype === 'init') {
-    streamingMessageIds[threadId] = getAssistantStreamingId(currentMessages);
-    return currentMessages;
-  }
-
-  if (sdkEvent.type === 'stream_event') {
-    const streamEvent = sdkEvent.event;
-    if (streamEvent?.type === 'message_start') {
-      const preferredId = streamEvent.message?.id;
-      const ensured = ensureStreamingMessage(currentMessages, threadId, streamingMessageIds, preferredId);
-      return ensured.messages.map((message) =>
-        message.id === ensured.messageId ? applyStreamingEventToMessage(message, sdkEvent) : message
-      );
-    }
-
-    const currentStreamingId = resolveStreamingMessageId(currentMessages, threadId, streamingMessageIds);
-    if (!currentStreamingId) {
-      return currentMessages;
-    }
-
-    return currentMessages.map((message) =>
-      message.id === currentStreamingId ? applyStreamingEventToMessage(message, sdkEvent) : message
-    );
-  }
-
-  if (sdkEvent.type === 'assistant' && Array.isArray(sdkEvent.message?.content)) {
-    const currentStreamingId = resolveStreamingMessageId(currentMessages, threadId, streamingMessageIds);
-    if (currentStreamingId) {
-      return currentMessages;
-    }
-
-    const fallbackId = (sdkEvent as { uuid?: string }).uuid;
-    const ensured = ensureStreamingMessage(currentMessages, threadId, streamingMessageIds, fallbackId);
-    return ensured.messages;
-  }
-
-  if (sdkEvent.type === 'user' && Array.isArray(sdkEvent.message?.content)) {
-    const contentBlocks = sdkEvent.message.content;
-    const isToolResultEvent =
-      contentBlocks.length > 0 &&
-      contentBlocks.every((block): block is ToolResultBlock => block?.type === 'tool_result');
-    const { sourceToolUseID } = extractToolEventMetaInfo(sdkEvent);
-
-    if (!isToolResultEvent) {
-      const currentStreamingId = resolveStreamingMessageId(currentMessages, threadId, streamingMessageIds);
-      const streamingMessage = currentStreamingId
-        ? currentMessages.find((message) => message.id === currentStreamingId)
-        : undefined;
-      const fallbackToolUseId = !sourceToolUseID
-        ? getLastToolUseId(streamingMessage) || getLastToolUseIdFromMessages(currentMessages)
-        : undefined;
-
-      return [
-        ...currentMessages,
-        {
-          id: `meta_${sourceToolUseID ?? fallbackToolUseId ?? Date.now()}_${Date.now()}`,
-          thread_id: threadId,
-          role: 'user',
-          content: contentBlocks,
-          created_at: Date.now(),
-          isMeta: true,
-          sourceToolUseID: sourceToolUseID ?? fallbackToolUseId,
-        },
-      ];
-    }
-
-    const toolUseResult = sdkEvent.toolUseResult ?? sdkEvent.tool_use_result;
-    const parentToolPrompt = typeof toolUseResult?.prompt === 'string' ? toolUseResult.prompt : undefined;
-    return attachToolResultsToMessages(currentMessages, contentBlocks, {
-      threadId,
-      parentToolUseId: sourceToolUseID,
-      parentToolPrompt,
-    });
-  }
-
-  if (sdkEvent.type === 'result') {
-    const currentStreamingId = resolveStreamingMessageId(currentMessages, threadId, streamingMessageIds);
-    streamingMessageIds[threadId] = null;
-    if (!currentStreamingId) {
-      return currentMessages;
-    }
-
-    return currentMessages.map((message) =>
-      message.id === currentStreamingId ? finalizeStreamingMessage(message) : message
-    );
-  }
-
-  return currentMessages;
-}
-
-type CodexNotification = {
+type PiNotification = {
   method: string;
   params?: Record<string, unknown>;
 };
 
-type AgentOsNotification = {
-  jsonrpc?: string;
-  method?: string;
-  params?: Record<string, unknown>;
-  type?: string;
-};
-
-type AgentOsSessionUpdate = {
-  sessionUpdate?: unknown;
-  content?: unknown;
-  toolCallId?: unknown;
-  title?: unknown;
-  rawInput?: unknown;
-  rawOutput?: unknown;
-  status?: unknown;
-};
-
-type CodexThreadItem = {
+type PiThreadItem = {
   id: string;
   type: string;
   [key: string]: unknown;
@@ -304,23 +183,15 @@ type RuntimeToolResult = {
   isError: boolean;
 };
 
-type CodexTodoStatus = 'pending' | 'in_progress' | 'completed';
+type PiTodoStatus = 'pending' | 'in_progress' | 'completed';
 
-type CodexTodoItem = {
+type PiTodoItem = {
   content: string;
-  status: CodexTodoStatus;
+  status: PiTodoStatus;
   activeForm: string;
 };
 
-function isClaudeSdkEvent(event: unknown): event is SDKEvent {
-  return Boolean(
-    event &&
-      typeof event === 'object' &&
-      typeof (event as { type?: unknown }).type === 'string'
-  );
-}
-
-function isCodexRuntimeEvent(event: unknown): event is CodexNotification {
+function isPiRuntimeEvent(event: unknown): event is PiNotification {
   return Boolean(
     event &&
       typeof event === 'object' &&
@@ -328,18 +199,7 @@ function isCodexRuntimeEvent(event: unknown): event is CodexNotification {
   );
 }
 
-function isAgentOsRuntimeEvent(event: unknown): event is AgentOsNotification {
-  return Boolean(
-    event &&
-      typeof event === 'object' &&
-      (
-        typeof (event as { method?: unknown }).method === 'string' ||
-        (event as { type?: unknown }).type === 'permission_request'
-      )
-  );
-}
-
-function isCodexThreadItem(item: unknown): item is CodexThreadItem {
+function isPiThreadItem(item: unknown): item is PiThreadItem {
   return Boolean(
     item &&
       typeof item === 'object' &&
@@ -874,7 +734,7 @@ function appendToolResultText(
   return upsertToolResultBlock(blocks, itemId, delta, itemKind, options);
 }
 
-function stringifyCodexValue(value: unknown): string {
+function stringifyPiValue(value: unknown): string {
   if (typeof value === 'string') {
     return value;
   }
@@ -886,175 +746,7 @@ function stringifyCodexValue(value: unknown): string {
   }
 }
 
-function getAgentOsSessionUpdate(event: AgentOsNotification): AgentOsSessionUpdate | null {
-  if (event.type === 'permission_request') {
-    return null;
-  }
-
-  if (event.method !== 'session/update') {
-    return null;
-  }
-
-  const params = event.params;
-  if (!params || typeof params !== 'object') {
-    return null;
-  }
-
-  const update = params.update;
-  return update && typeof update === 'object'
-    ? (update as AgentOsSessionUpdate)
-    : null;
-}
-
-function extractAgentOsTextContent(value: unknown): string {
-  if (typeof value === 'string') {
-    return value;
-  }
-
-  if (Array.isArray(value)) {
-    return value.map((entry) => extractAgentOsTextContent(entry)).filter(Boolean).join('');
-  }
-
-  if (!value || typeof value !== 'object') {
-    return '';
-  }
-
-  const record = value as Record<string, unknown>;
-  if (record.type === 'text' && typeof record.text === 'string') {
-    return record.text;
-  }
-  if (record.type === 'content') {
-    return extractAgentOsTextContent(record.content);
-  }
-  if (record.type === 'diff') {
-    const path = typeof record.path === 'string' ? record.path : 'file';
-    return `Updated ${path}`;
-  }
-  if ('content' in record) {
-    return extractAgentOsTextContent(record.content);
-  }
-  return '';
-}
-
-function applyAgentOsRuntimeEvent(
-  currentMessages: Message[],
-  threadId: string,
-  event: AgentOsNotification,
-  streamingMessageIds: Record<string, string | null>
-): Message[] {
-  const update = getAgentOsSessionUpdate(event);
-  if (!update) {
-    return currentMessages;
-  }
-
-  const sessionUpdate = typeof update.sessionUpdate === 'string'
-    ? update.sessionUpdate
-    : null;
-
-  if (sessionUpdate === 'agent_message_chunk') {
-    const text = extractAgentOsTextContent(update.content);
-    if (!text) return currentMessages;
-    return updateStreamingAssistantMessage(
-      currentMessages,
-      threadId,
-      streamingMessageIds,
-      (blocks) => appendContiguousTextBlock(
-        blocks,
-        text,
-        'agentos',
-        'agentos:message'
-      )
-    );
-  }
-
-  if (sessionUpdate === 'agent_thought_chunk') {
-    const text = extractAgentOsTextContent(update.content);
-    if (!text) return currentMessages;
-    return updateStreamingAssistantMessage(
-      currentMessages,
-      threadId,
-      streamingMessageIds,
-      (blocks) => appendContiguousThinkingBlock(
-        blocks,
-        text,
-        'Thinking',
-        'agentos',
-        'agentos:thinking'
-      )
-    );
-  }
-
-  const toolCallId = typeof update.toolCallId === 'string' ? update.toolCallId : null;
-
-  if (sessionUpdate === 'tool_call' && toolCallId) {
-    const title = typeof update.title === 'string' && update.title.trim()
-      ? update.title
-      : 'tool';
-    const rawInput =
-      update.rawInput && typeof update.rawInput === 'object'
-        ? (update.rawInput as Record<string, unknown>)
-        : {};
-    return updateStreamingAssistantMessage(
-      currentMessages,
-      threadId,
-      streamingMessageIds,
-      (blocks) => upsertToolUseBlock(blocks, toolCallId, title, rawInput, 'agentos')
-    );
-  }
-
-  if (sessionUpdate === 'tool_call_update' && toolCallId) {
-    const text = extractAgentOsTextContent(update.content) || extractAgentOsTextContent(update.rawOutput);
-    const status = typeof update.status === 'string' ? update.status : '';
-    const rawInput =
-      update.rawInput && typeof update.rawInput === 'object'
-        ? (update.rawInput as Record<string, unknown>)
-        : null;
-    const title = typeof update.title === 'string' && update.title.trim()
-      ? update.title
-      : null;
-    return updateStreamingAssistantMessage(
-      currentMessages,
-      threadId,
-      streamingMessageIds,
-      (blocks) => {
-        let nextBlocks = blocks;
-        const existingToolUse = getToolUseBlock(nextBlocks, toolCallId);
-        if (!existingToolUse) {
-          nextBlocks = upsertToolUseBlock(
-            nextBlocks,
-            toolCallId,
-            title ?? 'tool',
-            rawInput ?? {},
-            'agentos'
-          );
-        } else if (rawInput || title) {
-          nextBlocks = upsertToolUseBlock(
-            nextBlocks,
-            toolCallId,
-            title ?? existingToolUse.name,
-            rawInput ?? existingToolUse.input,
-            'agentos'
-          );
-        }
-        if (text) {
-          return appendToolResultText(nextBlocks, toolCallId, text, 'agentos', {
-            isError: status === 'failed',
-          });
-        }
-        if (status === 'failed') {
-          return upsertToolResultBlock(nextBlocks, toolCallId, 'Tool failed.', 'agentos', {
-            isError: true,
-          });
-        }
-        return nextBlocks;
-      }
-    );
-  }
-
-  return currentMessages;
-}
-
-function normalizeCodexTodoStatus(status: unknown): CodexTodoStatus {
+function normalizePiTodoStatus(status: unknown): PiTodoStatus {
   switch (status) {
     case 'completed':
       return 'completed';
@@ -1066,7 +758,7 @@ function normalizeCodexTodoStatus(status: unknown): CodexTodoStatus {
   }
 }
 
-function buildCodexTodos(plan: unknown): CodexTodoItem[] {
+function buildPiTodos(plan: unknown): PiTodoItem[] {
   if (!Array.isArray(plan)) {
     return [];
   }
@@ -1078,7 +770,7 @@ function buildCodexTodos(plan: unknown): CodexTodoItem[] {
         : 'Untitled task';
     return {
       content,
-      status: normalizeCodexTodoStatus(
+      status: normalizePiTodoStatus(
         item && typeof item === 'object' ? (item as { status?: unknown }).status : undefined
       ),
       activeForm: content,
@@ -1090,14 +782,14 @@ function joinNonEmpty(parts: Array<string | null | undefined>, separator = '\n\n
   return parts.map((part) => part?.trim()).filter(Boolean).join(separator);
 }
 
-function formatReasoningText(item: CodexThreadItem): string {
+function formatReasoningText(item: PiThreadItem): string {
   const content = Array.isArray(item.content)
     ? item.content.filter((value): value is string => typeof value === 'string').join('')
     : '';
   return content;
 }
 
-function formatReasoningSummaries(item: CodexThreadItem): string[] {
+function formatReasoningSummaries(item: PiThreadItem): string[] {
   if (!Array.isArray(item.summary)) {
     return [];
   }
@@ -1112,11 +804,11 @@ function formatReasoningSummaries(item: CodexThreadItem): string[] {
     ) {
       return (summary as { text: string }).text;
     }
-    return stringifyCodexValue(summary);
+    return stringifyPiValue(summary);
   });
 }
 
-function formatCommandResult(item: CodexThreadItem): string {
+function formatCommandResult(item: PiThreadItem): string {
   const output =
     typeof item.aggregatedOutput === 'string' ? item.aggregatedOutput.trimEnd() : '';
   const metadata = [
@@ -1133,12 +825,12 @@ function formatCommandResult(item: CodexThreadItem): string {
   ]);
 }
 
-function formatFileChangeResult(item: CodexThreadItem): string {
+function formatFileChangeResult(item: PiThreadItem): string {
   const changes = Array.isArray(item.changes) ? item.changes : [];
   const renderedChanges = changes
     .map((change) => {
       if (!change || typeof change !== 'object') {
-        return stringifyCodexValue(change);
+        return stringifyPiValue(change);
       }
       const path =
         typeof (change as { path?: unknown }).path === 'string'
@@ -1163,12 +855,12 @@ function formatFileChangeResult(item: CodexThreadItem): string {
   ]);
 }
 
-function formatMcpToolResult(item: CodexThreadItem): string {
+function formatMcpToolResult(item: PiThreadItem): string {
   if (item.error != null) {
-    return stringifyCodexValue(item.error);
+    return stringifyPiValue(item.error);
   }
   if (item.result != null) {
-    return stringifyCodexValue(item.result);
+    return stringifyPiValue(item.result);
   }
   if (typeof item.status === 'string') {
     return `status: ${item.status}`;
@@ -1176,12 +868,12 @@ function formatMcpToolResult(item: CodexThreadItem): string {
   return '';
 }
 
-function formatDynamicToolResult(item: CodexThreadItem): string {
+function formatDynamicToolResult(item: PiThreadItem): string {
   const parts: string[] = [];
   if (Array.isArray(item.contentItems)) {
     for (const contentItem of item.contentItems) {
       if (!contentItem || typeof contentItem !== 'object') {
-        parts.push(stringifyCodexValue(contentItem));
+        parts.push(stringifyPiValue(contentItem));
         continue;
       }
       if (
@@ -1191,7 +883,7 @@ function formatDynamicToolResult(item: CodexThreadItem): string {
         parts.push((contentItem as { text: string }).text);
         continue;
       }
-      parts.push(stringifyCodexValue(contentItem));
+      parts.push(stringifyPiValue(contentItem));
     }
   }
   if (typeof item.success === 'boolean') {
@@ -1203,8 +895,8 @@ function formatDynamicToolResult(item: CodexThreadItem): string {
   return parts.join('\n\n');
 }
 
-function formatCollabAgentResult(item: CodexThreadItem): string {
-  return stringifyCodexValue({
+function formatCollabAgentResult(item: PiThreadItem): string {
+  return stringifyPiValue({
     status: item.status,
     tool: item.tool,
     receiverThreadIds: item.receiverThreadIds,
@@ -1212,14 +904,14 @@ function formatCollabAgentResult(item: CodexThreadItem): string {
   });
 }
 
-function formatWebSearchResult(item: CodexThreadItem): string {
+function formatWebSearchResult(item: PiThreadItem): string {
   return joinNonEmpty([
     typeof item.query === 'string' ? item.query : '',
-    item.action != null ? stringifyCodexValue(item.action) : '',
+    item.action != null ? stringifyPiValue(item.action) : '',
   ]);
 }
 
-function formatImageResult(item: CodexThreadItem): string {
+function formatImageResult(item: PiThreadItem): string {
   return joinNonEmpty([
     typeof item.savedPath === 'string' ? `saved to: ${item.savedPath}` : '',
     typeof item.result === 'string' ? item.result : '',
@@ -1228,7 +920,7 @@ function formatImageResult(item: CodexThreadItem): string {
   ]);
 }
 
-function isFailedRuntimeItem(item: CodexThreadItem): boolean {
+function isFailedRuntimeItem(item: PiThreadItem): boolean {
   const status = typeof item.status === 'string' ? item.status : '';
   const result = item.result && typeof item.result === 'object'
     ? item.result as { details?: unknown }
@@ -1253,7 +945,7 @@ function isFailedRuntimeItem(item: CodexThreadItem): boolean {
 }
 
 function buildRuntimeToolResult(
-  item: CodexThreadItem,
+  item: PiThreadItem,
   content: string | ContentBlock[]
 ): RuntimeToolResult | null {
   if (typeof content === 'string' && content.length === 0) {
@@ -1406,7 +1098,7 @@ function omitUndefined(input: Record<string, unknown>): Record<string, unknown> 
   );
 }
 
-function buildDynamicToolInput(item: CodexThreadItem): Record<string, unknown> {
+function buildDynamicToolInput(item: PiThreadItem): Record<string, unknown> {
   const args =
     item.arguments && typeof item.arguments === 'object' && !Array.isArray(item.arguments)
       ? normalizeEditArguments(item.arguments as Record<string, unknown>)
@@ -1422,7 +1114,7 @@ function buildDynamicToolInput(item: CodexThreadItem): Record<string, unknown> {
   });
 }
 
-function buildToolUseFromCodexItem(item: CodexThreadItem): {
+function buildToolUseFromPiItem(item: PiThreadItem): {
   name: string;
   input: Record<string, unknown>;
 } | null {
@@ -1442,7 +1134,7 @@ function buildToolUseFromCodexItem(item: CodexThreadItem): {
       };
     case 'fileChange':
       return {
-        name: 'CodexFileChange',
+        name: 'PiFileChange',
         input: {
           status: item.status,
           changes: item.changes,
@@ -1484,14 +1176,14 @@ function buildToolUseFromCodexItem(item: CodexThreadItem): {
       };
     case 'imageView':
       return {
-        name: 'CodexImageView',
+        name: 'PiImageView',
         input: {
           path: item.path,
         },
       };
     case 'imageGeneration':
       return {
-        name: 'CodexImageGeneration',
+        name: 'PiImageGeneration',
         input: {
           status: item.status,
           revisedPrompt: item.revisedPrompt,
@@ -1500,7 +1192,7 @@ function buildToolUseFromCodexItem(item: CodexThreadItem): {
       };
     case 'enteredReviewMode':
       return {
-        name: 'CodexReviewMode',
+        name: 'PiReviewMode',
         input: {
           action: 'enter',
           review: item.review,
@@ -1508,7 +1200,7 @@ function buildToolUseFromCodexItem(item: CodexThreadItem): {
       };
     case 'exitedReviewMode':
       return {
-        name: 'CodexReviewMode',
+        name: 'PiReviewMode',
         input: {
           action: 'exit',
           review: item.review,
@@ -1516,12 +1208,12 @@ function buildToolUseFromCodexItem(item: CodexThreadItem): {
       };
     case 'contextCompaction':
       return {
-        name: 'CodexContextCompaction',
+        name: 'PiContextCompaction',
         input: {},
       };
     default:
       return {
-        name: `Codex:${item.type}`,
+        name: `Pi:${item.type}`,
         input: Object.fromEntries(
           Object.entries(item).filter(([key]) => key !== 'id' && key !== 'type')
         ),
@@ -1529,7 +1221,7 @@ function buildToolUseFromCodexItem(item: CodexThreadItem): {
   }
 }
 
-function buildToolResultFromCodexItem(item: CodexThreadItem): RuntimeToolResult | null {
+function buildToolResultFromPiItem(item: PiThreadItem): RuntimeToolResult | null {
   switch (item.type) {
     case 'commandExecution':
       return buildRuntimeToolResult(item, formatCommandResult(item));
@@ -1561,7 +1253,7 @@ function buildToolResultFromCodexItem(item: CodexThreadItem): RuntimeToolResult 
     default:
       return buildRuntimeToolResult(
         item,
-        stringifyCodexValue(
+        stringifyPiValue(
           Object.fromEntries(
             Object.entries(item).filter(([key]) => key !== 'id' && key !== 'type')
           )
@@ -1570,9 +1262,9 @@ function buildToolResultFromCodexItem(item: CodexThreadItem): RuntimeToolResult 
   }
 }
 
-function applyCodexItemStarted(
+function applyPiItemStarted(
   blocks: ContentBlock[],
-  item: CodexThreadItem
+  item: PiThreadItem
 ): ContentBlock[] {
   switch (item.type) {
     case 'userMessage':
@@ -1591,7 +1283,7 @@ function applyCodexItemStarted(
         item.type
       );
     default: {
-      const tool = buildToolUseFromCodexItem(item);
+      const tool = buildToolUseFromPiItem(item);
       if (!tool) {
         return blocks;
       }
@@ -1600,9 +1292,9 @@ function applyCodexItemStarted(
   }
 }
 
-function applyCodexItemCompleted(
+function applyPiItemCompleted(
   blocks: ContentBlock[],
-  item: CodexThreadItem
+  item: PiThreadItem
 ): ContentBlock[] {
   switch (item.type) {
     case 'userMessage':
@@ -1626,11 +1318,11 @@ function applyCodexItemCompleted(
       );
     default: {
       let nextBlocks = blocks;
-      const tool = buildToolUseFromCodexItem(item);
+      const tool = buildToolUseFromPiItem(item);
       if (tool) {
         nextBlocks = upsertToolUseBlock(nextBlocks, item.id, tool.name, tool.input, item.type);
       }
-      const result = buildToolResultFromCodexItem(item);
+      const result = buildToolResultFromPiItem(item);
       if (result) {
         nextBlocks = upsertToolResultBlock(
           nextBlocks,
@@ -1645,10 +1337,10 @@ function applyCodexItemCompleted(
   }
 }
 
-function applyCodexRuntimeEvent(
+function applyPiRuntimeEvent(
   currentMessages: Message[],
   threadId: string,
-  event: CodexNotification,
+  event: PiNotification,
   streamingMessageIds: Record<string, string | null>
 ): Message[] {
   const params = event.params ?? {};
@@ -1668,7 +1360,7 @@ function applyCodexRuntimeEvent(
   }
 
   if (event.method === 'turn/plan/updated') {
-    const todos = buildCodexTodos(params.plan);
+    const todos = buildPiTodos(params.plan);
     return updateStreamingAssistantMessage(
       currentMessages,
       threadId,
@@ -1688,23 +1380,23 @@ function applyCodexRuntimeEvent(
     );
   }
 
-  if (event.method === 'item/started' && isCodexThreadItem(params.item)) {
+  if (event.method === 'item/started' && isPiThreadItem(params.item)) {
     const item = params.item;
     return updateStreamingAssistantMessage(
       currentMessages,
       threadId,
       streamingMessageIds,
-      (blocks) => applyCodexItemStarted(blocks, item),
+      (blocks) => applyPiItemStarted(blocks, item),
     );
   }
 
-  if (event.method === 'item/completed' && isCodexThreadItem(params.item)) {
+  if (event.method === 'item/completed' && isPiThreadItem(params.item)) {
     const item = params.item;
     return updateStreamingAssistantMessage(
       currentMessages,
       threadId,
       streamingMessageIds,
-      (blocks) => applyCodexItemCompleted(blocks, item),
+      (blocks) => applyPiItemCompleted(blocks, item),
     );
   }
 
@@ -1861,29 +1553,19 @@ function applyCodexRuntimeEvent(
 export function applyRuntimeEventToMessages(
   currentMessages: Message[],
   threadId: string,
-  provider: RuntimeProvider,
   event: unknown,
   streamingMessageIds: Record<string, string | null>
 ): Message[] {
-  if (provider === 'codex' && isCodexRuntimeEvent(event)) {
-    return applyCodexRuntimeEvent(
-      currentMessages,
-      threadId,
-      event,
-      streamingMessageIds,
-    );
+  if (!isPiRuntimeEvent(event)) {
+    return currentMessages;
   }
 
-  if (provider === 'agentos' && isAgentOsRuntimeEvent(event)) {
-    return applyAgentOsRuntimeEvent(
-      currentMessages,
-      threadId,
-      event,
-      streamingMessageIds,
-    );
-  }
-
-  return currentMessages;
+  return applyPiRuntimeEvent(
+    currentMessages,
+    threadId,
+    event,
+    streamingMessageIds,
+  );
 }
 
 export function extractTextContent(content: string | ContentBlock[]): string {

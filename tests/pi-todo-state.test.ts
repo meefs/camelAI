@@ -14,14 +14,13 @@ function findToolUse(messages: Message[], id: string) {
   return undefined;
 }
 
-describe('Codex todo state integration', () => {
+describe('Pi todo state integration', () => {
   it('keeps late reasoning deltas in chronological order after assistant text', () => {
     const streamingIds: Record<string, string | null> = {};
 
     let messages = applyRuntimeEventToMessages(
       [],
       'thread-1',
-      'codex',
       {
         method: 'item/agentMessage/delta',
         params: {
@@ -35,7 +34,6 @@ describe('Codex todo state integration', () => {
     messages = applyRuntimeEventToMessages(
       messages,
       'thread-1',
-      'codex',
       {
         method: 'item/reasoning/textDelta',
         params: {
@@ -67,7 +65,6 @@ describe('Codex todo state integration', () => {
     let messages = applyRuntimeEventToMessages(
       [],
       'thread-1',
-      'codex',
       {
         method: 'item/reasoning/textDelta',
         params: {
@@ -82,7 +79,6 @@ describe('Codex todo state integration', () => {
     messages = applyRuntimeEventToMessages(
       messages,
       'thread-1',
-      'codex',
       {
         method: 'item/agentMessage/delta',
         params: {
@@ -96,7 +92,6 @@ describe('Codex todo state integration', () => {
     messages = applyRuntimeEventToMessages(
       messages,
       'thread-1',
-      'codex',
       {
         method: 'item/reasoning/textDelta',
         params: {
@@ -123,7 +118,6 @@ describe('Codex todo state integration', () => {
     const messages = applyRuntimeEventToMessages(
       [],
       'thread-1',
-      'codex',
       {
         method: 'turn/plan/updated',
         params: {
@@ -161,7 +155,6 @@ describe('Codex todo state integration', () => {
     let messages = applyRuntimeEventToMessages(
       [],
       'thread-1',
-      'codex',
       {
         method: 'item/started',
         params: {
@@ -180,7 +173,6 @@ describe('Codex todo state integration', () => {
     messages = applyRuntimeEventToMessages(
       messages,
       'thread-1',
-      'codex',
       {
         method: 'item/started',
         params: {
@@ -199,7 +191,6 @@ describe('Codex todo state integration', () => {
     messages = applyRuntimeEventToMessages(
       messages,
       'thread-1',
-      'codex',
       {
         method: 'item/started',
         params: {
@@ -221,7 +212,6 @@ describe('Codex todo state integration', () => {
     messages = applyRuntimeEventToMessages(
       messages,
       'thread-1',
-      'codex',
       {
         method: 'item/started',
         params: {
@@ -240,7 +230,6 @@ describe('Codex todo state integration', () => {
     messages = applyRuntimeEventToMessages(
       messages,
       'thread-1',
-      'codex',
       {
         method: 'item/started',
         params: {
@@ -259,7 +248,6 @@ describe('Codex todo state integration', () => {
     messages = applyRuntimeEventToMessages(
       messages,
       'thread-1',
-      'codex',
       {
         method: 'item/completed',
         params: {
@@ -314,7 +302,6 @@ describe('Codex todo state integration', () => {
     let messages = applyRuntimeEventToMessages(
       [],
       'thread-1',
-      'codex',
       {
         method: 'item/started',
         params: {
@@ -333,7 +320,6 @@ describe('Codex todo state integration', () => {
     messages = applyRuntimeEventToMessages(
       messages,
       'thread-1',
-      'codex',
       {
         method: 'item/completed',
         params: {
@@ -362,7 +348,6 @@ describe('Codex todo state integration', () => {
     let messages = applyRuntimeEventToMessages(
       [],
       'thread-1',
-      'codex',
       {
         method: 'item/started',
         params: {
@@ -381,7 +366,6 @@ describe('Codex todo state integration', () => {
     messages = applyRuntimeEventToMessages(
       messages,
       'thread-1',
-      'codex',
       {
         method: 'item/completed',
         params: {

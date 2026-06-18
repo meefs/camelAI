@@ -4,13 +4,11 @@ export type EvalSignalEnv = {
   EVAL_ENFORCE_SIGNAL?: string;
   EVAL_MAX_ASSISTANT_TURNS?: string;
   EVAL_MAX_BAD_TOOL_CALLS?: string;
-  EVAL_MAX_SDK_TURNS?: string;
 };
 
 export type EvalSignalThresholds = {
   maxAssistantTurns?: number;
   maxBadToolCalls?: number;
-  maxSdkTurns?: number;
 };
 
 export type EvalToolCallSummary = {
@@ -33,7 +31,6 @@ export type EvalTokenUsage = {
 
 export type EvalSignal = {
   assistantTurnCount: number;
-  sdkTurnStartCount: number;
   messageCount: number;
   toolCallCount: number;
   toolCallsByName: Record<string, number>;
@@ -90,19 +87,24 @@ function classifyFailedToolCall(
   return undefined;
 }
 
+function emptyEvalTokenUsage(): EvalTokenUsage {
+  return {
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheReadInputTokens: 0,
+    cacheCreationInputTokens: 0,
+    totalTokens: 0,
+    turnCount: 0,
+  };
+}
+
 function parseNonNegativeInt(value: unknown): number {
   const parsed = Number(value);
   if (!Number.isFinite(parsed) || parsed < 0) return 0;
   return Math.floor(parsed);
 }
 
-function extractEvalTurnUsage(usage: RecordValue): {
-  inputTokens: number;
-  outputTokens: number;
-  cacheReadInputTokens: number;
-  cacheCreationInputTokens: number;
-  costUsd?: number;
-} {
+function extractEvalTurnUsage(usage: RecordValue): EvalTokenUsage & { costUsd?: number } {
   const inputTokens = parseNonNegativeInt(
     usage.input ?? usage.input_tokens ?? usage.inputTokens,
   );
@@ -119,8 +121,15 @@ function extractEvalTurnUsage(usage: RecordValue): {
       usage.cache_creation_input_tokens ??
       usage.cacheCreationInputTokens,
   );
+  const explicitTotal = parseNonNegativeInt(
+    usage.totalTokens ?? usage.total_tokens,
+  );
+  const totalTokens = Math.max(
+    explicitTotal,
+    inputTokens + outputTokens + cacheReadInputTokens + cacheCreationInputTokens,
+  );
   const costRecord = asRecord(usage.cost);
-  const rawCost = Number(costRecord?.total);
+  const rawCost = Number(costRecord?.total ?? usage.costUsd ?? usage.cost_usd);
   const costUsd =
     Number.isFinite(rawCost) && rawCost > 0 ? rawCost : undefined;
   return {
@@ -128,6 +137,8 @@ function extractEvalTurnUsage(usage: RecordValue): {
     outputTokens,
     cacheReadInputTokens,
     cacheCreationInputTokens,
+    totalTokens,
+    turnCount: totalTokens > 0 ? 1 : 0,
     ...(costUsd !== undefined ? { costUsd } : {}),
   };
 }
@@ -135,60 +146,35 @@ function extractEvalTurnUsage(usage: RecordValue): {
 export function countEvalTokenUsage(
   result: Pick<AgentEvalSessionResult, "events">,
 ): EvalTokenUsage {
-  let inputTokens = 0;
-  let outputTokens = 0;
-  let cacheReadInputTokens = 0;
-  let cacheCreationInputTokens = 0;
-  let turnCount = 0;
+  const total = emptyEvalTokenUsage();
   let costUsd = 0;
   let hasCost = false;
 
   for (const rawEvent of result.events) {
     const event = asRecord(rawEvent);
-    if (event?.type !== "sdk_event") continue;
-    const sdkEvent = asRecord(event.event);
-    if (sdkEvent?.type !== "turn_end") continue;
-
-    const message = asRecord(sdkEvent.message);
-    const usage = asRecord(message?.usage);
+    if (event?.type !== "runtime_event") continue;
+    const runtimeEvent = asRecord(event.event);
+    if (runtimeEvent?.method !== "turn/completed") continue;
+    const params = asRecord(runtimeEvent.params);
+    const usage = asRecord(params?.usage);
     if (!usage) continue;
 
     const parsed = extractEvalTurnUsage(usage);
-    const hasDetailedUsage =
-      parsed.inputTokens > 0 ||
-      parsed.outputTokens > 0 ||
-      parsed.cacheReadInputTokens > 0 ||
-      parsed.cacheCreationInputTokens > 0;
-
-    if (!hasDetailedUsage) {
-      const totalTokens = parseNonNegativeInt(
-        usage.totalTokens ?? usage.total_tokens,
-      );
-      if (totalTokens <= 0) continue;
-      inputTokens += totalTokens;
-      turnCount += 1;
-      continue;
-    }
-
-    inputTokens += parsed.inputTokens;
-    outputTokens += parsed.outputTokens;
-    cacheReadInputTokens += parsed.cacheReadInputTokens;
-    cacheCreationInputTokens += parsed.cacheCreationInputTokens;
+    if (parsed.turnCount <= 0) continue;
+    total.inputTokens += parsed.inputTokens;
+    total.outputTokens += parsed.outputTokens;
+    total.cacheReadInputTokens += parsed.cacheReadInputTokens;
+    total.cacheCreationInputTokens += parsed.cacheCreationInputTokens;
+    total.totalTokens += parsed.totalTokens;
+    total.turnCount += parsed.turnCount;
     if (parsed.costUsd !== undefined) {
       costUsd += parsed.costUsd;
       hasCost = true;
     }
-    turnCount += 1;
   }
 
   return {
-    inputTokens,
-    outputTokens,
-    cacheReadInputTokens,
-    cacheCreationInputTokens,
-    totalTokens:
-      inputTokens + outputTokens + cacheReadInputTokens + cacheCreationInputTokens,
-    turnCount,
+    ...total,
     ...(hasCost ? { costUsd } : {}),
   };
 }
@@ -213,9 +199,6 @@ export function getEvalSignalThresholds(
     maxBadToolCalls:
       parsePositiveInt(env.EVAL_MAX_BAD_TOOL_CALLS, "EVAL_MAX_BAD_TOOL_CALLS") ??
       defaults.maxBadToolCalls,
-    maxSdkTurns:
-      parsePositiveInt(env.EVAL_MAX_SDK_TURNS, "EVAL_MAX_SDK_TURNS") ??
-      defaults.maxSdkTurns,
   };
 }
 
@@ -272,17 +255,12 @@ export function evaluateAgentEvalSignal(
     }
   }
 
-  let sdkTurnStartCount = 0;
   for (const rawEvent of result.events) {
     const event = asRecord(rawEvent);
-    const sdkEvent = asRecord(event?.event);
-    if (event?.type === "sdk_event" && sdkEvent?.type === "turn_start") {
-      sdkTurnStartCount += 1;
-    }
-
+    const runtimeEvent = asRecord(event?.event);
     if (event?.type !== "runtime_event") continue;
-    if (sdkEvent?.method !== "item/completed") continue;
-    const params = asRecord(sdkEvent.params);
+    if (runtimeEvent?.method !== "item/completed") continue;
+    const params = asRecord(runtimeEvent.params);
     const item = asRecord(params?.item);
     if (!item) continue;
 
@@ -340,14 +318,6 @@ export function evaluateAgentEvalSignal(
     );
   }
   if (
-    thresholds.maxSdkTurns !== undefined &&
-    sdkTurnStartCount > thresholds.maxSdkTurns
-  ) {
-    violations.push(
-      `sdk turns ${sdkTurnStartCount} exceeded max ${thresholds.maxSdkTurns}`,
-    );
-  }
-  if (
     thresholds.maxBadToolCalls !== undefined &&
     badToolCalls.length > thresholds.maxBadToolCalls
   ) {
@@ -358,7 +328,6 @@ export function evaluateAgentEvalSignal(
 
   return {
     assistantTurnCount,
-    sdkTurnStartCount,
     messageCount: result.messages.length,
     toolCallCount,
     toolCallsByName,

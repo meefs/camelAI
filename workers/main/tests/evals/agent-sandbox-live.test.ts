@@ -85,7 +85,6 @@ describe("agent evals with Sandbox runtime", () => {
         getEvalSignalThresholds(testEnv, {
           maxAssistantTurns: 4,
           maxBadToolCalls: 0,
-          maxSdkTurns: 4,
         }),
       );
 

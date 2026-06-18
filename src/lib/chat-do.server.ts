@@ -684,48 +684,6 @@ export async function generateThreadTitle(
   }
 }
 
-export async function getLegacyClaudeSessionId(
-  context: AppLoadContext,
-  threadId: string,
-): Promise<string | null> {
-  const env = getEnv(context);
-  if (
-    !env ||
-    typeof env !== "object" ||
-    !("CHAT_THREAD" in env) ||
-    !env.CHAT_THREAD
-  ) {
-    return null;
-  }
-  const threadStub = env.CHAT_THREAD.get(env.CHAT_THREAD.idFromName(threadId));
-  const sessionId = await threadStub
-    .getLegacyClaudeSessionId()
-    .catch(() => null);
-  return typeof sessionId === "string" && sessionId.trim()
-    ? sessionId.trim()
-    : null;
-}
-
-export async function getCodexSessionId(
-  context: AppLoadContext,
-  threadId: string,
-): Promise<string | null> {
-  const env = getEnv(context);
-  if (
-    !env ||
-    typeof env !== "object" ||
-    !("CHAT_THREAD" in env) ||
-    !env.CHAT_THREAD
-  ) {
-    return null;
-  }
-  const threadStub = env.CHAT_THREAD.get(env.CHAT_THREAD.idFromName(threadId));
-  const sessionId = await threadStub.getCodexSessionId().catch(() => null);
-  return typeof sessionId === "string" && sessionId.trim()
-    ? sessionId.trim()
-    : null;
-}
-
 export async function getPiCoreMessages(
   context: AppLoadContext,
   threadId: string,
@@ -748,35 +706,6 @@ export async function getPiCoreMessages(
     ).getPiCoreParsedMessages(threadId),
   );
   return Array.isArray(messages) ? messages : [];
-}
-
-export async function hydratePiCoreFromParsedMessages(
-  context: AppLoadContext,
-  threadId: string,
-  messages: ParsedThreadMessage[],
-): Promise<{ hydrated: boolean; count: number; existingCount: number; deferred?: boolean } | null> {
-  if (messages.length === 0) return null;
-  const env = getEnv(context);
-  if (
-    !env ||
-    typeof env !== "object" ||
-    !("CHAT_THREAD" in env) ||
-    !env.CHAT_THREAD
-  ) {
-    return null;
-  }
-  const threadStub = env.CHAT_THREAD.get(env.CHAT_THREAD.idFromName(threadId));
-  const result = await Promise.resolve(
-    (
-      threadStub as unknown as {
-        hydratePiCoreFromParsedMessages(
-          threadId: string,
-          messages: ParsedThreadMessage[],
-        ): Promise<{ hydrated: boolean; count: number; existingCount: number; deferred?: boolean }> | { hydrated: boolean; count: number; existingCount: number; deferred?: boolean };
-      }
-    ).hydratePiCoreFromParsedMessages(threadId, messages),
-  );
-  return result && typeof result === "object" ? result : null;
 }
 
 export async function getTodoState(
