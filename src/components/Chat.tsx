@@ -189,40 +189,12 @@ type ChatAgentState = {
 type ChatAgentClient = {
   readyState: number;
   send(data: string): void;
-  close(): void;
   reconnect(): void;
   call<T = unknown>(method: string, args?: unknown[]): Promise<T>;
 };
 
-function jsonEqual(left: unknown, right: unknown): boolean {
-  if (left === right) return true;
-  try {
-    return JSON.stringify(left) === JSON.stringify(right);
-  } catch {
-    return false;
-  }
-}
-
-function samePendingQuestion(
-  left: AskUserQuestionData | null,
-  right: AskUserQuestionData | null,
-): boolean {
-  if (left === right) return true;
-  if (!left || !right) return false;
-  return (
-    left.questionId === right.questionId &&
-    left.toolUseId === right.toolUseId &&
-    jsonEqual(left.questions, right.questions)
-  );
-}
-
-function sameConnectionSetupPrompt(
-  left: ConnectionSetupPromptData | null,
-  right: ConnectionSetupPromptData | null,
-): boolean {
-  if (left === right) return true;
-  if (!left || !right) return false;
-  return left.requestId === right.requestId && jsonEqual(left, right);
+function sameJson(left: unknown, right: unknown): boolean {
+  return left === right || JSON.stringify(left) === JSON.stringify(right);
 }
 
 // The backend acknowledges receipt before slow runner enqueue work, so this
@@ -3238,7 +3210,7 @@ export default function Chat({
         }
         if (suppressedId === next.questionId) return previous;
         if (suppressedId) optimisticallyAnsweredQuestionIdRef.current = null;
-        return samePendingQuestion(previous, next) ? previous : next;
+        return sameJson(previous, next) ? previous : next;
       });
       setConnectionSetupPrompt((previous) => {
         const next = state.connectionSetupPrompt ?? null;
@@ -3254,7 +3226,7 @@ export default function Chat({
         if (suppressedId) {
           optimisticallyClearedConnectionSetupRequestIdRef.current = null;
         }
-        return sameConnectionSetupPrompt(previous, next) ? previous : next;
+        return sameJson(previous, next) ? previous : next;
       });
       if (typeof state.title === "string") {
         if (typeof document !== "undefined") {
@@ -4384,18 +4356,9 @@ type SendOptions = {
       );
       setPendingMessages((prev) => prev);
     } else {
-      // Queue the full message object for later delivery (with file refs in content)
+      // Queue the full message object for later delivery (with file refs in content).
+      // useAgent reconnects automatically; the ready handler flushes the queue.
       setLoading(true);
-      const agentState = chatAgentRef.current?.readyState;
-      if (
-        agentState == null ||
-        agentState === WebSocket.CLOSING ||
-        agentState === WebSocket.CLOSED
-      ) {
-        if (chatAgentRef.current) chatAgentRef.current.reconnect();
-
-      }
-      // If connected but not ready, the message will be sent when ready event arrives
     }
     return true;
   }
