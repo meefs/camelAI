@@ -7,11 +7,6 @@ import type { SessionData } from "../session-kv.js";
 import type { WorkspaceDO } from "../workspace.js";
 import type { OrgDO, UserDO } from "../auth.js";
 import { getSignedSessionFromRequest } from "../cookies.js";
-import {
-  normalizePathForObservability,
-  recordErrorEvent,
-  recordObservabilityEvent,
-} from "../observability.js";
 import { text } from "./response.js";
 import { getWorkspaceStub, getOrgStub } from "./stubs.js";
 import { isOrgBanned, isUserBanned } from "../ban-list.js";
@@ -142,16 +137,6 @@ export async function requireSession(
       // every chat connection during a transient DO outage is worse than
       // honoring a signed session for the duration of the blip.
       invalidatedAt = null;
-      recordObservabilityEvent(env, {
-        event: "session_invalidation_check_failed_open",
-        severity: "warn",
-        component: "auth",
-        operation: "requireSession",
-        status: "fail_open",
-        userId: signedSession.user_id,
-        errorName: error instanceof Error ? error.name : "Error",
-        errorMessage: error instanceof Error ? error.message : String(error),
-      });
     }
   } else {
     invalidatedAt = await userNs
@@ -383,64 +368,21 @@ export async function requireChatWebSocketAccess(
   threadId: string,
   workspaceIdFromUrl?: string | null,
 ): Promise<ChatWebSocketAccessResult> {
-  const requestId = req.headers.get("cf-ray") ?? crypto.randomUUID();
-  const path = normalizePathForObservability(new URL(req.url).pathname);
-  const recordDenied = (
-    status: string,
-    statusCode: number,
-    details: {
-      orgId?: string | null;
-      workspaceId?: string | null;
-      userId?: string | null;
-      errorMessage?: string | null;
-    } = {},
-  ) => {
-    recordObservabilityEvent(env, {
-      event: "chat_ws_access_denied",
-      severity: statusCode >= 500 ? "error" : statusCode >= 400 ? "warn" : "info",
-      component: "auth",
-      operation: "requireChatWebSocketAccess",
-      status,
-      method: req.method,
-      path,
-      threadId,
-      workspaceId: details.workspaceId ?? null,
-      orgId: details.orgId ?? null,
-      userId: details.userId ?? null,
-      requestId,
-      statusCode,
-      errorMessage: details.errorMessage ?? null,
-      sampleIndex: threadId,
-    });
-  };
   const auth = await requireSession(req, env, {
     failOpenOnInvalidationCheckError: true,
   });
-  if ("error" in auth) {
-    const statusCode = auth.error.status || 401;
-    recordDenied(
-      statusCode === 401
-        ? "unauthorized"
-        : statusCode === 403
-          ? "forbidden"
-          : "auth_error",
-      statusCode,
-      { errorMessage: auth.error.statusText || null },
-    );
-    return auth;
-  }
+  if ("error" in auth) return auth;
 
   const { session } = auth;
   const { org_id: sessionOrgId, user_id: userId } = session;
 
-  // Authorize against the workspace the tab is actually connected to (from
-  // the /ws/:workspace URL), not the session's currently-selected workspace.
+  // Authorize against the workspace the tab is actually connected to, not the
+  // session's currently-selected workspace.
   // The session selection is a shared per-browser cookie that other tabs
   // mutate; using it here breaks open threads in other workspaces/orgs.
   const workspaceId =
     workspaceIdFromUrl?.trim() || session.workspace_id || "";
   if (!workspaceId) {
-    recordDenied("missing_workspace", 400, { orgId: sessionOrgId, userId });
     return { error: text("No workspace selected", 400) };
   }
 
@@ -458,11 +400,6 @@ export async function requireChatWebSocketAccess(
     );
 
     if (!wsInfo || wsInfo.archived) {
-      recordDenied("workspace_not_found", 404, {
-        orgId: workspaceOrgId,
-        workspaceId,
-        userId,
-      });
       return { error: text("Workspace not found", 404) };
     }
 
@@ -477,11 +414,6 @@ export async function requireChatWebSocketAccess(
     // call below fails transiently we degrade, and a denial we already hold
     // must never be converted into a degraded (fail-open) upgrade.
     if (workspaceAccess !== "full") {
-      recordDenied("member_access_forbidden", 403, {
-        orgId: wsInfo.org_id,
-        workspaceId,
-        userId,
-      });
       return { error: text("Forbidden", 403) };
     }
 
@@ -491,22 +423,6 @@ export async function requireChatWebSocketAccess(
     );
 
     if (!orgValidation.ok) {
-      const status =
-        orgValidation.reason === "org_not_found"
-          ? "org_not_found"
-          : orgValidation.reason === "thread_not_found"
-            ? "thread_not_found"
-            : "forbidden";
-      const statusCode =
-        orgValidation.reason === "org_not_found" ||
-        orgValidation.reason === "thread_not_found"
-          ? 404
-          : 403;
-      recordDenied(status, statusCode, {
-        orgId,
-        workspaceId,
-        userId,
-      });
       switch (orgValidation.reason) {
         case "org_not_found":
           return { error: text("Workspace not found", 404) };
@@ -532,40 +448,8 @@ export async function requireChatWebSocketAccess(
       // The authorization DOs are unreachable, not denying access. Fall back
       // to degraded auth: the session is verified, and ChatThreadDO will only
       // admit users it has already seen pass full authorization.
-      recordObservabilityEvent(env, {
-        event: "chat_ws_auth_degraded",
-        severity: "warn",
-        component: "auth",
-        operation: "requireChatWebSocketAccess",
-        status: "degraded",
-        method: req.method,
-        path,
-        threadId,
-        workspaceId,
-        orgId: sessionOrgId,
-        userId,
-        requestId,
-        errorName: error instanceof Error ? error.name : "Error",
-        errorMessage: error instanceof Error ? error.message : String(error),
-        sampleIndex: threadId,
-      });
       return { degraded: true, session, userId, threadId };
     }
-    recordErrorEvent(env, {
-      event: "chat_ws_access_failed",
-      component: "auth",
-      operation: "requireChatWebSocketAccess",
-      status: "exception",
-      method: req.method,
-      path,
-      threadId,
-      workspaceId,
-      orgId: sessionOrgId,
-      userId,
-      requestId,
-      sampleIndex: threadId,
-      error,
-    });
     return { error: text("Forbidden", 403) };
   }
 }

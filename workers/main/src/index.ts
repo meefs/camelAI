@@ -10,13 +10,14 @@
  * - /api/integrations/telegram/webhook → Telegram Bot API webhook
  * - email() → Workspace email ingress (Cloudflare Email Routing)
  * - /api/threads/:id/preview → Thread preview API
- * - /ws/:workspace → Chat side-channel WebSocket (ChatThreadDO)
- * - /ws/runner/:workspace → Chat runner WebSocket (ChatThreadDO-owned agent session)
+ * - /agents/chat-thread/:thread → ChatThreadDO Agents SDK WebSocket
+ * - /ws/:workspace → temporary compatibility shim for pre-Agents chat bundles
  * - * → React Router SSR
  */
 
 import { createRequestHandler } from 'react-router';
 import { DurableObject } from 'cloudflare:workers';
+import { routeAgentRequest } from 'agents';
 export { ContainerProxy, Sandbox } from '@cloudflare/sandbox';
 import type { Env, Route } from './types.js';
 import { handleSlackEventsQueue } from './slack-events-queue.js';
@@ -42,11 +43,7 @@ import {
   handleRemoteMcpOAuthStart,
   handleRemoteMcpOAuthCallback,
 } from './routes/integrations.js';
-import {
-  handleChatRunnerWebSocket,
-  handleChatWebSocket,
-  handleWorkspaceStatusWebSocket,
-} from './routes/websocket.js';
+import { handleWorkspaceStatusWebSocket } from './routes/websocket.js';
 import { handleLogsWebSocket } from './routes/logs-websocket.js';
 import { handleOAuthMetadata, handleResourceMetadata } from './routes/well-known.js';
 import {
@@ -61,12 +58,7 @@ import {
 import { handleEmailSendProxy } from './routes/email-send-proxy.js';
 import { handleWorkerAuth } from './routes/worker-auth.js';
 import { handleProjectRuntimeArtifactsProxy } from './routes/project-runtime-artifacts.js';
-import {
-  createRequestObservabilityContext,
-  normalizePathForObservability,
-  recordErrorEvent,
-  recordObservabilityEvent,
-} from './observability.js';
+import { requireChatWebSocketAccess } from './helpers/auth.js';
 
 // Re-exports for wrangler
 export { ChiridionMcp } from './mcp-handler.js';
@@ -258,8 +250,6 @@ const routes: Route[] = [
   // WebSocket routes
   { method: 'GET', path: /^\/ws\/logs$/, handler: handleLogsWebSocket, websocket: true },
   { method: 'GET', path: /^\/ws\/workspaces\/([^/]+)\/status$/, handler: handleWorkspaceStatusWebSocket, websocket: true },
-  { method: 'GET', path: /^\/ws\/runner\/([^/]+)$/, handler: handleChatRunnerWebSocket, websocket: true },
-  { method: 'GET', path: /^\/ws\/([^/]+)$/, handler: handleChatWebSocket, websocket: true },
 ];
 
 // =============================================================================
@@ -276,76 +266,90 @@ const reactRouterHandler = createRequestHandler(
 // Main Router
 // =============================================================================
 
+function rewriteLegacyChatAgentRequest(req: Request, url: URL): Request | null {
+  const match = url.pathname.match(/^\/ws\/([^/]+)$/);
+  const threadId = url.searchParams.get('threadId')?.trim();
+  if (!match || !threadId) return null;
+
+  const workspaceId = decodeURIComponent(match[1] ?? '').trim();
+  if (!workspaceId) return null;
+
+  const nextUrl = new URL(url);
+  nextUrl.pathname = `/agents/chat-thread/${encodeURIComponent(threadId)}`;
+  nextUrl.searchParams.set('workspaceId', workspaceId);
+  return new Request(nextUrl.toString(), req);
+}
+
+async function authorizeChatAgentConnect(
+  req: Request,
+  env: Env,
+  threadId: string,
+): Promise<Request | Response> {
+  const url = new URL(req.url);
+  const access = await requireChatWebSocketAccess(
+    req,
+    env,
+    threadId,
+    url.searchParams.get('workspaceId'),
+  );
+  if ('error' in access) return access.error;
+
+  const { session, userId } = access;
+  const fullAccess = 'degraded' in access ? null : access;
+
+  const headers = new Headers(req.headers);
+  headers.delete('X-Chiridion-User-Id');
+  headers.delete('X-Chiridion-User-Name');
+  headers.delete('X-Chiridion-User-Email');
+  headers.delete('X-Chiridion-Auth-Degraded');
+  headers.set('X-Chiridion-User-Id', userId);
+  if (session.user_name) headers.set('X-Chiridion-User-Name', session.user_name);
+  if (session.user_email) headers.set('X-Chiridion-User-Email', session.user_email);
+
+  url.searchParams.set('threadId', fullAccess?.threadId ?? threadId);
+  if (fullAccess) {
+    url.searchParams.set('workspaceId', fullAccess.workspaceId);
+    url.searchParams.set('orgId', fullAccess.orgId);
+  } else {
+    headers.set('X-Chiridion-Auth-Degraded', '1');
+  }
+
+  return new Request(url.toString(), { method: req.method, headers });
+}
+
 export default {
   async fetch(req: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(req.url);
     const method = req.method;
     const isWebSocket = req.headers.get('Upgrade') === 'websocket';
-    const requestContext = createRequestObservabilityContext(req);
-    const startedAt = Date.now();
-    let routeName = 'react_router';
-
-    const observeResponse = (response: Response): Response => {
-      const durationMs = Date.now() - startedAt;
-      recordObservabilityEvent(env, {
-        event: 'http_request',
-        severity: response.status >= 500 ? 'error' : response.status >= 400 ? 'warn' : 'info',
-        component: 'main_worker',
-        operation: isWebSocket ? 'websocket' : 'fetch',
-        status: response.status >= 500 ? 'error' : response.status >= 400 ? 'client_error' : 'ok',
-        route: routeName,
-        method,
-        path: normalizePathForObservability(url.pathname),
-        requestId: requestContext.requestId,
-        statusCode: response.status,
-        durationMs,
-        sampleIndex: requestContext.colo,
+    if (isWebSocket) {
+      const agentRequest = rewriteLegacyChatAgentRequest(req, url) ?? req;
+      const agentResponse = await routeAgentRequest(agentRequest, env, {
+        onBeforeConnect: (request, agent) =>
+          agent.className === 'CHAT_THREAD'
+            ? authorizeChatAgentConnect(request, env, agent.name)
+            : request,
       });
-      try {
-        response.headers.set('x-camelai-request-id', requestContext.requestId);
-        return response;
-      } catch {
-        return response;
-      }
-    };
-
-    try {
-      for (const route of routes) {
-        if (isWebSocket && !route.websocket) continue;
-        if (route.websocket && !isWebSocket) continue;
-        if (route.method !== 'ALL' && route.method !== method) continue;
-
-        const match = url.pathname.match(route.path);
-        if (!match) continue;
-
-        routeName = route.path.source;
-        const result = await route.handler({ req, env, ctx, url, match });
-        if (result !== null) return observeResponse(result);
-        // null → handler declined, continue matching
-      }
-
-      if (isWebSocket) {
-        routeName = 'websocket_not_found';
-        return observeResponse(new Response('Not Found', { status: 404 }));
-      }
-
-      return observeResponse(await reactRouterHandler(req, { cloudflare: { env, ctx } }));
-    } catch (error) {
-      recordErrorEvent(env, {
-        event: 'http_request_exception',
-        component: 'main_worker',
-        operation: isWebSocket ? 'websocket' : 'fetch',
-        status: 'exception',
-        route: routeName,
-        method,
-        path: normalizePathForObservability(url.pathname),
-        requestId: requestContext.requestId,
-        durationMs: Date.now() - startedAt,
-        sampleIndex: requestContext.colo,
-        error,
-      });
-      throw error;
+      if (agentResponse) return agentResponse;
     }
+
+    for (const route of routes) {
+      if (isWebSocket && !route.websocket) continue;
+      if (route.websocket && !isWebSocket) continue;
+      if (route.method !== 'ALL' && route.method !== method) continue;
+
+      const match = url.pathname.match(route.path);
+      if (!match) continue;
+
+      const result = await route.handler({ req, env, ctx, url, match });
+      if (result !== null) return result;
+    }
+
+    if (isWebSocket) {
+      return new Response('Not Found', { status: 404 });
+    }
+
+    return reactRouterHandler(req, { cloudflare: { env, ctx } });
   },
 
   async email(message: ForwardableEmailMessage, env: Env): Promise<void> {

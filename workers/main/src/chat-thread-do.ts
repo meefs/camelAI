@@ -1,5 +1,12 @@
 import { WorkerEntrypoint } from "cloudflare:workers";
-import { Agent, type FiberInspection, type FiberRecoveryContext } from "agents";
+import {
+  Agent,
+  type Connection,
+  type ConnectionContext,
+  type FiberInspection,
+  type FiberRecoveryContext,
+  type WSMessage,
+} from "agents";
 import { Type, type TSchema } from "typebox";
 import type {
   Agent as PiCoreAgent,
@@ -124,10 +131,6 @@ import {
 } from "./pi-container-tools";
 import { repairPiMessageHistoryForReplay } from "./pi-message-history";
 import { parseFilePreviewPath } from "./preview-paths";
-import {
-  recordErrorEvent,
-  recordObservabilityEvent,
-} from "./observability";
 import {
   buildChatErrorEventPayload,
   createChatErrorFingerprint,
@@ -857,8 +860,6 @@ interface ChatClientInitMessage {
   type: "init";
   threadId?: string;
   lastEventId?: number;
-  mode?: "side_channel";
-  lastSeq?: number;
 }
 
 interface ChatClientMessage {
@@ -3887,15 +3888,12 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
   }
 }
 
-const CHAT_SOCKET_TAG = "chat";
-const RUNNER_CLIENT_SOCKET_TAG = "runner";
 
 const CHAT_CONTEXT_KEY = "chatContext";
 const CHAT_TODOS_KEY = "chatTodos";
 const CHAT_CONTEXT_USED_PERCENT_KEY = "chatContextUsedPercent";
 const CHAT_CONTEXT_WINDOW_BY_MODEL_KEY = "chatContextWindowByModel";
 const CHAT_NEXT_EVENT_ID_KEY = "chatNextEventId";
-const CHAT_RUNNER_LAST_SEQ_KEY = "chatRunnerLastSeq";
 const CHAT_ACTIVE_TURN_USER_ID_KEY = "chatActiveTurnUserId";
 const PI_TURN_FIBER_NAME = "pi-turn";
 const PI_TURN_INACTIVITY_TIMEOUT_MS = 10 * 60_000;
@@ -3930,7 +3928,6 @@ const CHAT_RECENT_CLIENT_MESSAGE_IDS_MAX = 200;
 
 type ChatAgentEnv = Cloudflare.Env & Omit<ChatEnv, keyof Cloudflare.Env>;
 
-const TRACE_CHAT_THREAD_DO = false;
 const CHAT_CODEX_SESSION_ID_KEY = 'chatCodexSessionId';
 const CODE_MODE_ARTIFACTS_KEY_PREFIX = 'codeModeArtifacts:';
 
@@ -3986,12 +3983,9 @@ export class ChatThreadDO extends Agent<ChatAgentEnv> {
     threadId: string;
     activityText: string;
     activityAt: number;
-    // Number of activity updates coalesced into this pending flush, for the
-    // observability counter emitted when it fires.
     coalescedCount: number;
   } | null = null;
   private streamingActivityFlushTimer: ReturnType<typeof setTimeout> | null = null;
-  private lastRunnerSeq: number = 0;
   private runnerTransitionChain: Promise<void> = Promise.resolve();
   private piSessionPromise: Promise<PiCoreAgent> | null = null;
   private piSession: PiCoreAgent | null = null;
@@ -4030,24 +4024,6 @@ export class ChatThreadDO extends Agent<ChatAgentEnv> {
   private piRecordedProviderErrors = new Set<string>();
   private recordedChatErrors = new Map<string, number>();
 
-  private trace(event: string, details: Record<string, unknown> = {}): void {
-    if (!TRACE_CHAT_THREAD_DO) return;
-    const context = this.chatContext;
-    const payload = {
-      event,
-      threadId: context?.threadId || "",
-      workspaceId: context?.workspaceId || "",
-      orgId: context?.orgId || "",
-      chatSockets: this.getChatSockets().length,
-      ...details,
-    };
-    try {
-      console.log(`[ChatThreadDO][trace] ${JSON.stringify(payload)}`);
-    } catch {
-      console.log(`[ChatThreadDO][trace] ${event}`);
-    }
-  }
-
   private async withRunnerTransitionLock<T>(
     source: string,
     fn: () => Promise<T>,
@@ -4058,31 +4034,15 @@ export class ChatThreadDO extends Agent<ChatAgentEnv> {
       release = resolve;
     });
     await previous.catch(() => {});
-    this.trace("runner_transition_lock_acquired", { source });
     try {
       return await fn();
     } finally {
       release();
-      this.trace("runner_transition_lock_released", { source });
     }
-  }
-
-  private markRunnerActivity(source: string): void {
-    this.trace("runner_activity", {
-      source,
-    });
   }
 
   constructor(ctx: DurableObjectState, env: ChatEnv) {
     super(ctx, env as unknown as ChatAgentEnv);
-
-    // Set up auto-response for ping messages - responds without waking the DO
-    ctx.setWebSocketAutoResponse(
-      new WebSocketRequestResponsePair(
-        JSON.stringify({ type: "ping" }),
-        JSON.stringify({ type: "pong" }),
-      ),
-    );
 
     // Restore state from storage
     ctx.blockConcurrencyWhile(async () => {
@@ -4180,13 +4140,6 @@ export class ChatThreadDO extends Agent<ChatAgentEnv> {
         this.nextChatEventId = storedNextEventId;
       }
 
-      const storedRunnerLastSeq = ctx.storage.kv.get<number>(
-        CHAT_RUNNER_LAST_SEQ_KEY,
-      );
-      if (typeof storedRunnerLastSeq === "number" && storedRunnerLastSeq > 0) {
-        this.lastRunnerSeq = Math.floor(storedRunnerLastSeq);
-      }
-
       const storedActiveTurnUserId = ctx.storage.kv.get<string>(
         CHAT_ACTIVE_TURN_USER_ID_KEY,
       );
@@ -4224,12 +4177,6 @@ export class ChatThreadDO extends Agent<ChatAgentEnv> {
   async onFiberRecovered(ctx: FiberRecoveryContext) {
     if (ctx.name !== PI_TURN_FIBER_NAME) return await super.onFiberRecovered(ctx);
 
-    this.recordChatThreadObservabilityEvent("pi_turn_fiber_recovered", {
-      operation: "fiber_recovery",
-      status: "interrupted",
-      severity: "warn",
-      size: Math.max(0, Date.now() - ctx.createdAt),
-    });
     try {
       await this.recoverInterruptedPiTurn(ctx);
       return { status: "completed" as const };
@@ -4237,13 +4184,6 @@ export class ChatThreadDO extends Agent<ChatAgentEnv> {
       console.error("[ChatThreadDO] failed to recover interrupted Pi fiber", error);
       this.persistPiAgentLoopErrorForDevelopers(error, {
         source: "pi_turn_fiber_recovery",
-      });
-      this.recordChatThreadObservabilityEvent("pi_turn_fiber_recovery_failed", {
-        operation: "fiber_recovery",
-        status: "retrying",
-        severity: "warn",
-        error,
-        size: Math.max(0, Date.now() - ctx.createdAt),
       });
       return {
         status: "interrupted" as const,
@@ -4407,110 +4347,42 @@ export class ChatThreadDO extends Agent<ChatAgentEnv> {
     return `${CODE_MODE_ARTIFACTS_KEY_PREFIX}${parentToolUseId}`;
   }
 
+  async onConnect(connection: Connection, ctx: ConnectionContext): Promise<void> {
+    const url = new URL(ctx.request.url);
+    const incomingOrgId = url.searchParams.get("orgId")?.trim() || "";
+    if (
+      this.chatContext?.orgId &&
+      incomingOrgId &&
+      this.chatContext.orgId !== incomingOrgId
+    ) {
+      connection.close(1008, "forbidden");
+      return;
+    }
+
+    const upgradeUserId = ctx.request.headers.get(HEADER_USER_ID)?.trim() || "";
+    const authDegraded =
+      ctx.request.headers.get(HEADER_AUTH_DEGRADED)?.trim() === "1";
+    if (authDegraded) {
+      if (
+        !upgradeUserId ||
+        !this.chatContext ||
+        !this.isPreviouslyAuthorizedChatUser(upgradeUserId)
+      ) {
+        connection.close(1008, "forbidden");
+        return;
+      }
+    } else if (upgradeUserId) {
+      this.recordAuthorizedChatUser(upgradeUserId);
+    }
+
+    this.captureChatContextFromRequest(url, ctx.request, connection);
+  }
+
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
-    this.trace("fetch", {
-      method: request.method,
-      path: url.pathname,
-      search: url.search,
-      isWebSocketUpgrade: request.headers.get("Upgrade") === "websocket",
-    });
 
-    // WebSocket upgrade
     if (request.headers.get("Upgrade") === "websocket") {
-      const socketTag =
-        url.pathname === "/chat"
-          ? CHAT_SOCKET_TAG
-          : url.pathname === "/runner"
-            ? RUNNER_CLIENT_SOCKET_TAG
-            : null;
-      if (!socketTag) {
-        this.trace("ws_upgrade_rejected_path", { path: url.pathname });
-        this.recordChatThreadObservabilityEvent("chat_ws_upgrade", {
-          operation: "unknown",
-          status: "rejected_path",
-          severity: "warn",
-          sampleKey: url.pathname,
-        });
-        return new Response("Not found", { status: 404 });
-      }
-
-      // Ownership check: if this thread already has a stored orgId, reject
-      // connections from a different org. Prevents cross-org access via leaked thread UUIDs.
-      const incomingOrgId = url.searchParams.get("orgId")?.trim() || "";
-      if (
-        this.chatContext?.orgId &&
-        incomingOrgId &&
-        this.chatContext.orgId !== incomingOrgId
-      ) {
-        this.trace("ws_upgrade_rejected_org_mismatch", {
-          storedOrgId: this.chatContext.orgId,
-          incomingOrgId,
-        });
-        this.recordChatThreadObservabilityEvent("chat_ws_upgrade", {
-          operation: socketTag === RUNNER_CLIENT_SOCKET_TAG ? "runner" : "chat",
-          status: "rejected_org_mismatch",
-          severity: "warn",
-          sampleKey: this.chatContext.orgId,
-        });
-        return new Response("Forbidden", { status: 403 });
-      }
-
-      const upgradeUserId = request.headers.get(HEADER_USER_ID)?.trim() || "";
-      const authDegraded =
-        request.headers.get(HEADER_AUTH_DEGRADED)?.trim() === "1";
-      if (authDegraded) {
-        // The route could not reach the authorization DOs. Fail open only for
-        // users who have previously passed full authorization for this exact
-        // thread; everyone else stays failed closed.
-        if (
-          !upgradeUserId ||
-          !this.chatContext ||
-          !this.isPreviouslyAuthorizedChatUser(upgradeUserId)
-        ) {
-          this.trace("ws_upgrade_rejected_degraded_auth", {
-            userIdPresent: Boolean(upgradeUserId),
-            hadChatContext: Boolean(this.chatContext),
-          });
-          this.recordChatThreadObservabilityEvent("chat_ws_upgrade", {
-            operation:
-              socketTag === RUNNER_CLIENT_SOCKET_TAG ? "runner" : "chat",
-            status: "rejected_degraded_auth",
-            severity: "warn",
-            sampleKey: upgradeUserId || "missing_user",
-          });
-          return new Response("Forbidden", { status: 403 });
-        }
-        this.recordChatThreadObservabilityEvent("chat_ws_upgrade", {
-          operation: socketTag === RUNNER_CLIENT_SOCKET_TAG ? "runner" : "chat",
-          status: "accepted_degraded_auth",
-          severity: "warn",
-          sampleKey: upgradeUserId,
-        });
-      } else if (upgradeUserId) {
-        this.recordAuthorizedChatUser(upgradeUserId);
-      }
-
-      const pair = new WebSocketPair();
-      const [client, server] = Object.values(pair);
-      this.ctx.acceptWebSocket(server, [socketTag]);
-      this.captureChatContextFromRequest(url, request, server);
-      this.trace("ws_upgrade_accepted", {
-        path: url.pathname,
-        socketTag,
-        queryThreadId: url.searchParams.get("threadId") || "",
-        queryWorkspaceId: url.searchParams.get("workspaceId") || "",
-        queryOrgId: url.searchParams.get("orgId") || "",
-      });
-      this.recordChatThreadObservabilityEvent("chat_ws_upgrade", {
-        operation: socketTag === RUNNER_CLIENT_SOCKET_TAG ? "runner" : "chat",
-        status: "accepted",
-        size:
-          socketTag === RUNNER_CLIENT_SOCKET_TAG
-            ? this.getRunnerClientSockets().length
-            : this.getChatSockets().length,
-      });
-      return new Response(null, { status: 101, webSocket: client });
+      return super.fetch(request);
     }
 
     // HTTP API for setting preview state
@@ -4558,28 +4430,18 @@ export class ChatThreadDO extends Agent<ChatAgentEnv> {
     return new Response("Not found", { status: 404 });
   }
 
-  async webSocketMessage(
-    ws: WebSocket,
-    message: string | ArrayBuffer,
+  async onMessage(
+    ws: Connection,
+    message: WSMessage,
   ): Promise<void> {
     if (typeof message !== "string") return;
-    this.trace("chat_ws_message_raw", {
-      bytes: message.length,
-    });
 
     let data: { type: string; [key: string]: unknown };
     try {
       data = JSON.parse(message) as { type: string; [key: string]: unknown };
     } catch {
-      this.trace("chat_ws_message_invalid_json", {
-        bytes: message.length,
-      });
       return;
     }
-    this.trace("chat_ws_message_parsed", {
-      type: data.type,
-      bytes: message.length,
-    });
 
     try {
       if (data.type === "connection_setup_response") {
@@ -4596,11 +4458,6 @@ export class ChatThreadDO extends Agent<ChatAgentEnv> {
         return;
       }
 
-      if (this.isRunnerClientSocket(ws)) {
-        await this.handleRunnerClientMessage(ws, data);
-        return;
-      }
-
       // Chat transport messages
       if (data.type === "init") {
         await this.handleChatInit(ws, data as unknown as ChatClientInitMessage);
@@ -4610,8 +4467,7 @@ export class ChatThreadDO extends Agent<ChatAgentEnv> {
       if (
         data.type === "message" ||
         data.type === "stop" ||
-        data.type === "set_model" ||
-        data.type === "ping"
+        data.type === "set_model"
       ) {
         await this.handleRunnerClientMessage(ws, data);
         return;
@@ -4639,92 +4495,23 @@ export class ChatThreadDO extends Agent<ChatAgentEnv> {
         return;
       }
     } catch (err) {
-      console.error(
-        `[ChatThreadDO] webSocketMessage error (type=${data.type}):`,
-        err,
-      );
       this.emitChatError(
         `Internal error handling ${data.type}: ${err instanceof Error ? err.message : String(err)}`,
       );
     }
   }
 
-  async webSocketClose(
-    ws: WebSocket,
-    code: number,
-    reason: string,
-    wasClean: boolean,
-  ): Promise<void> {
-    if (this.isRunnerClientSocket(ws)) {
-      const remainingRunnerSockets = this.getRunnerClientSockets().length;
-      this.trace("runner_client_ws_close", {
-        code,
-        reason,
-        wasClean,
-        remainingRunnerSockets,
-      });
-      this.recordChatThreadObservabilityEvent("chat_ws_close", {
-        operation: "runner",
-        status: wasClean ? "clean" : "unclean",
-        severity: wasClean ? "info" : "warn",
-        statusCode: code,
-        size: remainingRunnerSockets,
-        sampleKey: String(code),
-      });
-      return;
+  async onClose(): Promise<void> {
+    if (
+      this.getChatSockets().length === 0 &&
+      this.browserPrompts.pendingQuestionCount > 0
+    ) {
+      this.ctx.waitUntil(
+        this.autoAnswerAllPendingQuestionsAsUnavailable(
+          ASK_USER_QUESTION_UNAVAILABLE_MESSAGE,
+        ),
+      );
     }
-
-    const remainingChatSockets = this.getChatSockets().length;
-    this.trace("chat_ws_close", {
-      code,
-      reason,
-      wasClean,
-      remainingChatSockets,
-    });
-    this.recordChatThreadObservabilityEvent("chat_ws_close", {
-      operation: "chat",
-      status: wasClean ? "clean" : "unclean",
-      severity: wasClean ? "info" : "warn",
-      statusCode: code,
-      size: remainingChatSockets,
-      sampleKey: String(code),
-    });
-    if (remainingChatSockets === 0) {
-      if (this.browserPrompts.pendingQuestionCount > 0) {
-        this.markRunnerActivity("chat_socket_closed_question_unavailable");
-        this.ctx.waitUntil(
-          this.autoAnswerAllPendingQuestionsAsUnavailable(
-            ASK_USER_QUESTION_UNAVAILABLE_MESSAGE,
-          ),
-        );
-      }
-    }
-    // Intentional no-op on side-channel socket close. Browser runner traffic is
-    // owned by ChatThreadDO on a separate tagged WebSocket.
-  }
-
-  async webSocketError(ws: WebSocket, error: unknown): Promise<void> {
-    if (this.isRunnerClientSocket(ws)) {
-      this.trace("runner_client_ws_error", {
-        error: String(error),
-      });
-      this.recordChatThreadObservabilityEvent("chat_ws_error", {
-        operation: "runner",
-        status: "error",
-        severity: "error",
-        error,
-      });
-      return;
-    }
-    this.trace("chat_ws_error", {
-      error: String(error),
-    });
-    this.recordChatThreadObservabilityEvent("chat_ws_error", {
-      operation: "chat",
-      status: "error",
-      severity: "error",
-      error,
-    });
   }
 
   getPreviewTarget(): PreviewTarget | null {
@@ -4781,12 +4568,6 @@ export class ChatThreadDO extends Agent<ChatAgentEnv> {
 
     if (mode === "repair" && changed) {
       await this.replacePiCoreMessages(afterMessages);
-      this.recordChatThreadObservabilityEvent("pi_core_message_history_repaired", {
-        operation: "repair_persisted_history",
-        status: "ok",
-        count: repaired.repairedCount + invalidRows,
-        size: afterMessages.length,
-      });
     }
 
     return {
@@ -5284,12 +5065,6 @@ export class ChatThreadDO extends Agent<ChatAgentEnv> {
       this.activeTurnUserId ||
       inFlightMessages.length > 0
     ) {
-      this.recordChatThreadObservabilityEvent("pi_core_messages_hydrate_deferred", {
-        operation: "merge_from_legacy",
-        status: "active_turn",
-        count: missingLegacyMessages.length,
-        size: existingMessages.length,
-      });
       return {
         hydrated: false,
         count: 0,
@@ -5305,12 +5080,6 @@ export class ChatThreadDO extends Agent<ChatAgentEnv> {
     ]);
     this.ctx.storage.sql.exec("DELETE FROM pi_core_compaction");
     this.clearPiInFlightMessages();
-    this.recordChatThreadObservabilityEvent("pi_core_messages_hydrated_from_legacy", {
-      operation: "merge_from_legacy",
-      status: "ok",
-      count: missingLegacyMessages.length,
-      size: existingMessages.length,
-    });
     return {
       hydrated: true,
       count: missingLegacyMessages.length,
@@ -5417,12 +5186,6 @@ export class ChatThreadDO extends Agent<ChatAgentEnv> {
       }
     }
 
-    this.recordChatThreadObservabilityEvent("channel_history_event_appended", {
-      operation: "append",
-      status: "ok",
-      count: 1,
-      size: text.length,
-    });
     return { status: "appended" };
   }
 
@@ -5718,9 +5481,6 @@ export class ChatThreadDO extends Agent<ChatAgentEnv> {
       }
     }
 
-    this.trace("active_turn_user_updated", {
-      userIdPresent: Boolean(normalizedUserId),
-    });
   }
 
   async refreshRunnerConfig(): Promise<void> {
@@ -6021,27 +5781,12 @@ export class ChatThreadDO extends Agent<ChatAgentEnv> {
       );
     } catch (error) {
       console.error("[ChatThreadDO] failed to store oversized Pi tool result in R2", error);
-      this.recordChatThreadObservabilityEvent("pi_tool_result_r2_store_failed", {
-        operation: "truncate_tool_result",
-        status: "error",
-        severity: "warn",
-        error,
-        size: this.piTextBytes(fullText),
-        sampleKey: context.toolCall.name,
-      });
     }
 
     const truncation: PiToolResultTruncation = {
       ...truncated.truncation,
       ...(fullOutput ? { fullOutput } : {}),
     };
-    this.recordChatThreadObservabilityEvent("pi_tool_result_truncated", {
-      operation: "truncate_tool_result",
-      status: "ok",
-      count: truncation.totalLines,
-      size: truncation.totalBytes,
-      sampleKey: context.toolCall.name,
-    });
 
     return {
       content: [
@@ -6068,13 +5813,6 @@ export class ChatThreadDO extends Agent<ChatAgentEnv> {
       return await this.truncatePiToolResultForModel(context);
     } catch (error) {
       console.error("[ChatThreadDO] Pi afterToolCall hook failed", error);
-      this.recordChatThreadObservabilityEvent("pi_after_tool_call_failed", {
-        operation: "after_tool_call",
-        status: "error",
-        severity: "warn",
-        error,
-        sampleKey: context.toolCall.name,
-      });
       return undefined;
     }
   }
@@ -6148,13 +5886,6 @@ export class ChatThreadDO extends Agent<ChatAgentEnv> {
               metadata,
             };
           } catch (error) {
-            this.recordChatThreadObservabilityEvent("pi_r2_image_externalize_failed", {
-              operation: "persist_history",
-              status: "error",
-              severity: "error",
-              error,
-              size: data.length,
-            });
           }
         }
       }
@@ -6180,21 +5911,8 @@ export class ChatThreadDO extends Agent<ChatAgentEnv> {
           const object = await this.env.R2_BUCKET.get(ref.key);
           data = object ? await object.text() : "";
         } catch (error) {
-          this.recordChatThreadObservabilityEvent("pi_r2_image_hydrate_failed", {
-            operation: "load_history",
-            status: "error",
-            severity: "error",
-            error,
-            size: ref.size,
-          });
         }
         if (data) {
-          this.recordChatThreadObservabilityEvent("pi_r2_image_hydrated", {
-            operation: "load_history",
-            status: "ok",
-            count: 1,
-            size: data.length,
-          });
           return {
             ...record,
             data,
@@ -6408,11 +6126,6 @@ export class ChatThreadDO extends Agent<ChatAgentEnv> {
       );
     }
     this.recordPiSqlStorageSanitization("replace", aggregateStats, messages.length);
-    this.recordChatThreadObservabilityEvent("pi_core_messages_replaced", {
-      operation: "replace",
-      status: "ok",
-      count: messages.length,
-    });
   }
 
   private isPiRecoveryContinueMessage(message: AgentMessage): boolean {
@@ -6446,21 +6159,8 @@ export class ChatThreadDO extends Agent<ChatAgentEnv> {
       );
     }
     this.recordPiSqlStorageSanitization("append", aggregateStats, messages.length);
-    this.recordChatThreadObservabilityEvent("pi_core_messages_appended", {
-      operation: "append",
-      status: "ok",
-      count: messages.length,
-      size: startIndex,
-    });
     const continueCount = messages.filter((message) => this.isPiRecoveryContinueMessage(message)).length;
     if (continueCount > 0) {
-      this.recordChatThreadObservabilityEvent("pi_recovery_continue_persisted", {
-        operation: "append",
-        status: "persisted",
-        severity: "warn",
-        count: continueCount,
-        size: startIndex,
-      });
     }
   }
 
@@ -6529,19 +6229,6 @@ export class ChatThreadDO extends Agent<ChatAgentEnv> {
       : stats.externalizedImages > 0
         ? "externalized"
         : "truncated";
-    this.recordChatThreadObservabilityEvent("pi_sql_storage_sanitized", {
-      operation,
-      status,
-      severity: "warn",
-      count: messageCount,
-      size: stats.originalChars - stats.storedChars,
-      sampleKey: [
-        `externalized:${stats.externalizedImages}`,
-        `images:${stats.omittedImages}`,
-        `strings:${stats.truncatedStrings}`,
-        `whole:${stats.omittedWholeMessage ? 1 : 0}`,
-      ].join("|"),
-    });
   }
 
   private dedupePiMessagesByKey(
@@ -6571,12 +6258,6 @@ export class ChatThreadDO extends Agent<ChatAgentEnv> {
     });
     await this.appendPiCoreMessages(missing);
     if (missing.length === 0) {
-      this.recordChatThreadObservabilityEvent("pi_core_messages_append_skipped", {
-        operation: "append_if_missing",
-        status: "duplicate",
-        count: 0,
-        size: messages.length,
-      });
     }
   }
 
@@ -6662,14 +6343,6 @@ export class ChatThreadDO extends Agent<ChatAgentEnv> {
     if (!pending) return;
     if (await this.hasActivePiTurnFiber()) return;
 
-    this.recordChatThreadObservabilityEvent("pi_turn_legacy_recovery_migrated", {
-      operation: "legacy_recovery_migration",
-      status: pending.status,
-      severity: "warn",
-      count: pending.retry_count,
-      size: Math.max(0, Date.now() - pending.started_at),
-      sampleKey: `turn:${pending.turn_id}`,
-    });
     await this.recoverInterruptedPiTurn({
       id: pending.turn_id,
       name: PI_TURN_FIBER_NAME,
@@ -6693,13 +6366,6 @@ export class ChatThreadDO extends Agent<ChatAgentEnv> {
       (inFlight[0] as unknown as Record<string, unknown> | undefined)?.timestamp,
     ) || 0));
     const createdAt = firstTimestamp || Date.now();
-    this.recordChatThreadObservabilityEvent("pi_turn_in_flight_recovery_started", {
-      operation: "orphaned_in_flight_recovery",
-      status: "recovering",
-      severity: "warn",
-      count: inFlight.length,
-      size: Math.max(0, Date.now() - createdAt),
-    });
     try {
       await this.recoverInterruptedPiTurn({
         id: "orphaned-in-flight",
@@ -6731,11 +6397,6 @@ export class ChatThreadDO extends Agent<ChatAgentEnv> {
 
   private async startPiTurnRecovery(userMessage: AgentMessage): Promise<void> {
     await this.appendPiInFlightMessages([userMessage]);
-    this.recordChatThreadObservabilityEvent("pi_turn_recovery_started", {
-      operation: "start_recovery",
-      status: "running",
-      count: 1,
-    });
   }
 
   async clearPiTurnRecoveryForAdmin(): Promise<PiTurnRecoveryAdminState> {
@@ -6752,11 +6413,6 @@ export class ChatThreadDO extends Agent<ChatAgentEnv> {
     this.clearLegacyPiTurnRecoveryForMigration();
     this.clearPiInFlightMessages();
     this.setChatIsStreaming(false);
-    this.recordChatThreadObservabilityEvent("pi_turn_recovery_admin_cleared", {
-      operation: "admin_clear_recovery",
-      status: "ok",
-      count: fibers.length,
-    });
     return await this.getPiTurnRecoveryAdminState();
   }
 
@@ -6837,12 +6493,6 @@ export class ChatThreadDO extends Agent<ChatAgentEnv> {
             const stalledMs = Math.max(0, Date.now() - this.piTurnLastProgressAtMs);
             if (stalledMs < PI_TURN_INACTIVITY_TIMEOUT_MS) return;
             onTimeout?.();
-            this.recordChatThreadObservabilityEvent("pi_turn_keep_alive_aborted", {
-              operation: "fiber_timeout",
-              status: "stalled",
-              severity: "warn",
-              size: stalledMs,
-            });
             this.disposePiSession();
             reject(new DOMException("Pi turn inactivity timeout", "AbortError"));
           }, PI_TURN_PROGRESS_INTERVAL_MS);
@@ -6861,11 +6511,6 @@ export class ChatThreadDO extends Agent<ChatAgentEnv> {
       : {};
     const activeUserId = typeof snapshot.activeUserId === "string" ? snapshot.activeUserId : null;
 
-    this.recordChatThreadObservabilityEvent("pi_turn_recovery_resumed", {
-      operation: "recover_interrupted_turn",
-      status: "recovering",
-      size: Math.max(0, Date.now() - ctx.createdAt),
-    });
     this.setActiveTurnUserId(activeUserId);
     this.setChatIsStreaming(true);
 
@@ -7094,15 +6739,6 @@ export class ChatThreadDO extends Agent<ChatAgentEnv> {
 
     const error = new Error(args.errorMessage);
     error.name = "PiProviderError";
-    this.recordChatThreadObservabilityEvent("pi_provider_error_message", {
-      operation: "annotate_pi_provider_error",
-      status: args.metadata.status ? String(args.metadata.status) : "error",
-      severity: "error",
-      provider: args.provider,
-      model: args.model,
-      statusCode: args.metadata.status,
-      error,
-    });
   }
 
   private getPiAssistantErrorMessage(message: AgentMessage): string {
@@ -7149,100 +6785,13 @@ export class ChatThreadDO extends Agent<ChatAgentEnv> {
     return { name: "UnknownError", message: "Unknown Pi agent loop error" };
   }
 
-  private recordChatThreadObservabilityEvent(
-    event: string,
-    details: {
-      operation?: string;
-      status?: string;
-      severity?: "debug" | "info" | "warn" | "error";
-      count?: number;
-      size?: number;
-      durationMs?: number;
-      error?: unknown;
-      statusCode?: number | null;
-      provider?: string | null;
-      model?: string | null;
-      sampleKey?: string | null;
-      insertedCount?: number;
-      updatedCount?: number;
-    } = {},
-  ): void {
-    const context = this.chatContext;
-    const count =
-      typeof details.insertedCount === "number" || typeof details.updatedCount === "number"
-        ? (details.insertedCount ?? 0) + (details.updatedCount ?? 0)
-        : details.count;
-    if (details.error) {
-      recordErrorEvent(this.env, {
-        event,
-        component: "chat_thread_do",
-        operation: details.operation,
-        status: details.status ?? "exception",
-        threadId: context?.threadId,
-        workspaceId: context?.workspaceId,
-        orgId: context?.orgId,
-        userId: context?.userId,
-        durationMs: details.durationMs,
-        statusCode: details.statusCode,
-        count,
-        size: details.size,
-        provider: details.provider,
-        model: details.model,
-        sampleIndex: details.sampleKey,
-        error: details.error,
-      });
-      return;
-    }
-    recordObservabilityEvent(this.env, {
-      event,
-      severity: details.severity ?? "info",
-      component: "chat_thread_do",
-      operation: details.operation,
-      status: details.status ?? "ok",
-      threadId: context?.threadId,
-      workspaceId: context?.workspaceId,
-      orgId: context?.orgId,
-      userId: context?.userId,
-      provider: details.provider,
-      model: details.model,
-      durationMs: details.durationMs,
-      count,
-      size: details.size,
-      sampleIndex: details.sampleKey,
-    });
-  }
 
   private retryChatDurableObjectRpc<T>(
     operation: string,
     fn: () => Promise<T>,
     options: { attempts?: number; initialDelayMs?: number } = {},
   ): Promise<T> {
-    return retryTransientDurableObjectRpc(operation, fn, {
-      ...options,
-      onRetry: ({ attempt, attempts, durationMs, error }) => {
-        this.recordChatThreadObservabilityEvent("durable_object_rpc_retry", {
-          operation,
-          status: "retry",
-          severity: "warn",
-          count: attempt,
-          size: attempts,
-          durationMs,
-          error,
-          sampleKey: operation,
-        });
-      },
-      onFailure: ({ attempt, attempts, durationMs, error, transient }) => {
-        this.recordChatThreadObservabilityEvent("durable_object_rpc_failed", {
-          operation,
-          status: transient ? "exhausted" : "non_transient",
-          count: attempt,
-          size: attempts,
-          durationMs,
-          error,
-          sampleKey: operation,
-        });
-      },
-    });
+    return retryTransientDurableObjectRpc(operation, fn, options);
   }
 
   private persistPiAgentLoopErrorForDevelopers(
@@ -7266,17 +6815,6 @@ export class ChatThreadDO extends Agent<ChatAgentEnv> {
     this.piLastPersistedLoopError = { fingerprint, at: now };
 
     const context = this.chatContext;
-    recordErrorEvent(this.env, {
-      event: "pi_agent_loop_error",
-      component: "chat_thread_do",
-      operation: source,
-      status: eventType ?? "error",
-      threadId: context?.threadId,
-      workspaceId: context?.workspaceId,
-      orgId: context?.orgId,
-      userId: context?.userId,
-      error,
-    });
 
     return details.message;
   }
@@ -7589,12 +7127,6 @@ export class ChatThreadDO extends Agent<ChatAgentEnv> {
         this.piRecoveryContinuePromptSentAtMs > 0 &&
         Date.now() - this.piRecoveryContinuePromptSentAtMs <= PI_TURN_RECOVERY_PROMPT_OBSERVATION_MS
       ) {
-        this.recordChatThreadObservabilityEvent("pi_recovery_continue_event_leaked", {
-          operation: "handle_pi_session_event",
-          status: "recent_recovery_prompt",
-          severity: "warn",
-          size: Math.max(0, Date.now() - this.piRecoveryContinuePromptSentAtMs),
-        });
       }
       return false;
     }
@@ -7907,12 +7439,6 @@ export class ChatThreadDO extends Agent<ChatAgentEnv> {
     const orgId = queryOrgId || prev?.orgId || "";
 
     if (!threadId || !workspaceId || !orgId) {
-      this.trace("capture_chat_context_skipped", {
-        queryThreadId,
-        queryWorkspaceId,
-        queryOrgId,
-        hadPreviousContext: Boolean(prev),
-      });
       return;
     }
 
@@ -7927,25 +7453,12 @@ export class ChatThreadDO extends Agent<ChatAgentEnv> {
 
     ws?.serializeAttachment(this.chatContext);
     this.ctx.storage.kv.put(CHAT_CONTEXT_KEY, this.chatContext);
-    this.trace("capture_chat_context_set", {
-      threadId,
-      workspaceId,
-      orgId,
-      userIdPresent: Boolean(this.chatContext.userId),
-      userNamePresent: Boolean(this.chatContext.userName),
-      userEmailPresent: Boolean(this.chatContext.userEmail),
-    });
   }
 
   private async handleChatInit(
     ws: WebSocket,
     data: ChatClientInitMessage,
   ): Promise<void> {
-    this.trace("handle_chat_init_start", {
-      incomingThreadId: typeof data.threadId === "string" ? data.threadId : "",
-      lastEventId:
-        typeof data.lastEventId === "number" ? data.lastEventId : null,
-    });
     const incomingThreadId =
       typeof data.threadId === "string" ? data.threadId.trim() : "";
     if (!incomingThreadId) {
@@ -7982,10 +7495,6 @@ export class ChatThreadDO extends Agent<ChatAgentEnv> {
         ? Math.max(0, Math.floor(data.lastEventId))
         : 0;
 
-    this.sendDirect(ws, {
-      type: "session",
-      sessionId: this.chatContext.threadId,
-    });
     // streaming_state MUST arrive before ready: the client sends queued messages
     // on ready and optimistically sets loading=true.  If streaming_state (false)
     // arrives *after* ready it overwrites the optimistic loading state, causing a
@@ -8035,14 +7544,6 @@ export class ChatThreadDO extends Agent<ChatAgentEnv> {
       type: "context_usage_state",
       usedPercent: initUsedPercent,
     });
-    this.trace("handle_chat_init_complete", {
-      incomingThreadId,
-      replayFromEventId: lastEventId,
-      bufferedEvents: this.chatEventBuffer.length,
-      pendingQuestions: this.browserPrompts.pendingQuestionCount,
-      currentTodos: this.currentTodos.length,
-      chatIsStreaming: this.chatIsStreaming,
-    });
   }
 
   private async applyMentionsForTurn(content: string): Promise<string> {
@@ -8088,86 +7589,13 @@ export class ChatThreadDO extends Agent<ChatAgentEnv> {
     ws: WebSocket,
     data: { type: string; [key: string]: unknown },
   ): Promise<void> {
-    if (data.type === "init") {
-      await this.handleRunnerClientInit(ws, data as unknown as ChatClientInitMessage);
-      return;
-    }
-
-    if (data.type === "ping") {
-      this.sendDirect(ws, { type: "pong", ts: data.ts });
-      return;
-    }
-
     if (data.type === "message") {
       await this.handleRunnerClientUserMessage(ws, data as unknown as ChatClientMessage);
       return;
     }
 
-    if (data.type === "question_response") {
-      await this.handleQuestionResponse(
-        ws,
-        data as unknown as ChatClientQuestionResponse,
-      );
-      return;
-    }
-
     await this.ensurePiSessionReady();
     this.sendRunnerCommand({ ...data, threadId: this.chatContext?.threadId });
-  }
-
-  private async handleRunnerClientInit(
-    ws: WebSocket,
-    data: ChatClientInitMessage,
-  ): Promise<void> {
-    const incomingThreadId =
-      typeof data.threadId === "string" ? data.threadId.trim() : "";
-    if (!incomingThreadId) {
-      this.sendDirect(ws, {
-        type: "error",
-        error: "Missing threadId - init requires a valid threadId",
-      });
-      try {
-        ws.close(1008, "missing threadId");
-      } catch {
-        // ignore close failures
-      }
-      return;
-    }
-
-    if (!this.chatContext) {
-      this.sendDirect(ws, {
-        type: "error",
-        error: "Missing chat context for thread",
-      });
-      return;
-    }
-
-    if (this.chatContext.threadId !== incomingThreadId) {
-      this.sendDirect(ws, {
-        type: "error",
-        error: "Thread mismatch for this chat connection",
-      });
-      return;
-    }
-
-    const lastSeq = this.normalizeRunnerClientSeq(data.lastSeq ?? data.lastEventId);
-    if (lastSeq > this.lastRunnerSeq) {
-      this.lastRunnerSeq = lastSeq;
-      this.ctx.storage.kv.put(CHAT_RUNNER_LAST_SEQ_KEY, this.lastRunnerSeq);
-    }
-
-    await this.ensurePiSessionReady();
-
-    this.sendDirect(ws, {
-      type: "session",
-      sessionId: this.chatContext.threadId,
-    });
-    this.sendDirect(ws, {
-      type: "streaming_state",
-      isStreaming: this.chatIsStreaming,
-    });
-    this.sendDirect(ws, { type: "ready" });
-    this.replayRunnerEvents(ws, lastSeq);
   }
 
   private chatSendFailureStatus(
@@ -8264,12 +7692,6 @@ export class ChatThreadDO extends Agent<ChatAgentEnv> {
   ): Promise<void> {
     const startedAt = Date.now();
     const sendAttemptId = data.clientMessageId || crypto.randomUUID();
-    this.recordChatThreadObservabilityEvent("runner_user_message_send_attempt", {
-      operation: "received",
-      status: "started",
-      count: data.clientMessageId ? 1 : 0,
-      sampleKey: sendAttemptId,
-    });
 
     const clientMessageId =
       typeof data.clientMessageId === "string" && data.clientMessageId
@@ -8286,16 +7708,6 @@ export class ChatThreadDO extends Agent<ChatAgentEnv> {
           type: "message_accepted",
           clientMessageId,
         });
-        this.recordChatThreadObservabilityEvent(
-          "runner_user_message_send_attempt",
-          {
-            operation: "received",
-            status: "duplicate_ignored",
-            severity: "warn",
-            durationMs: Date.now() - startedAt,
-            sampleKey: sendAttemptId,
-          },
-        );
         return;
       }
 
@@ -8308,16 +7720,6 @@ export class ChatThreadDO extends Agent<ChatAgentEnv> {
         clientMessageId,
       );
       if (inFlight) {
-        this.recordChatThreadObservabilityEvent(
-          "runner_user_message_send_attempt",
-          {
-            operation: "received",
-            status: "duplicate_in_flight",
-            severity: "warn",
-            durationMs: Date.now() - startedAt,
-            sampleKey: sendAttemptId,
-          },
-        );
         let outcome: InitialUserMessageResult;
         try {
           outcome = await inFlight;
@@ -8372,14 +7774,6 @@ export class ChatThreadDO extends Agent<ChatAgentEnv> {
       this.setChatIsStreaming(false);
       this.setActiveTurnUserId(null);
       console.error("[ChatThreadDO] failed to enqueue browser user message", error);
-      this.recordChatThreadObservabilityEvent("runner_user_message_send_attempt", {
-        operation: "enqueue_runner_user_message",
-        status: "exception",
-        severity: "error",
-        durationMs: Date.now() - startedAt,
-        sampleKey: sendAttemptId,
-        error,
-      });
       this.sendDirectChatError(ws, error, {
         source: "runner_enqueue",
         fallbackMessage: "Failed to send message to sandbox",
@@ -8392,13 +7786,6 @@ export class ChatThreadDO extends Agent<ChatAgentEnv> {
     }
 
     if (result.status !== "accepted") {
-      this.recordChatThreadObservabilityEvent("runner_user_message_send_attempt", {
-        operation: "enqueue_runner_user_message",
-        status: result.status,
-        severity: result.status === "busy" ? "warn" : "error",
-        durationMs: Date.now() - startedAt,
-        sampleKey: sendAttemptId,
-      });
       this.sendDirectChatError(ws, result.error, {
         source: "runner_send",
         status: result.status,
@@ -8413,12 +7800,6 @@ export class ChatThreadDO extends Agent<ChatAgentEnv> {
       this.recordAcceptedClientMessageId(clientMessageId);
     }
 
-    this.recordChatThreadObservabilityEvent("runner_user_message_send_attempt", {
-      operation: "enqueue_runner_user_message",
-      status: "accepted",
-      durationMs: Date.now() - startedAt,
-      sampleKey: sendAttemptId,
-    });
 
   }
 
@@ -8434,27 +7815,12 @@ export class ChatThreadDO extends Agent<ChatAgentEnv> {
     const sampleKey = options.sendAttemptId;
     const context = this.chatContext;
     if (!context) {
-      this.recordChatThreadObservabilityEvent("runner_user_message_enqueue", {
-        operation: "validate_context",
-        status: "error",
-        severity: "warn",
-        durationMs: Date.now() - startedAt,
-        sampleKey,
-      });
       return { status: "error", error: "Missing chat context for thread" };
     }
 
     const rawContent =
       typeof data.content === "string" ? data.content.trim() : "";
     if (!rawContent) {
-      this.recordChatThreadObservabilityEvent("runner_user_message_enqueue", {
-        operation: "validate_message",
-        status: "error",
-        severity: "warn",
-        durationMs: Date.now() - startedAt,
-        size: 0,
-        sampleKey,
-      });
       return { status: "error", error: "Empty message" };
     }
 
@@ -8462,43 +7828,14 @@ export class ChatThreadDO extends Agent<ChatAgentEnv> {
     const orgBan = await isOrgBanned(this.env.APP_KV, {
       orgId: context.orgId,
     });
-    this.recordChatThreadObservabilityEvent("runner_user_message_enqueue_stage", {
-      operation: "org_ban_checked",
-      durationMs: Date.now() - banCheckStartedAt,
-      size: rawContent.length,
-      sampleKey,
-    });
     if (orgBan) {
-      this.recordChatThreadObservabilityEvent("runner_user_message_enqueue", {
-        operation: "org_ban_checked",
-        status: "error",
-        severity: "warn",
-        durationMs: Date.now() - startedAt,
-        size: rawContent.length,
-        sampleKey,
-      });
       return { status: "error", error: "Organization is blocked" };
     }
 
     const runnerConnectStartedAt = Date.now();
     try {
       await this.ensurePiSessionReady();
-      this.recordChatThreadObservabilityEvent("runner_user_message_enqueue_stage", {
-        operation: "ensure_pi_session_ready",
-        durationMs: Date.now() - runnerConnectStartedAt,
-        size: rawContent.length,
-        sampleKey,
-      });
     } catch (error) {
-      this.recordChatThreadObservabilityEvent("runner_user_message_enqueue", {
-        operation: "ensure_pi_session_ready",
-        status: "exception",
-        severity: "error",
-        durationMs: Date.now() - startedAt,
-        size: rawContent.length,
-        sampleKey,
-        error,
-      });
       throw error;
     }
 
@@ -8513,33 +7850,10 @@ export class ChatThreadDO extends Agent<ChatAgentEnv> {
         userEmail: context.userEmail,
         messageSource: options.messageSource ?? "web",
       });
-      this.recordChatThreadObservabilityEvent("runner_user_message_enqueue_stage", {
-        operation: "message_prepared",
-        durationMs: Date.now() - messagePrepareStartedAt,
-        size: rawContent.length,
-        sampleKey,
-      });
     } catch (error) {
-      this.recordChatThreadObservabilityEvent("runner_user_message_enqueue", {
-        operation: "message_prepared",
-        status: "exception",
-        severity: "error",
-        durationMs: Date.now() - startedAt,
-        size: rawContent.length,
-        sampleKey,
-        error,
-      });
       throw error;
     }
     if (!attributedContent) {
-      this.recordChatThreadObservabilityEvent("runner_user_message_enqueue", {
-        operation: "message_prepared",
-        status: "error",
-        severity: "warn",
-        durationMs: Date.now() - startedAt,
-        size: rawContent.length,
-        sampleKey,
-      });
       return { status: "error", error: "Empty message" };
     }
 
@@ -8548,7 +7862,7 @@ export class ChatThreadDO extends Agent<ChatAgentEnv> {
       this.setActiveTurnUserId(context.userId);
       this.setChatIsStreaming(true);
       this.publishRunningUserMessageActivity(rawContent);
-      this.broadcastRunnerClients({ type: "streaming_state", isStreaming: true });
+      this.broadcastChat({ type: "streaming_state", isStreaming: true });
       this.ctx.waitUntil(
         this.updateThreadMetadataForUserMessage(
           attributedContent,
@@ -8558,13 +7872,6 @@ export class ChatThreadDO extends Agent<ChatAgentEnv> {
             '[ChatThreadDO] failed to update thread metadata after browser user message',
             err,
           );
-          this.recordChatThreadObservabilityEvent("runner_user_message_enqueue", {
-            operation: "update_thread_metadata",
-            status: "exception",
-            severity: "warn",
-            sampleKey,
-            error: err,
-          });
         }),
       );
 
@@ -8578,15 +7885,6 @@ export class ChatThreadDO extends Agent<ChatAgentEnv> {
     } catch (error) {
       this.setChatIsStreaming(false);
       this.setActiveTurnUserId(null);
-      this.recordChatThreadObservabilityEvent("runner_user_message_enqueue", {
-        operation: "send_runner_command",
-        status: "exception",
-        severity: "error",
-        durationMs: Date.now() - startedAt,
-        size: rawContent.length,
-        sampleKey,
-        error,
-      });
       throw error;
     }
     if (!sent) {
@@ -8597,24 +7895,9 @@ export class ChatThreadDO extends Agent<ChatAgentEnv> {
       });
       this.setChatIsStreaming(false);
       this.setActiveTurnUserId(null);
-      this.recordChatThreadObservabilityEvent("runner_user_message_enqueue", {
-        operation: "send_runner_command",
-        status: "error",
-        severity: "error",
-        durationMs: Date.now() - startedAt,
-        size: rawContent.length,
-        sampleKey,
-      });
       return { status: "error", error: "Failed to send message" };
     }
 
-    this.recordChatThreadObservabilityEvent("runner_user_message_enqueue", {
-      operation: "send_runner_command",
-      status: "accepted",
-      durationMs: Date.now() - startedAt,
-      size: rawContent.length,
-      sampleKey,
-    });
     return { status: "accepted" };
   }
 
@@ -8622,10 +7905,6 @@ export class ChatThreadDO extends Agent<ChatAgentEnv> {
     ws: WebSocket,
     data: ChatClientQuestionResponse,
   ): Promise<void> {
-    this.trace("handle_question_response", {
-      questionId: data.questionId || "",
-      hasAnswers: Boolean(data.answers && typeof data.answers === "object"),
-    });
     if (!data.questionId || !data.answers || typeof data.answers !== "object") {
       this.emitChatError("Missing questionId or answers");
       return;
@@ -8635,7 +7914,6 @@ export class ChatThreadDO extends Agent<ChatAgentEnv> {
       return;
     }
 
-    this.markRunnerActivity("question_response");
     const answeringUserId =
       this.getSocketChatContext(ws)?.userId ?? this.chatContext?.userId ?? null;
     this.sendRunnerCommand({
@@ -8961,12 +8239,6 @@ export class ChatThreadDO extends Agent<ChatAgentEnv> {
     this.pendingStreamingActivity = null;
 
     if (pending.coalescedCount > 1) {
-      this.recordChatThreadObservabilityEvent("workspace_streaming_activity_coalesced", {
-        operation: "record_thread_streaming",
-        status: "flushed",
-        count: pending.coalescedCount,
-        sampleKey: pending.threadId,
-      });
     }
 
     this.ctx.waitUntil(
@@ -9113,10 +8385,6 @@ export class ChatThreadDO extends Agent<ChatAgentEnv> {
     ) {
       return;
     }
-    this.trace("set_chat_is_streaming", {
-      from: this.chatIsStreaming,
-      to: value,
-    });
     if (value) {
       this.assistantCompletionRecordedAt = null;
       this.assistantCompletionSummaryRequestedAt = null;
@@ -9392,26 +8660,12 @@ export class ChatThreadDO extends Agent<ChatAgentEnv> {
     const startedAt = Date.now();
     const contextError = this.updateExternalChatContext(body);
     if (contextError) {
-      this.recordChatThreadObservabilityEvent("initial_user_message_start", {
-        operation: "validate_context",
-        status: "error",
-        severity: "warn",
-        durationMs: Date.now() - startedAt,
-        size: typeof body.message === "string" ? body.message.length : 0,
-      });
       return { status: "error", error: contextError };
     }
 
     const message =
       typeof body.message === "string" ? body.message.trim() : "";
     if (!message) {
-      this.recordChatThreadObservabilityEvent("initial_user_message_start", {
-        operation: "validate_message",
-        status: "error",
-        severity: "warn",
-        durationMs: Date.now() - startedAt,
-        size: 0,
-      });
       return { status: "error", error: "Missing message" };
     }
 
@@ -9425,13 +8679,6 @@ export class ChatThreadDO extends Agent<ChatAgentEnv> {
         this.chatIsStreaming ||
         this.browserPrompts.pendingQuestionCount > 0
       ) {
-        this.recordChatThreadObservabilityEvent("initial_user_message_start", {
-          operation: "automation_run_busy",
-          status: "busy",
-          severity: "warn",
-          durationMs: Date.now() - startedAt,
-          size: message.length,
-        });
         return {
           status: "busy",
           error: "Thread is busy with another run",
@@ -9455,13 +8702,6 @@ export class ChatThreadDO extends Agent<ChatAgentEnv> {
             ? body.messageSource.trim()
             : "web",
       });
-      this.recordChatThreadObservabilityEvent("initial_user_message_start", {
-        operation: "enqueue_runner_user_message",
-        status: result.status,
-        severity: result.status === "accepted" ? "info" : "warn",
-        durationMs: Date.now() - startedAt,
-        size: message.length,
-      });
       if (automationRun && result.status !== "accepted") {
         this.setActiveAutomationRun(null);
       }
@@ -9478,12 +8718,6 @@ export class ChatThreadDO extends Agent<ChatAgentEnv> {
       if (automationRun) {
         this.setActiveAutomationRun(null);
       }
-      this.recordChatThreadObservabilityEvent("initial_user_message_start", {
-        operation: "enqueue_runner_user_message",
-        durationMs: Date.now() - startedAt,
-        size: message.length,
-        error,
-      });
       this.pushChatEvent(
         this.chatSendErrorPayload(error, {
           fallbackMessage: "Failed to start initial message",
@@ -9597,27 +8831,12 @@ export class ChatThreadDO extends Agent<ChatAgentEnv> {
 
       const events = this.chatEventsAfter(baselineEventId);
       const result = this.latestAgentEvalResult(events);
-      this.recordChatThreadObservabilityEvent("agent_eval_session", {
-        operation: "run_agent_eval_session",
-        status: "completed",
-        durationMs: Date.now() - startedAt,
-        size: rawContent.length,
-        count: events.length,
-      });
       return await this.agentEvalResult("completed", baselineEventId, {
         result,
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       console.error("[ChatThreadDO] agent eval session failed", error);
-      this.recordChatThreadObservabilityEvent("agent_eval_session", {
-        operation: "run_agent_eval_session",
-        status: "exception",
-        severity: "error",
-        durationMs: Date.now() - startedAt,
-        size: rawContent.length,
-        error,
-      });
       try {
         this.piSession?.abort();
       } catch {
@@ -9879,7 +9098,6 @@ export class ChatThreadDO extends Agent<ChatAgentEnv> {
   private async ensurePiSessionReady(): Promise<void> {
     await this.withRunnerTransitionLock("ensure_pi_session_ready", async () => {
       if (this.piSession) {
-        this.trace("ensure_pi_session_ready_already_connected");
         return;
       }
 
@@ -9888,11 +9106,6 @@ export class ChatThreadDO extends Agent<ChatAgentEnv> {
         throw new Error("Missing chat context");
       }
 
-      this.trace("ensure_pi_session_ready_start", {
-        contextThreadId: baseContext.threadId,
-        contextWorkspaceId: baseContext.workspaceId,
-        contextOrgId: baseContext.orgId,
-      });
 
       const orgId = this.env.ORG.idFromName(baseContext.orgId);
       const getOrgStub = () => this.env.ORG.get(orgId);
@@ -9937,9 +9150,6 @@ export class ChatThreadDO extends Agent<ChatAgentEnv> {
         CHIRIDION_MODEL: threadModel,
         CHIRIDION_CLAUDE_MODEL: threadModel,
         CHIRIDION_CODEX_MODEL: threadModel,
-      });
-      this.trace("ensure_pi_session_ready_complete", {
-        lastSeq: this.lastRunnerSeq,
       });
     });
   }
@@ -9991,11 +9201,6 @@ export class ChatThreadDO extends Agent<ChatAgentEnv> {
       // agent_end failure discards them). Clearing here would lose the
       // recovery data if the DO is evicted again before any turn commits.
       initialMessages.push(this.buildPiRecoveryUserMessage(inFlight));
-      this.recordChatThreadObservabilityEvent("pi_in_flight_recovered", {
-        operation: "build_recovery_message",
-        status: "ok",
-        count: inFlight.length,
-      });
     }
     this.piMainBaselineIndex = persistedMessages.length;
     const session = new Agent({
@@ -10019,14 +9224,6 @@ export class ChatThreadDO extends Agent<ChatAgentEnv> {
           compacted.map((message) => sanitizePiModelMessage(message)),
         );
         if (repaired.repairedCount > 0) {
-          this.recordChatThreadObservabilityEvent("pi_provider_history_repaired", {
-            operation: "repair_message_history",
-            status: "ok",
-            count: repaired.repairedCount,
-            size: repaired.messages.length,
-            provider: current.usageProvider || current.provider,
-            model: current.model.id || current.modelId,
-          });
         }
         return repaired.messages;
       },
@@ -10060,7 +9257,6 @@ export class ChatThreadDO extends Agent<ChatAgentEnv> {
         }),
       );
     });
-    this.pushChatEvent({ type: "session", sessionId: context.threadId });
     this.pushChatEvent({ type: "ready" });
     return session;
   }
@@ -10721,12 +9917,6 @@ export class ChatThreadDO extends Agent<ChatAgentEnv> {
       attachmentCount: attachments.length,
     }).catch((error) => {
       console.error("[ChatThreadDO] failed to record Telegram outbound history", error);
-      this.recordChatThreadObservabilityEvent("channel_history_event_append_failed", {
-        operation: "record_telegram_outbound_history",
-        status: "error",
-        severity: "warn",
-        error,
-      });
       return "error" as const;
     });
     await this.markThreadChannelUsedBestEffort(context, "telegram");
@@ -11106,13 +10296,6 @@ export class ChatThreadDO extends Agent<ChatAgentEnv> {
         error,
       );
       this.persistPiCoreCompaction(fallbackSummary, storedFirstKeptIndex);
-      this.recordChatThreadObservabilityEvent("pi_context_compaction_fallback_persisted", {
-        operation: "compact_context",
-        status: "fallback",
-        severity: "warn",
-        count: messagesToSummarize.length,
-        size: messages.length - firstKeptIndex,
-      });
       return [this.createPiSummaryMessage(fallbackSummary), ...messages.slice(firstKeptIndex)];
     }
   }
@@ -11199,11 +10382,6 @@ export class ChatThreadDO extends Agent<ChatAgentEnv> {
     this.ctx.waitUntil(
       this.compactPiContextAfterTurn(latestAssistant).catch((error) => {
         console.error("[ChatThreadDO] Pi post-turn compaction failed", error);
-        this.recordChatThreadObservabilityEvent("pi_post_turn_compaction_failed", {
-          operation: "post_turn_compaction",
-          status: "error",
-          error,
-        });
       }),
     );
   }
@@ -11251,14 +10429,6 @@ export class ChatThreadDO extends Agent<ChatAgentEnv> {
     await this.replacePiCoreMessages(compacted);
     this.clearPiCoreCompaction();
     this.piMainBaselineIndex = compacted.length;
-    this.recordChatThreadObservabilityEvent("pi_post_turn_compacted", {
-      operation: "post_turn_compaction",
-      status: "ok",
-      count: before.length,
-      size: compacted.length,
-      provider: current.usageProvider || current.provider,
-      model: current.model.id || current.modelId,
-    });
   }
 
   private estimatePiContextTokens(messages: AgentMessage[]): number {
@@ -12008,9 +11178,8 @@ export class ChatThreadDO extends Agent<ChatAgentEnv> {
    * every turn across all of an org's threads, hammering the single OrgDO
    * instance. Within the TTL we serve the cached value (including a cached
    * null) and skip the RPC entirely. On a transient RPC failure we fall back
-   * to any cached value (even an expired one) and emit a "stale_fallback"
-   * observability event; with no cached value we propagate the error exactly
-   * as the underlying retry wrapper would.
+   * to any cached value (even an expired one); with no cached value we
+   * propagate the error exactly as the underlying retry wrapper would.
    *
    * The cache is keyed defensively on orgId: a ChatThreadDO instance belongs
    * to a single thread/org, so a mismatch indicates a bug and forces a fresh
@@ -12098,9 +11267,6 @@ export class ChatThreadDO extends Agent<ChatAgentEnv> {
     }
 
     if (config.aws_region) {
-      this.trace("pi_byok_bedrock_region_ignored", {
-        provider: record.provider,
-      });
     }
     return null;
   }
@@ -12278,14 +11444,6 @@ export class ChatThreadDO extends Agent<ChatAgentEnv> {
         }
 
         attempt += 1;
-        this.recordChatThreadObservabilityEvent("pi_provider_transient_retry", {
-          operation: "stream_pi_model",
-          status: "retry",
-          provider: this.piCurrentUsageProvider || model.provider,
-          model: model.id,
-          error: new Error(retryErrorMessage),
-          count: attempt,
-        });
         await this.sleepForPiProviderRetry(options?.signal);
       }
     })().catch((error) => {
@@ -12320,16 +11478,6 @@ export class ChatThreadDO extends Agent<ChatAgentEnv> {
     attempt: number,
     forwardedEvent: boolean,
   ): void {
-    this.recordChatThreadObservabilityEvent("pi_provider_stream_error", {
-      operation: "stream_pi_model",
-      status,
-      provider: this.piCurrentUsageProvider || model.provider,
-      model: model.id,
-      error: new Error(message),
-      count: attempt,
-      size: PI_PROVIDER_TRANSIENT_RETRY_ATTEMPTS + 1,
-      sampleKey: `${model.provider}:${model.id}:${status}`,
-    });
     console.warn("[ChatThreadDO] Pi provider stream error", {
       provider: this.piCurrentUsageProvider || model.provider,
       model: model.id,
@@ -13020,21 +12168,11 @@ export class ChatThreadDO extends Agent<ChatAgentEnv> {
         this.piUserStopRequestedAtMs > 0 &&
         this.isAbortedPiAssistantMessage(event.message)
       ) {
-        this.recordChatThreadObservabilityEvent("pi_user_stop_turn_end_suppressed", {
-          operation: "handle_pi_session_event",
-          status: "turn_end",
-          count: 1,
-        });
         return;
       }
 
       if (this.isFailedPiAssistantMessage(event.message)) {
         const droppedSessionMessages = this.discardUnpersistedPiSessionMessages();
-        this.recordChatThreadObservabilityEvent("pi_failed_turn_end_persistence_suppressed", {
-          operation: "handle_pi_session_event",
-          status: "turn_end",
-          count: droppedSessionMessages,
-        });
         this.clearPiInFlightMessages();
         return;
       }
@@ -13049,11 +12187,6 @@ export class ChatThreadDO extends Agent<ChatAgentEnv> {
       if (newMessages.length > 0) {
         await this.appendPiCoreMessagesIfMissing(newMessages);
         this.piMainBaselineIndex = snapshot.length;
-        this.recordChatThreadObservabilityEvent("pi_turn_end_persisted", {
-          operation: "handle_pi_session_event",
-          status: "turn_end",
-          count: newMessages.length,
-        });
       }
       this.clearPiInFlightMessages();
       const durationMs = this.piTurnStartedAtMs
@@ -13181,11 +12314,6 @@ export class ChatThreadDO extends Agent<ChatAgentEnv> {
       const record = event.message as unknown as Record<string, unknown>;
       if (record.role === "assistant" || record.role === "toolResult") {
         if (this.isFailedPiAssistantMessage(event.message)) {
-          this.recordChatThreadObservabilityEvent("pi_failed_in_flight_append_suppressed", {
-            operation: "handle_pi_session_event",
-            status: "message_end",
-            count: 1,
-          });
           return;
         }
         const buffered = isAssistant
@@ -13299,23 +12427,12 @@ export class ChatThreadDO extends Agent<ChatAgentEnv> {
             session.state.messages = [...baselineMessages, ...messagesForSession];
             this.piMainBaselineIndex = baselineMessages.length + messagesForSession.length;
           }
-          this.recordChatThreadObservabilityEvent("pi_user_stop_persisted", {
-            operation: "handle_pi_session_event",
-            status: "agent_end",
-            count: messagesToPersist.length,
-          });
         }
       }
       this.clearPiInFlightMessages();
       if (!stoppedByUser) {
         const droppedSessionMessages = this.discardUnpersistedPiSessionMessages();
         if (droppedInFlight > 0 || droppedSessionMessages > 0) {
-          this.recordChatThreadObservabilityEvent("pi_in_flight_discarded", {
-            operation: "handle_pi_session_event",
-            status: "agent_end_without_turn_end",
-            count: droppedInFlight,
-            size: droppedSessionMessages,
-          });
         }
       }
       const completedAtMs = Date.now();
@@ -13515,11 +12632,6 @@ export class ChatThreadDO extends Agent<ChatAgentEnv> {
         if (type === "message") {
           const content = typeof message.content === "string" ? message.content : "";
           if (!content.trim()) {
-            this.recordChatThreadObservabilityEvent("runner_command_dispatch", {
-              operation: type,
-              status: "empty_content",
-              severity: "warn",
-            });
             return false;
           }
           const wasStreaming = this.piSession.state.isStreaming;
@@ -13579,13 +12691,6 @@ export class ChatThreadDO extends Agent<ChatAgentEnv> {
                 });
                 this.setChatIsStreaming(false);
                 this.setActiveTurnUserId(null);
-                this.recordChatThreadObservabilityEvent("runner_command_dispatch", {
-                  operation: type,
-                  status: "pi_prompt_failed",
-                  severity: "error",
-                  error,
-                  count: wasStreaming ? 1 : 0,
-                });
               }),
           );
           return true;
@@ -13612,21 +12717,10 @@ export class ChatThreadDO extends Agent<ChatAgentEnv> {
         }
       } catch (error) {
         console.error("[ChatThreadDO] send Pi command failed", error);
-        this.recordChatThreadObservabilityEvent("runner_command_dispatch", {
-          operation: type,
-          status: "dispatch_failed",
-          severity: "error",
-          error,
-        });
         return false;
       }
     }
 
-    this.recordChatThreadObservabilityEvent("runner_command_dispatch", {
-      operation: type,
-      status: "pi_session_unavailable",
-      severity: "warn",
-    });
     return false;
   }
 
@@ -13778,14 +12872,8 @@ export class ChatThreadDO extends Agent<ChatAgentEnv> {
     if (this.chatEventBuffer.length > MAX_CHAT_EVENT_BUFFER) {
       this.chatEventBuffer.shift();
     }
-    this.trace("push_chat_event", {
-      payloadType: typeof payload.type === "string" ? payload.type : "unknown",
-      eventId,
-      bufferSize: this.chatEventBuffer.length,
-    });
 
     this.broadcastChat(envelope);
-    this.broadcastRunnerClients(envelope);
   }
 
   private replayChatEvents(ws: WebSocket, lastEventId: number): void {
@@ -13799,110 +12887,23 @@ export class ChatThreadDO extends Agent<ChatAgentEnv> {
   }
 
   private getChatSockets(): WebSocket[] {
-    return this.ctx.getWebSockets(CHAT_SOCKET_TAG);
-  }
-
-  private getRunnerClientSockets(): WebSocket[] {
-    return this.ctx.getWebSockets(RUNNER_CLIENT_SOCKET_TAG);
-  }
-
-  private isRunnerClientSocket(ws: WebSocket): boolean {
-    return this.ctx.getTags(ws).includes(RUNNER_CLIENT_SOCKET_TAG);
+    return Array.from(this.getConnections()) as unknown as WebSocket[];
   }
 
   private broadcastChat(message: object): void {
     const json = JSON.stringify(message);
     const typed = message as { type?: unknown };
-    this.trace("broadcast_chat", {
-      payloadType: typeof typed.type === "string" ? typed.type : "unknown",
-      bytes: json.length,
-      recipients: this.getChatSockets().length,
-    });
-    let failures = 0;
-    const sockets = this.getChatSockets();
-    for (const ws of sockets) {
-      try {
-        ws.send(json);
-      } catch {
-        failures += 1;
-      }
-    }
-    if (failures > 0) {
-      this.recordChatThreadObservabilityEvent("chat_ws_send_failed", {
-        operation: "broadcast_chat",
-        status: "socket_send_failed",
-        severity: "warn",
-        count: failures,
-        size: sockets.length,
-        sampleKey: typeof typed.type === "string" ? typed.type : "unknown",
-      });
-    }
-  }
-
-  private broadcastRunnerClients(message: object): void {
-    const json = JSON.stringify(message);
-    const typed = message as { type?: unknown };
-    this.trace("broadcast_runner_clients", {
-      payloadType: typeof typed.type === "string" ? typed.type : "unknown",
-      bytes: json.length,
-      recipients: this.getRunnerClientSockets().length,
-    });
-    let failures = 0;
-    const sockets = this.getRunnerClientSockets();
-    for (const ws of sockets) {
-      try {
-        ws.send(json);
-      } catch {
-        failures += 1;
-      }
-    }
-    if (failures > 0) {
-      this.recordChatThreadObservabilityEvent("chat_ws_send_failed", {
-        operation: "broadcast_runner",
-        status: "socket_send_failed",
-        severity: "warn",
-        count: failures,
-        size: sockets.length,
-        sampleKey: typeof typed.type === "string" ? typed.type : "unknown",
-      });
-    }
+    this.broadcast(json);
   }
 
   private sendDirect(ws: WebSocket, message: object): void {
     try {
       const json = JSON.stringify(message);
       const typed = message as { type?: unknown };
-      this.trace("send_direct", {
-        payloadType: typeof typed.type === "string" ? typed.type : "unknown",
-        bytes: json.length,
-      });
       ws.send(json);
-    } catch (error) {
-      const typed = message as { type?: unknown };
-      this.recordChatThreadObservabilityEvent("chat_ws_send_failed", {
-        operation: this.isRunnerClientSocket(ws) ? "send_direct_runner" : "send_direct_chat",
-        status: "socket_send_failed",
-        severity: "warn",
-        error,
-        sampleKey: typeof typed.type === "string" ? typed.type : "unknown",
-      });
+    } catch {
+      // Ignore dead connections; Agents SDK reconnect/replay covers clients.
     }
-  }
-
-  private replayRunnerEvents(ws: WebSocket, lastSeq: number): void {
-    for (const envelope of this.chatEventBuffer) {
-      const eventId =
-        typeof envelope.eventId === "number" ? envelope.eventId : 0;
-      if (eventId > lastSeq) {
-        this.sendDirect(ws, envelope);
-      }
-    }
-  }
-
-  private normalizeRunnerClientSeq(value: unknown): number {
-    return typeof value === "number" && Number.isFinite(value)
-      ? Math.max(0, Math.floor(value))
-      : 0;
   }
 
 }

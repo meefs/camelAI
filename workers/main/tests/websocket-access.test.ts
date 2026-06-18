@@ -58,12 +58,44 @@ describe('WebSocket access guard', () => {
     };
   }
 
+  it('allows WebSocket upgrade for authorized workspace access', async () => {
+    const { workspaceId, threadId, signedToken } = await setupMemberSession();
+
+    const response = await SELF.fetch(`http://example/agents/chat-thread/${threadId}?workspaceId=${workspaceId}`, {
+      headers: {
+        Upgrade: 'websocket',
+        Connection: 'Upgrade',
+        'X-Chiridion-Session-Id': signedToken,
+      },
+    });
+
+    expect(response.status).toBe(101);
+    response.webSocket?.accept();
+    response.webSocket?.close();
+  });
+
+  it('keeps the legacy chat WebSocket route during rollout', async () => {
+    const { workspaceId, threadId, signedToken } = await setupMemberSession();
+
+    const response = await SELF.fetch(`http://example/ws/${workspaceId}?threadId=${threadId}`, {
+      headers: {
+        Upgrade: 'websocket',
+        Connection: 'Upgrade',
+        'X-Chiridion-Session-Id': signedToken,
+      },
+    });
+
+    expect(response.status).toBe(101);
+    response.webSocket?.accept();
+    response.webSocket?.close();
+  });
+
   it('denies WebSocket upgrade for denied workspace access', async () => {
     const { ownerId, memberId, workspaceId, threadId, signedToken } = await setupMemberSession();
 
     await setWorkspaceAccess(testEnv, workspaceId, memberId, 'none', ownerId);
 
-    const response = await SELF.fetch(`http://example/ws/${workspaceId}?threadId=${threadId}`, {
+    const response = await SELF.fetch(`http://example/agents/chat-thread/${threadId}?workspaceId=${workspaceId}`, {
       headers: {
         Upgrade: 'websocket',
         Connection: 'Upgrade',
@@ -79,7 +111,7 @@ describe('WebSocket access guard', () => {
 
     await removeOrgMember(testEnv, orgId, memberId, ownerId);
 
-    const response = await SELF.fetch(`http://example/ws/${workspaceId}?threadId=${threadId}`, {
+    const response = await SELF.fetch(`http://example/agents/chat-thread/${threadId}?workspaceId=${workspaceId}`, {
       headers: {
         Upgrade: 'websocket',
         Connection: 'Upgrade',

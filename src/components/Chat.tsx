@@ -9,6 +9,7 @@ import {
   useLayoutEffect,
 } from "react";
 import type { CSSProperties } from "react";
+import { useAgent } from "agents/react";
 import {
   useNavigate,
   useFetcher,
@@ -165,22 +166,20 @@ import {
   appendUserUploadReferences,
   isUserUploadMountPath,
 } from "@/lib/chat-attachment-refs";
-import { reportClientEvent } from "@/lib/client-error-reporting";
 
 export { ChatErrorNotice } from "@/components/chat-error-notice";
 export { BillingCreditNotice } from "@/components/chat-billing-credit-notice";
 
-const CHAT_PING_MESSAGE = JSON.stringify({ type: "ping" });
+type ChatAgentSocket = {
+  readyState: number;
+  send(data: string): void;
+  close(): void;
+  reconnect(): void;
+};
+
 // The backend acknowledges receipt before slow runner enqueue work, so this
 // timeout only covers messages that never make it to ChatThreadDO.
 const MESSAGE_ACCEPTANCE_TIMEOUT_MS = 8_000;
-const CHAT_WS_RECONNECT_ATTEMPTS_BEFORE_BACKOFF = 5;
-const CHAT_WS_BACKGROUND_RETRY_MS = 30_000;
-// How long a CONNECTING socket may keep handshaking before a queued send
-// gives up on it and forces a fresh connection. Upgrades legitimately take
-// seconds when the auth chain crosses regions; superseding a live handshake
-// aborts it and restarts from zero.
-const CHAT_WS_CONNECTING_GRACE_MS = 10_000;
 const NEW_THREAD_BOOTSTRAP_STALL_TIMEOUT_MS = 10_000;
 
 function getThreadRunningState(
@@ -655,7 +654,6 @@ export default function Chat({
     useState<BillingCreditStatus | null>(() => billingCreditStatus ?? null);
   const [pendingMessages, setPendingMessagesState] = useState<Message[]>([]);
   const [currentTodos, setCurrentTodos] = useState<TodoItem[]>(initialTodos);
-  const newThreadBootstrapLoggedRef = useRef<string | null>(null);
   const newThreadBootstrapRecoveredRef = useRef<string | null>(null);
 
   useEffect(() => {
@@ -1198,24 +1196,6 @@ export default function Chat({
       return;
     }
 
-    if (import.meta.env.MODE !== "test") {
-      reportClientEvent({
-        source: "chat_new_thread",
-        event: "new_thread_submit_failed",
-        severity: "error",
-        status: "action_error",
-        message: newChatActionError,
-        routeId: "chat",
-        threadId: threadId ?? null,
-        workspaceId: resolvedWorkspaceId ?? null,
-        details: {
-          restoredInputLength: pendingSubmission.text.length,
-          restoredAttachmentCount: pendingSubmission.attachments.length,
-          readOnly,
-        },
-      });
-    }
-
     if (
       isComposerVisiblyEmpty(welcomeInputRef.current, attachmentsRef.current)
     ) {
@@ -1302,7 +1282,7 @@ export default function Chat({
   const stickToBottomRef = useRef(true);
   const forceScrollOnNextUpdate = useRef(false);
   const splitStreamingMessageOnNextPartRef = useRef(false);
-  const wsRef = useRef<WebSocket | null>(null);
+  const wsRef = useRef<ChatAgentSocket | null>(null);
   const {
     connectionSetupPrompt,
     handleConnectionSetupCancel,
@@ -1319,14 +1299,8 @@ export default function Chat({
   const iframeRetryTimeoutsRef = useRef<
     Record<string, ReturnType<typeof setTimeout>>
   >({});
-  const reconnectAttempts = useRef(0);
-  const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
-  const queuedSendReadyTimeoutRef = useRef<NodeJS.Timeout | null>(null);
-  const pingIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const composerTextareaRef = useRef<HTMLTextAreaElement>(null);
-  const sessionIdRef = useRef<string | null>(null);
   const lastEventIdRef = useRef(0);
-  const connectionStartedAtRef = useRef<Map<number, number>>(new Map());
   const fallbackRenderedAtRef = useRef<number>(Date.now());
   const pendingCodeModeArtifactsRef = useRef<Map<string, RuntimeCallArtifact[]>>(
     new Map(),
@@ -1584,11 +1558,7 @@ export default function Chat({
   ]);
 
   // Track connection ID to ignore events from stale WebSocket instances
-  const connectionIdRef = useRef(0);
   // Ref to hold stable connect function for effect
-  const connectWebSocketRef = useRef<
-    ((id: string, isReconnect?: boolean) => void) | null
-  >(null);
   const resolvedWelcomeData = welcomeData ?? {
     userId: user?.id ?? null,
     userName: user?.name ?? null,
@@ -1899,104 +1869,6 @@ export default function Chat({
     [normalizeChatError],
   );
 
-  const logRunnerClient = useCallback(
-    (event: string, fields: Record<string, unknown> = {}) => {
-      if (import.meta.env.MODE === "test") return;
-      console.info("[chat runner client]", {
-        event,
-        threadId,
-        workspaceId: resolvedWorkspaceId,
-        ready,
-        pendingMessages: pendingMessagesRef.current.length,
-        wsReadyState: wsRef.current?.readyState ?? null,
-        ...fields,
-      });
-    },
-    [ready, resolvedWorkspaceId, threadId],
-  );
-
-  const reportChatClientEvent = useCallback(
-    (
-      event: string,
-      {
-        source = event.startsWith("ws_") ? "chat_websocket" : "chat_runner",
-        severity = "info",
-        status,
-        message,
-        details = {},
-        statusCode,
-        durationMs,
-        count,
-        error,
-      }: {
-        source?: "chat_runner" | "chat_websocket" | "chat_new_thread";
-        severity?: "debug" | "info" | "warn" | "error";
-        status?: string;
-        message?: string;
-        details?: Record<string, unknown>;
-        statusCode?: number;
-        durationMs?: number;
-        count?: number;
-        error?: unknown;
-      } = {},
-    ) => {
-      if (import.meta.env.MODE === "test") return;
-      reportClientEvent({
-        source,
-        event,
-        severity,
-        status,
-        message,
-        routeId: "chat",
-        threadId: threadId ?? null,
-        workspaceId: resolvedWorkspaceId ?? null,
-        details: {
-          clientBuildId: APP_BUILD_ID,
-          ready,
-          wsReadyState: wsRef.current?.readyState ?? null,
-          reconnectAttempts: reconnectAttempts.current,
-          pendingMessages: pendingMessagesRef.current.length,
-          loading,
-          isNewThread,
-          ...details,
-        },
-        statusCode,
-        durationMs,
-        count,
-        error,
-      });
-    },
-    [isNewThread, loading, ready, resolvedWorkspaceId, threadId],
-  );
-
-  useEffect(() => {
-    if (!threadId || readOnly || !isNewThread) {
-      return;
-    }
-    if (newThreadBootstrapLoggedRef.current === threadId) {
-      return;
-    }
-    newThreadBootstrapLoggedRef.current = threadId;
-    reportChatClientEvent("new_thread_bootstrap_loaded", {
-      source: "chat_new_thread",
-      status: deferredInitialMessage?.trim() ? "deferred_initial_message" : "loaded",
-      message: "Mounted the new-thread chat route after createThreadAndStart.",
-      details: {
-        deferredInitialMessageLength: deferredInitialMessage?.length ?? 0,
-        initialMessageCount: parsedInitialMessages.length,
-        hasOptimisticInitialMessage: Boolean(optimisticInitialMessage),
-      },
-    });
-  }, [
-    deferredInitialMessage,
-    isNewThread,
-    optimisticInitialMessage,
-    parsedInitialMessages.length,
-    readOnly,
-    reportChatClientEvent,
-    threadId,
-  ]);
-
   useEffect(() => {
     if (
       !threadId ||
@@ -2013,41 +1885,13 @@ export default function Chat({
         return;
       }
       newThreadBootstrapRecoveredRef.current = threadId;
-      reportChatClientEvent("new_thread_bootstrap_stalled", {
-        source: "chat_new_thread",
-        severity: "warn",
-        status: "waiting_for_realtime",
-        message:
-          "New-thread bootstrap is still waiting for realtime delivery after the route loaded.",
-        details: {
-          deferredInitialMessageLength: deferredInitialMessage.length,
-          initialMessageCount: parsedInitialMessages.length,
-          visibleMessageCount: messagesRef.current.length,
-        },
-      });
       revalidator.revalidate();
     }, NEW_THREAD_BOOTSTRAP_STALL_TIMEOUT_MS);
 
     return () => {
       window.clearTimeout(timeout);
     };
-  }, [
-    deferredInitialMessage,
-    isNewThread,
-    parsedInitialMessages.length,
-    readOnly,
-    ready,
-    reportChatClientEvent,
-    revalidator,
-    threadId,
-  ]);
-
-  const clearQueuedSendReadyTimeout = useCallback(() => {
-    if (queuedSendReadyTimeoutRef.current) {
-      clearTimeout(queuedSendReadyTimeoutRef.current);
-      queuedSendReadyTimeoutRef.current = null;
-    }
-  }, []);
+  }, [deferredInitialMessage, isNewThread, readOnly, ready, revalidator, threadId]);
 
   const clearPendingMessageAcceptanceTimeout = useCallback(
     (clientMessageId: string) => {
@@ -2104,26 +1948,9 @@ export default function Chat({
     (message: string): boolean => {
       const failedMessages = getUnacceptedPendingUserMessages();
       if (failedMessages.length === 0) {
-        logRunnerClient("pending_delivery_failed_skipped", {
-          message,
-          reason: "no_unaccepted_pending_message",
-        });
         return false;
       }
 
-      logRunnerClient("pending_delivery_failed", {
-        message,
-        failedMessages: failedMessages.length,
-      });
-      reportChatClientEvent("pending_delivery_failed", {
-        severity: "warn",
-        status: "failed",
-        message,
-        details: {
-          failedMessages: failedMessages.length,
-          failedMessageIds: failedMessages.map((msg) => msg.id).slice(0, 5),
-        },
-      });
       clearAllPendingMessageAcceptanceTimeouts();
       const failedIds = new Set(failedMessages.map((msg) => msg.id));
       const failedDeliveryKeys = new Set(
@@ -2138,7 +1965,6 @@ export default function Chat({
         (msg) => !failedIds.has(msg.id),
       );
       setPendingMessages(remainingPendingMessages);
-      clearQueuedSendReadyTimeout();
       setLoading(
         remainingPendingMessages.length > 0 ||
           Boolean(streamingMessageIdRef.current),
@@ -2156,11 +1982,8 @@ export default function Chat({
     },
     [
       clearAllPendingMessageAcceptanceTimeouts,
-      clearQueuedSendReadyTimeout,
       getUnacceptedPendingUserMessages,
-      logRunnerClient,
-      reportChatClientEvent,
-      restorePendingDeliveryDraft,
+          restorePendingDeliveryDraft,
       showChatError,
       setMessages,
       setPendingMessages,
@@ -2185,15 +2008,6 @@ export default function Chat({
           return;
         }
 
-        logRunnerClient("message_acceptance_timeout", { clientMessageId });
-        reportChatClientEvent("message_acceptance_timeout", {
-          severity: "warn",
-          status: "timeout",
-          message: "Timed out waiting for ChatThreadDO to accept a pending message.",
-          details: {
-            clientMessageId,
-          },
-        });
         failPendingMessageDelivery(
           "The message did not reach the server. I restored it as a draft so you can try again.",
         );
@@ -2204,8 +2018,6 @@ export default function Chat({
       clearPendingMessageAcceptanceTimeout,
       failPendingMessageDelivery,
       isPendingMessageAccepted,
-      logRunnerClient,
-      reportChatClientEvent,
     ],
   );
 
@@ -2214,29 +2026,14 @@ export default function Chat({
       try {
         const stored = sessionStorage.getItem(sessionStorageKey(id));
         if (stored) {
-          const parsed = JSON.parse(stored) as {
-            sessionId?: string;
-            lastEventId?: number;
-            lastSideChannelEventId?: number;
-            lastRunnerSeq?: number;
-          };
-          const legacyLastEventId =
+          const parsed = JSON.parse(stored) as { lastEventId?: number };
+          lastEventIdRef.current =
             typeof parsed.lastEventId === "number" ? parsed.lastEventId : 0;
-          sessionIdRef.current =
-            typeof parsed.sessionId === "string" ? parsed.sessionId : null;
-          lastEventIdRef.current = Math.max(
-            legacyLastEventId,
-            typeof parsed.lastSideChannelEventId === "number"
-              ? parsed.lastSideChannelEventId
-              : 0,
-            typeof parsed.lastRunnerSeq === "number" ? parsed.lastRunnerSeq : 0,
-          );
           return;
         }
       } catch (e) {
         console.warn("Failed to load session state:", e);
       }
-      sessionIdRef.current = null;
       lastEventIdRef.current = 0;
     },
     [sessionStorageKey],
@@ -2246,8 +2043,7 @@ export default function Chat({
     (id: string) => {
       try {
         const payload = {
-          sessionId: sessionIdRef.current,
-          lastEventId: lastEventIdRef.current,
+            lastEventId: lastEventIdRef.current,
         };
         sessionStorage.setItem(sessionStorageKey(id), JSON.stringify(payload));
       } catch (e) {
@@ -2259,7 +2055,6 @@ export default function Chat({
 
   useEffect(() => {
     if (!threadId) {
-      sessionIdRef.current = null;
       lastEventIdRef.current = 0;
       return;
     }
@@ -2737,865 +2532,585 @@ export default function Chat({
     ],
   );
 
-  // WebSocket connection management
-  const connectWebSocket = useCallback(
-    (id: string, isReconnect = false) => {
-      if (!id) {
-        return;
-      }
-      // Clear any pending reconnect
-      if (reconnectTimeoutRef.current) {
-        clearTimeout(reconnectTimeoutRef.current);
-        reconnectTimeoutRef.current = null;
-      }
-      clearQueuedSendReadyTimeout();
+  // Agent connection
+  const agentEnabled = !readOnly && Boolean(threadId && resolvedWorkspaceId);
 
-      // Increment connection ID to invalidate any pending callbacks from old connections
-      const thisConnectionId = ++connectionIdRef.current;
-      connectionStartedAtRef.current.set(thisConnectionId, Date.now());
+  const handleAgentOpen = useCallback(() => {
+    if (!threadId) return;
+    wsRef.current?.send(
+      JSON.stringify({
+        type: "init",
+        threadId,
+        lastEventId: lastEventIdRef.current,
+      }),
+    );
+  }, [threadId]);
 
-      // Close existing connection regardless of state
-      // This prevents orphaned WebSockets from React StrictMode double-mounting
-      if (wsRef.current) {
-        wsRef.current.close();
-        wsRef.current = null;
-      }
+  const handleAgentMessage = useCallback(
+    (event: MessageEvent) => {
+      const id = threadId;
+      if (!id) return;
+      const data = JSON.parse(event.data);
 
-      // Clear any existing ping interval
-      if (pingIntervalRef.current) {
-        clearInterval(pingIntervalRef.current);
-        pingIntervalRef.current = null;
+      if (typeof data?.eventId === "number") {
+        lastEventIdRef.current = Math.max(lastEventIdRef.current, data.eventId);
+        if (id) {
+          persistSessionState(id);
+        }
       }
 
-      setReady(false);
-      // Clear stale streaming state on reconnect; server sends the
-      // authoritative streaming_state immediately after ready.
-      setStreamingMessageId(null);
-      lastCompletedAssistantMessageIdRef.current = null;
-      compactingPriorMessageIdRef.current = null;
-      setCompactingPriorMessageId(null);
-      setLoading(false);
-      isAutoCompactingRef.current = false;
-      syncCompactionIndicator();
-      if (!isReconnect) {
-        reconnectAttempts.current = 0;
-      }
+      if (data.type === "ready") {
+        setReady(true);
 
-      const wsHost = window.location.host;
-      const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-      const workspaceIdForConnection = resolvedWorkspaceId;
-      // One browser WebSocket connects to ChatThreadDO for agent streaming,
-      // replay, preview state, prompts, and other realtime chat state.
-      const wsUrl = `${protocol}//${wsHost}/ws/${workspaceIdForConnection}?threadId=${encodeURIComponent(id)}&clientBuildId=${encodeURIComponent(APP_BUILD_ID)}`;
-      reportChatClientEvent("ws_connect_started", {
-        source: "chat_websocket",
-        status: isReconnect ? "reconnect" : "connect",
-        message: "Opening chat websocket.",
-        details: {
-          connectionId: thisConnectionId,
-          isReconnect,
-          lastEventId: lastEventIdRef.current,
-          hasSessionId: Boolean(sessionIdRef.current),
-          wsUrl,
-        },
-      });
-      const ws = new WebSocket(wsUrl);
-      wsRef.current = ws;
+        const queuedMessages = pendingMessagesRef.current.filter((message) => {
+          if (message.role !== "user") return false;
+          const deliveryKey = message.clientMessageId ?? message.id;
+          return !sentPendingMessageIdsRef.current.has(deliveryKey);
+        });
+        if (queuedMessages.length > 0) {
+          setLoading(true);
 
-      ws.onopen = () => {
-        // Ignore if this connection was superseded
-        if (connectionIdRef.current !== thisConnectionId) {
+          // Restore to state if a route revalidation already accepted them.
+          const currentMessages = messagesRef.current;
+          const existingIds = new Set(currentMessages.map((m) => m.id));
+          const missing = queuedMessages.filter(
+            (m) => !existingIds.has(m.id),
+          );
+          if (missing.length > 0) {
+            setMessages([...currentMessages, ...missing]);
+          }
+
+          // Send all queued messages
+          for (const msg of queuedMessages) {
+            const content =
+              typeof msg.content === "string"
+                ? msg.content
+                : JSON.stringify(msg.content);
+            const clientMessageId = msg.clientMessageId ?? msg.id;
+            sentPendingMessageIdsRef.current.add(clientMessageId);
+            startPendingMessageAcceptanceTimeout(clientMessageId);
+            wsRef.current?.send(
+              JSON.stringify({
+                type: "message",
+                content,
+                clientMessageId,
+                        threadId: id,
+              }),
+            );
+          }
+          setPendingMessages((prev) => prev);
+        }
+      } else if (data.type === "runtime_event") {
+        if (!id) {
           return;
         }
-        logRunnerClient("ws_open", {
-          connectionId: thisConnectionId,
-          isReconnect,
-        });
-        reportChatClientEvent("ws_open", {
-          source: "chat_websocket",
-          status: isReconnect ? "reconnected" : "open",
-          message: "Chat websocket opened.",
-          details: {
-            connectionId: thisConnectionId,
-            isReconnect,
-            openLatencyMs:
-              Date.now() -
-              (connectionStartedAtRef.current.get(thisConnectionId) ?? Date.now()),
-          },
-          durationMs:
-            Date.now() -
-            (connectionStartedAtRef.current.get(thisConnectionId) ?? Date.now()),
-        });
-        reconnectAttempts.current = 0;
-
-        // Start ping interval to detect connection issues early
-        if (pingIntervalRef.current) {
-          clearInterval(pingIntervalRef.current);
-        }
-        pingIntervalRef.current = setInterval(() => {
-          if (ws.readyState === WebSocket.OPEN) {
-            ws.send(CHAT_PING_MESSAGE);
-          }
-        }, 30000); // Ping every 30 seconds
-
-        // Send init message to container
-        ws.send(
-          JSON.stringify({
-            type: "init",
-            threadId: id,
-            sessionId: sessionIdRef.current,
-            lastEventId: lastEventIdRef.current,
-          }),
-        );
-      };
-
-      ws.onmessage = (event) => {
-        // Ignore messages from stale WebSocket instances (e.g., from StrictMode double-mount)
-        if (wsRef.current !== ws) {
-          return;
-        }
-
-        const data = JSON.parse(event.data);
-
-        if (typeof data?.eventId === "number") {
-          lastEventIdRef.current = Math.max(lastEventIdRef.current, data.eventId);
-          if (id) {
-            persistSessionState(id);
-          }
-        }
-
-        if (data.type === "ready") {
-          // Container is ready to receive messages
-          clearQueuedSendReadyTimeout();
-          logRunnerClient("runner_ready", {
-            queuedMessages: pendingMessagesRef.current.length,
-          });
-        reportChatClientEvent("runner_ready", {
-          source: "chat_runner",
-          status: "ready",
-          message: "Chat runner reported ready over websocket.",
-            details: {
-              queuedMessages: pendingMessagesRef.current.length,
-            },
-          });
-          if (newThreadBootstrapRecoveredRef.current === id) {
-            reportChatClientEvent("new_thread_bootstrap_recovered", {
-              source: "chat_new_thread",
-              status: "realtime_ready",
-              message:
-                "New-thread bootstrap recovered after waiting for realtime delivery.",
-              details: {
-                recoveryConnectionId: thisConnectionId,
-              },
-            });
-          }
-          setReady(true);
-
-          const queuedMessages = pendingMessagesRef.current.filter((message) => {
-            if (message.role !== "user") return false;
-            const deliveryKey = message.clientMessageId ?? message.id;
-            return !sentPendingMessageIdsRef.current.has(deliveryKey);
-          });
-          if (queuedMessages.length > 0) {
-            setLoading(true);
-
-            // Restore to state if a route revalidation already accepted them.
-            const currentMessages = messagesRef.current;
-            const existingIds = new Set(currentMessages.map((m) => m.id));
-            const missing = queuedMessages.filter(
-              (m) => !existingIds.has(m.id),
-            );
-            if (missing.length > 0) {
-              setMessages([...currentMessages, ...missing]);
-            }
-
-            // Send all queued messages
-            for (const msg of queuedMessages) {
-              const content =
-                typeof msg.content === "string"
-                  ? msg.content
-                  : JSON.stringify(msg.content);
-              logRunnerClient("queued_message_sent", {
-                messageId: msg.id,
-                contentLength: content.length,
-              });
-              const clientMessageId = msg.clientMessageId ?? msg.id;
-              sentPendingMessageIdsRef.current.add(clientMessageId);
-              startPendingMessageAcceptanceTimeout(clientMessageId);
-              ws.send(
-                JSON.stringify({
-                  type: "message",
-                  content,
-                  clientMessageId,
-                  sessionId: sessionIdRef.current,
-                  threadId: id,
-                }),
-              );
-            }
-            setPendingMessages((prev) => prev);
-          }
-        } else if (
-          data.type === "session" &&
-          typeof data.sessionId === "string"
-        ) {
-          const newSessionId = data.sessionId;
-          if (sessionIdRef.current && sessionIdRef.current !== newSessionId) {
-            lastEventIdRef.current = 0;
-          }
-          sessionIdRef.current = newSessionId;
-          if (id) {
-            persistSessionState(id);
-          }
-        } else if (data.type === "runtime_event") {
-          if (!id) {
-            return;
-          }
-          const runtimeEvent = data.event;
-          const isTurnCompleted =
-            runtimeEvent &&
-            typeof runtimeEvent === "object" &&
-            (runtimeEvent as { method?: unknown }).method === "turn/completed";
-          const completedParams: {
-            forkEntryId?: unknown;
-            completedAtMs?: unknown;
-            turnDurationMs?: unknown;
-          } = isTurnCompleted
-            ? ((runtimeEvent as {
-                params?: {
-                  forkEntryId?: unknown;
-                  completedAtMs?: unknown;
-                  turnDurationMs?: unknown;
-                };
-              }).params ?? {})
-            : {};
-          const completingStreamingId = isTurnCompleted
-            ? runtimeStreamingMessageIdsRef.current[id] ??
-              streamingMessageIdRef.current
-            : null;
-          setMessagesDeferred((prev) => {
-            const next = applyRuntimeEventToMessages(
-              prev,
-              id,
-              "codex",
-              runtimeEvent,
-              runtimeStreamingMessageIdsRef.current,
-            );
-            return next;
-          });
-          const nextStreamingId =
-            runtimeStreamingMessageIdsRef.current[id] ?? null;
-          setStreamingMessageId(nextStreamingId);
-
-          if (isTurnCompleted) {
-            const forkEntryId =
-              typeof completedParams.forkEntryId === "string" &&
-              completedParams.forkEntryId.trim()
-                ? completedParams.forkEntryId.trim()
-                : null;
-            const completedTurnId = forkEntryId || completingStreamingId;
-            const completedAtMs =
-              typeof completedParams.completedAtMs === "number" &&
-              Number.isFinite(completedParams.completedAtMs)
-                ? completedParams.completedAtMs
-                : Date.now();
-            const durationMs =
-              typeof completedParams.turnDurationMs === "number" &&
-              Number.isFinite(completedParams.turnDurationMs)
-                ? Math.max(0, completedParams.turnDurationMs)
-                : 0;
-            if (completedTurnId) {
-              completedTurnsRef.current.set(completedTurnId, {
-                durationMs,
-                completedAtMs,
-              });
-              setCompletedTurns(new Map(completedTurnsRef.current));
-              setFreshlyCompletedTurnId(completedTurnId);
-            }
-            flushDeferredMessagesRender();
-            lastCompletedAssistantMessageIdRef.current =
-              completedTurnId ?? nextStreamingId;
-            setStreamingMessageId(null);
-            setLoading(false);
-            acceptedPendingMessageIdsRef.current.clear();
-            setPendingMessages([]);
-            dispatchLocalThreadStatus(id, "idle");
-            clearPendingDeliveryDraft();
-            refreshBillingCreditStatusAfterTurn(
-              completedTurnId ?? nextStreamingId ?? id,
-            );
-          }
-        } else if (data.type === "sdk_event") {
-          // Handle SDK events for streaming
-          const sdkEvent = data.event as SDKEvent;
-          const currentStreamingId = streamingMessageIdRef.current;
-
-          if (sdkEvent.type === "stream_event") {
-            const evt = sdkEvent.event;
-
-            // ── Compaction content block interception ──
-            // The API streams the compaction summary as a content block of type
-            // 'compaction' with a single 'compaction_delta' containing the full
-            // summary text. Intercept these events before they reach the normal
-            // streaming pipeline so the summary is rendered as a standalone
-            // CompactSummaryCard instead of being appended to the assistant message.
-            if (
-              evt?.type === "content_block_start" &&
-              evt?.content_block?.type === "compaction"
-            ) {
-              isInCompactionBlockRef.current = true;
-              compactionContentRef.current = "";
-              hasCapturedCompactionSummaryRef.current = false;
-              // Fallback trigger when system/status events are unavailable.
-              isAutoCompactingRef.current = true;
-              syncCompactionIndicator();
-              // Only capture once: status events are the primary source and this is
-              // a fallback path when those events are missing.
-              if (compactingPriorMessageIdRef.current === null) {
-                const priorId =
-                  streamingMessageIdRef.current ??
-                  lastCompletedAssistantMessageIdRef.current ??
-                  null;
-                compactingPriorMessageIdRef.current = priorId;
-                setCompactingPriorMessageId(priorId);
-              }
-              if (streamingMessageIdRef.current) {
-                setStreamingMessageId(null);
-              }
-              return;
-            }
-            if (isInCompactionBlockRef.current) {
-              if (
-                evt?.type === "content_block_delta" &&
-                evt?.delta?.type === "compaction_delta"
-              ) {
-                compactionContentRef.current += evt.delta.content || "";
-                return;
-              }
-              if (evt?.type === "content_block_stop") {
-                const summary = compactionContentRef.current;
-                isInCompactionBlockRef.current = false;
-                compactionContentRef.current = "";
-                compactingPriorMessageIdRef.current = null;
-                setCompactingPriorMessageId(null);
-                if (summary) {
-                  hasCapturedCompactionSummaryRef.current = true;
-                  completeActiveManualCompaction();
-                  isAutoCompactingRef.current = false;
-                  syncCompactionIndicator();
-                  const existingPlaceholderId =
-                    pendingCompactionPlaceholderIdRef.current;
-                  const compactMsg: Message = {
-                    id: existingPlaceholderId || `compact_${Date.now()}`,
-                    thread_id: id,
-                    role: "user",
-                    content: summary,
-                    created_at: Date.now(),
-                    isCompactSummary: true,
-                  };
-                  pendingCompactionPlaceholderIdRef.current = compactMsg.id;
-                  setMessages((prev) => {
-                    if (existingPlaceholderId) {
-                      const placeholderIndex = prev.findIndex(
-                        (m) => m.id === existingPlaceholderId,
-                      );
-                      if (placeholderIndex !== -1) {
-                        const next = [...prev];
-                        next[placeholderIndex] = compactMsg;
-                        return next;
-                      }
-                    }
-                    const existingSummaryIndex = prev.findIndex(
-                      (m) => m.id === compactMsg.id,
-                    );
-                    if (existingSummaryIndex !== -1) {
-                      const next = [...prev];
-                      next[existingSummaryIndex] = compactMsg;
-                      return next;
-                    }
-                    return [...prev, compactMsg];
-                  });
-                }
-                return;
-              }
-            }
-
-            if (evt?.type === "message_start") {
-              const currentMsgs = messagesRef.current;
-              const existingStreamingId = streamingMessageIdRef.current;
-              const existingStreamingMsg = existingStreamingId
-                ? currentMsgs.find((msg) => msg.id === existingStreamingId)
-                : undefined;
-              const fallbackStreamingMsg = existingStreamingMsg
-                ? undefined
-                : currentMsgs.find((msg) => msg.isStreaming);
-              const activeStreamingMsg =
-                existingStreamingMsg ?? fallbackStreamingMsg;
-
-              if (
-                splitStreamingMessageOnNextPartRef.current &&
-                activeStreamingMsg
-              ) {
-                splitStreamingMessageOnNextPartRef.current = false;
-                const nextMsgIdBase =
-                  evt.message?.id ||
-                  (sdkEvent as { uuid?: string }).uuid ||
-                  `stream_${Date.now()}`;
-                const nextMsgId = currentMsgs.some(
-                  (msg) => msg.id === nextMsgIdBase,
-                )
-                  ? `${nextMsgIdBase}_${Date.now()}`
-                  : nextMsgIdBase;
-
-                setStreamingMessageId(nextMsgId);
-                setMessages((prev) => {
-                  const finalized = prev.map((msg) =>
-                    msg.id === activeStreamingMsg.id
-                      ? finalizeStreamingMessage(msg)
-                      : msg,
-                  );
-                  const newMsg: Message = {
-                    id: nextMsgId,
-                    thread_id: id,
-                    role: "assistant",
-                    content: [],
-                    created_at: Date.now(),
-                    isStreaming: true,
-                  };
-                  if (finalized.some((msg) => msg.id === nextMsgId)) {
-                    return finalized.map((msg) =>
-                      msg.id === nextMsgId
-                        ? applyStreamingEventToMessage(msg, sdkEvent)
-                        : msg,
-                    );
-                  }
-                  const withNew = [...finalized, newMsg];
-                  return withNew.map((msg) =>
-                    msg.id === nextMsgId
-                      ? applyStreamingEventToMessage(msg, sdkEvent)
-                      : msg,
-                  );
-                });
-                return;
-              }
-
-              if (existingStreamingMsg) {
-                // Claude emits a new message_start after each tool call; append to the active turn.
-                setMessages((prev) =>
-                  prev.map((msg) =>
-                    msg.id === existingStreamingId
-                      ? applyStreamingEventToMessage(msg, sdkEvent)
-                      : msg,
-                  ),
-                );
-                return;
-              }
-
-              if (fallbackStreamingMsg) {
-                setStreamingMessageId(fallbackStreamingMsg.id);
-                setMessages((prev) =>
-                  prev.map((msg) =>
-                    msg.id === fallbackStreamingMsg.id
-                      ? applyStreamingEventToMessage(msg, sdkEvent)
-                      : msg,
-                  ),
-                );
-                return;
-              }
-
-              // Add new assistant message with isStreaming: true
-              const msgId =
-                evt.message?.id ||
-                (sdkEvent as { uuid?: string }).uuid ||
-                `stream_${Date.now()}`;
-              setStreamingMessageId(msgId);
-              const newMsg: Message = {
-                id: msgId,
-                thread_id: id,
-                role: "assistant",
-                content: [],
-                created_at: Date.now(),
-                isStreaming: true,
+        const runtimeEvent = data.event;
+        const isTurnCompleted =
+          runtimeEvent &&
+          typeof runtimeEvent === "object" &&
+          (runtimeEvent as { method?: unknown }).method === "turn/completed";
+        const completedParams: {
+          forkEntryId?: unknown;
+          completedAtMs?: unknown;
+          turnDurationMs?: unknown;
+        } = isTurnCompleted
+          ? ((runtimeEvent as {
+              params?: {
+                forkEntryId?: unknown;
+                completedAtMs?: unknown;
+                turnDurationMs?: unknown;
               };
-              // Use functional update to avoid race conditions with rapid events
-              setMessages((prev) => {
-                if (prev.some((m) => m.id === msgId)) {
-                  return prev;
-                }
-                return [...prev, newMsg];
-              });
-            } else if (currentStreamingId) {
-              // Apply streaming delta to the current message
-              setMessagesDeferred((prev) =>
-                prev.map((msg) =>
-                  msg.id === currentStreamingId
-                    ? applyStreamingEventToMessage(msg, sdkEvent)
-                    : msg,
-                ),
-              );
-            } else {
-              // No streamingMessageId - try to restore from streaming message (reconnect scenario)
-              const currentMessages = messagesRef.current;
-              const streamingMsg = currentMessages.find((m) => m.isStreaming);
-              if (streamingMsg) {
-                setStreamingMessageId(streamingMsg.id);
-                setMessagesDeferred((prev) =>
-                  prev.map((msg) =>
-                    msg.id === streamingMsg.id
-                      ? applyStreamingEventToMessage(msg, sdkEvent)
-                      : msg,
-                  ),
-                );
-              }
-            }
-          } else if (
-            sdkEvent.type === "system" &&
-            sdkEvent.subtype === "init"
+            }).params ?? {})
+          : {};
+        const completingStreamingId = isTurnCompleted
+          ? runtimeStreamingMessageIdsRef.current[id] ??
+            streamingMessageIdRef.current
+          : null;
+        setMessagesDeferred((prev) => {
+          const next = applyRuntimeEventToMessages(
+            prev,
+            id,
+            "codex",
+            runtimeEvent,
+            runtimeStreamingMessageIdsRef.current,
+          );
+          return next;
+        });
+        const nextStreamingId =
+          runtimeStreamingMessageIdsRef.current[id] ?? null;
+        setStreamingMessageId(nextStreamingId);
+
+        if (isTurnCompleted) {
+          const forkEntryId =
+            typeof completedParams.forkEntryId === "string" &&
+            completedParams.forkEntryId.trim()
+              ? completedParams.forkEntryId.trim()
+              : null;
+          const completedTurnId = forkEntryId || completingStreamingId;
+          const completedAtMs =
+            typeof completedParams.completedAtMs === "number" &&
+            Number.isFinite(completedParams.completedAtMs)
+              ? completedParams.completedAtMs
+              : Date.now();
+          const durationMs =
+            typeof completedParams.turnDurationMs === "number" &&
+            Number.isFinite(completedParams.turnDurationMs)
+              ? Math.max(0, completedParams.turnDurationMs)
+              : 0;
+          if (completedTurnId) {
+            completedTurnsRef.current.set(completedTurnId, {
+              durationMs,
+              completedAtMs,
+            });
+            setCompletedTurns(new Map(completedTurnsRef.current));
+            setFreshlyCompletedTurnId(completedTurnId);
+          }
+          flushDeferredMessagesRender();
+          lastCompletedAssistantMessageIdRef.current =
+            completedTurnId ?? nextStreamingId;
+          setStreamingMessageId(null);
+          setLoading(false);
+          acceptedPendingMessageIdsRef.current.clear();
+          setPendingMessages([]);
+          dispatchLocalThreadStatus(id, "idle");
+          clearPendingDeliveryDraft();
+          refreshBillingCreditStatusAfterTurn(
+            completedTurnId ?? nextStreamingId ?? id,
+          );
+        }
+      } else if (data.type === "sdk_event") {
+        // Handle SDK events for streaming
+        const sdkEvent = data.event as SDKEvent;
+        const currentStreamingId = streamingMessageIdRef.current;
+
+        if (sdkEvent.type === "stream_event") {
+          const evt = sdkEvent.event;
+
+          // ── Compaction content block interception ──
+          // The API streams the compaction summary as a content block of type
+          // 'compaction' with a single 'compaction_delta' containing the full
+          // summary text. Intercept these events before they reach the normal
+          // streaming pipeline so the summary is rendered as a standalone
+          // CompactSummaryCard instead of being appended to the assistant message.
+          if (
+            evt?.type === "content_block_start" &&
+            evt?.content_block?.type === "compaction"
           ) {
-            // System init - reset the streaming message ID
-            splitStreamingMessageOnNextPartRef.current = false;
-            setStreamingMessageId(null);
-            startQueuedManualCompactionIfNeeded();
-          } else if (
-            sdkEvent.type === "system" &&
-            sdkEvent.subtype === "status"
-          ) {
-            const status = (sdkEvent as unknown as Record<string, unknown>)
-              .status;
-            if (status === "compacting") {
-              isAutoCompactingRef.current = true;
-              syncCompactionIndicator();
+            isInCompactionBlockRef.current = true;
+            compactionContentRef.current = "";
+            hasCapturedCompactionSummaryRef.current = false;
+            // Fallback trigger when system/status events are unavailable.
+            isAutoCompactingRef.current = true;
+            syncCompactionIndicator();
+            // Only capture once: status events are the primary source and this is
+            // a fallback path when those events are missing.
+            if (compactingPriorMessageIdRef.current === null) {
               const priorId =
                 streamingMessageIdRef.current ??
                 lastCompletedAssistantMessageIdRef.current ??
                 null;
               compactingPriorMessageIdRef.current = priorId;
               setCompactingPriorMessageId(priorId);
-              if (streamingMessageIdRef.current) {
-                setStreamingMessageId(null);
-              }
-            } else if (status === null) {
-              isAutoCompactingRef.current = false;
-              syncCompactionIndicator();
+            }
+            if (streamingMessageIdRef.current) {
+              setStreamingMessageId(null);
+            }
+            return;
+          }
+          if (isInCompactionBlockRef.current) {
+            if (
+              evt?.type === "content_block_delta" &&
+              evt?.delta?.type === "compaction_delta"
+            ) {
+              compactionContentRef.current += evt.delta.content || "";
+              return;
+            }
+            if (evt?.type === "content_block_stop") {
+              const summary = compactionContentRef.current;
+              isInCompactionBlockRef.current = false;
+              compactionContentRef.current = "";
               compactingPriorMessageIdRef.current = null;
               setCompactingPriorMessageId(null);
+              if (summary) {
+                hasCapturedCompactionSummaryRef.current = true;
+                completeActiveManualCompaction();
+                isAutoCompactingRef.current = false;
+                syncCompactionIndicator();
+                const existingPlaceholderId =
+                  pendingCompactionPlaceholderIdRef.current;
+                const compactMsg: Message = {
+                  id: existingPlaceholderId || `compact_${Date.now()}`,
+                  thread_id: id,
+                  role: "user",
+                  content: summary,
+                  created_at: Date.now(),
+                  isCompactSummary: true,
+                };
+                pendingCompactionPlaceholderIdRef.current = compactMsg.id;
+                setMessages((prev) => {
+                  if (existingPlaceholderId) {
+                    const placeholderIndex = prev.findIndex(
+                      (m) => m.id === existingPlaceholderId,
+                    );
+                    if (placeholderIndex !== -1) {
+                      const next = [...prev];
+                      next[placeholderIndex] = compactMsg;
+                      return next;
+                    }
+                  }
+                  const existingSummaryIndex = prev.findIndex(
+                    (m) => m.id === compactMsg.id,
+                  );
+                  if (existingSummaryIndex !== -1) {
+                    const next = [...prev];
+                    next[existingSummaryIndex] = compactMsg;
+                    return next;
+                  }
+                  return [...prev, compactMsg];
+                });
+              }
+              return;
             }
-          } else if (
-            sdkEvent.type === "system" &&
-            sdkEvent.subtype === "compact_boundary"
-          ) {
-            // Compaction is complete — the compact_boundary event arrives AFTER the
-            // SDK finishes generating the summary (not before). Insert a compact
-            // summary card immediately. If the control plane later forwards the full
-            // summary (isCompactSummary user event), it will replace this placeholder.
+          }
+
+          if (evt?.type === "message_start") {
+            const currentMsgs = messagesRef.current;
+            const existingStreamingId = streamingMessageIdRef.current;
+            const existingStreamingMsg = existingStreamingId
+              ? currentMsgs.find((msg) => msg.id === existingStreamingId)
+              : undefined;
+            const fallbackStreamingMsg = existingStreamingMsg
+              ? undefined
+              : currentMsgs.find((msg) => msg.isStreaming);
+            const activeStreamingMsg =
+              existingStreamingMsg ?? fallbackStreamingMsg;
+
+            if (
+              splitStreamingMessageOnNextPartRef.current &&
+              activeStreamingMsg
+            ) {
+              splitStreamingMessageOnNextPartRef.current = false;
+              const nextMsgIdBase =
+                evt.message?.id ||
+                (sdkEvent as { uuid?: string }).uuid ||
+                `stream_${Date.now()}`;
+              const nextMsgId = currentMsgs.some(
+                (msg) => msg.id === nextMsgIdBase,
+              )
+                ? `${nextMsgIdBase}_${Date.now()}`
+                : nextMsgIdBase;
+
+              setStreamingMessageId(nextMsgId);
+              setMessages((prev) => {
+                const finalized = prev.map((msg) =>
+                  msg.id === activeStreamingMsg.id
+                    ? finalizeStreamingMessage(msg)
+                    : msg,
+                );
+                const newMsg: Message = {
+                  id: nextMsgId,
+                  thread_id: id,
+                  role: "assistant",
+                  content: [],
+                  created_at: Date.now(),
+                  isStreaming: true,
+                };
+                if (finalized.some((msg) => msg.id === nextMsgId)) {
+                  return finalized.map((msg) =>
+                    msg.id === nextMsgId
+                      ? applyStreamingEventToMessage(msg, sdkEvent)
+                      : msg,
+                  );
+                }
+                const withNew = [...finalized, newMsg];
+                return withNew.map((msg) =>
+                  msg.id === nextMsgId
+                    ? applyStreamingEventToMessage(msg, sdkEvent)
+                    : msg,
+                );
+              });
+              return;
+            }
+
+            if (existingStreamingMsg) {
+              // Claude emits a new message_start after each tool call; append to the active turn.
+              setMessages((prev) =>
+                prev.map((msg) =>
+                  msg.id === existingStreamingId
+                    ? applyStreamingEventToMessage(msg, sdkEvent)
+                    : msg,
+                ),
+              );
+              return;
+            }
+
+            if (fallbackStreamingMsg) {
+              setStreamingMessageId(fallbackStreamingMsg.id);
+              setMessages((prev) =>
+                prev.map((msg) =>
+                  msg.id === fallbackStreamingMsg.id
+                    ? applyStreamingEventToMessage(msg, sdkEvent)
+                    : msg,
+                ),
+              );
+              return;
+            }
+
+            // Add new assistant message with isStreaming: true
+            const msgId =
+              evt.message?.id ||
+              (sdkEvent as { uuid?: string }).uuid ||
+              `stream_${Date.now()}`;
+            setStreamingMessageId(msgId);
+            const newMsg: Message = {
+              id: msgId,
+              thread_id: id,
+              role: "assistant",
+              content: [],
+              created_at: Date.now(),
+              isStreaming: true,
+            };
+            // Use functional update to avoid race conditions with rapid events
+            setMessages((prev) => {
+              if (prev.some((m) => m.id === msgId)) {
+                return prev;
+              }
+              return [...prev, newMsg];
+            });
+          } else if (currentStreamingId) {
+            // Apply streaming delta to the current message
+            setMessagesDeferred((prev) =>
+              prev.map((msg) =>
+                msg.id === currentStreamingId
+                  ? applyStreamingEventToMessage(msg, sdkEvent)
+                  : msg,
+              ),
+            );
+          } else {
+            // No streamingMessageId - try to restore from streaming message (reconnect scenario)
+            const currentMessages = messagesRef.current;
+            const streamingMsg = currentMessages.find((m) => m.isStreaming);
+            if (streamingMsg) {
+              setStreamingMessageId(streamingMsg.id);
+              setMessagesDeferred((prev) =>
+                prev.map((msg) =>
+                  msg.id === streamingMsg.id
+                    ? applyStreamingEventToMessage(msg, sdkEvent)
+                    : msg,
+                ),
+              );
+            }
+          }
+        } else if (
+          sdkEvent.type === "system" &&
+          sdkEvent.subtype === "init"
+        ) {
+          // System init - reset the streaming message ID
+          splitStreamingMessageOnNextPartRef.current = false;
+          setStreamingMessageId(null);
+          startQueuedManualCompactionIfNeeded();
+        } else if (
+          sdkEvent.type === "system" &&
+          sdkEvent.subtype === "status"
+        ) {
+          const status = (sdkEvent as unknown as Record<string, unknown>)
+            .status;
+          if (status === "compacting") {
+            isAutoCompactingRef.current = true;
+            syncCompactionIndicator();
+            const priorId =
+              streamingMessageIdRef.current ??
+              lastCompletedAssistantMessageIdRef.current ??
+              null;
+            compactingPriorMessageIdRef.current = priorId;
+            setCompactingPriorMessageId(priorId);
+            if (streamingMessageIdRef.current) {
+              setStreamingMessageId(null);
+            }
+          } else if (status === null) {
+            isAutoCompactingRef.current = false;
+            syncCompactionIndicator();
+            compactingPriorMessageIdRef.current = null;
+            setCompactingPriorMessageId(null);
+          }
+        } else if (
+          sdkEvent.type === "system" &&
+          sdkEvent.subtype === "compact_boundary"
+        ) {
+          // Compaction is complete — the compact_boundary event arrives AFTER the
+          // SDK finishes generating the summary (not before). Insert a compact
+          // summary card immediately. If the control plane later forwards the full
+          // summary (isCompactSummary user event), it will replace this placeholder.
+          completeActiveManualCompaction();
+          isAutoCompactingRef.current = false;
+          syncCompactionIndicator();
+          compactingPriorMessageIdRef.current = null;
+          setCompactingPriorMessageId(null);
+          if (hasCapturedCompactionSummaryRef.current) {
+            hasCapturedCompactionSummaryRef.current = false;
+            return;
+          }
+          const compactMsg: Message = {
+            id: `compact_${Date.now()}`,
+            thread_id: id,
+            role: "user",
+            content:
+              "The conversation context was compacted to continue this session.",
+            created_at: Date.now(),
+            isCompactSummary: true,
+          };
+          pendingCompactionPlaceholderIdRef.current = compactMsg.id;
+          setMessages((prev) => [...prev, compactMsg]);
+        } else if (
+          sdkEvent.type === "assistant" &&
+          sdkEvent.message?.content
+        ) {
+          // Track message ID as fallback
+          if (!currentStreamingId) {
+            const sdkUuid = (sdkEvent as { uuid?: string }).uuid;
+            const sdkMsgId = (sdkEvent.message as { id?: string }).id;
+            if (sdkUuid || sdkMsgId) {
+              setStreamingMessageId(sdkUuid || sdkMsgId || null);
+            }
+          }
+        } else if (sdkEvent.type === "user" && sdkEvent.message?.content) {
+          // Compact summary — system-generated context recap
+          const isCompactSummary = Boolean(
+            (sdkEvent as unknown as Record<string, unknown>).isCompactSummary,
+          );
+          if (isCompactSummary) {
             completeActiveManualCompaction();
             isAutoCompactingRef.current = false;
             syncCompactionIndicator();
             compactingPriorMessageIdRef.current = null;
             setCompactingPriorMessageId(null);
-            if (hasCapturedCompactionSummaryRef.current) {
-              hasCapturedCompactionSummaryRef.current = false;
-              return;
-            }
+            hasCapturedCompactionSummaryRef.current = false;
+            const placeholderId = pendingCompactionPlaceholderIdRef.current;
+            pendingCompactionPlaceholderIdRef.current = null;
+            const content = sdkEvent.message.content;
             const compactMsg: Message = {
-              id: `compact_${Date.now()}`,
+              id:
+                (sdkEvent as { uuid?: string }).uuid ||
+                `compact_${Date.now()}`,
               thread_id: id,
               role: "user",
-              content:
-                "The conversation context was compacted to continue this session.",
+              content,
               created_at: Date.now(),
               isCompactSummary: true,
             };
-            pendingCompactionPlaceholderIdRef.current = compactMsg.id;
-            setMessages((prev) => [...prev, compactMsg]);
-          } else if (
-            sdkEvent.type === "assistant" &&
-            sdkEvent.message?.content
-          ) {
-            // Track message ID as fallback
-            if (!currentStreamingId) {
-              const sdkUuid = (sdkEvent as { uuid?: string }).uuid;
-              const sdkMsgId = (sdkEvent.message as { id?: string }).id;
-              if (sdkUuid || sdkMsgId) {
-                setStreamingMessageId(sdkUuid || sdkMsgId || null);
-              }
-            }
-          } else if (sdkEvent.type === "user" && sdkEvent.message?.content) {
-            // Compact summary — system-generated context recap
-            const isCompactSummary = Boolean(
-              (sdkEvent as unknown as Record<string, unknown>).isCompactSummary,
-            );
-            if (isCompactSummary) {
-              completeActiveManualCompaction();
-              isAutoCompactingRef.current = false;
-              syncCompactionIndicator();
-              compactingPriorMessageIdRef.current = null;
-              setCompactingPriorMessageId(null);
-              hasCapturedCompactionSummaryRef.current = false;
-              const placeholderId = pendingCompactionPlaceholderIdRef.current;
-              pendingCompactionPlaceholderIdRef.current = null;
-              const content = sdkEvent.message.content;
-              const compactMsg: Message = {
-                id:
-                  (sdkEvent as { uuid?: string }).uuid ||
-                  `compact_${Date.now()}`,
-                thread_id: id,
-                role: "user",
-                content,
-                created_at: Date.now(),
-                isCompactSummary: true,
-              };
-              // Replace only the currently tracked provisional compact card
-              // with the forwarded full summary.
-              setMessages((prev) => {
-                const existingSummaryIndex = prev.findIndex(
-                  (m) => m.id === compactMsg.id,
-                );
-                const upsertBySummaryId = () => {
-                  if (existingSummaryIndex === -1) {
-                    return [...prev, compactMsg];
-                  }
-                  const next = [...prev];
-                  next[existingSummaryIndex] = compactMsg;
-                  return next;
-                };
-                if (!placeholderId) {
-                  return upsertBySummaryId();
-                }
-                const placeholderIndex = prev.findIndex(
-                  (m) => m.id === placeholderId,
-                );
-                if (placeholderIndex === -1) {
-                  return upsertBySummaryId();
+            // Replace only the currently tracked provisional compact card
+            // with the forwarded full summary.
+            setMessages((prev) => {
+              const existingSummaryIndex = prev.findIndex(
+                (m) => m.id === compactMsg.id,
+              );
+              const upsertBySummaryId = () => {
+                if (existingSummaryIndex === -1) {
+                  return [...prev, compactMsg];
                 }
                 const next = [...prev];
-                next[placeholderIndex] = compactMsg;
+                next[existingSummaryIndex] = compactMsg;
                 return next;
-              });
-              return;
-            }
-
-            const contentBlocks = sdkEvent.message.content;
-            const isToolResultEvent =
-              Array.isArray(contentBlocks) &&
-              contentBlocks.length > 0 &&
-              contentBlocks.every((block) => block?.type === "tool_result");
-            const { sourceToolUseID } = extractToolEventMetaInfo(sdkEvent);
-
-            if (!isToolResultEvent) {
-              const shouldBeMeta = true;
-              const streamingMessage = streamingMessageIdRef.current
-                ? messagesRef.current.find(
-                    (msg) => msg.id === streamingMessageIdRef.current,
-                  )
-                : undefined;
-              const fallbackToolUseId =
-                shouldBeMeta && !sourceToolUseID
-                  ? getLastToolUseId(streamingMessage) ||
-                    getLastToolUseIdFromMessages(messagesRef.current)
-                  : undefined;
-              const resolvedToolUseId = sourceToolUseID || fallbackToolUseId;
-              const metaMsg: Message = {
-                id: `meta_${resolvedToolUseId ?? Date.now()}_${Date.now()}`,
-                thread_id: id,
-                role: "user",
-                content: contentBlocks,
-                created_at: Date.now(),
-                isMeta: shouldBeMeta,
-                sourceToolUseID: resolvedToolUseId,
               };
-              setMessages((prev) => [...prev, metaMsg]);
-              return;
-            }
-
-            const toolResults = contentBlocks.filter(
-              (block): block is ToolResultBlock =>
-                block?.type === "tool_result",
-            );
-            if (toolResults.length === 0) return;
-            const toolResultsWithArtifacts = toolResults.map((toolResult) => {
-              const pendingArtifacts = pendingCodeModeArtifactsRef.current.get(
-                toolResult.tool_use_id,
-              );
-              if (!pendingArtifacts?.length) return toolResult;
-              pendingCodeModeArtifactsRef.current.delete(toolResult.tool_use_id);
-              return mergeToolResultArtifacts(toolResult, pendingArtifacts);
-            });
-            const toolUseResultPrompt = (() => {
-              const toolUseResult =
-                sdkEvent.toolUseResult ?? sdkEvent.tool_use_result;
-              return typeof toolUseResult?.prompt === "string"
-                ? toolUseResult.prompt
-                : undefined;
-            })();
-            setMessages((prev) =>
-              attachToolResultsToMessages(prev, toolResultsWithArtifacts, {
-                threadId: id,
-                parentToolUseId: sourceToolUseID,
-                parentToolPrompt: toolUseResultPrompt,
-              }),
-            );
-          } else if (sdkEvent.type === "result") {
-            flushDeferredMessagesRender();
-            // Query complete - mark message as not streaming
-            // Finish streaming
-            splitStreamingMessageOnNextPartRef.current = false;
-            const msgId = streamingMessageIdRef.current;
-            lastCompletedAssistantMessageIdRef.current = msgId;
-            if (msgId) {
-              const parsedResultTimestamp =
-                typeof sdkEvent.timestamp === "string"
-                  ? new Date(sdkEvent.timestamp).getTime()
-                  : NaN;
-              const completedAt = Number.isFinite(parsedResultTimestamp)
-                ? parsedResultTimestamp
-                : Date.now();
-              setMessages((prev) =>
-                prev.map((msg) =>
-                  msg.id === msgId
-                    ? {
-                        ...finalizeStreamingMessage(msg),
-                        created_at: completedAt,
-                      }
-                    : msg,
-                ),
-              );
-            }
-            setStreamingMessageId(null);
-            setLoading(false);
-            acceptedPendingMessageIdsRef.current.clear();
-            setPendingMessages([]);
-            dispatchLocalThreadStatus(id, "idle");
-            clearPendingDeliveryDraft();
-            isAutoCompactingRef.current = false;
-            syncCompactionIndicator();
-            compactingPriorMessageIdRef.current = null;
-            setCompactingPriorMessageId(null);
-            if (activeManualCompactionTurnRef.current) {
-              completeActiveManualCompaction();
-            }
-            hasCapturedCompactionSummaryRef.current = false;
-            refreshBillingCreditStatusAfterTurn(msgId ?? id);
-          }
-        } else if (data.type === "todo_state") {
-          // Direct todo state from server - no extraction needed
-          if (Array.isArray(data.todos)) {
-            setCurrentTodos(data.todos);
-          }
-        } else if (data.type === "context_usage_state") {
-          if (data.usedPercent === null) {
-            setContextUsedPercent(null);
-          } else if (
-            typeof data.usedPercent === "number" &&
-            Number.isFinite(data.usedPercent)
-          ) {
-            setContextUsedPercent(
-              Math.max(0, Math.min(100, Math.round(data.usedPercent))),
-            );
-          }
-        } else if (data.type === "ask_user_question") {
-          // Claude is asking the user a question
-          if (data.questionId && Array.isArray(data.questions)) {
-            setPendingQuestion({
-              questionId: data.questionId,
-              toolUseId: data.toolUseId,
-              questions: data.questions,
-            });
-          }
-        } else if (data.type === "question_answered") {
-          // Clear the pending question
-          setPendingQuestion((prev) => {
-            if (prev?.questionId === data.questionId) {
-              return null;
-            }
-            return prev;
-          });
-        } else if (data.type === "streaming_state") {
-          const nextIsStreaming = Boolean(data.isStreaming);
-          if (!nextIsStreaming) {
-            flushDeferredMessagesRender();
-            splitStreamingMessageOnNextPartRef.current = false;
-            const msgId = streamingMessageIdRef.current;
-            if (msgId) {
-              lastCompletedAssistantMessageIdRef.current = msgId;
-              setMessages((prev) =>
-                prev.map((msg) =>
-                  msg.id === msgId ? finalizeStreamingMessage(msg) : msg,
-                ),
-              );
-            }
-            setStreamingMessageId(null);
-          }
-          if (nextIsStreaming || pendingMessagesRef.current.length === 0) {
-            setLoading(nextIsStreaming);
-          }
-        } else if (data.type === "message_accepted") {
-          const clientMessageId =
-            typeof data.clientMessageId === "string" ? data.clientMessageId : "";
-          if (clientMessageId) {
-            sentPendingMessageIdsRef.current.add(clientMessageId);
-            clearPendingMessageAcceptanceTimeout(clientMessageId);
-            clearQueuedSendReadyTimeout();
-            markPendingDeliveryDraftAccepted(clientMessageId);
-          }
-        } else if (data.type === "result") {
-          if (id) {
-            flushDeferredMessagesRender();
-            clearAllPendingMessageAcceptanceTimeouts();
-            acceptedPendingMessageIdsRef.current.clear();
-            setPendingMessages([]);
-            dispatchLocalThreadStatus(id, "idle");
-            clearPendingDeliveryDraft();
-            refreshBillingCreditStatusAfterTurn(id);
-          }
-        } else if (data.type === "error") {
-          flushDeferredMessagesRender();
-          console.error("WebSocket error:", data.error);
-          reportChatClientEvent("server_error_frame", {
-            source: "chat_websocket",
-            severity: "error",
-            status: "server_error",
-            message: "Chat websocket delivered an error payload.",
-            details: {
-              error: data.error,
-              status: data.status,
-              errorType: data.errorType,
-              billingSource: data.billingSource,
-              provider: data.provider,
-            },
-          });
-          const billingSource =
-            data.billingSource === "byok" || data.billingSource === "hosted"
-              ? data.billingSource
-              : null;
-          const eventProvider = parseByokProvider(data.provider);
-          const errorPayload =
-            typeof data.status === "number" ||
-            typeof data.status === "string" ||
-            typeof data.errorType === "string"
-              ? {
-                  error: data.error,
-                  status: data.status,
-                  type: data.errorType,
+              if (!placeholderId) {
+                return upsertBySummaryId();
               }
-              : data.error;
-          const errorContext: Partial<ChatApiErrorContext> = {
-            billingSource,
-          };
-          if (eventProvider) {
-            errorContext.llmProvider = eventProvider;
+              const placeholderIndex = prev.findIndex(
+                (m) => m.id === placeholderId,
+              );
+              if (placeholderIndex === -1) {
+                return upsertBySummaryId();
+              }
+              const next = [...prev];
+              next[placeholderIndex] = compactMsg;
+              return next;
+            });
+            return;
           }
-          const shouldRefreshBillingAfterError =
-            billingSource === "hosted" ||
-            isChatBillingOrCreditError(errorPayload);
-          showChatError(errorPayload, errorContext);
-          // Finish streaming on error
+
+          const contentBlocks = sdkEvent.message.content;
+          const isToolResultEvent =
+            Array.isArray(contentBlocks) &&
+            contentBlocks.length > 0 &&
+            contentBlocks.every((block) => block?.type === "tool_result");
+          const { sourceToolUseID } = extractToolEventMetaInfo(sdkEvent);
+
+          if (!isToolResultEvent) {
+            const shouldBeMeta = true;
+            const streamingMessage = streamingMessageIdRef.current
+              ? messagesRef.current.find(
+                  (msg) => msg.id === streamingMessageIdRef.current,
+                )
+              : undefined;
+            const fallbackToolUseId =
+              shouldBeMeta && !sourceToolUseID
+                ? getLastToolUseId(streamingMessage) ||
+                  getLastToolUseIdFromMessages(messagesRef.current)
+                : undefined;
+            const resolvedToolUseId = sourceToolUseID || fallbackToolUseId;
+            const metaMsg: Message = {
+              id: `meta_${resolvedToolUseId ?? Date.now()}_${Date.now()}`,
+              thread_id: id,
+              role: "user",
+              content: contentBlocks,
+              created_at: Date.now(),
+              isMeta: shouldBeMeta,
+              sourceToolUseID: resolvedToolUseId,
+            };
+            setMessages((prev) => [...prev, metaMsg]);
+            return;
+          }
+
+          const toolResults = contentBlocks.filter(
+            (block): block is ToolResultBlock =>
+              block?.type === "tool_result",
+          );
+          if (toolResults.length === 0) return;
+          const toolResultsWithArtifacts = toolResults.map((toolResult) => {
+            const pendingArtifacts = pendingCodeModeArtifactsRef.current.get(
+              toolResult.tool_use_id,
+            );
+            if (!pendingArtifacts?.length) return toolResult;
+            pendingCodeModeArtifactsRef.current.delete(toolResult.tool_use_id);
+            return mergeToolResultArtifacts(toolResult, pendingArtifacts);
+          });
+          const toolUseResultPrompt = (() => {
+            const toolUseResult =
+              sdkEvent.toolUseResult ?? sdkEvent.tool_use_result;
+            return typeof toolUseResult?.prompt === "string"
+              ? toolUseResult.prompt
+              : undefined;
+          })();
+          setMessages((prev) =>
+            attachToolResultsToMessages(prev, toolResultsWithArtifacts, {
+              threadId: id,
+              parentToolUseId: sourceToolUseID,
+              parentToolPrompt: toolUseResultPrompt,
+            }),
+          );
+        } else if (sdkEvent.type === "result") {
+          flushDeferredMessagesRender();
+          // Query complete - mark message as not streaming
+          // Finish streaming
           splitStreamingMessageOnNextPartRef.current = false;
           const msgId = streamingMessageIdRef.current;
           lastCompletedAssistantMessageIdRef.current = msgId;
           if (msgId) {
+            const parsedResultTimestamp =
+              typeof sdkEvent.timestamp === "string"
+                ? new Date(sdkEvent.timestamp).getTime()
+                : NaN;
+            const completedAt = Number.isFinite(parsedResultTimestamp)
+              ? parsedResultTimestamp
+              : Date.now();
             setMessages((prev) =>
               prev.map((msg) =>
-                msg.id === msgId ? finalizeStreamingMessage(msg) : msg,
+                msg.id === msgId
+                  ? {
+                      ...finalizeStreamingMessage(msg),
+                      created_at: completedAt,
+                    }
+                  : msg,
               ),
             );
           }
@@ -3604,162 +3119,164 @@ export default function Chat({
           acceptedPendingMessageIdsRef.current.clear();
           setPendingMessages([]);
           dispatchLocalThreadStatus(id, "idle");
-          if (id && shouldRefreshBillingAfterError) {
-            refreshBillingCreditStatusAfterTurn(
-              msgId ?? `${id}:billing-error:${Date.now()}`,
+          clearPendingDeliveryDraft();
+          isAutoCompactingRef.current = false;
+          syncCompactionIndicator();
+          compactingPriorMessageIdRef.current = null;
+          setCompactingPriorMessageId(null);
+          if (activeManualCompactionTurnRef.current) {
+            completeActiveManualCompaction();
+          }
+          hasCapturedCompactionSummaryRef.current = false;
+          refreshBillingCreditStatusAfterTurn(msgId ?? id);
+        }
+      } else if (data.type === "todo_state") {
+        // Direct todo state from server - no extraction needed
+        if (Array.isArray(data.todos)) {
+          setCurrentTodos(data.todos);
+        }
+      } else if (data.type === "context_usage_state") {
+        if (data.usedPercent === null) {
+          setContextUsedPercent(null);
+        } else if (
+          typeof data.usedPercent === "number" &&
+          Number.isFinite(data.usedPercent)
+        ) {
+          setContextUsedPercent(
+            Math.max(0, Math.min(100, Math.round(data.usedPercent))),
+          );
+        }
+      } else if (data.type === "ask_user_question") {
+        // Claude is asking the user a question
+        if (data.questionId && Array.isArray(data.questions)) {
+          setPendingQuestion({
+            questionId: data.questionId,
+            toolUseId: data.toolUseId,
+            questions: data.questions,
+          });
+        }
+      } else if (data.type === "question_answered") {
+        // Clear the pending question
+        setPendingQuestion((prev) => {
+          if (prev?.questionId === data.questionId) {
+            return null;
+          }
+          return prev;
+        });
+      } else if (data.type === "streaming_state") {
+        const nextIsStreaming = Boolean(data.isStreaming);
+        if (!nextIsStreaming) {
+          flushDeferredMessagesRender();
+          splitStreamingMessageOnNextPartRef.current = false;
+          const msgId = streamingMessageIdRef.current;
+          if (msgId) {
+            lastCompletedAssistantMessageIdRef.current = msgId;
+            setMessages((prev) =>
+              prev.map((msg) =>
+                msg.id === msgId ? finalizeStreamingMessage(msg) : msg,
+              ),
             );
           }
-          restorePendingDeliveryDraft();
-          isAutoCompactingRef.current = false;
-          compactingPriorMessageIdRef.current = null;
-          setCompactingPriorMessageId(null);
-          clearManualCompactionQueue();
-          hasCapturedCompactionSummaryRef.current = false;
-        } else if (
-          data.type === "preview_state" ||
-          data.type === "title_updated" ||
-          data.type === "thread_model_updated" ||
-          data.type === "code_mode_artifact" ||
-          data.type === "connection_setup_prompt" ||
-          data.type === "connection_setup_answered" ||
-          data.type === "connection_setup_error"
-        ) {
-          handleRealtimeSideChannelEvent(data);
+          setStreamingMessageId(null);
         }
-      };
-
-      ws.onclose = (event: CloseEvent) => {
-        // Ignore if this connection was superseded by a new one
-        if (connectionIdRef.current !== thisConnectionId) {
-          return;
+        if (nextIsStreaming || pendingMessagesRef.current.length === 0) {
+          setLoading(nextIsStreaming);
         }
-
-        // Clear ping interval
-        if (pingIntervalRef.current) {
-          clearInterval(pingIntervalRef.current);
-          pingIntervalRef.current = null;
+      } else if (data.type === "message_accepted") {
+        const clientMessageId =
+          typeof data.clientMessageId === "string" ? data.clientMessageId : "";
+        if (clientMessageId) {
+          sentPendingMessageIdsRef.current.add(clientMessageId);
+          clearPendingMessageAcceptanceTimeout(clientMessageId);
+                markPendingDeliveryDraftAccepted(clientMessageId);
         }
-
-        connectionStartedAtRef.current.delete(thisConnectionId);
-        setReady(false);
-        wsRef.current = null;
-        logRunnerClient("ws_closed", {
-          connectionId: thisConnectionId,
-          code: event.code || 1000,
-          reason: event.reason || "closed",
-          reconnectAttempts: reconnectAttempts.current,
-        });
-        reportChatClientEvent("ws_closed", {
-          source: "chat_websocket",
-          severity: reconnectAttempts.current <
-            CHAT_WS_RECONNECT_ATTEMPTS_BEFORE_BACKOFF
-            ? "warn"
-            : "error",
-          status: "closed",
-          message: "Chat websocket closed.",
-          details: {
-            connectionId: thisConnectionId,
-            code: event.code || 1000,
-            reason: event.reason || "closed",
-            reconnectAttempts: reconnectAttempts.current,
-            wasReady: ready,
-            pendingUnacceptedMessages: getUnacceptedPendingUserMessages().length,
-          },
-        });
-
-        // Messages sent on this socket that were never accepted must be
-        // eligible for resend on the next ready flush. The server dedupes by
-        // clientMessageId, so retransmitting an actually-delivered message is
-        // safe; never retransmitting a dropped one loses it.
-        for (const message of getUnacceptedPendingUserMessages()) {
-          const deliveryKey = message.clientMessageId ?? message.id;
-          sentPendingMessageIdsRef.current.delete(deliveryKey);
-          clearPendingMessageAcceptanceTimeout(deliveryKey);
+      } else if (data.type === "result") {
+        if (id) {
+          flushDeferredMessagesRender();
+          clearAllPendingMessageAcceptanceTimeouts();
+          acceptedPendingMessageIdsRef.current.clear();
+          setPendingMessages([]);
+          dispatchLocalThreadStatus(id, "idle");
+          clearPendingDeliveryDraft();
+          refreshBillingCreditStatusAfterTurn(id);
         }
-
-        // Auto-reconnect with exponential backoff, then keep trying quietly in
-        // the background so an idle disconnect does not become a permanent tab
-        // state.
-        if (
-          reconnectAttempts.current <
-          CHAT_WS_RECONNECT_ATTEMPTS_BEFORE_BACKOFF
-        ) {
-          const delay = Math.min(
-            1000 * Math.pow(2, reconnectAttempts.current),
-            30000,
-          );
-          reconnectAttempts.current++;
-          reconnectTimeoutRef.current = setTimeout(() => {
-            // Check again that we haven't been superseded
-            if (connectionIdRef.current === thisConnectionId) {
-              logRunnerClient("ws_reconnect_attempt", {
-                connectionId: thisConnectionId,
-                attempt: reconnectAttempts.current,
-              });
-              connectWebSocket(id, true);
+      } else if (data.type === "error") {
+        flushDeferredMessagesRender();
+        console.error("WebSocket error:", data.error);
+        const billingSource =
+          data.billingSource === "byok" || data.billingSource === "hosted"
+            ? data.billingSource
+            : null;
+        const eventProvider = parseByokProvider(data.provider);
+        const errorPayload =
+          typeof data.status === "number" ||
+          typeof data.status === "string" ||
+          typeof data.errorType === "string"
+            ? {
+                error: data.error,
+                status: data.status,
+                type: data.errorType,
             }
-          }, delay);
-        } else {
-          const failedPendingMessage = failPendingMessageDelivery(
-            "Connection was lost before your message was sent. I restored it as a draft.",
+            : data.error;
+        const errorContext: Partial<ChatApiErrorContext> = {
+          billingSource,
+        };
+        if (eventProvider) {
+          errorContext.llmProvider = eventProvider;
+        }
+        const shouldRefreshBillingAfterError =
+          billingSource === "hosted" ||
+          isChatBillingOrCreditError(errorPayload);
+        showChatError(errorPayload, errorContext);
+        // Finish streaming on error
+        splitStreamingMessageOnNextPartRef.current = false;
+        const msgId = streamingMessageIdRef.current;
+        lastCompletedAssistantMessageIdRef.current = msgId;
+        if (msgId) {
+          setMessages((prev) =>
+            prev.map((msg) =>
+              msg.id === msgId ? finalizeStreamingMessage(msg) : msg,
+            ),
           );
-          logRunnerClient("ws_reconnect_backoff_started", {
-            connectionId: thisConnectionId,
-            failedPendingMessage,
-            reconnectAttempts: reconnectAttempts.current,
-            retryDelayMs: CHAT_WS_BACKGROUND_RETRY_MS,
-          });
-          isAutoCompactingRef.current = false;
-          compactingPriorMessageIdRef.current = null;
-          setCompactingPriorMessageId(null);
-          lastCompletedAssistantMessageIdRef.current = null;
-          clearManualCompactionQueue();
-          reconnectTimeoutRef.current = setTimeout(() => {
-            if (connectionIdRef.current === thisConnectionId) {
-              reconnectTimeoutRef.current = null;
-              reconnectAttempts.current = 0;
-              logRunnerClient("ws_background_reconnect_attempt", {
-                connectionId: thisConnectionId,
-              });
-              connectWebSocket(id, true);
-            }
-          }, CHAT_WS_BACKGROUND_RETRY_MS);
         }
-      };
-
-      ws.onerror = () => {
-        // Ignore errors from superseded connections
-        if (connectionIdRef.current !== thisConnectionId) {
-          return;
+        setStreamingMessageId(null);
+        setLoading(false);
+        acceptedPendingMessageIdsRef.current.clear();
+        setPendingMessages([]);
+        dispatchLocalThreadStatus(id, "idle");
+        if (id && shouldRefreshBillingAfterError) {
+          refreshBillingCreditStatusAfterTurn(
+            msgId ?? `${id}:billing-error:${Date.now()}`,
+          );
         }
-        reportChatClientEvent("ws_error", {
-          source: "chat_websocket",
-          severity: "warn",
-          status: "error",
-          message: "Browser reported a websocket error event.",
-          details: {
-            connectionId: thisConnectionId,
-            readyState: ws.readyState,
-          },
-        });
-      };
+        restorePendingDeliveryDraft();
+        isAutoCompactingRef.current = false;
+        compactingPriorMessageIdRef.current = null;
+        setCompactingPriorMessageId(null);
+        clearManualCompactionQueue();
+        hasCapturedCompactionSummaryRef.current = false;
+      } else if (
+        data.type === "preview_state" ||
+        data.type === "title_updated" ||
+        data.type === "thread_model_updated" ||
+        data.type === "code_mode_artifact" ||
+        data.type === "connection_setup_prompt" ||
+        data.type === "connection_setup_answered" ||
+        data.type === "connection_setup_error"
+      ) {
+        handleRealtimeSideChannelEvent(data);
+      }
     },
     [
       clearPendingDeliveryDraft,
       clearPendingMessageAcceptanceTimeout,
       clearAllPendingMessageAcceptanceTimeouts,
-      clearQueuedSendReadyTimeout,
-      failPendingMessageDelivery,
       getUnacceptedPendingUserMessages,
-      isNewThread,
-      logRunnerClient,
       markPendingDeliveryDraftAccepted,
       persistSessionState,
       refreshBillingCreditStatusAfterTurn,
-      resolvedWorkspaceId,
       restorePendingDeliveryDraft,
       flushDeferredMessagesRender,
-      reportChatClientEvent,
       setMessages,
       setMessagesDeferred,
       setPendingMessages,
@@ -3767,53 +3284,72 @@ export default function Chat({
       startPendingMessageAcceptanceTimeout,
       handleRealtimeSideChannelEvent,
       showChatError,
+      threadId,
     ],
   );
 
-  // Keep the ref updated with the latest function
-  connectWebSocketRef.current = connectWebSocket;
+  const handleAgentClose = useCallback(() => {
+    setReady(false);
 
-  // Track which threadId we're connected to
-  const connectedThreadIdRef = useRef<string | null>(null);
-  const connectedWorkspaceIdRef = useRef<string | null>(null);
-  const bumpConnectionId = useCallback(() => {
-    connectionIdRef.current += 1;
-  }, []);
+    // Messages sent on this socket that were never accepted must be
+    // eligible for resend on the next ready flush. The server dedupes by
+    // clientMessageId, so retransmitting an actually-delivered message is
+    // safe; never retransmitting a dropped one loses it.
+    for (const message of getUnacceptedPendingUserMessages()) {
+      const deliveryKey = message.clientMessageId ?? message.id;
+      sentPendingMessageIdsRef.current.delete(deliveryKey);
+      clearPendingMessageAcceptanceTimeout(deliveryKey);
+    }
 
-  // Cleanup on unmount to avoid orphaned WebSockets or reconnect timers
+    // Agents SDK reconnects automatically. When it reopens, our onopen
+    // init path replays missed events and flushes queued user messages.
+  }, [
+    clearPendingMessageAcceptanceTimeout,
+    getUnacceptedPendingUserMessages,
+  ]);
+
+  const agentSocket = useAgent({
+    agent: "chat-thread",
+    name: threadId ?? "disabled",
+    enabled: agentEnabled,
+    query: {
+      threadId: threadId ?? null,
+      workspaceId: resolvedWorkspaceId ?? null,
+    },
+    onOpen: handleAgentOpen,
+    onMessage: handleAgentMessage,
+    onClose: handleAgentClose,
+  });
+
+  useEffect(() => {
+    wsRef.current = agentEnabled ? agentSocket : null;
+    return () => {
+      if (wsRef.current === agentSocket) wsRef.current = null;
+    };
+  }, [agentEnabled, agentSocket]);
+
+  useEffect(() => {
+    setReady(false);
+    setStreamingMessageId(null);
+    lastCompletedAssistantMessageIdRef.current = null;
+    compactingPriorMessageIdRef.current = null;
+    setCompactingPriorMessageId(null);
+    setLoading(false);
+    isAutoCompactingRef.current = false;
+    syncCompactionIndicator();
+  }, [threadId, resolvedWorkspaceId, readOnly, setStreamingMessageId, syncCompactionIndicator]);
+
   useEffect(() => {
     return () => {
-      bumpConnectionId();
-      connectedThreadIdRef.current = null;
-      connectedWorkspaceIdRef.current = null;
-
-      // Revoke any remaining attachment blob URLs that were not removed/sent.
       for (const previewUrl of attachmentPreviewUrlsRef.current) {
         URL.revokeObjectURL(previewUrl);
       }
       attachmentPreviewUrlsRef.current.clear();
-
-      if (wsRef.current) {
-        wsRef.current.close();
-        wsRef.current = null;
-      }
-
-      if (reconnectTimeoutRef.current) {
-        clearTimeout(reconnectTimeoutRef.current);
-        reconnectTimeoutRef.current = null;
-      }
-
-      if (pingIntervalRef.current) {
-        clearInterval(pingIntervalRef.current);
-        pingIntervalRef.current = null;
-      }
-
       clearAllPendingMessageAcceptanceTimeouts();
       acceptedPendingMessageIdsRef.current.clear();
       clearAllIframeRefreshTimeouts();
     };
   }, [
-    bumpConnectionId,
     clearAllIframeRefreshTimeouts,
     clearAllPendingMessageAcceptanceTimeouts,
   ]);
@@ -3848,170 +3384,6 @@ export default function Chat({
   const handleFreshlyCompletedTurnAnimationScheduled = useCallback(() => {
     setFreshlyCompletedTurnId(null);
   }, []);
-
-  // Connect when threadId changes
-  useEffect(() => {
-    if (readOnly) {
-      connectionIdRef.current++;
-      connectedThreadIdRef.current = null;
-      connectedWorkspaceIdRef.current = null;
-      if (wsRef.current) {
-        wsRef.current.close();
-        wsRef.current = null;
-      }
-      if (reconnectTimeoutRef.current) {
-        clearTimeout(reconnectTimeoutRef.current);
-        reconnectTimeoutRef.current = null;
-      }
-      clearQueuedSendReadyTimeout();
-      if (pingIntervalRef.current) {
-        clearInterval(pingIntervalRef.current);
-        pingIntervalRef.current = null;
-      }
-      setReady(false);
-      return;
-    }
-
-    if (!shouldShowChat || !resolvedWorkspaceId) {
-      // No threadId or workspace - cleanup any existing connection
-      if (connectedThreadIdRef.current) {
-        connectionIdRef.current++;
-        connectedThreadIdRef.current = null;
-        connectedWorkspaceIdRef.current = null;
-        if (wsRef.current) {
-          wsRef.current.close();
-          wsRef.current = null;
-        }
-        if (reconnectTimeoutRef.current) {
-          clearTimeout(reconnectTimeoutRef.current);
-          reconnectTimeoutRef.current = null;
-        }
-        // Messages are stored by threadId - no need to clear here.
-        // useMessages(threadId) automatically returns [] when threadId is undefined.
-        setReady(false);
-      }
-      return;
-    }
-
-    const nextWorkspaceId = resolvedWorkspaceId;
-    const threadChanged =
-      connectedThreadIdRef.current && connectedThreadIdRef.current !== threadId;
-    const workspaceChanged =
-      connectedWorkspaceIdRef.current &&
-      connectedWorkspaceIdRef.current !== nextWorkspaceId;
-
-    // Already connected to this thread+workspace? Nothing to do.
-    if (
-      connectedThreadIdRef.current === threadId &&
-      connectedWorkspaceIdRef.current === nextWorkspaceId
-    ) {
-      return;
-    }
-
-    // Switching threads or workspaces - close old connection first
-    if (connectedThreadIdRef.current || connectedWorkspaceIdRef.current) {
-      if (threadChanged || workspaceChanged) {
-        connectionIdRef.current++;
-        if (wsRef.current) {
-          wsRef.current.close();
-          wsRef.current = null;
-        }
-        if (reconnectTimeoutRef.current) {
-          clearTimeout(reconnectTimeoutRef.current);
-          reconnectTimeoutRef.current = null;
-        }
-      }
-    }
-
-    // Connect to the new thread/workspace
-    connectedThreadIdRef.current = threadId ?? null;
-    connectedWorkspaceIdRef.current = nextWorkspaceId;
-    if (threadId) {
-      connectWebSocketRef.current?.(threadId);
-    }
-
-    // Cleanup on unmount or dep change: close the WebSocket to prevent orphaned
-    // connections. Browsers only auto-close WebSockets on full page navigations,
-    // NOT on SPA client-side route changes. Without this, navigating from
-    // /chat/threadA → /new leaves the old WS alive (code 1006 after ~15s),
-    // and the lingering connection slows down new WS establishment.
-    return () => {
-      connectionIdRef.current++;
-      if (wsRef.current) {
-        wsRef.current.close();
-        wsRef.current = null;
-      }
-      if (reconnectTimeoutRef.current) {
-        clearTimeout(reconnectTimeoutRef.current);
-        reconnectTimeoutRef.current = null;
-      }
-      if (pingIntervalRef.current) {
-        clearInterval(pingIntervalRef.current);
-        pingIntervalRef.current = null;
-      }
-      connectedThreadIdRef.current = null;
-      connectedWorkspaceIdRef.current = null;
-    };
-  }, [
-    threadId,
-    shouldShowChat,
-    resolvedWorkspaceId,
-    readOnly,
-    clearQueuedSendReadyTimeout,
-  ]);
-
-  // On tab return, poke live-looking sockets and reconnect sockets the browser
-  // already knows are gone.
-  useEffect(() => {
-    const handleVisibilityChange = () => {
-      if (readOnly) return;
-      if (
-        document.visibilityState === "visible" &&
-        shouldShowChat &&
-        resolvedWorkspaceId &&
-        threadId
-      ) {
-        const socketState = wsRef.current?.readyState;
-        if (socketState === WebSocket.CONNECTING) {
-          return;
-        }
-
-        const reconnect = () => {
-          if (reconnectTimeoutRef.current) {
-            clearTimeout(reconnectTimeoutRef.current);
-            reconnectTimeoutRef.current = null;
-          }
-          reconnectAttempts.current = 0;
-          logRunnerClient("tab_return_reconnect", {
-            socketState,
-          });
-          connectWebSocketRef.current?.(threadId, true);
-        };
-
-        if (socketState === WebSocket.OPEN) {
-          try {
-            wsRef.current?.send(CHAT_PING_MESSAGE);
-          } catch {
-            reconnect();
-          }
-          return;
-        }
-
-        reconnect();
-      }
-    };
-
-    document.addEventListener("visibilitychange", handleVisibilityChange);
-    return () => {
-      document.removeEventListener("visibilitychange", handleVisibilityChange);
-    };
-  }, [
-    threadId,
-    shouldShowChat,
-    resolvedWorkspaceId,
-    readOnly,
-    logRunnerClient,
-  ]);
 
   const scrollToBottom = useCallback((behavior: ScrollBehavior = "auto") => {
     const container = scrollContainerRef.current;
@@ -4544,8 +3916,7 @@ export default function Chat({
             type: "set_model",
             model: nextModel,
             threadId,
-            sessionId: sessionIdRef.current,
-          }),
+              }),
         );
       }
     }
@@ -4771,17 +4142,6 @@ export default function Chat({
       createThreadPayload.firstMessage = finalContent;
     }
 
-    reportChatClientEvent("new_thread_submit_started", {
-      source: "chat_new_thread",
-      status: "submitting",
-      message: "Submitting new-thread creation request with initial message.",
-      details: {
-        model: selectedThreadModel,
-        groupId: chatGroupId,
-        contentLength: finalContent.length,
-        attachmentCount: currentAttachments.length,
-      },
-    });
 
     submit(createThreadPayload, {
       method: "post",
@@ -4932,7 +4292,6 @@ type SendOptions = {
     }
 
     const wasSentDuringStreaming = assistantTurnActive;
-    reconnectAttempts.current = 0;
     const clientMessageId = `client_${Date.now()}_${Math.random()
       .toString(36)
       .slice(2, 10)}`;
@@ -5040,9 +4399,6 @@ type SendOptions = {
     });
     if (wsRef.current?.readyState === WebSocket.OPEN && ready) {
       setLoading(true);
-      logRunnerClient("message_sent_immediate", {
-        contentLength: finalContent.length,
-      });
       sentPendingMessageIdsRef.current.add(clientMessageId);
       startPendingMessageAcceptanceTimeout(clientMessageId);
       wsRef.current.send(
@@ -5050,78 +4406,21 @@ type SendOptions = {
           type: "message",
           content: finalContent,
           clientMessageId,
-          sessionId: sessionIdRef.current,
-          threadId,
+            threadId,
         }),
       );
       setPendingMessages((prev) => prev);
     } else {
       // Queue the full message object for later delivery (with file refs in content)
       setLoading(true);
-      logRunnerClient("message_queued_waiting_ready", {
-        messageId: userMsg.id,
-        contentLength: finalContent.length,
-      });
-      if (!ready) {
-        clearQueuedSendReadyTimeout();
-        const checkQueuedSendReady = () => {
-          queuedSendReadyTimeoutRef.current = null;
-          const unsentMessages = pendingMessagesRef.current.filter((message) => {
-            if (message.role !== "user") return false;
-            return !sentPendingMessageIdsRef.current.has(
-              message.clientMessageId ?? message.id,
-            );
-          });
-          if (unsentMessages.length === 0 || !threadId) {
-            return;
-          }
-          // A CONNECTING socket may be a slow-but-live upgrade handshake;
-          // closing it to reconnect aborts the upgrade and starts over.
-          // Give it a grace window before forcing a fresh connection.
-          const connectionStartedAt = connectionStartedAtRef.current.get(
-            connectionIdRef.current,
-          );
-          if (
-            wsRef.current?.readyState === WebSocket.CONNECTING &&
-            connectionStartedAt != null &&
-            Date.now() - connectionStartedAt < CHAT_WS_CONNECTING_GRACE_MS
-          ) {
-            queuedSendReadyTimeoutRef.current = setTimeout(
-              checkQueuedSendReady,
-              1000,
-            );
-            return;
-          }
-          logRunnerClient("queued_ready_timeout_reconnect", {
-            queuedMessages: unsentMessages.length,
-          });
-          reportChatClientEvent("queued_ready_timeout_reconnect", {
-            source: "chat_runner",
-            severity: "warn",
-            status: "waiting_for_ready",
-            message:
-              "Queued messages were still waiting for a ready event, forcing websocket reconnect.",
-            details: {
-              queuedMessages: unsentMessages.length,
-            },
-          });
-          reconnectAttempts.current = 0;
-          connectWebSocketRef.current?.(threadId, true);
-        };
-        queuedSendReadyTimeoutRef.current = setTimeout(
-          checkQueuedSendReady,
-          5000,
-        );
-      }
-
       const socketState = wsRef.current?.readyState;
       if (
         socketState == null ||
         socketState === WebSocket.CLOSING ||
         socketState === WebSocket.CLOSED
       ) {
-        reconnectAttempts.current = 0;
-        connectWebSocketRef.current?.(threadId, true);
+        if (wsRef.current) wsRef.current.reconnect();
+
       }
       // If connected but not ready, the message will be sent when ready event arrives
     }

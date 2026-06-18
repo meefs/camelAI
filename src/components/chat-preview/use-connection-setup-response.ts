@@ -4,10 +4,15 @@ import type {
   ConnectionSetupResponse,
 } from "@/components/connection-setup-prompt";
 
+type ChatSocketLike = {
+  readyState: number;
+  send(data: string): void;
+};
+
 export function useConnectionSetupResponse({
   wsRef,
 }: {
-  wsRef: RefObject<WebSocket | null>;
+  wsRef: RefObject<ChatSocketLike | null>;
 }) {
   const [connectionSetupPrompt, setConnectionSetupPrompt] =
     useState<ConnectionSetupPromptData | null>(null);
@@ -16,9 +21,6 @@ export function useConnectionSetupResponse({
     async (response: ConnectionSetupResponse) => {
       const socket = wsRef.current;
       if (!socket || socket.readyState !== WebSocket.OPEN) {
-        console.error(
-          "[Chat] WebSocket not available for connection setup response",
-        );
         throw new Error(
           "The chat connection disconnected before the connection details could be submitted. Please try again.",
         );

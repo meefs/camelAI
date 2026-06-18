@@ -110,3 +110,5 @@ workers/main/src/embedded-skills.ts
 .claude/
 .selfhost/
 .env.selfhost
+
+.firecrawl/
