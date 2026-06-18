@@ -30,5 +30,5 @@ export async function generateThreadTitleWithOpenAI(
     context,
   });
 
-  return sanitizeGeneratedThreadTitle(generated);
+  return sanitizeGeneratedThreadTitle(generated, { titleCase: true });
 }

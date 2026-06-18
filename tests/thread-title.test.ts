@@ -5,6 +5,7 @@ import {
   getThreadTitleSourceMessage,
   getThreadUserMessageSources,
   isPlaceholderThreadTitle,
+  sanitizeGeneratedThreadTitle,
 } from '@/lib/thread-title';
 
 describe('thread title helpers', () => {
@@ -44,6 +45,15 @@ describe('thread title helpers', () => {
       titleSourceMessage: longMessage.slice(0, 500),
     });
     expect(getThreadTitleSourceMessage(content)).toBe(longMessage.slice(0, 500));
+  });
+
+  it('can normalize generated titles to title case', () => {
+    expect(sanitizeGeneratedThreadTitle('test delete flow', { titleCase: true })).toBe(
+      'Test Delete Flow',
+    );
+    expect(sanitizeGeneratedThreadTitle('api oauth setup', { titleCase: true })).toBe(
+      'API OAuth Setup',
+    );
   });
 
   it('ignores system-only content and slash commands', () => {

@@ -30,7 +30,7 @@ describe("thread title generation", () => {
       { gatewayName: "gw_1" },
     );
 
-    expect(title).toBe("Fix login form");
+    expect(title).toBe("Fix Login Form");
     expect(run).toHaveBeenCalledWith(
       AUXILIARY_AI_MODEL,
       {

@@ -10,8 +10,39 @@ export const THREAD_TITLE_GENERATION_SYSTEM_PROMPT =
   'Create a concise 3-6 word chat title for the user request. Do not copy the full request. Use title case. Respond with only the title: no markdown, quotes, punctuation, or explanation.';
 
 const MAX_THREAD_TITLE_LENGTH = 100;
+const TITLE_CASE_ACRONYMS = new Set([
+  'ai',
+  'api',
+  'auth',
+  'css',
+  'db',
+  'html',
+  'http',
+  'https',
+  'id',
+  'json',
+  'oauth',
+  'r2',
+  'sql',
+  'ui',
+  'url',
+  'ux',
+]);
 
-export function sanitizeGeneratedThreadTitle(title: string | null | undefined): string | null {
+function toTitleCase(title: string): string {
+  return title.replace(/\S+/g, (word) => {
+    const lower = word.toLowerCase();
+    if (TITLE_CASE_ACRONYMS.has(lower)) {
+      return lower === 'oauth' ? 'OAuth' : lower.toUpperCase();
+    }
+    return lower.charAt(0).toUpperCase() + lower.slice(1);
+  });
+}
+
+export function sanitizeGeneratedThreadTitle(
+  title: string | null | undefined,
+  options: { titleCase?: boolean } = {},
+): string | null {
   const normalized = title
     ?.split(/\r?\n/)
     .map((line) => line.trim())
@@ -23,7 +54,8 @@ export function sanitizeGeneratedThreadTitle(title: string | null | undefined): 
     return null;
   }
 
-  return normalized.slice(0, MAX_THREAD_TITLE_LENGTH);
+  const formatted = options.titleCase ? toTitleCase(normalized) : normalized;
+  return formatted.slice(0, MAX_THREAD_TITLE_LENGTH);
 }
 
 export function buildAppThreadFallbackTitle(scriptName: string): string {
