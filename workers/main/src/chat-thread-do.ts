@@ -4122,133 +4122,138 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
   constructor(ctx: DurableObjectState, env: ChatEnv) {
     super(ctx, env as unknown as ChatAgentEnv);
 
-    // Restore state from storage
-    ctx.blockConcurrencyWhile(async () => {
-      this.ensurePiCoreTables();
+    // SQLite-backed storage operations below are synchronous. Keep constructor
+    // hydration out of blockConcurrencyWhile: if an active turn is being
+    // recovered while route loaders reconnect, a blocked constructor can reset
+    // the Durable Object and turn a normal recovery into another interruption.
+    this.ensurePiCoreTables();
 
-      const storedTabs = ctx.storage.kv.get<PreviewTarget[]>("previewTabs");
-      const storedActiveTabId = ctx.storage.kv.get<string | null>(
-        "previewActiveTabId",
+    const storedTabs = ctx.storage.kv.get<PreviewTarget[]>("previewTabs");
+    const storedActiveTabId = ctx.storage.kv.get<string | null>(
+      "previewActiveTabId",
+    );
+    const storedTarget = ctx.storage.kv.get<PreviewTarget>("previewTarget");
+    if (Array.isArray(storedTabs)) {
+      const normalizedState = this.normalizePreviewTabsState(
+        storedTabs,
+        storedActiveTabId,
+      ) ?? {
+        tabs: [],
+        activeTabId: null,
+        target: null,
+      };
+      this.previewTabs = normalizedState.tabs;
+      this.previewActiveTabId = normalizedState.activeTabId;
+      this.previewTarget = normalizedState.target;
+    } else {
+      const normalizedTarget = this.normalizePreviewTarget(
+        storedTarget ?? null,
       );
-      const storedTarget = ctx.storage.kv.get<PreviewTarget>("previewTarget");
-      if (Array.isArray(storedTabs)) {
-        const normalizedState = this.normalizePreviewTabsState(
-          storedTabs,
-          storedActiveTabId,
-        ) ?? {
-          tabs: [],
-          activeTabId: null,
-          target: null,
-        };
-        this.previewTabs = normalizedState.tabs;
-        this.previewActiveTabId = normalizedState.activeTabId;
-        this.previewTarget = normalizedState.target;
-      } else {
-        const normalizedTarget = this.normalizePreviewTarget(
-          storedTarget ?? null,
-        );
-        if (normalizedTarget) {
-          this.previewTabs = [normalizedTarget];
-          this.previewActiveTabId = this.getPreviewTabId(normalizedTarget);
-          this.previewTarget = normalizedTarget;
+      if (normalizedTarget) {
+        this.previewTabs = [normalizedTarget];
+        this.previewActiveTabId = this.getPreviewTabId(normalizedTarget);
+        this.previewTarget = normalizedTarget;
+      }
+    }
+
+    const version = ctx.storage.kv.get<number>("previewVersion");
+    if (typeof version === "number") {
+      this.previewVersion = version;
+    }
+
+    // Persist normalized preview session state. This also migrates legacy
+    // single-target threads into multi-tab state on first hydrate.
+    this.ctx.storage.kv.put("previewTabs", this.previewTabs);
+    this.ctx.storage.kv.put("previewActiveTabId", this.previewActiveTabId);
+    this.ctx.storage.kv.put("previewTarget", this.previewTarget);
+
+    const storedContext =
+      ctx.storage.kv.get<ChatContextState>(CHAT_CONTEXT_KEY);
+    if (
+      storedContext &&
+      storedContext.threadId &&
+      storedContext.workspaceId &&
+      storedContext.orgId
+    ) {
+      this.chatContext = {
+        ...storedContext,
+        userId: storedContext.userId ?? null,
+        userName: storedContext.userName ?? null,
+        userEmail: storedContext.userEmail ?? null,
+      };
+    }
+
+    const storedTodos = ctx.storage.kv.get<unknown[]>(CHAT_TODOS_KEY);
+    if (Array.isArray(storedTodos)) {
+      this.currentTodos = normalizeTodoItems(storedTodos);
+    }
+
+    const storedContextUsedPercent = ctx.storage.kv.get<number>(CHAT_CONTEXT_USED_PERCENT_KEY);
+    if (typeof storedContextUsedPercent === 'number' && Number.isFinite(storedContextUsedPercent)) {
+      this.contextUsedPercent = Math.max(0, Math.min(100, Math.round(storedContextUsedPercent)));
+    }
+
+    const storedContextWindowByModel = ctx.storage.kv.get<
+      Record<string, unknown>
+    >(CHAT_CONTEXT_WINDOW_BY_MODEL_KEY);
+    if (
+      storedContextWindowByModel &&
+      typeof storedContextWindowByModel === "object"
+    ) {
+      for (const [model, contextWindow] of Object.entries(
+        storedContextWindowByModel,
+      )) {
+        if (
+          typeof contextWindow === "number" &&
+          Number.isFinite(contextWindow) &&
+          contextWindow > 0
+        ) {
+          this.cachedContextWindowByModel[model] = contextWindow;
         }
       }
+    }
 
-      const version = ctx.storage.kv.get<number>("previewVersion");
-      if (typeof version === "number") {
-        this.previewVersion = version;
-      }
+    const storedNextEventId = ctx.storage.kv.get<number>(
+      CHAT_NEXT_EVENT_ID_KEY,
+    );
+    if (typeof storedNextEventId === "number" && storedNextEventId > 0) {
+      this.nextChatEventId = storedNextEventId;
+    }
 
-      // Persist normalized preview session state. This also migrates legacy
-      // single-target threads into multi-tab state on first hydrate.
-      this.ctx.storage.kv.put("previewTabs", this.previewTabs);
-      this.ctx.storage.kv.put("previewActiveTabId", this.previewActiveTabId);
-      this.ctx.storage.kv.put("previewTarget", this.previewTarget);
+    const storedActiveTurnUserId = ctx.storage.kv.get<string>(
+      CHAT_ACTIVE_TURN_USER_ID_KEY,
+    );
+    if (
+      typeof storedActiveTurnUserId === "string" &&
+      storedActiveTurnUserId.trim()
+    ) {
+      this.activeTurnUserId = storedActiveTurnUserId.trim();
+    }
 
-      const storedContext =
-        ctx.storage.kv.get<ChatContextState>(CHAT_CONTEXT_KEY);
-      if (
-        storedContext &&
-        storedContext.threadId &&
-        storedContext.workspaceId &&
-        storedContext.orgId
-      ) {
-        this.chatContext = {
-          ...storedContext,
-          userId: storedContext.userId ?? null,
-          userName: storedContext.userName ?? null,
-          userEmail: storedContext.userEmail ?? null,
-        };
-      }
+    this.activeAutomationRun = this.normalizeActiveAutomationRun(
+      ctx.storage.kv.get<unknown>(CHAT_ACTIVE_AUTOMATION_RUN_KEY),
+    );
 
-      const storedTodos = ctx.storage.kv.get<unknown[]>(CHAT_TODOS_KEY);
-      if (Array.isArray(storedTodos)) {
-        this.currentTodos = normalizeTodoItems(storedTodos);
-      }
+    const storedCodexSessionId = ctx.storage.kv.get<string>(CHAT_CODEX_SESSION_ID_KEY);
+    if (typeof storedCodexSessionId === 'string' && storedCodexSessionId.trim()) {
+      this.codexSessionId = storedCodexSessionId.trim();
+    }
 
-      const storedContextUsedPercent = ctx.storage.kv.get<number>(CHAT_CONTEXT_USED_PERCENT_KEY);
-      if (typeof storedContextUsedPercent === 'number' && Number.isFinite(storedContextUsedPercent)) {
-        this.contextUsedPercent = Math.max(0, Math.min(100, Math.round(storedContextUsedPercent)));
-      }
+    this.syncAgentState();
 
-      const storedContextWindowByModel = ctx.storage.kv.get<
-        Record<string, unknown>
-      >(CHAT_CONTEXT_WINDOW_BY_MODEL_KEY);
-      if (
-        storedContextWindowByModel &&
-        typeof storedContextWindowByModel === "object"
-      ) {
-        for (const [model, contextWindow] of Object.entries(
-          storedContextWindowByModel,
-        )) {
-          if (
-            typeof contextWindow === "number" &&
-            Number.isFinite(contextWindow) &&
-            contextWindow > 0
-          ) {
-            this.cachedContextWindowByModel[model] = contextWindow;
-          }
-        }
-      }
-
-      const storedNextEventId = ctx.storage.kv.get<number>(
-        CHAT_NEXT_EVENT_ID_KEY,
+    const hasLegacyPiTurnRecovery = Boolean(
+      this.loadLegacyPiTurnRecoveryForMigration(),
+    );
+    if (
+      hasLegacyPiTurnRecovery ||
+      (!hasLegacyPiTurnRecovery && this.hasPiInFlightRecoveryRows())
+    ) {
+      ctx.waitUntil(
+        ctx.storage.setAlarm(Date.now() + 1_000).catch((error) => {
+          console.error("[ChatThreadDO] failed to schedule Pi recovery alarm", error);
+        }),
       );
-      if (typeof storedNextEventId === "number" && storedNextEventId > 0) {
-        this.nextChatEventId = storedNextEventId;
-      }
-
-      const storedActiveTurnUserId = ctx.storage.kv.get<string>(
-        CHAT_ACTIVE_TURN_USER_ID_KEY,
-      );
-      if (
-        typeof storedActiveTurnUserId === "string" &&
-        storedActiveTurnUserId.trim()
-      ) {
-        this.activeTurnUserId = storedActiveTurnUserId.trim();
-      }
-
-      this.activeAutomationRun = this.normalizeActiveAutomationRun(
-        ctx.storage.kv.get<unknown>(CHAT_ACTIVE_AUTOMATION_RUN_KEY),
-      );
-
-      const storedCodexSessionId = ctx.storage.kv.get<string>(CHAT_CODEX_SESSION_ID_KEY);
-      if (typeof storedCodexSessionId === 'string' && storedCodexSessionId.trim()) {
-        this.codexSessionId = storedCodexSessionId.trim();
-      }
-
-      this.syncAgentState();
-
-      const hasLegacyPiTurnRecovery = Boolean(
-        this.loadLegacyPiTurnRecoveryForMigration(),
-      );
-      if (
-        hasLegacyPiTurnRecovery ||
-        (!hasLegacyPiTurnRecovery && this.hasPiInFlightRecoveryRows())
-      ) {
-        await ctx.storage.setAlarm(Date.now() + 1_000);
-      }
-    });
+    }
   }
 
   async alarm(): Promise<void> {
@@ -4268,9 +4273,14 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
       this.persistPiAgentLoopErrorForDevelopers(error, {
         source: "pi_turn_fiber_recovery",
       });
+      this.ctx.waitUntil(
+        this.ctx.storage.setAlarm(Date.now() + 30_000).catch((alarmError) => {
+          console.error("[ChatThreadDO] failed to schedule Pi recovery retry alarm", alarmError);
+        }),
+      );
       return {
-        status: "interrupted" as const,
-        reason: "Pi turn recovery failed; retry later",
+        status: "error" as const,
+        error,
         snapshot: ctx.snapshot,
       };
     }
@@ -6435,7 +6445,7 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
   private async hasActivePiTurnFiber(): Promise<boolean> {
     const [fiber] = await this.listFibers({
       name: PI_TURN_FIBER_NAME,
-      status: ["pending", "running", "interrupted"],
+      status: ["pending", "running"],
       limit: 1,
     });
     return Boolean(fiber);
@@ -6548,6 +6558,17 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
           : {}),
       },
     );
+    if (result.status === "interrupted") {
+      await this.recoverInterruptedPiTurn({
+        id: result.fiberId,
+        name: PI_TURN_FIBER_NAME,
+        snapshot: result.snapshot ?? result.metadata ?? null,
+        createdAt: result.createdAt,
+        recoveryReason: "interrupted",
+      });
+      await this.resolveFiber(result.fiberId, { status: "completed" });
+      return;
+    }
     if (result.status === "error") {
       if (timedOut) {
         await this.recoverInterruptedPiTurn({
@@ -6565,6 +6586,9 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
       throw new Error(result.error ?? "Pi turn fiber failed");
     }
     if (result.status === "aborted") throw new DOMException(result.error ?? "Pi turn fiber aborted", "AbortError");
+    if (result.status !== "completed") {
+      throw new Error(`Pi turn fiber ended unexpectedly with status ${result.status}`);
+    }
   }
 
   private touchPiTurnProgress(): void {
@@ -6629,7 +6653,11 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
           role: "user",
           content: PI_TURN_RECOVERY_CONTINUE_PROMPT,
           timestamp: this.piRecoveryContinuePromptSentAtMs,
-        });
+          visibility: "hidden",
+          metadata: {
+            purpose: PI_TURN_RECOVERY_CONTEXT_PURPOSE,
+          },
+        } as unknown as AgentMessage);
       });
     } finally {
       this.suppressNextPiRecoveryPromptEvent = false;
@@ -7230,6 +7258,7 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
         this.piRecoveryContinuePromptSentAtMs > 0 &&
         Date.now() - this.piRecoveryContinuePromptSentAtMs <= PI_TURN_RECOVERY_PROMPT_OBSERVATION_MS
       ) {
+        return true;
       }
       return false;
     }
@@ -9235,6 +9264,7 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
           });
         }),
       );
+      return handled;
     });
     this.pushChatEvent({ type: "ready" });
     return session;

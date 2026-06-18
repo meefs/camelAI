@@ -2499,6 +2499,32 @@ describe('ChatThreadDO Codex turn handling', () => {
     }));
   });
 
+  it('recovers an already-interrupted managed Pi turn returned by idempotency lookup', async () => {
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    fake.activeTurnUserId = 'user1';
+    fake.loadPiInFlightMessages = vi.fn(async () => []);
+    fake.startFiber = vi.fn(async () => ({
+      fiberId: 'fiber1',
+      status: 'interrupted',
+      createdAt: 123,
+      snapshot: { activeUserId: 'user1' },
+      accepted: false,
+    }));
+    fake.withPiTurnInactivityTimeout = vi.fn(async (fn: () => Promise<void>) => fn());
+    fake.recoverInterruptedPiTurn = vi.fn(async () => undefined);
+    fake.resolveFiber = vi.fn(async () => true);
+
+    await ChatThreadDO.prototype['keepAlivePiTurnWhile'].call(fake, async () => undefined);
+
+    expect(fake.recoverInterruptedPiTurn).toHaveBeenCalledWith(expect.objectContaining({
+      id: 'fiber1',
+      name: 'pi-turn',
+      snapshot: { activeUserId: 'user1' },
+      recoveryReason: 'interrupted',
+    }));
+    expect(fake.resolveFiber).toHaveBeenCalledWith('fiber1', { status: 'completed' });
+  });
+
   it('does not recover user-cancelled Pi turn aborts', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-01-01T00:00:00.000Z'));
@@ -2520,6 +2546,33 @@ describe('ChatThreadDO Codex turn handling', () => {
     expect(fake.recoverInterruptedPiTurn).not.toHaveBeenCalled();
   });
 
+  it('sends Pi recovery continue prompts as hidden internal messages', async () => {
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    fake.chatContext = { threadId: 'thread1' };
+    fake.setActiveTurnUserId = vi.fn();
+    fake.setChatIsStreaming = vi.fn();
+    fake.ensurePiSessionReady = vi.fn(async () => undefined);
+    fake.refreshPiSessionModel = vi.fn(async () => undefined);
+    fake.withPiTurnInactivityTimeout = vi.fn(async (fn: () => Promise<void>) => fn());
+    const prompt = vi.fn(async () => undefined);
+    fake.piSession = { prompt };
+
+    await ChatThreadDO.prototype['recoverInterruptedPiTurn'].call(fake, {
+      id: 'fiber1',
+      name: 'pi-turn',
+      snapshot: { activeUserId: 'user1' },
+      createdAt: 100,
+      recoveryReason: 'interrupted',
+    });
+
+    expect(prompt).toHaveBeenCalledWith(expect.objectContaining({
+      role: 'user',
+      content: 'continue',
+      visibility: 'hidden',
+      metadata: { purpose: 'pi_turn_recovery_context' },
+    }));
+  });
+
   it('routes recovered Pi fibers through Pi recovery', async () => {
     const fake = Object.create(ChatThreadDO.prototype) as any;
     fake.recordChatThreadObservabilityEvent = vi.fn();
@@ -2538,8 +2591,12 @@ describe('ChatThreadDO Codex turn handling', () => {
     expect(result).toEqual(expect.objectContaining({ status: 'completed' }));
   });
 
-  it('keeps recovered Pi fibers interrupted when recovery fails transiently', async () => {
+  it('marks recovered Pi fibers errored and schedules orphan recovery when recovery fails', async () => {
     const fake = Object.create(ChatThreadDO.prototype) as any;
+    fake.ctx = {
+      waitUntil: vi.fn(),
+      storage: { setAlarm: vi.fn(async () => undefined) },
+    };
     fake.recordChatThreadObservabilityEvent = vi.fn();
     fake.persistPiAgentLoopErrorForDevelopers = vi.fn();
     fake.recoverInterruptedPiTurn = vi.fn(async () => {
@@ -2556,8 +2613,9 @@ describe('ChatThreadDO Codex turn handling', () => {
     const result = await ChatThreadDO.prototype.onFiberRecovered.call(fake, ctx);
 
     expect(fake.persistPiAgentLoopErrorForDevelopers).toHaveBeenCalled();
+    expect(fake.ctx.waitUntil).toHaveBeenCalled();
     expect(result).toEqual(expect.objectContaining({
-      status: 'interrupted',
+      status: 'error',
       snapshot: { activeUserId: 'user1' },
     }));
   });
@@ -5723,6 +5781,17 @@ describe('ChatThreadDO Codex turn handling', () => {
 
     expect(events).toEqual([]);
 
+    fake.piRecoveryContinuePromptSentAtMs = Date.now();
+    await ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, {
+      type: 'user',
+      message: {
+        content: 'continue',
+      },
+    });
+
+    expect(events).toEqual([]);
+
+    fake.piRecoveryContinuePromptSentAtMs = 0;
     await ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, {
       type: 'user',
       message: {
