@@ -497,7 +497,7 @@ function getSubscriptionCancellationDateMs(
   const seconds =
     subscription.cancel_at ??
     (subscription.cancel_at_period_end
-      ? (subscription.current_period_end ?? subscription.trial_end ?? null)
+      ? (subscription.current_period_end ?? subscription.trial_end)
       : null) ??
     (subscription.status === "canceled"
       ? (subscription.canceled_at ?? null)
