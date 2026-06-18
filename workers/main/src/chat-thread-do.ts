@@ -1,4 +1,5 @@
-import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
+import { WorkerEntrypoint } from "cloudflare:workers";
+import { Agent, type FiberInspection, type FiberRecoveryContext } from "agents";
 import { Type, type TSchema } from "typebox";
 import type {
   Agent as PiCoreAgent,
@@ -570,13 +571,18 @@ export interface PiCoreMessageHistoryRepairReport {
 }
 
 export interface PiTurnRecoveryAdminState {
-  pending: PiTurnRecoveryRow | null;
-  quarantined: {
-    reason: string;
-    retryCount: number;
-    updatedAt: number;
-  } | null;
+  pending: FiberInspection | null;
+  legacyPending?: LegacyPiTurnRecoveryRow | null;
   inFlightCount: number;
+}
+
+interface LegacyPiTurnRecoveryRow {
+  turn_id: string;
+  status: "running" | "recovering";
+  active_user_id: string | null;
+  retry_count: number;
+  started_at: number;
+  updated_at: number;
 }
 
 function cloneDurableState<T>(value: T): T {
@@ -3891,32 +3897,16 @@ const CHAT_CONTEXT_WINDOW_BY_MODEL_KEY = "chatContextWindowByModel";
 const CHAT_NEXT_EVENT_ID_KEY = "chatNextEventId";
 const CHAT_RUNNER_LAST_SEQ_KEY = "chatRunnerLastSeq";
 const CHAT_ACTIVE_TURN_USER_ID_KEY = "chatActiveTurnUserId";
-const PI_TURN_RECOVERY_ROW_ID = 1;
-const PI_TURN_RECOVERY_ALARM_MS = 10_000;
-const PI_TURN_RECOVERY_MAX_ALARM_MS = 5 * 60_000;
-const PI_TURN_RECOVERY_STALE_MS = 30_000;
-const PI_TURN_RECOVERY_MAX_RETRIES = 3;
-const PI_TURN_RECOVERY_QUARANTINE_KEY = "piTurnRecoveryQuarantined";
+const PI_TURN_FIBER_NAME = "pi-turn";
+const PI_TURN_INACTIVITY_TIMEOUT_MS = 10 * 60_000;
+const PI_TURN_PROGRESS_INTERVAL_MS = 30_000;
 const PI_TURN_RECOVERY_CONTEXT_PURPOSE = "pi_turn_recovery_context";
 const PI_TURN_RECOVERY_CONTINUE_PROMPT = "continue";
 const PI_TURN_RECOVERY_PROMPT_OBSERVATION_MS = 5 * 60_000;
-const PI_TURN_KEEP_ALIVE_INTERVAL_MS = 30_000;
-const PI_TURN_KEEP_ALIVE_STALL_MS = 10 * 60_000;
 const CHAT_ERROR_DEDUPE_WINDOW_MS = 10_000;
 
 const MAX_CHAT_EVENT_BUFFER = 500;
 const ASK_USER_QUESTION_UNAVAILABLE_MESSAGE = 'User is not at computer; AskUserQuestion is unavailable in this channel. Continue without asking and use best effort.';
-
-export interface PiTurnRecoveryRow {
-  turn_id: string;
-  status: "running" | "recovering";
-  user_content: string;
-  user_timestamp: number;
-  active_user_id: string | null;
-  retry_count: number;
-  started_at: number;
-  updated_at: number;
-}
 
 const HEADER_USER_NAME = "X-Chiridion-User-Name";
 const HEADER_USER_EMAIL = "X-Chiridion-User-Email";
@@ -3938,6 +3928,8 @@ const CHAT_DEGRADED_AUTH_GRANT_REFRESH_MS = 5 * 60 * 1000;
 const CHAT_RECENT_CLIENT_MESSAGE_IDS_KEY = "chat_recent_client_message_ids";
 const CHAT_RECENT_CLIENT_MESSAGE_IDS_MAX = 200;
 
+type ChatAgentEnv = Cloudflare.Env & Omit<ChatEnv, keyof Cloudflare.Env>;
+
 const TRACE_CHAT_THREAD_DO = false;
 const CHAT_CODEX_SESSION_ID_KEY = 'chatCodexSessionId';
 const CODE_MODE_ARTIFACTS_KEY_PREFIX = 'codeModeArtifacts:';
@@ -3947,7 +3939,7 @@ const CODE_MODE_ARTIFACTS_KEY_PREFIX = 'codeModeArtifacts:';
  * traffic, and agent turns. Sandbox-host remains the backend for workspace
  * file/shell/container operations.
  */
-export class ChatThreadDO extends DurableObject<ChatEnv> {
+export class ChatThreadDO extends Agent<ChatAgentEnv> {
   private static readonly CONNECTION_SETUP_TIMEOUT_MS = 30 * 60 * 1000;
 
   private previewTarget: PreviewTarget | null = null;
@@ -4033,9 +4025,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
   private piCurrentBillingSource: PiBillingSource = "hosted";
   private piCurrentCreditChargeable: boolean = false;
   private piCurrentUsageProvider: string | null = null;
-  private piRecoveryInFlight: Promise<void> | null = null;
-  private piTurnKeepAliveRefs: number = 0;
-  private piTurnKeepAliveLastProgressAtMs: number = 0;
+  private piTurnLastProgressAtMs: number = 0;
   private piLastPersistedLoopError: { fingerprint: string; at: number } | null = null;
   private piRecordedProviderErrors = new Set<string>();
   private recordedChatErrors = new Map<string, number>();
@@ -4084,7 +4074,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
   }
 
   constructor(ctx: DurableObjectState, env: ChatEnv) {
-    super(ctx, env);
+    super(ctx, env as unknown as ChatAgentEnv);
 
     // Set up auto-response for ping messages - responds without waking the DO
     ctx.setWebSocketAutoResponse(
@@ -4216,78 +4206,51 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         this.codexSessionId = storedCodexSessionId.trim();
       }
 
-      const pendingPiTurn = this.loadPiTurnRecovery();
-      if (pendingPiTurn) {
-        this.chatIsStreaming = true;
-        this.activeTurnUserId = pendingPiTurn.active_user_id;
-        this.recordChatThreadObservabilityEvent("pi_turn_recovery_loaded_on_boot", {
-          operation: "constructor",
-          status: pendingPiTurn.status,
-          severity: "warn",
-          count: pendingPiTurn.retry_count,
-          size: Math.max(0, Date.now() - pendingPiTurn.started_at),
-          sampleKey: `turn:${pendingPiTurn.turn_id}|active:${pendingPiTurn.active_user_id ? 1 : 0}`,
-        });
-        this.schedulePiTurnRecoveryAlarm(1_000);
+      if (
+        this.loadLegacyPiTurnRecoveryForMigration() ||
+        (await this.hasOrphanedPiInFlightRecovery())
+      ) {
+        await ctx.storage.setAlarm(Date.now() + 1_000);
       }
     });
   }
 
   async alarm(): Promise<void> {
-    const keepAliveAborted = await this.handlePiTurnKeepAliveAlarm();
+    await super.alarm();
+    await this.drainLegacyPiTurnRecoveryForMigration();
+    await this.drainOrphanedPiInFlightRecovery();
+  }
 
-    const pendingPiTurn = this.loadPiTurnRecovery();
-    if (!pendingPiTurn) return;
-    if (this.loadPiTurnRecoveryQuarantine()) return;
-    if (pendingPiTurn.retry_count >= PI_TURN_RECOVERY_MAX_RETRIES) {
-      this.quarantinePiTurnRecovery(
-        `retry_count ${pendingPiTurn.retry_count} reached max ${PI_TURN_RECOVERY_MAX_RETRIES}`,
-        pendingPiTurn.retry_count,
-      );
-      return;
+  async onFiberRecovered(ctx: FiberRecoveryContext) {
+    if (ctx.name !== PI_TURN_FIBER_NAME) return await super.onFiberRecovered(ctx);
+
+    this.recordChatThreadObservabilityEvent("pi_turn_fiber_recovered", {
+      operation: "fiber_recovery",
+      status: "interrupted",
+      severity: "warn",
+      size: Math.max(0, Date.now() - ctx.createdAt),
+    });
+    try {
+      await this.recoverInterruptedPiTurn(ctx);
+      return { status: "completed" as const };
+    } catch (error) {
+      console.error("[ChatThreadDO] failed to recover interrupted Pi fiber", error);
+      this.persistPiAgentLoopErrorForDevelopers(error, {
+        source: "pi_turn_fiber_recovery",
+      });
+      this.recordChatThreadObservabilityEvent("pi_turn_fiber_recovery_failed", {
+        operation: "fiber_recovery",
+        status: "retrying",
+        severity: "warn",
+        error,
+        size: Math.max(0, Date.now() - ctx.createdAt),
+      });
+      return {
+        status: "interrupted" as const,
+        reason: "Pi turn recovery failed; retry later",
+        snapshot: ctx.snapshot,
+      };
     }
-
-    if (!keepAliveAborted && (this.piTurnKeepAliveRefs ?? 0) > 0) {
-      await this.scheduleNextPiAlarm();
-      return;
-    }
-
-    if (this.piSession?.state.isStreaming) {
-      this.schedulePiTurnRecoveryAlarm(PI_TURN_RECOVERY_ALARM_MS);
-      return;
-    }
-
-    const ageMs = Date.now() - pendingPiTurn.updated_at;
-    if (ageMs < PI_TURN_RECOVERY_STALE_MS) {
-      this.schedulePiTurnRecoveryAlarm(PI_TURN_RECOVERY_STALE_MS - ageMs);
-      return;
-    }
-
-    if (!this.piRecoveryInFlight) {
-      this.piRecoveryInFlight = this.recoverInterruptedPiTurn(pendingPiTurn)
-        .catch((error) => {
-          console.error("[ChatThreadDO] failed to recover interrupted Pi turn", error);
-          this.persistPiAgentLoopErrorForDevelopers(error, {
-            source: "pi_turn_recovery",
-          });
-          const nextRetryCount = pendingPiTurn.retry_count + 1;
-          if (nextRetryCount >= PI_TURN_RECOVERY_MAX_RETRIES) {
-            this.quarantinePiTurnRecovery(
-              error instanceof Error ? error.message : "Pi turn recovery failed",
-              nextRetryCount,
-            );
-            return;
-          }
-          this.schedulePiTurnRecoveryAlarm(
-            this.piTurnRecoveryRetryDelayMs(nextRetryCount),
-          );
-        })
-        .finally(() => {
-          this.piRecoveryInFlight = null;
-        });
-    }
-
-    await this.piRecoveryInFlight;
   }
 
   async runCodeModeJavascript(
@@ -4686,12 +4649,12 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     }
   }
 
-  webSocketClose(
+  async webSocketClose(
     ws: WebSocket,
     code: number,
     reason: string,
     wasClean: boolean,
-  ): void {
+  ): Promise<void> {
     if (this.isRunnerClientSocket(ws)) {
       const remainingRunnerSockets = this.getRunnerClientSockets().length;
       this.trace("runner_client_ws_close", {
@@ -4740,7 +4703,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     // owned by ChatThreadDO on a separate tagged WebSocket.
   }
 
-  webSocketError(ws: WebSocket, error: unknown): void {
+  async webSocketError(ws: WebSocket, error: unknown): Promise<void> {
     if (this.isRunnerClientSocket(ws)) {
       this.trace("runner_client_ws_error", {
         error: String(error),
@@ -5342,7 +5305,6 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     ]);
     this.ctx.storage.sql.exec("DELETE FROM pi_core_compaction");
     this.clearPiInFlightMessages();
-    this.clearPiTurnRecovery();
     this.recordChatThreadObservabilityEvent("pi_core_messages_hydrated_from_legacy", {
       operation: "merge_from_legacy",
       status: "ok",
@@ -5526,7 +5488,6 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     await this.replacePiCoreMessages(cloneDurableState(normalizedMessages));
     this.ctx.storage.sql.exec("DELETE FROM pi_core_compaction");
     this.clearPiInFlightMessages();
-    this.clearPiTurnRecovery();
   }
 
   getForkStateSnapshot(): ChatThreadForkState {
@@ -5807,19 +5768,6 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         id INTEGER PRIMARY KEY CHECK (id = 1),
         summary TEXT NOT NULL,
         first_kept_index INTEGER NOT NULL,
-        updated_at INTEGER NOT NULL
-      )`,
-    );
-    this.ctx.storage.sql.exec(
-      `CREATE TABLE IF NOT EXISTS pi_turn_recovery (
-        id INTEGER PRIMARY KEY CHECK (id = 1),
-        turn_id TEXT NOT NULL,
-        status TEXT NOT NULL CHECK (status IN ('running', 'recovering')),
-        user_content TEXT NOT NULL,
-        user_timestamp INTEGER NOT NULL,
-        active_user_id TEXT,
-        retry_count INTEGER NOT NULL DEFAULT 0,
-        started_at INTEGER NOT NULL,
         updated_at INTEGER NOT NULL
       )`,
     );
@@ -6506,16 +6454,12 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     });
     const continueCount = messages.filter((message) => this.isPiRecoveryContinueMessage(message)).length;
     if (continueCount > 0) {
-      const pending = this.loadPiTurnRecovery();
       this.recordChatThreadObservabilityEvent("pi_recovery_continue_persisted", {
         operation: "append",
-        status: pending ? pending.status : "no_pending_recovery",
+        status: "persisted",
         severity: "warn",
         count: continueCount,
         size: startIndex,
-        sampleKey: pending
-          ? `turn:${pending.turn_id}|retry:${pending.retry_count}`
-          : "no_pending_recovery",
       });
     }
   }
@@ -6651,100 +6595,142 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     return droppedCount;
   }
 
-  private loadPiTurnRecovery(): PiTurnRecoveryRow | null {
-    this.ensurePiCoreTables();
+  // TODO(remove after next deploy): one-release migration shim for pi_turn_recovery
+  // rows created by the pre-Agents-SDK ChatThreadDO. New turns use managed fibers.
+  private ensureLegacyPiTurnRecoveryTableForMigration(): void {
+    this.ctx.storage.sql.exec(
+      `CREATE TABLE IF NOT EXISTS pi_turn_recovery (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        turn_id TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('running', 'recovering')),
+        user_content TEXT NOT NULL,
+        user_timestamp INTEGER NOT NULL,
+        active_user_id TEXT,
+        retry_count INTEGER NOT NULL DEFAULT 0,
+        started_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      )`,
+    );
+  }
+
+  private loadLegacyPiTurnRecoveryForMigration(): LegacyPiTurnRecoveryRow | null {
+    this.ensureLegacyPiTurnRecoveryTableForMigration();
     const row = this.ctx.storage.sql
       .exec<{
         turn_id: string;
         status: string;
-        user_content: string;
-        user_timestamp: number;
         active_user_id: string | null;
         retry_count: number;
         started_at: number;
         updated_at: number;
       }>(
-        `SELECT turn_id, status, user_content, user_timestamp, active_user_id,
-          retry_count, started_at, updated_at
+        `SELECT turn_id, status, active_user_id, retry_count, started_at, updated_at
          FROM pi_turn_recovery
-         WHERE id = ?`,
-        PI_TURN_RECOVERY_ROW_ID,
+         WHERE id = 1`,
       )
       .toArray()[0];
-    if (!row || (row.status !== "running" && row.status !== "recovering")) {
-      return null;
-    }
+    if (!row || (row.status !== "running" && row.status !== "recovering")) return null;
     return {
       turn_id: row.turn_id,
       status: row.status,
-      user_content: row.user_content,
       active_user_id:
         typeof row.active_user_id === "string" && row.active_user_id.trim()
           ? row.active_user_id.trim()
           : null,
       retry_count: Math.max(0, Math.floor(Number(row.retry_count) || 0)),
-      user_timestamp: Math.max(0, Math.floor(Number(row.user_timestamp) || 0)),
       started_at: Math.max(0, Math.floor(Number(row.started_at) || 0)),
       updated_at: Math.max(0, Math.floor(Number(row.updated_at) || 0)),
     };
   }
 
-  private loadPiTurnRecoveryQuarantine(): PiTurnRecoveryAdminState["quarantined"] {
-    const value = this.ctx.storage.kv.get<unknown>(PI_TURN_RECOVERY_QUARANTINE_KEY);
-    if (!value || typeof value !== "object") return null;
-    const record = value as Record<string, unknown>;
-    const reason = typeof record.reason === "string" && record.reason.trim()
-      ? record.reason.trim()
-      : "Pi turn recovery quarantined";
-    return {
-      reason,
-      retryCount: Math.max(0, Math.floor(Number(record.retryCount) || 0)),
-      updatedAt: Math.max(0, Math.floor(Number(record.updatedAt) || 0)),
-    };
+  private clearLegacyPiTurnRecoveryForMigration(): void {
+    this.ensureLegacyPiTurnRecoveryTableForMigration();
+    this.ctx.storage.sql.exec("DELETE FROM pi_turn_recovery WHERE id = 1");
+  }
+
+  private async hasActivePiTurnFiber(): Promise<boolean> {
+    const [fiber] = await this.listFibers({
+      name: PI_TURN_FIBER_NAME,
+      status: ["pending", "running", "interrupted"],
+      limit: 1,
+    });
+    return Boolean(fiber);
+  }
+
+  private async drainLegacyPiTurnRecoveryForMigration(): Promise<void> {
+    const pending = this.loadLegacyPiTurnRecoveryForMigration();
+    if (!pending) return;
+    if (await this.hasActivePiTurnFiber()) return;
+
+    this.recordChatThreadObservabilityEvent("pi_turn_legacy_recovery_migrated", {
+      operation: "legacy_recovery_migration",
+      status: pending.status,
+      severity: "warn",
+      count: pending.retry_count,
+      size: Math.max(0, Date.now() - pending.started_at),
+      sampleKey: `turn:${pending.turn_id}`,
+    });
+    await this.recoverInterruptedPiTurn({
+      id: pending.turn_id,
+      name: PI_TURN_FIBER_NAME,
+      snapshot: { activeUserId: pending.active_user_id },
+      createdAt: pending.started_at || pending.updated_at || Date.now(),
+      recoveryReason: "interrupted",
+    });
+    this.clearLegacyPiTurnRecoveryForMigration();
+  }
+
+  private async hasOrphanedPiInFlightRecovery(): Promise<boolean> {
+    if (this.loadLegacyPiTurnRecoveryForMigration()) return false;
+    if (await this.hasActivePiTurnFiber()) return false;
+    return (await this.loadPiInFlightMessages()).length > 0;
+  }
+
+  private async drainOrphanedPiInFlightRecovery(): Promise<void> {
+    if (!(await this.hasOrphanedPiInFlightRecovery())) return;
+    const inFlight = await this.loadPiInFlightMessages();
+    const firstTimestamp = Math.max(0, Math.floor(Number(
+      (inFlight[0] as unknown as Record<string, unknown> | undefined)?.timestamp,
+    ) || 0));
+    const createdAt = firstTimestamp || Date.now();
+    this.recordChatThreadObservabilityEvent("pi_turn_in_flight_recovery_started", {
+      operation: "orphaned_in_flight_recovery",
+      status: "recovering",
+      severity: "warn",
+      count: inFlight.length,
+      size: Math.max(0, Date.now() - createdAt),
+    });
+    try {
+      await this.recoverInterruptedPiTurn({
+        id: "orphaned-in-flight",
+        name: PI_TURN_FIBER_NAME,
+        snapshot: { activeUserId: this.activeTurnUserId },
+        createdAt,
+        recoveryReason: "interrupted",
+      });
+    } catch (error) {
+      console.error("[ChatThreadDO] failed to recover orphaned Pi in-flight messages", error);
+      this.persistPiAgentLoopErrorForDevelopers(error, {
+        source: "pi_turn_orphaned_in_flight_recovery",
+      });
+      await this.ctx.storage.setAlarm(Date.now() + 30_000);
+    }
   }
 
   async getPiTurnRecoveryAdminState(): Promise<PiTurnRecoveryAdminState> {
     return {
-      pending: this.loadPiTurnRecovery(),
-      quarantined: this.loadPiTurnRecoveryQuarantine(),
+      pending: (await this.listFibers({
+        name: PI_TURN_FIBER_NAME,
+        status: ["pending", "running", "interrupted"],
+        limit: 1,
+      }))[0] ?? null,
+      legacyPending: this.loadLegacyPiTurnRecoveryForMigration(),
       inFlightCount: (await this.loadPiInFlightMessages()).length,
     };
   }
 
   private async startPiTurnRecovery(userMessage: AgentMessage): Promise<void> {
-    const userRecord = userMessage as unknown as Record<string, unknown>;
-    const content = typeof userRecord.content === "string" ? userRecord.content : "";
-    if (!content.trim()) return;
-    const now = Date.now();
-    const timestamp =
-      typeof userRecord.timestamp === "number"
-        ? userRecord.timestamp
-        : now;
-    this.ensurePiCoreTables();
-    this.ctx.storage.sql.exec(
-      `INSERT INTO pi_turn_recovery
-        (id, turn_id, status, user_content, user_timestamp, active_user_id,
-          retry_count, started_at, updated_at)
-       VALUES (?, ?, 'running', ?, ?, ?, 0, ?, ?)
-       ON CONFLICT(id) DO UPDATE SET
-        turn_id = excluded.turn_id,
-        status = excluded.status,
-        user_content = excluded.user_content,
-        user_timestamp = excluded.user_timestamp,
-        active_user_id = excluded.active_user_id,
-        retry_count = 0,
-        started_at = excluded.started_at,
-        updated_at = excluded.updated_at`,
-      PI_TURN_RECOVERY_ROW_ID,
-      crypto.randomUUID(),
-      content,
-      timestamp,
-      this.activeTurnUserId,
-      now,
-      now,
-    );
     await this.appendPiInFlightMessages([userMessage]);
-    this.schedulePiTurnRecoveryAlarm(PI_TURN_RECOVERY_ALARM_MS);
     this.recordChatThreadObservabilityEvent("pi_turn_recovery_started", {
       operation: "start_recovery",
       status: "running",
@@ -6752,256 +6738,145 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     });
   }
 
-  private touchPiTurnRecovery(status: PiTurnRecoveryRow["status"]): void {
-    this.ensurePiCoreTables();
-    this.ctx.storage.sql.exec(
-      "UPDATE pi_turn_recovery SET status = ?, updated_at = ? WHERE id = ?",
-      status,
-      Date.now(),
-      PI_TURN_RECOVERY_ROW_ID,
-    );
-    this.schedulePiTurnRecoveryAlarm(PI_TURN_RECOVERY_ALARM_MS);
-  }
-
-  private markPiTurnRecovering(): void {
-    this.ensurePiCoreTables();
-    this.ctx.storage.sql.exec(
-      `UPDATE pi_turn_recovery
-       SET status = 'recovering', retry_count = retry_count + 1, updated_at = ?
-       WHERE id = ?`,
-      Date.now(),
-      PI_TURN_RECOVERY_ROW_ID,
-    );
-    this.schedulePiTurnRecoveryAlarm(PI_TURN_RECOVERY_ALARM_MS);
-  }
-
-  private clearPiTurnRecovery(): void {
-    this.ensurePiCoreTables();
-    this.ctx.storage.sql.exec(
-      "DELETE FROM pi_turn_recovery WHERE id = ?",
-      PI_TURN_RECOVERY_ROW_ID,
-    );
-    this.ctx.storage.kv.delete(PI_TURN_RECOVERY_QUARANTINE_KEY);
-  }
-
   async clearPiTurnRecoveryForAdmin(): Promise<PiTurnRecoveryAdminState> {
-    this.clearPiTurnRecovery();
+    const fibers = await this.listFibers({
+      name: PI_TURN_FIBER_NAME,
+      status: ["pending", "running", "interrupted"],
+      limit: 20,
+    });
+    await Promise.all(fibers.map((fiber) =>
+      fiber.status === "interrupted"
+        ? this.resolveFiber(fiber.fiberId, { status: "aborted", reason: "Admin cleared Pi recovery" })
+        : this.cancelFiber(fiber.fiberId, "Admin cleared Pi recovery"),
+    ));
+    this.clearLegacyPiTurnRecoveryForMigration();
     this.clearPiInFlightMessages();
     this.setChatIsStreaming(false);
-    this.ctx.waitUntil(
-      this.scheduleNextPiAlarm().catch((error) => {
-        console.error("[ChatThreadDO] failed to reschedule Pi alarm after admin recovery clear", error);
-      }),
-    );
     this.recordChatThreadObservabilityEvent("pi_turn_recovery_admin_cleared", {
       operation: "admin_clear_recovery",
       status: "ok",
+      count: fibers.length,
     });
     return await this.getPiTurnRecoveryAdminState();
   }
 
-  private quarantinePiTurnRecovery(reason: string, retryCount: number): void {
-    const updatedAt = Date.now();
-    this.ctx.storage.kv.put(PI_TURN_RECOVERY_QUARANTINE_KEY, {
-      reason,
-      retryCount,
-      updatedAt,
-    });
-    this.setChatIsStreaming(false);
-    this.ctx.waitUntil(
-      this.scheduleNextPiAlarm().catch((error) => {
-        console.error("[ChatThreadDO] failed to reschedule Pi alarm after recovery quarantine", error);
-      }),
-    );
-    this.recordChatThreadObservabilityEvent("pi_turn_recovery_quarantined", {
-      operation: "recover_interrupted_turn",
-      status: "quarantined",
-      severity: "warn",
-      count: retryCount,
-    });
-  }
-
-  private async keepAlivePiTurn(): Promise<() => void> {
-    const now = Date.now();
-    this.piTurnKeepAliveRefs = (this.piTurnKeepAliveRefs ?? 0) + 1;
-    if (this.piTurnKeepAliveRefs === 1) {
-      this.piTurnKeepAliveLastProgressAtMs = now;
-      await this.scheduleNextPiAlarm();
-      this.recordChatThreadObservabilityEvent("pi_turn_keep_alive_started", {
-        operation: "keep_alive",
-        status: "running",
-        count: this.piTurnKeepAliveRefs,
-      });
-    }
-
-    let disposed = false;
-    return () => {
-      if (disposed) return;
-      disposed = true;
-      this.piTurnKeepAliveRefs = Math.max(0, this.piTurnKeepAliveRefs - 1);
-      this.ctx.waitUntil(
-        this.scheduleNextPiAlarm().catch((error) => {
-          console.error("[ChatThreadDO] failed to reschedule Pi alarm after keepalive release", error);
-        }),
-      );
-      if (this.piTurnKeepAliveRefs === 0) {
-        this.piTurnKeepAliveLastProgressAtMs = 0;
-        this.recordChatThreadObservabilityEvent("pi_turn_keep_alive_stopped", {
-          operation: "keep_alive",
-          status: "idle",
-          count: 0,
-        });
-      }
+  private async keepAlivePiTurnWhile(fn: () => Promise<void>): Promise<void> {
+    const inFlight = await this.loadPiInFlightMessages();
+    const lastUserMessage = inFlight.findLast((message) =>
+      (message as unknown as Record<string, unknown>).role === "user"
+    ) as (AgentMessage & { content?: unknown; timestamp?: unknown }) | undefined;
+    const content = typeof lastUserMessage?.content === "string" ? lastUserMessage.content : "";
+    const metadata = {
+      activeUserId: this.activeTurnUserId,
+      inFlightCount: inFlight.length,
+      userTimestamp: typeof lastUserMessage?.timestamp === "number" ? lastUserMessage.timestamp : Date.now(),
+      startedAt: Date.now(),
     };
-  }
-
-  private async keepAlivePiTurnWhile<T>(fn: () => Promise<T>): Promise<T> {
-    const dispose = await this.keepAlivePiTurn();
-    try {
-      return await fn();
-    } finally {
-      dispose();
+    let timedOut = false;
+    const result = await this.startFiber(
+      PI_TURN_FIBER_NAME,
+      async (fiber) => {
+        fiber.stash(metadata);
+        await this.withPiTurnInactivityTimeout(fn, () => {
+          timedOut = true;
+        });
+      },
+      {
+        waitForCompletion: true,
+        metadata,
+        ...(content.trim()
+          ? { idempotencyKey: `pi-turn:${metadata.userTimestamp}:${(await this.sha256Hex(content)).slice(0, 16)}` }
+          : {}),
+      },
+    );
+    if (result.status === "error") {
+      if (timedOut) {
+        await this.recoverInterruptedPiTurn({
+          id: result.fiberId,
+          name: PI_TURN_FIBER_NAME,
+          snapshot: result.snapshot ?? result.metadata ?? null,
+          createdAt: result.createdAt,
+          recoveryReason: "interrupted",
+        });
+        return;
+      }
+      if (this.piUserStopRequestedAtMs > 0) {
+        throw new DOMException(result.error ?? "Pi turn aborted", "AbortError");
+      }
+      throw new Error(result.error ?? "Pi turn fiber failed");
     }
+    if (result.status === "aborted") throw new DOMException(result.error ?? "Pi turn fiber aborted", "AbortError");
   }
 
-  private markPiTurnKeepAliveProgress(): void {
-    if ((this.piTurnKeepAliveRefs ?? 0) <= 0) return;
-    this.piTurnKeepAliveLastProgressAtMs = Date.now();
+  private touchPiTurnProgress(): void {
+    this.piTurnLastProgressAtMs = Date.now();
   }
 
   private async keepPiTurnToolProgressAliveWhile<T>(fn: () => Promise<T>): Promise<T> {
-    this.markPiTurnKeepAliveProgress();
-    let progressInterval: ReturnType<typeof setInterval> | null = null;
-    if ((this.piTurnKeepAliveRefs ?? 0) > 0) {
-      progressInterval = setInterval(() => {
-        this.markPiTurnKeepAliveProgress();
-      }, PI_TURN_KEEP_ALIVE_INTERVAL_MS);
-    }
+    this.touchPiTurnProgress();
+    const interval = setInterval(() => this.touchPiTurnProgress(), PI_TURN_PROGRESS_INTERVAL_MS);
     try {
       return await fn();
     } finally {
-      if (progressInterval) {
-        clearInterval(progressInterval);
-      }
-      this.markPiTurnKeepAliveProgress();
+      clearInterval(interval);
+      this.touchPiTurnProgress();
     }
   }
 
-  private async handlePiTurnKeepAliveAlarm(): Promise<boolean> {
-    if ((this.piTurnKeepAliveRefs ?? 0) <= 0) return false;
-    const now = Date.now();
-    const lastProgressAt = this.piTurnKeepAliveLastProgressAtMs || now;
-    const stalledMs = Math.max(0, now - lastProgressAt);
-    const status =
-      stalledMs >= PI_TURN_KEEP_ALIVE_STALL_MS
-        ? "stalled"
-        : "running";
-    this.recordChatThreadObservabilityEvent("pi_turn_keep_alive_heartbeat", {
-      operation: "alarm",
-      status,
-      severity: status === "running" ? "info" : "warn",
-      count: this.piTurnKeepAliveRefs,
-      size: stalledMs,
-    });
-    if (status !== "running") {
-      this.recordChatThreadObservabilityEvent("pi_turn_keep_alive_aborted", {
-        operation: "alarm",
-        status,
-        severity: "warn",
-        count: this.piTurnKeepAliveRefs,
-        size: stalledMs,
-      });
-      this.piTurnKeepAliveRefs = 0;
-      this.piTurnKeepAliveLastProgressAtMs = 0;
-      this.disposePiSession();
-      await this.scheduleNextPiAlarm();
-      return true;
-    }
-    await this.scheduleNextPiAlarm();
-    return false;
-  }
-
-  private nextPiRecoveryAlarmAt(now: number): number | null {
-    const pendingPiTurn = this.loadPiTurnRecovery();
-    if (!pendingPiTurn || this.loadPiTurnRecoveryQuarantine()) {
-      return null;
-    }
-    if (this.piSession?.state.isStreaming) {
-      return now + PI_TURN_RECOVERY_ALARM_MS;
-    }
-    const staleInMs = PI_TURN_RECOVERY_STALE_MS - (now - pendingPiTurn.updated_at);
-    return now + Math.max(1_000, staleInMs);
-  }
-
-  private nextPiAlarmAt(now: number): number | null {
-    if ((this.piTurnKeepAliveRefs ?? 0) > 0) {
-      return now + PI_TURN_KEEP_ALIVE_INTERVAL_MS;
-    }
-    return this.nextPiRecoveryAlarmAt(now);
-  }
-
-  private async scheduleNextPiAlarm(): Promise<void> {
-    const nextAlarmAt = this.nextPiAlarmAt(Date.now());
-    if (nextAlarmAt === null) {
-      await this.ctx.storage.deleteAlarm();
-      return;
-    }
-    await this.ctx.storage.setAlarm(nextAlarmAt);
-  }
-
-  private schedulePiTurnRecoveryAlarm(delayMs: number): void {
-    const normalizedDelayMs = Math.max(1_000, Math.floor(delayMs));
-    this.ctx.waitUntil(
-      this.ctx.storage
-        .setAlarm(Date.now() + normalizedDelayMs)
-        .catch((error) => {
-          console.error("[ChatThreadDO] failed to schedule Pi recovery alarm", error);
-        }),
-    );
-  }
-
-  private piTurnRecoveryRetryDelayMs(retryCount: number): number {
-    const exponent = Math.max(0, Math.min(8, Math.floor(retryCount) - 1));
-    return Math.min(
-      PI_TURN_RECOVERY_MAX_ALARM_MS,
-      PI_TURN_RECOVERY_ALARM_MS * (2 ** exponent),
-    );
-  }
-
-  private async recoverInterruptedPiTurn(
-    pendingPiTurn: PiTurnRecoveryRow,
+  private async withPiTurnInactivityTimeout(
+    fn: () => Promise<void>,
+    onTimeout?: () => void,
   ): Promise<void> {
-    if (!this.chatContext) {
-      this.quarantinePiTurnRecovery("missing chat context for Pi turn recovery", pendingPiTurn.retry_count);
-      return;
+    this.touchPiTurnProgress();
+    let interval: ReturnType<typeof setInterval> | null = null;
+    try {
+      await Promise.race([
+        fn(),
+        new Promise<never>((_, reject) => {
+          interval = setInterval(() => {
+            const stalledMs = Math.max(0, Date.now() - this.piTurnLastProgressAtMs);
+            if (stalledMs < PI_TURN_INACTIVITY_TIMEOUT_MS) return;
+            onTimeout?.();
+            this.recordChatThreadObservabilityEvent("pi_turn_keep_alive_aborted", {
+              operation: "fiber_timeout",
+              status: "stalled",
+              severity: "warn",
+              size: stalledMs,
+            });
+            this.disposePiSession();
+            reject(new DOMException("Pi turn inactivity timeout", "AbortError"));
+          }, PI_TURN_PROGRESS_INTERVAL_MS);
+        }),
+      ]);
+    } finally {
+      if (interval) clearInterval(interval);
+      this.piTurnLastProgressAtMs = 0;
     }
+  }
 
-    // The original user message is already captured in the in-flight buffer
-    // by startPiTurnRecovery; runPi will fold it into the recovery context
-    // message on the next session boot. Re-appending here would duplicate
-    // rows on every retry and inflate the eventual recovery context.
-    this.markPiTurnRecovering();
+  private async recoverInterruptedPiTurn(ctx: FiberRecoveryContext): Promise<void> {
+    if (!this.chatContext) throw new Error("missing chat context for Pi turn recovery");
+    const snapshot = ctx.snapshot && typeof ctx.snapshot === "object"
+      ? ctx.snapshot as Record<string, unknown>
+      : {};
+    const activeUserId = typeof snapshot.activeUserId === "string" ? snapshot.activeUserId : null;
+
     this.recordChatThreadObservabilityEvent("pi_turn_recovery_resumed", {
       operation: "recover_interrupted_turn",
       status: "recovering",
-      count: pendingPiTurn.retry_count + 1,
-      size: Math.max(0, Date.now() - pendingPiTurn.started_at),
+      size: Math.max(0, Date.now() - ctx.createdAt),
     });
-    this.setActiveTurnUserId(pendingPiTurn.active_user_id);
+    this.setActiveTurnUserId(activeUserId);
     this.setChatIsStreaming(true);
 
     await this.ensurePiSessionReady();
-    if (!this.piSession) {
-      throw new Error("Pi session was not available for turn recovery");
-    }
+    if (!this.piSession) throw new Error("Pi session was not available for turn recovery");
     await this.refreshPiSessionModel();
     this.suppressNextPiRecoveryPromptEvent = true;
     this.piRecoveryContinuePromptSentAtMs = Date.now();
     try {
-      await this.keepAlivePiTurnWhile(async () => {
-        if (!this.piSession) {
-          throw new Error("Pi session was not available for turn recovery");
-        }
+      await this.withPiTurnInactivityTimeout(async () => {
+        if (!this.piSession) throw new Error("Pi session was not available for turn recovery");
         await this.piSession.prompt({
           role: "user",
           content: PI_TURN_RECOVERY_CONTINUE_PROMPT,
@@ -7714,16 +7589,11 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         this.piRecoveryContinuePromptSentAtMs > 0 &&
         Date.now() - this.piRecoveryContinuePromptSentAtMs <= PI_TURN_RECOVERY_PROMPT_OBSERVATION_MS
       ) {
-        const pending = this.loadPiTurnRecovery();
         this.recordChatThreadObservabilityEvent("pi_recovery_continue_event_leaked", {
           operation: "handle_pi_session_event",
-          status: pending ? pending.status : "no_pending_recovery",
+          status: "recent_recovery_prompt",
           severity: "warn",
-          count: pending?.retry_count ?? 0,
           size: Math.max(0, Date.now() - this.piRecoveryContinuePromptSentAtMs),
-          sampleKey: pending
-            ? `turn:${pending.turn_id}|retry:${pending.retry_count}`
-            : "recent_recovery_prompt",
         });
       }
       return false;
@@ -9753,7 +9623,6 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       } catch {
         // Best effort cleanup; the error below is the actionable eval failure.
       }
-      this.clearPiTurnRecovery();
       this.clearPiInFlightMessages();
       this.pushChatEvent(this.piProviderErrorEvent(message));
       this.setChatIsStreaming(false);
@@ -12625,9 +12494,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
   ): AgentTool[] {
     const tools = this.scopedCodeModeTools(context);
     const call = async (name: string, args: Record<string, unknown>) => {
-      const result = await this.keepPiTurnToolProgressAliveWhile(() =>
-        tools.callTool(name, args)
-      );
+      const result = await this.keepPiTurnToolProgressAliveWhile(() => tools.callTool(name, args));
       return {
         content: this.extractToolContent(result),
         details: result,
@@ -12717,21 +12584,19 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
             timeoutMs?: unknown;
             maxOutputCharacters?: unknown;
           };
-          const result = await this.keepPiTurnToolProgressAliveWhile(() =>
-            this.runCodeModeJavascript({
-              code: typeof raw.code === "string" ? raw.code : "",
-              orgId: context.orgId,
-              workspaceId: context.workspaceId,
-              threadId: context.threadId,
-              userId: context.userId ?? undefined,
-              toolUseId,
-              timeoutMs: typeof raw.timeoutMs === "number" ? raw.timeoutMs : null,
-              maxOutputCharacters:
-                typeof raw.maxOutputCharacters === "number"
-                  ? raw.maxOutputCharacters
-                  : null,
-            })
-          );
+          const result = await this.keepPiTurnToolProgressAliveWhile(() => this.runCodeModeJavascript({
+            code: typeof raw.code === "string" ? raw.code : "",
+            orgId: context.orgId,
+            workspaceId: context.workspaceId,
+            threadId: context.threadId,
+            userId: context.userId ?? undefined,
+            toolUseId,
+            timeoutMs: typeof raw.timeoutMs === "number" ? raw.timeoutMs : null,
+            maxOutputCharacters:
+              typeof raw.maxOutputCharacters === "number"
+                ? raw.maxOutputCharacters
+                : null,
+          }));
           return {
             content: [{ type: "text" as const, text: result.text }],
             details: result,
@@ -12767,10 +12632,9 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         params: unknown,
         signal?: AbortSignal,
         onUpdate?: (partialResult: AgentToolResult<unknown>) => void,
-      ) =>
-        this.keepPiTurnToolProgressAliveWhile(() =>
-          this.runPiSubagentTool(context, toolName, params, signal, onUpdate)
-        );
+      ) => this.keepPiTurnToolProgressAliveWhile(() =>
+        this.runPiSubagentTool(context, toolName, params, signal, onUpdate)
+      );
 
       definitions.push(
         {
@@ -13129,7 +12993,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
   }
 
   private async handlePiSessionEvent(event: AgentEvent): Promise<void> {
-    this.markPiTurnKeepAliveProgress();
+    this.touchPiTurnProgress();
     if (event.type === "agent_start") {
       this.piAssistantText = "";
       this.piActiveItemText = "";
@@ -13143,14 +13007,12 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       // this re-reads from OrgDO and every later call in the turn reuses it.
       this.cachedLlmProviderConfig = null;
       this.resetRunningActivityState();
-      this.touchPiTurnRecovery("running");
       this.setChatIsStreaming(true);
       return;
     }
 
     if (event.type === "turn_start") {
       this.piTurnStartedAtMs = Date.now();
-      this.touchPiTurnRecovery("running");
     }
 
     if (event.type === "turn_end") {
@@ -13516,7 +13378,6 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         summarySource,
       });
       this.setActiveTurnUserId(null);
-      this.clearPiTurnRecovery();
       this.completeTodoStateForTurnEnd();
       this.piActiveItemId = null;
       this.piActiveItemText = "";
@@ -13707,7 +13568,6 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
                 this.persistPiAgentLoopErrorForDevelopers(error, {
                   source: "pi_prompt",
                 });
-                this.clearPiTurnRecovery();
                 this.clearPiInFlightMessages();
                 const errorMessage =
                   error instanceof Error ? error.message : String(error);
@@ -13733,7 +13593,6 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         if (type === "stop") {
           this.piUserStopRequestedAtMs = Date.now();
           this.piSession.abort();
-          this.clearPiTurnRecovery();
           return true;
         }
         if (type === "ping") {

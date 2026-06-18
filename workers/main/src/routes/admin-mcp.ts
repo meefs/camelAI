@@ -364,7 +364,7 @@ function adminTools() {
     {
       name: TOOL_MANAGE_THREAD_RECOVERY,
       description:
-        "Inspect or clear stuck Pi turn recovery state for a chat thread. Use inspect to see pending/quarantined recovery state; use clear to stop recovery alarms and drop in-flight recovery rows.",
+        "Inspect or clear stuck Pi turn recovery state for a chat thread. Use inspect to see pending managed Pi turn fibers or one-release legacy recovery rows; use clear to cancel recovery fibers and drop in-flight recovery rows.",
       inputSchema: {
         type: "object",
         properties: {

@@ -98,16 +98,13 @@ describe('ChatThreadDO Codex turn handling', () => {
     fake.piReasoningItemId = null;
     fake.piToolArgs = new Map();
     fake.piAssistantText = '';
-    fake.touchPiTurnRecovery = vi.fn();
     fake.setChatIsStreaming = vi.fn();
     fake.appendPiCoreMessagesIfMissing = vi.fn();
     fake.upsertPiCoreMessages = vi.fn();
     fake.appendPiInFlightMessages = vi.fn();
     fake.loadPiInFlightMessages = vi.fn(() => []);
-    fake.loadPiTurnRecovery = vi.fn(() => null);
     fake.clearPiInFlightMessages = vi.fn();
     fake.setActiveTurnUserId = vi.fn();
-    fake.clearPiTurnRecovery = vi.fn();
     fake.completeTodoStateForTurnEnd = vi.fn();
     fake.recordChatThreadObservabilityEvent = vi.fn();
     fake.pushChatEvent = vi.fn((event: any) => events.push(event));
@@ -2403,174 +2400,190 @@ describe('ChatThreadDO Codex turn handling', () => {
     expect(fake.clearPiCoreCompaction).not.toHaveBeenCalled();
   });
 
-  it('quarantines stuck Pi turn recovery instead of retrying forever', async () => {
+  it('runs Pi turns inside an Agents SDK managed fiber', async () => {
     const fake = Object.create(ChatThreadDO.prototype) as any;
-    fake.loadPiTurnRecovery = vi.fn(() => ({
-      turn_id: 'turn1',
-      status: 'recovering',
-      user_content: 'hello',
-      user_timestamp: 1,
-      active_user_id: null,
-      retry_count: 3,
-      started_at: 1,
-      updated_at: 1,
-    }));
-    fake.loadPiTurnRecoveryQuarantine = vi.fn(() => null);
-    fake.quarantinePiTurnRecovery = vi.fn();
-    fake.schedulePiTurnRecoveryAlarm = vi.fn();
-    fake.piSession = null;
-
-    await ChatThreadDO.prototype.alarm.call(fake);
-
-    expect(fake.quarantinePiTurnRecovery).toHaveBeenCalledWith(
-      expect.stringContaining('reached max'),
-      3,
-    );
-    expect(fake.schedulePiTurnRecoveryAlarm).not.toHaveBeenCalled();
-  });
-
-  it('keeps Pi turns alive with a scoped alarm heartbeat', async () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(new Date('2026-01-01T00:00:00.000Z'));
-    const waitUntilPromises: Promise<unknown>[] = [];
-    const fake = Object.create(ChatThreadDO.prototype) as any;
-    fake.piTurnKeepAliveRefs = 0;
-    fake.loadPiTurnRecovery = vi.fn(() => null);
-    fake.loadPiTurnRecoveryQuarantine = vi.fn(() => null);
-    fake.recordChatThreadObservabilityEvent = vi.fn();
-    fake.ctx = {
-      waitUntil: vi.fn((promise: Promise<unknown>) => {
-        waitUntilPromises.push(promise);
-      }),
-      storage: {
-        setAlarm: vi.fn(async () => undefined),
-        deleteAlarm: vi.fn(async () => undefined),
-      },
-    };
-
-    await ChatThreadDO.prototype['keepAlivePiTurnWhile'].call(fake, async () => {
-      expect(fake.ctx.storage.setAlarm).toHaveBeenCalledWith(
-        Date.now() + 30_000,
-      );
-      expect(fake.ctx.storage.deleteAlarm).not.toHaveBeenCalled();
+    fake.activeTurnUserId = 'user1';
+    fake.loadPiInFlightMessages = vi.fn(async () => [{ role: 'user', content: 'hello', timestamp: 123 }]);
+    fake.sha256Hex = vi.fn(async () => 'abcdef1234567890');
+    const stash = vi.fn();
+    fake.startFiber = vi.fn(async (_name: string, fn: (ctx: { stash: typeof stash }) => Promise<unknown>) => {
+      await fn({ stash });
+      return { status: 'completed' };
     });
-    await Promise.all(waitUntilPromises);
+    fake.withPiTurnInactivityTimeout = vi.fn(async (fn: () => Promise<void>) => fn());
 
-    expect(fake.piTurnKeepAliveRefs).toBe(0);
-    expect(fake.ctx.storage.deleteAlarm).toHaveBeenCalled();
-    expect(fake.recordChatThreadObservabilityEvent).toHaveBeenCalledWith(
-      'pi_turn_keep_alive_started',
-      expect.objectContaining({ status: 'running' }),
-    );
-    expect(fake.recordChatThreadObservabilityEvent).toHaveBeenCalledWith(
-      'pi_turn_keep_alive_stopped',
-      expect.objectContaining({ status: 'idle' }),
-    );
+    await ChatThreadDO.prototype['keepAlivePiTurnWhile'].call(fake, async () => undefined);
+
+    expect(fake.startFiber).toHaveBeenCalledWith('pi-turn', expect.any(Function), expect.objectContaining({
+      waitForCompletion: true,
+      idempotencyKey: 'pi-turn:123:abcdef1234567890',
+      metadata: expect.objectContaining({ activeUserId: 'user1', inFlightCount: 1 }),
+    }));
+    expect(stash).toHaveBeenCalledWith(expect.objectContaining({ startedAt: expect.any(Number) }));
   });
 
-  it('does not recover a Pi turn while a keepalive-scoped prompt is still active', async () => {
+  it('recovers timed-out Pi turn fibers without legacy recovery alarms', async () => {
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    fake.activeTurnUserId = 'user1';
+    fake.loadPiInFlightMessages = vi.fn(async () => []);
+    fake.startFiber = vi.fn(async (_name: string, fn: () => Promise<unknown>) => {
+      await fn({ stash: vi.fn() });
+      return {
+        fiberId: 'fiber1',
+        status: 'error',
+        error: 'AbortError: Pi turn inactivity timeout',
+        createdAt: 123,
+        metadata: { activeUserId: 'user1' },
+      };
+    });
+    fake.withPiTurnInactivityTimeout = vi.fn(async (_fn: () => Promise<void>, onTimeout?: () => void) => {
+      onTimeout?.();
+    });
+    fake.recoverInterruptedPiTurn = vi.fn(async () => undefined);
+
+    await ChatThreadDO.prototype['keepAlivePiTurnWhile'].call(fake, async () => undefined);
+
+    expect(fake.recoverInterruptedPiTurn).toHaveBeenCalledWith(expect.objectContaining({
+      id: 'fiber1',
+      name: 'pi-turn',
+      snapshot: { activeUserId: 'user1' },
+      recoveryReason: 'interrupted',
+    }));
+  });
+
+  it('does not recover user-cancelled Pi turn aborts', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-01-01T00:00:00.000Z'));
-    const pendingTurn = {
-      turn_id: 'turn1',
-      status: 'running',
-      user_content: 'hello',
-      user_timestamp: 1,
-      active_user_id: null,
-      retry_count: 0,
-      started_at: 1,
-      updated_at: 1,
-    };
     const fake = Object.create(ChatThreadDO.prototype) as any;
-    fake.piTurnKeepAliveRefs = 1;
-    fake.loadPiTurnRecovery = vi.fn(() => pendingTurn);
-    fake.loadPiTurnRecoveryQuarantine = vi.fn(() => null);
-    fake.recordChatThreadObservabilityEvent = vi.fn();
-    fake.recoverInterruptedPiTurn = vi.fn();
-    fake.quarantinePiTurnRecovery = vi.fn();
-    fake.schedulePiTurnRecoveryAlarm = vi.fn();
-    fake.ctx = {
-      storage: {
-        setAlarm: vi.fn(async () => undefined),
-        deleteAlarm: vi.fn(async () => undefined),
-      },
-    };
-    fake.piSession = { state: { isStreaming: false } };
+    fake.piUserStopRequestedAtMs = Date.now();
+    fake.loadPiInFlightMessages = vi.fn(async () => []);
+    fake.startFiber = vi.fn(async () => ({
+      fiberId: 'fiber1',
+      status: 'error',
+      error: 'AbortError: user stopped turn',
+      createdAt: Date.now(),
+    }));
+    fake.recoverInterruptedPiTurn = vi.fn(async () => undefined);
 
-    await ChatThreadDO.prototype.alarm.call(fake);
+    await expect(
+      ChatThreadDO.prototype['keepAlivePiTurnWhile'].call(fake, async () => undefined),
+    ).rejects.toThrow(/user stopped turn/i);
 
     expect(fake.recoverInterruptedPiTurn).not.toHaveBeenCalled();
-    expect(fake.quarantinePiTurnRecovery).not.toHaveBeenCalled();
-    expect(fake.ctx.storage.setAlarm).toHaveBeenCalledWith(Date.now() + 30_000);
   });
 
-  it('refreshes Pi keepalive progress while a quiet tool call is still running', async () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(new Date('2026-01-01T00:00:00.000Z'));
+  it('routes recovered Pi fibers through Pi recovery', async () => {
     const fake = Object.create(ChatThreadDO.prototype) as any;
-    fake.piTurnKeepAliveRefs = 1;
-    fake.piTurnKeepAliveLastProgressAtMs = Date.now();
-
-    let resolveTool: (value: string) => void = () => {};
-    const run = ChatThreadDO.prototype['keepPiTurnToolProgressAliveWhile'].call(
-      fake,
-      () => new Promise<string>((resolve) => {
-        resolveTool = resolve;
-      }),
-    );
-
-    await vi.advanceTimersByTimeAsync(11 * 60_000);
-
-    expect(fake.piTurnKeepAliveLastProgressAtMs).toBe(Date.now());
-
-    resolveTool('ok');
-    await expect(run).resolves.toBe('ok');
-  });
-
-  it('aborts stalled Pi keepalive turns and resumes recovery', async () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(new Date('2026-01-01T00:10:00.000Z'));
-    const pendingTurn = {
-      turn_id: 'turn1',
-      status: 'running',
-      user_content: 'hello',
-      user_timestamp: 1,
-      active_user_id: null,
-      retry_count: 0,
-      started_at: 1,
-      updated_at: Date.now() - 60_000,
-    };
-    const fake = Object.create(ChatThreadDO.prototype) as any;
-    fake.piTurnKeepAliveRefs = 1;
-    fake.piTurnKeepAliveLastProgressAtMs = Date.now() - 10 * 60_000 - 1;
-    fake.loadPiTurnRecovery = vi.fn(() => pendingTurn);
-    fake.loadPiTurnRecoveryQuarantine = vi.fn(() => null);
     fake.recordChatThreadObservabilityEvent = vi.fn();
     fake.recoverInterruptedPiTurn = vi.fn(async () => undefined);
-    fake.quarantinePiTurnRecovery = vi.fn();
-    fake.schedulePiTurnRecoveryAlarm = vi.fn();
-    fake.disposePiSession = vi.fn();
-    fake.ctx = {
-      storage: {
-        setAlarm: vi.fn(async () => undefined),
-        deleteAlarm: vi.fn(async () => undefined),
-      },
+
+    const ctx = {
+      id: 'fiber1',
+      name: 'pi-turn',
+      snapshot: { activeUserId: 'user1' },
+      createdAt: Date.now() - 100,
+      recoveryReason: 'interrupted',
     };
-    fake.piSession = { state: { isStreaming: false } };
-    fake.piRecoveryInFlight = null;
+    const result = await ChatThreadDO.prototype.onFiberRecovered.call(fake, ctx);
 
-    await ChatThreadDO.prototype.alarm.call(fake);
+    expect(fake.recoverInterruptedPiTurn).toHaveBeenCalledWith(ctx);
+    expect(result).toEqual(expect.objectContaining({ status: 'completed' }));
+  });
 
-    expect(fake.piTurnKeepAliveRefs).toBe(0);
+  it('keeps recovered Pi fibers interrupted when recovery fails transiently', async () => {
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    fake.recordChatThreadObservabilityEvent = vi.fn();
+    fake.persistPiAgentLoopErrorForDevelopers = vi.fn();
+    fake.recoverInterruptedPiTurn = vi.fn(async () => {
+      throw new Error('OrgDO temporarily unavailable');
+    });
+
+    const ctx = {
+      id: 'fiber1',
+      name: 'pi-turn',
+      snapshot: { activeUserId: 'user1' },
+      createdAt: Date.now() - 100,
+      recoveryReason: 'interrupted',
+    };
+    const result = await ChatThreadDO.prototype.onFiberRecovered.call(fake, ctx);
+
+    expect(fake.persistPiAgentLoopErrorForDevelopers).toHaveBeenCalled();
+    expect(result).toEqual(expect.objectContaining({
+      status: 'interrupted',
+      snapshot: { activeUserId: 'user1' },
+    }));
+  });
+
+  it('drains one-release legacy Pi turn recovery rows when no managed fiber exists', async () => {
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    const legacyRow = {
+      turn_id: 'legacy-turn',
+      status: 'running',
+      active_user_id: 'user1',
+      retry_count: 1,
+      started_at: 100,
+      updated_at: 200,
+    };
+    const exec = vi.fn((sql: string) => ({
+      toArray: () => sql.includes('SELECT turn_id') ? [legacyRow] : [],
+    }));
+    fake.ctx = { storage: { sql: { exec } } };
+    fake.listFibers = vi.fn(async () => []);
+    fake.recordChatThreadObservabilityEvent = vi.fn();
+    fake.recoverInterruptedPiTurn = vi.fn(async () => undefined);
+
+    await ChatThreadDO.prototype['drainLegacyPiTurnRecoveryForMigration'].call(fake);
+
+    expect(fake.recoverInterruptedPiTurn).toHaveBeenCalledWith(expect.objectContaining({
+      id: 'legacy-turn',
+      name: 'pi-turn',
+      snapshot: { activeUserId: 'user1' },
+      createdAt: 100,
+      recoveryReason: 'interrupted',
+    }));
+    expect(exec).toHaveBeenCalledWith('DELETE FROM pi_turn_recovery WHERE id = 1');
+  });
+
+  it('recovers orphaned Pi in-flight rows when no managed fiber exists', async () => {
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    fake.activeTurnUserId = 'user1';
+    fake.loadLegacyPiTurnRecoveryForMigration = vi.fn(() => null);
+    fake.hasActivePiTurnFiber = vi.fn(async () => false);
+    fake.loadPiInFlightMessages = vi.fn(async () => [
+      { role: 'user', content: 'hello', timestamp: 123 },
+    ]);
+    fake.recordChatThreadObservabilityEvent = vi.fn();
+    fake.recoverInterruptedPiTurn = vi.fn(async () => undefined);
+
+    await ChatThreadDO.prototype['drainOrphanedPiInFlightRecovery'].call(fake);
+
+    expect(fake.recoverInterruptedPiTurn).toHaveBeenCalledWith(expect.objectContaining({
+      id: 'orphaned-in-flight',
+      name: 'pi-turn',
+      snapshot: { activeUserId: 'user1' },
+      createdAt: 123,
+      recoveryReason: 'interrupted',
+    }));
+  });
+
+  it('aborts Pi turns after an inactivity timeout', async () => {
+    vi.useFakeTimers();
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    fake.recordChatThreadObservabilityEvent = vi.fn();
+    fake.disposePiSession = vi.fn();
+    const promise = ChatThreadDO.prototype['withPiTurnInactivityTimeout'].call(
+      fake,
+      () => new Promise<void>(() => undefined),
+    );
+    const assertion = expect(promise).rejects.toThrow(/inactivity timeout/i);
+
+    await vi.advanceTimersByTimeAsync(10 * 60_000);
+    await assertion;
+
     expect(fake.disposePiSession).toHaveBeenCalledTimes(1);
-    expect(fake.recoverInterruptedPiTurn).toHaveBeenCalledWith(pendingTurn);
     expect(fake.recordChatThreadObservabilityEvent).toHaveBeenCalledWith(
       'pi_turn_keep_alive_aborted',
-      expect.objectContaining({
-        operation: 'alarm',
-        status: 'stalled',
-        count: 1,
-      }),
+      expect.objectContaining({ status: 'stalled' }),
     );
   });
 
@@ -4777,7 +4790,6 @@ describe('ChatThreadDO Codex turn handling', () => {
       },
     };
     fake.runCodeModeJavascript = vi.fn(async () => ({ text: 'done' }));
-    fake.keepPiTurnToolProgressAliveWhile = vi.fn(async (fn: () => Promise<unknown>) => fn());
 
     const tools = ChatThreadDO.prototype['createPiToolDefinitions'].call(fake, {
       orgId: 'org1',
@@ -4795,8 +4807,6 @@ describe('ChatThreadDO Codex turn handling', () => {
     });
 
     expect(jsExec.parameters.required).toContain('description');
-    expect(fake.keepPiTurnToolProgressAliveWhile).toHaveBeenCalledTimes(1);
-
     expect(fake.runCodeModeJavascript).toHaveBeenCalledWith({
       code: 'text("hello")',
       orgId: 'org1',
@@ -5197,6 +5207,7 @@ describe('ChatThreadDO Codex turn handling', () => {
         question: "What's your favorite programming language?",
         header: '',
         multiSelect: false,
+        allowOther: true,
         options: [
           { label: 'TypeScript', description: '' },
           { label: 'Python', description: '' },
@@ -5282,7 +5293,7 @@ describe('ChatThreadDO Codex turn handling', () => {
     );
   });
 
-  it('keeps Pi subagent tool progress alive while the child agent runs', async () => {
+  it('runs the Pi subagent tool with child-agent context', async () => {
     const fake = Object.create(ChatThreadDO.prototype) as any;
     fake.ctx = {
       exports: {
@@ -5291,7 +5302,6 @@ describe('ChatThreadDO Codex turn handling', () => {
         })),
       },
     };
-    fake.keepPiTurnToolProgressAliveWhile = vi.fn(async (fn: () => Promise<unknown>) => fn());
     fake.runPiSubagentTool = vi.fn(async () => ({
       content: [{ type: 'text', text: 'child done' }],
       details: { status: 'completed' },
@@ -5315,7 +5325,6 @@ describe('ChatThreadDO Codex turn handling', () => {
       onUpdate,
     );
 
-    expect(fake.keepPiTurnToolProgressAliveWhile).toHaveBeenCalledTimes(1);
     expect(fake.runPiSubagentTool).toHaveBeenCalledWith(
       context,
       'Agent',
@@ -7942,7 +7951,6 @@ describe('ChatThreadDO Codex turn handling', () => {
     fake.replacePiCoreMessages = vi.fn();
     fake.disposePiSession = vi.fn();
     fake.clearPiInFlightMessages = vi.fn();
-    fake.clearPiTurnRecovery = vi.fn();
     fake.recordChatThreadObservabilityEvent = vi.fn();
     fake.ctx = { storage: { sql: { exec: vi.fn() } } };
 
@@ -7977,7 +7985,6 @@ describe('ChatThreadDO Codex turn handling', () => {
     fake.replacePiCoreMessages = vi.fn(async () => undefined);
     fake.disposePiSession = vi.fn();
     fake.clearPiInFlightMessages = vi.fn();
-    fake.clearPiTurnRecovery = vi.fn();
     fake.recordChatThreadObservabilityEvent = vi.fn();
     fake.ctx = { storage: { sql: { exec: vi.fn() } } };
 
@@ -8024,7 +8031,6 @@ describe('ChatThreadDO Codex turn handling', () => {
     fake.replacePiCoreMessages = vi.fn(async () => undefined);
     fake.disposePiSession = vi.fn();
     fake.clearPiInFlightMessages = vi.fn();
-    fake.clearPiTurnRecovery = vi.fn();
     fake.recordChatThreadObservabilityEvent = vi.fn();
     fake.ctx = { storage: { sql: { exec: vi.fn() } } };
 
@@ -8066,7 +8072,6 @@ describe('ChatThreadDO Codex turn handling', () => {
     fake.replacePiCoreMessages = vi.fn(async () => undefined);
     fake.disposePiSession = vi.fn();
     fake.clearPiInFlightMessages = vi.fn();
-    fake.clearPiTurnRecovery = vi.fn();
     fake.recordChatThreadObservabilityEvent = vi.fn();
     fake.ctx = { storage: { sql: { exec: vi.fn() } } };
 
@@ -8105,7 +8110,6 @@ describe('ChatThreadDO Codex turn handling', () => {
     fake.replacePiCoreMessages = vi.fn(async () => undefined);
     fake.disposePiSession = vi.fn();
     fake.clearPiInFlightMessages = vi.fn();
-    fake.clearPiTurnRecovery = vi.fn();
     fake.recordChatThreadObservabilityEvent = vi.fn();
     fake.ctx = { storage: { sql: { exec: vi.fn() } } };
 

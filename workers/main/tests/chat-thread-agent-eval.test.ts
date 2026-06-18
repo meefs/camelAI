@@ -50,7 +50,6 @@ describe("ChatThreadDO agent eval sessions", () => {
     fake.startPiTurnRecovery = vi.fn(async () => undefined);
     fake.refreshPiSessionModel = vi.fn(async () => undefined);
     fake.keepAlivePiTurnWhile = vi.fn(async (fn: () => Promise<unknown>) => fn());
-    fake.clearPiTurnRecovery = vi.fn();
     fake.clearPiInFlightMessages = vi.fn();
     fake.getPiCoreParsedMessages = vi.fn(async () => parsedMessages);
     fake.piSession = {
