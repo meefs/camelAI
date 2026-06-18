@@ -95,6 +95,7 @@ For an agent client:
 | `GET` | `/api/admin/orgs/:id/usage/log/sum` | Bearer | Sum of usage costs between dates |
 | `PUT` | `/api/admin/signup-blocked-ips/:ip` | Bearer | Block an IP from signup |
 | `DELETE` | `/api/admin/signup-blocked-ips/:ip` | Bearer | Remove an IP from signup blocklist |
+| `GET` | `/api/admin/chat-errors` | Bearer | Query grouped chat errors, breakdowns, affected threads, and recent event samples |
 | `GET` | `/api/admin/threads` | Bearer | Paginated threads |
 | `GET` | `/api/admin/threads/:id/messages` | Bearer or superuser session | Parsed thread messages |
 | `PATCH` | `/api/admin/threads/:id` | Bearer | Update thread title and/or creator |
@@ -545,6 +546,52 @@ Response:
   "reason": null
 }
 ```
+
+### `GET /api/admin/chat-errors`
+
+Queries user-visible chat errors stored in the D1 admin index.
+
+Query params:
+
+- `range`: `1h | 6h | 24h | 7d | 30d`, default `24h`
+- `from`, `to`: millisecond timestamps; if either is supplied, explicit timestamps override `range`
+- exact filters: `fingerprint`, `org_id`, `workspace_id`, `thread_id`, `user_id`, `source`, `error_kind`, `provider`, `model`, `status`
+- `search`: substring match over normalized and sample messages
+- `limit`, `offset`: grouped fingerprint pagination, max `200`
+- `threads_limit`, `threads_offset`: affected-thread pagination, max `200`
+- `events_limit`, `events_offset`: recent event pagination, max `200`
+- `include_threads`: defaults to `true` when `fingerprint` is supplied
+- `include_events`: defaults to `false`; events are returned only when this is true and `events_limit > 0`
+- `include_breakdowns`: defaults to `true`
+- `sort_by`: `count | affected_threads | last_seen | first_seen`, default `count`
+- `sort_dir`: `asc | desc`, default `desc`
+
+The maximum window is 90 days. Invalid windows return `400`.
+
+Response includes:
+
+- `query`: resolved window, filters, and limits
+- `summary`: total events, affected threads, distinct groups, latest error timestamp
+- `groups`: grouped fingerprints with latest sample metadata and counts
+- `breakdowns`: by `source`, `error_kind`, `status`, `provider`, and `model`, unless disabled
+- `threads`: affected threads when requested or when filtering by `fingerprint`
+- `events`: recent event samples when requested
+
+Examples:
+
+```http
+GET /api/admin/chat-errors?range=24h
+GET /api/admin/chat-errors?fingerprint=abc123&include_threads=true
+GET /api/admin/chat-errors?provider=openai&model=gpt-5.4-mini&include_events=true&events_limit=10
+GET /api/admin/chat-errors?org_id=org_123&workspace_id=workspace_123&range=7d
+```
+
+Admin MCP investigation workflow:
+
+1. Call `query_chat_errors` for top groups.
+2. Call `query_chat_errors` with `fingerprint` to include affected threads.
+3. Add `include_events=true&events_limit=...` for concrete examples.
+4. Use `get_thread_messages` or `get_thread_jsonl` on representative `thread_id`s.
 
 ### `GET /api/admin/threads`
 

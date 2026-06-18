@@ -1,6 +1,11 @@
 import type {
   AdminAppListRow,
+  AdminChatErrorBreakdownRow,
+  AdminChatErrorBreakdowns,
+  AdminChatErrorEventRow,
+  AdminChatErrorFilters,
   AdminChatErrorGroupRow,
+  AdminChatErrorQueryOptions,
   AdminChatErrorSummary,
   AdminChatErrorThreadRow,
   AdminChatExplorerRow,
@@ -141,6 +146,12 @@ const CHAT_EXPLORER_SORT_COLS: Record<NonNullable<ChatExplorerFilters['sort_by']
   created_at: 't.created_at',
   updated_at: 't.updated_at',
 };
+const CHAT_ERROR_GROUP_SORT_COLS: Record<NonNullable<AdminChatErrorQueryOptions['sort_by']>, string> = {
+  count: 'count',
+  affected_threads: 'affected_thread_count',
+  last_seen: 'last_seen_at',
+  first_seen: 'first_seen_at',
+};
 const THREADS_INDEX_VERSION_KEY = 'threads_index_version';
 const THREADS_INDEX_VERSION = '3';
 const THREADS_INDEX_BACKFILL_REQUIRED_KEY = 'threads_index_backfill_required';
@@ -175,6 +186,93 @@ const CHAT_EXPLORER_FIRST_USER_MESSAGE_PREVIEW_LENGTH = 300;
 function normalizeChannelKindsForIndex(value: unknown): string | null {
   if (Array.isArray(value)) return JSON.stringify(value);
   return typeof value === 'string' ? value : null;
+}
+
+function normalizeChatErrorFilters(
+  options: Pick<AdminChatErrorQueryOptions, 'filters' | 'fingerprint'>,
+): AdminChatErrorFilters | undefined {
+  const filters: AdminChatErrorFilters = {};
+  const source = options.filters ?? {};
+  const copyString = (key: keyof Omit<AdminChatErrorFilters, 'status'>) => {
+    const value = source[key];
+    if (typeof value === 'string' && value.trim()) {
+      filters[key] = value.trim();
+    }
+  };
+
+  copyString('fingerprint');
+  copyString('org_id');
+  copyString('workspace_id');
+  copyString('thread_id');
+  copyString('user_id');
+  copyString('source');
+  copyString('error_kind');
+  copyString('provider');
+  copyString('model');
+  copyString('search');
+
+  const fingerprint = typeof options.fingerprint === 'string' ? options.fingerprint.trim() : '';
+  if (fingerprint) filters.fingerprint = fingerprint;
+
+  if (typeof source.status === 'number' && Number.isFinite(source.status)) {
+    filters.status = Math.trunc(source.status);
+  }
+
+  return Object.keys(filters).length > 0 ? filters : undefined;
+}
+
+function escapeSqlLike(value: string): string {
+  return value.replace(/[\\%_]/g, (match) => `\\${match}`);
+}
+
+type ChatErrorSqlFilterOptions = {
+  alias?: string;
+  startAt: number;
+  endAt: number;
+  filters?: AdminChatErrorFilters;
+};
+
+function buildChatErrorWhere(options: ChatErrorSqlFilterOptions): {
+  whereSql: string;
+  params: unknown[];
+} {
+  const prefix = options.alias ? `${options.alias}.` : '';
+  const conditions = [`${prefix}created_at >= ?`, `${prefix}created_at < ?`];
+  const params: unknown[] = [
+    Math.max(0, Math.floor(options.startAt)),
+    Math.max(0, Math.floor(options.endAt)),
+  ];
+  const filters = normalizeChatErrorFilters({ filters: options.filters });
+  const columns: Record<Exclude<keyof AdminChatErrorFilters, 'search'>, string> = {
+    fingerprint: 'fingerprint',
+    org_id: 'org_id',
+    workspace_id: 'workspace_id',
+    thread_id: 'thread_id',
+    user_id: 'user_id',
+    source: 'source',
+    error_kind: 'error_kind',
+    provider: 'provider',
+    model: 'model',
+    status: 'status',
+  };
+
+  for (const [key, column] of Object.entries(columns) as Array<[keyof typeof columns, string]>) {
+    const value = filters?.[key];
+    if (value === undefined) continue;
+    conditions.push(`${prefix}${column} = ?`);
+    params.push(value);
+  }
+
+  if (filters?.search) {
+    const like = `%${escapeSqlLike(filters.search)}%`;
+    conditions.push(`(${prefix}message_normalized LIKE ? ESCAPE '\\' OR ${prefix}message_sample LIKE ? ESCAPE '\\')`);
+    params.push(like, like);
+  }
+
+  return {
+    whereSql: `WHERE ${conditions.join(' AND ')}`,
+    params,
+  };
 }
 
 function normalizeModelHistoryForIndex(value: unknown, fallbackModel: unknown): string | null {
@@ -1278,12 +1376,11 @@ export class AppIndexDatabase {
     return { items, total, offset, limit, hasMore: offset + items.length < total };
   }
 
-  async getChatErrorSummary(options: {
-    startAt: number;
-    endAt: number;
-  }): Promise<AdminChatErrorSummary> {
+  async getChatErrorSummary(options: AdminChatErrorQueryOptions): Promise<AdminChatErrorSummary> {
     const startAt = Math.max(0, Math.floor(options.startAt));
-    const endAt = Math.max(startAt, Math.floor(options.endAt));
+    const endAt = Math.max(0, Math.floor(options.endAt));
+    const filters = normalizeChatErrorFilters(options);
+    const { whereSql, params } = buildChatErrorWhere({ startAt, endAt, filters });
     const row = await first<any>(
       this.db.prepare(`
         SELECT
@@ -1292,8 +1389,8 @@ export class AppIndexDatabase {
           COUNT(DISTINCT fingerprint) AS distinct_groups,
           MAX(created_at) AS latest_error_at
         FROM chat_error_events
-        WHERE created_at >= ? AND created_at < ?
-      `).bind(startAt, endAt),
+        ${whereSql}
+      `).bind(...params),
     );
     return {
       total_events: toNumber(row?.total_events),
@@ -1303,89 +1400,74 @@ export class AppIndexDatabase {
     };
   }
 
-  async getChatErrorGroups(options: {
-    startAt: number;
-    endAt: number;
-    limit?: number;
-    fingerprint?: string;
-  }): Promise<AdminChatErrorGroupRow[]> {
+  async getChatErrorGroups(options: AdminChatErrorQueryOptions): Promise<AdminChatErrorGroupRow[]> {
     const startAt = Math.max(0, Math.floor(options.startAt));
-    const endAt = Math.max(startAt, Math.floor(options.endAt));
+    const endAt = Math.max(0, Math.floor(options.endAt));
     const limit = Math.max(1, Math.min(200, Math.floor(options.limit ?? 50)));
-    const conditions = ['created_at >= ?', 'created_at < ?'];
-    const params: unknown[] = [startAt, endAt];
-    if (options.fingerprint?.trim()) {
-      conditions.push('fingerprint = ?');
-      params.push(options.fingerprint.trim());
-    }
-    const where = `WHERE ${conditions.join(' AND ')}`;
+    const offset = Math.max(0, Math.floor(options.offset ?? 0));
+    const filters = normalizeChatErrorFilters(options);
+    const { whereSql, params } = buildChatErrorWhere({ alias: 'e', startAt, endAt, filters });
+    const sortBy = CHAT_ERROR_GROUP_SORT_COLS[options.sort_by ?? 'count'] ?? 'count';
+    const sortDir = options.sort_dir === 'asc' ? 'ASC' : 'DESC';
     const rows = await this.all<any>(`
+      WITH filtered AS (
+        SELECT e.*
+        FROM chat_error_events e
+        ${whereSql}
+      )
       SELECT
         fingerprint,
         (
           SELECT message_sample
-          FROM chat_error_events sample
+          FROM filtered sample
           WHERE sample.fingerprint = grouped.fingerprint
-            AND sample.created_at >= ?
-            AND sample.created_at < ?
-          ORDER BY sample.created_at DESC
+          ORDER BY sample.created_at DESC, sample.id DESC
           LIMIT 1
         ) AS message_sample,
         (
           SELECT source
-          FROM chat_error_events sample
+          FROM filtered sample
           WHERE sample.fingerprint = grouped.fingerprint
-            AND sample.created_at >= ?
-            AND sample.created_at < ?
-          ORDER BY sample.created_at DESC
+          ORDER BY sample.created_at DESC, sample.id DESC
           LIMIT 1
         ) AS source,
         (
           SELECT error_kind
-          FROM chat_error_events sample
+          FROM filtered sample
           WHERE sample.fingerprint = grouped.fingerprint
-            AND sample.created_at >= ?
-            AND sample.created_at < ?
-          ORDER BY sample.created_at DESC
+          ORDER BY sample.created_at DESC, sample.id DESC
           LIMIT 1
         ) AS error_kind,
         (
           SELECT status
-          FROM chat_error_events sample
+          FROM filtered sample
           WHERE sample.fingerprint = grouped.fingerprint
-            AND sample.created_at >= ?
-            AND sample.created_at < ?
-          ORDER BY sample.created_at DESC
+          ORDER BY sample.created_at DESC, sample.id DESC
           LIMIT 1
         ) AS status,
         (
           SELECT provider
-          FROM chat_error_events sample
+          FROM filtered sample
           WHERE sample.fingerprint = grouped.fingerprint
-            AND sample.created_at >= ?
-            AND sample.created_at < ?
-          ORDER BY sample.created_at DESC
+          ORDER BY sample.created_at DESC, sample.id DESC
           LIMIT 1
         ) AS provider,
         (
           SELECT model
-          FROM chat_error_events sample
+          FROM filtered sample
           WHERE sample.fingerprint = grouped.fingerprint
-            AND sample.created_at >= ?
-            AND sample.created_at < ?
-          ORDER BY sample.created_at DESC
+          ORDER BY sample.created_at DESC, sample.id DESC
           LIMIT 1
         ) AS model,
         COUNT(*) AS count,
         COUNT(DISTINCT thread_id) AS affected_thread_count,
         MIN(created_at) AS first_seen_at,
         MAX(created_at) AS last_seen_at
-      FROM chat_error_events grouped
-      ${where}
+      FROM filtered grouped
       GROUP BY fingerprint
-      ORDER BY count DESC, affected_thread_count DESC, last_seen_at DESC
-      LIMIT ?
-    `, startAt, endAt, startAt, endAt, startAt, endAt, startAt, endAt, startAt, endAt, startAt, endAt, ...params, limit);
+      ORDER BY ${sortBy} ${sortDir}, count DESC, affected_thread_count DESC, last_seen_at DESC, fingerprint ASC
+      LIMIT ? OFFSET ?
+    `, ...params, limit, offset);
 
     return rows.map((row) => ({
       fingerprint: row.fingerprint,
@@ -1402,21 +1484,20 @@ export class AppIndexDatabase {
     }));
   }
 
-  async getChatErrorThreads(options: {
-    fingerprint: string;
-    startAt: number;
-    endAt: number;
-    limit?: number;
-    offset?: number;
-  }): Promise<AdminChatErrorThreadRow[]> {
-    const fingerprint = options.fingerprint.trim();
-    if (!fingerprint) return [];
+  async getChatErrorThreads(options: AdminChatErrorQueryOptions): Promise<AdminChatErrorThreadRow[]> {
     const startAt = Math.max(0, Math.floor(options.startAt));
-    const endAt = Math.max(startAt, Math.floor(options.endAt));
+    const endAt = Math.max(0, Math.floor(options.endAt));
     const limit = Math.max(1, Math.min(200, Math.floor(options.limit ?? 50)));
     const offset = Math.max(0, Math.floor(options.offset ?? 0));
+    const filters = normalizeChatErrorFilters(options);
+    const { whereSql, params } = buildChatErrorWhere({ alias: 'e', startAt, endAt, filters });
     const rows = await this.all<any>(`
-      WITH grouped AS (
+      WITH filtered AS (
+        SELECT e.*
+        FROM chat_error_events e
+        ${whereSql}
+      ),
+      grouped AS (
         SELECT
           e.thread_id,
           MAX(e.created_at) AS last_seen_at,
@@ -1425,18 +1506,12 @@ export class AppIndexDatabase {
           MAX(e.workspace_id) AS workspace_id,
           (
             SELECT latest.user_id
-            FROM chat_error_events latest
-            WHERE latest.fingerprint = ?
-              AND latest.thread_id = e.thread_id
-              AND latest.created_at >= ?
-              AND latest.created_at < ?
-            ORDER BY latest.created_at DESC
+            FROM filtered latest
+            WHERE latest.thread_id = e.thread_id
+            ORDER BY latest.created_at DESC, latest.id DESC
             LIMIT 1
           ) AS latest_user_id
-        FROM chat_error_events e
-        WHERE e.fingerprint = ?
-          AND e.created_at >= ?
-          AND e.created_at < ?
+        FROM filtered e
         GROUP BY e.thread_id
       )
       SELECT
@@ -1457,7 +1532,7 @@ export class AppIndexDatabase {
       LEFT JOIN users u ON u.id = COALESCE(t.created_by, grouped.latest_user_id)
       ORDER BY grouped.last_seen_at DESC, grouped.count DESC, grouped.thread_id ASC
       LIMIT ? OFFSET ?
-    `, fingerprint, startAt, endAt, fingerprint, startAt, endAt, limit, offset);
+    `, ...params, limit, offset);
 
     return rows.map((row) => ({
       thread_id: row.thread_id,
@@ -1470,6 +1545,103 @@ export class AppIndexDatabase {
       user_email: row.user_email ?? null,
       last_seen_at: row.last_seen_at,
       count: toNumber(row.count),
+    }));
+  }
+
+  async getChatErrorBreakdowns(options: AdminChatErrorQueryOptions): Promise<AdminChatErrorBreakdowns> {
+    const startAt = Math.max(0, Math.floor(options.startAt));
+    const endAt = Math.max(0, Math.floor(options.endAt));
+    const filters = normalizeChatErrorFilters(options);
+    const breakdown = async (
+      column: 'source' | 'error_kind' | 'status' | 'provider' | 'model',
+    ): Promise<AdminChatErrorBreakdownRow[]> => {
+      const { whereSql, params } = buildChatErrorWhere({ alias: 'e', startAt, endAt, filters });
+      const rows = await this.all<any>(`
+        SELECT
+          e.${column} AS value,
+          COUNT(*) AS count,
+          COUNT(DISTINCT e.thread_id) AS affected_thread_count,
+          MAX(e.created_at) AS latest_error_at
+        FROM chat_error_events e
+        ${whereSql}
+        GROUP BY e.${column}
+        ORDER BY count DESC, affected_thread_count DESC, latest_error_at DESC
+        LIMIT 200
+      `, ...params);
+      return rows.map((row) => ({
+        value: row.value ?? null,
+        count: toNumber(row.count),
+        affected_thread_count: toNumber(row.affected_thread_count),
+        latest_error_at: row.latest_error_at ?? null,
+      }));
+    };
+
+    const [source, error_kind, status, provider, model] = await Promise.all([
+      breakdown('source'),
+      breakdown('error_kind'),
+      breakdown('status'),
+      breakdown('provider'),
+      breakdown('model'),
+    ]);
+    return { source, error_kind, status, provider, model };
+  }
+
+  async getChatErrorEvents(options: AdminChatErrorQueryOptions): Promise<AdminChatErrorEventRow[]> {
+    const startAt = Math.max(0, Math.floor(options.startAt));
+    const endAt = Math.max(0, Math.floor(options.endAt));
+    const limit = Math.max(1, Math.min(200, Math.floor(options.limit ?? 50)));
+    const offset = Math.max(0, Math.floor(options.offset ?? 0));
+    const filters = normalizeChatErrorFilters(options);
+    const { whereSql, params } = buildChatErrorWhere({ alias: 'e', startAt, endAt, filters });
+    const rows = await this.all<any>(`
+      SELECT
+        e.id,
+        e.fingerprint,
+        e.thread_id,
+        t.title,
+        COALESCE(t.org_id, e.org_id) AS org_id,
+        o.name AS org_name,
+        COALESCE(t.workspace_id, e.workspace_id) AS workspace_id,
+        w.name AS workspace_name,
+        e.user_id,
+        u.email AS user_email,
+        e.created_at,
+        e.source,
+        e.error_kind,
+        e.status,
+        e.provider,
+        e.model,
+        e.message_sample,
+        e.message_normalized
+      FROM chat_error_events e
+      LEFT JOIN threads t ON t.id = e.thread_id
+      LEFT JOIN orgs o ON o.id = COALESCE(t.org_id, e.org_id)
+      LEFT JOIN workspaces w ON w.id = COALESCE(t.workspace_id, e.workspace_id)
+      LEFT JOIN users u ON u.id = e.user_id
+      ${whereSql}
+      ORDER BY e.created_at DESC, e.id DESC
+      LIMIT ? OFFSET ?
+    `, ...params, limit, offset);
+
+    return rows.map((row) => ({
+      id: row.id,
+      fingerprint: row.fingerprint,
+      thread_id: row.thread_id,
+      title: row.title ?? null,
+      org_id: row.org_id,
+      org_name: row.org_name ?? null,
+      workspace_id: row.workspace_id,
+      workspace_name: row.workspace_name ?? null,
+      user_id: row.user_id ?? null,
+      user_email: row.user_email ?? null,
+      created_at: row.created_at,
+      source: row.source,
+      error_kind: row.error_kind ?? null,
+      status: row.status ?? null,
+      provider: row.provider ?? null,
+      model: row.model ?? null,
+      message_sample: row.message_sample,
+      message_normalized: row.message_normalized,
     }));
   }
 

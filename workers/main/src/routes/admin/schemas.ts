@@ -107,6 +107,37 @@ export const AppsQuerySchema = PaginationQuerySchema.extend({
   sort_dir: z.enum(["asc", "desc"]).optional().default("desc"),
 });
 
+export const ChatErrorsQuerySchema = z.object({
+  range: z.enum(["1h", "6h", "24h", "7d", "30d"]).optional(),
+  from: z.coerce.number().int().min(0).optional(),
+  to: z.coerce.number().int().min(0).optional(),
+  fingerprint: z.string().optional(),
+  org_id: z.string().optional(),
+  workspace_id: z.string().optional(),
+  thread_id: z.string().optional(),
+  user_id: z.string().optional(),
+  source: z.string().optional(),
+  error_kind: z.string().optional(),
+  provider: z.string().optional(),
+  model: z.string().optional(),
+  status: z.coerce.number().int().optional(),
+  search: z.string().optional(),
+  limit: z.coerce.number().int().min(1).max(200).optional().default(50),
+  offset: z.coerce.number().int().min(0).optional().default(0),
+  threads_limit: z.coerce.number().int().min(1).max(200).optional().default(50),
+  threads_offset: z.coerce.number().int().min(0).optional().default(0),
+  events_limit: z.coerce.number().int().min(0).max(200).optional().default(0),
+  events_offset: z.coerce.number().int().min(0).optional().default(0),
+  include_threads: booleanQueryParam,
+  include_events: booleanQueryParam,
+  include_breakdowns: booleanQueryParam,
+  sort_by: z
+    .enum(["count", "affected_threads", "last_seen", "first_seen"])
+    .optional()
+    .default("count"),
+  sort_dir: z.enum(["asc", "desc"]).optional().default("desc"),
+});
+
 // ---------------------------------------------------------------------------
 // Request schemas (mutations)
 // ---------------------------------------------------------------------------
@@ -439,6 +470,108 @@ export const BanStartResponseSchema = z.object({
   ban_status: z.literal("active"),
   purge_status: z.enum(["pending", "running", "completed", "failed"]),
   job_id: z.string(),
+});
+
+const ChatErrorFiltersSchema = z.object({
+  fingerprint: z.string().optional(),
+  org_id: z.string().optional(),
+  workspace_id: z.string().optional(),
+  thread_id: z.string().optional(),
+  user_id: z.string().optional(),
+  source: z.string().optional(),
+  error_kind: z.string().optional(),
+  provider: z.string().optional(),
+  model: z.string().optional(),
+  status: z.number().int().optional(),
+  search: z.string().optional(),
+});
+
+const ChatErrorSummarySchema = z.object({
+  total_events: z.number().int(),
+  affected_threads: z.number().int(),
+  distinct_groups: z.number().int(),
+  latest_error_at: z.number().nullable(),
+});
+
+const ChatErrorGroupSchema = z.object({
+  fingerprint: z.string(),
+  message_sample: z.string(),
+  source: z.string(),
+  error_kind: z.string().nullable(),
+  status: z.number().int().nullable(),
+  provider: z.string().nullable(),
+  model: z.string().nullable(),
+  count: z.number().int(),
+  affected_thread_count: z.number().int(),
+  first_seen_at: z.number(),
+  last_seen_at: z.number(),
+});
+
+const ChatErrorBreakdownRowSchema = z.object({
+  value: z.union([z.string(), z.number(), z.null()]),
+  count: z.number().int(),
+  affected_thread_count: z.number().int(),
+  latest_error_at: z.number().nullable(),
+});
+
+const ChatErrorThreadSchema = z.object({
+  thread_id: z.string(),
+  title: z.string().nullable(),
+  org_id: z.string(),
+  org_name: z.string().nullable(),
+  workspace_id: z.string(),
+  workspace_name: z.string().nullable(),
+  user_id: z.string().nullable(),
+  user_email: z.string().nullable(),
+  last_seen_at: z.number(),
+  count: z.number().int(),
+});
+
+const ChatErrorEventSchema = z.object({
+  id: z.string(),
+  fingerprint: z.string(),
+  thread_id: z.string(),
+  title: z.string().nullable(),
+  org_id: z.string(),
+  org_name: z.string().nullable(),
+  workspace_id: z.string(),
+  workspace_name: z.string().nullable(),
+  user_id: z.string().nullable(),
+  user_email: z.string().nullable(),
+  created_at: z.number(),
+  source: z.string(),
+  error_kind: z.string().nullable(),
+  status: z.number().int().nullable(),
+  provider: z.string().nullable(),
+  model: z.string().nullable(),
+  message_sample: z.string(),
+  message_normalized: z.string(),
+});
+
+export const ChatErrorsResponseSchema = z.object({
+  query: z.object({
+    from: z.number().int(),
+    to: z.number().int(),
+    range: z.string().nullable(),
+    filters: ChatErrorFiltersSchema,
+    limit: z.number().int(),
+    offset: z.number().int(),
+    threads_limit: z.number().int(),
+    threads_offset: z.number().int(),
+    events_limit: z.number().int(),
+    events_offset: z.number().int(),
+  }),
+  summary: ChatErrorSummarySchema,
+  groups: z.array(ChatErrorGroupSchema),
+  breakdowns: z.object({
+    source: z.array(ChatErrorBreakdownRowSchema),
+    error_kind: z.array(ChatErrorBreakdownRowSchema),
+    status: z.array(ChatErrorBreakdownRowSchema),
+    provider: z.array(ChatErrorBreakdownRowSchema),
+    model: z.array(ChatErrorBreakdownRowSchema),
+  }).optional(),
+  threads: z.array(ChatErrorThreadSchema).optional(),
+  events: z.array(ChatErrorEventSchema).optional(),
 });
 
 // ---------------------------------------------------------------------------

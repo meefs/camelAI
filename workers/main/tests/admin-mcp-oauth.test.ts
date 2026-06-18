@@ -80,6 +80,83 @@ function parseToolText(rpc: any) {
   return JSON.parse(rpc.result.content[0].text);
 }
 
+async function seedMcpChatErrors(prefix = `mcp-chat-errors-${crypto.randomUUID()}`) {
+  const appIndex = getAppIndexDatabase(testEnv)!;
+  const base = Date.now() + Math.floor(Math.random() * 1_000_000);
+  const userId = `${prefix}-user`;
+  const orgId = `${prefix}-org`;
+  const workspaceId = `${prefix}-workspace`;
+  const threadId = `${prefix}-thread`;
+  const fingerprint = `${prefix}-fingerprint`;
+
+  await appIndex.applyAdminEvent({
+    type: "user_upsert",
+    payload: {
+      id: userId,
+      email: `${prefix}@example.com`,
+      name: `${prefix} User`,
+      created_at: base - 10_000,
+      avatar: { color: "#111111", content: "U" },
+    },
+  });
+  await appIndex.applyAdminEvent({
+    type: "org_upsert",
+    payload: {
+      id: orgId,
+      name: `${prefix} Org`,
+      created_at: base - 9_000,
+      created_by: userId,
+      archived: false,
+    },
+  });
+  await appIndex.applyAdminEvent({
+    type: "workspace_upsert",
+    payload: {
+      id: workspaceId,
+      name: `${prefix} Workspace`,
+      org_id: orgId,
+      created_at: base - 8_000,
+      created_by: userId,
+      archived: false,
+    },
+  });
+  await appIndex.applyAdminEvent({
+    type: "thread_upsert",
+    payload: {
+      id: threadId,
+      title: `${prefix} Thread`,
+      model: "sonnet",
+      org_id: orgId,
+      workspace_id: workspaceId,
+      created_by: userId,
+      created_at: base - 7_000,
+      updated_at: base + 2_000,
+    },
+  });
+  await appIndex.applyAdminEvent({
+    type: "thread_error_recorded",
+    payload: {
+      id: `${threadId}:${base + 1_000}:${fingerprint}`,
+      fingerprint,
+      thread_id: threadId,
+      org_id: orgId,
+      workspace_id: workspaceId,
+      user_id: userId,
+      created_at: base + 1_000,
+      source: "pi_provider",
+      error_kind: "rate_limit",
+      status: 429,
+      provider: "openai",
+      model: "gpt-5.4-mini",
+      message_normalized: "Provider returned [id]",
+      message_sample: "Provider returned request id",
+    },
+  });
+  await appIndex.markBootstrapComplete();
+
+  return { base, userId, orgId, workspaceId, threadId, fingerprint };
+}
+
 describe("admin MCP OAuth resource", () => {
   afterEach(() => {
     vi.restoreAllMocks();
@@ -310,6 +387,7 @@ describe("admin MCP OAuth resource", () => {
           expect.objectContaining({ name: "search_users" }),
           expect.objectContaining({ name: "search_orgs" }),
           expect.objectContaining({ name: "search_threads" }),
+          expect.objectContaining({ name: "query_chat_errors" }),
           expect.objectContaining({ name: "get_thread_jsonl" }),
           expect.objectContaining({ name: "manage_thread_recovery" }),
           expect.objectContaining({ name: "inspect_thread_previews" }),
@@ -330,6 +408,80 @@ describe("admin MCP OAuth resource", () => {
     expect(setCreditsTool.description).toContain(
       "without creating a grant ledger row",
     );
+  });
+
+  it("lets superusers query chat errors through the dedicated MCP tool", async () => {
+    const { userId } = await createUser(
+      testEnv,
+      `admin-mcp-chat-errors-${crypto.randomUUID()}@example.com`,
+      "password123",
+      "Chat Error Admin",
+    );
+    await createOrg(testEnv, "MCP Chat Error Admin Org", userId);
+    await updateUserProfile(testEnv, userId, { is_superuser: true });
+    const fixture = await seedMcpChatErrors();
+    const token = await issueAdminMcpToken(userId);
+
+    const response = await handleAdminMcp({
+      req: mcpRequest(
+        {
+          jsonrpc: "2.0",
+          id: 1,
+          method: "tools/call",
+          params: {
+            name: "query_chat_errors",
+            arguments: {
+              from: fixture.base,
+              to: fixture.base + 2_000,
+              fingerprint: fixture.fingerprint,
+              include_events: true,
+              events_limit: 1,
+            },
+          },
+        },
+        token,
+      ),
+      env: testEnv,
+      ctx: {} as ExecutionContext,
+      url: new URL("https://example.com/api/admin/mcp"),
+      match: [] as unknown as RegExpMatchArray,
+    });
+
+    expect(response?.status).toBe(200);
+    const rpc = (await response?.json()) as any;
+    const payload = parseToolText(rpc);
+    expect(payload).toMatchObject({
+      status: 200,
+      ok: true,
+      body_json: {
+        summary: {
+          total_events: 1,
+          affected_threads: 1,
+          distinct_groups: 1,
+        },
+        groups: [
+          expect.objectContaining({
+            fingerprint: fixture.fingerprint,
+            count: 1,
+          }),
+        ],
+        threads: [
+          expect.objectContaining({
+            thread_id: fixture.threadId,
+            workspace_id: fixture.workspaceId,
+            count: 1,
+          }),
+        ],
+        events: [
+          expect.objectContaining({
+            fingerprint: fixture.fingerprint,
+            thread_id: fixture.threadId,
+            org_id: fixture.orgId,
+            user_id: fixture.userId,
+          }),
+        ],
+      },
+    });
   });
 
   it("runs admin JavaScript that can call Durable Object RPC methods", async () => {

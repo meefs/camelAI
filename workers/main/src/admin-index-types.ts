@@ -149,6 +149,89 @@ export interface AdminChatErrorSummary {
   latest_error_at: number | null;
 }
 
+export interface AdminChatErrorFilters {
+  fingerprint?: string;
+  org_id?: string;
+  workspace_id?: string;
+  thread_id?: string;
+  user_id?: string;
+  source?: string;
+  error_kind?: string;
+  provider?: string;
+  model?: string;
+  status?: number;
+  search?: string;
+}
+
+export type AdminChatErrorGroupSortBy = 'count' | 'affected_threads' | 'last_seen' | 'first_seen';
+
+export interface AdminChatErrorQueryOptions {
+  startAt: number;
+  endAt: number;
+  filters?: AdminChatErrorFilters;
+  fingerprint?: string | null;
+  limit?: number;
+  offset?: number;
+  sort_by?: AdminChatErrorGroupSortBy;
+  sort_dir?: 'asc' | 'desc';
+}
+
+export interface AdminChatErrorBreakdownRow {
+  value: string | number | null;
+  count: number;
+  affected_thread_count: number;
+  latest_error_at: number | null;
+}
+
+export interface AdminChatErrorBreakdowns {
+  source: AdminChatErrorBreakdownRow[];
+  error_kind: AdminChatErrorBreakdownRow[];
+  status: AdminChatErrorBreakdownRow[];
+  provider: AdminChatErrorBreakdownRow[];
+  model: AdminChatErrorBreakdownRow[];
+}
+
+export interface AdminChatErrorEventRow {
+  id: string;
+  fingerprint: string;
+  thread_id: string;
+  title: string | null;
+  org_id: string;
+  org_name: string | null;
+  workspace_id: string;
+  workspace_name: string | null;
+  user_id: string | null;
+  user_email: string | null;
+  created_at: number;
+  source: string;
+  error_kind: string | null;
+  status: number | null;
+  provider: string | null;
+  model: string | null;
+  message_sample: string;
+  message_normalized: string;
+}
+
+export interface AdminChatErrorsResponse {
+  query: {
+    from: number;
+    to: number;
+    range: string | null;
+    filters: AdminChatErrorFilters;
+    limit: number;
+    offset: number;
+    threads_limit: number;
+    threads_offset: number;
+    events_limit: number;
+    events_offset: number;
+  };
+  summary: AdminChatErrorSummary;
+  groups: AdminChatErrorGroupRow[];
+  breakdowns?: AdminChatErrorBreakdowns;
+  threads?: AdminChatErrorThreadRow[];
+  events?: AdminChatErrorEventRow[];
+}
+
 export interface AdminAppListRow {
   app_id: string;
   script_name: string;

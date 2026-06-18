@@ -47,6 +47,7 @@ const TOOL_SEARCH_ORGS = "search_orgs";
 const TOOL_GET_ORG_DETAIL = "get_org_detail";
 const TOOL_UPDATE_ORG_MODEL_ACCESS = "update_org_model_access";
 const TOOL_SEARCH_THREADS = "search_threads";
+const TOOL_QUERY_CHAT_ERRORS = "query_chat_errors";
 const TOOL_GET_THREAD_MESSAGES = "get_thread_messages";
 const TOOL_GET_THREAD_JSONL = "get_thread_jsonl";
 const TOOL_MANAGE_THREAD_MESSAGE_ROWS = "manage_thread_message_rows";
@@ -303,6 +304,42 @@ function adminTools() {
           workspace_id: { type: "string" },
           created_by: { type: "string" },
           sort_by: { type: "string", enum: ["created_at", "updated_at"] },
+          sort_dir: { type: "string", enum: ["asc", "desc"] },
+        },
+        additionalProperties: false,
+      },
+    },
+    {
+      name: TOOL_QUERY_CHAT_ERRORS,
+      description:
+        "Query user-visible chat errors recorded in the admin error dashboard. Returns summaries, grouped fingerprints, optional dimension breakdowns, optional affected threads, and optional recent event samples. Use fingerprint plus include_threads to drill into one grouped error; use include_events for concrete examples before fetching thread messages.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          range: { type: "string", enum: ["1h", "6h", "24h", "7d", "30d"] },
+          from: { type: "integer", minimum: 0, description: "Start timestamp in milliseconds since epoch." },
+          to: { type: "integer", minimum: 0, description: "End timestamp in milliseconds since epoch." },
+          fingerprint: { type: "string" },
+          org_id: { type: "string" },
+          workspace_id: { type: "string" },
+          thread_id: { type: "string" },
+          user_id: { type: "string" },
+          source: { type: "string" },
+          error_kind: { type: "string" },
+          provider: { type: "string" },
+          model: { type: "string" },
+          status: { type: "integer" },
+          search: { type: "string" },
+          limit: { type: "integer", minimum: 1, maximum: 200, description: "Grouped fingerprint limit. Defaults to 50." },
+          offset: { type: "integer", minimum: 0, description: "Grouped fingerprint offset. Defaults to 0." },
+          threads_limit: { type: "integer", minimum: 1, maximum: 200, description: "Affected thread limit. Defaults to 50." },
+          threads_offset: { type: "integer", minimum: 0, description: "Affected thread offset. Defaults to 0." },
+          events_limit: { type: "integer", minimum: 0, maximum: 200, description: "Recent event limit. Defaults to 0." },
+          events_offset: { type: "integer", minimum: 0, description: "Recent event offset. Defaults to 0." },
+          include_threads: { type: "boolean", description: "Defaults to true when fingerprint is supplied." },
+          include_events: { type: "boolean", description: "Defaults to false." },
+          include_breakdowns: { type: "boolean", description: "Defaults to true." },
+          sort_by: { type: "string", enum: ["count", "affected_threads", "last_seen", "first_seen"] },
           sort_dir: { type: "string", enum: ["asc", "desc"] },
         },
         additionalProperties: false,
@@ -2027,6 +2064,39 @@ async function callTool(
       method: "GET",
       path: "/api/admin/threads",
       query: pickQuery(input, ["limit", "offset", "search", "org_id", "workspace_id", "created_by", "sort_by", "sort_dir"]),
+    });
+  }
+  if (name === TOOL_QUERY_CHAT_ERRORS) {
+    return fetchAdminApiTool(req, env, grant, {
+      method: "GET",
+      path: "/api/admin/chat-errors",
+      query: pickQuery(input, [
+        "range",
+        "from",
+        "to",
+        "fingerprint",
+        "org_id",
+        "workspace_id",
+        "thread_id",
+        "user_id",
+        "source",
+        "error_kind",
+        "provider",
+        "model",
+        "status",
+        "search",
+        "limit",
+        "offset",
+        "threads_limit",
+        "threads_offset",
+        "events_limit",
+        "events_offset",
+        "include_threads",
+        "include_events",
+        "include_breakdowns",
+        "sort_by",
+        "sort_dir",
+      ]),
     });
   }
   if (name === TOOL_GET_THREAD_MESSAGES) {

@@ -32,6 +32,13 @@ import type {
   AdminUserSummaryRow,
   AdminThreadListRow,
   AdminAppListRow,
+  AdminChatErrorBreakdowns,
+  AdminChatErrorEventRow,
+  AdminChatErrorFilters,
+  AdminChatErrorGroupRow,
+  AdminChatErrorGroupSortBy,
+  AdminChatErrorSummary,
+  AdminChatErrorThreadRow,
 } from "../../admin-index-types.js";
 import type {
   DashboardRetentionOptions,
@@ -76,6 +83,8 @@ import {
   OrgLlmProvidersQuerySchema,
   WorkspacesQuerySchema,
   AppsQuerySchema,
+  ChatErrorsQuerySchema,
+  ChatErrorsResponseSchema,
   OrgUsageSpendSchema,
   OrgUsageLimitsSchema,
   OrgUsageLogSchema,
@@ -196,6 +205,102 @@ type DashboardMetricsLookup = {
     options?: DashboardRetentionOptions,
   ): Promise<DashboardRetentionResponse>;
 };
+
+type AdminChatErrorLookup = {
+  getChatErrorSummary(options: {
+    startAt: number;
+    endAt: number;
+    filters?: AdminChatErrorFilters;
+  }): Promise<AdminChatErrorSummary>;
+  getChatErrorGroups(options: {
+    startAt: number;
+    endAt: number;
+    filters?: AdminChatErrorFilters;
+    limit?: number;
+    offset?: number;
+    sort_by?: AdminChatErrorGroupSortBy;
+    sort_dir?: "asc" | "desc";
+  }): Promise<AdminChatErrorGroupRow[]>;
+  getChatErrorBreakdowns(options: {
+    startAt: number;
+    endAt: number;
+    filters?: AdminChatErrorFilters;
+  }): Promise<AdminChatErrorBreakdowns>;
+  getChatErrorThreads(options: {
+    startAt: number;
+    endAt: number;
+    filters?: AdminChatErrorFilters;
+    limit?: number;
+    offset?: number;
+  }): Promise<AdminChatErrorThreadRow[]>;
+  getChatErrorEvents(options: {
+    startAt: number;
+    endAt: number;
+    filters?: AdminChatErrorFilters;
+    limit?: number;
+    offset?: number;
+  }): Promise<AdminChatErrorEventRow[]>;
+};
+
+const CHAT_ERROR_RANGE_MS = {
+  "1h": 60 * 60 * 1000,
+  "6h": 6 * 60 * 60 * 1000,
+  "24h": 24 * 60 * 60 * 1000,
+  "7d": 7 * 24 * 60 * 60 * 1000,
+  "30d": 30 * 24 * 60 * 60 * 1000,
+} as const;
+const CHAT_ERROR_DEFAULT_RANGE = "24h" as const;
+const CHAT_ERROR_MAX_WINDOW_MS = 90 * 24 * 60 * 60 * 1000;
+
+function normalizeChatErrorStringFilter(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed : undefined;
+}
+
+function buildChatErrorFilters(query: z.infer<typeof ChatErrorsQuerySchema>): AdminChatErrorFilters {
+  const filters: AdminChatErrorFilters = {};
+  for (const key of [
+    "fingerprint",
+    "org_id",
+    "workspace_id",
+    "thread_id",
+    "user_id",
+    "source",
+    "error_kind",
+    "provider",
+    "model",
+    "search",
+  ] as const) {
+    const value = normalizeChatErrorStringFilter(query[key]);
+    if (value) filters[key] = value;
+  }
+  if (query.status !== undefined) filters.status = query.status;
+  return filters;
+}
+
+function resolveChatErrorWindow(query: z.infer<typeof ChatErrorsQuerySchema>):
+  | { startAt: number; endAt: number; range: string | null }
+  | { error: string } {
+  const hasExplicitWindow = query.from !== undefined || query.to !== undefined;
+  const endAt = hasExplicitWindow ? query.to ?? Date.now() : Date.now();
+  const range = query.range ?? CHAT_ERROR_DEFAULT_RANGE;
+  const startAt = hasExplicitWindow
+    ? query.from ?? endAt - CHAT_ERROR_RANGE_MS[CHAT_ERROR_DEFAULT_RANGE]
+    : endAt - CHAT_ERROR_RANGE_MS[range];
+
+  if (startAt >= endAt) {
+    return { error: "Invalid time window: from must be before to" };
+  }
+  if (endAt - startAt > CHAT_ERROR_MAX_WINDOW_MS) {
+    return { error: "Invalid time window: maximum range is 90 days" };
+  }
+
+  return {
+    startAt,
+    endAt,
+    range: hasExplicitWindow ? null : range,
+  };
+}
 
 function normalizeAdminThreadResponse<T extends { model: unknown }>(thread: T) {
   return {
@@ -1580,6 +1685,88 @@ routes.delete(
       blocked_at: null,
       blocked_by: null,
       reason: null,
+    });
+  },
+);
+
+// ---------------------------------------------------------------------------
+// GET /chat-errors
+// ---------------------------------------------------------------------------
+
+routes.get(
+  "/chat-errors",
+  openApi({
+    summary: "Query user-visible chat errors",
+    request: {
+      query: ChatErrorsQuerySchema,
+    },
+    responses: {
+      200: ChatErrorsResponseSchema,
+      400: ErrorSchema,
+    },
+  }),
+  async (c) => {
+    const query = c.req.valid("query");
+    const window = resolveChatErrorWindow(query);
+    if ("error" in window) {
+      return c.json({ error: window.error }, 400);
+    }
+
+    const filters = buildChatErrorFilters(query);
+    const includeBreakdowns = query.include_breakdowns ?? true;
+    const includeThreads = query.include_threads ?? Boolean(filters.fingerprint);
+    const includeEvents = (query.include_events ?? false) && query.events_limit > 0;
+    const adminIndex = getAdminIndexStub(c.env) as unknown as AdminChatErrorLookup;
+    const baseOptions = {
+      startAt: window.startAt,
+      endAt: window.endAt,
+      filters,
+    };
+
+    const [summary, groups, breakdowns, threads, events] = await Promise.all([
+      adminIndex.getChatErrorSummary(baseOptions),
+      adminIndex.getChatErrorGroups({
+        ...baseOptions,
+        limit: query.limit,
+        offset: query.offset,
+        sort_by: query.sort_by,
+        sort_dir: query.sort_dir,
+      }),
+      includeBreakdowns ? adminIndex.getChatErrorBreakdowns(baseOptions) : Promise.resolve(undefined),
+      includeThreads
+        ? adminIndex.getChatErrorThreads({
+            ...baseOptions,
+            limit: query.threads_limit,
+            offset: query.threads_offset,
+          })
+        : Promise.resolve(undefined),
+      includeEvents
+        ? adminIndex.getChatErrorEvents({
+            ...baseOptions,
+            limit: query.events_limit,
+            offset: query.events_offset,
+          })
+        : Promise.resolve(undefined),
+    ]);
+
+    return c.json({
+      query: {
+        from: window.startAt,
+        to: window.endAt,
+        range: window.range,
+        filters,
+        limit: query.limit,
+        offset: query.offset,
+        threads_limit: query.threads_limit,
+        threads_offset: query.threads_offset,
+        events_limit: query.events_limit,
+        events_offset: query.events_offset,
+      },
+      summary,
+      groups,
+      ...(breakdowns ? { breakdowns } : {}),
+      ...(threads ? { threads } : {}),
+      ...(events ? { events } : {}),
     });
   },
 );
