@@ -77,9 +77,11 @@ function connection(overrides: Partial<ConnectionListItem> = {}): ConnectionList
 function renderConnectionsClient({
   initialConnections,
   initialMentionProjects,
+  initialEntry = "/connections?selected=conn_foo",
 }: {
   initialConnections: ConnectionListItem[];
   initialMentionProjects: MentionableProject[];
+  initialEntry?: string;
 }) {
   const router = createMemoryRouter(
     [
@@ -106,10 +108,11 @@ function renderConnectionsClient({
         element: <div>Chat</div>,
       },
     ],
-    { initialEntries: ["/connections?selected=conn_foo"] },
+    { initialEntries: [initialEntry] },
   );
 
-  render(<RouterProvider router={router} />);
+  const { container } = render(<RouterProvider router={router} />);
+  return { router, container };
 }
 
 describe("ConnectionsClient mention slugs", () => {
@@ -136,5 +139,76 @@ describe("ConnectionsClient mention slugs", () => {
     await user.click(openButtons[openButtons.length - 1]!);
 
     expect(writeDraftMock).toHaveBeenCalledWith("ws_1", null, "@foo ", []);
+  });
+
+  it("swaps selected panel content and row highlight immediately", async () => {
+    const user = userEvent.setup();
+    renderConnectionsClient({
+      initialConnections: [
+        connection({ id: "conn_foo", name: "Foo" }),
+        connection({ id: "conn_bar", name: "Bar", updated_at: 3 }),
+      ],
+      initialMentionProjects: [],
+      initialEntry: "/connections",
+    });
+
+    const fooRow = await screen.findByRole("button", { name: /Foo/ });
+    const barRow = screen.getByRole("button", { name: /Bar/ });
+
+    await user.click(fooRow);
+
+    expect(screen.getByRole("heading", { name: "Foo" })).toBeInTheDocument();
+    expect(fooRow).toHaveClass("bg-muted/70");
+    expect(barRow).not.toHaveClass("bg-muted/70");
+
+    await user.click(barRow);
+
+    expect(screen.getByRole("heading", { name: "Bar" })).toBeInTheDocument();
+    expect(barRow).toHaveClass("bg-muted/70");
+    expect(fooRow).not.toHaveClass("bg-muted/70");
+
+    await user.click(screen.getByRole("button", { name: "Close" }));
+
+    expect(screen.queryByRole("heading", { name: "Bar" })).not.toBeInTheDocument();
+    expect(barRow).not.toHaveClass("bg-muted/70");
+  });
+});
+
+describe("ConnectionsClient panel long-name layout", () => {
+  const LONG_NAME =
+    "Thread Review Dashboard API Test bearerToken Connection Example Name";
+
+  it("keeps the panel content constrained when the connection name is long", async () => {
+    const { container } = renderConnectionsClient({
+      initialConnections: [connection({ name: LONG_NAME })],
+      initialMentionProjects: [],
+    });
+
+    // The Radix ScrollArea content wrapper defaults to `display: table`, which
+    // expands to its widest child and clips everything once a long, unbreakable
+    // name forces it past the fixed panel width. The viewport override swaps it
+    // back to a block pinned to the viewport width so children can truncate/wrap.
+    const viewports = Array.from(
+      container.querySelectorAll("[data-slot='scroll-area-viewport']"),
+    );
+    const panelViewport = viewports.find((node) =>
+      node.className.includes("[&>div]:!block"),
+    );
+    expect(panelViewport).toBeTruthy();
+    expect(panelViewport?.className).toContain("[&>div]:!w-full");
+
+    // The title still truncates to a single line within the constrained width.
+    const heading = await screen.findByRole("heading", { name: LONG_NAME });
+    expect(heading).toHaveClass("truncate", "min-w-0", "flex-1");
+    expect(heading).toHaveAttribute("title", LONG_NAME);
+
+    // The mention pill truncates and keeps the always-visible copy button in
+    // view instead of overflowing the value column (block flex, not inline-flex
+    // which would shrink-to-fit and push the button off-screen).
+    const copyButton = screen.getByRole("button", { name: "Copy mention" });
+    const mentionRow = copyButton.parentElement;
+    expect(mentionRow).toHaveClass("flex");
+    expect(mentionRow).not.toHaveClass("inline-flex");
+    expect(mentionRow?.querySelector("code")).toHaveClass("min-w-0", "truncate");
   });
 });

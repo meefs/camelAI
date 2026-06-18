@@ -34,6 +34,7 @@ import type { WorkspaceIntegrationRecord } from '../../workers/main/src/workspac
 import ConnectionsClient from '@/components/pages/connections/connections-client';
 import { ConnectionsLoadingSkeleton } from '@/components/pages/connections/connections-loading';
 import { NoWorkspacesError } from '@/components/no-workspaces-error';
+import { shouldRevalidateConnectionsRoute } from '@/lib/connections-route-revalidation';
 import {
   buildWorkspaceEmailAddress,
   getWorkspaceEmailDomain,
@@ -53,6 +54,12 @@ const CONNECTION_MANAGEMENT_INTENTS = new Set([
   'deleteIntegration',
   'duplicateIntegration',
 ]);
+
+export function shouldRevalidate(
+  args: Parameters<typeof shouldRevalidateConnectionsRoute>[0],
+) {
+  return shouldRevalidateConnectionsRoute(args);
+}
 
 async function loadWorkspaceMentionProjects(
   env: unknown,

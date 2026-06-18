@@ -210,7 +210,8 @@ export default function ConnectionsClient({
   const isDesktop = useMediaQuery("(min-width: 1024px)");
   const searchRef = useRef<HTMLInputElement | null>(null);
   const pendingAction = useRef<PendingAction | null>(null);
-  const selectedId = searchParams.get("selected");
+  const urlSelectedId = searchParams.get("selected");
+  const [activeSelectedId, setActiveSelectedId] = useState(urlSelectedId);
   const isLoading = revalidator.state === "loading" && connections.length === 0;
 
   const currentMembership = orgs.find((entry) => entry.org_id === currentOrg?.id);
@@ -251,7 +252,8 @@ export default function ConnectionsClient({
     () => [...allGroups.channels, ...allGroups.connections],
     [allGroups],
   );
-  const selectedItem = allItems.find((item) => item.id === selectedId) ?? null;
+  const selectedItem =
+    allItems.find((item) => item.id === activeSelectedId) ?? null;
 
   const mentionableConnections = useMemo(
     () => filterMentionables(
@@ -299,10 +301,47 @@ export default function ConnectionsClient({
   }, [initialConnections]);
 
   useEffect(() => {
-    if (selectedId && !selectedItem) {
-      setSearchParams({}, { replace: true });
+    setActiveSelectedId(urlSelectedId);
+  }, [urlSelectedId]);
+
+  const updateUiSearchParams = useCallback(
+    (
+      mutate: (next: URLSearchParams) => void,
+      options?: { replace?: boolean },
+    ) => {
+      setSearchParams(
+        (previous) => {
+          const next = new URLSearchParams(previous);
+          mutate(next);
+          return next;
+        },
+        {
+          replace: options?.replace,
+          preventScrollReset: true,
+          defaultShouldRevalidate: false,
+        },
+      );
+    },
+    [setSearchParams],
+  );
+
+  const setSelectedParam = useCallback(
+    (id: string) => updateUiSearchParams((next) => next.set("selected", id)),
+    [updateUiSearchParams],
+  );
+
+  const clearSelectedParam = useCallback(
+    (options?: { replace?: boolean }) =>
+      updateUiSearchParams((next) => next.delete("selected"), options),
+    [updateUiSearchParams],
+  );
+
+  useEffect(() => {
+    if (activeSelectedId && !selectedItem) {
+      setActiveSelectedId(null);
+      clearSelectedParam({ replace: true });
     }
-  }, [selectedId, selectedItem, setSearchParams]);
+  }, [activeSelectedId, selectedItem, clearSelectedParam]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -312,12 +351,13 @@ export default function ConnectionsClient({
         return;
       }
       if (event.key === "Escape" && selectedItem && !renaming) {
-        setSearchParams({});
+        setActiveSelectedId(null);
+        clearSelectedParam();
       }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [renaming, selectedItem, setSearchParams]);
+  }, [clearSelectedParam, renaming, selectedItem]);
 
   useEffect(() => {
     const errorParam = searchParams.get("error");
@@ -326,26 +366,23 @@ export default function ConnectionsClient({
 
     if (errorParam) {
       toast.error(oauthErrorMessage(errorParam, reasonParam));
-      const nextParams = new URLSearchParams(searchParams);
-      nextParams.delete("error");
-      nextParams.delete("reason");
-      setSearchParams(nextParams, { replace: true });
+      updateUiSearchParams(
+        (next) => {
+          next.delete("error");
+          next.delete("reason");
+        },
+        { replace: true },
+      );
       return;
     }
 
     if (successParam) {
       toast.success(OAUTH_SUCCESS_MESSAGES[successParam] || "Connection successful!");
-      const nextParams = new URLSearchParams(searchParams);
-      nextParams.delete("success");
-      setSearchParams(nextParams, { replace: true });
+      updateUiSearchParams((next) => next.delete("success"), {
+        replace: true,
+      });
     }
-  }, [searchParams, setSearchParams]);
-
-  useEffect(() => {
-    if (revalidator.state === "idle") {
-      revalidator.revalidate();
-    }
-  }, [currentOrg?.id]);
+  }, [searchParams, updateUiSearchParams]);
 
   const startReauth = useCallback(
     (connection: ConnectionListItem) => {
@@ -379,11 +416,14 @@ export default function ConnectionsClient({
     setForceCredentialUpdate(true);
     setEditDialogOpen(true);
 
-    const nextParams = new URLSearchParams(searchParams);
-    nextParams.delete("connection");
-    nextParams.delete("reauth");
-    setSearchParams(nextParams, { replace: true });
-  }, [connections, searchParams, setSearchParams, startReauth]);
+    updateUiSearchParams(
+      (next) => {
+        next.delete("connection");
+        next.delete("reauth");
+      },
+      { replace: true },
+    );
+  }, [connections, searchParams, startReauth, updateUiSearchParams]);
 
   useEffect(() => {
     if (fetcher.state !== "idle" || !fetcher.data) return;
@@ -438,15 +478,17 @@ export default function ConnectionsClient({
 
   const handleSelect = useCallback(
     (item: PanelItem) => {
-      setSearchParams({ selected: item.id });
+      setActiveSelectedId(item.id);
+      setSelectedParam(item.id);
     },
-    [setSearchParams],
+    [setSelectedParam],
   );
 
   const handleClosePanel = useCallback(() => {
-    setSearchParams({});
+    setActiveSelectedId(null);
+    clearSelectedParam();
     setRenaming(null);
-  }, [setSearchParams]);
+  }, [clearSelectedParam]);
 
   const handleDelete = () => {
     if (!deleteTarget) return;
@@ -460,7 +502,7 @@ export default function ConnectionsClient({
     setConnections((current) =>
       current.filter((connection) => connection.id !== deleteTarget.id),
     );
-    if (selectedId === deleteTarget.id) {
+    if (activeSelectedId === deleteTarget.id) {
       handleClosePanel();
     }
     fetcher.submit(
@@ -537,7 +579,8 @@ export default function ConnectionsClient({
   const handleStartRename = (item: PanelItem) => {
     const connection = panelItemConnection(item);
     if (!connection || !isAdmin) return;
-    setSearchParams({ selected: item.id });
+    setActiveSelectedId(item.id);
+    setSelectedParam(item.id);
     setRenaming({
       id: connection.id,
       value: connection.name,
@@ -710,7 +753,7 @@ export default function ConnectionsClient({
                     channelItems={filteredGroups.channels}
                     connectionItems={filteredGroups.connections}
                     totalConnectionCount={connections.length}
-                    selectedId={selectedId}
+                    selectedId={activeSelectedId}
                     isAdmin={isAdmin}
                     otherWorkspacesCount={otherWorkspaces.length}
                     searchQuery={search.trim()}

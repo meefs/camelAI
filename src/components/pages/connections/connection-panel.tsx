@@ -80,7 +80,7 @@ function copyText(value: string, label: string) {
 
 function DetailRow({ label, children }: { label: string; children: ReactNode }) {
   return (
-    <div className="grid grid-cols-[8rem_1fr] gap-3 text-sm">
+    <div className="grid grid-cols-[8rem_minmax(0,1fr)] gap-3 text-sm">
       <dt className="text-muted-foreground">{label}</dt>
       <dd className="min-w-0 text-right text-foreground">{children}</dd>
     </div>
@@ -121,7 +121,7 @@ function CreatedBy({
   const label = name || id || "Unknown";
   const displayAvatar = avatar ?? generateDefaultAvatar(label);
   return (
-    <span className="inline-flex min-w-0 items-center justify-end gap-1.5">
+    <span className="flex min-w-0 items-center justify-end gap-1.5">
       <Avatar size="xs">
         <AvatarFallback
           content={displayAvatar.content}
@@ -133,7 +133,7 @@ function CreatedBy({
           {displayAvatar.content}
         </AvatarFallback>
       </Avatar>
-      <span className="truncate">{label}</span>
+      <span className="min-w-0 truncate">{label}</span>
     </span>
   );
 }
@@ -184,8 +184,8 @@ function UseInChatBlock({
       <div className="space-y-3">
         <dl className="space-y-2">
           <DetailRow label="Mention">
-            <span className="inline-flex min-w-0 items-center justify-end gap-1.5">
-              <code className="truncate rounded bg-muted px-1.5 py-0.5 text-xs">
+            <span className="flex min-w-0 items-center justify-end gap-1.5">
+              <code className="min-w-0 truncate rounded bg-muted px-1.5 py-0.5 text-xs">
                 @{mentionSlug}
               </code>
               <Button
@@ -351,7 +351,7 @@ function SlackDestination({ connection }: { connection: ConnectionListItem }) {
     <Section title="Destination & identity">
       <div className="space-y-3">
         <div>
-          <p className="text-lg font-semibold text-foreground">
+          <p className="break-words text-lg font-semibold text-foreground">
             {formatValue(metadata.team_name)}
           </p>
           <p className="mt-1 text-sm text-muted-foreground">
@@ -467,7 +467,7 @@ function TelegramDestination({ connection }: { connection: ConnectionListItem })
     <Section title="Destination & identity">
       <div className="space-y-3">
         <div>
-          <p className="text-lg font-semibold text-foreground">{chatTitle}</p>
+          <p className="break-words text-lg font-semibold text-foreground">{chatTitle}</p>
           <p className="mt-1 text-sm text-muted-foreground">
             Messages from this Telegram chat start threads here.
           </p>
@@ -605,7 +605,10 @@ export function ConnectionPanel({
         </div>
       </div>
 
-      <ScrollArea className="min-h-0 flex-1">
+      <ScrollArea
+        className="min-h-0 flex-1"
+        viewportClassName="[&>div]:!block [&>div]:!w-full"
+      >
         <div className="space-y-7 px-6 py-6">
           <div className="space-y-3">
             <div className="flex items-center gap-3">
@@ -632,7 +635,10 @@ export function ConnectionPanel({
                   onBlur={onCommitRename}
                 />
               ) : (
-                <h2 className="min-w-0 flex-1 truncate text-2xl font-semibold leading-tight text-foreground">
+                <h2
+                  title={displayName}
+                  className="min-w-0 flex-1 truncate text-2xl font-semibold leading-tight text-foreground"
+                >
                   {displayName}
                 </h2>
               )}

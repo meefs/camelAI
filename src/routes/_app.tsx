@@ -36,18 +36,32 @@ import { getByokProviderLabel } from "@/lib/byok-providers";
 import { getWorkspaceMigrationGate } from "@/lib/workspace-migration-gate.server";
 import { getEffectiveLlmProviderConfig } from "@/lib/selfhost-ai-provider";
 import { isSelfhostRuntime } from "@/lib/selfhost-runtime";
+import { isConnectionsUiOnlySearchChange } from "@/lib/connections-route-revalidation";
 
 const SIDEBAR_COOKIE_NAME = "sidebar_state";
 const PROJECT_MIGRATION_POLL_INTERVAL_MS = 5_000;
 
 export function shouldRevalidate({
+  currentUrl,
+  nextUrl,
   formData,
   defaultShouldRevalidate,
 }: {
+  currentUrl?: URL;
+  nextUrl?: URL;
   formData?: FormData;
   defaultShouldRevalidate: boolean;
 }) {
   if (formData?.get("intent") === "createThreadAndStart") {
+    return false;
+  }
+
+  if (
+    !formData &&
+    currentUrl &&
+    nextUrl &&
+    isConnectionsUiOnlySearchChange(currentUrl, nextUrl)
+  ) {
     return false;
   }
 

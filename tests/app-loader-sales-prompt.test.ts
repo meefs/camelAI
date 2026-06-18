@@ -118,6 +118,26 @@ describe("_app loader onboarding redirect", () => {
     ).toBe(true);
   });
 
+  it("skips layout revalidation for Connections UI-only search changes", () => {
+    expect(
+      shouldRevalidate({
+        currentUrl: new URL("https://camelai.dev/connections?selected=conn_1"),
+        nextUrl: new URL("https://camelai.dev/connections?selected=conn_2"),
+        defaultShouldRevalidate: true,
+      }),
+    ).toBe(false);
+  });
+
+  it("keeps default layout revalidation outside Connections UI-only search changes", () => {
+    expect(
+      shouldRevalidate({
+        currentUrl: new URL("https://camelai.dev/chat?selected=conn_1"),
+        nextUrl: new URL("https://camelai.dev/chat?selected=conn_2"),
+        defaultShouldRevalidate: true,
+      }),
+    ).toBe(true);
+  });
+
   it("redirects incomplete users to /onboarding without prompt_key", async () => {
     await expect(
       loader({
