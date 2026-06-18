@@ -2,6 +2,10 @@ import { WorkerEntrypoint } from "cloudflare:workers";
 import type { OrgDO } from "./auth";
 import { decryptCredentials } from "../../../src/lib/integration-crypto";
 import { parseStoredLlmProviderConfig } from "../../../src/lib/llm-provider-config";
+import {
+  DEFAULT_CLOUDFLARE_AI_GATEWAY_ORIGIN,
+  resolveCloudflareGatewayOrigin,
+} from "../../../src/lib/cloudflare-ai-gateway";
 import { chatCompletionToPiCall, runBedrockViaPi } from "./bedrock-pi-adapter";
 
 export interface AIVirtualBindingEnv {
@@ -10,6 +14,7 @@ export interface AIVirtualBindingEnv {
   R2_BUCKET?: R2Bucket;
   CF_ACCOUNT_ID?: string;
   CF_GATEWAY_NAME?: string;
+  CF_GATEWAY_BASE_URL?: string;
   CF_GATEWAY_TOKEN?: string;
   AI_GATEWAY_AUTH_TOKEN?: string;
   INTEGRATION_SECRET_KEY?: string;
@@ -475,6 +480,7 @@ export interface GatewaySettings {
   accountID: string;
   gatewayID: string;
   authToken: string;
+  origin?: string;
 }
 
 function requireGatewaySettings(env: AIVirtualBindingEnv): GatewaySettings {
@@ -502,6 +508,7 @@ export function resolveGatewaySettings(
     AIVirtualBindingEnv,
     | "CF_ACCOUNT_ID"
     | "CF_GATEWAY_NAME"
+    | "CF_GATEWAY_BASE_URL"
     | "AI_GATEWAY_AUTH_TOKEN"
     | "CF_GATEWAY_TOKEN"
   >,
@@ -515,6 +522,7 @@ export function resolveGatewaySettings(
     accountID,
     gatewayID,
     authToken,
+    origin: resolveCloudflareGatewayOrigin(env),
   };
 }
 
@@ -539,11 +547,11 @@ function buildGatewayMetadata(props: AIVirtualBindingProps): string {
 export type GatewayProvider = "compat" | "openrouter";
 
 function buildGatewayURL(
-  accountID: string,
-  gatewayID: string,
+  settings: GatewaySettings,
   provider: GatewayProvider = "compat",
 ): string {
-  return `https://gateway.ai.cloudflare.com/v1/${encodeURIComponent(accountID)}/${encodeURIComponent(gatewayID)}/${provider}/chat/completions`;
+  const origin = settings.origin || DEFAULT_CLOUDFLARE_AI_GATEWAY_ORIGIN;
+  return `${origin}/v1/${encodeURIComponent(settings.accountID)}/${encodeURIComponent(settings.gatewayID)}/${provider}/chat/completions`;
 }
 
 /**
@@ -596,7 +604,7 @@ export async function runViaGatewayHTTP(
   const payload = toGatewayPayload(input, model);
 
   const resp = await fetch(
-    buildGatewayURL(settings.accountID, settings.gatewayID, provider),
+    buildGatewayURL(settings, provider),
     {
       method: "POST",
       headers,

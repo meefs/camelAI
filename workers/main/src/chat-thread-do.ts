@@ -87,6 +87,7 @@ import {
 import { isOrgBanned } from "./ban-list";
 import type { WorkspaceThreadStreamingOptions } from "./thread-status";
 import { getPreferredAppUrl } from "../../../src/lib/app-url";
+import { buildCloudflareGatewayUrl } from "../../../src/lib/cloudflare-ai-gateway";
 import {
   getEvalDeployApp,
   isEvalDeployEnabled,
@@ -446,6 +447,7 @@ export interface ChatEnv extends WorkspaceFilesystemEnv, ProjectRuntimeServiceVm
   ANTHROPIC_API_KEY: string;
   CF_ACCOUNT_ID?: string;
   CF_GATEWAY_NAME?: string;
+  CF_GATEWAY_BASE_URL?: string;
   CF_GATEWAY_TOKEN?: string;
   INTEGRATION_SECRET_KEY: string;
   TOKEN_SIGNING_SECRET: string;
@@ -11944,9 +11946,10 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       requestProvider: "cloudflare-ai-gateway",
       requestModelId: resolved.hostedModelId,
       usageProvider: resolved.hostedGatewayProvider,
-      baseUrl:
-        `https://gateway.ai.cloudflare.com/v1/${encodeURIComponent(accountId)}` +
-        `/${encodeURIComponent(gatewayName)}/${encodeURIComponent(resolved.hostedGatewayProvider)}`,
+      baseUrl: buildCloudflareGatewayUrl(
+        this.env,
+        `/v1/${encodeURIComponent(accountId)}/${encodeURIComponent(gatewayName)}/${encodeURIComponent(resolved.hostedGatewayProvider)}`,
+      ),
       headers: {
         ...(resolved.hostedGatewayProvider === "openrouter"
           ? this.openRouterAttributionHeaders()

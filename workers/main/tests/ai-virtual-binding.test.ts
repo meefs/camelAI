@@ -32,6 +32,7 @@ describe("resolveGatewaySettings", () => {
       accountID: "acct",
       gatewayID: "chiridion",
       authToken: "token",
+      origin: "https://gateway.ai.cloudflare.com",
     });
   });
 

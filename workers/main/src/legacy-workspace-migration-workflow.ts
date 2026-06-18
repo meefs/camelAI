@@ -5,6 +5,7 @@ import {
 } from "cloudflare:workers";
 import { z } from "zod";
 import { CURRENT_LEGACY_WORKSPACE_MIGRATION_VERSION } from "../../../src/lib/legacy-workspace-migration-version";
+import { buildCloudflareGatewayUrl } from "../../../src/lib/cloudflare-ai-gateway";
 import type { WorkerScript } from "./auth.js";
 import { getOrgStub } from "./helpers/stubs.js";
 import type { Env } from "./types.js";
@@ -1275,7 +1276,10 @@ async function createMigrationPlanningResponse(
   const requestBody = JSON.stringify(
     buildMigrationPlanningResponsesRequest(input.input, input.allowedSourcePaths, input.previousResponseId),
   );
-  const endpoint = `https://gateway.ai.cloudflare.com/v1/${encodeURIComponent(accountId)}/${encodeURIComponent(gatewayName)}/openai/responses`;
+  const endpoint = buildCloudflareGatewayUrl(
+    env,
+    `/v1/${encodeURIComponent(accountId)}/${encodeURIComponent(gatewayName)}/openai/responses`,
+  );
   console.log("[legacy-migration] planning AI fetch starting", {
     workspaceId: input.workspaceId,
     responseIndex: input.responseIndex,

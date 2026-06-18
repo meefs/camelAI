@@ -95,6 +95,7 @@ export interface Env
   RUN_AGENT_EVALS?: string;
   // Claude API Proxy (CF AI Gateway)
   CF_GATEWAY_NAME?: string;
+  CF_GATEWAY_BASE_URL?: string;
   CF_GATEWAY_TOKEN?: string;
   AI_GATEWAY_AUTH_TOKEN?: string;
   BEDROCK_REGION?: string;

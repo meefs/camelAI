@@ -34,7 +34,7 @@
 
 				"EXT_API_CLIENT_ID": "set-me"
 				,"SANDBOX_TRANSPORT": "rpc"
-			// CF_GATEWAY_TOKEN is set via .dev.vars
+			// CF_GATEWAY_TOKEN and optional CF_GATEWAY_BASE_URL are set via .dev.vars for local dev
 		},
 	"assets": {
 		"binding": "ASSETS",
