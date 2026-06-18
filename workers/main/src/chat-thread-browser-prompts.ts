@@ -27,6 +27,7 @@ interface NormalizedAskQuestion {
   header: string;
   options: NormalizedAskQuestionOption[];
   multiSelect: boolean;
+  allowOther: boolean;
 }
 
 interface PendingQuestionWaiter {
@@ -107,6 +108,7 @@ function normalizeAskQuestion(value: unknown): NormalizedAskQuestion | null {
     header,
     options,
     multiSelect: record.multiSelect === true || record.multi_select === true,
+    allowOther: record.allowOther !== false && record.allow_other !== false,
   };
 }
 

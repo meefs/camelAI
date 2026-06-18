@@ -17,6 +17,7 @@ export function buildDestructiveConfirmationQuestion(
     question: input.question,
     header: input.header ?? "Confirm deletion",
     multiSelect: false,
+    allowOther: false,
     options: [
       {
         label: confirmLabel,

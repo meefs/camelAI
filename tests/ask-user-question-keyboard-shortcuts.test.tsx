@@ -463,4 +463,51 @@ describe("AskUserQuestion keyboard shortcuts", () => {
     });
     expect(onSubmit).not.toHaveBeenCalled();
   });
+
+  it("hides the Other option when allowOther is false", async () => {
+    render(
+      <AskUserQuestion
+        data={makeData([
+          {
+            header: "Confirm deletion",
+            question: "Delete project web-app?",
+            multiSelect: false,
+            allowOther: false,
+            options: [
+              { label: "Delete", description: "Proceed with this destructive action." },
+              { label: "Cancel", description: "Keep the existing resource unchanged." },
+            ],
+          },
+        ])}
+        onSubmit={vi.fn()}
+      />,
+    );
+
+    expect(screen.queryByText("Other")).toBeNull();
+    expect(screen.getByText("Delete")).toBeTruthy();
+    expect(screen.getByText("Cancel")).toBeTruthy();
+  });
+
+  it("preserves allowOther through display normalization", () => {
+    const { container } = render(
+      <AskUserQuestion
+        data={makeData([
+          {
+            header: "Confirm deletion",
+            question: "Delete project web-app?",
+            multiSelect: false,
+            allowOther: false,
+            options: [
+              { label: "Delete", description: "" },
+              { label: "Cancel", description: "" },
+            ],
+          },
+        ])}
+        onSubmit={vi.fn()}
+      />,
+    );
+
+    expect(container.querySelector('[data-ask-user-question-root="true"]')).not.toBeNull();
+    expect(screen.queryByText("Other")).toBeNull();
+  });
 });

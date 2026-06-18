@@ -29,6 +29,7 @@ export interface Question {
   header: string;
   options: QuestionOption[];
   multiSelect: boolean;
+  allowOther?: boolean;
 }
 
 export interface AskUserQuestionData {
@@ -47,6 +48,10 @@ interface QuestionState {
   selected: string[];
   otherText: string;
   isOther: boolean;
+}
+
+function questionAllowsOther(question: Question): boolean {
+  return question.allowOther !== false;
 }
 
 const EMPTY_QUESTION: Question = {
@@ -126,6 +131,7 @@ function normalizeQuestionForDisplay(value: Question): Question | null {
     header: typeof record.header === "string" ? record.header.trim() : "",
     options,
     multiSelect: record.multiSelect === true || record.multi_select === true,
+    allowOther: record.allowOther !== false && record.allow_other !== false,
   };
 }
 
@@ -243,8 +249,9 @@ export function AskUserQuestion({
   const currentQuestion = questions[safeIndex] ?? EMPTY_QUESTION;
   const currentState =
     questionStates[currentQuestion.question] ?? createEmptyQuestionState();
+  const allowsOther = questionAllowsOther(currentQuestion);
   const otherOptionIndex = currentQuestion.options.length;
-  const totalOptions = currentQuestion.options.length + 1;
+  const totalOptions = currentQuestion.options.length + (allowsOther ? 1 : 0);
   const keyboardHint = `# to pick · ↵ ${isLastQuestion ? "submit" : "next"}`;
   const keyboardHintId = `ask-user-question-hint-${data.questionId}-${safeIndex}`;
 
@@ -367,7 +374,7 @@ export function AskUserQuestion({
 
   const selectByIndex = useCallback(
     (index: number) => {
-      const isOtherIndex = index === otherOptionIndex;
+      const isOtherIndex = allowsOther && index === otherOptionIndex;
 
       if (isOtherIndex) {
         if (currentQuestion.multiSelect) {
@@ -412,6 +419,7 @@ export function AskUserQuestion({
       focusOtherInput,
       handleMultiSelect,
       handleSingleSelect,
+      allowsOther,
       otherOptionIndex,
     ],
   );
@@ -502,7 +510,7 @@ export function AskUserQuestion({
         return;
       }
 
-      if (event.key === "0") {
+      if (event.key === "0" && allowsOther) {
         event.preventDefault();
         setFocusedIndex(otherOptionIndex);
         const handledFocus = selectByIndex(otherOptionIndex);
@@ -513,6 +521,7 @@ export function AskUserQuestion({
     },
     [
       collapseWidget,
+      allowsOther,
       currentQuestion.options.length,
       focusContainer,
       focusedIndex,
@@ -668,51 +677,52 @@ export function AskUserQuestion({
                   </label>
                 ))}
 
-                {/* Other option for multi-select */}
-                <label
-                  id={`ask-user-question-option-${data.questionId}-${safeIndex}-${otherOptionIndex}`}
-                  onClick={() => setFocusedIndex(otherOptionIndex)}
-                  className={cn(
-                    "flex items-center gap-3 py-2 px-2 -mx-2 rounded-md cursor-pointer",
-                    "transition-colors hover:bg-muted/20",
-                    focusedIndex === otherOptionIndex &&
-                      "ring-1 ring-ring/50 bg-muted/10",
-                  )}
-                >
-                  <ShortcutBadge label="0" />
-                  <Checkbox
-                    checked={currentState.isOther}
-                    onCheckedChange={(checked) =>
-                      handleMultiSelect(
-                        currentQuestion.question,
-                        "__other__",
-                        !!checked,
-                      )
-                    }
-                    onFocus={() => setFocusedIndex(otherOptionIndex)}
-                  />
-                  <div className="flex-1 min-w-0 space-y-2">
-                    <p className="text-sm text-foreground">Other</p>
-                    {currentState.isOther && (
-                      <Input
-                        ref={otherInputRef}
-                        data-ask-user-question-other-input="true"
-                        type="text"
-                        placeholder="Type your answer..."
-                        value={currentState.otherText}
-                        onChange={(e) =>
-                          handleOtherTextChange(
-                            currentQuestion.question,
-                            e.target.value,
-                          )
-                        }
-                        onFocus={() => setFocusedIndex(otherOptionIndex)}
-                        className="h-8 text-sm"
-                        autoFocus
-                      />
+                {allowsOther ? (
+                  <label
+                    id={`ask-user-question-option-${data.questionId}-${safeIndex}-${otherOptionIndex}`}
+                    onClick={() => setFocusedIndex(otherOptionIndex)}
+                    className={cn(
+                      "flex items-center gap-3 py-2 px-2 -mx-2 rounded-md cursor-pointer",
+                      "transition-colors hover:bg-muted/20",
+                      focusedIndex === otherOptionIndex &&
+                        "ring-1 ring-ring/50 bg-muted/10",
                     )}
-                  </div>
-                </label>
+                  >
+                    <ShortcutBadge label="0" />
+                    <Checkbox
+                      checked={currentState.isOther}
+                      onCheckedChange={(checked) =>
+                        handleMultiSelect(
+                          currentQuestion.question,
+                          "__other__",
+                          !!checked,
+                        )
+                      }
+                      onFocus={() => setFocusedIndex(otherOptionIndex)}
+                    />
+                    <div className="flex-1 min-w-0 space-y-2">
+                      <p className="text-sm text-foreground">Other</p>
+                      {currentState.isOther && (
+                        <Input
+                          ref={otherInputRef}
+                          data-ask-user-question-other-input="true"
+                          type="text"
+                          placeholder="Type your answer..."
+                          value={currentState.otherText}
+                          onChange={(e) =>
+                            handleOtherTextChange(
+                              currentQuestion.question,
+                              e.target.value,
+                            )
+                          }
+                          onFocus={() => setFocusedIndex(otherOptionIndex)}
+                          className="h-8 text-sm"
+                          autoFocus
+                        />
+                      )}
+                    </div>
+                  </label>
+                ) : null}
               </div>
             ) : (
               <RadioGroup
@@ -759,44 +769,45 @@ export function AskUserQuestion({
                   </label>
                 ))}
 
-                {/* Other option for single-select */}
-                <label
-                  id={`ask-user-question-option-${data.questionId}-${safeIndex}-${otherOptionIndex}`}
-                  onClick={() => setFocusedIndex(otherOptionIndex)}
-                  className={cn(
-                    "flex items-center gap-3 py-2 px-2 -mx-2 rounded-md cursor-pointer",
-                    "transition-colors hover:bg-muted/20",
-                    focusedIndex === otherOptionIndex &&
-                      "ring-1 ring-ring/50 bg-muted/10",
-                  )}
-                >
-                  <ShortcutBadge label="0" />
-                  <RadioGroupItem
-                    value="__other__"
-                    onFocus={() => setFocusedIndex(otherOptionIndex)}
-                  />
-                  <div className="flex-1 min-w-0 space-y-2">
-                    <p className="text-sm text-foreground">Other</p>
-                    {currentState.isOther && (
-                      <Input
-                        ref={otherInputRef}
-                        data-ask-user-question-other-input="true"
-                        type="text"
-                        placeholder="Type your answer..."
-                        value={currentState.otherText}
-                        onChange={(e) =>
-                          handleOtherTextChange(
-                            currentQuestion.question,
-                            e.target.value,
-                          )
-                        }
-                        onFocus={() => setFocusedIndex(otherOptionIndex)}
-                        className="h-8 text-sm"
-                        autoFocus
-                      />
+                {allowsOther ? (
+                  <label
+                    id={`ask-user-question-option-${data.questionId}-${safeIndex}-${otherOptionIndex}`}
+                    onClick={() => setFocusedIndex(otherOptionIndex)}
+                    className={cn(
+                      "flex items-center gap-3 py-2 px-2 -mx-2 rounded-md cursor-pointer",
+                      "transition-colors hover:bg-muted/20",
+                      focusedIndex === otherOptionIndex &&
+                        "ring-1 ring-ring/50 bg-muted/10",
                     )}
-                  </div>
-                </label>
+                  >
+                    <ShortcutBadge label="0" />
+                    <RadioGroupItem
+                      value="__other__"
+                      onFocus={() => setFocusedIndex(otherOptionIndex)}
+                    />
+                    <div className="flex-1 min-w-0 space-y-2">
+                      <p className="text-sm text-foreground">Other</p>
+                      {currentState.isOther && (
+                        <Input
+                          ref={otherInputRef}
+                          data-ask-user-question-other-input="true"
+                          type="text"
+                          placeholder="Type your answer..."
+                          value={currentState.otherText}
+                          onChange={(e) =>
+                            handleOtherTextChange(
+                              currentQuestion.question,
+                              e.target.value,
+                            )
+                          }
+                          onFocus={() => setFocusedIndex(otherOptionIndex)}
+                          className="h-8 text-sm"
+                          autoFocus
+                        />
+                      )}
+                    </div>
+                  </label>
+                ) : null}
               </RadioGroup>
             )}
           </div>

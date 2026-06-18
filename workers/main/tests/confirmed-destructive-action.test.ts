@@ -44,6 +44,7 @@ describe("confirmed-destructive-action", () => {
         question: "Delete connection stripe?",
         header: "Confirm deletion",
         multiSelect: false,
+        allowOther: false,
         options: [
           { label: "Delete", description: "Proceed with this destructive action." },
           { label: "Cancel", description: "Keep the existing resource unchanged." },
