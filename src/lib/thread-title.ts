@@ -7,7 +7,7 @@ import {
 export const DEFAULT_THREAD_TITLE = 'New Chat';
 export const APP_THREAD_FALLBACK_TITLE_PREFIX = 'Working on ';
 export const THREAD_TITLE_GENERATION_SYSTEM_PROMPT =
-  'Summarize the message into a simple chat thread topic title. Respond with only a plain text title, no markdown, no quotes, no extra punctuation.';
+  'Create a concise 3-6 word chat title for the user request. Do not copy the full request. Use title case. Respond with only the title: no markdown, quotes, punctuation, or explanation.';
 
 const MAX_THREAD_TITLE_LENGTH = 100;
 

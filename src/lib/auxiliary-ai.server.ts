@@ -1,4 +1,4 @@
-export const AUXILIARY_AI_MODEL = "@cf/meta/llama-3.2-1b-instruct";
+export const AUXILIARY_AI_MODEL = "@cf/meta/llama-3.2-3b-instruct";
 
 export interface AuxiliaryAiChatCompletion {
   choices?: Array<{

@@ -97,7 +97,7 @@ describe("thread completion summary generation", () => {
     expect(source).toBe("Identified the account-level BYOK configuration issue.");
   });
 
-  it("uses Workers AI with Llama 3.2 1B", async () => {
+  it("uses Workers AI with Llama 3.2 3B", async () => {
     const run = vi.fn().mockResolvedValue({
       choices: [{ message: { content: "  Generated concise summary.  " } }],
     });
