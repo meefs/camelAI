@@ -1,6 +1,7 @@
 import { WorkerEntrypoint } from "cloudflare:workers";
 import {
   Agent,
+  callable,
   type Connection,
   type ConnectionContext,
   type FiberInspection,
@@ -532,6 +533,16 @@ export interface ChatThreadForkStateTarget {
   userId?: string | null;
 }
 
+interface ChatThreadAgentState {
+  isStreaming: boolean;
+  previewTabs: PreviewTarget[];
+  previewActiveTabId: string | null;
+  previewVersion: number;
+  previewRefreshTabId: string | null;
+  currentTodos: unknown[];
+  contextUsedPercent: number | null;
+}
+
 export interface AdminExplorerThreadSummary {
   userMessageCount: number;
   userMessageCountCapped: boolean;
@@ -872,17 +883,6 @@ interface ChatClientQuestionResponse {
   type: "question_response";
   questionId?: string;
   answers?: Record<string, unknown>;
-}
-
-interface ChatClientSetPreviewTarget {
-  type: "set_preview_target";
-  target?: PreviewTarget | null;
-}
-
-interface ChatClientSetPreviewTabsState {
-  type: "set_preview_tabs_state";
-  tabs?: PreviewTarget[];
-  activeTabId?: string | null;
 }
 
 export interface InitialUserMessageRequest {
@@ -3936,7 +3936,7 @@ const CODE_MODE_ARTIFACTS_KEY_PREFIX = 'codeModeArtifacts:';
  * traffic, and agent turns. Sandbox-host remains the backend for workspace
  * file/shell/container operations.
  */
-export class ChatThreadDO extends Agent<ChatAgentEnv> {
+export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
   private static readonly CONNECTION_SETUP_TIMEOUT_MS = 30 * 60 * 1000;
 
   private previewTarget: PreviewTarget | null = null;
@@ -4023,6 +4023,45 @@ export class ChatThreadDO extends Agent<ChatAgentEnv> {
   private piLastPersistedLoopError: { fingerprint: string; at: number } | null = null;
   private piRecordedProviderErrors = new Set<string>();
   private recordedChatErrors = new Map<string, number>();
+
+  initialState: ChatThreadAgentState = {
+    isStreaming: false,
+    previewTabs: [],
+    previewActiveTabId: null,
+    previewVersion: 0,
+    previewRefreshTabId: null,
+    currentTodos: [],
+    contextUsedPercent: null,
+  };
+
+  static {
+    const context = {} as ClassMethodDecoratorContext;
+    callable()(this.prototype.requestStop, context);
+    callable()(this.prototype.setPreviewTabsState, context);
+  }
+
+  private agentState(
+    overrides: Partial<ChatThreadAgentState> = {},
+  ): ChatThreadAgentState {
+    return {
+      isStreaming: this.chatIsStreaming,
+      previewTabs: cloneDurableState(this.previewTabs),
+      previewActiveTabId: this.previewActiveTabId,
+      previewVersion: this.previewVersion,
+      previewRefreshTabId: null,
+      currentTodos: cloneDurableState(this.currentTodos),
+      contextUsedPercent: resolveContextUsageForInit(
+        this.transientContextUsedPercent,
+        this.contextUsedPercent,
+        this.chatIsStreaming,
+      ),
+      ...overrides,
+    };
+  }
+
+  private syncAgentState(overrides?: Partial<ChatThreadAgentState>): void {
+    this.setState(this.agentState(overrides));
+  }
 
   private async withRunnerTransitionLock<T>(
     source: string,
@@ -4158,6 +4197,8 @@ export class ChatThreadDO extends Agent<ChatAgentEnv> {
       if (typeof storedCodexSessionId === 'string' && storedCodexSessionId.trim()) {
         this.codexSessionId = storedCodexSessionId.trim();
       }
+
+      this.syncAgentState();
 
       const hasLegacyPiTurnRecovery = Boolean(
         this.loadLegacyPiTurnRecoveryForMigration(),
@@ -4396,7 +4437,7 @@ export class ChatThreadDO extends Agent<ChatAgentEnv> {
         activeTabId?: string | null;
       };
       if (Array.isArray(body.tabs) || body.activeTabId !== undefined) {
-        await this.setPreviewTabsState(
+        await this.setPreviewTabsStateInternal(
           body.tabs ?? [],
           body.activeTabId ?? null,
         );
@@ -4467,11 +4508,7 @@ export class ChatThreadDO extends Agent<ChatAgentEnv> {
         return;
       }
 
-      if (
-        data.type === "message" ||
-        data.type === "stop" ||
-        data.type === "set_model"
-      ) {
+      if (data.type === "message" || data.type === "set_model") {
         await this.handleRunnerClientMessage(ws, data);
         return;
       }
@@ -4484,19 +4521,6 @@ export class ChatThreadDO extends Agent<ChatAgentEnv> {
         return;
       }
 
-      if (data.type === "set_preview_target") {
-        await this.handleSetPreviewTarget(
-          data as unknown as ChatClientSetPreviewTarget,
-        );
-        return;
-      }
-
-      if (data.type === "set_preview_tabs_state") {
-        await this.handleSetPreviewTabsState(
-          data as unknown as ChatClientSetPreviewTabsState,
-        );
-        return;
-      }
     } catch (err) {
       this.emitChatError(
         `Internal error handling ${data.type}: ${err instanceof Error ? err.message : String(err)}`,
@@ -4657,7 +4681,7 @@ export class ChatThreadDO extends Agent<ChatAgentEnv> {
       this.previewTarget = null;
       this.previewVersion++;
       this.persistPreviewState();
-      this.broadcastPreviewState();
+      this.syncAgentState();
       return;
     }
 
@@ -4676,16 +4700,30 @@ export class ChatThreadDO extends Agent<ChatAgentEnv> {
     this.previewTarget = normalizedTarget;
     this.previewVersion++;
     this.persistPreviewState();
-    this.broadcastPreviewState({
-      refreshTabId: previousActiveTabId === id ? id : undefined,
-    });
+    if (previousActiveTabId === id) {
+      this.syncAgentState({ previewRefreshTabId: id });
+      this.syncAgentState({ previewRefreshTabId: null });
+    } else {
+      this.syncAgentState();
+    }
   }
 
   async setPreviewTabsState(
     tabs: PreviewTarget[],
     activeTabId: string | null,
   ): Promise<void> {
-    await this.setPreviewTabsStateInternal(tabs, activeTabId);
+    if (!this.chatContext) throw new Error("Missing chat context");
+    const ok = await this.setPreviewTabsStateInternal(
+      tabs,
+      activeTabId,
+      this.chatContext.workspaceId,
+    );
+    if (!ok) throw new Error("Invalid preview target workspace");
+  }
+
+  async requestStop(): Promise<void> {
+    await this.ensurePiSessionReady();
+    this.sendRunnerCommand({ type: "stop", threadId: this.chatContext?.threadId });
   }
 
   private async setPreviewTabsStateInternal(
@@ -4707,7 +4745,7 @@ export class ChatThreadDO extends Agent<ChatAgentEnv> {
     this.previewTarget = normalizedState.target;
     this.previewVersion++;
     this.persistPreviewState();
-    this.broadcastPreviewState();
+    this.syncAgentState();
     return true;
   }
 
@@ -4753,7 +4791,7 @@ export class ChatThreadDO extends Agent<ChatAgentEnv> {
     this.previewTarget = nextTarget;
 
     this.persistPreviewState(false);
-    this.broadcastPreviewState();
+    this.syncAgentState();
   }
 
   // Set thread title and broadcast to connected chat clients
@@ -4780,7 +4818,7 @@ export class ChatThreadDO extends Agent<ChatAgentEnv> {
     } else {
       this.ctx.storage.kv.delete(CHAT_TODOS_KEY);
     }
-    this.broadcastChat({ type: 'todo_state', todos: this.currentTodos });
+    this.syncAgentState();
   }
 
   getTodoState(): unknown[] {
@@ -4887,9 +4925,7 @@ export class ChatThreadDO extends Agent<ChatAgentEnv> {
     if (this.currentTodos.length === 0) return;
 
     const completedTodos = this.currentTodos.map((todo) => {
-      if (!todo || typeof todo !== "object") {
-        return todo;
-      }
+      if (!todo || typeof todo !== "object") return todo;
       return {
         ...(todo as Record<string, unknown>),
         status: "completed",
@@ -4898,7 +4934,7 @@ export class ChatThreadDO extends Agent<ChatAgentEnv> {
 
     this.currentTodos = [];
     this.ctx.storage.kv.delete(CHAT_TODOS_KEY);
-    this.broadcastChat({ type: "todo_state", todos: completedTodos });
+    this.syncAgentState({ currentTodos: completedTodos });
   }
 
   getLegacyClaudeSessionId(): string | null {
@@ -7506,23 +7542,7 @@ export class ChatThreadDO extends Agent<ChatAgentEnv> {
         ? Math.max(0, Math.floor(data.lastEventId))
         : 0;
 
-    // streaming_state MUST arrive before ready: the client sends queued messages
-    // on ready and optimistically sets loading=true.  If streaming_state (false)
-    // arrives *after* ready it overwrites the optimistic loading state, causing a
-    // visible flicker on the first message of a new chat in production.
-    this.sendDirect(ws, {
-      type: "streaming_state",
-      isStreaming: this.chatIsStreaming,
-    });
     this.sendDirect(ws, { type: "ready" });
-    this.sendDirect(ws, {
-      type: "preview_state",
-      target: this.previewTarget,
-      tabs: this.previewTabs,
-      activeTabId: this.previewActiveTabId,
-      version: this.previewVersion,
-      refreshTabId: null,
-    });
     this.browserPrompts.sendPendingPromptsToWebSocket(ws);
 
     for (const pending of this.browserPrompts.pendingQuestionPrompts()) {
@@ -7540,21 +7560,6 @@ export class ChatThreadDO extends Agent<ChatAgentEnv> {
       await this.completeTodoStateForTurnEnd();
     }
 
-    // Send todo_state AFTER event replay so it arrives after any sdk_event that
-    // triggers streaming state. The client clears todos when streaming starts,
-    // so sending this last ensures the current todos aren't immediately cleared.
-    if (this.currentTodos.length > 0) {
-      this.sendDirect(ws, { type: "todo_state", todos: this.currentTodos });
-    }
-    const initUsedPercent = resolveContextUsageForInit(
-      this.transientContextUsedPercent,
-      this.contextUsedPercent,
-      this.chatIsStreaming,
-    );
-    this.sendDirect(ws, {
-      type: "context_usage_state",
-      usedPercent: initUsedPercent,
-    });
   }
 
   private async applyMentionsForTurn(content: string): Promise<string> {
@@ -7933,48 +7938,6 @@ export class ChatThreadDO extends Agent<ChatAgentEnv> {
       answers: data.answers,
       userId: answeringUserId ?? undefined,
     });
-  }
-
-  private async handleSetPreviewTarget(
-    data: ChatClientSetPreviewTarget,
-  ): Promise<void> {
-    if (!this.chatContext) {
-      this.emitChatError("No session - send init first");
-      return;
-    }
-
-    const normalized = this.normalizePreviewTarget(data.target ?? null);
-
-    if (normalized?.kind === "file") {
-      if (normalized.workspaceId !== this.chatContext.workspaceId) {
-        this.emitChatError("Invalid preview target workspace");
-        return;
-      }
-    }
-
-    await this.setPreviewTarget(normalized);
-  }
-
-  private async handleSetPreviewTabsState(
-    data: ChatClientSetPreviewTabsState,
-  ): Promise<void> {
-    if (!this.chatContext) {
-      this.emitChatError("No session - send init first");
-      return;
-    }
-
-    const tabs = Array.isArray(data.tabs) ? data.tabs : [];
-    const activeTabId =
-      typeof data.activeTabId === "string" ? data.activeTabId : null;
-
-    const ok = await this.setPreviewTabsStateInternal(
-      tabs,
-      activeTabId,
-      this.chatContext.workspaceId,
-    );
-    if (!ok) {
-      this.emitChatError("Invalid preview target workspace");
-    }
   }
 
   private getPreviewTabId(target: PreviewTarget): string {
@@ -8358,23 +8321,6 @@ export class ChatThreadDO extends Agent<ChatAgentEnv> {
     );
   }
 
-  private broadcastPreviewState(options?: {
-    refreshTabId?: string | null;
-  }): void {
-    const refreshTabId =
-      typeof options?.refreshTabId === "string" && options.refreshTabId
-        ? options.refreshTabId
-        : null;
-    this.broadcastChat({
-      type: "preview_state",
-      target: this.previewTarget,
-      tabs: this.previewTabs,
-      activeTabId: this.previewActiveTabId,
-      version: this.previewVersion,
-      refreshTabId,
-    });
-  }
-
   private setChatIsStreaming(
     value: boolean,
     options: { markUnread?: boolean; completedAt?: number; summarySource?: string | null } = {},
@@ -8426,10 +8372,10 @@ export class ChatThreadDO extends Agent<ChatAgentEnv> {
     if (value && this.currentTodos.length > 0) {
       this.currentTodos = [];
       this.ctx.storage.kv.delete(CHAT_TODOS_KEY);
-      this.broadcastChat({ type: "todo_state", todos: [] });
+      this.syncAgentState();
     }
     if (statusChanged) {
-      this.broadcastChat({ type: "streaming_state", isStreaming: value });
+      this.syncAgentState();
     }
     const context = this.chatContext;
     if (context?.workspaceId && context.threadId) {

@@ -170,11 +170,22 @@ import {
 export { ChatErrorNotice } from "@/components/chat-error-notice";
 export { BillingCreditNotice } from "@/components/chat-billing-credit-notice";
 
+type ChatAgentState = {
+  isStreaming?: boolean;
+  previewTabs?: PreviewTarget[];
+  previewActiveTabId?: string | null;
+  previewVersion?: number;
+  previewRefreshTabId?: string | null;
+  currentTodos?: unknown[];
+  contextUsedPercent?: number | null;
+};
+
 type ChatAgentSocket = {
   readyState: number;
   send(data: string): void;
   close(): void;
   reconnect(): void;
+  call<T = unknown>(method: string, args?: unknown[]): Promise<T>;
 };
 
 // The backend acknowledges receipt before slow runner enqueue work, so this
@@ -649,6 +660,7 @@ export default function Chat({
     string | null
   >(null);
   const [loading, setLoading] = useState(false);
+  const [agentIsStreaming, setAgentIsStreaming] = useState(false);
   const [topUpOpen, setTopUpOpen] = useState(false);
   const [currentBillingCreditStatus, setCurrentBillingCreditStatus] =
     useState<BillingCreditStatus | null>(() => billingCreditStatus ?? null);
@@ -911,7 +923,7 @@ export default function Chat({
     setPendingMessages,
   ]);
 
-  const isStreaming = streamingMessageId !== null;
+  const isStreaming = streamingMessageId !== null || agentIsStreaming;
   useEffect(() => {
     const initialTodosChanged = initialTodos !== prevInitialTodosRef.current;
     if (!initialTodosChanged) {
@@ -929,7 +941,7 @@ export default function Chat({
     }
     prevInitialTodosRef.current = initialTodos;
     setCurrentTodos(initialTodos);
-  }, [currentTodos.length, initialTodos, isStreaming, loading]);
+  }, [agentIsStreaming, currentTodos.length, initialTodos, isStreaming, loading]);
 
   const activeAssistantMessageId = useMemo(() => {
     if (streamingMessageId) {
@@ -1313,6 +1325,7 @@ export default function Chat({
     setCurrentTodos(initialTodos);
     setPendingQuestion(null);
     setContextUsedPercent(null);
+    setAgentIsStreaming(false);
     lastCompletedAssistantMessageIdRef.current = null;
     completedTurnsRef.current = new Map();
     setCompletedTurns(new Map());
@@ -2152,14 +2165,12 @@ export default function Chat({
       const socket = wsRef.current;
       if (!socket || socket.readyState !== WebSocket.OPEN) return;
 
-      socket.send(
-        JSON.stringify({
-          type: "set_preview_tabs_state",
-          tabs: nextTabs.map((tab) => tab.target),
-          activeTabId: nextActiveTabId,
-          threadId,
-        }),
-      );
+      void socket
+        .call("setPreviewTabsState", [
+          nextTabs.map((tab) => tab.target),
+          nextActiveTabId,
+        ])
+        .catch(() => {});
     },
     [threadId],
   );
@@ -2382,70 +2393,54 @@ export default function Chat({
     [setMessages],
   );
 
+  const applyAgentPreviewState = useCallback(
+    (state: ChatAgentState) => {
+      const newVersion =
+        typeof state.previewVersion === "number" ? state.previewVersion : 0;
+      previewVersionRef.current = newVersion;
+
+      const nextSession = normalizePreviewSessionState(
+        state.previewTabs,
+        state.previewActiveTabId,
+        null,
+      );
+      setLocalPreviewSessionState(nextSession.tabs, nextSession.activeTabId);
+
+      if (!nextSession.target || !nextSession.activeTabId) return;
+      if (nextSession.target.kind === "runtime_artifact") return;
+
+      const nextActiveId = nextSession.activeTabId;
+      if (state.previewRefreshTabId !== nextActiveId) return;
+      if (nextSession.target.kind === "app") {
+        const existingTimeout = iframeRefreshTimeoutsRef.current[nextActiveId];
+        if (existingTimeout) clearTimeout(existingTimeout);
+        setTabAppLoading((prev) => ({ ...prev, [nextActiveId]: true }));
+        iframeRefreshTimeoutsRef.current[nextActiveId] = setTimeout(() => {
+          delete iframeRefreshTimeoutsRef.current[nextActiveId];
+          if (activeTabIdRef.current !== nextActiveId) {
+            setTabAppLoading((prev) => {
+              if (!(nextActiveId in prev)) return prev;
+              const next = { ...prev };
+              delete next[nextActiveId];
+              return next;
+            });
+            return;
+          }
+          setTabAppLoading((prev) => ({ ...prev, [nextActiveId]: false }));
+          bumpIframeKey(nextActiveId);
+        }, 1500);
+      } else if (nextSession.target.kind === "file") {
+        const fileViewMode = tabFileViewModesRef.current[nextActiveId] ?? "preview";
+        if (shouldAutoRefreshFilePreview(nextSession.target, fileViewMode)) {
+          bumpFilePreviewKey(nextActiveId);
+        }
+      }
+    },
+    [bumpFilePreviewKey, bumpIframeKey, setLocalPreviewSessionState],
+  );
+
   const handleRealtimeSideChannelEvent = useCallback(
     (data: any) => {
-      if (data.type === "preview_state") {
-        const newVersion = typeof data.version === "number" ? data.version : 0;
-        const hasVersionBump = newVersion > previewVersionRef.current;
-        previewVersionRef.current = newVersion;
-        const hasRefreshHint = data.refreshTabId !== undefined;
-        const refreshTabId =
-          typeof data.refreshTabId === "string" ? data.refreshTabId : null;
-
-        const nextSession = normalizePreviewSessionState(
-          data.tabs,
-          data.activeTabId,
-          null,
-        );
-        setLocalPreviewSessionState(nextSession.tabs, nextSession.activeTabId);
-
-        if (!nextSession.target || !nextSession.activeTabId) {
-          return;
-        }
-
-        const nextActiveId = nextSession.activeTabId;
-        const shouldRefreshActiveTab = refreshTabId
-          ? refreshTabId === nextActiveId
-          : !hasRefreshHint && hasVersionBump;
-
-        if (nextSession.target.kind === "runtime_artifact") {
-          return;
-        }
-
-        if (nextSession.target.kind === "app" && shouldRefreshActiveTab) {
-          const existingTimeout = iframeRefreshTimeoutsRef.current[nextActiveId];
-          if (existingTimeout) {
-            clearTimeout(existingTimeout);
-          }
-          setTabAppLoading((prev) => ({ ...prev, [nextActiveId]: true }));
-          iframeRefreshTimeoutsRef.current[nextActiveId] = setTimeout(() => {
-            delete iframeRefreshTimeoutsRef.current[nextActiveId];
-            if (activeTabIdRef.current !== nextActiveId) {
-              setTabAppLoading((prev) => {
-                if (!(nextActiveId in prev)) return prev;
-                const next = { ...prev };
-                delete next[nextActiveId];
-                return next;
-              });
-              return;
-            }
-            setTabAppLoading((prev) => ({ ...prev, [nextActiveId]: false }));
-            bumpIframeKey(nextActiveId);
-          }, 1500);
-        } else if (
-          nextSession.target.kind === "file" &&
-          shouldRefreshActiveTab
-        ) {
-          const fileViewMode =
-            tabFileViewModesRef.current[nextActiveId] ?? "preview";
-          if (shouldAutoRefreshFilePreview(nextSession.target, fileViewMode)) {
-            bumpFilePreviewKey(nextActiveId);
-          }
-        }
-
-        return;
-      }
-
       if (data.type === "title_updated" && typeof data.title === "string") {
         if (typeof document !== "undefined") {
           document.title = `${data.title || "Chat"} - camelAI`;
@@ -3130,22 +3125,6 @@ export default function Chat({
           hasCapturedCompactionSummaryRef.current = false;
           refreshBillingCreditStatusAfterTurn(msgId ?? id);
         }
-      } else if (data.type === "todo_state") {
-        // Direct todo state from server - no extraction needed
-        if (Array.isArray(data.todos)) {
-          setCurrentTodos(data.todos);
-        }
-      } else if (data.type === "context_usage_state") {
-        if (data.usedPercent === null) {
-          setContextUsedPercent(null);
-        } else if (
-          typeof data.usedPercent === "number" &&
-          Number.isFinite(data.usedPercent)
-        ) {
-          setContextUsedPercent(
-            Math.max(0, Math.min(100, Math.round(data.usedPercent))),
-          );
-        }
       } else if (data.type === "ask_user_question") {
         // Claude is asking the user a question
         if (data.questionId && Array.isArray(data.questions)) {
@@ -3163,25 +3142,6 @@ export default function Chat({
           }
           return prev;
         });
-      } else if (data.type === "streaming_state") {
-        const nextIsStreaming = Boolean(data.isStreaming);
-        if (!nextIsStreaming) {
-          flushDeferredMessagesRender();
-          splitStreamingMessageOnNextPartRef.current = false;
-          const msgId = streamingMessageIdRef.current;
-          if (msgId) {
-            lastCompletedAssistantMessageIdRef.current = msgId;
-            setMessages((prev) =>
-              prev.map((msg) =>
-                msg.id === msgId ? finalizeStreamingMessage(msg) : msg,
-              ),
-            );
-          }
-          setStreamingMessageId(null);
-        }
-        if (nextIsStreaming || pendingMessagesRef.current.length === 0) {
-          setLoading(nextIsStreaming);
-        }
       } else if (data.type === "message_accepted") {
         const clientMessageId =
           typeof data.clientMessageId === "string" ? data.clientMessageId : "";
@@ -3256,7 +3216,6 @@ export default function Chat({
         clearManualCompactionQueue();
         hasCapturedCompactionSummaryRef.current = false;
       } else if (
-        data.type === "preview_state" ||
         data.type === "title_updated" ||
         data.type === "thread_model_updated" ||
         data.type === "code_mode_artifact" ||
@@ -3308,7 +3267,24 @@ export default function Chat({
     getUnacceptedPendingUserMessages,
   ]);
 
-  const agentSocket = useAgent({
+  const handleAgentStateUpdate = useCallback(
+    (state: ChatAgentState) => {
+      setAgentIsStreaming(Boolean(state?.isStreaming));
+      applyAgentPreviewState(state);
+      if (Array.isArray(state.currentTodos)) {
+        setCurrentTodos(state.currentTodos as TodoItem[]);
+      }
+      const usedPercent = state.contextUsedPercent;
+      setContextUsedPercent(
+        typeof usedPercent === "number" && Number.isFinite(usedPercent)
+          ? Math.max(0, Math.min(100, Math.round(usedPercent)))
+          : null,
+      );
+    },
+    [applyAgentPreviewState],
+  );
+
+  const agentSocket = useAgent<ChatAgentState>({
     agent: "chat-thread",
     name: threadId ?? "disabled",
     enabled: agentEnabled,
@@ -3319,6 +3295,7 @@ export default function Chat({
     onOpen: handleAgentOpen,
     onMessage: handleAgentMessage,
     onClose: handleAgentClose,
+    onStateUpdate: handleAgentStateUpdate,
   });
 
   useEffect(() => {
@@ -3331,6 +3308,7 @@ export default function Chat({
   useEffect(() => {
     setReady(false);
     setStreamingMessageId(null);
+    setAgentIsStreaming(false);
     lastCompletedAssistantMessageIdRef.current = null;
     compactingPriorMessageIdRef.current = null;
     setCompactingPriorMessageId(null);
@@ -4150,10 +4128,8 @@ export default function Chat({
   }
 
   function stopGeneration() {
-    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
-      return;
-    }
-    wsRef.current.send(JSON.stringify({ type: "stop" }));
+    if (wsRef.current?.readyState !== WebSocket.OPEN) return;
+    void wsRef.current.call("requestStop").catch(() => {});
   }
 
   const handleQuestionResponse = useCallback(
