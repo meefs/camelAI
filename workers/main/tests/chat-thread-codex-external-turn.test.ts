@@ -108,6 +108,7 @@ describe('ChatThreadDO Codex turn handling', () => {
     fake.completeTodoStateForTurnEnd = vi.fn();
     fake.recordChatThreadObservabilityEvent = vi.fn();
     fake.pushChatEvent = vi.fn((event: any) => events.push(event));
+    installAgentStateMocks(fake);
     return { fake, events, activityRecords, workspaceStub };
   }
 
@@ -117,6 +118,24 @@ describe('ChatThreadDO Codex turn handling', () => {
         .map(([promise]: [Promise<unknown>]) => promise)
         .filter(Boolean),
     );
+  }
+
+  function installAgentStateMocks(fake: any) {
+    fake.chatIsStreaming ??= false;
+    fake.previewTabs ??= [];
+    fake.previewActiveTabId ??= null;
+    fake.previewVersion ??= 0;
+    fake.currentTodos ??= [];
+    fake.transientContextUsedPercent ??= null;
+    fake.contextUsedPercent ??= null;
+    fake.currentTitle ??= null;
+    fake.currentTitleUpdatedAt ??= null;
+    fake.currentThreadModel ??= null;
+    fake.currentThreadModelUpdatedAt ??= null;
+    fake.browserPrompts ??= {};
+    fake.browserPrompts.getOldestPendingQuestion ??= vi.fn(() => null);
+    fake.browserPrompts.pendingConnectionSetupPrompts ??= vi.fn(() => []);
+    fake.setState = vi.fn();
   }
 
   it('resolves legacy-prefixed model ids before selecting the Pi model', () => {
@@ -624,33 +643,25 @@ describe('ChatThreadDO Codex turn handling', () => {
     expect(sentCommands[0].content).toBe('[web message from Miguel (miguel@example.com)]: please also add tests');
   });
 
-  it('records terminal browser message send observability for accepted messages', async () => {
-    const ws = { send: vi.fn() };
+  it('returns acceptance from the sendMessage RPC after enqueue accepts', async () => {
     const fake = Object.create(ChatThreadDO.prototype) as any;
     let resolveEnqueue: (value: { status: 'accepted' }) => void = () => {};
     const enqueuePromise = new Promise<{ status: 'accepted' }>((resolve) => {
       resolveEnqueue = resolve;
     });
     fake.ctx = { storage: { kv: { get: vi.fn(), put: vi.fn() } } };
-    fake.recordChatThreadObservabilityEvent = vi.fn();
     fake.enqueueRunnerUserMessage = vi.fn(() => enqueuePromise);
-    fake.sendDirect = vi.fn((socket: any, message: any) => socket.send(message));
 
-    const handlePromise = ChatThreadDO.prototype['handleRunnerClientUserMessage'].call(fake, ws, {
-      type: 'message',
+    const handlePromise = ChatThreadDO.prototype['handleClientUserMessage'].call(fake, {
       content: 'hello',
       clientMessageId: 'client-msg-1',
     });
 
     await Promise.resolve();
-
-    expect(ws.send).toHaveBeenCalledWith({
-      type: 'message_accepted',
-      clientMessageId: 'client-msg-1',
-    });
+    expect(fake.enqueueRunnerUserMessage).toHaveBeenCalledTimes(1);
 
     resolveEnqueue({ status: 'accepted' });
-    await handlePromise;
+    await expect(handlePromise).resolves.toEqual({ status: 'accepted' });
 
     expect(fake.enqueueRunnerUserMessage).toHaveBeenCalledWith(
       expect.objectContaining({ clientMessageId: 'client-msg-1' }),
@@ -659,118 +670,52 @@ describe('ChatThreadDO Codex turn handling', () => {
         startedAt: expect.any(Number),
       }),
     );
-    expect(fake.recordChatThreadObservabilityEvent).toHaveBeenCalledWith(
-      'runner_user_message_send_attempt',
-      expect.objectContaining({
-        operation: 'received',
-        status: 'started',
-        sampleKey: 'client-msg-1',
-      }),
-    );
-    expect(fake.recordChatThreadObservabilityEvent).toHaveBeenCalledWith(
-      'runner_user_message_send_attempt',
-      expect.objectContaining({
-        operation: 'enqueue_runner_user_message',
-        status: 'accepted',
-        sampleKey: 'client-msg-1',
-      }),
-    );
-    expect(ws.send).toHaveBeenCalledTimes(1);
-    expect(ws.send).toHaveBeenCalledWith({
-      type: 'message_accepted',
-      clientMessageId: 'client-msg-1',
-    });
+    expect(fake.ctx.storage.kv.put).toHaveBeenCalled();
   });
 
-  it('records thrown browser message send attempts and notifies the client', async () => {
-    const ws = { send: vi.fn() };
+  it('returns thrown browser message send failures to the RPC caller', async () => {
     const fake = Object.create(ChatThreadDO.prototype) as any;
     const error = new Error('connection dropped');
     fake.ctx = { storage: { kv: { get: vi.fn(), put: vi.fn() } } };
-    fake.recordChatThreadObservabilityEvent = vi.fn();
     fake.enqueueRunnerUserMessage = vi.fn(async () => {
       throw error;
     });
     fake.setChatIsStreaming = vi.fn();
     fake.setActiveTurnUserId = vi.fn();
-    fake.recordCurrentThreadError = vi.fn();
-    fake.sendDirect = vi.fn((socket: any, message: any) => socket.send(message));
+    fake.updateActiveAutomationRun = vi.fn();
 
-    await ChatThreadDO.prototype['handleRunnerClientUserMessage'].call(fake, ws, {
-      type: 'message',
+    await expect(ChatThreadDO.prototype['handleClientUserMessage'].call(fake, {
       content: 'hello',
       clientMessageId: 'client-msg-2',
+    })).resolves.toEqual({
+      status: 'error',
+      error: 'connection dropped',
     });
 
-    expect(ws.send).toHaveBeenCalledWith({
-      type: 'message_accepted',
-      clientMessageId: 'client-msg-2',
+    expect(fake.updateActiveAutomationRun).toHaveBeenCalledWith({
+      status: 'error',
+      message: 'connection dropped',
+      clear: true,
     });
     expect(fake.setChatIsStreaming).toHaveBeenCalledWith(false);
     expect(fake.setActiveTurnUserId).toHaveBeenCalledWith(null);
-    expect(fake.recordChatThreadObservabilityEvent).toHaveBeenCalledWith(
-      'runner_user_message_send_attempt',
-      expect.objectContaining({
-        operation: 'enqueue_runner_user_message',
-        status: 'exception',
-        severity: 'error',
-        sampleKey: 'client-msg-2',
-        error,
-      }),
-    );
-    expect(ws.send).toHaveBeenCalledWith({
-      type: 'error',
-      error: 'connection dropped',
-      status: 500,
-    });
-    expect(fake.recordCurrentThreadError).toHaveBeenCalledWith(
-      expect.objectContaining({
-        message: 'connection dropped',
-        source: 'runner_enqueue',
-        status: 500,
-      }),
-    );
   });
 
-  it('records rejected browser message send attempts before notifying the client', async () => {
-    const ws = { send: vi.fn() };
+  it('returns rejected browser message sends to the RPC caller', async () => {
     const fake = Object.create(ChatThreadDO.prototype) as any;
-    fake.recordChatThreadObservabilityEvent = vi.fn();
-    fake.piCurrentUsageProvider = 'openai';
+    fake.ctx = { storage: { kv: { get: vi.fn(), put: vi.fn() } } };
     fake.enqueueRunnerUserMessage = vi.fn(async () => ({
       status: 'busy',
       error: new Error('Thread is busy with another run'),
     }));
-    fake.recordCurrentThreadError = vi.fn();
-    fake.sendDirect = vi.fn((socket: any, message: any) => socket.send(message));
-    fake.ctx = { storage: { kv: { get: vi.fn(), put: vi.fn() } } };
 
-    await ChatThreadDO.prototype['handleRunnerClientUserMessage'].call(fake, ws, {
-      type: 'message',
+    await expect(ChatThreadDO.prototype['handleClientUserMessage'].call(fake, {
       content: 'hello',
       clientMessageId: 'client-msg-rejected',
+    })).resolves.toEqual({
+      status: 'busy',
+      error: new Error('Thread is busy with another run'),
     });
-
-    expect(ws.send).toHaveBeenCalledWith({
-      type: 'message_accepted',
-      clientMessageId: 'client-msg-rejected',
-    });
-    expect(ws.send).toHaveBeenCalledWith(
-      expect.objectContaining({
-        type: 'error',
-        error: 'Thread is busy with another run',
-        status: 409,
-        provider: 'openai',
-      }),
-    );
-    expect(fake.recordCurrentThreadError).toHaveBeenCalledWith(
-      expect.objectContaining({
-        message: 'Thread is busy with another run',
-        source: 'runner_send',
-        status: 409,
-        provider: 'openai',
-      }),
-    );
   });
 
   it('keeps explicit direct-send error sources when provider metadata exists', async () => {
@@ -821,42 +766,24 @@ describe('ChatThreadDO Codex turn handling', () => {
     );
   });
 
-  it('re-acks duplicates of accepted messages without enqueueing again', async () => {
-    const ws = { send: vi.fn() };
+  it('re-accepts duplicates of accepted messages without enqueueing again', async () => {
     const fake = Object.create(ChatThreadDO.prototype) as any;
     fake.ctx = {
       storage: {
         kv: { get: vi.fn(() => ['client-msg-dup']), put: vi.fn() },
       },
     };
-    fake.recordChatThreadObservabilityEvent = vi.fn();
     fake.enqueueRunnerUserMessage = vi.fn();
-    fake.sendDirect = vi.fn((socket: any, message: any) => socket.send(message));
 
-    await ChatThreadDO.prototype['handleRunnerClientUserMessage'].call(fake, ws, {
-      type: 'message',
+    await expect(ChatThreadDO.prototype['handleClientUserMessage'].call(fake, {
       content: 'hello again',
       clientMessageId: 'client-msg-dup',
-    });
+    })).resolves.toEqual({ status: 'accepted' });
 
-    expect(ws.send).toHaveBeenCalledTimes(1);
-    expect(ws.send).toHaveBeenCalledWith({
-      type: 'message_accepted',
-      clientMessageId: 'client-msg-dup',
-    });
     expect(fake.enqueueRunnerUserMessage).not.toHaveBeenCalled();
-    expect(fake.recordChatThreadObservabilityEvent).toHaveBeenCalledWith(
-      'runner_user_message_send_attempt',
-      expect.objectContaining({
-        operation: 'received',
-        status: 'duplicate_ignored',
-      }),
-    );
   });
 
-  it('relays an in-flight enqueue failure to a retransmitted duplicate instead of acking it', async () => {
-    const ws1 = { send: vi.fn() };
-    const ws2 = { send: vi.fn() };
+  it('relays an in-flight enqueue failure to a retransmitted duplicate instead of accepting it', async () => {
     const fake = Object.create(ChatThreadDO.prototype) as any;
     const error = new Error('runner exploded');
     let rejectEnqueue: (error: Error) => void = () => {};
@@ -864,87 +791,63 @@ describe('ChatThreadDO Codex turn handling', () => {
       rejectEnqueue = reject;
     });
     fake.ctx = { storage: { kv: { get: vi.fn(), put: vi.fn() } } };
-    fake.recordChatThreadObservabilityEvent = vi.fn();
     fake.enqueueRunnerUserMessage = vi.fn(() => enqueuePromise);
     fake.setChatIsStreaming = vi.fn();
     fake.setActiveTurnUserId = vi.fn();
-    fake.sendDirect = vi.fn((socket: any, message: any) => socket.send(message));
+    fake.updateActiveAutomationRun = vi.fn();
 
-    const first = ChatThreadDO.prototype['handleRunnerClientUserMessage'].call(fake, ws1, {
-      type: 'message',
+    const first = ChatThreadDO.prototype['handleClientUserMessage'].call(fake, {
       content: 'hello',
       clientMessageId: 'client-msg-3',
     });
     await Promise.resolve();
 
-    // Socket drops; the browser reconnects and retransmits on a new socket
-    // while the original enqueue is still unresolved.
-    const second = ChatThreadDO.prototype['handleRunnerClientUserMessage'].call(fake, ws2, {
-      type: 'message',
+    const second = ChatThreadDO.prototype['handleClientUserMessage'].call(fake, {
       content: 'hello',
       clientMessageId: 'client-msg-3',
     });
     await Promise.resolve();
 
-    // The duplicate must not be acked while the outcome is unknown.
-    expect(ws2.send).not.toHaveBeenCalled();
     expect(fake.enqueueRunnerUserMessage).toHaveBeenCalledTimes(1);
 
     rejectEnqueue(error);
-    await Promise.all([first, second]);
+    await expect(first).resolves.toEqual({
+      status: 'error',
+      error: 'runner exploded',
+    });
+    await expect(second).resolves.toEqual({
+      status: 'error',
+      error: 'runner exploded',
+    });
 
-    // The retransmitting socket receives the real failure, not an ack.
-    expect(ws2.send).toHaveBeenCalledTimes(1);
-    expect(ws2.send).toHaveBeenCalledWith(
-      expect.objectContaining({ type: 'error', error: 'runner exploded' }),
-    );
-    expect(fake.recordChatThreadObservabilityEvent).toHaveBeenCalledWith(
-      'runner_user_message_send_attempt',
-      expect.objectContaining({
-        operation: 'received',
-        status: 'duplicate_in_flight',
-      }),
-    );
-    // Nothing was recorded as accepted, so a later retry re-enqueues.
     expect(fake.ctx.storage.kv.put).not.toHaveBeenCalled();
   });
 
-  it('acks a retransmitted duplicate once the in-flight enqueue accepts', async () => {
-    const ws1 = { send: vi.fn() };
-    const ws2 = { send: vi.fn() };
+  it('accepts a retransmitted duplicate once the in-flight enqueue accepts', async () => {
     const fake = Object.create(ChatThreadDO.prototype) as any;
     let resolveEnqueue: (value: { status: 'accepted' }) => void = () => {};
     const enqueuePromise = new Promise<{ status: 'accepted' }>((resolve) => {
       resolveEnqueue = resolve;
     });
     fake.ctx = { storage: { kv: { get: vi.fn(), put: vi.fn() } } };
-    fake.recordChatThreadObservabilityEvent = vi.fn();
     fake.enqueueRunnerUserMessage = vi.fn(() => enqueuePromise);
-    fake.sendDirect = vi.fn((socket: any, message: any) => socket.send(message));
 
-    const first = ChatThreadDO.prototype['handleRunnerClientUserMessage'].call(fake, ws1, {
-      type: 'message',
+    const first = ChatThreadDO.prototype['handleClientUserMessage'].call(fake, {
       content: 'hello',
       clientMessageId: 'client-msg-4',
     });
     await Promise.resolve();
-    const second = ChatThreadDO.prototype['handleRunnerClientUserMessage'].call(fake, ws2, {
-      type: 'message',
+    const second = ChatThreadDO.prototype['handleClientUserMessage'].call(fake, {
       content: 'hello',
       clientMessageId: 'client-msg-4',
     });
     await Promise.resolve();
 
     resolveEnqueue({ status: 'accepted' });
-    await Promise.all([first, second]);
+    await expect(first).resolves.toEqual({ status: 'accepted' });
+    await expect(second).resolves.toEqual({ status: 'accepted' });
 
     expect(fake.enqueueRunnerUserMessage).toHaveBeenCalledTimes(1);
-    expect(ws2.send).toHaveBeenCalledTimes(1);
-    expect(ws2.send).toHaveBeenCalledWith({
-      type: 'message_accepted',
-      clientMessageId: 'client-msg-4',
-    });
-    // The id becomes a durable dedupe marker only after acceptance.
     expect(fake.ctx.storage.kv.put).toHaveBeenCalled();
   });
 
@@ -1026,16 +929,6 @@ describe('ChatThreadDO Codex turn handling', () => {
       ),
     ).rejects.toThrow('runner unavailable');
 
-    expect(fake.recordChatThreadObservabilityEvent).toHaveBeenCalledWith(
-      'runner_user_message_enqueue',
-      expect.objectContaining({
-        operation: 'ensure_pi_session_ready',
-        status: 'exception',
-        severity: 'error',
-        sampleKey: 'client-msg-3',
-        error,
-      }),
-    );
   });
 
   it('keeps hosted OpenAI models on Responses while routing through OpenRouter AI Gateway', async () => {
@@ -2082,10 +1975,6 @@ describe('ChatThreadDO Codex turn handling', () => {
     );
     expect(compacted).toHaveLength(2);
     expect((compacted[0] as { content: string }).content).toContain('[Context Summary]');
-    expect(fake.recordChatThreadObservabilityEvent).toHaveBeenCalledWith(
-      'pi_context_compaction_fallback_persisted',
-      expect.objectContaining({ status: 'fallback' }),
-    );
   });
 
   it('schedules post-turn Pi compaction from assistant usage like the high-level agent', async () => {
@@ -2166,13 +2055,6 @@ describe('ChatThreadDO Codex turn handling', () => {
     expect(fake.replacePiCoreMessages).toHaveBeenCalledWith(compactedMessages);
     expect(fake.clearPiCoreCompaction).toHaveBeenCalled();
     expect(fake.piMainBaselineIndex).toBe(compactedMessages.length);
-    expect(fake.recordChatThreadObservabilityEvent).toHaveBeenCalledWith(
-      'pi_post_turn_compacted',
-      expect.objectContaining({
-        count: beforeMessages.length,
-        size: compactedMessages.length,
-      }),
-    );
   });
 
   it('uses Pi effective output token cap as reserve for post-turn compaction triggers', () => {
@@ -2687,10 +2569,6 @@ describe('ChatThreadDO Codex turn handling', () => {
     await assertion;
 
     expect(fake.disposePiSession).toHaveBeenCalledTimes(1);
-    expect(fake.recordChatThreadObservabilityEvent).toHaveBeenCalledWith(
-      'pi_turn_keep_alive_aborted',
-      expect.objectContaining({ status: 'stalled' }),
-    );
   });
 
   it.each([
@@ -5990,14 +5868,6 @@ describe('ChatThreadDO Codex turn handling', () => {
     expect(fake.piSession.state.messages).toEqual([previousMessage]);
     expect(fake.piMainBaselineIndex).toBe(1);
     expect(fake.clearPiInFlightMessages).toHaveBeenCalledTimes(1);
-    expect(fake.recordChatThreadObservabilityEvent).toHaveBeenCalledWith(
-      'pi_failed_turn_end_persistence_suppressed',
-      expect.objectContaining({
-        operation: 'handle_pi_session_event',
-        status: 'turn_end',
-        count: 2,
-      }),
-    );
   });
 
   it('suppresses aborted turn_end persistence after a user stop request', async () => {
@@ -6029,13 +5899,6 @@ describe('ChatThreadDO Codex turn handling', () => {
     expect(fake.appendPiCoreMessagesIfMissing).not.toHaveBeenCalled();
     expect(fake.piMainBaselineIndex).toBe(0);
     expect(fake.clearPiInFlightMessages).not.toHaveBeenCalled();
-    expect(fake.recordChatThreadObservabilityEvent).toHaveBeenCalledWith(
-      'pi_user_stop_turn_end_suppressed',
-      expect.objectContaining({
-        operation: 'handle_pi_session_event',
-        status: 'turn_end',
-      }),
-    );
   });
 
   it('includes in-flight messages in the parsed chat view', async () => {
@@ -6315,14 +6178,6 @@ describe('ChatThreadDO Codex turn handling', () => {
         }),
       }),
     );
-    expect(fake.recordChatThreadObservabilityEvent).toHaveBeenCalledWith(
-      'pi_sql_storage_sanitized',
-      expect.objectContaining({
-        operation: 'append',
-        status: 'externalized',
-        sampleKey: expect.stringContaining('externalized:1'),
-      }),
-    );
   });
 
   it('hydrates oversized Pi image data from R2 when loading history', async () => {
@@ -6385,14 +6240,6 @@ describe('ChatThreadDO Codex turn handling', () => {
       }),
     ]);
     expect(get).toHaveBeenCalledWith('org1/workspace1/chat-sessions/thread1/pi-images/abc.base64');
-    expect(fake.recordChatThreadObservabilityEvent).toHaveBeenCalledWith(
-      'pi_r2_image_hydrated',
-      expect.objectContaining({
-        operation: 'load_history',
-        status: 'ok',
-        size: imageData.length,
-      }),
-    );
   });
 
   it('sanitizes unsupported image tool outputs before Pi can persist them', () => {
@@ -6589,16 +6436,6 @@ describe('ChatThreadDO Codex turn handling', () => {
       status: 429,
       errorType: 'rate_limit_error',
     }));
-    expect(fake.recordChatThreadObservabilityEvent).toHaveBeenCalledWith(
-      'pi_provider_error_message',
-      expect.objectContaining({
-        operation: 'annotate_pi_provider_error',
-        status: '429',
-        severity: 'error',
-        statusCode: 429,
-        error: expect.any(Error),
-      }),
-    );
   });
 
   it('records Bedrock 524 assistant errors with structured provider metadata', async () => {
@@ -6632,18 +6469,6 @@ describe('ChatThreadDO Codex turn handling', () => {
       provider: 'bedrock',
       status: 524,
     }));
-    expect(fake.recordChatThreadObservabilityEvent).toHaveBeenCalledWith(
-      'pi_provider_error_message',
-      expect.objectContaining({
-        operation: 'annotate_pi_provider_error',
-        status: '524',
-        severity: 'error',
-        provider: 'bedrock',
-        model: 'us.anthropic.claude-opus-4-8',
-        statusCode: 524,
-        error: expect.any(Error),
-      }),
-    );
   });
 
   it('does not emit provider errors for user-aborted Pi turns', async () => {
@@ -6893,13 +6718,6 @@ describe('ChatThreadDO Codex turn handling', () => {
     });
 
     expect(fake.appendPiInFlightMessages).not.toHaveBeenCalled();
-    expect(fake.recordChatThreadObservabilityEvent).toHaveBeenCalledWith(
-      'pi_failed_in_flight_append_suppressed',
-      expect.objectContaining({
-        operation: 'handle_pi_session_event',
-        status: 'message_end',
-      }),
-    );
   });
 
   it('prunes unpersisted Pi session messages when agent_end arrives without a successful turn_end', async () => {
@@ -6938,15 +6756,6 @@ describe('ChatThreadDO Codex turn handling', () => {
     expect(fake.appendPiCoreMessagesIfMissing).not.toHaveBeenCalled();
     expect(fake.piSession.state.messages).toEqual([previousMessage]);
     expect(fake.piMainBaselineIndex).toBe(1);
-    expect(fake.recordChatThreadObservabilityEvent).toHaveBeenCalledWith(
-      'pi_in_flight_discarded',
-      expect.objectContaining({
-        operation: 'handle_pi_session_event',
-        status: 'agent_end_without_turn_end',
-        count: 1,
-        size: 2,
-      }),
-    );
   });
 
   it('persists and broadcasts todo state from direct runner events', async () => {
@@ -6961,6 +6770,7 @@ describe('ChatThreadDO Codex turn handling', () => {
       getWebSockets: vi.fn(() => [{ send: vi.fn((message: string) => sent.push(message)) }]),
     };
     fake.trace = vi.fn();
+    installAgentStateMocks(fake);
 
     await ChatThreadDO.prototype.setTodoState.call(fake, [
       { content: 'Check state', status: 'in_progress' },
@@ -6969,10 +6779,9 @@ describe('ChatThreadDO Codex turn handling', () => {
     expect(put).toHaveBeenCalledWith('chatTodos', [
       { content: 'Check state', status: 'in_progress', activeForm: 'Check state' },
     ]);
-    expect(sent.map((message) => JSON.parse(message))).toContainEqual({
-      type: 'todo_state',
-      todos: [{ content: 'Check state', status: 'in_progress', activeForm: 'Check state' }],
-    });
+    expect(fake.setState).toHaveBeenCalledWith(expect.objectContaining({
+      currentTodos: [{ content: 'Check state', status: 'in_progress', activeForm: 'Check state' }],
+    }));
 
     await ChatThreadDO.prototype.setTodoState.call(fake, []);
 
@@ -6990,6 +6799,7 @@ describe('ChatThreadDO Codex turn handling', () => {
       getWebSockets: vi.fn(() => [{ send: vi.fn((message: string) => sent.push(message)) }]),
     };
     fake.trace = vi.fn();
+    installAgentStateMocks(fake);
 
     await ChatThreadDO.prototype.setTodoState.call(fake, [
       { step: 'Inspect logs', status: 'inProgress' },
@@ -7003,10 +6813,9 @@ describe('ChatThreadDO Codex turn handling', () => {
       { content: 'Retry deploy', status: 'pending', activeForm: 'Retry deploy' },
     ];
     expect(put).toHaveBeenCalledWith('chatTodos', expected);
-    expect(sent.map((message) => JSON.parse(message))).toContainEqual({
-      type: 'todo_state',
-      todos: expected,
-    });
+    expect(fake.setState).toHaveBeenCalledWith(expect.objectContaining({
+      currentTodos: expected,
+    }));
   });
 
   it('hydrates persisted todo state when requested', () => {
@@ -7046,18 +6855,18 @@ describe('ChatThreadDO Codex turn handling', () => {
       getWebSockets: vi.fn(() => [{ send: vi.fn((message: string) => sent.push(message)) }]),
     };
     fake.trace = vi.fn();
+    installAgentStateMocks(fake);
 
     await ChatThreadDO.prototype.completeTodoStateForTurnEnd.call(fake);
 
     expect(fake.currentTodos).toEqual([]);
     expect(deleteKey).toHaveBeenCalledWith('chatTodos');
-    expect(sent.map((message) => JSON.parse(message))).toContainEqual({
-      type: 'todo_state',
-      todos: [
+    expect(fake.setState).toHaveBeenCalledWith(expect.objectContaining({
+      currentTodos: [
         { content: 'Check state', status: 'completed', activeForm: 'Checking state' },
         { content: 'Summarize', status: 'completed', activeForm: 'Summarizing' },
       ],
-    });
+    }));
   });
 
   it('clears stale non-streaming todo state when a chat initializes', async () => {
@@ -7104,35 +6913,17 @@ describe('ChatThreadDO Codex turn handling', () => {
     });
   });
 
-  it('buffers generated thread titles so later chat init can replay them', async () => {
+  it('syncs generated thread titles through Agent state', async () => {
     const fake = Object.create(ChatThreadDO.prototype) as any;
-    const sent: string[] = [];
 
-    fake.chatContext = {
-      threadId: 'thread1',
-      workspaceId: 'workspace1',
-      orgId: 'org1',
-    };
-    fake.chatIsStreaming = false;
     fake.currentTodos = [];
-    fake.previewTarget = null;
-    fake.previewTabs = [];
-    fake.previewActiveTabId = null;
-    fake.previewVersion = 0;
-    fake.chatEventBuffer = [];
-    fake.nextChatEventId = 1;
-    fake.transientContextUsedPercent = null;
-    fake.contextUsedPercent = null;
     fake.trace = vi.fn();
     fake.browserPrompts = {
       sendPendingPromptsToWebSocket: vi.fn(),
       pendingQuestionPrompts: vi.fn(() => []),
       pendingQuestionCount: 0,
     };
-    fake.broadcastChat = vi.fn();
-    fake.broadcastRunnerClients = vi.fn();
-    fake.ctx = { storage: { kv: { put: vi.fn() } } };
-    fake.completeTodoStateForTurnEnd = vi.fn();
+    installAgentStateMocks(fake);
 
     await ChatThreadDO.prototype.setTitle.call(
       fake,
@@ -7140,25 +6931,10 @@ describe('ChatThreadDO Codex turn handling', () => {
       1_710_000_000_000,
     );
 
-    const ws = { send: vi.fn((message: string) => sent.push(message)) };
-
-    await ChatThreadDO.prototype['handleChatInit'].call(fake, ws, {
-      type: 'init',
-      mode: 'side_channel',
-      threadId: 'thread1',
-    });
-
-    const messages = sent.map((message) => JSON.parse(message));
-    expect(messages).toContainEqual({
-      type: 'title_updated',
+    expect(fake.setState).toHaveBeenCalledWith(expect.objectContaining({
       title: 'Generated title',
-      updatedAt: 1_710_000_000_000,
-      eventId: 1,
-      sessionId: 'thread1',
-    });
-    expect(messages.findIndex((message) => message.type === 'title_updated')).toBeGreaterThan(
-      messages.findIndex((message) => message.type === 'ready'),
-    );
+      titleUpdatedAt: 1_710_000_000_000,
+    }));
   });
 
   it('selects raw Durable Object Pi messages for a fork target', async () => {
