@@ -1,7 +1,6 @@
 "use client";
 
 import {
-  createContext,
   useContext,
   useCallback,
   useEffect,
@@ -20,6 +19,10 @@ import { useAuthData } from "@/hooks/use-auth-data";
 import { getChatDebugFlags } from "@/lib/chat-debug-flags";
 import { maxThreadStatus } from "@/lib/thread-status";
 import { isPlaceholderThreadTitle } from "@/lib/thread-title";
+import {
+  ChatGroupsContext,
+  type ChatGroupsContextValue,
+} from "@/hooks/chat-groups-context";
 
 interface AppChatGroupsLoaderData {
   chatGroups?: ChatGroupView[] | Promise<ChatGroupView[]>;
@@ -45,16 +48,6 @@ export interface LiveThreadMetadata {
 
 type ThreadStatusOverlay = ThreadStatus | LiveThreadMetadata;
 
-interface ChatGroupsContextValue {
-  groups: ChatGroupView[];
-  activeGroupId: string | null;
-  runningThreadIds: Set<string>;
-  hasStatusSnapshot: boolean;
-  isLoading: boolean;
-  markThreadIdle: (threadId: string) => void;
-}
-
-const ChatGroupsContext = createContext<ChatGroupsContextValue | null>(null);
 type ChatGroupThreadSummary = ChatGroupView["open_threads"][number];
 export type ThreadSummaryPatch = Partial<
   Pick<ChatGroupThreadSummary, "title" | "model">
