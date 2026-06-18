@@ -25,7 +25,7 @@ describe("selfhost ai binding", () => {
       awsRegion: "us-west-2",
     });
 
-    const result = await binding.run("@cf/zai-org/glm-4.7-flash", {
+    const result = await binding.run("@cf/meta/llama-3.2-1b-instruct", {
       messages: [
         { role: "system", content: "system" },
         { role: "user", content: "user" },
@@ -44,7 +44,7 @@ describe("selfhost ai binding", () => {
       "Content-Type": "application/json",
     });
     expect(JSON.parse(String(init.body))).toEqual({
-      model: "zai.glm-4.7-flash",
+      model: "meta.llama3-2-1b-instruct",
       messages: [
         { role: "system", content: "system" },
         { role: "user", content: "user" },
@@ -61,7 +61,7 @@ describe("selfhost ai binding", () => {
     });
 
     await expect(
-      binding.run("@cf/zai-org/glm-4.7-flash", {
+      binding.run("@cf/meta/llama-3.2-1b-instruct", {
         messages: [{ role: "user", content: "hello" }],
       }),
     ).rejects.toThrow(/only supports bedrock/i);

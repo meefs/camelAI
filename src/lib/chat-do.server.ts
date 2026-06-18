@@ -38,6 +38,7 @@ import {
 } from "./model-picker-config";
 import { retryTransientDurableObjectRead } from "./do-rpc-retry.server";
 import { truncateThreadPreviewText } from "./thread-preview";
+import { getThreadTitleSourceMessage } from "./thread-title";
 
 interface ParsedThreadMessage {
   id: string;
@@ -652,9 +653,12 @@ export async function generateThreadTitle(
     const wsInfo = await getWorkspaceInfo(env, workspaceId);
     if (!wsInfo) return;
 
+    const titleSourceMessage = getThreadTitleSourceMessage(message);
+    if (!titleSourceMessage) return;
+
     const title = await generateThreadTitleWithOpenAI(
       env.AI as never,
-      message,
+      titleSourceMessage,
       {
         orgId: wsInfo.org_id,
         workspaceId,
@@ -664,7 +668,6 @@ export async function generateThreadTitle(
     );
     if (!title) return;
 
-    // Update title in OrgDO
     const orgStub = env.ORG.get(env.ORG.idFromName(wsInfo.org_id));
     const updated = await orgStub.updateThread(threadId, title);
     if (userId) {
@@ -672,7 +675,6 @@ export async function generateThreadTitle(
         .renameEmptySingleThreadGroupForThread(threadId, title);
     }
 
-    // Broadcast via ChatThreadDO
     const threadStub = env.CHAT_THREAD.get(
       env.CHAT_THREAD.idFromName(threadId),
     );

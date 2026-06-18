@@ -15,7 +15,7 @@ function chatCompletion(content: string) {
 }
 
 describe("thread title generation", () => {
-  it("uses Workers AI with GLM 4.7 Flash", async () => {
+  it("uses Workers AI with Llama 3.2 1B", async () => {
     const run = vi.fn().mockResolvedValue(chatCompletion("  Fix login form  "));
     const ai = { run };
 

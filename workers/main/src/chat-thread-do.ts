@@ -4159,9 +4159,12 @@ export class ChatThreadDO extends Agent<ChatAgentEnv> {
         this.codexSessionId = storedCodexSessionId.trim();
       }
 
+      const hasLegacyPiTurnRecovery = Boolean(
+        this.loadLegacyPiTurnRecoveryForMigration(),
+      );
       if (
-        this.loadLegacyPiTurnRecoveryForMigration() ||
-        (await this.hasOrphanedPiInFlightRecovery())
+        hasLegacyPiTurnRecovery ||
+        (!hasLegacyPiTurnRecovery && this.hasPiInFlightRecoveryRows())
       ) {
         await ctx.storage.setAlarm(Date.now() + 1_000);
       }
@@ -5993,6 +5996,14 @@ export class ChatThreadDO extends Agent<ChatAgentEnv> {
         codeModeArtifacts: Array.from(artifactsById.values()),
       } satisfies PiUiMetadata,
     } as unknown as AgentMessage;
+  }
+
+  private hasPiInFlightRecoveryRows(): boolean {
+    this.ensurePiCoreTables();
+    const row = this.ctx.storage.sql
+      .exec<{ count: number }>("SELECT COUNT(*) AS count FROM pi_in_flight_messages")
+      .toArray()[0];
+    return Math.max(0, Math.floor(Number(row?.count) || 0)) > 0;
   }
 
   private async loadPiInFlightMessages(options: { includeUiMetadata?: boolean } = {}): Promise<AgentMessage[]> {
@@ -9029,11 +9040,9 @@ export class ChatThreadDO extends Agent<ChatAgentEnv> {
 
     const hasFirstUserMessage = typeof thread.first_user_message === 'string'
       && thread.first_user_message.trim().length > 0;
-    if (hasFirstUserMessage) {
-      return;
+    if (!hasFirstUserMessage) {
+      await orgStub.setThreadFirstUserMessage(context.threadId, metadataSourceMessage);
     }
-
-    await orgStub.setThreadFirstUserMessage(context.threadId, metadataSourceMessage);
 
     if (!isPlaceholderThreadTitle(thread.title) || this.titleGenerationInFlight) {
       return;

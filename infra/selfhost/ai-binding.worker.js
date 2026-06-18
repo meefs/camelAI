@@ -1,5 +1,5 @@
 const AUXILIARY_MODEL_ALIASES = {
-  "@cf/zai-org/glm-4.7-flash": "zai.glm-4.7-flash",
+  "@cf/meta/llama-3.2-1b-instruct": "meta.llama3-2-1b-instruct",
 };
 
 function resolveBedrockModelId(model) {
@@ -7,7 +7,7 @@ function resolveBedrockModelId(model) {
   if (!trimmed) {
     throw new Error("Self-host AI binding requires a model id");
   }
-  return AUXILIARY_MODEL_ALIASES[trimmed] ?? trimmed.replace(/^@cf\/zai-org\//, "zai.");
+  return AUXILIARY_MODEL_ALIASES[trimmed] ?? trimmed;
 }
 
 class SelfhostAiBinding {

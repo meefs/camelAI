@@ -7,12 +7,18 @@ import {
 export const DEFAULT_THREAD_TITLE = 'New Chat';
 export const APP_THREAD_FALLBACK_TITLE_PREFIX = 'Working on ';
 export const THREAD_TITLE_GENERATION_SYSTEM_PROMPT =
-  'Summarize the message into a simple chat thread topic title. Respond with only the title, no quotes or extra punctuation.';
+  'Summarize the message into a simple chat thread topic title. Respond with only a plain text title, no markdown, no quotes, no extra punctuation.';
 
 const MAX_THREAD_TITLE_LENGTH = 100;
 
 export function sanitizeGeneratedThreadTitle(title: string | null | undefined): string | null {
-  const normalized = title?.trim();
+  const normalized = title
+    ?.split(/\r?\n/)
+    .map((line) => line.trim())
+    .find(Boolean)
+    ?.replace(/^#+\s*/, '')
+    .replace(/^[-*`"'“”]+|[-*`"'“”]+$/g, '')
+    .trim();
   if (!normalized) {
     return null;
   }

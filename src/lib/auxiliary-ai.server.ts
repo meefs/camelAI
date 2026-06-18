@@ -1,11 +1,12 @@
-export const AUXILIARY_AI_MODEL = "@cf/zai-org/glm-4.7-flash";
+export const AUXILIARY_AI_MODEL = "@cf/meta/llama-3.2-1b-instruct";
 
 export interface AuxiliaryAiChatCompletion {
-  choices: Array<{
-    message: {
-      content: string;
+  choices?: Array<{
+    message?: {
+      content?: string | null;
     };
   }>;
+  response?: string | null;
 }
 
 export interface AuxiliaryAiBinding {
@@ -109,6 +110,6 @@ export async function runAuxiliaryAiChatCompletion(
     buildAuxiliaryAiRunOptions(options.metadata, options.context),
   )) as AuxiliaryAiChatCompletion;
 
-  const content = result.choices[0]?.message?.content?.trim();
+  const content = result.choices?.[0]?.message?.content?.trim() || result.response?.trim();
   return content || null;
 }
