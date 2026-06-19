@@ -27,7 +27,18 @@
 		"CF_ACCOUNT_ID": "85bbd288051330fb51ee1c86031a299b",
 		"CF_GATEWAY_NAME": "chiridion",
 		"TOKEN_SIGNING_SECRET": "test-signing-secret-for-unit-tests-only",
-		"INTEGRATION_SECRET_KEY": "test-secret-key-for-integration-tests"
+		"INTEGRATION_SECRET_KEY": "test-secret-key-for-integration-tests",
+		// Real-deploy evals (on by default when CF_API_TOKEN is set; opt out with
+		// EVAL_REAL_DEPLOY=0) target this testing-grounds dispatch namespace, served by the
+		// evals dispatcher at *.evals.camelai.app. CF_WORKER_NAME is the deployed worker that
+		// exposes the virtual-binding entrypoints (reuses the staging main worker). The
+		// LOCAL_APP_* hosts make getAppUrl emit the testing-grounds URL through the normal
+		// app path, so list_apps/set_preview need no eval-specific code.
+		"CF_DISPATCH_NAMESPACE": "chiridion-platform-evals",
+		"CF_WORKER_NAME": "chiridion-app-staging",
+		"WORKER_BASE_URL": "https://evals.camelai.dev",
+		"LOCAL_APP_VANITY_DOMAIN": "evals.camelai.app",
+		"LOCAL_APP_IFRAME_DOMAIN": "apps.evals.camelai.dev"
 	},
 	"kv_namespaces": [
 		{

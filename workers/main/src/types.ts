@@ -93,6 +93,10 @@ export interface Env
   LOCAL_AUTH_USER_EMAIL?: string;
   LOCAL_AUTH_USER_NAME?: string;
   RUN_AGENT_EVALS?: string;
+  // Within agent eval runs, deploys go for real to the testing-grounds namespace by
+  // default whenever CF_API_TOKEN is set. Set to "0"/"false" to disable real deploys
+  // (the deploy eval then skips). Opt-out switch.
+  EVAL_REAL_DEPLOY?: string;
   // Claude API Proxy (CF AI Gateway)
   CF_GATEWAY_NAME?: string;
   CF_GATEWAY_BASE_URL?: string;

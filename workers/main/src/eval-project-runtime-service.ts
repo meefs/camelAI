@@ -4,7 +4,7 @@ import { getSandbox, type Sandbox } from "@cloudflare/sandbox";
 import {
   cloneEvalDeployContext,
   upsertEvalDeployContext,
-} from "./eval-deploy-registry.js";
+} from "./eval-deploy-context.js";
 
 interface EvalProjectRuntimeEnv {
   EVAL_SANDBOX: DurableObjectNamespace<Sandbox>;

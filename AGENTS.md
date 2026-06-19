@@ -64,8 +64,28 @@ bun run deploy:main:prod
 bun run deploy:main:staging
 bun run deploy:dispatcher:prod
 bun run deploy:dispatcher:staging
+bun run deploy:dispatcher:evals       # testing-grounds dispatcher for real-deploy evals
 bun run deploy:bedrock-provider:prod
 ```
+
+### Real-deploy evals (testing grounds)
+
+Agent evals deploy apps for real to a dedicated testing-grounds namespace so they are
+actually usable. The eval sandbox runs inside Miniflare, so `eval-sandbox.ts` intercepts the
+container's Cloudflare API traffic and forwards it to the production `proxyCloudflareApi`
+in-process (identity via `trustedIdentity` from the per-container eval deploy context in
+`eval-deploy-context.ts`). The deploy then publishes to the `chiridion-platform-evals`
+dispatch namespace and registers in OrgDO exactly like production — so `list_apps` /
+`set_preview` and `AgentEvalSessionResult.deployedApps` surface the app through the normal
+app path with no eval-specific branches in `mcp-handler`/`chat-thread-do`. The testing-grounds
+host comes from the eval env's `WORKER_BASE_URL` / `LOCAL_APP_VANITY_DOMAIN`
+(`*.evals.camelai.app`), and virtual bindings resolve against the staging main worker
+(`CF_WORKER_NAME`); these are pinned in `wrangler.test.jsonc`. Real deploy is the default for
+agent eval runs whenever `CF_API_TOKEN` is set; `EVAL_REAL_DEPLOY=0` disables it (deploy evals
+then skip). Served by the evals dispatcher (`workers/dispatcher/wrangler.evals.jsonc`); the
+namespace + DNS routes are created out-of-band. Eval apps are kept (no cleanup). Live-data
+bindings (`DATA_PROXY`/`CONNECTIONS`) won't resolve to the eval's local workspace;
+self-contained apps render fully.
 
 ## Frontend Conventions
 

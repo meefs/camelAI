@@ -35,6 +35,7 @@
 		"deploy:main:dev-illiana": "node scripts/deploy-main.mjs dev-illiana",
 		"deploy:dispatcher:prod": "wrangler deploy -c workers/dispatcher/wrangler.prod.jsonc",
 		"deploy:dispatcher:staging": "wrangler deploy -c workers/dispatcher/wrangler.staging.jsonc",
+		"deploy:dispatcher:evals": "wrangler deploy -c workers/dispatcher/wrangler.evals.jsonc",
 		"deploy:dispatcher:dev-miguel": "wrangler deploy -c workers/dispatcher/wrangler.dev-miguel.jsonc",
 		"deploy:dispatcher:dev-illiana": "wrangler deploy -c workers/dispatcher/wrangler.dev-illiana.jsonc",
 		"deploy:dispatcher:local": "wrangler deploy -c workers/dispatcher/wrangler.jsonc --env local",

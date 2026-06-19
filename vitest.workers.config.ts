@@ -19,8 +19,15 @@ const bedrockDevVarNames = new Set([
   'BEDROCK_TEST_REGION',
   'AI_GATEWAY_AUTH_TOKEN',
   'CF_ACCOUNT_ID',
+  'CF_API_TOKEN',
+  // NOTE: CF_DISPATCH_NAMESPACE, CF_WORKER_NAME, WORKER_BASE_URL and the LOCAL_APP_*
+  // hosts are intentionally NOT whitelisted. They are pinned in wrangler.test.jsonc so a
+  // developer's ambient .dev.vars/env (e.g. CF_DISPATCH_NAMESPACE=chiridion-platform-staging)
+  // can't redirect real eval deploys out of the dedicated chiridion-platform-evals
+  // testing-grounds namespace or change the app host they are served on.
   'CF_GATEWAY_NAME',
   'CF_GATEWAY_TOKEN',
+  'EVAL_REAL_DEPLOY',
   'EVAL_CUSTOM_API',
   'EVAL_CUSTOM_API_KEY',
   'EVAL_CUSTOM_BASE_URL',

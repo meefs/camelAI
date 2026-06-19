@@ -16,10 +16,7 @@ import {
   getEvalTimeoutMs,
   type EvalModelEnv,
 } from "./model-config";
-import {
-  listEvalDeployApps,
-  listEvalDeployRequests,
-} from "../../src/eval-deploy-registry";
+import { isRealEvalDeployEnabled } from "../../src/eval-deploy-context";
 import type { ChatThreadDO } from "../../src/chat-thread-do";
 import type { WorkspaceFilesystemDO } from "../../src/workspace-filesystem-do";
 
@@ -28,10 +25,15 @@ type DeployEvalEnv = TestEnv & EvalModelEnv & EvalSignalEnv & {
   CHAT_THREAD: DurableObjectNamespace<ChatThreadDO>;
   WORKSPACE_FS: DurableObjectNamespace<WorkspaceFilesystemDO>;
   RUN_AGENT_EVALS?: string;
+  EVAL_REAL_DEPLOY?: string;
+  CF_API_TOKEN?: string;
 };
 
 const testEnv = env as unknown as DeployEvalEnv;
-const maybeIt = testEnv.RUN_AGENT_EVALS === "1" ? it : it.skip;
+// Real deploy is required for this eval (it publishes to the testing-grounds namespace and
+// fetches the live URL). Skips when not an agent eval run, real deploy is disabled, or no
+// CF_API_TOKEN is available.
+const maybeIt = isRealEvalDeployEnabled(testEnv) ? it : it.skip;
 
 function persistEvalArtifact(name: string, value: unknown): void {
   try {
@@ -103,7 +105,7 @@ describe("deploy fake data agent eval", () => {
           "In the deploy-fake-data project, use the bundled create-worker command to scaffold a Cloudflare Worker app named fake-data-dashboard.",
           "Customize the generated app into a polished fake-data dashboard or operations app using believable sample business data.",
           "Then run the generated app's exact deploy script with bun run deploy so it exercises wrangler deploy from the template.",
-          "This eval runtime sets CLOUDFLARE_API_BASE_URL and CLOUDFLARE_API_TOKEN to a local Cloudflare API mock, so do not ask for login or real Cloudflare credentials.",
+          "This eval runtime injects CLOUDFLARE_API_BASE_URL and CLOUDFLARE_API_TOKEN, so do not ask for login or real Cloudflare credentials.",
           "After deploying, call list_apps and verify fake-data-dashboard appears, then call set_preview for fake-data-dashboard.",
           "Summarize the deploy result and list_apps/set_preview result.",
         ].join(" "),
@@ -115,27 +117,12 @@ describe("deploy fake data agent eval", () => {
           maxBadToolCalls: 0,
         }),
       );
-      const deployedApps = await listEvalDeployApps(
-        testEnv.APP_DB,
-        defaultWorkspaceId,
-      );
-      const deployedApp = deployedApps.find(
-        (app) => app.script_name === "fake-data-dashboard",
-      );
-      const deployRequests = deployedApp
-        ? await listEvalDeployRequests(testEnv.APP_DB, deployedApp.container_id)
-        : [];
-      const deployVerification = {
-        app: deployedApp,
-        requests: deployRequests,
-      };
-
       persistEvalArtifact("deploy-fake-data-live", {
         status: result.status,
         error: result.error,
         model: testEnv.EVAL_MODEL,
         signal,
-        deployVerification,
+        deployedApps: result.deployedApps,
         result: result.result,
         events: result.events,
         messages: result.messages,
@@ -148,7 +135,7 @@ describe("deploy fake data agent eval", () => {
             error: result.error,
             model: testEnv.EVAL_MODEL,
             signal,
-            deployVerification,
+            deployedApps: result.deployedApps,
             result: result.result,
             events: result.events,
             messages: result.messages,
@@ -169,22 +156,28 @@ describe("deploy fake data agent eval", () => {
       expect(transcriptText).toContain("list_apps");
       expect(transcriptText).toContain("set_preview");
       expect(transcriptText).toContain("fake-data-dashboard");
-      expect(transcriptText).toContain("eval.camelai.app");
-      expect(deployedApp).toBeDefined();
-      expect(deployedApp).toMatchObject({
-        script_name: "fake-data-dashboard",
-        workspace_id: defaultWorkspaceId,
-        dispatch_namespace: "chiridion",
-        dispatch_script_name: "fake-data-dashboard",
-        vanity_url: "https://fake-data-dashboard.eval.camelai.app",
-      });
-      expect(deployRequests.some((request) =>
-        request.method === "PUT" &&
-        request.path.includes("/workers/dispatch/namespaces/chiridion/scripts/fake-data-dashboard") &&
-        request.query.includes("bindings_inherit=strict"),
-      )).toBe(true);
+      expect(transcriptText).toContain("evals.camelai.app");
       expect(result.events.some((event) => event.type === "runtime_event")).toBe(true);
       expect(result.events.some((event) => event.type === "result")).toBe(true);
+
+      // The deploy flows through the real cf-api-proxy and registers in OrgDO like a normal
+      // deploy, so the app surfaces in the eval result via the standard app path with the
+      // testing-grounds host — no eval-specific registry involved.
+      const resultApp = result.deployedApps?.find(
+        (app) => app.name === "fake-data-dashboard",
+      );
+      expect(resultApp).toBeDefined();
+      const appUrl = resultApp?.url ?? "";
+      const appHost = new URL(appUrl).host;
+      expect(appHost.startsWith("fake-data-dashboard")).toBe(true);
+      expect(appHost.endsWith(".evals.camelai.app")).toBe(true);
+
+      // The whole point: the app is actually reachable. Fetch the live URL and confirm the
+      // deployed worker serves a non-empty 200 response.
+      const live = await fetch(appUrl, { redirect: "follow" });
+      expect(live.status).toBe(200);
+      const liveBody = await live.text();
+      expect(liveBody.length).toBeGreaterThan(0);
     },
     660_000,
   );

@@ -131,39 +131,6 @@ describe("EvalProjectRuntimeService prototype", () => {
         timeoutMs: 120_000,
       });
       expect(scaffold).toMatchObject({ success: true, exitCode: 0 });
-
-      const deployMock = await bridge.exec({
-        project: project.name,
-        command:
-          'curl -fsS "$CLOUDFLARE_API_BASE_URL/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/dispatch/namespaces/chiridion/scripts/eval-smoke"',
-      });
-      expect(deployMock).toMatchObject({ success: true, exitCode: 0 });
-      expect(deployMock.stdout).toContain('"success":true');
-
-      const deployUpload = await bridge.exec({
-        project: project.name,
-        command: [
-          'curl -fsS -X PUT',
-          '-F metadata={}',
-          '-F script=@/workspace/hello.txt',
-          '"$CLOUDFLARE_API_BASE_URL/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/dispatch/namespaces/chiridion/scripts/eval-smoke?excludeScript=true&bindings_inherit=strict"',
-        ].join(" "),
-      });
-      expect(deployUpload).toMatchObject({ success: true, exitCode: 0 });
-
-      const deploys = await bridge.exec({
-        project: project.name,
-        command: "curl -fsS http://camelai-eval-cloudflare-api.internal/__eval/deploys",
-      });
-      expect(deploys).toMatchObject({ success: true, exitCode: 0 });
-      const deploysJson = JSON.parse(deploys.stdout) as {
-        apps?: Array<{ script_name?: string; workspace_id?: string; vanity_url?: string }>;
-      };
-      expect(deploysJson.apps?.some((app) =>
-        app.script_name === "eval-smoke" &&
-        app.workspace_id === "eval-workspace" &&
-        app.vanity_url === "https://eval-smoke.eval.camelai.app",
-      )).toBe(true);
     },
     120_000,
   );

@@ -101,12 +101,6 @@ import type { WorkspaceThreadStreamingOptions } from "./thread-status";
 import { getPreferredAppUrl } from "../../../src/lib/app-url";
 import { buildCloudflareGatewayUrl } from "../../../src/lib/cloudflare-ai-gateway";
 import {
-  getEvalDeployApp,
-  isEvalDeployEnabled,
-  listEvalDeployApps,
-  setEvalDeployAppPublic,
-} from "./eval-deploy-registry";
-import {
   findConnectionMethodEntry,
   getConnection,
   invokeConnectionMethod,
@@ -950,12 +944,25 @@ export interface AgentEvalSessionRequest extends InitialUserMessageRequest {
   timeoutMs?: number;
 }
 
+export interface AgentEvalDeployedApp {
+  name: string;
+  /** Authoritative app URL (the *.evals.camelai.app host for real eval deploys). */
+  url: string;
+  isPublic: boolean;
+}
+
 export interface AgentEvalSessionResult {
   status: "completed" | "busy" | "error";
   error?: string;
   result?: string;
   events: Array<Record<string, unknown>>;
   messages: AgentEvalParsedMessage[];
+  /**
+   * Apps the agent deployed during this eval, from the eval deploy registry. Captured
+   * directly in the result so the deployed URLs are authoritative regardless of what
+   * list_apps/set_preview report. Omitted when no apps were deployed.
+   */
+  deployedApps?: AgentEvalDeployedApp[];
 }
 
 export interface ChannelHistoryEventRequest {
@@ -2981,9 +2988,6 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
   }
 
   private async getAppUrl(script: WorkerScript): Promise<string> {
-    if ("eval" in script && script.eval === true && typeof (script as { vanity_url?: unknown }).vanity_url === "string") {
-      return (script as unknown as { vanity_url: string }).vanity_url;
-    }
     let appHostname = "camelai.dev";
     const workerBaseUrl = (this.env as { WORKER_BASE_URL?: string }).WORKER_BASE_URL;
     if (workerBaseUrl) {
@@ -3404,11 +3408,7 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
     }
 
     if (scriptName) {
-      const script =
-        (await this.orgStub.getWorkerScript(scriptName)) ??
-        (isEvalDeployEnabled(this.env)
-          ? await getEvalDeployApp(this.env.APP_DB, this.ctx.props.workspaceId, scriptName)
-          : null);
+      const script = await this.orgStub.getWorkerScript(scriptName);
       if (!script) throw new Error(`App '${scriptName}' not found`);
       if (script.workspace_id !== this.ctx.props.workspaceId) {
         throw new Error(`App '${scriptName}' belongs to a different workspace`);
@@ -3508,14 +3508,8 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
   }
 
   private async listApps(): Promise<unknown> {
-    const realScripts = await this.orgStub.listWorkerScriptsByWorkspace(this.ctx.props.workspaceId);
-    const evalScripts = isEvalDeployEnabled(this.env)
-      ? await listEvalDeployApps(this.env.APP_DB, this.ctx.props.workspaceId)
-      : [];
-    const scriptsByName = new Map<string, WorkerScript>();
-    for (const script of evalScripts) scriptsByName.set(script.script_name, script);
-    for (const script of realScripts) scriptsByName.set(script.script_name, script);
-    const scripts = Array.from(scriptsByName.values()).sort((a, b) => b.updated_at - a.updated_at);
+    const scripts = (await this.orgStub.listWorkerScriptsByWorkspace(this.ctx.props.workspaceId))
+      .sort((a, b) => b.updated_at - a.updated_at);
     return {
       count: scripts.length,
       apps: await Promise.all(scripts.map(async (script) => ({
@@ -3526,7 +3520,6 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
         created_at: new Date(script.created_at).toISOString(),
         updated_at: new Date(script.updated_at).toISOString(),
         preview_status: script.preview_status,
-        eval: "eval" in script && script.eval === true,
       }))),
     };
   }
@@ -3535,34 +3528,10 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
     const scriptName = typeof args.script_name === "string" ? args.script_name.trim() : "";
     if (!scriptName) throw new Error("script_name is required");
     if (typeof args.is_public !== "boolean") throw new Error("is_public must be a boolean");
-    const script =
-      (await this.orgStub.getWorkerScript(scriptName)) ??
-      (isEvalDeployEnabled(this.env)
-        ? await getEvalDeployApp(this.env.APP_DB, this.ctx.props.workspaceId, scriptName)
-        : null);
+    const script = await this.orgStub.getWorkerScript(scriptName);
     if (!script) return { success: false, error: `App '${scriptName}' not found` };
     if (script.workspace_id !== this.ctx.props.workspaceId) {
       return { success: false, error: `App '${scriptName}' belongs to a different workspace` };
-    }
-    if ("eval" in script && script.eval === true) {
-      const updated = await setEvalDeployAppPublic(
-        this.env.APP_DB,
-        this.ctx.props.workspaceId,
-        scriptName,
-        args.is_public,
-      );
-      if (!updated) return { success: false, error: `Failed to update app '${scriptName}'` };
-      await this.chatThreadStub.setPreviewAppVisibility(scriptName, updated.is_public);
-      return {
-        success: true,
-        app: {
-          name: updated.script_name,
-          url: await this.getAppUrl(updated),
-          is_public: updated.is_public,
-          updated_at: new Date(updated.updated_at).toISOString(),
-        },
-        message: `App '${scriptName}' is now ${updated.is_public ? "public" : "private"}`,
-      };
     }
     const updated = await this.orgStub.setWorkerScriptPublic(
       scriptName,
@@ -8624,7 +8593,47 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
       ...options,
       events,
       messages: await this.getPiCoreParsedMessages(threadId),
+      deployedApps: await this.collectAgentEvalDeployedApps(),
     };
+  }
+
+  private async collectAgentEvalDeployedApps(): Promise<
+    AgentEvalDeployedApp[] | undefined
+  > {
+    const workspaceId = this.chatContext?.workspaceId ?? "";
+    const orgId = this.chatContext?.orgId ?? "";
+    if (!workspaceId || !orgId) return undefined;
+    const orgStub = this.env.ORG.get(this.env.ORG.idFromName(orgId));
+    const scripts = await orgStub.listWorkerScriptsByWorkspace(workspaceId);
+    if (!scripts.length) return undefined;
+    // Build the app URL the same way the tools' getAppUrl does (the eval env pins the
+    // testing-grounds host via WORKER_BASE_URL/LOCAL_APP_VANITY_DOMAIN), so the result
+    // carries the authoritative *.evals.camelai.app URL with no eval-specific code.
+    let appHostname = "camelai.dev";
+    const workerBaseUrl = (this.env as { WORKER_BASE_URL?: string }).WORKER_BASE_URL;
+    if (workerBaseUrl) {
+      try {
+        appHostname = new URL(workerBaseUrl).host;
+      } catch {
+        appHostname = "camelai.dev";
+      }
+    }
+    const orgSlug = (await orgStub.getSlug()) ?? undefined;
+    return scripts
+      .sort((a, b) => b.updated_at - a.updated_at)
+      .map((script) => ({
+        name: script.script_name,
+        url: getPreferredAppUrl(script, {
+          hostname: {
+            hostname: appHostname,
+            vanityDomain: this.env.LOCAL_APP_VANITY_DOMAIN,
+            iframeDomain: this.env.LOCAL_APP_IFRAME_DOMAIN,
+          },
+          orgSlug,
+          orgCustomDomain: null,
+        }),
+        isPublic: script.is_public,
+      }));
   }
 
   private hasAvailableBrowserUser(): boolean {

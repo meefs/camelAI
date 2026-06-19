@@ -1,146 +1,97 @@
 import { Sandbox } from "@cloudflare/sandbox";
 import type { OutboundHandler } from "@cloudflare/containers";
 
+import { proxyCloudflareApi } from "./cf-api-proxy.js";
+import type { DeploySideEffectsInfo } from "./cf-api-proxy.js";
 import {
-  listEvalDeployAppsForContainer,
-  listEvalDeployRequests,
-  logEvalDeployRequest,
-  recordEvalDeployApp,
-} from "./eval-deploy-registry.js";
+  getEvalDeployContext,
+  isRealEvalDeployEnabled,
+} from "./eval-deploy-context.js";
 import {
   EVAL_CLOUDFLARE_API_BASE_URL,
   EVAL_CLOUDFLARE_API_HOST,
 } from "./project-vm-protocol.js";
+import { handleDeploySideEffects } from "./services/deploy.js";
 import type { Env } from "./types.js";
 
 export { EVAL_CLOUDFLARE_API_BASE_URL, EVAL_CLOUDFLARE_API_HOST };
 
-function envelope(result: unknown = {}, success = true): unknown {
-  return { success, errors: [], messages: [], result };
-}
-
-function fakeJwt(): string {
-  return "eyJhbGciOiJub25lIn0.eyJleHAiIjo0MTAyNDQ0ODAwfQ.";
-}
-
-function responseFor(method: string, path: string): unknown {
-  if (path === "/__health") return { ok: true, service: "eval-cloudflare-api-mock" };
-  if (/\/workers\/dispatch\/namespaces\/[^/]+\/scripts\/[^/]+\/assets-upload-session$/.test(path)) {
-    return envelope({ jwt: fakeJwt(), buckets: [] });
-  }
-  if (path.endsWith("/workers/assets/upload")) return envelope({ jwt: fakeJwt() });
-  if (/\/workers\/dispatch\/namespaces\/[^/]+\/scripts\/[^/]+\/(content|settings|bindings|tags|secrets)$/.test(path)) {
-    return envelope({
-      id: "eval-script",
-      etag: "eval-etag",
-      created_on: "2026-06-09T00:00:00Z",
-      modified_on: "2026-06-09T00:00:00Z",
-    });
-  }
-  if (/\/workers\/dispatch\/namespaces\/[^/]+\/scripts\/[^/]+\/deployments$/.test(path)) {
-    return method === "GET"
-      ? envelope({ deployments: [] })
-      : envelope({ id: "eval-deployment", source: "eval", strategy: "percentage" });
-  }
-  const scriptMatch = path.match(/\/workers\/dispatch\/namespaces\/([^/]+)\/scripts\/([^/]+)$/);
-  if (scriptMatch) {
-    const script = decodeURIComponent(scriptMatch[2]);
-    return envelope({
-      id: script,
-      script,
-      etag: "eval-etag",
-      handlers: ["fetch"],
-      created_on: "2026-06-09T00:00:00Z",
-      modified_on: "2026-06-09T00:00:00Z",
-    });
-  }
-  const nsMatch = path.match(/\/workers\/dispatch\/namespaces\/([^/]+)$/);
-  if (nsMatch) {
-    return envelope({
-      namespace: decodeURIComponent(nsMatch[1]),
-      created_on: "2026-06-09T00:00:00Z",
-    });
-  }
-  if (/\/r2\/buckets\/[^/]+$/.test(path)) {
-    return envelope({
-      name: decodeURIComponent(path.split("/").pop() ?? "eval-bucket"),
-      creation_date: "2026-06-09T00:00:00Z",
-    });
-  }
-  if (/\/accounts\/[^/]+$/.test(path)) {
-    return envelope({ id: "eval-account", name: "Eval Account" });
-  }
-  return envelope({ id: "eval", path, method });
-}
-
-function parseDispatchScriptPath(path: string): {
-  accountId: string;
-  dispatchNamespace: string;
-  scriptName: string;
-} | null {
-  const match = path.match(
-    /^\/client\/v4\/accounts\/([^/]+)\/workers\/dispatch\/namespaces\/([^/]+)\/scripts\/([^/]+)$/,
+function cfError(message: string, status: number): Response {
+  return Response.json(
+    { success: false, errors: [{ code: 10000, message }], messages: [], result: null },
+    { status },
   );
-  if (!match) return null;
-  return {
-    accountId: decodeURIComponent(match[1]),
-    dispatchNamespace: decodeURIComponent(match[2]),
-    scriptName: decodeURIComponent(match[3]),
-  };
 }
 
-function validateDeployUpload(request: Request, url: URL): Response | null {
-  if (request.method !== "PUT") return null;
-  const upload = parseDispatchScriptPath(url.pathname);
-  if (!upload) return null;
-  if (upload.dispatchNamespace !== "chiridion") {
-    return Response.json(envelope({}, false), { status: 400 });
+async function resolveOrgSlug(env: Env, orgId: string): Promise<string | null> {
+  try {
+    return (await env.ORG.get(env.ORG.idFromName(orgId)).getSlug()) ?? null;
+  } catch {
+    return null;
   }
-  if (!/^[a-z0-9][a-z0-9-]{0,62}$/.test(upload.scriptName)) {
-    return Response.json(envelope({}, false), { status: 400 });
-  }
-  const contentType = request.headers.get("content-type") ?? "";
-  if (!contentType.toLowerCase().includes("multipart/form-data")) {
-    return Response.json(envelope({}, false), { status: 400 });
-  }
-  if (url.searchParams.get("bindings_inherit") !== "strict") {
-    return Response.json(envelope({}, false), { status: 400 });
-  }
-  return null;
 }
 
+/**
+ * Agent evals run the sandbox container inside Miniflare, so its `wrangler deploy`
+ * traffic never reaches a deployed Worker. We intercept the container's Cloudflare API
+ * calls here and forward them to the real production cf-api-proxy in-process, so the
+ * deploy is genuinely published to the testing-grounds namespace and registered in
+ * OrgDO exactly like a production deploy. Identity is supplied via the proxy's
+ * `trustedIdentity` option, sourced from the per-container eval deploy context.
+ */
 const handleEvalCloudflareApi: OutboundHandler<Env> = async (request, env, ctx) => {
-  const url = new URL(request.url);
-  if (url.pathname === "/__eval/requests") {
-    const requests = await listEvalDeployRequests(env.APP_DB, ctx.containerId);
-    return new Response(requests.map((entry) => JSON.stringify(entry)).join("\n"), {
-      headers: { "Content-Type": "application/x-ndjson" },
-    });
-  }
-  if (url.pathname === "/__eval/deploys") {
-    const apps = await listEvalDeployAppsForContainer(env.APP_DB, ctx.containerId);
-    return Response.json({ apps });
-  }
-
-  const validationError = validateDeployUpload(request, url);
-  if (validationError) return validationError;
-
-  await logEvalDeployRequest(env.APP_DB, ctx.containerId, request, url);
-
-  const upload = parseDispatchScriptPath(url.pathname);
-  if (request.method === "PUT" && upload) {
-    await recordEvalDeployApp(env.APP_DB, {
-      containerId: ctx.containerId,
-      accountId: upload.accountId,
-      dispatchNamespace: upload.dispatchNamespace,
-      scriptName: upload.scriptName,
-      query: url.search.slice(1),
-      contentType: request.headers.get("content-type"),
-      contentLength: request.headers.get("content-length"),
-    });
+  // Honor the real-deploy opt-out: when EVAL_REAL_DEPLOY=0 or no CF_API_TOKEN is set, do
+  // not publish for real. There is no mock fallback, so surface a clear error instead of
+  // forwarding (which would either publish despite the opt-out or fail with a cryptic
+  // Missing CF_API_TOKEN). The deploy eval itself skips in this case.
+  if (!isRealEvalDeployEnabled(env)) {
+    return cfError(
+      "Real eval deploys are disabled (set EVAL_REAL_DEPLOY!=0 and provide CF_API_TOKEN)",
+      403,
+    );
   }
 
-  return Response.json(responseFor(request.method, url.pathname));
+  const context = await getEvalDeployContext(env.APP_DB, ctx.containerId);
+  if (!context) {
+    return cfError("Eval deploy context not found for container", 401);
+  }
+  const orgSlug = await resolveOrgSlug(env, context.orgId);
+  if (!orgSlug) {
+    return cfError("Eval deploy org has no slug", 401);
+  }
+
+  // proxyCloudflareApi normally runs onDeploySideEffects in a waitUntil after returning the
+  // deploy response. For evals we instead capture the info (the callback is invoked
+  // synchronously) and await the registration before releasing the response, so the script
+  // is in OrgDO by the time `bun run deploy` returns — list_apps/set_preview and the final
+  // result then never race the deferred registration.
+  let pendingDeploy: DeploySideEffectsInfo | null = null;
+  const response = await proxyCloudflareApi(request, env, {
+    trustedIdentity: {
+      orgId: context.orgId,
+      orgSlug,
+      workspaceId: context.workspaceId,
+      userId: context.userId,
+      threadId: context.threadId ?? undefined,
+      projectId: context.projectId ?? undefined,
+    },
+    onDeploySideEffects: (info) => {
+      pendingDeploy = info;
+      return Promise.resolve();
+    },
+  });
+
+  if (pendingDeploy) {
+    // Match the proxy's own catch-and-log: a side-effect failure must not turn a successful
+    // deploy response into an error.
+    try {
+      await handleDeploySideEffects(env, pendingDeploy);
+    } catch (error) {
+      console.error("[eval-sandbox] deploy side effects failed", String(error));
+    }
+  }
+
+  return response;
 };
 
 export class EvalSandbox extends Sandbox<Env> {}
