@@ -98,22 +98,12 @@ import { cn } from "@/lib/utils";
 import { buildSlugMap, type MentionableProject } from "@/lib/mentions";
 import { isFileDrag } from "@/lib/file-drag";
 import {
-  attachArtifactsToToolResultMessages,
-  finalizeStreamingMessage,
-  mergeToolResultArtifacts,
   mergeTaskNotifications,
   normalizeToolResultMessages,
   mergeTeammateMessages,
 } from "@/lib/streaming";
-import {
-  normalizeRuntimeCallArtifacts,
-  type RuntimeCallArtifact,
-} from "@/lib/runtime-artifacts";
-import {
-  applyRuntimeEventToMessages,
-  splitStreamingMessageForSteer,
-} from "@/lib/runtime-message-state";
 import { parseMessageContent } from "@/lib/chat-message-content";
+import { mergeOverlay } from "@/lib/runtime-message-state";
 import {
   type AppUrlInput,
   getAppUrl,
@@ -180,6 +170,19 @@ type ChatAgentState = {
   titleUpdatedAt?: number | null;
   model?: LlmModel | null;
   modelUpdatedAt?: number | null;
+  lastCompletedTurn?: {
+    id: string;
+    durationMs: number;
+    completedAtMs: number;
+  } | null;
+  lastError?: {
+    id: string;
+    error: string;
+    billingSource: string | null;
+    provider: string | null;
+    status: number | string | null;
+    errorType: string | null;
+  } | null;
 };
 
 type ChatAgentClient = {
@@ -199,6 +202,9 @@ function sameJson(left: unknown, right: unknown): boolean {
 }
 
 const NEW_THREAD_BOOTSTRAP_STALL_TIMEOUT_MS = 10_000;
+// Only animate the "just completed" turn highlight for completions this recent;
+// older completions replayed on load/reconnect still get their duration badge.
+const FRESHLY_COMPLETED_TURN_WINDOW_MS = 10_000;
 
 function getThreadRunningState(
   groups: readonly ChatGroupView[] | undefined,
@@ -632,17 +638,14 @@ export default function Chat({
     [initialPreviewTabs, initialActiveTabId],
   );
 
-  // Local state for messages, streaming, and loading
+  // Local state for messages, streaming, and loading. `messages` holds only
+  // committed (finalized) history and is set immediately; the throttling now
+  // lives on the live overlay below.
   const {
     state: messages,
     stateRef: messagesRef,
     setImmediate: setMessages,
-    setBuffered: setMessagesDeferred,
-    flush: flushDeferredMessagesRender,
   } = useBufferedState(parsedInitialMessages, STREAM_MESSAGE_RENDER_THROTTLE_MS);
-  const [streamingMessageId, setStreamingMessageIdState] = useState<
-    string | null
-  >(null);
   const [completedTurns, setCompletedTurns] = useState<
     Map<string, CompletedTurnMetadata>
   >(() => new Map());
@@ -650,11 +653,23 @@ export default function Chat({
     string | null
   >(null);
   const [loading, setLoading] = useState(false);
-  const [agentIsStreaming, setAgentIsStreaming] = useState(false);
+  const [agentIsStreaming, setAgentIsStreamingState] = useState(false);
   const [topUpOpen, setTopUpOpen] = useState(false);
   const [currentBillingCreditStatus, setCurrentBillingCreditStatus] =
     useState<BillingCreditStatus | null>(() => billingCreditStatus ?? null);
   const [pendingMessages, setPendingMessagesState] = useState<Message[]>([]);
+  // The current turn's assistant/tool messages, pushed whole from the server
+  // and replaced wholesale on every Agent-state update; overlaid on `messages`
+  // at render time. Buffered so the per-token stream throttles re-renders, with
+  // an immediate flush at turn boundaries. The ref always tracks the latest
+  // snapshot (both setters update it) so folding stays exact.
+  const {
+    state: liveOverlay,
+    stateRef: liveOverlayRef,
+    setImmediate: setLiveOverlayImmediate,
+    setBuffered: setLiveOverlayBuffered,
+    flush: flushLiveOverlay,
+  } = useBufferedState<Message[]>([], STREAM_MESSAGE_RENDER_THROTTLE_MS);
   const [currentTodos, setCurrentTodos] = useState<TodoItem[]>(initialTodos);
   const newThreadBootstrapRecoveredRef = useRef<string | null>(null);
 
@@ -818,12 +833,19 @@ export default function Chat({
     syncCompactionIndicator();
   }, [syncCompactionIndicator]);
   const iframeRef = useRef<HTMLIFrameElement>(null);
+  // Committed history overlaid with the live turn for rendering. `messages`
+  // itself stays finalized-only so the streaming entry lives solely in the
+  // overlay until it is folded in on completion.
+  const displayMessages = useMemo(
+    () => mergeOverlay(messages, liveOverlay),
+    [messages, liveOverlay],
+  );
   const normalizedMessages = useMemo(
     () =>
       mergeTaskNotifications(
-        mergeTeammateMessages(normalizeToolResultMessages(messages)),
+        mergeTeammateMessages(normalizeToolResultMessages(displayMessages)),
       ),
-    [messages],
+    [displayMessages],
   );
   const visibleMessages = useMemo(
     () =>
@@ -834,14 +856,16 @@ export default function Chat({
   );
 
   // Refs to track current state for use in callbacks (avoids stale closures)
-  const streamingMessageIdRef = useRef(streamingMessageId);
-  const runtimeStreamingMessageIdsRef = useRef<Record<string, string | null>>(
-    {},
-  );
-  const lastCompletedAssistantMessageIdRef = useRef<string | null>(null);
+  const agentIsStreamingRef = useRef(false);
   const completedTurnsRef = useRef<Map<string, CompletedTurnMetadata>>(
     new Map(),
   );
+  // The most recent completed turn already applied to completedTurns, so a
+  // reconnect carrying the same lastCompletedTurn doesn't replay it.
+  const lastAppliedCompletedTurnIdRef = useRef<string | null>(null);
+  // The most recent terminal error already surfaced, so the state-driven error
+  // is shown exactly once even across re-renders/reconnects.
+  const lastAppliedErrorIdRef = useRef<string | null>(null);
   const pendingMessagesRef = useRef(pendingMessages);
   const acceptedPendingMessageIdsRef = useRef<Set<string>>(new Set());
   const pendingThreadContextRef = useRef({
@@ -862,9 +886,9 @@ export default function Chat({
   const hasSyncedInitialPreviewRef = useRef(false);
   const previousPreviewThreadIdRef = useRef(threadId);
 
-  const setStreamingMessageId = useCallback((id: string | null) => {
-    streamingMessageIdRef.current = id;
-    setStreamingMessageIdState(id);
+  const setAgentIsStreaming = useCallback((value: boolean) => {
+    agentIsStreamingRef.current = value;
+    setAgentIsStreamingState(value);
   }, []);
 
   const setPendingMessages = useCallback(
@@ -884,7 +908,7 @@ export default function Chat({
       initialMessages !== prevInitialMessagesRef.current;
     if (
       !initialMessagesChanged ||
-      streamingMessageIdRef.current ||
+      agentIsStreamingRef.current ||
       pendingMessagesRef.current.length > 0
     ) {
       return;
@@ -910,7 +934,7 @@ export default function Chat({
     setPendingMessages,
   ]);
 
-  const isStreaming = streamingMessageId !== null || agentIsStreaming;
+  const isStreaming = agentIsStreaming;
   useEffect(() => {
     const initialTodosChanged = initialTodos !== prevInitialTodosRef.current;
     if (!initialTodosChanged) {
@@ -931,20 +955,14 @@ export default function Chat({
   }, [agentIsStreaming, currentTodos.length, initialTodos, isStreaming, loading]);
 
   const activeAssistantMessageId = useMemo(() => {
-    if (streamingMessageId) {
-      const trackedMessageExists = messages.some(
-        (msg) => msg.id === streamingMessageId && msg.role === "assistant",
-      );
-      if (trackedMessageExists) return streamingMessageId;
-    }
-
-    for (let i = messages.length - 1; i >= 0; i--) {
-      const msg = messages[i];
+    // The streaming message lives in the overlay carrying isStreaming; scan for
+    // it rather than tracking a separate id.
+    for (let i = displayMessages.length - 1; i >= 0; i--) {
+      const msg = displayMessages[i];
       if (msg.role === "assistant" && msg.isStreaming) return msg.id;
     }
-
     return null;
-  }, [messages, streamingMessageId]);
+  }, [displayMessages]);
   const activeThreadRunningState = useMemo(
     () => getThreadRunningState(chatGroupsContext?.groups, threadId ?? null),
     [chatGroupsContext?.groups, threadId],
@@ -1280,7 +1298,6 @@ export default function Chat({
   const initialScrollDoneRef = useRef(false);
   const stickToBottomRef = useRef(true);
   const forceScrollOnNextUpdate = useRef(false);
-  const splitStreamingMessageOnNextPartRef = useRef(false);
   const chatAgentRef = useRef<ChatAgentClient | null>(null);
   const optimisticallyClearedConnectionSetupRequestIdRef = useRef<string | null>(
     null,
@@ -1309,27 +1326,22 @@ export default function Chat({
     Record<string, ReturnType<typeof setTimeout>>
   >({});
   const composerTextareaRef = useRef<HTMLTextAreaElement>(null);
-  const lastEventIdRef = useRef(0);
   const fallbackRenderedAtRef = useRef<number>(Date.now());
-  const pendingCodeModeArtifactsRef = useRef<Map<string, RuntimeCallArtifact[]>>(
-    new Map(),
-  );
 
   useEffect(() => {
     initialScrollDoneRef.current = false;
     stickToBottomRef.current = true;
-    splitStreamingMessageOnNextPartRef.current = false;
     setCurrentTodos(initialTodos);
     setPendingQuestion(null);
     setContextUsedPercent(null);
     setAgentIsStreaming(false);
-    lastCompletedAssistantMessageIdRef.current = null;
+    lastAppliedCompletedTurnIdRef.current = null;
+    lastAppliedErrorIdRef.current = null;
     completedTurnsRef.current = new Map();
     setCompletedTurns(new Map());
     setFreshlyCompletedTurnId(null);
     compactingPriorMessageIdRef.current = null;
     setCompactingPriorMessageId(null);
-    pendingCodeModeArtifactsRef.current = new Map();
   }, [threadId]);
 
   const clearAllIframeRefreshTimeouts = useCallback(() => {
@@ -1663,14 +1675,6 @@ export default function Chat({
       setResolvedMentionProjects(data.projects);
     }
   }, [mentionSourcesFetcher.data]);
-  const sessionStorageKey = useCallback(
-    (id: string) => {
-      const workspaceKey = resolvedWorkspaceId ?? "unknown";
-      return `ws_session_${workspaceKey}_${id}`;
-    },
-    [resolvedWorkspaceId],
-  );
-
   const preserveDraftBeforeOptimisticClear = useCallback(
     (
       clientMessageId: string,
@@ -1953,8 +1957,7 @@ export default function Chat({
       );
       setPendingMessages(remainingPendingMessages);
       setLoading(
-        remainingPendingMessages.length > 0 ||
-          Boolean(streamingMessageIdRef.current),
+        remainingPendingMessages.length > 0 || agentIsStreamingRef.current,
       );
       if (!options?.preserveReady) {
         setReady(false);
@@ -1978,46 +1981,10 @@ export default function Chat({
     ],
   );
 
-  const loadSessionState = useCallback(
-    (id: string) => {
-      try {
-        const stored = sessionStorage.getItem(sessionStorageKey(id));
-        if (stored) {
-          const parsed = JSON.parse(stored) as { lastEventId?: number };
-          lastEventIdRef.current =
-            typeof parsed.lastEventId === "number" ? parsed.lastEventId : 0;
-          return;
-        }
-      } catch (e) {
-        console.warn("Failed to load session state:", e);
-      }
-      lastEventIdRef.current = 0;
-    },
-    [sessionStorageKey],
-  );
-
-  const persistSessionState = useCallback(
-    (id: string, eventId = lastEventIdRef.current) => {
-      try {
-        const payload = {
-          lastEventId: eventId,
-        };
-        sessionStorage.setItem(sessionStorageKey(id), JSON.stringify(payload));
-      } catch (e) {
-        console.warn("Failed to persist session state:", e);
-      }
-    },
-    [sessionStorageKey],
-  );
-
   useEffect(() => {
-    if (!threadId) {
-      lastEventIdRef.current = 0;
-      return;
-    }
+    if (!threadId) return;
     pendingNewThreadSubmissionRef.current = null;
-    loadSessionState(threadId);
-  }, [threadId, loadSessionState, resolvedWorkspaceId]);
+  }, [threadId]);
 
   useEffect(() => {
     if (!threadId || readOnly) {
@@ -2307,36 +2274,6 @@ export default function Chat({
     }
   }, [activeTabId, previewTarget, tabNotebookPdfExporting, tabNotebookStates]);
 
-  const handleCodeModeArtifactEvent = useCallback(
-    (data: any) => {
-      const parentToolUseId =
-        typeof data.parentToolUseId === "string" ? data.parentToolUseId.trim() : "";
-      const [artifact] = normalizeRuntimeCallArtifacts([data.artifact]);
-      if (!parentToolUseId || !artifact) return;
-
-      setMessages((prev) => {
-        const result = attachArtifactsToToolResultMessages(prev, parentToolUseId, [artifact]);
-        if (result.attached) {
-          return result.messages;
-        }
-
-        const existing = pendingCodeModeArtifactsRef.current.get(parentToolUseId) ?? [];
-        const merged = mergeToolResultArtifacts(
-          {
-            type: "tool_result",
-            tool_use_id: parentToolUseId,
-            content: "",
-            artifacts: existing,
-          },
-          [artifact],
-        ).artifacts ?? [];
-        pendingCodeModeArtifactsRef.current.set(parentToolUseId, merged);
-        return prev;
-      });
-    },
-    [setMessages],
-  );
-
   const applyAgentPreviewState = useCallback(
     (state: ChatAgentState) => {
       const newVersion =
@@ -2381,25 +2318,6 @@ export default function Chat({
       }
     },
     [bumpFilePreviewKey, bumpIframeKey, setLocalPreviewSessionState],
-  );
-
-  const handleRealtimeSideChannelEvent = useCallback(
-    (data: any) => {
-      if (data.type === "code_mode_artifact") {
-        handleCodeModeArtifactEvent(data);
-        return;
-      }
-
-      return;
-    },
-    [
-      threadId,
-      setLocalPreviewSessionState,
-      bumpIframeKey,
-      bumpFilePreviewKey,
-      showChatError,
-      handleCodeModeArtifactEvent,
-    ],
   );
 
   const sendPendingMessageToAgent = useCallback(
@@ -2452,15 +2370,87 @@ export default function Chat({
   const agentEnabled = !readOnly && Boolean(threadId && resolvedWorkspaceId);
 
   const handleAgentOpen = useCallback(() => {
-    if (!threadId) return;
-    chatAgentRef.current?.send(
-      JSON.stringify({
-        type: "init",
-        threadId,
-        lastEventId: lastEventIdRef.current,
-      }),
-    );
-  }, [threadId]);
+    const id = threadId;
+    if (!id) return;
+    setReady(true);
+
+    const queuedMessages = pendingMessagesRef.current.filter((message) => {
+      if (message.role !== "user") return false;
+      const deliveryKey = message.clientMessageId ?? message.id;
+      return !isPendingMessageAccepted(deliveryKey);
+    });
+    if (queuedMessages.length === 0) return;
+
+    setLoading(true);
+    const currentMessages = messagesRef.current;
+    const existingIds = new Set(currentMessages.map((message) => message.id));
+    const missing = queuedMessages.filter((message) => !existingIds.has(message.id));
+    if (missing.length > 0) {
+      setMessages([...currentMessages, ...missing]);
+    }
+    for (const message of queuedMessages) {
+      sendPendingMessageToAgent(message, id);
+    }
+    setPendingMessages((prev) => prev);
+  }, [isPendingMessageAccepted, sendPendingMessageToAgent, setMessages, setPendingMessages, threadId]);
+
+  // Apply a terminal error (delivered through Agent state, not the websocket, so
+  // it survives a reconnect after a disconnected/early failure).
+  const handleTerminalError = useCallback(
+    (payload: NonNullable<ChatAgentState["lastError"]>) => {
+      const id = threadId;
+      flushLiveOverlay();
+      console.error("Chat terminal error:", payload.error);
+      const billingSource =
+        payload.billingSource === "byok" || payload.billingSource === "hosted"
+          ? payload.billingSource
+          : null;
+      const eventProvider = parseByokProvider(payload.provider);
+      const errorPayload =
+        typeof payload.status === "number" ||
+        typeof payload.status === "string" ||
+        typeof payload.errorType === "string"
+          ? {
+              error: payload.error,
+              status: payload.status,
+              type: payload.errorType,
+            }
+          : payload.error;
+      const errorContext: Partial<ChatApiErrorContext> = { billingSource };
+      if (eventProvider) {
+        errorContext.llmProvider = eventProvider;
+      }
+      const shouldRefreshBillingAfterError =
+        billingSource === "hosted" || isChatBillingOrCreditError(errorPayload);
+      showChatError(errorPayload, errorContext);
+      // Finish streaming on error. The overlay's streaming entry is finalized
+      // server-side and folded into committed history via state sync.
+      setAgentIsStreaming(false);
+      setLoading(false);
+      acceptedPendingMessageIdsRef.current.clear();
+      setPendingMessages([]);
+      if (id) dispatchLocalThreadStatus(id, "idle");
+      if (id && shouldRefreshBillingAfterError) {
+        refreshBillingCreditStatusAfterTurn(`${id}:billing-error:${Date.now()}`);
+      }
+      restorePendingDeliveryDraft();
+      isAutoCompactingRef.current = false;
+      compactingPriorMessageIdRef.current = null;
+      setCompactingPriorMessageId(null);
+      clearManualCompactionQueue();
+      hasCapturedCompactionSummaryRef.current = false;
+    },
+    [
+      threadId,
+      flushLiveOverlay,
+      showChatError,
+      setAgentIsStreaming,
+      setPendingMessages,
+      refreshBillingCreditStatusAfterTurn,
+      restorePendingDeliveryDraft,
+      clearManualCompactionQueue,
+    ],
+  );
 
   const handleAgentMessage = useCallback(
     (event: MessageEvent) => {
@@ -2468,213 +2458,62 @@ export default function Chat({
       if (!id) return;
       const data = JSON.parse(event.data);
 
-      const incomingEventId =
-        typeof data?.eventId === "number" && Number.isFinite(data.eventId)
-          ? data.eventId
-          : null;
+      // Reject messages stamped for a different thread (a late broadcast that
+      // arrives after switching threads must never apply to the new one).
+      if (typeof data?.threadId === "string" && data.threadId !== id) return;
 
-      if (incomingEventId !== null) {
-        lastEventIdRef.current = Math.max(
-          lastEventIdRef.current,
-          incomingEventId,
+      // Errors and code-mode artifacts ride Agent state; the websocket carries
+      // the result signal and the live overlay (the current turn's streaming
+      // tail, off the durable state channel).
+      if (data.type === "live_overlay") {
+        const overlay = (Array.isArray(data.messages) ? data.messages : []).map(
+          (message: Message) => ({
+            ...message,
+            content: parseMessageContent(message.content),
+          }),
         );
-      }
-
-      if (data.type === "ready") {
-        setReady(true);
-
-        const queuedMessages = pendingMessagesRef.current.filter((message) => {
-          if (message.role !== "user") return false;
-          const deliveryKey = message.clientMessageId ?? message.id;
-          return !isPendingMessageAccepted(deliveryKey);
-        });
-        if (queuedMessages.length > 0) {
-          setLoading(true);
-
-          // Restore to state if a route revalidation already accepted them.
-          const currentMessages = messagesRef.current;
-          const existingIds = new Set(currentMessages.map((m) => m.id));
-          const missing = queuedMessages.filter(
-            (m) => !existingIds.has(m.id),
-          );
-          if (missing.length > 0) {
-            setMessages([...currentMessages, ...missing]);
+        // Fold finalized (non-streaming) entries into committed history so they
+        // survive the overlay clearing at turn end. Idempotent — mergeOverlay
+        // keys on id/clientMessageId; the streaming entry stays overlay-only so
+        // a later re-id can't duplicate it.
+        const finalized = [...liveOverlayRef.current, ...overlay].filter(
+          (message) => !message.isStreaming,
+        );
+        // If the overlay just cleared (turn end) but our last snapshot still had
+        // a streaming tail, finalize and fold it so the message isn't dropped.
+        if (overlay.length === 0) {
+          for (const message of liveOverlayRef.current) {
+            if (message.isStreaming) {
+              finalized.push({ ...message, isStreaming: false });
+            }
           }
-
-          for (const msg of queuedMessages) {
-            sendPendingMessageToAgent(msg, id);
-          }
-          setPendingMessages((prev) => prev);
         }
-      } else if (data.type === "runtime_event") {
-        if (!id) {
-          return;
+        if (finalized.length > 0) {
+          setMessages((previous) => mergeOverlay(previous, finalized));
         }
-        const runtimeEvent = data.event;
-        const isTurnCompleted =
-          runtimeEvent &&
-          typeof runtimeEvent === "object" &&
-          (runtimeEvent as { method?: unknown }).method === "turn/completed";
-        const completedParams: {
-          forkEntryId?: unknown;
-          completedAtMs?: unknown;
-          turnDurationMs?: unknown;
-        } = isTurnCompleted
-          ? ((runtimeEvent as {
-              params?: {
-                forkEntryId?: unknown;
-                completedAtMs?: unknown;
-                turnDurationMs?: unknown;
-              };
-            }).params ?? {})
-          : {};
-        const completingStreamingId = isTurnCompleted
-          ? runtimeStreamingMessageIdsRef.current[id] ??
-            streamingMessageIdRef.current
-          : null;
-        setMessagesDeferred((prev) => {
-          const next = applyRuntimeEventToMessages(
-            prev,
-            id,
-            runtimeEvent,
-            runtimeStreamingMessageIdsRef.current,
-          );
-          return next;
-        });
-        const nextStreamingId =
-          runtimeStreamingMessageIdsRef.current[id] ?? null;
-        setStreamingMessageId(nextStreamingId);
-
-        if (isTurnCompleted) {
-          const forkEntryId =
-            typeof completedParams.forkEntryId === "string" &&
-            completedParams.forkEntryId.trim()
-              ? completedParams.forkEntryId.trim()
-              : null;
-          const completedTurnId = forkEntryId || completingStreamingId;
-          const completedAtMs =
-            typeof completedParams.completedAtMs === "number" &&
-            Number.isFinite(completedParams.completedAtMs)
-              ? completedParams.completedAtMs
-              : Date.now();
-          const durationMs =
-            typeof completedParams.turnDurationMs === "number" &&
-            Number.isFinite(completedParams.turnDurationMs)
-              ? Math.max(0, completedParams.turnDurationMs)
-              : 0;
-          if (completedTurnId) {
-            completedTurnsRef.current.set(completedTurnId, {
-              durationMs,
-              completedAtMs,
-            });
-            setCompletedTurns(new Map(completedTurnsRef.current));
-            setFreshlyCompletedTurnId(completedTurnId);
-          }
-          flushDeferredMessagesRender();
-          lastCompletedAssistantMessageIdRef.current =
-            completedTurnId ?? nextStreamingId;
-          setStreamingMessageId(null);
-          setLoading(false);
-          completeActiveManualCompaction();
-          acceptedPendingMessageIdsRef.current.clear();
-          setPendingMessages([]);
-          dispatchLocalThreadStatus(id, "idle");
-          clearPendingDeliveryDraft();
-          refreshBillingCreditStatusAfterTurn(
-            completedTurnId ?? nextStreamingId ?? id,
-          );
+        liveOverlayRef.current = overlay;
+        if (overlay.length === 0) {
+          setLiveOverlayImmediate([]);
+        } else {
+          setLiveOverlayBuffered(overlay);
         }
       } else if (data.type === "result") {
-        if (id) {
-          flushDeferredMessagesRender();
-          if (incomingEventId !== null) {
-            persistSessionState(id, incomingEventId);
-          }
-          acceptedPendingMessageIdsRef.current.clear();
-          setPendingMessages([]);
-          dispatchLocalThreadStatus(id, "idle");
-          completeActiveManualCompaction();
-          clearPendingDeliveryDraft();
-          refreshBillingCreditStatusAfterTurn(id);
-        }
-      } else if (data.type === "error") {
-        flushDeferredMessagesRender();
-        console.error("WebSocket error:", data.error);
-        const billingSource =
-          data.billingSource === "byok" || data.billingSource === "hosted"
-            ? data.billingSource
-            : null;
-        const eventProvider = parseByokProvider(data.provider);
-        const errorPayload =
-          typeof data.status === "number" ||
-          typeof data.status === "string" ||
-          typeof data.errorType === "string"
-            ? {
-                error: data.error,
-                status: data.status,
-                type: data.errorType,
-            }
-            : data.error;
-        const errorContext: Partial<ChatApiErrorContext> = {
-          billingSource,
-        };
-        if (eventProvider) {
-          errorContext.llmProvider = eventProvider;
-        }
-        const shouldRefreshBillingAfterError =
-          billingSource === "hosted" ||
-          isChatBillingOrCreditError(errorPayload);
-        showChatError(errorPayload, errorContext);
-        // Finish streaming on error
-        splitStreamingMessageOnNextPartRef.current = false;
-        const msgId = streamingMessageIdRef.current;
-        lastCompletedAssistantMessageIdRef.current = msgId;
-        if (msgId) {
-          setMessages((prev) =>
-            prev.map((msg) =>
-              msg.id === msgId ? finalizeStreamingMessage(msg) : msg,
-            ),
-          );
-        }
-        if (incomingEventId !== null) {
-          persistSessionState(id, incomingEventId);
-        }
-        setStreamingMessageId(null);
-        setLoading(false);
+        flushLiveOverlay();
         acceptedPendingMessageIdsRef.current.clear();
         setPendingMessages([]);
         dispatchLocalThreadStatus(id, "idle");
-        if (id && shouldRefreshBillingAfterError) {
-          refreshBillingCreditStatusAfterTurn(
-            msgId ?? `${id}:billing-error:${Date.now()}`,
-          );
-        }
-        restorePendingDeliveryDraft();
-        isAutoCompactingRef.current = false;
-        compactingPriorMessageIdRef.current = null;
-        setCompactingPriorMessageId(null);
-        clearManualCompactionQueue();
-        hasCapturedCompactionSummaryRef.current = false;
-      } else if (data.type === "code_mode_artifact") {
-        handleRealtimeSideChannelEvent(data);
+        completeActiveManualCompaction();
+        clearPendingDeliveryDraft();
+        refreshBillingCreditStatusAfterTurn(id);
       }
     },
     [
       clearPendingDeliveryDraft,
       completeActiveManualCompaction,
-      getUnacceptedPendingUserMessages,
-      isPendingMessageAccepted,
-      persistSessionState,
       refreshBillingCreditStatusAfterTurn,
-      restorePendingDeliveryDraft,
-      flushDeferredMessagesRender,
+      flushLiveOverlay,
       setMessages,
-      setMessagesDeferred,
       setPendingMessages,
-      setStreamingMessageId,
-      sendPendingMessageToAgent,
-      handleRealtimeSideChannelEvent,
-      showChatError,
       threadId,
     ],
   );
@@ -2686,6 +2525,39 @@ export default function Chat({
   const handleAgentStateUpdate = useCallback(
     (state: ChatAgentState) => {
       setAgentIsStreaming(Boolean(state?.isStreaming));
+      // The live overlay now arrives over the broadcast channel
+      // (handleAgentMessage); Agent state carries only coarse fields. Keep
+      // loading true while streaming or while a queued send is still in flight
+      // (on reconnect the first state can be isStreaming:false before the queued
+      // send's turn has started — clearing then would re-enable the composer).
+      if (state?.isStreaming) {
+        setLoading(true);
+      } else if (getUnacceptedPendingUserMessages().length === 0) {
+        setLoading(false);
+      }
+      // Record completed-turn metadata for the duration/turn badges. Dedup by id
+      // so a reconnect carrying the same lastCompletedTurn doesn't re-apply it,
+      // and only fire the "freshly completed" animation for genuinely recent
+      // completions (not historical ones replayed on load).
+      const completed = state.lastCompletedTurn;
+      if (completed?.id && lastAppliedCompletedTurnIdRef.current !== completed.id) {
+        lastAppliedCompletedTurnIdRef.current = completed.id;
+        completedTurnsRef.current.set(completed.id, {
+          durationMs: completed.durationMs,
+          completedAtMs: completed.completedAtMs,
+        });
+        setCompletedTurns(new Map(completedTurnsRef.current));
+        if (completed.completedAtMs > Date.now() - FRESHLY_COMPLETED_TURN_WINDOW_MS) {
+          setFreshlyCompletedTurnId(completed.id);
+        }
+      }
+      // Terminal errors ride Agent state now; show each once (recovers a failure
+      // missed while disconnected).
+      const lastError = state.lastError;
+      if (lastError?.id && lastError.id !== lastAppliedErrorIdRef.current) {
+        lastAppliedErrorIdRef.current = lastError.id;
+        handleTerminalError(lastError);
+      }
       applyAgentPreviewState(state);
       if (Array.isArray(state.currentTodos)) {
         setCurrentTodos(state.currentTodos as TodoItem[]);
@@ -2749,7 +2621,7 @@ export default function Chat({
           : null,
       );
     },
-    [applyAgentPreviewState, setConnectionSetupPrompt, threadId],
+    [applyAgentPreviewState, setConnectionSetupPrompt, setAgentIsStreaming, getUnacceptedPendingUserMessages, handleTerminalError, threadId],
   );
 
   const agentSocket = useAgent<ChatAgentState>({
@@ -2775,15 +2647,18 @@ export default function Chat({
 
   useEffect(() => {
     setReady(false);
-    setStreamingMessageId(null);
     setAgentIsStreaming(false);
-    lastCompletedAssistantMessageIdRef.current = null;
+    // Drop the previous context's live tail. Rendered = mergeOverlay(messages,
+    // liveOverlay), so leaving it here would append the old thread's streaming
+    // assistant/tool tail onto the new thread until a fresh overlay arrives.
+    // setImmediate also clears liveOverlayRef.
+    setLiveOverlayImmediate([]);
     compactingPriorMessageIdRef.current = null;
     setCompactingPriorMessageId(null);
     setLoading(false);
     isAutoCompactingRef.current = false;
     syncCompactionIndicator();
-  }, [threadId, resolvedWorkspaceId, readOnly, setStreamingMessageId, syncCompactionIndicator]);
+  }, [threadId, resolvedWorkspaceId, readOnly, setAgentIsStreaming, setLiveOverlayImmediate, syncCompactionIndicator]);
 
   useEffect(() => {
     return () => {
@@ -3780,25 +3655,22 @@ type SendOptions = {
       sentDuringStreaming: wasSentDuringStreaming,
     };
 
-    // If user sends mid-stream, keep current part streaming and split at next message_start.
     if (wasSentDuringStreaming) {
-      const previousStreamingMessageId = streamingMessageIdRef.current;
-      const nextStreamingMessageId = `stream_steer_${Date.now()}`;
-      splitStreamingMessageOnNextPartRef.current = false;
-      runtimeStreamingMessageIdsRef.current[threadId] = nextStreamingMessageId;
-      setStreamingMessageId(nextStreamingMessageId);
+      // Steering: the assistant keeps streaming in the live overlay. Echo the
+      // user's message into committed history optimistically; it reconciles with
+      // the server copy by clientMessageId, and Pi's real ordering arrives via
+      // the overlay / next reload.
       setMessages((prev) =>
-        splitStreamingMessageForSteer(
-          prev,
-          threadId,
-          runtimeStreamingMessageIdsRef.current,
-          userMsg,
-          nextStreamingMessageId,
-          previousStreamingMessageId,
-        ),
+        prev.some(
+          (message) =>
+            message.id === userMsg.id ||
+            (userMsg.clientMessageId &&
+              message.clientMessageId === userMsg.clientMessageId),
+        )
+          ? prev
+          : [...prev, userMsg],
       );
     } else {
-      lastCompletedAssistantMessageIdRef.current = null;
       // /compact is operational and can happen while users read older messages.
       // Avoid forcing a jump to bottom in that case.
       forceScrollOnNextUpdate.current = !shouldShowCompactingIndicator;

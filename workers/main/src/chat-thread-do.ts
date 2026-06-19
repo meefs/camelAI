@@ -65,6 +65,8 @@ import {
 } from '../../../src/lib/thread-completion-summary-generation.server';
 import { normalizeThreadPreviewUserMessage } from '../../../src/lib/thread-preview';
 import { getToolSummary } from '../../../src/lib/tool-activity-summary';
+import { applyRuntimeEventToMessages } from '../../../src/lib/runtime-message-state';
+import { attachArtifactsToToolResultMessages } from '../../../src/lib/streaming';
 import {
   normalizePiUiMetadata,
   normalizeRuntimeCallArtifacts,
@@ -75,6 +77,7 @@ import {
 } from '../../../src/lib/runtime-artifacts';
 import type {
   LlmModel,
+  Message,
   ThreadCompletionSummaryStatus,
   ToolResultBlock,
   ToolUseBlock,
@@ -577,6 +580,20 @@ interface ChatThreadAgentState {
   titleUpdatedAt: number | null;
   model: LlmModel | null;
   modelUpdatedAt: number | null;
+  // Metadata for the most recently completed turn, keyed by the turn's
+  // assistant message id, so the browser can render duration/turn badges
+  // without replaying turn/completed events.
+  lastCompletedTurn: { id: string; durationMs: number; completedAtMs: number } | null;
+  // The most recent terminal error, with a unique id so the browser shows it
+  // exactly once (and can recover it on reconnect). Cleared at agent_start.
+  lastError: {
+    id: string;
+    error: string;
+    billingSource: string | null;
+    provider: string | null;
+    status: number | string | null;
+    errorType: string | null;
+  } | null;
 }
 
 export interface AdminExplorerThreadSummary {
@@ -891,12 +908,6 @@ interface NormalizedTodoItem {
   content: string;
   status: NormalizedTodoStatus;
   activeForm: string;
-}
-
-interface ChatClientInitMessage {
-  type: "init";
-  threadId?: string;
-  lastEventId?: number;
 }
 
 interface ChatUserMessageInput {
@@ -3912,7 +3923,6 @@ const CHAT_CONTEXT_KEY = "chatContext";
 const CHAT_TODOS_KEY = "chatTodos";
 const CHAT_CONTEXT_USED_PERCENT_KEY = "chatContextUsedPercent";
 const CHAT_CONTEXT_WINDOW_BY_MODEL_KEY = "chatContextWindowByModel";
-const CHAT_NEXT_EVENT_ID_KEY = "chatNextEventId";
 const CHAT_ACTIVE_TURN_USER_ID_KEY = "chatActiveTurnUserId";
 const PI_TURN_FIBER_NAME = "pi-turn";
 const PI_TURN_INACTIVITY_TIMEOUT_MS = 10 * 60_000;
@@ -3921,7 +3931,26 @@ const PI_TURN_RECOVERY_CONTEXT_PURPOSE = "pi_turn_recovery_context";
 const PI_TURN_RECOVERY_CONTINUE_PROMPT = "continue";
 const CHAT_ERROR_DEDUPE_WINDOW_MS = 10_000;
 
-const MAX_CHAT_EVENT_BUFFER = 500;
+// Coalesce high-frequency live-overlay syncs (streaming token/output deltas) so
+// a chatty tool doesn't serialize+broadcast the whole overlay per chunk.
+// Structural events (turn/completed, item/completed, errors) always force a sync.
+const LIVE_STATE_SYNC_THROTTLE_MS = 100;
+// Per-block cap on streamed tool/text output kept in the live overlay (Agent
+// state is broadcast as one message, bounded by Cloudflare's ~1MB WS frame). The
+// full output is always persisted durably and restored on reload.
+const MAX_LIVE_OVERLAY_BLOCK_CHARS = 128_000;
+const LIVE_OVERLAY_TRUNCATION_MARKER =
+  "…[earlier output truncated — full output available on reload]…\n";
+
+// Keep only the tail of an oversized streamed block so the live overlay stays
+// well under the broadcast size limit. Idempotent: a prior marker at the head is
+// sliced off (it falls outside the retained tail) and a fresh one is prepended.
+function boundLiveOverlayText(text: string): string {
+  if (text.length <= MAX_LIVE_OVERLAY_BLOCK_CHARS) return text;
+  const tailLength = MAX_LIVE_OVERLAY_BLOCK_CHARS - LIVE_OVERLAY_TRUNCATION_MARKER.length;
+  return LIVE_OVERLAY_TRUNCATION_MARKER + text.slice(text.length - tailLength);
+}
+
 const ASK_USER_QUESTION_UNAVAILABLE_MESSAGE = 'User is not at computer; AskUserQuestion is unavailable in this channel. Continue without asking and use best effort.';
 
 const HEADER_USER_NAME = "X-Chiridion-User-Name";
@@ -3963,9 +3992,22 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
 
   // Chat bridge state
   private chatContext: ChatContextState | null = null;
-  private chatEventBuffer: Array<Record<string, unknown>> = [];
   private agentEvalEventCollector: Array<Record<string, unknown>> | null = null;
-  private nextChatEventId: number = 1;
+  // The current turn's assistant/tool messages, built whole on the server and
+  // sent to the browser as a wholesale-replaced overlay (see Tier 2 design).
+  // Reset at agent_start; the browser folds finalized entries into its
+  // committed history, so this never needs to hold prior turns.
+  private liveMessages: Message[] = [];
+  private liveStreamingMessageId: string | null = null;
+  private lastCompletedTurn:
+    | { id: string; durationMs: number; completedAtMs: number }
+    | null = null;
+  private lastError: ChatThreadAgentState["lastError"] = null;
+  // Code-mode artifacts recorded before their js_exec tool result entered the
+  // live overlay; drained onto the overlay once the tool result appears.
+  private pendingOverlayArtifacts: Map<string, RuntimeCallArtifact[]> = new Map();
+  private lastLiveSyncAtMs: number = 0;
+  private liveStateHydrated: boolean = false;
   private currentTodos: unknown[] = [];
   // Canonical persisted/replayed value (set on result events only).
   private contextUsedPercent: number | null = null;
@@ -4056,6 +4098,8 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
     titleUpdatedAt: null,
     model: null,
     modelUpdatedAt: null,
+    lastCompletedTurn: null,
+    lastError: null,
   };
 
   static {
@@ -4084,20 +4128,45 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
         this.chatIsStreaming,
       ),
       pendingQuestion: cloneDurableState(
-        this.browserPrompts.getOldestPendingQuestion(),
+        this.browserPrompts?.getOldestPendingQuestion?.() ?? null,
       ),
       connectionSetupPrompt: cloneDurableState(
-        this.browserPrompts.pendingConnectionSetupPrompts()[0] ?? null,
+        this.browserPrompts?.pendingConnectionSetupPrompts?.()[0] ?? null,
       ),
       title: this.currentTitle,
       titleUpdatedAt: this.currentTitleUpdatedAt,
       model: this.currentThreadModel,
       modelUpdatedAt: this.currentThreadModelUpdatedAt,
+      lastCompletedTurn: this.lastCompletedTurn,
+      lastError: this.lastError,
       ...overrides,
     };
   }
 
+  // Restore coarse durable state on a cold wake. The live overlay is no longer
+  // persisted here (it streams over the non-durable broadcast channel); a warm
+  // reconnect gets the in-memory tail via onConnect, and committed history comes
+  // from the durable transcript.
+  private hydrateLiveStateFromAgentState(): void {
+    if (this.liveStateHydrated) return;
+    this.liveStateHydrated = true;
+    const state = this.state as Partial<ChatThreadAgentState> | undefined;
+    if (!state) return;
+    // Restore the streaming flag so a cold DO woken mid-turn doesn't immediately
+    // sync isStreaming=false (the default) and drop the running/stop state.
+    if (typeof state.isStreaming === "boolean") {
+      this.chatIsStreaming = state.isStreaming;
+    }
+    if (state.lastCompletedTurn && typeof state.lastCompletedTurn === "object") {
+      this.lastCompletedTurn = cloneDurableState(state.lastCompletedTurn);
+    }
+    if (state.lastError && typeof state.lastError === "object") {
+      this.lastError = cloneDurableState(state.lastError);
+    }
+  }
+
   private syncAgentState(overrides?: Partial<ChatThreadAgentState>): void {
+    this.hydrateLiveStateFromAgentState();
     this.setState(this.agentState(overrides));
   }
 
@@ -4225,13 +4294,6 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
           this.cachedContextWindowByModel[model] = contextWindow;
         }
       }
-    }
-
-    const storedNextEventId = ctx.storage.kv.get<number>(
-      CHAT_NEXT_EVENT_ID_KEY,
-    );
-    if (typeof storedNextEventId === "number" && storedNextEventId > 0) {
-      this.nextChatEventId = storedNextEventId;
     }
 
     const storedActiveTurnUserId = ctx.storage.kv.get<string>(
@@ -4414,12 +4476,34 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
     const artifacts = normalizeRuntimeCallArtifacts(existing);
     artifacts.push(artifact);
     this.ctx.storage.kv.put(key, artifacts);
-    this.pushChatEvent({
-      type: "code_mode_artifact",
-      parentToolUseId: normalizedParentToolUseId,
-      artifact,
-    });
+    // The artifact rides the live overlay's tool-result message (and the durable
+    // KV row above for reload), not a separate websocket event.
+    this.attachLiveArtifact(normalizedParentToolUseId, artifact);
     await this.setPreviewTarget({ kind: "runtime_artifact", artifact });
+  }
+
+  // Attach a code-mode artifact to its tool result in the live overlay so it
+  // flows to the browser through Agent state. The artifact is usually recorded
+  // mid-js_exec, before item/completed builds the tool result, so hold it until
+  // the tool result appears (drained in applyChatEventToLiveState).
+  private attachLiveArtifact(
+    parentToolUseId: string,
+    artifact: RuntimeCallArtifact,
+  ): void {
+    this.hydrateLiveStateFromAgentState();
+    const result = attachArtifactsToToolResultMessages(
+      this.liveMessages,
+      parentToolUseId,
+      [artifact],
+    );
+    if (result.attached) {
+      this.liveMessages = result.messages;
+      this.broadcastLiveOverlay();
+      return;
+    }
+    if (!this.pendingOverlayArtifacts) this.pendingOverlayArtifacts = new Map();
+    const pending = this.pendingOverlayArtifacts.get(parentToolUseId) ?? [];
+    this.pendingOverlayArtifacts.set(parentToolUseId, [...pending, artifact]);
   }
 
   async consumeCodeModeArtifacts(
@@ -4471,6 +4555,18 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
     }
 
     this.captureChatContextFromRequest(url, ctx.request, connection);
+
+    if (!this.chatIsStreaming && this.currentTodos.length > 0) {
+      // completeTodoStateForTurnEnd() syncs an override marking the stale todos
+      // completed; a second unconditional sync here (with currentTodos already
+      // cleared) would erase that checklist, so only sync in the else branch.
+      await this.completeTodoStateForTurnEnd();
+    } else {
+      this.syncAgentState();
+    }
+    // The live overlay isn't in durable state; hand a warm reconnect the
+    // in-progress turn directly (no-op when idle or after a cold eviction).
+    this.sendLiveOverlayToConnection(connection);
   }
 
   async fetch(request: Request): Promise<Response> {
@@ -4539,11 +4635,9 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
     }
 
     try {
-      // Chat transport messages
-      if (data.type === "init") {
-        await this.handleChatInit(ws, data as unknown as ChatClientInitMessage);
-        return;
-      }
+      // Browser commands use Agents SDK callables. Chronological chat data is
+      // pushed server-to-client only; reload/reconnect recovery comes from
+      // Agents SDK state sync.
 
     } catch (err) {
       this.emitChatError(
@@ -5011,11 +5105,9 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
     const normalizedThreadId = threadId.trim() || this.chatContext?.threadId || "";
     const parsed: AgentEvalParsedMessage[] = [];
 
-    const [coreMessages, inFlightMessages] = await Promise.all([
-      this.loadPiCoreMessages({ includeUiMetadata: true }),
-      this.loadPiInFlightMessages({ includeUiMetadata: true }),
-    ]);
-    const storedMessages = [...coreMessages, ...inFlightMessages];
+    // In-flight rows are recovery snapshots, not canonical chat history. The
+    // browser rebuilds live assistant/tool content from the replay buffer.
+    const storedMessages = await this.loadPiCoreMessages({ includeUiMetadata: true });
     storedMessages.forEach((message, index) => {
       const record = message as unknown as Record<string, unknown>;
       if (record.role === "toolResult") {
@@ -7254,56 +7346,6 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
     this.ctx.storage.kv.put(CHAT_CONTEXT_KEY, this.chatContext);
   }
 
-  private async handleChatInit(
-    ws: WebSocket,
-    data: ChatClientInitMessage,
-  ): Promise<void> {
-    const incomingThreadId =
-      typeof data.threadId === "string" ? data.threadId.trim() : "";
-    if (!incomingThreadId) {
-      this.sendDirect(ws, {
-        type: "error",
-        error: "Missing threadId - init requires a valid threadId",
-      });
-      try {
-        ws.close(1008, "missing threadId");
-      } catch {
-        // ignore close failures
-      }
-      return;
-    }
-
-    if (!this.chatContext) {
-      this.sendDirect(ws, {
-        type: "error",
-        error: "Missing chat context for thread",
-      });
-      return;
-    }
-
-    if (this.chatContext.threadId !== incomingThreadId) {
-      this.sendDirect(ws, {
-        type: "error",
-        error: "Thread mismatch for this chat connection",
-      });
-      return;
-    }
-
-    const lastEventId =
-      typeof data.lastEventId === "number" && Number.isFinite(data.lastEventId)
-        ? Math.max(0, Math.floor(data.lastEventId))
-        : 0;
-
-    this.sendDirect(ws, { type: "ready" });
-
-    this.replayChatEvents(ws, lastEventId);
-
-    if (!this.chatIsStreaming && this.currentTodos.length > 0) {
-      await this.completeTodoStateForTurnEnd();
-    }
-
-  }
-
   private async applyMentionsForTurn(content: string): Promise<string> {
     if (!content) return content;
     if (!content.includes('@')) return content;
@@ -7584,6 +7626,9 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
       return { status: "error", error: "Failed to send message" };
     }
 
+    // The browser echoes the user's own message optimistically; the server only
+    // builds the assistant/tool overlay (see liveMessages). Steered messages
+    // land in the transcript when Pi emits them and on the next reload.
     return { status: "accepted" };
   }
 
@@ -8083,6 +8128,15 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
     this.resetRunningActivityState();
     const statusChanged = this.chatIsStreaming !== value;
     this.chatIsStreaming = value;
+    if (!value) {
+      // The turn is over. Connected clients have already received the finalized
+      // overlay broadcast (it lands before this one) and folded it into
+      // committed history. Clear the overlay and broadcast the empty snapshot so
+      // clients drop their live tail; committed history is the source of truth.
+      this.liveMessages = [];
+      this.liveStreamingMessageId = null;
+      this.broadcastLiveOverlay();
+    }
     // Clear persisted todos when a new turn starts so they don't go stale
     // across reconnects. The next TodoWrite will re-persist fresh state.
     if (value && this.currentTodos.length > 0) {
@@ -8409,18 +8463,17 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
     body: AgentEvalSessionRequest,
   ): Promise<AgentEvalSessionResult> {
     const startedAt = Date.now();
-    const baselineEventId = this.nextChatEventId - 1;
     this.agentEvalEventCollector = [];
     const contextError = this.updateExternalChatContext(body);
     if (contextError) {
-      return await this.agentEvalResult("error", baselineEventId, {
+      return await this.agentEvalResult("error", {
         error: contextError,
       });
     }
 
     const context = this.chatContext;
     if (!context) {
-      return await this.agentEvalResult("error", baselineEventId, {
+      return await this.agentEvalResult("error", {
         error: "Missing chat context for eval",
       });
     }
@@ -8428,13 +8481,13 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
     const rawContent =
       typeof body.message === "string" ? body.message.trim() : "";
     if (!rawContent) {
-      return await this.agentEvalResult("error", baselineEventId, {
+      return await this.agentEvalResult("error", {
         error: "Missing message",
       });
     }
 
     if (this.chatIsStreaming || this.piSession?.state.isStreaming) {
-      return await this.agentEvalResult("busy", baselineEventId, {
+      return await this.agentEvalResult("busy", {
         error: "Thread is busy with another run",
       });
     }
@@ -8444,14 +8497,14 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
         orgId: context.orgId,
       });
       if (orgBan) {
-        return await this.agentEvalResult("error", baselineEventId, {
+        return await this.agentEvalResult("error", {
           error: "Organization is blocked",
         });
       }
 
       await this.ensurePiSessionReady();
       if (!this.piSession) {
-        return await this.agentEvalResult("error", baselineEventId, {
+        return await this.agentEvalResult("error", {
           error: "Pi session was not available for eval",
         });
       }
@@ -8468,7 +8521,7 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
             : "eval",
       });
       if (!attributedContent.trim()) {
-        return await this.agentEvalResult("error", baselineEventId, {
+        return await this.agentEvalResult("error", {
           error: "Empty message",
         });
       }
@@ -8501,9 +8554,9 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
       );
       await this.piEventHandlerChain;
 
-      const events = this.chatEventsAfter(baselineEventId);
+      const events = this.agentEvalEventCollector ?? [];
       const result = this.latestAgentEvalResult(events);
-      return await this.agentEvalResult("completed", baselineEventId, {
+      return await this.agentEvalResult("completed", {
         result,
       });
     } catch (error) {
@@ -8518,7 +8571,7 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
       this.pushChatEvent(this.piProviderErrorEvent(message));
       this.setChatIsStreaming(false);
       this.setActiveTurnUserId(null);
-      return await this.agentEvalResult("error", baselineEventId, {
+      return await this.agentEvalResult("error", {
         error: message,
       });
     }
@@ -8547,16 +8600,6 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
     }
   }
 
-  private chatEventsAfter(eventId: number): Array<Record<string, unknown>> {
-    return this.chatEventBuffer.filter((event) => {
-      const current =
-        typeof event.eventId === "number" && Number.isFinite(event.eventId)
-          ? event.eventId
-          : 0;
-      return current > eventId;
-    });
-  }
-
   private latestAgentEvalResult(
     events: Array<Record<string, unknown>>,
   ): string | undefined {
@@ -8571,13 +8614,10 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
 
   private async agentEvalResult(
     status: AgentEvalSessionResult["status"],
-    baselineEventId: number,
     options: { error?: string; result?: string } = {},
   ): Promise<AgentEvalSessionResult> {
     const threadId = this.chatContext?.threadId ?? "";
-    const events = this.agentEvalEventCollector
-      ? [...this.agentEvalEventCollector]
-      : this.chatEventsAfter(baselineEventId);
+    const events = this.agentEvalEventCollector ? [...this.agentEvalEventCollector] : [];
     this.agentEvalEventCollector = null;
     return {
       status,
@@ -8929,7 +8969,6 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
       );
       return handled;
     });
-    this.pushChatEvent({ type: "ready" });
     return session;
   }
 
@@ -11830,6 +11869,15 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
       // this re-reads from OrgDO and every later call in the turn reuses it.
       this.cachedLlmProviderConfig = null;
       this.resetRunningActivityState();
+      // New turn: reset the overlay so the browser stops showing the previous
+      // turn's tail (it has already folded those finalized messages into its
+      // committed history).
+      this.hydrateLiveStateFromAgentState();
+      this.liveMessages = [];
+      this.liveStreamingMessageId = null;
+      this.pendingOverlayArtifacts?.clear();
+      // A fresh turn supersedes any prior terminal error.
+      this.lastError = null;
       this.setChatIsStreaming(true);
       return;
     }
@@ -12487,6 +12535,9 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
     });
     const key = `${context.threadId}:${fingerprint}`;
     const now = Date.now();
+    if (!this.recordedChatErrors) {
+      this.recordedChatErrors = new Map();
+    }
     for (const [existingKey, recordedAt] of this.recordedChatErrors.entries()) {
       if (now - recordedAt > CHAT_ERROR_DEDUPE_WINDOW_MS) {
         this.recordedChatErrors.delete(existingKey);
@@ -12523,6 +12574,180 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
     this.pushChatEvent({ type: "error", error: message });
   }
 
+  // Publish the current turn's overlay over the non-durable broadcast channel
+  // (no setState/SQLite write — this is live, not durable). Coarse state
+  // (isStreaming, lastCompletedTurn, lastError, todos, …) still goes through
+  // setState; only the high-frequency streaming tail rides the broadcast.
+  private broadcastLiveOverlay(options: { throttle?: boolean } = {}): void {
+    const threadId = this.chatContext?.threadId;
+    if (!threadId) return;
+    if (options.throttle) {
+      // Coalesce rapid delta broadcasts; structural/forced events flush the
+      // latest overlay (and the turn-end clear flushes the final one).
+      const now = Date.now();
+      if (now - this.lastLiveSyncAtMs < LIVE_STATE_SYNC_THROTTLE_MS) return;
+      this.lastLiveSyncAtMs = now;
+    } else {
+      this.lastLiveSyncAtMs = Date.now();
+    }
+    this.broadcastChat({
+      type: "live_overlay",
+      threadId,
+      messages: this.liveMessages,
+      streamingMessageId: this.liveStreamingMessageId,
+    });
+  }
+
+  // Send the current overlay to a single (re)connecting client so a warm
+  // reconnect recovers the in-progress turn without it being persisted in state.
+  private sendLiveOverlayToConnection(connection: Connection): void {
+    const threadId = this.chatContext?.threadId;
+    if (!threadId || !Array.isArray(this.liveMessages) || this.liveMessages.length === 0) {
+      return;
+    }
+    try {
+      connection.send(
+        JSON.stringify({
+          type: "live_overlay",
+          threadId,
+          messages: this.liveMessages,
+          streamingMessageId: this.liveStreamingMessageId,
+        }),
+      );
+    } catch {
+      // Dead connection; ignore.
+    }
+  }
+
+  // Bound oversized streamed tool/text blocks in the live overlay so the
+  // broadcast snapshot stays well under the WS frame limit. Runs every event so
+  // memory stays bounded and subsequent deltas append from the capped content.
+  private boundLiveOverlaySize(): void {
+    if (!Array.isArray(this.liveMessages) || this.liveMessages.length === 0) return;
+    let changed = false;
+    const next = this.liveMessages.map((message) => {
+      if (!Array.isArray(message.content)) return message;
+      let blockChanged = false;
+      const content = message.content.map((block) => {
+        const record = block as unknown as Record<string, unknown>;
+        if (
+          record.type === "tool_result" &&
+          typeof record.content === "string" &&
+          record.content.length > MAX_LIVE_OVERLAY_BLOCK_CHARS
+        ) {
+          blockChanged = true;
+          return { ...block, content: boundLiveOverlayText(record.content) };
+        }
+        if (
+          record.type === "text" &&
+          typeof record.text === "string" &&
+          record.text.length > MAX_LIVE_OVERLAY_BLOCK_CHARS
+        ) {
+          blockChanged = true;
+          return { ...block, text: boundLiveOverlayText(record.text) };
+        }
+        return block;
+      });
+      if (!blockChanged) return message;
+      changed = true;
+      return { ...message, content };
+    });
+    if (changed) this.liveMessages = next;
+  }
+
+  // Build the current turn's assistant/tool messages whole from the broadcast
+  // event stream and publish them as the wholesale overlay in Agent state. The
+  // browser replaces its overlay with this snapshot on every update (it does
+  // not accumulate deltas), so a re-id at turn/completed can never duplicate a
+  // message. This is a per-thread DO, so a single streaming id replaces the old
+  // per-thread map.
+  private applyChatEventToLiveState(payload: Record<string, unknown>): void {
+    this.hydrateLiveStateFromAgentState();
+    const threadId = this.chatContext?.threadId;
+    if (!threadId) return;
+
+    let throttleSync = false;
+    if (payload.type === "runtime_event") {
+      const event = payload.event as
+        | { method?: unknown; params?: Record<string, unknown> }
+        | undefined;
+      // Streamed token/output deltas are high-frequency; coalesce their syncs.
+      // Structural events (item/turn completed, etc.) force a flush.
+      const method = typeof event?.method === "string" ? event.method : "";
+      throttleSync =
+        method.toLowerCase().includes("delta") || method.endsWith("/progress");
+      const previousStreamingId = this.liveStreamingMessageId;
+      const streamingIds: Record<string, string | null> = {
+        [threadId]: this.liveStreamingMessageId,
+      };
+      this.liveMessages = applyRuntimeEventToMessages(
+        this.liveMessages,
+        threadId,
+        payload.event,
+        streamingIds,
+      );
+      // Bound oversized streamed output every event so memory and the broadcast
+      // snapshot stay capped (full output is persisted durably).
+      this.boundLiveOverlaySize();
+      this.liveStreamingMessageId = streamingIds[threadId] ?? null;
+      // Drain any code-mode artifacts whose tool result has now appeared in the
+      // overlay (they were recorded before item/completed built it).
+      if (this.pendingOverlayArtifacts?.size) {
+        for (const [toolUseId, artifacts] of [...this.pendingOverlayArtifacts]) {
+          const result = attachArtifactsToToolResultMessages(
+            this.liveMessages,
+            toolUseId,
+            artifacts,
+          );
+          if (result.attached) {
+            this.liveMessages = result.messages;
+            this.pendingOverlayArtifacts.delete(toolUseId);
+          }
+        }
+      }
+      if (event?.method === "turn/completed") {
+        // Key the badge by the assistant message id the browser renders:
+        // forkEntryId after finalize, else the streaming id it kept.
+        const params = event.params ?? {};
+        const forkEntryId =
+          typeof params.forkEntryId === "string" && params.forkEntryId.trim()
+            ? params.forkEntryId.trim()
+            : null;
+        const completedId = forkEntryId ?? previousStreamingId;
+        if (completedId) {
+          this.lastCompletedTurn = {
+            id: completedId,
+            durationMs:
+              typeof params.turnDurationMs === "number" &&
+              Number.isFinite(params.turnDurationMs)
+                ? Math.max(0, params.turnDurationMs)
+                : 0,
+            completedAtMs:
+              typeof params.completedAtMs === "number" &&
+              Number.isFinite(params.completedAtMs)
+                ? params.completedAtMs
+                : Date.now(),
+          };
+          // lastCompletedTurn is coarse durable state (drives the badge), so it
+          // goes through setState — not the broadcast overlay.
+          this.syncAgentState();
+        }
+      }
+    } else if (payload.type === "error") {
+      const streamingId = this.liveStreamingMessageId;
+      if (streamingId) {
+        this.liveMessages = this.liveMessages.map((message) =>
+          message.id === streamingId ? { ...message, isStreaming: false } : message,
+        );
+      }
+      this.liveStreamingMessageId = null;
+    } else {
+      return;
+    }
+
+    this.broadcastLiveOverlay({ throttle: throttleSync });
+  }
+
   private piProviderErrorEvent(message: string): Record<string, unknown> {
     const metadata = this.piProviderErrorMetadata(message);
     return {
@@ -12537,8 +12762,6 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
 
   private pushChatEvent(payload: Record<string, unknown>): void {
     const sessionId = this.chatContext?.threadId || "";
-    const eventId = this.nextChatEventId++;
-    this.ctx.storage.kv.put(CHAT_NEXT_EVENT_ID_KEY, this.nextChatEventId);
 
     if (payload.type === "error") {
       const message =
@@ -12558,30 +12781,37 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
           createdAt: Date.now(),
         });
       }
+      // Surface the terminal error through Agent state (with a unique id for
+      // one-shot client dedup) so a reconnect after a disconnected/early failure
+      // still recovers it — the replay buffer is gone. Cleared at agent_start.
+      this.lastError = {
+        id: crypto.randomUUID(),
+        error: message,
+        billingSource:
+          typeof payload.billingSource === "string" ? payload.billingSource : null,
+        provider: typeof payload.provider === "string" ? payload.provider : null,
+        status:
+          typeof payload.status === "number" || typeof payload.status === "string"
+            ? (payload.status as number | string)
+            : null,
+        errorType: typeof payload.errorType === "string" ? payload.errorType : null,
+      };
+      this.syncAgentState();
     }
 
     const envelope: Record<string, unknown> = {
       ...payload,
-      eventId,
       sessionId,
     };
 
+    this.applyChatEventToLiveState(envelope);
     this.agentEvalEventCollector?.push(envelope);
-    this.chatEventBuffer.push(envelope);
-    if (this.chatEventBuffer.length > MAX_CHAT_EVENT_BUFFER) {
-      this.chatEventBuffer.shift();
-    }
-
-    this.broadcastChat(envelope);
-  }
-
-  private replayChatEvents(ws: WebSocket, lastEventId: number): void {
-    for (const envelope of this.chatEventBuffer) {
-      const eventId =
-        typeof envelope.eventId === "number" ? envelope.eventId : 0;
-      if (eventId > lastEventId) {
-        this.sendDirect(ws, envelope);
-      }
+    // runtime_event content and error events both reach the browser through
+    // Agent state (the overlay / lastError), not the websocket — broadcasting
+    // them here would duplicate (runtime) or be lost on reconnect (error).
+    // result/side-channel events are still delivered live over the socket.
+    if (envelope.type !== "runtime_event" && envelope.type !== "error") {
+      this.broadcastChat(envelope);
     }
   }
 
@@ -12593,16 +12823,6 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
     const json = JSON.stringify(message);
     const typed = message as { type?: unknown };
     this.broadcast(json);
-  }
-
-  private sendDirect(ws: WebSocket, message: object): void {
-    try {
-      const json = JSON.stringify(message);
-      const typed = message as { type?: unknown };
-      ws.send(json);
-    } catch {
-      // Ignore dead connections; Agents SDK reconnect/replay covers clients.
-    }
   }
 
 }

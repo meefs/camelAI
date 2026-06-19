@@ -355,7 +355,7 @@ describe("Chat AskUserQuestion composer focus", () => {
     });
   });
 
-  it("uses worker provider metadata for BYOK rate-limit websocket errors", async () => {
+  it("uses worker provider metadata for BYOK rate-limit errors via agent state", async () => {
     render(
       <Chat
         threadId="thread-1"
@@ -368,11 +368,15 @@ describe("Chat AskUserQuestion composer focus", () => {
     const agent = getMainAgent();
     act(() => {
       agent.emitOpen();
-      agent.emitMessage({
-        type: "error",
-        error: RATE_LIMIT_ERROR,
-        billingSource: "byok",
-        provider: "bedrock",
+      agent.emitStateUpdate({
+        lastError: {
+          id: "error-1",
+          error: RATE_LIMIT_ERROR,
+          billingSource: "byok",
+          provider: "bedrock",
+          status: null,
+          errorType: null,
+        },
       });
     });
 
@@ -385,7 +389,7 @@ describe("Chat AskUserQuestion composer focus", () => {
     expect(link).toHaveAttribute("href", BYOK_PROVIDERS.bedrock.getKeyUrl);
   });
 
-  it("falls back to the current provider when websocket provider metadata is absent", async () => {
+  it("falls back to the current provider when error provider metadata is absent", async () => {
     render(
       <Chat
         threadId="thread-1"
@@ -398,10 +402,15 @@ describe("Chat AskUserQuestion composer focus", () => {
     const agent = getMainAgent();
     act(() => {
       agent.emitOpen();
-      agent.emitMessage({
-        type: "error",
-        error: RATE_LIMIT_ERROR,
-        billingSource: "byok",
+      agent.emitStateUpdate({
+        lastError: {
+          id: "error-2",
+          error: RATE_LIMIT_ERROR,
+          billingSource: "byok",
+          provider: null,
+          status: null,
+          errorType: null,
+        },
       });
     });
 

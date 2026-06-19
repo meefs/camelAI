@@ -13,6 +13,34 @@ type RuntimeMessage = {
   sentDuringStreaming?: boolean;
 };
 
+/**
+ * Overlay the server's wholesale current-turn snapshot onto a base list.
+ *
+ * The server builds the active turn's messages whole and the browser replaces
+ * (not accumulates) its overlay on every Agent-state update, so a streaming
+ * message that gets re-id'd at turn/completed simply replaces its earlier entry
+ * here instead of duplicating it. Matching keys on id/clientMessageId; the
+ * overlay entry wins.
+ */
+export function mergeOverlay(base: Message[], overlay: Message[]): Message[] {
+  if (overlay.length === 0) return base;
+  const next = [...base];
+  for (const message of overlay) {
+    const index = next.findIndex(
+      (existing) =>
+        existing.id === message.id ||
+        (message.clientMessageId &&
+          existing.clientMessageId === message.clientMessageId)
+    );
+    if (index === -1) {
+      next.push(message);
+    } else {
+      next[index] = { ...next[index], ...message };
+    }
+  }
+  return next;
+}
+
 function toUiRole(role: RuntimeMessage['role']): Message['role'] {
   return role === 'assistant' ? 'assistant' : 'user';
 }
@@ -283,48 +311,6 @@ function finalizeAssistantMessage(
         }
       : message
   );
-}
-
-export function splitStreamingMessageForSteer(
-  messages: Message[],
-  threadId: string,
-  streamingMessageIds: Record<string, string | null>,
-  userMessage: Message,
-  nextStreamingMessageId: string,
-  previousStreamingMessageId?: string | null
-): Message[] {
-  const activeStreamingId =
-    previousStreamingMessageId &&
-    messages.some((message) => message.id === previousStreamingMessageId)
-      ? previousStreamingMessageId
-      : resolveStreamingMessageId(messages, threadId, streamingMessageIds);
-
-  const finalizedMessages = activeStreamingId
-    ? messages.map((message) =>
-        message.id === activeStreamingId && message.role === 'assistant'
-          ? finalizeStreamingMessage(message)
-          : message
-      )
-    : messages;
-
-  const nextStreamingMessage: Message = {
-    id: nextStreamingMessageId,
-    thread_id: threadId,
-    role: 'assistant',
-    content: [],
-    created_at: Date.now(),
-    isStreaming: true,
-  };
-
-  streamingMessageIds[threadId] = nextStreamingMessageId;
-
-  const withUserMessage = finalizedMessages.some((message) => message.id === userMessage.id)
-    ? finalizedMessages
-    : [...finalizedMessages, userMessage];
-
-  return withUserMessage.some((message) => message.id === nextStreamingMessageId)
-    ? withUserMessage
-    : [...withUserMessage, nextStreamingMessage];
 }
 
 function findBlockIndex(

@@ -136,6 +136,9 @@ describe('ChatThreadDO Pi turn handling', () => {
     fake.browserPrompts.getOldestPendingQuestion ??= vi.fn(() => null);
     fake.browserPrompts.pendingConnectionSetupPrompts ??= vi.fn(() => []);
     fake.setState = vi.fn();
+    // The live overlay rides the broadcast channel, not setState. Assign
+    // unconditionally — broadcastChat exists on the prototype, so ??= is a no-op.
+    fake.broadcastChat = vi.fn();
   }
 
   it('normalizes retired Fable 5 requests to Sonnet', () => {
@@ -177,6 +180,276 @@ describe('ChatThreadDO Pi turn handling', () => {
         sentDuringStreaming: true,
       },
     ]);
+  });
+
+  it('builds the live overlay whole and re-ids in place at turn completion without duplicating', () => {
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    fake.chatContext = { threadId: 'thread1' };
+    fake.ctx = {};
+    fake.liveStateHydrated = true;
+    fake.liveMessages = [];
+    fake.liveStreamingMessageId = null;
+    fake.lastCompletedTurn = null;
+    installAgentStateMocks(fake);
+
+    // A streaming delta creates exactly one streaming assistant message.
+    ChatThreadDO.prototype['applyChatEventToLiveState'].call(fake, {
+      type: 'runtime_event',
+      event: {
+        method: 'item/agentMessage/delta',
+        params: { itemId: 'item-1', delta: 'Hello' },
+      },
+    });
+
+    expect(fake.liveMessages).toHaveLength(1);
+    expect(fake.liveMessages[0]).toMatchObject({ role: 'assistant', isStreaming: true });
+    expect(typeof fake.liveStreamingMessageId).toBe('string');
+    const streamingId = fake.liveStreamingMessageId;
+
+    // turn/completed re-ids the streaming message to the fork entry id. Because
+    // the overlay is rebuilt in place, the message is replaced — not appended —
+    // so there is no duplicate and no leftover streaming bubble.
+    ChatThreadDO.prototype['applyChatEventToLiveState'].call(fake, {
+      type: 'runtime_event',
+      event: {
+        method: 'turn/completed',
+        params: { forkEntryId: 'fork-1', completedAtMs: 1700, turnDurationMs: 4200 },
+      },
+    });
+
+    expect(fake.liveMessages).toHaveLength(1);
+    expect(fake.liveMessages[0]).toMatchObject({
+      id: 'fork-1',
+      role: 'assistant',
+      isStreaming: false,
+    });
+    expect(fake.liveMessages[0].id).not.toBe(streamingId);
+    expect(fake.liveStreamingMessageId).toBeNull();
+    // Completion metadata is captured for the duration/turn badges, keyed by the
+    // assistant message id the browser renders.
+    expect(fake.lastCompletedTurn).toEqual({
+      id: 'fork-1',
+      durationMs: 4200,
+      completedAtMs: 1700,
+    });
+  });
+
+  it('captures terminal errors in lastError state instead of broadcasting them', () => {
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    fake.chatContext = { threadId: 'thread1' };
+    fake.liveStateHydrated = true;
+    fake.liveMessages = [];
+    fake.liveStreamingMessageId = null;
+    fake.lastError = null;
+    fake.agentEvalEventCollector = null;
+    fake.ctx = { storage: { sql: {} } };
+    fake.recordCurrentThreadError = vi.fn();
+    fake.syncAgentState = vi.fn();
+    fake.broadcastChat = vi.fn();
+
+    // Errors ride Agent state (with a unique id) and are not broadcast as error
+    // events, so a reconnect after a disconnected failure can still recover them.
+    ChatThreadDO.prototype['pushChatEvent'].call(fake, {
+      type: 'error',
+      error: 'Boom',
+      billingSource: 'byok',
+      provider: 'bedrock',
+      status: 429,
+    });
+
+    expect(fake.syncAgentState).toHaveBeenCalled();
+    expect(typeof fake.lastError.id).toBe('string');
+    expect(fake.lastError).toMatchObject({
+      error: 'Boom',
+      billingSource: 'byok',
+      provider: 'bedrock',
+      status: 429,
+      errorType: null,
+    });
+    const errorBroadcasts = fake.broadcastChat.mock.calls.filter(
+      ([msg]: [{ type?: string }]) => msg?.type === 'error',
+    );
+    expect(errorBroadcasts).toHaveLength(0);
+
+    // Non-error terminal signals (result) are still broadcast as events.
+    fake.broadcastChat.mockClear();
+    ChatThreadDO.prototype['pushChatEvent'].call(fake, {
+      type: 'result',
+      result: 'done',
+    });
+    const resultBroadcasts = fake.broadcastChat.mock.calls.filter(
+      ([msg]: [{ type?: string }]) => msg?.type === 'result',
+    );
+    expect(resultBroadcasts).toHaveLength(1);
+  });
+
+  it('clears the live overlay when a turn ends so reload sees no stale snapshot', () => {
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    fake.chatContext = null;
+    fake.chatIsStreaming = true;
+    fake.liveMessages = [
+      {
+        id: 'fork-1',
+        thread_id: 'thread1',
+        role: 'assistant',
+        content: [],
+        created_at: 1,
+        isStreaming: false,
+      },
+    ];
+    fake.liveStreamingMessageId = 'fork-1';
+    fake.assistantCompletionRecordedAt = null;
+    fake.assistantCompletionSummaryRequestedAt = null;
+    fake.activeAutomationRun = null;
+    fake.currentTodos = [];
+    fake.resetRunningActivityState = vi.fn();
+    fake.syncAgentState = vi.fn();
+
+    ChatThreadDO.prototype['setChatIsStreaming'].call(fake, false);
+
+    expect(fake.liveMessages).toEqual([]);
+    expect(fake.liveStreamingMessageId).toBeNull();
+    expect(fake.syncAgentState).toHaveBeenCalled();
+  });
+
+  it('restores the streaming flag from persisted state on wake', () => {
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    fake.liveStateHydrated = false;
+    fake.chatIsStreaming = false;
+    fake.lastCompletedTurn = null;
+    fake.lastError = null;
+    Object.defineProperty(fake, 'state', {
+      configurable: true,
+      value: {
+        isStreaming: true,
+        lastCompletedTurn: { id: 'fork-1', durationMs: 5, completedAtMs: 9 },
+      },
+    });
+
+    ChatThreadDO.prototype['hydrateLiveStateFromAgentState'].call(fake);
+
+    // The streaming flag and coarse fields are restored from durable state; the
+    // live overlay is not persisted there anymore.
+    expect(fake.chatIsStreaming).toBe(true);
+    expect(fake.lastCompletedTurn).toEqual({ id: 'fork-1', durationMs: 5, completedAtMs: 9 });
+  });
+
+  const sampleArtifact = {
+    id: 'art-1',
+    kind: 'outbound_email',
+    toolName: 'send_email',
+    status: 'sent',
+    title: 'Sent invite',
+    createdAt: 1,
+    updatedAt: 1,
+    summary: {},
+  };
+
+  it('attaches code-mode artifacts to the live overlay tool result', () => {
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    fake.chatContext = { threadId: 'thread1' };
+    fake.liveStateHydrated = true;
+    fake.liveMessages = [
+      {
+        id: 'm1',
+        thread_id: 'thread1',
+        role: 'user',
+        content: [{ type: 'tool_result', tool_use_id: 'tool-1', content: 'ok' }],
+        created_at: 1,
+      },
+    ];
+    fake.liveStreamingMessageId = null;
+    fake.pendingOverlayArtifacts = new Map();
+    fake.broadcastChat = vi.fn();
+
+    ChatThreadDO.prototype['attachLiveArtifact'].call(fake, 'tool-1', sampleArtifact);
+
+    const block = fake.liveMessages[0].content[0];
+    expect(block.artifacts).toHaveLength(1);
+    expect(block.artifacts[0].id).toBe('art-1');
+    expect(fake.pendingOverlayArtifacts.size).toBe(0);
+    // The updated overlay is published over the broadcast channel.
+    expect(fake.broadcastChat).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'live_overlay' }),
+    );
+  });
+
+  it('holds artifacts until their tool result appears in the overlay', () => {
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    fake.chatContext = { threadId: 'thread1' };
+    fake.liveStateHydrated = true;
+    fake.liveMessages = [];
+    fake.liveStreamingMessageId = null;
+    fake.pendingOverlayArtifacts = new Map();
+    fake.broadcastChat = vi.fn();
+
+    ChatThreadDO.prototype['attachLiveArtifact'].call(fake, 'tool-9', sampleArtifact);
+
+    expect(fake.liveMessages).toEqual([]);
+    expect(fake.pendingOverlayArtifacts.get('tool-9')).toEqual([sampleArtifact]);
+    expect(fake.broadcastChat).not.toHaveBeenCalled();
+  });
+
+  it('caps oversized streamed tool output in the live overlay, keeping the tail', () => {
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    const huge = 'x'.repeat(200_000) + 'RECENT_TAIL';
+    fake.liveMessages = [
+      {
+        id: 'm1',
+        thread_id: 'thread1',
+        role: 'user',
+        content: [{ type: 'tool_result', tool_use_id: 'tool-1', content: huge }],
+        created_at: 1,
+      },
+    ];
+
+    ChatThreadDO.prototype['boundLiveOverlaySize'].call(fake);
+
+    const capped = fake.liveMessages[0].content[0].content as string;
+    expect(capped.length).toBeLessThanOrEqual(128_000);
+    expect(capped).toContain('full output available on reload');
+    // The most recent output is retained for live viewing.
+    expect(capped.endsWith('RECENT_TAIL')).toBe(true);
+  });
+
+  it('leaves small overlay output untouched (no reallocation)', () => {
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    fake.liveMessages = [
+      {
+        id: 'm1',
+        thread_id: 'thread1',
+        role: 'user',
+        content: [{ type: 'tool_result', tool_use_id: 'tool-1', content: 'short output' }],
+        created_at: 1,
+      },
+    ];
+    const before = fake.liveMessages;
+
+    ChatThreadDO.prototype['boundLiveOverlaySize'].call(fake);
+
+    expect(fake.liveMessages[0].content[0].content).toBe('short output');
+    expect(fake.liveMessages).toBe(before);
+  });
+
+  it('throttles rapid delta overlay broadcasts but forces structural ones', () => {
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    fake.chatContext = { threadId: 'thread1' };
+    fake.liveMessages = [];
+    fake.liveStreamingMessageId = null;
+    fake.broadcastChat = vi.fn();
+
+    // A throttled broadcast after the window goes through.
+    fake.lastLiveSyncAtMs = Date.now() - 10_000;
+    ChatThreadDO.prototype['broadcastLiveOverlay'].call(fake, { throttle: true });
+    expect(fake.broadcastChat).toHaveBeenCalledTimes(1);
+
+    // An immediate second throttled broadcast is coalesced.
+    ChatThreadDO.prototype['broadcastLiveOverlay'].call(fake, { throttle: true });
+    expect(fake.broadcastChat).toHaveBeenCalledTimes(1);
+
+    // A forced (structural/terminal) broadcast always flushes.
+    ChatThreadDO.prototype['broadcastLiveOverlay'].call(fake, {});
+    expect(fake.broadcastChat).toHaveBeenCalledTimes(2);
   });
 
   it('backfills full first user message metadata while bounding title generation input', async () => {
@@ -5849,7 +6122,7 @@ describe('ChatThreadDO Pi turn handling', () => {
     expect(fake.clearPiInFlightMessages).not.toHaveBeenCalled();
   });
 
-  it('includes in-flight messages in the parsed chat view', async () => {
+  it('omits in-flight recovery snapshots from the parsed chat view', async () => {
     const fake = Object.create(ChatThreadDO.prototype) as any;
     fake.chatContext = { threadId: 'thread1' };
     fake.piCoreMessageToParsedChatMessage =
@@ -5863,7 +6136,7 @@ describe('ChatThreadDO Pi turn handling', () => {
     fake.piToolResultContentToChatContent =
       ChatThreadDO.prototype['piToolResultContentToChatContent'];
 
-    const committed = [
+    fake.loadPiCoreMessages = vi.fn(() => [
       { role: 'user', content: 'first turn', timestamp: 100 },
       {
         role: 'assistant',
@@ -5876,8 +6149,8 @@ describe('ChatThreadDO Pi turn handling', () => {
         usage: {},
         stopReason: 'stop',
       },
-    ];
-    const inFlight = [
+    ]);
+    fake.loadPiInFlightMessages = vi.fn(() => [
       { role: 'user', content: 'second turn', timestamp: 200 },
       {
         role: 'assistant',
@@ -5892,22 +6165,18 @@ describe('ChatThreadDO Pi turn handling', () => {
         usage: {},
         stopReason: 'toolUse',
       },
-    ];
-    fake.loadPiCoreMessages = vi.fn(() => committed);
-    fake.loadPiInFlightMessages = vi.fn(() => inFlight);
+    ]);
 
     const parsed = await ChatThreadDO.prototype['getPiCoreParsedMessages'].call(
       fake,
       'thread1',
     );
 
-    expect(parsed).toHaveLength(4);
+    expect(parsed).toHaveLength(2);
     expect(parsed[0]).toMatchObject({ role: 'user', content: 'first turn' });
     expect(parsed[1]).toMatchObject({ role: 'assistant', id: 'resp_first' });
-    expect(parsed[2]).toMatchObject({ role: 'user', content: 'second turn' });
-    expect(parsed[3]).toMatchObject({ role: 'assistant', id: 'resp_second' });
     expect(fake.loadPiCoreMessages).toHaveBeenCalledTimes(1);
-    expect(fake.loadPiInFlightMessages).toHaveBeenCalledTimes(1);
+    expect(fake.loadPiInFlightMessages).not.toHaveBeenCalled();
   });
 
   it('omits internal recovery context messages from the parsed chat view', async () => {
@@ -6817,48 +7086,46 @@ describe('ChatThreadDO Pi turn handling', () => {
     }));
   });
 
-  it('clears stale non-streaming todo state when a chat initializes', async () => {
+  it('clears stale non-streaming todo state when a chat connects', async () => {
     const fake = Object.create(ChatThreadDO.prototype) as any;
-    const sent: string[] = [];
 
     fake.chatContext = {
       threadId: 'thread1',
       workspaceId: 'workspace1',
       orgId: 'org1',
     };
+    fake.ctx = {
+      storage: { kv: { put: vi.fn() } },
+    };
     fake.chatIsStreaming = false;
     fake.currentTodos = [{ content: 'Old task', status: 'in_progress' }];
-    fake.previewTarget = null;
-    fake.previewTabs = [];
-    fake.previewActiveTabId = null;
-    fake.previewVersion = 0;
-    fake.chatEventBuffer = [];
-    fake.transientContextUsedPercent = null;
-    fake.contextUsedPercent = null;
-    fake.trace = vi.fn();
-    fake.browserPrompts = {
-      sendPendingPromptsToWebSocket: vi.fn(),
-      pendingQuestionPrompts: vi.fn(() => []),
-      pendingQuestionCount: 0,
-    };
-    fake.replayChatEvents = vi.fn();
+    fake.syncAgentState = vi.fn();
+    // Mirror the real method: it clears the todos and syncs an override marking
+    // them completed.
     fake.completeTodoStateForTurnEnd = vi.fn(async () => {
       fake.currentTodos = [];
+      fake.syncAgentState({
+        currentTodos: [{ content: 'Old task', status: 'completed' }],
+      });
     });
 
-    const ws = { send: vi.fn((message: string) => sent.push(message)) };
+    const connection = { close: vi.fn(), serializeAttachment: vi.fn() };
+    const ctx = {
+      request: new Request('https://example.com/ws?threadId=thread1&workspaceId=workspace1&orgId=org1'),
+    };
 
-    await ChatThreadDO.prototype['handleChatInit'].call(fake, ws, {
-      type: 'init',
-      mode: 'side_channel',
-      threadId: 'thread1',
-    });
+    await ChatThreadDO.prototype.onConnect.call(fake, connection, ctx);
 
     expect(fake.completeTodoStateForTurnEnd).toHaveBeenCalledTimes(1);
-    expect(sent.map((message) => JSON.parse(message))).not.toContainEqual({
-      type: 'todo_state',
-      todos: [{ content: 'Old task', status: 'in_progress' }],
-    });
+    // The completed-todo override must be the final sync — onConnect must not
+    // sync again afterward with the cleared list and erase the checklist.
+    expect(fake.syncAgentState).toHaveBeenCalledTimes(1);
+    expect(fake.syncAgentState).toHaveBeenCalledWith(
+      expect.objectContaining({
+        currentTodos: [{ content: 'Old task', status: 'completed' }],
+      }),
+    );
+    expect(connection.close).not.toHaveBeenCalled();
   });
 
   it('syncs generated thread titles through Agent state', async () => {
