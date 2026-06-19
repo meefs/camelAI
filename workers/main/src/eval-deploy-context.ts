@@ -118,6 +118,7 @@ export async function cloneEvalDeployContext(
   db: D1Database | undefined,
   sourceContainerId: string,
   targetContainerId: string,
+  targetProjectId: string,
 ): Promise<void> {
   if (!db || sourceContainerId === targetContainerId) return;
   const context = await getEvalDeployContext(db, sourceContainerId);
@@ -128,6 +129,6 @@ export async function cloneEvalDeployContext(
     workspaceId: context.workspaceId,
     userId: context.userId,
     threadId: context.threadId,
-    projectId: targetContainerId,
+    projectId: targetProjectId,
   });
 }

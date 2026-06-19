@@ -171,6 +171,16 @@ async function requireSandboxCommand(result: Promise<{
  * Cloudflare Sandbox SDK containers.
  */
 export class EvalProjectRuntimeService extends WorkerEntrypoint<EvalProjectRuntimeEnv> {
+  /**
+   * The container id the eval outbound handler sees (`ctx.containerId`) is the Sandbox
+   * Durable Object's hex id, not the project id. getSandbox(ns, id, {normalizeId:true})
+   * resolves the DO via `ns.idFromName(id.toLowerCase())`, so we key the eval deploy
+   * context under the same derived id and the handler's lookup matches.
+   */
+  private evalContainerId(projectId: string): string {
+    return this.env.EVAL_SANDBOX.idFromName(projectId.toLowerCase()).toString();
+  }
+
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
     if (url.pathname === "/health") {
@@ -193,7 +203,7 @@ export class EvalProjectRuntimeService extends WorkerEntrypoint<EvalProjectRunti
         if (!command) return errorResponse("cmd is required", 400);
         const env = toStringMap(body.env);
         await upsertEvalDeployContext(this.env.APP_DB, {
-          containerId: projectId,
+          containerId: this.evalContainerId(projectId),
           orgId: env.EVAL_ORG_ID || env.ORG_ID || "",
           workspaceId: env.EVAL_WORKSPACE_ID || env.WORKSPACE_ID || "",
           userId: env.EVAL_USER_ID || "eval",
@@ -304,7 +314,12 @@ export class EvalProjectRuntimeService extends WorkerEntrypoint<EvalProjectRunti
         await requireSandboxCommand(sandbox.exec(
           sandboxSafeCommand(`rm -f ${shellQuote(sourceArchive)}`),
         ));
-        await cloneEvalDeployContext(this.env.APP_DB, projectId, targetProjectId);
+        await cloneEvalDeployContext(
+          this.env.APP_DB,
+          this.evalContainerId(projectId),
+          this.evalContainerId(targetProjectId),
+          targetProjectId,
+        );
         return json({ success: true });
       }
 
