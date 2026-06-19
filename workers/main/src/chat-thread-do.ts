@@ -594,17 +594,7 @@ export interface PiCoreMessageHistoryRepairReport {
 
 export interface PiTurnRecoveryAdminState {
   pending: FiberInspection | null;
-  legacyPending?: LegacyPiTurnRecoveryRow | null;
   inFlightCount: number;
-}
-
-interface LegacyPiTurnRecoveryRow {
-  turn_id: string;
-  status: "running" | "recovering";
-  active_user_id: string | null;
-  retry_count: number;
-  started_at: number;
-  updated_at: number;
 }
 
 function cloneDurableState<T>(value: T): T {
@@ -4232,13 +4222,7 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
 
     this.syncAgentState();
 
-    const hasLegacyPiTurnRecovery = Boolean(
-      this.loadLegacyPiTurnRecoveryForMigration(),
-    );
-    if (
-      hasLegacyPiTurnRecovery ||
-      (!hasLegacyPiTurnRecovery && this.hasPiInFlightRecoveryRows())
-    ) {
+    if (this.hasPiInFlightRecoveryRows()) {
       ctx.waitUntil(
         ctx.storage.setAlarm(Date.now() + 1_000).catch((error) => {
           console.error("[ChatThreadDO] failed to schedule Pi recovery alarm", error);
@@ -4249,7 +4233,6 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
 
   async alarm(): Promise<void> {
     await super.alarm();
-    await this.drainLegacyPiTurnRecoveryForMigration();
     await this.drainOrphanedPiInFlightRecovery();
   }
 
@@ -6289,59 +6272,6 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
     return droppedCount;
   }
 
-  // TODO(remove after next deploy): one-release migration shim for pi_turn_recovery
-  // rows created by the pre-Agents-SDK ChatThreadDO. New turns use managed fibers.
-  private ensureLegacyPiTurnRecoveryTableForMigration(): void {
-    this.ctx.storage.sql.exec(
-      `CREATE TABLE IF NOT EXISTS pi_turn_recovery (
-        id INTEGER PRIMARY KEY CHECK (id = 1),
-        turn_id TEXT NOT NULL,
-        status TEXT NOT NULL CHECK (status IN ('running', 'recovering')),
-        user_content TEXT NOT NULL,
-        user_timestamp INTEGER NOT NULL,
-        active_user_id TEXT,
-        retry_count INTEGER NOT NULL DEFAULT 0,
-        started_at INTEGER NOT NULL,
-        updated_at INTEGER NOT NULL
-      )`,
-    );
-  }
-
-  private loadLegacyPiTurnRecoveryForMigration(): LegacyPiTurnRecoveryRow | null {
-    this.ensureLegacyPiTurnRecoveryTableForMigration();
-    const row = this.ctx.storage.sql
-      .exec<{
-        turn_id: string;
-        status: string;
-        active_user_id: string | null;
-        retry_count: number;
-        started_at: number;
-        updated_at: number;
-      }>(
-        `SELECT turn_id, status, active_user_id, retry_count, started_at, updated_at
-         FROM pi_turn_recovery
-         WHERE id = 1`,
-      )
-      .toArray()[0];
-    if (!row || (row.status !== "running" && row.status !== "recovering")) return null;
-    return {
-      turn_id: row.turn_id,
-      status: row.status,
-      active_user_id:
-        typeof row.active_user_id === "string" && row.active_user_id.trim()
-          ? row.active_user_id.trim()
-          : null,
-      retry_count: Math.max(0, Math.floor(Number(row.retry_count) || 0)),
-      started_at: Math.max(0, Math.floor(Number(row.started_at) || 0)),
-      updated_at: Math.max(0, Math.floor(Number(row.updated_at) || 0)),
-    };
-  }
-
-  private clearLegacyPiTurnRecoveryForMigration(): void {
-    this.ensureLegacyPiTurnRecoveryTableForMigration();
-    this.ctx.storage.sql.exec("DELETE FROM pi_turn_recovery WHERE id = 1");
-  }
-
   private async hasActivePiTurnFiber(): Promise<boolean> {
     const [fiber] = await this.listFibers({
       name: PI_TURN_FIBER_NAME,
@@ -6351,23 +6281,7 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
     return Boolean(fiber);
   }
 
-  private async drainLegacyPiTurnRecoveryForMigration(): Promise<void> {
-    const pending = this.loadLegacyPiTurnRecoveryForMigration();
-    if (!pending) return;
-    if (await this.hasActivePiTurnFiber()) return;
-
-    await this.recoverInterruptedPiTurn({
-      id: pending.turn_id,
-      name: PI_TURN_FIBER_NAME,
-      snapshot: { activeUserId: pending.active_user_id },
-      createdAt: pending.started_at || pending.updated_at || Date.now(),
-      recoveryReason: "interrupted",
-    });
-    this.clearLegacyPiTurnRecoveryForMigration();
-  }
-
   private async hasOrphanedPiInFlightRecovery(): Promise<boolean> {
-    if (this.loadLegacyPiTurnRecoveryForMigration()) return false;
     if (await this.hasActivePiTurnFiber()) return false;
     return (await this.loadPiInFlightMessages()).length > 0;
   }
@@ -6403,7 +6317,6 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
         status: ["pending", "running", "interrupted"],
         limit: 1,
       }))[0] ?? null,
-      legacyPending: this.loadLegacyPiTurnRecoveryForMigration(),
       inFlightCount: (await this.loadPiInFlightMessages()).length,
     };
   }
@@ -6423,7 +6336,6 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
         ? this.resolveFiber(fiber.fiberId, { status: "aborted", reason: "Admin cleared Pi recovery" })
         : this.cancelFiber(fiber.fiberId, "Admin cleared Pi recovery"),
     ));
-    this.clearLegacyPiTurnRecoveryForMigration();
     this.clearPiInFlightMessages();
     this.setChatIsStreaming(false);
     return await this.getPiTurnRecoveryAdminState();

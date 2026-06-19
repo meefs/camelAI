@@ -2482,40 +2482,9 @@ describe('ChatThreadDO Pi turn handling', () => {
     }));
   });
 
-  it('drains one-release legacy Pi turn recovery rows when no managed fiber exists', async () => {
-    const fake = Object.create(ChatThreadDO.prototype) as any;
-    const legacyRow = {
-      turn_id: 'legacy-turn',
-      status: 'running',
-      active_user_id: 'user1',
-      retry_count: 1,
-      started_at: 100,
-      updated_at: 200,
-    };
-    const exec = vi.fn((sql: string) => ({
-      toArray: () => sql.includes('SELECT turn_id') ? [legacyRow] : [],
-    }));
-    fake.ctx = { storage: { sql: { exec } } };
-    fake.listFibers = vi.fn(async () => []);
-    fake.recordChatThreadObservabilityEvent = vi.fn();
-    fake.recoverInterruptedPiTurn = vi.fn(async () => undefined);
-
-    await ChatThreadDO.prototype['drainLegacyPiTurnRecoveryForMigration'].call(fake);
-
-    expect(fake.recoverInterruptedPiTurn).toHaveBeenCalledWith(expect.objectContaining({
-      id: 'legacy-turn',
-      name: 'pi-turn',
-      snapshot: { activeUserId: 'user1' },
-      createdAt: 100,
-      recoveryReason: 'interrupted',
-    }));
-    expect(exec).toHaveBeenCalledWith('DELETE FROM pi_turn_recovery WHERE id = 1');
-  });
-
   it('recovers orphaned Pi in-flight rows when no managed fiber exists', async () => {
     const fake = Object.create(ChatThreadDO.prototype) as any;
     fake.activeTurnUserId = 'user1';
-    fake.loadLegacyPiTurnRecoveryForMigration = vi.fn(() => null);
     fake.hasActivePiTurnFiber = vi.fn(async () => false);
     fake.loadPiInFlightMessages = vi.fn(async () => [
       { role: 'user', content: 'hello', timestamp: 123 },

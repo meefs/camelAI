@@ -11,7 +11,6 @@
  * - email() → Workspace email ingress (Cloudflare Email Routing)
  * - /api/threads/:id/preview → Thread preview API
  * - /agents/chat-thread/:thread → ChatThreadDO Agents SDK WebSocket
- * - /ws/:workspace → temporary compatibility shim for pre-Agents chat bundles
  * - * → React Router SSR
  */
 
@@ -266,20 +265,6 @@ const reactRouterHandler = createRequestHandler(
 // Main Router
 // =============================================================================
 
-function rewriteLegacyChatAgentRequest(req: Request, url: URL): Request | null {
-  const match = url.pathname.match(/^\/ws\/([^/]+)$/);
-  const threadId = url.searchParams.get('threadId')?.trim();
-  if (!match || !threadId) return null;
-
-  const workspaceId = decodeURIComponent(match[1] ?? '').trim();
-  if (!workspaceId) return null;
-
-  const nextUrl = new URL(url);
-  nextUrl.pathname = `/agents/chat-thread/${encodeURIComponent(threadId)}`;
-  nextUrl.searchParams.set('workspaceId', workspaceId);
-  return new Request(nextUrl.toString(), req);
-}
-
 async function authorizeChatAgentConnect(
   req: Request,
   env: Env,
@@ -323,8 +308,7 @@ export default {
     const method = req.method;
     const isWebSocket = req.headers.get('Upgrade') === 'websocket';
     if (isWebSocket) {
-      const agentRequest = rewriteLegacyChatAgentRequest(req, url) ?? req;
-      const agentResponse = await routeAgentRequest(agentRequest, env, {
+      const agentResponse = await routeAgentRequest(req, env, {
         onBeforeConnect: (request, agent) =>
           agent.className === 'CHAT_THREAD'
             ? authorizeChatAgentConnect(request, env, agent.name)

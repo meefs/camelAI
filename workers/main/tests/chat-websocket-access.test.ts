@@ -21,7 +21,7 @@ async function buildRequest(): Promise<Request> {
     user_email: 'test@example.com',
   });
   return new Request(
-    `https://camelai.dev/ws/${URL_WORKSPACE_ID}?threadId=${THREAD_ID}`,
+    `https://camelai.dev/agents/chat-thread/${THREAD_ID}?workspaceId=${URL_WORKSPACE_ID}`,
     { headers: { Cookie: `chiridion_session_v3=${token}` } },
   );
 }

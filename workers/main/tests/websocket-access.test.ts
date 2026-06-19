@@ -74,22 +74,6 @@ describe('WebSocket access guard', () => {
     response.webSocket?.close();
   });
 
-  it('keeps the legacy chat WebSocket route during rollout', async () => {
-    const { workspaceId, threadId, signedToken } = await setupMemberSession();
-
-    const response = await SELF.fetch(`http://example/ws/${workspaceId}?threadId=${threadId}`, {
-      headers: {
-        Upgrade: 'websocket',
-        Connection: 'Upgrade',
-        'X-Chiridion-Session-Id': signedToken,
-      },
-    });
-
-    expect(response.status).toBe(101);
-    response.webSocket?.accept();
-    response.webSocket?.close();
-  });
-
   it('denies WebSocket upgrade for denied workspace access', async () => {
     const { ownerId, memberId, workspaceId, threadId, signedToken } = await setupMemberSession();
 
