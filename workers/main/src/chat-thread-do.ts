@@ -376,6 +376,33 @@ const PI_MODEL_CATALOG_FALLBACKS: Record<string, Model<any>> = {
     contextWindow: 262144,
     maxTokens: 16384,
   } satisfies Model<"openai-completions">,
+  "openrouter/z-ai/glm-5.2": {
+    id: "z-ai/glm-5.2",
+    name: "Z.ai: GLM 5.2",
+    api: "openai-completions",
+    provider: "openrouter",
+    baseUrl: "https://openrouter.ai/api/v1",
+    reasoning: true,
+    // GLM 5.2 only accepts reasoning efforts "high" and "xhigh"; the Pi agent
+    // defaults to "medium", so clamp the lower levels up to "high" to avoid
+    // OpenRouter rejecting unsupported efforts.
+    thinkingLevelMap: {
+      minimal: "high",
+      low: "high",
+      medium: "high",
+      high: "high",
+      xhigh: "xhigh",
+    },
+    input: ["text"],
+    cost: {
+      input: 1.2,
+      output: 4.1,
+      cacheRead: 0.2,
+      cacheWrite: 0,
+    },
+    contextWindow: 1048576,
+    maxTokens: 131072,
+  } satisfies Model<"openai-completions">,
 };
 
 function resolvePiModelCatalogFallback(
@@ -10417,6 +10444,8 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
         return openRouterReference("moonshotai/kimi-k2.7-code");
       case "grok-4.3":
         return openRouterResponsesReference("x-ai/grok-4.3");
+      case "glm-5.2":
+        return openRouterReference("z-ai/glm-5.2");
       case "gemini-3.5-flash":
         return openRouterReference("google/gemini-3.5-flash");
       case "gemini-3-flash-preview":

@@ -35,6 +35,7 @@ export const logoRegistry: Record<string, IntegrationLogoVariant> = {
   discord: 'single',
   figma: 'single',
   gemini: 'single',
+  glm: 'single',
   gcp: 'single',
   hubspot: 'single',
   intercom: 'single',

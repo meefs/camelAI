@@ -118,6 +118,8 @@ describe("normalizeLegacyModel (back-compat shim)", () => {
     expect(normalizeLegacyModel("opus-4.8")).toBe("anthropic/claude-opus-4.8");
     expect(normalizeLegacyModel("grok-4.3")).toBe("x-ai/grok-4.3");
     expect(normalizeLegacyModel("grok-latest")).toBe("x-ai/grok-4.3");
+    expect(normalizeLegacyModel("glm-5.2")).toBe("z-ai/glm-5.2");
+    expect(normalizeLegacyModel("glm-latest")).toBe("z-ai/glm-5.2");
     expect(normalizeLegacyModel("gemini-3.5-flash")).toBe("google/gemini-3.5-flash");
     expect(normalizeLegacyModel("deepseek-v4-pro")).toBe("deepseek/deepseek-v4-pro");
   });

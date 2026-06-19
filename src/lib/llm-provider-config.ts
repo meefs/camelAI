@@ -104,6 +104,11 @@ export const CODEX_LLM_MODEL_OPTIONS: ReadonlyArray<{
     label: "Grok 4.3",
     description: "OpenRouter/camelAI hosted model",
   },
+  {
+    value: "glm-5.2",
+    label: "GLM 5.2",
+    description: "OpenRouter/camelAI hosted model",
+  },
 ];
 
 export const CUSTOM_LLM_MODEL_OPTIONS: ReadonlyArray<{
@@ -131,6 +136,7 @@ export const LLM_MODEL_OPTIONS: ReadonlyArray<{
 const OPENROUTER_ONLY_CODEX_MODELS = new Set<LlmModel>([
   "kimi-k2.7-code",
   "grok-4.3",
+  "glm-5.2",
   "gemini-3.5-flash",
   "gemini-3-flash-preview",
   "deepseek-v4-pro",

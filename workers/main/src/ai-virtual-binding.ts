@@ -98,6 +98,8 @@ const LEGACY_MODEL_ALIASES: Readonly<Record<string, string>> = {
   "opus-4.8": "anthropic/claude-opus-4.8",
   "grok-4.3": "x-ai/grok-4.3",
   "grok-latest": "x-ai/grok-4.3",
+  "glm-5.2": "z-ai/glm-5.2",
+  "glm-latest": "z-ai/glm-5.2",
   "gemini-3.5-flash": "google/gemini-3.5-flash",
   "gemini-3-flash-preview": "google/gemini-3-flash-preview",
   "gemini-3.1-pro-preview": "google/gemini-3.5-flash",

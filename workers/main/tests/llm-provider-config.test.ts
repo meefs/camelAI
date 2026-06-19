@@ -26,6 +26,7 @@ const CODEX_MODELS = [
   "deepseek-v4-flash",
   "kimi-k2.7-code",
   "grok-4.3",
+  "glm-5.2",
 ] as const;
 
 const CLAUDE_MODELS = [
@@ -41,6 +42,7 @@ const OPENROUTER_ONLY_MODELS = [
   "deepseek-v4-flash",
   "kimi-k2.7-code",
   "grok-4.3",
+  "glm-5.2",
 ] as const;
 
 const BEDROCK_OPENAI_MODELS = ["gpt-5.5", "gpt-5.4"] as const;

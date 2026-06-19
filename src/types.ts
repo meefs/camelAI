@@ -553,6 +553,7 @@ export type LlmModel =
   | "custom"
   | "kimi-k2.7-code"
   | "grok-4.3"
+  | "glm-5.2"
   | "gemini-3.5-flash"
   | "gemini-3-flash-preview"
   | "deepseek-v4-pro"

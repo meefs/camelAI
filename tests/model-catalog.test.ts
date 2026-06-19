@@ -106,7 +106,7 @@ describe('MODEL_CATALOG', () => {
   it('keeps metadata values in the expected finite sets', () => {
     const ALLOWED_SCORES = [0.5, 1, 1.5, 2, 2.5, 3, 3.5, 4, 4.5, 5];
     for (const entry of Object.values(MODEL_CATALOG)) {
-      expect([0, 1, 2, 3, 4, 5]).toContain(entry.providerOrder);
+      expect([0, 1, 2, 3, 4, 5, 6]).toContain(entry.providerOrder);
       expect(entry.modelOrder).toBeGreaterThanOrEqual(0);
       expect(entry.cost.length).toBeGreaterThanOrEqual(1);
       expect(entry.cost.length).toBeLessThanOrEqual(COST_BUCKET_MAX);
@@ -277,6 +277,7 @@ describe('MODEL_CATALOG', () => {
       'deepseek-v4-flash',
       'kimi-k2.7-code',
       'grok-4.3',
+      'glm-5.2',
     ]);
   });
 
