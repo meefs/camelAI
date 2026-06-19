@@ -1,5 +1,6 @@
 import type { Route } from './+types/workspaces.$id.outputs.$';
 import { getEnv } from '@/lib/cloudflare.server';
+import { getR2ObjectWithRetry } from '@/lib/r2-read-retry';
 import { buildWorkspaceScopedR2Key } from '@/lib/workspace-r2-paths';
 import { requireWorkspaceAuth } from './workspaces.utils';
 
@@ -128,7 +129,9 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
       workspaceId,
       `user-outputs/${filePath}`
     );
-    const object = await env.R2_BUCKET.get(r2Key);
+    // Retry briefly: a preview can reference an output the moment before its
+    // R2 write lands, which would otherwise 404 for a few seconds.
+    const object = await getR2ObjectWithRetry(env.R2_BUCKET, r2Key);
 
     if (!object) {
       return Response.json({ error: 'File not found' }, { status: 404 });

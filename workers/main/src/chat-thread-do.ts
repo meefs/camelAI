@@ -151,6 +151,7 @@ import {
 } from "./chat-context-usage";
 import { CodeModeWebSearch } from "./code-mode-web-search";
 import { buildWorkspaceScopedR2Key } from "../../../src/lib/workspace-r2-paths";
+import { retryR2Read } from "../../../src/lib/r2-read-retry";
 import {
   buildWorkspaceEmailAddress,
   buildWorkspaceEmailSenderAddress,
@@ -3463,8 +3464,12 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
         }
         const bucketDir = target.source === "upload" ? "user-uploads" : "user-outputs";
         const relativePath = target.path.replace(/^\/+/, "");
-        const object = await this.env.R2_BUCKET.head(
-          buildWorkspaceScopedR2Key(orgId, workspaceId, `${bucketDir}/${relativePath}`),
+        // Retry briefly so a preview set the moment before the producer
+        // finishes writing to R2 validates instead of failing the race.
+        const object = await retryR2Read(() =>
+          this.env.R2_BUCKET.head(
+            buildWorkspaceScopedR2Key(orgId, workspaceId, `${bucketDir}/${relativePath}`),
+          ),
         );
         if (!object) {
           const publicPath = `${target.source === "upload" ? "uploads" : "outputs"}/${relativePath}`;
