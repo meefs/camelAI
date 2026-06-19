@@ -72,7 +72,7 @@ async function main() {
   includesAll(bindings.r2, ['R2_BUCKET', 'BACKUP_BUCKET'], 'r2');
   includesAll(bindings.d1, ['APP_DB'], 'd1');
   includesAll(bindings.queues, ['APP_SCREENSHOT_QUEUE', 'SLACK_EVENTS_QUEUE'], 'queues');
-  includesAll(bindings.workflows, ['DETERMINISTIC_AUTOMATION_WORKFLOWS', 'LEGACY_WORKSPACE_MIGRATIONS'], 'workflows');
+  includesAll(bindings.workflows, ['DETERMINISTIC_AUTOMATION_WORKFLOWS'], 'workflows');
   includesAll(bindings.artifacts, ['ARTIFACTS'], 'artifacts');
   includesAll(bindings.ai, ['AI'], 'ai');
   includesAll(bindings.workerLoaders, ['CODE_MODE_LOADER', 'SELFHOST_WORKER_LOADER'], 'workerLoaders');

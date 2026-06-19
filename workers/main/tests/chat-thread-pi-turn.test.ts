@@ -3556,7 +3556,6 @@ describe('ChatThreadDO Pi turn handling', () => {
 
   it('requires explicit file locations and rejects legacy R2 paths', async () => {
     const fake = Object.create(CodeModeToolsBinding.prototype) as any;
-    fake.assertWorkspaceNotMigrating = vi.fn(async () => undefined);
     fake.recordCodeModeArtifactBestEffort = vi.fn();
     fake.ctx = { props: { orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1' } };
 

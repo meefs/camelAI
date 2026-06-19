@@ -82,16 +82,6 @@
 			"name": "chiridion-deterministic-automations-test",
 			"binding": "DETERMINISTIC_AUTOMATION_WORKFLOWS",
 			"class_name": "DeterministicAutomationWorkflow"
-		},
-		{
-			"name": "chiridion-legacy-workspace-migrations-test",
-			"binding": "LEGACY_WORKSPACE_MIGRATIONS",
-			"class_name": "LegacyWorkspaceMigrationWorkflow"
-		},
-		{
-			"name": "chiridion-legacy-preview-repairs-test",
-			"binding": "LEGACY_PREVIEW_REPAIRS",
-			"class_name": "LegacyPreviewRepairWorkflow"
 		}
 	],
 	"migrations": [

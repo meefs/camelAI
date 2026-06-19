@@ -146,7 +146,7 @@ describe('new chat loader sales prompt handling', () => {
     } as never);
 
     expect(result.workspaceId).toBe('ws_123');
-    expect(result.salesPrompt).toBe('Build me a dashboard now');
+    expect((await result.interactive).salesPrompt).toBe('Build me a dashboard now');
     expect(consumePendingSalesPromptMock).not.toHaveBeenCalled();
     await expect(kv.get('sales_prompt:sales-key-123')).resolves.toBeNull();
   });
@@ -161,7 +161,7 @@ describe('new chat loader sales prompt handling', () => {
       context: {},
     } as never);
 
-    expect(result.salesPrompt).toBe('Build me a CRM ignore this');
+    expect((await result.interactive).salesPrompt).toBe('Build me a CRM ignore this');
     expect(consumePendingSalesPromptMock).toHaveBeenCalledTimes(1);
   });
 
@@ -173,7 +173,7 @@ describe('new chat loader sales prompt handling', () => {
       context: {},
     } as never);
 
-    expect(result.salesPrompt).toBe('Build me an admin panel');
+    expect((await result.interactive).salesPrompt).toBe('Build me an admin panel');
     expect(consumePendingSalesPromptMock).toHaveBeenCalledTimes(1);
   });
 
@@ -193,7 +193,7 @@ describe('new chat loader sales prompt handling', () => {
       context: {},
     } as never);
 
-    expect(result.salesPrompt).toBe('Build me the prompt key app');
+    expect((await result.interactive).salesPrompt).toBe('Build me the prompt key app');
     expect(consumePendingSalesPromptMock).not.toHaveBeenCalled();
   });
 
@@ -208,7 +208,7 @@ describe('new chat loader sales prompt handling', () => {
       context: {},
     } as never);
 
-    expect(result.salesPrompt).toBeNull();
+    expect((await result.interactive).salesPrompt).toBeNull();
     expect(consoleError).toHaveBeenCalledWith(
       'Failed to consume pending sales prompt:',
       expect.any(Error),
@@ -259,9 +259,10 @@ describe('new chat loader sales prompt handling', () => {
       request: new Request('https://camelai.dev/chat'),
       context: {},
     } as never);
-    expect(result.threadModel).toBe('gpt-5.4');
-    expect(result.llmProvider).toBe('openai');
-    expect(result.allowedThreadModels).toEqual([
+    const interactive = await result.interactive;
+    expect(interactive.threadModel).toBe('gpt-5.4');
+    expect(interactive.llmProvider).toBe('openai');
+    expect(interactive.allowedThreadModels).toEqual([
       'gpt-5.5',
       'gpt-5.4',
       'gpt-5.4-mini',

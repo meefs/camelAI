@@ -23,8 +23,6 @@ export interface CloudflareEnv {
   WORKSPACE: DurableObjectNamespace<WorkspaceDO>;
   WORKSPACE_FS: DurableObjectNamespace<WorkspaceFilesystemDO>;
   WORKSPACE_CRON: DurableObjectNamespace<WorkspaceCronDO>;
-  LEGACY_WORKSPACE_MIGRATIONS?: Workflow;
-  LEGACY_PREVIEW_REPAIRS?: Workflow;
   MCP_OBJECT: DurableObjectNamespace;
   WORKER_LOGS: DurableObjectNamespace<WorkerLogsDO>;
   TELEGRAM_REGISTRY?: DurableObjectNamespace<TelegramRegistryDO>;
@@ -40,7 +38,6 @@ export interface CloudflareEnv {
 
   // Service bindings
   WORKER_SELF_REFERENCE: Fetcher;
-  LEGACY_WORKSPACE_HOST?: Fetcher;
   PROJECT_RUNTIME_HOST?: Fetcher;
 
   // Other bindings
@@ -93,8 +90,6 @@ export interface CloudflareEnv {
   BILLING_TRIAL_CREDIT_CENTS?: string;
   BILLING_SUBSCRIPTION_INCLUDED_CREDIT_CENTS?: string;
   LEGACY_STRIPE_MIGRATION_CUSTOMERS?: string;
-  ENABLE_LEGACY_WORKSPACE_MIGRATION?: string;
-  LEGACY_WORKSPACE_SERVICE_URL?: string;
   PROJECT_RUNTIME_SERVICE_URL?: string;
   PROJECT_RUNTIME_SERVICE_BEARER_TOKEN?: string;
   PROJECT_RUNTIME_DOCKER_PROXY_BASE_URL?: string;

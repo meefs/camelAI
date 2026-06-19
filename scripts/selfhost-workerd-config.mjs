@@ -52,7 +52,6 @@ const SELFHOST_DEFAULT_VARS = {
   ARTIFACTS_NAMESPACE: 'selfhost',
   CF_DISPATCH_NAMESPACE: 'selfhost',
   CF_WORKER_NAME: 'chiridion-selfhost',
-  ENABLE_LEGACY_WORKSPACE_MIGRATION: '0',
   EMAIL_FROM_ADDRESS: 'no-reply@localhost',
   WORKSPACE_EMAIL_DOMAIN: 'localhost',
   TOKEN_SIGNING_SECRET: 'selfhost-token-signing-secret-change-me',
@@ -107,7 +106,6 @@ const SELFHOST_QUEUE_NAME_BY_SOURCE = {
 
 const SELFHOST_WORKFLOW_NAMES = {
   DETERMINISTIC_AUTOMATION_WORKFLOWS: 'chiridion-selfhost-deterministic-automations',
-  LEGACY_WORKSPACE_MIGRATIONS: 'chiridion-selfhost-legacy-workspace-migrations',
 };
 
 const BROWSER_RENDERING_SERVICE_NAME = 'browser-rendering:service';

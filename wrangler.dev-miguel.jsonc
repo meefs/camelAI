@@ -127,16 +127,6 @@
 			"name": "chiridion-deterministic-automations-dev-miguel",
 			"binding": "DETERMINISTIC_AUTOMATION_WORKFLOWS",
 			"class_name": "DeterministicAutomationWorkflow"
-		},
-		{
-			"name": "chiridion-legacy-workspace-migrations-dev-miguel",
-			"binding": "LEGACY_WORKSPACE_MIGRATIONS",
-			"class_name": "LegacyWorkspaceMigrationWorkflow"
-		},
-		{
-			"name": "chiridion-legacy-preview-repairs-dev-miguel",
-			"binding": "LEGACY_PREVIEW_REPAIRS",
-			"class_name": "LegacyPreviewRepairWorkflow"
 		}
 	],
 	"migrations": [

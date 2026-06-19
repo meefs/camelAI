@@ -25,7 +25,6 @@
 		"ARTIFACTS_NAMESPACE": "local",
 		"CF_DISPATCH_NAMESPACE": "chiridion-platform-local",
 		"CF_WORKER_NAME": "chiridion-app",
-		"ENABLE_LEGACY_WORKSPACE_MIGRATION": "1",
 		// Claude API proxy (CF AI Gateway)
 		"CF_GATEWAY_NAME": "chiridion",
 		"BEDROCK_REGION": "us-west-2",
@@ -144,11 +143,6 @@
 			"remote": true
 		},
 		{
-			"binding": "LEGACY_WORKSPACE_HOST",
-			"service_id": "019dd673-3397-7c93-b55c-e593a1ffd317",
-			"remote": true
-		},
-		{
 			"binding": "SANDBOX_HOST",
 			"service_id": "019dd673-3397-7c93-b55c-e593a1ffd317",
 			"remote": true
@@ -175,16 +169,6 @@
 			"name": "chiridion-deterministic-automations",
 			"binding": "DETERMINISTIC_AUTOMATION_WORKFLOWS",
 			"class_name": "DeterministicAutomationWorkflow"
-		},
-		{
-			"name": "chiridion-legacy-workspace-migrations",
-			"binding": "LEGACY_WORKSPACE_MIGRATIONS",
-			"class_name": "LegacyWorkspaceMigrationWorkflow"
-		},
-		{
-			"name": "chiridion-legacy-preview-repairs",
-			"binding": "LEGACY_PREVIEW_REPAIRS",
-			"class_name": "LegacyPreviewRepairWorkflow"
 		}
 	],
 	"migrations": [
@@ -229,10 +213,6 @@
 				{
 					"binding": "PROJECT_RUNTIME_HOST",
 					"service_id": "019e8a87-d4d8-7711-a627-91eeb22040a6"
-				},
-				{
-					"binding": "LEGACY_WORKSPACE_HOST",
-					"service_id": "019c54ff-d555-7741-8464-3b68f8a18edf"
 				},
 				{
 					"binding": "SANDBOX_HOST",

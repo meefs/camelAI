@@ -14,6 +14,7 @@ import { Button } from '@/components/ui/button';
 import { Toaster } from '@/components/ui/sonner';
 import { ThemeProvider } from '@/components/theme-provider';
 import { NavigationProgress } from '@/components/ui/navigation-progress';
+import { AppLoadingOverlay } from '@/components/app-loading-overlay';
 import {
   reportClientError,
   scheduleClientErrorReload,
@@ -106,6 +107,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
           <NavigationProgress />
           {children}
           <Toaster />
+          <AppLoadingOverlay />
         </ThemeProvider>
         <ScrollRestoration />
         <Scripts />

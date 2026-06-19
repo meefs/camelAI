@@ -1,5 +1,4 @@
 import { Suspense, useEffect, useRef, useState } from "react";
-import { Loader2 } from "lucide-react";
 import {
   Await,
   Outlet,
@@ -7,7 +6,6 @@ import {
   data,
   useLoaderData,
   useNavigate,
-  useRevalidator,
 } from "react-router";
 import type { Route } from "./+types/_app";
 import { requireAuthContext } from "@/lib/auth.server";
@@ -20,12 +18,11 @@ import {
   type PaywallTakeoverContext,
 } from "@/components/billing/paywall-takeover";
 import { AppSidebar } from "@/components/sidebar/app-sidebar";
-import { Card, CardContent, CardTitle } from "@/components/ui/card";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 import { ChatGroupsProvider } from "@/hooks/use-chat-groups";
 import { ChatThreadSnapshotsProvider } from "@/hooks/use-chat-thread-snapshots";
 import type { AuthState } from "@/types";
-import type { ChatGroupView, WorkspaceWithAccess } from "@/types";
+import type { ChatGroupView } from "@/types";
 import {
   getVerifiedLegacyStripeMigrationEligibility,
   isOrgBillingAccessReady,
@@ -33,13 +30,11 @@ import {
 } from "@/lib/billing.server";
 import { listGroupsForWorkspace } from "@/lib/chat-groups.server";
 import { getByokProviderLabel } from "@/lib/byok-providers";
-import { getWorkspaceMigrationGate } from "@/lib/workspace-migration-gate.server";
 import { getEffectiveLlmProviderConfig } from "@/lib/selfhost-ai-provider";
 import { isSelfhostRuntime } from "@/lib/selfhost-runtime";
 import { isConnectionsUiOnlySearchChange } from "@/lib/connections-route-revalidation";
 
 const SIDEBAR_COOKIE_NAME = "sidebar_state";
-const PROJECT_MIGRATION_POLL_INTERVAL_MS = 5_000;
 
 export function shouldRevalidate({
   currentUrl,
@@ -120,7 +115,6 @@ export async function loader({ request, context }: Route.LoaderArgs) {
       billingAccessReady: true,
       appRouteAccessible: true,
       paywallContext: null,
-      projectMigrationGate: null,
       embedMode: true,
     };
 
@@ -176,11 +170,6 @@ export async function loader({ request, context }: Route.LoaderArgs) {
   };
 
   const currentWorkspaceId = authContext.currentWorkspace?.id ?? null;
-  const migrationGateWorkspace = getMigrationGateWorkspace(url, authContext);
-  const projectMigrationGate = await getWorkspaceMigrationGate(
-    env,
-    migrationGateWorkspace,
-  );
   const actingUserId =
     authContext.user?.id ?? authContext.session?.user_id ?? null;
   const currentChatGroupsPromise: Promise<ChatGroupView[]> = currentWorkspaceId && actingUserId
@@ -237,7 +226,6 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     billingAccessReady,
     appRouteAccessible,
     paywallContext,
-    projectMigrationGate,
     embedMode: false,
   };
 
@@ -265,22 +253,10 @@ export default function AppLayout() {
     billingAccessReady,
     appRouteAccessible,
     paywallContext,
-    projectMigrationGate,
     embedMode,
   } =
     useLoaderData<typeof loader>();
   const navigate = useNavigate();
-  const revalidator = useRevalidator();
-
-  useEffect(() => {
-    if (!projectMigrationGate) return;
-    const interval = window.setInterval(() => {
-      if (revalidator.state === "idle") {
-        revalidator.revalidate();
-      }
-    }, PROJECT_MIGRATION_POLL_INTERVAL_MS);
-    return () => window.clearInterval(interval);
-  }, [projectMigrationGate, revalidator]);
 
   return (
     <SidebarProvider defaultOpen={defaultSidebarOpen}>
@@ -288,11 +264,7 @@ export default function AppLayout() {
         <ChatThreadSnapshotsProvider>
           {embedMode ? null : <AppSidebar />}
           <SidebarInset className="h-svh overflow-hidden flex flex-col">
-            {embedMode ? (
-              <Outlet />
-            ) : projectMigrationGate ? (
-              <WorkspaceMigrationInProgress />
-            ) : appRouteAccessible ? (
+            {embedMode || appRouteAccessible ? (
               <Outlet />
             ) : paywallContext ? (
               <Suspense
@@ -345,40 +317,6 @@ export default function AppLayout() {
       )}
     </SidebarProvider>
   );
-}
-
-function WorkspaceMigrationInProgress() {
-  return (
-    <div className="flex min-h-0 flex-1 items-center justify-center bg-background p-6">
-      <Card className="w-full max-w-md">
-        <CardContent className="flex flex-col items-center gap-5 px-6 py-6 text-center">
-          <div className="flex size-12 items-center justify-center rounded-full bg-muted text-muted-foreground">
-            <Loader2 className="size-5 animate-spin" aria-hidden="true" />
-          </div>
-          <div className="flex flex-col gap-2">
-            <CardTitle className="text-base">
-              camelAI migration in progress
-            </CardTitle>
-            <p className="text-sm text-muted-foreground">
-              We are upgrading camel&apos;s abilities. This page will refresh
-              automatically when migration is complete.
-            </p>
-            <p className="text-sm text-muted-foreground">
-              This may take a few minutes. You&apos;re free to leave this page and
-              come back later.
-            </p>
-          </div>
-        </CardContent>
-      </Card>
-    </div>
-  );
-}
-
-function getMigrationGateWorkspace(
-  _url: URL,
-  authContext: Awaited<ReturnType<typeof requireAuthContext>>,
-): WorkspaceWithAccess | null {
-  return authContext.currentWorkspace ?? null;
 }
 
 type LegacyMigrationData = Awaited<

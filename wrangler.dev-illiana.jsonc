@@ -118,16 +118,6 @@
 			"name": "chiridion-deterministic-automations-dev-illiana",
 			"binding": "DETERMINISTIC_AUTOMATION_WORKFLOWS",
 			"class_name": "DeterministicAutomationWorkflow"
-		},
-		{
-			"name": "chiridion-legacy-workspace-migrations-dev-illiana",
-			"binding": "LEGACY_WORKSPACE_MIGRATIONS",
-			"class_name": "LegacyWorkspaceMigrationWorkflow"
-		},
-		{
-			"name": "chiridion-legacy-preview-repairs-dev-illiana",
-			"binding": "LEGACY_PREVIEW_REPAIRS",
-			"class_name": "LegacyPreviewRepairWorkflow"
 		}
 	],
 	"migrations": [

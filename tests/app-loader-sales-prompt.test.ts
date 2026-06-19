@@ -2,7 +2,6 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const requireAuthContextMock = vi.fn();
 const getEnvMock = vi.fn();
-const getWorkspaceMigrationGateMock = vi.fn(() => null);
 
 vi.mock("@/lib/auth.server", () => ({
   requireAuthContext: requireAuthContextMock,
@@ -10,10 +9,6 @@ vi.mock("@/lib/auth.server", () => ({
 
 vi.mock("@/lib/cloudflare.server", () => ({
   getEnv: getEnvMock,
-}));
-
-vi.mock("@/lib/workspace-migration-gate.server", () => ({
-  getWorkspaceMigrationGate: getWorkspaceMigrationGateMock,
 }));
 
 vi.mock("@/lib/billing.server", () => ({

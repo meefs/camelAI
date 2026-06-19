@@ -141,11 +141,6 @@ import {
 } from "../../ban-list.js";
 import { waitUntil } from "cloudflare:workers";
 import { refreshOrgCustomDomainHostnamesForAdmin } from "../../../../../src/lib/admin-custom-domain.server.js";
-import { WorkspaceFilesystemClient } from "../../workspace-filesystem-do.js";
-import {
-  cancelLegacyWorkspaceMigration,
-  queueLegacyWorkspaceMigrationIfNeeded,
-} from "../../legacy-workspace-migration-queue.js";
 
 type HonoEnv = { Bindings: Env };
 
@@ -494,48 +489,6 @@ function toDailySpendPct(value: number, total: number): number {
 
 export const routes = new Hono<HonoEnv>();
 
-const LegacyWorkspaceMigrationTriggerBodySchema = z.object({
-  force: z.boolean().optional().default(false),
-  dry_run: z.boolean().optional().default(false),
-  requested_by: z.string().trim().min(1).max(128).optional(),
-});
-
-const LegacyWorkspaceMigrationTriggerResponseSchema = z.object({
-  success: z.boolean(),
-  org_id: z.string(),
-  workspace_id: z.string(),
-  workflow_id: z.string(),
-  dry_run: z.boolean(),
-  status: z.literal("queued"),
-});
-
-const LegacyWorkspaceMigrationCancelBodySchema = z.object({
-  requested_by: z.string().trim().min(1).max(128).optional(),
-});
-
-const LegacyWorkspaceMigrationCancelResponseSchema = z.object({
-  success: z.boolean(),
-  org_id: z.string(),
-  workspace_id: z.string(),
-  workflow_id: z.string().optional(),
-  status: z.literal("canceled"),
-});
-
-const LegacyPreviewRepairTriggerBodySchema = z.object({
-  dry_run: z.boolean().optional().default(false),
-  requested_by: z.string().trim().min(1).max(128).optional(),
-  thread_ids: z.array(z.string().trim().min(1)).max(500).optional(),
-});
-
-const LegacyPreviewRepairTriggerResponseSchema = z.object({
-  success: z.boolean(),
-  org_id: z.string(),
-  workspace_id: z.string(),
-  workflow_id: z.string(),
-  dry_run: z.boolean(),
-  status: z.literal("queued"),
-});
-
 const WorkspaceDoTenantMigrationBodySchema = z.object({
   workspace_id: z.string().trim().min(1).optional(),
   limit: z.number().int().min(1).max(100).optional().default(25),
@@ -606,110 +559,6 @@ routes.get(
 );
 
 // ---------------------------------------------------------------------------
-// POST /orgs/:orgId/workspaces/:workspaceId/legacy-migration
-// ---------------------------------------------------------------------------
-
-routes.get(
-  "/orgs/:orgId/workspaces/:workspaceId/legacy-migration",
-  openApi({
-    summary: "Get legacy workspace migration state",
-    responses: {
-      200: z.any(),
-      503: ErrorSchema,
-    },
-  }),
-  async (c) => {
-    if (!c.env.WORKSPACE_FS) {
-      return c.json({ error: "Workspace filesystem is not configured" }, 503);
-    }
-
-    const workspaceId = c.req.param("workspaceId");
-    const workspaceFs = new WorkspaceFilesystemClient(c.env as never, workspaceId);
-    return c.json(await workspaceFs.getLegacyWorkspaceMigrationState());
-  },
-);
-
-routes.post(
-  "/orgs/:orgId/workspaces/:workspaceId/legacy-migration",
-  openApi({
-    summary: "Queue legacy workspace migration",
-    request: { json: LegacyWorkspaceMigrationTriggerBodySchema },
-    responses: {
-      200: LegacyWorkspaceMigrationTriggerResponseSchema,
-      409: ErrorSchema,
-      503: ErrorSchema,
-    },
-  }),
-  async (c) => {
-    if (!c.env.WORKSPACE_FS || !c.env.LEGACY_WORKSPACE_MIGRATIONS) {
-      return c.json({ error: "Legacy workspace migration is not configured" }, 503);
-    }
-
-    const orgId = c.req.param("orgId");
-    const workspaceId = c.req.param("workspaceId");
-    const body = c.req.valid("json");
-    const result = await queueLegacyWorkspaceMigrationIfNeeded({
-      env: c.env,
-      workspaceId,
-      orgId,
-      requestedBy: body.requested_by || "admin-api",
-      dryRun: body.dry_run === true,
-      force: body.force === true,
-    });
-    if (!result.queued) {
-      return c.json({ error: `Migration is already ${result.state.status}; pass force to enqueue a rerun` }, 409);
-    }
-
-    return c.json({
-      success: true,
-      org_id: orgId,
-      workspace_id: workspaceId,
-      workflow_id: result.workflowId,
-      dry_run: body.dry_run === true,
-      status: "queued" as const,
-    });
-  },
-);
-
-routes.post(
-  "/orgs/:orgId/workspaces/:workspaceId/legacy-migration/cancel",
-  openApi({
-    summary: "Cancel active legacy workspace migration",
-    request: { json: LegacyWorkspaceMigrationCancelBodySchema },
-    responses: {
-      200: LegacyWorkspaceMigrationCancelResponseSchema,
-      409: ErrorSchema,
-      503: ErrorSchema,
-    },
-  }),
-  async (c) => {
-    if (!c.env.WORKSPACE_FS || !c.env.LEGACY_WORKSPACE_MIGRATIONS) {
-      return c.json({ error: "Legacy workspace migration is not configured" }, 503);
-    }
-
-    const orgId = c.req.param("orgId");
-    const workspaceId = c.req.param("workspaceId");
-    const body = c.req.valid("json");
-    const result = await cancelLegacyWorkspaceMigration({
-      env: c.env,
-      workspaceId,
-      requestedBy: body.requested_by || "admin-api",
-    });
-    if (!result.canceled) {
-      return c.json({ error: `Migration is not active; current status is ${result.state.status}` }, 409);
-    }
-
-    return c.json({
-      success: true,
-      org_id: orgId,
-      workspace_id: workspaceId,
-      workflow_id: result.workflowId,
-      status: "canceled" as const,
-    });
-  },
-);
-
-// ---------------------------------------------------------------------------
 // POST /orgs/:orgId/workspace-do-migration
 // ---------------------------------------------------------------------------
 
@@ -765,56 +614,6 @@ routes.post(
       offset: body.offset,
       next_offset: nextOffset,
       workspaces,
-    });
-  },
-);
-
-// ---------------------------------------------------------------------------
-// POST /orgs/:orgId/workspaces/:workspaceId/legacy-preview-repair
-// ---------------------------------------------------------------------------
-
-routes.post(
-  "/orgs/:orgId/workspaces/:workspaceId/legacy-preview-repair",
-  openApi({
-    summary: "Queue legacy thread preview repair",
-    request: { json: LegacyPreviewRepairTriggerBodySchema },
-    responses: {
-      200: LegacyPreviewRepairTriggerResponseSchema,
-      503: ErrorSchema,
-    },
-  }),
-  async (c) => {
-    if (!c.env.LEGACY_PREVIEW_REPAIRS) {
-      return c.json({ error: "Legacy preview repair workflow is not configured" }, 503);
-    }
-
-    const orgId = c.req.param("orgId");
-    const workspaceId = c.req.param("workspaceId");
-    const body = c.req.valid("json");
-    const workflowId = [
-      "legacy-preview-repair",
-      workspaceId,
-      Date.now().toString(36),
-    ].join("-");
-
-    await c.env.LEGACY_PREVIEW_REPAIRS.createBatch([{
-      id: workflowId,
-      params: {
-        orgId,
-        workspaceId,
-        requestedBy: body.requested_by || "admin-api",
-        dryRun: body.dry_run === true,
-        threadIds: body.thread_ids,
-      },
-    }]);
-
-    return c.json({
-      success: true,
-      org_id: orgId,
-      workspace_id: workspaceId,
-      workflow_id: workflowId,
-      dry_run: body.dry_run === true,
-      status: "queued" as const,
     });
   },
 );

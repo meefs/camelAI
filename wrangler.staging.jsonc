@@ -25,10 +25,6 @@
       "service_id": "019e866e-90ab-72f2-b1bf-b044653ff154",
     },
     {
-      "binding": "LEGACY_WORKSPACE_HOST",
-      "service_id": "019dd673-3397-7c93-b55c-e593a1ffd317",
-    },
-    {
       "binding": "SANDBOX_HOST",
       "service_id": "019dd673-3397-7c93-b55c-e593a1ffd317",
     },
@@ -61,7 +57,6 @@
     "CF_ZONE_ID": "94f647d6b1658a287820a83d09492c73",
     "CF_CUSTOM_HOSTNAME_FALLBACK": "custom-domains.staging.camelai.app",
     "CF_DCV_DELEGATION_UUID": "1b7fee6764db9b60",
-    "ENABLE_LEGACY_WORKSPACE_MIGRATION": "1",
   },
   "assets": {
     "binding": "ASSETS",
@@ -143,16 +138,6 @@
       "name": "chiridion-deterministic-automations-staging",
       "binding": "DETERMINISTIC_AUTOMATION_WORKFLOWS",
       "class_name": "DeterministicAutomationWorkflow"
-    },
-    {
-      "name": "chiridion-legacy-workspace-migrations-staging",
-      "binding": "LEGACY_WORKSPACE_MIGRATIONS",
-      "class_name": "LegacyWorkspaceMigrationWorkflow"
-    },
-    {
-      "name": "chiridion-legacy-preview-repairs-staging",
-      "binding": "LEGACY_PREVIEW_REPAIRS",
-      "class_name": "LegacyPreviewRepairWorkflow"
     }
   ],
   "migrations": [

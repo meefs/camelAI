@@ -83,12 +83,6 @@ export {
   DeterministicAutomationWorkflow,
   DynamicWorkflowBinding,
 } from './deterministic-automation-workflow.js';
-export {
-  LegacyWorkspaceMigrationWorkflow,
-} from './legacy-workspace-migration-workflow.js';
-export {
-  LegacyPreviewRepairWorkflow,
-} from './legacy-preview-repair-workflow.js';
 export { CamelAiService } from './camelai-service.js';
 export { SecureFetchBinding } from './secure-fetch-service.js';
 export { AppScreenshotBinding } from './app-screenshot-binding.js';
@@ -105,8 +99,9 @@ export class AdminIndexDO extends DurableObject<Env> {}
 export class CloudflareSandbox extends DurableObject<Env> {}
 
 // Compatibility shim for deployed migration histories that introduced the
-// old Think-based migration planning Durable Object. Planning now runs inside
-// LegacyWorkspaceMigrationWorkflow with direct Responses API calls.
+// old Think-based migration planning Durable Object. The legacy workspace
+// migration feature has since been removed; this no-op class remains only so
+// deployed Durable Object migration histories continue to resolve.
 export class MigrationPlanningAgent extends DurableObject<Env> {}
 
 // Extend React Router's AppLoadContext

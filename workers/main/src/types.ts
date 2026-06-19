@@ -107,8 +107,6 @@ export interface Env
   SANDBOX_PROXY_SECRET?: string;
   PROJECT_RUNTIME_SERVICE_URL?: string;
   PROJECT_RUNTIME_SERVICE_BEARER_TOKEN?: string;
-  LEGACY_WORKSPACE_HOST?: Fetcher;
-  LEGACY_WORKSPACE_SERVICE_URL?: string;
   PROJECT_RUNTIME_DOCKER_PROXY_BASE_URL?: string;
   PROJECT_RUNTIME_ARTIFACTS_PROXY_BASE?: string;
   PROJECT_RUNTIME_PROXY_SECRET?: string;
@@ -126,9 +124,6 @@ export interface Env
   CLOUDFLARE_ACCESS_ADMIN_GROUP_PREFIX?: string;
   CLOUDFLARE_ACCESS_DEFAULT_ORG_NAME?: string;
   CLOUDFLARE_ACCESS_REQUIRED_EMAIL_DOMAIN?: string;
-  LEGACY_WORKSPACE_MIGRATIONS?: Workflow;
-  LEGACY_PREVIEW_REPAIRS?: Workflow;
-  ENABLE_LEGACY_WORKSPACE_MIGRATION?: string;
   // Email handle registry (atomic handle claims)
   EMAIL_HANDLE?: DurableObjectNamespace<EmailHandleDO>;
   // Channel routing registries (strongly consistent routing state)

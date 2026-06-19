@@ -1,6 +1,5 @@
 import { DurableObject } from "cloudflare:workers";
 import { Workspace, type FileInfo } from "@cloudflare/shell";
-import { CURRENT_LEGACY_WORKSPACE_MIGRATION_VERSION } from "../../../src/lib/legacy-workspace-migration-version";
 import { normalizeGlobalProjectId } from "./project-vm-protocol.js";
 
 const LEGACY_WORKSPACE_ROOT = "/home/claude";
@@ -84,77 +83,8 @@ export interface WorkspaceProject {
   artifactRemote?: string;
   artifactDefaultBranch?: string;
   artifactStatus?: "ready" | "creating" | "importing" | "forking" | "error";
-  migratedFrom?: WorkspaceProjectMigrationSource;
   createdAt: string;
   updatedAt: string;
-}
-
-export interface WorkspaceProjectMigrationSource {
-  workspaceId: string;
-  legacyRoot: string;
-  sourcePaths: string[];
-  migratedAt: string;
-}
-
-export type LegacyWorkspaceMigrationStatus =
-  | "not_started"
-  | "queued"
-  | "scanning_legacy"
-  | "planning"
-  | "copying"
-  | "verifying"
-  | "dry_run_complete"
-  | "complete"
-  | "canceled"
-  | "failed";
-
-export interface LegacyWorkspaceMigrationProjectPlan {
-  name: string;
-  description: string;
-  sourcePaths: string[];
-  deployedApps?: string[];
-  ignoreGlobs?: string[];
-  reason?: string;
-}
-
-export interface LegacyWorkspaceMigrationWorkspaceFilePlan {
-  sourcePath: string;
-  destinationPath: string;
-  reason?: string;
-}
-
-export interface LegacyWorkspaceMigrationPlan {
-  projects: LegacyWorkspaceMigrationProjectPlan[];
-  workspaceFiles?: LegacyWorkspaceMigrationWorkspaceFilePlan[];
-  unclassified?: string[];
-}
-
-export interface LegacyWorkspaceMigrationDiagnostics {
-  legacyRoot?: string;
-  legacyFileCount?: number;
-  deployedAppCount?: number;
-  deployedAppNames?: string[];
-  warnings?: string[];
-}
-
-export interface LegacyWorkspaceMigrationState {
-  workspaceId: string;
-  orgId?: string;
-  migrationVersion: number;
-  status: LegacyWorkspaceMigrationStatus;
-  workflowId?: string;
-  leaseId?: string;
-  attempts: number;
-  plan?: LegacyWorkspaceMigrationPlan;
-  createdProjects?: string[];
-  copiedFiles?: number;
-  copiedBytes?: number;
-  skippedPaths?: string[];
-  diagnostics?: LegacyWorkspaceMigrationDiagnostics;
-  error?: string;
-  startedAt?: string;
-  updatedAt: string;
-  completedAt?: string;
 }
 
 export interface WorkspaceProjectCloneSource {
@@ -197,13 +127,7 @@ export interface WorkspaceFilesystemLike {
     id?: unknown;
     name?: unknown;
     description?: unknown;
-    migratedFrom?: WorkspaceProjectMigrationSource;
   }): Promise<WorkspaceProject>;
-  ensureLegacyMigrationProject(input?: {
-    name?: unknown;
-    description?: unknown;
-    migratedFrom?: WorkspaceProjectMigrationSource;
-  }): Promise<{ projectId: string; projectName: string }>;
   setProjectDescription(input?: { project?: unknown; projectId?: unknown; description?: unknown }): Promise<WorkspaceProject>;
   cloneProject(input?: {
     sourceProject?: unknown;
@@ -212,10 +136,6 @@ export interface WorkspaceFilesystemLike {
     name?: unknown;
     description?: unknown;
   }): Promise<WorkspaceProject>;
-  getLegacyWorkspaceMigrationState(): Promise<LegacyWorkspaceMigrationState>;
-  setLegacyWorkspaceMigrationState(
-    input: Partial<LegacyWorkspaceMigrationState> & { status: LegacyWorkspaceMigrationStatus },
-  ): Promise<LegacyWorkspaceMigrationState>;
   mintProjectArtifactToken(
     projectId: unknown,
     scope?: "read" | "write",
@@ -232,7 +152,6 @@ export interface ProjectArtifactToken {
 }
 
 const PROJECTS_KEY = "projects:v1";
-const LEGACY_MIGRATION_KEY = "legacy-workspace-migration:v1";
 const DEFAULT_PROJECT_VM_ID = "main";
 const ARTIFACTS_DEFAULT_BRANCH = "main";
 const ARTIFACTS_READY_TIMEOUT_MS = 30_000;
@@ -291,20 +210,7 @@ export class WorkspaceFilesystemDO extends DurableObject<WorkspaceFilesystemEnv>
     });
   }
 
-  async fetch(request: Request): Promise<Response> {
-    const url = new URL(request.url);
-    if (request.method === "POST" && url.pathname === "/internal/ensure-legacy-migration-project") {
-      try {
-        const input = await request.json().catch(() => ({})) as {
-          name?: unknown;
-          description?: unknown;
-          migratedFrom?: WorkspaceProjectMigrationSource;
-        };
-        return Response.json(await this.ensureLegacyMigrationProject(input));
-      } catch (error) {
-        return Response.json({ error: errorMessage(error) }, { status: 500 });
-      }
-    }
+  async fetch(_request: Request): Promise<Response> {
     return new Response("Not found", { status: 404 });
   }
 
@@ -441,6 +347,8 @@ export class WorkspaceFilesystemDO extends DurableObject<WorkspaceFilesystemEnv>
     return nestProjectClones((await this.readProjects()).map(toPublicProject));
   }
 
+  // Flat project list (clones not nested under their source). Used by the
+  // project delete paths to resolve targets by id/name.
   async listProjectsForMigrationReset(): Promise<WorkspaceProject[]> {
     return (await this.readProjects()).map(toPublicProject);
   }
@@ -496,7 +404,6 @@ export class WorkspaceFilesystemDO extends DurableObject<WorkspaceFilesystemEnv>
     name?: unknown;
     description?: unknown;
     workspaceId?: unknown;
-    migratedFrom?: WorkspaceProjectMigrationSource;
   } = {}): Promise<WorkspaceProject> {
     const projects = await this.readProjects();
     const name = requireProjectName(input.name ?? input.id ?? `project-${projects.length + 1}`);
@@ -517,38 +424,12 @@ export class WorkspaceFilesystemDO extends DurableObject<WorkspaceFilesystemEnv>
       name,
       description,
       defaultVmId: DEFAULT_PROJECT_VM_ID,
-      migratedFrom: normalizeProjectMigrationSource(input.migratedFrom),
       createdAt: now,
       updatedAt: now,
     });
     projects.push(project);
     await this.ctx.storage.kv.put(PROJECTS_KEY, projects);
     return toPublicProject(project);
-  }
-
-  async ensureLegacyMigrationProject(input: {
-    name?: unknown;
-    description?: unknown;
-    migratedFrom?: WorkspaceProjectMigrationSource;
-  } = {}): Promise<{ projectId: string; projectName: string }> {
-    const name = requireProjectName(input.name);
-    const nameKey = projectNameKey(name);
-    const migratedFrom = normalizeProjectMigrationSource(input.migratedFrom);
-    const existing = (await this.readProjects()).find((project) => projectNameKey(project.name) === nameKey);
-    if (existing) {
-      if (!migratedFrom || existing.migratedFrom?.workspaceId !== migratedFrom.workspaceId) {
-        throw new Error(`Project already exists and was not created by this migration: ${name}`);
-      }
-      return { projectId: existing.id, projectName: existing.name };
-    }
-
-    const project = await this.createProject({
-      name,
-      description: input.description,
-      workspaceId: migratedFrom?.workspaceId,
-      migratedFrom,
-    });
-    return { projectId: project.id, projectName: project.name };
   }
 
   async setProjectDescription(input: { project?: unknown; projectId?: unknown; description?: unknown } = {}): Promise<WorkspaceProject> {
@@ -637,53 +518,6 @@ export class WorkspaceFilesystemDO extends DurableObject<WorkspaceFilesystemEnv>
     return toPublicProject(project);
   }
 
-  async getLegacyWorkspaceMigrationState(): Promise<LegacyWorkspaceMigrationState> {
-    return await this.readLegacyWorkspaceMigrationState();
-  }
-
-  async setLegacyWorkspaceMigrationState(
-    input: Partial<LegacyWorkspaceMigrationState> & { status: LegacyWorkspaceMigrationStatus },
-  ): Promise<LegacyWorkspaceMigrationState> {
-    const current = await this.readLegacyWorkspaceMigrationState();
-    const now = new Date().toISOString();
-    const next: LegacyWorkspaceMigrationState = {
-      ...current,
-      ...input,
-      workspaceId: this.ctx.id.toString(),
-      migrationVersion: CURRENT_LEGACY_WORKSPACE_MIGRATION_VERSION,
-      attempts:
-        typeof input.attempts === "number" && Number.isFinite(input.attempts)
-          ? Math.max(0, Math.floor(input.attempts))
-          : current.attempts,
-      updatedAt: now,
-    };
-    if (!next.startedAt && next.status !== "not_started" && next.status !== "queued") {
-      next.startedAt = now;
-    }
-    if (next.status === "queued" || next.status === "not_started") {
-      delete next.plan;
-      delete next.createdProjects;
-      delete next.copiedFiles;
-      delete next.copiedBytes;
-      delete next.skippedPaths;
-      delete next.diagnostics;
-      delete next.leaseId;
-      delete next.startedAt;
-      delete next.completedAt;
-    }
-    if (next.status !== "failed" && next.status !== "canceled") {
-      delete next.error;
-    }
-    if (!["dry_run_complete", "complete", "failed", "canceled"].includes(next.status)) {
-      delete next.completedAt;
-    }
-    if ((next.status === "complete" || next.status === "failed" || next.status === "canceled") && !next.completedAt) {
-      next.completedAt = now;
-    }
-    await this.ctx.storage.kv.put(LEGACY_MIGRATION_KEY, next);
-    return next;
-  }
-
   async mintProjectArtifactToken(
     projectId: unknown,
     scope: "read" | "write" = "write",
@@ -728,23 +562,6 @@ export class WorkspaceFilesystemDO extends DurableObject<WorkspaceFilesystemEnv>
   private async readProjects(): Promise<WorkspaceProject[]> {
     const value = await this.ctx.storage.kv.get<WorkspaceProject[]>(PROJECTS_KEY);
     return Array.isArray(value) ? value.filter(isWorkspaceProject) : [];
-  }
-
-  private async readLegacyWorkspaceMigrationState(): Promise<LegacyWorkspaceMigrationState> {
-    const value = await this.ctx.storage.kv.get<LegacyWorkspaceMigrationState>(LEGACY_MIGRATION_KEY);
-    if (isLegacyWorkspaceMigrationState(value)) {
-      return {
-        ...value,
-        migrationVersion: normalizeLegacyWorkspaceMigrationVersion(value.migrationVersion),
-      };
-    }
-    return {
-      workspaceId: this.ctx.id.toString(),
-      migrationVersion: CURRENT_LEGACY_WORKSPACE_MIGRATION_VERSION,
-      status: "not_started",
-      attempts: 0,
-      updatedAt: new Date(0).toISOString(),
-    };
   }
 
   private async ensureProjectArtifactRepo(project: WorkspaceProject): Promise<WorkspaceProject> {
@@ -893,40 +710,8 @@ export class WorkspaceFilesystemClient implements WorkspaceFilesystemLike {
     id?: unknown;
     name?: unknown;
     description?: unknown;
-    migratedFrom?: WorkspaceProjectMigrationSource;
   }): Promise<WorkspaceProject> {
     return this.stub.createProject({ ...input, workspaceId: this.workspaceId });
-  }
-
-  ensureLegacyMigrationProject(input?: {
-    name?: unknown;
-    description?: unknown;
-    migratedFrom?: WorkspaceProjectMigrationSource;
-  }): Promise<{ projectId: string; projectName: string }> {
-    return this.ensureLegacyMigrationProjectViaFetch(input);
-  }
-
-  private async ensureLegacyMigrationProjectViaFetch(input?: {
-    name?: unknown;
-    description?: unknown;
-    migratedFrom?: WorkspaceProjectMigrationSource;
-  }): Promise<{ projectId: string; projectName: string }> {
-    const response = await this.stub.fetch("https://workspace-fs.internal/internal/ensure-legacy-migration-project", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(input ?? {}),
-    });
-    const payload = await response.json().catch(() => undefined);
-    if (!response.ok) {
-      const message = payload && typeof payload === "object" && "error" in payload
-        ? String((payload as { error?: unknown }).error)
-        : `WorkspaceFilesystemDO ensureLegacyMigrationProject failed (${response.status})`;
-      throw new Error(message);
-    }
-    return normalizeLegacyMigrationProjectReference(payload as {
-      projectId: unknown;
-      projectName: unknown;
-    });
   }
 
   setProjectDescription(input?: { project?: unknown; projectId?: unknown; description?: unknown }): Promise<WorkspaceProject> {
@@ -941,16 +726,6 @@ export class WorkspaceFilesystemClient implements WorkspaceFilesystemLike {
     description?: unknown;
   }): Promise<WorkspaceProject> {
     return this.stub.cloneProject({ ...input, workspaceId: this.workspaceId });
-  }
-
-  getLegacyWorkspaceMigrationState(): Promise<LegacyWorkspaceMigrationState> {
-    return this.stub.getLegacyWorkspaceMigrationState();
-  }
-
-  setLegacyWorkspaceMigrationState(
-    input: Partial<LegacyWorkspaceMigrationState> & { status: LegacyWorkspaceMigrationStatus },
-  ): Promise<LegacyWorkspaceMigrationState> {
-    return this.stub.setLegacyWorkspaceMigrationState(input);
   }
 
   mintProjectArtifactToken(
@@ -983,18 +758,6 @@ export function normalizeWorkspacePath(value: unknown, fallback = "/"): string {
     parts.push(part);
   }
   return parts.length > 0 ? `/${parts.join("/")}` : "/";
-}
-
-export async function normalizeLegacyMigrationProjectReference(
-  value: PromiseLike<{ projectId: unknown; projectName: unknown }> | { projectId: unknown; projectName: unknown },
-): Promise<{ projectId: string; projectName: string }> {
-  const project = await value;
-  const projectId = await project.projectId;
-  const projectName = await project.projectName;
-  return {
-    projectId: String(projectId),
-    projectName: String(projectName),
-  };
 }
 
 function normalizeRegistryId(value: unknown, fallback: string): string {
@@ -1267,47 +1030,6 @@ function isWorkspaceProject(value: unknown): value is WorkspaceProject {
       typeof (value as WorkspaceProject).id === "string" &&
       typeof (value as WorkspaceProject).name === "string",
   );
-}
-
-function normalizeLegacyWorkspaceMigrationVersion(value: unknown): number {
-  return typeof value === "number" && Number.isFinite(value) && value > 0
-    ? Math.floor(value)
-    : 0;
-}
-
-function isLegacyWorkspaceMigrationState(value: unknown): value is LegacyWorkspaceMigrationState {
-  return Boolean(
-    value &&
-      typeof value === "object" &&
-      typeof (value as LegacyWorkspaceMigrationState).workspaceId === "string" &&
-      typeof (value as LegacyWorkspaceMigrationState).status === "string" &&
-      typeof (value as LegacyWorkspaceMigrationState).attempts === "number" &&
-      typeof (value as LegacyWorkspaceMigrationState).updatedAt === "string",
-  );
-}
-
-function normalizeProjectMigrationSource(value: unknown): WorkspaceProjectMigrationSource | undefined {
-  if (!value || typeof value !== "object") return undefined;
-  const candidate = value as Partial<WorkspaceProjectMigrationSource>;
-  if (typeof candidate.workspaceId !== "string" || !candidate.workspaceId.trim()) return undefined;
-  const sourcePaths = Array.isArray(candidate.sourcePaths)
-    ? candidate.sourcePaths
-        .filter((path): path is string => typeof path === "string" && path.trim().length > 0)
-        .map((path) => path.trim())
-    : [];
-  if (sourcePaths.length === 0) return undefined;
-  return {
-    workspaceId: candidate.workspaceId.trim(),
-    legacyRoot:
-      typeof candidate.legacyRoot === "string" && candidate.legacyRoot.trim()
-        ? normalizeWorkspacePath(candidate.legacyRoot)
-        : LEGACY_WORKSPACE_ROOT,
-    sourcePaths,
-    migratedAt:
-      typeof candidate.migratedAt === "string" && candidate.migratedAt.trim()
-        ? candidate.migratedAt.trim()
-        : new Date().toISOString(),
-  };
 }
 
 function projectDescription(project: Pick<WorkspaceProject, "id" | "name"> & { description?: unknown }): string {

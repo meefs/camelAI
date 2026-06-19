@@ -1,4 +1,6 @@
+import { Suspense } from "react";
 import {
+  Await,
   redirect,
   useActionData,
   useLoaderData,
@@ -55,6 +57,7 @@ import {
 import Chat from "@/components/Chat";
 import { ChatTabBar } from "@/components/chat-tab-bar";
 import { NoWorkspacesError } from "@/components/no-workspaces-error";
+import { AppMainSkeleton } from "@/components/ui/app-main-skeleton";
 import { SidebarTrigger } from "@/components/ui/sidebar";
 import type {
   Integration,
@@ -215,37 +218,43 @@ export async function loader({ request, context }: Route.LoaderArgs) {
   const userId = authContext.user?.id ?? null;
   const userName = authContext.user?.name ?? null;
   const renderedAt = Date.now();
-  let salesPrompt: string | null = null;
 
-  // Only consume the KV entry if the user has completed onboarding.
-  // For new users, _app.tsx redirects to /onboarding in parallel with this
-  // loader — consuming here would delete the KV entry before the onboarding
-  // flow can use it.
-  if (promptKey && authContext.onboarding?.completed_at) {
-    try {
-      salesPrompt = await consumeSalesPrompt(env.APP_KV, promptKey);
-    } catch (error) {
-      console.error(
-        "Failed to consume sales prompt for welcome screen:",
-        error,
-      );
+  // Sales prompt consumption is deferred (it issues a USER DO RPC + KV read)
+  // so it does not block the initial shell. It only feeds the welcome
+  // composer's initial input, which is part of the streamed interactive UI.
+  const salesPromptPromise: Promise<string | null> = (async () => {
+    let salesPrompt: string | null = null;
+    // Only consume the KV entry if the user has completed onboarding.
+    // For new users, _app.tsx redirects to /onboarding in parallel with this
+    // loader — consuming here would delete the KV entry before the onboarding
+    // flow can use it.
+    if (promptKey && authContext.onboarding?.completed_at) {
+      try {
+        salesPrompt = await consumeSalesPrompt(env.APP_KV, promptKey);
+      } catch (error) {
+        console.error(
+          "Failed to consume sales prompt for welcome screen:",
+          error,
+        );
+      }
     }
-  }
 
-  if (
-    authContext.onboarding?.completed_at &&
-    !salesPrompt &&
-    authContext.user?.id
-  ) {
-    try {
-      const pendingPrompt = await authEnv.USER.get(
-        authEnv.USER.idFromName(authContext.user.id),
-      ).consumePendingSalesPrompt();
-      salesPrompt = pendingPrompt ? sanitizeSalesPrompt(pendingPrompt) : null;
-    } catch (error) {
-      console.error("Failed to consume pending sales prompt:", error);
+    if (
+      authContext.onboarding?.completed_at &&
+      !salesPrompt &&
+      authContext.user?.id
+    ) {
+      try {
+        const pendingPrompt = await authEnv.USER.get(
+          authEnv.USER.idFromName(authContext.user.id),
+        ).consumePendingSalesPrompt();
+        salesPrompt = pendingPrompt ? sanitizeSalesPrompt(pendingPrompt) : null;
+      } catch (error) {
+        console.error("Failed to consume pending sales prompt:", error);
+      }
     }
-  }
+    return salesPrompt;
+  })();
 
   const allAppsPromise: Promise<WorkerScriptWithCreator[]> =
     workspaceId && authContext.currentOrg?.id
@@ -354,72 +363,88 @@ export async function loader({ request, context }: Route.LoaderArgs) {
         },
       )
     : Promise.resolve(null);
-  const [
-    activeChatGroup,
-    moveChatGroups,
-    pickerState,
-  ] = await Promise.all([
-    activeChatGroupPromise,
-    moveChatGroupsPromise,
-    pickerStatePromise,
-  ]);
-  const experimentalSettings =
-    pickerState?.experimentalSettings ?? authContext.currentOrgExperimentalSettings;
-  const effectiveLlmProviderConfig = getEffectiveLlmProviderConfig(
-    env,
-    authContext.currentOrgLlmProviderConfig,
-  );
-  const llmProvider =
-    pickerState?.llmProvider ??
-    ((effectiveLlmProviderConfig?.provider ?? null) as
-      | import("@/types").LlmProvider
-      | null);
-  const customApi = getStoredCustomLlmProviderApi(effectiveLlmProviderConfig);
-  const customModelId = getStoredCustomLlmProviderModelId(effectiveLlmProviderConfig);
-  const awsRegion = getStoredBedrockAwsRegion(effectiveLlmProviderConfig);
-  const fallbackThreadModel = getDefaultLlmModel(effectiveLlmProviderConfig?.provider, {
-    customApi,
-    customModelId,
-  });
-  const fallbackAllowedThreadModels = getVisibleLlmModelOptions(
-    experimentalSettings,
-    fallbackThreadModel,
-    {
-      orgProvider: effectiveLlmProviderConfig?.provider,
-      customApi,
-      customModelId,
-      awsRegion,
-    },
-  ).map((option) => option.value);
-  const hasModelFallback = Boolean(workspaceId);
-  const billingOverview = !isSelfhostRuntime(env) && authContext.currentOrg
-    ? await getOrgBillingOverview(env, authContext.currentOrg).catch((error) => {
-        console.warn("Failed to load billing overview for chat:", error);
-        return null;
-      })
-    : null;
+  // Interactive bundle: model picker, billing, chat-group, and sales-prompt
+  // data all depend on Durable Object RPC. Bundling them into one deferred
+  // promise lets the loader return immediately after auth so the welcome
+  // skeleton streams right away; the real composer renders once this resolves.
+  const interactive = (async () => {
+    const [activeChatGroup, moveChatGroups, pickerState] = await Promise.all([
+      activeChatGroupPromise,
+      moveChatGroupsPromise,
+      pickerStatePromise,
+    ]);
+    const experimentalSettings =
+      pickerState?.experimentalSettings ??
+      authContext.currentOrgExperimentalSettings;
+    const effectiveLlmProviderConfig = getEffectiveLlmProviderConfig(
+      env,
+      authContext.currentOrgLlmProviderConfig,
+    );
+    const llmProvider =
+      pickerState?.llmProvider ??
+      ((effectiveLlmProviderConfig?.provider ?? null) as
+        | import("@/types").LlmProvider
+        | null);
+    const customApi = getStoredCustomLlmProviderApi(effectiveLlmProviderConfig);
+    const customModelId = getStoredCustomLlmProviderModelId(
+      effectiveLlmProviderConfig,
+    );
+    const awsRegion = getStoredBedrockAwsRegion(effectiveLlmProviderConfig);
+    const fallbackThreadModel = getDefaultLlmModel(
+      effectiveLlmProviderConfig?.provider,
+      {
+        customApi,
+        customModelId,
+      },
+    );
+    const fallbackAllowedThreadModels = getVisibleLlmModelOptions(
+      experimentalSettings,
+      fallbackThreadModel,
+      {
+        orgProvider: effectiveLlmProviderConfig?.provider,
+        customApi,
+        customModelId,
+        awsRegion,
+      },
+    ).map((option) => option.value);
+    const hasModelFallback = Boolean(workspaceId);
+    const billingOverview =
+      !isSelfhostRuntime(env) && authContext.currentOrg
+        ? await getOrgBillingOverview(env, authContext.currentOrg).catch(
+            (error) => {
+              console.warn("Failed to load billing overview for chat:", error);
+              return null;
+            },
+          )
+        : null;
 
-  const threadModel =
-    pickerState?.defaultModel ??
-    (hasModelFallback ? fallbackThreadModel : null);
+    const threadModel =
+      pickerState?.defaultModel ??
+      (hasModelFallback ? fallbackThreadModel : null);
+
+    return {
+      threadModel,
+      allowedThreadModels:
+        pickerState?.allowedThreadModels ??
+        (hasModelFallback ? fallbackAllowedThreadModels : []),
+      effectivePickerDefaultModel:
+        pickerState?.effectivePickerDefaultModel ?? null,
+      hasEffectivePickerDefault: pickerState?.hasEffectivePickerDefault ?? false,
+      billingCreditStatus: applyDevBillingCreditStatusOverride(
+        buildBillingCreditStatus(billingOverview, llmProvider, threadModel),
+        url.searchParams,
+      ),
+      llmProvider,
+      experimentalSettings,
+      salesPrompt: await salesPromptPromise,
+      activeChatGroup,
+      moveChatGroups,
+    };
+  })();
 
   return {
     workspaceId: workspaceId ?? null,
-    threadModel,
-    allowedThreadModels:
-      pickerState?.allowedThreadModels ??
-      (hasModelFallback ? fallbackAllowedThreadModels : []),
-    effectivePickerDefaultModel:
-      pickerState?.effectivePickerDefaultModel ?? null,
-    hasEffectivePickerDefault:
-      pickerState?.hasEffectivePickerDefault ?? false,
-    billingCreditStatus: applyDevBillingCreditStatusOverride(
-      buildBillingCreditStatus(billingOverview, llmProvider, threadModel),
-      url.searchParams,
-    ),
     initialChatError: getDevChatInitialError(url.searchParams),
-    llmProvider,
-    experimentalSettings,
     isOrgAdmin: authContext.orgs.some(
       (org) =>
         org.org_id === authContext.currentOrg.id &&
@@ -437,10 +462,8 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     projects: projectsPromise,
     recentThreads: recentThreadsPromise,
     renderedAt,
-    salesPrompt,
-    activeChatGroup,
     activeGroupId: groupId,
-    moveChatGroups,
+    interactive,
   };
 }
 
@@ -834,18 +857,40 @@ export async function action({ request, context }: Route.ActionArgs) {
   return Response.json({ error: "Unknown intent" }, { status: 400 });
 }
 
+type ChatInteractiveData = Awaited<
+  Awaited<ReturnType<typeof loader>>["interactive"]
+>;
+
 export default function NewChatPage() {
+  const { workspaceId, interactive } = useLoaderData<typeof loader>();
+
+  if (!workspaceId) {
+    return <NoWorkspacesError />;
+  }
+
+  // The interactive bundle (model picker, billing, chat groups, sales prompt)
+  // is deferred, so render the welcome skeleton until it streams in.
+  return (
+    <Suspense fallback={<AppMainSkeleton />}>
+      <Await resolve={interactive}>
+        {(resolvedInteractive) => (
+          <ChatWelcomeContent interactive={resolvedInteractive} />
+        )}
+      </Await>
+    </Suspense>
+  );
+}
+
+function ChatWelcomeContent({
+  interactive,
+}: {
+  interactive: ChatInteractiveData;
+}) {
   const actionData = useActionData() as
     | { error?: string }
     | undefined;
   const {
     workspaceId,
-    llmProvider,
-    threadModel,
-    allowedThreadModels,
-    effectivePickerDefaultModel,
-    hasEffectivePickerDefault,
-    billingCreditStatus,
     initialChatError,
     hostname,
     userId,
@@ -855,14 +900,22 @@ export default function NewChatPage() {
     projects,
     recentThreads,
     renderedAt,
-    salesPrompt,
-    activeChatGroup,
     activeGroupId,
-    moveChatGroups,
-    experimentalSettings,
     isOrgAdmin,
     recentModelScope,
   } = useLoaderData<typeof loader>();
+  const {
+    llmProvider,
+    threadModel,
+    allowedThreadModels,
+    effectivePickerDefaultModel,
+    hasEffectivePickerDefault,
+    billingCreditStatus,
+    salesPrompt,
+    activeChatGroup,
+    moveChatGroups,
+    experimentalSettings,
+  } = interactive;
   const navigate = useNavigate();
   const revalidator = useRevalidator();
   const { groups: liveChatGroups } = useChatGroups();
