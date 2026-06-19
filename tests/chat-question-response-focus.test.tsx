@@ -182,56 +182,98 @@ vi.mock("@/components/ui/dropdown-menu", () => ({
   ),
 }));
 
+// Chat connects through the Agents SDK (`useAgent`/PartySocket). Mock the hook so
+// tests can drive the agent connection directly instead of emulating PartySocket.
+const agentRuntime = vi.hoisted(() => {
+  type AgentOptions = {
+    agent: string;
+    name: string;
+    onOpen?: () => void;
+    onMessage?: (event: { data: string }) => void;
+    onClose?: () => void;
+    onStateUpdate?: (state: unknown) => void;
+  };
+
+  class MockAgentClient {
+    static instances: MockAgentClient[] = [];
+
+    options: AgentOptions;
+    // 0 = CONNECTING, 1 = OPEN, 3 = CLOSED (mirrors WebSocket.readyState).
+    readyState = 0;
+    send = vi.fn();
+    call = vi.fn(() => Promise.resolve());
+    reconnect = vi.fn();
+    close = vi.fn();
+
+    constructor(options: AgentOptions) {
+      this.options = options;
+      MockAgentClient.instances.push(this);
+    }
+
+    emitOpen() {
+      this.readyState = 1;
+      this.options.onOpen?.();
+    }
+
+    emitMessage(payload: unknown) {
+      this.options.onMessage?.({ data: JSON.stringify(payload) });
+    }
+
+    emitStateUpdate(state: unknown) {
+      this.options.onStateUpdate?.(state);
+    }
+
+    emitClose() {
+      this.readyState = 3;
+      this.options.onClose?.();
+    }
+  }
+
+  const registry = new Map<string, MockAgentClient>();
+
+  function useAgent(options: AgentOptions) {
+    const key = `${options.agent}:${options.name}`;
+    let instance = registry.get(key);
+    if (!instance) {
+      instance = new MockAgentClient(options);
+      registry.set(key, instance);
+    } else {
+      // Refresh the captured callbacks so emits run the latest handlers.
+      instance.options = options;
+    }
+    return instance;
+  }
+
+  function reset() {
+    registry.clear();
+    MockAgentClient.instances = [];
+  }
+
+  return { useAgent, reset, MockAgentClient };
+});
+
+vi.mock("agents/react", () => ({
+  useAgent: agentRuntime.useAgent,
+}));
+
 import Chat from "@/components/Chat";
 
 const RATE_LIMIT_ERROR =
   '429 {"error":{"type":"rate_limit_error","message":"Type 2b rate limited. Please try again later."}}';
 
-class MockWebSocket {
-  static readonly CONNECTING = 0;
-  static readonly OPEN = 1;
-  static readonly CLOSING = 2;
-  static readonly CLOSED = 3;
+type MockAgentClient = InstanceType<typeof agentRuntime.MockAgentClient>;
 
-  static instances: MockWebSocket[] = [];
-
-  readonly url: string;
-  readyState = MockWebSocket.CONNECTING;
-  onopen: ((event: Event) => void) | null = null;
-  onmessage: ((event: MessageEvent) => void) | null = null;
-  onclose: ((event: CloseEvent) => void) | null = null;
-  onerror: ((event: Event) => void) | null = null;
-  send = vi.fn();
-
-  constructor(url: string) {
-    this.url = url;
-    MockWebSocket.instances.push(this);
-  }
-
-  close = vi.fn(() => {
-    this.readyState = MockWebSocket.CLOSED;
-    this.onclose?.(new CloseEvent("close"));
-  });
-
-  emitOpen() {
-    this.readyState = MockWebSocket.OPEN;
-    this.onopen?.(new Event("open"));
-  }
-
-  emitMessage(payload: unknown) {
-    this.onmessage?.({ data: JSON.stringify(payload) } as MessageEvent);
-  }
-}
-
-function getMainSocket(): MockWebSocket {
-  const socket = MockWebSocket.instances.find((candidate) =>
-    candidate.url.includes("/ws/ws-1"),
+function getMainAgent(): MockAgentClient {
+  const agent = agentRuntime.MockAgentClient.instances.find(
+    (candidate) =>
+      candidate.options.agent === "chat-thread" &&
+      candidate.options.name === "thread-1",
   );
-  if (!socket) {
-    throw new Error("Main chat WebSocket was not created");
+  if (!agent) {
+    throw new Error("Main chat agent was not created");
   }
 
-  return socket;
+  return agent;
 }
 
 describe("Chat AskUserQuestion composer focus", () => {
@@ -253,8 +295,7 @@ describe("Chat AskUserQuestion composer focus", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    MockWebSocket.instances = [];
-    vi.stubGlobal("WebSocket", MockWebSocket as unknown as typeof WebSocket);
+    agentRuntime.reset();
   });
 
   afterEach(() => {
@@ -274,9 +315,9 @@ describe("Chat AskUserQuestion composer focus", () => {
       />,
     );
 
-    const socket = getMainSocket();
+    const agent = getMainAgent();
     act(() => {
-      socket.emitOpen();
+      agent.emitOpen();
     });
 
     const prompt = screen.getByLabelText("Prompt");
@@ -284,32 +325,30 @@ describe("Chat AskUserQuestion composer focus", () => {
     expect(prompt).toHaveFocus();
 
     act(() => {
-      socket.emitMessage({
-        type: "ask_user_question",
-        questionId: "question-1",
-        questions: [
-          {
-            header: "Framework",
-            question: "Which framework do you want?",
-            multiSelect: false,
-            options: [
-              { label: "Next.js", description: "" },
-              { label: "Remix", description: "" },
-            ],
-          },
-        ],
+      agent.emitStateUpdate({
+        pendingQuestion: {
+          questionId: "question-1",
+          questions: [
+            {
+              header: "Framework",
+              question: "Which framework do you want?",
+              multiSelect: false,
+              options: [
+                { label: "Next.js", description: "" },
+                { label: "Remix", description: "" },
+              ],
+            },
+          ],
+        },
       });
     });
 
     await user.click(screen.getByRole("button", { name: "Answer question" }));
 
-    expect(socket.send).toHaveBeenCalledWith(
-      JSON.stringify({
-        type: "question_response",
-        questionId: "question-1",
-        answers: { "Which framework do you want?": "Remix" },
-      }),
-    );
+    expect(agent.call).toHaveBeenCalledWith("answerQuestion", [
+      "question-1",
+      { "Which framework do you want?": "Remix" },
+    ]);
 
     await waitFor(() => {
       expect(screen.getByLabelText("Prompt")).toHaveFocus();
@@ -326,10 +365,10 @@ describe("Chat AskUserQuestion composer focus", () => {
       />,
     );
 
-    const socket = getMainSocket();
+    const agent = getMainAgent();
     act(() => {
-      socket.emitOpen();
-      socket.emitMessage({
+      agent.emitOpen();
+      agent.emitMessage({
         type: "error",
         error: RATE_LIMIT_ERROR,
         billingSource: "byok",
@@ -356,10 +395,10 @@ describe("Chat AskUserQuestion composer focus", () => {
       />,
     );
 
-    const socket = getMainSocket();
+    const agent = getMainAgent();
     act(() => {
-      socket.emitOpen();
-      socket.emitMessage({
+      agent.emitOpen();
+      agent.emitMessage({
         type: "error",
         error: RATE_LIMIT_ERROR,
         billingSource: "byok",

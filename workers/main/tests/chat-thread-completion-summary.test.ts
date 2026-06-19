@@ -41,6 +41,7 @@ describe("ChatThreadDO completion summaries", () => {
     fake.browserPrompts = { pendingQuestionCount: 0 };
     fake.trace = vi.fn();
     fake.broadcastRealtime = vi.fn();
+    fake.syncAgentState = vi.fn();
     fake.ctx = {
       storage: { kv: { delete: vi.fn() } },
       waitUntil: vi.fn((promise: Promise<unknown>) => {

@@ -1,6 +1,20 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import React from 'react';
+
+// Chat connects through the Agents SDK (`useAgent`/PartySocket). This test does
+// not exercise the live connection, so mock the hook with an inert client.
+vi.mock('agents/react', () => {
+  const client = {
+    readyState: 0,
+    send: vi.fn(),
+    call: vi.fn(() => Promise.resolve()),
+    reconnect: vi.fn(),
+    close: vi.fn(),
+  };
+  return { useAgent: () => client };
+});
+
 import Chat from '@/components/Chat';
 import type { AtMentionEntity, Integration } from '@/types';
 
@@ -207,26 +221,6 @@ vi.mock('@/components/chat-preview/chat-preview-shell', () => ({
   normalizePreviewSessionState: () => ({ tabs: [], activeTabId: null }),
 }));
 
-class MockWebSocket {
-  static CONNECTING = 0;
-  static OPEN = 1;
-  static CLOSED = 3;
-
-  readyState = MockWebSocket.CONNECTING;
-  onopen: (() => void) | null = null;
-  onclose: (() => void) | null = null;
-  onmessage: ((event: MessageEvent) => void) | null = null;
-  onerror: (() => void) | null = null;
-
-  constructor(readonly url: string) {}
-
-  send = vi.fn();
-  close = vi.fn(() => {
-    this.readyState = MockWebSocket.CLOSED;
-    this.onclose?.();
-  });
-}
-
 const initialProject: AtMentionEntity = {
   kind: 'project',
   id: 'project-initial',
@@ -264,7 +258,6 @@ describe('Chat mention source refresh', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     resetFetchers();
-    vi.stubGlobal('WebSocket', MockWebSocket as unknown as typeof WebSocket);
     vi.stubGlobal(
       'ResizeObserver',
       class ResizeObserver {

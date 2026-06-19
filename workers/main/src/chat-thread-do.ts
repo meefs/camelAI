@@ -132,6 +132,7 @@ import {
 } from "./pi-container-tools";
 import { repairPiMessageHistoryForReplay } from "./pi-message-history";
 import { parseFilePreviewPath } from "./preview-paths";
+import { recordErrorEvent, recordObservabilityEvent } from "./observability";
 import {
   buildChatErrorEventPayload,
   createChatErrorFingerprint,
@@ -7859,6 +7860,12 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
     this.pendingStreamingActivity = null;
 
     if (pending.coalescedCount > 1) {
+      this.recordChatThreadObservabilityEvent("workspace_streaming_activity_coalesced", {
+        operation: "record_thread_streaming",
+        status: "flushed",
+        count: pending.coalescedCount,
+        sampleKey: pending.threadId,
+      });
     }
 
     this.ctx.waitUntil(
@@ -7885,6 +7892,69 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
       this.streamingActivityFlushTimer = null;
     }
     this.pendingStreamingActivity = null;
+  }
+
+  private recordChatThreadObservabilityEvent(
+    event: string,
+    details: {
+      operation?: string;
+      status?: string;
+      severity?: "debug" | "info" | "warn" | "error";
+      count?: number;
+      size?: number;
+      durationMs?: number;
+      error?: unknown;
+      statusCode?: number | null;
+      provider?: string | null;
+      model?: string | null;
+      sampleKey?: string | null;
+      insertedCount?: number;
+      updatedCount?: number;
+    } = {},
+  ): void {
+    const context = this.chatContext;
+    const count =
+      typeof details.insertedCount === "number" || typeof details.updatedCount === "number"
+        ? (details.insertedCount ?? 0) + (details.updatedCount ?? 0)
+        : details.count;
+    if (details.error) {
+      recordErrorEvent(this.env, {
+        event,
+        component: "chat_thread_do",
+        operation: details.operation,
+        status: details.status ?? "exception",
+        threadId: context?.threadId,
+        workspaceId: context?.workspaceId,
+        orgId: context?.orgId,
+        userId: context?.userId,
+        durationMs: details.durationMs,
+        statusCode: details.statusCode,
+        count,
+        size: details.size,
+        provider: details.provider,
+        model: details.model,
+        sampleIndex: details.sampleKey,
+        error: details.error,
+      });
+      return;
+    }
+    recordObservabilityEvent(this.env, {
+      event,
+      severity: details.severity ?? "info",
+      component: "chat_thread_do",
+      operation: details.operation,
+      status: details.status ?? "ok",
+      threadId: context?.threadId,
+      workspaceId: context?.workspaceId,
+      orgId: context?.orgId,
+      userId: context?.userId,
+      provider: details.provider,
+      model: details.model,
+      durationMs: details.durationMs,
+      count,
+      size: details.size,
+      sampleIndex: details.sampleKey,
+    });
   }
 
   private normalizeRunningActivityText(text: string | null | undefined): string | null {
