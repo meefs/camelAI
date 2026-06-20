@@ -179,7 +179,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
         workspaceId: currentWorkspaceId,
       }).catch((error) => {
         console.error("Failed to load chat groups:", error);
-        return [];
+        throw error;
       })
     : Promise.resolve([]);
   const legacyMigrationPromise = selfhostRuntime

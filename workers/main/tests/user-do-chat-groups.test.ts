@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { env } from "cloudflare:test";
 import { createUser, getUserSchemaVersion, type TestEnv } from "./test-helpers";
+import {
+  AVATAR_COLORS,
+  DEFAULT_CHAT_GROUP_EMOJI,
+} from "../../../src/lib/avatar";
 
 const testEmail = () =>
   `chat-groups-${Date.now()}-${Math.random().toString(36).slice(2)}@example.com`;
@@ -21,10 +25,232 @@ describe("UserDO chat groups", () => {
     };
   }
 
-  it("migrates UserDO to schema V9", async () => {
+  it("migrates UserDO to schema V10", async () => {
     const { userId } = await createUserStub();
 
-    await expect(getUserSchemaVersion(testEnv, userId)).resolves.toBe(9);
+    await expect(getUserSchemaVersion(testEnv, userId)).resolves.toBe(10);
+  });
+
+  it("assigns deterministic default avatars to new groups", async () => {
+    const { userStub } = await createUserStub();
+    const orgId = crypto.randomUUID();
+    const workspaceId = crypto.randomUUID();
+    const otherWorkspaceId = crypto.randomUUID();
+
+    const first = await userStub.createChatGroup(orgId, workspaceId, {
+      name: "First",
+    });
+    const second = await userStub.createChatGroup(orgId, workspaceId, {
+      name: "Second",
+    });
+    const otherWorkspace = await userStub.createChatGroup(orgId, otherWorkspaceId, {
+      name: "Other workspace",
+    });
+
+    expect(first.avatar).toEqual({
+      color: AVATAR_COLORS[0],
+      content: DEFAULT_CHAT_GROUP_EMOJI,
+      status: "fallback",
+    });
+    expect(second.avatar).toEqual({
+      color: AVATAR_COLORS[1],
+      content: DEFAULT_CHAT_GROUP_EMOJI,
+      status: "fallback",
+    });
+    expect(otherWorkspace.avatar).toEqual({
+      color: AVATAR_COLORS[0],
+      content: DEFAULT_CHAT_GROUP_EMOJI,
+      status: "fallback",
+    });
+  });
+
+  it("updates user-saved avatars without changing recency or allowing generated overwrite", async () => {
+    const { userStub } = await createUserStub();
+    const orgId = crypto.randomUUID();
+    const workspaceId = crypto.randomUUID();
+    const group = await userStub.createChatGroup(orgId, workspaceId, {
+      name: "Design",
+    });
+
+    await userStub.setGeneratedChatGroupEmoji(group.id, "🧠");
+    let summary = await userStub.getChatGroupSummary(group.id);
+    expect(summary?.avatar.content).toBe("🧠");
+
+    await userStub.updateChatGroup(group.id, {
+      name: "Design systems",
+      avatar: { color: "#e0476b", content: "🌊" },
+    });
+    summary = await userStub.getChatGroupSummary(group.id);
+    expect(summary?.name).toBe("Design systems");
+    expect(summary?.avatar).toEqual({
+      color: "#E0476B",
+      content: "🌊",
+      status: "user",
+    });
+    expect(summary?.updated_at).toBe(group.updated_at);
+
+    await userStub.setGeneratedChatGroupEmoji(group.id, "🔥");
+    summary = await userStub.getChatGroupSummary(group.id);
+    expect(summary?.avatar.content).toBe("🌊");
+  });
+
+  it("claims default-source groups for emoji backfill and throttles recent attempts", async () => {
+    const { userStub } = await createUserStub();
+    const orgId = crypto.randomUUID();
+    const workspaceId = crypto.randomUUID();
+    const group = await userStub.createChatGroup(orgId, workspaceId, {
+      name: "Database migrations",
+    });
+
+    await expect(
+      userStub.claimChatGroupsNeedingEmojiBackfill(
+        orgId,
+        workspaceId,
+        [group.id],
+        3,
+      ),
+    ).resolves.toEqual([{ id: group.id, name: "Database migrations" }]);
+    await expect(userStub.getChatGroupSummary(group.id)).resolves.toMatchObject({
+      avatar: {
+        color: AVATAR_COLORS[0],
+        content: DEFAULT_CHAT_GROUP_EMOJI,
+        status: "pending",
+      },
+    });
+
+    await expect(
+      userStub.claimChatGroupsNeedingEmojiBackfill(
+        orgId,
+        workspaceId,
+        [group.id],
+        3,
+      ),
+    ).resolves.toEqual([]);
+
+    const retryGroup = await userStub.createChatGroup(orgId, workspaceId, {
+      name: "Retry later",
+    });
+    await expect(
+      userStub.claimChatGroupsNeedingEmojiBackfill(
+        orgId,
+        workspaceId,
+        [retryGroup.id],
+        3,
+        Date.now() - 25 * 60 * 60 * 1000,
+      ),
+    ).resolves.toEqual([{ id: retryGroup.id, name: "Retry later" }]);
+    await expect(
+      userStub.claimChatGroupsNeedingEmojiBackfill(
+        orgId,
+        workspaceId,
+        [retryGroup.id],
+        3,
+      ),
+    ).resolves.toEqual([{ id: retryGroup.id, name: "Retry later" }]);
+
+    await userStub.setGeneratedChatGroupEmoji(group.id, "🗄️");
+    await expect(userStub.getChatGroupSummary(group.id)).resolves.toMatchObject({
+      avatar: {
+        color: AVATAR_COLORS[0],
+        content: "🗄️",
+        status: "generated",
+      },
+    });
+    await expect(
+      userStub.claimChatGroupsNeedingEmojiBackfill(
+        orgId,
+        workspaceId,
+        [group.id],
+        3,
+      ),
+    ).resolves.toEqual([]);
+  });
+
+  it("does not claim placeholder group names for emoji backfill", async () => {
+    const { userStub } = await createUserStub();
+    const orgId = crypto.randomUUID();
+    const workspaceId = crypto.randomUUID();
+    const placeholder = await userStub.createChatGroup(orgId, workspaceId, {
+      name: "New Chat",
+    });
+
+    await expect(
+      userStub.claimChatGroupsNeedingEmojiBackfill(
+        orgId,
+        workspaceId,
+        [placeholder.id],
+        3,
+      ),
+    ).resolves.toEqual([]);
+  });
+
+  it("claims generated emoji work for eligible titled single-thread groups", async () => {
+    const { userStub } = await createUserStub();
+    const orgId = crypto.randomUUID();
+    const workspaceId = crypto.randomUUID();
+    const threadId = crypto.randomUUID();
+    const group = await userStub.ensureGroupForThread(
+      orgId,
+      workspaceId,
+      threadId,
+      "",
+    );
+
+    await userStub.renameEmptySingleThreadGroupForThread(
+      threadId,
+      "Generated title",
+    );
+
+    await expect(
+      userStub.claimChatGroupEmojiGenerationForThread(threadId),
+    ).resolves.toEqual({
+      id: group.id,
+      name: "Generated title",
+      avatar: {
+        color: AVATAR_COLORS[0],
+        content: DEFAULT_CHAT_GROUP_EMOJI,
+        status: "fallback",
+      },
+    });
+    await expect(
+      userStub.claimChatGroupEmojiGenerationForThread(threadId),
+    ).resolves.toBeNull();
+
+    await userStub.setGeneratedChatGroupEmoji(group.id, "🧠");
+    await expect(
+      userStub.claimChatGroupEmojiGenerationForThread(
+        threadId,
+        Date.now() + 25 * 60 * 60 * 1000,
+      ),
+    ).resolves.toBeNull();
+  });
+
+  it("does not claim generated emoji work for placeholder or multi-thread groups", async () => {
+    const { userStub } = await createUserStub();
+    const orgId = crypto.randomUUID();
+    const workspaceId = crypto.randomUUID();
+    const placeholderThreadId = crypto.randomUUID();
+    const multiThreadId = crypto.randomUUID();
+    const extraThreadId = crypto.randomUUID();
+
+    await userStub.ensureGroupForThread(
+      orgId,
+      workspaceId,
+      placeholderThreadId,
+      "New Chat",
+    );
+    await expect(
+      userStub.claimChatGroupEmojiGenerationForThread(placeholderThreadId),
+    ).resolves.toBeNull();
+
+    const multiGroup = await userStub.createChatGroup(orgId, workspaceId, {
+      name: "Implementation plan",
+    });
+    await userStub.addThreadToGroup(multiGroup.id, multiThreadId);
+    await userStub.addThreadToGroup(multiGroup.id, extraThreadId);
+    await expect(
+      userStub.claimChatGroupEmojiGenerationForThread(multiThreadId),
+    ).resolves.toBeNull();
   });
 
   it("lists the top 10 groups by recency and all groups for move menus", async () => {
@@ -209,10 +435,49 @@ describe("UserDO chat groups", () => {
     summary = await userStub.getChatGroupSummary(summary.id);
     expect(summary?.name).toBe("Generated title");
 
+    const placeholderThreadId = crypto.randomUUID();
+    let placeholderSummary = await userStub.ensureGroupForThread(
+      orgId,
+      workspaceId,
+      placeholderThreadId,
+      "New Chat",
+    );
+    expect(placeholderSummary.name).toBe("New Chat");
+    await userStub.renameEmptySingleThreadGroupForThread(
+      placeholderThreadId,
+      "Real title",
+    );
+    placeholderSummary = await userStub.getChatGroupSummary(placeholderSummary.id);
+    expect(placeholderSummary?.name).toBe("Real title");
+
     await userStub.renameChatGroup(summary!.id, "Manual");
     await userStub.renameEmptySingleThreadGroupForThread(threadId, "Ignored");
     summary = await userStub.getChatGroupSummary(summary!.id);
     expect(summary?.name).toBe("Manual");
+  });
+
+  it("writes generated emoji for single-thread groups with non-empty fallback names", async () => {
+    const { userStub } = await createUserStub();
+    const orgId = crypto.randomUUID();
+    const workspaceId = crypto.randomUUID();
+    const threadId = crypto.randomUUID();
+
+    const summary = await userStub.ensureGroupForThread(
+      orgId,
+      workspaceId,
+      threadId,
+      "Fallback title",
+    );
+
+    await userStub.renameEmptySingleThreadGroupForThread(
+      threadId,
+      "Generated title",
+      { generatedEmoji: "🧠" },
+    );
+
+    const updated = await userStub.getChatGroupSummary(summary.id);
+    expect(updated?.name).toBe("Fallback title");
+    expect(updated?.avatar.content).toBe("🧠");
   });
 
   it("removes memberships and deletes empty groups during cleanup", async () => {

@@ -11,6 +11,7 @@ import { SettingsHeader } from '@/components/settings/settings-header';
 import { ProfileForm } from '@/components/settings/profile-form';
 import { ThemePreference } from '@/components/settings/theme-preference';
 import { profileSchema } from '@/lib/schemas';
+import { normalizeAvatarColor, validateAvatarContent } from '@/lib/avatar';
 
 export function meta() {
   return [
@@ -32,6 +33,20 @@ export async function action({ request, context }: Route.ActionArgs) {
     }
     await resetOnboardingForUser(authEnv, authContext.user.id);
     throw redirect('/onboarding?reset=1');
+  }
+
+  if (intent === 'updateAvatar') {
+    const avatarColor = normalizeAvatarColor(formData.get('avatarColor'));
+    const avatarContentValue = formData.get('avatarContent');
+    const avatarContent =
+      typeof avatarContentValue === 'string' ? avatarContentValue.trim() : '';
+    if (!avatarColor || !validateAvatarContent(avatarContent)) {
+      return { error: 'Invalid avatar' };
+    }
+
+    const avatar = { color: avatarColor, content: avatarContent };
+    await authDO.updateUser(authEnv, authContext.user!.id, { avatar });
+    return { success: true, avatar };
   }
 
   const submission = parseWithZod(formData, { schema: profileSchema });

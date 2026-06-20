@@ -5,15 +5,18 @@ import { createMemoryRouter, MemoryRouter, RouterProvider } from "react-router";
 import {
   ChatTabBar,
   MAX_OPEN_CHAT_TABS_PER_GROUP,
-  RenameGroupDialog,
   TabRightSlot,
 } from "@/components/chat-tab-bar";
+import { ChatGroupAvatar } from "@/components/avatar/chat-group-avatar";
+import { RenameChatGroupDialog } from "@/components/avatar/rename-chat-group-dialog";
 import {
   ChatGroupCollapsedIcon,
+  ChatGroupIcon,
   ChatGroupRightSlot,
   ChatGroupsList,
   CLOSE_CHAT_GROUP_CONFIRMATION_SUPPRESSED_KEY,
 } from "@/components/sidebar/chat-groups-list";
+import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import {
   applyLiveRunningStatuses,
   ChatGroupsProvider,
@@ -23,7 +26,10 @@ import {
   hasPendingCompletionSummaries,
   mergeLiveAndLocalThreadStatuses,
   mergeActiveChatGroup,
+  LOCAL_GROUP_AVATAR_PENDING_TIMEOUT_MS,
+  PENDING_GROUP_AVATAR_REVALIDATE_MAX_MS,
   reconcileLocalThreadStatusesWithSnapshot,
+  reconcileGroupAvatarPatchesWithGroups,
   reconcileThreadSummaryPatchesWithGroups,
   shouldMarkActiveIdleThreadViewed,
   shouldMarkActiveUnreadThreadViewed,
@@ -39,6 +45,7 @@ const moveGroups: ChatGroup[] = [
     org_id: "org_1",
     workspace_id: "workspace_1",
     name: "Launch",
+    avatar: { color: "#4F46E5", content: "💬" },
     last_active_thread_id: null,
     created_at: 1,
     updated_at: 1,
@@ -135,6 +142,12 @@ function ChatGroupsProviderProbe({ threadId = "thread_1" }: { threadId?: string 
       <div data-testid="group-name">
         {group?.name ?? ""}
       </div>
+      <div data-testid="group-avatar">
+        {group?.avatar.content ?? ""}
+      </div>
+      <div data-testid="group-avatar-status">
+        {group?.avatar.status ?? ""}
+      </div>
       <div data-testid="groups-loading">
         {isLoading ? "loading" : "loaded"}
       </div>
@@ -197,6 +210,7 @@ function renderTabBar(overrides: Partial<React.ComponentProps<typeof ChatTabBar>
   const props: React.ComponentProps<typeof ChatTabBar> = {
     groupId: "group_1",
     groupName: "Launch",
+    groupAvatar: moveGroups[0].avatar,
     openTabs: [
       { threadId: "thread_1", title: "API plan", model: "haiku", status: "idle" },
       {
@@ -236,6 +250,83 @@ function renderTabBar(overrides: Partial<React.ComponentProps<typeof ChatTabBar>
   );
   return { ...props, ...result };
 }
+
+describe("Avatar chips", () => {
+  it("keeps circle avatars as the default and applies rounded chip shape on request", () => {
+    const { container, rerender } = render(
+      <Avatar>
+        <AvatarFallback content="AB">AB</AvatarFallback>
+      </Avatar>,
+    );
+
+    expect(container.querySelector('[data-slot="avatar"]')).toHaveClass(
+      "rounded-full",
+    );
+    expect(container.querySelector('[data-slot="avatar-fallback"]')).toHaveClass(
+      "rounded-full",
+    );
+
+    rerender(
+      <Avatar shape="rounded">
+        <AvatarFallback content="🌊">🌊</AvatarFallback>
+      </Avatar>,
+    );
+
+    expect(container.querySelector('[data-slot="avatar"]')).toHaveAttribute(
+      "data-shape",
+      "rounded",
+    );
+    expect(container.querySelector('[data-slot="avatar"]')).toHaveClass(
+      "rounded-[28%]",
+    );
+    expect(container.querySelector('[data-slot="avatar-fallback"]')).toHaveClass(
+      "rounded-[28%]",
+    );
+  });
+
+  it("renders chat group emoji chips and falls back to the group initial for invalid content", () => {
+    const { container, rerender } = render(
+      <ChatGroupAvatar
+        avatar={{ color: "#e0476b", content: "🌊" }}
+        fallbackName="Launch"
+      />,
+    );
+
+    expect(container.querySelector('[data-slot="avatar"]')).toHaveAttribute(
+      "data-shape",
+      "rounded",
+    );
+    expect(container.querySelector('[data-slot="avatar-fallback"]')).toHaveTextContent(
+      "🌊",
+    );
+
+    rerender(
+      <ChatGroupAvatar
+        avatar={{ color: "not-a-color", content: "not emoji" }}
+        fallbackName="Launch"
+      />,
+    );
+
+    expect(container.querySelector('[data-slot="avatar-fallback"]')).toHaveTextContent(
+      "L",
+    );
+  });
+
+  it("skeletonizes only the emoji while an avatar is pending", () => {
+    const { container } = render(
+      <ChatGroupAvatar
+        avatar={{ color: "#7C3AED", content: "💬", status: "pending" }}
+        fallbackName="Launch"
+      />,
+    );
+
+    const fallback = container.querySelector('[data-slot="avatar-fallback"]');
+    expect(fallback).not.toBeNull();
+    expect(fallback).toHaveStyle({ backgroundColor: "#7C3AED" });
+    expect(fallback).not.toHaveTextContent("💬");
+    expect(fallback?.querySelector(".animate-pulse")).not.toBeNull();
+  });
+});
 
 describe("ChatTabBar", () => {
   it("selects existing tabs and opens a new tab", () => {
@@ -308,6 +399,7 @@ describe("ChatTabBar", () => {
           org_id: "org_1",
           workspace_id: "workspace_1",
           name: "Research",
+          avatar: { color: "#7C3AED", content: "🔍" },
           last_active_thread_id: null,
           created_at: 2,
           updated_at: 2,
@@ -465,10 +557,11 @@ describe("ChatTabBar", () => {
   it("renames groups through a dialog with synced draft state", () => {
     const onSubmit = vi.fn();
     const { rerender } = render(
-      <RenameGroupDialog
+      <RenameChatGroupDialog
         open={true}
         onOpenChange={vi.fn()}
         initialName="Launch"
+        initialAvatar={moveGroups[0].avatar}
         onSubmit={onSubmit}
       />,
     );
@@ -479,17 +572,52 @@ describe("ChatTabBar", () => {
 
     fireEvent.change(input, { target: { value: "  Planning  " } });
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
-    expect(onSubmit).toHaveBeenCalledWith("Planning");
+    expect(onSubmit).toHaveBeenCalledWith({
+      name: "Planning",
+      avatar: moveGroups[0].avatar,
+    });
 
     rerender(
-      <RenameGroupDialog
+      <RenameChatGroupDialog
         open={true}
         onOpenChange={vi.fn()}
         initialName="Follow-up"
+        initialAvatar={moveGroups[0].avatar}
         onSubmit={onSubmit}
       />,
     );
     expect(screen.getByLabelText("Name")).toHaveValue("Follow-up");
+  });
+
+  it("preserves unsaved rename dialog edits across value-equivalent avatar rerenders", () => {
+    const onSubmit = vi.fn();
+    const onOpenChange = vi.fn();
+    const initialAvatar = { color: "#4F46E5", content: "💬" };
+    const { rerender } = render(
+      <RenameChatGroupDialog
+        open={true}
+        onOpenChange={onOpenChange}
+        initialName="Launch"
+        initialAvatar={initialAvatar}
+        onSubmit={onSubmit}
+      />,
+    );
+
+    fireEvent.change(screen.getByLabelText("Name"), {
+      target: { value: "Draft name" },
+    });
+
+    rerender(
+      <RenameChatGroupDialog
+        open={true}
+        onOpenChange={onOpenChange}
+        initialName="Launch"
+        initialAvatar={{ ...initialAvatar }}
+        onSubmit={onSubmit}
+      />,
+    );
+
+    expect(screen.getByLabelText("Name")).toHaveValue("Draft name");
   });
 });
 
@@ -570,16 +698,53 @@ describe("ChatGroupsList", () => {
     expect(screen.queryByLabelText("2 open chats")).not.toBeInTheDocument();
   });
 
-  it("renders collapsed initials as decoration instead of selectable text", () => {
+  it("renders collapsed avatars as decorative rounded chips", () => {
     const { container } = render(<ChatGroupCollapsedIcon group={groupView} />);
 
-    const collapsedIcon = container.querySelector("[data-initial='L']");
+    const collapsedIcon = container.querySelector('[data-slot="avatar"][data-shape="rounded"]');
     expect(collapsedIcon).not.toBeNull();
     expect(collapsedIcon).toHaveAttribute("aria-hidden", "true");
-    expect(collapsedIcon).toHaveClass("pointer-events-none");
     expect(collapsedIcon).toHaveClass("select-none");
-    expect(collapsedIcon).toHaveClass("before:content-[attr(data-initial)]");
-    expect(collapsedIcon).not.toHaveTextContent("L");
+    expect(collapsedIcon).toHaveTextContent("💬");
+  });
+
+  it("keeps collapsed group identity visible while overlaying status", () => {
+    const runningGroup: ChatGroupView = {
+      ...groupView,
+      status: "running",
+      avatar: { color: "#7C3AED", content: "🚀" },
+    };
+    const { container, rerender } = render(<ChatGroupIcon group={runningGroup} />);
+
+    let collapsedChip = container.querySelector(
+      '[data-slot="avatar"][data-shape="rounded"][data-size="md"]',
+    );
+    expect(collapsedChip).not.toBeNull();
+    expect(collapsedChip).toHaveTextContent("🚀");
+    const loader = within(container).getByLabelText("Agent is working");
+    expect(loader).toBeInTheDocument();
+    expect(loader.parentElement).toHaveClass("bg-background/65");
+    expect(loader.parentElement).not.toHaveClass("backdrop-blur-[2px]");
+    expect(loader.parentElement).toHaveClass("text-foreground");
+    expect(loader.parentElement).toHaveClass("rounded-[28%]");
+
+    rerender(
+      <ChatGroupIcon
+        group={{
+          ...runningGroup,
+          status: "unread",
+        }}
+      />,
+    );
+
+    collapsedChip = container.querySelector(
+      '[data-slot="avatar"][data-shape="rounded"][data-size="md"]',
+    );
+    expect(collapsedChip).not.toBeNull();
+    expect(collapsedChip).toHaveTextContent("🚀");
+    expect(within(container).getByLabelText("Awaiting your review")).toHaveClass(
+      "ring-sidebar",
+    );
   });
 
   it("selects and opens close confirmation for a single-chat group by default", () => {
@@ -971,6 +1136,33 @@ describe("mergeActiveChatGroup", () => {
     expect(merged[0].member_count).toBe(3);
   });
 
+  it("preserves a persisted avatar when merging a lightweight active fallback", () => {
+    const persistedGroup: ChatGroupView = {
+      ...groupView,
+      avatar: { color: "#7C3AED", content: "🔍" },
+    };
+    const activeGroup: ChatGroupView = {
+      ...groupView,
+      avatar: { color: "#4F46E5", content: "💬" },
+      open_threads: [
+        makeThreadSummary({
+          id: "thread_new",
+          title: "New tab",
+          updated_at: 3,
+          status: "running",
+        }),
+      ],
+      open_thread_ids: ["thread_new"],
+      member_count: 1,
+      status: "running",
+      last_active_thread_id: "thread_new",
+    };
+
+    const merged = mergeActiveChatGroup([persistedGroup], activeGroup);
+
+    expect(merged[0].avatar).toEqual({ color: "#7C3AED", content: "🔍" });
+  });
+
   it("uses active route ordering when it has a complete group snapshot", () => {
     const activeGroup: ChatGroupView = {
       ...multiChatGroupView,
@@ -1188,6 +1380,87 @@ describe("reconcileThreadSummaryPatchesWithGroups", () => {
   });
 });
 
+describe("reconcileGroupAvatarPatchesWithGroups", () => {
+  it("clears pending avatar patches when refreshed group data has a final avatar", () => {
+    const current = new Map([
+      [
+        "group_1",
+        {
+          avatar: { color: "#4F46E5", content: "💬", status: "pending" as const },
+          updatedAt: 1_000,
+        },
+      ],
+    ]);
+    const refreshedGroup: ChatGroupView = {
+      ...groupView,
+      avatar: { color: "#7C3AED", content: "🧠", status: "generated" },
+    };
+
+    const next = reconcileGroupAvatarPatchesWithGroups(
+      current,
+      [refreshedGroup],
+      2_000,
+    );
+
+    expect(next).not.toBe(current);
+    expect(next.size).toBe(0);
+  });
+
+  it("expires pending avatar patches when no final event arrives", () => {
+    const current = new Map([
+      [
+        "group_1",
+        {
+          avatar: { color: "#4F46E5", content: "💬", status: "pending" as const },
+          updatedAt: 1_000,
+        },
+      ],
+    ]);
+
+    const next = reconcileGroupAvatarPatchesWithGroups(
+      current,
+      undefined,
+      1_000 + LOCAL_GROUP_AVATAR_PENDING_TIMEOUT_MS,
+    );
+
+    expect(next).not.toBe(current);
+    expect(next.size).toBe(0);
+  });
+
+  it("drops user avatar patches once matching server data arrives", () => {
+    const userAvatar = {
+      color: "#7C3AED",
+      content: "🌊",
+      status: "user" as const,
+    };
+    const current = new Map([
+      ["group_1", { avatar: userAvatar, updatedAt: 1_000 }],
+    ]);
+    const matchingGroup: ChatGroupView = {
+      ...groupView,
+      avatar: userAvatar,
+    };
+
+    const reconciled = reconcileGroupAvatarPatchesWithGroups(
+      current,
+      [matchingGroup],
+      2_000,
+    );
+    expect(reconciled.size).toBe(0);
+
+    const changedGroup: ChatGroupView = {
+      ...groupView,
+      avatar: { color: "#0F766E", content: "⚙️", status: "generated" },
+    };
+    const later = reconcileGroupAvatarPatchesWithGroups(
+      reconciled,
+      [changedGroup],
+      3_000,
+    );
+    expect(later.size).toBe(0);
+  });
+});
+
 describe("ChatGroupsProvider summary patches", () => {
   it("does not suspend children while app chat groups are deferred", async () => {
     let resolveGroups: (groups: ChatGroupView[]) => void = () => {};
@@ -1278,6 +1551,59 @@ describe("ChatGroupsProvider summary patches", () => {
       expect(screen.getByTestId("groups-loading")).toHaveTextContent("loaded");
     });
     expect(screen.getByTestId("thread-title")).toHaveTextContent("Updated plan");
+  });
+
+  it("keeps current groups visible when same-workspace chat group refresh rejects", async () => {
+    let loaderChatGroups: ChatGroupView[] | Promise<ChatGroupView[]> = [groupView];
+    const loader = vi.fn(() => authLoaderState(loaderChatGroups));
+    const router = createMemoryRouter(
+      [
+        {
+          id: "routes/_app",
+          path: "/",
+          loader,
+          element: (
+            <ChatGroupsProvider>
+              <ChatGroupsProviderProbe />
+            </ChatGroupsProvider>
+          ),
+        },
+      ],
+      { initialEntries: ["/"] },
+    );
+
+    render(<RouterProvider router={router} />);
+
+    expect(await screen.findByTestId("groups-loading")).toHaveTextContent(
+      "loaded",
+    );
+    expect(screen.getByTestId("thread-title")).toHaveTextContent("API plan");
+
+    let rejectRefresh: (error: Error) => void = () => {};
+    const refreshPromise = new Promise<ChatGroupView[]>((_, reject) => {
+      rejectRefresh = reject;
+    });
+    loaderChatGroups = refreshPromise;
+
+    act(() => {
+      void router.revalidate();
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("groups-loading")).toHaveTextContent("loading");
+    });
+    expect(screen.getByTestId("thread-title")).toHaveTextContent("API plan");
+
+    await act(async () => {
+      rejectRefresh(new Error("chat group refresh failed"));
+      await refreshPromise.catch(() => undefined);
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("groups-loading")).toHaveTextContent("loaded");
+    });
+    expect(screen.getByTestId("thread-title")).toHaveTextContent("API plan");
+    expect(screen.getByTestId("group-name")).toHaveTextContent("Launch");
   });
 
   it("keeps newer local title patches over older loader group data", async () => {
@@ -1372,6 +1698,172 @@ describe("ChatGroupsProvider summary patches", () => {
       );
     } finally {
       addEventListenerSpy.mockRestore();
+    }
+  });
+
+  it("applies generated avatar events without waiting for a loader refresh", async () => {
+    const loader = vi.fn(() => authLoaderState([groupView]));
+    const addEventListenerSpy = vi.spyOn(window, "addEventListener");
+    const router = createMemoryRouter(
+      [
+        {
+          id: "routes/_app",
+          path: "/",
+          loader,
+          element: (
+            <ChatGroupsProvider>
+              <ChatGroupsProviderProbe />
+            </ChatGroupsProvider>
+          ),
+        },
+      ],
+      { initialEntries: ["/"] },
+    );
+
+    render(<RouterProvider router={router} />);
+
+    expect(await screen.findByTestId("group-avatar")).toHaveTextContent("💬");
+    await waitFor(() => {
+      expect(addEventListenerSpy).toHaveBeenCalledWith(
+        "camelai:chat-group-avatar",
+        expect.any(Function),
+      );
+    });
+
+    act(() => {
+      window.dispatchEvent(
+        new CustomEvent("camelai:chat-group-avatar", {
+          detail: {
+            groupId: "group_1",
+            avatar: { color: "#4F46E5", content: "🧠", status: "generated" },
+            updatedAt: 10,
+          },
+        }),
+      );
+    });
+
+    expect(screen.getByTestId("group-avatar")).toHaveTextContent("🧠");
+    expect(screen.getByTestId("group-avatar-status")).toHaveTextContent(
+      "generated",
+    );
+    expect(loader).toHaveBeenCalledTimes(1);
+    addEventListenerSpy.mockRestore();
+  });
+
+  it("reconciles pending avatar events with generated loader data", async () => {
+    let loaderState = authLoaderState([groupView]);
+    const addEventListenerSpy = vi.spyOn(window, "addEventListener");
+    const router = createMemoryRouter(
+      [
+        {
+          id: "routes/_app",
+          path: "/",
+          loader: () => loaderState,
+          element: (
+            <ChatGroupsProvider>
+              <ChatGroupsProviderProbe />
+            </ChatGroupsProvider>
+          ),
+        },
+      ],
+      { initialEntries: ["/"] },
+    );
+
+    render(<RouterProvider router={router} />);
+
+    expect(await screen.findByTestId("group-avatar")).toHaveTextContent("💬");
+    await waitFor(() => {
+      expect(addEventListenerSpy).toHaveBeenCalledWith(
+        "camelai:chat-group-avatar",
+        expect.any(Function),
+      );
+    });
+
+    act(() => {
+      const updatedAt = Date.now();
+      window.dispatchEvent(
+        new CustomEvent("camelai:chat-group-avatar", {
+          detail: {
+            groupId: "group_1",
+            avatar: { color: "#4F46E5", content: "💬", status: "pending" },
+            updatedAt,
+          },
+        }),
+      );
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("group-avatar-status")).toHaveTextContent(
+        "pending",
+      );
+    });
+
+    loaderState = authLoaderState([
+      {
+        ...groupView,
+        avatar: { color: "#7C3AED", content: "🧠", status: "generated" },
+      },
+    ]);
+    await act(async () => {
+      await router.revalidate();
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("group-avatar")).toHaveTextContent("🧠");
+    });
+    expect(screen.getByTestId("group-avatar-status")).toHaveTextContent(
+      "generated",
+    );
+    addEventListenerSpy.mockRestore();
+  });
+
+  it("expires loader-returned pending avatars after the bounded polling window", async () => {
+    vi.useFakeTimers();
+    try {
+      const loader = vi.fn(() =>
+        authLoaderState([
+          {
+            ...groupView,
+            avatar: { color: "#4F46E5", content: "💬", status: "pending" },
+          },
+        ]),
+      );
+      const router = createMemoryRouter(
+        [
+          {
+            id: "routes/_app",
+            path: "/",
+            loader,
+            element: (
+              <ChatGroupsProvider>
+                <ChatGroupsProviderProbe />
+              </ChatGroupsProvider>
+            ),
+          },
+        ],
+        { initialEntries: ["/"] },
+      );
+
+      render(<RouterProvider router={router} />);
+
+      await act(async () => {
+        await Promise.resolve();
+      });
+      expect(screen.getByTestId("group-avatar-status")).toHaveTextContent(
+        "pending",
+      );
+
+      await act(async () => {
+        vi.advanceTimersByTime(PENDING_GROUP_AVATAR_REVALIDATE_MAX_MS + 10);
+        await Promise.resolve();
+      });
+
+      expect(screen.getByTestId("group-avatar-status")).toHaveTextContent(
+        "fallback",
+      );
+      expect(loader.mock.calls.length).toBeGreaterThanOrEqual(2);
+    } finally {
+      vi.useRealTimers();
     }
   });
 

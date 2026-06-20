@@ -9,6 +9,7 @@ const getChatGroupSummaryMock = vi.fn();
 const closeThreadTabMock = vi.fn();
 const reopenThreadTabMock = vi.fn();
 const reorderThreadTabsMock = vi.fn();
+const updateChatGroupMock = vi.fn();
 
 vi.mock("@/lib/auth.server", () => ({
   requireSessionWorkspaceAccess: requireSessionWorkspaceAccessMock,
@@ -39,6 +40,7 @@ const group = {
   org_id: "org_1",
   workspace_id: "workspace_1",
   name: "Launch",
+  avatar: { color: "#4F46E5", content: "💬" },
   last_active_thread_id: null,
   created_at: 1,
   updated_at: 1,
@@ -76,6 +78,18 @@ function makeGroupArgs(method: string) {
       "https://camelai.com/api/chat-groups/group_1",
       { method },
     ),
+    context: {},
+    params: { id: "group_1" },
+  } as never;
+}
+
+function makePatchGroupArgs(body: unknown) {
+  return {
+    request: new Request("https://camelai.com/api/chat-groups/group_1", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
     context: {},
     params: { id: "group_1" },
   } as never;
@@ -119,6 +133,7 @@ describe("chat group tab routes", () => {
           closeThreadTab: closeThreadTabMock,
           reopenThreadTab: reopenThreadTabMock,
           reorderThreadTabs: reorderThreadTabsMock,
+          updateChatGroup: updateChatGroupMock,
         }),
       },
     });
@@ -288,5 +303,33 @@ describe("chat group tab routes", () => {
       "thread_2",
       "thread_1",
     ]);
+  });
+
+  it("updates a group name and avatar through PATCH", async () => {
+    const response = await groupRoute.action(
+      makePatchGroupArgs({
+        name: "  Planning  ",
+        avatar: { color: "#e0476b", content: "🌊" },
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({ success: true });
+    expect(updateChatGroupMock).toHaveBeenCalledWith("group_1", {
+      name: "Planning",
+      avatar: { color: "#E0476B", content: "🌊" },
+    });
+  });
+
+  it("rejects invalid PATCH avatar payloads", async () => {
+    const response = await groupRoute.action(
+      makePatchGroupArgs({
+        avatar: { color: "#e0476b", content: "JS" },
+      }),
+    );
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({ error: "Invalid avatar" });
+    expect(updateChatGroupMock).not.toHaveBeenCalled();
   });
 });

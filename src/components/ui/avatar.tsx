@@ -45,8 +45,21 @@ const avatarSizes = {
 } as const
 
 type AvatarSize = keyof typeof avatarSizes
+type AvatarShape = "circle" | "rounded"
 
 const AvatarSizeContext = React.createContext<AvatarSize>("default")
+const AvatarShapeContext = React.createContext<AvatarShape>("circle")
+
+const avatarShapeClasses = {
+  circle: {
+    box: "rounded-full",
+    after: "after:rounded-full",
+  },
+  rounded: {
+    box: "rounded-[28%]",
+    after: "after:rounded-[28%]",
+  },
+} as const
 
 function getCharacterCount(content: string): 1 | 2 {
   const trimmed = content.trim()
@@ -65,22 +78,29 @@ function getCharacterCount(content: string): 1 | 2 {
 function Avatar({
   className,
   size = "default",
+  shape = "circle",
   ...props
 }: React.ComponentProps<typeof AvatarPrimitive.Root> & {
   size?: AvatarSize
+  shape?: AvatarShape
 }) {
   return (
     <AvatarSizeContext.Provider value={size}>
-      <AvatarPrimitive.Root
-        data-slot="avatar"
-        data-size={size}
-        className={cn(
-          "rounded-full after:rounded-full after:border-border group/avatar relative flex shrink-0 select-none after:absolute after:inset-0 after:border after:mix-blend-darken dark:after:mix-blend-lighten",
-          avatarSizes[size]?.container ?? avatarSizes.default.container,
-          className
-        )}
-        {...props}
-      />
+      <AvatarShapeContext.Provider value={shape}>
+        <AvatarPrimitive.Root
+          data-slot="avatar"
+          data-size={size}
+          data-shape={shape}
+          className={cn(
+            "after:border-border group/avatar relative flex shrink-0 select-none after:absolute after:inset-0 after:border after:mix-blend-darken dark:after:mix-blend-lighten",
+            avatarShapeClasses[shape].box,
+            avatarShapeClasses[shape].after,
+            avatarSizes[size]?.container ?? avatarSizes.default.container,
+            className
+          )}
+          {...props}
+        />
+      </AvatarShapeContext.Provider>
     </AvatarSizeContext.Provider>
   )
 }
@@ -89,11 +109,13 @@ function AvatarImage({
   className,
   ...props
 }: React.ComponentProps<typeof AvatarPrimitive.Image>) {
+  const shape = React.useContext(AvatarShapeContext)
   return (
     <AvatarPrimitive.Image
       data-slot="avatar-image"
       className={cn(
-        "rounded-full aspect-square size-full object-cover",
+        "aspect-square size-full object-cover",
+        avatarShapeClasses[shape].box,
         className
       )}
       {...props}
@@ -110,6 +132,7 @@ function AvatarFallback({
   content?: string
 }) {
   const size = React.useContext(AvatarSizeContext)
+  const shape = React.useContext(AvatarShapeContext)
   const fallbackContent =
     typeof content === "string"
       ? content
@@ -125,7 +148,8 @@ function AvatarFallback({
     <AvatarPrimitive.Fallback
       data-slot="avatar-fallback"
       className={cn(
-        "bg-muted text-muted-foreground rounded-full flex size-full items-center justify-center",
+        "bg-muted text-muted-foreground flex size-full items-center justify-center",
+        avatarShapeClasses[shape].box,
         fontClass,
         className
       )}

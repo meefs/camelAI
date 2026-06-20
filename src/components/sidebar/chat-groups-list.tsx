@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { X } from "lucide-react";
 import type { ChatGroupThreadSummary, ChatGroupView, ThreadStatus } from "@/types";
+import { ChatGroupAvatar } from "@/components/avatar/chat-group-avatar";
 import { CamelLoader } from "@/components/camel-loader/camel-loader";
 import {
   AlertDialog,
@@ -102,28 +103,45 @@ export function ChatGroupRightSlot({
   );
 }
 
-export function ChatGroupCollapsedIcon({ group }: { group: ChatGroupView }) {
-  if (group.status === "running") {
-    return (
-      <span className="hidden text-muted-foreground group-data-[collapsible=icon]:block">
-        <CamelLoader size={16} ariaLabel="Agent is working" />
-      </span>
-    );
-  }
-  if (group.status === "unread") {
-    return (
-      <span
-        aria-label="Awaiting your review"
-        className="hidden size-2.5 rounded-full bg-amber-500 group-data-[collapsible=icon]:block"
-      />
-    );
-  }
-  const letter = (group.name?.trim()?.[0] ?? "?").toUpperCase();
+export function ChatGroupIcon({ group }: { group: ChatGroupView }) {
+  const isRunning = group.status === "running";
+  const isUnread = group.status === "unread";
   return (
-    <span
-      aria-hidden
-      data-initial={letter}
-      className="pointer-events-none hidden size-4 select-none place-items-center rounded bg-sidebar-accent text-[10px] font-medium leading-none text-sidebar-accent-foreground before:content-[attr(data-initial)] group-data-[collapsible=icon]:grid"
+    <>
+      <ChatGroupAvatar
+        avatar={group.avatar}
+        fallbackName={group.name}
+        size="sm"
+        className="group-data-[collapsible=icon]:hidden"
+      />
+      <span className="relative hidden size-6 group-data-[collapsible=icon]:block">
+        <ChatGroupAvatar
+          avatar={group.avatar}
+          fallbackName={group.name}
+          size="md"
+        />
+        {isRunning ? (
+          <span className="absolute inset-0 grid place-items-center rounded-[28%] bg-background/65 text-foreground">
+            <CamelLoader size={16} ariaLabel="Agent is working" />
+          </span>
+        ) : isUnread ? (
+          <span
+            aria-label="Awaiting your review"
+            className="absolute -right-0.5 -top-0.5 size-2.5 rounded-full bg-amber-500 ring-2 ring-sidebar"
+          />
+        ) : null}
+      </span>
+    </>
+  );
+}
+
+export function ChatGroupCollapsedIcon({ group }: { group: ChatGroupView }) {
+  return (
+    <ChatGroupAvatar
+      avatar={group.avatar}
+      fallbackName={group.name}
+      size="md"
+      className="hidden group-data-[collapsible=icon]:flex"
     />
   );
 }
@@ -211,7 +229,7 @@ export function ChatGroupsList({
                       onMoveThreadToGroup(threadId, group.id);
                     }}
                   >
-                    <ChatGroupCollapsedIcon group={group} />
+                    <ChatGroupIcon group={group} />
                     <span className="min-w-0 flex-1 truncate text-left group-data-[collapsible=icon]:hidden">
                       {group.name}
                     </span>

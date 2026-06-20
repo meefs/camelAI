@@ -1,4 +1,5 @@
 import type { Avatar } from '@/types';
+import emojiRegex from 'emoji-regex';
 
 export const AVATAR_COLORS = [
   '#4F46E5',
@@ -11,8 +12,8 @@ export const AVATAR_COLORS = [
   '#8B5CF6',
 ];
 
-const EMOJI_REGEX = /^(?:\p{Extended_Pictographic}|\p{Emoji_Presentation}|\p{Emoji}\uFE0F)$/u;
-const FLAG_REGEX = /^[\p{Regional_Indicator}]{2}$/u;
+export const DEFAULT_CHAT_GROUP_EMOJI = '💬';
+const HEX_COLOR_REGEX = /^#[0-9A-F]{6}$/i;
 
 function getGraphemeClusters(value: string): string[] {
   const trimmed = value.trim();
@@ -27,10 +28,10 @@ function getGraphemeClusters(value: string): string[] {
 }
 
 export function isEmoji(value: string): boolean {
-  const clusters = getGraphemeClusters(value);
-  if (clusters.length !== 1) return false;
-  const cluster = clusters[0];
-  return EMOJI_REGEX.test(cluster) || FLAG_REGEX.test(cluster);
+  const trimmed = value.trim();
+  if (!trimmed) return false;
+  const matches = Array.from(trimmed.matchAll(emojiRegex()), (match) => match[0]);
+  return matches.length === 1 && matches[0] === trimmed;
 }
 
 export function validateAvatarContent(content: string): boolean {
@@ -40,6 +41,40 @@ export function validateAvatarContent(content: string): boolean {
   if (clusters.length === 1) return isEmoji(trimmed);
   if (clusters.length !== 2) return false;
   return !clusters.some((cluster) => isEmoji(cluster));
+}
+
+export function normalizeAvatarColor(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  if (!HEX_COLOR_REGEX.test(trimmed)) return null;
+  return trimmed.toUpperCase();
+}
+
+export function normalizeChatGroupAvatar(input: unknown): Avatar | null {
+  if (!input || typeof input !== 'object') return null;
+  const keys = Object.keys(input as Record<string, unknown>);
+  if (keys.some((key) => key !== 'color' && key !== 'content')) return null;
+  const candidate = input as { color?: unknown; content?: unknown };
+  const color = normalizeAvatarColor(candidate.color);
+  const content = typeof candidate.content === 'string'
+    ? candidate.content.trim()
+    : '';
+  if (!color || !isEmoji(content)) return null;
+  return { color, content };
+}
+
+export function generateDefaultChatGroupAvatar(options: {
+  groupIndex?: number;
+  content?: string | null;
+} = {}): Avatar {
+  const groupIndex = Number.isFinite(options.groupIndex)
+    ? Math.max(0, Math.floor(options.groupIndex ?? 0))
+    : 0;
+  const content = options.content?.trim();
+  return {
+    color: AVATAR_COLORS[groupIndex % AVATAR_COLORS.length],
+    content: content && isEmoji(content) ? content : DEFAULT_CHAT_GROUP_EMOJI,
+  };
 }
 
 export function generateDefaultAvatar(source: string): Avatar {

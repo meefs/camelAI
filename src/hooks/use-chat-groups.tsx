@@ -11,6 +11,8 @@ import {
 } from "react";
 import { useMatches, useRouteLoaderData, useRevalidator } from "react-router";
 import type {
+  ChatGroupAvatar,
+  ChatGroupAvatarStatus,
   ChatGroupView,
   ThreadCompletionSummaryStatus,
   ThreadStatus,
@@ -54,6 +56,16 @@ export type ThreadSummaryPatch = Partial<
 > & {
   updatedAt: number;
 };
+
+export type GroupAvatarPatch = {
+  avatar: ChatGroupAvatar;
+  updatedAt: number;
+  snapshotVersion?: number;
+};
+
+export const LOCAL_GROUP_AVATAR_PENDING_TIMEOUT_MS = 15_000;
+export const PENDING_GROUP_AVATAR_REVALIDATE_INTERVAL_MS = 2_000;
+export const PENDING_GROUP_AVATAR_REVALIDATE_MAX_MS = 20_000;
 
 function useLatestRef<T>(value: T) {
   const ref = useRef(value);
@@ -302,6 +314,7 @@ function mergeActiveGroupWithExistingGroup(
     ...existingGroup,
     ...activeGroup,
     name: existingGroup.name || activeGroup.name,
+    avatar: existingGroup.avatar,
     open_thread_ids: openThreadIds,
     closed_thread_ids: closedThreadIds,
     open_threads: openThreads,
@@ -378,6 +391,138 @@ export function reconcileThreadSummaryPatchesWithGroups(
   }
 
   return next ?? (patches as Map<string, ThreadSummaryPatch>);
+}
+
+function isFinalChatGroupAvatarStatus(
+  status: ChatGroupAvatarStatus | undefined,
+): boolean {
+  return status === "generated" || status === "user" || status === "fallback";
+}
+
+function isSameChatGroupAvatar(
+  left: ChatGroupAvatar | null | undefined,
+  right: ChatGroupAvatar | null | undefined,
+): boolean {
+  return (
+    left?.color === right?.color &&
+    left?.content === right?.content &&
+    left?.status === right?.status
+  );
+}
+
+export function reconcileGroupAvatarPatchesWithGroups(
+  patches: ReadonlyMap<string, GroupAvatarPatch>,
+  groups: ChatGroupView[] | undefined,
+  now: number = Date.now(),
+  options: { snapshotVersion?: number } = {},
+): Map<string, GroupAvatarPatch> {
+  if (patches.size === 0) return patches as Map<string, GroupAvatarPatch>;
+  const groupsById = groups
+    ? new Map(groups.map((group) => [group.id, group] as const))
+    : null;
+
+  let next: Map<string, GroupAvatarPatch> | null = null;
+  for (const [groupId, patch] of patches) {
+    const refreshedGroup = groupsById?.get(groupId);
+    const isPendingPatch = patch.avatar.status === "pending";
+    const isExpiredPendingPatch =
+      isPendingPatch &&
+      now - patch.updatedAt >= LOCAL_GROUP_AVATAR_PENDING_TIMEOUT_MS;
+
+    if (isExpiredPendingPatch) {
+      next ??= new Map(patches);
+      next.delete(groupId);
+      continue;
+    }
+
+    if (!refreshedGroup) continue;
+
+    const refreshedAvatar = refreshedGroup.avatar;
+    const snapshotCanResolvePatch =
+      options.snapshotVersion === undefined ||
+      patch.snapshotVersion === undefined ||
+      options.snapshotVersion > patch.snapshotVersion;
+    const shouldClearPatch =
+      isSameChatGroupAvatar(refreshedAvatar, patch.avatar) ||
+      (isPendingPatch &&
+        snapshotCanResolvePatch &&
+        isFinalChatGroupAvatarStatus(refreshedAvatar.status));
+    if (!shouldClearPatch) continue;
+
+    next ??= new Map(patches);
+    next.delete(groupId);
+  }
+
+  return next ?? (patches as Map<string, GroupAvatarPatch>);
+}
+
+function isChatGroupAvatarStatus(value: unknown): value is ChatGroupAvatarStatus {
+  return (
+    value === "pending" ||
+    value === "generated" ||
+    value === "user" ||
+    value === "fallback"
+  );
+}
+
+function isChatGroupAvatar(value: unknown): value is ChatGroupAvatar {
+  if (!value || typeof value !== "object") return false;
+  const avatar = value as { color?: unknown; content?: unknown; status?: unknown };
+  return (
+    typeof avatar.color === "string" &&
+    typeof avatar.content === "string" &&
+    (avatar.status === undefined || isChatGroupAvatarStatus(avatar.status))
+  );
+}
+
+export function applyLocalGroupAvatarPatches(
+  source: ChatGroupView[],
+  avatarPatches: ReadonlyMap<string, GroupAvatarPatch>,
+): ChatGroupView[] {
+  if (avatarPatches.size === 0) return source;
+  let changed = false;
+  const nextGroups = source.map((group) => {
+    const patch = avatarPatches.get(group.id);
+    if (!patch) return group;
+    if (
+      group.avatar.color === patch.avatar.color &&
+      group.avatar.content === patch.avatar.content &&
+      group.avatar.status === patch.avatar.status
+    ) {
+      return group;
+    }
+    changed = true;
+    return {
+      ...group,
+      avatar: patch.avatar,
+    };
+  });
+  return changed ? nextGroups : source;
+}
+
+export function applyExpiredPendingGroupAvatarFallbacks(
+  source: ChatGroupView[],
+  expiredPendingGroupIds: ReadonlySet<string>,
+): ChatGroupView[] {
+  if (expiredPendingGroupIds.size === 0) return source;
+  let changed = false;
+  const nextGroups = source.map((group) => {
+    if (
+      group.avatar.status !== "pending" ||
+      !expiredPendingGroupIds.has(group.id)
+    ) {
+      return group;
+    }
+    changed = true;
+    return {
+      ...group,
+      avatar: {
+        ...group.avatar,
+        status: "fallback" as const,
+      },
+    };
+  });
+  return changed ? nextGroups : source;
 }
 
 function getThreadSummaryPatchFromPayload(payload: unknown): ThreadSummaryPatch | null {
@@ -656,6 +801,8 @@ export function ChatGroupsProvider({
   const [resolvedChatGroups, setResolvedChatGroups] = useState<
     ChatGroupView[] | null
   >(() => (Array.isArray(rawChatGroups) ? rawChatGroups : null));
+  const rawChatGroupsRef = useRef(rawChatGroups);
+  const resolvedChatGroupsSnapshotVersionRef = useRef(0);
   const [isChatGroupsLoading, setIsChatGroupsLoading] = useState(() =>
     isPromiseLike(rawChatGroups),
   );
@@ -674,8 +821,15 @@ export function ChatGroupsProvider({
   const [localThreadSummaryPatches, setLocalThreadSummaryPatches] = useState<
     Map<string, ThreadSummaryPatch>
   >(() => new Map());
+  const [localGroupAvatarPatches, setLocalGroupAvatarPatches] = useState<
+    Map<string, GroupAvatarPatch>
+  >(() => new Map());
+  const [expiredPendingGroupAvatarIds, setExpiredPendingGroupAvatarIds] = useState<
+    Set<string>
+  >(() => new Set());
   const liveThreadStatusesRef = useLatestRef(liveThreadStatuses);
   const localThreadStatusesRef = useLatestRef(localThreadStatuses);
+  const pendingGroupAvatarStartedAtRef = useRef<Map<string, number>>(new Map());
   const hasPendingCompletionSummariesRef = useLatestRef(
     hasPendingCompletionSummaries(resolvedChatGroups),
   );
@@ -719,18 +873,106 @@ export function ChatGroupsProvider({
         resolvedChatGroups ?? undefined,
       ),
     );
+    setLocalGroupAvatarPatches((current) =>
+      reconcileGroupAvatarPatchesWithGroups(
+        current,
+        resolvedChatGroups ?? undefined,
+        Date.now(),
+        { snapshotVersion: resolvedChatGroupsSnapshotVersionRef.current },
+      ),
+    );
   }, [resolvedChatGroups]);
+
+  useEffect(() => {
+    if (typeof window === "undefined" || localGroupAvatarPatches.size === 0) {
+      return;
+    }
+
+    const now = Date.now();
+    const nextExpirationAt = Array.from(localGroupAvatarPatches.values())
+      .filter((patch) => patch.avatar.status === "pending")
+      .map((patch) => patch.updatedAt + LOCAL_GROUP_AVATAR_PENDING_TIMEOUT_MS)
+      .sort((left, right) => left - right)[0];
+    if (nextExpirationAt === undefined) return;
+
+    const timeout = window.setTimeout(() => {
+      setLocalGroupAvatarPatches((current) =>
+        reconcileGroupAvatarPatchesWithGroups(
+          current,
+          resolvedChatGroups ?? undefined,
+          Date.now(),
+        ),
+      );
+    }, Math.max(0, nextExpirationAt - now) + 10);
+
+    return () => {
+      window.clearTimeout(timeout);
+    };
+  }, [localGroupAvatarPatches, resolvedChatGroups]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    const handleLocalGroupAvatar = (event: Event) => {
+      const detail = (event as CustomEvent<unknown>).detail;
+      if (!detail || typeof detail !== "object") return;
+      const payload = detail as {
+        groupId?: unknown;
+        avatar?: unknown;
+        updatedAt?: unknown;
+      };
+      if (typeof payload.groupId !== "string" || !isChatGroupAvatar(payload.avatar)) {
+        return;
+      }
+      const updatedAt =
+        typeof payload.updatedAt === "number" && Number.isFinite(payload.updatedAt)
+          ? payload.updatedAt
+          : Date.now();
+      setLocalGroupAvatarPatches((current) => {
+        const currentPatch = current.get(payload.groupId as string);
+        if (currentPatch && currentPatch.updatedAt > updatedAt) return current;
+        const avatar = payload.avatar as ChatGroupAvatar;
+        if (
+          currentPatch?.avatar.color === avatar.color &&
+          currentPatch.avatar.content === avatar.content &&
+          currentPatch.avatar.status === avatar.status &&
+          currentPatch.updatedAt === updatedAt
+        ) {
+          return current;
+        }
+        const next = new Map(current);
+        next.set(payload.groupId as string, {
+          avatar,
+          updatedAt,
+          snapshotVersion: resolvedChatGroupsSnapshotVersionRef.current,
+        });
+        return next;
+      });
+    };
+
+    window.addEventListener("camelai:chat-group-avatar", handleLocalGroupAvatar);
+    return () => {
+      window.removeEventListener("camelai:chat-group-avatar", handleLocalGroupAvatar);
+    };
+  }, []);
 
   useEffect(() => {
     const workspaceChanged = previousWorkspaceIdRef.current !== currentWorkspaceId;
     previousWorkspaceIdRef.current = currentWorkspaceId;
+    const markRawSnapshotChanged = () => {
+      if (rawChatGroupsRef.current === rawChatGroups) return;
+      rawChatGroupsRef.current = rawChatGroups;
+      resolvedChatGroupsSnapshotVersionRef.current += 1;
+    };
 
     if (Array.isArray(rawChatGroups)) {
+      markRawSnapshotChanged();
       setIsChatGroupsLoading(false);
       setResolvedChatGroups(rawChatGroups);
       return;
     }
     if (!isPromiseLike(rawChatGroups)) {
+      markRawSnapshotChanged();
       setIsChatGroupsLoading(false);
       setResolvedChatGroups([]);
       return;
@@ -740,17 +982,26 @@ export function ChatGroupsProvider({
     setIsChatGroupsLoading(true);
     if (workspaceChanged) {
       setResolvedChatGroups(null);
+      setLocalGroupAvatarPatches(new Map());
+      setExpiredPendingGroupAvatarIds(new Set());
+      pendingGroupAvatarStartedAtRef.current.clear();
     }
     rawChatGroups
       .then((groups) => {
         if (!cancelled) {
+          resolvedChatGroupsSnapshotVersionRef.current += 1;
           setResolvedChatGroups(groups);
           setIsChatGroupsLoading(false);
         }
       })
       .catch(() => {
         if (!cancelled) {
-          setResolvedChatGroups([]);
+          setResolvedChatGroups((current) => {
+            if (!workspaceChanged && current && current.length > 0) {
+              return current;
+            }
+            return [];
+          });
           setIsChatGroupsLoading(false);
         }
       });
@@ -919,6 +1170,9 @@ export function ChatGroupsProvider({
       setLiveThreadStatuses(new Map());
       setLocalThreadStatuses(new Map());
       setLocalThreadSummaryPatches(new Map());
+      setLocalGroupAvatarPatches(new Map());
+      setExpiredPendingGroupAvatarIds(new Set());
+      pendingGroupAvatarStartedAtRef.current.clear();
       setHasStatusSnapshot(false);
       return;
     }
@@ -1297,14 +1551,18 @@ export function ChatGroupsProvider({
     statusSocketEnabled,
   ]);
 
-  const groups = useMemo(() => {
+  const groupsBeforePendingExpiry = useMemo(() => {
     const loaderGroups = resolvedChatGroups ?? [];
     const source = mergeActiveChatGroup(
       loaderGroups,
       getActiveChatGroupFromMatches(matches),
     );
-    return applyLiveRunningStatuses(
+    const avatarPatchedSource = applyLocalGroupAvatarPatches(
       source,
+      localGroupAvatarPatches,
+    );
+    return applyLiveRunningStatuses(
+      avatarPatchedSource,
       runningThreadIds,
       hasStatusSnapshot,
       activeThreadId,
@@ -1314,12 +1572,119 @@ export function ChatGroupsProvider({
   }, [
     activeThreadId,
     hasStatusSnapshot,
+    localGroupAvatarPatches,
     localThreadSummaryPatches,
     matches,
     resolvedChatGroups,
     resolvedThreadStatuses,
     runningThreadIds,
   ]);
+
+  const groups = useMemo(
+    () =>
+      applyExpiredPendingGroupAvatarFallbacks(
+        groupsBeforePendingExpiry,
+        expiredPendingGroupAvatarIds,
+      ),
+    [expiredPendingGroupAvatarIds, groupsBeforePendingExpiry],
+  );
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const now = Date.now();
+    const pendingGroupIds = new Set(
+      groupsBeforePendingExpiry
+        .filter((group) => group.avatar.status === "pending")
+        .map((group) => group.id),
+    );
+    const startedAtByGroupId = pendingGroupAvatarStartedAtRef.current;
+
+    if (pendingGroupIds.size === 0) {
+      startedAtByGroupId.clear();
+      setExpiredPendingGroupAvatarIds((current) =>
+        current.size === 0 ? current : new Set(),
+      );
+      return;
+    }
+
+    for (const groupId of Array.from(startedAtByGroupId.keys())) {
+      if (!pendingGroupIds.has(groupId)) startedAtByGroupId.delete(groupId);
+    }
+
+    setExpiredPendingGroupAvatarIds((current) => {
+      let next: Set<string> | null = null;
+      for (const groupId of current) {
+        if (pendingGroupIds.has(groupId)) continue;
+        next ??= new Set(current);
+        next.delete(groupId);
+      }
+      return next ?? current;
+    });
+
+    let nextRevalidateAt: number | null = null;
+    let expiredNow = false;
+    for (const groupId of pendingGroupIds) {
+      if (expiredPendingGroupAvatarIds.has(groupId)) continue;
+      const startedAt = startedAtByGroupId.get(groupId) ?? now;
+      startedAtByGroupId.set(groupId, startedAt);
+      const expiresAt = startedAt + PENDING_GROUP_AVATAR_REVALIDATE_MAX_MS;
+      if (now >= expiresAt) {
+        expiredNow = true;
+        setExpiredPendingGroupAvatarIds((current) => {
+          if (current.has(groupId)) return current;
+          const next = new Set(current);
+          next.add(groupId);
+          return next;
+        });
+        continue;
+      }
+      nextRevalidateAt =
+        nextRevalidateAt === null ? expiresAt : Math.min(nextRevalidateAt, expiresAt);
+    }
+
+    if (expiredNow) {
+      revalidateRef.current();
+      return;
+    }
+
+    const pendingGroupIdsToPoll = Array.from(pendingGroupIds).filter(
+      (groupId) => !expiredPendingGroupAvatarIds.has(groupId),
+    );
+    if (pendingGroupIdsToPoll.length === 0) return;
+
+    const timeout = window.setTimeout(() => {
+      const timeoutNow = Date.now();
+      let expiredAtTimeout = false;
+      setExpiredPendingGroupAvatarIds((current) => {
+        let next: Set<string> | null = null;
+        for (const groupId of pendingGroupIdsToPoll) {
+          const startedAt = startedAtByGroupId.get(groupId);
+          if (
+            startedAt === undefined ||
+            timeoutNow - startedAt < PENDING_GROUP_AVATAR_REVALIDATE_MAX_MS ||
+            current.has(groupId)
+          ) {
+            continue;
+          }
+          next ??= new Set(current);
+          next.add(groupId);
+          expiredAtTimeout = true;
+        }
+        return next ?? current;
+      });
+      revalidateRef.current();
+      if (expiredAtTimeout) {
+        pendingGroupAvatarStartedAtRef.current = new Map(startedAtByGroupId);
+      }
+    }, Math.min(
+      PENDING_GROUP_AVATAR_REVALIDATE_INTERVAL_MS,
+      Math.max(0, (nextRevalidateAt ?? now) - now),
+    ));
+
+    return () => {
+      window.clearTimeout(timeout);
+    };
+  }, [expiredPendingGroupAvatarIds, groupsBeforePendingExpiry]);
 
   const value = useMemo(() => ({
     groups,

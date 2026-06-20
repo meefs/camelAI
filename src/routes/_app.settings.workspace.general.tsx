@@ -9,6 +9,7 @@ import { Separator } from '@/components/ui/separator';
 import { SettingsHeader } from '@/components/settings/settings-header';
 import { WorkspaceGeneralForm } from '@/components/settings/workspace-general-form';
 import { workspaceSchema } from '@/lib/schemas';
+import { normalizeAvatarColor, validateAvatarContent } from '@/lib/avatar';
 
 export function meta() {
   return [
@@ -27,6 +28,20 @@ export async function action({ request, context }: Route.ActionArgs) {
 
   if (!workspaceId) {
     return { error: 'No workspace selected' };
+  }
+
+  if (formData.get('intent') === 'updateAvatar') {
+    const avatarColor = normalizeAvatarColor(formData.get('avatarColor'));
+    const avatarContentValue = formData.get('avatarContent');
+    const avatarContent =
+      typeof avatarContentValue === 'string' ? avatarContentValue.trim() : '';
+    if (!avatarColor || !validateAvatarContent(avatarContent)) {
+      return { error: 'Invalid avatar' };
+    }
+
+    const avatar = { color: avatarColor, content: avatarContent };
+    await authDO.updateWorkspace(authEnv, workspaceId, { avatar }, actorId);
+    return { success: true, avatar };
   }
 
   const submission = parseWithZod(formData, { schema: workspaceSchema });

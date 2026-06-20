@@ -1,7 +1,7 @@
 "use client"
 
-import { useEffect, useState } from "react"
-import { Form, useActionData, useNavigation, useRevalidator } from "react-router"
+import { useEffect, useRef, useState } from "react"
+import { Form, useActionData, useFetcher, useNavigation, useRevalidator } from "react-router"
 import { useForm, getFormProps, getInputProps, getTextareaProps, type SubmissionResult } from "@conform-to/react"
 import { parseWithZod } from "@conform-to/zod/v4"
 import { Copy } from "lucide-react"
@@ -15,12 +15,18 @@ import { Textarea } from "@/components/ui/textarea"
 import { AvatarPicker } from "@/components/settings/avatar-picker"
 import { getContrastTextColor } from "@/lib/avatar"
 import { workspaceFormSchema } from "@/lib/schemas"
-import type { Workspace } from "@/types"
+import type { Avatar as AvatarShape, Workspace } from "@/types"
 
 interface WorkspaceGeneralFormProps {
   workspace: Workspace
   workspaceEmailAddress?: string | null
   canEdit: boolean
+}
+
+type AvatarSaveResponse = {
+  success?: boolean
+  error?: string
+  avatar?: AvatarShape
 }
 
 export function WorkspaceGeneralForm({
@@ -30,9 +36,12 @@ export function WorkspaceGeneralForm({
 }: WorkspaceGeneralFormProps) {
   const revalidator = useRevalidator()
   const actionData = useActionData<{ result?: SubmissionResult<string[]>; success?: boolean }>()
+  const avatarFetcher = useFetcher<AvatarSaveResponse>()
   const navigation = useNavigation()
   const [avatarOpen, setAvatarOpen] = useState(false)
   const [avatar, setAvatar] = useState(workspace.avatar)
+  const handledActionDataRef = useRef<typeof actionData | null>(null)
+  const handledAvatarFetcherDataRef = useRef<AvatarSaveResponse | null>(null)
   const saving = navigation.state === "submitting"
 
   const [form, fields] = useForm({
@@ -55,11 +64,32 @@ export function WorkspaceGeneralForm({
 
   // Handle success
   useEffect(() => {
-    if (actionData?.success && navigation.state === "idle") {
-      toast.success("Workspace updated")
-      revalidator.revalidate()
+    if (
+      !actionData?.success ||
+      navigation.state !== "idle" ||
+      handledActionDataRef.current === actionData
+    ) {
+      return
     }
-  }, [actionData?.success, navigation.state, revalidator])
+    handledActionDataRef.current = actionData
+    toast.success("Workspace updated")
+    revalidator.revalidate()
+  }, [actionData, navigation.state, revalidator])
+
+  useEffect(() => {
+    if (avatarFetcher.state !== "idle" || !avatarFetcher.data) return
+    if (handledAvatarFetcherDataRef.current === avatarFetcher.data) return
+    handledAvatarFetcherDataRef.current = avatarFetcher.data
+    if (avatarFetcher.data.success) {
+      if (avatarFetcher.data.avatar) setAvatar(avatarFetcher.data.avatar)
+      toast.success("Avatar updated")
+      revalidator.revalidate()
+      return
+    }
+    if (avatarFetcher.data.error) {
+      toast.error(avatarFetcher.data.error)
+    }
+  }, [avatarFetcher.data, avatarFetcher.state, revalidator])
 
   const nameErrors = fields.name.errors
   const descriptionErrors = fields.description.errors
@@ -160,7 +190,17 @@ export function WorkspaceGeneralForm({
         open={avatarOpen}
         onOpenChange={setAvatarOpen}
         value={avatar}
-        onChange={setAvatar}
+        onChange={(nextAvatar) => {
+          setAvatar(nextAvatar)
+          avatarFetcher.submit(
+            {
+              intent: "updateAvatar",
+              avatarColor: nextAvatar.color,
+              avatarContent: nextAvatar.content,
+            },
+            { method: "post" },
+          )
+        }}
         title="Workspace avatar"
         description="Update the workspace avatar and initials."
       />

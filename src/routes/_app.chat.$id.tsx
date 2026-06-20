@@ -47,6 +47,11 @@ import { getChatDebugFlags } from "@/lib/chat-debug-flags";
 import { shouldRevalidateActiveChatRoute } from "@/lib/chat-route-revalidation";
 import { parseChannelIndicatorKindsJson } from "@/lib/channel-kinds";
 import { truncateThreadPreviewText } from "@/lib/thread-preview";
+import { generateDefaultChatGroupAvatar } from "@/lib/avatar";
+import {
+  saveChatGroupRename,
+  type ChatGroupRenameInput,
+} from "@/lib/chat-group-rename.client";
 import * as authDO from "@/lib/auth-do.server";
 import * as chatDO from "@/lib/chat-do.server";
 import {
@@ -374,6 +379,14 @@ function getPreviewTabId(target: PreviewTarget): string {
   return `file:${target.workspaceId}:${target.source}:${target.project ?? ""}:${target.path}`;
 }
 
+function getFallbackChatGroupAvatarIndex(source: string): number {
+  let hash = 0;
+  for (const char of source) {
+    hash = (hash * 31 + (char.codePointAt(0) ?? 0)) % 1000;
+  }
+  return hash;
+}
+
 function buildFallbackActiveChatGroup(params: {
   groupId: string | null;
   orgId: string;
@@ -415,6 +428,11 @@ function buildFallbackActiveChatGroup(params: {
     org_id: params.orgId,
     workspace_id: params.workspaceId,
     name: params.thread.title || "New Chat",
+    avatar: generateDefaultChatGroupAvatar({
+      groupIndex: getFallbackChatGroupAvatarIndex(
+        `${params.groupId}:${params.thread.id}`,
+      ),
+    }),
     last_active_thread_id: params.thread.id,
     created_at: params.thread.created_at || now,
     updated_at: threadUpdatedAt,
@@ -1268,8 +1286,18 @@ export default function ChatPage() {
       model: thread.model,
       status: thread.status,
     })) ?? [];
-  const availableMoveGroups =
-    moveChatGroups.length > 0 ? moveChatGroups : liveChatGroups;
+  const liveChatGroupById = new Map(
+    liveChatGroups.map((group) => [group.id, group]),
+  );
+  const availableMoveGroups = (moveChatGroups.length > 0
+    ? moveChatGroups
+    : liveChatGroups
+  ).map((group) => {
+    const liveGroup = liveChatGroupById.get(group.id);
+    return liveGroup && liveGroup.avatar !== group.avatar
+      ? { ...group, avatar: liveGroup.avatar }
+      : group;
+  });
 
   const selectTab = (targetThreadId: string) => {
     const snapshot = getSnapshot(targetThreadId);
@@ -1353,15 +1381,11 @@ export default function ChatPage() {
     revalidator.revalidate();
   };
 
-  const renameGroup = async (name: string) => {
+  const renameGroup = async (next: ChatGroupRenameInput) => {
     const groupId = liveActiveChatGroup?.id ?? resolvedActiveGroupId;
-    if (!groupId) return;
-    await fetch(`/api/chat-groups/${encodeURIComponent(groupId)}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name }),
+    await saveChatGroupRename(groupId, next, {
+      revalidate: () => revalidator.revalidate(),
     });
-    revalidator.revalidate();
   };
 
   const reorderTabs = async (orderedThreadIds: string[]) => {
@@ -1412,6 +1436,7 @@ export default function ChatPage() {
           <ChatTabBar
             groupId={liveActiveChatGroup.id}
             groupName={liveActiveChatGroup.name}
+            groupAvatar={liveActiveChatGroup.avatar}
             openTabs={openTabs}
             closedTabs={closedTabs}
             activeThreadId={displayThreadId}

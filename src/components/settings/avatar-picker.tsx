@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react"
 
+import { AvatarEditor } from "@/components/avatar/avatar-editor"
 import { Avatar, AvatarFallback } from "@/components/ui/avatar"
 import { Button } from "@/components/ui/button"
 import {
@@ -12,7 +13,6 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
-import { Input } from "@/components/ui/input"
 import {
   Sheet,
   SheetContent,
@@ -21,41 +21,13 @@ import {
   SheetHeader,
   SheetTitle,
 } from "@/components/ui/sheet"
-import { AVATAR_COLORS, getContrastTextColor, validateAvatarContent } from "@/lib/avatar"
-import { cn } from "@/lib/utils"
+import {
+  getContrastTextColor,
+  normalizeAvatarColor,
+  validateAvatarContent,
+} from "@/lib/avatar"
 import { useIsMobile } from "@/hooks/use-mobile"
 import type { Avatar as AvatarShape } from "@/types"
-
-const EMOJI_OPTIONS = [
-  "😀",
-  "😎",
-  "🤖",
-  "👽",
-  "🦊",
-  "🐱",
-  "🐶",
-  "🦁",
-  "🐼",
-  "🦄",
-  "🌿",
-  "🍄",
-  "🌞",
-  "🌙",
-  "⭐",
-  "⚡",
-  "🔥",
-  "🌊",
-  "🎯",
-  "🎧",
-  "🎮",
-  "🧠",
-  "💡",
-  "📌",
-  "🚀",
-  "🪐",
-  "🧩",
-  "🎨",
-]
 
 interface AvatarPickerProps {
   open: boolean
@@ -72,7 +44,7 @@ export function AvatarPicker({
   value,
   onChange,
   title = "Edit avatar",
-  description = "Choose a color and initials or emoji.",
+  description = "Choose a color and emoji or initials.",
 }: AvatarPickerProps) {
   const isMobile = useIsMobile()
   const [color, setColor] = useState(value.color)
@@ -88,8 +60,11 @@ export function AvatarPicker({
   }, [open, value.color, value.content])
 
   const preview = useMemo(
-    () => ({ color, content: content.trim() || value.content }),
-    [color, content, value.content]
+    () => ({
+      color: normalizeAvatarColor(color) ?? value.color,
+      content: content.trim() || value.content,
+    }),
+    [color, content, value.color, value.content]
   )
   const previewTextColor = useMemo(
     () => getContrastTextColor(preview.color),
@@ -98,11 +73,16 @@ export function AvatarPicker({
 
   const handleSave = () => {
     const trimmed = content.trim()
+    const normalizedColor = normalizeAvatarColor(color)
+    if (!normalizedColor) {
+      setError("Choose a valid color.")
+      return
+    }
     if (!validateAvatarContent(trimmed)) {
       setError("Use 2 letters or a single emoji.")
       return
     }
-    onChange({ color, content: trimmed })
+    onChange({ color: normalizedColor, content: trimmed })
     onOpenChange(false)
   }
 
@@ -122,76 +102,39 @@ export function AvatarPicker({
         </div>
       </div>
 
-      <div className="space-y-2">
-        <p className="text-xs font-medium text-muted-foreground">Color</p>
-        <div className="grid grid-cols-8 gap-2">
-          {AVATAR_COLORS.map((preset) => (
-            <button
-              key={preset}
-              type="button"
-              onClick={() => setColor(preset)}
-              className={cn(
-                "h-7 w-7 rounded-full border border-border",
-                color === preset && "ring-2 ring-foreground"
-              )}
-              style={{ backgroundColor: preset }}
-              aria-label={`Select color ${preset}`}
-            />
-          ))}
-        </div>
-      </div>
-
-      <div className="space-y-2">
-        <p className="text-xs font-medium text-muted-foreground">Quick emoji</p>
-        <div className="grid grid-cols-9 gap-2">
-          {EMOJI_OPTIONS.map((emoji) => (
-            <button
-              key={emoji}
-              type="button"
-              onClick={() => {
-                setContent(emoji)
-                setError(null)
-              }}
-              className="rounded-md border border-border p-1.5 text-lg leading-none hover:border-primary/50"
-              aria-label={`Select ${emoji} avatar`}
-            >
-              {emoji}
-            </button>
-          ))}
-        </div>
-      </div>
-
-      <div className="space-y-2">
-        <label
-          className="text-xs font-medium text-muted-foreground"
-          htmlFor="avatar-content"
-        >
-          Or enter custom initials
-        </label>
-        <Input
-          id="avatar-content"
-          value={content}
-          onChange={(event) => {
-            setContent(event.target.value)
-            setError(null)
-          }}
-          placeholder="JS"
-        />
-        {error ? <p className="text-xs text-destructive">{error}</p> : null}
-      </div>
+      <AvatarEditor
+        shape="circle"
+        allowInitials
+        color={color}
+        content={content}
+        onColorChange={(nextColor) => {
+          setColor(nextColor)
+          setError(null)
+        }}
+        onContentChange={(nextContent) => {
+          setContent(nextContent)
+          setError(null)
+        }}
+        error={error}
+      />
     </div>
   )
 
   if (isMobile) {
     return (
       <Sheet open={open} onOpenChange={onOpenChange}>
-        <SheetContent side="bottom" className="rounded-t-2xl">
-          <SheetHeader>
+        <SheetContent
+          side="bottom"
+          className="max-h-[90vh] overflow-hidden rounded-t-2xl"
+        >
+          <SheetHeader className="shrink-0">
             <SheetTitle>{title}</SheetTitle>
             <SheetDescription>{description}</SheetDescription>
           </SheetHeader>
-          <div className="py-6">{body}</div>
-          <SheetFooter>
+          <div className="min-h-0 flex-1 overflow-y-auto px-6 py-4">
+            {body}
+          </div>
+          <SheetFooter className="shrink-0">
             <Button variant="outline" onClick={() => onOpenChange(false)}>
               Cancel
             </Button>
@@ -204,13 +147,15 @@ export function AvatarPicker({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-lg">
-        <DialogHeader>
+      <DialogContent className="flex max-h-[90vh] flex-col gap-4 sm:max-w-lg">
+        <DialogHeader className="shrink-0">
           <DialogTitle>{title}</DialogTitle>
           <DialogDescription>{description}</DialogDescription>
         </DialogHeader>
-        {body}
-        <DialogFooter>
+        <div className="min-h-0 flex-1 overflow-y-auto pr-1">
+          {body}
+        </div>
+        <DialogFooter className="shrink-0">
           <Button variant="outline" onClick={() => onOpenChange(false)}>
             Cancel
           </Button>

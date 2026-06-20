@@ -25,11 +25,18 @@ export interface Thread {
   creator?: User;
 }
 
+export type ChatGroupAvatarStatus = "pending" | "generated" | "user" | "fallback";
+
+export interface ChatGroupAvatar extends Avatar {
+  status?: ChatGroupAvatarStatus;
+}
+
 export interface ChatGroup {
   id: string;
   org_id: string;
   workspace_id: string;
   name: string;
+  avatar: ChatGroupAvatar;
   last_active_thread_id: string | null;
   created_at: number;
   updated_at: number;

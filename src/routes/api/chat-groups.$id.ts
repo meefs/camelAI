@@ -3,6 +3,8 @@ import { requireSessionWorkspaceAccess } from "@/lib/auth.server";
 import { getEnv } from "@/lib/cloudflare.server";
 import { getAuthEnv } from "@/lib/auth-helpers";
 import { closeGroup } from "@/lib/chat-groups.server";
+import { normalizeChatGroupAvatar } from "@/lib/avatar";
+import type { Avatar } from "@/types";
 
 export async function action({ request, context, params }: ActionFunctionArgs) {
   const { orgId, workspaceId, userId } = await requireSessionWorkspaceAccess(
@@ -18,20 +20,39 @@ export async function action({ request, context, params }: ActionFunctionArgs) {
 
   if (request.method === "PATCH") {
     const body = (await request.json().catch(() => null)) as
-      | { name?: unknown }
+      | { name?: unknown; avatar?: unknown }
       | null;
-    const name = typeof body?.name === "string" ? body.name.trim() : "";
-    if (!name) {
-      return Response.json({ error: "Name required" }, { status: 400 });
+    if (!body || (body.name === undefined && body.avatar === undefined)) {
+      return Response.json(
+        { error: "Name or avatar required" },
+        { status: 400 },
+      );
     }
-    const userStub = getAuthEnv(getEnv(context)).USER.get(
-      getAuthEnv(getEnv(context)).USER.idFromName(userId),
-    );
+    let name: string | undefined;
+    if (body.name !== undefined) {
+      if (typeof body.name !== "string") {
+        return Response.json({ error: "Invalid name" }, { status: 400 });
+      }
+      name = body.name.trim();
+      if (!name) {
+        return Response.json({ error: "Name required" }, { status: 400 });
+      }
+    }
+    let avatar: Avatar | undefined;
+    if (body.avatar !== undefined) {
+      const normalizedAvatar = normalizeChatGroupAvatar(body.avatar);
+      if (!normalizedAvatar) {
+        return Response.json({ error: "Invalid avatar" }, { status: 400 });
+      }
+      avatar = normalizedAvatar;
+    }
+    const authEnv = getAuthEnv(getEnv(context));
+    const userStub = authEnv.USER.get(authEnv.USER.idFromName(userId));
     const group = await userStub.getChatGroup(groupId);
     if (!group || group.org_id !== orgId || group.workspace_id !== workspaceId) {
       return Response.json({ error: "Group not found" }, { status: 404 });
     }
-    await userStub.renameChatGroup(groupId, name);
+    await userStub.updateChatGroup(groupId, { name, avatar });
     return Response.json({ success: true });
   }
 

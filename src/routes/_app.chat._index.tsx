@@ -54,6 +54,10 @@ import {
   isTransientDurableObjectRpcError,
   retryTransientDurableObjectRpc,
 } from "@/lib/do-rpc-retry.server";
+import {
+  saveChatGroupRename,
+  type ChatGroupRenameInput,
+} from "@/lib/chat-group-rename.client";
 import Chat from "@/components/Chat";
 import { ChatTabBar } from "@/components/chat-tab-bar";
 import { NoWorkspacesError } from "@/components/no-workspaces-error";
@@ -933,6 +937,15 @@ function ChatWelcomeContent({
     ? liveChatGroups.find((group) => group.id === resolvedActiveGroupId) ??
       activeChatGroup
     : activeChatGroup;
+  const liveChatGroupById = new Map(
+    liveChatGroups.map((group) => [group.id, group]),
+  );
+  const availableMoveGroups = moveChatGroups.map((group) => {
+    const liveGroup = liveChatGroupById.get(group.id);
+    return liveGroup && liveGroup.avatar !== group.avatar
+      ? { ...group, avatar: liveGroup.avatar }
+      : group;
+  });
 
   const openTabs =
     liveActiveChatGroup?.open_threads.map((thread) => ({
@@ -976,15 +989,9 @@ function ChatWelcomeContent({
     });
     refresh();
   };
-  const renameGroup = async (name: string) => {
+  const renameGroup = async (next: ChatGroupRenameInput) => {
     const groupId = liveActiveChatGroup?.id ?? resolvedActiveGroupId;
-    if (!groupId) return;
-    await fetch(`/api/chat-groups/${encodeURIComponent(groupId)}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name }),
-    });
-    refresh();
+    await saveChatGroupRename(groupId, next, { revalidate: refresh });
   };
   const reorderTabs = async (orderedThreadIds: string[]) => {
     const groupId = liveActiveChatGroup?.id ?? resolvedActiveGroupId;
@@ -1020,10 +1027,11 @@ function ChatWelcomeContent({
         <ChatTabBar
           groupId={liveActiveChatGroup.id}
           groupName={liveActiveChatGroup.name}
+          groupAvatar={liveActiveChatGroup.avatar}
           openTabs={openTabs}
           closedTabs={closedTabs}
           activeThreadId={null}
-          moveGroups={moveChatGroups}
+          moveGroups={availableMoveGroups}
           onCloseTab={closeTab}
           onRenameTab={renameTab}
           onReorderTabs={reorderTabs}

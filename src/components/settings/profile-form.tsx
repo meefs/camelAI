@@ -1,7 +1,7 @@
 "use client"
 
-import { useEffect, useState } from "react"
-import { Form, useActionData, useNavigation, useRevalidator } from "react-router"
+import { useEffect, useRef, useState } from "react"
+import { Form, useActionData, useFetcher, useNavigation, useRevalidator } from "react-router"
 import { useForm, getFormProps, getInputProps, type SubmissionResult } from "@conform-to/react"
 import { parseWithZod } from "@conform-to/zod/v4"
 import { toast } from "sonner"
@@ -13,18 +13,27 @@ import { Label } from "@/components/ui/label"
 import { AvatarPicker } from "@/components/settings/avatar-picker"
 import { getContrastTextColor } from "@/lib/avatar"
 import { profileFormSchema } from "@/lib/schemas"
-import type { User } from "@/types"
+import type { Avatar as AvatarShape, User } from "@/types"
 
 interface ProfileFormProps {
   user: User
 }
 
+type AvatarSaveResponse = {
+  success?: boolean
+  error?: string
+  avatar?: AvatarShape
+}
+
 export function ProfileForm({ user }: ProfileFormProps) {
   const revalidator = useRevalidator()
   const actionData = useActionData<{ result?: SubmissionResult<string[]>; success?: boolean }>()
+  const avatarFetcher = useFetcher<AvatarSaveResponse>()
   const navigation = useNavigation()
   const [avatarOpen, setAvatarOpen] = useState(false)
   const [avatar, setAvatar] = useState(user.avatar)
+  const handledActionDataRef = useRef<typeof actionData | null>(null)
+  const handledAvatarFetcherDataRef = useRef<AvatarSaveResponse | null>(null)
   const saving = navigation.state === "submitting"
 
   const [form, fields] = useForm({
@@ -46,11 +55,32 @@ export function ProfileForm({ user }: ProfileFormProps) {
 
   // Handle success
   useEffect(() => {
-    if (actionData?.success && navigation.state === "idle") {
-      toast.success("Profile updated")
-      revalidator.revalidate()
+    if (
+      !actionData?.success ||
+      navigation.state !== "idle" ||
+      handledActionDataRef.current === actionData
+    ) {
+      return
     }
-  }, [actionData?.success, navigation.state, revalidator])
+    handledActionDataRef.current = actionData
+    toast.success("Profile updated")
+    revalidator.revalidate()
+  }, [actionData, navigation.state, revalidator])
+
+  useEffect(() => {
+    if (avatarFetcher.state !== "idle" || !avatarFetcher.data) return
+    if (handledAvatarFetcherDataRef.current === avatarFetcher.data) return
+    handledAvatarFetcherDataRef.current = avatarFetcher.data
+    if (avatarFetcher.data.success) {
+      if (avatarFetcher.data.avatar) setAvatar(avatarFetcher.data.avatar)
+      toast.success("Avatar updated")
+      revalidator.revalidate()
+      return
+    }
+    if (avatarFetcher.data.error) {
+      toast.error(avatarFetcher.data.error)
+    }
+  }, [avatarFetcher.data, avatarFetcher.state, revalidator])
 
   const nameErrors = fields.name.errors
 
@@ -106,7 +136,17 @@ export function ProfileForm({ user }: ProfileFormProps) {
         open={avatarOpen}
         onOpenChange={setAvatarOpen}
         value={avatar}
-        onChange={setAvatar}
+        onChange={(nextAvatar) => {
+          setAvatar(nextAvatar)
+          avatarFetcher.submit(
+            {
+              intent: "updateAvatar",
+              avatarColor: nextAvatar.color,
+              avatarContent: nextAvatar.content,
+            },
+            { method: "post" },
+          )
+        }}
       />
     </div>
   )

@@ -9,7 +9,9 @@ import {
   Plus,
   X,
 } from "lucide-react";
-import type { ChatGroup, LlmModel, ThreadStatus } from "@/types";
+import type { Avatar, ChatGroup, LlmModel, ThreadStatus } from "@/types";
+import { ChatGroupAvatar } from "@/components/avatar/chat-group-avatar";
+import { RenameChatGroupDialog } from "@/components/avatar/rename-chat-group-dialog";
 import { CamelLoader } from "@/components/camel-loader/camel-loader";
 import { ModelLogo } from "@/components/model-logo";
 import { Button } from "@/components/ui/button";
@@ -37,16 +39,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { SidebarTrigger } from "@/components/ui/sidebar";
 import {
@@ -70,6 +63,7 @@ interface ChatTab {
 interface ChatTabBarProps {
   groupId: string;
   groupName: string;
+  groupAvatar: Avatar;
   openTabs: ChatTab[];
   closedTabs: ChatTab[];
   activeThreadId: string | null;
@@ -80,7 +74,7 @@ interface ChatTabBarProps {
   onReorderTabs: (orderedThreadIds: string[]) => void;
   onNewTab: () => void;
   onReopenClosedTab: (threadId: string) => void;
-  onRenameGroup: (name: string) => void;
+  onRenameGroup: (next: { name: string; avatar: Avatar }) => void;
   onMoveTabToGroup: (threadId: string, targetGroupId: string | "new") => void;
 }
 
@@ -113,79 +107,10 @@ export function TabRightSlot({
   return <ModelLogo model={model} size={16} className="opacity-80" />;
 }
 
-export function RenameGroupDialog({
-  open,
-  onOpenChange,
-  initialName,
-  onSubmit,
-}: {
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-  initialName: string;
-  onSubmit: (name: string) => void;
-}) {
-  const [draft, setDraft] = useState(initialName);
-
-  useEffect(() => {
-    if (open) setDraft(initialName);
-  }, [initialName, open]);
-
-  const trimmedDraft = draft.trim();
-  const trimmedInitialName = initialName.trim();
-  const canSave = trimmedDraft.length > 0 && trimmedDraft !== trimmedInitialName;
-  const submit = () => {
-    if (!canSave) return;
-    onSubmit(trimmedDraft);
-    onOpenChange(false);
-  };
-
-  return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-sm">
-        <DialogHeader>
-          <DialogTitle>Rename chat group</DialogTitle>
-          <DialogDescription>
-            Pick a name that describes this group of chats.
-          </DialogDescription>
-        </DialogHeader>
-        <form
-          className="grid gap-4"
-          onSubmit={(event) => {
-            event.preventDefault();
-            submit();
-          }}
-        >
-          <div className="grid gap-2">
-            <Label htmlFor="group-name">Name</Label>
-            <Input
-              id="group-name"
-              autoFocus
-              value={draft}
-              onChange={(event) => setDraft(event.target.value)}
-              placeholder="e.g. Marketing dashboards"
-            />
-          </div>
-          <DialogFooter>
-            <Button
-              type="button"
-              variant="outline"
-              onClick={() => onOpenChange(false)}
-            >
-              Cancel
-            </Button>
-            <Button type="submit" disabled={!canSave}>
-              Save
-            </Button>
-          </DialogFooter>
-        </form>
-      </DialogContent>
-    </Dialog>
-  );
-}
-
 export function ChatTabBar({
   groupId,
   groupName,
+  groupAvatar,
   openTabs,
   closedTabs,
   activeThreadId,
@@ -280,7 +205,7 @@ export function ChatTabBar({
 
   return (
     <div className="shrink-0 [--safe-area-padding-top:5px] pt-safe">
-    <div className="relative flex h-9 items-end gap-0 bg-muted/20 pl-2 pr-1 shadow-[inset_0_-1px_0_0_var(--border)]">
+      <div className="relative flex h-9 items-end gap-0 bg-muted/20 pl-2 pr-1 shadow-[inset_0_-1px_0_0_var(--border)]">
       <div className="mr-1 flex h-9 shrink-0 items-center pb-0.5 md:hidden">
         <SidebarTrigger />
       </div>
@@ -444,7 +369,14 @@ export function ChatTabBar({
                           onMoveTabToGroup(tab.threadId, group.id);
                         }}
                       >
-                        {group.name || "Untitled group"}
+                        <ChatGroupAvatar
+                          avatar={group.avatar}
+                          fallbackName={group.name}
+                          size="sm"
+                        />
+                        <span className="min-w-0 truncate">
+                          {group.name || "Untitled group"}
+                        </span>
                       </ContextMenuItem>
                     ))}
                     {otherGroups.length > 0 ? <ContextMenuSeparator /> : null}
@@ -558,13 +490,14 @@ export function ChatTabBar({
           </DropdownMenuContent>
         </DropdownMenu>
       </div>
-      <RenameGroupDialog
+      <RenameChatGroupDialog
         open={isRenameGroupOpen}
         onOpenChange={setIsRenameGroupOpen}
         initialName={groupName}
+        initialAvatar={groupAvatar}
         onSubmit={onRenameGroup}
       />
-    </div>
+      </div>
     </div>
   );
 }

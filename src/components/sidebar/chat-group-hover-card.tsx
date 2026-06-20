@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import type { ChatGroupThreadSummary, ChatGroupView } from "@/types";
+import { ChatGroupAvatar } from "@/components/avatar/chat-group-avatar";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
@@ -77,9 +78,16 @@ export function ChatGroupHoverCard({
 
   return (
     <div className="flex flex-col">
-      <div className="flex items-baseline justify-between gap-3 px-3 pt-3 pb-2">
-        <div className="min-w-0 flex-1 truncate text-sm font-semibold text-popover-foreground">
-          {group.name}
+      <div className="flex items-center justify-between gap-3 px-3 pt-3 pb-2">
+        <div className="flex min-w-0 flex-1 items-center gap-2">
+          <ChatGroupAvatar
+            avatar={group.avatar}
+            fallbackName={group.name}
+            size="sm"
+          />
+          <div className="min-w-0 flex-1 truncate text-sm font-semibold text-popover-foreground">
+            {group.name}
+          </div>
         </div>
         <div className="shrink-0 text-xs tabular-nums text-muted-foreground">
           {total} {noun}

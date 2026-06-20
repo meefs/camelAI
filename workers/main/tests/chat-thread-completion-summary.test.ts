@@ -40,12 +40,15 @@ describe("ChatThreadDO completion summaries", () => {
     fake.currentTodos = [];
     fake.browserPrompts = { pendingQuestionCount: 0 };
     fake.trace = vi.fn();
+    fake.broadcastChat = vi.fn();
+    fake.broadcast = vi.fn();
+    fake.broadcastLiveOverlay = vi.fn();
     fake.broadcastRealtime = vi.fn();
     fake.syncAgentState = vi.fn();
+    fake.setState = vi.fn();
     // The turn-end path clears the live overlay and broadcasts the empty
     // snapshot over the (Agents SDK) broadcast channel; stub it and seed the
     // overlay fields the fake instance doesn't get from the SDK constructor.
-    fake.broadcastChat = vi.fn();
     fake.liveMessages = [];
     fake.liveStreamingMessageId = null;
     fake.lastLiveSyncAtMs = 0;

@@ -57,6 +57,7 @@ import {
   getThreadUserMessageSources,
   isPlaceholderThreadTitle,
 } from '../../../src/lib/thread-title';
+import { generateChatGroupEmojiWithOpenAI } from '../../../src/lib/chat-group-avatar-generation.server';
 import { generateThreadTitleWithOpenAI } from '../../../src/lib/thread-title-generation.server';
 import {
   extractThreadCompletionSummarySource,
@@ -8791,6 +8792,54 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
       if (context.userId) {
         const userStub = this.env.USER.get(this.env.USER.idFromName(context.userId));
         await userStub.renameEmptySingleThreadGroupForThread(threadId, title);
+        if (!isPlaceholderThreadTitle(title)) {
+          this.ctx.waitUntil(
+            (async () => {
+              const claim = await userStub.claimChatGroupEmojiGenerationForThread(threadId);
+              if (!claim) return;
+              this.broadcastChat({
+                type: "chat_group_avatar_updated",
+                threadId,
+                groupId: claim.id,
+                avatar: { ...claim.avatar, status: "pending" },
+              });
+              let generatedEmoji: string | null = null;
+              try {
+                generatedEmoji = await generateChatGroupEmojiWithOpenAI(
+                  this.env.AI,
+                  claim.name,
+                  {
+                    orgId: context.orgId,
+                    workspaceId: context.workspaceId,
+                    threadId,
+                  },
+                  { gatewayName: this.env.CF_GATEWAY_NAME },
+                );
+              } catch (error) {
+                console.error("[ChatThreadDO] failed to generate chat group emoji", {
+                  threadId,
+                  error,
+                });
+              }
+              const avatar = generatedEmoji
+                ? await userStub.setGeneratedChatGroupEmoji(claim.id, generatedEmoji)
+                : await userStub.setChatGroupAvatarFallback(claim.id);
+              if (avatar) {
+                this.broadcastChat({
+                  type: "chat_group_avatar_updated",
+                  threadId,
+                  groupId: claim.id,
+                  avatar,
+                });
+              }
+            })().catch((error) => {
+              console.error("[ChatThreadDO] failed to update chat group avatar", {
+                threadId,
+                error,
+              });
+            }),
+          );
+        }
       }
     } catch (err) {
       console.error('[ChatThreadDO] failed to generate thread title', err);

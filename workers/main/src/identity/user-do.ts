@@ -2,10 +2,15 @@ import { DurableObject } from "cloudflare:workers";
 import type { DOEnv } from "./env";
 import { hashPassword, verifyPassword } from "../password";
 import {
+  DEFAULT_CHAT_GROUP_EMOJI,
   generateDefaultAvatar,
+  generateDefaultChatGroupAvatar,
+  isEmoji,
+  normalizeAvatarColor,
+  normalizeChatGroupAvatar,
   validateAvatarContent,
 } from "../../../../src/lib/avatar";
-import { DEFAULT_THREAD_TITLE } from "../../../../src/lib/thread-title";
+import { isPlaceholderThreadTitle } from "../../../../src/lib/thread-title";
 import {
   normalizeThreadCompletionSummary,
   normalizeThreadPreviewUserMessage,
@@ -22,8 +27,11 @@ import type {
   OrgModelPickerConfig,
   OnboardingPreferences,
   ChatGroup,
+  ChatGroupAvatar,
+  ChatGroupAvatarStatus,
   ChatGroupSummary,
   ThreadCompletionSummaryStatus,
+  Avatar,
 } from "../../../../src/types";
 import {
   DEFAULT_CODEX_MODEL,
@@ -56,6 +64,7 @@ export type { OrgRole, BillingStatus } from "../../../../src/types";
 
 const USER_ONBOARDING_KEY = "onboarding";
 const USER_SIGNUP_IP_KEY = "signup_ip";
+const CHAT_GROUP_AVATAR_PENDING_WINDOW_MS = 20 * 1000;
 
 function usageCost(value: unknown): number | null {
   if (value === null || value === undefined) return null;
@@ -618,7 +627,69 @@ export class UserDO extends DurableObject<DOEnv> {
       `);
     }
 
-    const CURRENT_SCHEMA_VERSION = 9;
+    if (version < 10) {
+      // V10: Per-user chat group color + emoji avatars.
+      try {
+        this.sql.exec(
+          "ALTER TABLE chat_groups ADD COLUMN avatar_color TEXT NOT NULL DEFAULT '#3B82F6'",
+        );
+      } catch {
+        // Column may already exist in fresh databases.
+      }
+      try {
+        this.sql.exec(
+          `ALTER TABLE chat_groups ADD COLUMN avatar_content TEXT NOT NULL DEFAULT '${DEFAULT_CHAT_GROUP_EMOJI}'`,
+        );
+      } catch {
+        // Column may already exist in fresh databases.
+      }
+      try {
+        this.sql.exec(
+          "ALTER TABLE chat_groups ADD COLUMN avatar_content_source TEXT NOT NULL DEFAULT 'default'",
+        );
+      } catch {
+        // Column may already exist in fresh databases.
+      }
+      try {
+        this.sql.exec(
+          "ALTER TABLE chat_groups ADD COLUMN avatar_emoji_last_attempt_at INTEGER",
+        );
+      } catch {
+        // Column may already exist in fresh databases.
+      }
+
+      const rows = this.sql
+        .exec<{
+          id: string;
+          org_id: string;
+          workspace_id: string;
+          created_at: number;
+        }>(
+          `SELECT id, org_id, workspace_id, created_at
+           FROM chat_groups
+           ORDER BY org_id ASC, workspace_id ASC, created_at ASC, id ASC`,
+        )
+        .toArray();
+      const counters = new Map<string, number>();
+      for (const row of rows) {
+        const key = `${row.org_id}:${row.workspace_id}`;
+        const count = counters.get(key) ?? 0;
+        counters.set(key, count + 1);
+        const avatar = generateDefaultChatGroupAvatar({ groupIndex: count });
+        this.sql.exec(
+          `UPDATE chat_groups
+           SET avatar_color = ?,
+               avatar_content = ?,
+               avatar_content_source = 'default'
+           WHERE id = ?`,
+          avatar.color,
+          avatar.content,
+          row.id,
+        );
+      }
+    }
+
+    const CURRENT_SCHEMA_VERSION = 10;
     if (version < CURRENT_SCHEMA_VERSION) {
       this.ctx.storage.kv.put("schemaVersion", CURRENT_SCHEMA_VERSION);
     }
@@ -1005,6 +1076,21 @@ export class UserDO extends DurableObject<DOEnv> {
     return (name ?? "").trim().slice(0, 120);
   }
 
+  private getChatGroupAvatarStatus(
+    source: string | null | undefined,
+    lastAttemptAt?: number | null,
+  ): ChatGroupAvatarStatus {
+    if (source === "generated" || source === "user") return source;
+    if (
+      source === "default" &&
+      typeof lastAttemptAt === "number" &&
+      Date.now() - lastAttemptAt < CHAT_GROUP_AVATAR_PENDING_WINDOW_MS
+    ) {
+      return "pending";
+    }
+    return "fallback";
+  }
+
   private toChatGroup(row: unknown): ChatGroup {
     const group = row as {
       id: string;
@@ -1014,7 +1100,17 @@ export class UserDO extends DurableObject<DOEnv> {
       last_active_thread_id: string | null;
       created_at: number;
       updated_at: number;
+      avatar_color?: string | null;
+      avatar_content?: string | null;
+      avatar_content_source?: string | null;
+      avatar_emoji_last_attempt_at?: number | null;
     };
+    const fallbackAvatar = generateDefaultChatGroupAvatar();
+    const avatarColor = normalizeAvatarColor(group.avatar_color) ?? fallbackAvatar.color;
+    const avatarContent =
+      typeof group.avatar_content === "string" && isEmoji(group.avatar_content)
+        ? group.avatar_content.trim()
+        : fallbackAvatar.content;
     return {
       id: group.id,
       org_id: group.org_id,
@@ -1023,6 +1119,14 @@ export class UserDO extends DurableObject<DOEnv> {
       last_active_thread_id: group.last_active_thread_id ?? null,
       created_at: group.created_at,
       updated_at: group.updated_at,
+      avatar: {
+        color: avatarColor,
+        content: avatarContent,
+        status: this.getChatGroupAvatarStatus(
+          group.avatar_content_source,
+          group.avatar_emoji_last_attempt_at,
+        ),
+      },
     };
   }
 
@@ -1076,6 +1180,19 @@ export class UserDO extends DurableObject<DOEnv> {
       .exec<{ count: number }>(
         "SELECT COUNT(*) AS count FROM chat_group_members WHERE group_id = ?",
         groupId,
+      )
+      .toArray();
+    return rows[0]?.count ?? 0;
+  }
+
+  private getWorkspaceChatGroupCount(orgId: string, workspaceId: string): number {
+    const rows = this.sql
+      .exec<{ count: number }>(
+        `SELECT COUNT(*) AS count
+         FROM chat_groups
+         WHERE org_id = ? AND workspace_id = ?`,
+        orgId,
+        workspaceId,
       )
       .toArray();
     return rows[0]?.count ?? 0;
@@ -1154,10 +1271,13 @@ export class UserDO extends DurableObject<DOEnv> {
     const id = crypto.randomUUID();
     const name = this.normalizeChatGroupName(opts.name);
     const lastActiveThreadId = opts.lastActiveThreadId?.trim() || null;
+    const avatar = generateDefaultChatGroupAvatar({
+      groupIndex: this.getWorkspaceChatGroupCount(orgId, workspaceId),
+    });
     this.sql.exec(
       `INSERT INTO chat_groups
-       (id, org_id, workspace_id, name, last_active_thread_id, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+       (id, org_id, workspace_id, name, last_active_thread_id, created_at, updated_at, avatar_color, avatar_content, avatar_content_source)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'default')`,
       id,
       orgId,
       workspaceId,
@@ -1165,17 +1285,182 @@ export class UserDO extends DurableObject<DOEnv> {
       lastActiveThreadId,
       now,
       now,
+      avatar.color,
+      avatar.content,
     );
     return this.getChatGroupRow(id)!;
   }
 
   renameChatGroup(groupId: string, name: string): void {
-    const nextName = this.normalizeChatGroupName(name);
-    this.sql.exec(
-      "UPDATE chat_groups SET name = ? WHERE id = ?",
-      nextName,
-      groupId,
-    );
+    this.updateChatGroup(groupId, { name });
+  }
+
+  updateChatGroup(
+    groupId: string,
+    updates: { name?: string; avatar?: Avatar },
+  ): void {
+    if (updates.name !== undefined) {
+      const nextName = this.normalizeChatGroupName(updates.name);
+      this.sql.exec(
+        "UPDATE chat_groups SET name = ? WHERE id = ?",
+        nextName,
+        groupId,
+      );
+    }
+    if (updates.avatar !== undefined) {
+      const avatar = normalizeChatGroupAvatar(updates.avatar);
+      if (!avatar) {
+        throw new Error("Invalid chat group avatar");
+      }
+      this.sql.exec(
+        `UPDATE chat_groups
+         SET avatar_color = ?,
+             avatar_content = ?,
+             avatar_content_source = 'user'
+         WHERE id = ?`,
+        avatar.color,
+        avatar.content,
+        groupId,
+      );
+    }
+  }
+
+  updateChatGroupAvatar(groupId: string, avatar: Avatar): void {
+    this.updateChatGroup(groupId, { avatar });
+  }
+
+  setGeneratedChatGroupEmoji(groupId: string, emoji: string): ChatGroupAvatar | null {
+    const content = emoji.trim();
+    if (!isEmoji(content)) return null;
+    let avatar: ChatGroupAvatar | null = null;
+    this.ctx.storage.transactionSync(() => {
+      this.sql.exec(
+        `UPDATE chat_groups
+         SET avatar_content = ?,
+             avatar_content_source = 'generated',
+             avatar_emoji_last_attempt_at = NULL
+         WHERE id = ? AND avatar_content_source = 'default'`,
+        content,
+        groupId,
+      );
+      const group = this.getChatGroupRow(groupId);
+      avatar = group?.avatar ?? null;
+    });
+    return avatar;
+  }
+
+  setChatGroupAvatarFallback(groupId: string): ChatGroupAvatar | null {
+    let avatar: ChatGroupAvatar | null = null;
+    this.ctx.storage.transactionSync(() => {
+      this.sql.exec(
+        `UPDATE chat_groups
+         SET avatar_content = ?,
+             avatar_content_source = 'fallback',
+             avatar_emoji_last_attempt_at = NULL
+         WHERE id = ? AND avatar_content_source = 'default'`,
+        DEFAULT_CHAT_GROUP_EMOJI,
+        groupId,
+      );
+      const group = this.getChatGroupRow(groupId);
+      avatar = group?.avatar ?? null;
+    });
+    return avatar;
+  }
+
+  claimChatGroupsNeedingEmojiBackfill(
+    orgId: string,
+    workspaceId: string,
+    groupIds: string[],
+    limit: number = 3,
+    at: number = Date.now(),
+  ): Array<{ id: string; name: string }> {
+    const cappedLimit = Math.max(1, Math.min(limit, 5));
+    const retryBefore = at - 24 * 60 * 60 * 1000;
+    const candidates: Array<{ id: string; name: string }> = [];
+    this.ctx.storage.transactionSync(() => {
+      for (const groupId of groupIds) {
+        if (candidates.length >= cappedLimit) break;
+        const rows = this.sql
+          .exec<{
+            id: string;
+            name: string;
+            avatar_emoji_last_attempt_at: number | null;
+          }>(
+            `SELECT id, name, avatar_emoji_last_attempt_at
+             FROM chat_groups
+             WHERE id = ?
+               AND org_id = ?
+               AND workspace_id = ?
+               AND avatar_content_source = 'default'
+               AND TRIM(name) <> ''
+             LIMIT 1`,
+            groupId,
+            orgId,
+            workspaceId,
+          )
+          .toArray();
+        const row = rows[0];
+        if (!row || isPlaceholderThreadTitle(row.name)) continue;
+        const lastAttempt = row.avatar_emoji_last_attempt_at;
+        if (typeof lastAttempt === "number" && lastAttempt > retryBefore) {
+          continue;
+        }
+        this.sql.exec(
+          `UPDATE chat_groups
+           SET avatar_emoji_last_attempt_at = ?
+           WHERE id = ? AND avatar_content_source = 'default'`,
+          at,
+          row.id,
+        );
+        candidates.push({ id: row.id, name: row.name });
+      }
+    });
+    return candidates;
+  }
+
+  claimChatGroupEmojiGenerationForThread(
+    threadId: string,
+    at: number = Date.now(),
+  ): { id: string; name: string; avatar: ChatGroupAvatar } | null {
+    let candidate: { id: string; name: string; avatar: ChatGroupAvatar } | null = null;
+    const retryBefore = at - 24 * 60 * 60 * 1000;
+    this.ctx.storage.transactionSync(() => {
+      const group = this.getChatGroupForThreadRow(threadId);
+      if (!group || isPlaceholderThreadTitle(group.name)) return;
+      const rows = this.sql
+        .exec<{
+          member_count: number;
+          avatar_content_source: string;
+          avatar_emoji_last_attempt_at: number | null;
+        }>(
+          `SELECT
+             (SELECT COUNT(*) FROM chat_group_members WHERE group_id = ?) AS member_count,
+             avatar_content_source,
+             avatar_emoji_last_attempt_at
+           FROM chat_groups
+           WHERE id = ?`,
+          group.id,
+          group.id,
+        )
+        .toArray();
+      const row = rows[0];
+      if (!row || row.member_count !== 1 || row.avatar_content_source !== "default") {
+        return;
+      }
+      const lastAttempt = row.avatar_emoji_last_attempt_at;
+      if (typeof lastAttempt === "number" && lastAttempt > retryBefore) {
+        return;
+      }
+      this.sql.exec(
+        `UPDATE chat_groups
+         SET avatar_emoji_last_attempt_at = ?
+         WHERE id = ? AND avatar_content_source = 'default'`,
+        at,
+        group.id,
+      );
+      candidate = { id: group.id, name: group.name, avatar: group.avatar };
+    });
+    return candidate;
   }
 
   closeChatGroup(groupId: string): void {
@@ -1445,12 +1730,17 @@ export class UserDO extends DurableObject<DOEnv> {
     });
   }
 
-  renameEmptySingleThreadGroupForThread(threadId: string, title: string): void {
+  renameEmptySingleThreadGroupForThread(
+    threadId: string,
+    title: string,
+    opts: { generatedEmoji?: string | null } = {},
+  ): void {
     const name = this.normalizeChatGroupName(title);
-    if (!name) return;
+    const generatedEmoji = opts.generatedEmoji?.trim() || null;
+    if (!name && !generatedEmoji) return;
     this.ctx.storage.transactionSync(() => {
       const group = this.getChatGroupForThreadRow(threadId);
-      if (!group || group.name.trim().length > 0) return;
+      if (!group) return;
       const rows = this.sql
         .exec<{ count: number }>(
           "SELECT COUNT(*) AS count FROM chat_group_members WHERE group_id = ?",
@@ -1458,11 +1748,20 @@ export class UserDO extends DurableObject<DOEnv> {
         )
         .toArray();
       if ((rows[0]?.count ?? 0) !== 1) return;
-      this.sql.exec(
-        "UPDATE chat_groups SET name = ? WHERE id = ?",
-        name,
-        group.id,
-      );
+      if (
+        name &&
+        !isPlaceholderThreadTitle(name) &&
+        isPlaceholderThreadTitle(group.name)
+      ) {
+        this.sql.exec(
+          "UPDATE chat_groups SET name = ? WHERE id = ?",
+          name,
+          group.id,
+        );
+      }
+      if (generatedEmoji) {
+        this.setGeneratedChatGroupEmoji(group.id, generatedEmoji);
+      }
     });
   }
 

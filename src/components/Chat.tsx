@@ -35,6 +35,8 @@ import type {
   PreviewTab,
   OrganizationExperimentalSettings,
   ChatGroupView,
+  ChatGroupAvatar,
+  ChatGroupAvatarStatus,
 } from "@/types";
 import { useAuthData } from "@/hooks/use-auth-data";
 import { useOptionalChatGroups } from "@/hooks/use-chat-groups";
@@ -383,6 +385,43 @@ function dispatchLocalThreadSummaryUpdate(
   window.dispatchEvent(
     new CustomEvent("camelai:thread-status", {
       detail: { threadId, ...patch, updatedAt },
+    }),
+  );
+}
+
+function isChatGroupAvatarStatus(value: unknown): value is ChatGroupAvatarStatus {
+  return (
+    value === "pending" ||
+    value === "generated" ||
+    value === "user" ||
+    value === "fallback"
+  );
+}
+
+function isChatGroupAvatar(value: unknown): value is ChatGroupAvatar {
+  if (!value || typeof value !== "object") return false;
+  const avatar = value as { color?: unknown; content?: unknown; status?: unknown };
+  return (
+    typeof avatar.color === "string" &&
+    typeof avatar.content === "string" &&
+    (avatar.status === undefined || isChatGroupAvatarStatus(avatar.status))
+  );
+}
+
+function dispatchLocalChatGroupAvatarUpdate(
+  threadId: string | null | undefined,
+  groupId: string | null | undefined,
+  avatar: ChatGroupAvatar | null | undefined,
+): void {
+  if (typeof window === "undefined" || !threadId || !groupId || !avatar) return;
+  window.dispatchEvent(
+    new CustomEvent("camelai:chat-group-avatar", {
+      detail: {
+        threadId,
+        groupId,
+        avatar,
+        updatedAt: Date.now(),
+      },
     }),
   );
 }
@@ -2505,6 +2544,12 @@ export default function Chat({
         completeActiveManualCompaction();
         clearPendingDeliveryDraft();
         refreshBillingCreditStatusAfterTurn(id);
+      } else if (
+        data.type === "chat_group_avatar_updated" &&
+        typeof data.groupId === "string" &&
+        isChatGroupAvatar(data.avatar)
+      ) {
+        dispatchLocalChatGroupAvatarUpdate(id, data.groupId, data.avatar);
       }
     },
     [

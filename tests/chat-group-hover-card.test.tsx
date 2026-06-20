@@ -39,6 +39,7 @@ function makeGroup(
     org_id: "org_1",
     workspace_id: "workspace_1",
     name: "Support tickets",
+    avatar: { color: "#4F46E5", content: "💬" },
     last_active_thread_id: null,
     created_at: 1,
     updated_at: 1,
