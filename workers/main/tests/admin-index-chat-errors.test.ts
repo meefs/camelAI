@@ -9,6 +9,15 @@ function unique(prefix: string): string {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
 
+// Chat-error breakdown/event queries filter by an absolute time window only, and
+// the app-index D1 is shared across the worker test suite. A random Date.now()
+// base let fixtures from this file (and admin-api-chat-errors) land in each
+// other's window and double-count. Give each fixture a deterministic base spaced
+// far apart, in a range distinct from the other chat-error fixture files.
+const CHAT_ERROR_FIXTURE_BASE_ORIGIN = 1_000_000_000;
+const CHAT_ERROR_FIXTURE_BASE_SPACING = 1_000_000;
+let chatErrorFixtureSequence = 0;
+
 async function upsertUser(id: string, email: string, name: string) {
   const appIndex = getAppIndexDatabase(testEnv)!;
   await appIndex.applyAdminEvent({
@@ -25,7 +34,9 @@ async function upsertUser(id: string, email: string, name: string) {
 
 async function seedChatErrorFixture(prefix = unique('chat-errors')) {
   const appIndex = getAppIndexDatabase(testEnv)!;
-  const base = Date.now() + Math.floor(Math.random() * 1_000_000);
+  const base =
+    CHAT_ERROR_FIXTURE_BASE_ORIGIN +
+    chatErrorFixtureSequence++ * CHAT_ERROR_FIXTURE_BASE_SPACING;
   const userAId = `${prefix}-user-a`;
   const userBId = `${prefix}-user-b`;
   const orgAId = `${prefix}-org-a`;

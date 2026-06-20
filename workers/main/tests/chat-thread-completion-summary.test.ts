@@ -42,6 +42,13 @@ describe("ChatThreadDO completion summaries", () => {
     fake.trace = vi.fn();
     fake.broadcastRealtime = vi.fn();
     fake.syncAgentState = vi.fn();
+    // The turn-end path clears the live overlay and broadcasts the empty
+    // snapshot over the (Agents SDK) broadcast channel; stub it and seed the
+    // overlay fields the fake instance doesn't get from the SDK constructor.
+    fake.broadcastChat = vi.fn();
+    fake.liveMessages = [];
+    fake.liveStreamingMessageId = null;
+    fake.lastLiveSyncAtMs = 0;
     fake.ctx = {
       storage: { kv: { delete: vi.fn() } },
       waitUntil: vi.fn((promise: Promise<unknown>) => {

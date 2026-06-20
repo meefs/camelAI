@@ -11,6 +11,13 @@ function unique(prefix: string): string {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
 
+// Deterministic, well-separated fixture bases so the shared app-index D1 can't
+// leak events across chat-error fixture windows (see admin-index-chat-errors).
+// This file uses a distinct origin range from admin-index-chat-errors.
+const API_CHAT_ERROR_FIXTURE_BASE_ORIGIN = 2_000_000_000;
+const API_CHAT_ERROR_FIXTURE_BASE_SPACING = 1_000_000;
+let apiChatErrorFixtureSequence = 0;
+
 function adminEnv(): WorkerEnv {
   return {
     ...testEnv,
@@ -37,7 +44,9 @@ async function adminGet(path: string): Promise<Response> {
 
 async function seedApiChatErrors(prefix = unique('api-chat-errors')) {
   const appIndex = getAppIndexDatabase(testEnv)!;
-  const base = Date.now() + Math.floor(Math.random() * 1_000_000);
+  const base =
+    API_CHAT_ERROR_FIXTURE_BASE_ORIGIN +
+    apiChatErrorFixtureSequence++ * API_CHAT_ERROR_FIXTURE_BASE_SPACING;
   const userId = `${prefix}-user`;
   const orgId = `${prefix}-org`;
   const workspaceId = `${prefix}-workspace`;

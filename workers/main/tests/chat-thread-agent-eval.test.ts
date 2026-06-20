@@ -22,6 +22,14 @@ describe("ChatThreadDO agent eval sessions", () => {
     fake.nextChatEventId = 1;
     fake.chatIsStreaming = false;
     fake.piEventHandlerChain = Promise.resolve();
+    // pushChatEvent now folds events into the live overlay and syncs Agent
+    // state; seed the overlay fields the fake doesn't get from the SDK ctor.
+    fake.liveMessages = [];
+    fake.liveStreamingMessageId = null;
+    fake.lastLiveSyncAtMs = 0;
+    fake.pendingOverlayArtifacts = new Map();
+    fake.setState = vi.fn();
+    fake.syncAgentState = vi.fn();
     fake.ctx = {
       storage: {
         kv: {
@@ -34,6 +42,15 @@ describe("ChatThreadDO agent eval sessions", () => {
     fake.env = {
       APP_KV: {
         get: vi.fn(async () => null),
+      },
+      // agentEvalResult collects deployed apps for the result via OrgDO; with no
+      // scripts the collector short-circuits to undefined.
+      ORG: {
+        idFromName: vi.fn((id: string) => id),
+        get: vi.fn(() => ({
+          listWorkerScriptsByWorkspace: vi.fn(async () => []),
+          getSlug: vi.fn(async () => null),
+        })),
       },
     };
     fake.broadcastChat = vi.fn();
