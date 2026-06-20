@@ -25,6 +25,19 @@ cloudflare_access_team_domain = "https://your-team.cloudflareaccess.com"
 cloudflare_access_aud = "your-access-aud"
 cloudflare_access_default_org_name = "Your Organization"
 # cloudflare_access_required_email_domain = "example.com"
+
+# Self-hosted SSO via Pomerium instead of Cloudflare Access (set one or the
+# other). The fronting Pomerium route must set pass_identity_headers: true.
+# Issuer/audience are the bare route host (no scheme), matched exactly.
+# pomerium_authenticate_url = "https://authenticate.your-domain.com"
+# pomerium_issuer = "app.your-domain.com"
+# pomerium_audience = "app.your-domain.com"
+# pomerium_default_org_name = "Your Organization"
+# pomerium_required_email_domain = "example.com"
+# Group-based org mapping (most common; groups arrive inline in the assertion):
+# pomerium_org_group_prefix = "camelai-office-"
+# pomerium_admin_group_prefix = "camelai-office-admin-"
+# pomerium_org_map = "{\"8f1e...\":\"Austin Office\"}"
 enable_public_ingress = false
 
 # AI provider. AWS defaults to Bedrock through the EC2 instance role, so no

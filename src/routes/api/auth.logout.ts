@@ -1,11 +1,8 @@
 import type { Route } from './+types/auth.logout';
 import { getEnv } from '@/lib/cloudflare.server';
 import { getSignedSessionFromRequest, createDeleteSessionCookieHeader } from '@/lib/cookies.server';
-import {
-  CLOUDFLARE_ACCESS_AUTH_SOURCE,
-  getCloudflareAccessLogoutUrl,
-  type CloudflareAccessEnv,
-} from '@/lib/cloudflare-access-auth.server';
+import { providerForAuthSource } from '../../../workers/main/src/helpers/proxy-auth-providers';
+import type { ProxyAuthEnv } from '../../../workers/main/src/helpers/proxy-auth-core';
 import type { UserDO } from '../../../workers/main/src/auth';
 
 export async function action({ request, context }: Route.ActionArgs) {
@@ -17,10 +14,11 @@ export async function action({ request, context }: Route.ActionArgs) {
   try {
     const env = getEnv(context);
     const session = await getSignedSessionFromRequest(request, env.TOKEN_SIGNING_SECRET);
+    // Reverse-proxy sessions (Cloudflare Access, Pomerium) must also be signed
+    // out at the proxy, otherwise it silently re-logs the user back in.
+    const proxyProvider = providerForAuthSource(session?.auth_source);
     accessLogoutUrl =
-      session?.auth_source === CLOUDFLARE_ACCESS_AUTH_SOURCE
-        ? getCloudflareAccessLogoutUrl(request, env as unknown as CloudflareAccessEnv)
-        : null;
+      proxyProvider?.getLogoutUrl(request, env as unknown as ProxyAuthEnv) ?? null;
 
     if (session) {
       // Invalidate all outstanding signed sessions for this user so that

@@ -105,6 +105,44 @@ Parameters:
   CloudflareAccessRequiredEmailDomain:
     Type: String
     Default: ''
+  PomeriumAuthenticateUrl:
+    Type: String
+    Default: ''
+    Description: Pomerium authenticate service URL; the JWKS endpoint (/.well-known/pomerium/jwks.json) is derived from it. Alternatively set PomeriumJwksUrl directly.
+  PomeriumJwksUrl:
+    Type: String
+    Default: ''
+    Description: Full Pomerium JWKS URL. Overrides PomeriumAuthenticateUrl when set.
+  PomeriumIssuer:
+    Type: String
+    Default: ''
+    Description: Expected JWT issuer (the route host Pomerium fronts).
+  PomeriumAudience:
+    Type: String
+    Default: ''
+    Description: Comma-separated accepted JWT audiences (the route host).
+  PomeriumDefaultOrgName:
+    Type: String
+    Default: ''
+  PomeriumOrgClaims:
+    Type: String
+    Default: __selfhost_org__
+    Description: Comma-separated Pomerium identity claim paths for org mapping. Default intentionally points at a missing claim so self-host falls back to PomeriumDefaultOrgName.
+  PomeriumOrgMap:
+    Type: String
+    Default: ''
+    Description: Optional JSON object mapping exact group ids/claim values to friendly org names.
+  PomeriumOrgGroupPrefix:
+    Type: String
+    Default: ''
+    Description: Prefix that maps inline SSO groups to orgs (e.g. camelai-office-).
+  PomeriumAdminGroupPrefix:
+    Type: String
+    Default: ''
+    Description: Prefix that maps inline SSO groups to admin membership in the mapped org.
+  PomeriumRequiredEmailDomain:
+    Type: String
+    Default: ''
 
 Rules:
   ExistingEipDnsRequiresPublicIp:
@@ -300,6 +338,16 @@ Resources:
           CLOUDFLARE_ACCESS_DEFAULT_ORG_NAME=${CloudflareAccessDefaultOrgName}
           CLOUDFLARE_ACCESS_ORG_CLAIMS=${CloudflareAccessOrgClaims}
           CLOUDFLARE_ACCESS_REQUIRED_EMAIL_DOMAIN=${CloudflareAccessRequiredEmailDomain}
+          POMERIUM_AUTHENTICATE_URL=${PomeriumAuthenticateUrl}
+          POMERIUM_JWKS_URL=${PomeriumJwksUrl}
+          POMERIUM_ISSUER=${PomeriumIssuer}
+          POMERIUM_AUDIENCE=${PomeriumAudience}
+          POMERIUM_DEFAULT_ORG_NAME=${PomeriumDefaultOrgName}
+          POMERIUM_ORG_CLAIMS=${PomeriumOrgClaims}
+          POMERIUM_ORG_MAP=${PomeriumOrgMap}
+          POMERIUM_ORG_GROUP_PREFIX=${PomeriumOrgGroupPrefix}
+          POMERIUM_ADMIN_GROUP_PREFIX=${PomeriumAdminGroupPrefix}
+          POMERIUM_REQUIRED_EMAIL_DOMAIN=${PomeriumRequiredEmailDomain}
           EOF
           chmod 600 .env.selfhost
 
@@ -341,6 +389,16 @@ Resources:
                 CLOUDFLARE_ACCESS_DEFAULT_ORG_NAME: __DOLLAR__{CLOUDFLARE_ACCESS_DEFAULT_ORG_NAME:-}
                 CLOUDFLARE_ACCESS_ORG_CLAIMS: __DOLLAR__{CLOUDFLARE_ACCESS_ORG_CLAIMS:-}
                 CLOUDFLARE_ACCESS_REQUIRED_EMAIL_DOMAIN: __DOLLAR__{CLOUDFLARE_ACCESS_REQUIRED_EMAIL_DOMAIN:-}
+                POMERIUM_AUTHENTICATE_URL: __DOLLAR__{POMERIUM_AUTHENTICATE_URL:-}
+                POMERIUM_JWKS_URL: __DOLLAR__{POMERIUM_JWKS_URL:-}
+                POMERIUM_ISSUER: __DOLLAR__{POMERIUM_ISSUER:-}
+                POMERIUM_AUDIENCE: __DOLLAR__{POMERIUM_AUDIENCE:-}
+                POMERIUM_DEFAULT_ORG_NAME: __DOLLAR__{POMERIUM_DEFAULT_ORG_NAME:-}
+                POMERIUM_ORG_CLAIMS: __DOLLAR__{POMERIUM_ORG_CLAIMS:-}
+                POMERIUM_ORG_MAP: __DOLLAR__{POMERIUM_ORG_MAP:-}
+                POMERIUM_ORG_GROUP_PREFIX: __DOLLAR__{POMERIUM_ORG_GROUP_PREFIX:-}
+                POMERIUM_ADMIN_GROUP_PREFIX: __DOLLAR__{POMERIUM_ADMIN_GROUP_PREFIX:-}
+                POMERIUM_REQUIRED_EMAIL_DOMAIN: __DOLLAR__{POMERIUM_REQUIRED_EMAIL_DOMAIN:-}
               ports:
                 - "127.0.0.1:3001:3001"
               volumes:

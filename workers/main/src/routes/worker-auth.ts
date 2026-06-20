@@ -21,7 +21,7 @@ import {
   validateAndConsumeAuthState,
   createWorkerAuthToken,
 } from '../worker-auth.js';
-import { validateAccessBackedSignedSession } from '../helpers/access-session.js';
+import { validateSessionIdentityMapsToOrg } from '../helpers/proxy-auth-providers.js';
 import type { OrgDO, UserDO } from '../auth.js';
 
 // Auth callback path on dispatcher domain
@@ -52,15 +52,21 @@ export async function handleWorkerAuth({ req, env, url }: RouteContext): Promise
     const loginUrl = new URL('/login', url.origin);
     return redirect(loginUrl.toString());
   }
-  const accessValidation = await validateAccessBackedSignedSession(
+  // Re-validate the live proxy identity against the org we're about to mint a
+  // token for (the private worker's org), NOT the cookie's current org_id. The
+  // isMember() check below only proves persisted membership, which can outlive a
+  // revoked proxy group; without targeting required_org_id a user whose cookie
+  // still maps to some other org could ride stale membership into this one.
+  const proxyValidation = await validateSessionIdentityMapsToOrg(
     req,
     env,
     session,
+    stateData.required_org_id,
   );
-  if (accessValidation === 'unavailable') {
-    return text('Cloudflare Access validation is temporarily unavailable', 503);
+  if (proxyValidation === 'unavailable') {
+    return text('Identity proxy validation is temporarily unavailable', 503);
   }
-  if (accessValidation !== 'valid') {
+  if (proxyValidation !== 'valid') {
     const loginUrl = new URL('/login', url.origin);
     return redirect(loginUrl.toString());
   }

@@ -10,7 +10,7 @@ import { getSignedSessionFromRequest } from "../cookies.js";
 import { text } from "./response.js";
 import { getWorkspaceStub, getOrgStub } from "./stubs.js";
 import { isOrgBanned, isUserBanned } from "../ban-list.js";
-import { validateAccessBackedSignedSession } from "./access-session.js";
+import { validateSessionMapsToOrg } from "./proxy-auth-providers.js";
 import {
   isTransientDurableObjectRpcError,
   retryTransientDurableObjectRpc,
@@ -87,17 +87,13 @@ export async function requireSession(
     env.TOKEN_SIGNING_SECRET,
   );
   if (!signedSession) return { error: text("Unauthorized", 401) };
-  const accessValidation = await validateAccessBackedSignedSession(
-    req,
-    env,
-    signedSession,
-  );
-  if (accessValidation === "unavailable") {
+  const proxyValidation = await validateSessionMapsToOrg(req, env, signedSession);
+  if (proxyValidation === "unavailable") {
     return {
-      error: text("Cloudflare Access validation is temporarily unavailable", 503),
+      error: text("Identity proxy validation is temporarily unavailable", 503),
     };
   }
-  if (accessValidation !== "valid") {
+  if (proxyValidation !== "valid") {
     return { error: text("Unauthorized", 401) };
   }
 

@@ -83,7 +83,11 @@ export interface UserAuthBootstrap {
   sessionInvalidatedAt: number | null;
 }
 
-export type OAuthProvider = "google" | "github" | "cloudflare_access";
+export type OAuthProvider =
+  | "google"
+  | "github"
+  | "cloudflare_access"
+  | "pomerium";
 
 export interface UserOAuthProvider {
   provider: OAuthProvider;

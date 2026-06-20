@@ -28,12 +28,18 @@ import {
   type LlmProviderConfigRecord,
 } from "./llm-provider-config";
 import {
-  CLOUDFLARE_ACCESS_AUTH_SOURCE,
   tryCloudflareAccessSilentLogin,
-  validateAccessBackedSignedSession,
-  type AccessValidationEnv,
   type CloudflareAccessEnv,
 } from "./cloudflare-access-auth.server";
+import {
+  tryPomeriumSilentLogin,
+  type PomeriumEnv,
+} from "./pomerium-auth.server";
+import {
+  isProxyAuthSource,
+  validateSessionMapsToOrg,
+} from "../../workers/main/src/helpers/proxy-auth-providers";
+import type { ProxyAuthValidationEnv } from "../../workers/main/src/helpers/proxy-auth-core";
 import { retryTransientDurableObjectRead } from "./do-rpc-retry.server";
 
 const LOCAL_AUTH_USER_ID = "local-dev-user";
@@ -93,28 +99,39 @@ export interface SessionWorkspaceAccessContext extends SessionContext {
   access: WorkspaceAccessLevel;
 }
 
-async function tryCreateCloudflareAccessSessionContext(
+async function tryCreateProxyAuthSessionContext(
   request: Request,
   context: AppLoadContext,
   env: ReturnType<typeof getEnv>,
 ): Promise<SessionContext | null> {
-  const accessSession = await tryCloudflareAccessSilentLogin(
-    request,
-    env as unknown as CloudflareAccessEnv,
-    getAuthEnv(env),
-  );
-  if (!accessSession) return null;
+  const authEnv = getAuthEnv(env);
+  // Try each configured reverse-proxy identity provider in order. Only the
+  // provider whose assertion header is present on the request returns a
+  // session; the others short-circuit to null. A present-but-invalid assertion
+  // throws a Response (403/503) and propagates.
+  const proxySession =
+    (await tryCloudflareAccessSilentLogin(
+      request,
+      env as unknown as CloudflareAccessEnv,
+      authEnv,
+    )) ??
+    (await tryPomeriumSilentLogin(
+      request,
+      env as unknown as PomeriumEnv,
+      authEnv,
+    ));
+  if (!proxySession) return null;
 
   await redirectIfBannedSession(request, context, {
-    userId: accessSession.session.user_id,
-    userEmail: accessSession.session.user_email,
-    orgId: accessSession.session.org_id,
+    userId: proxySession.session.user_id,
+    userEmail: proxySession.session.user_email,
+    orgId: proxySession.session.org_id,
   });
 
   return {
-    sessionId: `signed:${accessSession.session.user_id}`,
-    session: accessSession.session,
-    createdSessionCookie: accessSession.signedToken,
+    sessionId: `signed:${proxySession.session.user_id}`,
+    session: proxySession.session,
+    createdSessionCookie: proxySession.signedToken,
   };
 }
 
@@ -170,28 +187,28 @@ async function getSessionUncached(
     env.TOKEN_SIGNING_SECRET,
   );
   if (!signedSession) {
-    return tryCreateCloudflareAccessSessionContext(request, context, env);
+    return tryCreateProxyAuthSessionContext(request, context, env);
   }
 
-  if (signedSession.auth_source === CLOUDFLARE_ACCESS_AUTH_SOURCE) {
-    // Read-only revalidation: confirm the live Access identity still maps to
+  if (isProxyAuthSource(signedSession.auth_source)) {
+    // Read-only revalidation: confirm the live proxy identity still maps to
     // the session org without re-running the mutating provisioning flow when
     // the cookie still matches. If it no longer matches, immediately run the
-    // silent login path so the current Access identity can replace the stale
-    // signed cookie.
-    const accessValidation = await validateAccessBackedSignedSession(
+    // silent login path so the current identity can replace the stale signed
+    // cookie.
+    const proxyValidation = await validateSessionMapsToOrg(
       request,
-      env as unknown as AccessValidationEnv,
+      env as unknown as ProxyAuthValidationEnv,
       signedSession,
     );
-    if (accessValidation === "unavailable") {
+    if (proxyValidation === "unavailable") {
       throw new Response(
-        "Cloudflare Access validation is temporarily unavailable",
+        "Identity proxy validation is temporarily unavailable",
         { status: 503 },
       );
     }
-    if (accessValidation !== "valid") {
-      return tryCreateCloudflareAccessSessionContext(request, context, env);
+    if (proxyValidation !== "valid") {
+      return tryCreateProxyAuthSessionContext(request, context, env);
     }
   }
 

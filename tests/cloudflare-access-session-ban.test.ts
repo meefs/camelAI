@@ -13,7 +13,15 @@ const authHelpersMocks = vi.hoisted(() => ({
 const accessAuthMocks = vi.hoisted(() => ({
   CLOUDFLARE_ACCESS_AUTH_SOURCE: "cloudflare_access",
   tryCloudflareAccessSilentLogin: vi.fn(),
-  validateAccessBackedSignedSession: vi.fn(),
+}));
+const pomeriumAuthMocks = vi.hoisted(() => ({
+  tryPomeriumSilentLogin: vi.fn(),
+}));
+// auth.server now validates and dispatches through the generic provider
+// registry; mock it instead of the Cloudflare-specific validator.
+const proxyProviderMocks = vi.hoisted(() => ({
+  isProxyAuthSource: vi.fn(),
+  validateSessionMapsToOrg: vi.fn(),
 }));
 const banMocks = vi.hoisted(() => ({
   redirectIfBannedSession: vi.fn(),
@@ -23,6 +31,11 @@ vi.mock("@/lib/cookies.server", () => cookiesMocks);
 vi.mock("@/lib/cloudflare.server", () => cloudflareMocks);
 vi.mock("@/lib/auth-helpers", () => authHelpersMocks);
 vi.mock("@/lib/cloudflare-access-auth.server", () => accessAuthMocks);
+vi.mock("@/lib/pomerium-auth.server", () => pomeriumAuthMocks);
+vi.mock(
+  "../workers/main/src/helpers/proxy-auth-providers",
+  () => proxyProviderMocks,
+);
 vi.mock("@/lib/ban.server", () => banMocks);
 
 describe("Cloudflare Access session ban checks", () => {
@@ -31,6 +44,11 @@ describe("Cloudflare Access session ban checks", () => {
     cloudflareMocks.getEnv.mockReturnValue({ TOKEN_SIGNING_SECRET: "secret" });
     authHelpersMocks.getAuthEnv.mockReturnValue({});
     cookiesMocks.getSignedSessionFromRequest.mockResolvedValue(null);
+    pomeriumAuthMocks.tryPomeriumSilentLogin.mockResolvedValue(null);
+    proxyProviderMocks.isProxyAuthSource.mockImplementation(
+      (source: string | null | undefined) =>
+        source === "cloudflare_access" || source === "pomerium",
+    );
     banMocks.redirectIfBannedSession.mockResolvedValue(undefined);
   });
 
@@ -92,7 +110,7 @@ describe("Cloudflare Access session ban checks", () => {
       user_email: "access@example.com",
       auth_source: "cloudflare_access",
     });
-    accessAuthMocks.validateAccessBackedSignedSession.mockResolvedValue(
+    proxyProviderMocks.validateSessionMapsToOrg.mockResolvedValue(
       "invalid",
     );
     accessAuthMocks.tryCloudflareAccessSilentLogin.mockResolvedValue({
@@ -136,7 +154,7 @@ describe("Cloudflare Access session ban checks", () => {
       user_email: "access@example.com",
       auth_source: "cloudflare_access",
     });
-    accessAuthMocks.validateAccessBackedSignedSession.mockResolvedValue(
+    proxyProviderMocks.validateSessionMapsToOrg.mockResolvedValue(
       "invalid",
     );
     accessAuthMocks.tryCloudflareAccessSilentLogin.mockResolvedValue(null);
@@ -157,7 +175,7 @@ describe("Cloudflare Access session ban checks", () => {
       user_email: "access@example.com",
       auth_source: "cloudflare_access",
     });
-    accessAuthMocks.validateAccessBackedSignedSession.mockResolvedValue(
+    proxyProviderMocks.validateSessionMapsToOrg.mockResolvedValue(
       "unavailable",
     );
     const request = new Request("https://app.example.com/private", {
@@ -181,7 +199,7 @@ describe("Cloudflare Access session ban checks", () => {
       user_email: "access@example.com",
       auth_source: "cloudflare_access",
     });
-    accessAuthMocks.validateAccessBackedSignedSession.mockResolvedValue(
+    proxyProviderMocks.validateSessionMapsToOrg.mockResolvedValue(
       "valid",
     );
     const userStub = {

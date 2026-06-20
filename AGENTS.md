@@ -214,6 +214,7 @@ live in separate files, and the catalog tests fail if any of them drift apart.
 ## Auth, Onboarding, And Admin
 
 - Session/auth helpers are split between app-side loaders/actions in `src/lib/` and Worker-side helpers in `workers/main/src/helpers/`.
+- Reverse-proxy identity providers (auto-login behind Cloudflare Access or Pomerium) share one engine in `workers/main/src/helpers/proxy-auth-core.ts` (JWT verify, JWKS, org mapping, revalidation); per-provider adapters are `access-session.ts` (RS256, get-identity endpoint) and `pomerium-session.ts` (ES256, inline-group claims). The registry/dispatcher is `proxy-auth-providers.ts`; app-side silent login/provisioning is `src/lib/proxy-auth.server.ts`. To add a provider, implement `ProxyAuthProvider` and register it. Tests: `tests/{pomerium,cloudflare-access}-*.test.ts`. Docs: `docs/pomerium-auth.md`, `docs/cloudflare-access-auth.md`.
 - Password auth, OAuth account creation, email verification, onboarding, bans, and blocked signup policies all have tests in `workers/main/tests/`; update or add focused tests when touching these flows.
 - Superuser UI routes live under `/qaml-backdoor`.
 - Bearer-auth admin APIs live under `/api/admin/*`; implementation is in `workers/main/src/routes/admin/` and related route modules in `src/routes/api/`.

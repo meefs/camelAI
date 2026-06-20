@@ -39,10 +39,10 @@ import { isSelfhostRuntime } from "@/lib/selfhost-runtime";
 import { getOrg, getWorkerScript } from "@/lib/auth-do";
 import { switchSessionOrg, switchSessionWorkspace } from "@/lib/auth-do";
 import {
-  CLOUDFLARE_ACCESS_AUTH_SOURCE,
-  validateAccessIdentityMapsToOrg,
-  type AccessValidationEnv,
-} from "@/lib/cloudflare-access-auth.server";
+  isProxyAuthSource,
+  validateSessionIdentityMapsToOrg,
+} from "../../workers/main/src/helpers/proxy-auth-providers";
+import type { ProxyAuthValidationEnv } from "../../workers/main/src/helpers/proxy-auth-core";
 import { getChatDebugFlags } from "@/lib/chat-debug-flags";
 import { shouldRevalidateActiveChatRoute } from "@/lib/chat-route-revalidation";
 import { parseChannelIndicatorKindsJson } from "@/lib/channel-kinds";
@@ -855,23 +855,23 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
       let canSwitch = true;
       if (
         groupWorkspace.org_id !== authContext.session.org_id &&
-        authContext.session.auth_source === CLOUDFLARE_ACCESS_AUTH_SOURCE
+        isProxyAuthSource(authContext.session.auth_source)
       ) {
-        // An Access-backed cookie is only accepted for orgs the live Access
-        // identity maps to; switching to an unmapped org would mint a cookie
-        // that every subsequent request rejects. Stay in the current
-        // workspace instead.
-        const accessValidation = await validateAccessIdentityMapsToOrg(
+        // A proxy-backed cookie (Cloudflare Access, Pomerium) is only accepted
+        // for orgs the live identity maps to; switching to an unmapped org
+        // would mint a cookie that every subsequent request rejects. Stay in
+        // the current workspace instead.
+        const proxyValidation = await validateSessionIdentityMapsToOrg(
           request,
-          env as unknown as AccessValidationEnv,
-          authContext.session.user_email,
+          env as unknown as ProxyAuthValidationEnv,
+          authContext.session,
           groupWorkspace.org_id,
         );
-        if (accessValidation !== "valid") {
+        if (proxyValidation !== "valid") {
           canSwitch = false;
           console.warn(
-            "[cloudflare-access] skipped chat group org switch for unmapped org",
-            { orgId: groupWorkspace.org_id, validation: accessValidation },
+            "[proxy-auth] skipped chat group org switch for unmapped org",
+            { orgId: groupWorkspace.org_id, validation: proxyValidation },
           );
         }
       }

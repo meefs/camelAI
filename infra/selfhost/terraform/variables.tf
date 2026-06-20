@@ -96,6 +96,54 @@ variable "cloudflare_access_required_email_domain" {
   type    = string
   default = ""
 }
+variable "pomerium_authenticate_url" {
+  description = "Pomerium authenticate service URL; the JWKS endpoint (/.well-known/pomerium/jwks.json) is derived from it. Alternatively set pomerium_jwks_url directly."
+  type        = string
+  default     = ""
+}
+variable "pomerium_jwks_url" {
+  description = "Full Pomerium JWKS URL. Overrides pomerium_authenticate_url when set."
+  type        = string
+  default     = ""
+}
+variable "pomerium_issuer" {
+  description = "Expected JWT issuer (the bare route host Pomerium fronts, no scheme)."
+  type        = string
+  default     = ""
+}
+variable "pomerium_audience" {
+  description = "Comma-separated accepted JWT audiences (the bare route host(s))."
+  type        = string
+  default     = ""
+}
+variable "pomerium_default_org_name" {
+  type    = string
+  default = ""
+}
+variable "pomerium_org_claims" {
+  description = "Comma-separated Pomerium identity claim paths for org mapping. Default intentionally points at a missing claim so self-host falls back to pomerium_default_org_name."
+  type        = string
+  default     = "__selfhost_org__"
+}
+variable "pomerium_org_map" {
+  description = "Optional JSON object mapping exact group ids/claim values to friendly org names."
+  type        = string
+  default     = ""
+}
+variable "pomerium_org_group_prefix" {
+  description = "Prefix that maps inline SSO groups to orgs (e.g. camelai-office-)."
+  type        = string
+  default     = ""
+}
+variable "pomerium_admin_group_prefix" {
+  description = "Prefix that maps inline SSO groups to admin membership in the mapped org."
+  type        = string
+  default     = ""
+}
+variable "pomerium_required_email_domain" {
+  type    = string
+  default = ""
+}
 
 variable "selfhost_ai_provider" {
   description = "AI provider for self-host. Leave empty to use the cloud-specific default; AWS defaults to bedrock through the EC2 instance role."

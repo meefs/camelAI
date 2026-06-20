@@ -27,6 +27,16 @@ locals {
     cloudflare_access_default_org_name      = var.cloudflare_access_default_org_name
     cloudflare_access_org_claims            = var.cloudflare_access_org_claims
     cloudflare_access_required_email_domain = var.cloudflare_access_required_email_domain
+    pomerium_authenticate_url               = var.pomerium_authenticate_url
+    pomerium_jwks_url                       = var.pomerium_jwks_url
+    pomerium_issuer                         = var.pomerium_issuer
+    pomerium_audience                       = var.pomerium_audience
+    pomerium_default_org_name               = var.pomerium_default_org_name
+    pomerium_org_claims                     = var.pomerium_org_claims
+    pomerium_org_map                        = var.pomerium_org_map
+    pomerium_org_group_prefix               = var.pomerium_org_group_prefix
+    pomerium_admin_group_prefix             = var.pomerium_admin_group_prefix
+    pomerium_required_email_domain          = var.pomerium_required_email_domain
     selfhost_ai_provider                    = var.selfhost_ai_provider != "" ? var.selfhost_ai_provider : (var.cloud_provider == "aws" ? "bedrock" : "")
     selfhost_ai_api_key                     = var.selfhost_ai_api_key
     selfhost_ai_base_url                    = var.selfhost_ai_base_url

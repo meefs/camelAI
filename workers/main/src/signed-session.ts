@@ -12,6 +12,14 @@
 
 /** `auth_source` tag for sessions minted from a Cloudflare Access assertion. */
 export const CLOUDFLARE_ACCESS_AUTH_SOURCE = "cloudflare_access";
+/** `auth_source` tag for sessions minted from a Pomerium assertion. */
+export const POMERIUM_AUTH_SOURCE = "pomerium";
+
+/** `auth_source` tag for any session minted from a trusted reverse-proxy
+ * identity assertion (Cloudflare Access, Pomerium, ...). */
+export type ProxyAuthSource =
+  | typeof CLOUDFLARE_ACCESS_AUTH_SOURCE
+  | typeof POMERIUM_AUTH_SOURCE;
 
 export interface SignedSessionData {
   user_id: string;
@@ -20,7 +28,7 @@ export interface SignedSessionData {
   created_at: number;
   user_name?: string | null;
   user_email?: string | null;
-  auth_source?: typeof CLOUDFLARE_ACCESS_AUTH_SOURCE | null;
+  auth_source?: ProxyAuthSource | null;
 }
 
 export interface SignedOAuthStateData {

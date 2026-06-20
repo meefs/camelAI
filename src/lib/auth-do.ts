@@ -370,7 +370,7 @@ export async function createUserFromOAuth(
   env: AuthEnv,
   email: string,
   name: string | null,
-  provider: "google" | "github" | "cloudflare_access",
+  provider: "google" | "github" | "cloudflare_access" | "pomerium",
   providerId: string,
 ): Promise<{ userId: string; user: User }> {
   const blocklist = await getBlocklistFromKV(env.APP_KV);
@@ -440,7 +440,7 @@ export async function createUserFromOAuth(
 export async function linkOAuthProvider(
   env: AuthEnv,
   userId: string,
-  provider: "google" | "github" | "cloudflare_access",
+  provider: "google" | "github" | "cloudflare_access" | "pomerium",
   providerId: string,
 ): Promise<void> {
   const oauthKvKey = `oauth:${provider}:${providerId}`;

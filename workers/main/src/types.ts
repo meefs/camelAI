@@ -124,6 +124,16 @@ export interface Env
   CLOUDFLARE_ACCESS_ADMIN_GROUP_PREFIX?: string;
   CLOUDFLARE_ACCESS_DEFAULT_ORG_NAME?: string;
   CLOUDFLARE_ACCESS_REQUIRED_EMAIL_DOMAIN?: string;
+  POMERIUM_JWKS_URL?: string;
+  POMERIUM_AUTHENTICATE_URL?: string;
+  POMERIUM_ISSUER?: string;
+  POMERIUM_AUDIENCE?: string;
+  POMERIUM_ORG_MAP?: string;
+  POMERIUM_ORG_CLAIMS?: string;
+  POMERIUM_ORG_GROUP_PREFIX?: string;
+  POMERIUM_ADMIN_GROUP_PREFIX?: string;
+  POMERIUM_DEFAULT_ORG_NAME?: string;
+  POMERIUM_REQUIRED_EMAIL_DOMAIN?: string;
   // Email handle registry (atomic handle claims)
   EMAIL_HANDLE?: DurableObjectNamespace<EmailHandleDO>;
   // Channel routing registries (strongly consistent routing state)

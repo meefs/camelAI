@@ -70,6 +70,19 @@ CLOUDFLARE_ACCESS_DEFAULT_ORG_NAME="Your Organization"
 See [Cloudflare Access Auth](./cloudflare-access-auth.md) for group/claim-based
 organization mapping and optional email-domain restrictions.
 
+If you run your own identity-aware proxy instead of Cloudflare, [Pomerium](https://www.pomerium.com/)
+is supported the same way. Put Pomerium in front of the app hostname and set:
+
+```bash
+POMERIUM_AUTHENTICATE_URL=https://authenticate.your-domain.com
+POMERIUM_ISSUER=app.your-domain.com
+POMERIUM_AUDIENCE=app.your-domain.com
+POMERIUM_DEFAULT_ORG_NAME="Your Organization"
+```
+
+See [Pomerium Auth](./pomerium-auth.md) for the full configuration, including
+group/claim-based organization mapping.
+
 If port `3001` is already in use:
 
 ```bash
