@@ -1,62 +1,42 @@
-# AWS EC2 eval runner
+# AWS eval runner
 
-Run live agent evals on a stopped EC2 pool instead of your laptop.
+Live agent evals run on a stopped EC2 pool instead of your laptop. The **control plane** that
+drives the pool (dashboard + API + dispatch, on AWS) lives in its own repo,
+**[`qaml-ai/camelai-eval-runner`](https://github.com/qaml-ai/camelai-eval-runner)**. It clones
+*this* repo at a chosen branch/commit per run and executes the evals defined here. This page
+covers only the parts that live in `chiridion-app`.
 
-## Shared setup
+## What lives here
 
-One teammate with setup permissions runs:
+- **The evals**: `workers/main/tests/evals/*` — including the generic `custom-prompt-live.test.ts`
+  (driven by `CUSTOM_EVAL_PROMPT` / `CUSTOM_EVAL_PROJECT` / `CUSTOM_EVAL_EXPECT_SUBSTRINGS`, plus
+  the usual `EVAL_MODEL` / `EVAL_MAX_*` / `EVAL_REAL_DEPLOY` knobs).
+- **In-tree single-eval runner**: `scripts/run-agent-eval.mjs <eval-name>` (used locally and by
+  the on-instance runner). `bun run test:eval:dashboard` / `:deploy` / `:sandbox` wrap it.
+- **On-instance suite runner**: `scripts/run-eval-suite.sh` — the control plane clones this repo
+  onto a pool instance and runs this script, which builds the sandbox image and runs the eval(s),
+  writing `status.json` + artifacts to a local dir. It is **cloud-agnostic** — it assumes `.dev.vars`
+  is already present and never calls AWS. Secrets delivery and result upload are the control plane's
+  job (see below).
 
-```bash
-bun run test:eval:ec2:setup
-# or: bun run test:eval:ec2 -- setup
-```
+## How a control-plane run reaches these
 
-Setup creates/updates:
+`camelai-eval-runner` (always-on EC2 host) → picks a stopped pool instance → SSM preflight clones
+`chiridion-app` at the requested ref, writes `.dev.vars` (from Secrets Manager), and runs
+`scripts/run-eval-suite.sh` → the preflight then uploads `runs/<id>/…` to S3 → the control plane
+ingests the result. All AWS calls (Secrets Manager, S3, instance start/stop) live in the control
+plane, not here. See that repo's README for deploy + Cloudflare setup. The pool
+(`camelai:eval-pool=true`) and results bucket are provisioned by its Terraform.
 
-- S3 bucket/prefix for source bundles and durable results: `s3://camelai-evals-<account-id>-<region>/...`
-- DynamoDB lock table: `camelai-ec2-eval-runner-locks`
-- IAM role + instance profile for eval VMs
-- a stopped EC2 pool tagged `camelai:eval-pool=true`
+`camelai-eval-sandbox:latest` is rebuilt on each run so changes to
+`workers/main/eval-sandbox.Dockerfile` or `sandbox/create-worker` are picked up; Docker layer cache
+keeps it fast.
 
-The pool uses SSM Run Command, so teammates do not need SSH keys or inbound security group rules. They only need an authenticated AWS CLI with permission to use the pool and read/write the eval bucket.
-
-## Run
-
-```bash
-bun run test:eval:ec2 -- run all --model sonnet --enforce-signal
-# or run one eval:
-bun run test:eval:ec2 -- run sandbox-write-file-live --model sonnet
-```
-
-The runner:
-
-1. packages git-tracked plus unignored files, including `.dev.vars`
-2. uploads the source tarball to S3
-3. claims a stopped VM with a DynamoDB lock
-4. starts the VM and sends a detached SSM command
-5. remote script downloads source, installs deps, builds `camelai-eval-sandbox:latest` with Docker cache, runs evals
-6. uploads `manifest.json`, `status.json`, `output.log`, and artifacts to S3
-7. releases the lock and stops the VM
-
-`camelai-eval-sandbox:latest` is intentionally built on each eval run so changes to `workers/main/eval-sandbox.Dockerfile` or `sandbox/create-worker` are included. Docker layer cache keeps this fast when unchanged.
-
-## Check later
+## Running an eval locally
 
 ```bash
-bun run test:eval:ec2 -- list
-bun run test:eval:ec2 -- status <run-id>
-bun run test:eval:ec2 -- download <run-id>
-```
-
-Downloaded results land in `.eval-artifacts/ec2/<run-id>` by default.
-
-## Useful overrides
-
-```bash
-EVAL_EC2_INSTANCE_ID=i-...                          # force a specific instance
-EVAL_EC2_POOL_SIZE=8                                # setup pool size
-EVAL_EC2_INSTANCE_TYPE=t3.xlarge                    # setup instance size
-EVAL_EC2_REMOTE_ROOT=/home/ec2-user/camelai-evals   # remote workspace root
-EVAL_EC2_STOP_AFTER=0                               # keep the instance running for debugging
-EVAL_EC2_INSTALL_COMMAND='bun install --frozen-lockfile'
+RUN_AGENT_EVALS=1 bun run test:eval:dashboard   # or :deploy / :sandbox
+# custom prompt:
+RUN_AGENT_EVALS=1 CUSTOM_EVAL_PROMPT="Build a dashboard from fake data." \
+  bun scripts/run-agent-eval.mjs custom-prompt-live
 ```

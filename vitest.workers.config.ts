@@ -27,6 +27,9 @@ const bedrockDevVarNames = new Set([
   // testing-grounds namespace or change the app host they are served on.
   'CF_GATEWAY_NAME',
   'CF_GATEWAY_TOKEN',
+  'CUSTOM_EVAL_PROMPT',
+  'CUSTOM_EVAL_PROJECT',
+  'CUSTOM_EVAL_EXPECT_SUBSTRINGS',
   'EVAL_REAL_DEPLOY',
   'EVAL_CUSTOM_API',
   'EVAL_CUSTOM_API_KEY',

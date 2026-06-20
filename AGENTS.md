@@ -87,6 +87,26 @@ namespace + DNS routes are created out-of-band. Eval apps are kept (no cleanup).
 bindings (`DATA_PROXY`/`CONNECTIONS`) won't resolve to the eval's local workspace;
 self-contained apps render fully.
 
+### Eval control plane (separate repo)
+
+The pull-based eval control plane (dashboard + API + EC2 pool dispatch, on AWS) lives in its own
+repo, **`qaml-ai/camelai-eval-runner`** — it doesn't belong in the app tree. It clones *this* repo
+at a chosen branch/commit per run and executes the evals here, so the eval definitions stay in
+`chiridion-app`:
+
+- The evals themselves: `workers/main/tests/evals/*` (incl. the generic
+  `custom-prompt-live.test.ts` driven by `CUSTOM_EVAL_*` env), the in-tree single-eval runner
+  `scripts/run-agent-eval.mjs`, and the on-instance suite runner `scripts/run-eval-suite.sh`
+  (cloud-agnostic: builds the sandbox image + runs the eval(s), writing results to a local dir; it
+  touches no AWS — the control plane delivers `.dev.vars` and uploads the results).
+- The control plane reuses the EC2 pool tagged `camelai:eval-pool=true` and the results bucket;
+  the pool + host + infra are provisioned by Terraform in `camelai-eval-runner`.
+
+Run an eval locally with `bun run test:eval:dashboard` / `:deploy` / `:sandbox` (these wrap
+`scripts/run-agent-eval.mjs`). To drive the hosted runner API (`evals.camelai.dev`) or get past
+Cloudflare Access from the CLI, use the **`running-agent-evals`** skill. See the
+`camelai-eval-runner` README for deploy/Cloudflare setup.
+
 ## Frontend Conventions
 
 - React Router is in framework mode. Prefer `loader`, `action`, `<Form>`, and `useFetcher` over client-only fetching in `useEffect`.

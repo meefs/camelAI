@@ -1,0 +1,112 @@
+#!/bin/bash
+# Run the camelAI agent eval suite in THIS checkout and write results to a local $RUN_DIR.
+#
+# Cloud-agnostic by design: this script assumes `.dev.vars` is already present in the working tree
+# (repo root) and never touches any cloud API — no Secrets Manager, no S3, no instance management.
+# The orchestrator (qaml-ai/camelai-eval-runner) is responsible for delivering `.dev.vars`,
+# capturing output, uploading $RUN_DIR, and managing the host. Run from the repo root.
+#
+# Inputs (env): RUN_DIR (required, where status.json + artifacts/ are written), EVAL_TARGET
+# (required: an eval id, comma-separated list, or "all"), EVAL_ARGS_JSON, INSTALL_COMMAND, plus the
+# usual EVAL_*/CUSTOM_EVAL_* knobs which flow through to vitest via the environment.
+set -uo pipefail
+
+: "${RUN_DIR:?RUN_DIR is required}"
+: "${EVAL_TARGET:?EVAL_TARGET is required}"
+: "${EVAL_ARGS_JSON:=[]}"
+: "${INSTALL_COMMAND:=bun install --frozen-lockfile}"
+RUN_ID="${RUN_ID:-local}"
+
+mkdir -p "$RUN_DIR/artifacts"
+GIT_COMMIT="$(git rev-parse HEAD 2>/dev/null || echo "")"
+GIT_REF="${GIT_REF:-$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")}"
+
+write_status() {
+  local status="$1"
+  local extra="${2:-}"
+  cat > "$RUN_DIR/status.json" <<JSON
+{"runId":"$RUN_ID","status":"$status","timestamp":"$(date -Is)","ref":"$GIT_REF","commit":"$GIT_COMMIT","evalTarget":"$EVAL_TARGET"$extra}
+JSON
+}
+
+fail() {
+  local phase="$1" code="$2"
+  echo "[$(date -Is)] $phase failed (exit $code)"
+  write_status failed ',"exitCode":'"$code"',"finishedAt":"'"$(date -Is)"'","phase":"'"$phase"'"'
+  exit "$code"
+}
+
+install_prereqs() {
+  if ! command -v docker >/dev/null 2>&1; then
+    echo "[$(date -Is)] Installing Docker"
+    dnf install -y docker
+  fi
+  systemctl enable --now docker
+  usermod -aG docker ec2-user || true
+  chmod 666 /var/run/docker.sock || true
+  docker pull --platform linux/amd64 'cloudflare/proxy-everything:3cb1195@sha256:0ef6716c52430096900b150d84a3302057d6cd2319dae7987128c85d0733e3c8'
+
+  local node_version=22.21.1
+  local node_dir="/opt/node-v${node_version}-linux-x64"
+  if ! command -v node >/dev/null 2>&1 || [ "$(node -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo 0)" -lt 22 ]; then
+    echo "[$(date -Is)] Installing Node.js $node_version"
+    curl -fsSL "https://nodejs.org/dist/v${node_version}/node-v${node_version}-linux-x64.tar.xz" -o /tmp/node.tar.xz
+    tar -xJf /tmp/node.tar.xz -C /opt
+    ln -sf "$node_dir/bin/node" /usr/local/bin/node
+    ln -sf "$node_dir/bin/npm" /usr/local/bin/npm
+    ln -sf "$node_dir/bin/npx" /usr/local/bin/npx
+  fi
+  export PATH="/usr/local/bin:${node_dir}/bin:$PATH"
+
+  if ! command -v bun >/dev/null 2>&1; then
+    curl -fsSL https://bun.sh/install | BUN_INSTALL=/usr/local bash
+    ln -sf /usr/local/bin/bun /usr/local/bin/bunx /usr/bin/ || true
+  fi
+}
+
+run_evals() {
+  local evals
+  if [ "$EVAL_TARGET" = "all" ]; then
+    evals=(dashboard-fake-data-live deploy-fake-data-live sandbox-write-file-live)
+  else
+    # EVAL_TARGET may be a single eval id or a comma-separated list.
+    IFS=',' read -ra evals <<< "$EVAL_TARGET"
+  fi
+
+  mapfile -t eval_args < <(node -e 'for (const arg of JSON.parse(process.env.EVAL_ARGS_JSON || "[]")) console.log(arg)')
+  local code=0
+  for eval_name in "${evals[@]}"; do
+    # Eval selection (EVAL_MODEL, EVAL_REAL_DEPLOY, EVAL_MAX_*, EVAL_ENFORCE_SIGNAL) and the
+    # custom-prompt inputs (CUSTOM_EVAL_PROMPT/PROJECT/EXPECT_SUBSTRINGS) flow through from the
+    # environment to vitest.
+    EVAL_ARTIFACT_DIR="$RUN_DIR/artifacts" RUN_AGENT_EVALS=1 bun scripts/run-agent-eval.mjs "$eval_name" "${eval_args[@]}"
+    eval_code=$?
+    if [ "$eval_code" -ne 0 ]; then code="$eval_code"; fi
+  done
+  return "$code"
+}
+
+if [ ! -f .dev.vars ]; then
+  echo "[$(date -Is)] ERROR: .dev.vars not found in $(pwd); the orchestrator must deliver it before running"
+  fail dev-vars 1
+fi
+
+write_status running ',"startedAt":"'"$(date -Is)"'"'
+install_prereqs || true
+echo "[$(date -Is)] ref=$GIT_REF commit=$GIT_COMMIT node=$(node --version 2>/dev/null) bun=$(bun --version 2>/dev/null) docker=$(docker --version 2>/dev/null)"
+
+if [ -f workers/main/eval-sandbox.Dockerfile ]; then
+  echo "[$(date -Is)] Building camelai-eval-sandbox:latest (Docker cache enabled)"
+  docker build -t camelai-eval-sandbox:latest -f workers/main/eval-sandbox.Dockerfile . || fail docker-build $?
+fi
+
+echo "[$(date -Is)] Installing dependencies with: $INSTALL_COMMAND"
+bash -lc "$INSTALL_COMMAND" || fail install $?
+
+echo "[$(date -Is)] Running eval target: $EVAL_TARGET"
+run_evals
+code=$?
+if [ "$code" -eq 0 ]; then status=completed; else status=failed; fi
+write_status "$status" ',"exitCode":'"$code"',"finishedAt":"'"$(date -Is)"'"'
+echo "[$(date -Is)] Done (exit $code)"
+exit "$code"

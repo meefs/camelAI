@@ -18,6 +18,11 @@ const evals = {
     startMarker: "SANDBOX_WRITE_EVAL_TRANSCRIPT_START ",
     endMarker: " SANDBOX_WRITE_EVAL_TRANSCRIPT_END",
   },
+  "custom-prompt-live": {
+    testFile: "workers/main/tests/evals/custom-prompt-live.test.ts",
+    startMarker: "CUSTOM_EVAL_TRANSCRIPT_START ",
+    endMarker: " CUSTOM_EVAL_TRANSCRIPT_END",
+  },
 };
 
 const firstArg = process.argv[2];
