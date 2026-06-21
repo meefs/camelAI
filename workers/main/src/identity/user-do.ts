@@ -1339,9 +1339,18 @@ export class UserDO extends DurableObject<DOEnv> {
          SET avatar_content = ?,
              avatar_content_source = 'generated',
              avatar_emoji_last_attempt_at = NULL
-         WHERE id = ? AND avatar_content_source = 'default'`,
+         WHERE id = ?
+           AND (
+             avatar_content_source = 'default'
+             OR (
+               avatar_content_source = 'fallback'
+               AND avatar_content = ?
+               AND avatar_emoji_last_attempt_at IS NULL
+             )
+           )`,
         content,
         groupId,
+        DEFAULT_CHAT_GROUP_EMOJI,
       );
       const group = this.getChatGroupRow(groupId);
       avatar = group?.avatar ?? null;
@@ -1349,17 +1358,30 @@ export class UserDO extends DurableObject<DOEnv> {
     return avatar;
   }
 
-  setChatGroupAvatarFallback(groupId: string): ChatGroupAvatar | null {
+  setChatGroupAvatarFallback(
+    groupId: string,
+    at: number = Date.now(),
+  ): ChatGroupAvatar | null {
     let avatar: ChatGroupAvatar | null = null;
     this.ctx.storage.transactionSync(() => {
       this.sql.exec(
         `UPDATE chat_groups
          SET avatar_content = ?,
              avatar_content_source = 'fallback',
-             avatar_emoji_last_attempt_at = NULL
-         WHERE id = ? AND avatar_content_source = 'default'`,
+             avatar_emoji_last_attempt_at = ?
+         WHERE id = ?
+           AND (
+             avatar_content_source = 'default'
+             OR (
+               avatar_content_source = 'fallback'
+               AND avatar_content = ?
+               AND avatar_emoji_last_attempt_at IS NULL
+             )
+           )`,
         DEFAULT_CHAT_GROUP_EMOJI,
+        at,
         groupId,
+        DEFAULT_CHAT_GROUP_EMOJI,
       );
       const group = this.getChatGroupRow(groupId);
       avatar = group?.avatar ?? null;
@@ -1367,58 +1389,7 @@ export class UserDO extends DurableObject<DOEnv> {
     return avatar;
   }
 
-  claimChatGroupsNeedingEmojiBackfill(
-    orgId: string,
-    workspaceId: string,
-    groupIds: string[],
-    limit: number = 3,
-    at: number = Date.now(),
-  ): Array<{ id: string; name: string }> {
-    const cappedLimit = Math.max(1, Math.min(limit, 5));
-    const retryBefore = at - 24 * 60 * 60 * 1000;
-    const candidates: Array<{ id: string; name: string }> = [];
-    this.ctx.storage.transactionSync(() => {
-      for (const groupId of groupIds) {
-        if (candidates.length >= cappedLimit) break;
-        const rows = this.sql
-          .exec<{
-            id: string;
-            name: string;
-            avatar_emoji_last_attempt_at: number | null;
-          }>(
-            `SELECT id, name, avatar_emoji_last_attempt_at
-             FROM chat_groups
-             WHERE id = ?
-               AND org_id = ?
-               AND workspace_id = ?
-               AND avatar_content_source = 'default'
-               AND TRIM(name) <> ''
-             LIMIT 1`,
-            groupId,
-            orgId,
-            workspaceId,
-          )
-          .toArray();
-        const row = rows[0];
-        if (!row || isPlaceholderThreadTitle(row.name)) continue;
-        const lastAttempt = row.avatar_emoji_last_attempt_at;
-        if (typeof lastAttempt === "number" && lastAttempt > retryBefore) {
-          continue;
-        }
-        this.sql.exec(
-          `UPDATE chat_groups
-           SET avatar_emoji_last_attempt_at = ?
-           WHERE id = ? AND avatar_content_source = 'default'`,
-          at,
-          row.id,
-        );
-        candidates.push({ id: row.id, name: row.name });
-      }
-    });
-    return candidates;
-  }
-
-  claimChatGroupEmojiGenerationForThread(
+  claimChatGroupAvatarGenerationForThread(
     threadId: string,
     at: number = Date.now(),
   ): { id: string; name: string; avatar: ChatGroupAvatar } | null {
@@ -1429,34 +1400,57 @@ export class UserDO extends DurableObject<DOEnv> {
       if (!group || isPlaceholderThreadTitle(group.name)) return;
       const rows = this.sql
         .exec<{
-          member_count: number;
+          avatar_content: string;
           avatar_content_source: string;
           avatar_emoji_last_attempt_at: number | null;
         }>(
           `SELECT
-             (SELECT COUNT(*) FROM chat_group_members WHERE group_id = ?) AS member_count,
+             avatar_content,
              avatar_content_source,
              avatar_emoji_last_attempt_at
            FROM chat_groups
            WHERE id = ?`,
           group.id,
-          group.id,
         )
         .toArray();
       const row = rows[0];
-      if (!row || row.member_count !== 1 || row.avatar_content_source !== "default") {
+      if (!row) {
+        return;
+      }
+      const isSuspectFallback =
+        row.avatar_content_source === "fallback" &&
+        row.avatar_content === DEFAULT_CHAT_GROUP_EMOJI &&
+        row.avatar_emoji_last_attempt_at === null;
+      if (
+        row.avatar_content_source !== "default" &&
+        !isSuspectFallback
+      ) {
         return;
       }
       const lastAttempt = row.avatar_emoji_last_attempt_at;
-      if (typeof lastAttempt === "number" && lastAttempt > retryBefore) {
+      if (
+        row.avatar_content_source === "default" &&
+        typeof lastAttempt === "number" &&
+        lastAttempt > retryBefore
+      ) {
         return;
       }
       this.sql.exec(
         `UPDATE chat_groups
-         SET avatar_emoji_last_attempt_at = ?
-         WHERE id = ? AND avatar_content_source = 'default'`,
+         SET avatar_content_source = 'default',
+             avatar_emoji_last_attempt_at = ?
+         WHERE id = ?
+           AND (
+             avatar_content_source = 'default'
+             OR (
+               avatar_content_source = 'fallback'
+               AND avatar_content = ?
+               AND avatar_emoji_last_attempt_at IS NULL
+             )
+           )`,
         at,
         group.id,
+        DEFAULT_CHAT_GROUP_EMOJI,
       );
       candidate = { id: group.id, name: group.name, avatar: group.avatar };
     });
@@ -1876,6 +1870,21 @@ export class UserDO extends DurableObject<DOEnv> {
   // Test helper RPC: expose the current schema version used by migration logic.
   async getSchemaVersion(): Promise<number> {
     return this.getSchemaVersionValue();
+  }
+
+  // Test helper RPC: simulate generic fallback rows written before fallback attempts were marked.
+  async markChatGroupAvatarFallbackWithoutAttemptForTest(
+    groupId: string,
+  ): Promise<void> {
+    this.sql.exec(
+      `UPDATE chat_groups
+       SET avatar_content = ?,
+           avatar_content_source = 'fallback',
+           avatar_emoji_last_attempt_at = NULL
+       WHERE id = ?`,
+      DEFAULT_CHAT_GROUP_EMOJI,
+      groupId,
+    );
   }
 }
 

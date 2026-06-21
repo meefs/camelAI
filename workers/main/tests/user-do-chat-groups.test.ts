@@ -94,97 +94,7 @@ describe("UserDO chat groups", () => {
     expect(summary?.avatar.content).toBe("🌊");
   });
 
-  it("claims default-source groups for emoji backfill and throttles recent attempts", async () => {
-    const { userStub } = await createUserStub();
-    const orgId = crypto.randomUUID();
-    const workspaceId = crypto.randomUUID();
-    const group = await userStub.createChatGroup(orgId, workspaceId, {
-      name: "Database migrations",
-    });
-
-    await expect(
-      userStub.claimChatGroupsNeedingEmojiBackfill(
-        orgId,
-        workspaceId,
-        [group.id],
-        3,
-      ),
-    ).resolves.toEqual([{ id: group.id, name: "Database migrations" }]);
-    await expect(userStub.getChatGroupSummary(group.id)).resolves.toMatchObject({
-      avatar: {
-        color: AVATAR_COLORS[0],
-        content: DEFAULT_CHAT_GROUP_EMOJI,
-        status: "pending",
-      },
-    });
-
-    await expect(
-      userStub.claimChatGroupsNeedingEmojiBackfill(
-        orgId,
-        workspaceId,
-        [group.id],
-        3,
-      ),
-    ).resolves.toEqual([]);
-
-    const retryGroup = await userStub.createChatGroup(orgId, workspaceId, {
-      name: "Retry later",
-    });
-    await expect(
-      userStub.claimChatGroupsNeedingEmojiBackfill(
-        orgId,
-        workspaceId,
-        [retryGroup.id],
-        3,
-        Date.now() - 25 * 60 * 60 * 1000,
-      ),
-    ).resolves.toEqual([{ id: retryGroup.id, name: "Retry later" }]);
-    await expect(
-      userStub.claimChatGroupsNeedingEmojiBackfill(
-        orgId,
-        workspaceId,
-        [retryGroup.id],
-        3,
-      ),
-    ).resolves.toEqual([{ id: retryGroup.id, name: "Retry later" }]);
-
-    await userStub.setGeneratedChatGroupEmoji(group.id, "🗄️");
-    await expect(userStub.getChatGroupSummary(group.id)).resolves.toMatchObject({
-      avatar: {
-        color: AVATAR_COLORS[0],
-        content: "🗄️",
-        status: "generated",
-      },
-    });
-    await expect(
-      userStub.claimChatGroupsNeedingEmojiBackfill(
-        orgId,
-        workspaceId,
-        [group.id],
-        3,
-      ),
-    ).resolves.toEqual([]);
-  });
-
-  it("does not claim placeholder group names for emoji backfill", async () => {
-    const { userStub } = await createUserStub();
-    const orgId = crypto.randomUUID();
-    const workspaceId = crypto.randomUUID();
-    const placeholder = await userStub.createChatGroup(orgId, workspaceId, {
-      name: "New Chat",
-    });
-
-    await expect(
-      userStub.claimChatGroupsNeedingEmojiBackfill(
-        orgId,
-        workspaceId,
-        [placeholder.id],
-        3,
-      ),
-    ).resolves.toEqual([]);
-  });
-
-  it("claims generated emoji work for eligible titled single-thread groups", async () => {
+  it("claims avatar generation for an eligible titled thread group", async () => {
     const { userStub } = await createUserStub();
     const orgId = crypto.randomUUID();
     const workspaceId = crypto.randomUUID();
@@ -202,7 +112,7 @@ describe("UserDO chat groups", () => {
     );
 
     await expect(
-      userStub.claimChatGroupEmojiGenerationForThread(threadId),
+      userStub.claimChatGroupAvatarGenerationForThread(threadId),
     ).resolves.toEqual({
       id: group.id,
       name: "Generated title",
@@ -213,19 +123,19 @@ describe("UserDO chat groups", () => {
       },
     });
     await expect(
-      userStub.claimChatGroupEmojiGenerationForThread(threadId),
+      userStub.claimChatGroupAvatarGenerationForThread(threadId),
     ).resolves.toBeNull();
 
     await userStub.setGeneratedChatGroupEmoji(group.id, "🧠");
     await expect(
-      userStub.claimChatGroupEmojiGenerationForThread(
+      userStub.claimChatGroupAvatarGenerationForThread(
         threadId,
         Date.now() + 25 * 60 * 60 * 1000,
       ),
     ).resolves.toBeNull();
   });
 
-  it("does not claim generated emoji work for placeholder or multi-thread groups", async () => {
+  it("claims accessed multi-thread groups but skips placeholder names", async () => {
     const { userStub } = await createUserStub();
     const orgId = crypto.randomUUID();
     const workspaceId = crypto.randomUUID();
@@ -240,7 +150,7 @@ describe("UserDO chat groups", () => {
       "New Chat",
     );
     await expect(
-      userStub.claimChatGroupEmojiGenerationForThread(placeholderThreadId),
+      userStub.claimChatGroupAvatarGenerationForThread(placeholderThreadId),
     ).resolves.toBeNull();
 
     const multiGroup = await userStub.createChatGroup(orgId, workspaceId, {
@@ -249,7 +159,121 @@ describe("UserDO chat groups", () => {
     await userStub.addThreadToGroup(multiGroup.id, multiThreadId);
     await userStub.addThreadToGroup(multiGroup.id, extraThreadId);
     await expect(
-      userStub.claimChatGroupEmojiGenerationForThread(multiThreadId),
+      userStub.claimChatGroupAvatarGenerationForThread(multiThreadId),
+    ).resolves.toMatchObject({
+      id: multiGroup.id,
+      name: "Implementation plan",
+      avatar: {
+        content: DEFAULT_CHAT_GROUP_EMOJI,
+        status: "fallback",
+      },
+    });
+  });
+
+  it("repairs generic fallback rows for accessed threads once", async () => {
+    const { userStub } = await createUserStub();
+    const orgId = crypto.randomUUID();
+    const workspaceId = crypto.randomUUID();
+    const failedThreadId = crypto.randomUUID();
+    const generatedThreadId = crypto.randomUUID();
+    const failedGroup = await userStub.ensureGroupForThread(
+      orgId,
+      workspaceId,
+      failedThreadId,
+      "Broken rollout fallback",
+    );
+    const generatedGroup = await userStub.ensureGroupForThread(
+      orgId,
+      workspaceId,
+      generatedThreadId,
+      "Repair to generated",
+    );
+
+    await userStub.markChatGroupAvatarFallbackWithoutAttemptForTest(failedGroup.id);
+    await userStub.markChatGroupAvatarFallbackWithoutAttemptForTest(generatedGroup.id);
+
+    await expect(
+      userStub.claimChatGroupAvatarGenerationForThread(failedThreadId),
+    ).resolves.toMatchObject({
+      id: failedGroup.id,
+      name: "Broken rollout fallback",
+      avatar: {
+        content: DEFAULT_CHAT_GROUP_EMOJI,
+        status: "fallback",
+      },
+    });
+    await expect(userStub.getChatGroupSummary(failedGroup.id)).resolves.toMatchObject({
+      avatar: {
+        content: DEFAULT_CHAT_GROUP_EMOJI,
+        status: "pending",
+      },
+    });
+
+    await userStub.setChatGroupAvatarFallback(failedGroup.id);
+    await expect(
+      userStub.claimChatGroupAvatarGenerationForThread(
+        failedThreadId,
+        Date.now() + 25 * 60 * 60 * 1000,
+      ),
+    ).resolves.toBeNull();
+
+    await expect(
+      userStub.claimChatGroupAvatarGenerationForThread(generatedThreadId),
+    ).resolves.toMatchObject({
+      id: generatedGroup.id,
+    });
+    await userStub.setGeneratedChatGroupEmoji(generatedGroup.id, "🧠");
+    await expect(userStub.getChatGroupSummary(generatedGroup.id)).resolves.toMatchObject({
+      avatar: {
+        content: "🧠",
+        status: "generated",
+      },
+    });
+  });
+
+  it("does not claim accessed groups with user, generated, or final fallback avatars", async () => {
+    const { userStub } = await createUserStub();
+    const orgId = crypto.randomUUID();
+    const workspaceId = crypto.randomUUID();
+    const userThreadId = crypto.randomUUID();
+    const generatedThreadId = crypto.randomUUID();
+    const fallbackThreadId = crypto.randomUUID();
+    const userGroup = await userStub.ensureGroupForThread(
+      orgId,
+      workspaceId,
+      userThreadId,
+      "User avatar",
+    );
+    const generatedGroup = await userStub.ensureGroupForThread(
+      orgId,
+      workspaceId,
+      generatedThreadId,
+      "Generated avatar",
+    );
+    const fallbackGroup = await userStub.ensureGroupForThread(
+      orgId,
+      workspaceId,
+      fallbackThreadId,
+      "Final fallback",
+    );
+
+    await userStub.updateChatGroup(userGroup.id, {
+      avatar: { color: "#e0476b", content: "🌊" },
+    });
+    await userStub.setGeneratedChatGroupEmoji(generatedGroup.id, "🧠");
+    await userStub.setChatGroupAvatarFallback(fallbackGroup.id);
+
+    await expect(
+      userStub.claimChatGroupAvatarGenerationForThread(userThreadId),
+    ).resolves.toBeNull();
+    await expect(
+      userStub.claimChatGroupAvatarGenerationForThread(generatedThreadId),
+    ).resolves.toBeNull();
+    await expect(
+      userStub.claimChatGroupAvatarGenerationForThread(
+        fallbackThreadId,
+        Date.now() + 25 * 60 * 60 * 1000,
+      ),
     ).resolves.toBeNull();
   });
 

@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { ChatThreadDO } from "../src/chat-thread-do";
 
-function createFakeThread(options: { emojiFails?: boolean } = {}) {
+function createFakeThread(options: { emojiFails?: boolean; aiMissing?: boolean } = {}) {
   const waitUntilPromises: Promise<unknown>[] = [];
   const order: string[] = [];
   let resolveClaim:
@@ -40,7 +40,7 @@ function createFakeThread(options: { emojiFails?: boolean } = {}) {
     renameEmptySingleThreadGroupForThread: vi.fn(async () => {
       order.push("rename-group");
     }),
-    claimChatGroupEmojiGenerationForThread: vi.fn(() => {
+    claimChatGroupAvatarGenerationForThread: vi.fn(() => {
       order.push("claim-emoji");
       return claimPromise;
     }),
@@ -69,6 +69,11 @@ function createFakeThread(options: { emojiFails?: boolean } = {}) {
     return message;
   });
   fake.ctx = {
+    storage: {
+      kv: {
+        put: vi.fn(),
+      },
+    },
     waitUntil: vi.fn((promise: Promise<unknown>) => {
       order.push("wait-until");
       waitUntilPromises.push(promise);
@@ -76,7 +81,7 @@ function createFakeThread(options: { emojiFails?: boolean } = {}) {
   };
   fake.env = {
     CF_GATEWAY_NAME: "gw_1",
-    AI: { run: aiRun },
+    AI: options.aiMissing ? undefined : { run: aiRun },
     ORG: {
       idFromName: vi.fn((id: string) => id),
       get: vi.fn(() => orgStub),
@@ -196,5 +201,122 @@ describe("ChatThreadDO title generation", () => {
       groupId: "group1",
       avatar: { color: "#4F46E5", content: "💬", status: "fallback" },
     });
+  });
+
+  it("generates an accessed thread group avatar and broadcasts pending before final", async () => {
+    const {
+      fake,
+      aiRun,
+      userStub,
+      resolveClaim,
+    } = createFakeThread();
+
+    const task = ChatThreadDO.prototype[
+      "maybeGenerateChatGroupAvatarForThread"
+    ].call(fake, "thread1");
+
+    expect(userStub.claimChatGroupAvatarGenerationForThread).toHaveBeenCalledWith(
+      "thread1",
+    );
+    resolveClaim({
+      id: "group1",
+      name: "Database Migrations",
+      avatar: { color: "#4F46E5", content: "💬", status: "fallback" },
+    });
+    await task;
+
+    expect(aiRun).toHaveBeenCalledTimes(1);
+    expect(userStub.setGeneratedChatGroupEmoji).toHaveBeenCalledWith(
+      "group1",
+      "🗄️",
+    );
+    expect(fake.broadcastChat).toHaveBeenNthCalledWith(1, {
+      type: "chat_group_avatar_updated",
+      threadId: "thread1",
+      groupId: "group1",
+      avatar: { color: "#4F46E5", content: "💬", status: "pending" },
+    });
+    expect(fake.broadcastChat).toHaveBeenNthCalledWith(2, {
+      type: "chat_group_avatar_updated",
+      threadId: "thread1",
+      groupId: "group1",
+      avatar: { color: "#4F46E5", content: "🗄️", status: "generated" },
+    });
+  });
+
+  it("generates a chat group avatar from explicit app-side thread context", async () => {
+    const {
+      fake,
+      userStub,
+      resolveClaim,
+    } = createFakeThread();
+    fake.chatContext = null;
+
+    const task = ChatThreadDO.prototype[
+      "generateChatGroupAvatarForThread"
+    ].call(fake, {
+      threadId: "thread1",
+      workspaceId: "workspace1",
+      orgId: "org1",
+      userId: "user1",
+    });
+
+    expect(userStub.claimChatGroupAvatarGenerationForThread).toHaveBeenCalledWith(
+      "thread1",
+    );
+    resolveClaim({
+      id: "group1",
+      name: "Database Migrations",
+      avatar: { color: "#4F46E5", content: "💬", status: "fallback" },
+    });
+    await task;
+
+    expect(fake.ctx.storage.kv.put).toHaveBeenCalledWith(
+      "chatContext",
+      expect.objectContaining({
+        threadId: "thread1",
+        workspaceId: "workspace1",
+        orgId: "org1",
+        userId: "user1",
+      }),
+    );
+    expect(fake.broadcastChat).toHaveBeenLastCalledWith({
+      type: "chat_group_avatar_updated",
+      threadId: "thread1",
+      groupId: "group1",
+      avatar: { color: "#4F46E5", content: "🗄️", status: "generated" },
+    });
+  });
+
+  it("skips accessed thread avatar generation without claiming when AI is missing", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const { fake, userStub, aiRun } = createFakeThread({ aiMissing: true });
+
+    await ChatThreadDO.prototype[
+      "maybeGenerateChatGroupAvatarForThread"
+    ].call(fake, "thread1");
+
+    expect(userStub.claimChatGroupAvatarGenerationForThread).not.toHaveBeenCalled();
+    expect(userStub.setGeneratedChatGroupEmoji).not.toHaveBeenCalled();
+    expect(userStub.setChatGroupAvatarFallback).not.toHaveBeenCalled();
+    expect(fake.broadcastChat).not.toHaveBeenCalled();
+    expect(aiRun).not.toHaveBeenCalled();
+  });
+
+  it("does not run accessed thread avatar generation without complete user context", async () => {
+    const { fake, userStub } = createFakeThread();
+    fake.chatContext = {
+      orgId: "org1",
+      workspaceId: "workspace1",
+      threadId: "thread1",
+      userId: null,
+    };
+
+    await ChatThreadDO.prototype[
+      "maybeGenerateChatGroupAvatarForThread"
+    ].call(fake, "thread1");
+
+    expect(userStub.claimChatGroupAvatarGenerationForThread).not.toHaveBeenCalled();
+    expect(fake.broadcastChat).not.toHaveBeenCalled();
   });
 });

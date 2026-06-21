@@ -2,14 +2,14 @@ import type { Avatar } from '@/types';
 import emojiRegex from 'emoji-regex';
 
 export const AVATAR_COLORS = [
-  '#4F46E5',
-  '#7C3AED',
-  '#EC4899',
-  '#F59E0B',
-  '#10B981',
-  '#3B82F6',
-  '#EF4444',
-  '#8B5CF6',
+  '#5C63A6', // indigo
+  '#8E7CC0', // lavender
+  '#B0617F', // rose
+  '#BE924F', // amber
+  '#4F9B81', // green
+  '#5A82AD', // blue
+  '#B86A5F', // clay
+  '#8B5B86', // plum
 ];
 
 export const DEFAULT_CHAT_GROUP_EMOJI = '💬';

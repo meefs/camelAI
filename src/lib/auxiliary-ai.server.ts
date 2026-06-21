@@ -30,6 +30,7 @@ export interface AuxiliaryAiMetadata {
   orgId?: string;
   workspaceId?: string;
   threadId?: string;
+  groupId?: string;
 }
 
 export interface AuxiliaryAiRunContext {
@@ -51,11 +52,13 @@ function buildAuxiliaryAiRunOptions(
   if (metadata?.orgId) chiridion.orgId = metadata.orgId;
   if (metadata?.workspaceId) chiridion.workspaceId = metadata.workspaceId;
   if (metadata?.threadId) chiridion.threadId = metadata.threadId;
+  if (metadata?.groupId) chiridion.groupId = metadata.groupId;
 
   const tags = [
     metadata?.orgId ? `org:${metadata.orgId}` : null,
     metadata?.workspaceId ? `workspace:${metadata.workspaceId}` : null,
     metadata?.threadId ? `thread:${metadata.threadId}` : null,
+    metadata?.groupId ? `group:${metadata.groupId}` : null,
   ].filter((tag): tag is string => Boolean(tag));
 
   if (!gatewayName && tags.length === 0) {
@@ -70,7 +73,12 @@ function buildAuxiliaryAiRunOptions(
             ...(Object.keys(chiridion).length > 0
               ? {
                   metadata: {
-                    uid: [metadata?.orgId, metadata?.workspaceId, metadata?.threadId]
+                    uid: [
+                      metadata?.orgId,
+                      metadata?.workspaceId,
+                      metadata?.threadId,
+                      metadata?.groupId,
+                    ]
                       .filter(Boolean)
                       .join(":"),
                     chiridion: JSON.stringify(chiridion),

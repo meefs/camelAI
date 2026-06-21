@@ -679,6 +679,14 @@ export async function generateThreadTitle(
       env.CHAT_THREAD.idFromName(threadId),
     );
     await threadStub.setTitle(title, updated?.updated_at);
+    if (userId) {
+      await threadStub.generateChatGroupAvatarForThread({
+        threadId,
+        workspaceId,
+        orgId: wsInfo.org_id,
+        userId,
+      });
+    }
   } catch (e) {
     console.error("[generateThreadTitle] Error:", e);
   }

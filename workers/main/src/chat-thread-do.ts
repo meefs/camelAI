@@ -76,6 +76,7 @@ import {
   type RuntimeCallArtifactKind,
 } from '../../../src/lib/runtime-artifacts';
 import type {
+  ChatGroupAvatar,
   LlmModel,
   Message,
   ThreadCompletionSummaryStatus,
@@ -4521,6 +4522,9 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
     // The live overlay isn't in durable state; hand a warm reconnect the
     // in-progress turn directly (no-op when idle or after a cold eviction).
     this.sendLiveOverlayToConnection(connection);
+    await this.maybeGenerateChatGroupAvatarForThread(
+      this.chatContext?.threadId ?? "",
+    );
   }
 
   async fetch(request: Request): Promise<Response> {
@@ -4918,6 +4922,25 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
         ? updatedAt
         : Date.now();
     this.syncAgentState();
+  }
+
+  async generateChatGroupAvatarForThread(context: {
+    threadId: string;
+    workspaceId: string;
+    orgId: string;
+    userId?: string | null;
+  }): Promise<void> {
+    const error = this.updateExternalChatContext(context);
+    if (error) {
+      console.warn("[ChatThreadDO] skipping chat group avatar generation", {
+        reason: "invalid_context",
+        threadId: context.threadId,
+        workspaceId: context.workspaceId,
+        orgId: context.orgId,
+      });
+      return;
+    }
+    await this.maybeGenerateChatGroupAvatarForThread(context.threadId);
   }
 
   async setModel(model: LlmModel, updatedAt?: number): Promise<void> {
@@ -8765,6 +8788,143 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
     }
   }
 
+  private errorLogFields(error: unknown): {
+    errorName: string;
+    errorMessage: string;
+  } {
+    if (error instanceof Error) {
+      return {
+        errorName: error.name,
+        errorMessage: error.message,
+      };
+    }
+    return {
+      errorName: "UnknownError",
+      errorMessage: String(error),
+    };
+  }
+
+  private async generateClaimedChatGroupAvatar(
+    threadId: string,
+    claim: { id: string; name: string; avatar: ChatGroupAvatar },
+    userStub: {
+      setGeneratedChatGroupEmoji: (groupId: string, emoji: string) => unknown;
+      setChatGroupAvatarFallback: (groupId: string) => unknown;
+    },
+  ): Promise<void> {
+    const context = this.chatContext;
+    if (!context?.orgId || !context.workspaceId) return;
+
+    this.broadcastChat({
+      type: "chat_group_avatar_updated",
+      threadId,
+      groupId: claim.id,
+      avatar: { ...claim.avatar, status: "pending" },
+    });
+
+    let generatedEmoji: string | null = null;
+    try {
+      generatedEmoji = await generateChatGroupEmojiWithOpenAI(
+        this.env.AI,
+        claim.name,
+        {
+          orgId: context.orgId,
+          workspaceId: context.workspaceId,
+          threadId,
+          groupId: claim.id,
+        },
+        { gatewayName: this.env.CF_GATEWAY_NAME },
+      );
+    } catch (error) {
+      console.error("[ChatThreadDO] failed to generate chat group emoji", {
+        reason: "ai_error",
+        threadId,
+        groupId: claim.id,
+        workspaceId: context.workspaceId,
+        orgId: context.orgId,
+        ...this.errorLogFields(error),
+      });
+    }
+
+    try {
+      const avatar = (generatedEmoji
+        ? await userStub.setGeneratedChatGroupEmoji(claim.id, generatedEmoji)
+        : await userStub.setChatGroupAvatarFallback(claim.id)) as
+        | ChatGroupAvatar
+        | null;
+      if (!avatar) {
+        console.warn("[ChatThreadDO] chat group avatar write skipped", {
+          reason: "write_skipped",
+          threadId,
+          groupId: claim.id,
+          workspaceId: context.workspaceId,
+          orgId: context.orgId,
+          expectedStatus: generatedEmoji ? "generated" : "fallback",
+        });
+        return;
+      }
+      this.broadcastChat({
+        type: "chat_group_avatar_updated",
+        threadId,
+        groupId: claim.id,
+        avatar,
+      });
+    } catch (error) {
+      console.error("[ChatThreadDO] failed to write chat group avatar", {
+        reason: "write_skipped",
+        threadId,
+        groupId: claim.id,
+        workspaceId: context.workspaceId,
+        orgId: context.orgId,
+        ...this.errorLogFields(error),
+      });
+    }
+  }
+
+  private async maybeGenerateChatGroupAvatarForThread(
+    threadId: string,
+  ): Promise<void> {
+    const normalizedThreadId = threadId.trim();
+    const context = this.chatContext;
+    if (
+      !normalizedThreadId ||
+      !context?.orgId ||
+      !context.workspaceId ||
+      !context.userId
+    ) {
+      return;
+    }
+    if (!this.env.AI || typeof this.env.AI.run !== "function") {
+      console.warn("[ChatThreadDO] skipping chat group avatar generation", {
+        reason: "missing_ai",
+        threadId: normalizedThreadId,
+        workspaceId: context.workspaceId,
+        orgId: context.orgId,
+      });
+      return;
+    }
+
+    try {
+      const userStub = this.env.USER.get(this.env.USER.idFromName(context.userId));
+      const claim = await userStub.claimChatGroupAvatarGenerationForThread(
+        normalizedThreadId,
+      );
+      if (!claim) return;
+      await this.generateClaimedChatGroupAvatar(
+        normalizedThreadId,
+        claim,
+        userStub,
+      );
+    } catch (error) {
+      console.error("[ChatThreadDO] failed to update accessed chat group avatar", {
+        threadId: normalizedThreadId,
+        workspaceId: context.workspaceId,
+        orgId: context.orgId,
+        ...this.errorLogFields(error),
+      });
+    }
+  }
+
   private async generateThreadTitleFromMessage(threadId: string, message: string): Promise<void> {
     try {
       const context = this.chatContext;
@@ -8794,48 +8954,10 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
         await userStub.renameEmptySingleThreadGroupForThread(threadId, title);
         if (!isPlaceholderThreadTitle(title)) {
           this.ctx.waitUntil(
-            (async () => {
-              const claim = await userStub.claimChatGroupEmojiGenerationForThread(threadId);
-              if (!claim) return;
-              this.broadcastChat({
-                type: "chat_group_avatar_updated",
-                threadId,
-                groupId: claim.id,
-                avatar: { ...claim.avatar, status: "pending" },
-              });
-              let generatedEmoji: string | null = null;
-              try {
-                generatedEmoji = await generateChatGroupEmojiWithOpenAI(
-                  this.env.AI,
-                  claim.name,
-                  {
-                    orgId: context.orgId,
-                    workspaceId: context.workspaceId,
-                    threadId,
-                  },
-                  { gatewayName: this.env.CF_GATEWAY_NAME },
-                );
-              } catch (error) {
-                console.error("[ChatThreadDO] failed to generate chat group emoji", {
-                  threadId,
-                  error,
-                });
-              }
-              const avatar = generatedEmoji
-                ? await userStub.setGeneratedChatGroupEmoji(claim.id, generatedEmoji)
-                : await userStub.setChatGroupAvatarFallback(claim.id);
-              if (avatar) {
-                this.broadcastChat({
-                  type: "chat_group_avatar_updated",
-                  threadId,
-                  groupId: claim.id,
-                  avatar,
-                });
-              }
-            })().catch((error) => {
+            this.maybeGenerateChatGroupAvatarForThread(threadId).catch((error) => {
               console.error("[ChatThreadDO] failed to update chat group avatar", {
                 threadId,
-                error,
+                ...this.errorLogFields(error),
               });
             }),
           );

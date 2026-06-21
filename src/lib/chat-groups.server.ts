@@ -14,8 +14,6 @@ import type { WorkspaceRunningThreadStatus } from "../../workers/main/src/worksp
 import { maxThreadStatus } from "@/lib/thread-status";
 import { getInitialChatGroupNameFromThreadTitle } from "@/lib/thread-title";
 import { truncateThreadPreviewText } from "@/lib/thread-preview";
-import { generateChatGroupEmojiWithOpenAI } from "@/lib/chat-group-avatar-generation.server";
-import type { AuxiliaryAiBinding } from "@/lib/auxiliary-ai.server";
 
 interface UserScopedArgs {
   userId: string;
@@ -28,14 +26,6 @@ interface MoveThreadArgs extends UserScopedArgs {
   targetGroupId: string | "new";
   name?: string;
 }
-
-type WaitUntilContext = AppLoadContext & {
-  cloudflare?: {
-    ctx?: {
-      waitUntil?: (promise: Promise<unknown>) => void;
-    };
-  };
-};
 
 function getUserStub(context: AppLoadContext, userId: string): UserDO {
   const env = getEnv(context);
@@ -134,116 +124,6 @@ function collectThreadIds(groups: ChatGroupSummary[]): string[] {
       ]),
     ),
   );
-}
-
-function scheduleBackgroundTask(
-  context: AppLoadContext,
-  promise: Promise<unknown>,
-): void {
-  const waitUntil = (context as WaitUntilContext).cloudflare?.ctx?.waitUntil;
-  if (waitUntil) {
-    waitUntil(promise);
-    return;
-  }
-  void promise;
-}
-
-function markPendingChatGroupAvatars(
-  groups: ChatGroupView[],
-  pendingGroupIds: ReadonlySet<string>,
-): ChatGroupView[] {
-  if (pendingGroupIds.size === 0) return groups;
-  let changed = false;
-  const nextGroups = groups.map((group) => {
-    if (!pendingGroupIds.has(group.id) || group.avatar.status === "pending") {
-      return group;
-    }
-    changed = true;
-    return {
-      ...group,
-      avatar: {
-        ...group.avatar,
-        status: "pending" as const,
-      },
-    };
-  });
-  return changed ? nextGroups : groups;
-}
-
-async function maybeBackfillChatGroupEmojis(
-  context: AppLoadContext,
-  args: UserScopedArgs,
-  visibleGroups: ChatGroupView[],
-): Promise<Set<string>> {
-  try {
-    // Only opportunistically backfill groups already loaded for the current route.
-    const groupIds = visibleGroups
-      .filter((group) => group.name.trim().length > 0)
-      .map((group) => group.id);
-    if (groupIds.length === 0) return new Set();
-
-    const env = getEnv(context);
-    const ai = env.AI as AuxiliaryAiBinding | undefined;
-    if (!ai || typeof ai.run !== "function") {
-      console.warn("Skipping chat group emoji backfill: AI binding is not configured", {
-        workspaceId: args.workspaceId,
-        count: groupIds.length,
-      });
-      return new Set();
-    }
-
-    const userStub = getUserStub(context, args.userId);
-    const candidates = await userStub.claimChatGroupsNeedingEmojiBackfill(
-      args.orgId,
-      args.workspaceId,
-      groupIds,
-      3,
-    );
-    if (candidates.length === 0) return new Set();
-
-    scheduleBackgroundTask(
-      context,
-      (async () => {
-        for (const candidate of candidates) {
-          let emoji: string | null = null;
-          try {
-            emoji = await generateChatGroupEmojiWithOpenAI(
-              ai,
-              candidate.name,
-              {
-                orgId: args.orgId,
-                workspaceId: args.workspaceId,
-              },
-              { gatewayName: env.CF_GATEWAY_NAME },
-            );
-          } catch (error) {
-            console.error("Failed to generate chat group emoji backfill", {
-              groupId: candidate.id,
-              workspaceId: args.workspaceId,
-              error,
-            });
-          }
-          if (emoji) {
-            await userStub.setGeneratedChatGroupEmoji(candidate.id, emoji);
-          } else {
-            await userStub.setChatGroupAvatarFallback(candidate.id);
-          }
-        }
-      })().catch((error) => {
-        console.error("Failed to backfill chat group emojis", {
-          workspaceId: args.workspaceId,
-          error,
-        });
-      }),
-    );
-    return new Set(candidates.map((candidate) => candidate.id));
-  } catch (error) {
-    console.error("Failed to schedule chat group emoji backfill", {
-      workspaceId: args.workspaceId,
-      error,
-    });
-    return new Set();
-  }
 }
 
 async function hydrateThreads(
@@ -385,8 +265,7 @@ export async function listGroupsForWorkspace(
     args.workspaceId,
     groups,
   );
-  const pendingGroupIds = await maybeBackfillChatGroupEmojis(context, args, hydrated);
-  return markPendingChatGroupAvatars(hydrated, pendingGroupIds);
+  return hydrated;
 }
 
 export async function listGroupsForMove(
@@ -417,14 +296,6 @@ export async function getGroupForWorkspace(
     args.workspaceId,
     summary ? [summary] : [],
   );
-  if (hydrated) {
-    const pendingGroupIds = await maybeBackfillChatGroupEmojis(
-      context,
-      args,
-      [hydrated],
-    );
-    return markPendingChatGroupAvatars([hydrated], pendingGroupIds)[0] ?? hydrated;
-  }
   return hydrated ?? null;
 }
 
