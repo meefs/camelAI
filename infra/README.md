@@ -63,6 +63,14 @@ for staging. GitHub Actions deploys use the VM Tailscale IPs directly: prod
 `100.112.135.2` (`chiridion-sandbox-prod`) and staging `100.115.221.105`
 (`chiridion-sandbox-staging`).
 
+For interactive access, use Tailscale SSH as user `chiridion`; normal access
+should not require shared private keys:
+
+```bash
+tailscale ssh chiridion@chiridion-sandbox-staging
+tailscale ssh chiridion@chiridion-sandbox-prod
+```
+
 Public SSH ingress is intentionally not opened by Terraform. Administrative and
 deploy SSH should go through Tailscale. Keep `sshd` running on the host so
 Tailscale clients can reach it, but do not add Azure NSG port 22 rules except

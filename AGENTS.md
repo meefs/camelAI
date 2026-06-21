@@ -268,7 +268,7 @@ live in separate files, and the catalog tests fail if any of them drift apart.
 
 ## Local Environment Notes
 
-Minimal prerequisites: Node.js 22+, Bun, Go 1.24+ for sandbox-host, and Cloudflare credentials for deployed/bound services.
+Minimal prerequisites: Node.js 22+, Bun, Go 1.24+ for sandbox-host, Tailscale, and Cloudflare credentials for deployed/bound services.
 
 Common local secret/config files:
 
@@ -277,6 +277,17 @@ Common local secret/config files:
 Useful local variables include `CF_GATEWAY_TOKEN`, OAuth client IDs/secrets, `INTEGRATION_SECRET_KEY`, `TOKEN_SIGNING_SECRET`, and email provider settings.
 
 For exe.dev-specific admin MCP setup with mcporter, see `docs/exedev-admin-mcp.md`.
+
+### SSH to shared hosts
+
+Use Tailscale SSH as user `chiridion`; do not rely on shared private keys for normal access:
+
+```bash
+tailscale ssh chiridion@chiridion-sandbox-staging
+tailscale ssh chiridion@chiridion-sandbox-prod
+```
+
+Tailscale host IPs are staging `100.115.221.105` and prod `100.112.135.2`. Public SSH ingress should remain closed except temporary break-glass access.
 
 ## Maintenance Rules
 
