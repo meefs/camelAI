@@ -101,9 +101,6 @@ describe('ChatThreadDO Pi turn handling', () => {
     fake.setChatIsStreaming = vi.fn();
     fake.appendPiCoreMessagesIfMissing = vi.fn();
     fake.upsertPiCoreMessages = vi.fn();
-    fake.appendPiInFlightMessages = vi.fn();
-    fake.loadPiInFlightMessages = vi.fn(() => []);
-    fake.clearPiInFlightMessages = vi.fn();
     fake.setActiveTurnUserId = vi.fn();
     fake.completeTodoStateForTurnEnd = vi.fn();
     fake.recordChatThreadObservabilityEvent = vi.fn();
@@ -2583,199 +2580,6 @@ describe('ChatThreadDO Pi turn handling', () => {
     expect(fake.clearPiCoreCompaction).not.toHaveBeenCalled();
   });
 
-  it('runs Pi turns inside an Agents SDK managed fiber', async () => {
-    const fake = Object.create(ChatThreadDO.prototype) as any;
-    fake.activeTurnUserId = 'user1';
-    fake.loadPiInFlightMessages = vi.fn(async () => [{ role: 'user', content: 'hello', timestamp: 123 }]);
-    fake.sha256Hex = vi.fn(async () => 'abcdef1234567890');
-    const stash = vi.fn();
-    fake.startFiber = vi.fn(async (_name: string, fn: (ctx: { stash: typeof stash }) => Promise<unknown>) => {
-      await fn({ stash });
-      return { status: 'completed' };
-    });
-    fake.withPiTurnInactivityTimeout = vi.fn(async (fn: () => Promise<void>) => fn());
-
-    await ChatThreadDO.prototype['keepAlivePiTurnWhile'].call(fake, async () => undefined);
-
-    expect(fake.startFiber).toHaveBeenCalledWith('pi-turn', expect.any(Function), expect.objectContaining({
-      waitForCompletion: true,
-      idempotencyKey: 'pi-turn:123:abcdef1234567890',
-      metadata: expect.objectContaining({ activeUserId: 'user1', inFlightCount: 1 }),
-    }));
-    expect(stash).toHaveBeenCalledWith(expect.objectContaining({ startedAt: expect.any(Number) }));
-  });
-
-  it('recovers timed-out Pi turn fibers without legacy recovery alarms', async () => {
-    const fake = Object.create(ChatThreadDO.prototype) as any;
-    fake.activeTurnUserId = 'user1';
-    fake.loadPiInFlightMessages = vi.fn(async () => []);
-    fake.startFiber = vi.fn(async (_name: string, fn: () => Promise<unknown>) => {
-      await fn({ stash: vi.fn() });
-      return {
-        fiberId: 'fiber1',
-        status: 'error',
-        error: 'AbortError: Pi turn inactivity timeout',
-        createdAt: 123,
-        metadata: { activeUserId: 'user1' },
-      };
-    });
-    fake.withPiTurnInactivityTimeout = vi.fn(async (_fn: () => Promise<void>, onTimeout?: () => void) => {
-      onTimeout?.();
-    });
-    fake.recoverInterruptedPiTurn = vi.fn(async () => undefined);
-
-    await ChatThreadDO.prototype['keepAlivePiTurnWhile'].call(fake, async () => undefined);
-
-    expect(fake.recoverInterruptedPiTurn).toHaveBeenCalledWith(expect.objectContaining({
-      id: 'fiber1',
-      name: 'pi-turn',
-      snapshot: { activeUserId: 'user1' },
-      recoveryReason: 'interrupted',
-    }));
-  });
-
-  it('recovers an already-interrupted managed Pi turn returned by idempotency lookup', async () => {
-    const fake = Object.create(ChatThreadDO.prototype) as any;
-    fake.activeTurnUserId = 'user1';
-    fake.loadPiInFlightMessages = vi.fn(async () => []);
-    fake.startFiber = vi.fn(async () => ({
-      fiberId: 'fiber1',
-      status: 'interrupted',
-      createdAt: 123,
-      snapshot: { activeUserId: 'user1' },
-      accepted: false,
-    }));
-    fake.withPiTurnInactivityTimeout = vi.fn(async (fn: () => Promise<void>) => fn());
-    fake.recoverInterruptedPiTurn = vi.fn(async () => undefined);
-    fake.resolveFiber = vi.fn(async () => true);
-
-    await ChatThreadDO.prototype['keepAlivePiTurnWhile'].call(fake, async () => undefined);
-
-    expect(fake.recoverInterruptedPiTurn).toHaveBeenCalledWith(expect.objectContaining({
-      id: 'fiber1',
-      name: 'pi-turn',
-      snapshot: { activeUserId: 'user1' },
-      recoveryReason: 'interrupted',
-    }));
-    expect(fake.resolveFiber).toHaveBeenCalledWith('fiber1', { status: 'completed' });
-  });
-
-  it('does not recover user-cancelled Pi turn aborts', async () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(new Date('2026-01-01T00:00:00.000Z'));
-    const fake = Object.create(ChatThreadDO.prototype) as any;
-    fake.piUserStopRequestedAtMs = Date.now();
-    fake.loadPiInFlightMessages = vi.fn(async () => []);
-    fake.startFiber = vi.fn(async () => ({
-      fiberId: 'fiber1',
-      status: 'error',
-      error: 'AbortError: user stopped turn',
-      createdAt: Date.now(),
-    }));
-    fake.recoverInterruptedPiTurn = vi.fn(async () => undefined);
-
-    await expect(
-      ChatThreadDO.prototype['keepAlivePiTurnWhile'].call(fake, async () => undefined),
-    ).rejects.toThrow(/user stopped turn/i);
-
-    expect(fake.recoverInterruptedPiTurn).not.toHaveBeenCalled();
-  });
-
-  it('sends Pi recovery continue prompts as hidden internal messages', async () => {
-    const fake = Object.create(ChatThreadDO.prototype) as any;
-    fake.chatContext = { threadId: 'thread1' };
-    fake.setActiveTurnUserId = vi.fn();
-    fake.setChatIsStreaming = vi.fn();
-    fake.ensurePiSessionReady = vi.fn(async () => undefined);
-    fake.refreshPiSessionModel = vi.fn(async () => undefined);
-    fake.withPiTurnInactivityTimeout = vi.fn(async (fn: () => Promise<void>) => fn());
-    const prompt = vi.fn(async () => undefined);
-    fake.piSession = { prompt };
-
-    await ChatThreadDO.prototype['recoverInterruptedPiTurn'].call(fake, {
-      id: 'fiber1',
-      name: 'pi-turn',
-      snapshot: { activeUserId: 'user1' },
-      createdAt: 100,
-      recoveryReason: 'interrupted',
-    });
-
-    expect(prompt).toHaveBeenCalledWith(expect.objectContaining({
-      role: 'user',
-      content: 'continue',
-      visibility: 'hidden',
-      metadata: { purpose: 'pi_turn_recovery_context' },
-    }));
-  });
-
-  it('routes recovered Pi fibers through Pi recovery', async () => {
-    const fake = Object.create(ChatThreadDO.prototype) as any;
-    fake.recordChatThreadObservabilityEvent = vi.fn();
-    fake.recoverInterruptedPiTurn = vi.fn(async () => undefined);
-
-    const ctx = {
-      id: 'fiber1',
-      name: 'pi-turn',
-      snapshot: { activeUserId: 'user1' },
-      createdAt: Date.now() - 100,
-      recoveryReason: 'interrupted',
-    };
-    const result = await ChatThreadDO.prototype.onFiberRecovered.call(fake, ctx);
-
-    expect(fake.recoverInterruptedPiTurn).toHaveBeenCalledWith(ctx);
-    expect(result).toEqual(expect.objectContaining({ status: 'completed' }));
-  });
-
-  it('marks recovered Pi fibers errored and schedules orphan recovery when recovery fails', async () => {
-    const fake = Object.create(ChatThreadDO.prototype) as any;
-    fake.ctx = {
-      waitUntil: vi.fn(),
-      storage: { setAlarm: vi.fn(async () => undefined) },
-    };
-    fake.recordChatThreadObservabilityEvent = vi.fn();
-    fake.persistPiAgentLoopErrorForDevelopers = vi.fn();
-    fake.recoverInterruptedPiTurn = vi.fn(async () => {
-      throw new Error('OrgDO temporarily unavailable');
-    });
-
-    const ctx = {
-      id: 'fiber1',
-      name: 'pi-turn',
-      snapshot: { activeUserId: 'user1' },
-      createdAt: Date.now() - 100,
-      recoveryReason: 'interrupted',
-    };
-    const result = await ChatThreadDO.prototype.onFiberRecovered.call(fake, ctx);
-
-    expect(fake.persistPiAgentLoopErrorForDevelopers).toHaveBeenCalled();
-    expect(fake.ctx.waitUntil).toHaveBeenCalled();
-    expect(result).toEqual(expect.objectContaining({
-      status: 'error',
-      snapshot: { activeUserId: 'user1' },
-    }));
-  });
-
-  it('recovers orphaned Pi in-flight rows when no managed fiber exists', async () => {
-    const fake = Object.create(ChatThreadDO.prototype) as any;
-    fake.activeTurnUserId = 'user1';
-    fake.hasActivePiTurnFiber = vi.fn(async () => false);
-    fake.loadPiInFlightMessages = vi.fn(async () => [
-      { role: 'user', content: 'hello', timestamp: 123 },
-    ]);
-    fake.recordChatThreadObservabilityEvent = vi.fn();
-    fake.recoverInterruptedPiTurn = vi.fn(async () => undefined);
-
-    await ChatThreadDO.prototype['drainOrphanedPiInFlightRecovery'].call(fake);
-
-    expect(fake.recoverInterruptedPiTurn).toHaveBeenCalledWith(expect.objectContaining({
-      id: 'orphaned-in-flight',
-      name: 'pi-turn',
-      snapshot: { activeUserId: 'user1' },
-      createdAt: 123,
-      recoveryReason: 'interrupted',
-    }));
-  });
-
   it('aborts Pi turns after an inactivity timeout', async () => {
     vi.useFakeTimers();
     const fake = Object.create(ChatThreadDO.prototype) as any;
@@ -2791,6 +2595,49 @@ describe('ChatThreadDO Pi turn handling', () => {
     await assertion;
 
     expect(fake.disposePiSession).toHaveBeenCalledTimes(1);
+  });
+
+  it('resets streaming state and surfaces an error when a prompt hits the inactivity timeout', async () => {
+    vi.useFakeTimers();
+    const { fake, events } = createPiEventFake();
+    fake.persistPiAgentLoopErrorForDevelopers = vi.fn();
+    fake.updateActiveAutomationRun = vi.fn();
+    fake.refreshPiSessionModel = vi.fn(async () => undefined);
+    // The session is not streaming, so the prompt path runs through
+    // withPiTurnInactivityTimeout. The prompt never resolves, so only the
+    // inactivity timeout can end the turn — exactly the provider/tool hang the
+    // bug is about. disposePiSession (the real one runs during the timeout)
+    // unsubscribes handlers, so no agent_end runs to clean up.
+    fake.piTurnLastProgressAtMs = 0;
+    fake.disposePiSession = vi.fn(() => {
+      fake.piSession = null;
+    });
+    fake.piSession = {
+      state: { isStreaming: false, model: { api: 'test', provider: 'test', id: 'test-model' } },
+      prompt: vi.fn(() => new Promise<void>(() => undefined)),
+      steer: vi.fn(),
+      abort: vi.fn(),
+    };
+
+    const accepted = ChatThreadDO.prototype['sendRunnerCommand'].call(fake, {
+      type: 'message',
+      content: 'do the thing',
+    });
+    expect(accepted).toBe(true);
+
+    // Drive the inactivity timeout and let the queued waitUntil work settle.
+    await vi.advanceTimersByTimeAsync(10 * 60_000);
+    await flushWaitUntil(fake);
+
+    // The thread is not left streaming: cleanup that agent_end would normally
+    // do is performed in the catch instead.
+    expect(fake.setChatIsStreaming).toHaveBeenCalledWith(false);
+    expect(fake.setActiveTurnUserId).toHaveBeenCalledWith(null);
+    expect(fake.updateActiveAutomationRun).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 'error', clear: true }),
+    );
+    // The stall is surfaced to the user as a provider error, not swallowed.
+    expect(events.some((event) => event.type === 'error')).toBe(true);
   });
 
   it.each([
@@ -5734,7 +5581,6 @@ describe('ChatThreadDO Pi turn handling', () => {
 
   it('renders persisted Pi tool result messages with their assistant tool calls', async () => {
     const fake = Object.create(ChatThreadDO.prototype) as any;
-    fake.loadPiInFlightMessages = vi.fn(() => []);
     fake.loadPiCoreMessages = vi.fn(() => [
       { role: 'user', content: 'run it', timestamp: 100 },
       {
@@ -5791,7 +5637,6 @@ describe('ChatThreadDO Pi turn handling', () => {
 
   it('marks persisted Pi stopped-by-user messages for muted UI rendering', async () => {
     const fake = Object.create(ChatThreadDO.prototype) as any;
-    fake.loadPiInFlightMessages = vi.fn(() => []);
     fake.loadPiCoreMessages = vi.fn(() => [
       { role: 'user', content: 'stop test', timestamp: 100 },
       {
@@ -5823,7 +5668,6 @@ describe('ChatThreadDO Pi turn handling', () => {
 
   it('does not mark literal persisted Pi text as stopped-by-user without metadata', async () => {
     const fake = Object.create(ChatThreadDO.prototype) as any;
-    fake.loadPiInFlightMessages = vi.fn(() => []);
     fake.loadPiCoreMessages = vi.fn(() => [
       { role: 'user', content: 'echo the phrase', timestamp: 100 },
       {
@@ -5852,125 +5696,6 @@ describe('ChatThreadDO Pi turn handling', () => {
     expect(messages[1].content).not.toEqual(
       expect.arrayContaining([expect.objectContaining({ itemKind: 'userStop' })]),
     );
-  });
-
-  it('does not broadcast Pi recovery continue prompts as visible SDK user events', async () => {
-    const { fake, events } = createPiEventFake();
-
-    fake.suppressNextPiRecoveryPromptEvent = true;
-    await ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, {
-      type: 'user',
-      message: {
-        content: [{
-          type: 'text',
-          text: 'continue',
-        }],
-      },
-    });
-
-    expect(events).toEqual([]);
-
-    fake.suppressNextPiRecoveryPromptEvent = true;
-    await ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, {
-      type: 'user',
-      message: {
-        content: 'continue',
-      },
-    });
-
-    expect(events).toEqual([]);
-
-    fake.piRecoveryContinuePromptSentAtMs = Date.now();
-    await ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, {
-      type: 'user',
-      message: {
-        content: 'continue',
-      },
-    });
-
-    expect(events).toEqual([]);
-
-    fake.piRecoveryContinuePromptSentAtMs = 0;
-    await ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, {
-      type: 'user',
-      message: {
-        content: 'continue',
-      },
-    });
-
-    expect(events).toEqual([]);
-  });
-
-  it('does not broadcast internal recovery context SDK user events', async () => {
-    const { fake, events } = createPiEventFake();
-
-    await ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, {
-      type: 'user',
-      message: {
-        role: 'user',
-        content: 'recovery context',
-        visibility: 'hidden',
-        metadata: { purpose: 'pi_turn_recovery_context' },
-      },
-    });
-
-    expect(events).toEqual([]);
-  });
-
-  it('builds a recovery user message from in-flight messages', () => {
-    const fake = Object.create(ChatThreadDO.prototype) as any;
-    fake.serializePiMessageForSummary =
-      ChatThreadDO.prototype['serializePiMessageForSummary'];
-    const messages = [
-      { role: 'user', content: 'list files', timestamp: 100 },
-      {
-        role: 'assistant',
-        content: [
-          { type: 'toolCall', id: 'tool1', name: 'ls', arguments: {} },
-        ],
-        responseId: 'resp_tool',
-        timestamp: 200,
-        api: 'test',
-        provider: 'test',
-        model: 'test',
-        usage: {},
-        stopReason: 'toolUse',
-      },
-    ];
-
-    const recovery = ChatThreadDO.prototype['buildPiRecoveryUserMessage'].call(
-      fake,
-      messages,
-    );
-
-    expect(recovery.role).toBe('user');
-    expect(typeof recovery.content).toBe('string');
-    const content = recovery.content as string;
-    expect(content).toContain('[The previous turn was interrupted');
-    expect(content).toContain('list files');
-    expect(content).toContain('tool1');
-    expect(recovery).toMatchObject({
-      visibility: 'hidden',
-      metadata: { purpose: 'pi_turn_recovery_context' },
-    });
-  });
-
-  it('renders an empty in-flight buffer as a context-only marker', () => {
-    const fake = Object.create(ChatThreadDO.prototype) as any;
-    fake.serializePiMessageForSummary =
-      ChatThreadDO.prototype['serializePiMessageForSummary'];
-
-    const recovery = ChatThreadDO.prototype['buildPiRecoveryUserMessage'].call(
-      fake,
-      [],
-    );
-
-    expect(recovery.role).toBe('user');
-    expect(recovery.content).toContain('(no recorded events before the interruption)');
-    expect(recovery).toMatchObject({
-      visibility: 'hidden',
-      metadata: { purpose: 'pi_turn_recovery_context' },
-    });
   });
 
   it('turn_end snapshots agent.state.messages past the baseline into main', async () => {
@@ -6004,7 +5729,6 @@ describe('ChatThreadDO Pi turn handling', () => {
     fake.piSession = { state: { messages: allMessages } };
     fake.piMainBaselineIndex = 2;
     fake.appendPiCoreMessagesIfMissing = vi.fn();
-    fake.clearPiInFlightMessages = vi.fn();
 
     await ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, {
       type: 'turn_end',
@@ -6017,7 +5741,6 @@ describe('ChatThreadDO Pi turn handling', () => {
       allMessages[3],
     ]);
     expect(fake.piMainBaselineIndex).toBe(4);
-    expect(fake.clearPiInFlightMessages).toHaveBeenCalledTimes(1);
   });
 
   it('turn_end is a no-op when no new messages are past the baseline', async () => {
@@ -6039,7 +5762,6 @@ describe('ChatThreadDO Pi turn handling', () => {
     fake.piSession = { state: { messages: allMessages } };
     fake.piMainBaselineIndex = 2;
     fake.appendPiCoreMessagesIfMissing = vi.fn();
-    fake.clearPiInFlightMessages = vi.fn();
 
     await ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, {
       type: 'turn_end',
@@ -6049,10 +5771,9 @@ describe('ChatThreadDO Pi turn handling', () => {
 
     expect(fake.appendPiCoreMessagesIfMissing).not.toHaveBeenCalled();
     expect(fake.piMainBaselineIndex).toBe(2);
-    expect(fake.clearPiInFlightMessages).toHaveBeenCalledTimes(1);
   });
 
-  it('suppresses failed turn_end persistence and clears in-flight recovery state', async () => {
+  it('suppresses failed turn_end persistence and discards unpersisted session messages', async () => {
     const { fake, events: _events } = createPiEventFake();
     void _events;
     const previousMessage = { role: 'user', content: 'previous turn', timestamp: 50 };
@@ -6076,7 +5797,6 @@ describe('ChatThreadDO Pi turn handling', () => {
     fake.piSession = { state: { messages: allMessages } };
     fake.piMainBaselineIndex = 1;
     fake.appendPiCoreMessagesIfMissing = vi.fn();
-    fake.clearPiInFlightMessages = vi.fn();
 
     await ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, {
       type: 'turn_end',
@@ -6087,7 +5807,6 @@ describe('ChatThreadDO Pi turn handling', () => {
     expect(fake.appendPiCoreMessagesIfMissing).not.toHaveBeenCalled();
     expect(fake.piSession.state.messages).toEqual([previousMessage]);
     expect(fake.piMainBaselineIndex).toBe(1);
-    expect(fake.clearPiInFlightMessages).toHaveBeenCalledTimes(1);
   });
 
   it('suppresses aborted turn_end persistence after a user stop request', async () => {
@@ -6108,7 +5827,6 @@ describe('ChatThreadDO Pi turn handling', () => {
     fake.piMainBaselineIndex = 0;
     fake.piUserStopRequestedAtMs = 1234;
     fake.appendPiCoreMessagesIfMissing = vi.fn();
-    fake.clearPiInFlightMessages = vi.fn();
 
     await ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, {
       type: 'turn_end',
@@ -6118,82 +5836,23 @@ describe('ChatThreadDO Pi turn handling', () => {
 
     expect(fake.appendPiCoreMessagesIfMissing).not.toHaveBeenCalled();
     expect(fake.piMainBaselineIndex).toBe(0);
-    expect(fake.clearPiInFlightMessages).not.toHaveBeenCalled();
   });
 
-  it('omits in-flight recovery snapshots from the parsed chat view', async () => {
-    const fake = Object.create(ChatThreadDO.prototype) as any;
-    fake.chatContext = { threadId: 'thread1' };
-    fake.piCoreMessageToParsedChatMessage =
-      ChatThreadDO.prototype['piCoreMessageToParsedChatMessage'];
-    fake.piUserContentToChatContent =
-      ChatThreadDO.prototype['piUserContentToChatContent'];
-    fake.piAssistantContentToChatContent =
-      ChatThreadDO.prototype['piAssistantContentToChatContent'];
-    fake.attachPiToolResultToParsedMessages =
-      ChatThreadDO.prototype['attachPiToolResultToParsedMessages'];
-    fake.piToolResultContentToChatContent =
-      ChatThreadDO.prototype['piToolResultContentToChatContent'];
-
-    fake.loadPiCoreMessages = vi.fn(() => [
-      { role: 'user', content: 'first turn', timestamp: 100 },
-      {
-        role: 'assistant',
-        content: [{ type: 'text', text: 'first reply' }],
-        responseId: 'resp_first',
-        timestamp: 110,
-        api: 'test',
-        provider: 'test',
-        model: 'test',
-        usage: {},
-        stopReason: 'stop',
-      },
-    ]);
-    fake.loadPiInFlightMessages = vi.fn(() => [
-      { role: 'user', content: 'second turn', timestamp: 200 },
-      {
-        role: 'assistant',
-        content: [
-          { type: 'toolCall', id: 'tool1', name: 'ls', arguments: {} },
-        ],
-        responseId: 'resp_second',
-        timestamp: 210,
-        api: 'test',
-        provider: 'test',
-        model: 'test',
-        usage: {},
-        stopReason: 'toolUse',
-      },
-    ]);
-
-    const parsed = await ChatThreadDO.prototype['getPiCoreParsedMessages'].call(
-      fake,
-      'thread1',
-    );
-
-    expect(parsed).toHaveLength(2);
-    expect(parsed[0]).toMatchObject({ role: 'user', content: 'first turn' });
-    expect(parsed[1]).toMatchObject({ role: 'assistant', id: 'resp_first' });
-    expect(fake.loadPiCoreMessages).toHaveBeenCalledTimes(1);
-    expect(fake.loadPiInFlightMessages).not.toHaveBeenCalled();
-  });
-
-  it('omits internal recovery context messages from the parsed chat view', async () => {
+  it('omits hidden internal messages from the parsed chat view', async () => {
     const fake = Object.create(ChatThreadDO.prototype) as any;
     fake.chatContext = { threadId: 'thread1' };
     fake.loadPiCoreMessages = vi.fn(() => [
       { role: 'user', content: 'first turn', timestamp: 100 },
       {
         role: 'user',
-        content: 'recovery context that should not reach the client',
+        content: 'hidden context that should not reach the client',
         timestamp: 200,
         visibility: 'hidden',
-        metadata: { purpose: 'pi_turn_recovery_context' },
       },
       {
         role: 'assistant',
-        content: [{ type: 'text', text: 'recovered reply' }],
-        responseId: 'resp_recovered',
+        content: [{ type: 'text', text: 'reply' }],
+        responseId: 'resp_reply',
         timestamp: 210,
         api: 'test',
         provider: 'test',
@@ -6202,7 +5861,6 @@ describe('ChatThreadDO Pi turn handling', () => {
         stopReason: 'stop',
       },
     ]);
-    fake.loadPiInFlightMessages = vi.fn(() => []);
 
     const parsed = await ChatThreadDO.prototype['getPiCoreParsedMessages'].call(
       fake,
@@ -6211,10 +5869,10 @@ describe('ChatThreadDO Pi turn handling', () => {
 
     expect(parsed).toHaveLength(2);
     expect(parsed[0]).toMatchObject({ role: 'user', content: 'first turn' });
-    expect(parsed[1]).toMatchObject({ role: 'assistant', id: 'resp_recovered' });
+    expect(parsed[1]).toMatchObject({ role: 'assistant', id: 'resp_reply' });
     expect(
       parsed.some((message) =>
-        String(message.content).includes('recovery context'),
+        String(message.content).includes('hidden context'),
       ),
     ).toBe(false);
   });
@@ -6580,52 +6238,7 @@ describe('ChatThreadDO Pi turn handling', () => {
       type: 'result',
       result: 'Whole reply',
     }));
-    expect(fake.appendPiInFlightMessages).toHaveBeenCalledWith([
-      expect.objectContaining({
-        role: 'assistant',
-        content: [{ type: 'text', text: 'Whole reply' }],
-      }),
-    ]);
     expect(fake.upsertPiCoreMessages).not.toHaveBeenCalled();
-  });
-
-
-  it('attaches buffered code mode artifacts to persisted js_exec tool result messages', async () => {
-    const { fake } = createPiEventFake();
-    const artifact = {
-      id: 'artifact_1',
-      kind: 'outbound_email',
-      toolName: 'send_email',
-      status: 'sent',
-      title: 'Email sent',
-      createdAt: 1,
-      updatedAt: 2,
-      summary: { to: 'alice@example.com' },
-    };
-    fake.consumeCodeModeArtifacts = vi.fn(async () => [artifact]);
-
-    await ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, { type: 'agent_start' });
-    await ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, {
-      type: 'message_end',
-      message: {
-        role: 'toolResult',
-        toolCallId: 'tool_js_exec_1',
-        toolName: 'js_exec',
-        content: 'ok',
-      },
-    });
-
-    expect(fake.consumeCodeModeArtifacts).toHaveBeenCalledWith('tool_js_exec_1', {
-      deleteAfterRead: false,
-    });
-    expect(fake.appendPiInFlightMessages).toHaveBeenCalledWith([
-      expect.objectContaining({
-        role: 'toolResult',
-        toolCallId: 'tool_js_exec_1',
-        toolName: 'js_exec',
-        uiMetadata: { codeModeArtifacts: [artifact] },
-      }),
-    ]);
   });
 
   it('emits Pi agent_end provider errors', async () => {
@@ -6752,7 +6365,6 @@ describe('ChatThreadDO Pi turn handling', () => {
         ],
       },
     };
-    fake.loadPiInFlightMessages = vi.fn(() => inFlight);
 
     await ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, { type: 'agent_start' });
     fake.piUserStopRequestedAtMs = 1234;
@@ -6806,7 +6418,6 @@ describe('ChatThreadDO Pi turn handling', () => {
       completedAt: expect.any(Number),
       clear: true,
     });
-    expect(fake.clearPiInFlightMessages).toHaveBeenCalledTimes(1);
     expect(fake.piSession.state.messages).toEqual([
       { role: 'user', content: 'previous', timestamp: 50 },
       ...inFlight,
@@ -6833,14 +6444,16 @@ describe('ChatThreadDO Pi turn handling', () => {
       updatedAt: 2,
       summary: { to: 'alice@example.com' },
     };
-    const inFlight = [{
+    // The stop path consumes buffered artifacts from the live session tail, so
+    // the unpersisted tool result carries no UI metadata until it is attached.
+    const toolResult = {
       role: 'toolResult',
       toolCallId: 'tool_js_exec_1',
       toolName: 'js_exec',
       content: 'ok',
-      uiMetadata: { codeModeArtifacts: [artifact] },
       timestamp: 200,
-    }];
+    };
+    fake.consumeCodeModeArtifacts = vi.fn(async () => [artifact]);
 
     fake.piUserStopRequestedAtMs = 1234;
     fake.piMainBaselineIndex = 1;
@@ -6849,7 +6462,7 @@ describe('ChatThreadDO Pi turn handling', () => {
         model: { api: 'test', provider: 'test', id: 'test-model' },
         messages: [
           { role: 'user', content: 'previous', timestamp: 50 },
-          ...inFlight,
+          toolResult,
           {
             role: 'assistant',
             content: [{ type: 'text', text: '' }],
@@ -6861,7 +6474,6 @@ describe('ChatThreadDO Pi turn handling', () => {
         ],
       },
     };
-    fake.loadPiInFlightMessages = vi.fn(() => inFlight);
 
     await ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, { type: 'agent_start' });
     fake.piUserStopRequestedAtMs = 1234;
@@ -6869,7 +6481,7 @@ describe('ChatThreadDO Pi turn handling', () => {
     await ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, {
       type: 'agent_end',
       messages: [
-        ...inFlight,
+        toolResult,
         {
           role: 'assistant',
           content: [{ type: 'text', text: '' }],
@@ -6881,7 +6493,9 @@ describe('ChatThreadDO Pi turn handling', () => {
       ],
     });
 
-    expect(fake.loadPiInFlightMessages).toHaveBeenCalledWith({ includeUiMetadata: true });
+    expect(fake.consumeCodeModeArtifacts).toHaveBeenCalledWith('tool_js_exec_1', {
+      deleteAfterRead: true,
+    });
     expect(fake.appendPiCoreMessagesIfMissing).toHaveBeenCalledWith([
       expect.objectContaining({
         role: 'toolResult',
@@ -6912,30 +6526,6 @@ describe('ChatThreadDO Pi turn handling', () => {
     expect(events.filter((event) => event.type === 'runtime_event')).toEqual([]);
   });
 
-  it('does not append failed assistant message_end events to in-flight replay state', async () => {
-    const { fake } = createPiEventFake();
-
-    await ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, { type: 'agent_start' });
-    await ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, {
-      type: 'message_end',
-      message: {
-        role: 'assistant',
-        content: [{
-          type: 'toolCall',
-          id: 'call_1|fc_tmp_1',
-          name: 'js_exec',
-          arguments: {},
-        }],
-        stopReason: 'error',
-        errorMessage: 'Provider returned error',
-        responseId: 'resp_error',
-        timestamp: 200,
-      },
-    });
-
-    expect(fake.appendPiInFlightMessages).not.toHaveBeenCalled();
-  });
-
   it('prunes unpersisted Pi session messages when agent_end arrives without a successful turn_end', async () => {
     const { fake } = createPiEventFake();
     const previousMessage = { role: 'user', content: 'previous turn', timestamp: 50 };
@@ -6962,7 +6552,6 @@ describe('ChatThreadDO Pi turn handling', () => {
       },
     };
     fake.piMainBaselineIndex = 1;
-    fake.loadPiInFlightMessages = vi.fn(() => [failedTurnMessages[0]]);
 
     await ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, {
       type: 'agent_end',

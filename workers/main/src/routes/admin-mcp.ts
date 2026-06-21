@@ -7,7 +7,6 @@ import type { Env, RouteContext } from "../types.js";
 import type {
   PiCoreMessageHistoryRepairReport,
   PiCoreMessageRow,
-  PiTurnRecoveryAdminState,
 } from "../chat-thread-do.js";
 import {
   ADMIN_MCP_SCOPE,
@@ -45,7 +44,6 @@ const TOOL_GET_THREAD_MESSAGES = "get_thread_messages";
 const TOOL_GET_THREAD_JSONL = "get_thread_jsonl";
 const TOOL_MANAGE_THREAD_MESSAGE_ROWS = "manage_thread_message_rows";
 const TOOL_REPAIR_PI_MESSAGE_HISTORY = "repair_pi_message_history";
-const TOOL_MANAGE_THREAD_RECOVERY = "manage_thread_recovery";
 const TOOL_UPDATE_THREAD = "update_thread";
 const TOOL_SEARCH_WORKSPACES = "search_workspaces";
 const TOOL_SEARCH_APPS = "search_apps";
@@ -368,20 +366,6 @@ function adminTools() {
       },
     },
     {
-      name: TOOL_MANAGE_THREAD_RECOVERY,
-      description:
-        "Inspect or clear stuck Pi turn recovery state for a chat thread. Use inspect to see pending managed Pi turn fibers and in-flight recovery rows; use clear to cancel recovery fibers and drop in-flight recovery rows.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          thread_id: { type: "string", description: "Thread ID whose Pi recovery state should be inspected or cleared." },
-          mode: { type: "string", enum: ["inspect", "clear"], description: "Inspect recovery state or clear stuck recovery state." },
-        },
-        required: ["thread_id", "mode"],
-        additionalProperties: false,
-      },
-    },
-    {
       name: TOOL_UPDATE_THREAD,
       description: "Update a thread title, creator, or model where allowed by admin API rules.",
       inputSchema: {
@@ -695,8 +679,6 @@ type ChatThreadMessageRowsStub = {
   repairPiCoreMessageHistory(input?: {
     mode?: "dry_run" | "repair";
   }): Promise<PiCoreMessageHistoryRepairReport> | PiCoreMessageHistoryRepairReport;
-  getPiTurnRecoveryAdminState(): Promise<PiTurnRecoveryAdminState> | PiTurnRecoveryAdminState;
-  clearPiTurnRecoveryForAdmin(): Promise<PiTurnRecoveryAdminState> | PiTurnRecoveryAdminState;
   putPiCoreMessageRow(input: {
     idx: number;
     payload: string;
@@ -1180,40 +1162,6 @@ async function repairPiMessageHistoryTool(env: Env, args: Record<string, unknown
   }
 }
 
-async function manageThreadRecoveryTool(env: Env, args: Record<string, unknown>) {
-  const threadId = requiredStringArg(args, "thread_id");
-  if (typeof threadId !== "string") return toolText(threadId, true);
-
-  const mode = stringArg(args, "mode");
-  if (mode !== "inspect" && mode !== "clear") {
-    return toolText({ error: "mode must be inspect or clear" }, true);
-  }
-
-  const chatThreadStub = getChatThreadMessageRowsStub(env, threadId);
-  if (!chatThreadStub) {
-    return toolText({ error: "CHAT_THREAD binding is not available" }, true);
-  }
-
-  try {
-    const state = await Promise.resolve(
-      mode === "clear"
-        ? chatThreadStub.clearPiTurnRecoveryForAdmin()
-        : chatThreadStub.getPiTurnRecoveryAdminState(),
-    );
-    return toolText({
-      success: true,
-      thread_id: threadId,
-      mode,
-      ...state,
-    });
-  } catch (error) {
-    return toolText(
-      { error: error instanceof Error ? error.message : "Failed to manage thread recovery" },
-      true,
-    );
-  }
-}
-
 async function manageThreadMessageRowsTool(env: Env, args: Record<string, unknown>) {
   const threadId = requiredStringArg(args, "thread_id");
   if (typeof threadId !== "string") return toolText(threadId, true);
@@ -1495,9 +1443,6 @@ async function callTool(
   }
   if (name === TOOL_REPAIR_PI_MESSAGE_HISTORY) {
     return repairPiMessageHistoryTool(env, input);
-  }
-  if (name === TOOL_MANAGE_THREAD_RECOVERY) {
-    return manageThreadRecoveryTool(env, input);
   }
   if (name === TOOL_UPDATE_THREAD) {
     const threadId = requiredStringArg(input, "thread_id");

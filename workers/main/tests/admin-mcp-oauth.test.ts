@@ -389,7 +389,6 @@ describe("admin MCP OAuth resource", () => {
           expect.objectContaining({ name: "search_threads" }),
           expect.objectContaining({ name: "query_chat_errors" }),
           expect.objectContaining({ name: "get_thread_jsonl" }),
-          expect.objectContaining({ name: "manage_thread_recovery" }),
           expect.objectContaining({ name: "search_workspaces" }),
           expect.objectContaining({ name: "search_apps" }),
           expect.objectContaining({ name: "list_bans" }),

@@ -64,10 +64,8 @@ describe("ChatThreadDO agent eval sessions", () => {
       fake.chatIsStreaming = value;
     });
     fake.publishRunningUserMessageActivity = vi.fn();
-    fake.startPiTurnRecovery = vi.fn(async () => undefined);
     fake.refreshPiSessionModel = vi.fn(async () => undefined);
-    fake.keepAlivePiTurnWhile = vi.fn(async (fn: () => Promise<unknown>) => fn());
-    fake.clearPiInFlightMessages = vi.fn();
+    fake.withPiTurnInactivityTimeout = vi.fn(async (fn: () => Promise<unknown>) => fn());
     fake.getPiCoreParsedMessages = vi.fn(async () => parsedMessages);
     fake.piSession = {
       state: { isStreaming: false },
@@ -107,7 +105,7 @@ describe("ChatThreadDO agent eval sessions", () => {
       "result",
     ]);
     expect(fake.piSession.prompt).toHaveBeenCalledTimes(1);
-    expect(fake.startPiTurnRecovery).toHaveBeenCalledTimes(1);
+    expect(fake.withPiTurnInactivityTimeout).toHaveBeenCalledTimes(1);
     expect(fake.setChatIsStreaming).toHaveBeenCalledWith(true);
   });
 });
