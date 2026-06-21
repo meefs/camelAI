@@ -1,6 +1,41 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
+
+// Workaround for cloudflare/workerd#6793: the stock proxy-everything egress sidecar's TPROXY rules
+// intercept docker bridge control traffic on newer hosts (e.g. kernel 6.17 / Docker 29.x), so the
+// eval container never becomes ready ("Container failed to start"). scripts/run-eval-suite.sh
+// builds a patched interceptor image (camelai-eval-egress-fixed); for direct local runs, auto-select
+// it here if present. Remove once workerd#6794 ships in a release.
+if (!process.env.MINIFLARE_CONTAINER_EGRESS_IMAGE) {
+  const patchedEgressImage = "camelai-eval-egress-fixed:latest";
+  const probe = spawnSync("docker", ["image", "inspect", patchedEgressImage], { stdio: "ignore" });
+  if (probe.status === 0) {
+    process.env.MINIFLARE_CONTAINER_EGRESS_IMAGE = patchedEgressImage;
+    console.log(`Using patched egress interceptor ${patchedEgressImage} (workerd#6793 workaround)`);
+  }
+}
+
+// workers-sdk#14242: vitest-pool-workers leaves the eval container and its egress sidecar running
+// after the run instead of removing them. They accumulate (each holds a netns, ports and memory)
+// and will eventually exhaust the host. Prune lingering eval containers before and after every run.
+//
+// This is a GLOBAL sweep (matches all EvalSandbox containers), which is only safe when this is the
+// only eval on the host. A direct local run (`bun run test:eval:*`) is exactly that. Under the
+// control plane, runs execute concurrently (EVAL_MAX_CONCURRENT), so a global sweep would kill a
+// sibling run's container — the control plane sets EVAL_MANAGED_CLEANUP=1 and owns a concurrency-
+// safe reaper instead, so we skip here.
+function sweepEvalContainers(reason) {
+  if (process.env.EVAL_MANAGED_CLEANUP === "1") return;
+  const list = spawnSync("docker", ["ps", "-aq", "--filter", "name=EvalSandbox"], {
+    encoding: "utf8",
+  });
+  if (list.status !== 0) return; // docker unavailable; nothing to do
+  const ids = (list.stdout || "").split("\n").map((line) => line.trim()).filter(Boolean);
+  if (ids.length === 0) return;
+  spawnSync("docker", ["rm", "-f", ...ids], { stdio: "ignore" });
+  console.log(`Pruned ${ids.length} leftover eval container(s) (${reason}; workers-sdk#14242)`);
+}
 
 const evals = {
   "dashboard-fake-data-live": {
@@ -264,6 +299,8 @@ function observeChunk(chunk) {
   }
 }
 
+sweepEvalContainers("pre-run");
+
 const child = spawn(
   "bunx",
   [
@@ -317,5 +354,6 @@ child.on("close", (code) => {
     console.warn(`No transcript marker found for eval "${evalName}".`);
   }
 
+  sweepEvalContainers("post-run");
   process.exit(code ?? 1);
 });

@@ -100,6 +100,17 @@ if [ -f workers/main/eval-sandbox.Dockerfile ]; then
   docker build -t camelai-eval-sandbox:latest -f workers/main/eval-sandbox.Dockerfile . || fail docker-build $?
 fi
 
+# Patched Cloudflare Containers egress interceptor (workerd#6793 workaround): the stock
+# proxy-everything sidecar's TPROXY rules intercept docker bridge control traffic on newer hosts
+# (e.g. kernel 6.17 / Docker 29.x), so the container never becomes ready and the eval fails with
+# "Container failed to start". This wrapper adds a bridge-bypass rule. It's a no-op where the bug
+# doesn't trigger, so we build + select it unconditionally. Remove once workerd#6794 is released.
+if [ -f workers/main/eval-egress-fix/Dockerfile ]; then
+  echo "[$(date -Is)] Building camelai-eval-egress-fixed:latest (workerd#6793 bridge-bypass)"
+  docker build -t camelai-eval-egress-fixed:latest workers/main/eval-egress-fix || fail egress-build $?
+  export MINIFLARE_CONTAINER_EGRESS_IMAGE=camelai-eval-egress-fixed:latest
+fi
+
 echo "[$(date -Is)] Installing dependencies with: $INSTALL_COMMAND"
 bash -lc "$INSTALL_COMMAND" || fail install $?
 

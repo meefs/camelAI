@@ -107,6 +107,22 @@ Run an eval locally with `bun run test:eval:dashboard` / `:deploy` / `:sandbox` 
 Cloudflare Access from the CLI, use the **`running-agent-evals`** skill. See the
 `camelai-eval-runner` README for deploy/Cloudflare setup.
 
+**Container egress workaround (workerd#6793).** Evals run the agent in a Cloudflare Container via
+`@cloudflare/vitest-pool-workers`/Miniflare. On newer hosts (Linux kernel ~6.17 / Docker 29.x) the
+stock `cloudflare/proxy-everything` egress sidecar's TPROXY rules intercept docker bridge *control*
+traffic, so the container never becomes ready and evals fail with `kj/timer ... operation timed out`
+/ "Container failed to start". `workers/main/eval-egress-fix/` is a thin wrapper image that adds a
+bridge-bypass rule; `run-eval-suite.sh` builds it and `run-agent-eval.mjs` auto-selects it via
+`MINIFLARE_CONTAINER_EGRESS_IMAGE` (both no-ops where the bug doesn't trigger). Such hosts also need
+the docker bridge allowed to reach the host (e.g. `ufw allow in on docker0`). Remove the wrapper
+once cloudflare/workerd#6794 ships in a release.
+
+Separately, vitest-pool-workers leaves the eval container + sidecar running after each run
+(workers-sdk#14242); they accumulate and exhaust the host. `run-agent-eval.mjs` prunes leftover
+`EvalSandbox` containers for direct local runs, but skips when `EVAL_MANAGED_CLEANUP=1` — under the
+control plane runs are concurrent (`EVAL_MAX_CONCURRENT`), so a global sweep would kill a sibling's
+container; the control plane (`camelai-eval-runner`) owns a concurrency-safe reaper instead.
+
 ## Frontend Conventions
 
 - React Router is in framework mode. Prefer `loader`, `action`, `<Form>`, and `useFetcher` over client-only fetching in `useEffect`.
