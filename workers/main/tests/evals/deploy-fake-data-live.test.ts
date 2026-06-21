@@ -17,6 +17,11 @@ import {
   type EvalModelEnv,
 } from "./model-config";
 import { isRealEvalDeployEnabled } from "../../src/eval-deploy-context";
+import {
+  assertDeployedApp,
+  assertDeployedAppLive,
+  countWorkspaceApps,
+} from "./eval-deploy-assert";
 import type { ChatThreadDO } from "../../src/chat-thread-do";
 import type { WorkspaceFilesystemDO } from "../../src/workspace-filesystem-do";
 
@@ -92,6 +97,8 @@ describe("deploy fake data agent eval", () => {
       const chatThread = testEnv.CHAT_THREAD.get(
         testEnv.CHAT_THREAD.idFromName(thread.id),
       );
+      // Snapshot the workspace's app count so we can assert the eval actually deployed one.
+      const appsBefore = await countWorkspaceApps(orgStub, defaultWorkspaceId);
       const result = await chatThread.runAgentEvalSession({
         threadId: thread.id,
         workspaceId: defaultWorkspaceId,
@@ -160,24 +167,16 @@ describe("deploy fake data agent eval", () => {
       expect(result.events.some((event) => event.type === "runtime_event")).toBe(true);
       expect(result.events.some((event) => event.type === "result")).toBe(true);
 
-      // The deploy flows through the real cf-api-proxy and registers in OrgDO like a normal
-      // deploy, so the app surfaces in the eval result via the standard app path with the
-      // testing-grounds host — no eval-specific registry involved.
-      const resultApp = result.deployedApps?.find(
-        (app) => app.name === "fake-data-dashboard",
-      );
-      expect(resultApp).toBeDefined();
-      const appUrl = resultApp?.url ?? "";
-      const appHost = new URL(appUrl).host;
-      expect(appHost.startsWith("fake-data-dashboard")).toBe(true);
-      expect(appHost.endsWith(".evals.camelai.app")).toBe(true);
+      // The eval must actually create an app: the workspace had `appsBefore` registered apps
+      // before the run and must have exactly one more now. This is name-agnostic (doesn't depend
+      // on what the agent named the app) and fails loudly if the agent never deployed.
+      expect(await countWorkspaceApps(orgStub, defaultWorkspaceId)).toBe(appsBefore + 1);
 
-      // The whole point: the app is actually reachable. Fetch the live URL and confirm the
-      // deployed worker serves a non-empty 200 response.
-      const live = await fetch(appUrl, { redirect: "follow" });
-      expect(live.status).toBe(200);
-      const liveBody = await live.text();
-      expect(liveBody.length).toBeGreaterThan(0);
+      // The deploy flows through the real cf-api-proxy and registers in OrgDO like a normal deploy,
+      // so the app surfaces in result.deployedApps with the testing-grounds host. Confirm it is
+      // actually reachable: fetch the live URL and require a non-empty 200.
+      const deployedApp = assertDeployedApp(result, { hostSuffix: ".evals.camelai.app" });
+      await assertDeployedAppLive(deployedApp);
     },
     660_000,
   );
