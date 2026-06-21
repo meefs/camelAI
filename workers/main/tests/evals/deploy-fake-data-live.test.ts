@@ -22,6 +22,7 @@ import {
   assertDeployedAppLive,
   countWorkspaceApps,
 } from "./eval-deploy-assert";
+import { emitEvalTranscript } from "./eval-transcript";
 import type { ChatThreadDO } from "../../src/chat-thread-do";
 import type { WorkspaceFilesystemDO } from "../../src/workspace-filesystem-do";
 
@@ -135,20 +136,16 @@ describe("deploy fake data agent eval", () => {
         messages: result.messages,
       });
 
-      console.log(
-        "DEPLOY_EVAL_TRANSCRIPT_START " +
-          JSON.stringify({
-            status: result.status,
-            error: result.error,
-            model: testEnv.EVAL_MODEL,
-            signal,
-            deployedApps: result.deployedApps,
-            result: result.result,
-            events: result.events,
-            messages: result.messages,
-          }) +
-          " DEPLOY_EVAL_TRANSCRIPT_END",
-      );
+      emitEvalTranscript({
+        status: result.status,
+        error: result.error,
+        model: testEnv.EVAL_MODEL,
+        signal,
+        deployedApps: result.deployedApps,
+        result: result.result,
+        events: result.events,
+        messages: result.messages,
+      });
 
       const transcriptText = JSON.stringify({
         result: result.result,

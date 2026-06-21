@@ -58,6 +58,7 @@
 		"test:stripe": "RUN_STRIPE_INTEGRATION_TESTS=1 vitest run tests/stripe-integration.test.ts",
 		"test:workers": "vitest run --config vitest.workers.config.ts",
 		"test:workers:codex-web": "vitest run --config vitest.workers.config.ts workers/main/tests/web-codex-provider.test.ts",
+		"test:eval": "node scripts/run-agent-eval.mjs",
 		"test:eval:dashboard": "node scripts/run-agent-eval.mjs dashboard-fake-data-live",
 		"test:eval:deploy": "node scripts/run-agent-eval.mjs deploy-fake-data-live",
 		"test:eval:sandbox": "node scripts/run-agent-eval.mjs sandbox-write-file-live",

@@ -1,0 +1,26 @@
+// Standard transcript emitter for agent evals. Every eval ends by calling emitEvalTranscript(...);
+// scripts/run-agent-eval.mjs captures the JSON between the single marker pair below and writes it
+// as the run's artifact. Using one shared marker (instead of a bespoke pair per eval) is what lets
+// run-agent-eval.mjs stay manifest-driven — a new eval needs no marker wiring, just this call.
+
+export const EVAL_TRANSCRIPT_START = "EVAL_TRANSCRIPT_START ";
+export const EVAL_TRANSCRIPT_END = " EVAL_TRANSCRIPT_END";
+
+export interface EvalTranscriptPayload {
+  status: unknown;
+  error?: unknown;
+  /** EVAL_MODEL used for the run (for the dashboard's per-model view). */
+  model?: unknown;
+  /** Output of evaluateAgentEvalSignal (turns, tool calls, token usage, violations). */
+  signal?: unknown;
+  /** AgentEvalSessionResult.result — the agent's final summary text. */
+  result?: unknown;
+  events?: unknown;
+  messages?: unknown;
+  /** AgentEvalSessionResult.deployedApps, when the eval deploys. */
+  deployedApps?: unknown;
+}
+
+export function emitEvalTranscript(payload: EvalTranscriptPayload): void {
+  console.log(EVAL_TRANSCRIPT_START + JSON.stringify(payload) + EVAL_TRANSCRIPT_END);
+}

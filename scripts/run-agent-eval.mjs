@@ -1,4 +1,4 @@
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 
@@ -37,28 +37,22 @@ function sweepEvalContainers(reason) {
   console.log(`Pruned ${ids.length} leftover eval container(s) (${reason}; workers-sdk#14242)`);
 }
 
-const evals = {
-  "dashboard-fake-data-live": {
-    testFile: "workers/main/tests/evals/dashboard-fake-data-live.test.ts",
-    startMarker: "DASHBOARD_EVAL_TRANSCRIPT_START ",
-    endMarker: " DASHBOARD_EVAL_TRANSCRIPT_END",
-  },
-  "deploy-fake-data-live": {
-    testFile: "workers/main/tests/evals/deploy-fake-data-live.test.ts",
-    startMarker: "DEPLOY_EVAL_TRANSCRIPT_START ",
-    endMarker: " DEPLOY_EVAL_TRANSCRIPT_END",
-  },
-  "sandbox-write-file-live": {
-    testFile: "workers/main/tests/evals/sandbox-write-file-live.test.ts",
-    startMarker: "SANDBOX_WRITE_EVAL_TRANSCRIPT_START ",
-    endMarker: " SANDBOX_WRITE_EVAL_TRANSCRIPT_END",
-  },
-  "custom-prompt-live": {
-    testFile: "workers/main/tests/evals/custom-prompt-live.test.ts",
-    startMarker: "CUSTOM_EVAL_TRANSCRIPT_START ",
-    endMarker: " CUSTOM_EVAL_TRANSCRIPT_END",
-  },
-};
+// Single source of truth: the eval manifest. Adding an eval = add a manifest entry + a
+// workers/main/tests/evals/<id>.test.ts that ends in emitEvalTranscript(...) (see ./eval-transcript).
+// All evals share one transcript marker pair, so no per-eval wiring is needed here.
+const EVALS_DIR = "workers/main/tests/evals";
+const START_MARKER = "EVAL_TRANSCRIPT_START ";
+const END_MARKER = " EVAL_TRANSCRIPT_END";
+const manifestEvalIds = JSON.parse(
+  readFileSync(path.resolve(EVALS_DIR, "manifest.json"), "utf8"),
+).evals.map((entry) => entry.id);
+// custom-prompt-live is the generic env-driven custom harness — runnable but not a manifest eval.
+const evalIds = [...manifestEvalIds, "custom-prompt-live"];
+const configFor = (id) => ({
+  testFile: `${EVALS_DIR}/${id}.test.ts`,
+  startMarker: START_MARKER,
+  endMarker: END_MARKER,
+});
 
 const firstArg = process.argv[2];
 const evalName = firstArg && !firstArg.startsWith("--") ? firstArg : "deploy-fake-data-live";
@@ -67,7 +61,7 @@ const cliArgs = process.argv.slice(firstArg && !firstArg.startsWith("--") ? 3 : 
 function usage() {
   console.log(`Usage: node scripts/run-agent-eval.mjs [eval-name] [options]
 
-Available evals: ${Object.keys(evals).join(", ")}
+Available evals: ${evalIds.join(", ")}
 
 Options:
   --model <id>              Thread model id, for example sonnet, gpt-5.4, custom
@@ -186,10 +180,10 @@ function printSignalSummary(transcript) {
   }
 }
 
-const config = evals[evalName];
+const config = evalIds.includes(evalName) ? configFor(evalName) : null;
 
 if (!config) {
-  console.error(`Unknown eval "${evalName}". Available evals: ${Object.keys(evals).join(", ")}`);
+  console.error(`Unknown eval "${evalName}". Available evals: ${evalIds.join(", ")}`);
   process.exit(1);
 }
 

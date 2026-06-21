@@ -5,6 +5,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { createOrg, createUser, type TestEnv } from "../test-helpers";
+import { emitEvalTranscript } from "./eval-transcript";
 import {
   assertEvalSignal,
   evaluateAgentEvalSignal,
@@ -161,11 +162,7 @@ describe("custom prompt agent eval", () => {
       };
       persistEvalArtifact("custom-prompt-live", payload);
 
-      console.log(
-        "CUSTOM_EVAL_TRANSCRIPT_START " +
-          JSON.stringify(payload) +
-          " CUSTOM_EVAL_TRANSCRIPT_END",
-      );
+      emitEvalTranscript(payload);
 
       const transcriptText = JSON.stringify({
         result: result.result,

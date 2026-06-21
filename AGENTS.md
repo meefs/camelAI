@@ -102,10 +102,19 @@ at a chosen branch/commit per run and executes the evals here, so the eval defin
 - The control plane reuses the EC2 pool tagged `camelai:eval-pool=true` and the results bucket;
   the pool + host + infra are provisioned by Terraform in `camelai-eval-runner`.
 
-Run an eval locally with `bun run test:eval:dashboard` / `:deploy` / `:sandbox` (these wrap
-`scripts/run-agent-eval.mjs`). To drive the hosted runner API (`evals.camelai.dev`) or get past
-Cloudflare Access from the CLI, use the **`running-agent-evals`** skill. See the
-`camelai-eval-runner` README for deploy/Cloudflare setup.
+Run an eval locally with `bun run test:eval <id>` (or the `:dashboard` / `:deploy` / `:sandbox`
+shortcuts) — these wrap `scripts/run-agent-eval.mjs`. To drive the hosted runner API
+(`evals.camelai.dev`) or get past Cloudflare Access from the CLI, use the **`running-agent-evals`**
+skill. See the `camelai-eval-runner` README for deploy/Cloudflare setup.
+
+**Adding a new eval.** `workers/main/tests/evals/manifest.json` is the single source of truth for the
+committed eval list. To add one: (1) create `workers/main/tests/evals/<id>.test.ts`, gated on
+`RUN_AGENT_EVALS === "1"`, ending in `emitEvalTranscript({...})` from `./eval-transcript` (every eval
+shares one transcript marker pair); (2) add a `{ "id", "description", "realDeploy"? }` entry to
+`manifest.json`. It is then runnable via `bun run test:eval <id>`, included in `EVAL_TARGET=all`, and
+auto-listed by the control plane's `GET /api/evals` + dashboard for that ref — no other files to edit.
+`custom-prompt-live` is intentionally not in the manifest (it's the generic `CUSTOM_EVAL_*`-driven
+harness). Each run executes exactly one eval; `all`/multi-eval requests fan out to one run per eval.
 
 **Container egress workaround (workerd#6793).** Evals run the agent in a Cloudflare Container via
 `@cloudflare/vitest-pool-workers`/Miniflare. On newer hosts (Linux kernel ~6.17 / Docker 29.x) the

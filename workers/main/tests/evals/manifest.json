@@ -1,0 +1,18 @@
+{
+  "$comment": "Single source of truth for committed agent evals. Adding an eval = create workers/main/tests/evals/<id>.test.ts (gated on RUN_AGENT_EVALS, ending in emitEvalTranscript from ./eval-transcript) and add one entry here. Consumed by scripts/run-agent-eval.mjs, scripts/run-eval-suite.sh, and the eval control plane (GET /api/evals). custom-prompt-live is intentionally NOT listed — it's the generic env-driven custom-prompt harness, not a fixed eval. realDeploy:true marks evals that only run when real deploy is enabled (CF_API_TOKEN + EVAL_REAL_DEPLOY!=0).",
+  "evals": [
+    {
+      "id": "dashboard-fake-data-live",
+      "description": "Build a polished static HTML dashboard from fake business data"
+    },
+    {
+      "id": "deploy-fake-data-live",
+      "description": "Scaffold + deploy a Cloudflare Worker app to the testing-grounds namespace",
+      "realDeploy": true
+    },
+    {
+      "id": "sandbox-write-file-live",
+      "description": "Write and verify a file in the project sandbox"
+    }
+  ]
+}

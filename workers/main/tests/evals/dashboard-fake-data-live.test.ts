@@ -2,6 +2,7 @@ import { env } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
 import { createOrg, createUser, type TestEnv } from "../test-helpers";
+import { emitEvalTranscript } from "./eval-transcript";
 import {
   assertEvalSignal,
   evaluateAgentEvalSignal,
@@ -90,19 +91,15 @@ describe("dashboard fake data agent eval", () => {
         }),
       );
 
-      console.log(
-        "DASHBOARD_EVAL_TRANSCRIPT_START " +
-          JSON.stringify({
-            status: result.status,
-            error: result.error,
-            model: testEnv.EVAL_MODEL,
-            signal,
-            result: result.result,
-            events: result.events,
-            messages: result.messages,
-          }) +
-          " DASHBOARD_EVAL_TRANSCRIPT_END",
-      );
+      emitEvalTranscript({
+        status: result.status,
+        error: result.error,
+        model: testEnv.EVAL_MODEL,
+        signal,
+        result: result.result,
+        events: result.events,
+        messages: result.messages,
+      });
 
       expect(result.status).toBe("completed");
       assertEvalSignal(signal, testEnv);
