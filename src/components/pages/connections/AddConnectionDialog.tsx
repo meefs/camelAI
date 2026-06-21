@@ -2,7 +2,13 @@
 
 import { useState, useEffect } from 'react';
 import { useFetcher } from 'react-router';
-import type { IntegrationDefinition } from '@/lib/integration-registry';
+import {
+  type IntegrationDefinition,
+  shouldShowConfigField,
+  shouldShowCredentialField,
+  isCredentialFieldRequired,
+  filterVisibleCredentials,
+} from '@/lib/integration-registry';
 import {
   Dialog,
   DialogContent,
@@ -54,40 +60,6 @@ const applyDefaults = (
   return next;
 };
 
-function shouldShowConfigField(
-  connectionType: string,
-  fieldName: string,
-  config: Record<string, unknown>
-): boolean {
-  if (connectionType === 'remote_mcp' && fieldName === 'auth_header') {
-    return config.auth_type === 'custom_header';
-  }
-  return true;
-}
-
-function shouldShowCredentialField(
-  connectionType: string,
-  fieldName: string,
-  config: Record<string, unknown>
-): boolean {
-  if (connectionType === 'remote_mcp' && fieldName === 'token') {
-    return config.auth_type === 'bearer' || config.auth_type === 'custom_header';
-  }
-  return true;
-}
-
-function isCredentialFieldRequired(
-  connectionType: string,
-  fieldName: string,
-  config: Record<string, unknown>,
-  schemaRequired: boolean
-): boolean {
-  if (connectionType === 'remote_mcp' && fieldName === 'token') {
-    return config.auth_type === 'bearer' || config.auth_type === 'custom_header';
-  }
-  return schemaRequired;
-}
-
 export function AddConnectionDialog({
   open,
   onOpenChange,
@@ -133,7 +105,7 @@ export function AddConnectionDialog({
         integration_type: connectionType,
         name: name.trim() || typeDef?.displayName || connectionType,
         config: JSON.stringify(nextConfig),
-        credentials: JSON.stringify(credentials),
+        credentials: JSON.stringify(filterVisibleCredentials(connectionType, nextConfig, credentials)),
       },
       { method: 'POST' }
     );

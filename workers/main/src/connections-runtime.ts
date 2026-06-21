@@ -1288,7 +1288,7 @@ async function callAuthenticatedConnectionFetch(
   if (nativeProvider) {
     await applyNativeHttpAuth(env, context, record, nativeProvider, headers, credentials);
   } else {
-    applyOtherAuth(headers, config, credentials);
+    await applyOtherAuth(env, context, record, headers, config, credentials);
   }
 
   const init: RequestInit = { method, headers };
@@ -1303,6 +1303,21 @@ async function callAuthenticatedConnectionFetch(
   }
 
   const response = await fetch(requestUrl, init);
+  // Self-heal stale auth status: a successful authenticated fetch proves the
+  // connection is usable again, so clear a previously recorded setup/reauth
+  // problem. This covers config-only fixes (e.g. switching an "other" connection
+  // to auth_type "none", correcting base_url, or fixing the header name) that do
+  // not rewrite credentials and therefore would otherwise leave the connection
+  // stuck looking broken in the connections UI. Skip on upstream auth-failure
+  // responses, where credentials were applied but rejected.
+  if (
+    record.auth_status &&
+    record.auth_status !== 'connected' &&
+    response.status !== 401 &&
+    response.status !== 403
+  ) {
+    await markConnectionAuthStatus(env, context, record, 'connected', '', '');
+  }
   const responseBody = await boundedResponseText(response, OTHER_CONNECTION_RESPONSE_LIMIT);
   return {
     status: response.status,
@@ -1624,16 +1639,31 @@ async function applyNativeHttpAuth(
   }
 }
 
-function applyOtherAuth(headers: Headers, config: Record<string, unknown>, credentials: Record<string, unknown>): void {
+async function applyOtherAuth(
+  env: ConnectionsRuntimeEnv,
+  context: ConnectionsContext,
+  record: WorkspaceIntegrationRecord,
+  headers: Headers,
+  config: Record<string, unknown>,
+  credentials: Record<string, unknown>
+): Promise<void> {
   const authType = typeof config.auth_type === 'string' && config.auth_type.trim()
     ? config.auth_type.trim().toLowerCase()
     : 'bearer';
+  // Mirror native HTTP providers: when an "other" connection is missing the
+  // credentials its configured auth_type needs, flag it as setup_incomplete so
+  // the connections UI surfaces the problem instead of failing opaquely later.
+  const setupIncomplete = async (message: string): Promise<Error> => {
+    const code = 'AUTH_SETUP_INCOMPLETE';
+    await markConnectionAuthStatus(env, context, record, 'setup_incomplete', code, message);
+    return connectionAuthError(record, context, 'setup_incomplete', code, message, 400);
+  };
   switch (authType) {
     case 'none':
       return;
     case 'bearer': {
       const token = credentialString(credentials, 'api_key', 'access_token', 'token');
-      if (!token) throw Object.assign(new Error('Custom API bearer auth requires api_key.'), { status: 400 });
+      if (!token) throw await setupIncomplete(`Custom API connection "${record.name}" requires api_key for bearer auth.`);
       headers.set('authorization', `Bearer ${token}`);
       return;
     }
@@ -1641,7 +1671,7 @@ function applyOtherAuth(headers: Headers, config: Record<string, unknown>, crede
       const username = credentialString(credentials, 'client_id', 'username', 'api_key');
       const password = credentialString(credentials, 'client_secret', 'password', 'api_secret');
       if (!username || !password) {
-        throw Object.assign(new Error('Custom API basic auth requires username/client_id/api_key and password/client_secret/api_secret.'), { status: 400 });
+        throw await setupIncomplete(`Custom API connection "${record.name}" requires username/client_id and password/client_secret for basic auth.`);
       }
       headers.set('authorization', `Basic ${btoa(`${username}:${password}`)}`);
       return;
@@ -1651,7 +1681,7 @@ function applyOtherAuth(headers: Headers, config: Record<string, unknown>, crede
         ? config.auth_header.trim()
         : 'X-API-Key';
       const token = credentialString(credentials, 'api_key', 'access_token', 'token');
-      if (!token) throw Object.assign(new Error('Custom API header auth requires api_key.'), { status: 400 });
+      if (!token) throw await setupIncomplete(`Custom API connection "${record.name}" requires api_key for custom header auth.`);
       headers.set(headerName, token);
       return;
     }

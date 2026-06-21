@@ -3,7 +3,15 @@
 import { useState, useEffect } from 'react';
 import { useFetcher } from 'react-router';
 import type { Integration } from '@/types';
-import type { IntegrationDefinition } from '@/lib/integration-registry';
+import {
+  type IntegrationDefinition,
+  shouldShowConfigField,
+  shouldShowCredentialField,
+  isCredentialFieldRequired,
+  requiresCredentialEntryOnEdit,
+  shouldClearHiddenCredentials,
+  filterVisibleCredentials,
+} from '@/lib/integration-registry';
 import {
   Dialog,
   DialogContent,
@@ -51,40 +59,6 @@ const applyDefaults = (
   return next;
 };
 
-function shouldShowConfigField(
-  connectionType: string,
-  fieldName: string,
-  config: Record<string, unknown>
-): boolean {
-  if (connectionType === 'remote_mcp' && fieldName === 'auth_header') {
-    return config.auth_type === 'custom_header';
-  }
-  return true;
-}
-
-function shouldShowCredentialField(
-  connectionType: string,
-  fieldName: string,
-  config: Record<string, unknown>
-): boolean {
-  if (connectionType === 'remote_mcp' && fieldName === 'token') {
-    return config.auth_type === 'bearer' || config.auth_type === 'custom_header';
-  }
-  return true;
-}
-
-function isCredentialFieldRequired(
-  connectionType: string,
-  fieldName: string,
-  config: Record<string, unknown>,
-  schemaRequired: boolean
-): boolean {
-  if (connectionType === 'remote_mcp' && fieldName === 'token') {
-    return config.auth_type === 'bearer' || config.auth_type === 'custom_header';
-  }
-  return schemaRequired;
-}
-
 export function EditConnectionDialog({
   open,
   onOpenChange,
@@ -123,11 +97,36 @@ export function EditConnectionDialog({
     }
   }, [fetcher.state, fetcher.data, onSuccess]);
 
+  if (!typeDef) return null;
+
+  const visibleCredentialFields = typeDef.credentialSchema.filter((field) =>
+    shouldShowCredentialField(connection.integration_type, field.name, config)
+  );
+  const isRemoteMcpOAuth = connection.integration_type === 'remote_mcp' && config.auth_type === 'oauth';
+
+  // Force credential entry (and submission) when the selected auth mode needs a
+  // secret the stored credentials cannot satisfy, so a config-only auth-mode
+  // change can't persist a connection that fails on its first request.
+  const credentialEntryRequired = requiresCredentialEntryOnEdit(
+    typeDef,
+    config,
+    connection.config,
+    Boolean(connection.has_credentials)
+  );
+  const credentialEntryActive = shouldUpdateCredentials || credentialEntryRequired;
+  const clearsHiddenCredentials = shouldClearHiddenCredentials(
+    typeDef,
+    config,
+    connection.config,
+    Boolean(connection.has_credentials)
+  );
+  const submitCredentials = credentialEntryActive || clearsHiddenCredentials;
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
 
-    const nextConfig = typeDef ? applyDefaults(typeDef.configSchema, config) : config;
+    const nextConfig = applyDefaults(typeDef.configSchema, config);
 
     fetcher.submit(
       {
@@ -135,7 +134,13 @@ export function EditConnectionDialog({
         integrationId: connection.id,
         name: name.trim(),
         config: JSON.stringify(nextConfig),
-        ...(shouldUpdateCredentials ? { credentials: JSON.stringify(credentials) } : {}),
+        ...(submitCredentials
+          ? {
+              credentials: JSON.stringify(
+                filterVisibleCredentials(connection.integration_type, config, credentials)
+              ),
+            }
+          : {}),
       },
       { method: 'POST' }
     );
@@ -157,12 +162,6 @@ export function EditConnectionDialog({
   const handleCredentialChange = (field: string, value: unknown) => {
     setCredentials((prev) => ({ ...prev, [field]: value }));
   };
-
-  if (!typeDef) return null;
-  const visibleCredentialFields = typeDef.credentialSchema.filter((field) =>
-    shouldShowCredentialField(connection.integration_type, field.name, config)
-  );
-  const isRemoteMcpOAuth = connection.integration_type === 'remote_mcp' && config.auth_type === 'oauth';
 
   return (
     <Dialog open={open} onOpenChange={handleClose}>
@@ -246,7 +245,7 @@ export function EditConnectionDialog({
                 <div className="mt-2 border-t pt-4">
                   <div className="mb-3 flex items-center justify-between">
                     <p className="text-sm font-medium">Credentials</p>
-                    {connection.has_credentials && !shouldUpdateCredentials && (
+                    {connection.has_credentials && !credentialEntryActive && (
                       <Button
                         type="button"
                         variant="outline"
@@ -259,7 +258,16 @@ export function EditConnectionDialog({
                     )}
                   </div>
 
-                  {connection.has_credentials && !shouldUpdateCredentials ? (
+                  {connection.has_credentials && credentialEntryRequired && (
+                    <Alert className="mb-3">
+                      <AlertDescription>
+                        This authentication method needs different credentials. Enter them below to
+                        save your changes.
+                      </AlertDescription>
+                    </Alert>
+                  )}
+
+                  {connection.has_credentials && !credentialEntryActive ? (
                     <Alert>
                       <AlertDescription>
                         Credentials are stored securely. Click &quot;Update Credentials&quot; to replace
@@ -290,7 +298,7 @@ export function EditConnectionDialog({
                                 handleCredentialChange(field.name, e.target.value)
                               }
                               placeholder={field.placeholder}
-                              required={shouldUpdateCredentials && required}
+                              required={credentialEntryActive && required}
                               rows={6}
                               className="font-mono text-xs"
                             />
@@ -303,7 +311,7 @@ export function EditConnectionDialog({
                                 handleCredentialChange(field.name, e.target.value)
                               }
                               placeholder={field.placeholder}
-                              required={shouldUpdateCredentials && required}
+                              required={credentialEntryActive && required}
                             />
                           )}
                           {field.description && (

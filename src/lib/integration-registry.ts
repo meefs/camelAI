@@ -1529,3 +1529,142 @@ export function shouldStoreIntegrationCredentials(
     return true;
   });
 }
+
+// Normalized auth_type for an "other" (custom HTTP API) connection. Mirrors the
+// default used at request time in applyOtherAuth (connections-runtime.ts).
+function otherAuthType(config: Record<string, unknown>): string {
+  return typeof config.auth_type === 'string' && config.auth_type.trim()
+    ? config.auth_type.trim().toLowerCase()
+    : 'bearer';
+}
+
+// Which credential fields an "other" connection actually uses, keyed by auth_type.
+// Must stay in sync with the credential lookups in applyOtherAuth.
+const OTHER_CREDENTIAL_FIELDS_BY_AUTH: Record<string, string[]> = {
+  none: [],
+  bearer: ['api_key'],
+  header: ['api_key'],
+  basic: ['client_id', 'client_secret'],
+};
+
+// Whether a config field should be shown for the given connection type/state.
+// Centralized so the Add and Edit dialogs stay in sync.
+export function shouldShowConfigField(
+  type: string,
+  fieldName: string,
+  config: Record<string, unknown>
+): boolean {
+  if (type === 'remote_mcp' && fieldName === 'auth_header') {
+    return config.auth_type === 'custom_header';
+  }
+  // Only relevant when authenticating via a custom header.
+  if (type === 'other' && fieldName === 'auth_header') {
+    return otherAuthType(config) === 'header';
+  }
+  return true;
+}
+
+// Whether a credential field should be shown for the given connection type/state.
+export function shouldShowCredentialField(
+  type: string,
+  fieldName: string,
+  config: Record<string, unknown>
+): boolean {
+  if (type === 'remote_mcp' && fieldName === 'token') {
+    return config.auth_type === 'bearer' || config.auth_type === 'custom_header';
+  }
+  if (type === 'other') {
+    const fields = OTHER_CREDENTIAL_FIELDS_BY_AUTH[otherAuthType(config)] ?? OTHER_CREDENTIAL_FIELDS_BY_AUTH.bearer;
+    return fields.includes(fieldName);
+  }
+  return true;
+}
+
+// Whether a credential field is required given the current type/state. Falls back
+// to the schema's declared requirement for types without conditional auth.
+export function isCredentialFieldRequired(
+  type: string,
+  fieldName: string,
+  config: Record<string, unknown>,
+  schemaRequired: boolean
+): boolean {
+  if (type === 'remote_mcp' && fieldName === 'token') {
+    return config.auth_type === 'bearer' || config.auth_type === 'custom_header';
+  }
+  // For "other", every credential field that is shown for the chosen auth_type is
+  // required — otherwise the connection silently fails its first request.
+  if (type === 'other') {
+    return shouldShowCredentialField('other', fieldName, config);
+  }
+  return schemaRequired;
+}
+
+// Credential field names required for a given connection type/config.
+function requiredCredentialKeys(
+  definition: IntegrationDefinition,
+  config: Record<string, unknown>
+): string[] {
+  return definition.credentialSchema
+    .filter((field) => isCredentialFieldRequired(definition.type, field.name, config, field.required))
+    .map((field) => field.name);
+}
+
+// When editing an existing connection, decide whether the user must supply
+// credentials now (rather than reusing the stored secret). This is true when the
+// selected config requires a credential the stored credentials would not contain:
+// either nothing is stored yet, or the auth mode change introduced a newly-required
+// credential key (e.g. switching an "other" connection from basic to bearer, where
+// the stored client_id/client_secret cannot satisfy the new api_key requirement).
+// Without this, a config-only save would persist an auth mode whose secret is
+// missing and the next request would fail with AUTH_SETUP_INCOMPLETE.
+export function requiresCredentialEntryOnEdit(
+  definition: IntegrationDefinition,
+  currentConfig: Record<string, unknown>,
+  storedConfig: Record<string, unknown>,
+  hasStoredCredentials: boolean
+): boolean {
+  const requiredNow = requiredCredentialKeys(definition, currentConfig);
+  if (requiredNow.length === 0) return false;
+  if (!hasStoredCredentials) return true;
+  const requiredBefore = new Set(requiredCredentialKeys(definition, storedConfig));
+  return requiredNow.some((key) => !requiredBefore.has(key));
+}
+
+// Returns true when the newly-selected auth mode hides a credential field that
+// the stored config exposed, so the edit must submit a filtered payload to
+// overwrite the orphaned (now-invisible) secret instead of letting the server
+// keep it. No-op for connection types without conditional credential visibility
+// (shouldShowCredentialField returns true for every key there, so the visible
+// sets match).
+export function shouldClearHiddenCredentials(
+  definition: IntegrationDefinition,
+  currentConfig: Record<string, unknown>,
+  storedConfig: Record<string, unknown>,
+  hasStoredCredentials: boolean
+): boolean {
+  if (!hasStoredCredentials) return false;
+  const visibleNow = new Set(
+    definition.credentialSchema
+      .filter((field) => shouldShowCredentialField(definition.type, field.name, currentConfig))
+      .map((field) => field.name)
+  );
+  return definition.credentialSchema
+    .filter((field) => shouldShowCredentialField(definition.type, field.name, storedConfig))
+    .map((field) => field.name)
+    .some((name) => !visibleNow.has(name));
+}
+
+// Drop credential values for fields hidden by the current auth mode so secrets a
+// user can no longer see/clear in the UI are never silently persisted (e.g. an
+// "other" connection where api_key was typed under bearer then auth_type switched
+// to none/basic). For types without conditional auth, shouldShowCredentialField
+// returns true for every key, so this is a no-op (snowflake etc. unaffected).
+export function filterVisibleCredentials(
+  type: string,
+  config: Record<string, unknown>,
+  credentials: Record<string, unknown>
+): Record<string, unknown> {
+  return Object.fromEntries(
+    Object.entries(credentials).filter(([key]) => shouldShowCredentialField(type, key, config))
+  );
+}

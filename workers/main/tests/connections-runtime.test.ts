@@ -1189,6 +1189,397 @@ describe('connections runtime', () => {
     });
   });
 
+  it('defaults custom API auth to bearer when auth_type is omitted', async () => {
+    const fetchMock = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      expect(new Headers(init?.headers).get('authorization')).toBe('Bearer fallback-token');
+      return new Response('ok');
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const records = [
+      integration({
+        id: 'custom_api',
+        integration_type: 'other',
+        name: 'custom-api',
+        category: 'saas',
+        config: JSON.stringify({ display_name: 'Custom API', base_url: 'https://api.example.com' }),
+        credentials_encrypted: await encryptedCredentials({ api_key: 'fallback-token' }),
+      }),
+    ];
+
+    await expect(invokeConnectionMethod(envWith(records), context, {
+      connection: 'otherCustomApi',
+      method: 'fetch',
+      input: { input: '/v1/items' },
+    })).resolves.toMatchObject({ status: 200, bodyText: 'ok' });
+  });
+
+  it('falls back to access_token then token for custom API bearer auth', async () => {
+    const fetchMock = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      expect(new Headers(init?.headers).get('authorization')).toBe('Bearer oauth-access');
+      return new Response('ok');
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const records = [
+      integration({
+        id: 'custom_api',
+        integration_type: 'other',
+        name: 'custom-api',
+        category: 'saas',
+        config: JSON.stringify({ display_name: 'Custom API', base_url: 'https://api.example.com', auth_type: 'bearer' }),
+        credentials_encrypted: await encryptedCredentials({ access_token: 'oauth-access', token: 'ignored' }),
+      }),
+    ];
+
+    await expect(invokeConnectionMethod(envWith(records), context, {
+      connection: 'otherCustomApi',
+      method: 'fetch',
+      input: { input: '/v1/items' },
+    })).resolves.toMatchObject({ status: 200 });
+  });
+
+  it('applies basic auth from client_id/client_secret for custom API connections', async () => {
+    const expected = `Basic ${btoa('client-abc:secret-xyz')}`;
+    const fetchMock = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      expect(new Headers(init?.headers).get('authorization')).toBe(expected);
+      return new Response('ok');
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const records = [
+      integration({
+        id: 'custom_api',
+        integration_type: 'other',
+        name: 'custom-api',
+        category: 'saas',
+        config: JSON.stringify({ display_name: 'Custom API', base_url: 'https://api.example.com', auth_type: 'basic' }),
+        credentials_encrypted: await encryptedCredentials({ client_id: 'client-abc', client_secret: 'secret-xyz' }),
+      }),
+    ];
+
+    await expect(invokeConnectionMethod(envWith(records), context, {
+      connection: 'otherCustomApi',
+      method: 'fetch',
+      input: { input: '/v1/items' },
+    })).resolves.toMatchObject({ status: 200 });
+  });
+
+  it('applies basic auth from api_key/api_secret fallback for custom API connections', async () => {
+    const expected = `Basic ${btoa('user-key:user-secret')}`;
+    const fetchMock = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      expect(new Headers(init?.headers).get('authorization')).toBe(expected);
+      return new Response('ok');
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const records = [
+      integration({
+        id: 'custom_api',
+        integration_type: 'other',
+        name: 'custom-api',
+        category: 'saas',
+        config: JSON.stringify({ display_name: 'Custom API', base_url: 'https://api.example.com', auth_type: 'basic' }),
+        credentials_encrypted: await encryptedCredentials({ api_key: 'user-key', api_secret: 'user-secret' }),
+      }),
+    ];
+
+    await expect(invokeConnectionMethod(envWith(records), context, {
+      connection: 'otherCustomApi',
+      method: 'fetch',
+      input: { input: '/v1/items' },
+    })).resolves.toMatchObject({ status: 200 });
+  });
+
+  it('applies a custom header for custom API header auth', async () => {
+    const fetchMock = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      const headers = new Headers(init?.headers);
+      expect(headers.get('x-acme-key')).toBe('header-token');
+      expect(headers.get('authorization')).toBeNull();
+      return new Response('ok');
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const records = [
+      integration({
+        id: 'custom_api',
+        integration_type: 'other',
+        name: 'custom-api',
+        category: 'saas',
+        config: JSON.stringify({
+          display_name: 'Custom API',
+          base_url: 'https://api.example.com',
+          auth_type: 'header',
+          auth_header: 'X-Acme-Key',
+        }),
+        credentials_encrypted: await encryptedCredentials({ api_key: 'header-token' }),
+      }),
+    ];
+
+    await expect(invokeConnectionMethod(envWith(records), context, {
+      connection: 'otherCustomApi',
+      method: 'fetch',
+      input: { input: '/v1/items' },
+    })).resolves.toMatchObject({ status: 200 });
+  });
+
+  it('defaults header auth to X-API-Key when no header name is configured', async () => {
+    const fetchMock = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      expect(new Headers(init?.headers).get('x-api-key')).toBe('header-token');
+      return new Response('ok');
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const records = [
+      integration({
+        id: 'custom_api',
+        integration_type: 'other',
+        name: 'custom-api',
+        category: 'saas',
+        config: JSON.stringify({ display_name: 'Custom API', base_url: 'https://api.example.com', auth_type: 'header' }),
+        credentials_encrypted: await encryptedCredentials({ api_key: 'header-token' }),
+      }),
+    ];
+
+    await expect(invokeConnectionMethod(envWith(records), context, {
+      connection: 'otherCustomApi',
+      method: 'fetch',
+      input: { input: '/v1/items' },
+    })).resolves.toMatchObject({ status: 200 });
+  });
+
+  it('does not send an authorization header for custom API none auth', async () => {
+    const fetchMock = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      expect(new Headers(init?.headers).get('authorization')).toBeNull();
+      return new Response('ok');
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const records = [
+      integration({
+        id: 'custom_api',
+        integration_type: 'other',
+        name: 'custom-api',
+        category: 'saas',
+        config: JSON.stringify({ display_name: 'Custom API', base_url: 'https://api.example.com', auth_type: 'none' }),
+      }),
+    ];
+
+    await expect(invokeConnectionMethod(envWith(records), context, {
+      connection: 'otherCustomApi',
+      method: 'fetch',
+      input: { input: '/v1/items' },
+    })).resolves.toMatchObject({ status: 200 });
+  });
+
+  it('overrides any caller-supplied authorization header with the stored bearer token', async () => {
+    const fetchMock = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      expect(new Headers(init?.headers).get('authorization')).toBe('Bearer secret-token');
+      return new Response('ok');
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const records = [
+      integration({
+        id: 'custom_api',
+        integration_type: 'other',
+        name: 'custom-api',
+        category: 'saas',
+        config: JSON.stringify({ display_name: 'Custom API', base_url: 'https://api.example.com', auth_type: 'bearer' }),
+        credentials_encrypted: await encryptedCredentials({ api_key: 'secret-token' }),
+      }),
+    ];
+
+    await expect(invokeConnectionMethod(envWith(records), context, {
+      connection: 'otherCustomApi',
+      method: 'fetch',
+      input: {
+        input: '/v1/items',
+        init: { headers: { Authorization: 'Bearer attacker-supplied' } },
+      },
+    })).resolves.toMatchObject({ status: 200 });
+  });
+
+  it('marks custom API bearer auth setup incomplete when api_key is missing', async () => {
+    const updates: Array<{ id: string; status: string; code: string | null; message: string | null }> = [];
+    const records = [
+      integration({
+        id: 'custom_api',
+        integration_type: 'other',
+        name: 'custom-api',
+        category: 'saas',
+        config: JSON.stringify({ display_name: 'Custom API', base_url: 'https://api.example.com', auth_type: 'bearer' }),
+        credentials_encrypted: await encryptedCredentials({}),
+      }),
+    ];
+
+    await expect(invokeConnectionMethod(
+      envWith(records, (id, status, code, message) => updates.push({ id, status, code, message })),
+      context,
+      { connection: 'otherCustomApi', method: 'fetch', input: { input: '/v1/items' } }
+    )).rejects.toMatchObject({
+      message: 'Custom API connection "custom-api" requires api_key for bearer auth.',
+      status: 400,
+      code: 'AUTH_SETUP_INCOMPLETE',
+      data: {
+        authStatus: 'setup_incomplete',
+        reauthUrl: '/connections?connection=custom_api&reauth=1',
+      },
+    });
+    expect(updates).toMatchObject([
+      {
+        id: 'custom_api',
+        status: 'setup_incomplete',
+        code: 'AUTH_SETUP_INCOMPLETE',
+        message: 'Custom API connection "custom-api" requires api_key for bearer auth.',
+      },
+    ]);
+  });
+
+  it('marks custom API basic auth setup incomplete when the password is missing', async () => {
+    const updates: Array<{ id: string; status: string; code: string | null; message: string | null }> = [];
+    const records = [
+      integration({
+        id: 'custom_api',
+        integration_type: 'other',
+        name: 'custom-api',
+        category: 'saas',
+        config: JSON.stringify({ display_name: 'Custom API', base_url: 'https://api.example.com', auth_type: 'basic' }),
+        credentials_encrypted: await encryptedCredentials({ client_id: 'client-abc' }),
+      }),
+    ];
+
+    await expect(invokeConnectionMethod(
+      envWith(records, (id, status, code, message) => updates.push({ id, status, code, message })),
+      context,
+      { connection: 'otherCustomApi', method: 'fetch', input: { input: '/v1/items' } }
+    )).rejects.toMatchObject({
+      status: 400,
+      code: 'AUTH_SETUP_INCOMPLETE',
+      data: { authStatus: 'setup_incomplete' },
+    });
+    expect(updates).toMatchObject([
+      { id: 'custom_api', status: 'setup_incomplete', code: 'AUTH_SETUP_INCOMPLETE' },
+    ]);
+  });
+
+  it('marks custom API header auth setup incomplete when api_key is missing', async () => {
+    const updates: Array<{ id: string; status: string }> = [];
+    const records = [
+      integration({
+        id: 'custom_api',
+        integration_type: 'other',
+        name: 'custom-api',
+        category: 'saas',
+        config: JSON.stringify({
+          display_name: 'Custom API',
+          base_url: 'https://api.example.com',
+          auth_type: 'header',
+          auth_header: 'X-Acme-Key',
+        }),
+        credentials_encrypted: await encryptedCredentials({}),
+      }),
+    ];
+
+    await expect(invokeConnectionMethod(
+      envWith(records, (id, status) => updates.push({ id, status })),
+      context,
+      { connection: 'otherCustomApi', method: 'fetch', input: { input: '/v1/items' } }
+    )).rejects.toMatchObject({
+      status: 400,
+      code: 'AUTH_SETUP_INCOMPLETE',
+    });
+    expect(updates).toMatchObject([{ id: 'custom_api', status: 'setup_incomplete' }]);
+  });
+
+  it('rejects unsupported custom API auth_type without marking setup incomplete', async () => {
+    const updates: Array<{ id: string; status: string }> = [];
+    const records = [
+      integration({
+        id: 'custom_api',
+        integration_type: 'other',
+        name: 'custom-api',
+        category: 'saas',
+        config: JSON.stringify({ display_name: 'Custom API', base_url: 'https://api.example.com', auth_type: 'oauth2' }),
+        credentials_encrypted: await encryptedCredentials({ api_key: 'secret-token' }),
+      }),
+    ];
+
+    await expect(invokeConnectionMethod(
+      envWith(records, (id, status) => updates.push({ id, status })),
+      context,
+      { connection: 'otherCustomApi', method: 'fetch', input: { input: '/v1/items' } }
+    )).rejects.toMatchObject({
+      message: 'Unsupported custom API auth_type: oauth2',
+      status: 400,
+    });
+    expect(updates).toEqual([]);
+  });
+
+  it('clears a stale setup_incomplete status after a successful custom API fetch', async () => {
+    const updates: Array<{ id: string; status: string }> = [];
+    const fetchMock = vi.fn(async () => new Response('ok'));
+    vi.stubGlobal('fetch', fetchMock);
+    const records = [
+      integration({
+        id: 'custom_api',
+        integration_type: 'other',
+        name: 'custom-api',
+        category: 'saas',
+        // Previously flagged as incomplete; user has since switched to auth_type none.
+        auth_status: 'setup_incomplete',
+        auth_error_code: 'AUTH_SETUP_INCOMPLETE',
+        config: JSON.stringify({ display_name: 'Custom API', base_url: 'https://api.example.com', auth_type: 'none' }),
+      }),
+    ];
+
+    await expect(invokeConnectionMethod(
+      envWith(records, (id, status) => updates.push({ id, status })),
+      context,
+      { connection: 'otherCustomApi', method: 'fetch', input: { input: '/v1/items' } }
+    )).resolves.toMatchObject({ status: 200, bodyText: 'ok' });
+    expect(updates).toMatchObject([{ id: 'custom_api', status: 'connected' }]);
+  });
+
+  it('does not rewrite auth status when an already connected custom API fetch succeeds', async () => {
+    const updates: Array<{ id: string; status: string }> = [];
+    const fetchMock = vi.fn(async () => new Response('ok'));
+    vi.stubGlobal('fetch', fetchMock);
+    const records = [
+      integration({
+        id: 'custom_api',
+        integration_type: 'other',
+        name: 'custom-api',
+        category: 'saas',
+        auth_status: 'connected',
+        config: JSON.stringify({ display_name: 'Custom API', base_url: 'https://api.example.com', auth_type: 'bearer' }),
+        credentials_encrypted: await encryptedCredentials({ api_key: 'secret-token' }),
+      }),
+    ];
+
+    await expect(invokeConnectionMethod(
+      envWith(records, (id, status) => updates.push({ id, status })),
+      context,
+      { connection: 'otherCustomApi', method: 'fetch', input: { input: '/v1/items' } }
+    )).resolves.toMatchObject({ status: 200 });
+    expect(updates).toEqual([]);
+  });
+
+  it('does not clear a stale status when the upstream rejects the custom API auth', async () => {
+    const updates: Array<{ id: string; status: string }> = [];
+    const fetchMock = vi.fn(async () => new Response('forbidden', { status: 403 }));
+    vi.stubGlobal('fetch', fetchMock);
+    const records = [
+      integration({
+        id: 'custom_api',
+        integration_type: 'other',
+        name: 'custom-api',
+        category: 'saas',
+        auth_status: 'setup_incomplete',
+        config: JSON.stringify({ display_name: 'Custom API', base_url: 'https://api.example.com', auth_type: 'none' }),
+      }),
+    ];
+
+    await expect(invokeConnectionMethod(
+      envWith(records, (id, status) => updates.push({ id, status })),
+      context,
+      { connection: 'otherCustomApi', method: 'fetch', input: { input: '/v1/items' } }
+    )).resolves.toMatchObject({ status: 403 });
+    expect(updates).toEqual([]);
+  });
+
   it('marks Notion as first-party remote MCP brokered by camelAI', async () => {
     const records = [
       integration({
