@@ -119,7 +119,7 @@ describe("settings avatar modal saves", () => {
     container.querySelector("form")?.addEventListener("submit", formSubmit);
 
     fireEvent.click(screen.getByRole("button", { name: "Change avatar" }));
-    fireEvent.click(screen.getByLabelText("Select color #7C3AED"));
+    fireEvent.click(screen.getByLabelText("Select color #8E7CC0"));
     fireEvent.change(screen.getByLabelText("Or enter custom initials"), {
       target: { value: "AB" },
     });
@@ -128,7 +128,7 @@ describe("settings avatar modal saves", () => {
     expect(fetcherSubmitMock).toHaveBeenCalledWith(
       {
         intent: "updateAvatar",
-        avatarColor: "#7C3AED",
+        avatarColor: "#8E7CC0",
         avatarContent: "AB",
       },
       { method: "post" },
@@ -138,7 +138,7 @@ describe("settings avatar modal saves", () => {
 
     resetFetcher({
       success: true,
-      avatar: { color: "#7C3AED", content: "AB" },
+      avatar: { color: "#8E7CC0", content: "AB" },
     });
     rerender(<ProfileForm user={user} />);
 
@@ -182,7 +182,7 @@ describe("settings avatar modal saves", () => {
     container.querySelector("form")?.addEventListener("submit", formSubmit);
 
     fireEvent.click(screen.getByRole("button", { name: "Change avatar" }));
-    fireEvent.click(screen.getByLabelText("Select color #10B981"));
+    fireEvent.click(screen.getByLabelText("Select color #4F9B81"));
     fireEvent.change(screen.getByLabelText("Or enter custom initials"), {
       target: { value: "WX" },
     });
@@ -191,7 +191,7 @@ describe("settings avatar modal saves", () => {
     expect(fetcherSubmitMock).toHaveBeenCalledWith(
       {
         intent: "updateAvatar",
-        avatarColor: "#10B981",
+        avatarColor: "#4F9B81",
         avatarContent: "WX",
       },
       { method: "post" },
@@ -201,7 +201,7 @@ describe("settings avatar modal saves", () => {
 
     resetFetcher({
       success: true,
-      avatar: { color: "#10B981", content: "WX" },
+      avatar: { color: "#4F9B81", content: "WX" },
     });
     rerender(
       <WorkspaceGeneralForm
