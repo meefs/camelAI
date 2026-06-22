@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"log"
 	"net"
 	"net/http"
 	neturl "net/url"
@@ -35,6 +36,9 @@ const (
 	defaultMySQLTLS                         = "preferred"
 	defaultMySQLCharset                     = "utf8mb4"
 	defaultDataProxyRequestLimitBytes int64 = 1 << 20
+	// Bulk export runs longer than a normal point query (it streams a whole
+	// result set into the warehouse), so it gets its own, more generous timeout.
+	defaultDataProxyExportTimeout = 120 * time.Second
 )
 
 type DataProxyHandlerConfig struct {
@@ -78,6 +82,12 @@ func (h *dataProxyHTTPHandler) ServeHTTP(w http.ResponseWriter, req *http.Reques
 		_ = handleDataProxyPostgresQueryWithConfig(w, req, h.cfg)
 	case normalizedPath == "/data-proxy/mysql/query" && req.Method == http.MethodPost:
 		_ = handleDataProxyMySQLQueryWithConfig(w, req, h.cfg)
+	case normalizedPath == "/data-proxy/mssql/export" && req.Method == http.MethodPost:
+		_ = handleDataProxyMssqlExportWithConfig(w, req, h.cfg)
+	case normalizedPath == "/data-proxy/postgres/export" && req.Method == http.MethodPost:
+		_ = handleDataProxyPostgresExportWithConfig(w, req, h.cfg)
+	case normalizedPath == "/data-proxy/mysql/export" && req.Method == http.MethodPost:
+		_ = handleDataProxyMySQLExportWithConfig(w, req, h.cfg)
 	default:
 		errorJSON(w, "Method not allowed", http.StatusMethodNotAllowed)
 	}
@@ -87,7 +97,8 @@ func normalizeDataProxyPath(path string) (string, bool) {
 	trimmed := strings.TrimSpace(path)
 
 	switch trimmed {
-	case "/data-proxy/mssql/query", "/data-proxy/postgres/query", "/data-proxy/mysql/query":
+	case "/data-proxy/mssql/query", "/data-proxy/postgres/query", "/data-proxy/mysql/query",
+		"/data-proxy/mssql/export", "/data-proxy/postgres/export", "/data-proxy/mysql/export":
 		return trimmed, true
 	default:
 		return "", false
@@ -328,6 +339,249 @@ func handleDataProxyMySQLQueryWithConfig(w http.ResponseWriter, req *http.Reques
 		writeMySQLError(w, err)
 	}
 	return nil
+}
+
+// =============================================================================
+// Streaming export endpoints
+// =============================================================================
+//
+// `/export` runs a read-only query and STREAMS the result set as newline-
+// delimited JSON (one JSON object per row), with no in-memory recordset and no
+// response-size cap. This is the bulk-extract path the warehouse tier reads
+// directly with DuckDB (`read_json_auto('http://.../export')`). Export is always
+// read-only (wrapped in a rolled-back read transaction) and uses a more generous
+// timeout than a point query. NDJSON is the v1 interchange; Arrow/Parquet are a
+// planned perf follow-up (see docs/warehouse-binding-design.md).
+
+func handleDataProxyMssqlExportWithConfig(w http.ResponseWriter, req *http.Request, cfg DataProxyHandlerConfig) error {
+	cfg = normalizeDataProxyHandlerConfig(cfg)
+
+	var payload mssqlQueryRequest
+	if err := decodeDataProxyJSON(w, req, cfg.RequestBodyLimitBytes, &payload); err != nil {
+		errorJSON(w, "invalid JSON body", http.StatusBadRequest)
+		return nil
+	}
+	if !hasRequiredSQLFields(payload.Server, payload.User, payload.Password, payload.Query) {
+		errorJSON(w, "Missing required fields: server, user, password, query", http.StatusBadRequest)
+		return nil
+	}
+
+	endpoint, err := resolveSQLEndpoint(req.Context(), cfg, strings.TrimSpace(payload.Server), payload.effectivePort())
+	if err != nil {
+		errorJSON(w, err.Error(), http.StatusBadGateway)
+		return nil
+	}
+
+	db, err := sql.Open("sqlserver", payload.connectionStringFor(endpoint.Host, endpoint.Port))
+	if err != nil {
+		writeMssqlError(w, err)
+		return nil
+	}
+	defer db.Close()
+
+	connectCtx, cancelConnect := context.WithTimeout(req.Context(), defaultMssqlConnectTimeout)
+	defer cancelConnect()
+	if err := db.PingContext(connectCtx); err != nil {
+		writeMssqlError(w, err)
+		return nil
+	}
+
+	started, err := streamSQLExportNDJSON(req.Context(), db, w, payload.Query, payload.namedArgs(), defaultDataProxyExportTimeout)
+	if err != nil {
+		if started {
+			log.Printf("data-proxy mssql export: stream aborted after partial output: %v", err)
+		} else {
+			writeMssqlError(w, err)
+		}
+	}
+	return nil
+}
+
+func handleDataProxyPostgresExportWithConfig(w http.ResponseWriter, req *http.Request, cfg DataProxyHandlerConfig) error {
+	cfg = normalizeDataProxyHandlerConfig(cfg)
+
+	var payload postgresQueryRequest
+	if err := decodeDataProxyJSON(w, req, cfg.RequestBodyLimitBytes, &payload); err != nil {
+		errorJSON(w, "invalid JSON body", http.StatusBadRequest)
+		return nil
+	}
+	if !hasRequiredSQLFields(payload.Host, payload.User, payload.Password, payload.Query) {
+		errorJSON(w, "Missing required fields: host, user, password, query", http.StatusBadRequest)
+		return nil
+	}
+
+	args, err := positionalArgs(payload.Params)
+	if err != nil {
+		errorJSON(w, err.Error(), http.StatusBadRequest)
+		return nil
+	}
+
+	endpoint, err := resolveSQLEndpoint(req.Context(), cfg, strings.TrimSpace(payload.Host), payload.effectivePort())
+	if err != nil {
+		errorJSON(w, err.Error(), http.StatusBadGateway)
+		return nil
+	}
+
+	db, err := sql.Open("postgres", payload.connectionStringFor(endpoint.Host, endpoint.Port))
+	if err != nil {
+		writePostgresError(w, err)
+		return nil
+	}
+	defer db.Close()
+
+	connectCtx, cancelConnect := context.WithTimeout(req.Context(), defaultPostgresConnectMS)
+	defer cancelConnect()
+	if err := db.PingContext(connectCtx); err != nil {
+		writePostgresError(w, err)
+		return nil
+	}
+
+	started, err := streamSQLExportNDJSON(req.Context(), db, w, payload.Query, args, defaultDataProxyExportTimeout)
+	if err != nil {
+		if started {
+			log.Printf("data-proxy postgres export: stream aborted after partial output: %v", err)
+		} else {
+			writePostgresError(w, err)
+		}
+	}
+	return nil
+}
+
+func handleDataProxyMySQLExportWithConfig(w http.ResponseWriter, req *http.Request, cfg DataProxyHandlerConfig) error {
+	cfg = normalizeDataProxyHandlerConfig(cfg)
+
+	var payload mysqlQueryRequest
+	if err := decodeDataProxyJSON(w, req, cfg.RequestBodyLimitBytes, &payload); err != nil {
+		errorJSON(w, "invalid JSON body", http.StatusBadRequest)
+		return nil
+	}
+	if !hasRequiredSQLFields(payload.Host, payload.User, payload.Password, payload.Query) {
+		errorJSON(w, "Missing required fields: host, user, password, query", http.StatusBadRequest)
+		return nil
+	}
+
+	args, err := positionalArgs(payload.Params)
+	if err != nil {
+		errorJSON(w, err.Error(), http.StatusBadRequest)
+		return nil
+	}
+
+	endpoint, err := resolveSQLEndpoint(req.Context(), cfg, strings.TrimSpace(payload.Host), payload.effectivePort())
+	if err != nil {
+		errorJSON(w, err.Error(), http.StatusBadGateway)
+		return nil
+	}
+
+	dsn, err := payload.connectionStringFor(endpoint.Host, endpoint.Port)
+	if err != nil {
+		errorJSON(w, err.Error(), http.StatusBadRequest)
+		return nil
+	}
+
+	db, err := sql.Open("mysql", dsn)
+	if err != nil {
+		writeMySQLError(w, err)
+		return nil
+	}
+	defer db.Close()
+
+	connectCtx, cancelConnect := context.WithTimeout(req.Context(), defaultMySQLConnectMS)
+	defer cancelConnect()
+	if err := db.PingContext(connectCtx); err != nil {
+		writeMySQLError(w, err)
+		return nil
+	}
+
+	started, err := streamSQLExportNDJSON(req.Context(), db, w, payload.Query, args, defaultDataProxyExportTimeout)
+	if err != nil {
+		if started {
+			log.Printf("data-proxy mysql export: stream aborted after partial output: %v", err)
+		} else {
+			writeMySQLError(w, err)
+		}
+	}
+	return nil
+}
+
+// streamSQLExportNDJSON runs query inside a rolled-back read transaction and
+// streams each result row as a JSON object followed by a newline. It returns
+// started=true once any byte of the body may have been written, so the caller
+// knows whether it can still emit a structured error response (headers not yet
+// sent) or must only log (stream already in flight).
+func streamSQLExportNDJSON(
+	ctx context.Context,
+	db *sql.DB,
+	w http.ResponseWriter,
+	query string,
+	args []any,
+	timeout time.Duration,
+) (started bool, err error) {
+	queryCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	// Read mode runs inside a transaction that is always rolled back — a safety
+	// net mirroring executeSQLQuery's read path.
+	tx, err := beginReadTransaction(func(opts *sql.TxOptions) (*sql.Tx, error) {
+		return db.BeginTx(queryCtx, opts)
+	})
+	if err != nil {
+		return false, err
+	}
+	defer func() {
+		_ = tx.Rollback()
+	}()
+
+	rows, err := tx.QueryContext(queryCtx, query, args...)
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+
+	columns, err := rows.Columns()
+	if err != nil {
+		return false, err
+	}
+
+	w.Header().Set("Content-Type", "application/x-ndjson")
+	flusher, _ := w.(http.Flusher)
+	enc := json.NewEncoder(w)
+
+	values := make([]any, len(columns))
+	dest := make([]any, len(columns))
+	for i := range values {
+		dest[i] = &values[i]
+	}
+
+	wrote := false
+	rowCount := 0
+	for rows.Next() {
+		if err := rows.Scan(dest...); err != nil {
+			return wrote, err
+		}
+		row := make(map[string]any, len(columns))
+		for i, column := range columns {
+			if b, ok := values[i].([]byte); ok {
+				row[column] = string(b)
+				continue
+			}
+			row[column] = values[i]
+		}
+		if err := enc.Encode(row); err != nil { // Encode appends a newline
+			return wrote, err
+		}
+		wrote = true
+		rowCount++
+		if flusher != nil && rowCount%1000 == 0 {
+			flusher.Flush()
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return wrote, err
+	}
+	if flusher != nil {
+		flusher.Flush()
+	}
+	return wrote, nil
 }
 
 func hasRequiredSQLFields(host, user, password, query string) bool {

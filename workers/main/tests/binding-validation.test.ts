@@ -155,6 +155,15 @@ describe('Worker Binding Validation', () => {
       expect(result.forbiddenBindings).toHaveLength(0);
     });
 
+    it('allows virtual WAREHOUSE service binding (rewritten at deploy time)', () => {
+      const bindings: WorkerBinding[] = [
+        { type: 'service', name: 'WAREHOUSE', service: 'placeholder' },
+      ];
+      const result = validateBindings(bindings);
+      expect(result.valid).toBe(true);
+      expect(result.forbiddenBindings).toHaveLength(0);
+    });
+
     it('blocks SELF service binding', () => {
       const bindings: WorkerBinding[] = [
         { type: 'service', name: 'SELF', service: 'starter', entrypoint: 'InternetProxy' },
@@ -399,6 +408,33 @@ describe('Worker Binding Validation', () => {
           props: { workspaceId: 'ws_123', orgId: 'org_456', userId: 'user_789' },
         },
         { type: 'plain_text', name: 'APP_ENV', text: 'prod' },
+      ]);
+    });
+
+    it('rewrites a WAREHOUSE service binding to the WarehouseService entrypoint with tenant props', () => {
+      const bindings: WorkerBinding[] = [
+        { type: 'service', name: 'WAREHOUSE', service: 'placeholder' },
+      ];
+
+      const transformed = mapVirtualizedBindings(bindings, 'ws_123', 'org_456', 'user_789', 'chiridion-app', 'demo--acme');
+
+      // WAREHOUSE rewrites to WarehouseService; a default CONNECTIONS binding is
+      // always appended by mapVirtualizedBindings.
+      expect(transformed).toEqual([
+        {
+          type: 'service',
+          name: 'WAREHOUSE',
+          service: 'chiridion-app',
+          entrypoint: 'WarehouseService',
+          props: { workspaceId: 'ws_123', orgId: 'org_456' },
+        },
+        {
+          type: 'service',
+          name: 'CONNECTIONS',
+          service: 'chiridion-app',
+          entrypoint: 'ConnectionsService',
+          props: { workspaceId: 'ws_123', orgId: 'org_456', userId: 'user_789' },
+        },
       ]);
     });
 

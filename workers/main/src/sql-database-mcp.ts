@@ -6,6 +6,7 @@ import {
   type DataProxyEnv,
 } from './data-proxy.js';
 import type { WorkspaceIntegrationRecord } from './workspace.js';
+import { buildSqlExportPlan } from './warehouse-export.js';
 
 type JsonValue =
   | null
@@ -19,7 +20,7 @@ interface SqlDatabaseMcpEnv extends DataProxyEnv {
   INTEGRATION_SECRET_KEY: string;
 }
 
-interface SqlDatabaseClient {
+export interface SqlDatabaseClient {
   type: 'postgres' | 'mysql';
   host: string;
   port?: number;
@@ -91,6 +92,19 @@ export function listSqlDatabaseMcpTools(): Array<Record<string, unknown>> {
             description: 'Positional query parameters. Use $1, $2 for Postgres and ? for MySQL.',
           },
           limit: { type: 'integer', minimum: 1, maximum: MAX_LIMIT, description: `Default LIMIT to append when the query has no LIMIT. Defaults to ${DEFAULT_LIMIT}.` },
+        },
+        required: ['query'],
+        additionalProperties: false,
+      },
+    },
+    {
+      name: 'export',
+      description:
+        'Export the FULL result of a read-only query to the workspace warehouse (R2) — no row cap, streamed server-side. Returns an R2 object handle to read with DuckDB (read_json_auto). Use for bulk extracts feeding analytics/joins, not for inline display.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          query: { type: 'string', description: 'Read-only SQL query to export in full.' },
         },
         required: ['query'],
         additionalProperties: false,
@@ -168,12 +182,44 @@ async function callSqlDatabaseTool(
         ),
         arrayArg(args.params, 'params')
       ));
+    case 'export': {
+      const plan = buildSqlExportPlan(
+        context.workspaceId,
+        record.name,
+        client,
+        requireString(args.query, 'query'),
+      );
+      return runSqlWarehouseExport(env, context, plan);
+    }
     default:
       throw Object.assign(new Error(`Unknown ${client.type} tool: ${name}`), { status: 404 });
   }
 }
 
-async function createSqlDatabaseClient(
+/**
+ * Stream a resolved SQL export to the workspace warehouse (R2) and return the R2
+ * handle. Deploy-gated: the actual stream-to-R2 runs on the sandbox-host VM
+ * (`/export-to-r2`, presigned PUT to `plan.r2Key`) and needs the warehouse R2
+ * staging bucket. Until that infra is deployed, fail loudly rather than silently
+ * returning a handle to an object that was never written.
+ */
+async function runSqlWarehouseExport(
+  env: SqlDatabaseMcpEnv,
+  _context: DataProxyContext,
+  plan: ReturnType<typeof buildSqlExportPlan>,
+): Promise<Record<string, JsonValue>> {
+  if (!(env as { WAREHOUSE_EXPORT_BUCKET?: unknown }).WAREHOUSE_EXPORT_BUCKET) {
+    throw Object.assign(
+      new Error('Warehouse export is not enabled in this deployment (pending the sandbox-host /export-to-r2 endpoint + R2 staging bucket).'),
+      { status: 501 },
+    );
+  }
+  // Deploy: presign a PUT for plan.r2Key, POST {engine: plan.engine, body: plan.body,
+  // url: <presigned>} to the VM /export-to-r2, await completion.
+  return { ok: true, r2_key: plan.r2Key };
+}
+
+export async function createSqlDatabaseClient(
   env: SqlDatabaseMcpEnv,
   record: WorkspaceIntegrationRecord
 ): Promise<SqlDatabaseClient> {

@@ -216,6 +216,7 @@ export async function mysqlQuery(
   return proxyRequest<MysqlQueryResponse>(env, context, '/mysql/query', request);
 }
 
+
 // =============================================================================
 // MS SQL Server Types
 // =============================================================================

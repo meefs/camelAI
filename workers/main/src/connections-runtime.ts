@@ -912,7 +912,7 @@ function virtualChannelMethods(connection: ConnectionSummary): ConnectionMethodS
   }];
 }
 
-function resolveIntegration(records: WorkspaceIntegrationRecord[], query: string):
+export function resolveIntegration(records: WorkspaceIntegrationRecord[], query: string):
   | { ok: true; record: WorkspaceIntegrationRecord }
   | { ok: false; status: number; error: string; matches?: Record<string, string>[] } {
   const normalized = query.trim().toLowerCase();
@@ -953,7 +953,7 @@ function resolveIntegration(records: WorkspaceIntegrationRecord[], query: string
   };
 }
 
-async function getWorkspaceIntegrations(
+export async function getWorkspaceIntegrations(
   env: ConnectionsRuntimeEnv,
   context: ConnectionsContext
 ): Promise<WorkspaceIntegrationRecord[]> {

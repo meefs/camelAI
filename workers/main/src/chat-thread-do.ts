@@ -1639,6 +1639,24 @@ const CODE_MODE_TOOL_REGISTRY: CodeModeToolRegistration[] = [
       category: "apps",
     },
   ),
+  codeModePassthroughTool(
+    "warehouse_run_code",
+    "Run Python in this workspace's analytics sandbox (the WAREHOUSE) for heavy cross-source data work that's too big for a Durable Object. STRONGLY PREFER DuckDB (pre-installed): `import duckdb`. Reach workspace connections credential-free via the connections bridge (reference connections BY NAME; the platform injects credentials). For SQL connections, stream uncapped into DuckDB: read_json_auto('http://connections.internal/export?connection=<name>&q=<url-encoded-sql>'). For any other connection, call its method via the invoke bridge: POST http://connections.internal/invoke {connection, method, input} (JSON result, like env.CONNECTIONS in js_exec). Use warehouse_list_connections to see what's available and which are streamable. Each call runs in an isolated session. Returns the interpreter result. Arguments: { code }.",
+    Type.Object({
+      code: Type.String(),
+    }),
+    {
+      category: "connections",
+    },
+  ),
+  codeModePassthroughTool(
+    "warehouse_list_connections",
+    "List the workspace connections reachable from warehouse_run_code. Returns [{ id, name, type, displayName, streamable }]: ALL connections are reachable via the invoke bridge; `streamable: true` ones (Postgres/MySQL family) can also be streamed uncapped into DuckDB via read_json_auto('http://connections.internal/export?connection=<name>&q=...'). Reference connections BY NAME.",
+    EMPTY_PARAMETERS,
+    {
+      category: "connections",
+    },
+  ),
   codeModePassthroughTool("list_scheduled_prompts", "List scheduled prompts for the current workspace.", EMPTY_PARAMETERS, {
     category: "schedules",
   }),
@@ -1999,6 +2017,8 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
     set_app_visibility: (binding, args) => binding.setAppVisibility(args),
     get_latest_logs: (binding, args) => binding.getLatestLogs(args),
     take_screenshot: (binding, args) => binding.takeScreenshot(args),
+    warehouse_run_code: (binding, args) => binding.warehouseRunCode(args),
+    warehouse_list_connections: (binding) => binding.warehouseListConnections(),
     list_scheduled_prompts: (binding) => binding.listScheduledPrompts(),
     create_scheduled_prompt: (binding, args) => binding.createScheduledPrompt(args),
     update_scheduled_prompt: (binding, args) => binding.updateScheduledPrompt(args),
@@ -3607,6 +3627,30 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
       height: typeof args.height === "number" ? args.height : undefined,
       waitMs: typeof args.wait_ms === "number" ? args.wait_ms : undefined,
     });
+  }
+
+  private warehouseService() {
+    return (this.ctx.exports as unknown as {
+      WarehouseService: (options: { props: Pick<CodeModeToolsProps, "orgId" | "workspaceId"> }) => {
+        runCode(request: { code: string }): Promise<{ ok: boolean; result?: unknown; error?: string }>;
+        listConnections(): Promise<Array<{ id: string; name: string; type: string; displayName: string; streamable: boolean }>>;
+      };
+    }).WarehouseService({
+      props: {
+        orgId: this.ctx.props.orgId,
+        workspaceId: this.ctx.props.workspaceId,
+      },
+    });
+  }
+
+  private async warehouseRunCode(args: Record<string, unknown>): Promise<unknown> {
+    const code = typeof args.code === "string" ? args.code : "";
+    if (!code.trim()) throw new Error("code is required");
+    return this.warehouseService().runCode({ code });
+  }
+
+  private async warehouseListConnections(): Promise<unknown> {
+    return this.warehouseService().listConnections();
   }
 
   private get scheduledPrompts(): CodeModeScheduledPrompts {

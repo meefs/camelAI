@@ -77,6 +77,7 @@ export { R2VirtualBucket } from './r2-virtual-bucket.js';
 export { KVVirtualNamespace } from './kv-virtual-namespace.js';
 export { AssetsVirtualBinding } from './assets-virtual-binding.js';
 export { DataProxyService } from './data-proxy-service.js';
+export { WarehouseService } from './warehouse-service.js';
 export { AIVirtualBinding } from './ai-virtual-binding.js';
 export { ConnectionsService } from './connections-service.js';
 export {

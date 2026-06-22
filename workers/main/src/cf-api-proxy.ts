@@ -33,10 +33,12 @@ import {
 const VIRTUAL_DATA_PROXY_BINDING_NAME = "DATA_PROXY";
 const VIRTUAL_CONNECTIONS_BINDING_NAME = "CONNECTIONS";
 const VIRTUAL_CAMELAI_BINDING_NAME = "CAMELAI";
+const VIRTUAL_WAREHOUSE_BINDING_NAME = "WAREHOUSE";
 const ALLOWED_VIRTUAL_SERVICE_BINDINGS = new Set([
   VIRTUAL_DATA_PROXY_BINDING_NAME,
   VIRTUAL_CONNECTIONS_BINDING_NAME,
   VIRTUAL_CAMELAI_BINDING_NAME,
+  VIRTUAL_WAREHOUSE_BINDING_NAME,
 ]);
 
 // =============================================================================
@@ -221,6 +223,7 @@ function validateSelfhostBindings(
     "DataProxyService",
     "KVVirtualNamespace",
     "R2VirtualBucket",
+    "WarehouseService",
   ]);
   const forbiddenBindings: BindingValidationResult["forbiddenBindings"] = [];
 
@@ -1323,6 +1326,19 @@ export function mapVirtualizedBindings(
         name: binding.name,
         service: workerServiceName,
         entrypoint: "DataProxyService",
+        props: { workspaceId, orgId },
+      };
+    }
+
+    if (
+      binding.type === "service" &&
+      binding.name === VIRTUAL_WAREHOUSE_BINDING_NAME
+    ) {
+      return {
+        type: "service",
+        name: binding.name,
+        service: workerServiceName,
+        entrypoint: "WarehouseService",
         props: { workspaceId, orgId },
       };
     }

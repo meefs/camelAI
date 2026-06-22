@@ -180,6 +180,20 @@ export function listBigQueryMcpTools(): Array<Record<string, unknown>> {
         additionalProperties: false,
       },
     },
+    {
+      name: 'export',
+      description:
+        'Export the FULL result of a query to the workspace warehouse (R2) — no row cap, streamed server-side. Returns an R2 object handle to read with DuckDB. Use for bulk extracts feeding analytics/joins, not for inline display.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          query: { type: 'string', description: 'Standard SQL query to export in full.' },
+          datasetId: { type: 'string', description: 'Default dataset for unqualified table names.' },
+        },
+        required: ['query'],
+        additionalProperties: false,
+      },
+    },
   ];
 }
 
@@ -239,6 +253,13 @@ async function callBigQueryTool(
       ));
     case 'execute_sql_readonly':
       return textToolResult(await executeSqlReadonly(client, args));
+    case 'export':
+      // Deploy-gated: BigQuery → R2 staging (BQ EXPORT / Storage API stream).
+      // Fail loud until enabled rather than silently returning a missing handle.
+      throw Object.assign(
+        new Error('BigQuery warehouse export is not enabled in this deployment (pending BigQuery → R2 staging).'),
+        { status: 501 },
+      );
     default:
       throw Object.assign(new Error(`Unknown BigQuery tool: ${name}`), { status: 404 });
   }
