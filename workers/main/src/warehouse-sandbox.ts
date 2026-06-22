@@ -52,7 +52,16 @@ export class WarehouseSandbox extends Sandbox<Env> {
     const mountPath = `/${prefix}`;
     if (this.warehouseMountPath === mountPath) return;
     try {
-      await this.mountBucket(bucketBinding, mountPath, { prefix: mountPath, readOnly: true });
+      await this.mountBucket(bucketBinding, mountPath, {
+        prefix: mountPath,
+        readOnly: true,
+        // The SDK defaults to a 60s s3fs stat cache (+ negative caching), so a
+        // just-staged export can be read through a stale/partial view for up to a
+        // minute — which surfaces as a DuckDB read failure / TransactionException.
+        // Shrink it so freshly-written objects are read correctly (the export →
+        // read gap exceeds 1s, so this adds no real overhead).
+        s3fsOptions: ['stat_cache_expire=1'],
+      });
     } catch (error) {
       if (!isMountAlreadyPresent(error)) throw error;
     }

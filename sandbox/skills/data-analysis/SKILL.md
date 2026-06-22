@@ -267,7 +267,11 @@ Three steps:
    interpolating them into the code string — they arrive as a Python `params`
    dict. It returns `{ ok, stdout, stderr, result, error }`; whatever you
    `print()` is in `stdout` (a plain string). Print CSV/JSON to hand structured
-   data back to `js_exec`.
+   data back to `js_exec`. Always check `ok` — on a failed read it's `false` with
+   the message in `error`. Prefer `duckdb.sql(...)` (a fresh connection per call)
+   over a long-lived module-level `con`: a single failed read aborts a reused
+   connection's transaction, so every later statement then fails with a
+   `TransactionException`.
 
 3. **Use the result** in `js_exec` — write it to a file with
    `tools.write({ location, path, content })` (`location`: `"workspace"` for
