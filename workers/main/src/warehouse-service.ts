@@ -1,6 +1,8 @@
 import { WorkerEntrypoint } from 'cloudflare:workers';
 import { listConnections, type ConnectionsRuntimeEnv } from './connections-runtime.js';
 import { isSqlDatabaseMcpIntegration } from './sql-database-mcp.js';
+import { isBigQueryMcpIntegration } from './bigquery-mcp.js';
+import { isClickHouseMcpIntegration } from './clickhouse-mcp.js';
 
 /**
  * Virtual WAREHOUSE service binding entrypoint for user-uploaded workers.
@@ -17,10 +19,10 @@ import { isSqlDatabaseMcpIntegration } from './sql-database-mcp.js';
  * same workspace never clobber each other's files. The session is deleted when
  * the call finishes.
  *
- * CREDENTIALS: the app's code reaches data through the Sandbox egress proxy
- * (e.g. read_json_auto('http://data-proxy.internal/...?connection=<name>')); the
- * proxy resolves the connection by name — scoped to the container's workspace —
- * and injects credentials server-side. No secrets ever enter the container.
+ * DATA: the container is SEALED (no network). Data reaches it via R2 — a
+ * connection's `export` method (see sql-database-mcp / bigquery-mcp) streams a
+ * read query's full result to an R2 staging object server-side; the container's
+ * DuckDB reads that object. No credential ever enters the container.
  * See docs/warehouse-binding-design.md.
  */
 
@@ -36,29 +38,24 @@ export interface WarehouseRunResult {
   error?: string;
 }
 
-/** A workspace connection reachable from the warehouse via the connections bridge. */
+/** A workspace connection, annotated for warehouse use. */
 export interface WarehouseConnection {
   id: string;
   name: string;
   type: string;
   displayName: string;
   /**
-   * True if this connection can be STREAMED uncapped into DuckDB via the export
-   * bridge (`read_json_auto('http://connections.internal/export?connection=…')`)
-   * — the SQL data-proxy types (Postgres/MySQL family). All other connections
-   * are still reachable via the invoke bridge (`/invoke`), but go through
-   * `invokeConnectionMethod` (JSON result, their own limits), exactly like
-   * env.CONNECTIONS in js_exec.
+   * True if this connection has an `export` method — i.e. its full query result
+   * can be staged to R2 for the warehouse (`connections[alias].export({ query })`).
+   * That's the SQL database family (Postgres/MySQL/Neon/PlanetScale), BigQuery,
+   * and ClickHouse today; other types don't have an `export` method yet.
    */
-  streamable: boolean;
+  exportable: boolean;
 }
 
 /**
- * Annotate a workspace's full connection catalog with whether each is
- * stream-queryable via the export bridge. Every connection is reachable from the
- * warehouse (via the invoke bridge); `streamable` marks the ones the data-proxy
- * `/export` + createSqlDatabaseClient resolver can stream uncapped. Pure +
- * unit-testable.
+ * Annotate a workspace's connection catalog with whether each has an `export`
+ * method (and can therefore feed the warehouse). Pure + unit-testable.
  */
 export function annotateWarehouseConnections(
   summaries: ReadonlyArray<{ id: string; name: string; type: string; displayName: string }>,
@@ -68,7 +65,10 @@ export function annotateWarehouseConnections(
     name: c.name,
     type: c.type,
     displayName: c.displayName,
-    streamable: isSqlDatabaseMcpIntegration(c.type),
+    exportable:
+      isSqlDatabaseMcpIntegration(c.type) ||
+      isBigQueryMcpIntegration(c.type) ||
+      isClickHouseMcpIntegration(c.type),
   }));
 }
 

@@ -1641,7 +1641,7 @@ const CODE_MODE_TOOL_REGISTRY: CodeModeToolRegistration[] = [
   ),
   codeModePassthroughTool(
     "warehouse_run_code",
-    "Run Python in this workspace's analytics sandbox (the WAREHOUSE) for heavy cross-source data work that's too big for a Durable Object. STRONGLY PREFER DuckDB (pre-installed): `import duckdb`. Reach workspace connections credential-free via the connections bridge (reference connections BY NAME; the platform injects credentials). For SQL connections, stream uncapped into DuckDB: read_json_auto('http://connections.internal/export?connection=<name>&q=<url-encoded-sql>'). For any other connection, call its method via the invoke bridge: POST http://connections.internal/invoke {connection, method, input} (JSON result, like env.CONNECTIONS in js_exec). Use warehouse_list_connections to see what's available and which are streamable. Each call runs in an isolated session. Returns the interpreter result. Arguments: { code }.",
+    "Run Python in this workspace's SEALED analytics sandbox (no network) for heavy cross-source data work that's too big for a Durable Object. STRONGLY PREFER DuckDB (pre-installed): `import duckdb`. The sandbox has NO direct database access — bring data in first by exporting connections to the warehouse: call a connection's `export` method (via env.CONNECTIONS, e.g. `connections[alias].export({ query })`), which streams the full result to R2 server-side (credentials stay server-side); then read those staged objects here with DuckDB (read_parquet / read_json_auto). Use warehouse_list_connections to see which connections are exportable. Each call runs in an isolated session. Returns the interpreter result. Arguments: { code }.",
     Type.Object({
       code: Type.String(),
     }),
@@ -1651,7 +1651,7 @@ const CODE_MODE_TOOL_REGISTRY: CodeModeToolRegistration[] = [
   ),
   codeModePassthroughTool(
     "warehouse_list_connections",
-    "List the workspace connections reachable from warehouse_run_code. Returns [{ id, name, type, displayName, streamable }]: ALL connections are reachable via the invoke bridge; `streamable: true` ones (Postgres/MySQL family) can also be streamed uncapped into DuckDB via read_json_auto('http://connections.internal/export?connection=<name>&q=...'). Reference connections BY NAME.",
+    "List the workspace connections usable with the warehouse. Returns [{ id, name, type, displayName, exportable }]: `exportable: true` connections (SQL databases + BigQuery) have an `export` method that streams a query's full result to R2 — `connections[alias].export({ query })` — which warehouse_run_code then reads with DuckDB. Reference connections BY NAME.",
     EMPTY_PARAMETERS,
     {
       category: "connections",
@@ -3633,7 +3633,7 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
     return (this.ctx.exports as unknown as {
       WarehouseService: (options: { props: Pick<CodeModeToolsProps, "orgId" | "workspaceId"> }) => {
         runCode(request: { code: string }): Promise<{ ok: boolean; result?: unknown; error?: string }>;
-        listConnections(): Promise<Array<{ id: string; name: string; type: string; displayName: string; streamable: boolean }>>;
+        listConnections(): Promise<Array<{ id: string; name: string; type: string; displayName: string; exportable: boolean }>>;
       };
     }).WarehouseService({
       props: {

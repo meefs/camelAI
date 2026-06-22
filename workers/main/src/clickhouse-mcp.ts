@@ -76,6 +76,19 @@ export function listClickHouseMcpTools(): Array<Record<string, unknown>> {
         additionalProperties: false,
       },
     },
+    {
+      name: 'export',
+      description:
+        'Export the FULL result of a query to the workspace warehouse (R2) — no row cap, streamed server-side. Returns an R2 object handle to read with DuckDB. Use for bulk extracts feeding analytics/joins, not for inline display.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          query: { type: 'string', description: 'SQL query to export in full.' },
+        },
+        required: ['query'],
+        additionalProperties: false,
+      },
+    },
   ];
 }
 
@@ -141,6 +154,13 @@ async function callClickHouseTool(
           boundedInteger(args.limit, DEFAULT_LIMIT, 1, MAX_LIMIT, 'limit')
         )
       ));
+    case 'export':
+      // Deploy-gated: ClickHouse → R2 staging (stream a query result via
+      // FORMAT JSONEachRow / ClickHouse native export). Fail loud until enabled.
+      throw Object.assign(
+        new Error('ClickHouse warehouse export is not enabled in this deployment (pending ClickHouse → R2 staging).'),
+        { status: 501 },
+      );
     default:
       throw Object.assign(new Error(`Unknown ClickHouse tool: ${name}`), { status: 404 });
   }

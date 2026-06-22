@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { buildSqlExportPlan, sqlClientToExportBody, warehouseExportKey } from '../src/warehouse-export.js';
 import { listSqlDatabaseMcpTools } from '../src/sql-database-mcp.js';
 import { listBigQueryMcpTools } from '../src/bigquery-mcp.js';
+import { listClickHouseMcpTools } from '../src/clickhouse-mcp.js';
 
 describe('warehouseExportKey', () => {
   it('is deterministic and namespaced by workspace + connection', () => {
@@ -42,8 +43,8 @@ describe('sqlClientToExportBody', () => {
 });
 
 describe('export is a first-class connection method', () => {
-  it('appears in the SQL database and BigQuery method catalogs (next to execute_sql_readonly)', () => {
-    for (const tools of [listSqlDatabaseMcpTools(), listBigQueryMcpTools()]) {
+  it('appears in the SQL database, BigQuery, and ClickHouse method catalogs (next to execute_sql_readonly)', () => {
+    for (const tools of [listSqlDatabaseMcpTools(), listBigQueryMcpTools(), listClickHouseMcpTools()]) {
       const names = tools.map((t) => t.name);
       expect(names).toContain('execute_sql_readonly');
       expect(names).toContain('export');

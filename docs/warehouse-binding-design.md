@@ -69,37 +69,38 @@ Read-only is inherent (an *export* only reads). The static-egress IP `20.46.233.
 A thin wrapper over the Sandbox SDK code interpreter — the caller runs its **own Python** in the workspace container. **Python-only** (no JS): DuckDB's first-class API is Python and this tier exists for DuckDB-via-Python analytics. **DuckDB is pre-installed and heavily encouraged.** No bespoke query DSL.
 
 ```ts
+// 1. Export each source to R2 (server-side; creds stay server-side):
+const { r2: d365 } = await connections['Infinity-D365'].export({ query: 'SELECT … FROM markuptable …' });
+const { r2: bq }   = await connections['legacy-bq'].export({ query: 'SELECT tracking_no, freight FROM …' });
+
+// 2. Run DuckDB over the staged R2 objects in the sealed container:
 const res = await env.WAREHOUSE.runCode({
   code: `
 import duckdb
 con = duckdb.connect()
-con.install_extension("json"); con.load_extension("json")
-# credential-free via the connections bridge (resolves the connection BY NAME, server-side)
-con.execute("CREATE TABLE d365 AS SELECT * FROM read_json_auto('http://connections.internal/export?connection=Infinity-D365&q=' || ...)")
-con.execute("CREATE TABLE bq   AS SELECT * FROM read_json_auto('http://connections.internal/export?connection=legacy-bq&q=' || ...)")
+con.execute("CREATE TABLE d365 AS SELECT * FROM read_parquet('${d365}')")
+con.execute("CREATE TABLE bq   AS SELECT * FROM read_parquet('${bq}')")
 rows = con.execute("SELECT * FROM d365 JOIN bq USING(tracking_number) WHERE d365.customer_charged <> bq.freight").fetchall()
 print(rows)
 `,
 });
 ```
 
-- `runCode({ code })` — run Python in a **fresh, isolated session** of the workspace's container; returns the interpreter result (stdout / rich outputs).
-- The caller owns everything inside the code (its SQL, its joins); the platform owns the container, isolation, and credential injection.
+- `runCode({ code })` — run Python in a **fresh, isolated session** of the workspace's **sealed** container; returns the interpreter result. The container has no network — it reads only the R2 objects staged by the connections' `export` method.
+- For a long, durable pipeline, sequence export + runCode as steps of a **deterministic workflow** (the runtime already ships).
 
 **Two call sites, same `WarehouseService` (scoped to the workspace):**
 - **Deployed user apps** → the virtualized binding `env.WAREHOUSE.runCode({ code })`.
 - **Agent / chat (`js_exec`)** → the codemode tool `await tools.warehouse_run_code({ code })`, wired in `chat-thread-do.ts` via `ctx.exports.WarehouseService({ props })` (mirrors `take_screenshot` → `AppScreenshotBinding`). Lets the agent run warehouse analytics during a session, not just deployed apps.
 
-### Which connections are reachable + discovery
-**All** workspace connections are reachable from the warehouse via the bridge. They split two ways:
-- **Streamable** (the `/export` verb, uncapped into DuckDB): the SQL data-proxy family — `postgres`, `mysql`, `neon`, `planetscale` — per `isSqlDatabaseMcpIntegration`. (MSSQL: `/export` supports it but `createSqlDatabaseClient` doesn't yet emit an mssql client — resolver fix pending. ClickHouse/Snowflake/BigQuery: streamable once they get export resolvers.)
-- **Invoke-only** (the `/invoke` verb, JSON, method's own limits): everything else — ClickHouse/Snowflake/Mongo today, plus Stripe/Slack/HTTP "other" — same as `env.CONNECTIONS` in js_exec.
+### Which connections are exportable + discovery
+A connection feeds the warehouse if it has an **`export` method**. Today that's the **SQL database family** (`postgres`, `mysql`, `neon`, `planetscale` — `sql-database-mcp.ts`), **BigQuery** (`bigquery-mcp.ts`), and **ClickHouse** (`clickhouse-mcp.ts`). Snowflake/Databricks/Turso/Mongo and non-DB connections (Stripe/Slack/HTTP) don't have an `export` method yet.
 
 Discover them with `WarehouseService.listConnections()`:
 - Deployed apps → `await env.WAREHOUSE.listConnections()`
 - js_exec → `await tools.warehouse_list_connections()`
 
-Returns `[{ id, name, type, displayName, streamable }]` — the full connection catalog (`listConnections` from `connections-runtime`) annotated by `annotateWarehouseConnections` (`streamable = isSqlDatabaseMcpIntegration(type)`).
+Returns `[{ id, name, type, displayName, exportable }]` — the full connection catalog (`listConnections`) annotated by `annotateWarehouseConnections` (`exportable` = SQL family || BigQuery || ClickHouse).
 
 ## Container / Sandbox lifecycle
 

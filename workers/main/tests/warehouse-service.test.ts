@@ -107,29 +107,29 @@ describe('runWarehouseCode', () => {
 describe('annotateWarehouseConnections', () => {
   const summary = (id: string, name: string, type: string) => ({ id, name, type, displayName: name });
 
-  it('returns ALL connections, marking Postgres/MySQL-family ones streamable', () => {
+  it('returns ALL connections, marking the ones with an export method exportable', () => {
     const all = [
       summary('1', 'Infinity-D365', 'mysql'),
       summary('2', 'analytics-pg', 'postgres'),
       summary('3', 'neon-db', 'neon'),
       summary('4', 'ps-db', 'planetscale'),
-      summary('5', 'warehouse-ch', 'clickhouse'),
-      summary('6', 'sql-server', 'mssql'),
-      summary('7', 'stripe-acct', 'stripe'),
+      summary('5', 'BigQuery', 'bigquery'),
+      summary('6', 'warehouse-ch', 'clickhouse'),
+      summary('7', 'sql-server', 'mssql'),
+      summary('8', 'stripe-acct', 'stripe'),
     ];
     const annotated = annotateWarehouseConnections(all);
 
-    // Every connection is reachable (none dropped).
+    // Every connection is returned (none dropped).
     expect(annotated.map((c) => c.name)).toEqual(all.map((c) => c.name));
-    // Only the Postgres/MySQL family is streamable.
-    const streamable = annotated.filter((c) => c.streamable).map((c) => c.name);
-    expect(streamable).toEqual(['Infinity-D365', 'analytics-pg', 'neon-db', 'ps-db']);
-    // clickhouse / mssql / stripe are reachable but invoke-only.
-    expect(annotated.find((c) => c.name === 'warehouse-ch')?.streamable).toBe(false);
-    expect(annotated.find((c) => c.name === 'sql-server')?.streamable).toBe(false);
-    expect(annotated.find((c) => c.name === 'stripe-acct')?.streamable).toBe(false);
+    // SQL family + BigQuery + ClickHouse have an export method.
+    const exportable = annotated.filter((c) => c.exportable).map((c) => c.name);
+    expect(exportable).toEqual(['Infinity-D365', 'analytics-pg', 'neon-db', 'ps-db', 'BigQuery', 'warehouse-ch']);
+    // mssql / stripe have no export method yet.
+    expect(annotated.find((c) => c.name === 'sql-server')?.exportable).toBe(false);
+    expect(annotated.find((c) => c.name === 'stripe-acct')?.exportable).toBe(false);
     expect(annotated[0]).toEqual({
-      id: '1', name: 'Infinity-D365', type: 'mysql', displayName: 'Infinity-D365', streamable: true,
+      id: '1', name: 'Infinity-D365', type: 'mysql', displayName: 'Infinity-D365', exportable: true,
     });
   });
 });
