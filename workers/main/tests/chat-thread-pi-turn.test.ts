@@ -5635,6 +5635,69 @@ describe('ChatThreadDO Pi turn handling', () => {
     ]);
   });
 
+  it('inserts a tool result after its tool call so trailing answer text stays last', async () => {
+    // Pi can persist a turn's final answer in the same assistant record as its
+    // tool calls. The tool result must land right after its tool_use, not at the
+    // end of the message — otherwise the trailing answer text would render
+    // before the tool result and the turn view would fold it into the collapsed
+    // tool trace instead of showing it as the turn's final output.
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    fake.loadPiCoreMessages = vi.fn(() => [
+      { role: 'user', content: 'run it', timestamp: 100 },
+      {
+        role: 'assistant',
+        content: [
+          { type: 'text', text: 'Let me check.' },
+          {
+            type: 'toolCall',
+            id: 'tool1',
+            name: 'bash',
+            arguments: { command: 'echo hi' },
+          },
+          { type: 'text', text: 'All done — the output was hi.' },
+        ],
+        responseId: 'resp_tool',
+        timestamp: 200,
+        api: 'test',
+        provider: 'test',
+        model: 'test',
+        usage: {},
+        stopReason: 'stop',
+      },
+      {
+        role: 'toolResult',
+        toolCallId: 'tool1',
+        toolName: 'bash',
+        content: [{ type: 'text', text: 'hi\n' }],
+        isError: false,
+        timestamp: 300,
+      },
+    ]);
+
+    const messages = await ChatThreadDO.prototype.getPiCoreParsedMessages.call(fake, 'thread1');
+
+    expect(messages).toHaveLength(2);
+    expect(messages[1].content).toEqual([
+      { type: 'text', text: 'Let me check.' },
+      {
+        type: 'tool_use',
+        id: 'tool1',
+        name: 'bash',
+        input: { command: 'echo hi' },
+      },
+      {
+        type: 'tool_result',
+        tool_use_id: 'tool1',
+        content: 'hi\n',
+        is_error: false,
+        status: 'succeeded',
+        itemId: 'tool1',
+        itemKind: 'commandExecution',
+      },
+      { type: 'text', text: 'All done — the output was hi.' },
+    ]);
+  });
+
   it('marks persisted Pi stopped-by-user messages for muted UI rendering', async () => {
     const fake = Object.create(ChatThreadDO.prototype) as any;
     fake.loadPiCoreMessages = vi.fn(() => [

@@ -6869,16 +6869,24 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
       if (message.role !== "assistant") continue;
       if (fallbackAssistantIndex === -1) fallbackAssistantIndex = index;
       const content = Array.isArray(message.content) ? message.content : [];
-      if (
-        content.some((part) => {
-          if (!part || typeof part !== "object") return false;
-          const item = part as Record<string, unknown>;
-          return item.type === "tool_use" && item.id === toolCallId;
-        })
-      ) {
+      const toolUseIndex = content.findIndex((part) => {
+        if (!part || typeof part !== "object") return false;
+        const item = part as Record<string, unknown>;
+        return item.type === "tool_use" && item.id === toolCallId;
+      });
+      if (toolUseIndex !== -1) {
+        // Insert the result directly after its tool_use, not at the end of the
+        // message. Pi can persist a turn's trailing answer text in the same
+        // assistant record as its tool calls; appending the result there would
+        // push it past the final text, so the turn view (see turn-utils) would
+        // fold that answer into the collapsed tool trace instead of rendering it
+        // as the turn's final output. This mirrors the live overlay, which
+        // anchors tool_result blocks to their tool_use.
+        const nextContent = [...content];
+        nextContent.splice(toolUseIndex + 1, 0, block);
         messages[index] = {
           ...message,
-          content: [...content, block],
+          content: nextContent,
         };
         return;
       }
