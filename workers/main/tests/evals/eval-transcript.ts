@@ -19,6 +19,10 @@ export interface EvalTranscriptPayload {
   messages?: unknown;
   /** AgentEvalSessionResult.deployedApps, when the eval deploys. */
   deployedApps?: unknown;
+  /** Eval-specific runtime assertion summary, when present. */
+  runtimeAssertions?: unknown;
+  /** Eval-specific source inspection summary, when present. */
+  sourceInspection?: unknown;
 }
 
 export function emitEvalTranscript(payload: EvalTranscriptPayload): void {

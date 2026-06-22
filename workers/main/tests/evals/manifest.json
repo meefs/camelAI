@@ -11,6 +11,11 @@
       "realDeploy": true
     },
     {
+      "id": "space-matching-game-live",
+      "description": "Build and deploy a persistent space themed matching game with leaderboard",
+      "realDeploy": true
+    },
+    {
       "id": "sandbox-write-file-live",
       "description": "Write and verify a file in the project sandbox"
     }
