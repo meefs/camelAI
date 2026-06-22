@@ -36,7 +36,7 @@ Cloudflare AI Gateway and BYOK credentials back model access.
 - `workers/dispatcher/` - Workers for Platforms dispatcher for deployed user apps.
 - `workers/bedrock-provider/` - AI Gateway custom provider translating Anthropic-style requests to Bedrock.
 - `workers/user-logs-tail/` - Tail worker for deployed app logs.
-- `services/sandbox-host/` - Legacy Go code retained for the data-proxy container build path.
+- The data-proxy Go service lives in the external **`qaml-ai/project-runtime-service`** repo (`cmd/data-proxy`), not in this tree. It is the binary deployed to the sandbox host VM and the one behind the `SANDBOX_HOST` / `DATA_PROXY` bindings. There is no in-repo copy — do not reintroduce one. (`scripts/test-local-database-mcp.ts` runs it locally via `PROJECT_RUNTIME_SERVICE_DIR`, default sibling checkout.)
 - `sandbox/` - In-container control plane, Codex/Claude harness integration, MCP helpers, scaffold/publish tooling, sandbox skills.
 - `scripts/` - Deploy and maintenance scripts.
 - `docs/` - Supporting documentation, including shadcn component catalog.
@@ -260,7 +260,7 @@ live in separate files, and the catalog tests fail if any of them drift apart.
 
 - Projects run through the external project runtime service via the `PROJECT_RUNTIME_HOST` VPC binding and `ProjectRuntimeServiceVmBridge`.
 - Project metadata and DO-backed workspace files live in `WorkspaceFilesystemDO`; project files and shell execution live in the runtime service.
-- The old app-owned sandbox-host deploy/dev scripts have been removed. Do not add new project VM behavior through the retired sandbox-host binding.
+- The old app-owned sandbox-host service and its deploy/dev scripts have been removed (the data-proxy now lives in `qaml-ai/project-runtime-service`). Do not add new project VM behavior through the retired sandbox-host binding.
 
 ## Testing Guidance
 
@@ -277,7 +277,7 @@ live in separate files, and the catalog tests fail if any of them drift apart.
 
 ## Local Environment Notes
 
-Minimal prerequisites: Node.js 22+, Bun, Go 1.24+ for sandbox-host, Tailscale, and Cloudflare credentials for deployed/bound services.
+Minimal prerequisites: Node.js 22+, Bun, Tailscale, and Cloudflare credentials for deployed/bound services. (Go 1.24+ is only needed if you run the external `project-runtime-service` data-proxy locally.)
 
 Common local secret/config files:
 

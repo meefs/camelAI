@@ -241,6 +241,88 @@ model = LinearRegression().fit(X_train, y_train)
 predictions = model.predict(X_test)
 ```
 
+## Large or Cross-Source Data: the Warehouse (DuckDB on R2)
+
+For **heavy** database work — bulk extracts, cross-source joins (e.g. Dynamics ⋈
+BigQuery), or aggregations over more rows than fit comfortably in a notebook —
+use the **warehouse** instead of pulling rows into pandas. It runs DuckDB in a
+sealed container off the Durable Object, so it won't OOM and doesn't abuse DO
+CPU. **Drive the whole flow from a single `js_exec` block** (the Pi code-mode
+tool) — export, DuckDB, and writing the result are all `js_exec` calls.
+
+Three steps:
+
+1. **Export** a connection's full query result to R2. A connection's `export`
+   method streams the whole result set server-side (no row cap, credentials stay
+   server-side) and returns `{ ok, r2_key }`. SQL databases (Postgres, MySQL,
+   Neon, PlanetScale) and ClickHouse export **Parquet**; BigQuery exports
+   **NDJSON**. Exportable connections: the SQL family, ClickHouse, and BigQuery —
+   check with `tools.warehouse_list_connections()`.
+
+2. **Run DuckDB** over the staged exports with `tools.warehouse_run_code({ code, params })`.
+   The container is **sealed** (no network) with `duckdb`, `pandas`, `pyarrow`,
+   and `numpy` preinstalled. Each export is mounted read-only at `/<r2_key>`, so
+   read it with `duckdb.read_parquet('/' + r2_key)` (or `read_json_auto` for
+   BigQuery `.ndjson`). Pass values through **`params`** (a JSON dict) rather than
+   interpolating them into the code string — they arrive as a Python `params`
+   dict. It returns `{ ok, stdout, stderr, result, error }`; whatever you
+   `print()` is in `stdout` (a plain string). Print CSV/JSON to hand structured
+   data back to `js_exec`.
+
+3. **Use the result** in `js_exec` — write it to a file with
+   `tools.write({ location, path, content })` (`location`: `"workspace"` for
+   durable workspace files, `"r2"` for user-visible outputs, `"vm"` for a project
+   VM), feed it onward, or load it into a notebook to chart.
+
+```javascript
+// js_exec — export → DuckDB → save to a workspace file, end to end.
+const entry = await env.CONNECTIONS.find("ClickHouse");
+const { r2_key } = await env.CONNECTIONS[entry.alias].export({
+  query: "SELECT database, name, engine FROM system.tables WHERE database NOT IN ('system', 'information_schema', 'INFORMATION_SCHEMA')",
+});
+
+const warehouseResult = await tools.warehouse_run_code({
+  params: { r2_key },
+  code: `
+import duckdb
+df = duckdb.sql("SELECT * FROM read_parquet('/' || ?)", params=[params["r2_key"]]).df()
+print(df.to_csv(index=False))
+`,
+});
+const csv = warehouseResult.stdout; // flat string — no result.logs.stdout[0] digging
+
+await tools.write({ location: "workspace", path: "clickhouse_tables.csv", content: csv });
+return { rows: csv.trim().split("\n").length - 1, saved: "clickhouse_tables.csv" };
+```
+
+Cross-source joins work the same way — export each source, pass both keys via
+`params`, then `JOIN` the mounted files in one `warehouse_run_code` call:
+
+```python
+# inside warehouse_run_code, params = { "freight_key": ..., "rates_key": ... }
+import duckdb
+duckdb.sql(
+  "SELECT f.shipment_id, f.charge, r.expected_rate, f.charge - r.expected_rate AS delta "
+  "FROM read_parquet('/' || ?) f "
+  "JOIN read_json_auto('/' || ?) r USING (shipment_id) "
+  "WHERE f.charge <> r.expected_rate",
+  params=[params["freight_key"], params["rates_key"]],
+).df()
+```
+
+**When to use which:**
+- **Warehouse (`warehouse_run_code`)** — large/bulk extracts, cross-source joins,
+  heavy aggregation. It is sealed and DuckDB-focused: **no charts, no internet, no
+  `uv add`.** Use it to *reduce* big data down to a small result.
+- **Project-VM notebook (the rest of this skill)** — interactive exploration,
+  visualization, and the final report. Charts (Altair/Plotly) only render here.
+
+Typical flow for big data: export → reduce/join in `warehouse_run_code` → return
+the small aggregated result → load it into a notebook to chart and narrate.
+
+For long-running exports followed by analysis, the `deterministic-automations`
+skill can orchestrate the export and the DuckDB step as workflow steps.
+
 ## Database Connectivity
 
 | Package | Purpose | Status |
@@ -300,6 +382,10 @@ Supported query methods:
 ### Workspace connections from notebooks (preferred in project VMs)
 
 Project VMs expose workspace connections through the stateless RPC endpoint in `CAMELAI_CONNECTIONS_RPC_URL`. Use this from notebooks and Python scripts instead of asking for credentials or looking for connection env vars. The VM receives only the proxy URL; camelAI applies workspace identity and stored auth outside the VM.
+
+This `query`-into-pandas pattern is for **interactive, reasonably-sized** result sets. For bulk extracts or cross-source joins, use the warehouse `export` + `warehouse_run_code` path above instead of pulling every row into the notebook.
+
+Connection query methods run your SQL **exactly as written** — nothing (no `LIMIT`, no `FORMAT`) is appended. Add your own `LIMIT` when you want to cap inline rows, and don't add a ClickHouse `FORMAT` clause (the broker handles output format). Reach for `export` whenever you want the full, uncapped result.
 
 Minimal Python helper:
 

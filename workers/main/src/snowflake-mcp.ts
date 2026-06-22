@@ -58,12 +58,11 @@ export function listSnowflakeMcpTools(): Array<Record<string, unknown>> {
     },
     {
       name: 'execute_sql_readonly',
-      description: 'Execute a SQL query through the Snowflake SQL API.',
+      description: 'Execute a SQL query through the Snowflake SQL API. The query runs exactly as written; add your own LIMIT to cap rows.',
       inputSchema: {
         type: 'object',
         properties: {
           query: { type: 'string', description: 'Read-only SQL statement.' },
-          limit: { type: 'integer', minimum: 1, maximum: MAX_LIMIT },
         },
         required: ['query'],
         additionalProperties: false,
@@ -113,7 +112,7 @@ async function callSnowflakeTool(
     case 'list_tables':
       return textToolResult(await executeSnowflakeSql(client, `SHOW TABLES IN SCHEMA ${quoteIdentifier(databaseFromArgs(client, args))}.${quoteIdentifier(schemaFromArgs(client, args))} LIMIT ${limit}`));
     case 'execute_sql_readonly':
-      return textToolResult(await executeSnowflakeSql(client, normalizeReadOnlyQuery(requireString(args.query, 'query'), limit)));
+      return textToolResult(await executeSnowflakeSql(client, requireString(args.query, 'query')));
     default:
       throw Object.assign(new Error(`Unknown Snowflake tool: ${name}`), { status: 404 });
   }
@@ -220,11 +219,6 @@ function schemaFromArgs(client: SnowflakeClient, args: Record<string, unknown>):
   throw Object.assign(new Error('schema is required because the connection has no default schema.'), { status: 400 });
 }
 
-function normalizeReadOnlyQuery(query: string, limit: number): string {
-  const trimmed = query.trim().replace(/;\s*$/, '');
-  if (/^(select|with)\b/i.test(trimmed) && !/\blimit\b/i.test(trimmed)) return `${trimmed} LIMIT ${limit}`;
-  return trimmed;
-}
 function quoteIdentifier(value: string): string {
   if (!/^[A-Za-z_][A-Za-z0-9_$ -]*$/.test(value)) {
     throw Object.assign(new Error('identifier contains invalid characters.'), { status: 400 });

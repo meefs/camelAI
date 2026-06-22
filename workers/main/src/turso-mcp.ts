@@ -12,9 +12,6 @@ interface TursoClient {
   token: string;
 }
 
-const DEFAULT_LIMIT = 100;
-const MAX_LIMIT = 1000;
-
 export function isTursoMcpIntegration(integrationType: string): boolean {
   return integrationType === 'turso';
 }
@@ -38,13 +35,12 @@ export function listTursoMcpTools(): Array<Record<string, unknown>> {
     },
     {
       name: 'execute_sql_readonly',
-      description: 'Execute a SQL query and return rows.',
+      description: 'Execute a SQL query and return rows. The query runs exactly as written; add your own LIMIT to cap rows.',
       inputSchema: {
         type: 'object',
         properties: {
           query: { type: 'string', description: 'Read-only SQL query.' },
           params: { type: 'array', description: 'Optional positional parameters.' },
-          limit: { type: 'integer', minimum: 1, maximum: MAX_LIMIT, description: `Default LIMIT to append when absent. Defaults to ${DEFAULT_LIMIT}.` },
         },
         required: ['query'],
         additionalProperties: false,
@@ -93,7 +89,7 @@ async function callTursoTool(
     case 'execute_sql_readonly':
       return textToolResult(await executeTursoSql(
         client,
-        normalizeReadOnlyQuery(requireString(args.query, 'query'), boundedInteger(args.limit, DEFAULT_LIMIT, 1, MAX_LIMIT, 'limit')),
+        requireString(args.query, 'query'),
         arrayArg(args.params, 'params')
       ));
     default:
@@ -155,13 +151,6 @@ function tursoHttpEndpoint(rawUrl: string): string {
   return url.toString().replace(/\/+$/, '');
 }
 
-function normalizeReadOnlyQuery(query: string, limit: number): string {
-  const trimmed = query.trim().replace(/;\s*$/, '');
-  if (/^(select|with)\b/i.test(trimmed) && !/\blimit\b/i.test(trimmed)) {
-    return `${trimmed} LIMIT ${limit}`;
-  }
-  return trimmed;
-}
 function quoteSqlIdentifier(value: string): string {
   if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(value)) {
     throw Object.assign(new Error('table must be a simple SQL identifier.'), { status: 400 });
@@ -188,15 +177,6 @@ function requireString(value: unknown, field: string): string {
     throw Object.assign(new Error(`${field} is required`), { status: 400 });
   }
   return value.trim();
-}
-
-function boundedInteger(value: unknown, defaultValue: number, min: number, max: number, field: string): number {
-  if (value == null) return defaultValue;
-  const parsed = Number(value);
-  if (!Number.isInteger(parsed) || parsed < min || parsed > max) {
-    throw Object.assign(new Error(`${field} must be an integer from ${min} to ${max}.`), { status: 400 });
-  }
-  return parsed;
 }
 
 function parseJsonObject(value: string | null | undefined): Record<string, unknown> {

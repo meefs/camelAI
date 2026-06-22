@@ -1,5 +1,11 @@
 import { decryptCredentials } from '../../../src/lib/integration-crypto';
 import type { WorkspaceIntegrationRecord } from './workspace.js';
+import { warehouseExportKey, stageWarehouseExport } from './warehouse-export.js';
+
+/** Minimal context the export path needs to namespace the R2 staging key. */
+export interface ClickHouseMcpContext {
+  workspaceId: string;
+}
 
 type JsonValue =
   | null
@@ -11,6 +17,8 @@ type JsonValue =
 
 interface ClickHouseMcpEnv {
   INTEGRATION_SECRET_KEY: string;
+  /** Auto-expiring R2 staging bucket for warehouse exports. */
+  WAREHOUSE_EXPORT_BUCKET?: R2Bucket;
 }
 
 interface ClickHouseClient {
@@ -20,8 +28,6 @@ interface ClickHouseClient {
   password: string;
 }
 
-const DEFAULT_LIMIT = 100;
-const MAX_LIMIT = 1000;
 const CLICKHOUSE_ID_RE = /^[A-Za-z_][A-Za-z0-9_]{0,255}$/;
 
 export function isClickHouseMcpIntegration(integrationType: string): boolean {
@@ -65,12 +71,11 @@ export function listClickHouseMcpTools(): Array<Record<string, unknown>> {
     },
     {
       name: 'execute_sql_readonly',
-      description: 'Execute a ClickHouse query and return JSON.',
+      description: 'Execute a ClickHouse query and return JSON. The query is run exactly as written — add your own LIMIT if you want to cap rows for inline display, or use export for the full result set.',
       inputSchema: {
         type: 'object',
         properties: {
-          query: { type: 'string', description: 'SQL query to execute.' },
-          limit: { type: 'integer', minimum: 1, maximum: MAX_LIMIT, description: `Default LIMIT to append when the query has no LIMIT. Defaults to ${DEFAULT_LIMIT}.` },
+          query: { type: 'string', description: 'SQL query to execute, verbatim.' },
         },
         required: ['query'],
         additionalProperties: false,
@@ -94,6 +99,7 @@ export function listClickHouseMcpTools(): Array<Record<string, unknown>> {
 
 export async function clickHouseMcpRpc(
   env: ClickHouseMcpEnv,
+  context: ClickHouseMcpContext,
   record: WorkspaceIntegrationRecord,
   method: string,
   params: Record<string, unknown> = {}
@@ -116,7 +122,7 @@ export async function clickHouseMcpRpc(
     case 'tools/list':
       return { tools: listClickHouseMcpTools() };
     case 'tools/call':
-      return callClickHouseTool(env, record, params);
+      return callClickHouseTool(env, context, record, params);
     default:
       throw Object.assign(new Error(`Method not found: ${method}`), { status: 404 });
   }
@@ -124,6 +130,7 @@ export async function clickHouseMcpRpc(
 
 async function callClickHouseTool(
   env: ClickHouseMcpEnv,
+  context: ClickHouseMcpContext,
   record: WorkspaceIntegrationRecord,
   params: Record<string, unknown>
 ): Promise<Record<string, unknown>> {
@@ -147,20 +154,25 @@ async function callClickHouseTool(
         `SELECT name, type, default_kind, comment FROM system.columns WHERE database = ${sqlString(databaseFromArgs(client, args))} AND table = ${sqlString(requireIdentifier(args.table, 'table'))} ORDER BY position`
       ));
     case 'execute_sql_readonly':
-      return textToolResult(await executeClickHouseJson(
-        client,
-        normalizeReadOnlyQuery(
-          requireString(args.query, 'query'),
-          boundedInteger(args.limit, DEFAULT_LIMIT, 1, MAX_LIMIT, 'limit')
-        )
-      ));
-    case 'export':
-      // Deploy-gated: ClickHouse → R2 staging (stream a query result via
-      // FORMAT JSONEachRow / ClickHouse native export). Fail loud until enabled.
-      throw Object.assign(
-        new Error('ClickHouse warehouse export is not enabled in this deployment (pending ClickHouse → R2 staging).'),
-        { status: 501 },
-      );
+      return textToolResult(await executeClickHouseJson(client, requireString(args.query, 'query')));
+    case 'export': {
+      const bucket = env.WAREHOUSE_EXPORT_BUCKET;
+      if (!bucket) {
+        throw Object.assign(
+          new Error('ClickHouse warehouse export is not enabled in this deployment (WAREHOUSE_EXPORT_BUCKET is not bound).'),
+          { status: 501 },
+        );
+      }
+      // ClickHouse emits Parquet natively (`FORMAT Parquet`); stream it straight
+      // into the auto-expiring warehouse bucket without buffering. The sealed
+      // DuckDB container then reads `r2_key` via mountBucket.
+      const query = requireString(args.query, 'query');
+      // Namespace by unique integration id, not display name (names can collide across types).
+      const r2Key = warehouseExportKey(context.workspaceId, record.id, query, 'parquet');
+      const response = await executeClickHouseParquet(client, query);
+      await stageWarehouseExport(bucket, r2Key, response.body, 'parquet');
+      return { ok: true, r2_key: r2Key };
+    }
     default:
       throw Object.assign(new Error(`Unknown ClickHouse tool: ${name}`), { status: 404 });
   }
@@ -192,13 +204,19 @@ async function createClickHouseClient(
 }
 
 async function executeClickHouseJson(client: ClickHouseClient, query: string): Promise<Record<string, JsonValue>> {
-  const response = await fetch(`${client.endpoint}/?database=${encodeURIComponent(client.database)}`, {
+  // Set the output format via `default_format` (a URL param) instead of appending
+  // ` FORMAT JSON` to the SQL, so the user's query is sent exactly as written. A
+  // FORMAT clause in the query itself still wins over default_format.
+  // `readonly=2` makes ClickHouse reject any write/DDL statement server-side (a
+  // readonly-labelled method must not be a write path), while still allowing the
+  // `default_format` setting we pass (mode 1 would reject setting changes).
+  const response = await fetch(`${client.endpoint}/?database=${encodeURIComponent(client.database)}&default_format=JSON&readonly=2`, {
     method: 'POST',
     headers: {
       authorization: `Basic ${btoa(`${client.username}:${client.password}`)}`,
       'content-type': 'text/plain; charset=utf-8',
     },
-    body: `${query.trim().replace(/;+\s*$/, '')} FORMAT JSON`,
+    body: query,
   });
   const text = await response.text();
   if (!response.ok) {
@@ -209,11 +227,33 @@ async function executeClickHouseJson(client: ClickHouseClient, query: string): P
   return JSON.parse(text) as Record<string, JsonValue>;
 }
 
-function normalizeReadOnlyQuery(query: string, limit: number): string {
-  const trimmed = query.trim().replace(/;+\s*$/, '');
-  if (/limit/i.test(trimmed)) return trimmed;
-  return `${trimmed} LIMIT ${limit}`;
+/**
+ * Run a query and return the raw streaming Response as Parquet so the caller can
+ * pipe the bytes straight to R2. ClickHouse produces Parquet natively, so no
+ * row-by-row re-encoding happens in the Worker. The output format is set via the
+ * `default_format` URL param (not a ` FORMAT Parquet` SQL append), so the user's
+ * query runs exactly as written. On a non-2xx the (small) error body is consumed
+ * and rethrown loudly.
+ */
+async function executeClickHouseParquet(client: ClickHouseClient, query: string): Promise<Response> {
+  // `readonly=2`: reject writes/DDL server-side while allowing the default_format setting.
+  const response = await fetch(`${client.endpoint}/?database=${encodeURIComponent(client.database)}&default_format=Parquet&readonly=2`, {
+    method: 'POST',
+    headers: {
+      authorization: `Basic ${btoa(`${client.username}:${client.password}`)}`,
+      'content-type': 'text/plain; charset=utf-8',
+    },
+    body: query,
+  });
+  if (!response.ok) {
+    const text = await response.text();
+    throw Object.assign(new Error(text || `ClickHouse request failed with HTTP ${response.status}`), {
+      status: response.status,
+    });
+  }
+  return response;
 }
+
 function validateClickHouseEndpoint(host: string, port: number): string {
   if (!Number.isInteger(port) || port < 1 || port > 65535) {
     throw Object.assign(new Error('port must be a valid TCP port.'), { status: 400 });
@@ -253,21 +293,6 @@ function requireString(value: unknown, field: string): string {
     throw Object.assign(new Error(`${field} is required`), { status: 400 });
   }
   return value.trim();
-}
-
-function boundedInteger(
-  value: unknown,
-  defaultValue: number,
-  min: number,
-  max: number,
-  field: string
-): number {
-  if (value == null) return defaultValue;
-  const parsed = Number(value);
-  if (!Number.isInteger(parsed) || parsed < min || parsed > max) {
-    throw Object.assign(new Error(`${field} must be an integer from ${min} to ${max}.`), { status: 400 });
-  }
-  return parsed;
 }
 
 function sqlString(value: string): string {

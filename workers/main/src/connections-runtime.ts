@@ -103,6 +103,8 @@ type JsonValue =
 export interface ConnectionsRuntimeEnv extends DataProxyEnv {
   INTEGRATION_SECRET_KEY: string;
   ORG: DurableObjectNamespace<OrgDO>;
+  /** Auto-expiring R2 staging bucket for warehouse exports (connection `export` method). */
+  WAREHOUSE_EXPORT_BUCKET?: R2Bucket;
 }
 
 export interface ConnectionsContext {
@@ -1762,10 +1764,10 @@ async function nativeMcpRpc(
     );
   }
   if (isBigQueryMcpIntegration(record.integration_type)) {
-    return bigQueryMcpRpc(env, record, method, params);
+    return bigQueryMcpRpc(env, { workspaceId: context.workspaceId }, record, method, params);
   }
   if (isClickHouseMcpIntegration(record.integration_type)) {
-    return clickHouseMcpRpc(env, record, method, params);
+    return clickHouseMcpRpc(env, { workspaceId: context.workspaceId }, record, method, params);
   }
   if (isSqlDatabaseMcpIntegration(record.integration_type)) {
     return sqlDatabaseMcpRpc(env, context, record, method, params);

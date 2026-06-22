@@ -35,6 +35,9 @@ export interface CloudflareEnv {
 
   // R2
   R2_BUCKET: R2Bucket;
+  // Staging area for warehouse connection exports (auto-expiring); read by the
+  // sealed DuckDB warehouse container.
+  WAREHOUSE_EXPORT_BUCKET: R2Bucket;
 
   // Service bindings
   WORKER_SELF_REFERENCE: Fetcher;

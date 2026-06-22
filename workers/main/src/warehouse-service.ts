@@ -3,6 +3,7 @@ import { listConnections, type ConnectionsRuntimeEnv } from './connections-runti
 import { isSqlDatabaseMcpIntegration } from './sql-database-mcp.js';
 import { isBigQueryMcpIntegration } from './bigquery-mcp.js';
 import { isClickHouseMcpIntegration } from './clickhouse-mcp.js';
+import { warehouseWorkspacePrefix } from './warehouse-export.js';
 
 /**
  * Virtual WAREHOUSE service binding entrypoint for user-uploaded workers.
@@ -29,11 +30,22 @@ import { isClickHouseMcpIntegration } from './clickhouse-mcp.js';
 export interface WarehouseRunRequest {
   /** Python source to execute in the workspace's sandbox (DuckDB strongly preferred). */
   code: string;
+  /**
+   * Optional values injected into the Python runtime as a `params` dict (e.g.
+   * `{ r2_key }`), so callers reference `params["r2_key"]` instead of
+   * interpolating values into the code string (which is fragile with special
+   * characters). JSON-serializable values only.
+   */
+  params?: Record<string, unknown>;
 }
 
 export interface WarehouseRunResult {
   ok: boolean;
-  /** Raw code-interpreter result (stdout/stderr/rich outputs) passed through. */
+  /** Captured stdout (everything the code `print()`ed), already joined. */
+  stdout?: string;
+  /** Captured stderr. */
+  stderr?: string;
+  /** Raw code-interpreter result (rich outputs, execution metadata) passed through. */
   result?: unknown;
   error?: string;
 }
@@ -78,6 +90,17 @@ export interface WarehouseSandboxLike {
   deleteSession(id: string): Promise<unknown>;
 }
 
+/**
+ * The real sandbox stub adds the container-side mount method (a custom method on
+ * WarehouseSandbox, reachable via the getSandbox DO-RPC proxy).
+ */
+export interface WarehouseSandboxStub extends WarehouseSandboxLike {
+  ensureExportsMounted(bucketBinding: string, prefix: string): Promise<void>;
+}
+
+/** The R2 binding name the container's s3fs egress mount routes to. */
+export const WAREHOUSE_EXPORT_BUCKET_BINDING = 'WAREHOUSE_EXPORT_BUCKET';
+
 export interface WarehouseSessionLike {
   runCode(code: string, options?: { language?: string }): Promise<unknown>;
 }
@@ -105,8 +128,15 @@ export async function runWarehouseCode(
   try {
     // Python-only by design — DuckDB's first-class API is Python, and this tier
     // is for DuckDB-via-Python analytics.
-    const result = await session.runCode(request.code, { language: 'python' });
-    return { ok: true, result };
+    const code = withWarehouseParams(request.code, request.params);
+    const result = await session.runCode(code, { language: 'python' });
+    const { stdout, stderr } = extractWarehouseStdio(result);
+    // The interpreter RESOLVES (doesn't throw) on a Python error, setting
+    // result.error — surface it as ok: false so callers don't treat a failed
+    // analysis (bad read_parquet path, DuckDB exception, …) as success.
+    const codeError = extractWarehouseError(result);
+    if (codeError) return { ok: false, error: codeError, result, stdout, stderr };
+    return { ok: true, result, stdout, stderr };
   } catch (error) {
     return { ok: false, error: error instanceof Error ? error.message : 'Warehouse code failed' };
   } finally {
@@ -119,9 +149,51 @@ export async function runWarehouseCode(
   }
 }
 
+/**
+ * Prepend a `params` dict to the Python code so callers reference
+ * `params["r2_key"]` instead of interpolating values into the code string.
+ * The values are embedded as a JSON string and parsed with `json.loads`, so
+ * arbitrary content (special characters, quotes) is safe.
+ */
+export function withWarehouseParams(code: string, params?: Record<string, unknown>): string {
+  if (!params || Object.keys(params).length === 0) return code;
+  // Double-encode: inner produces JSON, outer produces a Python string literal of it.
+  const literal = JSON.stringify(JSON.stringify(params));
+  return `import json as _wh_json\nparams = _wh_json.loads(${literal})\ndel _wh_json\n${code}`;
+}
+
+/**
+ * Flatten the code-interpreter result's nested logs into plain stdout/stderr
+ * strings so callers don't have to dig through `result.logs.stdout[0]`.
+ */
+export function extractWarehouseStdio(result: unknown): { stdout?: string; stderr?: string } {
+  const logs = (result as { logs?: { stdout?: unknown; stderr?: unknown } } | null | undefined)?.logs;
+  const join = (value: unknown): string | undefined => {
+    if (Array.isArray(value)) return value.map((part) => String(part)).join('');
+    if (typeof value === 'string') return value;
+    return undefined;
+  };
+  return { stdout: join(logs?.stdout), stderr: join(logs?.stderr) };
+}
+
+/**
+ * The code interpreter reports a Python failure by resolving with an `error`
+ * field (name/message/traceback) rather than throwing. Return a human-readable
+ * message when that happened, else undefined.
+ */
+export function extractWarehouseError(result: unknown): string | undefined {
+  const error = (result as { error?: { name?: unknown; message?: unknown } } | null | undefined)?.error;
+  if (!error || typeof error !== 'object') return undefined;
+  const name = typeof error.name === 'string' ? error.name : '';
+  const message = typeof error.message === 'string' ? error.message : '';
+  return [name, message].filter(Boolean).join(': ') || 'Warehouse code raised an error';
+}
+
 interface WarehouseEnv {
   /** DurableObjectNamespace for the Sandbox container (Cloudflare Containers). */
   WAREHOUSE_SANDBOX?: unknown;
+  /** Auto-expiring R2 staging bucket; mounted read-only into the container. */
+  WAREHOUSE_EXPORT_BUCKET?: R2Bucket;
 }
 
 interface WarehouseServiceProps {
@@ -130,15 +202,31 @@ interface WarehouseServiceProps {
 }
 
 export class WarehouseService extends WorkerEntrypoint<WarehouseEnv, WarehouseServiceProps> {
-  private sandbox?: WarehouseSandboxLike;
+  private sandbox?: WarehouseSandboxStub;
 
   /** Test seam: override the sandbox. */
-  setSandbox(sandbox: WarehouseSandboxLike): void {
+  setSandbox(sandbox: WarehouseSandboxStub): void {
     this.sandbox = sandbox;
   }
 
   async runCode(request: WarehouseRunRequest): Promise<WarehouseRunResult> {
     const sandbox = await this.resolveSandbox();
+    // Mount the workspace's staged exports read-only so DuckDB can read them.
+    // The container mounts once per its lifecycle (see WarehouseSandbox); this is
+    // a cheap no-op on a warm container.
+    if (this.env.WAREHOUSE_EXPORT_BUCKET) {
+      try {
+        await sandbox.ensureExportsMounted(
+          WAREHOUSE_EXPORT_BUCKET_BINDING,
+          warehouseWorkspacePrefix(this.ctx.props.workspaceId),
+        );
+      } catch (error) {
+        return {
+          ok: false,
+          error: error instanceof Error ? `warehouse mount failed: ${error.message}` : 'warehouse mount failed',
+        };
+      }
+    }
     return runWarehouseCode(request, {
       sandbox,
       newSessionId: () => crypto.randomUUID(),
@@ -157,7 +245,7 @@ export class WarehouseService extends WorkerEntrypoint<WarehouseEnv, WarehouseSe
     return annotateWarehouseConnections(summaries);
   }
 
-  private async resolveSandbox(): Promise<WarehouseSandboxLike> {
+  private async resolveSandbox(): Promise<WarehouseSandboxStub> {
     if (this.sandbox) return this.sandbox;
     if (!this.env.WAREHOUSE_SANDBOX) {
       throw new Error('WAREHOUSE_SANDBOX container binding is not configured');
@@ -168,7 +256,7 @@ export class WarehouseService extends WorkerEntrypoint<WarehouseEnv, WarehouseSe
       this.env.WAREHOUSE_SANDBOX as Parameters<typeof getSandbox>[0],
       this.ctx.props.workspaceId,
       { normalizeId: true },
-    ) as unknown as WarehouseSandboxLike;
+    ) as unknown as WarehouseSandboxStub;
     return this.sandbox;
   }
 }

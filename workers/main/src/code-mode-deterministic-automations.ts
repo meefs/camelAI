@@ -1,4 +1,23 @@
-import type { WorkspaceCronDO } from "./workspace-cron";
+import type { AutomationRunRecord, WorkspaceCronDO } from "./workspace-cron";
+
+/**
+ * Flatten one stored automation run into an agent-friendly shape: a plain status
+ * (`started` = still running, `success`, `error`), ISO timestamps, the computed
+ * `duration_ms`, and the error message (if any). Pure + unit-testable.
+ */
+export function formatAutomationRun(run: AutomationRunRecord): Record<string, unknown> {
+  const durationMs =
+    run.completed_at != null ? Math.max(0, run.completed_at - run.started_at) : null;
+  return {
+    instance_id: run.instance_id,
+    status: run.status,
+    trigger: run.trigger,
+    started_at: new Date(run.started_at).toISOString(),
+    completed_at: run.completed_at != null ? new Date(run.completed_at).toISOString() : null,
+    duration_ms: durationMs,
+    error: run.status === "error" ? run.message : null,
+  };
+}
 
 interface CodeModeDeterministicAutomationsOptions {
   cronStub: DurableObjectStub<WorkspaceCronDO>;
@@ -175,6 +194,24 @@ export class CodeModeDeterministicAutomations {
     return {
       success: true,
       message: `Deleted workflow "${automationId}"`,
+    };
+  }
+
+  async getRuns(args: Record<string, unknown>): Promise<unknown> {
+    const automationId = getWorkflowId(args);
+    if (!automationId) throw new Error("workflow_id is required");
+    const requested = typeof args.limit === "number" ? Math.floor(args.limit) : 10;
+    const limit = Math.max(1, Math.min(50, requested));
+    const page = await this.options.cronStub.listAutomationRunsPage(
+      this.options.workspaceId,
+      { kind: "deterministic_automation", automationId, limit },
+    );
+    const runs = page.runs.map(formatAutomationRun);
+    return {
+      success: true,
+      workflow_id: automationId,
+      latest: runs[0] ?? null,
+      runs,
     };
   }
 

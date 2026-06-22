@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
   annotateWarehouseConnections,
+  extractWarehouseError,
+  extractWarehouseStdio,
   runWarehouseCode,
+  withWarehouseParams,
   type WarehouseSandboxLike,
   type WarehouseSessionLike,
 } from '../src/warehouse-service.js';
@@ -101,6 +104,75 @@ describe('runWarehouseCode', () => {
     const result = await runWarehouseCode({ code: 'x' }, { sandbox, newSessionId: seqId });
     expect(result.ok).toBe(false);
     expect(result.error).toMatch(/container unavailable/);
+  });
+
+  it('injects params and surfaces flattened stdout/stderr', async () => {
+    const sandbox = fakeSandbox({ runImpl: async () => ({ logs: { stdout: ['46\n'], stderr: [] } }) });
+    const result = await runWarehouseCode(
+      { code: "print(params['r2_key'])", params: { r2_key: 'warehouse/ws/c/a.parquet' } },
+      { sandbox, newSessionId: seqId },
+    );
+    expect(result.ok).toBe(true);
+    expect(result.stdout).toBe('46\n'); // flat, not result.logs.stdout[0]
+    const [session] = [...sandbox.sessions.values()];
+    expect(session.ranCode[0]).toContain('params = _wh_json.loads(');
+    expect(session.ranCode[0]).toContain("print(params['r2_key'])");
+  });
+
+  it('returns ok: false when the interpreter resolves with a Python error', async () => {
+    // The SDK resolves (does not throw) on a Python failure, setting `error`.
+    const sandbox = fakeSandbox({
+      runImpl: async () => ({
+        logs: { stdout: [], stderr: [] },
+        error: { name: 'IOException', message: "No files found that match the pattern '/bad.parquet'", traceback: [] },
+      }),
+    });
+    const result = await runWarehouseCode({ code: "duckdb.read_parquet('/bad.parquet')" }, { sandbox, newSessionId: seqId });
+    expect(result.ok).toBe(false);
+    expect(result.error).toBe("IOException: No files found that match the pattern '/bad.parquet'");
+    expect([...sandbox.sessions.values()][0].deleted).toBe(true); // still cleaned up
+  });
+});
+
+describe('extractWarehouseError', () => {
+  it('formats an interpreter error as "name: message"', () => {
+    expect(extractWarehouseError({ error: { name: 'NameError', message: "name 'params' is not defined" } }))
+      .toBe("NameError: name 'params' is not defined");
+  });
+
+  it('returns undefined for a successful run', () => {
+    expect(extractWarehouseError({ logs: { stdout: ['ok'] } })).toBeUndefined();
+    expect(extractWarehouseError({})).toBeUndefined();
+    expect(extractWarehouseError(null)).toBeUndefined();
+  });
+});
+
+describe('withWarehouseParams', () => {
+  it('returns code unchanged when there are no params', () => {
+    expect(withWarehouseParams('print(1)')).toBe('print(1)');
+    expect(withWarehouseParams('print(1)', {})).toBe('print(1)');
+  });
+
+  it('injects a params dict that survives special characters', () => {
+    const tricky = `warehouse/ws/c/a"b'c\n.parquet`;
+    const code = withWarehouseParams("print(params['r2_key'])", { r2_key: tricky });
+    expect(code).toContain('params = _wh_json.loads(');
+    expect(code.endsWith("print(params['r2_key'])")).toBe(true);
+    // The embedded literal round-trips back to the original value.
+    const literal = code.match(/_wh_json\.loads\((".*?")\)\n/s)?.[1];
+    expect(JSON.parse(JSON.parse(literal!)).r2_key).toBe(tricky);
+  });
+});
+
+describe('extractWarehouseStdio', () => {
+  it('joins array stdout/stderr chunks', () => {
+    expect(extractWarehouseStdio({ logs: { stdout: ['a', 'b'], stderr: ['x'] } })).toEqual({ stdout: 'ab', stderr: 'x' });
+  });
+
+  it('passes through string logs and tolerates missing/odd shapes', () => {
+    expect(extractWarehouseStdio({ logs: { stdout: 'hi' } })).toEqual({ stdout: 'hi', stderr: undefined });
+    expect(extractWarehouseStdio(null)).toEqual({ stdout: undefined, stderr: undefined });
+    expect(extractWarehouseStdio({})).toEqual({ stdout: undefined, stderr: undefined });
   });
 });
 

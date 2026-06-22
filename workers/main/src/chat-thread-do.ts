@@ -1641,9 +1641,10 @@ const CODE_MODE_TOOL_REGISTRY: CodeModeToolRegistration[] = [
   ),
   codeModePassthroughTool(
     "warehouse_run_code",
-    "Run Python in this workspace's SEALED analytics sandbox (no network) for heavy cross-source data work that's too big for a Durable Object. STRONGLY PREFER DuckDB (pre-installed): `import duckdb`. The sandbox has NO direct database access — bring data in first by exporting connections to the warehouse: call a connection's `export` method (via env.CONNECTIONS, e.g. `connections[alias].export({ query })`), which streams the full result to R2 server-side (credentials stay server-side); then read those staged objects here with DuckDB (read_parquet / read_json_auto). Use warehouse_list_connections to see which connections are exportable. Each call runs in an isolated session. Returns the interpreter result. Arguments: { code }.",
+    "Run Python in this workspace's SEALED analytics sandbox (no network) for heavy cross-source data work that's too big for a Durable Object. STRONGLY PREFER DuckDB (pre-installed): `import duckdb`. The sandbox has NO direct database access — bring data in first by exporting connections to the warehouse: call a connection's `export` method (via env.CONNECTIONS, e.g. `connections[alias].export({ query })`), which streams the full result to R2 server-side (credentials stay server-side) and returns { r2_key }. Each export is mounted read-only into the sandbox at the path '/' + r2_key, so read it with DuckDB: `duckdb.read_parquet('/' + r2_key)` (or `read_json_auto` for BigQuery .ndjson exports). Pass values via `params` (a JSON dict) instead of interpolating them into the code string — they arrive as a Python `params` dict, e.g. `duckdb.read_parquet('/' + params['r2_key'])`. Use warehouse_list_connections to see which connections are exportable. Each call runs in an isolated session. Returns { ok, stdout, stderr, result, error } — read printed output from `stdout` (e.g. `print` CSV/JSON, then write it with tools.write). Arguments: { code, params? }.",
     Type.Object({
       code: Type.String(),
+      params: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
     }),
     {
       category: "connections",
@@ -1717,7 +1718,7 @@ const CODE_MODE_TOOL_REGISTRY: CodeModeToolRegistration[] = [
   ),
   codeModePassthroughTool(
     "validate_workflow",
-    "Validate workflow source without saving it. Arguments: { source }.",
+    "Validate workflow source without saving it: checks that it exports `class AutomationWorkflow extends WorkflowEntrypoint` and compiles. IMPORTANT: a workflow runs as a single module with ONLY the injected bindings (env.TOOLS, env.CONNECTIONS, env.AI, …) — the only import you may use is `import { WorkflowEntrypoint } from \"cloudflare:workers\"`. npm packages, URL/CDN imports (e.g. esm.sh), and relative/multi-file modules are NOT available and fail at runtime, so never import them. Arguments: { source }.",
     Type.Object({ source: Type.String() }),
     {
       category: "workflows",
@@ -1725,7 +1726,7 @@ const CODE_MODE_TOOL_REGISTRY: CodeModeToolRegistration[] = [
   ),
   codeModePassthroughTool(
     "create_workflow",
-    "Create a workflow. Arguments: { name, source, cron_expression, description, enabled? }.",
+    "Create a workflow. The source runs as a single module with ONLY the injected bindings — the one allowed import is `import { WorkflowEntrypoint } from \"cloudflare:workers\"`; do NOT import npm packages, URLs/CDNs (e.g. esm.sh), or relative modules (they fail at runtime). Use env.TOOLS / env.CONNECTIONS / env.AI for everything else. Arguments: { name, source, cron_expression, description, enabled? }.",
     Type.Object({
       name: Type.String(),
       source: Type.String(),
@@ -1765,11 +1766,19 @@ const CODE_MODE_TOOL_REGISTRY: CodeModeToolRegistration[] = [
   ),
   codeModePassthroughTool(
     "run_workflow_now",
-    "Start a workflow immediately. Arguments: { workflow_id }.",
+    "Start a workflow immediately. Returns the run's instance_id; the run is asynchronous, so poll get_workflow_run to see when it finishes and whether it failed (do NOT block-wait). Arguments: { workflow_id }.",
     Type.Object({ workflow_id: Type.String() }),
     {
       category: "workflows",
       sideEffect: true,
+    },
+  ),
+  codeModePassthroughTool(
+    "get_workflow_run",
+    "Inspect a workflow's recent runs — use after run_workflow_now (or to debug a failed scheduled run) instead of blindly waiting. Returns { latest, runs: [{ instance_id, status, trigger, started_at, completed_at, duration_ms, error }] }. status is `started` (still running), `success`, or `error` (with the message in `error`); each completed run reports duration_ms (sample recent runs for a rough ETA). Poll a few times if the latest run is still `started`. Arguments: { workflow_id, limit? }.",
+    Type.Object({ workflow_id: Type.String(), limit: Type.Optional(Type.Number()) }),
+    {
+      category: "workflows",
     },
   ),
   codeModePassthroughTool(
@@ -2030,6 +2039,7 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
     update_workflow: (binding, args) => binding.updateDeterministicAutomation(args),
     delete_workflow: (binding, args) => binding.deleteDeterministicAutomation(args),
     run_workflow_now: (binding, args) => binding.runDeterministicAutomationNow(args),
+    get_workflow_run: (binding, args) => binding.getDeterministicAutomationRuns(args),
     list_deterministic_automations: (binding) => binding.listDeterministicAutomations(),
     validate_deterministic_automation: (binding, args) => binding.validateDeterministicAutomation(args),
     create_deterministic_automation: (binding, args) => binding.createDeterministicAutomation(args),
@@ -3632,7 +3642,7 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
   private warehouseService() {
     return (this.ctx.exports as unknown as {
       WarehouseService: (options: { props: Pick<CodeModeToolsProps, "orgId" | "workspaceId"> }) => {
-        runCode(request: { code: string }): Promise<{ ok: boolean; result?: unknown; error?: string }>;
+        runCode(request: { code: string; params?: Record<string, unknown> }): Promise<{ ok: boolean; result?: unknown; error?: string }>;
         listConnections(): Promise<Array<{ id: string; name: string; type: string; displayName: string; exportable: boolean }>>;
       };
     }).WarehouseService({
@@ -3646,7 +3656,13 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
   private async warehouseRunCode(args: Record<string, unknown>): Promise<unknown> {
     const code = typeof args.code === "string" ? args.code : "";
     if (!code.trim()) throw new Error("code is required");
-    return this.warehouseService().runCode({ code });
+    // Forward the params dict (the tool advertises it) so WarehouseService can
+    // inject it as a Python `params` dict; otherwise params['...'] is a NameError.
+    const params =
+      args.params && typeof args.params === "object" && !Array.isArray(args.params)
+        ? (args.params as Record<string, unknown>)
+        : undefined;
+    return this.warehouseService().runCode({ code, params });
   }
 
   private async warehouseListConnections(): Promise<unknown> {
@@ -3712,6 +3728,10 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
 
   private async runDeterministicAutomationNow(args: Record<string, unknown>): Promise<unknown> {
     return this.deterministicAutomations.runNow(args);
+  }
+
+  private async getDeterministicAutomationRuns(args: Record<string, unknown>): Promise<unknown> {
+    return this.deterministicAutomations.getRuns(args);
   }
 
   private get integrations(): CodeModeIntegrations {

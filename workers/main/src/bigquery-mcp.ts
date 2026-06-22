@@ -2,6 +2,12 @@ import { decryptCredentials } from '../../../src/lib/integration-crypto';
 import { getProviderMcpDefinition } from '../../../src/lib/provider-mcp-registry';
 import { mintBigQueryAccessTokenFromServiceAccount } from './google-service-account';
 import type { WorkspaceIntegrationRecord } from './workspace.js';
+import { warehouseExportKey, stageWarehouseExport } from './warehouse-export.js';
+
+/** Minimal context the export path needs to namespace the R2 staging key. */
+export interface BigQueryMcpContext {
+  workspaceId: string;
+}
 
 type JsonValue =
   | null
@@ -13,6 +19,8 @@ type JsonValue =
 
 interface BigQueryMcpEnv {
   INTEGRATION_SECRET_KEY: string;
+  /** Auto-expiring R2 staging bucket for warehouse exports. */
+  WAREHOUSE_EXPORT_BUCKET?: R2Bucket;
 }
 
 interface BigQueryConfig {
@@ -39,6 +47,7 @@ interface BigQueryQueryResponse {
   totalRows?: string;
   totalBytesProcessed?: string;
   cacheHit?: boolean;
+  pageToken?: string;
 }
 
 interface BigQueryJobResponse {
@@ -48,6 +57,7 @@ interface BigQueryJobResponse {
       totalBytesProcessed?: string;
       totalBytesBilled?: string;
       cacheHit?: boolean;
+      statementType?: string;
     };
   };
 }
@@ -68,6 +78,11 @@ const DEFAULT_TIMEOUT_MS = 30_000;
 const MAX_TIMEOUT_MS = 120_000;
 const DEFAULT_MAXIMUM_BYTES_BILLED = '1000000000';
 const BIGQUERY_ID_RE = /^[A-Za-z_][A-Za-z0-9_]{0,1023}$/;
+// Warehouse export paging: BigQuery caps a page at ~10MB regardless of this row
+// hint, so a high value just minimizes round-trips on narrow rows.
+const BIGQUERY_EXPORT_PAGE_SIZE = 50_000;
+const BIGQUERY_EXPORT_TIMEOUT_MS = 30_000;
+const BIGQUERY_EXPORT_POLL_ATTEMPTS = 60;
 const BIGQUERY_PROVIDER_MCP = getProviderMcpDefinition('bigquery');
 if (!BIGQUERY_PROVIDER_MCP) {
   throw new Error('BigQuery provider MCP definition is missing');
@@ -183,12 +198,16 @@ export function listBigQueryMcpTools(): Array<Record<string, unknown>> {
     {
       name: 'export',
       description:
-        'Export the FULL result of a query to the workspace warehouse (R2) — no row cap, streamed server-side. Returns an R2 object handle to read with DuckDB. Use for bulk extracts feeding analytics/joins, not for inline display.',
+        'Export the FULL result of a query to the workspace warehouse (R2) — no row cap, streamed server-side as NDJSON. Returns { ok, r2_key, rows, columns }; read the object with DuckDB read_json_auto. When rows is 0 the NDJSON file is empty (read_json_auto cannot infer columns from it) — treat that as a no-rows result and use the returned columns rather than reading the file. Use for bulk extracts feeding analytics/joins, not for inline display.',
       inputSchema: {
         type: 'object',
         properties: {
           query: { type: 'string', description: 'Standard SQL query to export in full.' },
           datasetId: { type: 'string', description: 'Default dataset for unqualified table names.' },
+          maximumBytesBilled: {
+            type: 'string',
+            description: `Maximum bytes BigQuery may bill for the export (fail-without-charge cap). Defaults to ${DEFAULT_MAXIMUM_BYTES_BILLED}; raise it for legitimately large extracts.`,
+          },
         },
         required: ['query'],
         additionalProperties: false,
@@ -199,6 +218,7 @@ export function listBigQueryMcpTools(): Array<Record<string, unknown>> {
 
 export async function bigQueryMcpRpc(
   env: BigQueryMcpEnv,
+  context: BigQueryMcpContext,
   record: WorkspaceIntegrationRecord,
   method: string,
   params: Record<string, unknown> = {}
@@ -221,7 +241,7 @@ export async function bigQueryMcpRpc(
     case 'tools/list':
       return { tools: listBigQueryMcpTools() };
     case 'tools/call':
-      return callBigQueryTool(env, record, params);
+      return callBigQueryTool(env, context, record, params);
     default:
       throw Object.assign(new Error(`Method not found: ${method}`), { status: 404 });
   }
@@ -229,6 +249,7 @@ export async function bigQueryMcpRpc(
 
 async function callBigQueryTool(
   env: BigQueryMcpEnv,
+  context: BigQueryMcpContext,
   record: WorkspaceIntegrationRecord,
   params: Record<string, unknown>
 ): Promise<Record<string, unknown>> {
@@ -254,11 +275,17 @@ async function callBigQueryTool(
     case 'execute_sql_readonly':
       return textToolResult(await executeSqlReadonly(client, args));
     case 'export':
-      // Deploy-gated: BigQuery → R2 staging (BQ EXPORT / Storage API stream).
-      // Fail loud until enabled rather than silently returning a missing handle.
-      throw Object.assign(
-        new Error('BigQuery warehouse export is not enabled in this deployment (pending BigQuery → R2 staging).'),
-        { status: 501 },
+      return runBigQueryWarehouseExport(
+        env,
+        context,
+        client,
+        record.id, // namespace by unique integration id, not display name (names can collide across types)
+        requireString(args.query, 'query'),
+        // Match execute_sql_readonly: apply the caller-provided datasetId or the
+        // connection's default dataset so unqualified table names resolve.
+        datasetFromArgs(client.config, args, false) || null,
+        // ...and the same fail-without-charge billing cap (default or override).
+        maximumBytesBilledFromArgs(args.maximumBytesBilled),
       );
     default:
       throw Object.assign(new Error(`Unknown BigQuery tool: ${name}`), { status: 404 });
@@ -417,6 +444,9 @@ async function executeSqlReadonly(
       },
     }
   );
+  // BigQuery has no per-query read-only flag, but the dry-run reports the parsed
+  // statement type without executing — reject anything that isn't a read.
+  assertBigQueryReadOnly(dryRun.statistics?.query?.statementType);
 
   const response = await bigQueryFetch<BigQueryQueryResponse>(
     client,
@@ -447,6 +477,211 @@ async function executeSqlReadonly(
     schema: (response.schema ?? { fields: [] }) as JsonValue,
     rows: formatRows(response.schema?.fields ?? [], response.rows ?? []) as JsonValue,
   };
+}
+
+/**
+ * Export the FULL result of a query to the workspace warehouse (R2) as NDJSON
+ * and return the R2 handle. BigQuery's REST `jobs.query`/`getQueryResults` path
+ * returns JSON rows (no native Parquet stream), so we page through every result
+ * page and stream NDJSON straight into the auto-expiring bucket without
+ * buffering the whole result. The sealed DuckDB container reads it with
+ * `read_json_auto`. (A native BigQuery → GCS Parquet extract is a future
+ * optimization; the R2 key extension already records the format.)
+ */
+// BigQuery statement types (from the dry-run) that are read-only. Anything else
+// (INSERT/UPDATE/DELETE/MERGE/CREATE_*/DROP_*/SCRIPT/CALL/…) is a write/DDL.
+const BIGQUERY_READONLY_STATEMENT_TYPES = new Set(['SELECT']);
+
+function assertBigQueryReadOnly(statementType: string | undefined): void {
+  const type = (statementType ?? '').toUpperCase();
+  if (!BIGQUERY_READONLY_STATEMENT_TYPES.has(type)) {
+    throw Object.assign(
+      new Error(
+        `This method is read-only — BigQuery statement type "${statementType || 'UNKNOWN'}" is not allowed. Use a SELECT query.`,
+      ),
+      { status: 400 },
+    );
+  }
+}
+
+/** Dry-run a query (no execution, no charge) and return its parsed statement type. */
+async function bigQueryStatementType(
+  client: { config: BigQueryConfig; token: string },
+  query: string,
+  datasetId: string | null,
+): Promise<string | undefined> {
+  const dryRun = await bigQueryFetch<BigQueryJobResponse>(
+    client,
+    `/projects/${encodeURIComponent(client.config.projectId)}/jobs`,
+    {
+      method: 'POST',
+      body: {
+        configuration: {
+          dryRun: true,
+          query: {
+            query,
+            useLegacySql: false,
+            ...(datasetId ? { defaultDataset: { projectId: client.config.projectId, datasetId } } : {}),
+          },
+        },
+      },
+    },
+  );
+  return dryRun.statistics?.query?.statementType;
+}
+
+async function runBigQueryWarehouseExport(
+  env: BigQueryMcpEnv,
+  context: BigQueryMcpContext,
+  client: { config: BigQueryConfig; token: string },
+  connectionId: string,
+  query: string,
+  datasetId: string | null,
+  maximumBytesBilled: string,
+): Promise<Record<string, JsonValue>> {
+  const bucket = env.WAREHOUSE_EXPORT_BUCKET;
+  if (!bucket) {
+    throw Object.assign(
+      new Error('BigQuery warehouse export is not enabled in this deployment (WAREHOUSE_EXPORT_BUCKET is not bound).'),
+      { status: 501 },
+    );
+  }
+  // Reject writes/DDL before launching the export job (export is read-only).
+  assertBigQueryReadOnly(await bigQueryStatementType(client, query, datasetId));
+  // Fold the default dataset into the cache key: the same query text resolves to
+  // different rows under different default datasets, so they must not collide.
+  const keyInput = datasetId ? `${datasetId}:${query}` : query;
+  const r2Key = warehouseExportKey(context.workspaceId, connectionId, keyInput, 'ndjson');
+  // The stream populates these as it pages; an empty NDJSON file can't convey the
+  // schema, so surface row count + columns in the result. rows: 0 is an explicit
+  // signal that read_json_auto('/' + r2_key) will have nothing to infer.
+  const stats: BigQueryExportStats = { rows: 0, columns: [] };
+  await stageWarehouseExport(
+    bucket,
+    r2Key,
+    bigQueryNdjsonStream(client, query, datasetId, maximumBytesBilled, stats),
+    'ndjson',
+  );
+  return { ok: true, r2_key: r2Key, rows: stats.rows, columns: stats.columns };
+}
+
+interface BigQueryExportStats {
+  rows: number;
+  columns: string[];
+}
+
+/**
+ * A lazily-paging NDJSON stream over a BigQuery query result. Each `pull` fetches
+ * the next page (kicking off the job on the first pull, polling until the job
+ * completes), so memory stays bounded and R2 backpressure flows through.
+ */
+function bigQueryNdjsonStream(
+  client: { config: BigQueryConfig; token: string },
+  query: string,
+  datasetId: string | null,
+  maximumBytesBilled: string,
+  stats: BigQueryExportStats,
+): ReadableStream<Uint8Array> {
+  const encoder = new TextEncoder();
+  const projectPath = `/projects/${encodeURIComponent(client.config.projectId)}`;
+  const defaultDataset = datasetId
+    ? { defaultDataset: { projectId: client.config.projectId, datasetId } }
+    : {};
+  let fields: BigQueryField[] = [];
+  let jobId = '';
+  let location: string | undefined;
+  let pageToken: string | undefined;
+  let started = false;
+  let finished = false;
+
+  const captureColumns = () => {
+    if (!stats.columns.length && fields.length) {
+      stats.columns = fields.map((field, index) => field.name || `field_${index}`);
+    }
+  };
+
+  const enqueueRows = (
+    controller: ReadableStreamDefaultController<Uint8Array>,
+    rows: Array<{ f?: Array<{ v?: unknown }> }> | undefined,
+  ) => {
+    if (!rows?.length) return;
+    stats.rows += rows.length;
+    let chunk = '';
+    for (const formatted of formatRows(fields, rows)) {
+      chunk += `${JSON.stringify(formatted)}\n`;
+    }
+    if (chunk) controller.enqueue(encoder.encode(chunk));
+  };
+
+  const resultsPath = () => {
+    const params = new URLSearchParams({
+      maxResults: String(BIGQUERY_EXPORT_PAGE_SIZE),
+      timeoutMs: String(BIGQUERY_EXPORT_TIMEOUT_MS),
+    });
+    if (pageToken) params.set('pageToken', pageToken);
+    if (location) params.set('location', location);
+    return `${projectPath}/queries/${encodeURIComponent(jobId)}?${params.toString()}`;
+  };
+
+  return new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      try {
+        if (finished) {
+          controller.close();
+          return;
+        }
+        if (!started) {
+          started = true;
+          let response = await bigQueryFetch<BigQueryQueryResponse>(client, `${projectPath}/queries`, {
+            method: 'POST',
+            body: {
+              query,
+              useLegacySql: false,
+              maximumBytesBilled,
+              ...defaultDataset,
+              maxResults: BIGQUERY_EXPORT_PAGE_SIZE,
+              timeoutMs: BIGQUERY_EXPORT_TIMEOUT_MS,
+            },
+          });
+          jobId = response.jobReference?.jobId ?? '';
+          location = response.jobReference?.location;
+          fields = response.schema?.fields ?? [];
+
+          // jobs.query can return before the job completes; poll getQueryResults.
+          let attempts = 0;
+          while (!response.jobComplete) {
+            if (attempts++ >= BIGQUERY_EXPORT_POLL_ATTEMPTS) {
+              throw Object.assign(new Error('BigQuery export timed out waiting for the query to complete.'), { status: 504 });
+            }
+            if (!jobId) {
+              throw Object.assign(new Error('BigQuery export did not return a job reference to poll.'), { status: 502 });
+            }
+            response = await bigQueryFetch<BigQueryQueryResponse>(client, resultsPath());
+            if (!fields.length) fields = response.schema?.fields ?? [];
+          }
+          captureColumns(); // record columns even when there are zero rows
+          enqueueRows(controller, response.rows);
+          pageToken = response.pageToken;
+          if (!pageToken) {
+            finished = true;
+            controller.close();
+          }
+          return;
+        }
+        const response = await bigQueryFetch<BigQueryQueryResponse>(client, resultsPath());
+        if (!fields.length) fields = response.schema?.fields ?? [];
+        captureColumns();
+        enqueueRows(controller, response.rows);
+        pageToken = response.pageToken;
+        if (!pageToken) {
+          finished = true;
+          controller.close();
+        }
+      } catch (error) {
+        controller.error(error);
+      }
+    },
+  });
 }
 
 async function bigQueryFetch<T>(

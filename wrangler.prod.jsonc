@@ -66,6 +66,17 @@
   "browser": { "binding": "BROWSER" },
   "ai": { "binding": "AI", "remote": true },
   "worker_loaders": [{ "binding": "CODE_MODE_LOADER" }],
+  "containers": [
+    {
+      "class_name": "WarehouseSandbox",
+      "image": "./workers/main/warehouse-sandbox.Dockerfile",
+      // Largest instance type (4 vCPU / 12 GiB / 20 GB disk) for data-intensive
+      // DuckDB. max_instances is the account vCPU-bound ceiling for standard-4
+      // (account cap 1,500 vCPU ÷ 4 = 375). Demand-driven, not reserved.
+      "instance_type": "standard-4",
+      "max_instances": 375,
+    },
+  ],
   "artifacts": [
     { "binding": "ARTIFACTS", "namespace": "prod" },
   ],
@@ -76,6 +87,7 @@
   ],
   "r2_buckets": [
     { "binding": "R2_BUCKET", "bucket_name": "chiridion-sandbox" },
+    { "binding": "WAREHOUSE_EXPORT_BUCKET", "bucket_name": "chiridion-warehouse-exports" },
   ],
   "analytics_engine_datasets": [
     { "binding": "ERROR_ANALYTICS", "dataset": "chiridion_errors_prod" },
@@ -131,6 +143,7 @@
       { "name": "MCP_OBJECT", "class_name": "ChiridionMcp" },
 	      { "name": "WORKER_LOGS", "class_name": "WorkerLogsDO" },
 	      { "name": "WORKSPACE_FS", "class_name": "WorkspaceFilesystemDO" },
+	      { "name": "WAREHOUSE_SANDBOX", "class_name": "WarehouseSandbox" },
 	    ],
 	  },
   "workflows": [
@@ -171,5 +184,6 @@
     { "tag": "v24", "new_sqlite_classes": ["CloudflareSandbox"] },
     { "tag": "v25", "new_sqlite_classes": ["WorkspaceFilesystemDO"] },
 	    { "tag": "v27", "new_sqlite_classes": ["MigrationPlanningAgent"] },
+    { "tag": "v28", "new_sqlite_classes": ["WarehouseSandbox"] },
 	  ],
 	}

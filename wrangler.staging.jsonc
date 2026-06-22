@@ -66,6 +66,16 @@
   "browser": { "binding": "BROWSER" },
   "ai": { "binding": "AI", "remote": true },
   "worker_loaders": [{ "binding": "CODE_MODE_LOADER" }],
+  "containers": [
+    {
+      "class_name": "WarehouseSandbox",
+      "image": "./workers/main/warehouse-sandbox.Dockerfile",
+      // Match prod's largest instance type so staging tests are representative;
+      // a small instance count is enough for staging.
+      "instance_type": "standard-4",
+      "max_instances": 10,
+    },
+  ],
   "artifacts": [
     { "binding": "ARTIFACTS", "namespace": "staging" },
   ],
@@ -76,6 +86,7 @@
   ],
   "r2_buckets": [
     { "binding": "R2_BUCKET", "bucket_name": "chiridion-sandbox" },
+    { "binding": "WAREHOUSE_EXPORT_BUCKET", "bucket_name": "chiridion-warehouse-exports-staging" },
   ],
   "analytics_engine_datasets": [
     { "binding": "ERROR_ANALYTICS", "dataset": "chiridion_errors_staging" },
@@ -131,6 +142,7 @@
 	      { "name": "MCP_OBJECT", "class_name": "ChiridionMcp" },
 	      { "name": "WORKER_LOGS", "class_name": "WorkerLogsDO" },
 	      { "name": "WORKSPACE_FS", "class_name": "WorkspaceFilesystemDO" },
+	      { "name": "WAREHOUSE_SANDBOX", "class_name": "WarehouseSandbox" },
 	    ],
 	  },
   "workflows": [
@@ -146,5 +158,6 @@
     { "tag": "v29", "new_sqlite_classes": ["TelegramRegistryDO", "SlackTeamRegistryDO"] },
 	    { "tag": "v30", "new_sqlite_classes": ["WorkspaceFilesystemDO"] },
 	    { "tag": "v31", "new_sqlite_classes": ["MigrationPlanningAgent"] },
+    { "tag": "v32", "new_sqlite_classes": ["WarehouseSandbox"] },
 	  ],
 	}

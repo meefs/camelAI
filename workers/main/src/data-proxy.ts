@@ -216,6 +216,44 @@ export async function mysqlQuery(
   return proxyRequest<MysqlQueryResponse>(env, context, '/mysql/query', request);
 }
 
+export interface SqlExportStreamRequest {
+  engine: 'mysql' | 'postgres' | 'mssql';
+  /** Connection + query payload, identical in shape to the `/query` body. */
+  body: Record<string, unknown>;
+}
+
+/**
+ * Stream a bulk read-only export from the data-proxy VM (`/{engine}/export`,
+ * Parquet) and return the raw streaming `Response`. The body is NOT buffered —
+ * the caller pipes `response.body` straight to R2, so a multi-GB extract never
+ * sits in Worker memory. The VM enforces its own export timeout, so unlike point
+ * queries we do not impose a client-side abort that would kill the stream
+ * mid-upload. Throws loudly (with the VM's error text) on a non-2xx response.
+ */
+export async function sqlExportStream(
+  env: DataProxyEnv,
+  context: DataProxyContext,
+  request: SqlExportStreamRequest
+): Promise<Response> {
+  const response = await fetchSandboxHost(
+    env,
+    sandboxDataProxyUrl(env, context, `/${request.engine}/export`),
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(request.body),
+    }
+  );
+  if (!response.ok) {
+    const text = await readTextResponseWithLimit(response, resolveMaxResponseBytes(env)).catch(() => '');
+    throw createDataProxyError(
+      text || `Data proxy export failed with status ${response.status}`,
+      response.status
+    );
+  }
+  return response;
+}
+
 
 // =============================================================================
 // MS SQL Server Types

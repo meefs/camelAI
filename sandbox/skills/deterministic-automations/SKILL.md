@@ -47,6 +47,13 @@ export class AutomationWorkflow extends WorkflowEntrypoint {
 }
 ```
 
+**Imports:** a workflow runs as a single module with only the injected bindings.
+The **only** import you may use is `import { WorkflowEntrypoint } from "cloudflare:workers"`.
+There is no npm, no URL/CDN imports (e.g. `esm.sh`), and no relative/multi-file
+modules — they fail at runtime. Use the bindings below (`env.TOOLS`,
+`env.CONNECTIONS`, `env.AI`) and built-in Web APIs (`fetch`, `crypto`, …) for
+everything else.
+
 The workflow receives `event.payload` with:
 
 ```js

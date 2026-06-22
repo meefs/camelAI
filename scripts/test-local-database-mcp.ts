@@ -237,9 +237,15 @@ async function waitForDockerExec(container: string, args: string[]): Promise<voi
   throw new Error(`Timed out waiting for ${container} exec ${args[0]}: ${String(lastError)}`);
 }
 
+// The data-proxy now lives in the external project-runtime-service repo (this
+// repo no longer carries a duplicate). Point at a local checkout via
+// PROJECT_RUNTIME_SERVICE_DIR; default to the sibling clone.
+const PROJECT_RUNTIME_SERVICE_DIR =
+  process.env.PROJECT_RUNTIME_SERVICE_DIR ?? '../project-runtime-service';
+
 function startDataProxy(): ReturnType<typeof spawn> {
   const child = spawn('go', ['run', './cmd/data-proxy'], {
-    cwd: 'services/sandbox-host',
+    cwd: PROJECT_RUNTIME_SERVICE_DIR,
     env: {
       ...process.env,
       DATA_PROXY_PORT: String(DATA_PROXY_PORT),
@@ -773,12 +779,13 @@ async function verifyRedis(record: WorkspaceIntegrationRecord): Promise<void> {
 
 async function verifyClickHouse(record: WorkspaceIntegrationRecord): Promise<void> {
   const env = { INTEGRATION_SECRET_KEY: SECRET };
-  const tools = await clickHouseMcpRpc(env, record, 'tools/list') as { tools?: Array<{ name?: string }> };
+  const ctx = { workspaceId: 'local-smoke' };
+  const tools = await clickHouseMcpRpc(env, ctx, record, 'tools/list') as { tools?: Array<{ name?: string }> };
   if (!tools.tools?.some((tool) => tool.name === 'execute_sql_readonly')) {
     throw new Error('ClickHouse did not expose execute_sql_readonly');
   }
 
-  const tables = parseToolText(await clickHouseMcpRpc(env, record, 'tools/call', {
+  const tables = parseToolText(await clickHouseMcpRpc(env, ctx, record, 'tools/call', {
     name: 'list_tables',
     arguments: {},
   }) as Record<string, unknown>) as { data?: Array<Record<string, unknown>> };
@@ -786,7 +793,7 @@ async function verifyClickHouse(record: WorkspaceIntegrationRecord): Promise<voi
     throw new Error(`ClickHouse list_tables did not return widgets: ${JSON.stringify(tables)}`);
   }
 
-  const result = parseToolText(await clickHouseMcpRpc(env, record, 'tools/call', {
+  const result = parseToolText(await clickHouseMcpRpc(env, ctx, record, 'tools/call', {
     name: 'execute_sql_readonly',
     arguments: { query: 'select name from widgets order by id' },
   }) as Record<string, unknown>) as { data?: Array<Record<string, unknown>> };

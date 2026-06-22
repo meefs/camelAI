@@ -396,6 +396,7 @@ describe('connections runtime', () => {
       { name: 'list_table_ids' },
       { name: 'get_table_info' },
       { name: 'execute_sql_readonly' },
+      { name: 'export' },
     ]);
   });
 
@@ -704,6 +705,7 @@ describe('connections runtime', () => {
           { name: 'listTableIds', tool: 'list_table_ids' },
           { name: 'getTableInfo', tool: 'get_table_info' },
           { name: 'executeSqlReadonly', tool: 'execute_sql_readonly' },
+          { name: 'export', tool: 'export' },
           { name: 'executeQuery', tool: 'execute_sql_readonly' },
         ],
       },
@@ -1126,8 +1128,8 @@ describe('connections runtime', () => {
 
   it('runs a database smoke test through the normalized query method', async () => {
     const fetchMock = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
-      expect(String(url)).toBe('https://clickhouse.example:8443/?database=default');
-      expect(String(init?.body)).toBe('SELECT 1 AS ok LIMIT 100 FORMAT JSON');
+      expect(String(url)).toBe('https://clickhouse.example:8443/?database=default&default_format=JSON&readonly=2');
+      expect(String(init?.body)).toBe('SELECT 1 AS ok');
       return new Response(JSON.stringify({
         data: [{ ok: 1 }],
         rows: 1,
@@ -2387,12 +2389,12 @@ describe('connections runtime', () => {
 
   it('executes read-only ClickHouse SQL through the platform broker', async () => {
     const fetchMock = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
-      expect(String(url)).toBe('https://clickhouse.example:8443/?database=default');
+      expect(String(url)).toBe('https://clickhouse.example:8443/?database=default&default_format=JSON&readonly=2');
       expect(init?.method).toBe('POST');
       expect(init?.headers).toMatchObject({
         authorization: `Basic ${btoa('default:secret')}`,
       });
-      expect(String(init?.body)).toBe('SELECT event, count() FROM events GROUP BY event LIMIT 10 FORMAT JSON');
+      expect(String(init?.body)).toBe('SELECT event, count() FROM events GROUP BY event');
       return new Response(JSON.stringify({
         data: [{ event: 'pageview', count: 12 }],
         rows: 1,
@@ -2416,6 +2418,7 @@ describe('connections runtime', () => {
       { name: 'list_tables' },
       { name: 'get_table_info' },
       { name: 'execute_sql_readonly' },
+      { name: 'export' },
     ]);
 
     const result = await callConnectionTool(envWith(records), context, 'clickhouse_events', 'execute_sql_readonly', {
@@ -2441,7 +2444,7 @@ describe('connections runtime', () => {
         user: 'app',
         password: 'secret',
         database: 'appdb',
-        query: 'select id, email from users LIMIT 25',
+        query: 'select id, email from users',
         params: [],
         sslmode: 'require',
       });
@@ -2473,6 +2476,7 @@ describe('connections runtime', () => {
       { name: 'list_tables' },
       { name: 'get_table_info' },
       { name: 'execute_sql_readonly' },
+      { name: 'export' },
     ]);
 
     const result = await callConnectionTool({
@@ -2578,7 +2582,7 @@ describe('connections runtime', () => {
         user: 'app',
         password: 'secret',
         database: 'neondb',
-        query: 'select now() LIMIT 5',
+        query: 'select now()',
         params: [],
         sslmode: 'require',
       });
@@ -2605,6 +2609,7 @@ describe('connections runtime', () => {
       { name: 'list_tables' },
       { name: 'get_table_info' },
       { name: 'execute_sql_readonly' },
+      { name: 'export' },
     ]);
 
     const result = await callConnectionTool({
@@ -2632,7 +2637,7 @@ describe('connections runtime', () => {
         user: 'svc',
         password: 'secret',
         database: 'appdb',
-        query: 'select id from users LIMIT 3',
+        query: 'select id from users',
         params: [],
         tls: 'true',
       });
@@ -2672,7 +2677,7 @@ describe('connections runtime', () => {
     const fetchMock = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
       expect(JSON.parse(String(init?.body))).toMatchObject({
         mode: 'read',
-        query: 'delete from users LIMIT 100',
+        query: 'delete from users',
       });
       return new Response(JSON.stringify({ rowsAffected: [3] }));
     });
@@ -2802,6 +2807,7 @@ describe('connections runtime', () => {
               totalBytesProcessed: '42',
               totalBytesBilled: '0',
               cacheHit: false,
+              statementType: 'SELECT',
             },
           },
         }));
@@ -2865,7 +2871,7 @@ describe('connections runtime', () => {
       if (target.endsWith('/projects/demo-project/jobs')) {
         expect(body.configuration.query.query).toBe('delete from warehouse.users where true');
         return new Response(JSON.stringify({
-          statistics: { query: { totalBytesProcessed: '12', totalBytesBilled: '0' } },
+          statistics: { query: { totalBytesProcessed: '12', totalBytesBilled: '0', statementType: 'SELECT' } },
         }));
       }
       if (target.endsWith('/projects/demo-project/queries')) {
@@ -3162,7 +3168,7 @@ describe('connections runtime', () => {
       expect(init?.method).toBe('POST');
       expect(init?.headers).toMatchObject({ authorization: 'Bearer dapi-token' });
       const body = JSON.parse(String(init?.body));
-      expect(body.statement).toBe('SELECT * FROM events LIMIT 5');
+      expect(body.statement).toBe('SELECT * FROM events');
       expect(body.warehouse_id).toBe('wh_123');
       return Response.json({ statement_id: 'stmt_1', status: { state: 'SUCCEEDED' }, result: { row_count: 1 } });
     });
@@ -3282,7 +3288,7 @@ describe('connections runtime', () => {
       expect(String(url)).toBe('https://db-org.turso.io/v2/pipeline');
       expect(init?.headers).toMatchObject({ authorization: 'Bearer turso-token' });
       const body = JSON.parse(String(init?.body));
-      expect(body.requests[0].stmt.sql).toBe('SELECT * FROM users LIMIT 3');
+      expect(body.requests[0].stmt.sql).toBe('SELECT * FROM users');
       return Response.json({ results: [{ type: 'ok' }] });
     });
     vi.stubGlobal('fetch', fetchMock);

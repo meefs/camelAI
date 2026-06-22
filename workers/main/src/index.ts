@@ -90,6 +90,7 @@ export { AppScreenshotBinding } from './app-screenshot-binding.js';
 export { WorkspaceFilesystemDO } from './workspace-filesystem-do.js';
 export { EvalProjectRuntimeService } from './eval-project-runtime-service.js';
 export { EvalSandbox } from './eval-sandbox.js';
+export { WarehouseSandbox } from './warehouse-sandbox.js';
 
 // Compatibility shim for environments whose deployed migration history still
 // references the old AdminIndexDO class. The app uses the D1-backed index now.

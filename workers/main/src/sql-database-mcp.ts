@@ -2,11 +2,12 @@ import { decryptCredentials } from '../../../src/lib/integration-crypto';
 import {
   mysqlQuery,
   postgresQuery,
+  sqlExportStream,
   type DataProxyContext,
   type DataProxyEnv,
 } from './data-proxy.js';
 import type { WorkspaceIntegrationRecord } from './workspace.js';
-import { buildSqlExportPlan } from './warehouse-export.js';
+import { buildSqlExportPlan, stageWarehouseExport } from './warehouse-export.js';
 
 type JsonValue =
   | null
@@ -18,6 +19,8 @@ type JsonValue =
 
 interface SqlDatabaseMcpEnv extends DataProxyEnv {
   INTEGRATION_SECRET_KEY: string;
+  /** Auto-expiring R2 staging bucket for warehouse exports. */
+  WAREHOUSE_EXPORT_BUCKET?: R2Bucket;
 }
 
 export interface SqlDatabaseClient {
@@ -82,7 +85,7 @@ export function listSqlDatabaseMcpTools(): Array<Record<string, unknown>> {
     },
     {
       name: 'execute_sql_readonly',
-      description: 'Execute a SQL query and return rows.',
+      description: 'Execute a SQL query and return rows. The query runs exactly as written; add your own LIMIT to cap rows.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -91,7 +94,6 @@ export function listSqlDatabaseMcpTools(): Array<Record<string, unknown>> {
             type: 'array',
             description: 'Positional query parameters. Use $1, $2 for Postgres and ? for MySQL.',
           },
-          limit: { type: 'integer', minimum: 1, maximum: MAX_LIMIT, description: `Default LIMIT to append when the query has no LIMIT. Defaults to ${DEFAULT_LIMIT}.` },
         },
         required: ['query'],
         additionalProperties: false,
@@ -100,7 +102,7 @@ export function listSqlDatabaseMcpTools(): Array<Record<string, unknown>> {
     {
       name: 'export',
       description:
-        'Export the FULL result of a read-only query to the workspace warehouse (R2) — no row cap, streamed server-side. Returns an R2 object handle to read with DuckDB (read_json_auto). Use for bulk extracts feeding analytics/joins, not for inline display.',
+        'Export the FULL result of a read-only query to the workspace warehouse (R2) — no row cap, streamed server-side as Parquet. Returns an R2 object handle to read with DuckDB (read_parquet). Use for bulk extracts feeding analytics/joins, not for inline display.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -176,16 +178,13 @@ async function callSqlDatabaseTool(
         env,
         context,
         client,
-        normalizeReadOnlyQuery(
-          requireString(args.query, 'query'),
-          boundedInteger(args.limit, DEFAULT_LIMIT, 1, MAX_LIMIT, 'limit')
-        ),
+        requireString(args.query, 'query'),
         arrayArg(args.params, 'params')
       ));
     case 'export': {
       const plan = buildSqlExportPlan(
         context.workspaceId,
-        record.name,
+        record.id, // namespace by unique integration id, not display name (names can collide across types)
         client,
         requireString(args.query, 'query'),
       );
@@ -198,24 +197,26 @@ async function callSqlDatabaseTool(
 
 /**
  * Stream a resolved SQL export to the workspace warehouse (R2) and return the R2
- * handle. Deploy-gated: the actual stream-to-R2 runs on the sandbox-host VM
- * (`/export-to-r2`, presigned PUT to `plan.r2Key`) and needs the warehouse R2
- * staging bucket. Until that infra is deployed, fail loudly rather than silently
- * returning a handle to an object that was never written.
+ * handle. The data-proxy VM streams the full result set as Parquet
+ * (`/{engine}/export`, see project-runtime-service); we pipe that stream straight
+ * into the auto-expiring warehouse bucket without buffering, so the row set never
+ * lands in Worker memory. The sealed DuckDB container then reads `r2_key` via
+ * `mountBucket`.
  */
 async function runSqlWarehouseExport(
   env: SqlDatabaseMcpEnv,
-  _context: DataProxyContext,
+  context: DataProxyContext,
   plan: ReturnType<typeof buildSqlExportPlan>,
 ): Promise<Record<string, JsonValue>> {
-  if (!(env as { WAREHOUSE_EXPORT_BUCKET?: unknown }).WAREHOUSE_EXPORT_BUCKET) {
+  const bucket = env.WAREHOUSE_EXPORT_BUCKET;
+  if (!bucket) {
     throw Object.assign(
-      new Error('Warehouse export is not enabled in this deployment (pending the sandbox-host /export-to-r2 endpoint + R2 staging bucket).'),
+      new Error('Warehouse export is not enabled in this deployment (WAREHOUSE_EXPORT_BUCKET is not bound).'),
       { status: 501 },
     );
   }
-  // Deploy: presign a PUT for plan.r2Key, POST {engine: plan.engine, body: plan.body,
-  // url: <presigned>} to the VM /export-to-r2, await completion.
+  const response = await sqlExportStream(env, context, { engine: plan.engine, body: plan.body });
+  await stageWarehouseExport(bucket, plan.r2Key, response.body, 'parquet');
   return { ok: true, r2_key: plan.r2Key };
 }
 
@@ -384,13 +385,6 @@ function tableInfoQuery(client: SqlDatabaseClient): string {
   `;
 }
 
-function normalizeReadOnlyQuery(query: string, limit: number): string {
-  const trimmed = query.trim().replace(/;+\s*$/, '');
-  if (/\blimit\b/i.test(trimmed)) {
-    return trimmed;
-  }
-  return `${trimmed} LIMIT ${limit}`;
-}
 function schemaFromArgs(client: SqlDatabaseClient, args: Record<string, unknown>): string {
   return optionalString(args.schema) || client.schema;
 }

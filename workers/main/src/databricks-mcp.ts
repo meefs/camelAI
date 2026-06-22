@@ -63,13 +63,12 @@ export function listDatabricksMcpTools(): Array<Record<string, unknown>> {
     },
     {
       name: 'execute_sql_readonly',
-      description: 'Execute a SQL query through a SQL warehouse.',
+      description: 'Execute a SQL query through a SQL warehouse. The query runs exactly as written; add your own LIMIT to cap rows.',
       inputSchema: {
         type: 'object',
         properties: {
           warehouseId: { type: 'string', description: 'SQL warehouse id. Uses sql_warehouse_id from config when omitted.' },
           query: { type: 'string', description: 'Read-only SQL statement.' },
-          limit: { type: 'integer', minimum: 1, maximum: MAX_LIMIT },
         },
         required: ['query'],
         additionalProperties: false,
@@ -121,7 +120,7 @@ async function callDatabricksTool(
     case 'list_tables':
       return textToolResult(await executeStatement(client, warehouseIdFromArgs(client, args), `SHOW TABLES IN ${quoteIdentifier(requireString(args.catalog, 'catalog'))}.${quoteIdentifier(requireString(args.schema, 'schema'))} LIMIT ${limit}`));
     case 'execute_sql_readonly':
-      return textToolResult(await executeStatement(client, warehouseIdFromArgs(client, args), normalizeReadOnlyQuery(requireString(args.query, 'query'), limit)));
+      return textToolResult(await executeStatement(client, warehouseIdFromArgs(client, args), requireString(args.query, 'query')));
     default:
       throw Object.assign(new Error(`Unknown Databricks tool: ${name}`), { status: 404 });
   }
@@ -199,11 +198,6 @@ function warehouseIdFromArgs(client: DatabricksClient, args: Record<string, unkn
   throw Object.assign(new Error('warehouseId is required because the connection has no sql_warehouse_id config value.'), { status: 400 });
 }
 
-function normalizeReadOnlyQuery(query: string, limit: number): string {
-  const trimmed = query.trim().replace(/;\s*$/, '');
-  if (/^(select|with)\b/i.test(trimmed) && !/\blimit\b/i.test(trimmed)) return `${trimmed} LIMIT ${limit}`;
-  return trimmed;
-}
 function quoteIdentifier(value: string): string {
   if (!/^[A-Za-z_][A-Za-z0-9_ -]*$/.test(value)) {
     throw Object.assign(new Error('identifier contains invalid characters.'), { status: 400 });

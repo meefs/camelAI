@@ -897,7 +897,7 @@ async function handleNativeMcpProxy(
   }
   if (isClickHouseMcpIntegration(resolved.record.integration_type)) {
     return handleHosted((method, params) =>
-      clickHouseMcpRpc(env, resolved.record, method, params)
+      clickHouseMcpRpc(env, { workspaceId: proxyAuth.workspaceId }, resolved.record, method, params)
     );
   }
   if (isSqlDatabaseMcpIntegration(resolved.record.integration_type)) {
@@ -1137,7 +1137,7 @@ async function handleBigQueryMcpBroker(
 ): Promise<Response> {
   return handleHostedMcpBroker(
     req,
-    (method, params) => bigQueryMcpRpc(env, record, method, params),
+    (method, params) => bigQueryMcpRpc(env, { workspaceId: authContext?.workspaceId ?? '' }, record, method, params),
     authContext
   );
 }
