@@ -14,6 +14,18 @@ function assistant(id: string, text: string, isStreaming = false): Message {
   } as Message;
 }
 
+function user(id: string, text: string, sentDuringStreaming = false): Message {
+  return {
+    id,
+    clientMessageId: id,
+    thread_id: "thread-1",
+    role: "user",
+    content: text,
+    created_at: 2,
+    sentDuringStreaming,
+  } as Message;
+}
+
 describe("mergeOverlay", () => {
   it("returns the base untouched for an empty overlay", () => {
     const base = [assistant("a", "hi")];
@@ -77,5 +89,52 @@ describe("mergeOverlay", () => {
     const merged = mergeOverlay([optimistic], [serverCopy]);
     expect(merged).toHaveLength(1);
     expect(merged[0].id).toBe("pi_user_456");
+  });
+
+  it("renders the streaming assistant above an optimistic steering echo", () => {
+    // The browser appends the steering message to committed history; the
+    // streaming assistant lives only in the overlay. It must render below the
+    // assistant it is steering, not above it.
+    const base = [user("turn-starter", "do the thing"), user("steer", "actually also this", true)];
+    const merged = mergeOverlay(base, [assistant("stream_1", "working...", true)]);
+    expect(merged.map((m) => m.id)).toEqual(["turn-starter", "stream_1", "steer"]);
+  });
+
+  it("keeps the steering echo below the assistant when the turn folds at completion", () => {
+    const base = [user("turn-starter", "do the thing"), user("steer", "actually also this", true)];
+    const folded = mergeOverlay(base, [assistant("fork_1", "done")]);
+    expect(folded.map((m) => m.id)).toEqual(["turn-starter", "fork_1", "steer"]);
+  });
+
+  it("orders multiple steering echoes after the assistant, preserving their order", () => {
+    const base = [
+      user("turn-starter", "go"),
+      user("steer-1", "one", true),
+      user("steer-2", "two", true),
+    ];
+    const merged = mergeOverlay(base, [assistant("stream_1", "...", true)]);
+    expect(merged.map((m) => m.id)).toEqual([
+      "turn-starter",
+      "stream_1",
+      "steer-1",
+      "steer-2",
+    ]);
+  });
+
+  it("appends a fresh turn's assistant after a non-steering turn-starter", () => {
+    // A turn-starter (not sent during streaming) must keep the assistant below
+    // it, even when an earlier completed turn ended with a steered message.
+    const base = [
+      assistant("prev-turn", "earlier"),
+      user("prev-steer", "earlier steer", true),
+      user("turn-starter", "next prompt"),
+    ];
+    const merged = mergeOverlay(base, [assistant("stream_2", "...", true)]);
+    expect(merged.map((m) => m.id)).toEqual([
+      "prev-turn",
+      "prev-steer",
+      "turn-starter",
+      "stream_2",
+    ]);
   });
 });
