@@ -71,10 +71,13 @@
       "class_name": "WarehouseSandbox",
       "image": "./workers/main/warehouse-sandbox.Dockerfile",
       // Largest instance type (4 vCPU / 12 GiB / 20 GB disk) for data-intensive
-      // DuckDB. max_instances is the account vCPU-bound ceiling for standard-4
-      // (account cap 1,500 vCPU ÷ 4 = 375). Demand-driven, not reserved.
+      // DuckDB. The account-wide container budget is shared across all
+      // environments (~1,500 vCPU default), so cap the warehouse well under it
+      // (100 × 4 = 400 vCPU, ~27%) — still 100 concurrent containers, with plenty
+      // of headroom so it can't starve the eval/staging/other sandboxes. Ceiling
+      // is demand-driven, not reserved; raise it later if real usage approaches it.
       "instance_type": "standard-4",
-      "max_instances": 375,
+      "max_instances": 100,
     },
   ],
   "artifacts": [
