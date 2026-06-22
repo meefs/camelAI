@@ -17,7 +17,8 @@ Use agent tasks when the user wants the agent to think or write a reply later. U
 - `create_workflow` - create a workflow with `{ name, source, cron_expression, description, enabled? }`. Description is required and should summarize what the workflow does.
 - `update_workflow` - update metadata, schedule, enabled state, or source with `{ workflow_id, ... }`.
 - `delete_workflow` - delete the schedule. Already-started workflow instances may still need their versioned source.
-- `run_workflow_now` - start the workflow immediately.
+- `run_workflow_now` - start the workflow immediately. Runs are asynchronous and return an `instance_id`; poll `get_workflow_run` to see when they finish — don't block-wait.
+- `get_workflow_run` - inspect a workflow's recent runs with `{ workflow_id, limit? }`. Returns `{ latest, runs: [{ instance_id, status, trigger, started_at, completed_at, duration_ms, error }] }`. `status` is `started` (still running), `success`, or `error` (message in `error`). Sample recent `duration_ms` for a sensible wait, then poll until the latest run is no longer `started`. (Per-step status isn't available from the Workflows binding yet.)
 
 Workflow scripts are also exposed as virtual files:
 
