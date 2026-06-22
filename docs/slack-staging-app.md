@@ -26,8 +26,7 @@ bunx wrangler secret put SLACK_SIGNING_SECRET -c wrangler.staging.jsonc
 After updating secrets, deploy staging:
 
 ```bash
-bun run build
-wrangler deploy -c wrangler.staging.jsonc
+bun run deploy:main:staging
 ```
 
 The staging worker already has the required `SESSIONS`, `SLACK_EVENTS_QUEUE`,

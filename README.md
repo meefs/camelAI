@@ -42,16 +42,11 @@ bun run test:e2e
 
 ## Deploy
 
-Production deploys go through the `production` branch (Cloudflare Git
-integration). To deploy the main worker manually, build then run wrangler
-against the environment config:
-
 ```bash
-bun run build
-wrangler deploy -c wrangler.prod.jsonc
-wrangler deploy -c wrangler.staging.jsonc
-wrangler deploy -c wrangler.dev-miguel.jsonc
-wrangler deploy -c wrangler.dev-illiana.jsonc
+bun run deploy:main:prod
+bun run deploy:main:staging
+bun run deploy:main:dev-miguel
+bun run deploy:main:dev-illiana
 ```
 
 Dispatcher deploys:

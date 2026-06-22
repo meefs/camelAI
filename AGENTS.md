@@ -60,10 +60,8 @@ bun run test:e2e            # Playwright
 Common deploy commands:
 
 ```bash
-# Main worker: prod deploys via the production branch (Cloudflare Git integration);
-# deploy manually after `bun run build` with wrangler against the env config:
-wrangler deploy -c wrangler.prod.jsonc
-wrangler deploy -c wrangler.staging.jsonc
+bun run deploy:main:prod
+bun run deploy:main:staging
 bun run deploy:dispatcher:prod
 bun run deploy:dispatcher:staging
 bun run deploy:dispatcher:evals       # testing-grounds dispatcher for real-deploy evals
