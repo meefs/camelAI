@@ -84,32 +84,68 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-async function recordWorkflowRunStatus(
+/**
+ * Retry config for the terminal status write. It is a DO RPC that a deploy can
+ * disrupt (the WorkspaceCronDO is relocated mid-call), so the Workflows engine
+ * must durably retry it rather than dropping it.
+ */
+const RUN_STATUS_STEP_CONFIG = {
+  retries: { limit: 6, delay: "5 seconds", backoff: "exponential" },
+  timeout: "1 minute",
+} as const;
+
+/**
+ * Write the terminal run status to WorkspaceCronDO. THROWS on RPC failure so the
+ * enclosing `step.do` retries; a `false` return (the run row is gone/superseded)
+ * is terminal and only logged.
+ */
+async function writeWorkflowRunStatus(
+  target: AutomationRunStatusTarget,
+  status: "success" | "error",
+  error?: unknown,
+): Promise<void> {
+  const recorded = await target.cronStub.recordDeterministicAutomationRunResult({
+    workspaceId: target.workspaceId,
+    automationId: target.automationId,
+    instanceId: target.instanceId,
+    status,
+    error: status === "error" ? errorMessage(error) : null,
+  });
+  if (!recorded) {
+    console.warn(
+      "[DeterministicAutomationWorkflow] run status row missing; not recorded",
+      {
+        workspaceId: target.workspaceId,
+        automationId: target.automationId,
+        instanceId: target.instanceId,
+        status,
+      },
+    );
+  }
+}
+
+/**
+ * Record the terminal status durably, inside a `step.do`, so the Workflows engine
+ * retries the DO RPC across transient failures (e.g. a deploy relocating the
+ * WorkspaceCronDO) instead of the previous fire-and-forget call that swallowed
+ * errors and could strand a run in `started`. Cloudflare already resumes the
+ * workflow itself across deploys; this makes the bridge to our run record equally
+ * durable.
+ */
+export async function recordWorkflowRunStatus(
+  step: WorkflowStep,
   target: AutomationRunStatusTarget | null,
   status: "success" | "error",
   error?: unknown,
 ): Promise<void> {
   if (!target) return;
   try {
-    const recorded =
-      await target.cronStub.recordDeterministicAutomationRunResult({
-        workspaceId: target.workspaceId,
-        automationId: target.automationId,
-        instanceId: target.instanceId,
-        status,
-        error: status === "error" ? errorMessage(error) : null,
-      });
-    if (!recorded) {
-      console.warn("[DeterministicAutomationWorkflow] run status not recorded", {
-        workspaceId: target.workspaceId,
-        automationId: target.automationId,
-        instanceId: target.instanceId,
-        status,
-      });
-    }
+    await step.do(`camelai:record-run-status:${status}`, RUN_STATUS_STEP_CONFIG, () =>
+      writeWorkflowRunStatus(target, status, error),
+    );
   } catch (recordError) {
     console.error(
-      "[DeterministicAutomationWorkflow] failed to record run status",
+      "[DeterministicAutomationWorkflow] failed to durably record run status",
       {
         workspaceId: target.workspaceId,
         automationId: target.automationId,
@@ -503,10 +539,10 @@ export class DeterministicAutomationWorkflow extends WorkflowEntrypoint<
           },
         }),
       );
-      await recordWorkflowRunStatus(statusTarget, "success");
+      await recordWorkflowRunStatus(step, statusTarget, "success");
       return result;
     } catch (error) {
-      await recordWorkflowRunStatus(statusTarget, "error", error);
+      await recordWorkflowRunStatus(step, statusTarget, "error", error);
       throw error;
     }
   }

@@ -3,7 +3,12 @@ import type { AgentMessage } from "@earendil-works/pi-agent-core";
 export interface PiMessageHistoryRepairStats {
   droppedToolResults: number;
   syntheticToolResults: number;
-  trimmedAssistantBlocks: number;
+  // Non-toolCall blocks (e.g. trailing thinking/reasoning emitted after a
+  // tool call) moved back ahead of the tool calls in an assistant message.
+  // Providers (and notably OpenRouter-wrapped Anthropic/Bedrock reasoning)
+  // require thinking blocks to precede tool_use, so we REORDER rather than
+  // delete — preserving signed/redacted reasoning verbatim.
+  reorderedAssistantBlocks: number;
 }
 
 export interface PiMessageHistoryRepairResult {
@@ -22,7 +27,7 @@ export function repairPiMessageHistoryForReplay(
   let pendingToolCallNames: Map<string, string> | null = null;
   let droppedToolResults = 0;
   let syntheticToolResults = 0;
-  let trimmedAssistantBlocks = 0;
+  let reorderedAssistantBlocks = 0;
 
   const flushUnmatchedToolCalls = () => {
     if (!pendingToolCallIds) return;
@@ -52,13 +57,13 @@ export function repairPiMessageHistoryForReplay(
     const record = message as unknown as Record<string, unknown>;
     if (record.role === "assistant") {
       flushUnmatchedToolCalls();
-      const trimmed = trimAssistantContentAfterLastToolCall(message);
-      trimmedAssistantBlocks += trimmed.removedBlocks;
-      repaired.push(trimmed.message);
+      const reordered = reorderAssistantToolCallsLast(message);
+      reorderedAssistantBlocks += reordered.movedBlocks;
+      repaired.push(reordered.message);
       if (record.stopReason === "error" || record.stopReason === "aborted") {
         continue;
       }
-      const collected = collectToolCalls(trimmed.message);
+      const collected = collectToolCalls(reordered.message);
       pendingToolCallIds = collected?.ids ?? null;
       pendingToolCallNames = collected?.names ?? null;
       continue;
@@ -86,13 +91,13 @@ export function repairPiMessageHistoryForReplay(
 
   flushUnmatchedToolCalls();
 
-  const repairedCount = droppedToolResults + syntheticToolResults + trimmedAssistantBlocks;
+  const repairedCount = droppedToolResults + syntheticToolResults + reorderedAssistantBlocks;
   return {
     messages: repairedCount > 0 ? repaired : messages,
     stats: {
       droppedToolResults,
       syntheticToolResults,
-      trimmedAssistantBlocks,
+      reorderedAssistantBlocks,
     },
     repairedCount,
   };
@@ -121,32 +126,54 @@ function collectToolCalls(
   return ids.size > 0 ? { ids, names } : null;
 }
 
-function trimAssistantContentAfterLastToolCall(
+function isToolCallBlock(part: unknown): boolean {
+  return (
+    !!part &&
+    typeof part === "object" &&
+    (part as Record<string, unknown>).type === "toolCall"
+  );
+}
+
+// Anthropic (and OpenRouter-wrapped Anthropic/Bedrock) require an assistant
+// turn's thinking/reasoning blocks to precede its tool_use blocks, and reject
+// turns whose content does not end on the tool calls. Some providers — OpenRouter
+// with reasoning enabled in particular — emit a (signed, sometimes redacted)
+// reasoning block AFTER the tool call, yielding e.g. [thinking, text, toolCall,
+// thinking]. We must NOT drop that block (signed thinking has to round-trip
+// verbatim); instead we stable-partition the content so every non-toolCall block
+// keeps its relative order but moves ahead of the tool calls, and the tool calls
+// move to the end in their original order: [thinking, text, thinking, toolCall].
+function reorderAssistantToolCallsLast(
   message: AgentMessage,
-): { message: AgentMessage; removedBlocks: number } {
+): { message: AgentMessage; movedBlocks: number } {
   const record = message as unknown as Record<string, unknown>;
   if (record.role !== "assistant" || !Array.isArray(record.content)) {
-    return { message, removedBlocks: 0 };
+    return { message, movedBlocks: 0 };
   }
 
-  let lastToolCallIndex = -1;
-  for (let index = record.content.length - 1; index >= 0; index--) {
-    const part = record.content[index];
-    if (part && typeof part === "object" && (part as Record<string, unknown>).type === "toolCall") {
-      lastToolCallIndex = index;
-      break;
-    }
+  const content = record.content;
+  const firstToolCallIndex = content.findIndex(isToolCallBlock);
+  if (firstToolCallIndex < 0) {
+    return { message, movedBlocks: 0 };
   }
 
-  if (lastToolCallIndex < 0 || lastToolCallIndex === record.content.length - 1) {
-    return { message, removedBlocks: 0 };
+  // Blocks that need moving: any non-toolCall block positioned after the first
+  // tool call. If there are none, the content already ends on the tool calls.
+  let movedBlocks = 0;
+  for (let index = firstToolCallIndex + 1; index < content.length; index++) {
+    if (!isToolCallBlock(content[index])) movedBlocks += 1;
+  }
+  if (movedBlocks === 0) {
+    return { message, movedBlocks: 0 };
   }
 
+  const nonToolCalls = content.filter((part) => !isToolCallBlock(part));
+  const toolCalls = content.filter((part) => isToolCallBlock(part));
   return {
     message: {
       ...record,
-      content: record.content.slice(0, lastToolCallIndex + 1),
+      content: [...nonToolCalls, ...toolCalls],
     } as unknown as AgentMessage,
-    removedBlocks: record.content.length - lastToolCallIndex - 1,
+    movedBlocks,
   };
 }

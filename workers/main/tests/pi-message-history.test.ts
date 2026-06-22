@@ -17,7 +17,7 @@ describe('repairPiMessageHistoryForReplay', () => {
     expect(result.stats).toEqual({
       droppedToolResults: 1,
       syntheticToolResults: 0,
-      trimmedAssistantBlocks: 0,
+      reorderedAssistantBlocks: 0,
     });
     expect(result.repairedCount).toBe(1);
   });
@@ -104,16 +104,28 @@ describe('repairPiMessageHistoryForReplay', () => {
     expect(result.repairedCount).toBe(1);
   });
 
-  it('trims assistant blocks that appear after tool calls', () => {
+  it('reorders thinking/text emitted after a tool call back ahead of it, preserving signed reasoning', () => {
+    // OpenRouter (reasoning enabled) over Anthropic/Bedrock can emit a signed,
+    // redacted reasoning block AFTER the tool call. Anthropic requires thinking
+    // to precede tool_use AND the signed block to round-trip verbatim, so we
+    // reorder (tool calls last) without dropping anything.
+    const signedThinking = {
+      type: 'thinking',
+      thinking: 'valid signed thinking',
+      signature: 'sig',
+    };
+    const redactedTail = {
+      type: 'thinking',
+      thinking: '[Reasoning redacted]',
+      thinkingSignature: 'openrouter.reasoning:abc',
+      redacted: true,
+    };
+    const tailText = { type: 'text', text: 'tail text' };
+    const toolCall = { type: 'toolCall', id: 'tool1', name: 'read', arguments: {} };
     const messages = [
       {
         role: 'assistant',
-        content: [
-          { type: 'thinking', thinking: 'valid signed thinking', signature: 'sig' },
-          { type: 'toolCall', id: 'tool1', name: 'read', arguments: {} },
-          { type: 'thinking', thinking: 'openrouter reasoning tail' },
-          { type: 'text', text: 'tail text' },
-        ],
+        content: [signedThinking, toolCall, redactedTail, tailText],
         responseId: 'resp_tool',
         timestamp: 200,
         api: 'test',
@@ -127,12 +139,45 @@ describe('repairPiMessageHistoryForReplay', () => {
 
     const result = repairPiMessageHistoryForReplay(messages);
 
+    // Nothing deleted: every block (incl. the signed/redacted reasoning) is kept,
+    // just reordered so the tool call is last.
     expect((result.messages[0] as any).content).toEqual([
-      { type: 'thinking', thinking: 'valid signed thinking', signature: 'sig' },
-      { type: 'toolCall', id: 'tool1', name: 'read', arguments: {} },
+      signedThinking,
+      redactedTail,
+      tailText,
+      toolCall,
     ]);
-    expect(result.stats.trimmedAssistantBlocks).toBe(2);
+    expect(result.stats.reorderedAssistantBlocks).toBe(2);
     expect(result.repairedCount).toBe(2);
+  });
+
+  it('leaves an assistant turn untouched when tool calls are already last', () => {
+    const messages = [
+      {
+        role: 'assistant',
+        content: [
+          { type: 'thinking', thinking: 'reasoning', signature: 'sig' },
+          { type: 'text', text: 'let me check' },
+          { type: 'toolCall', id: 'tool1', name: 'read', arguments: {} },
+          { type: 'toolCall', id: 'tool2', name: 'bash', arguments: {} },
+        ],
+        responseId: 'resp_tool',
+        timestamp: 200,
+        api: 'test',
+        provider: 'test',
+        model: 'test',
+        usage: {},
+        stopReason: 'toolUse',
+      },
+      toolResult('tool1', 'ok'),
+      toolResult('tool2', 'ok'),
+    ] as AgentMessage[];
+
+    const result = repairPiMessageHistoryForReplay(messages);
+
+    expect(result.messages).toBe(messages);
+    expect(result.stats.reorderedAssistantBlocks).toBe(0);
+    expect(result.repairedCount).toBe(0);
   });
 
   it('leaves Pi message history unchanged when tool calls and results are balanced', () => {
@@ -148,7 +193,7 @@ describe('repairPiMessageHistoryForReplay', () => {
     expect(result.stats).toEqual({
       droppedToolResults: 0,
       syntheticToolResults: 0,
-      trimmedAssistantBlocks: 0,
+      reorderedAssistantBlocks: 0,
     });
     expect(result.repairedCount).toBe(0);
   });

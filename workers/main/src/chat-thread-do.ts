@@ -127,6 +127,7 @@ import {
   PI_CONTAINER_TOOL_DEFINITIONS,
 } from "./pi-container-tools";
 import { repairPiMessageHistoryForReplay } from "./pi-message-history";
+import { planPiTurnResume } from "./pi-turn-journal";
 import { parseFilePreviewPath } from "./preview-paths";
 import { recordErrorEvent, recordObservabilityEvent } from "./observability";
 import {
@@ -617,7 +618,7 @@ export interface PiCoreMessageHistoryRepairReport {
   stats: {
     droppedToolResults: number;
     syntheticToolResults: number;
-    trimmedAssistantBlocks: number;
+    reorderedAssistantBlocks: number;
   };
 }
 
@@ -3939,6 +3940,27 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
 
 
 const CHAT_CONTEXT_KEY = "chatContext";
+// Durable resume of an interrupted Pi turn (e.g. the DO is evicted mid-turn by a
+// deploy). Each turn runs inside the Agents SDK durable fiber `PI_TURN_FIBER`,
+// which holds `keepAlive()` for the turn and — if the DO dies mid-turn — leaves
+// an orphan run row the SDK detects on the next wake, calling `onFiberRecovered`.
+// `piActiveTurn` marks the in-flight turn (gating + attempt budget); the
+// `pi_turn_journal` table mirrors the not-yet-committed tail so we know *what* to
+// resume. We must NOT touch the raw DO alarm — the base Agent owns it.
+const PI_ACTIVE_TURN_KEY = "piActiveTurn";
+// Durable list (sync KV) of user messages handed to steer() while a turn streams,
+// so an eviction before Pi drains them can re-deliver instead of losing them.
+const PI_STEER_JOURNAL_KEY = "piSteerJournal";
+// Name of the durable fiber that wraps a Pi turn (used to filter recoveries).
+const PI_TURN_FIBER = "pi-turn";
+// Give up after this many resume attempts to avoid a crash -> resume -> crash loop.
+const MAX_PI_RESUME_ATTEMPTS = 3;
+
+interface PiActiveTurnMarker {
+  turnId: string;
+  attempt: number;
+  openedAt: number;
+}
 const CHAT_TODOS_KEY = "chatTodos";
 const CHAT_CONTEXT_USED_PERCENT_KEY = "chatContextUsedPercent";
 const CHAT_CONTEXT_WINDOW_BY_MODEL_KEY = "chatContextWindowByModel";
@@ -5635,6 +5657,19 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
         updated_at INTEGER NOT NULL
       )`,
     );
+    // Staging buffer for the in-flight turn's not-yet-committed tail. It is a
+    // discardable mirror of `agent.state.messages.slice(piMainBaselineIndex)`:
+    // filled at message_end/tool_execution_end, drained (committed to
+    // pi_core_messages) at turn_end, and dropped wholesale on a failed/aborted
+    // turn. On a cold load with `piActiveTurn` set, it is folded back in to
+    // resume the interrupted turn.
+    this.ctx.storage.sql.exec(
+      `CREATE TABLE IF NOT EXISTS pi_turn_journal (
+        seq INTEGER PRIMARY KEY,
+        payload TEXT NOT NULL,
+        created_at INTEGER NOT NULL
+      )`,
+    );
   }
 
   private async sha256Hex(value: string): Promise<string> {
@@ -6267,6 +6302,326 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
     });
     await this.appendPiCoreMessages(missing);
     if (missing.length === 0) {
+    }
+  }
+
+  // --- Durable resume of an interrupted Pi turn (Flue-style journal + reconcile) ---
+
+  /**
+   * Mirror the in-flight (not-yet-committed) tail of the live session into the
+   * `pi_turn_journal` staging table. Called as the turn produces work
+   * (message_end / tool_execution_end) so a mid-turn eviction can recover it.
+   */
+  private async recordPiTurnJournalTail(): Promise<void> {
+    const session = this.piSession;
+    if (!session) return;
+    const tail = session.state.messages.slice(this.piMainBaselineIndex);
+    // Serialize the replacement payloads FIRST. serializePiMessageForSqlStorageDetailed
+    // can await R2/image work, and an eviction during that await must NOT leave us
+    // with a half-written journal — so we keep the previous (valid) checkpoint until
+    // the new payloads are fully prepared.
+    const payloads: string[] = [];
+    for (const message of tail) {
+      payloads.push((await this.serializePiMessageForSqlStorageDetailed(message)).payload);
+    }
+    // Now swap the table contents with no await between DELETE and the INSERTs, so
+    // the replacement is atomic from an eviction's standpoint (synchronous run).
+    this.ensurePiCoreTables();
+    const now = Date.now();
+    this.ctx.storage.sql.exec("DELETE FROM pi_turn_journal");
+    for (let index = 0; index < payloads.length; index += 1) {
+      this.ctx.storage.sql.exec(
+        "INSERT INTO pi_turn_journal (seq, payload, created_at) VALUES (?, ?, ?)",
+        index,
+        payloads[index],
+        now,
+      );
+    }
+  }
+
+  /**
+   * Seed the journal with the just-accepted user message BEFORE `prompt()` runs.
+   * The first {@link recordPiTurnJournalTail} only happens on message_end, so
+   * without this an eviction in the window between agent_start and the model's
+   * first message would fold an empty journal, see the prior assistant turn as
+   * already complete, and silently drop the accepted prompt.
+   */
+  private recordPiTurnJournalUserMessage(userMessage: AgentMessage): void {
+    // Use the SYNCHRONOUS serializer (no R2 image externalization) so the durable
+    // journal write happens with NO awaitable I/O before it — otherwise an eviction
+    // during an image prompt's R2 PUT could land in a window where the marker is set
+    // but the journal is still empty, and the prompt would be dropped. Oversized
+    // messages are truncated/omitted by the serializer (bounded row); after the first
+    // message_end, recordPiTurnJournalTail rewrites the journal with the full
+    // R2-externalized tail.
+    const payload = serializePiMessageForSqlStorageDetailed(userMessage).payload;
+    this.ensurePiCoreTables();
+    const now = Date.now();
+    this.ctx.storage.sql.exec("DELETE FROM pi_turn_journal");
+    // A fresh prompt only starts when not streaming, so any steer-journal entries
+    // are stale leftovers from a prior run — drop them so they can't fold in here.
+    this.clearPiTurnSteerJournal();
+    this.ctx.storage.sql.exec(
+      "INSERT INTO pi_turn_journal (seq, payload, created_at) VALUES (?, ?, ?)",
+      0,
+      payload,
+      now,
+    );
+  }
+
+  private async loadPiTurnJournalTail(): Promise<AgentMessage[]> {
+    this.ensurePiCoreTables();
+    const rows = this.ctx.storage.sql
+      .exec<{ payload: string }>(
+        "SELECT payload FROM pi_turn_journal ORDER BY seq ASC",
+      )
+      .toArray();
+    const messages: AgentMessage[] = [];
+    for (const row of rows) {
+      try {
+        const parsed = JSON.parse(row.payload) as AgentMessage;
+        if (parsed && typeof parsed === "object" && "role" in parsed) {
+          const hydrated = await this.hydratePiStoredImages(parsed);
+          messages.push(sanitizePiModelMessage(hydrated as AgentMessage));
+        }
+      } catch {
+        // Skip corrupt journal rows rather than failing recovery.
+      }
+    }
+    return messages;
+  }
+
+  private clearPiTurnJournal(): void {
+    this.ensurePiCoreTables();
+    this.ctx.storage.sql.exec("DELETE FROM pi_turn_journal");
+  }
+
+  /**
+   * Durably record a user message accepted via `steer()` while a turn is already
+   * streaming, so a mid-turn eviction can re-deliver it instead of silently
+   * dropping it. A small bounded list lives in sync KV (no table needed); the
+   * sync serializer keeps each payload within KV's value limit, and the
+   * read-push-write has no await between read and write so it is atomic against
+   * eviction (same property as {@link recordPiTurnJournalUserMessage}). Appended,
+   * not replaced: a single turn can accept several steering messages.
+   */
+  private recordPiTurnJournalSteerMessage(userMessage: AgentMessage): void {
+    const payload = serializePiMessageForSqlStorageDetailed(userMessage).payload;
+    const existing =
+      this.ctx.storage.kv.get<string[]>(PI_STEER_JOURNAL_KEY) ?? [];
+    existing.push(payload);
+    this.ctx.storage.kv.put(PI_STEER_JOURNAL_KEY, existing);
+  }
+
+  private async loadPiTurnSteerJournal(): Promise<AgentMessage[]> {
+    const payloads =
+      this.ctx.storage.kv.get<string[]>(PI_STEER_JOURNAL_KEY) ?? [];
+    const messages: AgentMessage[] = [];
+    for (const payload of payloads) {
+      try {
+        const parsed = JSON.parse(payload) as AgentMessage;
+        if (parsed && typeof parsed === "object" && "role" in parsed) {
+          const hydrated = await this.hydratePiStoredImages(parsed);
+          messages.push(sanitizePiModelMessage(hydrated as AgentMessage));
+        }
+      } catch {
+        // Skip corrupt entries rather than failing recovery.
+      }
+    }
+    return messages;
+  }
+
+  private clearPiTurnSteerJournal(): void {
+    this.ctx.storage.kv.delete(PI_STEER_JOURNAL_KEY);
+  }
+
+  private readPiActiveTurn(): PiActiveTurnMarker | null {
+    return this.ctx.storage.kv.get<PiActiveTurnMarker>(PI_ACTIVE_TURN_KEY) ?? null;
+  }
+
+  /** Mark a turn in flight (once per turn) so a cold load knows to resume it. */
+  private openPiActiveTurnIfAbsent(): void {
+    if (this.readPiActiveTurn()) return;
+    this.writePiActiveTurn({
+      turnId: crypto.randomUUID(),
+      attempt: 0,
+      openedAt: Date.now(),
+    });
+  }
+
+  private writePiActiveTurn(marker: PiActiveTurnMarker): void {
+    this.ctx.storage.kv.put(PI_ACTIVE_TURN_KEY, marker);
+  }
+
+  private async clearPiActiveTurnAndJournal(): Promise<void> {
+    this.ctx.storage.kv.delete(PI_ACTIVE_TURN_KEY);
+    this.clearPiTurnJournal();
+    // Steering messages span the whole agent run (a steer can drain in a later
+    // turn), so they are only dropped here at agent_end — not at per-turn turn_end.
+    this.clearPiTurnSteerJournal();
+  }
+
+  /**
+   * Agents SDK hook: called on the next wake when an interrupted durable fiber is
+   * detected (the DO was evicted mid-turn). This runs BEFORE onStart, so the Pi
+   * session isn't built yet — schedule the resume rather than driving Pi inline.
+   */
+  override async onFiberRecovered(ctx: { name: string }): Promise<void> {
+    if (ctx.name !== PI_TURN_FIBER) return;
+    if (!this.readPiActiveTurn()) return; // turn already committed -> nothing to resume
+    await this.schedule(0, "resumeInterruptedPiTurn");
+  }
+
+  /**
+   * Reconcile an interrupted turn (committed history + journal tail are folded in
+   * by {@link createPiSession}) and drive it to completion via `Agent.continue()`
+   * when the model still owes output. Invoked by the scheduler after
+   * {@link onFiberRecovered}; re-wraps the continuation in a fiber so a second
+   * eviction is recovered too. Bounded by the attempt budget on the active-turn
+   * marker.
+   */
+  async resumeInterruptedPiTurn(): Promise<void> {
+    const marker = this.readPiActiveTurn();
+    if (!marker) return;
+    // Bail only if a turn is genuinely running in THIS process. Do NOT consult
+    // `this.chatIsStreaming`: it is persisted and restored on a cold wake, so for
+    // the very interrupted turn we are recovering it is already `true` even though
+    // nothing is running yet — that would consume the one-shot recovery without
+    // resuming and leave the thread stuck busy. `piSession.state.isStreaming` is the
+    // live in-memory signal (piSession is null on a fresh wake, so we proceed).
+    if (this.piSession?.state.isStreaming) return;
+    if (!this.chatContext) {
+      // No context to rebuild the session — drop the marker to avoid a hot loop.
+      await this.clearPiActiveTurnAndJournal();
+      return;
+    }
+    if (marker.attempt >= MAX_PI_RESUME_ATTEMPTS) {
+      await this.failPiResume();
+      return;
+    }
+    // Bump the attempt budget before doing work so a crash during resume is bounded.
+    this.writePiActiveTurn({ ...marker, attempt: marker.attempt + 1 });
+
+    try {
+      // Rebuilding the Pi session can fail on its own (e.g. OrgDO/model-provider
+      // config retries exhaust). Keep it INSIDE this try so a setup failure runs
+      // the same release cleanup as a continuation failure — otherwise the marker,
+      // journal, and isStreaming would stay set with the fiber row already consumed
+      // and no remaining trigger to retry recovery, stranding the thread busy.
+      await this.ensurePiSessionReady();
+      const session = this.piSession;
+      if (!session) return;
+      const messages = session.state.messages;
+      const last = messages[messages.length - 1] as { role?: string } | undefined;
+      const owesModelOutput = last?.role === "user" || last?.role === "toolResult";
+      if (!owesModelOutput) {
+        // The interrupted turn already produced its final assistant message; commit
+        // whatever the journal staged and close the turn out — nothing to continue.
+        // Fold Code Mode / js_exec artifacts back onto their tool results first, the
+        // same way turn_end does (consume drains the transient KV artifact bucket) —
+        // otherwise the reloaded transcript would be missing those artifacts.
+        const tail = messages.slice(this.piMainBaselineIndex);
+        if (tail.length > 0) {
+          const tailWithArtifacts = await Promise.all(
+            tail.map((message) =>
+              this.attachCodeModeArtifactsToToolResult(message, { consume: true }),
+            ),
+          );
+          await this.appendPiCoreMessagesIfMissing(tailWithArtifacts);
+          this.piMainBaselineIndex = messages.length;
+        }
+        await this.clearPiActiveTurnAndJournal();
+        // This is the ONLY completion path for a turn recovered after its final
+        // assistant message but before agent_end ran, so finalize it exactly like
+        // the normal agent_end path: markUnread drives recordThreadAssistant-
+        // Completion (workspace unread + completion timestamp), the active
+        // automation run -> success, and the completion summary. A bare
+        // setChatIsStreaming(false) would persist the messages but leave all of
+        // that stale.
+        const completedAt = Date.now();
+        const finalText = this.extractLatestPiAssistantText(messages);
+        const summarySource = extractThreadCompletionSummarySource(
+          messages,
+          finalText,
+        );
+        this.setChatIsStreaming(false, {
+          markUnread: true,
+          completedAt,
+          summarySource,
+        });
+        this.setActiveTurnUserId(null);
+        await this.completeTodoStateForTurnEnd();
+        return;
+      }
+      this.setChatIsStreaming(true);
+      await this.runFiber(PI_TURN_FIBER, async () => {
+        await this.withPiTurnInactivityTimeout(async () => {
+          const active = this.piSession;
+          if (!active) {
+            throw new Error("Pi session was not available to resume the interrupted turn");
+          }
+          await active.continue();
+        });
+      });
+      // A successful continuation runs the normal lifecycle; `agent_end` clears the
+      // marker + journal.
+    } catch (error) {
+      // A genuine eviction tears down the isolate before this catch can run, so
+      // anything reaching here is an in-process failure: a session-rebuild failure
+      // (ensurePiSessionReady), a provider error, the inactivity timeout, or a user
+      // abort. The fiber row is already consumed/deleted, so without this cleanup
+      // the marker, journal, and isStreaming would stay set with no trigger left to
+      // retry recovery — the thread would be stuck busy until manual intervention.
+      // Mirror the initial prompt path's failure cleanup.
+      const isInactivityTimeout = error instanceof PiTurnInactivityTimeoutError;
+      if (
+        !isInactivityTimeout &&
+        error instanceof Error &&
+        (error.name === "AbortError" || /aborted/i.test(error.message))
+      ) {
+        // A user stop keeps the Pi handlers subscribed, so agent_end still runs and
+        // clears the marker + journal + streaming. Leave it to that path.
+        return;
+      }
+      console.error("[ChatThreadDO] Pi turn resume failed", error);
+      this.persistPiAgentLoopErrorForDevelopers(error, { source: "pi_resume" });
+      const errorMessage = isInactivityTimeout
+        ? "The assistant stalled and the resumed turn was stopped after a period of inactivity. Please try again."
+        : error instanceof Error
+          ? error.message
+          : String(error);
+      this.pushChatEvent(this.piProviderErrorEvent(errorMessage));
+      this.updateActiveAutomationRun({
+        status: "error",
+        message: errorMessage,
+        clear: true,
+      });
+      this.setChatIsStreaming(false);
+      this.setActiveTurnUserId(null);
+      await this.clearPiActiveTurnAndJournal();
+    }
+  }
+
+  private async failPiResume(): Promise<void> {
+    await this.clearPiActiveTurnAndJournal();
+    this.setChatIsStreaming(false);
+    // Release turn ownership like the normal completion / resume-error paths,
+    // otherwise getActiveTurnUserId() keeps attributing later sandbox MCP /
+    // integration calls to the abandoned turn's author until the next turn.
+    this.setActiveTurnUserId(null);
+    this.recordChatThreadObservabilityEvent("pi_turn_resume_abandoned", {
+      operation: "resume_interrupted_turn",
+      status: "abandoned",
+      severity: "warn",
+    });
+    try {
+      this.pushChatEvent(
+        this.piProviderErrorEvent(
+          "This turn was interrupted and could not be resumed automatically. Please send your message again.",
+        ),
+      );
+    } catch {
+      // Best effort: the observability event above is the actionable signal.
     }
   }
 
@@ -8825,8 +9180,50 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
     const modelConfig = await resolveCurrentModel();
     this.piModelResolver = resolveCurrentModel;
     const persistedMessages = await this.loadPiCoreMessages();
-    const initialMessages = [...persistedMessages];
+    let initialMessages = [...persistedMessages];
     this.piMainBaselineIndex = persistedMessages.length;
+    // Resume an interrupted turn: fold the journaled in-flight tail back in and
+    // reconcile (synthesize interrupted results for dispatched-but-unfinished
+    // tools; reorder reasoning ahead of tool calls). The synthesized/reordered
+    // tail commits at the next turn_end via appendPiCoreMessagesIfMissing, so we
+    // keep the committed-message count as the baseline (and never persist the
+    // virtual compaction-summary prefix).
+    if (this.readPiActiveTurn()) {
+      const journalTail = await this.loadPiTurnJournalTail();
+      // If the DO was evicted mid-turn_end — after some journaled messages were
+      // already appended to pi_core_messages but before the journal was cleared —
+      // those messages live in BOTH stores. Drop journal entries already committed
+      // (by the same identity appendPiCoreMessagesIfMissing dedups on) so we don't
+      // fold a duplicated user/assistant/tool sequence into the resumed transcript.
+      const committedKeys = new Set(
+        persistedMessages.map((message) => this.piCoreMessageKey(message)),
+      );
+      const uncommittedTail = journalTail.filter(
+        (message) => !committedKeys.has(this.piCoreMessageKey(message)),
+      );
+      // Re-deliver any steer()'d messages that never made it into the turn journal
+      // before eviction. Dedup against both committed history and the journal tail:
+      // a steer that already drained into messages (and committed, or sits in the
+      // tail) carries the same piCoreMessageKey, so it is folded once, never twice.
+      const tailKeys = new Set(
+        uncommittedTail.map((message) => this.piCoreMessageKey(message)),
+      );
+      const pendingSteer = (await this.loadPiTurnSteerJournal()).filter((message) => {
+        const key = this.piCoreMessageKey(message);
+        return !committedKeys.has(key) && !tailKeys.has(key);
+      });
+      const plan = planPiTurnResume(persistedMessages, [
+        ...uncommittedTail,
+        ...pendingSteer,
+      ]);
+      initialMessages = [...plan.messages];
+      this.recordChatThreadObservabilityEvent("pi_turn_recovered", {
+        operation: "resume_interrupted_turn",
+        status: plan.owesModelOutput ? "continue" : "complete",
+        count: plan.interruptedToolResults,
+        size: plan.messages.length,
+      });
+    }
     const session = new Agent({
       initialState: {
         systemPrompt: this.createPiSystemPrompt(context),
@@ -11792,6 +12189,12 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
       // A fresh turn supersedes any prior terminal error.
       this.lastError = null;
       this.setChatIsStreaming(true);
+      // NOTE: do NOT open the recovery marker here. agent_start also fires for
+      // non-fibered turns (e.g. the eval runner's direct piSession.prompt), which
+      // have no cf_agents_runs row — opening a marker there would leave stale
+      // recovery state that never recovers and shows the thread as busy. The
+      // marker is opened only inside the chat turn's runFiber wrapper, so it
+      // exists exactly when there is a durable fiber that can drive recovery.
       return;
     }
 
@@ -11823,6 +12226,9 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
         await this.appendPiCoreMessagesIfMissing(newMessages);
         this.piMainBaselineIndex = snapshot.length;
       }
+      // This turn is committed to pi_core_messages; drop its journaled tail (the
+      // agent run may still have more turns, which will re-journal their tail).
+      this.clearPiTurnJournal();
       const durationMs = this.piTurnStartedAtMs
         ? Date.now() - this.piTurnStartedAtMs
         : 0;
@@ -11946,6 +12352,9 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
         this.piActiveItemId = `pi_agent_${crypto.randomUUID()}`;
         this.piActiveItemText = "";
       }
+      // Journal the in-flight tail so a mid-turn eviction can recover this
+      // assistant message (and any tool calls it issued) before turn_end commits.
+      await this.recordPiTurnJournalTail();
       return;
     }
 
@@ -12010,6 +12419,9 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
         threadId: this.piRuntimeThreadId(),
         item,
       });
+      // Journal the in-flight tail so a completed tool result survives a mid-turn
+      // eviction and is not re-run on resume.
+      await this.recordPiTurnJournalTail();
       return;
     }
 
@@ -12129,6 +12541,9 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
       this.piAssistantText = "";
       this.piUserStopRequestedAtMs = 0;
       this.resetRunningActivityState();
+      // The run is complete (success, user-stop, or a surfaced error): the turn is
+      // no longer in flight, so clear the resume marker, journal, and alarm.
+      await this.clearPiActiveTurnAndJournal();
       return;
     }
 
@@ -12303,18 +12718,42 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
               ? { metadata: { sentDuringStreaming: true } }
               : {}),
           } as unknown as AgentMessage;
+          // True only once we enter the fibered new-turn branch below, so the error
+          // handler clears recovery state only for a turn THIS call made recoverable
+          // (never a different, already-streaming turn whose steer/refresh threw).
+          let recoverableTurnStarted = false;
           this.ctx.waitUntil(
             (async () => {
               if (!this.piSession) return;
               await this.refreshPiSessionModel();
               if (this.piSession.state.isStreaming) {
+                // Durably journal the accepted message BEFORE handing it to the
+                // in-memory steering queue, so an eviction in the window before Pi
+                // drains it re-delivers it on resume instead of silently losing it.
+                this.recordPiTurnJournalSteerMessage(userMessage);
                 this.piSession.steer(userMessage);
               } else {
-                await this.withPiTurnInactivityTimeout(async () => {
-                  if (!this.piSession) {
-                    throw new Error("Pi session was not available for prompt");
-                  }
-                  await this.piSession.prompt(userMessage);
+                recoverableTurnStarted = true;
+                // Make the turn recoverable BEFORE entering the fiber: mark it
+                // active and journal the accepted user message. Both are synchronous
+                // (kv.put + sql.exec), and runFiber's own cf_agents_runs INSERT is
+                // synchronous too, so the marker, journal, AND fiber row are all
+                // durable before runFiber's first await (keepAlive). That closes the
+                // window where the run row could exist with no recoverable state yet.
+                this.openPiActiveTurnIfAbsent();
+                this.recordPiTurnJournalUserMessage(userMessage);
+                // Run the turn inside a durable fiber: it holds keepAlive() for the
+                // turn and, if the DO is evicted mid-turn, leaves an orphan run row
+                // the SDK detects on the next wake (onFiberRecovered ->
+                // resumeInterruptedPiTurn). Normal completion/errors delete the row,
+                // so only a true eviction triggers resume.
+                await this.runFiber(PI_TURN_FIBER, async () => {
+                  await this.withPiTurnInactivityTimeout(async () => {
+                    if (!this.piSession) {
+                      throw new Error("Pi session was not available for prompt");
+                    }
+                    await this.piSession.prompt(userMessage);
+                  });
                 });
               }
             })().catch((error) => {
@@ -12349,6 +12788,17 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
                 });
                 this.setChatIsStreaming(false);
                 this.setActiveTurnUserId(null);
+                // The turn failed before agent_end could clean up (the inactivity
+                // timeout disposes the session first). The fiber row is already
+                // deleted on error, so clear the recovery marker + journal too —
+                // otherwise the next session build treats this stale tail as an
+                // interrupted turn and reuses the old attempt budget. Only do this
+                // for a turn THIS call made recoverable: a throw from the steer path
+                // or refreshPiSessionModel() must not wipe a still-streaming turn's
+                // recovery state.
+                if (recoverableTurnStarted) {
+                  void this.clearPiActiveTurnAndJournal();
+                }
               }),
           );
           return true;

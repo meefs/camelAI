@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   createDeterministicAutomationRuntimeBindings,
   prepareDeterministicAutomationRuntimeSource,
+  recordWorkflowRunStatus,
 } from "../src/deterministic-automation-workflow";
 
 const WORKFLOW_COMPATIBILITY_DATE = "2026-05-18";
@@ -221,6 +222,101 @@ export class AutomationWorkflow extends WorkflowEntrypoint {
         workspaceId: "workspace1",
         userId: "user1",
       },
+    });
+  });
+
+  describe("recordWorkflowRunStatus (durable terminal status)", () => {
+    function fakeStep() {
+      // Mimic WorkflowStep.do(name, config, callback): run the callback so a
+      // throw surfaces (the engine would retry; here we just propagate).
+      return {
+        do: vi.fn(
+          async (_name: string, _config: unknown, callback: () => Promise<unknown>) =>
+            callback(),
+        ),
+      };
+    }
+
+    function fakeTarget(recordResult: boolean | Error) {
+      const recordDeterministicAutomationRunResult = vi.fn(async () => {
+        if (recordResult instanceof Error) throw recordResult;
+        return recordResult;
+      });
+      return {
+        target: {
+          cronStub: { recordDeterministicAutomationRunResult } as never,
+          workspaceId: "workspace1",
+          automationId: "automation1",
+          instanceId: "instance1",
+        },
+        recordDeterministicAutomationRunResult,
+      };
+    }
+
+    it("records the terminal status inside a durable step.do", async () => {
+      const step = fakeStep();
+      const { target, recordDeterministicAutomationRunResult } = fakeTarget(true);
+
+      await recordWorkflowRunStatus(step as never, target, "success");
+
+      expect(step.do).toHaveBeenCalledWith(
+        "camelai:record-run-status:success",
+        expect.objectContaining({ retries: expect.objectContaining({ limit: 6 }) }),
+        expect.any(Function),
+      );
+      expect(recordDeterministicAutomationRunResult).toHaveBeenCalledWith({
+        workspaceId: "workspace1",
+        automationId: "automation1",
+        instanceId: "instance1",
+        status: "success",
+        error: null,
+      });
+    });
+
+    it("passes the error message through on the error path", async () => {
+      const step = fakeStep();
+      const { target, recordDeterministicAutomationRunResult } = fakeTarget(true);
+
+      await recordWorkflowRunStatus(
+        step as never,
+        target,
+        "error",
+        new Error("provider exploded"),
+      );
+
+      expect(recordDeterministicAutomationRunResult).toHaveBeenCalledWith(
+        expect.objectContaining({ status: "error", error: "provider exploded" }),
+      );
+    });
+
+    it("does not throw when the run row is missing (recorded === false)", async () => {
+      const step = fakeStep();
+      const { target } = fakeTarget(false);
+
+      await expect(
+        recordWorkflowRunStatus(step as never, target, "success"),
+      ).resolves.toBeUndefined();
+    });
+
+    it("swallows a step.do failure (retries exhausted) so it never escapes run()", async () => {
+      const step = {
+        do: vi.fn(async () => {
+          throw new Error("step retries exhausted");
+        }),
+      };
+      const { target } = fakeTarget(true);
+
+      await expect(
+        recordWorkflowRunStatus(step as never, target, "error", new Error("x")),
+      ).resolves.toBeUndefined();
+    });
+
+    it("is a no-op without a status target", async () => {
+      const step = fakeStep();
+
+      await recordWorkflowRunStatus(step as never, null, "success");
+
+      expect(step.do).not.toHaveBeenCalled();
     });
   });
 });

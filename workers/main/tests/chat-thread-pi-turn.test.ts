@@ -92,7 +92,22 @@ describe('ChatThreadDO Pi turn handling', () => {
         get: vi.fn(() => workspaceStub),
       },
     };
-    fake.ctx = { waitUntil: vi.fn() };
+    fake.ctx = {
+      waitUntil: vi.fn(),
+      // Pi turn-journal + active-turn marker storage (used by message_end /
+      // turn_end / agent_end via recordPiTurnJournalTail / clearPiTurnJournal /
+      // clearPiActiveTurnAndJournal). A no-op SQL/KV stub is enough for these
+      // unit tests — the durable-resume behavior is covered in pi-turn-journal.test.ts.
+      storage: {
+        kv: { get: vi.fn(() => undefined), put: vi.fn(), delete: vi.fn() },
+        sql: { exec: vi.fn(() => ({ toArray: () => [] })) },
+      },
+    };
+    // The Agents SDK runFiber does real durable bookkeeping (cf_agents_runs
+    // INSERT via an iterable SQL cursor); these unit tests only care that the
+    // wrapped turn body runs, so invoke the callback directly. Durable-resume
+    // semantics are covered separately in pi-turn-journal.test.ts.
+    fake.runFiber = vi.fn(async (_name: string, fn: () => unknown) => fn());
     fake.piActiveItemId = null;
     fake.piActiveItemText = '';
     fake.piReasoningItemId = null;
@@ -5834,6 +5849,242 @@ describe('ChatThreadDO Pi turn handling', () => {
 
     expect(fake.appendPiCoreMessagesIfMissing).not.toHaveBeenCalled();
     expect(fake.piMainBaselineIndex).toBe(2);
+  });
+
+  // --- Durable resume: resumeInterruptedPiTurn ---
+
+  function createResumeFake(overrides: Record<string, any> = {}) {
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    fake.readPiActiveTurn = vi.fn(() => ({ turnId: 't1', attempt: 0, openedAt: 1 }));
+    fake.writePiActiveTurn = vi.fn();
+    fake.clearPiActiveTurnAndJournal = vi.fn(async () => {});
+    fake.setChatIsStreaming = vi.fn();
+    fake.setActiveTurnUserId = vi.fn();
+    fake.persistPiAgentLoopErrorForDevelopers = vi.fn();
+    fake.updateActiveAutomationRun = vi.fn();
+    fake.pushChatEvent = vi.fn();
+    fake.piProviderErrorEvent = vi.fn((message: string) => ({ type: 'error', message }));
+    fake.appendPiCoreMessagesIfMissing = vi.fn();
+    fake.attachCodeModeArtifactsToToolResult = vi.fn(async (message: any) => message);
+    fake.extractLatestPiAssistantText = vi.fn(() => 'final reply');
+    fake.completeTodoStateForTurnEnd = vi.fn(async () => {});
+    fake.chatContext = { threadId: 'thread1' };
+    fake.ensurePiSessionReady = vi.fn(async () => {});
+    fake.runFiber = vi.fn(async (_name: string, fn: () => unknown) => fn());
+    fake.withPiTurnInactivityTimeout = vi.fn(async (fn: () => unknown) => fn());
+    Object.assign(fake, overrides);
+    return fake;
+  }
+
+  it('attaches Code Mode artifacts when committing a recovered tail that owes no model output', async () => {
+    // Evicted after the final assistant message_end but before turn_end snapshotted
+    // it: nothing owed, so the tail is committed directly — but it must still fold
+    // js_exec/Code Mode artifacts onto tool results the way turn_end does.
+    const toolResult = {
+      role: 'toolResult',
+      toolCallId: 'call_1',
+      toolName: 'js_exec',
+      content: [{ type: 'text', text: 'output' }],
+    };
+    const assistantFinal = {
+      role: 'assistant',
+      content: [{ type: 'text', text: 'done' }],
+      stopReason: 'endTurn',
+    };
+    const messages = [{ role: 'user', content: 'run it' }, toolResult, assistantFinal];
+    const withArtifacts = { ...toolResult, _artifactsAttached: true };
+    const fake = createResumeFake({
+      piSession: { state: { isStreaming: false, messages } },
+      piMainBaselineIndex: 1,
+      attachCodeModeArtifactsToToolResult: vi.fn(async (message: any) =>
+        message === toolResult ? withArtifacts : message,
+      ),
+    });
+
+    await ChatThreadDO.prototype['resumeInterruptedPiTurn'].call(fake);
+
+    expect(fake.attachCodeModeArtifactsToToolResult).toHaveBeenCalledWith(toolResult, {
+      consume: true,
+    });
+    expect(fake.appendPiCoreMessagesIfMissing).toHaveBeenCalledWith([
+      withArtifacts,
+      assistantFinal,
+    ]);
+    expect(fake.clearPiActiveTurnAndJournal).toHaveBeenCalled();
+    // Finalizes like the normal agent_end path: markUnread drives completion
+    // recording / automation success / summary, not a bare streaming reset.
+    expect(fake.setChatIsStreaming).toHaveBeenCalledWith(
+      false,
+      expect.objectContaining({ markUnread: true, completedAt: expect.any(Number) }),
+    );
+    expect(fake.setActiveTurnUserId).toHaveBeenCalledWith(null);
+    expect(fake.completeTodoStateForTurnEnd).toHaveBeenCalled();
+  });
+
+  it('releases the thread when rebuilding the Pi session fails during resume', async () => {
+    // ensurePiSessionReady can throw (e.g. OrgDO/model-provider config retries
+    // exhaust). That happens before the continuation, with the fiber row already
+    // consumed, so it must run the same release cleanup or the thread stays busy.
+    const rebuildError = new Error('model provider config unavailable');
+    const fake = createResumeFake({
+      ensurePiSessionReady: vi.fn(() => Promise.reject(rebuildError)),
+    });
+
+    await ChatThreadDO.prototype['resumeInterruptedPiTurn'].call(fake);
+
+    expect(fake.persistPiAgentLoopErrorForDevelopers).toHaveBeenCalledWith(
+      rebuildError,
+      { source: 'pi_resume' },
+    );
+    expect(fake.pushChatEvent).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'error' }),
+    );
+    expect(fake.setChatIsStreaming).toHaveBeenCalledWith(false);
+    expect(fake.setActiveTurnUserId).toHaveBeenCalledWith(null);
+    expect(fake.clearPiActiveTurnAndJournal).toHaveBeenCalled();
+  });
+
+  it('releases the thread when a recovered continuation fails for a non-eviction reason', async () => {
+    // The model still owes output, so we drive continue() in a fiber. A provider
+    // error (not an eviction) must clear the marker/journal and reset streaming —
+    // otherwise the thread stays busy with no run row left to retry recovery.
+    const messages = [
+      { role: 'user', content: 'hi' },
+      { role: 'toolResult', toolCallId: 'c1', toolName: 'read', content: [{ type: 'text', text: 'r' }] },
+    ];
+    const providerError = new Error('Provider exploded');
+    const fake = createResumeFake({
+      piSession: {
+        state: { isStreaming: false, messages },
+        continue: vi.fn(() => Promise.reject(providerError)),
+      },
+      piMainBaselineIndex: 0,
+    });
+
+    await ChatThreadDO.prototype['resumeInterruptedPiTurn'].call(fake);
+
+    expect(fake.piSession.continue).toHaveBeenCalled();
+    expect(fake.pushChatEvent).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'error', message: 'Provider exploded' }),
+    );
+    expect(fake.updateActiveAutomationRun).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 'error', clear: true }),
+    );
+    expect(fake.setChatIsStreaming).toHaveBeenCalledWith(false);
+    expect(fake.setActiveTurnUserId).toHaveBeenCalledWith(null);
+    expect(fake.clearPiActiveTurnAndJournal).toHaveBeenCalled();
+  });
+
+  it('leaves recovery cleanup to agent_end when a recovered continuation is user-aborted', async () => {
+    // A user stop keeps Pi handlers subscribed, so agent_end runs and cleans up;
+    // the resume catch must treat the AbortError as benign and NOT wipe state.
+    const messages = [
+      { role: 'user', content: 'hi' },
+      { role: 'toolResult', toolCallId: 'c1', toolName: 'read', content: [{ type: 'text', text: 'r' }] },
+    ];
+    const abortError = new Error('The turn was aborted');
+    abortError.name = 'AbortError';
+    const fake = createResumeFake({
+      piSession: {
+        state: { isStreaming: false, messages },
+        continue: vi.fn(() => Promise.reject(abortError)),
+      },
+      piMainBaselineIndex: 0,
+    });
+
+    await ChatThreadDO.prototype['resumeInterruptedPiTurn'].call(fake);
+
+    expect(fake.piSession.continue).toHaveBeenCalled();
+    expect(fake.clearPiActiveTurnAndJournal).not.toHaveBeenCalled();
+    expect(fake.setChatIsStreaming).not.toHaveBeenCalledWith(false);
+    expect(fake.pushChatEvent).not.toHaveBeenCalled();
+  });
+
+  it('clears active turn ownership when the resume attempt budget is exhausted', async () => {
+    // failPiResume must release the active-turn user like the other terminal
+    // paths, or later sandbox MCP calls stay attributed to the abandoned author.
+    const fake = createResumeFake({
+      readPiActiveTurn: vi.fn(() => ({ turnId: 't1', attempt: 3, openedAt: 1 })),
+      recordChatThreadObservabilityEvent: vi.fn(),
+    });
+
+    await ChatThreadDO.prototype['resumeInterruptedPiTurn'].call(fake);
+
+    expect(fake.clearPiActiveTurnAndJournal).toHaveBeenCalled();
+    expect(fake.setChatIsStreaming).toHaveBeenCalledWith(false);
+    expect(fake.setActiveTurnUserId).toHaveBeenCalledWith(null);
+    // It bailed at the attempt budget — never tried to rebuild/continue.
+    expect(fake.ensurePiSessionReady).not.toHaveBeenCalled();
+  });
+
+  describe('steer-message journaling', () => {
+    it('round-trips steer messages through sync KV and clears them', async () => {
+      const store = new Map<string, unknown>();
+      const fake = Object.create(ChatThreadDO.prototype) as any;
+      fake.ctx = {
+        storage: {
+          kv: {
+            get: (key: string) => store.get(key),
+            put: (key: string, value: unknown) => void store.set(key, value),
+            delete: (key: string) => void store.delete(key),
+          },
+        },
+      };
+      fake.hydratePiStoredImages = vi.fn(async (message: any) => message);
+
+      ChatThreadDO.prototype['recordPiTurnJournalSteerMessage'].call(fake, {
+        role: 'user',
+        content: 'steer one',
+        timestamp: 1,
+      });
+      ChatThreadDO.prototype['recordPiTurnJournalSteerMessage'].call(fake, {
+        role: 'user',
+        content: 'steer two',
+        timestamp: 2,
+      });
+
+      const loaded = await ChatThreadDO.prototype['loadPiTurnSteerJournal'].call(fake);
+      expect(loaded).toHaveLength(2);
+      expect(JSON.stringify(loaded)).toContain('steer one');
+      expect(JSON.stringify(loaded)).toContain('steer two');
+
+      ChatThreadDO.prototype['clearPiTurnSteerJournal'].call(fake);
+      const afterClear = await ChatThreadDO.prototype['loadPiTurnSteerJournal'].call(fake);
+      expect(afterClear).toEqual([]);
+    });
+
+    it('journals an accepted steering message before handing it to the steer queue', async () => {
+      const { fake } = createPiEventFake();
+      fake.refreshPiSessionModel = vi.fn(async () => undefined);
+      fake.recordPiTurnJournalSteerMessage = vi.fn();
+      const steer = vi.fn();
+      fake.piSession = {
+        state: {
+          isStreaming: true,
+          model: { api: 'test', provider: 'test', id: 'test-model' },
+        },
+        prompt: vi.fn(),
+        steer,
+        abort: vi.fn(),
+      };
+
+      const accepted = ChatThreadDO.prototype['sendRunnerCommand'].call(fake, {
+        type: 'message',
+        content: 'steer me',
+      });
+      expect(accepted).toBe(true);
+      await flushWaitUntil(fake);
+
+      expect(fake.recordPiTurnJournalSteerMessage).toHaveBeenCalledTimes(1);
+      expect(steer).toHaveBeenCalledTimes(1);
+      // Same message object, journaled strictly before it reaches the queue.
+      expect(fake.recordPiTurnJournalSteerMessage.mock.calls[0][0]).toBe(
+        steer.mock.calls[0][0],
+      );
+      expect(
+        fake.recordPiTurnJournalSteerMessage.mock.invocationCallOrder[0],
+      ).toBeLessThan(steer.mock.invocationCallOrder[0]);
+    });
   });
 
   it('suppresses failed turn_end persistence and discards unpersisted session messages', async () => {
