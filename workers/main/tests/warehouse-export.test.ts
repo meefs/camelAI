@@ -51,65 +51,122 @@ function streamOf(...chunks: Uint8Array[]): ReadableStream<Uint8Array> {
   });
 }
 
-/** Fake R2 bucket recording multipart upload lifecycle + the empty-object fallback. */
-function fakeMultipartBucket() {
-  const uploads: Array<{
-    key: string;
-    contentType?: string;
-    parts: Array<{ partNumber: number; bytes: Uint8Array }>;
-    completed: boolean;
-    aborted: boolean;
-    emptyPut?: Uint8Array;
-  }> = [];
+const PART_SIZE = 8 * 1024 * 1024;
+
+/**
+ * Fake R2 bucket backed by an object store. Records whether each key was written
+ * via a single `put` or via a completed multipart upload, and serves `head` from
+ * the store so the post-write durability check sees committed objects.
+ */
+function fakeBucket() {
+  const store = new Map<string, { bytes: Uint8Array; contentType?: string; via: 'put' | 'multipart'; partCount?: number }>();
+  const events = { puts: 0, multipartCompletes: 0, aborts: 0 };
   const bucket = {
     async createMultipartUpload(key: string, opts?: { httpMetadata?: { contentType?: string } }) {
-      const rec = { key, contentType: opts?.httpMetadata?.contentType, parts: [] as Array<{ partNumber: number; bytes: Uint8Array }>, completed: false, aborted: false };
-      uploads.push(rec);
+      const parts: Uint8Array[] = [];
       return {
         async uploadPart(partNumber: number, data: Uint8Array) {
-          rec.parts.push({ partNumber, bytes: data });
+          parts[partNumber - 1] = data;
           return { partNumber, etag: `etag-${partNumber}` };
         },
-        async complete() { rec.completed = true; },
-        async abort() { rec.aborted = true; },
+        async complete() {
+          events.multipartCompletes++;
+          const total = parts.reduce((n, p) => n + p.length, 0);
+          const all = new Uint8Array(total);
+          let o = 0;
+          for (const p of parts) { all.set(p, o); o += p.length; }
+          store.set(key, { bytes: all, contentType: opts?.httpMetadata?.contentType, via: 'multipart', partCount: parts.length });
+        },
+        async abort() { events.aborts++; },
       };
     },
-    async put(key: string, body: Uint8Array, _opts: unknown) {
-      const rec = uploads.find((u) => u.key === key);
-      if (rec) rec.emptyPut = body;
+    async put(key: string, body: Uint8Array, opts?: { httpMetadata?: { contentType?: string } }) {
+      events.puts++;
+      store.set(key, { bytes: body, contentType: opts?.httpMetadata?.contentType, via: 'put' });
       return { key };
     },
+    async head(key: string) {
+      const rec = store.get(key);
+      return rec ? { key, size: rec.bytes.length } : null;
+    },
   } as unknown as R2Bucket;
-  return { bucket, uploads };
+  return { bucket, store, events };
 }
 
 describe('stageWarehouseExport', () => {
-  it('streams the body to R2 via multipart with the format content-type', async () => {
-    const { bucket, uploads } = fakeMultipartBucket();
+  it('commits a small body with a single put (no multipart) and the format content-type', async () => {
+    const { bucket, store, events } = fakeBucket();
     const data = new TextEncoder().encode('hello world');
     const result = await stageWarehouseExport(bucket, 'warehouse/ws/c/abc.parquet', streamOf(data), 'parquet');
     expect(result).toEqual({ ok: true, r2_key: 'warehouse/ws/c/abc.parquet' });
-    expect(uploads).toHaveLength(1);
-    expect(uploads[0]!.contentType).toBe('application/vnd.apache.parquet');
-    expect(uploads[0]!.completed).toBe(true);
-    // The streamed bytes are uploaded as part(s) reassembling to the original.
-    const assembled = uploads[0]!.parts.flatMap((p) => [...p.bytes]);
-    expect(new TextDecoder().decode(new Uint8Array(assembled))).toBe('hello world');
-    expect(uploads[0]!.parts[0]!.partNumber).toBe(1);
+    expect(events.puts).toBe(1);
+    expect(events.multipartCompletes).toBe(0);
+    const rec = store.get('warehouse/ws/c/abc.parquet')!;
+    expect(rec.via).toBe('put');
+    expect(rec.contentType).toBe('application/vnd.apache.parquet');
+    expect(new TextDecoder().decode(rec.bytes)).toBe('hello world');
   });
 
-  it('writes an empty object (no dangling multipart) when the result is empty', async () => {
-    const { bucket, uploads } = fakeMultipartBucket();
+  it('writes a 0-byte object via put when the result is empty', async () => {
+    const { bucket, store, events } = fakeBucket();
     await stageWarehouseExport(bucket, 'warehouse/ws/c/empty.ndjson', streamOf(), 'ndjson');
-    expect(uploads[0]!.parts).toHaveLength(0);
-    expect(uploads[0]!.aborted).toBe(true);
-    expect(uploads[0]!.emptyPut).toEqual(new Uint8Array(0));
+    expect(events.puts).toBe(1);
+    expect(events.multipartCompletes).toBe(0);
+    expect(store.get('warehouse/ws/c/empty.ndjson')!.bytes).toEqual(new Uint8Array(0));
+  });
+
+  it('escalates to a multipart upload for a body larger than one part', async () => {
+    const { bucket, store, events } = fakeBucket();
+    const big = new Uint8Array(PART_SIZE + 1024).fill(7); // > one part
+    const tail = new Uint8Array(16).fill(9);
+    const result = await stageWarehouseExport(bucket, 'warehouse/ws/c/big.parquet', streamOf(big, tail), 'parquet');
+    expect(result.ok).toBe(true);
+    expect(events.puts).toBe(0);
+    expect(events.multipartCompletes).toBe(1);
+    const rec = store.get('warehouse/ws/c/big.parquet')!;
+    expect(rec.via).toBe('multipart');
+    expect(rec.partCount).toBeGreaterThanOrEqual(2); // never a single-part upload
+    expect(rec.bytes.length).toBe(big.length + tail.length);
+  });
+
+  it('uses a single put for a one-chunk body of exactly one part (no multipart)', async () => {
+    const { bucket, store, events } = fakeBucket();
+    const exact = new Uint8Array(PART_SIZE).fill(3);
+    await stageWarehouseExport(bucket, 'warehouse/ws/c/exact.parquet', streamOf(exact), 'parquet');
+    expect(events.puts).toBe(1);
+    expect(events.multipartCompletes).toBe(0);
+    expect(store.get('warehouse/ws/c/exact.parquet')!.via).toBe('put');
+  });
+
+  it('never completes a single-part multipart when one chunk crosses the threshold then ends', async () => {
+    // Regression: a source (e.g. BigQuery enqueuing a whole page) delivers one
+    // chunk just over a part and the stream ends. Must split into >= 2 parts and
+    // reassemble exactly — not flush the chunk as a lone part and commit nothing.
+    const { bucket, store, events } = fakeBucket();
+    const oneBigChunk = new Uint8Array(PART_SIZE + 4096).fill(5);
+    const result = await stageWarehouseExport(bucket, 'warehouse/ws/c/page.ndjson', streamOf(oneBigChunk), 'ndjson');
+    expect(result.ok).toBe(true);
+    expect(events.puts).toBe(0);
+    const rec = store.get('warehouse/ws/c/page.ndjson')!;
+    expect(rec.via).toBe('multipart');
+    expect(rec.partCount).toBeGreaterThanOrEqual(2);
+    expect(rec.bytes.length).toBe(oneBigChunk.length);
   });
 
   it('fails loudly when the export source produced no body', async () => {
-    const { bucket, uploads } = fakeMultipartBucket();
+    const { bucket } = fakeBucket();
     await expect(stageWarehouseExport(bucket, 'k', null, 'parquet')).rejects.toThrow(/no body/);
-    expect(uploads).toHaveLength(0);
+  });
+
+  it('fails loudly when the write does not persist (HEAD finds no object)', async () => {
+    // A bucket whose put silently no-ops — the post-write HEAD must catch it.
+    const bucket = {
+      async put() { return { key: 'k' }; },
+      async head() { return null; },
+    } as unknown as R2Bucket;
+    await expect(
+      stageWarehouseExport(bucket, 'warehouse/ws/c/ghost.ndjson', streamOf(new TextEncoder().encode('x')), 'ndjson'),
+    ).rejects.toThrow(/did not persist/);
   });
 });
 

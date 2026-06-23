@@ -254,16 +254,24 @@ Three steps:
 
 1. **Export** a connection's full query result to R2. A connection's `export`
    method streams the whole result set server-side (no row cap, credentials stay
-   server-side) and returns `{ ok, r2_key }`. SQL databases (Postgres, MySQL,
-   Neon, PlanetScale) and ClickHouse export **Parquet**; BigQuery exports
-   **NDJSON**. Exportable connections: the SQL family, ClickHouse, and BigQuery —
-   check with `tools.warehouse_list_connections()`.
+   server-side) and returns `{ ok, r2_key }`. Exportable connections: the SQL
+   family, ClickHouse, and BigQuery — check with
+   `tools.warehouse_list_connections()`, which reports each one's `exportFormat`.
+
+   > **Export format depends on the source — read it with the matching DuckDB
+   > reader.** SQL databases (Postgres, MySQL, Neon, PlanetScale) and ClickHouse
+   > export **Parquet** → `read_parquet`. **BigQuery exports NDJSON, not Parquet**
+   > (its REST API only returns JSON, so there's no Parquet to stream) →
+   > `read_json_auto`. Calling `read_parquet` on a BigQuery `.ndjson` export
+   > fails. The `r2_key` extension (`.parquet` vs `.ndjson`) and the
+   > `exportFormat` field both tell you which reader to use.
 
 2. **Run DuckDB** over the staged exports with `tools.warehouse_run_code({ code, params })`.
    The container is **sealed** (no network) with `duckdb`, `pandas`, `pyarrow`,
    and `numpy` preinstalled. Each export is mounted read-only at `/<r2_key>`, so
-   read it with `duckdb.read_parquet('/' + r2_key)` (or `read_json_auto` for
-   BigQuery `.ndjson`). Pass values through **`params`** (a JSON dict) rather than
+   read it with the reader for its format: `duckdb.read_parquet('/' + r2_key)` for
+   SQL/ClickHouse Parquet, `duckdb.read_json_auto('/' + r2_key)` for BigQuery
+   NDJSON. Pass values through **`params`** (a JSON dict) rather than
    interpolating them into the code string — they arrive as a Python `params`
    dict. It returns `{ ok, stdout, stderr, result, error }`; whatever you
    `print()` is in `stdout` (a plain string). Print CSV/JSON to hand structured
@@ -304,6 +312,8 @@ Cross-source joins work the same way — export each source, pass both keys via
 
 ```python
 # inside warehouse_run_code, params = { "freight_key": ..., "rates_key": ... }
+# freight_key came from a SQL/ClickHouse export (Parquet) → read_parquet;
+# rates_key came from a BigQuery export (NDJSON) → read_json_auto.
 import duckdb
 duckdb.sql(
   "SELECT f.shipment_id, f.charge, r.expected_rate, f.charge - r.expected_rate AS delta "

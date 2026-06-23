@@ -1642,7 +1642,7 @@ const CODE_MODE_TOOL_REGISTRY: CodeModeToolRegistration[] = [
   ),
   codeModePassthroughTool(
     "warehouse_run_code",
-    "Run Python in this workspace's SEALED analytics sandbox (no network) for heavy cross-source data work that's too big for a Durable Object. STRONGLY PREFER DuckDB (pre-installed): `import duckdb`. The sandbox has NO direct database access — bring data in first by exporting connections to the warehouse: call a connection's `export` method (via env.CONNECTIONS, e.g. `connections[alias].export({ query })`), which streams the full result to R2 server-side (credentials stay server-side) and returns { r2_key }. Each export is mounted read-only into the sandbox at the path '/' + r2_key, so read it with DuckDB: `duckdb.read_parquet('/' + r2_key)` (or `read_json_auto` for BigQuery .ndjson exports). Pass values via `params` (a JSON dict) instead of interpolating them into the code string — they arrive as a Python `params` dict, e.g. `duckdb.read_parquet('/' + params['r2_key'])`. Use warehouse_list_connections to see which connections are exportable. Each call runs in an isolated session. Returns { ok, stdout, stderr, result, error } — read printed output from `stdout` (e.g. `print` CSV/JSON, then write it with tools.write). Arguments: { code, params? }.",
+    "Run Python in this workspace's SEALED analytics sandbox (no network) for heavy cross-source data work that's too big for a Durable Object. STRONGLY PREFER DuckDB (pre-installed): `import duckdb`. The sandbox has NO direct database access — bring data in first by exporting connections to the warehouse: call a connection's `export` method (via env.CONNECTIONS, e.g. `connections[alias].export({ query })`), which streams the full result to R2 server-side (credentials stay server-side) and returns { r2_key }. Each export is mounted read-only into the sandbox at the path '/' + r2_key. Read it with the DuckDB reader that matches the export FORMAT: SQL databases + ClickHouse export Parquet → `duckdb.read_parquet('/' + r2_key)`; **BigQuery exports NDJSON, not Parquet** → `duckdb.read_json_auto('/' + r2_key)` (calling read_parquet on a BigQuery .ndjson export fails). The r2_key's extension (.parquet vs .ndjson) tells you which, and warehouse_list_connections reports each connection's `exportFormat`. Pass values via `params` (a JSON dict) instead of interpolating them into the code string — they arrive as a Python `params` dict, e.g. `duckdb.read_parquet('/' + params['r2_key'])`. Use warehouse_list_connections to see which connections are exportable and in what format. Each call runs in an isolated session. Returns { ok, stdout, stderr, result, error } — read printed output from `stdout` (e.g. `print` CSV/JSON, then write it with tools.write). Arguments: { code, params? }.",
     Type.Object({
       code: Type.String(),
       params: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
@@ -1653,7 +1653,7 @@ const CODE_MODE_TOOL_REGISTRY: CodeModeToolRegistration[] = [
   ),
   codeModePassthroughTool(
     "warehouse_list_connections",
-    "List the workspace connections usable with the warehouse. Returns [{ id, name, type, displayName, exportable }]: `exportable: true` connections (SQL databases + BigQuery) have an `export` method that streams a query's full result to R2 — `connections[alias].export({ query })` — which warehouse_run_code then reads with DuckDB. Reference connections BY NAME.",
+    "List the workspace connections usable with the warehouse. Returns [{ id, name, type, displayName, exportable, exportFormat }]: `exportable: true` connections (SQL databases, ClickHouse, BigQuery) have an `export` method that streams a query's full result to R2 — `connections[alias].export({ query })` — which warehouse_run_code then reads with DuckDB. `exportFormat` is `'parquet'` (SQL + ClickHouse → read with read_parquet) or `'ndjson'` (BigQuery → read with read_json_auto), so you pick the right DuckDB reader. Reference connections BY NAME.",
     EMPTY_PARAMETERS,
     {
       category: "connections",
@@ -3644,7 +3644,7 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
     return (this.ctx.exports as unknown as {
       WarehouseService: (options: { props: Pick<CodeModeToolsProps, "orgId" | "workspaceId"> }) => {
         runCode(request: { code: string; params?: Record<string, unknown> }): Promise<{ ok: boolean; result?: unknown; error?: string }>;
-        listConnections(): Promise<Array<{ id: string; name: string; type: string; displayName: string; exportable: boolean }>>;
+        listConnections(): Promise<Array<{ id: string; name: string; type: string; displayName: string; exportable: boolean; exportFormat: 'parquet' | 'ndjson' | null }>>;
       };
     }).WarehouseService({
       props: {

@@ -198,7 +198,7 @@ export function listBigQueryMcpTools(): Array<Record<string, unknown>> {
     {
       name: 'export',
       description:
-        'Export the FULL result of a query to the workspace warehouse (R2) — no row cap, streamed server-side as NDJSON. Returns { ok, r2_key, rows, columns }; read the object with DuckDB read_json_auto. When rows is 0 the NDJSON file is empty (read_json_auto cannot infer columns from it) — treat that as a no-rows result and use the returned columns rather than reading the file. Use for bulk extracts feeding analytics/joins, not for inline display.',
+        'Export the FULL result of a query to the workspace warehouse (R2) — no row cap, streamed server-side as NDJSON (BigQuery has no Parquet-over-API path, so unlike SQL/ClickHouse exports this is NDJSON, NOT Parquet). Returns { ok, r2_key, rows, columns }; read the object with DuckDB read_json_auto (NOT read_parquet). When rows is 0 the NDJSON file is empty (read_json_auto cannot infer columns from it) — treat that as a no-rows result and use the returned columns rather than reading the file. Use for bulk extracts feeding analytics/joins, not for inline display.',
       inputSchema: {
         type: 'object',
         properties: {

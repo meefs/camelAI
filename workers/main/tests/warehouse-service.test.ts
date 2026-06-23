@@ -201,7 +201,26 @@ describe('annotateWarehouseConnections', () => {
     expect(annotated.find((c) => c.name === 'sql-server')?.exportable).toBe(false);
     expect(annotated.find((c) => c.name === 'stripe-acct')?.exportable).toBe(false);
     expect(annotated[0]).toEqual({
-      id: '1', name: 'Infinity-D365', type: 'mysql', displayName: 'Infinity-D365', exportable: true,
+      id: '1', name: 'Infinity-D365', type: 'mysql', displayName: 'Infinity-D365',
+      exportable: true, exportFormat: 'parquet',
     });
+  });
+
+  it('reports exportFormat per source: SQL + ClickHouse are Parquet, BigQuery is NDJSON', () => {
+    const annotated = annotateWarehouseConnections([
+      summary('1', 'Infinity-D365', 'mysql'),
+      summary('2', 'analytics-pg', 'postgres'),
+      summary('5', 'BigQuery', 'bigquery'),
+      summary('6', 'warehouse-ch', 'clickhouse'),
+      summary('7', 'sql-server', 'mssql'),
+    ]);
+    const fmt = (name: string) => annotated.find((c) => c.name === name)?.exportFormat;
+    expect(fmt('Infinity-D365')).toBe('parquet');
+    expect(fmt('analytics-pg')).toBe('parquet');
+    expect(fmt('warehouse-ch')).toBe('parquet');
+    // BigQuery's REST API only returns JSON, so its export stages NDJSON.
+    expect(fmt('BigQuery')).toBe('ndjson');
+    // Non-exportable connections have no format.
+    expect(fmt('sql-server')).toBeNull();
   });
 });

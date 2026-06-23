@@ -84,15 +84,33 @@ function concatChunks(chunks: Uint8Array[], total: number): Uint8Array {
 }
 
 /**
- * Stream an export body into the warehouse R2 staging bucket via a multipart
- * upload and return the object handle.
+ * Stream an export body into the warehouse R2 staging bucket and return the
+ * object handle.
  *
  * The export bodies are chunked (ClickHouse/data-proxy responses, the BigQuery
  * pager) with no Content-Length, so `R2.put(stream)` rejects them ("readable
- * stream must have a known length"). Multipart upload sidesteps that: each part
- * has a known length while the total stays unknown, and only ~one part (8 MiB)
- * is ever held in memory, so a multi-GB export never OOMs the Worker. Aborts the
- * upload on any failure so no partial object is left behind.
+ * stream must have a known length"). We therefore buffer and:
+ *   - if the WHOLE body fits in one part (the common case — most exports are
+ *     small), commit it with a single known-length `bucket.put`. A plain put is
+ *     simple and reliable; a one-part multipart upload here was leaving the
+ *     object uncommitted (export reported success but no object ever landed in
+ *     R2, surfacing in the sealed container as a 0-byte phantom).
+ *   - only escalate to a multipart upload once the body exceeds a single part,
+ *     so multi-GB exports still stream through in bounded memory (~one part at a
+ *     time) without an OOM. Aborts the upload on any failure so no partial object
+ *     is left behind.
+ *
+ * Parts are flushed in fixed `WAREHOUSE_EXPORT_PART_SIZE` chunks, and ONLY while
+ * strictly more than one part is buffered — so the retained remainder (and thus
+ * the final part) is always non-empty. That guarantees a multipart upload is
+ * never completed with a single part, even when the source delivers one big chunk
+ * that lands right at/above the threshold and then ends (e.g. BigQuery enqueues a
+ * whole result page as one chunk) — which is exactly the single-part case that
+ * was failing to commit.
+ *
+ * After writing, HEAD the key to confirm the object is durably present — so a
+ * silent write failure becomes a loud error instead of a phantom that `export()`
+ * reports `ok` for.
  */
 export async function stageWarehouseExport(
   bucket: R2Bucket,
@@ -104,43 +122,77 @@ export async function stageWarehouseExport(
     throw Object.assign(new Error('export source returned no body'), { status: 502 });
   }
   const httpMetadata = { contentType: EXPORT_CONTENT_TYPE[format] };
-  const upload = await bucket.createMultipartUpload(key, { httpMetadata });
+  const reader = body.getReader();
+  let upload: Awaited<ReturnType<R2Bucket['createMultipartUpload']>> | null = null;
+  const parts: R2UploadedPart[] = [];
+  let buffered: Uint8Array[] = [];
+  let bufferedBytes = 0;
+
+  // Take exactly `size` bytes off the front of the buffer (splitting a chunk if
+  // needed), retaining the rest. Callers only ever take <= bufferedBytes.
+  const takeBytes = (size: number): Uint8Array => {
+    const out = new Uint8Array(size);
+    let filled = 0;
+    while (filled < size) {
+      const head = buffered[0]!;
+      const need = size - filled;
+      if (head.length <= need) {
+        out.set(head, filled);
+        filled += head.length;
+        buffered.shift();
+      } else {
+        out.set(head.subarray(0, need), filled);
+        buffered[0] = head.subarray(need);
+        filled += need;
+      }
+    }
+    bufferedBytes -= size;
+    return out;
+  };
+
+  const flushPart = async (size: number) => {
+    if (!upload) upload = await bucket.createMultipartUpload(key, { httpMetadata });
+    parts.push(await upload.uploadPart(parts.length + 1, takeBytes(size)));
+  };
+
   try {
-    const reader = body.getReader();
-    const parts: R2UploadedPart[] = [];
-    let buffered: Uint8Array[] = [];
-    let bufferedBytes = 0;
-
-    const flushPart = async () => {
-      const data = concatChunks(buffered, bufferedBytes);
-      parts.push(await upload.uploadPart(parts.length + 1, data));
-      buffered = [];
-      bufferedBytes = 0;
-    };
-
     for (;;) {
       const { done, value } = await reader.read();
       if (done) break;
       if (value && value.length) {
         buffered.push(value);
         bufferedBytes += value.length;
-        if (bufferedBytes >= WAREHOUSE_EXPORT_PART_SIZE) await flushPart();
+        // Flush full parts only while STRICTLY more than a part remains, so the
+        // leftover — and therefore a trailing part — is guaranteed non-empty. We
+        // must never complete a multipart upload with a single part.
+        while (bufferedBytes > WAREHOUSE_EXPORT_PART_SIZE) {
+          await flushPart(WAREHOUSE_EXPORT_PART_SIZE);
+        }
       }
     }
-    if (bufferedBytes > 0) await flushPart();
 
-    if (parts.length === 0) {
-      // Empty result: a multipart upload needs >= 1 part, so write an empty object instead.
-      await upload.abort();
-      await bucket.put(key, new Uint8Array(0), { httpMetadata });
-    } else {
+    if (upload) {
+      // Multipart was started, so > 1 part of data exists; the remaining buffer
+      // (always > 0 here) is the final, size-unrestricted part.
+      if (bufferedBytes > 0) await flushPart(bufferedBytes);
       await upload.complete(parts);
+    } else {
+      // Whole body fit in one part (incl. empty → 0-byte object): single put.
+      await bucket.put(key, concatChunks(buffered, bufferedBytes), { httpMetadata });
     }
-    return { ok: true, r2_key: key };
   } catch (error) {
-    await upload.abort().catch(() => {});
+    if (upload) await upload.abort().catch(() => {});
     throw error;
   }
+
+  const head = await bucket.head(key);
+  if (!head) {
+    throw Object.assign(
+      new Error(`warehouse export did not persist: no object at ${key} after write`),
+      { status: 502 },
+    );
+  }
+  return { ok: true, r2_key: key };
 }
 
 /**

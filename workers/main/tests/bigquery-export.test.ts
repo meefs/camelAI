@@ -46,6 +46,10 @@ function fakeBucket() {
       puts.push({ key, text: decode([body ?? new Uint8Array(0)]), opts });
       return { key };
     },
+    // stageWarehouseExport HEAD-verifies the object after writing.
+    async head(key: string) {
+      return puts.some((p) => p.key === key) ? { key } : null;
+    },
   } as unknown as R2Bucket;
   return { bucket, puts };
 }

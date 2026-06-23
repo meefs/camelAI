@@ -63,6 +63,13 @@ export interface WarehouseConnection {
    * and ClickHouse today; other types don't have an `export` method yet.
    */
   exportable: boolean;
+  /**
+   * The R2 staging format this connection's `export` produces, so the agent reads
+   * it with the right DuckDB reader: `parquet` → `read_parquet`, `ndjson` →
+   * `read_json_auto`. SQL + ClickHouse export Parquet; **BigQuery exports NDJSON**
+   * (its REST API returns JSON, not Parquet bytes). `null` when not exportable.
+   */
+  exportFormat: 'parquet' | 'ndjson' | null;
 }
 
 /**
@@ -72,16 +79,23 @@ export interface WarehouseConnection {
 export function annotateWarehouseConnections(
   summaries: ReadonlyArray<{ id: string; name: string; type: string; displayName: string }>,
 ): WarehouseConnection[] {
-  return summaries.map((c) => ({
-    id: c.id,
-    name: c.name,
-    type: c.type,
-    displayName: c.displayName,
-    exportable:
-      isSqlDatabaseMcpIntegration(c.type) ||
-      isBigQueryMcpIntegration(c.type) ||
-      isClickHouseMcpIntegration(c.type),
-  }));
+  return summaries.map((c) => {
+    // BigQuery stages NDJSON (no Parquet over its REST API); SQL + ClickHouse
+    // stage Parquet. Keep this in sync with each MCP module's `export` impl.
+    const exportFormat: 'parquet' | 'ndjson' | null = isBigQueryMcpIntegration(c.type)
+      ? 'ndjson'
+      : isSqlDatabaseMcpIntegration(c.type) || isClickHouseMcpIntegration(c.type)
+        ? 'parquet'
+        : null;
+    return {
+      id: c.id,
+      name: c.name,
+      type: c.type,
+      displayName: c.displayName,
+      exportable: exportFormat !== null,
+      exportFormat,
+    };
+  });
 }
 
 /** Minimal shape of the Sandbox we depend on (keeps WarehouseService testable). */
