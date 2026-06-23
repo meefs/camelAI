@@ -242,8 +242,12 @@ describe("connections action admin guard", () => {
           intent: "createIntegration",
           integration_type: "postgres",
           name: "Primary DB",
-          config: JSON.stringify({ host: "db.example.com" }),
-          credentials: JSON.stringify({}),
+          config: JSON.stringify({
+            host: "db.example.com",
+            port: 5432,
+            database: "app_db",
+          }),
+          credentials: JSON.stringify({ username: "app", password: "secret" }),
         }),
         context: {},
         params: {},
@@ -255,7 +259,7 @@ describe("connections action admin guard", () => {
       "Primary DB",
       "databases",
       "api_key",
-      JSON.stringify({ host: "db.example.com" }),
+      JSON.stringify({ host: "db.example.com", port: 5432, database: "app_db" }),
       expect.any(String),
       "user_1",
     );

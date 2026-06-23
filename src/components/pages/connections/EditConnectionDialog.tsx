@@ -142,7 +142,7 @@ export function EditConnectionDialog({
             }
           : {}),
       },
-      { method: 'POST' }
+      { method: 'POST', action: '/connections' }
     );
   };
 

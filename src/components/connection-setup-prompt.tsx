@@ -18,6 +18,7 @@ import {
 } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { Textarea } from '@/components/ui/textarea';
 import { Label } from '@/components/ui/label';
 import {
   Select,
@@ -490,14 +491,26 @@ export function ConnectionSetupPrompt({
                             {field.label}
                             {required && <span className="ml-1 text-red-400">*</span>}
                           </Label>
-                          <Input
-                            id={`cred-${field.name}`}
-                            type={field.type === 'password' ? 'password' : 'text'}
-                            value={(credentials[field.name] as string) || ''}
-                            onChange={(e) => updateCredentials(field.name, e.target.value)}
-                            placeholder={field.placeholder}
-                            required={required}
-                          />
+                          {field.type === 'textarea' ? (
+                            <Textarea
+                              id={`cred-${field.name}`}
+                              value={(credentials[field.name] as string) || ''}
+                              onChange={(e) => updateCredentials(field.name, e.target.value)}
+                              placeholder={field.placeholder}
+                              required={required}
+                              rows={6}
+                              className="font-mono text-xs"
+                            />
+                          ) : (
+                            <Input
+                              id={`cred-${field.name}`}
+                              type={field.type === 'password' ? 'password' : 'text'}
+                              value={(credentials[field.name] as string) || ''}
+                              onChange={(e) => updateCredentials(field.name, e.target.value)}
+                              placeholder={field.placeholder}
+                              required={required}
+                            />
+                          )}
                         </div>
                       );
                     })}

@@ -107,7 +107,7 @@ export function AddConnectionDialog({
         config: JSON.stringify(nextConfig),
         credentials: JSON.stringify(filterVisibleCredentials(connectionType, nextConfig, credentials)),
       },
-      { method: 'POST' }
+      { method: 'POST', action: '/connections' }
     );
   };
 

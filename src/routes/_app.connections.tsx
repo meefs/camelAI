@@ -15,6 +15,9 @@ import { getEnv, type CloudflareEnv } from '@/lib/cloudflare.server';
 import {
   INTEGRATION_REGISTRY,
   getIntegrationDefinition,
+  isCredentialFieldRequired,
+  shouldShowConfigField,
+  shouldShowCredentialField,
   shouldStoreIntegrationCredentials,
 } from '@/lib/integration-registry';
 import { decryptCredentials, encryptCredentials } from '@/lib/integration-crypto';
@@ -84,6 +87,30 @@ function parseIntegrationConfig(rawConfig: string): Record<string, unknown> {
   } catch {
     return {};
   }
+}
+
+function validateRequiredIntegrationFields(
+  definition: NonNullable<ReturnType<typeof getIntegrationDefinition>>,
+  config: Record<string, unknown>,
+  credentials: Record<string, unknown>,
+): string[] {
+  const errors: string[] = [];
+  for (const field of definition.configSchema) {
+    if (!shouldShowConfigField(definition.type, field.name, config)) continue;
+    const value = config[field.name];
+    if (field.required && (value === undefined || value === null || value === '')) {
+      errors.push(`${field.label} is required`);
+    }
+  }
+  for (const field of definition.credentialSchema) {
+    if (!shouldShowCredentialField(definition.type, field.name, config)) continue;
+    const value = credentials[field.name];
+    const required = isCredentialFieldRequired(definition.type, field.name, config, field.required);
+    if (required && (value === undefined || value === null || value === '')) {
+      errors.push(`${field.label} is required`);
+    }
+  }
+  return errors;
 }
 
 async function getOptionalCreatorProfiles(
@@ -223,6 +250,10 @@ export async function action({ request, context }: Route.ActionArgs) {
     try {
       const config = configStr ? JSON.parse(configStr) : {};
       const credentials = credentialsStr ? JSON.parse(credentialsStr) : {};
+      const validationErrors = validateRequiredIntegrationFields(definition, config, credentials);
+      if (validationErrors.length > 0) {
+        return { error: validationErrors.join(', ') };
+      }
       if (integrationType === 'remote_mcp') {
         const validationErrors = validateRemoteMcpConnection(config, credentials);
         if (validationErrors.length > 0) {

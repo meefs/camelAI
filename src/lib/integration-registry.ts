@@ -640,7 +640,14 @@ export const INTEGRATION_REGISTRY: Record<string, IntegrationDefinition> = {
       { name: 'dataset', label: 'Default Dataset', type: 'string', required: false },
     ],
     credentialSchema: [
-      { name: 'service_account_json', label: 'Service Account JSON', type: 'password', required: true },
+      {
+        name: 'service_account_json',
+        label: 'Service Account JSON',
+        type: 'textarea',
+        required: true,
+        placeholder: '{\n  "type": "service_account",\n  "project_id": "..."\n}',
+        description: 'Paste the full Google Cloud service account key JSON.',
+      },
     ],
     // Requires Google auth.
   },

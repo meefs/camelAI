@@ -27,6 +27,9 @@ export function useConnectionSetupResponse({
       }
 
       await agent.call("submitConnectionSetupResponse", [response]);
+      setConnectionSetupPrompt((current) =>
+        current?.requestId === response.requestId ? null : current,
+      );
     },
     [chatAgentRef],
   );
