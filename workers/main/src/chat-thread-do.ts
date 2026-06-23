@@ -4053,7 +4053,6 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
   private transientContextUsedPercent: number | null = null;
   private usageIsPostCompaction: boolean = true;
   private cachedContextWindowByModel: Record<string, number> = {};
-  private chatIsStreaming: boolean = false;
   private activeAutomationRun: ActiveAutomationRunState | null = null;
   private currentTitle: string | null = null;
   private currentTitleUpdatedAt: number | null = null;
@@ -4153,8 +4152,9 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
   private agentState(
     overrides: Partial<ChatThreadAgentState> = {},
   ): ChatThreadAgentState {
+    const isStreaming = this.isThreadStreaming();
     return {
-      isStreaming: this.chatIsStreaming,
+      isStreaming,
       previewTabs: cloneDurableState(this.previewTabs),
       previewActiveTabId: this.previewActiveTabId,
       previewVersion: this.previewVersion,
@@ -4163,7 +4163,7 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
       contextUsedPercent: resolveContextUsageForInit(
         this.transientContextUsedPercent,
         this.contextUsedPercent,
-        this.chatIsStreaming,
+        isStreaming,
       ),
       pendingQuestion: cloneDurableState(
         this.browserPrompts?.getOldestPendingQuestion?.() ?? null,
@@ -4190,11 +4190,10 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
     this.liveStateHydrated = true;
     const state = this.state as Partial<ChatThreadAgentState> | undefined;
     if (!state) return;
-    // Restore the streaming flag so a cold DO woken mid-turn doesn't immediately
-    // sync isStreaming=false (the default) and drop the running/stop state.
-    if (typeof state.isStreaming === "boolean") {
-      this.chatIsStreaming = state.isStreaming;
-    }
+    // NOTE: streaming state is no longer restored here — it is derived on read from
+    // execution ground truth ({@link isThreadStreaming}), so a cold wake recomputes
+    // it (an evicted mid-turn thread reports streaming via its orphan fiber row /
+    // pending resume; a completed one reports idle) with no flag to resurrect.
     if (state.lastCompletedTurn && typeof state.lastCompletedTurn === "object") {
       this.lastCompletedTurn = cloneDurableState(state.lastCompletedTurn);
     }
@@ -4527,54 +4526,29 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
     return `${CODE_MODE_ARTIFACTS_KEY_PREFIX}${parentToolUseId}`;
   }
 
-  /**
-   * Heal a thread stranded "streaming" by a mid-turn eviction (e.g. a deploy) that
-   * left no recoverable turn behind.
-   *
-   * A normal mid-turn eviction leaves a durable fiber run row + active-turn marker,
-   * and the SDK's wake-time fiber scan (which runs before this hook) calls
-   * {@link onFiberRecovered} -> {@link resumeInterruptedPiTurn}, driving the turn to
-   * completion and clearing the streaming flag. But if the eviction landed before
-   * that recoverable state was written, there is nothing to recover: the persisted
-   * `isStreaming = true` is restored on wake ({@link hydrateLiveStateFromAgentState})
-   * and never flips back, so the client's loading indicator (driven solely by
-   * `state.isStreaming`) spins forever.
-   *
-   * Detect that case here — persisted streaming, no live turn in this isolate, and no
-   * active-turn marker (a marker means a resume is pending/in-flight, so leave it to
-   * the recovery path) — and finalize the orphaned turn so reconnecting clients
-   * unblock. Runs on every cold wake, so it also heals threads stranded before this
-   * fix shipped.
-   */
   override async onStart(props?: unknown): Promise<void> {
     await super.onStart?.(props as never);
     this.hydrateLiveStateFromAgentState();
-    if (
-      this.chatIsStreaming &&
-      !this.piSession?.state.isStreaming &&
-      !this.readPiActiveTurn()
-    ) {
-      const interruptionMessage =
-        "This turn was interrupted and could not be resumed automatically. Please send your message again.";
-      this.recordChatThreadObservabilityEvent("pi_turn_stranded_cleared", {
-        operation: "heal_stranded_streaming",
-        status: "cleared",
-        severity: "warn",
-      });
-      this.pushChatEvent(this.piProviderErrorEvent(interruptionMessage));
-      // If the stranded turn was a scheduled-automation run, its run id was
-      // persisted in activeAutomationRun before the turn started. Report it as
-      // errored and clear it here (same as the other Pi failure paths) — otherwise
-      // the stale run lingers in KV and a later unrelated turn's
-      // setChatIsStreaming(false, { markUnread: true }) records it as succeeded,
-      // corrupting the scheduled-prompt result.
-      this.updateActiveAutomationRun({
-        status: "error",
-        message: interruptionMessage,
-        clear: true,
-      });
-      this.setChatIsStreaming(false);
-      this.setActiveTurnUserId(null);
+  }
+
+  /**
+   * The single source of truth for the client loading indicator, DERIVED on read.
+   * A turn is "working" iff pi-core is live in this isolate OR an active-turn marker
+   * exists. The marker is written synchronously at turn start and cleared by every
+   * terminal path (agent_end / resume completion / error cleanup); it survives
+   * eviction, so a cold wake still reads busy across the gap between the SDK deleting
+   * the recovered fiber row and the scheduled resume running — which also stops a new
+   * turn from racing the pending resume. Because nothing sets a separate spinner
+   * flag, there's no clear-site to forget; a genuinely hung turn keeps pi-core live
+   * (the inactivity timeout's job, not a desync).
+   */
+  private isThreadStreaming(): boolean {
+    if (this.piSession?.state.isStreaming) return true;
+    // This derive is called on every state sync; never let a storage read throw.
+    try {
+      return this.readPiActiveTurn() !== null;
+    } catch {
+      return false;
     }
   }
 
@@ -4608,7 +4582,7 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
 
     this.captureChatContextFromRequest(url, ctx.request, connection);
 
-    if (!this.chatIsStreaming && this.currentTodos.length > 0) {
+    if (!this.isThreadStreaming() && this.currentTodos.length > 0) {
       // completeTodoStateForTurnEnd() syncs an override marking the stale todos
       // completed; a second unconditional sync here (with currentTodos already
       // cleared) would erase that checklist, so only sync in the else branch.
@@ -5093,12 +5067,13 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
 
   getRuntimeStatus(): ChatThreadRuntimeStatus {
     const pending = this.browserPrompts.getOldestPendingQuestion();
+    const isStreaming = this.isThreadStreaming();
     return {
-      isStreaming: this.chatIsStreaming,
+      isStreaming,
       pendingQuestionCount: this.browserPrompts.pendingQuestionCount,
       oldestPendingQuestion: pending?.questions[0]?.question ?? null,
       updatedAt:
-        this.chatIsStreaming || this.browserPrompts.pendingQuestionCount > 0
+        isStreaming || this.browserPrompts.pendingQuestionCount > 0
           ? Date.now()
           : null,
     };
@@ -5144,19 +5119,14 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
 
   async setBrowserTurnStreaming(isStreaming: boolean): Promise<void> {
     if (isStreaming) {
-      this.setChatIsStreaming(true);
+      this.markTurnStarted();
       return;
     }
-    this.setChatIsStreaming(
-      false,
-      this.chatIsStreaming
-        ? {
-            markUnread: true,
-            completedAt: Date.now(),
-            summarySource: null,
-          }
-        : {},
-    );
+    this.finishTurn({
+      markUnread: true,
+      completedAt: Date.now(),
+      summarySource: null,
+    });
   }
 
   async completeTodoStateForTurnEnd(): Promise<void> {
@@ -5533,7 +5503,6 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
       this.cachedContextWindowByModel,
     );
 
-    this.chatIsStreaming = false;
     this.setActiveAutomationRun(null);
     this.browserPrompts.clearQuestions();
     this.titleGenerationInFlight = false;
@@ -5621,7 +5590,7 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
   private reconcileInactiveAutomationRun(reason: string): boolean {
     if (
       !this.activeAutomationRun ||
-      this.chatIsStreaming ||
+      this.isThreadStreaming() ||
       this.browserPrompts.pendingQuestionCount > 0
     ) {
       return false;
@@ -5660,19 +5629,32 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
 
   }
 
-  async refreshRunnerConfig(): Promise<void> {
-    await this.withRunnerTransitionLock('refresh_runner_config', async () => {
+  /**
+   * Apply a mid-thread config change (model or BYOK provider/credentials) by
+   * rebuilding the session: model + provider routing are baked in at creation, so a
+   * cache refresh alone doesn't reach an in-flight turn. Disposing is safe now (the
+   * spinner is derived), and an in-flight turn is continued via an idempotent resume.
+   */
+  private async rebuildPiSessionForConfigChange(lockLabel: string): Promise<void> {
+    await this.withRunnerTransitionLock(lockLabel, async () => {
+      const wasStreaming = this.isThreadStreaming();
       this.disposePiSession();
+      if (wasStreaming) {
+        await this.schedule(0, "resumeInterruptedPiTurn", undefined, {
+          idempotent: true,
+        });
+      }
     });
   }
 
+  async refreshRunnerConfig(): Promise<void> {
+    await this.rebuildPiSessionForConfigChange("refresh_runner_config");
+  }
+
   async byokChanged(): Promise<void> {
-    // Admin changed this org's BYOK config: drop the cached llm provider
-    // config so the next turn re-reads it instead of waiting out the TTL.
+    // Drop the cached provider config so the rebuilt session reads the new values.
     this.cachedLlmProviderConfig = null;
-    await this.withRunnerTransitionLock('byok_changed', async () => {
-      this.disposePiSession();
-    });
+    await this.rebuildPiSessionForConfigChange("byok_changed");
   }
 
   private disposePiSession(): void {
@@ -6520,7 +6502,10 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
   override async onFiberRecovered(ctx: { name: string }): Promise<void> {
     if (ctx.name !== PI_TURN_FIBER) return;
     if (!this.readPiActiveTurn()) return; // turn already committed -> nothing to resume
-    await this.schedule(0, "resumeInterruptedPiTurn");
+    // idempotent: this hook runs inside the SDK's wake-time fiber scan (onStart
+    // context), so a thread re-woken while the marker persists must not stack
+    // duplicate resume callbacks.
+    await this.schedule(0, "resumeInterruptedPiTurn", undefined, { idempotent: true });
   }
 
   /**
@@ -6534,12 +6519,9 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
   async resumeInterruptedPiTurn(): Promise<void> {
     const marker = this.readPiActiveTurn();
     if (!marker) return;
-    // Bail only if a turn is genuinely running in THIS process. Do NOT consult
-    // `this.chatIsStreaming`: it is persisted and restored on a cold wake, so for
-    // the very interrupted turn we are recovering it is already `true` even though
-    // nothing is running yet — that would consume the one-shot recovery without
-    // resuming and leave the thread stuck busy. `piSession.state.isStreaming` is the
-    // live in-memory signal (piSession is null on a fresh wake, so we proceed).
+    // Bail only if a turn is genuinely running in THIS process.
+    // `piSession.state.isStreaming` is the live in-memory signal (piSession is null
+    // on a fresh wake, so we proceed to rebuild and continue).
     if (this.piSession?.state.isStreaming) return;
     if (!this.chatContext) {
       // No context to rebuild the session — drop the marker to avoid a hot loop.
@@ -6584,18 +6566,16 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
         await this.clearPiActiveTurnAndJournal();
         // This is the ONLY completion path for a turn recovered after its final
         // assistant message but before agent_end ran, so finalize it exactly like
-        // the normal agent_end path: markUnread drives recordThreadAssistant-
-        // Completion (workspace unread + completion timestamp), the active
-        // automation run -> success, and the completion summary. A bare
-        // setChatIsStreaming(false) would persist the messages but leave all of
-        // that stale.
+        // the normal agent_end path via finishTurn({ markUnread }): it drives
+        // recordThreadAssistantCompletion (workspace unread + completion timestamp),
+        // the active automation run -> success, and the completion summary.
         const completedAt = Date.now();
         const finalText = this.extractLatestPiAssistantText(messages);
         const summarySource = extractThreadCompletionSummarySource(
           messages,
           finalText,
         );
-        this.setChatIsStreaming(false, {
+        this.finishTurn({
           markUnread: true,
           completedAt,
           summarySource,
@@ -6604,7 +6584,8 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
         await this.completeTodoStateForTurnEnd();
         return;
       }
-      this.setChatIsStreaming(true);
+      // Turn-start bookkeeping runs from the agent_start event the continuation
+      // below emits; the spinner is already derived-on from the fiber row.
       await this.runFiber(PI_TURN_FIBER, async () => {
         await this.withPiTurnInactivityTimeout(async () => {
           const active = this.piSession;
@@ -6647,15 +6628,18 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
         message: errorMessage,
         clear: true,
       });
-      this.setChatIsStreaming(false);
+      this.finishTurn();
       this.setActiveTurnUserId(null);
       await this.clearPiActiveTurnAndJournal();
+    } finally {
+      // Post-settle: broadcast the derived state to clear the spinner once done.
+      this.syncAgentState();
     }
   }
 
   private async failPiResume(): Promise<void> {
     await this.clearPiActiveTurnAndJournal();
-    this.setChatIsStreaming(false);
+    this.finishTurn();
     // Release turn ownership like the normal completion / resume-error paths,
     // otherwise getActiveTurnUserId() keeps attributing later sandbox MCP /
     // integration calls to the abandoned turn's author until the next turn.
@@ -7648,7 +7632,7 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
         message: error instanceof Error ? error.message : "Failed to send message",
         clear: true,
       });
-      this.setChatIsStreaming(false);
+      this.finishTurn();
       this.setActiveTurnUserId(null);
       console.error("[ChatThreadDO] failed to enqueue browser user message", error);
       return {
@@ -7731,7 +7715,8 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
     let sent = false;
     try {
       this.setActiveTurnUserId(context.userId);
-      this.setChatIsStreaming(true);
+      // Turn-start bookkeeping runs from agent_start once the run begins; the
+      // spinner turns on via the derived sync after the fiber row is created (below).
       this.publishRunningUserMessageActivity(rawContent);
       this.ctx.waitUntil(
         this.updateThreadMetadataForUserMessage(
@@ -7753,7 +7738,7 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
         userId: context.userId ?? undefined,
       });
     } catch (error) {
-      this.setChatIsStreaming(false);
+      this.finishTurn();
       this.setActiveTurnUserId(null);
       throw error;
     }
@@ -7763,10 +7748,14 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
         message: "Failed to send message",
         clear: true,
       });
-      this.setChatIsStreaming(false);
+      this.finishTurn();
       this.setActiveTurnUserId(null);
       return { status: "error", error: "Failed to send message" };
     }
+
+    // sendRunnerCommand created the durable fiber row synchronously, so the derived
+    // streaming state is now true — broadcast it for instant spinner feedback.
+    this.syncAgentState();
 
     // The browser echoes the user's own message optimistically; the server only
     // builds the assistant/tool overlay (see liveMessages). Steered messages
@@ -7922,7 +7911,7 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
     // state is now stale: the turn is starting, ending, or the streaming state
     // is flipping. Drop it so it cannot race a terminal transition and resurrect
     // a "streaming" row. The authoritative streaming state is delivered
-    // un-debounced by setChatIsStreaming / completion recording.
+    // un-debounced by finishTurn / completion recording.
     this.discardPendingStreamingActivity();
   }
 
@@ -8181,9 +8170,8 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
     // Coalesce bursts of running-activity updates into a single trailing
     // debounced RPC carrying the latest state, instead of fanning in one RPC per
     // update to the single WorkspaceDO instance. Terminal streaming transitions
-    // (see setChatIsStreaming / recordThreadAssistantCompletion) flush or
-    // discard this pending update so the workspace UI never sticks on
-    // "streaming".
+    // (see finishTurn / recordThreadAssistantCompletion) flush or discard this
+    // pending update so the workspace UI never sticks on "streaming".
     this.queueStreamingActivityUpdate(
       context.workspaceId,
       context.threadId,
@@ -8224,35 +8212,57 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
     );
   }
 
-  private setChatIsStreaming(
-    value: boolean,
+  // Fire-and-forget the workspace thread-list "streaming" indicator. Does NOT drive
+  // the client spinner (that is derived; see {@link isThreadStreaming}).
+  private pushWorkspaceStreaming(value: boolean): void {
+    const context = this.chatContext;
+    if (!context?.workspaceId || !context.threadId) return;
+    this.ctx.waitUntil(
+      this.recordWorkspaceThreadStreaming(context.workspaceId, context.threadId, value).catch(
+        (error) => console.error("[ChatThreadDO] failed to record workspace thread status", error),
+      ),
+    );
+  }
+
+  /**
+   * Turn-start bookkeeping. Resets the completion-recording guard, clears stale
+   * todos, and broadcasts state. Invoked once per run from the agent_start event.
+   */
+  private markTurnStarted(): void {
+    this.assistantCompletionRecordedAt = null;
+    this.assistantCompletionSummaryRequestedAt = null;
+    this.resetRunningActivityState();
+    // Clear persisted todos so they don't go stale across reconnects.
+    if (this.currentTodos.length > 0) {
+      this.currentTodos = [];
+      this.ctx.storage.kv.delete(CHAT_TODOS_KEY);
+    }
+    this.syncAgentState();
+    this.pushWorkspaceStreaming(true);
+  }
+
+  /**
+   * Turn-completion bookkeeping. Records the assistant completion / summary /
+   * automation result exactly once per turn — idempotency rides on
+   * {@link assistantCompletionRecordedAt}, NOT on any stored streaming flag — clears
+   * the live overlay, and broadcasts the now-idle derived state. Safe to call on any
+   * terminal path (agent_end, resume completion, or error/abort cleanup).
+   */
+  private finishTurn(
     options: { markUnread?: boolean; completedAt?: number; summarySource?: string | null } = {},
   ): void {
     const shouldRecordCompletion =
-      !value && options.markUnread === true && this.assistantCompletionRecordedAt === null;
+      options.markUnread === true && this.assistantCompletionRecordedAt === null;
     const shouldRecordCompletionSummary =
-      !value &&
       options.markUnread === true &&
       !shouldRecordCompletion &&
       this.assistantCompletionRecordedAt !== null &&
       this.assistantCompletionSummaryRequestedAt !== this.assistantCompletionRecordedAt &&
       typeof options.summarySource === "string" &&
       options.summarySource.trim().length > 0;
-    if (
-      this.chatIsStreaming === value &&
-      !shouldRecordCompletion &&
-      !shouldRecordCompletionSummary
-    ) {
-      return;
-    }
-    if (value) {
-      this.assistantCompletionRecordedAt = null;
-      this.assistantCompletionSummaryRequestedAt = null;
-    }
     // A turn that stops after asking a browser question is still awaiting user
     // input; keep the automation run active so the eventual answer can finish it.
     if (
-      !value &&
       shouldRecordCompletion &&
       this.activeAutomationRun &&
       this.browserPrompts.pendingQuestionCount === 0
@@ -8268,27 +8278,11 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
       });
     }
     this.resetRunningActivityState();
-    const statusChanged = this.chatIsStreaming !== value;
-    this.chatIsStreaming = value;
-    if (!value) {
-      // The turn is over. Connected clients have already received the finalized
-      // overlay broadcast (it lands before this one) and folded it into
-      // committed history. Clear the overlay and broadcast the empty snapshot so
-      // clients drop their live tail; committed history is the source of truth.
-      this.liveMessages = [];
-      this.liveStreamingMessageId = null;
-      this.broadcastLiveOverlay();
-    }
-    // Clear persisted todos when a new turn starts so they don't go stale
-    // across reconnects. The next TodoWrite will re-persist fresh state.
-    if (value && this.currentTodos.length > 0) {
-      this.currentTodos = [];
-      this.ctx.storage.kv.delete(CHAT_TODOS_KEY);
-      this.syncAgentState();
-    }
-    if (statusChanged) {
-      this.syncAgentState();
-    }
+    // Turn over: drop the live overlay (committed history is the source of truth).
+    this.liveMessages = [];
+    this.liveStreamingMessageId = null;
+    this.broadcastLiveOverlay();
+    this.syncAgentState();
     const context = this.chatContext;
     if (context?.workspaceId && context.threadId) {
       if (shouldRecordCompletion) {
@@ -8320,16 +8314,10 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
             console.error("[ChatThreadDO] failed to record assistant completion summary", error);
           }),
         );
-      } else if (statusChanged) {
-        this.ctx.waitUntil(
-          this.recordWorkspaceThreadStreaming(
-            context.workspaceId,
-            context.threadId,
-            value,
-          ).catch((error) => {
-            console.error("[ChatThreadDO] failed to record workspace thread status", error);
-          }),
-        );
+      } else {
+        // Not a completion (error/abort teardown): just clear the workspace
+        // indicator. The completion branches clear it via recordThreadAssistantCompletion.
+        this.pushWorkspaceStreaming(false);
       }
     }
   }
@@ -8545,7 +8533,7 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
       );
       if (
         this.activeAutomationRun ||
-        this.chatIsStreaming ||
+        this.isThreadStreaming() ||
         this.browserPrompts.pendingQuestionCount > 0
       ) {
         return {
@@ -8628,7 +8616,7 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
       });
     }
 
-    if (this.chatIsStreaming || this.piSession?.state.isStreaming) {
+    if (this.isThreadStreaming()) {
       return await this.agentEvalResult("busy", {
         error: "Thread is busy with another run",
       });
@@ -8669,7 +8657,7 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
       }
 
       this.setActiveTurnUserId(context.userId);
-      this.setChatIsStreaming(true);
+      // Turn-start bookkeeping runs from the agent_start event the prompt emits.
       this.publishRunningUserMessageActivity(rawContent);
       await this.updateThreadMetadataForUserMessage(
         attributedContent,
@@ -8709,7 +8697,7 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
         // Best effort cleanup; the error below is the actionable eval failure.
       }
       this.pushChatEvent(this.piProviderErrorEvent(message));
-      this.setChatIsStreaming(false);
+      this.finishTurn();
       this.setActiveTurnUserId(null);
       return await this.agentEvalResult("error", {
         error: message,
@@ -12239,7 +12227,8 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
       this.pendingOverlayArtifacts?.clear();
       // A fresh turn supersedes any prior terminal error.
       this.lastError = null;
-      this.setChatIsStreaming(true);
+      // agent_start is the one turn-start hook for every run (prompt, resume, eval).
+      this.markTurnStarted();
       // NOTE: do NOT open the recovery marker here. agent_start also fires for
       // non-fibered turns (e.g. the eval runner's direct piSession.prompt), which
       // have no cf_agents_runs row — opening a marker there would leave stale
@@ -12578,7 +12567,7 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
           clear: true,
         });
       }
-      this.setChatIsStreaming(false, {
+      this.finishTurn({
         markUnread: true,
         completedAt: completedAtMs,
         summarySource,
@@ -12846,7 +12835,7 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
                   message: errorMessage,
                   clear: true,
                 });
-                this.setChatIsStreaming(false);
+                this.finishTurn();
                 this.setActiveTurnUserId(null);
                 // The turn failed before agent_end could clean up (the inactivity
                 // timeout disposes the session first). The fiber row is already
@@ -12859,6 +12848,11 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
                 if (recoverableTurnStarted) {
                   void this.clearPiActiveTurnAndJournal();
                 }
+              })
+              .finally(() => {
+                // Post-settle: the fiber row is gone and pi-core is idle, so this
+                // broadcast of the derived state is what clears the client spinner.
+                this.syncAgentState();
               }),
           );
           return true;

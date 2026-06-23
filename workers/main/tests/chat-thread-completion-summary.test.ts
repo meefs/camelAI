@@ -95,7 +95,7 @@ describe("ChatThreadDO completion summaries", () => {
     const rawFinalText =
       "Final answer: I changed several files, ran commands, and here are verbose details.";
 
-    ChatThreadDO.prototype["setChatIsStreaming"].call(fake, false, {
+    ChatThreadDO.prototype["finishTurn"].call(fake, {
       markUnread: true,
       summarySource: rawFinalText,
     });
@@ -145,7 +145,7 @@ describe("ChatThreadDO completion summaries", () => {
       recordThreadStreaming,
     } = createFakeThread({ aiError: new Error("Unauthorized") });
 
-    ChatThreadDO.prototype["setChatIsStreaming"].call(fake, false, {
+    ChatThreadDO.prototype["finishTurn"].call(fake, {
       markUnread: true,
       summarySource: "Raw final answer that should not be stored on failure.",
     });
@@ -199,7 +199,7 @@ describe("ChatThreadDO completion summaries", () => {
         input.summaryStatus === "pending" ? storedCompletedAt : input.completedAt,
     );
 
-    ChatThreadDO.prototype["setChatIsStreaming"].call(fake, false, {
+    ChatThreadDO.prototype["finishTurn"].call(fake, {
       markUnread: true,
       completedAt: 100,
       summarySource: "Raw final answer.",
@@ -232,7 +232,7 @@ describe("ChatThreadDO completion summaries", () => {
     } = createFakeThread();
     recordThreadAssistantCompletion.mockResolvedValue(false);
 
-    ChatThreadDO.prototype["setChatIsStreaming"].call(fake, false, {
+    ChatThreadDO.prototype["finishTurn"].call(fake, {
       markUnread: true,
       completedAt: 100,
       summarySource: "Stale final answer.",
@@ -258,7 +258,7 @@ describe("ChatThreadDO completion summaries", () => {
     } = createFakeThread();
     recordThreadAssistantCompletion.mockRejectedValue(new Error("transient"));
 
-    ChatThreadDO.prototype["setChatIsStreaming"].call(fake, false, {
+    ChatThreadDO.prototype["finishTurn"].call(fake, {
       markUnread: true,
       completedAt: 100,
       summarySource: "Completed final answer.",
@@ -285,7 +285,7 @@ describe("ChatThreadDO completion summaries", () => {
       recordThreadStreaming,
     } = createFakeThread({ aiResponse: { choices: [{ message: { content: "   " } }] } });
 
-    ChatThreadDO.prototype["setChatIsStreaming"].call(fake, false, {
+    ChatThreadDO.prototype["finishTurn"].call(fake, {
       markUnread: true,
       summarySource: "Raw final answer.",
     });
@@ -315,7 +315,7 @@ describe("ChatThreadDO completion summaries", () => {
       recordThreadStreaming,
     } = createFakeThread();
 
-    ChatThreadDO.prototype["setChatIsStreaming"].call(fake, false, {
+    ChatThreadDO.prototype["finishTurn"].call(fake, {
       markUnread: true,
       summarySource: null,
     });
@@ -366,7 +366,7 @@ describe("ChatThreadDO completion summaries", () => {
     fake.browserPrompts = { pendingQuestionCount: 1 };
     fake.updateActiveAutomationRun = vi.fn();
 
-    ChatThreadDO.prototype["setChatIsStreaming"].call(fake, false, {
+    ChatThreadDO.prototype["finishTurn"].call(fake, {
       markUnread: true,
       completedAt: 123,
       summarySource: null,
@@ -383,7 +383,7 @@ describe("ChatThreadDO completion summaries", () => {
     ChatThreadDO.prototype["publishRunningActivity"].call(fake, "Thinking", {
       immediate: true,
     });
-    ChatThreadDO.prototype["setChatIsStreaming"].call(fake, false, {
+    ChatThreadDO.prototype["finishTurn"].call(fake, {
       markUnread: true,
       completedAt: 100,
       summarySource: "Raw final answer.",

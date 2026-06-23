@@ -113,7 +113,8 @@ describe('ChatThreadDO Pi turn handling', () => {
     fake.piReasoningItemId = null;
     fake.piToolArgs = new Map();
     fake.piAssistantText = '';
-    fake.setChatIsStreaming = vi.fn();
+    fake.markTurnStarted = vi.fn();
+    fake.finishTurn = vi.fn();
     fake.appendPiCoreMessagesIfMissing = vi.fn();
     fake.upsertPiCoreMessages = vi.fn();
     fake.setActiveTurnUserId = vi.fn();
@@ -317,14 +318,14 @@ describe('ChatThreadDO Pi turn handling', () => {
     fake.resetRunningActivityState = vi.fn();
     fake.syncAgentState = vi.fn();
 
-    ChatThreadDO.prototype['setChatIsStreaming'].call(fake, false);
+    ChatThreadDO.prototype['finishTurn'].call(fake);
 
     expect(fake.liveMessages).toEqual([]);
     expect(fake.liveStreamingMessageId).toBeNull();
     expect(fake.syncAgentState).toHaveBeenCalled();
   });
 
-  it('restores the streaming flag from persisted state on wake', () => {
+  it('does NOT restore streaming from persisted state on wake (it is derived)', () => {
     const fake = Object.create(ChatThreadDO.prototype) as any;
     fake.liveStateHydrated = false;
     fake.chatIsStreaming = false;
@@ -340,9 +341,10 @@ describe('ChatThreadDO Pi turn handling', () => {
 
     ChatThreadDO.prototype['hydrateLiveStateFromAgentState'].call(fake);
 
-    // The streaming flag and coarse fields are restored from durable state; the
-    // live overlay is not persisted there anymore.
-    expect(fake.chatIsStreaming).toBe(true);
+    // Streaming is derived on read (see isThreadStreaming), so hydrate leaves the
+    // internal bookkeeping latch untouched — there is no flag to resurrect, which is
+    // why a cold wake can't strand the spinner. Coarse fields are still restored.
+    expect(fake.chatIsStreaming).toBe(false);
     expect(fake.lastCompletedTurn).toEqual({ id: 'fork-1', durationMs: 5, completedAtMs: 9 });
   });
 
@@ -675,9 +677,9 @@ describe('ChatThreadDO Pi turn handling', () => {
     };
     fake.recordChatThreadObservabilityEvent = vi.fn();
     fake.setActiveTurnUserId = vi.fn();
-    fake.setChatIsStreaming = vi.fn((value: boolean) => {
-      fake.chatIsStreaming = value;
-    });
+    fake.markTurnStarted = vi.fn();
+    fake.finishTurn = vi.fn();
+    fake.syncAgentState = vi.fn();
     fake.broadcastRunnerClients = vi.fn();
     fake.emitChatError = vi.fn();
     fake.ensurePiSessionReady = vi.fn(async () => undefined);
@@ -703,7 +705,7 @@ describe('ChatThreadDO Pi turn handling', () => {
 
     expect(result).toEqual({ status: 'accepted' });
     expect(fake.ensurePiSessionReady).toHaveBeenCalledTimes(1);
-    expect(fake.setChatIsStreaming).toHaveBeenCalledWith(true);
+    expect(fake.syncAgentState).toHaveBeenCalled();
     expect(fake.warmWorkspaceContainerForTurn).not.toHaveBeenCalled();
     expect(sentCommands).toHaveLength(1);
     expect(sentCommands[0]).toMatchObject({
@@ -747,8 +749,10 @@ describe('ChatThreadDO Pi turn handling', () => {
       return fn();
     });
     fake.withPiTurnInactivityTimeout = vi.fn(async (fn: () => unknown) => fn());
-    fake.setChatIsStreaming = vi.fn();
+    fake.markTurnStarted = vi.fn();
+    fake.finishTurn = vi.fn();
     fake.setActiveTurnUserId = vi.fn();
+    fake.syncAgentState = vi.fn();
     fake.updateActiveAutomationRun = vi.fn();
     fake.pushChatEvent = vi.fn();
     fake.piProviderErrorEvent = vi.fn((message: string) => ({ type: 'error', error: message }));
@@ -783,63 +787,132 @@ describe('ChatThreadDO Pi turn handling', () => {
     expect(order).toEqual(['marker', 'journal', 'runFiber', 'refresh', 'prompt']);
   });
 
-  it('heals a thread stranded streaming with no recoverable turn on wake', async () => {
-    const events: any[] = [];
-    const fake = Object.create(ChatThreadDO.prototype) as any;
-    fake.chatContext = { threadId: 'thread1' };
-    fake.liveStateHydrated = true; // skip re-hydration; state already reflects the stranded turn
-    fake.chatIsStreaming = true;
-    fake.piSession = null;
-    fake.readPiActiveTurn = vi.fn(() => null);
-    fake.recordChatThreadObservabilityEvent = vi.fn();
-    fake.pushChatEvent = vi.fn((event: any) => events.push(event));
-    fake.piProviderErrorEvent = vi.fn((message: string) => ({ type: 'error', error: message }));
-    fake.updateActiveAutomationRun = vi.fn();
-    fake.setChatIsStreaming = vi.fn((value: boolean) => {
-      fake.chatIsStreaming = value;
+  describe('isThreadStreaming (derived loading state)', () => {
+    const makeFake = (opts: { piStreaming?: boolean | null; marker?: boolean }) => {
+      const fake = Object.create(ChatThreadDO.prototype) as any;
+      fake.piSession =
+        opts.piStreaming === null || opts.piStreaming === undefined
+          ? null
+          : { state: { isStreaming: opts.piStreaming } };
+      fake.readPiActiveTurn = vi.fn(() =>
+        opts.marker ? { turnId: 't1', attempt: 0, openedAt: 1 } : null,
+      );
+      return fake;
+    };
+    const call = (fake: any): boolean =>
+      ChatThreadDO.prototype['isThreadStreaming'].call(fake);
+
+    it('is true while a turn is live in this isolate', () => {
+      expect(call(makeFake({ piStreaming: true, marker: false }))).toBe(true);
     });
-    fake.setActiveTurnUserId = vi.fn();
 
-    await ChatThreadDO.prototype.onStart.call(fake);
+    it('is true when an active-turn marker exists (cold-wake gap / pending resume, piSession gone)', () => {
+      expect(call(makeFake({ piStreaming: null, marker: true }))).toBe(true);
+    });
 
-    expect(fake.setChatIsStreaming).toHaveBeenCalledWith(false);
-    expect(fake.setActiveTurnUserId).toHaveBeenCalledWith(null);
-    expect(events).toHaveLength(1);
-    expect(events[0]).toMatchObject({ type: 'error' });
-    expect(fake.recordChatThreadObservabilityEvent).toHaveBeenCalledWith(
-      'pi_turn_stranded_cleared',
-      expect.objectContaining({ status: 'cleared' }),
-    );
-    // A stranded scheduled-automation run must be reported errored + cleared, not
-    // left in KV for a later turn to mis-record as succeeded.
-    expect(fake.updateActiveAutomationRun).toHaveBeenCalledWith(
-      expect.objectContaining({ status: 'error', clear: true }),
-    );
+    it('is false when no turn is live and no marker is set', () => {
+      expect(call(makeFake({ piStreaming: false, marker: false }))).toBe(false);
+    });
+
+    it('reads idle once a terminal path clears the marker', () => {
+      // agent_end / resume completion / error cleanup all clear the marker, so a
+      // settled turn derives idle with no separate flag to forget.
+      expect(call(makeFake({ piStreaming: null, marker: false }))).toBe(false);
+    });
   });
 
-  it('leaves a recoverable interrupted turn (active-turn marker present) for the resume path on wake', async () => {
-    const fake = Object.create(ChatThreadDO.prototype) as any;
-    fake.chatContext = { threadId: 'thread1' };
-    fake.liveStateHydrated = true;
-    fake.chatIsStreaming = true;
-    fake.piSession = null;
-    fake.readPiActiveTurn = vi.fn(() => ({ turnId: 't1', attempt: 0, openedAt: 1 }));
-    fake.recordChatThreadObservabilityEvent = vi.fn();
-    fake.pushChatEvent = vi.fn();
-    fake.piProviderErrorEvent = vi.fn();
-    fake.updateActiveAutomationRun = vi.fn();
-    fake.setChatIsStreaming = vi.fn();
-    fake.setActiveTurnUserId = vi.fn();
+  describe('onStart (no heal needed — streaming is derived)', () => {
+    it('only hydrates; never clears streaming or schedules a resume', async () => {
+      const fake = Object.create(ChatThreadDO.prototype) as any;
+      fake.liveStateHydrated = true; // hydrate short-circuits
+      fake.markTurnStarted = vi.fn();
+      fake.finishTurn = vi.fn();
+      fake.setActiveTurnUserId = vi.fn();
+      fake.schedule = vi.fn(async () => {});
+      fake.pushChatEvent = vi.fn();
 
-    await ChatThreadDO.prototype.onStart.call(fake);
+      await ChatThreadDO.prototype.onStart.call(fake);
 
-    // A marker means onFiberRecovered -> resumeInterruptedPiTurn owns the turn;
-    // the heal-on-wake path must not race it by clearing the streaming flag or
-    // tearing down its automation run.
-    expect(fake.setChatIsStreaming).not.toHaveBeenCalled();
-    expect(fake.setActiveTurnUserId).not.toHaveBeenCalled();
-    expect(fake.pushChatEvent).not.toHaveBeenCalled();
-    expect(fake.updateActiveAutomationRun).not.toHaveBeenCalled();
+      expect(fake.finishTurn).not.toHaveBeenCalled();
+      expect(fake.markTurnStarted).not.toHaveBeenCalled();
+      expect(fake.schedule).not.toHaveBeenCalled();
+      expect(fake.pushChatEvent).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('mid-turn config change', () => {
+    it('byokChanged invalidates the provider cache and rebuilds the live session with the new config', async () => {
+      const calls: string[] = [];
+      const fake = Object.create(ChatThreadDO.prototype) as any;
+      fake.cachedLlmProviderConfig = { stale: true };
+      fake.piSession = { state: { isStreaming: true } }; // live
+      fake.disposePiSession = vi.fn(() => {
+        calls.push('dispose');
+        fake.piSession = null;
+      });
+      fake.schedule = vi.fn(async () => {
+        calls.push('schedule');
+      });
+      fake.withRunnerTransitionLock = vi.fn(
+        async (_label: string, fn: () => Promise<void>) => fn(),
+      );
+
+      await ChatThreadDO.prototype.byokChanged.call(fake);
+
+      expect(fake.cachedLlmProviderConfig).toBeNull();
+      // A rebuild is required: getApiKey can refresh the key on the live loop, but
+      // not the captured model / provider routing / base URL the in-flight turn is
+      // already streaming with — only dispose + resume picks those up.
+      expect(calls).toEqual(['dispose', 'schedule']);
+      expect(fake.schedule).toHaveBeenCalledWith(0, 'resumeInterruptedPiTurn', undefined, {
+        idempotent: true,
+      });
+    });
+
+    it('refreshRunnerConfig disposes a live turn and resumes it so it continues with the new model', async () => {
+      const calls: string[] = [];
+      const fake = Object.create(ChatThreadDO.prototype) as any;
+      fake.piSession = { state: { isStreaming: true } }; // live -> isThreadStreaming short-circuits true
+      fake.disposePiSession = vi.fn(() => {
+        calls.push('dispose');
+        fake.piSession = null;
+      });
+      fake.schedule = vi.fn(async () => {
+        calls.push('schedule');
+      });
+      fake.withRunnerTransitionLock = vi.fn(
+        async (_label: string, fn: () => Promise<void>) => fn(),
+      );
+
+      await ChatThreadDO.prototype.refreshRunnerConfig.call(fake);
+
+      // Dispose first (the live turn settles; the spinner is derived so it won't
+      // strand), then schedule the resume which rebuilds with the new model.
+      expect(calls).toEqual(['dispose', 'schedule']);
+      expect(fake.schedule).toHaveBeenCalledWith(0, 'resumeInterruptedPiTurn', undefined, {
+        idempotent: true,
+      });
+    });
+
+    it('refreshRunnerConfig disposes but does not resume an idle thread', async () => {
+      const fake = Object.create(ChatThreadDO.prototype) as any;
+      fake.piSession = null; // idle
+      fake.ctx = {
+        storage: {
+          sql: { exec: () => ({ toArray: () => [{ c: 0 }] }) },
+        },
+      };
+      fake.disposePiSession = vi.fn();
+      fake.schedule = vi.fn(async () => {});
+      fake.withRunnerTransitionLock = vi.fn(
+        async (_label: string, fn: () => Promise<void>) => fn(),
+      );
+
+      await ChatThreadDO.prototype.refreshRunnerConfig.call(fake);
+
+      expect(fake.disposePiSession).toHaveBeenCalled();
+      expect(fake.schedule).not.toHaveBeenCalled();
+    });
   });
 
   it('publishes initial user message startup failures to chat clients', async () => {
@@ -889,8 +962,8 @@ describe('ChatThreadDO Pi turn handling', () => {
     };
 
     fake.chatContext = null;
-    fake.chatIsStreaming = true;
     fake.activeAutomationRun = activeAutomationRun;
+    fake.isThreadStreaming = vi.fn(() => true); // a turn is active in this isolate
     fake.browserPrompts = { pendingQuestionCount: 0 };
     fake.ctx = {
       storage: { kv: { put: vi.fn(), delete: vi.fn() } },
@@ -1005,9 +1078,9 @@ describe('ChatThreadDO Pi turn handling', () => {
     };
     fake.recordChatThreadObservabilityEvent = vi.fn();
     fake.setActiveTurnUserId = vi.fn();
-    fake.setChatIsStreaming = vi.fn((value: boolean) => {
-      fake.chatIsStreaming = value;
-    });
+    fake.markTurnStarted = vi.fn();
+    fake.finishTurn = vi.fn();
+    fake.syncAgentState = vi.fn();
     fake.publishRunningUserMessageActivity = vi.fn();
     fake.broadcastRunnerClients = vi.fn();
     fake.ensurePiSessionReady = vi.fn(async () => undefined);
@@ -1027,7 +1100,7 @@ describe('ChatThreadDO Pi turn handling', () => {
 
     expect(result).toEqual({ status: 'accepted' });
     expect(fake.ensurePiSessionReady).toHaveBeenCalledTimes(1);
-    expect(fake.setChatIsStreaming).toHaveBeenCalledWith(true);
+    expect(fake.syncAgentState).toHaveBeenCalled();
     expect(fake.publishRunningUserMessageActivity).toHaveBeenCalledWith(
       'please also add tests',
     );
@@ -1078,7 +1151,8 @@ describe('ChatThreadDO Pi turn handling', () => {
     fake.enqueueRunnerUserMessage = vi.fn(async () => {
       throw error;
     });
-    fake.setChatIsStreaming = vi.fn();
+    fake.markTurnStarted = vi.fn();
+    fake.finishTurn = vi.fn();
     fake.setActiveTurnUserId = vi.fn();
     fake.updateActiveAutomationRun = vi.fn();
 
@@ -1095,7 +1169,7 @@ describe('ChatThreadDO Pi turn handling', () => {
       message: 'connection dropped',
       clear: true,
     });
-    expect(fake.setChatIsStreaming).toHaveBeenCalledWith(false);
+    expect(fake.finishTurn).toHaveBeenCalled();
     expect(fake.setActiveTurnUserId).toHaveBeenCalledWith(null);
   });
 
@@ -1190,7 +1264,8 @@ describe('ChatThreadDO Pi turn handling', () => {
     });
     fake.ctx = { storage: { kv: { get: vi.fn(), put: vi.fn() } } };
     fake.enqueueRunnerUserMessage = vi.fn(() => enqueuePromise);
-    fake.setChatIsStreaming = vi.fn();
+    fake.markTurnStarted = vi.fn();
+    fake.finishTurn = vi.fn();
     fake.setActiveTurnUserId = vi.fn();
     fake.updateActiveAutomationRun = vi.fn();
 
@@ -2773,7 +2848,7 @@ describe('ChatThreadDO Pi turn handling', () => {
 
     // The thread is not left streaming: cleanup that agent_end would normally
     // do is performed in the catch instead.
-    expect(fake.setChatIsStreaming).toHaveBeenCalledWith(false);
+    expect(fake.finishTurn).toHaveBeenCalled();
     expect(fake.setActiveTurnUserId).toHaveBeenCalledWith(null);
     expect(fake.updateActiveAutomationRun).toHaveBeenCalledWith(
       expect.objectContaining({ status: 'error', clear: true }),
@@ -5985,8 +6060,11 @@ describe('ChatThreadDO Pi turn handling', () => {
     fake.readPiActiveTurn = vi.fn(() => ({ turnId: 't1', attempt: 0, openedAt: 1 }));
     fake.writePiActiveTurn = vi.fn();
     fake.clearPiActiveTurnAndJournal = vi.fn(async () => {});
-    fake.setChatIsStreaming = vi.fn();
+    fake.markTurnStarted = vi.fn();
+    fake.finishTurn = vi.fn();
     fake.setActiveTurnUserId = vi.fn();
+    fake.syncAgentState = vi.fn();
+    fake.isThreadStreaming = vi.fn(() => false);
     fake.persistPiAgentLoopErrorForDevelopers = vi.fn();
     fake.updateActiveAutomationRun = vi.fn();
     fake.pushChatEvent = vi.fn();
@@ -6040,8 +6118,7 @@ describe('ChatThreadDO Pi turn handling', () => {
     expect(fake.clearPiActiveTurnAndJournal).toHaveBeenCalled();
     // Finalizes like the normal agent_end path: markUnread drives completion
     // recording / automation success / summary, not a bare streaming reset.
-    expect(fake.setChatIsStreaming).toHaveBeenCalledWith(
-      false,
+    expect(fake.finishTurn).toHaveBeenCalledWith(
       expect.objectContaining({ markUnread: true, completedAt: expect.any(Number) }),
     );
     expect(fake.setActiveTurnUserId).toHaveBeenCalledWith(null);
@@ -6066,7 +6143,7 @@ describe('ChatThreadDO Pi turn handling', () => {
     expect(fake.pushChatEvent).toHaveBeenCalledWith(
       expect.objectContaining({ type: 'error' }),
     );
-    expect(fake.setChatIsStreaming).toHaveBeenCalledWith(false);
+    expect(fake.finishTurn).toHaveBeenCalled();
     expect(fake.setActiveTurnUserId).toHaveBeenCalledWith(null);
     expect(fake.clearPiActiveTurnAndJournal).toHaveBeenCalled();
   });
@@ -6097,7 +6174,7 @@ describe('ChatThreadDO Pi turn handling', () => {
     expect(fake.updateActiveAutomationRun).toHaveBeenCalledWith(
       expect.objectContaining({ status: 'error', clear: true }),
     );
-    expect(fake.setChatIsStreaming).toHaveBeenCalledWith(false);
+    expect(fake.finishTurn).toHaveBeenCalled();
     expect(fake.setActiveTurnUserId).toHaveBeenCalledWith(null);
     expect(fake.clearPiActiveTurnAndJournal).toHaveBeenCalled();
   });
@@ -6123,7 +6200,7 @@ describe('ChatThreadDO Pi turn handling', () => {
 
     expect(fake.piSession.continue).toHaveBeenCalled();
     expect(fake.clearPiActiveTurnAndJournal).not.toHaveBeenCalled();
-    expect(fake.setChatIsStreaming).not.toHaveBeenCalledWith(false);
+    expect(fake.finishTurn).not.toHaveBeenCalled();
     expect(fake.pushChatEvent).not.toHaveBeenCalled();
   });
 
@@ -6138,7 +6215,7 @@ describe('ChatThreadDO Pi turn handling', () => {
     await ChatThreadDO.prototype['resumeInterruptedPiTurn'].call(fake);
 
     expect(fake.clearPiActiveTurnAndJournal).toHaveBeenCalled();
-    expect(fake.setChatIsStreaming).toHaveBeenCalledWith(false);
+    expect(fake.finishTurn).toHaveBeenCalled();
     expect(fake.setActiveTurnUserId).toHaveBeenCalledWith(null);
     // It bailed at the attempt budget — never tried to rebuild/continue.
     expect(fake.ensurePiSessionReady).not.toHaveBeenCalled();

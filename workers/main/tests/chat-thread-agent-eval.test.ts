@@ -60,9 +60,8 @@ describe("ChatThreadDO agent eval sessions", () => {
     fake.applyMentionsForTurn = vi.fn(async (content: string) => content);
     fake.updateThreadMetadataForUserMessage = vi.fn(async () => undefined);
     fake.setActiveTurnUserId = vi.fn();
-    fake.setChatIsStreaming = vi.fn((value: boolean) => {
-      fake.chatIsStreaming = value;
-    });
+    fake.markTurnStarted = vi.fn();
+    fake.finishTurn = vi.fn();
     fake.publishRunningUserMessageActivity = vi.fn();
     fake.refreshPiSessionModel = vi.fn(async () => undefined);
     fake.withPiTurnInactivityTimeout = vi.fn(async (fn: () => Promise<unknown>) => fn());
@@ -106,6 +105,9 @@ describe("ChatThreadDO agent eval sessions", () => {
     ]);
     expect(fake.piSession.prompt).toHaveBeenCalledTimes(1);
     expect(fake.withPiTurnInactivityTimeout).toHaveBeenCalledTimes(1);
-    expect(fake.setChatIsStreaming).toHaveBeenCalledWith(true);
+    // Turn-start bookkeeping in the eval path: the user is attributed to the turn.
+    // (markTurnStarted itself now fires from the agent_start event the real prompt
+    // emits, which this mock prompt does not synthesize.)
+    expect(fake.setActiveTurnUserId).toHaveBeenCalledWith("user1");
   });
 });
