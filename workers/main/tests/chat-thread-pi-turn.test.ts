@@ -715,6 +715,133 @@ describe('ChatThreadDO Pi turn handling', () => {
     expect(sentCommands[0].content).toBe('[email message from Miguel (miguel@example.com)]: hello');
   });
 
+  it('makes a new turn recoverable before the model refresh resolves (deploy-safe start)', async () => {
+    const order: string[] = [];
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+
+    let resolveRefresh: () => void = () => {};
+    const refreshGate = new Promise<void>((resolve) => {
+      resolveRefresh = resolve;
+    });
+
+    fake.piSession = {
+      state: { isStreaming: false },
+      prompt: vi.fn(async () => {
+        order.push('prompt');
+      }),
+      steer: vi.fn(),
+    };
+    fake.ctx = { waitUntil: vi.fn() };
+    fake.refreshPiSessionModel = vi.fn(async () => {
+      order.push('refresh');
+      await refreshGate;
+    });
+    fake.openPiActiveTurnIfAbsent = vi.fn(() => order.push('marker'));
+    fake.recordPiTurnJournalUserMessage = vi.fn(() => order.push('journal'));
+    fake.recordPiTurnJournalSteerMessage = vi.fn();
+    // The real runFiber's cf_agents_runs INSERT is synchronous (before its first
+    // await); the unit fake stands in for that durable bookkeeping and just runs
+    // the wrapped turn body.
+    fake.runFiber = vi.fn(async (_name: string, fn: () => unknown) => {
+      order.push('runFiber');
+      return fn();
+    });
+    fake.withPiTurnInactivityTimeout = vi.fn(async (fn: () => unknown) => fn());
+    fake.setChatIsStreaming = vi.fn();
+    fake.setActiveTurnUserId = vi.fn();
+    fake.updateActiveAutomationRun = vi.fn();
+    fake.pushChatEvent = vi.fn();
+    fake.piProviderErrorEvent = vi.fn((message: string) => ({ type: 'error', error: message }));
+    fake.persistPiAgentLoopErrorForDevelopers = vi.fn();
+
+    const accepted = ChatThreadDO.prototype['sendRunnerCommand'].call(fake, {
+      type: 'message',
+      content: 'do the thing',
+    });
+    expect(accepted).toBe(true);
+
+    // Let the waitUntil turn body run up to the (still pending) model refresh.
+    await Promise.resolve();
+    await Promise.resolve();
+
+    // The active-turn marker, journal, and durable fiber row must all be in place
+    // even though the model refresh has NOT resolved — otherwise a deploy eviction
+    // in the refresh window would strand the thread "streaming" with nothing for
+    // onFiberRecovered to resume. (Before the fix, refreshPiSessionModel was awaited
+    // first, so a hung refresh meant the marker/fiber were never created.)
+    expect(fake.openPiActiveTurnIfAbsent).toHaveBeenCalledTimes(1);
+    expect(fake.recordPiTurnJournalUserMessage).toHaveBeenCalledTimes(1);
+    expect(fake.runFiber).toHaveBeenCalledTimes(1);
+    expect(order.indexOf('marker')).toBeLessThan(order.indexOf('refresh'));
+    expect(order.indexOf('runFiber')).toBeLessThan(order.indexOf('refresh'));
+    // The prompt only fires once the model refresh resolves, inside the fiber.
+    expect(fake.piSession.prompt).not.toHaveBeenCalled();
+
+    resolveRefresh();
+    await flushWaitUntil(fake);
+    expect(fake.piSession.prompt).toHaveBeenCalledTimes(1);
+    expect(order).toEqual(['marker', 'journal', 'runFiber', 'refresh', 'prompt']);
+  });
+
+  it('heals a thread stranded streaming with no recoverable turn on wake', async () => {
+    const events: any[] = [];
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    fake.chatContext = { threadId: 'thread1' };
+    fake.liveStateHydrated = true; // skip re-hydration; state already reflects the stranded turn
+    fake.chatIsStreaming = true;
+    fake.piSession = null;
+    fake.readPiActiveTurn = vi.fn(() => null);
+    fake.recordChatThreadObservabilityEvent = vi.fn();
+    fake.pushChatEvent = vi.fn((event: any) => events.push(event));
+    fake.piProviderErrorEvent = vi.fn((message: string) => ({ type: 'error', error: message }));
+    fake.updateActiveAutomationRun = vi.fn();
+    fake.setChatIsStreaming = vi.fn((value: boolean) => {
+      fake.chatIsStreaming = value;
+    });
+    fake.setActiveTurnUserId = vi.fn();
+
+    await ChatThreadDO.prototype.onStart.call(fake);
+
+    expect(fake.setChatIsStreaming).toHaveBeenCalledWith(false);
+    expect(fake.setActiveTurnUserId).toHaveBeenCalledWith(null);
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ type: 'error' });
+    expect(fake.recordChatThreadObservabilityEvent).toHaveBeenCalledWith(
+      'pi_turn_stranded_cleared',
+      expect.objectContaining({ status: 'cleared' }),
+    );
+    // A stranded scheduled-automation run must be reported errored + cleared, not
+    // left in KV for a later turn to mis-record as succeeded.
+    expect(fake.updateActiveAutomationRun).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 'error', clear: true }),
+    );
+  });
+
+  it('leaves a recoverable interrupted turn (active-turn marker present) for the resume path on wake', async () => {
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    fake.chatContext = { threadId: 'thread1' };
+    fake.liveStateHydrated = true;
+    fake.chatIsStreaming = true;
+    fake.piSession = null;
+    fake.readPiActiveTurn = vi.fn(() => ({ turnId: 't1', attempt: 0, openedAt: 1 }));
+    fake.recordChatThreadObservabilityEvent = vi.fn();
+    fake.pushChatEvent = vi.fn();
+    fake.piProviderErrorEvent = vi.fn();
+    fake.updateActiveAutomationRun = vi.fn();
+    fake.setChatIsStreaming = vi.fn();
+    fake.setActiveTurnUserId = vi.fn();
+
+    await ChatThreadDO.prototype.onStart.call(fake);
+
+    // A marker means onFiberRecovered -> resumeInterruptedPiTurn owns the turn;
+    // the heal-on-wake path must not race it by clearing the streaming flag or
+    // tearing down its automation run.
+    expect(fake.setChatIsStreaming).not.toHaveBeenCalled();
+    expect(fake.setActiveTurnUserId).not.toHaveBeenCalled();
+    expect(fake.pushChatEvent).not.toHaveBeenCalled();
+    expect(fake.updateActiveAutomationRun).not.toHaveBeenCalled();
+  });
+
   it('publishes initial user message startup failures to chat clients', async () => {
     const fake = Object.create(ChatThreadDO.prototype) as any;
     const events: any[] = [];

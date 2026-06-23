@@ -4527,6 +4527,57 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
     return `${CODE_MODE_ARTIFACTS_KEY_PREFIX}${parentToolUseId}`;
   }
 
+  /**
+   * Heal a thread stranded "streaming" by a mid-turn eviction (e.g. a deploy) that
+   * left no recoverable turn behind.
+   *
+   * A normal mid-turn eviction leaves a durable fiber run row + active-turn marker,
+   * and the SDK's wake-time fiber scan (which runs before this hook) calls
+   * {@link onFiberRecovered} -> {@link resumeInterruptedPiTurn}, driving the turn to
+   * completion and clearing the streaming flag. But if the eviction landed before
+   * that recoverable state was written, there is nothing to recover: the persisted
+   * `isStreaming = true` is restored on wake ({@link hydrateLiveStateFromAgentState})
+   * and never flips back, so the client's loading indicator (driven solely by
+   * `state.isStreaming`) spins forever.
+   *
+   * Detect that case here — persisted streaming, no live turn in this isolate, and no
+   * active-turn marker (a marker means a resume is pending/in-flight, so leave it to
+   * the recovery path) — and finalize the orphaned turn so reconnecting clients
+   * unblock. Runs on every cold wake, so it also heals threads stranded before this
+   * fix shipped.
+   */
+  override async onStart(props?: unknown): Promise<void> {
+    await super.onStart?.(props as never);
+    this.hydrateLiveStateFromAgentState();
+    if (
+      this.chatIsStreaming &&
+      !this.piSession?.state.isStreaming &&
+      !this.readPiActiveTurn()
+    ) {
+      const interruptionMessage =
+        "This turn was interrupted and could not be resumed automatically. Please send your message again.";
+      this.recordChatThreadObservabilityEvent("pi_turn_stranded_cleared", {
+        operation: "heal_stranded_streaming",
+        status: "cleared",
+        severity: "warn",
+      });
+      this.pushChatEvent(this.piProviderErrorEvent(interruptionMessage));
+      // If the stranded turn was a scheduled-automation run, its run id was
+      // persisted in activeAutomationRun before the turn started. Report it as
+      // errored and clear it here (same as the other Pi failure paths) — otherwise
+      // the stale run lingers in KV and a later unrelated turn's
+      // setChatIsStreaming(false, { markUnread: true }) records it as succeeded,
+      // corrupting the scheduled-prompt result.
+      this.updateActiveAutomationRun({
+        status: "error",
+        message: interruptionMessage,
+        clear: true,
+      });
+      this.setChatIsStreaming(false);
+      this.setActiveTurnUserId(null);
+    }
+  }
+
   async onConnect(connection: Connection, ctx: ConnectionContext): Promise<void> {
     const url = new URL(ctx.request.url);
     const incomingOrgId = url.searchParams.get("orgId")?.trim() || "";
@@ -12725,21 +12776,29 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
           this.ctx.waitUntil(
             (async () => {
               if (!this.piSession) return;
-              await this.refreshPiSessionModel();
               if (this.piSession.state.isStreaming) {
-                // Durably journal the accepted message BEFORE handing it to the
-                // in-memory steering queue, so an eviction in the window before Pi
-                // drains it re-delivers it on resume instead of silently losing it.
+                // Durably journal the accepted message BEFORE any await, so an
+                // eviction in the window before Pi drains the in-memory steering
+                // queue re-delivers it on resume instead of silently losing it. The
+                // in-flight turn's own fiber already makes the run recoverable, so
+                // the model refresh can stay async here.
                 this.recordPiTurnJournalSteerMessage(userMessage);
+                await this.refreshPiSessionModel();
+                if (!this.piSession) return;
                 this.piSession.steer(userMessage);
               } else {
                 recoverableTurnStarted = true;
-                // Make the turn recoverable BEFORE entering the fiber: mark it
-                // active and journal the accepted user message. Both are synchronous
-                // (kv.put + sql.exec), and runFiber's own cf_agents_runs INSERT is
-                // synchronous too, so the marker, journal, AND fiber row are all
-                // durable before runFiber's first await (keepAlive). That closes the
-                // window where the run row could exist with no recoverable state yet.
+                // Establish durable recoverability in the SAME synchronous tick that
+                // persisted isStreaming=true upstream (enqueueRunnerUserMessage) — NO
+                // await may run before this. The active-turn marker (kv.put) and
+                // journal (sql.exec) are synchronous, and runFiber's own
+                // cf_agents_runs INSERT runs synchronously too (before its first
+                // keepAlive await), so the marker, journal, AND fiber row are all
+                // durable in one tick. The model refresh therefore moves INSIDE the
+                // fiber, right before prompt(): left here, its await would open a
+                // window where isStreaming is persisted but no run row / marker
+                // exists yet, so an eviction (e.g. a deploy) would strand the thread
+                // "streaming" forever with nothing for onFiberRecovered to resume.
                 this.openPiActiveTurnIfAbsent();
                 this.recordPiTurnJournalUserMessage(userMessage);
                 // Run the turn inside a durable fiber: it holds keepAlive() for the
@@ -12752,6 +12811,7 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
                     if (!this.piSession) {
                       throw new Error("Pi session was not available for prompt");
                     }
+                    await this.refreshPiSessionModel();
                     await this.piSession.prompt(userMessage);
                   });
                 });
