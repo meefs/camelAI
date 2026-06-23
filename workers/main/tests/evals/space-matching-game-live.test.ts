@@ -24,7 +24,10 @@ import {
 } from "./eval-deploy-assert";
 import { emitEvalTranscript } from "./eval-transcript";
 import type { ChatThreadDO } from "../../src/chat-thread-do";
-import type { WorkspaceFilesystemDO } from "../../src/workspace-filesystem-do";
+import type {
+  WorkspaceFilesystemDO,
+  WorkspaceProject,
+} from "../../src/workspace-filesystem-do";
 
 type SpaceMatchingGameEvalEnv = TestEnv & EvalModelEnv & EvalSignalEnv & {
   APP_DB?: D1Database;
@@ -46,6 +49,13 @@ type RuntimeFileEntry = {
 
 type RuntimeItem = Record<string, unknown>;
 
+type RuntimeEvidence = {
+  commands: string[];
+  jsExecCodeBlocks: string[];
+  jsExecResultTexts: string[];
+  tools: string[];
+};
+
 type SourceFile = {
   path: string;
   text: string;
@@ -65,8 +75,45 @@ type SourceInspection = {
   error?: string;
 };
 
+type ProjectMetadata = {
+  id: string;
+  name: string;
+  description: string;
+  defaultVmId: string;
+  kind?: WorkspaceProject["kind"];
+  clonedFromProjectId?: string;
+  artifactRemote?: string;
+  artifactStatus?: WorkspaceProject["artifactStatus"];
+  createdAt: string;
+  updatedAt: string;
+};
+
+type ProjectCreationInspection = {
+  initialProjects: ProjectMetadata[];
+  finalProjects: ProjectMetadata[];
+  newProjects: ProjectMetadata[];
+  selectedProject?: ProjectMetadata;
+  failures: string[];
+};
+
+type SourceInspectionCandidate = {
+  project: ProjectMetadata;
+  score: number;
+  appDir?: string;
+  packageName?: string;
+  deployScript?: string;
+  sourceFileCount: number;
+  failures: string[];
+};
+
 const EVAL_ID = "space-matching-game-live";
-const PROJECT_NAME = "space-matching-game";
+const APP_NAME_HINTS = [
+  "space-matching-game",
+  "space-game",
+  "matching-game",
+  "space-memory",
+  "memory-game",
+];
 const testEnv = env as unknown as SpaceMatchingGameEvalEnv;
 // This eval needs the real testing-grounds deploy path because it asserts a live app.
 const maybeIt = isRealEvalDeployEnabled(testEnv) ? it : it.skip;
@@ -187,6 +234,61 @@ function parseJsonObject(text: string | undefined): Record<string, unknown> {
   }
 }
 
+function projectMetadata(project: WorkspaceProject): ProjectMetadata {
+  return {
+    id: project.id,
+    name: project.name,
+    description: project.description,
+    defaultVmId: project.defaultVmId,
+    kind: project.kind,
+    clonedFromProjectId: project.clonedFromProjectId,
+    artifactRemote: project.artifactRemote,
+    artifactStatus: project.artifactStatus,
+    createdAt: project.createdAt,
+    updatedAt: project.updatedAt,
+  };
+}
+
+function diffNewProjects(
+  initialProjects: WorkspaceProject[],
+  finalProjects: WorkspaceProject[],
+): WorkspaceProject[] {
+  const initialIds = new Set(initialProjects.map((project) => project.id));
+  return finalProjects.filter((project) => !initialIds.has(project.id));
+}
+
+function describeProjects(projects: WorkspaceProject[]): string {
+  return projects
+    .map((project) => `${project.name} (${project.id})`)
+    .join(", ");
+}
+
+function buildProjectCreationInspection(
+  initialProjects: WorkspaceProject[],
+  finalProjects: WorkspaceProject[],
+  selectedProject?: WorkspaceProject,
+): ProjectCreationInspection {
+  const newProjects = diffNewProjects(initialProjects, finalProjects);
+  const failures: string[] = [];
+  if (initialProjects.length > 0) {
+    failures.push(
+      `harness/environment failure: workspace started with existing project(s): ${
+        describeProjects(initialProjects)
+      }`,
+    );
+  } else if (newProjects.length === 0) {
+    failures.push("agent failed to create a project from the empty workspace");
+  }
+
+  return {
+    initialProjects: initialProjects.map(projectMetadata),
+    finalProjects: finalProjects.map(projectMetadata),
+    newProjects: newProjects.map(projectMetadata),
+    selectedProject: selectedProject ? projectMetadata(selectedProject) : undefined,
+    failures,
+  };
+}
+
 function collectRuntimeItems(events: Array<Record<string, unknown>>): RuntimeItem[] {
   const items: RuntimeItem[] = [];
   for (const rawEvent of events) {
@@ -201,25 +303,107 @@ function collectRuntimeItems(events: Array<Record<string, unknown>>): RuntimeIte
   return items;
 }
 
-function executedCommands(events: Array<Record<string, unknown>>): string[] {
-  return collectRuntimeItems(events)
+function uniqueStrings(values: string[]): string[] {
+  return [...new Set(values.map((value) => value.trim()).filter(Boolean))];
+}
+
+function runtimeToolName(item: RuntimeItem): string | undefined {
+  return asString(item.tool)?.toLowerCase();
+}
+
+function isJsExecItem(item: RuntimeItem): boolean {
+  const tool = runtimeToolName(item);
+  return tool === "js_exec" || tool?.endsWith("__js_exec") === true;
+}
+
+function resultText(value: unknown): string {
+  const record = asRecord(value);
+  if (!record) return typeof value === "string" ? value : "";
+  const text = asString(record.text);
+  if (text) return text;
+  const content = record.content;
+  if (!Array.isArray(content)) return "";
+  return content
+    .map((part) => asString(asRecord(part)?.text) ?? "")
+    .filter(Boolean)
+    .join("\n");
+}
+
+function extractJsStringLiterals(code: string): string[] {
+  const literals: string[] = [];
+  const pattern = /(["'`])((?:\\[\s\S]|(?!\1)[\s\S])*?)\1/g;
+  let match: RegExpExecArray | null;
+  while ((match = pattern.exec(code)) !== null) {
+    literals.push(match[2]);
+  }
+  return literals;
+}
+
+function extractCommandEvidenceFromJsExec(code: string): string[] {
+  const commandSignal =
+    /\b(create-worker|bun\s+run\s+deploy|wrangler\s+init|npm\s+create\s+cloudflare|pnpm\s+create\s+cloudflare|yarn\s+create\s+cloudflare)\b/i;
+  const stripped = stripComments(code);
+  return uniqueStrings(
+    extractJsStringLiterals(stripped).filter((literal) =>
+      commandSignal.test(literal),
+    ),
+  );
+}
+
+function jsExecCodeMentionsTool(code: string, toolName: string): boolean {
+  const stripped = stripComments(code);
+  const escaped = escapeRegex(toolName);
+  return [
+    new RegExp(`\\btools\\s*\\.\\s*${escaped}\\s*\\(`, "i"),
+    new RegExp(`\\btools\\s*\\[\\s*(["'\`])${escaped}\\1\\s*\\]\\s*\\(`, "i"),
+    new RegExp(`\\bcallTool\\s*\\(\\s*(["'\`])${escaped}\\1`, "i"),
+    new RegExp(`\\b${escaped}\\s*\\(`, "i"),
+    new RegExp(`(["'\`])${escaped}\\1`, "i"),
+  ].some((pattern) => pattern.test(stripped));
+}
+
+function collectRuntimeEvidence(events: Array<Record<string, unknown>>): RuntimeEvidence {
+  const items = collectRuntimeItems(events);
+  const jsExecCodeBlocks = items
+    .filter(isJsExecItem)
+    .map((item) => asString(asRecord(item.arguments)?.code) ?? "")
+    .filter(Boolean);
+  const jsExecResultTexts = items
+    .filter(isJsExecItem)
+    .map((item) => resultText(item.result))
+    .filter(Boolean);
+
+  const topLevelCommands = items
     .filter((item) => item.type === "commandExecution")
     .map((item) => asString(item.command) ?? "")
     .filter(Boolean);
+  const jsExecCommands = jsExecCodeBlocks.flatMap(extractCommandEvidenceFromJsExec);
+  const topLevelTools = items
+    .map(runtimeToolName)
+    .filter((tool): tool is string => Boolean(tool));
+
+  return {
+    commands: uniqueStrings([...topLevelCommands, ...jsExecCommands]),
+    jsExecCodeBlocks,
+    jsExecResultTexts,
+    tools: uniqueStrings(topLevelTools),
+  };
 }
 
 function usedTool(events: Array<Record<string, unknown>>, toolName: string): boolean {
   const expected = toolName.toLowerCase();
-  return collectRuntimeItems(events).some((item) => {
-    const tool = asString(item.tool)?.toLowerCase();
-    return tool === expected || tool?.endsWith(`__${expected}`);
-  });
+  const evidence = collectRuntimeEvidence(events);
+  return (
+    evidence.tools.some((tool) => tool === expected || tool.endsWith(`__${expected}`)) ||
+    evidence.jsExecCodeBlocks.some((code) => jsExecCodeMentionsTool(code, expected))
+  );
 }
 
 function readDevelopingSoftwareSkill(
   events: Array<Record<string, unknown>>,
 ): boolean {
-  return collectRuntimeItems(events).some((item) => {
+  const evidence = collectRuntimeEvidence(events);
+  if (collectRuntimeItems(events).some((item) => {
     const tool = asString(item.tool)?.toLowerCase();
     if (tool !== "read") return false;
     const args = asRecord(item.arguments);
@@ -238,7 +422,26 @@ function readDevelopingSoftwareSkill(
         itemText.includes("use `create-worker`")
       )
     );
-  });
+  })) {
+    return true;
+  }
+
+  return (
+    evidence.jsExecCodeBlocks.some((code) => {
+      const lowerCode = stripComments(code).toLowerCase();
+      return (
+        lowerCode.includes("developing-software/skill.md") &&
+        jsExecCodeMentionsTool(code, "read")
+      );
+    }) ||
+    evidence.jsExecResultTexts.some((text) => {
+      const lower = text.toLowerCase();
+      return (
+        lower.includes("deploying software to cloudflare") ||
+        lower.includes("use `create-worker`")
+      );
+    })
+  );
 }
 
 function evaluateRuntimeAssertions(
@@ -247,17 +450,21 @@ function evaluateRuntimeAssertions(
   commands: string[];
   failures: string[];
 } {
-  const commands = executedCommands(result.events);
-  const lowerCommands = commands.map((command) => command.toLowerCase());
+  const evidence = collectRuntimeEvidence(result.events);
+  const commands = evidence.commands;
+  const commandSignalText = [
+    ...commands,
+    ...evidence.jsExecCodeBlocks.map(stripComments),
+  ].join("\n").toLowerCase();
   const failures: string[] = [];
 
   if (!readDevelopingSoftwareSkill(result.events)) {
     failures.push("agent did not read developing-software/SKILL.md");
   }
-  if (!lowerCommands.some((command) => /\bcreate-worker\b/.test(command))) {
+  if (!/\bcreate-worker\b/.test(commandSignalText)) {
     failures.push("agent did not run the create-worker scaffold command");
   }
-  if (!lowerCommands.some((command) => /\bbun\s+run\s+deploy\b/.test(command))) {
+  if (!/\bbun\s+run\s+deploy\b/.test(commandSignalText)) {
     failures.push("agent did not run bun run deploy");
   }
   if (!usedTool(result.events, "list_apps")) {
@@ -271,6 +478,15 @@ function evaluateRuntimeAssertions(
     /\b(wrangler\s+init|npm\s+create\s+cloudflare|pnpm\s+create\s+cloudflare|yarn\s+create\s+cloudflare)\b/i
       .test(command),
   );
+  if (
+    wrongScaffoldCommands.length === 0 &&
+    evidence.jsExecCodeBlocks.some((code) =>
+      /\b(wrangler\s+init|npm\s+create\s+cloudflare|pnpm\s+create\s+cloudflare|yarn\s+create\s+cloudflare)\b/i
+        .test(stripComments(code)),
+    )
+  ) {
+    wrongScaffoldCommands.push("js_exec code referenced unsupported scaffold command");
+  }
   if (wrongScaffoldCommands.length > 0) {
     failures.push(
       `agent used unsupported scaffold command(s): ${wrongScaffoldCommands.join(" | ")}`,
@@ -280,21 +496,54 @@ function evaluateRuntimeAssertions(
   return { commands, failures };
 }
 
+function normalizedName(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
+function resemblesPromptApp(value: string): boolean {
+  const normalized = normalizedName(value);
+  return APP_NAME_HINTS.some((hint) => normalized.includes(hint));
+}
+
+function runtimeEntryPath(parent: string, entry: RuntimeFileEntry): string | undefined {
+  if (entry.absolutePath) return entry.absolutePath;
+  const child = entry.relativePath ?? entry.name;
+  return child ? joinVmPath(parent, child) : undefined;
+}
+
+function shouldSearchDirectory(directory: string): boolean {
+  const name = directory.split("/").pop() ?? "";
+  return !/^(?:node_modules|\.wrangler|\.react-router|dist|build|coverage|public)$/
+    .test(name);
+}
+
 async function findGeneratedAppDir(
   runtime: Fetcher,
   projectId: string,
 ): Promise<string | undefined> {
   const topLevel = await listRuntimeFiles(runtime, projectId, "/workspace");
-  const candidates = [
-    "/workspace",
-    ...topLevel
-      .filter((entry) => entry.type === "directory")
-      .map((entry) => entry.absolutePath ?? joinVmPath("/workspace", entry.name ?? ""))
-      .filter(Boolean),
-  ];
+  const candidates = new Set<string>(["/workspace"]);
+  const topLevelDirs = topLevel
+    .filter((entry) => entry.type === "directory")
+    .map((entry) => runtimeEntryPath("/workspace", entry))
+    .filter((directory): directory is string => Boolean(directory))
+    .filter(shouldSearchDirectory);
+
+  for (const directory of topLevelDirs) {
+    candidates.add(directory);
+    const children = await listRuntimeFiles(runtime, projectId, directory);
+    for (const child of children) {
+      if (child.type !== "directory") continue;
+      const childPath = runtimeEntryPath(directory, child);
+      if (childPath && shouldSearchDirectory(childPath)) candidates.add(childPath);
+    }
+  }
 
   const scored: Array<{ dir: string; score: number }> = [];
-  for (const dir of candidates) {
+  for (const dir of candidates.values()) {
     const packageJson = await readRuntimeText(
       runtime,
       projectId,
@@ -307,16 +556,37 @@ async function findGeneratedAppDir(
     const hasWrangler =
       (await readRuntimeText(runtime, projectId, joinVmPath(dir, "wrangler.jsonc"))) !==
       undefined;
+    const wrangler = hasWrangler
+      ? await readRuntimeText(runtime, projectId, joinVmPath(dir, "wrangler.jsonc"))
+      : undefined;
+    const activeWrangler = stripComments(wrangler ?? "").toLowerCase();
     let score = 1;
-    const packageName = asString(parseJsonObject(packageJson).name) ?? "";
-    if (packageName === PROJECT_NAME) score += 5;
-    if (dir.endsWith(`/${PROJECT_NAME}`)) score += 4;
+    const parsedPackage = parseJsonObject(packageJson);
+    const packageName = asString(parsedPackage.name) ?? "";
+    const scripts = asRecord(parsedPackage.scripts) ?? {};
+    const dependencies = asRecord(parsedPackage.dependencies) ?? {};
+    const devDependencies = asRecord(parsedPackage.devDependencies) ?? {};
+    const deployScript = asString(scripts.deploy) ?? "";
+    if (resemblesPromptApp(packageName)) score += 4;
+    if (resemblesPromptApp(dir)) score += 4;
     if (hasComponentsJson) score += 3;
     if (hasWrangler) score += 3;
+    if (dependencies.react && dependencies["react-dom"] && dependencies["react-router"]) {
+      score += 4;
+    }
+    if (devDependencies["@cloudflare/vite-plugin"] && devDependencies.wrangler) {
+      score += 4;
+    }
+    if (deployScript.includes("wrangler deploy")) score += 3;
+    if (deployScript.includes("dispatch-namespace")) score += 3;
+    if (activeWrangler.includes('"main": "./workers/app.ts"')) score += 4;
+    if (activeWrangler.includes('"assets"') && activeWrangler.includes('"binding": "assets"')) {
+      score += 2;
+    }
     scored.push({ dir, score });
   }
 
-  return scored.sort((a, b) => b.score - a.score)[0]?.dir;
+  return scored.sort((a, b) => b.score - a.score || a.dir.length - b.dir.length)[0]?.dir;
 }
 
 async function collectSourceFiles(
@@ -567,6 +837,138 @@ async function inspectSource(
   }
 }
 
+function missingProjectSourceInspection(): SourceInspection {
+  return {
+    checkedFiles: [],
+    sourceFiles: [],
+    signalHits: {},
+    persistenceFiles: [],
+    failures: ["agent did not create a project for source inspection"],
+  };
+}
+
+function sourceInspectionScore(inspection: SourceInspection): number {
+  const signalHitCount = Object.values(inspection.signalHits).reduce(
+    (total, hits) => total + hits.length,
+    0,
+  );
+  return (
+    (inspection.appDir ? 20 : 0) +
+    inspection.sourceFiles.length +
+    signalHitCount +
+    (inspection.deployScript ? 5 : 0) +
+    (inspection.persistenceFiles.length > 0 ? 5 : 0) -
+    inspection.failures.length * 25
+  );
+}
+
+async function inspectCreatedProjectSources(
+  runtime: Fetcher,
+  projects: WorkspaceProject[],
+): Promise<{
+  selectedProject?: WorkspaceProject;
+  sourceInspection: SourceInspection;
+  sourceInspectionCandidates: SourceInspectionCandidate[];
+}> {
+  const inspected = await Promise.all(
+    projects.map(async (project) => {
+      const inspection = await inspectSource(runtime, project.id);
+      return {
+        project,
+        inspection,
+        score: sourceInspectionScore(inspection),
+      };
+    }),
+  );
+  const selected = inspected.sort((a, b) => b.score - a.score)[0];
+
+  return {
+    selectedProject: selected?.project,
+    sourceInspection: selected?.inspection ?? missingProjectSourceInspection(),
+    sourceInspectionCandidates: inspected.map(({ project, inspection, score }) => ({
+      project: projectMetadata(project),
+      score,
+      appDir: inspection.appDir,
+      packageName: inspection.packageName,
+      deployScript: inspection.deployScript,
+      sourceFileCount: inspection.sourceFiles.length,
+      failures: inspection.failures,
+    })),
+  };
+}
+
+function completedRuntimeItem(item: RuntimeItem): Record<string, unknown> {
+  return {
+    type: "runtime_event",
+    event: {
+      method: "item/completed",
+      params: { item },
+    },
+  };
+}
+
+describe("space matching game runtime assertion extraction", () => {
+  it("accepts valid deploy behavior routed through js_exec", () => {
+    const code = `
+      const project = await env.PROJECTS.create({
+        name: "space-matching-game",
+        description: "Space themed matching game",
+      });
+      await tools.read({ location: "workspace", path: "developing-software/SKILL.md" });
+      await vm.exec({ project: project.name, command: "create-worker space-matching-game" });
+      await vm.exec({ project: project.name, command: "bun run deploy", timeoutSeconds: 120 });
+      await tools.list_apps({});
+      await tools.set_preview({ app_name: "space-matching-game" });
+    `;
+    const runtimeAssertions = evaluateRuntimeAssertions({
+      events: [
+        completedRuntimeItem({
+          type: "dynamicToolCall",
+          tool: "js_exec",
+          arguments: { code },
+          result: { content: [{ type: "text", text: "done" }] },
+        }),
+      ],
+    });
+
+    expect(runtimeAssertions.failures).toEqual([]);
+    expect(runtimeAssertions.commands).toEqual(
+      expect.arrayContaining([
+        "create-worker space-matching-game",
+        "bun run deploy",
+      ]),
+    );
+  });
+
+  it("detects unsupported scaffold commands inside js_exec", () => {
+    const runtimeAssertions = evaluateRuntimeAssertions({
+      events: [
+        completedRuntimeItem({
+          type: "dynamicToolCall",
+          tool: "js_exec",
+          arguments: {
+            code: `
+              await tools.read({ location: "workspace", path: "developing-software/SKILL.md" });
+              await vm.exec({ project: "space", command: "npm create cloudflare@latest space" });
+              await vm.exec({ project: "space", command: "bun run deploy" });
+              await tools.list_apps({});
+              await tools.set_preview({ app_name: "space" });
+            `,
+          },
+          result: { content: [{ type: "text", text: "done" }] },
+        }),
+      ],
+    });
+
+    expect(runtimeAssertions.failures).toContain(
+      "agent did not run the create-worker scaffold command",
+    );
+    expect(runtimeAssertions.failures).toContain(
+      "agent used unsupported scaffold command(s): npm create cloudflare@latest space",
+    );
+  });
+});
+
 describe("space matching game deploy agent eval", () => {
   maybeIt(
     "asks the agent to create and deploy a persistent space matching game",
@@ -597,12 +999,22 @@ describe("space matching game deploy agent eval", () => {
       const workspaceFs = testEnv.WORKSPACE_FS.get(
         testEnv.WORKSPACE_FS.idFromName(defaultWorkspaceId),
       );
-      const project = await workspaceFs.createProject({
-        id: PROJECT_NAME,
-        name: PROJECT_NAME,
-        description: "Space themed matching game deploy eval project.",
-        workspaceId: defaultWorkspaceId,
-      });
+      const initialProjects = await workspaceFs.listProjectsForMigrationReset();
+      if (initialProjects.length > 0) {
+        const projectCreation = buildProjectCreationInspection(
+          initialProjects,
+          initialProjects,
+        );
+        const payload = {
+          status: "harness_error",
+          model: testEnv.EVAL_MODEL,
+          projectCreation,
+          sourceInspection: missingProjectSourceInspection(),
+        };
+        persistEvalArtifact(EVAL_ID, payload);
+        emitEvalTranscript(payload);
+        throw new Error(projectCreation.failures.join("\n"));
+      }
 
       const chatThread = testEnv.CHAT_THREAD.get(
         testEnv.CHAT_THREAD.idFromName(thread.id),
@@ -618,10 +1030,25 @@ describe("space matching game deploy agent eval", () => {
         messageSource: "eval",
         timeoutMs: getEvalTimeoutMs(testEnv, 900_000),
         message: [
-          `In the ${PROJECT_NAME} project, create a web app that is a space themed matching game with a leaderboard where users can enter their credentials for their high score.`,
+          "Create a web app that is a space themed matching game with a leaderboard where users can enter their credentials for their high score.",
           "This eval runtime injects CLOUDFLARE_API_BASE_URL and CLOUDFLARE_API_TOKEN, so do not ask for login or real Cloudflare credentials.",
         ].join(" "),
       });
+      const finalProjects = await workspaceFs.listProjectsForMigrationReset();
+      const newProjects = diffNewProjects(initialProjects, finalProjects);
+      const {
+        selectedProject,
+        sourceInspection,
+        sourceInspectionCandidates,
+      } = await inspectCreatedProjectSources(
+        testEnv.PROJECT_RUNTIME_HOST,
+        newProjects,
+      );
+      const projectCreation = buildProjectCreationInspection(
+        initialProjects,
+        finalProjects,
+        selectedProject,
+      );
       const signal = evaluateAgentEvalSignal(
         result,
         getEvalSignalThresholds(testEnv, {
@@ -630,10 +1057,6 @@ describe("space matching game deploy agent eval", () => {
         }),
       );
       const runtimeAssertions = evaluateRuntimeAssertions(result);
-      const sourceInspection = await inspectSource(
-        testEnv.PROJECT_RUNTIME_HOST,
-        project.id,
-      );
 
       const payload = {
         status: result.status,
@@ -641,8 +1064,10 @@ describe("space matching game deploy agent eval", () => {
         model: testEnv.EVAL_MODEL,
         signal,
         deployedApps: result.deployedApps,
+        projectCreation,
         runtimeAssertions,
         sourceInspection,
+        sourceInspectionCandidates,
         result: result.result,
         events: result.events,
         messages: result.messages,
@@ -661,6 +1086,7 @@ describe("space matching game deploy agent eval", () => {
       expect(transcriptText).not.toContain("assistant error");
       expect(result.events.some((event) => event.type === "runtime_event")).toBe(true);
       expect(result.events.some((event) => event.type === "result")).toBe(true);
+      expect(projectCreation.failures).toEqual([]);
       expect(runtimeAssertions.failures).toEqual([]);
       expect(sourceInspection.failures).toEqual([]);
       expect(await countWorkspaceApps(orgStub, defaultWorkspaceId)).toBe(

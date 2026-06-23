@@ -21,8 +21,12 @@ export interface EvalTranscriptPayload {
   deployedApps?: unknown;
   /** Eval-specific runtime assertion summary, when present. */
   runtimeAssertions?: unknown;
+  /** Eval-specific project creation summary, when present. */
+  projectCreation?: unknown;
   /** Eval-specific source inspection summary, when present. */
   sourceInspection?: unknown;
+  /** Eval-specific source inspection candidate summaries, when present. */
+  sourceInspectionCandidates?: unknown;
 }
 
 export function emitEvalTranscript(payload: EvalTranscriptPayload): void {
