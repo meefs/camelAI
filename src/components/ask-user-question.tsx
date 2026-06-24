@@ -2,6 +2,11 @@
 
 import { useState, useCallback, useEffect, useMemo, useRef } from "react";
 import { cn } from "@/lib/utils";
+import {
+  normalizeAskUserQuestions,
+  type NormalizedAskUserQuestion,
+  type NormalizedAskUserQuestionOption,
+} from "@/lib/ask-user-question-normalization";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
@@ -19,18 +24,11 @@ import {
   ChevronRight,
 } from "lucide-react";
 
-export interface QuestionOption {
-  label: string;
-  description: string;
-}
+export type QuestionOption = NormalizedAskUserQuestionOption;
 
-export interface Question {
-  question: string;
-  header: string;
-  options: QuestionOption[];
-  multiSelect: boolean;
+export type Question = Omit<NormalizedAskUserQuestion, "allowOther"> & {
   allowOther?: boolean;
-}
+};
 
 export interface AskUserQuestionData {
   questionId: string;
@@ -80,67 +78,6 @@ function createInitialQuestionStates(
   return initial;
 }
 
-function normalizeQuestionOption(value: unknown): QuestionOption | null {
-  if (
-    typeof value === "string" ||
-    typeof value === "number" ||
-    typeof value === "boolean"
-  ) {
-    const label = String(value).trim();
-    return label ? { label, description: "" } : null;
-  }
-
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return null;
-  }
-
-  const record = value as Record<string, unknown>;
-  const rawLabel = record.label ?? record.value ?? record.text ?? record.name;
-  const label =
-    typeof rawLabel === "string" ||
-    typeof rawLabel === "number" ||
-    typeof rawLabel === "boolean"
-      ? String(rawLabel).trim()
-      : "";
-  if (!label) return null;
-
-  return {
-    label,
-    description:
-      typeof record.description === "string" ? record.description.trim() : "",
-  };
-}
-
-function normalizeQuestionForDisplay(value: Question): Question | null {
-  if (!value || typeof value !== "object") {
-    return null;
-  }
-
-  const record = value as unknown as Record<string, unknown>;
-  const question = typeof record.question === "string" ? record.question.trim() : "";
-  if (!question) return null;
-
-  const options = Array.isArray(record.options)
-    ? record.options
-        .map(normalizeQuestionOption)
-        .filter((option): option is QuestionOption => option !== null)
-    : [];
-
-  return {
-    question,
-    header: typeof record.header === "string" ? record.header.trim() : "",
-    options,
-    multiSelect: record.multiSelect === true || record.multi_select === true,
-    allowOther: record.allowOther !== false && record.allow_other !== false,
-  };
-}
-
-function normalizeQuestionsForDisplay(questions: Question[]): Question[] {
-  return questions
-    .map(normalizeQuestionForDisplay)
-    .filter((question): question is Question => question !== null);
-}
-
 function ShortcutBadge({ label }: { label: string | null }) {
   if (!label) {
     return <span aria-hidden="true" className="inline-flex h-5 w-5 shrink-0" />;
@@ -184,7 +121,7 @@ export function AskUserQuestion({
   className,
 }: AskUserQuestionProps) {
   const questions = useMemo(
-    () => normalizeQuestionsForDisplay(data.questions),
+    () => normalizeAskUserQuestions(data.questions),
     [data.questions],
   );
   const [questionStates, setQuestionStates] = useState<

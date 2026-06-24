@@ -1,4 +1,8 @@
 import type { DynamicIntegrationSchema } from "../../../src/lib/integration-registry";
+import {
+  normalizeAskUserQuestions,
+  type NormalizedAskUserQuestion,
+} from "../../../src/lib/ask-user-question-normalization";
 
 export interface ConnectionSetupResponse {
   requestId: string;
@@ -14,20 +18,7 @@ export interface ConnectionSetupResponse {
 export interface PendingQuestionInfo {
   questionId: string;
   toolUseId?: string;
-  questions: NormalizedAskQuestion[];
-}
-
-interface NormalizedAskQuestionOption {
-  label: string;
-  description: string;
-}
-
-interface NormalizedAskQuestion {
-  question: string;
-  header: string;
-  options: NormalizedAskQuestionOption[];
-  multiSelect: boolean;
-  allowOther: boolean;
+  questions: NormalizedAskUserQuestion[];
 }
 
 interface PendingQuestionWaiter {
@@ -66,60 +57,6 @@ interface BrowserPromptCoordinatorOptions {
   askUserQuestionUnavailableMessage: string;
   questionTimeoutMs: number;
   connectionSetupTimeoutMs: number;
-}
-
-function normalizeAskQuestionOption(value: unknown): NormalizedAskQuestionOption | null {
-  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
-    const label = String(value).trim();
-    return label ? { label, description: "" } : null;
-  }
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return null;
-  }
-  const record = value as Record<string, unknown>;
-  const rawLabel = record.label ?? record.value ?? record.text ?? record.name;
-  const label = typeof rawLabel === "string" || typeof rawLabel === "number" || typeof rawLabel === "boolean"
-    ? String(rawLabel).trim()
-    : "";
-  if (!label) return null;
-  const description = typeof record.description === "string" ? record.description.trim() : "";
-  return { label, description };
-}
-
-function normalizeAskQuestion(value: unknown): NormalizedAskQuestion | null {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return null;
-  }
-  const record = value as Record<string, unknown>;
-  const question = typeof record.question === "string" && record.question.trim()
-    ? record.question.trim()
-    : typeof record.prompt === "string" && record.prompt.trim()
-      ? record.prompt.trim()
-      : "";
-  if (!question) return null;
-  const header = typeof record.header === "string" && record.header.trim()
-    ? record.header.trim()
-    : typeof record.label === "string" && record.label.trim()
-      ? record.label.trim()
-      : "";
-  const options = Array.isArray(record.options)
-    ? record.options
-        .map(normalizeAskQuestionOption)
-        .filter((option): option is NormalizedAskQuestionOption => option !== null)
-    : [];
-  return {
-    question,
-    header,
-    options,
-    multiSelect: record.multiSelect === true || record.multi_select === true,
-    allowOther: record.allowOther !== false && record.allow_other !== false,
-  };
-}
-
-function normalizeAskQuestions(values: unknown[]): NormalizedAskQuestion[] {
-  return values
-    .map(normalizeAskQuestion)
-    .filter((question): question is NormalizedAskQuestion => question !== null);
 }
 
 export class BrowserPromptCoordinator {
@@ -169,7 +106,7 @@ export class BrowserPromptCoordinator {
     questions?: unknown[];
     toolUseId?: string;
   }): Promise<Record<string, unknown>> {
-    const questions = normalizeAskQuestions(Array.isArray(input.questions) ? input.questions : []);
+    const questions = normalizeAskUserQuestions(input.questions);
     if (questions.length === 0) {
       throw new Error("questions is required");
     }

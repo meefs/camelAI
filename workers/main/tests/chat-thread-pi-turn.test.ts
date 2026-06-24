@@ -5481,6 +5481,68 @@ describe('ChatThreadDO Pi turn handling', () => {
     vi.useRealTimers();
   });
 
+  it('normalizes AskUserQuestion multi_select type before broadcasting to the browser', async () => {
+    vi.useFakeTimers();
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    fake.broadcastChat = vi.fn();
+    fake.browserPrompts = new BrowserPromptCoordinator({
+      hasAvailableBrowserUser: () => true,
+      broadcast: fake.broadcastChat,
+      sendDirect: vi.fn(),
+      askUserQuestionUnavailableMessage: 'unavailable',
+      questionTimeoutMs: 30 * 60 * 1000,
+      connectionSetupTimeoutMs: 30 * 60 * 1000,
+    });
+
+    const promise = ChatThreadDO.prototype.askUserQuestion.call(fake, {
+      toolUseId: 'tool-ask',
+      questions: [{
+        id: 'multiselect-test',
+        type: 'multi_select',
+        question: 'Multi-select rendering test: please select all fruits you like.',
+        options: [
+          { label: 'Apple', value: 'apple' },
+          { label: 'Banana', value: 'banana' },
+          { label: 'Mango', value: 'mango' },
+          { label: 'Strawberry', value: 'strawberry' },
+        ],
+        required: false,
+      }],
+    });
+
+    expect(fake.broadcastChat).toHaveBeenCalledWith({
+      type: 'ask_user_question',
+      questionId: expect.any(String),
+      toolUseId: 'tool-ask',
+      questions: [{
+        question: 'Multi-select rendering test: please select all fruits you like.',
+        header: '',
+        multiSelect: true,
+        allowOther: true,
+        options: [
+          { label: 'Apple', description: '' },
+          { label: 'Banana', description: '' },
+          { label: 'Mango', description: '' },
+          { label: 'Strawberry', description: '' },
+        ],
+      }],
+    });
+
+    const prompt = fake.broadcastChat.mock.calls[0][0];
+    fake.browserPrompts.answerQuestion({
+      questionId: prompt.questionId,
+      answers: {
+        'Multi-select rendering test: please select all fruits you like.':
+          'Apple, Mango',
+      },
+    });
+    await expect(promise).resolves.toEqual({
+      'Multi-select rendering test: please select all fruits you like.':
+        'Apple, Mango',
+    });
+    vi.useRealTimers();
+  });
+
   it('does not emit placeholder tool rows for unnamed preliminary Pi toolcall events', async () => {
     const { fake, events } = createPiEventFake();
 

@@ -109,6 +109,44 @@ describe("AskUserQuestion keyboard shortcuts", () => {
     });
   });
 
+  it("renders multi_select raw payloads as checkboxes and submits selected labels", async () => {
+    const onSubmit = vi.fn();
+    const user = userEvent.setup();
+    render(
+      <AskUserQuestion
+        data={makeData([
+          {
+            id: "multiselect-test",
+            type: "multi_select",
+            question:
+              "Multi-select rendering test: please select all fruits you like.",
+            options: [
+              { label: "Apple", value: "apple" },
+              { label: "Banana", value: "banana" },
+              { label: "Mango", value: "mango" },
+              { label: "Strawberry", value: "strawberry" },
+            ],
+            required: false,
+            allowOther: false,
+          } as any,
+        ])}
+        onSubmit={onSubmit}
+      />,
+    );
+
+    expect(screen.getAllByRole("checkbox")).toHaveLength(4);
+    expect(screen.queryByRole("radio")).not.toBeInTheDocument();
+
+    await user.click(screen.getByText("Apple"));
+    await user.click(screen.getByText("Mango"));
+    await user.click(screen.getByRole("button", { name: "Submit" }));
+
+    expect(onSubmit).toHaveBeenCalledWith({
+      "Multi-select rendering test: please select all fruits you like.":
+        "Apple, Mango",
+    });
+  });
+
   it("still handles number keys and Enter when focus has moved to a non-editable control", async () => {
     const onSubmit = vi.fn();
     const { container } = render(
