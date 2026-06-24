@@ -63,6 +63,7 @@ function makeThreadSummary(
     status: "idle",
     membership: "open",
     last_active_at: updatedAt,
+    first_user_message: null,
     latest_user_message: null,
     latest_user_message_at: null,
     running_activity_text: null,
@@ -2240,6 +2241,45 @@ describe("applyLiveRunningStatuses", () => {
     expect(group.status).toBe("running");
     expect(group.open_threads[0].status).toBe("running");
     expect(group.open_threads[0].latest_user_message).toBe("fresh prompt");
+    expect(group.open_threads[0].latest_user_message_at).toBe(20);
+  });
+
+  it("overlays first user messages from live metadata without dropping latest message data", () => {
+    const [group] = applyLiveRunningStatuses(
+      [
+        {
+          ...groupView,
+          open_threads: [
+            makeThreadSummary({
+              id: "thread_1",
+              title: "API plan",
+              updated_at: 10,
+              last_active_at: 10,
+              status: "idle",
+              first_user_message: "stale first prompt",
+              latest_user_message: "stale latest prompt",
+            }),
+          ],
+        },
+      ],
+      new Set(),
+      true,
+      null,
+      new Map([
+        [
+          "thread_1",
+          {
+            status: "running",
+            firstUserMessage: "fresh first prompt",
+            latestUserMessage: "fresh latest prompt",
+            latestUserMessageAt: 20,
+          },
+        ],
+      ]),
+    );
+
+    expect(group.open_threads[0].first_user_message).toBe("fresh first prompt");
+    expect(group.open_threads[0].latest_user_message).toBe("fresh latest prompt");
     expect(group.open_threads[0].latest_user_message_at).toBe(20);
   });
 

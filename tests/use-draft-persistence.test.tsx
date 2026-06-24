@@ -107,6 +107,85 @@ describe('use-draft-persistence', () => {
     });
   });
 
+  it('preserves transcript attachment metadata in normal and delivery drafts', () => {
+    const attachments: Attachment[] = [
+      {
+        id: 'transcript-1',
+        name: 'planning-chat-transcript.md',
+        path: 'uploads/planning-chat-transcript.md',
+        size: 2048,
+        contentType: 'text/markdown',
+        originalName: 'planning-chat-transcript.md',
+        status: 'complete',
+        kind: 'transcript',
+        sourceThreadId: 'thread-source',
+        sourceTitle: 'Planning chat',
+        snippet: 'Plan the rollout',
+      },
+    ];
+
+    writeDraft('ws-1', 'thread-1', 'use this', attachments);
+    writeDeliveryDraft(
+      'ws-1',
+      'thread-1',
+      'client-1',
+      'use this',
+      attachments,
+      null,
+    );
+
+    const expectedAttachment = {
+      id: 'transcript-1',
+      name: 'planning-chat-transcript.md',
+      path: 'uploads/planning-chat-transcript.md',
+      size: 2048,
+      contentType: 'text/markdown',
+      originalName: 'planning-chat-transcript.md',
+      status: 'complete',
+      kind: 'transcript',
+      sourceThreadId: 'thread-source',
+      sourceTitle: 'Planning chat',
+      snippet: 'Plan the rollout',
+    };
+
+    expect(loadDraft('ws-1', 'thread-1')?.attachments).toEqual([
+      expectedAttachment,
+    ]);
+    expect(loadDeliveryDraft('ws-1', 'thread-1')?.attachments).toEqual([
+      expectedAttachment,
+    ]);
+  });
+
+  it('preserves completed reused upload attachments without requiring a file size', () => {
+    const attachments: Attachment[] = [
+      {
+        id: 'recent-attachment-1',
+        name: 'report.csv',
+        path: 'uploads/report.csv',
+        originalName: 'report.csv',
+        status: 'complete',
+      },
+    ];
+
+    writeDraft('ws-1', 'thread-1', 'reuse this file', attachments);
+
+    expect(loadDraft('ws-1', 'thread-1')?.attachments).toEqual([
+      {
+        id: 'recent-attachment-1',
+        name: 'report.csv',
+        path: 'uploads/report.csv',
+        size: undefined,
+        originalName: 'report.csv',
+        contentType: undefined,
+        status: 'complete',
+        kind: undefined,
+        sourceThreadId: undefined,
+        sourceTitle: undefined,
+        snippet: undefined,
+      },
+    ]);
+  });
+
   it('removes the stored draft when text and attachments are empty', () => {
     writeDraft('ws-1', 'thread-1', 'hello', []);
     expect(loadDraft('ws-1', 'thread-1')?.text).toBe('hello');

@@ -58,12 +58,16 @@ import {
   saveChatGroupRename,
   type ChatGroupRenameInput,
 } from "@/lib/chat-group-rename.client";
+import { extractGroupNewChatRecentItems } from "@/lib/group-new-chat-recent-items";
 import Chat from "@/components/Chat";
 import { ChatTabBar } from "@/components/chat-tab-bar";
 import { NoWorkspacesError } from "@/components/no-workspaces-error";
 import { AppMainSkeleton } from "@/components/ui/app-main-skeleton";
 import { SidebarTrigger } from "@/components/ui/sidebar";
 import type {
+  ChatGroupView,
+  GroupNewChatRecentItems,
+  GroupNewChatPayload,
   Integration,
   LlmModel,
   Thread,
@@ -76,6 +80,104 @@ import {
   recordErrorEvent,
   recordObservabilityEvent,
 } from "../../workers/main/src/observability";
+
+const GROUP_NEW_CHAT_TRANSCRIPT_CARD_LIMIT = 8;
+
+const EMPTY_GROUP_NEW_CHAT_RECENT_ITEMS: GroupNewChatRecentItems = {
+  recentlyUsed: {
+    projectIds: [],
+    connectionIds: [],
+  },
+  attachmentCards: [],
+};
+
+function isPromiseLike<T>(value: T | Promise<T>): value is Promise<T> {
+  return typeof (value as Promise<T>).then === "function";
+}
+
+function getGroupNewChatCandidateThreads(group: ChatGroupView | null) {
+  if (!group) return [];
+  return [...group.open_threads]
+    .filter((thread) => {
+      if (thread.last_assistant_completed_at === null) return false;
+      return Boolean(
+        thread.first_user_message?.trim() ||
+          thread.latest_user_message?.trim() ||
+          thread.last_assistant_summary?.trim() ||
+          thread.title?.trim(),
+      );
+    })
+    .sort((left, right) => right.last_active_at - left.last_active_at)
+    .slice(0, GROUP_NEW_CHAT_TRANSCRIPT_CARD_LIMIT);
+}
+
+function buildGroupNewChatPayload(
+  group: ChatGroupView,
+  recentItems: GroupNewChatRecentItems | Promise<GroupNewChatRecentItems>,
+): GroupNewChatPayload {
+  const immediateRecentItems =
+    isPromiseLike(recentItems) ? EMPTY_GROUP_NEW_CHAT_RECENT_ITEMS : recentItems;
+  const transcriptCards = getGroupNewChatCandidateThreads(group).map((thread) => ({
+    threadId: thread.id,
+    title: thread.title || "Untitled Chat",
+    openingLine:
+      thread.first_user_message?.trim() ||
+      thread.latest_user_message?.trim() ||
+      thread.last_assistant_summary?.trim() ||
+      thread.title ||
+      "Untitled Chat",
+    status: thread.status,
+    lastActiveAt: thread.last_active_at,
+    lastAssistantCompletedAt: thread.last_assistant_completed_at ?? 0,
+  }));
+
+  return {
+    id: group.id,
+    name: group.name,
+    avatar: group.avatar ?? null,
+    transcriptCards,
+    recentlyUsed: immediateRecentItems.recentlyUsed,
+    attachmentCards: immediateRecentItems.attachmentCards,
+    recentItems,
+  };
+}
+
+async function loadGroupNewChatRecentItems(
+  context: Route.LoaderArgs["context"],
+  group: ChatGroupView | null,
+  connections: Integration[],
+  projects: MentionableProject[],
+): Promise<GroupNewChatRecentItems> {
+  const candidateThreads = getGroupNewChatCandidateThreads(group);
+  if (candidateThreads.length === 0) {
+    return EMPTY_GROUP_NEW_CHAT_RECENT_ITEMS;
+  }
+
+  const threadMessages = await Promise.all(
+    candidateThreads.map(async (thread) => {
+      try {
+        return {
+          threadId: thread.id,
+          title: thread.title || "Untitled Chat",
+          messages: await chatDO.getPiCoreMessages(context, thread.id),
+        };
+      } catch (error) {
+        console.error("Failed to scan group thread mentions:", error);
+        return {
+          threadId: thread.id,
+          title: thread.title || "Untitled Chat",
+          messages: [],
+        };
+      }
+    }),
+  );
+
+  return extractGroupNewChatRecentItems({
+    threads: threadMessages,
+    connections,
+    projects,
+  });
+}
 
 /**
  * Skip loader revalidation after createThread — the user is navigating away
@@ -347,6 +449,22 @@ export async function loader({ request, context }: Route.LoaderArgs) {
           return null;
         })
       : Promise.resolve(null);
+  const activeGroupRecentItemsPromise: Promise<GroupNewChatRecentItems> =
+    activeChatGroupPromise
+      .then(async (activeChatGroup) => {
+        if (!activeChatGroup) return EMPTY_GROUP_NEW_CHAT_RECENT_ITEMS;
+        const mentionSources = await mentionSourcesPromise;
+        return loadGroupNewChatRecentItems(
+          context,
+          activeChatGroup,
+          mentionSources.connections,
+          mentionSources.projects,
+        );
+      })
+      .catch((error) => {
+        console.error("Failed to load group new-chat recent items:", error);
+        return EMPTY_GROUP_NEW_CHAT_RECENT_ITEMS;
+      });
   const moveChatGroupsPromise =
     workspaceId && userId
       ? listGroupsForMove(context, {
@@ -467,6 +585,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     recentThreads: recentThreadsPromise,
     renderedAt,
     activeGroupId: groupId,
+    activeGroupRecentItems: activeGroupRecentItemsPromise,
     interactive,
   };
 }
@@ -905,6 +1024,7 @@ function ChatWelcomeContent({
     recentThreads,
     renderedAt,
     activeGroupId,
+    activeGroupRecentItems,
     isOrgAdmin,
     recentModelScope,
   } = useLoaderData<typeof loader>();
@@ -946,6 +1066,12 @@ function ChatWelcomeContent({
       ? { ...group, avatar: liveGroup.avatar }
       : group;
   });
+  const groupWelcomeData = liveActiveChatGroup
+    ? buildGroupNewChatPayload(
+        liveActiveChatGroup,
+        activeGroupRecentItems ?? EMPTY_GROUP_NEW_CHAT_RECENT_ITEMS,
+      )
+    : undefined;
 
   const openTabs =
     liveActiveChatGroup?.open_threads.map((thread) => ({
@@ -1060,6 +1186,7 @@ function ChatWelcomeContent({
             projects,
             recentThreads,
             renderedAt,
+            group: groupWelcomeData,
           }}
           experimentalSettings={experimentalSettings}
           llmProvider={llmProvider}

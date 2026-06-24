@@ -2,6 +2,7 @@
 
 import { X, AlertCircle } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { Badge } from '@/components/ui/badge';
 import {
   getFileExtension,
   getFileCategory,
@@ -62,10 +63,10 @@ export function FileCard({
           // Fixed square + layout
           'relative flex h-[88px] w-[88px] flex-col justify-between overflow-hidden rounded-lg border p-2 text-left',
           // Default styling
-          'border-border bg-muted/30',
+          'border-border bg-card',
           // Hover (non-error)
           !isError &&
-            'transition-colors duration-150 hover:border-border/80 hover:bg-muted/50',
+            'transition-all duration-200 ease-out hover:border-ring hover:shadow-md',
           // Error styling
           isError && 'border-destructive/40 bg-destructive/5',
           // Clickable cursor
@@ -76,13 +77,13 @@ export function FileCard({
       >
         {/* Top zone: extension badge + category icon */}
         <div className="flex items-start justify-between">
-          <span className="rounded-sm bg-foreground/8 px-1.5 py-0.5 text-[10px] font-bold leading-none text-foreground">
+          <Badge variant="outline" className="h-5 px-1.5 text-[10px] uppercase leading-none">
             {ext}
-          </span>
+          </Badge>
           {isError ? (
             <AlertCircle className="h-3.5 w-3.5 text-destructive" />
           ) : (
-            <Icon className="h-3.5 w-3.5 text-muted-foreground/50" />
+            <Icon className="h-3.5 w-3.5 text-muted-foreground" />
           )}
         </div>
 

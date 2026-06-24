@@ -5,6 +5,7 @@ import {
   normalizeThreadUserMessageText,
   truncateThreadPreviewText,
 } from '@/lib/thread-preview';
+import { appendAttachmentReferences } from '@/lib/chat-attachment-refs';
 
 describe('normalizeThreadPreviewUserMessage', () => {
   it('strips author prefixes with name and email', () => {
@@ -27,6 +28,20 @@ describe('normalizeThreadPreviewUserMessage', () => {
     expect(normalizeThreadPreviewUserMessage(content)).toBe('Hello @camel');
   });
 
+  it('strips upload metadata annotations from previews', () => {
+    const content = appendAttachmentReferences('Use this transcript', [
+      {
+        path: 'uploads/planning-chat-transcript.md',
+        kind: 'generated_transcript',
+        sourceThreadId: 'thread_source',
+      },
+    ]);
+
+    expect(normalizeThreadPreviewUserMessage(content)).toBe(
+      'Use this transcript\n\n(user uploaded file to uploads/planning-chat-transcript.md)',
+    );
+  });
+
   it('returns null for system-only content', () => {
     const content = '<camelai system message>hidden</camelai system message>';
     expect(normalizeThreadPreviewUserMessage(content)).toBeNull();
@@ -42,6 +57,20 @@ describe('normalizeThreadUserMessageText', () => {
   it('normalizes user-authored text without truncating it', () => {
     const content = `[Illiana Reed (illiana@example.com)]: <camelai system message>hidden</camelai system message>\n\n${'a'.repeat(800)}`;
     expect(normalizeThreadUserMessageText(content)).toBe('a'.repeat(800));
+  });
+
+  it('does not retain upload metadata annotations in metadata source text', () => {
+    const content = appendAttachmentReferences('', [
+      {
+        path: 'uploads/planning-chat-transcript.md',
+        kind: 'generated_transcript',
+        sourceThreadId: 'thread_source',
+      },
+    ]);
+
+    expect(normalizeThreadUserMessageText(content)).toBe(
+      '(user uploaded file to uploads/planning-chat-transcript.md)',
+    );
   });
 });
 

@@ -3,7 +3,17 @@
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Await, useNavigate } from 'react-router';
 import { ChevronUp, Plus } from 'lucide-react';
-import type { AtMentionEntity, WorkerScriptWithCreator, Integration, LlmModel, Thread } from '@/types';
+import type {
+  AtMentionEntity,
+  CondensedTranscript,
+  GroupNewChatAttachmentCard,
+  GroupNewChatPayload,
+  GroupNewChatTranscriptCard,
+  WorkerScriptWithCreator,
+  Integration,
+  LlmModel,
+  Thread,
+} from '@/types';
 import type { Attachment } from '@/components/attachment-list';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import { PromptInput } from '@/components/prompt-input';
@@ -26,6 +36,8 @@ import { IntegrationButtons, FEATURED_CONNECTIONS, LOGO_STACK_CONNECTIONS } from
 import { ConnectedTools } from './connected-tools';
 import { AppCardsRow } from './app-cards-row';
 import { RecentChatsRow } from './recent-chats-row';
+import { GroupNewChatHeader } from './group-new-chat-header';
+import { RecentlyUsedInGroup } from './recently-used-in-group';
 import type { ModelCatalogEntry } from '@/lib/model-catalog';
 import type { RecentModelScope } from '@/lib/recent-model';
 
@@ -201,12 +213,18 @@ interface WelcomeScreenProps {
   projects: MentionableProject[] | Promise<MentionableProject[]>;
   recentThreads: Thread[] | Promise<Thread[]>;
   renderedAt?: number;
+  group?: GroupNewChatPayload;
   onPromptChange: (prompt: string) => void;
   onSubmit: () => void;
   onStartChatForApp: (app: WorkerScriptWithCreator) => void;
   inputValue: string;
   attachments: Attachment[];
   onFilesSelected: (files: File[]) => void;
+  onRecentAttachmentSelect: (card: GroupNewChatAttachmentCard) => void;
+  onTranscriptAttach: (
+    transcript: CondensedTranscript,
+    card: GroupNewChatTranscriptCard,
+  ) => Promise<void> | void;
   onAttachmentRemove: (id: string) => void;
   isCreatingThread: boolean;
   model: LlmModel;
@@ -226,7 +244,7 @@ function isPromiseLike<T>(value: T | Promise<T> | undefined): value is Promise<T
 function RecentChatsFallback() {
   return (
     <section className="space-y-4">
-      <SectionHeader title="Your recent chats" linkHref="/history" />
+      <SectionHeader title="Recent chats" linkHref="/history" />
       <div className="flex gap-4 overflow-x-auto pb-2 no-scrollbar">
         {Array.from({ length: 3 }).map((_, index) => (
           <Skeleton key={index} className="h-[116px] w-[260px] shrink-0 rounded-xl" />
@@ -239,7 +257,7 @@ function RecentChatsFallback() {
 function AppsFallback() {
   return (
     <section className="space-y-4">
-      <SectionHeader title="Continue building an app" linkHref="/apps" />
+      <SectionHeader title="Your apps" linkHref="/apps" />
       <div className="flex gap-4 overflow-x-auto pb-2 no-scrollbar">
         {Array.from({ length: 3 }).map((_, index) => (
           <Skeleton key={index} className="aspect-video w-[260px] shrink-0 rounded-xl" />
@@ -262,7 +280,7 @@ function RecentChatsSection({
 
   return (
     <section className="space-y-4">
-      <SectionHeader title="Your recent chats" linkHref="/history" />
+      <SectionHeader title="Recent chats" linkHref="/history" />
       <RecentChatsRow
         threads={resolvedRecentThreads.slice(0, 4)}
         renderedAt={referenceTime}
@@ -293,7 +311,7 @@ function AppsSection({
   if (userApps.length > 0) {
     return (
       <section className="space-y-4">
-        <SectionHeader title="Continue building an app" linkHref="/apps" />
+        <SectionHeader title="Your apps" linkHref="/apps" />
         <AppCardsRow
           apps={userApps.slice(0, 4)}
           renderedAt={referenceTime}
@@ -306,7 +324,7 @@ function AppsSection({
   if (teamApps.length > 0) {
     return (
       <section className="space-y-4">
-        <SectionHeader title="What your team is working on" linkHref="/apps" />
+        <SectionHeader title="Team apps" linkHref="/apps" />
         <AppCardsRow
           apps={teamApps.slice(0, 4)}
           renderedAt={referenceTime}
@@ -327,12 +345,15 @@ export function WelcomeScreen({
   projects,
   recentThreads,
   renderedAt,
+  group,
   onPromptChange,
   onSubmit,
   onStartChatForApp,
   inputValue,
   attachments,
   onFilesSelected,
+  onRecentAttachmentSelect,
+  onTranscriptAttach,
   onAttachmentRemove,
   isCreatingThread,
   model,
@@ -469,10 +490,75 @@ export function WelcomeScreen({
     focusInput();
   }, [connectionSlugMap, onPromptChange, focusInput]);
 
+  const handleGroupTagSelect = useCallback((item: AtMentionEntity) => {
+    const computedSlug = slugForMentionable(item, connectionSlugMap);
+    if (!computedSlug) return;
+    const separator = inputValue && !inputValue.endsWith(' ') ? ' ' : '';
+    onPromptChange(`${inputValue}${separator}@${computedSlug} `);
+    focusInput();
+  }, [connectionSlugMap, focusInput, inputValue, onPromptChange]);
+
   const handleIntegrationSelect = useCallback((integration: { type: string; displayName: string }) => {
     onPromptChange(`Let's connect ${integration.displayName}`);
     focusInput();
   }, [onPromptChange, focusInput]);
+
+  if (group) {
+    return (
+      <div className="mx-auto w-full max-w-3xl space-y-10">
+        <GroupNewChatHeader group={group} />
+
+        <div>
+          <AnimatedPlaceholder isActive={shouldAnimatePlaceholder}>
+            {(animatedText) => (
+              <PromptInput
+                textareaRef={textareaRef}
+                value={inputValue}
+                onChange={onPromptChange}
+                onSubmit={onSubmit}
+                placeholder="Ask anything..."
+                animatedPlaceholder={shouldAnimatePlaceholder ? animatedText : undefined}
+                isLoading={isCreatingThread}
+                minHeight="80px"
+                autoFocus
+                attachments={attachments}
+                onFilesSelected={onFilesSelected}
+                onAttachmentRemove={onAttachmentRemove}
+                model={model}
+                onModelChange={onModelChange}
+                modelOptions={modelOptions}
+                modelDisabled={isCreatingThread}
+                disabled={Boolean(noModelsMessage)}
+                isOrgAdmin={isOrgAdmin}
+                recentModelScope={recentModelScope}
+                mentionables={mentionEntities}
+                mentionMenuSide="top"
+                onMentionAddNewClick={() => navigate('/connections')}
+              />
+            )}
+          </AnimatedPlaceholder>
+
+          {noModelsMessage && (
+            <p className="mt-2 text-sm text-muted-foreground">
+              {noModelsMessage}
+            </p>
+          )}
+        </div>
+
+        <RecentlyUsedInGroup
+          group={group}
+          connections={mentionableConnections}
+          projects={resolvedProjects}
+          inputValue={inputValue}
+          attachments={attachments}
+          mentionSlugMap={connectionSlugMap}
+          onTagSelect={handleGroupTagSelect}
+          onAttachmentSelect={onRecentAttachmentSelect}
+          onTranscriptAttach={onTranscriptAttach}
+        />
+      </div>
+    );
+  }
 
   return (
     <div className="w-full max-w-5xl space-y-10">
@@ -539,10 +625,7 @@ export function WelcomeScreen({
       </Suspense>
 
       <section className="space-y-4">
-        <SectionHeader
-          title={hasConnections ? 'Your connected tools' : 'Connect your tools'}
-          linkHref="/connections"
-        />
+        <SectionHeader title="Connections" linkHref="/connections" />
 
         {hasConnections ? (
           <ConnectedTools connections={mentionableConnections} onSelect={handleConnectionSelect} />
@@ -599,7 +682,7 @@ export function WelcomeScreen({
       </section>
 
       <section className="space-y-4">
-        <SectionHeader title="Need inspiration? Try one of these" onRefresh={handleShufflePrompts} />
+        <SectionHeader title="Try something new" onRefresh={handleShufflePrompts} />
         <StarterPrompts
           prompts={promptsToDisplay}
           onSelect={handlePromptSelect}

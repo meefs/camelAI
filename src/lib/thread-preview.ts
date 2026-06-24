@@ -1,5 +1,6 @@
 import type { ContentBlock } from '@/types';
 import { stripMentionAnnotations } from '@/lib/mentions';
+import { stripUploadAnnotations } from '@/lib/chat-attachment-refs';
 
 const AUTHOR_PREFIX_WITH_EMAIL_REGEX = /^\[([^\]]+)\s+\(([^)]+)\)\]:\s*/;
 const AUTHOR_PREFIX_SIMPLE_REGEX = /^\[([^\]]+)\]:\s*/;
@@ -7,8 +8,22 @@ const SYSTEM_MESSAGE_TAG_REGEX = /<camelai system message>[\s\S]*?<\/camelai sys
 const MAX_THREAD_PREVIEW_TEXT_LENGTH = 500;
 const MAX_ASSISTANT_COMPLETION_SUMMARY_LENGTH = 240;
 
-function stripSystemMessageTags(text: string): string {
-  return stripMentionAnnotations(text.replace(SYSTEM_MESSAGE_TAG_REGEX, '')).trim();
+interface NormalizeThreadUserMessageTextOptions {
+  stripUploadAnnotations?: boolean;
+}
+
+function stripSystemMessageTags(
+  text: string,
+  options: NormalizeThreadUserMessageTextOptions = {},
+): string {
+  const withoutMentionAnnotations = stripMentionAnnotations(
+    text.replace(SYSTEM_MESSAGE_TAG_REGEX, ''),
+  );
+  const withoutUploadAnnotations =
+    options.stripUploadAnnotations === false
+      ? withoutMentionAnnotations
+      : stripUploadAnnotations(withoutMentionAnnotations);
+  return withoutUploadAnnotations.trim();
 }
 
 function stripAuthorPrefix(text: string): string {
@@ -39,9 +54,12 @@ function contentToText(content: string | ContentBlock[]): string {
 /**
  * Convert a user message into normalized user-authored text for thread metadata.
  */
-export function normalizeThreadUserMessageText(content: string | ContentBlock[]): string | null {
+export function normalizeThreadUserMessageText(
+  content: string | ContentBlock[],
+  options: NormalizeThreadUserMessageTextOptions = {},
+): string | null {
   const rawText = contentToText(content);
-  const withoutSystemTags = stripSystemMessageTags(rawText);
+  const withoutSystemTags = stripSystemMessageTags(rawText, options);
   if (!withoutSystemTags) {
     return null;
   }

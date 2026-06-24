@@ -17,6 +17,7 @@ function makeThread(
     status: "idle",
     membership: "open",
     last_active_at: updatedAt,
+    first_user_message: null,
     latest_user_message: null,
     latest_user_message_at: null,
     running_activity_text: null,

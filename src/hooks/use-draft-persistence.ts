@@ -11,9 +11,13 @@ export interface SerializedAttachment {
   id: string;
   name: string;
   path: string;
-  size: number;
+  size?: number;
   contentType?: string;
   originalName?: string;
+  kind?: 'transcript';
+  sourceThreadId?: string;
+  sourceTitle?: string;
+  snippet?: string;
   status: 'complete';
 }
 
@@ -51,13 +55,28 @@ export function deliveryDraftKey(workspaceId: string, threadId: string | null): 
 export function serializeAttachments(attachments: Attachment[]): SerializedAttachment[] {
   return attachments
     .filter((attachment) => attachment.status === 'complete')
-    .map(({ id, name, path, size, contentType, originalName }) => ({
+    .map(({
       id,
       name,
       path,
       size,
       contentType,
       originalName,
+      kind,
+      sourceThreadId,
+      sourceTitle,
+      snippet,
+    }) => ({
+      id,
+      name,
+      path,
+      size,
+      contentType,
+      originalName,
+      kind,
+      sourceThreadId,
+      sourceTitle,
+      snippet,
       status: 'complete',
     }));
 }
@@ -76,8 +95,8 @@ function parseSerializedAttachment(value: unknown): SerializedAttachment | null 
     typeof record.id !== 'string' ||
     typeof record.name !== 'string' ||
     typeof record.path !== 'string' ||
-    typeof record.size !== 'number' ||
-    !Number.isFinite(record.size)
+    (record.size !== undefined &&
+      (typeof record.size !== 'number' || !Number.isFinite(record.size)))
   ) {
     return null;
   }
@@ -86,9 +105,15 @@ function parseSerializedAttachment(value: unknown): SerializedAttachment | null 
     id: record.id,
     name: record.name,
     path: record.path,
-    size: record.size,
+    size: typeof record.size === 'number' ? record.size : undefined,
     contentType: typeof record.contentType === 'string' ? record.contentType : undefined,
     originalName: typeof record.originalName === 'string' ? record.originalName : undefined,
+    kind: record.kind === 'transcript' ? 'transcript' : undefined,
+    sourceThreadId:
+      typeof record.sourceThreadId === 'string' ? record.sourceThreadId : undefined,
+    sourceTitle:
+      typeof record.sourceTitle === 'string' ? record.sourceTitle : undefined,
+    snippet: typeof record.snippet === 'string' ? record.snippet : undefined,
     status: 'complete',
   };
 }

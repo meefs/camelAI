@@ -177,6 +177,10 @@ export default [
   route("api/chat-groups/move-thread", "routes/api/chat-groups.move-thread.ts"),
   route("api/threads/:id", "routes/api/threads.$id.ts"),
   route(
+    "api/threads/:id/condensed-transcript",
+    "routes/api/threads.$id.condensed-transcript.ts",
+  ),
+  route(
     "api/threads/:id/mark-viewed",
     "routes/api/threads.$id.mark-viewed.ts",
   ),

@@ -35,6 +35,10 @@ import type {
   PreviewTab,
   OrganizationExperimentalSettings,
   ChatGroupView,
+  CondensedTranscript,
+  GroupNewChatAttachmentCard,
+  GroupNewChatPayload,
+  GroupNewChatTranscriptCard,
   ChatGroupAvatar,
   ChatGroupAvatarStatus,
 } from "@/types";
@@ -159,9 +163,10 @@ import {
 } from "@/hooks/use-draft-persistence";
 import { useBufferedState } from "@/hooks/use-buffered-state";
 import {
-  appendUserUploadReferences,
+  appendAttachmentReferences,
   isUserUploadMountPath,
 } from "@/lib/chat-attachment-refs";
+import { condensedTranscriptToMarkdown } from "@/lib/condensed-transcript";
 
 export { ChatErrorNotice } from "@/components/chat-error-notice";
 export { BillingCreditNotice } from "@/components/chat-billing-credit-notice";
@@ -288,6 +293,7 @@ interface ChatProps {
     projects: MentionableProject[] | Promise<MentionableProject[]>;
     recentThreads: Thread[] | Promise<Thread[]>;
     renderedAt: number;
+    group?: GroupNewChatPayload;
   };
 }
 
@@ -364,6 +370,7 @@ function dispatchLocalThreadStatus(
   options: {
     latestUserMessage?: string | null;
     latestUserMessageAt?: number | null;
+    firstUserMessage?: string | null;
     runningActivityText?: string | null;
     runningActivityAt?: number | null;
     runningStartedAt?: number | null;
@@ -499,7 +506,11 @@ function areDraftAttachmentsEqual(
       attachment.path === other.path &&
       attachment.size === other.size &&
       attachment.contentType === other.contentType &&
-      attachment.originalName === other.originalName
+      attachment.originalName === other.originalName &&
+      attachment.kind === other.kind &&
+      attachment.sourceThreadId === other.sourceThreadId &&
+      attachment.sourceTitle === other.sourceTitle &&
+      attachment.snippet === other.snippet
     );
   });
 }
@@ -545,10 +556,28 @@ function getCompletedAttachments(attachments: Attachment[]): Attachment[] {
 }
 
 function buildMessageContent(text: string, attachments: Attachment[]): string {
-  return appendUserUploadReferences(
+  return appendAttachmentReferences(
     text,
-    getCompletedAttachments(attachments).map((attachment) => attachment.path),
+    getCompletedAttachments(attachments).map((attachment) => ({
+      path: attachment.path,
+      kind:
+        attachment.kind === "transcript"
+          ? "generated_transcript"
+          : "user_upload",
+      sourceThreadId: attachment.sourceThreadId,
+      sourceTitle: attachment.sourceTitle,
+    })),
   );
+}
+
+function sanitizeGeneratedFilename(value: string): string {
+  const basename = value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 80);
+  return basename || "chat";
 }
 
 /**
@@ -1636,6 +1665,7 @@ export default function Chat({
     projects: EMPTY_MENTION_PROJECTS,
     recentThreads: EMPTY_RECENT_THREADS,
     renderedAt: fallbackRenderedAtRef.current,
+    group: undefined,
   };
   const rawMentionConnections = connections ?? resolvedWelcomeData.connections;
   const rawMentionProjects = projects ?? resolvedWelcomeData.projects;
@@ -3236,6 +3266,115 @@ export default function Chat({
     [resolvedWorkspaceId],
   );
 
+  const handleGeneratedTranscriptAttachment = useCallback(
+    async (
+      transcript: CondensedTranscript,
+      card: GroupNewChatTranscriptCard,
+    ) => {
+      if (!resolvedWorkspaceId) return;
+      if (transcript.turns.length === 0) {
+        throw new Error("This chat does not have a completed transcript yet.");
+      }
+
+      const markdown = condensedTranscriptToMarkdown(transcript);
+      const filename = `${sanitizeGeneratedFilename(card.title)}-transcript.md`;
+      const file = new File([markdown], filename, { type: "text/markdown" });
+      const id = `transcript_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+      const snippet = card.openingLine || transcript.turns[0]?.user || filename;
+
+      setAttachments((prev) => [
+        ...prev,
+        {
+          id,
+          name: file.name,
+          path: "",
+          size: file.size,
+          contentType: file.type || "text/markdown",
+          originalName: file.name,
+          status: "uploading",
+          progress: 0,
+          kind: "transcript",
+          sourceThreadId: card.threadId,
+          sourceTitle: card.title,
+          snippet,
+        },
+      ]);
+
+      try {
+        const data = await uploadWorkspaceFile(resolvedWorkspaceId, file, {
+          onProgress: (progressPercent) => {
+            setAttachments((prev) =>
+              prev.map((attachment) =>
+                attachment.id === id
+                  ? { ...attachment, progress: progressPercent }
+                  : attachment,
+              ),
+            );
+          },
+        });
+        if (!isUserUploadMountPath(data.path)) {
+          throw new Error("Upload completed without a readable uploads/ path");
+        }
+
+        setAttachments((prev) =>
+          prev.map((attachment) =>
+            attachment.id === id
+              ? {
+                  ...attachment,
+                  path: data.path,
+                  size: data.size,
+                  contentType: data.contentType ?? attachment.contentType,
+                  originalName: data.originalName ?? attachment.originalName,
+                  status: "complete" as const,
+                  progress: 100,
+                }
+              : attachment,
+          ),
+        );
+      } catch (err) {
+        console.error("Transcript upload failed:", err);
+        const errorMessage =
+          err instanceof Error ? err.message : "Upload failed";
+        setAttachments((prev) =>
+          prev.map((attachment) =>
+            attachment.id === id
+              ? {
+                  ...attachment,
+                  status: "error" as const,
+                  error: errorMessage,
+                  progress: undefined,
+                }
+              : attachment,
+          ),
+        );
+      }
+    },
+    [resolvedWorkspaceId],
+  );
+
+  const handleRecentAttachmentSelect = useCallback(
+    (card: GroupNewChatAttachmentCard) => {
+      setAttachments((prev) => {
+        if (prev.some((attachment) => attachment.path === card.path)) {
+          return prev;
+        }
+        return [
+          ...prev,
+          {
+            id: `recent_attachment_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`,
+            name: card.originalName || card.filename,
+            path: card.path,
+            size: card.size,
+            contentType: card.contentType,
+            originalName: card.originalName,
+            status: "complete",
+          },
+        ];
+      });
+    },
+    [],
+  );
+
   const handleAttachmentRemove = useCallback(
     (id: string) => {
       setAttachments((prev) => {
@@ -3792,9 +3931,16 @@ type SendOptions = {
     // If WebSocket is connected and ready, send immediately
     const previewUserMessage = normalizeThreadPreviewUserMessage(rawContent);
     const userMessageAt = Date.now();
+    const isFirstUserTurn = !messagesRef.current.some(
+      (message) =>
+        message.role === "user" &&
+        !message.isMeta &&
+        !message.isCompactSummary,
+    );
     dispatchLocalThreadStatus(threadId, "running", {
       latestUserMessage: previewUserMessage,
       latestUserMessageAt: userMessageAt,
+      ...(isFirstUserTurn ? { firstUserMessage: previewUserMessage } : {}),
       runningActivityText: previewUserMessage,
       runningActivityAt: userMessageAt,
       runningStartedAt: userMessageAt,
@@ -4221,12 +4367,15 @@ type SendOptions = {
                   projects={resolvedWelcomeData.projects}
                   recentThreads={resolvedWelcomeData.recentThreads}
                   renderedAt={resolvedWelcomeData.renderedAt}
+                  group={resolvedWelcomeData.group}
                   inputValue={welcomeInput}
                   onPromptChange={setWelcomeInput}
                   onSubmit={startNewChat}
                   onStartChatForApp={handleStartChatForApp}
                   attachments={attachments}
                   onFilesSelected={handleFilesSelected}
+                  onRecentAttachmentSelect={handleRecentAttachmentSelect}
+                  onTranscriptAttach={handleGeneratedTranscriptAttachment}
                   onAttachmentRemove={handleAttachmentRemove}
                   isCreatingThread={isSubmittingNewThread}
                   model={selectedThreadModel}

@@ -7,6 +7,7 @@ import {
   isPlaceholderThreadTitle,
   sanitizeGeneratedThreadTitle,
 } from '@/lib/thread-title';
+import { appendAttachmentReferences } from '@/lib/chat-attachment-refs';
 
 describe('thread title helpers', () => {
   it('builds the app fallback title from the script name', () => {
@@ -34,6 +35,20 @@ describe('thread title helpers', () => {
     const content = '<camelai system message>Research the app first.</camelai system message>\n\n[Jane Doe (jane@example.com)]: Fix the broken login form';
 
     expect(getThreadTitleSourceMessage(content)).toBe('Fix the broken login form');
+  });
+
+  it('removes upload metadata annotations from title source text', () => {
+    const content = appendAttachmentReferences('Follow up from this chat', [
+      {
+        path: 'uploads/planning-chat-transcript.md',
+        kind: 'generated_transcript',
+        sourceThreadId: 'thread_source',
+      },
+    ]);
+
+    expect(getThreadTitleSourceMessage(content)).toBe(
+      'Follow up from this chat\n\n(user uploaded file to uploads/planning-chat-transcript.md)',
+    );
   });
 
   it('separates full metadata source text from bounded title source text', () => {

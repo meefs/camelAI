@@ -47,6 +47,10 @@ function threadToGroupThreadSummary(
 ): ChatGroupThreadSummary {
   const status = options.status ?? "idle";
   const now = Date.now();
+  const firstUserMessage = truncateThreadPreviewText(
+    thread.first_user_message,
+    500,
+  );
   const latestUserMessage = truncateThreadPreviewText(
     thread.last_user_message,
     500,
@@ -64,6 +68,7 @@ function threadToGroupThreadSummary(
     is_unread: status === "unread",
     membership,
     last_active_at: Math.max(thread.updated_at, thread.last_assistant_completed_at ?? 0),
+    first_user_message: firstUserMessage,
     latest_user_message: latestUserMessage,
     latest_user_message_at: latestUserMessageAt,
     running_activity_text:
@@ -180,6 +185,10 @@ export async function hydrateChatGroups(
     const viewedAt = viewedAtByThreadId[threadId] ?? 0;
     const completedAt = thread.last_assistant_completed_at ?? null;
     const lastActiveAt = Math.max(thread.updated_at, completedAt ?? 0);
+    const firstUserMessage = truncateThreadPreviewText(
+      thread.first_user_message,
+      500,
+    );
     const latestUserMessage = truncateThreadPreviewText(
       thread.last_user_message,
       500,
@@ -207,6 +216,7 @@ export async function hydrateChatGroups(
       is_unread: isUnread,
       membership,
       last_active_at: lastActiveAt,
+      first_user_message: firstUserMessage,
       latest_user_message: latestUserMessage,
       latest_user_message_at: latestUserMessageAt,
       running_activity_text: runningActivityText,

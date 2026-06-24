@@ -411,6 +411,7 @@ function buildFallbackActiveChatGroup(params: {
     status: "running" as const,
     membership: "open" as const,
     last_active_at: threadUpdatedAt,
+    first_user_message: firstUserMessagePreview,
     latest_user_message: firstUserMessagePreview,
     latest_user_message_at: firstUserMessagePreview
       ? threadUpdatedAt

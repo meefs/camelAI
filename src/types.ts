@@ -70,6 +70,7 @@ export interface ChatGroupThreadSummary {
   status: ThreadStatus;
   membership: "open" | "closed";
   last_active_at: number;
+  first_user_message: string | null;
   latest_user_message: string | null;
   latest_user_message_at: number | null;
   running_activity_text: string | null;
@@ -85,6 +86,56 @@ export interface ChatGroupView extends ChatGroupSummary {
   member_count: number;
   open_threads: ChatGroupThreadSummary[];
   closed_threads: ChatGroupThreadSummary[];
+}
+
+export interface GroupNewChatTranscriptCard {
+  threadId: string;
+  title: string;
+  openingLine: string;
+  status: ThreadStatus;
+  lastActiveAt: number;
+  lastAssistantCompletedAt: number;
+}
+
+export interface GroupNewChatAttachmentCard {
+  path: string;
+  filename: string;
+  originalName: string;
+  sourceThreadId: string;
+  sourceTitle: string;
+  lastUsedAt: number;
+  contentType?: string;
+  size?: number;
+}
+
+export interface GroupNewChatRecentItems {
+  recentlyUsed: {
+    projectIds: string[];
+    connectionIds: string[];
+  };
+  attachmentCards: GroupNewChatAttachmentCard[];
+}
+
+export interface GroupNewChatPayload {
+  id: string;
+  name: string;
+  avatar: ChatGroupAvatar | null;
+  transcriptCards: GroupNewChatTranscriptCard[];
+  recentlyUsed: GroupNewChatRecentItems["recentlyUsed"];
+  attachmentCards: GroupNewChatAttachmentCard[];
+  recentItems?: GroupNewChatRecentItems | Promise<GroupNewChatRecentItems>;
+}
+
+export interface CondensedTranscriptTurn {
+  user: string;
+  assistantFinal: string;
+  omittedCount: number;
+}
+
+export interface CondensedTranscript {
+  threadId: string;
+  title: string;
+  turns: CondensedTranscriptTurn[];
 }
 
 export interface ThreadCreator {

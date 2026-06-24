@@ -41,6 +41,7 @@ export interface LiveThreadMetadata {
   completedAt?: number | null;
   summaryStatus?: ThreadCompletionSummaryStatus | null;
   summary?: string | null;
+  firstUserMessage?: string | null;
   latestUserMessage?: string | null;
   latestUserMessageAt?: number | null;
   runningActivityText?: string | null;
@@ -54,6 +55,7 @@ type ChatGroupThreadSummary = ChatGroupView["open_threads"][number];
 export type ThreadSummaryPatch = Partial<
   Pick<ChatGroupThreadSummary, "title" | "model">
 > & {
+  firstUserMessage?: string | null;
   updatedAt: number;
 };
 
@@ -542,6 +544,12 @@ function getThreadSummaryPatchFromPayload(payload: unknown): ThreadSummaryPatch 
   return {
     title: record.title,
     model: record.model as ChatGroupThreadSummary["model"],
+    firstUserMessage:
+      typeof record.first_user_message === "string"
+        ? record.first_user_message
+        : record.first_user_message === null
+          ? null
+          : undefined,
     updatedAt: record.updated_at,
   };
 }
@@ -564,6 +572,7 @@ function mergeThreadSummaryPatch(
   if (
     currentPatch?.title === nextPatch.title &&
     currentPatch?.model === nextPatch.model &&
+    currentPatch?.firstUserMessage === nextPatch.firstUserMessage &&
     currentPatch?.updatedAt === nextPatch.updatedAt
   ) {
     return current as Map<string, ThreadSummaryPatch>;
@@ -607,6 +616,12 @@ export function applyLiveRunningStatuses(
       const summaryPatch = threadSummaryPatches.get(thread.id);
       const nextTitle = summaryPatch?.title ?? thread.title;
       const nextModel = summaryPatch?.model ?? thread.model;
+      const firstUserMessage =
+        liveMetadata?.firstUserMessage !== undefined
+          ? liveMetadata.firstUserMessage
+          : summaryPatch?.firstUserMessage !== undefined
+            ? summaryPatch.firstUserMessage
+            : undefined;
       const completedAt =
         typeof liveMetadata?.completedAt === "number" &&
         Number.isFinite(liveMetadata.completedAt)
@@ -678,6 +693,10 @@ export function applyLiveRunningStatuses(
         latestUserMessageAt !== undefined
           ? latestUserMessageAt
           : thread.latest_user_message_at;
+      const nextFirstUserMessage =
+        firstUserMessage !== undefined
+          ? firstUserMessage
+          : thread.first_user_message;
       const nextRunningActivityText =
         resolvedStatus === "running"
           ? runningActivityText !== undefined
@@ -707,6 +726,7 @@ export function applyLiveRunningStatuses(
         thread.last_assistant_completed_at === lastAssistantCompletedAt &&
         thread.last_assistant_summary === lastAssistantSummary &&
         thread.last_assistant_summary_status === lastAssistantSummaryStatus &&
+        thread.first_user_message === nextFirstUserMessage &&
         thread.latest_user_message === nextLatestUserMessage &&
         thread.latest_user_message_at === nextLatestUserMessageAt &&
         thread.running_activity_text === nextRunningActivityText &&
@@ -728,6 +748,7 @@ export function applyLiveRunningStatuses(
         last_assistant_completed_at: lastAssistantCompletedAt,
         last_assistant_summary: lastAssistantSummary,
         last_assistant_summary_status: lastAssistantSummaryStatus,
+        first_user_message: nextFirstUserMessage,
         latest_user_message: nextLatestUserMessage,
         latest_user_message_at: nextLatestUserMessageAt,
         running_activity_text: nextRunningActivityText,
@@ -1043,6 +1064,7 @@ export function ChatGroupsProvider({
         title?: unknown;
         model?: unknown;
         updatedAt?: unknown;
+        firstUserMessage?: unknown;
         latestUserMessage?: unknown;
         latestUserMessageAt?: unknown;
         runningActivityText?: unknown;
@@ -1089,6 +1111,12 @@ export function ChatGroupsProvider({
           : payload.latestUserMessage === null
             ? null
             : undefined;
+      const firstUserMessage =
+        typeof payload.firstUserMessage === "string"
+          ? payload.firstUserMessage
+          : payload.firstUserMessage === null
+            ? null
+            : undefined;
       const latestUserMessageAt =
         typeof payload.latestUserMessageAt === "number" &&
         Number.isFinite(payload.latestUserMessageAt)
@@ -1131,6 +1159,8 @@ export function ChatGroupsProvider({
           existing?.status === status &&
           (latestUserMessage === undefined ||
             existing.latestUserMessage === latestUserMessage) &&
+          (firstUserMessage === undefined ||
+            existing.firstUserMessage === firstUserMessage) &&
           (latestUserMessageAt === undefined ||
             existing.latestUserMessageAt === latestUserMessageAt) &&
           (runningActivityText === undefined ||
@@ -1147,6 +1177,7 @@ export function ChatGroupsProvider({
           threadId,
           mergeThreadMetadata(existing, {
             status,
+            ...(firstUserMessage === undefined ? {} : { firstUserMessage }),
             ...(latestUserMessage === undefined ? {} : { latestUserMessage }),
             ...(latestUserMessageAt === undefined ? {} : { latestUserMessageAt }),
             ...(runningActivityText === undefined ? {} : { runningActivityText }),
