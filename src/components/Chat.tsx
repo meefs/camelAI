@@ -111,6 +111,14 @@ import {
   getAppUrl,
   getAppIframeUrl,
 } from "@/lib/app-url";
+import {
+  collectVmProjectReferencesFromMessages,
+  collectVmProjectReferencesFromPreviewTabs,
+  formatCopyFilePath,
+  normalizeProjectCopyLookupKey,
+  resolveProjectMentionSlug,
+  type CopyFilePathTarget,
+} from "@/lib/file-path-copy";
 import { uploadWorkspaceFile } from "@/lib/workspace-upload.client";
 import { isManualCompactCommand } from "@/lib/slash-commands";
 import { buildAppThreadFallbackTitle } from "@/lib/thread-title";
@@ -1694,6 +1702,53 @@ export default function Chat({
     () => buildSlugMap(mentionEntities),
     [mentionEntities],
   );
+  const formatFilePathForCopy = useCallback(
+    (target: CopyFilePathTarget) =>
+      formatCopyFilePath(target, { mentionSlugMap }),
+    [mentionSlugMap],
+  );
+  const visibleVmProjectReferences = useMemo(
+    () => [
+      ...collectVmProjectReferencesFromPreviewTabs(previewTabs),
+      ...collectVmProjectReferencesFromMessages(visibleMessages),
+    ],
+    [previewTabs, visibleMessages],
+  );
+  const attemptedProjectMentionRefreshesRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    attemptedProjectMentionRefreshesRef.current.clear();
+  }, [resolvedWorkspaceId, threadId]);
+  useEffect(() => {
+    if (!resolvedWorkspaceId) return;
+    if (mentionSourcesFetcher.state !== "idle") return;
+
+    for (const reference of visibleVmProjectReferences) {
+      if (
+        resolveProjectMentionSlug(reference.project, mentionSlugMap, {
+          projectId: reference.projectId,
+        })
+      ) {
+        continue;
+      }
+
+      const projectKey = normalizeProjectCopyLookupKey(reference.project);
+      if (!projectKey) continue;
+      if (attemptedProjectMentionRefreshesRef.current.has(projectKey)) {
+        continue;
+      }
+      attemptedProjectMentionRefreshesRef.current.add(projectKey);
+      mentionSourcesFetcher.load(
+        `/api/workspaces/${encodeURIComponent(resolvedWorkspaceId)}/mentions`,
+      );
+      return;
+    }
+  }, [
+    mentionSlugMap,
+    mentionSourcesFetcher,
+    resolvedWorkspaceId,
+    threadId,
+    visibleVmProjectReferences,
+  ]);
   const lastMentionSourcesFetchAtRef = useRef(0);
   const handleMentionMenuOpenChange = useCallback((open: boolean) => {
     if (!open || !resolvedWorkspaceId) return;
@@ -4047,6 +4102,7 @@ type SendOptions = {
           clearPreviewTarget,
           resolveAppVisibility,
           workspaceId: resolvedWorkspaceId,
+          formatFilePathForCopy,
         }}
       >
         <>

@@ -1,7 +1,11 @@
 "use client";
 
 import type { ToolResultBlock, ToolUseBlock } from '@/types';
+import { useChatPreviewContext } from '@/components/chat-preview/preview-context';
+import { formatCopyFilePath } from '@/lib/file-path-copy';
+import { buildFilePreviewLinkTarget } from '@/lib/file-preview-target';
 import { CopyButton, DetailRow, OutputBlock } from './shared';
+import { copyTargetFromToolInput } from './file-copy';
 import { getResultText } from '../tool-utils';
 import { FileLink } from '../file-link';
 
@@ -23,15 +27,158 @@ function extractResultLines(resultText: string): string {
   return filtered.length > 0 ? filtered.join('\n') : resultText;
 }
 
+function isFailedToolResult(result?: ToolResultBlock): boolean {
+  return Boolean(result && (result.is_error === true || result.status === 'failed'));
+}
+
 type ParsedLine = {
   path: string;
+  resolvedPath: string;
   suffix: string;
   raw: string;
 };
 
-function parseLine(line: string): ParsedLine | null {
+const VM_PROJECT_ROOT_PREFIXES = ['/workspace', '/home/claude', '/root'];
+
+function isSearchNoResultLine(line: string): boolean {
+  return /^No files found/i.test(line) || /^No matches found/i.test(line);
+}
+
+function isSearchNoticeLine(line: string): boolean {
+  return isSearchNoResultLine(line) || /^results are truncated/i.test(line);
+}
+
+function isVmGlobBareRelativePath(line: string): boolean {
+  const trimmed = line.trim();
+  if (!trimmed) return false;
+  if (isSearchNoticeLine(trimmed)) return false;
+  if (trimmed.startsWith('[') && trimmed.endsWith(']')) return false;
+  if (trimmed.includes('\0')) return false;
+  if (trimmed.includes(':')) return false;
+  if (trimmed === '.' || trimmed === '..') return false;
+  if (
+    trimmed.startsWith('/') ||
+    trimmed.startsWith('./') ||
+    trimmed.startsWith('../')
+  ) {
+    return false;
+  }
+  if (trimmed.includes('/')) return false;
+  return true;
+}
+
+function parseGrepMatchLine(line: string): { path: string; suffix: string } | null {
+  const match = line.match(/^(.+?):([1-9]\d*):(.*)$/);
+  if (!match) return null;
+
+  return {
+    path: match[1].trim(),
+    suffix: `:${match[2]}:${match[3]}`,
+  };
+}
+
+function normalizeVmProjectPath(path: string): string | null {
+  const rawPath = path.trim();
+  if (!rawPath) return null;
+
+  let normalized = rawPath.replace(/\\/g, '/').replace(/\/+/g, '/');
+  normalized = normalized.startsWith('/') ? normalized : `/${normalized}`;
+
+  for (const prefix of VM_PROJECT_ROOT_PREFIXES) {
+    if (normalized === prefix) {
+      normalized = '/';
+      break;
+    }
+    if (normalized.startsWith(`${prefix}/`)) {
+      normalized = normalized.slice(prefix.length) || '/';
+      break;
+    }
+  }
+
+  const segments: string[] = [];
+  for (const segment of normalized.split('/')) {
+    if (!segment || segment === '.') continue;
+    if (segment === '..') {
+      if (segments.length === 0) return null;
+      segments.pop();
+      continue;
+    }
+    segments.push(segment);
+  }
+
+  return `/${segments.join('/')}`;
+}
+
+// Resolves a search result path to an absolute VM project path. Absolute
+// results are normalized as-is; relative results are joined against the search
+// root. We deliberately do not special-case single-file grep roots (where the
+// result is a bare basename that should resolve against the root's directory):
+// that case is indistinguishable from a directory grep matching a top-level
+// file, so disambiguating it requires a heuristic. We optimize for the common
+// directory-search case and accept that single-file grep roots resolve
+// imperfectly; proper handling is deferred to a follow-up.
+function resolveVmSearchResultPath(
+  resultPath: string,
+  searchRoot: string,
+): string | null {
+  const normalizedResultPath = resultPath.trim().replace(/\\/g, '/');
+  if (!normalizedResultPath) return null;
+
+  if (normalizedResultPath.startsWith('/')) {
+    return normalizeVmProjectPath(normalizedResultPath);
+  }
+
+  const normalizedSearchRoot = normalizeVmProjectPath(searchRoot || '/');
+  if (!normalizedSearchRoot) return null;
+  const joinedPath = normalizedSearchRoot === '/'
+    ? `/${normalizedResultPath}`
+    : `${normalizedSearchRoot}/${normalizedResultPath}`;
+  return normalizeVmProjectPath(joinedPath);
+}
+
+function parseLine(
+  line: string,
+  options: {
+    mode: SearchDetailsProps['mode'];
+    isVmSearch: boolean;
+    searchRoot: string;
+  },
+): ParsedLine | null {
   const trimmed = line.trim();
   if (!trimmed) return null;
+  if (isSearchNoticeLine(trimmed)) return null;
+
+  if (
+    options.isVmSearch &&
+    options.mode === 'glob' &&
+    isVmGlobBareRelativePath(trimmed)
+  ) {
+    const resolvedPath = resolveVmSearchResultPath(trimmed, options.searchRoot);
+    if (!resolvedPath) return null;
+    return {
+      path: trimmed,
+      resolvedPath,
+      suffix: '',
+      raw: trimmed,
+    };
+  }
+
+  if (options.isVmSearch && options.mode === 'grep' && trimmed.includes(':')) {
+    const grepMatch = parseGrepMatchLine(trimmed);
+    if (!grepMatch) return null;
+    const resolvedPath = resolveVmSearchResultPath(
+      grepMatch.path,
+      options.searchRoot,
+    );
+    if (!resolvedPath) return null;
+    return {
+      path: grepMatch.path,
+      resolvedPath,
+      suffix: grepMatch.suffix,
+      raw: trimmed,
+    };
+  }
+
   const colonIndex = trimmed.indexOf(':');
   const base = colonIndex >= 0 ? trimmed.slice(0, colonIndex) : trimmed;
   if (
@@ -40,8 +187,13 @@ function parseLine(line: string): ParsedLine | null {
     base.startsWith('../') ||
     base.includes('/')
   ) {
+    const resolvedPath = options.isVmSearch
+      ? resolveVmSearchResultPath(base, options.searchRoot)
+      : base;
+    if (!resolvedPath) return null;
     return {
       path: base,
+      resolvedPath,
       suffix: colonIndex >= 0 ? trimmed.slice(colonIndex) : '',
       raw: trimmed,
     };
@@ -51,24 +203,40 @@ function parseLine(line: string): ParsedLine | null {
 
 export function SearchDetails({ tool, result, mode }: SearchDetailsProps) {
   const input = tool?.input ?? {};
+  const previewContext = useChatPreviewContext();
+  const isVmSearch = input.location === 'vm';
   const pattern = typeof input.pattern === 'string' ? input.pattern : '';
   const path = typeof input.path === 'string' ? input.path : '';
   const outputMode = typeof input.output_mode === 'string' ? input.output_mode : '';
   const resultText = getResultText(result);
   const count = parseCount(resultText);
-  const lines = extractResultLines(resultText);
-  const fileLines = lines.split(/\r?\n/).filter(Boolean);
-  const parsedLines = fileLines
-    .map(line => parseLine(line))
-    .filter((entry): entry is ParsedLine => Boolean(entry));
-  const copyValue = parsedLines.some(entry => entry.suffix)
-    ? parsedLines.map(entry => entry.raw).join('\n')
-    : parsedLines.map(entry => entry.path).join('\n');
+  const resultFailed = isFailedToolResult(result);
+  const displayText = resultFailed ? resultText : extractResultLines(resultText);
+  const fileLines = displayText.split(/\r?\n/).filter(Boolean);
+  const parsedLines = resultFailed
+    ? []
+    : fileLines
+        .map(line => parseLine(line, { mode, isVmSearch, searchRoot: path }))
+        .filter((entry): entry is ParsedLine => Boolean(entry));
+  const copyValue = parsedLines
+    .map((entry) => {
+      const copyTarget = copyTargetFromToolInput(input, entry.resolvedPath);
+      const formattedPath = previewContext?.formatFilePathForCopy?.(copyTarget) ??
+        formatCopyFilePath(copyTarget, { fallbackProjectMention: true });
+      return `${formattedPath}${entry.suffix}`;
+    })
+    .join('\n');
 
   return (
     <div className="space-y-1">
       <DetailRow label="Pattern:" value={pattern} copyValue={pattern} mono />
-      <DetailRow label="Path:" value={path} copyValue={path} mono asFileLink />
+      <DetailRow
+        label="Path:"
+        value={path}
+        copyFileTarget={copyTargetFromToolInput(input, path)}
+        mono
+        asFileLink
+      />
       {outputMode ? <DetailRow label="Mode:" value={outputMode} /> : null}
       {count !== null ? <DetailRow label="Count:" value={String(count)} /> : null}
       {parsedLines.length > 0 ? (
@@ -85,7 +253,12 @@ export function SearchDetails({ tool, result, mode }: SearchDetailsProps) {
             {parsedLines.map((entry, index) => (
               <div key={`${entry.path}-${index}`} className="flex items-start gap-1">
                 <FileLink
-                  path={entry.path}
+                  path={entry.resolvedPath}
+                  previewTarget={buildFilePreviewLinkTarget({
+                    path: entry.resolvedPath,
+                    location: input.location,
+                    project: input.project,
+                  }) ?? undefined}
                   mono
                   className="truncate text-muted-foreground/80"
                 >
@@ -102,9 +275,9 @@ export function SearchDetails({ tool, result, mode }: SearchDetailsProps) {
         </div>
       ) : (
         <OutputBlock
-          value={lines}
+          value={displayText}
           label={mode === 'glob' ? 'Files' : 'Matches'}
-          copyValue={lines}
+          copyValue={displayText}
         />
       )}
     </div>

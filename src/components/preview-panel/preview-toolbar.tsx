@@ -20,6 +20,8 @@ import {
 import { Separator } from '@/components/ui/separator';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { cn } from '@/lib/utils';
+import { useChatPreviewContext } from '@/components/chat-preview/preview-context';
+import { formatCopyFilePath } from '@/lib/file-path-copy';
 import type { PreviewTarget } from '@/types';
 import { getFileExtension } from '@/components/chat-file-preview/file-type-utils';
 import type { NotebookPreviewLoadState } from '@/components/chat-file-preview';
@@ -176,6 +178,7 @@ function ClickToCopyFileChip({
 }) {
   const [copied, setCopied] = useState(false);
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const previewContext = useChatPreviewContext();
   const displayName = getFileDisplayName(target);
   const FileIcon = getTabIcon(target);
 
@@ -189,8 +192,11 @@ function ClickToCopyFileChip({
   }, []);
 
   const handleCopy = async () => {
+    const copyValue =
+      previewContext?.formatFilePathForCopy?.(target) ??
+      formatCopyFilePath(target, { fallbackProjectMention: true });
     try {
-      await navigator.clipboard.writeText(target.path);
+      await navigator.clipboard.writeText(copyValue);
       setCopied(true);
       if (timeoutRef.current) {
         clearTimeout(timeoutRef.current);

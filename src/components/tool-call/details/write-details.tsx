@@ -3,6 +3,7 @@
 import type { ToolUseBlock } from '@/types';
 import { buildFilePreviewLinkTarget } from '@/lib/file-preview-target';
 import { DetailRow, OutputBlock } from './shared';
+import { copyTargetFromToolInput } from './file-copy';
 import { formatBytes, getPreviewLines, safeJsonStringify } from '../tool-utils';
 
 interface WriteDetailsProps {
@@ -32,7 +33,7 @@ export function WriteDetails({ tool }: WriteDetailsProps) {
       <DetailRow
         label="Path:"
         value={path}
-        copyValue={path}
+        copyFileTarget={copyTargetFromToolInput(input, path)}
         mono
         asFileLink
         filePreview={filePreview}

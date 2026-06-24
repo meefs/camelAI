@@ -16,7 +16,19 @@ vi.mock('agents/react', () => {
 });
 
 import Chat from '@/components/Chat';
-import type { AtMentionEntity, Integration } from '@/types';
+import type { AtMentionEntity, Integration, Message, PreviewTarget } from '@/types';
+
+const { latestPreviewContextValue } = vi.hoisted(() => ({
+  latestPreviewContextValue: {
+    current: null as null | {
+      formatFilePathForCopy?: (target: {
+        path: string;
+        source?: string | null;
+        project?: string | null;
+      }) => string;
+    },
+  },
+}));
 
 const mockNavigate = vi.fn();
 const mockRevalidate = vi.fn();
@@ -185,9 +197,22 @@ vi.mock('@/components/ui/resizable', () => ({
 }));
 
 vi.mock('@/components/chat-preview/preview-context', () => ({
-  ChatPreviewProvider: ({ children }: { children: React.ReactNode }) => (
-    <>{children}</>
-  ),
+  ChatPreviewProvider: ({
+    value,
+    children,
+  }: {
+    value: {
+      formatFilePathForCopy?: (target: {
+        path: string;
+        source?: string | null;
+        project?: string | null;
+      }) => string;
+    };
+    children: React.ReactNode;
+  }) => {
+    latestPreviewContextValue.current = value;
+    return <>{children}</>;
+  },
 }));
 
 vi.mock('@/components/chat-preview/use-connection-setup-response', () => ({
@@ -218,7 +243,30 @@ vi.mock('@/components/chat-preview/chat-preview-shell', () => ({
   },
   MobileViewSwitcher: () => null,
   PreviewPanelShell: () => null,
-  normalizePreviewSessionState: () => ({ tabs: [], activeTabId: null }),
+  normalizePreviewSessionState: (
+    tabsInput: unknown,
+    activeTabIdInput: unknown,
+  ) => {
+    const tabs = Array.isArray(tabsInput)
+      ? tabsInput.map((target, index) => ({
+          id:
+            target && typeof target === 'object' && 'kind' in target
+              ? `${String((target as { kind?: unknown }).kind)}:${index}`
+              : `tab:${index}`,
+          target,
+        }))
+      : [];
+    const activeTabId =
+      typeof activeTabIdInput === 'string'
+        ? activeTabIdInput
+        : (tabs[0]?.id ?? null);
+
+    return {
+      tabs,
+      activeTabId,
+      target: tabs.find((tab) => tab.id === activeTabId)?.target ?? null,
+    };
+  },
 }));
 
 const initialProject: AtMentionEntity = {
@@ -254,9 +302,31 @@ const initialConnection: Integration = {
   name: 'Existing Connection',
 };
 
+function assistantToolUseMessage(
+  id: string,
+  name: string,
+  input: Record<string, unknown>,
+): Message {
+  return {
+    id,
+    thread_id: 'thread-1',
+    role: 'assistant',
+    content: [
+      {
+        type: 'tool_use',
+        id: `${id}_tool`,
+        name,
+        input,
+      },
+    ],
+    created_at: 1,
+  };
+}
+
 describe('Chat mention source refresh', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    latestPreviewContextValue.current = null;
     resetFetchers();
     vi.stubGlobal(
       'ResizeObserver',
@@ -347,5 +417,157 @@ describe('Chat mention source refresh', () => {
       expect(screen.getByText('Fetched Project')).toBeInTheDocument();
     });
     expect(screen.queryByText('Initial Project')).not.toBeInTheDocument();
+  });
+
+  it('refreshes mention sources for a VM preview project missing from the current map', async () => {
+    const vmPreviewTarget: PreviewTarget = {
+      kind: 'file',
+      source: 'vm',
+      workspaceId: 'ws-1',
+      path: '/test.html',
+      filename: 'test.html',
+      project: 'test',
+      contentType: 'text/html',
+    };
+    const fetchedProjectForPreview: AtMentionEntity = {
+      kind: 'project',
+      id: 'project-test',
+      name: 'test',
+      description: 'Test project',
+    };
+
+    const { rerender } = render(
+      <Chat
+        threadId="thread-1"
+        workspaceId="ws-1"
+        initialMessages={[]}
+        connections={[]}
+        projects={[initialProject]}
+        initialPreviewTabs={[vmPreviewTarget]}
+      />,
+    );
+
+    const mentionFetcher = fetchers[3]!;
+    await waitFor(() => {
+      expect(mentionFetcher.load).toHaveBeenCalledWith('/api/workspaces/ws-1/mentions');
+    });
+    expect(mentionFetcher.load).toHaveBeenCalledTimes(1);
+    expect(
+      latestPreviewContextValue.current?.formatFilePathForCopy?.({
+        path: '/test.html',
+        source: 'vm',
+        project: 'test',
+      }),
+    ).toBe('/test.html');
+
+    mentionFetcher.data = {
+      connections: [],
+      projects: [fetchedProjectForPreview],
+    };
+    fetcherCallIndex = 0;
+    rerender(
+      <Chat
+        threadId="thread-1"
+        workspaceId="ws-1"
+        initialMessages={[]}
+        connections={[]}
+        projects={[initialProject]}
+        initialPreviewTabs={[vmPreviewTarget]}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(
+        latestPreviewContextValue.current?.formatFilePathForCopy?.({
+          path: '/test.html',
+          source: 'vm',
+          project: 'test',
+        }),
+      ).toBe('@test - /test.html');
+    });
+    expect(mentionFetcher.load).toHaveBeenCalledTimes(1);
+  });
+
+  it('refreshes mention sources for a tool-only VM project missing from the current map', async () => {
+    const fetchedProjectForTool: AtMentionEntity = {
+      kind: 'project',
+      id: 'project-test',
+      name: 'test',
+      description: 'Test project',
+    };
+
+    const { rerender } = render(
+      <Chat
+        threadId="thread-1"
+        workspaceId="ws-1"
+        initialMessages={[
+          assistantToolUseMessage('message-tool-read', 'read', {
+            location: 'vm',
+            project: 'test',
+            path: '/test.html',
+          }),
+        ]}
+        connections={[]}
+        projects={[initialProject]}
+      />,
+    );
+
+    const mentionFetcher = fetchers[3]!;
+    await waitFor(() => {
+      expect(mentionFetcher.load).toHaveBeenCalledWith('/api/workspaces/ws-1/mentions');
+    });
+    expect(mentionFetcher.load).toHaveBeenCalledTimes(1);
+
+    mentionFetcher.data = {
+      connections: [],
+      projects: [fetchedProjectForTool],
+    };
+    fetcherCallIndex = 0;
+    rerender(
+      <Chat
+        threadId="thread-1"
+        workspaceId="ws-1"
+        initialMessages={[
+          assistantToolUseMessage('message-tool-read', 'read', {
+            location: 'vm',
+            project: 'test',
+            path: '/test.html',
+          }),
+        ]}
+        connections={[]}
+        projects={[initialProject]}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(
+        latestPreviewContextValue.current?.formatFilePathForCopy?.({
+          source: 'vm',
+          project: 'test',
+          path: '/test.html',
+        }),
+      ).toBe('@test - /test.html');
+    });
+    expect(mentionFetcher.load).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not refresh mention sources for non-file-copy VM tools', () => {
+    render(
+      <Chat
+        threadId="thread-1"
+        workspaceId="ws-1"
+        initialMessages={[
+          assistantToolUseMessage('message-tool-bash', 'bash', {
+            location: 'vm',
+            project: 'test',
+            command: 'cat /test.html',
+          }),
+        ]}
+        connections={[]}
+        projects={[initialProject]}
+      />,
+    );
+
+    expect(fetchers[3]!.load).not.toHaveBeenCalled();
   });
 });

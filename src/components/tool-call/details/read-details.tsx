@@ -3,6 +3,7 @@
 import type { ToolResultBlock, ToolUseBlock } from '@/types';
 import { buildFilePreviewLinkTarget } from '@/lib/file-preview-target';
 import { DetailRow, OutputBlock } from './shared';
+import { copyTargetFromToolInput } from './file-copy';
 import { getPreviewLines, getResultText } from '../tool-utils';
 
 interface ReadDetailsProps {
@@ -32,7 +33,7 @@ export function ReadDetails({ tool, result }: ReadDetailsProps) {
       <DetailRow
         label="Path:"
         value={path}
-        copyValue={path}
+        copyFileTarget={copyTargetFromToolInput(input, path)}
         mono
         asFileLink
         filePreview={filePreview}

@@ -5,6 +5,11 @@ import { Check, Copy } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { cn } from '@/lib/utils';
+import { useChatPreviewContext } from '@/components/chat-preview/preview-context';
+import {
+  formatCopyFilePath,
+  type CopyFilePathTarget,
+} from '@/lib/file-path-copy';
 import type { FilePreviewLinkTarget } from '@/lib/file-preview-target';
 import { FileLink } from '../file-link';
 import { stripAnsi } from '../tool-utils';
@@ -62,6 +67,7 @@ export function CopyButton({ value, label = 'Copy', className, hoverClassName }:
             className
           )}
           onClick={handleCopy}
+          aria-label={copied ? 'Copied' : label}
         >
           {copied ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
         </Button>
@@ -75,6 +81,7 @@ interface DetailRowProps {
   label: string;
   value?: React.ReactNode;
   copyValue?: string;
+  copyFileTarget?: CopyFilePathTarget;
   mono?: boolean;
   className?: string;
   tooltipThreshold?: number;
@@ -87,6 +94,7 @@ export function DetailRow({
   label,
   value,
   copyValue,
+  copyFileTarget,
   mono = false,
   className,
   tooltipThreshold = 48,
@@ -94,6 +102,12 @@ export function DetailRow({
   filePath,
   filePreview,
 }: DetailRowProps) {
+  const previewContext = useChatPreviewContext();
+  const formattedCopyValue = copyFileTarget
+    ? previewContext?.formatFilePathForCopy?.(copyFileTarget) ??
+      formatCopyFilePath(copyFileTarget, { fallbackProjectMention: true })
+    : copyValue;
+
   if (value === undefined || value === null || value === '') return null;
 
   const renderValue = (() => {
@@ -147,7 +161,9 @@ export function DetailRow({
     <div className={cn("flex items-start gap-2 group/row py-0.5", className)}>
       <span className="shrink-0 text-muted-foreground/60">{label}</span>
       <div className="min-w-0 flex-1">{renderValue}</div>
-      {copyValue ? <CopyButton value={copyValue} hoverClassName="group-hover/details:opacity-100" /> : null}
+      {formattedCopyValue ? (
+        <CopyButton value={formattedCopyValue} hoverClassName="group-hover/details:opacity-100" />
+      ) : null}
     </div>
   );
 }

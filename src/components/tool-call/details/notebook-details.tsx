@@ -3,6 +3,7 @@
 import type { ToolUseBlock } from '@/types';
 import { buildFilePreviewLinkTarget } from '@/lib/file-preview-target';
 import { DetailRow, OutputBlock } from './shared';
+import { copyTargetFromToolInput } from './file-copy';
 import { getPreviewLines, safeJsonStringify } from '../tool-utils';
 
 interface NotebookDetailsProps {
@@ -33,7 +34,7 @@ export function NotebookDetails({ tool }: NotebookDetailsProps) {
       <DetailRow
         label="Notebook:"
         value={path}
-        copyValue={path}
+        copyFileTarget={copyTargetFromToolInput(input, path)}
         mono
         asFileLink
         filePreview={filePreview}

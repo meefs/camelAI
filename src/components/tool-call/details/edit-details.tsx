@@ -4,6 +4,7 @@ import type { ToolUseBlock } from '@/types';
 import { cn } from '@/lib/utils';
 import { buildFilePreviewLinkTarget } from '@/lib/file-preview-target';
 import { DetailRow } from './shared';
+import { copyTargetFromToolInput } from './file-copy';
 
 interface EditDetailsProps {
   tool?: ToolUseBlock;
@@ -68,7 +69,7 @@ export function EditDetails({ tool }: EditDetailsProps) {
       <DetailRow
         label="Path:"
         value={path}
-        copyValue={path}
+        copyFileTarget={copyTargetFromToolInput(input, path)}
         mono
         asFileLink
         filePreview={filePreview}

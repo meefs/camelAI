@@ -1,7 +1,9 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
+import { ChatPreviewProvider } from '@/components/chat-preview/preview-context';
 import { PreviewToolbar } from '@/components/preview-panel/preview-toolbar';
+import { formatCopyFilePath } from '@/lib/file-path-copy';
 import type { PreviewTarget } from '@/types';
 
 const NOTEBOOK_TARGET: PreviewTarget = {
@@ -53,6 +55,61 @@ describe('PreviewToolbar notebook downloads', () => {
 
     await waitFor(() => {
       expect(writeText).toHaveBeenCalledWith('/reports/analysis.ipynb');
+    });
+  });
+
+  it('copies project VM paths with the project mention slug from preview context', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      writable: true,
+      value: {
+        writeText,
+      },
+    });
+    const mentionSlugMap = new Map([
+      [
+        'thread_review_dashboard',
+        { kind: 'project' as const, name: 'Thread Review Dashboard' },
+      ],
+    ]);
+
+    render(
+      <ChatPreviewProvider
+        value={{
+          openPreviewTarget: vi.fn(),
+          clearPreviewTarget: vi.fn(),
+          formatFilePathForCopy: (target) =>
+            formatCopyFilePath(target, { mentionSlugMap }),
+        }}
+      >
+        <PreviewToolbar
+          activeTarget={{
+            kind: 'file',
+            source: 'vm',
+            workspaceId: 'workspace-123',
+            path: '/plans/phase-2-automation.md',
+            filename: 'phase-2-automation.md',
+            project: 'Thread Review Dashboard',
+            contentType: 'text/markdown',
+          }}
+          onRefresh={() => {}}
+          openElsewhereKind={null}
+          onOpenElsewhere={() => {}}
+          filePreviewOpenUrl="/api/workspaces/workspace-123/fs/content/plans/phase-2-automation.md"
+        />
+      </ChatPreviewProvider>,
+    );
+
+    const fileChip = screen.getByRole('button', { name: /phase-2-automation\.md/i });
+    expect(fileChip).toBeInTheDocument();
+
+    fireEvent.click(fileChip);
+
+    await waitFor(() => {
+      expect(writeText).toHaveBeenCalledWith(
+        '@thread_review_dashboard - /plans/phase-2-automation.md',
+      );
     });
   });
 
