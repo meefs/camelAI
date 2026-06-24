@@ -18,6 +18,26 @@
     {
       "id": "sandbox-write-file-live",
       "description": "Write and verify a file in the project sandbox"
+    },
+    {
+      "id": "scheduled-prompt-live",
+      "description": "Create a scheduled prompt and verify it persisted (exercises the lean-dropped schedules tools via discovery)"
+    },
+    {
+      "id": "workflow-live",
+      "description": "Create a deterministic workflow and verify it persisted (exercises the lean-dropped workflows tools via discovery)"
+    },
+    {
+      "id": "integration-create-live",
+      "description": "Create a remote MCP integration and verify it persisted (exercises the lean-dropped integrations tools via discovery)"
+    },
+    {
+      "id": "custom-domain-live",
+      "description": "Discover and call the custom-domain diagnostics tool (exercises the lean-dropped domains tools via discovery)"
+    },
+    {
+      "id": "warehouse-list-live",
+      "description": "Discover and call the warehouse connection listing tool (exercises the lean-dropped warehouse/connections tools via discovery)"
     }
   ]
 }
