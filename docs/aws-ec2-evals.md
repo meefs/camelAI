@@ -9,8 +9,9 @@ covers only the parts that live in `chiridion-app`.
 ## What lives here
 
 - **The evals**: `workers/main/tests/evals/*` — including the generic `custom-prompt-live.test.ts`
-  (driven by `CUSTOM_EVAL_PROMPT` / `CUSTOM_EVAL_PROJECT` / `CUSTOM_EVAL_EXPECT_SUBSTRINGS`, plus
-  the usual `EVAL_MODEL` / `EVAL_MAX_*` / `EVAL_REAL_DEPLOY` knobs).
+  (driven by `CUSTOM_EVAL_PROMPT` / `CUSTOM_EVAL_PROJECT` /
+  `CUSTOM_EVAL_REQUIRED_TRANSCRIPT_SUBSTRINGS`, plus the usual `EVAL_MODEL` / `EVAL_MAX_*` /
+  `EVAL_REAL_DEPLOY` knobs).
 - **In-tree single-eval runner**: `scripts/run-agent-eval.mjs <eval-name>` (used locally and by
   the on-instance runner). `bun run test:eval:dashboard` / `:deploy` / `:sandbox` wrap it.
 - **On-instance suite runner**: `scripts/run-eval-suite.sh` — the control plane clones this repo

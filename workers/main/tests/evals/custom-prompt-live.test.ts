@@ -1,13 +1,19 @@
 import { env } from "cloudflare:test";
-import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, it } from "vitest";
 
 import { createOrg, createUser, type TestEnv } from "../test-helpers";
+import {
+  assertPassFailCriteria,
+  buildEvalCriteriaSummary,
+  buildNoAssistantErrorCriterion,
+  buildResultEventCriterion,
+  buildRuntimeEventsCriterion,
+  buildSessionCompletedCriterion,
+  passFailCriterion,
+  scoreCriterion,
+} from "./eval-criteria";
 import { emitEvalTranscript } from "./eval-transcript";
 import {
-  assertEvalSignal,
   evaluateAgentEvalSignal,
   getEvalSignalThresholds,
   type EvalSignalEnv,
@@ -23,10 +29,10 @@ import type { WorkspaceFilesystemDO } from "../../src/workspace-filesystem-do";
 // Generic, env-driven eval used by the control plane to run custom prompts that are NOT
 // committed to the source tree. The prompt, optional project name, and optional pass/fail
 // substring assertions are supplied via env (whitelisted in vitest.workers.config.ts):
-//   CUSTOM_EVAL_PROMPT            (required) the user message sent to the agent
-//   CUSTOM_EVAL_PROJECT          (optional) project name to scaffold; default "custom-eval"
-//   CUSTOM_EVAL_EXPECT_SUBSTRINGS (optional) JSON array of lowercase substrings that must
-//                                  appear in the transcript for the eval to pass
+//   CUSTOM_EVAL_PROMPT                         (required) the user message sent to the agent
+//   CUSTOM_EVAL_PROJECT                        (optional) project name to scaffold; default "custom-eval"
+//   CUSTOM_EVAL_REQUIRED_TRANSCRIPT_SUBSTRINGS (optional) JSON array of lowercase substrings
+//                                               that must appear in the transcript for the eval to pass
 // Model selection (EVAL_MODEL / EVAL_CUSTOM_*), signal thresholds (EVAL_MAX_* /
 // EVAL_ENFORCE_SIGNAL), and real-deploy opt-in (EVAL_REAL_DEPLOY) reuse the shared harness.
 type CustomEvalEnv = TestEnv & EvalModelEnv & EvalSignalEnv & {
@@ -35,43 +41,28 @@ type CustomEvalEnv = TestEnv & EvalModelEnv & EvalSignalEnv & {
   RUN_AGENT_EVALS?: string;
   CUSTOM_EVAL_PROMPT?: string;
   CUSTOM_EVAL_PROJECT?: string;
-  CUSTOM_EVAL_EXPECT_SUBSTRINGS?: string;
+  CUSTOM_EVAL_REQUIRED_TRANSCRIPT_SUBSTRINGS?: string;
 };
 
 const testEnv = env as unknown as CustomEvalEnv;
 const maybeIt = testEnv.RUN_AGENT_EVALS === "1" ? it : it.skip;
 
-function persistEvalArtifact(name: string, value: unknown): void {
-  try {
-    const dir = path.resolve(
-      process.env.EVAL_ARTIFACT_DIR ??
-        path.join(os.tmpdir(), "camelai-eval-artifacts"),
-    );
-    fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(path.join(dir, `${name}.json`), JSON.stringify(value, null, 2));
-  } catch (error) {
-    console.warn(
-      `Unable to persist eval artifact ${name}: ${
-        error instanceof Error ? error.message : String(error)
-      }`,
-    );
-  }
-}
-
-function parseExpectSubstrings(raw: string | undefined): string[] {
+function parseRequiredTranscriptSubstrings(raw: string | undefined): string[] {
   if (!raw) return [];
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
   } catch (error) {
     throw new Error(
-      `CUSTOM_EVAL_EXPECT_SUBSTRINGS must be a JSON array of strings: ${
+      `CUSTOM_EVAL_REQUIRED_TRANSCRIPT_SUBSTRINGS must be a JSON array of strings: ${
         error instanceof Error ? error.message : String(error)
       }`,
     );
   }
   if (!Array.isArray(parsed) || parsed.some((item) => typeof item !== "string")) {
-    throw new Error("CUSTOM_EVAL_EXPECT_SUBSTRINGS must be a JSON array of strings");
+    throw new Error(
+      "CUSTOM_EVAL_REQUIRED_TRANSCRIPT_SUBSTRINGS must be a JSON array of strings",
+    );
   }
   return (parsed as string[]).map((item) => item.toLowerCase());
 }
@@ -86,16 +77,56 @@ describe("custom prompt agent eval", () => {
     "runs a control-plane supplied prompt and captures the transcript",
     async () => {
       const prompt = testEnv.CUSTOM_EVAL_PROMPT?.trim();
-      if (!prompt) {
-        // Fail loudly: a custom eval run was requested without a prompt to run.
-        throw new Error(
-          "CUSTOM_EVAL_PROMPT is required to run the custom-prompt-live eval",
+      let requiredTranscriptSubstrings: string[] = [];
+      let configError: string | undefined;
+      try {
+        requiredTranscriptSubstrings = parseRequiredTranscriptSubstrings(
+          testEnv.CUSTOM_EVAL_REQUIRED_TRANSCRIPT_SUBSTRINGS,
         );
+      } catch (error) {
+        configError = error instanceof Error ? error.message : String(error);
       }
-      const expectSubstrings = parseExpectSubstrings(
-        testEnv.CUSTOM_EVAL_EXPECT_SUBSTRINGS,
-      );
       const projectName = testEnv.CUSTOM_EVAL_PROJECT?.trim() || "custom-eval";
+      if (!prompt || configError) {
+        const evaluation = buildEvalCriteriaSummary({
+          passFail: [
+            passFailCriterion({
+              id: "custom_prompt_present",
+              label: "Custom prompt is present",
+              passed: Boolean(prompt),
+              reason: prompt
+                ? undefined
+                : "CUSTOM_EVAL_PROMPT is required to run custom-prompt-live.",
+            }),
+            passFailCriterion({
+              id: "required_transcript_substrings_config_valid",
+              label: "Required transcript substring config is valid",
+              passed: !configError,
+              reason: configError,
+            }),
+          ],
+          scorecard: [
+            scoreCriterion({
+              id: "no_bad_tool_calls",
+              label: "No bad tool calls",
+              points: 0,
+              maxPoints: 1,
+              reason: "Agent session did not run.",
+            }),
+          ],
+        });
+        const payload = {
+          status: "harness_error",
+          evaluation,
+          error: configError ?? "CUSTOM_EVAL_PROMPT is required",
+          model: testEnv.EVAL_MODEL,
+          prompt,
+          requiredTranscriptSubstrings,
+        };
+        emitEvalTranscript(payload);
+        assertPassFailCriteria(evaluation);
+        return;
+      }
 
       const suffix = crypto.randomUUID().slice(0, 8);
       const { userId } = await createUser(
@@ -149,35 +180,64 @@ describe("custom prompt agent eval", () => {
         getEvalSignalThresholds(testEnv, { maxBadToolCalls: 0 }),
       );
 
-      const payload = {
+      const transcriptText = JSON.stringify({
+        result: result.result,
+        events: result.events,
+        messages: result.messages,
+      }).toLowerCase();
+      const missingSubstrings = requiredTranscriptSubstrings.filter(
+        (substring) => !transcriptText.includes(substring),
+      );
+      const evaluation = buildEvalCriteriaSummary({
+        passFail: [
+          passFailCriterion({
+            id: "custom_prompt_present",
+            label: "Custom prompt is present",
+            passed: true,
+          }),
+          buildSessionCompletedCriterion(result),
+          buildNoAssistantErrorCriterion(transcriptText),
+          buildRuntimeEventsCriterion(result),
+          buildResultEventCriterion(result),
+          passFailCriterion({
+            id: "required_transcript_substrings_present",
+            label: "Required transcript substrings are present",
+            passed: missingSubstrings.length === 0,
+            reason: missingSubstrings.length
+              ? `Missing required substring(s): ${missingSubstrings.join(", ")}`
+              : undefined,
+            details: {
+              requiredTranscriptSubstrings,
+              missingSubstrings,
+            },
+          }),
+        ],
+        scorecard: [
+          scoreCriterion({
+            id: "no_bad_tool_calls",
+            label: "No bad tool calls",
+            points: signal.badToolCallCount === 0 ? 1 : 0,
+            maxPoints: 1,
+            reason: `${signal.badToolCallCount} bad tool call(s).`,
+          }),
+        ],
+      });
+      const finalPayload = {
         status: result.status,
+        evaluation,
         error: result.error,
         model: testEnv.EVAL_MODEL,
         prompt,
+        requiredTranscriptSubstrings,
         signal,
         deployedApps: result.deployedApps,
         result: result.result,
         events: result.events,
         messages: result.messages,
       };
-      persistEvalArtifact("custom-prompt-live", payload);
+      emitEvalTranscript(finalPayload);
 
-      emitEvalTranscript(payload);
-
-      const transcriptText = JSON.stringify({
-        result: result.result,
-        events: result.events,
-        messages: result.messages,
-      }).toLowerCase();
-
-      expect(result.status).toBe("completed");
-      assertEvalSignal(signal, testEnv);
-      expect(transcriptText).not.toContain("assistant error");
-      for (const substring of expectSubstrings) {
-        expect(transcriptText).toContain(substring);
-      }
-      expect(result.events.some((event) => event.type === "runtime_event")).toBe(true);
-      expect(result.events.some((event) => event.type === "result")).toBe(true);
+      assertPassFailCriteria(evaluation);
     },
     660_000,
   );

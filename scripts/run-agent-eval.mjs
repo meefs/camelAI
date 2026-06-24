@@ -43,9 +43,11 @@ function sweepEvalContainers(reason) {
 const EVALS_DIR = "workers/main/tests/evals";
 const START_MARKER = "EVAL_TRANSCRIPT_START ";
 const END_MARKER = " EVAL_TRANSCRIPT_END";
-const manifestEvalIds = JSON.parse(
+const manifest = JSON.parse(
   readFileSync(path.resolve(EVALS_DIR, "manifest.json"), "utf8"),
-).evals.map((entry) => entry.id);
+);
+const manifestEvalIds = manifest.evals.map((entry) => entry.id);
+const manifestEvalById = new Map(manifest.evals.map((entry) => [entry.id, entry]));
 // custom-prompt-live is the generic env-driven custom harness — runnable but not a manifest eval.
 const evalIds = [...manifestEvalIds, "custom-prompt-live"];
 const configFor = (id) => ({
@@ -71,7 +73,7 @@ Options:
   --custom-model <id>       Upstream model id for EVAL_MODEL=custom
   --custom-model-id <id>    Alias for --custom-model
   --timeout-ms <ms>         Agent session timeout override
-  --enforce-signal          Fail when eval signal thresholds are violated
+  --enforce-signal          Set EVAL_ENFORCE_SIGNAL for legacy evals
   --max-assistant-turns <n> Assistant turn warning/failure threshold
   --max-bad-tool-calls <n>  Bad tool call warning/failure threshold
   --max-sdk-turns <n>       SDK turn_start warning/failure threshold
@@ -259,6 +261,53 @@ function addHarnessSignal(transcript, harnessErrors) {
   return transcript;
 }
 
+function isObject(value) {
+  return value && typeof value === "object" && !Array.isArray(value);
+}
+
+function validateEvaluationContract(transcript) {
+  if (!isObject(transcript)) {
+    throw new Error("captured transcript is not a JSON object");
+  }
+  const evaluation = transcript.evaluation;
+  if (!isObject(evaluation)) {
+    throw new Error("captured transcript is missing required evaluation object");
+  }
+  if (!isObject(evaluation.passFail)) {
+    throw new Error("evaluation.passFail must be an object");
+  }
+  if (!Array.isArray(evaluation.passFail.criteria)) {
+    throw new Error("evaluation.passFail.criteria must be an array");
+  }
+  if (!isObject(evaluation.scorecard)) {
+    throw new Error("evaluation.scorecard must be an object");
+  }
+  if (!Array.isArray(evaluation.scorecard.criteria)) {
+    throw new Error("evaluation.scorecard.criteria must be an array");
+  }
+}
+
+function isRealEvalDeployEnabled(env) {
+  if (env.RUN_AGENT_EVALS !== "1") return false;
+  const flag = env.EVAL_REAL_DEPLOY?.trim().toLowerCase();
+  if (flag === "0" || flag === "false") return false;
+  return Boolean(env.CF_API_TOKEN?.trim());
+}
+
+function hasSkippedTests(output) {
+  return /\b\d+\s+skipped\b/i.test(output);
+}
+
+function isExpectedMarkerlessSkip(exitCode, output) {
+  if (exitCode !== 0) return false;
+  if (!hasSkippedTests(output)) return false;
+  const manifestEntry = manifestEvalById.get(evalName);
+  return manifestEntry?.realDeploy === true && !isRealEvalDeployEnabled({
+    ...evalEnv,
+    RUN_AGENT_EVALS: "1",
+  });
+}
+
 function observeChunk(chunk) {
   if (complete) return;
 
@@ -335,19 +384,35 @@ child.on("error", (error) => {
 });
 
 child.on("close", (code) => {
+  let exitCode = code ?? 1;
   if (complete) {
-    mkdirSync(artifactDir, { recursive: true });
-    const transcript = addHarnessSignal(
-      JSON.parse(captured),
-      extractVitestUnhandledErrors(processOutputTail),
+    try {
+      mkdirSync(artifactDir, { recursive: true });
+      const transcript = addHarnessSignal(
+        JSON.parse(captured),
+        extractVitestUnhandledErrors(processOutputTail),
+      );
+      validateEvaluationContract(transcript);
+      writeFileSync(artifactPath, JSON.stringify(transcript, null, 2));
+      console.log(`Wrote eval artifact: ${artifactPath}`);
+      printSignalSummary(transcript);
+    } catch (error) {
+      console.error(
+        `Eval transcript contract failed for "${evalName}": ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+      exitCode = 1;
+    }
+  } else if (isExpectedMarkerlessSkip(exitCode, processOutputTail)) {
+    console.log(
+      `No transcript marker found for skipped real-deploy eval "${evalName}"; preserving Vitest success.`,
     );
-    writeFileSync(artifactPath, JSON.stringify(transcript, null, 2));
-    console.log(`Wrote eval artifact: ${artifactPath}`);
-    printSignalSummary(transcript);
   } else {
-    console.warn(`No transcript marker found for eval "${evalName}".`);
+    console.error(`No transcript marker found for eval "${evalName}".`);
+    exitCode = 1;
   }
 
   sweepEvalContainers("post-run");
-  process.exit(code ?? 1);
+  process.exit(exitCode);
 });

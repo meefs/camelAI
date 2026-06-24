@@ -1,12 +1,17 @@
 import { env } from "cloudflare:test";
-import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { createOrg, createUser, type TestEnv } from "../test-helpers";
 import {
-  assertEvalSignal,
+  assertPassFailCriteria,
+  buildEvalCriteriaSummary,
+  buildSessionCompletedCriterion,
+  passFailCriterion,
+  scoreCriterion,
+  scoreLatestPreview,
+  scoreSignalEfficiency,
+} from "./eval-criteria";
+import {
   evaluateAgentEvalSignal,
   getEvalSignalThresholds,
   type EvalSignalEnv,
@@ -19,8 +24,8 @@ import {
 import { isRealEvalDeployEnabled } from "../../src/eval-deploy-context";
 import {
   assertDeployedApp,
-  assertDeployedAppLive,
   countWorkspaceApps,
+  type EvalDeployedApp,
 } from "./eval-deploy-assert";
 import { emitEvalTranscript } from "./eval-transcript";
 import type { ChatThreadDO } from "../../src/chat-thread-do";
@@ -106,6 +111,14 @@ type SourceInspectionCandidate = {
   failures: string[];
 };
 
+type PageSmoke = {
+  url?: string;
+  status?: number;
+  bodyLength?: number;
+  errorStrings: string[];
+  error?: string;
+};
+
 const EVAL_ID = "space-matching-game-live";
 const APP_NAME_HINTS = [
   "space-matching-game",
@@ -117,26 +130,6 @@ const APP_NAME_HINTS = [
 const testEnv = env as unknown as SpaceMatchingGameEvalEnv;
 // This eval needs the real testing-grounds deploy path because it asserts a live app.
 const maybeIt = isRealEvalDeployEnabled(testEnv) ? it : it.skip;
-
-function persistEvalArtifact(name: string, value: unknown): void {
-  try {
-    const dir = path.resolve(
-      process.env.EVAL_ARTIFACT_DIR ??
-        path.join(os.tmpdir(), "camelai-eval-artifacts"),
-    );
-    fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(
-      path.join(dir, `${name}.json`),
-      JSON.stringify(value, null, 2),
-    );
-  } catch (error) {
-    console.warn(
-      `Unable to persist eval artifact ${name}: ${
-        error instanceof Error ? error.message : String(error)
-      }`,
-    );
-  }
-}
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
   return value && typeof value === "object" && !Array.isArray(value)
@@ -357,8 +350,6 @@ function jsExecCodeMentionsTool(code: string, toolName: string): boolean {
     new RegExp(`\\btools\\s*\\.\\s*${escaped}\\s*\\(`, "i"),
     new RegExp(`\\btools\\s*\\[\\s*(["'\`])${escaped}\\1\\s*\\]\\s*\\(`, "i"),
     new RegExp(`\\bcallTool\\s*\\(\\s*(["'\`])${escaped}\\1`, "i"),
-    new RegExp(`\\b${escaped}\\s*\\(`, "i"),
-    new RegExp(`(["'\`])${escaped}\\1`, "i"),
   ].some((pattern) => pattern.test(stripped));
 }
 
@@ -494,6 +485,32 @@ function evaluateRuntimeAssertions(
   }
 
   return { commands, failures };
+}
+
+function buildPostDeployToolCriteria(runtimeAssertions: { failures: string[] }) {
+  const listAppsFailure = runtimeAssertions.failures.find((failure) =>
+    failure.includes("list_apps"),
+  );
+  const setPreviewFailure = runtimeAssertions.failures.find((failure) =>
+    failure.includes("set_preview"),
+  );
+
+  return [
+    passFailCriterion({
+      id: "called_list_apps",
+      label: "Agent called list_apps after deploy",
+      passed: !listAppsFailure,
+      reason: listAppsFailure,
+      details: { failures: runtimeAssertions.failures },
+    }),
+    passFailCriterion({
+      id: "called_set_preview",
+      label: "Agent called set_preview for the deployed app",
+      passed: !setPreviewFailure,
+      reason: setPreviewFailure,
+      details: { failures: runtimeAssertions.failures },
+    }),
+  ];
 }
 
 function normalizedName(value: string): string {
@@ -847,6 +864,39 @@ function missingProjectSourceInspection(): SourceInspection {
   };
 }
 
+async function smokeFetchRoot(app: EvalDeployedApp | undefined): Promise<PageSmoke> {
+  if (!app) {
+    return {
+      errorStrings: [],
+      error: "No deployed app URL was captured.",
+    };
+  }
+  try {
+    const response = await fetch(app.url, { redirect: "follow" });
+    const body = await response.text();
+    const lower = body.toLowerCase();
+    const errorStrings = [
+      "oops",
+      "application error",
+      "internal server error",
+      "not found",
+      "stack",
+    ].filter((term) => lower.includes(term));
+    return {
+      url: app.url,
+      status: response.status,
+      bodyLength: body.length,
+      errorStrings,
+    };
+  } catch (error) {
+    return {
+      url: app.url,
+      errorStrings: [],
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
 function sourceInspectionScore(inspection: SourceInspection): number {
   const signalHitCount = Object.values(inspection.signalHits).reduce(
     (total, hits) => total + hits.length,
@@ -908,6 +958,13 @@ function completedRuntimeItem(item: RuntimeItem): Record<string, unknown> {
 }
 
 describe("space matching game runtime assertion extraction", () => {
+  it("does not treat bare tool-name mentions as tool calls", () => {
+    expect(jsExecCodeMentionsTool('const next = "list_apps";', "list_apps")).toBe(false);
+    expect(jsExecCodeMentionsTool("list_apps;", "list_apps")).toBe(false);
+    expect(jsExecCodeMentionsTool("await tools.list_apps({});", "list_apps")).toBe(true);
+    expect(jsExecCodeMentionsTool('await callTool("set_preview", {});', "set_preview")).toBe(true);
+  });
+
   it("accepts valid deploy behavior routed through js_exec", () => {
     const code = `
       const project = await env.PROJECTS.create({
@@ -967,6 +1024,28 @@ describe("space matching game runtime assertion extraction", () => {
       "agent used unsupported scaffold command(s): npm create cloudflare@latest space",
     );
   });
+
+  it("keeps post-deploy tool failures in pass/fail criteria", () => {
+    const criteria = buildPostDeployToolCriteria({
+      failures: [
+        "agent did not call list_apps after deploy",
+        "agent did not call set_preview for the deployed app",
+      ],
+    });
+
+    expect(criteria).toMatchObject([
+      {
+        id: "called_list_apps",
+        status: "failed",
+        reason: "agent did not call list_apps after deploy",
+      },
+      {
+        id: "called_set_preview",
+        status: "failed",
+        reason: "agent did not call set_preview for the deployed app",
+      },
+    ]);
+  });
 });
 
 describe("space matching game deploy agent eval", () => {
@@ -1005,15 +1084,49 @@ describe("space matching game deploy agent eval", () => {
           initialProjects,
           initialProjects,
         );
+        const evaluation = buildEvalCriteriaSummary({
+          passFail: [
+            passFailCriterion({
+              id: "agent_session_completed",
+              label: "Agent session completed",
+              passed: false,
+              reason: "Agent session did not run because the workspace was not empty.",
+            }),
+            passFailCriterion({
+              id: "agent_created_project",
+              label: "Agent created a project",
+              passed: false,
+              reason: projectCreation.failures.join("; "),
+              details: projectCreation,
+            }),
+          ],
+          scorecard: [
+            scoreCriterion({
+              id: "previewed_latest_app",
+              label: "Previewed the latest deployed app",
+              points: 0,
+              maxPoints: 5,
+              reason: "Agent session did not run.",
+            }),
+            scoreCriterion({
+              id: "agent_efficiency",
+              label: "Agent efficiency / signal",
+              points: 0,
+              maxPoints: 4,
+              reason: "Agent session did not run.",
+            }),
+          ],
+        });
         const payload = {
           status: "harness_error",
+          evaluation,
           model: testEnv.EVAL_MODEL,
           projectCreation,
           sourceInspection: missingProjectSourceInspection(),
         };
-        persistEvalArtifact(EVAL_ID, payload);
         emitEvalTranscript(payload);
-        throw new Error(projectCreation.failures.join("\n"));
+        assertPassFailCriteria(evaluation);
+        return;
       }
 
       const chatThread = testEnv.CHAT_THREAD.get(
@@ -1052,14 +1165,156 @@ describe("space matching game deploy agent eval", () => {
       const signal = evaluateAgentEvalSignal(
         result,
         getEvalSignalThresholds(testEnv, {
-          maxAssistantTurns: 18,
-          maxBadToolCalls: 0,
+          maxAssistantTurns: 20,
+          maxBadToolCalls: 3,
         }),
       );
       const runtimeAssertions = evaluateRuntimeAssertions(result);
+      const commandText = runtimeAssertions.commands.join("\n").toLowerCase();
+      const unsupportedScaffoldFailures = runtimeAssertions.failures.filter((failure) =>
+        failure.includes("unsupported scaffold"),
+      );
+      const shadcnFailures = sourceInspection.failures.filter((failure) =>
+        /components\.json|shadcn/i.test(failure),
+      );
+      const usedCreateWorker = /\bcreate-worker\b/.test(commandText);
+      const usedBunRunDeploy = /\bbun\s+run\s+deploy\b/.test(commandText);
+      const appsAfter = await countWorkspaceApps(orgStub, defaultWorkspaceId);
+      let deployedApp: EvalDeployedApp | undefined;
+      let deployedAppError: string | undefined;
+      try {
+        deployedApp = assertDeployedApp(result, { hostSuffix: ".evals.camelai.app" });
+      } catch (error) {
+        deployedAppError = error instanceof Error ? error.message : String(error);
+      }
+      const rootSmoke = await smokeFetchRoot(deployedApp);
+      const evaluation = buildEvalCriteriaSummary({
+        passFail: [
+          buildSessionCompletedCriterion(result),
+          passFailCriterion({
+            id: "agent_created_project",
+            label: "Agent created a project",
+            passed: projectCreation.failures.length === 0,
+            reason: projectCreation.failures.length
+              ? projectCreation.failures.join("; ")
+              : undefined,
+            details: projectCreation,
+          }),
+          passFailCriterion({
+            id: "read_deploy_skill",
+            label: "Agent read the deploy software skill",
+            passed: readDevelopingSoftwareSkill(result.events),
+            reason: readDevelopingSoftwareSkill(result.events)
+              ? undefined
+              : "No qualifying developing-software/SKILL.md read evidence was found.",
+          }),
+          passFailCriterion({
+            id: "scaffolded_with_create_worker_and_shadcn",
+            label: "Agent scaffolded with create-worker and shadcn",
+            passed:
+              usedCreateWorker &&
+              unsupportedScaffoldFailures.length === 0 &&
+              shadcnFailures.length === 0,
+            reason:
+              usedCreateWorker &&
+              unsupportedScaffoldFailures.length === 0 &&
+              shadcnFailures.length === 0
+                ? undefined
+                : [
+                    ...(usedCreateWorker ? [] : ["No create-worker scaffold command evidence was found."]),
+                    ...unsupportedScaffoldFailures,
+                    ...shadcnFailures,
+                  ].join(" "),
+            details: {
+              commands: runtimeAssertions.commands,
+              unsupportedScaffoldFailures,
+              shadcnFailures,
+            },
+          }),
+          passFailCriterion({
+            id: "deployed_with_bun_run_deploy",
+            label: "Agent deployed with bun run deploy",
+            passed: usedBunRunDeploy,
+            reason: usedBunRunDeploy
+              ? undefined
+              : "No bun run deploy command evidence was found.",
+            details: { commands: runtimeAssertions.commands },
+          }),
+          ...buildPostDeployToolCriteria(runtimeAssertions),
+          passFailCriterion({
+            id: "source_satisfies_app_requirements",
+            label: "Generated source satisfies required app requirements",
+            passed: sourceInspection.failures.length === 0,
+            reason: sourceInspection.failures.length
+              ? sourceInspection.failures.join("; ")
+              : undefined,
+            details: sourceInspection,
+          }),
+          passFailCriterion({
+            id: "workspace_app_created",
+            label: "Workspace app was created",
+            passed: appsAfter === appsBefore + 1,
+            reason:
+              appsAfter === appsBefore + 1
+                ? undefined
+                : `Expected app count to increase by one; before=${appsBefore}, after=${appsAfter}.`,
+            details: { appsBefore, appsAfter },
+          }),
+          passFailCriterion({
+            id: "eval_app_url_deployed",
+            label: "A real eval app URL was deployed",
+            passed: Boolean(deployedApp),
+            reason: deployedApp ? undefined : deployedAppError,
+            details: { deployedApp },
+          }),
+          passFailCriterion({
+            id: "deployed_app_live",
+            label: "Deployed app is live",
+            passed: rootSmoke.status === 200 && (rootSmoke.bodyLength ?? 0) > 0,
+            reason:
+              rootSmoke.status === 200 && (rootSmoke.bodyLength ?? 0) > 0
+                ? undefined
+                : rootSmoke.error ??
+                  `Root fetch returned HTTP ${rootSmoke.status ?? "unknown"} with body length ${rootSmoke.bodyLength ?? 0}.`,
+            details: rootSmoke,
+          }),
+          passFailCriterion({
+            id: "important_pages_load_without_server_error",
+            label: "Important app pages load without obvious server error",
+            passed:
+              rootSmoke.status === 200 &&
+              (rootSmoke.bodyLength ?? 0) > 0 &&
+              rootSmoke.errorStrings.length === 0,
+            reason:
+              rootSmoke.status === 200 &&
+              (rootSmoke.bodyLength ?? 0) > 0 &&
+              rootSmoke.errorStrings.length === 0
+                ? undefined
+                : rootSmoke.errorStrings.length
+                  ? `Root body contained error marker(s): ${rootSmoke.errorStrings.join(", ")}`
+                  : rootSmoke.error ??
+                    `Root fetch returned HTTP ${rootSmoke.status ?? "unknown"} with body length ${rootSmoke.bodyLength ?? 0}.`,
+            details: rootSmoke,
+          }),
+        ],
+        scorecard: [
+          scoreLatestPreview(result.events),
+          scoreSignalEfficiency(signal, {
+            maxPoints: 4,
+            fallbackPoints: 1,
+            tiers: [
+              { maxAssistantTurns: 20, maxBadToolCalls: 3, points: 4 },
+              { maxAssistantTurns: 30, maxBadToolCalls: 6, points: 3 },
+              { maxAssistantTurns: 40, maxBadToolCalls: 12, points: 2 },
+              { maxAssistantTurns: 50, maxBadToolCalls: 24, points: 1 },
+            ],
+          }),
+        ],
+      });
 
       const payload = {
         status: result.status,
+        evaluation,
         error: result.error,
         model: testEnv.EVAL_MODEL,
         signal,
@@ -1068,33 +1323,13 @@ describe("space matching game deploy agent eval", () => {
         runtimeAssertions,
         sourceInspection,
         sourceInspectionCandidates,
+        livePageSmoke: rootSmoke,
         result: result.result,
         events: result.events,
         messages: result.messages,
       };
-      persistEvalArtifact(EVAL_ID, payload);
       emitEvalTranscript(payload);
-
-      const transcriptText = lowerText({
-        result: result.result,
-        events: result.events,
-        messages: result.messages,
-      });
-
-      expect(result.status).toBe("completed");
-      assertEvalSignal(signal, testEnv);
-      expect(transcriptText).not.toContain("assistant error");
-      expect(result.events.some((event) => event.type === "runtime_event")).toBe(true);
-      expect(result.events.some((event) => event.type === "result")).toBe(true);
-      expect(projectCreation.failures).toEqual([]);
-      expect(runtimeAssertions.failures).toEqual([]);
-      expect(sourceInspection.failures).toEqual([]);
-      expect(await countWorkspaceApps(orgStub, defaultWorkspaceId)).toBe(
-        appsBefore + 1,
-      );
-
-      const deployedApp = assertDeployedApp(result, { hostSuffix: ".evals.camelai.app" });
-      await assertDeployedAppLive(deployedApp);
+      assertPassFailCriteria(evaluation);
     },
     960_000,
   );

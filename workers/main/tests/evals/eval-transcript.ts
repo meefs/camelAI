@@ -1,3 +1,5 @@
+import type { EvalCriteriaSummary } from "./eval-criteria";
+
 // Standard transcript emitter for agent evals. Every eval ends by calling emitEvalTranscript(...);
 // scripts/run-agent-eval.mjs captures the JSON between the single marker pair below and writes it
 // as the run's artifact. Using one shared marker (instead of a bespoke pair per eval) is what lets
@@ -8,6 +10,7 @@ export const EVAL_TRANSCRIPT_END = " EVAL_TRANSCRIPT_END";
 
 export interface EvalTranscriptPayload {
   status: unknown;
+  evaluation: EvalCriteriaSummary;
   error?: unknown;
   /** EVAL_MODEL used for the run (for the dashboard's per-model view). */
   model?: unknown;
@@ -27,6 +30,13 @@ export interface EvalTranscriptPayload {
   sourceInspection?: unknown;
   /** Eval-specific source inspection candidate summaries, when present. */
   sourceInspectionCandidates?: unknown;
+  /** Eval-specific file inspection summary, when present. */
+  fileInspection?: unknown;
+  /** Eval-specific live page smoke summary, when present. */
+  livePageSmoke?: unknown;
+  /** Custom eval prompt/config metadata, when present. */
+  prompt?: unknown;
+  requiredTranscriptSubstrings?: unknown;
 }
 
 export function emitEvalTranscript(payload: EvalTranscriptPayload): void {

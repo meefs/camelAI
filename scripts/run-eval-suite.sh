@@ -79,8 +79,8 @@ run_evals() {
   local code=0
   for eval_name in "${evals[@]}"; do
     # Eval selection (EVAL_MODEL, EVAL_REAL_DEPLOY, EVAL_MAX_*, EVAL_ENFORCE_SIGNAL) and the
-    # custom-prompt inputs (CUSTOM_EVAL_PROMPT/PROJECT/EXPECT_SUBSTRINGS) flow through from the
-    # environment to vitest.
+    # custom-prompt inputs (CUSTOM_EVAL_PROMPT/PROJECT/REQUIRED_TRANSCRIPT_SUBSTRINGS) flow through
+    # from the environment to vitest.
     EVAL_ARTIFACT_DIR="$RUN_DIR/artifacts" RUN_AGENT_EVALS=1 bun scripts/run-agent-eval.mjs "$eval_name" "${eval_args[@]}"
     eval_code=$?
     if [ "$eval_code" -ne 0 ]; then code="$eval_code"; fi

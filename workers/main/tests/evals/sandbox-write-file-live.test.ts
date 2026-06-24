@@ -1,10 +1,19 @@
 import { env } from "cloudflare:test";
-import { describe, expect, it } from "vitest";
+import { describe, it } from "vitest";
 
 import { createOrg, createUser, type TestEnv } from "../test-helpers";
+import {
+  assertPassFailCriteria,
+  buildEvalCriteriaSummary,
+  buildNoAssistantErrorCriterion,
+  buildResultEventCriterion,
+  buildRuntimeEventsCriterion,
+  buildSessionCompletedCriterion,
+  passFailCriterion,
+  scoreSignalEfficiency,
+} from "./eval-criteria";
 import { emitEvalTranscript } from "./eval-transcript";
 import {
-  assertEvalSignal,
   evaluateAgentEvalSignal,
   getEvalSignalThresholds,
   type EvalSignalEnv,
@@ -26,6 +35,7 @@ type SandboxWriteEvalEnv = TestEnv & EvalModelEnv & EvalSignalEnv & {
 
 const testEnv = env as unknown as SandboxWriteEvalEnv;
 const maybeIt = testEnv.RUN_AGENT_EVALS === "1" ? it : it.skip;
+const EXPECTED_FILE_CONTENT = "sandbox write eval ok.";
 
 describe("sandbox write file agent eval", () => {
   maybeIt(
@@ -89,33 +99,91 @@ describe("sandbox write file agent eval", () => {
         }),
       );
 
+      const readResponse = await testEnv.PROJECT_RUNTIME_HOST.fetch(
+        `http://runtime.test/v1/projects/${encodeURIComponent(project.id)}/fs/read?path=${encodeURIComponent("/workspace/eval-output.txt")}`,
+      );
+      const fileContents = readResponse.ok ? await readResponse.text() : "";
+      const normalizedFileContents = fileContents.trimEnd();
+      const finalResult = result.result?.trim() ?? "";
+      const finalResultLower = finalResult.toLowerCase();
+      const finalResultExtra = finalResultLower
+        .replace(EXPECTED_FILE_CONTENT, "")
+        .trim();
+      const transcriptText = JSON.stringify({
+        result: result.result,
+        events: result.events,
+        messages: result.messages,
+      }).toLowerCase();
+      const evaluation = buildEvalCriteriaSummary({
+        passFail: [
+          buildSessionCompletedCriterion(result),
+          passFailCriterion({
+            id: "expected_file_written",
+            label: "Agent wrote the expected file",
+            passed: readResponse.ok,
+            reason: readResponse.ok
+              ? undefined
+              : `Reading /workspace/eval-output.txt returned HTTP ${readResponse.status}.`,
+            details: { status: readResponse.status },
+          }),
+          passFailCriterion({
+            id: "file_contents_exact",
+            label: "File contents are exactly correct",
+            passed: normalizedFileContents === EXPECTED_FILE_CONTENT,
+            reason:
+              normalizedFileContents === EXPECTED_FILE_CONTENT
+                ? undefined
+                : `Expected "${EXPECTED_FILE_CONTENT}" after trailing whitespace normalization.`,
+            details: { actual: normalizedFileContents },
+          }),
+          passFailCriterion({
+            id: "final_response_includes_file_contents",
+            label: "Agent final response includes the file contents",
+            passed:
+              finalResultLower.includes(EXPECTED_FILE_CONTENT) &&
+              finalResultExtra.length <= 80,
+            reason:
+              finalResultLower.includes(EXPECTED_FILE_CONTENT)
+                ? finalResultExtra.length <= 80
+                  ? undefined
+                  : "Final response included unrelated explanation beyond the requested file contents."
+                : "Final response did not include the expected file contents.",
+            details: { finalResult },
+          }),
+          buildNoAssistantErrorCriterion(transcriptText),
+          buildRuntimeEventsCriterion(result),
+          buildResultEventCriterion(result),
+        ],
+        scorecard: [
+          scoreSignalEfficiency(signal, {
+            maxPoints: 4,
+            fallbackPoints: 1,
+            tiers: [
+              { maxAssistantTurns: 4, maxBadToolCalls: 0, points: 4 },
+              { maxAssistantTurns: 6, maxBadToolCalls: 1, points: 3 },
+              { maxAssistantTurns: 10, maxBadToolCalls: 3, points: 2 },
+            ],
+          }),
+        ],
+      });
+
       emitEvalTranscript({
         status: result.status,
+        evaluation,
         error: result.error,
         model: testEnv.EVAL_MODEL,
         signal,
         result: result.result,
         events: result.events,
         messages: result.messages,
+        fileInspection: {
+          path: "/workspace/eval-output.txt",
+          readStatus: readResponse.status,
+          contents: fileContents,
+        },
       });
 
-      expect(result.status).toBe("completed");
-      assertEvalSignal(signal, testEnv);
-      expect(result.result?.toLowerCase()).toContain("sandbox write eval ok");
-      expect(signal.tokenUsage.turnCount).toBeGreaterThan(0);
-      expect(signal.tokenUsage.totalTokens).toBeGreaterThan(0);
-      expect(JSON.stringify(result.messages).toLowerCase()).not.toContain(
-        "assistant error",
-      );
-      expect(result.events.some((event) => event.type === "runtime_event")).toBe(true);
-      expect(result.events.some((event) => event.type === "result")).toBe(true);
-
-      const runtime = testEnv.PROJECT_RUNTIME_HOST;
-      const readResponse = await runtime.fetch(
-        `http://runtime.test/v1/projects/${encodeURIComponent(project.id)}/fs/read?path=${encodeURIComponent("/workspace/eval-output.txt")}`,
-      );
-      expect(readResponse.ok).toBe(true);
-      await expect(readResponse.text()).resolves.toContain("sandbox write eval ok");
+      assertPassFailCriteria(evaluation);
     },
     240_000,
   );
