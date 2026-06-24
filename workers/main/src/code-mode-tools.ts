@@ -1,0 +1,2973 @@
+// Code-mode tool layer, extracted from chat-thread-do.ts to keep the
+// ChatThreadDO Durable Object file focused. Contains the code-mode
+// tool-definition registry/helpers and the CodeModeToolsBinding
+// WorkerEntrypoint. Behavior is unchanged by the extraction.
+//
+// ChatThreadDO is imported as a type only (for the chat-thread DO stub
+// signature), so there is no runtime import cycle with ./chat-thread-do.
+import { WorkerEntrypoint } from "cloudflare:workers";
+import { Agent, type Connection } from "agents";
+import { Type, type TSchema } from "typebox";
+import type { AgentToolResult } from "@earendil-works/pi-agent-core";
+import type { OrgDO, WorkerScript } from "./auth";
+import type { WorkspaceDO } from "./workspace";
+import type { WorkspaceCronDO } from "./workspace-cron";
+import { WorkspaceFilesystemClient, normalizeWorkspacePath as normalizeDurableWorkspacePath, type WorkspaceProject, type WorkspaceProjectCloneSummary, projectNameKey } from "./workspace-filesystem-do";
+import { ProjectRuntimeServiceVmBridge } from "./project-runtime-service-vm";
+import type { RuntimeCallArtifact, RuntimeCallArtifactKind } from "../../../src/lib/runtime-artifacts";
+import { getPreferredAppUrl } from "../../../src/lib/app-url";
+import { findConnectionMethodEntry, getConnection, invokeConnectionMethod, listConnectionMethods, listConnections, listConnectionTools, testConnectionMethodEntry } from "./connections-runtime";
+import { confirmDestructiveAction, DESTRUCTIVE_CONFIRM_LABEL } from "./confirmed-destructive-action";
+import { collectProjectDeletionTargets, orderProjectsForRuntimeDelete } from "./project-deletion";
+import { listPiBundledSkillFiles, readPiBundledSkillFile } from "./pi-skill-bundle-helpers";
+import { PiContainerTools, PI_CONTAINER_TOOL_DEFINITIONS } from "./pi-container-tools";
+import { parseFilePreviewPath } from "./preview-paths";
+import type { ConnectionSetupResponse } from "./chat-thread-browser-prompts";
+import { CodeModeWebSearch } from "./code-mode-web-search";
+import { buildWorkspaceScopedR2Key } from "../../../src/lib/workspace-r2-paths";
+import { retryR2Read } from "../../../src/lib/r2-read-retry";
+import { buildWorkspaceEmailAddress, getWorkspaceEmailDomain } from "../../../src/lib/workspace-email";
+import { CodeModeCustomDomains } from "./code-mode-custom-domains";
+import { detectImageMimeType as detectSharedImageMimeType, getSupportedImageMimeTypeFromContentType, inlineImageMaxBase64Chars, prepareInlineImageFromStream, readImageSniffBytesAndReplayStream, type PreparedInlineImage, readStreamBytes } from "./image-tool-content";
+import { CodeModeScheduledPrompts } from "./code-mode-scheduled-prompts";
+import { CodeModeDeterministicAutomations } from "./code-mode-deterministic-automations";
+import { CodeModeIntegrations } from "./code-mode-integrations";
+import { createSignedToken } from "./signed-tokens";
+import { editAutomationVirtualFile, listAutomationVirtualFiles, normalizeAutomationVirtualPath, readAutomationVirtualFile, writeAutomationVirtualFile } from "./deterministic-automation-virtual-files";
+import type { DynamicIntegrationSchema } from "../../../src/lib/integration-registry";
+import type { ChatThreadDO } from "./chat-thread-do";
+import { ChannelTools } from "./chat-channels";
+import {
+  PI_TOOL_RESULT_MAX_BYTES,
+  PI_TOOL_RESULT_MAX_LINES,
+} from "./pi-message-storage";
+import type {
+  ChatEnv,
+  ChatContextState,
+  PreviewTarget,
+  NormalizedTodoItem,
+  NormalizedTodoStatus,
+} from "./chat-thread-do";
+
+export interface CodeModeToolsProps {
+  orgId: string;
+  workspaceId: string;
+  threadId?: string;
+  userId?: string;
+  parentToolUseId?: string;
+}
+
+export interface AIVirtualBindingProps {
+  orgId: string;
+  workspaceId: string;
+  userId?: string;
+}
+
+interface CodeModeToolDefinition {
+  name: string;
+  description: string;
+  parameters: TSchema;
+  category: CodeModeToolCategory;
+  examples: string[];
+  sideEffect: boolean;
+  externalDelivery: boolean;
+}
+
+interface CodeModeToolRegistration extends CodeModeToolDefinition {
+  piPassthrough: boolean;
+}
+
+type CodeModeToolCategory =
+  | "workspace"
+  | "user_interaction"
+  | "communication"
+  | "apps"
+  | "schedules"
+  | "workflows"
+  | "integrations"
+  | "domains"
+  | "web"
+  | "agents"
+  | "connections";
+
+interface CodeModeToolOptions {
+  piPassthrough?: boolean;
+  category?: CodeModeToolCategory;
+  examples?: string[];
+  sideEffect?: boolean;
+  externalDelivery?: boolean;
+}
+
+type CodeModeToolCallHandler = (
+  binding: CodeModeToolsBinding,
+  args: Record<string, unknown>,
+  name: string,
+) => Promise<unknown> | unknown;
+
+type CodeModeR2Mount = "uploads" | "outputs" | "tmp";
+
+interface CodeModeR2Path {
+  mount: CodeModeR2Mount;
+  key: string;
+  path: string;
+  relativePath: string;
+}
+
+type CodeModeFileLocation = "workspace" | "vm" | "r2";
+
+interface CodeModeMoveEndpoint {
+  location: CodeModeFileLocation;
+  path: string;
+  project?: string;
+  contentType?: string;
+}
+
+interface CodeModeMoveFile {
+  path: string;
+  relativePath: string;
+  size?: number;
+  contentType?: string;
+}
+
+export const CODE_MODE_COMPATIBILITY_DATE = "2026-05-11";
+export const CODE_MODE_DEFAULT_TIMEOUT_MS = 60_000;
+export const CODE_MODE_MAX_TIMEOUT_MS = 600_000;
+export const CODE_MODE_DEFAULT_MAX_OUTPUT_CHARACTERS = 60_000;
+export const CODE_MODE_MAX_OUTPUT_CHARACTERS = 200_000;
+const CODE_MODE_R2_READ_NOTICE_RESERVED_BYTES = 1024;
+const CODE_MODE_R2_MAX_WRITE_BYTES = 10 * 1024 * 1024;
+const CODE_MODE_R2_MAX_TEXT_OBJECT_BYTES = 10 * 1024 * 1024;
+const JS_EXEC_EXCLUDED_TOOL_NAMES = new Set([
+  // This tool waits for human input and can outlive js_exec's short sandbox
+  // timeout. Keep it as a top-level Pi tool so the agent sees the submission.
+  "prompt_connection_setup",
+  "delete_connection",
+  "delete_project",
+  // Backing tool for env.WORKSPACE.*. Keep the user-facing runtime facade in
+  // tools.help(), not the implementation detail.
+  "workspace_info",
+]);
+
+export function clampCodeModeInteger(value: unknown, fallback: number, min: number, max: number): number {
+  const parsed = typeof value === "number" ? Math.trunc(value) : Number.parseInt(String(value ?? ""), 10);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.min(max, Math.max(min, parsed));
+}
+
+export function truncateCodeModeText(value: unknown, maxCharacters: number): string {
+  const text = String(value ?? "");
+  if (text.length <= maxCharacters) return text;
+  return `${text.slice(0, maxCharacters)}\n\n[Truncated: ${maxCharacters} of ${text.length} characters]`;
+}
+
+function basenameForMove(path: string): string {
+  return path.split("/").filter(Boolean).pop() || "";
+}
+
+function joinRelativeMovePath(root: string, child: string): string {
+  const cleanRoot = root.replace(/^\/+|\/+$/g, "");
+  const cleanChild = child.replace(/^\/+|\/+$/g, "");
+  if (!cleanRoot) return cleanChild;
+  if (!cleanChild) return cleanRoot;
+  return `${cleanRoot}/${cleanChild}`;
+}
+
+function joinMoveDestinationPath(location: CodeModeFileLocation, root: string, child: string): string {
+  const cleanChild = child.replace(/^\/+/, "");
+  if (location === "r2") {
+    const cleanRoot = root.replace(/^\/+|\/+$/g, "");
+    return cleanRoot ? `${cleanRoot}/${cleanChild}` : cleanChild;
+  }
+  const cleanRoot = root.replace(/\/+$/g, "");
+  if (!cleanRoot || cleanRoot === "/") return `/${cleanChild}`;
+  return `${cleanRoot}/${cleanChild}`;
+}
+
+function bytesToBase64ForMove(bytes: Uint8Array): string {
+  let binary = "";
+  const chunkSize = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
+  }
+  return btoa(binary);
+}
+
+function base64ToBytesForMove(value: string): Uint8Array {
+  const binary = atob(value.replace(/\s/g, ""));
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i += 1) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return bytes;
+}
+
+function normalizeTodoStatus(value: unknown): NormalizedTodoStatus {
+  const status = typeof value === "string" ? value.trim().toLowerCase() : "";
+  switch (status) {
+    case "completed":
+    case "complete":
+    case "done":
+      return "completed";
+    case "inprogress":
+    case "in_progress":
+    case "in-progress":
+    case "running":
+    case "active":
+      return "in_progress";
+    default:
+      return "pending";
+  }
+}
+
+function normalizeTodoText(value: unknown): string {
+  if (
+    typeof value === "string" ||
+    typeof value === "number" ||
+    typeof value === "boolean"
+  ) {
+    return String(value).trim();
+  }
+  if (Array.isArray(value)) {
+    return value
+      .map(normalizeTodoText)
+      .filter(Boolean)
+      .join("");
+  }
+  return "";
+}
+
+function normalizeTodoItem(value: unknown, index: number): NormalizedTodoItem | null {
+  if (
+    typeof value === "string" ||
+    typeof value === "number" ||
+    typeof value === "boolean"
+  ) {
+    const content = String(value).trim();
+    return content ? { content, status: "pending", activeForm: content } : null;
+  }
+
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+
+  const record = value as Record<string, unknown>;
+  const content =
+    normalizeTodoText(record.content) ||
+    normalizeTodoText(record.step) ||
+    normalizeTodoText(record.title) ||
+    normalizeTodoText(record.task) ||
+    normalizeTodoText(record.text) ||
+    normalizeTodoText(record.description) ||
+    normalizeTodoText(record.name) ||
+    `Task ${index + 1}`;
+  const activeForm =
+    normalizeTodoText(record.activeForm) ||
+    normalizeTodoText(record.active_form) ||
+    normalizeTodoText(record.active) ||
+    content;
+
+  return {
+    content,
+    status: normalizeTodoStatus(record.status),
+    activeForm,
+  };
+}
+
+export function normalizeTodoItems(values: unknown[]): NormalizedTodoItem[] {
+  return values
+    .map(normalizeTodoItem)
+    .filter((todo): todo is NormalizedTodoItem => todo !== null);
+}
+
+const EMPTY_PARAMETERS = Type.Object({});
+const CONNECTION_QUERY_PARAMETERS = Type.Object({
+  query: Type.Union([
+    Type.String(),
+    Type.Object({}, { additionalProperties: true }),
+  ]),
+});
+
+function codeModeTool(
+  name: string,
+  description: string,
+  parameters: TSchema = EMPTY_PARAMETERS,
+  options: CodeModeToolOptions = {},
+): CodeModeToolRegistration {
+  return {
+    name,
+    description,
+    parameters,
+    category: options.category ?? "workspace",
+    examples: options.examples ?? [],
+    sideEffect: options.sideEffect ?? false,
+    externalDelivery: options.externalDelivery ?? false,
+    piPassthrough: options.piPassthrough ?? false,
+  };
+}
+
+function codeModePassthroughTool(
+  name: string,
+  description: string,
+  parameters: TSchema = EMPTY_PARAMETERS,
+  options: Omit<CodeModeToolOptions, "piPassthrough"> = {},
+): CodeModeToolRegistration {
+  return codeModeTool(name, description, parameters, { ...options, piPassthrough: true });
+}
+
+function codeModeDefinition(
+  registration: CodeModeToolRegistration,
+): CodeModeToolDefinition {
+  return {
+    name: registration.name,
+    description: registration.description,
+    parameters: registration.parameters,
+    category: registration.category,
+    examples: registration.examples,
+    sideEffect: registration.sideEffect,
+    externalDelivery: registration.externalDelivery,
+  };
+}
+
+const CODE_MODE_CONTAINER_TOOL_NAMES = [
+  "read",
+  "write",
+  "ls",
+  "edit",
+  "grep",
+  "find",
+  "delete",
+] as const;
+
+const CODE_MODE_CONTAINER_TOOL_DEFINITIONS = CODE_MODE_CONTAINER_TOOL_NAMES.map(
+  (name) => {
+    const definition = PI_CONTAINER_TOOL_DEFINITIONS[name];
+    return codeModeTool(definition.name, definition.description, definition.parameters, {
+      category: "workspace",
+      sideEffect: ["bash", "write", "edit"].includes(definition.name),
+    });
+  },
+);
+
+const MOVE_ENDPOINT_PARAMETERS = Type.Object({
+  location: Type.Union([
+    Type.Literal("workspace"),
+    Type.Literal("vm"),
+    Type.Literal("r2"),
+  ], {
+    description: "Required filesystem location: workspace, vm, or r2.",
+  }),
+  path: Type.String({
+    description: "Path at that location. R2 paths must be uploads/<path>, outputs/<path>, or tmp/<path> with no leading slash.",
+  }),
+  project: Type.Optional(Type.String({
+    description: "Required when location is vm; unique workspace project name.",
+  })),
+  content_type: Type.Optional(Type.String({
+    description: "Destination R2 content type override.",
+  })),
+}, { additionalProperties: false });
+
+export const BASH_TOOL = codeModeTool(
+  "bash",
+  "Run a bash command in a project VM. Requires the unique workspace project name and a concise description for the UI. Commands run from /workspace by default; pass cwd only for subdirectories in that checkout. Arguments: { command, project, description, cwd?, timeoutMs?, timeoutSeconds?, env? }.",
+  Type.Object({
+    command: Type.String(),
+    project: Type.String(),
+    description: Type.String(),
+    cwd: Type.Optional(Type.String()),
+    timeoutMs: Type.Optional(Type.Number()),
+    timeoutSeconds: Type.Optional(Type.Number()),
+    env: Type.Optional(Type.Object({}, { additionalProperties: true })),
+  }, { additionalProperties: false }),
+);
+
+function vmTargetParameters() {
+  return {
+    location: Type.Optional(Type.Literal("vm")),
+    project: Type.String(),
+  };
+}
+
+const ASK_USER_QUESTION_TOOL = codeModePassthroughTool(
+  "AskUserQuestion",
+  "Ask the user one or more multiple-choice questions in the chat UI and wait for answers. Arguments: { questions }.",
+  Type.Object({
+    questions: Type.Array(Type.Object({}, { additionalProperties: true })),
+  }),
+  {
+    category: "user_interaction",
+  },
+);
+const CHANNEL_ATTACHMENT_PARAMETERS = Type.Optional(Type.Array(Type.Object({
+  path: Type.String(),
+  filename: Type.Optional(Type.String()),
+  content_type: Type.Optional(Type.String()),
+  caption: Type.Optional(Type.String()),
+  send_as: Type.Optional(Type.String()),
+})));
+const SEND_EMAIL_TOOL = codeModeTool(
+  "send_email",
+  "Send an email from the current workspace. This tool is available only inside js_exec as tools.send_email(...) or deterministic workflows as this.env.TOOLS.send_email(...); it is not a top-level tool. Use this only when channel instructions require an external reply or the user explicitly asks to send an email. Normal assistant replies stay in chat and must not be emailed. Arguments: { to, subject, text?, html?, reply_to?, attachments? }.",
+  Type.Object({
+    to: Type.String(),
+    subject: Type.String(),
+    text: Type.Optional(Type.String()),
+    html: Type.Optional(Type.String()),
+    reply_to: Type.Optional(Type.String()),
+    attachments: CHANNEL_ATTACHMENT_PARAMETERS,
+  }),
+  {
+    category: "communication",
+    examples: [
+      `await tools.send_email({ to: "person@example.com", subject: "Update", text: "Here is the update." })`,
+      `await tools.send_email({ to: "person@example.com", subject: "Files", text: "Attached.", attachments: [{ path: "uploads/report.pdf" }] })`,
+    ],
+    sideEffect: true,
+    externalDelivery: true,
+  },
+);
+const SEND_SLACK_MESSAGE_TOOL = codeModeTool(
+  "send_slack_message",
+  "Send a Slack message from the current workspace. This tool is available only inside js_exec as tools.send_slack_message(...) or deterministic workflows as this.env.TOOLS.send_slack_message(...); it is not a top-level tool. In a Slack-originated thread, routing defaults to that Slack conversation. Otherwise provide channel_id and, when multiple Slack connections exist, integration_id or team_id. Use thread_ts to reply in a Slack thread. Arguments: { text?, integration_id?, team_id?, channel_id?, thread_ts?, attachments? }.",
+  Type.Object({
+    text: Type.Optional(Type.String()),
+    integration_id: Type.Optional(Type.String()),
+    team_id: Type.Optional(Type.String()),
+    channel_id: Type.Optional(Type.String()),
+    thread_ts: Type.Optional(Type.String()),
+    attachments: CHANNEL_ATTACHMENT_PARAMETERS,
+  }),
+  {
+    category: "communication",
+    examples: [
+      `await tools.send_slack_message({ channel_id: "C123", text: "Here is the update." })`,
+      `await tools.send_slack_message({ integration_id: "slack_prod", channel_id: "C123", thread_ts: "1712345678.901", text: "Replying in thread." })`,
+    ],
+    sideEffect: true,
+    externalDelivery: true,
+  },
+);
+const SEND_TELEGRAM_MESSAGE_TOOL = codeModeTool(
+  "send_telegram_message",
+  "Send a Telegram message from the current workspace. This tool is available only inside js_exec as tools.send_telegram_message(...) or deterministic workflows as this.env.TOOLS.send_telegram_message(...); it is not a top-level tool. In a Telegram-originated thread, routing defaults to that chat. Outside Telegram threads, integration_id is optional when exactly one connected Telegram integration exists; if there are multiple, call tools.list_integrations({}) and use the Telegram integration id. Do not invent chat ids. Image attachments are sent as native Telegram photos when possible; use attachments[].send_as = 'document' to force file/document delivery. Arguments: { text?, chat_id?, integration_id?, attachments? }.",
+  Type.Object({
+    text: Type.Optional(Type.String()),
+    chat_id: Type.Optional(Type.String()),
+    integration_id: Type.Optional(Type.String()),
+    attachments: CHANNEL_ATTACHMENT_PARAMETERS,
+  }),
+  {
+    category: "communication",
+    examples: [
+      `await tools.send_telegram_message({ integration_id: "telegram_direct", text: "Here is the update." })`,
+      `await tools.send_telegram_message({ integration_id: "telegram_direct", text: "Attached.", attachments: [{ path: "uploads/photo.jpg" }] })`,
+    ],
+    sideEffect: true,
+    externalDelivery: true,
+  },
+);
+const WEB_SEARCH_TOOL = codeModePassthroughTool(
+  "WebSearch",
+  "Search the web. Arguments: { query, numResults?, maxCharacters? }.",
+  Type.Object({
+    query: Type.String(),
+    numResults: Type.Optional(Type.Number()),
+    maxCharacters: Type.Optional(Type.Number()),
+    includeDomains: Type.Optional(Type.Array(Type.String())),
+    excludeDomains: Type.Optional(Type.Array(Type.String())),
+    startPublishedDate: Type.Optional(Type.String()),
+    endPublishedDate: Type.Optional(Type.String()),
+    searchType: Type.Optional(Type.String()),
+    category: Type.Optional(Type.String()),
+  }),
+  {
+    category: "web",
+    examples: [`await tools.WebSearch({ query: "Cloudflare Workers Durable Objects", numResults: 5 })`],
+  },
+);
+const WEB_FETCH_TOOL = codeModePassthroughTool(
+  "WebFetch",
+  "Fetch text from a URL. Arguments: { url, maxCharacters? }.",
+  Type.Object({
+    url: Type.String(),
+    maxCharacters: Type.Optional(Type.Number()),
+    query: Type.Optional(Type.String()),
+    fresh: Type.Optional(Type.Boolean()),
+    content: Type.Optional(Type.String()),
+  }),
+  {
+    category: "web",
+    examples: [`await tools.WebFetch({ url: "https://developers.cloudflare.com/workers/", maxCharacters: 12000 })`],
+  },
+);
+const AGENT_TOOL = codeModeTool(
+  "Agent",
+  "Run a focused subagent in the same workspace. Arguments: { prompt, description?, agent?, model? }.",
+  Type.Object({
+    prompt: Type.String(),
+    description: Type.Optional(Type.String()),
+    agent: Type.Optional(Type.String()),
+    model: Type.Optional(Type.String()),
+  }),
+  {
+    category: "agents",
+  },
+);
+const EXPLORE_TOOL = codeModeTool(
+  "Explore",
+  "Run a focused read-oriented exploration subagent in the same workspace. Arguments: { prompt? or query?, description?, agent?, model? }.",
+  Type.Object({
+    prompt: Type.Optional(Type.String()),
+    query: Type.Optional(Type.String()),
+    description: Type.Optional(Type.String()),
+    agent: Type.Optional(Type.String()),
+    model: Type.Optional(Type.String()),
+  }),
+  {
+    category: "agents",
+  },
+);
+
+const CODE_MODE_TOOL_REGISTRY: CodeModeToolRegistration[] = [
+  ...CODE_MODE_CONTAINER_TOOL_DEFINITIONS,
+  BASH_TOOL,
+  codeModeTool(
+    "vm_exec",
+    "Run a command in a project VM. Prefer the js_exec vm.exec({ command, project, ...options }) facade; vm.exec(command, options) also works. Commands run from /workspace by default; pass cwd only for subdirectories in that checkout. Arguments: { command, project, location?: 'vm', cwd?, timeoutMs?, timeoutSeconds?, env? }.",
+    Type.Object({
+      command: Type.String(),
+      ...vmTargetParameters(),
+      cwd: Type.Optional(Type.String()),
+      timeoutMs: Type.Optional(Type.Number()),
+      timeoutSeconds: Type.Optional(Type.Number()),
+      env: Type.Optional(Type.Object({}, { additionalProperties: true })),
+    }),
+  ),
+  codeModeTool(
+    "move",
+    "Transfer files between any two explicit locations: workspace, vm, or r2. Copies by default and overwrites the destination. Use deleteSource: true only when you intentionally want a destructive move after a successful copy. Arguments: { source: { location, path, project? }, destination: { location, path, project?, content_type? }, deleteSource? }.",
+    Type.Object({
+      source: MOVE_ENDPOINT_PARAMETERS,
+      destination: MOVE_ENDPOINT_PARAMETERS,
+      deleteSource: Type.Optional(Type.Boolean({
+        description: "Delete the source after all destination writes succeed. Defaults to false.",
+      })),
+    }, { additionalProperties: false }),
+    { category: "workspace", sideEffect: true },
+  ),
+  codeModePassthroughTool(
+    "list_projects",
+    "List known git/compute projects for this workspace as a nested tree. Includes project descriptions. Top-level rows are source projects; clone projects are nested under each source project's clones[] with cloneCount, like worktrees attached to the same remote. Arguments: {}.",
+  ),
+  codeModePassthroughTool(
+    "create_project",
+    "Create a project with one Artifacts Git repo and one default main VM checkout. Project names must be unique within the workspace. New projects require a concise description explaining what the project is for. Arguments: { name, description }.",
+    Type.Object({
+      name: Type.String(),
+      description: Type.String(),
+    }, { additionalProperties: false }),
+  ),
+  codeModePassthroughTool(
+    "set_project_description",
+    "Set the description for an existing project by its unique workspace project name. Use this when the project's purpose changes or needs clarification. Arguments: { project, description }.",
+    Type.Object({
+      project: Type.String(),
+      description: Type.String(),
+    }, { additionalProperties: false }),
+    {
+      sideEffect: true,
+    },
+  ),
+  codeModePassthroughTool(
+    "clone_project",
+    "Clone an existing project's VM filesystem into a fresh project VM while keeping the same Artifacts Git remote. This captures current VM files, including uncommitted changes. Optional description overrides the generated clone description. Arguments: { sourceProject, name?, description? }.",
+    Type.Object({
+      sourceProject: Type.String(),
+      name: Type.Optional(Type.String()),
+      description: Type.Optional(Type.String()),
+    }, { additionalProperties: false }),
+    {
+      sideEffect: true,
+    },
+  ),
+  codeModePassthroughTool(
+    "delete_project",
+    "Delete a project after the user confirms in chat. Use this as a top-level tool, not from js_exec. Accepts the unique workspace project name. Deleting a source project also deletes its clone projects. Arguments: { project }.",
+    Type.Object({
+      project: Type.String(),
+    }, { additionalProperties: false }),
+    {
+      sideEffect: true,
+    },
+  ),
+  ASK_USER_QUESTION_TOOL,
+  SEND_EMAIL_TOOL,
+  SEND_SLACK_MESSAGE_TOOL,
+  SEND_TELEGRAM_MESSAGE_TOOL,
+  codeModePassthroughTool(
+    "TodoWrite",
+    "Update the visible task list in the chat UI. Arguments: { todos: [{ content, status, activeForm? }] }. Status is pending, in_progress, or completed.",
+    Type.Object({
+      todos: Type.Array(
+        Type.Object({
+          content: Type.Optional(Type.String()),
+          step: Type.Optional(Type.String()),
+          title: Type.Optional(Type.String()),
+          task: Type.Optional(Type.String()),
+          status: Type.Optional(Type.String()),
+          activeForm: Type.Optional(Type.String()),
+          active_form: Type.Optional(Type.String()),
+        }, { additionalProperties: true }),
+      ),
+    }),
+    {
+      category: "user_interaction",
+      sideEffect: true,
+    },
+  ),
+  codeModeTool(
+    "workspace_info",
+    "Get current workspace metadata for js_exec, including email_address when users can email the current workspace. Prefer await env.WORKSPACE.emailAddress() when you only need the address. Arguments: {}.",
+    EMPTY_PARAMETERS,
+    {
+      category: "workspace",
+    },
+  ),
+  codeModePassthroughTool(
+    "set_preview",
+    "Set the active preview to exactly one real target: an app or a file. App example: { app_name: 'poll-maker' }. Durable workspace file example: { location: 'workspace', path: '/notes.md' }. Project VM file example: { location: 'vm', project: 'menu-app', path: 'index.html' }. R2 file example: { location: 'r2', path: 'outputs/report.html' }. Successful file previews are validated before the preview changes. Arguments: { script_name?, app_name?, is_public?, path?, content_type?, location?, project? }.",
+    Type.Object({
+      script_name: Type.Optional(Type.String()),
+      app_name: Type.Optional(Type.String()),
+      is_public: Type.Optional(Type.Boolean()),
+      path: Type.Optional(Type.String()),
+      content_type: Type.Optional(Type.String()),
+      location: Type.Optional(Type.Union([
+        Type.Literal("workspace"),
+        Type.Literal("vm"),
+        Type.Literal("r2"),
+      ])),
+      project: Type.Optional(Type.String()),
+    }),
+    {
+      category: "apps",
+      sideEffect: true,
+    },
+  ),
+  codeModePassthroughTool("list_apps", "List deployed apps for the current workspace.", EMPTY_PARAMETERS, {
+    category: "apps",
+  }),
+  codeModePassthroughTool(
+    "set_app_visibility",
+    "Change a deployed app visibility. Arguments: { script_name, is_public }.",
+    Type.Object({
+      script_name: Type.String(),
+      is_public: Type.Boolean(),
+    }),
+    {
+      category: "apps",
+      sideEffect: true,
+    },
+  ),
+  codeModePassthroughTool(
+    "get_latest_logs",
+    "Get recent logs for a deployed app. Arguments: { script_name, limit?, since_ms? }.",
+    Type.Object({
+      script_name: Type.String(),
+      limit: Type.Optional(Type.Number()),
+      since_ms: Type.Optional(Type.Number()),
+    }),
+    {
+      category: "apps",
+    },
+  ),
+  codeModePassthroughTool(
+    "take_screenshot",
+    "Capture a screenshot of a deployed workspace app. Arguments: { script_name, path?, width?, height?, wait_ms? }.",
+    Type.Object({
+      script_name: Type.String(),
+      path: Type.Optional(Type.String()),
+      width: Type.Optional(Type.Number()),
+      height: Type.Optional(Type.Number()),
+      wait_ms: Type.Optional(Type.Number()),
+    }),
+    {
+      category: "apps",
+    },
+  ),
+  codeModePassthroughTool(
+    "warehouse_run_code",
+    "Run Python in this workspace's SEALED analytics sandbox (no network) for heavy cross-source data work that's too big for a Durable Object. STRONGLY PREFER DuckDB (pre-installed): `import duckdb`. The sandbox has NO direct database access — bring data in first by exporting connections to the warehouse: call a connection's `export` method (via env.CONNECTIONS, e.g. `connections[alias].export({ query })`), which streams the full result to R2 server-side (credentials stay server-side) and returns { r2_key }. Each export is mounted read-only into the sandbox at the path '/' + r2_key. Read it with the DuckDB reader that matches the export FORMAT: SQL databases + ClickHouse export Parquet → `duckdb.read_parquet('/' + r2_key)`; **BigQuery exports NDJSON, not Parquet** → `duckdb.read_json_auto('/' + r2_key)` (calling read_parquet on a BigQuery .ndjson export fails). The r2_key's extension (.parquet vs .ndjson) tells you which, and warehouse_list_connections reports each connection's `exportFormat`. Pass values via `params` (a JSON dict) instead of interpolating them into the code string — they arrive as a Python `params` dict, e.g. `duckdb.read_parquet('/' + params['r2_key'])`. Use warehouse_list_connections to see which connections are exportable and in what format. Each call runs in an isolated session. Returns { ok, stdout, stderr, result, error } — read printed output from `stdout` (e.g. `print` CSV/JSON, then write it with tools.write). Arguments: { code, params? }.",
+    Type.Object({
+      code: Type.String(),
+      params: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
+    }),
+    {
+      category: "connections",
+    },
+  ),
+  codeModePassthroughTool(
+    "warehouse_list_connections",
+    "List the workspace connections usable with the warehouse. Returns [{ id, name, type, displayName, exportable, exportFormat }]: `exportable: true` connections (SQL databases, ClickHouse, BigQuery) have an `export` method that streams a query's full result to R2 — `connections[alias].export({ query })` — which warehouse_run_code then reads with DuckDB. `exportFormat` is `'parquet'` (SQL + ClickHouse → read with read_parquet) or `'ndjson'` (BigQuery → read with read_json_auto), so you pick the right DuckDB reader. Reference connections BY NAME.",
+    EMPTY_PARAMETERS,
+    {
+      category: "connections",
+    },
+  ),
+  codeModePassthroughTool("list_scheduled_prompts", "List scheduled prompts for the current workspace.", EMPTY_PARAMETERS, {
+    category: "schedules",
+  }),
+  codeModePassthroughTool(
+    "create_scheduled_prompt",
+    "Create a scheduled prompt. Arguments: { name, prompt, cron_expression, enabled? }.",
+    Type.Object({
+      name: Type.String(),
+      prompt: Type.String(),
+      cron_expression: Type.String(),
+      enabled: Type.Optional(Type.Boolean()),
+    }),
+    {
+      category: "schedules",
+      sideEffect: true,
+    },
+  ),
+  codeModePassthroughTool(
+    "update_scheduled_prompt",
+    "Update a scheduled prompt. Arguments: { prompt_id, name?, prompt?, cron_expression?, enabled? }.",
+    Type.Object({
+      prompt_id: Type.String(),
+      name: Type.Optional(Type.String()),
+      prompt: Type.Optional(Type.String()),
+      cron_expression: Type.Optional(Type.String()),
+      enabled: Type.Optional(Type.Boolean()),
+    }),
+    {
+      category: "schedules",
+      sideEffect: true,
+    },
+  ),
+  codeModePassthroughTool(
+    "delete_scheduled_prompt",
+    "Delete a scheduled prompt. Arguments: { prompt_id }.",
+    Type.Object({ prompt_id: Type.String() }),
+    {
+      category: "schedules",
+      sideEffect: true,
+    },
+  ),
+  codeModePassthroughTool(
+    "run_scheduled_prompt_now",
+    "Trigger a scheduled prompt immediately. Arguments: { prompt_id }.",
+    Type.Object({ prompt_id: Type.String() }),
+    {
+      category: "schedules",
+      sideEffect: true,
+    },
+  ),
+  codeModePassthroughTool(
+    "list_workflows",
+    "List workflows for the current workspace. Workflows are deterministic JavaScript code that runs on a schedule.",
+    EMPTY_PARAMETERS,
+    {
+      category: "workflows",
+    },
+  ),
+  codeModePassthroughTool(
+    "validate_workflow",
+    "Validate workflow source without saving it: checks that it exports `class AutomationWorkflow extends WorkflowEntrypoint` and compiles. IMPORTANT: a workflow runs as a single module with ONLY the injected bindings (env.TOOLS, env.CONNECTIONS, env.AI, …) — the only import you may use is `import { WorkflowEntrypoint } from \"cloudflare:workers\"`. npm packages, URL/CDN imports (e.g. esm.sh), and relative/multi-file modules are NOT available and fail at runtime, so never import them. Arguments: { source }.",
+    Type.Object({ source: Type.String() }),
+    {
+      category: "workflows",
+    },
+  ),
+  codeModePassthroughTool(
+    "create_workflow",
+    "Create a workflow. The source runs as a single module with ONLY the injected bindings — the one allowed import is `import { WorkflowEntrypoint } from \"cloudflare:workers\"`; do NOT import npm packages, URLs/CDNs (e.g. esm.sh), or relative modules (they fail at runtime). Use env.TOOLS / env.CONNECTIONS / env.AI for everything else. Arguments: { name, source, cron_expression, description, enabled? }.",
+    Type.Object({
+      name: Type.String(),
+      source: Type.String(),
+      cron_expression: Type.String(),
+      description: Type.String(),
+      enabled: Type.Optional(Type.Boolean()),
+    }),
+    {
+      category: "workflows",
+      sideEffect: true,
+    },
+  ),
+  codeModePassthroughTool(
+    "update_workflow",
+    "Update a workflow. Arguments: { workflow_id, name?, source?, cron_expression?, description?, enabled? }.",
+    Type.Object({
+      workflow_id: Type.String(),
+      name: Type.Optional(Type.String()),
+      source: Type.Optional(Type.String()),
+      cron_expression: Type.Optional(Type.String()),
+      description: Type.Optional(Type.String()),
+      enabled: Type.Optional(Type.Boolean()),
+    }),
+    {
+      category: "workflows",
+      sideEffect: true,
+    },
+  ),
+  codeModePassthroughTool(
+    "delete_workflow",
+    "Delete a workflow. Arguments: { workflow_id }.",
+    Type.Object({ workflow_id: Type.String() }),
+    {
+      category: "workflows",
+      sideEffect: true,
+    },
+  ),
+  codeModePassthroughTool(
+    "run_workflow_now",
+    "Start a workflow immediately. Returns the run's instance_id; the run is asynchronous, so poll get_workflow_run to see when it finishes and whether it failed (do NOT block-wait). Arguments: { workflow_id }.",
+    Type.Object({ workflow_id: Type.String() }),
+    {
+      category: "workflows",
+      sideEffect: true,
+    },
+  ),
+  codeModePassthroughTool(
+    "get_workflow_run",
+    "Inspect a workflow's recent runs — use after run_workflow_now (or to debug a failed scheduled run) instead of blindly waiting. Returns { latest, runs: [{ instance_id, status, trigger, started_at, completed_at, duration_ms, error }] }. status is `started` (still running), `success`, or `error` (with the message in `error`); each completed run reports duration_ms (sample recent runs for a rough ETA). Poll a few times if the latest run is still `started`. Arguments: { workflow_id, limit? }.",
+    Type.Object({ workflow_id: Type.String(), limit: Type.Optional(Type.Number()) }),
+    {
+      category: "workflows",
+    },
+  ),
+  codeModePassthroughTool(
+    "list_integrations",
+    "List configured integrations for the current workspace. Channel integrations include recommended_access.recommended_actions with js_exec examples such as tools.send_telegram_message(...). Arguments: { category? }.",
+    Type.Object({ category: Type.Optional(Type.String()) }),
+    {
+      category: "integrations",
+      examples: [`await tools.list_integrations({ category: "communication" })`],
+    },
+  ),
+  codeModePassthroughTool(
+    "list_integration_types",
+    "List available integration types. Arguments: { category? }. For a native remote MCP server, use integration_type `remote_mcp`; the returned type metadata includes setup hints and MCP capability flags.",
+    Type.Object({ category: Type.Optional(Type.String()) }),
+    {
+      category: "integrations",
+    },
+  ),
+  codeModePassthroughTool(
+    "create_integration",
+    "Create an integration. Arguments: { integration_type, name, config?, credentials? }. Use integration_type `remote_mcp` for native remote MCP servers; set config.server_url, config.auth_type, and credentials.token when token auth is required.",
+    Type.Object({
+      integration_type: Type.String(),
+      name: Type.String(),
+      config: Type.Optional(Type.Object({}, { additionalProperties: true })),
+      credentials: Type.Optional(Type.Object({}, { additionalProperties: true })),
+    }),
+    {
+      category: "integrations",
+      sideEffect: true,
+    },
+  ),
+  codeModePassthroughTool(
+    "prompt_connection_setup",
+    "Prompt the user to set up or reauthorize a connection in the chat UI and wait for completion. Use this as a top-level tool, not from js_exec. Use integration_type `remote_mcp` for native remote MCP servers. Pass integration_id or connection_id to update an existing connection during reauth. You may pass config and credentials to pre-populate known form fields. Arguments: { integration_type, integration_id?, connection_id?, suggested_name?, message?, config?, credentials?, display_name?, description?, instructions?, fields? }.",
+    Type.Object({
+      integration_type: Type.String(),
+      integration_id: Type.Optional(Type.String()),
+      connection_id: Type.Optional(Type.String()),
+      suggested_name: Type.Optional(Type.String()),
+      message: Type.Optional(Type.String()),
+      config: Type.Optional(Type.Object({}, { additionalProperties: true })),
+      credentials: Type.Optional(Type.Object({}, { additionalProperties: true })),
+      display_name: Type.Optional(Type.String()),
+      description: Type.Optional(Type.String()),
+      instructions: Type.Optional(Type.String()),
+      fields: Type.Optional(Type.Array(Type.Object({}, { additionalProperties: true }))),
+    }),
+    {
+      category: "integrations",
+      sideEffect: true,
+    },
+  ),
+  codeModePassthroughTool(
+    "delete_connection",
+    "Delete a workspace connection after the user confirms in chat. Use this as a top-level tool, not from js_exec. Accepts a connection id, alias, type, or name. Arguments: { connection }.",
+    Type.Object({
+      connection: Type.String(),
+    }, { additionalProperties: false }),
+    {
+      category: "integrations",
+      sideEffect: true,
+    },
+  ),
+  codeModePassthroughTool("get_custom_domain", "Get custom domain diagnostics for deployed apps.", EMPTY_PARAMETERS, {
+    category: "domains",
+  }),
+  codeModePassthroughTool(
+    "set_custom_domain",
+    "Set an exact custom hostname for an app. Arguments: { app_name, hostname }.",
+    Type.Object({
+      app_name: Type.String(),
+      hostname: Type.String(),
+    }),
+    {
+      category: "domains",
+      sideEffect: true,
+    },
+  ),
+  codeModePassthroughTool(
+    "remove_custom_domain",
+    "Remove a custom hostname from an app. Arguments: { app_name }.",
+    Type.Object({ app_name: Type.String() }),
+    {
+      category: "domains",
+      sideEffect: true,
+    },
+  ),
+  codeModePassthroughTool(
+    "retry_custom_domain_hostnames",
+    "Retry hostname provisioning for configured app custom domains.",
+    EMPTY_PARAMETERS,
+    {
+      category: "domains",
+      sideEffect: true,
+    },
+  ),
+  WEB_SEARCH_TOOL,
+  WEB_FETCH_TOOL,
+  AGENT_TOOL,
+  EXPLORE_TOOL,
+  codeModeTool(
+    "connections_list",
+    "List workspace connections. Prefer calling this from js_exec as await env.CONNECTIONS.list().",
+    EMPTY_PARAMETERS,
+    {
+      category: "connections",
+      examples: [`await env.CONNECTIONS.list()`],
+    },
+  ),
+  codeModeTool(
+    "connections_get",
+    "Get one workspace connection. Prefer calling this from js_exec as await env.CONNECTIONS.get(connection). Arguments: { connection }.",
+    Type.Object({ connection: Type.String() }),
+    {
+      category: "connections",
+      examples: [`await env.CONNECTIONS.get("telegram_direct")`],
+    },
+  ),
+  codeModeTool(
+    "connections_tools",
+    "List MCP-backed tools for a workspace connection. Prefer calling this from js_exec as await env.CONNECTIONS.tools(connection). Arguments: { connection }.",
+    Type.Object({ connection: Type.String() }),
+    {
+      category: "connections",
+      examples: [`await env.CONNECTIONS.tools("stripe")`],
+    },
+  ),
+  codeModeTool(
+    "connections_methods",
+    "List workspace connections and their method aliases, virtual channel actions, tool names, examples, and input schemas. Prefer calling this from js_exec as await env.CONNECTIONS.methods().",
+    EMPTY_PARAMETERS,
+    {
+      category: "connections",
+      examples: [`await env.CONNECTIONS.methods()`],
+    },
+  ),
+  codeModeTool(
+    "connections_find",
+    "Find one workspace connection method catalog entry by alias, id, type, or name. Prefer calling this from js_exec as await env.CONNECTIONS.find(query). Arguments: { query }.",
+    CONNECTION_QUERY_PARAMETERS,
+    {
+      category: "connections",
+      examples: [`const entry = await env.CONNECTIONS.find("clickhouse")`],
+    },
+  ),
+  codeModeTool(
+    "connections_test",
+    "Run a quick workspace connection smoke test. Prefer calling this from js_exec as await env.CONNECTIONS.test(query). Arguments: { query }.",
+    CONNECTION_QUERY_PARAMETERS,
+    {
+      category: "connections",
+      examples: [`await env.CONNECTIONS.test("clickhouse")`],
+    },
+  ),
+];
+
+const CODE_MODE_TOOL_DEFINITIONS: CodeModeToolDefinition[] = CODE_MODE_TOOL_REGISTRY
+  .map(codeModeDefinition);
+export const CODE_MODE_PI_PASSTHROUGH_TOOL_DEFINITIONS: CodeModeToolDefinition[] =
+  CODE_MODE_TOOL_REGISTRY
+    .filter((registration) => registration.piPassthrough)
+    .map(codeModeDefinition);
+
+const FILE_TOOL_NAMES = new Set(["read", "write", "edit", "ls", "delete", "grep", "find"]);
+
+function requireFileLocation(toolName: string, args: Record<string, unknown>): "workspace" | "vm" | "r2" {
+  const location = args.location;
+  if (location !== "workspace" && location !== "vm" && location !== "r2") {
+    throw new Error(`${toolName} requires an explicit location: "workspace", "vm", or "r2"`);
+  }
+  if (location === "vm" && (typeof args.project !== "string" || args.project.trim().length === 0)) {
+    throw new Error(`${toolName} with location "vm" requires a project name`);
+  }
+  if ((toolName === "grep" || toolName === "find") && location === "r2") {
+    throw new Error(`${toolName} does not support location "r2"; use ls/read for R2 objects`);
+  }
+  return location;
+}
+
+function hasVmTarget(args: Record<string, unknown>): boolean {
+  return args.location === "vm";
+}
+
+function hasR2Target(args: Record<string, unknown>): boolean {
+  return args.location === "r2";
+}
+
+function projectForAgent(project: WorkspaceProject): Record<string, unknown> {
+  return {
+    name: project.name,
+    description: project.description,
+    kind: project.kind,
+    defaultVmId: project.defaultVmId,
+    cloneSource: project.cloneSource
+      ? {
+          name: project.cloneSource.name,
+          description: project.cloneSource.description,
+        }
+      : undefined,
+    clones: project.clones?.map(projectCloneForAgent),
+    cloneCount: project.cloneCount,
+    artifactRemote: project.artifactRemote,
+    artifactDefaultBranch: project.artifactDefaultBranch,
+    artifactStatus: project.artifactStatus,
+    createdAt: project.createdAt,
+    updatedAt: project.updatedAt,
+  };
+}
+
+function projectCloneForAgent(project: WorkspaceProjectCloneSummary): Record<string, unknown> {
+  return {
+    name: project.name,
+    description: project.description,
+    defaultVmId: project.defaultVmId,
+    artifactRemote: project.artifactRemote,
+    artifactStatus: project.artifactStatus,
+    createdAt: project.createdAt,
+    updatedAt: project.updatedAt,
+  };
+}
+
+export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeToolsProps> {
+  private static readonly TOOL_CALL_HANDLERS: Record<string, CodeModeToolCallHandler> = {
+    AskUserQuestion: (binding, args) => binding.askUserQuestion(args),
+    TodoWrite: (binding, args) => binding.updateTodos(args),
+    set_preview: (binding, args) => binding.setPreview(args),
+    list_apps: (binding) => binding.listApps(),
+    set_app_visibility: (binding, args) => binding.setAppVisibility(args),
+    get_latest_logs: (binding, args) => binding.getLatestLogs(args),
+    take_screenshot: (binding, args) => binding.takeScreenshot(args),
+    warehouse_run_code: (binding, args) => binding.warehouseRunCode(args),
+    warehouse_list_connections: (binding) => binding.warehouseListConnections(),
+    list_scheduled_prompts: (binding) => binding.listScheduledPrompts(),
+    create_scheduled_prompt: (binding, args) => binding.createScheduledPrompt(args),
+    update_scheduled_prompt: (binding, args) => binding.updateScheduledPrompt(args),
+    delete_scheduled_prompt: (binding, args) => binding.deleteScheduledPrompt(args),
+    run_scheduled_prompt_now: (binding, args) => binding.runScheduledPromptNow(args),
+    list_workflows: (binding) => binding.listDeterministicAutomations(),
+    validate_workflow: (binding, args) => binding.validateDeterministicAutomation(args),
+    create_workflow: (binding, args) => binding.createDeterministicAutomation(args),
+    update_workflow: (binding, args) => binding.updateDeterministicAutomation(args),
+    delete_workflow: (binding, args) => binding.deleteDeterministicAutomation(args),
+    run_workflow_now: (binding, args) => binding.runDeterministicAutomationNow(args),
+    get_workflow_run: (binding, args) => binding.getDeterministicAutomationRuns(args),
+    list_deterministic_automations: (binding) => binding.listDeterministicAutomations(),
+    validate_deterministic_automation: (binding, args) => binding.validateDeterministicAutomation(args),
+    create_deterministic_automation: (binding, args) => binding.createDeterministicAutomation(args),
+    update_deterministic_automation: (binding, args) => binding.updateDeterministicAutomation(args),
+    delete_deterministic_automation: (binding, args) => binding.deleteDeterministicAutomation(args),
+    run_deterministic_automation_now: (binding, args) => binding.runDeterministicAutomationNow(args),
+    workspace_info: (binding) => binding.getWorkspaceRuntimeInfo(),
+    list_integrations: (binding, args) => binding.listIntegrations(args),
+    list_integration_types: (binding, args) => binding.listIntegrationTypes(args),
+    create_integration: (binding, args) => binding.createIntegration(args),
+    prompt_connection_setup: (binding, args) => binding.promptConnectionSetup(args),
+    delete_connection: (binding, args) => binding.deleteConnection(args),
+    delete_project: (binding, args) => binding.deleteProject(args),
+    send_email: (binding, args) => binding.sendEmail(args),
+    send_slack_message: (binding, args) => binding.sendSlackMessage(args),
+    send_telegram_message: (binding, args) => binding.sendTelegramMessage(args),
+    get_custom_domain: (binding) => binding.getCustomDomain(),
+    set_custom_domain: (binding, args) => binding.setCustomDomain(args),
+    remove_custom_domain: (binding, args) => binding.removeCustomDomain(args),
+    retry_custom_domain_hostnames: (binding) => binding.retryCustomDomainHostnames(),
+    WebSearch: (binding, args) => binding.webSearch(args),
+    WebFetch: (binding, args) => binding.webFetch(args),
+    Agent: (binding, args, name) => binding.runSubagentTool(name, args),
+    Explore: (binding, args, name) => binding.runSubagentTool(name, args),
+    connections_list: (binding) => listConnections(binding.env, binding.connectionsContext),
+    connections_get: (binding, args) => {
+      const connection = typeof args.connection === "string" ? args.connection : "";
+      if (!connection) throw new Error("connection is required");
+      return getConnection(binding.env, binding.connectionsContext, connection);
+    },
+    connections_tools: (binding, args) => {
+      const connection = typeof args.connection === "string" ? args.connection : "";
+      if (!connection) throw new Error("connection is required");
+      return listConnectionTools(binding.env, binding.connectionsContext, connection);
+    },
+    connections_methods: (binding) => listConnectionMethods(binding.env, binding.connectionsContext),
+    connections_find: (binding, args) =>
+      findConnectionMethodEntry(binding.env, binding.connectionsContext, binding.connectionQuery(args)),
+    connections_test: (binding, args) =>
+      testConnectionMethodEntry(binding.env, binding.connectionsContext, binding.connectionQuery(args)),
+    connections_invoke: (binding, args) => invokeConnectionMethod(binding.env, binding.connectionsContext, {
+      connection: typeof args.connection === "string" ? args.connection : "",
+      method: typeof args.method === "string" ? args.method : undefined,
+      input: args.input,
+    }),
+  };
+
+  private get workspaceFs(): WorkspaceFilesystemClient {
+    const { workspaceId } = this.ctx.props;
+    if (!workspaceId) {
+      throw new Error("Code mode tool binding is missing workspace scope");
+    }
+    return new WorkspaceFilesystemClient(this.env, workspaceId);
+  }
+
+  private get connectionsContext() {
+    const { workspaceId, orgId, userId } = this.ctx.props;
+    if (!workspaceId || !orgId) {
+      throw new Error("Code mode tool binding is missing connection scope");
+    }
+    return { workspaceId, orgId, userId };
+  }
+
+  private get piContainerTools(): PiContainerTools {
+    return new PiContainerTools(this.workspaceFs, { images: this.env.IMAGES });
+  }
+
+  private get projectVm(): ProjectRuntimeServiceVmBridge {
+    const { workspaceId, orgId } = this.ctx.props;
+    if (!workspaceId || !orgId) {
+      throw new Error("Code mode VM binding is missing workspace scope");
+    }
+    return new ProjectRuntimeServiceVmBridge({
+      env: this.env,
+      workspace: this.workspaceFs,
+      commandEnv: () => this.createContainerCommandEnv(),
+    });
+  }
+
+  private get orgStub(): DurableObjectStub<OrgDO> {
+    const { orgId } = this.ctx.props;
+    if (!orgId) throw new Error("Code mode tool binding is missing org scope");
+    return this.env.ORG.get(this.env.ORG.idFromName(orgId));
+  }
+
+  private get workspaceStub(): DurableObjectStub<WorkspaceDO> {
+    const { workspaceId } = this.ctx.props;
+    if (!workspaceId) {
+      throw new Error("Code mode tool binding is missing workspace scope");
+    }
+    return this.env.WORKSPACE.get(this.env.WORKSPACE.idFromName(workspaceId));
+  }
+
+  private get chatThreadStub(): DurableObjectStub<ChatThreadDO> {
+    const { threadId } = this.ctx.props;
+    if (!threadId) throw new Error("This tool requires chat thread scope");
+    return this.env.CHAT_THREAD.get(this.env.CHAT_THREAD.idFromName(threadId));
+  }
+
+  private get cronStub(): DurableObjectStub<WorkspaceCronDO> {
+    const { workspaceId } = this.ctx.props;
+    if (!workspaceId) {
+      throw new Error("Code mode tool binding is missing workspace scope");
+    }
+    if (!this.env.WORKSPACE_CRON) {
+      throw new Error("Scheduled prompt tools are not configured");
+    }
+    return this.env.WORKSPACE_CRON.get(this.env.WORKSPACE_CRON.idFromName(workspaceId));
+  }
+
+  private async getOrgSlug(): Promise<string | null> {
+    const info = await this.orgStub.getInfo();
+    return typeof info?.slug === "string" && info.slug.trim() ? info.slug.trim() : null;
+  }
+
+  private async getWorkspaceRuntimeInfo(): Promise<Record<string, unknown>> {
+    const workspaceInfo = await this.workspaceStub.getInfo();
+    const emailDomain = getWorkspaceEmailDomain(this.env);
+    const emailHandle = typeof workspaceInfo?.email_handle === "string"
+      ? workspaceInfo.email_handle.trim()
+      : "";
+    const emailAddress = emailDomain && emailHandle
+      ? buildWorkspaceEmailAddress(emailHandle, emailDomain)
+      : null;
+    return {
+      id: workspaceInfo?.id ?? this.ctx.props.workspaceId,
+      name: workspaceInfo?.name ?? null,
+      email_address: emailAddress,
+    };
+  }
+
+  private async createContainerCommandEnv(): Promise<Record<string, string>> {
+    return {
+      ...(await this.createWorkspaceCommandEnv()),
+      ...(await this.createWranglerDeployEnv()),
+    };
+  }
+
+  private async createWorkspaceCommandEnv(): Promise<Record<string, string>> {
+    const { orgId, workspaceId, userId, threadId } = this.ctx.props;
+    const env: Record<string, string> = {
+      WORKSPACE_ID: workspaceId,
+      ORG_ID: orgId,
+      WRANGLER_SEND_METRICS: "false",
+      CI: "1",
+    };
+    const dispatchNamespace = this.env.CF_DISPATCH_NAMESPACE?.trim();
+    if (dispatchNamespace) {
+      env.CF_DISPATCH_NAMESPACE = dispatchNamespace;
+    }
+    if (this.env.RUN_AGENT_EVALS === "1") {
+      env.EVAL_ORG_ID = orgId;
+      env.EVAL_WORKSPACE_ID = workspaceId;
+      if (userId) env.EVAL_USER_ID = userId;
+      if (threadId) env.EVAL_THREAD_ID = threadId;
+    }
+    return env;
+  }
+
+  private async createWranglerDeployEnv(): Promise<Record<string, string>> {
+    const { orgId, workspaceId, threadId } = this.ctx.props;
+    if (!orgId || !workspaceId) {
+      return {};
+    }
+
+    const dockerProxyBaseUrl =
+      this.env.SANDBOX_DOCKER_PROXY_BASE_URL?.trim().replace(/\/+$/, "") ||
+      "http://host.docker.internal:8081";
+    let proxyPath =
+      `/v1/workspaces/${encodeURIComponent(orgId)}` +
+      `/${encodeURIComponent(workspaceId)}`;
+    const sandboxProxySecret = this.env.SANDBOX_PROXY_SECRET?.trim();
+    if (threadId && sandboxProxySecret) {
+      const threadToken = await createSignedToken(sandboxProxySecret, {
+        org_id: orgId,
+        // The host only validates org/workspace/thread claims; org_slug is
+        // required by the shared signed-token helper but is not trusted here.
+        org_slug: orgId,
+        workspace_id: workspaceId,
+        thread_id: threadId,
+        scopes: ["sandbox_thread"],
+        name: "sandbox-proxy-thread",
+        exp: Date.now() + 6 * 60 * 60 * 1000,
+      });
+      proxyPath += `/thread-tokens/${encodeURIComponent(threadToken)}`;
+    }
+    proxyPath += "/client/v4";
+
+    return {
+      CLOUDFLARE_API_BASE_URL: `${dockerProxyBaseUrl}${proxyPath}`,
+      CLOUDFLARE_API_TOKEN: "sandbox-outbound-proxy",
+      CLOUDFLARE_ACCOUNT_ID: this.env.CF_ACCOUNT_ID?.trim() || "chiridion",
+    };
+  }
+
+  private safeThreadR2SessionId(): string {
+    const { threadId } = this.ctx.props;
+    if (!threadId) {
+      throw new Error("R2 temp paths require chat thread scope");
+    }
+    return threadId.replace(/[^a-zA-Z0-9_-]/g, "_");
+  }
+
+  private r2MountBaseKey(mount: CodeModeR2Mount): string {
+    const { orgId, workspaceId } = this.ctx.props;
+    if (!orgId || !workspaceId) {
+      throw new Error("Code mode tool binding is missing R2 scope");
+    }
+    switch (mount) {
+      case "uploads":
+        return buildWorkspaceScopedR2Key(orgId, workspaceId, "user-uploads/");
+      case "outputs":
+        return buildWorkspaceScopedR2Key(orgId, workspaceId, "user-outputs/");
+      case "tmp":
+        return buildWorkspaceScopedR2Key(
+          orgId,
+          workspaceId,
+          `chat-sessions/${this.safeThreadR2SessionId()}/pi-tool-results/tmp/`,
+        );
+    }
+  }
+
+  private normalizeR2RelativePath(path: string, allowDirectory: boolean): string {
+    if (path.startsWith("/")) {
+      throw new Error("R2 paths must be relative: use uploads/<path>, outputs/<path>, or tmp/<path>");
+    }
+    const relativePath = allowDirectory ? path.replace(/\/+$/, "") : path;
+    if (relativePath.length > 1024) {
+      throw new Error("R2 path exceeds the maximum length of 1024 characters");
+    }
+    if (!relativePath) return "";
+    const segments = relativePath.split("/");
+    if (segments.some((segment) => segment === "" || segment === "." || segment === "..")) {
+      throw new Error("R2 paths must not contain empty, '.', or '..' segments");
+    }
+    return relativePath;
+  }
+
+  private r2PathFromRelative(mount: CodeModeR2Mount, relativePath: string): string {
+    return relativePath ? `${mount}/${relativePath}` : mount;
+  }
+
+  private resolveCodeModeR2Path(
+    raw: Record<string, unknown>,
+    options: { allowDirectory?: boolean; requireWritable?: boolean } = {},
+  ): CodeModeR2Path {
+    const rawPath = typeof raw.path === "string" ? raw.path.trim().replace(/\\/g, "/") : "";
+    if (!rawPath) throw new Error("R2 path is required");
+    const normalizedPath = this.normalizeR2RelativePath(rawPath, options.allowDirectory ?? false);
+    const [mountPart, ...rest] = normalizedPath.split("/");
+    if (mountPart !== "uploads" && mountPart !== "outputs" && mountPart !== "tmp") {
+      throw new Error("R2 path must start with uploads/, outputs/, or tmp/");
+    }
+    const relativePath = rest.join("/");
+    if (!options.allowDirectory && !relativePath) throw new Error("R2 object path is required");
+    if (options.requireWritable && mountPart === "uploads") throw new Error("uploads/ is read-only");
+    return {
+      mount: mountPart,
+      key: `${this.r2MountBaseKey(mountPart)}${relativePath}`,
+      path: this.r2PathFromRelative(mountPart, relativePath),
+      relativePath,
+    };
+  }
+
+  private r2PublicUrl(target: CodeModeR2Path): string | null {
+    if (target.mount === "tmp") return null;
+    return `/api/workspaces/${this.ctx.props.workspaceId}/${target.mount}/${target.relativePath}`;
+  }
+
+  private formatR2ObjectMetadata(obj: R2Object, target: CodeModeR2Path): Record<string, unknown> {
+    return {
+      location: "r2",
+      path: target.path,
+      namespace: target.mount,
+      publicUrl: this.r2PublicUrl(target),
+      size: obj.size,
+      etag: obj.etag,
+      uploaded: obj.uploaded instanceof Date ? obj.uploaded.toISOString() : String(obj.uploaded),
+      contentType: obj.httpMetadata?.contentType ?? null,
+      customMetadata: obj.customMetadata ?? {},
+    };
+  }
+
+  private textByteLength(value: string): number {
+    return new TextEncoder().encode(value).byteLength;
+  }
+
+  private truncateR2ReadHead(
+    content: string,
+    maxBytes: number,
+  ): {
+    content: string;
+    truncated: boolean;
+    truncatedBy: "lines" | "bytes" | null;
+    totalLines: number;
+    totalBytes: number;
+    outputLines: number;
+    outputBytes: number;
+    firstLineExceedsLimit: boolean;
+    maxLines: number;
+    maxBytes: number;
+  } {
+    const lines = content.split("\n");
+    const totalLines = lines.length;
+    const totalBytes = this.textByteLength(content);
+    if (totalLines <= PI_TOOL_RESULT_MAX_LINES && totalBytes <= maxBytes) {
+      return {
+        content,
+        truncated: false,
+        truncatedBy: null,
+        totalLines,
+        totalBytes,
+        outputLines: totalLines,
+        outputBytes: totalBytes,
+        firstLineExceedsLimit: false,
+        maxLines: PI_TOOL_RESULT_MAX_LINES,
+        maxBytes,
+      };
+    }
+    if (this.textByteLength(lines[0] ?? "") > maxBytes) {
+      return {
+        content: "",
+        truncated: true,
+        truncatedBy: "bytes",
+        totalLines,
+        totalBytes,
+        outputLines: 0,
+        outputBytes: 0,
+        firstLineExceedsLimit: true,
+        maxLines: PI_TOOL_RESULT_MAX_LINES,
+        maxBytes,
+      };
+    }
+    const selected: string[] = [];
+    let outputBytes = 0;
+    let truncatedBy: "lines" | "bytes" = "lines";
+    for (let index = 0; index < lines.length && index < PI_TOOL_RESULT_MAX_LINES; index += 1) {
+      const line = lines[index] ?? "";
+      if (selected.length >= PI_TOOL_RESULT_MAX_LINES) {
+        truncatedBy = "lines";
+        break;
+      }
+      const lineBytes = this.textByteLength(line) + (selected.length > 0 ? 1 : 0);
+      if (outputBytes + lineBytes > maxBytes) {
+        truncatedBy = "bytes";
+        break;
+      }
+      selected.push(line);
+      outputBytes += lineBytes;
+    }
+    if (selected.length >= PI_TOOL_RESULT_MAX_LINES && outputBytes <= maxBytes) {
+      truncatedBy = "lines";
+    }
+    const outputContent = selected.join("\n");
+    return {
+      content: outputContent,
+      truncated: true,
+      truncatedBy,
+      totalLines,
+      totalBytes,
+      outputLines: selected.length,
+      outputBytes: this.textByteLength(outputContent),
+      firstLineExceedsLimit: false,
+      maxLines: PI_TOOL_RESULT_MAX_LINES,
+      maxBytes,
+    };
+  }
+
+  private r2ImageReadResult(
+    head: R2Object,
+    target: CodeModeR2Path,
+    imageMimeType: string,
+    inlineImage: PreparedInlineImage | null,
+  ): Record<string, unknown> {
+    const metadata = this.formatR2ObjectMetadata(head, target);
+    let text = `Read R2 image object [${inlineImage?.mimeType ?? imageMimeType}]`;
+    if (inlineImage?.optimizedForInlineView) {
+      text += `\n[Image optimized for inline model context and may be scaled/compressed from the source.]`;
+    }
+    const content: Array<{ type: "text"; text: string } | { type: "image"; data: string; mimeType: string }> = [
+      { type: "text", text },
+    ];
+    if (inlineImage) {
+      content.push({ type: "image", data: inlineImage.data, mimeType: inlineImage.mimeType });
+    } else {
+      text += `\n[Image omitted: could not be resized below the inline image size limit of ${inlineImageMaxBase64Chars()} base64 chars.]`;
+      content[0] = { type: "text", text };
+    }
+    return {
+      text,
+      content,
+      details: {
+        ...metadata,
+        image: true,
+        mimeType: inlineImage?.mimeType ?? imageMimeType,
+        originalMimeType: imageMimeType,
+        inlineImage: Boolean(inlineImage),
+        optimizedForInlineView: inlineImage?.optimizedForInlineView ?? false,
+        maxInlineDimension: inlineImage?.maxInlineDimension ?? null,
+        usedImagesBinding: inlineImage?.usedImagesBinding ?? false,
+        base64Chars: inlineImage?.base64Chars ?? null,
+        offset: null,
+        nextOffset: null,
+        totalLines: null,
+        truncation: null,
+      },
+    };
+  }
+
+  private async readR2File(args: Record<string, unknown>): Promise<Record<string, unknown>> {
+    const target = this.resolveCodeModeR2Path(args);
+    const offset = clampCodeModeInteger(args.offset, 1, 1, Number.MAX_SAFE_INTEGER);
+    const limit = typeof args.limit === "number"
+      ? clampCodeModeInteger(args.limit, PI_TOOL_RESULT_MAX_LINES, 1, PI_TOOL_RESULT_MAX_LINES)
+      : undefined;
+    const head = await this.env.R2_BUCKET.head(target.key);
+    if (!head) {
+      throw new Error(`R2 object not found: ${target.path}`);
+    }
+    const contentTypeImageMimeType = getSupportedImageMimeTypeFromContentType(
+      head.httpMetadata?.contentType,
+    );
+    const object = await this.env.R2_BUCKET.get(target.key);
+    if (!object) {
+      throw new Error(`R2 object not found: ${target.path}`);
+    }
+    const images = this.env.IMAGES;
+    if (!images) throw new Error("IMAGES binding is required for image reads");
+    let bytes: Uint8Array;
+    if (object.body) {
+      const sniffed = await readImageSniffBytesAndReplayStream(object.body);
+      const imageDetection = detectSharedImageMimeType(sniffed.prefix);
+      const imageMimeType = imageDetection.kind === "supported"
+        ? imageDetection.mimeType
+        : imageDetection.kind === "unknown"
+          ? contentTypeImageMimeType
+          : null;
+      if (imageMimeType) {
+        const inlineImage = await prepareInlineImageFromStream(sniffed.stream, imageMimeType, images, {
+          createRetryStream: async () => {
+            const retryObject = await this.env.R2_BUCKET.get(target.key);
+            if (!retryObject?.body) throw new Error(`R2 image object is not streamable: ${target.path}`);
+            return retryObject.body;
+          },
+        });
+        return this.r2ImageReadResult(head, target, imageMimeType, inlineImage);
+      }
+      if (head.size > CODE_MODE_R2_MAX_TEXT_OBJECT_BYTES) {
+        await sniffed.stream.cancel("R2 object exceeds text read limit").catch(() => undefined);
+        throw new Error(
+          `R2 object is too large for text read (${head.size} bytes; max ${CODE_MODE_R2_MAX_TEXT_OBJECT_BYTES} bytes)`,
+        );
+      }
+      bytes = await readStreamBytes(sniffed.stream);
+    } else {
+      bytes = typeof object.arrayBuffer === "function"
+        ? new Uint8Array(await object.arrayBuffer())
+        : new TextEncoder().encode(await object.text());
+      const imageDetection = detectSharedImageMimeType(bytes);
+      const imageMimeType = imageDetection.kind === "supported"
+        ? imageDetection.mimeType
+        : imageDetection.kind === "unknown"
+          ? contentTypeImageMimeType
+          : null;
+      if (imageMimeType) throw new Error(`R2 image object is not streamable: ${target.path}`);
+    }
+    if (head.size > CODE_MODE_R2_MAX_TEXT_OBJECT_BYTES) {
+      throw new Error(
+        `R2 object is too large for text read (${head.size} bytes; max ${CODE_MODE_R2_MAX_TEXT_OBJECT_BYTES} bytes)`,
+      );
+    }
+    const fullText = new TextDecoder().decode(bytes);
+    const allLines = fullText.split("\n");
+    const startLine = offset - 1;
+    if (startLine >= allLines.length) {
+      throw new Error(`Offset ${offset} is beyond end of R2 object (${allLines.length} lines total)`);
+    }
+    let selectedContent: string;
+    let userLimitedLines: number | undefined;
+    if (limit !== undefined) {
+      const endLine = Math.min(startLine + limit, allLines.length);
+      selectedContent = allLines.slice(startLine, endLine).join("\n");
+      userLimitedLines = endLine - startLine;
+    } else {
+      selectedContent = allLines.slice(startLine).join("\n");
+    }
+    const maxBytes = PI_TOOL_RESULT_MAX_BYTES - CODE_MODE_R2_READ_NOTICE_RESERVED_BYTES;
+    const truncation = this.truncateR2ReadHead(selectedContent, maxBytes);
+    const startLineDisplay = startLine + 1;
+    let text: string;
+    let nextOffset: number | null = null;
+    if (truncation.firstLineExceedsLimit) {
+      text =
+        `[Line ${startLineDisplay} is ${this.textByteLength(allLines[startLine] ?? "")} bytes, exceeds ${maxBytes} byte read budget. R2 path: ${target.path}]`;
+    } else if (truncation.truncated) {
+      const endLineDisplay = startLine + truncation.outputLines;
+      nextOffset = endLineDisplay + 1;
+      const limitLabel = truncation.truncatedBy === "bytes"
+        ? ` (${maxBytes} byte read budget)`
+        : "";
+      text = truncation.content;
+      text +=
+        `${text ? "\n\n" : ""}` +
+        `[Showing lines ${startLineDisplay}-${endLineDisplay} of ${allLines.length}${limitLabel}. Use offset=${nextOffset} to continue.]`;
+    } else if (userLimitedLines !== undefined && startLine + userLimitedLines < allLines.length) {
+      const remaining = allLines.length - (startLine + userLimitedLines);
+      nextOffset = startLine + userLimitedLines + 1;
+      text = `${truncation.content}\n\n[${remaining} more lines in R2 object. Use offset=${nextOffset} to continue.]`;
+    } else {
+      text = truncation.content;
+    }
+
+    return {
+      text,
+      content: [{ type: "text", text }],
+      details: {
+        ...this.formatR2ObjectMetadata(head, target),
+        offset,
+        nextOffset,
+        totalLines: allLines.length,
+        truncation,
+      },
+    };
+  }
+
+  private async writeR2File(args: Record<string, unknown>): Promise<Record<string, unknown>> {
+    const target = this.resolveCodeModeR2Path(args, { requireWritable: true });
+    const content = typeof args.content === "string" ? args.content : "";
+    const contentBytes = new TextEncoder().encode(content).byteLength;
+    if (contentBytes > CODE_MODE_R2_MAX_WRITE_BYTES) {
+      throw new Error(`R2 write content exceeds ${CODE_MODE_R2_MAX_WRITE_BYTES} bytes`);
+    }
+    const contentType = typeof args.content_type === "string" && args.content_type.trim()
+      ? args.content_type.trim()
+      : "text/plain; charset=utf-8";
+    const object = await this.env.R2_BUCKET.put(target.key, content, {
+      httpMetadata: { contentType },
+      customMetadata: {
+        type: "code-mode-r2-file",
+        orgId: this.ctx.props.orgId,
+        workspaceId: this.ctx.props.workspaceId,
+        threadId: this.ctx.props.threadId ?? "",
+      },
+    });
+    const text = `Wrote ${contentBytes} bytes to ${target.path}`;
+    return {
+      text,
+      content: [{ type: "text", text }],
+      details: {
+        ...(object ? this.formatR2ObjectMetadata(object, target) : {
+          location: "r2",
+          path: target.path,
+          namespace: target.mount,
+          publicUrl: this.r2PublicUrl(target),
+          size: contentBytes,
+          contentType,
+        }),
+        bytesWritten: contentBytes,
+      },
+    };
+  }
+
+  private async editR2File(args: Record<string, unknown>): Promise<Record<string, unknown>> {
+    const target = this.resolveCodeModeR2Path(args, { requireWritable: true });
+    const edits = Array.isArray(args.edits)
+      ? args.edits.map((entry, index) => {
+          if (!entry || typeof entry !== "object") {
+            throw new Error(`edits[${index}] must be an object`);
+          }
+          const raw = entry as Record<string, unknown>;
+          const oldText = typeof raw.oldText === "string"
+            ? raw.oldText
+            : typeof raw.old_string === "string"
+              ? raw.old_string
+              : "";
+          const newText = typeof raw.newText === "string"
+            ? raw.newText
+            : typeof raw.new_string === "string"
+              ? raw.new_string
+              : "";
+          if (!oldText) throw new Error(`edits[${index}].oldText is required`);
+          return { oldText, newText };
+        })
+      : [];
+    if (edits.length === 0) throw new Error("edits must be a non-empty array");
+
+    const head = await this.env.R2_BUCKET.head(target.key);
+    if (!head) throw new Error(`R2 object not found: ${target.path}`);
+    if (head.size > CODE_MODE_R2_MAX_TEXT_OBJECT_BYTES) {
+      throw new Error(
+        `R2 object is too large for text edit (${head.size} bytes; max ${CODE_MODE_R2_MAX_TEXT_OBJECT_BYTES} bytes)`,
+      );
+    }
+    const object = await this.env.R2_BUCKET.get(target.key);
+    if (!object) throw new Error(`R2 object not found: ${target.path}`);
+    const originalContent = await object.text();
+    const replacements = edits.map((edit, index) => {
+      const start = originalContent.indexOf(edit.oldText);
+      if (start === -1) throw new Error(`edits[${index}].oldText not found in ${target.path}`);
+      if (originalContent.indexOf(edit.oldText, start + edit.oldText.length) !== -1) {
+        throw new Error(`edits[${index}].oldText is not unique in ${target.path}`);
+      }
+      return {
+        index,
+        start,
+        end: start + edit.oldText.length,
+        newText: edit.newText,
+      };
+    }).sort((a, b) => a.start - b.start);
+
+    for (let index = 1; index < replacements.length; index += 1) {
+      const previous = replacements[index - 1]!;
+      const current = replacements[index]!;
+      if (current.start < previous.end) {
+        throw new Error(`edits[${current.index}].oldText overlaps another edit in ${target.path}`);
+      }
+    }
+
+    let content = originalContent;
+    for (const replacement of replacements.slice().reverse()) {
+      content = `${content.slice(0, replacement.start)}${replacement.newText}${content.slice(replacement.end)}`;
+    }
+
+    return this.writeR2File({
+      ...args,
+      path: target.path,
+      content,
+      content_type: head.httpMetadata?.contentType ?? "text/plain; charset=utf-8",
+    });
+  }
+
+  private async listR2Files(args: Record<string, unknown>): Promise<Record<string, unknown>> {
+    const target = this.resolveCodeModeR2Path(args, { allowDirectory: true });
+    const limit = clampCodeModeInteger(args.limit, 100, 1, 1000);
+    const cursor = typeof args.cursor === "string" && args.cursor.trim()
+      ? args.cursor.trim()
+      : undefined;
+    const directoryRelativePath = target.relativePath
+      ? `${target.relativePath}/`
+      : "";
+    const baseKey = this.r2MountBaseKey(target.mount);
+    const result = await this.env.R2_BUCKET.list({
+      prefix: `${baseKey}${directoryRelativePath}`,
+      delimiter: "/",
+      limit,
+      cursor,
+      include: ["httpMetadata", "customMetadata"],
+    });
+    const objects = result.objects.map((object) => {
+      const relativePath = object.key.startsWith(baseKey)
+        ? object.key.slice(baseKey.length)
+        : object.key;
+      return this.formatR2ObjectMetadata(object, {
+        ...target,
+        relativePath,
+        path: this.r2PathFromRelative(target.mount, relativePath),
+        key: object.key,
+      });
+    });
+    const prefixes = result.delimitedPrefixes.map((prefix) => {
+      const relativePath = prefix.startsWith(baseKey)
+        ? prefix.slice(baseKey.length).replace(/\/+$/, "")
+        : prefix.replace(/\/+$/, "");
+      return { path: this.r2PathFromRelative(target.mount, relativePath) };
+    });
+    const lines = [
+      ...prefixes.map((prefix) => `dir  ${prefix.path}/`),
+      ...objects.map((object) => `${String(object.size).padStart(8, " ")} ${object.path}`),
+    ];
+    const text = lines.length > 0 ? lines.join("\n") : "(empty)";
+    return {
+      text,
+      content: [{ type: "text", text }],
+      details: {
+        location: "r2",
+        path: target.path,
+        namespace: target.mount,
+        objects,
+        prefixes,
+        truncated: result.truncated,
+        cursor: result.truncated ? result.cursor : undefined,
+      },
+    };
+  }
+
+  private async deleteR2File(args: Record<string, unknown>): Promise<Record<string, unknown>> {
+    const target = this.resolveCodeModeR2Path(args, { requireWritable: true });
+    await this.env.R2_BUCKET.delete(target.key);
+    const text = `Deleted ${target.path}`;
+    return {
+      text,
+      content: [{ type: "text", text }],
+      details: {
+        location: "r2",
+        path: target.path,
+        namespace: target.mount,
+        publicUrl: this.r2PublicUrl(target),
+        deleted: true,
+      },
+    };
+  }
+
+  private normalizeMoveEndpoint(value: unknown, label: "source" | "destination"): CodeModeMoveEndpoint {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      throw new Error(`${label} must be an object`);
+    }
+    const raw = value as Record<string, unknown>;
+    const location = raw.location;
+    if (location !== "workspace" && location !== "vm" && location !== "r2") {
+      throw new Error(`${label}.location must be "workspace", "vm", or "r2"`);
+    }
+    const path = typeof raw.path === "string" ? raw.path.trim().replace(/\\/g, "/") : "";
+    if (!path) throw new Error(`${label}.path is required`);
+    const project = typeof raw.project === "string" && raw.project.trim()
+      ? raw.project.trim()
+      : undefined;
+    if (location === "vm" && !project) {
+      throw new Error(`${label}.project is required when ${label}.location is "vm"`);
+    }
+    const contentType = typeof raw.content_type === "string" && raw.content_type.trim()
+      ? raw.content_type.trim()
+      : undefined;
+    return { location, path, project, contentType };
+  }
+
+  private async collectMoveSourceFiles(source: CodeModeMoveEndpoint): Promise<{ files: CodeModeMoveFile[]; sourceIsDirectory: boolean }> {
+    if (source.location === "workspace") return this.collectWorkspaceMoveFiles(source);
+    if (source.location === "vm") {
+      const stat = await this.projectVm.statPathForTransfer(source);
+      const files = await this.projectVm.collectFilesForTransfer(source);
+      return { files, sourceIsDirectory: stat.isDirectory };
+    }
+    return this.collectR2MoveFiles(source);
+  }
+
+  private async collectWorkspaceMoveFiles(source: CodeModeMoveEndpoint): Promise<{ files: CodeModeMoveFile[]; sourceIsDirectory: boolean }> {
+    const path = normalizeDurableWorkspacePath(source.path);
+    const exists = await this.workspaceFs.exists(path);
+    if (!exists.exists) throw new Error(`Workspace path not found: ${path}`);
+    if (exists.isFile) {
+      return {
+        files: [{ path, relativePath: basenameForMove(path), size: exists.size, contentType: exists.mimeType }],
+        sourceIsDirectory: false,
+      };
+    }
+    if (!exists.isDirectory) throw new Error(`Workspace path is not a file or directory: ${path}`);
+    const listing = await this.workspaceFs.listFiles(path, { recursive: true, includeHidden: true });
+    if (!listing.success) throw new Error(listing.error || `Failed to list ${path}`);
+    const rootName = basenameForMove(path);
+    const files = listing.files
+      .filter((entry) => entry.type === "file")
+      .map((entry) => ({
+        path: normalizeDurableWorkspacePath(entry.absolutePath),
+        relativePath: joinRelativeMovePath(rootName, entry.relativePath),
+        size: entry.size,
+        contentType: entry.mimeType,
+      }))
+      .sort((a, b) => a.relativePath.localeCompare(b.relativePath));
+    return { files, sourceIsDirectory: true };
+  }
+
+  private async collectR2MoveFiles(source: CodeModeMoveEndpoint): Promise<{ files: CodeModeMoveFile[]; sourceIsDirectory: boolean }> {
+    const target = this.resolveCodeModeR2Path(source as unknown as Record<string, unknown>, { allowDirectory: true });
+    if (target.relativePath) {
+      const head = await this.env.R2_BUCKET.head(target.key);
+      if (head) {
+        return {
+          files: [{
+            path: target.path,
+            relativePath: basenameForMove(target.path),
+            size: head.size,
+            contentType: head.httpMetadata?.contentType,
+          }],
+          sourceIsDirectory: false,
+        };
+      }
+    }
+
+    const baseKey = this.r2MountBaseKey(target.mount);
+    const directoryRelativePath = target.relativePath ? `${target.relativePath}/` : "";
+    const prefix = `${baseKey}${directoryRelativePath}`;
+    const rootName = basenameForMove(target.path);
+    const files: CodeModeMoveFile[] = [];
+    let cursor: string | undefined;
+    do {
+      const listed = await this.env.R2_BUCKET.list({
+        prefix,
+        cursor,
+        limit: 1000,
+        include: ["httpMetadata"],
+      });
+      for (const object of listed.objects) {
+        const objectRelativePath = object.key.startsWith(prefix)
+          ? object.key.slice(prefix.length)
+          : object.key.slice(baseKey.length);
+        if (!objectRelativePath) continue;
+        files.push({
+          path: this.r2PathFromRelative(target.mount, target.relativePath
+            ? `${target.relativePath}/${objectRelativePath}`
+            : objectRelativePath),
+          relativePath: joinRelativeMovePath(rootName, objectRelativePath),
+          size: object.size,
+          contentType: object.httpMetadata?.contentType,
+        });
+      }
+      cursor = listed.truncated ? listed.cursor : undefined;
+    } while (cursor);
+
+    if (files.length === 0) throw new Error(`R2 path not found: ${target.path}`);
+    files.sort((a, b) => a.relativePath.localeCompare(b.relativePath));
+    return { files, sourceIsDirectory: true };
+  }
+
+  private async readMoveSourceFile(source: CodeModeMoveEndpoint, file: CodeModeMoveFile): Promise<{ bytes: Uint8Array; contentType?: string }> {
+    if (source.location === "workspace") {
+      const read = await this.workspaceFs.readFile(file.path);
+      if (!read.success || typeof read.content !== "string") {
+        throw new Error(read.error || `Failed to read ${file.path}`);
+      }
+      return {
+        bytes: read.encoding === "base64"
+          ? base64ToBytesForMove(read.content)
+          : new TextEncoder().encode(read.content),
+        contentType: read.mimeType ?? file.contentType,
+      };
+    }
+    if (source.location === "vm") {
+      const read = await this.projectVm.readFileBytesForTransfer({ ...source, path: file.path });
+      return { bytes: read.bytes, contentType: read.contentType ?? file.contentType };
+    }
+    const target = this.resolveCodeModeR2Path({ ...source, path: file.path });
+    const object = await this.env.R2_BUCKET.get(target.key);
+    if (!object) throw new Error(`R2 object not found: ${target.path}`);
+    return {
+      bytes: new Uint8Array(await object.arrayBuffer()),
+      contentType: object.httpMetadata?.contentType ?? file.contentType,
+    };
+  }
+
+  private async writeMoveDestinationFile(
+    destination: CodeModeMoveEndpoint,
+    path: string,
+    bytes: Uint8Array,
+    contentType?: string,
+  ): Promise<{ path: string; bytes: number }> {
+    if (destination.location === "workspace") {
+      const normalizedPath = normalizeDurableWorkspacePath(path);
+      const result = await this.workspaceFs.writeBinaryFile(normalizedPath, bytesToBase64ForMove(bytes));
+      if (!result.success) throw new Error(result.error || `Failed to write ${normalizedPath}`);
+      return { path: normalizedPath, bytes: bytes.byteLength };
+    }
+    if (destination.location === "vm") {
+      return this.projectVm.writeFileBytesForTransfer({ ...destination, path }, bytes);
+    }
+    const target = this.resolveCodeModeR2Path({ ...destination, path }, { requireWritable: true });
+    await this.env.R2_BUCKET.put(target.key, bytes, {
+      httpMetadata: { contentType: destination.contentType ?? contentType ?? "application/octet-stream" },
+      customMetadata: {
+        type: "code-mode-move-file",
+        orgId: this.ctx.props.orgId,
+        workspaceId: this.ctx.props.workspaceId,
+        threadId: this.ctx.props.threadId ?? "",
+      },
+    });
+    return { path: target.path, bytes: bytes.byteLength };
+  }
+
+  private async deleteMoveSource(source: CodeModeMoveEndpoint, files: CodeModeMoveFile[]): Promise<void> {
+    if (source.location === "workspace") {
+      const result = await this.workspaceFs.deleteFile(source.path, { recursive: true });
+      if (!result.success) throw new Error(result.error || `Failed to delete ${source.path}`);
+      return;
+    }
+    if (source.location === "vm") {
+      await this.projectVm.deletePathForTransfer(source, { recursive: true });
+      return;
+    }
+    const target = this.resolveCodeModeR2Path(source as unknown as Record<string, unknown>, { allowDirectory: true });
+    if (target.mount === "uploads") throw new Error("uploads/ is read-only");
+    for (const file of files) {
+      const fileTarget = this.resolveCodeModeR2Path({ ...source, path: file.path }, { requireWritable: true });
+      await this.env.R2_BUCKET.delete(fileTarget.key);
+    }
+  }
+
+  private async comparableMovePath(endpoint: CodeModeMoveEndpoint): Promise<string> {
+    if (endpoint.location === "workspace") {
+      return normalizeDurableWorkspacePath(endpoint.path).replace(/\/+$/g, "") || "/";
+    }
+    if (endpoint.location === "r2") {
+      return this.resolveCodeModeR2Path(endpoint as unknown as Record<string, unknown>, { allowDirectory: true }).path.replace(/\/+$/g, "");
+    }
+    const resolved = await this.projectVm.resolvePathForTransfer(endpoint);
+    return resolved.path.replace(/\/+$/g, "") || "/";
+  }
+
+  private isMovePathEqualOrDescendant(sourcePath: string, destinationPath: string): boolean {
+    if (destinationPath === sourcePath) return true;
+    const prefix = sourcePath.endsWith("/") ? sourcePath : `${sourcePath}/`;
+    return destinationPath.startsWith(prefix);
+  }
+
+  private async assertSafeMoveDeleteDestination(
+    source: CodeModeMoveEndpoint,
+    destination: CodeModeMoveEndpoint,
+    sourceIsDirectory: boolean,
+  ): Promise<void> {
+    if (source.location !== destination.location) return;
+    if (source.location === "vm" && source.project !== destination.project) return;
+
+    const sourcePath = await this.comparableMovePath(source);
+    const destinationPath = await this.comparableMovePath(destination);
+    const overlaps = sourceIsDirectory
+      ? this.isMovePathEqualOrDescendant(sourcePath, destinationPath)
+      : sourcePath === destinationPath;
+    if (overlaps) {
+      throw new Error("move with deleteSource cannot use an equal or descendant destination in the same location");
+    }
+  }
+
+  private async moveFile(args: Record<string, unknown>): Promise<Record<string, unknown>> {
+    const source = this.normalizeMoveEndpoint(args.source, "source");
+    const destination = this.normalizeMoveEndpoint(args.destination, "destination");
+    const deleteSource = args.deleteSource === true || args.delete_source === true;
+    if (deleteSource && source.location === "r2") {
+      const sourceTarget = this.resolveCodeModeR2Path(source as unknown as Record<string, unknown>, { allowDirectory: true });
+      if (sourceTarget.mount === "uploads") throw new Error("uploads/ is read-only");
+    }
+    if (destination.location === "r2") {
+      this.resolveCodeModeR2Path(destination as unknown as Record<string, unknown>, { allowDirectory: true, requireWritable: true });
+    }
+
+    const { files, sourceIsDirectory } = await this.collectMoveSourceFiles(source);
+    if (files.length === 0) throw new Error(`No files found at ${source.path}`);
+    if (deleteSource) {
+      await this.assertSafeMoveDeleteDestination(source, destination, sourceIsDirectory);
+    }
+
+    const copied: Array<{ from: string; to: string; bytes: number }> = [];
+    let totalBytes = 0;
+    const useDestinationAsRoot = sourceIsDirectory || files.length > 1;
+    for (const file of files) {
+      const destinationPath = useDestinationAsRoot
+        ? joinMoveDestinationPath(destination.location, destination.path, file.relativePath)
+        : destination.path;
+      const read = await this.readMoveSourceFile(source, file);
+      const written = await this.writeMoveDestinationFile(destination, destinationPath, read.bytes, read.contentType);
+      totalBytes += written.bytes;
+      copied.push({ from: file.path, to: written.path, bytes: written.bytes });
+    }
+
+    if (deleteSource) await this.deleteMoveSource(source, files);
+
+    const verb = deleteSource ? "Moved" : "Copied";
+    const text = `${verb} ${copied.length} file${copied.length === 1 ? "" : "s"} (${totalBytes} bytes)`;
+    return {
+      text,
+      content: [{ type: "text", text }],
+      details: {
+        source: { location: source.location, path: source.path, project: source.project ?? null },
+        destination: { location: destination.location, path: destination.path, project: destination.project ?? null },
+        deleteSource,
+        files: copied,
+        count: copied.length,
+        bytes: totalBytes,
+      },
+    };
+  }
+
+  private async getAppUrl(script: WorkerScript): Promise<string> {
+    let appHostname = "camelai.dev";
+    const workerBaseUrl = (this.env as { WORKER_BASE_URL?: string }).WORKER_BASE_URL;
+    if (workerBaseUrl) {
+      try {
+        appHostname = new URL(workerBaseUrl).host;
+      } catch {
+        appHostname = "camelai.dev";
+      }
+    }
+    const orgSlug = await this.getOrgSlug();
+    return getPreferredAppUrl(script, {
+      hostname: {
+        hostname: appHostname,
+        vanityDomain: this.env.LOCAL_APP_VANITY_DOMAIN,
+        iframeDomain: this.env.LOCAL_APP_IFRAME_DOMAIN,
+      },
+      orgSlug: orgSlug ?? undefined,
+      orgCustomDomain: null,
+    });
+  }
+
+  async listTools(): Promise<CodeModeToolDefinition[]> {
+    return CODE_MODE_TOOL_DEFINITIONS
+      .filter((definition) => !JS_EXEC_EXCLUDED_TOOL_NAMES.has(definition.name));
+  }
+
+  async callTool(name: string, rawArgs: unknown = {}): Promise<unknown> {
+    if (rawArgs != null && (typeof rawArgs !== "object" || Array.isArray(rawArgs))) {
+      throw new Error("tool arguments must be an object");
+    }
+    const args = rawArgs == null ? {} : rawArgs as Record<string, unknown>;
+    const handler = CodeModeToolsBinding.TOOL_CALL_HANDLERS[name];
+    if (handler) {
+      return this.callToolWithArtifactCapture(name, args, () => handler(this, args, name));
+    }
+
+    return this.callToolWithArtifactCapture(name, args, async () => {
+      if (FILE_TOOL_NAMES.has(name)) requireFileLocation(name, args);
+      switch (name) {
+        case "bash":
+          return this.projectVm.exec({ ...args, location: "vm" });
+
+        case "read":
+          if (hasR2Target(args)) return this.readR2File(args);
+          if (hasVmTarget(args)) return this.projectVm.read(args);
+        {
+          const path = typeof args.path === "string" ? args.path : "";
+          if (normalizeAutomationVirtualPath(path) !== null) {
+            const automationFile = await readAutomationVirtualFile({
+              cronStub: this.cronStub,
+              workspaceId: this.ctx.props.workspaceId,
+              path,
+            });
+            if (automationFile) return automationFile;
+          }
+          const skill = readPiBundledSkillFile(path);
+          if (skill) {
+            return {
+              text: skill.text,
+              content: [{ type: "text", text: skill.text }],
+              details: {
+                path: skill.path,
+                size: skill.size,
+                encoding: skill.encoding,
+                source: skill.source,
+              },
+            };
+          }
+        }
+        return this.piContainerTools.callTool("read", args);
+
+        case "write":
+          if (hasR2Target(args)) return this.writeR2File(args);
+          if (hasVmTarget(args)) return this.projectVm.write(args);
+        {
+          const path = typeof args.path === "string" ? args.path : "";
+          const content = typeof args.content === "string" ? args.content : "";
+          if (normalizeAutomationVirtualPath(path) !== null) {
+            const automationFile = await writeAutomationVirtualFile({
+              cronStub: this.cronStub,
+              workspaceId: this.ctx.props.workspaceId,
+              path,
+              content,
+            });
+            if (automationFile) return automationFile;
+          }
+        }
+        return this.piContainerTools.callTool("write", args);
+
+        case "ls":
+          if (hasR2Target(args)) return this.listR2Files(args);
+          if (hasVmTarget(args)) return this.projectVm.ls(args);
+        {
+          if (typeof args.path === "string") {
+            if (normalizeAutomationVirtualPath(args.path) !== null) {
+              const automationListing = await listAutomationVirtualFiles({
+                cronStub: this.cronStub,
+                workspaceId: this.ctx.props.workspaceId,
+                path: args.path,
+              });
+              if (automationListing) return automationListing;
+            }
+            const listing = listPiBundledSkillFiles(args.path);
+            if (listing) {
+              return {
+                text: listing.text,
+                content: [{ type: "text", text: listing.text }],
+                details: {
+                  path: listing.path,
+                  files: listing.files,
+                  source: listing.source,
+                },
+              };
+            }
+          }
+        }
+        return this.piContainerTools.callTool("ls", args);
+
+        case "edit":
+          if (hasR2Target(args)) return this.editR2File(args);
+          if (hasVmTarget(args)) return this.projectVm.edit(args);
+        {
+          const path = typeof args.path === "string" ? args.path : "";
+          const edits = Array.isArray(args.edits)
+            ? args.edits.flatMap((entry) => {
+                if (!entry || typeof entry !== "object") return [];
+                const raw = entry as Record<string, unknown>;
+                return [{
+                  oldText: String(raw.oldText ?? raw.old_string ?? ""),
+                  newText: String(raw.newText ?? raw.new_string ?? ""),
+                }];
+              })
+            : [];
+          if (normalizeAutomationVirtualPath(path) !== null) {
+            const automationFile = await editAutomationVirtualFile({
+              cronStub: this.cronStub,
+              workspaceId: this.ctx.props.workspaceId,
+              path,
+              edits,
+            });
+            if (automationFile) return automationFile;
+          }
+        }
+        return this.piContainerTools.callTool("edit", args);
+
+        case "delete":
+          if (hasR2Target(args)) return this.deleteR2File(args);
+          if (hasVmTarget(args)) {
+            throw new Error("delete does not support project VM files; use bash or vm_exec with rm for explicit VM deletion");
+          }
+          return this.piContainerTools.callTool("delete", args);
+
+        case "grep":
+          if (hasVmTarget(args)) return this.projectVm.grep(args);
+          return this.piContainerTools.callTool("grep", args);
+
+        case "find":
+          if (hasVmTarget(args)) return this.projectVm.find(args);
+          return this.piContainerTools.callTool("find", args);
+
+        case "vm_exec":
+          return this.projectVm.exec(args);
+
+        case "move":
+          return this.moveFile(args);
+
+        case "list_projects":
+          return (await this.workspaceFs.listProjects()).map(projectForAgent);
+
+        case "create_project":
+          return projectForAgent(await this.workspaceFs.createProject(args));
+
+        case "set_project_description":
+          return projectForAgent(await this.workspaceFs.setProjectDescription(args));
+
+        case "clone_project":
+          return this.projectVm.cloneProject(args);
+
+        case "delete_project":
+          return this.deleteProject(args);
+
+        case "delete_connection":
+          return this.deleteConnection(args);
+
+        default:
+          throw new Error(`Unknown code mode tool: ${name}`);
+      }
+    });
+  }
+
+  private async callToolWithArtifactCapture(
+    name: string,
+    args: Record<string, unknown>,
+    execute: () => Promise<unknown> | unknown,
+  ): Promise<unknown> {
+    try {
+      const result = await execute();
+      await this.recordCodeModeArtifactBestEffort(name, args, result);
+      return result;
+    } catch (error) {
+      await this.recordCodeModeArtifactBestEffort(name, args, undefined, error);
+      throw error;
+    }
+  }
+
+  private async recordCodeModeArtifactBestEffort(
+    name: string,
+    args: Record<string, unknown>,
+    result?: unknown,
+    error?: unknown,
+  ): Promise<void> {
+    try {
+      await this.maybeRecordCodeModeArtifact(name, args, result, error);
+    } catch (recordError) {
+      console.error("Failed to record code mode artifact", {
+        toolName: name,
+        threadId: this.ctx?.props?.threadId,
+        parentToolUseId: this.ctx?.props?.parentToolUseId,
+        error: recordError instanceof Error ? recordError.message : String(recordError),
+      });
+    }
+  }
+
+  private async maybeRecordCodeModeArtifact(
+    name: string,
+    args: Record<string, unknown>,
+    result?: unknown,
+    error?: unknown,
+  ): Promise<void> {
+    const props = this.ctx?.props;
+    const parentToolUseId = props?.parentToolUseId?.trim();
+    const threadId = props?.threadId?.trim();
+    if (!parentToolUseId || !threadId) return;
+    const artifact = this.buildCodeModeArtifact(name, args, result, error);
+    if (!artifact) return;
+    await (this.chatThreadStub as unknown as {
+      recordCodeModeArtifact(parentToolUseId: string, artifact: RuntimeCallArtifact): Promise<void>;
+    }).recordCodeModeArtifact(parentToolUseId, artifact);
+  }
+
+  private buildCodeModeArtifact(
+    name: string,
+    args: Record<string, unknown>,
+    result?: unknown,
+    error?: unknown,
+  ): RuntimeCallArtifact | null {
+    const kindByTool: Record<string, RuntimeCallArtifactKind> = {
+      send_email: "outbound_email",
+      send_slack_message: "outbound_slack_message",
+      send_telegram_message: "outbound_telegram_message",
+    };
+    const kind = kindByTool[name];
+    if (!kind) return null;
+    const now = Date.now();
+    const status = error ? "failed" : "sent";
+    const details = this.codeModeArtifactDetails(result);
+    const summary = this.summarizeCodeModeArtifactArgs(name, args);
+    const titleByKind: Record<RuntimeCallArtifactKind, string> = {
+      outbound_email: status === "sent" ? "Email sent" : "Email failed",
+      outbound_slack_message: status === "sent" ? "Slack message sent" : "Slack message failed",
+      outbound_telegram_message: status === "sent" ? "Telegram message sent" : "Telegram message failed",
+    };
+    return {
+      id: `${this.ctx.props.parentToolUseId}:${name}:${crypto.randomUUID()}`,
+      kind,
+      toolName: name as RuntimeCallArtifact["toolName"],
+      status,
+      title: titleByKind[kind],
+      subtitle: this.codeModeArtifactSubtitle(kind, summary, details),
+      createdAt: now,
+      updatedAt: now,
+      summary,
+      ...(Object.keys(details).length > 0 ? { result: details } : {}),
+      ...(error ? { error: this.codeModeArtifactError(error) } : {}),
+    };
+  }
+
+  private summarizeCodeModeArtifactArgs(
+    name: string,
+    args: Record<string, unknown>,
+  ): Record<string, unknown> {
+    const attachmentCount = Array.isArray(args.attachments) ? args.attachments.length : 0;
+    const text = typeof args.text === "string" ? args.text : "";
+    switch (name) {
+      case "send_email": {
+        const to = typeof args.to === "string" ? args.to.trim() : "";
+        return {
+          to,
+          toDomain: to.includes("@") ? to.split("@").pop() : undefined,
+          subject: typeof args.subject === "string" ? args.subject : undefined,
+          hasText: typeof args.text === "string" && args.text.length > 0,
+          hasHtml: typeof args.html === "string" && args.html.length > 0,
+          attachmentCount,
+        };
+      }
+      case "send_slack_message":
+        return {
+          channelId: typeof args.channel_id === "string" ? args.channel_id : undefined,
+          teamId: typeof args.team_id === "string" ? args.team_id : undefined,
+          integrationId: typeof args.integration_id === "string" ? args.integration_id : undefined,
+          threadTs: typeof args.thread_ts === "string" ? args.thread_ts : undefined,
+          hasText: text.length > 0,
+          textPreview: text ? this.truncateArtifactPreviewText(text) : undefined,
+          attachmentCount,
+        };
+      case "send_telegram_message":
+        return {
+          chatId: typeof args.chat_id === "string" ? args.chat_id : undefined,
+          integrationId: typeof args.integration_id === "string" ? args.integration_id : undefined,
+          hasText: text.length > 0,
+          textPreview: text ? this.truncateArtifactPreviewText(text) : undefined,
+          attachmentCount,
+        };
+      default:
+        return { attachmentCount };
+    }
+  }
+
+  private codeModeArtifactDetails(result: unknown): Record<string, unknown> {
+    if (!result || typeof result !== "object" || Array.isArray(result)) return {};
+    const details = (result as { details?: unknown }).details;
+    return details && typeof details === "object" && !Array.isArray(details)
+      ? details as Record<string, unknown>
+      : {};
+  }
+
+  private codeModeArtifactSubtitle(
+    kind: RuntimeCallArtifactKind,
+    summary: Record<string, unknown>,
+    result: Record<string, unknown>,
+  ): string | undefined {
+    if (kind === "outbound_email") {
+      return typeof summary.to === "string" && summary.to ? summary.to : undefined;
+    }
+    if (kind === "outbound_slack_message") {
+      const channelId = typeof result.channelId === "string" ? result.channelId : summary.channelId;
+      return typeof channelId === "string" && channelId ? `Channel ${channelId}` : undefined;
+    }
+    const chatId = typeof result.chatId === "string" ? result.chatId : summary.chatId;
+    return typeof chatId === "string" && chatId ? `Chat ${chatId}` : undefined;
+  }
+
+  private codeModeArtifactError(error: unknown): { name: string; message: string } {
+    return error instanceof Error
+      ? { name: error.name || "Error", message: error.message || "Unknown error" }
+      : { name: "Error", message: String(error || "Unknown error") };
+  }
+
+  private truncateArtifactPreviewText(text: string): string {
+    const normalized = text.replace(/\s+/g, " ").trim();
+    return normalized.length > 160 ? `${normalized.slice(0, 157)}...` : normalized;
+  }
+
+  private askUserQuestion(args: Record<string, unknown>): Promise<unknown> {
+    return this.chatThreadStub.askUserQuestion({
+      questions: Array.isArray(args.questions) ? args.questions : [args],
+      toolUseId: typeof args.toolUseId === "string" ? args.toolUseId : undefined,
+    });
+  }
+
+  private runSubagentTool(name: string, args: Record<string, unknown>): Promise<AgentToolResult<unknown>> {
+    return (this.chatThreadStub as unknown as {
+      runCodeModeSubagent(toolName: "Agent" | "Explore", params: unknown): Promise<AgentToolResult<unknown>>;
+    }).runCodeModeSubagent(name as "Agent" | "Explore", args);
+  }
+
+  private connectionQuery(args: Record<string, unknown>): string | Record<string, string> {
+    return typeof args.query === "string" || (args.query && typeof args.query === "object" && !Array.isArray(args.query))
+      ? args.query as string | Record<string, string>
+      : "";
+  }
+
+  private async updateTodos(args: Record<string, unknown>): Promise<unknown> {
+    const todos = normalizeTodoItems(
+      Array.isArray(args.todos)
+        ? args.todos
+        : Array.isArray(args.items)
+          ? args.items
+          : [],
+    );
+    await this.chatThreadStub.setTodoState(todos);
+    return { success: true, todos };
+  }
+
+  private async setPreview(args: Record<string, unknown>): Promise<unknown> {
+    const scriptNameArg = typeof args.script_name === "string" ? args.script_name.trim() : "";
+    const appNameArg = typeof args.app_name === "string" ? args.app_name.trim() : "";
+    if (scriptNameArg && appNameArg && scriptNameArg !== appNameArg) {
+      throw new Error("set_preview accepts only one app target; use script_name or app_name, not both");
+    }
+    const scriptName = scriptNameArg || appNameArg;
+    const filePath = typeof args.path === "string" ? args.path.trim() : "";
+    if (args.location === "vm" && !filePath) {
+      throw new Error("path is required when previewing a VM file");
+    }
+    const targetKinds = [scriptName ? "app" : "", filePath ? "file" : ""].filter(Boolean);
+    if (targetKinds.length === 0) {
+      throw new Error("set_preview requires app_name/script_name or path");
+    }
+    if (targetKinds.length > 1) {
+      throw new Error("set_preview accepts exactly one target: app_name/script_name or path");
+    }
+    if (args.location !== "vm" && typeof args.project === "string" && args.project.trim()) {
+      throw new Error("project is only valid with location: 'vm'");
+    }
+    if (filePath && typeof args.is_public === "boolean") {
+      throw new Error("is_public is only valid for app previews");
+    }
+
+    if (scriptName) {
+      const script = await this.orgStub.getWorkerScript(scriptName);
+      if (!script) throw new Error(`App '${scriptName}' not found`);
+      if (script.workspace_id !== this.ctx.props.workspaceId) {
+        throw new Error(`App '${scriptName}' belongs to a different workspace`);
+      }
+      const target: PreviewTarget = {
+        kind: "app",
+        scriptName,
+        isPublic: typeof args.is_public === "boolean" ? args.is_public : script.is_public,
+      };
+      await this.chatThreadStub.setPreviewTarget(target);
+      return { success: true, target, app: { name: scriptName, url: await this.getAppUrl(script), is_public: target.isPublic } };
+    }
+    const location = typeof args.location === "string" ? args.location.trim() : "";
+    if (location && location !== "workspace" && location !== "vm" && location !== "r2") {
+      throw new Error('set_preview location must be "workspace", "vm", or "r2"');
+    }
+    let parsedPath = parseFilePreviewPath(filePath);
+    let source: Extract<PreviewTarget, { kind: "file" }>["source"];
+    if (location === "workspace" || location === "vm") {
+      parsedPath = parseFilePreviewPath(filePath.startsWith("/") ? filePath : `/${filePath}`);
+      if (!parsedPath || parsedPath.source !== "workspace") {
+        throw new Error("Invalid preview file path");
+      }
+      source = location;
+    } else if (location === "r2") {
+      if (!parsedPath || parsedPath.source === "workspace") {
+        throw new Error("R2 preview path must start with uploads/ or outputs/");
+      }
+      source = parsedPath.source;
+    } else {
+      if (!parsedPath) {
+        throw new Error("Invalid preview file path");
+      }
+      source = parsedPath.source;
+    }
+    const target: PreviewTarget = {
+      kind: "file",
+      source,
+      workspaceId: this.ctx.props.workspaceId,
+      path: parsedPath.path,
+      project:
+        source === "vm" && typeof args.project === "string"
+          ? args.project.trim()
+          : undefined,
+      filename: parsedPath.filename,
+      contentType: typeof args.content_type === "string" ? args.content_type.trim() : undefined,
+    };
+    if (target.source === "vm" && !target.project) {
+      throw new Error("project is required when previewing a VM file");
+    }
+    await this.assertPreviewFileReadable(target);
+    await this.chatThreadStub.setPreviewTarget(target);
+    return { success: true, target };
+  }
+
+  private async assertPreviewFileReadable(target: Extract<PreviewTarget, { kind: "file" }>): Promise<void> {
+    switch (target.source) {
+      case "workspace": {
+        const exists = await this.workspaceFs.exists(target.path);
+        if (!exists.exists) {
+          throw new Error(`Preview file not found: ${target.path}`);
+        }
+        if (exists.isDirectory) {
+          throw new Error(`Preview path is a directory, not a file: ${target.path}`);
+        }
+        return;
+      }
+      case "upload":
+      case "output": {
+        const { orgId, workspaceId } = this.ctx.props;
+        if (!orgId || !workspaceId) {
+          throw new Error("Code mode tool binding is missing R2 scope");
+        }
+        const bucketDir = target.source === "upload" ? "user-uploads" : "user-outputs";
+        const relativePath = target.path.replace(/^\/+/, "");
+        // Retry briefly so a preview set the moment before the producer
+        // finishes writing to R2 validates instead of failing the race.
+        const object = await retryR2Read(() =>
+          this.env.R2_BUCKET.head(
+            buildWorkspaceScopedR2Key(orgId, workspaceId, `${bucketDir}/${relativePath}`),
+          ),
+        );
+        if (!object) {
+          const publicPath = `${target.source === "upload" ? "uploads" : "outputs"}/${relativePath}`;
+          throw new Error(`Preview file not found: ${publicPath}`);
+        }
+        return;
+      }
+      case "vm": {
+        if (!target.project) {
+          throw new Error("project is required when previewing a VM file");
+        }
+        await this.projectVm.assertFileReadable({
+          location: "vm",
+          project: target.project,
+          path: target.path,
+        });
+        return;
+      }
+    }
+  }
+
+  private async listApps(): Promise<unknown> {
+    const scripts = (await this.orgStub.listWorkerScriptsByWorkspace(this.ctx.props.workspaceId))
+      .sort((a, b) => b.updated_at - a.updated_at);
+    return {
+      count: scripts.length,
+      apps: await Promise.all(scripts.map(async (script) => ({
+        name: script.script_name,
+        url: await this.getAppUrl(script),
+        is_public: script.is_public,
+        created_by: script.created_by,
+        created_at: new Date(script.created_at).toISOString(),
+        updated_at: new Date(script.updated_at).toISOString(),
+        preview_status: script.preview_status,
+      }))),
+    };
+  }
+
+  private async setAppVisibility(args: Record<string, unknown>): Promise<unknown> {
+    const scriptName = typeof args.script_name === "string" ? args.script_name.trim() : "";
+    if (!scriptName) throw new Error("script_name is required");
+    if (typeof args.is_public !== "boolean") throw new Error("is_public must be a boolean");
+    const script = await this.orgStub.getWorkerScript(scriptName);
+    if (!script) return { success: false, error: `App '${scriptName}' not found` };
+    if (script.workspace_id !== this.ctx.props.workspaceId) {
+      return { success: false, error: `App '${scriptName}' belongs to a different workspace` };
+    }
+    const updated = await this.orgStub.setWorkerScriptPublic(
+      scriptName,
+      args.is_public,
+      this.ctx.props.userId || "system",
+    );
+    if (!updated) return { success: false, error: `Failed to update app '${scriptName}'` };
+    await this.chatThreadStub.setPreviewAppVisibility(scriptName, updated.is_public);
+    return {
+      success: true,
+      app: {
+        name: updated.script_name,
+        url: await this.getAppUrl(updated),
+        is_public: updated.is_public,
+        updated_at: new Date(updated.updated_at).toISOString(),
+      },
+      message: `App '${scriptName}' is now ${updated.is_public ? "public" : "private"}`,
+    };
+  }
+
+  private async getLatestLogs(args: Record<string, unknown>): Promise<unknown> {
+    const scriptName = typeof args.script_name === "string" ? args.script_name.trim() : "";
+    if (!scriptName) throw new Error("script_name is required");
+    if (!this.env.WORKER_LOGS) throw new Error("Worker logs are not configured");
+    const script = await this.orgStub.getWorkerScript(scriptName);
+    if (!script) return { success: false, error: `App '${scriptName}' not found` };
+    if (script.workspace_id !== this.ctx.props.workspaceId) {
+      return { success: false, error: `App '${scriptName}' belongs to a different workspace` };
+    }
+    const limit = clampCodeModeInteger(args.limit, 100, 1, 500);
+    const since = typeof args.since_ms === "number" && Number.isFinite(args.since_ms)
+      ? Math.max(0, Math.floor(args.since_ms))
+      : undefined;
+    const orgSlug = await this.getOrgSlug();
+    const storageKey = orgSlug ? `${scriptName}--${orgSlug}` : scriptName;
+    const logsStub = this.env.WORKER_LOGS.get(this.env.WORKER_LOGS.idFromName(storageKey));
+    const [logs, stats] = await Promise.all([
+      logsStub.getLogs({ limit, since }),
+      logsStub.getStats(),
+    ]);
+    return {
+      success: true,
+      script: { name: scriptName, storage_key: storageKey, dispatch_name: storageKey },
+      count: logs.length,
+      limit,
+      since_ms: since ?? null,
+      stats: {
+        total_log_count: stats.logCount,
+        last_log_at_ms: stats.lastLogAt,
+        last_log_at: stats.lastLogAt ? new Date(stats.lastLogAt).toISOString() : null,
+      },
+      logs: logs.map((entry) => ({
+        id: entry.id,
+        timestamp_ms: entry.timestamp,
+        timestamp: new Date(entry.timestamp).toISOString(),
+        level: entry.level,
+        message: entry.message,
+        exception: entry.exception,
+        script_version: entry.scriptVersion,
+      })),
+    };
+  }
+
+  private async takeScreenshot(args: Record<string, unknown>): Promise<unknown> {
+    const scriptName = typeof args.script_name === "string" ? args.script_name.trim() : "";
+    if (!scriptName) throw new Error("script_name is required");
+    const screenshotBinding = (this.ctx.exports as unknown as {
+      AppScreenshotBinding: (options: { props: Pick<CodeModeToolsProps, "orgId" | "workspaceId"> }) => {
+        capture(input: {
+          scriptName: string;
+          path?: string;
+          width?: number;
+          height?: number;
+          waitMs?: number;
+        }): Promise<{ imageDataUrl: string; width: number; height: number }>;
+      };
+    }).AppScreenshotBinding({
+      props: {
+        orgId: this.ctx.props.orgId,
+        workspaceId: this.ctx.props.workspaceId,
+      },
+    });
+    return screenshotBinding.capture({
+      scriptName,
+      path: typeof args.path === "string" ? args.path : undefined,
+      width: typeof args.width === "number" ? args.width : undefined,
+      height: typeof args.height === "number" ? args.height : undefined,
+      waitMs: typeof args.wait_ms === "number" ? args.wait_ms : undefined,
+    });
+  }
+
+  private warehouseService() {
+    return (this.ctx.exports as unknown as {
+      WarehouseService: (options: { props: Pick<CodeModeToolsProps, "orgId" | "workspaceId"> }) => {
+        runCode(request: { code: string; params?: Record<string, unknown> }): Promise<{ ok: boolean; result?: unknown; error?: string }>;
+        listConnections(): Promise<Array<{ id: string; name: string; type: string; displayName: string; exportable: boolean; exportFormat: 'parquet' | 'ndjson' | null }>>;
+      };
+    }).WarehouseService({
+      props: {
+        orgId: this.ctx.props.orgId,
+        workspaceId: this.ctx.props.workspaceId,
+      },
+    });
+  }
+
+  private async warehouseRunCode(args: Record<string, unknown>): Promise<unknown> {
+    const code = typeof args.code === "string" ? args.code : "";
+    if (!code.trim()) throw new Error("code is required");
+    // Forward the params dict (the tool advertises it) so WarehouseService can
+    // inject it as a Python `params` dict; otherwise params['...'] is a NameError.
+    const params =
+      args.params && typeof args.params === "object" && !Array.isArray(args.params)
+        ? (args.params as Record<string, unknown>)
+        : undefined;
+    return this.warehouseService().runCode({ code, params });
+  }
+
+  private async warehouseListConnections(): Promise<unknown> {
+    return this.warehouseService().listConnections();
+  }
+
+  private get scheduledPrompts(): CodeModeScheduledPrompts {
+    return new CodeModeScheduledPrompts({
+      cronStub: this.cronStub,
+      workspaceId: this.ctx.props.workspaceId,
+      threadId: this.ctx.props.threadId,
+      userId: this.ctx.props.userId,
+    });
+  }
+
+  private get deterministicAutomations(): CodeModeDeterministicAutomations {
+    return new CodeModeDeterministicAutomations({
+      cronStub: this.cronStub,
+      workspaceId: this.ctx.props.workspaceId,
+      userId: this.ctx.props.userId,
+    });
+  }
+
+  private async listScheduledPrompts(): Promise<unknown> {
+    return this.scheduledPrompts.list();
+  }
+
+  private async createScheduledPrompt(args: Record<string, unknown>): Promise<unknown> {
+    return this.scheduledPrompts.create(args);
+  }
+
+  private async updateScheduledPrompt(args: Record<string, unknown>): Promise<unknown> {
+    return this.scheduledPrompts.update(args);
+  }
+
+  private async deleteScheduledPrompt(args: Record<string, unknown>): Promise<unknown> {
+    return this.scheduledPrompts.delete(args);
+  }
+
+  private async runScheduledPromptNow(args: Record<string, unknown>): Promise<unknown> {
+    return this.scheduledPrompts.runNow(args);
+  }
+
+  private async listDeterministicAutomations(): Promise<unknown> {
+    return this.deterministicAutomations.list();
+  }
+
+  private async validateDeterministicAutomation(args: Record<string, unknown>): Promise<unknown> {
+    return this.deterministicAutomations.validate(args);
+  }
+
+  private async createDeterministicAutomation(args: Record<string, unknown>): Promise<unknown> {
+    return this.deterministicAutomations.create(args);
+  }
+
+  private async updateDeterministicAutomation(args: Record<string, unknown>): Promise<unknown> {
+    return this.deterministicAutomations.update(args);
+  }
+
+  private async deleteDeterministicAutomation(args: Record<string, unknown>): Promise<unknown> {
+    return this.deterministicAutomations.delete(args);
+  }
+
+  private async runDeterministicAutomationNow(args: Record<string, unknown>): Promise<unknown> {
+    return this.deterministicAutomations.runNow(args);
+  }
+
+  private async getDeterministicAutomationRuns(args: Record<string, unknown>): Promise<unknown> {
+    return this.deterministicAutomations.getRuns(args);
+  }
+
+  private get integrations(): CodeModeIntegrations {
+    return new CodeModeIntegrations({
+      env: this.env,
+      orgStub: this.orgStub,
+      workspaceId: this.ctx.props.workspaceId,
+      userId: this.ctx.props.userId,
+      promptConnectionSetup: (input) =>
+        (this.chatThreadStub as unknown as {
+          promptConnectionSetup(input: {
+            integrationId?: string;
+            integrationType: string;
+            suggestedName?: string;
+            message?: string;
+            instructions?: string;
+            initialConfig?: Record<string, unknown>;
+            initialCredentials?: Record<string, unknown>;
+            dynamicSchema?: DynamicIntegrationSchema;
+          }): Promise<ConnectionSetupResponse>;
+        }).promptConnectionSetup(input),
+    });
+  }
+
+  private async listIntegrations(args: Record<string, unknown>): Promise<unknown> {
+    return this.integrations.list(args);
+  }
+
+  private listIntegrationTypes(args: Record<string, unknown>): unknown {
+    return this.integrations.listTypes(args);
+  }
+
+  private async createIntegration(args: Record<string, unknown>): Promise<unknown> {
+    return this.integrations.create(args);
+  }
+
+  private async promptConnectionSetup(args: Record<string, unknown>): Promise<unknown> {
+    return this.integrations.promptConnectionSetup(args);
+  }
+
+  private async deleteConnection(args: Record<string, unknown>): Promise<unknown> {
+    const connection = typeof args.connection === "string" ? args.connection.trim() : "";
+    if (!connection) throw new Error("connection is required");
+
+    const entry = await findConnectionMethodEntry(this.env, this.connectionsContext, connection);
+    const summary = entry.connection;
+    const question =
+      `Delete connection "${summary.name}" (${summary.type})? This removes its stored configuration and cannot be undone.`;
+    const confirmation = await confirmDestructiveAction(
+      (questionArgs) => this.askUserQuestion(questionArgs),
+      {
+        question,
+        header: "Delete connection?",
+        confirmLabel: DESTRUCTIVE_CONFIRM_LABEL,
+      },
+    );
+    if (confirmation.unavailableReason) {
+      return {
+        success: false,
+        cancelled: true,
+        unavailable_reason: confirmation.unavailableReason,
+        message: confirmation.unavailableReason,
+      };
+    }
+    if (!confirmation.confirmed) {
+      return {
+        success: false,
+        cancelled: true,
+        message: "Connection deletion cancelled.",
+      };
+    }
+
+    const actorId = this.ctx.props.userId?.trim() || "system";
+    await this.orgStub.deleteWorkspaceIntegration(
+      this.ctx.props.workspaceId,
+      summary.id,
+      actorId,
+    );
+    return {
+      success: true,
+      connection: summary.name,
+      message: `Deleted connection "${summary.name}"`,
+    };
+  }
+
+  private async deleteProject(args: Record<string, unknown>): Promise<unknown> {
+    const projectName = typeof args.project === "string" ? args.project.trim() : "";
+    if (!projectName) throw new Error("project is required");
+
+    const projects = await this.workspaceFs.listProjectsForMigrationReset();
+    const nameKey = projectNameKey(projectName);
+    const target = projects.find((project) => projectNameKey(project.name) === nameKey);
+    if (!target) {
+      throw new Error(`Project not found: ${projectName}`);
+    }
+
+    const confirmedTargets = collectProjectDeletionTargets(projects, target);
+    const cloneNames = confirmedTargets
+      .filter((project) => project.id !== target.id)
+      .map((project) => project.name);
+    const question = cloneNames.length > 0
+      ? `Delete project "${target.name}" and its ${cloneNames.length} clone project(s) (${cloneNames.join(", ")})? This removes their VM checkouts and metadata. This cannot be undone.`
+      : `Delete project "${target.name}"? This removes its VM checkout and metadata. This cannot be undone.`;
+    const confirmation = await confirmDestructiveAction(
+      (questionArgs) => this.askUserQuestion(questionArgs),
+      {
+        question,
+        header: "Delete project?",
+        confirmLabel: DESTRUCTIVE_CONFIRM_LABEL,
+      },
+    );
+    if (confirmation.unavailableReason) {
+      return {
+        success: false,
+        cancelled: true,
+        unavailable_reason: confirmation.unavailableReason,
+        message: confirmation.unavailableReason,
+      };
+    }
+    if (!confirmation.confirmed) {
+      return {
+        success: false,
+        cancelled: true,
+        message: "Project deletion cancelled.",
+      };
+    }
+
+    const confirmedProjectIds = orderProjectsForRuntimeDelete(confirmedTargets);
+    return this.projectVm.deleteProject({ projectIds: confirmedProjectIds });
+  }
+
+  private chatContextFromProps(): ChatContextState {
+    return {
+      orgId: this.ctx.props.orgId,
+      workspaceId: this.ctx.props.workspaceId,
+      threadId: this.ctx.props.threadId || "",
+      userId: this.ctx.props.userId ?? null,
+      userName: null,
+      userEmail: null,
+    };
+  }
+
+  private get channelTools(): ChannelTools {
+    return new ChannelTools(this.env);
+  }
+
+  private async sendEmail(args: Record<string, unknown>): Promise<unknown> {
+    return this.channelTools.sendChannelEmailTool(this.chatContextFromProps(), args);
+  }
+
+  private async sendSlackMessage(args: Record<string, unknown>): Promise<unknown> {
+    return this.channelTools.sendChannelSlackMessageTool(this.chatContextFromProps(), args);
+  }
+
+  private async sendTelegramMessage(args: Record<string, unknown>): Promise<unknown> {
+    return this.channelTools.sendChannelTelegramMessageTool(this.chatContextFromProps(), args);
+  }
+
+  private get customDomains(): CodeModeCustomDomains {
+    return new CodeModeCustomDomains({
+      env: this.env,
+      orgStub: this.orgStub,
+      workspaceId: this.ctx.props.workspaceId,
+      userId: this.ctx.props.userId,
+    });
+  }
+
+  private async getCustomDomain(): Promise<unknown> {
+    return this.customDomains.get();
+  }
+
+  private async setCustomDomain(args: Record<string, unknown>): Promise<unknown> {
+    return this.customDomains.set(args);
+  }
+
+  private async removeCustomDomain(args: Record<string, unknown>): Promise<unknown> {
+    return this.customDomains.remove(args);
+  }
+
+  private async retryCustomDomainHostnames(): Promise<unknown> {
+    return this.customDomains.retryHostnames();
+  }
+
+  private get webSearchClient(): CodeModeWebSearch {
+    return new CodeModeWebSearch(
+      this.env,
+      this.ctx.props.threadId || this.ctx.props.workspaceId,
+    );
+  }
+
+  private async webFetch(args: Record<string, unknown>): Promise<unknown> {
+    return this.webSearchClient.fetch(args);
+  }
+
+  private async webSearch(args: Record<string, unknown>): Promise<unknown> {
+    return this.webSearchClient.search(args);
+  }
+}

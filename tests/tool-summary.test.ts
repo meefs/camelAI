@@ -333,7 +333,7 @@ describe('getToolSummaryParts friendly dynamic tool labels', () => {
 
   it('has friendly summaries for every registered code-mode tool', () => {
     const source = fs.readFileSync(
-      path.join(root, 'workers/main/src/chat-thread-do.ts'),
+      path.join(root, 'workers/main/src/code-mode-tools.ts'),
       'utf8',
     );
     const registryStart = source.indexOf('const CODE_MODE_CONTAINER_TOOL_NAMES');

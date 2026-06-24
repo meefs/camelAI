@@ -1,5 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ChatThreadDO, CodeModeToolsBinding, prepareCodeModeUserCode } from '../src/chat-thread-do';
+import { ChannelTools } from '../src/chat-channels';
+import { piCoreMessageToParsedChatMessage, attachPiToolResultToParsedMessages } from '../src/pi-message-export';
+import { PiModelMapping } from '../src/pi-model-resolution';
 import { BrowserPromptCoordinator } from '../src/chat-thread-browser-prompts';
 import { CamelAiService } from '../src/camelai-service';
 import { validateSignedToken } from '../src/signed-tokens';
@@ -155,10 +158,7 @@ describe('ChatThreadDO Pi turn handling', () => {
   }
 
   it('normalizes retired Fable 5 requests to Sonnet', () => {
-    const result = ChatThreadDO.prototype['resolvePiModelReference'].call(
-      Object.create(ChatThreadDO.prototype),
-      'fable-5',
-    );
+    const result = new PiModelMapping().resolvePiModelReference('fable-5');
 
     expect(result).toEqual({
       provider: 'anthropic',
@@ -169,9 +169,7 @@ describe('ChatThreadDO Pi turn handling', () => {
   });
 
   it('preserves sentDuringStreaming metadata on parsed Pi user messages', () => {
-    const fake = Object.create(ChatThreadDO.prototype) as any;
-
-    const result = fake.piCoreMessageToParsedChatMessage(
+    const result = piCoreMessageToParsedChatMessage(
       {
         role: 'user',
         content: 'also add dark mode',
@@ -1538,7 +1536,6 @@ describe('ChatThreadDO Pi turn handling', () => {
     fake.checkHostedPiModelAccess = vi.fn(async () => {
       throw new Error('hosted billing should not be checked for BYOK');
     });
-    fake.openRouterAttributionHeaders = ChatThreadDO.prototype['openRouterAttributionHeaders'];
 
     const model = await ChatThreadDO.prototype['resolvePiModel'].call(
       fake,
@@ -1575,7 +1572,6 @@ describe('ChatThreadDO Pi turn handling', () => {
     fake.checkHostedPiModelAccess = vi.fn(async () => {
       throw new Error('hosted billing should not be checked for BYOK');
     });
-    fake.openRouterAttributionHeaders = ChatThreadDO.prototype['openRouterAttributionHeaders'];
 
     const model = await ChatThreadDO.prototype['resolvePiModel'].call(
       fake,
@@ -1616,7 +1612,6 @@ describe('ChatThreadDO Pi turn handling', () => {
     fake.checkHostedPiModelAccess = vi.fn(async () => {
       throw new Error('hosted billing should not be checked for self-host env provider');
     });
-    fake.openRouterAttributionHeaders = ChatThreadDO.prototype['openRouterAttributionHeaders'];
 
     const model = await ChatThreadDO.prototype['resolvePiModel'].call(
       fake,
@@ -1862,7 +1857,6 @@ describe('ChatThreadDO Pi turn handling', () => {
   it('prefixes hosted OpenAI aliases when routing through OpenRouter BYOK', async () => {
     const fake = Object.create(ChatThreadDO.prototype) as any;
     fake.env = {};
-    fake.openRouterAttributionHeaders = ChatThreadDO.prototype['openRouterAttributionHeaders'];
     fake.resolveCurrentByokCredentials = vi.fn(async () => ({
       provider: 'openrouter',
       apiKey: 'sk-or-test',
@@ -1898,7 +1892,6 @@ describe('ChatThreadDO Pi turn handling', () => {
   it('suppresses OpenAI SDK bearer auth for custom OpenAI-compatible x-api-key providers', async () => {
     const fake = Object.create(ChatThreadDO.prototype) as any;
     fake.env = {};
-    fake.customProviderAuthHeaders = ChatThreadDO.prototype['customProviderAuthHeaders'];
     fake.resolveCurrentByokCredentials = vi.fn(async () => ({
       provider: 'custom',
       apiKey: 'custom-key',
@@ -1941,7 +1934,6 @@ describe('ChatThreadDO Pi turn handling', () => {
   it('suppresses Anthropic SDK x-api-key auth for custom Anthropic-compatible bearer providers', async () => {
     const fake = Object.create(ChatThreadDO.prototype) as any;
     fake.env = {};
-    fake.customProviderAuthHeaders = ChatThreadDO.prototype['customProviderAuthHeaders'];
     fake.resolveCurrentByokCredentials = vi.fn(async () => ({
       provider: 'custom',
       apiKey: 'custom-key',
@@ -2862,10 +2854,7 @@ describe('ChatThreadDO Pi turn handling', () => {
     ['gemini-3-flash-preview', 'google/gemini-3-flash-preview'],
     ['gemini-3.1-pro-preview', 'google/gemini-3.5-flash'],
   ])('routes %s through OpenRouter chat completions', (model, routeModel) => {
-    const result = ChatThreadDO.prototype['resolvePiModelReference'].call(
-      Object.create(ChatThreadDO.prototype),
-      model,
-    );
+    const result = new PiModelMapping().resolvePiModelReference(model);
 
     expect(result).toEqual({
       provider: 'openrouter',
@@ -4281,9 +4270,7 @@ describe('ChatThreadDO Pi turn handling', () => {
       created_at: 1,
       forkEntryId: 'assistant_1',
     }];
-    const fake = Object.create(ChatThreadDO.prototype) as any;
-
-    ChatThreadDO.prototype['attachPiToolResultToParsedMessages'].call(fake, messages, {
+    attachPiToolResultToParsedMessages(messages, {
       role: 'toolResult',
       toolCallId: 'tool_js_exec_1',
       toolName: 'js_exec',
@@ -4340,7 +4327,7 @@ describe('ChatThreadDO Pi turn handling', () => {
     const kvPutMock = vi.fn(async () => undefined);
     const recordThreadChannelUsed = vi.fn(async () => null);
 
-    const fake = Object.create(ChatThreadDO.prototype) as any;
+    const fake = Object.create(ChannelTools.prototype) as any;
     fake.env = {
       EMAIL: { send: sendEmailMock },
       WORKSPACE_EMAIL_DOMAIN: 'camelai.dev',
@@ -4357,7 +4344,7 @@ describe('ChatThreadDO Pi turn handling', () => {
         })),
       },
     };
-    const result = await ChatThreadDO.prototype['sendChannelEmailTool'].call(
+    const result = await ChannelTools.prototype['sendChannelEmailTool'].call(
       fake,
       {
         orgId: 'org1',
@@ -4417,7 +4404,7 @@ describe('ChatThreadDO Pi turn handling', () => {
       channel_message_id: 'first-user@example.com',
     };
 
-    const fake = Object.create(ChatThreadDO.prototype) as any;
+    const fake = Object.create(ChannelTools.prototype) as any;
     fake.env = {
       EMAIL: { send: sendEmailMock },
       WORKSPACE_EMAIL_DOMAIN: 'camelai.dev',
@@ -4435,7 +4422,7 @@ describe('ChatThreadDO Pi turn handling', () => {
       },
     };
 
-    await ChatThreadDO.prototype['sendChannelEmailTool'].call(
+    await ChannelTools.prototype['sendChannelEmailTool'].call(
       fake,
       {
         orgId: 'org1',
@@ -4498,7 +4485,7 @@ describe('ChatThreadDO Pi turn handling', () => {
       channel_message_id: null,
     };
 
-    const fake = Object.create(ChatThreadDO.prototype) as any;
+    const fake = Object.create(ChannelTools.prototype) as any;
     fake.env = {
       EMAIL: { send: sendEmailMock },
       WORKSPACE_EMAIL_DOMAIN: 'camelai.dev',
@@ -4516,7 +4503,7 @@ describe('ChatThreadDO Pi turn handling', () => {
       },
     };
 
-    await ChatThreadDO.prototype['sendChannelEmailTool'].call(
+    await ChannelTools.prototype['sendChannelEmailTool'].call(
       fake,
       {
         orgId: 'org1',
@@ -4571,7 +4558,7 @@ describe('ChatThreadDO Pi turn handling', () => {
       channel_message_id: null,
     };
 
-    const fake = Object.create(ChatThreadDO.prototype) as any;
+    const fake = Object.create(ChannelTools.prototype) as any;
     fake.env = {
       EMAIL: { send: sendEmailMock },
       WORKSPACE_EMAIL_DOMAIN: 'camelai.dev',
@@ -4590,7 +4577,7 @@ describe('ChatThreadDO Pi turn handling', () => {
     };
 
     try {
-      const result = await ChatThreadDO.prototype['sendChannelEmailTool'].call(
+      const result = await ChannelTools.prototype['sendChannelEmailTool'].call(
         fake,
         {
           orgId: 'org1',
@@ -4640,7 +4627,7 @@ describe('ChatThreadDO Pi turn handling', () => {
       channel_message_id: null,
     };
 
-    const fake = Object.create(ChatThreadDO.prototype) as any;
+    const fake = Object.create(ChannelTools.prototype) as any;
     fake.env = {
       EMAIL: { send: sendEmailMock },
       WORKSPACE_EMAIL_DOMAIN: 'camelai.dev',
@@ -4664,7 +4651,7 @@ describe('ChatThreadDO Pi turn handling', () => {
     };
 
     try {
-      const result = await ChatThreadDO.prototype['sendChannelEmailTool'].call(
+      const result = await ChannelTools.prototype['sendChannelEmailTool'].call(
         fake,
         {
           orgId: 'org1',
@@ -4713,7 +4700,7 @@ describe('ChatThreadDO Pi turn handling', () => {
       channel_message_id: '1700000000.000100',
     };
 
-    const fake = Object.create(ChatThreadDO.prototype) as any;
+    const fake = Object.create(ChannelTools.prototype) as any;
     fake.env = {
       EMAIL: { send: sendEmailMock },
       WORKSPACE_EMAIL_DOMAIN: 'camelai.dev',
@@ -4731,7 +4718,7 @@ describe('ChatThreadDO Pi turn handling', () => {
       },
     };
 
-    await ChatThreadDO.prototype['sendChannelEmailTool'].call(
+    await ChannelTools.prototype['sendChannelEmailTool'].call(
       fake,
       {
         orgId: 'org1',
@@ -4770,7 +4757,7 @@ describe('ChatThreadDO Pi turn handling', () => {
       channel_message_id: null,
     };
 
-    const fake = Object.create(ChatThreadDO.prototype) as any;
+    const fake = Object.create(ChannelTools.prototype) as any;
     fake.env = {
       EMAIL: { send: sendEmailMock },
       WORKSPACE_EMAIL_DOMAIN: 'camelai.dev',
@@ -4788,7 +4775,7 @@ describe('ChatThreadDO Pi turn handling', () => {
       },
     };
 
-    await ChatThreadDO.prototype['sendChannelEmailTool'].call(
+    await ChannelTools.prototype['sendChannelEmailTool'].call(
       fake,
       {
         orgId: 'org1',
@@ -4815,7 +4802,7 @@ describe('ChatThreadDO Pi turn handling', () => {
 
   it('rejects channel email sends for Pay as you go orgs', async () => {
     const sendEmailMock = vi.fn(async () => ({ messageId: 'email_1' }));
-    const fake = Object.create(ChatThreadDO.prototype) as any;
+    const fake = Object.create(ChannelTools.prototype) as any;
     fake.env = {
       EMAIL: { send: sendEmailMock },
       ORG: {
@@ -4830,7 +4817,7 @@ describe('ChatThreadDO Pi turn handling', () => {
     };
 
     await expect(
-      ChatThreadDO.prototype['sendChannelEmailTool'].call(
+      ChannelTools.prototype['sendChannelEmailTool'].call(
         fake,
         {
           orgId: 'org1',
@@ -7329,7 +7316,7 @@ describe('ChatThreadDO Pi turn handling', () => {
       channel_conversation_id: 'message:email-0',
       channel_message_id: 'email-0',
     };
-    const fake = Object.create(ChatThreadDO.prototype) as any;
+    const fake = Object.create(ChannelTools.prototype) as any;
     fake.env = {
       EMAIL: { send },
       APP_KV: { get: vi.fn(async () => null), put: kvPutMock },
@@ -7348,7 +7335,7 @@ describe('ChatThreadDO Pi turn handling', () => {
       },
     };
 
-    const result = await ChatThreadDO.prototype['sendChannelEmailTool'].call(
+    const result = await ChannelTools.prototype['sendChannelEmailTool'].call(
       fake,
       { orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1' },
       {
@@ -7394,11 +7381,11 @@ describe('ChatThreadDO Pi turn handling', () => {
           }
         : null
     );
-    const fake = Object.create(ChatThreadDO.prototype) as any;
+    const fake = Object.create(ChannelTools.prototype) as any;
     fake.env = { R2_BUCKET: { get } };
 
     await expect(
-      ChatThreadDO.prototype['resolveChannelOutboundAttachments'].call(
+      ChannelTools.prototype['resolveChannelOutboundAttachments'].call(
         fake,
         { orgId: 'org1', workspaceId: 'workspace1' },
         { attachments: [{ path: 'outputs/large.bin' }] },
@@ -7449,7 +7436,7 @@ describe('ChatThreadDO Pi turn handling', () => {
     });
     vi.stubGlobal('fetch', fetchMock);
 
-    const fake = Object.create(ChatThreadDO.prototype) as any;
+    const fake = Object.create(ChannelTools.prototype) as any;
     fake.getOriginatingChannelThread = vi.fn(async () => ({
       source: 'channel',
       channel_kind: 'slack',
@@ -7484,7 +7471,7 @@ describe('ChatThreadDO Pi turn handling', () => {
       },
     };
 
-    const result = await ChatThreadDO.prototype['sendChannelSlackMessageTool'].call(
+    const result = await ChannelTools.prototype['sendChannelSlackMessageTool'].call(
       fake,
       { orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1' },
       {
@@ -7529,7 +7516,7 @@ describe('ChatThreadDO Pi turn handling', () => {
     });
     vi.stubGlobal('fetch', fetchMock);
 
-    const fake = Object.create(ChatThreadDO.prototype) as any;
+    const fake = Object.create(ChannelTools.prototype) as any;
     fake.getOriginatingChannelThread = vi.fn(async () => ({
       source: 'channel',
       channel_kind: 'telegram',
@@ -7548,7 +7535,7 @@ describe('ChatThreadDO Pi turn handling', () => {
       R2_BUCKET: { get },
     };
 
-    const result = await ChatThreadDO.prototype['sendChannelTelegramMessageTool'].call(
+    const result = await ChannelTools.prototype['sendChannelTelegramMessageTool'].call(
       fake,
       { orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1' },
       {
@@ -7590,7 +7577,7 @@ describe('ChatThreadDO Pi turn handling', () => {
     });
     vi.stubGlobal('fetch', fetchMock);
 
-    const fake = Object.create(ChatThreadDO.prototype) as any;
+    const fake = Object.create(ChannelTools.prototype) as any;
     fake.getOriginatingChannelThread = vi.fn(async () => null);
     fake.env = {
       INTEGRATION_SECRET_KEY: 'secret',
@@ -7613,7 +7600,7 @@ describe('ChatThreadDO Pi turn handling', () => {
       },
     };
 
-    const result = await ChatThreadDO.prototype['sendChannelSlackMessageTool'].call(
+    const result = await ChannelTools.prototype['sendChannelSlackMessageTool'].call(
       fake,
       { orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1' },
       {
@@ -7639,7 +7626,7 @@ describe('ChatThreadDO Pi turn handling', () => {
     const fetchMock = vi.fn();
     vi.stubGlobal('fetch', fetchMock);
 
-    const fake = Object.create(ChatThreadDO.prototype) as any;
+    const fake = Object.create(ChannelTools.prototype) as any;
     fake.getOriginatingChannelThread = vi.fn(async () => null);
     fake.env = {
       TELEGRAM_BOT_TOKEN: 'bot-token',
@@ -7654,7 +7641,7 @@ describe('ChatThreadDO Pi turn handling', () => {
     };
 
     await expect(
-      ChatThreadDO.prototype['sendChannelTelegramMessageTool'].call(
+      ChannelTools.prototype['sendChannelTelegramMessageTool'].call(
         fake,
         { orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1' },
         {
@@ -7678,7 +7665,7 @@ describe('ChatThreadDO Pi turn handling', () => {
       );
       vi.stubGlobal('fetch', fetchMock);
 
-      const fake = Object.create(ChatThreadDO.prototype) as any;
+      const fake = Object.create(ChannelTools.prototype) as any;
       fake.getOriginatingChannelThread = vi.fn(async () => null);
       fake.env = {
         TELEGRAM_BOT_TOKEN: 'bot-token',
@@ -7702,7 +7689,7 @@ describe('ChatThreadDO Pi turn handling', () => {
         },
       };
 
-      const promise = ChatThreadDO.prototype['sendChannelTelegramMessageTool'].call(
+      const promise = ChannelTools.prototype['sendChannelTelegramMessageTool'].call(
         fake,
         { orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1' },
         {
@@ -7742,7 +7729,7 @@ describe('ChatThreadDO Pi turn handling', () => {
     });
     vi.stubGlobal('fetch', fetchMock);
 
-    const fake = Object.create(ChatThreadDO.prototype) as any;
+    const fake = Object.create(ChannelTools.prototype) as any;
     fake.getOriginatingChannelThread = vi.fn(async () => null);
     fake.env = {
       TELEGRAM_BOT_TOKEN: 'bot-token',
@@ -7791,7 +7778,7 @@ describe('ChatThreadDO Pi turn handling', () => {
       },
     };
 
-    const result = await ChatThreadDO.prototype['sendChannelTelegramMessageTool'].call(
+    const result = await ChannelTools.prototype['sendChannelTelegramMessageTool'].call(
       fake,
       { orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1' },
       { text: 'Hello' },
@@ -7826,7 +7813,7 @@ describe('ChatThreadDO Pi turn handling', () => {
     });
     vi.stubGlobal('fetch', fetchMock);
 
-    const fake = Object.create(ChatThreadDO.prototype) as any;
+    const fake = Object.create(ChannelTools.prototype) as any;
     fake.getOriginatingChannelThread = vi.fn(async () => null);
     fake.env = {
       TELEGRAM_BOT_TOKEN: 'bot-token',
@@ -7873,7 +7860,7 @@ describe('ChatThreadDO Pi turn handling', () => {
       },
     };
 
-    const result = await ChatThreadDO.prototype['sendChannelTelegramMessageTool'].call(
+    const result = await ChannelTools.prototype['sendChannelTelegramMessageTool'].call(
       fake,
       { orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1' },
       {
@@ -7957,7 +7944,7 @@ describe('ChatThreadDO Pi turn handling', () => {
     const fetchMock = vi.fn();
     vi.stubGlobal('fetch', fetchMock);
 
-    const fake = Object.create(ChatThreadDO.prototype) as any;
+    const fake = Object.create(ChannelTools.prototype) as any;
     fake.getOriginatingChannelThread = vi.fn(async () => null);
       fake.env = {
         TELEGRAM_BOT_TOKEN: 'bot-token',
@@ -7980,7 +7967,7 @@ describe('ChatThreadDO Pi turn handling', () => {
     };
 
     await expect(
-      ChatThreadDO.prototype['sendChannelTelegramMessageTool'].call(
+      ChannelTools.prototype['sendChannelTelegramMessageTool'].call(
         fake,
         { orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1' },
         {
@@ -8015,7 +8002,7 @@ describe('ChatThreadDO Pi turn handling', () => {
     });
     vi.stubGlobal('fetch', fetchMock);
 
-    const fake = Object.create(ChatThreadDO.prototype) as any;
+    const fake = Object.create(ChannelTools.prototype) as any;
     fake.getOriginatingChannelThread = vi.fn(async () => ({
       source: 'channel',
       channel_kind: 'telegram',
@@ -8030,7 +8017,7 @@ describe('ChatThreadDO Pi turn handling', () => {
       R2_BUCKET: { get },
     };
 
-    const result = await ChatThreadDO.prototype['sendChannelTelegramMessageTool'].call(
+    const result = await ChannelTools.prototype['sendChannelTelegramMessageTool'].call(
       fake,
       { orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1' },
       {
@@ -8072,7 +8059,7 @@ describe('ChatThreadDO Pi turn handling', () => {
     vi.stubGlobal('fetch', fetchMock);
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
-    const fake = Object.create(ChatThreadDO.prototype) as any;
+    const fake = Object.create(ChannelTools.prototype) as any;
     fake.getOriginatingChannelThread = vi.fn(async () => ({
       source: 'channel',
       channel_kind: 'telegram',
@@ -8088,7 +8075,7 @@ describe('ChatThreadDO Pi turn handling', () => {
     };
 
     try {
-      const result = await ChatThreadDO.prototype['sendChannelTelegramMessageTool'].call(
+      const result = await ChannelTools.prototype['sendChannelTelegramMessageTool'].call(
         fake,
         { orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1' },
         {
@@ -8126,7 +8113,7 @@ describe('ChatThreadDO Pi turn handling', () => {
     });
     vi.stubGlobal('fetch', fetchMock);
 
-    const fake = Object.create(ChatThreadDO.prototype) as any;
+    const fake = Object.create(ChannelTools.prototype) as any;
     fake.getOriginatingChannelThread = vi.fn(async () => ({
       source: 'channel',
       channel_kind: 'telegram',
@@ -8141,7 +8128,7 @@ describe('ChatThreadDO Pi turn handling', () => {
       R2_BUCKET: { get },
     };
 
-    const result = await ChatThreadDO.prototype['sendChannelTelegramMessageTool'].call(
+    const result = await ChannelTools.prototype['sendChannelTelegramMessageTool'].call(
       fake,
       { orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1' },
       {

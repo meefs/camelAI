@@ -51,7 +51,7 @@ describe('model pricing coverage', () => {
 
   it('registers new Pi models with the expected model providers', () => {
     const source = fs.readFileSync(
-      path.join(root, 'workers/main/src/chat-thread-do.ts'),
+      path.join(root, 'workers/main/src/pi-model-resolution.ts'),
       'utf8',
     );
 
