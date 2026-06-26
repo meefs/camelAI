@@ -275,6 +275,127 @@ describe('chat loader workspace mismatch handling', () => {
     });
   });
 
+  it('renders the first message from the thread record without reading the transcript for a pending first turn', async () => {
+    requireAuthContextMock.mockResolvedValue({
+      currentWorkspace: { id: 'ws_active' },
+      currentOrg: { id: 'org_active', slug: 'acme' },
+      orgs: [{ org_id: 'org_active', role: 'admin' }],
+    });
+    getThreadMock.mockResolvedValue({
+      id: 'thread_123',
+      workspace_id: 'ws_active',
+      title: 'New Chat',
+      model: 'sonnet',
+      user_message_count: 0,
+      first_user_message: 'Build an analytics dashboard',
+    });
+
+    const result = await loader({
+      request: new Request('https://camelai.com/chat/thread_123?newThread=1'),
+      context: {},
+      params: { id: 'thread_123' },
+    } as never);
+
+    // The first message is rendered straight from the thread record...
+    expect(await result.chatData).toEqual({
+      messages: [
+        expect.objectContaining({
+          id: 'pending-first:thread_123',
+          role: 'user',
+          content: 'Build an analytics dashboard',
+        }),
+      ],
+      messagesError: null,
+      todos: [],
+      previewTabs: [],
+      activeTabId: null,
+    });
+    // ...so the cold ChatThreadDO is never read on this load.
+    expect(readThreadMessagesMock).not.toHaveBeenCalled();
+  });
+
+  it('surfaces pendingFirstTurn from the warm thread record alone, so the agent working indicator shows without any cold ChatThreadDO read', async () => {
+    // The agent "working" indicator is driven by the loader's pendingFirstTurn
+    // flag (Chat.tsx feeds it into deriveIsAwaitingAssistant -> the global
+    // assistant indicator). For a freshly-started new chat that flag must come
+    // from the warm thread record only — every ChatThreadDO-backed read
+    // (transcript, preview tabs, todos) boots the cold DO (~2s), and none of
+    // them may run, or the indicator would be gated on that cold boot. This is
+    // a deterministic stand-in for "the DO is still cold": we assert those
+    // reads are simply never invoked on this path.
+    requireAuthContextMock.mockResolvedValue({
+      currentWorkspace: { id: 'ws_active' },
+      currentOrg: { id: 'org_active', slug: 'acme' },
+      orgs: [{ org_id: 'org_active', role: 'admin' }],
+    });
+    getThreadMock.mockResolvedValue({
+      id: 'thread_123',
+      workspace_id: 'ws_active',
+      title: 'New Chat',
+      model: 'sonnet',
+      user_message_count: 0,
+      first_user_message: 'Build an analytics dashboard',
+    });
+
+    const result = await loader({
+      request: new Request('https://camelai.com/chat/thread_123?newThread=1'),
+      context: {},
+      params: { id: 'thread_123' },
+    } as never);
+
+    // The signal that lights up the working indicator is available immediately...
+    expect(result.pendingFirstTurn).toBe(true);
+    // ...with zero reads against the cold ChatThreadDO.
+    expect(readThreadMessagesMock).not.toHaveBeenCalled();
+    expect(getThreadPreviewStateMock).not.toHaveBeenCalled();
+    expect(getTodoStateMock).not.toHaveBeenCalled();
+
+    // And the optimistic first user message is present, giving the indicator a
+    // trailing non-assistant message to await (deriveIsAwaitingAssistant).
+    const chatData = await result.chatData;
+    expect(chatData.messages).toEqual([
+      expect.objectContaining({
+        id: 'pending-first:thread_123',
+        role: 'user',
+        content: 'Build an analytics dashboard',
+      }),
+    ]);
+  });
+
+  it('does NOT take the pending-first-turn fast path without ?newThread=1 (e.g. an API-created thread)', async () => {
+    // A thread created with a stored first_user_message + count 0 but no started
+    // run (the workspaces chat-threads API does exactly this) must load normally:
+    // read the transcript, and not synthesize a pending-first message.
+    requireAuthContextMock.mockResolvedValue({
+      currentWorkspace: { id: 'ws_active' },
+      currentOrg: { id: 'org_active', slug: 'acme' },
+      orgs: [{ org_id: 'org_active', role: 'admin' }],
+    });
+    getThreadMock.mockResolvedValue({
+      id: 'thread_123',
+      workspace_id: 'ws_active',
+      title: 'New Chat',
+      model: 'sonnet',
+      user_message_count: 0,
+      first_user_message: 'Build an analytics dashboard',
+    });
+    readThreadMessagesMock.mockResolvedValue([]);
+
+    const result = await loader({
+      // No ?newThread=1 — not a freshly-started new chat.
+      request: new Request('https://camelai.com/chat/thread_123'),
+      context: {},
+      params: { id: 'thread_123' },
+    } as never);
+
+    const chatData = await result.chatData;
+    expect(chatData.messages).toEqual([]);
+    expect(
+      chatData.messages.some((m) => m.id === 'pending-first:thread_123'),
+    ).toBe(false);
+    expect(readThreadMessagesMock).toHaveBeenCalled();
+  });
+
   it('does not block existing-thread navigation on chat data resolution', async () => {
     let resolveMessages: ((messages: []) => void) | undefined;
     const pendingMessages = new Promise<[]>((resolve) => {
@@ -451,191 +572,5 @@ describe('chat loader workspace mismatch handling', () => {
     expect(result.allowedThreadModels).toContain('sonnet');
     expect(result.allowedThreadModels.length).toBeGreaterThan(0);
     consoleErrorSpy.mockRestore();
-  });
-
-  it('keeps the saved thread model for new-thread navigations', async () => {
-    const orgGetThreadMock = vi.fn(async () => {
-      throw new Error('unexpected separate thread read');
-    });
-    const getInfoMock = vi.fn(async () => {
-      throw new Error('unexpected separate org info read');
-    });
-    const getThreadWithOrgSlugMock = vi.fn(async () => ({
-      thread: {
-        id: 'thread_123',
-        workspace_id: 'ws_active',
-        title: 'Workspace Thread',
-        model: 'opus-4.8',
-        user_message_count: 0,
-      },
-      orgSlug: 'acme',
-    }));
-    getAuthEnvMock.mockReturnValue({
-      ORG: {
-        idFromName: (id: string) => id,
-        get: () => ({
-          getThread: orgGetThreadMock,
-          getInfo: getInfoMock,
-          getThreadWithOrgSlug: getThreadWithOrgSlugMock,
-        }),
-      },
-    });
-
-    const result = await loader({
-      request: new Request(
-        'https://camelai.com/chat/thread_123?newThread=1&group=group_123',
-      ),
-      context: {},
-      params: { id: 'thread_123' },
-    } as never);
-
-    expect(result.readOnly).toBe(false);
-    expect(result.isNewThread).toBe(true);
-    expect(result.threadModel).toBe('opus-4.8');
-    expect(result.allowedThreadModels).toEqual(['opus-4.8']);
-    expect(result.isOrgAdmin).toBe(false);
-    expect(result.orgSlug).toBe('acme');
-    expect(result.recentModelScope).toEqual({
-      orgId: 'org_active',
-      workspaceId: 'ws_active',
-    });
-    await expect(result.connections).resolves.toEqual([]);
-    await expect(result.projects).resolves.toEqual([]);
-    expect(loadWorkspaceMentionSourcesMock).toHaveBeenCalledWith(
-      expect.any(Object),
-      'ws_active',
-    );
-    expect(requireSessionWorkspaceAccessMock).toHaveBeenCalledTimes(1);
-    expect(requireAuthContextMock).not.toHaveBeenCalled();
-    expect(getThreadMock).not.toHaveBeenCalled();
-    expect(orgGetThreadMock).not.toHaveBeenCalled();
-    expect(getThreadWithOrgSlugMock).toHaveBeenCalledWith('thread_123');
-    expect(getInfoMock).not.toHaveBeenCalled();
-    expect(ensureGroupForThreadMock).not.toHaveBeenCalled();
-    expect(result.activeGroupId).toBe('group_123');
-    expect(result.activeChatGroup).toMatchObject({
-      id: 'group_123',
-      name: 'Workspace Thread',
-      open_thread_ids: ['thread_123'],
-      open_threads: [
-        expect.objectContaining({
-          id: 'thread_123',
-          title: 'Workspace Thread',
-          model: 'opus-4.8',
-          status: 'running',
-        }),
-      ],
-    });
-  });
-
-  it('loads in-flight Pi messages for new-thread navigations', async () => {
-    const inFlightUserMessage = {
-      id: 'pi_user_1_0',
-      thread_id: 'thread_123',
-      role: 'user' as const,
-      content: 'Build the thing',
-      created_at: 1,
-    };
-    readThreadMessagesMock.mockResolvedValueOnce([inFlightUserMessage]);
-    getAuthEnvMock.mockReturnValue({
-      ORG: {
-        idFromName: (id: string) => id,
-        get: () => ({
-          getThread: async () => ({
-            id: 'thread_123',
-            workspace_id: 'ws_active',
-            title: 'Workspace Thread',
-            model: 'opus-4.8',
-            user_message_count: 0,
-          }),
-          getInfo: async () => ({ id: 'org_active', slug: 'acme' }),
-          getThreadWithOrgSlug: async () => ({
-            thread: {
-              id: 'thread_123',
-              workspace_id: 'ws_active',
-              title: 'Workspace Thread',
-              model: 'opus-4.8',
-              user_message_count: 0,
-            },
-            orgSlug: 'acme',
-          }),
-        }),
-      },
-    });
-
-    const result = await loader({
-      request: new Request('https://camelai.com/chat/thread_123?newThread=1'),
-      context: {},
-      params: { id: 'thread_123' },
-    } as never);
-
-    expect(result.isNewThread).toBe(true);
-    expect(await result.chatData).toEqual(
-      expect.objectContaining({ messages: [inFlightUserMessage] }),
-    );
-    expect(readThreadMessagesMock).toHaveBeenCalledWith(
-      {},
-      expect.objectContaining({
-        orgId: 'org_active',
-        workspaceId: 'ws_active',
-        threadId: 'thread_123',
-      }),
-    );
-  });
-
-  it('returns minimal model state for OpenAI-only new-thread navigations', async () => {
-    getAuthEnvMock.mockReturnValue({
-      ORG: {
-        idFromName: (id: string) => id,
-        get: () => ({
-          getThread: async () => ({
-            id: 'thread_123',
-            workspace_id: 'ws_active',
-            title: 'Workspace Thread',
-            model: 'gpt-5.4-mini',
-            user_message_count: 0,
-          }),
-          getInfo: async () => ({ id: 'org_active', slug: 'acme' }),
-          getThreadWithOrgSlug: async () => ({
-            thread: {
-              id: 'thread_123',
-              workspace_id: 'ws_active',
-              title: 'Workspace Thread',
-              model: 'gpt-5.4-mini',
-              user_message_count: 0,
-            },
-            orgSlug: 'acme',
-          }),
-        }),
-      },
-    });
-
-    const result = await loader({
-      request: new Request('https://camelai.com/chat/thread_123?newThread=1'),
-      context: {},
-      params: { id: 'thread_123' },
-    } as never);
-
-    expect(result.isNewThread).toBe(true);
-    expect(result.threadModel).toBe('gpt-5.4-mini');
-    expect(result.llmProvider).toBe(null);
-    expect(result.allowedThreadModels).toEqual(['gpt-5.4-mini']);
-    expect(result.allowedThreadModels).not.toContain('sonnet');
-    expect(result.allowedThreadModels).not.toContain('opus-4.8');
-    expect(result.effectivePickerDefaultModel).toBe(null);
-    expect(result.hasEffectivePickerDefault).toBe(false);
-    expect(result.isOrgAdmin).toBe(false);
-    expect(getWorkspaceModelPickerStateMock).not.toHaveBeenCalled();
-    expect(result.recentModelScope).toEqual({
-      orgId: 'org_active',
-      workspaceId: 'ws_active',
-    });
-    expect(await result.chatData).toEqual({
-      messages: [],
-      messagesError: null,
-      todos: [],
-      previewTabs: [],
-      activeTabId: null,
-    });
   });
 });

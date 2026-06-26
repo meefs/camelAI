@@ -174,7 +174,7 @@ describe('new chat create action', () => {
     ).toBe(false);
   });
 
-  it('redirects immediately and starts the first message in the background', async () => {
+  it('starts the first message in the background and redirects immediately to the clean thread URL', async () => {
     const formData = makeCreateThreadFormData();
     formData.set('intent', 'createThreadAndStart');
     formData.set('firstMessage', 'Build an analytics dashboard');
@@ -189,6 +189,8 @@ describe('new chat create action', () => {
     } as never);
 
     expect(response.status).toBe(302);
+    // ?newThread=1 marks a freshly-started new chat so the thread loader renders
+    // the first message from the record (and skips the cold-DO transcript read).
     expect(response.headers.get('Location')).toBe(
       '/chat/thread_123?newThread=1&group=group_123',
     );
@@ -212,6 +214,8 @@ describe('new chat create action', () => {
       message: 'Build an analytics dashboard',
       clientMessageId: 'initial:thread_123',
     });
+    // The turn start is fired in the background (so the cold DO boot doesn't block
+    // the redirect); title generation also runs via waitUntil → two total.
     expect(waitUntilMock).toHaveBeenCalledTimes(2);
     expect(createGroupForNewThreadLightweightMock).toHaveBeenCalledWith(
       {},
@@ -289,6 +293,8 @@ describe('new chat create action', () => {
     } as never);
 
     expect(response.status).toBe(302);
+    // The turn start runs in the background; drive its waitUntil promise to let the
+    // transient retry resolve.
     const startPromise = waitUntilMock.mock.calls[1]?.[0] as Promise<unknown>;
     await expect(startPromise).resolves.toBeUndefined();
     expect(startInitialUserMessageMock).toHaveBeenCalledTimes(2);

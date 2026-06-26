@@ -109,6 +109,10 @@ import {
   mergeTeammateMessages,
 } from "@/lib/streaming";
 import { parseMessageContent } from "@/lib/chat-message-content";
+import {
+  deriveIsAwaitingAssistant,
+  isAssistantLikeMessage,
+} from "@/lib/chat-working-indicator";
 import { mergeOverlay } from "@/lib/runtime-message-state";
 import {
   type AppUrlInput,
@@ -216,7 +220,6 @@ function sameJson(left: unknown, right: unknown): boolean {
   return left === right || JSON.stringify(left) === JSON.stringify(right);
 }
 
-const NEW_THREAD_BOOTSTRAP_STALL_TIMEOUT_MS = 10_000;
 // Only animate the "just completed" turn highlight for completions this recent;
 // older completions replayed on load/reconnect still get their duration badge.
 const FRESHLY_COMPLETED_TURN_WINDOW_MS = 10_000;
@@ -267,7 +270,12 @@ interface ChatProps {
   experimentalSettings?: OrganizationExperimentalSettings | null;
   initialPreviewTabs?: PreviewTarget[];
   initialActiveTabId?: string | null;
-  isNewThread?: boolean;
+  /**
+   * A freshly-started new chat whose first turn is running in the background
+   * (set by the new-chat action via ?newThread=1). Shows the working indicator
+   * from first paint until the assistant reply appears.
+   */
+  pendingFirstTurn?: boolean;
   /** Hostname from server for consistent URL generation (avoids hydration mismatch) */
   hostname?: AppUrlInput;
   /** Org slug for namespaced app URLs */
@@ -278,7 +286,6 @@ interface ChatProps {
   readOnly?: boolean;
   chatGroupId?: string | null;
   initialWelcomeInput?: string | null;
-  deferredInitialMessage?: string | null;
   connections?: Integration[] | Promise<Integration[]>;
   projects?: MentionableProject[] | Promise<MentionableProject[]>;
   onSnapshotChange?: (snapshot: {
@@ -470,16 +477,6 @@ function hasUserOrAssistantMessage(messages: Message[]): boolean {
   );
 }
 
-function hasNonInitialUserOrAssistantMessage(messages: Message[]): boolean {
-  return messages.some(
-    (message) =>
-      (message.role === "assistant" ||
-        (message.role === "user" &&
-          message.clientMessageId !== `initial:${message.thread_id}`)) &&
-      !message.isMeta,
-  );
-}
-
 function isComposerVisiblyEmpty(
   text: string,
   attachments: Attachment[],
@@ -591,10 +588,6 @@ function isUserTurnAnchorMessage(msg: Message): boolean {
   return true;
 }
 
-function isAssistantLikeMessage(msg: Message | null | undefined): boolean {
-  return Boolean(msg && (msg.role === "assistant" || msg.isCompactSummary));
-}
-
 const STREAM_MESSAGE_RENDER_THROTTLE_MS = 50;
 
 const CHAT_SCROLL_CONTAINER_STYLE = {
@@ -619,14 +612,13 @@ export default function Chat({
   experimentalSettings,
   initialPreviewTabs,
   initialActiveTabId,
-  isNewThread = false,
+  pendingFirstTurn = false,
   hostname,
   orgSlug,
   isLoadingMessages = false,
   readOnly = false,
   chatGroupId = null,
   initialWelcomeInput,
-  deferredInitialMessage,
   connections,
   projects,
   onSnapshotChange,
@@ -661,48 +653,21 @@ export default function Chat({
   const isSubmittingNewThread =
     navigation.state !== "idle" &&
     navigation.formData?.get("intent") === "createThreadAndStart";
-  useEffect(() => {
-    if (readOnly || !isNewThread || !resolvedWorkspaceId || !threadId) {
-      return;
-    }
-    removeDraft(resolvedWorkspaceId, null);
-  }, [isNewThread, readOnly, resolvedWorkspaceId, threadId]);
-
-  // Anchor to last message for existing threads with messages (not new threads)
+  // Anchor to the last message when opening a thread that already has messages
+  // (the welcome composer clears its own draft on submit; see startNewChat).
   const shouldAnchorToLastMessage =
-    !isNewThread && initialMessages && initialMessages.length > 0;
+    initialMessages && initialMessages.length > 0;
 
-  const optimisticInitialMessage = useMemo<Message | null>(() => {
-    if (!isNewThread || !threadId) {
-      return null;
-    }
-    const content = deferredInitialMessage;
-    if (!content?.trim()) {
-      return null;
-    }
-    if (hasUserOrAssistantMessage(initialMessages ?? [])) {
-      return null;
-    }
-    return {
-      id: `initial:${threadId}`,
-      clientMessageId: `initial:${threadId}`,
-      thread_id: threadId,
-      role: "user",
-      content,
-      created_at: Date.now(),
-    };
-  }, [deferredInitialMessage, initialMessages, isNewThread, threadId]);
-
-  // Parse initial messages once
+  // Parse initial messages once. The first user message of a new thread is part
+  // of the persisted transcript (the new-chat action awaits the DO accepting and
+  // persisting it before navigating here), so there is no optimistic placeholder.
   const parsedInitialMessages = useMemo(
-    () => {
-      const parsed = (initialMessages ?? []).map((msg) => ({
+    () =>
+      (initialMessages ?? []).map((msg) => ({
         ...msg,
         content: parseMessageContent(msg.content),
-      }));
-      return optimisticInitialMessage ? [optimisticInitialMessage, ...parsed] : parsed;
-    },
-    [initialMessages, optimisticInitialMessage],
+      })),
+    [initialMessages],
   );
   const initialPreviewSession = useMemo(
     () =>
@@ -747,7 +712,6 @@ export default function Chat({
     flush: flushLiveOverlay,
   } = useBufferedState<Message[]>([], STREAM_MESSAGE_RENDER_THROTTLE_MS);
   const [currentTodos, setCurrentTodos] = useState<TodoItem[]>(initialTodos);
-  const newThreadBootstrapRecoveredRef = useRef<string | null>(null);
 
   useEffect(() => {
     if (!threadId || readOnly) return;
@@ -947,13 +911,11 @@ export default function Chat({
   const pendingThreadContextRef = useRef({
     workspaceId: resolvedWorkspaceId,
     threadId,
-    isNewThread,
     readOnly,
   });
   pendingThreadContextRef.current = {
     workspaceId: resolvedWorkspaceId,
     threadId,
-    isNewThread,
     readOnly,
   };
 
@@ -991,9 +953,11 @@ export default function Chat({
     }
     prevInitialMessagesRef.current = initialMessages;
 
+    // Don't let an empty loader result (e.g. a revalidation that raced ahead of
+    // persistence) clobber a conversation we already have locally.
     if (
       parsedInitialMessages.length === 0 &&
-      hasNonInitialUserOrAssistantMessage(messagesRef.current)
+      hasUserOrAssistantMessage(messagesRef.current)
     ) {
       return;
     }
@@ -1043,12 +1007,9 @@ export default function Chat({
     () => getThreadRunningState(chatGroupsContext?.groups, threadId ?? null),
     [chatGroupsContext?.groups, threadId],
   );
-  const assistantTurnActive =
-    loading ||
-    isStreaming ||
-    activeAssistantMessageId !== null ||
-    activeThreadRunningState.isRunning;
-  const showGlobalAssistantIndicator = assistantTurnActive && !isCompacting;
+  // assistantTurnActive / showGlobalAssistantIndicator are defined below, after
+  // isAwaitingAssistant, so a freshly-started new chat (pendingFirstTurn) counts
+  // as an active turn during the cold-start gap too.
   const runningStartedAt = activeThreadRunningState.isRunning
     ? activeThreadRunningState.startedAt
     : null;
@@ -2007,30 +1968,6 @@ export default function Chat({
     [normalizeChatError],
   );
 
-  useEffect(() => {
-    if (
-      !threadId ||
-      readOnly ||
-      !isNewThread ||
-      !deferredInitialMessage?.trim() ||
-      ready
-    ) {
-      return;
-    }
-
-    const timeout = window.setTimeout(() => {
-      if (ready || newThreadBootstrapRecoveredRef.current === threadId) {
-        return;
-      }
-      newThreadBootstrapRecoveredRef.current = threadId;
-      revalidator.revalidate();
-    }, NEW_THREAD_BOOTSTRAP_STALL_TIMEOUT_MS);
-
-    return () => {
-      window.clearTimeout(timeout);
-    };
-  }, [deferredInitialMessage, isNewThread, readOnly, ready, revalidator, threadId]);
-
   const isPendingMessageAccepted = useCallback((clientMessageId: string) => {
     if (acceptedPendingMessageIdsRef.current.has(clientMessageId)) {
       return true;
@@ -2812,9 +2749,32 @@ export default function Chat({
   const visibleMessageCount = visibleMessages.length;
   const lastVisibleMessageId = lastMessage?.id ?? null;
   const isLastMessageAssistantLike = isAssistantLikeMessage(lastMessage);
-  const showAssistantTail = loading || isStreaming;
-  const isAwaitingAssistant =
-    showAssistantTail && Boolean(lastMessage) && !isLastMessageAssistantLike;
+  // See deriveIsAwaitingAssistant: shows the working indicator while a turn is
+  // pending (streaming / queued send / freshly-started new chat) and the
+  // transcript ends on a non-assistant message. pendingFirstTurn is a loader
+  // prop that stays true for this mount's lifetime, so we drop it once a
+  // terminal error lands — otherwise a failed background first turn (which
+  // clears loading/isStreaming but leaves the synthesized user message last)
+  // would keep the composer stuck in running/stop mode and treat the next
+  // submission as a steer instead of a fresh prompt.
+  const isAwaitingAssistant = deriveIsAwaitingAssistant({
+    loading,
+    isStreaming,
+    pendingFirstTurn,
+    lastMessage,
+    hasTerminalError: Boolean(error),
+  });
+  // A turn is active while streaming/queued/running OR while a freshly-started
+  // new chat is awaiting its first reply (isAwaitingAssistant covers the cold
+  // pendingFirstTurn gap and clears once the reply lands, so the composer shows
+  // the running/stop state and a second submit is treated as a steer).
+  const assistantTurnActive =
+    loading ||
+    isStreaming ||
+    isAwaitingAssistant ||
+    activeAssistantMessageId !== null ||
+    activeThreadRunningState.isRunning;
+  const showGlobalAssistantIndicator = assistantTurnActive && !isCompacting;
   const lastUserMessage = useMemo(() => {
     for (let i = visibleMessages.length - 1; i >= 0; i -= 1) {
       if (isUserTurnAnchorMessage(visibleMessages[i])) {
@@ -4193,7 +4153,7 @@ type SendOptions = {
                   onStop={stopGeneration}
                   placeholder="Type a message..."
                   isLoading={isLoadingMessages}
-                  isAssistantRunning={loading || isStreaming}
+                  isAssistantRunning={loading || isStreaming || isAwaitingAssistant}
                   autoFocus
                   attachments={attachments}
                   onFilesSelected={handleFilesSelected}

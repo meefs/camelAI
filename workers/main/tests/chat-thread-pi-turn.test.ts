@@ -684,6 +684,10 @@ describe('ChatThreadDO Pi turn handling', () => {
     fake.applyMentionsForTurn = vi.fn(async (content: string) => content);
     fake.updateThreadMetadataForUserMessage = vi.fn(async () => {});
     fake.warmWorkspaceContainerForTurn = vi.fn(async () => undefined);
+    const persisted: any[] = [];
+    fake.appendPiCoreMessagesIfMissing = vi.fn(async (messages: any[]) => {
+      persisted.push(...messages);
+    });
     fake.sendRunnerCommand = vi.fn((command: any) => {
       sentCommands.push(command);
       return true;
@@ -713,6 +717,104 @@ describe('ChatThreadDO Pi turn handling', () => {
       clientMessageId: 'initial:thread1',
     });
     expect(sentCommands[0].content).toBe('[email message from Miguel (miguel@example.com)]: hello');
+    // The initial send commits the user's message to the transcript up front so a
+    // reader that loads the thread the instant this resolves sees it (no optimistic
+    // placeholder). It shares its timestamp with the message Pi is prompted with so
+    // the turn-end commit dedups it by piCoreMessageKey instead of double-storing.
+    expect(persisted).toHaveLength(1);
+    expect(persisted[0]).toMatchObject({
+      role: 'user',
+      content: '[email message from Miguel (miguel@example.com)]: hello',
+    });
+    expect(persisted[0].timestamp).toBe(sentCommands[0].timestamp);
+    expect(typeof persisted[0].timestamp).toBe('number');
+  });
+
+  const makeNewTurnEnqueueFake = (order: string[]) => {
+    // A fresh new-chat turn: no live piSession, so startsNewTurn is true and the
+    // persistUserMessageImmediately path runs.
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    fake.chatContext = {
+      threadId: 'thread1',
+      workspaceId: 'workspace1',
+      orgId: 'org1',
+      userId: 'user1',
+      userName: 'Miguel',
+      userEmail: 'miguel@example.com',
+    };
+    fake.chatIsStreaming = false;
+    fake.ctx = {
+      storage: { kv: { put: vi.fn(), delete: vi.fn() } },
+      waitUntil: vi.fn(),
+    };
+    fake.env = {
+      APP_KV: { get: vi.fn().mockResolvedValue(null) },
+      WORKSPACE: {
+        idFromName: vi.fn((id: string) => id),
+        get: vi.fn(() => ({ recordThreadStreaming: vi.fn(async () => {}) })),
+      },
+    };
+    fake.recordChatThreadObservabilityEvent = vi.fn();
+    fake.setActiveTurnUserId = vi.fn();
+    fake.markTurnStarted = vi.fn();
+    fake.finishTurn = vi.fn();
+    fake.syncAgentState = vi.fn();
+    fake.broadcastRunnerClients = vi.fn();
+    fake.publishRunningUserMessageActivity = vi.fn();
+    fake.updateActiveAutomationRun = vi.fn();
+    fake.ensurePiSessionReady = vi.fn(async () => undefined);
+    fake.applyMentionsForTurn = vi.fn(async (content: string) => content);
+    fake.updateThreadMetadataForUserMessage = vi.fn(async () => {});
+    fake.warmWorkspaceContainerForTurn = vi.fn(async () => undefined);
+    fake.appendPiCoreMessagesIfMissing = vi.fn(async () => {
+      order.push('persist');
+    });
+    return fake;
+  };
+
+  it('persists the initial user message only AFTER the send is accepted', async () => {
+    // Ordering guard: the first-message commit must run after sendRunnerCommand
+    // succeeds (the fiber row exists), not before — otherwise a failed/interrupted
+    // send strands an orphaned user message with no turn behind it. It must still
+    // commit before the enqueue resolves, so a reader that awaits the ack and
+    // loads the thread sees the message.
+    const order: string[] = [];
+    const fake = makeNewTurnEnqueueFake(order);
+    fake.sendRunnerCommand = vi.fn(() => {
+      order.push('send');
+      return true;
+    });
+
+    const result = await ChatThreadDO.prototype['enqueueRunnerUserMessage'].call(
+      fake,
+      { type: 'message', content: 'hello', clientMessageId: 'initial:thread1' },
+      { persistUserMessageImmediately: true },
+    );
+
+    expect(result).toEqual({ status: 'accepted' });
+    expect(order).toEqual(['send', 'persist']);
+    expect(fake.appendPiCoreMessagesIfMissing).toHaveBeenCalledTimes(1);
+  });
+
+  it('does NOT persist the initial user message when the send is rejected (no orphaned first message)', async () => {
+    const order: string[] = [];
+    const fake = makeNewTurnEnqueueFake(order);
+    // The runner refuses the command (e.g. a transient DO reset). Under the old
+    // persist-before-send ordering this left an orphaned user message with no
+    // turn — the original "user message, no agent response" bug.
+    fake.sendRunnerCommand = vi.fn(() => false);
+
+    const result = await ChatThreadDO.prototype['enqueueRunnerUserMessage'].call(
+      fake,
+      { type: 'message', content: 'hello', clientMessageId: 'initial:thread1' },
+      { persistUserMessageImmediately: true },
+    );
+
+    expect(result.status).toBe('error');
+    expect(order).toEqual([]);
+    expect(fake.appendPiCoreMessagesIfMissing).not.toHaveBeenCalled();
+    expect(fake.finishTurn).toHaveBeenCalled();
+    expect(fake.setActiveTurnUserId).toHaveBeenLastCalledWith(null);
   });
 
   it('makes a new turn recoverable before the model refresh resolves (deploy-safe start)', async () => {

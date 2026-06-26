@@ -19,7 +19,6 @@ import { loadWorkspaceMentionSources } from "@/lib/mention-sources.server";
 import { getEnv } from "@/lib/cloudflare.server";
 import { getAppUrlContext } from "@/lib/app-url.server";
 import { getOrgBillingOverview } from "@/lib/billing.server";
-import { retryTransientDurableObjectRead } from "@/lib/do-rpc-retry.server";
 import {
   applyDevBillingCreditStatusOverride,
   buildBillingCreditStatus,
@@ -45,9 +44,6 @@ import {
 import type { ProxyAuthValidationEnv } from "../../workers/main/src/helpers/proxy-auth-core";
 import { getChatDebugFlags } from "@/lib/chat-debug-flags";
 import { shouldRevalidateActiveChatRoute } from "@/lib/chat-route-revalidation";
-import { parseChannelIndicatorKindsJson } from "@/lib/channel-kinds";
-import { truncateThreadPreviewText } from "@/lib/thread-preview";
-import { generateDefaultChatGroupAvatar } from "@/lib/avatar";
 import {
   saveChatGroupRename,
   type ChatGroupRenameInput,
@@ -68,7 +64,6 @@ import { useChatGroups } from "@/hooks/use-chat-groups";
 import { useChatThreadSnapshots } from "@/hooks/use-chat-thread-snapshots";
 import type { TodoItem } from "@/components/floating-todo";
 import type {
-  ChatGroupView,
   Integration,
   LlmProvider,
   LlmModel,
@@ -83,7 +78,6 @@ import {
   recordErrorEvent,
   recordObservabilityEvent,
 } from "../../workers/main/src/observability";
-import type { OrgThread } from "../../workers/main/src/auth";
 
 export function meta({ data }: Route.MetaArgs) {
   const title = data?.threadTitle || "Chat";
@@ -296,6 +290,20 @@ function isPromiseLike<T>(value: T | Promise<T>): value is Promise<T> {
   return typeof (value as Promise<T>).then === "function";
 }
 
+// The first user message of a not-yet-started thread, rendered from the thread
+// record so the page paints instantly without booting the ChatThreadDO. The real
+// turn (and its persisted, attributed copy) streams/loads in afterward; the
+// reconciliation effect in Chat swaps this out once the transcript arrives.
+function pendingFirstUserMessage(threadId: string, content: string): Message {
+  return {
+    id: `pending-first:${threadId}`,
+    thread_id: threadId,
+    role: "user",
+    content,
+    created_at: Date.now(),
+  };
+}
+
 function buildChatDataError(error: unknown): ChatData {
   console.error("Failed to load chat data:", error);
   return {
@@ -377,73 +385,6 @@ function getPreviewTabId(target: PreviewTarget): string {
   if (target.kind === "app") return `app:${target.scriptName}`;
   if (target.kind === "runtime_artifact") return `artifact:${target.artifact.id}`;
   return `file:${target.workspaceId}:${target.source}:${target.project ?? ""}:${target.path}`;
-}
-
-function getFallbackChatGroupAvatarIndex(source: string): number {
-  let hash = 0;
-  for (const char of source) {
-    hash = (hash * 31 + (char.codePointAt(0) ?? 0)) % 1000;
-  }
-  return hash;
-}
-
-function buildFallbackActiveChatGroup(params: {
-  groupId: string | null;
-  orgId: string;
-  workspaceId: string;
-  thread: Thread;
-}): ChatGroupView | null {
-  if (!params.groupId) return null;
-  const now = Date.now();
-  const threadUpdatedAt = params.thread.updated_at || now;
-  const firstUserMessagePreview = truncateThreadPreviewText(
-    params.thread.first_user_message,
-    500,
-  );
-  const threadSummary = {
-    id: params.thread.id,
-    title: params.thread.title || "New Chat",
-    model: params.thread.model,
-    updated_at: threadUpdatedAt,
-    channel_kind: params.thread.channel_kind ?? null,
-    channel_kinds: params.thread.channel_kinds ?? null,
-    is_unread: false,
-    status: "running" as const,
-    membership: "open" as const,
-    last_active_at: threadUpdatedAt,
-    first_user_message: firstUserMessagePreview,
-    latest_user_message: firstUserMessagePreview,
-    latest_user_message_at: firstUserMessagePreview
-      ? threadUpdatedAt
-      : null,
-    running_activity_text: firstUserMessagePreview,
-    running_activity_at: now,
-    last_assistant_completed_at: null,
-    last_assistant_summary: null,
-    last_assistant_summary_status: null,
-    running_started_at: now,
-  };
-
-  return {
-    id: params.groupId,
-    org_id: params.orgId,
-    workspace_id: params.workspaceId,
-    name: params.thread.title || "New Chat",
-    avatar: generateDefaultChatGroupAvatar({
-      groupIndex: getFallbackChatGroupAvatarIndex(
-        `${params.groupId}:${params.thread.id}`,
-      ),
-    }),
-    last_active_thread_id: params.thread.id,
-    created_at: params.thread.created_at || now,
-    updated_at: threadUpdatedAt,
-    open_thread_ids: [params.thread.id],
-    closed_thread_ids: [],
-    open_threads: [threadSummary],
-    closed_threads: [],
-    member_count: 1,
-    status: "running",
-  };
 }
 
 async function buildChatData(
@@ -548,31 +489,10 @@ async function findAccessibleGroupWorkspace(
   );
 }
 
-type OrgThreadSlugStub = {
-  getThreadWithOrgSlug(
-    id: string,
-  ): Promise<{ thread: OrgThread | null; orgSlug: string | null }>;
-};
-
-async function loadThreadWithOrgSlug(
-  orgStub: OrgThreadSlugStub,
-  threadId: string,
-): Promise<{ thread: OrgThread | null; orgSlug: string | undefined }> {
-  const result = await retryTransientDurableObjectRead(
-    "OrgDO.getThreadWithOrgSlug",
-    () => orgStub.getThreadWithOrgSlug(threadId),
-  );
-  return {
-    thread: result.thread,
-    orgSlug: result.orgSlug ?? undefined,
-  };
-}
-
 export async function loader({ request, context, params }: Route.LoaderArgs) {
   const loaderStartedAt = Date.now();
   const url = new URL(request.url);
   const isAdminReadonly = url.searchParams.get("adminReadonly") === "1";
-  const isNewThread = url.searchParams.get("newThread") === "1";
   const useClientMessageCache = url.searchParams.get("chatCache") === "1";
   const env = getEnv(context);
   const hostname = getAppUrlContext(env, request);
@@ -624,7 +544,6 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
       experimentalSettings: DEFAULT_ORG_EXPERIMENTAL_SETTINGS,
       billingCreditStatus: null,
       initialChatError: null,
-      isNewThread: false,
       hostname,
       orgSlug: org?.slug,
       connections: [] as Integration[],
@@ -633,196 +552,10 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
       recentModelScope: null,
       readOnly: true,
       activeChatGroup: null,
+      activeGroupId: null,
       moveChatGroups: [],
       usedClientMessageCache: false,
-      deferredInitialMessage: null,
-    };
-  }
-
-  if (isNewThread) {
-    const accessStartedAt = Date.now();
-    const { orgId, workspaceId, userId } = await requireSessionWorkspaceAccess(
-      request,
-      context,
-    );
-    traceIds.orgId = orgId;
-    traceIds.workspaceId = workspaceId;
-    traceIds.userId = userId;
-    recordChatThreadRouteLoaderStage(
-      env,
-      traceContext,
-      traceIds,
-      "new_thread_access_validated",
-      accessStartedAt,
-      { status: "new_thread" },
-    );
-    const mentionSourcesPromise = loadWorkspaceMentionSources(env, workspaceId);
-    const connectionsPromise: Promise<Integration[]> = mentionSourcesPromise.then(
-      ({ connections }) => connections,
-    );
-    const projectsPromise: Promise<MentionableProject[]> =
-      mentionSourcesPromise.then(({ projects }) => projects);
-    const groupId = url.searchParams.get("group")?.trim() || null;
-    const orgStub = authEnv.ORG.get(authEnv.ORG.idFromName(orgId));
-    const threadLoadStartedAt = Date.now();
-    const { thread, orgSlug } = await loadThreadWithOrgSlug(
-      orgStub as unknown as OrgThreadSlugStub,
-      params.id,
-    );
-    recordChatThreadRouteLoaderStage(
-      env,
-      traceContext,
-      traceIds,
-      "new_thread_record_loaded",
-      threadLoadStartedAt,
-      {
-        status: thread ? "found" : "missing",
-        model: thread?.model ?? null,
-        size: thread?.first_user_message?.length ?? 0,
-      },
-    );
-
-    if (!thread || thread.workspace_id !== workspaceId) {
-      recordChatThreadRouteLoaderStage(
-        env,
-        traceContext,
-        traceIds,
-        "new_thread_redirect_missing",
-        loaderStartedAt,
-        { status: "redirect", statusCode: 302 },
-      );
-      throw redirect("/chat");
-    }
-    if ((thread.user_message_count ?? 0) > 0) {
-      recordChatThreadRouteLoaderStage(
-        env,
-        traceContext,
-        traceIds,
-        "new_thread_redirect_started",
-        loaderStartedAt,
-        {
-          status: "redirect",
-          statusCode: 302,
-          count: thread.user_message_count ?? 0,
-          model: thread.model,
-        },
-      );
-      throw redirect(`/chat/${params.id}`);
-    }
-    const deferredInitialMessage =
-      (thread.user_message_count ?? 0) === 0
-        ? (thread.first_user_message ?? null)
-        : null;
-    const chatDataStartedAt = Date.now();
-    const chatData = deferredInitialMessage?.trim()
-      ? (() => {
-          recordChatThreadRouteLoaderStage(
-            env,
-            traceContext,
-            traceIds,
-            "new_thread_chat_data_resolved",
-            chatDataStartedAt,
-            {
-              status: "deferred_initial_message",
-              model: thread.model,
-              size: deferredInitialMessage.length,
-            },
-          );
-          return EMPTY_CHAT_DATA;
-        })()
-      : await buildChatData(context, authEnv, params.id, {
-          orgId,
-          workspaceId,
-          loadMessages: true,
-        }).catch((error) => {
-          console.error("Failed to load new thread chat data:", error);
-          recordChatThreadRouteLoaderError(
-            env,
-            traceContext,
-            traceIds,
-            "new_thread_chat_data_resolved",
-            chatDataStartedAt,
-            error,
-            { status: "fallback_empty", model: thread.model },
-          );
-          return EMPTY_CHAT_DATA;
-        });
-    if (!deferredInitialMessage?.trim()) {
-      recordChatThreadRouteLoaderStage(
-        env,
-        traceContext,
-        traceIds,
-        "new_thread_chat_data_resolved",
-        chatDataStartedAt,
-        {
-          status: "loaded",
-          model: thread.model,
-          count: chatData.messages.length,
-        },
-      );
-    }
-    const activeGroupStartedAt = Date.now();
-    const fallbackThread: Thread = {
-      ...thread,
-      channel_kinds: parseChannelIndicatorKindsJson(thread.channel_kinds),
-    };
-    const activeChatGroup = buildFallbackActiveChatGroup({
-      groupId,
-      orgId,
-      workspaceId,
-      thread: fallbackThread,
-    });
-    recordChatThreadRouteLoaderStage(
-      env,
-      traceContext,
-      traceIds,
-      "new_thread_group_resolved",
-      activeGroupStartedAt,
-      {
-        status: activeChatGroup ? "local_fallback" : "missing",
-        model: thread.model,
-      },
-    );
-    recordChatThreadRouteLoaderStage(
-      env,
-      traceContext,
-      traceIds,
-      "new_thread_response_ready",
-      loaderStartedAt,
-      {
-        status: "ok",
-        statusCode: 200,
-        model: thread.model,
-        size: deferredInitialMessage?.length ?? 0,
-      },
-    );
-
-    return {
-      threadId: params.id,
-      workspaceId,
-      chatData,
-      threadTitle: thread.title ?? null,
-      threadModel: thread.model,
-      llmProvider: null as LlmProvider | null,
-      allowedThreadModels: [thread.model],
-      effectivePickerDefaultModel: null,
-      hasEffectivePickerDefault: false,
-      experimentalSettings: DEFAULT_ORG_EXPERIMENTAL_SETTINGS,
-      billingCreditStatus: null,
-      initialChatError: getDevChatInitialError(url.searchParams),
-      isNewThread: true,
-      hostname,
-      orgSlug,
-      connections: connectionsPromise,
-      projects: projectsPromise,
-      isOrgAdmin: false,
-      recentModelScope: { orgId, workspaceId },
-      readOnly: false,
-      activeChatGroup,
-      activeGroupId: groupId,
-      moveChatGroups: [],
-      usedClientMessageCache: false,
-      deferredInitialMessage,
+      pendingFirstTurn: false,
     };
   }
 
@@ -842,15 +575,15 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
       experimentalSettings: DEFAULT_ORG_EXPERIMENTAL_SETTINGS,
       billingCreditStatus: null,
       initialChatError: getDevChatInitialError(url.searchParams),
-      isNewThread: false,
       hostname: undefined,
       connections: [] as Integration[],
       projects: [] as MentionableProject[],
       isOrgAdmin: false,
       recentModelScope: null,
       readOnly: false,
+      activeGroupId: null,
       usedClientMessageCache: false,
-      deferredInitialMessage: null,
+      pendingFirstTurn: false,
     };
   }
 
@@ -955,7 +688,7 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
 
   // Even for newly created threads, load the persisted thread record so the UI
   // reflects the actual saved model instead of the Sonnet default.
-  if (!isNewThread && !thread) {
+  if (!thread) {
     throw redirect("/chat");
   }
   const experimentalSettings = authContext.currentOrgExperimentalSettings;
@@ -983,8 +716,26 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
     },
   ).map((option) => option.value);
 
+  // A freshly-started new chat: render the first message straight from the (warm)
+  // thread record and SKIP buildChatData, whose transcript/preview/todo reads
+  // would each boot the cold ChatThreadDO (~2s). The turn streams in over the WS
+  // once the DO is warm; once it records the turn (user_message_count > 0) later
+  // loads read the real transcript. Gated on the new-chat action's ?newThread=1
+  // signal so threads created with a stored first message but no started run
+  // (e.g. the workspaces chat-threads API) are NOT treated as pending.
+  const pendingFirstTurn =
+    url.searchParams.get("newThread") === "1" &&
+    (thread.user_message_count ?? 0) === 0 &&
+    Boolean(thread.first_user_message?.trim());
   const chatDataStartedAt = Date.now();
-  const chatData: ChatDataValue = thread
+  const chatData: ChatDataValue = pendingFirstTurn
+    ? {
+        ...EMPTY_CHAT_DATA,
+        messages: [
+          pendingFirstUserMessage(params.id, thread.first_user_message ?? ""),
+        ],
+      }
+    : thread
     ? buildChatData(context, authEnv, params.id, {
         orgId,
         workspaceId,
@@ -1089,7 +840,6 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
       url.searchParams,
     ),
     initialChatError: getDevChatInitialError(url.searchParams),
-    isNewThread,
     hostname,
     orgSlug: authContext.currentOrg.slug,
     connections: connectionsPromise,
@@ -1101,12 +851,10 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
     recentModelScope: { orgId, workspaceId },
     readOnly: false,
     activeChatGroup,
+    activeGroupId: url.searchParams.get("group")?.trim() || null,
     moveChatGroups,
     usedClientMessageCache: useClientMessageCache,
-    deferredInitialMessage:
-      isNewThread && thread && (thread.user_message_count ?? 0) === 0
-        ? (thread.first_user_message ?? null)
-        : null,
+    pendingFirstTurn,
   };
 }
 
@@ -1126,7 +874,6 @@ export default function ChatPage() {
     experimentalSettings,
     billingCreditStatus,
     initialChatError,
-    isNewThread,
     hostname,
     orgSlug,
     connections,
@@ -1138,7 +885,7 @@ export default function ChatPage() {
     activeGroupId,
     moveChatGroups = [],
     usedClientMessageCache = false,
-    deferredInitialMessage,
+    pendingFirstTurn = false,
   } = useLoaderData<typeof loader>();
   const {
     chatData: resolvedChatData,
@@ -1167,7 +914,6 @@ export default function ChatPage() {
         at: new Date().toISOString(),
         location: `${location.pathname}${location.search}`,
         threadId,
-        isNewThread,
         routeMessageCount: resolvedChatData.messages.length,
         routeMessageIds: resolvedChatData.messages.map((message) => ({
           id: message.id,
@@ -1184,7 +930,6 @@ export default function ChatPage() {
     activeChatGroup?.id,
     chatDebugFlags.historyLogs,
     isLoadingChatData,
-    isNewThread,
     location.pathname,
     location.search,
     resolvedChatData,
@@ -1235,7 +980,6 @@ export default function ChatPage() {
     : resolvedChatData;
   const isLoadingDisplayMessages =
     isLoadingChatData && !shouldUseCachedSnapshot;
-  const displayIsNewThread = isNewThread;
 
   useEffect(() => {
     if (!usedClientMessageCache || !displayThreadId) return;
@@ -1470,10 +1214,9 @@ export default function ChatPage() {
             experimentalSettings={experimentalSettings}
             billingCreditStatus={billingCreditStatus}
             initialError={initialChatError ?? displayChatData.messagesError}
-            deferredInitialMessage={deferredInitialMessage}
+            pendingFirstTurn={isDisplayingLoaderThread && pendingFirstTurn}
             initialPreviewTabs={displayChatData.previewTabs}
             initialActiveTabId={displayChatData.activeTabId}
-            isNewThread={displayIsNewThread}
             hostname={hostname}
             orgSlug={orgSlug}
             connections={connections}

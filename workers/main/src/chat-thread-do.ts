@@ -4178,6 +4178,12 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
       sendAttemptId?: string;
       startedAt?: number;
       messageSource?: string | null;
+      // Commit the user's message to the canonical transcript before returning
+      // (new-turn only). Set by the initial new-chat send so the action can await
+      // acceptance and the thread page then loads the message normally — no
+      // optimistic client placeholder. Normal sends leave this unset and keep the
+      // turn-end commit so their optimistic-echo reconciliation is unchanged.
+      persistUserMessageImmediately?: boolean;
     } = {},
   ): Promise<InitialUserMessageResult> {
     const startedAt = options.startedAt ?? Date.now();
@@ -4226,6 +4232,13 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
       return { status: "error", error: "Empty message" };
     }
 
+    // A new turn (the user is prompting, not steering an in-flight run) is given a
+    // single canonical timestamp shared by the message we persist below and the
+    // one sendRunnerCommand prompts Pi with, so both carry the same
+    // piCoreMessageKey and the turn-end commit dedups instead of double-storing.
+    const startsNewTurn = !this.piSession?.state.isStreaming;
+    const turnTimestamp = Date.now();
+
     let sent = false;
     try {
       this.setActiveTurnUserId(context.userId);
@@ -4250,6 +4263,7 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
         content: attributedContent,
         threadId: context.threadId,
         userId: context.userId ?? undefined,
+        timestamp: turnTimestamp,
       });
     } catch (error) {
       this.finishTurn();
@@ -4267,13 +4281,33 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
       return { status: "error", error: "Failed to send message" };
     }
 
+    // Persist the user's message to the canonical transcript only after the send
+    // is accepted (the fiber row now exists), but before we return "accepted",
+    // so a reader that awaits this ack and immediately loads the thread sees it.
+    // Deferring until acceptance means a failed/interrupted send never leaves an
+    // orphaned first message with no turn behind it — and a retry that re-runs
+    // this RPC won't double-append, because the interrupted attempt persisted
+    // nothing. This is what lets the new-chat page render the thread normally,
+    // with no optimistic client placeholder and no special new-thread loader
+    // path. The matching turn-end commit skips it via piCoreMessageKey.
+    if (startsNewTurn && options.persistUserMessageImmediately) {
+      await this.appendPiCoreMessagesIfMissing([
+        {
+          role: "user",
+          content: attributedContent,
+          timestamp: turnTimestamp,
+        } as unknown as AgentMessage,
+      ]);
+    }
+
     // sendRunnerCommand created the durable fiber row synchronously, so the derived
     // streaming state is now true — broadcast it for instant spinner feedback.
     this.syncAgentState();
 
-    // The browser echoes the user's own message optimistically; the server only
-    // builds the assistant/tool overlay (see liveMessages). Steered messages
-    // land in the transcript when Pi emits them and on the next reload.
+    // A new turn's user message is now in the canonical transcript (above); the
+    // server builds only the assistant/tool overlay live (see liveMessages).
+    // Steered messages land in the transcript when Pi emits them and on the next
+    // reload.
     return { status: "accepted" };
   }
 
@@ -5071,6 +5105,7 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
           typeof body.messageSource === "string" && body.messageSource.trim()
             ? body.messageSource.trim()
             : "web",
+        persistUserMessageImmediately: true,
       });
       if (automationRun && result.status !== "accepted") {
         this.setActiveAutomationRun(null);
@@ -8022,10 +8057,17 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
             return false;
           }
           const wasStreaming = this.piSession.state.isStreaming;
+          // Reuse the caller's timestamp when provided so a message persisted up
+          // front (the new-turn path in enqueueRunnerUserMessage) shares its
+          // piCoreMessageKey with the one Pi commits at turn end.
+          const timestamp =
+            typeof message.timestamp === "number"
+              ? message.timestamp
+              : Date.now();
           const userMessage: AgentMessage = {
             role: "user",
             content,
-            timestamp: Date.now(),
+            timestamp,
             ...(wasStreaming
               ? { metadata: { sentDuringStreaming: true } }
               : {}),
