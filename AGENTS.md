@@ -36,6 +36,7 @@ Cloudflare AI Gateway and BYOK credentials back model access.
 - `workers/dispatcher/` - Workers for Platforms dispatcher for deployed user apps.
 - `workers/bedrock-provider/` - AI Gateway custom provider translating Anthropic-style requests to Bedrock.
 - `workers/user-logs-tail/` - Tail worker for deployed app logs.
+- `workers/e2e-reports/` - Public viewer at `e2e-reports.camelai.dev` serving Playwright E2E reports from R2 (uploaded by the E2E workflow); deploy with `bun run deploy:e2e-reports`.
 - The data-proxy Go service lives in the external **`qaml-ai/project-runtime-service`** repo (`cmd/data-proxy`), not in this tree. It is the binary deployed to the sandbox host VM and the one behind the `SANDBOX_HOST` / `DATA_PROXY` bindings. There is no in-repo copy — do not reintroduce one. (`scripts/test-local-database-mcp.ts` runs it locally via `PROJECT_RUNTIME_SERVICE_DIR`, default sibling checkout.)
 - `sandbox/` - In-container control plane, Codex/Claude harness integration, MCP helpers, scaffold/publish tooling, sandbox skills.
 - `scripts/` - Deploy and maintenance scripts.

@@ -1,0 +1,123 @@
+name: E2E
+
+# Non-blocking: E2E hits a live app and (for agent specs) makes real LLM calls,
+# so it runs on demand + nightly, NOT as a PR merge gate. Keep it off pull_request
+# until it is deterministic (see notes at the bottom).
+on:
+  workflow_dispatch:
+    inputs:
+      record_all_video:
+        description: 'Record video for EVERY test (default: only failures)'
+        type: boolean
+        default: false
+      base_url:
+        description: 'Target base URL (blank = E2E_BASE_URL secret)'
+        type: string
+        default: ''
+  schedule:
+    - cron: '0 7 * * *' # nightly 07:00 UTC
+
+# One E2E run at a time; a newer run cancels an in-flight one.
+concurrency:
+  group: e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  e2e:
+    name: e2e (${{ matrix.shard }}/4)
+    # Flip to [self-hosted, chiridion-ci] once the box is activated — E2E only
+    # needs Chromium + network, so it is a clean fit for the dormant runner.
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile
+      - run: bunx playwright install --with-deps chromium
+      - name: Run E2E shard ${{ matrix.shard }}/4
+        run: bun run test:e2e -- --shard=${{ matrix.shard }}/4
+        env:
+          # Blank base_url -> E2E_BASE_URL secret (e.g. staging). To run the
+          # credential-free local-bypass path instead, set E2E_LOCAL=1 here and
+          # leave BASE_URL unset (playwright.config boots dev:local-auth).
+          BASE_URL: ${{ inputs.base_url || secrets.E2E_BASE_URL }}
+          # Real creds only for the admin specs; harmless if unset (those skip).
+          SUPERUSER_TEST_EMAIL: ${{ secrets.SUPERUSER_TEST_EMAIL }}
+          SUPERUSER_TEST_PASSWORD: ${{ secrets.SUPERUSER_TEST_PASSWORD }}
+          PW_VIDEO: ${{ inputs.record_all_video && 'on' || 'retain-on-failure' }}
+      - name: Upload shard blob report
+        uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: blob-report-${{ matrix.shard }}
+          path: blob-report/
+          retention-days: 14
+
+  report:
+    name: merge report
+    needs: [e2e]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    env:
+      # Secrets can't be referenced directly in `if:`, so surface it as env and
+      # gate the publish step on env.UPLOAD_TOKEN instead.
+      UPLOAD_TOKEN: ${{ secrets.E2E_REPORT_UPLOAD_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile
+      - name: Download all shard blob reports
+        uses: actions/download-artifact@v4
+        with:
+          path: all-blob-reports
+          pattern: blob-report-*
+          merge-multiple: true
+      - name: Merge into one HTML report (videos + traces embedded)
+        run: bunx playwright merge-reports --reporter html ./all-blob-reports
+      - name: Upload merged HTML report (artifact fallback)
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: playwright-report/
+          retention-days: 14
+      - name: Publish report to the viewer worker (writes to R2 via its binding)
+        # UPLOAD_TOKEN is the shared secret matching the worker's UPLOAD_TOKEN —
+        # NOT a Cloudflare API token; it only permits writing report objects
+        # through this worker. Inherited from the job-level env above.
+        if: ${{ env.UPLOAD_TOKEN != '' }}
+        run: |
+          # run_id is stable across re-runs but run_attempt increments; key the
+          # report by both so a re-run publishes a fresh path (the viewer caches
+          # assets immutably per path).
+          run_dir="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          cd playwright-report
+          find . -type f | sed 's|^\./||' | while read -r f; do
+            curl -fsS -X PUT "https://e2e-reports.camelai.dev/upload/${run_dir}/${f}" \
+              -H "Authorization: Bearer ${UPLOAD_TOKEN}" \
+              --data-binary "@${f}" -o /dev/null
+          done
+          echo "### E2E report" >> "$GITHUB_STEP_SUMMARY"
+          echo "[View report](https://e2e-reports.camelai.dev/r/${run_dir}/)" >> "$GITHUB_STEP_SUMMARY"
+
+# Required repo secrets:
+#   E2E_BASE_URL              target app (e.g. https://staging.camelai.dev)
+#   E2E_REPORT_UPLOAD_TOKEN   shared secret matching the chiridion-e2e-reports
+#                             worker's UPLOAD_TOKEN (publishes the report); no
+#                             Cloudflare API token needed
+#   SUPERUSER_TEST_EMAIL      admin-spec login (dedicated test superuser)
+#   SUPERUSER_TEST_PASSWORD
+#
+# Remaining work before this can gate PRs (tracked separately):
+#   * Auth without secrets (#2/#4): run E2E_LOCAL=1 against a local worker so
+#     LOCAL_AUTH_BYPASS activates and each run gets a fresh, isolated org.
+#   * Deterministic LLM (#3): LLM egress is server-side, so it can't be stubbed
+#     from the browser. The clean seam is CF_GATEWAY_BASE_URL
+#     (src/lib/cloudflare-ai-gateway.ts) -> a record/replay stub, OR a
+#     TEST_LLM_REPLAY toggle at the two fetch chokepoints. Until then, agent
+#     specs make real model calls and stay nightly-only.

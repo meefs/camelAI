@@ -1,0 +1,17 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "chiridion-e2e-reports",
+  "main": "src/index.ts",
+  "compatibility_date": "2025-12-01",
+  "workers_dev": true,
+  "observability": { "enabled": true },
+  "routes": [
+    { "pattern": "e2e-reports.camelai.dev", "custom_domain": true }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "REPORTS_BUCKET",
+      "bucket_name": "chiridion-e2e-reports"
+    }
+  ]
+}
