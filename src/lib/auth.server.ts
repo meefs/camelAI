@@ -19,7 +19,6 @@ import type { User } from "@/types";
 import type { OnboardingPreferences } from "@/types";
 import { type AuthEnv, type SessionData, getAuthEnv } from "./auth-helpers";
 import {
-  getUserOrgs,
   listUserWorkspacesAcrossOrgs,
   listOrgWorkspaces,
   getWorkspace,
@@ -671,12 +670,22 @@ async function getAuthContextUncached(
   }
   const currentOrg: Organization = orgInfo;
   const onboarding = authBootstrap.onboarding;
-  let orgs = await getUserOrgs(authEnv, sessionContext.session.user_id, {
-    preloadedUserOrgs: authBootstrap.orgs,
-    preloadedOrgInfoById: new Map([
-      [sessionContext.session.org_id, currentOrg],
-    ]),
-  });
+  // Build the membership list straight from the already-loaded bootstrap, WITHOUT
+  // a per-org ORG.getInfo() RPC. Those RPCs (one per org, only to fetch each
+  // org's name + archived flag) dominated auth latency on every authenticated
+  // page load — a single cold OrgDO could stall the whole request ~1.4s. The
+  // critical path only needs the current org's name; the workspace switcher
+  // lazy-loads the full named/archived-filtered list via GET /api/orgs. Other
+  // consumers use org_id/role only. (Archived orgs the user still belongs to may
+  // appear here until the switcher's lazy fetch filters them — a benign cosmetic
+  // edge; current-org permissions are always correct.)
+  let orgs: OrgMembership[] = authBootstrap.orgs.map((membership) => ({
+    org_id: membership.org_id,
+    org_name: membership.org_id === currentOrg.id ? currentOrg.name : "",
+    role: membership.role,
+    joined_at: membership.joined_at,
+    last_workspace_id: membership.last_workspace_id ?? null,
+  }));
 
   // OrgDO is the source of truth for role checks. If UserDO role data is stale
   // for the active org, reconcile it in-memory so current request permissions/UI

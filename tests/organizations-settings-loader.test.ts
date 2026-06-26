@@ -123,4 +123,88 @@ describe("organizations settings loader", () => {
       ],
     });
   });
+
+  it("falls back to the per-org summary name when the auth-context org name is blank (lazy orgs)", async () => {
+    // After lazy-loading org names out of auth, AuthContext.orgs carries a name
+    // only for the current org; others are "". The page must still render their
+    // names from the per-org summary it already fetches.
+    requireAuthContextMock.mockResolvedValue({
+      user: { id: "user_1" },
+      currentOrg: { id: "org_1" },
+      orgs: [
+        { org_id: "org_1", org_name: "Primary", role: "owner", joined_at: 10 },
+        { org_id: "org_2", org_name: "", role: "member", joined_at: 20 },
+      ],
+    });
+    getOrgSettingsSummaryMock.mockImplementation(
+      async (_authEnv: unknown, orgId: string) => ({
+        name: orgId === "org_1" ? "Primary" : "Side Project",
+        billing_plan: "starter",
+        billing_status: "trialing",
+        member_count: 1,
+        workspace_count: 1,
+      }),
+    );
+
+    const result = await loader({
+      request: new Request("https://camelai.test/settings/organizations"),
+      context: {},
+      params: {},
+    } as never);
+
+    const nameById = Object.fromEntries(
+      result.orgs.map((org) => [org.org_id, org.org_name]),
+    );
+    expect(nameById.org_1).toBe("Primary");
+    expect(nameById.org_2).toBe("Side Project");
+  });
+
+  it("hides archived orgs that linger in the auth bootstrap membership list", async () => {
+    // qaml-backdoor archiveOrg doesn't prune UserDO memberships, so an archived
+    // org can still appear in authContext.orgs. The settings page must not
+    // render it (or its "Switch to this org" action) — except the current org,
+    // which stays visible so a user already inside one isn't stranded.
+    getOrgSettingsSummaryMock.mockImplementation(
+      async (_authEnv: unknown, orgId: string) => ({
+        name: orgId === "org_1" ? "Primary" : "Side Project",
+        archived: orgId === "org_2",
+        billing_plan: "starter",
+        billing_status: "trialing",
+        member_count: 1,
+        workspace_count: 1,
+      }),
+    );
+
+    const result = await loader({
+      request: new Request("https://camelai.test/settings/organizations"),
+      context: {},
+      params: {},
+    } as never);
+
+    const orgIds = result.orgs.map((org) => org.org_id);
+    expect(orgIds).toContain("org_1");
+    expect(orgIds).not.toContain("org_2");
+  });
+
+  it("keeps the current org visible even when it is archived", async () => {
+    getOrgSettingsSummaryMock.mockImplementation(
+      async (_authEnv: unknown, orgId: string) => ({
+        name: orgId === "org_1" ? "Primary" : "Side Project",
+        archived: true,
+        billing_plan: "starter",
+        billing_status: "trialing",
+        member_count: 1,
+        workspace_count: 1,
+      }),
+    );
+
+    const result = await loader({
+      request: new Request("https://camelai.test/settings/organizations"),
+      context: {},
+      params: {},
+    } as never);
+
+    const orgIds = result.orgs.map((org) => org.org_id);
+    expect(orgIds).toEqual(["org_1"]);
+  });
 });

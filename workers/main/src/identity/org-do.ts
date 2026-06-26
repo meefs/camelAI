@@ -257,6 +257,8 @@ export interface OrgThreadWithOrgSlug {
 }
 
 export interface OrgSettingsSummary {
+  name: string;
+  archived: boolean;
   billing_plan: Organization["billing_plan"];
   billing_status: BillingStatus;
   member_count: number;
@@ -5329,6 +5331,15 @@ export class OrgDO extends DurableObject<DOEnv> {
     const member = await this.getMember(userId);
     if (!member) return [];
 
+    // An archived org should expose no workspaces (a partial archive could leave
+    // a stray un-archived workspace behind). Callers used to exclude archived
+    // orgs up front via getUserOrgs; that org-level filter no longer runs in the
+    // auth critical path, so enforce it here at the source.
+    if (!includeArchived) {
+      const info = await this.getInfo();
+      if (info?.archived) return [];
+    }
+
     const workspaces = await this.getWorkspaceInfos(includeArchived);
     const workspacesNeedingAccessMigration = workspaces.filter(
       (workspace) => !this.isWorkspaceAccessMigrated(workspace.id),
@@ -5451,6 +5462,8 @@ export class OrgDO extends DurableObject<DOEnv> {
         .one()?.count ?? 0;
 
     return {
+      name: info.name,
+      archived: Boolean(info.archived),
       billing_plan: info.billing_plan,
       billing_status: info.billing_status,
       member_count: Number(memberCount),

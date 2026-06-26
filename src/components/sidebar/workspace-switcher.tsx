@@ -1,7 +1,7 @@
 "use client"
 
 import { useState } from "react"
-import { useLocation, useNavigate } from "react-router"
+import { useFetcher, useLocation, useNavigate } from "react-router"
 import { Check, ChevronsUpDown, CircleAlert, Loader2 } from "lucide-react"
 import { toast } from "sonner"
 
@@ -20,6 +20,7 @@ import {
   useSidebar,
 } from "@/components/ui/sidebar"
 import { useAuthData } from "@/hooks/use-auth-data"
+import type { OrgMembership } from "@/types"
 import {
   isWorkspaceSwitchSupersededError,
   useSwitchWorkspace,
@@ -33,8 +34,21 @@ export function WorkspaceSwitcher() {
   const navigate = useNavigate()
   const location = useLocation()
   const [pendingWorkspaceId, setPendingWorkspaceId] = useState<string | null>(null)
+  // Org names are no longer resolved in the critical auth path (that per-org RPC
+  // fan-out was the dominant auth latency). Fetch the full named list lazily, only
+  // when the switcher is first opened.
+  const orgsFetcher = useFetcher<{ orgs: OrgMembership[] }>()
+  const [orgsRequested, setOrgsRequested] = useState(false)
   const workspaceList = allWorkspaces ?? []
-  const orgNameById = new Map(orgs.map((org) => [org.org_id, org.org_name]))
+  // Seed names from the auth context (carries the current org's name) and overlay
+  // the lazily-fetched full list once it arrives.
+  const orgNameById = new Map<string, string>()
+  for (const org of orgs) {
+    if (org.org_name) orgNameById.set(org.org_id, org.org_name)
+  }
+  for (const org of orgsFetcher.data?.orgs ?? []) {
+    if (org.org_name) orgNameById.set(org.org_id, org.org_name)
+  }
 
   if (!currentOrg) {
     return null
@@ -61,7 +75,14 @@ export function WorkspaceSwitcher() {
   return (
     <SidebarMenu>
       <SidebarMenuItem>
-        <DropdownMenu>
+        <DropdownMenu
+          onOpenChange={(open) => {
+            if (open && !orgsRequested) {
+              setOrgsRequested(true)
+              orgsFetcher.load("/api/orgs")
+            }
+          }}
+        >
           <DropdownMenuTrigger asChild>
             <SidebarMenuButton
               size="lg"

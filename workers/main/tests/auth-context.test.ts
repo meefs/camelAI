@@ -179,6 +179,33 @@ describe('Auth context building (parallel DO calls)', () => {
       expect(allWorkspaces.length).toBe(2);
     });
 
+    it('excludes an archived org even when it still has an un-archived workspace', async () => {
+      const email = testEmail();
+      const { userId } = await createUser(testEnv, email, 'password', 'Archived Org User');
+      const { org: activeOrg } = await createOrg(testEnv, 'Active Org', userId);
+      const { org: archivedOrg } = await createOrg(testEnv, 'Archived Org', userId);
+
+      // Mark the org archived WITHOUT archiving its workspaces — the partial-archive
+      // edge. (The lazy-orgs change no longer filters archived orgs out of the
+      // membership list up front, so the workspace listing must drop them itself.)
+      const archivedOrgStub = testEnv.ORG.get(testEnv.ORG.idFromName(archivedOrg.id));
+      await (
+        archivedOrgStub as unknown as { archiveOrg(actorId: string): Promise<void> }
+      ).archiveOrg(userId);
+
+      // Pass the full membership (including the archived org) — mimicking the
+      // unfiltered list getAuthContext now builds.
+      const memberships = [
+        { org_id: activeOrg.id, org_name: 'Active Org', role: 'owner' as const, joined_at: Date.now(), last_workspace_id: null },
+        { org_id: archivedOrg.id, org_name: '', role: 'owner' as const, joined_at: Date.now(), last_workspace_id: null },
+      ];
+      const allWorkspaces = await listUserWorkspacesAcrossOrgs(testEnv, userId, memberships);
+      const orgIds = new Set(allWorkspaces.map((w) => w.org_id));
+
+      expect(orgIds.has(activeOrg.id)).toBe(true);
+      expect(orgIds.has(archivedOrg.id)).toBe(false);
+    });
+
     it('uses preloaded workspace lists without re-reading that org', async () => {
       const preloadedWorkspace = {
         id: 'ws-preloaded',
@@ -556,6 +583,38 @@ describe('Auth context building (parallel DO calls)', () => {
       expect(authContext?.allWorkspaces.map((workspace) => workspace.id)).toContain(defaultWorkspaceId);
       expect(authContext?.allWorkspaces.map((workspace) => workspace.id)).not.toContain(deniedWorkspace.id);
       expect(authContext?.currentWorkspace?.id).toBe(defaultWorkspaceId);
+    });
+
+    it('builds the org list from membership, resolving only the current org name (lazy switcher)', async () => {
+      const email = testEmail();
+      const { userId } = await createUser(testEnv, email, 'password', 'Lazy Orgs User');
+      const { org: currentOrg } = await createOrg(testEnv, 'Current Org', userId);
+      const { org: otherOrg } = await createOrg(testEnv, 'Other Org', userId);
+
+      const { signedToken } = await createTestSession(userId, currentOrg.id, email);
+      const request = new Request('https://camelai.dev/', {
+        headers: {
+          host: 'camelai.dev',
+          'X-Chiridion-Session-Id': signedToken,
+        },
+      });
+      const context = { cloudflare: { env: testEnv } } as any;
+
+      const authContext = await getAuthContext(request, context);
+      expect(authContext).not.toBeNull();
+      // Every membership is present by id (built from the preloaded bootstrap).
+      expect(authContext!.orgs.map((o) => o.org_id).sort()).toEqual(
+        [currentOrg.id, otherOrg.id].sort(),
+      );
+      // The current org carries its name (the critical path needs it)...
+      expect(
+        authContext!.orgs.find((o) => o.org_id === currentOrg.id)?.org_name,
+      ).toBe('Current Org');
+      // ...but other orgs' names are deferred (no per-org ORG.getInfo() in the
+      // critical path) — the workspace switcher fetches them via /api/orgs.
+      expect(
+        authContext!.orgs.find((o) => o.org_id === otherOrg.id)?.org_name,
+      ).toBe('');
     });
 
     it('rejects sessions invalidated before full auth context loads', async () => {

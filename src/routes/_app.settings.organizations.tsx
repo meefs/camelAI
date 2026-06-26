@@ -56,9 +56,12 @@ export async function loader({ request, context }: Route.LoaderArgs) {
 
       return {
         org_id: org.org_id,
-        org_name: org.org_name,
+        // org_name on AuthContext.orgs is only resolved for the current org
+        // (others are deferred); use the per-org summary's name here.
+        org_name: summary?.name || org.org_name,
         role: org.role,
         joined_at: org.joined_at,
+        archived: summary?.archived ?? false,
         billing_plan: normalizeBillingPlan(
           summary?.billing_plan,
           summary?.billing_status ?? "inactive",
@@ -69,8 +72,17 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     }),
   );
 
+  // The qaml-backdoor archive path calls OrgDO.archiveOrg without pruning
+  // UserDO memberships, so authContext.orgs can still include archived orgs.
+  // Hide them here (mirroring getUserOrgs' archived filter) so the page never
+  // renders an archived org or its "Switch to this org" action. Keep the
+  // current org regardless, so a user already inside one isn't stranded.
+  const visibleOrgs = orgSummaries.filter(
+    (org) => !org.archived || org.org_id === authContext.currentOrg.id,
+  );
+
   return {
-    orgs: orgSummaries,
+    orgs: visibleOrgs,
     currentOrgId: authContext.currentOrg.id,
     currentUserId: authContext.user.id,
   };

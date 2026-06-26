@@ -111,6 +111,8 @@ async function getWorkspaceOrgStub(
 }
 
 export interface OrgSettingsSummary {
+  name: string;
+  archived: boolean;
   billing_plan: Organization["billing_plan"];
   billing_status: Organization["billing_status"];
   member_count: number;
