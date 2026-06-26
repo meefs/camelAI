@@ -8,7 +8,26 @@ on:
 
 jobs:
   tests:
+    # The client (jsdom) and worker (miniflare/workerd) suites share no state and
+    # each is dominated by per-file environment startup, so we both split them
+    # into separate jobs AND shard each suite across runners with vitest --shard.
+    # vitest distributes test FILES across shards, so the per-file jsdom/workerd
+    # boot cost (the bottleneck) parallelizes near-linearly: ~11min sequential ->
+    # ~2-3min. Workers (~402s) gets 4 shards; client (~256s) gets 2.
+    # runs-on stays a single knob: switch to a self-hosted label to move
+    # execution onto a bigger box without other changes.
+    name: tests (${{ matrix.suite }} ${{ matrix.shard }}/${{ matrix.total }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { suite: client, command: test:run, shard: 1, total: 2 }
+          - { suite: client, command: test:run, shard: 2, total: 2 }
+          - { suite: workers, command: test:workers, shard: 1, total: 4 }
+          - { suite: workers, command: test:workers, shard: 2, total: 4 }
+          - { suite: workers, command: test:workers, shard: 3, total: 4 }
+          - { suite: workers, command: test:workers, shard: 4, total: 4 }
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -16,4 +35,4 @@ jobs:
           node-version: '22'
       - uses: oven-sh/setup-bun@v2
       - run: bun install --frozen-lockfile
-      - run: bun run test:all
+      - run: bun run ${{ matrix.command }} -- --shard=${{ matrix.shard }}/${{ matrix.total }}
