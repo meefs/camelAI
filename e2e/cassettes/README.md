@@ -27,29 +27,45 @@ the *real* recorded responses, not fabricated ones.
 Files here are `<key>.sse` — the raw recorded response bytes (SSE for streamed
 turns, JSON otherwise).
 
-## Recording
+## Interception (verified)
 
-Run once against the real model to populate cassettes, then commit them:
+The worker routes model calls to the stub via **two** seams, both keyed on
+`TEST_LLM_REPLAY_URL`:
 
-```bash
-REPLAY_MODE=record \
-REPLAY_UPSTREAM=https://openrouter.ai/api/v1 \   # the real model base for your default model
-REPLAY_DIR=e2e/cassettes \
-node scripts/llm-replay-stub.mjs
-# ...point the app's TEST_LLM_REPLAY_URL at the stub and run the E2E specs once...
-```
+- `resolvePiModel` (`chat-thread-do.ts`) overrides the per-model `baseUrl` —
+  covers direct/BYOK provider calls.
+- `resolveCloudflareGatewayOrigin` (`src/lib/cloudflare-ai-gateway.ts`) overrides
+  the AI Gateway origin — covers the **hosted** path (the AI virtual binding),
+  which is what a default turn actually uses. Without this the stub is never hit.
 
-The stub proxies to `REPLAY_UPSTREAM`, returns the real response, and tees it to
-`<key>.sse`. After that, replay mode (the default) needs no network.
+Confirmed working: a local bypass turn's request lands on the stub
+(`replay POST /v1/messages -> key ... (miss)`).
+
+## Recording — use the AI Gateway Logs API, not the proxy
+
+Record mode (`REPLAY_MODE=record`, `REPLAY_UPSTREAM=...`) proxies and tees, but
+for the **hosted/gateway** path it does **not** work cleanly: the gateway injects
+the provider key and encodes the provider in its URL path, and the origin-swap
+flattens both — so a proxied record gets `x-api-key required` (wrong upstream) or
+`model not found` (wrong provider route). Proxy-record only suits a single
+static-base direct provider.
+
+For the hosted path, record by running the suite once **normally** (real gateway,
+correct routing/auth, real response) and harvesting the request/response payloads
+from the **AI Gateway Logs API**
+(`GET /accounts/{id}/ai-gateway/gateways/{gw}/logs/{id}/{request,response}`), then
+writing them as `e2e/cassettes/<key>.sse`. Replay (the default) then needs no
+network.
 
 ## Wiring the worker (local boot)
 
 `playwright.config.ts` (with `E2E_LOCAL=1`) starts the stub and the app, and sets
 `TEST_LLM_REPLAY_URL` on the app process. `vite.config.ts`'s `withLocalDevVars`
-forwards it into the worker config (alongside `LOCAL_AUTH_BYPASS` etc.), so
-`resolvePiModel` sees it — no manual `.dev.vars` entry needed for the
-`react-router dev` path.
+forwards it into the worker config (alongside `LOCAL_AUTH_BYPASS` etc.), so both
+interception seams see it — no manual `.dev.vars` entry needed for the
+`react-router dev` path. Verified: the app boots under bypass, auto-auths as
+`local-dev-user`, and turns complete locally (~1.5s).
 
 (Validating the full local boot — including the project-runtime-service the
-`dev:local-auth` script also starts — is the remaining step before the
-`E2E_LOCAL` path is green in CI.)
+`dev:local-auth` script also starts — and harvesting the real cassettes remain
+the steps before the `E2E_LOCAL` path is green in CI.)

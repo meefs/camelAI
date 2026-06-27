@@ -77,6 +77,7 @@ const server = createServer(async (req, res) => {
   const bodyText = await readBody(req);
   const key = cassetteKey(bodyText);
   const file = path.join(DIR, `${key}.sse`);
+  console.log(`${MODE} ${req.method} ${req.url} -> key ${key} (${existsSync(file) ? "hit" : "miss"})`);
 
   if (MODE === "record") {
     if (!UPSTREAM) {

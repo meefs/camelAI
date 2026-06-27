@@ -17,6 +17,7 @@ export interface AIVirtualBindingEnv {
   CF_GATEWAY_BASE_URL?: string;
   CF_GATEWAY_TOKEN?: string;
   AI_GATEWAY_AUTH_TOKEN?: string;
+  TEST_LLM_REPLAY_URL?: string;
   INTEGRATION_SECRET_KEY?: string;
 }
 
@@ -513,11 +514,16 @@ export function resolveGatewaySettings(
     | "CF_GATEWAY_BASE_URL"
     | "AI_GATEWAY_AUTH_TOKEN"
     | "CF_GATEWAY_TOKEN"
+    | "TEST_LLM_REPLAY_URL"
   >,
 ): GatewaySettings | undefined {
-  const accountID = env.CF_ACCOUNT_ID?.trim();
-  const gatewayID = env.CF_GATEWAY_NAME?.trim();
-  const authToken = resolveGatewayAuthToken(env);
+  // E2E replay routes to a local stub that ignores account/gateway/auth, so the
+  // credential-free CI path can stand in dummy values rather than failing the
+  // gateway-config check before the origin override (resolveCloudflareGatewayOrigin) applies.
+  const replay = env.TEST_LLM_REPLAY_URL?.trim() ? "replay" : undefined;
+  const accountID = env.CF_ACCOUNT_ID?.trim() || replay;
+  const gatewayID = env.CF_GATEWAY_NAME?.trim() || replay;
+  const authToken = resolveGatewayAuthToken(env) || replay;
   if (!accountID || !gatewayID || !authToken) return undefined;
 
   return {

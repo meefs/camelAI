@@ -6519,9 +6519,17 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
     }
 
     const creditChargeable = await this.checkHostedPiModelAccess(context);
-    const accountId = this.env.CF_ACCOUNT_ID?.trim();
-    const gatewayName = this.env.CF_GATEWAY_NAME?.trim();
-    const token = this.env.AI_GATEWAY_AUTH_TOKEN?.trim() || this.env.CF_GATEWAY_TOKEN?.trim();
+    // E2E replay routes hosted calls to a local stub that ignores account/
+    // gateway/auth, so stand in dummy values to clear this gateway-config check
+    // (the real origin is swapped in resolveCloudflareGatewayOrigin). Lets the
+    // credential-free CI path replay hosted turns without gateway secrets.
+    const replay = this.env.TEST_LLM_REPLAY_URL?.trim() ? "replay" : undefined;
+    const accountId = this.env.CF_ACCOUNT_ID?.trim() || replay;
+    const gatewayName = this.env.CF_GATEWAY_NAME?.trim() || replay;
+    const token =
+      this.env.AI_GATEWAY_AUTH_TOKEN?.trim() ||
+      this.env.CF_GATEWAY_TOKEN?.trim() ||
+      replay;
     if (!accountId || !gatewayName || !token) {
       if (isSelfhostRuntime(this.env)) {
         throw new Error(
