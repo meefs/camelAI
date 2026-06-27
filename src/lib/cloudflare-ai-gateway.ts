@@ -9,7 +9,7 @@ export interface CloudflareGatewayOriginEnv {
 export function resolveCloudflareGatewayOrigin(
   env: CloudflareGatewayOriginEnv,
 ): string {
-  // E2E determinism: route gateway traffic to the local record/replay stub.
+  // E2E determinism: route gateway traffic to the local fake LLM.
   // Unlike CF_GATEWAY_BASE_URL below, the stub is plain http on localhost, so
   // we return it as-is (no http->https rewrite). Unset in production -> no-op.
   const replay = env.TEST_LLM_REPLAY_URL?.trim().replace(/\/+$/, "");

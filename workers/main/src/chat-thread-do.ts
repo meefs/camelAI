@@ -6399,8 +6399,8 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
     this.piCurrentCreditChargeable = configured.creditChargeable;
     this.piCurrentUsageProvider = usageProvider;
     // E2E determinism: when TEST_LLM_REPLAY_URL is set, route every provider's
-    // requests to the local record/replay stub (scripts/llm-replay-stub.mjs)
-    // instead of the real model. Auth/headers are left untouched (the stub
+    // requests to the local deterministic fake LLM (scripts/fake-llm.mjs)
+    // instead of the real model. Auth/headers are left untouched (the fake
     // ignores them); only the origin changes, so the agent loop runs offline
     // and deterministically. Unset in production -> no effect.
     const replayBaseUrl = (
