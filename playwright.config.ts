@@ -7,6 +7,7 @@ import { defineConfig, devices } from '@playwright/test';
 // which keeps test state from polluting a shared environment.
 const useLocalServer = process.env.E2E_LOCAL === '1';
 const localBaseURL = 'http://localhost:3001';
+const REPLAY_PORT = 8788;
 
 // PW_VIDEO toggles recording: default keeps a video only for failing tests
 // (cheap, and exactly when you want one); set PW_VIDEO=on to record every test
@@ -49,14 +50,29 @@ export default defineConfig({
   timeout: 120000, // 2 minutes per test for LLM responses
   ...(useLocalServer
     ? {
-        webServer: {
-          // Boots the app with LOCAL_AUTH_BYPASS=1 so every request is
-          // auto-authenticated as local-dev-user — no credentials/secrets in CI.
-          command: 'bun run dev:local-auth',
-          url: localBaseURL,
-          timeout: 180_000,
-          reuseExistingServer: !process.env.CI,
-        },
+        webServer: [
+          {
+            // Deterministic LLM: replays recorded cassettes (e2e/cassettes/) so
+            // the agent loop runs offline. The worker routes model calls here
+            // when its env carries TEST_LLM_REPLAY_URL (resolvePiModel).
+            command: 'node scripts/llm-replay-stub.mjs',
+            url: `http://localhost:${REPLAY_PORT}/`,
+            timeout: 30_000,
+            reuseExistingServer: !process.env.CI,
+            env: { REPLAY_PORT: String(REPLAY_PORT), REPLAY_MODE: 'replay' },
+          },
+          {
+            // Boots the app with LOCAL_AUTH_BYPASS=1 so every request is
+            // auto-authenticated as local-dev-user — no credentials/secrets in CI.
+            // TEST_LLM_REPLAY_URL is forwarded into the worker config by
+            // vite.config.ts's withLocalDevVars, so resolvePiModel sees it.
+            command: 'bun run dev:local-auth',
+            url: localBaseURL,
+            timeout: 180_000,
+            reuseExistingServer: !process.env.CI,
+            env: { TEST_LLM_REPLAY_URL: `http://localhost:${REPLAY_PORT}` },
+          },
+        ],
       }
     : {}),
 });

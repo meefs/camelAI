@@ -62,6 +62,8 @@ function withLocalDevVars(config: WorkerConfig): Partial<WorkerConfig> | void {
   const projectRuntimeDockerProxyBaseUrl =
     process.env.PROJECT_RUNTIME_DOCKER_PROXY_BASE_URL;
   const projectRuntimeProxySecret = process.env.PROJECT_RUNTIME_PROXY_SECRET;
+  // E2E deterministic LLM: route model calls to the local replay stub.
+  const testLlmReplayUrl = process.env.TEST_LLM_REPLAY_URL;
 
   if (
     !localAuthBypass &&
@@ -71,7 +73,8 @@ function withLocalDevVars(config: WorkerConfig): Partial<WorkerConfig> | void {
     !sandboxProxySecret &&
     !projectRuntimeServiceUrl &&
     !projectRuntimeDockerProxyBaseUrl &&
-    !projectRuntimeProxySecret
+    !projectRuntimeProxySecret &&
+    !testLlmReplayUrl
   ) {
     return;
   }
@@ -79,6 +82,7 @@ function withLocalDevVars(config: WorkerConfig): Partial<WorkerConfig> | void {
   return {
     vars: {
       ...(config.vars ?? {}),
+      ...(testLlmReplayUrl ? { TEST_LLM_REPLAY_URL: testLlmReplayUrl } : {}),
       ...(localAuthBypass ? { LOCAL_AUTH_BYPASS: localAuthBypass } : {}),
       ...(localAuthUserEmail
         ? { LOCAL_AUTH_USER_EMAIL: localAuthUserEmail }
