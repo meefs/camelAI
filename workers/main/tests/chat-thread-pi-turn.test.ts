@@ -323,6 +323,70 @@ describe('ChatThreadDO Pi turn handling', () => {
     expect(fake.syncAgentState).toHaveBeenCalled();
   });
 
+  it('sends an empty live_overlay to a reconnecting client when idle so a stale streaming tail clears', () => {
+    // A turn that finished while the client was disconnected cleared liveMessages,
+    // so its turn-end empty-overlay broadcast reached nobody. On reconnect the client
+    // still holds its pre-disconnect streaming tail; the empty snapshot is the only
+    // signal that folds it to non-streaming. Skipping the send strands the spinner.
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    fake.chatContext = { threadId: 'thread1', workspaceId: 'workspace1', orgId: 'org1' };
+    fake.liveMessages = [];
+    fake.liveStreamingMessageId = null;
+    fake.isThreadStreaming = vi.fn(() => false);
+    const connection = { send: vi.fn() } as any;
+
+    ChatThreadDO.prototype['sendLiveOverlayToConnection'].call(fake, connection);
+
+    expect(connection.send).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(connection.send.mock.calls[0][0])).toEqual({
+      type: 'live_overlay',
+      threadId: 'thread1',
+      messages: [],
+      streamingMessageId: null,
+    });
+  });
+
+  it('does NOT send an empty live_overlay when streaming with no overlay (cold-wake mid-turn)', () => {
+    // A cold-woken DO mid-turn has an empty overlay (the non-durable tail is not
+    // restored on wake) while isThreadStreaming() is still true from the durable
+    // active-turn marker. Folding the client's tail here would finalize a still-
+    // running turn and the next delta would start a duplicate overlay message, so
+    // we must NOT send the empty clear — the resuming turn's deltas drive the client.
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    fake.chatContext = { threadId: 'thread1', workspaceId: 'workspace1', orgId: 'org1' };
+    fake.liveMessages = [];
+    fake.liveStreamingMessageId = null;
+    fake.isThreadStreaming = vi.fn(() => true);
+    const connection = { send: vi.fn() } as any;
+
+    ChatThreadDO.prototype['sendLiveOverlayToConnection'].call(fake, connection);
+
+    expect(connection.send).not.toHaveBeenCalled();
+  });
+
+  it('sends the live overlay on a warm reconnect mid-turn regardless of streaming state', () => {
+    // A warm reconnect mid-turn has the in-memory overlay; send it so streaming
+    // resumes. isThreadStreaming() is true but the non-empty overlay short-circuits
+    // the idle gate.
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    fake.chatContext = { threadId: 'thread1', workspaceId: 'workspace1', orgId: 'org1' };
+    fake.liveMessages = [
+      { id: 'm1', thread_id: 'thread1', role: 'assistant', content: [], created_at: 1, isStreaming: true },
+    ];
+    fake.liveStreamingMessageId = 'm1';
+    fake.isThreadStreaming = vi.fn(() => true);
+    const connection = { send: vi.fn() } as any;
+
+    ChatThreadDO.prototype['sendLiveOverlayToConnection'].call(fake, connection);
+
+    expect(connection.send).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(connection.send.mock.calls[0][0])).toMatchObject({
+      type: 'live_overlay',
+      threadId: 'thread1',
+      streamingMessageId: 'm1',
+    });
+  });
+
   it('does NOT restore streaming from persisted state on wake (it is derived)', () => {
     const fake = Object.create(ChatThreadDO.prototype) as any;
     fake.liveStateHydrated = false;

@@ -908,6 +908,12 @@ export default function Chat({
   const lastAppliedErrorIdRef = useRef<string | null>(null);
   const pendingMessagesRef = useRef(pendingMessages);
   const acceptedPendingMessageIdsRef = useRef<Set<string>>(new Set());
+  // False until the Agent socket has opened once for this thread. A later open is a
+  // reconnect, after which we revalidate committed history so a turn that finished
+  // while we were disconnected reloads its final messages (the live overlay only
+  // carries the in-flight turn, so an idle reconnect would otherwise show the frozen
+  // pre-disconnect tail). Reset when the thread changes.
+  const hasAgentConnectedRef = useRef(false);
   const pendingThreadContextRef = useRef({
     workspaceId: resolvedWorkspaceId,
     threadId,
@@ -2435,6 +2441,16 @@ export default function Chat({
     if (!id) return;
     setReady(true);
 
+    // Reconnect (not the first open for this thread): a turn may have started,
+    // streamed, and finished entirely while we were disconnected. Revalidate so
+    // committed history reloads its final messages; the initial-messages effect
+    // ignores the result while a turn is still streaming or sends are pending, so
+    // this never clobbers an in-progress turn.
+    if (hasAgentConnectedRef.current) {
+      revalidator.revalidate();
+    }
+    hasAgentConnectedRef.current = true;
+
     const queuedMessages = pendingMessagesRef.current.filter((message) => {
       if (message.role !== "user") return false;
       const deliveryKey = message.clientMessageId ?? message.id;
@@ -2453,7 +2469,7 @@ export default function Chat({
       sendPendingMessageToAgent(message, id);
     }
     setPendingMessages((prev) => prev);
-  }, [isPendingMessageAccepted, sendPendingMessageToAgent, setMessages, setPendingMessages, threadId]);
+  }, [isPendingMessageAccepted, revalidator, sendPendingMessageToAgent, setMessages, setPendingMessages, threadId]);
 
   // Apply a terminal error (delivered through Agent state, not the websocket, so
   // it survives a reconnect after a disconnected/early failure).
@@ -2715,6 +2731,8 @@ export default function Chat({
   useEffect(() => {
     setReady(false);
     setAgentIsStreaming(false);
+    // New thread context: the next socket open is a first connect, not a reconnect.
+    hasAgentConnectedRef.current = false;
     // Drop the previous context's live tail. Rendered = mergeOverlay(messages,
     // liveOverlay), so leaving it here would append the old thread's streaming
     // assistant/tool tail onto the new thread until a fresh overlay arrives.

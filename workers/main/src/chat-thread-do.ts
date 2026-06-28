@@ -8333,9 +8333,29 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
 
   // Send the current overlay to a single (re)connecting client so a warm
   // reconnect recovers the in-progress turn without it being persisted in state.
+  //
+  // When there IS a live overlay (warm reconnect mid-turn), send it so streaming
+  // resumes. When the overlay is empty we send an empty snapshot ONLY if the thread
+  // is actually idle: if the turn finished while the client was disconnected (tabbed
+  // away past turn end) the turn-end empty-overlay broadcast reached nobody, so the
+  // reconnecting client still holds its pre-disconnect streaming tail — the empty
+  // snapshot is the signal it folds into committed history (isStreaming -> false) to
+  // clear that tail, otherwise the spinner is stranded forever.
+  //
+  // But an empty overlay does NOT imply idle: a cold-woken DO mid-turn also has an
+  // empty overlay (the non-durable tail isn't restored on wake) while
+  // isThreadStreaming() is still true from the durable active-turn marker. Folding
+  // the client's tail there would finalize a still-running turn and the next delta
+  // would start a fresh overlay message, duplicating/dropping partial output. So in
+  // that case keep the old no-op and let the resuming turn's deltas drive the client.
   private sendLiveOverlayToConnection(connection: Connection): void {
     const threadId = this.chatContext?.threadId;
-    if (!threadId || !Array.isArray(this.liveMessages) || this.liveMessages.length === 0) {
+    if (!threadId) {
+      return;
+    }
+    const hasOverlay =
+      Array.isArray(this.liveMessages) && this.liveMessages.length > 0;
+    if (!hasOverlay && this.isThreadStreaming()) {
       return;
     }
     try {
@@ -8343,7 +8363,7 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
         JSON.stringify({
           type: "live_overlay",
           threadId,
-          messages: this.liveMessages,
+          messages: hasOverlay ? this.liveMessages : [],
           streamingMessageId: this.liveStreamingMessageId,
         }),
       );
