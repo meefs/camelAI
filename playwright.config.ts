@@ -28,10 +28,8 @@ export default defineConfig({
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 2 : 0,
   workers: process.env.CI ? 1 : undefined,
-  // In CI each shard emits a self-contained "blob" report (which bundles its
-  // videos/traces); a final merge job stitches the shards into one HTML report.
-  // Locally we want the browsable HTML report directly.
-  reporter: process.env.CI ? 'blob' : 'html',
+  // One browsable HTML report (with videos), published to the viewer.
+  reporter: [['html', { open: 'never' }]],
   use: {
     baseURL:
       process.env.BASE_URL ||
@@ -68,7 +66,8 @@ export default defineConfig({
             // vite.config.ts's withLocalDevVars, so resolvePiModel sees it.
             command: 'bun run dev:local-auth',
             url: localBaseURL,
-            timeout: 180_000,
+            // CI cold-builds a sandbox Docker container on first boot, so allow time.
+            timeout: 300_000,
             reuseExistingServer: !process.env.CI,
             env: { TEST_LLM_REPLAY_URL: `http://localhost:${FAKE_LLM_PORT}` },
           },

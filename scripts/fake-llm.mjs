@@ -46,7 +46,9 @@ function lastUserText(body) {
 function replyText(body) {
   const content = lastUserText(body);
   const m = content.match(/reply with(?: exactly)?(?: one word)?:?\s*([^\n"]+)/i);
-  return m ? m[1].trim() : "Deterministic test reply from the fake LLM.";
+  // Prefix the echo so the assistant's reply is distinguishable from the user's
+  // own message in the transcript (tests assert on `[fake-llm] <token>`).
+  return m ? `[fake-llm] ${m[1].trim()}` : "Deterministic test reply from the fake LLM.";
 }
 
 function words(text) {

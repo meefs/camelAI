@@ -159,6 +159,10 @@ export default defineConfig(({ command }) => {
       configPath: './wrangler.jsonc',
       config: withLocalDevVars,
       viteEnvironment: { name: 'ssr' },
+      // E2E (E2E_LOCAL=1) runs fully local: disable remote bindings so wrangler
+      // dev doesn't open a remote proxy session (which needs a Cloudflare login
+      // the CI runner doesn't have). Everything resolves in local miniflare.
+      ...(process.env.E2E_LOCAL === '1' ? { remoteBindings: false } : {}),
     }),
     reactRouter(),
     tsconfigPaths({ ignoreConfigErrors: true }),
