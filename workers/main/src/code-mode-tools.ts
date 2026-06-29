@@ -1389,6 +1389,16 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
     return project;
   }
 
+  private async resolveDoBackedProjectForAction(args: Record<string, unknown>, action: string): Promise<WorkspaceProject> {
+    const project = await this.resolveProjectForAction(args);
+    if ((project.backend ?? "vm") !== "do-r2") {
+      throw new Error(
+        `${action} only supports DO-backed projects. Project "${project.name}" is backend: "${project.backend ?? "vm"}"; use legacy VM tools for this project or migrate it first.`,
+      );
+    }
+    return project;
+  }
+
   private async writeProjectScaffold(
     project: WorkspaceProject,
     options: { template?: unknown; force?: boolean } = {},
@@ -3282,7 +3292,7 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
   }
 
   private async buildProject(args: Record<string, unknown>): Promise<unknown> {
-    const project = await this.resolveProjectForAction(args);
+    const project = await this.resolveDoBackedProjectForAction(args, "build_project");
     const timeoutMs = typeof args.timeoutMs === "number" ? args.timeoutMs : undefined;
     const result = await runProjectBuild({
       projectId: project.id,
@@ -3298,7 +3308,7 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
   }
 
   private async addDependency(args: Record<string, unknown>): Promise<unknown> {
-    const project = await this.resolveProjectForAction(args);
+    const project = await this.resolveDoBackedProjectForAction(args, "add_dependency");
     const dependency = typeof args.dependency === "string" ? args.dependency : "";
     const result = await runProjectAddDependency({
       projectId: project.id,
@@ -3315,7 +3325,7 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
   }
 
   private async revertProject(args: Record<string, unknown>): Promise<unknown> {
-    const project = await this.resolveProjectForAction(args);
+    const project = await this.resolveDoBackedProjectForAction(args, "revert_project");
     const snapshotId = typeof args.snapshot_id === "string" ? args.snapshot_id.trim() : "";
     if (!snapshotId) throw new Error("snapshot_id is required");
     const files = new ProjectFilesystemClient(this.env, project.id);
@@ -3336,7 +3346,7 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
   }
 
   private async listCommits(args: Record<string, unknown>): Promise<unknown> {
-    const project = await this.resolveProjectForAction(args);
+    const project = await this.resolveDoBackedProjectForAction(args, "list_commits");
     const limit = typeof args.limit === "number" ? args.limit : 20;
     const snapshots = await new ProjectFilesystemClient(this.env, project.id).listSourceSnapshots(limit);
     return {
@@ -3354,7 +3364,7 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
   }
 
   private async deployProject(args: Record<string, unknown>): Promise<unknown> {
-    const project = await this.resolveProjectForAction(args);
+    const project = await this.resolveDoBackedProjectForAction(args, "deploy_project");
     const sandbox = this.projectBuildSandbox();
     const timeoutMs = typeof args.timeoutMs === "number" ? args.timeoutMs : undefined;
     const build = await runProjectBuild({

@@ -77,14 +77,22 @@ function base64(content: string): string {
   return btoa(unescape(encodeURIComponent(content)));
 }
 
-function createProjectToolFake({ deploy = false, projectFileEntries }: { deploy?: boolean; projectFileEntries?: Array<[string, string]> } = {}) {
+function createProjectToolFake({
+  deploy = false,
+  projectFileEntries,
+  backend = 'do-r2',
+}: {
+  deploy?: boolean;
+  projectFileEntries?: Array<[string, string]>;
+  backend?: 'do-r2' | 'vm';
+} = {}) {
   const project = {
     id: 'project-1',
     workspaceId: 'workspace1',
     name: 'Demo App',
     description: 'Demo project',
     defaultVmId: 'main',
-    backend: 'do-r2',
+    backend,
     createdAt: '2026-01-01T00:00:00.000Z',
     updatedAt: '2026-01-01T00:00:00.000Z',
   };
@@ -5365,6 +5373,33 @@ describe('ChatThreadDO Pi turn handling', () => {
       cwd: '/workspace/project-1',
       env: expect.objectContaining({ CAMELAI_PROJECT_ID: 'project-1', CAMELAI_BUILD_TIMEOUT_MS: '5000' }),
     }));
+  });
+
+  it('rejects DO-only project actions for legacy VM-backed projects', async () => {
+    const { fake, sandbox, projectStub } = createProjectToolFake({ backend: 'vm' });
+
+    await expect(CodeModeToolsBinding.prototype.callTool.call(fake, 'build_project', {
+      project: 'Demo App',
+    })).rejects.toThrow('build_project only supports DO-backed projects');
+    await expect(CodeModeToolsBinding.prototype.callTool.call(fake, 'deploy_project', {
+      project: 'Demo App',
+    })).rejects.toThrow('deploy_project only supports DO-backed projects');
+    await expect(CodeModeToolsBinding.prototype.callTool.call(fake, 'add_dependency', {
+      project: 'Demo App',
+      dependency: 'zod',
+    })).rejects.toThrow('add_dependency only supports DO-backed projects');
+    await expect(CodeModeToolsBinding.prototype.callTool.call(fake, 'list_commits', {
+      project: 'Demo App',
+    })).rejects.toThrow('list_commits only supports DO-backed projects');
+    await expect(CodeModeToolsBinding.prototype.callTool.call(fake, 'revert_project', {
+      project: 'Demo App',
+      snapshot_id: 'a'.repeat(64),
+    })).rejects.toThrow('revert_project only supports DO-backed projects');
+
+    expect(sandbox.exec).not.toHaveBeenCalled();
+    expect(projectStub.projectListFiles).not.toHaveBeenCalled();
+    expect(projectStub.projectWriteFile).not.toHaveBeenCalled();
+    expect(projectStub.projectRestoreSourceSnapshot).not.toHaveBeenCalled();
   });
 
   it('creates new code-mode projects as DO-backed projects', async () => {
