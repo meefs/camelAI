@@ -86,6 +86,95 @@ describe("deployWorkerModulesDirect", () => {
     expect(form.get("index.js")).toBeInstanceOf(Blob);
   });
 
+  it("normalizes wrangler durable object migrations for first deploy", async () => {
+    const fetcher = vi.fn(async (input: string | URL | Request) => {
+      const url = String(input);
+      if (url.endsWith("/scripts/demo-app--acme")) {
+        return Response.json({ success: false, errors: [{ code: 10092, message: "not found" }], result: null }, { status: 404 });
+      }
+      return Response.json({ success: true, result: { id: "version-1" } });
+    });
+
+    await deployWorkerModulesDirect(env, {
+      scriptName: "demo-app",
+      hostname: "camelai.dev",
+      identity,
+      metadata: {
+        main_module: "index.js",
+        migrations: [{ tag: "v1", new_sqlite_classes: ["CounterDO"] }],
+      },
+      modules: [{ name: "index.js", contentType: "application/javascript+module", content: "export default {};" }],
+    }, { fetcher: fetcher as unknown as typeof fetch });
+
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    const form = fetcher.mock.calls[1]![1]?.body as FormData;
+    const metadata = JSON.parse(await (form.get("metadata") as Blob).text());
+    expect(metadata.migrations).toEqual({
+      new_tag: "v1",
+      steps: [{ new_sqlite_classes: ["CounterDO"] }],
+    });
+  });
+
+  it("skips durable object migrations that are already applied", async () => {
+    const fetcher = vi.fn(async (input: string | URL | Request) => {
+      const url = String(input);
+      if (url.endsWith("/scripts/demo-app--acme")) {
+        return Response.json({ success: true, result: { script: { migration_tag: "v2" } } });
+      }
+      return Response.json({ success: true, result: { id: "version-1" } });
+    });
+
+    await deployWorkerModulesDirect(env, {
+      scriptName: "demo-app",
+      hostname: "camelai.dev",
+      identity,
+      metadata: {
+        main_module: "index.js",
+        migrations: [
+          { tag: "v1", new_sqlite_classes: ["CounterDO"] },
+          { tag: "v2", new_sqlite_classes: ["SessionDO"] },
+        ],
+      },
+      modules: [{ name: "index.js", contentType: "application/javascript+module", content: "export default {};" }],
+    }, { fetcher: fetcher as unknown as typeof fetch });
+
+    const form = fetcher.mock.calls[1]![1]?.body as FormData;
+    const metadata = JSON.parse(await (form.get("metadata") as Blob).text());
+    expect(metadata.migrations).toBeUndefined();
+  });
+
+  it("uploads only pending durable object migration steps after the current tag", async () => {
+    const fetcher = vi.fn(async (input: string | URL | Request) => {
+      const url = String(input);
+      if (url.endsWith("/scripts/demo-app--acme")) {
+        return Response.json({ success: true, result: { script: { migration_tag: "v1" } } });
+      }
+      return Response.json({ success: true, result: { id: "version-1" } });
+    });
+
+    await deployWorkerModulesDirect(env, {
+      scriptName: "demo-app",
+      hostname: "camelai.dev",
+      identity,
+      metadata: {
+        main_module: "index.js",
+        migrations: [
+          { tag: "v1", new_sqlite_classes: ["CounterDO"] },
+          { tag: "v2", new_sqlite_classes: ["SessionDO"] },
+        ],
+      },
+      modules: [{ name: "index.js", contentType: "application/javascript+module", content: "export default {};" }],
+    }, { fetcher: fetcher as unknown as typeof fetch });
+
+    const form = fetcher.mock.calls[1]![1]?.body as FormData;
+    const metadata = JSON.parse(await (form.get("metadata") as Blob).text());
+    expect(metadata.migrations).toEqual({
+      old_tag: "v1",
+      new_tag: "v2",
+      steps: [{ new_sqlite_classes: ["SessionDO"] }],
+    });
+  });
+
   it("uploads build assets natively and publishes the self-host manifest after script upload succeeds", async () => {
     const kv = new Map<string, string>();
     const r2 = new Map<string, { body: string | Uint8Array; options?: unknown }>();

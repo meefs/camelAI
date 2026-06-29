@@ -101,6 +101,12 @@ type AssetUploadResult = {
   jwt?: string;
 };
 
+type DirectWorkerUploadMigrations = {
+  old_tag?: string;
+  new_tag: string;
+  steps: Array<Record<string, unknown>>;
+};
+
 type CloudflareResultRead<T> = {
   result: T | null;
   errorText?: string;
@@ -140,8 +146,17 @@ export async function deployWorkerModulesDirect(
     warnings.push(`Deploy asset rollback cache unavailable: ${errorMessage(error)}`);
   }
   const bindings = normalizedDirectBindings(request.metadata);
+  const migrations = await migrationsForDirectDeploy(
+    accountId,
+    dispatchNamespace,
+    dispatchScriptName,
+    request.metadata,
+    cfApiToken,
+    options.fetcher ?? fetch,
+  );
   const metadata: DirectWorkerMetadata = {
     ...request.metadata,
+    migrations,
     assets: nativeAssets
       ? { jwt: nativeAssets.jwt }
       : undefined,
@@ -212,6 +227,100 @@ export async function deployWorkerModulesDirect(
     ...(warnings.length > 0 ? { warnings } : {}),
     ...(response.ok ? { result: body } : { error: typeof body === "string" ? body : JSON.stringify(body) }),
   };
+}
+
+async function migrationsForDirectDeploy(
+  accountId: string,
+  dispatchNamespace: string,
+  dispatchScriptName: string,
+  metadata: DirectWorkerMetadata,
+  cfApiToken: string,
+  fetcher: typeof fetch,
+): Promise<DirectWorkerMetadata["migrations"]> {
+  const configMigrations = metadata.migrations;
+  if (!Array.isArray(configMigrations) || configMigrations.length === 0) {
+    return configMigrations;
+  }
+
+  const migrationTags = configMigrations.map((migration) => {
+    if (!migration || typeof migration !== "object" || Array.isArray(migration)) {
+      throw new Error("Deploy migrations must be objects");
+    }
+    const tag = (migration as Record<string, unknown>).tag;
+    if (typeof tag !== "string" || !tag.trim()) {
+      throw new Error("Deploy migration entries must include a string tag");
+    }
+    return tag;
+  });
+  const latestTag = migrationTags[migrationTags.length - 1]!;
+  const currentTag = await readCurrentWorkerMigrationTag(accountId, dispatchNamespace, dispatchScriptName, cfApiToken, fetcher);
+  if (currentTag) {
+    const currentIndex = migrationTags.findIndex((tag) => tag === currentTag);
+    if (currentIndex === migrationTags.length - 1) return undefined;
+    const pendingMigrations = currentIndex === -1
+      ? configMigrations
+      : configMigrations.slice(currentIndex + 1);
+    return {
+      old_tag: currentTag,
+      new_tag: latestTag,
+      steps: migrationStepsForUpload(pendingMigrations),
+    };
+  }
+
+  return {
+    new_tag: latestTag,
+    steps: migrationStepsForUpload(configMigrations),
+  };
+}
+
+function migrationStepsForUpload(migrations: unknown[]): Array<Record<string, unknown>> {
+  return migrations.map((migration) => {
+    const { tag: _tag, ...step } = migration as Record<string, unknown>;
+    return step;
+  });
+}
+
+async function readCurrentWorkerMigrationTag(
+  accountId: string,
+  dispatchNamespace: string,
+  dispatchScriptName: string,
+  cfApiToken: string,
+  fetcher: typeof fetch,
+): Promise<string | undefined> {
+  const url = `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(accountId)}` +
+    `/workers/dispatch/namespaces/${encodeURIComponent(dispatchNamespace)}` +
+    `/scripts/${encodeURIComponent(dispatchScriptName)}`;
+  const response = await fetcher(url, {
+    method: "GET",
+    headers: { Authorization: `Bearer ${cfApiToken}` },
+  });
+  const body = await readJsonOrText(response);
+  if (!response.ok) {
+    if (response.status === 404 || cloudflareErrorCodes(body).some((code) => code === 10092)) return undefined;
+    throw new Error(`Failed to read existing Worker migration tag: ${cloudflareBodyText(body)}`);
+  }
+  if (!body || typeof body !== "object" || Array.isArray(body)) return undefined;
+  const result = (body as { result?: unknown }).result;
+  const script = result && typeof result === "object" && !Array.isArray(result) && "script" in result
+    ? (result as { script?: unknown }).script
+    : result;
+  if (!script || typeof script !== "object" || Array.isArray(script)) return undefined;
+  const migrationTag = (script as { migration_tag?: unknown }).migration_tag;
+  return typeof migrationTag === "string" && migrationTag.trim() ? migrationTag.trim() : undefined;
+}
+
+function cloudflareErrorCodes(body: unknown): number[] {
+  if (!body || typeof body !== "object" || Array.isArray(body)) return [];
+  const errors = (body as { errors?: unknown }).errors;
+  if (!Array.isArray(errors)) return [];
+  return errors.map((error) => {
+    if (!error || typeof error !== "object" || Array.isArray(error)) return undefined;
+    return (error as { code?: unknown }).code;
+  }).filter((code): code is number => typeof code === "number");
+}
+
+function cloudflareBodyText(body: unknown): string {
+  return typeof body === "string" ? body : JSON.stringify(body);
 }
 
 function mapDirectDispatchBindings(
