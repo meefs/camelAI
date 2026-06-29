@@ -101,6 +101,11 @@ type AssetUploadResult = {
   jwt?: string;
 };
 
+type CloudflareResultRead<T> = {
+  result: T | null;
+  errorText?: string;
+};
+
 export async function deployWorkerModulesDirect(
   env: DirectDispatchDeployEnv,
   request: DirectDispatchDeployRequest,
@@ -244,7 +249,7 @@ async function uploadNativeWorkerAssets(
 
   const entries = await Promise.all(assets.map(async (asset) => ({
     asset,
-    path: normalizeSelfhostAssetPath(asset.path),
+    path: `/${normalizeSelfhostAssetPath(asset.path)}`,
     hash: await workerAssetHash(asset),
   })));
   const manifest: Record<string, { hash: string; size: number }> = {};
@@ -264,11 +269,11 @@ async function uploadNativeWorkerAssets(
     body: JSON.stringify({ manifest }),
   });
   const sessionBody = await readCloudflareResult<AssetUploadSessionResult>(sessionResponse);
-  if (!sessionResponse.ok || !sessionBody || typeof sessionBody === "string") {
-    throw new Error(`Asset upload session failed: ${typeof sessionBody === "string" ? sessionBody : JSON.stringify(sessionBody)}`);
+  if (!sessionResponse.ok || !sessionBody.result) {
+    throw new Error(`Asset upload session failed: ${sessionBody.errorText ?? "missing result"}`);
   }
-  const uploadJwt = sessionBody.jwt;
-  const buckets = sessionBody.buckets ?? [];
+  const uploadJwt = sessionBody.result.jwt;
+  const buckets = sessionBody.result.buckets ?? [];
   if (!uploadJwt) throw new Error("Asset upload session did not return an upload token");
   if (buckets.length === 0) return { jwt: uploadJwt, assetCount: assets.length };
 
@@ -292,10 +297,10 @@ async function uploadNativeWorkerAssets(
       body: form,
     });
     const uploadBody = await readCloudflareResult<AssetUploadResult>(uploadResponse);
-    if (!uploadResponse.ok || !uploadBody || typeof uploadBody === "string") {
-      throw new Error(`Asset upload failed: ${typeof uploadBody === "string" ? uploadBody : JSON.stringify(uploadBody)}`);
+    if (!uploadResponse.ok || !uploadBody.result) {
+      throw new Error(`Asset upload failed: ${uploadBody.errorText ?? "missing result"}`);
     }
-    completionJwt = uploadBody.jwt ?? completionJwt;
+    completionJwt = uploadBody.result.jwt ?? completionJwt;
   }
   if (!completionJwt) throw new Error("Asset upload completed without a completion token");
   return { jwt: completionJwt, assetCount: assets.length };
@@ -599,10 +604,17 @@ async function readJsonOrText(response: Response): Promise<unknown> {
   return response.text().catch(() => "");
 }
 
-async function readCloudflareResult<T>(response: Response): Promise<T | string | null> {
+async function readCloudflareResult<T>(response: Response): Promise<CloudflareResultRead<T>> {
   const body = await readJsonOrText(response);
   if (body && typeof body === "object" && !Array.isArray(body) && "result" in body) {
-    return (body as { result?: T | null }).result ?? null;
+    const result = (body as { result?: T | null }).result ?? null;
+    return {
+      result,
+      ...(!response.ok || result == null ? { errorText: JSON.stringify(body) } : {}),
+    };
   }
-  return body as T | string | null;
+  return {
+    result: response.ok ? body as T : null,
+    ...(!response.ok ? { errorText: typeof body === "string" ? body : JSON.stringify(body) } : {}),
+  };
 }

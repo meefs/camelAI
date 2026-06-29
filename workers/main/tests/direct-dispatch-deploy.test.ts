@@ -125,8 +125,8 @@ describe("deployWorkerModulesDirect", () => {
     expect(sessionUrl).toBe("https://api.cloudflare.com/client/v4/accounts/account-id/workers/dispatch/namespaces/dispatch-ns/scripts/demo-app--acme/assets-upload-session");
     expect(sessionInit).toMatchObject({ method: "POST" });
     const sessionBody = JSON.parse(sessionInit?.body as string);
-    expect(sessionBody.manifest["index.html"]).toMatchObject({ size: 5 });
-    const assetHash = sessionBody.manifest["index.html"].hash;
+    expect(sessionBody.manifest["/index.html"]).toMatchObject({ size: 5 });
+    const assetHash = sessionBody.manifest["/index.html"].hash;
     const [, uploadInit] = fetcher.mock.calls[1]!;
     expect((uploadInit?.headers as Record<string, string>).Authorization).toBe("Bearer upload-jwt");
     const uploadForm = uploadInit?.body as FormData;
@@ -241,6 +241,34 @@ describe("deployWorkerModulesDirect", () => {
     expect(String(fetcher.mock.calls[2]![0])).toBe("https://api.cloudflare.com/client/v4/accounts/account-id/workers/dispatch/namespaces/dispatch-ns/scripts/demo-app--acme");
     const metadata = JSON.parse(await ((fetcher.mock.calls[2]![1]?.body as FormData).get("metadata") as Blob).text());
     expect(metadata.assets).toEqual({ jwt: "assets-jwt" });
+  });
+
+  it("includes Cloudflare error bodies when asset upload session returns result null", async () => {
+    const fetcher = vi.fn(async (input: string | URL | Request) => {
+      const url = String(input);
+      if (url.endsWith("/assets-upload-session")) {
+        return Response.json({
+          success: false,
+          errors: [{ code: 10001, message: "upload session denied" }],
+          messages: [],
+          result: null,
+        }, { status: 400 });
+      }
+      return Response.json({ success: true });
+    });
+
+    await expect(deployWorkerModulesDirect({
+      ...env,
+      APP_KV: { put: vi.fn(async () => undefined) },
+      R2_BUCKET: { put: vi.fn(async () => undefined) },
+    }, {
+      scriptName: "demo-app",
+      hostname: "camelai.dev",
+      identity,
+      metadata: { main_module: "index.js", assets: { directory: "../client" } },
+      modules: [{ name: "index.js", contentType: "application/javascript+module", content: "export default {};" }],
+      assets: [{ path: "index.html", content: new TextEncoder().encode("hello"), contentType: "text/html; charset=utf-8" }],
+    }, { fetcher: fetcher as unknown as typeof fetch })).rejects.toThrow(/upload session denied/);
   });
 
   it("rolls back by replaying a cached deploy artifact", async () => {
