@@ -34,7 +34,7 @@ import { CodeModeScheduledPrompts } from "./code-mode-scheduled-prompts";
 import { CodeModeDeterministicAutomations } from "./code-mode-deterministic-automations";
 import { CodeModeIntegrations } from "./code-mode-integrations";
 import { createSignedToken } from "./signed-tokens";
-import { collectWorkerBundleFromSandbox, runProjectAddDependency, runProjectBuild, type ProjectBuildSandboxLike } from "./project-build-service";
+import { collectWorkerBundleFromSandbox, projectBuildSandboxKey, runProjectAddDependency, runProjectBuild, type ProjectBuildSandboxLike } from "./project-build-service";
 import { deployWorkerModulesDirect, rollbackWorkerDeployFromArtifactCache } from "./direct-dispatch-deploy";
 import { handleDeploySideEffects } from "./services/deploy";
 import { editAutomationVirtualFile, listAutomationVirtualFiles, normalizeAutomationVirtualPath, readAutomationVirtualFile, writeAutomationVirtualFile } from "./deterministic-automation-virtual-files";
@@ -1668,6 +1668,9 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
     if (!name) throw new Error("project is required for location='project'");
     const project = await this.workspaceFs.getProjectByName(name);
     if (!project) throw new Error(`Project not found: ${name}`);
+    if ((project.backend ?? "vm") !== "do-r2") {
+      throw new Error(`Project "${project.name}" is backend: "${project.backend ?? "vm"}"; location: "project" only supports DO-backed projects. Use location: "vm" for legacy projects or migrate it first.`);
+    }
     return new ProjectFilesystemClient(this.env, project.id);
   }
 
@@ -1675,13 +1678,13 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
     return new PiContainerTools(await this.projectFileStore(args), { images: this.env.IMAGES });
   }
 
-  private projectBuildSandbox(): ProjectBuildSandboxLike {
+  private projectBuildSandbox(projectId: string): ProjectBuildSandboxLike {
     const { orgId } = this.ctx.props;
     if (!orgId) throw new Error("Project builds require org scope");
     if (!this.env.PROJECT_BUILD_SANDBOX) {
       throw new Error("PROJECT_BUILD_SANDBOX container binding is not configured");
     }
-    return getSandbox(this.env.PROJECT_BUILD_SANDBOX, orgId, {
+    return getSandbox(this.env.PROJECT_BUILD_SANDBOX, projectBuildSandboxKey(orgId, projectId), {
       normalizeId: true,
       transport: "rpc",
     }) as unknown as ProjectBuildSandboxLike;
@@ -3604,7 +3607,7 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
       const result = await runProjectBuild({
         projectId: project.id,
         files: new ProjectFilesystemClient(this.env, project.id),
-        sandbox: this.projectBuildSandbox(),
+        sandbox: this.projectBuildSandbox(project.id),
         timeoutMs,
       });
       return {
@@ -3624,7 +3627,7 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
         dependency,
         dev: args.dev === true,
         files: new ProjectFilesystemClient(this.env, project.id),
-        sandbox: this.projectBuildSandbox(),
+        sandbox: this.projectBuildSandbox(project.id),
       });
       return {
         ...result,
@@ -3676,7 +3679,7 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
   private async deployProject(args: Record<string, unknown>): Promise<unknown> {
     return withProjectBuildServiceErrorMapping(async () => {
       const project = await this.resolveDoBackedProjectForAction(args, "deploy_project");
-      const sandbox = this.projectBuildSandbox();
+      const sandbox = this.projectBuildSandbox(project.id);
       const timeoutMs = typeof args.timeoutMs === "number" ? args.timeoutMs : undefined;
       const build = await runProjectBuild({
         projectId: project.id,
@@ -3752,9 +3755,24 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
       hostname === "::1" ||
       hostname.endsWith(".exe.xyz");
     if (!isLocalMainWorker) return [];
+    if (this.isRemoteDispatcherHostConfigured()) return [];
     return [
       "App deployed successfully. If the app URL is unreachable in local dev with `chiridion-dispatcher-local` not found, start the local dispatcher worker (`wrangler dev -c workers/dispatcher/wrangler.jsonc --env local`) and retry the URL.",
     ];
+  }
+
+  private isRemoteDispatcherHostConfigured(): boolean {
+    const dispatchNamespace = this.env.CF_DISPATCH_NAMESPACE?.trim();
+    if (!dispatchNamespace || !dispatchNamespace.startsWith("chiridion-platform") || dispatchNamespace === "chiridion-platform-local") return false;
+    const domains = [this.env.LOCAL_APP_VANITY_DOMAIN, this.env.LOCAL_APP_IFRAME_DOMAIN]
+      .map((value) => typeof value === "string" ? value.trim().toLowerCase() : "")
+      .filter(Boolean);
+    return domains.some((domain) =>
+      domain === "camelai.app" ||
+      domain.endsWith(".camelai.app") ||
+      domain === "apps.camelai.dev" ||
+      domain.endsWith(".camelai.dev"),
+    );
   }
 
   private async rollbackDeploy(args: Record<string, unknown>): Promise<unknown> {
@@ -3899,8 +3917,13 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
     }
 
     let deletedFileEntries = 0;
+    let deletedSourceSnapshots = 0;
+    let deletedSourceSnapshotBlobs = 0;
     for (const project of doBackedTargets) {
-      deletedFileEntries += await this.deleteDoBackedProjectFiles(project);
+      const cleanup = await this.deleteDoBackedProjectFiles(project);
+      deletedFileEntries += cleanup.fileEntries;
+      deletedSourceSnapshots += cleanup.sourceSnapshots;
+      deletedSourceSnapshotBlobs += cleanup.sourceSnapshotBlobs;
     }
     const cleanup = doBackedTargets.length > 0
       ? await this.workspaceFs.removeProjects(doBackedTargets.map((project) => project.id))
@@ -3911,6 +3934,8 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
       success: true,
       deleted: deletedNames,
       deleted_file_entries: deletedFileEntries,
+      deleted_source_snapshots: deletedSourceSnapshots,
+      deleted_source_snapshot_blobs: deletedSourceSnapshotBlobs,
       message:
         deletedNames.length === 1
           ? `Deleted project "${deletedNames[0]}"`
@@ -3918,12 +3943,12 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
     };
   }
 
-  private async deleteDoBackedProjectFiles(project: WorkspaceProject): Promise<number> {
+  private async deleteDoBackedProjectFiles(project: WorkspaceProject): Promise<{ fileEntries: number; sourceSnapshots: number; sourceSnapshotBlobs: number }> {
     const files = new ProjectFilesystemClient(this.env, project.id);
-    const listing = await files.listFiles("/", { includeHidden: true, limit: 50_000 });
+    const listing = await files.listFiles("/", { recursive: true, includeHidden: true, limit: 50_000 });
     if (!listing.success) {
       const notFound = typeof listing.error === "string" && /not found/i.test(listing.error);
-      if (notFound) return 0;
+      if (notFound) return { fileEntries: 0, sourceSnapshots: 0, sourceSnapshotBlobs: 0 };
       throw new Error(listing.error || `Failed to list project files for ${project.name}`);
     }
     let deleted = 0;
@@ -3934,7 +3959,12 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
       }
       deleted += 1;
     }
-    return deleted;
+    const snapshots = await files.deleteSourceSnapshots();
+    return {
+      fileEntries: deleted,
+      sourceSnapshots: snapshots.snapshotsDeleted,
+      sourceSnapshotBlobs: snapshots.blobsDeleted,
+    };
   }
 
   private chatContextFromProps(): ChatContextState {

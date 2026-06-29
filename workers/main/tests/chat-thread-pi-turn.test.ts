@@ -171,6 +171,7 @@ function createProjectToolFake({
       totalBytes: 96,
       entries: [],
     }]),
+    projectDeleteSourceSnapshots: vi.fn(async () => ({ snapshotsDeleted: 1, blobsDeleted: 2 })),
   };
   const sandboxFiles = new Map<string, string>();
   const sandbox = {
@@ -5422,6 +5423,20 @@ describe('ChatThreadDO Pi turn handling', () => {
     expect(projectStub.projectRestoreSourceSnapshot).not.toHaveBeenCalled();
   });
 
+  it('rejects project-location file tools for legacy VM-backed projects', async () => {
+    const { fake, projectStub } = createProjectToolFake({ backend: 'vm' });
+
+    await expect(CodeModeToolsBinding.prototype.callTool.call(fake, 'read', {
+      location: 'project',
+      project: 'Demo App',
+      path: '/package.json',
+    })).rejects.toThrow('location: "project" only supports DO-backed projects');
+
+    expect(projectStub.projectReadFile).not.toHaveBeenCalled();
+    expect(projectStub.projectListFiles).not.toHaveBeenCalled();
+    expect(projectStub.projectWriteFile).not.toHaveBeenCalled();
+  });
+
   it('creates new code-mode projects as DO-backed projects', async () => {
     const { fake, workspaceStub, projectStub } = createProjectToolFake({ projectFileEntries: [] });
 
@@ -5682,6 +5697,8 @@ describe('ChatThreadDO Pi turn handling', () => {
       success: true,
       deleted: ['Demo App'],
       deleted_file_entries: 2,
+      deleted_source_snapshots: 1,
+      deleted_source_snapshot_blobs: 2,
       message: 'Deleted project "Demo App"',
     });
     expect(askUserQuestion).toHaveBeenCalledWith({
@@ -5692,6 +5709,8 @@ describe('ChatThreadDO Pi turn handling', () => {
     });
     expect(projectStub.projectDeleteFile).toHaveBeenCalledWith('/package.json', { recursive: true, force: true });
     expect(projectStub.projectDeleteFile).toHaveBeenCalledWith('/src/index.ts', { recursive: true, force: true });
+    expect(projectStub.projectListFiles).toHaveBeenCalledWith('/', { recursive: true, includeHidden: true, limit: 50000 });
+    expect(projectStub.projectDeleteSourceSnapshots).toHaveBeenCalled();
     expect(workspaceStub.removeProjects).toHaveBeenCalledWith(['project-1']);
     expect(projectVm.deleteProject).not.toHaveBeenCalled();
   });
@@ -5808,6 +5827,31 @@ describe('ChatThreadDO Pi turn handling', () => {
     expect((result as any).warnings).toEqual([
       expect.stringContaining('chiridion-dispatcher-local'),
     ]);
+  });
+
+  it('uses a configured remote dispatcher app domain in local dev without local dispatcher warning', async () => {
+    const { fake } = createProjectToolFake({ deploy: true });
+    fake.env = {
+      ...fake.env,
+      WORKER_BASE_URL: 'https://snowboard-owl.exe.xyz:3001',
+      CF_DISPATCH_NAMESPACE: 'chiridion-platform-evals',
+      CF_WORKER_NAME: 'chiridion-app-staging',
+      LOCAL_APP_VANITY_DOMAIN: 'evals.camelai.app',
+      LOCAL_APP_IFRAME_DOMAIN: 'apps.evals.camelai.dev',
+    };
+    const fetchMock = vi.fn(async () => Response.json({ success: true }, { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await CodeModeToolsBinding.prototype.callTool.call(fake, 'deploy_project', {
+      project: 'Demo App',
+    });
+
+    expect((result as any).appUrl).toBe('https://demo-app--test-org.evals.camelai.app');
+    expect((result as any).warnings).toBeUndefined();
+    expect(fetchMock).toHaveBeenCalledWith(
+      'https://api.cloudflare.com/client/v4/accounts/account/workers/dispatch/namespaces/chiridion-platform-evals/scripts/demo-app--test-org',
+      expect.objectContaining({ method: 'PUT' }),
+    );
   });
 
   it('serves deterministic automation virtual files through js_exec file tools', async () => {

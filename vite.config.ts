@@ -58,6 +58,10 @@ function withLocalDevVars(config: WorkerConfig): Partial<WorkerConfig> | void {
   const localAuthUserEmail = process.env.LOCAL_AUTH_USER_EMAIL;
   const localAuthUserName = process.env.LOCAL_AUTH_USER_NAME;
   const workerBaseUrl = process.env.WORKER_BASE_URL;
+  const cfDispatchNamespace = process.env.CF_DISPATCH_NAMESPACE;
+  const cfWorkerName = process.env.CF_WORKER_NAME;
+  const localAppVanityDomain = process.env.LOCAL_APP_VANITY_DOMAIN;
+  const localAppIframeDomain = process.env.LOCAL_APP_IFRAME_DOMAIN;
   const sandboxProxySecret = process.env.SANDBOX_PROXY_SECRET;
   const projectRuntimeServiceUrl = process.env.PROJECT_RUNTIME_SERVICE_URL;
   const projectRuntimeDockerProxyBaseUrl =
@@ -72,6 +76,10 @@ function withLocalDevVars(config: WorkerConfig): Partial<WorkerConfig> | void {
     !localAuthUserEmail &&
     !localAuthUserName &&
     !workerBaseUrl &&
+    !cfDispatchNamespace &&
+    !cfWorkerName &&
+    !localAppVanityDomain &&
+    !localAppIframeDomain &&
     !sandboxProxySecret &&
     !projectRuntimeServiceUrl &&
     !projectRuntimeDockerProxyBaseUrl &&
@@ -94,6 +102,10 @@ function withLocalDevVars(config: WorkerConfig): Partial<WorkerConfig> | void {
         : {}),
       ...(localAuthUserName ? { LOCAL_AUTH_USER_NAME: localAuthUserName } : {}),
       ...(workerBaseUrl ? { WORKER_BASE_URL: workerBaseUrl } : {}),
+      ...(cfDispatchNamespace ? { CF_DISPATCH_NAMESPACE: cfDispatchNamespace } : {}),
+      ...(cfWorkerName ? { CF_WORKER_NAME: cfWorkerName } : {}),
+      ...(localAppVanityDomain ? { LOCAL_APP_VANITY_DOMAIN: localAppVanityDomain } : {}),
+      ...(localAppIframeDomain ? { LOCAL_APP_IFRAME_DOMAIN: localAppIframeDomain } : {}),
       ...(sandboxProxySecret
         ? { SANDBOX_PROXY_SECRET: sandboxProxySecret }
         : {}),

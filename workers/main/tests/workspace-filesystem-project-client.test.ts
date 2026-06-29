@@ -23,6 +23,7 @@ describe("ProjectFilesystemClient", () => {
       projectCreateSourceSnapshot: vi.fn(async () => ({ id: "snapshot-1", createdAt: "2026-01-01T00:00:00.000Z", fileCount: 1, totalBytes: 5, entries: [] })),
       projectRestoreSourceSnapshot: vi.fn(async () => ({ id: "snapshot-1", createdAt: "2026-01-01T00:00:00.000Z", fileCount: 1, totalBytes: 5, entries: [] })),
       projectListSourceSnapshots: vi.fn(async () => []),
+      projectDeleteSourceSnapshots: vi.fn(async () => ({ snapshotsDeleted: 1, blobsDeleted: 1 })),
     };
     const workspaces = namespaceFor(stub);
     const client = new ProjectFilesystemClient(
@@ -36,6 +37,7 @@ describe("ProjectFilesystemClient", () => {
     await expect(client.createSourceSnapshot({ message: "deploy" })).resolves.toMatchObject({ id: "snapshot-1" });
     await expect(client.restoreSourceSnapshot("snapshot-1")).resolves.toMatchObject({ id: "snapshot-1" });
     await client.listSourceSnapshots(5);
+    await expect(client.deleteSourceSnapshots()).resolves.toEqual({ snapshotsDeleted: 1, blobsDeleted: 1 });
 
     expect(workspaces.idFromName).toHaveBeenCalledWith("ca-aaaaaaaa-aaaaaaaa-aaaaaaaa-aaaaaaaa-demo-app");
     expect(stub.projectWriteFile).toHaveBeenCalledWith("/src/index.ts", "hello");
@@ -44,6 +46,7 @@ describe("ProjectFilesystemClient", () => {
     expect(stub.projectCreateSourceSnapshot).toHaveBeenCalledWith({ message: "deploy" });
     expect(stub.projectRestoreSourceSnapshot).toHaveBeenCalledWith("snapshot-1");
     expect(stub.projectListSourceSnapshots).toHaveBeenCalledWith(5);
+    expect(stub.projectDeleteSourceSnapshots).toHaveBeenCalled();
     expect(stub).not.toHaveProperty("writeFile.mock");
   });
 
@@ -107,5 +110,12 @@ describe("ProjectFilesystemClient", () => {
     await expect(client.restoreSourceSnapshot(first.id)).resolves.toMatchObject({ id: first.id, fileCount: 2 });
     await expect(client.readFile("/src/index.ts")).resolves.toMatchObject({ content: "export const value = 1;\n" });
     await expect(client.readFile("/src/extra.ts")).resolves.toMatchObject({ success: false, code: "ENOENT" });
+
+    const firstBlobKey = first.entries[0]?.blobKey;
+    expect(firstBlobKey).toBeTruthy();
+    await expect((env as never as { R2_BUCKET: R2Bucket }).R2_BUCKET.head(firstBlobKey)).resolves.toBeTruthy();
+    await expect(client.deleteSourceSnapshots()).resolves.toEqual({ snapshotsDeleted: 1, blobsDeleted: 2 });
+    await expect(client.listSourceSnapshots(10)).resolves.toEqual([]);
+    await expect((env as never as { R2_BUCKET: R2Bucket }).R2_BUCKET.head(firstBlobKey)).resolves.toBeNull();
   });
 });

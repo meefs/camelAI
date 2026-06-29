@@ -59,7 +59,7 @@ export interface ProjectDependencyResult {
 }
 
 export interface ProjectBuildSandboxLike {
-  exec(command: string, options?: { cwd?: string; env?: Record<string, string | undefined> }): Promise<{
+  exec(command: string, options?: { cwd?: string; env?: Record<string, string | undefined>; timeoutMs?: number }): Promise<{
     success?: boolean;
     stdout?: string;
     stderr?: string;
@@ -188,6 +188,7 @@ export async function runProjectBuild(input: {
 
   const result = normalizeSandboxExecResult(await input.sandbox.exec("bun install && bun run build", {
     cwd: workdir,
+    timeoutMs,
     env: {
       CI: "1",
       WRANGLER_SEND_METRICS: "false",
@@ -250,6 +251,7 @@ export async function runProjectAddDependency(input: {
   const command = `bun add ${dev ? "-d " : ""}${shellQuote(dependency)}`;
   const result = normalizeSandboxExecResult(await input.sandbox.exec(command, {
     cwd: workdir,
+    timeoutMs: DEFAULT_BUILD_TIMEOUT_MS,
     env: {
       CI: "1",
       WRANGLER_SEND_METRICS: "false",
@@ -292,6 +294,10 @@ async function materializeProjectSourceFiles(
 
   for (const file of sourceFiles) {
     const targetPath = `${workdir}/${file.path}`;
+    const parent = dirnameSandboxPath(targetPath);
+    if (parent !== workdir) {
+      await sandbox.mkdir(parent, { recursive: true });
+    }
     await sandbox.writeFile(targetPath, bytesToBase64(file.bytes), { encoding: "base64" });
   }
 }
@@ -368,7 +374,7 @@ export class ProjectBuildService extends WorkerEntrypoint<ProjectBuildEnv, Proje
       throw new Error("Project build service requires org scope");
     }
     const projectId = normalizeProjectBuildId(request.projectId);
-    const sandbox = getSandbox(this.env.PROJECT_BUILD_SANDBOX, this.ctx.props.orgId, {
+    const sandbox = getSandbox(this.env.PROJECT_BUILD_SANDBOX, projectBuildSandboxKey(this.ctx.props.orgId, projectId), {
       normalizeId: true,
       transport: "rpc",
     }) as unknown as ProjectBuildSandboxLike;
@@ -388,7 +394,7 @@ export class ProjectBuildService extends WorkerEntrypoint<ProjectBuildEnv, Proje
       throw new Error("Project build service requires org scope");
     }
     const projectId = normalizeProjectBuildId(request.projectId);
-    const sandbox = getSandbox(this.env.PROJECT_BUILD_SANDBOX, this.ctx.props.orgId, {
+    const sandbox = getSandbox(this.env.PROJECT_BUILD_SANDBOX, projectBuildSandboxKey(this.ctx.props.orgId, projectId), {
       normalizeId: true,
       transport: "rpc",
     }) as unknown as ProjectBuildSandboxLike;
@@ -464,6 +470,13 @@ function normalizeProjectBuildId(value: string): string {
     .slice(0, 63);
   if (!normalized) throw new Error("projectId is required");
   return normalized;
+}
+
+export function projectBuildSandboxKey(orgId: string, projectId: string): string {
+  const org = orgId.trim().toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/^-+|-+$/g, "");
+  const project = normalizeProjectBuildId(projectId);
+  if (!org) throw new Error("orgId is required");
+  return `${org}-${project}`.slice(0, 128);
 }
 
 async function readSandboxFileBytes(sandbox: ProjectBuildSandboxLike, path: string): Promise<Uint8Array> {

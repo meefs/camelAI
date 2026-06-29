@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { collectWorkerBundleFromSandbox, runProjectAddDependency, runProjectBuild, type ProjectBuildSandboxLike } from "../src/project-build-service";
+import { collectWorkerBundleFromSandbox, projectBuildSandboxKey, runProjectAddDependency, runProjectBuild, type ProjectBuildSandboxLike } from "../src/project-build-service";
 import type { WorkspaceFileStoreLike, WorkspaceListEntry } from "../src/workspace-filesystem-do";
 
 function fakeFileStore(files: Record<string, string>): WorkspaceFileStoreLike {
@@ -76,6 +76,7 @@ describe("runProjectBuild", () => {
     expect(sandbox.exec).toHaveBeenCalledWith(expect.stringContaining("rm -rf"), { cwd: "/workspace" });
     expect(sandbox.exec).toHaveBeenCalledWith("bun install && bun run build", {
       cwd: "/workspace/demo-project",
+      timeoutMs: 15_000,
       env: {
         CI: "1",
         WRANGLER_SEND_METRICS: "false",
@@ -88,6 +89,7 @@ describe("runProjectBuild", () => {
       "/workspace/demo-project/package.json",
       "/workspace/demo-project/src/index.ts",
     ]);
+    expect(sandbox.mkdir).toHaveBeenCalledWith("/workspace/demo-project/src", { recursive: true });
   });
 
   it("returns structured failures from the build command", async () => {
@@ -173,6 +175,7 @@ describe("runProjectAddDependency", () => {
     });
     expect(sandbox.exec).toHaveBeenCalledWith("bun add -d '@types/node@^22'", {
       cwd: "/workspace/demo-project",
+      timeoutMs: 120_000,
       env: {
         CI: "1",
         WRANGLER_SEND_METRICS: "false",
@@ -221,6 +224,13 @@ describe("runProjectAddDependency", () => {
       dependency: "file:../local",
     })).rejects.toThrow("dependency must be an npm registry package spec");
     expect(sandbox.exec).not.toHaveBeenCalled();
+  });
+});
+
+describe("projectBuildSandboxKey", () => {
+  it("isolates build sandboxes by org and project", () => {
+    expect(projectBuildSandboxKey("Org A", "Demo_Project")).toBe("org-a-demo-project");
+    expect(projectBuildSandboxKey("Org B", "Demo_Project")).toBe("org-b-demo-project");
   });
 });
 

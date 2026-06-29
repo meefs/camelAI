@@ -546,6 +546,28 @@ export class WorkspaceFilesystemDO extends DurableObject<WorkspaceFilesystemEnv>
     return snapshots;
   }
 
+  async projectDeleteSourceSnapshots(): Promise<{ snapshotsDeleted: number; blobsDeleted: number }> {
+    const index = await this.ctx.storage.kv.get<string[]>(PROJECT_SNAPSHOT_INDEX_KEY) ?? [];
+    const blobKeys = new Set<string>();
+    let snapshotsDeleted = 0;
+    for (const id of index) {
+      const snapshot = await this.ctx.storage.kv.get<ProjectSourceSnapshot>(`${PROJECT_SNAPSHOT_PREFIX}${id}`);
+      if (!snapshot) continue;
+      snapshotsDeleted += 1;
+      for (const entry of snapshot.entries) {
+        if (entry.blobKey) blobKeys.add(entry.blobKey);
+      }
+      await this.ctx.storage.kv.delete(`${PROJECT_SNAPSHOT_PREFIX}${id}`);
+    }
+    await this.ctx.storage.kv.put(PROJECT_SNAPSHOT_INDEX_KEY, []);
+    let blobsDeleted = 0;
+    for (const key of blobKeys) {
+      await this.env.R2_BUCKET.delete(key);
+      blobsDeleted += 1;
+    }
+    return { snapshotsDeleted, blobsDeleted };
+  }
+
   async listProjects(): Promise<WorkspaceProject[]> {
     return nestProjectClones((await this.readProjects()).map(toPublicProject));
   }
@@ -1044,6 +1066,10 @@ export class ProjectFilesystemClient implements WorkspaceFileStoreLike {
 
   listSourceSnapshots(limit?: number): Promise<ProjectSourceSnapshot[]> {
     return this.stub.projectListSourceSnapshots(limit);
+  }
+
+  deleteSourceSnapshots(): Promise<{ snapshotsDeleted: number; blobsDeleted: number }> {
+    return this.stub.projectDeleteSourceSnapshots();
   }
 }
 

@@ -276,7 +276,16 @@ function validateArtifactCacheRecord(value: unknown, key: string): DirectDeployA
 function normalizedDirectBindings(metadata: DirectWorkerMetadata): WorkerBinding[] {
   const bindings = metadata.bindings ?? [];
   if (!metadata.assets || bindings.some((binding) => binding.type === "assets")) return bindings;
-  return [...bindings, { type: "assets", name: "ASSETS" }];
+  return [...bindings, { type: "assets", name: assetsBindingName(metadata.assets) }];
+}
+
+function assetsBindingName(assets: unknown): string {
+  if (assets && typeof assets === "object" && !Array.isArray(assets)) {
+    const record = assets as Record<string, unknown>;
+    const configured = record.binding ?? record.binding_name ?? record.name;
+    if (typeof configured === "string" && configured.trim()) return configured.trim();
+  }
+  return "ASSETS";
 }
 
 async function storeDirectAssets(

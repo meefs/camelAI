@@ -102,7 +102,7 @@ describe("deployWorkerModulesDirect", () => {
       identity,
       metadata: {
         main_module: "index.js",
-        assets: { directory: "../client" },
+        assets: { directory: "../client", binding: "STATIC_ASSETS" },
       },
       modules: [{ name: "index.js", contentType: "application/javascript+module", content: "export default {};" }],
       assets: [{ path: "index.html", content: new TextEncoder().encode("hello"), contentType: "text/html; charset=utf-8" }],
@@ -137,7 +137,7 @@ describe("deployWorkerModulesDirect", () => {
     expect(cachedRecord.modules).toEqual([{ name: "index.js", contentType: "application/javascript+module", contentBase64: "ZXhwb3J0IGRlZmF1bHQge307" }]);
     expect(cachedRecord.metadata.bindings).toContainEqual({
       type: "service",
-      name: "ASSETS",
+      name: "STATIC_ASSETS",
       service: "chiridion-main",
       entrypoint: "AssetsVirtualBinding",
       props: { appId: "demo-app--acme" },
@@ -148,7 +148,7 @@ describe("deployWorkerModulesDirect", () => {
     expect(metadata.assets).toBeUndefined();
     expect(metadata.bindings).toContainEqual({
       type: "service",
-      name: "ASSETS",
+      name: "STATIC_ASSETS",
       service: "chiridion-main",
       entrypoint: "AssetsVirtualBinding",
       props: { appId: "demo-app--acme" },
