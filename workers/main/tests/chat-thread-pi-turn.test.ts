@@ -94,6 +94,11 @@ function createProjectToolFake({ deploy = false, projectFileEntries }: { deploy?
   ]);
   const workspaceStub = {
     getProjectByName: vi.fn(async (name: string) => name === 'Demo App' ? project : null),
+    listProjectsForMigrationReset: vi.fn(async () => [project]),
+    removeProjects: vi.fn(async (ids: string[]) => ({
+      deleted: ids.includes(project.id) ? [project] : [],
+      retained: ids.includes(project.id) ? [] : [project],
+    })),
     createProject: vi.fn(async (input: any) => ({
       ...project,
       name: input.name,
@@ -130,6 +135,10 @@ function createProjectToolFake({ deploy = false, projectFileEntries }: { deploy?
     })),
     projectWriteFile: vi.fn(async (path: string, content: string) => {
       projectFiles.set(path, content);
+      return { success: true };
+    }),
+    projectDeleteFile: vi.fn(async (path: string) => {
+      projectFiles.delete(path);
       return { success: true };
     }),
     projectCreateSourceSnapshot: vi.fn(async () => ({
@@ -5545,6 +5554,39 @@ describe('ChatThreadDO Pi turn handling', () => {
         total_bytes: 96,
       }],
     });
+  });
+
+  it('deletes DO-backed projects without invoking VM cleanup', async () => {
+    const { fake, workspaceStub, projectStub } = createProjectToolFake();
+    const projectVm = {
+      deleteProject: vi.fn(),
+    };
+    const askUserQuestion = vi.fn(async ({ questions }: any) => ({
+      [questions[0].question]: 'Delete',
+    }));
+    Object.defineProperty(fake, 'projectVm', { value: projectVm });
+    fake.askUserQuestion = askUserQuestion;
+
+    const result = await CodeModeToolsBinding.prototype.callTool.call(fake, 'delete_project', {
+      project: 'Demo App',
+    });
+
+    expect(result).toMatchObject({
+      success: true,
+      deleted: ['Demo App'],
+      deleted_file_entries: 2,
+      message: 'Deleted project "Demo App"',
+    });
+    expect(askUserQuestion).toHaveBeenCalledWith({
+      questions: [expect.objectContaining({
+        question: expect.stringContaining('project files and metadata'),
+        header: 'Delete project?',
+      })],
+    });
+    expect(projectStub.projectDeleteFile).toHaveBeenCalledWith('/package.json', { recursive: true, force: true });
+    expect(projectStub.projectDeleteFile).toHaveBeenCalledWith('/src/index.ts', { recursive: true, force: true });
+    expect(workspaceStub.removeProjects).toHaveBeenCalledWith(['project-1']);
+    expect(projectVm.deleteProject).not.toHaveBeenCalled();
   });
 
   it('includes deploy artifact metadata in list_apps results', async () => {

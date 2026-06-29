@@ -3505,18 +3505,14 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
     }
 
     const confirmedTargets = collectProjectDeletionTargets(projects, target);
-    const doBackedTargets = confirmedTargets.filter((project) => project.backend === "do-r2");
-    if (doBackedTargets.length > 0) {
-      throw new Error(
-        `Project deletion for DO-backed projects is not yet supported without legacy VM cleanup: ${doBackedTargets.map((project) => project.name).join(", ")}`,
-      );
-    }
     const cloneNames = confirmedTargets
       .filter((project) => project.id !== target.id)
       .map((project) => project.name);
+    const hasDoBackedTargets = confirmedTargets.some((project) => project.backend === "do-r2");
+    const storageLabel = hasDoBackedTargets ? "project files" : "VM checkouts";
     const question = cloneNames.length > 0
-      ? `Delete project "${target.name}" and its ${cloneNames.length} clone project(s) (${cloneNames.join(", ")})? This removes their VM checkouts and metadata. This cannot be undone.`
-      : `Delete project "${target.name}"? This removes its VM checkout and metadata. This cannot be undone.`;
+      ? `Delete project "${target.name}" and its ${cloneNames.length} clone project(s) (${cloneNames.join(", ")})? This removes their ${storageLabel} and metadata. This cannot be undone.`
+      : `Delete project "${target.name}"? This removes its ${storageLabel} and metadata. This cannot be undone.`;
     const confirmation = await confirmDestructiveAction(
       (questionArgs) => this.askUserQuestion(questionArgs),
       {
@@ -3541,8 +3537,60 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
       };
     }
 
-    const confirmedProjectIds = orderProjectsForRuntimeDelete(confirmedTargets);
-    return this.projectVm.deleteProject({ projectIds: confirmedProjectIds });
+    const vmTargets = confirmedTargets.filter((project) => project.backend !== "do-r2");
+    const doBackedTargets = confirmedTargets.filter((project) => project.backend === "do-r2");
+
+    if (vmTargets.length > 0 && doBackedTargets.length === 0) {
+      return this.projectVm.deleteProject({ projectIds: orderProjectsForRuntimeDelete(vmTargets) });
+    }
+
+    const deletedNames: string[] = [];
+    if (vmTargets.length > 0) {
+      const result = await this.projectVm.deleteProject({ projectIds: orderProjectsForRuntimeDelete(vmTargets) }) as { deleted?: unknown };
+      if (Array.isArray(result.deleted)) {
+        deletedNames.push(...result.deleted.filter((name): name is string => typeof name === "string"));
+      } else {
+        deletedNames.push(...vmTargets.map((project) => project.name));
+      }
+    }
+
+    let deletedFileEntries = 0;
+    for (const project of doBackedTargets) {
+      deletedFileEntries += await this.deleteDoBackedProjectFiles(project);
+    }
+    const cleanup = doBackedTargets.length > 0
+      ? await this.workspaceFs.removeProjects(doBackedTargets.map((project) => project.id))
+      : { deleted: [] };
+    deletedNames.push(...cleanup.deleted.map((project) => project.name));
+
+    return {
+      success: true,
+      deleted: deletedNames,
+      deleted_file_entries: deletedFileEntries,
+      message:
+        deletedNames.length === 1
+          ? `Deleted project "${deletedNames[0]}"`
+          : `Deleted ${deletedNames.length} projects: ${deletedNames.join(", ")}`,
+    };
+  }
+
+  private async deleteDoBackedProjectFiles(project: WorkspaceProject): Promise<number> {
+    const files = new ProjectFilesystemClient(this.env, project.id);
+    const listing = await files.listFiles("/", { includeHidden: true, limit: 50_000 });
+    if (!listing.success) {
+      const notFound = typeof listing.error === "string" && /not found/i.test(listing.error);
+      if (notFound) return 0;
+      throw new Error(listing.error || `Failed to list project files for ${project.name}`);
+    }
+    let deleted = 0;
+    for (const entry of listing.files) {
+      const result = await files.deleteFile(entry.absolutePath, { recursive: true, force: true });
+      if (!result.success) {
+        throw new Error(result.error || `Failed to delete project file ${entry.absolutePath}`);
+      }
+      deleted += 1;
+    }
+    return deleted;
   }
 
   private chatContextFromProps(): ChatContextState {
