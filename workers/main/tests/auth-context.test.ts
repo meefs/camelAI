@@ -454,6 +454,50 @@ describe('Auth context building (parallel DO calls)', () => {
       });
     });
 
+    it('records deploy versions with artifact metadata', async () => {
+      const email = testEmail();
+      const { userId } = await createUser(testEnv, email, 'password', 'Deploy User');
+      const { org, defaultWorkspaceId } = await createOrg(testEnv, 'Deploy History Org', userId);
+      const orgStub = testEnv.ORG.get(testEnv.ORG.idFromName(org.id));
+
+      await orgStub.registerWorkerScript(
+        'demo-app',
+        defaultWorkspaceId,
+        userId,
+        'wrangler.jsonc',
+        'project-1',
+        'sha-1',
+        'deploy-artifacts/key-1.json',
+      );
+      await orgStub.registerWorkerScript(
+        'demo-app',
+        defaultWorkspaceId,
+        userId,
+        'wrangler.jsonc',
+        'project-1',
+        'sha-2',
+        'deploy-artifacts/key-2.json',
+      );
+
+      const versions = await orgStub.listWorkerScriptDeployVersions('demo-app');
+      expect(versions).toHaveLength(2);
+      expect(versions).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          script_name: 'demo-app',
+          workspace_id: defaultWorkspaceId,
+          created_by: userId,
+          config_path: 'wrangler.jsonc',
+          project_id: 'project-1',
+          commit_sha: 'sha-1',
+          artifact_cache_key: 'deploy-artifacts/key-1.json',
+        }),
+        expect.objectContaining({
+          commit_sha: 'sha-2',
+          artifact_cache_key: 'deploy-artifacts/key-2.json',
+        }),
+      ]));
+    });
+
     it('hydrates legacy WorkspaceDO restrictions when workspace access has not been migrated', async () => {
       const ownerEmail = testEmail();
       const memberEmail = testEmail();

@@ -50,6 +50,8 @@ export interface Env
   WORKER_LOGS: DurableObjectNamespace<WorkerLogsDO>;
   // Sealed DuckDB analytics container for the warehouse tier (per-workspace).
   WAREHOUSE_SANDBOX?: DurableObjectNamespace<import('./warehouse-sandbox.js').WarehouseSandbox>;
+  // Warm native-toolchain build container for DO+R2-backed projects (per-org).
+  PROJECT_BUILD_SANDBOX?: DurableObjectNamespace<import('./project-build-sandbox.js').ProjectBuildSandbox>;
   // Auto-expiring R2 staging bucket for warehouse connection exports.
   WAREHOUSE_EXPORT_BUCKET?: R2Bucket;
   SESSIONS: KVNamespace;
@@ -94,6 +96,7 @@ export interface Env
   BILLING_TRIAL_CREDIT_CENTS?: string;
   BILLING_SUBSCRIPTION_INCLUDED_CREDIT_CENTS?: string;
   LOCAL_AUTH_BYPASS?: string;
+  LOCAL_AUTH_BYPASS_HOSTS?: string;
   LOCAL_AUTH_USER_EMAIL?: string;
   LOCAL_AUTH_USER_NAME?: string;
   RUN_AGENT_EVALS?: string;

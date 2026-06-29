@@ -75,6 +75,12 @@
       "instance_type": "standard-4",
       "max_instances": 10,
     },
+    {
+      "class_name": "ProjectBuildSandbox",
+      "image": "./workers/main/project-build-sandbox.Dockerfile",
+      "instance_type": "standard-4",
+      "max_instances": 25,
+    },
   ],
   "artifacts": [
     { "binding": "ARTIFACTS", "namespace": "staging" },
@@ -143,6 +149,7 @@
 	      { "name": "WORKER_LOGS", "class_name": "WorkerLogsDO" },
 	      { "name": "WORKSPACE_FS", "class_name": "WorkspaceFilesystemDO" },
 	      { "name": "WAREHOUSE_SANDBOX", "class_name": "WarehouseSandbox" },
+	      { "name": "PROJECT_BUILD_SANDBOX", "class_name": "ProjectBuildSandbox" },
 	    ],
 	  },
   "workflows": [
@@ -157,7 +164,8 @@
     { "tag": "v28" },
     { "tag": "v29", "new_sqlite_classes": ["TelegramRegistryDO", "SlackTeamRegistryDO"] },
 	    { "tag": "v30", "new_sqlite_classes": ["WorkspaceFilesystemDO"] },
-	    { "tag": "v31", "new_sqlite_classes": ["MigrationPlanningAgent"] },
+    { "tag": "v31", "new_sqlite_classes": ["MigrationPlanningAgent"] },
     { "tag": "v32", "new_sqlite_classes": ["WarehouseSandbox"] },
+	    { "tag": "v33", "new_sqlite_classes": ["ProjectBuildSandbox"] },
 	  ],
 	}

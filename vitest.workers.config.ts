@@ -114,6 +114,11 @@ export default defineConfig({
             useSQLite: true,
             container: { imageName: 'camelai-eval-sandbox:latest' },
           },
+          PROJECT_BUILD_SANDBOX: {
+            className: 'ProjectBuildSandbox',
+            useSQLite: true,
+            container: { imageName: 'camelai-eval-sandbox:latest' },
+          },
         },
         cachePersist: false,
         d1Persist: false,

@@ -16,7 +16,7 @@ const SCRIPT_PREFIX = 'script:';
 const SCRIPT_ORG_PREFIX_LEGACY = 'script_org:';
 
 export async function handleDeploySideEffects(env: Env, info: DeploySideEffectsInfo): Promise<void> {
-  const { scriptName, dispatchScriptName, orgId, orgSlug, workspaceId, hostname, threadId, projectId, configPath } = info;
+  const { scriptName, dispatchScriptName, orgId, orgSlug, workspaceId, hostname, threadId, projectId, configPath, commitSha, artifactCacheKey } = info;
   const orgStub = getOrgStub(env, orgId);
 
   // Register ownership (stores user-facing scriptName in OrgDO)
@@ -30,7 +30,7 @@ export async function handleDeploySideEffects(env: Env, info: DeploySideEffectsI
     } catch {}
   }
 
-  const script = await orgStub.registerWorkerScript(scriptName, workspaceId, createdBy, configPath, projectId);
+  const script = await orgStub.registerWorkerScript(scriptName, workspaceId, createdBy, configPath, projectId, commitSha, artifactCacheKey);
 
   // Store in KV with namespaced key: script:{script-name}--{org-slug}
   // This allows the dispatcher to look up access info by dispatchScriptName

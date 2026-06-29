@@ -1,7 +1,7 @@
 import type { Route } from './+types/workspaces.$id.projects.$project.fs.content.$';
 import { getEnv } from '@/lib/cloudflare.server';
 import { ProjectRuntimeServiceVmBridge } from '../../../workers/main/src/project-runtime-service-vm';
-import { WorkspaceFilesystemClient } from '../../../workers/main/src/workspace-filesystem-do';
+import { ProjectFilesystemClient, WorkspaceFilesystemClient } from '../../../workers/main/src/workspace-filesystem-do';
 import {
   normalizeWorkspacePath,
   requireWorkspaceAccess,
@@ -91,30 +91,53 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
 
     const path = decodeVmPath(rawFilePath);
     const env = getEnv(context);
-    const bridge = new ProjectRuntimeServiceVmBridge({
-      env,
-      workspace: new WorkspaceFilesystemClient(env as never, workspaceId),
-    });
-
-    let stream: { response: Response; path: string };
-    try {
-      stream = await bridge.readFileStream({
-        location: 'vm',
-        project,
-        path,
-      });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      if (message.includes('File not found')) {
-        return Response.json({ error: 'File not found' }, { status: 404 });
-      }
-      throw error;
+    const workspaceFs = new WorkspaceFilesystemClient(env as never, workspaceId);
+    const projectRecord = await workspaceFs.getProjectByName(project);
+    if (!projectRecord) {
+      return Response.json({ error: 'Project not found' }, { status: 404 });
     }
 
-    const filename = stream.path.split('/').filter(Boolean).pop() || 'file';
+    let body: ReadableStream<Uint8Array> | null;
+    let resolvedPath = path;
+    let contentLength: string | null = null;
+    if ((projectRecord.backend ?? 'vm') === 'do-r2') {
+      const projectFs = new ProjectFilesystemClient(env as never, projectRecord.id);
+      const result = await projectFs.readFileStream(path);
+      if (!result.success || !result.stream) {
+        return Response.json({ error: 'File not found' }, { status: 404 });
+      }
+      body = result.stream;
+      contentLength = typeof result.size === 'number' ? String(result.size) : null;
+    } else {
+      const bridge = new ProjectRuntimeServiceVmBridge({
+        env,
+        workspace: workspaceFs,
+      });
+      try {
+        const stream = await bridge.readFileStream({
+          location: 'vm',
+          project,
+          path,
+        });
+        body = stream.response.body;
+        resolvedPath = stream.path;
+        contentLength = stream.response.headers.get('Content-Length');
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (message.includes('File not found')) {
+          return Response.json({ error: 'File not found' }, { status: 404 });
+        }
+        throw error;
+      }
+    }
+
+    if (!body) {
+      return Response.json({ error: 'File not found' }, { status: 404 });
+    }
+
+    const filename = resolvedPath.split('/').filter(Boolean).pop() || 'file';
     const contentType = getMimeType(filename);
     const displayInline = shouldDisplayInline(contentType);
-    const contentLength = stream.response.headers.get('Content-Length');
 
     const headers: Record<string, string> = {
       'Content-Type': contentType,
@@ -125,12 +148,12 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
       headers['Content-Length'] = contentLength;
     }
 
-    return new Response(stream.response.body, { headers });
+    return new Response(body, { headers });
   } catch (error) {
     if (error instanceof Response) {
       return error;
     }
-    console.error('Error serving project VM content file:', error);
-    return Response.json({ error: 'Failed to serve project VM content file' }, { status: 500 });
+    console.error('Error serving project content file:', error);
+    return Response.json({ error: 'Failed to serve project content file' }, { status: 500 });
   }
 }

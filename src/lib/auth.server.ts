@@ -266,9 +266,14 @@ function envFlagEnabled(value: string | undefined): boolean {
   return ["1", "true", "yes", "on"].includes(value.trim().toLowerCase());
 }
 
-function isLocalhostRequest(request: Request): boolean {
+function isLocalhostRequest(request: Request, extraHosts?: string): boolean {
   const hostname = new URL(request.url).hostname;
-  return hostname === "localhost" || hostname === "127.0.0.1";
+  if (hostname === "localhost" || hostname === "127.0.0.1") return true;
+  return (extraHosts || "")
+    .split(",")
+    .map((host) => host.trim().toLowerCase())
+    .filter(Boolean)
+    .includes(hostname.toLowerCase());
 }
 
 async function getLocalAuthBypassSession(
@@ -277,11 +282,17 @@ async function getLocalAuthBypassSession(
 ): Promise<SessionContext | null> {
   const env = getEnv(context);
   if (
-    !isLocalhostRequest(request) ||
     !envFlagEnabled(
       getRuntimeEnvValue(
         env as unknown as Record<string, unknown>,
         "LOCAL_AUTH_BYPASS",
+      ),
+    ) ||
+    !isLocalhostRequest(
+      request,
+      getRuntimeEnvValue(
+        env as unknown as Record<string, unknown>,
+        "LOCAL_AUTH_BYPASS_HOSTS",
       ),
     )
   ) {

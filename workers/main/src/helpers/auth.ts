@@ -163,16 +163,21 @@ function envFlagEnabled(value: string | undefined): boolean {
   return ["1", "true", "yes", "on"].includes(value.trim().toLowerCase());
 }
 
-function isLocalhostRequest(req: Request): boolean {
+function isLocalhostRequest(req: Request, extraHosts?: string): boolean {
   const hostname = new URL(req.url).hostname;
-  return hostname === "localhost" || hostname === "127.0.0.1";
+  if (hostname === "localhost" || hostname === "127.0.0.1") return true;
+  return (extraHosts || "")
+    .split(",")
+    .map((host) => host.trim().toLowerCase())
+    .filter(Boolean)
+    .includes(hostname.toLowerCase());
 }
 
 async function getLocalAuthBypassSession(
   req: Request,
   env: Env,
 ): Promise<SessionData | null> {
-  if (!isLocalhostRequest(req) || !envFlagEnabled(env.LOCAL_AUTH_BYPASS)) {
+  if (!envFlagEnabled(env.LOCAL_AUTH_BYPASS) || !isLocalhostRequest(req, env.LOCAL_AUTH_BYPASS_HOSTS)) {
     return null;
   }
 

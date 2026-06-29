@@ -1,4 +1,4 @@
-export type FilePreviewSource = "workspace" | "upload" | "output" | "vm";
+export type FilePreviewSource = "workspace" | "project" | "upload" | "output" | "vm";
 
 export interface FilePreviewLinkTarget {
   source: FilePreviewSource;
@@ -145,12 +145,12 @@ export function buildFilePreviewLinkTarget(
     );
   }
 
-  if (location === "vm") {
+  if (location === "project" || location === "vm") {
     const project = getString(input.project);
     if (!project) return null;
     return withMetadata(
       {
-        source: "vm",
+        source: location,
         path: normalizedPath.absolutePath,
         project,
       },
@@ -179,6 +179,7 @@ export function buildFilePreviewLinkTarget(
 function isFilePreviewSource(value: unknown): value is FilePreviewSource {
   return (
     value === "workspace" ||
+    value === "project" ||
     value === "upload" ||
     value === "output" ||
     value === "vm"
@@ -192,7 +193,7 @@ function normalizeCanonicalTargetPath(
   const normalizedPath = normalizePathValue(path);
   if (!normalizedPath) return null;
 
-  if (source === "workspace" || source === "vm") {
+  if (source === "workspace" || source === "project" || source === "vm") {
     const filename = basename(normalizedPath.absolutePath);
     if (!filename) return null;
     return { path: normalizedPath.absolutePath, filename };
@@ -242,7 +243,7 @@ export function parseFilePreviewTargetFromToolResultText(
   if (!pathInfo) return null;
 
   const project = getString(targetRecord.project);
-  if (source === "vm" && !project) return null;
+  if ((source === "project" || source === "vm") && !project) return null;
 
   const filename = getString(targetRecord.filename) || pathInfo.filename;
   if (!filename) return null;

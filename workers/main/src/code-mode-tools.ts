@@ -6,13 +6,14 @@
 // ChatThreadDO is imported as a type only (for the chat-thread DO stub
 // signature), so there is no runtime import cycle with ./chat-thread-do.
 import { WorkerEntrypoint } from "cloudflare:workers";
+import { getSandbox } from "@cloudflare/sandbox";
 import { Agent, type Connection } from "agents";
 import { Type, type TSchema } from "typebox";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import type { OrgDO, WorkerScript } from "./auth";
 import type { WorkspaceDO } from "./workspace";
 import type { WorkspaceCronDO } from "./workspace-cron";
-import { WorkspaceFilesystemClient, normalizeWorkspacePath as normalizeDurableWorkspacePath, type WorkspaceProject, type WorkspaceProjectCloneSummary, projectNameKey } from "./workspace-filesystem-do";
+import { ProjectFilesystemClient, WorkspaceFilesystemClient, normalizeWorkspacePath as normalizeDurableWorkspacePath, type WorkspaceFileStoreLike, type WorkspaceProject, type WorkspaceProjectCloneSummary, projectNameKey } from "./workspace-filesystem-do";
 import { ProjectRuntimeServiceVmBridge } from "./project-runtime-service-vm";
 import type { RuntimeCallArtifact, RuntimeCallArtifactKind } from "../../../src/lib/runtime-artifacts";
 import { getPreferredAppUrl } from "../../../src/lib/app-url";
@@ -33,6 +34,9 @@ import { CodeModeScheduledPrompts } from "./code-mode-scheduled-prompts";
 import { CodeModeDeterministicAutomations } from "./code-mode-deterministic-automations";
 import { CodeModeIntegrations } from "./code-mode-integrations";
 import { createSignedToken } from "./signed-tokens";
+import { collectWorkerBundleFromSandbox, runProjectAddDependency, runProjectBuild, type ProjectBuildSandboxLike } from "./project-build-service";
+import { deployWorkerModulesDirect, rollbackWorkerDeployFromArtifactCache } from "./direct-dispatch-deploy";
+import { handleDeploySideEffects } from "./services/deploy";
 import { editAutomationVirtualFile, listAutomationVirtualFiles, normalizeAutomationVirtualPath, readAutomationVirtualFile, writeAutomationVirtualFile } from "./deterministic-automation-virtual-files";
 import type { DynamicIntegrationSchema } from "../../../src/lib/integration-registry";
 import type { ChatThreadDO } from "./chat-thread-do";
@@ -113,7 +117,7 @@ interface CodeModeR2Path {
   relativePath: string;
 }
 
-type CodeModeFileLocation = "workspace" | "vm" | "r2";
+type CodeModeFileLocation = "workspace" | "project" | "vm" | "r2";
 
 interface CodeModeMoveEndpoint {
   location: CodeModeFileLocation;
@@ -351,16 +355,17 @@ const CODE_MODE_CONTAINER_TOOL_DEFINITIONS = CODE_MODE_CONTAINER_TOOL_NAMES.map(
 const MOVE_ENDPOINT_PARAMETERS = Type.Object({
   location: Type.Union([
     Type.Literal("workspace"),
+    Type.Literal("project"),
     Type.Literal("vm"),
     Type.Literal("r2"),
   ], {
-    description: "Required filesystem location: workspace, vm, or r2.",
+    description: "Required filesystem location: workspace, project, vm, or r2.",
   }),
   path: Type.String({
     description: "Path at that location. R2 paths must be uploads/<path>, outputs/<path>, or tmp/<path> with no leading slash.",
   }),
   project: Type.Optional(Type.String({
-    description: "Required when location is vm; unique workspace project name.",
+    description: "Required when location is project or vm; unique workspace project name.",
   })),
   content_type: Type.Optional(Type.String({
     description: "Destination R2 content type override.",
@@ -369,7 +374,7 @@ const MOVE_ENDPOINT_PARAMETERS = Type.Object({
 
 export const BASH_TOOL = codeModeTool(
   "bash",
-  "Run a bash command in a project VM. Requires the unique workspace project name and a concise description for the UI. Commands run from /workspace by default; pass cwd only for subdirectories in that checkout. Arguments: { command, project, description, cwd?, timeoutMs?, timeoutSeconds?, env? }.",
+  "Run a bash command in a legacy project VM only. DO-backed projects reject this; use project file tools plus build_project, deploy_project, and add_dependency instead. Requires the unique workspace project name and a concise description for the UI. Commands run from /workspace by default; pass cwd only for subdirectories in that checkout. Arguments: { command, project, description, cwd?, timeoutMs?, timeoutSeconds?, env? }.",
   Type.Object({
     command: Type.String(),
     project: Type.String(),
@@ -533,7 +538,7 @@ const CODE_MODE_TOOL_REGISTRY: CodeModeToolRegistration[] = [
   BASH_TOOL,
   codeModeTool(
     "vm_exec",
-    "Run a command in a project VM. Prefer the js_exec vm.exec({ command, project, ...options }) facade; vm.exec(command, options) also works. Commands run from /workspace by default; pass cwd only for subdirectories in that checkout. Arguments: { command, project, location?: 'vm', cwd?, timeoutMs?, timeoutSeconds?, env? }.",
+    "Run a command in a legacy project VM only. DO-backed projects reject this; use project file tools plus build_project, deploy_project, and add_dependency instead. Prefer the js_exec vm.exec({ command, project, ...options }) facade for legacy projects; vm.exec(command, options) also works. Commands run from /workspace by default; pass cwd only for subdirectories in that checkout. Arguments: { command, project, location?: 'vm', cwd?, timeoutMs?, timeoutSeconds?, env? }.",
     Type.Object({
       command: Type.String(),
       ...vmTargetParameters(),
@@ -545,7 +550,7 @@ const CODE_MODE_TOOL_REGISTRY: CodeModeToolRegistration[] = [
   ),
   codeModeTool(
     "move",
-    "Transfer files between any two explicit locations: workspace, vm, or r2. Copies by default and overwrites the destination. Use deleteSource: true only when you intentionally want a destructive move after a successful copy. Arguments: { source: { location, path, project? }, destination: { location, path, project?, content_type? }, deleteSource? }.",
+    "Transfer files between any two explicit locations: workspace, project, vm, or r2. Copies by default and overwrites the destination. Use deleteSource: true only when you intentionally want a destructive move after a successful copy. Arguments: { source: { location, path, project? }, destination: { location, path, project?, content_type? }, deleteSource? }.",
     Type.Object({
       source: MOVE_ENDPOINT_PARAMETERS,
       destination: MOVE_ENDPOINT_PARAMETERS,
@@ -557,15 +562,30 @@ const CODE_MODE_TOOL_REGISTRY: CodeModeToolRegistration[] = [
   ),
   codeModePassthroughTool(
     "list_projects",
-    "List known git/compute projects for this workspace as a nested tree. Includes project descriptions. Top-level rows are source projects; clone projects are nested under each source project's clones[] with cloneCount, like worktrees attached to the same remote. Arguments: {}.",
+    "List known projects for this workspace as a nested tree, including each project's backend. Use location='project' and platform build/deploy actions for backend='do-r2'; location='vm'/bash are legacy-only. Includes project descriptions. Top-level rows are source projects; clone projects are nested under each source project's clones[] with cloneCount. Arguments: {}.",
   ),
   codeModePassthroughTool(
     "create_project",
-    "Create a project with one Artifacts Git repo and one default main VM checkout. Project names must be unique within the workspace. New projects require a concise description explaining what the project is for. Arguments: { name, description }.",
+    "Create a new DO-backed project and seed a deployable Worker scaffold. Project names must be unique within the workspace. New projects require a concise description explaining what the project is for. The default scaffold includes package.json with scripts.build, wrangler.jsonc, tsconfig.json, src/index.ts, and a build-manifest writer that emits build/server/wrangler.json for deploy_project. Arguments: { name, description, template? }.",
     Type.Object({
       name: Type.String(),
       description: Type.String(),
+      template: Type.Optional(Type.Union([Type.Literal("worker"), Type.Literal("api")], {
+        description: "Optional scaffold template. Defaults to worker. api currently uses the same deployable Worker scaffold.",
+      })),
     }, { additionalProperties: false }),
+  ),
+  codeModePassthroughTool(
+    "scaffold_project",
+    "Seed or repair the standard DO-backed Worker scaffold in an existing project. By default it does not overwrite existing files; pass force: true to replace scaffold paths. Arguments: { project, template?, force? }.",
+    Type.Object({
+      project: Type.String(),
+      template: Type.Optional(Type.Union([Type.Literal("worker"), Type.Literal("api")], {
+        description: "Optional scaffold template. Defaults to worker. api currently uses the same deployable Worker scaffold.",
+      })),
+      force: Type.Optional(Type.Boolean({ description: "Overwrite existing scaffold files. Defaults to false." })),
+    }, { additionalProperties: false }),
+    { category: "workspace", sideEffect: true },
   ),
   codeModePassthroughTool(
     "set_project_description",
@@ -580,7 +600,7 @@ const CODE_MODE_TOOL_REGISTRY: CodeModeToolRegistration[] = [
   ),
   codeModePassthroughTool(
     "clone_project",
-    "Clone an existing project's VM filesystem into a fresh project VM while keeping the same Artifacts Git remote. This captures current VM files, including uncommitted changes. Optional description overrides the generated clone description. Arguments: { sourceProject, name?, description? }.",
+    "Legacy VM-only clone: clone an existing legacy project's VM filesystem into a fresh project VM while keeping the same Artifacts Git remote. DO-backed source projects reject this; create a new project or use list_commits/revert_project for DO-backed source history. Optional description overrides the generated clone description. Arguments: { sourceProject, name?, description? }.",
     Type.Object({
       sourceProject: Type.String(),
       name: Type.Optional(Type.String()),
@@ -589,6 +609,73 @@ const CODE_MODE_TOOL_REGISTRY: CodeModeToolRegistration[] = [
     {
       sideEffect: true,
     },
+  ),
+  codeModeTool(
+    "build_project",
+    "Build a DO-backed project with the platform build pipeline. This does not deploy. Arguments: { project, timeoutMs? }.",
+    Type.Object({
+      project: Type.String(),
+      timeoutMs: Type.Optional(Type.Number()),
+    }, { additionalProperties: false }),
+    { category: "workspace", sideEffect: true },
+  ),
+  codeModeTool(
+    "add_dependency",
+    "Add one npm registry dependency to a DO-backed project with the platform dependency pipeline. This runs a fixed bun add command and persists package.json plus bun.lock back to project storage. Arguments: { project, dependency, dev? }.",
+    Type.Object({
+      project: Type.String(),
+      dependency: Type.String(),
+      dev: Type.Optional(Type.Boolean()),
+    }, { additionalProperties: false }),
+    { category: "workspace", sideEffect: true },
+  ),
+  codeModeTool(
+    "revert_project",
+    "Restore a DO-backed project's source files to a previous source snapshot. Use snapshot ids from list_deploy_versions commit_sha/source snapshot values. Set deploy=true to rebuild and redeploy after restoring. Arguments: { project, snapshot_id, deploy?, script_name? }.",
+    Type.Object({
+      project: Type.String(),
+      snapshot_id: Type.String(),
+      deploy: Type.Optional(Type.Boolean()),
+      script_name: Type.Optional(Type.String()),
+    }, { additionalProperties: false }),
+    { category: "workspace", sideEffect: true },
+  ),
+  codeModeTool(
+    "list_commits",
+    "List source snapshots for a DO-backed project, newest first. These snapshot ids are the current platform source-version keys and can be passed to revert_project. Arguments: { project, limit? }.",
+    Type.Object({
+      project: Type.String(),
+      limit: Type.Optional(Type.Number()),
+    }, { additionalProperties: false }),
+    { category: "workspace" },
+  ),
+  codeModeTool(
+    "deploy_project",
+    "Build and deploy a DO-backed project through the platform direct deploy path. Arguments: { project, script_name?, timeoutMs? }.",
+    Type.Object({
+      project: Type.String(),
+      script_name: Type.Optional(Type.String()),
+      timeoutMs: Type.Optional(Type.Number()),
+    }, { additionalProperties: false }),
+    { category: "workspace", sideEffect: true },
+  ),
+  codeModeTool(
+    "rollback_deploy",
+    "Rollback a deployed app by re-uploading a cached deploy artifact without rebuilding. Use artifact_cache_key to target a specific cached artifact; otherwise the app's latest registered artifact is used. Arguments: { script_name, artifact_cache_key? }.",
+    Type.Object({
+      script_name: Type.String(),
+      artifact_cache_key: Type.Optional(Type.String()),
+    }, { additionalProperties: false }),
+    { category: "apps", sideEffect: true },
+  ),
+  codeModeTool(
+    "list_deploy_versions",
+    "List cached deploy versions for an app, newest first. Use artifact_cache_key values with rollback_deploy to restore a version without rebuilding. Arguments: { script_name, limit? }.",
+    Type.Object({
+      script_name: Type.String(),
+      limit: Type.Optional(Type.Number()),
+    }, { additionalProperties: false }),
+    { category: "apps" },
   ),
   codeModePassthroughTool(
     "delete_project",
@@ -635,7 +722,7 @@ const CODE_MODE_TOOL_REGISTRY: CodeModeToolRegistration[] = [
   ),
   codeModePassthroughTool(
     "set_preview",
-    "Set the active preview to exactly one real target: an app or a file. App example: { app_name: 'poll-maker' }. Durable workspace file example: { location: 'workspace', path: '/notes.md' }. Project VM file example: { location: 'vm', project: 'menu-app', path: 'index.html' }. R2 file example: { location: 'r2', path: 'outputs/report.html' }. Successful file previews are validated before the preview changes. Arguments: { script_name?, app_name?, is_public?, path?, content_type?, location?, project? }.",
+    "Set the active preview to exactly one real target: an app or a file. App example: { app_name: 'poll-maker' }. Durable workspace file example: { location: 'workspace', path: '/notes.md' }. DO-backed project file example: { location: 'project', project: 'menu-app', path: 'index.html' }. Legacy project VM file example: { location: 'vm', project: 'menu-app', path: 'index.html' }. R2 file example: { location: 'r2', path: 'outputs/report.html' }. Successful file previews are validated before the preview changes. Arguments: { script_name?, app_name?, is_public?, path?, content_type?, location?, project? }.",
     Type.Object({
       script_name: Type.Optional(Type.String()),
       app_name: Type.Optional(Type.String()),
@@ -644,6 +731,7 @@ const CODE_MODE_TOOL_REGISTRY: CodeModeToolRegistration[] = [
       content_type: Type.Optional(Type.String()),
       location: Type.Optional(Type.Union([
         Type.Literal("workspace"),
+        Type.Literal("project"),
         Type.Literal("vm"),
         Type.Literal("r2"),
       ])),
@@ -1002,13 +1090,13 @@ export const CODE_MODE_PI_PASSTHROUGH_TOOL_DEFINITIONS: CodeModeToolDefinition[]
 
 const FILE_TOOL_NAMES = new Set(["read", "write", "edit", "ls", "delete", "grep", "find"]);
 
-function requireFileLocation(toolName: string, args: Record<string, unknown>): "workspace" | "vm" | "r2" {
+function requireFileLocation(toolName: string, args: Record<string, unknown>): CodeModeFileLocation {
   const location = args.location;
-  if (location !== "workspace" && location !== "vm" && location !== "r2") {
-    throw new Error(`${toolName} requires an explicit location: "workspace", "vm", or "r2"`);
+  if (location !== "workspace" && location !== "project" && location !== "vm" && location !== "r2") {
+    throw new Error(`${toolName} requires an explicit location: "workspace", "project", "vm", or "r2"`);
   }
-  if (location === "vm" && (typeof args.project !== "string" || args.project.trim().length === 0)) {
-    throw new Error(`${toolName} with location "vm" requires a project name`);
+  if ((location === "project" || location === "vm") && (typeof args.project !== "string" || args.project.trim().length === 0)) {
+    throw new Error(`${toolName} with location "${location}" requires a project name`);
   }
   if ((toolName === "grep" || toolName === "find") && location === "r2") {
     throw new Error(`${toolName} does not support location "r2"; use ls/read for R2 objects`);
@@ -1020,8 +1108,27 @@ function hasVmTarget(args: Record<string, unknown>): boolean {
   return args.location === "vm";
 }
 
+function vmProjectName(args: Record<string, unknown>): string {
+  return typeof args.project === "string" ? args.project.trim() : "";
+}
+
+function hasProjectTarget(args: Record<string, unknown>): boolean {
+  return args.location === "project";
+}
+
 function hasR2Target(args: Record<string, unknown>): boolean {
   return args.location === "r2";
+}
+
+function normalizeDeployScriptName(value: unknown): string {
+  const normalized = String(value ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 48);
+  if (!normalized) throw new Error("script_name is required");
+  return normalized;
 }
 
 function projectForAgent(project: WorkspaceProject): Record<string, unknown> {
@@ -1029,6 +1136,7 @@ function projectForAgent(project: WorkspaceProject): Record<string, unknown> {
     name: project.name,
     description: project.description,
     kind: project.kind,
+    backend: project.backend ?? "vm",
     defaultVmId: project.defaultVmId,
     cloneSource: project.cloneSource
       ? {
@@ -1050,12 +1158,113 @@ function projectCloneForAgent(project: WorkspaceProjectCloneSummary): Record<str
   return {
     name: project.name,
     description: project.description,
+    backend: project.backend ?? "vm",
     defaultVmId: project.defaultVmId,
     artifactRemote: project.artifactRemote,
     artifactStatus: project.artifactStatus,
     createdAt: project.createdAt,
     updatedAt: project.updatedAt,
   };
+}
+
+type ProjectScaffoldTemplate = "worker" | "api";
+
+interface ProjectScaffoldResult {
+  template: ProjectScaffoldTemplate;
+  filesWritten: string[];
+  filesSkipped: string[];
+}
+
+function normalizeProjectScaffoldTemplate(value: unknown): ProjectScaffoldTemplate {
+  if (value === undefined || value === null || value === "" || value === "worker") return "worker";
+  if (value === "api") return "api";
+  if (value === "react-router") {
+    throw new Error("react-router scaffolding is not available for DO-backed projects yet; use template='worker' for the current deployable starter");
+  }
+  throw new Error('template must be "worker" or "api"');
+}
+
+function scaffoldPackageName(projectName: string): string {
+  return projectName
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 48) || "camelai-project";
+}
+
+function defaultWorkerScaffoldFiles(projectName: string, template: ProjectScaffoldTemplate): Array<{ path: string; content: string }> {
+  const packageName = scaffoldPackageName(projectName);
+  const scriptName = normalizeDeployScriptName(projectName);
+  const title = template === "api" ? "DO-backed API Worker" : "DO-backed Worker";
+  return [
+    {
+      path: "/package.json",
+      content: `${JSON.stringify({
+        name: packageName,
+        private: true,
+        type: "module",
+        scripts: {
+          build: "tsc --noEmit && bun build src/index.ts --target=browser --format=esm --outfile=build/server/index.js && bun scripts/write-build-manifest.mjs",
+          deploy: "wrangler deploy",
+        },
+        devDependencies: {
+          "@cloudflare/workers-types": "^4.20260629.1",
+          typescript: "^5.9.2",
+          wrangler: "^4.97.0",
+        },
+      }, null, 2)}\n`,
+    },
+    {
+      path: "/wrangler.jsonc",
+      content: `${JSON.stringify({
+        name: scriptName,
+        main: "src/index.ts",
+        compatibility_date: "2026-06-01",
+      }, null, 2)}\n`,
+    },
+    {
+      path: "/tsconfig.json",
+      content: `${JSON.stringify({
+        compilerOptions: {
+          target: "ES2022",
+          module: "ESNext",
+          moduleResolution: "Bundler",
+          lib: ["ES2022"],
+          types: ["@cloudflare/workers-types"],
+          strict: true,
+          skipLibCheck: true,
+          noEmit: true,
+        },
+        include: ["src/**/*.ts", "scripts/**/*.mjs"],
+      }, null, 2)}\n`,
+    },
+    {
+      path: "/src/index.ts",
+      content: `export interface Env {}\n\nexport default {\n  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {\n    const url = new URL(request.url);\n\n    if (url.pathname === "/health") {\n      return Response.json({ ok: true, project: ${JSON.stringify(packageName)} });\n    }\n\n    return new Response(${JSON.stringify(`Hello from ${projectName}!`)}, {\n      headers: { "content-type": "text/plain; charset=utf-8" },\n    });\n  },\n} satisfies ExportedHandler<Env>;\n`,
+    },
+    {
+      path: "/scripts/write-build-manifest.mjs",
+      content: [
+        `import { mkdir, readFile, writeFile } from "node:fs/promises";`,
+        ``,
+        `const config = JSON.parse(await readFile(new URL("../wrangler.jsonc", import.meta.url), "utf8"));`,
+        `const manifest = { ...config, main_module: "index.js" };`,
+        `delete manifest.main;`,
+        ``,
+        `await mkdir(new URL("../build/server", import.meta.url), { recursive: true });`,
+        `await writeFile(`,
+        `  new URL("../build/server/wrangler.json", import.meta.url),`,
+        "  `${JSON.stringify(manifest, null, 2)}\\n`,",
+        `);`,
+        ``,
+      ].join("\n"),
+    },
+    {
+      path: "/README.md",
+      content: `# ${projectName}\n\n${title} scaffolded by camelAI.\n\n## Commands\n\n- \`bun install\` installs explicit dev dependencies.\n- \`bun run build\` type-checks, bundles \`src/index.ts\`, and writes \`build/server/wrangler.json\` for the platform deploy pipeline.\n- \`bun run deploy\` is included for compatibility; camelAI's \`deploy_project\` uses the platform direct-deploy path instead of exposing Cloudflare credentials to this project.\n\nBuild scripts must declare every CLI they use in \`dependencies\` or \`devDependencies\`; package scripts can then resolve those binaries from \`node_modules/.bin\`.\n`,
+    },
+  ];
 }
 
 export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeToolsProps> {
@@ -1146,6 +1355,103 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
 
   private get piContainerTools(): PiContainerTools {
     return new PiContainerTools(this.workspaceFs, { images: this.env.IMAGES });
+  }
+
+  private async projectFileStore(args: Record<string, unknown>): Promise<ProjectFilesystemClient> {
+    const name = typeof args.project === "string" ? args.project.trim() : "";
+    if (!name) throw new Error("project is required for location='project'");
+    const project = await this.workspaceFs.getProjectByName(name);
+    if (!project) throw new Error(`Project not found: ${name}`);
+    return new ProjectFilesystemClient(this.env, project.id);
+  }
+
+  private async projectContainerTools(args: Record<string, unknown>): Promise<PiContainerTools> {
+    return new PiContainerTools(await this.projectFileStore(args), { images: this.env.IMAGES });
+  }
+
+  private projectBuildSandbox(): ProjectBuildSandboxLike {
+    const { orgId } = this.ctx.props;
+    if (!orgId) throw new Error("Project builds require org scope");
+    if (!this.env.PROJECT_BUILD_SANDBOX) {
+      throw new Error("PROJECT_BUILD_SANDBOX container binding is not configured");
+    }
+    return getSandbox(this.env.PROJECT_BUILD_SANDBOX, orgId, {
+      normalizeId: true,
+      transport: "rpc",
+    }) as unknown as ProjectBuildSandboxLike;
+  }
+
+  private async resolveProjectForAction(args: Record<string, unknown>): Promise<WorkspaceProject> {
+    const name = typeof args.project === "string" ? args.project.trim() : "";
+    if (!name) throw new Error("project is required");
+    const project = await this.workspaceFs.getProjectByName(name);
+    if (!project) throw new Error(`Project not found: ${name}`);
+    return project;
+  }
+
+  private async writeProjectScaffold(
+    project: WorkspaceProject,
+    options: { template?: unknown; force?: boolean } = {},
+  ): Promise<ProjectScaffoldResult> {
+    if ((project.backend ?? "vm") !== "do-r2") {
+      throw new Error(`Project "${project.name}" is not DO-backed; scaffold_project only supports backend: "do-r2"`);
+    }
+    const template = normalizeProjectScaffoldTemplate(options.template);
+    const files = defaultWorkerScaffoldFiles(project.name, template);
+    const fileStore = new ProjectFilesystemClient(this.env, project.id);
+    const filesWritten: string[] = [];
+    const filesSkipped: string[] = [];
+    for (const file of files) {
+      if (!options.force) {
+        const exists = await fileStore.exists(file.path);
+        if (exists.exists) {
+          filesSkipped.push(file.path);
+          continue;
+        }
+      }
+      const result = await fileStore.writeFile(file.path, file.content);
+      if (!result.success) throw new Error(result.error || `Failed to write scaffold file ${file.path}`);
+      filesWritten.push(file.path);
+    }
+    return { template, filesWritten, filesSkipped };
+  }
+
+  private async createProject(args: Record<string, unknown>): Promise<Record<string, unknown>> {
+    const project = await this.workspaceFs.createProject({ ...args, backend: "do-r2" });
+    const scaffold = await this.writeProjectScaffold(project, { template: args.template ?? "worker" });
+    return { ...projectForAgent(project), scaffold };
+  }
+
+  private async scaffoldProject(args: Record<string, unknown>): Promise<Record<string, unknown>> {
+    const project = await this.resolveProjectForAction(args);
+    const scaffold = await this.writeProjectScaffold(project, {
+      template: args.template ?? "worker",
+      force: args.force === true,
+    });
+    return {
+      success: true,
+      project: project.name,
+      backend: project.backend ?? "vm",
+      ...scaffold,
+    };
+  }
+
+  private async assertVmProjectAllowed(args: Record<string, unknown>, operation: string): Promise<void> {
+    const name = vmProjectName(args);
+    if (!name) throw new Error(`${operation} requires a project name for legacy VM access`);
+    const project = await this.workspaceFs.getProjectByName(name);
+    if (!project) throw new Error(`Project not found: ${name}`);
+    if (project.backend === "do-r2") {
+      throw new Error(
+        `Project "${project.name}" is DO-backed and cannot use legacy VM ${operation}. ` +
+          `Use location: "project" file tools plus build_project, deploy_project, add_dependency, list_commits, and revert_project instead.`,
+      );
+    }
+  }
+
+  private async assertVmEndpointAllowed(endpoint: CodeModeMoveEndpoint, operation: string): Promise<void> {
+    if (endpoint.location !== "vm") return;
+    await this.assertVmProjectAllowed({ project: endpoint.project }, operation);
   }
 
   private get projectVm(): ProjectRuntimeServiceVmBridge {
@@ -1789,16 +2095,16 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
     }
     const raw = value as Record<string, unknown>;
     const location = raw.location;
-    if (location !== "workspace" && location !== "vm" && location !== "r2") {
-      throw new Error(`${label}.location must be "workspace", "vm", or "r2"`);
+    if (location !== "workspace" && location !== "project" && location !== "vm" && location !== "r2") {
+      throw new Error(`${label}.location must be "workspace", "project", "vm", or "r2"`);
     }
     const path = typeof raw.path === "string" ? raw.path.trim().replace(/\\/g, "/") : "";
     if (!path) throw new Error(`${label}.path is required`);
     const project = typeof raw.project === "string" && raw.project.trim()
       ? raw.project.trim()
       : undefined;
-    if (location === "vm" && !project) {
-      throw new Error(`${label}.project is required when ${label}.location is "vm"`);
+    if ((location === "project" || location === "vm") && !project) {
+      throw new Error(`${label}.project is required when ${label}.location is "${location}"`);
     }
     const contentType = typeof raw.content_type === "string" && raw.content_type.trim()
       ? raw.content_type.trim()
@@ -1808,7 +2114,9 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
 
   private async collectMoveSourceFiles(source: CodeModeMoveEndpoint): Promise<{ files: CodeModeMoveFile[]; sourceIsDirectory: boolean }> {
     if (source.location === "workspace") return this.collectWorkspaceMoveFiles(source);
+    if (source.location === "project") return this.collectProjectMoveFiles(source);
     if (source.location === "vm") {
+      await this.assertVmEndpointAllowed(source, "file transfer");
       const stat = await this.projectVm.statPathForTransfer(source);
       const files = await this.projectVm.collectFilesForTransfer(source);
       return { files, sourceIsDirectory: stat.isDirectory };
@@ -1817,17 +2125,28 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
   }
 
   private async collectWorkspaceMoveFiles(source: CodeModeMoveEndpoint): Promise<{ files: CodeModeMoveFile[]; sourceIsDirectory: boolean }> {
+    return this.collectFileStoreMoveFiles(this.workspaceFs, source);
+  }
+
+  private async collectProjectMoveFiles(source: CodeModeMoveEndpoint): Promise<{ files: CodeModeMoveFile[]; sourceIsDirectory: boolean }> {
+    return this.collectFileStoreMoveFiles(await this.projectFileStore(source as unknown as Record<string, unknown>), source);
+  }
+
+  private async collectFileStoreMoveFiles(
+    fileStore: WorkspaceFileStoreLike,
+    source: CodeModeMoveEndpoint,
+  ): Promise<{ files: CodeModeMoveFile[]; sourceIsDirectory: boolean }> {
     const path = normalizeDurableWorkspacePath(source.path);
-    const exists = await this.workspaceFs.exists(path);
-    if (!exists.exists) throw new Error(`Workspace path not found: ${path}`);
+    const exists = await fileStore.exists(path);
+    if (!exists.exists) throw new Error(`Path not found: ${path}`);
     if (exists.isFile) {
       return {
         files: [{ path, relativePath: basenameForMove(path), size: exists.size, contentType: exists.mimeType }],
         sourceIsDirectory: false,
       };
     }
-    if (!exists.isDirectory) throw new Error(`Workspace path is not a file or directory: ${path}`);
-    const listing = await this.workspaceFs.listFiles(path, { recursive: true, includeHidden: true });
+    if (!exists.isDirectory) throw new Error(`Path is not a file or directory: ${path}`);
+    const listing = await fileStore.listFiles(path, { recursive: true, includeHidden: true });
     if (!listing.success) throw new Error(listing.error || `Failed to list ${path}`);
     const rootName = basenameForMove(path);
     const files = listing.files
@@ -1907,7 +2226,21 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
         contentType: read.mimeType ?? file.contentType,
       };
     }
+    if (source.location === "project") {
+      const fileStore = await this.projectFileStore(source as unknown as Record<string, unknown>);
+      const read = await fileStore.readFile(file.path);
+      if (!read.success || typeof read.content !== "string") {
+        throw new Error(read.error || `Failed to read ${file.path}`);
+      }
+      return {
+        bytes: read.encoding === "base64"
+          ? base64ToBytesForMove(read.content)
+          : new TextEncoder().encode(read.content),
+        contentType: read.mimeType ?? file.contentType,
+      };
+    }
     if (source.location === "vm") {
+      await this.assertVmEndpointAllowed(source, "file transfer");
       const read = await this.projectVm.readFileBytesForTransfer({ ...source, path: file.path });
       return { bytes: read.bytes, contentType: read.contentType ?? file.contentType };
     }
@@ -1932,7 +2265,15 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
       if (!result.success) throw new Error(result.error || `Failed to write ${normalizedPath}`);
       return { path: normalizedPath, bytes: bytes.byteLength };
     }
+    if (destination.location === "project") {
+      const normalizedPath = normalizeDurableWorkspacePath(path);
+      const fileStore = await this.projectFileStore(destination as unknown as Record<string, unknown>);
+      const result = await fileStore.writeBinaryFile(normalizedPath, bytesToBase64ForMove(bytes));
+      if (!result.success) throw new Error(result.error || `Failed to write ${normalizedPath}`);
+      return { path: normalizedPath, bytes: bytes.byteLength };
+    }
     if (destination.location === "vm") {
+      await this.assertVmEndpointAllowed(destination, "file transfer");
       return this.projectVm.writeFileBytesForTransfer({ ...destination, path }, bytes);
     }
     const target = this.resolveCodeModeR2Path({ ...destination, path }, { requireWritable: true });
@@ -1954,7 +2295,14 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
       if (!result.success) throw new Error(result.error || `Failed to delete ${source.path}`);
       return;
     }
+    if (source.location === "project") {
+      const fileStore = await this.projectFileStore(source as unknown as Record<string, unknown>);
+      const result = await fileStore.deleteFile(source.path, { recursive: true });
+      if (!result.success) throw new Error(result.error || `Failed to delete ${source.path}`);
+      return;
+    }
     if (source.location === "vm") {
+      await this.assertVmEndpointAllowed(source, "file transfer");
       await this.projectVm.deletePathForTransfer(source, { recursive: true });
       return;
     }
@@ -1970,9 +2318,13 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
     if (endpoint.location === "workspace") {
       return normalizeDurableWorkspacePath(endpoint.path).replace(/\/+$/g, "") || "/";
     }
+    if (endpoint.location === "project") {
+      return normalizeDurableWorkspacePath(endpoint.path).replace(/\/+$/g, "") || "/";
+    }
     if (endpoint.location === "r2") {
       return this.resolveCodeModeR2Path(endpoint as unknown as Record<string, unknown>, { allowDirectory: true }).path.replace(/\/+$/g, "");
     }
+    await this.assertVmEndpointAllowed(endpoint, "file transfer");
     const resolved = await this.projectVm.resolvePathForTransfer(endpoint);
     return resolved.path.replace(/\/+$/g, "") || "/";
   }
@@ -1989,6 +2341,7 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
     sourceIsDirectory: boolean,
   ): Promise<void> {
     if (source.location !== destination.location) return;
+    if (source.location === "project" && source.project !== destination.project) return;
     if (source.location === "vm" && source.project !== destination.project) return;
 
     const sourcePath = await this.comparableMovePath(source);
@@ -2091,11 +2444,16 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
       if (FILE_TOOL_NAMES.has(name)) requireFileLocation(name, args);
       switch (name) {
         case "bash":
+          await this.assertVmProjectAllowed(args, "shell command");
           return this.projectVm.exec({ ...args, location: "vm" });
 
         case "read":
           if (hasR2Target(args)) return this.readR2File(args);
-          if (hasVmTarget(args)) return this.projectVm.read(args);
+          if (hasProjectTarget(args)) return (await this.projectContainerTools(args)).callTool("read", args);
+          if (hasVmTarget(args)) {
+            await this.assertVmProjectAllowed(args, "file read");
+            return this.projectVm.read(args);
+          }
         {
           const path = typeof args.path === "string" ? args.path : "";
           if (normalizeAutomationVirtualPath(path) !== null) {
@@ -2124,7 +2482,11 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
 
         case "write":
           if (hasR2Target(args)) return this.writeR2File(args);
-          if (hasVmTarget(args)) return this.projectVm.write(args);
+          if (hasProjectTarget(args)) return (await this.projectContainerTools(args)).callTool("write", args);
+          if (hasVmTarget(args)) {
+            await this.assertVmProjectAllowed(args, "file write");
+            return this.projectVm.write(args);
+          }
         {
           const path = typeof args.path === "string" ? args.path : "";
           const content = typeof args.content === "string" ? args.content : "";
@@ -2142,7 +2504,11 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
 
         case "ls":
           if (hasR2Target(args)) return this.listR2Files(args);
-          if (hasVmTarget(args)) return this.projectVm.ls(args);
+          if (hasProjectTarget(args)) return (await this.projectContainerTools(args)).callTool("ls", args);
+          if (hasVmTarget(args)) {
+            await this.assertVmProjectAllowed(args, "file listing");
+            return this.projectVm.ls(args);
+          }
         {
           if (typeof args.path === "string") {
             if (normalizeAutomationVirtualPath(args.path) !== null) {
@@ -2171,7 +2537,11 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
 
         case "edit":
           if (hasR2Target(args)) return this.editR2File(args);
-          if (hasVmTarget(args)) return this.projectVm.edit(args);
+          if (hasProjectTarget(args)) return (await this.projectContainerTools(args)).callTool("edit", args);
+          if (hasVmTarget(args)) {
+            await this.assertVmProjectAllowed(args, "file edit");
+            return this.projectVm.edit(args);
+          }
         {
           const path = typeof args.path === "string" ? args.path : "";
           const edits = Array.isArray(args.edits)
@@ -2198,20 +2568,30 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
 
         case "delete":
           if (hasR2Target(args)) return this.deleteR2File(args);
+          if (hasProjectTarget(args)) return (await this.projectContainerTools(args)).callTool("delete", args);
           if (hasVmTarget(args)) {
             throw new Error("delete does not support project VM files; use bash or vm_exec with rm for explicit VM deletion");
           }
           return this.piContainerTools.callTool("delete", args);
 
         case "grep":
-          if (hasVmTarget(args)) return this.projectVm.grep(args);
+          if (hasProjectTarget(args)) return (await this.projectContainerTools(args)).callTool("grep", args);
+          if (hasVmTarget(args)) {
+            await this.assertVmProjectAllowed(args, "file search");
+            return this.projectVm.grep(args);
+          }
           return this.piContainerTools.callTool("grep", args);
 
         case "find":
-          if (hasVmTarget(args)) return this.projectVm.find(args);
+          if (hasProjectTarget(args)) return (await this.projectContainerTools(args)).callTool("find", args);
+          if (hasVmTarget(args)) {
+            await this.assertVmProjectAllowed(args, "file search");
+            return this.projectVm.find(args);
+          }
           return this.piContainerTools.callTool("find", args);
 
         case "vm_exec":
+          await this.assertVmProjectAllowed(args, "shell command");
           return this.projectVm.exec(args);
 
         case "move":
@@ -2221,13 +2601,38 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
           return (await this.workspaceFs.listProjects()).map(projectForAgent);
 
         case "create_project":
-          return projectForAgent(await this.workspaceFs.createProject(args));
+          return this.createProject(args);
+
+        case "scaffold_project":
+          return this.scaffoldProject(args);
 
         case "set_project_description":
           return projectForAgent(await this.workspaceFs.setProjectDescription(args));
 
         case "clone_project":
+          await this.assertVmProjectAllowed({ project: args.sourceProject ?? args.sourceProjectId }, "clone");
           return this.projectVm.cloneProject(args);
+
+        case "build_project":
+          return this.buildProject(args);
+
+        case "add_dependency":
+          return this.addDependency(args);
+
+        case "revert_project":
+          return this.revertProject(args);
+
+        case "list_commits":
+          return this.listCommits(args);
+
+        case "deploy_project":
+          return this.deployProject(args);
+
+        case "rollback_deploy":
+          return this.rollbackDeploy(args);
+
+        case "list_deploy_versions":
+          return this.listDeployVersions(args);
 
         case "delete_project":
           return this.deleteProject(args);
@@ -2453,8 +2858,8 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
     if (targetKinds.length > 1) {
       throw new Error("set_preview accepts exactly one target: app_name/script_name or path");
     }
-    if (args.location !== "vm" && typeof args.project === "string" && args.project.trim()) {
-      throw new Error("project is only valid with location: 'vm'");
+    if (args.location !== "vm" && args.location !== "project" && typeof args.project === "string" && args.project.trim()) {
+      throw new Error("project is only valid with location: 'project' or 'vm'");
     }
     if (filePath && typeof args.is_public === "boolean") {
       throw new Error("is_public is only valid for app previews");
@@ -2475,12 +2880,12 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
       return { success: true, target, app: { name: scriptName, url: await this.getAppUrl(script), is_public: target.isPublic } };
     }
     const location = typeof args.location === "string" ? args.location.trim() : "";
-    if (location && location !== "workspace" && location !== "vm" && location !== "r2") {
-      throw new Error('set_preview location must be "workspace", "vm", or "r2"');
+    if (location && location !== "workspace" && location !== "project" && location !== "vm" && location !== "r2") {
+      throw new Error('set_preview location must be "workspace", "project", "vm", or "r2"');
     }
     let parsedPath = parseFilePreviewPath(filePath);
     let source: Extract<PreviewTarget, { kind: "file" }>["source"];
-    if (location === "workspace" || location === "vm") {
+    if (location === "workspace" || location === "project" || location === "vm") {
       parsedPath = parseFilePreviewPath(filePath.startsWith("/") ? filePath : `/${filePath}`);
       if (!parsedPath || parsedPath.source !== "workspace") {
         throw new Error("Invalid preview file path");
@@ -2503,14 +2908,14 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
       workspaceId: this.ctx.props.workspaceId,
       path: parsedPath.path,
       project:
-        source === "vm" && typeof args.project === "string"
+        (source === "project" || source === "vm") && typeof args.project === "string"
           ? args.project.trim()
           : undefined,
       filename: parsedPath.filename,
       contentType: typeof args.content_type === "string" ? args.content_type.trim() : undefined,
     };
-    if (target.source === "vm" && !target.project) {
-      throw new Error("project is required when previewing a VM file");
+    if ((target.source === "project" || target.source === "vm") && !target.project) {
+      throw new Error(`project is required when previewing a ${target.source === "project" ? "project" : "VM"} file`);
     }
     await this.assertPreviewFileReadable(target);
     await this.chatThreadStub.setPreviewTarget(target);
@@ -2521,6 +2926,20 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
     switch (target.source) {
       case "workspace": {
         const exists = await this.workspaceFs.exists(target.path);
+        if (!exists.exists) {
+          throw new Error(`Preview file not found: ${target.path}`);
+        }
+        if (exists.isDirectory) {
+          throw new Error(`Preview path is a directory, not a file: ${target.path}`);
+        }
+        return;
+      }
+      case "project": {
+        if (!target.project) {
+          throw new Error("project is required when previewing a project file");
+        }
+        const fileStore = await this.projectFileStore({ project: target.project });
+        const exists = await fileStore.exists(target.path);
         if (!exists.exists) {
           throw new Error(`Preview file not found: ${target.path}`);
         }
@@ -2554,6 +2973,7 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
         if (!target.project) {
           throw new Error("project is required when previewing a VM file");
         }
+        await this.assertVmProjectAllowed({ project: target.project }, "file preview");
         await this.projectVm.assertFileReadable({
           location: "vm",
           project: target.project,
@@ -2577,6 +2997,9 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
         created_at: new Date(script.created_at).toISOString(),
         updated_at: new Date(script.updated_at).toISOString(),
         preview_status: script.preview_status,
+        project_id: script.project_id,
+        commit_sha: script.commit_sha,
+        artifact_cache_key: script.artifact_cache_key,
       }))),
     };
   }
@@ -2858,6 +3281,218 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
     };
   }
 
+  private async buildProject(args: Record<string, unknown>): Promise<unknown> {
+    const project = await this.resolveProjectForAction(args);
+    const timeoutMs = typeof args.timeoutMs === "number" ? args.timeoutMs : undefined;
+    const result = await runProjectBuild({
+      projectId: project.id,
+      files: new ProjectFilesystemClient(this.env, project.id),
+      sandbox: this.projectBuildSandbox(),
+      timeoutMs,
+    });
+    return {
+      ...result,
+      project: project.name,
+      backend: project.backend ?? "vm",
+    };
+  }
+
+  private async addDependency(args: Record<string, unknown>): Promise<unknown> {
+    const project = await this.resolveProjectForAction(args);
+    const dependency = typeof args.dependency === "string" ? args.dependency : "";
+    const result = await runProjectAddDependency({
+      projectId: project.id,
+      dependency,
+      dev: args.dev === true,
+      files: new ProjectFilesystemClient(this.env, project.id),
+      sandbox: this.projectBuildSandbox(),
+    });
+    return {
+      ...result,
+      project: project.name,
+      backend: project.backend ?? "vm",
+    };
+  }
+
+  private async revertProject(args: Record<string, unknown>): Promise<unknown> {
+    const project = await this.resolveProjectForAction(args);
+    const snapshotId = typeof args.snapshot_id === "string" ? args.snapshot_id.trim() : "";
+    if (!snapshotId) throw new Error("snapshot_id is required");
+    const files = new ProjectFilesystemClient(this.env, project.id);
+    const snapshot = await files.restoreSourceSnapshot(snapshotId);
+    const restored = {
+      id: snapshot.id,
+      fileCount: snapshot.fileCount,
+      totalBytes: snapshot.totalBytes,
+      createdAt: snapshot.createdAt,
+    };
+    if (args.deploy === true) {
+      const deployArgs: Record<string, unknown> = { project: project.name };
+      if (typeof args.script_name === "string" && args.script_name.trim()) deployArgs.script_name = args.script_name.trim();
+      const deploy = await this.deployProject(deployArgs);
+      return { success: true, project: project.name, backend: project.backend ?? "vm", restored, deploy };
+    }
+    return { success: true, project: project.name, backend: project.backend ?? "vm", restored };
+  }
+
+  private async listCommits(args: Record<string, unknown>): Promise<unknown> {
+    const project = await this.resolveProjectForAction(args);
+    const limit = typeof args.limit === "number" ? args.limit : 20;
+    const snapshots = await new ProjectFilesystemClient(this.env, project.id).listSourceSnapshots(limit);
+    return {
+      project: project.name,
+      backend: project.backend ?? "vm",
+      count: snapshots.length,
+      commits: snapshots.map((snapshot) => ({
+        sha: snapshot.id,
+        created_at: snapshot.createdAt,
+        message: snapshot.message ?? null,
+        file_count: snapshot.fileCount,
+        total_bytes: snapshot.totalBytes,
+      })),
+    };
+  }
+
+  private async deployProject(args: Record<string, unknown>): Promise<unknown> {
+    const project = await this.resolveProjectForAction(args);
+    const sandbox = this.projectBuildSandbox();
+    const timeoutMs = typeof args.timeoutMs === "number" ? args.timeoutMs : undefined;
+    const build = await runProjectBuild({
+      projectId: project.id,
+      files: new ProjectFilesystemClient(this.env, project.id),
+      sandbox,
+      timeoutMs,
+    });
+    if (!build.success) {
+      return { success: false, project: project.name, build };
+    }
+    const projectFiles = new ProjectFilesystemClient(this.env, project.id);
+    const snapshot = await projectFiles.createSourceSnapshot({ message: `Deploy ${project.name}` });
+    const bundle = await collectWorkerBundleFromSandbox(sandbox, build.workdir);
+    const orgSlug = await this.getOrgSlug();
+    if (!orgSlug) throw new Error("Current org has no slug; cannot deploy project");
+    const scriptName = normalizeDeployScriptName(
+      typeof args.script_name === "string" && args.script_name.trim() ? args.script_name : project.name,
+    );
+    const deploy = await deployWorkerModulesDirect(this.env, {
+      scriptName,
+      hostname: this.deployHostname(),
+      identity: {
+        orgId: this.ctx.props.orgId,
+        orgSlug,
+        workspaceId: this.ctx.props.workspaceId,
+        userId: this.ctx.props.userId,
+        threadId: this.ctx.props.threadId,
+        projectId: project.id,
+      },
+      metadata: bundle.metadata,
+      modules: bundle.modules,
+      assets: bundle.assets,
+      commitSha: snapshot.id,
+    });
+    if (!deploy.success) {
+      return { success: false, project: project.name, build, deploy };
+    }
+    await handleDeploySideEffects(this.env as never, deploy.sideEffects);
+    return {
+      success: true,
+      project: project.name,
+      sourceSnapshot: {
+        id: snapshot.id,
+        fileCount: snapshot.fileCount,
+        totalBytes: snapshot.totalBytes,
+      },
+      build,
+      deploy: {
+        scriptName: deploy.scriptName,
+        dispatchScriptName: deploy.dispatchScriptName,
+        status: deploy.status,
+        result: deploy.result,
+      },
+      appUrl: await this.appUrlForScriptName(scriptName),
+    };
+  }
+
+  private async rollbackDeploy(args: Record<string, unknown>): Promise<unknown> {
+    const scriptName = typeof args.script_name === "string" ? args.script_name.trim() : "";
+    if (!scriptName) throw new Error("script_name is required");
+    const script = await this.orgStub.getWorkerScript(scriptName);
+    if (!script) throw new Error(`App '${scriptName}' not found`);
+    if (script.workspace_id !== this.ctx.props.workspaceId) {
+      throw new Error(`App '${scriptName}' belongs to a different workspace`);
+    }
+    const artifactCacheKey = typeof args.artifact_cache_key === "string" && args.artifact_cache_key.trim()
+      ? args.artifact_cache_key.trim()
+      : script.artifact_cache_key;
+    if (!artifactCacheKey) {
+      throw new Error(`App '${scriptName}' does not have a cached deploy artifact`);
+    }
+    const deploy = await rollbackWorkerDeployFromArtifactCache(this.env, {
+      artifactCacheKey,
+      hostname: this.deployHostname(),
+      expected: {
+        orgId: this.ctx.props.orgId,
+        workspaceId: this.ctx.props.workspaceId,
+        scriptName,
+      },
+      threadId: this.ctx.props.threadId,
+    });
+    if (!deploy.success) {
+      return { success: false, app: scriptName, deploy };
+    }
+    await handleDeploySideEffects(this.env as never, deploy.sideEffects);
+    return {
+      success: true,
+      app: scriptName,
+      artifactCacheKey,
+      deploy: {
+        scriptName: deploy.scriptName,
+        dispatchScriptName: deploy.dispatchScriptName,
+        status: deploy.status,
+        result: deploy.result,
+      },
+      appUrl: await this.appUrlForScriptName(scriptName),
+    };
+  }
+
+  private async listDeployVersions(args: Record<string, unknown>): Promise<unknown> {
+    const scriptName = typeof args.script_name === "string" ? args.script_name.trim() : "";
+    if (!scriptName) throw new Error("script_name is required");
+    const script = await this.orgStub.getWorkerScript(scriptName);
+    if (!script) throw new Error(`App '${scriptName}' not found`);
+    if (script.workspace_id !== this.ctx.props.workspaceId) {
+      throw new Error(`App '${scriptName}' belongs to a different workspace`);
+    }
+    const limit = typeof args.limit === "number" ? args.limit : 20;
+    const versions = await this.orgStub.listWorkerScriptDeployVersions(scriptName, limit);
+    return {
+      app: scriptName,
+      count: versions.length,
+      versions: versions.map((version) => ({
+        id: version.id,
+        created_at: new Date(version.created_at).toISOString(),
+        created_by: version.created_by,
+        project_id: version.project_id,
+        commit_sha: version.commit_sha,
+        artifact_cache_key: version.artifact_cache_key,
+        config_path: version.config_path,
+      })),
+    };
+  }
+
+  private deployHostname(): string {
+    try {
+      return new URL(this.env.WORKER_BASE_URL || "https://camelai.dev").hostname;
+    } catch {
+      return "camelai.dev";
+    }
+  }
+
+  private async appUrlForScriptName(scriptName: string): Promise<string> {
+    const script = await this.orgStub.getWorkerScript(scriptName);
+    return script ? this.getAppUrl(script) : this.getAppUrl({ script_name: scriptName, custom_domain_hostname: null } as WorkerScript);
+  }
+
   private async deleteProject(args: Record<string, unknown>): Promise<unknown> {
     const projectName = typeof args.project === "string" ? args.project.trim() : "";
     if (!projectName) throw new Error("project is required");
@@ -2870,6 +3505,12 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
     }
 
     const confirmedTargets = collectProjectDeletionTargets(projects, target);
+    const doBackedTargets = confirmedTargets.filter((project) => project.backend === "do-r2");
+    if (doBackedTargets.length > 0) {
+      throw new Error(
+        `Project deletion for DO-backed projects is not yet supported without legacy VM cleanup: ${doBackedTargets.map((project) => project.name).join(", ")}`,
+      );
+    }
     const cloneNames = confirmedTargets
       .filter((project) => project.id !== target.id)
       .map((project) => project.name);

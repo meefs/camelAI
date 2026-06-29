@@ -12,6 +12,12 @@
 			"image": "./workers/main/eval-sandbox.Dockerfile",
 			"instance_type": "lite",
 			"max_instances": 1
+		},
+		{
+			"class_name": "ProjectBuildSandbox",
+			"image": "./workers/main/project-build-sandbox.Dockerfile",
+			"instance_type": "standard-4",
+			"max_instances": 1
 		}
 	],
 	"send_email": [{ "name": "EMAIL" }],
@@ -54,6 +60,9 @@
 			"id": "test-sessions"
 		}
 	],
+	"r2_buckets": [
+		{ "binding": "R2_BUCKET", "bucket_name": "chiridion-sandbox-test" }
+	],
 	"d1_databases": [
 		{
 			"binding": "APP_DB",
@@ -74,7 +83,8 @@
 				{ "name": "SLACK_TEAM_REGISTRY", "class_name": "SlackTeamRegistryDO" },
 				{ "name": "WORKSPACE", "class_name": "WorkspaceDO" },
 				{ "name": "WORKSPACE_CRON", "class_name": "WorkspaceCronDO" },
-				{ "name": "WORKSPACE_FS", "class_name": "WorkspaceFilesystemDO" }
+				{ "name": "WORKSPACE_FS", "class_name": "WorkspaceFilesystemDO" },
+				{ "name": "PROJECT_BUILD_SANDBOX", "class_name": "ProjectBuildSandbox" }
 			]
 		},
 	"workflows": [
@@ -95,6 +105,7 @@
 			{ "tag": "v8", "new_sqlite_classes": ["WorkspaceFilesystemDO"] },
 			{ "tag": "v9", "new_sqlite_classes": ["MigrationPlanningAgent"] },
 			{ "tag": "v10", "new_sqlite_classes": ["Sandbox", "ChatThreadDO"] },
-			{ "tag": "v11", "new_sqlite_classes": ["EvalSandbox"] }
+			{ "tag": "v11", "new_sqlite_classes": ["EvalSandbox"] },
+			{ "tag": "v12", "new_sqlite_classes": ["ProjectBuildSandbox"] }
 		]
 	}

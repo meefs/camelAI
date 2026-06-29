@@ -225,7 +225,7 @@ export type PreviewTarget =
     }
   | {
       kind: "file";
-      source: "workspace" | "upload" | "output" | "vm";
+      source: "workspace" | "project" | "upload" | "output" | "vm";
       workspaceId: string;
       path: string;
       project?: string;
@@ -444,6 +444,7 @@ export interface ChatEnv extends WorkspaceFilesystemEnv, ProjectRuntimeServiceVm
   WORKSPACE_CRON?: DurableObjectNamespace<WorkspaceCronDO>;
   DETERMINISTIC_AUTOMATION_WORKFLOWS?: Workflow;
   WORKER_LOGS?: DurableObjectNamespace<WorkerLogsDO>;
+  PROJECT_BUILD_SANDBOX?: DurableObjectNamespace<import("./project-build-sandbox.js").ProjectBuildSandbox>;
   MCP_OBJECT: DurableObjectNamespace;
   APP_KV: KVNamespace;
   R2_BUCKET: R2Bucket;
@@ -467,6 +468,7 @@ export interface ChatEnv extends WorkspaceFilesystemEnv, ProjectRuntimeServiceVm
   SELFHOST_AI_AWS_REGION?: string;
   LOCAL_APP_VANITY_DOMAIN?: string;
   LOCAL_APP_IFRAME_DOMAIN?: string;
+  WORKER_BASE_URL?: string;
   CF_DISPATCH_NAMESPACE?: string;
   EMAIL_TO_USER: KVNamespace;
   SESSIONS?: KVNamespace;
@@ -487,6 +489,7 @@ export interface ChatEnv extends WorkspaceFilesystemEnv, ProjectRuntimeServiceVm
   TELEGRAM_BOT_TOKEN?: string;
   NEXTJS_ENV?: string;
   FIRECRAWL_API_KEY?: string;
+  TEST_LLM_REPLAY_URL?: string;
   FIRECRAWL_BASE_URL?: string;
   PARALLEL_API_KEY?: string;
   PARALLEL_BASE_URL?: string;
@@ -7076,7 +7079,7 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
         name: "bash",
         label: "bash",
         description:
-          "Run a bash command in a project VM. Requires the unique workspace project name and a concise description. Commands run from /workspace by default; pass cwd only for subdirectories in that checkout. Use this for direct shell commands; use js_exec when orchestrating several tool calls in JavaScript.",
+          "Run a bash command in a legacy project VM only. DO-backed projects reject this; use project file tools plus build_project, deploy_project, and add_dependency instead. Requires the unique workspace project name and a concise description. Commands run from /workspace by default; pass cwd only for subdirectories in that checkout. Use js_exec when orchestrating several tool calls in JavaScript.",
         parameters: BASH_TOOL.parameters,
         execute: async (_id, params) => call("bash", params as Record<string, unknown>),
         executionMode: "sequential",

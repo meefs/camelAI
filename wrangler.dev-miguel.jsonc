@@ -60,6 +60,14 @@
 	"browser": { "binding": "BROWSER" },
 	"ai": { "binding": "AI", "remote": true },
 	"worker_loaders": [{ "binding": "CODE_MODE_LOADER" }],
+	"containers": [
+		{
+			"class_name": "ProjectBuildSandbox",
+			"image": "./workers/main/project-build-sandbox.Dockerfile",
+			"instance_type": "standard-4",
+			"max_instances": 10
+		}
+	],
 	"artifacts": [
 		{ "binding": "ARTIFACTS", "namespace": "dev-miguel" }
 	],
@@ -120,6 +128,7 @@
 			{ "name": "MCP_OBJECT", "class_name": "ChiridionMcp" },
 				{ "name": "WORKER_LOGS", "class_name": "WorkerLogsDO" },
 				{ "name": "WORKSPACE_FS", "class_name": "WorkspaceFilesystemDO" },
+				{ "name": "PROJECT_BUILD_SANDBOX", "class_name": "ProjectBuildSandbox" },
 			]
 		},
 	"workflows": [
@@ -161,6 +170,7 @@
 					"SlackTeamRegistryDO"
 				]
 			},
-			{ "tag": "v27", "new_sqlite_classes": ["MigrationPlanningAgent"] }
-		]
-	}
+			{ "tag": "v27", "new_sqlite_classes": ["MigrationPlanningAgent"] },
+			{ "tag": "v28", "new_sqlite_classes": ["ProjectBuildSandbox"] }
+	]
+}

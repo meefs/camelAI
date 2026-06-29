@@ -315,6 +315,8 @@ export interface DeploySideEffectsInfo {
   threadId?: string;
   projectId?: string;
   configPath?: string;
+  commitSha?: string;
+  artifactCacheKey?: string;
 }
 
 /**

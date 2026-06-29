@@ -54,6 +54,7 @@ function suppressUndiciTerminatedErrors(): Plugin {
 
 function withLocalDevVars(config: WorkerConfig): Partial<WorkerConfig> | void {
   const localAuthBypass = process.env.LOCAL_AUTH_BYPASS;
+  const localAuthBypassHosts = process.env.LOCAL_AUTH_BYPASS_HOSTS;
   const localAuthUserEmail = process.env.LOCAL_AUTH_USER_EMAIL;
   const localAuthUserName = process.env.LOCAL_AUTH_USER_NAME;
   const workerBaseUrl = process.env.WORKER_BASE_URL;
@@ -67,6 +68,7 @@ function withLocalDevVars(config: WorkerConfig): Partial<WorkerConfig> | void {
 
   if (
     !localAuthBypass &&
+    !localAuthBypassHosts &&
     !localAuthUserEmail &&
     !localAuthUserName &&
     !workerBaseUrl &&
@@ -84,6 +86,9 @@ function withLocalDevVars(config: WorkerConfig): Partial<WorkerConfig> | void {
       ...(config.vars ?? {}),
       ...(testLlmReplayUrl ? { TEST_LLM_REPLAY_URL: testLlmReplayUrl } : {}),
       ...(localAuthBypass ? { LOCAL_AUTH_BYPASS: localAuthBypass } : {}),
+      ...(localAuthBypassHosts
+        ? { LOCAL_AUTH_BYPASS_HOSTS: localAuthBypassHosts }
+        : {}),
       ...(localAuthUserEmail
         ? { LOCAL_AUTH_USER_EMAIL: localAuthUserEmail }
         : {}),

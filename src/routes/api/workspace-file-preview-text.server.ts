@@ -4,7 +4,7 @@ import { FULL_TEXT_PREVIEW_BYTE_LIMIT } from '@/lib/file-preview-limits';
 import { getR2ObjectWithRetry } from '@/lib/r2-read-retry';
 import { buildWorkspaceScopedR2Key } from '@/lib/workspace-r2-paths';
 import { ProjectRuntimeServiceVmBridge } from '../../../workers/main/src/project-runtime-service-vm';
-import { WorkspaceFilesystemClient } from '../../../workers/main/src/workspace-filesystem-do';
+import { ProjectFilesystemClient, WorkspaceFilesystemClient } from '../../../workers/main/src/workspace-filesystem-do';
 import {
   hasNormalizableWhitespace,
   normalizeWorkspacePath,
@@ -37,7 +37,7 @@ const MIME_TYPES: Record<string, string> = {
   '.sh': 'text/x-shellscript; charset=utf-8',
 };
 
-type TextPreviewSource = 'workspace' | 'vm' | 'upload' | 'output';
+type TextPreviewSource = 'workspace' | 'project' | 'vm' | 'upload' | 'output';
 
 function getMimeType(filename: string): string {
   const ext = filename.includes('.') ? `.${filename.split('.').pop()?.toLowerCase()}` : '';
@@ -169,20 +169,35 @@ async function resolvePreviewStream({
     };
   }
 
-  if (source === 'vm') {
+  if (source === 'project' || source === 'vm') {
     if (!project) {
       throw Response.json({ error: 'Project required' }, { status: 400 });
     }
-    const vmPath = normalizePreviewWorkspacePath(path);
-    const bridge = new ProjectRuntimeServiceVmBridge({
-      env,
-      workspace: new WorkspaceFilesystemClient(env as never, workspaceId),
-    });
+    const projectPath = normalizePreviewWorkspacePath(path);
+    const workspaceFs = new WorkspaceFilesystemClient(env as never, workspaceId);
+    const projectRecord = await workspaceFs.getProjectByName(project);
+    if (!projectRecord) {
+      throw Response.json({ error: 'Project not found' }, { status: 404 });
+    }
+    if (source === 'project' || (projectRecord.backend ?? 'vm') === 'do-r2') {
+      const projectFs = new ProjectFilesystemClient(env as never, projectRecord.id);
+      const result = await projectFs.readFileStream(projectPath);
+      if (!result.success || !result.stream) {
+        throw Response.json({ error: 'File not found' }, { status: 404 });
+      }
+      return {
+        stream: result.stream,
+        contentType: result.mimeType || getMimeType(projectPath),
+        path: projectPath,
+        size: result.size,
+      };
+    }
+    const bridge = new ProjectRuntimeServiceVmBridge({ env, workspace: workspaceFs });
     try {
       const result = await bridge.readFileStream({
         location: 'vm',
         project,
-        path: vmPath,
+        path: projectPath,
       });
       if (!result.response.body) {
         throw new Error('Runtime returned an empty file stream');
@@ -236,7 +251,7 @@ export async function loadTextPreviewResponse({
   const url = new URL(request.url);
   const source = url.searchParams.get('source') as TextPreviewSource | null;
   const path = url.searchParams.get('path');
-  if (!source || !['workspace', 'vm', 'upload', 'output'].includes(source)) {
+  if (!source || !['workspace', 'project', 'vm', 'upload', 'output'].includes(source)) {
     throw Response.json({ error: 'Invalid source' }, { status: 400 });
   }
   if (!path) {

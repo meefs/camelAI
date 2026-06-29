@@ -113,6 +113,7 @@ export interface CloudflareEnv {
   ADMIN_MCP_CLIENT_ID?: string;
   ADMIN_MCP_REDIRECT_URIS?: string;
   LOCAL_AUTH_BYPASS?: string;
+  LOCAL_AUTH_BYPASS_HOSTS?: string;
   LOCAL_AUTH_USER_EMAIL?: string;
   LOCAL_AUTH_USER_NAME?: string;
 }

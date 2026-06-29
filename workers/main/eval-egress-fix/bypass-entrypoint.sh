@@ -20,6 +20,25 @@ for a in "$@"; do
   if [ "$prev" = "--docker-gateway-cidr" ]; then CIDR="$a"; break; fi
   prev="$a"
 done
+
+# Some local Docker hosts grant the sidecar NET_ADMIN but not NET_RAW. On those
+# hosts iptables' `-m socket` match fails even though the rest of the TPROXY setup
+# works. That rule is an optimization/escape hatch for already-owned sockets; the
+# bridge-bypass above is the control-plane fix we need. In local dev only, no-op
+# unsupported socket-match rules instead of letting the sidecar exit before the
+# sandbox can start.
+mkdir -p /tmp/camelai-iptables-shim
+cat >/tmp/camelai-iptables-shim/iptables <<'EOF'
+#!/bin/sh
+case " $* " in
+  *" -m socket "*|*" --match socket "*) exit 0 ;;
+esac
+exec /usr/sbin/iptables "$@"
+EOF
+chmod +x /tmp/camelai-iptables-shim/iptables
+ln -sf /tmp/camelai-iptables-shim/iptables /tmp/camelai-iptables-shim/ip6tables
+export PATH="/tmp/camelai-iptables-shim:$PATH"
+
 (
   while true; do
     iptables -t mangle -C PREROUTING -s "$CIDR" -d "$CIDR" -j RETURN 2>/dev/null \

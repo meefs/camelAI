@@ -5,7 +5,7 @@ export { PREVIEW_INITIAL_MAX_LINES };
 
 export interface FilePreviewUrlDescriptor {
   workspaceId: string;
-  source: 'workspace' | 'vm' | 'upload' | 'output';
+  source: 'workspace' | 'project' | 'vm' | 'upload' | 'output';
   path: string;
   project?: string;
 }
@@ -20,7 +20,7 @@ function encodePathSegments(path: string) {
 export function buildRawFilePreviewRoute(descriptor: FilePreviewUrlDescriptor): string {
   const normalizedPath = descriptor.path.replace(/^\/+/, '');
   const encodedPath = encodePathSegments(normalizedPath);
-  if (descriptor.source === 'vm') {
+  if (descriptor.source === 'vm' || descriptor.source === 'project') {
     const encodedProject = encodeURIComponent(descriptor.project ?? '');
     return `/api/workspaces/${descriptor.workspaceId}/projects/${encodedProject}/fs/content/${encodedPath}`;
   }

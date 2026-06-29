@@ -171,17 +171,19 @@ export async function stageWarehouseExport(
       }
     }
 
-    if (upload) {
+    const activeUpload = upload as Awaited<ReturnType<R2Bucket['createMultipartUpload']>> | null;
+    if (activeUpload) {
       // Multipart was started, so > 1 part of data exists; the remaining buffer
       // (always > 0 here) is the final, size-unrestricted part.
       if (bufferedBytes > 0) await flushPart(bufferedBytes);
-      await upload.complete(parts);
+      await activeUpload.complete(parts);
     } else {
       // Whole body fit in one part (incl. empty → 0-byte object): single put.
       await bucket.put(key, concatChunks(buffered, bufferedBytes), { httpMetadata });
     }
   } catch (error) {
-    if (upload) await upload.abort().catch(() => {});
+    const activeUpload = upload as Awaited<ReturnType<R2Bucket['createMultipartUpload']>> | null;
+    if (activeUpload) await activeUpload.abort().catch(() => {});
     throw error;
   }
 

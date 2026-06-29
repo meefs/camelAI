@@ -73,6 +73,168 @@ function createChannelOrgNamespace({
   };
 }
 
+function base64(content: string): string {
+  return btoa(unescape(encodeURIComponent(content)));
+}
+
+function createProjectToolFake({ deploy = false, projectFileEntries }: { deploy?: boolean; projectFileEntries?: Array<[string, string]> } = {}) {
+  const project = {
+    id: 'project-1',
+    workspaceId: 'workspace1',
+    name: 'Demo App',
+    description: 'Demo project',
+    defaultVmId: 'main',
+    backend: 'do-r2',
+    createdAt: '2026-01-01T00:00:00.000Z',
+    updatedAt: '2026-01-01T00:00:00.000Z',
+  };
+  const projectFiles = new Map<string, string>(projectFileEntries ?? [
+    ['/package.json', '{"scripts":{"build":"vite build"}}'],
+    ['/src/index.ts', 'export default { fetch() { return new Response("ok"); } }'],
+  ]);
+  const workspaceStub = {
+    getProjectByName: vi.fn(async (name: string) => name === 'Demo App' ? project : null),
+    createProject: vi.fn(async (input: any) => ({
+      ...project,
+      name: input.name,
+      description: input.description,
+      backend: input.backend,
+    })),
+  };
+  const projectStub = {
+    projectExists: vi.fn(async (path: string) => ({
+      exists: projectFiles.has(path),
+      isFile: projectFiles.has(path),
+      isDirectory: false,
+      size: projectFiles.get(path)?.length ?? 0,
+    })),
+    projectListFiles: vi.fn(async () => ({
+      success: true,
+      files: [...projectFiles.entries()].map(([path, content]) => ({
+        name: path.split('/').pop(),
+        type: 'file',
+        size: content.length,
+        modifiedAt: '2026-01-01T00:00:00.000Z',
+        absolutePath: path,
+        relativePath: path.replace(/^\/+/, ''),
+      })),
+      count: projectFiles.size,
+      path: '/',
+    })),
+    projectReadFile: vi.fn(async (path: string) => ({
+      success: true,
+      content: projectFiles.get(path) ?? '',
+      encoding: 'utf8',
+      isBinary: false,
+      size: projectFiles.get(path)?.length ?? 0,
+    })),
+    projectWriteFile: vi.fn(async (path: string, content: string) => {
+      projectFiles.set(path, content);
+      return { success: true };
+    }),
+    projectCreateSourceSnapshot: vi.fn(async () => ({
+      id: 'snapshot-1',
+      createdAt: '2026-01-01T00:00:00.000Z',
+      fileCount: projectFiles.size,
+      totalBytes: [...projectFiles.values()].reduce((sum, content) => sum + content.length, 0),
+      entries: [],
+    })),
+    projectRestoreSourceSnapshot: vi.fn(async (id: string) => ({
+      id,
+      createdAt: '2026-01-01T00:00:00.000Z',
+      fileCount: 2,
+      totalBytes: 96,
+      entries: [],
+    })),
+    projectListSourceSnapshots: vi.fn(async () => [{
+      id: 'snapshot-1',
+      createdAt: '2026-01-01T00:00:00.000Z',
+      message: 'Deploy Demo App',
+      fileCount: 2,
+      totalBytes: 96,
+      entries: [],
+    }]),
+  };
+  const sandboxFiles = new Map<string, string>();
+  const sandbox = {
+    mkdir: vi.fn(async () => undefined),
+    writeFile: vi.fn(async (path: string, content: string) => {
+      sandboxFiles.set(path, content);
+    }),
+    exec: vi.fn(async (command: string, options?: { cwd?: string }) => {
+      if (command === 'bun install && bun run build' && options?.cwd) {
+        sandboxFiles.set(`${options.cwd}/bun.lock`, base64('# lockfile\n'));
+        sandboxFiles.set(`${options.cwd}/build/server/wrangler.json`, base64(JSON.stringify({
+          main_module: 'index.js',
+          compatibility_date: '2026-06-01',
+        })));
+        sandboxFiles.set(`${options.cwd}/build/server/index.js`, base64('export default { fetch() { return new Response("ok"); } };'));
+      }
+      if (command === "bun add -d 'zod@^4'" && options?.cwd) {
+        sandboxFiles.set(`${options.cwd}/package.json`, base64(JSON.stringify({
+          scripts: { build: 'vite build' },
+          devDependencies: { zod: '^4' },
+        }, null, 2)));
+        sandboxFiles.set(`${options.cwd}/bun.lock`, base64('# zod lockfile\n'));
+        return { success: true, stdout: 'added zod', stderr: '', exitCode: 0 };
+      }
+      return { success: true, stdout: 'built', stderr: '', exitCode: 0 };
+    }),
+    readFile: vi.fn(async (path: string) => ({ content: sandboxFiles.get(path) ?? base64('') })),
+    listFiles: vi.fn(async (path: string) => ({
+      files: [...sandboxFiles.keys()]
+        .filter((file) => file.startsWith(`${path.replace(/\/+$/g, '')}/`))
+        .map((file) => ({
+          name: file.split('/').pop() ?? '',
+          type: 'file' as const,
+          absolutePath: file,
+          relativePath: file.slice(path.replace(/\/+$/g, '').length + 1),
+        })),
+    })),
+  };
+  const script = {
+    script_name: 'demo-app',
+    workspace_id: 'workspace1',
+    is_public: false,
+    custom_domain_hostname: null,
+    updated_at: 123,
+  };
+  const orgStub = {
+    getInfo: vi.fn(async () => ({ slug: 'test-org', billing_plan: 'starter', billing_status: 'active' })),
+    getThread: vi.fn(async () => ({ id: 'thread1', workspace_id: 'workspace1', created_by: 'user1' })),
+    registerWorkerScript: vi.fn(async () => script),
+    updateWorkerScriptPreview: vi.fn(async () => ({ stale: false })),
+    getWorkerScript: vi.fn(async () => script),
+  };
+  const env = {
+    WORKER_BASE_URL: 'https://staging.camelai.dev',
+    LOCAL_APP_VANITY_DOMAIN: 'camelai.app',
+    WORKSPACE_FS: {
+      idFromName: vi.fn((id: string) => id),
+      get: vi.fn((id: string) => id === 'workspace1' ? workspaceStub : projectStub),
+    },
+    ORG: {
+      idFromName: vi.fn((id: string) => id),
+      get: vi.fn(() => orgStub),
+    },
+    APP_KV: {
+      put: vi.fn(async () => undefined),
+    },
+    R2_BUCKET: deploy ? {
+      put: vi.fn(async () => undefined),
+    } : undefined,
+    CF_API_TOKEN: deploy ? 'token' : undefined,
+    CF_ACCOUNT_ID: deploy ? 'account' : undefined,
+    CF_DISPATCH_NAMESPACE: deploy ? 'namespace' : undefined,
+    CF_WORKER_NAME: deploy ? 'main-worker' : undefined,
+  };
+  const fake = Object.create(CodeModeToolsBinding.prototype) as any;
+  fake.ctx = { props: { orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1', userId: 'user1' } };
+  fake.env = env;
+  fake.projectBuildSandbox = vi.fn(() => sandbox);
+  return { fake, env, sandbox, workspaceStub, projectStub, orgStub };
+}
+
 describe('ChatThreadDO Pi turn handling', () => {
   function createPiEventFake() {
     const events: any[] = [];
@@ -3273,11 +3435,17 @@ describe('ChatThreadDO Pi turn handling', () => {
       'TodoWrite',
       'set_preview',
       'list_apps',
+      'rollback_deploy',
+      'list_deploy_versions',
       'list_scheduled_prompts',
       'list_workflows',
       'list_integrations',
       'create_project',
+      'scaffold_project',
       'set_project_description',
+      'add_dependency',
+      'revert_project',
+      'list_commits',
       'get_custom_domain',
       'Agent',
       'Explore',
@@ -3292,17 +3460,28 @@ describe('ChatThreadDO Pi turn handling', () => {
     expect((byName.get('read') as any).parameters.properties.project).toBeDefined();
     expect((byName.get('create_project') as any).parameters.properties.description).toBeDefined();
     expect((byName.get('create_project') as any).parameters.properties.name).toBeDefined();
+    expect((byName.get('create_project') as any).parameters.properties.template).toBeDefined();
     expect((byName.get('create_project') as any).parameters.required).toContain('description');
     expect((byName.get('create_project') as any).parameters.required).toContain('name');
+    expect((byName.get('scaffold_project') as any).parameters.properties.project).toBeDefined();
+    expect((byName.get('scaffold_project') as any).parameters.properties.force).toBeDefined();
     expect((byName.get('set_project_description') as any).parameters.properties.project).toBeDefined();
     expect((byName.get('set_project_description') as any).parameters.properties.projectId).toBeUndefined();
     expect((byName.get('set_project_description') as any).parameters.properties.description).toBeDefined();
+    expect((byName.get('add_dependency') as any).parameters.properties.project).toBeDefined();
+    expect((byName.get('add_dependency') as any).parameters.properties.dependency).toBeDefined();
+    expect((byName.get('revert_project') as any).parameters.properties.snapshot_id).toBeDefined();
+    expect((byName.get('list_commits') as any).parameters.properties.project).toBeDefined();
     expect((byName.get('set_preview') as any).parameters.properties.location).toBeDefined();
     expect(JSON.stringify((byName.get('set_preview') as any).parameters.properties.location)).toContain('workspace');
+    expect(JSON.stringify((byName.get('set_preview') as any).parameters.properties.location)).toContain('project');
     expect(JSON.stringify((byName.get('set_preview') as any).parameters.properties.location)).toContain('vm');
     expect(JSON.stringify((byName.get('set_preview') as any).parameters.properties.location)).toContain('r2');
     expect((byName.get('set_preview') as any).parameters.properties.project).toBeDefined();
     expect((byName.get('set_preview') as any).parameters.properties.clear).toBeUndefined();
+    expect((byName.get('rollback_deploy') as any).parameters.properties.script_name).toBeDefined();
+    expect((byName.get('rollback_deploy') as any).parameters.properties.artifact_cache_key).toBeDefined();
+    expect((byName.get('list_deploy_versions') as any).parameters.properties.script_name).toBeDefined();
     expect((byName.get('WebSearch') as any).parameters.properties.query).toBeDefined();
     expect((byName.get('WebFetch') as any).parameters.properties.url).toBeDefined();
     expect((byName.get('read') as any).parameters.properties.key).toBeUndefined();
@@ -3443,6 +3622,38 @@ describe('ChatThreadDO Pi turn handling', () => {
     expect(setPreviewTarget).toHaveBeenCalledWith((result as any).target);
   });
 
+  it('sets explicit DO-backed project file previews', async () => {
+    const setPreviewTarget = vi.fn();
+    const exists = vi.fn(async () => ({ exists: true, isDirectory: false }));
+    const fake = Object.create(CodeModeToolsBinding.prototype) as any;
+    fake.ctx = { props: { workspaceId: 'workspace1' } };
+    Object.defineProperty(fake, 'chatThreadStub', {
+      value: { setPreviewTarget },
+    });
+    fake.projectFileStore = vi.fn(async () => ({ exists }));
+
+    const result = await (CodeModeToolsBinding.prototype as any).setPreview.call(fake, {
+      location: 'project',
+      project: 'menu-app',
+      path: 'index.html',
+    });
+
+    expect(fake.projectFileStore).toHaveBeenCalledWith({ project: 'menu-app' });
+    expect(exists).toHaveBeenCalledWith('/index.html');
+    expect(result).toMatchObject({
+      success: true,
+      target: {
+        kind: 'file',
+        source: 'project',
+        workspaceId: 'workspace1',
+        path: '/index.html',
+        project: 'menu-app',
+        filename: 'index.html',
+      },
+    });
+    expect(setPreviewTarget).toHaveBeenCalledWith((result as any).target);
+  });
+
   it('validates VM file previews before changing preview state', async () => {
     const setPreviewTarget = vi.fn();
     const assertFileReadable = vi.fn(async () => ({ path: '/workspace/index.html' }));
@@ -3450,6 +3661,9 @@ describe('ChatThreadDO Pi turn handling', () => {
     fake.ctx = { props: { workspaceId: 'workspace1' } };
     Object.defineProperty(fake, 'chatThreadStub', {
       value: { setPreviewTarget },
+    });
+    Object.defineProperty(fake, 'workspaceFs', {
+      value: { getProjectByName: vi.fn(async () => ({ name: 'menu-app', backend: 'vm' })) },
     });
     Object.defineProperty(fake, 'projectVm', {
       value: { assertFileReadable },
@@ -3675,6 +3889,7 @@ describe('ChatThreadDO Pi turn handling', () => {
     const piTools = ChatThreadDO.prototype['createPiToolDefinitions'].call(fake, context);
     expect(piTools.find((tool: any) => tool.name === 'list_projects')).toBeTruthy();
     expect(piTools.find((tool: any) => tool.name === 'create_project')).toBeTruthy();
+    expect(piTools.find((tool: any) => tool.name === 'scaffold_project')).toBeTruthy();
     expect(piTools.find((tool: any) => tool.name === 'set_project_description')).toBeTruthy();
     expect(piTools.find((tool: any) => tool.name === 'clone_project')).toBeTruthy();
     expect(piTools.find((tool: any) => tool.name === 'send_email')).toBeUndefined();
@@ -3703,6 +3918,9 @@ describe('ChatThreadDO Pi turn handling', () => {
     const fake = Object.create(CodeModeToolsBinding.prototype) as any;
     fake.env = { R2_BUCKET: { head, get } };
     fake.ctx = { props: { orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1' } };
+    Object.defineProperty(fake, 'workspaceFs', {
+      value: { getProjectByName: vi.fn(async () => ({ name: 'web-app', backend: 'vm' })) },
+    });
     Object.defineProperty(fake, 'projectVm', {
       value: { writeFileBytesForTransfer },
     });
@@ -5114,6 +5332,319 @@ describe('ChatThreadDO Pi turn handling', () => {
     expect((listing as any).text).toContain('data-analysis');
     expect((listing as any).details.source).toBe('bundled_skill');
     expect(containerTool).not.toHaveBeenCalled();
+  });
+
+  it('builds a DO-backed project through the project build action', async () => {
+    const { fake, sandbox, workspaceStub, projectStub } = createProjectToolFake();
+
+    const result = await CodeModeToolsBinding.prototype.callTool.call(fake, 'build_project', {
+      project: 'Demo App',
+      timeoutMs: 5000,
+    });
+
+    expect(result).toMatchObject({
+      success: true,
+      project: 'Demo App',
+      backend: 'do-r2',
+      projectId: 'project-1',
+      fileCount: 2,
+      stdout: 'built',
+    });
+    expect(workspaceStub.getProjectByName).toHaveBeenCalledWith('Demo App');
+    expect(projectStub.projectListFiles).toHaveBeenCalledWith('/', { recursive: true, includeHidden: true, limit: 50000 });
+    expect(sandbox.exec).toHaveBeenCalledWith('bun install && bun run build', expect.objectContaining({
+      cwd: '/workspace/project-1',
+      env: expect.objectContaining({ CAMELAI_PROJECT_ID: 'project-1', CAMELAI_BUILD_TIMEOUT_MS: '5000' }),
+    }));
+  });
+
+  it('creates new code-mode projects as DO-backed projects', async () => {
+    const { fake, workspaceStub, projectStub } = createProjectToolFake({ projectFileEntries: [] });
+
+    const result = await CodeModeToolsBinding.prototype.callTool.call(fake, 'create_project', {
+      name: 'New App',
+      description: 'A new app',
+    });
+
+    expect(workspaceStub.createProject).toHaveBeenCalledWith({
+      name: 'New App',
+      description: 'A new app',
+      backend: 'do-r2',
+      workspaceId: 'workspace1',
+    });
+    expect(result).toMatchObject({
+      name: 'New App',
+      description: 'A new app',
+      backend: 'do-r2',
+      scaffold: {
+        template: 'worker',
+        filesSkipped: [],
+      },
+    });
+    expect((result as any).scaffold.filesWritten).toEqual(expect.arrayContaining([
+      '/package.json',
+      '/wrangler.jsonc',
+      '/tsconfig.json',
+      '/src/index.ts',
+      '/scripts/write-build-manifest.mjs',
+    ]));
+    const packageWrite = projectStub.projectWriteFile.mock.calls.find(([path]) => path === '/package.json');
+    expect(packageWrite).toBeTruthy();
+    const packageJson = JSON.parse(packageWrite?.[1] ?? '{}');
+    expect(packageJson.scripts.build).toContain('tsc --noEmit');
+    expect(packageJson.scripts.build).toContain('build/server/index.js');
+    expect(packageJson.devDependencies).toMatchObject({
+      typescript: expect.any(String),
+      wrangler: expect.any(String),
+      '@cloudflare/workers-types': expect.any(String),
+    });
+  });
+
+  it('scaffolds existing DO-backed projects without overwriting unless forced', async () => {
+    const { fake, projectStub } = createProjectToolFake();
+
+    const result = await CodeModeToolsBinding.prototype.callTool.call(fake, 'scaffold_project', {
+      project: 'Demo App',
+    });
+
+    expect(result).toMatchObject({
+      success: true,
+      project: 'Demo App',
+      backend: 'do-r2',
+      template: 'worker',
+      filesSkipped: expect.arrayContaining(['/package.json', '/src/index.ts']),
+    });
+    expect(projectStub.projectWriteFile).toHaveBeenCalledWith('/wrangler.jsonc', expect.stringContaining('"main": "src/index.ts"'));
+
+    await CodeModeToolsBinding.prototype.callTool.call(fake, 'scaffold_project', {
+      project: 'Demo App',
+      force: true,
+    });
+    expect(projectStub.projectWriteFile).toHaveBeenCalledWith('/package.json', expect.stringContaining('"build"'));
+  });
+
+  it('adds a dependency to a DO-backed project through the dependency action', async () => {
+    const { fake, sandbox, projectStub } = createProjectToolFake();
+
+    const result = await CodeModeToolsBinding.prototype.callTool.call(fake, 'add_dependency', {
+      project: 'Demo App',
+      dependency: 'zod@^4',
+      dev: true,
+    });
+
+    expect(result).toMatchObject({
+      success: true,
+      project: 'Demo App',
+      backend: 'do-r2',
+      projectId: 'project-1',
+      dependency: 'zod@^4',
+      dev: true,
+      stdout: 'added zod',
+      packageJsonPersisted: true,
+      lockfilePersisted: true,
+    });
+    expect(sandbox.exec).toHaveBeenCalledWith("bun add -d 'zod@^4'", expect.objectContaining({
+      cwd: '/workspace/project-1',
+      env: expect.objectContaining({ CAMELAI_PROJECT_ID: 'project-1' }),
+    }));
+    expect(projectStub.projectWriteFile).toHaveBeenCalledWith('/package.json', expect.stringContaining('devDependencies'));
+    expect(projectStub.projectWriteFile).toHaveBeenCalledWith('/bun.lock', '# zod lockfile\n');
+  });
+
+  it('rejects legacy VM shell and file tools for DO-backed projects', async () => {
+    const { fake, workspaceStub } = createProjectToolFake();
+    const projectVm = {
+      exec: vi.fn(),
+      read: vi.fn(),
+    };
+    Object.defineProperty(fake, 'projectVm', { value: projectVm });
+
+    await expect(CodeModeToolsBinding.prototype.callTool.call(fake, 'bash', {
+      project: 'Demo App',
+      command: 'bun install',
+    })).rejects.toThrow('DO-backed and cannot use legacy VM shell command');
+    await expect(CodeModeToolsBinding.prototype.callTool.call(fake, 'read', {
+      location: 'vm',
+      project: 'Demo App',
+      path: '/workspace/package.json',
+    })).rejects.toThrow('Use location: "project" file tools');
+
+    expect(workspaceStub.getProjectByName).toHaveBeenCalledWith('Demo App');
+    expect(projectVm.exec).not.toHaveBeenCalled();
+    expect(projectVm.read).not.toHaveBeenCalled();
+  });
+
+  it('rejects legacy VM preview, move, and clone for DO-backed projects', async () => {
+    const { fake } = createProjectToolFake();
+    const projectVm = {
+      assertFileReadable: vi.fn(),
+      writeFileBytesForTransfer: vi.fn(),
+      cloneProject: vi.fn(),
+    };
+    Object.defineProperty(fake, 'projectVm', { value: projectVm });
+    Object.defineProperty(fake, 'chatThreadStub', { value: { setPreviewTarget: vi.fn() } });
+    fake.env = { ...fake.env, R2_BUCKET: { get: vi.fn(async () => r2Object('hello', 'text/plain')), head: vi.fn(async () => ({ size: 5 })) } };
+
+    await expect((CodeModeToolsBinding.prototype as any).setPreview.call(fake, {
+      location: 'vm',
+      project: 'Demo App',
+      path: 'index.html',
+    })).rejects.toThrow('DO-backed and cannot use legacy VM file preview');
+    await expect((CodeModeToolsBinding.prototype as any).moveFile.call(fake, {
+      source: { location: 'r2', path: 'outputs/report.txt' },
+      destination: { location: 'vm', project: 'Demo App', path: '/workspace/report.txt' },
+    })).rejects.toThrow('DO-backed and cannot use legacy VM file transfer');
+    await expect(CodeModeToolsBinding.prototype.callTool.call(fake, 'clone_project', {
+      sourceProject: 'Demo App',
+      name: 'Copy',
+    })).rejects.toThrow('DO-backed and cannot use legacy VM clone');
+
+    expect(projectVm.assertFileReadable).not.toHaveBeenCalled();
+    expect(projectVm.writeFileBytesForTransfer).not.toHaveBeenCalled();
+    expect(projectVm.cloneProject).not.toHaveBeenCalled();
+  });
+
+  it('restores a DO-backed project from a source snapshot', async () => {
+    const { fake, projectStub } = createProjectToolFake();
+
+    const result = await CodeModeToolsBinding.prototype.callTool.call(fake, 'revert_project', {
+      project: 'Demo App',
+      snapshot_id: 'a'.repeat(64),
+    });
+
+    expect(projectStub.projectRestoreSourceSnapshot).toHaveBeenCalledWith('a'.repeat(64));
+    expect(result).toMatchObject({
+      success: true,
+      project: 'Demo App',
+      backend: 'do-r2',
+      restored: {
+        id: 'a'.repeat(64),
+        fileCount: 2,
+        totalBytes: 96,
+      },
+    });
+  });
+
+  it('lists project source snapshots through the list_commits action', async () => {
+    const { fake, projectStub } = createProjectToolFake();
+
+    const result = await CodeModeToolsBinding.prototype.callTool.call(fake, 'list_commits', {
+      project: 'Demo App',
+      limit: 5,
+    });
+
+    expect(projectStub.projectListSourceSnapshots).toHaveBeenCalledWith(5);
+    expect(result).toMatchObject({
+      project: 'Demo App',
+      backend: 'do-r2',
+      count: 1,
+      commits: [{
+        sha: 'snapshot-1',
+        message: 'Deploy Demo App',
+        file_count: 2,
+        total_bytes: 96,
+      }],
+    });
+  });
+
+  it('includes deploy artifact metadata in list_apps results', async () => {
+    const fake = Object.create(CodeModeToolsBinding.prototype) as any;
+    fake.ctx = { props: { workspaceId: 'workspace1' } };
+    fake.env = { WORKER_BASE_URL: 'https://staging.camelai.dev', LOCAL_APP_VANITY_DOMAIN: 'camelai.app' };
+    Object.defineProperty(fake, 'orgStub', {
+      value: {
+        getInfo: vi.fn(async () => ({ slug: 'test-org' })),
+        listWorkerScriptsByWorkspace: vi.fn(async () => [{
+          script_name: 'demo-app',
+          workspace_id: 'workspace1',
+          created_by: 'user1',
+          created_at: 10,
+          updated_at: 20,
+          is_public: false,
+          preview_status: 'ready',
+          project_id: 'project-1',
+          commit_sha: 'abc123',
+          artifact_cache_key: 'deploy-artifacts/key.json',
+          custom_domain_hostname: null,
+        }]),
+      },
+    });
+
+    await expect(CodeModeToolsBinding.prototype.callTool.call(fake, 'list_apps', {})).resolves.toMatchObject({
+      count: 1,
+      apps: [{
+        name: 'demo-app',
+        project_id: 'project-1',
+        commit_sha: 'abc123',
+        artifact_cache_key: 'deploy-artifacts/key.json',
+      }],
+    });
+  });
+
+  it('lists cached deploy versions for rollback discovery', async () => {
+    const fake = Object.create(CodeModeToolsBinding.prototype) as any;
+    fake.ctx = { props: { workspaceId: 'workspace1' } };
+    Object.defineProperty(fake, 'orgStub', {
+      value: {
+        getWorkerScript: vi.fn(async () => ({ script_name: 'demo-app', workspace_id: 'workspace1' })),
+        listWorkerScriptDeployVersions: vi.fn(async (_scriptName: string, limit: number) => [{
+          id: 'deploy-1',
+          script_name: 'demo-app',
+          workspace_id: 'workspace1',
+          created_at: 20,
+          created_by: 'user1',
+          config_path: 'wrangler.jsonc',
+          project_id: 'project-1',
+          commit_sha: 'abc123',
+          artifact_cache_key: 'deploy-artifacts/key.json',
+          limit,
+        }]),
+      },
+    });
+
+    await expect(CodeModeToolsBinding.prototype.callTool.call(fake, 'list_deploy_versions', {
+      script_name: 'demo-app',
+      limit: 5,
+    })).resolves.toMatchObject({
+      app: 'demo-app',
+      count: 1,
+      versions: [{
+        id: 'deploy-1',
+        project_id: 'project-1',
+        commit_sha: 'abc123',
+        artifact_cache_key: 'deploy-artifacts/key.json',
+        config_path: 'wrangler.jsonc',
+      }],
+    });
+  });
+
+  it('builds and directly deploys a DO-backed project through the deploy action', async () => {
+    const { fake, env, orgStub } = createProjectToolFake({ deploy: true });
+    const fetchMock = vi.fn(async () => Response.json({ success: true }, { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await CodeModeToolsBinding.prototype.callTool.call(fake, 'deploy_project', {
+      project: 'Demo App',
+      script_name: 'Demo App',
+    });
+
+    expect(result).toMatchObject({
+      success: true,
+      project: 'Demo App',
+      sourceSnapshot: { id: 'snapshot-1' },
+      deploy: {
+        scriptName: 'demo-app',
+        dispatchScriptName: 'demo-app--test-org',
+        status: 200,
+      },
+    });
+    expect((result as any).appUrl).toContain('demo-app--test-org');
+    expect(fetchMock).toHaveBeenCalledWith(
+      'https://api.cloudflare.com/client/v4/accounts/account/workers/dispatch/namespaces/namespace/scripts/demo-app--test-org',
+      expect.objectContaining({ method: 'PUT', headers: { Authorization: 'Bearer token' } }),
+    );
+    expect(orgStub.registerWorkerScript).toHaveBeenCalledWith('demo-app', 'workspace1', 'user1', undefined, 'project-1', 'snapshot-1', expect.stringMatching(/^deploy-artifacts\//));
+    expect(env.APP_KV.put).toHaveBeenCalledWith('script:demo-app--test-org', JSON.stringify({ org_id: 'org1', org_slug: 'test-org', is_public: false }));
   });
 
   it('serves deterministic automation virtual files through js_exec file tools', async () => {

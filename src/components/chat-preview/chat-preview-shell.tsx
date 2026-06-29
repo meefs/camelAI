@@ -61,6 +61,7 @@ export function coercePreviewTarget(value: unknown): PreviewTarget | null {
       typeof record.workspaceId !== "string" ||
       typeof record.path !== "string" ||
       (record.source !== "workspace" &&
+        record.source !== "project" &&
         record.source !== "upload" &&
         record.source !== "output" &&
         record.source !== "vm")
@@ -68,10 +69,10 @@ export function coercePreviewTarget(value: unknown): PreviewTarget | null {
       return null;
     }
     const project =
-      record.source === "vm" && typeof record.project === "string"
+      (record.source === "project" || record.source === "vm") && typeof record.project === "string"
         ? record.project.trim()
         : undefined;
-    if (record.source === "vm" && !project) {
+    if ((record.source === "project" || record.source === "vm") && !project) {
       return null;
     }
     return {

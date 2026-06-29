@@ -72,6 +72,7 @@ export interface WorkspaceProject {
   name: string;
   description: string;
   defaultVmId: string;
+  backend?: WorkspaceProjectBackend;
   kind?: "project" | "clone";
   clonedFromProjectId?: string;
   cloneSource?: WorkspaceProjectCloneSource;
@@ -98,12 +99,15 @@ export interface WorkspaceProjectCloneSummary {
   name: string;
   description: string;
   defaultVmId: string;
+  backend?: WorkspaceProjectBackend;
   clonedFromProjectId: string;
   artifactRemote?: string;
   artifactStatus?: WorkspaceProject["artifactStatus"];
   createdAt: string;
   updatedAt: string;
 }
+
+export type WorkspaceProjectBackend = "vm" | "do-r2";
 
 export interface WorkspaceFilesystemLike {
   exists(path: string): Promise<WorkspaceExistsResponse>;
@@ -127,8 +131,10 @@ export interface WorkspaceFilesystemLike {
     id?: unknown;
     name?: unknown;
     description?: unknown;
+    backend?: unknown;
   }): Promise<WorkspaceProject>;
   setProjectDescription(input?: { project?: unknown; projectId?: unknown; description?: unknown }): Promise<WorkspaceProject>;
+  setProjectBackend(input?: { project?: unknown; projectId?: unknown; backend?: unknown }): Promise<WorkspaceProject>;
   cloneProject(input?: {
     sourceProject?: unknown;
     sourceProjectId?: unknown;
@@ -143,6 +149,17 @@ export interface WorkspaceFilesystemLike {
   ): Promise<ProjectArtifactToken>;
 }
 
+export type WorkspaceFileStoreLike = Pick<WorkspaceFilesystemLike,
+  | "exists"
+  | "readFile"
+  | "readFileStream"
+  | "writeFile"
+  | "writeBinaryFile"
+  | "listFiles"
+  | "mkdir"
+  | "deleteFile"
+>;
+
 export interface ProjectArtifactToken {
   project: WorkspaceProject;
   token: string;
@@ -151,12 +168,31 @@ export interface ProjectArtifactToken {
   artifactRemoteProjectId: string;
 }
 
+export interface ProjectSourceSnapshotEntry {
+  path: string;
+  size: number;
+  sha256: string;
+  blobKey: string;
+}
+
+export interface ProjectSourceSnapshot {
+  id: string;
+  createdAt: string;
+  message?: string;
+  fileCount: number;
+  totalBytes: number;
+  entries: ProjectSourceSnapshotEntry[];
+}
+
 const PROJECTS_KEY = "projects:v1";
+const PROJECT_SNAPSHOT_INDEX_KEY = "project-source-snapshots:v1";
+const PROJECT_SNAPSHOT_PREFIX = "project-source-snapshot:";
 const DEFAULT_PROJECT_VM_ID = "main";
 const ARTIFACTS_DEFAULT_BRANCH = "main";
 const ARTIFACTS_READY_TIMEOUT_MS = 30_000;
 const ARTIFACTS_READY_POLL_MS = 1_000;
 export const ARTIFACTS_VANITY_HOST = "artifacts.camelai.internal";
+type FileStoreScope = "workspace" | "project";
 
 interface ArtifactsBinding {
   create(
@@ -196,15 +232,29 @@ interface ReadyArtifactsRepoInfo extends ArtifactsRepoInfo {
 }
 
 export class WorkspaceFilesystemDO extends DurableObject<WorkspaceFilesystemEnv> {
-  private readonly workspace: Workspace;
+  private workspaceFiles?: Workspace;
+  private projectFiles?: Workspace;
 
   constructor(ctx: DurableObjectState, env: WorkspaceFilesystemEnv) {
     super(ctx, env);
-    const durableId = ctx.id.toString();
-    this.workspace = new Workspace({
-      sql: ctx.storage.sql,
-      r2: env.R2_BUCKET,
-      r2Prefix: `workspace-fs/${durableId}`,
+  }
+
+  private get workspace(): Workspace {
+    this.workspaceFiles ??= this.createFileStore("workspace");
+    return this.workspaceFiles;
+  }
+
+  private get projectWorkspace(): Workspace {
+    this.projectFiles ??= this.createFileStore("project");
+    return this.projectFiles;
+  }
+
+  private createFileStore(scope: FileStoreScope): Workspace {
+    const durableId = this.ctx.id.toString();
+    return new Workspace({
+      sql: this.ctx.storage.sql,
+      r2: this.env.R2_BUCKET,
+      r2Prefix: fileStoreR2Prefix(scope, durableId),
       inlineThreshold: DEFAULT_INLINE_THRESHOLD,
       name: durableId,
     });
@@ -215,7 +265,15 @@ export class WorkspaceFilesystemDO extends DurableObject<WorkspaceFilesystemEnv>
   }
 
   async exists(path: string): Promise<WorkspaceExistsResponse> {
-    const stat = await this.workspace.stat(normalizeWorkspacePath(path));
+    return this.existsIn(this.workspace, path);
+  }
+
+  async projectExists(path: string): Promise<WorkspaceExistsResponse> {
+    return this.existsIn(this.projectWorkspace, path);
+  }
+
+  private async existsIn(files: Workspace, path: string): Promise<WorkspaceExistsResponse> {
+    const stat = await files.stat(normalizeWorkspacePath(path));
     if (!stat) return { exists: false };
     return {
       exists: true,
@@ -227,12 +285,20 @@ export class WorkspaceFilesystemDO extends DurableObject<WorkspaceFilesystemEnv>
   }
 
   async readFile(path: string): Promise<WorkspaceReadFileResponse> {
+    return this.readFileFrom(this.workspace, path);
+  }
+
+  async projectReadFile(path: string): Promise<WorkspaceReadFileResponse> {
+    return this.readFileFrom(this.projectWorkspace, path);
+  }
+
+  private async readFileFrom(files: Workspace, path: string): Promise<WorkspaceReadFileResponse> {
     const normalizedPath = normalizeWorkspacePath(path);
-    const bytes = await this.workspace.readFileBytes(normalizedPath);
+    const bytes = await files.readFileBytes(normalizedPath);
     if (!bytes) {
       return { success: false, error: "File not found", code: "ENOENT" };
     }
-    const stat = await this.workspace.stat(normalizedPath);
+    const stat = await files.stat(normalizedPath);
     const decoded = decodeMaybeText(bytes);
     return {
       success: true,
@@ -245,12 +311,20 @@ export class WorkspaceFilesystemDO extends DurableObject<WorkspaceFilesystemEnv>
   }
 
   async readFileStream(path: string): Promise<WorkspaceReadFileStreamResponse> {
+    return this.readFileStreamFrom(this.workspace, path);
+  }
+
+  async projectReadFileStream(path: string): Promise<WorkspaceReadFileStreamResponse> {
+    return this.readFileStreamFrom(this.projectWorkspace, path);
+  }
+
+  private async readFileStreamFrom(files: Workspace, path: string): Promise<WorkspaceReadFileStreamResponse> {
     const normalizedPath = normalizeWorkspacePath(path);
-    const stream = await this.workspace.readFileStream(normalizedPath);
+    const stream = await files.readFileStream(normalizedPath);
     if (!stream) {
       return { success: false, error: "File not found", code: "ENOENT" };
     }
-    const stat = await this.workspace.stat(normalizedPath);
+    const stat = await files.stat(normalizedPath);
     return {
       success: true,
       stream,
@@ -260,8 +334,16 @@ export class WorkspaceFilesystemDO extends DurableObject<WorkspaceFilesystemEnv>
   }
 
   async writeFile(path: string, content: string): Promise<WorkspaceWriteResponse> {
+    return this.writeFileTo(this.workspace, path, content);
+  }
+
+  async projectWriteFile(path: string, content: string): Promise<WorkspaceWriteResponse> {
+    return this.writeFileTo(this.projectWorkspace, path, content);
+  }
+
+  private async writeFileTo(files: Workspace, path: string, content: string): Promise<WorkspaceWriteResponse> {
     try {
-      await this.workspace.writeFile(normalizeWorkspacePath(path), content);
+      await files.writeFile(normalizeWorkspacePath(path), content);
       return { success: true };
     } catch (error) {
       return { success: false, error: errorMessage(error), code: "EWRITE" };
@@ -269,8 +351,16 @@ export class WorkspaceFilesystemDO extends DurableObject<WorkspaceFilesystemEnv>
   }
 
   async writeBinaryFile(path: string, base64Content: string): Promise<WorkspaceWriteResponse> {
+    return this.writeBinaryFileTo(this.workspace, path, base64Content);
+  }
+
+  async projectWriteBinaryFile(path: string, base64Content: string): Promise<WorkspaceWriteResponse> {
+    return this.writeBinaryFileTo(this.projectWorkspace, path, base64Content);
+  }
+
+  private async writeBinaryFileTo(files: Workspace, path: string, base64Content: string): Promise<WorkspaceWriteResponse> {
     try {
-      await this.workspace.writeFileBytes(
+      await files.writeFileBytes(
         normalizeWorkspacePath(path),
         base64ToBytes(base64Content),
       );
@@ -284,18 +374,33 @@ export class WorkspaceFilesystemDO extends DurableObject<WorkspaceFilesystemEnv>
     path: string,
     options: { recursive?: boolean; includeHidden?: boolean; limit?: number } = {},
   ): Promise<WorkspaceListResponse> {
+    return this.listFilesFrom(this.workspace, path, options);
+  }
+
+  async projectListFiles(
+    path: string,
+    options: { recursive?: boolean; includeHidden?: boolean; limit?: number } = {},
+  ): Promise<WorkspaceListResponse> {
+    return this.listFilesFrom(this.projectWorkspace, path, options);
+  }
+
+  private async listFilesFrom(
+    filesStore: Workspace,
+    path: string,
+    options: { recursive?: boolean; includeHidden?: boolean; limit?: number } = {},
+  ): Promise<WorkspaceListResponse> {
     const root = normalizeWorkspacePath(path);
     const includeHidden = options.includeHidden === true;
     const limit = Math.max(1, Math.min(50_000, Math.floor(options.limit ?? 10_000)));
 
     try {
-      const stat = await this.workspace.stat(root);
+      const stat = await filesStore.stat(root);
       if (!stat) throw new Error(`Path not found: ${root}`);
       const files: WorkspaceListEntry[] = [];
       if (stat.type === "file") {
         files.push(toListEntry(stat, root, root));
       } else {
-        await this.collectEntries(root, root, files, {
+        await this.collectEntries(filesStore, root, root, files, {
           recursive: options.recursive === true,
           includeHidden,
           limit,
@@ -320,8 +425,16 @@ export class WorkspaceFilesystemDO extends DurableObject<WorkspaceFilesystemEnv>
   }
 
   async mkdir(path: string, options: { recursive?: boolean } = {}): Promise<WorkspaceWriteResponse> {
+    return this.mkdirIn(this.workspace, path, options);
+  }
+
+  async projectMkdir(path: string, options: { recursive?: boolean } = {}): Promise<WorkspaceWriteResponse> {
+    return this.mkdirIn(this.projectWorkspace, path, options);
+  }
+
+  private async mkdirIn(files: Workspace, path: string, options: { recursive?: boolean } = {}): Promise<WorkspaceWriteResponse> {
     try {
-      await this.workspace.mkdir(normalizeWorkspacePath(path), { recursive: options.recursive === true });
+      await files.mkdir(normalizeWorkspacePath(path), { recursive: options.recursive === true });
       return { success: true };
     } catch (error) {
       return { success: false, error: errorMessage(error), code: "EMKDIR" };
@@ -332,8 +445,23 @@ export class WorkspaceFilesystemDO extends DurableObject<WorkspaceFilesystemEnv>
     path: string,
     options: { recursive?: boolean; force?: boolean } = {},
   ): Promise<WorkspaceWriteResponse> {
+    return this.deleteFileFrom(this.workspace, path, options);
+  }
+
+  async projectDeleteFile(
+    path: string,
+    options: { recursive?: boolean; force?: boolean } = {},
+  ): Promise<WorkspaceWriteResponse> {
+    return this.deleteFileFrom(this.projectWorkspace, path, options);
+  }
+
+  private async deleteFileFrom(
+    files: Workspace,
+    path: string,
+    options: { recursive?: boolean; force?: boolean } = {},
+  ): Promise<WorkspaceWriteResponse> {
     try {
-      await this.workspace.rm(normalizeWorkspacePath(path), {
+      await files.rm(normalizeWorkspacePath(path), {
         recursive: options.recursive === true,
         force: options.force === true,
       });
@@ -341,6 +469,81 @@ export class WorkspaceFilesystemDO extends DurableObject<WorkspaceFilesystemEnv>
     } catch (error) {
       return { success: false, error: errorMessage(error), code: "EDELETE" };
     }
+  }
+
+  async projectCreateSourceSnapshot(input: { message?: unknown } = {}): Promise<ProjectSourceSnapshot> {
+    const message = typeof input.message === "string" && input.message.trim()
+      ? input.message.trim().slice(0, 240)
+      : undefined;
+    const listing = await this.projectListFiles("/", { recursive: true, includeHidden: true, limit: 50_000 });
+    if (!listing.success) throw new Error(listing.error || "Failed to list project files");
+
+    const entries: ProjectSourceSnapshotEntry[] = [];
+    let totalBytes = 0;
+    for (const entry of listing.files) {
+      if (entry.type !== "file") continue;
+      const path = normalizeProjectSnapshotPath(entry.absolutePath);
+      if (!path || shouldIgnoreProjectSnapshotPath(path)) continue;
+      const bytes = await this.projectWorkspace.readFileBytes(`/${path}`);
+      if (!bytes) continue;
+      const sha256 = await sha256Hex(bytes);
+      const blobKey = projectSnapshotBlobKey(this.ctx.id.toString(), sha256);
+      await this.env.R2_BUCKET.put(blobKey, bytes, {
+        customMetadata: { type: "project-source-snapshot", sha256 },
+      });
+      entries.push({ path, size: bytes.byteLength, sha256, blobKey });
+      totalBytes += bytes.byteLength;
+    }
+    entries.sort((a, b) => a.path.localeCompare(b.path));
+    const digestInput = JSON.stringify(entries.map((entry) => [entry.path, entry.size, entry.sha256]));
+    const id = await sha256Hex(new TextEncoder().encode(digestInput));
+    const snapshot: ProjectSourceSnapshot = {
+      id,
+      createdAt: new Date().toISOString(),
+      ...(message ? { message } : {}),
+      fileCount: entries.length,
+      totalBytes,
+      entries,
+    };
+    await this.ctx.storage.kv.put(`${PROJECT_SNAPSHOT_PREFIX}${id}`, snapshot);
+    const index = await this.ctx.storage.kv.get<string[]>(PROJECT_SNAPSHOT_INDEX_KEY) ?? [];
+    await this.ctx.storage.kv.put(PROJECT_SNAPSHOT_INDEX_KEY, [id, ...index.filter((existing) => existing !== id)].slice(0, 200));
+    return snapshot;
+  }
+
+  async projectRestoreSourceSnapshot(snapshotId: unknown): Promise<ProjectSourceSnapshot> {
+    const id = requireSnapshotId(snapshotId);
+    const snapshot = await this.ctx.storage.kv.get<ProjectSourceSnapshot>(`${PROJECT_SNAPSHOT_PREFIX}${id}`);
+    if (!snapshot) throw new Error(`Project source snapshot not found: ${id}`);
+    const keep = new Set(snapshot.entries.map((entry) => entry.path));
+    const current = await this.projectListFiles("/", { recursive: true, includeHidden: true, limit: 50_000 });
+    if (!current.success) throw new Error(current.error || "Failed to list project files");
+    for (const entry of current.files) {
+      if (entry.type !== "file") continue;
+      const path = normalizeProjectSnapshotPath(entry.absolutePath);
+      if (!path || shouldIgnoreProjectSnapshotPath(path) || keep.has(path)) continue;
+      await this.projectWorkspace.rm(`/${path}`, { force: true });
+    }
+    for (const entry of snapshot.entries) {
+      const object = await this.env.R2_BUCKET.get(entry.blobKey);
+      if (!object) throw new Error(`Project source snapshot blob missing: ${entry.path}`);
+      const bytes = new Uint8Array(await object.arrayBuffer());
+      const actualSha = await sha256Hex(bytes);
+      if (actualSha !== entry.sha256) throw new Error(`Project source snapshot blob hash mismatch: ${entry.path}`);
+      await this.projectWorkspace.writeFileBytes(`/${entry.path}`, bytes);
+    }
+    return snapshot;
+  }
+
+  async projectListSourceSnapshots(limit = 20): Promise<ProjectSourceSnapshot[]> {
+    const safeLimit = Math.max(1, Math.min(100, Math.floor(limit)));
+    const index = await this.ctx.storage.kv.get<string[]>(PROJECT_SNAPSHOT_INDEX_KEY) ?? [];
+    const snapshots: ProjectSourceSnapshot[] = [];
+    for (const id of index.slice(0, safeLimit)) {
+      const snapshot = await this.ctx.storage.kv.get<ProjectSourceSnapshot>(`${PROJECT_SNAPSHOT_PREFIX}${id}`);
+      if (snapshot) snapshots.push(snapshot);
+    }
+    return snapshots;
   }
 
   async listProjects(): Promise<WorkspaceProject[]> {
@@ -404,6 +607,7 @@ export class WorkspaceFilesystemDO extends DurableObject<WorkspaceFilesystemEnv>
     name?: unknown;
     description?: unknown;
     workspaceId?: unknown;
+    backend?: unknown;
   } = {}): Promise<WorkspaceProject> {
     const projects = await this.readProjects();
     const name = requireProjectName(input.name ?? input.id ?? `project-${projects.length + 1}`);
@@ -419,11 +623,13 @@ export class WorkspaceFilesystemDO extends DurableObject<WorkspaceFilesystemEnv>
 
     const now = new Date().toISOString();
     const description = requireProjectDescription(input.description);
+    const backend = input.backend === undefined ? "vm" : requireProjectBackend(input.backend);
     const project = await this.ensureProjectArtifactRepo({
       id,
       name,
       description,
       defaultVmId: DEFAULT_PROJECT_VM_ID,
+      backend,
       createdAt: now,
       updatedAt: now,
     });
@@ -445,6 +651,25 @@ export class WorkspaceFilesystemDO extends DurableObject<WorkspaceFilesystemEnv>
     const updated: WorkspaceProject = {
       ...projects[index]!,
       description,
+      updatedAt: new Date().toISOString(),
+    };
+    projects[index] = updated;
+    await this.ctx.storage.kv.put(PROJECTS_KEY, projects);
+    return toPublicProject(updated);
+  }
+
+  async setProjectBackend(input: { project?: unknown; projectId?: unknown; backend?: unknown } = {}): Promise<WorkspaceProject> {
+    const backend = requireProjectBackend(input.backend);
+    const projects = await this.readProjects();
+    const index = typeof input.project === "string" && input.project.trim()
+      ? projects.findIndex((project) => projectNameKey(project.name) === requireProjectNameKey(input.project, "project"))
+      : projects.findIndex((project) => project.id === requireProjectId(input.projectId, "project"));
+    if (index === -1) {
+      throw new Error(`Project not found: ${String(input.project || input.projectId || "")}`);
+    }
+    const updated: WorkspaceProject = {
+      ...projects[index]!,
+      backend,
       updatedAt: new Date().toISOString(),
     };
     projects[index] = updated;
@@ -503,6 +728,7 @@ export class WorkspaceFilesystemDO extends DurableObject<WorkspaceFilesystemEnv>
       name: cloneName,
       description,
       defaultVmId: DEFAULT_PROJECT_VM_ID,
+      backend: source.backend ?? "vm",
       clonedFromProjectId: source.id,
       artifactRemoteProjectId: source.artifactRemoteProjectId || source.id,
       artifactRepoName: source.artifactRepoName,
@@ -584,10 +810,29 @@ export class WorkspaceFilesystemDO extends DurableObject<WorkspaceFilesystemEnv>
       await this.replaceProject(updated);
       return updated;
     } catch (error) {
+      const message = errorMessage(error);
+      if (isArtifactsBindingUnavailableError(message)) {
+        const updated: WorkspaceProject = {
+          ...project,
+          artifactRepoName: repoName,
+          artifactRemote,
+          artifactRemoteProjectId: project.artifactRemoteProjectId || project.id,
+          artifactDefaultBranch: project.artifactDefaultBranch || ARTIFACTS_DEFAULT_BRANCH,
+          artifactStatus: "error",
+          updatedAt: new Date().toISOString(),
+        };
+        await this.replaceProject(updated);
+        console.warn("[WorkspaceFilesystemDO] Artifacts repo unavailable; continuing without repo", {
+          projectId: project.id,
+          repoName,
+          error: message,
+        });
+        return updated;
+      }
       console.error("[WorkspaceFilesystemDO] failed to ensure Artifacts repo", {
         projectId: project.id,
         repoName,
-        error: errorMessage(error),
+        error: message,
       });
       throw error;
     }
@@ -618,20 +863,21 @@ export class WorkspaceFilesystemDO extends DurableObject<WorkspaceFilesystemEnv>
   }
 
   private async collectEntries(
+    filesStore: Workspace,
     root: string,
     dir: string,
     files: WorkspaceListEntry[],
     options: { recursive: boolean; includeHidden: boolean; limit: number },
   ): Promise<void> {
     if (files.length >= options.limit) return;
-    const entries = await this.workspace.readDir(dir, { limit: options.limit });
+    const entries = await filesStore.readDir(dir, { limit: options.limit });
     for (const entry of entries) {
       if (files.length >= options.limit) return;
       const relativePath = relativeUnderRoot(root, entry.path);
       if (!options.includeHidden && isHiddenPath(relativePath)) continue;
       files.push(toListEntry(entry, root, entry.path));
       if (options.recursive && entry.type === "directory") {
-        await this.collectEntries(root, entry.path, files, options);
+        await this.collectEntries(filesStore, root, entry.path, files, options);
       }
     }
   }
@@ -710,12 +956,17 @@ export class WorkspaceFilesystemClient implements WorkspaceFilesystemLike {
     id?: unknown;
     name?: unknown;
     description?: unknown;
+    backend?: unknown;
   }): Promise<WorkspaceProject> {
     return this.stub.createProject({ ...input, workspaceId: this.workspaceId });
   }
 
   setProjectDescription(input?: { project?: unknown; projectId?: unknown; description?: unknown }): Promise<WorkspaceProject> {
     return this.stub.setProjectDescription(input);
+  }
+
+  setProjectBackend(input?: { project?: unknown; projectId?: unknown; backend?: unknown }): Promise<WorkspaceProject> {
+    return this.stub.setProjectBackend(input);
   }
 
   cloneProject(input?: {
@@ -734,6 +985,65 @@ export class WorkspaceFilesystemClient implements WorkspaceFilesystemLike {
     ttlSeconds?: number,
   ): Promise<ProjectArtifactToken> {
     return this.stub.mintProjectArtifactToken(projectId, scope, ttlSeconds);
+  }
+}
+
+export class ProjectFilesystemClient implements WorkspaceFileStoreLike {
+  constructor(
+    private readonly env: WorkspaceFilesystemEnv,
+    private readonly projectId: string,
+  ) {}
+
+  private get stub(): DurableObjectStub<WorkspaceFilesystemDO> {
+    const normalizedProjectId = normalizeGlobalProjectId(this.projectId);
+    return this.env.WORKSPACE_FS.get(this.env.WORKSPACE_FS.idFromName(normalizedProjectId));
+  }
+
+  exists(path: string): Promise<WorkspaceExistsResponse> {
+    return this.stub.projectExists(path);
+  }
+
+  readFile(path: string): Promise<WorkspaceReadFileResponse> {
+    return this.stub.projectReadFile(path);
+  }
+
+  readFileStream(path: string): Promise<WorkspaceReadFileStreamResponse> {
+    return this.stub.projectReadFileStream(path);
+  }
+
+  writeFile(path: string, content: string): Promise<WorkspaceWriteResponse> {
+    return this.stub.projectWriteFile(path, content);
+  }
+
+  writeBinaryFile(path: string, base64Content: string): Promise<WorkspaceWriteResponse> {
+    return this.stub.projectWriteBinaryFile(path, base64Content);
+  }
+
+  listFiles(
+    path: string,
+    options?: { recursive?: boolean; includeHidden?: boolean; limit?: number },
+  ): Promise<WorkspaceListResponse> {
+    return this.stub.projectListFiles(path, options);
+  }
+
+  mkdir(path: string, options?: { recursive?: boolean }): Promise<WorkspaceWriteResponse> {
+    return this.stub.projectMkdir(path, options);
+  }
+
+  deleteFile(path: string, options?: { recursive?: boolean; force?: boolean }): Promise<WorkspaceWriteResponse> {
+    return this.stub.projectDeleteFile(path, options);
+  }
+
+  createSourceSnapshot(input?: { message?: unknown }): Promise<ProjectSourceSnapshot> {
+    return this.stub.projectCreateSourceSnapshot(input);
+  }
+
+  restoreSourceSnapshot(snapshotId: unknown): Promise<ProjectSourceSnapshot> {
+    return this.stub.projectRestoreSourceSnapshot(snapshotId);
+  }
+
+  listSourceSnapshots(limit?: number): Promise<ProjectSourceSnapshot[]> {
+    return this.stub.projectListSourceSnapshots(limit);
   }
 }
 
@@ -894,6 +1204,10 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function fileStoreR2Prefix(scope: FileStoreScope, durableId: string): string {
+  return `${scope === "project" ? "project-fs" : "workspace-fs"}/${durableId}`;
+}
+
 async function optionalStringValue(value: unknown): Promise<string | undefined> {
   const resolved = await Promise.resolve(value);
   return typeof resolved === "string" && resolved.trim() ? resolved : undefined;
@@ -907,6 +1221,8 @@ function normalizeArtifactStatus(status: string | undefined): ArtifactsRepoInfo[
 
 export const __testing = {
   createOrGetArtifactRepo,
+  fileStoreR2Prefix,
+  isArtifactsBindingUnavailableError,
 };
 
 function artifactRepoName(_workspaceKey: string, projectId: string): string {
@@ -966,6 +1282,7 @@ function toProjectCloneSummary(project: WorkspaceProject): WorkspaceProjectClone
     name: project.name,
     description: projectDescription(project),
     defaultVmId: project.defaultVmId,
+    backend: project.backend ?? "vm",
     clonedFromProjectId: project.clonedFromProjectId,
     artifactRemote: project.artifactRemote,
     artifactStatus: project.artifactStatus,
@@ -1049,6 +1366,43 @@ function requireProjectDescription(value: unknown): string {
   return description;
 }
 
+function requireProjectBackend(value: unknown): WorkspaceProjectBackend {
+  if (value === "vm" || value === "do-r2") return value;
+  throw new Error('project backend must be "vm" or "do-r2"');
+}
+
+function normalizeProjectSnapshotPath(path: string): string {
+  return path.replace(/\\/g, "/").replace(/^\/+/, "").split("/").filter((part) => part && part !== "." && part !== "..").join("/");
+}
+
+function shouldIgnoreProjectSnapshotPath(path: string): boolean {
+  return path.split("/").some((part) =>
+    part === "node_modules" ||
+    part === ".git" ||
+    part === ".wrangler" ||
+    part === ".cache" ||
+    part === "dist" ||
+    part === "build"
+  );
+}
+
+function requireSnapshotId(value: unknown): string {
+  if (typeof value !== "string" || !/^[a-f0-9]{64}$/.test(value.trim())) {
+    throw new Error("snapshot id is required");
+  }
+  return value.trim();
+}
+
+function projectSnapshotBlobKey(durableId: string, sha256: string): string {
+  return `project-source-snapshots/${durableId}/${sha256}`;
+}
+
+async function sha256Hex(bytes: Uint8Array): Promise<string> {
+  const content = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
+  const digest = await crypto.subtle.digest("SHA-256", content);
+  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
 export function relativeUnderRoot(root: string, path: string): string {
   const normalizedRoot = normalizeWorkspacePath(root).replace(/\/+$/, "") || "/";
   const normalizedPath = normalizeWorkspacePath(path);
@@ -1107,4 +1461,10 @@ function base64ToBytes(value: string): Uint8Array {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function isArtifactsBindingUnavailableError(message: string): boolean {
+  const normalized = message.toLowerCase();
+  return normalized.includes("binding artifacts needs to be run remotely") ||
+    normalized.includes("artifacts binding is not configured");
 }

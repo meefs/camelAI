@@ -391,19 +391,19 @@ export class ChiridionMcp extends McpAgent<any, Record<string, unknown>, Record<
     // Set preview panel to a file
     this.server.tool(
       'set_file_preview',
-      'Set the chat preview panel to a file path. Supports explicit location="workspace", location="vm" with project, and location="r2" for R2 paths like uploads/... or outputs/....',
+      'Set the chat preview panel to a file path. Supports explicit location="workspace", location="project" or "vm" with project, and location="r2" for R2 paths like uploads/... or outputs/....',
       {
         path: z
           .string()
           .describe('Path to preview. Examples: "/workspace/README.md", "src/app.tsx", "outputs/plot.png", "uploads/notebook.ipynb"'),
         location: z
-          .enum(['workspace', 'vm', 'r2'])
+          .enum(['workspace', 'project', 'vm', 'r2'])
           .optional()
-          .describe('Set to "workspace" for durable workspace files, "vm" for project VM files, or "r2" for uploads/... / outputs/... paths.'),
+          .describe('Set to "workspace" for durable workspace files, "project" for DO-backed project files, "vm" for project VM files, or "r2" for uploads/... / outputs/... paths.'),
         project: z
           .string()
           .optional()
-          .describe('Project name when location is "vm".'),
+          .describe('Project name when location is "project" or "vm".'),
         content_type: z
           .string()
           .optional()
@@ -414,10 +414,10 @@ export class ChiridionMcp extends McpAgent<any, Record<string, unknown>, Record<
         if (!workspaceId) {
           return this.textResponse({ success: false, error: 'No workspace context available' });
         }
-        if (location !== 'vm' && project?.trim()) {
+        if (location !== 'project' && location !== 'vm' && project?.trim()) {
           return this.textResponse({
             success: false,
-            error: 'project is only valid with location="vm"',
+            error: 'project is only valid with location="project" or location="vm"',
           });
         }
 
@@ -432,7 +432,7 @@ export class ChiridionMcp extends McpAgent<any, Record<string, unknown>, Record<
 
         let parsedPath = parseFilePreviewPath(path);
         let source: Extract<PreviewTarget, { kind: 'file' }>['source'];
-        if (location === 'workspace' || location === 'vm') {
+        if (location === 'workspace' || location === 'project' || location === 'vm') {
           parsedPath = parseFilePreviewPath(path.startsWith('/') ? path : `/${path}`);
           if (!parsedPath || parsedPath.source !== 'workspace') {
             return this.textResponse({
@@ -464,14 +464,14 @@ export class ChiridionMcp extends McpAgent<any, Record<string, unknown>, Record<
           source,
           workspaceId,
           path: parsedPath.path,
-          project: source === 'vm' ? project?.trim() : undefined,
+          project: source === 'project' || source === 'vm' ? project?.trim() : undefined,
           filename: parsedPath.filename,
           contentType: typeof content_type === 'string' && content_type.trim() ? content_type.trim() : undefined,
         };
-        if (target.source === 'vm' && !target.project) {
+        if ((target.source === 'project' || target.source === 'vm') && !target.project) {
           return this.textResponse({
             success: false,
-            error: 'project is required when previewing a VM file',
+            error: `project is required when previewing a ${target.source === 'project' ? 'project' : 'VM'} file`,
           });
         }
 
@@ -480,7 +480,7 @@ export class ChiridionMcp extends McpAgent<any, Record<string, unknown>, Record<
 
         const normalizedPath = target.path.replace(/^\/+/, '');
         const encodedPath = this.encodePathSegments(normalizedPath);
-        const route = target.source === 'vm'
+        const route = target.source === 'project' || target.source === 'vm'
           ? `projects/${encodeURIComponent(target.project ?? '')}/fs/content/${encodedPath}`
           : target.source === 'workspace'
           ? `fs/content/${encodedPath}`

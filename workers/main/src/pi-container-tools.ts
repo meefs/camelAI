@@ -1,6 +1,6 @@
 import { Type } from "typebox";
 import type {
-  WorkspaceFilesystemLike,
+  WorkspaceFileStoreLike,
   WorkspaceReadFileResponse,
   WorkspaceReadFileStreamResponse,
 } from "./workspace-filesystem-do";
@@ -32,14 +32,15 @@ export type PiContainerToolResult = {
 const PI_FILE_LOCATION_PARAMETERS = {
   location: Type.Union([
     Type.Literal("workspace"),
+    Type.Literal("project"),
     Type.Literal("vm"),
     Type.Literal("r2"),
   ], {
     description:
-      "Required. Use 'workspace' for loose durable workspace files, 'vm' for a named project VM checkout, or 'r2' for workspace-scoped R2 paths (uploads/..., outputs/..., tmp/...).",
+      "Required. Use 'workspace' for loose durable workspace files, 'project' for DO-backed project source files, 'vm' for a named legacy project VM checkout, or 'r2' for workspace-scoped R2 paths (uploads/..., outputs/..., tmp/...).",
   }),
   project: Type.Optional(Type.String({
-    description: "Unique workspace project name when location is 'vm'. Selects the project's default VM checkout.",
+    description: "Unique workspace project name when location is 'project' or 'vm'.",
   })),
 };
 
@@ -113,49 +114,49 @@ export const PI_CONTAINER_TOOL_DEFINITIONS = {
     name: "read",
     label: "read",
     description:
-      `Read a file. Required location: use location='workspace' for loose durable workspace files, location='vm' plus project for project VM files, or location='r2' for workspace-scoped R2. R2 paths must be uploads/<path> for read-only user uploads, outputs/<path> for user-visible outputs, or tmp/<path> for temporary objects; do not use leading slashes, /mnt paths, /r2 paths, or raw R2 keys. Text output is truncated to ${DEFAULT_MAX_LINES} lines or ${DEFAULT_MAX_BYTES / 1024}KB for workspace files. Images are returned as image content when possible.`,
+      `Read a file. Required location: use location='workspace' for loose durable workspace files, location='project' plus project for DO-backed project source files, location='vm' plus project for legacy project VM files, or location='r2' for workspace-scoped R2. R2 paths must be uploads/<path> for read-only user uploads, outputs/<path> for user-visible outputs, or tmp/<path> for temporary objects; do not use leading slashes, /mnt paths, /r2 paths, or raw R2 keys. Text output is truncated to ${DEFAULT_MAX_LINES} lines or ${DEFAULT_MAX_BYTES / 1024}KB for workspace/project files. Images are returned as image content when possible.`,
     parameters: PI_READ_PARAMETERS,
   },
   write: {
     name: "write",
     label: "write",
     description:
-      "Write content to a required location: use location='workspace' for loose durable workspace files, location='vm' plus project for project VM files, or location='r2' for workspace-scoped R2. R2 writable paths are outputs/<path> and tmp/<path>; uploads/<path> is read-only. Do not use leading slashes, /mnt paths, /r2 paths, or raw R2 keys. Creates parent directories for workspace/VM writes.",
+      "Write content to a required location: use location='workspace' for loose durable workspace files, location='project' plus project for DO-backed project source files, location='vm' plus project for legacy project VM files, or location='r2' for workspace-scoped R2. R2 writable paths are outputs/<path> and tmp/<path>; uploads/<path> is read-only. Do not use leading slashes, /mnt paths, /r2 paths, or raw R2 keys.",
     parameters: PI_WRITE_PARAMETERS,
   },
   edit: {
     name: "edit",
     label: "edit",
     description:
-      "Edit a single text file at a required location: use location='workspace' for loose durable workspace files, location='vm' plus project for project VM files, or location='r2' for workspace-scoped R2. Every edits[].oldText must match a unique, non-overlapping region of the original file.",
+      "Edit a single text file at a required location: use location='workspace' for loose durable workspace files, location='project' plus project for DO-backed project source files, location='vm' plus project for legacy project VM files, or location='r2' for workspace-scoped R2. Every edits[].oldText must match a unique, non-overlapping region of the original file.",
     parameters: PI_EDIT_PARAMETERS,
   },
   delete: {
     name: "delete",
     label: "delete",
     description:
-      "Delete a file at a required location: use location='workspace' for loose durable workspace files, or location='r2' for workspace-scoped R2. For project VM files, use bash/vm_exec with rm so deletion is explicit in the shell command.",
+      "Delete a file at a required location: use location='workspace' for loose durable workspace files, location='project' plus project for DO-backed project source files, or location='r2' for workspace-scoped R2. For legacy project VM files, use bash/vm_exec with rm so deletion is explicit in the shell command.",
     parameters: PI_DELETE_PARAMETERS,
   },
   ls: {
     name: "ls",
     label: "ls",
     description:
-      "List directory contents at a required location: use location='workspace' for loose durable workspace files, location='vm' plus project for project VM files, or location='r2' for workspace-scoped R2. For R2, path must be uploads, outputs, tmp, or a path under one of them with no leading slash. Returns entries sorted alphabetically, with '/' suffix for directories where applicable.",
+      "List directory contents at a required location: use location='workspace' for loose durable workspace files, location='project' plus project for DO-backed project source files, location='vm' plus project for legacy project VM files, or location='r2' for workspace-scoped R2. For R2, path must be uploads, outputs, tmp, or a path under one of them with no leading slash. Returns entries sorted alphabetically, with '/' suffix for directories where applicable.",
     parameters: PI_LS_PARAMETERS,
   },
   grep: {
     name: "grep",
     label: "grep",
     description:
-      "Search file contents at a required location: use location='workspace' for loose durable workspace files or location='vm' plus project for project VM files. R2 search is not supported. Returns matching lines with file paths and line numbers.",
+      "Search file contents at a required location: use location='workspace' for loose durable workspace files, location='project' plus project for DO-backed project source files, or location='vm' plus project for legacy project VM files. R2 search is not supported. Returns matching lines with file paths and line numbers.",
     parameters: PI_GREP_PARAMETERS,
   },
   find: {
     name: "find",
     label: "find",
     description:
-      "Search files by glob pattern at a required location: use location='workspace' for loose durable workspace files or location='vm' plus project for project VM files. R2 search is not supported. Returns matching file paths relative to the search directory.",
+      "Search files by glob pattern at a required location: use location='workspace' for loose durable workspace files, location='project' plus project for DO-backed project source files, or location='vm' plus project for legacy project VM files. R2 search is not supported. Returns matching file paths relative to the search directory.",
     parameters: PI_FIND_PARAMETERS,
   },
 } as const;
@@ -372,7 +373,7 @@ function simpleDiff(before: string, after: string) {
 
 export class PiContainerTools {
   constructor(
-    private readonly workspace: WorkspaceFilesystemLike,
+    private readonly workspace: WorkspaceFileStoreLike,
     private readonly options: { images?: ImagesBinding } = {},
   ) {}
 
