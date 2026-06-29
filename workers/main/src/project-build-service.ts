@@ -302,7 +302,7 @@ function validatePackageJsonBuildScript(sourceFiles: ProjectSourceFile[]): strin
   const parsed = parseProjectPackageJson(packageJson);
   if (typeof parsed === "string") return parsed;
   const scripts = (parsed as { scripts?: unknown }).scripts;
-  const buildScriptMessage = "Project package.json must define scripts.build. Use scaffold_project to seed the default DO-backed Worker scaffold, and list every CLI used by scripts.build in dependencies or devDependencies.";
+  const buildScriptMessage = "Project package.json must define scripts.build. Use scaffold_project to seed a DO-backed worker or react-router scaffold, and list every CLI used by scripts.build in dependencies or devDependencies.";
   if (!scripts || typeof scripts !== "object") return buildScriptMessage;
   const build = (scripts as { build?: unknown }).build;
   return typeof build === "string" && build.trim() ? null : buildScriptMessage;

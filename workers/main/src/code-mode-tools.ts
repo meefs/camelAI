@@ -566,22 +566,22 @@ const CODE_MODE_TOOL_REGISTRY: CodeModeToolRegistration[] = [
   ),
   codeModePassthroughTool(
     "create_project",
-    "Create a new DO-backed project and seed a deployable Worker scaffold. Project names must be unique within the workspace. New projects require a concise description explaining what the project is for. The default scaffold includes package.json with scripts.build, wrangler.jsonc, tsconfig.json, src/index.ts, and a build-manifest writer that emits build/server/wrangler.json for deploy_project. Arguments: { name, description, template? }.",
+    "Create a new DO-backed project and seed a deployable scaffold. Project names must be unique within the workspace. New projects require a concise description explaining what the project is for. The default worker scaffold includes package.json with scripts.build, wrangler.jsonc, tsconfig.json, src/index.ts, and a build-manifest writer that emits build/server/wrangler.json for deploy_project. Use template='react-router' for a full React Router SSR scaffold. Arguments: { name, description, template? }.",
     Type.Object({
       name: Type.String(),
       description: Type.String(),
-      template: Type.Optional(Type.Union([Type.Literal("worker"), Type.Literal("api")], {
-        description: "Optional scaffold template. Defaults to worker. api currently uses the same deployable Worker scaffold.",
+      template: Type.Optional(Type.Union([Type.Literal("worker"), Type.Literal("api"), Type.Literal("react-router")], {
+        description: "Optional scaffold template. Defaults to worker. api currently uses the same deployable Worker scaffold; react-router seeds a React Router SSR app.",
       })),
     }, { additionalProperties: false }),
   ),
   codeModePassthroughTool(
     "scaffold_project",
-    "Seed or repair the standard DO-backed Worker scaffold in an existing project. By default it does not overwrite existing files; pass force: true to replace scaffold paths. Arguments: { project, template?, force? }.",
+    "Seed or repair a standard DO-backed scaffold in an existing project. By default it does not overwrite existing files; pass force: true to replace scaffold paths. Use template='worker' for a bare Worker, 'api' for the same Worker scaffold, or 'react-router' for React Router SSR. Arguments: { project, template?, force? }.",
     Type.Object({
       project: Type.String(),
-      template: Type.Optional(Type.Union([Type.Literal("worker"), Type.Literal("api")], {
-        description: "Optional scaffold template. Defaults to worker. api currently uses the same deployable Worker scaffold.",
+      template: Type.Optional(Type.Union([Type.Literal("worker"), Type.Literal("api"), Type.Literal("react-router")], {
+        description: "Optional scaffold template. Defaults to worker. api currently uses the same deployable Worker scaffold; react-router seeds a React Router SSR app.",
       })),
       force: Type.Optional(Type.Boolean({ description: "Overwrite existing scaffold files. Defaults to false." })),
     }, { additionalProperties: false }),
@@ -1167,7 +1167,7 @@ function projectCloneForAgent(project: WorkspaceProjectCloneSummary): Record<str
   };
 }
 
-type ProjectScaffoldTemplate = "worker" | "api";
+type ProjectScaffoldTemplate = "worker" | "api" | "react-router";
 
 interface ProjectScaffoldResult {
   template: ProjectScaffoldTemplate;
@@ -1178,10 +1178,8 @@ interface ProjectScaffoldResult {
 function normalizeProjectScaffoldTemplate(value: unknown): ProjectScaffoldTemplate {
   if (value === undefined || value === null || value === "" || value === "worker") return "worker";
   if (value === "api") return "api";
-  if (value === "react-router") {
-    throw new Error("react-router scaffolding is not available for DO-backed projects yet; use template='worker' for the current deployable starter");
-  }
-  throw new Error('template must be "worker" or "api"');
+  if (value === "react-router") return "react-router";
+  throw new Error('template must be "worker", "api", or "react-router"');
 }
 
 function scaffoldPackageName(projectName: string): string {
@@ -1265,6 +1263,288 @@ function defaultWorkerScaffoldFiles(projectName: string, template: ProjectScaffo
       content: `# ${projectName}\n\n${title} scaffolded by camelAI.\n\n## Commands\n\n- \`bun install\` installs explicit dev dependencies.\n- \`bun run build\` type-checks, bundles \`src/index.ts\`, and writes \`build/server/wrangler.json\` for the platform deploy pipeline.\n- \`bun run deploy\` is included for compatibility; camelAI's \`deploy_project\` uses the platform direct-deploy path instead of exposing Cloudflare credentials to this project.\n\nBuild scripts must declare every CLI they use in \`dependencies\` or \`devDependencies\`; package scripts can then resolve those binaries from \`node_modules/.bin\`.\n`,
     },
   ];
+}
+
+function defaultReactRouterScaffoldFiles(projectName: string): Array<{ path: string; content: string }> {
+  const packageName = scaffoldPackageName(projectName);
+  const scriptName = normalizeDeployScriptName(projectName);
+  const file = (lines: string[]) => `${lines.join("\n")}\n`;
+  return [
+    {
+      path: "/package.json",
+      content: `${JSON.stringify({
+        name: packageName,
+        private: true,
+        type: "module",
+        scripts: {
+          build: "react-router build && node ./scripts/build-manifest.mjs",
+          deploy: "wrangler deploy",
+        },
+        dependencies: {
+          "@react-router/cloudflare": "^7.16.0",
+          react: "^19.2.0",
+          "react-dom": "^19.2.0",
+          "react-router": "^7.16.0",
+        },
+        devDependencies: {
+          "@cloudflare/workers-types": "^4.20260629.1",
+          "@react-router/dev": "^7.16.0",
+          "@types/react": "^19.2.0",
+          "@types/react-dom": "^19.2.0",
+          esbuild: "^0.28.1",
+          typescript: "^5.9.2",
+          vite: "^8.0.16",
+          "vite-tsconfig-paths": "^5.1.4",
+          wrangler: "^4.97.0",
+        },
+      }, null, 2)}\n`,
+    },
+    {
+      path: "/wrangler.jsonc",
+      content: `${JSON.stringify({
+        name: scriptName,
+        main: "./workers/app.ts",
+        compatibility_date: "2026-06-01",
+        compatibility_flags: ["nodejs_compat"],
+        assets: {
+          directory: "./public/",
+          binding: "ASSETS",
+        },
+      }, null, 2)}\n`,
+    },
+    {
+      path: "/tsconfig.json",
+      content: `${JSON.stringify({
+        compilerOptions: {
+          target: "ES2022",
+          module: "ESNext",
+          moduleResolution: "Bundler",
+          jsx: "react-jsx",
+          lib: ["ES2022", "DOM", "DOM.Iterable"],
+          types: ["@cloudflare/workers-types", "vite/client"],
+          strict: true,
+          skipLibCheck: true,
+          noEmit: true,
+          allowSyntheticDefaultImports: true,
+          esModuleInterop: true,
+        },
+        include: ["app/**/*.ts", "app/**/*.tsx", "workers/**/*.ts", "scripts/**/*.mjs", "vite.config.ts", "react-router.config.ts"],
+      }, null, 2)}\n`,
+    },
+    {
+      path: "/vite.config.ts",
+      content: file([
+        `import { reactRouter } from "@react-router/dev/vite";`,
+        `import { cloudflareDevProxy } from "@react-router/dev/vite/cloudflare";`,
+        `import { defineConfig } from "vite";`,
+        `import tsconfigPaths from "vite-tsconfig-paths";`,
+        ``,
+        `export default defineConfig({`,
+        `  plugins: [cloudflareDevProxy(), reactRouter(), tsconfigPaths()],`,
+        `  ssr: {`,
+        `    noExternal: true,`,
+        `    target: "webworker",`,
+        `  },`,
+        `});`,
+      ]),
+    },
+    {
+      path: "/react-router.config.ts",
+      content: file([
+        `import type { Config } from "@react-router/dev/config";`,
+        ``,
+        `export default {`,
+        `  ssr: true,`,
+        `} satisfies Config;`,
+      ]),
+    },
+    {
+      path: "/app/root.tsx",
+      content: file([
+        `import type { ReactNode } from "react";`,
+        `import { Links, Meta, Outlet, Scripts, ScrollRestoration } from "react-router";`,
+        ``,
+        `export function Layout({ children }: { children: ReactNode }) {`,
+        `  return (`,
+        `    <html lang="en">`,
+        `      <head>`,
+        `        <meta charSet="utf-8" />`,
+        `        <meta name="viewport" content="width=device-width, initial-scale=1" />`,
+        `        <Meta />`,
+        `        <Links />`,
+        `      </head>`,
+        `      <body>`,
+        `        {children}`,
+        `        <ScrollRestoration />`,
+        `        <Scripts />`,
+        `      </body>`,
+        `    </html>`,
+        `  );`,
+        `}`,
+        ``,
+        `export default function App() {`,
+        `  return <Outlet />;`,
+        `}`,
+      ]),
+    },
+    {
+      path: "/app/routes.ts",
+      content: file([
+        `import { index, type RouteConfig } from "@react-router/dev/routes";`,
+        ``,
+        `export default [index("routes/home.tsx")] satisfies RouteConfig;`,
+      ]),
+    },
+    {
+      path: "/app/routes/home.tsx",
+      content: file([
+        `export function meta() {`,
+        `  return [`,
+        `    { title: ${JSON.stringify(projectName)} },`,
+        `    { name: "description", content: "A camelAI React Router app" },`,
+        `  ];`,
+        `}`,
+        ``,
+        `export default function Home() {`,
+        `  return (`,
+        `    <main style={{ fontFamily: "system-ui, sans-serif", padding: "4rem", lineHeight: 1.5 }}>`,
+        `      <p style={{ color: "#64748b", marginBottom: "0.5rem" }}>camelAI React Router scaffold</p>`,
+        `      <h1 style={{ fontSize: "3rem", margin: 0 }}>Hello from ${projectName}</h1>`,
+        `      <p>Edit <code>app/routes/home.tsx</code>, then run <code>build_project</code> and <code>deploy_project</code>.</p>`,
+        `    </main>`,
+        `  );`,
+        `}`,
+      ]),
+    },
+    {
+      path: "/app/entry.server.tsx",
+      content: file([
+        `import { renderToReadableStream } from "react-dom/server";`,
+        `import type { AppLoadContext, EntryContext } from "react-router";`,
+        `import { ServerRouter } from "react-router";`,
+        ``,
+        `export default async function handleRequest(`,
+        `  request: Request,`,
+        `  responseStatusCode: number,`,
+        `  responseHeaders: Headers,`,
+        `  routerContext: EntryContext,`,
+        `  _loadContext: AppLoadContext,`,
+        `): Promise<Response> {`,
+        `  const body = await renderToReadableStream(`,
+        `    <ServerRouter context={routerContext} url={request.url} />,`,
+        `    {`,
+        `      signal: request.signal,`,
+        `      onError(error: unknown) {`,
+        `        console.error(error);`,
+        `        responseStatusCode = 500;`,
+        `      },`,
+        `    },`,
+        `  );`,
+        `  responseHeaders.set("Content-Type", "text/html");`,
+        `  return new Response(body, { headers: responseHeaders, status: responseStatusCode });`,
+        `}`,
+      ]),
+    },
+    {
+      path: "/workers/app.ts",
+      content: file([
+        `import { createRequestHandler } from "react-router";`,
+        ``,
+        `interface Env {}`,
+        ``,
+        `const requestHandler = createRequestHandler(`,
+        `  () => import("virtual:react-router/server-build"),`,
+        `  import.meta.env.MODE,`,
+        `);`,
+        ``,
+        `export default {`,
+        `  fetch(request: Request, env: Env, ctx: ExecutionContext) {`,
+        `    return requestHandler(request, { cloudflare: { env, ctx } });`,
+        `  },`,
+        `} satisfies ExportedHandler<Env>;`,
+      ]),
+    },
+    {
+      path: "/public/robots.txt",
+      content: file([`User-agent: *`, `Allow: /`]),
+    },
+    {
+      path: "/scripts/build-manifest.mjs",
+      content: file([
+        `import { execFileSync } from "node:child_process";`,
+        `import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";`,
+        ``,
+        `mkdirSync("build/server", { recursive: true });`,
+        ``,
+        `const workerEntryPath = "build/server/_cf_worker_entry.js";`,
+        `const workerEntry = [`,
+        `  'import { createRequestHandler } from "react-router";',`,
+        `  'import * as build from "./index.js";',`,
+        `  '',`,
+        `  'const handler = createRequestHandler(build, "production");',`,
+        `  '',`,
+        `  'export default {',`,
+        `  '  async fetch(request, env, ctx) {',`,
+        `  '    return handler(request, { cloudflare: { env, ctx } });',`,
+        `  '  },',`,
+        `  '};',`,
+        `].join("\\n");`,
+        `writeFileSync(workerEntryPath, workerEntry + "\\n");`,
+        ``,
+        `execFileSync("node_modules/.bin/esbuild", [`,
+        `  workerEntryPath,`,
+        `  "--bundle",`,
+        `  "--format=esm",`,
+        `  "--platform=browser",`,
+        `  "--conditions=workerd,worker,browser",`,
+        `  "--external:cloudflare:*",`,
+        `  "--external:node:*",`,
+        `  "--external:util",`,
+        `  "--external:crypto",`,
+        `  "--external:async_hooks",`,
+        `  "--external:stream",`,
+        `  "--external:buffer",`,
+        `  "--external:events",`,
+        `  "--outfile=build/server/worker.js",`,
+        `], { stdio: "inherit" });`,
+        ``,
+        `rmSync(workerEntryPath, { force: true });`,
+        ``,
+        `const rawConfig = readFileSync("wrangler.jsonc", "utf8");`,
+        `const config = JSON.parse(rawConfig.replace(/\\/\\/[^\\n]*/g, "").replace(/,(\\s*[}\\]])/g, "$1"));`,
+        `const manifest = {`,
+        `  name: config.name,`,
+        `  main_module: "worker.js",`,
+        `  compatibility_date: config.compatibility_date,`,
+        `  compatibility_flags: config.compatibility_flags ?? [],`,
+        `  assets: { directory: "../client", binding: "ASSETS" },`,
+        `};`,
+        `writeFileSync("build/server/wrangler.json", JSON.stringify(manifest, null, 2) + "\\n");`,
+        `console.log("build/server/wrangler.json written.");`,
+      ]),
+    },
+    {
+      path: "/README.md",
+      content: file([
+        `# ${projectName}`,
+        ``,
+        `React Router SSR scaffolded by camelAI.`,
+        ``,
+        `## Commands`,
+        ``,
+        "- `bun install` installs explicit dependencies and CLIs.",
+        "- `bun run build` runs `react-router build`, bundles a Cloudflare Worker wrapper, and writes `build/server/wrangler.json` for `deploy_project`.",
+        "- `bun run deploy` is included for compatibility; camelAI's `deploy_project` uses the platform direct-deploy path.",
+        ``,
+        "Build scripts must declare every CLI they use in `dependencies` or `devDependencies`; package scripts can then resolve those binaries from `node_modules/.bin`.",
+      ]),
+    },
+  ];
+}
+
+function defaultProjectScaffoldFiles(projectName: string, template: ProjectScaffoldTemplate): Array<{ path: string; content: string }> {
+  if (template === "react-router") return defaultReactRouterScaffoldFiles(projectName);
+  return defaultWorkerScaffoldFiles(projectName, template);
 }
 
 export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeToolsProps> {
@@ -1407,7 +1687,7 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
       throw new Error(`Project "${project.name}" is not DO-backed; scaffold_project only supports backend: "do-r2"`);
     }
     const template = normalizeProjectScaffoldTemplate(options.template);
-    const files = defaultWorkerScaffoldFiles(project.name, template);
+    const files = defaultProjectScaffoldFiles(project.name, template);
     const fileStore = new ProjectFilesystemClient(this.env, project.id);
     const filesWritten: string[] = [];
     const filesSkipped: string[] = [];
