@@ -66,6 +66,7 @@ export interface DirectDispatchDeployResult {
   status: number;
   result?: unknown;
   error?: string;
+  warnings?: string[];
   sideEffects: DeploySideEffectsInfo;
 }
 
@@ -125,7 +126,14 @@ export async function deployWorkerModulesDirect(
 
   const dispatchScriptName = `${request.scriptName}--${request.identity.orgSlug}`;
   const nativeAssets = await uploadNativeWorkerAssets(env, dispatchNamespace, dispatchScriptName, request, options.fetcher ?? fetch);
-  const assetsRecord = await storeDirectAssets(env, dispatchScriptName, request, { publish: false });
+  const warnings: string[] = [];
+  let assetsRecord: SelfhostAssetsRecord | null = null;
+  try {
+    assetsRecord = await storeDirectAssets(env, dispatchScriptName, request, { publish: false });
+  } catch (error) {
+    if (!nativeAssets) throw error;
+    warnings.push(`Deploy asset rollback cache unavailable: ${errorMessage(error)}`);
+  }
   const bindings = normalizedDirectBindings(request.metadata);
   const metadata: DirectWorkerMetadata = {
     ...request.metadata,
@@ -141,14 +149,19 @@ export async function deployWorkerModulesDirect(
       dispatchScriptName,
     ),
   };
-  const artifactCacheKey = await storeDeployArtifactCache(env, {
-    scriptName: request.scriptName,
-    dispatchScriptName,
-    identity: request.identity,
-    metadata,
-    modules: request.modules,
-    assetsRecord,
-  });
+  let artifactCacheKey: string | undefined;
+  try {
+    artifactCacheKey = await storeDeployArtifactCache(env, {
+      scriptName: request.scriptName,
+      dispatchScriptName,
+      identity: request.identity,
+      metadata,
+      modules: request.modules,
+      assetsRecord,
+    });
+  } catch (error) {
+    warnings.push(`Deploy artifact cache unavailable: ${errorMessage(error)}`);
+  }
   const form = new FormData();
   form.append("metadata", new Blob([JSON.stringify(metadata)], { type: "application/json" }));
   for (const module of request.modules) {
@@ -166,7 +179,11 @@ export async function deployWorkerModulesDirect(
   });
   const body = await readJsonOrText(response);
   if (response.ok && assetsRecord) {
-    await publishDirectAssetsRecord(env, dispatchScriptName, assetsRecord);
+    try {
+      await publishDirectAssetsRecord(env, dispatchScriptName, assetsRecord);
+    } catch (error) {
+      warnings.push(`Deploy asset manifest cache unavailable: ${errorMessage(error)}`);
+    }
   }
   const sideEffects: DeploySideEffectsInfo = {
     scriptName: request.scriptName,
@@ -187,6 +204,7 @@ export async function deployWorkerModulesDirect(
     dispatchScriptName,
     status: response.status,
     sideEffects,
+    ...(warnings.length > 0 ? { warnings } : {}),
     ...(response.ok ? { result: body } : { error: typeof body === "string" ? body : JSON.stringify(body) }),
   };
 }
@@ -567,6 +585,10 @@ function base64ToBytes(value: string): Uint8Array {
 function blobPart(content: string | Uint8Array | ArrayBuffer): BlobPart {
   if (typeof content === "string" || content instanceof ArrayBuffer) return content;
   return content.buffer.slice(content.byteOffset, content.byteOffset + content.byteLength) as ArrayBuffer;
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 async function readJsonOrText(response: Response): Promise<unknown> {

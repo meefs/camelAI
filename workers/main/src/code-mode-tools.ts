@@ -3739,7 +3739,7 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
       }
       await handleDeploySideEffects(this.env as never, deploy.sideEffects);
       const appUrl = await this.appUrlForScriptName(scriptName);
-      const warnings = this.localDeployReachabilityWarnings();
+      const warnings = [...(deploy.warnings ?? []), ...this.localDeployReachabilityWarnings()];
       return {
         success: true,
         project: project.name,

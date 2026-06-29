@@ -199,6 +199,50 @@ describe("deployWorkerModulesDirect", () => {
     expect(kvPut).not.toHaveBeenCalledWith(selfhostAssetsKey("demo-app--acme"), expect.any(String));
   });
 
+  it("continues native asset deploy when the local rollback asset cache R2 put fails", async () => {
+    const fetcher = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/assets-upload-session")) {
+        const body = JSON.parse(init?.body as string) as { manifest: Record<string, { hash: string }> };
+        return Response.json({ success: true, result: { jwt: "upload-jwt", buckets: [Object.values(body.manifest).map((entry) => entry.hash)] } });
+      }
+      if (url.endsWith("/workers/assets/upload?base64=true")) {
+        return Response.json({ success: true, result: { jwt: "assets-jwt" } });
+      }
+      return Response.json({ success: true, result: { id: "version-1", has_assets: true } });
+    });
+    const r2Put = vi.fn(async () => {
+      throw new Error("put: Unspecified error (0)");
+    });
+
+    const result = await deployWorkerModulesDirect({
+      ...env,
+      APP_KV: { put: vi.fn(async () => undefined) },
+      R2_BUCKET: { put: r2Put },
+    }, {
+      scriptName: "demo-app",
+      hostname: "camelai.dev",
+      identity,
+      metadata: { main_module: "index.js", assets: { directory: "../client" } },
+      modules: [{ name: "index.js", contentType: "application/javascript+module", content: "export default {};" }],
+      assets: [{ path: "index.html", content: new TextEncoder().encode("hello"), contentType: "text/html; charset=utf-8" }],
+    }, { fetcher: fetcher as unknown as typeof fetch });
+
+    expect(result).toMatchObject({
+      success: true,
+      result: { success: true, result: { has_assets: true } },
+    });
+    expect(result.warnings).toEqual(expect.arrayContaining([
+      expect.stringContaining("Deploy asset rollback cache unavailable: put: Unspecified error (0)"),
+      expect.stringContaining("Deploy artifact cache unavailable: put: Unspecified error (0)"),
+    ]));
+    expect(r2Put).toHaveBeenCalled();
+    expect(fetcher).toHaveBeenCalledTimes(3);
+    expect(String(fetcher.mock.calls[2]![0])).toBe("https://api.cloudflare.com/client/v4/accounts/account-id/workers/dispatch/namespaces/dispatch-ns/scripts/demo-app--acme");
+    const metadata = JSON.parse(await ((fetcher.mock.calls[2]![1]?.body as FormData).get("metadata") as Blob).text());
+    expect(metadata.assets).toEqual({ jwt: "assets-jwt" });
+  });
+
   it("rolls back by replaying a cached deploy artifact", async () => {
     const kv = new Map<string, string>();
     const r2 = new Map<string, { body: string | Uint8Array; options?: unknown }>();
