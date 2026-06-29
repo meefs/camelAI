@@ -15,6 +15,7 @@ const {
   r2GetMock,
   workspaceReadFileStreamMock,
   workspaceListFilesMock,
+  workspaceGetProjectByNameMock,
   vmReadFileStreamMock,
 } = vi.hoisted(() => ({
   getEnvMock: vi.fn(),
@@ -22,6 +23,7 @@ const {
   r2GetMock: vi.fn(),
   workspaceReadFileStreamMock: vi.fn(),
   workspaceListFilesMock: vi.fn(),
+  workspaceGetProjectByNameMock: vi.fn(),
   vmReadFileStreamMock: vi.fn(),
 }));
 
@@ -41,6 +43,7 @@ vi.mock('../workers/main/src/workspace-filesystem-do', () => ({
   WorkspaceFilesystemClient: class WorkspaceFilesystemClient {
     readFileStream = workspaceReadFileStreamMock;
     listFiles = workspaceListFilesMock;
+    getProjectByName = workspaceGetProjectByNameMock;
   },
 }));
 
@@ -380,6 +383,11 @@ describe('text preview route integration', () => {
       mimeType: 'text/plain; charset=utf-8',
     });
     workspaceListFilesMock.mockResolvedValue({ success: true, files: [] });
+    workspaceGetProjectByNameMock.mockResolvedValue({
+      id: 'project-1',
+      name: 'app',
+      backend: 'vm',
+    });
     vmReadFileStreamMock.mockResolvedValue({
       response: new Response('vm text', {
         headers: {
