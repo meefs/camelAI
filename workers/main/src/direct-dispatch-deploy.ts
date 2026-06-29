@@ -38,6 +38,11 @@ export interface DirectWorkerMetadata {
   [key: string]: unknown;
 }
 
+interface NativeAssetsUploadResult {
+  jwt: string;
+  assetCount: number;
+}
+
 export interface DirectWorkerModule {
   name: string;
   contentType: string;
@@ -86,6 +91,15 @@ export interface DirectDeployArtifactCacheRecord {
   assetsRecord: SelfhostAssetsRecord | null;
 }
 
+type AssetUploadSessionResult = {
+  jwt?: string;
+  buckets?: string[][];
+};
+
+type AssetUploadResult = {
+  jwt?: string;
+};
+
 export async function deployWorkerModulesDirect(
   env: DirectDispatchDeployEnv,
   request: DirectDispatchDeployRequest,
@@ -110,12 +124,15 @@ export async function deployWorkerModulesDirect(
   }
 
   const dispatchScriptName = `${request.scriptName}--${request.identity.orgSlug}`;
-  const assetsRecord = await storeDirectAssets(env, dispatchScriptName, request);
+  const nativeAssets = await uploadNativeWorkerAssets(env, dispatchNamespace, dispatchScriptName, request, options.fetcher ?? fetch);
+  const assetsRecord = await storeDirectAssets(env, dispatchScriptName, request, { publish: false });
   const bindings = normalizedDirectBindings(request.metadata);
   const metadata: DirectWorkerMetadata = {
     ...request.metadata,
-    assets: undefined,
-    bindings: mapVirtualizedBindings(
+    assets: nativeAssets
+      ? { jwt: nativeAssets.jwt }
+      : undefined,
+    bindings: mapDirectDispatchBindings(
       bindings,
       request.identity.workspaceId,
       request.identity.orgId,
@@ -148,6 +165,9 @@ export async function deployWorkerModulesDirect(
     body: form,
   });
   const body = await readJsonOrText(response);
+  if (response.ok && assetsRecord) {
+    await publishDirectAssetsRecord(env, dispatchScriptName, assetsRecord);
+  }
   const sideEffects: DeploySideEffectsInfo = {
     scriptName: request.scriptName,
     dispatchScriptName,
@@ -171,6 +191,104 @@ export async function deployWorkerModulesDirect(
   };
 }
 
+function mapDirectDispatchBindings(
+  bindings: WorkerBinding[],
+  workspaceId: string,
+  orgId: string,
+  userId: string | undefined,
+  workerServiceName: string,
+  appId: string,
+): WorkerBinding[] {
+  const assetBindings = bindings.filter((binding) => binding.type === "assets");
+  const mapped = mapVirtualizedBindings(
+    bindings.filter((binding) => binding.type !== "assets"),
+    workspaceId,
+    orgId,
+    userId,
+    workerServiceName,
+    appId,
+  );
+  return [...assetBindings, ...mapped];
+}
+
+async function uploadNativeWorkerAssets(
+  env: DirectDispatchDeployEnv,
+  dispatchNamespace: string,
+  dispatchScriptName: string,
+  request: DirectDispatchDeployRequest,
+  fetcher: typeof fetch,
+): Promise<NativeAssetsUploadResult | null> {
+  const assets = request.assets ?? [];
+  if (!request.metadata.assets || assets.length === 0) return null;
+  const cfApiToken = env.CF_API_TOKEN?.trim();
+  const accountId = env.CF_ACCOUNT_ID?.trim();
+  if (!cfApiToken || !accountId) throw new Error("Cloudflare credentials are required for direct deploy assets");
+
+  const entries = await Promise.all(assets.map(async (asset) => ({
+    asset,
+    path: normalizeSelfhostAssetPath(asset.path),
+    hash: await workerAssetHash(asset),
+  })));
+  const manifest: Record<string, { hash: string; size: number }> = {};
+  for (const entry of entries) {
+    manifest[entry.path] = { hash: entry.hash, size: entry.asset.content.byteLength };
+  }
+
+  const sessionUrl = `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(accountId)}` +
+    `/workers/dispatch/namespaces/${encodeURIComponent(dispatchNamespace)}` +
+    `/scripts/${encodeURIComponent(dispatchScriptName)}/assets-upload-session`;
+  const sessionResponse = await fetcher(sessionUrl, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${cfApiToken}`,
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({ manifest }),
+  });
+  const sessionBody = await readCloudflareResult<AssetUploadSessionResult>(sessionResponse);
+  if (!sessionResponse.ok || !sessionBody || typeof sessionBody === "string") {
+    throw new Error(`Asset upload session failed: ${typeof sessionBody === "string" ? sessionBody : JSON.stringify(sessionBody)}`);
+  }
+  const uploadJwt = sessionBody.jwt;
+  const buckets = sessionBody.buckets ?? [];
+  if (!uploadJwt) throw new Error("Asset upload session did not return an upload token");
+  if (buckets.length === 0) return { jwt: uploadJwt, assetCount: assets.length };
+
+  const entriesByHash = new Map(entries.map((entry) => [entry.hash, entry]));
+  let completionJwt = "";
+  for (const bucket of buckets) {
+    const form = new FormData();
+    for (const hash of bucket) {
+      const entry = entriesByHash.get(hash);
+      if (!entry) throw new Error(`Asset upload bucket referenced unknown hash: ${hash}`);
+      form.append(
+        hash,
+        new Blob([bytesToBase64(entry.asset.content)], { type: entry.asset.contentType ?? "application/null" }),
+        hash,
+      );
+    }
+    const uploadUrl = `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(accountId)}/workers/assets/upload?base64=true`;
+    const uploadResponse = await fetcher(uploadUrl, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${uploadJwt}` },
+      body: form,
+    });
+    const uploadBody = await readCloudflareResult<AssetUploadResult>(uploadResponse);
+    if (!uploadResponse.ok || !uploadBody || typeof uploadBody === "string") {
+      throw new Error(`Asset upload failed: ${typeof uploadBody === "string" ? uploadBody : JSON.stringify(uploadBody)}`);
+    }
+    completionJwt = uploadBody.jwt ?? completionJwt;
+  }
+  if (!completionJwt) throw new Error("Asset upload completed without a completion token");
+  return { jwt: completionJwt, assetCount: assets.length };
+}
+
+async function workerAssetHash(asset: { path: string; content: Uint8Array }): Promise<string> {
+  const extension = asset.path.split(".").pop() ?? "";
+  const encoded = new TextEncoder().encode(`${bytesToBase64(asset.content)}${extension}`);
+  return (await sha256Hex(encoded)).slice(0, 32);
+}
+
 export async function rollbackWorkerDeployFromArtifactCache(
   env: DirectDispatchDeployEnv,
   request: DirectDeployRollbackRequest,
@@ -179,6 +297,7 @@ export async function rollbackWorkerDeployFromArtifactCache(
   const cfApiToken = env.CF_API_TOKEN?.trim();
   const accountId = env.CF_ACCOUNT_ID?.trim();
   const dispatchNamespace = env.CF_DISPATCH_NAMESPACE?.trim();
+  const fetcher = options.fetcher ?? fetch;
   if (!cfApiToken) throw new Error("CF_API_TOKEN is required for direct rollback");
   if (!accountId) throw new Error("CF_ACCOUNT_ID is required for direct rollback");
   if (!dispatchNamespace) throw new Error("CF_DISPATCH_NAMESPACE is required for direct rollback");
@@ -199,13 +318,22 @@ export async function rollbackWorkerDeployFromArtifactCache(
     throw new Error("Deploy artifact cache belongs to a different app");
   }
 
+  let metadata = record.metadata;
   if (record.assetsRecord) {
-    if (!env.APP_KV) throw new Error("APP_KV is required for direct rollback assets");
-    await env.APP_KV.put(selfhostAssetsKey(record.dispatchScriptName), JSON.stringify(record.assetsRecord));
+    const assets = await loadDirectAssetsFromRecord(env, record.dispatchScriptName, record.assetsRecord);
+    const nativeAssets = await uploadNativeWorkerAssets(env, dispatchNamespace, record.dispatchScriptName, {
+      scriptName: record.scriptName,
+      hostname: request.hostname,
+      identity: record.identity,
+      metadata: record.metadata,
+      modules: [],
+      assets,
+    }, fetcher);
+    metadata = nativeAssets ? { ...record.metadata, assets: { jwt: nativeAssets.jwt } } : record.metadata;
   }
 
   const form = new FormData();
-  form.append("metadata", new Blob([JSON.stringify(record.metadata)], { type: "application/json" }));
+  form.append("metadata", new Blob([JSON.stringify(metadata)], { type: "application/json" }));
   for (const module of record.modules) {
     form.append(
       module.name,
@@ -217,13 +345,15 @@ export async function rollbackWorkerDeployFromArtifactCache(
   const url = `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(accountId)}` +
     `/workers/dispatch/namespaces/${encodeURIComponent(dispatchNamespace)}` +
     `/scripts/${encodeURIComponent(record.dispatchScriptName)}`;
-  const fetcher = options.fetcher ?? fetch;
   const response = await fetcher(url, {
     method: "PUT",
     headers: { Authorization: `Bearer ${cfApiToken}` },
     body: form,
   });
   const body = await readJsonOrText(response);
+  if (response.ok && record.assetsRecord) {
+    await publishDirectAssetsRecord(env, record.dispatchScriptName, record.assetsRecord);
+  }
   const sideEffects: DeploySideEffectsInfo = {
     scriptName: record.scriptName,
     dispatchScriptName: record.dispatchScriptName,
@@ -233,7 +363,7 @@ export async function rollbackWorkerDeployFromArtifactCache(
     hostname: request.hostname,
     threadId: request.threadId ?? record.identity.threadId,
     projectId: record.identity.projectId,
-    configPath: typeof record.metadata.config_path === "string" ? record.metadata.config_path : undefined,
+    configPath: typeof metadata.config_path === "string" ? metadata.config_path : undefined,
     artifactCacheKey,
   };
   return {
@@ -244,6 +374,25 @@ export async function rollbackWorkerDeployFromArtifactCache(
     sideEffects,
     ...(response.ok ? { result: body } : { error: typeof body === "string" ? body : JSON.stringify(body) }),
   };
+}
+
+async function loadDirectAssetsFromRecord(
+  env: DirectDispatchDeployEnv,
+  appId: string,
+  record: SelfhostAssetsRecord,
+): Promise<Array<{ path: string; content: Uint8Array; contentType?: string }>> {
+  if (!env.R2_BUCKET) throw new Error("R2_BUCKET is required for direct deploy assets");
+  const assets: Array<{ path: string; content: Uint8Array; contentType?: string }> = [];
+  for (const [path, entry] of Object.entries(record.manifest)) {
+    const object = await env.R2_BUCKET.get(selfhostAssetObjectKey(appId, entry.hash));
+    if (!object) throw new Error(`Deploy artifact asset blob not found: ${path}`);
+    assets.push({
+      path,
+      content: new Uint8Array(await object.arrayBuffer()),
+      ...(entry.contentType ? { contentType: entry.contentType } : {}),
+    });
+  }
+  return assets;
 }
 
 function validateArtifactCacheRecord(value: unknown, key: string): DirectDeployArtifactCacheRecord {
@@ -292,6 +441,7 @@ async function storeDirectAssets(
   env: DirectDispatchDeployEnv,
   appId: string,
   request: DirectDispatchDeployRequest,
+  options: { publish?: boolean } = {},
 ): Promise<SelfhostAssetsRecord | null> {
   const assets = request.assets ?? [];
   const hasAssetsBinding = request.metadata.bindings?.some((binding) => binding.type === "assets") || Boolean(request.metadata.assets);
@@ -322,8 +472,19 @@ async function storeDirectAssets(
     createdAt: new Date().toISOString(),
     manifest,
   };
-  await env.APP_KV.put(selfhostAssetsKey(appId), JSON.stringify(record));
+  if (options.publish !== false) {
+    await publishDirectAssetsRecord(env, appId, record);
+  }
   return record;
+}
+
+async function publishDirectAssetsRecord(
+  env: DirectDispatchDeployEnv,
+  appId: string,
+  record: SelfhostAssetsRecord,
+): Promise<void> {
+  if (!env.APP_KV) throw new Error("APP_KV is required for direct deploy assets");
+  await env.APP_KV.put(selfhostAssetsKey(appId), JSON.stringify(record));
 }
 
 async function storeDeployArtifactCache(
@@ -414,4 +575,12 @@ async function readJsonOrText(response: Response): Promise<unknown> {
     return response.json().catch(() => null);
   }
   return response.text().catch(() => "");
+}
+
+async function readCloudflareResult<T>(response: Response): Promise<T | string | null> {
+  const body = await readJsonOrText(response);
+  if (body && typeof body === "object" && !Array.isArray(body) && "result" in body) {
+    return (body as { result?: T | null }).result ?? null;
+  }
+  return body as T | string | null;
 }

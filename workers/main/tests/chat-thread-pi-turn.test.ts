@@ -5550,8 +5550,10 @@ describe('ChatThreadDO Pi turn handling', () => {
     expect(projectStub.projectWriteFile).toHaveBeenCalledWith('/vite.config.ts', expect.stringContaining('noExternal: true'));
     expect(projectStub.projectWriteFile).toHaveBeenCalledWith('/app/entry.server.tsx', expect.stringContaining('renderToReadableStream'));
     expect(projectStub.projectWriteFile).toHaveBeenCalledWith('/workers/app.ts', expect.stringContaining('createRequestHandler'));
+    expect(projectStub.projectWriteFile).toHaveBeenCalledWith('/workers/app.ts', expect.stringContaining('env.ASSETS.fetch(request)'));
     expect(projectStub.projectWriteFile).toHaveBeenCalledWith('/scripts/build-manifest.mjs', expect.stringContaining('main_module: "worker.js"'));
     expect(projectStub.projectWriteFile).toHaveBeenCalledWith('/scripts/build-manifest.mjs', expect.stringContaining('node_modules/.bin/esbuild'));
+    expect(projectStub.projectWriteFile).toHaveBeenCalledWith('/scripts/build-manifest.mjs', expect.stringContaining('env.ASSETS.fetch(request)'));
   });
 
   it('adds a dependency to a DO-backed project through the dependency action', async () => {
@@ -5755,10 +5757,10 @@ describe('ChatThreadDO Pi turn handling', () => {
     Object.defineProperty(fake, 'orgStub', {
       value: {
         getWorkerScript: vi.fn(async () => ({ script_name: 'demo-app', workspace_id: 'workspace1' })),
-        listWorkerScriptDeployVersions: vi.fn(async (_scriptName: string, limit: number) => [{
+        listWorkerScriptDeployVersions: vi.fn(async (_scriptName: string, workspaceId: string, limit: number) => [{
           id: 'deploy-1',
           script_name: 'demo-app',
-          workspace_id: 'workspace1',
+          workspace_id: workspaceId,
           created_at: 20,
           created_by: 'user1',
           config_path: 'wrangler.jsonc',
@@ -5784,6 +5786,7 @@ describe('ChatThreadDO Pi turn handling', () => {
         config_path: 'wrangler.jsonc',
       }],
     });
+    expect(fake.orgStub.listWorkerScriptDeployVersions).toHaveBeenCalledWith('demo-app', 'workspace1', 5);
   });
 
   it('builds and directly deploys a DO-backed project through the deploy action', async () => {

@@ -1711,7 +1711,7 @@ export class OrgDO extends DurableObject<DOEnv> {
       )
     `);
     this.sql.exec(
-      "CREATE INDEX IF NOT EXISTS idx_worker_script_deploys_script ON worker_script_deploys(script_name, created_at DESC)",
+      "CREATE INDEX IF NOT EXISTS idx_worker_script_deploys_script_workspace ON worker_script_deploys(script_name, workspace_id, created_at DESC)",
     );
     this.sql.exec(
       "CREATE INDEX IF NOT EXISTS idx_worker_script_deploys_workspace ON worker_script_deploys(workspace_id, created_at DESC)",
@@ -4165,16 +4165,17 @@ export class OrgDO extends DurableObject<DOEnv> {
     );
   }
 
-  async listWorkerScriptDeployVersions(scriptName: string, limit = 20): Promise<WorkerScriptDeployVersion[]> {
+  async listWorkerScriptDeployVersions(scriptName: string, workspaceId: string, limit = 20): Promise<WorkerScriptDeployVersion[]> {
     this.ensureWorkerScriptDeploysSchema();
     const safeLimit = Math.max(1, Math.min(100, Math.floor(limit)));
     return this.sql.exec<WorkerScriptDeployVersion>(
       `SELECT id, script_name, workspace_id, created_at, created_by, config_path, project_id, commit_sha, artifact_cache_key
        FROM worker_script_deploys
-       WHERE script_name = ?
+       WHERE script_name = ? AND workspace_id = ?
        ORDER BY created_at DESC
        LIMIT ?`,
       scriptName,
+      workspaceId,
       safeLimit,
     ).toArray();
   }

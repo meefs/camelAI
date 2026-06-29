@@ -479,7 +479,7 @@ describe('Auth context building (parallel DO calls)', () => {
         'deploy-artifacts/key-2.json',
       );
 
-      const versions = await orgStub.listWorkerScriptDeployVersions('demo-app');
+      const versions = await orgStub.listWorkerScriptDeployVersions('demo-app', defaultWorkspaceId);
       expect(versions).toHaveLength(2);
       expect(versions).toEqual(expect.arrayContaining([
         expect.objectContaining({
