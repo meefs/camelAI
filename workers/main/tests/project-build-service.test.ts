@@ -232,6 +232,20 @@ describe("projectBuildSandboxKey", () => {
     expect(projectBuildSandboxKey("Org A", "Demo_Project")).toBe("org-a-demo-project");
     expect(projectBuildSandboxKey("Org B", "Demo_Project")).toBe("org-b-demo-project");
   });
+
+  it("keeps long org/project sandbox keys within the Cloudflare container id limit", () => {
+    const key = projectBuildSandboxKey(
+      "local-dev-org",
+      "ca-ded88355a4284af7bb641b8729105ca8-deploy-test-2-193q",
+    );
+
+    expect(key.length).toBeLessThanOrEqual(63);
+    expect(key).toMatch(/^local-dev-org-ca-ded88355a4284af7bb641b8729105ca8-[a-z0-9-]*[a-f0-9]{8}$/);
+    expect(projectBuildSandboxKey(
+      "local-dev-org",
+      "ca-ded88355a4284af7bb641b8729105ca8-deploy-test-2-other",
+    )).not.toBe(key);
+  });
 });
 
 describe("collectWorkerBundleFromSandbox", () => {

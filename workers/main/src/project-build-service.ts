@@ -7,6 +7,7 @@ import type { ProjectBuildSandbox } from "./project-build-sandbox.js";
 
 const DEFAULT_BUILD_TIMEOUT_MS = 120_000;
 const PROJECT_BUILD_ROOT = "/workspace";
+const MAX_PROJECT_BUILD_SANDBOX_KEY_LENGTH = 63;
 
 export interface ProjectBuildEnv {
   WORKSPACE_FS: DurableObjectNamespace;
@@ -476,7 +477,21 @@ export function projectBuildSandboxKey(orgId: string, projectId: string): string
   const org = orgId.trim().toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/^-+|-+$/g, "");
   const project = normalizeProjectBuildId(projectId);
   if (!org) throw new Error("orgId is required");
-  return `${org}-${project}`.slice(0, 128);
+  const readable = `${org}-${project}`;
+  if (readable.length <= MAX_PROJECT_BUILD_SANDBOX_KEY_LENGTH) return readable;
+  const hash = stableHexHash(`${org}:${project}`);
+  const prefixLength = MAX_PROJECT_BUILD_SANDBOX_KEY_LENGTH - hash.length - 1;
+  const prefix = readable.slice(0, prefixLength).replace(/-+$/g, "");
+  return `${prefix}-${hash}`;
+}
+
+function stableHexHash(value: string): string {
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < value.length; i += 1) {
+    hash ^= value.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0).toString(16).padStart(8, "0");
 }
 
 async function readSandboxFileBytes(sandbox: ProjectBuildSandboxLike, path: string): Promise<Uint8Array> {
