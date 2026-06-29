@@ -200,6 +200,7 @@ export default defineConfig(({ command }) => {
       optimizeDeps: ssrOptimizeDeps,
     },
     resolve: {
+      dedupe: ['react', 'react-dom'],
       alias: [
         {
           find: '@smithy/core/config',
