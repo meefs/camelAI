@@ -5377,6 +5377,24 @@ describe('ChatThreadDO Pi turn handling', () => {
     }));
   });
 
+  it('maps build sandbox 503 RPC failures to a friendly project build error', async () => {
+    const { fake, sandbox } = createProjectToolFake();
+    sandbox.mkdir.mockRejectedValueOnce(new Error('RPCTransportError: WebSocket upgrade failed: 503 Service Unavailable'));
+
+    await expect(CodeModeToolsBinding.prototype.callTool.call(fake, 'build_project', {
+      project: 'Demo App',
+    })).rejects.toThrow('Build service temporarily unavailable. Please try again in a moment.');
+  });
+
+  it('maps deploy sandbox 503 RPC failures to a friendly project build error', async () => {
+    const { fake, sandbox } = createProjectToolFake({ deploy: true });
+    sandbox.mkdir.mockRejectedValueOnce(new Error('RPCTransportError: WebSocket upgrade failed: 503 Service Unavailable'));
+
+    await expect(CodeModeToolsBinding.prototype.callTool.call(fake, 'deploy_project', {
+      project: 'Demo App',
+    })).rejects.toThrow('Build service temporarily unavailable. Please try again in a moment.');
+  });
+
   it('rejects DO-only project actions for legacy VM-backed projects', async () => {
     const { fake, sandbox, projectStub } = createProjectToolFake({ backend: 'vm' });
 
@@ -5776,6 +5794,20 @@ describe('ChatThreadDO Pi turn handling', () => {
     );
     expect(orgStub.registerWorkerScript).toHaveBeenCalledWith('demo-app', 'workspace1', 'user1', undefined, 'project-1', 'snapshot-1', expect.stringMatching(/^deploy-artifacts\//));
     expect(env.APP_KV.put).toHaveBeenCalledWith('script:demo-app--test-org', JSON.stringify({ org_id: 'org1', org_slug: 'test-org', is_public: false }));
+  });
+
+  it('warns when a local deploy may need the local dispatcher worker for reachability', async () => {
+    const { fake } = createProjectToolFake({ deploy: true });
+    fake.env = { ...fake.env, WORKER_BASE_URL: 'https://snowboard-owl.exe.xyz:3001' };
+    vi.stubGlobal('fetch', vi.fn(async () => Response.json({ success: true }, { status: 200 })));
+
+    const result = await CodeModeToolsBinding.prototype.callTool.call(fake, 'deploy_project', {
+      project: 'Demo App',
+    });
+
+    expect((result as any).warnings).toEqual([
+      expect.stringContaining('chiridion-dispatcher-local'),
+    ]);
   });
 
   it('serves deterministic automation virtual files through js_exec file tools', async () => {

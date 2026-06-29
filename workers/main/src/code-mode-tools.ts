@@ -1131,6 +1131,32 @@ function normalizeDeployScriptName(value: unknown): string {
   return normalized;
 }
 
+const PROJECT_BUILD_SERVICE_UNAVAILABLE_MESSAGE =
+  "Build service temporarily unavailable. Please try again in a moment.";
+
+function isProjectBuildServiceUnavailableError(error: unknown): boolean {
+  const message = String(
+    error instanceof Error
+      ? `${error.name}: ${error.message}`
+      : error,
+  );
+  return /RPCTransportError/i.test(message) ||
+    /WebSocket upgrade failed/i.test(message) ||
+    /503\s+Service\s+Unavailable/i.test(message) ||
+    /Container failed to start/i.test(message);
+}
+
+async function withProjectBuildServiceErrorMapping<T>(operation: () => Promise<T>): Promise<T> {
+  try {
+    return await operation();
+  } catch (error) {
+    if (isProjectBuildServiceUnavailableError(error)) {
+      throw new Error(PROJECT_BUILD_SERVICE_UNAVAILABLE_MESSAGE, { cause: error });
+    }
+    throw error;
+  }
+}
+
 function projectForAgent(project: WorkspaceProject): Record<string, unknown> {
   return {
     name: project.name,
@@ -3572,36 +3598,40 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
   }
 
   private async buildProject(args: Record<string, unknown>): Promise<unknown> {
-    const project = await this.resolveDoBackedProjectForAction(args, "build_project");
-    const timeoutMs = typeof args.timeoutMs === "number" ? args.timeoutMs : undefined;
-    const result = await runProjectBuild({
-      projectId: project.id,
-      files: new ProjectFilesystemClient(this.env, project.id),
-      sandbox: this.projectBuildSandbox(),
-      timeoutMs,
+    return withProjectBuildServiceErrorMapping(async () => {
+      const project = await this.resolveDoBackedProjectForAction(args, "build_project");
+      const timeoutMs = typeof args.timeoutMs === "number" ? args.timeoutMs : undefined;
+      const result = await runProjectBuild({
+        projectId: project.id,
+        files: new ProjectFilesystemClient(this.env, project.id),
+        sandbox: this.projectBuildSandbox(),
+        timeoutMs,
+      });
+      return {
+        ...result,
+        project: project.name,
+        backend: project.backend ?? "vm",
+      };
     });
-    return {
-      ...result,
-      project: project.name,
-      backend: project.backend ?? "vm",
-    };
   }
 
   private async addDependency(args: Record<string, unknown>): Promise<unknown> {
-    const project = await this.resolveDoBackedProjectForAction(args, "add_dependency");
-    const dependency = typeof args.dependency === "string" ? args.dependency : "";
-    const result = await runProjectAddDependency({
-      projectId: project.id,
-      dependency,
-      dev: args.dev === true,
-      files: new ProjectFilesystemClient(this.env, project.id),
-      sandbox: this.projectBuildSandbox(),
+    return withProjectBuildServiceErrorMapping(async () => {
+      const project = await this.resolveDoBackedProjectForAction(args, "add_dependency");
+      const dependency = typeof args.dependency === "string" ? args.dependency : "";
+      const result = await runProjectAddDependency({
+        projectId: project.id,
+        dependency,
+        dev: args.dev === true,
+        files: new ProjectFilesystemClient(this.env, project.id),
+        sandbox: this.projectBuildSandbox(),
+      });
+      return {
+        ...result,
+        project: project.name,
+        backend: project.backend ?? "vm",
+      };
     });
-    return {
-      ...result,
-      project: project.name,
-      backend: project.backend ?? "vm",
-    };
   }
 
   private async revertProject(args: Record<string, unknown>): Promise<unknown> {
@@ -3644,63 +3674,87 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
   }
 
   private async deployProject(args: Record<string, unknown>): Promise<unknown> {
-    const project = await this.resolveDoBackedProjectForAction(args, "deploy_project");
-    const sandbox = this.projectBuildSandbox();
-    const timeoutMs = typeof args.timeoutMs === "number" ? args.timeoutMs : undefined;
-    const build = await runProjectBuild({
-      projectId: project.id,
-      files: new ProjectFilesystemClient(this.env, project.id),
-      sandbox,
-      timeoutMs,
-    });
-    if (!build.success) {
-      return { success: false, project: project.name, build };
-    }
-    const projectFiles = new ProjectFilesystemClient(this.env, project.id);
-    const snapshot = await projectFiles.createSourceSnapshot({ message: `Deploy ${project.name}` });
-    const bundle = await collectWorkerBundleFromSandbox(sandbox, build.workdir);
-    const orgSlug = await this.getOrgSlug();
-    if (!orgSlug) throw new Error("Current org has no slug; cannot deploy project");
-    const scriptName = normalizeDeployScriptName(
-      typeof args.script_name === "string" && args.script_name.trim() ? args.script_name : project.name,
-    );
-    const deploy = await deployWorkerModulesDirect(this.env, {
-      scriptName,
-      hostname: this.deployHostname(),
-      identity: {
-        orgId: this.ctx.props.orgId,
-        orgSlug,
-        workspaceId: this.ctx.props.workspaceId,
-        userId: this.ctx.props.userId,
-        threadId: this.ctx.props.threadId,
+    return withProjectBuildServiceErrorMapping(async () => {
+      const project = await this.resolveDoBackedProjectForAction(args, "deploy_project");
+      const sandbox = this.projectBuildSandbox();
+      const timeoutMs = typeof args.timeoutMs === "number" ? args.timeoutMs : undefined;
+      const build = await runProjectBuild({
         projectId: project.id,
-      },
-      metadata: bundle.metadata,
-      modules: bundle.modules,
-      assets: bundle.assets,
-      commitSha: snapshot.id,
+        files: new ProjectFilesystemClient(this.env, project.id),
+        sandbox,
+        timeoutMs,
+      });
+      if (!build.success) {
+        return { success: false, project: project.name, build };
+      }
+      const projectFiles = new ProjectFilesystemClient(this.env, project.id);
+      const snapshot = await projectFiles.createSourceSnapshot({ message: `Deploy ${project.name}` });
+      const bundle = await collectWorkerBundleFromSandbox(sandbox, build.workdir);
+      const orgSlug = await this.getOrgSlug();
+      if (!orgSlug) throw new Error("Current org has no slug; cannot deploy project");
+      const scriptName = normalizeDeployScriptName(
+        typeof args.script_name === "string" && args.script_name.trim() ? args.script_name : project.name,
+      );
+      const deploy = await deployWorkerModulesDirect(this.env, {
+        scriptName,
+        hostname: this.deployHostname(),
+        identity: {
+          orgId: this.ctx.props.orgId,
+          orgSlug,
+          workspaceId: this.ctx.props.workspaceId,
+          userId: this.ctx.props.userId,
+          threadId: this.ctx.props.threadId,
+          projectId: project.id,
+        },
+        metadata: bundle.metadata,
+        modules: bundle.modules,
+        assets: bundle.assets,
+        commitSha: snapshot.id,
+      });
+      if (!deploy.success) {
+        return { success: false, project: project.name, build, deploy };
+      }
+      await handleDeploySideEffects(this.env as never, deploy.sideEffects);
+      const appUrl = await this.appUrlForScriptName(scriptName);
+      const warnings = this.localDeployReachabilityWarnings();
+      return {
+        success: true,
+        project: project.name,
+        sourceSnapshot: {
+          id: snapshot.id,
+          fileCount: snapshot.fileCount,
+          totalBytes: snapshot.totalBytes,
+        },
+        build,
+        deploy: {
+          scriptName: deploy.scriptName,
+          dispatchScriptName: deploy.dispatchScriptName,
+          status: deploy.status,
+          result: deploy.result,
+        },
+        appUrl,
+        ...(warnings.length > 0 ? { warnings } : {}),
+      };
     });
-    if (!deploy.success) {
-      return { success: false, project: project.name, build, deploy };
+  }
+
+  private localDeployReachabilityWarnings(): string[] {
+    const workerBaseUrl = (this.env as { WORKER_BASE_URL?: string }).WORKER_BASE_URL;
+    if (!workerBaseUrl) return [];
+    let hostname = "";
+    try {
+      hostname = new URL(workerBaseUrl).hostname.toLowerCase();
+    } catch {
+      return [];
     }
-    await handleDeploySideEffects(this.env as never, deploy.sideEffects);
-    return {
-      success: true,
-      project: project.name,
-      sourceSnapshot: {
-        id: snapshot.id,
-        fileCount: snapshot.fileCount,
-        totalBytes: snapshot.totalBytes,
-      },
-      build,
-      deploy: {
-        scriptName: deploy.scriptName,
-        dispatchScriptName: deploy.dispatchScriptName,
-        status: deploy.status,
-        result: deploy.result,
-      },
-      appUrl: await this.appUrlForScriptName(scriptName),
-    };
+    const isLocalMainWorker = hostname === "localhost" ||
+      hostname === "127.0.0.1" ||
+      hostname === "::1" ||
+      hostname.endsWith(".exe.xyz");
+    if (!isLocalMainWorker) return [];
+    return [
+      "App deployed successfully. If the app URL is unreachable in local dev with `chiridion-dispatcher-local` not found, start the local dispatcher worker (`wrangler dev -c workers/dispatcher/wrangler.jsonc --env local`) and retry the URL.",
+    ];
   }
 
   private async rollbackDeploy(args: Record<string, unknown>): Promise<unknown> {

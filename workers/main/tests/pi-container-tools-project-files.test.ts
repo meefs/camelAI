@@ -49,6 +49,19 @@ function fakeFileStore(files: Record<string, string>): WorkspaceFileStoreLike {
 }
 
 describe("PiContainerTools with a project file store", () => {
+  it("writes empty DO-backed project files without parsing or transform errors", async () => {
+    const store = fakeFileStore({});
+    const tools = new PiContainerTools(store);
+
+    await expect(tools.callTool("write", {
+      location: "project",
+      project: "demo",
+      path: "/public/.gitkeep",
+      content: "",
+    })).resolves.toMatchObject({ text: "Successfully wrote 0 bytes to /public/.gitkeep" });
+    expect(store.writeFile).toHaveBeenCalledWith("/public/.gitkeep", "");
+  });
+
   it("searches, finds, and deletes DO-backed project files", async () => {
     const store = fakeFileStore({
       "/src/index.ts": "export const greeting = 'hello project';\n",
