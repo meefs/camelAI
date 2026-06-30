@@ -5456,27 +5456,16 @@ describe('ChatThreadDO Pi turn handling', () => {
       description: 'A new app',
       backend: 'do-r2',
       scaffold: {
-        template: 'worker',
+        template: 'react-router',
         filesSkipped: [],
       },
     });
     expect((result as any).scaffold.filesWritten).toEqual(expect.arrayContaining([
       '/package.json',
       '/wrangler.jsonc',
-      '/tsconfig.json',
-      '/src/index.ts',
-      '/scripts/write-build-manifest.mjs',
+      '/app/root.tsx',
+      '/scripts/build-manifest.mjs',
     ]));
-    const packageWrite = projectStub.projectWriteFile.mock.calls.find(([path]) => path === '/package.json');
-    expect(packageWrite).toBeTruthy();
-    const packageJson = JSON.parse(packageWrite?.[1] ?? '{}');
-    expect(packageJson.scripts.build).toContain('tsc --noEmit');
-    expect(packageJson.scripts.build).toContain('build/server/index.js');
-    expect(packageJson.devDependencies).toMatchObject({
-      typescript: expect.any(String),
-      wrangler: expect.any(String),
-      '@cloudflare/workers-types': expect.any(String),
-    });
   });
 
   it('scaffolds existing DO-backed projects without overwriting unless forced', async () => {
@@ -5490,10 +5479,11 @@ describe('ChatThreadDO Pi turn handling', () => {
       success: true,
       project: 'Demo App',
       backend: 'do-r2',
-      template: 'worker',
-      filesSkipped: expect.arrayContaining(['/package.json', '/src/index.ts']),
+      template: 'react-router',
+      filesSkipped: expect.arrayContaining(['/package.json']),
     });
-    expect(projectStub.projectWriteFile).toHaveBeenCalledWith('/wrangler.jsonc', expect.stringContaining('"main": "src/index.ts"'));
+    expect(projectStub.projectWriteFile).toHaveBeenCalledWith('/wrangler.jsonc', expect.stringContaining('"main": "./workers/app.ts"'));
+    expect(projectStub.projectWriteFile).toHaveBeenCalledWith('/app/app.css', expect.stringContaining('@import "tailwindcss"'));
 
     await CodeModeToolsBinding.prototype.callTool.call(fake, 'scaffold_project', {
       project: 'Demo App',
@@ -5502,58 +5492,30 @@ describe('ChatThreadDO Pi turn handling', () => {
     expect(projectStub.projectWriteFile).toHaveBeenCalledWith('/package.json', expect.stringContaining('"build"'));
   });
 
-  it('scaffolds React Router projects with a Cloudflare deploy manifest writer', async () => {
+  it('keeps an explicit bare Worker scaffold available for DO-backed projects', async () => {
     const { fake, projectStub } = createProjectToolFake({ projectFileEntries: [] });
 
     const result = await CodeModeToolsBinding.prototype.callTool.call(fake, 'scaffold_project', {
       project: 'Demo App',
-      template: 'react-router',
+      template: 'worker',
     });
 
     expect(result).toMatchObject({
       success: true,
       project: 'Demo App',
       backend: 'do-r2',
-      template: 'react-router',
+      template: 'worker',
       filesSkipped: [],
     });
     expect((result as any).filesWritten).toEqual(expect.arrayContaining([
       '/package.json',
       '/wrangler.jsonc',
-      '/vite.config.ts',
-      '/react-router.config.ts',
-      '/app/root.tsx',
-      '/app/routes.ts',
-      '/app/routes/home.tsx',
-      '/app/entry.server.tsx',
-      '/workers/app.ts',
-      '/public/robots.txt',
-      '/scripts/build-manifest.mjs',
+      '/tsconfig.json',
+      '/src/index.ts',
+      '/scripts/write-build-manifest.mjs',
     ]));
-    const packageWrite = projectStub.projectWriteFile.mock.calls.find(([path]) => path === '/package.json');
-    expect(packageWrite).toBeTruthy();
-    const packageJson = JSON.parse(packageWrite?.[1] ?? '{}');
-    expect(packageJson.type).toBe('module');
-    expect(packageJson.scripts.build).toBe('react-router build && node ./scripts/build-manifest.mjs');
-    expect(packageJson.dependencies).toMatchObject({
-      react: expect.any(String),
-      'react-dom': expect.any(String),
-      'react-router': expect.any(String),
-    });
-    expect(packageJson.devDependencies).toMatchObject({
-      '@react-router/dev': expect.any(String),
-      esbuild: expect.any(String),
-      vite: expect.any(String),
-      'vite-tsconfig-paths': expect.any(String),
-      wrangler: expect.any(String),
-    });
-    expect(projectStub.projectWriteFile).toHaveBeenCalledWith('/vite.config.ts', expect.stringContaining('noExternal: true'));
-    expect(projectStub.projectWriteFile).toHaveBeenCalledWith('/app/entry.server.tsx', expect.stringContaining('renderToReadableStream'));
-    expect(projectStub.projectWriteFile).toHaveBeenCalledWith('/workers/app.ts', expect.stringContaining('createRequestHandler'));
-    expect(projectStub.projectWriteFile).toHaveBeenCalledWith('/workers/app.ts', expect.stringContaining('env.ASSETS.fetch(request)'));
-    expect(projectStub.projectWriteFile).toHaveBeenCalledWith('/scripts/build-manifest.mjs', expect.stringContaining('main_module: "worker.js"'));
-    expect(projectStub.projectWriteFile).toHaveBeenCalledWith('/scripts/build-manifest.mjs', expect.stringContaining('node_modules/.bin/esbuild'));
-    expect(projectStub.projectWriteFile).toHaveBeenCalledWith('/scripts/build-manifest.mjs', expect.stringContaining('env.ASSETS.fetch(request)'));
+    const writtenPaths = projectStub.projectWriteFile.mock.calls.map(([path]) => path);
+    expect(writtenPaths).not.toContain('/app/root.tsx');
   });
 
   it('adds a dependency to a DO-backed project through the dependency action', async () => {
