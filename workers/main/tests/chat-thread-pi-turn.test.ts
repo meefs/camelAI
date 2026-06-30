@@ -5546,6 +5546,36 @@ describe('ChatThreadDO Pi turn handling', () => {
     expect(projectStub.projectWriteFile).toHaveBeenCalledWith('/bun.lock', '# zod lockfile\n');
   });
 
+  it('builds a DO-backed project immediately after dependency changes are persisted', async () => {
+    const { fake, sandbox, projectStub } = createProjectToolFake();
+
+    await expect(CodeModeToolsBinding.prototype.callTool.call(fake, 'add_dependency', {
+      project: 'Demo App',
+      dependency: 'zod@^4',
+      dev: true,
+    })).resolves.toMatchObject({
+      success: true,
+      packageJsonPersisted: true,
+    });
+
+    const storedPackageJson = await projectStub.projectReadFile('/package.json');
+    expect(storedPackageJson.content).toContain('devDependencies');
+
+    await expect(CodeModeToolsBinding.prototype.callTool.call(fake, 'build_project', {
+      project: 'Demo App',
+    })).resolves.toMatchObject({
+      success: true,
+      project: 'Demo App',
+      backend: 'do-r2',
+    });
+
+    const packageMaterializations = sandbox.writeFile.mock.calls
+      .filter(([path]) => path === '/workspace/project-1/package.json')
+      .map(([, content]) => atob(content));
+    expect(packageMaterializations).toHaveLength(2);
+    expect(packageMaterializations.at(-1)).toContain('devDependencies');
+  });
+
   it('rejects legacy VM shell and file tools for DO-backed projects', async () => {
     const { fake, workspaceStub } = createProjectToolFake();
     const projectVm = {

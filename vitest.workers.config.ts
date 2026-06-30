@@ -42,6 +42,7 @@ const bedrockDevVarNames = new Set([
   'EVAL_MODEL',
   'EVAL_TIMEOUT_MS',
   'RUN_AGENT_EVALS',
+  'RUN_PROJECT_BUILD_SANDBOX_REPRO',
   'RUN_SANDBOX_EVAL_PROTOTYPE',
 ]);
 
