@@ -56,17 +56,19 @@ interface ConnectionPanelProps extends ConnectionActionHandlers {
   onNewChat: (item: PanelItem, mentionSlug: string) => void;
 }
 
+const ABSOLUTE_TIME_FORMATTER = new Intl.DateTimeFormat(undefined, {
+  month: "short",
+  day: "numeric",
+  year: "numeric",
+  hour: "numeric",
+  minute: "2-digit",
+  timeZone: "UTC",
+  timeZoneName: "short",
+});
+
 function formatAbsoluteTime(timestamp: number | null | undefined): string {
   if (!timestamp) return "Never";
-  return new Intl.DateTimeFormat(undefined, {
-    month: "short",
-    day: "numeric",
-    year: "numeric",
-    hour: "numeric",
-    minute: "2-digit",
-    timeZone: "UTC",
-    timeZoneName: "short",
-  }).format(new Date(timestamp));
+  return ABSOLUTE_TIME_FORMATTER.format(new Date(timestamp));
 }
 
 function formatValue(value: string | null | undefined): string {

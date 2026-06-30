@@ -65,13 +65,15 @@ function polarToCartesian(centerX: number, centerY: number, radius: number, angl
   };
 }
 
+const CHART_PADDING = { top: 18, right: 20, bottom: 44, left: 52 };
+
 export function SpreadsheetChartGraphic({ chart, compact = false }: { chart: SpreadsheetChart; compact?: boolean }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const tooltipRef = useRef<HTMLDivElement | null>(null);
   const [hoveredDatum, setHoveredDatum] = useState<ChartHoverState | null>(null);
   const width = 640;
   const height = compact ? 260 : 360;
-  const padding = { top: 18, right: 20, bottom: 44, left: 52 };
+  const padding = CHART_PADDING;
   const plotWidth = width - padding.left - padding.right;
   const plotHeight = height - padding.top - padding.bottom;
   const domain = getChartDomain(chart);

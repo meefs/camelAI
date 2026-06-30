@@ -206,17 +206,20 @@ async function buildMarkdownImageAssets(
   }
 
   const imageAssets: PdfMarkdownImageAssets = {};
-  for (const url of urls) {
+  const entries = await Promise.all(urls.map(async (url) => {
     throwIfAborted(signal);
     try {
-      imageAssets[url] = await buildPdfImageAsset(url, signal);
+      return [url, await buildPdfImageAsset(url, signal)] as const;
     } catch (error) {
       if (signal?.aborted) {
         throw getAbortError(signal);
       }
       console.error('Notebook PDF markdown image export failed:', error);
-      imageAssets[url] = null;
+      return [url, null] as const;
     }
+  }));
+  for (const [url, asset] of entries) {
+    imageAssets[url] = asset;
   }
 
   return imageAssets;
@@ -305,17 +308,12 @@ export async function prepareNotebookPdfBlocks(
   blocks: NotebookReportExportBlock[],
   signal?: AbortSignal
 ): Promise<NotebookPdfRenderableBlock[]> {
-  const preparedBlocks: NotebookPdfRenderableBlock[] = [];
-
-  for (const block of blocks) {
+  const prepared = await Promise.all(blocks.map((block) => {
     throwIfAborted(signal);
-    const prepared = await preparePdfBlock(block, signal);
-    if (prepared) {
-      preparedBlocks.push(prepared);
-    }
-  }
+    return preparePdfBlock(block, signal);
+  }));
 
-  return preparedBlocks;
+  return prepared.filter((block): block is NotebookPdfRenderableBlock => Boolean(block));
 }
 
 export async function exportNotebookReportAsPdf(options: {

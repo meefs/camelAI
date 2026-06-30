@@ -85,23 +85,17 @@ export function PlotlyChart({
         plot.innerHTML = '';
         await Plotly.newPlot(plot, themed.traces, themed.layout, themed.config);
 
-        plot.style.background = 'transparent';
-        plot.style.width = '100%';
-        plot.style.minWidth = '0';
+        plot.style.cssText += 'background: transparent; width: 100%; min-width: 0;';
 
         for (const element of Array.from(
           plot.querySelectorAll('.js-plotly-plot, .plot-container, .svg-container')
         )) {
           const node = element as HTMLElement;
-          node.style.background = 'transparent';
-          node.style.width = '100%';
-          node.style.minWidth = '0';
+          node.style.cssText += 'background: transparent; width: 100%; min-width: 0;';
         }
 
         for (const svg of Array.from(plot.querySelectorAll('svg'))) {
-          svg.style.background = 'transparent';
-          svg.style.display = 'block';
-          svg.style.maxWidth = '100%';
+          svg.style.cssText += 'background: transparent; display: block; max-width: 100%;';
         }
 
         requestAnimationFrame(() => {

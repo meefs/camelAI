@@ -189,7 +189,11 @@ export function AddConnectionDialog({
             </div>
 
             {/* Config fields */}
-            {typeDef.configSchema.filter((field) => shouldShowConfigField(connectionType, field.name, config)).map((field) => (
+            {typeDef.configSchema.flatMap((field) => {
+              if (!shouldShowConfigField(connectionType, field.name, config)) {
+                return [];
+              }
+              return [(
               <div key={field.name} className="grid gap-1.5">
                 <Label htmlFor={field.name}>
                   {field.label}
@@ -230,7 +234,8 @@ export function AddConnectionDialog({
                   <p className="text-xs text-muted-foreground">{field.description}</p>
                 )}
               </div>
-            ))}
+              )];
+            })}
 
             {typeDef.requiresOutboundIpAllowlist && <SandboxIpNotice />}
 

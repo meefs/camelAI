@@ -123,6 +123,10 @@ interface PythonSyntaxHighlighterProps {
   code: string;
 }
 
+function HighlightedLine({ line }: { line: string }) {
+  return renderLine(line);
+}
+
 export function PythonSyntaxHighlighter({ code }: PythonSyntaxHighlighterProps) {
   const lines = code.split('\n');
 
@@ -134,7 +138,7 @@ export function PythonSyntaxHighlighter({ code }: PythonSyntaxHighlighterProps) 
             {lineIndex + 1}
           </span>
           <code className="min-w-0 flex-1 whitespace-pre-wrap break-words">
-            {renderLine(line)}
+            <HighlightedLine line={line} />
           </code>
         </div>
       ))}

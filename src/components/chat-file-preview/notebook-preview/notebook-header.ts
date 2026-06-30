@@ -20,10 +20,19 @@ export function extractHeader(notebook: NotebookFile): NotebookHeader {
     if (cell.cell_type !== 'markdown') continue;
 
     const lines = toText(cell.source).split('\n');
-    const h1LineIndex = lines.findIndex((line) => /^#\s+/.test(line.trim()));
-    if (h1LineIndex === -1) continue;
+    let h1LineIndex: number | null = null;
+    let h1Line = '';
+    for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
+      const line = lines[lineIndex];
+      if (/^#\s+/.test(line.trim())) {
+        h1LineIndex = lineIndex;
+        h1Line = line;
+        break;
+      }
+    }
+    if (h1LineIndex === null) continue;
 
-    title = stripMarkdownFormatting(lines[h1LineIndex].replace(/^#\s+/, ''));
+    title = stripMarkdownFormatting(h1Line.replace(/^#\s+/, ''));
     titleCellIndex = i;
 
     const remainingLines = lines.slice(h1LineIndex + 1);
@@ -52,9 +61,12 @@ export function extractHeader(notebook: NotebookFile): NotebookHeader {
     }
   }
 
-  const visualizationCount = cells.filter((cell) =>
-    cell.cell_type === 'code' && hasVisualOutput(cell.outputs ?? [])
-  ).length;
+  let visualizationCount = 0;
+  for (const cell of cells) {
+    if (cell.cell_type === 'code' && hasVisualOutput(cell.outputs ?? [])) {
+      visualizationCount += 1;
+    }
+  }
 
   return {
     title,

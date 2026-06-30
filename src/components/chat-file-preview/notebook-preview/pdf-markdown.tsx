@@ -228,7 +228,7 @@ function markdownTableToParsedTable(node: MdastNode): ParsedTable {
 
 function renderInlineNodes(nodes: MdastNode[], keyPrefix: string): ReactNode[] {
   return nodes.flatMap((node, index) => {
-    const key = `${keyPrefix}-${index}`;
+    const key = getMdastNodeKey(node, keyPrefix, index);
 
     switch (node.type) {
       case 'text':
@@ -271,6 +271,15 @@ function renderInlineNodes(nodes: MdastNode[], keyPrefix: string): ReactNode[] {
         return extractText(node);
     }
   });
+}
+
+function InlinePdfNodes({ nodes, keyPrefix }: { nodes: MdastNode[]; keyPrefix: string }) {
+  return renderInlineNodes(nodes, keyPrefix);
+}
+
+function getMdastNodeKey(node: MdastNode, prefix: string, fallbackIndex: number): string {
+  const content = node.value ?? node.url ?? node.alt ?? extractText(node).slice(0, 80);
+  return `${prefix}-${node.type}-${content || fallbackIndex}`;
 }
 
 function renderMarkdownImageFallback(alt: string, key: string): ReactNode {
@@ -332,22 +341,24 @@ function renderList(
     <View key={key} style={listStyles}>
       {nodeChildren(node).map((item, index) => {
         const marker = ordered ? `${start + index}.` : '\u2022';
+        const itemKey = getMdastNodeKey(item, `${key}-item`, index);
         return (
-          <View key={`${key}-item-${index}`} style={styles.listItem}>
+          <View key={itemKey} style={styles.listItem}>
             <Text style={styles.listMarker}>{marker}</Text>
             <View style={styles.listBody}>
               {nodeChildren(item).map((child, childIndex) => {
+                const childKey = getMdastNodeKey(child, `${itemKey}-child`, childIndex);
                 if (child.type === 'paragraph') {
                   return (
-                    <Text key={`${key}-paragraph-${index}-${childIndex}`} style={styles.listParagraph}>
-                      {renderInlineNodes(nodeChildren(child), `${key}-paragraph-${index}-${childIndex}`)}
+                    <Text key={childKey} style={styles.listParagraph}>
+            <InlinePdfNodes nodes={nodeChildren(child)} keyPrefix={childKey} />
                     </Text>
                   );
                 }
 
                 return renderBlockNode(
                   child,
-                  `${key}-child-${index}-${childIndex}`,
+                  childKey,
                   depth + 1,
                   imageAssets
                 );
@@ -392,7 +403,9 @@ function renderBlockNode(
     case 'blockquote':
       return (
         <View key={key} style={styles.blockquote}>
-          {nodeChildren(node).map((child, index) => renderBlockNode(child, `${key}-${index}`, depth, imageAssets))}
+          {nodeChildren(node).map((child, index) =>
+            renderBlockNode(child, getMdastNodeKey(child, key, index), depth, imageAssets)
+          )}
         </View>
       );
     case 'list':
@@ -421,7 +434,9 @@ function renderBlockNode(
       if (nodeChildren(node).length > 0) {
         return (
           <View key={key}>
-            {nodeChildren(node).map((child, index) => renderBlockNode(child, `${key}-${index}`, depth, imageAssets))}
+            {nodeChildren(node).map((child, index) =>
+              renderBlockNode(child, getMdastNodeKey(child, key, index), depth, imageAssets)
+            )}
           </View>
         );
       }
@@ -434,9 +449,10 @@ export function renderMarkdownToPdfNodes(
   options: RenderMarkdownToPdfOptions = {}
 ): ReactNode[] {
   const tree = markdownProcessor.parse(markdown) as MdastNode;
-  return nodeChildren(tree)
-    .map((node, index) => renderBlockNode(node, `markdown-${index}`, 0, options.imageAssets))
-    .filter(Boolean);
+  return nodeChildren(tree).flatMap((node, index) => {
+    const rendered = renderBlockNode(node, getMdastNodeKey(node, 'markdown', index), 0, options.imageAssets);
+    return rendered ? [rendered] : [];
+  });
 }
 
 export function PdfMarkdown({ markdown, imageAssets }: { markdown: string; imageAssets?: PdfMarkdownImageAssets }) {

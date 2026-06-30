@@ -232,13 +232,14 @@ function parseRelationships(
 ) {
   const document = parseXmlDocument(getWorkbookFileText(files, relsPath));
   if (!document) return [];
-  return getDescendantsByLocalName(document, 'Relationship')
-    .map((relationship) => ({
+  return getDescendantsByLocalName(document, 'Relationship').flatMap((relationship) => {
+    const parsed = {
       id: relationship.getAttribute('Id') || '',
       type: relationship.getAttribute('Type') || '',
       target: relationship.getAttribute('Target') || '',
-    }))
-    .filter((relationship) => relationship.id && relationship.target);
+    };
+    return parsed.id && parsed.target ? [parsed] : [];
+  });
 }
 
 function getRelationshipId(node: XmlElement) {
@@ -266,14 +267,15 @@ function getSheetPartPathsBySheetName(
   if (!workbookDocument) return fallbackPaths;
 
   const sheetPartTargetsById = new Map(
-    parseRelationships(files, 'xl/_rels/workbook.xml.rels')
-      .filter((relationship) =>
-        relationship.type.includes('/worksheet') || relationship.type.includes('/chartsheet'),
-      )
-      .map((relationship) => [
+    parseRelationships(files, 'xl/_rels/workbook.xml.rels').flatMap((relationship) => {
+      if (!relationship.type.includes('/worksheet') && !relationship.type.includes('/chartsheet')) {
+        return [];
+      }
+      return [[
         relationship.id,
         normalizeWorkbookPath('xl/workbook.xml', relationship.target),
-      ]),
+      ]];
+    }),
   );
   if (sheetPartTargetsById.size === 0) return fallbackPaths;
 
@@ -333,9 +335,10 @@ function getSeriesName(seriesNode: XmlElement, fallback: string) {
 function getChartTitle(chartSpace: XmlDocument, fallback: string) {
   const titleNode = getDescendantsByLocalName(chartSpace, 'title')[0];
   if (!titleNode) return fallback;
-  const textParts = getDescendantsByLocalName(titleNode, 't')
-    .map((node) => node.textContent?.trim() ?? '')
-    .filter((value) => value.length > 0);
+  const textParts = getDescendantsByLocalName(titleNode, 't').flatMap((node) => {
+    const value = node.textContent?.trim() ?? '';
+    return value.length > 0 ? [value] : [];
+  });
   return textParts.length > 0 ? textParts.join(' ') : fallback;
 }
 

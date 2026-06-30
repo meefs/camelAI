@@ -106,7 +106,7 @@ function loadScript(src: string, globalCheck: () => boolean): Promise<void> {
 
     const script = document.createElement('script');
     script.src = src;
-    script.async = true;
+    script.async = false;
     script.crossOrigin = 'anonymous';
     script.referrerPolicy = 'no-referrer';
     script.dataset.chiridionNotebookScript = src;
@@ -166,9 +166,11 @@ export async function ensureVegaLibrariesLoaded(): Promise<void> {
 
   if (!vegaLibrariesLoadPromise) {
     vegaLibrariesLoadPromise = (async () => {
-      await loadScript(VEGA_CDN_URL, () => Boolean((window as VegaLiteWindow).vega));
-      await loadScript(VEGA_LITE_CDN_URL, () => Boolean((window as VegaLiteWindow).vegaLite));
-      await loadScript(VEGA_EMBED_CDN_URL, () => Boolean((window as VegaLiteWindow).vegaEmbed));
+      await Promise.all([
+        loadScript(VEGA_CDN_URL, () => Boolean((window as VegaLiteWindow).vega)),
+        loadScript(VEGA_LITE_CDN_URL, () => Boolean((window as VegaLiteWindow).vegaLite)),
+        loadScript(VEGA_EMBED_CDN_URL, () => Boolean((window as VegaLiteWindow).vegaEmbed)),
+      ]);
     })().catch((error) => {
       vegaLibrariesLoadPromise = null;
       throw error;
@@ -184,10 +186,7 @@ export function getCurrentTheme(): ThemeMode {
 }
 
 function cloneValue<T>(value: T): T {
-  if (typeof structuredClone === 'function') {
-    return structuredClone(value);
-  }
-  return JSON.parse(JSON.stringify(value)) as T;
+  return structuredClone(value);
 }
 
 function asRecord(value: unknown): Record<string, unknown> {

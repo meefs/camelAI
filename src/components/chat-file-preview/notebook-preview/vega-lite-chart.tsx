@@ -105,16 +105,10 @@ export function VegaLiteChart({ spec, title, fillContainer = false }: VegaLiteCh
         // vega-embed adds wrapper divs; flatten visual chrome so it feels inline/native.
         for (const element of Array.from(container.querySelectorAll('div'))) {
           const node = element as HTMLDivElement;
-          node.style.background = 'transparent';
-          node.style.width = '100%';
-          node.style.minWidth = '0';
+          node.style.cssText += 'background: transparent; width: 100%; min-width: 0;';
         }
         for (const svg of Array.from(container.querySelectorAll('svg'))) {
-          svg.style.background = 'transparent';
-          svg.style.display = 'block';
-          svg.style.maxWidth = '100%';
-          svg.style.height = 'auto';
-          svg.style.width = '100%';
+          svg.style.cssText += 'background: transparent; display: block; max-width: 100%; height: auto; width: 100%;';
         }
 
         if (!cancelled) {

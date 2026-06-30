@@ -1,5 +1,5 @@
 import type { ParsedTable } from './notebook-preview/types';
-import { parseDelimitedRows } from './spreadsheet';
+import { parseDelimitedRows } from './spreadsheet/parse-delimited';
 
 export {
   SpreadsheetPreview,

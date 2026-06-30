@@ -142,19 +142,22 @@ export function parseWorkbookSheet(workbook: WorkBook, sheetName: string): Sprea
   const sourceEndCol = sourceStartCol + Math.max(columnCount - 1, 0);
   const wasTrimmed = rowCount < sourceRowCount || columnCount < sourceColumnCount;
   const merges = ((worksheet['!merges'] as Array<{ s: { r: number; c: number }; e: { r: number; c: number } }> | undefined) ?? [])
-    .filter(
-      (merge) =>
-        merge.e.r >= sourceStartRow &&
-        merge.e.c >= sourceStartCol &&
-        merge.s.r <= sourceEndRow &&
-        merge.s.c <= sourceEndCol,
-    )
-    .map((merge) => ({
+    .flatMap((merge) => {
+      if (
+        merge.e.r < sourceStartRow ||
+        merge.e.c < sourceStartCol ||
+        merge.s.r > sourceEndRow ||
+        merge.s.c > sourceEndCol
+      ) {
+        return [];
+      }
+      return [{
       startRow: Math.max(merge.s.r, sourceStartRow) - sourceStartRow,
       startCol: Math.max(merge.s.c, sourceStartCol) - sourceStartCol,
       endRow: Math.min(merge.e.r, sourceEndRow) - sourceStartRow,
       endCol: Math.min(merge.e.c, sourceEndCol) - sourceStartCol,
-    }));
+      }];
+    });
   const rowHeights = Array.from({ length: rowCount }, (_, rowIndex) => {
     const descriptor = (worksheet['!rows'] as Array<{ hidden?: boolean; hpx?: number } | null> | undefined)?.[
       sourceStartRow + rowIndex

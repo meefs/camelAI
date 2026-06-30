@@ -43,6 +43,19 @@ const TYPE_COPY = {
     "A workflow is deterministic JavaScript that runs on a schedule. It executes exactly the same way every time. Good for retries, exports, and integrations.",
 } as const;
 
+const RELATIVE_TIME_FORMATTER = new Intl.RelativeTimeFormat(undefined, {
+  numeric: "auto",
+});
+
+const ABSOLUTE_TIME_FORMATTER = new Intl.DateTimeFormat(undefined, {
+  month: "short",
+  day: "numeric",
+  hour: "numeric",
+  minute: "2-digit",
+  timeZone: "UTC",
+  timeZoneName: "short",
+});
+
 function formatRelativeTime(timestamp: number | null, now: number): string {
   if (!timestamp) return "Never";
   const deltaMs = timestamp - now;
@@ -52,10 +65,9 @@ function formatRelativeTime(timestamp: number | null, now: number): string {
     ["hour", 3_600_000],
     ["minute", 60_000],
   ];
-  const rtf = new Intl.RelativeTimeFormat(undefined, { numeric: "auto" });
   for (const [unit, size] of units) {
     if (absMs >= size) {
-      return rtf.format(Math.round(deltaMs / size), unit);
+      return RELATIVE_TIME_FORMATTER.format(Math.round(deltaMs / size), unit);
     }
   }
   return "just now";
@@ -63,14 +75,7 @@ function formatRelativeTime(timestamp: number | null, now: number): string {
 
 function formatAbsoluteTime(timestamp: number | null): string {
   if (!timestamp) return "Never";
-  return new Intl.DateTimeFormat(undefined, {
-    month: "short",
-    day: "numeric",
-    hour: "numeric",
-    minute: "2-digit",
-    timeZone: "UTC",
-    timeZoneName: "short",
-  }).format(new Date(timestamp));
+  return ABSOLUTE_TIME_FORMATTER.format(new Date(timestamp));
 }
 
 function DetailRow({ label, children }: { label: string; children: ReactNode }) {

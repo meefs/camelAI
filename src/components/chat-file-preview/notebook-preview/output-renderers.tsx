@@ -24,6 +24,25 @@ interface ChartOutputWithActionsProps {
   title: string;
 }
 
+function ChartOutput({
+  kind,
+  spec,
+  title,
+  fullScreen,
+}: ChartOutputWithActionsProps & { fullScreen: boolean }) {
+  if (kind === 'vegalite') {
+    return <VegaLiteChart spec={spec} title={title} fillContainer={fullScreen} />;
+  }
+  return (
+    <PlotlyChart
+      payload={spec}
+      title={title}
+      showModeBar={fullScreen}
+      fillContainer={fullScreen}
+    />
+  );
+}
+
 function ChartOutputWithActions({
   kind,
   spec,
@@ -34,24 +53,10 @@ function ChartOutputWithActions({
   const fullScreenContainerRef = useRef<HTMLDivElement>(null);
   const [isFullScreen, setIsFullScreen] = useState(false);
 
-  const renderChart = (fullScreen: boolean) => {
-    if (kind === 'vegalite') {
-      return <VegaLiteChart spec={spec} title={chartTitle} fillContainer={fullScreen} />;
-    }
-    return (
-      <PlotlyChart
-        payload={spec}
-        title={chartTitle}
-        showModeBar={fullScreen}
-        fillContainer={fullScreen}
-      />
-    );
-  };
-
   return (
     <div className="w-full min-w-0">
       <div ref={inlineContainerRef}>
-        {renderChart(false)}
+        <ChartOutput kind={kind} spec={spec} title={chartTitle} fullScreen={false} />
       </div>
       <OutputActionBar
         kind={kind}
@@ -77,7 +82,7 @@ function ChartOutputWithActions({
         >
           <div className="flex h-full min-h-0 items-center justify-center overflow-auto p-6">
             <div ref={fullScreenContainerRef} className="h-full w-full max-w-[1800px]">
-              {renderChart(true)}
+              <ChartOutput kind={kind} spec={spec} title={chartTitle} fullScreen />
             </div>
           </div>
         </FullScreenDialog>

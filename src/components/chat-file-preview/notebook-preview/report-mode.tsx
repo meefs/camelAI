@@ -7,7 +7,7 @@ import { ReportFooter } from './report-footer';
 import { ReportHeader } from './report-header';
 import { ReportMarkdownCell } from './report-markdown-cell';
 import { ReportSidebar } from './report-sidebar';
-import type { NotebookFile, TocEntry } from './types';
+import type { NotebookCell, NotebookFile, NotebookOutput, TocEntry } from './types';
 import {
   extractTocEntries,
   getNotebookCells,
@@ -18,6 +18,16 @@ import {
 interface ReportModeProps {
   notebook: NotebookFile;
   layout: 'panel' | 'dialog';
+}
+
+function getReportCellKey(cell: NotebookCell) {
+  const source = Array.isArray(cell.source) ? cell.source.join('') : cell.source ?? '';
+  return [cell.cell_type ?? 'cell', cell.execution_count ?? 'none', source.slice(0, 80)].join(':');
+}
+
+function getReportOutputKey(output: NotebookOutput) {
+  const text = Array.isArray(output.text) ? output.text.join('') : output.text ?? '';
+  return [output.output_type ?? 'output', output.name ?? 'none', text.slice(0, 80)].join(':');
 }
 
 function ReportModeComponent({ notebook, layout }: ReportModeProps) {
@@ -66,7 +76,7 @@ function ReportModeComponent({ notebook, layout }: ReportModeProps) {
 
                 return (
                   <ReportMarkdownCell
-                    key={`cell-${index}`}
+                    key={getReportCellKey(cell)}
                     source={source}
                     entries={tocEntriesByCell.get(index) ?? []}
                   />
@@ -78,10 +88,10 @@ function ReportModeComponent({ notebook, layout }: ReportModeProps) {
               if (reportOutputs.length === 0) return null;
 
               return (
-                <div key={`cell-${index}`} className="min-w-0 space-y-8">
+                <div key={getReportCellKey(cell)} className="min-w-0 space-y-8">
                   {reportOutputs.map((output, outputIndex) => (
                     <OutputRenderer
-                      key={`output-${index}-${outputIndex}`}
+                      key={getReportOutputKey(output)}
                       output={output}
                       mode="report"
                       layout={layout}

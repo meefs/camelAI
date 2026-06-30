@@ -114,9 +114,11 @@ function escapeCell(value: string): string {
 
 function objectsToCsv(rows: Record<string, unknown>[]): string {
   const keys: string[] = [];
+  const seenKeys = new Set<string>();
   for (const row of rows) {
     for (const key of Object.keys(row)) {
-      if (!keys.includes(key)) {
+      if (!seenKeys.has(key)) {
+        seenKeys.add(key);
         keys.push(key);
       }
     }

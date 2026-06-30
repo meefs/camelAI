@@ -229,6 +229,11 @@ interface ConnectionRowProps extends ConnectionActionHandlers {
   onNewChat: (item: PanelItem, mentionSlug: string) => void;
 }
 
+function handleActionClick(event: MouseEvent, action: () => void) {
+  event.stopPropagation();
+  action();
+}
+
 export function ConnectionRow({
   item,
   isSelected,
@@ -247,11 +252,6 @@ export function ConnectionRow({
 }: ConnectionRowProps) {
   const connection = panelItemConnection(item);
   const displayName = panelItemName(item);
-
-  const handleActionClick = (event: MouseEvent, action: () => void) => {
-    event.stopPropagation();
-    action();
-  };
 
   return (
     <div
