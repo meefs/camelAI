@@ -316,34 +316,52 @@ type DeferredChatDataState = {
   source: ChatDataValue;
   data: ChatData;
   loading: boolean;
+  dataKey: string;
 };
 
 function getInitialDeferredChatDataState(
   source: ChatDataValue,
+  dataKey: string,
 ): DeferredChatDataState {
   return {
     source,
     data: isPromiseLike(source) ? EMPTY_CHAT_DATA : source,
     loading: isPromiseLike(source),
+    dataKey,
   };
 }
 
-function useDeferredChatData(chatData: ChatDataValue): {
+function getDeferredChatDataLoadingState(
+  previousState: DeferredChatDataState,
+  source: Promise<ChatData>,
+  dataKey: string,
+): DeferredChatDataState {
+  return {
+    source,
+    data: previousState.dataKey === dataKey ? previousState.data : EMPTY_CHAT_DATA,
+    loading: true,
+    dataKey,
+  };
+}
+
+function useDeferredChatData(chatData: ChatDataValue, dataKey: string): {
   chatData: ChatData;
   isLoading: boolean;
 } {
   const [state, setState] = useState<DeferredChatDataState>(() =>
-    getInitialDeferredChatDataState(chatData),
+    getInitialDeferredChatDataState(chatData, dataKey),
   );
 
   useEffect(() => {
     if (!isPromiseLike(chatData)) {
-      setState({ source: chatData, data: chatData, loading: false });
+      setState({ source: chatData, data: chatData, loading: false, dataKey });
       return;
     }
 
     let active = true;
-    setState({ source: chatData, data: EMPTY_CHAT_DATA, loading: true });
+    setState((previousState) =>
+      getDeferredChatDataLoadingState(previousState, chatData, dataKey),
+    );
     chatData.then(
       (resolvedChatData) => {
         if (active) {
@@ -351,6 +369,7 @@ function useDeferredChatData(chatData: ChatDataValue): {
             source: chatData,
             data: resolvedChatData,
             loading: false,
+            dataKey,
           });
         }
       },
@@ -360,6 +379,7 @@ function useDeferredChatData(chatData: ChatDataValue): {
             source: chatData,
             data: buildChatDataError(error),
             loading: false,
+            dataKey,
           });
         }
       },
@@ -368,12 +388,14 @@ function useDeferredChatData(chatData: ChatDataValue): {
     return () => {
       active = false;
     };
-  }, [chatData]);
+  }, [chatData, dataKey]);
 
   const currentState =
-    state.source === chatData
+    state.source === chatData && state.dataKey === dataKey
       ? state
-      : getInitialDeferredChatDataState(chatData);
+      : isPromiseLike(chatData) && state.dataKey === dataKey
+        ? getDeferredChatDataLoadingState(state, chatData, dataKey)
+        : getInitialDeferredChatDataState(chatData, dataKey);
 
   return {
     chatData: currentState.data,
@@ -890,7 +912,7 @@ export default function ChatPage() {
   const {
     chatData: resolvedChatData,
     isLoading: isLoadingChatData,
-  } = useDeferredChatData(chatData);
+  } = useDeferredChatData(chatData, threadId);
   const navigate = useNavigate();
   const location = useLocation();
   const revalidator = useRevalidator();
@@ -979,7 +1001,9 @@ export default function ChatPage() {
       }
     : resolvedChatData;
   const isLoadingDisplayMessages =
-    isLoadingChatData && !shouldUseCachedSnapshot;
+    isLoadingChatData &&
+    !shouldUseCachedSnapshot &&
+    displayChatData.messages.length === 0;
 
   useEffect(() => {
     if (!usedClientMessageCache || !displayThreadId) return;
