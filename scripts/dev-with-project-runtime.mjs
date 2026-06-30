@@ -4,6 +4,7 @@ import { mkdir } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import process from "node:process";
+import { applyCloudflareContainerEgressWorkaround } from "./cloudflare-container-egress.mjs";
 
 const repoRoot = path.resolve(import.meta.dirname, "..");
 const useLocalRuntime = process.env.USE_LOCAL_PROJECT_RUNTIME === "1";
@@ -30,6 +31,7 @@ if (useLocalRuntime) {
 }
 
 const appEnv = { ...process.env };
+applyCloudflareContainerEgressWorkaround(appEnv);
 if (useLocalRuntime) {
   appEnv.PROJECT_RUNTIME_SERVICE_URL = runtimeUrl;
   appEnv.PROJECT_RUNTIME_DOCKER_PROXY_BASE_URL =

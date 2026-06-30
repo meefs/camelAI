@@ -10,7 +10,7 @@
 		"build": "bun run build:cf && bun run check:pi-bedrock-build",
 		"build:cf": "react-router build",
 		"check:pi-bedrock-build": "node scripts/check-pi-bedrock-build.mjs",
-		"start": "wrangler dev",
+		"start": "node scripts/wrangler-dev.mjs",
 		"selfhost:init": "node scripts/selfhost-init.mjs",
 		"selfhost:doctor": "node scripts/selfhost-doctor.mjs",
 		"selfhost:up": "node scripts/selfhost-up.mjs",
