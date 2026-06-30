@@ -1146,8 +1146,6 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
     this.activeAutomationRun = this.normalizeActiveAutomationRun(
       ctx.storage.kv.get<unknown>(CHAT_ACTIVE_AUTOMATION_RUN_KEY),
     );
-
-    this.syncAgentState();
   }
 
   async runCodeModeJavascript(
@@ -1329,6 +1327,11 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
   override async onStart(props?: unknown): Promise<void> {
     await super.onStart?.(props as never);
     this.hydrateLiveStateFromAgentState();
+    // PartyServer name bootstrap happens before onStart, not in the constructor.
+    // syncAgentState() calls setState(), which emits through PartyServer and needs
+    // this.name; doing it here keeps cold-wake state fresh without crashing stale
+    // alarm/RPC wakes that haven't initialized the PartyServer name yet.
+    this.syncAgentState();
   }
 
   /**

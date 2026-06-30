@@ -1166,7 +1166,7 @@ describe('ChatThreadDO Pi turn handling', () => {
   });
 
   describe('onStart (no heal needed — streaming is derived)', () => {
-    it('only hydrates; never clears streaming or schedules a resume', async () => {
+    it('hydrates and syncs state; never clears streaming or schedules a resume', async () => {
       const fake = Object.create(ChatThreadDO.prototype) as any;
       fake.liveStateHydrated = true; // hydrate short-circuits
       fake.markTurnStarted = vi.fn();
@@ -1174,9 +1174,11 @@ describe('ChatThreadDO Pi turn handling', () => {
       fake.setActiveTurnUserId = vi.fn();
       fake.schedule = vi.fn(async () => {});
       fake.pushChatEvent = vi.fn();
+      fake.syncAgentState = vi.fn();
 
       await ChatThreadDO.prototype.onStart.call(fake);
 
+      expect(fake.syncAgentState).toHaveBeenCalledTimes(1);
       expect(fake.finishTurn).not.toHaveBeenCalled();
       expect(fake.markTurnStarted).not.toHaveBeenCalled();
       expect(fake.schedule).not.toHaveBeenCalled();
