@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useLayoutEffect, useState } from 'react';
 import { useFetcher, useLoaderData, useNavigation, useRevalidator, useSubmit } from 'react-router';
 import type { Route } from './+types/_app.settings.organization.domains';
 import { requireAuthContext } from '@/lib/auth.server';
@@ -195,7 +195,7 @@ function AppDomainRow({
     if (app.error) setExpanded(true);
   }, [app.error]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (fetcher.state !== 'idle' || !fetcher.data) return;
     if (fetcher.data.error) {
       setError(fetcher.data.error);

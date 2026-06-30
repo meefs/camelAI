@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useFetcher } from 'react-router';
 import { ArrowUpRight, ChevronDown, ChevronUp, X } from 'lucide-react';
 import { toast } from 'sonner';
@@ -71,7 +71,7 @@ export function LegacyUserBanner({ show, userId }: LegacyUserBannerProps) {
 
   const isDismissing = fetcher.state !== 'idle';
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     setSnoozedUntil(readSnoozedUntil(userId));
     setIsReady(true);
   }, [userId]);

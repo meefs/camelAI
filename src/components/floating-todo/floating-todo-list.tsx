@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from 'react';
+import { useLayoutEffect, useMemo, useState } from 'react';
 import { cn } from '@/lib/utils';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import { ScrollArea } from '@/components/ui/scroll-area';
@@ -100,7 +100,7 @@ export function FloatingTodoList({ todos, isStreaming, className }: FloatingTodo
   const completedCount = displayTodos.filter(todo => todo.status === 'completed').length;
   const totalCount = displayTodos.length;
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!displayTodos.length) return;
     const hasInProgress = displayTodos.some(todo => todo.status === 'in_progress');
     if (hasInProgress) {

@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useLayoutEffect, useRef, useState } from 'react';
 import {
   Activity,
   BarChart3,
@@ -111,40 +111,50 @@ const ICONS: Record<StarterPromptIconName, LucideIcon> = {
 
 const SLOT_COUNT = 4;
 
+interface StarterPromptDisplayState {
+  displayed: StarterPromptItem[];
+  phase: 'idle' | 'out' | 'in';
+}
+
 export function StarterPrompts({ prompts, onSelect, shuffleKey = 0 }: StarterPromptsProps) {
-  const [displayed, setDisplayed] = useState(prompts);
-  const [phase, setPhase] = useState<'idle' | 'out' | 'in'>('idle');
+  const [displayState, setDisplayState] = useState<StarterPromptDisplayState>(() => ({
+    displayed: prompts,
+    phase: 'idle',
+  }));
+  const { displayed, phase } = displayState;
   const pendingPrompts = useRef(prompts);
   const timers = useRef<ReturnType<typeof setTimeout>[]>([]);
 
-  useEffect(() => {
-    return () => timers.current.forEach(clearTimeout);
-  }, []);
-
-  useEffect(() => {
+  useLayoutEffect(() => {
     pendingPrompts.current = prompts;
-
-    if (shuffleKey === 0) {
-      setDisplayed(prompts);
-      return;
-    }
-
     timers.current.forEach(clearTimeout);
     timers.current = [];
 
+    if (shuffleKey === 0) {
+      setDisplayState({ displayed: prompts, phase: 'idle' });
+      return;
+    }
+
     // Phase 1: slide content out
-    setPhase('out');
+    setDisplayState((prev) => ({ ...prev, phase: 'out' }));
 
     // Phase 2: swap data + slide content in
     const swap = setTimeout(() => {
-      setDisplayed(pendingPrompts.current);
-      setPhase('in');
+      setDisplayState({ displayed: pendingPrompts.current, phase: 'in' });
 
       // Phase 3: back to idle
-      const idle = setTimeout(() => setPhase('idle'), 450);
+      const idle = setTimeout(
+        () => setDisplayState((prev) => ({ ...prev, phase: 'idle' })),
+        450
+      );
       timers.current.push(idle);
     }, 220);
     timers.current.push(swap);
+
+    return () => {
+      timers.current.forEach(clearTimeout);
+      timers.current = [];
+    };
   }, [shuffleKey, prompts]);
 
   // Stable click handler that reads current displayed data
@@ -188,7 +198,7 @@ const OUT_DIRECTIONS = [
 function PromptSlot({ index, item, phase, onClick }: PromptSlotProps) {
   const innerRef = useRef<HTMLDivElement>(null);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const el = innerRef.current;
     if (!el) return;
 

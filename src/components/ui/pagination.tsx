@@ -7,7 +7,6 @@ import { ChevronLeftIcon, ChevronRightIcon, MoreHorizontalIcon } from "lucide-re
 function Pagination({ className, ...props }: React.ComponentProps<"nav">) {
   return (
     <nav
-      role="navigation"
       aria-label="pagination"
       data-slot="pagination"
       className={cn(
@@ -43,8 +42,10 @@ type PaginationLinkProps = {
 
 function PaginationLink({
   className,
+  children,
   isActive,
   size = "icon",
+  "aria-label": ariaLabel,
   ...props
 }: PaginationLinkProps) {
   return (
@@ -55,11 +56,14 @@ function PaginationLink({
       className={cn(className)}
     >
       <a
+        aria-label={ariaLabel ?? "Page"}
         aria-current={isActive ? "page" : undefined}
         data-slot="pagination-link"
         data-active={isActive}
         {...props}
-      />
+      >
+        {children}
+      </a>
     </Button>
   )
 }

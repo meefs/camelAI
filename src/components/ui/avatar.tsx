@@ -109,7 +109,7 @@ function AvatarImage({
   className,
   ...props
 }: React.ComponentProps<typeof AvatarPrimitive.Image>) {
-  const shape = React.useContext(AvatarShapeContext)
+  const shape = React.use(AvatarShapeContext)
   return (
     <AvatarPrimitive.Image
       data-slot="avatar-image"
@@ -131,8 +131,8 @@ function AvatarFallback({
 }: React.ComponentProps<typeof AvatarPrimitive.Fallback> & {
   content?: string
 }) {
-  const size = React.useContext(AvatarSizeContext)
-  const shape = React.useContext(AvatarShapeContext)
+  const size = React.use(AvatarSizeContext)
+  const shape = React.use(AvatarShapeContext)
   const fallbackContent =
     typeof content === "string"
       ? content

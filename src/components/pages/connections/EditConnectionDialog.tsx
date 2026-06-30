@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useLayoutEffect } from 'react';
 import { useFetcher } from 'react-router';
 import type { Integration } from '@/types';
 import {
@@ -44,6 +44,28 @@ interface EditConnectionDialogProps {
   onSuccess: () => void;
 }
 
+interface EditConnectionFormState {
+  name: string;
+  config: Record<string, unknown>;
+  credentials: Record<string, unknown>;
+  shouldUpdateCredentials: boolean;
+  error: string | null;
+}
+
+function getInitialEditConnectionFormState(
+  connection: Integration,
+  typeDef: IntegrationDefinition | undefined,
+  forceCredentialUpdate: boolean
+): EditConnectionFormState {
+  return {
+    name: connection.name,
+    config: typeDef ? applyDefaults(typeDef.configSchema, connection.config) : connection.config,
+    credentials: {},
+    shouldUpdateCredentials: forceCredentialUpdate,
+    error: null,
+  };
+}
+
 const applyDefaults = (
   schema: IntegrationDefinition['configSchema'],
   current: Record<string, unknown>
@@ -69,30 +91,25 @@ export function EditConnectionDialog({
   onSuccess,
 }: EditConnectionDialogProps) {
   const fetcher = useFetcher<{ success?: boolean; error?: string }>();
-  const [name, setName] = useState(connection.name);
-  const [config, setConfig] = useState<Record<string, unknown>>(connection.config);
-  const [credentials, setCredentials] = useState<Record<string, unknown>>({});
-  const [shouldUpdateCredentials, setShouldUpdateCredentials] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const typeDef = connectionTypes.find((t) => t.type === connection.integration_type);
+  const [form, setForm] = useState(() =>
+    getInitialEditConnectionFormState(connection, typeDef, forceCredentialUpdate)
+  );
+  const { name, config, credentials, shouldUpdateCredentials, error } = form;
 
   const submitting = fetcher.state !== 'idle';
-  const typeDef = connectionTypes.find((t) => t.type === connection.integration_type);
 
   // Reset form when connection changes
-  useEffect(() => {
-    setName(connection.name);
-    setConfig(typeDef ? applyDefaults(typeDef.configSchema, connection.config) : connection.config);
-    setCredentials({});
-    setShouldUpdateCredentials(forceCredentialUpdate);
-    setError(null);
+  useLayoutEffect(() => {
+    setForm(getInitialEditConnectionFormState(connection, typeDef, forceCredentialUpdate));
   }, [connection, typeDef, forceCredentialUpdate]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (fetcher.state === 'idle' && fetcher.data) {
       if (fetcher.data.success) {
         onSuccess();
       } else if (fetcher.data.error) {
-        setError(fetcher.data.error);
+        setForm((prev) => ({ ...prev, error: fetcher.data?.error ?? null }));
       }
     }
   }, [fetcher.state, fetcher.data, onSuccess]);
@@ -124,7 +141,7 @@ export function EditConnectionDialog({
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    setError(null);
+    setForm((prev) => ({ ...prev, error: null }));
 
     const nextConfig = applyDefaults(typeDef.configSchema, config);
 
@@ -147,20 +164,28 @@ export function EditConnectionDialog({
   };
 
   const handleClose = () => {
-    setName(connection.name);
-    setConfig(connection.config);
-    setCredentials({});
-    setShouldUpdateCredentials(false);
-    setError(null);
+    setForm({
+      name: connection.name,
+      config: connection.config,
+      credentials: {},
+      shouldUpdateCredentials: false,
+      error: null,
+    });
     onOpenChange(false);
   };
 
   const handleConfigChange = (field: string, value: unknown) => {
-    setConfig((prev) => ({ ...prev, [field]: value }));
+    setForm((prev) => ({
+      ...prev,
+      config: { ...prev.config, [field]: value },
+    }));
   };
 
   const handleCredentialChange = (field: string, value: unknown) => {
-    setCredentials((prev) => ({ ...prev, [field]: value }));
+    setForm((prev) => ({
+      ...prev,
+      credentials: { ...prev.credentials, [field]: value },
+    }));
   };
 
   return (
@@ -189,7 +214,9 @@ export function EditConnectionDialog({
               <Input
                 id="edit-name"
                 value={name}
-                onChange={(e) => setName(e.target.value)}
+                onChange={(e) =>
+                  setForm((prev) => ({ ...prev, name: e.target.value }))
+                }
                 placeholder={typeDef.displayName}
                 required
               />
@@ -250,7 +277,12 @@ export function EditConnectionDialog({
                         type="button"
                         variant="outline"
                         size="sm"
-                        onClick={() => setShouldUpdateCredentials(true)}
+                        onClick={() =>
+                          setForm((prev) => ({
+                            ...prev,
+                            shouldUpdateCredentials: true,
+                          }))
+                        }
                       >
                         <Key className="mr-2 size-3" />
                         Update Credentials

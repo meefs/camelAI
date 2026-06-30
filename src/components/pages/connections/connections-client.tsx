@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   useFetcher,
   useNavigate,
@@ -336,7 +336,7 @@ export default function ConnectionsClient({
     [updateUiSearchParams],
   );
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (activeSelectedId && !selectedItem) {
       setActiveSelectedId(null);
       clearSelectedParam({ replace: true });
@@ -395,7 +395,7 @@ export default function ConnectionsClient({
     [currentWorkspace?.id],
   );
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const connectionId = searchParams.get("connection");
     const shouldReauth = searchParams.get("reauth") === "1";
     if (!connectionId || !shouldReauth) return;
@@ -425,7 +425,7 @@ export default function ConnectionsClient({
     );
   }, [connections, searchParams, startReauth, updateUiSearchParams]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (fetcher.state !== "idle" || !fetcher.data) return;
     const pending = pendingAction.current;
     if (!pending) return;

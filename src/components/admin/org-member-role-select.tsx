@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useState } from "react"
+import { useLayoutEffect, useState } from "react"
 import { useFetcher } from "react-router"
 
 import {
@@ -27,46 +27,58 @@ export function OrgMemberRoleSelect({
   currentRole,
   disabled = false,
 }: OrgMemberRoleSelectProps) {
-  const fetcher = useFetcher<{ success?: boolean; error?: string }>()
-  const [value, setValue] = useState<OrgRole>(currentRole)
-  const [error, setError] = useState<string | null>(null)
-  const isPending = fetcher.state !== "idle"
-  const isOwner = currentRole === "owner"
+  if (currentRole === "owner") {
+    return <span className="text-xs text-muted-foreground">Owner</span>
+  }
 
-  useEffect(() => {
-    setValue(currentRole)
-  }, [currentRole])
+  return (
+    <OrgMemberRoleSelectEditor
+      key={`${userId}:${currentRole}`}
+      orgId={orgId}
+      userId={userId}
+      currentRole={currentRole}
+      disabled={disabled}
+    />
+  )
+}
+
+function OrgMemberRoleSelectEditor({
+  orgId,
+  userId,
+  currentRole,
+  disabled = false,
+}: OrgMemberRoleSelectProps) {
+  const fetcher = useFetcher<{ success?: boolean; error?: string }>()
+  const [selection, setSelection] = useState<{
+    value: OrgRole
+    error: string | null
+  }>(() => ({ value: currentRole, error: null }))
+  const isPending = fetcher.state !== "idle"
 
   // Handle response
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (fetcher.state === "idle" && fetcher.data) {
       if (fetcher.data.error) {
-        setValue(currentRole)
-        setError(fetcher.data.error)
+        setSelection({ value: currentRole, error: fetcher.data.error })
       } else {
-        setError(null)
+        setSelection((prev) => ({ ...prev, error: null }))
       }
     }
   }, [fetcher.state, fetcher.data, currentRole])
 
   const handleChange = (nextRole: string) => {
     const role = nextRole as OrgRole
-    setValue(role)
-    setError(null)
+    setSelection({ value: role, error: null })
     fetcher.submit(
       { intent: "updateMemberRole", orgId, userId, role },
       { method: "POST" }
     )
   }
 
-  if (isOwner) {
-    return <span className="text-xs text-muted-foreground">Owner</span>
-  }
-
   return (
     <div className="space-y-1">
       <Select
-        value={value}
+        value={selection.value}
         onValueChange={handleChange}
         disabled={disabled || isPending}
       >
@@ -81,7 +93,9 @@ export function OrgMemberRoleSelect({
           ))}
         </SelectContent>
       </Select>
-      {error ? <p className="text-xs text-destructive">{error}</p> : null}
+      {selection.error ? (
+        <p className="text-xs text-destructive">{selection.error}</p>
+      ) : null}
     </div>
   )
 }

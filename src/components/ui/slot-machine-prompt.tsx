@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useLayoutEffect } from 'react';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 import { ArrowUp } from 'lucide-react';
@@ -71,7 +71,7 @@ export function SlotMachinePrompt({
   }, [isScrambling, revealedCount, targetText.length, scrambleSpeed]);
 
   // When all characters revealed, stop scrambling
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (revealedCount >= targetText.length && targetText.length > 0) {
       setChars(targetText.split('').map((char) => ({ char, revealed: true })));
       setIsScrambling(false);

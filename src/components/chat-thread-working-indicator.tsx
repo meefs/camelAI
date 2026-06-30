@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useLayoutEffect, useState } from "react";
 import { CamelLoader } from "@/components/camel-loader/camel-loader";
 import { formatRunningElapsed } from "@/lib/chat-group-hover-time";
 
@@ -13,7 +13,7 @@ export function ChatThreadWorkingIndicator({
   const [now, setNow] = useState<number | null>(null);
   const displayNow = now ?? startedAt;
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (startedAt === null) {
       setNow(null);
       return;

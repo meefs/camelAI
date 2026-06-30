@@ -4,6 +4,7 @@
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useRef,
   useState,
   type KeyboardEvent,
@@ -445,20 +446,27 @@ function ChartTabBar({
       canScrollForward: node.scrollLeft < maxScrollLeft - 1,
     });
   }, []);
+  const updateScrollStateRef = useRef(updateScrollState);
+  updateScrollStateRef.current = updateScrollState;
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const node = scrollerRef.current;
     if (!node) return;
 
-    const resizeObserver = new ResizeObserver(updateScrollState);
+    const handleScrollStateChange = () => updateScrollStateRef.current();
+    const resizeObserver = new ResizeObserver(handleScrollStateChange);
     resizeObserver.observe(node);
-    node.addEventListener('scroll', updateScrollState, { passive: true });
-    updateScrollState();
+    node.addEventListener('scroll', handleScrollStateChange, { passive: true });
+    handleScrollStateChange();
 
     return () => {
       resizeObserver.disconnect();
-      node.removeEventListener('scroll', updateScrollState);
+      node.removeEventListener('scroll', handleScrollStateChange);
     };
+  }, []);
+
+  useLayoutEffect(() => {
+    updateScrollState();
   }, [charts, updateScrollState]);
 
   useEffect(() => {
@@ -601,7 +609,7 @@ export function SpreadsheetChartsSurface({
 }) {
   const [activeChartIndex, setActiveChartIndex] = useState(0);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     setActiveChartIndex(0);
   }, [charts]);
 

@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Search, X } from 'lucide-react';
 import { Input } from '@/components/ui/input';
 import { cn } from '@/lib/utils';
@@ -66,7 +66,7 @@ export function ConnectionPicker({
     setShowFade(hasOverflow && !isAtBottom);
   }, []);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     checkFade();
   }, [filteredIntegrations, checkFade]);
 

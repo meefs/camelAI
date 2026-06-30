@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Check, Copy, Download, FileText, RefreshCw, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import {
@@ -40,7 +40,7 @@ export function FilePreviewPopover({
     useState<SpreadsheetToolbarState | null>(null);
   const filenameCopyTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (filenameCopyTimeoutRef.current) {
       clearTimeout(filenameCopyTimeoutRef.current);
       filenameCopyTimeoutRef.current = null;

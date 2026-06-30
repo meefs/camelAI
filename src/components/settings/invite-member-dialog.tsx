@@ -1,6 +1,6 @@
 "use client"
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import { flushSync } from "react-dom"
 import { useFetcher } from "react-router"
 import { useForm, getFormProps, type SubmissionResult } from "@conform-to/react"
@@ -160,7 +160,7 @@ export function InviteMemberDialog({
         : `Send ${requestedInviteCount} invites`
 
   // Handle response
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (fetcher.state === "idle" && fetcher.data) {
       if (fetcher.data.success) {
         const invitedCount = fetcher.data.invited?.length ?? 0

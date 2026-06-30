@@ -148,7 +148,7 @@ export function LoginForm({ redirectTo, oauthError }: LoginFormProps) {
                   href="https://app.camelai.com"
                   className="hover:underline underline-offset-4"
                 >
-                  Click here
+                  Open old camelAI
                 </a>
               </div>
             </form>

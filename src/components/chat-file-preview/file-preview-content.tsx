@@ -1,6 +1,6 @@
 'use client';
 
-import { lazy, memo, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { lazy, memo, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Loader2 } from 'lucide-react';
 import { PREVIEW_INITIAL_MAX_LINES } from '@/lib/file-preview-limits';
 import { cn } from '@/lib/utils';
@@ -183,7 +183,7 @@ function ImagePreview({
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState(false);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     setLoaded(false);
     setError(false);
   }, [src]);
@@ -310,7 +310,7 @@ function FilePreviewContentComponent({
     }
   }, [previewType]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const shouldFetchText =
       previewType === 'text' ||
       previewType === 'code' ||
@@ -544,7 +544,7 @@ function FilePreviewContentComponent({
     }
   }, [fileFullTextPreviewUrl, previewType]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (previewType === 'pdf' || previewType === 'audio' || previewType === 'video') {
       setMediaLoading(true);
       setMediaError(false);
@@ -738,6 +738,7 @@ function FilePreviewContentComponent({
           <iframe
             src={previewUrl}
             title={filename}
+            sandbox="allow-downloads allow-forms allow-modals allow-popups allow-scripts"
             className={cn(
               'w-full rounded-md border',
               layout === 'panel' ? 'h-full min-h-[320px]' : 'h-[60vh]',

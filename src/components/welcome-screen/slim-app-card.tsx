@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useLayoutEffect, useState } from 'react';
 import { ArrowRight, Image } from 'lucide-react';
 import type { WorkerScriptWithCreator } from '@/types';
 import { cn } from '@/lib/utils';
@@ -34,7 +34,7 @@ export function SlimAppCard({ app, renderedAt, onStartChat }: SlimAppCardProps) 
     : null;
   const [previewFailed, setPreviewFailed] = useState(false);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     setPreviewFailed(false);
   }, [previewUrl]);
 

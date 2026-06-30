@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback, useEffect, useMemo, useRef } from "react";
+import { useState, useCallback, useEffect, useLayoutEffect, useMemo, useRef } from "react";
 import { cn } from "@/lib/utils";
 import {
   normalizeAskUserQuestions,
@@ -136,13 +136,13 @@ export function AskUserQuestion({
   const otherInputRef = useRef<HTMLInputElement>(null);
 
   // Reset state when a new question payload arrives
-  useEffect(() => {
+  useLayoutEffect(() => {
     setCurrentQuestionIndex(0);
     setIsSubmitting(false);
     setQuestionStates(createInitialQuestionStates(questions));
   }, [data.questionId, questions]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     setFocusedIndex(0);
   }, [data.questionId, currentQuestionIndex]);
 

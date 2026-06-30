@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useLayoutEffect } from 'react';
 import { useFetcher } from 'react-router';
 import {
   type IntegrationDefinition,
@@ -42,6 +42,22 @@ interface AddConnectionDialogProps {
   onSuccess: () => void;
 }
 
+interface AddConnectionFormState {
+  name: string;
+  config: Record<string, unknown>;
+  credentials: Record<string, unknown>;
+  error: string | null;
+}
+
+function getEmptyConnectionFormState(): AddConnectionFormState {
+  return {
+    name: '',
+    config: {},
+    credentials: {},
+    error: null,
+  };
+}
+
 // OAuth integration types that have worker routes
 const OAUTH_INTEGRATIONS = ['slack', 'notion'] as const;
 
@@ -69,33 +85,28 @@ export function AddConnectionDialog({
   onSuccess,
 }: AddConnectionDialogProps) {
   const fetcher = useFetcher<{ success?: boolean; error?: string; oauthUrl?: string }>();
-  const [name, setName] = useState('');
-  const [config, setConfig] = useState<Record<string, unknown>>({});
-  const [credentials, setCredentials] = useState<Record<string, unknown>>({});
-  const [error, setError] = useState<string | null>(null);
+  const [form, setForm] = useState(getEmptyConnectionFormState);
+  const { name, config, credentials, error } = form;
 
   const submitting = fetcher.state !== 'idle';
   const typeDef = connectionTypes.find((t) => t.type === connectionType);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (fetcher.state === 'idle' && fetcher.data) {
       if (fetcher.data.oauthUrl) {
         window.location.href = fetcher.data.oauthUrl;
       } else if (fetcher.data.success) {
-        setName('');
-        setConfig({});
-        setCredentials({});
-        setError(null);
+        setForm(getEmptyConnectionFormState());
         onSuccess();
       } else if (fetcher.data.error) {
-        setError(fetcher.data.error);
+        setForm((prev) => ({ ...prev, error: fetcher.data?.error ?? null }));
       }
     }
   }, [fetcher.state, fetcher.data, onSuccess]);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    setError(null);
+    setForm((prev) => ({ ...prev, error: null }));
 
     const nextConfig = typeDef ? applyDefaults(typeDef.configSchema, config) : config;
 
@@ -112,24 +123,30 @@ export function AddConnectionDialog({
   };
 
   const handleClose = () => {
-    setName('');
-    setConfig({});
-    setCredentials({});
-    setError(null);
+    setForm(getEmptyConnectionFormState());
     onOpenChange(false);
   };
 
   const updateConfig = (field: string, value: unknown) => {
-    setConfig((prev) => ({ ...prev, [field]: value }));
+    setForm((prev) => ({
+      ...prev,
+      config: { ...prev.config, [field]: value },
+    }));
   };
 
   const updateCredentials = (field: string, value: unknown) => {
-    setCredentials((prev) => ({ ...prev, [field]: value }));
+    setForm((prev) => ({
+      ...prev,
+      credentials: { ...prev.credentials, [field]: value },
+    }));
   };
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!open || !typeDef) return;
-    setConfig((prev) => applyDefaults(typeDef.configSchema, prev));
+    setForm((prev) => ({
+      ...prev,
+      config: applyDefaults(typeDef.configSchema, prev.config),
+    }));
   }, [open, typeDef]);
 
   if (!typeDef) return null;
@@ -158,11 +175,13 @@ export function AddConnectionDialog({
             {/* Name field */}
             <div className="grid gap-1.5">
               <Label htmlFor="name">Name</Label>
-              <Input
-                id="name"
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                placeholder={typeDef.displayName}
+                <Input
+                  id="name"
+                  value={name}
+                  onChange={(e) =>
+                    setForm((prev) => ({ ...prev, name: e.target.value }))
+                  }
+                  placeholder={typeDef.displayName}
               />
               <p className="text-xs text-muted-foreground">
                 A friendly name to identify this connection

@@ -626,6 +626,9 @@ export default function Chat({
 }: ChatProps) {
   const navigate = useNavigate();
   const location = useLocation();
+  const locationPathname = location.pathname;
+  const locationSearch = location.search;
+  const locationHash = location.hash;
   const navigation = useNavigation();
   const revalidator = useRevalidator();
   const submit = useSubmit();
@@ -724,16 +727,16 @@ export default function Chat({
     useState<AskUserQuestionData | null>(null);
   const optimisticallyAnsweredQuestionIdRef = useRef<string | null>(null);
   const currentChatPath = useMemo(
-    () => `${location.pathname}${location.search}${location.hash}`,
-    [location.hash, location.pathname, location.search],
+    () => `${locationPathname}${locationSearch}${locationHash}`,
+    [locationHash, locationPathname, locationSearch],
   );
   const lastHandledCheckoutKeyRef = useRef<string | null>(null);
 
   useEffect(() => {
-    const searchParams = new URLSearchParams(location.search);
+    const searchParams = new URLSearchParams(locationSearch);
     const checkoutStatus = searchParams.get("checkout");
     if (!checkoutStatus) return;
-    const checkoutKey = `${location.pathname}${location.search}${location.hash}`;
+    const checkoutKey = `${locationPathname}${locationSearch}${locationHash}`;
     if (lastHandledCheckoutKeyRef.current === checkoutKey) return;
     lastHandledCheckoutKeyRef.current = checkoutKey;
 
@@ -747,10 +750,10 @@ export default function Chat({
     nextParams.delete("checkout");
     const nextSearch = nextParams.toString();
     navigate(
-      `${location.pathname}${nextSearch ? `?${nextSearch}` : ""}${location.hash}`,
+      `${locationPathname}${nextSearch ? `?${nextSearch}` : ""}${locationHash}`,
       { replace: true },
     );
-  }, [location.hash, location.pathname, location.search, navigate]);
+  }, [locationHash, locationPathname, locationSearch, navigate]);
 
   useEffect(() => {
     if (!initialWelcomeInput) {
@@ -775,7 +778,7 @@ export default function Chat({
     if (threadId) {
       return;
     }
-    if (!location.search.includes("prompt_key=")) {
+    if (!locationSearch.includes("prompt_key=")) {
       return;
     }
 
@@ -790,7 +793,7 @@ export default function Chat({
       "",
       `${url.pathname}${url.search}${url.hash}`,
     );
-  }, [location.search, threadId]);
+  }, [locationSearch, threadId]);
 
   const previousWelcomeWorkspaceIdRef = useRef<string | null>(
     resolvedWorkspaceId ?? null,
@@ -947,7 +950,7 @@ export default function Chat({
     [],
   );
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const initialMessagesChanged =
       initialMessages !== prevInitialMessagesRef.current;
     if (
@@ -981,7 +984,7 @@ export default function Chat({
   ]);
 
   const isStreaming = agentIsStreaming;
-  useEffect(() => {
+  useLayoutEffect(() => {
     const initialTodosChanged = initialTodos !== prevInitialTodosRef.current;
     if (!initialTodosChanged) {
       return;
@@ -1101,7 +1104,7 @@ export default function Chat({
     }),
   );
   const selectedThreadModelRef = useRef<LlmModel>(selectedThreadModel);
-  const locationSearchRef = useRef(location.search);
+  const locationSearchRef = useRef(locationSearch);
   const lastBillingRefreshCompletionKeyRef = useRef<string | null>(null);
   const noModelsMessage =
     availableThreadModels.length === 0
@@ -1118,8 +1121,8 @@ export default function Chat({
   }, [selectedThreadModel]);
 
   useEffect(() => {
-    locationSearchRef.current = location.search;
-  }, [location.search]);
+    locationSearchRef.current = locationSearch;
+  }, [locationSearch]);
 
   useEffect(() => {
     if (!billingStatusFetcher.data) return;
@@ -1230,7 +1233,7 @@ export default function Chat({
     setAttachments(draft.attachments);
   }, [initialWelcomeInput, readOnly, resolvedWorkspaceId, threadId]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     setError(
       initialError
         ? getChatApiErrorPresentation(initialError, {
@@ -1241,7 +1244,7 @@ export default function Chat({
     );
   }, [initialError, llmProvider, threadModel]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (
       !newChatActionError ||
       handledNewChatActionErrorRef.current === newChatActionError
@@ -1371,7 +1374,7 @@ export default function Chat({
   const composerTextareaRef = useRef<HTMLTextAreaElement>(null);
   const fallbackRenderedAtRef = useRef<number>(Date.now());
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     initialScrollDoneRef.current = false;
     stickToBottomRef.current = true;
     setCurrentTodos(initialTodos);
@@ -1409,7 +1412,7 @@ export default function Chat({
     [],
   );
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const nextTabs = threadId ? initialPreviewSession.tabs : [];
     const nextActiveTabId = threadId ? initialPreviewSession.activeTabId : null;
     const didThreadChange = previousPreviewThreadIdRef.current !== threadId;
@@ -1531,7 +1534,7 @@ export default function Chat({
     });
   }, []);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     for (const tabId of Object.keys(iframeRefreshTimeoutsRef.current)) {
       if (tabId !== activeTabId) clearIframeTimersForTab(tabId);
     }
@@ -2728,7 +2731,7 @@ export default function Chat({
     };
   }, [agentEnabled, agentSocket]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     setReady(false);
     setAgentIsStreaming(false);
     // New thread context: the next socket open is a first connect, not a reconnect.

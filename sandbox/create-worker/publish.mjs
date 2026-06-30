@@ -90,11 +90,45 @@ function generateWorkerJs() {
 
 const RENDERER_DIST = '/usr/local/lib/create-worker/renderer-dist';
 
+function escapeScriptJson(value) {
+  return JSON.stringify(value).replace(/[<>&\u2028\u2029]/g, (char) => {
+    switch (char) {
+      case '<':
+        return '\\u003c';
+      case '>':
+        return '\\u003e';
+      case '&':
+        return '\\u0026';
+      case '\u2028':
+        return '\\u2028';
+      case '\u2029':
+        return '\\u2029';
+      default:
+        return char;
+    }
+  });
+}
+
+function escapeHtmlText(value) {
+  return String(value).replace(/[&<>]/g, (char) => {
+    switch (char) {
+      case '&':
+        return '&amp;';
+      case '<':
+        return '&lt;';
+      case '>':
+        return '&gt;';
+      default:
+        return char;
+    }
+  });
+}
+
 function copyRendererBundle(projectDir, filename) {
   cpSync(RENDERER_DIST, join(projectDir, 'public'), { recursive: true });
   let html = readFileSync(join(projectDir, 'public', 'index.html'), 'utf-8');
-  html = html.replace('</head>', `<script>window.__FILENAME__=${JSON.stringify(filename)}</script>\n</head>`);
-  html = html.replace(/<title>[^<]*<\/title>/, `<title>${filename}</title>`);
+  html = html.replace('</head>', `<script>window.__FILENAME__=${escapeScriptJson(filename)}</script>\n</head>`);
+  html = html.replace(/<title>[^<]*<\/title>/, `<title>${escapeHtmlText(filename)}</title>`);
   writeFileSync(join(projectDir, 'public', 'index.html'), html);
 }
 

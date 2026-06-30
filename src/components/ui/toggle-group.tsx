@@ -64,7 +64,7 @@ function ToggleGroupItem({
   ...props
 }: React.ComponentProps<typeof ToggleGroupPrimitive.Item> &
   VariantProps<typeof toggleGroupItemVariants>) {
-  const context = React.useContext(ToggleGroupVariantContext)
+  const context = React.use(ToggleGroupVariantContext)
   return (
     <ToggleGroupPrimitive.Item
       data-slot="toggle-group-item"

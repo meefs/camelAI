@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router";
 import {
   CircleFadingPlus,
@@ -78,6 +78,12 @@ interface ChatTabBarProps {
   onMoveTabToGroup: (threadId: string, targetGroupId: string | "new") => void;
 }
 
+interface ChatTabBarLocalState {
+  renamingThreadId: string | null;
+  draftName: string;
+  contextMenuResetVersion: number;
+}
+
 function displayThreadTitle(title: string): string {
   return title.trim() || "New chat";
 }
@@ -125,10 +131,13 @@ export function ChatTabBar({
   onMoveTabToGroup,
 }: ChatTabBarProps) {
   const navigate = useNavigate();
-  const [renamingThreadId, setRenamingThreadId] = useState<string | null>(null);
-  const [draftName, setDraftName] = useState("");
+  const [localState, setLocalState] = useState<ChatTabBarLocalState>({
+    renamingThreadId: null,
+    draftName: "",
+    contextMenuResetVersion: 0,
+  });
+  const { renamingThreadId, draftName, contextMenuResetVersion } = localState;
   const [isRenameGroupOpen, setIsRenameGroupOpen] = useState(false);
-  const [contextMenuResetVersion, setContextMenuResetVersion] = useState(0);
   const renameInputRef = useRef<HTMLInputElement | null>(null);
   const preventNextContextMenuFocusRestoreRef = useRef(false);
   const pendingContextMenuRenameTimeoutRef = useRef<ReturnType<
@@ -143,14 +152,16 @@ export function ChatTabBar({
     };
   }, []);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (pendingContextMenuRenameTimeoutRef.current !== null) {
       clearTimeout(pendingContextMenuRenameTimeoutRef.current);
       pendingContextMenuRenameTimeoutRef.current = null;
     }
-    setRenamingThreadId(null);
-    setDraftName("");
-    setContextMenuResetVersion((version) => version + 1);
+    setLocalState((prev) => ({
+      renamingThreadId: null,
+      draftName: "",
+      contextMenuResetVersion: prev.contextMenuResetVersion + 1,
+    }));
   }, [groupId]);
 
   useEffect(() => {
@@ -178,8 +189,11 @@ export function ChatTabBar({
   const submitThreadRename = (threadId: string) => {
     const nextName = draftName.trim();
     if (nextName) onRenameTab(threadId, nextName);
-    setRenamingThreadId(null);
-    setDraftName("");
+    setLocalState((prev) => ({
+      ...prev,
+      renamingThreadId: null,
+      draftName: "",
+    }));
   };
 
   const startThreadRename = (
@@ -194,13 +208,19 @@ export function ChatTabBar({
       }
       pendingContextMenuRenameTimeoutRef.current = setTimeout(() => {
         pendingContextMenuRenameTimeoutRef.current = null;
-        setDraftName(title);
-        setRenamingThreadId(threadId);
+        setLocalState((prev) => ({
+          ...prev,
+          draftName: title,
+          renamingThreadId: threadId,
+        }));
       }, 0);
       return;
     }
-    setDraftName(title);
-    setRenamingThreadId(threadId);
+    setLocalState((prev) => ({
+      ...prev,
+      draftName: title,
+      renamingThreadId: threadId,
+    }));
   };
 
   return (
@@ -269,12 +289,22 @@ export function ChatTabBar({
                       ref={renameInputRef}
                       autoFocus
                       value={draftName}
-                      onChange={(event) => setDraftName(event.target.value)}
+                      onChange={(event) =>
+                        setLocalState((prev) => ({
+                          ...prev,
+                          draftName: event.target.value,
+                        }))
+                      }
                       onClick={(event) => event.stopPropagation()}
                       onKeyDown={(event) => {
                         event.stopPropagation();
                         if (event.key === "Enter") submitThreadRename(tab.threadId);
-                        if (event.key === "Escape") setRenamingThreadId(null);
+                        if (event.key === "Escape") {
+                          setLocalState((prev) => ({
+                            ...prev,
+                            renamingThreadId: null,
+                          }));
+                        }
                       }}
                       onBlur={() => submitThreadRename(tab.threadId)}
                       className="h-6 min-w-0 flex-1"
@@ -365,7 +395,11 @@ export function ChatTabBar({
                       <ContextMenuItem
                         key={group.id}
                         onSelect={() => {
-                          setContextMenuResetVersion((version) => version + 1);
+                          setLocalState((prev) => ({
+                            ...prev,
+                            contextMenuResetVersion:
+                              prev.contextMenuResetVersion + 1,
+                          }));
                           onMoveTabToGroup(tab.threadId, group.id);
                         }}
                       >
@@ -382,7 +416,11 @@ export function ChatTabBar({
                     {otherGroups.length > 0 ? <ContextMenuSeparator /> : null}
                     <ContextMenuItem
                       onSelect={() => {
-                        setContextMenuResetVersion((version) => version + 1);
+                        setLocalState((prev) => ({
+                          ...prev,
+                          contextMenuResetVersion:
+                            prev.contextMenuResetVersion + 1,
+                        }));
                         onMoveTabToGroup(tab.threadId, "new");
                       }}
                     >

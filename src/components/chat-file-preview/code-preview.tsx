@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState, type CSSProperties } from 'react';
+import { useCallback, useLayoutEffect, useMemo, useState, type CSSProperties } from 'react';
 import { Check, Copy } from 'lucide-react';
 import { PREVIEW_INITIAL_MAX_LINES } from '@/lib/file-preview-limits';
 import { codeToHtml, SHIKI_DEFAULT_THEMES, SUPPORTED_LANGUAGES } from '@/lib/shiki-config';
@@ -87,7 +87,7 @@ export function SourcePreview({
     [lineNumberDigits]
   );
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     let isActive = true;
 
     if (!code || !shouldHighlight) {
@@ -133,6 +133,7 @@ export function SourcePreview({
   return (
     <div className={cn('group/code relative', layout === 'dialog' && 'max-h-[60vh] overflow-auto')}>
       <button
+        type="button"
         onClick={handleCopy}
         className="absolute top-2 right-2 z-10 rounded-md p-1 opacity-0 transition-opacity group-hover/code:opacity-100 hover:bg-muted"
         aria-label="Copy source"

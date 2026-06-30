@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useLayoutEffect, useState } from 'react';
 import type { ReactNode } from 'react';
 
 export const PLACEHOLDER_PROMPTS = [
@@ -92,7 +92,7 @@ function useAnimatedPlaceholder({ isActive, prompts = PLACEHOLDER_PROMPTS }: Use
   const [promptIndex, setPromptIndex] = useState(0);
   const [charIndex, setCharIndex] = useState(0);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     setSequence(buildSequence(prompts));
     setText('');
     setState('typing');
@@ -100,7 +100,7 @@ function useAnimatedPlaceholder({ isActive, prompts = PLACEHOLDER_PROMPTS }: Use
     setCharIndex(0);
   }, [prompts]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!isActive) {
       setText('');
       setState('typing');

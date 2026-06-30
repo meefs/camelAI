@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import { useState, useEffect, useLayoutEffect, useCallback, useRef, useMemo } from 'react';
 import { useNavigate, useSearchParams, useRevalidator, useFetcher } from 'react-router';
 import type { Thread, ThreadCreator, WorkspaceWithAccess } from '@/types';
 import { useAuthData } from '@/hooks/use-auth-data';
@@ -219,7 +219,7 @@ export default function HistoryClient({
     [searchParams, setSearchParams]
   );
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!activeCreatorId || hasActiveCreator) {
       return;
     }

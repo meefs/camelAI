@@ -1710,6 +1710,7 @@ async function resolveCnameViaDoH(hostname: string): Promise<CnameLookupResult> 
   try {
     const resp = await fetch(url, {
       headers: { Accept: 'application/dns-json' },
+      redirect: 'manual',
     });
     if (!resp.ok) {
       return {

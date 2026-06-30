@@ -915,6 +915,8 @@ export default function ChatPage() {
   } = useDeferredChatData(chatData, threadId);
   const navigate = useNavigate();
   const location = useLocation();
+  const locationPathname = location.pathname;
+  const locationSearch = location.search;
   const revalidator = useRevalidator();
   const { groups: liveChatGroups, markThreadIdle } = useChatGroups();
   const { getSnapshot, setSnapshot } = useChatThreadSnapshots();
@@ -934,7 +936,7 @@ export default function ChatPage() {
       console.info("[chat history route]", {
         event: "loader_data_received",
         at: new Date().toISOString(),
-        location: `${location.pathname}${location.search}`,
+        location: `${locationPathname}${locationSearch}`,
         threadId,
         routeMessageCount: resolvedChatData.messages.length,
         routeMessageIds: resolvedChatData.messages.map((message) => ({
@@ -952,8 +954,8 @@ export default function ChatPage() {
     activeChatGroup?.id,
     chatDebugFlags.historyLogs,
     isLoadingChatData,
-    location.pathname,
-    location.search,
+    locationPathname,
+    locationSearch,
     resolvedChatData,
     threadId,
   ]);
@@ -1007,13 +1009,13 @@ export default function ChatPage() {
 
   useEffect(() => {
     if (!usedClientMessageCache || !displayThreadId) return;
-    const nextSearch = new URLSearchParams(location.search);
+    const nextSearch = new URLSearchParams(locationSearch);
     nextSearch.delete("chatCache");
     const nextUrl = `/chat/${encodeURIComponent(displayThreadId)}${
       nextSearch.toString() ? `?${nextSearch.toString()}` : ""
     }`;
     navigate(nextUrl, { replace: true, preventScrollReset: true });
-  }, [displayThreadId, location.search, navigate, usedClientMessageCache]);
+  }, [displayThreadId, locationSearch, navigate, usedClientMessageCache]);
 
   useEffect(() => {
     markThreadIdleRef.current = markThreadIdle;
@@ -1186,10 +1188,6 @@ export default function ChatPage() {
     }
   };
 
-  if (!workspaceId) {
-    return <NoWorkspacesError />;
-  }
-
   const handleSnapshotChange = useCallback(
     (snapshot: { messages: Message[]; todos: TodoItem[] }) => {
       if (!displayThreadId || isLoadingDisplayMessages) return;
@@ -1197,6 +1195,10 @@ export default function ChatPage() {
     },
     [displayThreadId, isLoadingDisplayMessages, setSnapshot],
   );
+
+  if (!workspaceId) {
+    return <NoWorkspacesError />;
+  }
 
   return (
     <>

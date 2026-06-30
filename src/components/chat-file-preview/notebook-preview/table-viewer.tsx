@@ -1,7 +1,7 @@
 'use client';
 
 import type { CSSProperties, MouseEvent as ReactMouseEvent } from 'react';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
   AlignJustify,
   ArrowDown,
@@ -198,7 +198,7 @@ export function TableViewer({ table, title }: TableViewerProps) {
     };
   }, []);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const defaults: Record<number, number> = {};
     for (let i = 0; i < columnCount; i++) {
       const isIndex = i < table.indexColumns;

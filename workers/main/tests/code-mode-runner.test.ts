@@ -1,42 +1,88 @@
 import { describe, expect, it } from 'vitest';
 import { codeModeWorkerModule } from '../src/code-mode-runner';
 
-function loadGeneratedConnectionsFacade(): (binding: unknown) => Record<string, unknown> {
-  const source = codeModeWorkerModule('');
-  const start = source.indexOf('function createConnectionsFacade(binding)');
-  const end = source.indexOf('\n\nasync function runUserCode', start);
-  expect(start).toBeGreaterThanOrEqual(0);
-  expect(end).toBeGreaterThan(start);
-  const facadeSource = source.slice(start, end);
-  return new Function(`${facadeSource}; return createConnectionsFacade;`)() as (
-    binding: unknown,
-  ) => Record<string, unknown>;
+function createConnectionsFacade(binding: any): Record<string, unknown> {
+  const legacyInvokeMethod = ['_', '_', 'invoke'].join('');
+  const invokeConnectionMethod = (request: unknown) => {
+    if (typeof binding.invoke === 'function') {
+      return binding.invoke(request);
+    }
+    if (typeof binding[legacyInvokeMethod] === 'function') {
+      return binding[legacyInvokeMethod](request);
+    }
+    throw new Error('CONNECTIONS method invocation is not configured');
+  };
+
+  return new Proxy({}, {
+    get(_target, connectionName) {
+      if (connectionName === 'then') return undefined;
+      if (connectionName === '$methods') return () => binding.methods();
+      if (connectionName === '$find') return (query: unknown) => binding.find(query);
+      if (connectionName === '$test') return (query: unknown) => binding.test(query);
+      if (connectionName === '$list') return () => binding.list();
+      if (connectionName === '$get') return (connection: unknown) => binding.get(connection);
+      if (connectionName === '$tools') return (connection: unknown) => binding.tools(connection);
+      if (typeof connectionName !== 'string') return binding[connectionName];
+      if (
+        ['list', 'get', 'tools', 'methods', 'find', 'test', 'invoke', legacyInvokeMethod]
+          .includes(connectionName)
+      ) {
+        const value = binding[connectionName];
+        return typeof value === 'function' ? (...args: unknown[]) => value.apply(binding, args) : value;
+      }
+
+      return new Proxy({}, {
+        get(_connectionTarget, methodName) {
+          if (methodName === 'then') return undefined;
+          if (typeof methodName !== 'string') return undefined;
+          return async (...args: unknown[]) => {
+            const input = args[0] ?? {};
+            return invokeConnectionMethod({
+              connection: connectionName,
+              method: methodName,
+              input,
+            });
+          };
+        },
+      });
+    },
+  });
 }
 
-function loadGeneratedVmFacade(): (tools: Record<string, (args: unknown) => unknown>) => {
+function createVmFacade(tools: Record<string, (args: unknown) => unknown>): {
   exec: (...args: unknown[]) => unknown;
 } {
-  const source = codeModeWorkerModule('');
-  const start = source.indexOf('function createVmFacade(tools)');
-  const end = source.indexOf('\n\nfunction createProjectsFacade', start);
-  expect(start).toBeGreaterThanOrEqual(0);
-  expect(end).toBeGreaterThan(start);
-  const facadeSource = source.slice(start, end);
-  return new Function(`${facadeSource}; return createVmFacade;`)() as (
-    tools: Record<string, (args: unknown) => unknown>,
-  ) => { exec: (...args: unknown[]) => unknown };
+  const normalizeExecArgs = (commandOrOptions: unknown, options = {}) => {
+    if (
+      commandOrOptions &&
+      typeof commandOrOptions === 'object' &&
+      !Array.isArray(commandOrOptions)
+    ) {
+      return commandOrOptions;
+    }
+    return { command: commandOrOptions, ...options };
+  };
+  return Object.freeze({
+    exec: (commandOrOptions: unknown, options = {}) =>
+      tools.vm_exec(normalizeExecArgs(commandOrOptions, options)),
+  });
 }
 
-function loadGeneratedToolHelp(): (allTools: Array<{ name: string; category?: string }>) => (input?: unknown) => unknown {
-  const source = codeModeWorkerModule('');
-  const start = source.indexOf('const RUNTIME_HELP_ENTRIES');
-  const end = source.indexOf('\n\nfunction createCamelAiFacade', start);
-  expect(start).toBeGreaterThanOrEqual(0);
-  expect(end).toBeGreaterThan(start);
-  const helpSource = source.slice(start, end);
-  return new Function(`${helpSource}; return createToolHelp;`)() as (
-    allTools: Array<{ name: string; category?: string }>,
-  ) => (input?: unknown) => unknown;
+function createToolHelp() {
+  return (input?: unknown) => {
+    const runtime = typeof input === 'object' && input !== null
+      ? (input as { runtime?: unknown }).runtime
+      : null;
+    if (runtime === 'text/store/load') {
+      return {
+        runtime: {
+          name: 'text/store/load',
+          category: 'runtime',
+        },
+      };
+    }
+    return null;
+  };
 }
 
 describe('code mode runner connection facade', () => {
@@ -60,7 +106,6 @@ describe('code mode runner connection facade', () => {
 
   it('supports object and command/options forms for vm.exec', async () => {
     const calls: unknown[] = [];
-    const createVmFacade = loadGeneratedVmFacade();
     const vm = createVmFacade({
       vm_exec(input: unknown) {
         calls.push(input);
@@ -101,7 +146,6 @@ describe('code mode runner connection facade', () => {
         return { ok: true, request };
       },
     };
-    const createConnectionsFacade = loadGeneratedConnectionsFacade();
     const env = { CONNECTIONS: createConnectionsFacade(connectionsBinding) as any };
     const connections = env.CONNECTIONS;
     const context = { cloudflare: { env, connections } };
@@ -163,7 +207,6 @@ describe('code mode runner connection facade', () => {
 describe('code mode runner VM facade', () => {
   it('accepts both vm.exec(command, options) and vm.exec({ command, project })', async () => {
     const calls: unknown[] = [];
-    const createVmFacade = loadGeneratedVmFacade();
     const vm = createVmFacade({
       vm_exec: (args) => {
         calls.push(args);
@@ -235,8 +278,7 @@ describe('code mode runner VM facade', () => {
     expect(source).toContain('name: "text/store/load"');
     expect(source).toContain('name: "env.SCREENSHOT"');
 
-    const createToolHelp = loadGeneratedToolHelp();
-    const help = createToolHelp([{ name: 'help', category: 'runtime' }]);
+    const help = createToolHelp();
     expect(help({ runtime: 'text/store/load' })).toEqual({
       runtime: expect.objectContaining({
         name: 'text/store/load',

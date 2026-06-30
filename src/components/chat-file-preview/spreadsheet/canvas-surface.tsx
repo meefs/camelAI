@@ -4,6 +4,7 @@
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -215,7 +216,7 @@ export function SpreadsheetCanvasSurface({
   const totalHeight = measureSheetHeight(rowHeights);
   const hasCharts = workbook.charts.length > 0;
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     setColumnWidthsBySheet(
       Object.fromEntries(workbook.sheets.map((sheet) => [sheet.name, createInitialColumnWidths(sheet)])),
     );
@@ -228,7 +229,7 @@ export function SpreadsheetCanvasSurface({
     );
   }, [workbook]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!activeSheet || activeSheet.rowCount === 0 || activeSheet.columnCount === 0) {
       setSelection(null);
       return;

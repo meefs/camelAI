@@ -1,6 +1,6 @@
 'use client';
 
-import { createContext, useContext, type ReactNode } from 'react';
+import { createContext, use, type ReactNode } from 'react';
 import type { PreviewTarget } from '@/types';
 import type { CopyFilePathTarget } from '@/lib/file-path-copy';
 
@@ -28,5 +28,5 @@ export function ChatPreviewProvider({ value, children }: ChatPreviewProviderProp
 }
 
 export function useChatPreviewContext(): ChatPreviewContextValue | null {
-  return useContext(ChatPreviewContext);
+  return use(ChatPreviewContext);
 }

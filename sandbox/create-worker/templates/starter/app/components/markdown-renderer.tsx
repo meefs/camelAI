@@ -69,6 +69,7 @@ function CodeBlockPre({ children }: { children?: React.ReactNode }) {
         </div>
       )}
       <button
+        type="button"
         onClick={handleCopy}
         className="absolute top-2 right-2 p-1.5 rounded-md bg-gray-100 hover:bg-gray-200 opacity-0 group-hover/code:opacity-100 transition-opacity z-10"
         aria-label="Copy code"

@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useLayoutEffect, useState } from 'react';
 import { useFetcher } from 'react-router';
 import type { AppCreator, WorkerScriptWithCreator } from '@/types';
 import {
@@ -32,6 +32,24 @@ interface AppSettingsDialogProps {
   hostname?: AppUrlInput;
   orgCustomDomain?: string | null;
   onSuccess: () => void;
+}
+
+type PendingAppAction = 'save' | 'delete' | null;
+
+interface AppSettingsDialogState {
+  isPublic: boolean;
+  error: string | null;
+  confirmDeleteOpen: boolean;
+  pendingAction: PendingAppAction;
+}
+
+function getInitialDialogState(app: WorkerScriptWithCreator): AppSettingsDialogState {
+  return {
+    isPublic: app.is_public,
+    error: null,
+    confirmDeleteOpen: false,
+    pendingAction: null,
+  };
 }
 
 function formatDate(timestamp: number): string {
@@ -72,10 +90,8 @@ export function AppSettingsDialog({
   onSuccess,
 }: AppSettingsDialogProps) {
   const fetcher = useFetcher<{ success?: boolean; error?: string }>();
-  const [isPublic, setIsPublic] = useState(app.is_public);
-  const [error, setError] = useState<string | null>(null);
-  const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false);
-  const [pendingAction, setPendingAction] = useState<'save' | 'delete' | null>(null);
+  const [dialogState, setDialogState] = useState(() => getInitialDialogState(app));
+  const { isPublic, error, confirmDeleteOpen, pendingAction } = dialogState;
   const submitting = fetcher.state !== 'idle' && pendingAction === 'save';
   const deleting = fetcher.state !== 'idle' && pendingAction === 'delete';
 
@@ -91,30 +107,29 @@ export function AppSettingsDialog({
       }
     : undefined;
 
-  useEffect(() => {
-    setIsPublic(app.is_public);
-    setError(null);
-    setPendingAction(null);
-    setConfirmDeleteOpen(false);
+  useLayoutEffect(() => {
+    setDialogState(getInitialDialogState(app));
   }, [app]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (fetcher.state === 'idle' && fetcher.data && pendingAction) {
       if (fetcher.data.success) {
         onSuccess();
         handleClose();
       } else if (fetcher.data.error) {
-        setError(fetcher.data.error);
+        setDialogState((prev) => ({
+          ...prev,
+          error: fetcher.data?.error ?? null,
+          pendingAction: null,
+        }));
+      } else {
+        setDialogState((prev) => ({ ...prev, pendingAction: null }));
       }
-      setPendingAction(null);
     }
   }, [fetcher.state, fetcher.data, pendingAction, onSuccess]);
 
   const handleClose = () => {
-    setIsPublic(app.is_public);
-    setError(null);
-    setPendingAction(null);
-    setConfirmDeleteOpen(false);
+    setDialogState(getInitialDialogState(app));
     onOpenChange(false);
   };
 
@@ -126,7 +141,7 @@ export function AppSettingsDialog({
 
   const handleSave = (event: React.FormEvent) => {
     event.preventDefault();
-    setError(null);
+    setDialogState((prev) => ({ ...prev, error: null }));
 
     if (isPublic === app.is_public) {
       onSuccess();
@@ -134,7 +149,7 @@ export function AppSettingsDialog({
       return;
     }
 
-    setPendingAction('save');
+    setDialogState((prev) => ({ ...prev, pendingAction: 'save' }));
     fetcher.submit(
       buildSetAppPublicPayload({
         scriptName: app.script_name,
@@ -145,8 +160,7 @@ export function AppSettingsDialog({
   };
 
   const handleDelete = () => {
-    setError(null);
-    setPendingAction('delete');
+    setDialogState((prev) => ({ ...prev, error: null, pendingAction: 'delete' }));
     fetcher.submit(
       {
         intent: 'deleteApp',
@@ -232,7 +246,12 @@ export function AppSettingsDialog({
                     <Switch
                       id="public-access"
                       checked={isPublic}
-                      onCheckedChange={setIsPublic}
+                      onCheckedChange={(nextIsPublic) =>
+                        setDialogState((prev) => ({
+                          ...prev,
+                          isPublic: nextIsPublic,
+                        }))
+                      }
                       disabled={!isAdmin || submitting}
                     />
                   </div>
@@ -253,7 +272,12 @@ export function AppSettingsDialog({
                     variant="destructive"
                     size="sm"
                     className="w-fit"
-                    onClick={() => setConfirmDeleteOpen(true)}
+                    onClick={() =>
+                      setDialogState((prev) => ({
+                        ...prev,
+                        confirmDeleteOpen: true,
+                      }))
+                    }
                     disabled={!isAdmin || deleting}
                   >
                     <Trash2 className="size-3.5" />
@@ -282,7 +306,12 @@ export function AppSettingsDialog({
 
       <ConfirmDialog
         open={confirmDeleteOpen}
-        onOpenChange={setConfirmDeleteOpen}
+        onOpenChange={(nextOpen) =>
+          setDialogState((prev) => ({
+            ...prev,
+            confirmDeleteOpen: nextOpen,
+          }))
+        }
         title="Delete app?"
         description={`This will permanently remove the deployment at ${appUrl}. Any existing links to this URL will stop working. You can redeploy the app later, but it will be treated as a new deployment.`}
         confirmLabel="Delete App"

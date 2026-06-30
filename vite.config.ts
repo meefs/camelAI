@@ -12,6 +12,17 @@ const camelaiBuildId =
 // Plugin to suppress benign "terminated" errors from undici/miniflare
 // These occur when WebSocket connections are aborted during HMR/navigation
 function suppressUndiciTerminatedErrors(): Plugin {
+  const isBenignDevFetchAbort = (value: unknown) => {
+    const msg = String(value);
+    return (
+      msg.includes('terminated') ||
+      msg.includes('ECONNRESET') ||
+      msg.includes('other side closed') ||
+      (msg.includes('fetch failed') &&
+        (msg.includes('undici') || msg.includes('miniflare')))
+    );
+  };
+
   return {
     name: 'suppress-undici-terminated',
     configureServer() {
@@ -20,13 +31,8 @@ function suppressUndiciTerminatedErrors(): Plugin {
       process.removeAllListeners('uncaughtException');
 
       process.on('uncaughtException', (err) => {
-        const msg = String(err);
         // Suppress benign connection abort errors from undici/miniflare
-        if (
-          msg.includes('terminated') ||
-          msg.includes('ECONNRESET') ||
-          msg.includes('other side closed')
-        ) {
+        if (isBenignDevFetchAbort(err)) {
           // Silently ignore - these are expected during HMR/navigation
           return;
         }
@@ -37,12 +43,7 @@ function suppressUndiciTerminatedErrors(): Plugin {
       });
 
       process.on('unhandledRejection', (reason) => {
-        const msg = String(reason);
-        if (
-          msg.includes('terminated') ||
-          msg.includes('ECONNRESET') ||
-          msg.includes('other side closed')
-        ) {
+        if (isBenignDevFetchAbort(reason)) {
           return;
         }
         // Let other rejections propagate normally
@@ -153,7 +154,7 @@ export default defineConfig(({ command }) => {
     ignoreOutdatedRequests: true,
   };
 
-  // Allow common tunnel hosts for local development (e.g., ngrok).
+  // Allow common tunnel/proxy hosts for local development (e.g., exe.dev, ngrok).
   // Additional hosts can be provided via VITE_ALLOWED_HOSTS=host1,host2.
   // Leading dot entries allow subdomains (e.g. ".ngrok-free.app").
   const extraAllowedHosts = (process.env.VITE_ALLOWED_HOSTS || '')
@@ -162,6 +163,7 @@ export default defineConfig(({ command }) => {
     .filter(Boolean);
   const allowedHosts = Array.from(new Set([
     'host.docker.internal',
+    '.exe.xyz',
     '.ngrok-free.app',
     '.ngrok-free.dev',
     '.ngrok.app',

@@ -1,7 +1,7 @@
 import {
   createContext,
+  use,
   useCallback,
-  useContext,
   useMemo,
   useRef,
   type ReactNode,
@@ -60,7 +60,7 @@ export function ChatThreadSnapshotsProvider({
 }
 
 export function useChatThreadSnapshots() {
-  const context = useContext(ChatThreadSnapshotsContext);
+  const context = use(ChatThreadSnapshotsContext);
   if (!context) {
     throw new Error(
       "useChatThreadSnapshots must be used within ChatThreadSnapshotsProvider",

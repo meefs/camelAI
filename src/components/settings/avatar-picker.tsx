@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useMemo, useState } from "react"
+import { useLayoutEffect, useMemo, useState } from "react"
 
 import { AvatarEditor } from "@/components/avatar/avatar-editor"
 import { Avatar, AvatarFallback } from "@/components/ui/avatar"
@@ -38,6 +38,12 @@ interface AvatarPickerProps {
   description?: string
 }
 
+interface AvatarDraftState {
+  color: string
+  content: string
+  error: string | null
+}
+
 export function AvatarPicker({
   open,
   onOpenChange,
@@ -47,15 +53,16 @@ export function AvatarPicker({
   description = "Choose a color and emoji or initials.",
 }: AvatarPickerProps) {
   const isMobile = useIsMobile()
-  const [color, setColor] = useState(value.color)
-  const [content, setContent] = useState(value.content)
-  const [error, setError] = useState<string | null>(null)
+  const [draft, setDraft] = useState<AvatarDraftState>(() => ({
+    color: value.color,
+    content: value.content,
+    error: null,
+  }))
+  const { color, content, error } = draft
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (open) {
-      setColor(value.color)
-      setContent(value.content)
-      setError(null)
+      setDraft({ color: value.color, content: value.content, error: null })
     }
   }, [open, value.color, value.content])
 
@@ -75,11 +82,11 @@ export function AvatarPicker({
     const trimmed = content.trim()
     const normalizedColor = normalizeAvatarColor(color)
     if (!normalizedColor) {
-      setError("Choose a valid color.")
+      setDraft((prev) => ({ ...prev, error: "Choose a valid color." }))
       return
     }
     if (!validateAvatarContent(trimmed)) {
-      setError("Use 2 letters or a single emoji.")
+      setDraft((prev) => ({ ...prev, error: "Use 2 letters or a single emoji." }))
       return
     }
     onChange({ color: normalizedColor, content: trimmed })
@@ -108,12 +115,10 @@ export function AvatarPicker({
         color={color}
         content={content}
         onColorChange={(nextColor) => {
-          setColor(nextColor)
-          setError(null)
+          setDraft((prev) => ({ ...prev, color: nextColor, error: null }))
         }}
         onContentChange={(nextContent) => {
-          setContent(nextContent)
-          setError(null)
+          setDraft((prev) => ({ ...prev, content: nextContent, error: null }))
         }}
         error={error}
       />

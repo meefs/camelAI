@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useMemo, useRef, useState } from "react"
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import { useFetcher } from "react-router"
 import { type SubmissionResult, getFormProps, getTextareaProps, useForm } from "@conform-to/react"
 import { parseWithZod } from "@conform-to/zod/v4"
@@ -52,6 +52,28 @@ interface GetHelpDialogProps {
   defaultCategory?: HelpCategory
 }
 
+interface GetHelpDialogState {
+  category: HelpCategory
+  severity: HelpSeverity
+  description: string
+  pageUrl: string
+  screenSize: string
+  formSessionId: number
+  lastSubmissionResult: SubmissionResult<string[]> | undefined
+}
+
+function getInitialHelpDialogState(): GetHelpDialogState {
+  return {
+    category: "bug",
+    severity: "low",
+    description: "",
+    pageUrl: "",
+    screenSize: "",
+    formSessionId: 0,
+    lastSubmissionResult: undefined,
+  }
+}
+
 function severityDotClass(severity: HelpSeverity): string {
   if (severity === "high") return "bg-destructive"
   if (severity === "medium") return "bg-yellow-500"
@@ -77,13 +99,16 @@ export function GetHelpDialog({ open, onOpenChange, defaultCategory }: GetHelpDi
   }>()
   const saving = fetcher.state !== "idle"
 
-  const [category, setCategory] = useState<HelpCategory>("bug")
-  const [severity, setSeverity] = useState<HelpSeverity>("low")
-  const [description, setDescription] = useState("")
-  const [pageUrl, setPageUrl] = useState("")
-  const [screenSize, setScreenSize] = useState("")
-  const [formSessionId, setFormSessionId] = useState(0)
-  const [lastSubmissionResult, setLastSubmissionResult] = useState<SubmissionResult<string[]> | undefined>(undefined)
+  const [dialogState, setDialogState] = useState(getInitialHelpDialogState)
+  const {
+    category,
+    severity,
+    description,
+    pageUrl,
+    screenSize,
+    formSessionId,
+    lastSubmissionResult,
+  } = dialogState
   const hasOpenedRef = useRef(false)
   const successToastShownRef = useRef(false)
 
@@ -109,26 +134,29 @@ export function GetHelpDialog({ open, onOpenChange, defaultCategory }: GetHelpDi
     return props
   }, [fields.description])
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!open) return
     successToastShownRef.current = false
-    if (hasOpenedRef.current) {
-      setFormSessionId((current) => current + 1)
-    } else {
-      hasOpenedRef.current = true
-    }
-    setLastSubmissionResult(undefined)
+    const hasOpened = hasOpenedRef.current
+    hasOpenedRef.current = true
     const context = readPageContext()
-    setCategory(defaultCategory ?? "bug")
-    setSeverity("low")
-    setDescription("")
-    setPageUrl(context.pageUrl)
-    setScreenSize(context.screenSize)
+    setDialogState((prev) => ({
+      category: defaultCategory ?? "bug",
+      severity: "low",
+      description: "",
+      pageUrl: context.pageUrl,
+      screenSize: context.screenSize,
+      formSessionId: hasOpened ? prev.formSessionId + 1 : prev.formSessionId,
+      lastSubmissionResult: undefined,
+    }))
   }, [open])
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (fetcher.state !== "idle" || !fetcher.data) return
-    setLastSubmissionResult(fetcher.data.success ? undefined : fetcher.data.result)
+    setDialogState((prev) => ({
+      ...prev,
+      lastSubmissionResult: fetcher.data?.success ? undefined : fetcher.data?.result,
+    }))
     if (fetcher.data.success && !successToastShownRef.current) {
       successToastShownRef.current = true
       toast.success("Help request sent! Check your email for confirmation.")
@@ -178,7 +206,15 @@ export function GetHelpDialog({ open, onOpenChange, defaultCategory }: GetHelpDi
 
       <div className="space-y-2">
         <Label htmlFor={fields.category.id}>Category</Label>
-        <Select value={category} onValueChange={(value) => setCategory(value as HelpCategory)}>
+        <Select
+          value={category}
+          onValueChange={(value) =>
+            setDialogState((prev) => ({
+              ...prev,
+              category: value as HelpCategory,
+            }))
+          }
+        >
           <SelectTrigger id={fields.category.id} aria-invalid={fields.category.errors?.length ? true : undefined} className="w-full">
             <SelectValue placeholder="Select a category" />
           </SelectTrigger>
@@ -203,7 +239,10 @@ export function GetHelpDialog({ open, onOpenChange, defaultCategory }: GetHelpDi
           value={severity}
           onValueChange={(value) => {
             if (!value) return
-            setSeverity(value as HelpSeverity)
+            setDialogState((prev) => ({
+              ...prev,
+              severity: value as HelpSeverity,
+            }))
           }}
           className="w-full flex-wrap"
           aria-label="Severity"
@@ -233,7 +272,12 @@ export function GetHelpDialog({ open, onOpenChange, defaultCategory }: GetHelpDi
         <Textarea
           {...descriptionProps}
           value={description}
-          onChange={(event) => setDescription(event.target.value)}
+          onChange={(event) =>
+            setDialogState((prev) => ({
+              ...prev,
+              description: event.target.value,
+            }))
+          }
           placeholder="What happened? What did you expect? Include steps to reproduce if applicable."
           maxLength={HELP_DESCRIPTION_MAX_LENGTH}
           className="min-h-[120px] max-h-[240px]"

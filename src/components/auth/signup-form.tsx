@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useLayoutEffect } from "react";
 import { useNavigate, Link, useFetcher } from "react-router";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -67,14 +67,14 @@ export function SignupForm({
     }
   }, [fetcher.state, fetcher.data, navigate, redirectTo]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (fetcher.state === "idle" && fetcher.data?.error && requiresTurnstile) {
       setTurnstileToken(null);
       setTurnstileResetKey((current) => current + 1);
     }
   }, [fetcher.state, fetcher.data, requiresTurnstile]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (turnstileToken && validationError === "Complete the security check") {
       setValidationError("");
     }

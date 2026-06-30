@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useState } from "react";
 import { X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
@@ -100,7 +100,7 @@ export function BillingCreditNotice({
     [userId, orgId],
   );
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     setDismissedTier(readDismissedTier(userId, orgId));
     setIsDismissing(false);
     setIsReady(true);
@@ -119,14 +119,14 @@ export function BillingCreditNotice({
     return () => window.removeEventListener("storage", handleStorage);
   }, [storageKeyForNotice]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!isReady || activeTier !== null) return;
     writeDismissedTier(userId, orgId, null);
     setDismissedTier(null);
     setIsDismissing(false);
   }, [activeTier, isReady, orgId, userId]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!activeTier || !shouldShowLowCreditAlert(activeTier, dismissedTier)) {
       return;
     }
@@ -151,7 +151,7 @@ export function BillingCreditNotice({
     activeTier !== null &&
     (isDismissing || shouldShowLowCreditAlert(activeTier, dismissedTier));
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!shouldShowLowRail || activeTier === null) {
       setAnnouncement("");
       return;

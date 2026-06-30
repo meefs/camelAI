@@ -1,4 +1,4 @@
-import { useState, useRef, type FormEvent, useEffect, useCallback } from "react";
+import { useState, useRef, type FormEvent, useEffect, useCallback, useLayoutEffect } from "react";
 import {
   useLoaderData,
   redirect,
@@ -229,6 +229,7 @@ function ChatWithSidebar({
         {/* New Chat button */}
         <div className="p-3">
           <button
+            type="button"
             onClick={handleNewChat}
             className="w-full flex items-center gap-2 px-3 py-2 rounded-lg border border-gray-700 hover:bg-gray-800 transition-colors text-sm"
           >
@@ -261,6 +262,7 @@ function ChatWithSidebar({
             >
               <span className="flex-1 truncate">{session.title}</span>
               <button
+                type="button"
                 onClick={(e) => {
                   e.stopPropagation();
                   handleDeleteSession(session.id);
@@ -310,12 +312,12 @@ function ChatClient({
   onTitleUpdate: (title: string) => void;
 }) {
   const [input, setInput] = useState("");
-  const [titleSet, setTitleSet] = useState(false);
+  const titleSetRef = useRef(false);
   const initialMessageCountRef = useRef<number | null>(null);
 
   // Reset title tracking when session changes
-  useEffect(() => {
-    setTitleSet(false);
+  useLayoutEffect(() => {
+    titleSetRef.current = false;
     initialMessageCountRef.current = null;
   }, [sessionId]);
 
@@ -341,7 +343,7 @@ function ChatClient({
   // messages are replayed from the DO. This prevents unnecessary title-update
   // POSTs (which bump updated_at) on every session switch.
   useEffect(() => {
-    if (titleSet) return;
+    if (titleSetRef.current) return;
     if (initialMessageCountRef.current === null) {
       // Capture the initial message count on first render / session switch
       initialMessageCountRef.current = messages.length;
@@ -359,10 +361,10 @@ function ChatClient({
         .join("");
       if (text) {
         onTitleUpdate(text.length > 40 ? text.slice(0, 40) + "..." : text);
-        setTitleSet(true);
+        titleSetRef.current = true;
       }
     }
-  }, [messages, titleSet, onTitleUpdate]);
+  }, [messages, onTitleUpdate]);
 
   const onSubmit = async (e: FormEvent) => {
     e.preventDefault();
@@ -384,6 +386,7 @@ function ChatClient({
       {/* Header */}
       <header className="bg-white border-b border-gray-200 px-4 py-3 flex items-center gap-3">
         <button
+          type="button"
           onClick={onToggleSidebar}
           className="p-1 rounded hover:bg-gray-100 text-gray-500 hover:text-gray-700 transition-colors"
           title={sidebarOpen ? "Close sidebar" : "Open sidebar"}
@@ -404,6 +407,7 @@ function ChatClient({
         <h1 className="text-xl font-semibold text-gray-900">AI Chat</h1>
         <div className="flex-1" />
         <button
+          type="button"
           onClick={clearHistory}
           className="text-sm text-gray-500 hover:text-gray-700"
         >

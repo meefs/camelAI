@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useLayoutEffect } from 'react';
 import { cn } from '@/lib/utils';
 
 interface RecordingTimerProps {
@@ -15,22 +15,21 @@ function formatTime(seconds: number): string {
 }
 
 export function RecordingTimer({ startTime, className }: RecordingTimerProps) {
-  const [elapsed, setElapsed] = useState(0);
+  const [, setTick] = useState(0);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!startTime) {
-      setElapsed(0);
       return;
     }
 
-    setElapsed(Math.floor((Date.now() - startTime) / 1000));
-
     const interval = setInterval(() => {
-      setElapsed(Math.floor((Date.now() - startTime) / 1000));
+      setTick((tick) => tick + 1);
     }, 1000);
 
     return () => clearInterval(interval);
   }, [startTime]);
+
+  const elapsed = startTime ? Math.floor((Date.now() - startTime) / 1000) : 0;
 
   return (
     <span className={cn('font-mono', className)}>

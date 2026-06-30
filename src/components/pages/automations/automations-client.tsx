@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   useFetcher,
   useNavigate,
@@ -192,7 +192,7 @@ export default function AutomationsClient({
   // Load the first page of run history whenever the selected automation changes.
   // This is intentionally keyed only on selectedRunsKey; fetcher state changes
   // must not clear rows and restart the first-page request.
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!selectedRunsKey) {
       setRunState(null);
       setRunsLoading(null);
@@ -207,7 +207,7 @@ export default function AutomationsClient({
   // Apply run-history results. The endpoint echoes id/kind so a response for an
   // automation the user already left is discarded; fromCursor distinguishes the
   // first page (replace) from a "Show older runs" page (append + dedupe).
-  useEffect(() => {
+  useLayoutEffect(() => {
     const data = runsFetcher.data;
     if (!data) return;
     if ("error" in data) {
@@ -295,7 +295,7 @@ export default function AutomationsClient({
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [renaming, selectedAutomation, setSearchParams]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const data = fetcher.data;
     if (!data) return;
     const pending = pendingAction.current;

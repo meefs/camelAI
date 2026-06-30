@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { AppCreator, WorkerScriptWithCreator, WorkspaceWithAccess } from '@/types';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
@@ -141,12 +141,12 @@ export function AppCard({
     return () => window.clearTimeout(timer);
   }, [copyMessage]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     setPreviewFailed(false);
     setPreviewLoaded(false);
   }, [previewUrl]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!showPreview || previewLoaded || previewFailed) return;
     const img = previewRef.current;
     if (!img || !img.complete) return;

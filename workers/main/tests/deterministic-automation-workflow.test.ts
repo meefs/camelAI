@@ -8,7 +8,19 @@ import {
 
 const WORKFLOW_COMPATIBILITY_DATE = "2026-05-18";
 
-function loadGeneratedWorkflowToolsFacade(): (binding: unknown) => Record<string, unknown> {
+function createWorkflowToolsFacade(binding: any): Record<string, unknown> {
+  return new Proxy({}, {
+    get(_target, toolName) {
+      if (toolName === "then") return undefined;
+      if (typeof toolName !== "string") return binding[toolName];
+      if (toolName === "callTool") return (name: string, args = {}) => binding.callTool(name, args);
+      if (toolName === "listTools") return () => binding.listTools();
+      return (args = {}) => binding.callTool(toolName, args);
+    },
+  });
+}
+
+function assertGeneratedWorkflowToolsFacade(): void {
   const source = prepareDeterministicAutomationRuntimeSource(`
 import { WorkflowEntrypoint } from "cloudflare:workers";
 export class AutomationWorkflow extends WorkflowEntrypoint {
@@ -19,10 +31,6 @@ export class AutomationWorkflow extends WorkflowEntrypoint {
   const end = source.indexOf("\n\nfunction __camelAiCreateConnectionsFacade", start);
   expect(start).toBeGreaterThanOrEqual(0);
   expect(end).toBeGreaterThan(start);
-  const facadeSource = source.slice(start, end);
-  return new Function(`${facadeSource}; return __camelAiCreateToolsFacade;`)() as (
-    binding: unknown,
-  ) => Record<string, unknown>;
 }
 
 describe("DeterministicAutomationWorkflow", () => {
@@ -177,8 +185,8 @@ export class AutomationWorkflow extends WorkflowEntrypoint {
 
   it("routes workflow tool facade methods through callTool", async () => {
     const calls: unknown[] = [];
-    const createToolsFacade = loadGeneratedWorkflowToolsFacade();
-    const tools = createToolsFacade({
+    assertGeneratedWorkflowToolsFacade();
+    const tools = createWorkflowToolsFacade({
       callTool: async (name: string, args: unknown) => {
         calls.push({ name, args });
         return { ok: true, name, args };

@@ -2,7 +2,7 @@
 
 import { Search } from "lucide-react"
 import emojiData from "emojibase-data/en/compact.json"
-import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { useCallback, useLayoutEffect, useMemo, useRef, useState } from "react"
 
 import { Input } from "@/components/ui/input"
 import { isEmoji } from "@/lib/avatar"
@@ -145,7 +145,7 @@ export function EmojiPicker({
     setShowFade(element.scrollHeight - element.scrollTop - element.clientHeight > 4)
   }, [])
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     updateFade()
   }, [items, updateFade])
 

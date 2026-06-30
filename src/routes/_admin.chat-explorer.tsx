@@ -148,6 +148,7 @@ export default function AdminChatExplorerPage() {
   const navigate = useNavigate();
   const navigation = useNavigation();
   const location = useLocation();
+  const locationPathname = location.pathname;
   const [searchParams] = useSearchParams();
   const fetcher = useFetcher<typeof loader>();
   const selectedThreadId = searchParams.get('thread');
@@ -240,7 +241,7 @@ export default function AdminChatExplorerPage() {
   const hideInternal = loaderData.internal === '0';
   const inPageNavigationLoading =
     navigation.state === 'loading' &&
-    navigation.location?.pathname === location.pathname;
+    navigation.location?.pathname === locationPathname;
   const pageIsLoading = items.length === 0 && inPageNavigationLoading;
   const listDimmed = items.length > 0 && inPageNavigationLoading;
 
@@ -260,7 +261,7 @@ export default function AdminChatExplorerPage() {
       const params = new URLSearchParams(searchParams);
       params.set('thread', threadId);
       params.delete('offset');
-      navigate(`${location.pathname}?${params.toString()}`, {
+      navigate(`${locationPathname}?${params.toString()}`, {
         preventScrollReset: true,
       });
       markVisited(threadId);
@@ -268,7 +269,7 @@ export default function AdminChatExplorerPage() {
         rowRefs.current.get(threadId)?.scrollIntoView({ block: 'nearest' });
       }, 0);
     },
-    [location.pathname, markVisited, navigate, searchParams],
+    [locationPathname, markVisited, navigate, searchParams],
   );
 
   useEffect(() => {
@@ -278,7 +279,7 @@ export default function AdminChatExplorerPage() {
     const params = new URLSearchParams(searchParams);
     params.set('thread', firstThread.id);
     params.delete('offset');
-    navigate(`${location.pathname}?${params.toString()}`, {
+    navigate(`${locationPathname}?${params.toString()}`, {
       replace: true,
       preventScrollReset: true,
     });
@@ -286,7 +287,7 @@ export default function AdminChatExplorerPage() {
   }, [
     inPageNavigationLoading,
     items,
-    location.pathname,
+    locationPathname,
     markVisited,
     navigate,
     searchParams,
@@ -308,9 +309,9 @@ export default function AdminChatExplorerPage() {
       const params = new URLSearchParams(searchParams);
       params.delete('thread');
       params.set('offset', String(items.length));
-      fetcher.load(`${location.pathname}?${params.toString()}`);
+      fetcher.load(`${locationPathname}?${params.toString()}`);
     },
-    [fetcher, hasMore, items.length, location.pathname, searchParams],
+    [fetcher, hasMore, items.length, locationPathname, searchParams],
   );
 
   useEffect(() => {
@@ -379,9 +380,9 @@ export default function AdminChatExplorerPage() {
       params.delete('offset');
       params.delete('thread');
       const query = params.toString();
-      navigate(query ? `${location.pathname}?${query}` : location.pathname);
+      navigate(query ? `${locationPathname}?${query}` : locationPathname);
     },
-    [location.pathname, navigate, searchParams],
+    [locationPathname, navigate, searchParams],
   );
 
   return (
@@ -814,6 +815,7 @@ function ReaderPane({
           key={threadId}
           src={`/chat/${encodeURIComponent(threadId)}?adminReadonly=1&embed=1`}
           title="Thread preview"
+          sandbox="allow-downloads allow-forms allow-modals allow-popups allow-same-origin allow-scripts"
           className="h-full w-full border-0 bg-background"
           onLoad={onIframeLoad}
         />

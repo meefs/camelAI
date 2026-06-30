@@ -9,7 +9,7 @@ import {
   useMemo,
   useState,
   useCallback,
-  useEffect,
+  useLayoutEffect,
   type ReactElement,
   type ReactNode,
 } from 'react';
@@ -153,7 +153,7 @@ function CodeBlockPre({
     language = match ? match[1] : '';
   }
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     let isActive = true;
 
     if (!codeString || isStreaming) {
@@ -197,6 +197,7 @@ function CodeBlockPre({
         </div>
       )}
       <button
+        type="button"
         onClick={handleCopy}
         className="absolute top-2 right-2 p-1.5 rounded-md bg-muted/80 hover:bg-muted opacity-0 group-hover/code:opacity-100 transition-opacity z-10"
         aria-label="Copy code"

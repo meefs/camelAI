@@ -1,9 +1,10 @@
 "use client";
 
 import {
-  useContext,
+  use,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -1195,7 +1196,7 @@ export function ChatGroupsProvider({
     };
   }, [markViewedEnabled]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const workspaceId = currentWorkspace?.id;
     if (!statusSocketEnabled || !workspaceId || typeof window === "undefined") {
       setLiveThreadStatuses(new Map());
@@ -1741,7 +1742,7 @@ export function ChatGroupsProvider({
 }
 
 export function useChatGroups() {
-  const context = useContext(ChatGroupsContext);
+  const context = use(ChatGroupsContext);
   if (!context) {
     throw new Error("useChatGroups must be used within ChatGroupsProvider");
   }
@@ -1749,5 +1750,5 @@ export function useChatGroups() {
 }
 
 export function useOptionalChatGroups() {
-  return useContext(ChatGroupsContext);
+  return use(ChatGroupsContext);
 }

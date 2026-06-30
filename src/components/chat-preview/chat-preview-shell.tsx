@@ -370,6 +370,7 @@ export const PreviewPanelShell = memo(function PreviewPanelShell({
                 ref={iframeRef}
                 key={activeTabState.iframeKey}
                 src={activeTabState.appPreviewUrl || "about:blank"}
+                sandbox="allow-downloads allow-forms allow-modals allow-popups allow-same-origin allow-scripts"
                 className="h-full w-full bg-white"
                 title="Deployed App Preview"
               />

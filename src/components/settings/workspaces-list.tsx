@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useRef, useState } from "react"
+import { useLayoutEffect, useRef, useState } from "react"
 import { useFetcher } from "react-router"
 import { toast } from "sonner"
 import { Link } from "react-router"
@@ -85,7 +85,7 @@ export function WorkspacesList({
   const pendingArchiveRef = useRef<string | null>(null)
 
   // Handle fetcher response for archive
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (fetcher.state === "idle" && fetcher.data) {
       if (fetcher.data.success && pendingArchiveRef.current) {
         const archivedId = pendingArchiveRef.current

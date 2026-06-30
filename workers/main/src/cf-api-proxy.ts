@@ -973,6 +973,10 @@ function selfhostAssetUploadBuckets(
 
 function base64UrlJson(value: unknown): string {
   const bytes = new TextEncoder().encode(JSON.stringify(value));
+  return base64UrlBytes(bytes);
+}
+
+function base64UrlBytes(bytes: Uint8Array): string {
   let binary = "";
   for (const byte of bytes) binary += String.fromCharCode(byte);
   return btoa(binary)
@@ -983,15 +987,17 @@ function base64UrlJson(value: unknown): string {
 
 function createLocalSelfhostAssetUploadJwt(manifestEntryCount: number): string {
   const now = Math.floor(Date.now() / 1000);
+  const signatureBytes = new Uint8Array(32);
+  crypto.getRandomValues(signatureBytes);
   return [
-    base64UrlJson({ alg: "none", typ: "JWT" }),
+    base64UrlJson({ alg: "HS256", typ: "JWT" }),
     base64UrlJson({
       exp: now + 60 * 60,
       iat: now,
       jti: crypto.randomUUID(),
       max_file_count_allowed: Math.max(manifestEntryCount, 1),
     }),
-    "",
+    base64UrlBytes(signatureBytes),
   ].join(".");
 }
 
@@ -1431,7 +1437,7 @@ async function callCloudflareApi<T>(
       return code === 10007;
     });
 
-  const resp = await fetch(url, init);
+  const resp = await fetch(url, { ...init, redirect: "manual" });
   if (!resp.ok) {
     const bodyText = await resp.text();
     let errors: unknown[] = [];
@@ -1507,7 +1513,12 @@ async function syncDispatchScriptSettings(
     "settings.json",
   );
 
-  const resp = await fetch(url, { method: "PATCH", headers, body: formData });
+  const resp = await fetch(url, {
+    method: "PATCH",
+    headers,
+    body: formData,
+    redirect: "manual",
+  });
   if (!resp.ok) {
     const text = await resp.text();
     console.error("[cf-api-proxy] failed to set tail_consumers", {
@@ -1540,7 +1551,7 @@ export async function deleteDispatchScript(
     `/workers/dispatch/namespaces/${encodeURIComponent(dispatchNamespace)}` +
     `/scripts/${encodeURIComponent(scriptName)}`;
   const headers = { Authorization: `Bearer ${apiToken}` };
-  const resp = await fetch(url, { method: "DELETE", headers });
+  const resp = await fetch(url, { method: "DELETE", headers, redirect: "manual" });
 
   if (!resp.ok) {
     // 404 means script doesn't exist - that's OK for delete
@@ -1723,6 +1734,7 @@ export async function deleteCustomHostname(
     const resp = await fetch(url, {
       method: "DELETE",
       headers: { Authorization: `Bearer ${apiToken}` },
+      redirect: "manual",
     });
     if (resp.ok || resp.status === 404) return true;
     const body = await resp.text();
@@ -1750,6 +1762,7 @@ export async function listCustomHostnames(
     const url = `https://api.cloudflare.com/client/v4/zones/${encodeURIComponent(zoneId)}/custom_hostnames?hostname_contains=${encodeURIComponent(hostnameContains)}&per_page=${perPage}&page=${page}`;
     const resp = await fetch(url, {
       headers: { Authorization: `Bearer ${apiToken}` },
+      redirect: "manual",
     });
     if (!resp.ok) break;
     const data = (await resp.json()) as {
