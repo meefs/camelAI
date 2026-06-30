@@ -101,10 +101,12 @@ export async function collectWorkerBundleFromSandbox(
   const manifestBytes = await readSandboxFileBytes(sandbox, absoluteManifestPath);
   const manifest = JSON.parse(new TextDecoder().decode(manifestBytes)) as DirectWorkerMetadata & {
     assets?: { directory?: string } | string;
+    durable_objects?: { bindings?: unknown };
   };
   if (!manifest.main_module || typeof manifest.main_module !== "string") {
     throw new Error(`Build manifest ${manifestPath} is missing main_module`);
   }
+  const metadata = normalizeWorkerBundleMetadata(manifest);
   const serverRoot = dirnameSandboxPath(absoluteManifestPath);
   const listed = await sandbox.listFiles(serverRoot, { recursive: true, includeHidden: true });
   const modules: DirectWorkerModule[] = [];
@@ -122,10 +124,39 @@ export async function collectWorkerBundleFromSandbox(
   }
   modules.sort((a, b) => a.name.localeCompare(b.name));
   return {
-    metadata: manifest,
+    metadata,
     modules,
-    assets: await collectAssetsFromManifest(sandbox, serverRoot, manifest),
+    assets: await collectAssetsFromManifest(sandbox, serverRoot, metadata),
     manifestPath,
+  };
+}
+
+function normalizeWorkerBundleMetadata(
+  manifest: DirectWorkerMetadata & {
+    durable_objects?: { bindings?: unknown };
+  },
+): DirectWorkerMetadata {
+  const bindings = [...(manifest.bindings ?? [])];
+  const durableObjectBindings = manifest.durable_objects?.bindings;
+  if (Array.isArray(durableObjectBindings)) {
+    for (const binding of durableObjectBindings) {
+      if (!binding || typeof binding !== "object" || Array.isArray(binding)) continue;
+      const record = binding as Record<string, unknown>;
+      if (typeof record.name !== "string" || typeof record.class_name !== "string") continue;
+      if (bindings.some((candidate) => candidate.name === record.name)) continue;
+      bindings.push({
+        ...record,
+        type: "durable_object_namespace",
+        name: record.name,
+        class_name: record.class_name,
+      });
+    }
+  }
+
+  const { durable_objects: _durableObjects, ...metadata } = manifest;
+  return {
+    ...metadata,
+    ...(bindings.length > 0 ? { bindings } : {}),
   };
 }
 
