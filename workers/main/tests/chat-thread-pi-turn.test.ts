@@ -5745,6 +5745,51 @@ describe('ChatThreadDO Pi turn handling', () => {
     });
   });
 
+  it('filters list_apps by project or name and caps noisy results', async () => {
+    const fake = Object.create(CodeModeToolsBinding.prototype) as any;
+    fake.ctx = { props: { workspaceId: 'workspace1' } };
+    fake.env = { WORKER_BASE_URL: 'https://staging.camelai.dev', LOCAL_APP_VANITY_DOMAIN: 'camelai.app' };
+    const scripts = [
+      { script_name: 'older-app', project_id: 'project-old', updated_at: 10 },
+      { script_name: 'miguel-simple-site', project_id: 'project-miguel', updated_at: 30 },
+      { script_name: 'miguel-simple-site-preview', project_id: 'project-miguel', updated_at: 20 },
+    ].map((script) => ({
+      workspace_id: 'workspace1',
+      created_by: 'user1',
+      created_at: 1,
+      is_public: false,
+      preview_status: 'ready',
+      commit_sha: null,
+      artifact_cache_key: null,
+      custom_domain_hostname: null,
+      ...script,
+    }));
+    Object.defineProperty(fake, 'orgStub', {
+      value: {
+        getInfo: vi.fn(async () => ({ slug: 'test-org' })),
+        listWorkerScriptsByWorkspace: vi.fn(async () => scripts),
+      },
+    });
+
+    await expect(CodeModeToolsBinding.prototype.callTool.call(fake, 'list_apps', {
+      project: 'project-miguel',
+      limit: 1,
+    })).resolves.toMatchObject({
+      total: 2,
+      count: 1,
+      filters: { project: 'project-miguel', limit: 1, sort: 'updated_desc' },
+      apps: [{ name: 'miguel-simple-site' }],
+    });
+
+    await expect(CodeModeToolsBinding.prototype.callTool.call(fake, 'list_apps', {
+      name: 'preview',
+    })).resolves.toMatchObject({
+      total: 1,
+      count: 1,
+      apps: [{ name: 'miguel-simple-site-preview' }],
+    });
+  });
+
   it('lists cached deploy versions for rollback discovery', async () => {
     const fake = Object.create(CodeModeToolsBinding.prototype) as any;
     fake.ctx = { props: { workspaceId: 'workspace1' } };
@@ -5796,6 +5841,10 @@ describe('ChatThreadDO Pi turn handling', () => {
     expect(result).toMatchObject({
       success: true,
       project: 'Demo App',
+      scriptName: 'demo-app',
+      dispatchScriptName: 'demo-app--test-org',
+      status: 200,
+      buildSuccess: true,
       sourceSnapshot: { id: 'snapshot-1' },
       deploy: {
         scriptName: 'demo-app',
@@ -5803,7 +5852,10 @@ describe('ChatThreadDO Pi turn handling', () => {
         status: 200,
       },
     });
+    expect((result as any).url).toContain('demo-app--test-org');
     expect((result as any).appUrl).toContain('demo-app--test-org');
+    expect((result as any).build).not.toHaveProperty('stdout');
+    expect((result as any).build).not.toHaveProperty('stderr');
     expect(fetchMock).toHaveBeenCalledWith(
       'https://api.cloudflare.com/client/v4/accounts/account/workers/dispatch/namespaces/namespace/scripts/demo-app--test-org',
       expect.objectContaining({ method: 'PUT', headers: { Authorization: 'Bearer token' } }),
@@ -5849,6 +5901,75 @@ describe('ChatThreadDO Pi turn handling', () => {
       'https://api.cloudflare.com/client/v4/accounts/account/workers/dispatch/namespaces/chiridion-platform-evals/scripts/demo-app--test-org',
       expect.objectContaining({ method: 'PUT' }),
     );
+  });
+
+  it('returns a concise deploy-stage error summary without full build logs', async () => {
+    const { fake } = createProjectToolFake({ deploy: true });
+    vi.stubGlobal('fetch', vi.fn(async () => Response.json({
+      success: false,
+      errors: [{ message: 'Uncaught Error: Dynamic require of "util" is not supported' }],
+    }, { status: 400 })));
+
+    const result = await CodeModeToolsBinding.prototype.callTool.call(fake, 'deploy_project', {
+      project: 'Demo App',
+      script_name: 'Demo App',
+    });
+
+    expect(result).toMatchObject({
+      success: false,
+      stage: 'deploy',
+      project: 'Demo App',
+      scriptName: 'demo-app',
+      dispatchScriptName: 'demo-app--test-org',
+      status: 400,
+      errorSummary: 'Uncaught Error: Dynamic require of "util" is not supported',
+      build: {
+        success: true,
+        projectId: 'project-1',
+      },
+      deploy: {
+        success: false,
+        status: 400,
+        errorSummary: 'Uncaught Error: Dynamic require of "util" is not supported',
+      },
+    });
+    expect((result as any).build).not.toHaveProperty('stdout');
+    expect((result as any).build).not.toHaveProperty('stderr');
+  });
+
+  it('keeps take_screenshot output concise unless inline image data is requested', async () => {
+    const capture = vi.fn(async () => ({
+      imageDataUrl: 'data:image/png;base64,' + 'a'.repeat(100),
+      width: 1280,
+      height: 720,
+    }));
+    const fake = Object.create(CodeModeToolsBinding.prototype) as any;
+    fake.ctx = {
+      props: { orgId: 'org1', workspaceId: 'workspace1' },
+      exports: {
+        AppScreenshotBinding: vi.fn(() => ({ capture })),
+      },
+    };
+
+    await expect(CodeModeToolsBinding.prototype.callTool.call(fake, 'take_screenshot', {
+      script_name: 'demo-app',
+      path: '/',
+    })).resolves.toEqual({
+      success: true,
+      width: 1280,
+      height: 720,
+      imageDataUrlBytes: 122,
+      message: expect.stringContaining('include_image_data_url=true'),
+    });
+
+    await expect(CodeModeToolsBinding.prototype.callTool.call(fake, 'take_screenshot', {
+      script_name: 'demo-app',
+      include_image_data_url: true,
+    })).resolves.toMatchObject({
+      imageDataUrl: expect.stringContaining('data:image/png;base64,'),
+      width: 1280,
+      height: 720,
+    });
   });
 
   it('serves deterministic automation virtual files through js_exec file tools', async () => {

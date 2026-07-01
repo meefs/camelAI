@@ -85,7 +85,8 @@ describe("defaultProjectScaffoldFiles", () => {
     expect(scaffoldFile(files, "/app/components/ui/button.tsx")).toContain("buttonVariants");
     expect(scaffoldFile(files, "/app/routes/home.tsx")).toContain("Browse shadcn components");
     expect(scaffoldFile(files, "/app/root.tsx")).toContain('import "./app.css"');
-    expect(scaffoldFile(files, "/app/entry.server.tsx")).toContain("renderToReadableStream");
+    expect(scaffoldFile(files, "/app/entry.server.tsx")).toContain('from "react-dom/server.edge"');
+    expect(scaffoldFile(files, "/app/entry.server.tsx")).not.toContain('from "react-dom/server";');
     expect(scaffoldFile(files, "/workers/app.ts")).toContain("createRequestHandler");
     expect(scaffoldFile(files, "/workers/app.ts")).toContain("env.ASSETS.fetch(request)");
     expect(scaffoldFile(files, "/scripts/build-manifest.mjs")).toContain('main_module: "worker.js"');

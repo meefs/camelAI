@@ -34,10 +34,10 @@ import { CodeModeScheduledPrompts } from "./code-mode-scheduled-prompts";
 import { CodeModeDeterministicAutomations } from "./code-mode-deterministic-automations";
 import { CodeModeIntegrations } from "./code-mode-integrations";
 import { createSignedToken } from "./signed-tokens";
-import { projectBuildSandboxKey, runProjectAddDependency, runProjectBuild } from "./project-build-service";
+import { projectBuildSandboxKey, runProjectAddDependency, runProjectBuild, type ProjectBuildResult } from "./project-build-service";
 import { collectWorkerBundleFromSandbox, type ProjectBuildSandboxLike } from "./project-worker-bundle";
 import { defaultProjectScaffoldFiles, normalizeProjectScaffoldTemplate, type ProjectScaffoldResult } from "./project-scaffold";
-import { deployWorkerModulesDirect, rollbackWorkerDeployFromArtifactCache } from "./direct-dispatch-deploy";
+import { deployWorkerModulesDirect, rollbackWorkerDeployFromArtifactCache, type DirectDispatchDeployResult } from "./direct-dispatch-deploy";
 import { handleDeploySideEffects } from "./services/deploy";
 import { editAutomationVirtualFile, listAutomationVirtualFiles, normalizeAutomationVirtualPath, readAutomationVirtualFile, writeAutomationVirtualFile } from "./deterministic-automation-virtual-files";
 import type { DynamicIntegrationSchema } from "../../../src/lib/integration-registry";
@@ -744,9 +744,19 @@ const CODE_MODE_TOOL_REGISTRY: CodeModeToolRegistration[] = [
       sideEffect: true,
     },
   ),
-  codeModePassthroughTool("list_apps", "List deployed apps for the current workspace.", EMPTY_PARAMETERS, {
-    category: "apps",
-  }),
+  codeModePassthroughTool(
+    "list_apps",
+    "List deployed apps for the current workspace. Optional filters keep agent output small: name matches app/custom-domain names, project matches project_id or app name, limit caps results, and sort defaults to updated_desc. Arguments: { name?, project?, limit?, sort? }.",
+    Type.Object({
+      name: Type.Optional(Type.String()),
+      project: Type.Optional(Type.String()),
+      limit: Type.Optional(Type.Number()),
+      sort: Type.Optional(Type.Union([Type.Literal("updated_desc"), Type.Literal("updated_asc"), Type.Literal("name_asc")])),
+    }, { additionalProperties: false }),
+    {
+      category: "apps",
+    },
+  ),
   codeModePassthroughTool(
     "set_app_visibility",
     "Change a deployed app visibility. Arguments: { script_name, is_public }.",
@@ -773,13 +783,14 @@ const CODE_MODE_TOOL_REGISTRY: CodeModeToolRegistration[] = [
   ),
   codeModePassthroughTool(
     "take_screenshot",
-    "Capture a screenshot of a deployed workspace app. Arguments: { script_name, path?, width?, height?, wait_ms? }.",
+    "Capture a screenshot of a deployed workspace app. Returns concise metadata by default; pass include_image_data_url=true only when the inline base64 image is needed. Arguments: { script_name, path?, width?, height?, wait_ms?, include_image_data_url? }.",
     Type.Object({
       script_name: Type.String(),
       path: Type.Optional(Type.String()),
       width: Type.Optional(Type.Number()),
       height: Type.Optional(Type.Number()),
       wait_ms: Type.Optional(Type.Number()),
+      include_image_data_url: Type.Optional(Type.Boolean()),
     }),
     {
       category: "apps",
@@ -1159,6 +1170,84 @@ async function withProjectBuildServiceErrorMapping<T>(operation: () => Promise<T
   }
 }
 
+function summarizeProjectBuildResult(build: ProjectBuildResult): Record<string, unknown> {
+  return {
+    success: build.success,
+    projectId: build.projectId,
+    workdir: build.workdir,
+    exitCode: build.exitCode,
+    fileCount: build.fileCount,
+    durationMs: build.durationMs,
+    lockfilePersisted: build.lockfilePersisted,
+    ...(build.error ? { errorSummary: conciseErrorSummary(build.error) } : {}),
+  };
+}
+
+function summarizeDirectDeployResult(deploy: DirectDispatchDeployResult): Record<string, unknown> {
+  return {
+    success: deploy.success,
+    scriptName: deploy.scriptName,
+    dispatchScriptName: deploy.dispatchScriptName,
+    status: deploy.status,
+    ...(deploy.success ? { result: deploy.result } : { errorSummary: summarizeDeployFailure(deploy) }),
+    ...(deploy.warnings?.length ? { warnings: deploy.warnings } : {}),
+  };
+}
+
+function summarizeBuildFailure(build: ProjectBuildResult): string {
+  return conciseErrorSummary(build.error || build.stderr || build.stdout || `Build failed with exit code ${build.exitCode}`);
+}
+
+function summarizeDeployFailure(deploy: DirectDispatchDeployResult): string {
+  return conciseErrorSummary(deploy.error || `Deploy failed with status ${deploy.status}`);
+}
+
+function conciseErrorSummary(value: string): string {
+  const fromJson = conciseJsonErrorSummary(value);
+  if (fromJson) return limitSummary(fromJson);
+  const dynamicRequire = value.match(/Dynamic require of ["'][^"']+["'] is not supported/i)?.[0];
+  if (dynamicRequire) return dynamicRequire;
+  const uncaught = value.match(/Uncaught (?:Error|Exception|TypeError|ReferenceError|SyntaxError):?[^\n\r]*/i)?.[0];
+  if (uncaught) return limitSummary(uncaught);
+  const firstMeaningfulLine = value.split(/\r?\n/).map((line) => line.trim()).find(Boolean);
+  return limitSummary(firstMeaningfulLine || "Unknown error");
+}
+
+function conciseJsonErrorSummary(value: string): string | null {
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    const messages: string[] = [];
+    collectJsonMessages(parsed, messages);
+    return messages.find(Boolean) ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function collectJsonMessages(value: unknown, out: string[]): void {
+  if (typeof value === "string") {
+    out.push(value);
+    return;
+  }
+  if (!value || typeof value !== "object") return;
+  if (Array.isArray(value)) {
+    for (const item of value) collectJsonMessages(item, out);
+    return;
+  }
+  const record = value as Record<string, unknown>;
+  for (const key of ["message", "error", "error_message", "detail"]) {
+    if (typeof record[key] === "string") out.push(record[key]);
+  }
+  for (const key of ["errors", "messages", "result"]) {
+    collectJsonMessages(record[key], out);
+  }
+}
+
+function limitSummary(value: string): string {
+  const summary = value.trim().replace(/\s+/g, " ");
+  return summary.length <= 500 ? summary : `${summary.slice(0, 497)}...`;
+}
+
 function projectForAgent(project: WorkspaceProject): Record<string, unknown> {
   return {
     name: project.name,
@@ -1195,12 +1284,24 @@ function projectCloneForAgent(project: WorkspaceProjectCloneSummary): Record<str
   };
 }
 
+type WorkerScriptListRow = WorkerScript & {
+  commit_sha?: string | null;
+  artifact_cache_key?: string | null;
+};
+
+function appFilterText(script: WorkerScriptListRow): string {
+  return [script.script_name, script.custom_domain_hostname, script.project_id]
+    .filter((value): value is string => typeof value === "string" && value.length > 0)
+    .join(" ")
+    .toLowerCase();
+}
+
 export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeToolsProps> {
   private static readonly TOOL_CALL_HANDLERS: Record<string, CodeModeToolCallHandler> = {
     AskUserQuestion: (binding, args) => binding.askUserQuestion(args),
     TodoWrite: (binding, args) => binding.updateTodos(args),
     set_preview: (binding, args) => binding.setPreview(args),
-    list_apps: (binding) => binding.listApps(),
+    list_apps: (binding, args) => binding.listApps(args),
     set_app_visibility: (binding, args) => binding.setAppVisibility(args),
     get_latest_logs: (binding, args) => binding.getLatestLogs(args),
     take_screenshot: (binding, args) => binding.takeScreenshot(args),
@@ -2925,11 +3026,39 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
     }
   }
 
-  private async listApps(): Promise<unknown> {
-    const scripts = (await this.orgStub.listWorkerScriptsByWorkspace(this.ctx.props.workspaceId))
-      .sort((a, b) => b.updated_at - a.updated_at);
+  private async listApps(args: Record<string, unknown> = {}): Promise<unknown> {
+    const nameFilter = typeof args.name === "string" ? args.name.trim().toLowerCase() : "";
+    const projectFilter = typeof args.project === "string" ? args.project.trim().toLowerCase() : "";
+    const sort = args.sort === "updated_asc" || args.sort === "name_asc" ? args.sort : "updated_desc";
+    const limit = typeof args.limit === "number" && Number.isFinite(args.limit)
+      ? Math.max(0, Math.min(100, Math.floor(args.limit)))
+      : undefined;
+    let scripts: WorkerScriptListRow[] = [...await this.orgStub.listWorkerScriptsByWorkspace(this.ctx.props.workspaceId)];
+    if (nameFilter) {
+      scripts = scripts.filter((script) => appFilterText(script).includes(nameFilter));
+    }
+    if (projectFilter) {
+      scripts = scripts.filter((script) =>
+        (script.project_id ?? "").toLowerCase().includes(projectFilter) ||
+        script.script_name.toLowerCase().includes(projectFilter)
+      );
+    }
+    scripts = scripts.sort((a, b) => {
+      if (sort === "updated_asc") return a.updated_at - b.updated_at;
+      if (sort === "name_asc") return a.script_name.localeCompare(b.script_name);
+      return b.updated_at - a.updated_at;
+    });
+    const total = scripts.length;
+    if (limit !== undefined) scripts = scripts.slice(0, limit);
     return {
+      total,
       count: scripts.length,
+      filters: {
+        ...(nameFilter ? { name: args.name } : {}),
+        ...(projectFilter ? { project: args.project } : {}),
+        ...(limit !== undefined ? { limit } : {}),
+        sort,
+      },
       apps: await Promise.all(scripts.map(async (script) => ({
         name: script.script_name,
         url: await this.getAppUrl(script),
@@ -3035,13 +3164,21 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
         workspaceId: this.ctx.props.workspaceId,
       },
     });
-    return screenshotBinding.capture({
+    const result = await screenshotBinding.capture({
       scriptName,
       path: typeof args.path === "string" ? args.path : undefined,
       width: typeof args.width === "number" ? args.width : undefined,
       height: typeof args.height === "number" ? args.height : undefined,
       waitMs: typeof args.wait_ms === "number" ? args.wait_ms : undefined,
     });
+    if (args.include_image_data_url === true) return result;
+    return {
+      success: true,
+      width: result.width,
+      height: result.height,
+      imageDataUrlBytes: result.imageDataUrl.length,
+      message: "Screenshot captured. Re-run with include_image_data_url=true only if the inline base64 image is needed.",
+    };
   }
 
   private warehouseService() {
@@ -3310,7 +3447,13 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
         timeoutMs,
       });
       if (!build.success) {
-        return { success: false, project: project.name, build };
+        return {
+          success: false,
+          stage: "build",
+          project: project.name,
+          errorSummary: summarizeBuildFailure(build),
+          build: summarizeProjectBuildResult(build),
+        };
       }
       const projectFiles = new ProjectFilesystemClient(this.env, project.id);
       const snapshot = await projectFiles.createSourceSnapshot({ message: `Deploy ${project.name}` });
@@ -3337,7 +3480,17 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
         commitSha: snapshot.id,
       });
       if (!deploy.success) {
-        return { success: false, project: project.name, build, deploy };
+        return {
+          success: false,
+          stage: "deploy",
+          project: project.name,
+          scriptName: deploy.scriptName,
+          dispatchScriptName: deploy.dispatchScriptName,
+          status: deploy.status,
+          errorSummary: summarizeDeployFailure(deploy),
+          build: summarizeProjectBuildResult(build),
+          deploy: summarizeDirectDeployResult(deploy),
+        };
       }
       await handleDeploySideEffects(this.env as never, deploy.sideEffects);
       const appUrl = await this.appUrlForScriptName(scriptName);
@@ -3345,19 +3498,19 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
       return {
         success: true,
         project: project.name,
+        scriptName: deploy.scriptName,
+        dispatchScriptName: deploy.dispatchScriptName,
+        status: deploy.status,
+        url: appUrl,
+        appUrl,
+        buildSuccess: true,
         sourceSnapshot: {
           id: snapshot.id,
           fileCount: snapshot.fileCount,
           totalBytes: snapshot.totalBytes,
         },
-        build,
-        deploy: {
-          scriptName: deploy.scriptName,
-          dispatchScriptName: deploy.dispatchScriptName,
-          status: deploy.status,
-          result: deploy.result,
-        },
-        appUrl,
+        build: summarizeProjectBuildResult(build),
+        deploy: summarizeDirectDeployResult(deploy),
         ...(warnings.length > 0 ? { warnings } : {}),
       };
     });

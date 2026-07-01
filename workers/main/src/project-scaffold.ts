@@ -681,7 +681,7 @@ function defaultReactRouterScaffoldFiles(projectName: string, scriptName: string
     {
       path: "/app/entry.server.tsx",
       content: file([
-        `import { renderToReadableStream } from "react-dom/server";`,
+        `import { renderToReadableStream } from "react-dom/server.edge";`,
         `import type { AppLoadContext, EntryContext } from "react-router";`,
         `import { ServerRouter } from "react-router";`,
         ``,
