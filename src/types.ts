@@ -25,7 +25,7 @@ export interface Thread {
   creator?: User;
 }
 
-export type ChatGroupAvatarStatus = "pending" | "generated" | "user" | "fallback";
+export type ChatGroupAvatarStatus = "pending" | "generated" | "user" | "default";
 
 export interface ChatGroupAvatar extends Avatar {
   status?: ChatGroupAvatarStatus;

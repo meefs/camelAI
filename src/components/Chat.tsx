@@ -416,7 +416,7 @@ function isChatGroupAvatarStatus(value: unknown): value is ChatGroupAvatarStatus
     value === "pending" ||
     value === "generated" ||
     value === "user" ||
-    value === "fallback"
+    value === "default"
   );
 }
 

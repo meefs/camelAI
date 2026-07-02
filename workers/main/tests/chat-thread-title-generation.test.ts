@@ -9,13 +9,13 @@ function createFakeThread(options: { emojiFails?: boolean; aiMissing?: boolean }
     | ((claim: {
         id: string;
         name: string;
-        avatar: { color: string; content: string; status: "fallback" };
+        avatar: { color: string; content: string; status: "default" };
       }) => void)
     | null = null;
   const claimPromise = new Promise<{
     id: string;
     name: string;
-    avatar: { color: string; content: string; status: "fallback" };
+    avatar: { color: string; content: string; status: "default" };
   }>((resolve) => {
     resolveClaim = resolve;
   });
@@ -48,9 +48,9 @@ function createFakeThread(options: { emojiFails?: boolean; aiMissing?: boolean }
       order.push("set-generated");
       return { color: "#4F46E5", content: "🗄️", status: "generated" };
     }),
-    setChatGroupAvatarFallback: vi.fn(async () => {
-      order.push("set-fallback");
-      return { color: "#4F46E5", content: "💬", status: "fallback" };
+    markChatGroupAvatarGenerationFailed: vi.fn(async () => {
+      order.push("mark-failed");
+      return { color: "#4F46E5", content: "💬", status: "default" };
     }),
   };
   const fake = Object.create(ChatThreadDO.prototype) as any;
@@ -144,7 +144,7 @@ describe("ChatThreadDO title generation", () => {
     resolveClaim({
       id: "group1",
       name: "Database Migrations",
-      avatar: { color: "#4F46E5", content: "💬", status: "fallback" },
+      avatar: { color: "#4F46E5", content: "💬", status: "default" },
     });
     await Promise.all(waitUntilPromises);
 
@@ -167,7 +167,7 @@ describe("ChatThreadDO title generation", () => {
     });
   });
 
-  it("falls back after emoji generation failure without blocking title naming", async () => {
+  it("leaves the default avatar after emoji generation failure without blocking title naming", async () => {
     vi.spyOn(console, "error").mockImplementation(() => undefined);
     const {
       fake,
@@ -189,17 +189,19 @@ describe("ChatThreadDO title generation", () => {
     resolveClaim({
       id: "group1",
       name: "Database Migrations",
-      avatar: { color: "#4F46E5", content: "💬", status: "fallback" },
+      avatar: { color: "#4F46E5", content: "💬", status: "default" },
     });
     await Promise.all(waitUntilPromises);
 
     expect(userStub.setGeneratedChatGroupEmoji).not.toHaveBeenCalled();
-    expect(userStub.setChatGroupAvatarFallback).toHaveBeenCalledWith("group1");
+    expect(userStub.markChatGroupAvatarGenerationFailed).toHaveBeenCalledWith(
+      "group1",
+    );
     expect(fake.broadcastChat).toHaveBeenLastCalledWith({
       type: "chat_group_avatar_updated",
       threadId: "thread1",
       groupId: "group1",
-      avatar: { color: "#4F46E5", content: "💬", status: "fallback" },
+      avatar: { color: "#4F46E5", content: "💬", status: "default" },
     });
   });
 
@@ -221,7 +223,7 @@ describe("ChatThreadDO title generation", () => {
     resolveClaim({
       id: "group1",
       name: "Database Migrations",
-      avatar: { color: "#4F46E5", content: "💬", status: "fallback" },
+      avatar: { color: "#4F46E5", content: "💬", status: "default" },
     });
     await task;
 
@@ -267,7 +269,7 @@ describe("ChatThreadDO title generation", () => {
     resolveClaim({
       id: "group1",
       name: "Database Migrations",
-      avatar: { color: "#4F46E5", content: "💬", status: "fallback" },
+      avatar: { color: "#4F46E5", content: "💬", status: "default" },
     });
     await task;
 
@@ -298,7 +300,7 @@ describe("ChatThreadDO title generation", () => {
 
     expect(userStub.claimChatGroupAvatarGenerationForThread).not.toHaveBeenCalled();
     expect(userStub.setGeneratedChatGroupEmoji).not.toHaveBeenCalled();
-    expect(userStub.setChatGroupAvatarFallback).not.toHaveBeenCalled();
+    expect(userStub.markChatGroupAvatarGenerationFailed).not.toHaveBeenCalled();
     expect(fake.broadcastChat).not.toHaveBeenCalled();
     expect(aiRun).not.toHaveBeenCalled();
   });

@@ -399,7 +399,7 @@ export function reconcileThreadSummaryPatchesWithGroups(
 function isFinalChatGroupAvatarStatus(
   status: ChatGroupAvatarStatus | undefined,
 ): boolean {
-  return status === "generated" || status === "user" || status === "fallback";
+  return status === "generated" || status === "user" || status === "default";
 }
 
 function isSameChatGroupAvatar(
@@ -464,7 +464,7 @@ function isChatGroupAvatarStatus(value: unknown): value is ChatGroupAvatarStatus
     value === "pending" ||
     value === "generated" ||
     value === "user" ||
-    value === "fallback"
+    value === "default"
   );
 }
 
@@ -521,7 +521,7 @@ export function applyExpiredPendingGroupAvatarFallbacks(
       ...group,
       avatar: {
         ...group.avatar,
-        status: "fallback" as const,
+        status: "default" as const,
       },
     };
   });

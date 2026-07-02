@@ -20,7 +20,7 @@ export function ChatGroupAvatar({
 }) {
   const color = normalizeAvatarColor(avatar?.color) ?? "#3B82F6"
   const emoji = avatar?.content?.trim()
-  const status = avatar?.status ?? "fallback"
+  const status = avatar?.status ?? "default"
   const fallbackInitial = Array.from(fallbackName?.trim() || "?")[0] ?? "?"
   const content =
     (emoji && isEmoji(emoji) ? emoji : "") ||

@@ -1860,7 +1860,7 @@ describe("ChatGroupsProvider summary patches", () => {
       });
 
       expect(screen.getByTestId("group-avatar-status")).toHaveTextContent(
-        "fallback",
+        "default",
       );
       expect(loader.mock.calls.length).toBeGreaterThanOrEqual(2);
     } finally {

@@ -56,7 +56,7 @@ function makeGroup(): ChatGroupSummary {
     avatar: {
       color: "#4F46E5",
       content: "💬",
-      status: "fallback",
+      status: "default",
     },
     open_thread_ids: ["thread_1"],
     closed_thread_ids: [],
@@ -109,7 +109,7 @@ describe("chat group server loading", () => {
     );
 
     expect(result).toHaveLength(1);
-    expect(result[0].avatar.status).toBe("fallback");
+    expect(result[0].avatar.status).toBe("default");
     expect(waitUntil).not.toHaveBeenCalled();
   });
 });

@@ -3,37 +3,36 @@ import { describe, expect, it, vi } from "vitest";
 import {
   CHAT_GROUP_EMOJI_MAX_OUTPUT_TOKENS,
   generateChatGroupEmojiWithOpenAI,
-  parseGeneratedChatGroupEmoji,
   sanitizeGeneratedChatGroupEmoji,
 } from "@/lib/chat-group-avatar-generation.server";
 
 describe("chat group avatar generation", () => {
-  it("accepts a single generated emoji and strips surrounding punctuation", () => {
+  it("takes the first emoji out of whatever the model returns", () => {
     expect(sanitizeGeneratedChatGroupEmoji("🌊")).toBe("🌊");
     expect(sanitizeGeneratedChatGroupEmoji('"🧠"')).toBe("🧠");
     expect(sanitizeGeneratedChatGroupEmoji("`🚀`")).toBe("🚀");
     expect(sanitizeGeneratedChatGroupEmoji("Use 🌊")).toBe("🌊");
     expect(sanitizeGeneratedChatGroupEmoji("Emoji: 🧠")).toBe("🧠");
     expect(sanitizeGeneratedChatGroupEmoji('{ "emoji": "🛠️" }')).toBe("🛠️");
+    expect(sanitizeGeneratedChatGroupEmoji("The best emoji is 🧠.")).toBe("🧠");
   });
 
-  it("rejects words, empty values, and multiple emoji", () => {
+  it("uses the first emoji even when the model returns several", () => {
+    expect(sanitizeGeneratedChatGroupEmoji("🌊🚀")).toBe("🌊");
+    expect(sanitizeGeneratedChatGroupEmoji("🌊 and 🚀")).toBe("🌊");
+  });
+
+  it("returns null when there is no emoji", () => {
     expect(sanitizeGeneratedChatGroupEmoji(null)).toBeNull();
     expect(sanitizeGeneratedChatGroupEmoji("")).toBeNull();
     expect(sanitizeGeneratedChatGroupEmoji("Use the ocean")).toBeNull();
-    expect(sanitizeGeneratedChatGroupEmoji("🌊🚀")).toBeNull();
-    expect(parseGeneratedChatGroupEmoji("🌊 and 🚀")).toMatchObject({
-      reason: "multiple_emoji",
-      emojiMatchCount: 2,
-    });
   });
 
   it("uses enough output tokens for short prefixed responses", () => {
     expect(CHAT_GROUP_EMOJI_MAX_OUTPUT_TOKENS).toBeGreaterThanOrEqual(24);
-    expect(sanitizeGeneratedChatGroupEmoji("The best emoji is 🧠.")).toBe("🧠");
   });
 
-  it("uses the larger token budget when calling auxiliary AI", async () => {
+  it("passes the token budget when calling auxiliary AI", async () => {
     const ai = {
       run: vi.fn(async () => ({
         choices: [{ message: { content: "Emoji: 🧠" } }],

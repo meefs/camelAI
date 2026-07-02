@@ -5498,7 +5498,7 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
     claim: { id: string; name: string; avatar: ChatGroupAvatar },
     userStub: {
       setGeneratedChatGroupEmoji: (groupId: string, emoji: string) => unknown;
-      setChatGroupAvatarFallback: (groupId: string) => unknown;
+      markChatGroupAvatarGenerationFailed: (groupId: string) => unknown;
     },
   ): Promise<void> {
     const context = this.chatContext;
@@ -5535,29 +5535,51 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
       });
     }
 
-    try {
-      const avatar = (generatedEmoji
-        ? await userStub.setGeneratedChatGroupEmoji(claim.id, generatedEmoji)
-        : await userStub.setChatGroupAvatarFallback(claim.id)) as
-        | ChatGroupAvatar
-        | null;
-      if (!avatar) {
-        console.warn("[ChatThreadDO] chat group avatar write skipped", {
-          reason: "write_skipped",
+    if (!generatedEmoji) {
+      // No emoji: record the one-shot attempt (so reconnects don't retry) and
+      // broadcast the group's *actual* current avatar to clear the pending
+      // state. Re-reading avoids clobbering an avatar the user set while the AI
+      // was in flight.
+      try {
+        const avatar = (await userStub.markChatGroupAvatarGenerationFailed(
+          claim.id,
+        )) as ChatGroupAvatar | null;
+        if (avatar) {
+          this.broadcastChat({
+            type: "chat_group_avatar_updated",
+            threadId,
+            groupId: claim.id,
+            avatar,
+          });
+        }
+      } catch (error) {
+        console.error("[ChatThreadDO] failed to mark chat group avatar attempt", {
+          reason: "mark_failed",
           threadId,
           groupId: claim.id,
           workspaceId: context.workspaceId,
           orgId: context.orgId,
-          expectedStatus: generatedEmoji ? "generated" : "fallback",
+          ...this.errorLogFields(error),
         });
-        return;
       }
-      this.broadcastChat({
-        type: "chat_group_avatar_updated",
-        threadId,
-        groupId: claim.id,
-        avatar,
-      });
+      return;
+    }
+
+    try {
+      // The write re-reads and returns the current avatar (which may be a
+      // user-set avatar if it changed while the AI ran), so broadcast that.
+      const avatar = (await userStub.setGeneratedChatGroupEmoji(
+        claim.id,
+        generatedEmoji,
+      )) as ChatGroupAvatar | null;
+      if (avatar) {
+        this.broadcastChat({
+          type: "chat_group_avatar_updated",
+          threadId,
+          groupId: claim.id,
+          avatar,
+        });
+      }
     } catch (error) {
       console.error("[ChatThreadDO] failed to write chat group avatar", {
         reason: "write_skipped",

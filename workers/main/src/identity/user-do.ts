@@ -64,7 +64,6 @@ export type { OrgRole, BillingStatus } from "../../../../src/types";
 
 const USER_ONBOARDING_KEY = "onboarding";
 const USER_SIGNUP_IP_KEY = "signup_ip";
-const CHAT_GROUP_AVATAR_PENDING_WINDOW_MS = 20 * 1000;
 
 function usageCost(value: unknown): number | null {
   if (value === null || value === undefined) return null;
@@ -1078,17 +1077,12 @@ export class UserDO extends DurableObject<DOEnv> {
 
   private getChatGroupAvatarStatus(
     source: string | null | undefined,
-    lastAttemptAt?: number | null,
   ): ChatGroupAvatarStatus {
     if (source === "generated" || source === "user") return source;
-    if (
-      source === "default" &&
-      typeof lastAttemptAt === "number" &&
-      Date.now() - lastAttemptAt < CHAT_GROUP_AVATAR_PENDING_WINDOW_MS
-    ) {
-      return "pending";
-    }
-    return "fallback";
+    // Anything else (including legacy "fallback" rows) is the resting default
+    // avatar. The transient "pending" state only exists as a live broadcast
+    // while generation is in flight; it is never persisted.
+    return "default";
   }
 
   private toChatGroup(row: unknown): ChatGroup {
@@ -1103,7 +1097,6 @@ export class UserDO extends DurableObject<DOEnv> {
       avatar_color?: string | null;
       avatar_content?: string | null;
       avatar_content_source?: string | null;
-      avatar_emoji_last_attempt_at?: number | null;
     };
     const fallbackAvatar = generateDefaultChatGroupAvatar();
     const avatarColor = normalizeAvatarColor(group.avatar_color) ?? fallbackAvatar.color;
@@ -1122,10 +1115,7 @@ export class UserDO extends DurableObject<DOEnv> {
       avatar: {
         color: avatarColor,
         content: avatarContent,
-        status: this.getChatGroupAvatarStatus(
-          group.avatar_content_source,
-          group.avatar_emoji_last_attempt_at,
-        ),
+        status: this.getChatGroupAvatarStatus(group.avatar_content_source),
       },
     };
   }
@@ -1334,54 +1324,16 @@ export class UserDO extends DurableObject<DOEnv> {
     if (!isEmoji(content)) return null;
     let avatar: ChatGroupAvatar | null = null;
     this.ctx.storage.transactionSync(() => {
+      // Only fill in an avatar the user hasn't set and that hasn't already been
+      // generated. Legacy "fallback" rows are eligible (NOT IN covers them).
       this.sql.exec(
         `UPDATE chat_groups
          SET avatar_content = ?,
-             avatar_content_source = 'generated',
-             avatar_emoji_last_attempt_at = NULL
+             avatar_content_source = 'generated'
          WHERE id = ?
-           AND (
-             avatar_content_source = 'default'
-             OR (
-               avatar_content_source = 'fallback'
-               AND avatar_content = ?
-               AND avatar_emoji_last_attempt_at IS NULL
-             )
-           )`,
+           AND avatar_content_source NOT IN ('user', 'generated')`,
         content,
         groupId,
-        DEFAULT_CHAT_GROUP_EMOJI,
-      );
-      const group = this.getChatGroupRow(groupId);
-      avatar = group?.avatar ?? null;
-    });
-    return avatar;
-  }
-
-  setChatGroupAvatarFallback(
-    groupId: string,
-    at: number = Date.now(),
-  ): ChatGroupAvatar | null {
-    let avatar: ChatGroupAvatar | null = null;
-    this.ctx.storage.transactionSync(() => {
-      this.sql.exec(
-        `UPDATE chat_groups
-         SET avatar_content = ?,
-             avatar_content_source = 'fallback',
-             avatar_emoji_last_attempt_at = ?
-         WHERE id = ?
-           AND (
-             avatar_content_source = 'default'
-             OR (
-               avatar_content_source = 'fallback'
-               AND avatar_content = ?
-               AND avatar_emoji_last_attempt_at IS NULL
-             )
-           )`,
-        DEFAULT_CHAT_GROUP_EMOJI,
-        at,
-        groupId,
-        DEFAULT_CHAT_GROUP_EMOJI,
       );
       const group = this.getChatGroupRow(groupId);
       avatar = group?.avatar ?? null;
@@ -1391,70 +1343,49 @@ export class UserDO extends DurableObject<DOEnv> {
 
   claimChatGroupAvatarGenerationForThread(
     threadId: string,
-    at: number = Date.now(),
   ): { id: string; name: string; avatar: ChatGroupAvatar } | null {
-    let candidate: { id: string; name: string; avatar: ChatGroupAvatar } | null = null;
-    const retryBefore = at - 24 * 60 * 60 * 1000;
+    // One-shot, fire-and-forget: only generate for a titled group that is still
+    // on its default avatar AND has not been attempted yet. Generation is
+    // triggered on every websocket connection, so without the attempt marker a
+    // group whose generation keeps failing would re-invoke the model on each
+    // reconnect. Success flips the source to 'generated'; failure stamps
+    // avatar_emoji_last_attempt_at — either way the group stops being claimable.
+    const group = this.getChatGroupForThreadRow(threadId);
+    if (!group || isPlaceholderThreadTitle(group.name)) return null;
+    if (group.avatar.status !== "default") return null;
+    const rows = this.sql
+      .exec<{ avatar_emoji_last_attempt_at: number | null }>(
+        "SELECT avatar_emoji_last_attempt_at FROM chat_groups WHERE id = ?",
+        group.id,
+      )
+      .toArray();
+    if (rows[0]?.avatar_emoji_last_attempt_at != null) return null;
+    return { id: group.id, name: group.name, avatar: group.avatar };
+  }
+
+  markChatGroupAvatarGenerationFailed(
+    groupId: string,
+    at: number = Date.now(),
+  ): ChatGroupAvatar | null {
+    let avatar: ChatGroupAvatar | null = null;
     this.ctx.storage.transactionSync(() => {
-      const group = this.getChatGroupForThreadRow(threadId);
-      if (!group || isPlaceholderThreadTitle(group.name)) return;
-      const rows = this.sql
-        .exec<{
-          avatar_content: string;
-          avatar_content_source: string;
-          avatar_emoji_last_attempt_at: number | null;
-        }>(
-          `SELECT
-             avatar_content,
-             avatar_content_source,
-             avatar_emoji_last_attempt_at
-           FROM chat_groups
-           WHERE id = ?`,
-          group.id,
-        )
-        .toArray();
-      const row = rows[0];
-      if (!row) {
-        return;
-      }
-      const isSuspectFallback =
-        row.avatar_content_source === "fallback" &&
-        row.avatar_content === DEFAULT_CHAT_GROUP_EMOJI &&
-        row.avatar_emoji_last_attempt_at === null;
-      if (
-        row.avatar_content_source !== "default" &&
-        !isSuspectFallback
-      ) {
-        return;
-      }
-      const lastAttempt = row.avatar_emoji_last_attempt_at;
-      if (
-        row.avatar_content_source === "default" &&
-        typeof lastAttempt === "number" &&
-        lastAttempt > retryBefore
-      ) {
-        return;
-      }
+      // Record the one-shot attempt so reconnects don't keep retrying a title
+      // whose generation fails. Matches the same rows the claim/write paths
+      // treat as eligible (including legacy "fallback" rows); never touches a
+      // user-set or already-generated avatar.
       this.sql.exec(
         `UPDATE chat_groups
-         SET avatar_content_source = 'default',
-             avatar_emoji_last_attempt_at = ?
+         SET avatar_emoji_last_attempt_at = ?
          WHERE id = ?
-           AND (
-             avatar_content_source = 'default'
-             OR (
-               avatar_content_source = 'fallback'
-               AND avatar_content = ?
-               AND avatar_emoji_last_attempt_at IS NULL
-             )
-           )`,
+           AND avatar_content_source NOT IN ('user', 'generated')
+           AND avatar_emoji_last_attempt_at IS NULL`,
         at,
-        group.id,
-        DEFAULT_CHAT_GROUP_EMOJI,
+        groupId,
       );
-      candidate = { id: group.id, name: group.name, avatar: group.avatar };
+      const group = this.getChatGroupRow(groupId);
+      avatar = group?.avatar ?? null;
     });
-    return candidate;
+    return avatar;
   }
 
   closeChatGroup(groupId: string): void {
@@ -1870,21 +1801,6 @@ export class UserDO extends DurableObject<DOEnv> {
   // Test helper RPC: expose the current schema version used by migration logic.
   async getSchemaVersion(): Promise<number> {
     return this.getSchemaVersionValue();
-  }
-
-  // Test helper RPC: simulate generic fallback rows written before fallback attempts were marked.
-  async markChatGroupAvatarFallbackWithoutAttemptForTest(
-    groupId: string,
-  ): Promise<void> {
-    this.sql.exec(
-      `UPDATE chat_groups
-       SET avatar_content = ?,
-           avatar_content_source = 'fallback',
-           avatar_emoji_last_attempt_at = NULL
-       WHERE id = ?`,
-      DEFAULT_CHAT_GROUP_EMOJI,
-      groupId,
-    );
   }
 }
 
