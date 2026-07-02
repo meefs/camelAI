@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { projectBuildSandboxKey, runProjectAddDependency, runProjectBuild } from "../src/project-build-service";
+import { buildLogTail, projectBuildSandboxKey, runProjectAddDependency, runProjectBuild } from "../src/project-build-service";
 import type { ProjectBuildSandboxLike } from "../src/project-worker-bundle";
 import type { WorkspaceFileStoreLike, WorkspaceListEntry } from "../src/workspace-filesystem-do";
 
@@ -246,5 +246,86 @@ describe("projectBuildSandboxKey", () => {
       "local-dev-org",
       "ca-ded88355a4284af7bb641b8729105ca8-deploy-test-2-other",
     )).not.toBe(key);
+  });
+});
+
+describe("buildLogTail", () => {
+  it("keeps the vite/rolldown diagnostic that appears at the end of the combined output", () => {
+    const raw = [
+      "$ react-router build && node ./scripts/build-manifest.mjs",
+      "vite v8.0.16 building client environment for production...",
+      "transforming...",
+      "✓ 3048 modules transformed.",
+      "✗ Build failed in 8.34s",
+      "Build failed with 1 error:",
+      "",
+      "[plugin react-router:dot-server]",
+      'Error: Errored while resolving "@/lib/auxiliary-ai.server" in `this.resolve`.',
+      "    Error: Server-only module referenced by client",
+      "",
+      "        '/opt/repo/src/lib/auxiliary-ai.server' imported by route 'src/routes/api/help.ts'",
+      "",
+      'error: script "build:cf" exited with code 1',
+    ].join("\n");
+
+    const tail = buildLogTail(raw)!;
+    expect(tail).toContain("Server-only module referenced by client");
+    expect(tail).toContain("src/routes/api/help.ts");
+  });
+
+  it("keeps parse errors with their code frame", () => {
+    const raw = [
+      "$ react-router build && node ./scripts/build-manifest.mjs",
+      "Error: Transform failed with 1 error:",
+      "[PARSE_ERROR] Expected `;` but found `Identifier`",
+      "     ╭─[ app/routes/home.tsx:21:30 ]",
+      " 21  │   const forcedBuildFailure = ;",
+      'error: script "build" exited with code 1',
+    ].join("\n");
+
+    const tail = buildLogTail(raw)!;
+    expect(tail).toContain("[PARSE_ERROR] Expected `;` but found `Identifier`");
+    expect(tail).toContain("app/routes/home.tsx:21:30");
+    expect(tail).toContain("const forcedBuildFailure = ;");
+  });
+
+  it("strips ANSI escapes and collapses blank runs", () => {
+    const raw = "\u001b[31m✗ Build failed\u001b[0m\n\n\n\n\u001b[1merror TS2339: nope\u001b[22m";
+    expect(buildLogTail(raw)).toBe("✗ Build failed\n\nerror TS2339: nope");
+  });
+
+  it("keeps only the tail of oversized output, where the diagnostic lives", () => {
+    const noise = Array.from({ length: 500 }, (_, i) => `progress line ${i}`).join("\n");
+    const raw = `${noise}\nError: something exploded at the end`;
+    const tail = buildLogTail(raw)!;
+    expect(tail.length).toBeLessThan(2500);
+    expect(tail).toContain("[truncated");
+    expect(tail).toContain("Error: something exploded at the end");
+    expect(tail).not.toContain("progress line 0\n");
+  });
+
+  it("returns null for empty output", () => {
+    expect(buildLogTail("")).toBeNull();
+    expect(buildLogTail("\n  \n")).toBeNull();
+  });
+});
+
+describe("build failure output ordering", () => {
+  it("keeps stderr diagnostics visible in the tail even when stdout is huge", async () => {
+    const files = fakeFileStore({ "/package.json": JSON.stringify({ scripts: { build: "vite build" } }) });
+    const sandbox = fakeSandbox();
+    const noisyStdout = Array.from({ length: 800 }, (_, i) => `progress ${i}`).join("\n");
+    sandbox.exec.mockResolvedValueOnce({ success: true, exitCode: 0, stdout: "", stderr: "" });
+    sandbox.exec.mockResolvedValueOnce({
+      success: false,
+      exitCode: 1,
+      stdout: noisyStdout,
+      stderr: "error TS2339: Property 'x' does not exist on type 'Env'.",
+    });
+
+    const result = await runProjectBuild({ projectId: "demo", files, sandbox });
+    const tail = buildLogTail(result.error!)!;
+    expect(tail).toContain("error TS2339");
+    expect(tail).toContain("[truncated");
   });
 });

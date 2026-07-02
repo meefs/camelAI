@@ -175,8 +175,45 @@ export async function runProjectBuild(input: {
     fileCount: sourceFiles.length,
     durationMs,
     lockfilePersisted,
-    ...(result.exitCode === 0 ? {} : { error: result.stderr || result.stdout || `Build failed with exit code ${result.exitCode}` }),
+    ...(result.exitCode === 0
+      ? {}
+      : {
+        // Combine both streams: bun echoes the failing command to stderr while the
+        // actual compiler/bundler diagnostics often land in stdout, so either one
+        // alone can be all noise. stdout first, stderr last: concatenation loses
+        // temporal interleaving and consumers keep a TAIL of this text, so the
+        // stream where compilers put errors (stderr, typically short) must sit at
+        // the end where noisy stdout can never truncate it away.
+        error: [result.stdout, result.stderr].filter(Boolean).join("\n") ||
+          `Build failed with exit code ${result.exitCode}`,
+      }),
   };
+}
+
+// ---------------------------------------------------------------------------
+// Build log tail
+//
+// Raw build output opens with bun's command echo ("$ react-router build && ...")
+// and tool banners, but build tools print the actual diagnostic at the END of
+// their output — so instead of pattern-matching error formats (a taxonomy that
+// drifts with every toolchain release), return an ANSI-stripped tail of the
+// combined output. The consuming agent reads the excerpt directly.
+// ---------------------------------------------------------------------------
+
+const BUILD_LOG_TAIL_MAX_CHARS = 2400;
+
+export function buildLogTail(raw: string): string | null {
+  const cleaned = raw
+    .replace(/\u001b\[[0-9;]*m/g, "")
+    .replace(/\u001b/g, "")
+    .split(/\r?\n/)
+    .map((line) => line.trimEnd())
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+  if (!cleaned) return null;
+  if (cleaned.length <= BUILD_LOG_TAIL_MAX_CHARS) return cleaned;
+  return `[truncated ${cleaned.length - BUILD_LOG_TAIL_MAX_CHARS} chars]\n${cleaned.slice(-BUILD_LOG_TAIL_MAX_CHARS)}`;
 }
 
 export async function runProjectAddDependency(input: {

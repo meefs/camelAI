@@ -34,7 +34,7 @@ import { CodeModeScheduledPrompts } from "./code-mode-scheduled-prompts";
 import { CodeModeDeterministicAutomations } from "./code-mode-deterministic-automations";
 import { CodeModeIntegrations } from "./code-mode-integrations";
 import { createSignedToken } from "./signed-tokens";
-import { projectBuildSandboxKey, runProjectAddDependency, runProjectBuild, type ProjectBuildResult } from "./project-build-service";
+import { buildLogTail, projectBuildSandboxKey, runProjectAddDependency, runProjectBuild, type ProjectBuildResult } from "./project-build-service";
 import { collectWorkerBundleFromSandbox, type ProjectBuildSandboxLike } from "./project-worker-bundle";
 import { defaultProjectScaffoldFiles, normalizeProjectScaffoldTemplate, type ProjectScaffoldResult } from "./project-scaffold";
 import { deployWorkerModulesDirect, rollbackWorkerDeployFromArtifactCache, type DirectDispatchDeployResult } from "./direct-dispatch-deploy";
@@ -1175,6 +1175,7 @@ async function withProjectBuildServiceErrorMapping<T>(operation: () => Promise<T
 }
 
 function summarizeProjectBuildResult(build: ProjectBuildResult): Record<string, unknown> {
+  const excerpt = build.success ? null : buildLogTail(buildFailureRawOutput(build));
   return {
     success: build.success,
     projectId: build.projectId,
@@ -1183,7 +1184,10 @@ function summarizeProjectBuildResult(build: ProjectBuildResult): Record<string, 
     fileCount: build.fileCount,
     durationMs: build.durationMs,
     lockfilePersisted: build.lockfilePersisted,
-    ...(build.error ? { errorSummary: conciseErrorSummary(build.error) } : {}),
+    ...(build.error ? { errorSummary: summarizeBuildFailure(build) } : {}),
+    // Capped log tail so the agent can fix the failure without the full
+    // stdout/stderr flood.
+    ...(excerpt ? { logExcerpt: excerpt } : {}),
   };
 }
 
@@ -1198,8 +1202,22 @@ function summarizeDirectDeployResult(deploy: DirectDispatchDeployResult): Record
   };
 }
 
+function buildFailureRawOutput(build: ProjectBuildResult): string {
+  // stdout first, stderr last — consumers keep a tail of this text, and stderr
+  // (where compilers put errors) must never be truncated away by stdout noise.
+  return build.error ||
+    [build.stdout, build.stderr].filter(Boolean).join("\n") ||
+    `Build failed with exit code ${build.exitCode}`;
+}
+
+// No error-format pattern matching here: build tools print the diagnostic at the
+// end of their output, so the failure payload carries a capped log tail
+// (logExcerpt) and the summary stays dumb. Short single-line failures (e.g.
+// package.json validation) are their own best summary.
 function summarizeBuildFailure(build: ProjectBuildResult): string {
-  return conciseErrorSummary(build.error || build.stderr || build.stdout || `Build failed with exit code ${build.exitCode}`);
+  const tail = buildLogTail(buildFailureRawOutput(build));
+  if (tail && tail.length <= 300 && !tail.includes("\n")) return limitSummary(tail);
+  return `Build failed with exit code ${build.exitCode}; see build.logExcerpt for the diagnostic output`;
 }
 
 function summarizeDeployFailure(deploy: DirectDispatchDeployResult): string {
@@ -3389,8 +3407,12 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
         sandbox: this.projectBuildSandbox(project.id),
         timeoutMs,
       });
+      // Same summarized shape as deploy_project's build payload: on failure the
+      // agent gets errorSummary + a capped logExcerpt instead of the raw
+      // stdout/stderr flood; on success a capped stdout tail is kept for context.
       return {
-        ...result,
+        ...summarizeProjectBuildResult(result),
+        ...(result.success && result.stdout ? { stdout: buildLogTail(result.stdout) } : {}),
         project: project.name,
         backend: project.backend ?? "vm",
       };
