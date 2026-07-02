@@ -9,6 +9,7 @@ vi.mock('@/lib/wait-until', () => ({
 }));
 
 const { generateHelpSubject } = await import('@/routes/api/help');
+const { AUXILIARY_AI_MODEL } = await import('@/lib/auxiliary-ai.server');
 
 describe('generateHelpSubject', () => {
   it('generates a trimmed subject from description', async () => {
@@ -24,7 +25,7 @@ describe('generateHelpSubject', () => {
 
     expect(subject).toBe('Agent freezes on large file upload');
     expect(run).toHaveBeenCalledWith(
-      '@cf/google/gemma-3-12b-it',
+      AUXILIARY_AI_MODEL,
       expect.objectContaining({
         messages: expect.arrayContaining([
           expect.objectContaining({
@@ -33,9 +34,9 @@ describe('generateHelpSubject', () => {
               'Summarize the following support request into a short subject line (under 80 characters). Respond with only the subject line, no quotes or extra punctuation.',
           }),
         ]),
-        temperature: 0.3,
         max_tokens: 30,
-      })
+      }),
+      undefined
     );
   });
 

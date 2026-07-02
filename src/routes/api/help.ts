@@ -1,5 +1,9 @@
 import { parseWithZod } from '@conform-to/zod/v4';
 import type { Route } from './+types/help';
+import {
+  runAuxiliaryAiChatCompletion,
+  type AuxiliaryAiBinding,
+} from '@/lib/auxiliary-ai.server';
 import { requireAuthContext } from '@/lib/auth.server';
 import { getEnv, type CloudflareEnv } from '@/lib/cloudflare.server';
 import { waitUntil } from '@/lib/wait-until';
@@ -20,20 +24,8 @@ import {
   getOrgBillingPlan,
 } from '@/lib/billing-plans';
 
-const HELP_SUBJECT_MODEL = '@cf/google/gemma-3-12b-it';
 const HELP_SUBJECT_SYSTEM_PROMPT =
   'Summarize the following support request into a short subject line (under 80 characters). Respond with only the subject line, no quotes or extra punctuation.';
-
-type AiBinding = {
-  run: (
-    model: string,
-    options: {
-      messages: Array<{ role: string; content: string }>;
-      temperature?: number;
-      max_tokens?: number;
-    }
-  ) => Promise<{ response?: string } | null>;
-};
 
 function normalizeSubject(value: string | undefined | null): string | null {
   if (!value) return null;
@@ -75,19 +67,15 @@ export async function generateHelpSubject(
   fallbackCategoryLabel: string
 ): Promise<string> {
   try {
-    const ai = env.AI as AiBinding;
-    const response = await ai.run(HELP_SUBJECT_MODEL, {
-      messages: [
-        {
-          role: 'system',
-          content: HELP_SUBJECT_SYSTEM_PROMPT,
-        },
-        { role: 'user', content: description },
-      ],
-      temperature: 0.3,
-      max_tokens: 30,
-    });
-    return normalizeSubject(response?.response) ?? fallbackCategoryLabel;
+    const subject = await runAuxiliaryAiChatCompletion(
+      env.AI as AuxiliaryAiBinding,
+      {
+        systemPrompt: HELP_SUBJECT_SYSTEM_PROMPT,
+        userMessage: description,
+        maxTokens: 30,
+      },
+    );
+    return normalizeSubject(subject) ?? fallbackCategoryLabel;
   } catch (error) {
     console.error('Help subject generation failed:', error);
     return fallbackCategoryLabel;

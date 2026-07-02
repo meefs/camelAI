@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 // @ts-expect-error self-host worker module has no types
 import makeBinding from "../../../infra/selfhost/ai-binding.worker.js";
+import { AUXILIARY_AI_MODEL } from "../../../src/lib/auxiliary-ai.server";
 
 describe("selfhost ai binding", () => {
   afterEach(() => {
@@ -51,6 +52,31 @@ describe("selfhost ai binding", () => {
       ],
       max_tokens: 32,
     });
+  });
+
+  it("maps the auxiliary utility model to Bedrock Mantle", async () => {
+    const fetchMock = vi.fn(async () =>
+      new Response(
+        JSON.stringify({ choices: [{ message: { content: "🧠" } }] }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const binding = makeBinding({
+      provider: "bedrock",
+      apiKey: "bedrock-test-key",
+      awsRegion: "us-west-2",
+    });
+
+    await binding.run(AUXILIARY_AI_MODEL, {
+      messages: [{ role: "user", content: "Architecture planning" }],
+      max_tokens: 32,
+    });
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    // A raw "@cf/..." id passed through to Bedrock means a missing alias.
+    expect(JSON.parse(String(init.body)).model).toBe("meta.llama3-3-70b-instruct");
   });
 
   it("rejects unsupported providers", async () => {

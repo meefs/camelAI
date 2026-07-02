@@ -45,6 +45,7 @@ import {
   getThreadUserMessageSources,
   isPlaceholderThreadTitle,
 } from '../../../src/lib/thread-title';
+import { AUXILIARY_AI_MODEL } from '../../../src/lib/auxiliary-ai.server';
 import { generateChatGroupEmojiWithOpenAI } from '../../../src/lib/chat-group-avatar-generation.server';
 import { generateThreadTitleWithOpenAI } from '../../../src/lib/thread-title-generation.server';
 import {
@@ -5512,6 +5513,8 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
     });
 
     let generatedEmoji: string | null = null;
+    const generationStartedAt = Date.now();
+    let aiErrored = false;
     try {
       generatedEmoji = await generateChatGroupEmojiWithOpenAI(
         this.env.AI,
@@ -5525,6 +5528,7 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
         { gatewayName: this.env.CF_GATEWAY_NAME },
       );
     } catch (error) {
+      aiErrored = true;
       console.error("[ChatThreadDO] failed to generate chat group emoji", {
         reason: "ai_error",
         threadId,
@@ -5532,6 +5536,23 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
         workspaceId: context.workspaceId,
         orgId: context.orgId,
         ...this.errorLogFields(error),
+      });
+      this.recordChatThreadObservabilityEvent("chat_group_emoji_generation", {
+        operation: "generate",
+        status: "ai_error",
+        model: AUXILIARY_AI_MODEL,
+        durationMs: Date.now() - generationStartedAt,
+        error,
+      });
+    }
+    // One event per generation outcome so the failure rate is measurable.
+    if (!aiErrored) {
+      this.recordChatThreadObservabilityEvent("chat_group_emoji_generation", {
+        operation: "generate",
+        status: generatedEmoji ? "ok" : "no_emoji",
+        severity: generatedEmoji ? "info" : "warn",
+        model: AUXILIARY_AI_MODEL,
+        durationMs: Date.now() - generationStartedAt,
       });
     }
 

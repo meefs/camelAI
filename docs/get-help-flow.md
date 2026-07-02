@@ -175,21 +175,15 @@ New route at `src/routes/api/help.ts`.
 
 #### AI-Generated Subject Line
 
-Follow the same pattern as `generateThreadTitle` in `src/lib/chat-do.server.ts`. Use the Cloudflare Workers AI binding (`env.AI`) with the same model:
+Subject generation goes through the shared auxiliary helper (`runAuxiliaryAiChatCompletion` with `AUXILIARY_AI_MODEL` from `src/lib/auxiliary-ai.server.ts`) — the same single utility model used for thread titles, chat group emoji, and completion summaries:
 
 ```typescript
-const response = await env.AI.run('@cf/google/gemma-3-12b-it', {
-  messages: [
-    {
-      role: 'system',
-      content: 'Summarize the following support request into a short subject line (under 80 characters). Respond with only the subject line, no quotes or extra punctuation.',
-    },
-    { role: 'user', content: description },
-  ],
-  temperature: 0.3,  // Lower than thread titles — we want precision, not creativity
-  max_tokens: 30,
+const subject = await runAuxiliaryAiChatCompletion(env.AI, {
+  systemPrompt: 'Summarize the following support request into a short subject line (under 80 characters). Respond with only the subject line, no quotes or extra punctuation.',
+  userMessage: description,
+  maxTokens: 30,
 });
-const subject = response?.response?.trim()?.slice(0, 100) || categoryLabel;
+return normalizeSubject(subject) ?? categoryLabel;
 ```
 
 **Fallback:** If AI generation fails or returns empty, fall back to the human-readable category label (e.g., "Bug report").

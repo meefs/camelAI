@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
+import { AUXILIARY_AI_MODEL } from "@/lib/auxiliary-ai.server";
 import {
   CHAT_GROUP_EMOJI_MAX_OUTPUT_TOKENS,
   generateChatGroupEmojiWithOpenAI,
@@ -32,7 +33,7 @@ describe("chat group avatar generation", () => {
     expect(CHAT_GROUP_EMOJI_MAX_OUTPUT_TOKENS).toBeGreaterThanOrEqual(24);
   });
 
-  it("passes the token budget when calling auxiliary AI", async () => {
+  it("passes the emoji model and token budget when calling auxiliary AI", async () => {
     const ai = {
       run: vi.fn(async () => ({
         choices: [{ message: { content: "Emoji: 🧠" } }],
@@ -44,7 +45,7 @@ describe("chat group avatar generation", () => {
     ).resolves.toBe("🧠");
 
     expect(ai.run).toHaveBeenCalledWith(
-      expect.any(String),
+      AUXILIARY_AI_MODEL,
       expect.objectContaining({
         max_tokens: CHAT_GROUP_EMOJI_MAX_OUTPUT_TOKENS,
       }),

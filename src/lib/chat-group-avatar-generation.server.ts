@@ -8,9 +8,14 @@ import { isEmoji } from "./avatar";
 import emojiRegex from "emoji-regex";
 
 const CHAT_GROUP_EMOJI_GENERATION_SYSTEM_PROMPT = [
-  "Pick a single emoji that represents this chat group title.",
-  "Reply with only the emoji.",
-].join(" ");
+  "Pick the single emoji that best represents a chat conversation title.",
+  "Reply with only that emoji — no words, no punctuation, no quotes.",
+  "Examples:",
+  '"Fix login redirect bug" -> 🐛',
+  '"Q3 revenue dashboard" -> 📊',
+  '"Deploy service to staging" -> 🚀',
+  '"Plan team offsite in Lisbon" -> ✈️',
+].join("\n");
 
 export const CHAT_GROUP_EMOJI_MAX_OUTPUT_TOKENS = 32;
 

@@ -1,5 +1,6 @@
 const AUXILIARY_MODEL_ALIASES = {
   "@cf/meta/llama-3.2-3b-instruct": "meta.llama3-2-3b-instruct",
+  "@cf/meta/llama-3.3-70b-instruct-fp8-fast": "meta.llama3-3-70b-instruct",
 };
 
 function resolveBedrockModelId(model) {

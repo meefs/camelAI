@@ -1,4 +1,11 @@
-export const AUXILIARY_AI_MODEL = "@cf/meta/llama-3.2-3b-instruct";
+// Single utility model for all auxiliary generation (thread titles, chat
+// group emoji, completion summaries, help-ticket subjects). Chosen over the
+// small llamas and the newer Gemma/GLM/Qwen/gpt-oss models after live
+// benchmarking: ~340ms median (as fast as the 3B), perfect instruction
+// following on trivial-output tasks, and no hidden thinking mode — the new
+// reasoning models spend 2-7s (or their whole token budget) thinking before
+// answering, which is the wrong trade for short utility calls.
+export const AUXILIARY_AI_MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast";
 
 export interface AuxiliaryAiChatCompletion {
   choices?: Array<{
