@@ -239,6 +239,11 @@ function extractVitestUnhandledErrors(output) {
     // an unhandled rejection. A stack through callToolEnvelope proves the error was
     // delivered to the agent as a value — a duplicate signal, not a harness bug.
     .filter((piece) => !piece.includes("callToolEnvelope"))
+    // Known eval-env limitation: the Miniflare eval environment has no BROWSER
+    // binding, so take_screenshot always fails with this message. The failure is
+    // already surfaced to the agent as a tool error; the extra unhandled-rejection
+    // report is environment noise, not an agent or harness bug.
+    .filter((piece) => !piece.includes("Screenshot capture requires the BROWSER binding"))
     .map((piece) => firstMeaningfulLine(piece))
     .filter(Boolean)
     .map((line) => ({

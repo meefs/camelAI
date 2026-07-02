@@ -87,7 +87,7 @@ describe("sandbox write file agent eval", () => {
         messageSource: "eval",
         timeoutMs: getEvalTimeoutMs(testEnv, 180_000),
         message: [
-          "Use bash in the sandbox-write-app project to create /workspace/eval-output.txt with exactly this text: sandbox write eval ok.",
+          'Use bash in the sandbox-write-app project to create /workspace/eval-output.txt with exactly this text (everything between the quotes, including the final period): "sandbox write eval ok."',
           "Then read the file back and reply with the file contents only.",
         ].join(" "),
       });

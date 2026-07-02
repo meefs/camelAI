@@ -142,6 +142,60 @@ describe("eval signal scoring", () => {
     });
   });
 
+  it("does not count take_screenshot BROWSER-binding failures as bad tool calls", () => {
+    // Known eval-env limitation: the Miniflare eval environment has no BROWSER
+    // binding, so take_screenshot always fails there. Not agent misbehavior.
+    const signal = evaluateAgentEvalSignal(
+      {
+        messages: [],
+        events: [
+          {
+            type: "runtime_event",
+            event: {
+              method: "item/completed",
+              params: {
+                item: {
+                  id: "tool1",
+                  type: "dynamicToolCall",
+                  tool: "take_screenshot",
+                  status: "failed",
+                  arguments: { app_name: "space-matching-game" },
+                  result: {
+                    details: {
+                      text: "Screenshot capture requires the BROWSER binding, which is not configured for this environment.",
+                    },
+                  },
+                },
+              },
+            },
+          },
+          {
+            type: "runtime_event",
+            event: {
+              method: "item/completed",
+              params: {
+                item: {
+                  id: "tool2",
+                  type: "dynamicToolCall",
+                  tool: "take_screenshot",
+                  status: "failed",
+                  arguments: { app_name: "space-matching-game" },
+                  result: { details: { text: "some other real failure" } },
+                },
+              },
+            },
+          },
+        ],
+      },
+      {},
+    );
+
+    expect(signal.badToolCallCount).toBe(1);
+    expect(signal.badToolCalls).toMatchObject([
+      { id: "tool2", tool: "take_screenshot", reason: "tool_status_failed" },
+    ]);
+  });
+
   it("sums token usage from Pi turn completion events", () => {
     const tokenUsage = countEvalTokenUsage({
       events: [

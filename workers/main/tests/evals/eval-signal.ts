@@ -69,6 +69,15 @@ function excerpt(value: unknown): string | undefined {
     : text;
 }
 
+// Known eval-env limitation: the Miniflare eval environment has no BROWSER binding,
+// so take_screenshot always fails with this message
+// (workers/main/src/app-screenshot-binding.ts). That is not agent misbehavior, so
+// such failures must not count against the bad-tool-call budget. Production
+// take_screenshot behavior is unchanged — this only filters eval signal.
+function isKnownEvalEnvToolLimitation(output: string | undefined): boolean {
+  return output?.includes("Screenshot capture requires the BROWSER binding") === true;
+}
+
 function classifyFailedToolCall(
   tool: string,
   output: string | undefined,
@@ -298,6 +307,7 @@ export function evaluateAgentEvalSignal(
     }
 
     if (!reason) continue;
+    if (isKnownEvalEnvToolLimitation(output)) continue;
     badToolCallsByKey.set(key, {
       id,
       tool,

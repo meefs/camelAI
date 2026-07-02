@@ -94,6 +94,30 @@ describe("defaultProjectScaffoldFiles", () => {
     expect(scaffoldFile(files, "/scripts/build-manifest.mjs")).toContain('main_module: "worker.js"');
     expect(scaffoldFile(files, "/scripts/build-manifest.mjs")).toContain("node_modules/.bin/esbuild");
     expect(scaffoldFile(files, "/scripts/build-manifest.mjs")).toContain("env.ASSETS.fetch(request)");
+
+    // When wrangler.jsonc sets main (the scaffold default), the build must bundle that
+    // module as the worker entry so agent-added exports (Durable Object classes) survive.
+    const buildManifest = scaffoldFile(files, "/scripts/build-manifest.mjs");
+    expect(buildManifest).toContain("if (config.main) {");
+    expect(buildManifest).toContain("config.main,");
+    expect(buildManifest).toContain("--alias:virtual:react-router/server-build=./build/server/index.js");
+    expect(buildManifest).toContain('--define:import.meta.env.MODE="production"');
+
+    // Durable Object bindings and migrations must pass through to the deploy manifest;
+    // wrangler vars are converted to plain_text/json env-var bindings (a top-level vars
+    // key is a no-op on the direct-deploy path, which only reads metadata.bindings).
+    expect(buildManifest).toContain("...(config.durable_objects ? { durable_objects: config.durable_objects } : {})");
+    expect(buildManifest).toContain("...(config.migrations ? { migrations: config.migrations } : {})");
+    expect(buildManifest).toContain('? { type: "plain_text", name, text: value }');
+    expect(buildManifest).toContain(': { type: "json", name, json: value }');
+    expect(buildManifest).toContain("const bindings = [...(config.bindings ?? []), ...varBindings];");
+    expect(buildManifest).toContain("...(bindings.length > 0 ? { bindings } : {})");
+    expect(buildManifest).not.toContain("{ vars: config.vars }");
+
+    // Without a main module, declared DO config cannot be bundled: fail loudly.
+    expect(buildManifest).toContain("if (config.durable_objects || config.migrations) {");
+    expect(buildManifest).toContain("declares Durable Objects but no main worker module exports their classes");
+    expect(buildManifest).toContain("process.exit(1)");
   });
 
   it("keeps the explicit bare Worker scaffold available", () => {
@@ -117,5 +141,19 @@ describe("defaultProjectScaffoldFiles", () => {
       "@cloudflare/workers-types": expect.any(String),
     });
     expect(scaffoldFile(files, "/wrangler.jsonc")).toContain('"main": "src/index.ts"');
+
+    // The minimal scaffold's manifest spreads the whole wrangler config, so
+    // durable_objects/migrations already pass through to the deploy manifest —
+    // but vars must be converted to plain_text/json env-var bindings, since a
+    // top-level vars key is a no-op on the direct-deploy path (it only reads
+    // metadata.bindings).
+    const writeBuildManifest = scaffoldFile(files, "/scripts/write-build-manifest.mjs");
+    expect(writeBuildManifest).toContain("...config,");
+    expect(writeBuildManifest).toContain('main_module: "index.js"');
+    expect(writeBuildManifest).toContain('? { type: "plain_text", name, text: value }');
+    expect(writeBuildManifest).toContain(': { type: "json", name, json: value }');
+    expect(writeBuildManifest).toContain("const bindings = [...(config.bindings ?? []), ...varBindings];");
+    expect(writeBuildManifest).toContain("...(bindings.length > 0 ? { bindings } : {})");
+    expect(writeBuildManifest).toContain("delete manifest.vars;");
   });
 });

@@ -29,9 +29,11 @@ import {
 } from "./eval-deploy-assert";
 import { emitEvalTranscript } from "./eval-transcript";
 import type { ChatThreadDO } from "../../src/chat-thread-do";
-import type {
-  WorkspaceFilesystemDO,
-  WorkspaceProject,
+import {
+  ProjectFilesystemClient,
+  type WorkspaceFilesystemDO,
+  type WorkspaceFilesystemEnv,
+  type WorkspaceProject,
 } from "../../src/workspace-filesystem-do";
 
 type SpaceMatchingGameEvalEnv = TestEnv & EvalModelEnv & EvalSignalEnv & {
@@ -66,6 +68,11 @@ type SourceFile = {
   text: string;
   size: number;
 };
+
+// Agents can build the app through two legitimate paths:
+// - "vm": legacy sandbox VM path (`create-worker ...` + `bun run deploy` + `list_apps`)
+// - "do": DO-backed path (`create_project` + project file writes + `deploy_project`)
+type DeployPath = "vm" | "do";
 
 type SourceInspection = {
   appDir?: string;
@@ -117,6 +124,7 @@ type PageSmoke = {
   bodyLength?: number;
   errorStrings: string[];
   error?: string;
+  attempts?: number;
 };
 
 const EVAL_ID = "space-matching-game-live";
@@ -188,6 +196,12 @@ function joinVmPath(base: string, child: string): string {
   return `${base.replace(/\/+$/, "")}/${child.replace(/^\/+/, "")}`;
 }
 
+function relativeToAppDir(appDir: string, path: string): string {
+  const base = appDir.replace(/\/+$/, "");
+  if (base && path.startsWith(`${base}/`)) return path.slice(base.length + 1);
+  return path.replace(/^\/+/, "");
+}
+
 function stripComments(text: string): string {
   return text
     .replace(/\/\*[\s\S]*?\*\//g, "")
@@ -198,6 +212,18 @@ function stripComments(text: string): string {
 
 function lowerText(value: unknown): string {
   return JSON.stringify(value).toLowerCase();
+}
+
+// Real code spells these concepts as compound identifiers — LeaderboardDO, addScore,
+// getLeaderboard, time_seconds — and hasTerm's word boundaries can never match inside
+// them, so a genuine DO+SQLite leaderboard scored zero persistence/task hits
+// (run eval-20260702-081333Z-6c9ef776). Split camelCase and snake_case into words
+// before matching game/persistence vocabulary.
+function searchableSourceText(text: string): string {
+  return stripComments(text)
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .replace(/_+/g, " ")
+    .toLowerCase();
 }
 
 function escapeRegex(value: string): string {
@@ -390,6 +416,102 @@ function usedTool(events: Array<Record<string, unknown>>, toolName: string): boo
   );
 }
 
+const APP_URL_PATTERN = /https?:\/\/[^\s"'`\\]+/i;
+
+// Extract every parseable JSON object embedded in free-form js_exec output (which
+// typically interleaves logs with JSON.stringify'd tool results).
+function extractJsonObjects(text: string): Array<Record<string, unknown>> {
+  const objects: Array<Record<string, unknown>> = [];
+  let index = 0;
+  while (index < text.length) {
+    const start = text.indexOf("{", index);
+    if (start === -1) break;
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+    let end = -1;
+    for (let i = start; i < text.length; i += 1) {
+      const char = text[i];
+      if (inString) {
+        if (escaped) escaped = false;
+        else if (char === "\\") escaped = true;
+        else if (char === '"') inString = false;
+        continue;
+      }
+      if (char === '"') {
+        inString = true;
+        continue;
+      }
+      if (char === "{") depth += 1;
+      if (char === "}") {
+        depth -= 1;
+        if (depth === 0) {
+          end = i;
+          break;
+        }
+      }
+    }
+    if (end === -1) {
+      index = start + 1;
+      continue;
+    }
+    try {
+      const record = asRecord(JSON.parse(text.slice(start, end + 1)));
+      if (record) objects.push(record);
+      index = end + 1;
+    } catch {
+      index = start + 1;
+    }
+  }
+  return objects;
+}
+
+// True when the object looks like a *successful* deploy_project result carrying the
+// live app URL: an explicit success marker (success/ok/buildSuccess true, or a
+// sourceSnapshot — deploy_project result fields) plus a url/appUrl field with an
+// http(s) URL on the same object. Explicitly failed envelopes (ok:false /
+// success:false) never count and are not recursed into; unmarked wrapper objects are
+// searched for a nested deploy result.
+function isSuccessfulDeployResultObject(record: Record<string, unknown>): boolean {
+  if (record.success === false || record.ok === false) return false;
+  const url = [record.url, record.appUrl].find(
+    (value): value is string => typeof value === "string" && APP_URL_PATTERN.test(value),
+  );
+  const marked =
+    record.success === true ||
+    record.ok === true ||
+    record.buildSuccess === true ||
+    asRecord(record.sourceSnapshot) !== undefined;
+  if (url && marked) return true;
+  return Object.values(record).some((value) => {
+    const nested = asRecord(value);
+    return nested ? isSuccessfulDeployResultObject(nested) : false;
+  });
+}
+
+// A deploy_project call only substitutes for list_apps when it actually delivered the
+// live app URL: the result (top-level item or js_exec output) must contain a
+// successful deploy result *object* whose own url/appUrl carries the URL. This
+// matters even for top-level items with a non-failed status, because deploy_project
+// returns completed { success: false, stage: "build"|"deploy", ... } envelopes on
+// build/deploy failures rather than throwing (see code-mode-tools.ts) — so an
+// incidental docs/log URL in a failure summary must not count.
+function deployProjectYieldedAppUrl(events: Array<Record<string, unknown>>): boolean {
+  return collectRuntimeItems(events).some((item) => {
+    const tool = runtimeToolName(item);
+    if (tool === "deploy_project" || tool?.endsWith("__deploy_project") === true) {
+      if (item.status === "failed") return false;
+      return extractJsonObjects(resultText(item.result)).some(isSuccessfulDeployResultObject);
+    }
+    if (isJsExecItem(item)) {
+      const code = asString(asRecord(item.arguments)?.code) ?? "";
+      if (!jsExecCodeMentionsTool(code, "deploy_project")) return false;
+      return extractJsonObjects(resultText(item.result)).some(isSuccessfulDeployResultObject);
+    }
+    return false;
+  });
+}
+
 function readDevelopingSoftwareSkill(
   events: Array<Record<string, unknown>>,
 ): boolean {
@@ -440,6 +562,8 @@ function evaluateRuntimeAssertions(
 ): {
   commands: string[];
   failures: string[];
+  usedCreateProject: boolean;
+  usedDeployProject: boolean;
 } {
   const evidence = collectRuntimeEvidence(result.events);
   const commands = evidence.commands;
@@ -449,16 +573,27 @@ function evaluateRuntimeAssertions(
   ].join("\n").toLowerCase();
   const failures: string[] = [];
 
+  // The DO-backed path (create_project + deploy_project) is a legitimate alternative to
+  // the legacy VM path (create-worker + bun run deploy + list_apps): deploy_project
+  // returns the live app URL directly.
+  const usedCreateProject = usedTool(result.events, "create_project");
+  const usedDeployProject = usedTool(result.events, "deploy_project");
+
   if (!readDevelopingSoftwareSkill(result.events)) {
     failures.push("agent did not read developing-software/SKILL.md");
   }
-  if (!/\bcreate-worker\b/.test(commandSignalText)) {
+  if (!/\bcreate-worker\b/.test(commandSignalText) && !usedCreateProject) {
     failures.push("agent did not run the create-worker scaffold command");
   }
-  if (!/\bbun\s+run\s+deploy\b/.test(commandSignalText)) {
+  if (!/\bbun\s+run\s+deploy\b/.test(commandSignalText) && !usedDeployProject) {
     failures.push("agent did not run bun run deploy");
   }
-  if (!usedTool(result.events, "list_apps")) {
+  // Only a deploy_project that actually returned the app URL substitutes for
+  // list_apps; a failed or URL-less deploy_project must still flag the miss.
+  if (
+    !usedTool(result.events, "list_apps") &&
+    !(usedDeployProject && deployProjectYieldedAppUrl(result.events))
+  ) {
     failures.push("agent did not call list_apps after deploy");
   }
   if (!usedTool(result.events, "set_preview")) {
@@ -484,24 +619,34 @@ function evaluateRuntimeAssertions(
     );
   }
 
-  return { commands, failures };
+  return { commands, failures, usedCreateProject, usedDeployProject };
 }
 
-function buildPostDeployToolCriteria(runtimeAssertions: { failures: string[] }) {
+function buildPostDeployToolCriteria(
+  runtimeAssertions: { failures: string[] },
+  options: { deployProjectProvidedAppUrl?: boolean } = {},
+) {
   const listAppsFailure = runtimeAssertions.failures.find((failure) =>
     failure.includes("list_apps"),
   );
   const setPreviewFailure = runtimeAssertions.failures.find((failure) =>
     failure.includes("set_preview"),
   );
+  // deploy_project returns the live app URL directly, so a successful deploy_project
+  // whose result carried the app URL is equivalent evidence to calling list_apps.
+  const listAppsPassed =
+    !listAppsFailure || options.deployProjectProvidedAppUrl === true;
 
   return [
     passFailCriterion({
       id: "called_list_apps",
-      label: "Agent called list_apps after deploy",
-      passed: !listAppsFailure,
-      reason: listAppsFailure,
-      details: { failures: runtimeAssertions.failures },
+      label: "Agent called list_apps after deploy (or deploy_project returned the app URL)",
+      passed: listAppsPassed,
+      reason: listAppsPassed ? undefined : listAppsFailure,
+      details: {
+        failures: runtimeAssertions.failures,
+        deployProjectProvidedAppUrl: options.deployProjectProvidedAppUrl === true,
+      },
     }),
     passFailCriterion({
       id: "called_set_preview",
@@ -654,9 +799,10 @@ async function collectSourceFiles(
 function inspectCollectedSource(
   appDir: string,
   sourceFiles: SourceFile[],
+  deployPath: DeployPath = "vm",
 ): SourceInspection {
   const textByBasename = new Map(
-    sourceFiles.map((file) => [file.path.slice(appDir.length + 1), file.text]),
+    sourceFiles.map((file) => [relativeToAppDir(appDir, file.path), file.text]),
   );
   const packageJson = parseJsonObject(textByBasename.get("package.json"));
   const scripts = asRecord(packageJson.scripts) ?? {};
@@ -685,12 +831,11 @@ function inspectCollectedSource(
     "tile",
   ];
   const taskFiles = sourceFiles.filter((file) =>
-    containsAny(stripComments(file.text).toLowerCase(), taskTerms),
+    containsAny(searchableSourceText(file.text), taskTerms),
   );
   const taskSourceText = taskFiles
-    .map((file) => stripComments(file.text))
-    .join("\n")
-    .toLowerCase();
+    .map((file) => searchableSourceText(file.text))
+    .join("\n");
 
   const signalTerms = {
     matchingGame: [
@@ -716,6 +861,14 @@ function inspectCollectedSource(
       "player name",
       "email",
       "password",
+      // Name-entry vocabulary: a leaderboard "credential" is often just a display
+      // name (e.g. "Enter your name", placeholder "Your callsign...").
+      "callsign",
+      "nickname",
+      "gamertag",
+      "initials",
+      "your name",
+      "enter a name",
     ],
     spaceTheme: [
       "space",
@@ -743,9 +896,12 @@ function inspectCollectedSource(
 
   const persistenceFiles = sourceFiles
     .filter((file) => {
-      const text = stripComments(file.text).toLowerCase();
+      const text = searchableSourceText(file.text);
       return (
         containsAny(text, [
+          // "durable object" is what searchableSourceText makes of DurableObject;
+          // keep the joined form for sources that already spell it lowercase.
+          "durable object",
           "durableobject",
           "storage.sql",
           "ctx.storage.sql",
@@ -755,18 +911,27 @@ function inspectCollectedSource(
         containsAny(text, ["score", "leaderboard", "player", "credential", "user"])
       );
     })
-    .map((file) => file.path.slice(appDir.length + 1));
+    .map((file) => relativeToAppDir(appDir, file.path));
 
   const failures: string[] = [];
   const deployScript = asString(scripts.deploy);
-  if (!deployScript?.includes("wrangler deploy") || !deployScript.includes("dispatch-namespace")) {
-    failures.push("package.json deploy script does not deploy with wrangler dispatch namespace");
+  if (deployPath === "vm") {
+    // Legacy VM path deploys with the project's own `bun run deploy` script.
+    if (!deployScript?.includes("wrangler deploy") || !deployScript.includes("dispatch-namespace")) {
+      failures.push("package.json deploy script does not deploy with wrangler dispatch namespace");
+    }
   }
   if (!dependencies["react-router"] || !dependencies.react || !dependencies["react-dom"]) {
     failures.push("package.json is missing React/React Router scaffold dependencies");
   }
-  if (!devDependencies["@cloudflare/vite-plugin"] || !devDependencies.wrangler) {
-    failures.push("package.json is missing Cloudflare Vite/Wrangler dev dependencies");
+  if (deployPath === "vm") {
+    if (!devDependencies["@cloudflare/vite-plugin"] || !devDependencies.wrangler) {
+      failures.push("package.json is missing Cloudflare Vite/Wrangler dev dependencies");
+    }
+  } else if (!devDependencies["@react-router/dev"] || !devDependencies.wrangler) {
+    // The DO-backed create_project scaffold builds with @react-router/dev + esbuild
+    // (no @cloudflare/vite-plugin) and deploys through deploy_project.
+    failures.push("package.json is missing React Router/Wrangler dev dependencies");
   }
   if (
     componentsJson["$schema"] !== "https://ui.shadcn.com/schema.json" ||
@@ -798,8 +963,15 @@ function inspectCollectedSource(
   if (signalHits.leaderboard.length < 2) {
     failures.push("source does not show leaderboard/high-score behavior");
   }
+  // A single vocabulary hit is enough when the source also shows concrete text-input
+  // + submit markup (a genuine name-entry flow may only say e.g. "username" once).
+  // An app with no entry flow at all still fails: zero hits, or no form markup.
+  const hasEntryFormMarkup =
+    /\b(input|textarea)\b/i.test(taskSourceText) &&
+    /\b(form|onsubmit|submit|button)\b/i.test(taskSourceText);
   if (
-    signalHits.credentials.length < 2 ||
+    signalHits.credentials.length < 1 ||
+    (signalHits.credentials.length < 2 && !hasEntryFormMarkup) ||
     !/\b(input|form|action|method=["']post|onsubmit|submit)\b/i.test(taskSourceText)
   ) {
     failures.push("source does not show a credential/name entry flow for high scores");
@@ -810,12 +982,12 @@ function inspectCollectedSource(
 
   return {
     appDir,
-    checkedFiles: sourceFiles.map((file) => file.path.slice(appDir.length + 1)),
+    checkedFiles: sourceFiles.map((file) => relativeToAppDir(appDir, file.path)),
     sourceFiles: sourceFiles.map((file) => ({
-      path: file.path.slice(appDir.length + 1),
+      path: relativeToAppDir(appDir, file.path),
       size: file.size,
     })),
-    taskFiles: taskFiles.map((file) => file.path.slice(appDir.length + 1)),
+    taskFiles: taskFiles.map((file) => relativeToAppDir(appDir, file.path)),
     packageName: asString(packageJson.name),
     deployScript,
     signalHits,
@@ -841,7 +1013,7 @@ async function inspectSource(
     }
 
     const sourceFiles = await collectSourceFiles(runtime, projectId, appDir);
-    return inspectCollectedSource(appDir, sourceFiles);
+    return inspectCollectedSource(appDir, sourceFiles, "vm");
   } catch (error) {
     return {
       checkedFiles: [],
@@ -849,6 +1021,63 @@ async function inspectSource(
       signalHits: {},
       persistenceFiles: [],
       failures: ["source inspection failed"],
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
+// DO-backed (create_project) project files live in WorkspaceFilesystemDO, not in the
+// sandbox container filesystem, so read them through ProjectFilesystemClient instead of
+// the project runtime fs API.
+async function collectDoProjectSourceFiles(
+  fsEnv: WorkspaceFilesystemEnv,
+  projectId: string,
+): Promise<SourceFile[]> {
+  const client = new ProjectFilesystemClient(fsEnv, projectId);
+  const listing = await client.listFiles("/", { recursive: true, limit: 2000 });
+  if (!listing.success) return [];
+
+  const sourceExtension = /\.(?:tsx?|jsx?|css|json|jsonc)$/i;
+  const excluded =
+    /(?:^|\/)(node_modules|\.wrangler|\.react-router|dist|build|public|coverage)(?:\/|$)|bun\.lock$/;
+  const sourceFiles: SourceFile[] = [];
+  for (const entry of listing.files) {
+    if (entry.type !== "file") continue;
+    const filePath = entry.absolutePath || `/${entry.relativePath ?? entry.name}`;
+    if (excluded.test(filePath) || !sourceExtension.test(filePath)) continue;
+    const read = await client.readFile(filePath);
+    if (!read.success || read.isBinary || typeof read.content !== "string") continue;
+    sourceFiles.push({ path: filePath, text: read.content, size: read.content.length });
+  }
+  return sourceFiles.sort((a, b) => a.path.localeCompare(b.path));
+}
+
+async function inspectDoBackedProjectSource(
+  fsEnv: WorkspaceFilesystemEnv,
+  projectId: string,
+): Promise<SourceInspection> {
+  try {
+    const sourceFiles = await collectDoProjectSourceFiles(fsEnv, projectId);
+    const hasPackageJson = sourceFiles.some(
+      (file) => relativeToAppDir("/", file.path) === "package.json",
+    );
+    if (!hasPackageJson) {
+      return {
+        checkedFiles: sourceFiles.map((file) => file.path),
+        sourceFiles: sourceFiles.map((file) => ({ path: file.path, size: file.size })),
+        signalHits: {},
+        persistenceFiles: [],
+        failures: ["could not read DO-backed project source with a package.json"],
+      };
+    }
+    return inspectCollectedSource("/", sourceFiles, "do");
+  } catch (error) {
+    return {
+      checkedFiles: [],
+      sourceFiles: [],
+      signalHits: {},
+      persistenceFiles: [],
+      failures: ["DO-backed source inspection failed"],
       error: error instanceof Error ? error.message : String(error),
     };
   }
@@ -864,6 +1093,14 @@ function missingProjectSourceInspection(): SourceInspection {
   };
 }
 
+// Freshly deployed apps can 5xx for a few seconds after session end while DO
+// migrations/dispatch routing propagate; the same URL settles shortly after. Retry
+// with backoff so deployed_app_live and important_pages_load_without_server_error
+// test steady-state behavior, not the propagation window — but still fail hard if
+// the app keeps 5xxing (or erroring) after all attempts.
+const SMOKE_FETCH_ATTEMPTS = 4;
+const SMOKE_FETCH_BACKOFF_MS = [3_000, 8_000, 15_000];
+
 async function smokeFetchRoot(app: EvalDeployedApp | undefined): Promise<PageSmoke> {
   if (!app) {
     return {
@@ -871,30 +1108,48 @@ async function smokeFetchRoot(app: EvalDeployedApp | undefined): Promise<PageSmo
       error: "No deployed app URL was captured.",
     };
   }
-  try {
-    const response = await fetch(app.url, { redirect: "follow" });
-    const body = await response.text();
-    const lower = body.toLowerCase();
-    const errorStrings = [
-      "oops",
-      "application error",
-      "internal server error",
-      "not found",
-      "stack",
-    ].filter((term) => lower.includes(term));
-    return {
-      url: app.url,
-      status: response.status,
-      bodyLength: body.length,
-      errorStrings,
-    };
-  } catch (error) {
-    return {
-      url: app.url,
-      errorStrings: [],
-      error: error instanceof Error ? error.message : String(error),
-    };
+  let last: PageSmoke = {
+    url: app.url,
+    errorStrings: [],
+    error: "smoke fetch did not run",
+  };
+  for (let attempt = 1; attempt <= SMOKE_FETCH_ATTEMPTS; attempt += 1) {
+    if (attempt > 1) {
+      await new Promise((resolve) =>
+        setTimeout(resolve, SMOKE_FETCH_BACKOFF_MS[attempt - 2]),
+      );
+    }
+    try {
+      const response = await fetch(app.url, { redirect: "follow" });
+      const body = await response.text();
+      const lower = body.toLowerCase();
+      const errorStrings = [
+        "oops",
+        "application error",
+        "internal server error",
+        "not found",
+        "stack",
+      ].filter((term) => lower.includes(term));
+      last = {
+        url: app.url,
+        status: response.status,
+        bodyLength: body.length,
+        errorStrings,
+        attempts: attempt,
+      };
+      // Only 5xx responses are treated as (possibly) transient; anything else is
+      // the app's steady-state answer.
+      if (response.status < 500) return last;
+    } catch (error) {
+      last = {
+        url: app.url,
+        errorStrings: [],
+        error: error instanceof Error ? error.message : String(error),
+        attempts: attempt,
+      };
+    }
   }
+  return last;
 }
 
 function sourceInspectionScore(inspection: SourceInspection): number {
@@ -914,6 +1169,7 @@ function sourceInspectionScore(inspection: SourceInspection): number {
 
 async function inspectCreatedProjectSources(
   runtime: Fetcher,
+  fsEnv: WorkspaceFilesystemEnv,
   projects: WorkspaceProject[],
 ): Promise<{
   selectedProject?: WorkspaceProject;
@@ -922,7 +1178,9 @@ async function inspectCreatedProjectSources(
 }> {
   const inspected = await Promise.all(
     projects.map(async (project) => {
-      const inspection = await inspectSource(runtime, project.id);
+      const inspection = project.backend === "do-r2"
+        ? await inspectDoBackedProjectSource(fsEnv, project.id)
+        : await inspectSource(runtime, project.id);
       return {
         project,
         inspection,
@@ -1022,6 +1280,414 @@ describe("space matching game runtime assertion extraction", () => {
     );
     expect(runtimeAssertions.failures).toContain(
       "agent used unsupported scaffold command(s): npm create cloudflare@latest space",
+    );
+  });
+
+  it("accepts the DO-backed create_project + deploy_project path routed through js_exec", () => {
+    const code = `
+      await tools.read({ location: "workspace", path: "developing-software/SKILL.md" });
+      const project = await tools["create_project"]({
+        name: "space-matching-game",
+        description: "Space themed matching game",
+      });
+      await tools.write({ location: "project", project: "space-matching-game", path: "/app/routes/home.tsx", content: "..." });
+      const deployed = await tools.deploy_project({ project: "space-matching-game" });
+      await tools.set_preview({ app_name: "space-matching-game" });
+    `;
+    const runtimeAssertions = evaluateRuntimeAssertions({
+      events: [
+        completedRuntimeItem({
+          type: "dynamicToolCall",
+          tool: "js_exec",
+          arguments: { code },
+          result: {
+            content: [{
+              type: "text",
+              text: 'deployed: { "success": true, "url": "https://space-matching-game.evals.camelai.app" }',
+            }],
+          },
+        }),
+      ],
+    });
+
+    expect(runtimeAssertions.usedCreateProject).toBe(true);
+    expect(runtimeAssertions.usedDeployProject).toBe(true);
+    expect(runtimeAssertions.failures).toEqual([]);
+  });
+
+  it("detects top-level create_project and deploy_project tool calls", () => {
+    const runtimeAssertions = evaluateRuntimeAssertions({
+      events: [
+        completedRuntimeItem({
+          type: "dynamicToolCall",
+          tool: "create_project",
+          arguments: { name: "space-matching-game", description: "game" },
+          result: { content: [{ type: "text", text: "created" }] },
+        }),
+        completedRuntimeItem({
+          type: "dynamicToolCall",
+          tool: "deploy_project",
+          arguments: { project: "space-matching-game" },
+          result: {
+            content: [{
+              type: "text",
+              text: '{ "success": true, "appUrl": "https://space-matching-game.evals.camelai.app" }',
+            }],
+          },
+        }),
+      ],
+    });
+
+    expect(runtimeAssertions.usedCreateProject).toBe(true);
+    expect(runtimeAssertions.usedDeployProject).toBe(true);
+    expect(runtimeAssertions.failures).not.toContain(
+      "agent did not run the create-worker scaffold command",
+    );
+    expect(runtimeAssertions.failures).not.toContain("agent did not run bun run deploy");
+    expect(runtimeAssertions.failures).not.toContain(
+      "agent did not call list_apps after deploy",
+    );
+  });
+
+  it("still flags missing list_apps when deploy_project failed or returned no URL", () => {
+    const failedDeploy = evaluateRuntimeAssertions({
+      events: [
+        completedRuntimeItem({
+          type: "dynamicToolCall",
+          tool: "deploy_project",
+          status: "failed",
+          arguments: { project: "space-matching-game" },
+          result: {
+            content: [{ type: "text", text: "build failed: https://space-matching-game.evals.camelai.app was not deployed" }],
+          },
+        }),
+      ],
+    });
+    expect(failedDeploy.usedDeployProject).toBe(true);
+    expect(failedDeploy.failures).toContain("agent did not call list_apps after deploy");
+
+    const urlLessDeploy = evaluateRuntimeAssertions({
+      events: [
+        completedRuntimeItem({
+          type: "dynamicToolCall",
+          tool: "deploy_project",
+          arguments: { project: "space-matching-game" },
+          result: { content: [{ type: "text", text: '{ "success": false, "stage": "build" }' }] },
+        }),
+      ],
+    });
+    expect(urlLessDeploy.usedDeployProject).toBe(true);
+    expect(urlLessDeploy.failures).toContain("agent did not call list_apps after deploy");
+
+    // deploy_project reports build/deploy failures as *completed* items with a
+    // { success: false, ... } envelope rather than throwing; a docs/log URL inside
+    // that failure summary must not count as app-URL evidence.
+    const completedFailureEnvelope = evaluateRuntimeAssertions({
+      events: [
+        completedRuntimeItem({
+          type: "dynamicToolCall",
+          tool: "deploy_project",
+          status: "completed",
+          arguments: { project: "space-matching-game" },
+          result: {
+            content: [{
+              type: "text",
+              text: '{ "success": false, "stage": "deploy", "errorSummary": "worker startup failed, see https://developers.cloudflare.com/workers/observability/logs/" }',
+            }],
+          },
+        }),
+      ],
+    });
+    expect(completedFailureEnvelope.usedDeployProject).toBe(true);
+    expect(completedFailureEnvelope.failures).toContain(
+      "agent did not call list_apps after deploy",
+    );
+  });
+
+  it("ignores incidental URLs in js_exec output around a failed deploy_project", () => {
+    const code = `
+      await tools.read({ location: "workspace", path: "developing-software/SKILL.md" });
+      await tools.create_project({ name: "space-matching-game", description: "game" });
+      const deployed = await tools.deploy_project({ project: "space-matching-game" });
+      console.log(deployed);
+    `;
+    const runtimeAssertions = evaluateRuntimeAssertions({
+      events: [
+        completedRuntimeItem({
+          type: "dynamicToolCall",
+          tool: "js_exec",
+          arguments: { code },
+          result: {
+            content: [{
+              type: "text",
+              // A docs URL outside any JSON object, plus a URL inside a *failed*
+              // deploy envelope — neither may stand in for a delivered app URL.
+              text: [
+                "see https://developers.cloudflare.com/durable-objects/ for docs",
+                '{ "success": false, "stage": "deploy", "errorSummary": "worker startup failed, logs: https://dash.cloudflare.com/logs" }',
+              ].join("\n"),
+            }],
+          },
+        }),
+      ],
+    });
+
+    expect(runtimeAssertions.usedDeployProject).toBe(true);
+    expect(runtimeAssertions.failures).toContain(
+      "agent did not call list_apps after deploy",
+    );
+  });
+
+  it("passes called_list_apps when deploy_project returned the app URL", () => {
+    const criteria = buildPostDeployToolCriteria(
+      {
+        failures: [
+          "agent did not call list_apps after deploy",
+          "agent did not call set_preview for the deployed app",
+        ],
+      },
+      { deployProjectProvidedAppUrl: true },
+    );
+
+    expect(criteria).toMatchObject([
+      { id: "called_list_apps", status: "passed" },
+      {
+        id: "called_set_preview",
+        status: "failed",
+        reason: "agent did not call set_preview for the deployed app",
+      },
+    ]);
+  });
+
+  function doScaffoldFixtureFiles(homeTsxText: string): SourceFile[] {
+    return [
+      {
+        path: "/package.json",
+        text: JSON.stringify({
+          name: "space-matching-game",
+          scripts: { deploy: "wrangler deploy" },
+          dependencies: {
+            react: "^19.2.0",
+            "react-dom": "^19.2.0",
+            "react-router": "^7.16.0",
+          },
+          devDependencies: {
+            "@react-router/dev": "^7.16.0",
+            wrangler: "^4.97.0",
+          },
+        }),
+        size: 1,
+      },
+      {
+        path: "/components.json",
+        text: JSON.stringify({
+          $schema: "https://ui.shadcn.com/schema.json",
+          tsx: true,
+          iconLibrary: "lucide",
+          tailwind: { css: "app/app.css" },
+        }),
+        size: 1,
+      },
+      {
+        path: "/wrangler.jsonc",
+        text: JSON.stringify({
+          name: "space-matching-game",
+          main: "./workers/app.ts",
+          assets: { directory: "./public/", binding: "ASSETS" },
+          durable_objects: {
+            bindings: [{ name: "LEADERBOARD_DO", class_name: "LeaderboardDO" }],
+          },
+          migrations: [{ tag: "v1", new_sqlite_classes: ["LeaderboardDO"] }],
+        }, null, 2),
+        size: 1,
+      },
+      {
+        path: "/app/routes.ts",
+        text: 'import { index, type RouteConfig } from "@react-router/dev/routes";',
+        size: 1,
+      },
+      {
+        path: "/app/routes/home.tsx",
+        text: homeTsxText,
+        size: 1,
+      },
+      {
+        path: "/workers/app.ts",
+        text: [
+          'import { DurableObject } from "cloudflare:workers";',
+          "export class LeaderboardDO extends DurableObject {",
+          "  init() { this.ctx.storage.sql.exec(\"CREATE TABLE IF NOT EXISTS scores (name TEXT, score INTEGER)\"); }",
+          "}",
+        ].join("\n"),
+        size: 1,
+      },
+    ];
+  }
+
+  it("accepts the DO-backed scaffold shape in path-aware source inspection", () => {
+    const sourceFiles = doScaffoldFixtureFiles([
+      'const title = "Space memory matching game: match planet, star, and rocket cards";',
+      "const cards = shuffle(planets); let flipped = []; let matched = [];",
+      "function match(card) {}",
+      '<form onSubmit={submit}><input name="username" placeholder="player name" /></form>',
+      "const leaderboard = topScores; const score = moves;",
+    ].join("\n"));
+
+    const inspection = inspectCollectedSource("/", sourceFiles, "do");
+
+    expect(inspection.failures).toEqual([]);
+    expect(inspection.checkedFiles).toContain("package.json");
+    expect(inspection.persistenceFiles).toContain("workers/app.ts");
+  });
+
+  it("accepts a plain name-entry leaderboard flow as a credential flow", () => {
+    // Observed in a live run: "Enter your name for the leaderboard" with a
+    // placeholder of "Your callsign..." and username state was a genuine entry
+    // flow but scored only one hit from the old credentials vocabulary.
+    const sourceFiles = doScaffoldFixtureFiles([
+      'const title = "Space memory matching game: match planet, star, and rocket cards";',
+      "const cards = shuffle(planets); let flipped = []; let matched = [];",
+      "function match(card) {}",
+      '<form onSubmit={saveScore}><input value={entered} placeholder="Your callsign..." /><button type="submit">Save</button></form>',
+      "const leaderboard = topScores; const score = moves;",
+    ].join("\n"));
+
+    const inspection = inspectCollectedSource("/", sourceFiles, "do");
+
+    // Exactly one vocabulary hit ("callsign"), accepted because the source also
+    // shows concrete text-input + submit markup.
+    expect(inspection.signalHits.credentials).toEqual(["callsign"]);
+    expect(inspection.failures).not.toContain(
+      "source does not show a credential/name entry flow for high scores",
+    );
+  });
+
+  // Verbatim agent-written workers/app.ts from run eval-20260702-081333Z-6c9ef776,
+  // where a genuine DO+SQLite leaderboard scored persistenceFiles=[] because every
+  // relevant concept was spelled as a compound identifier (LeaderboardDO, addScore,
+  // getLeaderboard, time_seconds) that hasTerm's word boundaries never match.
+  const ARTIFACT_WORKERS_APP_TS = [
+    "import { DurableObject } from \"cloudflare:workers\";",
+    "import { createRequestHandler } from \"react-router\";",
+    "",
+    "declare module \"react-router\" {",
+    "  export interface AppLoadContext {",
+    "    cloudflare: {",
+    "      env: Env;",
+    "      ctx: ExecutionContext;",
+    "    };",
+    "  }",
+    "}",
+    "",
+    "const requestHandler = createRequestHandler(",
+    "  () => import(\"virtual:react-router/server-build\"),",
+    "  import.meta.env.MODE",
+    ");",
+    "",
+    "export default {",
+    "  async fetch(request, env, ctx) {",
+    "    return requestHandler(request, {",
+    "      cloudflare: { env, ctx },",
+    "    });",
+    "  },",
+    "} satisfies ExportedHandler<Env>;",
+    "",
+    "export { LocalDataProxyService } from \"@cloudflare/codemode\";",
+    "export { LocalConnectionsService } from \"@cloudflare/codemode\";",
+    "export { LocalCamelAiService } from \"@cloudflare/codemode\";",
+    "",
+    "export class LeaderboardDO extends DurableObject<Env> {",
+    "  sql = this.ctx.storage.sql;",
+    "",
+    "  constructor(ctx: DurableObjectState, env: Env) {",
+    "    super(ctx, env);",
+    "    this.sql.exec(`",
+    "      CREATE TABLE IF NOT EXISTS scores (",
+    "        id INTEGER PRIMARY KEY AUTOINCREMENT,",
+    "        username TEXT NOT NULL,",
+    "        time_seconds INTEGER NOT NULL,",
+    "        moves INTEGER NOT NULL,",
+    "        difficulty TEXT NOT NULL DEFAULT 'medium',",
+    "        created_at INTEGER DEFAULT (unixepoch())",
+    "      )",
+    "    `);",
+    "  }",
+    "",
+    "  async addScore(username: string, timeSeconds: number, moves: number, difficulty: string) {",
+    "    this.sql.exec(",
+    "      \"INSERT INTO scores (username, time_seconds, moves, difficulty) VALUES (?, ?, ?, ?)\",",
+    "      username,",
+    "      timeSeconds,",
+    "      moves,",
+    "      difficulty",
+    "    );",
+    "    return { ok: true };",
+    "  }",
+    "",
+    "  async getLeaderboard(difficulty: string = \"all\", limit: number = 20) {",
+    "    if (difficulty === \"all\") {",
+    "      return this.sql.exec(",
+    "        \"SELECT id, username, time_seconds, moves, difficulty, created_at FROM scores ORDER BY time_seconds ASC, moves ASC LIMIT ?\",",
+    "        limit",
+    "      ).toArray();",
+    "    }",
+    "    return this.sql.exec(",
+    "      \"SELECT id, username, time_seconds, moves, difficulty, created_at FROM scores WHERE difficulty = ? ORDER BY time_seconds ASC, moves ASC LIMIT ?\",",
+    "      difficulty,",
+    "      limit",
+    "    ).toArray();",
+    "  }",
+    "}",
+  ].join("\n") + "\n";
+
+  const ARTIFACT_WRANGLER_JSONC = `${JSON.stringify({
+    name: "space-match",
+    main: "./workers/app.ts",
+    compatibility_date: "2024-12-01",
+    compatibility_flags: ["nodejs_compat"],
+    assets: { directory: "./public/", binding: "ASSETS" },
+    durable_objects: {
+      bindings: [{ name: "LEADERBOARD", class_name: "LeaderboardDO" }],
+    },
+    migrations: [{ tag: "v1", new_sqlite_classes: ["LeaderboardDO"] }],
+  }, null, 2)}\n`;
+
+  it("reads DO-backed sources verbatim and detects compound-identifier persistence", async () => {
+    const projectId = `sm-src-inspect-repro-${crypto.randomUUID().slice(0, 8)}`;
+    const fsEnv = testEnv as unknown as WorkspaceFilesystemEnv;
+    const client = new ProjectFilesystemClient(fsEnv, projectId);
+    const writeApp = await client.writeFile("/workers/app.ts", ARTIFACT_WORKERS_APP_TS);
+    const writeWrangler = await client.writeFile("/wrangler.jsonc", ARTIFACT_WRANGLER_JSONC);
+    expect(writeApp.success).toBe(true);
+    expect(writeWrangler.success).toBe(true);
+
+    const sourceFiles = await collectDoProjectSourceFiles(fsEnv, projectId);
+    const workersApp = sourceFiles.find((file) => file.path === "/workers/app.ts");
+    // The DO read path returns the exact written bytes — this rules out truncation,
+    // base64/binary misdetection, and path-normalization theories for the live miss.
+    expect(workersApp?.text).toBe(ARTIFACT_WORKERS_APP_TS);
+    expect(workersApp?.size).toBe(ARTIFACT_WORKERS_APP_TS.length);
+
+    const inspection = inspectCollectedSource("/", sourceFiles, "do");
+    expect(inspection.taskFiles).toContain("workers/app.ts");
+    expect(inspection.persistenceFiles).toContain("workers/app.ts");
+    expect(inspection.failures).not.toContain(
+      "source does not show leaderboard persistence with Durable Objects + SQLite",
+    );
+  });
+
+  it("still fails the credential criterion when there is no entry flow", () => {
+    const sourceFiles = doScaffoldFixtureFiles([
+      'const title = "Space memory matching game: match planet, star, and rocket cards";',
+      "const cards = shuffle(planets); let flipped = []; let matched = [];",
+      "function match(card) {}",
+      "const leaderboard = topScores; const score = moves;",
+    ].join("\n"));
+
+    const inspection = inspectCollectedSource("/", sourceFiles, "do");
+
+    expect(inspection.failures).toContain(
+      "source does not show a credential/name entry flow for high scores",
     );
   });
 
@@ -1155,6 +1821,7 @@ describe("space matching game deploy agent eval", () => {
         sourceInspectionCandidates,
       } = await inspectCreatedProjectSources(
         testEnv.PROJECT_RUNTIME_HOST,
+        testEnv as unknown as WorkspaceFilesystemEnv,
         newProjects,
       );
       const projectCreation = buildProjectCreationInspection(
@@ -1179,6 +1846,17 @@ describe("space matching game deploy agent eval", () => {
       );
       const usedCreateWorker = /\bcreate-worker\b/.test(commandText);
       const usedBunRunDeploy = /\bbun\s+run\s+deploy\b/.test(commandText);
+      // DO-backed path: tool calls can be top-level (signal.toolCallsByName) or routed
+      // through js_exec code (runtimeAssertions detection covers tools.<name>(...),
+      // tools["<name>"](...), and callTool("<name>", ...)).
+      const usedCreateProject =
+        runtimeAssertions.usedCreateProject ||
+        (signal.toolCallsByName["create_project"] ?? 0) >= 1;
+      const usedDeployProject =
+        runtimeAssertions.usedDeployProject ||
+        (signal.toolCallsByName["deploy_project"] ?? 0) >= 1;
+      // A create_project call is "successful" when the workspace gained a new project.
+      const createdProjectViaTool = usedCreateProject && newProjects.length > 0;
       const appsAfter = await countWorkspaceApps(orgStub, defaultWorkspaceId);
       let deployedApp: EvalDeployedApp | undefined;
       let deployedAppError: string | undefined;
@@ -1187,6 +1865,9 @@ describe("space matching game deploy agent eval", () => {
       } catch (error) {
         deployedAppError = error instanceof Error ? error.message : String(error);
       }
+      // deploy_project registers the app and returns its live URL directly; a captured
+      // deployed-app URL after a deploy_project call is a successful DO-path deploy.
+      const deployedViaDeployProject = usedDeployProject && Boolean(deployedApp);
       const rootSmoke = await smokeFetchRoot(deployedApp);
       const evaluation = buildEvalCriteriaSummary({
         passFail: [
@@ -1210,37 +1891,49 @@ describe("space matching game deploy agent eval", () => {
           }),
           passFailCriterion({
             id: "scaffolded_with_create_worker_and_shadcn",
-            label: "Agent scaffolded with create-worker and shadcn",
+            label: "Agent scaffolded with create-worker or create_project (with shadcn)",
             passed:
-              usedCreateWorker &&
+              (usedCreateWorker || createdProjectViaTool) &&
               unsupportedScaffoldFailures.length === 0 &&
               shadcnFailures.length === 0,
             reason:
-              usedCreateWorker &&
+              (usedCreateWorker || createdProjectViaTool) &&
               unsupportedScaffoldFailures.length === 0 &&
               shadcnFailures.length === 0
                 ? undefined
                 : [
-                    ...(usedCreateWorker ? [] : ["No create-worker scaffold command evidence was found."]),
+                    ...(usedCreateWorker || createdProjectViaTool
+                      ? []
+                      : ["No create-worker command or successful create_project tool call evidence was found."]),
                     ...unsupportedScaffoldFailures,
                     ...shadcnFailures,
                   ].join(" "),
             details: {
               commands: runtimeAssertions.commands,
+              usedCreateWorker,
+              usedCreateProject,
+              createdProjectViaTool,
               unsupportedScaffoldFailures,
               shadcnFailures,
             },
           }),
           passFailCriterion({
             id: "deployed_with_bun_run_deploy",
-            label: "Agent deployed with bun run deploy",
-            passed: usedBunRunDeploy,
-            reason: usedBunRunDeploy
+            label: "Agent deployed via bun run deploy or deploy_project",
+            passed: usedBunRunDeploy || deployedViaDeployProject,
+            reason: usedBunRunDeploy || deployedViaDeployProject
               ? undefined
-              : "No bun run deploy command evidence was found.",
-            details: { commands: runtimeAssertions.commands },
+              : "No bun run deploy command or successful deploy_project evidence was found.",
+            details: {
+              commands: runtimeAssertions.commands,
+              usedBunRunDeploy,
+              usedDeployProject,
+              deployedViaDeployProject,
+            },
           }),
-          ...buildPostDeployToolCriteria(runtimeAssertions),
+          ...buildPostDeployToolCriteria(runtimeAssertions, {
+            deployProjectProvidedAppUrl: deployedViaDeployProject,
+          }),
           passFailCriterion({
             id: "source_satisfies_app_requirements",
             label: "Generated source satisfies required app requirements",
