@@ -5856,6 +5856,7 @@ describe('ChatThreadDO Pi turn handling', () => {
     expect((result as any).appUrl).toContain('demo-app--test-org');
     expect((result as any).build).not.toHaveProperty('stdout');
     expect((result as any).build).not.toHaveProperty('stderr');
+    expect((result as any).deploy).not.toHaveProperty('result');
     expect(fetchMock).toHaveBeenCalledWith(
       'https://api.cloudflare.com/client/v4/accounts/account/workers/dispatch/namespaces/namespace/scripts/demo-app--test-org',
       expect.objectContaining({ method: 'PUT', headers: { Authorization: 'Bearer token' } }),

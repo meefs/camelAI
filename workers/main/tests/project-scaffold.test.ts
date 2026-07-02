@@ -70,13 +70,15 @@ describe("defaultProjectScaffoldFiles", () => {
         esbuild: expect.any(String),
         tailwindcss: expect.any(String),
         vite: expect.any(String),
-        "vite-tsconfig-paths": expect.any(String),
         wrangler: expect.any(String),
       },
     });
+    expect(packageJson.devDependencies).not.toHaveProperty("vite-tsconfig-paths");
 
     expect(scaffoldFile(files, "/wrangler.jsonc")).toContain('"main": "./workers/app.ts"');
     expect(scaffoldFile(files, "/vite.config.ts")).toContain("tailwindcss()");
+    expect(scaffoldFile(files, "/vite.config.ts")).not.toContain("vite-tsconfig-paths");
+    expect(scaffoldFile(files, "/vite.config.ts")).not.toContain("tsconfigPaths()");
     expect(scaffoldFile(files, "/vite.config.ts")).toContain("noExternal: true");
     expect(scaffoldFile(files, "/components.json")).toContain('"ui": "~/components/ui"');
     expect(scaffoldFile(files, "/app/app.css")).toContain('@import "tailwindcss"');

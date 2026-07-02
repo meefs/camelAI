@@ -1189,7 +1189,7 @@ function summarizeDirectDeployResult(deploy: DirectDispatchDeployResult): Record
     scriptName: deploy.scriptName,
     dispatchScriptName: deploy.dispatchScriptName,
     status: deploy.status,
-    ...(deploy.success ? { result: deploy.result } : { errorSummary: summarizeDeployFailure(deploy) }),
+    ...(deploy.success ? {} : { errorSummary: summarizeDeployFailure(deploy) }),
     ...(deploy.warnings?.length ? { warnings: deploy.warnings } : {}),
   };
 }
