@@ -1214,9 +1214,31 @@ function buildFailureRawOutput(build: ProjectBuildResult): string {
 // end of their output, so the failure payload carries a capped log tail
 // (logExcerpt) and the summary stays dumb. Short single-line failures (e.g.
 // package.json validation) are their own best summary.
+// bun's wrapper line confirms failure but carries no diagnostic content.
+const BUN_SCRIPT_WRAPPER_LINE = /^error: script ".*" exited with code \d+/i;
+// Code-frame furniture printed AFTER a diagnostic (box-drawing borders and
+// line-number gutters) can itself contain "error"/"failed" — e.g. a frame for
+// app/routes/error.tsx — and must not steal the last-match.
+const CODE_FRAME_LINE = /^\s*(?:[╭│╰├└┌]|\d+\s*[│|])/;
+
 function summarizeBuildFailure(build: ProjectBuildResult): string {
   const tail = buildLogTail(buildFailureRawOutput(build));
-  if (tail && tail.length <= 300 && !tail.includes("\n")) return limitSummary(tail);
+  if (!tail) return `Build failed with exit code ${build.exitCode}`;
+  if (tail.length <= 300 && !tail.includes("\n")) return limitSummary(tail);
+  // Single generic heuristic (deliberately not a per-toolchain format taxonomy):
+  // build tools print the decisive diagnostic as the last error-looking line
+  // before bun's wrapper, so surface that line directly in the summary. The
+  // full context stays in build.logExcerpt either way.
+  const lastDiagnostic = tail
+    .split("\n")
+    .filter((line) =>
+      /error|failed/i.test(line) &&
+      !BUN_SCRIPT_WRAPPER_LINE.test(line.trim()) &&
+      !CODE_FRAME_LINE.test(line))
+    .pop();
+  if (lastDiagnostic?.trim()) {
+    return limitSummary(`${lastDiagnostic.trim()} (see build.logExcerpt for full output)`);
+  }
   return `Build failed with exit code ${build.exitCode}; see build.logExcerpt for the diagnostic output`;
 }
 

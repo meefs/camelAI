@@ -5394,6 +5394,37 @@ describe('ChatThreadDO Pi turn handling', () => {
     })).rejects.toThrow('Build service temporarily unavailable. Please try again in a moment.');
   });
 
+  it('surfaces the last diagnostic line as errorSummary on build failures', async () => {
+    const { fake, sandbox } = createProjectToolFake();
+    const buildOutput = [
+      '$ react-router build && node ./scripts/build-manifest.mjs',
+      'vite v8.0.16 building client environment for production...',
+      'Error: Transform failed with 1 error:',
+      '[PARSE_ERROR] Expected `;` but found `Identifier`',
+      // Code-frame furniture referencing an error-named file must not steal
+      // the last-diagnostic match.
+      '     ╭─[ app/routes/error.tsx:21:30 ]',
+      ' 21  │   const failedThing = ;',
+      '     ╰────',
+      'error: script "build" exited with code 1',
+    ].join('\n');
+    sandbox.exec.mockImplementation(async (command: string) =>
+      command.includes('bun run build')
+        ? { success: false, exitCode: 1, stdout: buildOutput, stderr: '' }
+        : { success: true, exitCode: 0, stdout: '', stderr: '' });
+
+    const result = await CodeModeToolsBinding.prototype.callTool.call(fake, 'build_project', {
+      project: 'Demo App',
+    }) as Record<string, unknown>;
+
+    expect(result.success).toBe(false);
+    // The decisive diagnostic, not bun's command echo or wrapper line.
+    expect(result.errorSummary).toContain('[PARSE_ERROR] Expected `;` but found `Identifier`');
+    expect(result.errorSummary).not.toContain('$ react-router build');
+    expect(result.errorSummary).not.toContain('error.tsx');
+    expect(result.logExcerpt).toContain('app/routes/error.tsx:21:30');
+  });
+
   it('maps deploy sandbox 503 RPC failures to a friendly project build error', async () => {
     const { fake, sandbox } = createProjectToolFake({ deploy: true });
     sandbox.mkdir.mockRejectedValueOnce(new Error('RPCTransportError: WebSocket upgrade failed: 503 Service Unavailable'));
