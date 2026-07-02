@@ -1210,34 +1210,77 @@ function buildFailureRawOutput(build: ProjectBuildResult): string {
     `Build failed with exit code ${build.exitCode}`;
 }
 
-// No error-format pattern matching here: build tools print the diagnostic at the
-// end of their output, so the failure payload carries a capped log tail
-// (logExcerpt) and the summary stays dumb. Short single-line failures (e.g.
-// package.json validation) are their own best summary.
+// The summary anchors on the failure marker that vite/rolldown/bun print right
+// before the diagnostic block, instead of scanning for "error-looking" lines —
+// a last-match scan gets stolen by stack traces and printed error-object tails
+// (e.g. "errors: [Getter/Setter]"). Full context stays in build.logExcerpt.
 // bun's wrapper line confirms failure but carries no diagnostic content.
 const BUN_SCRIPT_WRAPPER_LINE = /^error: script ".*" exited with code \d+/i;
-// Code-frame furniture printed AFTER a diagnostic (box-drawing borders and
-// line-number gutters) can itself contain "error"/"failed" — e.g. a frame for
-// app/routes/error.tsx — and must not steal the last-match.
-const CODE_FRAME_LINE = /^\s*(?:[╭│╰├└┌]|\d+\s*[│|])/;
+// Code-frame furniture and stack frames after the diagnostic — never summary
+// material, but frame lines are still scanned for the file:line reference.
+const CODE_FRAME_LINE = /^\s*(?:[╭│╰├└┌─]|\d+\s*[│|])/;
+const STACK_FRAME_LINE = /^\s*(?:at |[}{]+\s*$)/;
+const BUILD_FAILURE_MARKER = /(?:Build|Transform) failed with \d+ errors?|✗ Build failed|error during build:/i;
+// File reference with optional bundler query suffix (stripped) and position.
+const BUILD_FILE_REFERENCE = /([^\s"'`()[\]]+\.(?:tsx?|jsx?|mjs|cjs|css|json))(\?[^\s:'"`)\]]*)?(:\d+(?::\d+)?)?/;
+
+function isBuildSummaryNoise(line: string): boolean {
+  const trimmed = line.trim();
+  return !trimmed ||
+    BUN_SCRIPT_WRAPPER_LINE.test(trimmed) ||
+    CODE_FRAME_LINE.test(line) ||
+    STACK_FRAME_LINE.test(line);
+}
+
+function buildFileReferenceNear(lines: string[], fromIndex: number): string | null {
+  for (let index = fromIndex; index < Math.min(lines.length, fromIndex + 8); index += 1) {
+    const match = lines[index]?.match(BUILD_FILE_REFERENCE);
+    if (match && !match[1]!.includes("node_modules")) {
+      return `${match[1]}${match[3] ?? ""}`;
+    }
+  }
+  return null;
+}
 
 function summarizeBuildFailure(build: ProjectBuildResult): string {
   const tail = buildLogTail(buildFailureRawOutput(build));
   if (!tail) return `Build failed with exit code ${build.exitCode}`;
   if (tail.length <= 300 && !tail.includes("\n")) return limitSummary(tail);
-  // Single generic heuristic (deliberately not a per-toolchain format taxonomy):
-  // build tools print the decisive diagnostic as the last error-looking line
-  // before bun's wrapper, so surface that line directly in the summary. The
-  // full context stays in build.logExcerpt either way.
-  const lastDiagnostic = tail
-    .split("\n")
-    .filter((line) =>
-      /error|failed/i.test(line) &&
-      !BUN_SCRIPT_WRAPPER_LINE.test(line.trim()) &&
-      !CODE_FRAME_LINE.test(line))
-    .pop();
-  if (lastDiagnostic?.trim()) {
-    return limitSummary(`${lastDiagnostic.trim()} (see build.logExcerpt for full output)`);
+
+  const lines = tail.split("\n");
+  let summaryStart = -1;
+  const markerIndex = lines.reduce(
+    (last, line, index) => (BUILD_FAILURE_MARKER.test(line) ? index : last),
+    -1,
+  );
+  const picked: string[] = [];
+  if (markerIndex >= 0) {
+    // The diagnostic block immediately follows the marker; collect its first
+    // one or two informative lines (a bare "[plugin x]" tag plus its message).
+    for (let index = markerIndex + 1; index < lines.length && picked.length < 2; index += 1) {
+      const line = lines[index]!;
+      if (!line.trim()) {
+        if (picked.length) break;
+        continue;
+      }
+      if (isBuildSummaryNoise(line)) break;
+      if (summaryStart < 0) summaryStart = index;
+      picked.push(line.trim());
+    }
+  }
+  if (!picked.length) {
+    // No marker (e.g. tsc): the first error-looking line precedes any stack
+    // trace or printed error-object tail.
+    summaryStart = lines.findIndex((line) => /error|failed/i.test(line) && !isBuildSummaryNoise(line));
+    if (summaryStart >= 0) picked.push(lines[summaryStart]!.trim());
+  }
+  if (picked.length) {
+    let summary = picked.join(" ");
+    const fileReference = buildFileReferenceNear(lines, summaryStart);
+    if (fileReference && !summary.includes(fileReference)) {
+      summary = `${summary} (${fileReference})`;
+    }
+    return limitSummary(`${summary} (see build.logExcerpt for full output)`);
   }
   return `Build failed with exit code ${build.exitCode}; see build.logExcerpt for the diagnostic output`;
 }

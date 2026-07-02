@@ -5418,11 +5418,49 @@ describe('ChatThreadDO Pi turn handling', () => {
     }) as Record<string, unknown>;
 
     expect(result.success).toBe(false);
-    // The decisive diagnostic, not bun's command echo or wrapper line.
+    // The decisive diagnostic plus its location, not bun's command echo,
+    // wrapper line, or code-frame furniture.
     expect(result.errorSummary).toContain('[PARSE_ERROR] Expected `;` but found `Identifier`');
+    expect(result.errorSummary).toContain('(app/routes/error.tsx:21:30)');
     expect(result.errorSummary).not.toContain('$ react-router build');
-    expect(result.errorSummary).not.toContain('error.tsx');
     expect(result.logExcerpt).toContain('app/routes/error.tsx:21:30');
+  });
+
+  it('anchors errorSummary on the diagnostic block, not stack or error-object tails', async () => {
+    const { fake, sandbox } = createProjectToolFake();
+    const buildOutput = [
+      '$ react-router build && node ./scripts/build-manifest.mjs',
+      '✗ Build failed in 261ms',
+      'Build failed with 1 error:',
+      '',
+      '[builtin:vite-transform] Unexpected token',
+      '    ╭─[ app/routes/home.tsx?__react-router-build-client-route:20:30 ]',
+      '    │',
+      ' 20 │   const forcedBuildFailure = ;',
+      '    │                              ┬',
+      '    │                              ╰──',
+      '────╯',
+      '    at buildEnvironment (file:///repo/node_modules/vite/dist/node/chunks/node.js:33253:64)',
+      '} {',
+      '  errors: [Getter/Setter]',
+      '}',
+      'error: script "build" exited with code 1',
+    ].join('\n');
+    sandbox.exec.mockImplementation(async (command: string) =>
+      command.includes('bun run build')
+        ? { success: false, exitCode: 1, stdout: buildOutput, stderr: '' }
+        : { success: true, exitCode: 0, stdout: '', stderr: '' });
+
+    const result = await CodeModeToolsBinding.prototype.callTool.call(fake, 'build_project', {
+      project: 'Demo App',
+    }) as Record<string, unknown>;
+
+    // The regression case: the printed error-object tail must never win.
+    expect(result.errorSummary).not.toContain('Getter/Setter');
+    expect(result.errorSummary).toContain('[builtin:vite-transform] Unexpected token');
+    // Bundler query suffix stripped from the location.
+    expect(result.errorSummary).toContain('(app/routes/home.tsx:20:30)');
+    expect(result.errorSummary).not.toContain('__react-router-build-client-route');
   });
 
   it('maps deploy sandbox 503 RPC failures to a friendly project build error', async () => {
