@@ -158,6 +158,7 @@ import {
   CODE_MODE_MAX_OUTPUT_CHARACTERS,
   CODE_MODE_MAX_TIMEOUT_MS,
   CODE_MODE_PI_PASSTHROUGH_TOOL_DEFINITIONS,
+  CODE_MODE_TOOL_DEFINITIONS,
   clampCodeModeInteger,
   normalizeTodoItems,
   truncateCodeModeText,
@@ -459,6 +460,9 @@ export interface ChatEnv extends WorkspaceFilesystemEnv, ProjectRuntimeServiceVm
   INTEGRATION_SECRET_KEY: string;
   TOKEN_SIGNING_SECRET: string;
   AI_GATEWAY_AUTH_TOKEN?: string;
+  // E2E determinism: when set, hosted/provider LLM calls are routed to the local
+  // record/replay stub (scripts/llm-replay-stub.mjs). Unset in production.
+  TEST_LLM_REPLAY_URL?: string;
   SELFHOST_AI_PROVIDER?: string;
   SELFHOST_AI_API_KEY?: string;
   SELFHOST_AI_BASE_URL?: string;
@@ -490,7 +494,6 @@ export interface ChatEnv extends WorkspaceFilesystemEnv, ProjectRuntimeServiceVm
   TELEGRAM_BOT_TOKEN?: string;
   NEXTJS_ENV?: string;
   FIRECRAWL_API_KEY?: string;
-  TEST_LLM_REPLAY_URL?: string;
   FIRECRAWL_BASE_URL?: string;
   PARALLEL_API_KEY?: string;
   PARALLEL_BASE_URL?: string;
@@ -791,6 +794,68 @@ function boundLiveOverlayText(text: string): string {
 }
 
 const ASK_USER_QUESTION_UNAVAILABLE_MESSAGE = 'User is not at computer; AskUserQuestion is unavailable in this channel. Continue without asking and use best effort.';
+
+// Passthrough harness tools in these categories are NOT advertised in the model's
+// top-level tool list. They remain fully callable inside js_exec via `tools.<name>()`
+// and discoverable through `tools.search()` / `tools.help()`; we simply stop spending
+// per-turn context on their schemas (the executor-style "search → describe → call"
+// approach). These are long-tail, rarely-needed tools the agent reliably rediscovers
+// by category; the app/project lifecycle categories (workspace, apps, user_interaction,
+// web, agents) intentionally STAY top-level, because dropping them led the agent to
+// guess tool names on complex build+deploy tasks instead of searching.
+const TOP_LEVEL_EXCLUDED_CATEGORIES = new Set<string>([
+  "workflows",
+  "schedules",
+  "integrations",
+  "domains",
+  "connections",
+  "communication",
+]);
+
+// Passthrough tools that always stay top-level even though their category is excluded:
+// they block on human input and so cannot run inside js_exec's short-lived sandbox.
+// Keep in sync with the js_exec-excluded names in code-mode-tools.ts.
+const ALWAYS_TOP_LEVEL_PASSTHROUGH_NAMES = new Set<string>([
+  "prompt_connection_setup",
+  "delete_connection",
+  "delete_project",
+  "AskUserQuestion",
+]);
+
+// The names-only inventory of tools reachable only inside js_exec (executor's
+// "Available integrations" pattern): names are cheap in the cached prompt prefix
+// and directly prevent tool-name guessing, while the schemas stay behind
+// tools.search()/tools.describe(). Computed over the full catalog (not just the
+// passthrough list — communication tools like send_email were never advertised
+// top-level) so it can never drift from the actual top-level exclusion.
+const JS_EXEC_ONLY_TOOL_INVENTORY = (() => {
+  const byCategory = new Map<string, string[]>();
+  for (const definition of CODE_MODE_TOOL_DEFINITIONS) {
+    if (ALWAYS_TOP_LEVEL_PASSTHROUGH_NAMES.has(definition.name)) continue;
+    if (!TOP_LEVEL_EXCLUDED_CATEGORIES.has(definition.category)) continue;
+    const names = byCategory.get(definition.category) ?? [];
+    names.push(definition.name);
+    byCategory.set(definition.category, names);
+  }
+  return [...byCategory.entries()]
+    .map(([category, names]) => `${category}: ${names.join(", ")}`)
+    .join("; ");
+})();
+
+// The js_exec tool description, kept executor-style small: a one-line intro, a
+// pointer to the on-demand guide (`await tools.help()` inside the sandbox), the
+// search → describe → call recipe, and the names-only inventory above. The
+// long-form usage guidance lives in JS_EXEC_GUIDE in code-mode-runner.ts so it
+// is fetched only when the model actually writes code, instead of sitting in
+// every turn's prompt prefix.
+const JS_EXEC_DESCRIPTION =
+  "Run JavaScript or TypeScript (types are stripped) in a Worker-style sandbox with every workspace tool on the global `tools` object plus runtime bindings (`env.CONNECTIONS`, `env.AI`, `env.CAMELAI`, `env.WORKSPACE`, `env.PROJECTS`, `vm.exec`). The final expression is returned and console output is captured. " +
+  "Before writing non-trivial code, run `await tools.help()` once — it returns the full usage guide (file locations, project VMs, connections, hosted helpers) plus the tool catalog by category. " +
+  "NEVER guess a tool name: `await tools.search(\"<intent + key nouns>\")`, then `await tools.describe(items[0].name)`, then invoke as the result's `call` field shows (kind \"tool\" runs as `await tools.<name>(args)`; kind \"runtime\" results are sandbox globals, never on `tools`). " +
+  "Every `tools.<name>(args)` call resolves to `{ ok: true, data }` or `{ ok: false, error: { message } }` — branch on `result.ok` instead of try/catch; failed calls do not throw, so you can describe the tool and retry in the same run. " +
+  `Tools reachable ONLY here (not in your tool list) — ${JS_EXEC_ONLY_TOOL_INVENTORY}. ` +
+  "After you deploy an app or make changes to it, ALWAYS call `set_preview` with the newly deployed app to surface it to the user, and verify the deploy by calling `list_apps` before reporting done. " +
+  "Interactive tools that wait for the user (prompt_connection_setup, delete_connection, delete_project, AskUserQuestion) are top-level tools and cannot be called from js_exec.";
 
 const HEADER_USER_NAME = "X-Chiridion-User-Name";
 const HEADER_USER_EMAIL = "X-Chiridion-User-Email";
@@ -7070,6 +7135,9 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
     return [{ type: "text", text: this.extractToolText(result) }];
   }
 
+  // Executor-style tool surface: the model sees the core file/bash/js_exec/subagent
+  // tools plus the app/project-lifecycle passthrough tools, and reaches everything
+  // else by writing code in js_exec (tools.search / tools.describe / tools.<name>).
   private createPiToolDefinitions(
     context: ChatContextState,
     options: PiToolDefinitionOptions = {},
@@ -7133,20 +7201,7 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
       {
         name: "js_exec",
         label: "JavaScript",
-        description:
-          "Run short JavaScript in the Worker-style code mode runtime. Use this for workspace connections and for small scripts that need to orchestrate multiple harness tools. " +
-          "The final expression is returned automatically, and `console.log`/`console.warn`/`console.error` output is shown in the tool result. Use explicit `return` when a script has branches or loops. " +
-          "Connection globals: `env.CONNECTIONS`, `connections`, `context.cloudflare.connections`, and `context.cloudflare.env.CONNECTIONS` expose the same method facade. " +
-          "To use a connection, prefer `const entry = await env.CONNECTIONS.find(\"clickhouse\"); return await env.CONNECTIONS[entry.alias].query({ query: \"SELECT 1 AS ok\" });`. `find` accepts an alias, id, type, name, or object such as `{ type: \"clickhouse\" }` and throws on missing/ambiguous matches. " +
-          "Use `await env.CONNECTIONS.methods()` when you need the full catalog; method entries include copyable `example` strings. Virtual channel action entries such as Telegram sends are called through their `tools.<action>(...)` examples, not through `env.CONNECTIONS[alias]` or `connections[alias]`. Use `await env.CONNECTIONS.test(\"clickhouse\")` for a quick smoke test. " +
-          "Custom `other` connections expose `fetch`, for example `const response = await connections[entry.alias].fetch(\"/v1/items\", { method: \"GET\" }); return await response.json();`; camelAI applies the stored auth settings. " +
-          "Global `fetch()` is also available for direct HTTP requests. It automatically authenticates to this workspace's deployed apps, including private apps on `*.camelai.app`, `*.apps.camelai.dev`, and active custom domains. For web search and page retrieval, prefer `await tools.WebSearch({ query: \"...\" })` and `await tools.WebFetch({ url: \"...\" })`. " +
-          "Connection credentials are intentionally hidden behind the binding. " +
-          "For workflows that need a project VM, use `env.PROJECTS` to list/create/describe/clone projects and the `vm` facade for project VM execution and file transfer. Project names are unique within the workspace and are the handle to use in tools: `const project = await env.PROJECTS.create({ name: \"web-app\", description: \"Customer-facing React app for tracking pizza orders.\" }); await vm.exec({ command: \"git status && bun install && bun run build\", project: project.name, timeoutSeconds: 120 }); await env.PROJECTS.setDescription({ project: project.name, description: \"Updated project purpose.\" }); const clone = await env.PROJECTS.clone({ sourceProject: project.name, name: \"web-app-experiment\" });`. Each project has one default VM checkout; cloning a project copies the source project VM filesystem, so it can include uncommitted files and be used like a lightweight worktree. When commands are independent, especially across different project VMs or clones, run them concurrently with `const rows = await env.PROJECTS.list(); const targets = rows.flatMap((project) => [project, ...(project.clones ?? [])]); await Promise.all(targets.map((project) => vm.exec({ command: \"bun run test:run\", project: project.name, timeoutSeconds: 120 })))`; this is explicitly better than looping through `await vm.exec(...)` calls synchronously. `vm.exec(command, options)` also works. The active project VM checkout is `/workspace`, and `vm.exec`/`bash` commands run there by default; do not prepend `cd /workspace &&`. Pass `cwd` only for subdirectories in that checkout. Do not use `/home/claude`; it is a legacy path and can fail with permission errors in the current runtime image. The platform configures the Git remote outside the VM so Artifacts credentials stay outside the VM; use normal Git commands in the VM for selective commits and pushes. The normal file tools require an explicit `location` every time: `await tools.read({ location: \"vm\", project: project.name, path: \"/src/App.tsx\" })` reads from the project VM, `await tools.read({ location: \"workspace\", path: \"/notes.md\" })` reads from durable workspace files, and `await tools.read({ location: \"r2\", path: \"outputs/chart.png\" })` reads workspace-scoped R2 objects including images; use `tools.write({ location: \"r2\", path: \"tmp/result.txt\", content })`, `tools.edit({ location: \"r2\", path, edits })`, `tools.ls({ location: \"r2\", path: \"outputs\" })`, or `tools.delete({ location: \"r2\", path })` for R2 writes/edits/listing/deletion. R2 paths are relative: `uploads/<path>` for read-only uploads, `outputs/<path>` for user-visible outputs, and `tmp/<path>` for temporary objects. Search tools are also available inside js_exec: `await tools.grep({ location: \"vm\", project: project.name, pattern: \"TODO\", path: \"/workspace\" })` searches file contents and `await tools.find({ location: \"vm\", project: project.name, pattern: \"**/*.tsx\" })` finds files by glob. Copy files between durable workspace files, project VM files, and R2 objects with `await tools.move({ source: { location: \"workspace\", path: \"/package.json\" }, destination: { location: \"vm\", project: project.name, path: \"/workspace/package.json\" } })` or `await tools.move({ source: { location: \"vm\", project: project.name, path: \"/workspace/dist\" }, destination: { location: \"r2\", path: \"outputs/dist\" } })`. The durable workspace filesystem remains separate. " +
-          "AI globals: `env.AI` and `context.cloudflare.env.AI` expose the virtual AI binding (`run()` only). Call `await env.AI.run(\"auto\", { messages: [{ role: \"user\", content: \"hello\" }] })`; model tiers are `cheap`, `fast`, `auto` (default), and `smart`, and any OpenRouter model id is also accepted. For images, call `await env.CAMELAI.generateImage(\"prompt\")` or `await env.CAMELAI.generateImage({ prompt, referenceImageUrl })` on `context.cloudflare.env.CAMELAI`. Returns `{ text, imageDataUrl, images }`. For audio transcription, call `await env.CAMELAI.transcribeAudio({ path: \"uploads/audio.ogg\" })` or pass base64 audio; it returns `{ text }`. Use `await env.CAMELAI.help()` for its method catalog. " +
-          "Workspace metadata: call `await env.WORKSPACE.emailAddress()` when users want to email the current workspace; it returns the address string or null. `await env.WORKSPACE.info()` also includes `email_address`. " +
-          "Every registered harness tool is also available on the global `tools` object. Start with `await tools.help()` for expandable categories, `await tools.help(\"communication\")` for a category, or `await tools.help(\"send_email\")` for one tool. `ALL_TOOLS` contains the same names, descriptions, schemas, categories, examples, and side-effect metadata. Provider-specific outbound channel tools are intentionally available only here; use them only when the current turn's channel instructions require an external reply or the user explicitly asks for external delivery. " +
-          "Interactive tools that wait for the user, such as `prompt_connection_setup`, `delete_connection`, `delete_project`, and `AskUserQuestion`, must be called as top-level tools instead of from js_exec.",
+        description: JS_EXEC_DESCRIPTION,
         parameters: Type.Object({
           description: Type.String({
             description:
@@ -7190,6 +7245,15 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
 
     for (const definition of CODE_MODE_PI_PASSTHROUGH_TOOL_DEFINITIONS) {
       const { name } = definition;
+      // Drop long-tail-category passthrough tools from the top-level list; they stay
+      // reachable inside js_exec and discoverable via tools.search(). Human-input tools
+      // and app/project-lifecycle categories are always kept top-level.
+      if (
+        !ALWAYS_TOP_LEVEL_PASSTHROUGH_NAMES.has(name) &&
+        TOP_LEVEL_EXCLUDED_CATEGORIES.has(definition.category)
+      ) {
+        continue;
+      }
       definitions.push({
         name,
         label: name,

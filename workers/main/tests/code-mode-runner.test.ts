@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { codeModeWorkerModule } from '../src/code-mode-runner';
+import { codeModeWorkerModule, stripTypeScriptFromUserCode } from '../src/code-mode-runner';
 
 function createConnectionsFacade(binding: any): Record<string, unknown> {
   const legacyInvokeMethod = ['_', '_', 'invoke'].join('');
@@ -97,7 +97,7 @@ describe('code mode runner connection facade', () => {
   it('does not inject projects as a standalone user-code binding', () => {
     const source = codeModeWorkerModule('const projects = ["local"]; return projects.length;');
 
-    expect(source).toContain('const PROJECTS = createProjectsFacade(tools)');
+    expect(source).toContain('const PROJECTS = createProjectsFacade(rawTools)');
     expect(source).toContain('projects: env.PROJECTS');
     expect(source).toContain('const projects = ["local"]; return projects.length;');
     expect(source).not.toContain('async function runUserCode(tools, CONNECTIONS, connections, VM, vm, PROJECTS, projects');
@@ -285,5 +285,269 @@ describe('code mode runner VM facade', () => {
         category: 'runtime',
       }),
     });
+  });
+});
+
+describe('code mode runner TypeScript stripping', () => {
+  it('strips type annotations, casts, interfaces, and generics from user code', () => {
+    const stripped = stripTypeScriptFromUserCode([
+      'interface Row { id: number; name: string }',
+      'const limit: number = 5;',
+      'const rows = (await tools.list_apps({ limit })) as { data: Row[] };',
+      'function pick<T>(items: T[]): T | undefined { return items[0]; }',
+      'return pick(rows.data)!;',
+    ].join('\n'));
+
+    expect(stripped).not.toContain('interface');
+    expect(stripped).not.toContain(': number');
+    expect(stripped).not.toContain('as {');
+    expect(stripped).not.toContain('<T>');
+    expect(stripped).toContain('const limit = 5;');
+    expect(stripped).toContain('return pick(rows.data);');
+  });
+
+  it('leaves plain JavaScript intact, including ternaries and object literals', () => {
+    const code = [
+      'const config = { mode: enabled ? "on" : "off", retries: 3 };',
+      'return await tools.set_preview({ app_name: config.mode });',
+    ].join('\n');
+    expect(stripTypeScriptFromUserCode(code)).toBe(code);
+  });
+
+  it('supports top-level return and await, and falls back on unparseable code', () => {
+    expect(stripTypeScriptFromUserCode('return await tools.list_apps();')).toBe(
+      'return await tools.list_apps();',
+    );
+    const broken = 'const x = {;';
+    expect(stripTypeScriptFromUserCode(broken)).toBe(broken);
+  });
+
+  it('is applied by codeModeWorkerModule before embedding user code', () => {
+    const source = codeModeWorkerModule('const n: number = 1;\nreturn n;');
+    expect(source).toContain('const n = 1;');
+    expect(source).not.toContain('const n: number = 1;');
+  });
+});
+
+function loadGeneratedToolHelp(): (allTools: unknown[]) => (input?: unknown) => any {
+  const source = codeModeWorkerModule('');
+  const start = source.indexOf('const TOOL_CATEGORY_DESCRIPTIONS');
+  const end = source.indexOf('\n\nfunction createCamelAiFacade', start);
+  expect(start).toBeGreaterThanOrEqual(0);
+  expect(end).toBeGreaterThan(start);
+  const slice = source.slice(start, end);
+  return new Function(`${slice}; return createToolHelp;`)();
+}
+
+describe('code mode runner tools.help guide', () => {
+  it('resolves the connections category over the connections runtime facade for bare keys', () => {
+    const createHelp = loadGeneratedToolHelp();
+    const help = createHelp([
+      { name: 'warehouse_list_connections', category: 'connections', description: 'List warehouse connections.' },
+    ]);
+
+    const result = help('connections');
+    expect(result.category).toBe('connections');
+    expect(result.tools.map((tool: any) => tool.name)).toContain('warehouse_list_connections');
+    // The runtime facade still shows up inside the category view...
+    expect(result.runtimes.map((entry: any) => entry.name)).toContain('connections');
+    // ...and stays directly reachable via an explicit runtime request.
+    expect(help({ runtime: 'connections' }).runtime.name).toBe('connections');
+  });
+
+  it('returns the full usage guide from a no-argument tools.help() call', () => {
+    const createHelp = loadGeneratedToolHelp();
+    const help = createHelp([
+      { name: 'send_email', category: 'communication', description: 'Send an email.' },
+    ]);
+
+    const result = help();
+    expect(Array.isArray(result.guide)).toBe(true);
+    const guide = result.guide.join('\n');
+    // The long-form guidance moved out of the js_exec tool description lives here.
+    expect(guide).toContain('set_preview');
+    expect(guide).toContain('env.CONNECTIONS.find');
+    expect(guide).toContain('location');
+    expect(guide).toContain('vm.exec');
+    expect(guide).toContain('env.AI.run');
+    // Executor-style calling shape: envelope semantics and TypeScript acceptance.
+    expect(guide).toContain('{ ok: true, data }');
+    expect(guide).toContain('type annotations are stripped');
+    expect(result.categories.length).toBeGreaterThan(0);
+  });
+});
+
+function loadGeneratedToolSearch(): {
+  createToolSearch: (allTools: unknown[]) => (input?: unknown) => any;
+  createToolDescribe: (allTools: unknown[]) => (input?: unknown) => any;
+  createEnvelopeToolCall: (name: string, callTool: (name: string, args?: unknown) => unknown) => (args?: unknown) => Promise<any>;
+  schemaToTypeScript: (schema: unknown) => string;
+} {
+  const source = codeModeWorkerModule('');
+  const start = source.indexOf('const RUNTIME_HELP_ENTRIES');
+  const end = source.indexOf('\n\nfunction createScreenshotFacade', start);
+  expect(start).toBeGreaterThanOrEqual(0);
+  expect(end).toBeGreaterThan(start);
+  const slice = source.slice(start, end);
+  return new Function(`${slice}; return { createToolSearch, createToolDescribe, createEnvelopeToolCall, schemaToTypeScript };`)();
+}
+
+describe('code mode runner tools.search / tools.describe', () => {
+  const allTools = [
+    { name: 'send_email', category: 'communication', description: 'Send an email message to a recipient.', examples: ['await tools.send_email({ to, subject, body })'] },
+    { name: 'list_apps', category: 'apps', description: 'List deployed apps for the current workspace.', examples: [] },
+    { name: 'create_workflow', category: 'workflows', description: 'Create a deterministic JavaScript workflow.', examples: [] },
+  ];
+
+  it('ranks the most relevant tool first and gates out non-matches', () => {
+    const { createToolSearch } = loadGeneratedToolSearch();
+    const search = createToolSearch(allTools);
+
+    const result = search('send email');
+    expect(result.items[0].name).toBe('send_email');
+    expect(result.items.every((item: any) => item.score > 0)).toBe(true);
+    // "send email" should not surface unrelated tools (coverage gate).
+    expect(result.items.map((item: any) => item.name)).not.toContain('list_apps');
+    // Each match advertises how to inspect it next.
+    expect(result.items[0].describe).toBe('await tools.describe("send_email")');
+  });
+
+  it('accepts a string or { query, limit } and requires a query', () => {
+    const { createToolSearch } = loadGeneratedToolSearch();
+    const search = createToolSearch(allTools);
+
+    expect(search({ query: 'deployed apps', limit: 1 }).items).toHaveLength(1);
+    expect(() => search('')).toThrow(/requires a query/);
+    expect(() => search({})).toThrow(/requires a query/);
+  });
+
+  it('labels runtime hits as globals instead of suggesting tools.<name> calls', () => {
+    const { createToolSearch } = loadGeneratedToolSearch();
+    const search = createToolSearch(allTools);
+
+    const toolHit = search('send email').items[0];
+    expect(toolHit.kind).toBe('tool');
+    expect(toolHit.call).toBe('await tools["send_email"](args)');
+
+    const result = search('connections');
+    const runtimeHit = result.items.find((item: any) => item.name === 'env.CONNECTIONS');
+    expect(runtimeHit.kind).toBe('runtime');
+    expect(runtimeHit.call).toContain('NOT callable via tools.<name>');
+    expect(runtimeHit.call).toContain('await env.CONNECTIONS.list()');
+    expect(result.usage).toContain('sandbox globals');
+  });
+
+  it('describe returns the full definition for a known tool and suggests for misses', () => {
+    const { createToolDescribe } = loadGeneratedToolSearch();
+    const describe = createToolDescribe(allTools);
+
+    const known = describe('send_email');
+    expect(known.tool.name).toBe('send_email');
+    expect(known.tool.description).toContain('Send an email');
+    expect(known.usage).toContain('await tools.send_email');
+
+    const miss = describe('totally_unknown_tool');
+    expect(miss.error).toContain('totally_unknown_tool');
+    expect(Array.isArray(miss.suggestions)).toBe(true);
+    expect(() => describe('')).toThrow(/requires a tool name/);
+  });
+
+  it('describe replaces the JSON Schema with a compact inputTypeScript shape', () => {
+    const { createToolDescribe } = loadGeneratedToolSearch();
+    const describe = createToolDescribe([
+      {
+        name: 'create_scheduled_prompt',
+        category: 'schedules',
+        description: 'Create a scheduled prompt.',
+        parameters: {
+          type: 'object',
+          required: ['name', 'prompt', 'cron_expression'],
+          properties: {
+            name: { type: 'string' },
+            prompt: { type: 'string' },
+            cron_expression: { type: 'string' },
+            enabled: { type: 'boolean' },
+          },
+        },
+      },
+    ]);
+
+    const result = describe('create_scheduled_prompt');
+    expect(result.tool.inputTypeScript).toBe(
+      '{ name: string, prompt: string, cron_expression: string, enabled?: boolean }',
+    );
+    expect(result.tool.parameters).toBeUndefined();
+    expect(result.usage).toContain('{ ok: true, data }');
+  });
+
+  it('renders enums, unions, arrays, and nested objects as TypeScript', () => {
+    const { schemaToTypeScript } = loadGeneratedToolSearch();
+    expect(schemaToTypeScript({
+      type: 'object',
+      required: ['location', 'todos'],
+      properties: {
+        location: { type: 'string', enum: ['workspace', 'vm', 'r2'] },
+        limit: { type: ['number', 'null'] },
+        todos: {
+          type: 'array',
+          items: {
+            type: 'object',
+            required: ['content'],
+            properties: { content: { type: 'string' } },
+          },
+        },
+      },
+    })).toBe('{ location: "workspace" | "vm" | "r2", limit?: number | null, todos: { content: string }[] }');
+    expect(schemaToTypeScript({ type: 'array', items: { enum: ['a', 'b'] } })).toBe('("a" | "b")[]');
+    expect(schemaToTypeScript(undefined)).toBe('unknown');
+  });
+
+  it('passes DO-built envelopes through and normalizes transport failures', async () => {
+    const { createEnvelopeToolCall } = loadGeneratedToolSearch();
+
+    const success = createEnvelopeToolCall('list_apps', async () => ({ ok: true, data: { apps: [] } }));
+    await expect(success({})).resolves.toEqual({ ok: true, data: { apps: [] } });
+
+    const toolFailure = createEnvelopeToolCall('create_scheduled_prompt', async () => ({
+      ok: false,
+      error: { tool: 'create_scheduled_prompt', message: 'cron_expression is required' },
+    }));
+    await expect(toolFailure({ name: 'x' })).resolves.toEqual({
+      ok: false,
+      error: { tool: 'create_scheduled_prompt', message: 'cron_expression is required' },
+    });
+
+    const transportFailure = createEnvelopeToolCall('list_apps', async () => {
+      throw new Error('RPC connection lost');
+    });
+    await expect(transportFailure({})).resolves.toEqual({
+      ok: false,
+      error: { tool: 'list_apps', message: 'RPC connection lost' },
+    });
+  });
+
+  it('describe on a runtime helper explains it is a global, not a tools.<name> call', () => {
+    const { createToolDescribe } = loadGeneratedToolSearch();
+    const describe = createToolDescribe(allTools);
+
+    const runtime = describe('env.CONNECTIONS');
+    expect(runtime.runtime.name).toBe('env.CONNECTIONS');
+    expect(runtime.usage).toContain('NOT callable via tools.<name>');
+    expect(runtime.usage).toContain('await env.CONNECTIONS.list()');
+  });
+
+  it('describes the project facades advertised in the js_exec guide', () => {
+    const { createToolDescribe } = loadGeneratedToolSearch();
+    const describe = createToolDescribe(allTools);
+
+    const projects = describe('env.PROJECTS');
+    expect(projects.runtime.name).toBe('env.PROJECTS');
+    expect(projects.runtime.methods.map((method: any) => method.name)).toEqual(
+      ['list', 'create', 'setDescription', 'clone'],
+    );
+
+    const vm = describe('vm');
+    expect(vm.runtime.name).toBe('vm');
+    expect(vm.usage).toContain('vm.exec');
   });
 });

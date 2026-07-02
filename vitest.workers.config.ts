@@ -146,5 +146,14 @@ export default defineConfig({
   test: {
     include: ['workers/**/tests/**/*.test.ts'],
     testTimeout: 20_000,
+    // Agent-eval runs only: don't let vitest's exit code flip to 1 on unhandled
+    // errors. The vitest-pool-workers handler-context shim re-reports tool throws
+    // that callToolEnvelope already caught and delivered to the agent as
+    // { ok: false } values, which otherwise fails runs whose every criterion
+    // passed. The errors still print, and scripts/run-agent-eval.mjs still parses
+    // them into signal violations (filtering only the enveloped duplicates), so
+    // real harness errors keep failing eval runs through the signal. Regular
+    // worker test runs keep vitest's strict default.
+    dangerouslyIgnoreUnhandledErrors: process.env.RUN_AGENT_EVALS === '1',
   },
 });

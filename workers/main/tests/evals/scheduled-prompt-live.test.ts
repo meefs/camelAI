@@ -1,10 +1,19 @@
 import { env } from "cloudflare:test";
-import { describe, expect, it } from "vitest";
+import { describe, it } from "vitest";
 
 import { createOrg, createUser, type TestEnv } from "../test-helpers";
+import {
+  assertPassFailCriteria,
+  buildEvalCriteriaSummary,
+  buildNoAssistantErrorCriterion,
+  buildResultEventCriterion,
+  buildRuntimeEventsCriterion,
+  buildSessionCompletedCriterion,
+  passFailCriterion,
+  scoreSignalEfficiency,
+} from "./eval-criteria";
 import { emitEvalTranscript } from "./eval-transcript";
 import {
-  assertEvalSignal,
   evaluateAgentEvalSignal,
   getEvalSignalThresholds,
   type EvalSignalEnv,
@@ -18,10 +27,10 @@ import type { ChatThreadDO } from "../../src/chat-thread-do";
 import type { WorkspaceCronDO } from "../../src/workspace-cron";
 
 // This eval exercises the scheduled-prompt tools (create_scheduled_prompt /
-// list_scheduled_prompts). Those tools live in the "schedules" category, which the
-// lean tool surface (PI_LEAN_TOOLS=1) drops from the model's top-level tool list — so
-// this eval also verifies the agent can still DISCOVER and use them via tools.search
-// inside js_exec, the long-tail capability that had no coverage before.
+// list_scheduled_prompts). Those tools live in the "schedules" category, which the lean
+// tool surface (now the default) drops from the model's top-level tool list — so this
+// eval also verifies the agent can still DISCOVER and use them via tools.search inside
+// js_exec, the long-tail capability that had no coverage before.
 
 type ScheduledPromptEvalEnv = TestEnv & EvalModelEnv & EvalSignalEnv & {
   CHAT_THREAD: DurableObjectNamespace<ChatThreadDO>;
@@ -98,8 +107,72 @@ describe("scheduled prompt agent eval", () => {
       const prompts = await cronStub.listScheduledPrompts(defaultWorkspaceId);
       const match = prompts.find((p) => p.name === SCHEDULE_NAME);
 
+      const transcriptText = JSON.stringify({
+        result: result.result,
+        events: result.events,
+        messages: result.messages,
+      }).toLowerCase();
+      const evaluation = buildEvalCriteriaSummary({
+        passFail: [
+          buildSessionCompletedCriterion(result),
+          passFailCriterion({
+            id: "schedule_persisted",
+            label: "Scheduled prompt persisted",
+            passed: Boolean(match),
+            reason: match
+              ? undefined
+              : `No scheduled prompt named "${SCHEDULE_NAME}" was created.`,
+            details: { scheduledPromptCount: prompts.length },
+          }),
+          passFailCriterion({
+            id: "schedule_cron_correct",
+            label: "Scheduled prompt has the requested cron expression",
+            passed: match?.cron_expression === SCHEDULE_CRON,
+            reason:
+              match?.cron_expression === SCHEDULE_CRON
+                ? undefined
+                : `Expected cron "${SCHEDULE_CRON}", got "${match?.cron_expression ?? "none"}".`,
+            details: { cron: match?.cron_expression ?? null },
+          }),
+          passFailCriterion({
+            id: "schedule_prompt_nonempty",
+            label: "Scheduled prompt has non-empty prompt text",
+            passed: (match?.prompt ?? "").length > 0,
+            reason:
+              (match?.prompt ?? "").length > 0
+                ? undefined
+                : "Persisted scheduled prompt had empty prompt text.",
+          }),
+          passFailCriterion({
+            id: "produced_token_usage",
+            label: "Agent produced token usage",
+            passed: signal.tokenUsage.totalTokens > 0,
+            reason:
+              signal.tokenUsage.totalTokens > 0
+                ? undefined
+                : "Signal reported zero total tokens.",
+            details: { totalTokens: signal.tokenUsage.totalTokens },
+          }),
+          buildNoAssistantErrorCriterion(transcriptText),
+          buildRuntimeEventsCriterion(result),
+          buildResultEventCriterion(result),
+        ],
+        scorecard: [
+          scoreSignalEfficiency(signal, {
+            maxPoints: 4,
+            fallbackPoints: 1,
+            tiers: [
+              { maxAssistantTurns: 6, maxBadToolCalls: 0, points: 4 },
+              { maxAssistantTurns: 12, maxBadToolCalls: 1, points: 3 },
+              { maxAssistantTurns: 18, maxBadToolCalls: 3, points: 2 },
+            ],
+          }),
+        ],
+      });
+
       emitEvalTranscript({
         status: result.status,
+        evaluation,
         error: result.error,
         model: testEnv.EVAL_MODEL,
         signal,
@@ -116,17 +189,7 @@ describe("scheduled prompt agent eval", () => {
         },
       });
 
-      expect(result.status).toBe("completed");
-      assertEvalSignal(signal, testEnv);
-      // The agent (in lean mode, after discovering the tool via tools.search) must
-      // have persisted a scheduled prompt with the requested name and cron.
-      expect(match, `expected a scheduled prompt named "${SCHEDULE_NAME}"`).toBeTruthy();
-      expect(match?.cron_expression).toBe(SCHEDULE_CRON);
-      expect((match?.prompt ?? "").length).toBeGreaterThan(0);
-      expect(signal.tokenUsage.totalTokens).toBeGreaterThan(0);
-      expect(JSON.stringify(result.messages).toLowerCase()).not.toContain(
-        "assistant error",
-      );
+      assertPassFailCriteria(evaluation);
     },
     240_000,
   );

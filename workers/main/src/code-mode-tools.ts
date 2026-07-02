@@ -149,6 +149,10 @@ const JS_EXEC_EXCLUDED_TOOL_NAMES = new Set([
   "prompt_connection_setup",
   "delete_connection",
   "delete_project",
+  // Blocks on human input the same way; keep it out of the js_exec catalog so
+  // tools.search() can't advertise burying a user prompt inside the sandbox
+  // timeout. It stays a top-level Pi tool.
+  "AskUserQuestion",
   // Backing tool for env.WORKSPACE.*. Keep the user-facing runtime facade in
   // tools.help(), not the implementation detail.
   "workspace_info",
@@ -1094,7 +1098,7 @@ const CODE_MODE_TOOL_REGISTRY: CodeModeToolRegistration[] = [
   ),
 ];
 
-const CODE_MODE_TOOL_DEFINITIONS: CodeModeToolDefinition[] = CODE_MODE_TOOL_REGISTRY
+export const CODE_MODE_TOOL_DEFINITIONS: CodeModeToolDefinition[] = CODE_MODE_TOOL_REGISTRY
   .map(codeModeDefinition);
 export const CODE_MODE_PI_PASSTHROUGH_TOOL_DEFINITIONS: CodeModeToolDefinition[] =
   CODE_MODE_TOOL_REGISTRY
@@ -2470,6 +2474,22 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
   async listTools(): Promise<CodeModeToolDefinition[]> {
     return CODE_MODE_TOOL_DEFINITIONS
       .filter((definition) => !JS_EXEC_EXCLUDED_TOOL_NAMES.has(definition.name));
+  }
+
+  // Executor-style result envelope for js_exec's `tools.<name>()` calls. Catching
+  // on this side of the RPC boundary matters: a thrown error would be delivered
+  // to the sandbox by capnweb but still surface as an unhandled rejection in the
+  // calling isolate, so expected tool failures must return as values here.
+  async callToolEnvelope(
+    name: string,
+    rawArgs: unknown = {},
+  ): Promise<{ ok: true; data: unknown } | { ok: false; error: { tool: string; message: string } }> {
+    try {
+      return { ok: true, data: await this.callTool(name, rawArgs) };
+    } catch (error) {
+      const message = error instanceof Error && error.message ? error.message : String(error);
+      return { ok: false, error: { tool: name, message } };
+    }
   }
 
   async callTool(name: string, rawArgs: unknown = {}): Promise<unknown> {

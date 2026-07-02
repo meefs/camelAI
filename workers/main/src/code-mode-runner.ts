@@ -1,3 +1,28 @@
+import { transform as sucraseTransform } from "sucrase";
+
+// js_exec user code runs inside an async function body, so wrap it the same way
+// before handing it to sucrase: that makes top-level `return`/`await` parse. The
+// wrapper contains no TypeScript, so it survives the transform byte-for-byte and
+// can be sliced back off. Executor-style: models may write idiomatic TypeScript
+// and the type syntax is stripped before execution. Anything sucrase cannot
+// parse falls back to the original code so plain-JS behavior never regresses.
+const TS_STRIP_PREFIX = "async function __camelTypeStrip__() {\n";
+const TS_STRIP_SUFFIX = "\n}";
+
+export function stripTypeScriptFromUserCode(userCode: string): string {
+  if (!userCode.trim()) return userCode;
+  try {
+    const wrapped = `${TS_STRIP_PREFIX}${userCode}${TS_STRIP_SUFFIX}`;
+    const stripped = sucraseTransform(wrapped, { transforms: ["typescript"] }).code;
+    if (!stripped.startsWith(TS_STRIP_PREFIX) || !stripped.endsWith(TS_STRIP_SUFFIX)) {
+      return userCode;
+    }
+    return stripped.slice(TS_STRIP_PREFIX.length, stripped.length - TS_STRIP_SUFFIX.length);
+  } catch {
+    return userCode;
+  }
+}
+
 export function prepareCodeModeUserCode(userCode: string): string {
   if (!userCode.trim() || /\breturn\b/.test(userCode)) return userCode;
 
@@ -26,7 +51,7 @@ export function prepareCodeModeUserCode(userCode: string): string {
 }
 
 export function codeModeWorkerModule(userCode: string): string {
-  const executableUserCode = prepareCodeModeUserCode(userCode);
+  const executableUserCode = prepareCodeModeUserCode(stripTypeScriptFromUserCode(userCode));
   return `${String.raw`
 import { WorkerEntrypoint } from "cloudflare:workers";
 
@@ -117,6 +142,49 @@ const TOOL_HELP_DEFINITION = Object.freeze({
     "await tools.help(\"communication\")",
     "await tools.help(\"send_email\")",
     "await tools.help({ runtime: \"env.CAMELAI\" })",
+  ],
+  sideEffect: false,
+  externalDelivery: false,
+});
+
+const TOOL_SEARCH_DEFINITION = Object.freeze({
+  name: "search",
+  description:
+    "Rank harness tools and runtime helpers by relevance to a query. Returns lightweight matches ({ name, category, score }); follow up with await tools.describe(name) to see arguments, then call await tools.<name>(args). Prefer this over loading every tool up front.",
+  parameters: {
+    type: "object",
+    properties: {
+      query: { type: "string", description: "Intent plus key nouns, e.g. \"send slack message\"." },
+      limit: { type: "number", description: "Max results to return (default 12)." },
+    },
+    required: ["query"],
+    additionalProperties: false,
+  },
+  category: "runtime",
+  examples: [
+    "await tools.search(\"send email\")",
+    "await tools.search({ query: \"list deployed apps\", limit: 5 })",
+  ],
+  sideEffect: false,
+  externalDelivery: false,
+});
+
+const TOOL_DESCRIBE_DEFINITION = Object.freeze({
+  name: "describe",
+  description:
+    "Return the full definition (description, category, parameter schema, examples) for one harness tool or runtime helper by exact name. Use after tools.search to learn how to call a tool.",
+  parameters: {
+    type: "object",
+    properties: {
+      name: { type: "string", description: "Exact tool or runtime helper name." },
+    },
+    required: ["name"],
+    additionalProperties: false,
+  },
+  category: "runtime",
+  examples: [
+    "await tools.describe(\"send_email\")",
+    "await tools.describe(\"env.CAMELAI\")",
   ],
   sideEffect: false,
   externalDelivery: false,
@@ -239,6 +307,39 @@ const RUNTIME_HELP_ENTRIES = Object.freeze([
     ],
   }),
   Object.freeze({
+    name: "env.PROJECTS",
+    category: "workspace",
+    kind: "runtime_binding",
+    description:
+      "Project facade for listing, creating, describing, and cloning workspace projects. Backed by the list_projects/create_project/set_project_description/clone_project tools.",
+    examples: [
+      "await env.PROJECTS.list()",
+      "await env.PROJECTS.create({ name: \"my-app\", description: \"What this app does\" })",
+    ],
+    methods: [
+      { name: "list", usage: "await env.PROJECTS.list()" },
+      { name: "create", usage: "await env.PROJECTS.create({ name, description, template? })" },
+      { name: "setDescription", usage: "await env.PROJECTS.setDescription({ project, description })" },
+      { name: "clone", usage: "await env.PROJECTS.clone({ project, name? })" },
+    ],
+  }),
+  Object.freeze({
+    name: "vm",
+    category: "workspace",
+    kind: "runtime_binding",
+    description:
+      "Project VM shell facade (also exposed as env.VM). vm.exec runs a command in a legacy project VM; the active checkout is /workspace, so don't prepend cd /workspace.",
+    examples: [
+      "await vm.exec({ command: \"bun run build\", project: \"my-app\", timeoutSeconds: 120 })",
+    ],
+    methods: [
+      {
+        name: "exec",
+        usage: "await vm.exec({ command, project, timeoutSeconds? }) or await vm.exec(\"command\", { project })",
+      },
+    ],
+  }),
+  Object.freeze({
     name: "text/store/load",
     category: "runtime",
     kind: "runtime_helper",
@@ -269,6 +370,24 @@ function normalizeHelpInput(input) {
   }
   throw new Error("tools.help expects no arguments, a category/tool string, or { category?, tool?, runtime? }");
 }
+
+// The full js_exec usage guide, returned by a no-argument tools.help() call.
+// This is the executor-style split: the always-loaded js_exec tool description
+// stays tiny (a pointer here plus the tool inventory), and this long-form
+// guidance is fetched on demand the moment the model actually writes code.
+const JS_EXEC_GUIDE = Object.freeze([
+  "Results: the final expression is returned automatically and console.log/warn/error output is captured; use an explicit return inside branches or loops. You may write TypeScript — type annotations are stripped before execution.",
+  "Tool results: every await tools.<name>(args) call resolves to { ok: true, data } on success or { ok: false, error: { tool, message } } on failure — branch on result.ok and read result.data; failed calls do not throw, so you can inspect the error, tools.describe the tool, and retry in the same run. Runtime bindings (env.*, vm.exec, connections[alias]) and tools.search/describe/help return their values directly.",
+  "Discovery: await tools.search(\"<intent + key nouns>\") ranks matching tools; await tools.describe(name) returns one definition with a compact inputTypeScript argument shape; await tools.help(\"<category>\") expands a category. Results with kind \"tool\" run as await tools.<name>(args); kind \"runtime\" results are sandbox globals (env.*, connections, text/store/load) used directly, never through tools.",
+  "Every top-level harness tool is also on tools, e.g. await tools.create_project(...).",
+  "Connections: const entry = await env.CONNECTIONS.find(\"clickhouse\"); return await connections[entry.alias].query({ query: \"SELECT 1 AS ok\" }). Use await env.CONNECTIONS.methods() for the full catalog and await env.CONNECTIONS.test(\"clickhouse\") for a smoke test; custom \"other\" connections expose fetch.",
+  "File tools require an explicit location (\"workspace\" | \"vm\" | \"r2\"), e.g. const file = await tools.read({ location: \"vm\", project: project.name, path: \"/src/App.tsx\" }); then use file.data. R2 mounts are uploads/ (read-only), outputs/ (user-visible), tmp/. tools.grep, tools.find, and tools.move are also available.",
+  "Project VMs: use env.PROJECTS to list/create/clone projects and vm.exec({ command, project, timeoutSeconds }); the active checkout is /workspace (don't prepend cd /workspace), pass cwd only for subdirectories, and don't use /home/claude. Run independent commands concurrently with Promise.all.",
+  "Deploy verification: after you deploy an app or make changes to it, ALWAYS call set_preview with the newly deployed app and verify by calling list_apps before reporting done.",
+  "Hosted helpers: env.AI.run(\"auto\", { messages }) with tiers cheap/fast/auto/smart or any OpenRouter id, env.CAMELAI.generateImage/transcribeAudio, env.WORKSPACE.info(); web access via tools.WebSearch/tools.WebFetch. Global fetch() auto-authenticates to this workspace's deployed apps.",
+  "Scratch state: text(value) appends user-visible output; store(key, value)/load(key) keep per-runner scratch state.",
+  "Interactive tools that wait for the user (prompt_connection_setup, delete_connection, delete_project, AskUserQuestion) are top-level only and cannot be called from js_exec.",
+]);
 
 function createToolHelp(allTools) {
   const toolsByName = new Map(allTools.map((tool) => [tool.name.toLowerCase(), tool]));
@@ -311,6 +430,7 @@ function createToolHelp(allTools) {
     if (!requestedKey && !requestedTool && !requestedCategory && !requestedRuntime) {
       return {
         usage: "Expand a category with await tools.help(\"communication\") or inspect one tool with await tools.help(\"send_email\").",
+        guide: cloneHelpValue(JS_EXEC_GUIDE),
         categories: categorySummary(),
       };
     }
@@ -320,13 +440,13 @@ function createToolHelp(allTools) {
       return { tool: cloneHelpValue(toolsByName.get(toolKey)) };
     }
 
-    const runtimeKey = requestedRuntime || requestedKey;
-    if (runtimeKey && runtimeByName.has(runtimeKey)) {
-      return { runtime: cloneHelpValue(runtimeByName.get(runtimeKey)) };
-    }
-
+    // For a bare-string key, resolve categories before runtime helpers: the
+    // "connections" category and the "connections" runtime facade share a name,
+    // and category browsing is the discovery path for tools hidden from the
+    // top-level list. Nothing is lost — the category view lists its runtime
+    // entries too, and an explicit { runtime: "connections" } stays precise.
     const categoryKey = requestedCategory || requestedKey;
-    if (categoryKey && categories.has(categoryKey)) {
+    if (categoryKey && categories.has(categoryKey) && !requestedRuntime) {
       const entry = categories.get(categoryKey);
       return {
         category: categoryKey,
@@ -336,11 +456,234 @@ function createToolHelp(allTools) {
       };
     }
 
+    const runtimeKey = requestedRuntime || requestedKey;
+    if (runtimeKey && runtimeByName.has(runtimeKey)) {
+      return { runtime: cloneHelpValue(runtimeByName.get(runtimeKey)) };
+    }
+
     return {
       error: "No exact js_exec help entry matched " + JSON.stringify(requestedKey || requestedTool || requestedCategory || requestedRuntime) + ".",
       usage: "Use await tools.help() to list categories, then expand one exact category or tool name.",
       categories: categorySummary(),
     };
+  };
+}
+
+// Executor-style tool search: a small dependency-free weighted scorer over the
+// tool catalog. No embeddings; ranks by token overlap and substring/prefix hits
+// across name/category/description/examples with a coverage gate.
+function leanNormalizeText(value) {
+  return String(value == null ? "" : value)
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .replace(/[_./:-]+/g, " ")
+    .toLowerCase();
+}
+
+function leanTokenize(value) {
+  return leanNormalizeText(value).split(/[^a-z0-9]+/).filter(Boolean);
+}
+
+const SEARCH_FIELD_WEIGHTS = Object.freeze({ name: 10, category: 6, description: 4, examples: 2 });
+
+function scoreSearchField(fieldText, queryTokens, weight, matchedTokens) {
+  if (!fieldText) return 0;
+  const normalized = leanNormalizeText(fieldText);
+  const fieldTokens = normalized.split(/[^a-z0-9]+/).filter(Boolean);
+  const fieldTokenSet = new Set(fieldTokens);
+  let score = 0;
+  for (const token of queryTokens) {
+    if (fieldTokenSet.has(token)) {
+      score += weight * 4;
+      matchedTokens.add(token);
+    } else if (fieldTokens.some((ft) => ft.startsWith(token) || token.startsWith(ft))) {
+      score += weight * 2;
+      matchedTokens.add(token);
+    } else if (normalized.includes(token)) {
+      score += weight * 1;
+      matchedTokens.add(token);
+    }
+  }
+  return score;
+}
+
+function scoreSearchEntry(ref, queryTokens, phrase) {
+  const matchedTokens = new Set();
+  let score = 0;
+  score += scoreSearchField(ref.name, queryTokens, SEARCH_FIELD_WEIGHTS.name, matchedTokens);
+  score += scoreSearchField(ref.category, queryTokens, SEARCH_FIELD_WEIGHTS.category, matchedTokens);
+  score += scoreSearchField(ref.description, queryTokens, SEARCH_FIELD_WEIGHTS.description, matchedTokens);
+  const exampleText = Array.isArray(ref.examples) ? ref.examples.join(" ") : "";
+  score += scoreSearchField(exampleText, queryTokens, SEARCH_FIELD_WEIGHTS.examples, matchedTokens);
+
+  const normalizedName = leanNormalizeText(ref.name);
+  if (normalizedName === phrase) score += 40;
+  else if (normalizedName.startsWith(phrase)) score += 12;
+  else if (normalizedName.includes(phrase)) score += 6;
+
+  const coverage = queryTokens.length ? matchedTokens.size / queryTokens.length : 0;
+  const minimumCoverage = queryTokens.length <= 2 ? 1 : 0.6;
+  const phraseMatch =
+    normalizedName.includes(phrase) || leanNormalizeText(ref.description).includes(phrase);
+  if (coverage < minimumCoverage && !phraseMatch) return null;
+  score += coverage >= 1 ? 25 : Math.round(coverage * 10);
+  return score;
+}
+
+function normalizeSearchInput(input) {
+  if (typeof input === "string") return { query: input };
+  if (input === undefined || input === null) return {};
+  if (typeof input === "object" && !Array.isArray(input)) return input;
+  throw new Error("tools.search expects a query string or { query, limit }");
+}
+
+function createToolSearch(allTools) {
+  const entries = [
+    ...allTools.map((tool) => ({ kind: "tool", ref: tool })),
+    ...RUNTIME_HELP_ENTRIES.map((entry) => ({ kind: "runtime", ref: entry })),
+  ];
+  return (input) => {
+    const request = normalizeSearchInput(input);
+    const query = typeof request.query === "string" ? request.query.trim() : "";
+    if (!query) {
+      throw new Error("tools.search requires a query string, e.g. await tools.search(\"send email\")");
+    }
+    const limit = Number.isFinite(request.limit)
+      ? Math.max(1, Math.min(50, Math.trunc(request.limit)))
+      : 12;
+    const queryTokens = leanTokenize(query);
+    const phrase = leanNormalizeText(query).trim();
+    const scored = [];
+    for (const entry of entries) {
+      const ref = entry.ref;
+      const score = scoreSearchEntry(ref, queryTokens, phrase);
+      if (score === null) continue;
+      const firstExample = Array.isArray(ref.examples) && ref.examples.length ? ref.examples[0] : null;
+      scored.push({
+        name: ref.name,
+        kind: entry.kind,
+        category: ref.category || "workspace",
+        description: ref.description || "",
+        score,
+        describe: "await tools.describe(" + JSON.stringify(ref.name) + ")",
+        call: entry.kind === "tool"
+          ? "await tools[" + JSON.stringify(ref.name) + "](args)"
+          : "Runtime global, NOT callable via tools.<name>." + (firstExample ? " Example: " + firstExample : ""),
+      });
+    }
+    scored.sort((a, b) => (b.score - a.score) || a.name.localeCompare(b.name));
+    const items = scored.slice(0, limit);
+    return {
+      query,
+      total: scored.length,
+      items,
+      usage: items.length
+        ? "Inspect a result with await tools.describe(name), then invoke it as its call field shows: kind \"tool\" results run as await tools.<name>(args); kind \"runtime\" results are sandbox globals used directly, never through tools."
+        : "No tools matched. Try broader terms or await tools.help() to browse categories.",
+    };
+  };
+}
+
+// Compact executor-style TypeScript rendering of a JSON Schema parameters
+// object: "{ name: string, enabled?: boolean }" reads at a fraction of the
+// context cost of the raw schema. Best-effort — anything unrecognized prints
+// as unknown rather than throwing.
+function schemaToTypeScript(schema) {
+  if (!schema || typeof schema !== "object") return "unknown";
+  if (Array.isArray(schema.enum) && schema.enum.length) {
+    return schema.enum.map((value) => JSON.stringify(value)).join(" | ");
+  }
+  if (schema.const !== undefined) return JSON.stringify(schema.const);
+  const variants = Array.isArray(schema.anyOf) ? schema.anyOf : (Array.isArray(schema.oneOf) ? schema.oneOf : null);
+  if (variants && variants.length) {
+    return [...new Set(variants.map(schemaToTypeScript))].join(" | ");
+  }
+  if (Array.isArray(schema.type)) {
+    return [...new Set(schema.type.map((type) => schemaToTypeScript({ ...schema, type })))].join(" | ");
+  }
+  switch (schema.type) {
+    case "string": return "string";
+    case "number":
+    case "integer": return "number";
+    case "boolean": return "boolean";
+    case "null": return "null";
+    case "array": {
+      const item = schemaToTypeScript(schema.items);
+      return (item.includes(" | ") ? "(" + item + ")" : item) + "[]";
+    }
+    case "object": {
+      const required = new Set(Array.isArray(schema.required) ? schema.required : []);
+      const properties = schema.properties && typeof schema.properties === "object"
+        ? Object.entries(schema.properties)
+        : [];
+      if (!properties.length) {
+        return schema.additionalProperties ? "Record<string, unknown>" : "{}";
+      }
+      const fields = properties.map(([key, value]) =>
+        key + (required.has(key) ? "" : "?") + ": " + schemaToTypeScript(value));
+      return "{ " + fields.join(", ") + " }";
+    }
+    default: return "unknown";
+  }
+}
+
+function createToolDescribe(allTools) {
+  const toolsByName = new Map(allTools.map((tool) => [tool.name.toLowerCase(), tool]));
+  const runtimeByName = new Map(RUNTIME_HELP_ENTRIES.map((entry) => [entry.name.toLowerCase(), entry]));
+  const search = createToolSearch(allTools);
+  return (input) => {
+    const name = typeof input === "string"
+      ? input.trim()
+      : (input && typeof input === "object" && typeof input.name === "string" ? input.name.trim() : "");
+    if (!name) {
+      throw new Error("tools.describe requires a tool name, e.g. await tools.describe(\"send_email\")");
+    }
+    const key = name.toLowerCase();
+    if (toolsByName.has(key)) {
+      const tool = toolsByName.get(key);
+      const definition = cloneHelpValue(tool);
+      delete definition.parameters;
+      definition.inputTypeScript = schemaToTypeScript(tool.parameters);
+      return {
+        tool: definition,
+        usage: "Call it as await tools." + tool.name + "(args); the call resolves to { ok: true, data } or { ok: false, error: { message } } — branch on ok.",
+      };
+    }
+    if (runtimeByName.has(key)) {
+      const entry = runtimeByName.get(key);
+      const firstExample = Array.isArray(entry.examples) && entry.examples.length ? entry.examples[0] : null;
+      return {
+        runtime: cloneHelpValue(entry),
+        usage: "Runtime global available directly in js_exec, NOT callable via tools.<name>." +
+          (firstExample ? " Example: " + firstExample : ""),
+      };
+    }
+    const suggestions = search({ query: name, limit: 5 }).items.map((item) => item.name);
+    return {
+      error: "No tool or runtime helper named " + JSON.stringify(name) + ".",
+      suggestions,
+      usage: "Use await tools.search(\"...\") to find tools, then await tools.describe(name).",
+    };
+  };
+}
+
+// Executor-style result envelope for tools.<name>() calls: expected tool/domain
+// failures come back as values the model can branch on inside the same script
+// (search -> call -> on-error describe -> retry in one run), instead of throwing
+// and killing the whole js_exec turn. The envelope is built on the DO side of
+// the RPC (TOOLS.callToolEnvelope) so no exception ever crosses capnweb; the
+// catch here only normalizes transport-level failures. Runtime bindings (env.*,
+// vm.exec, connections[alias]) and tools.search/describe/help keep returning
+// raw values.
+function createEnvelopeToolCall(name, invokeEnvelope) {
+  return async (args = {}) => {
+    try {
+      return await invokeEnvelope(name, args);
+    } catch (error) {
+      const message = error && typeof error.message === "string" && error.message
+        ? error.message
+        : String(error);
+      return { ok: false, error: { tool: name, message } };
+    }
   };
 }
 
@@ -562,13 +905,23 @@ export class CodeModeRunner extends WorkerEntrypoint {
     })));
     const ALL_TOOLS = Object.freeze([
       TOOL_HELP_DEFINITION,
+      TOOL_SEARCH_DEFINITION,
+      TOOL_DESCRIBE_DEFINITION,
       ...registeredTools,
     ]);
     const callTool = (name, args = {}) => this.env.TOOLS.callTool(name, args);
+    const invokeEnvelope = (name, args = {}) => this.env.TOOLS.callToolEnvelope(name, args);
     const help = createToolHelp(ALL_TOOLS);
-    const toolEntries = registeredTools.map((tool) => [tool.name, (args = {}) => callTool(tool.name, args)]);
+    const search = createToolSearch(ALL_TOOLS);
+    const describe = createToolDescribe(ALL_TOOLS);
+    const rawTools = Object.freeze(Object.fromEntries(
+      registeredTools.map((tool) => [tool.name, (args = {}) => callTool(tool.name, args)]),
+    ));
+    const toolEntries = registeredTools.map((tool) => [tool.name, createEnvelopeToolCall(tool.name, invokeEnvelope)]);
     const tools = Object.freeze(Object.fromEntries([
       ["help", help],
+      ["search", search],
+      ["describe", describe],
       ...toolEntries,
     ]));
     const CONNECTIONS_BINDING = createToolBackedConnectionsBinding(callTool);
@@ -578,9 +931,9 @@ export class CodeModeRunner extends WorkerEntrypoint {
     const CAMELAI = createCamelAiFacade(this.env.CAMELAI);
     const SCREENSHOT = createScreenshotFacade(this.env.SCREENSHOT);
     const WORKSPACE = createWorkspaceFacade(callTool);
-    const VM = createVmFacade(tools);
+    const VM = createVmFacade(rawTools);
     const vm = VM;
-    const PROJECTS = createProjectsFacade(tools);
+    const PROJECTS = createProjectsFacade(rawTools);
     const env = Object.freeze({ CONNECTIONS, AI, CAMELAI, SCREENSHOT, WORKSPACE, VM, PROJECTS });
     const context = Object.freeze({ cloudflare: Object.freeze({ env, connections, vm, projects: env.PROJECTS }) });
     const text = (value) => {

@@ -1,10 +1,19 @@
 import { env } from "cloudflare:test";
-import { describe, expect, it } from "vitest";
+import { describe, it } from "vitest";
 
 import { createOrg, createUser, type TestEnv } from "../test-helpers";
+import {
+  assertPassFailCriteria,
+  buildEvalCriteriaSummary,
+  buildNoAssistantErrorCriterion,
+  buildResultEventCriterion,
+  buildRuntimeEventsCriterion,
+  buildSessionCompletedCriterion,
+  passFailCriterion,
+  scoreSignalEfficiency,
+} from "./eval-criteria";
 import { emitEvalTranscript } from "./eval-transcript";
 import {
-  assertEvalSignal,
   evaluateAgentEvalSignal,
   getEvalSignalThresholds,
   type EvalSignalEnv,
@@ -19,7 +28,7 @@ import type { WorkspaceCronDO } from "../../src/workspace-cron";
 
 // This eval exercises the workflow tools (validate_workflow / create_workflow /
 // list_workflows). Those tools live in the "workflows" category, which the lean tool
-// surface (PI_LEAN_TOOLS=1) drops from the model's top-level tool list — so this eval
+// surface (now the default) drops from the model's top-level tool list — so this eval
 // also verifies the agent can still DISCOVER and use them via tools.search inside
 // js_exec, the long-tail capability that had no coverage before. Authoring a valid
 // WorkflowEntrypoint module is part of the test (the agent should validate first).
@@ -101,8 +110,80 @@ describe("workflow agent eval", () => {
       const workflows = await cronStub.listDeterministicAutomations(defaultWorkspaceId);
       const match = workflows.find((w) => w.name === WORKFLOW_NAME);
 
+      const transcriptText = JSON.stringify({
+        result: result.result,
+        events: result.events,
+        messages: result.messages,
+      }).toLowerCase();
+      const evaluation = buildEvalCriteriaSummary({
+        passFail: [
+          buildSessionCompletedCriterion(result),
+          passFailCriterion({
+            id: "workflow_persisted",
+            label: "Workflow persisted",
+            passed: Boolean(match),
+            reason: match
+              ? undefined
+              : `No workflow named "${WORKFLOW_NAME}" was created.`,
+            details: { workflowCount: workflows.length },
+          }),
+          passFailCriterion({
+            id: "workflow_cron_correct",
+            label: "Workflow has the requested cron expression",
+            passed: match?.cron_expression === WORKFLOW_CRON,
+            reason:
+              match?.cron_expression === WORKFLOW_CRON
+                ? undefined
+                : `Expected cron "${WORKFLOW_CRON}", got "${match?.cron_expression ?? "none"}".`,
+            details: { cron: match?.cron_expression ?? null },
+          }),
+          passFailCriterion({
+            id: "workflow_source_has_entrypoint",
+            label: "Workflow source is a real WorkflowEntrypoint module",
+            passed: (match?.source ?? "").includes("WorkflowEntrypoint"),
+            reason: (match?.source ?? "").includes("WorkflowEntrypoint")
+              ? undefined
+              : "Persisted workflow source did not contain WorkflowEntrypoint.",
+          }),
+          passFailCriterion({
+            id: "workflow_description_nonempty",
+            label: "Workflow has a non-empty description",
+            passed: (match?.description ?? "").length > 0,
+            reason:
+              (match?.description ?? "").length > 0
+                ? undefined
+                : "Persisted workflow had an empty description.",
+          }),
+          passFailCriterion({
+            id: "produced_token_usage",
+            label: "Agent produced token usage",
+            passed: signal.tokenUsage.totalTokens > 0,
+            reason:
+              signal.tokenUsage.totalTokens > 0
+                ? undefined
+                : "Signal reported zero total tokens.",
+            details: { totalTokens: signal.tokenUsage.totalTokens },
+          }),
+          buildNoAssistantErrorCriterion(transcriptText),
+          buildRuntimeEventsCriterion(result),
+          buildResultEventCriterion(result),
+        ],
+        scorecard: [
+          scoreSignalEfficiency(signal, {
+            maxPoints: 4,
+            fallbackPoints: 1,
+            tiers: [
+              { maxAssistantTurns: 12, maxBadToolCalls: 2, points: 4 },
+              { maxAssistantTurns: 24, maxBadToolCalls: 3, points: 3 },
+              { maxAssistantTurns: 36, maxBadToolCalls: 5, points: 2 },
+            ],
+          }),
+        ],
+      });
+
       emitEvalTranscript({
         status: result.status,
+        evaluation,
         error: result.error,
         model: testEnv.EVAL_MODEL,
         signal,
@@ -122,19 +203,7 @@ describe("workflow agent eval", () => {
         },
       });
 
-      expect(result.status).toBe("completed");
-      assertEvalSignal(signal, testEnv);
-      // The agent (in lean mode, after discovering the tool via tools.search) must
-      // have persisted a workflow with the requested name and cron, and the saved
-      // source must be a real WorkflowEntrypoint module.
-      expect(match, `expected a workflow named "${WORKFLOW_NAME}"`).toBeTruthy();
-      expect(match?.cron_expression).toBe(WORKFLOW_CRON);
-      expect(match?.source ?? "").toContain("WorkflowEntrypoint");
-      expect((match?.description ?? "").length).toBeGreaterThan(0);
-      expect(signal.tokenUsage.totalTokens).toBeGreaterThan(0);
-      expect(JSON.stringify(result.messages).toLowerCase()).not.toContain(
-        "assistant error",
-      );
+      assertPassFailCriteria(evaluation);
     },
     300_000,
   );

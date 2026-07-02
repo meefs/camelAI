@@ -1,10 +1,19 @@
 import { env } from "cloudflare:test";
-import { describe, expect, it } from "vitest";
+import { describe, it } from "vitest";
 
 import { createOrg, createUser, type TestEnv } from "../test-helpers";
+import {
+  assertPassFailCriteria,
+  buildEvalCriteriaSummary,
+  buildNoAssistantErrorCriterion,
+  buildResultEventCriterion,
+  buildRuntimeEventsCriterion,
+  buildSessionCompletedCriterion,
+  passFailCriterion,
+  scoreSignalEfficiency,
+} from "./eval-criteria";
 import { emitEvalTranscript } from "./eval-transcript";
 import {
-  assertEvalSignal,
   evaluateAgentEvalSignal,
   getEvalSignalThresholds,
   type EvalSignalEnv,
@@ -17,11 +26,11 @@ import {
 import type { ChatThreadDO } from "../../src/chat-thread-do";
 
 // This eval exercises the integration tools (create_integration / list_integrations).
-// Those tools live in the "integrations" category, which the lean tool surface
-// (PI_LEAN_TOOLS=1) drops from the model's top-level tool list — so this eval verifies
-// the agent can still DISCOVER and use them via tools.search inside js_exec. A
-// remote_mcp integration is created without any network call, so the assertion is
-// deterministic: the integration must actually persist on the workspace.
+// Those tools live in the "integrations" category, which the lean tool surface (now the
+// default) drops from the model's top-level tool list — so this eval verifies the agent
+// can still DISCOVER and use them via tools.search inside js_exec. A remote_mcp
+// integration is created without any network call, so the assertion is deterministic:
+// the integration must actually persist on the workspace.
 
 type IntegrationEvalEnv = TestEnv & EvalModelEnv & EvalSignalEnv & {
   CHAT_THREAD: DurableObjectNamespace<ChatThreadDO>;
@@ -97,8 +106,63 @@ describe("integration create agent eval", () => {
         (i) => i.name === INTEGRATION_NAME && i.integration_type === INTEGRATION_TYPE,
       );
 
+      const transcriptText = JSON.stringify({
+        result: result.result,
+        events: result.events,
+        messages: result.messages,
+      }).toLowerCase();
+      const evaluation = buildEvalCriteriaSummary({
+        passFail: [
+          buildSessionCompletedCriterion(result),
+          passFailCriterion({
+            id: "integration_persisted",
+            label: "Integration persisted",
+            passed: Boolean(match),
+            reason: match
+              ? undefined
+              : `No ${INTEGRATION_TYPE} integration named "${INTEGRATION_NAME}" was created.`,
+            details: { integrationCount: integrations.length },
+          }),
+          passFailCriterion({
+            id: "integration_type_correct",
+            label: "Integration has the requested type",
+            passed: match?.integration_type === INTEGRATION_TYPE,
+            reason:
+              match?.integration_type === INTEGRATION_TYPE
+                ? undefined
+                : `Expected integration type "${INTEGRATION_TYPE}", got "${match?.integration_type ?? "none"}".`,
+            details: { integrationType: match?.integration_type ?? null },
+          }),
+          passFailCriterion({
+            id: "produced_token_usage",
+            label: "Agent produced token usage",
+            passed: signal.tokenUsage.totalTokens > 0,
+            reason:
+              signal.tokenUsage.totalTokens > 0
+                ? undefined
+                : "Signal reported zero total tokens.",
+            details: { totalTokens: signal.tokenUsage.totalTokens },
+          }),
+          buildNoAssistantErrorCriterion(transcriptText),
+          buildRuntimeEventsCriterion(result),
+          buildResultEventCriterion(result),
+        ],
+        scorecard: [
+          scoreSignalEfficiency(signal, {
+            maxPoints: 4,
+            fallbackPoints: 1,
+            tiers: [
+              { maxAssistantTurns: 6, maxBadToolCalls: 1, points: 4 },
+              { maxAssistantTurns: 12, maxBadToolCalls: 2, points: 3 },
+              { maxAssistantTurns: 18, maxBadToolCalls: 3, points: 2 },
+            ],
+          }),
+        ],
+      });
+
       emitEvalTranscript({
         status: result.status,
+        evaluation,
         error: result.error,
         model: testEnv.EVAL_MODEL,
         signal,
@@ -116,14 +180,7 @@ describe("integration create agent eval", () => {
         },
       });
 
-      expect(result.status).toBe("completed");
-      assertEvalSignal(signal, testEnv);
-      expect(match, `expected a ${INTEGRATION_TYPE} integration named "${INTEGRATION_NAME}"`).toBeTruthy();
-      expect(match?.integration_type).toBe(INTEGRATION_TYPE);
-      expect(signal.tokenUsage.totalTokens).toBeGreaterThan(0);
-      expect(JSON.stringify(result.messages).toLowerCase()).not.toContain(
-        "assistant error",
-      );
+      assertPassFailCriteria(evaluation);
     },
     240_000,
   );

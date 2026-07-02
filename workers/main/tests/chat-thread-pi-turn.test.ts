@@ -3451,7 +3451,6 @@ describe('ChatThreadDO Pi turn handling', () => {
       'move',
       'grep',
       'find',
-      'AskUserQuestion',
       'TodoWrite',
       'set_preview',
       'list_apps',
@@ -3473,6 +3472,11 @@ describe('ChatThreadDO Pi turn handling', () => {
       'WebFetch',
       'connections_methods',
     ]));
+    // Human-blocking tools stay top-level only: they must not be in the js_exec
+    // catalog where tools.search() would advertise them inside the sandbox timeout.
+    for (const name of ['AskUserQuestion', 'prompt_connection_setup', 'delete_connection', 'delete_project']) {
+      expect(byName.has(name)).toBe(false);
+    }
     expect((byName.get('bash') as any).parameters.properties.command).toBeDefined();
     expect((byName.get('bash') as any).parameters.properties.project).toBeDefined();
     expect((byName.get('bash') as any).parameters.properties.projectId).toBeUndefined();
@@ -4722,7 +4726,8 @@ describe('ChatThreadDO Pi turn handling', () => {
 
     const piTools = ChatThreadDO.prototype['createPiToolDefinitions'].call(fake, context);
     const jsExec = piTools.find((tool: any) => tool.name === 'js_exec');
-    expect(jsExec?.description).toContain('explicitly asks for external delivery');
+    // The js_exec description must not advertise outbound channel sends; the opt-in
+    // caution itself lives in the system prompt ("answer in chat only", asserted above).
     expect(jsExec?.description).not.toContain('tools.send_email');
     expect(jsExec?.description).not.toContain('tools.send_slack_message');
     expect(jsExec?.description).not.toContain('tools.send_telegram_message');
@@ -6218,17 +6223,19 @@ describe('ChatThreadDO Pi turn handling', () => {
       'set_preview',
       'list_apps',
       'get_latest_logs',
-      'list_scheduled_prompts',
-      'list_workflows',
-      'list_integrations',
       'prompt_connection_setup',
-      'get_custom_domain',
       'WebSearch',
       'WebFetch',
     ]));
     expect(toolNames).not.toContain('grep');
     expect(toolNames).not.toContain('find');
     expect(toolNames).not.toContain('list_deterministic_automations');
+    // Long-tail-category tools are reachable via js_exec (tools.<name>()) and
+    // tools.search(), not advertised as top-level definitions.
+    expect(toolNames).not.toContain('list_scheduled_prompts');
+    expect(toolNames).not.toContain('list_workflows');
+    expect(toolNames).not.toContain('list_integrations');
+    expect(toolNames).not.toContain('get_custom_domain');
 
     const ask = tools.find((tool: any) => tool.name === 'AskUserQuestion');
     const result = await ask.execute('ask-tool-id', {
@@ -6632,6 +6639,116 @@ describe('ChatThreadDO Pi turn handling', () => {
     expect(childTools.map((tool: any) => tool.name)).not.toEqual(
       expect.arrayContaining(['Agent', 'Explore']),
     );
+  });
+
+  it('drops long-tail-category passthrough tools from the top-level list but keeps core + lifecycle + human-input tools', () => {
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    fake.ctx = {
+      exports: {
+        CodeModeToolsBinding: vi.fn(() => ({
+          callTool: vi.fn(async () => ({ text: 'ok' })),
+        })),
+      },
+    };
+    const context = {
+      orgId: 'org1',
+      workspaceId: 'workspace1',
+      threadId: 'thread1',
+      userId: 'user1',
+    };
+
+    const toolNames = new Set(
+      ChatThreadDO.prototype['createPiToolDefinitions']
+        .call(fake, context)
+        .map((tool: any) => tool.name),
+    );
+
+    // Core tools and subagents are always present.
+    for (const name of ['read', 'write', 'edit', 'delete', 'ls', 'bash', 'js_exec', 'Agent', 'Explore']) {
+      expect(toolNames.has(name)).toBe(true);
+    }
+
+    // Human-input passthrough tools stay top-level (cannot run inside js_exec).
+    for (const name of ['prompt_connection_setup', 'delete_connection', 'delete_project', 'AskUserQuestion']) {
+      expect(toolNames.has(name)).toBe(true);
+    }
+
+    // App/project-lifecycle tools stay top-level (discovery-sensitive on complex
+    // build+deploy tasks).
+    for (const name of ['list_projects', 'create_project', 'list_apps', 'set_preview', 'TodoWrite']) {
+      expect(toolNames.has(name)).toBe(true);
+    }
+
+    // Long-tail-category passthrough tools are NOT advertised top-level; the agent
+    // reaches them via tools.search() / tools.<name>() inside js_exec.
+    for (const name of ['list_integrations', 'create_workflow', 'list_scheduled_prompts', 'get_custom_domain']) {
+      expect(toolNames.has(name)).toBe(false);
+    }
+  });
+
+  it('callToolEnvelope returns tool failures as values so no exception crosses the RPC boundary', async () => {
+    const fake = Object.create(CodeModeToolsBinding.prototype) as any;
+    fake.callTool = vi.fn(async (name: string) => {
+      if (name === 'boom') throw new Error('cron_expression is required');
+      return { created: true };
+    });
+
+    await expect(fake.callToolEnvelope('list_apps', {})).resolves.toEqual({
+      ok: true,
+      data: { created: true },
+    });
+    await expect(fake.callToolEnvelope('boom', {})).resolves.toEqual({
+      ok: false,
+      error: { tool: 'boom', message: 'cron_expression is required' },
+    });
+  });
+
+  it('keeps the js_exec description lean: help pointer, deploy nudge, and a names-only inventory of js_exec-only tools', () => {
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    fake.ctx = {
+      exports: {
+        CodeModeToolsBinding: vi.fn(() => ({
+          callTool: vi.fn(async () => ({ text: 'ok' })),
+        })),
+      },
+    };
+    const context = {
+      orgId: 'org1',
+      workspaceId: 'workspace1',
+      threadId: 'thread1',
+      userId: 'user1',
+    };
+
+    const tools = ChatThreadDO.prototype['createPiToolDefinitions'].call(fake, context);
+    const description = (tools.find((tool: any) => tool.name === 'js_exec') as any).description as string;
+
+    // Executor-style: the always-loaded description points at the on-demand guide
+    // instead of inlining it, and lists the hidden tools by name (names are cheap;
+    // schemas stay behind tools.search()/tools.describe()).
+    expect(description).toContain('await tools.help()');
+    for (const name of ['list_integrations', 'create_workflow', 'list_scheduled_prompts', 'get_custom_domain', 'send_email']) {
+      expect(description).toContain(name);
+    }
+    // Human-input tools are advertised top-level, so they must not appear in the
+    // js_exec-only inventory (they are named only in the cannot-run-here caveat).
+    const inventory = description.slice(
+      description.indexOf('Tools reachable ONLY here'),
+      description.indexOf('After you deploy'),
+    );
+    expect(inventory).toContain('send_email');
+    expect(inventory).not.toContain('prompt_connection_setup');
+    expect(inventory).not.toContain('delete_connection');
+    // The eval-critical post-deploy verification nudge stays inline.
+    expect(description).toContain('set_preview');
+    expect(description).toContain('list_apps');
+    // Executor-style calling shape: result envelope and TypeScript acceptance.
+    expect(description).toContain('result.ok');
+    expect(description).toContain('TypeScript');
+    // The long-form guidance moved behind tools.help(): connections examples, file
+    // locations, and VM guidance no longer sit in the always-loaded description.
+    expect(description).not.toContain('env.CONNECTIONS.find');
+    expect(description).not.toContain('vm.exec({ command');
+    expect(description.length).toBeLessThan(2200);
   });
 
   it('runs the Pi subagent tool with child-agent context', async () => {

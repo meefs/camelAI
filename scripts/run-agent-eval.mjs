@@ -233,6 +233,12 @@ function extractVitestUnhandledErrors(output) {
   if (!/Unhandled Errors/i.test(output)) return [];
   const pieces = output.split(/Unhandled (?:Rejection|Exception)/i).slice(1);
   return pieces
+    // Tool failures that reach the agent as { ok: false } envelopes are caught in
+    // CodeModeToolsBinding.callToolEnvelope before crossing any boundary, but the
+    // vitest-pool-workers handler-context shim still reports the original throw as
+    // an unhandled rejection. A stack through callToolEnvelope proves the error was
+    // delivered to the agent as a value — a duplicate signal, not a harness bug.
+    .filter((piece) => !piece.includes("callToolEnvelope"))
     .map((piece) => firstMeaningfulLine(piece))
     .filter(Boolean)
     .map((line) => ({
@@ -396,6 +402,17 @@ child.on("close", (code) => {
       writeFileSync(artifactPath, JSON.stringify(transcript, null, 2));
       console.log(`Wrote eval artifact: ${artifactPath}`);
       printSignalSummary(transcript);
+      // dangerouslyIgnoreUnhandledErrors (eval runs only) stops vitest from
+      // exiting 1 on the enveloped-tool duplicates filtered above — but that
+      // also silences REAL unhandled errors. Any that survived the filter must
+      // still fail the run here.
+      const realHarnessErrors = transcript?.signal?.harnessErrorCount ?? 0;
+      if (exitCode === 0 && realHarnessErrors > 0) {
+        console.error(
+          `Failing eval: ${realHarnessErrors} unfiltered harness unhandled error(s).`,
+        );
+        exitCode = 1;
+      }
     } catch (error) {
       console.error(
         `Eval transcript contract failed for "${evalName}": ${

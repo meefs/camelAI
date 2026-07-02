@@ -1,10 +1,19 @@
 import { env } from "cloudflare:test";
-import { describe, expect, it } from "vitest";
+import { describe, it } from "vitest";
 
 import { createOrg, createUser, type TestEnv } from "../test-helpers";
+import {
+  assertPassFailCriteria,
+  buildEvalCriteriaSummary,
+  buildNoAssistantErrorCriterion,
+  buildResultEventCriterion,
+  buildRuntimeEventsCriterion,
+  buildSessionCompletedCriterion,
+  passFailCriterion,
+  scoreSignalEfficiency,
+} from "./eval-criteria";
 import { emitEvalTranscript } from "./eval-transcript";
 import {
-  assertEvalSignal,
   evaluateAgentEvalSignal,
   getEvalSignalThresholds,
   type EvalSignalEnv,
@@ -17,7 +26,7 @@ import {
 import type { ChatThreadDO } from "../../src/chat-thread-do";
 
 // This eval exercises the warehouse tools (warehouse_list_connections). Those tools
-// live in the "connections" category, which the lean tool surface (PI_LEAN_TOOLS=1)
+// live in the "connections" category, which the lean tool surface (now the default)
 // drops from the model's top-level tool list — so this eval verifies the agent can
 // still DISCOVER and invoke them via tools.search inside js_exec. Listing warehouse
 // connections is a clean read (empty in the eval workspace, no network), so the
@@ -32,15 +41,17 @@ const testEnv = env as unknown as WarehouseEvalEnv;
 const maybeIt = testEnv.RUN_AGENT_EVALS === "1" ? it : it.skip;
 
 // A tool can be invoked either as a top-level tool call (full mode) or via
-// `tools.<name>(...)` inside js_exec (lean mode), so detect both. Top-level calls show
-// up in signal.toolCallsByName; js_exec calls only appear in the js_exec `code`.
+// `tools.<name>(...)` / `tools["<name>"](...)` inside js_exec (lean mode) — the
+// tools.search() `call` hint recommends the bracket form — so detect all three.
+// Top-level calls show up in signal.toolCallsByName; js_exec calls only appear
+// in the js_exec `code`.
 function agentInvokedTool(
   toolName: string,
   toolCallsByName: Record<string, number>,
   messages: unknown,
 ): boolean {
   if ((toolCallsByName[toolName] ?? 0) >= 1) return true;
-  const callPattern = new RegExp(`(?:tools\\.)?${toolName}\\s*\\(`);
+  const callPattern = new RegExp(`(?:tools\\.|tools\\[\\s*["'])?${toolName}(?:["']\\s*\\])?\\s*\\(`);
   for (const msg of (Array.isArray(messages) ? messages : []) as Array<{
     content?: Array<{ type?: string; name?: string; input?: { code?: unknown } }>;
   }>) {
@@ -113,8 +124,55 @@ describe("warehouse list connections agent eval", () => {
         result.messages,
       );
 
+      const transcriptText = JSON.stringify({
+        result: result.result,
+        events: result.events,
+        messages: result.messages,
+      }).toLowerCase();
+      const evaluation = buildEvalCriteriaSummary({
+        passFail: [
+          buildSessionCompletedCriterion(result),
+          // The core regression check: in lean mode warehouse_list_connections is not a
+          // top-level tool, so the agent must have discovered it via tools.search.
+          passFailCriterion({
+            id: "called_warehouse_list",
+            label: "Agent discovered and called warehouse_list_connections",
+            passed: calledWarehouseList,
+            reason: calledWarehouseList
+              ? undefined
+              : "Agent did not discover/call warehouse_list_connections.",
+            details: { toolCallsByName: signal.toolCallsByName },
+          }),
+          passFailCriterion({
+            id: "produced_token_usage",
+            label: "Agent produced token usage",
+            passed: signal.tokenUsage.totalTokens > 0,
+            reason:
+              signal.tokenUsage.totalTokens > 0
+                ? undefined
+                : "Signal reported zero total tokens.",
+            details: { totalTokens: signal.tokenUsage.totalTokens },
+          }),
+          buildNoAssistantErrorCriterion(transcriptText),
+          buildRuntimeEventsCriterion(result),
+          buildResultEventCriterion(result),
+        ],
+        scorecard: [
+          scoreSignalEfficiency(signal, {
+            maxPoints: 4,
+            fallbackPoints: 1,
+            tiers: [
+              { maxAssistantTurns: 5, maxBadToolCalls: 1, points: 4 },
+              { maxAssistantTurns: 10, maxBadToolCalls: 2, points: 3 },
+              { maxAssistantTurns: 15, maxBadToolCalls: 3, points: 2 },
+            ],
+          }),
+        ],
+      });
+
       emitEvalTranscript({
         status: result.status,
+        evaluation,
         error: result.error,
         model: testEnv.EVAL_MODEL,
         signal,
@@ -130,18 +188,7 @@ describe("warehouse list connections agent eval", () => {
         },
       });
 
-      expect(result.status).toBe("completed");
-      assertEvalSignal(signal, testEnv);
-      // The core regression check: in lean mode warehouse_list_connections is not a
-      // top-level tool, so the agent must have discovered it via tools.search.
-      expect(
-        calledWarehouseList,
-        "expected the agent to discover and call warehouse_list_connections",
-      ).toBe(true);
-      expect(signal.tokenUsage.totalTokens).toBeGreaterThan(0);
-      expect(JSON.stringify(result.messages).toLowerCase()).not.toContain(
-        "assistant error",
-      );
+      assertPassFailCriteria(evaluation);
     },
     240_000,
   );
