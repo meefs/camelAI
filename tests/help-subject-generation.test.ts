@@ -8,7 +8,7 @@ vi.mock('@/lib/wait-until', () => ({
   waitUntil: vi.fn(),
 }));
 
-const { generateHelpSubject } = await import('@/routes/api/help');
+const { generateHelpSubject } = await import('@/lib/help-subject.server');
 const { AUXILIARY_AI_MODEL } = await import('@/lib/auxiliary-ai.server');
 
 describe('generateHelpSubject', () => {

@@ -1,9 +1,6 @@
 import { parseWithZod } from '@conform-to/zod/v4';
 import type { Route } from './+types/help';
-import {
-  runAuxiliaryAiChatCompletion,
-  type AuxiliaryAiBinding,
-} from '@/lib/auxiliary-ai.server';
+import { generateHelpSubject } from '@/lib/help-subject.server';
 import { requireAuthContext } from '@/lib/auth.server';
 import { getEnv, type CloudflareEnv } from '@/lib/cloudflare.server';
 import { waitUntil } from '@/lib/wait-until';
@@ -23,16 +20,6 @@ import {
   BILLING_PLAN_LIMITS,
   getOrgBillingPlan,
 } from '@/lib/billing-plans';
-
-const HELP_SUBJECT_SYSTEM_PROMPT =
-  'Summarize the following support request into a short subject line (under 80 characters). Respond with only the subject line, no quotes or extra punctuation.';
-
-function normalizeSubject(value: string | undefined | null): string | null {
-  if (!value) return null;
-  const normalized = value.replace(/\s+/g, ' ').trim();
-  if (!normalized) return null;
-  return normalized.slice(0, 100);
-}
 
 function deriveFirstName(name: string | null | undefined): string {
   const firstName = name?.trim().split(/\s+/).find((token) => token.length > 0);
@@ -59,27 +46,6 @@ function logHelpDeliveryResult(
   }
 
   console.warn('Help email delivery skipped:', payload);
-}
-
-export async function generateHelpSubject(
-  env: Pick<CloudflareEnv, 'AI'>,
-  description: string,
-  fallbackCategoryLabel: string
-): Promise<string> {
-  try {
-    const subject = await runAuxiliaryAiChatCompletion(
-      env.AI as AuxiliaryAiBinding,
-      {
-        systemPrompt: HELP_SUBJECT_SYSTEM_PROMPT,
-        userMessage: description,
-        maxTokens: 30,
-      },
-    );
-    return normalizeSubject(subject) ?? fallbackCategoryLabel;
-  } catch (error) {
-    console.error('Help subject generation failed:', error);
-    return fallbackCategoryLabel;
-  }
 }
 
 export async function action({ request, context }: Route.ActionArgs) {
