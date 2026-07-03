@@ -1,4 +1,5 @@
 import type { DirectWorkerMetadata, DirectWorkerModule } from "./direct-dispatch-deploy.js";
+import type { WorkerBinding } from "./cf-api-proxy.js";
 
 export interface ProjectBuildSandboxLike {
   exec(command: string, options?: { cwd?: string; env?: Record<string, string | undefined>; timeoutMs?: number }): Promise<{
@@ -38,6 +39,8 @@ export async function collectWorkerBundleFromSandbox(
   const manifest = JSON.parse(new TextDecoder().decode(manifestBytes)) as DirectWorkerMetadata & {
     assets?: { directory?: string } | string;
     durable_objects?: { bindings?: unknown };
+    kv_namespaces?: unknown;
+    r2_buckets?: unknown;
   };
   if (!manifest.main_module || typeof manifest.main_module !== "string") {
     throw new Error(`Build manifest ${manifestPath} is missing main_module`);
@@ -67,20 +70,94 @@ export async function collectWorkerBundleFromSandbox(
   };
 }
 
+// A Durable Object namespace binding names a `class_name` that Cloudflare
+// requires the worker's entry module to export by that exact name; a migration
+// that creates the class needs it too. When the class isn't exported (e.g. the
+// agent added the binding to wrangler.jsonc but forgot `export class Foo`, or
+// misspelled it), CF rejects the upload with an opaque migration error. Catch it
+// pre-upload against the bundled entry module and name the offending class.
+//
+// Export names are a stable module contract — esbuild preserves them verbatim
+// (that's how CF resolves the binding), so scanning the bundled `main_module`
+// for its exported names is reliable and can't false-positive on a genuinely
+// exported class. Returns the declared class names that are NOT exported.
+export function findUnexportedDurableObjectClasses(bundle: ProjectWorkerBundle): string[] {
+  const declaredClasses = new Set<string>();
+  for (const binding of bundle.metadata.bindings ?? []) {
+    if (binding.type === "durable_object_namespace" && typeof binding.class_name === "string") {
+      declaredClasses.add(binding.class_name);
+    }
+  }
+  if (declaredClasses.size === 0) return [];
+
+  const entryName = bundle.metadata.main_module;
+  const entry = bundle.modules.find((module) => module.name === entryName);
+  // No entry module to inspect — don't block; the deploy path surfaces its own
+  // error rather than us guessing.
+  if (!entry) return [];
+
+  const entryText = decodeModuleText(entry.content);
+  // A star re-export (`export * from "./do.js"`) surfaces another module's named
+  // exports that we can't resolve statically. Rather than risk a false positive
+  // that blocks a valid deploy, skip the preflight entirely when one is present —
+  // the guard is best-effort convenience; a missed check just falls through to
+  // the normal deploy path.
+  if (/\bexport\s+\*/.test(entryText)) return [];
+
+  const exported = extractEsmExportNames(entryText);
+  return [...declaredClasses].filter((className) => !exported.has(className));
+}
+
+function decodeModuleText(content: string | Uint8Array | ArrayBuffer): string {
+  if (typeof content === "string") return content;
+  return new TextDecoder().decode(content instanceof ArrayBuffer ? new Uint8Array(content) : content);
+}
+
+// The set of names an ESM module exports, covering the forms esbuild emits:
+// `export class/function/const/let/var NAME`, `export default`, and consolidated
+// `export { local as PUBLIC, bare }` clauses (the PUBLIC alias is the export name).
+function extractEsmExportNames(source: string): Set<string> {
+  const names = new Set<string>();
+
+  const declRe = /\bexport\s+(?:async\s+)?(?:class|function\*?|const|let|var)\s+([A-Za-z_$][\w$]*)/g;
+  for (let match = declRe.exec(source); match; match = declRe.exec(source)) {
+    names.add(match[1]!);
+  }
+  if (/\bexport\s+default\b/.test(source)) names.add("default");
+
+  const clauseRe = /\bexport\s*\{([^}]*)\}/g;
+  for (let match = clauseRe.exec(source); match; match = clauseRe.exec(source)) {
+    for (const rawEntry of match[1]!.split(",")) {
+      const entry = rawEntry.trim();
+      if (!entry) continue;
+      // `local as PUBLIC` exports PUBLIC; a bare `name` exports `name`.
+      const asMatch = entry.match(/\bas\s+([A-Za-z_$][\w$]*)\s*$/);
+      names.add(asMatch ? asMatch[1]! : entry);
+    }
+  }
+  return names;
+}
+
 function normalizeWorkerBundleMetadata(
   manifest: DirectWorkerMetadata & {
     durable_objects?: { bindings?: unknown };
+    kv_namespaces?: unknown;
+    r2_buckets?: unknown;
   },
 ): DirectWorkerMetadata {
   const bindings = [...(manifest.bindings ?? [])];
+  const addBinding = (binding: WorkerBinding) => {
+    if (bindings.some((candidate) => candidate.name === binding.name)) return;
+    bindings.push(binding);
+  };
+
   const durableObjectBindings = manifest.durable_objects?.bindings;
   if (Array.isArray(durableObjectBindings)) {
     for (const binding of durableObjectBindings) {
       if (!binding || typeof binding !== "object" || Array.isArray(binding)) continue;
       const record = binding as Record<string, unknown>;
       if (typeof record.name !== "string" || typeof record.class_name !== "string") continue;
-      if (bindings.some((candidate) => candidate.name === record.name)) continue;
-      bindings.push({
+      addBinding({
         ...record,
         type: "durable_object_namespace",
         name: record.name,
@@ -89,11 +166,49 @@ function normalizeWorkerBundleMetadata(
     }
   }
 
-  const { durable_objects: _durableObjects, ...metadata } = manifest;
+  // Wrangler's idiomatic top-level `kv_namespaces` / `r2_buckets` arrays are
+  // otherwise dropped by the deploy metadata (which only reads `bindings`), so a
+  // KV/R2 binding declared the normal way silently never reaches the worker and
+  // env.<NAME> is undefined at runtime. Lift them into typed bindings the same
+  // way durable_objects are; mapVirtualizedBindings then virtualizes them.
+  // Wrangler uses `binding` for the env var name (vs `name` for DOs).
+  for (const entry of asBindingArray(manifest.kv_namespaces)) {
+    const name = typeof entry.binding === "string" ? entry.binding : undefined;
+    if (!name) continue;
+    addBinding({
+      type: "kv_namespace",
+      name,
+      ...(typeof entry.id === "string" ? { namespace_id: entry.id } : {}),
+    });
+  }
+  for (const entry of asBindingArray(manifest.r2_buckets)) {
+    const name = typeof entry.binding === "string" ? entry.binding : undefined;
+    if (!name) continue;
+    addBinding({
+      type: "r2_bucket",
+      name,
+      ...(typeof entry.bucket_name === "string" ? { bucket_name: entry.bucket_name } : {}),
+    });
+  }
+
+  const {
+    durable_objects: _durableObjects,
+    kv_namespaces: _kvNamespaces,
+    r2_buckets: _r2Buckets,
+    ...metadata
+  } = manifest;
   return {
     ...metadata,
     ...(bindings.length > 0 ? { bindings } : {}),
   };
+}
+
+function asBindingArray(value: unknown): Array<Record<string, unknown>> {
+  if (!Array.isArray(value)) return [];
+  return value.filter(
+    (entry): entry is Record<string, unknown> =>
+      Boolean(entry) && typeof entry === "object" && !Array.isArray(entry),
+  );
 }
 
 async function collectAssetsFromManifest(

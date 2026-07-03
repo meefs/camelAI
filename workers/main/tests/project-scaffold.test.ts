@@ -108,6 +108,10 @@ describe("defaultProjectScaffoldFiles", () => {
     // key is a no-op on the direct-deploy path, which only reads metadata.bindings).
     expect(buildManifest).toContain("...(config.durable_objects ? { durable_objects: config.durable_objects } : {})");
     expect(buildManifest).toContain("...(config.migrations ? { migrations: config.migrations } : {})");
+    // KV / R2 declared the idiomatic wrangler way must be forwarded so the deploy
+    // pipeline lifts them into bindings (otherwise they are silently dropped).
+    expect(buildManifest).toContain("...(config.kv_namespaces ? { kv_namespaces: config.kv_namespaces } : {})");
+    expect(buildManifest).toContain("...(config.r2_buckets ? { r2_buckets: config.r2_buckets } : {})");
     expect(buildManifest).toContain('? { type: "plain_text", name, text: value }');
     expect(buildManifest).toContain(': { type: "json", name, json: value }');
     expect(buildManifest).toContain("const bindings = [...(config.bindings ?? []), ...varBindings];");

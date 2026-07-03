@@ -115,6 +115,8 @@ describe('react-router scaffold build-manifest.mjs (generated script execution)'
       migrations: [{ tag: 'v1', new_sqlite_classes: ['LeaderboardDO'] }],
       bindings: [{ type: 'plain_text', name: 'EXISTING', text: 'kept' }],
       vars: { APP_TITLE: 'Space Match', MAX_PLAYERS: 8 },
+      kv_namespaces: [{ binding: 'SCORES_KV', id: 'kv-1' }],
+      r2_buckets: [{ binding: 'ASSETS_BUCKET', bucket_name: 'space-assets' }],
     });
 
     const result = runBuildManifest(dir);
@@ -138,6 +140,10 @@ describe('react-router scaffold build-manifest.mjs (generated script execution)'
         bindings: [{ name: 'LEADERBOARD_DO', class_name: 'LeaderboardDO' }],
       },
       migrations: [{ tag: 'v1', new_sqlite_classes: ['LeaderboardDO'] }],
+      // Idiomatic KV/R2 arrays are forwarded verbatim; the deploy pipeline
+      // (project-worker-bundle) lifts them into typed bindings.
+      kv_namespaces: [{ binding: 'SCORES_KV', id: 'kv-1' }],
+      r2_buckets: [{ binding: 'ASSETS_BUCKET', bucket_name: 'space-assets' }],
     });
     // vars become env-var bindings (merged after any explicit config.bindings);
     // a top-level vars key would be a no-op on the direct-deploy path.

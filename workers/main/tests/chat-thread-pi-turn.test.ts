@@ -209,6 +209,9 @@ function createProjectToolFake({
           relativePath: file.slice(path.replace(/\/+$/g, '').length + 1),
         })),
     })),
+    // Test helper: seed a sandbox file (auto-base64) so a custom exec mock can
+    // shape the build output collectWorkerBundleFromSandbox will read back.
+    __setFile: (path: string, content: string) => sandboxFiles.set(path, base64(content)),
   };
   const script = {
     script_name: 'demo-app',
@@ -5550,6 +5553,34 @@ describe('ChatThreadDO Pi turn handling', () => {
     await expect(CodeModeToolsBinding.prototype.callTool.call(fake, 'deploy_project', {
       project: 'Demo App',
     })).rejects.toThrow('Build service temporarily unavailable. Please try again in a moment.');
+  });
+
+  it('blocks deploy with a clear error when a declared DO class is not exported', async () => {
+    const { fake, sandbox } = createProjectToolFake({ deploy: true });
+    // Build succeeds but writes a manifest declaring LeaderboardDO while the
+    // bundled entry never exports it (agent forgot `export class LeaderboardDO`).
+    sandbox.exec.mockImplementation(async (command: string, options?: { cwd?: string }) => {
+      if (command === 'bun install && bun run build' && options?.cwd) {
+        sandbox.__setFile?.(`${options.cwd}/build/server/wrangler.json`, JSON.stringify({
+          main_module: 'index.js',
+          compatibility_date: '2026-06-01',
+          durable_objects: { bindings: [{ name: 'LEADERBOARD', class_name: 'LeaderboardDO' }] },
+          migrations: [{ tag: 'v1', new_sqlite_classes: ['LeaderboardDO'] }],
+        }));
+        sandbox.__setFile?.(`${options.cwd}/build/server/index.js`, 'class LeaderboardDO {}\nexport default {};');
+      }
+      return { success: true, stdout: 'built', stderr: '', exitCode: 0 };
+    });
+
+    const result = await CodeModeToolsBinding.prototype.callTool.call(fake, 'deploy_project', {
+      project: 'Demo App',
+    }) as Record<string, unknown>;
+
+    expect(result.success).toBe(false);
+    expect(result.stage).toBe('validate');
+    expect(result.errorSummary).toContain('"LeaderboardDO"');
+    expect(result.errorSummary).toContain('not exported from the worker entry (index.js)');
+    expect(result.errorSummary).toContain('export class LeaderboardDO');
   });
 
   it('rejects DO-only project actions for legacy VM-backed projects', async () => {

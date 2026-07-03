@@ -35,7 +35,7 @@ import { CodeModeDeterministicAutomations } from "./code-mode-deterministic-auto
 import { CodeModeIntegrations } from "./code-mode-integrations";
 import { createSignedToken } from "./signed-tokens";
 import { buildLogTail, projectBuildSandboxKey, runProjectAddDependency, runProjectBuild, type ProjectBuildResult } from "./project-build-service";
-import { collectWorkerBundleFromSandbox, type ProjectBuildSandboxLike } from "./project-worker-bundle";
+import { collectWorkerBundleFromSandbox, findUnexportedDurableObjectClasses, type ProjectBuildSandboxLike } from "./project-worker-bundle";
 import { defaultProjectScaffoldFiles, normalizeProjectScaffoldTemplate, type ProjectScaffoldResult } from "./project-scaffold";
 import { deployWorkerModulesDirect, rollbackWorkerDeployFromArtifactCache, type DirectDispatchDeployResult } from "./direct-dispatch-deploy";
 import { handleDeploySideEffects } from "./services/deploy";
@@ -3565,6 +3565,25 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
       const projectFiles = new ProjectFilesystemClient(this.env, project.id);
       const snapshot = await projectFiles.createSourceSnapshot({ message: `Deploy ${project.name}` });
       const bundle = await collectWorkerBundleFromSandbox(sandbox, build.workdir);
+      // Catch a Durable Object binding whose class the entry module doesn't
+      // export before the upload, where CF would reject it with an opaque
+      // migration error, and name the class so the agent can fix it directly.
+      const unexportedDoClasses = findUnexportedDurableObjectClasses(bundle);
+      if (unexportedDoClasses.length > 0) {
+        const classList = unexportedDoClasses.map((name) => `"${name}"`).join(", ");
+        const plural = unexportedDoClasses.length > 1;
+        return {
+          success: false,
+          stage: "validate",
+          project: project.name,
+          errorSummary:
+            `Durable Object ${plural ? "classes" : "class"} ${classList} ${plural ? "are" : "is"} declared in ` +
+            `wrangler.jsonc but not exported from the worker entry (${bundle.metadata.main_module}). ` +
+            `Add \`export class ${unexportedDoClasses[0]} …\` (or \`export { ${unexportedDoClasses[0]} }\`) ` +
+            `to the module set as \`main\`, matching the binding's class_name exactly.`,
+          build: summarizeProjectBuildResult(build),
+        };
+      }
       const orgSlug = await this.getOrgSlug();
       if (!orgSlug) throw new Error("Current org has no slug; cannot deploy project");
       const scriptName = normalizeDeployScriptName(
