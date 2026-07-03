@@ -53,7 +53,7 @@ export function createPiSystemPrompt(
     "Before relying on repository-specific conventions, read /workspace/AGENTS.md, /workspace/CLAUDE.md, /AGENTS.md, or /CLAUDE.md if present.",
     "",
     "## Available Skills",
-    "When a task matches a skill, read that skill file with the read tool and follow it. Built-in skills are available at:",
+    "Pay close attention to these skills — they are curated, battle-tested playbooks and are the preferred way to do a task, not optional reference. Before starting any non-trivial task, scan this list and check whether one applies. Skipping a skill that matches and improvising instead is a common and costly mistake; do not do it. When a task matches a skill, even loosely, read that skill file with the read tool FIRST and follow it before writing any other code or output; if several could apply, read the most specific one. Built-in skills are available at:",
     ...skillLines,
     "",
     `Thread ID: ${context.threadId}`,

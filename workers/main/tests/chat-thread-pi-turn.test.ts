@@ -4821,6 +4821,11 @@ describe('ChatThreadDO Pi turn handling', () => {
     };
 
     const prompt = ChatThreadDO.prototype['createPiSystemPrompt'].call(fake, context);
+    // The skills section emphasizes not skipping matching skills — models
+    // (including DeepSeek flash) tend to improvise past them otherwise.
+    expect(prompt).toContain('## Available Skills');
+    expect(prompt).toContain('Pay close attention to these skills');
+    expect(prompt).toContain('a common and costly mistake');
     expect(prompt).toContain('answer in chat only');
     expect(prompt).toContain('set_preview({ location: "workspace", path: "/notes.md" })');
     expect(prompt).toContain('set_preview({ location: "r2", path: "outputs/report.html" })');
