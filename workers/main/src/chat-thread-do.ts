@@ -282,6 +282,10 @@ export interface PiResolvedModelReference {
   api?: string;
   hostedGatewayProvider: string;
   hostedModelId?: string;
+  // Reasoning effort to force on the hosted (AI Gateway) model. The gateway
+  // provider reports supportsReasoningEffort=false in pi-ai, so without this
+  // reasoning_effort is never sent and the route uses its upstream default.
+  hostedReasoningEffort?: string;
 }
 
 interface PiRequestConfig {
@@ -6576,6 +6580,28 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
         ...(configured.headers ?? {}),
       },
     } as Model<any>;
+    // Force a fixed reasoning effort on hosted AI Gateway models that need it
+    // (e.g. DeepSeek V4 Flash -> xhigh). pi-ai treats the cloudflare-ai-gateway
+    // provider as supportsReasoningEffort=false, so we flip it on and map every
+    // agent thinking level to the target effort; otherwise reasoning_effort is
+    // never emitted and the dynamic route falls back to its upstream default.
+    if (
+      resolved.hostedReasoningEffort &&
+      resolvedModel.provider === "cloudflare-ai-gateway"
+    ) {
+      const effort = resolved.hostedReasoningEffort;
+      resolvedModel.compat = {
+        ...(resolvedModel.compat ?? {}),
+        supportsReasoningEffort: true,
+      };
+      resolvedModel.thinkingLevelMap = {
+        minimal: effort,
+        low: effort,
+        medium: effort,
+        high: effort,
+        xhigh: effort,
+      } as Model<any>["thinkingLevelMap"];
+    }
     return {
       model:
         resolvedModel.api === "bedrock-converse-stream"

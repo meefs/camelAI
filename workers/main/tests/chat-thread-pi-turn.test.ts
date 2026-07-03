@@ -1860,6 +1860,17 @@ describe('ChatThreadDO Pi turn handling', () => {
       api: 'openai-completions',
       baseUrl: 'https://gateway.ai.cloudflare.com/v1/acct_1/gateway_1/compat',
     });
+    // Hosted flash is pinned to the highest reasoning effort: the gateway
+    // provider must be told it supports reasoning_effort, and every agent
+    // thinking level maps to xhigh so the medium default is not clamped to high.
+    expect(model.model.compat).toMatchObject({ supportsReasoningEffort: true });
+    expect(model.model.thinkingLevelMap).toEqual({
+      minimal: 'xhigh',
+      low: 'xhigh',
+      medium: 'xhigh',
+      high: 'xhigh',
+      xhigh: 'xhigh',
+    });
     expect(fake.piCurrentUsageProvider).toBe('compat');
   });
 
@@ -1892,6 +1903,15 @@ describe('ChatThreadDO Pi turn handling', () => {
     });
     expect(model.apiKey).toBe('sk-or-test');
     expect(model.billingSource).toBe('byok');
+    // The forced-xhigh override is scoped to the hosted gateway model only, so
+    // BYOK OpenRouter keeps the upstream catalog reasoning map untouched.
+    expect(model.model.thinkingLevelMap).not.toEqual({
+      minimal: 'xhigh',
+      low: 'xhigh',
+      medium: 'xhigh',
+      high: 'xhigh',
+      xhigh: 'xhigh',
+    });
   });
 
   it.each(['gemini-3.5-flash', 'gemini-3.1-pro-preview'])(
@@ -3292,6 +3312,7 @@ describe('ChatThreadDO Pi turn handling', () => {
       modelId: 'deepseek/deepseek-v4-flash',
       hostedGatewayProvider: 'compat',
       hostedModelId: 'dynamic/deepseek-v4-flash-fallback',
+      hostedReasoningEffort: 'xhigh',
     });
   });
 
