@@ -113,7 +113,10 @@ import {
   deriveIsAwaitingAssistant,
   isAssistantLikeMessage,
 } from "@/lib/chat-working-indicator";
-import { mergeOverlay } from "@/lib/runtime-message-state";
+import {
+  findStaleLoaderPayloadId,
+  mergeOverlay,
+} from "@/lib/runtime-message-state";
 import {
   type AppUrlInput,
   getAppUrl,
@@ -223,6 +226,10 @@ function sameJson(left: unknown, right: unknown): boolean {
 // Only animate the "just completed" turn highlight for completions this recent;
 // older completions replayed on load/reconnect still get their duration badge.
 const FRESHLY_COMPLETED_TURN_WINDOW_MS = 10_000;
+// How recent a completed turn must be for a missing message to trigger a
+// history refetch. Generous enough to absorb client/server clock skew, tight
+// enough that historical threads never refetch on open.
+const MISSED_TURN_REFETCH_WINDOW_MS = 5 * 60_000;
 
 function getThreadRunningState(
   groups: readonly ChatGroupView[] | undefined,
@@ -705,8 +712,8 @@ export default function Chat({
   // The current turn's assistant/tool messages, pushed whole from the server
   // and replaced wholesale on every Agent-state update; overlaid on `messages`
   // at render time. Buffered so the per-token stream throttles re-renders, with
-  // an immediate flush at turn boundaries. The ref always tracks the latest
-  // snapshot (both setters update it) so folding stays exact.
+  // an immediate flush at turn boundaries. Purely ephemeral rendering state —
+  // committed history arrives via the turn-end frame's finalMessages.
   const {
     state: liveOverlay,
     stateRef: liveOverlayRef,
@@ -917,6 +924,14 @@ export default function Chat({
   // carries the in-flight turn, so an idle reconnect would otherwise show the frozen
   // pre-disconnect tail). Reset when the thread changes.
   const hasAgentConnectedRef = useRef(false);
+  // Message ids committed from the most recent turn-end frame's finalMessages.
+  // A loader payload that lacks one of these while we still hold it locally was
+  // sampled mid-turn (before the turn's messages were persisted-and-readable);
+  // applying it would silently drop the just-finished message until reload.
+  const lastFinalizedTurnMessageIdsRef = useRef<string[]>([]);
+  // The finalized id that already triggered a stale-payload refetch, so a
+  // payload still lacking it after the retry is accepted as a real removal.
+  const staleLoaderRetryIdRef = useRef<string | null>(null);
   const pendingThreadContextRef = useRef({
     workspaceId: resolvedWorkspaceId,
     threadId,
@@ -970,6 +985,25 @@ export default function Chat({
     ) {
       return;
     }
+    // A non-empty payload missing a message we committed from the turn-end
+    // frame was sampled mid-turn (e.g. a reconnect revalidation whose loader
+    // read ran before the turn's messages were committed); applying it would
+    // drop the final message. Skip it and refetch once — a fresh read includes
+    // the turn. If the retried payload still lacks the id, accept it: the
+    // message was legitimately removed (fork, purge).
+    const missingFinalizedId = findStaleLoaderPayloadId(
+      messagesRef.current,
+      parsedInitialMessages,
+      lastFinalizedTurnMessageIdsRef.current,
+    );
+    if (
+      missingFinalizedId &&
+      staleLoaderRetryIdRef.current !== missingFinalizedId
+    ) {
+      staleLoaderRetryIdRef.current = missingFinalizedId;
+      revalidator.revalidate();
+      return;
+    }
     setPendingMessages([]);
     if (messagesHaveSameContent(messagesRef.current, parsedInitialMessages)) {
       return;
@@ -979,6 +1013,7 @@ export default function Chat({
     initialMessages,
     parsedInitialMessages,
     readOnly,
+    revalidator,
     setMessages,
     setPendingMessages,
   ]);
@@ -2503,8 +2538,8 @@ export default function Chat({
       const shouldRefreshBillingAfterError =
         billingSource === "hosted" || isChatBillingOrCreditError(errorPayload);
       showChatError(errorPayload, errorContext);
-      // Finish streaming on error. The overlay's streaming entry is finalized
-      // server-side and folded into committed history via state sync.
+      // Finish streaming on error. The turn-end frame's finalMessages commit
+      // the overlay's streaming entry to history server-side.
       setAgentIsStreaming(false);
       setLoading(false);
       acceptedPendingMessageIdsRef.current.clear();
@@ -2552,24 +2587,26 @@ export default function Chat({
             content: parseMessageContent(message.content),
           }),
         );
-        // Fold finalized (non-streaming) entries into committed history so they
-        // survive the overlay clearing at turn end. Idempotent — mergeOverlay
-        // keys on id/clientMessageId; the streaming entry stays overlay-only so
-        // a later re-id can't duplicate it.
-        const finalized = [...liveOverlayRef.current, ...overlay].filter(
-          (message) => !message.isStreaming,
-        );
-        // If the overlay just cleared (turn end) but our last snapshot still had
-        // a streaming tail, finalize and fold it so the message isn't dropped.
-        if (overlay.length === 0) {
-          for (const message of liveOverlayRef.current) {
-            if (message.isStreaming) {
-              finalized.push({ ...message, isStreaming: false });
-            }
-          }
-        }
-        if (finalized.length > 0) {
-          setMessages((previous) => mergeOverlay(previous, finalized));
+        // The turn-end clearing frame carries the server's authoritative
+        // snapshot of the turn's messages. Committing that (rather than folding
+        // whatever overlay tail we happened to receive) means a dropped or
+        // throttled delta frame can never truncate the final message. Idempotent
+        // — mergeOverlay keys on id/clientMessageId, so a loader copy of the
+        // same message doesn't duplicate.
+        const finalMessages = (
+          Array.isArray(data.finalMessages) ? data.finalMessages : []
+        ).map((message: Message) => ({
+          ...message,
+          content: parseMessageContent(message.content),
+        }));
+        if (finalMessages.length > 0) {
+          lastFinalizedTurnMessageIdsRef.current = finalMessages
+            .map((message: Message) => message.id)
+            .filter(
+              (messageId: unknown): messageId is string =>
+                typeof messageId === "string" && messageId.length > 0,
+            );
+          setMessages((previous) => mergeOverlay(previous, finalMessages));
         }
         liveOverlayRef.current = overlay;
         if (overlay.length === 0) {
@@ -2635,6 +2672,25 @@ export default function Chat({
         setCompletedTurns(new Map(completedTurnsRef.current));
         if (completed.completedAtMs > Date.now() - FRESHLY_COMPLETED_TURN_WINDOW_MS) {
           setFreshlyCompletedTurnId(completed.id);
+        }
+        // State says a turn just completed but committed history has no copy
+        // of its message: the client missed some or all of the turn (it
+        // finished between the loader read and the first socket open, or
+        // while disconnected). Reload committed history. Once per turn id via
+        // the dedup above. Deliberately ignore the live overlay here — an
+        // overlay entry only becomes history via a turn-end finalMessages
+        // frame, so a matching id there (e.g. a stale pre-disconnect tail on
+        // an idle reconnect) is about to be cleared, not committed, and must
+        // not suppress the refetch. Live turn ends can't fire this: the
+        // turn/completed-time state sync still reports isStreaming (durable
+        // active-turn marker), and by the idle sync finalMessages are already
+        // committed.
+        if (
+          !state?.isStreaming &&
+          completed.completedAtMs > Date.now() - MISSED_TURN_REFETCH_WINDOW_MS &&
+          !messagesRef.current.some((message) => message.id === completed.id)
+        ) {
+          revalidator.revalidate();
         }
       }
       // Terminal errors ride Agent state now; show each once (recovers a failure
@@ -2707,7 +2763,7 @@ export default function Chat({
           : null,
       );
     },
-    [applyAgentPreviewState, setConnectionSetupPrompt, setAgentIsStreaming, getUnacceptedPendingUserMessages, handleTerminalError, threadId],
+    [applyAgentPreviewState, setConnectionSetupPrompt, setAgentIsStreaming, getUnacceptedPendingUserMessages, handleTerminalError, revalidator, threadId],
   );
 
   const agentSocket = useAgent<ChatAgentState>({
@@ -2736,6 +2792,10 @@ export default function Chat({
     setAgentIsStreaming(false);
     // New thread context: the next socket open is a first connect, not a reconnect.
     hasAgentConnectedRef.current = false;
+    // The stale-payload guard is per-thread; the old thread's finalized ids
+    // must not veto the new thread's loader payload.
+    lastFinalizedTurnMessageIdsRef.current = [];
+    staleLoaderRetryIdRef.current = null;
     // Drop the previous context's live tail. Rendered = mergeOverlay(messages,
     // liveOverlay), so leaving it here would append the old thread's streaming
     // assistant/tool tail onto the new thread until a fresh overlay arrives.

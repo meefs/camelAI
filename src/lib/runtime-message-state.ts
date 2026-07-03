@@ -57,6 +57,27 @@ export function mergeOverlay(base: Message[], overlay: Message[]): Message[] {
   return next;
 }
 
+/**
+ * Detect a loader payload that was read mid-turn: it lacks a message the
+ * client already committed from the most recent turn-end frame's
+ * finalMessages (and still holds locally). Applying such a payload wholesale
+ * would silently drop the just-finished message until the next reload.
+ * Returns the first missing finalized id, or null when the payload is safe.
+ */
+export function findStaleLoaderPayloadId(
+  localMessages: Pick<Message, 'id'>[],
+  payloadMessages: Pick<Message, 'id'>[],
+  finalizedMessageIds: string[],
+): string | null {
+  for (const finalizedId of finalizedMessageIds) {
+    if (!localMessages.some((message) => message.id === finalizedId)) continue;
+    if (!payloadMessages.some((message) => message.id === finalizedId)) {
+      return finalizedId;
+    }
+  }
+  return null;
+}
+
 function toUiRole(role: RuntimeMessage['role']): Message['role'] {
   return role === 'assistant' ? 'assistant' : 'user';
 }

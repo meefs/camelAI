@@ -506,11 +506,59 @@ describe('ChatThreadDO Pi turn handling', () => {
     expect(fake.syncAgentState).toHaveBeenCalled();
   });
 
+  it('ships the turn snapshot as finalMessages on the turn-end clearing frame', () => {
+    // The clearing frame both empties the overlay and carries the authoritative
+    // snapshot the client commits to history (isStreaming stripped). Deltas are
+    // broadcast through a lossy throttle, so this frame — not the last delta the
+    // client happened to receive — must be what determines the final message.
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    fake.chatContext = { threadId: 'thread1' };
+    fake.chatIsStreaming = true;
+    fake.liveMessages = [
+      {
+        id: 'stream-1',
+        thread_id: 'thread1',
+        role: 'assistant',
+        content: [{ type: 'text', text: 'Hello world' }],
+        created_at: 1,
+        isStreaming: true,
+      },
+    ];
+    fake.liveStreamingMessageId = 'stream-1';
+    fake.assistantCompletionRecordedAt = null;
+    fake.assistantCompletionSummaryRequestedAt = null;
+    fake.activeAutomationRun = null;
+    fake.currentTodos = [];
+    fake.resetRunningActivityState = vi.fn();
+    fake.syncAgentState = vi.fn();
+    fake.broadcastChat = vi.fn();
+
+    ChatThreadDO.prototype['finishTurn'].call(fake);
+
+    const overlayFrames = fake.broadcastChat.mock.calls
+      .map(([msg]: [{ type?: string }]) => msg)
+      .filter((msg: { type?: string }) => msg?.type === 'live_overlay');
+    expect(overlayFrames).toHaveLength(1);
+    expect(overlayFrames[0]).toMatchObject({
+      messages: [],
+      streamingMessageId: null,
+      finalMessages: [
+        expect.objectContaining({
+          id: 'stream-1',
+          role: 'assistant',
+          isStreaming: false,
+          content: [{ type: 'text', text: 'Hello world' }],
+        }),
+      ],
+    });
+  });
+
   it('sends an empty live_overlay to a reconnecting client when idle so a stale streaming tail clears', () => {
     // A turn that finished while the client was disconnected cleared liveMessages,
-    // so its turn-end empty-overlay broadcast reached nobody. On reconnect the client
-    // still holds its pre-disconnect streaming tail; the empty snapshot is the only
-    // signal that folds it to non-streaming. Skipping the send strands the spinner.
+    // so its turn-end clearing broadcast reached nobody. On reconnect the client
+    // still holds its pre-disconnect streaming tail; the empty snapshot clears it
+    // (the reconnect revalidation reloads committed history). Skipping the send
+    // strands the spinner.
     const fake = Object.create(ChatThreadDO.prototype) as any;
     fake.chatContext = { threadId: 'thread1', workspaceId: 'workspace1', orgId: 'org1' };
     fake.liveMessages = [];
@@ -532,9 +580,9 @@ describe('ChatThreadDO Pi turn handling', () => {
   it('does NOT send an empty live_overlay when streaming with no overlay (cold-wake mid-turn)', () => {
     // A cold-woken DO mid-turn has an empty overlay (the non-durable tail is not
     // restored on wake) while isThreadStreaming() is still true from the durable
-    // active-turn marker. Folding the client's tail here would finalize a still-
-    // running turn and the next delta would start a duplicate overlay message, so
-    // we must NOT send the empty clear — the resuming turn's deltas drive the client.
+    // active-turn marker. Clearing the client's tail here would blank a still-
+    // streaming message, so we must NOT send the empty clear — the resuming
+    // turn's deltas drive the client.
     const fake = Object.create(ChatThreadDO.prototype) as any;
     fake.chatContext = { threadId: 'thread1', workspaceId: 'workspace1', orgId: 'org1' };
     fake.liveMessages = [];

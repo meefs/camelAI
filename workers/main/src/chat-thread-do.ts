@@ -4947,10 +4947,15 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
       });
     }
     this.resetRunningActivityState();
-    // Turn over: drop the live overlay (committed history is the source of truth).
+    // Turn over: ship the turn's messages as the authoritative snapshot on the
+    // clearing frame. The client commits finalMessages to history directly, so
+    // correctness never depends on it having received every throttled delta.
+    const finalMessages = this.liveMessages.map((message) =>
+      message.isStreaming ? { ...message, isStreaming: false } : message,
+    );
     this.liveMessages = [];
     this.liveStreamingMessageId = null;
-    this.broadcastLiveOverlay();
+    this.broadcastLiveOverlay({ finalMessages });
     this.syncAgentState();
     const context = this.chatContext;
     if (context?.workspaceId && context.threadId) {
@@ -7732,8 +7737,8 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
       this.cachedLlmProviderConfig = null;
       this.resetRunningActivityState();
       // New turn: reset the overlay so the browser stops showing the previous
-      // turn's tail (it has already folded those finalized messages into its
-      // committed history).
+      // turn's tail (the previous turn-end frame's finalMessages already
+      // committed it to client history).
       this.hydrateLiveStateFromAgentState();
       this.liveMessages = [];
       this.liveStreamingMessageId = null;
@@ -8501,12 +8506,14 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
   // (no setState/SQLite write — this is live, not durable). Coarse state
   // (isStreaming, lastCompletedTurn, lastError, todos, …) still goes through
   // setState; only the high-frequency streaming tail rides the broadcast.
-  private broadcastLiveOverlay(options: { throttle?: boolean } = {}): void {
+  private broadcastLiveOverlay(
+    options: { throttle?: boolean; finalMessages?: Message[] } = {},
+  ): void {
     const threadId = this.chatContext?.threadId;
     if (!threadId) return;
     if (options.throttle) {
-      // Coalesce rapid delta broadcasts; structural/forced events flush the
-      // latest overlay (and the turn-end clear flushes the final one).
+      // Coalesce rapid delta broadcasts; a dropped frame only delays rendering —
+      // the turn-end frame's finalMessages carry the authoritative content.
       const now = Date.now();
       if (now - this.lastLiveSyncAtMs < LIVE_STATE_SYNC_THROTTLE_MS) return;
       this.lastLiveSyncAtMs = now;
@@ -8518,6 +8525,9 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
       threadId,
       messages: this.liveMessages,
       streamingMessageId: this.liveStreamingMessageId,
+      ...(options.finalMessages && options.finalMessages.length > 0
+        ? { finalMessages: options.finalMessages }
+        : {}),
     });
   }
 
@@ -8526,18 +8536,15 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
   //
   // When there IS a live overlay (warm reconnect mid-turn), send it so streaming
   // resumes. When the overlay is empty we send an empty snapshot ONLY if the thread
-  // is actually idle: if the turn finished while the client was disconnected (tabbed
-  // away past turn end) the turn-end empty-overlay broadcast reached nobody, so the
-  // reconnecting client still holds its pre-disconnect streaming tail — the empty
-  // snapshot is the signal it folds into committed history (isStreaming -> false) to
-  // clear that tail, otherwise the spinner is stranded forever.
+  // is actually idle: if the turn finished while the client was disconnected, the
+  // client still holds its pre-disconnect streaming tail — the empty snapshot
+  // clears it (the reconnect revalidation reloads the committed messages).
   //
   // But an empty overlay does NOT imply idle: a cold-woken DO mid-turn also has an
   // empty overlay (the non-durable tail isn't restored on wake) while
-  // isThreadStreaming() is still true from the durable active-turn marker. Folding
-  // the client's tail there would finalize a still-running turn and the next delta
-  // would start a fresh overlay message, duplicating/dropping partial output. So in
-  // that case keep the old no-op and let the resuming turn's deltas drive the client.
+  // isThreadStreaming() is still true from the durable active-turn marker. Clearing
+  // the client's tail there would blank a still-streaming message, so keep the
+  // no-op and let the resuming turn's deltas drive the client.
   private sendLiveOverlayToConnection(connection: Connection): void {
     const threadId = this.chatContext?.threadId;
     if (!threadId) {
