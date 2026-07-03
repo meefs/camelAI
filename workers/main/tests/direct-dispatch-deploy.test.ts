@@ -86,6 +86,67 @@ describe("deployWorkerModulesDirect", () => {
     expect(form.get("index.js")).toBeInstanceOf(Blob);
   });
 
+  it("attaches the tail worker as a tail consumer when TAIL_WORKER_NAME is set", async () => {
+    const fetcher = vi.fn(async () => Response.json({ success: true, result: { id: "version-1" } }));
+
+    await deployWorkerModulesDirect({ ...env, TAIL_WORKER_NAME: "chiridion-user-logs-tail" }, {
+      scriptName: "demo-app",
+      hostname: "camelai.dev",
+      identity,
+      metadata: { main_module: "index.js" },
+      modules: [{ name: "index.js", contentType: "application/javascript+module", content: "export default {};" }],
+    }, { fetcher: fetcher as unknown as typeof fetch });
+
+    const form = fetcher.mock.calls[0]![1]?.body as FormData;
+    const metadata = JSON.parse(await (form.get("metadata") as Blob).text());
+    expect(metadata.tail_consumers).toEqual([{ service: "chiridion-user-logs-tail" }]);
+  });
+
+  it("preserves project-declared tail consumers and dedupes the platform one", async () => {
+    const fetcher = vi.fn(async () => Response.json({ success: true, result: { id: "version-1" } }));
+
+    await deployWorkerModulesDirect({ ...env, TAIL_WORKER_NAME: "chiridion-user-logs-tail" }, {
+      scriptName: "demo-app",
+      hostname: "camelai.dev",
+      identity,
+      metadata: {
+        main_module: "index.js",
+        tail_consumers: [
+          { service: "project-own-tail" },
+          { service: "chiridion-user-logs-tail" },
+          { service: "chiridion-user-logs-tail", environment: "staging" },
+        ],
+      },
+      modules: [{ name: "index.js", contentType: "application/javascript+module", content: "export default {};" }],
+    }, { fetcher: fetcher as unknown as typeof fetch });
+
+    const form = fetcher.mock.calls[0]![1]?.body as FormData;
+    const metadata = JSON.parse(await (form.get("metadata") as Blob).text());
+    // The exact platform consumer is deduped; an environment-scoped consumer
+    // for the same service is preserved (Wrangler treats it as distinct).
+    expect(metadata.tail_consumers).toEqual([
+      { service: "project-own-tail" },
+      { service: "chiridion-user-logs-tail", environment: "staging" },
+      { service: "chiridion-user-logs-tail" },
+    ]);
+  });
+
+  it("omits tail consumers when TAIL_WORKER_NAME is not configured", async () => {
+    const fetcher = vi.fn(async () => Response.json({ success: true, result: { id: "version-1" } }));
+
+    await deployWorkerModulesDirect(env, {
+      scriptName: "demo-app",
+      hostname: "camelai.dev",
+      identity,
+      metadata: { main_module: "index.js" },
+      modules: [{ name: "index.js", contentType: "application/javascript+module", content: "export default {};" }],
+    }, { fetcher: fetcher as unknown as typeof fetch });
+
+    const form = fetcher.mock.calls[0]![1]?.body as FormData;
+    const metadata = JSON.parse(await (form.get("metadata") as Blob).text());
+    expect(metadata.tail_consumers).toBeUndefined();
+  });
+
   it("normalizes wrangler durable object migrations for first deploy", async () => {
     const fetcher = vi.fn(async (input: string | URL | Request) => {
       const url = String(input);
@@ -431,5 +492,46 @@ describe("deployWorkerModulesDirect", () => {
       name: "ASSETS",
     });
     expect(form.get("index.js")).toBeInstanceOf(Blob);
+  });
+
+  it("re-applies the platform tail consumer when rolling back an artifact cached without one", async () => {
+    const r2 = new Map<string, { body: string | Uint8Array; options?: unknown }>();
+    const fetcher = vi.fn(async () => Response.json({ success: true }));
+    const rollbackEnv = {
+      ...env,
+      TAIL_WORKER_NAME: "chiridion-user-logs-tail",
+      APP_KV: { put: vi.fn(async () => undefined) },
+      R2_BUCKET: {
+        put: vi.fn(async (key: string, body: string | Uint8Array, options?: unknown) => r2.set(key, { body, options })),
+        get: vi.fn(async (key: string) => {
+          const item = r2.get(key);
+          return item ? { text: async () => item.body as string } : null;
+        }),
+      },
+    };
+    // Cache an artifact whose metadata predates the tail-consumer behavior.
+    const artifactCacheKey = "deploy-artifacts/org-1/workspace-1/project-1/demo-app--acme/legacy.json";
+    r2.set(artifactCacheKey, {
+      body: JSON.stringify({
+        schemaVersion: 1,
+        createdAt: "2026-01-01T00:00:00.000Z",
+        scriptName: "demo-app",
+        dispatchScriptName: "demo-app--acme",
+        identity,
+        metadata: { main_module: "index.js" },
+        modules: [{ name: "index.js", contentType: "application/javascript+module", contentBase64: "ZXhwb3J0IGRlZmF1bHQge307" }],
+        assetsRecord: null,
+      }),
+    });
+
+    await rollbackWorkerDeployFromArtifactCache(rollbackEnv, {
+      artifactCacheKey,
+      hostname: "camelai.dev",
+      expected: { orgId: "org-1", workspaceId: "workspace-1", scriptName: "demo-app" },
+    }, { fetcher: fetcher as unknown as typeof fetch });
+
+    const form = fetcher.mock.calls.at(-1)![1]?.body as FormData;
+    const metadata = JSON.parse(await (form.get("metadata") as Blob).text());
+    expect(metadata.tail_consumers).toEqual([{ service: "chiridion-user-logs-tail" }]);
   });
 });

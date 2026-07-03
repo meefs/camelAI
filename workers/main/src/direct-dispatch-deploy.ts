@@ -16,6 +16,7 @@ export interface DirectDispatchDeployEnv {
   CF_ACCOUNT_ID?: string;
   CF_DISPATCH_NAMESPACE?: string;
   CF_WORKER_NAME?: string;
+  TAIL_WORKER_NAME?: string;
   APP_KV?: KVNamespace;
   R2_BUCKET?: R2Bucket;
 }
@@ -121,6 +122,7 @@ export async function deployWorkerModulesDirect(
   const accountId = env.CF_ACCOUNT_ID?.trim();
   const dispatchNamespace = env.CF_DISPATCH_NAMESPACE?.trim();
   const workerServiceName = env.CF_WORKER_NAME?.trim();
+  const tailWorkerName = env.TAIL_WORKER_NAME?.trim();
   if (!cfApiToken) throw new Error("CF_API_TOKEN is required for direct deploy");
   if (!accountId) throw new Error("CF_ACCOUNT_ID is required for direct deploy");
   if (!dispatchNamespace) throw new Error("CF_DISPATCH_NAMESPACE is required for direct deploy");
@@ -168,6 +170,15 @@ export async function deployWorkerModulesDirect(
       workerServiceName,
       dispatchScriptName,
     ),
+    // Attach the tail worker so deployed app logs/exceptions flow into
+    // WorkerLogsDO. The legacy wrangler-deploy path set this via a separate
+    // settings PATCH in cf-api-proxy; the direct-dispatch path owns the upload
+    // PUT, so we set tail_consumers inline on every deploy (incl. redeploys).
+    // Merge into (not replace) any consumers the project already declares so a
+    // project-configured tail consumer is preserved alongside the platform one.
+    ...(tailWorkerName
+      ? { tail_consumers: withPlatformTailConsumer(request.metadata.tail_consumers, tailWorkerName) }
+      : {}),
   };
   let artifactCacheKey: string | undefined;
   try {
@@ -271,6 +282,25 @@ async function migrationsForDirectDeploy(
     new_tag: latestTag,
     steps: migrationStepsForUpload(configMigrations),
   };
+}
+
+function withPlatformTailConsumer(
+  existing: unknown,
+  tailWorkerName: string,
+): Array<Record<string, unknown>> {
+  const preserved = Array.isArray(existing)
+    ? existing.filter((consumer): consumer is Record<string, unknown> => {
+        if (!consumer || typeof consumer !== "object" || Array.isArray(consumer)) return false;
+        // Drop only the exact platform consumer we are about to add (same
+        // service, no environment scope). Wrangler treats a consumer with an
+        // `environment` as distinct, so environment-scoped consumers for the
+        // same service are preserved.
+        const { service, environment } = consumer as { service?: unknown; environment?: unknown };
+        const isExactPlatformConsumer = service === tailWorkerName && environment == null;
+        return !isExactPlatformConsumer;
+      })
+    : [];
+  return [...preserved, { service: tailWorkerName }];
 }
 
 function migrationStepsForUpload(migrations: unknown[]): Array<Record<string, unknown>> {
@@ -429,6 +459,7 @@ export async function rollbackWorkerDeployFromArtifactCache(
   const cfApiToken = env.CF_API_TOKEN?.trim();
   const accountId = env.CF_ACCOUNT_ID?.trim();
   const dispatchNamespace = env.CF_DISPATCH_NAMESPACE?.trim();
+  const tailWorkerName = env.TAIL_WORKER_NAME?.trim();
   const fetcher = options.fetcher ?? fetch;
   if (!cfApiToken) throw new Error("CF_API_TOKEN is required for direct rollback");
   if (!accountId) throw new Error("CF_ACCOUNT_ID is required for direct rollback");
@@ -462,6 +493,13 @@ export async function rollbackWorkerDeployFromArtifactCache(
       assets,
     }, fetcher);
     metadata = nativeAssets ? { ...record.metadata, assets: { jwt: nativeAssets.jwt } } : record.metadata;
+  }
+
+  // Re-apply the platform tail consumer so rolling back to an artifact cached
+  // before this behavior existed (or under a different tail worker name) still
+  // forwards logs to WorkerLogsDO. Idempotent for artifacts already carrying it.
+  if (tailWorkerName) {
+    metadata = { ...metadata, tail_consumers: withPlatformTailConsumer(metadata.tail_consumers, tailWorkerName) };
   }
 
   const form = new FormData();
