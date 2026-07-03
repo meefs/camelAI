@@ -12,6 +12,9 @@ import {
   parseCronExpression,
 } from "./cron-schedule";
 import type { WorkspaceDO } from "./workspace";
+import { prewarmWorkspaceBuildSandboxes } from "./project-build-service";
+import type { WorkspaceFilesystemDO } from "./workspace-filesystem-do";
+import type { ProjectBuildSandbox } from "./project-build-sandbox";
 import {
   getDefaultLlmModel,
   getStoredCustomLlmProviderApi,
@@ -36,6 +39,11 @@ import {
 } from "./model-picker-config-compat";
 
 const MAX_DUE_JOBS_PER_ALARM = 20;
+// Wake this far ahead of the next scheduled run to prewarm the build container,
+// so its 10s+ cold boot overlaps the lead window instead of the deploy. The
+// early wake only prewarms (due queries still gate on next_run_at <= now, so
+// nothing runs early) and then re-arms the alarm for the real run time.
+const BUILD_SANDBOX_PREWARM_LEAD_MS = 20_000;
 const WORKSPACE_ID_KEY = "workspaceId";
 const AUTOMATION_WORKFLOW_BINDING = "DETERMINISTIC_AUTOMATION_WORKFLOWS";
 const SCHEDULE_DISABLED_BY_BILLING_PREFIX =
@@ -315,7 +323,10 @@ export interface ValidateDeterministicAutomationResult {
 export interface WorkspaceCronEnv {
   ORG: DurableObjectNamespace<OrgDO>;
   WORKSPACE: DurableObjectNamespace<WorkspaceDO>;
+  WORKSPACE_FS: DurableObjectNamespace<WorkspaceFilesystemDO>;
+  R2_BUCKET: R2Bucket;
   CHAT_THREAD: DurableObjectNamespace<ChatThreadDO>;
+  PROJECT_BUILD_SANDBOX?: DurableObjectNamespace<ProjectBuildSandbox>;
   CODE_MODE_LOADER?: WorkerLoader;
   DETERMINISTIC_AUTOMATION_WORKFLOWS?: Workflow;
   CF_ACCOUNT_ID?: string;
@@ -1338,7 +1349,15 @@ export class WorkspaceCronDO extends DurableObject<WorkspaceCronEnv> {
     }
 
     const now = Date.now();
-    await this.ctx.storage.setAlarm(Math.max(now + 1000, nextRunAt));
+    // When the next run is still more than the lead window away, wake early to
+    // prewarm the build container; otherwise (already inside the lead window,
+    // e.g. re-arming right after a prewarm wake) target the real run time so we
+    // don't busy-loop 1s alarms across the lead window.
+    const target =
+      nextRunAt - now > BUILD_SANDBOX_PREWARM_LEAD_MS
+        ? nextRunAt - BUILD_SANDBOX_PREWARM_LEAD_MS
+        : nextRunAt;
+    await this.ctx.storage.setAlarm(Math.max(now + 1000, target));
   }
 
   async listScheduledPrompts(
@@ -2197,6 +2216,27 @@ export class WorkspaceCronDO extends DurableObject<WorkspaceCronEnv> {
     await this.alarm();
   }
 
+  /**
+   * Whether any scheduled prompt or deterministic automation is actually due as
+   * of `now`. Used to tell a real due-run alarm from an early prewarm-only lead
+   * wake, so the latter never takes the destructive "workspace unavailable"
+   * disable path on a transient failure.
+   */
+  private hasDueScheduledWork(now: number): boolean {
+    const row = this.sql
+      .exec(
+        `SELECT
+           (SELECT COUNT(*) FROM scheduled_prompts
+             WHERE enabled = 1 AND next_run_at IS NOT NULL AND next_run_at <= ?)
+         + (SELECT COUNT(*) FROM deterministic_automations
+             WHERE enabled = 1 AND next_run_at IS NOT NULL AND next_run_at <= ?) AS due_count`,
+        now,
+        now,
+      )
+      .toArray()[0] as { due_count: number } | undefined;
+    return (row?.due_count ?? 0) > 0;
+  }
+
   async alarm(): Promise<void> {
     const workspaceId = this.getStoredWorkspaceId();
     if (!workspaceId) {
@@ -2204,26 +2244,61 @@ export class WorkspaceCronDO extends DurableObject<WorkspaceCronEnv> {
       return;
     }
 
+    const now = Date.now();
+    // Tell a real due-run wake apart from an early prewarm-only lead wake
+    // (scheduled BUILD_SANDBOX_PREWARM_LEAD_MS before next_run_at). Only a wake
+    // with actually-due work may take the destructive disable path below; a
+    // transient getWorkspaceInfo failure during the prewarm lead window must not
+    // tear down future schedules before their scheduled time.
+    const hasDueWork = this.hasDueScheduledWork(now);
+
     let workspace: WorkspaceInfo;
     try {
       workspace = await this.getWorkspaceInfo(workspaceId);
     } catch (error) {
-      console.warn(
-        "[WorkspaceCronDO] workspace unavailable, disabling scheduled prompts",
-        {
-          workspaceId,
-          error: error instanceof Error ? error.message : String(error),
-        },
-      );
-      await this.disableAllScheduledPrompts(
+      console.warn("[WorkspaceCronDO] workspace unavailable", {
         workspaceId,
-        "workspace_unavailable",
-      );
+        hasDueWork,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      if (hasDueWork) {
+        await this.disableAllScheduledPrompts(
+          workspaceId,
+          "workspace_unavailable",
+        );
+        return;
+      }
+      // Prewarm-only wake: don't disable anything on a transient failure. Re-arm
+      // so the real run time gets its own (destructive-on-failure) attempt.
+      await this.scheduleNextAlarm();
+      return;
+    }
+
+    // Every alarm wake precedes a scheduled run within the lead window (either
+    // this wake runs due jobs, or it's the early prewarm wake ahead of them), so
+    // warming the build container now overlaps its cold boot with the dispatched
+    // turn. Fire-and-forget + best-effort; a warm failure never blocks the run.
+    this.ctx.waitUntil(
+      prewarmWorkspaceBuildSandboxes(this.env, workspace.org_id, workspaceId).catch(
+        (error) => {
+          console.warn("[WorkspaceCronDO] build sandbox prewarm failed", {
+            workspaceId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        },
+      ),
+    );
+
+    if (!hasDueWork) {
+      // Prewarm-only lead wake: nothing is due yet. Skip the billing read and
+      // (empty) due-row processing — a transient failure there would reject
+      // before the re-arm below and drop the real run — and just re-arm for the
+      // actual run time.
+      await this.scheduleNextAlarm();
       return;
     }
 
     const limits = await this.getWorkspaceBillingLimits(workspace);
-    const now = Date.now();
     const dueRows = this.sql
       .exec(
         `SELECT * FROM scheduled_prompts

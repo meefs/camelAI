@@ -1,7 +1,12 @@
 import { WorkerEntrypoint } from "cloudflare:workers";
 import { getSandbox } from "@cloudflare/sandbox";
 
-import { ProjectFilesystemClient, type WorkspaceFileStoreLike } from "./workspace-filesystem-do.js";
+import {
+  ProjectFilesystemClient,
+  WorkspaceFilesystemClient,
+  type WorkspaceFileStoreLike,
+  type WorkspaceFilesystemEnv,
+} from "./workspace-filesystem-do.js";
 import type { ProjectBuildSandbox } from "./project-build-sandbox.js";
 import type { ProjectBuildSandboxLike } from "./project-worker-bundle.js";
 
@@ -9,6 +14,8 @@ export { collectWorkerBundleFromSandbox } from "./project-worker-bundle.js";
 export type { ProjectBuildSandboxLike, ProjectWorkerBundle } from "./project-worker-bundle.js";
 
 const DEFAULT_BUILD_TIMEOUT_MS = 120_000;
+const DEFAULT_PREWARM_TIMEOUT_MS = 25_000;
+const DEFAULT_PREWARM_MAX_TARGETS = 5;
 const PROJECT_BUILD_ROOT = "/workspace";
 const MAX_PROJECT_BUILD_SANDBOX_KEY_LENGTH = 63;
 const MAX_COMMAND_OUTPUT_LOG_CHARS = 4000;
@@ -506,6 +513,134 @@ export function projectBuildSandboxKey(orgId: string, projectId: string): string
   const prefixLength = MAX_PROJECT_BUILD_SANDBOX_KEY_LENGTH - hash.length - 1;
   const prefix = readable.slice(0, prefixLength).replace(/-+$/g, "");
   return `${prefix}-${hash}`;
+}
+
+export interface ProjectBuildSandboxNamespaceEnv {
+  PROJECT_BUILD_SANDBOX?: DurableObjectNamespace<ProjectBuildSandbox>;
+}
+
+/**
+ * Best-effort prewarm of the per-(org, project) build container so its cold
+ * boot (10s+, see src/entry.server.tsx) is paid ahead of an interactive or
+ * scheduled deploy instead of synchronously at deploy time. Runs a trivial
+ * no-op command to trigger the boot, reusing the exact sandbox key that
+ * runProjectBuild/deploy use so the warm instance is the one they acquire.
+ *
+ * Never throws: callers fire this from waitUntil and a warm failure (binding
+ * absent, container busy, transient error) must not affect the turn. Returns
+ * true only when the no-op command actually completed against the container.
+ */
+export async function prewarmProjectBuildSandbox(input: {
+  env: ProjectBuildSandboxNamespaceEnv;
+  orgId: string;
+  projectId: string;
+  timeoutMs?: number;
+}): Promise<boolean> {
+  const namespace = input.env.PROJECT_BUILD_SANDBOX;
+  if (!namespace) return false;
+  const orgId = input.orgId?.trim();
+  if (!orgId) return false;
+
+  let projectId: string;
+  let key: string;
+  try {
+    projectId = normalizeProjectBuildId(input.projectId);
+    key = projectBuildSandboxKey(orgId, projectId);
+  } catch {
+    // Invalid ids should never blow up a prewarm; the real build will surface
+    // the error loudly at deploy time.
+    return false;
+  }
+
+  const timeoutMs = Math.max(
+    1_000,
+    Math.floor(input.timeoutMs ?? DEFAULT_PREWARM_TIMEOUT_MS),
+  );
+  const startedAt = Date.now();
+  try {
+    const sandbox = getSandbox(namespace, key, {
+      normalizeId: true,
+      transport: "rpc",
+    }) as unknown as ProjectBuildSandboxLike;
+    // @cloudflare/sandbox's ExecOptions bounds execution via `timeout` (ms), not
+    // `timeoutMs`; pass `timeout` so the prewarm actually fails fast instead of
+    // hanging in waitUntil on a cold-start/control-plane stall.
+    await sandbox.exec("true", { timeout: timeoutMs });
+    return true;
+  } catch (error) {
+    console.warn("[project-build] prewarm failed", {
+      operation: "prewarm",
+      projectId,
+      durationMs: Date.now() - startedAt,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return false;
+  }
+}
+
+/**
+ * Prewarm every DO-backed (do-r2) project's build container in a workspace.
+ * Used by both the interactive turn-start path (ChatThreadDO) and the scheduled
+ * automation path (WorkspaceCronDO): at those moments a deploy is likely, and
+ * only do-r2 projects use the ProjectBuildSandbox container (legacy vm projects
+ * deploy through the runtime VM and are skipped).
+ *
+ * Best-effort: never throws. Returns the number of containers warmed. Warms are
+ * capped (maxTargets) so a workspace with many projects can't fan out an
+ * unbounded number of container boots; the cap is logged when it bites.
+ */
+export async function prewarmWorkspaceBuildSandboxes(
+  env: ProjectBuildSandboxNamespaceEnv & WorkspaceFilesystemEnv,
+  orgId: string,
+  workspaceId: string,
+  options: { timeoutMs?: number; maxTargets?: number } = {},
+): Promise<number> {
+  if (!env.PROJECT_BUILD_SANDBOX) return 0;
+  if (!orgId?.trim() || !workspaceId?.trim()) return 0;
+
+  let doBackedProjectIds: string[];
+  try {
+    const projects = await new WorkspaceFilesystemClient(env, workspaceId).listProjects();
+    // listProjects() nests clones under their source's `clones` array rather than
+    // returning them as top-level rows, but deploy_project/build_project resolve a
+    // clone by name and build under the clone's own id — so warm clones too, or a
+    // cloned-project deploy pays the full cold boot.
+    const ids: string[] = [];
+    for (const project of projects) {
+      if ((project.backend ?? "vm") === "do-r2") ids.push(project.id);
+      for (const clone of project.clones ?? []) {
+        if ((clone.backend ?? "vm") === "do-r2") ids.push(clone.id);
+      }
+    }
+    doBackedProjectIds = ids;
+  } catch (error) {
+    console.warn("[project-build] prewarm listProjects failed", {
+      operation: "prewarm",
+      workspaceId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return 0;
+  }
+
+  if (doBackedProjectIds.length === 0) return 0;
+
+  const maxTargets = Math.max(1, Math.floor(options.maxTargets ?? DEFAULT_PREWARM_MAX_TARGETS));
+  const targets = doBackedProjectIds.slice(0, maxTargets);
+  if (doBackedProjectIds.length > targets.length) {
+    console.info("[project-build] prewarm capped", {
+      operation: "prewarm",
+      workspaceId,
+      doBackedProjects: doBackedProjectIds.length,
+      prewarming: targets.length,
+    });
+  }
+
+  const results = await Promise.all(
+    targets.map((projectId) =>
+      prewarmProjectBuildSandbox({ env, orgId, projectId, timeoutMs: options.timeoutMs }),
+    ),
+  );
+  return results.filter(Boolean).length;
 }
 
 function stableHexHash(value: string): string {

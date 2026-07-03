@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { env } from 'cloudflare:test';
+import { env, runInDurableObject } from 'cloudflare:test';
 import type { OrgDO } from '../src/auth';
 import { CodeModeDeterministicAutomations } from '../src/code-mode-deterministic-automations';
 import type { AutomationRunCursor, WorkspaceCronDO } from '../src/workspace-cron';
@@ -962,5 +962,85 @@ export class AutomationWorkflow extends WorkflowEntrypoint {
     });
     expect(empty.runs).toHaveLength(0);
     expect(empty.nextCursor).toBeNull();
+  });
+
+  it('treats a healthy prewarm-only lead wake as non-destructive and does not consume the schedule', async () => {
+    const { userId } = await createUser(testEnv, testEmail(), 'password123', 'Cron Owner');
+    const { org } = await createOrg(testEnv, 'Cron Org', userId);
+    const workspaces = await listUserWorkspaces(testEnv, userId, org.id);
+    const workspaceId = workspaces[0]?.id;
+
+    const cronStub = testEnv.WORKSPACE_CRON.get(
+      testEnv.WORKSPACE_CRON.idFromName(workspaceId!)
+    ) as DurableObjectStub<WorkspaceCronDO>;
+
+    const created = await cronStub.createScheduledPrompt({
+      workspaceId: workspaceId!,
+      name: 'Hourly digest',
+      prompt: 'Summarize workspace status.',
+      cronExpression: '0 * * * *',
+      createdBy: userId,
+    });
+    const nextRun = created.next_run_at!;
+
+    // Wake inside the prewarm lead window, before the prompt is due: it must not
+    // run, advance, or disable the prompt (it returns after firing the warm).
+    useFixedTime(new Date(nextRun - 5_000).toISOString());
+    await cronStub.runDueAutomationsForTest(workspaceId!);
+
+    const after = (await cronStub.listScheduledPrompts(workspaceId!))[0];
+    expect(after?.enabled).toBe(true);
+    expect(after?.next_run_at).toBe(nextRun);
+    expect(after?.last_run_at).toBeNull();
+    expect(after?.run_count).toBe(0);
+  });
+
+  it('does not disable schedules on a prewarm-only lead wake when the workspace lookup fails, but still disables on the real due run', async () => {
+    const { userId } = await createUser(testEnv, testEmail(), 'password123', 'Cron Owner');
+    const { org } = await createOrg(testEnv, 'Cron Org', userId);
+    const workspaces = await listUserWorkspaces(testEnv, userId, org.id);
+    const workspaceId = workspaces[0]?.id;
+    expect(workspaceId).toBeTypeOf('string');
+
+    const cronStub = testEnv.WORKSPACE_CRON.get(
+      testEnv.WORKSPACE_CRON.idFromName(workspaceId!)
+    ) as DurableObjectStub<WorkspaceCronDO>;
+
+    const created = await cronStub.createScheduledPrompt({
+      workspaceId: workspaceId!,
+      name: 'Hourly digest',
+      prompt: 'Summarize workspace status.',
+      cronExpression: '0 * * * *',
+      createdBy: userId,
+    });
+    const nextRun = created.next_run_at!;
+    expect(nextRun).toBeTypeOf('number');
+
+    // Break the workspace lookup so getWorkspaceInfo throws, WITHOUT going
+    // through archive()/delete (which would themselves disable the prompts via a
+    // cross-DO call and mask the behavior under test). Deleting the stored info
+    // row makes getInfo() return null, exactly like a transient lookup failure.
+    const wsStub = testEnv.WORKSPACE.get(testEnv.WORKSPACE.idFromName(workspaceId!));
+    await runInDurableObject(wsStub, async (instance: { ctx: DurableObjectState }) => {
+      instance.ctx.storage.sql.exec("DELETE FROM workspace_info WHERE key = 'data'");
+    });
+
+    // Early prewarm-only lead wake (before next_run_at): the failure must NOT
+    // disable the schedule — the real run still deserves its chance.
+    useFixedTime(new Date(nextRun - 5_000).toISOString());
+    await cronStub.runDueAutomationsForTest(workspaceId!);
+    const afterLead = (await cronStub.listScheduledPrompts(workspaceId!))[0];
+    expect(afterLead?.enabled).toBe(true);
+    expect(afterLead?.next_run_at).toBe(nextRun);
+    expect(afterLead?.last_run_error).toBeNull();
+
+    // Real due wake (at next_run_at): the same lookup failure is now destructive
+    // — this is a genuinely due run against a gone workspace, so it disables.
+    useFixedTime(new Date(nextRun).toISOString());
+    await cronStub.runDueAutomationsForTest(workspaceId!);
+    const afterDue = (await cronStub.listScheduledPrompts(workspaceId!))[0];
+    expect(afterDue?.enabled).toBe(false);
+    expect(afterDue?.next_run_at).toBeNull();
+    expect(afterDue?.last_run_error).toBe('workspace_unavailable');
   });
 });

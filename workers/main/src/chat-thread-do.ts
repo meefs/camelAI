@@ -37,6 +37,7 @@ import type { WorkspaceDO } from "./workspace";
 import type { WorkspaceCronDO } from "./workspace-cron";
 import type { WorkerLogsDO } from "./worker-logs-do";
 import { WorkspaceFilesystemClient, type WorkspaceFilesystemEnv } from "./workspace-filesystem-do";
+import { prewarmWorkspaceBuildSandboxes } from "./project-build-service";
 import { type ProjectRuntimeServiceVmEnv } from "./project-runtime-service-vm";
 import { formatAttributedUserMessage } from './chat-author-attribution';
 import { injectFileSafetyMessage } from './file-safety';
@@ -259,6 +260,12 @@ const CHAT_ACTIVE_AUTOMATION_RUN_KEY = "activeAutomationRun";
 // transitions (streaming start/stop) bypass this debounce entirely so a
 // workspace UI is never stuck showing "streaming".
 const WORKSPACE_STREAMING_ACTIVITY_DEBOUNCE_MS = 5_000;
+
+// Prewarm the DO-backed build container when a turn starts so its 10s+ cold
+// boot overlaps the model's thinking instead of the deploy. Debounced so
+// steering messages and rapid turns don't repeatedly re-warm. The per-workspace
+// project cap lives in prewarmWorkspaceBuildSandboxes.
+const BUILD_SANDBOX_PREWARM_DEBOUNCE_MS = 4 * 60_000;
 
 type LlmProviderConfigRecord = ReturnType<
   import("./identity/org-do").OrgDO["getLlmProviderConfig"]
@@ -912,6 +919,10 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
   private pendingOverlayArtifacts: Map<string, RuntimeCallArtifact[]> = new Map();
   private lastLiveSyncAtMs: number = 0;
   private liveStateHydrated: boolean = false;
+  // In-memory debounce marker for build-container prewarm (see
+  // maybePrewarmProjectBuildSandboxes). Best-effort only; a DO eviction resets
+  // it, which at worst triggers one extra cheap no-op warm.
+  private lastBuildSandboxPrewarmAtMs: number = 0;
   private currentTodos: unknown[] = [];
   // Canonical persisted/replayed value (set on result events only).
   private contextUsedPercent: number | null = null;
@@ -4089,6 +4100,35 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
     return this.env.ORG.get(this.env.ORG.idFromName(orgId));
   }
 
+  /**
+   * Fire-and-forget prewarm of this workspace's DO-backed build containers at
+   * turn start. A user sending a message strongly predicts an imminent
+   * build/deploy, so booting the container now hides its 10s+ cold start behind
+   * the model's thinking/tool time. Debounced and best-effort: a warm failure
+   * must never affect the turn.
+   */
+  private maybePrewarmProjectBuildSandboxes(): void {
+    const context = this.chatContext;
+    if (!context?.orgId || !context.workspaceId) return;
+    if (!this.env.PROJECT_BUILD_SANDBOX) return;
+
+    const now = Date.now();
+    if (now - this.lastBuildSandboxPrewarmAtMs < BUILD_SANDBOX_PREWARM_DEBOUNCE_MS) {
+      return;
+    }
+    this.lastBuildSandboxPrewarmAtMs = now;
+
+    const { orgId, workspaceId } = context;
+    this.ctx.waitUntil(
+      prewarmWorkspaceBuildSandboxes(this.env, orgId, workspaceId).catch((err) => {
+        console.warn("[ChatThreadDO] build sandbox prewarm failed", {
+          workspaceId,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }),
+    );
+  }
+
   private get channelTools(): ChannelTools {
     return new ChannelTools(this.env);
   }
@@ -4278,6 +4318,11 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
     if (orgBan) {
       return { status: "error", error: "Organization is blocked" };
     }
+
+    // A user prompt strongly predicts a build/deploy this turn; start the
+    // build container's cold boot now so it overlaps the model's work. Fired
+    // before ensurePiSessionReady for maximum overlap; debounced + best-effort.
+    this.maybePrewarmProjectBuildSandboxes();
 
     const runnerConnectStartedAt = Date.now();
     try {

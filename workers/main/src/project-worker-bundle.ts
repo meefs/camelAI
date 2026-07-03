@@ -2,7 +2,7 @@ import type { DirectWorkerMetadata, DirectWorkerModule } from "./direct-dispatch
 import type { WorkerBinding } from "./cf-api-proxy.js";
 
 export interface ProjectBuildSandboxLike {
-  exec(command: string, options?: { cwd?: string; env?: Record<string, string | undefined>; timeoutMs?: number }): Promise<{
+  exec(command: string, options?: { cwd?: string; env?: Record<string, string | undefined>; timeout?: number; timeoutMs?: number }): Promise<{
     success?: boolean;
     stdout?: string;
     stderr?: string;
