@@ -6582,7 +6582,13 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
         billingSource: "byok",
         creditChargeable: false,
         usageProvider: "openrouter",
-        requestModelId: resolved.hostedModelId,
+        // hostedModelId can be a gateway-only dynamic route (e.g.
+        // "dynamic/..." on the AI Gateway compat endpoint); OpenRouter only
+        // understands native model ids, so fall back to the OpenRouter id.
+        requestModelId:
+          resolved.hostedGatewayProvider === "openrouter"
+            ? resolved.hostedModelId
+            : this.piModelMapping.openRouterNitroModel(resolved.modelId),
         headers: {
           ...this.piModelMapping.openRouterAttributionHeaders(),
           ...(resolved.provider === "anthropic"

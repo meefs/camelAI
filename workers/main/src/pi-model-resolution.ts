@@ -64,7 +64,14 @@ export class PiModelMapping {
       case "deepseek-v4-pro":
         return openRouterReference("deepseek/deepseek-v4-pro");
       case "deepseek-v4-flash":
-        return openRouterReference("deepseek/deepseek-v4-flash");
+        // Hosted traffic goes through the AI Gateway dynamic route (provider
+        // fallbacks are configured on the gateway); BYOK OpenRouter still uses
+        // the native OpenRouter model id from `modelId`.
+        return {
+          ...openRouterReference("deepseek/deepseek-v4-flash"),
+          hostedGatewayProvider: "compat",
+          hostedModelId: "dynamic/deepseek-v4-flash-fallback",
+        };
       default:
         if (normalizedModelId.includes("/")) {
           return openRouterReference(normalizedModelId);
