@@ -68,20 +68,21 @@
   "worker_loaders": [{ "binding": "CODE_MODE_LOADER" }],
   "containers": [
     {
-      "class_name": "WarehouseSandbox",
-      "image": "./workers/main/warehouse-sandbox.Dockerfile",
-      // Largest instance type (4 vCPU / 12 GiB / 20 GB disk) for data-intensive
-      // DuckDB. The account-wide container budget is shared across all
-      // environments (~1,500 vCPU default), so cap the warehouse well under it
-      // (100 × 4 = 400 vCPU, ~27%) — still 100 concurrent containers, with plenty
-      // of headroom so it can't starve the eval/staging/other sandboxes. Ceiling
-      // is demand-driven, not reserved; raise it later if real usage approaches it.
+      "class_name": "ProjectBuildSandbox",
+      "image": "./workers/main/project-build-sandbox.Dockerfile",
       "instance_type": "standard-4",
       "max_instances": 100,
     },
     {
-      "class_name": "ProjectBuildSandbox",
-      "image": "./workers/main/project-build-sandbox.Dockerfile",
+      // Unified analysis container (notebooks + shell + DuckDB) — successor to
+      // the warehouse tier. Largest instance type (4 vCPU / 12 GiB / 20 GB disk)
+      // for data-intensive DuckDB. The account-wide container budget is shared
+      // across all environments (~1,500 vCPU default), so cap this tier well
+      // under it (100 × 4 = 400 vCPU, ~27%) — still 100 concurrent containers,
+      // with headroom so it can't starve the eval/staging/other sandboxes.
+      // Ceiling is demand-driven, not reserved; scale-to-zero when idle.
+      "class_name": "AnalysisSandbox",
+      "image": "./workers/main/analysis-sandbox.Dockerfile",
       "instance_type": "standard-4",
       "max_instances": 100,
     },
@@ -152,7 +153,7 @@
       { "name": "MCP_OBJECT", "class_name": "ChiridionMcp" },
 	      { "name": "WORKER_LOGS", "class_name": "WorkerLogsDO" },
 	      { "name": "WORKSPACE_FS", "class_name": "WorkspaceFilesystemDO" },
-	      { "name": "WAREHOUSE_SANDBOX", "class_name": "WarehouseSandbox" },
+	      { "name": "ANALYSIS_SANDBOX", "class_name": "AnalysisSandbox" },
 	      { "name": "PROJECT_BUILD_SANDBOX", "class_name": "ProjectBuildSandbox" },
 	    ],
 	  },
@@ -196,5 +197,7 @@
 	    { "tag": "v27", "new_sqlite_classes": ["MigrationPlanningAgent"] },
     { "tag": "v28", "new_sqlite_classes": ["WarehouseSandbox"] },
 	    { "tag": "v29", "new_sqlite_classes": ["ProjectBuildSandbox"] },
+	    { "tag": "v30", "new_sqlite_classes": ["AnalysisSandbox"] },
+	    { "tag": "v31", "deleted_classes": ["WarehouseSandbox"] },
 	  ],
 	}

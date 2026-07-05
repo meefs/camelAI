@@ -903,11 +903,13 @@ export class CodeModeRunner extends WorkerEntrypoint {
       sideEffect: Boolean(tool.sideEffect),
       externalDelivery: Boolean(tool.externalDelivery),
     })));
+    // Hidden tools (deprecated aliases) stay callable on the tools object below
+    // but are dropped from every discovery surface: help, search, and describe.
     const ALL_TOOLS = Object.freeze([
       TOOL_HELP_DEFINITION,
       TOOL_SEARCH_DEFINITION,
       TOOL_DESCRIBE_DEFINITION,
-      ...registeredTools,
+      ...registeredTools.filter((tool) => !tool.hidden),
     ]);
     const callTool = (name, args = {}) => this.env.TOOLS.callTool(name, args);
     const invokeEnvelope = (name, args = {}) => this.env.TOOLS.callToolEnvelope(name, args);

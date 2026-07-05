@@ -6,22 +6,38 @@ license: Complete terms in LICENSE.txt
 
 # Data Analysis
 
-## Python Environment Setup
+## Python Environment (DO-backed projects)
 
-Install data analysis packages on demand. Initialize a Python project in the workspace if one does not exist:
+For DO-backed projects, data analysis runs in a stateless per-workspace sandbox
+over the project filesystem — there is no persistent VM to set up. **The default
+data stack is preinstalled**, so most analysis needs no environment step at all:
 
-```bash
-uv init --python 3.13
-uv add pandas numpy polars matplotlib altair plotly seaborn scipy scikit-learn duckdb pyarrow jupyterlab
-```
+> pandas, numpy, polars, duckdb, pyarrow, altair, plotly, matplotlib, seaborn,
+> scipy, scikit-learn, statsmodels, openpyxl, xlsxwriter, pdfplumber, python-docx,
+> python-pptx, sqlalchemy (+ psycopg/pymysql), jupyter/nbconvert.
 
-Run scripts and tools with `uv run`:
-```bash
-uv run python script.py
-uv run jupyter nbconvert --to notebook --execute --inplace notebook.ipynb
-```
+- **Need a package beyond the stack?** `add_python_dependency({ project, packages: ["<pkg>"] })`
+  — it runs `uv add` and persists `pyproject.toml` + `uv.lock` back to the project.
+  (You can also just edit `pyproject.toml`; the next run's `uv sync` reconciles it.)
+- **Run a notebook:** `run_notebook` (see below) — execution + validation in one call.
+- **Ad-hoc shell/Python:** `analysis_exec({ command, project? })`.
 
-Add more packages with `uv add <package>`. The project's `pyproject.toml` and `.venv` persist across sessions. Skip `uv init` if `pyproject.toml` already exists.
+`.venv` is derived state — it is reconstituted in the sandbox from `pyproject.toml` +
+`uv.lock` and is never stored. Do not `uv init` / `uv add` by hand.
+
+### Data placement
+
+- **Big inputs are mounted read-only, not copied** — read them in place
+  (`pd.read_csv(...)`, `duckdb.read_parquet(...)`), never copy them into the project:
+  - **Uploaded files** are at `/uploads/<name>` — the same `uploads/<name>` R2
+    reference you use elsewhere, with a leading slash.
+  - **Connection exports** are at `'/' + r2_key` (see the DuckDB section below).
+- **Large intermediates go in `$SCRATCH`** — a per-run directory the sandbox
+  creates for you (read it via `os.environ["SCRATCH"]`); it is removed after the
+  run and never persisted.
+- **Notebooks and small results go in the project** — those persist back to the
+  project filesystem after each run (files over ~25 MB are reported, not auto-saved;
+  `move` the ones you want to keep to R2 outputs).
 
 ## Database CLI
 
@@ -61,10 +77,10 @@ sqlite3 data.db "SELECT * FROM users LIMIT 10"
 
 | Package | Purpose | Status |
 |---------|---------|--------|
-| `pandas` | DataFrames and data manipulation | install with `uv add` |
-| `numpy` | Numerical computing | install with `uv add` |
-| `polars` | Fast DataFrame library (Rust-based) | install with `uv add` |
-| `duckdb` | In-process SQL analytics | install with `uv add` |
+| `pandas` | DataFrames and data manipulation | preinstalled |
+| `numpy` | Numerical computing | preinstalled |
+| `polars` | Fast DataFrame library (Rust-based) | preinstalled |
+| `duckdb` | In-process SQL analytics | preinstalled |
 
 ```python
 import pandas as pd
@@ -95,10 +111,10 @@ camelAI's notebook preview renders Altair and Plotly charts natively — not in 
 
 | Package | Purpose | Status |
 |---------|---------|--------|
-| `altair` | Declarative charts (Vega-Lite) — **preferred** | install with `uv add` |
-| `plotly` | Interactive charts — use for 3D, maps, finance | install with `uv add` |
-| `matplotlib` | Static plots (fallback) | install with `uv add` |
-| `seaborn` | Statistical visualization (fallback) | install with `uv add` |
+| `altair` | Declarative charts (Vega-Lite) — **preferred** | preinstalled |
+| `plotly` | Interactive charts — use for 3D, maps, finance | preinstalled |
+| `matplotlib` | Static plots (fallback) | preinstalled |
+| `seaborn` | Statistical visualization (fallback) | preinstalled |
 
 ```python
 # Altair (preferred — renders natively with dark/light theme support)
@@ -171,27 +187,35 @@ Notebooks preview reliabily with rich Altair charts and markdown rendering, and 
 
 ### Execute notebooks
 
-```bash
-uv run jupyter nbconvert --to notebook --execute --inplace analysis.ipynb
+Run the notebook with **`run_notebook`** — it executes (`jupyter nbconvert
+--execute --inplace`), validates the result, and persists the executed notebook +
+any changed files back to the project, all in one call:
+
+```text
+run_notebook({ project: "<project>", path: "analysis.ipynb" })
 ```
 
-Setup calls whose return value is not meaningful report content, such as `alt.data_transformers.disable_max_rows()` or `plt.plot(...)`, should be silenced with a trailing `;` or assigned to `_` so object reprs do not leak into notebook outputs.
+It returns `{ ok, executed, validation: { clean, issues }, stdout, stderr,
+changedFiles, ... }`. The validator catches errors `nbconvert` doesn't surface
+(cell exceptions, charts that fell back to text/plain, blank charts with constant
+data). **If `ok` is false, fix the failing cells (see `validation.issues` /
+`stderr`) and re-run.** Never suppress errors — do not reach for `--allow-errors`,
+which silently embeds tracebacks the user sees in the rendered report.
 
-**Always validate after execution.** Run the notebook validator to catch errors that `nbconvert` may not surface (cell exceptions, charts that fell back to text/plain, blank charts with constant data):
-
-```bash
-validate-notebook analysis.ipynb
-```
-
-If it reports issues, fix the failing cells and re-execute. Do **not** use `--allow-errors` — it silently embeds tracebacks in cell outputs that the user will see in the rendered report.
+Setup calls whose return value is not meaningful report content, such as
+`alt.data_transformers.disable_max_rows()` or `plt.plot(...)`, should be silenced
+with a trailing `;` or assigned to `_` so object reprs do not leak into outputs.
 
 ### Preview notebooks in chat
 
-After creating or updating a notebook, set the active chat preview to the notebook file:
+After `run_notebook` returns `ok`, set the active chat preview to the executed
+notebook (it now lives in the project filesystem):
 
 ```text
 set_preview(
-  path="/workspace/analysis.ipynb",
+  path="analysis.ipynb",
+  location="project",
+  project="<project>",
   content_type="application/x-ipynb+json"
 )
 ```
@@ -229,8 +253,8 @@ The user can toggle to Notebook mode to see all cells, code, and execution count
 
 | Package | Purpose | Status |
 |---------|---------|--------|
-| `scipy` | Scientific computing, optimization | install with `uv add` |
-| `scikit-learn` | Machine learning algorithms | install with `uv add` |
+| `scipy` | Scientific computing, optimization | preinstalled |
+| `scikit-learn` | Machine learning algorithms | preinstalled |
 
 ```python
 from sklearn.model_selection import train_test_split
@@ -241,22 +265,21 @@ model = LinearRegression().fit(X_train, y_train)
 predictions = model.predict(X_test)
 ```
 
-## Large or Cross-Source Data: the Warehouse (DuckDB on R2)
+## Large or Cross-Source Data (DuckDB over R2 exports)
 
 For **heavy** database work — bulk extracts, cross-source joins (e.g. Dynamics ⋈
-BigQuery), or aggregations over more rows than fit comfortably in a notebook —
-use the **warehouse** instead of pulling rows into pandas. It runs DuckDB in a
-sealed container off the Durable Object, so it won't OOM and doesn't abuse DO
-CPU. **Drive the whole flow from a single `js_exec` block** (the Pi code-mode
-tool) — export, DuckDB, and writing the result are all `js_exec` calls.
+BigQuery), or aggregations over more rows than fit comfortably in a notebook — don't
+pull rows into pandas. Export each source to R2 and reduce it with DuckDB via
+**`run_code`**. This runs in the same analysis sandbox as your notebooks, so a
+reduced result can be charted right after — no separate tier.
 
-Three steps:
+Three steps, all driven from a single `js_exec` block:
 
 1. **Export** a connection's full query result to R2. A connection's `export`
    method streams the whole result set server-side (no row cap, credentials stay
    server-side) and returns `{ ok, r2_key }`. Exportable connections: the SQL
    family, ClickHouse, and BigQuery — check with
-   `tools.warehouse_list_connections()`, which reports each one's `exportFormat`.
+   `tools.analysis_list_connections()`, which reports each one's `exportFormat`.
 
    > **Export format depends on the source — read it with the matching DuckDB
    > reader.** SQL databases (Postgres, MySQL, Neon, PlanetScale) and ClickHouse
@@ -266,25 +289,24 @@ Three steps:
    > fails. The `r2_key` extension (`.parquet` vs `.ndjson`) and the
    > `exportFormat` field both tell you which reader to use.
 
-2. **Run DuckDB** over the staged exports with `tools.warehouse_run_code({ code, params })`.
-   The container is **sealed** (no network) with `duckdb`, `pandas`, `pyarrow`,
-   and `numpy` preinstalled. Each export is mounted read-only at `/<r2_key>`, so
-   read it with the reader for its format: `duckdb.read_parquet('/' + r2_key)` for
-   SQL/ClickHouse Parquet, `duckdb.read_json_auto('/' + r2_key)` for BigQuery
-   NDJSON. Pass values through **`params`** (a JSON dict) rather than
-   interpolating them into the code string — they arrive as a Python `params`
-   dict. It returns `{ ok, stdout, stderr, result, error }`; whatever you
-   `print()` is in `stdout` (a plain string). Print CSV/JSON to hand structured
-   data back to `js_exec`. Always check `ok` — on a failed read it's `false` with
-   the message in `error`. Prefer `duckdb.sql(...)` (a fresh connection per call)
-   over a long-lived module-level `con`: a single failed read aborts a reused
-   connection's transaction, so every later statement then fails with a
+2. **Run DuckDB** over the staged exports with `tools.run_code({ code, params })`.
+   `duckdb`, `pandas`, `pyarrow`, and `numpy` are preinstalled. Each export is
+   mounted read-only at `/<r2_key>`, so read it with the reader for its format:
+   `duckdb.read_parquet('/' + r2_key)` for SQL/ClickHouse Parquet,
+   `duckdb.read_json_auto('/' + r2_key)` for BigQuery NDJSON. Pass values through
+   **`params`** (a JSON dict) rather than interpolating them into the code string —
+   they arrive as a Python `params` dict. It returns `{ ok, stdout, stderr, error }`;
+   whatever you `print()` is in `stdout` (a plain string). Print CSV/JSON to hand
+   structured data back to `js_exec`. Always check `ok` — on a failed read it's
+   `false` with the message in `error`. Prefer `duckdb.sql(...)` (a fresh connection
+   per call) over a long-lived module-level `con`: a single failed read aborts a
+   reused connection's transaction, so every later statement then fails with a
    `TransactionException`.
 
 3. **Use the result** in `js_exec` — write it to a file with
-   `tools.write({ location, path, content })` (`location`: `"workspace"` for
-   durable workspace files, `"r2"` for user-visible outputs, `"vm"` for a project
-   VM), feed it onward, or load it into a notebook to chart.
+   `tools.write({ location, path, content })` (`location`: `"workspace"` for durable
+   workspace files, `"r2"` for user-visible outputs), feed it onward, or load it
+   into a notebook to chart.
 
 ```javascript
 // js_exec — export → DuckDB → save to a workspace file, end to end.
@@ -293,7 +315,7 @@ const { r2_key } = await env.CONNECTIONS[entry.alias].export({
   query: "SELECT database, name, engine FROM system.tables WHERE database NOT IN ('system', 'information_schema', 'INFORMATION_SCHEMA')",
 });
 
-const warehouseResult = await tools.warehouse_run_code({
+const result = await tools.run_code({
   params: { r2_key },
   code: `
 import duckdb
@@ -301,17 +323,17 @@ df = duckdb.sql("SELECT * FROM read_parquet('/' || ?)", params=[params["r2_key"]
 print(df.to_csv(index=False))
 `,
 });
-const csv = warehouseResult.stdout; // flat string — no result.logs.stdout[0] digging
+const csv = result.stdout; // flat string — no result.logs.stdout[0] digging
 
 await tools.write({ location: "workspace", path: "clickhouse_tables.csv", content: csv });
 return { rows: csv.trim().split("\n").length - 1, saved: "clickhouse_tables.csv" };
 ```
 
 Cross-source joins work the same way — export each source, pass both keys via
-`params`, then `JOIN` the mounted files in one `warehouse_run_code` call:
+`params`, then `JOIN` the mounted files in one `run_code` call:
 
 ```python
-# inside warehouse_run_code, params = { "freight_key": ..., "rates_key": ... }
+# inside run_code, params = { "freight_key": ..., "rates_key": ... }
 # freight_key came from a SQL/ClickHouse export (Parquet) → read_parquet;
 # rates_key came from a BigQuery export (NDJSON) → read_json_auto.
 import duckdb
@@ -325,14 +347,13 @@ duckdb.sql(
 ```
 
 **When to use which:**
-- **Warehouse (`warehouse_run_code`)** — large/bulk extracts, cross-source joins,
-  heavy aggregation. It is sealed and DuckDB-focused: **no charts, no internet, no
-  `uv add`.** Use it to *reduce* big data down to a small result.
-- **Project-VM notebook (the rest of this skill)** — interactive exploration,
-  visualization, and the final report. Charts (Altair/Plotly) only render here.
+- **`run_code`** — large/bulk extracts, cross-source joins, heavy aggregation over
+  R2 exports. Use it to *reduce* big data down to a small result via DuckDB.
+- **`run_notebook`** — interactive exploration, visualization, and the final report.
+  Charts (Altair/Plotly) render from notebook outputs.
 
-Typical flow for big data: export → reduce/join in `warehouse_run_code` → return
-the small aggregated result → load it into a notebook to chart and narrate.
+Typical flow for big data: export → reduce/join in `run_code` → load the small
+aggregated result into a notebook to chart and narrate.
 
 For long-running exports followed by analysis, the `deterministic-automations`
 skill can orchestrate the export and the DuckDB step as workflow steps.
@@ -341,12 +362,12 @@ skill can orchestrate the export and the DuckDB step as workflow steps.
 
 | Package | Purpose | Status |
 |---------|---------|--------|
-| `sqlalchemy` | Python ORM and database toolkit | install with `uv add` |
-| `psycopg` | PostgreSQL driver | install with `uv add` |
-| `pymysql` | MySQL driver | `uv add pymysql` |
-| `google-cloud-bigquery` | BigQuery client | install with `uv add` |
-| `google-cloud-bigquery-storage` | BigQuery Storage API client for faster downloads | install with `uv add` |
-| `google-auth` | Google authentication (used for BigQuery tokens) | install with `uv add` |
+| `sqlalchemy` | Python ORM and database toolkit | preinstalled |
+| `psycopg` | PostgreSQL driver | preinstalled |
+| `pymysql` | MySQL driver | preinstalled |
+| `google-cloud-bigquery` | BigQuery client | add with `add_python_dependency` |
+| `google-cloud-bigquery-storage` | BigQuery Storage API client for faster downloads | add with `add_python_dependency` |
+| `google-auth` | Google authentication (used for BigQuery tokens) | add with `add_python_dependency` |
 
 ### SQL Server / PostgreSQL / MySQL (Primary: Worker `DATA_PROXY` service binding)
 
@@ -393,11 +414,11 @@ Supported query methods:
 - `DATA_PROXY.mysqlQuery(...)` (positional params array)
 - All query calls require `mode: "read"` or `mode: "modify"` (no auto-detection).
 
-### Workspace connections from notebooks (preferred in project VMs)
+### Workspace connections from notebooks (preferred)
 
-Project VMs expose workspace connections through the stateless RPC endpoint in `CAMELAI_CONNECTIONS_RPC_URL`. Use this from notebooks and Python scripts instead of asking for credentials or looking for connection env vars. The VM receives only the proxy URL; camelAI applies workspace identity and stored auth outside the VM.
+The analysis sandbox exposes workspace connections through the stateless RPC endpoint in `CAMELAI_CONNECTIONS_RPC_URL`. Use this from notebooks and Python scripts instead of asking for credentials or looking for connection env vars. The sandbox receives only the proxy URL; camelAI applies workspace identity and stored auth outside it.
 
-This `query`-into-pandas pattern is for **interactive, reasonably-sized** result sets. For bulk extracts or cross-source joins, use the warehouse `export` + `warehouse_run_code` path above instead of pulling every row into the notebook.
+This `query`-into-pandas pattern is for **interactive, reasonably-sized** result sets. For bulk extracts or cross-source joins, use the `export` + `run_code` path above instead of pulling every row into the notebook.
 
 Connection query methods run your SQL **exactly as written** — nothing (no `LIMIT`, no `FORMAT`) is appended. Add your own `LIMIT` when you want to cap inline rows, and don't add a ClickHouse `FORMAT` clause (the broker handles output format). Reach for `export` whenever you want the full, uncapped result.
 
@@ -519,12 +540,12 @@ mysql_df = pd.read_sql("SELECT * FROM orders", mysql_engine)
 
 | Package | Purpose | Status |
 |---------|---------|--------|
-| `pyarrow` | Parquet, Arrow files | install with `uv add` |
-| `openpyxl` | Excel (.xlsx) read/write | install with `uv add` |
-| `xlsxwriter` | Excel creation with formatting | install with `uv add` |
-| `pdfplumber` | PDF text and table extraction | install with `uv add` |
-| `python-docx` | Word documents | install with `uv add` |
-| `python-pptx` | PowerPoint files | install with `uv add` |
+| `pyarrow` | Parquet, Arrow files | preinstalled |
+| `openpyxl` | Excel (.xlsx) read/write | preinstalled |
+| `xlsxwriter` | Excel creation with formatting | preinstalled |
+| `pdfplumber` | PDF text and table extraction | preinstalled |
+| `python-docx` | Word documents | preinstalled |
+| `python-pptx` | PowerPoint files | preinstalled |
 
 ```python
 # Read Excel
@@ -559,7 +580,7 @@ Database connection credentials are available through the virtual connections bi
 
 | Package | Purpose | Status |
 |---------|---------|--------|
-| `statsmodels` | Statistical modeling, time series | install with `uv add` |
-| `xgboost` | Gradient boosting | install with `uv add` |
-| `geopandas` | Geospatial data | `uv add geopandas` |
-| `opencv-python-headless` | Computer vision | `uv add opencv-python-headless` |
+| `statsmodels` | Statistical modeling, time series | preinstalled |
+| `xgboost` | Gradient boosting | add with `add_python_dependency` |
+| `geopandas` | Geospatial data | add with `add_python_dependency` |
+| `opencv-python-headless` | Computer vision | add with `add_python_dependency` |

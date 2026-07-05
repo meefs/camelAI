@@ -25,12 +25,13 @@ import {
 } from "./model-config";
 import type { ChatThreadDO } from "../../src/chat-thread-do";
 
-// This eval exercises the warehouse tools (warehouse_list_connections). Those tools
-// live in the "connections" category, which the lean tool surface (now the default)
-// drops from the model's top-level tool list — so this eval verifies the agent can
-// still DISCOVER and invoke them via tools.search inside js_exec. Listing warehouse
-// connections is a clean read (empty in the eval workspace, no network), so the
-// discriminating signal is whether the agent found and called the dropped tool.
+// This eval exercises the analysis connections listing (analysis_list_connections;
+// warehouse_list_connections is its hidden source-compat alias). The tool lives in
+// the "connections" category, which the lean tool surface (now the default) drops
+// from the model's top-level tool list — so this eval verifies the agent can still
+// DISCOVER and invoke it via tools.search inside js_exec. Listing connections is a
+// clean read (empty in the eval workspace, no network), so the discriminating
+// signal is whether the agent found and called the dropped tool.
 
 type WarehouseEvalEnv = TestEnv & EvalModelEnv & EvalSignalEnv & {
   CHAT_THREAD: DurableObjectNamespace<ChatThreadDO>;
@@ -118,11 +119,11 @@ describe("warehouse list connections agent eval", () => {
         }),
       );
 
-      const calledWarehouseList = agentInvokedTool(
-        "warehouse_list_connections",
-        signal.toolCallsByName,
-        result.messages,
-      );
+      // The canonical tool is analysis_list_connections; warehouse_list_connections
+      // remains a callable-but-hidden source-compat alias, so accept either.
+      const calledWarehouseList =
+        agentInvokedTool("analysis_list_connections", signal.toolCallsByName, result.messages) ||
+        agentInvokedTool("warehouse_list_connections", signal.toolCallsByName, result.messages);
 
       const transcriptText = JSON.stringify({
         result: result.result,
@@ -132,15 +133,15 @@ describe("warehouse list connections agent eval", () => {
       const evaluation = buildEvalCriteriaSummary({
         passFail: [
           buildSessionCompletedCriterion(result),
-          // The core regression check: in lean mode warehouse_list_connections is not a
-          // top-level tool, so the agent must have discovered it via tools.search.
+          // The core regression check: the connections listing is not a top-level
+          // tool, so the agent must have discovered it via tools.search.
           passFailCriterion({
             id: "called_warehouse_list",
-            label: "Agent discovered and called warehouse_list_connections",
+            label: "Agent discovered and called analysis_list_connections",
             passed: calledWarehouseList,
             reason: calledWarehouseList
               ? undefined
-              : "Agent did not discover/call warehouse_list_connections.",
+              : "Agent did not discover/call analysis_list_connections (or the warehouse_list_connections alias).",
             details: { toolCallsByName: signal.toolCallsByName },
           }),
           passFailCriterion({

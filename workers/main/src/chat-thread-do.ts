@@ -842,6 +842,7 @@ const ALWAYS_TOP_LEVEL_PASSTHROUGH_NAMES = new Set<string>([
 const JS_EXEC_ONLY_TOOL_INVENTORY = (() => {
   const byCategory = new Map<string, string[]>();
   for (const definition of CODE_MODE_TOOL_DEFINITIONS) {
+    if (definition.hidden) continue;
     if (ALWAYS_TOP_LEVEL_PASSTHROUGH_NAMES.has(definition.name)) continue;
     if (!TOP_LEVEL_EXCLUDED_CATEGORIES.has(definition.category)) continue;
     const names = byCategory.get(definition.category) ?? [];
@@ -7327,6 +7328,8 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
 
     for (const definition of CODE_MODE_PI_PASSTHROUGH_TOOL_DEFINITIONS) {
       const { name } = definition;
+      // Hidden tools (deprecated aliases) never register top-level.
+      if (definition.hidden) continue;
       // Drop long-tail-category passthrough tools from the top-level list; they stay
       // reachable inside js_exec and discoverable via tools.search(). Human-input tools
       // and app/project-lifecycle categories are always kept top-level.

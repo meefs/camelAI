@@ -48,11 +48,12 @@ export interface Env
   ASSETS: Fetcher;
   WORKSPACE: DurableObjectNamespace<WorkspaceDO>;
   WORKER_LOGS: DurableObjectNamespace<WorkerLogsDO>;
-  // Sealed DuckDB analytics container for the warehouse tier (per-workspace).
-  WAREHOUSE_SANDBOX?: DurableObjectNamespace<import('./warehouse-sandbox.js').WarehouseSandbox>;
+  // Unified analysis container (notebooks + shell + DuckDB) — successor to the
+  // warehouse tier; SDK-allowlisted egress, one warm container per workspace.
+  ANALYSIS_SANDBOX?: DurableObjectNamespace<import('./analysis-sandbox.js').AnalysisSandbox>;
   // Warm native-toolchain build container for DO+R2-backed projects (per-org).
   PROJECT_BUILD_SANDBOX?: DurableObjectNamespace<import('./project-build-sandbox.js').ProjectBuildSandbox>;
-  // Auto-expiring R2 staging bucket for warehouse connection exports.
+  // Auto-expiring R2 staging bucket for warehouse/analysis connection exports.
   WAREHOUSE_EXPORT_BUCKET?: R2Bucket;
   SESSIONS: KVNamespace;
   OBSERVABILITY_EVENTS?: AnalyticsEngineDataset;

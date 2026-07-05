@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { InvalidMountConfigError, S3FSMountError } from '@cloudflare/sandbox';
-import { createSingleFlight, isMountAlreadyPresent } from '../src/warehouse-sandbox.js';
+import { createSingleFlight, isMountAlreadyPresent } from '../src/analysis-sandbox.js';
 
 describe('isMountAlreadyPresent', () => {
   it('treats the SDK s3fs mount error as already-mounted (branch on type, not message)', () => {

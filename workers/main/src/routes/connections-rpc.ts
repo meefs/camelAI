@@ -217,6 +217,30 @@ export async function handleConnectionsRpc({ req, env }: RouteContext): Promise<
     return rpcError('Unauthorized', 401);
   }
 
+  return handleAuthenticatedConnectionsRpc(req, env, auth);
+}
+
+/**
+ * Serve a connections RPC request whose identity is ALREADY established by the
+ * caller — the auth context is trusted as-is, no header validation happens here.
+ *
+ * Two callers: the HTTP route above (after proxy-identity validation) and the
+ * analysis sandbox's `connections.internal` outbound handler, where the
+ * workspace/org scope is attached DO-side via outbound-handler params
+ * (unforgeable by container code — see analysis-sandbox.ts).
+ */
+export async function handleAuthenticatedConnectionsRpc(
+  req: Request,
+  env: RouteContext['env'],
+  auth: ConnectionsContext,
+): Promise<Response> {
+  if (req.method === 'GET') {
+    return jsonResponse({ ok: true, actions: ACTIONS });
+  }
+  if (req.method !== 'POST') {
+    return rpcError('Method not allowed', 405);
+  }
+
   let payload: ConnectionsRpcRequest;
   try {
     payload = await req.json() as ConnectionsRpcRequest;

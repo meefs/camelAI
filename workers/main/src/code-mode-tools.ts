@@ -77,6 +77,13 @@ interface CodeModeToolDefinition {
   examples: string[];
   sideEffect: boolean;
   externalDelivery: boolean;
+  /**
+   * Callable but not discoverable: the tool stays on js_exec's `tools` object
+   * (source compat for old transcripts/snippets) but is dropped from every
+   * discovery surface — tools.help()/search()/describe(), the js_exec prompt
+   * inventory, and Pi top-level registration. Used for deprecated alias names.
+   */
+  hidden: boolean;
 }
 
 interface CodeModeToolRegistration extends CodeModeToolDefinition {
@@ -102,6 +109,7 @@ interface CodeModeToolOptions {
   examples?: string[];
   sideEffect?: boolean;
   externalDelivery?: boolean;
+  hidden?: boolean;
 }
 
 type CodeModeToolCallHandler = (
@@ -311,6 +319,7 @@ function codeModeTool(
     examples: options.examples ?? [],
     sideEffect: options.sideEffect ?? false,
     externalDelivery: options.externalDelivery ?? false,
+    hidden: options.hidden ?? false,
     piPassthrough: options.piPassthrough ?? false,
   };
 }
@@ -335,6 +344,7 @@ function codeModeDefinition(
     examples: registration.examples,
     sideEffect: registration.sideEffect,
     externalDelivery: registration.externalDelivery,
+    hidden: registration.hidden,
   };
 }
 
@@ -801,8 +811,21 @@ const CODE_MODE_TOOL_REGISTRY: CodeModeToolRegistration[] = [
     },
   ),
   codeModePassthroughTool(
-    "warehouse_run_code",
-    "Run Python in this workspace's SEALED analytics sandbox (no network) for heavy cross-source data work that's too big for a Durable Object. STRONGLY PREFER DuckDB (pre-installed): `import duckdb`. The sandbox has NO direct database access — bring data in first by exporting connections to the warehouse: call a connection's `export` method (via env.CONNECTIONS, e.g. `connections[alias].export({ query })`), which streams the full result to R2 server-side (credentials stay server-side) and returns { r2_key }. Each export is mounted read-only into the sandbox at the path '/' + r2_key. Read it with the DuckDB reader that matches the export FORMAT: SQL databases + ClickHouse export Parquet → `duckdb.read_parquet('/' + r2_key)`; **BigQuery exports NDJSON, not Parquet** → `duckdb.read_json_auto('/' + r2_key)` (calling read_parquet on a BigQuery .ndjson export fails). The r2_key's extension (.parquet vs .ndjson) tells you which, and warehouse_list_connections reports each connection's `exportFormat`. Pass values via `params` (a JSON dict) instead of interpolating them into the code string — they arrive as a Python `params` dict, e.g. `duckdb.read_parquet('/' + params['r2_key'])`. Use warehouse_list_connections to see which connections are exportable and in what format. Each call runs in an isolated session. Returns { ok, stdout, stderr, result, error } — read printed output from `stdout` (e.g. `print` CSV/JSON, then write it with tools.write). Arguments: { code, params? }.",
+    "run_notebook",
+    "Execute a Jupyter notebook (.ipynb) in a DO-backed project and persist the executed notebook + any changed files back to the project. This is the PRIMARY data-analysis path — one call runs `jupyter nbconvert --execute --inplace` then validates the result, so you don't drive nbconvert/validate by hand. The default Python data stack (pandas, numpy, polars, duckdb, pyarrow, altair, plotly, matplotlib, seaborn, scipy, scikit-learn, statsmodels, openpyxl, pdfplumber, jupyter) is PREINSTALLED — no setup needed; use add_python_dependency for anything else. Read big inputs from the read-only mounts — uploaded files at /uploads/<name> (the R2 uploads/<name> reference with a leading slash) and connection exports at '/' + r2_key — keep large intermediates in the per-run $SCRATCH directory (created for you, cleaned up after the run), and put notebooks + small results in the project. After it returns ok, set_preview the .ipynb (location: 'project', project, path). Returns { ok, executed, validation: { clean, issues }, stdout, stderr, exitCode, changedFiles, removedFiles, skippedOversize, durationMs }. If ok is false, fix the failing cells (see validation.issues / stderr) and re-run — never suppress errors. Arguments: { project, path, timeoutMs? }.",
+    Type.Object({
+      project: Type.String(),
+      path: Type.String(),
+      timeoutMs: Type.Optional(Type.Number()),
+    }),
+    {
+      category: "connections",
+      sideEffect: true,
+    },
+  ),
+  codeModePassthroughTool(
+    "run_code",
+    "Run a Python string in this workspace's analysis sandbox for heavy cross-source data work too big for a Durable Object. STRONGLY PREFER DuckDB (pre-installed): `import duckdb`. Bring big data in by exporting a connection: call a connection's `export` method (via env.CONNECTIONS, e.g. `connections[alias].export({ query })`), which streams the full result to R2 server-side (credentials stay server-side) and returns { r2_key }. Each export is mounted read-only at the path '/' + r2_key. Read it with the reader that matches the export FORMAT: SQL databases + ClickHouse export Parquet → `duckdb.read_parquet('/' + r2_key)`; **BigQuery exports NDJSON** → `duckdb.read_json_auto('/' + r2_key)`. The r2_key extension (.parquet vs .ndjson) tells you which; analysis_list_connections reports each connection's `exportFormat`. Pass values via `params` (a JSON dict) instead of interpolating into the code string — they arrive as a Python `params` dict, e.g. `duckdb.read_parquet('/' + params['r2_key'])`. Each call runs isolated. Returns { ok, stdout, stderr, error } — read printed output from `stdout` (e.g. `print` CSV/JSON, then write it with tools.write). Arguments: { code, params? }.",
     Type.Object({
       code: Type.String(),
       params: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
@@ -812,11 +835,63 @@ const CODE_MODE_TOOL_REGISTRY: CodeModeToolRegistration[] = [
     },
   ),
   codeModePassthroughTool(
-    "warehouse_list_connections",
-    "List the workspace connections usable with the warehouse. Returns [{ id, name, type, displayName, exportable, exportFormat }]: `exportable: true` connections (SQL databases, ClickHouse, BigQuery) have an `export` method that streams a query's full result to R2 — `connections[alias].export({ query })` — which warehouse_run_code then reads with DuckDB. `exportFormat` is `'parquet'` (SQL + ClickHouse → read with read_parquet) or `'ndjson'` (BigQuery → read with read_json_auto), so you pick the right DuckDB reader. Reference connections BY NAME.",
+    "analysis_exec",
+    "Run a shell command in the workspace analysis sandbox — the escape hatch for data work run_notebook doesn't cover (usql/sqlite3 schema poking, file-format conversions, quick `python -c` probes over a mounted upload). Pass a `project` to run inside that DO-backed project's working tree (changed files persist back, like run_notebook); omit it for scratch work over the read-only mounts. Returns { ok, stdout, stderr, exitCode, changedFiles, removedFiles, skippedOversize, durationMs }. Arguments: { command, project?, cwd?, env?, timeoutMs? }.",
+    Type.Object({
+      command: Type.String(),
+      project: Type.Optional(Type.String()),
+      cwd: Type.Optional(Type.String()),
+      env: Type.Optional(Type.Record(Type.String(), Type.String())),
+      timeoutMs: Type.Optional(Type.Number()),
+    }),
+    {
+      category: "connections",
+      sideEffect: true,
+    },
+  ),
+  codeModePassthroughTool(
+    "add_python_dependency",
+    "Add one or more PyPI packages to a DO-backed project's Python environment (`uv add`), persisting pyproject.toml + uv.lock back to the project. The default data stack is already preinstalled — only use this for packages beyond it. The first add on a project initializes a pyproject.toml seeded with the default stack plus your packages, so notebooks keep the full environment. Arguments: { project, packages: string[], dev? }.",
+    Type.Object({
+      project: Type.String(),
+      packages: Type.Array(Type.String()),
+      dev: Type.Optional(Type.Boolean()),
+    }),
+    {
+      category: "connections",
+      sideEffect: true,
+    },
+  ),
+  codeModePassthroughTool(
+    "analysis_list_connections",
+    "List the workspace connections usable for analysis. Returns [{ id, name, type, displayName, exportable, exportFormat }]: `exportable: true` connections (SQL databases, ClickHouse, BigQuery) have an `export` method that streams a query's full result to R2 — `connections[alias].export({ query })` — which run_code then reads with DuckDB. `exportFormat` is `'parquet'` (SQL + ClickHouse → read with read_parquet) or `'ndjson'` (BigQuery → read with read_json_auto), so you pick the right DuckDB reader. Reference connections BY NAME.",
     EMPTY_PARAMETERS,
     {
       category: "connections",
+    },
+  ),
+  // Source-compat aliases for the pre-merge warehouse tool names: callable from
+  // js_exec (old transcripts/snippets keep working) but hidden from every
+  // discovery surface. New code uses run_code / analysis_list_connections.
+  codeModePassthroughTool(
+    "warehouse_run_code",
+    "Deprecated alias for run_code. Arguments: { code, params? }.",
+    Type.Object({
+      code: Type.String(),
+      params: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
+    }),
+    {
+      category: "connections",
+      hidden: true,
+    },
+  ),
+  codeModePassthroughTool(
+    "warehouse_list_connections",
+    "Deprecated alias for analysis_list_connections.",
+    EMPTY_PARAMETERS,
+    {
+      category: "connections",
+      hidden: true,
     },
   ),
   codeModePassthroughTool("list_scheduled_prompts", "List scheduled prompts for the current workspace.", EMPTY_PARAMETERS, {
@@ -1392,8 +1467,14 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
     set_app_visibility: (binding, args) => binding.setAppVisibility(args),
     get_latest_logs: (binding, args) => binding.getLatestLogs(args),
     take_screenshot: (binding, args) => binding.takeScreenshot(args),
-    warehouse_run_code: (binding, args) => binding.warehouseRunCode(args),
-    warehouse_list_connections: (binding) => binding.warehouseListConnections(),
+    run_notebook: (binding, args) => binding.analysisRunNotebook(args),
+    analysis_exec: (binding, args) => binding.analysisExecCommand(args),
+    run_code: (binding, args) => binding.analysisRunCode(args),
+    add_python_dependency: (binding, args) => binding.analysisAddDependency(args),
+    analysis_list_connections: (binding) => binding.analysisListConnections(),
+    // Source-compat aliases onto the unified analysis tier.
+    warehouse_run_code: (binding, args) => binding.analysisRunCode(args),
+    warehouse_list_connections: (binding) => binding.analysisListConnections(),
     list_scheduled_prompts: (binding) => binding.listScheduledPrompts(),
     create_scheduled_prompt: (binding, args) => binding.createScheduledPrompt(args),
     update_scheduled_prompt: (binding, args) => binding.updateScheduledPrompt(args),
@@ -3284,13 +3365,16 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
     };
   }
 
-  private warehouseService() {
+  private analysisService() {
     return (this.ctx.exports as unknown as {
-      WarehouseService: (options: { props: Pick<CodeModeToolsProps, "orgId" | "workspaceId"> }) => {
-        runCode(request: { code: string; params?: Record<string, unknown> }): Promise<{ ok: boolean; result?: unknown; error?: string }>;
+      AnalysisService: (options: { props: Pick<CodeModeToolsProps, "orgId" | "workspaceId"> }) => {
+        runCode(request: { code: string; params?: Record<string, unknown> }): Promise<{ ok: boolean; stdout?: string; stderr?: string; error?: string }>;
+        runNotebook(request: { projectId: string; path: string; timeoutMs?: number }): Promise<unknown>;
+        exec(request: { projectId?: string; command: string; cwd?: string; env?: Record<string, string>; timeoutMs?: number }): Promise<unknown>;
+        addDependency(request: { projectId: string; packages: string[]; dev?: boolean }): Promise<unknown>;
         listConnections(): Promise<Array<{ id: string; name: string; type: string; displayName: string; exportable: boolean; exportFormat: 'parquet' | 'ndjson' | null }>>;
       };
-    }).WarehouseService({
+    }).AnalysisService({
       props: {
         orgId: this.ctx.props.orgId,
         workspaceId: this.ctx.props.workspaceId,
@@ -3298,20 +3382,58 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
     });
   }
 
-  private async warehouseRunCode(args: Record<string, unknown>): Promise<unknown> {
+  private async analysisRunCode(args: Record<string, unknown>): Promise<unknown> {
     const code = typeof args.code === "string" ? args.code : "";
     if (!code.trim()) throw new Error("code is required");
-    // Forward the params dict (the tool advertises it) so WarehouseService can
+    // Forward the params dict (the tool advertises it) so AnalysisService can
     // inject it as a Python `params` dict; otherwise params['...'] is a NameError.
     const params =
       args.params && typeof args.params === "object" && !Array.isArray(args.params)
         ? (args.params as Record<string, unknown>)
         : undefined;
-    return this.warehouseService().runCode({ code, params });
+    return this.analysisService().runCode({ code, params });
   }
 
-  private async warehouseListConnections(): Promise<unknown> {
-    return this.warehouseService().listConnections();
+  private async analysisRunNotebook(args: Record<string, unknown>): Promise<unknown> {
+    const project = await this.resolveDoBackedProjectForAction(args, "run_notebook");
+    const path = typeof args.path === "string" ? args.path.trim() : "";
+    if (!path) throw new Error("path is required (the .ipynb to execute)");
+    const timeoutMs = typeof args.timeoutMs === "number" ? args.timeoutMs : undefined;
+    const result = await this.analysisService().runNotebook({ projectId: project.id, path, timeoutMs });
+    return { ...(result as Record<string, unknown>), project: project.name };
+  }
+
+  private async analysisExecCommand(args: Record<string, unknown>): Promise<unknown> {
+    const command = typeof args.command === "string" ? args.command : "";
+    if (!command.trim()) throw new Error("command is required");
+    let projectId: string | undefined;
+    let projectName: string | undefined;
+    if (typeof args.project === "string" && args.project.trim()) {
+      const project = await this.resolveDoBackedProjectForAction(args, "analysis_exec");
+      projectId = project.id;
+      projectName = project.name;
+    }
+    const cwd = typeof args.cwd === "string" ? args.cwd : undefined;
+    const env = args.env && typeof args.env === "object" && !Array.isArray(args.env) ? (args.env as Record<string, string>) : undefined;
+    const timeoutMs = typeof args.timeoutMs === "number" ? args.timeoutMs : undefined;
+    const result = await this.analysisService().exec({ projectId, command, cwd, env, timeoutMs });
+    return { ...(result as Record<string, unknown>), ...(projectName ? { project: projectName } : {}) };
+  }
+
+  private async analysisAddDependency(args: Record<string, unknown>): Promise<unknown> {
+    const project = await this.resolveDoBackedProjectForAction(args, "add_python_dependency");
+    const packages = Array.isArray(args.packages)
+      ? (args.packages as unknown[]).filter((p): p is string => typeof p === "string")
+      : typeof args.package === "string"
+        ? [args.package]
+        : [];
+    if (!packages.length) throw new Error("packages is required (one or more PyPI specs)");
+    const result = await this.analysisService().addDependency({ projectId: project.id, packages, dev: args.dev === true });
+    return { ...(result as Record<string, unknown>), project: project.name };
+  }
+
+  private async analysisListConnections(): Promise<unknown> {
+    return this.analysisService().listConnections();
   }
 
   private get scheduledPrompts(): CodeModeScheduledPrompts {

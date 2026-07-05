@@ -34,11 +34,13 @@ const VIRTUAL_DATA_PROXY_BINDING_NAME = "DATA_PROXY";
 const VIRTUAL_CONNECTIONS_BINDING_NAME = "CONNECTIONS";
 const VIRTUAL_CAMELAI_BINDING_NAME = "CAMELAI";
 const VIRTUAL_WAREHOUSE_BINDING_NAME = "WAREHOUSE";
+const VIRTUAL_ANALYSIS_BINDING_NAME = "ANALYSIS";
 const ALLOWED_VIRTUAL_SERVICE_BINDINGS = new Set([
   VIRTUAL_DATA_PROXY_BINDING_NAME,
   VIRTUAL_CONNECTIONS_BINDING_NAME,
   VIRTUAL_CAMELAI_BINDING_NAME,
   VIRTUAL_WAREHOUSE_BINDING_NAME,
+  VIRTUAL_ANALYSIS_BINDING_NAME,
 ]);
 
 // =============================================================================
@@ -224,6 +226,7 @@ function validateSelfhostBindings(
     "KVVirtualNamespace",
     "R2VirtualBucket",
     "WarehouseService",
+    "AnalysisAppService",
   ]);
   const forbiddenBindings: BindingValidationResult["forbiddenBindings"] = [];
 
@@ -1342,11 +1345,28 @@ export function mapVirtualizedBindings(
       binding.type === "service" &&
       binding.name === VIRTUAL_WAREHOUSE_BINDING_NAME
     ) {
+      // Source-compat: already-deployed apps keep resolving WAREHOUSE to the
+      // (still-present) WarehouseService entrypoint. New apps should bind ANALYSIS.
       return {
         type: "service",
         name: binding.name,
         service: workerServiceName,
         entrypoint: "WarehouseService",
+        props: { workspaceId, orgId },
+      };
+    }
+
+    if (
+      binding.type === "service" &&
+      binding.name === VIRTUAL_ANALYSIS_BINDING_NAME
+    ) {
+      // Deployed apps get the narrowed entrypoint (runCode + listConnections
+      // only) — never the full AnalysisService with project-filesystem access.
+      return {
+        type: "service",
+        name: binding.name,
+        service: workerServiceName,
+        entrypoint: "AnalysisAppService",
         props: { workspaceId, orgId },
       };
     }
