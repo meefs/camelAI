@@ -37,6 +37,7 @@ Cloudflare AI Gateway and BYOK credentials back model access.
 - `workers/bedrock-provider/` - AI Gateway custom provider translating Anthropic-style requests to Bedrock.
 - `workers/user-logs-tail/` - Tail worker for deployed app logs.
 - `workers/e2e-reports/` - Public viewer at `e2e-reports.camelai.dev` serving Playwright E2E reports from R2 (uploaded by the E2E workflow); deploy with `bun run deploy:e2e-reports`.
+- `workers/eval-reports/` - Read-only results store + viewer for agent evals at `evals.camelai.dev` (evals run locally; `EVAL_REPORT=1` publishes them); deploy with `bun run deploy:eval-reports`.
 - The data-proxy Go service lives in the external **`qaml-ai/project-runtime-service`** repo (`cmd/data-proxy`), not in this tree. It is the binary deployed to the sandbox host VM and the one behind the `SANDBOX_HOST` / `DATA_PROXY` bindings. There is no in-repo copy — do not reintroduce one. (`scripts/test-local-database-mcp.ts` runs it locally via `PROJECT_RUNTIME_SERVICE_DIR`, default sibling checkout.)
 - `sandbox/` - In-container control plane, Codex/Claude harness integration, MCP helpers, scaffold/publish tooling, sandbox skills.
 - `scripts/` - Deploy and maintenance scripts.
@@ -88,25 +89,21 @@ namespace + DNS routes are created out-of-band. Eval apps are kept (no cleanup).
 bindings (`DATA_PROXY`/`CONNECTIONS`) won't resolve to the eval's local workspace;
 self-contained apps render fully.
 
-### Eval control plane (separate repo)
+### Eval results viewer (`workers/eval-reports/`)
 
-The pull-based eval control plane (dashboard + API + EC2 pool dispatch, on AWS) lives in its own
-repo, **`qaml-ai/camelai-eval-runner`** — it doesn't belong in the app tree. It clones *this* repo
-at a chosen branch/commit per run and executes the evals here, so the eval definitions stay in
-`chiridion-app`:
+Agent evals **run locally** (they need Docker + `.dev.vars`; Miniflare spawns the eval sandbox
+containers via the local Docker daemon): `bun run test:eval <id>` (or the `:dashboard` / `:deploy`
+/ `:sandbox` shortcuts) wraps `scripts/run-agent-eval.mjs`; `scripts/run-eval-suite.sh` runs a
+list/`all`. There is no remote runner — the retired `qaml-ai/camelai-eval-runner` VM control plane
+was replaced by a shared results store + read-only viewer on Cloudflare (`workers/eval-reports/`,
+`evals.camelai.dev`: Worker + R2, everything behind Cloudflare Access, no worker secrets).
 
-- The evals themselves: `workers/main/tests/evals/*` (incl. the generic
-  `custom-prompt-live.test.ts` driven by `CUSTOM_EVAL_*` env), the in-tree single-eval runner
-  `scripts/run-agent-eval.mjs`, and the on-instance suite runner `scripts/run-eval-suite.sh`
-  (cloud-agnostic: builds the sandbox image + runs the eval(s), writing results to a local dir; it
-  touches no AWS — the control plane delivers `.dev.vars` and uploads the results).
-- The control plane reuses the EC2 pool tagged `camelai:eval-pool=true` and the results bucket;
-  the pool + host + infra are provisioned by Terraform in `camelai-eval-runner`.
-
-Run an eval locally with `bun run test:eval <id>` (or the `:dashboard` / `:deploy` / `:sandbox`
-shortcuts) — these wrap `scripts/run-agent-eval.mjs`. To drive the hosted runner API
-(`evals.camelai.dev`) or get past Cloudflare Access from the CLI, use the **`running-agent-evals`**
-skill. See the `camelai-eval-runner` README for deploy/Cloudflare setup.
+Set `EVAL_REPORT=1` on a run to publish it there when it finishes: `run-agent-eval.mjs` captures
+the output log and invokes `scripts/report-eval-run.mjs`, which uploads the transcript artifact +
+log and posts metadata (auth via an Access service token in `CF_ACCESS_CLIENT_ID/SECRET`, or a
+local `cloudflared access login`). Use the **`running-agent-evals`** skill for the run/report/read
+workflows; the always-current API doc is served at `GET evals.camelai.dev/skill`. Deploy the
+viewer with `bun run deploy:eval-reports`; see `workers/eval-reports/README.md`.
 
 **Adding a new eval.** `workers/main/tests/evals/manifest.json` is the single source of truth for the
 committed eval list. To add one: (1) create `workers/main/tests/evals/<id>.test.ts`, gated on
@@ -129,9 +126,9 @@ once cloudflare/workerd#6794 ships in a release.
 
 Separately, vitest-pool-workers leaves the eval container + sidecar running after each run
 (workers-sdk#14242); they accumulate and exhaust the host. `run-agent-eval.mjs` prunes leftover
-`EvalSandbox` containers for direct local runs, but skips when `EVAL_MANAGED_CLEANUP=1` — under the
-control plane runs are concurrent (`EVAL_MAX_CONCURRENT`), so a global sweep would kill a sibling's
-container; the control plane (`camelai-eval-runner`) owns a concurrency-safe reaper instead.
+`EvalSandbox` containers before/after each run. The sweep is global, so it's only safe when one
+eval runs at a time (the normal local case); an orchestrator that runs evals concurrently must set
+`EVAL_MANAGED_CLEANUP=1` to skip it and own cleanup itself.
 
 ## Frontend Conventions
 

@@ -3,8 +3,8 @@
 #
 # Cloud-agnostic by design: this script assumes `.dev.vars` is already present in the working tree
 # (repo root) and never touches any cloud API — no Secrets Manager, no S3, no instance management.
-# The orchestrator (qaml-ai/camelai-eval-runner) is responsible for delivering `.dev.vars`,
-# capturing output, uploading $RUN_DIR, and managing the host. Run from the repo root.
+# The caller is responsible for having `.dev.vars` in place and for whatever happens to $RUN_DIR
+# afterwards (e.g. reporting artifacts via scripts/report-eval-run.mjs). Run from the repo root.
 #
 # Inputs (env): RUN_DIR (required, where status.json + artifacts/ are written), EVAL_TARGET
 # (required: an eval id, comma-separated list, or "all"), EVAL_ARGS_JSON, INSTALL_COMMAND, plus the

@@ -43,6 +43,14 @@ jobs:
         env:
           E2E_LOCAL: '1'
           PW_VIDEO: on
+          # Pin the stock egress interceptor so the dev server's workerd#6793
+          # workaround (scripts/cloudflare-container-egress.mjs) early-returns.
+          # GitHub runners (kernel 6.8, Docker 28) don't trigger that bug, and
+          # workerd unconditionally `docker pull`s this image — the locally
+          # built camelai-eval-egress-fixed tag isn't pullable, which killed
+          # the dev server whenever a test started a container. Keep the tag
+          # in sync with miniflare's DEFAULT_CONTAINER_EGRESS_INTERCEPTOR_IMAGE.
+          MINIFLARE_CONTAINER_EGRESS_IMAGE: cloudflare/proxy-everything:3cb1195@sha256:0ef6716c52430096900b150d84a3302057d6cd2319dae7987128c85d0733e3c8
       - name: Upload HTML report (artifact)
         uses: actions/upload-artifact@v4
         if: ${{ !cancelled() }}

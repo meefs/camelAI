@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 
@@ -204,6 +204,19 @@ const artifactSuffix = artifactModelLabel
   : "";
 const artifactPath = path.join(artifactDir, `${evalName}${artifactSuffix}.json`);
 
+// With EVAL_REPORT=1, the full run output is captured next to the artifact and the
+// finished run is uploaded to the shared results viewer (scripts/report-eval-run.mjs).
+const reportRun = process.env.EVAL_REPORT === "1";
+const logPath = path.join(artifactDir, `${evalName}${artifactSuffix}.log`);
+const startedAt = new Date().toISOString();
+if (reportRun) {
+  mkdirSync(artifactDir, { recursive: true });
+  // Clear leftovers from a previous run of the same eval/model: a run that fails
+  // before writing a fresh transcript must not report the stale artifact.
+  rmSync(logPath, { force: true });
+  rmSync(artifactPath, { force: true });
+}
+
 let captured = "";
 let tail = "";
 let processOutputTail = "";
@@ -379,12 +392,14 @@ const child = spawn(
 
 child.stdout.on("data", (chunk) => {
   process.stdout.write(chunk);
+  if (reportRun) appendFileSync(logPath, chunk);
   observeProcessOutput(chunk);
   observeChunk(chunk);
 });
 
 child.stderr.on("data", (chunk) => {
   process.stderr.write(chunk);
+  if (reportRun) appendFileSync(logPath, chunk);
   observeProcessOutput(chunk);
   observeChunk(chunk);
 });
@@ -396,6 +411,9 @@ child.on("error", (error) => {
 
 child.on("close", (code) => {
   let exitCode = code ?? 1;
+  // A real-deploy eval that legitimately skipped (no CF_API_TOKEN / EVAL_REAL_DEPLOY=0)
+  // produced no result — reporting it would record a bogus contract failure.
+  let skippedRun = false;
   if (complete) {
     try {
       mkdirSync(artifactDir, { recursive: true });
@@ -427,6 +445,7 @@ child.on("close", (code) => {
       exitCode = 1;
     }
   } else if (isExpectedMarkerlessSkip(exitCode, processOutputTail)) {
+    skippedRun = true;
     console.log(
       `No transcript marker found for skipped real-deploy eval "${evalName}"; preserving Vitest success.`,
     );
@@ -436,5 +455,25 @@ child.on("close", (code) => {
   }
 
   sweepEvalContainers("post-run");
+
+  if (reportRun && !skippedRun) {
+    // Failed runs (even without an artifact) are reported too — the viewer
+    // synthesizes an evaluation-contract failure for them.
+    const reporterArgs = [
+      path.resolve("scripts/report-eval-run.mjs"),
+      "--eval", evalName,
+      "--exit-code", String(exitCode),
+      "--started", startedAt,
+      "--finished", new Date().toISOString(),
+      "--log", logPath,
+    ];
+    if (existsSync(artifactPath)) reporterArgs.push("--artifact", artifactPath);
+    if (artifactModelLabel) reporterArgs.push("--model", artifactModelLabel);
+    if (process.env.EVAL_REAL_DEPLOY !== undefined) {
+      reporterArgs.push("--real-deploy", process.env.EVAL_REAL_DEPLOY === "0" ? "0" : "1");
+    }
+    spawnSync(process.execPath, reporterArgs, { stdio: "inherit" });
+  }
+
   process.exit(exitCode);
 });

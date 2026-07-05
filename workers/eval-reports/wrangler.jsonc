@@ -1,0 +1,24 @@
+{
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "chiridion-eval-reports",
+	"main": "src/index.ts",
+	"compatibility_date": "2025-12-01",
+	"workers_dev": true,
+	"observability": { "enabled": true },
+	// evals.camelai.dev currently points at the old VM's Cloudflare Tunnel; delete that
+	// DNS record before the first deploy so the custom domain can attach (see README).
+	// The existing Cloudflare Access application on this hostname stays as-is.
+	"routes": [{ "pattern": "evals.camelai.dev", "custom_domain": true }],
+	// Bundle the single-file dashboard, favicon, and the self-served skill doc as text.
+	"rules": [{ "type": "Text", "globs": ["**/*.html", "**/*.md", "**/*.svg"] }],
+	"r2_buckets": [
+		{ "binding": "RUNS_BUCKET", "bucket_name": "chiridion-eval-reports" }
+	],
+	"vars": {
+		"CF_ACCESS_TEAM_DOMAIN": "https://qaml.cloudflareaccess.com",
+		// AUD tag of the Access application protecting evals.camelai.dev.
+		"CF_ACCESS_AUD": "set-me"
+	}
+	// No secrets: uploads and reads are both authenticated by Cloudflare Access
+	// (humans log in; the reporter uses an Access service token).
+}

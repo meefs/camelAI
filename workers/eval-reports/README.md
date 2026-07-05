@@ -1,0 +1,68 @@
+# chiridion-eval-reports
+
+Shared results store + viewer for **camelAI agent evals** at `evals.camelai.dev`. Evals themselves
+run **locally** in a chiridion-app checkout (`bun run test:eval <id>` — they need Docker and a
+`.dev.vars`); with `EVAL_REPORT=1` the reporter uploads each finished run here, so the team keeps
+one history of scorecards, transcripts, and logs without any remote runner infrastructure.
+
+This replaced the retired `qaml-ai/camelai-eval-runner` VM control plane (queue + dispatcher +
+tunnel + SQLite). There is no queue and nothing executes remotely — runs arrive here only after
+they finish.
+
+```
+bun run test:eval <id>  (locally: docker build + Miniflare eval)
+   └─ EVAL_REPORT=1 → scripts/report-eval-run.mjs
+        PUT  /upload/<runId>/artifacts/<eval>.json     (transcript)
+        PUT  /upload/<runId>/log                       (captured output)
+        POST /upload/<runId>/complete                  (metadata → run.json, scorecard ingest)
+                     │
+                     ▼
+   chiridion-eval-reports Worker @ evals.camelai.dev  (behind Cloudflare Access)
+        R2 (chiridion-eval-reports): runs/<runId>/{run.json, output.log, artifacts/}
+        read-only dashboard + JSON API
+```
+
+## Layout
+
+- `src/index.ts` — Worker: upload endpoints, read API, dashboard. All routes re-validate the
+  Cloudflare Access JWT (`src/access.ts`); there are **no worker secrets** — uploads authenticate
+  with an Access service token, humans with their Access login.
+- `src/ingest.ts` — folds transcript artifacts into the run record at report time (pass/fail
+  criteria, scorecard, signal, deployed apps; synthesizes a contract failure when an artifact
+  carries no valid evaluation).
+- `dashboard/index.html` — single-file read-only dashboard (list, scorecards, transcript, log).
+- `SKILL.md` — usage doc, self-served at `GET /skill` (single source of truth).
+- The reporter lives with the eval runner: `scripts/report-eval-run.mjs`, invoked automatically by
+  `scripts/run-agent-eval.mjs` when `EVAL_REPORT=1`.
+
+## Storage
+
+One R2 prefix per run: `runs/<runId>/run.json` (the record the API serves), `output.log`,
+`artifacts/<eval>.json`. Run ids embed a UTC timestamp, so listing the prefixes in reverse order
+is newest-first — no database.
+
+## Deploy
+
+```bash
+bun run deploy:eval-reports          # wrangler deploy -c workers/eval-reports/wrangler.jsonc
+```
+
+One-time setup:
+
+1. Create the R2 bucket `chiridion-eval-reports`.
+2. Cutover from the old VM control plane: delete the `evals.camelai.dev` Cloudflare **Tunnel DNS
+   record** so the worker's custom domain can attach; keep the existing **Access application**
+   (same hostname, same AUD — `CF_ACCESS_AUD` in `wrangler.jsonc`). The old VM services
+   (`camelai-evals`, `cloudflared`) can be stopped and the box downsized/retired. Old runs stay in
+   the VM's SQLite; they are not migrated.
+
+## Local dev
+
+```bash
+cd workers/eval-reports
+CF_ACCESS_ENABLED=0 ../../node_modules/.bin/wrangler dev --port 8789   # local R2 simulation
+# report a run into it:
+EVAL_REPORT_BASE=http://localhost:8789 node scripts/report-eval-run.mjs --eval <id> --artifact <file>
+```
+
+Typecheck: `cd workers/eval-reports && bun run typecheck`.
