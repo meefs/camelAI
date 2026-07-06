@@ -4,7 +4,7 @@ import { defaultProjectScaffoldFiles, type ProjectScaffoldTemplate } from "../sr
 import warmupManifest from "../project-build-sandbox-warmup/package.json";
 
 // The project build sandbox image (workers/main/project-build-sandbox.Dockerfile)
-// prebakes a warm bun cache by installing the union of both scaffold templates'
+// prebakes a warm bun cache by installing the buildable scaffold templates'
 // dependencies at image build time. This test guards against drift: every
 // dependency (name AND version range) used by a scaffold template must appear in
 // workers/main/project-build-sandbox-warmup/package.json, otherwise cold builds
@@ -27,7 +27,9 @@ const warmupDependencies: Record<string, string> = {
 };
 
 describe("project build sandbox warmup manifest", () => {
-  const templates: ProjectScaffoldTemplate[] = ["worker", "react-router"];
+  // Only templates that seed a /package.json matter here; data-analysis projects
+  // are notebook-only and never hit the build sandbox.
+  const templates: ProjectScaffoldTemplate[] = ["react-router"];
 
   for (const template of templates) {
     it(`covers every dependency of the "${template}" scaffold template`, () => {

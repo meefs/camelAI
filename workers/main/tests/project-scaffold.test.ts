@@ -14,8 +14,12 @@ describe("normalizeProjectScaffoldTemplate", () => {
     expect(normalizeProjectScaffoldTemplate(null)).toBe("react-router");
     expect(normalizeProjectScaffoldTemplate("")).toBe("react-router");
     expect(normalizeProjectScaffoldTemplate("react-router")).toBe("react-router");
-    expect(normalizeProjectScaffoldTemplate("worker")).toBe("worker");
-    expect(normalizeProjectScaffoldTemplate("api")).toBe("api");
+    expect(normalizeProjectScaffoldTemplate("data-analysis")).toBe("data-analysis");
+  });
+
+  it("rejects the removed worker/api templates", () => {
+    expect(() => normalizeProjectScaffoldTemplate("worker")).toThrow(/react-router.*data-analysis/);
+    expect(() => normalizeProjectScaffoldTemplate("api")).toThrow(/react-router.*data-analysis/);
   });
 });
 
@@ -127,40 +131,49 @@ describe("defaultProjectScaffoldFiles", () => {
     expect(buildManifest).toContain("process.exit(1)");
   });
 
-  it("keeps the explicit bare Worker scaffold available", () => {
-    const files = defaultProjectScaffoldFiles("Demo App", "worker", "demo-app");
+  it("generates the notebook-first data-analysis scaffold", () => {
+    const files = defaultProjectScaffoldFiles("Demo App", "data-analysis", "demo-app");
 
-    expect(files.map((file) => file.path)).toEqual(expect.arrayContaining([
-      "/package.json",
-      "/wrangler.jsonc",
-      "/tsconfig.json",
-      "/src/index.ts",
-      "/scripts/write-build-manifest.mjs",
-    ]));
-    expect(files.map((file) => file.path)).not.toContain("/app/root.tsx");
+    expect(files.map((file) => file.path)).toEqual(["/analysis.ipynb", "/README.md"]);
 
-    const packageJson = JSON.parse(scaffoldFile(files, "/package.json"));
-    expect(packageJson.scripts.build).toContain("tsc --noEmit");
-    expect(packageJson.scripts.build).toContain("build/server/index.js");
-    expect(packageJson.devDependencies).toMatchObject({
-      typescript: expect.any(String),
-      wrangler: expect.any(String),
-      "@cloudflare/workers-types": expect.any(String),
-    });
-    expect(scaffoldFile(files, "/wrangler.jsonc")).toContain('"main": "src/index.ts"');
+    // Data-analysis projects are notebook deliverables, not deployable apps: no
+    // package.json/wrangler config means build_project/deploy_project fail loudly.
+    expect(files.map((file) => file.path)).not.toContain("/package.json");
+    expect(files.map((file) => file.path)).not.toContain("/wrangler.jsonc");
 
-    // The minimal scaffold's manifest spreads the whole wrangler config, so
-    // durable_objects/migrations already pass through to the deploy manifest —
-    // but vars must be converted to plain_text/json env-var bindings, since a
-    // top-level vars key is a no-op on the direct-deploy path (it only reads
-    // metadata.bindings).
-    const writeBuildManifest = scaffoldFile(files, "/scripts/write-build-manifest.mjs");
-    expect(writeBuildManifest).toContain("...config,");
-    expect(writeBuildManifest).toContain('main_module: "index.js"');
-    expect(writeBuildManifest).toContain('? { type: "plain_text", name, text: value }');
-    expect(writeBuildManifest).toContain(': { type: "json", name, json: value }');
-    expect(writeBuildManifest).toContain("const bindings = [...(config.bindings ?? []), ...varBindings];");
-    expect(writeBuildManifest).toContain("...(bindings.length > 0 ? { bindings } : {})");
-    expect(writeBuildManifest).toContain("delete manifest.vars;");
+    const notebook = JSON.parse(scaffoldFile(files, "/analysis.ipynb"));
+    expect(notebook.nbformat).toBe(4);
+    expect(notebook.metadata.kernelspec.language).toBe("python");
+    for (const cell of notebook.cells) {
+      expect(typeof cell.id).toBe("string");
+      expect(["markdown", "code"]).toContain(cell.cell_type);
+    }
+
+    // Report-mode structure: a single `#` title with subtitle paragraph, `##`
+    // sections, and a Key Findings section.
+    const markdown = notebook.cells
+      .filter((cell: { cell_type: string }) => cell.cell_type === "markdown")
+      .map((cell: { source: string[] }) => cell.source.join(""))
+      .join("\n");
+    expect(markdown).toContain("# Demo App");
+    expect(markdown).toContain("## Data");
+    expect(markdown).toContain("## Key Findings");
+
+    // The example chart carries a pre-rendered Vega-Lite output so the notebook
+    // previews with a themed chart before any execution happens.
+    const chartCell = notebook.cells.find((cell: { id: string }) => cell.id === "example-chart");
+    expect(chartCell.source.join("")).toContain("alt.Chart(data)");
+    const chartOutput = chartCell.outputs[0];
+    expect(chartOutput.output_type).toBe("execute_result");
+    const spec = chartOutput.data["application/vnd.vegalite.v5+json"];
+    expect(spec.mark).toBe("bar");
+    expect(spec.data.values.length).toBeGreaterThan(0);
+
+    const readme = scaffoldFile(files, "/README.md");
+    expect(readme).toContain("# Demo App");
+    expect(readme).toContain("Report mode");
+    expect(readme).toContain("set_preview");
+    expect(readme).toContain('"application/x-ipynb+json"');
+    expect(readme).toContain("no build or deploy step");
   });
 });

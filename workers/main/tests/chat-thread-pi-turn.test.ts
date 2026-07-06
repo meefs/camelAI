@@ -5753,30 +5753,49 @@ describe('ChatThreadDO Pi turn handling', () => {
     expect(projectStub.projectWriteFile).toHaveBeenCalledWith('/package.json', expect.stringContaining('"build"'));
   });
 
-  it('keeps an explicit bare Worker scaffold available for DO-backed projects', async () => {
+  it('seeds the notebook-first data-analysis scaffold for DO-backed projects', async () => {
     const { fake, projectStub } = createProjectToolFake({ projectFileEntries: [] });
 
     const result = await CodeModeToolsBinding.prototype.callTool.call(fake, 'scaffold_project', {
       project: 'Demo App',
-      template: 'worker',
+      template: 'data-analysis',
     });
 
     expect(result).toMatchObject({
       success: true,
       project: 'Demo App',
       backend: 'do-r2',
-      template: 'worker',
+      template: 'data-analysis',
       filesSkipped: [],
     });
-    expect((result as any).filesWritten).toEqual(expect.arrayContaining([
-      '/package.json',
-      '/wrangler.jsonc',
-      '/tsconfig.json',
-      '/src/index.ts',
-      '/scripts/write-build-manifest.mjs',
-    ]));
+    expect((result as any).filesWritten).toEqual(['/analysis.ipynb', '/README.md']);
+    expect(projectStub.projectWriteFile).toHaveBeenCalledWith('/analysis.ipynb', expect.stringContaining('"nbformat": 4'));
+    expect(projectStub.projectWriteFile).toHaveBeenCalledWith('/README.md', expect.stringContaining('Report mode'));
     const writtenPaths = projectStub.projectWriteFile.mock.calls.map(([path]) => path);
+    expect(writtenPaths).not.toContain('/package.json');
     expect(writtenPaths).not.toContain('/app/root.tsx');
+  });
+
+  it('rejects the removed worker/api scaffold templates', async () => {
+    const { fake } = createProjectToolFake({ projectFileEntries: [] });
+
+    await expect(CodeModeToolsBinding.prototype.callTool.call(fake, 'scaffold_project', {
+      project: 'Demo App',
+      template: 'worker',
+    })).rejects.toThrow('template must be "react-router" or "data-analysis"');
+  });
+
+  it('rejects an invalid create_project template before registering the project', async () => {
+    const { fake, workspaceStub } = createProjectToolFake({ projectFileEntries: [] });
+
+    await expect(CodeModeToolsBinding.prototype.callTool.call(fake, 'create_project', {
+      name: 'New App',
+      description: 'A new app',
+      template: 'worker',
+    })).rejects.toThrow('template must be "react-router" or "data-analysis"');
+    // Validation must run first — otherwise the name is burned and a retry
+    // with a valid template fails with "Project already exists".
+    expect(workspaceStub.createProject).not.toHaveBeenCalled();
   });
 
   it('adds a dependency to a DO-backed project through the dependency action', async () => {

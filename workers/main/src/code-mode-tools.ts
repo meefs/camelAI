@@ -582,22 +582,22 @@ const CODE_MODE_TOOL_REGISTRY: CodeModeToolRegistration[] = [
   ),
   codeModePassthroughTool(
     "create_project",
-    "Create a new DO-backed project and seed a deployable scaffold. Project names must be unique within the workspace. New projects require a concise description explaining what the project is for. The default scaffold is a React Router SSR app with Tailwind/shadcn-style UI primitives and a deploy manifest writer for deploy_project. Use template='worker' for a bare Worker scaffold or template='api' for the same minimal Worker scaffold. Arguments: { name, description, template? }.",
+    "Create a new DO-backed project and seed a scaffold. Project names must be unique within the workspace. New projects require a concise description explaining what the project is for. The default scaffold is a deployable React Router SSR app with Tailwind/shadcn-style UI primitives and a deploy manifest writer for deploy_project. Use template='data-analysis' for a notebook-first analysis project: a Report-mode analysis.ipynb plus conventions README, executed with run_notebook instead of build/deploy. Arguments: { name, description, template? }.",
     Type.Object({
       name: Type.String(),
       description: Type.String(),
-      template: Type.Optional(Type.Union([Type.Literal("worker"), Type.Literal("api"), Type.Literal("react-router")], {
-        description: "Optional scaffold template. Defaults to react-router. worker/api seed the minimal deployable Worker scaffold.",
+      template: Type.Optional(Type.Union([Type.Literal("react-router"), Type.Literal("data-analysis")], {
+        description: "Optional scaffold template. Defaults to react-router. data-analysis seeds a notebook-first analysis project.",
       })),
     }, { additionalProperties: false }),
   ),
   codeModePassthroughTool(
     "scaffold_project",
-    "Seed or repair a standard DO-backed scaffold in an existing project. By default it does not overwrite existing files; pass force: true to replace scaffold paths. Defaults to a React Router SSR app with Tailwind/shadcn-style UI primitives. Use template='worker' for a bare Worker or 'api' for the same minimal Worker scaffold. Arguments: { project, template?, force? }.",
+    "Seed or repair a standard DO-backed scaffold in an existing project. By default it does not overwrite existing files; pass force: true to replace scaffold paths. Defaults to a React Router SSR app with Tailwind/shadcn-style UI primitives. Use template='data-analysis' for a notebook-first analysis project (Report-mode analysis.ipynb, executed with run_notebook instead of build/deploy). Arguments: { project, template?, force? }.",
     Type.Object({
       project: Type.String(),
-      template: Type.Optional(Type.Union([Type.Literal("worker"), Type.Literal("api"), Type.Literal("react-router")], {
-        description: "Optional scaffold template. Defaults to react-router. worker/api seed the minimal deployable Worker scaffold.",
+      template: Type.Optional(Type.Union([Type.Literal("react-router"), Type.Literal("data-analysis")], {
+        description: "Optional scaffold template. Defaults to react-router. data-analysis seeds a notebook-first analysis project.",
       })),
       force: Type.Optional(Type.Boolean({ description: "Overwrite existing scaffold files. Defaults to false." })),
     }, { additionalProperties: false }),
@@ -1627,8 +1627,11 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
   }
 
   private async createProject(args: Record<string, unknown>): Promise<Record<string, unknown>> {
+    // Validate before creating: js_exec calls skip schema validation, and an
+    // invalid template must not leave behind an empty registered project.
+    const template = normalizeProjectScaffoldTemplate(args.template);
     const project = await this.workspaceFs.createProject({ ...args, backend: "do-r2" });
-    const scaffold = await this.writeProjectScaffold(project, { template: args.template });
+    const scaffold = await this.writeProjectScaffold(project, { template });
     return { ...projectForAgent(project), scaffold };
   }
 
@@ -2827,7 +2830,10 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
           return (await this.workspaceFs.listProjects()).map(projectForAgent);
 
         case "create_project":
-          return this.createProject(args);
+          // `await` (not bare return): createProject can reject synchronously on an
+          // invalid template, and promise adoption attaches its handler late enough
+          // to trip workerd's unhandled-rejection detector.
+          return await this.createProject(args);
 
         case "scaffold_project":
           return this.scaffoldProject(args);

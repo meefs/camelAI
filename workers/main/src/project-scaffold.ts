@@ -1,4 +1,4 @@
-export type ProjectScaffoldTemplate = "worker" | "api" | "react-router";
+export type ProjectScaffoldTemplate = "react-router" | "data-analysis";
 
 export interface ProjectScaffoldFile {
   path: string;
@@ -13,10 +13,9 @@ export interface ProjectScaffoldResult {
 
 export function normalizeProjectScaffoldTemplate(value: unknown): ProjectScaffoldTemplate {
   if (value === undefined || value === null || value === "") return "react-router";
-  if (value === "worker") return "worker";
-  if (value === "api") return "api";
   if (value === "react-router") return "react-router";
-  throw new Error('template must be "worker", "api", or "react-router"');
+  if (value === "data-analysis") return "data-analysis";
+  throw new Error('template must be "react-router" or "data-analysis"');
 }
 
 function scaffoldPackageName(projectName: string): string {
@@ -39,93 +38,141 @@ function escapeXmlText(value: string): string {
   return value.replace(/[&<>"']/g, (char) => escapes[char] ?? char);
 }
 
-function defaultWorkerScaffoldFiles(
-  projectName: string,
-  scriptName: string,
-  template: ProjectScaffoldTemplate,
-): ProjectScaffoldFile[] {
-  const packageName = scaffoldPackageName(projectName);
-  const title = template === "api" ? "DO-backed API Worker" : "DO-backed Worker";
+interface NotebookCodeCellOutput {
+  output_type: "execute_result";
+  execution_count: number;
+  data: Record<string, unknown>;
+  metadata: Record<string, unknown>;
+}
+
+function markdownCell(id: string, lines: string[]): Record<string, unknown> {
+  return {
+    cell_type: "markdown",
+    id,
+    metadata: {},
+    source: lines.map((line, index) => (index < lines.length - 1 ? `${line}\n` : line)),
+  };
+}
+
+function codeCell(
+  id: string,
+  lines: string[],
+  options: { executionCount?: number; outputs?: NotebookCodeCellOutput[] } = {},
+): Record<string, unknown> {
+  return {
+    cell_type: "code",
+    id,
+    metadata: {},
+    execution_count: options.executionCount ?? null,
+    outputs: options.outputs ?? [],
+    source: lines.map((line, index) => (index < lines.length - 1 ? `${line}\n` : line)),
+  };
+}
+
+function defaultDataAnalysisScaffoldFiles(projectName: string): ProjectScaffoldFile[] {
+  const exampleRows = [
+    { category: "A", amount: 28 },
+    { category: "B", amount: 55 },
+    { category: "C", amount: 43 },
+    { category: "D", amount: 91 },
+  ];
+  const exampleChartSpec = {
+    $schema: "https://vega.github.io/schema/vega-lite/v5.json",
+    data: { values: exampleRows },
+    mark: "bar",
+    encoding: {
+      x: { field: "category", type: "nominal" },
+      y: { field: "amount", type: "quantitative" },
+    },
+    title: { text: "Example chart", subtitle: "Replace with your analysis" },
+    width: 500,
+    height: 300,
+  };
+  const notebook = {
+    cells: [
+      markdownCell("report-header", [
+        `# ${projectName}`,
+        ``,
+        `One-sentence summary of what this analysis covers. Report mode uses the \`#\` heading above as the report title and this paragraph as the subtitle.`,
+      ]),
+      codeCell("setup", [
+        `# Setup: keep imports and configuration in a dedicated cell so Report mode hides it.`,
+        `import pandas as pd`,
+        `import altair as alt`,
+      ], { executionCount: 1 }),
+      markdownCell("data-section", [
+        `## Data`,
+        ``,
+        `Describe where the data comes from (uploads, workspace connections, connection exports) and any cleaning applied.`,
+      ]),
+      codeCell("example-chart", [
+        `data = pd.DataFrame({`,
+        `    "category": ["A", "B", "C", "D"],`,
+        `    "amount": [28, 55, 43, 91],`,
+        `})`,
+        `alt.Chart(data).mark_bar().encode(`,
+        `    x="category:N",`,
+        `    y="amount:Q",`,
+        `).properties(`,
+        `    title=alt.Title("Example chart", subtitle="Replace with your analysis"),`,
+        `    width=500,`,
+        `    height=300,`,
+        `)`,
+      ], {
+        executionCount: 2,
+        outputs: [
+          {
+            output_type: "execute_result",
+            execution_count: 2,
+            data: { "application/vnd.vegalite.v5+json": exampleChartSpec },
+            metadata: {},
+          },
+        ],
+      }),
+      markdownCell("findings", [
+        `## Key Findings`,
+        ``,
+        `- Replace these bullets with the takeaways a reader should remember.`,
+        `- Keep each finding short and tie it to a chart or table above.`,
+      ]),
+    ],
+    metadata: {
+      kernelspec: { display_name: "Python 3", language: "python", name: "python3" },
+      language_info: { name: "python" },
+    },
+    nbformat: 4,
+    nbformat_minor: 5,
+  };
   return [
     {
-      path: "/package.json",
-      content: `${JSON.stringify({
-        name: packageName,
-        private: true,
-        type: "module",
-        scripts: {
-          build: "tsc --noEmit && bun build src/index.ts --target=browser --format=esm --outfile=build/server/index.js && bun scripts/write-build-manifest.mjs",
-          deploy: "wrangler deploy",
-        },
-        devDependencies: {
-          "@cloudflare/workers-types": "^4.20260629.1",
-          typescript: "^5.9.2",
-          wrangler: "^4.97.0",
-        },
-      }, null, 2)}\n`,
-    },
-    {
-      path: "/wrangler.jsonc",
-      content: `${JSON.stringify({
-        name: scriptName,
-        main: "src/index.ts",
-        compatibility_date: "2026-06-01",
-      }, null, 2)}\n`,
-    },
-    {
-      path: "/tsconfig.json",
-      content: `${JSON.stringify({
-        compilerOptions: {
-          target: "ES2022",
-          module: "ESNext",
-          moduleResolution: "Bundler",
-          lib: ["ES2022"],
-          types: ["@cloudflare/workers-types"],
-          strict: true,
-          skipLibCheck: true,
-          noEmit: true,
-        },
-        include: ["src/**/*.ts", "scripts/**/*.mjs"],
-      }, null, 2)}\n`,
-    },
-    {
-      path: "/src/index.ts",
-      content: `export interface Env {}\n\nexport default {\n  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {\n    const url = new URL(request.url);\n\n    if (url.pathname === "/health") {\n      return Response.json({ ok: true, project: ${JSON.stringify(packageName)} });\n    }\n\n    return new Response(${JSON.stringify(`Hello from ${projectName}!`)}, {\n      headers: { "content-type": "text/plain; charset=utf-8" },\n    });\n  },\n} satisfies ExportedHandler<Env>;\n`,
-    },
-    {
-      path: "/scripts/write-build-manifest.mjs",
-      content: [
-        `import { mkdir, readFile, writeFile } from "node:fs/promises";`,
-        ``,
-        `const config = JSON.parse(await readFile(new URL("../wrangler.jsonc", import.meta.url), "utf8"));`,
-        `// The platform deploy pipeline only reads metadata.bindings (a top-level vars`,
-        `// key is a no-op on that path), so convert wrangler vars into env-var bindings:`,
-        `// strings become plain_text bindings and everything else becomes a json binding.`,
-        `const varBindings = Object.entries(config.vars ?? {}).map(([name, value]) =>`,
-        `  typeof value === "string"`,
-        `    ? { type: "plain_text", name, text: value }`,
-        `    : { type: "json", name, json: value },`,
-        `);`,
-        `const bindings = [...(config.bindings ?? []), ...varBindings];`,
-        `const manifest = {`,
-        `  ...config,`,
-        `  main_module: "index.js",`,
-        `  ...(bindings.length > 0 ? { bindings } : {}),`,
-        `};`,
-        `delete manifest.main;`,
-        `delete manifest.vars;`,
-        ``,
-        `await mkdir(new URL("../build/server", import.meta.url), { recursive: true });`,
-        `await writeFile(`,
-        `  new URL("../build/server/wrangler.json", import.meta.url),`,
-        "  `${JSON.stringify(manifest, null, 2)}\\n`,",
-        `);`,
-        ``,
-      ].join("\n"),
+      path: "/analysis.ipynb",
+      content: `${JSON.stringify(notebook, null, 1)}\n`,
     },
     {
       path: "/README.md",
-      content: `# ${projectName}\n\n${title} scaffolded by camelAI.\n\n## Commands\n\n- \`bun install\` installs explicit dev dependencies.\n- \`bun run build\` type-checks, bundles \`src/index.ts\`, and writes \`build/server/wrangler.json\` for the platform deploy pipeline.\n- \`bun run deploy\` is included for compatibility; camelAI's \`deploy_project\` uses the platform direct-deploy path instead of exposing Cloudflare credentials to this project.\n\nBuild scripts must declare every CLI they use in \`dependencies\` or \`devDependencies\`; package scripts can then resolve those binaries from \`node_modules/.bin\`.\n`,
+      content: [
+        `# ${projectName}`,
+        ``,
+        `Notebook-first data analysis project scaffolded by camelAI.`,
+        ``,
+        `\`analysis.ipynb\` is the main deliverable. camelAI renders notebooks in Report mode by default: code is hidden and the reader sees markdown prose plus cell outputs (charts, tables, text) as a polished article.`,
+        ``,
+        `## Workflow`,
+        ``,
+        `- Execute with \`run_notebook({ project: ${JSON.stringify(projectName)}, path: "analysis.ipynb" })\` — one call runs the notebook, validates the outputs, and persists results back to the project. If \`ok\` is false, fix the failing cells (see \`validation.issues\`/\`stderr\`) and re-run.`,
+        `- The default Python data stack (pandas, numpy, polars, duckdb, pyarrow, altair, plotly, scipy, scikit-learn, and more) is preinstalled; use \`add_python_dependency\` for anything else.`,
+        `- Read big inputs from the read-only mounts — uploads at \`/uploads/<name>\`, connection exports at \`'/' + r2_key\` — and keep large intermediates in \`$SCRATCH\`; only notebooks and small results belong in the project.`,
+        `- After a clean run, preview it in chat: \`set_preview({ location: "project", project: ${JSON.stringify(projectName)}, path: "analysis.ipynb", content_type: "application/x-ipynb+json" })\`.`,
+        ``,
+        `## Report conventions`,
+        ``,
+        `- Start the notebook with a single \`#\` title and a one-paragraph subtitle, use \`##\` headings for sections (they become the report's table of contents), and end with a \`## Key Findings\` section.`,
+        `- Keep imports and configuration in dedicated setup cells; Report mode hides them automatically.`,
+        `- Charts: prefer Altair — Vega-Lite outputs render natively with light/dark theme support (Plotly and PNG outputs also render). Do not set chart backgrounds or hardcode text colors.`,
+        `- Tables: output plain pandas DataFrames, not \`df.style\` or hand-built HTML \`<table>\` markup, so they render with theme-aware styling, sorting, and CSV export.`,
+        ``,
+        `This project holds analysis deliverables; it has no build or deploy step (\`build_project\`/\`deploy_project\` do not apply).`,
+      ].join("\n") + "\n",
     },
   ];
 }
@@ -914,6 +961,6 @@ export function defaultProjectScaffoldFiles(
   template: ProjectScaffoldTemplate,
   scriptName: string,
 ): ProjectScaffoldFile[] {
-  if (template === "react-router") return defaultReactRouterScaffoldFiles(projectName, scriptName);
-  return defaultWorkerScaffoldFiles(projectName, scriptName, template);
+  if (template === "data-analysis") return defaultDataAnalysisScaffoldFiles(projectName);
+  return defaultReactRouterScaffoldFiles(projectName, scriptName);
 }

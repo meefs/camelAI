@@ -35,18 +35,11 @@ const STUB_ESBUILD = [
   '',
 ].join('\n');
 
-function generatedScaffoldScript(
-  template: 'react-router' | 'worker',
-  scriptPath: string,
-): string {
-  const files = defaultProjectScaffoldFiles('Demo App', template, 'demo-app');
-  const file = files.find((candidate) => candidate.path === scriptPath);
-  if (!file) throw new Error(`scaffold is missing ${scriptPath}`);
-  return file.content;
-}
-
 function generatedBuildManifestScript(): string {
-  return generatedScaffoldScript('react-router', '/scripts/build-manifest.mjs');
+  const files = defaultProjectScaffoldFiles('Demo App', 'react-router', 'demo-app');
+  const file = files.find((candidate) => candidate.path === '/scripts/build-manifest.mjs');
+  if (!file) throw new Error('scaffold is missing /scripts/build-manifest.mjs');
+  return file.content;
 }
 
 interface RunResult {
@@ -204,83 +197,3 @@ describe('react-router scaffold build-manifest.mjs (generated script execution)'
   });
 });
 
-describe('minimal worker scaffold write-build-manifest.mjs (generated script execution)', () => {
-  const tempDirs: string[] = [];
-
-  afterEach(() => {
-    for (const dir of tempDirs.splice(0)) {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
-
-  function setupWorkerProject(wranglerConfig: Record<string, unknown>): string {
-    const dir = mkdtempSync(path.join(tmpdir(), 'scaffold-write-manifest-'));
-    tempDirs.push(dir);
-    mkdirSync(path.join(dir, 'scripts'), { recursive: true });
-    writeFileSync(
-      path.join(dir, 'scripts', 'write-build-manifest.mjs'),
-      generatedScaffoldScript('worker', '/scripts/write-build-manifest.mjs'),
-    );
-    writeFileSync(path.join(dir, 'wrangler.jsonc'), `${JSON.stringify(wranglerConfig, null, 2)}\n`);
-    return dir;
-  }
-
-  it('spreads the config, drops main, and converts vars into env-var bindings', () => {
-    const dir = setupWorkerProject({
-      name: 'demo-app',
-      main: 'src/index.ts',
-      compatibility_date: '2026-06-01',
-      durable_objects: {
-        bindings: [{ name: 'COUNTER_DO', class_name: 'CounterDO' }],
-      },
-      migrations: [{ tag: 'v1', new_sqlite_classes: ['CounterDO'] }],
-      bindings: [{ type: 'plain_text', name: 'EXISTING', text: 'kept' }],
-      vars: { APP_TITLE: 'Demo API', MAX_ITEMS: 5 },
-    });
-
-    execFileSync(process.execPath, ['scripts/write-build-manifest.mjs'], {
-      cwd: dir,
-      encoding: 'utf8',
-    });
-
-    const manifest = readManifest(dir);
-    expect(manifest).toMatchObject({
-      name: 'demo-app',
-      main_module: 'index.js',
-      compatibility_date: '2026-06-01',
-      durable_objects: {
-        bindings: [{ name: 'COUNTER_DO', class_name: 'CounterDO' }],
-      },
-      migrations: [{ tag: 'v1', new_sqlite_classes: ['CounterDO'] }],
-    });
-    // vars become env-var bindings (merged after any explicit config.bindings);
-    // a top-level vars key would be a no-op on the direct-deploy path.
-    expect(manifest.bindings).toEqual([
-      { type: 'plain_text', name: 'EXISTING', text: 'kept' },
-      { type: 'plain_text', name: 'APP_TITLE', text: 'Demo API' },
-      { type: 'json', name: 'MAX_ITEMS', json: 5 },
-    ]);
-    expect(manifest).not.toHaveProperty('vars');
-    expect(manifest).not.toHaveProperty('main');
-  });
-
-  it('omits bindings entirely when the config has no vars or bindings', () => {
-    const dir = setupWorkerProject({
-      name: 'demo-app',
-      main: 'src/index.ts',
-      compatibility_date: '2026-06-01',
-    });
-
-    execFileSync(process.execPath, ['scripts/write-build-manifest.mjs'], {
-      cwd: dir,
-      encoding: 'utf8',
-    });
-
-    const manifest = readManifest(dir);
-    expect(manifest).toEqual({
-      name: 'demo-app',
-      main_module: 'index.js',
-      compatibility_date: '2026-06-01',
-    });
-  });
-});

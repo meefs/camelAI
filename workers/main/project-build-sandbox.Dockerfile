@@ -3,7 +3,7 @@
 # Cold project builds run `bun install && bun run build` (see
 # src/project-build-service.ts). To avoid downloading the full scaffold
 # dependency tree from npm on every fresh container, prebake a warm bun
-# global cache: install the union of both scaffold templates' dependencies
+# global cache: install the buildable scaffold templates' dependencies
 # (workers/main/project-build-sandbox-warmup/package.json, kept in sync with
 # src/project-scaffold.ts by tests/project-scaffold-warmup.test.ts) into a
 # throwaway dir at image build time, then delete the dir but keep the cache.
