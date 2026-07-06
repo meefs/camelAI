@@ -6595,7 +6595,7 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
       },
     } as Model<any>;
     // Force a fixed reasoning effort on hosted AI Gateway models that need it
-    // (e.g. DeepSeek V4 Flash -> xhigh). pi-ai treats the cloudflare-ai-gateway
+    // (e.g. DeepSeek V4 Pro/Auto -> xhigh). pi-ai treats the cloudflare-ai-gateway
     // provider as supportsReasoningEffort=false, so we flip it on and map every
     // agent thinking level to the target effort; otherwise reasoning_effort is
     // never emitted and the dynamic route falls back to its upstream default.

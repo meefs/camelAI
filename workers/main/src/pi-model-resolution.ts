@@ -62,19 +62,26 @@ export class PiModelMapping {
       case "gemini-3.1-pro-preview":
         return openRouterReference("google/gemini-3.5-flash");
       case "deepseek-v4-pro":
-        return openRouterReference("deepseek/deepseek-v4-pro");
-      case "deepseek-v4-flash":
-        // Hosted traffic goes through the AI Gateway dynamic route (provider
-        // fallbacks are configured on the gateway); BYOK OpenRouter still uses
-        // the native OpenRouter model id from `modelId`. Flash is cheap and
-        // fast, so pin hosted turns to the highest reasoning effort — see
-        // resolvePiModel, which applies `hostedReasoningEffort` to the model.
+        // Hosted traffic goes through the AI Gateway dynamic route so Gateway
+        // can try Azure first and fall back to OpenRouter; BYOK OpenRouter uses
+        // the native OpenRouter Pro id from `modelId`.
         return {
-          ...openRouterReference("deepseek/deepseek-v4-flash"),
+          ...openRouterReference("deepseek/deepseek-v4-pro"),
           hostedGatewayProvider: "compat",
-          hostedModelId: "dynamic/deepseek-v4-flash-fallback",
+          hostedModelId: "dynamic/deepseek-v4-pro-fallback",
           hostedReasoningEffort: "xhigh",
         };
+      case "deepseek-v4-auto":
+        // Hosted traffic goes through the AI Gateway dynamic route (provider
+        // fallbacks are configured on the gateway); BYOK OpenRouter uses Pro.
+        return {
+          ...openRouterReference("deepseek/deepseek-v4-pro"),
+          hostedGatewayProvider: "compat",
+          hostedModelId: "dynamic/deepseek-v4-auto",
+          hostedReasoningEffort: "xhigh",
+        };
+      case "deepseek-v4-flash":
+        return openRouterReference("deepseek/deepseek-v4-flash");
       default:
         if (normalizedModelId.includes("/")) {
           return openRouterReference(normalizedModelId);

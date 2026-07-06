@@ -90,6 +90,11 @@ export const CODEX_LLM_MODEL_OPTIONS: ReadonlyArray<{
     description: "OpenRouter/camelAI hosted flagship reasoning model",
   },
   {
+    value: "deepseek-v4-auto",
+    label: "DeepSeek V4 Auto",
+    description: "camelAI hosted DeepSeek Pro-first fallback route",
+  },
+  {
     value: "deepseek-v4-flash",
     label: "DeepSeek V4 Flash",
     description: "OpenRouter/camelAI hosted faster and cheaper model",
@@ -140,6 +145,7 @@ const OPENROUTER_ONLY_CODEX_MODELS = new Set<LlmModel>([
   "gemini-3.5-flash",
   "gemini-3-flash-preview",
   "deepseek-v4-pro",
+  "deepseek-v4-auto",
   "deepseek-v4-flash",
 ]);
 

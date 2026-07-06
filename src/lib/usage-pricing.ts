@@ -250,6 +250,11 @@ const modelPricingTable: Record<string, ModelPricing> = {
     outputPerToken: 0.00000087,
     cacheReadPerToken: 0.000000003625,
   },
+  "deepseek-v4-auto": {
+    inputPerToken: 0.000000435,
+    outputPerToken: 0.00000087,
+    cacheReadPerToken: 0.000000003625,
+  },
   "deepseek/deepseek-v4-flash": {
     inputPerToken: 0.00000014,
     outputPerToken: 0.00000028,
@@ -328,6 +333,9 @@ export function lookupPricing(model: string): ModelPricing {
   }
   if (normalized.includes("grok-4.3")) return modelPricingTable["x-ai/grok-4.3"];
   if (normalized.includes("glm-5.2")) return modelPricingTable["z-ai/glm-5.2"];
+  if (normalized.includes("deepseek-v4-auto")) {
+    return modelPricingTable["deepseek-v4-auto"];
+  }
   if (normalized.includes("deepseek-v4-pro")) {
     return modelPricingTable["deepseek/deepseek-v4-pro"];
   }

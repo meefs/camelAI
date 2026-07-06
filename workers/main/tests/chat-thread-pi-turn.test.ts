@@ -1873,7 +1873,140 @@ describe('ChatThreadDO Pi turn handling', () => {
     expect(fake.piCurrentUsageProvider).toBe('openrouter');
   });
 
-  it('routes hosted deepseek-v4-flash through the AI Gateway dynamic fallback route', async () => {
+  it('routes hosted deepseek-v4-auto through the AI Gateway dynamic fallback route', async () => {
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    fake.env = {
+      CF_ACCOUNT_ID: 'acct_1',
+      CF_GATEWAY_NAME: 'gateway_1',
+      AI_GATEWAY_AUTH_TOKEN: 'cf-token',
+    };
+    fake.chatContext = {
+      orgId: 'org1',
+      workspaceId: 'workspace1',
+      threadId: 'thread1',
+    };
+    fake.resolveCurrentByokCredentials = vi.fn(async () => null);
+    fake.checkHostedPiModelAccess = vi.fn(async () => true);
+
+    const getModel = vi.fn(() => ({
+      id: 'deepseek/deepseek-v4-pro',
+      provider: 'openrouter',
+      api: 'openai-completions',
+      baseUrl: 'https://openrouter.ai/api/v1',
+    }));
+    const model = await ChatThreadDO.prototype['resolvePiModel'].call(
+      fake,
+      { orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1' },
+      { CHIRIDION_CODEX_MODEL: 'deepseek-v4-auto' },
+      getModel,
+    );
+
+    expect(getModel).toHaveBeenCalledWith('openrouter', 'deepseek/deepseek-v4-pro');
+    expect(model.model).toMatchObject({
+      id: 'dynamic/deepseek-v4-auto',
+      provider: 'cloudflare-ai-gateway',
+      api: 'openai-completions',
+      baseUrl: 'https://gateway.ai.cloudflare.com/v1/acct_1/gateway_1/compat',
+    });
+    // Hosted auto is pinned to the highest reasoning effort: the gateway
+    // provider must be told it supports reasoning_effort, and every agent
+    // thinking level maps to xhigh so the medium default is not clamped to high.
+    expect(model.model.compat).toMatchObject({ supportsReasoningEffort: true });
+    expect(model.model.thinkingLevelMap).toEqual({
+      minimal: 'xhigh',
+      low: 'xhigh',
+      medium: 'xhigh',
+      high: 'xhigh',
+      xhigh: 'xhigh',
+    });
+    expect(fake.piCurrentUsageProvider).toBe('compat');
+  });
+
+  it('routes hosted deepseek-v4-pro through the AI Gateway dynamic fallback route', async () => {
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    fake.env = {
+      CF_ACCOUNT_ID: 'acct_1',
+      CF_GATEWAY_NAME: 'gateway_1',
+      AI_GATEWAY_AUTH_TOKEN: 'cf-token',
+    };
+    fake.chatContext = {
+      orgId: 'org1',
+      workspaceId: 'workspace1',
+      threadId: 'thread1',
+    };
+    fake.resolveCurrentByokCredentials = vi.fn(async () => null);
+    fake.checkHostedPiModelAccess = vi.fn(async () => true);
+
+    const getModel = vi.fn(() => ({
+      id: 'deepseek/deepseek-v4-pro',
+      provider: 'openrouter',
+      api: 'openai-completions',
+      baseUrl: 'https://openrouter.ai/api/v1',
+    }));
+    const model = await ChatThreadDO.prototype['resolvePiModel'].call(
+      fake,
+      { orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1' },
+      { CHIRIDION_CODEX_MODEL: 'deepseek-v4-pro' },
+      getModel,
+    );
+
+    expect(getModel).toHaveBeenCalledWith('openrouter', 'deepseek/deepseek-v4-pro');
+    expect(model.model).toMatchObject({
+      id: 'dynamic/deepseek-v4-pro-fallback',
+      provider: 'cloudflare-ai-gateway',
+      api: 'openai-completions',
+      baseUrl: 'https://gateway.ai.cloudflare.com/v1/acct_1/gateway_1/compat',
+    });
+    expect(model.model.compat).toMatchObject({ supportsReasoningEffort: true });
+    expect(model.model.thinkingLevelMap).toEqual({
+      minimal: 'xhigh',
+      low: 'xhigh',
+      medium: 'xhigh',
+      high: 'xhigh',
+      xhigh: 'xhigh',
+    });
+    expect(fake.piCurrentUsageProvider).toBe('compat');
+  });
+
+  it('keeps the native OpenRouter model id for deepseek-v4-pro under OpenRouter BYOK', async () => {
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    fake.env = {};
+    fake.resolveCurrentByokCredentials = vi.fn(async () => ({
+      provider: 'openrouter',
+      apiKey: 'sk-or-test',
+    }));
+    fake.checkHostedPiModelAccess = vi.fn(async () => {
+      throw new Error('hosted billing should not be checked for BYOK');
+    });
+
+    const model = await ChatThreadDO.prototype['resolvePiModel'].call(
+      fake,
+      { orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1' },
+      { CHIRIDION_CODEX_MODEL: 'deepseek-v4-pro' },
+      vi.fn(() => ({
+        id: 'deepseek/deepseek-v4-pro',
+        provider: 'openrouter',
+        api: 'openai-completions',
+        baseUrl: 'https://openrouter.ai/api/v1',
+      })),
+    );
+
+    expect(model.model).toMatchObject({
+      id: 'deepseek/deepseek-v4-pro',
+      baseUrl: 'https://openrouter.ai/api/v1',
+    });
+    expect(model.apiKey).toBe('sk-or-test');
+    expect(model.billingSource).toBe('byok');
+    expect(model.model.thinkingLevelMap).not.toEqual({
+      minimal: 'xhigh',
+      low: 'xhigh',
+      medium: 'xhigh',
+      high: 'xhigh',
+      xhigh: 'xhigh',
+    });
+  });
+
+  it('routes hosted deepseek-v4-flash through the native OpenRouter Flash model', async () => {
     const fake = Object.create(ChatThreadDO.prototype) as any;
     fake.env = {
       CF_ACCOUNT_ID: 'acct_1',
@@ -1903,23 +2036,20 @@ describe('ChatThreadDO Pi turn handling', () => {
 
     expect(getModel).toHaveBeenCalledWith('openrouter', 'deepseek/deepseek-v4-flash');
     expect(model.model).toMatchObject({
-      id: 'dynamic/deepseek-v4-flash-fallback',
+      id: 'deepseek/deepseek-v4-flash',
       provider: 'cloudflare-ai-gateway',
       api: 'openai-completions',
-      baseUrl: 'https://gateway.ai.cloudflare.com/v1/acct_1/gateway_1/compat',
+      baseUrl: 'https://gateway.ai.cloudflare.com/v1/acct_1/gateway_1/openrouter',
     });
-    // Hosted flash is pinned to the highest reasoning effort: the gateway
-    // provider must be told it supports reasoning_effort, and every agent
-    // thinking level maps to xhigh so the medium default is not clamped to high.
-    expect(model.model.compat).toMatchObject({ supportsReasoningEffort: true });
-    expect(model.model.thinkingLevelMap).toEqual({
+    expect(model.model.compat?.supportsReasoningEffort).not.toBe(true);
+    expect(model.model.thinkingLevelMap).not.toEqual({
       minimal: 'xhigh',
       low: 'xhigh',
       medium: 'xhigh',
       high: 'xhigh',
       xhigh: 'xhigh',
     });
-    expect(fake.piCurrentUsageProvider).toBe('compat');
+    expect(fake.piCurrentUsageProvider).toBe('openrouter');
   });
 
   it('keeps the native OpenRouter model id for deepseek-v4-flash under OpenRouter BYOK', async () => {
@@ -3352,15 +3482,38 @@ describe('ChatThreadDO Pi turn handling', () => {
     });
   });
 
-  it('resolves deepseek-v4-flash to the AI Gateway dynamic route with an OpenRouter lookup id', () => {
+  it('resolves deepseek-v4-pro to the AI Gateway dynamic route with an OpenRouter lookup id', () => {
+    const result = new PiModelMapping().resolvePiModelReference('deepseek-v4-pro');
+
+    expect(result).toEqual({
+      provider: 'openrouter',
+      modelId: 'deepseek/deepseek-v4-pro',
+      hostedGatewayProvider: 'compat',
+      hostedModelId: 'dynamic/deepseek-v4-pro-fallback',
+      hostedReasoningEffort: 'xhigh',
+    });
+  });
+
+  it('resolves deepseek-v4-auto to the AI Gateway dynamic route with an OpenRouter lookup id', () => {
+    const result = new PiModelMapping().resolvePiModelReference('deepseek-v4-auto');
+
+    expect(result).toEqual({
+      provider: 'openrouter',
+      modelId: 'deepseek/deepseek-v4-pro',
+      hostedGatewayProvider: 'compat',
+      hostedModelId: 'dynamic/deepseek-v4-auto',
+      hostedReasoningEffort: 'xhigh',
+    });
+  });
+
+  it('resolves deepseek-v4-flash to the native OpenRouter Flash model', () => {
     const result = new PiModelMapping().resolvePiModelReference('deepseek-v4-flash');
 
     expect(result).toEqual({
       provider: 'openrouter',
       modelId: 'deepseek/deepseek-v4-flash',
-      hostedGatewayProvider: 'compat',
-      hostedModelId: 'dynamic/deepseek-v4-flash-fallback',
-      hostedReasoningEffort: 'xhigh',
+      hostedGatewayProvider: 'openrouter',
+      hostedModelId: 'deepseek/deepseek-v4-flash',
     });
   });
 

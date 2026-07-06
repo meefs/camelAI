@@ -615,6 +615,7 @@ export type LlmModel =
   | "gemini-3.5-flash"
   | "gemini-3-flash-preview"
   | "deepseek-v4-pro"
+  | "deepseek-v4-auto"
   | "deepseek-v4-flash";
 
 export interface ModelPickerModelConfig {

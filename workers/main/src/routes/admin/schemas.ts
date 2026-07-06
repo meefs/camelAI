@@ -177,6 +177,7 @@ export const UpdateThreadBodySchema = z.object({
       "gemini-3.5-flash",
       "gemini-3-flash-preview",
       "deepseek-v4-pro",
+      "deepseek-v4-auto",
       "deepseek-v4-flash",
     ])
     .optional(),
@@ -266,6 +267,7 @@ export const LlmModelSchema = z.enum([
   "gemini-3.5-flash",
   "gemini-3-flash-preview",
   "deepseek-v4-pro",
+  "deepseek-v4-auto",
   "deepseek-v4-flash",
 ]);
 

@@ -121,12 +121,14 @@ describe("normalizeLegacyModel (back-compat shim)", () => {
     expect(normalizeLegacyModel("glm-5.2")).toBe("z-ai/glm-5.2");
     expect(normalizeLegacyModel("glm-latest")).toBe("z-ai/glm-5.2");
     expect(normalizeLegacyModel("gemini-3.5-flash")).toBe("google/gemini-3.5-flash");
-    expect(normalizeLegacyModel("deepseek-v4-pro")).toBe("deepseek/deepseek-v4-pro");
   });
 
-  it("passes current tier names and OpenRouter ids through unchanged (idempotent)", () => {
+  it("passes current tier names, friendly ids, and OpenRouter ids through unchanged", () => {
     expect(normalizeLegacyModel("auto")).toBe("auto");
     expect(normalizeLegacyModel("smart")).toBe("smart");
+    expect(normalizeLegacyModel("deepseek-v4-pro")).toBe("deepseek-v4-pro");
+    expect(normalizeLegacyModel("deepseek-v4-auto")).toBe("deepseek-v4-auto");
+    expect(normalizeLegacyModel("deepseek-v4-flash")).toBe("deepseek-v4-flash");
     expect(normalizeLegacyModel("anthropic/claude-sonnet-4.6")).toBe("anthropic/claude-sonnet-4.6");
     expect(normalizeLegacyModel(normalizeLegacyModel("gpt-5.5"))).toBe("openai/gpt-5.5");
   });
@@ -137,6 +139,83 @@ describe("normalizeLegacyModel (back-compat shim)", () => {
 });
 
 describe("resolveRouting", () => {
+  it("routes hosted DeepSeek V4 Auto through the AI Gateway compat dynamic route", async () => {
+    const routing = await resolveRouting(
+      {
+        env: {
+          ORG: {
+            idFromName: vi.fn((id: string) => id),
+            get: vi.fn(() => ({
+              getLlmProviderConfig: vi.fn(async () => null),
+            })),
+          } as never,
+        },
+        props: { orgId: "org1", workspaceId: "ws1" },
+        waitUntil: vi.fn(),
+      },
+      "deepseek-v4-auto",
+    );
+
+    expect(routing.provider).toBe("openrouter");
+    expect(routing.gatewayProvider).toBe("compat");
+    expect(routing.usageProvider).toBe("compat");
+    expect(routing.model).toBe("dynamic/deepseek-v4-auto");
+    expect(routing.byokKey).toBeUndefined();
+  });
+
+  it("routes hosted DeepSeek V4 Pro through the pro fallback dynamic route", async () => {
+    const routing = await resolveRouting(
+      {
+        env: {
+          ORG: {
+            idFromName: vi.fn((id: string) => id),
+            get: vi.fn(() => ({
+              getLlmProviderConfig: vi.fn(async () => null),
+            })),
+          } as never,
+        },
+        props: { orgId: "org1", workspaceId: "ws1" },
+        waitUntil: vi.fn(),
+      },
+      "deepseek-v4-pro",
+    );
+
+    expect(routing.gatewayProvider).toBe("compat");
+    expect(routing.usageProvider).toBe("compat");
+    expect(routing.model).toBe("dynamic/deepseek-v4-pro-fallback");
+    expect(routing.byokKey).toBeUndefined();
+  });
+
+  it("routes OpenRouter BYOK DeepSeek Auto to native OpenRouter Pro", async () => {
+    const encrypted = await encryptCredentials({ api_key: "openrouter-token" }, "secret");
+    const routing = await resolveRouting(
+      {
+        env: {
+          INTEGRATION_SECRET_KEY: "secret",
+          ORG: {
+            idFromName: vi.fn((id: string) => id),
+            get: vi.fn(() => ({
+              getLlmProviderConfig: vi.fn(async () => ({
+                provider: "openrouter",
+                config: JSON.stringify({}),
+                credentials_encrypted: encrypted,
+              })),
+            })),
+          } as never,
+        },
+        props: { orgId: "org1", workspaceId: "ws1" },
+        waitUntil: vi.fn(),
+      },
+      "deepseek-v4-auto",
+    );
+
+    expect(routing.provider).toBe("openrouter");
+    expect(routing.gatewayProvider).toBe("openrouter");
+    expect(routing.usageProvider).toBe("openrouter");
+    expect(routing.model).toBe("deepseek/deepseek-v4-pro:nitro");
+    expect(routing.byokKey).toBe("openrouter-token");
+  });
+
   it("defaults Bedrock BYOK routing to us-east-1 when no region is stored", async () => {
     const encrypted = await encryptCredentials({ bearer_token: "bedrock-token" }, "secret");
     const routing = await resolveRouting(
@@ -221,6 +300,57 @@ describe("resolveRouting", () => {
 });
 
 describe("executeVirtualAiRun", () => {
+  it("posts hosted DeepSeek V4 Auto to the compat dynamic route", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ id: "chatcmpl_deepseek_auto" }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+
+    try {
+      await executeVirtualAiRun(
+        {
+          env: {
+            CF_ACCOUNT_ID: "acct_1",
+            CF_GATEWAY_NAME: "gw_1",
+            CF_GATEWAY_TOKEN: "tok_1",
+            ORG: {
+              idFromName: vi.fn((id: string) => id),
+              get: vi.fn(() => ({
+                getLlmProviderConfig: vi.fn(async () => null),
+                getInfo: vi.fn(async () => ({
+                  billing_status: "active",
+                  billing_plan: "payg",
+                  billing_credit_purchase_total_cents: 1000,
+                  billing_credit_grant_total_cents: 0,
+                })),
+                getUsageLogSum: vi.fn(async () => ({ total_cost_usd: 0 })),
+                recordUsage: vi.fn(async () => undefined),
+              })),
+            } as never,
+          },
+          props: { orgId: "org1", workspaceId: "ws1" },
+          waitUntil: vi.fn(),
+        },
+        "deepseek-v4-auto",
+        { messages: [{ role: "user", content: "hello" }] },
+      );
+
+      const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+      expect(url).toBe(
+        "https://gateway.ai.cloudflare.com/v1/acct_1/gw_1/compat/chat/completions",
+      );
+      const headers = new Headers(init.headers);
+      expect(headers.get("authorization")).toBe("Bearer tok_1");
+      expect(headers.get("cf-aig-authorization")).toBeNull();
+      const body = JSON.parse(String(init.body)) as { model: string };
+      expect(body.model).toBe("dynamic/deepseek-v4-auto");
+    } finally {
+      fetchMock.mockRestore();
+    }
+  });
+
   it("does not require AI Gateway settings before Bedrock BYOK routing", async () => {
     const encrypted = await encryptCredentials({ bearer_token: "bedrock-token" }, "secret");
     const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(

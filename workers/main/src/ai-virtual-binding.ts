@@ -35,6 +35,7 @@ export interface VirtualAiRunScope {
 
 export type TierName = "cheap" | "fast" | "auto" | "smart";
 export type ProviderKind = "openai" | "anthropic" | "bedrock" | "openrouter";
+export type GatewayProvider = "compat" | "openrouter";
 
 const TIERS: ReadonlySet<TierName> = new Set(["cheap", "fast", "auto", "smart"]);
 
@@ -83,8 +84,8 @@ const DEFAULT_BEDROCK_REGION = "us-east-1";
  *   plain completion rather than erroring.
  * - `dynamic/auto_image` maps to the private `auto_image` route (see
  *   executeVirtualAiRun) so image generation keeps working.
- * - The old friendly model names map to their OpenRouter ids; the pass-through
- *   path then appends `:nitro` as usual.
+ * - Old friendly model names map to their OpenRouter ids; current friendly ids
+ *   with hosted routing semantics are resolved explicitly in resolveRouting.
  */
 const LEGACY_MODEL_ALIASES: Readonly<Record<string, string>> = {
   "dynamic/auto": "auto",
@@ -104,8 +105,33 @@ const LEGACY_MODEL_ALIASES: Readonly<Record<string, string>> = {
   "gemini-3.5-flash": "google/gemini-3.5-flash",
   "gemini-3-flash-preview": "google/gemini-3-flash-preview",
   "gemini-3.1-pro-preview": "google/gemini-3.5-flash",
-  "deepseek-v4-pro": "deepseek/deepseek-v4-pro",
-  "deepseek-v4-flash": "deepseek/deepseek-v4-flash",
+};
+
+const DEEPSEEK_V4_VIRTUAL_AI_ROUTES: Readonly<
+  Record<
+    string,
+    {
+      nativeOpenRouterModel: string;
+      hostedModel: string;
+      hostedGatewayProvider: GatewayProvider;
+    }
+  >
+> = {
+  "deepseek-v4-pro": {
+    nativeOpenRouterModel: "deepseek/deepseek-v4-pro",
+    hostedModel: "dynamic/deepseek-v4-pro-fallback",
+    hostedGatewayProvider: "compat",
+  },
+  "deepseek-v4-auto": {
+    nativeOpenRouterModel: "deepseek/deepseek-v4-pro",
+    hostedModel: "dynamic/deepseek-v4-auto",
+    hostedGatewayProvider: "compat",
+  },
+  "deepseek-v4-flash": {
+    nativeOpenRouterModel: "deepseek/deepseek-v4-flash",
+    hostedModel: "deepseek/deepseek-v4-flash",
+    hostedGatewayProvider: "openrouter",
+  },
 };
 
 /**
@@ -119,8 +145,12 @@ export function normalizeLegacyModel(model: string): string {
 }
 
 interface ResolvedRouting {
-  /** Provider whose endpoint we hit. */
+  /** Provider family used for BYOK compatibility and default usage attribution. */
   provider: ProviderKind;
+  /** AI Gateway route family for non-Bedrock requests. */
+  gatewayProvider: GatewayProvider;
+  /** Provider value stored on usage rows. Defaults to `provider`. */
+  usageProvider?: string;
   /** Model id sent to the provider (already :nitro-suffixed for OpenRouter). */
   model: string;
   /** Per-request auth: user's BYOK key, or undefined to use the hosted gateway token. */
@@ -151,9 +181,30 @@ export async function resolveRouting(
     const baseModel = TIER_MODELS[provider][tier];
     return {
       provider,
+      gatewayProvider: provider === "openrouter" ? "openrouter" : "compat",
       model: formatModelForProvider(provider, baseModel),
       byokKey: byok?.apiKey,
       awsRegion: byok?.awsRegion,
+    };
+  }
+
+  const deepseekRoute = DEEPSEEK_V4_VIRTUAL_AI_ROUTES[trimmed];
+  if (deepseekRoute) {
+    const usesOpenRouterByok = byok?.provider === "openrouter";
+    return {
+      provider: "openrouter",
+      gatewayProvider: usesOpenRouterByok
+        ? "openrouter"
+        : deepseekRoute.hostedGatewayProvider,
+      usageProvider: usesOpenRouterByok
+        ? "openrouter"
+        : deepseekRoute.hostedGatewayProvider,
+      model: usesOpenRouterByok
+        ? appendNitro(deepseekRoute.nativeOpenRouterModel)
+        : deepseekRoute.hostedGatewayProvider === "openrouter"
+          ? appendNitro(deepseekRoute.hostedModel)
+          : deepseekRoute.hostedModel,
+      byokKey: usesOpenRouterByok ? byok.apiKey : undefined,
     };
   }
 
@@ -162,6 +213,7 @@ export async function resolveRouting(
   // Gateway has the OpenRouter key stored at the gateway level).
   return {
     provider: "openrouter",
+    gatewayProvider: "openrouter",
     model: appendNitro(trimmed || TIER_MODELS.openrouter.auto),
     byokKey: byok?.provider === "openrouter" ? byok.apiKey : undefined,
   };
@@ -276,11 +328,11 @@ export async function executeVirtualAiRun(
           region: routing.awsRegion,
         })
       : await runViaGatewayHTTP(
-	          settings!,
+          settings!,
           scope.props,
           sanitizedInput,
           routing.model,
-          routing.provider === "openrouter" ? "openrouter" : "compat",
+          routing.gatewayProvider,
           routing.byokKey,
         );
 
@@ -290,7 +342,7 @@ export async function executeVirtualAiRun(
       scope.env,
       scope.props,
       usage,
-      routing.provider,
+      routing.usageProvider ?? routing.provider,
       Date.now() - startedAt,
       access.creditChargeable,
       billingSource,
@@ -402,7 +454,7 @@ async function recordVirtualAiUsage(
   env: AIVirtualBindingEnv,
   props: AIVirtualBindingProps,
   usage: ExtractedUsage,
-  provider: ProviderKind,
+  provider: string,
   durationMs: number,
   creditChargeable: boolean,
   billingSource: "byok" | "hosted",
@@ -551,8 +603,6 @@ function buildGatewayMetadata(props: AIVirtualBindingProps): string {
     chiridion,
   });
 }
-
-export type GatewayProvider = "compat" | "openrouter";
 
 function buildGatewayURL(
   settings: GatewaySettings,
