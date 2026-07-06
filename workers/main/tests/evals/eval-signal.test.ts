@@ -196,6 +196,42 @@ describe("eval signal scoring", () => {
     ]);
   });
 
+  it("does not count env.BROWSER.launch BROWSER-binding failures as bad tool calls", () => {
+    // Same known eval-env limitation: no BROWSER binding, so js_exec code that
+    // calls env.BROWSER.launch fails with the browser-session variant of the
+    // message. Not agent misbehavior.
+    const signal = evaluateAgentEvalSignal(
+      {
+        messages: [],
+        events: [
+          {
+            type: "runtime_event",
+            event: {
+              method: "item/completed",
+              params: {
+                item: {
+                  id: "tool1",
+                  type: "dynamicToolCall",
+                  tool: "js_exec",
+                  status: "failed",
+                  arguments: { code: "await env.BROWSER.launch({ scriptName })" },
+                  result: {
+                    details: {
+                      text: "Browser sessions require the BROWSER binding",
+                    },
+                  },
+                },
+              },
+            },
+          },
+        ],
+      },
+      {},
+    );
+
+    expect(signal.badToolCallCount).toBe(0);
+  });
+
   it("sums token usage from Pi turn completion events", () => {
     const tokenUsage = countEvalTokenUsage({
       events: [

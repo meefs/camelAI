@@ -3389,6 +3389,7 @@ describe('ChatThreadDO Pi turn handling', () => {
         CamelAiService: vi.fn(() => aiBinding),
         SecureFetchBinding: vi.fn(() => ({ fetch: vi.fn() })),
         AppScreenshotBinding: vi.fn(() => ({ capture: vi.fn() })),
+        AppBrowserBinding: vi.fn(() => ({ launch: vi.fn() })),
       },
     };
 
@@ -3443,6 +3444,7 @@ describe('ChatThreadDO Pi turn handling', () => {
     expect(capturedWorkerCode.env.CAMELAI).toBe(aiBinding);
     expect(capturedWorkerCode.env.SECURE_FETCH).toEqual({ fetch: expect.any(Function) });
     expect(capturedWorkerCode.env.SCREENSHOT).toEqual({ capture: expect.any(Function) });
+    expect(capturedWorkerCode.env.BROWSER).toEqual({ launch: expect.any(Function) });
     expect(capturedWorkerCode.modules['index.js'].js).toContain('class CodeModeRunner');
     expect(capturedWorkerCode.modules['index.js'].js).toContain('createConnectionsFacade');
     expect(capturedWorkerCode.modules['index.js'].js).toContain('if (connectionName === "$find") return (query) => binding.find(query)');
@@ -3461,7 +3463,7 @@ describe('ChatThreadDO Pi turn handling', () => {
     expect(capturedWorkerCode.modules['index.js'].js).toContain('const WORKSPACE = createWorkspaceFacade(callTool)');
     expect(capturedWorkerCode.modules['index.js'].js).toContain('createVmFacade');
     expect(capturedWorkerCode.modules['index.js'].js).toContain('createProjectsFacade');
-    expect(capturedWorkerCode.modules['index.js'].js).toContain('const env = Object.freeze({ CONNECTIONS, AI, CAMELAI, SCREENSHOT, WORKSPACE, VM, PROJECTS })');
+    expect(capturedWorkerCode.modules['index.js'].js).toContain('const env = Object.freeze({ CONNECTIONS, AI, CAMELAI, SCREENSHOT, BROWSER, WORKSPACE, VM, PROJECTS })');
     expect(capturedWorkerCode.modules['index.js'].js).toContain('const context = Object.freeze({ cloudflare: Object.freeze({ env, connections, vm, projects: env.PROJECTS }) })');
     expect(capturedWorkerCode.modules['index.js'].js).not.toContain('const projects = PROJECTS');
     expect(capturedWorkerCode.modules['index.js'].js).not.toContain('PROJECTS, projects, env');
@@ -3495,6 +3497,7 @@ describe('ChatThreadDO Pi turn handling', () => {
         CamelAiService: vi.fn(() => ({})),
         SecureFetchBinding: vi.fn(() => ({ fetch: vi.fn() })),
         AppScreenshotBinding: vi.fn(() => ({ capture: vi.fn() })),
+        AppBrowserBinding: vi.fn(() => ({ launch: vi.fn() })),
       },
     };
 
@@ -3534,6 +3537,7 @@ describe('ChatThreadDO Pi turn handling', () => {
         CamelAiService: vi.fn(() => ({})),
         SecureFetchBinding: vi.fn(() => ({ fetch: vi.fn() })),
         AppScreenshotBinding: vi.fn(() => ({ capture: vi.fn() })),
+        AppBrowserBinding: vi.fn(() => ({ launch: vi.fn() })),
       },
     };
 
@@ -6227,6 +6231,7 @@ describe('ChatThreadDO Pi turn handling', () => {
       props: { orgId: 'org1', workspaceId: 'workspace1' },
       exports: {
         AppScreenshotBinding: vi.fn(() => ({ capture })),
+        AppBrowserBinding: vi.fn(() => ({ launch: vi.fn() })),
       },
     };
 

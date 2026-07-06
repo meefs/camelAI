@@ -1645,7 +1645,13 @@ export class OrgDO extends DurableObject<DOEnv> {
       this.ensureWorkerScriptDeploysSchema();
     }
 
-    const CURRENT_SCHEMA_VERSION = 38;
+    if (version < 39) {
+      // V39: Per-workspace registry of active Browser Rendering sessions, used
+      // to cap concurrent browser tests per workspace (see app-browser-binding).
+      this.ensureBrowserSessionsSchema();
+    }
+
+    const CURRENT_SCHEMA_VERSION = 39;
     if (version < CURRENT_SCHEMA_VERSION) {
       this.ctx.storage.kv.put("schemaVersion", CURRENT_SCHEMA_VERSION);
     }
@@ -1715,6 +1721,19 @@ export class OrgDO extends DurableObject<DOEnv> {
     );
     this.sql.exec(
       "CREATE INDEX IF NOT EXISTS idx_worker_script_deploys_workspace ON worker_script_deploys(workspace_id, created_at DESC)",
+    );
+  }
+
+  private ensureBrowserSessionsSchema(): void {
+    this.sql.exec(`
+      CREATE TABLE IF NOT EXISTS workspace_browser_sessions (
+        session_id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL,
+        created_at INTEGER NOT NULL
+      )
+    `);
+    this.sql.exec(
+      "CREATE INDEX IF NOT EXISTS idx_workspace_browser_sessions_workspace ON workspace_browser_sessions(workspace_id)",
     );
   }
 
@@ -4178,6 +4197,70 @@ export class OrgDO extends DurableObject<DOEnv> {
       workspaceId,
       safeLimit,
     ).toArray();
+  }
+
+  /**
+   * Record a live Browser Rendering session for a workspace so concurrent
+   * browser tests can be capped per workspace. Idempotent on session_id.
+   */
+  async recordBrowserSession(
+    workspaceId: string,
+    sessionId: string,
+  ): Promise<void> {
+    if (!workspaceId || !sessionId) return;
+    this.sql.exec(
+      "INSERT OR REPLACE INTO workspace_browser_sessions (session_id, workspace_id, created_at) VALUES (?, ?, ?)",
+      sessionId,
+      workspaceId,
+      Date.now(),
+    );
+  }
+
+  /** Drop a browser session from the registry (best-effort, on session close). */
+  async removeBrowserSession(sessionId: string): Promise<void> {
+    if (!sessionId) return;
+    this.sql.exec(
+      "DELETE FROM workspace_browser_sessions WHERE session_id = ?",
+      sessionId,
+    );
+  }
+
+  /**
+   * Prune recorded browser sessions that are no longer live (the caller passes
+   * the account-global live session ids from puppeteer.sessions), then return
+   * how many recorded sessions remain for `workspaceId`. Reconciling against the
+   * platform's live list makes the per-workspace count self-heal when a session
+   * leaks (its worker died before removeBrowserSession ran) — the dead session
+   * drops off the live list and is pruned here.
+   */
+  async reconcileBrowserSessions(
+    workspaceId: string,
+    liveSessionIds: string[],
+  ): Promise<number> {
+    const live = [
+      ...new Set(
+        (Array.isArray(liveSessionIds) ? liveSessionIds : []).filter(
+          (id): id is string => typeof id === "string" && id.length > 0,
+        ),
+      ),
+    ];
+    if (live.length === 0) {
+      this.sql.exec("DELETE FROM workspace_browser_sessions");
+    } else {
+      const placeholders = live.map(() => "?").join(", ");
+      this.sql.exec(
+        `DELETE FROM workspace_browser_sessions WHERE session_id NOT IN (${placeholders})`,
+        ...live,
+      );
+    }
+    return (
+      this.sql
+        .exec<{ count: number }>(
+          "SELECT COUNT(*) AS count FROM workspace_browser_sessions WHERE workspace_id = ?",
+          workspaceId,
+        )
+        .next().value?.count ?? 0
+    );
   }
 
   async getWorkerScript(scriptName: string): Promise<WorkerScript | null> {

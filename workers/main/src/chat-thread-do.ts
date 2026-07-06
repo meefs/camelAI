@@ -1305,6 +1305,14 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
         workspaceId: request.workspaceId,
       },
     });
+    const appBrowser = (this.ctx.exports as unknown as {
+      AppBrowserBinding: (options: { props: Pick<CodeModeToolsProps, "orgId" | "workspaceId"> }) => unknown;
+    }).AppBrowserBinding({
+      props: {
+        orgId: request.orgId,
+        workspaceId: request.workspaceId,
+      },
+    });
 
     const workerCode: WorkerLoaderWorkerCode = {
       compatibilityDate: CODE_MODE_COMPATIBILITY_DATE,
@@ -1312,7 +1320,7 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
       modules: {
         "index.js": { js: codeModeWorkerModule(code) },
       },
-      env: { TOOLS: tools, AI: ai, CAMELAI: camelai, SECURE_FETCH: secureFetch, SCREENSHOT: screenshot },
+      env: { TOOLS: tools, AI: ai, CAMELAI: camelai, SECURE_FETCH: secureFetch, SCREENSHOT: screenshot, BROWSER: appBrowser },
     };
     const worker = typeof loader.load === "function"
       ? loader.load(workerCode)

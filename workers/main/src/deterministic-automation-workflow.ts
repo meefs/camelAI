@@ -441,13 +441,15 @@ export function createDeterministicAutomationRuntimeBindings(input: {
     CamelAiService,
     SecureFetchBinding,
     AppScreenshotBinding,
+    AppBrowserBinding,
   } = exports;
   if (
     !CodeModeToolsBinding ||
     !AIVirtualBinding ||
     !CamelAiService ||
     !SecureFetchBinding ||
-    !AppScreenshotBinding
+    !AppScreenshotBinding ||
+    !AppBrowserBinding
   ) {
     throw new Error("Automation runtime bindings are not exported");
   }
@@ -462,6 +464,12 @@ export function createDeterministicAutomationRuntimeBindings(input: {
       },
     }),
     SCREENSHOT: AppScreenshotBinding({
+      props: {
+        orgId: input.orgId,
+        workspaceId: input.workspaceId,
+      },
+    }),
+    BROWSER: AppBrowserBinding({
       props: {
         orgId: input.orgId,
         workspaceId: input.workspaceId,

@@ -123,6 +123,8 @@ After deploying a worker, use MCP tools to verify the deployment and get the liv
 
 Screenshots run on Cloudflare Browser Rendering through the platform `env.SCREENSHOT` binding, including for private apps. No container browser or auth tokens are required.
 
+4. **Exercise interactive flows (when the app has them)** - Use js_exec with `env.BROWSER` to drive the deployed app like a small Playwright test: `const b = await env.BROWSER.launch({ scriptName }); await b.click("button"); await b.waitForText("Saved"); const logs = await b.logs(); await b.close();`. Check `logs.pageErrors` to catch runtime errors screenshots miss. See the testing-debugging skill or `tools.help({ runtime: "env.BROWSER" })` for the full method list.
+
 This ensures the user can inspect the newly deployed app in the preview pane, the deployment succeeded, and the app renders correctly before sharing the URL with the user.
 
 ## Durable Objects with SQLite Storage

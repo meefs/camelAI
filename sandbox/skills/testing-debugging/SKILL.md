@@ -265,15 +265,40 @@ await tools.take_screenshot({ script_name: "my-app", path: "/" });
 
 This uses Cloudflare Browser Rendering through the platform binding, including for private apps. Prefer unit/integration tests with Vitest for logic and API behavior.
 
+## Interactive Browser Testing
+
+For end-to-end checks of a deployed app — clicking buttons, filling forms, asserting rendered text, catching console errors — launch an interactive browser session in js_exec with `env.BROWSER`. It runs on Cloudflare Browser Rendering (private apps included) and exposes a Playwright-style API:
+
+```javascript
+const b = await env.BROWSER.launch({ scriptName: "my-app", path: "/" });
+try {
+  await b.fill("#todo-input", "buy milk");
+  await b.click("button[type=submit]");
+  await b.waitForText("buy milk");           // throws if it never appears
+  const count = await b.count(".todo-item");
+  if (count !== 1) throw new Error(`expected 1 todo, got ${count}`);
+  const logs = await b.logs();               // { console, pageErrors, requestFailures }
+  if (logs.pageErrors.length) throw new Error(`page errors: ${logs.pageErrors.join("; ")}`);
+} finally {
+  await b.close();
+}
+```
+
+Other session methods: `goto`, `type`, `press`, `select`, `hover`, `waitForSelector`, `waitForFunction`, `evaluate` (run JS in the page), `textContent`, `getAttribute`, `exists`, `content` (HTML), `url`, `title`, `screenshot`. Run `await tools.help({ runtime: "env.BROWSER" })` for full usage. Keep the whole test inside one js_exec call, always `close()` the session, and note sessions auto-close after 5 minutes.
+
+**Limitation:** for **private** apps, server-streamed responses (Server-Sent Events / streaming `fetch`) are buffered by the session's request proxy, so realtime/SSE-driven UI updates won't arrive mid-session. Standard request/response and interaction testing works normally; to exercise realtime/streaming flows, test against a public deploy of the app.
+
 ### When to Use Visual Checks vs Unit Tests
 
 | Scenario | Approach |
 |----------|----------|
 | Logic bug in a function | Unit test (faster) |
 | Visual layout issue | js_exec screenshot |
-| Form submission flow | Unit/integration test where possible |
+| Form submission flow | `env.BROWSER` session against the deployed app |
+| Multi-step user flow on the deployed app | `env.BROWSER` session |
 | API response handling | Unit test with mocks |
 | Deployed app smoke check | `env.SCREENSHOT.capture` |
+| Console/runtime errors on a deployed page | `env.BROWSER` session `logs()` |
 
 ## Debugging Checklist
 

@@ -42,7 +42,7 @@ export const NAVIGATION_TIMEOUT_MS = 30_000;
 export const READY_TIMEOUT_MS = 1500;
 export const POST_LOAD_DELAY_MS = 600;
 
-function truncateError(err: unknown, maxLength = 500): string {
+export function truncateError(err: unknown, maxLength = 500): string {
   const message = err instanceof Error ? err.message : String(err);
   if (message.length <= maxLength) return message;
   return `${message.slice(0, maxLength)}...`;
@@ -101,19 +101,40 @@ async function applyScreenshotStyles(page: Page): Promise<void> {
   });
 }
 
-function headersRecord(headers: Headers): Record<string, string> {
-  const output: Record<string, string> = {};
+export function headersRecord(headers: Headers): Record<string, string | string[]> {
+  const output: Record<string, string | string[]> = {};
   headers.forEach((value, key) => {
     output[key] = value;
   });
+  // Headers.forEach collapses duplicate Set-Cookie into a single comma-joined
+  // value, which corrupts cookies (Expires and some values contain commas).
+  // Preserve each Set-Cookie separately so request.respond emits multiple
+  // headers — needed for private-app login/multi-cookie flows via env.BROWSER.
+  // puppeteer's request.respond splits array header values into distinct
+  // headers, so passing the array through is sufficient.
+  const setCookies = typeof headers.getSetCookie === 'function' ? headers.getSetCookie() : [];
+  if (setCookies.length > 0) {
+    output['set-cookie'] = setCookies;
+  }
   return output;
 }
 
-async function installDispatchRequestInterception(
+export interface DispatchInterceptionOptions {
+  // Redirect mode passed to the dispatch fetch for intercepted app requests.
+  // Screenshots leave this at the default 'follow' (they only need the final
+  // rendered page). Interactive browser sessions pass 'manual' so 3xx responses
+  // are handed back to Chrome as-is and it performs the redirect itself —
+  // preserving real navigation semantics (url(), history, cookies, and
+  // POST/redirect/GET or login redirects) for private apps too.
+  redirect?: RequestRedirect;
+}
+
+export async function installDispatchRequestInterception(
   page: Page,
   env: WorkspaceAppFetcherEnv,
   context: WorkspaceAppContext,
   hostIndex: WorkspaceAppHostIndex,
+  options?: DispatchInterceptionOptions,
 ): Promise<() => void> {
   await page.setRequestInterception(true);
   const handler = async (request: HTTPRequest) => {
@@ -132,6 +153,7 @@ async function installDispatchRequestInterception(
             body: request.method() === 'GET' || request.method() === 'HEAD'
               ? undefined
               : request.postData(),
+            redirect: options?.redirect,
           }),
           hostIndex,
         );

@@ -307,6 +307,44 @@ const RUNTIME_HELP_ENTRIES = Object.freeze([
     ],
   }),
   Object.freeze({
+    name: "env.BROWSER",
+    category: "apps",
+    kind: "runtime_binding",
+    description:
+      "Interactive Browser Rendering session for testing deployed workspace apps (including private apps) with Playwright-style scripts: navigate, click, fill, wait for text, evaluate JS in the page, screenshot, and read console/page errors. Always await session.close() when done. Sessions auto-close after 5 minutes. When this workspace (or the account) already has too many browser sessions running, launch() throws — close finished sessions or retry shortly. Note: for PRIVATE apps, server-streamed responses (SSE / streaming fetch) are buffered, so realtime/SSE-driven UI won't update mid-session — exercise those flows on a public deploy.",
+    examples: [
+      "const b = await env.BROWSER.launch({ scriptName: \"web-app\", path: \"/\" });\ntry {\n  await b.fill(\"#todo-input\", \"buy milk\");\n  await b.click(\"button[type=submit]\");\n  await b.waitForText(\"buy milk\");\n  const count = await b.count(\".todo-item\");\n  const logs = await b.logs();\n  console.log({ count, pageErrors: logs.pageErrors });\n} finally {\n  await b.close();\n}",
+    ],
+    methods: [
+      {
+        name: "launch",
+        usage: "await env.BROWSER.launch({ scriptName, path?, width?, height? })",
+        returns: "A session with the methods below. Launch navigates to path (default \"/\").",
+      },
+      { name: "goto", usage: "await session.goto(\"/dashboard\")", returns: "{ url, status }" },
+      { name: "click", usage: "await session.click(\"button.submit\", { timeoutMs? })" },
+      { name: "fill", usage: "await session.fill(\"#email\", \"a@b.com\") — clears the field first" },
+      { name: "type", usage: "await session.type(\"#search\", \"query\") — appends keystrokes" },
+      { name: "press", usage: "await session.press(\"Enter\", { selector? })" },
+      { name: "select", usage: "await session.select(\"select#plan\", \"pro\")" },
+      { name: "hover", usage: "await session.hover(\".menu\")" },
+      { name: "waitForSelector", usage: "await session.waitForSelector(\".toast\", { timeoutMs?, hidden? })" },
+      { name: "waitForText", usage: "await session.waitForText(\"Saved\", { timeoutMs? })" },
+      { name: "waitForFunction", usage: "await session.waitForFunction(\"document.querySelectorAll('li').length >= 3\")" },
+      { name: "evaluate", usage: "await session.evaluate(\"document.title\")", returns: "JSON-safe result" },
+      { name: "textContent", usage: "await session.textContent(\"h1\")", returns: "{ text, truncated }" },
+      { name: "getAttribute", usage: "await session.getAttribute(\"a.cta\", \"href\")" },
+      { name: "count", usage: "await session.count(\".todo-item\")", returns: "number" },
+      { name: "exists", usage: "await session.exists(\".error-banner\")", returns: "boolean" },
+      { name: "content", usage: "await session.content({ selector?, maxChars? })", returns: "{ html, truncated }" },
+      { name: "url", usage: "await session.url()" },
+      { name: "title", usage: "await session.title()" },
+      { name: "screenshot", usage: "await session.screenshot({ fullPage? })", returns: "{ imageDataUrl, width, height }" },
+      { name: "logs", usage: "await session.logs()", returns: "{ console, pageErrors, requestFailures, truncated }" },
+      { name: "close", usage: "await session.close()" },
+    ],
+  }),
+  Object.freeze({
     name: "env.PROJECTS",
     category: "workspace",
     kind: "runtime_binding",
@@ -693,6 +731,17 @@ function createScreenshotFacade(binding) {
   });
 }
 
+function createBrowserFacade(binding) {
+  return Object.freeze({
+    launch: (...args) => {
+      if (!binding || typeof binding.launch !== "function") {
+        throw new Error("env.BROWSER is not configured in this runtime");
+      }
+      return binding.launch.call(binding, ...args);
+    },
+  });
+}
+
 function createCamelAiFacade(binding) {
   const helpEntry = RUNTIME_HELP_ENTRIES.find((entry) => entry.name === "env.CAMELAI");
   return Object.freeze({
@@ -932,11 +981,12 @@ export class CodeModeRunner extends WorkerEntrypoint {
     const AI = this.env.AI;
     const CAMELAI = createCamelAiFacade(this.env.CAMELAI);
     const SCREENSHOT = createScreenshotFacade(this.env.SCREENSHOT);
+    const BROWSER = createBrowserFacade(this.env.BROWSER);
     const WORKSPACE = createWorkspaceFacade(callTool);
     const VM = createVmFacade(rawTools);
     const vm = VM;
     const PROJECTS = createProjectsFacade(rawTools);
-    const env = Object.freeze({ CONNECTIONS, AI, CAMELAI, SCREENSHOT, WORKSPACE, VM, PROJECTS });
+    const env = Object.freeze({ CONNECTIONS, AI, CAMELAI, SCREENSHOT, BROWSER, WORKSPACE, VM, PROJECTS });
     const context = Object.freeze({ cloudflare: Object.freeze({ env, connections, vm, projects: env.PROJECTS }) });
     const text = (value) => {
       output.push(stringifyOutput(value));
