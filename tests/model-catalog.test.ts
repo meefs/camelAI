@@ -9,7 +9,7 @@ import {
 } from '@/lib/model-catalog';
 import type { LlmModel } from '@/types';
 
-const NEW_OPENROUTER_MODELS: Array<{
+const NEW_ROUTED_MODELS: Array<{
   id: LlmModel;
   label: string;
   providerLogo: string;
@@ -148,8 +148,8 @@ describe('MODEL_CATALOG', () => {
     );
   });
 
-  it('adds Gemini and DeepSeek metadata with OpenRouter pricing keys', () => {
-    for (const expected of NEW_OPENROUTER_MODELS) {
+  it('adds Gemini and DeepSeek metadata with provider pricing keys', () => {
+    for (const expected of NEW_ROUTED_MODELS) {
       expect(MODEL_CATALOG[expected.id]).toMatchObject({
         id: expected.id,
         label: expected.label,
@@ -265,7 +265,7 @@ describe('MODEL_CATALOG', () => {
     ).toEqual(['custom']);
   });
 
-  it('uses current OpenRouter platform models grouped by provider, then model order', () => {
+  it('uses current OpenRouter BYOK platform models grouped by provider, then model order', () => {
     const visible = resolveModelPickerCatalog({
       effectiveConfig: {
         source: 'org',
@@ -286,12 +286,25 @@ describe('MODEL_CATALOG', () => {
       'gemini-3.5-flash',
       'gemini-3-flash-preview',
       'deepseek-v4-pro',
-      'deepseek-v4-auto',
       'deepseek-v4-flash',
       'kimi-k2.7-code',
       'grok-4.3',
       'glm-5.2',
     ]);
+  });
+
+  it('keeps DeepSeek V4 Auto in hosted camelAI platform models', () => {
+    const visible = resolveModelPickerCatalog({
+      effectiveConfig: {
+        source: 'org',
+        use_platform_defaults: true,
+        default_model: null,
+        models: [],
+      },
+      orgProvider: null,
+    });
+
+    expect(visible.map((entry) => entry.id)).toContain('deepseek-v4-auto');
   });
 
   it('uses explicit custom overrides as an allowlist', () => {

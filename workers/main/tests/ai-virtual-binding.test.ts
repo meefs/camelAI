@@ -186,7 +186,7 @@ describe("resolveRouting", () => {
     expect(routing.byokKey).toBeUndefined();
   });
 
-  it("routes OpenRouter BYOK DeepSeek Auto to native OpenRouter Pro", async () => {
+  it("does not route DeepSeek V4 Auto through OpenRouter BYOK", async () => {
     const encrypted = await encryptCredentials({ api_key: "openrouter-token" }, "secret");
     const routing = await resolveRouting(
       {
@@ -210,10 +210,10 @@ describe("resolveRouting", () => {
     );
 
     expect(routing.provider).toBe("openrouter");
-    expect(routing.gatewayProvider).toBe("openrouter");
-    expect(routing.usageProvider).toBe("openrouter");
-    expect(routing.model).toBe("deepseek/deepseek-v4-pro:nitro");
-    expect(routing.byokKey).toBe("openrouter-token");
+    expect(routing.gatewayProvider).toBe("compat");
+    expect(routing.usageProvider).toBe("compat");
+    expect(routing.model).toBe("dynamic/deepseek-v4-auto");
+    expect(routing.byokKey).toBeUndefined();
   });
 
   it("defaults Bedrock BYOK routing to us-east-1 when no region is stored", async () => {
