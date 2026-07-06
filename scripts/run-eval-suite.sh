@@ -67,8 +67,7 @@ install_prereqs() {
 run_evals() {
   local evals
   if [ "$EVAL_TARGET" = "all" ]; then
-    # "all" = every eval in the manifest (the single source of truth). The control plane normally
-    # fans out to one run per eval, so EVAL_TARGET is usually a single id here.
+    # "all" = every eval in the manifest (the single source of truth), run one after another below.
     mapfile -t evals < <(node -e 'for (const e of JSON.parse(require("fs").readFileSync("workers/main/tests/evals/manifest.json","utf8")).evals) console.log(e.id)')
   else
     # EVAL_TARGET may be a single eval id or a comma-separated list.

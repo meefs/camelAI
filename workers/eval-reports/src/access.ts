@@ -1,5 +1,5 @@
 /**
- * Cloudflare Access JWT validation for the eval control plane. Access fronts the
+ * Cloudflare Access JWT validation for the eval reports service. Access fronts the
  * evals hostname and stamps each allowed request with a signed JWT in
  * Cf-Access-Jwt-Assertion; we re-validate it at the worker so the API cannot be
  * reached with a bare workers.dev URL or a misconfigured route.

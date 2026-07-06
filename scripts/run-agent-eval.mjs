@@ -21,10 +21,9 @@ if (!process.env.MINIFLARE_CONTAINER_EGRESS_IMAGE) {
 // and will eventually exhaust the host. Prune lingering eval containers before and after every run.
 //
 // This is a GLOBAL sweep (matches all EvalSandbox containers), which is only safe when this is the
-// only eval on the host. A direct local run (`bun run test:eval:*`) is exactly that. Under the
-// control plane, runs execute concurrently (EVAL_MAX_CONCURRENT), so a global sweep would kill a
-// sibling run's container — the control plane sets EVAL_MANAGED_CLEANUP=1 and owns a concurrency-
-// safe reaper instead, so we skip here.
+// only eval on the host. A direct local run (`bun run test:eval:*`) is exactly that. An orchestrator
+// that runs evals concurrently would have a global sweep kill a sibling run's container, so it sets
+// EVAL_MANAGED_CLEANUP=1 to skip this and owns a concurrency-safe reaper instead.
 function sweepEvalContainers(reason) {
   if (process.env.EVAL_MANAGED_CLEANUP === "1") return;
   const list = spawnSync("docker", ["ps", "-aq", "--filter", "name=EvalSandbox"], {

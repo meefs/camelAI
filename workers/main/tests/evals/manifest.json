@@ -1,5 +1,5 @@
 {
-  "$comment": "Single source of truth for committed agent evals. Adding an eval = create workers/main/tests/evals/<id>.test.ts (gated on RUN_AGENT_EVALS, ending in emitEvalTranscript from ./eval-transcript) and add one entry here. Consumed by scripts/run-agent-eval.mjs, scripts/run-eval-suite.sh, and the eval control plane (GET /api/evals). custom-prompt-live is intentionally NOT listed — it's the generic env-driven custom-prompt harness, not a fixed eval. realDeploy:true marks evals that only run when real deploy is enabled (CF_API_TOKEN + EVAL_REAL_DEPLOY!=0).",
+  "$comment": "Single source of truth for committed agent evals. Adding an eval = create workers/main/tests/evals/<id>.test.ts (gated on RUN_AGENT_EVALS, ending in emitEvalTranscript from ./eval-transcript) and add one entry here. Consumed by scripts/run-agent-eval.mjs and scripts/run-eval-suite.sh. custom-prompt-live is intentionally NOT listed — it's the generic env-driven custom-prompt harness, not a fixed eval. realDeploy:true marks evals that only run when real deploy is enabled (CF_API_TOKEN + EVAL_REAL_DEPLOY!=0).",
   "evals": [
     {
       "id": "dashboard-fake-data-live",

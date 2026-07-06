@@ -109,10 +109,10 @@ viewer with `bun run deploy:eval-reports`; see `workers/eval-reports/README.md`.
 committed eval list. To add one: (1) create `workers/main/tests/evals/<id>.test.ts`, gated on
 `RUN_AGENT_EVALS === "1"`, ending in `emitEvalTranscript({...})` from `./eval-transcript` (every eval
 shares one transcript marker pair); (2) add a `{ "id", "description", "realDeploy"? }` entry to
-`manifest.json`. It is then runnable via `bun run test:eval <id>`, included in `EVAL_TARGET=all`, and
-auto-listed by the control plane's `GET /api/evals` + dashboard for that ref — no other files to edit.
-`custom-prompt-live` is intentionally not in the manifest (it's the generic `CUSTOM_EVAL_*`-driven
-harness). Each run executes exactly one eval; `all`/multi-eval requests fan out to one run per eval.
+`manifest.json`. It is then runnable via `bun run test:eval <id>` and included in `EVAL_TARGET=all` —
+no other files to edit. `custom-prompt-live` is intentionally not in the manifest (it's the generic
+`CUSTOM_EVAL_*`-driven harness). `run-agent-eval.mjs` runs exactly one eval; `run-eval-suite.sh`
+iterates a comma-separated list or `all`, running each eval in turn.
 
 **Container egress workaround (workerd#6793).** Evals run the agent in a Cloudflare Container via
 `@cloudflare/vitest-pool-workers`/Miniflare. On newer hosts (Linux kernel ~6.17 / Docker 29.x) the

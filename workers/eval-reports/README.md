@@ -43,11 +43,15 @@ is newest-first — no database.
 
 ## Deploy
 
+Pushes to `main` **auto-deploy** via a Cloudflare Workers Build (trigger "Deploy eval-reports on
+main", deploy command `bun run deploy:eval-reports`) — the same Git integration the other chiridion
+workers use. Deploy by hand when needed:
+
 ```bash
 bun run deploy:eval-reports          # wrangler deploy -c workers/eval-reports/wrangler.jsonc
 ```
 
-One-time setup:
+One-time setup (already done for the production deployment; kept here for reference / re-setup):
 
 1. Create the R2 bucket `chiridion-eval-reports`.
 2. Cutover from the old VM control plane: delete the `evals.camelai.dev` Cloudflare **Tunnel DNS
@@ -55,6 +59,8 @@ One-time setup:
    (same hostname, same AUD — `CF_ACCESS_AUD` in `wrangler.jsonc`). The old VM services
    (`camelai-evals`, `cloudflared`) can be stopped and the box downsized/retired. Old runs stay in
    the VM's SQLite; they are not migrated.
+3. Add a Workers Build trigger on `main` for auto-deploy (Cloudflare dashboard → the worker →
+   Settings → Build, or via the account's existing `qaml-ai/chiridion-app` repo connection).
 
 ## Local dev
 
