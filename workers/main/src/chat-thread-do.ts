@@ -282,6 +282,8 @@ export interface PiResolvedModelReference {
   api?: string;
   hostedGatewayProvider: string;
   hostedModelId?: string;
+  /** False for hosted-only camelAI routes that must not be served by BYOK keys. */
+  byokAllowed?: boolean;
   // Reasoning effort to force on the hosted (AI Gateway) model. The gateway
   // provider reports supportsReasoningEffort=false in pi-ai, so without this
   // reasoning_effort is never sent and the route uses its upstream default.
@@ -6643,7 +6645,8 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
       console.error("[ChatThreadDO] failed to resolve Pi BYOK credentials", error);
       return null;
     });
-    if (byok?.provider === "custom" && byok.apiKey && byok.baseUrl && byok.api) {
+    const byokAllowed = resolved.byokAllowed !== false;
+    if (byokAllowed && byok?.provider === "custom" && byok.apiKey && byok.baseUrl && byok.api) {
       const customModel = this.piModelMapping.resolveCustomProviderModelReference(
         byok.api,
         requestedModelId,
@@ -6663,7 +6666,7 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
         headers: this.piModelMapping.customProviderAuthHeaders(byok.api, byok.authType ?? "bearer", byok.apiKey),
       };
     }
-    if (byok?.provider === "openrouter" && byok.apiKey) {
+    if (byokAllowed && byok?.provider === "openrouter" && byok.apiKey) {
       return {
         apiKey: byok.apiKey,
         billingSource: "byok",
@@ -6687,7 +6690,7 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
           : "https://openrouter.ai/api/v1",
       };
     }
-    if (byok?.provider === "bedrock" && byok.apiKey && resolved.provider === "anthropic") {
+    if (byokAllowed && byok?.provider === "bedrock" && byok.apiKey && resolved.provider === "anthropic") {
       return {
         apiKey: byok.apiKey,
         billingSource: "byok",
@@ -6699,7 +6702,7 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
         usageProvider: "bedrock",
       };
     }
-    if (byok?.provider === "bedrock" && byok.apiKey && resolved.provider === "openai") {
+    if (byokAllowed && byok?.provider === "bedrock" && byok.apiKey && resolved.provider === "openai") {
       const bedrockOpenAi = this.piModelMapping.bedrockOpenAiModelConfig(resolved.modelId, byok.awsRegion);
       if (bedrockOpenAi) {
         return {
@@ -6716,7 +6719,7 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
         };
       }
     }
-    if (byok?.provider === resolved.provider && byok.apiKey) {
+    if (byokAllowed && byok?.provider === resolved.provider && byok.apiKey) {
       return {
         apiKey: byok.apiKey,
         billingSource: "byok",

@@ -145,8 +145,11 @@ const OPENROUTER_ONLY_CODEX_MODELS = new Set<LlmModel>([
   "gemini-3.5-flash",
   "gemini-3-flash-preview",
   "deepseek-v4-pro",
-  "deepseek-v4-auto",
   "deepseek-v4-flash",
+]);
+
+const CAMELAI_HOSTED_ONLY_CODEX_MODELS = new Set<LlmModel>([
+  "deepseek-v4-auto",
 ]);
 
 const BEDROCK_OPENAI_MODEL_REGIONS: Readonly<Record<string, readonly string[]>> = {
@@ -306,6 +309,9 @@ export function isLlmModelAllowedForOrgProvider(
   orgProvider?: string | null,
   options?: LlmProviderModelOptions,
 ): boolean {
+  if (CAMELAI_HOSTED_ONLY_CODEX_MODELS.has(model) && orgProvider) {
+    return false;
+  }
   if (orgProvider === "openai") {
     return isCodexLlmModel(model) && !OPENROUTER_ONLY_CODEX_MODELS.has(model);
   }

@@ -73,12 +73,14 @@ export class PiModelMapping {
         };
       case "deepseek-v4-auto":
         // Hosted traffic goes through the AI Gateway dynamic route (provider
-        // fallbacks are configured on the gateway); BYOK OpenRouter uses Pro.
+        // fallbacks are configured on the gateway). There is no OpenRouter BYOK
+        // equivalent for this camelAI-hosted auto route.
         return {
           ...openRouterReference("deepseek/deepseek-v4-pro"),
           hostedGatewayProvider: "compat",
           hostedModelId: "dynamic/deepseek-v4-auto",
           hostedReasoningEffort: "xhigh",
+          byokAllowed: false,
         };
       case "deepseek-v4-flash":
         return openRouterReference("deepseek/deepseek-v4-flash");

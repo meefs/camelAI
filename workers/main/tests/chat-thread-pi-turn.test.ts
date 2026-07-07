@@ -2006,6 +2006,47 @@ describe('ChatThreadDO Pi turn handling', () => {
     });
   });
 
+  it('does not route deepseek-v4-auto through OpenRouter BYOK', async () => {
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    fake.env = {
+      CF_ACCOUNT_ID: 'acct_1',
+      CF_GATEWAY_NAME: 'gateway_1',
+      AI_GATEWAY_AUTH_TOKEN: 'cf-token',
+    };
+    fake.chatContext = {
+      orgId: 'org1',
+      workspaceId: 'workspace1',
+      threadId: 'thread1',
+    };
+    fake.resolveCurrentByokCredentials = vi.fn(async () => ({
+      provider: 'openrouter',
+      apiKey: 'sk-or-test',
+    }));
+    fake.checkHostedPiModelAccess = vi.fn(async () => true);
+
+    const model = await ChatThreadDO.prototype['resolvePiModel'].call(
+      fake,
+      { orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1' },
+      { CHIRIDION_CODEX_MODEL: 'deepseek-v4-auto' },
+      vi.fn(() => ({
+        id: 'deepseek/deepseek-v4-pro',
+        provider: 'openrouter',
+        api: 'openai-completions',
+        baseUrl: 'https://openrouter.ai/api/v1',
+      })),
+    );
+
+    expect(model.model).toMatchObject({
+      id: 'dynamic/deepseek-v4-auto',
+      provider: 'cloudflare-ai-gateway',
+      baseUrl: 'https://gateway.ai.cloudflare.com/v1/acct_1/gateway_1/compat',
+    });
+    expect(model.apiKey).toBe('cf-token');
+    expect(model.billingSource).toBe('hosted');
+    expect(model.usageProvider).toBe('compat');
+    expect(fake.checkHostedPiModelAccess).toHaveBeenCalledOnce();
+  });
+
   it('routes hosted deepseek-v4-flash through the native OpenRouter Flash model', async () => {
     const fake = Object.create(ChatThreadDO.prototype) as any;
     fake.env = {
@@ -3503,6 +3544,7 @@ describe('ChatThreadDO Pi turn handling', () => {
       hostedGatewayProvider: 'compat',
       hostedModelId: 'dynamic/deepseek-v4-auto',
       hostedReasoningEffort: 'xhigh',
+      byokAllowed: false,
     });
   });
 

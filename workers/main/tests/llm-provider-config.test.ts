@@ -40,12 +40,26 @@ const OPENROUTER_ONLY_MODELS = [
   "gemini-3.5-flash",
   "gemini-3-flash-preview",
   "deepseek-v4-pro",
-  "deepseek-v4-auto",
   "deepseek-v4-flash",
   "kimi-k2.7-code",
   "grok-4.3",
   "glm-5.2",
 ] as const;
+
+const OPENROUTER_BYOK_CODEX_MODELS = [
+  "gpt-5.5",
+  "gpt-5.4",
+  "gpt-5.4-mini",
+  "gemini-3.5-flash",
+  "gemini-3-flash-preview",
+  "deepseek-v4-pro",
+  "deepseek-v4-flash",
+  "kimi-k2.7-code",
+  "grok-4.3",
+  "glm-5.2",
+] as const;
+
+const CAMELAI_HOSTED_ONLY_MODELS = ["deepseek-v4-auto"] as const;
 
 const BEDROCK_OPENAI_MODELS = ["gpt-5.5", "gpt-5.4"] as const;
 
@@ -81,6 +95,10 @@ describe("llm provider config helpers", () => {
       "gpt-5.4",
       "gpt-5.4-mini",
     ]);
+    expect(getLlmModelOptions("openrouter").map((option) => option.value)).toEqual([
+      ...CLAUDE_MODELS,
+      ...OPENROUTER_BYOK_CODEX_MODELS,
+    ]);
     expect(getLlmModelOptions(null).map((option) => option.value)).toEqual([
       ...CLAUDE_MODELS,
       ...CODEX_MODELS,
@@ -114,6 +132,10 @@ describe("llm provider config helpers", () => {
     expect(normalizeLlmModel("kimi-latest")).toBe("kimi-k2.7-code");
     expect(normalizeLlmModel("opus")).toBe("opus-4.8");
     expect(normalizeLlmModel("opus-4.7")).toBe("opus-4.8");
+    expect(normalizeLlmModel("deepseek-v4-auto")).toBe("deepseek-v4-auto");
+    expect(normalizeLlmModel("deepseek-v4-auto", "openrouter")).toBe(
+      DEFAULT_OPENROUTER_MODEL,
+    );
     expect(
       normalizeLlmModel("sonnet", "custom", { customApi: "openai-completions" }),
     ).toBe(DEFAULT_CODEX_MODEL);
@@ -148,7 +170,7 @@ describe("llm provider config helpers", () => {
       }).map((option) => option.value),
     ).toEqual([
       ...CLAUDE_MODELS,
-      ...CODEX_MODELS,
+      ...OPENROUTER_BYOK_CODEX_MODELS,
     ]);
     expect(
       getVisibleLlmModelOptions({ claude_proxy_models: false }, null, {
@@ -208,7 +230,7 @@ describe("llm provider config helpers", () => {
       ).map((option) => option.value),
     ).toEqual([
       ...CLAUDE_MODELS,
-      ...CODEX_MODELS,
+      ...OPENROUTER_BYOK_CODEX_MODELS,
     ]);
     expect(
       getVisibleLlmModelOptions(
@@ -287,6 +309,23 @@ describe("llm provider config helpers", () => {
         }),
       ).toBe(false);
     }
+    for (const model of CAMELAI_HOSTED_ONLY_MODELS) {
+      expect(
+        isLlmModelAllowedForNewThread(model, null, {
+          claude_proxy_models: false,
+        }),
+      ).toBe(true);
+      expect(
+        isLlmModelAllowedForNewThread(model, "openrouter", {
+          claude_proxy_models: true,
+        }),
+      ).toBe(false);
+      expect(
+        isLlmModelAllowedForNewThread(model, "openai", {
+          claude_proxy_models: true,
+        }),
+      ).toBe(false);
+    }
     expect(
       isLlmModelAllowedForNewThread("haiku", "openrouter", {
         claude_proxy_models: true,
@@ -322,7 +361,7 @@ describe("llm provider config helpers", () => {
     });
     expect(getLlmModelOptions("custom").map((option) => option.value)).toEqual([
       ...CLAUDE_MODELS,
-      ...CODEX_MODELS,
+      ...OPENROUTER_BYOK_CODEX_MODELS,
     ]);
   });
 

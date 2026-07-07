@@ -114,6 +114,7 @@ const DEEPSEEK_V4_VIRTUAL_AI_ROUTES: Readonly<
       nativeOpenRouterModel: string;
       hostedModel: string;
       hostedGatewayProvider: GatewayProvider;
+      allowOpenRouterByok: boolean;
     }
   >
 > = {
@@ -121,16 +122,19 @@ const DEEPSEEK_V4_VIRTUAL_AI_ROUTES: Readonly<
     nativeOpenRouterModel: "deepseek/deepseek-v4-pro",
     hostedModel: "dynamic/deepseek-v4-pro-fallback",
     hostedGatewayProvider: "compat",
+    allowOpenRouterByok: true,
   },
   "deepseek-v4-auto": {
     nativeOpenRouterModel: "deepseek/deepseek-v4-pro",
     hostedModel: "dynamic/deepseek-v4-auto",
     hostedGatewayProvider: "compat",
+    allowOpenRouterByok: false,
   },
   "deepseek-v4-flash": {
     nativeOpenRouterModel: "deepseek/deepseek-v4-flash",
     hostedModel: "deepseek/deepseek-v4-flash",
     hostedGatewayProvider: "openrouter",
+    allowOpenRouterByok: true,
   },
 };
 
@@ -190,7 +194,8 @@ export async function resolveRouting(
 
   const deepseekRoute = DEEPSEEK_V4_VIRTUAL_AI_ROUTES[trimmed];
   if (deepseekRoute) {
-    const usesOpenRouterByok = byok?.provider === "openrouter";
+    const usesOpenRouterByok =
+      deepseekRoute.allowOpenRouterByok && byok?.provider === "openrouter";
     return {
       provider: "openrouter",
       gatewayProvider: usesOpenRouterByok
