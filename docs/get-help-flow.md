@@ -99,7 +99,7 @@ A centered `Dialog` (shadcn) with a form. Mobile: use `Sheet` (bottom) for respo
 
 #### Severity Selector Detail
 
-Install the `ToggleGroup` component from shadcn (`npx shadcn@latest add toggle-group`). Use `ToggleGroup` with `type="single"` and `variant="outline"` for a segmented-button look. Each option gets a colored dot indicator:
+Install the `ToggleGroup` component from shadcn in a local repo shell (`bunx --bun shadcn@latest add toggle-group --yes`). Use `ToggleGroup` with `type="single"` and `variant="outline"` for a segmented-button look. Each option gets a colored dot indicator:
 
 ```
 ┌──────────────┐  ┌──────────────┐  ┌──────────────┐
@@ -526,7 +526,7 @@ waitUntil(
 ## Components to Install
 
 ```bash
-npx shadcn@latest add toggle-group
+bunx --bun shadcn@latest add toggle-group --yes
 ```
 
 ## Components Used

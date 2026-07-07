@@ -66,6 +66,10 @@ Quick reference of available components. Use MCP tools for details and examples.
 
 ---
 
-**Install:** `npx shadcn@latest add <component>`
+**Install in a camelAI DO-backed project:** `add_shadcn_component({ project: "<project>", components: ["accordion", "tabs", "progress"] })`
+
+**Install in local shell:** `bunx --bun shadcn@latest add <component> --yes`
+
+Generated React Router projects already include `components.json`, `app/app.css`, `~/lib/utils`, and `~/components/ui` aliases.
 
 **Search blocks:** `mcp__shadcn__search_items_in_registries(registries: ["@shadcn"], query: "sidebar")`

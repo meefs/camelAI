@@ -221,7 +221,7 @@ See `workers/tests/example-do.test.ts` for a complete example.
 Use `bunx` to run the shadcn CLI:
 
 ```bash
-bunx --bun shadcn@latest add button card input
+bunx --bun shadcn@latest add button card input --yes
 ```
 
 Components install to `app/components/ui/`.

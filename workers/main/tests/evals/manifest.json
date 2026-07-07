@@ -6,6 +6,10 @@
       "description": "Build a polished static HTML dashboard from fake business data"
     },
     {
+      "id": "shadcn-components-live",
+      "description": "Create a DO-backed React Router app and add new shadcn/ui components"
+    },
+    {
       "id": "deploy-fake-data-live",
       "description": "Scaffold + deploy a Cloudflare Worker app to the testing-grounds namespace",
       "realDeploy": true

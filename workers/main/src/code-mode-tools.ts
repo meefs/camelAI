@@ -37,6 +37,7 @@ import { createSignedToken } from "./signed-tokens";
 import { buildLogTail, projectBuildSandboxKey, runProjectAddDependency, runProjectBuild, type ProjectBuildResult } from "./project-build-service";
 import { collectWorkerBundleFromSandbox, findUnexportedDurableObjectClasses, type ProjectBuildSandboxLike } from "./project-worker-bundle";
 import { defaultProjectScaffoldFiles, normalizeProjectScaffoldTemplate, type ProjectScaffoldResult } from "./project-scaffold";
+import { addShadcnComponentsToProject, normalizeShadcnComponentList, SUPPORTED_SHADCN_COMPONENTS } from "./shadcn-components";
 import { deployWorkerModulesDirect, rollbackWorkerDeployFromArtifactCache, type DirectDispatchDeployResult } from "./direct-dispatch-deploy";
 import { handleDeploySideEffects } from "./services/deploy";
 import { editAutomationVirtualFile, listAutomationVirtualFiles, normalizeAutomationVirtualPath, readAutomationVirtualFile, writeAutomationVirtualFile } from "./deterministic-automation-virtual-files";
@@ -645,6 +646,17 @@ const CODE_MODE_TOOL_REGISTRY: CodeModeToolRegistration[] = [
     }, { additionalProperties: false }),
     { category: "workspace", sideEffect: true },
   ),
+  codeModePassthroughTool(
+    "add_shadcn_component",
+    `Add one or more bundled shadcn/ui primitive files to a DO-backed React Router project without npm registry access. Uses the scaffold's existing radix-ui package, ~/lib/utils, and app/components/ui path. Supported components: ${SUPPORTED_SHADCN_COMPONENTS.join(", ")}. Arguments: { project, component? or components?, force? }.`,
+    Type.Object({
+      project: Type.String(),
+      component: Type.Optional(Type.String()),
+      components: Type.Optional(Type.Array(Type.String())),
+      force: Type.Optional(Type.Boolean({ description: "Overwrite existing component files. Defaults to false." })),
+    }, { additionalProperties: false }),
+    { category: "workspace", sideEffect: true },
+  ),
   codeModeTool(
     "revert_project",
     "Restore a DO-backed project's source files to a previous source snapshot. Use snapshot_id from list_commits.commits[]; list_deploy_versions is for deployed artifact rollback, not source snapshots. Restoring source does not publish the live app unless deploy=true or you subsequently call deploy_project. Arguments: { project, snapshot_id, deploy?, script_name? }.",
@@ -836,7 +848,7 @@ const CODE_MODE_TOOL_REGISTRY: CodeModeToolRegistration[] = [
   ),
   codeModePassthroughTool(
     "analysis_exec",
-    "Run a shell command in the workspace analysis sandbox — the escape hatch for data work run_notebook doesn't cover (usql/sqlite3 schema poking, file-format conversions, quick `python -c` probes over a mounted upload). Pass a `project` to run inside that DO-backed project's working tree (changed files persist back, like run_notebook); omit it for scratch work over the read-only mounts. Returns { ok, stdout, stderr, exitCode, changedFiles, removedFiles, skippedOversize, durationMs }. Arguments: { command, project?, cwd?, env?, timeoutMs? }.",
+    "Run a shell command in the workspace analysis sandbox. Pass a `project` to run inside that DO-backed project's working tree; changed files persist back to project storage. Use purpose-built project tools first (`add_dependency`, `add_shadcn_component`, `build_project`, `deploy_project`); use analysis_exec only for project-local CLIs those tools do not cover. It is also the escape hatch for data work run_notebook doesn't cover (usql/sqlite3 schema poking, file-format conversions, quick `python -c` probes over a mounted upload). Omit `project` for scratch work over the read-only mounts. Returns { ok, stdout, stderr, exitCode, changedFiles, removedFiles, skippedOversize, durationMs }. Arguments: { command, project?, cwd?, env?, timeoutMs? }.",
     Type.Object({
       command: Type.String(),
       project: Type.Optional(Type.String()),
@@ -1471,6 +1483,7 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
     analysis_exec: (binding, args) => binding.analysisExecCommand(args),
     run_code: (binding, args) => binding.analysisRunCode(args),
     add_python_dependency: (binding, args) => binding.analysisAddDependency(args),
+    add_shadcn_component: (binding, args) => binding.addShadcnComponent(args),
     analysis_list_connections: (binding) => binding.analysisListConnections(),
     // Source-compat aliases onto the unified analysis tier.
     warehouse_run_code: (binding, args) => binding.analysisRunCode(args),
@@ -3629,6 +3642,21 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
         backend: project.backend ?? "vm",
       };
     });
+  }
+
+  private async addShadcnComponent(args: Record<string, unknown>): Promise<unknown> {
+    const project = await this.resolveDoBackedProjectForAction(args, "add_shadcn_component");
+    const components = normalizeShadcnComponentList(args);
+    const result = await addShadcnComponentsToProject(
+      new ProjectFilesystemClient(this.env, project.id),
+      components,
+      { force: args.force === true },
+    );
+    return {
+      ...result,
+      project: project.name,
+      backend: project.backend ?? "vm",
+    };
   }
 
   private async revertProject(args: Record<string, unknown>): Promise<unknown> {

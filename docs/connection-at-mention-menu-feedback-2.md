@@ -204,7 +204,7 @@ Critical styling rules (the implementation agent must not change these):
 - `font-semibold` — body text in the textarea is `font-normal` (per `prompt-input.tsx`'s `text-base` default). One step heavier = `font-semibold`. **Do not use `font-bold`.**
 - The chip's text is the same `text-base` size as the surrounding text — do **not** scale it down. Identical glyph metrics are what keeps the overlay aligned with the hidden textarea.
 
-**Hover state** — the user clarified that the hover state belongs on the **composer chip**, not the sent-message chip. Use shadcn `HoverCard` (install if not present: `bunx shadcn@latest add hover-card`). It's the right primitive — pointer hover + delay + collision-aware popover, no click required. See section "ChipHoverPreview" below for the content.
+**Hover state** — the user clarified that the hover state belongs on the **composer chip**, not the sent-message chip. Use shadcn `HoverCard` (install in a local repo shell if not present: `bunx --bun shadcn@latest add hover-card --yes`). It's the right primitive — pointer hover + delay + collision-aware popover, no click required. See section "ChipHoverPreview" below for the content.
 
 ---
 

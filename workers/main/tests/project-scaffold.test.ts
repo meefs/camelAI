@@ -47,6 +47,7 @@ describe("defaultProjectScaffoldFiles", () => {
       "/public/favicon.svg",
       "/public/og-image.svg",
       "/scripts/build-manifest.mjs",
+      "/README.md",
     ]));
 
     const packageJson = JSON.parse(scaffoldFile(files, "/package.json"));
@@ -101,6 +102,8 @@ describe("defaultProjectScaffoldFiles", () => {
     expect(scaffoldFile(files, "/scripts/build-manifest.mjs")).toContain('main_module: "worker.js"');
     expect(scaffoldFile(files, "/scripts/build-manifest.mjs")).toContain("node_modules/.bin/esbuild");
     expect(scaffoldFile(files, "/scripts/build-manifest.mjs")).toContain("env.ASSETS.fetch(request)");
+    expect(scaffoldFile(files, "/README.md")).toContain("bunx --bun shadcn@latest add <component> --yes");
+    expect(scaffoldFile(files, "/README.md")).toContain("add_shadcn_component");
 
     // When wrangler.jsonc sets main (the scaffold default), the build must bundle that
     // module as the worker entry so agent-added exports (Durable Object classes) survive.

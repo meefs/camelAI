@@ -277,8 +277,8 @@ This makes the reference unambiguous in the transcript without changing the WebS
 
 Use shadcn primitives. Two are not yet in `src/components/ui/`:
 
-- **`popover.tsx`** — install via `bunx shadcn@latest add popover`. Wraps `@radix-ui/react-popover`.
-- **`command.tsx`** — install via `bunx shadcn@latest add command`. Wraps `cmdk`.
+- **`popover.tsx`** — install in a local repo shell via `bunx --bun shadcn@latest add popover --yes`. Wraps `@radix-ui/react-popover`.
+- **`command.tsx`** — install in a local repo shell via `bunx --bun shadcn@latest add command --yes`. Wraps `cmdk`.
 
 Already present and reused as-is: `tooltip.tsx`.
 
@@ -503,7 +503,7 @@ If we later want richer behavior (e.g. server-side validation that mentioned con
 
 ## Implementation steps (in order)
 
-1. **Add shadcn primitives**: `bunx shadcn@latest add popover command`. Verify `cmdk` lands in `package.json`.
+1. **Add shadcn primitives**: in a local repo shell, run `bunx --bun shadcn@latest add popover command --yes`. Verify `cmdk` lands in `package.json`.
 2. **Create `src/lib/connection-mentions.ts`** with `slug`, `buildSlugMap`, `parseMentions`, `expandMentions`. Unit-test with Vitest.
 3. **Create `src/components/connection-mention-menu/`** (`index.tsx`, `use-mention-trigger.ts`).
 4. **Wire into `src/components/prompt-input.tsx`** as additive props. Default behavior (no `mentionableConnections`) is unchanged.

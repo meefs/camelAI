@@ -10,11 +10,11 @@ This skill guides deployment of production software to Cloudflare's edge network
 
 ## Core Principles
 
-1. **Use `create-worker` to scaffold projects** - Do not use `wrangler init` or `npm create cloudflare`
-2. **Deploy Cloudflare Workers** - The infrastructure is already configured for Worker deployments
+1. **Use `create_project` to scaffold projects** - Do not use `create-worker`, `wrangler init`, or `npm create cloudflare` in camelAI chats
+2. **Deploy with `deploy_project`** - The platform build/deploy path is already configured
 3. **Use Durable Objects with SQLite backends** - This is the primary persistence mechanism
 4. **Use React Router 7 framework mode for fullstack web apps** - It is the successor to Remix; default to route `loader()`/`action()` patterns, not SPA-style client data fetching
-5. **Use shadcn/ui for frontend components** - Use `bunx --bun shadcn@latest add <component>` to add components
+5. **Use shadcn/ui for frontend components** - Use `add_shadcn_component` for bundled primitives before writing custom component files
 
 ## Using Agent Teams for Parallel Development
 
@@ -57,68 +57,37 @@ This parallel approach can significantly reduce total development time for compl
 
 ## Creating New Projects
 
-Use the `create-worker` command to scaffold new projects. Do NOT use `wrangler init` or `npm create cloudflare`.
+Use `create_project` to scaffold new DO-backed projects. Do NOT use `create-worker`, `wrangler init`, `npm create cloudflare`, `bash`, or package-manager shell commands for normal project scaffolding in camelAI chats.
 
-```bash
-# Create a fullstack React app with defaults
-create-worker my-app
-
-# Publish any file (notebook, markdown, CSV, etc.) as a standalone app
-publish my-notebook --file ./analysis.ipynb
-
-# Customize the UI style and theme
-create-worker my-app --style nova --theme blue
-
-# Full customization example
-create-worker my-app --style lyra --theme emerald --font figtree --radius large
-
-# See all options
-create-worker --help
+```ts
+await tools.create_project({
+  name: "my-app",
+  description: "Fullstack React Router app for ...",
+});
 ```
 
-### Style Options
-
-| Option | Values | Default | Description |
-|--------|--------|---------|-------------|
-| `--style` | vega, nova, maia, lyra, mira | mira | UI style preset |
-| `--theme` | neutral, amber, blue, cyan, emerald, fuchsia, green, indigo, lime, orange, pink, purple, red, rose, sky, teal, violet, yellow, zinc, gray, stone | neutral | Theme color |
-| `--base-color` | neutral, zinc, gray, stone | neutral | Base gray color (must match theme if theme is zinc/gray/stone) |
-| `--font` | inter, noto-sans, nunito-sans, figtree | inter | Font family |
-| `--radius` | default, none, small, medium, large | default | Border radius |
-| `--menu-color` | default, inverted | default | Menu color style |
-| `--menu-accent` | subtle, bold | subtle | Menu accent style |
+The default scaffold is a React Router SSR app with Tailwind v4, Cloudflare Worker deploy metadata, `components.json`, `~/lib/utils`, and starter shadcn-style primitives.
 
 ## Deployment Commands
 
-```bash
-# Deploy to production
-bun run deploy
-
-# View logs
-bun wrangler tail
+```ts
+await tools.deploy_project({ project: "my-app", script_name: "my-app" });
 ```
 
-> **Note:** `wrangler dev` is not available. Deployments are fast - just deploy and iterate in the cloud.
+Use `build_project` for validation-only builds. Do not run `bun run deploy`, `wrangler deploy`, or package-manager deploy scripts for DO-backed projects.
 
 ## Post-Deployment Verification
 
 After deploying a worker, use MCP tools to verify the deployment and get the live URL:
 
-1. **Get the deployed app URL** - Use the `list_apps` MCP tool to retrieve the URL of deployed workers
+1. **Get the deployed app URL** - Use `list_apps` to retrieve the URL of deployed workers
 2. **Set the active preview** - Always call `set_preview` for the newly deployed app so the user immediately sees the live site in the chat preview pane
 3. **Take a screenshot** - Use js_exec with `await env.SCREENSHOT.capture({ scriptName, path: "/" })` or `await tools.take_screenshot({ script_name, path: "/" })` to capture the deployed app and verify it looks correct
 
-```bash
-# Example workflow after bun run deploy
-# 1. List apps to get the script name
-#    → Use MCP tool: list_apps
-
-# 2. Set the deployed app as the active preview
-#    → Use MCP tool: set_preview with the deployed script/app name
-
-# 3. Take a screenshot to verify the UI
-#    → Use js_exec:
-#      await env.SCREENSHOT.capture({ scriptName: "my-app", path: "/" })
+```ts
+await tools.deploy_project({ project: "my-app", script_name: "my-app" });
+await tools.set_preview({ app_name: "my-app" });
+await tools.take_screenshot({ script_name: "my-app", path: "/" });
 ```
 
 Screenshots run on Cloudflare Browser Rendering through the platform `env.SCREENSHOT` binding, including for private apps. No container browser or auth tokens are required.
@@ -438,28 +407,13 @@ for (const socket of roomSockets) {
 
 ## Fullstack Apps with React + Vite
 
-For fullstack applications, use the `create-worker` command:
+For fullstack applications, use `create_project`, project file tools, `add_shadcn_component`, `build_project`, and `deploy_project`:
 
-```bash
-# Create React app with Vite
-create-worker my-app
-
-# Or with custom styling
-create-worker my-app --style nova --theme blue
-
-cd my-app
-
-# Install dependencies
-bun install
-
-# Add shadcn/ui components
-bunx --bun shadcn@latest add button card form input
-
-# Local development
-bun dev
-
-# Deploy
-bun run deploy
+```ts
+await tools.create_project({ name: "my-app", description: "Fullstack app for ..." });
+await tools.add_shadcn_component({ project: "my-app", components: ["accordion", "tabs", "progress"] });
+await tools.build_project({ project: "my-app" });
+await tools.deploy_project({ project: "my-app", script_name: "my-app" });
 ```
 
 The template includes:

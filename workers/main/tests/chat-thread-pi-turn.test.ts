@@ -5741,6 +5741,71 @@ describe('ChatThreadDO Pi turn handling', () => {
     }));
   });
 
+  it('adds bundled shadcn components to a DO-backed project without npm', async () => {
+    const { fake, projectStub } = createProjectToolFake();
+
+    const result = await CodeModeToolsBinding.prototype.callTool.call(fake, 'add_shadcn_component', {
+      project: 'Demo App',
+      components: ['accordion', 'tabs', 'progress'],
+    }) as Record<string, unknown>;
+
+    expect(result).toMatchObject({
+      success: true,
+      project: 'Demo App',
+      backend: 'do-r2',
+      components: ['accordion', 'tabs', 'progress'],
+      filesWritten: [
+        '/app/components/ui/accordion.tsx',
+        '/app/components/ui/tabs.tsx',
+        '/app/components/ui/progress.tsx',
+      ],
+    });
+    expect(projectStub.projectWriteFile).toHaveBeenCalledWith(
+      '/app/components/ui/accordion.tsx',
+      expect.stringContaining('AccordionPrimitive'),
+    );
+    expect(projectStub.projectWriteFile).toHaveBeenCalledWith(
+      '/app/components/ui/tabs.tsx',
+      expect.stringContaining('TabsPrimitive'),
+    );
+    expect(projectStub.projectWriteFile).toHaveBeenCalledWith(
+      '/app/components/ui/progress.tsx',
+      expect.stringContaining('ProgressPrimitive'),
+    );
+
+    const second = await CodeModeToolsBinding.prototype.callTool.call(fake, 'add_shadcn_component', {
+      project: 'Demo App',
+      component: 'tabs',
+    }) as Record<string, unknown>;
+
+    expect(second).toMatchObject({
+      success: true,
+      filesWritten: [],
+      filesSkipped: ['/app/components/ui/tabs.tsx'],
+    });
+
+    const stringComponents = await CodeModeToolsBinding.prototype.callTool.call(fake, 'add_shadcn_component', {
+      project: 'Demo App',
+      components: 'progress',
+      force: true,
+    }) as Record<string, unknown>;
+
+    expect(stringComponents).toMatchObject({
+      success: true,
+      components: ['progress'],
+      filesWritten: ['/app/components/ui/progress.tsx'],
+    });
+  });
+
+  it('rejects unsupported bundled shadcn components clearly', async () => {
+    const { fake } = createProjectToolFake();
+
+    await expect(CodeModeToolsBinding.prototype.callTool.call(fake, 'add_shadcn_component', {
+      project: 'Demo App',
+      component: 'command',
+    })).rejects.toThrow('Unsupported shadcn component "command"');
+  });
+
   it('maps build sandbox 503 RPC failures to a friendly project build error', async () => {
     const { fake, sandbox } = createProjectToolFake();
     sandbox.mkdir.mockRejectedValueOnce(new Error('RPCTransportError: WebSocket upgrade failed: 503 Service Unavailable'));

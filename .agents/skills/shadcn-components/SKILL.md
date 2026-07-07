@@ -10,7 +10,9 @@ description: Build UI using shadcn/ui components. Use when creating pages, forms
 Before writing ANY UI code:
 1. Check [docs/shadcn-components.md](../../../docs/shadcn-components.md) for relevant primitives
 2. Use MCP `mcp__shadcn__search_items_in_registries` to find blocks matching your need
-3. Install blocks with `npx shadcn@latest add <block>` before customizing
+3. Install blocks/components before customizing:
+   - camelAI DO-backed project: `add_shadcn_component({ project: "<project>", components: ["accordion", "tabs", "progress"] })` for supported bundled primitives
+   - Local repo shell: `bunx --bun shadcn@latest add <component> --yes`
 4. Only build custom components when no shadcn primitive or block exists
 
 ## Composition Philosophy
@@ -42,15 +44,17 @@ Buttons, inputs, dialogs, dropdowns, cards, forms, navigation, tables, tooltips,
 
 ## Project Configuration
 
-- **Style:** radix-mira (compact/dense interface)
+- **Style:** new-york / compact-dense interface
 - **Base color:** zinc
 - **Font:** Inter
-- **Radius:** 0.5rem (medium)
+- **Radius:** 0.5rem-0.75rem depending on app scaffold
 - **Icons:** Lucide
-- **Components location:** `src/components/ui/`
+- **Main repo components location:** `src/components/ui/`
+- **Generated app components location:** `app/components/ui/`
+- **Generated app aliases:** `~/components`, `~/components/ui`, `~/lib/utils`
 
 ## Styling
 
-- Use `cn()` utility from `@/lib/utils` for conditional classes
-- Theme colors use CSS variables in `globals.css`
+- Use `cn()` utility from `@/lib/utils` in the main repo or `~/lib/utils` in generated apps
+- Theme colors use CSS variables in the app CSS file (`globals.css` in the main repo, `app/app.css` in generated apps)
 - Components support light/dark mode via `.dark` class on root

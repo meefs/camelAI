@@ -113,7 +113,7 @@ export default function MyComponent({ loaderData }: Route.ComponentProps) {
 bun dev                    # Local development
 bun run deploy             # Deploy to Cloudflare
 bun run test               # Run Vitest tests
-bunx --bun shadcn@latest add <name>  # Add UI components
+bunx --bun shadcn@latest add <name> --yes  # Add UI components
 ```
 
 ## Common Data Libraries
@@ -306,4 +306,4 @@ Every project should ship with polished design fundamentals out of the box. When
 - **Generate session IDs in loaders**, not in component body (causes re-render issues). For persistence across refreshes, use `sessionStorage` on the client.
 - **`useAgentChat` does NOT return `input`/`setInput`/`handleSubmit`** — these were removed in AI SDK v3. Manage your own input state with `useState("")` and send messages via `sendMessage({ role: "user", parts: [{ type: "text", text }] })`. Using the removed properties causes `"X is not a function"` errors.
 - **Use MarkdownRenderer for AI output** - AI responses are markdown-formatted
-- **Use `bunx --bun shadcn@latest add`** - not `npx shadcn` or `bun run shadcn`
+- **Use `bunx --bun shadcn@latest add <name> --yes` in local shells** - not `npx shadcn` or `bun run shadcn`

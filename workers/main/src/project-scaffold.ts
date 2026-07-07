@@ -948,7 +948,7 @@ function defaultReactRouterScaffoldFiles(projectName: string, scriptName: string
         "- `bun run typecheck` regenerates React Router route types and checks TypeScript.",
         "- `bun run build` runs `react-router build`, bundles a Cloudflare Worker wrapper, and writes `build/server/wrangler.json` for `deploy_project`.",
         "- `bun run deploy` is included for compatibility; camelAI's `deploy_project` uses the platform direct-deploy path.",
-        "- Add more UI with `bunx --bun shadcn@latest add <component>`; `components.json`, `app/app.css`, and `~/lib/utils` are already configured.",
+        "- In camelAI chat, add bundled shadcn/ui primitives with `add_shadcn_component({ project: \"<project>\", components: [\"accordion\", \"tabs\", \"progress\"] })`. For local development outside camelAI, use `bunx --bun shadcn@latest add <component> --yes`. `components.json`, `app/app.css`, and `~/lib/utils` are already configured.",
         ``,
         "Build scripts must declare every CLI they use in `dependencies` or `devDependencies`; package scripts can then resolve those binaries from `node_modules/.bin`.",
       ]),

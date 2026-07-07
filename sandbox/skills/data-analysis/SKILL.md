@@ -573,10 +573,10 @@ with pdfplumber.open("report.pdf") as pdf:
 When the user wants a **live dashboard**, **data app**, or any interactive web UI built on top of their database or data sources, use the `developing-software` skill. That skill covers deploying fullstack Cloudflare Workers apps with React, Vite, and shadcn/ui — which is the right approach for persistent, shareable dashboards.
 
 **Read the `developing-software` skill** before building any dashboard or data-driven web app. It documents:
-- `create-worker` for scaffolding React + Vite projects
+- `create_project` for scaffolding React Router projects
 - Durable Objects with SQLite for server-side state
 - shadcn/ui components for charts, tables, and UI
-- Deployment via `bun deploy`
+- Deployment via `deploy_project`
 
 Database connection credentials are available through the virtual connections binding. Prefer connection methods over direct credential handling.
 
