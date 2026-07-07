@@ -34,7 +34,7 @@ import { CodeModeScheduledPrompts } from "./code-mode-scheduled-prompts";
 import { CodeModeDeterministicAutomations } from "./code-mode-deterministic-automations";
 import { CodeModeIntegrations } from "./code-mode-integrations";
 import { createSignedToken } from "./signed-tokens";
-import { buildLogTail, projectBuildSandboxKey, runProjectAddDependency, runProjectBuild, type ProjectBuildResult } from "./project-build-service";
+import { buildLogTail, cleanBuildLog, projectBuildSandboxKey, runProjectAddDependency, runProjectBuild, type ProjectBuildResult } from "./project-build-service";
 import { collectWorkerBundleFromSandbox, findUnexportedDurableObjectClasses, type ProjectBuildSandboxLike } from "./project-worker-bundle";
 import { defaultProjectScaffoldFiles, normalizeProjectScaffoldTemplate, type ProjectScaffoldResult } from "./project-scaffold";
 import { addShadcnComponentsToProject, normalizeShadcnComponentList, SUPPORTED_SHADCN_COMPONENTS } from "./shadcn-components";
@@ -1264,6 +1264,7 @@ async function withProjectBuildServiceErrorMapping<T>(operation: () => Promise<T
 
 function summarizeProjectBuildResult(build: ProjectBuildResult): Record<string, unknown> {
   const excerpt = build.success ? null : buildLogTail(buildFailureRawOutput(build));
+  const errorMessage = build.success ? null : buildErrorMessage(build);
   return {
     success: build.success,
     projectId: build.projectId,
@@ -1274,9 +1275,12 @@ function summarizeProjectBuildResult(build: ProjectBuildResult): Record<string, 
     durationMs: build.durationMs,
     timings: build.timings,
     lockfilePersisted: build.lockfilePersisted,
-    ...(build.error ? { errorSummary: summarizeBuildFailure(build) } : {}),
-    // Capped log tail so the agent can fix the failure without the full
-    // stdout/stderr flood.
+    ...(build.buildLogPath ? { buildLogPath: build.buildLogPath } : {}),
+    ...(typeof build.buildLogPersisted === "boolean" ? { buildLogPersisted: build.buildLogPersisted } : {}),
+    ...(typeof build.buildLogBytes === "number" ? { buildLogBytes: build.buildLogBytes } : {}),
+    ...(errorMessage ? { errorMessage, errorSummary: summarizeBuildFailure(build) } : {}),
+    // Complete log when modest-sized; otherwise a capped tail. Full latest build
+    // output is persisted at buildLogPath when buildLogPersisted is true.
     ...(excerpt ? { logExcerpt: excerpt } : {}),
   };
 }
@@ -1304,7 +1308,7 @@ function buildFailureRawOutput(build: ProjectBuildResult): string {
 // The summary anchors on the failure marker that vite/rolldown/bun print right
 // before the diagnostic block, instead of scanning for "error-looking" lines —
 // a last-match scan gets stolen by stack traces and printed error-object tails
-// (e.g. "errors: [Getter/Setter]"). Full context stays in build.logExcerpt.
+// (e.g. "errors: [Getter/Setter]"). Full context stays in buildLogPath.
 // bun's wrapper line confirms failure but carries no diagnostic content.
 const BUN_SCRIPT_WRAPPER_LINE = /^error: script ".*" exited with code \d+/i;
 // Code-frame furniture and stack frames after the diagnostic — never summary
@@ -1334,11 +1338,18 @@ function buildFileReferenceNear(lines: string[], fromIndex: number): string | nu
 }
 
 function summarizeBuildFailure(build: ProjectBuildResult): string {
-  const tail = buildLogTail(buildFailureRawOutput(build));
-  if (!tail) return `Build failed with exit code ${build.exitCode}`;
-  if (tail.length <= 300 && !tail.includes("\n")) return limitSummary(tail);
+  const message = buildErrorMessage(build);
+  if (!message) return `Build failed with exit code ${build.exitCode}`;
+  if (message.length <= 300 && !message.includes("\n")) return limitSummary(message);
+  return limitSummary(`${message} (${buildFailureOutputReference(build)})`);
+}
 
-  const lines = tail.split("\n");
+function buildErrorMessage(build: ProjectBuildResult): string {
+  const output = cleanBuildLog(buildFailureRawOutput(build));
+  if (!output) return `Build failed with exit code ${build.exitCode}`;
+  if (output.length <= 300 && !output.includes("\n")) return output;
+
+  const lines = output.split("\n");
   let summaryStart = -1;
   const markerIndex = lines.reduce(
     (last, line, index) => (BUILD_FAILURE_MARKER.test(line) ? index : last),
@@ -1371,9 +1382,23 @@ function summarizeBuildFailure(build: ProjectBuildResult): string {
     if (fileReference && !summary.includes(fileReference)) {
       summary = `${summary} (${fileReference})`;
     }
-    return limitSummary(`${summary} (see build.logExcerpt for full output)`);
+    return limitSummary(summary);
   }
-  return `Build failed with exit code ${build.exitCode}; see build.logExcerpt for the diagnostic output`;
+  return `Build failed with exit code ${build.exitCode}`;
+}
+
+function buildFailureOutputReference(build: ProjectBuildResult): string {
+  return build.buildLogPath && build.buildLogPersisted !== false
+    ? `see ${build.buildLogPath} for full output`
+    : "see logExcerpt for diagnostic output";
+}
+
+function pickBuildFailureFields(build: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const key of ["errorMessage", "buildLogPath", "buildLogPersisted", "buildLogBytes", "logExcerpt"]) {
+    if (key in build) out[key] = build[key];
+  }
+  return out;
 }
 
 function summarizeDeployFailure(deploy: DirectDispatchDeployResult): string {
@@ -3823,12 +3848,14 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
         timeoutMs,
       });
       if (!build.success) {
+        const summarizedBuild = summarizeProjectBuildResult(build);
         return {
           success: false,
           stage: "build",
           project: project.name,
           errorSummary: summarizeBuildFailure(build),
-          build: summarizeProjectBuildResult(build),
+          ...pickBuildFailureFields(summarizedBuild),
+          build: summarizedBuild,
         };
       }
       const projectFiles = new ProjectFilesystemClient(this.env, project.id);

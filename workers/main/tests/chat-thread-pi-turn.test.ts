@@ -5831,6 +5831,9 @@ describe('ChatThreadDO Pi turn handling', () => {
     }) as Record<string, unknown>;
 
     expect(result.success).toBe(false);
+    expect(result.errorMessage).toContain('[PARSE_ERROR] Expected `;` but found `Identifier`');
+    expect(result.buildLogPath).toBe('/.camelai/tmp/build.log');
+    expect(result.buildLogPersisted).toBe(true);
     // The decisive diagnostic plus its location, not bun's command echo,
     // wrapper line, or code-frame furniture.
     expect(result.errorSummary).toContain('[PARSE_ERROR] Expected `;` but found `Identifier`');
@@ -5883,6 +5886,42 @@ describe('ChatThreadDO Pi turn handling', () => {
     await expect(CodeModeToolsBinding.prototype.callTool.call(fake, 'deploy_project', {
       project: 'Demo App',
     })).rejects.toThrow('Build service temporarily unavailable. Please try again in a moment.');
+  });
+
+  it('returns build diagnostics and the temp build log path on deploy build failures', async () => {
+    const { fake, sandbox } = createProjectToolFake({ deploy: true });
+    const buildOutput = [
+      '$ react-router build && node ./scripts/build-manifest.mjs',
+      'Error: Transform failed with 1 error:',
+      '[PARSE_ERROR] Expected `;` but found `Identifier`',
+      '     ╭─[ app/routes/home.tsx:21:30 ]',
+      ' 21  │   const forcedBuildFailure = ;',
+      'error: script "build" exited with code 1',
+    ].join('\n');
+    sandbox.exec.mockImplementation(async (command: string) =>
+      command.includes('bun run build')
+        ? { success: false, exitCode: 1, stdout: buildOutput, stderr: '' }
+        : { success: true, exitCode: 0, stdout: '', stderr: '' });
+
+    const result = await CodeModeToolsBinding.prototype.callTool.call(fake, 'deploy_project', {
+      project: 'Demo App',
+    }) as Record<string, any>;
+
+    expect(result).toMatchObject({
+      success: false,
+      stage: 'build',
+      project: 'Demo App',
+      errorMessage: expect.stringContaining('[PARSE_ERROR] Expected `;` but found `Identifier`'),
+      buildLogPath: '/.camelai/tmp/build.log',
+      buildLogPersisted: true,
+      build: {
+        success: false,
+        errorMessage: expect.stringContaining('[PARSE_ERROR] Expected `;` but found `Identifier`'),
+        buildLogPath: '/.camelai/tmp/build.log',
+        buildLogPersisted: true,
+      },
+    });
+    expect(result.logExcerpt).toContain('app/routes/home.tsx:21:30');
   });
 
   it('blocks deploy with a clear error when a declared DO class is not exported', async () => {
@@ -6105,11 +6144,11 @@ describe('ChatThreadDO Pi turn handling', () => {
       backend: 'do-r2',
     });
 
-    const packageMaterializations = sandbox.writeFile.mock.calls
-      .filter(([path]) => path === '/workspace/project-1/package.json')
+    const sourceArchives = sandbox.writeFile.mock.calls
+      .filter(([path]) => path === '/workspace/project-1.source.tar')
       .map(([, content]) => atob(content));
-    expect(packageMaterializations).toHaveLength(2);
-    expect(packageMaterializations.at(-1)).toContain('devDependencies');
+    expect(sourceArchives).toHaveLength(2);
+    expect(sourceArchives.at(-1)).toContain('devDependencies');
   });
 
   it('rejects legacy VM shell and file tools for DO-backed projects', async () => {

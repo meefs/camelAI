@@ -56,6 +56,7 @@ describe("runProjectBuild", () => {
     const files = fakeFileStore({
       "/package.json": JSON.stringify({ scripts: { build: "vite build" } }),
       "/src/index.ts": "export default {};",
+      "/.camelai/tmp/build.log": "previous build log",
       "/node_modules/pkg/index.js": "ignored",
       "/build/server/index.js": "ignored",
       "/.git/config": "ignored",
@@ -100,6 +101,7 @@ describe("runProjectBuild", () => {
       "/workspace/demo-project.source.tar",
       "/workspace/demo-project.next-source-manifest.json",
     ]);
+    expect(files.writeFile).toHaveBeenCalledWith("/.camelai/tmp/build.log", "built");
   });
 
   it("returns structured failures from the build command", async () => {
@@ -111,8 +113,11 @@ describe("runProjectBuild", () => {
     await expect(runProjectBuild({ projectId: "demo", files, sandbox })).resolves.toMatchObject({
       success: false,
       exitCode: 1,
+      buildLogPath: "/.camelai/tmp/build.log",
+      buildLogPersisted: true,
       error: "missing build",
     });
+    expect(files.writeFile).toHaveBeenCalledWith("/.camelai/tmp/build.log", "missing build");
   });
 
   it("fails fast when package.json has no build script", async () => {
@@ -123,6 +128,8 @@ describe("runProjectBuild", () => {
       success: false,
       exitCode: 1,
       lockfilePersisted: false,
+      buildLogPath: "/.camelai/tmp/build.log",
+      buildLogPersisted: true,
       error: expect.stringContaining("Project package.json must define scripts.build"),
     });
     expect(sandbox.mkdir).not.toHaveBeenCalled();
@@ -301,11 +308,20 @@ describe("buildLogTail", () => {
     expect(buildLogTail(raw)).toBe("✗ Build failed\n\nerror TS2339: nope");
   });
 
-  it("keeps only the tail of oversized output, where the diagnostic lives", () => {
+  it("returns complete modest output without truncating the beginning", () => {
     const noise = Array.from({ length: 500 }, (_, i) => `progress line ${i}`).join("\n");
     const raw = `${noise}\nError: something exploded at the end`;
     const tail = buildLogTail(raw)!;
-    expect(tail.length).toBeLessThan(2500);
+    expect(tail).toContain("progress line 0\n");
+    expect(tail).toContain("Error: something exploded at the end");
+    expect(tail).not.toContain("[truncated");
+  });
+
+  it("keeps only the tail of oversized output, where the diagnostic usually lives", () => {
+    const noise = Array.from({ length: 1500 }, (_, i) => `progress line ${i}`).join("\n");
+    const raw = `${noise}\nError: something exploded at the end`;
+    const tail = buildLogTail(raw)!;
+    expect(tail.length).toBeLessThan(10100);
     expect(tail).toContain("[truncated");
     expect(tail).toContain("Error: something exploded at the end");
     expect(tail).not.toContain("progress line 0\n");
@@ -321,7 +337,7 @@ describe("build failure output ordering", () => {
   it("keeps stderr diagnostics visible in the tail even when stdout is huge", async () => {
     const files = fakeFileStore({ "/package.json": JSON.stringify({ scripts: { build: "vite build" } }) });
     const sandbox = fakeSandbox();
-    const noisyStdout = Array.from({ length: 800 }, (_, i) => `progress ${i}`).join("\n");
+    const noisyStdout = Array.from({ length: 1500 }, (_, i) => `progress ${i}`).join("\n");
     sandbox.exec.mockResolvedValueOnce({ success: true, exitCode: 0, stdout: "", stderr: "" });
     sandbox.exec.mockResolvedValueOnce({
       success: false,

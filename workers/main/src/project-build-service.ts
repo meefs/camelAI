@@ -16,6 +16,8 @@ const DEFAULT_PREWARM_TIMEOUT_MS = 25_000;
 const PROJECT_BUILD_ROOT = "/workspace";
 const MAX_PROJECT_BUILD_SANDBOX_KEY_LENGTH = 63;
 const MAX_COMMAND_OUTPUT_LOG_CHARS = 4000;
+const PROJECT_TEMP_DIR = "/.camelai/tmp";
+const PROJECT_BUILD_LOG_PATH = `${PROJECT_TEMP_DIR}/build.log`;
 const SOURCE_READ_CONCURRENCY = 16;
 
 export interface ProjectBuildEnv {
@@ -51,6 +53,9 @@ export interface ProjectBuildResult {
   durationMs: number;
   timings: ProjectBuildTimings;
   lockfilePersisted: boolean;
+  buildLogPath?: string;
+  buildLogPersisted?: boolean;
+  buildLogBytes?: number;
   error?: string;
 }
 
@@ -156,6 +161,8 @@ export async function runProjectBuild(input: {
   const packageValidationError = validatePackageJsonBuildScript(sourceFiles);
   if (packageValidationError) {
     const durationMs = Date.now() - startedAt;
+    const buildLog = cleanBuildLog(packageValidationError) || packageValidationError;
+    const buildLogPersist = await persistProjectBuildLog(input.files, projectId, buildLog);
     console.warn('[project-build] validation failed', {
       operation: 'build',
       projectId,
@@ -178,6 +185,9 @@ export async function runProjectBuild(input: {
         totalMs: durationMs,
       }),
       lockfilePersisted: false,
+      buildLogPath: PROJECT_BUILD_LOG_PATH,
+      buildLogPersisted: buildLogPersist.persisted,
+      buildLogBytes: buildLogPersist.bytes,
       error: packageValidationError,
     };
   }
@@ -205,6 +215,10 @@ export async function runProjectBuild(input: {
       timeoutMs,
     }, result);
   }
+  const buildLogRaw = [result.stdout, result.stderr].filter(Boolean).join("\n") ||
+    (result.exitCode === 0 ? "Build completed with no command output" : `Build failed with exit code ${result.exitCode}`);
+  const buildLog = cleanBuildLog(buildLogRaw) || buildLogRaw;
+  const buildLogPersist = await persistProjectBuildLog(input.files, projectId, buildLog);
   const persistStartedAt = Date.now();
   const lockfilePersisted = result.exitCode === 0
     ? await persistBunLockfile(input.sandbox, input.files, workdir)
@@ -231,6 +245,9 @@ export async function runProjectBuild(input: {
     durationMs,
     timings,
     lockfilePersisted,
+    buildLogPath: PROJECT_BUILD_LOG_PATH,
+    buildLogPersisted: buildLogPersist.persisted,
+    buildLogBytes: buildLogPersist.bytes,
     ...(result.exitCode === 0
       ? {}
       : {
@@ -247,18 +264,16 @@ export async function runProjectBuild(input: {
 }
 
 // ---------------------------------------------------------------------------
-// Build log tail
+// Build log excerpt
 //
-// Raw build output opens with bun's command echo ("$ react-router build && ...")
-// and tool banners, but build tools print the actual diagnostic at the END of
-// their output — so instead of pattern-matching error formats (a taxonomy that
-// drifts with every toolchain release), return an ANSI-stripped tail of the
-// combined output. The consuming agent reads the excerpt directly.
+// Return complete ANSI-stripped output for ordinary failures. Very large logs
+// still use a capped tail so tool results do not drown the turn; the uncapped
+// latest build output is persisted separately at PROJECT_BUILD_LOG_PATH.
 // ---------------------------------------------------------------------------
 
-const BUILD_LOG_TAIL_MAX_CHARS = 2400;
+const BUILD_LOG_EXCERPT_MAX_CHARS = 10_000;
 
-export function buildLogTail(raw: string): string | null {
+export function cleanBuildLog(raw: string): string | null {
   const cleaned = raw
     .replace(/\u001b\[[0-9;]*m/g, "")
     .replace(/\u001b/g, "")
@@ -267,9 +282,34 @@ export function buildLogTail(raw: string): string | null {
     .join("\n")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
+  return cleaned || null;
+}
+
+export function buildLogTail(raw: string): string | null {
+  const cleaned = cleanBuildLog(raw);
   if (!cleaned) return null;
-  if (cleaned.length <= BUILD_LOG_TAIL_MAX_CHARS) return cleaned;
-  return `[truncated ${cleaned.length - BUILD_LOG_TAIL_MAX_CHARS} chars]\n${cleaned.slice(-BUILD_LOG_TAIL_MAX_CHARS)}`;
+  if (cleaned.length <= BUILD_LOG_EXCERPT_MAX_CHARS) return cleaned;
+  return `[truncated ${cleaned.length - BUILD_LOG_EXCERPT_MAX_CHARS} chars]\n${cleaned.slice(-BUILD_LOG_EXCERPT_MAX_CHARS)}`;
+}
+
+async function persistProjectBuildLog(
+  files: WorkspaceFileStoreLike,
+  projectId: string,
+  content: string,
+): Promise<{ persisted: boolean; bytes: number }> {
+  const bytes = new TextEncoder().encode(content).byteLength;
+  const result = await files.writeFile(PROJECT_BUILD_LOG_PATH, content);
+  if (!result.success) {
+    console.warn('[project-build] build log persist failed', {
+      operation: 'build_log_persist',
+      projectId,
+      path: PROJECT_BUILD_LOG_PATH,
+      bytes,
+      error: result.error,
+    });
+    return { persisted: false, bytes };
+  }
+  return { persisted: true, bytes };
 }
 
 export async function runProjectAddDependency(input: {
@@ -794,6 +834,7 @@ function shouldIgnoreBuildSourcePath(path: string): boolean {
   const parts = path.split("/");
   return parts.some((part) =>
     part === "node_modules" ||
+    part === ".camelai" ||
     part === ".git" ||
     part === ".wrangler" ||
     part === ".cache" ||
