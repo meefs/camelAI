@@ -1270,7 +1270,9 @@ function summarizeProjectBuildResult(build: ProjectBuildResult): Record<string, 
     workdir: build.workdir,
     exitCode: build.exitCode,
     fileCount: build.fileCount,
+    sourceBytes: build.sourceBytes,
     durationMs: build.durationMs,
+    timings: build.timings,
     lockfilePersisted: build.lockfilePersisted,
     ...(build.error ? { errorSummary: summarizeBuildFailure(build) } : {}),
     // Capped log tail so the agent can fix the failure without the full
@@ -1285,6 +1287,7 @@ function summarizeDirectDeployResult(deploy: DirectDispatchDeployResult): Record
     scriptName: deploy.scriptName,
     dispatchScriptName: deploy.dispatchScriptName,
     status: deploy.status,
+    ...(deploy.timings ? { timings: deploy.timings } : {}),
     ...(deploy.success ? {} : { errorSummary: summarizeDeployFailure(deploy) }),
     ...(deploy.warnings?.length ? { warnings: deploy.warnings } : {}),
   };

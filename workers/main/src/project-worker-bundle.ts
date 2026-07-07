@@ -1,6 +1,8 @@
 import type { DirectWorkerMetadata, DirectWorkerModule } from "./direct-dispatch-deploy.js";
 import type { WorkerBinding } from "./cf-api-proxy.js";
 
+const BUNDLE_READ_CONCURRENCY = 16;
+
 export interface ProjectBuildSandboxLike {
   exec(command: string, options?: { cwd?: string; env?: Record<string, string | undefined>; timeout?: number; timeoutMs?: number }): Promise<{
     success?: boolean;
@@ -48,19 +50,20 @@ export async function collectWorkerBundleFromSandbox(
   const metadata = normalizeWorkerBundleMetadata(manifest);
   const serverRoot = dirnameSandboxPath(absoluteManifestPath);
   const listed = await sandbox.listFiles(serverRoot, { recursive: true, includeHidden: true });
-  const modules: DirectWorkerModule[] = [];
-  for (const file of listed.files) {
-    if (file.type !== "file") continue;
+  const moduleFiles = listed.files.filter((file) => file.type === "file").map((file) => {
     const absolutePath = file.absolutePath || joinSandboxPath(serverRoot, file.relativePath || file.name);
     const relativePath = relativeSandboxPath(serverRoot, absolutePath);
-    if (!relativePath || relativePath === basenameSandboxPath(absoluteManifestPath)) continue;
-    if (shouldIgnoreBuildOutputModule(relativePath)) continue;
-    modules.push({
+    return { absolutePath, relativePath };
+  }).filter(({ relativePath }) =>
+    Boolean(relativePath) &&
+    relativePath !== basenameSandboxPath(absoluteManifestPath) &&
+    !shouldIgnoreBuildOutputModule(relativePath)
+  );
+  const modules = await mapWithConcurrency(moduleFiles, BUNDLE_READ_CONCURRENCY, async ({ absolutePath, relativePath }) => ({
       name: relativePath,
       contentType: contentTypeForModule(relativePath),
       content: await readSandboxFileBytes(sandbox, absolutePath),
-    });
-  }
+    }));
   modules.sort((a, b) => a.name.localeCompare(b.name));
   return {
     metadata,
@@ -225,18 +228,16 @@ async function collectAssetsFromManifest(
   if (!sandbox.readFile || !sandbox.listFiles) throw new Error("Sandbox does not support asset output reads");
   const assetsRoot = joinSandboxPath(serverRoot, rawDirectory);
   const listed = await sandbox.listFiles(assetsRoot, { recursive: true, includeHidden: true });
-  const assets = [];
-  for (const file of listed.files) {
-    if (file.type !== "file") continue;
+  const assetFiles = listed.files.filter((file) => file.type === "file").map((file) => {
     const absolutePath = file.absolutePath || joinSandboxPath(assetsRoot, file.relativePath || file.name);
     const relativePath = relativeSandboxPath(assetsRoot, absolutePath);
-    if (!relativePath) continue;
-    assets.push({
+    return { absolutePath, relativePath };
+  }).filter(({ relativePath }) => Boolean(relativePath));
+  const assets = await mapWithConcurrency(assetFiles, BUNDLE_READ_CONCURRENCY, async ({ absolutePath, relativePath }) => ({
       path: relativePath,
       content: await readSandboxFileBytes(sandbox, absolutePath),
       contentType: contentTypeForAsset(relativePath),
-    });
-  }
+    }));
   return assets.sort((a, b) => a.path.localeCompare(b.path));
 }
 
@@ -312,4 +313,22 @@ function base64ToBytes(value: string): Uint8Array {
     bytes[index] = binary.charCodeAt(index);
   }
   return bytes;
+}
+
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  concurrency: number,
+  mapper: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let nextIndex = 0;
+  const workerCount = Math.max(1, Math.min(concurrency, items.length));
+  await Promise.all(Array.from({ length: workerCount }, async () => {
+    while (nextIndex < items.length) {
+      const index = nextIndex;
+      nextIndex += 1;
+      results[index] = await mapper(items[index]!, index);
+    }
+  }));
+  return results;
 }

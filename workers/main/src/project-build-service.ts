@@ -16,6 +16,7 @@ const DEFAULT_PREWARM_TIMEOUT_MS = 25_000;
 const PROJECT_BUILD_ROOT = "/workspace";
 const MAX_PROJECT_BUILD_SANDBOX_KEY_LENGTH = 63;
 const MAX_COMMAND_OUTPUT_LOG_CHARS = 4000;
+const SOURCE_READ_CONCURRENCY = 16;
 
 export interface ProjectBuildEnv {
   WORKSPACE_FS: DurableObjectNamespace;
@@ -46,7 +47,9 @@ export interface ProjectBuildResult {
   stderr: string;
   exitCode: number;
   fileCount: number;
+  sourceBytes: number;
   durationMs: number;
+  timings: ProjectBuildTimings;
   lockfilePersisted: boolean;
   error?: string;
 }
@@ -61,10 +64,33 @@ export interface ProjectDependencyResult {
   stderr: string;
   exitCode: number;
   fileCount: number;
+  sourceBytes: number;
   durationMs: number;
+  timings: ProjectBuildTimings;
   packageJsonPersisted: boolean;
   lockfilePersisted: boolean;
   error?: string;
+}
+
+export interface ProjectBuildTimings {
+  collectSourceMs: number;
+  sourceListMs: number;
+  sourceReadMs: number;
+  sourceHashMs: number;
+  materializeMs: number;
+  previousManifestReadMs: number;
+  archiveCreateMs: number;
+  archiveWriteMs: number;
+  materializeExecMs: number;
+  commandMs: number;
+  persistMs: number;
+  totalMs: number;
+}
+
+interface ProjectSourceCollection {
+  files: ProjectSourceFile[];
+  timings: Pick<ProjectBuildTimings, "collectSourceMs" | "sourceListMs" | "sourceReadMs" | "sourceHashMs">;
+  totalBytes: number;
 }
 
 function commandOutputForLog(value: string): string | undefined {
@@ -106,6 +132,12 @@ function logProjectCommandFailure(
 interface ProjectSourceFile {
   path: string;
   bytes: Uint8Array;
+  sha256: string;
+}
+
+interface SourceManifest {
+  schemaVersion: 1;
+  files: Array<{ path: string; size: number; sha256: string }>;
 }
 
 export async function runProjectBuild(input: {
@@ -119,9 +151,11 @@ export async function runProjectBuild(input: {
   const workdir = `${PROJECT_BUILD_ROOT}/${projectId}`;
   const timeoutMs = Math.max(1, Math.floor(input.timeoutMs ?? DEFAULT_BUILD_TIMEOUT_MS));
 
-  const sourceFiles = await collectProjectSourceFiles(input.files);
+  const sourceCollection = await collectProjectSourceFiles(input.files);
+  const sourceFiles = sourceCollection.files;
   const packageValidationError = validatePackageJsonBuildScript(sourceFiles);
   if (packageValidationError) {
+    const durationMs = Date.now() - startedAt;
     console.warn('[project-build] validation failed', {
       operation: 'build',
       projectId,
@@ -137,13 +171,19 @@ export async function runProjectBuild(input: {
       stderr: packageValidationError,
       exitCode: 1,
       fileCount: sourceFiles.length,
-      durationMs: Date.now() - startedAt,
+      sourceBytes: sourceCollection.totalBytes,
+      durationMs,
+      timings: zeroProjectBuildTimings({
+        ...sourceCollection.timings,
+        totalMs: durationMs,
+      }),
       lockfilePersisted: false,
       error: packageValidationError,
     };
   }
-  await materializeProjectSourceFiles(input.sandbox, workdir, sourceFiles);
+  const materializeTiming = await materializeProjectSourceFiles(input.sandbox, workdir, sourceFiles);
 
+  const commandStartedAt = Date.now();
   const result = normalizeSandboxExecResult(await input.sandbox.exec("bun install && bun run build", {
     cwd: workdir,
     timeoutMs,
@@ -154,6 +194,7 @@ export async function runProjectBuild(input: {
       CAMELAI_BUILD_TIMEOUT_MS: String(timeoutMs),
     },
   }));
+  const commandMs = Date.now() - commandStartedAt;
   const commandDurationMs = Date.now() - startedAt;
   if (result.exitCode !== 0) {
     logProjectCommandFailure('build', {
@@ -164,10 +205,19 @@ export async function runProjectBuild(input: {
       timeoutMs,
     }, result);
   }
+  const persistStartedAt = Date.now();
   const lockfilePersisted = result.exitCode === 0
     ? await persistBunLockfile(input.sandbox, input.files, workdir)
     : false;
+  const persistMs = Date.now() - persistStartedAt;
   const durationMs = Date.now() - startedAt;
+  const timings = zeroProjectBuildTimings({
+    ...sourceCollection.timings,
+    ...materializeTiming,
+    commandMs,
+    persistMs,
+    totalMs: durationMs,
+  });
 
   return {
     success: result.exitCode === 0,
@@ -177,7 +227,9 @@ export async function runProjectBuild(input: {
     stderr: result.stderr,
     exitCode: result.exitCode,
     fileCount: sourceFiles.length,
+    sourceBytes: sourceCollection.totalBytes,
     durationMs,
+    timings,
     lockfilePersisted,
     ...(result.exitCode === 0
       ? {}
@@ -233,9 +285,11 @@ export async function runProjectAddDependency(input: {
   const dependency = normalizeDependencySpec(input.dependency);
   const dev = input.dev === true;
 
-  const sourceFiles = await collectProjectSourceFiles(input.files);
+  const sourceCollection = await collectProjectSourceFiles(input.files);
+  const sourceFiles = sourceCollection.files;
   const packageValidationError = validatePackageJson(sourceFiles);
   if (packageValidationError) {
+    const durationMs = Date.now() - startedAt;
     console.warn('[project-build] validation failed', {
       operation: 'dependency_install',
       projectId,
@@ -255,15 +309,21 @@ export async function runProjectAddDependency(input: {
       stderr: packageValidationError,
       exitCode: 1,
       fileCount: sourceFiles.length,
-      durationMs: Date.now() - startedAt,
+      sourceBytes: sourceCollection.totalBytes,
+      durationMs,
+      timings: zeroProjectBuildTimings({
+        ...sourceCollection.timings,
+        totalMs: durationMs,
+      }),
       packageJsonPersisted: false,
       lockfilePersisted: false,
       error: packageValidationError,
     };
   }
 
-  await materializeProjectSourceFiles(input.sandbox, workdir, sourceFiles);
+  const materializeTiming = await materializeProjectSourceFiles(input.sandbox, workdir, sourceFiles);
   const command = `bun add ${dev ? "-d " : ""}${shellQuote(dependency)}`;
+  const commandStartedAt = Date.now();
   const result = normalizeSandboxExecResult(await input.sandbox.exec(command, {
     cwd: workdir,
     timeoutMs: DEFAULT_BUILD_TIMEOUT_MS,
@@ -273,6 +333,7 @@ export async function runProjectAddDependency(input: {
       CAMELAI_PROJECT_ID: projectId,
     },
   }));
+  const commandMs = Date.now() - commandStartedAt;
   const commandDurationMs = Date.now() - startedAt;
   if (result.exitCode !== 0) {
     logProjectCommandFailure('dependency_install', {
@@ -285,13 +346,22 @@ export async function runProjectAddDependency(input: {
       timeoutMs: DEFAULT_BUILD_TIMEOUT_MS,
     }, result);
   }
+  const persistStartedAt = Date.now();
   const packageJsonPersisted = result.exitCode === 0
     ? await persistSandboxTextFile(input.sandbox, input.files, workdir, "package.json", { required: true })
     : false;
   const lockfilePersisted = result.exitCode === 0
     ? await persistSandboxTextFile(input.sandbox, input.files, workdir, "bun.lock", { required: false })
     : false;
+  const persistMs = Date.now() - persistStartedAt;
   const durationMs = Date.now() - startedAt;
+  const timings = zeroProjectBuildTimings({
+    ...sourceCollection.timings,
+    ...materializeTiming,
+    commandMs,
+    persistMs,
+    totalMs: durationMs,
+  });
 
   return {
     success: result.exitCode === 0,
@@ -303,7 +373,9 @@ export async function runProjectAddDependency(input: {
     stderr: result.stderr,
     exitCode: result.exitCode,
     fileCount: sourceFiles.length,
+    sourceBytes: sourceCollection.totalBytes,
     durationMs,
+    timings,
     packageJsonPersisted,
     lockfilePersisted,
     ...(result.exitCode === 0 ? {} : { error: result.stderr || result.stdout || `Dependency install failed with exit code ${result.exitCode}` }),
@@ -314,20 +386,60 @@ async function materializeProjectSourceFiles(
   sandbox: ProjectBuildSandboxLike,
   workdir: string,
   sourceFiles: ProjectSourceFile[],
-): Promise<void> {
+): Promise<Pick<ProjectBuildTimings, "materializeMs" | "previousManifestReadMs" | "archiveCreateMs" | "archiveWriteMs" | "materializeExecMs">> {
+  const startedAt = Date.now();
   await sandbox.mkdir(workdir, { recursive: true });
-  await sandbox.exec(`rm -rf ${shellQuote(workdir)}/* ${shellQuote(workdir)}/.[!.]* ${shellQuote(workdir)}/..?*`, {
-    cwd: PROJECT_BUILD_ROOT,
-  });
+  const manifest = sourceManifestForFiles(sourceFiles);
+  const manifestPath = `${workdir}.next-source-manifest.json`;
+  const currentManifestPath = sourceManifestPath(workdir);
+  const archivePath = `${workdir}.source.tar`;
 
-  for (const file of sourceFiles) {
-    const targetPath = `${workdir}/${file.path}`;
-    const parent = dirnameSandboxPath(targetPath);
-    if (parent !== workdir) {
-      await sandbox.mkdir(parent, { recursive: true });
-    }
-    await sandbox.writeFile(targetPath, bytesToBase64(file.bytes), { encoding: "base64" });
+  const previousManifestStartedAt = Date.now();
+  const previousManifest = await readSourceManifestFromSandbox(sandbox, workdir);
+  const previousManifestReadMs = Date.now() - previousManifestStartedAt;
+  const previousFiles = previousManifest
+    ? new Map(previousManifest.files.map((file) => [file.path, file]))
+    : null;
+  const changedFiles = previousFiles
+    ? sourceFiles.filter((file) => {
+      const previous = previousFiles.get(file.path);
+      return !previous || previous.size !== file.bytes.byteLength || previous.sha256 !== file.sha256;
+    })
+    : sourceFiles;
+
+  const archiveCreateStartedAt = Date.now();
+  const archive = changedFiles.length > 0 ? createTarArchive(changedFiles) : null;
+  const archiveCreateMs = Date.now() - archiveCreateStartedAt;
+
+  const archiveWriteStartedAt = Date.now();
+  if (archive) {
+    await sandbox.writeFile(archivePath, bytesToBase64(archive), { encoding: "base64" });
   }
+  await sandbox.writeFile(
+    manifestPath,
+    bytesToBase64(new TextEncoder().encode(JSON.stringify(manifest))),
+    { encoding: "base64" },
+  );
+  const archiveWriteMs = Date.now() - archiveWriteStartedAt;
+
+  const materializeExecStartedAt = Date.now();
+  await sandbox.exec(materializeCommand({
+    workdir,
+    currentManifestPath,
+    manifestPath,
+    archivePath,
+    extractArchive: archive !== null,
+    forceClean: previousManifest === null,
+  }), { cwd: PROJECT_BUILD_ROOT });
+  const materializeExecMs = Date.now() - materializeExecStartedAt;
+
+  return {
+    materializeMs: Date.now() - startedAt,
+    previousManifestReadMs,
+    archiveCreateMs,
+    archiveWriteMs,
+    materializeExecMs,
+  };
 }
 
 function validatePackageJsonBuildScript(sourceFiles: ProjectSourceFile[]): string | null {
@@ -340,6 +452,187 @@ function validatePackageJsonBuildScript(sourceFiles: ProjectSourceFile[]): strin
   if (!scripts || typeof scripts !== "object") return buildScriptMessage;
   const build = (scripts as { build?: unknown }).build;
   return typeof build === "string" && build.trim() ? null : buildScriptMessage;
+}
+
+function sourceManifestForFiles(sourceFiles: ProjectSourceFile[]): SourceManifest {
+  return {
+    schemaVersion: 1,
+    files: sourceFiles.map((file) => ({
+      path: file.path,
+      size: file.bytes.byteLength,
+      sha256: file.sha256,
+    })),
+  };
+}
+
+async function readSourceManifestFromSandbox(
+  sandbox: ProjectBuildSandboxLike,
+  workdir: string,
+): Promise<SourceManifest | null> {
+  if (!sandbox.readFile) return null;
+  let read: { content: string };
+  try {
+    read = await sandbox.readFile(sourceManifestPath(workdir), { encoding: "base64" });
+  } catch (error) {
+    const message = String(error).toLowerCase();
+    if (message.includes("missing") || message.includes("not found") || message.includes("enoent")) return null;
+    throw error;
+  }
+  try {
+    return validateSourceManifest(JSON.parse(new TextDecoder().decode(base64ToBytes(read.content))));
+  } catch {
+    // Treat malformed old state as a cache miss. The materializer will wipe the
+    // workdir before extracting the full source archive.
+    return null;
+  }
+}
+
+function validateSourceManifest(value: unknown): SourceManifest {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("invalid source manifest");
+  const record = value as SourceManifest;
+  if (record.schemaVersion !== 1 || !Array.isArray(record.files)) throw new Error("invalid source manifest");
+  const files = record.files.map((file) => {
+    if (!file || typeof file !== "object" || Array.isArray(file)) throw new Error("invalid source manifest");
+    const entry = file as { path?: unknown; size?: unknown; sha256?: unknown };
+    if (typeof entry.path !== "string" || !entry.path || entry.path.includes("\0") || entry.path.startsWith("/")) {
+      throw new Error("invalid source manifest");
+    }
+    if (typeof entry.size !== "number" || entry.size < 0 || !Number.isFinite(entry.size)) throw new Error("invalid source manifest");
+    if (typeof entry.sha256 !== "string" || !/^[a-f0-9]{64}$/i.test(entry.sha256)) throw new Error("invalid source manifest");
+    return { path: normalizeRelativeBuildPath(entry.path), size: entry.size, sha256: entry.sha256.toLowerCase() };
+  }).filter((file) => file.path);
+  return { schemaVersion: 1, files };
+}
+
+function sourceManifestPath(workdir: string): string {
+  return `${workdir}.source-manifest.json`;
+}
+
+function materializeCommand(input: { workdir: string; currentManifestPath: string; manifestPath: string; archivePath: string; extractArchive: boolean; forceClean?: boolean }): string {
+  const commands = [
+    `CAMELAI_WORKDIR=${shellQuote(input.workdir)} CAMELAI_CURRENT_MANIFEST=${shellQuote(input.currentManifestPath)} CAMELAI_NEXT_MANIFEST=${shellQuote(input.manifestPath)} CAMELAI_FORCE_CLEAN=${input.forceClean ? "1" : "0"} bun -e ${shellQuote(SOURCE_MATERIALIZE_SCRIPT)}`,
+  ];
+  if (input.extractArchive) {
+    commands.push(`tar -xf ${shellQuote(input.archivePath)} -C ${shellQuote(input.workdir)}`);
+    commands.push(`rm -f ${shellQuote(input.archivePath)}`);
+  } else {
+    commands.push(`rm -f ${shellQuote(input.archivePath)}`);
+  }
+  commands.push(`mv ${shellQuote(input.manifestPath)} ${shellQuote(input.currentManifestPath)}`);
+  commands.push(`find ${shellQuote(input.workdir)} -type d -empty -delete 2>/dev/null || true`);
+  return commands.join(" && ");
+}
+
+const SOURCE_MATERIALIZE_SCRIPT = String.raw`
+const fs = require("fs");
+const path = require("path");
+const workdir = process.env.CAMELAI_WORKDIR;
+const currentManifestPath = process.env.CAMELAI_CURRENT_MANIFEST;
+const nextManifestPath = process.env.CAMELAI_NEXT_MANIFEST;
+if (!workdir || !currentManifestPath || !nextManifestPath) throw new Error("missing materialize inputs");
+fs.mkdirSync(workdir, { recursive: true });
+const next = JSON.parse(fs.readFileSync(nextManifestPath, "utf8"));
+const nextFiles = Array.isArray(next.files) ? next.files : [];
+const forceClean = process.env.CAMELAI_FORCE_CLEAN === "1";
+const safeResolve = (relativePath) => {
+  const target = path.resolve(workdir, relativePath);
+  const root = path.resolve(workdir);
+  if (target !== root && target.startsWith(root + path.sep)) return target;
+  throw new Error("unsafe source path: " + relativePath);
+};
+if (forceClean || !fs.existsSync(currentManifestPath)) {
+  for (const name of fs.readdirSync(workdir)) {
+    fs.rmSync(path.join(workdir, name), { recursive: true, force: true });
+  }
+} else {
+  const current = JSON.parse(fs.readFileSync(currentManifestPath, "utf8"));
+  const keep = new Set(nextFiles.map((file) => file.path));
+  for (const file of Array.isArray(current.files) ? current.files : []) {
+    if (!file || typeof file.path !== "string" || keep.has(file.path)) continue;
+    fs.rmSync(safeResolve(file.path), { force: true });
+  }
+}
+`;
+
+function createTarArchive(sourceFiles: ProjectSourceFile[]): Uint8Array {
+  const chunks: Uint8Array[] = [];
+  for (const file of sourceFiles) {
+    chunks.push(tarHeader(file.path, file.bytes.byteLength));
+    chunks.push(file.bytes);
+    const padding = tarPadding(file.bytes.byteLength);
+    if (padding > 0) chunks.push(new Uint8Array(padding));
+  }
+  chunks.push(new Uint8Array(1024));
+  return concatBytes(chunks);
+}
+
+function tarHeader(path: string, size: number): Uint8Array {
+  const header = new Uint8Array(512);
+  const { name, prefix } = splitTarPath(path);
+  writeTarString(header, 0, 100, name);
+  writeTarString(header, 100, 8, "0000644");
+  writeTarString(header, 108, 8, "0000000");
+  writeTarString(header, 116, 8, "0000000");
+  writeTarOctal(header, 124, 12, size);
+  writeTarOctal(header, 136, 12, Math.floor(Date.now() / 1000));
+  for (let index = 148; index < 156; index += 1) header[index] = 0x20;
+  header[156] = 0x30;
+  writeTarString(header, 257, 6, "ustar");
+  writeTarString(header, 263, 2, "00");
+  if (prefix) writeTarString(header, 345, 155, prefix);
+  const checksum = header.reduce((sum, byte) => sum + byte, 0);
+  writeTarChecksum(header, checksum);
+  return header;
+}
+
+function splitTarPath(path: string): { name: string; prefix?: string } {
+  if (/[\0\r\n]/.test(path)) throw new Error(`Invalid source path for archive: ${path}`);
+  const encoded = new TextEncoder().encode(path);
+  if (encoded.byteLength <= 100) return { name: path };
+  const parts = path.split("/");
+  for (let index = 1; index < parts.length; index += 1) {
+    const prefix = parts.slice(0, index).join("/");
+    const name = parts.slice(index).join("/");
+    if (new TextEncoder().encode(prefix).byteLength <= 155 && new TextEncoder().encode(name).byteLength <= 100) {
+      return { name, prefix };
+    }
+  }
+  throw new Error(`Source path is too long for archive: ${path}`);
+}
+
+function writeTarString(header: Uint8Array, offset: number, length: number, value: string): void {
+  const encoded = new TextEncoder().encode(value);
+  if (encoded.byteLength > length) throw new Error(`Tar field is too long: ${value}`);
+  header.set(encoded, offset);
+}
+
+function writeTarOctal(header: Uint8Array, offset: number, length: number, value: number): void {
+  const text = value.toString(8).padStart(length - 1, "0").slice(-(length - 1));
+  writeTarString(header, offset, length - 1, text);
+  header[offset + length - 1] = 0;
+}
+
+function writeTarChecksum(header: Uint8Array, value: number): void {
+  const text = value.toString(8).padStart(6, "0").slice(-6);
+  writeTarString(header, 148, 6, text);
+  header[154] = 0;
+  header[155] = 0x20;
+}
+
+function tarPadding(size: number): number {
+  const remainder = size % 512;
+  return remainder === 0 ? 0 : 512 - remainder;
+}
+
+function concatBytes(chunks: Uint8Array[]): Uint8Array {
+  const total = chunks.reduce((sum, chunk) => sum + chunk.byteLength, 0);
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    out.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return out;
 }
 
 function validatePackageJson(sourceFiles: ProjectSourceFile[]): string | null {
@@ -451,26 +744,50 @@ function normalizeDependencySpec(value: unknown): string {
   return spec;
 }
 
-async function collectProjectSourceFiles(files: WorkspaceFileStoreLike): Promise<ProjectSourceFile[]> {
+async function collectProjectSourceFiles(files: WorkspaceFileStoreLike): Promise<ProjectSourceCollection> {
+  const startedAt = Date.now();
+  const listStartedAt = Date.now();
   const listing = await files.listFiles("/", { recursive: true, includeHidden: true, limit: 50_000 });
+  const sourceListMs = Date.now() - listStartedAt;
   if (!listing.success) throw new Error(listing.error || "Failed to list project files");
-  const out: ProjectSourceFile[] = [];
-  for (const entry of listing.files) {
-    if (entry.type !== "file") continue;
-    const relativePath = normalizeRelativeBuildPath(entry.absolutePath);
-    if (!relativePath || shouldIgnoreBuildSourcePath(relativePath)) continue;
+  const entries = listing.files
+    .filter((entry) => entry.type === "file")
+    .map((entry) => ({ entry, relativePath: normalizeRelativeBuildPath(entry.absolutePath) }))
+    .filter(({ relativePath }) => Boolean(relativePath) && !shouldIgnoreBuildSourcePath(relativePath));
+
+  const readStartedAt = Date.now();
+  const readFiles = await mapWithConcurrency(entries, SOURCE_READ_CONCURRENCY, async ({ entry, relativePath }) => {
     const read = await files.readFile(entry.absolutePath);
     if (!read.success || typeof read.content !== "string") {
       throw new Error(read.error || `Failed to read ${entry.absolutePath}`);
     }
-    out.push({
-      path: relativePath,
-      bytes: read.encoding === "base64"
-        ? base64ToBytes(read.content)
-        : new TextEncoder().encode(read.content),
-    });
-  }
-  return out.sort((a, b) => a.path.localeCompare(b.path));
+    const bytes = read.encoding === "base64"
+      ? base64ToBytes(read.content)
+      : new TextEncoder().encode(read.content);
+    return { path: relativePath, bytes };
+  });
+  const sourceReadMs = Date.now() - readStartedAt;
+
+  const hashStartedAt = Date.now();
+  const out = await mapWithConcurrency(readFiles, SOURCE_READ_CONCURRENCY, async (file) => {
+    const sha256 = await sha256Hex(file.bytes);
+    return {
+      ...file,
+      sha256,
+    };
+  });
+  const sourceHashMs = Date.now() - hashStartedAt;
+  const totalBytes = out.reduce((sum, file) => sum + file.bytes.byteLength, 0);
+  return {
+    files: out.sort((a, b) => a.path.localeCompare(b.path)),
+    totalBytes,
+    timings: {
+      collectSourceMs: Date.now() - startedAt,
+      sourceListMs,
+      sourceReadMs,
+      sourceHashMs,
+    },
+  };
 }
 
 function shouldIgnoreBuildSourcePath(path: string): boolean {
@@ -604,12 +921,6 @@ function stableHexHash(value: string): string {
   return (hash >>> 0).toString(16).padStart(8, "0");
 }
 
-function dirnameSandboxPath(path: string): string {
-  const parts = path.split("/").filter(Boolean);
-  parts.pop();
-  return parts.length ? `/${parts.join("/")}` : "/";
-}
-
 function normalizeSandboxExecResult(result: {
   success?: boolean;
   stdout?: string;
@@ -622,6 +933,48 @@ function normalizeSandboxExecResult(result: {
     stderr: typeof result.stderr === "string" ? result.stderr : "",
     exitCode,
   };
+}
+
+function zeroProjectBuildTimings(partial: Partial<ProjectBuildTimings> = {}): ProjectBuildTimings {
+  return {
+    collectSourceMs: 0,
+    sourceListMs: 0,
+    sourceReadMs: 0,
+    sourceHashMs: 0,
+    materializeMs: 0,
+    previousManifestReadMs: 0,
+    archiveCreateMs: 0,
+    archiveWriteMs: 0,
+    materializeExecMs: 0,
+    commandMs: 0,
+    persistMs: 0,
+    totalMs: 0,
+    ...partial,
+  };
+}
+
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  concurrency: number,
+  mapper: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let nextIndex = 0;
+  const workerCount = Math.max(1, Math.min(concurrency, items.length));
+  await Promise.all(Array.from({ length: workerCount }, async () => {
+    while (nextIndex < items.length) {
+      const index = nextIndex;
+      nextIndex += 1;
+      results[index] = await mapper(items[index]!, index);
+    }
+  }));
+  return results;
+}
+
+async function sha256Hex(bytes: Uint8Array): Promise<string> {
+  const content = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
+  const digest = await crypto.subtle.digest("SHA-256", content);
+  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
 function shellQuote(value: string): string {

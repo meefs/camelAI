@@ -37,6 +37,7 @@ function fakeSandbox(): ProjectBuildSandboxLike & {
   exec: ReturnType<typeof vi.fn>;
   mkdir: ReturnType<typeof vi.fn>;
   writeFile: ReturnType<typeof vi.fn>;
+  readFile: ReturnType<typeof vi.fn>;
 } {
   return {
     exec: vi.fn(async (command: string) => command.includes("bun run build")
@@ -44,6 +45,9 @@ function fakeSandbox(): ProjectBuildSandboxLike & {
       : { success: true, stdout: "", stderr: "", exitCode: 0 }),
     mkdir: vi.fn(async () => undefined),
     writeFile: vi.fn(async () => undefined),
+    readFile: vi.fn(async () => {
+      throw new Error("not found");
+    }),
   };
 }
 
@@ -72,9 +76,15 @@ describe("runProjectBuild", () => {
       stdout: "built",
       exitCode: 0,
       fileCount: 2,
+      sourceBytes: expect.any(Number),
+      timings: expect.objectContaining({
+        collectSourceMs: expect.any(Number),
+        materializeMs: expect.any(Number),
+        commandMs: expect.any(Number),
+      }),
     });
     expect(sandbox.mkdir).toHaveBeenCalledWith("/workspace/demo-project", { recursive: true });
-    expect(sandbox.exec).toHaveBeenCalledWith(expect.stringContaining("rm -rf"), { cwd: "/workspace" });
+    expect(sandbox.exec).toHaveBeenCalledWith(expect.stringContaining("tar -xf '/workspace/demo-project.source.tar'"), { cwd: "/workspace" });
     expect(sandbox.exec).toHaveBeenCalledWith("bun install && bun run build", {
       cwd: "/workspace/demo-project",
       timeoutMs: 15_000,
@@ -87,10 +97,9 @@ describe("runProjectBuild", () => {
     });
     expect(sandbox.writeFile).toHaveBeenCalledTimes(2);
     expect(sandbox.writeFile.mock.calls.map((call) => call[0])).toEqual([
-      "/workspace/demo-project/package.json",
-      "/workspace/demo-project/src/index.ts",
+      "/workspace/demo-project.source.tar",
+      "/workspace/demo-project.next-source-manifest.json",
     ]);
-    expect(sandbox.mkdir).toHaveBeenCalledWith("/workspace/demo-project/src", { recursive: true });
   });
 
   it("returns structured failures from the build command", async () => {

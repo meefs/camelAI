@@ -382,10 +382,8 @@ describe("deployWorkerModulesDirect", () => {
       success: true,
       result: { success: true, result: { has_assets: true } },
     });
-    expect(result.warnings).toEqual(expect.arrayContaining([
-      expect.stringContaining("Deploy asset rollback cache unavailable: put: Unspecified error (0)"),
-      expect.stringContaining("Deploy artifact cache unavailable: put: Unspecified error (0)"),
-    ]));
+    expect(result.warnings).toEqual(["Deploy artifact cache unavailable: put: Unspecified error (0)"]);
+    expect(result.sideEffects.artifactCacheKey).toBeUndefined();
     expect(r2Put).toHaveBeenCalled();
     expect(fetcher).toHaveBeenCalledTimes(3);
     expect(String(fetcher.mock.calls[2]![0])).toBe("https://api.cloudflare.com/client/v4/accounts/account-id/workers/dispatch/namespaces/dispatch-ns/scripts/demo-app--acme");

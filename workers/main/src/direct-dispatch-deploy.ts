@@ -1,3 +1,5 @@
+import { waitUntil } from "cloudflare:workers";
+
 import {
   mapVirtualizedBindings,
   validateBindings,
@@ -10,6 +12,8 @@ import {
   selfhostAssetsKey,
   type SelfhostAssetsRecord,
 } from "./selfhost-assets-registry.js";
+
+const DIRECT_DEPLOY_WRITE_CONCURRENCY = 16;
 
 export interface DirectDispatchDeployEnv {
   CF_API_TOKEN?: string;
@@ -44,6 +48,17 @@ interface NativeAssetsUploadResult {
   assetCount: number;
 }
 
+interface PreparedDirectAsset {
+  path: string;
+  normalizedPath: string;
+  cfPath: string;
+  content: Uint8Array;
+  contentType?: string;
+  base64: string;
+  cfHash: string;
+  r2Hash: string;
+}
+
 export interface DirectWorkerModule {
   name: string;
   contentType: string;
@@ -65,10 +80,26 @@ export interface DirectDispatchDeployResult {
   scriptName: string;
   dispatchScriptName: string;
   status: number;
+  timings?: DirectDispatchDeployTimings;
   result?: unknown;
   error?: string;
   warnings?: string[];
   sideEffects: DeploySideEffectsInfo;
+}
+
+export interface DirectDispatchDeployTimings {
+  totalMs: number;
+  prepareAssetsMs: number;
+  nativeAssetsMs: number;
+  storeAssetsMs: number;
+  migrationsMs: number;
+  artifactCacheMs: number;
+  cloudflareUploadMs: number;
+  publishAssetsRecordMs: number;
+  moduleCount: number;
+  assetCount: number;
+  moduleBytes: number;
+  assetBytes: number;
 }
 
 export interface DirectDeployRollbackRequest {
@@ -108,6 +139,11 @@ type DirectWorkerUploadMigrations = {
   steps: Array<Record<string, unknown>>;
 };
 
+type PreparedDeployArtifactCache = {
+  key: string;
+  record: Promise<DirectDeployArtifactCacheRecord>;
+};
+
 type CloudflareResultRead<T> = {
   result: T | null;
   errorText?: string;
@@ -118,6 +154,24 @@ export async function deployWorkerModulesDirect(
   request: DirectDispatchDeployRequest,
   options: { fetcher?: typeof fetch } = {},
 ): Promise<DirectDispatchDeployResult> {
+  const startedAt = Date.now();
+  const prepareAssetsStartedAt = Date.now();
+  const preparedAssets = await prepareDirectAssets(request.assets ?? []);
+  const prepareAssetsMs = Date.now() - prepareAssetsStartedAt;
+  const timings: DirectDispatchDeployTimings = {
+    totalMs: 0,
+    prepareAssetsMs,
+    nativeAssetsMs: 0,
+    storeAssetsMs: 0,
+    migrationsMs: 0,
+    artifactCacheMs: 0,
+    cloudflareUploadMs: 0,
+    publishAssetsRecordMs: 0,
+    moduleCount: request.modules.length,
+    assetCount: preparedAssets.length,
+    moduleBytes: request.modules.reduce((sum, module) => sum + contentBytes(module.content).byteLength, 0),
+    assetBytes: preparedAssets.reduce((sum, asset) => sum + asset.content.byteLength, 0),
+  };
   const cfApiToken = env.CF_API_TOKEN?.trim();
   const accountId = env.CF_ACCOUNT_ID?.trim();
   const dispatchNamespace = env.CF_DISPATCH_NAMESPACE?.trim();
@@ -138,16 +192,28 @@ export async function deployWorkerModulesDirect(
   }
 
   const dispatchScriptName = `${request.scriptName}--${request.identity.orgSlug}`;
-  const nativeAssets = await uploadNativeWorkerAssets(env, dispatchNamespace, dispatchScriptName, request, options.fetcher ?? fetch);
+  const nativeAssetsStartedAt = Date.now();
+  const nativeAssets = await uploadNativeWorkerAssets(env, dispatchNamespace, dispatchScriptName, request, preparedAssets, options.fetcher ?? fetch);
+  timings.nativeAssetsMs = Date.now() - nativeAssetsStartedAt;
   const warnings: string[] = [];
   let assetsRecord: SelfhostAssetsRecord | null = null;
+  let storeAssetsTask: Promise<void> | null = null;
+  const storeAssetsStartedAt = Date.now();
   try {
-    assetsRecord = await storeDirectAssets(env, dispatchScriptName, request, { publish: false });
+    const preparedStore = prepareDirectAssetsRecord(env, dispatchScriptName, request, preparedAssets);
+    assetsRecord = preparedStore.record;
+    storeAssetsTask = preparedStore.store;
+    storeAssetsTask?.catch(() => {});
+    if (!nativeAssets) await storeAssetsTask;
   } catch (error) {
     if (!nativeAssets) throw error;
     warnings.push(`Deploy asset rollback cache unavailable: ${errorMessage(error)}`);
+    storeAssetsTask = null;
+    assetsRecord = null;
   }
+  timings.storeAssetsMs = Date.now() - storeAssetsStartedAt;
   const bindings = normalizedDirectBindings(request.metadata);
+  const migrationsStartedAt = Date.now();
   const migrations = await migrationsForDirectDeploy(
     accountId,
     dispatchNamespace,
@@ -156,6 +222,7 @@ export async function deployWorkerModulesDirect(
     cfApiToken,
     options.fetcher ?? fetch,
   );
+  timings.migrationsMs = Date.now() - migrationsStartedAt;
   const metadata: DirectWorkerMetadata = {
     ...request.metadata,
     migrations,
@@ -181,8 +248,10 @@ export async function deployWorkerModulesDirect(
       : {}),
   };
   let artifactCacheKey: string | undefined;
+  let artifactCacheTask: Promise<string | undefined> | null = null;
+  const artifactCacheStartedAt = Date.now();
   try {
-    artifactCacheKey = await storeDeployArtifactCache(env, {
+    const preparedArtifactCache = await prepareDeployArtifactCache(env, {
       scriptName: request.scriptName,
       dispatchScriptName,
       identity: request.identity,
@@ -190,9 +259,16 @@ export async function deployWorkerModulesDirect(
       modules: request.modules,
       assetsRecord,
     });
+    artifactCacheTask = preparedArtifactCache
+      ? Promise.resolve(storeAssetsTask)
+        .then(() => storePreparedDeployArtifactCache(env, preparedArtifactCache))
+        .then(() => preparedArtifactCache.key)
+      : null;
+    artifactCacheTask?.catch(() => {});
   } catch (error) {
     warnings.push(`Deploy artifact cache unavailable: ${errorMessage(error)}`);
   }
+  timings.artifactCacheMs = Date.now() - artifactCacheStartedAt;
   const form = new FormData();
   form.append("metadata", new Blob([JSON.stringify(metadata)], { type: "application/json" }));
   for (const module of request.modules) {
@@ -203,19 +279,33 @@ export async function deployWorkerModulesDirect(
     `/workers/dispatch/namespaces/${encodeURIComponent(dispatchNamespace)}` +
     `/scripts/${encodeURIComponent(dispatchScriptName)}`;
   const fetcher = options.fetcher ?? fetch;
+  const cloudflareUploadStartedAt = Date.now();
   const response = await fetcher(url, {
     method: "PUT",
     headers: { Authorization: `Bearer ${cfApiToken}` },
     body: form,
   });
+  timings.cloudflareUploadMs = Date.now() - cloudflareUploadStartedAt;
   const body = await readJsonOrText(response);
   if (response.ok && assetsRecord) {
-    try {
-      await publishDirectAssetsRecord(env, dispatchScriptName, assetsRecord);
-    } catch (error) {
-      warnings.push(`Deploy asset manifest cache unavailable: ${errorMessage(error)}`);
-    }
+    const publishAssetsStartedAt = Date.now();
+    scheduleDeployBackgroundTask(
+      Promise.resolve(storeAssetsTask)
+        .then(() => publishDirectAssetsRecord(env, dispatchScriptName, assetsRecord))
+        .catch((error) => console.warn("[direct-deploy] asset cache publish failed", { dispatchScriptName, error: errorMessage(error) })),
+    );
+    timings.publishAssetsRecordMs = Date.now() - publishAssetsStartedAt;
   }
+  if (response.ok && artifactCacheTask) {
+    const artifactCacheStoreStartedAt = Date.now();
+    try {
+      artifactCacheKey = await artifactCacheTask;
+    } catch (error) {
+      warnings.push(`Deploy artifact cache unavailable: ${errorMessage(error)}`);
+    }
+    timings.artifactCacheMs += Date.now() - artifactCacheStoreStartedAt;
+  }
+  timings.totalMs = Date.now() - startedAt;
   const sideEffects: DeploySideEffectsInfo = {
     scriptName: request.scriptName,
     dispatchScriptName,
@@ -234,6 +324,7 @@ export async function deployWorkerModulesDirect(
     scriptName: request.scriptName,
     dispatchScriptName,
     status: response.status,
+    timings,
     sideEffects,
     ...(warnings.length > 0 ? { warnings } : {}),
     ...(response.ok ? { result: body } : { error: typeof body === "string" ? body : JSON.stringify(body) }),
@@ -378,22 +469,17 @@ async function uploadNativeWorkerAssets(
   dispatchNamespace: string,
   dispatchScriptName: string,
   request: DirectDispatchDeployRequest,
+  preparedAssets: PreparedDirectAsset[],
   fetcher: typeof fetch,
 ): Promise<NativeAssetsUploadResult | null> {
-  const assets = request.assets ?? [];
-  if (!request.metadata.assets || assets.length === 0) return null;
+  if (!request.metadata.assets || preparedAssets.length === 0) return null;
   const cfApiToken = env.CF_API_TOKEN?.trim();
   const accountId = env.CF_ACCOUNT_ID?.trim();
   if (!cfApiToken || !accountId) throw new Error("Cloudflare credentials are required for direct deploy assets");
 
-  const entries = await Promise.all(assets.map(async (asset) => ({
-    asset,
-    path: `/${normalizeSelfhostAssetPath(asset.path)}`,
-    hash: await workerAssetHash(asset),
-  })));
   const manifest: Record<string, { hash: string; size: number }> = {};
-  for (const entry of entries) {
-    manifest[entry.path] = { hash: entry.hash, size: entry.asset.content.byteLength };
+  for (const asset of preparedAssets) {
+    manifest[asset.cfPath] = { hash: asset.cfHash, size: asset.content.byteLength };
   }
 
   const sessionUrl = `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(accountId)}` +
@@ -414,22 +500,21 @@ async function uploadNativeWorkerAssets(
   const uploadJwt = sessionBody.result.jwt;
   const buckets = sessionBody.result.buckets ?? [];
   if (!uploadJwt) throw new Error("Asset upload session did not return an upload token");
-  if (buckets.length === 0) return { jwt: uploadJwt, assetCount: assets.length };
+  if (buckets.length === 0) return { jwt: uploadJwt, assetCount: preparedAssets.length };
 
-  const entriesByHash = new Map(entries.map((entry) => [entry.hash, entry]));
-  let completionJwt = "";
-  for (const bucket of buckets) {
+  const entriesByHash = new Map(preparedAssets.map((asset) => [asset.cfHash, asset]));
+  const uploadUrl = `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(accountId)}/workers/assets/upload?base64=true`;
+  const uploadResults = await Promise.all(buckets.map(async (bucket) => {
     const form = new FormData();
     for (const hash of bucket) {
       const entry = entriesByHash.get(hash);
       if (!entry) throw new Error(`Asset upload bucket referenced unknown hash: ${hash}`);
       form.append(
         hash,
-        new Blob([bytesToBase64(entry.asset.content)], { type: entry.asset.contentType ?? "application/null" }),
+        new Blob([entry.base64], { type: entry.contentType ?? "application/null" }),
         hash,
       );
     }
-    const uploadUrl = `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(accountId)}/workers/assets/upload?base64=true`;
     const uploadResponse = await fetcher(uploadUrl, {
       method: "POST",
       headers: { Authorization: `Bearer ${uploadJwt}` },
@@ -439,16 +524,11 @@ async function uploadNativeWorkerAssets(
     if (!uploadResponse.ok || !uploadBody.result) {
       throw new Error(`Asset upload failed: ${uploadBody.errorText ?? "missing result"}`);
     }
-    completionJwt = uploadBody.result.jwt ?? completionJwt;
-  }
+    return uploadBody.result.jwt;
+  }));
+  const completionJwt = uploadResults.find((jwt): jwt is string => typeof jwt === "string" && jwt.length > 0) ?? "";
   if (!completionJwt) throw new Error("Asset upload completed without a completion token");
-  return { jwt: completionJwt, assetCount: assets.length };
-}
-
-async function workerAssetHash(asset: { path: string; content: Uint8Array }): Promise<string> {
-  const extension = asset.path.split(".").pop() ?? "";
-  const encoded = new TextEncoder().encode(`${bytesToBase64(asset.content)}${extension}`);
-  return (await sha256Hex(encoded)).slice(0, 32);
+  return { jwt: completionJwt, assetCount: preparedAssets.length };
 }
 
 export async function rollbackWorkerDeployFromArtifactCache(
@@ -484,6 +564,7 @@ export async function rollbackWorkerDeployFromArtifactCache(
   let metadata = record.metadata;
   if (record.assetsRecord) {
     const assets = await loadDirectAssetsFromRecord(env, record.dispatchScriptName, record.assetsRecord);
+    const preparedAssets = await prepareDirectAssets(assets);
     const nativeAssets = await uploadNativeWorkerAssets(env, dispatchNamespace, record.dispatchScriptName, {
       scriptName: record.scriptName,
       hostname: request.hostname,
@@ -491,7 +572,7 @@ export async function rollbackWorkerDeployFromArtifactCache(
       metadata: record.metadata,
       modules: [],
       assets,
-    }, fetcher);
+    }, preparedAssets, fetcher);
     metadata = nativeAssets ? { ...record.metadata, assets: { jwt: nativeAssets.jwt } } : record.metadata;
   }
 
@@ -607,30 +688,43 @@ function assetsBindingName(assets: unknown): string {
   return "ASSETS";
 }
 
-async function storeDirectAssets(
+async function prepareDirectAssets(
+  assets: Array<{ path: string; content: Uint8Array; contentType?: string }>,
+): Promise<PreparedDirectAsset[]> {
+  return mapWithConcurrency(assets, DIRECT_DEPLOY_WRITE_CONCURRENCY, async (asset) => {
+    const normalizedPath = normalizeSelfhostAssetPath(asset.path);
+    const base64 = bytesToBase64(asset.content);
+    const extension = asset.path.split(".").pop() ?? "";
+    const cfHash = (await sha256Hex(new TextEncoder().encode(`${base64}${extension}`))).slice(0, 32);
+    const r2Hash = await sha256Hex(asset.content);
+    return {
+      path: asset.path,
+      normalizedPath,
+      cfPath: `/${normalizedPath}`,
+      content: asset.content,
+      ...(asset.contentType ? { contentType: asset.contentType } : {}),
+      base64,
+      cfHash,
+      r2Hash,
+    };
+  });
+}
+
+function prepareDirectAssetsRecord(
   env: DirectDispatchDeployEnv,
   appId: string,
   request: DirectDispatchDeployRequest,
-  options: { publish?: boolean } = {},
-): Promise<SelfhostAssetsRecord | null> {
-  const assets = request.assets ?? [];
+  preparedAssets: PreparedDirectAsset[],
+): { record: SelfhostAssetsRecord | null; store: Promise<void> | null } {
   const hasAssetsBinding = request.metadata.bindings?.some((binding) => binding.type === "assets") || Boolean(request.metadata.assets);
-  if (!hasAssetsBinding && assets.length === 0) return null;
+  if (!hasAssetsBinding && preparedAssets.length === 0) return { record: null, store: null };
   if (!env.APP_KV) throw new Error("APP_KV is required for direct deploy assets");
-  if (assets.length > 0 && !env.R2_BUCKET) throw new Error("R2_BUCKET is required for direct deploy assets");
+  if (preparedAssets.length > 0 && !env.R2_BUCKET) throw new Error("R2_BUCKET is required for direct deploy assets");
 
   const manifest: SelfhostAssetsRecord["manifest"] = {};
-  for (const asset of assets) {
-    const path = normalizeSelfhostAssetPath(asset.path);
-    const hash = await sha256Hex(asset.content);
-    if (!env.R2_BUCKET) throw new Error("R2_BUCKET is required for direct deploy assets");
-    await env.R2_BUCKET.put(
-      selfhostAssetObjectKey(appId, hash),
-      asset.content,
-      asset.contentType ? { httpMetadata: { contentType: asset.contentType } } : undefined,
-    );
-    manifest[path] = {
-      hash,
+  for (const asset of preparedAssets) {
+    manifest[asset.normalizedPath] = {
+      hash: asset.r2Hash,
       size: asset.content.byteLength,
       ...(asset.contentType ? { contentType: asset.contentType } : {}),
     };
@@ -642,10 +736,17 @@ async function storeDirectAssets(
     createdAt: new Date().toISOString(),
     manifest,
   };
-  if (options.publish !== false) {
-    await publishDirectAssetsRecord(env, appId, record);
-  }
-  return record;
+  const store = preparedAssets.length > 0
+    ? mapWithConcurrency(preparedAssets, DIRECT_DEPLOY_WRITE_CONCURRENCY, async (asset) => {
+      if (!env.R2_BUCKET) throw new Error("R2_BUCKET is required for direct deploy assets");
+      await env.R2_BUCKET.put(
+        selfhostAssetObjectKey(appId, asset.r2Hash),
+        asset.content,
+        asset.contentType ? { httpMetadata: { contentType: asset.contentType } } : undefined,
+      );
+    }).then(() => undefined)
+    : Promise.resolve();
+  return { record, store };
 }
 
 async function publishDirectAssetsRecord(
@@ -657,7 +758,7 @@ async function publishDirectAssetsRecord(
   await env.APP_KV.put(selfhostAssetsKey(appId), JSON.stringify(record));
 }
 
-async function storeDeployArtifactCache(
+async function prepareDeployArtifactCache(
   env: DirectDispatchDeployEnv,
   input: {
     scriptName: string;
@@ -667,41 +768,64 @@ async function storeDeployArtifactCache(
     modules: DirectWorkerModule[];
     assetsRecord: SelfhostAssetsRecord | null;
   },
-): Promise<string | undefined> {
+): Promise<PreparedDeployArtifactCache | undefined> {
   if (!env.R2_BUCKET) return undefined;
-  const deterministic = {
+  const moduleFingerprints = await mapWithConcurrency(input.modules, DIRECT_DEPLOY_WRITE_CONCURRENCY, async (module) => {
+    const bytes = contentBytes(module.content);
+    return {
+      name: module.name,
+      contentType: module.contentType,
+      size: bytes.byteLength,
+      sha256: await sha256Hex(bytes),
+    };
+  });
+  const deterministicForKey = {
     schemaVersion: 1 as const,
     scriptName: input.scriptName,
     dispatchScriptName: input.dispatchScriptName,
     identity: input.identity,
     metadata: input.metadata,
-    modules: await Promise.all(input.modules.map(async (module) => ({
-      name: module.name,
-      contentType: module.contentType,
-      contentBase64: bytesToBase64(contentBytes(module.content)),
-    }))),
+    modules: moduleFingerprints,
     assetsRecord: input.assetsRecord,
   };
-  const encoded = new TextEncoder().encode(JSON.stringify(deterministic));
+  const encoded = new TextEncoder().encode(JSON.stringify(deterministicForKey));
   const digest = await sha256Hex(encoded);
   const projectSegment = input.identity.projectId ? encodeURIComponent(input.identity.projectId) : "workspace";
   const key = `deploy-artifacts/${encodeURIComponent(input.identity.orgId)}/${encodeURIComponent(input.identity.workspaceId)}/${projectSegment}/${encodeURIComponent(input.dispatchScriptName)}/${digest}.json`;
-  const record: DirectDeployArtifactCacheRecord = {
-    ...deterministic,
+  const record = (async (): Promise<DirectDeployArtifactCacheRecord> => ({
+    schemaVersion: 1 as const,
+    scriptName: input.scriptName,
+    dispatchScriptName: input.dispatchScriptName,
+    identity: input.identity,
+    metadata: input.metadata,
+    modules: await mapWithConcurrency(input.modules, DIRECT_DEPLOY_WRITE_CONCURRENCY, async (module) => ({
+      name: module.name,
+      contentType: module.contentType,
+      contentBase64: bytesToBase64(contentBytes(module.content)),
+    })),
+    assetsRecord: input.assetsRecord,
     createdAt: new Date().toISOString(),
-  };
-  await env.R2_BUCKET.put(key, JSON.stringify(record), {
+  }))();
+  return { key, record };
+}
+
+async function storePreparedDeployArtifactCache(
+  env: DirectDispatchDeployEnv,
+  prepared: PreparedDeployArtifactCache,
+): Promise<void> {
+  if (!env.R2_BUCKET) return;
+  const record = await prepared.record;
+  await env.R2_BUCKET.put(prepared.key, JSON.stringify(record), {
     httpMetadata: { contentType: "application/json; charset=utf-8" },
     customMetadata: {
       type: "direct-deploy-artifact-cache",
-      orgId: input.identity.orgId,
-      workspaceId: input.identity.workspaceId,
-      scriptName: input.scriptName,
-      dispatchScriptName: input.dispatchScriptName,
-      ...(input.identity.projectId ? { projectId: input.identity.projectId } : {}),
+      orgId: record.identity.orgId,
+      workspaceId: record.identity.workspaceId,
+      scriptName: record.scriptName,
+      dispatchScriptName: record.dispatchScriptName,
+      ...(record.identity.projectId ? { projectId: record.identity.projectId } : {}),
     },
   });
-  return key;
 }
 
 async function sha256Hex(bytes: Uint8Array): Promise<string> {
@@ -714,6 +838,34 @@ function contentBytes(content: string | Uint8Array | ArrayBuffer): Uint8Array {
   if (typeof content === "string") return new TextEncoder().encode(content);
   if (content instanceof ArrayBuffer) return new Uint8Array(content);
   return content;
+}
+
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  concurrency: number,
+  mapper: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let nextIndex = 0;
+  const workerCount = Math.max(1, Math.min(concurrency, items.length));
+  await Promise.all(Array.from({ length: workerCount }, async () => {
+    while (nextIndex < items.length) {
+      const index = nextIndex;
+      nextIndex += 1;
+      results[index] = await mapper(items[index]!, index);
+    }
+  }));
+  return results;
+}
+
+function scheduleDeployBackgroundTask(task: Promise<unknown>): void {
+  try {
+    waitUntil(task);
+  } catch {
+    // Unit tests and non-request contexts may not provide an active waitUntil
+    // scope. Keep the work best-effort without blocking the deploy response.
+    task.catch(() => {});
+  }
 }
 
 function bytesToBase64(bytes: Uint8Array): string {

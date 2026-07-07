@@ -488,9 +488,12 @@ export class WorkspaceFilesystemDO extends DurableObject<WorkspaceFilesystemEnv>
       if (!bytes) continue;
       const sha256 = await sha256Hex(bytes);
       const blobKey = projectSnapshotBlobKey(this.ctx.id.toString(), sha256);
-      await this.env.R2_BUCKET.put(blobKey, bytes, {
-        customMetadata: { type: "project-source-snapshot", sha256 },
-      });
+      const existingBlob = await this.env.R2_BUCKET.head(blobKey);
+      if (!existingBlob) {
+        await this.env.R2_BUCKET.put(blobKey, bytes, {
+          customMetadata: { type: "project-source-snapshot", sha256 },
+        });
+      }
       entries.push({ path, size: bytes.byteLength, sha256, blobKey });
       totalBytes += bytes.byteLength;
     }
