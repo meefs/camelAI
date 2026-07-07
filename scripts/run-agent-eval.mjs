@@ -31,6 +31,38 @@ if (!process.env.MINIFLARE_CONTAINER_EGRESS_IMAGE) {
 // container, so it sets EVAL_MANAGED_CLEANUP=1 to skip this and owns a concurrency-safe reaper instead.
 const EVAL_CONTAINER_CLASS_NAMES = ["EvalSandbox", "ProjectBuildSandbox", "AnalysisSandbox"];
 const VITEST_CONTAINER_NAME_PREFIX = "workerd-vitest-pool-workers-runner--";
+const ANALYSIS_SANDBOX_IMAGE = "camelai-analysis-sandbox:latest";
+const ANALYSIS_SANDBOX_DOCKERFILE = "workers/main/analysis-sandbox.Dockerfile";
+const ANALYSIS_EVAL_IDS = new Set([
+  "data-analysis-report-live",
+  "notebook-fix-rerun-live",
+]);
+
+function ensureAnalysisSandboxImage(evalId) {
+  if (!ANALYSIS_EVAL_IDS.has(evalId)) return;
+  if (!existsSync(ANALYSIS_SANDBOX_DOCKERFILE)) return;
+  const probe = spawnSync("docker", ["image", "inspect", ANALYSIS_SANDBOX_IMAGE], {
+    stdio: "ignore",
+  });
+  if (probe.status === 0) return;
+  console.log(`Building ${ANALYSIS_SANDBOX_IMAGE} for ${evalId}`);
+  const build = spawnSync(
+    "docker",
+    [
+      "build",
+      "-t",
+      ANALYSIS_SANDBOX_IMAGE,
+      "-f",
+      ANALYSIS_SANDBOX_DOCKERFILE,
+      "workers/main",
+    ],
+    { stdio: "inherit" },
+  );
+  if (build.status !== 0) {
+    console.error(`Failed to build ${ANALYSIS_SANDBOX_IMAGE}.`);
+    process.exit(build.status ?? 1);
+  }
+}
 
 function sweepEvalContainers(reason) {
   if (process.env.EVAL_MANAGED_CLEANUP === "1") return;
@@ -232,6 +264,8 @@ const evalEnv = withLoadedEvalEnv({
   ...process.env,
   ...parseOptions(cliArgs),
 });
+
+ensureAnalysisSandboxImage(evalName);
 
 const artifactDir = path.resolve(evalEnv.EVAL_ARTIFACT_DIR ?? ".eval-artifacts");
 const artifactModelLabel =
