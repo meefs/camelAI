@@ -176,7 +176,35 @@ describe('react-router scaffold build-manifest.mjs (generated script execution)'
     ]);
   });
 
-  it('fails loudly when Durable Objects are declared without a main worker module', () => {
+  it('allows delete-only Durable Object migrations without a main worker module', () => {
+    const dir = makeTempDir();
+    setupProject(dir, {
+      name: 'demo-app',
+      compatibility_date: '2026-06-01',
+      migrations: [
+        { tag: 'v1', new_sqlite_classes: ['LeaderboardDO'] },
+        { tag: 'v2', deleted_classes: ['LeaderboardDO'] },
+      ],
+    });
+
+    const result = runBuildManifest(dir);
+    expect(result.status).toBe(0);
+
+    const esbuildArgs = readEsbuildArgs(dir);
+    expect(esbuildArgs[0]).toBe('build/server/_cf_worker_entry.js');
+
+    const manifest = readManifest(dir);
+    expect(manifest).toMatchObject({
+      name: 'demo-app',
+      main_module: 'worker.js',
+      migrations: [
+        { tag: 'v1', new_sqlite_classes: ['LeaderboardDO'] },
+        { tag: 'v2', deleted_classes: ['LeaderboardDO'] },
+      ],
+    });
+  });
+
+  it('builds the deploy manifest when Durable Objects are declared without a main worker module', () => {
     const dir = makeTempDir();
     setupProject(dir, {
       name: 'demo-app',
@@ -188,12 +216,19 @@ describe('react-router scaffold build-manifest.mjs (generated script execution)'
     });
 
     const result = runBuildManifest(dir);
-    expect(result.status).not.toBe(0);
-    expect(result.stderr).toContain(
-      'wrangler.jsonc declares Durable Objects but no main worker module exports their classes',
-    );
-    expect(result.stderr).toContain('./workers/app.ts');
-    expect(existsSync(path.join(dir, 'build', 'server', 'wrangler.json'))).toBe(false);
+    expect(result.status).toBe(0);
+
+    const esbuildArgs = readEsbuildArgs(dir);
+    expect(esbuildArgs[0]).toBe('build/server/_cf_worker_entry.js');
+
+    const manifest = readManifest(dir);
+    expect(manifest).toMatchObject({
+      name: 'demo-app',
+      main_module: 'worker.js',
+      durable_objects: {
+        bindings: [{ name: 'LEADERBOARD_DO', class_name: 'LeaderboardDO' }],
+      },
+      migrations: [{ tag: 'v1', new_sqlite_classes: ['LeaderboardDO'] }],
+    });
   });
 });
-

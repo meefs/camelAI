@@ -128,10 +128,11 @@ describe("defaultProjectScaffoldFiles", () => {
     expect(buildManifest).toContain("...(bindings.length > 0 ? { bindings } : {})");
     expect(buildManifest).not.toContain("{ vars: config.vars }");
 
-    // Without a main module, declared DO config cannot be bundled: fail loudly.
-    expect(buildManifest).toContain("if (config.durable_objects || config.migrations) {");
-    expect(buildManifest).toContain("declares Durable Objects but no main worker module exports their classes");
-    expect(buildManifest).toContain("process.exit(1)");
+    // The generated build step should not infer Durable Object validity from
+    // config history. Deploy-time validation checks actual current bindings
+    // against the bundled module exports and produces the actionable error.
+    expect(buildManifest).not.toContain("declares Durable Objects but no main worker module exports their classes");
+    expect(buildManifest).not.toContain("process.exit(1)");
   });
 
   it("generates the notebook-first data-analysis scaffold", () => {
