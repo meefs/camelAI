@@ -120,6 +120,11 @@ export default defineConfig({
             useSQLite: true,
             container: { imageName: 'camelai-eval-sandbox:latest' },
           },
+          ANALYSIS_SANDBOX: {
+            className: 'AnalysisSandbox',
+            useSQLite: true,
+            container: { imageName: 'camelai-analysis-sandbox:latest' },
+          },
         },
         cachePersist: false,
         d1Persist: false,

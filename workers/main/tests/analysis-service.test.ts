@@ -19,6 +19,7 @@ import {
   treeManifestCommand,
   validateNotebookCommand,
   type AnalysisSandboxLike,
+  type AnalysisSandboxStub,
 } from "../src/analysis-service.js";
 import type { WorkspaceFileStoreLike } from "../src/workspace-filesystem-do.js";
 
@@ -113,6 +114,7 @@ describe("command builders", () => {
     expect(cmd).toContain("sha256sum");
     expect(cmd).toContain("-name '.venv'");
     expect(cmd).toContain("-prune");
+    expect(cmd).not.toContain("exit ");
   });
 });
 
@@ -354,6 +356,77 @@ describe("runAnalysisCode env scoping", () => {
     const sandbox = envRecordingSandbox();
     await runAnalysisCode({ code: "print(1)" }, { sandbox, scratchId: "s1", connections: false });
     expect(sandbox.envs.every((env) => !env?.CAMELAI_CONNECTIONS_RPC_URL)).toBe(true);
+  });
+});
+
+describe("AnalysisService workspace uploads mount", () => {
+  function analysisServiceSandbox() {
+    const mounts: Array<{ bucketBinding: string; prefix: string; mountPath?: string }> = [];
+    const connections: Array<unknown> = [];
+    const sandbox: AnalysisSandboxStub & { mounts: typeof mounts; connections: typeof connections } = {
+      mounts,
+      connections,
+      async ensureMounted(bucketBinding: string, prefix: string, mountPath?: string) {
+        mounts.push({ bucketBinding, prefix, mountPath });
+      },
+      async ensureConnectionsRpc(params: unknown) {
+        connections.push(params);
+      },
+      async sealAppEgress() {},
+      async mkdir() {
+        return {};
+      },
+      async writeFile() {
+        return {};
+      },
+      async readFile() {
+        return { content: "" };
+      },
+      async exec() {
+        return { exitCode: 0, stdout: "", stderr: "" };
+      },
+    };
+    return sandbox;
+  }
+
+  function serviceWithUploads(objects: string[]) {
+    const sandbox = analysisServiceSandbox();
+    const listCalls: unknown[] = [];
+    const service = Object.create(AnalysisService.prototype) as AnalysisService & {
+      env: unknown;
+      ctx: unknown;
+    };
+    service.env = {
+      R2_BUCKET: {
+        async list(options: unknown) {
+          listCalls.push(options);
+          return { objects: objects.map((key) => ({ key })) };
+        },
+      },
+    };
+    service.ctx = { props: { orgId: "org-1", workspaceId: "ws-1" } };
+    (service as unknown as { sandboxes: Map<string, AnalysisSandboxStub> }).sandboxes = new Map([["agent", sandbox]]);
+    return { service, sandbox, listCalls };
+  }
+
+  it("skips the /uploads mount when the workspace upload prefix is empty", async () => {
+    const { service, sandbox, listCalls } = serviceWithUploads([]);
+    await expect(service.runCode({ code: "print('ok')" })).resolves.toMatchObject({ ok: true });
+    expect(listCalls).toEqual([{ prefix: "org-1/ws-1/user-uploads/", limit: 1 }]);
+    expect(sandbox.mounts).toEqual([]);
+    expect(sandbox.connections).toHaveLength(1);
+  });
+
+  it("mounts /uploads when the workspace upload prefix has objects", async () => {
+    const { service, sandbox } = serviceWithUploads(["org-1/ws-1/user-uploads/data.csv"]);
+    await expect(service.runCode({ code: "print('ok')" })).resolves.toMatchObject({ ok: true });
+    expect(sandbox.mounts).toEqual([
+      {
+        bucketBinding: "R2_BUCKET",
+        prefix: "org-1/ws-1/user-uploads",
+        mountPath: "/uploads",
+      },
+    ]);
   });
 });
 

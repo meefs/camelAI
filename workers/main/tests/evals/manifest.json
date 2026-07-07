@@ -11,6 +11,16 @@
       "realDeploy": true
     },
     {
+      "id": "do-backed-project-deploy-live",
+      "description": "Create and deploy a DO-backed project with Durable Object persistence through deploy_project",
+      "realDeploy": true
+    },
+    {
+      "id": "project-update-redeploy-state-live",
+      "description": "Update and redeploy a DO-backed app while preserving Durable Object state",
+      "realDeploy": true
+    },
+    {
       "id": "space-matching-game-live",
       "description": "Build and deploy a persistent space themed matching game with leaderboard",
       "realDeploy": true
@@ -18,6 +28,23 @@
     {
       "id": "sandbox-write-file-live",
       "description": "Write and verify a file in the project sandbox"
+    },
+    {
+      "id": "data-analysis-report-live",
+      "description": "Create a notebook-first data-analysis project, run the notebook, and preview the report"
+    },
+    {
+      "id": "notebook-fix-rerun-live",
+      "description": "Fix a stale failing data-analysis notebook, rerun it, and preview the refreshed report"
+    },
+    {
+      "id": "project-snapshot-revert-live",
+      "description": "Discover and restore a DO-backed project source snapshot with list_commits/revert_project"
+    },
+    {
+      "id": "project-revert-redeploy-live",
+      "description": "Restore a DO-backed project source snapshot and redeploy the restored live app",
+      "realDeploy": true
     },
     {
       "id": "scheduled-prompt-live",
