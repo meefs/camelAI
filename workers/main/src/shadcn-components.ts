@@ -22,8 +22,8 @@ const SHADCN_COMPONENT_FILES: Record<SupportedShadcnComponent, ShadcnComponentFi
   accordion: {
     path: "/app/components/ui/accordion.tsx",
     content: `import * as React from "react";
-import { Accordion as AccordionPrimitive } from "radix-ui";
-import { ChevronDownIcon } from "lucide-react";
+import * as AccordionPrimitive from "@radix-ui/react-accordion";
+import ChevronDownIcon from "lucide-react/dist/esm/icons/chevron-down.js";
 
 import { cn } from "~/lib/utils";
 
@@ -88,7 +88,7 @@ export { Accordion, AccordionItem, AccordionTrigger, AccordionContent };
   progress: {
     path: "/app/components/ui/progress.tsx",
     content: `import * as React from "react";
-import { Progress as ProgressPrimitive } from "radix-ui";
+import * as ProgressPrimitive from "@radix-ui/react-progress";
 
 import { cn } from "~/lib/utils";
 
@@ -118,7 +118,7 @@ export { Progress };
   tabs: {
     path: "/app/components/ui/tabs.tsx",
     content: `import * as React from "react";
-import { Tabs as TabsPrimitive } from "radix-ui";
+import * as TabsPrimitive from "@radix-ui/react-tabs";
 
 import { cn } from "~/lib/utils";
 

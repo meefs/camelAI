@@ -649,7 +649,7 @@ const CODE_MODE_TOOL_REGISTRY: CodeModeToolRegistration[] = [
   ),
   codeModePassthroughTool(
     "add_shadcn_component",
-    `Add one or more bundled shadcn/ui primitive files to a DO-backed React Router project without npm registry access. Uses the scaffold's existing radix-ui package, ~/lib/utils, and app/components/ui path. Supported components: ${SUPPORTED_SHADCN_COMPONENTS.join(", ")}. Arguments: { project, component? or components?, force? }.`,
+    `Add one or more bundled shadcn/ui primitive files to a DO-backed React Router project without npm registry access. Uses the scaffold's existing Radix primitive packages, ~/lib/utils, and app/components/ui path. Supported components: ${SUPPORTED_SHADCN_COMPONENTS.join(", ")}. Arguments: { project, component? or components?, force? }.`,
     Type.Object({
       project: Type.String(),
       component: Type.Optional(Type.String()),
