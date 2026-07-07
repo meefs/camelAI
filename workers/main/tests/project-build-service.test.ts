@@ -308,6 +308,14 @@ describe("buildLogTail", () => {
     expect(buildLogTail(raw)).toBe("✗ Build failed\n\nerror TS2339: nope");
   });
 
+  it("strips non-color ANSI controls and normalizes progress carriage returns", () => {
+    const raw = "transforming...\u001b[2K\r✓ 1817 modules transformed.\n✗ Build failed";
+    const tail = buildLogTail(raw)!;
+    expect(tail).toBe("transforming...\n✓ 1817 modules transformed.\n✗ Build failed");
+    expect(tail).not.toContain("[2K");
+    expect(tail).not.toContain("\r");
+  });
+
   it("returns complete modest output without truncating the beginning", () => {
     const noise = Array.from({ length: 500 }, (_, i) => `progress line ${i}`).join("\n");
     const raw = `${noise}\nError: something exploded at the end`;

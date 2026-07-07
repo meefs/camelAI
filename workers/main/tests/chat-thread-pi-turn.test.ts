@@ -5879,6 +5879,40 @@ describe('ChatThreadDO Pi turn handling', () => {
     expect(result.errorSummary).not.toContain('__react-router-build-client-route');
   });
 
+  it('keeps Tailwind CSS diagnostics relative and strips progress controls', async () => {
+    const { fake, sandbox } = createProjectToolFake();
+    const workdir = '/workspace/project-1';
+    const buildOutput = [
+      'vite v8.1.3 building client environment for production...',
+      'transforming...\u001b[2K\r✓ 1817 modules transformed.',
+      '✗ Build failed in 2.31s',
+      'Build failed with 1 error:',
+      '',
+      `[plugin @tailwindcss/vite:generate:build] ${workdir}/app/app.css`,
+      'CssSyntaxError: Missing closing } at',
+      `    at Se (file://${workdir}/node_modules/tailwindcss/dist/lib.mjs:1:3926)`,
+      '} {',
+      '  errors: [Getter/Setter]',
+      '}',
+      'error: script "build" exited with code 1',
+    ].join('\n');
+    sandbox.exec.mockImplementation(async (command: string) =>
+      command.includes('bun run build')
+        ? { success: false, exitCode: 1, stdout: buildOutput, stderr: '' }
+        : { success: true, exitCode: 0, stdout: '', stderr: '' });
+
+    const result = await CodeModeToolsBinding.prototype.callTool.call(fake, 'build_project', {
+      project: 'Demo App',
+    }) as Record<string, unknown>;
+
+    expect(result.errorMessage).toBe('[plugin @tailwindcss/vite:generate:build] app/app.css CssSyntaxError: Missing closing } at');
+    expect(result.errorSummary).toBe('[plugin @tailwindcss/vite:generate:build] app/app.css CssSyntaxError: Missing closing } at');
+    expect(result.errorSummary).not.toContain('/workspace/project-1');
+    expect(result.errorSummary).not.toContain('Getter/Setter');
+    expect(result.logExcerpt).not.toContain('[2K');
+    expect(result.logExcerpt).not.toContain('\r');
+  });
+
   it('maps deploy sandbox 503 RPC failures to a friendly project build error', async () => {
     const { fake, sandbox } = createProjectToolFake({ deploy: true });
     sandbox.mkdir.mockRejectedValueOnce(new Error('RPCTransportError: WebSocket upgrade failed: 503 Service Unavailable'));

@@ -275,8 +275,9 @@ const BUILD_LOG_EXCERPT_MAX_CHARS = 10_000;
 
 export function cleanBuildLog(raw: string): string | null {
   const cleaned = raw
-    .replace(/\u001b\[[0-9;]*m/g, "")
+    .replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, "")
     .replace(/\u001b/g, "")
+    .replace(/\r(?!\n)/g, "\n")
     .split(/\r?\n/)
     .map((line) => line.trimEnd())
     .join("\n")

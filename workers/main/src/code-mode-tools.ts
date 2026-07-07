@@ -1327,14 +1327,25 @@ function isBuildSummaryNoise(line: string): boolean {
     STACK_FRAME_LINE.test(line);
 }
 
-function buildFileReferenceNear(lines: string[], fromIndex: number): string | null {
+function buildFileReferenceNear(build: ProjectBuildResult, lines: string[], fromIndex: number): string | null {
   for (let index = fromIndex; index < Math.min(lines.length, fromIndex + 8); index += 1) {
     const match = lines[index]?.match(BUILD_FILE_REFERENCE);
     if (match && !match[1]!.includes("node_modules")) {
-      return `${match[1]}${match[3] ?? ""}`;
+      return `${relativizeBuildPath(build, match[1]!)}${match[3] ?? ""}`;
     }
   }
   return null;
+}
+
+function relativizeBuildPath(build: ProjectBuildResult, value: string): string {
+  const workdir = build.workdir.replace(/\/+$/g, "");
+  const prefix = `${workdir}/`;
+  return value.startsWith(prefix) ? value.slice(prefix.length) : value;
+}
+
+function relativizeBuildPaths(build: ProjectBuildResult, value: string): string {
+  const workdir = build.workdir.replace(/[-/\\^$*+?.()|[\]{}]/g, "\\$&").replace(/\\\/+$/g, "");
+  return value.replace(new RegExp(`${workdir}/`, "g"), "");
 }
 
 function summarizeBuildFailure(build: ProjectBuildResult): string {
@@ -1347,7 +1358,7 @@ function summarizeBuildFailure(build: ProjectBuildResult): string {
 function buildErrorMessage(build: ProjectBuildResult): string {
   const output = cleanBuildLog(buildFailureRawOutput(build));
   if (!output) return `Build failed with exit code ${build.exitCode}`;
-  if (output.length <= 300 && !output.includes("\n")) return output;
+  if (output.length <= 300 && !output.includes("\n")) return relativizeBuildPaths(build, output);
 
   const lines = output.split("\n");
   let summaryStart = -1;
@@ -1377,8 +1388,8 @@ function buildErrorMessage(build: ProjectBuildResult): string {
     if (summaryStart >= 0) picked.push(lines[summaryStart]!.trim());
   }
   if (picked.length) {
-    let summary = picked.join(" ");
-    const fileReference = buildFileReferenceNear(lines, summaryStart);
+    let summary = relativizeBuildPaths(build, picked.join(" "));
+    const fileReference = buildFileReferenceNear(build, lines, summaryStart);
     if (fileReference && !summary.includes(fileReference)) {
       summary = `${summary} (${fileReference})`;
     }
