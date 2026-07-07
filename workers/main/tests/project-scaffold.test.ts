@@ -99,9 +99,11 @@ describe("defaultProjectScaffoldFiles", () => {
     expect(scaffoldFile(files, "/app/entry.server.tsx")).toContain("export function handleError");
     expect(scaffoldFile(files, "/workers/app.ts")).toContain("createRequestHandler");
     expect(scaffoldFile(files, "/workers/app.ts")).toContain("env.ASSETS.fetch(request)");
+    expect(scaffoldFile(files, "/workers/app.ts")).toContain('method !== "GET" && method !== "HEAD"');
     expect(scaffoldFile(files, "/scripts/build-manifest.mjs")).toContain('main_module: "worker.js"');
     expect(scaffoldFile(files, "/scripts/build-manifest.mjs")).toContain("node_modules/.bin/esbuild");
     expect(scaffoldFile(files, "/scripts/build-manifest.mjs")).toContain("env.ASSETS.fetch(request)");
+    expect(scaffoldFile(files, "/scripts/build-manifest.mjs")).toContain('method !== "GET" && method !== "HEAD"');
     expect(scaffoldFile(files, "/README.md")).toContain("bunx --bun shadcn@latest add <component> --yes");
     expect(scaffoldFile(files, "/README.md")).toContain("add_shadcn_component");
 
