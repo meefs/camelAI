@@ -261,10 +261,9 @@ const CHAT_ACTIVE_AUTOMATION_RUN_KEY = "activeAutomationRun";
 // workspace UI is never stuck showing "streaming".
 const WORKSPACE_STREAMING_ACTIVITY_DEBOUNCE_MS = 5_000;
 
-// Prewarm the DO-backed build container when a turn starts so its 10s+ cold
-// boot overlaps the model's thinking instead of the deploy. Debounced so
-// steering messages and rapid turns don't repeatedly re-warm. The per-workspace
-// project cap lives in prewarmWorkspaceBuildSandboxes.
+// Prewarm the org-scoped DO-backed build container when a turn starts so its
+// 10s+ cold boot overlaps the model's thinking instead of the deploy. Debounced
+// so steering messages and rapid turns don't repeatedly re-warm.
 const BUILD_SANDBOX_PREWARM_DEBOUNCE_MS = 4 * 60_000;
 
 type LlmProviderConfigRecord = ReturnType<
@@ -4118,7 +4117,7 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
   }
 
   /**
-   * Fire-and-forget prewarm of this workspace's DO-backed build containers at
+   * Fire-and-forget prewarm of this org's DO-backed build container at
    * turn start. A user sending a message strongly predicts an imminent
    * build/deploy, so booting the container now hides its 10s+ cold start behind
    * the model's thinking/tool time. Debounced and best-effort: a warm failure

@@ -3,9 +3,7 @@ import { getSandbox } from "@cloudflare/sandbox";
 
 import {
   ProjectFilesystemClient,
-  WorkspaceFilesystemClient,
   type WorkspaceFileStoreLike,
-  type WorkspaceFilesystemEnv,
 } from "./workspace-filesystem-do.js";
 import type { ProjectBuildSandbox } from "./project-build-sandbox.js";
 import type { ProjectBuildSandboxLike } from "./project-worker-bundle.js";
@@ -15,7 +13,6 @@ export type { ProjectBuildSandboxLike, ProjectWorkerBundle } from "./project-wor
 
 const DEFAULT_BUILD_TIMEOUT_MS = 120_000;
 const DEFAULT_PREWARM_TIMEOUT_MS = 25_000;
-const DEFAULT_PREWARM_MAX_TARGETS = 5;
 const PROJECT_BUILD_ROOT = "/workspace";
 const MAX_PROJECT_BUILD_SANDBOX_KEY_LENGTH = 63;
 const MAX_COMMAND_OUTPUT_LOG_CHARS = 4000;
@@ -405,7 +402,7 @@ export class ProjectBuildService extends WorkerEntrypoint<ProjectBuildEnv, Proje
       throw new Error("Project build service requires org scope");
     }
     const projectId = normalizeProjectBuildId(request.projectId);
-    const sandbox = getSandbox(this.env.PROJECT_BUILD_SANDBOX, projectBuildSandboxKey(this.ctx.props.orgId, projectId), {
+    const sandbox = getSandbox(this.env.PROJECT_BUILD_SANDBOX, projectBuildSandboxKey(this.ctx.props.orgId), {
       normalizeId: true,
       transport: "rpc",
     }) as unknown as ProjectBuildSandboxLike;
@@ -425,7 +422,7 @@ export class ProjectBuildService extends WorkerEntrypoint<ProjectBuildEnv, Proje
       throw new Error("Project build service requires org scope");
     }
     const projectId = normalizeProjectBuildId(request.projectId);
-    const sandbox = getSandbox(this.env.PROJECT_BUILD_SANDBOX, projectBuildSandboxKey(this.ctx.props.orgId, projectId), {
+    const sandbox = getSandbox(this.env.PROJECT_BUILD_SANDBOX, projectBuildSandboxKey(this.ctx.props.orgId), {
       normalizeId: true,
       transport: "rpc",
     }) as unknown as ProjectBuildSandboxLike;
@@ -503,13 +500,12 @@ function normalizeProjectBuildId(value: string): string {
   return normalized;
 }
 
-export function projectBuildSandboxKey(orgId: string, projectId: string): string {
+export function projectBuildSandboxKey(orgId: string): string {
   const org = orgId.trim().toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/^-+|-+$/g, "");
-  const project = normalizeProjectBuildId(projectId);
   if (!org) throw new Error("orgId is required");
-  const readable = `${org}-${project}`;
+  const readable = `org-${org}`;
   if (readable.length <= MAX_PROJECT_BUILD_SANDBOX_KEY_LENGTH) return readable;
-  const hash = stableHexHash(`${org}:${project}`);
+  const hash = stableHexHash(org);
   const prefixLength = MAX_PROJECT_BUILD_SANDBOX_KEY_LENGTH - hash.length - 1;
   const prefix = readable.slice(0, prefixLength).replace(/-+$/g, "");
   return `${prefix}-${hash}`;
@@ -520,7 +516,7 @@ export interface ProjectBuildSandboxNamespaceEnv {
 }
 
 /**
- * Best-effort prewarm of the per-(org, project) build container so its cold
+ * Best-effort prewarm of the per-org build container so its cold
  * boot (10s+, see src/entry.server.tsx) is paid ahead of an interactive or
  * scheduled deploy instead of synchronously at deploy time. Runs a trivial
  * no-op command to trigger the boot, reusing the exact sandbox key that
@@ -533,7 +529,6 @@ export interface ProjectBuildSandboxNamespaceEnv {
 export async function prewarmProjectBuildSandbox(input: {
   env: ProjectBuildSandboxNamespaceEnv;
   orgId: string;
-  projectId: string;
   timeoutMs?: number;
 }): Promise<boolean> {
   const namespace = input.env.PROJECT_BUILD_SANDBOX;
@@ -541,11 +536,9 @@ export async function prewarmProjectBuildSandbox(input: {
   const orgId = input.orgId?.trim();
   if (!orgId) return false;
 
-  let projectId: string;
   let key: string;
   try {
-    projectId = normalizeProjectBuildId(input.projectId);
-    key = projectBuildSandboxKey(orgId, projectId);
+    key = projectBuildSandboxKey(orgId);
   } catch {
     // Invalid ids should never blow up a prewarm; the real build will surface
     // the error loudly at deploy time.
@@ -570,7 +563,7 @@ export async function prewarmProjectBuildSandbox(input: {
   } catch (error) {
     console.warn("[project-build] prewarm failed", {
       operation: "prewarm",
-      projectId,
+      orgId,
       durationMs: Date.now() - startedAt,
       error: error instanceof Error ? error.message : String(error),
     });
@@ -579,68 +572,27 @@ export async function prewarmProjectBuildSandbox(input: {
 }
 
 /**
- * Prewarm every DO-backed (do-r2) project's build container in a workspace.
+ * Prewarm the shared per-org build container for a workspace.
  * Used by both the interactive turn-start path (ChatThreadDO) and the scheduled
  * automation path (WorkspaceCronDO): at those moments a deploy is likely, and
- * only do-r2 projects use the ProjectBuildSandbox container (legacy vm projects
- * deploy through the runtime VM and are skipped).
+ * The build sandbox is keyed by org, not by project, so this works even before a
+ * new project exists in the workspace. That is the important interactive case:
+ * turn-start prewarm should hide cold boot before the agent creates and deploys
+ * a new app.
  *
- * Best-effort: never throws. Returns the number of containers warmed. Warms are
- * capped (maxTargets) so a workspace with many projects can't fan out an
- * unbounded number of container boots; the cap is logged when it bites.
+ * Best-effort: never throws. Returns 1 when the org sandbox was warmed, 0 when
+ * unavailable or failed.
  */
 export async function prewarmWorkspaceBuildSandboxes(
-  env: ProjectBuildSandboxNamespaceEnv & WorkspaceFilesystemEnv,
+  env: ProjectBuildSandboxNamespaceEnv,
   orgId: string,
-  workspaceId: string,
+  _workspaceId: string,
   options: { timeoutMs?: number; maxTargets?: number } = {},
 ): Promise<number> {
   if (!env.PROJECT_BUILD_SANDBOX) return 0;
-  if (!orgId?.trim() || !workspaceId?.trim()) return 0;
-
-  let doBackedProjectIds: string[];
-  try {
-    const projects = await new WorkspaceFilesystemClient(env, workspaceId).listProjects();
-    // listProjects() nests clones under their source's `clones` array rather than
-    // returning them as top-level rows, but deploy_project/build_project resolve a
-    // clone by name and build under the clone's own id — so warm clones too, or a
-    // cloned-project deploy pays the full cold boot.
-    const ids: string[] = [];
-    for (const project of projects) {
-      if ((project.backend ?? "vm") === "do-r2") ids.push(project.id);
-      for (const clone of project.clones ?? []) {
-        if ((clone.backend ?? "vm") === "do-r2") ids.push(clone.id);
-      }
-    }
-    doBackedProjectIds = ids;
-  } catch (error) {
-    console.warn("[project-build] prewarm listProjects failed", {
-      operation: "prewarm",
-      workspaceId,
-      error: error instanceof Error ? error.message : String(error),
-    });
-    return 0;
-  }
-
-  if (doBackedProjectIds.length === 0) return 0;
-
-  const maxTargets = Math.max(1, Math.floor(options.maxTargets ?? DEFAULT_PREWARM_MAX_TARGETS));
-  const targets = doBackedProjectIds.slice(0, maxTargets);
-  if (doBackedProjectIds.length > targets.length) {
-    console.info("[project-build] prewarm capped", {
-      operation: "prewarm",
-      workspaceId,
-      doBackedProjects: doBackedProjectIds.length,
-      prewarming: targets.length,
-    });
-  }
-
-  const results = await Promise.all(
-    targets.map((projectId) =>
-      prewarmProjectBuildSandbox({ env, orgId, projectId, timeoutMs: options.timeoutMs }),
-    ),
-  );
-  return results.filter(Boolean).length;
+  if (!orgId?.trim()) return 0;
+  const warmed = await prewarmProjectBuildSandbox({ env, orgId, timeoutMs: options.timeoutMs });
+  return warmed ? 1 : 0;
 }
 
 function stableHexHash(value: string): string {

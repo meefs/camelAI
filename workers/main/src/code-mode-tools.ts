@@ -1583,13 +1583,13 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
     return new PiContainerTools(await this.projectFileStore(args), { images: this.env.IMAGES });
   }
 
-  private projectBuildSandbox(projectId: string): ProjectBuildSandboxLike {
+  private projectBuildSandbox(): ProjectBuildSandboxLike {
     const { orgId } = this.ctx.props;
     if (!orgId) throw new Error("Project builds require org scope");
     if (!this.env.PROJECT_BUILD_SANDBOX) {
       throw new Error("PROJECT_BUILD_SANDBOX container binding is not configured");
     }
-    return getSandbox(this.env.PROJECT_BUILD_SANDBOX, projectBuildSandboxKey(orgId, projectId), {
+    return getSandbox(this.env.PROJECT_BUILD_SANDBOX, projectBuildSandboxKey(orgId), {
       normalizeId: true,
       transport: "rpc",
     }) as unknown as ProjectBuildSandboxLike;
@@ -3614,7 +3614,7 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
       const result = await runProjectBuild({
         projectId: project.id,
         files: new ProjectFilesystemClient(this.env, project.id),
-        sandbox: this.projectBuildSandbox(project.id),
+        sandbox: this.projectBuildSandbox(),
         timeoutMs,
       });
       // Same summarized shape as deploy_project's build payload: on failure the
@@ -3638,7 +3638,7 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
         dependency,
         dev: args.dev === true,
         files: new ProjectFilesystemClient(this.env, project.id),
-        sandbox: this.projectBuildSandbox(project.id),
+        sandbox: this.projectBuildSandbox(),
       });
       return {
         ...result,
@@ -3778,7 +3778,7 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
   private async deployProject(args: Record<string, unknown>): Promise<unknown> {
     return withProjectBuildServiceErrorMapping(async () => {
       const project = await this.resolveDoBackedProjectForAction(args, "deploy_project");
-      const sandbox = this.projectBuildSandbox(project.id);
+      const sandbox = this.projectBuildSandbox();
       const timeoutMs = typeof args.timeoutMs === "number" ? args.timeoutMs : undefined;
       const build = await runProjectBuild({
         projectId: project.id,

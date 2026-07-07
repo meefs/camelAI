@@ -229,22 +229,20 @@ describe("runProjectAddDependency", () => {
 });
 
 describe("projectBuildSandboxKey", () => {
-  it("isolates build sandboxes by org and project", () => {
-    expect(projectBuildSandboxKey("Org A", "Demo_Project")).toBe("org-a-demo-project");
-    expect(projectBuildSandboxKey("Org B", "Demo_Project")).toBe("org-b-demo-project");
+  it("isolates build sandboxes by org", () => {
+    expect(projectBuildSandboxKey("Org A")).toBe("org-org-a");
+    expect(projectBuildSandboxKey("Org B")).toBe("org-org-b");
   });
 
-  it("keeps long org/project sandbox keys within the Cloudflare container id limit", () => {
+  it("keeps long org sandbox keys within the Cloudflare container id limit", () => {
     const key = projectBuildSandboxKey(
-      "local-dev-org",
-      "ca-ded88355a4284af7bb641b8729105ca8-deploy-test-2-193q",
+      "local-dev-org-with-a-very-long-name-that-still-needs-a-stable-build-sandbox-key",
     );
 
     expect(key.length).toBeLessThanOrEqual(63);
-    expect(key).toMatch(/^local-dev-org-ca-ded88355a4284af7bb641b8729105ca8-[a-z0-9-]*[a-f0-9]{8}$/);
+    expect(key).toMatch(/^org-local-dev-org-with-a-very-long-name-that-still-nee-[a-f0-9]{8}$/);
     expect(projectBuildSandboxKey(
-      "local-dev-org",
-      "ca-ded88355a4284af7bb641b8729105ca8-deploy-test-2-other",
+      "local-dev-org-with-a-very-long-name-that-still-needs-a-different-stable-build-sandbox-key",
     )).not.toBe(key);
   });
 });

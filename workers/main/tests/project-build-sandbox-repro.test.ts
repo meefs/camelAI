@@ -28,7 +28,7 @@ describe("real project build sandbox repro", () => {
   maybeIt("runs add_dependency followed immediately by build repeatedly", async () => {
     expect(testEnv.PROJECT_BUILD_SANDBOX).toBeDefined();
     const projectId = `repro-${Date.now().toString(36)}`;
-    const sandbox = getSandbox(testEnv.PROJECT_BUILD_SANDBOX, projectBuildSandboxKey("repro-org", projectId), {
+    const sandbox = getSandbox(testEnv.PROJECT_BUILD_SANDBOX, projectBuildSandboxKey("repro-org"), {
       normalizeId: true,
       transport: "rpc",
     }) as unknown as ProjectBuildSandboxLike;
