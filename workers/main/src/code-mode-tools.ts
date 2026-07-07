@@ -38,7 +38,7 @@ import { buildLogTail, projectBuildSandboxKey, runProjectAddDependency, runProje
 import { collectWorkerBundleFromSandbox, findUnexportedDurableObjectClasses, type ProjectBuildSandboxLike } from "./project-worker-bundle";
 import { defaultProjectScaffoldFiles, normalizeProjectScaffoldTemplate, type ProjectScaffoldResult } from "./project-scaffold";
 import { addShadcnComponentsToProject, normalizeShadcnComponentList, SUPPORTED_SHADCN_COMPONENTS } from "./shadcn-components";
-import { launchAppBrowserSession } from "./app-browser-binding";
+import { connectAppBrowserSession, launchAppBrowserSession } from "./app-browser-binding";
 import { deployWorkerModulesDirect, rollbackWorkerDeployFromArtifactCache, type DirectDispatchDeployResult } from "./direct-dispatch-deploy";
 import { handleDeploySideEffects } from "./services/deploy";
 import { editAutomationVirtualFile, listAutomationVirtualFiles, normalizeAutomationVirtualPath, readAutomationVirtualFile, writeAutomationVirtualFile } from "./deterministic-automation-virtual-files";
@@ -2886,8 +2886,11 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
         case "delete_connection":
           return this.deleteConnection(args);
 
-        case "browser_run":
-          return this.browserRun(args);
+        case "browser_launch":
+          return this.browserLaunch(args);
+
+        case "browser_action":
+          return this.browserAction(args);
 
         default:
           throw new Error(`Unknown code mode tool: ${name}`);
@@ -3663,24 +3666,26 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
     };
   }
 
-  private async browserRun(args: Record<string, unknown>): Promise<unknown> {
-    const launch = args.launch && typeof args.launch === "object"
-      ? args.launch as Record<string, unknown>
-      : {};
-    const session = await launchAppBrowserSession(this.env, {
-      orgId: this.ctx.props.orgId,
-      workspaceId: this.ctx.props.workspaceId,
-    }, {
-      scriptName: typeof launch.scriptName === "string"
-        ? launch.scriptName
-        : typeof launch.script_name === "string"
-          ? launch.script_name
+  private browserLaunchInput(args: Record<string, unknown>): {
+    scriptName: string;
+    path?: string;
+    width?: number;
+    height?: number;
+  } {
+    return {
+      scriptName: typeof args.scriptName === "string"
+        ? args.scriptName
+        : typeof args.script_name === "string"
+          ? args.script_name
           : "",
-      path: typeof launch.path === "string" ? launch.path : undefined,
-      width: typeof launch.width === "number" ? launch.width : undefined,
-      height: typeof launch.height === "number" ? launch.height : undefined,
-    });
-    const allowed = new Set([
+      path: typeof args.path === "string" ? args.path : undefined,
+      width: typeof args.width === "number" ? args.width : undefined,
+      height: typeof args.height === "number" ? args.height : undefined,
+    };
+  }
+
+  private browserMethodAllowlist(): Set<string> {
+    return new Set([
       "goto",
       "click",
       "fill",
@@ -3703,28 +3708,56 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
       "logs",
       "close",
     ]);
-    const actions = Array.isArray(args.actions) ? args.actions : [];
-    let result: unknown;
+  }
+
+  private async browserLaunch(args: Record<string, unknown>): Promise<unknown> {
+    const session = await launchAppBrowserSession(this.env, {
+      orgId: this.ctx.props.orgId,
+      workspaceId: this.ctx.props.workspaceId,
+    }, this.browserLaunchInput(args));
     try {
-      for (const action of actions) {
-        const actionRecord = action && typeof action === "object"
-          ? action as Record<string, unknown>
-          : {};
-        const method = typeof actionRecord.method === "string" ? actionRecord.method.trim() : "";
-        if (!allowed.has(method)) {
-          throw new Error(`Unsupported browser session method: ${method || "(empty)"}`);
-        }
-        const callable = (session as unknown as Record<string, (...methodArgs: unknown[]) => Promise<unknown>>)[method];
-        if (typeof callable !== "function") {
-          throw new Error(`Browser session method is not callable: ${method}`);
-        }
-        const methodArgs = Array.isArray(actionRecord.args) ? actionRecord.args : [];
-        result = await callable.apply(session, methodArgs);
-        if (method === "close") return result;
+      const sessionId = session.sessionId();
+      if (!sessionId) {
+        throw new Error("Browser session did not expose a reconnectable sessionId");
       }
-      return result;
+      return {
+        sessionId,
+        scriptName: this.browserLaunchInput(args).scriptName,
+      };
     } finally {
-      await session.close().catch(() => {});
+      await session.disconnect().catch(() => {});
+    }
+  }
+
+  private async browserAction(args: Record<string, unknown>): Promise<unknown> {
+    const sessionId = typeof args.sessionId === "string" ? args.sessionId.trim() : "";
+    if (!sessionId) throw new Error("sessionId is required");
+    const scriptName = typeof args.scriptName === "string"
+      ? args.scriptName
+      : typeof args.script_name === "string"
+        ? args.script_name
+        : "";
+    const method = typeof args.method === "string" ? args.method.trim() : "";
+    if (!this.browserMethodAllowlist().has(method)) {
+      throw new Error(`Unsupported browser session method: ${method || "(empty)"}`);
+    }
+    const session = await connectAppBrowserSession(this.env, {
+      orgId: this.ctx.props.orgId,
+      workspaceId: this.ctx.props.workspaceId,
+    }, { sessionId, scriptName });
+    try {
+      const callable = (session as unknown as Record<string, (...methodArgs: unknown[]) => Promise<unknown>>)[method];
+      if (typeof callable !== "function") {
+        throw new Error(`Browser session method is not callable: ${method}`);
+      }
+      const methodArgs = Array.isArray(args.args) ? args.args : [];
+      return await callable.apply(session, methodArgs);
+    } finally {
+      if (method === "close") {
+        await session.close().catch(() => {});
+      } else {
+        await session.disconnect().catch(() => {});
+      }
     }
   }
 

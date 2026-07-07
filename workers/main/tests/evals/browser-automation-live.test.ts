@@ -220,7 +220,7 @@ describe("browser automation agent eval", () => {
           `The page must render a button with id "lab-counter-button" and visible text "${BUTTON_TEXT}". Clicking it increments visible text from "Clicked 0 times" to "Clicked 1 time" to exactly "${CLICKED_TWICE_TEXT}".`,
           `Deploy it with deploy_project using script_name exactly "${PROJECT_NAME}".`,
           "After deploy, run a real interactive browser automation check in js_exec using env.BROWSER.launch, not fetch, take_screenshot, env.SCREENSHOT, get_latest_logs, or local Playwright.",
-          `The browser check must launch { scriptName: "${PROJECT_NAME}", path: "/" }, click #lab-counter-button twice, wait for text "${CLICKED_TWICE_TEXT}", read logs(), fail if pageErrors is non-empty, and console.log JSON containing exactly ${PASS_MARKER}.`,
+          `The browser check must launch { scriptName: "${PROJECT_NAME}", path: "/" }, click #lab-counter-button twice, wait for text "${CLICKED_TWICE_TEXT}", call textContent("body") and verify the returned object's .text includes "${CLICKED_TWICE_TEXT}", then perform another browser action after that data-returning call by waiting for text "${BUTTON_TEXT}" again. Then read logs(), fail if pageErrors is non-empty, and console.log JSON containing exactly ${PASS_MARKER}.`,
           "Always close the browser session in a finally block. Do not use legacy VM work, create-worker, wrangler deploy, or bun run deploy.",
           "When done, reply with the deployed URL and the browser automation result.",
         ].join(" "),
@@ -267,7 +267,7 @@ describe("browser automation agent eval", () => {
         attemptedBrowserLaunch: runtimeEvidence.jsExecCodeBlocks.some((code) =>
           /\benv\s*\.\s*BROWSER\s*\.\s*launch\s*\(/.test(code)
         ),
-        usedBrowserSessionActions: ["click", "waitForText", "logs", "close"].every((method) =>
+        usedBrowserSessionActions: ["click", "waitForText", "textContent", "logs", "close"].every((method) =>
           runtimeEvidence.jsExecCodeBlocks.some((code) => new RegExp(`\\.${method}\\s*\\(`).test(code))
         ),
         browserPassMarkerFound: runtimeOutputText.includes(PASS_MARKER),

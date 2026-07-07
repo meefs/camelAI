@@ -118,6 +118,9 @@ function createFakeBrowser() {
     async close() {
       calls.push({ method: 'browser.close', args: [] });
     },
+    async disconnect() {
+      calls.push({ method: 'browser.disconnect', args: [] });
+    },
   };
   return { browser: browser as unknown as Browser, calls };
 }
@@ -314,6 +317,26 @@ describe('AppBrowserSession', () => {
     expect(removed).toEqual(['yes']);
     expect(fakePage.calls.filter((call) => call.method === 'page.close')).toHaveLength(1);
     expect(fakeBrowser.calls.filter((call) => call.method === 'browser.close')).toHaveLength(1);
+    expect(await captureRejection(session.click('#x'))).toMatch(/session is closed/i);
+  });
+
+  it('disconnects without closing the remote browser session', async () => {
+    const fakePage = createFakePage();
+    const fakeBrowser = createFakeBrowser();
+    const removed: string[] = [];
+    const session = createSession(fakePage, fakeBrowser, {
+      remoteSessionId: 'browser-session-1',
+      removeInterception: () => removed.push('yes'),
+    });
+
+    expect(session.sessionId()).toBe('browser-session-1');
+    await session.disconnect();
+    await session.disconnect();
+
+    expect(removed).toEqual(['yes']);
+    expect(fakePage.calls.filter((call) => call.method === 'page.close')).toHaveLength(0);
+    expect(fakeBrowser.calls.filter((call) => call.method === 'browser.close')).toHaveLength(0);
+    expect(fakeBrowser.calls.filter((call) => call.method === 'browser.disconnect')).toHaveLength(1);
     expect(await captureRejection(session.click('#x'))).toMatch(/session is closed/i);
   });
 

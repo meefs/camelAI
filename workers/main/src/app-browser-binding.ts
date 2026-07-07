@@ -151,6 +151,7 @@ export interface AppBrowserSessionInit {
   baseUrl: URL;
   hostIndex: WorkspaceAppHostIndex;
   logContext: Record<string, unknown>;
+  remoteSessionId?: string | null;
   removeInterception?: () => void;
   maxLifetimeMs?: number;
   // Best-effort cleanup hook fired once when the session closes (any reason:
@@ -172,6 +173,7 @@ export class AppBrowserSession extends RpcTarget {
   private readonly baseUrl: URL;
   private readonly hostIndex: WorkspaceAppHostIndex;
   private readonly logContext: Record<string, unknown>;
+  private readonly remoteSessionId: string | null;
   private readonly removeInterception?: () => void;
   private readonly onClose?: () => void | Promise<void>;
   private readonly lifetimeTimer: ReturnType<typeof setTimeout>;
@@ -189,6 +191,7 @@ export class AppBrowserSession extends RpcTarget {
     this.baseUrl = init.baseUrl;
     this.hostIndex = init.hostIndex;
     this.logContext = init.logContext;
+    this.remoteSessionId = init.remoteSessionId ?? null;
     this.removeInterception = init.removeInterception;
     this.onClose = init.onClose;
     const maxLifetimeMs = init.maxLifetimeMs ?? BROWSER_SESSION_MAX_LIFETIME_MS;
@@ -542,6 +545,30 @@ export class AppBrowserSession extends RpcTarget {
     return { closed: true as const };
   }
 
+  sessionId(): string | null {
+    return this.remoteSessionId;
+  }
+
+  async disconnect(): Promise<void> {
+    if (this.closed) return;
+    this.closed = true;
+    this.closedReason = 'session disconnected';
+    clearTimeout(this.lifetimeTimer);
+    try {
+      this.removeInterception?.();
+    } catch {
+      // best-effort cleanup
+    }
+    try {
+      await this.browser.disconnect();
+    } catch (error) {
+      console.warn('[app-browser] browser disconnect failed', {
+        ...this.logContext,
+        error: truncateError(error),
+      });
+    }
+  }
+
   private async closeInternal(reason: string | null): Promise<void> {
     if (this.closed) return;
     this.closed = true;
@@ -668,6 +695,7 @@ export async function launchAppBrowserSession(
       baseUrl,
       hostIndex,
       logContext,
+      remoteSessionId: browserSessionId,
       removeInterception,
       onClose: browserSessionId
         ? () => orgStub.removeBrowserSession(browserSessionId)
@@ -693,6 +721,85 @@ export async function launchAppBrowserSession(
   } catch (error) {
     await browser.close().catch(() => {});
     throw new Error(`Browser session launch failed: ${truncateError(error)}`);
+  }
+}
+
+export async function connectAppBrowserSession(
+  env: AppBrowserBindingEnv,
+  context: AppBrowserBindingProps,
+  input: AppBrowserLaunchInput & { sessionId: string },
+): Promise<AppBrowserSession> {
+  const scriptName = input.scriptName?.trim();
+  if (!scriptName) {
+    throw new Error('scriptName is required');
+  }
+  const sessionId = input.sessionId?.trim();
+  if (!sessionId) {
+    throw new Error('sessionId is required');
+  }
+  if (!env.BROWSER) {
+    throw new Error('Browser sessions require the BROWSER binding');
+  }
+
+  const orgStub = env.ORG.get(env.ORG.idFromName(context.orgId));
+  const script = await orgStub.getWorkerScript(scriptName);
+  if (!script) {
+    throw new Error(`App not found: ${scriptName}`);
+  }
+  if (script.workspace_id !== context.workspaceId) {
+    throw new Error(`App ${scriptName} is not in this workspace`);
+  }
+  if (!script.is_public && !env.DISPATCHER) {
+    throw new Error('Browser sessions for private apps require the DISPATCHER binding');
+  }
+
+  const baseUrl = new URL(await buildWorkspaceAppUrl(env, context, scriptName, '/'));
+  const logContext = {
+    scriptName,
+    orgId: context.orgId,
+    workspaceId: context.workspaceId,
+    browserSessionId: sessionId,
+  };
+  const { default: puppeteer } = await import('@cloudflare/puppeteer');
+  const browser = await puppeteer.connect(env.BROWSER, sessionId);
+  try {
+    const hostIndex = await buildWorkspaceAppHostIndex(env, context);
+    const pages = await browser.pages();
+    const page = pages.find((candidate) => {
+      try {
+        const hostname = new URL(candidate.url()).hostname;
+        return hostname === baseUrl.hostname || isWorkspaceAppHostname(hostIndex, hostname);
+      } catch {
+        return false;
+      }
+    }) ?? pages.at(-1) ?? await browser.newPage();
+    await page.setViewport(screenshotViewport(input.width, input.height));
+    page.setDefaultTimeout(BROWSER_SESSION_DEFAULT_ACTION_TIMEOUT_MS);
+
+    let removeInterception: (() => void) | undefined;
+    if (!script.is_public) {
+      removeInterception = await installDispatchRequestInterception(
+        page,
+        env,
+        context,
+        hostIndex,
+        { redirect: 'manual' },
+      );
+    }
+
+    return new AppBrowserSession({
+      browser,
+      page,
+      baseUrl,
+      hostIndex,
+      logContext,
+      remoteSessionId: sessionId,
+      removeInterception,
+      onClose: () => orgStub.removeBrowserSession(sessionId),
+    });
+  } catch (error) {
+    await browser.disconnect().catch(() => {});
+    throw new Error(`Browser session reconnect failed: ${truncateError(error)}`);
   }
 }
 

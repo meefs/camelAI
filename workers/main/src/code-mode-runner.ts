@@ -755,41 +755,55 @@ function createBrowserFacade(callTool) {
     "logs",
     "close",
   ];
-  const terminalSessionMethods = new Set([
-    "evaluate",
-    "textContent",
-    "getAttribute",
-    "count",
-    "exists",
-    "content",
-    "url",
-    "title",
-    "screenshot",
-    "logs",
-    "close",
-  ]);
-  const createSessionFacade = (sessionId) => {
-    const actions = [];
+  const openSessions = new Map();
+  const createSessionFacade = (handle) => {
     let closed = false;
+    openSessions.set(handle.sessionId, handle);
     const call = async (method, args) => {
       if (method === "close" && closed) return undefined;
       if (closed) {
         throw new Error("Browser session is closed. Launch a new session with env.BROWSER.launch(...).");
       }
-      actions.push({ method, args });
-      if (!terminalSessionMethods.has(method)) return { ok: true };
-      closed = true;
-      const result = await callTool("browser_run", { launch: sessionId, actions });
-      if (method === "close") return undefined;
-      return result;
+      try {
+        return await callTool("browser_action", {
+          sessionId: handle.sessionId,
+          scriptName: handle.scriptName,
+          method,
+          args,
+        });
+      } finally {
+        if (method === "close") {
+          closed = true;
+          openSessions.delete(handle.sessionId);
+        }
+      }
     };
     return Object.freeze(Object.fromEntries(
       sessionMethods.map((method) => [method, (...args) => call(method, args)]),
     ));
   };
-  return Object.freeze({
-    launch: async (input = {}) => createSessionFacade(input),
+  const facade = Object.freeze({
+    launch: async (input = {}) => {
+      const handle = await callTool("browser_launch", input);
+      if (!handle || typeof handle.sessionId !== "string" || !handle.sessionId) {
+        throw new Error("env.BROWSER.launch returned an invalid session handle");
+      }
+      return createSessionFacade(handle);
+    },
   });
+  const cleanup = async () => {
+    const handles = Array.from(openSessions.values());
+    openSessions.clear();
+    await Promise.all(handles.map((handle) =>
+      callTool("browser_action", {
+        sessionId: handle.sessionId,
+        scriptName: handle.scriptName,
+        method: "close",
+        args: [],
+      }).catch(() => undefined)
+    ));
+  };
+  return { facade, cleanup };
 }
 
 function createCamelAiFacade(binding) {
@@ -1031,7 +1045,8 @@ export class CodeModeRunner extends WorkerEntrypoint {
     const AI = this.env.AI;
     const CAMELAI = createCamelAiFacade(this.env.CAMELAI);
     const SCREENSHOT = createScreenshotFacade(this.env.SCREENSHOT);
-    const BROWSER = createBrowserFacade(callTool);
+    const browserRuntime = createBrowserFacade(callTool);
+    const BROWSER = browserRuntime.facade;
     const WORKSPACE = createWorkspaceFacade(callTool);
     const VM = createVmFacade(rawTools);
     const vm = VM;
@@ -1070,6 +1085,7 @@ export class CodeModeRunner extends WorkerEntrypoint {
       if (result !== undefined) output.push(stringifyOutput(result));
       return { text: output.join("\n") };
     } finally {
+      await browserRuntime.cleanup();
       cleanupSecureFetch();
       cleanupRuntimeGlobals();
     }
