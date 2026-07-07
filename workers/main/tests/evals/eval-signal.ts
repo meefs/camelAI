@@ -4,11 +4,13 @@ export type EvalSignalEnv = {
   EVAL_ENFORCE_SIGNAL?: string;
   EVAL_MAX_ASSISTANT_TURNS?: string;
   EVAL_MAX_BAD_TOOL_CALLS?: string;
+  EVAL_MAX_SDK_TURNS?: string;
 };
 
 export type EvalSignalThresholds = {
   maxAssistantTurns?: number;
   maxBadToolCalls?: number;
+  maxSdkTurns?: number;
 };
 
 export type EvalToolCallSummary = {
@@ -31,11 +33,16 @@ export type EvalTokenUsage = {
 
 export type EvalSignal = {
   assistantTurnCount: number;
+  sdkTurnStartCount: number;
+  sdkTurnCompletedCount: number;
   messageCount: number;
   toolCallCount: number;
   toolCallsByName: Record<string, number>;
   harnessErrorCount: number;
   harnessErrors: EvalToolCallSummary[];
+  filteredEnvLimitationCount: number;
+  filteredEnvLimitations: EvalToolCallSummary[];
+  filteredEnvLimitationsByReason: Record<string, number>;
   badToolCallCount: number;
   badToolCalls: EvalToolCallSummary[];
   tokenUsage: EvalTokenUsage;
@@ -69,17 +76,27 @@ function excerpt(value: unknown): string | undefined {
     : text;
 }
 
-// Known eval-env limitation: the Miniflare eval environment has no BROWSER
-// binding, so both take_screenshot and env.BROWSER.launch always fail with these
-// messages (app-screenshot-binding.ts / app-browser-binding.ts). That is not
-// agent misbehavior, so such failures must not count against the bad-tool-call
-// budget. Production behavior is unchanged — this only filters eval signal.
-function isKnownEvalEnvToolLimitation(output: string | undefined): boolean {
-  if (output === undefined) return false;
-  return (
-    output.includes("Screenshot capture requires the BROWSER binding")
-    || output.includes("Browser sessions require the BROWSER binding")
-  );
+// Known eval-env limitations: the Miniflare eval environment has no BROWSER
+// binding, so both take_screenshot and env.BROWSER.launch always fail, and it
+// also lacks the dispatcher service binding used by js_exec's internal deployed
+// app fetch path. The eval harness smoke-checks public app URLs separately, so
+// these local verification failures must not count against the bad-tool budget.
+// Production behavior is unchanged — this only filters eval signal.
+function classifyKnownEvalEnvToolLimitation(output: string | undefined): string | undefined {
+  if (output === undefined) return undefined;
+  if (output.includes("Screenshot capture requires the BROWSER binding")) {
+    return "missing_browser_binding_screenshot";
+  }
+  if (output.includes("Browser sessions require the BROWSER binding")) {
+    return "missing_browser_binding_session";
+  }
+  if (output.includes("DISPATCHER service binding is not configured")) {
+    return "missing_dispatcher_binding";
+  }
+  if (output.includes("ServiceStub serialization requires the 'experimental' compat flag")) {
+    return "servicestub_experimental_compat_missing";
+  }
+  return undefined;
 }
 
 function classifyFailedToolCall(
@@ -159,36 +176,66 @@ function extractEvalTurnUsage(usage: RecordValue): EvalTokenUsage & { costUsd?: 
 export function countEvalTokenUsage(
   result: Pick<AgentEvalSessionResult, "events">,
 ): EvalTokenUsage {
-  const total = emptyEvalTokenUsage();
-  let costUsd = 0;
-  let hasCost = false;
+  const sdkTotal = emptyEvalTokenUsage();
+  let sdkCostUsd = 0;
+  let sdkHasCost = false;
+  const legacyTotal = emptyEvalTokenUsage();
+  let legacyCostUsd = 0;
+  let legacyHasCost = false;
 
-  for (const rawEvent of result.events) {
-    const event = asRecord(rawEvent);
-    if (event?.type !== "runtime_event") continue;
-    const runtimeEvent = asRecord(event.event);
-    if (runtimeEvent?.method !== "turn/completed") continue;
-    const params = asRecord(runtimeEvent.params);
-    const usage = asRecord(params?.usage);
-    if (!usage) continue;
-
-    const parsed = extractEvalTurnUsage(usage);
-    if (parsed.turnCount <= 0) continue;
+  function addUsage(
+    total: EvalTokenUsage,
+    parsed: EvalTokenUsage & { costUsd?: number },
+    addCost: (cost: number) => void,
+  ) {
     total.inputTokens += parsed.inputTokens;
     total.outputTokens += parsed.outputTokens;
     total.cacheReadInputTokens += parsed.cacheReadInputTokens;
     total.cacheCreationInputTokens += parsed.cacheCreationInputTokens;
     total.totalTokens += parsed.totalTokens;
     total.turnCount += parsed.turnCount;
-    if (parsed.costUsd !== undefined) {
-      costUsd += parsed.costUsd;
-      hasCost = true;
+    if (parsed.costUsd !== undefined) addCost(parsed.costUsd);
+  }
+
+  const total = emptyEvalTokenUsage();
+
+  for (const rawEvent of result.events) {
+    const event = asRecord(rawEvent);
+    if (event?.type !== "runtime_event") continue;
+    const runtimeEvent = asRecord(event.event);
+    const method = asString(runtimeEvent?.method);
+    if (method !== "sdk/turn/completed" && method !== "turn/completed") continue;
+    const params = asRecord(runtimeEvent.params);
+    const usage = asRecord(params?.usage);
+    if (!usage) continue;
+
+    const parsed = extractEvalTurnUsage(usage);
+    if (parsed.turnCount <= 0) continue;
+
+    if (method === "sdk/turn/completed") {
+      addUsage(sdkTotal, parsed, (cost) => {
+        sdkCostUsd += cost;
+        sdkHasCost = true;
+      });
+    } else {
+      addUsage(legacyTotal, parsed, (cost) => {
+        legacyCostUsd += cost;
+        legacyHasCost = true;
+      });
     }
   }
 
+  if (sdkTotal.turnCount > 0) {
+    return {
+      ...sdkTotal,
+      ...(sdkHasCost ? { costUsd: sdkCostUsd } : {}),
+    };
+  }
+
+  Object.assign(total, legacyTotal);
   return {
     ...total,
-    ...(hasCost ? { costUsd } : {}),
+    ...(legacyHasCost ? { costUsd: legacyCostUsd } : {}),
   };
 }
 
@@ -212,6 +259,9 @@ export function getEvalSignalThresholds(
     maxBadToolCalls:
       parsePositiveInt(env.EVAL_MAX_BAD_TOOL_CALLS, "EVAL_MAX_BAD_TOOL_CALLS") ??
       defaults.maxBadToolCalls,
+    maxSdkTurns:
+      parsePositiveInt(env.EVAL_MAX_SDK_TURNS, "EVAL_MAX_SDK_TURNS") ??
+      defaults.maxSdkTurns,
   };
 }
 
@@ -238,9 +288,13 @@ export function evaluateAgentEvalSignal(
 ): EvalSignal {
   const toolCallsByName: Record<string, number> = {};
   const badToolCallsByKey = new Map<string, EvalToolCallSummary>();
+  const filteredEnvLimitations: EvalToolCallSummary[] = [];
+  const filteredEnvLimitationsByReason: Record<string, number> = {};
 
   let toolCallCount = 0;
   let assistantTurnCount = 0;
+  let sdkTurnStartCount = 0;
+  let sdkTurnCompletedCount = 0;
   for (const message of result.messages) {
     if (message.role !== "assistant") continue;
     assistantTurnCount += 1;
@@ -272,6 +326,14 @@ export function evaluateAgentEvalSignal(
     const event = asRecord(rawEvent);
     const runtimeEvent = asRecord(event?.event);
     if (event?.type !== "runtime_event") continue;
+    if (runtimeEvent?.method === "sdk/turn/started") {
+      sdkTurnStartCount += 1;
+      continue;
+    }
+    if (runtimeEvent?.method === "sdk/turn/completed") {
+      sdkTurnCompletedCount += 1;
+      continue;
+    }
     if (runtimeEvent?.method !== "item/completed") continue;
     const params = asRecord(runtimeEvent.params);
     const item = asRecord(params?.item);
@@ -311,7 +373,19 @@ export function evaluateAgentEvalSignal(
     }
 
     if (!reason) continue;
-    if (isKnownEvalEnvToolLimitation(output)) continue;
+    const envLimitationReason = classifyKnownEvalEnvToolLimitation(output);
+    if (envLimitationReason) {
+      filteredEnvLimitationsByReason[envLimitationReason] =
+        (filteredEnvLimitationsByReason[envLimitationReason] ?? 0) + 1;
+      filteredEnvLimitations.push({
+        id,
+        tool,
+        reason: envLimitationReason,
+        status,
+        output: excerpt(output),
+      });
+      continue;
+    }
     badToolCallsByKey.set(key, {
       id,
       tool,
@@ -339,14 +413,27 @@ export function evaluateAgentEvalSignal(
       `bad tool calls ${badToolCalls.length} exceeded max ${thresholds.maxBadToolCalls}`,
     );
   }
+  if (
+    thresholds.maxSdkTurns !== undefined &&
+    sdkTurnStartCount > thresholds.maxSdkTurns
+  ) {
+    violations.push(
+      `sdk turns ${sdkTurnStartCount} exceeded max ${thresholds.maxSdkTurns}`,
+    );
+  }
 
   return {
     assistantTurnCount,
+    sdkTurnStartCount,
+    sdkTurnCompletedCount,
     messageCount: result.messages.length,
     toolCallCount,
     toolCallsByName,
     harnessErrorCount: 0,
     harnessErrors: [],
+    filteredEnvLimitationCount: filteredEnvLimitations.length,
+    filteredEnvLimitations,
+    filteredEnvLimitationsByReason,
     badToolCallCount: badToolCalls.length,
     badToolCalls,
     tokenUsage: countEvalTokenUsage(result),

@@ -120,9 +120,12 @@ describe("eval signal scoring", () => {
     );
 
     expect(signal.assistantTurnCount).toBe(2);
+    expect(signal.sdkTurnStartCount).toBe(0);
+    expect(signal.sdkTurnCompletedCount).toBe(0);
     expect(signal.toolCallCount).toBe(2);
     expect(signal.toolCallsByName).toEqual({ bash: 1, ls: 1 });
     expect(signal.harnessErrorCount).toBe(0);
+    expect(signal.filteredEnvLimitationCount).toBe(0);
     expect(signal.badToolCalls.map((call) => call.reason)).toEqual([
       "validation_failed",
       "ls_file_path_resolved_to_skill_catalog",
@@ -191,6 +194,14 @@ describe("eval signal scoring", () => {
     );
 
     expect(signal.badToolCallCount).toBe(1);
+    expect(signal.filteredEnvLimitationCount).toBe(1);
+    expect(signal.filteredEnvLimitations).toMatchObject([
+      {
+        id: "tool1",
+        tool: "take_screenshot",
+        reason: "missing_browser_binding_screenshot",
+      },
+    ]);
     expect(signal.badToolCalls).toMatchObject([
       { id: "tool2", tool: "take_screenshot", reason: "tool_status_failed" },
     ]);
@@ -230,6 +241,28 @@ describe("eval signal scoring", () => {
     );
 
     expect(signal.badToolCallCount).toBe(0);
+    expect(signal.filteredEnvLimitationCount).toBe(1);
+    expect(signal.filteredEnvLimitationsByReason).toEqual({
+      missing_browser_binding_session: 1,
+    });
+  });
+
+  it("counts SDK turns and enforces their threshold", () => {
+    const signal = evaluateAgentEvalSignal(
+      {
+        messages: [],
+        events: [
+          { type: "runtime_event", event: { method: "sdk/turn/started", params: {} } },
+          { type: "runtime_event", event: { method: "sdk/turn/completed", params: {} } },
+          { type: "runtime_event", event: { method: "sdk/turn/started", params: {} } },
+        ],
+      },
+      { maxSdkTurns: 1 },
+    );
+
+    expect(signal.sdkTurnStartCount).toBe(2);
+    expect(signal.sdkTurnCompletedCount).toBe(1);
+    expect(signal.violations).toEqual(["sdk turns 2 exceeded max 1"]);
   });
 
   it("sums token usage from Pi turn completion events", () => {
@@ -286,6 +319,51 @@ describe("eval signal scoring", () => {
       totalTokens: 2776,
       turnCount: 3,
       costUsd: 0.0042,
+    });
+  });
+
+  it("prefers SDK turn token usage over legacy visible turn completion usage", () => {
+    const tokenUsage = countEvalTokenUsage({
+      events: [
+        {
+          type: "runtime_event",
+          event: {
+            method: "turn/completed",
+            params: { usage: { input: 9999, output: 9999 } },
+          },
+        },
+        {
+          type: "runtime_event",
+          event: {
+            method: "sdk/turn/completed",
+            params: {
+              usage: {
+                input: 100,
+                output: 20,
+                cacheRead: 5,
+                cost: { total: 0.001 },
+              },
+            },
+          },
+        },
+        {
+          type: "runtime_event",
+          event: {
+            method: "sdk/turn/completed",
+            params: { usage: { input: 50, output: 10, cacheWrite: 2 } },
+          },
+        },
+      ],
+    });
+
+    expect(tokenUsage).toEqual({
+      inputTokens: 150,
+      outputTokens: 30,
+      cacheReadInputTokens: 5,
+      cacheCreationInputTokens: 2,
+      totalTokens: 187,
+      turnCount: 2,
+      costUsd: 0.001,
     });
   });
 });

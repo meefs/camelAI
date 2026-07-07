@@ -647,7 +647,7 @@ const CODE_MODE_TOOL_REGISTRY: CodeModeToolRegistration[] = [
   ),
   codeModeTool(
     "revert_project",
-    "Restore a DO-backed project's source files to a previous source snapshot. Use snapshot ids from list_deploy_versions commit_sha/source snapshot values. Set deploy=true to rebuild and redeploy after restoring. Arguments: { project, snapshot_id, deploy?, script_name? }.",
+    "Restore a DO-backed project's source files to a previous source snapshot. Use snapshot_id from list_commits.commits[]; list_deploy_versions is for deployed artifact rollback, not source snapshots. Restoring source does not publish the live app unless deploy=true or you subsequently call deploy_project. Arguments: { project, snapshot_id, deploy?, script_name? }.",
     Type.Object({
       project: Type.String(),
       snapshot_id: Type.String(),
@@ -3649,7 +3649,13 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
       const deploy = await this.deployProject(deployArgs);
       return { success: true, project: project.name, backend: project.backend ?? "vm", restored, deploy };
     }
-    return { success: true, project: project.name, backend: project.backend ?? "vm", restored };
+    return {
+      success: true,
+      project: project.name,
+      backend: project.backend ?? "vm",
+      restored,
+      message: "Source restored. The deployed app is unchanged until you call deploy_project (or pass deploy=true).",
+    };
   }
 
   private async listCommits(args: Record<string, unknown>): Promise<unknown> {
@@ -3661,6 +3667,8 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
       backend: project.backend ?? "vm",
       count: snapshots.length,
       commits: snapshots.map((snapshot) => ({
+        snapshot_id: snapshot.id,
+        id: snapshot.id,
         sha: snapshot.id,
         created_at: snapshot.createdAt,
         message: snapshot.message ?? null,

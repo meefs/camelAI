@@ -101,6 +101,11 @@ if [ -f workers/main/eval-sandbox.Dockerfile ]; then
   docker build -t camelai-eval-sandbox:latest -f workers/main/eval-sandbox.Dockerfile . || fail docker-build $?
 fi
 
+if [ -f workers/main/analysis-sandbox.Dockerfile ]; then
+  echo "[$(date -Is)] Building camelai-analysis-sandbox:latest (analysis stack)"
+  docker build -t camelai-analysis-sandbox:latest -f workers/main/analysis-sandbox.Dockerfile workers/main || fail analysis-docker-build $?
+fi
+
 # Patched Cloudflare Containers egress interceptor (workerd#6793 workaround): the stock
 # proxy-everything sidecar's TPROXY rules intercept docker bridge control traffic on newer hosts
 # (e.g. kernel 6.17 / Docker 29.x), so the container never becomes ready and the eval fails with

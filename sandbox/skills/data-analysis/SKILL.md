@@ -184,6 +184,10 @@ Notebooks preview reliabily with rich Altair charts and markdown rendering, and 
   - markdown cell: what to look for
   - code cell: chart/query
   - markdown cell: interpretation and takeaway
+- When modifying an existing `.ipynb`, treat it as structured JSON. For cell
+  additions/removals or broad source changes, read the notebook, update the JSON,
+  and write the full notebook back; use tiny text edits only when the exact JSON
+  fragment is visible and stable.
 
 ### Execute notebooks
 

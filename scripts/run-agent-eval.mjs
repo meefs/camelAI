@@ -1,6 +1,11 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
+import {
+  attachEvalLlmJudge,
+  formatEvalLlmJudgeSummary,
+  withLoadedEvalEnv,
+} from "./lib/eval-llm-judge.mjs";
 
 // Workaround for cloudflare/workerd#6793: the stock proxy-everything egress sidecar's TPROXY rules
 // intercept docker bridge control traffic on newer hosts (e.g. kernel 6.17 / Docker 29.x), so the
@@ -16,24 +21,36 @@ if (!process.env.MINIFLARE_CONTAINER_EGRESS_IMAGE) {
   }
 }
 
-// workers-sdk#14242: vitest-pool-workers leaves the eval container and its egress sidecar running
+// workers-sdk#14242: vitest-pool-workers leaves container DOs and their egress sidecars running
 // after the run instead of removing them. They accumulate (each holds a netns, ports and memory)
-// and will eventually exhaust the host. Prune lingering eval containers before and after every run.
+// and will eventually exhaust the host. Prune lingering eval-runner containers before and after every run.
 //
-// This is a GLOBAL sweep (matches all EvalSandbox containers), which is only safe when this is the
-// only eval on the host. A direct local run (`bun run test:eval:*`) is exactly that. An orchestrator
-// that runs evals concurrently would have a global sweep kill a sibling run's container, so it sets
-// EVAL_MANAGED_CLEANUP=1 to skip this and owns a concurrency-safe reaper instead.
+// This is a GLOBAL sweep of vitest-pool runner containers for classes used by evals, which is only
+// safe when this is the only eval on the host. A direct local run (`bun run test:eval:*`) is exactly
+// that. An orchestrator that runs evals concurrently would have a global sweep kill a sibling run's
+// container, so it sets EVAL_MANAGED_CLEANUP=1 to skip this and owns a concurrency-safe reaper instead.
+const EVAL_CONTAINER_CLASS_NAMES = ["EvalSandbox", "ProjectBuildSandbox", "AnalysisSandbox"];
+const VITEST_CONTAINER_NAME_PREFIX = "workerd-vitest-pool-workers-runner--";
+
 function sweepEvalContainers(reason) {
   if (process.env.EVAL_MANAGED_CLEANUP === "1") return;
-  const list = spawnSync("docker", ["ps", "-aq", "--filter", "name=EvalSandbox"], {
+  const list = spawnSync("docker", ["ps", "-a", "--format", "{{.ID}}\t{{.Names}}"], {
     encoding: "utf8",
   });
   if (list.status !== 0) return; // docker unavailable; nothing to do
-  const ids = (list.stdout || "").split("\n").map((line) => line.trim()).filter(Boolean);
+  const ids = (list.stdout || "")
+    .split("\n")
+    .map((line) => {
+      const [id, name = ""] = line.split("\t");
+      const isEvalRunnerContainer =
+        name.startsWith(VITEST_CONTAINER_NAME_PREFIX) &&
+        EVAL_CONTAINER_CLASS_NAMES.some((className) => name.includes(`--${className}-`));
+      return isEvalRunnerContainer ? id.trim() : "";
+    })
+    .filter(Boolean);
   if (ids.length === 0) return;
   spawnSync("docker", ["rm", "-f", ...ids], { stdio: "ignore" });
-  console.log(`Pruned ${ids.length} leftover eval container(s) (${reason}; workers-sdk#14242)`);
+  console.log(`Pruned ${ids.length} leftover eval-runner container(s) (${reason}; workers-sdk#14242)`);
 }
 
 // Single source of truth: the eval manifest. Adding an eval = add a manifest entry + a
@@ -78,6 +95,12 @@ Options:
   --max-sdk-turns <n>       SDK turn_start warning/failure threshold
   --artifact-dir <path>     Directory for the captured transcript JSON
   --help                    Show this help message
+
+Environment:
+  EVAL_LLM_JUDGE=0 disables the advisory LLM judge
+  EVAL_JUDGE_MODEL overrides the judge model (default: openai/gpt-5.5)
+  EVAL_JUDGE_GATEWAY_PROVIDER overrides the AI Gateway route (default: compat)
+  EVAL_JUDGE_REASONING_EFFORT overrides judge reasoning effort (default: high)
 `);
 }
 
@@ -136,6 +159,8 @@ function printSignalSummary(transcript) {
       `toolCalls=${signal.toolCallCount}`,
       `badToolCalls=${signal.badToolCallCount}`,
       `harnessErrors=${signal.harnessErrorCount ?? 0}`,
+      `filteredEnvLimitations=${signal.filteredEnvLimitationCount ?? 0}`,
+      `filteredHarnessErrors=${signal.filteredHarnessErrorCount ?? 0}`,
     ].join(" "),
   );
 
@@ -179,6 +204,21 @@ function printSignalSummary(transcript) {
       console.warn(`- ${error.reason}: ${error.output ?? ""}`);
     }
   }
+
+  if (signal.filteredEnvLimitations?.length) {
+    console.log("Filtered eval-env tool limitations:");
+    for (const limitation of signal.filteredEnvLimitations) {
+      const label = limitation.id ? `${limitation.tool} (${limitation.id})` : limitation.tool;
+      console.log(`- ${label}: ${limitation.reason}`);
+    }
+  }
+
+  if (signal.filteredHarnessErrors?.length) {
+    console.log("Filtered harness duplicate/env errors:");
+    for (const error of signal.filteredHarnessErrors) {
+      console.log(`- ${error.reason}: ${error.output ?? ""}`);
+    }
+  }
 }
 
 const config = evalIds.includes(evalName) ? configFor(evalName) : null;
@@ -188,10 +228,10 @@ if (!config) {
   process.exit(1);
 }
 
-const evalEnv = {
+const evalEnv = withLoadedEvalEnv({
   ...process.env,
   ...parseOptions(cliArgs),
-};
+});
 
 const artifactDir = path.resolve(evalEnv.EVAL_ARTIFACT_DIR ?? ".eval-artifacts");
 const artifactModelLabel =
@@ -205,7 +245,7 @@ const artifactPath = path.join(artifactDir, `${evalName}${artifactSuffix}.json`)
 
 // With EVAL_REPORT=1, the full run output is captured next to the artifact and the
 // finished run is uploaded to the shared results viewer (scripts/report-eval-run.mjs).
-const reportRun = process.env.EVAL_REPORT === "1";
+const reportRun = evalEnv.EVAL_REPORT === "1";
 const logPath = path.join(artifactDir, `${evalName}${artifactSuffix}.log`);
 const startedAt = new Date().toISOString();
 if (reportRun) {
@@ -241,44 +281,77 @@ function firstMeaningfulLine(text) {
     });
 }
 
+function classifyFilteredHarnessError(piece) {
+  if (piece.includes("callToolEnvelope")) return "enveloped_tool_duplicate";
+  if (piece.includes("Screenshot capture requires the BROWSER binding")) {
+    return "missing_browser_binding_screenshot";
+  }
+  if (piece.includes("Browser sessions require the BROWSER binding")) {
+    return "missing_browser_binding_session";
+  }
+  if (piece.includes("DISPATCHER service binding is not configured")) {
+    return "missing_dispatcher_binding";
+  }
+  if (piece.includes("ServiceStub serialization requires the 'experimental' compat flag")) {
+    return "servicestub_experimental_compat_missing";
+  }
+  return null;
+}
+
 function extractVitestUnhandledErrors(output) {
-  if (!/Unhandled Errors/i.test(output)) return [];
+  if (!/Unhandled Errors/i.test(output)) return { harnessErrors: [], filteredHarnessErrors: [] };
   const pieces = output.split(/Unhandled (?:Rejection|Exception)/i).slice(1);
-  return pieces
-    // Tool failures that reach the agent as { ok: false } envelopes are caught in
-    // CodeModeToolsBinding.callToolEnvelope before crossing any boundary, but the
-    // vitest-pool-workers handler-context shim still reports the original throw as
-    // an unhandled rejection. A stack through callToolEnvelope proves the error was
-    // delivered to the agent as a value — a duplicate signal, not a harness bug.
-    .filter((piece) => !piece.includes("callToolEnvelope"))
-    // Known eval-env limitation: the Miniflare eval environment has no BROWSER
-    // binding, so take_screenshot always fails with this message. The failure is
-    // already surfaced to the agent as a tool error; the extra unhandled-rejection
-    // report is environment noise, not an agent or harness bug.
-    .filter((piece) => !piece.includes("Screenshot capture requires the BROWSER binding"))
-    .map((piece) => firstMeaningfulLine(piece))
-    .filter(Boolean)
-    .map((line) => ({
+  const harnessErrors = [];
+  const filteredHarnessErrors = [];
+  for (const piece of pieces) {
+    const line = firstMeaningfulLine(piece);
+    if (!line) continue;
+    const filteredReason = classifyFilteredHarnessError(piece);
+    if (filteredReason) {
+      filteredHarnessErrors.push({
+        tool: "harness",
+        reason: filteredReason,
+        output: line.slice(0, 500),
+      });
+      continue;
+    }
+    harnessErrors.push({
       tool: "harness",
       reason: "vitest_unhandled_error",
       output: line.slice(0, 500),
-    }));
+    });
+  }
+  return { harnessErrors, filteredHarnessErrors };
 }
 
-function addHarnessSignal(transcript, harnessErrors) {
-  if (!transcript || !harnessErrors.length) return transcript;
+function addHarnessSignal(transcript, harnessSignal) {
+  if (!transcript) return transcript;
+  const harnessErrors = harnessSignal.harnessErrors ?? [];
+  const filteredHarnessErrors = harnessSignal.filteredHarnessErrors ?? [];
+  if (!harnessErrors.length && !filteredHarnessErrors.length) return transcript;
   const signal = transcript.signal ?? {};
   const existingHarnessErrors = Array.isArray(signal.harnessErrors)
     ? signal.harnessErrors
     : [];
   const mergedHarnessErrors = [...existingHarnessErrors, ...harnessErrors];
+  const existingFilteredHarnessErrors = Array.isArray(signal.filteredHarnessErrors)
+    ? signal.filteredHarnessErrors
+    : [];
+  const mergedFilteredHarnessErrors = [
+    ...existingFilteredHarnessErrors,
+    ...filteredHarnessErrors,
+  ];
   transcript.signal = {
     ...signal,
     harnessErrors: mergedHarnessErrors,
     harnessErrorCount: mergedHarnessErrors.length,
+    filteredHarnessErrors: mergedFilteredHarnessErrors,
+    filteredHarnessErrorCount: mergedFilteredHarnessErrors.length,
     violations: [
       ...(Array.isArray(signal.violations) ? signal.violations : []),
-      `harness unhandled errors ${mergedHarnessErrors.length}`,
+      ...(mergedHarnessErrors.length > 0
+        ? [`harness unhandled errors ${mergedHarnessErrors.length}`]
+        : []),
     ],
   };
   return transcript;
@@ -408,7 +481,7 @@ child.on("error", (error) => {
   process.exit(1);
 });
 
-child.on("close", (code) => {
+child.on("close", async (code) => {
   let exitCode = code ?? 1;
   // A real-deploy eval that legitimately skipped (no CF_API_TOKEN / EVAL_REAL_DEPLOY=0)
   // produced no result — reporting it would record a bogus contract failure.
@@ -421,8 +494,15 @@ child.on("close", (code) => {
         extractVitestUnhandledErrors(processOutputTail),
       );
       validateEvaluationContract(transcript);
+      await attachEvalLlmJudge(transcript, {
+        env: evalEnv,
+        evalName,
+        targetModel: artifactModelLabel,
+      });
       writeFileSync(artifactPath, JSON.stringify(transcript, null, 2));
       console.log(`Wrote eval artifact: ${artifactPath}`);
+      const judgeSummary = formatEvalLlmJudgeSummary(transcript);
+      if (judgeSummary) console.log(judgeSummary);
       printSignalSummary(transcript);
       // dangerouslyIgnoreUnhandledErrors (eval runs only) stops vitest from
       // exiting 1 on the enveloped-tool duplicates filtered above — but that
@@ -468,10 +548,10 @@ child.on("close", (code) => {
     ];
     if (existsSync(artifactPath)) reporterArgs.push("--artifact", artifactPath);
     if (artifactModelLabel) reporterArgs.push("--model", artifactModelLabel);
-    if (process.env.EVAL_REAL_DEPLOY !== undefined) {
-      reporterArgs.push("--real-deploy", process.env.EVAL_REAL_DEPLOY === "0" ? "0" : "1");
+    if (evalEnv.EVAL_REAL_DEPLOY !== undefined) {
+      reporterArgs.push("--real-deploy", evalEnv.EVAL_REAL_DEPLOY === "0" ? "0" : "1");
     }
-    spawnSync(process.execPath, reporterArgs, { stdio: "inherit" });
+    spawnSync(process.execPath, reporterArgs, { stdio: "inherit", env: evalEnv });
   }
 
   process.exit(exitCode);

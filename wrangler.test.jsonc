@@ -18,6 +18,12 @@
 			"image": "./workers/main/project-build-sandbox.Dockerfile",
 			"instance_type": "standard-4",
 			"max_instances": 1
+		},
+		{
+			"class_name": "AnalysisSandbox",
+			"image": "./workers/main/analysis-sandbox.Dockerfile",
+			"instance_type": "standard-4",
+			"max_instances": 1
 		}
 	],
 	"send_email": [{ "name": "EMAIL" }],
@@ -84,7 +90,8 @@
 				{ "name": "WORKSPACE", "class_name": "WorkspaceDO" },
 				{ "name": "WORKSPACE_CRON", "class_name": "WorkspaceCronDO" },
 				{ "name": "WORKSPACE_FS", "class_name": "WorkspaceFilesystemDO" },
-				{ "name": "PROJECT_BUILD_SANDBOX", "class_name": "ProjectBuildSandbox" }
+				{ "name": "PROJECT_BUILD_SANDBOX", "class_name": "ProjectBuildSandbox" },
+				{ "name": "ANALYSIS_SANDBOX", "class_name": "AnalysisSandbox" }
 			]
 		},
 	"workflows": [
@@ -106,6 +113,7 @@
 			{ "tag": "v9", "new_sqlite_classes": ["MigrationPlanningAgent"] },
 			{ "tag": "v10", "new_sqlite_classes": ["Sandbox", "ChatThreadDO"] },
 			{ "tag": "v11", "new_sqlite_classes": ["EvalSandbox"] },
-			{ "tag": "v12", "new_sqlite_classes": ["ProjectBuildSandbox"] }
+			{ "tag": "v12", "new_sqlite_classes": ["ProjectBuildSandbox"] },
+			{ "tag": "v13", "new_sqlite_classes": ["AnalysisSandbox"] }
 		]
 	}

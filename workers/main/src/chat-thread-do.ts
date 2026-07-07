@@ -995,6 +995,8 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
   private piAgentStartedAtMs: number = 0;
   private piUserStopRequestedAtMs: number = 0;
   private piLastTurnUsage: Record<string, unknown> | null = null;
+  private piSdkTurnIndex: number = 0;
+  private piSdkTurnUsageTotal: Record<string, unknown> | null = null;
   private piCurrentBillingSource: PiBillingSource = "hosted";
   private piCurrentCreditChargeable: boolean = false;
   private piCurrentUsageProvider: string | null = null;
@@ -7743,6 +7745,8 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
       this.piTurnStartedAtMs = Date.now();
       this.piUserStopRequestedAtMs = 0;
       this.piLastTurnUsage = null;
+      this.piSdkTurnIndex = 0;
+      this.piSdkTurnUsageTotal = null;
       // Provider config is read once per agent turn: the first LLM call after
       // this re-reads from OrgDO and every later call in the turn reuses it.
       this.cachedLlmProviderConfig = null;
@@ -7769,6 +7773,12 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
 
     if (event.type === "turn_start") {
       this.piTurnStartedAtMs = Date.now();
+      this.piSdkTurnIndex += 1;
+      this.pushPiRuntimeEvent("sdk/turn/started", {
+        threadId: this.piRuntimeThreadId(),
+        sdkTurnIndex: this.piSdkTurnIndex,
+        startedAtMs: this.piTurnStartedAtMs,
+      });
     }
 
     if (event.type === "turn_end") {
@@ -7805,6 +7815,18 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
       const creditChargeable = this.piCurrentCreditChargeable;
       const usageProvider = this.piCurrentUsageProvider;
       this.piLastTurnUsage = this.piRuntimeUsageSummary(event.message);
+      this.piSdkTurnUsageTotal = this.addPiRuntimeUsageSummaries(
+        this.piSdkTurnUsageTotal,
+        this.piLastTurnUsage,
+      );
+      this.pushPiRuntimeEvent("sdk/turn/completed", {
+        threadId: this.piRuntimeThreadId(),
+        sdkTurnIndex: this.piSdkTurnIndex,
+        completedAtMs: Date.now(),
+        durationMs,
+        ...(usageProvider ? { provider: usageProvider } : {}),
+        ...(this.piLastTurnUsage ? { usage: this.piLastTurnUsage } : {}),
+      });
       this.ctx.waitUntil(
         this.recordPiAssistantUsage(
           event.message,
@@ -8071,7 +8093,8 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
         ...(forkEntryId ? { forkEntryId } : {}),
         completedAtMs,
         turnDurationMs,
-        ...(this.piLastTurnUsage ? { usage: this.piLastTurnUsage } : {}),
+        ...(this.piSdkTurnUsageTotal ? { usage: this.piSdkTurnUsageTotal } : {}),
+        ...(this.piSdkTurnIndex > 0 ? { sdkTurnCount: this.piSdkTurnIndex } : {}),
       });
       this.pushChatEvent({
         type: "result",
@@ -8152,6 +8175,29 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
       ...(Number.isFinite(costTotal) && costTotal > 0
         ? { cost: { total: costTotal } }
         : {}),
+    };
+  }
+
+  private addPiRuntimeUsageSummaries(
+    current: Record<string, unknown> | null,
+    next: Record<string, unknown> | null,
+  ): Record<string, unknown> | null {
+    if (!next) return current;
+    const sum = (key: string) =>
+      Math.max(0, Math.floor(Number(current?.[key] ?? 0))) +
+      Math.max(0, Math.floor(Number(next[key] ?? 0)));
+    const currentCost = Number((current?.cost as { total?: unknown } | undefined)?.total ?? 0);
+    const nextCost = Number((next.cost as { total?: unknown } | undefined)?.total ?? 0);
+    const costTotal =
+      (Number.isFinite(currentCost) && currentCost > 0 ? currentCost : 0) +
+      (Number.isFinite(nextCost) && nextCost > 0 ? nextCost : 0);
+    return {
+      input: sum("input"),
+      output: sum("output"),
+      cacheRead: sum("cacheRead"),
+      cacheWrite: sum("cacheWrite"),
+      totalTokens: sum("totalTokens"),
+      ...(costTotal > 0 ? { cost: { total: costTotal } } : {}),
     };
   }
 

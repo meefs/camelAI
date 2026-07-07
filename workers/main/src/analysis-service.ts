@@ -51,6 +51,12 @@ const MAX_NOTEBOOK_TIMEOUT_MS = 900_000;
 const DEFAULT_EXEC_TIMEOUT_MS = 300_000;
 const DEFAULT_DEP_TIMEOUT_MS = 300_000;
 
+async function r2PrefixHasObjects(bucket: R2Bucket, prefix: string): Promise<boolean> {
+  const normalizedPrefix = prefix.replace(/\/+$/, "");
+  const listed = await bucket.list({ prefix: `${normalizedPrefix}/`, limit: 1 });
+  return listed.objects.length > 0;
+}
+
 // ---------------------------------------------------------------------------
 // Sandbox interface (minimal, for testability)
 // ---------------------------------------------------------------------------
@@ -307,7 +313,7 @@ export function treeManifestCommand(): string {
   const prune = pruneNames.map((name) => `-name ${shellQuote(name)}`).join(" -o ");
   return (
     `__mf=$(mktemp) && find . \\( ${prune} \\) -prune -o -type f -print0 > "$__mf" ` +
-    `&& xargs -0 -r sha256sum < "$__mf"; __rc=$?; rm -f "$__mf"; exit $__rc`
+    `&& xargs -0 -r sha256sum < "$__mf"; __rc=$?; [ -n "$__mf" ] && rm -f "$__mf"; test "$__rc" -eq 0`
   );
 }
 
@@ -903,7 +909,9 @@ export class AnalysisService extends WorkerEntrypoint<AnalysisEnv, AnalysisServi
       // reference with a leading slash — because the raw org/workspace R2
       // prefix is neither shown to the agent nor derivable in the container.
       const uploadsPrefix = `${getWorkspaceR2Prefix(this.ctx.props.orgId, this.ctx.props.workspaceId)}/user-uploads`;
-      await sandbox.ensureMounted(ANALYSIS_UPLOADS_BUCKET_BINDING, uploadsPrefix, ANALYSIS_UPLOADS_MOUNT_PATH);
+      if (await r2PrefixHasObjects(this.env.R2_BUCKET, uploadsPrefix)) {
+        await sandbox.ensureMounted(ANALYSIS_UPLOADS_BUCKET_BINDING, uploadsPrefix, ANALYSIS_UPLOADS_MOUNT_PATH);
+      }
     }
     if (this.ctx.props.orgId && this.ctx.props.workspaceId) {
       await sandbox.ensureConnectionsRpc({

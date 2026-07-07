@@ -22,6 +22,21 @@ CUSTOM_EVAL_PROMPT="Build a dashboard from fake data." bun scripts/run-agent-eva
 Knobs: `--model <id>`, `--timeout-ms <ms>`, `EVAL_REAL_DEPLOY=0/1`, `CUSTOM_EVAL_*` (see
 `bun scripts/run-agent-eval.mjs --help`).
 
+Captured artifacts include an advisory `llmJudge` block by default when Cloudflare AI Gateway
+credentials are available. The default judge is fixed to `openai/gpt-5.5` on the `compat` route
+with high reasoning. It is blind to deterministic pass/fail, then records agreement after judging;
+it never changes deterministic pass/fail. Set `EVAL_LLM_JUDGE=0` to disable it, or override with
+`EVAL_JUDGE_MODEL`, `EVAL_JUDGE_GATEWAY_PROVIDER`, or `EVAL_JUDGE_REASONING_EFFORT`.
+
+## Run a matrix
+
+```bash
+bun run test:eval:matrix -- --models sonnet,deepseek-v4-flash --evals do-backed-project-deploy-live --repeat 3
+```
+
+The matrix runner writes `<artifact-dir>/matrix-summary.json` with per-run status, artifact path,
+report URLs, score, signal, and judge agreement/usage metadata.
+
 ## Report the run to the shared viewer
 
 Set `EVAL_REPORT=1` and the run (artifact, log, scorecard) is uploaded when it finishes:
