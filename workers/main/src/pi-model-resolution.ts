@@ -4,8 +4,6 @@
 // via `this`. The stateful resolution orchestrators (resolvePiModel,
 // resolvePiRequestConfig, getCachedLlmProviderConfig, resolveCurrentByokCredentials)
 // remain on ChatThreadDO and call into a PiModelMapping instance.
-import { bedrockProviderModule } from "./pi-bedrock-provider";
-import type { Model } from "@earendil-works/pi-ai";
 import { DEFAULT_LLM_MODEL, normalizeLlmModel } from "../../../src/lib/llm-provider-config";
 import type { PiHeaderValue, PiResolvedModelReference } from "./chat-thread-do";
 
@@ -41,8 +39,10 @@ export class PiModelMapping {
       case "opus-4.7":
       case "opus-4.8":
         return claudeReference("claude-opus-4-8");
+      case "fable-5":
+        return claudeReference("claude-fable-5");
       case "sonnet":
-        return claudeReference("claude-sonnet-4-6");
+        return claudeReference("claude-sonnet-5");
       case "gpt-5.4-mini":
       case "gpt-5.4":
       case "gpt-5.5":
@@ -96,8 +96,8 @@ export class PiModelMapping {
     const trimmed = modelId.trim();
     const normalized = trimmed;
     const lower = normalized.toLowerCase();
-    if (lower === "fable-5" || lower === "claude-fable-5") {
-      return "sonnet";
+    if (lower === "claude-fable-5") {
+      return "fable-5";
     }
     if (
       lower === "kimi-k2.6" ||
@@ -165,7 +165,10 @@ export class PiModelMapping {
   openRouterClaudeModel(model: string): string {
     switch (model.trim().toLowerCase()) {
       case "sonnet":
-        return "anthropic/claude-sonnet-4.6";
+        return "anthropic/claude-sonnet-5";
+      case "fable-5":
+      case "claude-fable-5":
+        return "anthropic/claude-fable-5";
       case "haiku":
         return "anthropic/claude-haiku-4.5";
       case "opus":
@@ -178,6 +181,8 @@ export class PiModelMapping {
       case "claude-opus-4-6":
       case "claude-opus-4.6":
         return "anthropic/claude-opus-4.8";
+      case "claude-sonnet-5":
+        return "anthropic/claude-sonnet-5";
       case "claude-sonnet-4-6":
         return "anthropic/claude-sonnet-4.6";
       case "claude-sonnet-4-5-20250929":
@@ -225,23 +230,26 @@ export class PiModelMapping {
   bedrockClaudeModel(modelId: string): string {
     switch (modelId) {
       case "claude-haiku-4-5-20251001":
-        return "global.anthropic.claude-haiku-4-5-20251001-v1:0";
+        return "anthropic.claude-haiku-4-5";
       case "claude-opus-4-8":
-        return "global.anthropic.claude-opus-4-8";
+        return "anthropic.claude-opus-4-8";
+      case "claude-fable-5":
+        return "anthropic.claude-fable-5";
       case "claude-opus-4-6":
       case "claude-opus-4-7":
-        return "global.anthropic.claude-opus-4-8";
+        return "anthropic.claude-opus-4-8";
+      case "claude-sonnet-5":
+        return "anthropic.claude-sonnet-5";
       case "claude-sonnet-4-6":
       default:
-        return "global.anthropic.claude-sonnet-4-6";
+        return "anthropic.claude-sonnet-5";
     }
   }
 
-  bedrockRuntimeBaseUrl(region: string | undefined): string | undefined {
-    const normalized = region?.trim();
-    if (!normalized) return undefined;
+  bedrockAnthropicMessagesBaseUrl(region: string | undefined): string | undefined {
+    const normalized = region?.trim() || "us-east-1";
     if (!/^[a-z0-9-]+$/.test(normalized)) return undefined;
-    return `https://bedrock-runtime.${normalized}.amazonaws.com`;
+    return `https://bedrock-mantle.${normalized}.api.aws/anthropic`;
   }
 
   bedrockOpenAiModelConfig(
@@ -272,18 +280,4 @@ export class PiModelMapping {
     };
   }
 
-  buildBedrockByokOptions(
-    model: Model<any>,
-    options: Parameters<typeof import("@earendil-works/pi-ai").streamSimple>[2],
-  ): Parameters<typeof bedrockProviderModule.streamBedrock>[2] {
-    return {
-      ...options,
-      bearerToken: options?.apiKey,
-      maxTokens:
-        options?.maxTokens ??
-        (typeof model.maxTokens === "number" && model.maxTokens > 0
-          ? Math.min(model.maxTokens, 32000)
-          : undefined),
-    } as Parameters<typeof bedrockProviderModule.streamBedrock>[2];
-  }
 }

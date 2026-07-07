@@ -14,7 +14,6 @@ export const THREAD_MODEL_LOCK_MESSAGE =
   "This thread is locked to its original model. Start a new thread to use a different model.";
 
 const LEGACY_LLM_MODEL_REPLACEMENTS = {
-  "fable-5": "sonnet",
   "gemini-3.1-pro-preview": "gemini-3.5-flash",
   "kimi-k2.6": "kimi-k2.7-code",
   "kimi-latest": "kimi-k2.7-code",
@@ -47,8 +46,13 @@ export const CLAUDE_LLM_MODEL_OPTIONS: ReadonlyArray<{
     description: "Flagship coding model",
   },
   {
+    value: "fable-5",
+    label: "Fable 5",
+    description: "Highest-capability Claude model",
+  },
+  {
     value: "sonnet",
-    label: "Sonnet 4.6",
+    label: "Sonnet 5",
     description: "Default and recommended",
   },
   { value: "haiku", label: "Haiku 4.5", description: "Faster and cheaper" },

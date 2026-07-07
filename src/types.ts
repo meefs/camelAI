@@ -604,6 +604,7 @@ export type LlmProvider = "anthropic" | "bedrock" | "custom" | "openai" | "openr
 export type LlmModel =
   | "haiku"
   | "sonnet"
+  | "fable-5"
   | "opus-4.8"
   | "gpt-5.5"
   | "gpt-5.4"

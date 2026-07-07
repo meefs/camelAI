@@ -186,7 +186,7 @@ describe('organization model settings UI', () => {
     expect(screen.getByRole('button', { name: 'remove' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'add' })).toBeInTheDocument();
     expect(
-      screen.getByRole('button', { name: 'Clear Sonnet 4.6 as default' }),
+      screen.getByRole('button', { name: 'Clear Sonnet 5 as default' }),
     ).toBeInTheDocument();
     expect(screen.getByText('Additional models')).toBeInTheDocument();
   });
@@ -309,7 +309,7 @@ describe('organization model settings UI', () => {
 
     expect(screen.getByRole('button', { name: 'remove' })).toBeEnabled();
     expect(
-      screen.getByRole('button', { name: 'Clear Sonnet 4.6 as default' }),
+      screen.getByRole('button', { name: 'Clear Sonnet 5 as default' }),
     ).toBeDisabled();
     expect(screen.queryByText('Additional models')).not.toBeInTheDocument();
   });

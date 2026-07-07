@@ -19,13 +19,7 @@ import type {
 import {
   createAssistantMessageEventStream,
   isContextOverflow,
-  setBedrockProviderModule,
 } from "@earendil-works/pi-ai";
-import {
-  bedrockProviderModule,
-  resolveBedrockModelFallback,
-  withBedrockModelMetadata,
-} from "./pi-bedrock-provider";
 import type {
   AssistantMessage,
   AssistantMessageEvent,
@@ -216,10 +210,6 @@ import type {
   PiSqlStorageSerialization,
 } from "./pi-message-storage";
 
-// Pi lazy-loads its Bedrock provider through the AWS SDK, which is brittle in
-// Cloudflare Workers. Register our Worker-native Bedrock adapter instead.
-setBedrockProviderModule(bedrockProviderModule);
-
 export type PreviewTarget =
   | {
       kind: "app";
@@ -320,23 +310,41 @@ type AssistantCompletionPersistenceResult =
   | { status: "failed" };
 
 const PI_MODEL_CATALOG_FALLBACKS: Record<string, Model<any>> = {
-  "anthropic/claude-sonnet-4-6": {
-    id: "claude-sonnet-4-6",
-    name: "Claude Sonnet 4.6",
+  "anthropic/claude-sonnet-5": {
+    id: "claude-sonnet-5",
+    name: "Claude Sonnet 5",
     api: "anthropic-messages",
     provider: "anthropic",
     baseUrl: "https://api.anthropic.com",
     reasoning: true,
-    thinkingLevelMap: { xhigh: "xhigh" },
     input: ["text", "image"],
     cost: {
-      input: 3,
-      output: 15,
-      cacheRead: 0.3,
-      cacheWrite: 3.75,
+      input: 2,
+      output: 10,
+      cacheRead: 0.2,
+      cacheWrite: 2.5,
     },
     contextWindow: 1_000_000,
-    maxTokens: 64_000,
+    maxTokens: 128_000,
+  } satisfies Model<"anthropic-messages">,
+  "anthropic/claude-fable-5": {
+    id: "claude-fable-5",
+    name: "Claude Fable 5",
+    api: "anthropic-messages",
+    provider: "anthropic",
+    baseUrl: "https://api.anthropic.com",
+    compat: { forceAdaptiveThinking: true },
+    reasoning: true,
+    thinkingLevelMap: { off: null, xhigh: "xhigh" },
+    input: ["text", "image"],
+    cost: {
+      input: 10,
+      output: 50,
+      cacheRead: 1,
+      cacheWrite: 12.5,
+    },
+    contextWindow: 1_000_000,
+    maxTokens: 128_000,
   } satisfies Model<"anthropic-messages">,
   "anthropic/claude-opus-4-8": {
     id: "claude-opus-4-8",
@@ -5919,7 +5927,7 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
     envVars: Record<string, string>,
   ): Promise<PiCoreAgent> {
     const { Agent } = await import("@earendil-works/pi-agent-core");
-    const { completeSimple, getModel, streamSimple } = await import("@earendil-works/pi-ai");
+    const { completeSimple, getModel, streamSimple } = await import("@earendil-works/pi-ai/compat");
 
     this.piUnsubscribe?.();
     this.piUnsubscribe = null;
@@ -6043,7 +6051,7 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
     messages: AgentMessage[],
     model: Model<any>,
     apiKey: string,
-    completeSimple: typeof import("@earendil-works/pi-ai").completeSimple,
+    completeSimple: typeof import("@earendil-works/pi-ai/compat").completeSimple,
     signal?: AbortSignal,
     force = false,
   ): Promise<AgentMessage[]> {
@@ -6191,8 +6199,8 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
     );
   }
 
-  private async loadPiCompleteSimple(): Promise<typeof import("@earendil-works/pi-ai").completeSimple> {
-    const { completeSimple } = await import("@earendil-works/pi-ai");
+  private async loadPiCompleteSimple(): Promise<typeof import("@earendil-works/pi-ai/compat").completeSimple> {
+    const { completeSimple } = await import("@earendil-works/pi-ai/compat");
     return completeSimple;
   }
 
@@ -6335,7 +6343,7 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
     messages: AgentMessage[],
     model: Model<any>,
     apiKey: string,
-    completeSimple: typeof import("@earendil-works/pi-ai").completeSimple,
+    completeSimple: typeof import("@earendil-works/pi-ai/compat").completeSimple,
     signal?: AbortSignal,
     previousSummary?: string,
   ): Promise<string> {
@@ -6404,7 +6412,7 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
     messages: AgentMessage[],
     model: Model<any>,
     apiKey: string,
-    completeSimple: typeof import("@earendil-works/pi-ai").completeSimple,
+    completeSimple: typeof import("@earendil-works/pi-ai/compat").completeSimple,
     summaryMaxTokens: number,
     inputTokenBudget: number,
     signal?: AbortSignal,
@@ -6435,20 +6443,11 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
       maxTokens: summaryMaxTokens,
       ...(model.reasoning ? { reasoning: "high" as const } : {}),
     } as Parameters<typeof completeSimple>[2];
-    const response =
-      model.api === "bedrock-converse-stream"
-        ? await bedrockProviderModule
-            .streamBedrock(
-              model,
-              summaryContext,
-              this.piModelMapping.buildBedrockByokOptions(model, summaryOptions),
-            )
-            .result()
-        : await completeSimple(
-            model,
-            summaryContext,
-            summaryOptions,
-          );
+    const response = await completeSimple(
+      model,
+      summaryContext,
+      summaryOptions,
+    );
     if ((response as { stopReason?: unknown }).stopReason === "error") {
       const errorMessage = typeof (response as { errorMessage?: unknown }).errorMessage === "string"
         ? (response as { errorMessage: string }).errorMessage
@@ -6558,15 +6557,11 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
             configured.modelLookupProvider as never,
             (configured.modelLookupModelId ?? configured.requestModelId) as never,
           ) as Model<any> | null | undefined) ??
-          (configured.modelLookupProvider === "amazon-bedrock"
-            ? resolveBedrockModelFallback(
-                configured.modelLookupModelId ?? configured.requestModelId,
-              )
-            : resolvePiModelCatalogFallback({
-                provider: configured.modelLookupProvider,
-                modelId: configured.modelLookupModelId ?? configured.requestModelId,
-                hostedGatewayProvider: resolved.hostedGatewayProvider,
-              }))
+          resolvePiModelCatalogFallback({
+            provider: configured.modelLookupProvider,
+            modelId: configured.modelLookupModelId ?? configured.requestModelId,
+            hostedGatewayProvider: resolved.hostedGatewayProvider,
+          })
         : null;
     if (configured.modelLookupProvider && !configuredModel) {
       throw new Error(
@@ -6620,10 +6615,7 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
       } as Model<any>["thinkingLevelMap"];
     }
     return {
-      model:
-        resolvedModel.api === "bedrock-converse-stream"
-          ? withBedrockModelMetadata(resolvedModel as Model<"bedrock-converse-stream">)
-          : resolvedModel,
+      model: resolvedModel,
       apiKey: configured.apiKey,
       headers: configured.headers,
       provider: resolved.provider,
@@ -6692,12 +6684,14 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
     if (byokAllowed && byok?.provider === "bedrock" && byok.apiKey && resolved.provider === "anthropic") {
       return {
         apiKey: byok.apiKey,
+        api: "anthropic-messages",
         billingSource: "byok",
         creditChargeable: false,
-        requestProvider: "amazon-bedrock",
+        requestProvider: "custom",
         requestModelId: this.piModelMapping.bedrockClaudeModel(resolved.modelId),
-        modelLookupProvider: "amazon-bedrock",
-        baseUrl: this.piModelMapping.bedrockRuntimeBaseUrl(byok.awsRegion),
+        modelLookupProvider: "anthropic",
+        modelLookupModelId: resolved.modelId,
+        baseUrl: this.piModelMapping.bedrockAnthropicMessagesBaseUrl(byok.awsRegion),
         usageProvider: "bedrock",
       };
     }
@@ -6932,30 +6926,20 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
 
   private streamPiModel(
     model: Model<any>,
-    context: Parameters<typeof import("@earendil-works/pi-ai").streamSimple>[1],
-    options: Parameters<typeof import("@earendil-works/pi-ai").streamSimple>[2],
-    streamSimple: typeof import("@earendil-works/pi-ai").streamSimple,
-    streamBedrock = bedrockProviderModule.streamBedrock,
-  ): ReturnType<typeof import("@earendil-works/pi-ai").streamSimple> {
+    context: Parameters<typeof import("@earendil-works/pi-ai/compat").streamSimple>[1],
+    options: Parameters<typeof import("@earendil-works/pi-ai/compat").streamSimple>[2],
+    streamSimple: typeof import("@earendil-works/pi-ai/compat").streamSimple,
+  ): ReturnType<typeof import("@earendil-works/pi-ai/compat").streamSimple> {
     return this.streamPiModelWithTransientRetry(
       model,
       options,
-      () => {
-        if (model.api === "bedrock-converse-stream" && options?.apiKey) {
-          return streamBedrock(
-            model,
-            context,
-            this.piModelMapping.buildBedrockByokOptions(model, options),
-          ) as ReturnType<typeof import("@earendil-works/pi-ai").streamSimple>;
-        }
-        return streamSimple(model, context, options);
-      },
-    ) as ReturnType<typeof import("@earendil-works/pi-ai").streamSimple>;
+      () => streamSimple(model, context, options),
+    ) as ReturnType<typeof import("@earendil-works/pi-ai/compat").streamSimple>;
   }
 
   private streamPiModelWithTransientRetry(
     model: Model<any>,
-    options: Parameters<typeof import("@earendil-works/pi-ai").streamSimple>[2],
+    options: Parameters<typeof import("@earendil-works/pi-ai/compat").streamSimple>[2],
     createStream: () => AssistantMessageEventStream,
   ): AssistantMessageEventStream {
     const outer = createAssistantMessageEventStream();
@@ -7439,7 +7423,7 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
     }
 
     const { Agent } = await import("@earendil-works/pi-agent-core");
-    const { getModel, streamSimple } = await import("@earendil-works/pi-ai");
+    const { getModel, streamSimple } = await import("@earendil-works/pi-ai/compat");
     const resolveCurrentModel =
       this.piModelResolver ?? (() => this.resolvePiModel(context, {}, getModel));
     let modelConfig = await resolveCurrentModel();

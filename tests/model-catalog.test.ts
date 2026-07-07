@@ -176,10 +176,15 @@ describe('MODEL_CATALOG', () => {
     }
     expect(MODEL_CATALOG).not.toHaveProperty('opus');
     expect(MODEL_CATALOG).not.toHaveProperty('opus-4.7');
-    expect(MODEL_CATALOG).not.toHaveProperty('fable-5');
     expect(LLM_MODEL_TO_PRICING_KEY).not.toHaveProperty('opus');
     expect(LLM_MODEL_TO_PRICING_KEY).not.toHaveProperty('opus-4.7');
-    expect(LLM_MODEL_TO_PRICING_KEY).not.toHaveProperty('fable-5');
+    expect(MODEL_CATALOG['fable-5']).toMatchObject({
+      id: 'fable-5',
+      label: 'Fable 5',
+      providerLogo: 'claude',
+      cost: '$$$$$',
+    });
+    expect(LLM_MODEL_TO_PRICING_KEY['fable-5']).toBe('claude-fable-5');
   });
 
   it('hides Claude and OpenRouter-only models for OpenAI BYOK orgs', () => {
@@ -278,6 +283,7 @@ describe('MODEL_CATALOG', () => {
 
     expect(visible.map((entry) => entry.id)).toEqual([
       'opus-4.8',
+      'fable-5',
       'sonnet',
       'haiku',
       'gpt-5.5',

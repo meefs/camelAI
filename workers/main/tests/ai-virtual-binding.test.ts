@@ -294,7 +294,7 @@ describe("resolveRouting", () => {
     );
 
     expect(routing.provider).toBe("bedrock");
-    expect(routing.model).toBe("global.anthropic.claude-opus-4-8");
+    expect(routing.model).toBe("anthropic.claude-opus-4-8");
     expect(routing.awsRegion).toBe("us-east-1");
   });
 });
@@ -752,7 +752,7 @@ describe("chatCompletionToPiCall (Bedrock adapter — input)", () => {
     });
   });
 
-  it("emits one ToolResultMessage per role:tool message (pi-bedrock-provider groups adjacent tool results downstream)", () => {
+  it("emits one ToolResultMessage per role:tool message", () => {
     const call = chatCompletionToPiCall({
       messages: [
         { role: "user", content: "weather in SF and NYC" },
@@ -789,8 +789,8 @@ describe("piMessageToChatCompletion (Bedrock adapter — output)", () => {
       {
         role: "assistant",
         content: [{ type: "text", text: "Hello!" }],
-        api: "bedrock-converse-stream",
-        provider: "amazon-bedrock",
+        api: "anthropic-messages",
+        provider: "custom",
         model: "haiku",
         usage: baseUsage,
         stopReason: "stop",
@@ -817,8 +817,8 @@ describe("piMessageToChatCompletion (Bedrock adapter — output)", () => {
             arguments: { city: "SF" },
           },
         ],
-        api: "bedrock-converse-stream",
-        provider: "amazon-bedrock",
+        api: "anthropic-messages",
+        provider: "custom",
         model: "haiku",
         usage: baseUsage,
         stopReason: "toolUse",
@@ -844,8 +844,8 @@ describe("piMessageToChatCompletion (Bedrock adapter — output)", () => {
       {
         role: "assistant",
         content: [{ type: "text", text: "ok" }],
-        api: "bedrock-converse-stream",
-        provider: "amazon-bedrock",
+        api: "anthropic-messages",
+        provider: "custom",
         model: "m",
         usage: baseUsage,
         stopReason: "toolUse",
@@ -863,8 +863,8 @@ describe("piMessageToChatCompletion (Bedrock adapter — output)", () => {
       {
         role: "assistant",
         content: [{ type: "text", text: "ok" }],
-        api: "bedrock-converse-stream",
-        provider: "amazon-bedrock",
+        api: "anthropic-messages",
+        provider: "custom",
         model: "m",
         usage: {
           input: 100,
@@ -893,8 +893,8 @@ describe("piMessageToChatCompletion (Bedrock adapter — output)", () => {
         {
           role: "assistant",
           content: [],
-          api: "bedrock-converse-stream",
-          provider: "amazon-bedrock",
+          api: "anthropic-messages",
+          provider: "custom",
           model: "m",
           usage: baseUsage,
           stopReason: "error",

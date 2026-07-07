@@ -1,24 +1,17 @@
 /**
- * OpenAI chat/completions ↔ pi-ai Bedrock adapter.
+ * OpenAI chat/completions ↔ Bedrock Mantle adapter.
  *
- * Replaces the bespoke chat/completions ↔ Bedrock Converse translator. The
- * repo already ships a `pi-bedrock-provider` that talks to
- * `bedrock-runtime.<region>.amazonaws.com/model/<id>/invoke-with-response-stream`
- * with Anthropic-shaped Messages bodies (the same provider the chat agent in
- * `chat-thread-do.ts` rides). We translate the virtual binding's OpenAI input
- * shape into pi-ai's normalized `Context`, hand it to that provider, and
- * translate the resulting event stream back into OpenAI chat/completions
- * (real streaming, no synthesized SSE).
+ * We translate the virtual binding's OpenAI input shape into pi-ai's normalized
+ * `Context`, call Bedrock Mantle's Anthropic-compatible Messages API through
+ * pi-ai's standard Anthropic provider, and translate the resulting event stream
+ * back into OpenAI chat/completions.
  *
  * Bedrock requests do *not* go through CF AI Gateway — BYOK traffic is billed
  * to the user's AWS account directly, the gateway adds latency without value
  * on that path.
  */
 
-import {
-  bedrockProviderModule,
-  withBedrockModelMetadata,
-} from "./pi-bedrock-provider";
+import { streamSimple } from "@earendil-works/pi-ai/api/anthropic-messages";
 import type {
   AssistantMessage,
   AssistantMessageEventStream,
@@ -117,8 +110,8 @@ export function chatCompletionToPiCall(input: unknown): PiBedrockCall {
       const assistantMsg: AssistantMessage = {
         role: "assistant",
         content,
-        api: "bedrock-converse-stream",
-        provider: "amazon-bedrock",
+        api: "anthropic-messages",
+        provider: "custom",
         model: "",
         usage: zeroUsage(),
         stopReason: toolCalls.length > 0 ? "toolUse" : "stop",
@@ -166,39 +159,102 @@ export function chatCompletionToPiCall(input: unknown): PiBedrockCall {
 }
 
 /**
- * Build a minimal `Model<"bedrock-converse-stream">` for `streamBedrock`. The
- * known Claude-on-Bedrock IDs in `pi-bedrock-provider.BEDROCK_CLAUDE_MODEL_METADATA`
- * (haiku-4-5, sonnet-4-6, opus-4-7, etc.) get full metadata filled in via
- * `withBedrockModelMetadata`; the bare stub here is just enough to identify
- * the model + region.
+ * Build a Mantle model for pi-ai's Anthropic Messages provider.
  */
 export function buildBedrockPiModel(
   modelId: string,
   region: string = DEFAULT_REGION,
-): Model<"bedrock-converse-stream"> {
-  const stub: Model<"bedrock-converse-stream"> = {
-    id: modelId,
-    name: modelId,
-    api: "bedrock-converse-stream",
-    provider: "amazon-bedrock",
-    baseUrl: `https://bedrock-runtime.${region}.amazonaws.com`,
-    reasoning: false,
-    input: ["text"],
-    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-    contextWindow: 0,
-    maxTokens: 0,
-  };
-  const enriched = withBedrockModelMetadata(stub);
-  // Bedrock currently rejects `tools[].eager_input_streaming: true` for
-  // custom tools ("Extra inputs are not permitted"). Opt out — pi-bedrock-provider
-  // reads this flag and skips emitting the field.
+): Model<"anthropic-messages"> {
+  const mantleModelId = toMantleAnthropicModelId(modelId);
+  const metadata = anthropicMantleMetadata(mantleModelId);
   return {
-    ...enriched,
+    id: mantleModelId,
+    name: metadata.name,
+    api: "anthropic-messages",
+    provider: "custom",
+    baseUrl: `https://bedrock-mantle.${region}.api.aws/anthropic`,
+    reasoning: metadata.reasoning,
+    thinkingLevelMap: metadata.thinkingLevelMap,
+    input: metadata.input,
+    cost: metadata.cost,
+    contextWindow: metadata.contextWindow,
+    maxTokens: metadata.maxTokens,
+    headers: {
+      "anthropic-dangerous-direct-browser-access": "true",
+    },
+    // Mantle rejects Anthropic's eager tool streaming extension for custom tools.
     compat: {
-      ...((enriched.compat as Record<string, unknown> | undefined) ?? {}),
+      ...metadata.compat,
       supportsEagerToolInputStreaming: false,
     },
-	  } as unknown as Model<"bedrock-converse-stream">;
+  };
+}
+
+type AnthropicMantleMetadata = Pick<
+  Model<"anthropic-messages">,
+  "name" | "compat" | "reasoning" | "thinkingLevelMap" | "input" | "cost" | "contextWindow" | "maxTokens"
+>;
+
+function toMantleAnthropicModelId(modelId: string): string {
+  const normalized = modelId.trim().toLowerCase();
+  if (normalized.includes("fable-5")) return "anthropic.claude-fable-5";
+  if (normalized.includes("opus-4-8") || normalized.includes("opus-4.8")) {
+    return "anthropic.claude-opus-4-8";
+  }
+  if (normalized.includes("opus-4-7") || normalized.includes("opus-4.7")) {
+    return "anthropic.claude-opus-4-7";
+  }
+  if (normalized.includes("sonnet-5")) return "anthropic.claude-sonnet-5";
+  if (normalized.includes("haiku-4-5") || normalized.includes("haiku-4.5")) {
+    return "anthropic.claude-haiku-4-5";
+  }
+  if (normalized.startsWith("anthropic.")) return normalized;
+  if (normalized.startsWith("global.anthropic.")) return normalized.slice("global.".length);
+  return `anthropic.${modelId}`;
+}
+
+function anthropicMantleMetadata(modelId: string): AnthropicMantleMetadata {
+  if (modelId.includes("claude-fable-5")) {
+    return {
+      name: "Claude Fable 5",
+      compat: { forceAdaptiveThinking: true },
+      reasoning: true,
+      thinkingLevelMap: { off: null, xhigh: "xhigh" },
+      input: ["text", "image"],
+      cost: { input: 10, output: 50, cacheRead: 1, cacheWrite: 12.5 },
+      contextWindow: 1_000_000,
+      maxTokens: 128_000,
+    };
+  }
+  if (modelId.includes("claude-opus-4-8") || modelId.includes("claude-opus-4-7")) {
+    return {
+      name: modelId.includes("4-7") ? "Claude Opus 4.7" : "Claude Opus 4.8",
+      reasoning: true,
+      thinkingLevelMap: { xhigh: "xhigh" },
+      input: ["text", "image"],
+      cost: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
+      contextWindow: 1_000_000,
+      maxTokens: 128_000,
+    };
+  }
+  if (modelId.includes("claude-haiku-4-5")) {
+    return {
+      name: "Claude Haiku 4.5",
+      reasoning: true,
+      input: ["text", "image"],
+      cost: { input: 1, output: 5, cacheRead: 0.1, cacheWrite: 1.25 },
+      contextWindow: 200_000,
+      maxTokens: 64_000,
+    };
+  }
+  return {
+    name: "Claude Sonnet 5",
+    reasoning: true,
+    input: ["text", "image"],
+    cost: { input: 2, output: 10, cacheRead: 0.2, cacheWrite: 2.5 },
+    contextWindow: 1_000_000,
+    maxTokens: 128_000,
+  };
 }
 
 /**
@@ -213,10 +269,8 @@ export async function runBedrockViaPi(args: {
   region?: string;
 }): Promise<unknown> {
   const model = buildBedrockPiModel(args.modelId, args.region);
-  const eventStream = bedrockProviderModule.streamBedrock(model, args.call.context, {
+  const eventStream = streamSimple(model, args.call.context, {
     apiKey: args.bearerToken,
-    bearerToken: args.bearerToken,
-    region: args.region,
     toolChoice: args.call.toolChoice,
     maxTokens: args.call.maxTokens,
     temperature: args.call.temperature,
@@ -390,8 +444,8 @@ export function piEventStreamToSSE(
 
 /**
  * Convert an OpenAI user-message `content` into pi-ai user content,
- * preserving image parts. pi-bedrock-provider's `convertUserContent` turns
- * pi-ai `ImageContent` into Anthropic base64 image blocks downstream, so vision
+ * preserving image parts. pi-ai's Anthropic provider turns `ImageContent` into
+ * Anthropic base64 image blocks downstream, so vision
  * requests survive the round-trip instead of being flattened to text.
  *
  * Only `data:` image URLs are supported (the common case for uploaded/generated

@@ -15,7 +15,7 @@ export interface UsageTokens {
   upstreamInferenceCostUsd?: number | null;
 }
 
-const SONNET_FALLBACK_MODEL = "claude-sonnet-4-5-20250929";
+const SONNET_FALLBACK_MODEL = "claude-sonnet-5";
 
 const modelPricingTable: Record<string, ModelPricing> = {
   "claude-fable-5": {
@@ -29,6 +29,18 @@ const modelPricingTable: Record<string, ModelPricing> = {
     outputPerToken: 0.00005,
     cacheCreationPerToken: 0.0000125,
     cacheReadPerToken: 0.000001,
+  },
+  "claude-sonnet-5": {
+    inputPerToken: 0.000002,
+    outputPerToken: 0.00001,
+    cacheCreationPerToken: 0.0000025,
+    cacheReadPerToken: 0.0000002,
+  },
+  "anthropic/claude-sonnet-5": {
+    inputPerToken: 0.000002,
+    outputPerToken: 0.00001,
+    cacheCreationPerToken: 0.0000025,
+    cacheReadPerToken: 0.0000002,
   },
   "claude-opus-4-8": {
     inputPerToken: 0.000005,
@@ -300,6 +312,9 @@ export function lookupPricing(model: string): ModelPricing {
   if (normalized.startsWith("gpt-5.4")) return modelPricingTable["gpt-5.4"];
   if (normalized.includes("claude-fable-5")) {
     return modelPricingTable["claude-fable-5"];
+  }
+  if (normalized.includes("claude-sonnet-5")) {
+    return modelPricingTable["claude-sonnet-5"];
   }
   if (
     normalized.includes("claude-opus-4.8") ||

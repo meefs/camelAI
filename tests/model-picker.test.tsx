@@ -103,17 +103,17 @@ describe('ModelPicker metadata card state', () => {
       screen.getByLabelText('Speed rating: 2 out of 5'),
     ).toBeInTheDocument();
 
-    fireEvent.focus(getModelItem('Sonnet 4.6'));
-    expect(screen.getByRole('tooltip')).toHaveTextContent('Sonnet 4.6');
+    fireEvent.focus(getModelItem('Sonnet 5'));
+    expect(screen.getByRole('tooltip')).toHaveTextContent('Sonnet 5');
     expect(
-      screen.getByLabelText('Intelligence rating: 3.5 out of 5'),
+      screen.getByLabelText('Intelligence rating: 4 out of 5'),
     ).toBeInTheDocument();
     expect(
       screen.getByLabelText('Speed rating: 3.5 out of 5'),
     ).toBeInTheDocument();
     expect(screen.getAllByText('cost')).toHaveLength(1);
 
-    fireEvent.blur(getModelItem('Sonnet 4.6'));
+    fireEvent.blur(getModelItem('Sonnet 5'));
     expect(screen.queryByRole('tooltip')).not.toBeInTheDocument();
   });
 
@@ -133,9 +133,9 @@ describe('ModelPicker metadata card state', () => {
     act(() => vi.advanceTimersByTime(150));
     expect(screen.getByRole('tooltip')).toHaveTextContent('Opus 4.8');
 
-    fireEvent.pointerEnter(getModelItem('Sonnet 4.6'));
+    fireEvent.pointerEnter(getModelItem('Sonnet 5'));
     act(() => vi.advanceTimersByTime(150));
-    expect(screen.getByRole('tooltip')).toHaveTextContent('Sonnet 4.6');
+    expect(screen.getByRole('tooltip')).toHaveTextContent('Sonnet 5');
     expect(screen.getAllByRole('tooltip')).toHaveLength(1);
   });
 

@@ -49,27 +49,24 @@ const TIER_MODELS: Readonly<Record<ProviderKind, Readonly<Record<TierName, strin
   anthropic: {
     cheap: "claude-haiku-4-5-20251001",
     fast: "claude-haiku-4-5-20251001",
-    auto: "claude-sonnet-4-6",
+    auto: "claude-sonnet-5",
     smart: "claude-opus-4-8",
   },
   bedrock: {
-    cheap: "global.anthropic.claude-haiku-4-5-20251001-v1:0",
-    fast: "global.anthropic.claude-haiku-4-5-20251001-v1:0",
-    auto: "global.anthropic.claude-sonnet-4-6",
-    smart: "global.anthropic.claude-opus-4-8",
+    cheap: "anthropic.claude-haiku-4-5",
+    fast: "anthropic.claude-haiku-4-5",
+    auto: "anthropic.claude-sonnet-5",
+    smart: "anthropic.claude-opus-4-8",
   },
   openrouter: {
     cheap: "deepseek/deepseek-v4-flash",
     fast: "deepseek/deepseek-v4-flash",
     auto: "moonshotai/kimi-k2.7-code",
-    smart: "anthropic/claude-sonnet-4.6",
+    smart: "anthropic/claude-sonnet-5",
   },
 };
 
-// Matches the fallback used by the BYOK key-validation route and
-// pi-bedrock-provider (chat path). Bedrock model access is granted per region,
-// so an org that validated/used Bedrock in us-east-1 must hit the same region
-// for env.AI.run tier calls.
+// Mantle host region for Bedrock BYOK env.AI.run tier calls.
 const DEFAULT_BEDROCK_REGION = "us-east-1";
 
 /**
