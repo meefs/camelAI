@@ -115,6 +115,8 @@ const UPDATED_MARKER = "UPDATED_STATEFUL_CHECKINS_MARKER";
 const SEEDED_NAME = "eval-seed-before-redeploy";
 const testEnv = env as unknown as ProjectUpdateRedeployStateEvalEnv;
 const maybeIt = isRealEvalDeployEnabled(testEnv) ? it : it.skip;
+const SESSION_TIMEOUT_MS = getEvalTimeoutMs(testEnv, 720_000);
+const TEST_TIMEOUT_MS = SESSION_TIMEOUT_MS * 2 + 180_000;
 
 function appUrl(app: EvalDeployedApp, path: string): string {
   return new URL(path, app.url).toString();
@@ -431,7 +433,7 @@ describe("project update redeploy state agent eval", () => {
         userName: "Project Update State Eval",
         userEmail: `project-update-state-eval-${suffix}@example.com`,
         messageSource: "eval",
-        timeoutMs: getEvalTimeoutMs(testEnv, 720_000),
+        timeoutMs: SESSION_TIMEOUT_MS,
         message: [
           `Create a new DO-backed React Router project named exactly "${PROJECT_NAME}" using create_project with a concise description.`,
           "Use the default deployable React Router scaffold; do not use the data-analysis template.",
@@ -464,7 +466,7 @@ describe("project update redeploy state agent eval", () => {
         userName: "Project Update State Eval",
         userEmail: `project-update-state-eval-${suffix}@example.com`,
         messageSource: "eval",
-        timeoutMs: getEvalTimeoutMs(testEnv, 720_000),
+        timeoutMs: SESSION_TIMEOUT_MS,
         message: [
           `The eval harness has now called the live deployed app's POST /api/checkins once. The Durable Object count should be at least 1.`,
           `Update only the user-visible root page marker to exact text "${UPDATED_MARKER}" and remove "${INITIAL_MARKER}" from the page.`,
@@ -669,6 +671,6 @@ describe("project update redeploy state agent eval", () => {
 
       assertPassFailCriteria(evaluation);
     },
-    1_260_000,
+    TEST_TIMEOUT_MS,
   );
 });

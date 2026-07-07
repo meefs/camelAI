@@ -14,6 +14,24 @@ const MAX_OBJECT_KEYS = 60;
 const MAX_DEPTH = 6;
 const MAX_TRAJECTORY_ITEMS = 90;
 
+const DEV_VAR_ALLOWLIST = new Set([
+  "AI_GATEWAY_AUTH_TOKEN",
+  "CF_ACCESS_CLIENT_ID",
+  "CF_ACCESS_CLIENT_SECRET",
+  "CF_ACCOUNT_ID",
+  "CF_API_TOKEN",
+  "CF_GATEWAY_BASE_URL",
+  "CF_GATEWAY_NAME",
+  "CF_GATEWAY_TOKEN",
+  "EVAL_JUDGE_GATEWAY_PROVIDER",
+  "EVAL_JUDGE_MAX_ATTEMPTS",
+  "EVAL_JUDGE_MAX_TOKENS",
+  "EVAL_JUDGE_MODEL",
+  "EVAL_JUDGE_REASONING_EFFORT",
+  "EVAL_JUDGE_TIMEOUT_MS",
+  "EVAL_LLM_JUDGE",
+]);
+
 function isObject(value) {
   return value && typeof value === "object" && !Array.isArray(value);
 }
@@ -93,13 +111,19 @@ export function parseDevVars(text) {
   return env;
 }
 
+function filterEvalDevVars(env) {
+  return Object.fromEntries(
+    Object.entries(env).filter(([key]) => DEV_VAR_ALLOWLIST.has(key)),
+  );
+}
+
 function loadDevVars(env) {
   const explicitPath = env.CHIRIDION_DEV_VARS_PATH || env.EVAL_DEV_VARS_PATH;
   const candidates = [explicitPath, ".dev.vars"].filter(Boolean);
   for (const candidate of candidates) {
     const filePath = path.resolve(candidate);
     if (!existsSync(filePath)) continue;
-    return parseDevVars(readFileSync(filePath, "utf8"));
+    return filterEvalDevVars(parseDevVars(readFileSync(filePath, "utf8")));
   }
   return {};
 }
@@ -365,7 +389,7 @@ function summarizeTrajectory(events) {
 function buildJudgeInput(transcript, context) {
   const topLevel = {};
   for (const [key, value] of Object.entries(transcript)) {
-    if (key === "events" || key === "messages" || key === "llmJudge" || key === "evaluation") continue;
+    if (key === "events" || key === "messages" || key === "llmJudge" || key === "evaluation" || key === "model") continue;
     topLevel[key] = compactValue(value);
   }
   return {
@@ -480,7 +504,7 @@ function buildJudgeRequestBody(config, judgeInput) {
   return body;
 }
 
-async function callJudgeGatewayOnce(config, judgeInput) {
+async function callJudgeGatewayOnce(config, judgeInput, context) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), config.timeoutMs);
   const startedAt = Date.now();
@@ -493,7 +517,7 @@ async function callJudgeGatewayOnce(config, judgeInput) {
         authorization: `Bearer ${config.authToken}`,
         "content-type": "application/json",
         "cf-aig-metadata": JSON.stringify({
-          uid: `eval-judge:${judgeInput.evalName}:${judgeInput.targetModel ?? "default"}`,
+          uid: `eval-judge:${judgeInput.evalName}:${context.targetModel ?? "default"}`,
           chiridion: { component: "agent-eval-judge" },
         }),
       },
@@ -526,12 +550,12 @@ async function callJudgeGatewayOnce(config, judgeInput) {
   }
 }
 
-async function callJudgeGateway(config, judgeInput) {
+async function callJudgeGateway(config, judgeInput, context) {
   const errors = [];
   const startedAt = Date.now();
   for (let attempt = 1; attempt <= config.maxAttempts; attempt += 1) {
     try {
-      const result = await callJudgeGatewayOnce(config, judgeInput);
+      const result = await callJudgeGatewayOnce(config, judgeInput, context);
       return {
         ...result,
         attempts: attempt,
@@ -659,7 +683,7 @@ export async function attachEvalLlmJudge(transcript, context) {
 
   try {
     const judgeInput = buildJudgeInput(transcript, context);
-    const judgeResult = await callJudgeGateway(config, judgeInput);
+    const judgeResult = await callJudgeGateway(config, judgeInput, context);
     const { parsed, responseText } = judgeResult;
     transcript.llmJudge = normalizeJudgeResult(parsed, config, context, transcript, judgeResult);
     if (!transcript.llmJudge.summary) {

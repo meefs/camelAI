@@ -21,6 +21,9 @@ CUSTOM_EVAL_PROMPT="Build a dashboard from fake data." bun scripts/run-agent-eva
 
 Knobs: `--model <id>`, `--timeout-ms <ms>`, `EVAL_REAL_DEPLOY=0/1`, `CUSTOM_EVAL_*` (see
 `bun scripts/run-agent-eval.mjs --help`).
+`CHIRIDION_DEV_VARS_PATH` / `.dev.vars` are read only for eval-relevant Cloudflare Access,
+Cloudflare API, and judge gateway credentials/settings; ordinary eval knobs such as `EVAL_MODEL`
+and `EVAL_REPORT` should be passed explicitly in the shell or CLI.
 
 Captured artifacts include an advisory `llmJudge` block by default when Cloudflare AI Gateway
 credentials are available. The default judge is fixed to `openai/gpt-5.5` on the `compat` route

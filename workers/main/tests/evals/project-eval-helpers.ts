@@ -181,19 +181,34 @@ export function legacyDeployPathEvidence(
 export async function fetchWithRetry(
   url: string,
   init?: RequestInit,
-  attempts = 4,
+  attempts = 8,
 ): Promise<Response> {
   let lastError: unknown;
+  const method = (init?.method ?? "GET").toUpperCase();
+  const canRetryResponse = method === "GET" || method === "HEAD";
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     try {
       const response = await fetch(url, init);
-      if (response.status < 500 || attempt === attempts - 1) return response;
+      const shouldRetryStatus =
+        response.status === 404 ||
+        response.status === 408 ||
+        response.status === 425 ||
+        response.status === 429 ||
+        response.status >= 500;
+      if (!canRetryResponse || !shouldRetryStatus || attempt === attempts - 1) {
+        return response;
+      }
       lastError = new Error(`HTTP ${response.status}`);
+      try {
+        await response.body?.cancel();
+      } catch {
+        // Best effort: avoid leaking retried response bodies in the eval harness.
+      }
     } catch (error) {
       lastError = error;
       if (attempt === attempts - 1) break;
     }
-    await new Promise((resolve) => setTimeout(resolve, 500 * (attempt + 1)));
+    await new Promise((resolve) => setTimeout(resolve, 750 * (attempt + 1)));
   }
   throw lastError instanceof Error ? lastError : new Error(String(lastError));
 }

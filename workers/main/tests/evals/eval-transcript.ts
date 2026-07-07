@@ -9,6 +9,8 @@ export const EVAL_TRANSCRIPT_START = "EVAL_TRANSCRIPT_START ";
 export const EVAL_TRANSCRIPT_END = " EVAL_TRANSCRIPT_END";
 
 export interface EvalTranscriptPayload {
+  /** Eval-specific artifact fields are allowed; shared fields below are standardized. */
+  [key: string]: unknown;
   status: unknown;
   evaluation: EvalCriteriaSummary;
   error?: unknown;

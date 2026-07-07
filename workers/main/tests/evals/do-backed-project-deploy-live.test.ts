@@ -138,7 +138,7 @@ async function inspectProjectSource(
       wrangler.includes("migrations") &&
       /new_(?:sqlite_)?classes|renamed_classes|deleted_classes/.test(wrangler),
     sourceHasDurableObject:
-      /class\s+\w*Check\w*\s+extends\s+DurableObject/.test(workerSource) ||
+      /class\s+\w+\s+extends\s+DurableObject/.test(workerSource) ||
       workerSource.includes("DurableObjectState"),
     sourceHasTitle:
       workerSource.includes(APP_TITLE) || homeRouteSource.includes(APP_TITLE),

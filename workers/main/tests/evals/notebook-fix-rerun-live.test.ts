@@ -180,13 +180,14 @@ async function inspectNotebook(project: WorkspaceProject): Promise<NotebookInspe
     const sourceText = cellRecords.map(cellSourceText).join("\n");
     const outputText = cellRecords.map(cellOutputText).join("\n");
     const codeCells = cellRecords.filter((cell) => cell.cell_type === "code");
+    const codeSourceText = codeCells.map(cellSourceText).join("\n");
     const executedOutputCount = codeCells.filter((cell) =>
       typeof cell.execution_count === "number" ||
       (Array.isArray(cell.outputs) && cell.outputs.length > 0),
     ).length;
     return {
       readSuccess: true,
-      hasTypo: sourceText.includes("revnue"),
+      hasTypo: codeSourceText.includes("revnue"),
       hasStaleMarker: sourceText.includes(STALE_MARKER),
       hasRefreshedMarker: sourceText.includes(REFRESHED_MARKER),
       outputText,
@@ -253,6 +254,7 @@ describe("notebook fix and rerun agent eval", () => {
           `The existing DO-backed data-analysis project named exactly "${PROJECT_NAME}" has a stale failing analysis.ipynb report titled "${REPORT_TITLE}".`,
           `Inspect the notebook, fix the execution bug, and remove the stale marker from the report; the literal string "${STALE_MARKER}" must not appear anywhere in the final notebook source.`,
           `Add the exact markdown marker "${REFRESHED_MARKER}" after the notebook is fixed.`,
+          `The executed notebook output must include the exact text "${EXPECTED_OUTPUT}".`,
           "Run the notebook with run_notebook until it succeeds, then set_preview for analysis.ipynb.",
           "Do not create a new project, do not use build_project or deploy_project, and do not use legacy VM shell commands.",
           "Reply with the refreshed total revenue number from the executed notebook output.",
