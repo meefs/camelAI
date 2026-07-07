@@ -134,6 +134,26 @@ describe('chat API error classification', () => {
     });
   });
 
+  it('explains Bedrock Fable 5 data retention requirements', () => {
+    const presentation = getChatApiErrorPresentation(
+      '400 {"type":"error","error":{"type":"invalid_request_error","message":"data retention mode \'default\' is not available for this model"}}',
+      {
+        billingSource: 'byok',
+        llmProvider: 'bedrock',
+        threadModel: 'fable-5',
+      },
+    );
+
+    expect(presentation).toEqual({
+      kind: 'generic',
+      title: 'Bedrock data retention must be enabled for Fable 5',
+      message: expect.stringContaining('/v1/data_retention'),
+      actionHref:
+        'https://docs.aws.amazon.com/bedrock/latest/userguide/data-retention.html',
+      actionLabel: 'Open AWS data retention docs',
+    });
+  });
+
   it('classifies hosted credit exhaustion with a top-up action', () => {
     const raw =
       'Hosted model credits are used up. You have used 0.00 credits of 0.00 credits.';

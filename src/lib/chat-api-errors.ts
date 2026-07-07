@@ -44,7 +44,12 @@ export type ChatApiErrorPresentation =
       kind: "generic";
       title?: string;
       message: string;
+      actionHref?: string;
+      actionLabel?: string;
     };
+
+const BEDROCK_DATA_RETENTION_DOCS_URL =
+  "https://docs.aws.amazon.com/bedrock/latest/userguide/data-retention.html";
 
 function safeJsonStringify(value: unknown): string {
   try {
@@ -222,6 +227,14 @@ function isBillingOrCreditError(lowerMessage: string): boolean {
   );
 }
 
+function isBedrockProviderDataShareRequired(lowerMessage: string): boolean {
+  return (
+    lowerMessage.includes("data retention mode") &&
+    lowerMessage.includes("default") &&
+    lowerMessage.includes("not available")
+  );
+}
+
 export function isChatBillingOrCreditError(error: unknown): boolean {
   const details = parseChatApiError(error);
   const message = details.providerMessage || details.rawMessage;
@@ -306,6 +319,20 @@ export function getChatApiErrorPresentation(
   }
 
   const lowerMessage = message.toLowerCase();
+  if (
+    context.llmProvider === "bedrock" &&
+    isBedrockProviderDataShareRequired(lowerMessage)
+  ) {
+    return {
+      kind: "generic",
+      title: "Bedrock data retention must be enabled for Fable 5",
+      message:
+        "Claude Fable 5 on Bedrock requires provider data sharing. Ask an AWS admin to grant bedrock-mantle:PutAccountDataRetention, then set Bedrock Mantle data retention to provider_data_share. Account-level API: PUT https://bedrock-mantle.<region>.api.aws/v1/data_retention with {\"mode\":\"provider_data_share\"}. Project-level API: POST https://bedrock-mantle.<region>.api.aws/v1/organization/projects/{project_id} with {\"data_retention\":{\"mode\":\"provider_data_share\"}}. This is an AWS data-sharing setting, so camelAI cannot enable it automatically.",
+      actionHref: BEDROCK_DATA_RETENTION_DOCS_URL,
+      actionLabel: "Open AWS data retention docs",
+    };
+  }
+
   if (isBillingOrCreditError(lowerMessage)) {
     if (isCurrentTurnByok(context) && !isHostedCreditExhaustedMessage(lowerMessage)) {
       return {

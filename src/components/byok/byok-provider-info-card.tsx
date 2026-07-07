@@ -40,6 +40,17 @@ export function ByokProviderInfoCard({ provider }: ByokProviderInfoCardProps) {
       <div className="space-y-1">
         <p className="font-medium text-foreground">{provider.warning.title}</p>
         <p className="text-muted-foreground">{provider.warning.body}</p>
+        {provider.warning.helpUrl ? (
+          <a
+            href={provider.warning.helpUrl}
+            target="_blank"
+            rel="noreferrer"
+            className="inline-flex items-center gap-1 text-sm text-primary hover:underline"
+          >
+            {provider.warning.helpLinkLabel ?? "Open documentation"}
+            <ArrowRight className="size-3.5" aria-hidden="true" />
+          </a>
+        ) : null}
       </div>
     </div>
   );

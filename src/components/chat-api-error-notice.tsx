@@ -116,28 +116,39 @@ export function ChatApiErrorNotice({
   }
 
   return (
-    <div
-      className={cn(
-        "flex items-center gap-2 px-1 py-1.5 text-sm text-muted-foreground",
-        className,
-      )}
-    >
-      <CircleAlert className="h-4 w-4 shrink-0 text-muted-foreground" />
-      <p className="min-w-0 flex-1 text-sm text-muted-foreground">
-        {presentation.message}
-      </p>
-      {onDismiss ? (
-        <Button
-          type="button"
-          variant="ghost"
-          size="icon-sm"
-          className="ml-auto h-5 w-5 shrink-0 text-muted-foreground hover:text-foreground"
-          aria-label="Dismiss error"
-          onClick={onDismiss}
-        >
-          <X className="h-3.5 w-3.5" />
-        </Button>
+    <Alert className={cn("px-3 py-2 text-sm", className)}>
+      <CircleAlert className="h-4 w-4 text-muted-foreground" />
+      {presentation.title ? (
+        <AlertTitle className="text-sm">{presentation.title}</AlertTitle>
       ) : null}
-    </div>
+      <AlertDescription className="space-y-2 text-sm text-muted-foreground">
+        <p>{presentation.message}</p>
+        {presentation.actionHref ? (
+          <a
+            href={presentation.actionHref}
+            target="_blank"
+            rel="noreferrer"
+            className="inline-flex items-center gap-1 text-sm text-primary hover:underline"
+          >
+            {presentation.actionLabel ?? "Open documentation"}
+            <ArrowRight className="size-3.5" aria-hidden="true" />
+          </a>
+        ) : null}
+      </AlertDescription>
+      {onDismiss ? (
+        <AlertAction>
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon-sm"
+            className="h-5 w-5 text-muted-foreground hover:text-foreground"
+            aria-label="Dismiss error"
+            onClick={onDismiss}
+          >
+            <X className="h-3.5 w-3.5" />
+          </Button>
+        </AlertAction>
+      ) : null}
+    </Alert>
   );
 }
