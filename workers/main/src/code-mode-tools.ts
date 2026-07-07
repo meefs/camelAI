@@ -38,6 +38,7 @@ import { buildLogTail, projectBuildSandboxKey, runProjectAddDependency, runProje
 import { collectWorkerBundleFromSandbox, findUnexportedDurableObjectClasses, type ProjectBuildSandboxLike } from "./project-worker-bundle";
 import { defaultProjectScaffoldFiles, normalizeProjectScaffoldTemplate, type ProjectScaffoldResult } from "./project-scaffold";
 import { addShadcnComponentsToProject, normalizeShadcnComponentList, SUPPORTED_SHADCN_COMPONENTS } from "./shadcn-components";
+import { launchAppBrowserSession } from "./app-browser-binding";
 import { deployWorkerModulesDirect, rollbackWorkerDeployFromArtifactCache, type DirectDispatchDeployResult } from "./direct-dispatch-deploy";
 import { handleDeploySideEffects } from "./services/deploy";
 import { editAutomationVirtualFile, listAutomationVirtualFiles, normalizeAutomationVirtualPath, readAutomationVirtualFile, writeAutomationVirtualFile } from "./deterministic-automation-virtual-files";
@@ -2885,6 +2886,9 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
         case "delete_connection":
           return this.deleteConnection(args);
 
+        case "browser_run":
+          return this.browserRun(args);
+
         default:
           throw new Error(`Unknown code mode tool: ${name}`);
       }
@@ -3657,6 +3661,71 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
       project: project.name,
       backend: project.backend ?? "vm",
     };
+  }
+
+  private async browserRun(args: Record<string, unknown>): Promise<unknown> {
+    const launch = args.launch && typeof args.launch === "object"
+      ? args.launch as Record<string, unknown>
+      : {};
+    const session = await launchAppBrowserSession(this.env, {
+      orgId: this.ctx.props.orgId,
+      workspaceId: this.ctx.props.workspaceId,
+    }, {
+      scriptName: typeof launch.scriptName === "string"
+        ? launch.scriptName
+        : typeof launch.script_name === "string"
+          ? launch.script_name
+          : "",
+      path: typeof launch.path === "string" ? launch.path : undefined,
+      width: typeof launch.width === "number" ? launch.width : undefined,
+      height: typeof launch.height === "number" ? launch.height : undefined,
+    });
+    const allowed = new Set([
+      "goto",
+      "click",
+      "fill",
+      "type",
+      "press",
+      "select",
+      "hover",
+      "waitForSelector",
+      "waitForText",
+      "waitForFunction",
+      "evaluate",
+      "textContent",
+      "getAttribute",
+      "count",
+      "exists",
+      "content",
+      "url",
+      "title",
+      "screenshot",
+      "logs",
+      "close",
+    ]);
+    const actions = Array.isArray(args.actions) ? args.actions : [];
+    let result: unknown;
+    try {
+      for (const action of actions) {
+        const actionRecord = action && typeof action === "object"
+          ? action as Record<string, unknown>
+          : {};
+        const method = typeof actionRecord.method === "string" ? actionRecord.method.trim() : "";
+        if (!allowed.has(method)) {
+          throw new Error(`Unsupported browser session method: ${method || "(empty)"}`);
+        }
+        const callable = (session as unknown as Record<string, (...methodArgs: unknown[]) => Promise<unknown>>)[method];
+        if (typeof callable !== "function") {
+          throw new Error(`Browser session method is not callable: ${method}`);
+        }
+        const methodArgs = Array.isArray(actionRecord.args) ? actionRecord.args : [];
+        result = await callable.apply(session, methodArgs);
+        if (method === "close") return result;
+      }
+      return result;
+    } finally {
+      await session.close().catch(() => {});
+    }
   }
 
   private async revertProject(args: Record<string, unknown>): Promise<unknown> {

@@ -20,6 +20,11 @@
       "realDeploy": true
     },
     {
+      "id": "browser-automation-live",
+      "description": "Deploy a small app and verify it with env.BROWSER interactive browser automation",
+      "realDeploy": true
+    },
+    {
       "id": "project-update-redeploy-state-live",
       "description": "Update and redeploy a DO-backed app while preserving Durable Object state",
       "realDeploy": true

@@ -731,14 +731,64 @@ function createScreenshotFacade(binding) {
   });
 }
 
-function createBrowserFacade(binding) {
-  return Object.freeze({
-    launch: (...args) => {
-      if (!binding || typeof binding.launch !== "function") {
-        throw new Error("env.BROWSER is not configured in this runtime");
+function createBrowserFacade(callTool) {
+  const sessionMethods = [
+    "goto",
+    "click",
+    "fill",
+    "type",
+    "press",
+    "select",
+    "hover",
+    "waitForSelector",
+    "waitForText",
+    "waitForFunction",
+    "evaluate",
+    "textContent",
+    "getAttribute",
+    "count",
+    "exists",
+    "content",
+    "url",
+    "title",
+    "screenshot",
+    "logs",
+    "close",
+  ];
+  const terminalSessionMethods = new Set([
+    "evaluate",
+    "textContent",
+    "getAttribute",
+    "count",
+    "exists",
+    "content",
+    "url",
+    "title",
+    "screenshot",
+    "logs",
+    "close",
+  ]);
+  const createSessionFacade = (sessionId) => {
+    const actions = [];
+    let closed = false;
+    const call = async (method, args) => {
+      if (method === "close" && closed) return undefined;
+      if (closed) {
+        throw new Error("Browser session is closed. Launch a new session with env.BROWSER.launch(...).");
       }
-      return binding.launch.call(binding, ...args);
-    },
+      actions.push({ method, args });
+      if (!terminalSessionMethods.has(method)) return { ok: true };
+      closed = true;
+      const result = await callTool("browser_run", { launch: sessionId, actions });
+      if (method === "close") return undefined;
+      return result;
+    };
+    return Object.freeze(Object.fromEntries(
+      sessionMethods.map((method) => [method, (...args) => call(method, args)]),
+    ));
+  };
+  return Object.freeze({
+    launch: async (input = {}) => createSessionFacade(input),
   });
 }
 
@@ -981,7 +1031,7 @@ export class CodeModeRunner extends WorkerEntrypoint {
     const AI = this.env.AI;
     const CAMELAI = createCamelAiFacade(this.env.CAMELAI);
     const SCREENSHOT = createScreenshotFacade(this.env.SCREENSHOT);
-    const BROWSER = createBrowserFacade(this.env.BROWSER);
+    const BROWSER = createBrowserFacade(callTool);
     const WORKSPACE = createWorkspaceFacade(callTool);
     const VM = createVmFacade(rawTools);
     const vm = VM;

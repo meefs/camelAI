@@ -583,6 +583,119 @@ export class AppBrowserSession extends RpcTarget {
   }
 }
 
+export async function launchAppBrowserSession(
+  env: AppBrowserBindingEnv,
+  context: AppBrowserBindingProps,
+  input: AppBrowserLaunchInput,
+): Promise<AppBrowserSession> {
+  const scriptName = input.scriptName?.trim();
+  if (!scriptName) {
+    throw new Error('scriptName is required');
+  }
+  if (!env.BROWSER) {
+    throw new Error('Browser sessions require the BROWSER binding');
+  }
+
+  const orgStub = env.ORG.get(env.ORG.idFromName(context.orgId));
+  const script = await orgStub.getWorkerScript(scriptName);
+  if (!script) {
+    throw new Error(`App not found: ${scriptName}`);
+  }
+  if (script.workspace_id !== context.workspaceId) {
+    throw new Error(`App ${scriptName} is not in this workspace`);
+  }
+  if (!script.is_public && !env.DISPATCHER) {
+    throw new Error('Browser sessions for private apps require the DISPATCHER binding');
+  }
+
+  const baseUrl = new URL(await buildWorkspaceAppUrl(env, context, scriptName, '/'));
+  const logContext = {
+    scriptName,
+    orgId: context.orgId,
+    workspaceId: context.workspaceId,
+  };
+
+  const { default: puppeteer } = await import('@cloudflare/puppeteer');
+
+  let liveSessions: unknown[] | null = null;
+  let workspaceSessionCount: number | null = null;
+  try {
+    const sessions = await puppeteer.sessions(env.BROWSER);
+    liveSessions = Array.isArray(sessions) ? sessions : [];
+    const liveIds = liveSessions
+      .map((entry) => (entry as { sessionId?: unknown })?.sessionId)
+      .filter((id): id is string => typeof id === 'string' && id.length > 0);
+    workspaceSessionCount = await orgStub.reconcileBrowserSessions(
+      context.workspaceId,
+      liveIds,
+    );
+  } catch (error) {
+    console.warn('[app-browser] session-capacity check failed; proceeding', {
+      ...logContext,
+      error: truncateError(error),
+    });
+  }
+  if (liveSessions !== null) {
+    assertBrowserSessionCapacity(liveSessions);
+  }
+  if (workspaceSessionCount !== null) {
+    assertWorkspaceBrowserSessionCapacity(workspaceSessionCount);
+  }
+
+  const browser = await puppeteer.launch(env.BROWSER);
+  const browserSessionId =
+    typeof browser.sessionId === 'function' ? browser.sessionId() : null;
+  try {
+    const page = await browser.newPage();
+    await page.setViewport(screenshotViewport(input.width, input.height));
+    page.setDefaultTimeout(BROWSER_SESSION_DEFAULT_ACTION_TIMEOUT_MS);
+
+    const hostIndex = await buildWorkspaceAppHostIndex(env, context);
+    let removeInterception: (() => void) | undefined;
+    if (!script.is_public) {
+      removeInterception = await installDispatchRequestInterception(
+        page,
+        env,
+        context,
+        hostIndex,
+        { redirect: 'manual' },
+      );
+    }
+
+    const session = new AppBrowserSession({
+      browser,
+      page,
+      baseUrl,
+      hostIndex,
+      logContext,
+      removeInterception,
+      onClose: browserSessionId
+        ? () => orgStub.removeBrowserSession(browserSessionId)
+        : undefined,
+    });
+    try {
+      await session.goto(input.path ?? '/');
+    } catch (error) {
+      await session.close().catch(() => {});
+      throw error;
+    }
+    if (browserSessionId) {
+      await orgStub
+        .recordBrowserSession(context.workspaceId, browserSessionId)
+        .catch((error) => {
+          console.warn('[app-browser] failed to record browser session', {
+            ...logContext,
+            error: truncateError(error),
+          });
+        });
+    }
+    return session;
+  } catch (error) {
+    await browser.close().catch(() => {});
+    throw new Error(`Browser session launch failed: ${truncateError(error)}`);
+  }
+}
+
 /**
  * Virtual binding that launches interactive Browser Rendering sessions against
  * deployed workspace apps, so js_exec code can run Playwright-style UI tests.
@@ -598,127 +711,6 @@ export class AppBrowserBinding extends WorkerEntrypoint<
   }
 
   async launch(input: AppBrowserLaunchInput): Promise<AppBrowserSession> {
-    const scriptName = input.scriptName?.trim();
-    if (!scriptName) {
-      throw new Error('scriptName is required');
-    }
-    if (!this.env.BROWSER) {
-      throw new Error('Browser sessions require the BROWSER binding');
-    }
-    if (!this.env.DISPATCHER) {
-      throw new Error('Browser sessions require the DISPATCHER binding');
-    }
-
-    const orgStub = this.env.ORG.get(this.env.ORG.idFromName(this.context.orgId));
-    const script = await orgStub.getWorkerScript(scriptName);
-    if (!script) {
-      throw new Error(`App not found: ${scriptName}`);
-    }
-    if (script.workspace_id !== this.context.workspaceId) {
-      throw new Error(`App ${scriptName} is not in this workspace`);
-    }
-
-    const baseUrl = new URL(
-      await buildWorkspaceAppUrl(this.env, this.context, scriptName, '/'),
-    );
-    const logContext = {
-      scriptName,
-      orgId: this.context.orgId,
-      workspaceId: this.context.workspaceId,
-    };
-
-    const { default: puppeteer } = await import('@cloudflare/puppeteer');
-
-    // Cost safety net: refuse to launch when the account, or this workspace, is
-    // already near its Browser Rendering concurrency budget. The live session
-    // list from puppeteer.sessions() is account-global, so per-workspace counting
-    // reconciles our OrgDO registry against it (leaked sessions drop off the live
-    // list and self-heal). If gathering that data fails, fail open — the 5-minute
-    // session lifetime and Cloudflare's hard 120-session cap remain as backstops —
-    // rather than block all browser tests on a transient control-plane error.
-    let liveSessions: unknown[] | null = null;
-    let workspaceSessionCount: number | null = null;
-    try {
-      const sessions = await puppeteer.sessions(this.env.BROWSER);
-      liveSessions = Array.isArray(sessions) ? sessions : [];
-      const liveIds = liveSessions
-        .map((entry) => (entry as { sessionId?: unknown })?.sessionId)
-        .filter((id): id is string => typeof id === 'string' && id.length > 0);
-      workspaceSessionCount = await orgStub.reconcileBrowserSessions(
-        this.context.workspaceId,
-        liveIds,
-      );
-    } catch (error) {
-      console.warn('[app-browser] session-capacity check failed; proceeding', {
-        ...logContext,
-        error: truncateError(error),
-      });
-    }
-    if (liveSessions !== null) {
-      assertBrowserSessionCapacity(liveSessions);
-    }
-    if (workspaceSessionCount !== null) {
-      assertWorkspaceBrowserSessionCapacity(workspaceSessionCount);
-    }
-
-    const browser = await puppeteer.launch(this.env.BROWSER);
-    const browserSessionId =
-      typeof browser.sessionId === 'function' ? browser.sessionId() : null;
-    try {
-      const page = await browser.newPage();
-      await page.setViewport(screenshotViewport(input.width, input.height));
-      page.setDefaultTimeout(BROWSER_SESSION_DEFAULT_ACTION_TIMEOUT_MS);
-
-      const hostIndex = await buildWorkspaceAppHostIndex(this.env, this.context);
-      let removeInterception: (() => void) | undefined;
-      if (!script.is_public) {
-        removeInterception = await installDispatchRequestInterception(
-          page,
-          this.env,
-          this.context,
-          hostIndex,
-          // Preserve redirects so the session sees real navigation (url(),
-          // history, login/redirect flows) rather than the final page under the
-          // original URL, as a screenshot would.
-          { redirect: 'manual' },
-        );
-      }
-
-      const session = new AppBrowserSession({
-        browser,
-        page,
-        baseUrl,
-        hostIndex,
-        logContext,
-        removeInterception,
-        // Drop this session from the per-workspace registry on close. Best-effort:
-        // reconcileBrowserSessions() self-heals if it never fires.
-        onClose: browserSessionId
-          ? () => orgStub.removeBrowserSession(browserSessionId)
-          : undefined,
-      });
-      try {
-        await session.goto(input.path ?? '/');
-      } catch (error) {
-        await session.close().catch(() => {});
-        throw error;
-      }
-      // Register only after a successful first navigation so failed launches
-      // don't occupy a workspace slot. Best-effort — reconciliation self-heals.
-      if (browserSessionId) {
-        await orgStub
-          .recordBrowserSession(this.context.workspaceId, browserSessionId)
-          .catch((error) => {
-            console.warn('[app-browser] failed to record browser session', {
-              ...logContext,
-              error: truncateError(error),
-            });
-          });
-      }
-      return session;
-    } catch (error) {
-      await browser.close().catch(() => {});
-      throw new Error(`Browser session launch failed: ${truncateError(error)}`);
-    }
+    return launchAppBrowserSession(this.env, this.context, input);
   }
 }

@@ -6,6 +6,7 @@
 	"compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
 	"rules": [{ "type": "Text", "globs": ["**/*.md"], "fallthrough": true }],
 	"worker_loaders": [{ "binding": "CODE_MODE_LOADER" }],
+	"browser": { "binding": "BROWSER" },
 	"containers": [
 		{
 			"class_name": "EvalSandbox",
