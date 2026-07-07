@@ -3,7 +3,7 @@
   "name": "chiridion-app",
   "main": "build/server/index.js",
   "no_bundle": true,
-  "compatibility_date": "2025-12-01",
+  "compatibility_date": "2026-04-07",
   "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
   "upload_source_maps": true,
   "observability": {
