@@ -401,25 +401,26 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
     this.pruneStaleStreamingRows(now);
     if (isStreaming) {
       if (hasActivityTextUpdate) {
-        this.sql.exec(
-          `INSERT INTO thread_streaming_status (
-             thread_id,
-             started_at,
-             updated_at,
-             latest_activity_text,
-             latest_activity_at
-           )
-           VALUES (?, ?, ?, ?, ?)
-           ON CONFLICT(thread_id) DO UPDATE SET
-             updated_at = excluded.updated_at,
-             latest_activity_text = excluded.latest_activity_text,
-             latest_activity_at = excluded.latest_activity_at`,
-          normalizedThreadId,
-          now,
+        // Activity-carrying updates ride a trailing debounce (and RPC retries)
+        // in ChatThreadDO, so one can land AFTER the turn's terminal
+        // isStreaming=false already deleted the row. Update-only: a late flush
+        // must not resurrect a cleared turn as a phantom "running" row (it
+        // would persist for the full TTL and pin sidebar/status UIs). Only the
+        // un-debounced turn-start transition may create the row.
+        const updated = this.sql.exec(
+          `UPDATE thread_streaming_status SET
+             updated_at = ?,
+             latest_activity_text = ?,
+             latest_activity_at = ?
+           WHERE thread_id = ?`,
           now,
           activityText,
           activityAt,
-        );
+          normalizedThreadId,
+        ).rowsWritten;
+        if (updated === 0) {
+          return;
+        }
       } else {
         this.sql.exec(
           `INSERT INTO thread_streaming_status (

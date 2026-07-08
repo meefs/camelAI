@@ -1325,16 +1325,59 @@ describe("reconcileLocalThreadStatusesWithSnapshot", () => {
 
     expect(Array.from(next.entries())).toEqual([]);
   });
+
+  it("keeps a local idle written after the snapshot run started (stale server row)", () => {
+    const current = new Map([
+      ["thread_1", { status: "idle" as const, statusChangedAt: 2_000 }],
+    ]);
+
+    const next = reconcileLocalThreadStatusesWithSnapshot(
+      current,
+      new Set(["thread_1"]),
+      new Map([["thread_1", 1_000]]),
+    );
+
+    expect(next).toBe(current);
+  });
+
+  it("clears a local idle when the snapshot run started after it (genuinely new run)", () => {
+    const current = new Map([
+      ["thread_1", { status: "idle" as const, statusChangedAt: 1_000 }],
+    ]);
+
+    const next = reconcileLocalThreadStatusesWithSnapshot(
+      current,
+      new Set(["thread_1"]),
+      new Map([["thread_1", 2_000]]),
+    );
+
+    expect(Array.from(next.entries())).toEqual([]);
+  });
+
+  it("clears a local idle when the snapshot run has no started-at metadata", () => {
+    const current = new Map([
+      ["thread_1", { status: "idle" as const, statusChangedAt: 2_000 }],
+    ]);
+
+    const next = reconcileLocalThreadStatusesWithSnapshot(
+      current,
+      new Set(["thread_1"]),
+      new Map([["thread_1", null]]),
+    );
+
+    expect(Array.from(next.entries())).toEqual([]);
+  });
 });
 
 describe("mergeLiveAndLocalThreadStatuses", () => {
-  it("keeps authoritative live running state over stale local idle overlays", () => {
+  it("keeps fresher live running state over an older local idle overlay", () => {
     const merged = mergeLiveAndLocalThreadStatuses(
       new Map([
         [
           "thread_1",
           {
             status: "running",
+            statusChangedAt: 2_000,
             runningActivityText: "Running typecheck...",
           },
         ],
@@ -1344,6 +1387,7 @@ describe("mergeLiveAndLocalThreadStatuses", () => {
           "thread_1",
           {
             status: "idle",
+            statusChangedAt: 1_000,
             latestUserMessage: "local prompt",
           },
         ],
@@ -1352,8 +1396,47 @@ describe("mergeLiveAndLocalThreadStatuses", () => {
 
     expect(merged.get("thread_1")).toEqual({
       status: "running",
+      statusChangedAt: 2_000,
       runningActivityText: "Running typecheck...",
     });
+  });
+
+  it("lets a newer local idle beat a stale live running entry", () => {
+    const merged = mergeLiveAndLocalThreadStatuses(
+      new Map([
+        [
+          "thread_1",
+          {
+            status: "running",
+            statusChangedAt: 1_000,
+            runningActivityText: "Running typecheck...",
+          },
+        ],
+      ]),
+      new Map([["thread_1", { status: "idle", statusChangedAt: 2_000 }]]),
+    );
+
+    expect(merged.get("thread_1")?.status).toBe("idle");
+  });
+
+  it("lets a local idle without timestamps beat an unstamped live running entry", () => {
+    const merged = mergeLiveAndLocalThreadStatuses(
+      new Map([["thread_1", { status: "running" }]]),
+      new Map([["thread_1", { status: "idle" }]]),
+    );
+
+    expect(merged.get("thread_1")?.status).toBe("idle");
+  });
+
+  it("still lets local running overlay a live idle entry", () => {
+    const merged = mergeLiveAndLocalThreadStatuses(
+      new Map([["thread_1", { status: "idle", statusChangedAt: 2_000 }]]),
+      new Map([
+        ["thread_1", { status: "running", statusChangedAt: 1_000 }],
+      ]),
+    );
+
+    expect(merged.get("thread_1")?.status).toBe("running");
   });
 });
 

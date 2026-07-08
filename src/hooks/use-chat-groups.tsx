@@ -40,6 +40,15 @@ interface ChatRouteData {
 
 export interface LiveThreadMetadata {
   status: ThreadStatus;
+  /**
+   * When `status` was last asserted: client receipt time for socket frames and
+   * local dispatches, or the server-reported run start for snapshot-derived
+   * running entries. Merge/reconcile prefer the fresher assertion instead of a
+   * fixed live-over-local precedence, so a stale server-side "running" row
+   * (e.g. a lost turn-end broadcast) cannot pin a thread running after the
+   * client has observed the turn finish.
+   */
+  statusChangedAt?: number;
   completedAt?: number | null;
   summaryStatus?: ThreadCompletionSummaryStatus | null;
   summary?: string | null;
@@ -144,14 +153,27 @@ export function getGroupLandingHref(group: ChatGroupView): string {
 export function reconcileLocalThreadStatusesWithSnapshot<T extends ThreadStatusOverlay>(
   localStatuses: Map<string, T>,
   runningThreadIds: Set<string>,
+  runningStartedAts: ReadonlyMap<string, number | null> = new Map(),
 ): Map<string, T> {
   let next: Map<string, T> | null = null;
   for (const [threadId, overlay] of localStatuses) {
     const status = getOverlayStatus(overlay);
-    if (
-      (status === "running" && !runningThreadIds.has(threadId)) ||
-      (status !== "running" && runningThreadIds.has(threadId))
-    ) {
+    if (status === "running" && !runningThreadIds.has(threadId)) {
+      next ??= new Map(localStatuses);
+      next.delete(threadId);
+      continue;
+    }
+    if (status !== "running" && runningThreadIds.has(threadId)) {
+      // A snapshot can carry a stale running row (the server's turn-end
+      // record/broadcast was lost). If the run it describes started BEFORE the
+      // client locally marked the thread not-running, the local status is
+      // firsthand knowledge of that same run ending — keep it. A genuinely new
+      // run has a startedAt after the local write and still clears the overlay.
+      const startedAt = runningStartedAts.get(threadId);
+      const localChangedAt = getOverlayMetadata(overlay)?.statusChangedAt ?? 0;
+      if (typeof startedAt === "number" && startedAt <= localChangedAt) {
+        continue;
+      }
       next ??= new Map(localStatuses);
       next.delete(threadId);
     }
@@ -166,7 +188,15 @@ export function mergeLiveAndLocalThreadStatuses(
   const next = new Map(liveStatuses);
   for (const [threadId, metadata] of localStatuses) {
     const liveMetadata = next.get(threadId);
-    if (liveMetadata?.status === "running" && metadata.status !== "running") {
+    // Live "running" outranks a local non-running overlay only while the live
+    // assertion is fresher. Once the client observes the turn end (its local
+    // idle is newer), the local status wins — otherwise a stale server-side
+    // running row would pin the thread "running" indefinitely.
+    if (
+      liveMetadata?.status === "running" &&
+      metadata.status !== "running" &&
+      (liveMetadata.statusChangedAt ?? 0) > (metadata.statusChangedAt ?? 0)
+    ) {
       continue;
     }
     next.set(threadId, mergeThreadMetadata(liveMetadata, metadata));
@@ -1048,7 +1078,10 @@ export function ChatGroupsProvider({
       const next = new Map(current);
       next.set(
         normalizedThreadId,
-        mergeThreadMetadata(currentStatus, { status: "idle" }),
+        mergeThreadMetadata(currentStatus, {
+          status: "idle",
+          statusChangedAt: Date.now(),
+        }),
       );
       return next;
     });
@@ -1179,6 +1212,7 @@ export function ChatGroupsProvider({
           threadId,
           mergeThreadMetadata(existing, {
             status,
+            statusChangedAt: Date.now(),
             ...(firstUserMessage === undefined ? {} : { firstUserMessage }),
             ...(latestUserMessage === undefined ? {} : { latestUserMessage }),
             ...(latestUserMessageAt === undefined ? {} : { latestUserMessageAt }),
@@ -1357,6 +1391,13 @@ export function ChatGroupsProvider({
             (thread) => thread.threadId,
           );
           const nextRunningThreadIdSet = new Set(nextRunningThreadIds);
+          const snapshotReceivedAt = Date.now();
+          const nextRunningStartedAts = new Map(
+            nextRunningThreads.map((thread) => [
+              thread.threadId,
+              thread.runningStartedAt ?? null,
+            ]),
+          );
           const staleRunningThreadIds =
             getThreadIdsRequiringSnapshotRevalidation(
               liveThreadStatusesRef.current,
@@ -1372,6 +1413,10 @@ export function ChatGroupsProvider({
             for (const thread of nextRunningThreads) {
               next.set(thread.threadId, {
                 status: "running",
+                // Stamp with the run's server-side start so a stale snapshot
+                // row loses to a local not-running write made after that run
+                // began (the client watched that same run finish).
+                statusChangedAt: thread.runningStartedAt ?? snapshotReceivedAt,
                 ...(thread.runningActivityText === undefined
                   ? {}
                   : { runningActivityText: thread.runningActivityText }),
@@ -1389,6 +1434,7 @@ export function ChatGroupsProvider({
             reconcileLocalThreadStatusesWithSnapshot(
               current,
               nextRunningThreadIdSet,
+              nextRunningStartedAts,
             ),
           );
           if (staleRunningThreadIds.length > 0) {
@@ -1471,6 +1517,7 @@ export function ChatGroupsProvider({
             existingMetadata?.status === status &&
             (completedAt === undefined ||
               existingMetadata.completedAt === completedAt);
+          const frameReceivedAt = Date.now();
           setHasStatusSnapshot(true);
           setLiveThreadStatuses((current) => {
             const existing = current.get(threadId);
@@ -1493,6 +1540,7 @@ export function ChatGroupsProvider({
               threadId,
               mergeThreadMetadata(existing, {
                 status,
+                statusChangedAt: frameReceivedAt,
                 ...(completedAt === undefined ? {} : { completedAt }),
                 ...(summaryStatus === undefined ? {} : { summaryStatus }),
                 ...(summary === undefined ? {} : { summary }),
@@ -1524,6 +1572,7 @@ export function ChatGroupsProvider({
               threadId,
               mergeThreadMetadata(existing, {
                 status,
+                statusChangedAt: frameReceivedAt,
                 ...(completedAt === undefined ? {} : { completedAt }),
                 ...(summaryStatus === undefined ? {} : { summaryStatus }),
                 ...(summary === undefined ? {} : { summary }),

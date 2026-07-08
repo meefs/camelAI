@@ -88,6 +88,7 @@ describe("WorkspaceDO thread status", () => {
     const workspaceStub = await createWorkspaceStatusStub();
     const threadId = crypto.randomUUID();
 
+    await workspaceStub.recordThreadStreaming(threadId, true);
     await workspaceStub.recordThreadStreaming(threadId, true, {
       activityText:
         "Reading src/components/sidebar/chat-group-hover-card.tsx with extra whitespace",
@@ -113,6 +114,7 @@ describe("WorkspaceDO thread status", () => {
     const workspaceStub = await createWorkspaceStatusStub();
     const threadId = crypto.randomUUID();
 
+    await workspaceStub.recordThreadStreaming(threadId, true);
     await workspaceStub.recordThreadStreaming(threadId, true, {
       activityText: "Thinking",
       activityAt: 100,
@@ -132,6 +134,7 @@ describe("WorkspaceDO thread status", () => {
     const workspaceStub = await createWorkspaceStatusStub();
     const threadId = crypto.randomUUID();
 
+    await workspaceStub.recordThreadStreaming(threadId, true);
     await workspaceStub.recordThreadStreaming(threadId, true, {
       activityText: "Running newer turn",
       activityAt: 100,
@@ -167,5 +170,36 @@ describe("WorkspaceDO thread status", () => {
     });
 
     await expect(workspaceStub.listStreamingThreadStatuses()).resolves.toEqual([]);
+  });
+
+  it("drops a late activity update after the turn was terminally cleared", async () => {
+    const workspaceStub = await createWorkspaceStatusStub();
+    const threadId = crypto.randomUUID();
+
+    await workspaceStub.recordThreadStreaming(threadId, true);
+    await workspaceStub.recordThreadStreaming(threadId, false, {
+      completedAt: Date.now(),
+    });
+
+    // A debounced/retried running-activity flush landing after the terminal
+    // clear must not resurrect a phantom "running" row.
+    await workspaceStub.recordThreadStreaming(threadId, true, {
+      activityText: "Stale activity from the finished turn",
+      activityAt: Date.now(),
+    });
+
+    await expect(workspaceStub.listStreamingThreadIds()).resolves.toEqual([]);
+  });
+
+  it("does not create a running row from an activity-only update", async () => {
+    const workspaceStub = await createWorkspaceStatusStub();
+    const threadId = crypto.randomUUID();
+
+    await workspaceStub.recordThreadStreaming(threadId, true, {
+      activityText: "Activity before the turn-start transition",
+      activityAt: Date.now(),
+    });
+
+    await expect(workspaceStub.listStreamingThreadIds()).resolves.toEqual([]);
   });
 });
