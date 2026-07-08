@@ -33,6 +33,7 @@ import type {
 import {
   createAssistantMessageEventStream,
   isContextOverflow,
+  isRetryableAssistantError,
 } from "@earendil-works/pi-ai";
 import type {
   AssistantMessage,
@@ -268,6 +269,17 @@ const PI_PROVIDER_TRANSIENT_ERROR_PATTERNS = [
   "connection lost",
   "transient issue on remote node",
 ];
+// In-process regeneration budget for a turn whose run SETTLED with a retryable
+// transient provider error (e.g. the AI Gateway's mid-stream "Upstream idle
+// timeout exceeded"). This is a third, independent retry layer: the
+// PI_PROVIDER_* wrapper above retries a transient stream error only BEFORE any
+// event was forwarded, and chatRecovery re-drives only evictions/stalls — a
+// post-forwarded provider error previously terminal-failed with no final
+// message. Classification is pi-ai's isRetryableAssistantError; each attempt
+// re-drives resumeActivePiTurn (rebuild from committed history + journal).
+const PI_TURN_TRANSIENT_RETRY_ATTEMPTS = 2;
+const PI_TURN_TRANSIENT_RETRY_BASE_MS = 500;
+const PI_TURN_TRANSIENT_RETRY_MAX_MS = 4_000;
 const CHAT_ACTIVE_AUTOMATION_RUN_KEY = "activeAutomationRun";
 
 // Trailing-debounce window for coalescing the high-frequency "thread is still
@@ -1055,6 +1067,17 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
   private piCurrentCreditChargeable: boolean = false;
   private piCurrentUsageProvider: string | null = null;
   private piTurnLastProgressAtMs: number = 0;
+  // In-process transient-retry state (see PI_TURN_TRANSIENT_RETRY_ATTEMPTS).
+  // agent_end defers terminal surfacing of a retryable provider error by
+  // setting the pending token; the turn body's retryPiTurnWhileTransient loop
+  // consumes it. Both reset at the start of each onChatMessage execute.
+  private piTurnTransientRetryAttempts = 0;
+  private piPendingTransientTurnRetry: {
+    errorText: string;
+    provider: string | null;
+    model: string | null;
+  } | null = null;
+  private piTransientRetryBackoffAbort: AbortController | null = null;
   private piLastPersistedLoopError: { fingerprint: string; at: number } | null = null;
   private piRecordedProviderErrors = new Set<string>();
   private recordedChatErrors = new Map<string, number>();
@@ -3725,6 +3748,40 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
   private clearPiTurnJournal(): void {
     this.ensurePiCoreTables();
     this.ctx.storage.sql.exec("DELETE FROM pi_turn_journal");
+  }
+
+  /**
+   * Drop failed (stopReason error/aborted) assistant rows from the turn
+   * journal. Pi journals the in-flight tail at message_end — INCLUDING the
+   * error assistant message a failed run terminates on (the failed turn_end
+   * discards the session tail but leaves the journal untouched). A
+   * transient-retry resume must not fold that row: planPiTurnResume would see
+   * the transcript as already complete (trailing assistant) and commit the
+   * error message instead of regenerating. Real work in the journal (the
+   * accepted user message, completed tool results) is kept.
+   */
+  private prunePiTurnJournalFailedAssistantMessages(): void {
+    this.ensurePiCoreTables();
+    const rows = this.ctx.storage.sql
+      .exec<{ seq: number; payload: string }>(
+        "SELECT seq, payload FROM pi_turn_journal ORDER BY seq ASC",
+      )
+      .toArray();
+    for (const row of rows) {
+      let failed = false;
+      try {
+        const parsed = JSON.parse(row.payload) as AgentMessage;
+        failed = this.isFailedPiAssistantMessage(parsed);
+      } catch {
+        // Corrupt rows are already skipped by loadPiTurnJournalTail; keep them.
+      }
+      if (failed) {
+        this.ctx.storage.sql.exec(
+          "DELETE FROM pi_turn_journal WHERE seq = ?",
+          row.seq,
+        );
+      }
+    }
   }
 
   /**
@@ -8430,6 +8487,13 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
     if (event.type === "agent_end") {
       const stoppedByUserAtMs = this.piUserStopRequestedAtMs;
       const stoppedByUser = stoppedByUserAtMs > 0;
+      // A run that settled with a RETRYABLE transient provider error is not
+      // terminal yet: skip ALL terminal surfacing (no error/result events, no
+      // finishTurn, marker + journal left set) and let the turn body's
+      // retryPiTurnWhileTransient loop regenerate it in-process.
+      if (!stoppedByUser && this.maybeDeferPiTurnForTransientRetry(event.messages)) {
+        return;
+      }
       const newMessages = this.annotatePiProviderErrorMessages(
         stoppedByUser
           ? this.ensurePiUserStopMessage(event.messages, stoppedByUserAtMs)
@@ -8870,6 +8934,9 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
         }
         if (type === "stop") {
           this.piUserStopRequestedAtMs = Date.now();
+          // A stop during a transient-retry backoff has no in-flight run to
+          // abort — wake the sleeping retry loop so it terminal-stops now.
+          this.piTransientRetryBackoffAbort?.abort();
           this.piSession.abort();
           return true;
         }
@@ -9298,6 +9365,11 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
             for (const chunk of buffered) writer.write(chunk as never);
           }
           this.piStreamWriter = writer;
+          // Fresh transient-retry budget per stream invocation (a chatRecovery
+          // re-drive is a new invocation and gets its own budget — chatRecovery
+          // bounds those separately).
+          this.piTurnTransientRetryAttempts = 0;
+          this.piPendingTransientTurnRetry = null;
           try {
             if (freshPrompts) {
               // No bespoke inactivity race: the ai-chat stall watchdog
@@ -9334,6 +9406,9 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
             // Drain the Pi event handler chain so agent_end's turn/completed → the
             // encoder `finish` chunk is flushed before the stream closes.
             await this.piEventHandlerChain.catch(() => {});
+            // If that agent_end deferred a retryable transient provider error,
+            // regenerate in-process on this same open stream.
+            await this.retryPiTurnWhileTransient();
           } catch (error) {
             this.handlePiTurnFailure(error);
           } finally {
@@ -9458,6 +9533,284 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
       severity: "warn",
     });
     this.disposePiSession();
+  }
+
+  /**
+   * agent_end gate for the in-process transient retry: when the run settled
+   * with a RETRYABLE provider error (pi-ai's isRetryableAssistantError — its
+   * non-retryable pattern excludes refusals/usage limits, which must
+   * terminal-fail immediately) and budget remains, stash a pending-retry token
+   * and tell the caller to skip terminal surfacing. Returns false — keeping the
+   * existing terminal path — when no ai-chat turn body is attached (direct
+   * prompt() drivers like agent evals have no retry loop to consume the token),
+   * when the budget is spent, or when the run did not end in a retryable error.
+   */
+  private maybeDeferPiTurnForTransientRetry(messages: AgentMessage[]): boolean {
+    if (!this.activePiStreamTurnId) return false;
+    if (this.piTurnTransientRetryAttempts >= PI_TURN_TRANSIENT_RETRY_ATTEMPTS) {
+      return false;
+    }
+    // A failed run always terminates on its error assistant message (pi emits
+    // turn_end + agent_end immediately after it), so only the LAST message can
+    // carry the retryable error.
+    const last = messages.length > 0 ? messages[messages.length - 1] : undefined;
+    if (!last) return false;
+    const errorText = this.getPiAssistantErrorMessage(last);
+    if (!errorText) return false;
+    if (!isRetryableAssistantError(last as unknown as AssistantMessage)) {
+      return false;
+    }
+    const record = last as unknown as Record<string, unknown>;
+    this.piPendingTransientTurnRetry = {
+      errorText,
+      provider:
+        this.piCurrentUsageProvider ||
+        (typeof record.provider === "string" ? record.provider : null),
+      model:
+        typeof record.model === "string" && record.model.trim()
+          ? record.model.trim()
+          : this.piSession?.state.model?.id ?? null,
+    };
+    return true;
+  }
+
+  /**
+   * In-process regeneration loop for a turn whose run settled with a retryable
+   * transient provider error (deferred by {@link maybeDeferPiTurnForTransientRetry}).
+   * Runs in the turn body AFTER the event-handler chain drained, so the deferred
+   * agent_end has already been processed. Each attempt: bounded exponential
+   * backoff (heartbeats keep ai-chat's inter-chunk stall watchdog fed; a user
+   * stop aborts the sleep), then re-drive via the SAME regeneration path
+   * eviction recovery uses — prune the failed error row from the journal,
+   * dispose the session so resumeActivePiTurn rebuilds it from committed
+   * history + journal, and continue into the same assistant message. The
+   * active-turn marker + journal stay set across attempts (they are what the
+   * rebuild folds); the retried run's own agent_end clears them on success, and
+   * on exhaustion or a non-retryable error the gate declines and the normal
+   * terminal path runs. Errors thrown by the re-drive propagate to
+   * onChatMessage's catch (handlePiTurnFailure).
+   */
+  private async retryPiTurnWhileTransient(): Promise<void> {
+    while (this.piPendingTransientTurnRetry) {
+      const pending = this.piPendingTransientTurnRetry;
+      this.piPendingTransientTurnRetry = null;
+      if (this.piUserStopRequestedAtMs > 0) {
+        await this.finishPiTurnStoppedDuringTransientRetry();
+        return;
+      }
+      this.piTurnTransientRetryAttempts += 1;
+      const attempt = this.piTurnTransientRetryAttempts;
+      // Routed to the errors dataset (via the `error` field): the deferred
+      // agent_end surfaced nothing to the client, so this event is the only
+      // record of the retried provider error — and each retry re-bills the
+      // reprocessed input tokens, so this counter is also the spend signal.
+      const retryError = new Error(pending.errorText);
+      retryError.name = "PiProviderError";
+      this.recordChatThreadObservabilityEvent("pi_turn_transient_retry", {
+        operation: "transient_turn_retry",
+        status: "retrying",
+        severity: "warn",
+        count: attempt,
+        provider: pending.provider,
+        model: pending.model,
+        error: retryError,
+      });
+      // Prune the failed assistant row from the durable journal BEFORE the
+      // evictable backoff sleep. If the DO is evicted during the sleep, the
+      // in-memory pending-retry intent is lost, so cold-load recovery folds the
+      // journal blind — and a lingering error row would make planPiTurnResume see
+      // a trailing assistant, take the "already complete" branch, and commit the
+      // provider error as a successful final message (silently abandoning the
+      // retry). Pruning first means an eviction here folds a transcript ending in
+      // the user/tool message and regenerates, exactly as an in-process retry
+      // would. Idempotent: finishPiTurnStoppedDuringTransientRetry filters the
+      // failed row rather than depending on it, and a second prune is a no-op.
+      this.prunePiTurnJournalFailedAssistantMessages();
+      // The backoff writes no content chunks; feed the stall watchdog so it
+      // cannot cancel the open reply stream while we sleep.
+      this.writePiStreamHeartbeat();
+      const backoffAbort = new AbortController();
+      this.piTransientRetryBackoffAbort = backoffAbort;
+      try {
+        await this.sleepForPiTransientTurnRetry(attempt, backoffAbort.signal);
+      } catch {
+        // The only abort source is a user stop (sendRunnerCommand's stop path).
+        await this.finishPiTurnStoppedDuringTransientRetry();
+        return;
+      } finally {
+        if (this.piTransientRetryBackoffAbort === backoffAbort) {
+          this.piTransientRetryBackoffAbort = null;
+        }
+      }
+      if (this.piUserStopRequestedAtMs > 0) {
+        await this.finishPiTurnStoppedDuringTransientRetry();
+        return;
+      }
+      this.writePiStreamHeartbeat();
+      // Journal already pruned before the sleep (above); trim the in-flight
+      // streaming reply parts (in-memory, not durable, so no eviction concern).
+      this.trimIncompleteStreamingReplyParts();
+      // resumeActivePiTurn folds committed history + journal only through a
+      // session REBUILD (ensurePiSessionReady reuses a warm one) — dispose
+      // first so the re-drive runs the same cold path eviction recovery does.
+      // Known minor edge: a user `stop` landing in the dispose→rebuild window
+      // hits sendRunnerCommand's `if (this.piSession)` guard while the session
+      // is null, so that one click is dropped; the rebuilt run streams and can be
+      // stopped again. Not a hang (the run completes and clears the marker); left
+      // as-is rather than widening the stop path on the hot turn body.
+      this.disposePiSession();
+      await this.resumeActivePiTurn();
+      await this.piEventHandlerChain.catch(() => {});
+    }
+  }
+
+  /** Bounded exponential backoff between transient turn retries. */
+  private sleepForPiTransientTurnRetry(
+    attempt: number,
+    signal: AbortSignal,
+  ): Promise<void> {
+    const delayMs = Math.min(
+      PI_TURN_TRANSIENT_RETRY_MAX_MS,
+      PI_TURN_TRANSIENT_RETRY_BASE_MS * 2 ** Math.max(0, attempt - 1),
+    );
+    if (signal.aborted) {
+      return Promise.reject(new Error("Request was aborted"));
+    }
+    return new Promise((resolve, reject) => {
+      const onAbort = () => {
+        clearTimeout(timeout);
+        reject(new Error("Request was aborted"));
+      };
+      const timeout = setTimeout(() => {
+        signal.removeEventListener("abort", onAbort);
+        resolve();
+      }, delayMs);
+      signal.addEventListener("abort", onAbort, { once: true });
+    });
+  }
+
+  /**
+   * Terminal path for a user stop that lands during a transient-retry backoff:
+   * there is no in-flight run to emit the stoppedByUser agent_end, so run the
+   * equivalent teardown here. The journal may hold accepted-but-uncommitted
+   * real work (the turn's user message when the FIRST model call failed,
+   * completed tool results) — commit it minus the failed error row before the
+   * journal is cleared, so the stop doesn't drop the prompt from the transcript.
+   */
+  private async finishPiTurnStoppedDuringTransientRetry(): Promise<void> {
+    const stoppedAtMs = this.piUserStopRequestedAtMs || Date.now();
+    const completedAtMs = Date.now();
+    const threadId = this.chatContext?.threadId || "";
+    this.recordChatThreadObservabilityEvent("pi_turn_transient_retry", {
+      operation: "transient_turn_retry",
+      status: "stopped",
+      severity: "warn",
+      count: this.piTurnTransientRetryAttempts,
+    });
+    const journalTail = await this.loadPiTurnJournalTail();
+    const realWork = journalTail.filter(
+      (message) => !this.isFailedPiAssistantMessage(message),
+    );
+    await this.appendPiCoreMessagesIfMissing([
+      ...realWork,
+      this.createPiUserStopMessage(stoppedAtMs),
+    ]);
+    const turnStartedAtMs =
+      this.piAgentStartedAtMs || this.piTurnStartedAtMs || completedAtMs;
+    this.piAgentStartedAtMs = 0;
+    this.pushPiRuntimeEvent("item/agentMessage/delta", {
+      threadId,
+      itemId: `pi_user_stop_${stoppedAtMs}`,
+      itemKind: "userStop",
+      delta: PI_USER_STOP_TEXT,
+    });
+    this.pushPiRuntimeEvent("turn/completed", {
+      threadId,
+      completedAtMs,
+      turnDurationMs: Math.max(0, completedAtMs - turnStartedAtMs),
+    });
+    this.pushChatEvent({
+      type: "result",
+      threadId,
+      result: PI_USER_STOP_TEXT,
+      sessionId: threadId,
+      completedAt: completedAtMs,
+    });
+    this.updateActiveAutomationRun({
+      status: "error",
+      message: PI_USER_STOP_TEXT,
+      completedAt: completedAtMs,
+      clear: true,
+    });
+    this.finishTurn({ markUnread: true, completedAt: completedAtMs });
+    this.setActiveTurnUserId(null);
+    this.completeTodoStateForTurnEnd();
+    this.piUserStopRequestedAtMs = 0;
+    this.resetRunningActivityState();
+    // The warm session's uncommitted tail was discarded at the failed turn_end
+    // and pi_core just gained the journal commit above — rebuild next turn.
+    this.disposePiSession();
+    await this.clearPiActiveTurnAndJournal();
+  }
+
+  /**
+   * In-process analog of {@link trimIncompleteLiveAssistantParts}: mid-stream
+   * nothing is persisted for this turn yet, but ai-chat's in-flight reply
+   * message (the parts array `applyChunkToParts` builds and `_reply` persists
+   * at stream end) still holds the failed attempt's incomplete trailing parts.
+   * The regeneration re-produces that content, so drop the incomplete tail
+   * before re-driving — otherwise the persisted message renders the half text
+   * followed by the full regenerated text. Settled parts (completed tools,
+   * finished text runs) correspond to journaled work the resume keeps, so they
+   * stay. The client's live copy still shows the stale tail until the
+   * end-of-turn persistMessages broadcast reconciles it.
+   */
+  private trimIncompleteStreamingReplyParts(): void {
+    // ai-chat 0.9.3 holds the in-flight reply on the PRIVATE `_streamingMessage`
+    // field: `_reply` assigns it `_createStreamingAssistantMessage()`'s
+    // `{ id, role, parts }` and persists that same `parts` array verbatim at
+    // stream end. We reach it through a cast (there is no public trim/reset API).
+    // An upstream RENAME would make the cast read `undefined`, so this trim would
+    // silently no-op and reintroduce the half+full render it exists to prevent.
+    // Distinguish a MISSING field (rename — surface loudly so a dependency bump
+    // that breaks the safeguard shows up in prod, not just in a stale test) from a
+    // legitimately null one (no reply stream open — nothing to trim). The
+    // keep-in-sync guard test (chat-thread-streaming-reply-trim.test.ts) pins the
+    // field name and the `{ parts }` shape against the installed dist.
+    const agent = this as unknown as {
+      _streamingMessage?: { parts?: unknown[] } | null;
+    };
+    if (!("_streamingMessage" in agent)) {
+      console.error(
+        "[ChatThreadDO] @cloudflare/ai-chat _streamingMessage field is missing; " +
+          "transient-retry partial trim is a no-op (upstream rename?)",
+      );
+      this.recordChatThreadObservabilityEvent("pi_streaming_reply_field_missing", {
+        operation: "transient_turn_retry",
+        status: "error",
+        severity: "error",
+      });
+      return;
+    }
+    const streaming = agent._streamingMessage;
+    const parts = streaming?.parts;
+    if (!Array.isArray(parts)) return;
+    let trimmed = 0;
+    while (parts.length > 0) {
+      const last = parts[parts.length - 1] as { state?: unknown };
+      if (last?.state === "streaming" || last?.state === "input-streaming") {
+        parts.pop();
+        trimmed += 1;
+        continue;
+      }
+      break;
+    }
+    if (trimmed === 0) return;
+    this.recordChatThreadObservabilityEvent("pi_turn_partial_trimmed", {
+      operation: "transient_turn_retry",
+      status: "trimmed",
+      count: trimmed,
+    });
   }
 
   /**

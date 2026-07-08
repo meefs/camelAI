@@ -7923,6 +7923,408 @@ describe('ChatThreadDO Pi turn handling', () => {
     );
   });
 
+  // --- In-process transient provider-error retry (post-forwarded regeneration) ---
+
+  describe('in-process transient provider-error retry', () => {
+    const RETRYABLE_ERROR = 'Upstream idle timeout exceeded';
+
+    function failedAssistantMessage(
+      errorMessage: string = RETRYABLE_ERROR,
+      overrides: Record<string, unknown> = {},
+    ) {
+      return {
+        role: 'assistant',
+        content: [],
+        stopReason: 'error',
+        errorMessage,
+        responseId: 'resp_fail',
+        timestamp: 1,
+        model: 'claude-test-model',
+        ...overrides,
+      };
+    }
+
+    function createGateFake() {
+      const { fake, events } = createPiEventFake();
+      fake.activePiStreamTurnId = 'turn-retry';
+      fake.piTurnTransientRetryAttempts = 0;
+      fake.piPendingTransientTurnRetry = null;
+      fake.piCurrentUsageProvider = 'bedrock';
+      fake.clearPiActiveTurnAndJournal = vi.fn(async () => {});
+      return { fake, events };
+    }
+
+    it('agent_end defers a retryable provider error: no terminal surfacing, marker preserved', async () => {
+      const { fake, events } = createGateFake();
+
+      await ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, { type: 'agent_start' });
+      await ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, {
+        type: 'agent_end',
+        messages: [failedAssistantMessage()],
+      });
+
+      // Nothing terminal reached the client and the recovery state survived.
+      expect(events.some((event) => event.type === 'error')).toBe(false);
+      expect(events.some((event) => event.type === 'result')).toBe(false);
+      expect(fake.finishTurn).not.toHaveBeenCalled();
+      expect(fake.setActiveTurnUserId).not.toHaveBeenCalled();
+      expect(fake.clearPiActiveTurnAndJournal).not.toHaveBeenCalled();
+      // The pending token carries what the retry loop records.
+      expect(fake.piPendingTransientTurnRetry).toEqual({
+        errorText: RETRYABLE_ERROR,
+        provider: 'bedrock',
+        model: 'claude-test-model',
+      });
+    });
+
+    it('agent_end terminal-fails a NON-retryable error immediately (no retry token)', async () => {
+      const { fake, events } = createGateFake();
+
+      await ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, { type: 'agent_start' });
+      await ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, {
+        type: 'agent_end',
+        messages: [failedAssistantMessage('insufficient_quota: request quota exceeded')],
+      });
+
+      expect(fake.piPendingTransientTurnRetry).toBeNull();
+      expect(events).toContainEqual(
+        expect.objectContaining({
+          type: 'error',
+          error: 'insufficient_quota: request quota exceeded',
+        }),
+      );
+      expect(fake.finishTurn).toHaveBeenCalled();
+      expect(fake.clearPiActiveTurnAndJournal).toHaveBeenCalled();
+    });
+
+    it('agent_end terminal-fails a retryable error once the attempt budget is spent', async () => {
+      const { fake, events } = createGateFake();
+      fake.piTurnTransientRetryAttempts = 2;
+
+      await ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, { type: 'agent_start' });
+      await ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, {
+        type: 'agent_end',
+        messages: [failedAssistantMessage()],
+      });
+
+      expect(fake.piPendingTransientTurnRetry).toBeNull();
+      expect(events).toContainEqual(
+        expect.objectContaining({ type: 'error', error: RETRYABLE_ERROR }),
+      );
+      expect(fake.finishTurn).toHaveBeenCalled();
+      expect(fake.clearPiActiveTurnAndJournal).toHaveBeenCalled();
+    });
+
+    it('agent_end keeps the terminal path when no ai-chat turn body is attached (eval prompt)', async () => {
+      const { fake, events } = createGateFake();
+      fake.activePiStreamTurnId = null;
+
+      await ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, { type: 'agent_start' });
+      await ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, {
+        type: 'agent_end',
+        messages: [failedAssistantMessage()],
+      });
+
+      expect(fake.piPendingTransientTurnRetry).toBeNull();
+      expect(events).toContainEqual(
+        expect.objectContaining({ type: 'error', error: RETRYABLE_ERROR }),
+      );
+      expect(fake.clearPiActiveTurnAndJournal).toHaveBeenCalled();
+    });
+
+    function createRetryLoopFake(overrides: Record<string, any> = {}) {
+      const fake = Object.create(ChatThreadDO.prototype) as any;
+      fake.chatContext = { threadId: 'thread1' };
+      fake.piTurnTransientRetryAttempts = 0;
+      fake.piPendingTransientTurnRetry = {
+        errorText: RETRYABLE_ERROR,
+        provider: 'bedrock',
+        model: 'claude-test-model',
+      };
+      fake.piTransientRetryBackoffAbort = null;
+      fake.piUserStopRequestedAtMs = 0;
+      fake.piEventHandlerChain = Promise.resolve();
+      fake.recordChatThreadObservabilityEvent = vi.fn();
+      fake.writePiStreamHeartbeat = vi.fn();
+      fake.prunePiTurnJournalFailedAssistantMessages = vi.fn();
+      fake.trimIncompleteStreamingReplyParts = vi.fn();
+      fake.disposePiSession = vi.fn();
+      fake.resumeActivePiTurn = vi.fn(async () => {});
+      fake.finishPiTurnStoppedDuringTransientRetry = vi.fn(async () => {});
+      fake.clearPiActiveTurnAndJournal = vi.fn(async () => {});
+      Object.assign(fake, overrides);
+      return fake;
+    }
+
+    it('retry loop backs off, prunes the journal, disposes, and re-drives resumeActivePiTurn once', async () => {
+      vi.useFakeTimers();
+      const fake = createRetryLoopFake();
+
+      const promise = ChatThreadDO.prototype['retryPiTurnWhileTransient'].call(fake);
+      await vi.advanceTimersByTimeAsync(500);
+      await promise;
+
+      expect(fake.piTurnTransientRetryAttempts).toBe(1);
+      expect(fake.resumeActivePiTurn).toHaveBeenCalledTimes(1);
+      // Heartbeats keep the stall watchdog fed across the silent backoff.
+      expect(fake.writePiStreamHeartbeat).toHaveBeenCalled();
+      // The failed error row must be gone and the session rebuilt cold BEFORE
+      // the re-drive folds the journal.
+      const pruneOrder = fake.prunePiTurnJournalFailedAssistantMessages.mock.invocationCallOrder[0];
+      const disposeOrder = fake.disposePiSession.mock.invocationCallOrder[0];
+      const resumeOrder = fake.resumeActivePiTurn.mock.invocationCallOrder[0];
+      expect(pruneOrder).toBeLessThan(resumeOrder);
+      expect(disposeOrder).toBeLessThan(resumeOrder);
+      expect(fake.trimIncompleteStreamingReplyParts).toHaveBeenCalledTimes(1);
+      // Marker + journal survive the retry; only success/exhaustion clears them.
+      expect(fake.clearPiActiveTurnAndJournal).not.toHaveBeenCalled();
+      expect(fake.finishPiTurnStoppedDuringTransientRetry).not.toHaveBeenCalled();
+      expect(fake.recordChatThreadObservabilityEvent).toHaveBeenCalledWith(
+        'pi_turn_transient_retry',
+        expect.objectContaining({
+          status: 'retrying',
+          severity: 'warn',
+          count: 1,
+          provider: 'bedrock',
+          model: 'claude-test-model',
+          error: expect.objectContaining({ message: RETRYABLE_ERROR }),
+        }),
+      );
+    });
+
+    it('prunes the failed journal row BEFORE the evictable backoff sleep (eviction during backoff must not commit the error row)', async () => {
+      vi.useFakeTimers();
+      const fake = createRetryLoopFake();
+
+      // Start the loop but do NOT advance timers yet: it runs up to the first
+      // await, which is the backoff sleep. By then the failed-row prune must have
+      // already run — so a DO eviction during the sleep folds a journal with no
+      // error row and regenerates, instead of cold-load recovery committing the
+      // provider error as a "completed" turn (Risk 5).
+      const promise = ChatThreadDO.prototype['retryPiTurnWhileTransient'].call(fake);
+      await Promise.resolve(); // let the synchronous pre-sleep body run
+      expect(fake.prunePiTurnJournalFailedAssistantMessages).toHaveBeenCalledTimes(1);
+      expect(fake.resumeActivePiTurn).not.toHaveBeenCalled(); // still sleeping
+
+      await vi.advanceTimersByTimeAsync(500);
+      await promise;
+      // Not double-pruned: one prune per attempt, ahead of the sleep.
+      expect(fake.prunePiTurnJournalFailedAssistantMessages).toHaveBeenCalledTimes(1);
+      expect(fake.resumeActivePiTurn).toHaveBeenCalledTimes(1);
+    });
+
+    it('a repeatedly failing turn consumes the budget, then the gate declines the third attempt', async () => {
+      vi.useFakeTimers();
+      const fake = createRetryLoopFake({
+        activePiStreamTurnId: 'turn-retry',
+        piSession: null,
+        piCurrentUsageProvider: 'bedrock',
+      });
+      // Each re-drive "fails" again: re-arm the pending token through the real
+      // gate, exactly like the retried run's deferred agent_end would.
+      fake.resumeActivePiTurn = vi.fn(async () => {
+        ChatThreadDO.prototype['maybeDeferPiTurnForTransientRetry'].call(fake, [
+          failedAssistantMessage(),
+        ]);
+      });
+
+      const promise = ChatThreadDO.prototype['retryPiTurnWhileTransient'].call(fake);
+      await vi.advanceTimersByTimeAsync(500); // attempt 1 backoff
+      await vi.advanceTimersByTimeAsync(1000); // attempt 2 backoff (exponential)
+      await promise;
+
+      expect(fake.piTurnTransientRetryAttempts).toBe(2);
+      expect(fake.resumeActivePiTurn).toHaveBeenCalledTimes(2);
+      // The budget is spent: the next agent_end runs the normal terminal path.
+      expect(
+        ChatThreadDO.prototype['maybeDeferPiTurnForTransientRetry'].call(fake, [
+          failedAssistantMessage(),
+        ]),
+      ).toBe(false);
+    });
+
+    it('a user stop that already landed aborts the retry before any attempt', async () => {
+      const fake = createRetryLoopFake({ piUserStopRequestedAtMs: 123 });
+
+      await ChatThreadDO.prototype['retryPiTurnWhileTransient'].call(fake);
+
+      expect(fake.finishPiTurnStoppedDuringTransientRetry).toHaveBeenCalledTimes(1);
+      expect(fake.resumeActivePiTurn).not.toHaveBeenCalled();
+      expect(fake.piTurnTransientRetryAttempts).toBe(0);
+    });
+
+    it('a user stop during the backoff sleep wakes it and terminal-stops cleanly', async () => {
+      vi.useFakeTimers();
+      const fake = createRetryLoopFake();
+
+      const promise = ChatThreadDO.prototype['retryPiTurnWhileTransient'].call(fake);
+      // The loop runs synchronously up to the backoff await, so the abort
+      // controller is installed by now — this is the hook the stop command uses.
+      expect(fake.piTransientRetryBackoffAbort).toBeTruthy();
+      fake.piUserStopRequestedAtMs = Date.now();
+      fake.piTransientRetryBackoffAbort.abort();
+      await promise;
+
+      expect(fake.finishPiTurnStoppedDuringTransientRetry).toHaveBeenCalledTimes(1);
+      expect(fake.resumeActivePiTurn).not.toHaveBeenCalled();
+    });
+
+    it('finishPiTurnStoppedDuringTransientRetry commits journal work minus the failed row and tears down', async () => {
+      const events: any[] = [];
+      const fake = Object.create(ChatThreadDO.prototype) as any;
+      const userMessage = { role: 'user', content: 'do the thing' };
+      const failed = failedAssistantMessage();
+      const stopMessage = { role: 'user', content: 'Stopped by user', timestamp: 111 };
+      fake.chatContext = { threadId: 'thread1' };
+      fake.piUserStopRequestedAtMs = 111;
+      fake.piAgentStartedAtMs = 100;
+      fake.piTurnStartedAtMs = 100;
+      fake.piTurnTransientRetryAttempts = 1;
+      fake.recordChatThreadObservabilityEvent = vi.fn();
+      fake.loadPiTurnJournalTail = vi.fn(async () => [userMessage, failed]);
+      fake.appendPiCoreMessagesIfMissing = vi.fn(async () => {});
+      fake.createPiUserStopMessage = vi.fn(() => stopMessage);
+      fake.pushPiRuntimeEvent = vi.fn();
+      fake.pushChatEvent = vi.fn((event: any) => events.push(event));
+      fake.updateActiveAutomationRun = vi.fn();
+      fake.finishTurn = vi.fn();
+      fake.setActiveTurnUserId = vi.fn();
+      fake.completeTodoStateForTurnEnd = vi.fn();
+      fake.resetRunningActivityState = vi.fn();
+      fake.disposePiSession = vi.fn();
+      fake.clearPiActiveTurnAndJournal = vi.fn(async () => {});
+
+      await ChatThreadDO.prototype['finishPiTurnStoppedDuringTransientRetry'].call(fake);
+
+      // The accepted prompt survives; the failed error row does not.
+      expect(fake.appendPiCoreMessagesIfMissing).toHaveBeenCalledWith([
+        userMessage,
+        stopMessage,
+      ]);
+      expect(fake.pushPiRuntimeEvent).toHaveBeenCalledWith(
+        'turn/completed',
+        expect.objectContaining({ threadId: 'thread1' }),
+      );
+      expect(events).toContainEqual(
+        expect.objectContaining({ type: 'result', result: 'Stopped by user' }),
+      );
+      expect(fake.finishTurn).toHaveBeenCalledWith(
+        expect.objectContaining({ markUnread: true }),
+      );
+      expect(fake.setActiveTurnUserId).toHaveBeenCalledWith(null);
+      expect(fake.clearPiActiveTurnAndJournal).toHaveBeenCalled();
+      expect(fake.piUserStopRequestedAtMs).toBe(0);
+    });
+
+    it('prunes only failed assistant rows from the turn journal', () => {
+      const fake = Object.create(ChatThreadDO.prototype) as any;
+      const deletes: any[] = [];
+      const journalRows = [
+        { seq: 0, payload: JSON.stringify({ role: 'user', content: 'hi' }) },
+        {
+          seq: 1,
+          payload: JSON.stringify({
+            role: 'toolResult',
+            toolCallId: 'c1',
+            content: [{ type: 'text', text: 'r' }],
+          }),
+        },
+        { seq: 2, payload: JSON.stringify(failedAssistantMessage()) },
+      ];
+      fake.ctx = {
+        storage: {
+          sql: {
+            exec: vi.fn((query: string, ...args: any[]) => {
+              if (query.startsWith('SELECT')) return { toArray: () => journalRows };
+              if (query.startsWith('DELETE FROM pi_turn_journal WHERE')) deletes.push(args);
+              return { toArray: () => [] };
+            }),
+          },
+        },
+      };
+
+      ChatThreadDO.prototype['prunePiTurnJournalFailedAssistantMessages'].call(fake);
+
+      expect(deletes).toEqual([[2]]);
+    });
+
+    it('trims the failed attempt\'s incomplete trailing parts from the in-flight reply message', () => {
+      const fake = Object.create(ChatThreadDO.prototype) as any;
+      fake.chatContext = { threadId: 'thread1' };
+      fake.recordChatThreadObservabilityEvent = vi.fn();
+      const parts = [
+        { type: 'text', text: 'settled run', state: 'done' },
+        { type: 'tool-bash', toolCallId: 'c1', state: 'output-available' },
+        { type: 'text', text: 'half a sen', state: 'streaming' },
+      ];
+      fake._streamingMessage = { parts };
+
+      ChatThreadDO.prototype['trimIncompleteStreamingReplyParts'].call(fake);
+
+      expect(parts).toEqual([
+        { type: 'text', text: 'settled run', state: 'done' },
+        { type: 'tool-bash', toolCallId: 'c1', state: 'output-available' },
+      ]);
+      expect(fake.recordChatThreadObservabilityEvent).toHaveBeenCalledWith(
+        'pi_turn_partial_trimmed',
+        expect.objectContaining({ count: 1 }),
+      );
+    });
+
+    it('trim is a no-op when ai-chat has no in-flight reply message', () => {
+      const fake = Object.create(ChatThreadDO.prototype) as any;
+      fake.recordChatThreadObservabilityEvent = vi.fn();
+      fake._streamingMessage = null;
+
+      ChatThreadDO.prototype['trimIncompleteStreamingReplyParts'].call(fake);
+
+      expect(fake.recordChatThreadObservabilityEvent).not.toHaveBeenCalled();
+    });
+
+    it('resumeActivePiTurn is safe warm: dispose mid-turn, rebuild, and continue in-process', async () => {
+      // The retry re-drives on a WARM isolate (unlike eviction recovery's cold
+      // wake): disposePiSession must fully reset the live session so
+      // ensurePiSessionReady rebuilds from committed history + journal and
+      // continue() regenerates.
+      const fake = Object.create(ChatThreadDO.prototype) as any;
+      const oldSession = { abort: vi.fn(), state: { messages: [] } };
+      fake.piSession = oldSession;
+      fake.piUnsubscribe = null;
+      fake.piModelResolver = null;
+      fake.piSessionPromise = null;
+      fake.piMainBaselineIndex = 3;
+      fake.piEventHandlerChain = Promise.resolve();
+      fake.piActiveItemId = 'stale';
+      fake.piAssistantText = 'stale';
+      const newSession = {
+        state: {
+          isStreaming: false,
+          messages: [{ role: 'user', content: 'do the thing' }],
+        },
+        continue: vi.fn(async () => {}),
+      };
+      fake.ensurePiSessionReady = vi.fn(async () => {
+        fake.piSession = newSession;
+      });
+      fake.recordChatThreadObservabilityEvent = vi.fn();
+      fake.trimIncompleteLiveAssistantParts = vi.fn(async () => {});
+      fake.clearPiActiveTurnAndJournal = vi.fn(async () => {});
+
+      ChatThreadDO.prototype['disposePiSession'].call(fake);
+
+      expect(oldSession.abort).toHaveBeenCalled();
+      expect(fake.piSession).toBeNull();
+      expect(fake.piMainBaselineIndex).toBe(0);
+
+      await ChatThreadDO.prototype['resumeActivePiTurn'].call(fake);
+
+      expect(fake.ensurePiSessionReady).toHaveBeenCalled();
+      expect(newSession.continue).toHaveBeenCalled();
+      // The continuation's own agent_end owns the terminal clear.
+      expect(fake.clearPiActiveTurnAndJournal).not.toHaveBeenCalled();
+    });
+  });
+
   describe('steer-message journaling', () => {
     it('round-trips steer messages through sync KV and clears them', async () => {
       const store = new Map<string, unknown>();
