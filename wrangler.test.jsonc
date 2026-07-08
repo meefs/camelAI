@@ -5,6 +5,9 @@
 	"compatibility_date": "2025-12-01",
 	"compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
 	"rules": [{ "type": "Text", "globs": ["**/*.md"], "fallthrough": true }],
+	// Notebook deploys read the pre-built renderer SPA (public/notebook-renderer/,
+	// bun run build:renderer) through ASSETS; run-agent-eval.mjs ensures it's built.
+	"assets": { "binding": "ASSETS", "directory": "./public" },
 	"worker_loaders": [{ "binding": "CODE_MODE_LOADER" }],
 	"browser": { "binding": "BROWSER" },
 	"containers": [

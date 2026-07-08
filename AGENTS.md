@@ -114,6 +114,13 @@ no other files to edit. `custom-prompt-live` is intentionally not in the manifes
 `CUSTOM_EVAL_*`-driven harness). `run-agent-eval.mjs` runs exactly one eval; `run-eval-suite.sh`
 iterates a comma-separated list or `all`, running each eval in turn.
 
+**Apple Silicon: build the analysis sandbox natively.** Cloudflare publishes `cloudflare/sandbox`
+images for amd64 only; under Rosetta/QEMU the Jupyter kernel never answers its handshake, so
+`run_notebook` (and every notebook eval) fails on arm64 hosts. `scripts/build-analysis-sandbox-image.mjs`
+builds the pinned sandbox base from source for the host arch and layers the analysis image on top;
+`run-agent-eval.mjs` and `run-eval-suite.sh` invoke it automatically (it also rebuilds when the
+cached image arch doesn't match the host).
+
 **Container egress workaround (workerd#6793).** Evals run the agent in a Cloudflare Container via
 `@cloudflare/vitest-pool-workers`/Miniflare. On newer hosts (Linux kernel ~6.17 / Docker 29.x) the
 stock `cloudflare/proxy-everything` egress sidecar's TPROXY rules intercept docker bridge *control*

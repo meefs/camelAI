@@ -15,7 +15,15 @@
 # Tag MUST match the @cloudflare/sandbox npm version (0.12.0). Do NOT set ENTRYPOINT
 # — the base image's entrypoint starts the sandbox HTTP API server; we only add
 # packages and tools on top.
-FROM docker.io/cloudflare/sandbox:0.12.0-python
+#
+# SANDBOX_BASE_IMAGE exists because Cloudflare publishes amd64-only images:
+# on Apple Silicon the amd64 image runs under Rosetta/QEMU, where the Jupyter
+# kernel never answers its handshake, so run_notebook always fails locally.
+# scripts/build-analysis-sandbox-image.mjs builds the same base from the
+# sandbox-sdk source for arm64 and passes it here; production always uses the
+# default.
+ARG SANDBOX_BASE_IMAGE=docker.io/cloudflare/sandbox:0.12.0-python
+FROM ${SANDBOX_BASE_IMAGE}
 
 # --- CLI tools the data-analysis skill documents -----------------------------
 # sqlite3 for local DBs; usql as the universal SQL CLI (static binary).

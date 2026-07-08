@@ -102,8 +102,11 @@ if [ -f workers/main/eval-sandbox.Dockerfile ]; then
 fi
 
 if [ -f workers/main/analysis-sandbox.Dockerfile ]; then
-  echo "[$(date -Is)] Building camelai-analysis-sandbox:latest (analysis stack)"
-  docker build -t camelai-analysis-sandbox:latest -f workers/main/analysis-sandbox.Dockerfile workers/main || fail analysis-docker-build $?
+  echo "[$(date -Is)] Building camelai-analysis-sandbox:latest (analysis stack, native arch)"
+  # Builds natively for the host arch; on arm64 hosts it first builds the
+  # amd64-only cloudflare/sandbox base from source (Rosetta/QEMU breaks the
+  # Jupyter kernel handshake, so an emulated image fails every run_notebook).
+  node scripts/build-analysis-sandbox-image.mjs || fail analysis-docker-build $?
 fi
 
 # Patched Cloudflare Containers egress interceptor (workerd#6793 workaround): the stock

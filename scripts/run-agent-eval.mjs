@@ -36,28 +36,35 @@ const ANALYSIS_SANDBOX_DOCKERFILE = "workers/main/analysis-sandbox.Dockerfile";
 const ANALYSIS_EVAL_IDS = new Set([
   "data-analysis-report-live",
   "notebook-fix-rerun-live",
+  "notebook-deploy-live",
 ]);
+
+// Evals that publish a notebook as a static app need the pre-built renderer SPA
+// in public/notebook-renderer/ (served to the worker via the test ASSETS binding).
+const NOTEBOOK_RENDERER_EVAL_IDS = new Set(["notebook-deploy-live"]);
+
+function ensureNotebookRendererAssets(evalId) {
+  if (!NOTEBOOK_RENDERER_EVAL_IDS.has(evalId)) return;
+  if (existsSync("public/notebook-renderer/manifest.json")) return;
+  console.log("Building notebook renderer assets for", evalId);
+  const build = spawnSync("bun", ["run", "build:renderer"], { stdio: "inherit" });
+  if (build.status !== 0) {
+    console.error("Failed to build notebook renderer assets (bun run build:renderer).");
+    process.exit(build.status ?? 1);
+  }
+}
 
 function ensureAnalysisSandboxImage(evalId) {
   if (!ANALYSIS_EVAL_IDS.has(evalId)) return;
   if (!existsSync(ANALYSIS_SANDBOX_DOCKERFILE)) return;
-  const probe = spawnSync("docker", ["image", "inspect", ANALYSIS_SANDBOX_IMAGE], {
-    stdio: "ignore",
+  // Delegated: the script is a fast no-op when the image already exists with
+  // the host's architecture, and otherwise builds it natively (on arm64 hosts
+  // it first builds the amd64-only cloudflare/sandbox base from source —
+  // under Rosetta/QEMU the Jupyter kernel never answers its handshake, so an
+  // emulated image breaks every run_notebook call).
+  const build = spawnSync("node", ["scripts/build-analysis-sandbox-image.mjs"], {
+    stdio: "inherit",
   });
-  if (probe.status === 0) return;
-  console.log(`Building ${ANALYSIS_SANDBOX_IMAGE} for ${evalId}`);
-  const build = spawnSync(
-    "docker",
-    [
-      "build",
-      "-t",
-      ANALYSIS_SANDBOX_IMAGE,
-      "-f",
-      ANALYSIS_SANDBOX_DOCKERFILE,
-      "workers/main",
-    ],
-    { stdio: "inherit" },
-  );
   if (build.status !== 0) {
     console.error(`Failed to build ${ANALYSIS_SANDBOX_IMAGE}.`);
     process.exit(build.status ?? 1);
@@ -266,6 +273,7 @@ const evalEnv = withLoadedEvalEnv({
 });
 
 ensureAnalysisSandboxImage(evalName);
+ensureNotebookRendererAssets(evalName);
 
 const artifactDir = path.resolve(evalEnv.EVAL_ARTIFACT_DIR ?? ".eval-artifacts");
 const artifactModelLabel =

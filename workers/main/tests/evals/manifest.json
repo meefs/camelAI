@@ -47,6 +47,11 @@
       "description": "Fix a stale failing data-analysis notebook, rerun it, and preview the refreshed report"
     },
     {
+      "id": "notebook-deploy-live",
+      "description": "Create a data-analysis notebook project, run it, and publish the report as a static app with minimal prompting",
+      "realDeploy": true
+    },
+    {
       "id": "project-snapshot-revert-live",
       "description": "Discover and restore a DO-backed project source snapshot with list_commits/revert_project"
     },
