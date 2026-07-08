@@ -368,6 +368,7 @@ describe('code mode runner tools.help guide', () => {
     expect(guide).toContain('set_preview');
     expect(guide).toContain('env.CONNECTIONS.find');
     expect(guide).toContain('location');
+    expect(guide).toContain('file.data.text');
     expect(guide).toContain('vm.exec');
     expect(guide).toContain('env.AI.run');
     // Executor-style calling shape: envelope semantics and TypeScript acceptance.
@@ -375,7 +376,28 @@ describe('code mode runner tools.help guide', () => {
     expect(guide).toContain('type annotations are stripped');
     expect(result.categories.length).toBeGreaterThan(0);
   });
+
+  it('includes a targeted hint for JSON.parse on a tool result envelope', () => {
+    const formatRuntimeError = loadGeneratedRuntimeErrorFormatter();
+
+    const result = formatRuntimeError(new SyntaxError('"[object Object]" is not valid JSON'));
+
+    expect(result).toContain('"[object Object]" is not valid JSON');
+    expect(result).toContain('JSON.parse received an object');
+    expect(result).toContain('js_exec tools return { ok, data }');
+    expect(result).toContain('parse result.data.text');
+  });
 });
+
+function loadGeneratedRuntimeErrorFormatter(): (error: unknown) => string {
+  const source = codeModeWorkerModule('');
+  const start = source.indexOf('function formatRuntimeError');
+  const end = source.indexOf('\n\nfunction createOutputConsole', start);
+  expect(start).toBeGreaterThanOrEqual(0);
+  expect(end).toBeGreaterThan(start);
+  const slice = source.slice(start, end);
+  return new Function(`${slice}; return formatRuntimeError;`)();
+}
 
 function loadGeneratedToolSearch(): {
   createToolSearch: (allTools: unknown[]) => (input?: unknown) => any;

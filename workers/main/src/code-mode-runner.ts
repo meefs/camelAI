@@ -72,6 +72,23 @@ function stringifyConsoleArg(value) {
   return stringifyOutput(value);
 }
 
+function formatRuntimeError(error) {
+  const message = error && typeof error.message === "string" && error.message
+    ? error.message
+    : String(error);
+  const stack = error && typeof error.stack === "string" && error.stack
+    ? error.stack
+    : "";
+  const hints = [];
+  if (message.includes('"[object Object]" is not valid JSON')) {
+    hints.push(
+      "JSON.parse received an object. js_exec tools return { ok, data }; for tools.read text, check result.ok and parse result.data.text.",
+    );
+  }
+  const formatted = stack || message;
+  return formatted + (hints.length ? "\n\nHint: " + hints.join(" ") : "");
+}
+
 function createOutputConsole(output) {
   const originalConsole = globalThis.console || {};
   const capture = (...args) => {
@@ -419,7 +436,7 @@ const JS_EXEC_GUIDE = Object.freeze([
   "Discovery: await tools.search(\"<intent + key nouns>\") ranks matching tools; await tools.describe(name) returns one definition with a compact inputTypeScript argument shape; await tools.help(\"<category>\") expands a category. Results with kind \"tool\" run as await tools.<name>(args); kind \"runtime\" results are sandbox globals (env.*, connections, text/store/load) used directly, never through tools.",
   "Every top-level harness tool is also on tools, e.g. await tools.create_project(...).",
   "Connections: const entry = await env.CONNECTIONS.find(\"clickhouse\"); return await connections[entry.alias].query({ query: \"SELECT 1 AS ok\" }). Use await env.CONNECTIONS.methods() for the full catalog and await env.CONNECTIONS.test(\"clickhouse\") for a smoke test; custom \"other\" connections expose fetch.",
-  "File tools require an explicit location (\"workspace\" | \"vm\" | \"r2\"), e.g. const file = await tools.read({ location: \"vm\", project: project.name, path: \"/src/App.tsx\" }); then use file.data. R2 mounts are uploads/ (read-only), outputs/ (user-visible), tmp/. tools.grep, tools.find, and tools.move are also available.",
+  "File tools require an explicit location (\"workspace\" | \"vm\" | \"r2\"), e.g. const file = await tools.read({ location: \"vm\", project: project.name, path: \"/src/App.tsx\" }); if (!file.ok) throw new Error(file.error.message); then use file.data.text for text file contents. R2 mounts are uploads/ (read-only), outputs/ (user-visible), tmp/. tools.grep, tools.find, and tools.move are also available.",
   "Project VMs: use env.PROJECTS to list/create/clone projects and vm.exec({ command, project, timeoutSeconds }); the active checkout is /workspace (don't prepend cd /workspace), pass cwd only for subdirectories, and don't use /home/claude. Run independent commands concurrently with Promise.all.",
   "Deploy verification: after you deploy an app or make changes to it, ALWAYS call set_preview with the newly deployed app and verify by calling list_apps before reporting done.",
   "Hosted helpers: env.AI.run(\"auto\", { messages }) with tiers cheap/fast/auto/smart or any OpenRouter id, env.CAMELAI.generateImage/transcribeAudio, env.WORKSPACE.info(); web access via tools.WebSearch/tools.WebFetch. Global fetch() auto-authenticates to this workspace's deployed apps.",
@@ -1084,6 +1101,10 @@ export class CodeModeRunner extends WorkerEntrypoint {
       const result = await runUserCode();
       if (result !== undefined) output.push(stringifyOutput(result));
       return { text: output.join("\n") };
+    } catch (error) {
+      const formatted = formatRuntimeError(error);
+      const prefix = output.length ? output.join("\n") + "\n\n" : "";
+      throw new Error(prefix + "JavaScript execution failed: " + formatted);
     } finally {
       await browserRuntime.cleanup();
       cleanupSecureFetch();
