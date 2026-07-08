@@ -272,6 +272,8 @@ export interface ResolvedModelCatalogEntry extends ModelCatalogEntry {
   addedAt: number;
 }
 
+const EXPLICIT_OPT_IN_MODELS = new Set<LlmModel>(["fable-5"]);
+
 export function compareModelCatalogEntries(
   a: ModelCatalogEntry,
   b: ModelCatalogEntry,
@@ -299,11 +301,14 @@ export function resolveModelPickerCatalog(args: {
       awsRegion: args.awsRegion,
     }).map((option) => option.value),
   );
+  const platformDefaultModelIds = new Set(
+    [...visibleModelIds].filter((id) => !EXPLICIT_OPT_IN_MODELS.has(id)),
+  );
 
   const sourceModels =
     args.effectiveConfig.use_platform_defaults === false
       ? args.effectiveConfig.models
-      : [...visibleModelIds].map((id) => ({ id, added_at: Date.now() }));
+      : [...platformDefaultModelIds].map((id) => ({ id, added_at: Date.now() }));
 
   const entries = sourceModels
     .filter((model) => visibleModelIds.has(model.id))

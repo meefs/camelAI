@@ -283,7 +283,6 @@ describe('MODEL_CATALOG', () => {
 
     expect(visible.map((entry) => entry.id)).toEqual([
       'opus-4.8',
-      'fable-5',
       'sonnet',
       'haiku',
       'gpt-5.5',
@@ -297,6 +296,30 @@ describe('MODEL_CATALOG', () => {
       'grok-4.3',
       'glm-5.2',
     ]);
+  });
+
+  it('keeps Fable out of platform defaults unless explicitly added', () => {
+    const platformDefaults = resolveModelPickerCatalog({
+      effectiveConfig: {
+        source: 'org',
+        use_platform_defaults: true,
+        default_model: null,
+        models: [],
+      },
+      orgProvider: null,
+    });
+    expect(platformDefaults.map((entry) => entry.id)).not.toContain('fable-5');
+
+    const explicitOverride = resolveModelPickerCatalog({
+      effectiveConfig: {
+        source: 'org',
+        use_platform_defaults: false,
+        default_model: null,
+        models: [{ id: 'fable-5', added_at: 1 }],
+      },
+      orgProvider: null,
+    });
+    expect(explicitOverride.map((entry) => entry.id)).toEqual(['fable-5']);
   });
 
   it('keeps DeepSeek V4 Auto in hosted camelAI platform models', () => {
