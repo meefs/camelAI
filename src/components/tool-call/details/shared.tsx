@@ -82,6 +82,7 @@ interface DetailRowProps {
   value?: React.ReactNode;
   copyValue?: string;
   copyFileTarget?: CopyFilePathTarget;
+  copyLabel?: string;
   mono?: boolean;
   className?: string;
   tooltipThreshold?: number;
@@ -95,6 +96,7 @@ export function DetailRow({
   value,
   copyValue,
   copyFileTarget,
+  copyLabel,
   mono = false,
   className,
   tooltipThreshold = 48,
@@ -162,9 +164,32 @@ export function DetailRow({
       <span className="shrink-0 text-muted-foreground/60">{label}</span>
       <div className="min-w-0 flex-1">{renderValue}</div>
       {formattedCopyValue ? (
-        <CopyButton value={formattedCopyValue} hoverClassName="group-hover/details:opacity-100" />
+        <CopyButton
+          value={formattedCopyValue}
+          label={copyLabel}
+          hoverClassName="group-hover/details:opacity-100"
+        />
       ) : null}
     </div>
+  );
+}
+
+export function getToolInputProject(input?: Record<string, unknown>): string {
+  if (!input) return '';
+  return typeof input.project === 'string' ? input.project.trim() : '';
+}
+
+export function ProjectDetailRow({ input }: { input?: Record<string, unknown> }) {
+  const project = getToolInputProject(input);
+  if (!project) return null;
+  return (
+    <DetailRow
+      label="Project:"
+      value={project}
+      copyValue={project}
+      copyLabel="Copy project name"
+      mono
+    />
   );
 }
 

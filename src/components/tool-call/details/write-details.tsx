@@ -2,7 +2,7 @@
 
 import type { ToolUseBlock } from '@/types';
 import { buildFilePreviewLinkTarget } from '@/lib/file-preview-target';
-import { DetailRow, OutputBlock } from './shared';
+import { DetailRow, OutputBlock, ProjectDetailRow } from './shared';
 import { copyTargetFromToolInput } from './file-copy';
 import { formatBytes, getPreviewLines, safeJsonStringify } from '../tool-utils';
 
@@ -38,6 +38,7 @@ export function WriteDetails({ tool }: WriteDetailsProps) {
         asFileLink
         filePreview={filePreview}
       />
+      <ProjectDetailRow input={input} />
       {size ? <DetailRow label="Size:" value={size} /> : null}
       <OutputBlock value={preview} label="Preview" copyValue={content} />
     </div>

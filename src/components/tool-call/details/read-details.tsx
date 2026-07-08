@@ -2,7 +2,7 @@
 
 import type { ToolResultBlock, ToolUseBlock } from '@/types';
 import { buildFilePreviewLinkTarget } from '@/lib/file-preview-target';
-import { DetailRow, OutputBlock } from './shared';
+import { DetailRow, OutputBlock, ProjectDetailRow } from './shared';
 import { copyTargetFromToolInput } from './file-copy';
 import { getPreviewLines, getResultText } from '../tool-utils';
 
@@ -38,6 +38,7 @@ export function ReadDetails({ tool, result }: ReadDetailsProps) {
         asFileLink
         filePreview={filePreview}
       />
+      <ProjectDetailRow input={input} />
       <DetailRow label="Lines:" value={lineCount ? String(lineCount) : '0'} />
       <OutputBlock value={preview} label="Preview" copyValue={resultText} />
     </div>

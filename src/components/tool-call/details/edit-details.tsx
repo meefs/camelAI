@@ -3,7 +3,7 @@
 import type { ToolUseBlock } from '@/types';
 import { cn } from '@/lib/utils';
 import { buildFilePreviewLinkTarget } from '@/lib/file-preview-target';
-import { DetailRow } from './shared';
+import { DetailRow, ProjectDetailRow } from './shared';
 import { copyTargetFromToolInput } from './file-copy';
 
 interface EditDetailsProps {
@@ -74,6 +74,7 @@ export function EditDetails({ tool }: EditDetailsProps) {
         asFileLink
         filePreview={filePreview}
       />
+      <ProjectDetailRow input={input} />
       <DetailRow label="Changes:" value={replacementCount ? `${replacementCount} replacements` : '0'} />
       {diffLines.length > 0 ? (
         <div className="mt-2 font-mono text-xs bg-muted/30 rounded p-2 max-h-32 overflow-auto">

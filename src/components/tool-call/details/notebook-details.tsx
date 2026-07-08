@@ -2,7 +2,7 @@
 
 import type { ToolUseBlock } from '@/types';
 import { buildFilePreviewLinkTarget } from '@/lib/file-preview-target';
-import { DetailRow, OutputBlock } from './shared';
+import { DetailRow, OutputBlock, ProjectDetailRow } from './shared';
 import { copyTargetFromToolInput } from './file-copy';
 import { getPreviewLines, safeJsonStringify } from '../tool-utils';
 
@@ -39,6 +39,7 @@ export function NotebookDetails({ tool }: NotebookDetailsProps) {
         asFileLink
         filePreview={filePreview}
       />
+      <ProjectDetailRow input={input} />
       {cellId ? <DetailRow label="Cell:" value={cellId} copyValue={cellId} mono /> : null}
       <OutputBlock value={preview} label="Content" copyValue={contentValue} />
     </div>

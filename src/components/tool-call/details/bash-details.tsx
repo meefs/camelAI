@@ -1,7 +1,7 @@
 "use client";
 
 import type { ToolResultBlock, ToolUseBlock } from '@/types';
-import { DetailRow, OutputBlock } from './shared';
+import { DetailRow, OutputBlock, ProjectDetailRow } from './shared';
 import { getResultText } from '../tool-utils';
 
 interface BashDetailsProps {
@@ -45,6 +45,7 @@ export function BashDetails({ tool, result }: BashDetailsProps) {
   return (
     <div className="space-y-1">
       <DetailRow label="Command:" value={command} copyValue={command} mono />
+      <ProjectDetailRow input={input} />
       {description ? <DetailRow label="Description:" value={description} /> : null}
       {exitCode !== undefined ? <DetailRow label="Exit code:" value={String(exitCode)} /> : null}
       {parsed.stdout ? (

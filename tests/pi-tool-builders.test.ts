@@ -132,12 +132,18 @@ describe('buildToolUseFromPiItem name canonicalization + input', () => {
       id: 'tool-bash',
       type: 'commandExecution',
       command: 'pwd',
+      project: 'menu-app',
       description: 'Check workspace directory',
       status: 'running',
     };
     expect(buildToolUseFromPiItem(item)).toMatchObject({
       name: 'Bash',
-      input: { command: 'pwd', description: 'Check workspace directory', status: 'running' },
+      input: {
+        command: 'pwd',
+        project: 'menu-app',
+        description: 'Check workspace directory',
+        status: 'running',
+      },
     });
   });
 });

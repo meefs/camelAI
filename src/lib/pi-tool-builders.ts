@@ -383,6 +383,7 @@ export function buildToolUseFromPiItem(item: PiThreadItem): {
         name: 'Bash',
         input: omitUndefined({
           command: item.command,
+          project: item.project,
           description: item.description,
           cwd: item.cwd,
           source: item.source,

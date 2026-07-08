@@ -4,7 +4,7 @@ import type { ToolResultBlock, ToolUseBlock } from '@/types';
 import { useChatPreviewContext } from '@/components/chat-preview/preview-context';
 import { formatCopyFilePath } from '@/lib/file-path-copy';
 import { buildFilePreviewLinkTarget } from '@/lib/file-preview-target';
-import { CopyButton, DetailRow, OutputBlock } from './shared';
+import { CopyButton, DetailRow, OutputBlock, ProjectDetailRow } from './shared';
 import { copyTargetFromToolInput } from './file-copy';
 import { getResultText } from '../tool-utils';
 import { FileLink } from '../file-link';
@@ -237,6 +237,7 @@ export function SearchDetails({ tool, result, mode }: SearchDetailsProps) {
         mono
         asFileLink
       />
+      <ProjectDetailRow input={input} />
       {outputMode ? <DetailRow label="Mode:" value={outputMode} /> : null}
       {count !== null ? <DetailRow label="Count:" value={String(count)} /> : null}
       {parsedLines.length > 0 ? (

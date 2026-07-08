@@ -8195,6 +8195,9 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
         command: typeof normalizedArgs.command === "string" ? normalizedArgs.command : "",
         cwd: normalizedArgs.cwd,
         status,
+        ...(typeof normalizedArgs.project === "string" && normalizedArgs.project
+          ? { project: normalizedArgs.project }
+          : {}),
         ...(typeof normalizedArgs.description === "string" && normalizedArgs.description
           ? { description: normalizedArgs.description }
           : {}),
