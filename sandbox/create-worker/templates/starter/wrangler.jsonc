@@ -23,17 +23,18 @@
 	 * 4. Add migration (increment tag, add new_sqlite_classes for SQLite DOs)
 	 * 5. Run `bun wrangler types` to update Env types
 	 */
-	// Uncomment to enable Durable Objects:
-	// "durable_objects": {
-	// 	"bindings": [
-	// 		{ "name": "EXAMPLE_DO", "class_name": "ExampleDO" }
-	// 		// { "name": "Chat", "class_name": "Chat" }
-	// 		// { "name": "CHAT_SESSIONS", "class_name": "ChatSessionsDO" }
-	// 	]
-	// },
-	// "migrations": [
-	// 	{ "tag": "v1", "new_sqlite_classes": ["ExampleDO", "ChatSessionsDO", "Chat"] }
-	// ],
+	"durable_objects": {
+		"bindings": [
+			{ "name": "EXAMPLE_DO", "class_name": "ExampleDO" },
+			// Uncomment to enable AI chat:
+			// { "name": "Chat", "class_name": "Chat" },
+			// { "name": "CHAT_SESSIONS", "class_name": "ChatSessionsDO" }
+		]
+	},
+	"migrations": [
+		{ "tag": "v1", "new_sqlite_classes": ["ExampleDO"] }
+		// When enabling AI chat, add a new migration for ChatSessionsDO and Chat.
+	],
 
 	/**
 	 * R2 Object Storage

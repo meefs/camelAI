@@ -39,7 +39,7 @@ export async function action({ request, context }: Route.ActionArgs) {
     });
 
     if (!result.success) {
-      return { error: result.error.errors[0].message };
+      return { error: result.error.issues[0].message };
     }
 
     await stub.createContact(result.data);

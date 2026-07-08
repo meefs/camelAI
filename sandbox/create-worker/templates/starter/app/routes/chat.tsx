@@ -4,13 +4,13 @@ import {
   redirect,
   useNavigate,
   useFetcher,
+  type AppLoadContext,
 } from "react-router";
 import { useAgent } from "agents/react";
 import { useAgentChat } from "@cloudflare/ai-chat/react";
 import type { UIMessage } from "@ai-sdk/react";
 import { MarkdownRenderer } from "~/components/markdown-renderer";
-import type { Route } from "./+types/chat";
-import type { ChatSessionRow } from "../../workers/chat-sessions";
+import type { ChatSessionsDO, ChatSessionRow } from "../../workers/chat-sessions";
 
 /**
  * Chat route using Cloudflare Agents SDK.
@@ -53,11 +53,15 @@ import type { ChatSessionRow } from "../../workers/chat-sessions";
 
 // --- Helpers ---
 
-function getSessionsStub(context: Route.LoaderArgs["context"]) {
+type ChatAppLoadContext = AppLoadContext & {
+  cloudflare: AppLoadContext["cloudflare"] & { ownerId: string };
+};
+
+function getSessionsStub(context: ChatAppLoadContext): DurableObjectStub<ChatSessionsDO> {
   const { env, ownerId } = context.cloudflare;
   // Cast: CHAT_SESSIONS binding is commented out by default in wrangler.jsonc;
   // it's only present when the AI chat feature is enabled (see CLAUDE.md).
-  const binding = (env as any).CHAT_SESSIONS as DurableObjectNamespace;
+  const binding = (env as unknown as { CHAT_SESSIONS: DurableObjectNamespace<ChatSessionsDO> }).CHAT_SESSIONS;
   const doId = binding.idFromName(ownerId);
   return binding.get(doId);
 }
@@ -71,7 +75,7 @@ function getSessionsStub(context: Route.LoaderArgs["context"]) {
  * This prevents an attacker from "adopting" another owner's session ID
  * into their index and then deleting it to wipe the Chat DO.
  */
-export async function loader({ request, context }: Route.LoaderArgs) {
+export async function loader({ request, context }: { request: Request; context: ChatAppLoadContext }) {
   const url = new URL(request.url);
   const sessionId = url.searchParams.get("session");
   const stub = getSessionsStub(context);
@@ -102,7 +106,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
  * Handles session mutations: delete and update-title.
  * Uses React Router `<Form>` / `useFetcher` for server-driven mutations.
  */
-export async function action({ request, context }: Route.ActionArgs) {
+export async function action({ request, context }: { request: Request; context: ChatAppLoadContext }) {
   const formData = await request.formData();
   const intent = formData.get("intent");
   const stub = getSessionsStub(context);

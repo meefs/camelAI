@@ -131,9 +131,10 @@ export class LocalConnectionsService extends WorkerEntrypoint<LocalConnectionsEn
 		return callConnectionsRpc<ConnectionMethodCatalogEntry>(this.env, "find", { query });
 	}
 
-	async test(query: ConnectionFindQuery): Promise<unknown> {
-		return callConnectionsRpc<unknown>(this.env, "test", { query });
-	}
+	test: WorkerEntrypoint<LocalConnectionsEnv>["test"] & ((query: ConnectionFindQuery) => Promise<unknown>) = ((
+		query: ConnectionFindQuery,
+	) => callConnectionsRpc<unknown>(this.env, "test", { query })) as WorkerEntrypoint<LocalConnectionsEnv>["test"] &
+		((query: ConnectionFindQuery) => Promise<unknown>);
 
 	async invoke<T = unknown>(invoke: ConnectionInvokeRequest): Promise<T> {
 		return callConnectionsRpc<T>(this.env, "invoke", invoke as unknown as Record<string, unknown>);

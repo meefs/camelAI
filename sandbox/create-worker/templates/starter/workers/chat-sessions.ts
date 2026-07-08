@@ -76,6 +76,7 @@ export class ChatSessionsDO extends DurableObject<Env> {
   /** Delete a session from the index. Returns true if a row was actually removed. */
   async deleteSession(id: string): Promise<boolean> {
     this.sql.exec("DELETE FROM sessions WHERE id = ?", id);
-    return this.sql.exec("SELECT changes() AS c").one<{ c: number }>().c > 0;
+    const row = this.sql.exec<{ c: number }>("SELECT changes() AS c").one();
+    return row.c > 0;
   }
 }
