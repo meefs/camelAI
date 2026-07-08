@@ -957,7 +957,7 @@ function MessageBubbleBase({
                 </Button>
               </TooltipTrigger>
               <TooltipContent side="bottom">
-                {isForking ? 'Forking...' : 'Fork from here'}
+                {isForking ? 'Starting new thread...' : 'New thread from here'}
               </TooltipContent>
             </Tooltip>
           )}

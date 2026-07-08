@@ -4,7 +4,7 @@ import { ChatThreadDO } from "../src/chat-thread-do";
 
 function createStateSyncFake(): any {
   const fake = Object.create(ChatThreadDO.prototype) as any;
-  fake.hydrateLiveStateFromAgentState = vi.fn();
+  fake.hydrateDurableStateOnce = vi.fn();
   fake.agentState = vi.fn(() => ({ ready: true }));
   fake.setState = vi.fn();
   return fake;
@@ -16,7 +16,7 @@ describe("ChatThreadDO agent state sync", () => {
 
     ChatThreadDO.prototype["syncAgentState"].call(fake);
 
-    expect(fake.hydrateLiveStateFromAgentState).toHaveBeenCalledTimes(1);
+    expect(fake.hydrateDurableStateOnce).toHaveBeenCalledTimes(1);
     expect(fake.setState).toHaveBeenCalledWith({ ready: true });
   });
 
@@ -30,7 +30,7 @@ describe("ChatThreadDO agent state sync", () => {
       "PartyServer name unavailable",
     );
 
-    expect(fake.hydrateLiveStateFromAgentState).toHaveBeenCalledTimes(1);
+    expect(fake.hydrateDurableStateOnce).toHaveBeenCalledTimes(1);
   });
 
   it("syncs initial state from onStart instead of the constructor", async () => {

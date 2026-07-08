@@ -1,0 +1,241 @@
+{
+  "text only": [
+    {
+      "id": "turn-stable",
+      "thread_id": "thread-1",
+      "role": "assistant",
+      "content": [
+        {
+          "type": "text",
+          "text": "Hello world"
+        }
+      ],
+      "created_at": 1,
+      "forkEntryId": "fork-text",
+      "completedAtMs": 1
+    }
+  ],
+  "completed agentMessage without deltas": [
+    {
+      "id": "turn-stable",
+      "thread_id": "thread-1",
+      "role": "assistant",
+      "content": [
+        {
+          "type": "text",
+          "text": "One-shot answer"
+        }
+      ],
+      "created_at": 0,
+      "forkEntryId": "fork-oneshot"
+    }
+  ],
+  "reasoning then text": [
+    {
+      "id": "turn-stable",
+      "thread_id": "thread-1",
+      "role": "assistant",
+      "content": [
+        {
+          "type": "thinking",
+          "thinking": "Let me think.",
+          "itemKind": "reasoning",
+          "label": "Thinking",
+          "summaries": [],
+          "itemId": "r1"
+        },
+        {
+          "type": "text",
+          "text": "The answer."
+        }
+      ],
+      "created_at": 0,
+      "forkEntryId": "fork-r"
+    }
+  ],
+  "interleaved reasoning/text/reasoning": [
+    {
+      "id": "turn-stable",
+      "thread_id": "thread-1",
+      "role": "assistant",
+      "content": [
+        {
+          "type": "thinking",
+          "thinking": "First thought.",
+          "itemKind": "reasoning",
+          "label": "Thinking",
+          "summaries": [],
+          "itemId": "r1"
+        },
+        {
+          "type": "text",
+          "text": "Interim answer"
+        },
+        {
+          "type": "thinking",
+          "thinking": "Second thought.",
+          "itemKind": "reasoning",
+          "label": "Thinking",
+          "summaries": [],
+          "itemId": "r2"
+        }
+      ],
+      "created_at": 0
+    }
+  ],
+  "command execution with output delta": [
+    {
+      "id": "turn-stable",
+      "thread_id": "thread-1",
+      "role": "assistant",
+      "content": [
+        {
+          "type": "tool_use",
+          "id": "t1",
+          "name": "Bash",
+          "input": {
+            "command": "ls",
+            "status": "completed"
+          },
+          "itemKind": "commandExecution"
+        },
+        {
+          "type": "tool_result",
+          "tool_use_id": "t1",
+          "content": "file1\n\n[status: completed]",
+          "status": "succeeded",
+          "itemId": "t1",
+          "itemKind": "commandExecution"
+        }
+      ],
+      "created_at": 0,
+      "forkEntryId": "fork-cmd"
+    }
+  ],
+  "failed command execution": [
+    {
+      "id": "turn-stable",
+      "thread_id": "thread-1",
+      "role": "assistant",
+      "content": [
+        {
+          "type": "tool_use",
+          "id": "t1",
+          "name": "Bash",
+          "input": {
+            "command": "bad",
+            "status": "failed"
+          },
+          "itemKind": "commandExecution"
+        },
+        {
+          "type": "tool_result",
+          "tool_use_id": "t1",
+          "content": "boom\n\n[exit code: 1, status: failed]",
+          "is_error": true,
+          "status": "failed",
+          "itemId": "t1",
+          "itemKind": "commandExecution"
+        }
+      ],
+      "created_at": 0
+    }
+  ],
+  "dynamic tool call": [
+    {
+      "id": "turn-stable",
+      "thread_id": "thread-1",
+      "role": "assistant",
+      "content": [
+        {
+          "type": "tool_use",
+          "id": "t2",
+          "name": "WebSearch",
+          "input": {
+            "query": "x",
+            "arguments": {
+              "query": "x"
+            },
+            "status": "completed",
+            "rawToolName": "web_search"
+          },
+          "itemKind": "dynamicToolCall"
+        },
+        {
+          "type": "tool_result",
+          "tool_use_id": "t2",
+          "content": "result text\n\nstatus: completed",
+          "status": "succeeded",
+          "itemId": "t2",
+          "itemKind": "dynamicToolCall"
+        }
+      ],
+      "created_at": 0
+    }
+  ],
+  "text, tool, text combined": [
+    {
+      "id": "turn-stable",
+      "thread_id": "thread-1",
+      "role": "assistant",
+      "content": [
+        {
+          "type": "thinking",
+          "thinking": "think",
+          "itemKind": "reasoning",
+          "label": "Thinking",
+          "summaries": [],
+          "itemId": "r1"
+        },
+        {
+          "type": "text",
+          "text": "Answer part 1"
+        },
+        {
+          "type": "tool_use",
+          "id": "t1",
+          "name": "Bash",
+          "input": {
+            "command": "ls",
+            "status": "completed"
+          },
+          "itemKind": "commandExecution"
+        },
+        {
+          "type": "tool_result",
+          "tool_use_id": "t1",
+          "content": "out\n\n[status: completed]",
+          "status": "succeeded",
+          "itemId": "t1",
+          "itemKind": "commandExecution"
+        },
+        {
+          "type": "text",
+          "text": "Answer part 2"
+        }
+      ],
+      "created_at": 0,
+      "forkEntryId": "fork-combined"
+    }
+  ],
+  "user stop": [
+    {
+      "id": "turn-stable",
+      "thread_id": "thread-1",
+      "role": "assistant",
+      "content": [
+        {
+          "type": "text",
+          "text": "Partial "
+        },
+        {
+          "type": "text",
+          "text": "Stopped by user",
+          "itemKind": "userStop"
+        }
+      ],
+      "created_at": 0,
+      "forkEntryId": "f1"
+    }
+  ]
+}

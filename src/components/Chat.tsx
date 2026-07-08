@@ -10,6 +10,7 @@ import {
 } from "react";
 import type { CSSProperties } from "react";
 import { useAgent } from "agents/react";
+import type { UIMessage } from "ai";
 import {
   useNavigate,
   useFetcher,
@@ -43,7 +44,12 @@ import type {
   ChatGroupAvatarStatus,
 } from "@/types";
 import { useAuthData } from "@/hooks/use-auth-data";
+import {
+  useBillingCreditStatus,
+  type BillingCreditStatusResourceData,
+} from "@/hooks/use-billing-credit-status";
 import { useOptionalChatGroups } from "@/hooks/use-chat-groups";
+import { useCompletedTurns } from "@/hooks/use-completed-turns";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { APP_BUILD_ID } from "@/lib/app-build-id";
 import {
@@ -104,19 +110,23 @@ import { cn } from "@/lib/utils";
 import { buildSlugMap, type MentionableProject } from "@/lib/mentions";
 import { isFileDrag } from "@/lib/file-drag";
 import {
+  createTranscriptNormalizationCaches,
   mergeTaskNotifications,
   normalizeToolResultMessages,
   mergeTeammateMessages,
 } from "@/lib/streaming";
+import {
+  uiMessageToMessage,
+  uiMessagesEquivalent,
+} from "@/lib/ui-message-adapter";
 import { parseMessageContent } from "@/lib/chat-message-content";
 import {
   deriveIsAwaitingAssistant,
   isAssistantLikeMessage,
 } from "@/lib/chat-working-indicator";
-import {
-  findStaleLoaderPayloadId,
-  mergeOverlay,
-} from "@/lib/runtime-message-state";
+import { mergeOverlay } from "@/lib/runtime-message-state";
+import type { ChatAgentStatePayload } from "@/lib/chat-agent-state";
+import { usePiChatStream } from "@/lib/use-pi-chat-stream";
 import {
   type AppUrlInput,
   getAppUrl,
@@ -178,34 +188,17 @@ import { condensedTranscriptToMarkdown } from "@/lib/condensed-transcript";
 export { ChatErrorNotice } from "@/components/chat-error-notice";
 export { BillingCreditNotice } from "@/components/chat-billing-credit-notice";
 
-type ChatAgentState = {
-  isStreaming?: boolean;
-  previewTabs?: PreviewTarget[];
-  previewActiveTabId?: string | null;
-  previewVersion?: number;
-  previewRefreshTabId?: string | null;
-  currentTodos?: unknown[];
-  contextUsedPercent?: number | null;
-  pendingQuestion?: AskUserQuestionData | null;
-  connectionSetupPrompt?: ConnectionSetupPromptData | null;
-  title?: string | null;
-  titleUpdatedAt?: number | null;
-  model?: LlmModel | null;
-  modelUpdatedAt?: number | null;
-  lastCompletedTurn?: {
-    id: string;
-    durationMs: number;
-    completedAtMs: number;
-  } | null;
-  lastError?: {
-    id: string;
-    error: string;
-    billingSource: string | null;
-    provider: string | null;
-    status: number | string | null;
-    errorType: string | null;
-  } | null;
-};
+// Agent-state payload from ChatThreadDO. Structure is the shared source of truth;
+// the client fills the generic sub-types with its own component types and treats
+// every field as optional (a partial state update may omit any of them).
+type ChatAgentState = Partial<
+  ChatAgentStatePayload<
+    PreviewTarget,
+    AskUserQuestionData,
+    ConnectionSetupPromptData,
+    LlmModel
+  >
+>;
 
 type ChatAgentClient = {
   readyState: number;
@@ -226,10 +219,6 @@ function sameJson(left: unknown, right: unknown): boolean {
 // Only animate the "just completed" turn highlight for completions this recent;
 // older completions replayed on load/reconnect still get their duration badge.
 const FRESHLY_COMPLETED_TURN_WINDOW_MS = 10_000;
-// How recent a completed turn must be for a missing message to trigger a
-// history refetch. Generous enough to absorb client/server clock skew, tight
-// enough that historical threads never refetch on open.
-const MISSED_TURN_REFETCH_WINDOW_MS = 5 * 60_000;
 
 function getThreadRunningState(
   groups: readonly ChatGroupView[] | undefined,
@@ -262,7 +251,20 @@ function getThreadRunningState(
 interface ChatProps {
   threadId?: string;
   workspaceId: string;
+  /**
+   * Legacy `Message` transcript. Supplied by the admin read-only loader branch
+   * (pi_core, rendered directly), the pending-first-turn skeleton, and the
+   * client snapshot cache. The live loader branch leaves it empty — its
+   * fallback view is derived from `initialUiMessages`.
+   */
   initialMessages?: Message[];
+  /**
+   * ai-chat-owned durable render history (commit 4). Seeds `useAgentChat`; the
+   * live-user loader branch supplies it and the hook owns the transcript from
+   * there. The admin read-only branch leaves it empty and renders `initialMessages`
+   * (pi_core) directly.
+   */
+  initialUiMessages?: UIMessage[];
   initialTodos?: TodoItem[];
   threadModel?: LlmModel | null;
   llmProvider?: LlmProvider | null;
@@ -297,6 +299,7 @@ interface ChatProps {
   projects?: MentionableProject[] | Promise<MentionableProject[]>;
   onSnapshotChange?: (snapshot: {
     messages: Message[];
+    uiMessages: UIMessage[];
     todos: TodoItem[];
   }) => void;
   welcomeData?: {
@@ -311,31 +314,17 @@ interface ChatProps {
   };
 }
 
-type CompletedTurnMetadata = {
-  durationMs: number;
-  completedAtMs: number;
-};
-
 interface CreditPacksResourceData {
   packs: TopUpDialogPack[];
   canTopUp: boolean;
   unavailableReason?: string | null;
 }
 
-type BillingCreditStatusResourceData =
-  | {
-      ok: true;
-      billingCreditStatus: BillingCreditStatus | null;
-    }
-  | {
-      ok: false;
-      error?: string;
-    };
-
 function isPromiseLike<T>(value: T | Promise<T> | undefined): value is Promise<T> {
   return typeof (value as Promise<T> | undefined)?.then === "function";
 }
 
+const EMPTY_UI_MESSAGES: UIMessage[] = [];
 const EMPTY_WORKER_APPS: WorkerScriptWithCreator[] = [];
 const EMPTY_INTEGRATIONS: Integration[] = [];
 const EMPTY_MENTION_PROJECTS: MentionableProject[] = [];
@@ -452,35 +441,6 @@ function dispatchLocalChatGroupAvatarUpdate(
         updatedAt: Date.now(),
       },
     }),
-  );
-}
-
-function messagesHaveSameContent(left: Message[], right: Message[]): boolean {
-  if (left.length !== right.length) return false;
-  for (let index = 0; index < left.length; index += 1) {
-    const leftMessage = left[index];
-    const rightMessage = right[index];
-    if (
-      leftMessage.id !== rightMessage.id ||
-      leftMessage.role !== rightMessage.role ||
-      leftMessage.created_at !== rightMessage.created_at ||
-      leftMessage.isStreaming !== rightMessage.isStreaming ||
-      leftMessage.isMeta !== rightMessage.isMeta ||
-      leftMessage.sourceToolUseID !== rightMessage.sourceToolUseID ||
-      leftMessage.isCompactSummary !== rightMessage.isCompactSummary ||
-      JSON.stringify(leftMessage.content) !== JSON.stringify(rightMessage.content)
-    ) {
-      return false;
-    }
-  }
-  return true;
-}
-
-function hasUserOrAssistantMessage(messages: Message[]): boolean {
-  return messages.some(
-    (message) =>
-      (message.role === "user" || message.role === "assistant") &&
-      !message.isMeta,
   );
 }
 
@@ -605,6 +565,7 @@ export default function Chat({
   threadId,
   workspaceId,
   initialMessages,
+  initialUiMessages,
   initialTodos = [],
   threadModel,
   llmProvider,
@@ -663,22 +624,27 @@ export default function Chat({
   const isSubmittingNewThread =
     navigation.state !== "idle" &&
     navigation.formData?.get("intent") === "createThreadAndStart";
-  // Anchor to the last message when opening a thread that already has messages
-  // (the welcome composer clears its own draft on submit; see startNewChat).
-  const shouldAnchorToLastMessage =
-    initialMessages && initialMessages.length > 0;
-
   // Parse initial messages once. The first user message of a new thread is part
   // of the persisted transcript (the new-chat action awaits the DO accepting and
   // persisting it before navigating here), so there is no optimistic placeholder.
-  const parsedInitialMessages = useMemo(
-    () =>
-      (initialMessages ?? []).map((msg) => ({
-        ...msg,
-        content: parseMessageContent(msg.content),
-      })),
-    [initialMessages],
-  );
+  // A live-user loader no longer fetches the legacy pi_core transcript (the
+  // ai-chat render history is the single transcript RPC), so when the legacy
+  // list is absent the same fallback view is derived from initialUiMessages —
+  // it covers the paint gap until usePiChatStream seeds, and the snapshot cache.
+  const parsedInitialMessages = useMemo(() => {
+    const source =
+      initialMessages && initialMessages.length > 0
+        ? initialMessages
+        : (initialUiMessages ?? []).map((ui) => uiMessageToMessage(ui, { threadId }));
+    return source.map((msg) => ({
+      ...msg,
+      content: parseMessageContent(msg.content),
+    }));
+  }, [initialMessages, initialUiMessages, threadId]);
+
+  // Anchor to the last message when opening a thread that already has messages
+  // (the welcome composer clears its own draft on submit; see startNewChat).
+  const shouldAnchorToLastMessage = parsedInitialMessages.length > 0;
   const initialPreviewSession = useMemo(
     () =>
       normalizePreviewSessionState(
@@ -689,47 +655,108 @@ export default function Chat({
     [initialPreviewTabs, initialActiveTabId],
   );
 
-  // Local state for messages, streaming, and loading. `messages` holds only
-  // committed (finalized) history and is set immediately; the throttling now
-  // lives on the live overlay below.
+  // Stable reference for the ai-chat seed so useAgentChat mounts its initial
+  // history once (deferred/missed-turn refreshes reconcile through setUiMessages).
+  const stableInitialUiMessages = useMemo(
+    () => initialUiMessages ?? EMPTY_UI_MESSAGES,
+    [initialUiMessages],
+  );
+
+  // Error ids already present in a loader-provided render history payload. The
+  // same terminal error rides both the durable data-pi-error part (rendered as
+  // an inline ErrorBlock by the adapter) and Agent-state lastError; on a reload
+  // after a failed turn the transcript shows the inline block, so the one-shot
+  // banner must not fire again for that id. A live turn's error id never
+  // appears in a loader payload, so its banner still shows. Collected during
+  // render (not an effect) so a socket state update racing the first paint
+  // still sees the ids from the payload that seeded this mount.
+  const loaderErrorIdsRef = useRef<Set<string>>(new Set());
+  const loaderErrorIdsSourceRef = useRef<UIMessage[] | null>(null);
+  if (loaderErrorIdsSourceRef.current !== stableInitialUiMessages) {
+    loaderErrorIdsSourceRef.current = stableInitialUiMessages;
+    for (const ui of stableInitialUiMessages) {
+      for (const part of ui.parts) {
+        if (part.type !== "data-pi-error") continue;
+        const errorId = (part as { data?: { id?: unknown } }).data?.id;
+        if (typeof errorId === "string" && errorId) {
+          loaderErrorIdsRef.current.add(errorId);
+        }
+      }
+    }
+  }
+
+  // ai-chat owns the durable render history now. `messages` here holds only
+  // optimistic pending user bubbles (the just-sent message before its persisted
+  // skeleton echoes back through the hook); the transcript itself lives in the
+  // stream hook below and is reconciled by id/clientMessageId at render time.
   const {
     state: messages,
     stateRef: messagesRef,
     setImmediate: setMessages,
-  } = useBufferedState(parsedInitialMessages, STREAM_MESSAGE_RENDER_THROTTLE_MS);
-  const [completedTurns, setCompletedTurns] = useState<
-    Map<string, CompletedTurnMetadata>
-  >(() => new Map());
-  const [freshlyCompletedTurnId, setFreshlyCompletedTurnId] = useState<
-    string | null
-  >(null);
-  const [loading, setLoading] = useState(false);
-  const [agentIsStreaming, setAgentIsStreamingState] = useState(false);
-  const [topUpOpen, setTopUpOpen] = useState(false);
-  const [currentBillingCreditStatus, setCurrentBillingCreditStatus] =
-    useState<BillingCreditStatus | null>(() => billingCreditStatus ?? null);
-  const [pendingMessages, setPendingMessagesState] = useState<Message[]>([]);
-  // The current turn's assistant/tool messages, pushed whole from the server
-  // and replaced wholesale on every Agent-state update; overlaid on `messages`
-  // at render time. Buffered so the per-token stream throttles re-renders, with
-  // an immediate flush at turn boundaries. Purely ephemeral rendering state —
-  // committed history arrives via the turn-end frame's finalMessages.
-  const {
-    state: liveOverlay,
-    stateRef: liveOverlayRef,
-    setImmediate: setLiveOverlayImmediate,
-    setBuffered: setLiveOverlayBuffered,
-    flush: flushLiveOverlay,
   } = useBufferedState<Message[]>([], STREAM_MESSAGE_RENDER_THROTTLE_MS);
+  const [loading, setLoading] = useState(false);
+  const [topUpOpen, setTopUpOpen] = useState(false);
+  const [pendingMessages, setPendingMessagesState] = useState<Message[]>([]);
   const [currentTodos, setCurrentTodos] = useState<TodoItem[]>(initialTodos);
 
+  const agentEnabled = !readOnly && Boolean(threadId && resolvedWorkspaceId);
+  // useAgent's lifecycle callbacks reference many callbacks defined later in the
+  // component; stable wrappers read them from a ref so the socket can mount here,
+  // ahead of the render-history projection that depends on its connection.
+  const agentCallbacksRef = useRef<{
+    onOpen: () => void;
+    onMessage: (event: MessageEvent) => void;
+    onClose: () => void;
+    onStateUpdate: (state: ChatAgentState) => void;
+  }>({
+    onOpen: () => {},
+    onMessage: () => {},
+    onClose: () => {},
+    onStateUpdate: () => {},
+  });
+  const agentSocket = useAgent<ChatAgentState>({
+    agent: "chat-thread",
+    name: threadId ?? "disabled",
+    enabled: agentEnabled,
+    query: {
+      threadId: threadId ?? null,
+      workspaceId: resolvedWorkspaceId ?? null,
+    },
+    onOpen: () => agentCallbacksRef.current.onOpen(),
+    onMessage: (event) => agentCallbacksRef.current.onMessage(event),
+    onClose: () => agentCallbacksRef.current.onClose(),
+    onStateUpdate: (state) => agentCallbacksRef.current.onStateUpdate(state),
+  });
+  const piChat = usePiChatStream({
+    agent: agentSocket,
+    threadId,
+    initialUiMessages: stableInitialUiMessages,
+  });
+  const piChatRef = useRef(piChat);
+  piChatRef.current = piChat;
+  const isStreaming = piChat.isStreaming;
+  const isStreamingRef = useRef(false);
+  isStreamingRef.current = isStreaming;
+
+  // Snapshot the rendered transcript for instant paint on thread switch. Keyed
+  // on the hook history + optimistic bubbles; `displayMessagesRef` holds the
+  // merged view (defined below, read at effect time).
   useEffect(() => {
     if (!threadId || readOnly) return;
     onSnapshotChange?.({
-      messages,
+      messages: displayMessagesRef.current,
+      uiMessages: piChat.uiMessages,
       todos: currentTodos,
     });
-  }, [currentTodos, messages, onSnapshotChange, readOnly, threadId]);
+  }, [
+    currentTodos,
+    piChat.messages,
+    piChat.uiMessages,
+    messages,
+    onSnapshotChange,
+    readOnly,
+    threadId,
+  ]);
   const [pendingQuestion, setPendingQuestion] =
     useState<AskUserQuestionData | null>(null);
   const optimisticallyAnsweredQuestionIdRef = useRef<string | null>(null);
@@ -830,12 +857,7 @@ export default function Chat({
 
   // Compaction in-progress indicator
   const [isCompacting, setIsCompacting] = useState(false);
-  // Track compaction content block streaming (compaction summary arrives as a
-  // content block of type 'compaction' with 'compaction_delta' deltas)
-  const isInCompactionBlockRef = useRef(false);
-  const compactionContentRef = useRef("");
   const hasCapturedCompactionSummaryRef = useRef(false);
-  const pendingCompactionPlaceholderIdRef = useRef<string | null>(null);
   const queuedManualCompactionsRef = useRef(0);
   const activeManualCompactionTurnRef = useRef(false);
   const isAutoCompactingRef = useRef(false);
@@ -856,17 +878,6 @@ export default function Chat({
     queuedManualCompactionsRef.current += 1;
     syncCompactionIndicator();
   }, [syncCompactionIndicator]);
-  const startQueuedManualCompactionIfNeeded = useCallback(() => {
-    if (
-      activeManualCompactionTurnRef.current ||
-      queuedManualCompactionsRef.current <= 0
-    ) {
-      return;
-    }
-    queuedManualCompactionsRef.current -= 1;
-    activeManualCompactionTurnRef.current = true;
-    syncCompactionIndicator();
-  }, [syncCompactionIndicator]);
   const completeActiveManualCompaction = useCallback(() => {
     if (activeManualCompactionTurnRef.current) {
       activeManualCompactionTurnRef.current = false;
@@ -883,17 +894,56 @@ export default function Chat({
     syncCompactionIndicator();
   }, [syncCompactionIndicator]);
   const iframeRef = useRef<HTMLIFrameElement>(null);
-  // Committed history overlaid with the live turn for rendering. `messages`
-  // itself stays finalized-only so the streaming entry lives solely in the
-  // overlay until it is folded in on completion.
-  const displayMessages = useMemo(
-    () => mergeOverlay(messages, liveOverlay),
-    [messages, liveOverlay],
-  );
+  // The durable transcript comes from ai-chat (piChat.messages). Read-only admin
+  // viewers render pi_core directly (parsedInitialMessages), and both branches
+  // fall back to the loader payload until the hook seeds/streams — this keeps the
+  // instant-paint snapshot on thread switch working through the deferred-load gap.
+  const baseMessages = useMemo(() => {
+    if (readOnly) return parsedInitialMessages;
+    return piChat.messages.length > 0 ? piChat.messages : parsedInitialMessages;
+  }, [readOnly, parsedInitialMessages, piChat.messages]);
+  // Optimistic pending user bubbles that have not yet echoed back through the
+  // hook (matched by id / clientMessageId) are appended for immediate feedback.
+  const displayMessages = useMemo(() => {
+    if (messages.length === 0) return baseMessages;
+    const baseKeys = new Set<string>();
+    for (const message of baseMessages) {
+      baseKeys.add(message.id);
+      if (message.clientMessageId) baseKeys.add(message.clientMessageId);
+    }
+    const optimistic = messages.filter(
+      (message) =>
+        !baseKeys.has(message.id) &&
+        !(message.clientMessageId && baseKeys.has(message.clientMessageId)),
+    );
+    return optimistic.length === 0
+      ? baseMessages
+      : mergeOverlay(baseMessages, optimistic);
+  }, [baseMessages, messages]);
+  const displayMessagesRef = useRef<Message[]>(displayMessages);
+  displayMessagesRef.current = displayMessages;
+  // Turn duration/completion badges keyed by the assistant message id, plus the
+  // one-shot "freshly completed" highlight. Derived from each completed turn's
+  // metadata (turnDurationMs / completedAtMs ride message-metadata.pi on the
+  // assistant message). Replaces the retired Agent-state lastCompletedTurn channel.
+  const { completedTurns, freshlyCompletedTurnId, clearFreshlyCompletedTurnId } =
+    useCompletedTurns(displayMessages, threadId);
+  // Per-message work inside the normalize chain is cached by object identity
+  // (only the streaming message's object changes per tick), so this per-tick
+  // re-run over the whole transcript stays cheap. See
+  // TranscriptNormalizationCaches in streaming.ts.
+  const normalizationCachesRef = useRef(createTranscriptNormalizationCaches());
   const normalizedMessages = useMemo(
     () =>
       mergeTaskNotifications(
-        mergeTeammateMessages(normalizeToolResultMessages(displayMessages)),
+        mergeTeammateMessages(
+          normalizeToolResultMessages(
+            displayMessages,
+            normalizationCachesRef.current,
+          ),
+          normalizationCachesRef.current,
+        ),
+        normalizationCachesRef.current,
       ),
     [displayMessages],
   );
@@ -906,32 +956,11 @@ export default function Chat({
   );
 
   // Refs to track current state for use in callbacks (avoids stale closures)
-  const agentIsStreamingRef = useRef(false);
-  const completedTurnsRef = useRef<Map<string, CompletedTurnMetadata>>(
-    new Map(),
-  );
-  // The most recent completed turn already applied to completedTurns, so a
-  // reconnect carrying the same lastCompletedTurn doesn't replay it.
-  const lastAppliedCompletedTurnIdRef = useRef<string | null>(null);
   // The most recent terminal error already surfaced, so the state-driven error
   // is shown exactly once even across re-renders/reconnects.
   const lastAppliedErrorIdRef = useRef<string | null>(null);
   const pendingMessagesRef = useRef(pendingMessages);
   const acceptedPendingMessageIdsRef = useRef<Set<string>>(new Set());
-  // False until the Agent socket has opened once for this thread. A later open is a
-  // reconnect, after which we revalidate committed history so a turn that finished
-  // while we were disconnected reloads its final messages (the live overlay only
-  // carries the in-flight turn, so an idle reconnect would otherwise show the frozen
-  // pre-disconnect tail). Reset when the thread changes.
-  const hasAgentConnectedRef = useRef(false);
-  // Message ids committed from the most recent turn-end frame's finalMessages.
-  // A loader payload that lacks one of these while we still hold it locally was
-  // sampled mid-turn (before the turn's messages were persisted-and-readable);
-  // applying it would silently drop the just-finished message until reload.
-  const lastFinalizedTurnMessageIdsRef = useRef<string[]>([]);
-  // The finalized id that already triggered a stale-payload refetch, so a
-  // payload still lacking it after the retry is accepted as a real removal.
-  const staleLoaderRetryIdRef = useRef<string | null>(null);
   const pendingThreadContextRef = useRef({
     workspaceId: resolvedWorkspaceId,
     threadId,
@@ -943,15 +972,10 @@ export default function Chat({
     readOnly,
   };
 
-  const prevInitialMessagesRef = useRef(initialMessages);
+  const prevInitialUiMessagesRef = useRef(stableInitialUiMessages);
   const prevInitialTodosRef = useRef(initialTodos);
   const hasSyncedInitialPreviewRef = useRef(false);
   const previousPreviewThreadIdRef = useRef(threadId);
-
-  const setAgentIsStreaming = useCallback((value: boolean) => {
-    agentIsStreamingRef.current = value;
-    setAgentIsStreamingState(value);
-  }, []);
 
   const setPendingMessages = useCallback(
     (updater: Message[] | ((prev: Message[]) => Message[])) => {
@@ -965,60 +989,44 @@ export default function Chat({
     [],
   );
 
-  useLayoutEffect(() => {
-    const initialMessagesChanged =
-      initialMessages !== prevInitialMessagesRef.current;
-    if (
-      !initialMessagesChanged ||
-      agentIsStreamingRef.current ||
-      pendingMessagesRef.current.length > 0
-    ) {
+  // Reconcile the loader's ai-chat render history into the hook. Covers the
+  // deferred initial load (hook seeded empty at mount, payload resolves after)
+  // and the missed-turn revalidation (a turn that finished while disconnected).
+  // The hook owns history once it has any, so we never clobber a live turn or
+  // overwrite a populated transcript with an empty loader result.
+  useEffect(() => {
+    if (stableInitialUiMessages === prevInitialUiMessagesRef.current) return;
+    prevInitialUiMessagesRef.current = stableInitialUiMessages;
+    if (readOnly) return;
+    if (isStreamingRef.current || pendingMessagesRef.current.length > 0) return;
+    const currentUiMessages = piChatRef.current.uiMessages;
+    if (stableInitialUiMessages.length === 0 && currentUiMessages.length > 0) {
       return;
     }
-    prevInitialMessagesRef.current = initialMessages;
+    if (uiMessagesEquivalent(currentUiMessages, stableInitialUiMessages)) return;
+    piChatRef.current.setUiMessages(stableInitialUiMessages);
+  }, [stableInitialUiMessages, readOnly]);
 
-    // Don't let an empty loader result (e.g. a revalidation that raced ahead of
-    // persistence) clobber a conversation we already have locally.
-    if (
-      parsedInitialMessages.length === 0 &&
-      hasUserOrAssistantMessage(messagesRef.current)
-    ) {
-      return;
+  // Drop optimistic pending bubbles once their persisted skeleton has echoed
+  // back through the hook (matched by id / clientMessageId), so the local list
+  // stays bounded to genuinely in-flight sends.
+  useEffect(() => {
+    if (messagesRef.current.length === 0) return;
+    const baseKeys = new Set<string>();
+    for (const message of piChat.messages) {
+      baseKeys.add(message.id);
+      if (message.clientMessageId) baseKeys.add(message.clientMessageId);
     }
-    // A non-empty payload missing a message we committed from the turn-end
-    // frame was sampled mid-turn (e.g. a reconnect revalidation whose loader
-    // read ran before the turn's messages were committed); applying it would
-    // drop the final message. Skip it and refetch once — a fresh read includes
-    // the turn. If the retried payload still lacks the id, accept it: the
-    // message was legitimately removed (fork, purge).
-    const missingFinalizedId = findStaleLoaderPayloadId(
-      messagesRef.current,
-      parsedInitialMessages,
-      lastFinalizedTurnMessageIdsRef.current,
+    const remaining = messagesRef.current.filter(
+      (message) =>
+        !baseKeys.has(message.id) &&
+        !(message.clientMessageId && baseKeys.has(message.clientMessageId)),
     );
-    if (
-      missingFinalizedId &&
-      staleLoaderRetryIdRef.current !== missingFinalizedId
-    ) {
-      staleLoaderRetryIdRef.current = missingFinalizedId;
-      revalidator.revalidate();
-      return;
+    if (remaining.length !== messagesRef.current.length) {
+      setMessages(remaining);
     }
-    setPendingMessages([]);
-    if (messagesHaveSameContent(messagesRef.current, parsedInitialMessages)) {
-      return;
-    }
-    setMessages(parsedInitialMessages);
-  }, [
-    initialMessages,
-    parsedInitialMessages,
-    readOnly,
-    revalidator,
-    setMessages,
-    setPendingMessages,
-  ]);
+  }, [piChat.messages, setMessages]);
 
-  const isStreaming = agentIsStreaming;
   useLayoutEffect(() => {
     const initialTodosChanged = initialTodos !== prevInitialTodosRef.current;
     if (!initialTodosChanged) {
@@ -1036,17 +1044,11 @@ export default function Chat({
     }
     prevInitialTodosRef.current = initialTodos;
     setCurrentTodos(initialTodos);
-  }, [agentIsStreaming, currentTodos.length, initialTodos, isStreaming, loading]);
+  }, [currentTodos.length, initialTodos, isStreaming, loading]);
 
-  const activeAssistantMessageId = useMemo(() => {
-    // The streaming message lives in the overlay carrying isStreaming; scan for
-    // it rather than tracking a separate id.
-    for (let i = displayMessages.length - 1; i >= 0; i--) {
-      const msg = displayMessages[i];
-      if (msg.role === "assistant" && msg.isStreaming) return msg.id;
-    }
-    return null;
-  }, [displayMessages]);
+  // The streaming assistant message is the transcript tail while the hook
+  // reports an active stream (see usePiChatStream.streamingMessageId).
+  const activeAssistantMessageId = piChat.streamingMessageId;
   const activeThreadRunningState = useMemo(
     () => getThreadRunningState(chatGroupsContext?.groups, threadId ?? null),
     [chatGroupsContext?.groups, threadId],
@@ -1059,7 +1061,7 @@ export default function Chat({
     : null;
   const skillSheetsByToolId = useMemo(() => {
     const map = new Map<string, string>();
-    for (const message of messages) {
+    for (const message of normalizedMessages) {
       if (!message.sourceToolUseID) continue;
       const content =
         typeof message.content === "string"
@@ -1073,7 +1075,7 @@ export default function Chat({
       }
     }
     return map;
-  }, [messages]);
+  }, [normalizedMessages]);
   const [input, setInput] = useState("");
   const [ready, setReady] = useState(false);
   const [error, setError] = useState<ChatApiErrorPresentation | null>(() =>
@@ -1140,16 +1142,10 @@ export default function Chat({
   );
   const selectedThreadModelRef = useRef<LlmModel>(selectedThreadModel);
   const locationSearchRef = useRef(locationSearch);
-  const lastBillingRefreshCompletionKeyRef = useRef<string | null>(null);
   const noModelsMessage =
     availableThreadModels.length === 0
       ? "No models are available. Ask an admin to add a model in Settings > Models."
       : null;
-
-  useEffect(() => {
-    setCurrentBillingCreditStatus(billingCreditStatus ?? null);
-    lastBillingRefreshCompletionKeyRef.current = null;
-  }, [billingCreditStatus]);
 
   useEffect(() => {
     selectedThreadModelRef.current = selectedThreadModel;
@@ -1159,39 +1155,13 @@ export default function Chat({
     locationSearchRef.current = locationSearch;
   }, [locationSearch]);
 
-  useEffect(() => {
-    if (!billingStatusFetcher.data) return;
-    if (!billingStatusFetcher.data.ok) return;
-    setCurrentBillingCreditStatus(billingStatusFetcher.data.billingCreditStatus);
-  }, [billingStatusFetcher.data]);
-
-  const refreshBillingCreditStatusAfterTurn = useCallback(
-    (completionKey: string | null | undefined) => {
-      const normalizedCompletionKey = completionKey?.trim();
-      if (!normalizedCompletionKey) return;
-      if (
-        lastBillingRefreshCompletionKeyRef.current === normalizedCompletionKey
-      ) {
-        return;
-      }
-      lastBillingRefreshCompletionKeyRef.current = normalizedCompletionKey;
-
-      const params = new URLSearchParams();
-      params.set("model", selectedThreadModelRef.current);
-      const currentSearchParams = new URLSearchParams(
-        locationSearchRef.current,
-      );
-      for (const key of ["devCreditState", "devChatError"]) {
-        const value = currentSearchParams.get(key);
-        if (value) params.set(key, value);
-      }
-      if (typeof billingStatusFetcher.load !== "function") return;
-      billingStatusFetcher.load(
-        `/api/billing/chat-credit-status?${params.toString()}`,
-      );
-    },
-    [billingStatusFetcher],
-  );
+  const { currentBillingCreditStatus, refreshBillingCreditStatusAfterTurn } =
+    useBillingCreditStatus({
+      billingStatusFetcher,
+      initialStatus: billingCreditStatus,
+      selectedThreadModelRef,
+      locationSearchRef,
+    });
 
   const lastAppliedWelcomeInputRef = useRef(initialWelcomeInput ?? "");
   const [showScrollButton, setShowScrollButton] = useState(false);
@@ -1415,12 +1385,7 @@ export default function Chat({
     setCurrentTodos(initialTodos);
     setPendingQuestion(null);
     setContextUsedPercent(null);
-    setAgentIsStreaming(false);
-    lastAppliedCompletedTurnIdRef.current = null;
     lastAppliedErrorIdRef.current = null;
-    completedTurnsRef.current = new Map();
-    setCompletedTurns(new Map());
-    setFreshlyCompletedTurnId(null);
     compactingPriorMessageIdRef.current = null;
     setCompactingPriorMessageId(null);
   }, [threadId]);
@@ -2062,7 +2027,7 @@ export default function Chat({
       );
       setPendingMessages(remainingPendingMessages);
       setLoading(
-        remainingPendingMessages.length > 0 || agentIsStreamingRef.current,
+        remainingPendingMessages.length > 0 || isStreamingRef.current,
       );
       if (!options?.preserveReady) {
         setReady(false);
@@ -2471,23 +2436,15 @@ export default function Chat({
     [failPendingMessageDelivery, markPendingDeliveryDraftAccepted],
   );
 
-  // Agent connection
-  const agentEnabled = !readOnly && Boolean(threadId && resolvedWorkspaceId);
-
   const handleAgentOpen = useCallback(() => {
     const id = threadId;
     if (!id) return;
     setReady(true);
 
-    // Reconnect (not the first open for this thread): a turn may have started,
-    // streamed, and finished entirely while we were disconnected. Revalidate so
-    // committed history reloads its final messages; the initial-messages effect
-    // ignores the result while a turn is still streaming or sends are pending, so
-    // this never clobbers an in-progress turn.
-    if (hasAgentConnectedRef.current) {
-      revalidator.revalidate();
-    }
-    hasAgentConnectedRef.current = true;
+    // History sync on (re)connect is owned by the ai-chat hook now: `resume: true`
+    // replays an in-flight turn's stream and the CHAT_MESSAGES broadcast folds in
+    // any turn that finished while we were disconnected. The loader is cold-load
+    // only — no reconnect revalidation.
 
     const queuedMessages = pendingMessagesRef.current.filter((message) => {
       if (message.role !== "user") return false;
@@ -2507,14 +2464,13 @@ export default function Chat({
       sendPendingMessageToAgent(message, id);
     }
     setPendingMessages((prev) => prev);
-  }, [isPendingMessageAccepted, revalidator, sendPendingMessageToAgent, setMessages, setPendingMessages, threadId]);
+  }, [isPendingMessageAccepted, sendPendingMessageToAgent, setMessages, setPendingMessages, threadId]);
 
   // Apply a terminal error (delivered through Agent state, not the websocket, so
   // it survives a reconnect after a disconnected/early failure).
   const handleTerminalError = useCallback(
     (payload: NonNullable<ChatAgentState["lastError"]>) => {
       const id = threadId;
-      flushLiveOverlay();
       console.error("Chat terminal error:", payload.error);
       const billingSource =
         payload.billingSource === "byok" || payload.billingSource === "hosted"
@@ -2538,9 +2494,8 @@ export default function Chat({
       const shouldRefreshBillingAfterError =
         billingSource === "hosted" || isChatBillingOrCreditError(errorPayload);
       showChatError(errorPayload, errorContext);
-      // Finish streaming on error. The turn-end frame's finalMessages commit
-      // the overlay's streaming entry to history server-side.
-      setAgentIsStreaming(false);
+      // The stream ends on error; the hook's isStreaming clears itself. Just
+      // release the composer and pending queue here.
       setLoading(false);
       acceptedPendingMessageIdsRef.current.clear();
       setPendingMessages([]);
@@ -2557,9 +2512,7 @@ export default function Chat({
     },
     [
       threadId,
-      flushLiveOverlay,
       showChatError,
-      setAgentIsStreaming,
       setPendingMessages,
       refreshBillingCreditStatusAfterTurn,
       restorePendingDeliveryDraft,
@@ -2577,52 +2530,10 @@ export default function Chat({
       // arrives after switching threads must never apply to the new one).
       if (typeof data?.threadId === "string" && data.threadId !== id) return;
 
-      // Errors and code-mode artifacts ride Agent state; the websocket carries
-      // the result signal and the live overlay (the current turn's streaming
-      // tail, off the durable state channel).
-      if (data.type === "live_overlay") {
-        const overlay = (Array.isArray(data.messages) ? data.messages : []).map(
-          (message: Message) => ({
-            ...message,
-            content: parseMessageContent(message.content),
-          }),
-        );
-        // The turn-end clearing frame carries the server's authoritative
-        // snapshot of the turn's messages. Committing that (rather than folding
-        // whatever overlay tail we happened to receive) means a dropped or
-        // throttled delta frame can never truncate the final message. Idempotent
-        // — mergeOverlay keys on id/clientMessageId, so a loader copy of the
-        // same message doesn't duplicate.
-        const finalMessages = (
-          Array.isArray(data.finalMessages) ? data.finalMessages : []
-        ).map((message: Message) => ({
-          ...message,
-          content: parseMessageContent(message.content),
-        }));
-        if (finalMessages.length > 0) {
-          lastFinalizedTurnMessageIdsRef.current = finalMessages
-            .map((message: Message) => message.id)
-            .filter(
-              (messageId: unknown): messageId is string =>
-                typeof messageId === "string" && messageId.length > 0,
-            );
-          setMessages((previous) => mergeOverlay(previous, finalMessages));
-        }
-        liveOverlayRef.current = overlay;
-        if (overlay.length === 0) {
-          setLiveOverlayImmediate([]);
-        } else {
-          setLiveOverlayBuffered(overlay);
-        }
-      } else if (data.type === "result") {
-        flushLiveOverlay();
-        acceptedPendingMessageIdsRef.current.clear();
-        setPendingMessages([]);
-        dispatchLocalThreadStatus(id, "idle");
-        completeActiveManualCompaction();
-        clearPendingDeliveryDraft();
-        refreshBillingCreditStatusAfterTurn(id);
-      } else if (
+      // The transcript (streaming tokens, tool output, turn end) now rides
+      // ai-chat's native stream, consumed by useAgentChat. This raw handler only
+      // covers the remaining out-of-band broadcasts.
+      if (
         data.type === "chat_group_avatar_updated" &&
         typeof data.groupId === "string" &&
         isChatGroupAvatar(data.avatar)
@@ -2630,15 +2541,7 @@ export default function Chat({
         dispatchLocalChatGroupAvatarUpdate(id, data.groupId, data.avatar);
       }
     },
-    [
-      clearPendingDeliveryDraft,
-      completeActiveManualCompaction,
-      refreshBillingCreditStatusAfterTurn,
-      flushLiveOverlay,
-      setMessages,
-      setPendingMessages,
-      threadId,
-    ],
+    [threadId],
   );
 
   const handleAgentClose = useCallback(() => {
@@ -2647,58 +2550,21 @@ export default function Chat({
 
   const handleAgentStateUpdate = useCallback(
     (state: ChatAgentState) => {
-      setAgentIsStreaming(Boolean(state?.isStreaming));
-      // The live overlay now arrives over the broadcast channel
-      // (handleAgentMessage); Agent state carries only coarse fields. Keep
-      // loading true while streaming or while a queued send is still in flight
-      // (on reconnect the first state can be isStreaming:false before the queued
-      // send's turn has started — clearing then would re-enable the composer).
-      if (state?.isStreaming) {
-        setLoading(true);
-      } else if (getUnacceptedPendingUserMessages().length === 0) {
-        setLoading(false);
-      }
-      // Record completed-turn metadata for the duration/turn badges. Dedup by id
-      // so a reconnect carrying the same lastCompletedTurn doesn't re-apply it,
-      // and only fire the "freshly completed" animation for genuinely recent
-      // completions (not historical ones replayed on load).
-      const completed = state.lastCompletedTurn;
-      if (completed?.id && lastAppliedCompletedTurnIdRef.current !== completed.id) {
-        lastAppliedCompletedTurnIdRef.current = completed.id;
-        completedTurnsRef.current.set(completed.id, {
-          durationMs: completed.durationMs,
-          completedAtMs: completed.completedAtMs,
-        });
-        setCompletedTurns(new Map(completedTurnsRef.current));
-        if (completed.completedAtMs > Date.now() - FRESHLY_COMPLETED_TURN_WINDOW_MS) {
-          setFreshlyCompletedTurnId(completed.id);
-        }
-        // State says a turn just completed but committed history has no copy
-        // of its message: the client missed some or all of the turn (it
-        // finished between the loader read and the first socket open, or
-        // while disconnected). Reload committed history. Once per turn id via
-        // the dedup above. Deliberately ignore the live overlay here — an
-        // overlay entry only becomes history via a turn-end finalMessages
-        // frame, so a matching id there (e.g. a stale pre-disconnect tail on
-        // an idle reconnect) is about to be cleared, not committed, and must
-        // not suppress the refetch. Live turn ends can't fire this: the
-        // turn/completed-time state sync still reports isStreaming (durable
-        // active-turn marker), and by the idle sync finalMessages are already
-        // committed.
-        if (
-          !state?.isStreaming &&
-          completed.completedAtMs > Date.now() - MISSED_TURN_REFETCH_WINDOW_MS &&
-          !messagesRef.current.some((message) => message.id === completed.id)
-        ) {
-          revalidator.revalidate();
-        }
-      }
+      // Streaming/loading and turn duration/completion badges are derived from the
+      // ai-chat hook + render history now (isStreaming from the hook; completedTurns
+      // from message-metadata.pi on the assistant messages). Agent state carries
+      // only the coarse fields below (terminal error, preview, todos, etc.).
       // Terminal errors ride Agent state now; show each once (recovers a failure
       // missed while disconnected).
       const lastError = state.lastError;
       if (lastError?.id && lastError.id !== lastAppliedErrorIdRef.current) {
         lastAppliedErrorIdRef.current = lastError.id;
-        handleTerminalError(lastError);
+        // Suppress the banner when the error already renders as an inline
+        // block from the loader payload (reload-after-error); see
+        // loaderErrorIdsRef. Live/reconnect errors are new ids and still fire.
+        if (!loaderErrorIdsRef.current.has(lastError.id)) {
+          handleTerminalError(lastError);
+        }
       }
       applyAgentPreviewState(state);
       if (Array.isArray(state.currentTodos)) {
@@ -2763,22 +2629,49 @@ export default function Chat({
           : null,
       );
     },
-    [applyAgentPreviewState, setConnectionSetupPrompt, setAgentIsStreaming, getUnacceptedPendingUserMessages, handleTerminalError, revalidator, threadId],
+    [applyAgentPreviewState, setConnectionSetupPrompt, handleTerminalError, threadId],
   );
 
-  const agentSocket = useAgent<ChatAgentState>({
-    agent: "chat-thread",
-    name: threadId ?? "disabled",
-    enabled: agentEnabled,
-    query: {
-      threadId: threadId ?? null,
-      workspaceId: resolvedWorkspaceId ?? null,
-    },
+  // Route the socket's lifecycle callbacks (mounted at the top of the component)
+  // to the handlers defined above.
+  agentCallbacksRef.current = {
     onOpen: handleAgentOpen,
     onMessage: handleAgentMessage,
     onClose: handleAgentClose,
     onStateUpdate: handleAgentStateUpdate,
-  });
+  };
+
+  // Turn lifecycle: the ai-chat stream owns streaming state, so the "turn just
+  // finished" side effects (previously the legacy `result` frame) fire when the
+  // hook transitions out of a busy window. `submitted` covers the awaiting-first-
+  // token gap; `isServerStreaming` (folded into isStreaming) spans tool rounds.
+  const isTurnBusy =
+    isStreaming || piChat.status === "submitted" || piChat.status === "streaming";
+  const wasTurnBusyRef = useRef(false);
+  useEffect(() => {
+    const wasBusy = wasTurnBusyRef.current;
+    wasTurnBusyRef.current = isTurnBusy;
+    if (isTurnBusy) {
+      setLoading(true);
+      return;
+    }
+    if (!wasBusy) return;
+    const id = pendingThreadContextRef.current.threadId;
+    acceptedPendingMessageIdsRef.current.clear();
+    setPendingMessages([]);
+    if (id) dispatchLocalThreadStatus(id, "idle");
+    completeActiveManualCompaction();
+    clearPendingDeliveryDraft();
+    if (id) refreshBillingCreditStatusAfterTurn(id);
+    if (getUnacceptedPendingUserMessages().length === 0) setLoading(false);
+  }, [
+    isTurnBusy,
+    setPendingMessages,
+    completeActiveManualCompaction,
+    clearPendingDeliveryDraft,
+    refreshBillingCreditStatusAfterTurn,
+    getUnacceptedPendingUserMessages,
+  ]);
 
   useEffect(() => {
     chatAgentRef.current = agentEnabled ? agentSocket : null;
@@ -2789,24 +2682,15 @@ export default function Chat({
 
   useLayoutEffect(() => {
     setReady(false);
-    setAgentIsStreaming(false);
-    // New thread context: the next socket open is a first connect, not a reconnect.
-    hasAgentConnectedRef.current = false;
-    // The stale-payload guard is per-thread; the old thread's finalized ids
-    // must not veto the new thread's loader payload.
-    lastFinalizedTurnMessageIdsRef.current = [];
-    staleLoaderRetryIdRef.current = null;
-    // Drop the previous context's live tail. Rendered = mergeOverlay(messages,
-    // liveOverlay), so leaving it here would append the old thread's streaming
-    // assistant/tool tail onto the new thread until a fresh overlay arrives.
-    // setImmediate also clears liveOverlayRef.
-    setLiveOverlayImmediate([]);
+    // Drop the previous context's optimistic bubbles; the hook remounts with the
+    // new thread's history (Chat is keyed by threadId).
+    setMessages([]);
     compactingPriorMessageIdRef.current = null;
     setCompactingPriorMessageId(null);
     setLoading(false);
     isAutoCompactingRef.current = false;
     syncCompactionIndicator();
-  }, [threadId, resolvedWorkspaceId, readOnly, setAgentIsStreaming, setLiveOverlayImmediate, syncCompactionIndicator]);
+  }, [threadId, resolvedWorkspaceId, readOnly, setMessages, syncCompactionIndicator]);
 
   useEffect(() => {
     return () => {
@@ -2869,9 +2753,8 @@ export default function Chat({
     !lastUserMessage?.sentDuringStreaming &&
     !error &&
     (isAwaitingAssistant || isLastMessageAssistantLike);
-  const handleFreshlyCompletedTurnAnimationScheduled = useCallback(() => {
-    setFreshlyCompletedTurnId(null);
-  }, []);
+  const handleFreshlyCompletedTurnAnimationScheduled =
+    clearFreshlyCompletedTurnId;
 
   const scrollToBottom = useCallback((behavior: ScrollBehavior = "auto") => {
     const container = scrollContainerRef.current;
@@ -3972,7 +3855,7 @@ type SendOptions = {
     // If WebSocket is connected and ready, send immediately
     const previewUserMessage = normalizeThreadPreviewUserMessage(rawContent);
     const userMessageAt = Date.now();
-    const isFirstUserTurn = !messagesRef.current.some(
+    const isFirstUserTurn = !displayMessagesRef.current.some(
       (message) =>
         message.role === "user" &&
         !message.isMeta &&

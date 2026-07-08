@@ -11,6 +11,7 @@ import {
   type ReactNode,
 } from "react";
 import { useMatches, useRouteLoaderData, useRevalidator } from "react-router";
+import { WebSocket as ReconnectingWebSocket } from "partysocket";
 import type {
   ChatGroupAvatar,
   ChatGroupAvatarStatus,
@@ -1211,8 +1212,6 @@ export function ChatGroupsProvider({
 
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
     const socketUrl = `${protocol}//${window.location.host}/ws/workspaces/${encodeURIComponent(workspaceId)}/status`;
-    let socket: WebSocket | null = null;
-    let reconnectTimer: number | null = null;
     let revalidateTimer: number | null = null;
     const metadataRefreshTimers = new Map<string, number>();
     let closedByEffect = false;
@@ -1266,315 +1265,303 @@ export function ChatGroupsProvider({
       }).catch(() => {});
     };
 
-    const connect = () => {
-      const nextSocket = new WebSocket(socketUrl);
-      socket = nextSocket;
+    // partysocket's ReconnectingWebSocket owns reconnect/backoff; same-origin
+    // session cookies ride the upgrade like a native WebSocket, and close() in
+    // teardown also disables further reconnection.
+    const socket = new ReconnectingWebSocket(socketUrl);
 
-      nextSocket.addEventListener("message", (event) => {
-        try {
-          const payload = JSON.parse(event.data as string) as {
-            type?: unknown;
-            runningThreadIds?: unknown;
-            runningThreads?: unknown;
-            threadId?: unknown;
-            status?: unknown;
-            completedAt?: unknown;
-            summaryStatus?: unknown;
-            summary?: unknown;
-            runningActivityText?: unknown;
-            runningActivityAt?: unknown;
-            runningStartedAt?: unknown;
+    socket.addEventListener("message", (event) => {
+      try {
+        const payload = JSON.parse(event.data as string) as {
+          type?: unknown;
+          runningThreadIds?: unknown;
+          runningThreads?: unknown;
+          threadId?: unknown;
+          status?: unknown;
+          completedAt?: unknown;
+          summaryStatus?: unknown;
+          summary?: unknown;
+          runningActivityText?: unknown;
+          runningActivityAt?: unknown;
+          runningStartedAt?: unknown;
+        };
+        if (
+          payload.type === "thread_status_snapshot" &&
+          (Array.isArray(payload.runningThreadIds) ||
+            Array.isArray(payload.runningThreads))
+        ) {
+          setHasStatusSnapshot(true);
+          const fallbackRunningThreadIds = Array.isArray(payload.runningThreadIds)
+            ? payload.runningThreadIds.filter(
+                (threadId): threadId is string => typeof threadId === "string",
+              )
+            : [];
+          type RunningThreadSnapshot = {
+            threadId: string;
+            runningActivityText?: string | null;
+            runningActivityAt?: number | null;
+            runningStartedAt?: number | null;
           };
-          if (
-            payload.type === "thread_status_snapshot" &&
-            (Array.isArray(payload.runningThreadIds) ||
-              Array.isArray(payload.runningThreads))
-          ) {
-            setHasStatusSnapshot(true);
-            const fallbackRunningThreadIds = Array.isArray(payload.runningThreadIds)
-              ? payload.runningThreadIds.filter(
-                  (threadId): threadId is string => typeof threadId === "string",
-                )
-              : [];
-            type RunningThreadSnapshot = {
-              threadId: string;
-              runningActivityText?: string | null;
-              runningActivityAt?: number | null;
-              runningStartedAt?: number | null;
-            };
-            const parsedRunningThreads: RunningThreadSnapshot[] = Array.isArray(payload.runningThreads)
-              ? payload.runningThreads.flatMap((entry) => {
-                  if (!entry || typeof entry !== "object") return [];
-                  const record = entry as {
-                    threadId?: unknown;
-                    startedAt?: unknown;
-                    runningActivityText?: unknown;
-                    latestActivityText?: unknown;
-                    runningActivityAt?: unknown;
-                    latestActivityAt?: unknown;
-                  };
-                  if (typeof record.threadId !== "string") return [];
-                  const runningActivityText =
-                    typeof record.runningActivityText === "string"
-                      ? record.runningActivityText
-                      : typeof record.latestActivityText === "string"
-                        ? record.latestActivityText
-                        : record.runningActivityText === null ||
-                            record.latestActivityText === null
-                          ? null
-                          : undefined;
-                  const runningActivityAt =
-                    typeof record.runningActivityAt === "number" &&
-                    Number.isFinite(record.runningActivityAt)
-                      ? record.runningActivityAt
-                      : typeof record.latestActivityAt === "number" &&
-                          Number.isFinite(record.latestActivityAt)
-                        ? record.latestActivityAt
-                        : record.runningActivityAt === null ||
-                            record.latestActivityAt === null
-                          ? null
-                          : undefined;
-                  const runningStartedAt =
-                    typeof record.startedAt === "number" &&
-                    Number.isFinite(record.startedAt)
-                      ? record.startedAt
-                      : undefined;
-                  return [
-                    {
-                      threadId: record.threadId,
-                      runningActivityText,
-                      runningActivityAt,
-                      runningStartedAt,
-                    },
-                  ];
-                })
-              : [];
-            const nextRunningThreads: RunningThreadSnapshot[] =
-              parsedRunningThreads.length > 0
-                ? parsedRunningThreads
-                : fallbackRunningThreadIds.map((threadId) => ({ threadId }));
-            const nextRunningThreadIds = nextRunningThreads.map(
-              (thread) => thread.threadId,
-            );
-            const nextRunningThreadIdSet = new Set(nextRunningThreadIds);
-            const staleRunningThreadIds =
-              getThreadIdsRequiringSnapshotRevalidation(
-                liveThreadStatusesRef.current,
-                localThreadStatusesRef.current,
-                nextRunningThreadIdSet,
-                activeThreadIdRef.current,
-              );
-            setLiveThreadStatuses((current) => {
-              const next = new Map(current);
-              for (const [threadId, metadata] of next) {
-                if (metadata.status === "running") next.delete(threadId);
-              }
-              for (const thread of nextRunningThreads) {
-                next.set(thread.threadId, {
-                  status: "running",
-                  ...(thread.runningActivityText === undefined
-                    ? {}
-                    : { runningActivityText: thread.runningActivityText }),
-                  ...(thread.runningActivityAt === undefined
-                    ? {}
-                    : { runningActivityAt: thread.runningActivityAt }),
-                  ...(thread.runningStartedAt === undefined
-                    ? {}
-                    : { runningStartedAt: thread.runningStartedAt }),
-                });
-              }
-              return next;
-            });
-            setLocalThreadStatuses((current) =>
-              reconcileLocalThreadStatusesWithSnapshot(
-                current,
-                nextRunningThreadIdSet,
-              ),
-            );
-            if (staleRunningThreadIds.length > 0) {
-              scheduleStatusRevalidate(staleRunningThreadIds[0]);
-              for (const threadId of staleRunningThreadIds) {
-                scheduleThreadSummaryRefresh(threadId);
-              }
-            } else if (hasPendingCompletionSummariesRef.current) {
-              scheduleStatusSnapshotRevalidate();
-            }
-          }
-          if (
-            payload.type === "thread_status" &&
-            typeof payload.threadId === "string" &&
-            (payload.status === "idle" ||
-              payload.status === "running" ||
-              payload.status === "unread")
-          ) {
-            const threadId = payload.threadId;
-            const payloadStatus = payload.status as ThreadStatus;
-            const isActiveUnread = shouldMarkActiveUnreadThreadViewed(
-              payloadStatus,
-              threadId,
+          const parsedRunningThreads: RunningThreadSnapshot[] = Array.isArray(payload.runningThreads)
+            ? payload.runningThreads.flatMap((entry) => {
+                if (!entry || typeof entry !== "object") return [];
+                const record = entry as {
+                  threadId?: unknown;
+                  startedAt?: unknown;
+                  runningActivityText?: unknown;
+                  latestActivityText?: unknown;
+                  runningActivityAt?: unknown;
+                  latestActivityAt?: unknown;
+                };
+                if (typeof record.threadId !== "string") return [];
+                const runningActivityText =
+                  typeof record.runningActivityText === "string"
+                    ? record.runningActivityText
+                    : typeof record.latestActivityText === "string"
+                      ? record.latestActivityText
+                      : record.runningActivityText === null ||
+                          record.latestActivityText === null
+                        ? null
+                        : undefined;
+                const runningActivityAt =
+                  typeof record.runningActivityAt === "number" &&
+                  Number.isFinite(record.runningActivityAt)
+                    ? record.runningActivityAt
+                    : typeof record.latestActivityAt === "number" &&
+                        Number.isFinite(record.latestActivityAt)
+                      ? record.latestActivityAt
+                      : record.runningActivityAt === null ||
+                          record.latestActivityAt === null
+                        ? null
+                        : undefined;
+                const runningStartedAt =
+                  typeof record.startedAt === "number" &&
+                  Number.isFinite(record.startedAt)
+                    ? record.startedAt
+                    : undefined;
+                return [
+                  {
+                    threadId: record.threadId,
+                    runningActivityText,
+                    runningActivityAt,
+                    runningStartedAt,
+                  },
+                ];
+              })
+            : [];
+          const nextRunningThreads: RunningThreadSnapshot[] =
+            parsedRunningThreads.length > 0
+              ? parsedRunningThreads
+              : fallbackRunningThreadIds.map((threadId) => ({ threadId }));
+          const nextRunningThreadIds = nextRunningThreads.map(
+            (thread) => thread.threadId,
+          );
+          const nextRunningThreadIdSet = new Set(nextRunningThreadIds);
+          const staleRunningThreadIds =
+            getThreadIdsRequiringSnapshotRevalidation(
+              liveThreadStatusesRef.current,
+              localThreadStatusesRef.current,
+              nextRunningThreadIdSet,
               activeThreadIdRef.current,
             );
-            if (isActiveUnread) {
-              markActiveThreadViewed(threadId);
+          setLiveThreadStatuses((current) => {
+            const next = new Map(current);
+            for (const [threadId, metadata] of next) {
+              if (metadata.status === "running") next.delete(threadId);
             }
-            const status = isActiveUnread ? "idle" : payloadStatus;
-            const completedAt =
-              typeof payload.completedAt === "number" &&
-              Number.isFinite(payload.completedAt)
-                ? payload.completedAt
-                : undefined;
-            const summaryStatus =
-              payload.summaryStatus === "pending" ||
-              payload.summaryStatus === "ready" ||
-              payload.summaryStatus === "failed"
-                ? payload.summaryStatus
-                : undefined;
-            const summary =
-              typeof payload.summary === "string"
-                ? payload.summary
-                : payload.summary === null
-                  ? null
-                  : undefined;
-            const runningActivityText =
-              typeof payload.runningActivityText === "string"
-                ? payload.runningActivityText
-                : payload.runningActivityText === null
-                  ? null
-                  : undefined;
-            const runningActivityAt =
-              typeof payload.runningActivityAt === "number" &&
-              Number.isFinite(payload.runningActivityAt)
-                ? payload.runningActivityAt
-                : payload.runningActivityAt === null
-                  ? null
-                  : undefined;
-            const runningStartedAt =
-              typeof payload.runningStartedAt === "number" &&
-              Number.isFinite(payload.runningStartedAt)
-                ? payload.runningStartedAt
-                : payload.runningStartedAt === null
-                  ? null
-                  : undefined;
-            const existingMetadata =
-              localThreadStatusesRef.current.get(threadId) ??
-              liveThreadStatusesRef.current.get(threadId);
-            const hasMetadataOnlyUpdate =
-              summaryStatus !== undefined ||
-              summary !== undefined ||
-              runningActivityText !== undefined ||
-              runningActivityAt !== undefined ||
-              runningStartedAt !== undefined;
-            const hasSummaryMetadataUpdate =
-              summaryStatus !== undefined || summary !== undefined;
-            const isMetadataOnlyUpdate =
-              hasMetadataOnlyUpdate &&
-              existingMetadata?.status === status &&
-              (completedAt === undefined ||
-                existingMetadata.completedAt === completedAt);
-            setHasStatusSnapshot(true);
-            setLiveThreadStatuses((current) => {
-              const existing = current.get(threadId);
-              if (
-                existing?.status === status &&
-                (completedAt === undefined || existing.completedAt === completedAt) &&
-                (summaryStatus === undefined || existing.summaryStatus === summaryStatus) &&
-                (summary === undefined || existing.summary === summary) &&
-                (runningActivityText === undefined ||
-                  existing.runningActivityText === runningActivityText) &&
-                (runningActivityAt === undefined ||
-                  existing.runningActivityAt === runningActivityAt) &&
-                (runningStartedAt === undefined ||
-                  existing.runningStartedAt === runningStartedAt)
-              ) {
-                return current;
-              }
-              const next = new Map(current);
-              next.set(
-                threadId,
-                mergeThreadMetadata(existing, {
-                  status,
-                  ...(completedAt === undefined ? {} : { completedAt }),
-                  ...(summaryStatus === undefined ? {} : { summaryStatus }),
-                  ...(summary === undefined ? {} : { summary }),
-                  ...(runningActivityText === undefined ? {} : { runningActivityText }),
-                  ...(runningActivityAt === undefined ? {} : { runningActivityAt }),
-                  ...(runningStartedAt === undefined ? {} : { runningStartedAt }),
-                }),
-              );
-              return next;
-            });
-            setLocalThreadStatuses((current) => {
-              const existing = current.get(threadId);
-              if (
-                existing?.status === status &&
-                (completedAt === undefined || existing.completedAt === completedAt) &&
-                (summaryStatus === undefined || existing.summaryStatus === summaryStatus) &&
-                (summary === undefined || existing.summary === summary) &&
-                (runningActivityText === undefined ||
-                  existing.runningActivityText === runningActivityText) &&
-                (runningActivityAt === undefined ||
-                  existing.runningActivityAt === runningActivityAt) &&
-                (runningStartedAt === undefined ||
-                  existing.runningStartedAt === runningStartedAt)
-              ) {
-                return current;
-              }
-              const next = new Map(current);
-              next.set(
-                threadId,
-                mergeThreadMetadata(existing, {
-                  status,
-                  ...(completedAt === undefined ? {} : { completedAt }),
-                  ...(summaryStatus === undefined ? {} : { summaryStatus }),
-                  ...(summary === undefined ? {} : { summary }),
-                  ...(runningActivityText === undefined ? {} : { runningActivityText }),
-                  ...(runningActivityAt === undefined ? {} : { runningActivityAt }),
-                  ...(runningStartedAt === undefined ? {} : { runningStartedAt }),
-                }),
-              );
-              return next;
-            });
-            if (status === "idle" || status === "unread") {
-              scheduleThreadSummaryRefresh(threadId);
-            }
-            if (
-              shouldRevalidateThreadStatusUpdate(
-                status,
-                isMetadataOnlyUpdate,
-                hasSummaryMetadataUpdate,
-              )
-            ) {
-              scheduleStatusRevalidate(threadId, {
-                includeActive: hasSummaryMetadataUpdate,
+            for (const thread of nextRunningThreads) {
+              next.set(thread.threadId, {
+                status: "running",
+                ...(thread.runningActivityText === undefined
+                  ? {}
+                  : { runningActivityText: thread.runningActivityText }),
+                ...(thread.runningActivityAt === undefined
+                  ? {}
+                  : { runningActivityAt: thread.runningActivityAt }),
+                ...(thread.runningStartedAt === undefined
+                  ? {}
+                  : { runningStartedAt: thread.runningStartedAt }),
               });
             }
+            return next;
+          });
+          setLocalThreadStatuses((current) =>
+            reconcileLocalThreadStatusesWithSnapshot(
+              current,
+              nextRunningThreadIdSet,
+            ),
+          );
+          if (staleRunningThreadIds.length > 0) {
+            scheduleStatusRevalidate(staleRunningThreadIds[0]);
+            for (const threadId of staleRunningThreadIds) {
+              scheduleThreadSummaryRefresh(threadId);
+            }
+          } else if (hasPendingCompletionSummariesRef.current) {
+            scheduleStatusSnapshotRevalidate();
           }
-        } catch {
-          // Ignore malformed status frames.
         }
-      });
-
-      nextSocket.addEventListener("close", () => {
-        if (closedByEffect || socket !== nextSocket) return;
-        reconnectTimer = window.setTimeout(connect, 1000);
-      });
-      nextSocket.addEventListener("error", () => {
-        if (socket !== nextSocket) return;
-        nextSocket.close();
-      });
-    };
-
-    connect();
+        if (
+          payload.type === "thread_status" &&
+          typeof payload.threadId === "string" &&
+          (payload.status === "idle" ||
+            payload.status === "running" ||
+            payload.status === "unread")
+        ) {
+          const threadId = payload.threadId;
+          const payloadStatus = payload.status as ThreadStatus;
+          const isActiveUnread = shouldMarkActiveUnreadThreadViewed(
+            payloadStatus,
+            threadId,
+            activeThreadIdRef.current,
+          );
+          if (isActiveUnread) {
+            markActiveThreadViewed(threadId);
+          }
+          const status = isActiveUnread ? "idle" : payloadStatus;
+          const completedAt =
+            typeof payload.completedAt === "number" &&
+            Number.isFinite(payload.completedAt)
+              ? payload.completedAt
+              : undefined;
+          const summaryStatus =
+            payload.summaryStatus === "pending" ||
+            payload.summaryStatus === "ready" ||
+            payload.summaryStatus === "failed"
+              ? payload.summaryStatus
+              : undefined;
+          const summary =
+            typeof payload.summary === "string"
+              ? payload.summary
+              : payload.summary === null
+                ? null
+                : undefined;
+          const runningActivityText =
+            typeof payload.runningActivityText === "string"
+              ? payload.runningActivityText
+              : payload.runningActivityText === null
+                ? null
+                : undefined;
+          const runningActivityAt =
+            typeof payload.runningActivityAt === "number" &&
+            Number.isFinite(payload.runningActivityAt)
+              ? payload.runningActivityAt
+              : payload.runningActivityAt === null
+                ? null
+                : undefined;
+          const runningStartedAt =
+            typeof payload.runningStartedAt === "number" &&
+            Number.isFinite(payload.runningStartedAt)
+              ? payload.runningStartedAt
+              : payload.runningStartedAt === null
+                ? null
+                : undefined;
+          const existingMetadata =
+            localThreadStatusesRef.current.get(threadId) ??
+            liveThreadStatusesRef.current.get(threadId);
+          const hasMetadataOnlyUpdate =
+            summaryStatus !== undefined ||
+            summary !== undefined ||
+            runningActivityText !== undefined ||
+            runningActivityAt !== undefined ||
+            runningStartedAt !== undefined;
+          const hasSummaryMetadataUpdate =
+            summaryStatus !== undefined || summary !== undefined;
+          const isMetadataOnlyUpdate =
+            hasMetadataOnlyUpdate &&
+            existingMetadata?.status === status &&
+            (completedAt === undefined ||
+              existingMetadata.completedAt === completedAt);
+          setHasStatusSnapshot(true);
+          setLiveThreadStatuses((current) => {
+            const existing = current.get(threadId);
+            if (
+              existing?.status === status &&
+              (completedAt === undefined || existing.completedAt === completedAt) &&
+              (summaryStatus === undefined || existing.summaryStatus === summaryStatus) &&
+              (summary === undefined || existing.summary === summary) &&
+              (runningActivityText === undefined ||
+                existing.runningActivityText === runningActivityText) &&
+              (runningActivityAt === undefined ||
+                existing.runningActivityAt === runningActivityAt) &&
+              (runningStartedAt === undefined ||
+                existing.runningStartedAt === runningStartedAt)
+            ) {
+              return current;
+            }
+            const next = new Map(current);
+            next.set(
+              threadId,
+              mergeThreadMetadata(existing, {
+                status,
+                ...(completedAt === undefined ? {} : { completedAt }),
+                ...(summaryStatus === undefined ? {} : { summaryStatus }),
+                ...(summary === undefined ? {} : { summary }),
+                ...(runningActivityText === undefined ? {} : { runningActivityText }),
+                ...(runningActivityAt === undefined ? {} : { runningActivityAt }),
+                ...(runningStartedAt === undefined ? {} : { runningStartedAt }),
+              }),
+            );
+            return next;
+          });
+          setLocalThreadStatuses((current) => {
+            const existing = current.get(threadId);
+            if (
+              existing?.status === status &&
+              (completedAt === undefined || existing.completedAt === completedAt) &&
+              (summaryStatus === undefined || existing.summaryStatus === summaryStatus) &&
+              (summary === undefined || existing.summary === summary) &&
+              (runningActivityText === undefined ||
+                existing.runningActivityText === runningActivityText) &&
+              (runningActivityAt === undefined ||
+                existing.runningActivityAt === runningActivityAt) &&
+              (runningStartedAt === undefined ||
+                existing.runningStartedAt === runningStartedAt)
+            ) {
+              return current;
+            }
+            const next = new Map(current);
+            next.set(
+              threadId,
+              mergeThreadMetadata(existing, {
+                status,
+                ...(completedAt === undefined ? {} : { completedAt }),
+                ...(summaryStatus === undefined ? {} : { summaryStatus }),
+                ...(summary === undefined ? {} : { summary }),
+                ...(runningActivityText === undefined ? {} : { runningActivityText }),
+                ...(runningActivityAt === undefined ? {} : { runningActivityAt }),
+                ...(runningStartedAt === undefined ? {} : { runningStartedAt }),
+              }),
+            );
+            return next;
+          });
+          if (status === "idle" || status === "unread") {
+            scheduleThreadSummaryRefresh(threadId);
+          }
+          if (
+            shouldRevalidateThreadStatusUpdate(
+              status,
+              isMetadataOnlyUpdate,
+              hasSummaryMetadataUpdate,
+            )
+          ) {
+            scheduleStatusRevalidate(threadId, {
+              includeActive: hasSummaryMetadataUpdate,
+            });
+          }
+        }
+      } catch {
+        // Ignore malformed status frames.
+      }
+    });
 
     return () => {
       closedByEffect = true;
-      if (reconnectTimer) window.clearTimeout(reconnectTimer);
       if (revalidateTimer) window.clearTimeout(revalidateTimer);
       for (const timer of metadataRefreshTimers.values()) {
         window.clearTimeout(timer);
       }
       metadataRefreshTimers.clear();
-      socket?.close();
+      socket.close();
     };
   }, [
     currentWorkspace?.id,

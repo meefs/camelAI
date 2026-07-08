@@ -168,36 +168,60 @@ function authLoaderState(chatGroups: ChatGroupView[] | Promise<ChatGroupView[]>)
   };
 }
 
-class MockStatusWebSocket {
-  static instances: MockStatusWebSocket[] = [];
+// The status socket in use-chat-groups is a partysocket ReconnectingWebSocket, so
+// mock the `partysocket` module (not the global WebSocket) — the mock IS the socket
+// the hook constructs, so `instances[0].emit(...)` drives its message listener
+// directly, as before. Defined via vi.hoisted so the hoisted vi.mock factory can
+// reference it.
+const { MockStatusWebSocket } = vi.hoisted(() => {
+  class MockStatusWebSocket {
+    static instances: MockStatusWebSocket[] = [];
 
-  readonly url: string;
-  readonly listeners = new Map<string, Set<(event: MessageEvent | Event) => void>>();
+    readonly url: string;
+    readonly listeners = new Map<
+      string,
+      Set<(event: MessageEvent | Event) => void>
+    >();
 
-  constructor(url: string) {
-    this.url = url;
-    MockStatusWebSocket.instances.push(this);
-  }
+    constructor(url: string) {
+      this.url = url;
+      MockStatusWebSocket.instances.push(this);
+    }
 
-  addEventListener(type: string, listener: (event: MessageEvent | Event) => void) {
-    const listeners = this.listeners.get(type) ?? new Set();
-    listeners.add(listener);
-    this.listeners.set(type, listeners);
-  }
+    addEventListener(
+      type: string,
+      listener: (event: MessageEvent | Event) => void,
+    ) {
+      const listeners = this.listeners.get(type) ?? new Set();
+      listeners.add(listener);
+      this.listeners.set(type, listeners);
+    }
 
-  close() {
-    for (const listener of this.listeners.get("close") ?? []) {
-      listener(new Event("close"));
+    removeEventListener(
+      type: string,
+      listener: (event: MessageEvent | Event) => void,
+    ) {
+      this.listeners.get(type)?.delete(listener);
+    }
+
+    close() {
+      for (const listener of this.listeners.get("close") ?? []) {
+        listener(new Event("close"));
+      }
+    }
+
+    emit(payload: unknown) {
+      const event = { data: JSON.stringify(payload) } as MessageEvent;
+      for (const listener of this.listeners.get("message") ?? []) {
+        listener(event);
+      }
     }
   }
 
-  emit(payload: unknown) {
-    const event = { data: JSON.stringify(payload) } as MessageEvent;
-    for (const listener of this.listeners.get("message") ?? []) {
-      listener(event);
-    }
-  }
-}
+  return { MockStatusWebSocket };
+});
+
+vi.mock("partysocket", () => ({ WebSocket: MockStatusWebSocket }));
 
 beforeEach(() => {
   MockStatusWebSocket.instances = [];

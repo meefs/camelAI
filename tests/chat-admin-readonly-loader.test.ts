@@ -9,6 +9,7 @@ const adminGetThreadContextByIdMock = vi.fn();
 const getThreadMock = vi.fn();
 const getThreadPreviewStateMock = vi.fn();
 const getTodoStateMock = vi.fn();
+const getUiMessagesMock = vi.fn();
 const getWorkspaceModelPickerStateMock = vi.fn();
 const getOrgMock = vi.fn();
 const getWorkerScriptMock = vi.fn();
@@ -38,6 +39,7 @@ vi.mock('@/lib/chat-do.server', () => ({
   getThread: getThreadMock,
   getThreadPreviewState: getThreadPreviewStateMock,
   getTodoState: getTodoStateMock,
+  getUiMessages: getUiMessagesMock,
   getWorkspaceModelPickerState: getWorkspaceModelPickerStateMock,
 }));
 
@@ -90,6 +92,7 @@ describe('chat loader admin readonly mode', () => {
       version: 0,
     });
     getTodoStateMock.mockResolvedValue([]);
+    getUiMessagesMock.mockResolvedValue([]);
     getWorkspaceModelPickerStateMock.mockResolvedValue({
       llmProvider: null,
       experimentalSettings: { claude_proxy_models: false },
@@ -172,6 +175,7 @@ describe('chat loader admin readonly mode', () => {
     expect(await result.chatData).toEqual({
       messages: [],
       messagesError: null,
+      initialUiMessages: [],
       todos: [],
       previewTabs: [],
       activeTabId: null,
@@ -198,6 +202,7 @@ describe('chat loader workspace mismatch handling', () => {
       version: 0,
     });
     getTodoStateMock.mockResolvedValue([]);
+    getUiMessagesMock.mockResolvedValue([]);
     requireSessionWorkspaceAccessMock.mockResolvedValue({
       orgId: 'org_active',
       workspaceId: 'ws_active',
@@ -269,6 +274,7 @@ describe('chat loader workspace mismatch handling', () => {
     expect(await result.chatData).toEqual({
       messages: [],
       messagesError: null,
+      initialUiMessages: [],
       todos: [],
       previewTabs: [],
       activeTabId: null,
@@ -306,6 +312,7 @@ describe('chat loader workspace mismatch handling', () => {
         }),
       ],
       messagesError: null,
+      initialUiMessages: [],
       todos: [],
       previewTabs: [],
       activeTabId: null,
@@ -347,6 +354,7 @@ describe('chat loader workspace mismatch handling', () => {
     expect(result.pendingFirstTurn).toBe(true);
     // ...with zero reads against the cold ChatThreadDO.
     expect(readThreadMessagesMock).not.toHaveBeenCalled();
+    expect(getUiMessagesMock).not.toHaveBeenCalled();
     expect(getThreadPreviewStateMock).not.toHaveBeenCalled();
     expect(getTodoStateMock).not.toHaveBeenCalled();
 
@@ -365,7 +373,7 @@ describe('chat loader workspace mismatch handling', () => {
   it('does NOT take the pending-first-turn fast path without ?newThread=1 (e.g. an API-created thread)', async () => {
     // A thread created with a stored first_user_message + count 0 but no started
     // run (the workspaces chat-threads API does exactly this) must load normally:
-    // read the transcript, and not synthesize a pending-first message.
+    // read the render history, and not synthesize a pending-first message.
     requireAuthContextMock.mockResolvedValue({
       currentWorkspace: { id: 'ws_active' },
       currentOrg: { id: 'org_active', slug: 'acme' },
@@ -393,7 +401,10 @@ describe('chat loader workspace mismatch handling', () => {
     expect(
       chatData.messages.some((m) => m.id === 'pending-first:thread_123'),
     ).toBe(false);
-    expect(readThreadMessagesMock).toHaveBeenCalled();
+    expect(getUiMessagesMock).toHaveBeenCalled();
+    // The legacy pi_core transcript read is admin-readonly only; a live load
+    // makes exactly one transcript RPC (the ai-chat render history).
+    expect(readThreadMessagesMock).not.toHaveBeenCalled();
   });
 
   it('does not block existing-thread navigation on chat data resolution', async () => {
@@ -411,7 +422,7 @@ describe('chat loader workspace mismatch handling', () => {
       workspace_id: 'ws_active',
       title: 'Workspace Thread',
     });
-    readThreadMessagesMock.mockReturnValue(pendingMessages);
+    getUiMessagesMock.mockReturnValue(pendingMessages);
 
     const result = await loader({
       request: new Request('https://camelai.com/chat/thread_123'),
@@ -433,6 +444,7 @@ describe('chat loader workspace mismatch handling', () => {
     expect(await result.chatData).toEqual({
       messages: [],
       messagesError: null,
+      initialUiMessages: [],
       todos: [],
       previewTabs: [],
       activeTabId: null,
@@ -457,9 +469,9 @@ describe('chat loader workspace mismatch handling', () => {
       context,
       params: { id: 'thread_123' },
     } as never);
-    expect(readThreadMessagesMock).toHaveBeenCalledTimes(1);
+    expect(getUiMessagesMock).toHaveBeenCalledTimes(1);
 
-    readThreadMessagesMock.mockClear();
+    getUiMessagesMock.mockClear();
     const sameThreadShouldRevalidate = shouldRevalidate({
       currentUrl: new URL('https://camelai.com/chat/thread_123'),
       nextUrl: new URL('https://camelai.com/chat/thread_123'),
@@ -474,14 +486,9 @@ describe('chat loader workspace mismatch handling', () => {
         params: { id: 'thread_123' },
       } as never);
     }
-    expect(readThreadMessagesMock).toHaveBeenCalledTimes(1);
-    expect(readThreadMessagesMock).toHaveBeenCalledWith(context, {
-      workspaceId: 'ws_active',
-      orgId: 'org_active',
-      threadId: 'thread_123',
-      skipBanCheck: undefined,
-    });
-    readThreadMessagesMock.mockClear();
+    expect(getUiMessagesMock).toHaveBeenCalledTimes(1);
+    expect(getUiMessagesMock).toHaveBeenCalledWith(context, 'thread_123');
+    getUiMessagesMock.mockClear();
 
     const threadChangeShouldRevalidate = shouldRevalidate({
       currentUrl: new URL('https://camelai.com/chat/thread_123'),
@@ -498,12 +505,9 @@ describe('chat loader workspace mismatch handling', () => {
       params: { id: 'thread_456' },
     } as never);
 
-    expect(readThreadMessagesMock).toHaveBeenCalledWith(context, {
-      workspaceId: 'ws_active',
-      orgId: 'org_active',
-      threadId: 'thread_456',
-      skipBanCheck: undefined,
-    });
+    expect(getUiMessagesMock).toHaveBeenCalledWith(context, 'thread_456');
+    // Live loads never touch the legacy pi_core transcript RPC.
+    expect(readThreadMessagesMock).not.toHaveBeenCalled();
   });
 
   it('loads todo state into chat data for existing threads', async () => {

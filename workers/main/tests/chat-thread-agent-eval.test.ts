@@ -22,12 +22,13 @@ describe("ChatThreadDO agent eval sessions", () => {
     fake.nextChatEventId = 1;
     fake.chatIsStreaming = false;
     fake.piEventHandlerChain = Promise.resolve();
-    // pushChatEvent now folds events into the live overlay and syncs Agent
-    // state; seed the overlay fields the fake doesn't get from the SDK ctor.
-    fake.liveMessages = [];
-    fake.liveStreamingMessageId = null;
-    fake.lastLiveSyncAtMs = 0;
-    fake.pendingOverlayArtifacts = new Map();
+    // pushChatEvent relays chunks through the encoder and feeds the eval
+    // collector; seed the bridge fields the fake doesn't get from the SDK ctor
+    // (no bridged turn here, so the encoder relay is a no-op).
+    fake.piChunkEncoder = null;
+    fake.piStreamWriter = null;
+    fake.piPreAttachChunkBuffer = null;
+    fake.activePiStreamTurnId = null;
     fake.setState = vi.fn();
     fake.syncAgentState = vi.fn();
     fake.ctx = {

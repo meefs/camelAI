@@ -256,6 +256,20 @@ vi.mock("agents/react", () => ({
   useAgent: agentRuntime.useAgent,
 }));
 
+// Chat owns its transcript through ai-chat (useAgentChat) now; this test drives
+// pendingQuestion via Agent state, not the live stream, so stub the projection
+// hook to keep the real ai-chat client out of the render.
+vi.mock("@/lib/use-pi-chat-stream", () => ({
+  usePiChatStream: () => ({
+    messages: [],
+    uiMessages: [],
+    status: "ready",
+    isStreaming: false,
+    streamingMessageId: null,
+    setUiMessages: vi.fn(),
+  }),
+}));
+
 import Chat from "@/components/Chat";
 
 const RATE_LIMIT_ERROR =

@@ -7,6 +7,7 @@ import {
   useRevalidator,
 } from "react-router";
 import type { Route } from "./+types/_app.chat.$id";
+import type { UIMessage } from "ai";
 import {
   requireAuthContext,
   requireSuperuser,
@@ -15,6 +16,7 @@ import {
 } from "@/lib/auth.server";
 import { createSessionCookieHeader } from "@/lib/cookies.server";
 import type { MentionableProject } from "@/lib/mentions";
+import { resolveDisplayChatData } from "@/lib/chat-thread-display";
 import { loadWorkspaceMentionSources } from "@/lib/mention-sources.server";
 import { getEnv } from "@/lib/cloudflare.server";
 import { getAppUrlContext } from "@/lib/app-url.server";
@@ -271,6 +273,10 @@ export async function action({ request, context, params }: Route.ActionArgs) {
 interface ChatData {
   messages: Message[];
   messagesError: string | null;
+  // ai-chat-owned durable render history (commit 4). The live-user loader branch
+  // fetches this via getUiMessages(); useAgentChat mounts it as its initial
+  // messages. The admin-readonly branch leaves it empty (it renders pi_core).
+  initialUiMessages: UIMessage[];
   todos: TodoItem[];
   previewTabs: PreviewTarget[];
   activeTabId: string | null;
@@ -281,6 +287,7 @@ type ChatDataValue = ChatData | Promise<ChatData>;
 const EMPTY_CHAT_DATA: ChatData = {
   messages: [],
   messagesError: null,
+  initialUiMessages: [],
   todos: [],
   previewTabs: [],
   activeTabId: null,
@@ -308,6 +315,7 @@ function buildChatDataError(error: unknown): ChatData {
   console.error("Failed to load chat data:", error);
   return {
     ...EMPTY_CHAT_DATA,
+    initialUiMessages: [],
     messagesError: "Failed to load chat messages",
   };
 }
@@ -416,7 +424,15 @@ async function buildChatData(
   options: {
     orgId: string;
     workspaceId: string;
-    loadMessages: boolean;
+    // Admin-readonly branch only: fetch the legacy pi_core transcript
+    // (readThreadMessages) it renders directly. The live branch leaves it off —
+    // its transcript is the ai-chat render history, so a normal chat load makes
+    // exactly ONE transcript RPC (Chat.tsx derives any fallback Message view
+    // from initialUiMessages).
+    loadLegacyMessages: boolean;
+    // Live-user branch only: fetch the ai-chat render history (getUiMessages)
+    // that useAgentChat mounts. Admin-readonly leaves it off (renders pi_core).
+    loadUiMessages: boolean;
     skipBanCheck?: boolean;
   },
 ): Promise<ChatData> {
@@ -466,7 +482,7 @@ async function buildChatData(
     };
   })();
 
-  const messagesPromise = options.loadMessages
+  const messagesPromise = options.loadLegacyMessages
     ? readThreadMessages(context, {
         workspaceId: options.workspaceId,
         orgId: options.orgId,
@@ -475,19 +491,36 @@ async function buildChatData(
       })
         .then((messages) => ({ messages, messagesError: null }))
     : Promise.resolve({ messages: [], messagesError: null });
+  // The live branch has no legacy transcript to fall back on, so a failed
+  // render-history read must surface as messagesError instead of silently
+  // rendering an empty thread.
+  const uiMessagesPromise = options.loadUiMessages
+    ? chatDO
+        .getUiMessages(context, threadId)
+        .then((uiMessages) => ({ uiMessages, uiMessagesError: null }))
+        .catch((error) => {
+          console.error("Failed to load ai-chat render history:", error);
+          return {
+            uiMessages: [] as UIMessage[],
+            uiMessagesError: "Failed to load chat messages",
+          };
+        })
+    : Promise.resolve({ uiMessages: [] as UIMessage[], uiMessagesError: null });
   const todosPromise = chatDO
     .getTodoState(context, threadId)
     .catch(() => [] as unknown[]);
 
-  const [previewData, messageData, todos] = await Promise.all([
+  const [previewData, messageData, uiMessageData, todos] = await Promise.all([
     previewDataPromise,
     messagesPromise,
+    uiMessagesPromise,
     todosPromise,
   ]);
   return {
     ...previewData,
     messages: messageData.messages,
-    messagesError: messageData.messagesError,
+    messagesError: messageData.messagesError ?? uiMessageData.uiMessagesError,
+    initialUiMessages: uiMessageData.uiMessages,
     todos: Array.isArray(todos) ? (todos as TodoItem[]) : [],
   };
 }
@@ -551,7 +584,8 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
       chatData: await buildChatData(context, authEnv, params.id, {
         orgId: threadContext.org_id,
         workspaceId: threadContext.workspace_id,
-        loadMessages: true,
+        loadLegacyMessages: true,
+        loadUiMessages: false,
         skipBanCheck: true,
       }),
       threadTitle: thread?.title ?? threadContext.title ?? null,
@@ -761,7 +795,8 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
     ? buildChatData(context, authEnv, params.id, {
         orgId,
         workspaceId,
-        loadMessages: !useClientMessageCache,
+        loadLegacyMessages: false,
+        loadUiMessages: !useClientMessageCache,
       })
         .then((resolvedChatData) => {
           recordChatThreadRouteLoaderStage(
@@ -775,7 +810,7 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
                 ? "loaded_without_messages"
                 : "loaded",
               model: thread.model,
-              count: resolvedChatData.messages.length,
+              count: resolvedChatData.initialUiMessages.length,
               size: resolvedChatData.previewTabs.length,
             },
           );
@@ -995,13 +1030,11 @@ export default function ChatPage() {
     cachedSnapshot &&
       (!isDisplayingLoaderThread || usedClientMessageCache || isLoadingChatData),
   );
-  const displayChatData = shouldUseCachedSnapshot
-    ? {
-        ...resolvedChatData,
-        messages: cachedSnapshot?.messages ?? resolvedChatData.messages,
-        todos: cachedSnapshot?.todos ?? resolvedChatData.todos,
-      }
-    : resolvedChatData;
+  const displayChatData = resolveDisplayChatData(
+    resolvedChatData,
+    cachedSnapshot,
+    shouldUseCachedSnapshot,
+  );
   const isLoadingDisplayMessages =
     isLoadingChatData &&
     !shouldUseCachedSnapshot &&
@@ -1189,7 +1222,11 @@ export default function ChatPage() {
   };
 
   const handleSnapshotChange = useCallback(
-    (snapshot: { messages: Message[]; todos: TodoItem[] }) => {
+    (snapshot: {
+      messages: Message[];
+      uiMessages: UIMessage[];
+      todos: TodoItem[];
+    }) => {
       if (!displayThreadId || isLoadingDisplayMessages) return;
       setSnapshot(displayThreadId, snapshot);
     },
@@ -1231,6 +1268,7 @@ export default function ChatPage() {
             workspaceId={workspaceId}
             chatGroupId={liveActiveChatGroup?.id ?? resolvedActiveGroupId}
             initialMessages={displayChatData.messages}
+            initialUiMessages={displayChatData.initialUiMessages}
             initialTodos={displayChatData.todos}
             threadModel={displayThreadModel}
             llmProvider={llmProvider}

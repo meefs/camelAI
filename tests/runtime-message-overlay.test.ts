@@ -1,9 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import {
-  findStaleLoaderPayloadId,
-  mergeOverlay,
-} from "@/lib/runtime-message-state";
+import { mergeOverlay } from "@/lib/runtime-message-state";
 import type { Message } from "@/types";
 
 function assistant(id: string, text: string, isStreaming = false): Message {
@@ -139,34 +136,5 @@ describe("mergeOverlay", () => {
       "turn-starter",
       "stream_2",
     ]);
-  });
-});
-
-describe("findStaleLoaderPayloadId", () => {
-  const finalized = assistant("fork_1", "final answer");
-  const older = assistant("prev-turn", "earlier");
-
-  it("flags a payload missing a finalized message the client still holds", () => {
-    // A revalidation sampled mid-turn returns history without the message the
-    // turn-end frame just committed; applying it would drop the final message.
-    expect(
-      findStaleLoaderPayloadId([older, finalized], [older], ["fork_1"]),
-    ).toBe("fork_1");
-  });
-
-  it("accepts a payload that contains the finalized message", () => {
-    expect(
-      findStaleLoaderPayloadId([older, finalized], [older, finalized], ["fork_1"]),
-    ).toBeNull();
-  });
-
-  it("accepts a payload when the client never held the finalized message", () => {
-    // The client missed the turn-end frame entirely (disconnected); a fresh
-    // payload is the recovery path and must not be vetoed.
-    expect(findStaleLoaderPayloadId([older], [older], ["fork_1"])).toBeNull();
-  });
-
-  it("accepts any payload when no turn has finalized ids recorded", () => {
-    expect(findStaleLoaderPayloadId([older, finalized], [], [])).toBeNull();
   });
 });

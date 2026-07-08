@@ -7,8 +7,38 @@ import type {
   ToolUseBlock,
 } from '@/types';
 import type { RuntimeCallArtifact } from './runtime-artifacts';
-import { parseTeammateMessage } from '@/lib/teammate-message';
-import { parseTaskNotificationFromContent } from '@/lib/task-notification';
+import { parseTeammateMessage, type ParsedTeammateMessage } from '@/lib/teammate-message';
+import {
+  parseTaskNotificationFromContent,
+  type ParsedTaskNotification,
+} from '@/lib/task-notification';
+
+/**
+ * Identity-keyed per-message caches for the render-time normalization chain
+ * (normalizeToolResultMessages → mergeTeammateMessages → mergeTaskNotifications).
+ * The chain re-runs over the whole transcript on every streaming tick, but only
+ * the streaming message's object identity changes per tick — so the per-message
+ * pure work (content sanitizing, teammate/task-notification XML parsing,
+ * tool_use extraction) is cached here and only the cheap cross-message merge
+ * loops re-run. Messages are immutable snapshots (a changed message is a new
+ * object), which is what makes identity keying sound. Optional everywhere:
+ * callers that don't stream (tests, one-shot paths) can omit it.
+ */
+export interface TranscriptNormalizationCaches {
+  toolResultClassification: WeakMap<Message, ToolResultMessageClassification>;
+  teammateParse: WeakMap<Message, ParsedTeammateMessage | null>;
+  taskNotificationParse: WeakMap<Message, ParsedTaskNotification | null>;
+  toolUseBlocks: WeakMap<Message, ToolUseBlock[]>;
+}
+
+export function createTranscriptNormalizationCaches(): TranscriptNormalizationCaches {
+  return {
+    toolResultClassification: new WeakMap(),
+    teammateParse: new WeakMap(),
+    taskNotificationParse: new WeakMap(),
+    toolUseBlocks: new WeakMap(),
+  };
+}
 
 export interface SDKEvent {
   type: string;
@@ -303,14 +333,32 @@ interface ToolUseIndexEntry {
   tool: ToolUseBlock;
 }
 
-function buildToolUseIndex(messages: Message[]): Map<string, ToolUseIndexEntry> {
+function extractToolUseBlocks(
+  message: Message,
+  cache?: WeakMap<Message, ToolUseBlock[]>,
+): ToolUseBlock[] {
+  const cached = cache?.get(message);
+  if (cached) return cached;
+  const blocks =
+    message.role === 'assistant' && Array.isArray(message.content)
+      ? sanitizeContentBlocks(message.content).filter(
+          (block): block is ToolUseBlock =>
+            block.type === 'tool_use' && Boolean(block.id),
+        )
+      : [];
+  cache?.set(message, blocks);
+  return blocks;
+}
+
+function buildToolUseIndex(
+  messages: Message[],
+  cache?: WeakMap<Message, ToolUseBlock[]>,
+): Map<string, ToolUseIndexEntry> {
   const index = new Map<string, ToolUseIndexEntry>();
   messages.forEach((message, messageIndex) => {
-    if (message.role !== 'assistant' || !Array.isArray(message.content)) return;
-    sanitizeContentBlocks(message.content).forEach(block => {
-      if (block.type !== 'tool_use' || !block.id) return;
+    for (const block of extractToolUseBlocks(message, cache)) {
       index.set(block.id, { messageIndex, tool: block });
-    });
+    }
   });
   return index;
 }
@@ -471,21 +519,49 @@ export function attachArtifactsToToolResultMessages(
   };
 }
 
-export function normalizeToolResultMessages(messages: Message[]): Message[] {
+/** Per-message pure step of normalizeToolResultMessages: `toolResults` is set
+ * for a user message made entirely of tool_result blocks (lifted into earlier
+ * messages by the merge loop), otherwise `sanitizedMessage` is what renders. */
+export interface ToolResultMessageClassification {
+  sanitizedMessage: Message;
+  toolResults: ToolResultBlock[] | null;
+}
+
+function classifyToolResultMessage(
+  message: Message,
+  cache?: WeakMap<Message, ToolResultMessageClassification>,
+): ToolResultMessageClassification {
+  const cached = cache?.get(message);
+  if (cached) return cached;
+  const contentBlocks = Array.isArray(message.content)
+    ? sanitizeContentBlocks(message.content)
+    : null;
+  const isToolResultMessage = message.role === 'user' &&
+    contentBlocks &&
+    contentBlocks.length > 0 &&
+    contentBlocks.every(isToolResultBlock);
+  const classification: ToolResultMessageClassification =
+    isToolResultMessage && contentBlocks
+      ? { sanitizedMessage: message, toolResults: contentBlocks.filter(isToolResultBlock) }
+      : { sanitizedMessage: sanitizeMessageContentForRender(message), toolResults: null };
+  cache?.set(message, classification);
+  return classification;
+}
+
+export function normalizeToolResultMessages(
+  messages: Message[],
+  caches?: TranscriptNormalizationCaches,
+): Message[] {
   let normalized: Message[] = [];
   let changed = false;
 
   messages.forEach(message => {
-    const contentBlocks = Array.isArray(message.content)
-      ? sanitizeContentBlocks(message.content)
-      : null;
-    const isToolResultMessage = message.role === 'user' &&
-      contentBlocks &&
-      contentBlocks.length > 0 &&
-      contentBlocks.every(isToolResultBlock);
+    const { sanitizedMessage, toolResults } = classifyToolResultMessage(
+      message,
+      caches?.toolResultClassification,
+    );
 
-    if (!isToolResultMessage || !contentBlocks) {
-      const sanitizedMessage = sanitizeMessageContentForRender(message);
+    if (!toolResults) {
       if (sanitizedMessage !== message) {
         changed = true;
       }
@@ -493,7 +569,6 @@ export function normalizeToolResultMessages(messages: Message[]): Message[] {
       return;
     }
 
-    const toolResults = contentBlocks.filter(isToolResultBlock);
     normalized = attachToolResultsToMessages(normalized, toolResults, {
       threadId: message.thread_id,
       createdAt: message.created_at,
@@ -514,7 +589,27 @@ export function normalizeToolResultMessages(messages: Message[]): Message[] {
  * to the preceding assistant message — so they render inline with the
  * assistant's tool calls and text, with identical spacing.
  */
-export function mergeTeammateMessages(messages: Message[]): Message[] {
+function parseTeammateMessageFromMessage(
+  msg: Message,
+  cache?: WeakMap<Message, ParsedTeammateMessage | null>,
+): ParsedTeammateMessage | null {
+  if (cache?.has(msg)) return cache.get(msg) ?? null;
+  // Extract raw text to check for teammate message
+  const rawText = typeof msg.content === 'string'
+    ? msg.content
+    : msg.content
+        .map(block => (block.type === 'text' ? block.text : ''))
+        .filter(Boolean)
+        .join('\n');
+  const parsed = parseTeammateMessage(rawText);
+  cache?.set(msg, parsed);
+  return parsed;
+}
+
+export function mergeTeammateMessages(
+  messages: Message[],
+  caches?: TranscriptNormalizationCaches,
+): Message[] {
   const result: Message[] = [];
   let changed = false;
 
@@ -524,15 +619,7 @@ export function mergeTeammateMessages(messages: Message[]): Message[] {
       continue;
     }
 
-    // Extract raw text to check for teammate message
-    const rawText = typeof msg.content === 'string'
-      ? msg.content
-      : msg.content
-          .map(block => (block.type === 'text' ? block.text : ''))
-          .filter(Boolean)
-          .join('\n');
-
-    const parsed = parseTeammateMessage(rawText);
+    const parsed = parseTeammateMessageFromMessage(msg, caches?.teammateParse);
     if (!parsed) {
       result.push(msg);
       continue;
@@ -585,10 +672,13 @@ export function mergeTeammateMessages(messages: Message[]): Message[] {
  * preceding assistant message. If no assistant message exists yet, it creates
  * a synthetic assistant message so raw XML is never shown in the transcript.
  */
-export function mergeTaskNotifications(messages: Message[]): Message[] {
+export function mergeTaskNotifications(
+  messages: Message[],
+  caches?: TranscriptNormalizationCaches,
+): Message[] {
   const result: Message[] = [];
   let changed = false;
-  const fullToolUseIndex = buildToolUseIndex(messages);
+  const fullToolUseIndex = buildToolUseIndex(messages, caches?.toolUseBlocks);
   const resultAssistantIndexBySourceIndex = new Map<number, number>();
   const queuedByAssistantSourceIndex = new Map<
     number,
@@ -638,7 +728,13 @@ export function mergeTaskNotifications(messages: Message[]): Message[] {
       continue;
     }
 
-    const parsed = parseTaskNotificationFromContent(msg.content);
+    let parsed: ParsedTaskNotification | null;
+    if (caches?.taskNotificationParse.has(msg)) {
+      parsed = caches.taskNotificationParse.get(msg) ?? null;
+    } else {
+      parsed = parseTaskNotificationFromContent(msg.content);
+      caches?.taskNotificationParse.set(msg, parsed);
+    }
     if (!parsed) {
       result.push(msg);
       continue;

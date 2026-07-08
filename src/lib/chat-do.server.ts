@@ -1,4 +1,5 @@
 import type { AppLoadContext } from "react-router";
+import type { UIMessage } from "ai";
 import { getEnv, type CloudflareEnv } from "./cloudflare.server";
 import type {
   Thread,
@@ -712,6 +713,30 @@ export async function getPiCoreMessages(
         getPiCoreParsedMessages(threadId: string): Promise<ParsedThreadMessage[]> | ParsedThreadMessage[];
       }
     ).getPiCoreParsedMessages(threadId),
+  );
+  return Array.isArray(messages) ? messages : [];
+}
+
+export async function getUiMessages(
+  context: AppLoadContext,
+  threadId: string,
+): Promise<UIMessage[]> {
+  const env = getEnv(context);
+  if (
+    !env ||
+    typeof env !== "object" ||
+    !("CHAT_THREAD" in env) ||
+    !env.CHAT_THREAD
+  ) {
+    throw new Error("CHAT_THREAD binding is not available");
+  }
+  const threadStub = env.CHAT_THREAD.get(env.CHAT_THREAD.idFromName(threadId));
+  const messages = await Promise.resolve(
+    (
+      threadStub as unknown as {
+        getUiMessages(): Promise<UIMessage[]> | UIMessage[];
+      }
+    ).getUiMessages(),
   );
   return Array.isArray(messages) ? messages : [];
 }

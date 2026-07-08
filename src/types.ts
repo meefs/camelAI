@@ -260,6 +260,14 @@ export interface Message {
   clientMessageId?: string;
   /** Stable runtime/session entry id used for fork operations. */
   forkEntryId?: string;
+  /**
+   * Model-reported duration of the turn this assistant message completed (ms),
+   * surfaced from `message-metadata.pi.turnDurationMs`. Drives the turn duration
+   * badge without a separate Agent-state channel.
+   */
+  turnDurationMs?: number;
+  /** Wall-clock completion time of the turn (ms since epoch). */
+  completedAtMs?: number;
   isStreaming?: boolean;
   /** True if this user message was sent while assistant was streaming */
   sentDuringStreaming?: boolean;

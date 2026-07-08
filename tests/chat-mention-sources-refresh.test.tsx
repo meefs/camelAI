@@ -15,6 +15,20 @@ vi.mock('agents/react', () => {
   return { useAgent: () => client };
 });
 
+// Chat owns its transcript through ai-chat (useAgentChat) now; this test does
+// not exercise the live stream, so stub the projection hook. An empty history
+// makes Chat fall back to `initialMessages`, matching the pre-cutover behavior.
+vi.mock('@/lib/use-pi-chat-stream', () => ({
+  usePiChatStream: () => ({
+    messages: [],
+    uiMessages: [],
+    status: 'ready',
+    isStreaming: false,
+    streamingMessageId: null,
+    setUiMessages: vi.fn(),
+  }),
+}));
+
 import Chat from '@/components/Chat';
 import type { AtMentionEntity, Integration, Message, PreviewTarget } from '@/types';
 

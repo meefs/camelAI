@@ -199,8 +199,10 @@ curl "https://api.cloudflare.com/client/v4/accounts/$CF_ACCOUNT_ID/analytics_eng
 - Browser chat connects to `/ws/{workspace}`.
 - The main worker validates access and routes to `ChatThreadDO`.
 - `ChatThreadDO` runs the Pi coding agent in the Durable Object. File, shell, and container operations are forwarded to the sandbox-host control plane.
+- Transport + render history are owned by `@cloudflare/ai-chat` (`ChatThreadDO extends AIChatAgent`). A turn is a resumable UIMessage stream: `onChatMessage` runs the Pi prompt (or the recovery/resume branch) and relays Pi runtime events through the encoder as native UIMessage chunks; `chatRecovery` owns bounded re-drives of an interrupted turn and `chatStreamStallTimeoutMs` bounds a stalled turn (its stream-cancel disposes the hung Pi session and routes the turn into recovery). The client renders from `useAgentChat` (`resume: true`); no bespoke websocket transcript fan-out.
+- Two message stores: **`pi_core_*`** tables are Pi's model-side transcript (authoritative for the agent and repair/eval tooling); the **ai-chat message table** is the browser render history. A high-water-mark backfill (`topUpUiMessagesFromPiCore` / `getUiMessages` RPC) mirrors new pi_core rows into render history with deterministic ids. The chat-route loader calls `getUiMessages` for cold load only; live sync rides the stream + CHAT_MESSAGES broadcasts.
+- The Pi event → UIMessage chunk encoder is `src/lib/pi-chunk-encoder.ts`; the UIMessage → legacy `Message` render adapter (both directions) is `src/lib/ui-message-adapter.ts`. Steering appends via RPC + `persistMessages`. The Agent-state payload (`src/lib/chat-agent-state.ts`, shared DO/client) now carries only coarse fields (preview, todos, title, model, terminal error) — streaming and turn duration/completion are derived from the hook + `message-metadata.pi`.
 - Thread records store provider/model state on org thread data. Verify current fields in `OrgDO` before changing related behavior.
-- Active message history is stored in `ChatThreadDO`; sandbox-host chat message APIs are retained for legacy session migration.
 - Slash commands are allowlisted in `ChatThreadDO`; check `SLASH_COMMANDS` before adding or changing one.
 - Clarifying questions use the Pi `AskUserQuestion`/`ask_user_question` tools.
 

@@ -1,11 +1,25 @@
 
 import {
-  Agent,
   callable,
   type Connection,
   type ConnectionContext,
   type WSMessage,
 } from "agents";
+import { AIChatAgent } from "@cloudflare/ai-chat";
+import type {
+  ChatRecoveryConfig,
+  ChatRecoveryExhaustedContext,
+} from "@cloudflare/ai-chat";
+import type {
+  ChatRecoveryContext,
+  ChatRecoveryOptions,
+} from "@cloudflare/ai-chat";
+import {
+  CHAT_MESSAGE_TYPES,
+  CHAT_RECOVERING_FLAG_TTL_MS,
+  CHAT_RECOVERING_KEY,
+  CHAT_RECOVERY_INCIDENT_KEY_PREFIX,
+} from "agents/chat";
 import { Type } from "typebox";
 import type {
   Agent as PiCoreAgent,
@@ -49,8 +63,21 @@ import {
 } from '../../../src/lib/thread-completion-summary-generation.server';
 import { normalizeThreadPreviewUserMessage } from '../../../src/lib/thread-preview';
 import { getToolSummary } from '../../../src/lib/tool-activity-summary';
-import { applyRuntimeEventToMessages } from '../../../src/lib/runtime-message-state';
-import { attachArtifactsToToolResultMessages } from '../../../src/lib/streaming';
+// Types only — the `ai` package's runtime surface is heavy and chat-thread-do.ts
+// sits in every worker/test isolate's module graph, so its stream builders are
+// lazy-loaded via dynamic import() inside onChatMessage (the only runtime user)
+// rather than eagerly pulled here. Static value imports from 'ai' roughly double
+// the worker test-suite import time and time out unrelated slow tests.
+import type { UIMessage, UIMessageStreamWriter } from 'ai';
+import {
+  PiChunkEncoder,
+  piArtifactsPartId,
+  PI_ERROR_PART_ID,
+  type PiRuntimeEvent,
+  type PiUiMessageChunk,
+} from '../../../src/lib/pi-chunk-encoder';
+import { messageToUiMessage } from '../../../src/lib/ui-message-adapter';
+import type { ChatAgentStatePayload } from '../../../src/lib/chat-agent-state';
 import { normalizePiUiMetadata, normalizeRuntimeCallArtifacts, stripPiUiMetadata, type PiUiMetadata, type RuntimeCallArtifact } from '../../../src/lib/runtime-artifacts';
 import type {
   ChatGroupAvatar,
@@ -562,35 +589,16 @@ export interface ChatThreadForkStateTarget {
   userId?: string | null;
 }
 
-interface ChatThreadAgentState {
-  isStreaming: boolean;
-  previewTabs: PreviewTarget[];
-  previewActiveTabId: string | null;
-  previewVersion: number;
-  previewRefreshTabId: string | null;
-  currentTodos: unknown[];
-  contextUsedPercent: number | null;
-  pendingQuestion: PendingQuestionInfo | null;
-  connectionSetupPrompt: PendingConnectionSetupPromptData | null;
-  title: string | null;
-  titleUpdatedAt: number | null;
-  model: LlmModel | null;
-  modelUpdatedAt: number | null;
-  // Metadata for the most recently completed turn, keyed by the turn's
-  // assistant message id, so the browser can render duration/turn badges
-  // without replaying turn/completed events.
-  lastCompletedTurn: { id: string; durationMs: number; completedAtMs: number } | null;
-  // The most recent terminal error, with a unique id so the browser shows it
-  // exactly once (and can recover it on reconnect). Cleared at agent_start.
-  lastError: {
-    id: string;
-    error: string;
-    billingSource: string | null;
-    provider: string | null;
-    status: number | string | null;
-    errorType: string | null;
-  } | null;
-}
+// The Agent-state payload synced to the browser. Structure (field set /
+// nullability / lastError shape) is fixed in the shared module so the DO and the
+// client can't drift; the DO instantiates the generic sub-types with its own
+// worker-side types.
+type ChatThreadAgentState = ChatAgentStatePayload<
+  PreviewTarget,
+  PendingQuestionInfo,
+  PendingConnectionSetupPromptData,
+  LlmModel
+>;
 
 export interface AdminExplorerThreadSummary {
   userMessageCount: number;
@@ -768,24 +776,31 @@ class PiTurnInactivityTimeoutError extends Error {
 
 const CHAT_CONTEXT_KEY = "chatContext";
 // Durable resume of an interrupted Pi turn (e.g. the DO is evicted mid-turn by a
-// deploy). Each turn runs inside the Agents SDK durable fiber `PI_TURN_FIBER`,
-// which holds `keepAlive()` for the turn and — if the DO dies mid-turn — leaves
-// an orphan run row the SDK detects on the next wake, calling `onFiberRecovered`.
-// `piActiveTurn` marks the in-flight turn (gating + attempt budget); the
-// `pi_turn_journal` table mirrors the not-yet-committed tail so we know *what* to
-// resume. We must NOT touch the raw DO alarm — the base Agent owns it.
+// deploy). ai-chat's `chatRecovery` owns recovery now: a turn runs through
+// saveMessages -> _runProgrammaticChatTurn -> onChatMessage, wrapped by ai-chat's
+// `_runChatRecoveryFiber`. A mid-turn eviction leaves an ai-chat fiber orphan the
+// framework detects on the next wake and re-drives through onChatMessage
+// (continueLastTurn for a mid-stream partial, _retryLastUserTurn for a pre-stream
+// eviction) under a bounded attempt budget. `piActiveTurn` still marks the
+// in-flight turn — it gates the derived spinner (isThreadStreaming), carries the
+// stable stream/message id (turnId) so a recovery continuation re-streams into the
+// SAME ai-chat assistant message, and pairs with the `pi_turn_journal` table (the
+// not-yet-committed model tail) to tell onChatMessage's resume branch *what* to
+// continue. The retry/attempt budget lives in chatRecovery, not on the marker.
 const PI_ACTIVE_TURN_KEY = "piActiveTurn";
 // Durable list (sync KV) of user messages handed to steer() while a turn streams,
 // so an eviction before Pi drains them can re-deliver instead of losing them.
 const PI_STEER_JOURNAL_KEY = "piSteerJournal";
-// Name of the durable fiber that wraps a Pi turn (used to filter recoveries).
-const PI_TURN_FIBER = "pi-turn";
-// Give up after this many resume attempts to avoid a crash -> resume -> crash loop.
-const MAX_PI_RESUME_ATTEMPTS = 3;
+// User-facing copy delivered as the chatRecovery `terminalMessage` when an
+// interrupted turn exhausts its recovery budget (reused from the old resume path).
+const PI_RESUME_EXHAUSTED_MESSAGE =
+  "This turn was interrupted and could not be resumed automatically. Please send your message again.";
 
 interface PiActiveTurnMarker {
+  // The minted assistant-message / stream id for the turn. Persisted so a recovery
+  // continuation re-streams into the SAME ai-chat assistant message (its encoder is
+  // rebuilt with this id, and ai-chat's continuation clone keeps the same id).
   turnId: string;
-  attempt: number;
   openedAt: number;
 }
 const CHAT_TODOS_KEY = "chatTodos";
@@ -794,27 +809,38 @@ const CHAT_CONTEXT_WINDOW_BY_MODEL_KEY = "chatContextWindowByModel";
 const CHAT_ACTIVE_TURN_USER_ID_KEY = "chatActiveTurnUserId";
 const PI_TURN_INACTIVITY_TIMEOUT_MS = 10 * 60_000;
 const PI_TURN_PROGRESS_INTERVAL_MS = 30_000;
+
+// ai-chat's recovery-bookkeeping storage keys are imported from agents/chat
+// (CHAT_RECOVERY_INCIDENT_KEY_PREFIX / CHAT_RECOVERING_KEY /
+// CHAT_RECOVERING_FLAG_TTL_MS) so they can never drift from the framework. The
+// stale-marker sweep reads them to confirm ai-chat has no in-flight recovery for
+// an orphaned turn before clearing it.
+const ACTIVE_CHAT_RECOVERY_STATUSES = new Set([
+  "detected",
+  "scheduled",
+  "attempting",
+]);
+
+// Chat-protocol wire frames AIChatAgent's constructor-installed onMessage
+// wrapper would service from ANY authorized socket. This DO's chat data flow is
+// server-driven (sendMessage callable → sendRunnerCommand → saveMessages); no
+// browser client legitimately submits these frames, and letting them through
+// would allow any workspace member's socket to wipe/forge render history
+// (chat_clear / chat_messages), start framework-owned turns (use_chat_request),
+// abort the reply stream mid-turn (request_cancel → stall-dispose with the
+// active-turn marker left set), or inject tool results/approvals. The guard
+// installed in the constructor drops them before the framework handler runs.
+// Resume-handshake frames (cf_agent_stream_resume_*) and the Agents SDK
+// rpc/state frames are NOT protocol frames of this set and pass through.
+const BLOCKED_CHAT_PROTOCOL_FRAME_TYPES = new Set<string>([
+  CHAT_MESSAGE_TYPES.CHAT_CLEAR,
+  CHAT_MESSAGE_TYPES.CHAT_MESSAGES,
+  CHAT_MESSAGE_TYPES.USE_CHAT_REQUEST,
+  CHAT_MESSAGE_TYPES.CHAT_REQUEST_CANCEL,
+  CHAT_MESSAGE_TYPES.TOOL_RESULT,
+  CHAT_MESSAGE_TYPES.TOOL_APPROVAL,
+]);
 const CHAT_ERROR_DEDUPE_WINDOW_MS = 10_000;
-
-// Coalesce high-frequency live-overlay syncs (streaming token/output deltas) so
-// a chatty tool doesn't serialize+broadcast the whole overlay per chunk.
-// Structural events (turn/completed, item/completed, errors) always force a sync.
-const LIVE_STATE_SYNC_THROTTLE_MS = 100;
-// Per-block cap on streamed tool/text output kept in the live overlay (Agent
-// state is broadcast as one message, bounded by Cloudflare's ~1MB WS frame). The
-// full output is always persisted durably and restored on reload.
-const MAX_LIVE_OVERLAY_BLOCK_CHARS = 128_000;
-const LIVE_OVERLAY_TRUNCATION_MARKER =
-  "…[earlier output truncated — full output available on reload]…\n";
-
-// Keep only the tail of an oversized streamed block so the live overlay stays
-// well under the broadcast size limit. Idempotent: a prior marker at the head is
-// sliced off (it falls outside the retained tail) and a fresh one is prepended.
-function boundLiveOverlayText(text: string): string {
-  if (text.length <= MAX_LIVE_OVERLAY_BLOCK_CHARS) return text;
-  const tailLength = MAX_LIVE_OVERLAY_BLOCK_CHARS - LIVE_OVERLAY_TRUNCATION_MARKER.length;
-  return LIVE_OVERLAY_TRUNCATION_MARKER + text.slice(text.length - tailLength);
-}
 
 const ASK_USER_QUESTION_UNAVAILABLE_MESSAGE = 'User is not at computer; AskUserQuestion is unavailable in this channel. Continue without asking and use best effort.';
 
@@ -905,12 +931,40 @@ type ChatAgentEnv = Cloudflare.Env & Omit<ChatEnv, keyof Cloudflare.Env>;
 
 const CODE_MODE_ARTIFACTS_KEY_PREFIX = 'codeModeArtifacts:';
 
+// High-water mark for the pi_core → ai-chat render-history top-up backfill
+// (see topUpUiMessagesFromPiCore). The value is the count of parsed render
+// messages already mirrored into cf_ai_chat_agent_messages; toolResult rows
+// merge into their assistant message and internal/empty rows drop, so a parsed
+// count (not the raw SQL idx) is the stable high-water unit for the deterministic
+// array-index-based render ids. Every pi_core rewrite invalidates the mark;
+// replacePiCoreMessages re-pins or rebuilds it per its uiRender option.
+const UI_MESSAGES_PI_CORE_HIGH_WATER_KEY = "uiMessagesPiCoreHighWaterIdx";
+// Last explicit created_at (ms) written by the backfill, persisted so successive
+// top-ups keep strictly increasing timestamps even across DO wakes.
+const UI_MESSAGES_PI_CORE_LAST_CREATED_AT_KEY = "uiMessagesPiCoreLastCreatedAtMs";
+// Drop-oldest cap for the pre-attach chunk buffer so a turn that never attaches
+// a writer (e.g. saveMessages skipped) cannot grow memory without bound.
+const PI_STREAM_PRE_ATTACH_CHUNK_CAP = 5000;
+
+// SQLite `current_timestamp` yields "YYYY-MM-DD HH:MM:SS" (UTC, 1s resolution).
+// ai-chat orders render history by that column, so backfilled rows format their
+// explicit created_at the same way but with milliseconds ("...:SS.mmm"): the
+// millisecond suffix sorts lexicographically right after the whole-second live
+// rows, keeping backfilled history correctly interleaved with live turns.
+function formatAiChatCreatedAt(ms: number): string {
+  return new Date(ms).toISOString().replace("T", " ").replace("Z", "");
+}
+
 /**
  * ChatThreadDO - One per thread, holds preview state, prompts, browser runner
  * traffic, and agent turns. Sandbox-host remains the backend for workspace
  * file/shell/container operations.
  */
-export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
+// Extends AIChatAgent for its resumable-stream transport (SQLite chunk
+// buffering + replay on reconnect) and, later, chatRecovery. The ai-chat
+// message model is transport-internal only: pi_core_messages remains the
+// canonical history and the Pi runtime owns the agent loop.
+export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState> {
   private static readonly CONNECTION_SETUP_TIMEOUT_MS = 30 * 60 * 1000;
 
   private previewTarget: PreviewTarget | null = null;
@@ -921,21 +975,9 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
   // Chat bridge state
   private chatContext: ChatContextState | null = null;
   private agentEvalEventCollector: Array<Record<string, unknown>> | null = null;
-  // The current turn's assistant/tool messages, built whole on the server and
-  // sent to the browser as a wholesale-replaced overlay (see Tier 2 design).
-  // Reset at agent_start; the browser folds finalized entries into its
-  // committed history, so this never needs to hold prior turns.
-  private liveMessages: Message[] = [];
-  private liveStreamingMessageId: string | null = null;
-  private lastCompletedTurn:
-    | { id: string; durationMs: number; completedAtMs: number }
-    | null = null;
   private lastError: ChatThreadAgentState["lastError"] = null;
-  // Code-mode artifacts recorded before their js_exec tool result entered the
-  // live overlay; drained onto the overlay once the tool result appears.
-  private pendingOverlayArtifacts: Map<string, RuntimeCallArtifact[]> = new Map();
-  private lastLiveSyncAtMs: number = 0;
-  private liveStateHydrated: boolean = false;
+  // Guards the one-time cold-wake reload of lastError.
+  private durableStateHydrated: boolean = false;
   // In-memory debounce marker for build-container prewarm (see
   // maybePrewarmProjectBuildSandboxes). Best-effort only; a DO eviction resets
   // it, which at worst triggers one extra cheap no-op warm.
@@ -1017,8 +1059,56 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
   private piRecordedProviderErrors = new Set<string>();
   private recordedChatErrors = new Map<string, number>();
 
+  // --- Native UIMessage stream bridge (commit 6, ai-chat-owned turn) --------
+  // onChatMessage OWNS the Pi turn: its stream execute runs the model
+  // (prompt for a fresh turn, resume-continue for a recovery) and relays the Pi
+  // runtime events through the encoder into native UIMessage chunks. Fresh turns
+  // queue their attributed Pi prompts here (in-memory, FIFO): two rapid sends on
+  // a cold session both land before prompt() flips isStreaming, so admission
+  // must queue rather than overwrite. onChatMessage drains the queue — the first
+  // message is prompted, the rest are steer()ed into the just-started run. On a
+  // recovery re-drive the queue is empty — the resume branch rebuilds the model
+  // turn from the pi_turn_journal (which durably holds every queued user
+  // message) instead.
+  private pendingPiPromptQueue: Array<{ userMessage: AgentMessage }> = [];
+  // The minted stream turnId for the in-flight turn — the id ai-chat adopts as the
+  // assistant message id (and the client renders under). Restored from the active-
+  // turn marker at the top of onChatMessage so a recovery continuation reuses it.
+  // null between turns.
+  private activePiStreamTurnId: string | null = null;
+  // The stateful encoder for the in-flight turn (created in onChatMessage from the
+  // marker turnId). null when no turn is bridging.
+  private piChunkEncoder: PiChunkEncoder | null = null;
+  // The live ai-chat stream writer once onChatMessage's execute has attached it.
+  private piStreamWriter: UIMessageStreamWriter<UIMessage> | null = null;
+  // Defensive buffer for any chunk produced before the writer attaches. The turn
+  // body runs inside execute (after the writer is set) so this normally stays
+  // empty, but it keeps a stray between-attach event from being dropped.
+  private piPreAttachChunkBuffer: PiUiMessageChunk[] | null = null;
+
+  // Durable chat recovery (commit 6). MUST be a class field (not set in onStart):
+  // the SDK evaluates recovery budgets on wake BEFORE onStart runs. maxAttempts
+  // bounds re-drives of an interrupted turn; onExhausted mirrors the old resume
+  // give-up cleanup (the framework also delivers `terminalMessage` to the client).
+  // Defaults fill stableTimeoutMs / noProgressTimeoutMs / maxOomRetries.
+  chatRecovery: ChatRecoveryConfig = {
+    maxAttempts: 3,
+    terminalMessage: PI_RESUME_EXHAUSTED_MESSAGE,
+    onExhausted: (ctx) => this.handlePiRecoveryExhausted(ctx),
+  };
+
+  // ai-chat's inter-chunk stall watchdog (commit 7). If no chunk reaches the
+  // reply stream within this window the turn is aborted and routed into bounded
+  // chatRecovery. Set as a class field (like chatRecovery) so it is live before
+  // onStart. This replaces the bespoke `withPiTurnInactivityTimeout` on the
+  // bridged turn paths: every Pi runtime event writes at least one chunk, so an
+  // inter-chunk gap is exactly the old inter-event inactivity signal. onChatMessage
+  // wires the watchdog's stream-cancel to dispose the hung Pi session (see
+  // {@link onPiReplyStreamCancelled}); the eval path keeps the bespoke wrapper
+  // since it prompts the session directly, outside the ai-chat stream.
+  chatStreamStallTimeoutMs = PI_TURN_INACTIVITY_TIMEOUT_MS;
+
   initialState: ChatThreadAgentState = {
-    isStreaming: false,
     previewTabs: [],
     previewActiveTabId: null,
     previewVersion: 0,
@@ -1031,7 +1121,6 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
     titleUpdatedAt: null,
     model: null,
     modelUpdatedAt: null,
-    lastCompletedTurn: null,
     lastError: null,
   };
 
@@ -1048,9 +1137,10 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
   private agentState(
     overrides: Partial<ChatThreadAgentState> = {},
   ): ChatThreadAgentState {
+    // Derived only to seed the initial context-usage estimate; streaming state
+    // itself now reaches the browser through the ai-chat hook, not Agent state.
     const isStreaming = this.isThreadStreaming();
     return {
-      isStreaming,
       previewTabs: cloneDurableState(this.previewTabs),
       previewActiveTabId: this.previewActiveTabId,
       previewVersion: this.previewVersion,
@@ -1071,35 +1161,32 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
       titleUpdatedAt: this.currentTitleUpdatedAt,
       model: this.currentThreadModel,
       modelUpdatedAt: this.currentThreadModelUpdatedAt,
-      lastCompletedTurn: this.lastCompletedTurn,
       lastError: this.lastError,
       ...overrides,
     };
   }
 
-  // Restore coarse durable state on a cold wake. The live overlay is no longer
-  // persisted here (it streams over the non-durable broadcast channel); a warm
-  // reconnect gets the in-memory tail via onConnect, and committed history comes
-  // from the durable transcript.
-  private hydrateLiveStateFromAgentState(): void {
-    if (this.liveStateHydrated) return;
-    this.liveStateHydrated = true;
+  // Restore the coarse durable error from Agent state on a cold wake, once.
+  // Render history comes from ai-chat; streaming state is derived on read
+  // ({@link isThreadStreaming}); only lastError is an instance field that a fresh
+  // isolate must reload before the next syncAgentState() would otherwise
+  // overwrite it with null.
+  private hydrateDurableStateOnce(): void {
+    if (this.durableStateHydrated) return;
+    this.durableStateHydrated = true;
     const state = this.state as Partial<ChatThreadAgentState> | undefined;
     if (!state) return;
     // NOTE: streaming state is no longer restored here — it is derived on read from
     // execution ground truth ({@link isThreadStreaming}), so a cold wake recomputes
     // it (an evicted mid-turn thread reports streaming via its orphan fiber row /
     // pending resume; a completed one reports idle) with no flag to resurrect.
-    if (state.lastCompletedTurn && typeof state.lastCompletedTurn === "object") {
-      this.lastCompletedTurn = cloneDurableState(state.lastCompletedTurn);
-    }
     if (state.lastError && typeof state.lastError === "object") {
       this.lastError = cloneDurableState(state.lastError);
     }
   }
 
   private syncAgentState(overrides?: Partial<ChatThreadAgentState>): void {
-    this.hydrateLiveStateFromAgentState();
+    this.hydrateDurableStateOnce();
     this.setState(this.agentState(overrides));
   }
 
@@ -1137,6 +1224,39 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
 
   constructor(ctx: DurableObjectState, env: ChatEnv) {
     super(ctx, env as unknown as ChatAgentEnv);
+
+    // AIChatAgent's constructor reassigned this.onMessage to a wrapper that
+    // services cf_agent_* chat-protocol frames (chat_clear, chat_messages,
+    // use_chat_request, request_cancel, tool_result, tool_approval) from any
+    // authorized socket BEFORE subclass code runs. This DO never accepts those
+    // frames from clients (see BLOCKED_CHAT_PROTOCOL_FRAME_TYPES), so wrap the
+    // wrapper: drop the blocked frame types and pass everything else (resume
+    // handshake, Agents SDK rpc/state frames, non-JSON) through unchanged.
+    const frameworkOnMessage = this.onMessage.bind(this);
+    this.onMessage = async (connection: Connection, message: WSMessage) => {
+      if (typeof message === "string") {
+        let frameType: string | null = null;
+        try {
+          const parsed = JSON.parse(message) as { type?: unknown } | null;
+          frameType =
+            parsed && typeof parsed === "object" && typeof parsed.type === "string"
+              ? parsed.type
+              : null;
+        } catch {
+          frameType = null;
+        }
+        if (frameType && BLOCKED_CHAT_PROTOCOL_FRAME_TYPES.has(frameType)) {
+          // No frame contents in the event — the type alone is the signal.
+          this.recordChatThreadObservabilityEvent("chat_ws_frame_blocked", {
+            operation: frameType,
+            status: "blocked",
+            severity: "warn",
+          });
+          return;
+        }
+      }
+      return frameworkOnMessage(connection, message);
+    };
 
     // SQLite-backed storage operations below are synchronous. Keep constructor
     // hydration out of blockConcurrencyWhile: if an active turn is being
@@ -1378,34 +1498,31 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
     const artifacts = normalizeRuntimeCallArtifacts(existing);
     artifacts.push(artifact);
     this.ctx.storage.kv.put(key, artifacts);
-    // The artifact rides the live overlay's tool-result message (and the durable
-    // KV row above for reload), not a separate websocket event.
-    this.attachLiveArtifact(normalizedParentToolUseId, artifact);
+    // Deliver the artifact to the client on the native stream as a standalone
+    // data part reconciled by tool call id (full accumulated set each time). The
+    // artifact is usually recorded mid-js_exec, possibly after item/completed
+    // built the tool result, so a separate part — folded onto the tool_result by
+    // uiMessageToMessage at read time — is the right shape. The durable KV row
+    // above backs reload/backfill (surfaced onto the tool_result there too).
+    this.deliverCodeModeArtifacts(normalizedParentToolUseId, artifacts);
     await this.setPreviewTarget({ kind: "runtime_artifact", artifact });
   }
 
-  // Attach a code-mode artifact to its tool result in the live overlay so it
-  // flows to the browser through Agent state. The artifact is usually recorded
-  // mid-js_exec, before item/completed builds the tool result, so hold it until
-  // the tool result appears (drained in applyChatEventToLiveState).
-  private attachLiveArtifact(
+  // Emit the code-mode artifacts data part into the current turn's native stream.
+  // A no-op when no turn is bridging (encoder null) — the artifacts still persist
+  // to KV above and reach the client via top-up backfill on the next connect.
+  private deliverCodeModeArtifacts(
     parentToolUseId: string,
-    artifact: RuntimeCallArtifact,
+    artifacts: RuntimeCallArtifact[],
   ): void {
-    this.hydrateLiveStateFromAgentState();
-    const result = attachArtifactsToToolResultMessages(
-      this.liveMessages,
-      parentToolUseId,
-      [artifact],
-    );
-    if (result.attached) {
-      this.liveMessages = result.messages;
-      this.broadcastLiveOverlay();
-      return;
-    }
-    if (!this.pendingOverlayArtifacts) this.pendingOverlayArtifacts = new Map();
-    const pending = this.pendingOverlayArtifacts.get(parentToolUseId) ?? [];
-    this.pendingOverlayArtifacts.set(parentToolUseId, [...pending, artifact]);
+    if (!this.piChunkEncoder) return;
+    this.enqueuePiStreamChunks([
+      {
+        type: "data-pi-artifacts",
+        id: piArtifactsPartId(parentToolUseId),
+        data: { toolCallId: parentToolUseId, artifacts },
+      },
+    ]);
   }
 
   async consumeCodeModeArtifacts(
@@ -1430,12 +1547,96 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
 
   override async onStart(props?: unknown): Promise<void> {
     await super.onStart?.(props as never);
-    this.hydrateLiveStateFromAgentState();
+    this.hydrateDurableStateOnce();
+    // super.onStart already let ai-chat evaluate recovery budgets and establish
+    // any incident/stream for an interrupted turn, so it is now safe to clear a
+    // marker that ai-chat is provably NOT recovering (an old→new deploy orphan).
+    await this.sweepOrphanedActiveTurnMarker();
     // PartyServer name bootstrap happens before onStart, not in the constructor.
     // syncAgentState() calls setState(), which emits through PartyServer and needs
     // this.name; doing it here keeps cold-wake state fresh without crashing stale
     // alarm/RPC wakes that haven't initialized the PartyServer name yet.
     this.syncAgentState();
+  }
+
+  /**
+   * Clear an active-turn marker orphaned across the old→new recovery boundary
+   * (commit 7). A marker written by the pre-ai-chat fiber machinery has no ai-chat
+   * incident to re-drive it, so {@link isThreadStreaming} would read "busy"
+   * forever. Runs at wake (after super.onStart) and clears the marker + journal
+   * ONLY when the turn is provably not going to be recovered: no live Pi stream,
+   * no pending prompt, no onChatMessage in flight, ai-chat has no active recovery
+   * incident (detected/scheduled/attempting) and no non-stale recovering flag, and
+   * the marker is not freshly opened (guards a same-wake race with a just-started
+   * turn). A post-migration marker always pairs with an ai-chat incident, so this
+   * never fires for it. Fails safe — any read error leaves the marker untouched.
+   */
+  private async sweepOrphanedActiveTurnMarker(): Promise<void> {
+    let marker: PiActiveTurnMarker | null;
+    try {
+      marker = this.readPiActiveTurn();
+    } catch {
+      return;
+    }
+    if (!marker) return;
+    // A live/starting turn legitimately owns the marker.
+    if (this.piSession?.state.isStreaming) return;
+    if (this.activePiStreamTurnId || this.pendingPiPromptQueue.length > 0) return;
+    // Only sweep a marker old enough that it cannot be a turn starting on this
+    // same wake (the stall timeout is a comfortable floor).
+    if (Date.now() - marker.openedAt < PI_TURN_INACTIVITY_TIMEOUT_MS) return;
+    // ai-chat still intends to recover this turn — leave it alone.
+    if (this.hasActiveChatRecovery()) return;
+
+    this.recordChatThreadObservabilityEvent("pi_turn_marker_swept", {
+      operation: "sweep_orphan_marker",
+      status: "cleared",
+      severity: "warn",
+    });
+    await this.clearPiActiveTurnAndJournal();
+    this.finishTurn();
+    this.setActiveTurnUserId(null);
+  }
+
+  /**
+   * True when ai-chat has an in-flight recovery for the current turn — a recovery
+   * incident in an active state (detected/scheduled/attempting) or a non-stale
+   * `recovering` flag. Reads ai-chat's own durable bookkeeping (keys imported
+   * from agents/chat) through the sync SQLite-backed KV API.
+   * Fails safe: on any read error, assume a recovery may be pending (return true)
+   * so the sweep never clears a turn ai-chat could still resume.
+   */
+  private hasActiveChatRecovery(): boolean {
+    try {
+      const recovering = this.ctx.storage.kv.get<{ at?: number }>(
+        CHAT_RECOVERING_KEY,
+      );
+      if (
+        recovering &&
+        typeof recovering === "object" &&
+        Date.now() - (recovering.at ?? 0) < CHAT_RECOVERING_FLAG_TTL_MS
+      ) {
+        return true;
+      }
+      for (const [, incident] of this.ctx.storage.kv.list<{ status?: unknown }>({
+        prefix: CHAT_RECOVERY_INCIDENT_KEY_PREFIX,
+      })) {
+        const status = incident?.status;
+        if (
+          typeof status === "string" &&
+          ACTIVE_CHAT_RECOVERY_STATUSES.has(status)
+        ) {
+          return true;
+        }
+      }
+      return false;
+    } catch (error) {
+      console.error(
+        "[ChatThreadDO] failed to read chat recovery state for marker sweep",
+        error,
+      );
+      return true;
+    }
   }
 
   /**
@@ -1489,6 +1690,30 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
 
     this.captureChatContextFromRequest(url, ctx.request, connection);
 
+    // Deliver the current render history to THIS socket. Turns can complete
+    // while a browser is disconnected (headless saveMessages turns from email/
+    // Slack/cron ingress, recovery re-drives) and nothing else replays them to a
+    // (re)connecting client: the resumable stream only replays an IN-FLIGHT
+    // turn, and Agents SDK state sync carries no chat messages. Uses the same
+    // frame shape ai-chat's persistMessages broadcast uses (the client handler
+    // replaces its list wholesale), sent only to the new connection.
+    if (this.messages.length > 0) {
+      try {
+        connection.send(
+          JSON.stringify({
+            messages: this.messages,
+            type: CHAT_MESSAGE_TYPES.CHAT_MESSAGES,
+          }),
+        );
+      } catch (error) {
+        // A socket that closed mid-connect just reconnects; never fail onConnect.
+        console.error(
+          "[ChatThreadDO] failed to send render history on connect",
+          error,
+        );
+      }
+    }
+
     if (!this.isThreadStreaming() && this.currentTodos.length > 0) {
       // completeTodoStateForTurnEnd() syncs an override marking the stale todos
       // completed; a second unconditional sync here (with currentTodos already
@@ -1497,9 +1722,9 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
     } else {
       this.syncAgentState();
     }
-    // The live overlay isn't in durable state; hand a warm reconnect the
-    // in-progress turn directly (no-op when idle or after a cold eviction).
-    this.sendLiveOverlayToConnection(connection);
+    // An in-progress turn's stream is served by ai-chat's resumable stream on
+    // reconnect; completed history was hand-delivered above (and the initial
+    // page load also reads it via getUiMessages).
     await this.maybeGenerateChatGroupAvatarForThread(
       this.chatContext?.threadId ?? "",
     );
@@ -1648,7 +1873,7 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
     const afterMessages = changed ? repaired.messages : messages;
 
     if (mode === "repair" && changed) {
-      await this.replacePiCoreMessages(afterMessages);
+      await this.replacePiCoreMessages(afterMessages, { uiRender: "rebuild" });
     }
 
     return {
@@ -2209,6 +2434,26 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
       timestamp: sentAt,
     } satisfies AgentMessage;
     await this.appendPiCoreMessagesIfMissing([message]);
+    // Mirror the channel event into the linear render history (commit 3b). A
+    // direct linear append (persistMessages, not saveMessages) — this is history,
+    // not a new agent turn.
+    if (text) {
+      this.ctx.waitUntil(
+        this.persistMessages([
+          ...this.messages,
+          this.buildUserUiSkeleton({
+            rawContent: text,
+            channelHistory: true,
+            piCoreMessageKey: sentAt,
+          }),
+        ]).catch((error) => {
+          console.error(
+            "[ChatThreadDO] failed to persist channel-history render message",
+            error,
+          );
+        }),
+      );
+    }
     const normalizedChannelKind = normalizeChannelIndicatorKind(channelKind);
     if (normalizedChannelKind) {
       await this.channelTools.markThreadChannelUsedBestEffort(
@@ -2303,7 +2548,9 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
     }
 
     this.disposePiSession();
-    await this.replacePiCoreMessages(cloneDurableState(normalizedMessages));
+    await this.replacePiCoreMessages(cloneDurableState(normalizedMessages), {
+      uiRender: "rebuild",
+    });
     this.ctx.storage.sql.exec("DELETE FROM pi_core_compaction");
   }
 
@@ -2539,19 +2786,69 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
   /**
    * Apply a mid-thread config change (model or BYOK provider/credentials) by
    * rebuilding the session: model + provider routing are baked in at creation, so a
-   * cache refresh alone doesn't reach an in-flight turn. Disposing is safe now (the
-   * spinner is derived), and an in-flight turn is continued via an idempotent resume.
+   * cache refresh alone doesn't reach an in-flight turn. Disposing aborts the
+   * in-flight prompt (onChatMessage swallows the AbortError, leaving the active-turn
+   * marker set), and the interrupted turn is re-driven through ai-chat's recovery
+   * entry points so its resume streams into the same assistant message.
    */
   private async rebuildPiSessionForConfigChange(lockLabel: string): Promise<void> {
     await this.withRunnerTransitionLock(lockLabel, async () => {
       const wasStreaming = this.isThreadStreaming();
       this.disposePiSession();
       if (wasStreaming) {
-        await this.schedule(0, "resumeInterruptedPiTurn", undefined, {
-          idempotent: true,
-        });
+        // Fire-and-forget so the transition lock isn't held for the whole resumed
+        // turn; ai-chat's turn queue serializes it behind the aborted turn's close.
+        this.ctx.waitUntil(
+          this.driveConfigChangeResume().catch((error) => {
+            console.error("[ChatThreadDO] config-change resume failed", error);
+          }),
+        );
       }
     });
+  }
+
+  /**
+   * Re-drive the interrupted turn after a config-change dispose through ai-chat's
+   * recovery entry points (both re-enter onChatMessage's resume branch, which
+   * rebuilds the session with the new config and folds the journal). Mirrors
+   * ai-chat's own retry-vs-continue classification so the resumed output never
+   * merges into a prior turn's bubble: continue when this turn already persisted a
+   * partial assistant (last-assistant id === the marker's stream id), otherwise
+   * retry from the trailing user message (a fresh assistant under the same id).
+   */
+  private async driveConfigChangeResume(): Promise<void> {
+    const marker = this.readPiActiveTurn();
+    if (!marker) return;
+    const lastAssistant = [...this.messages]
+      .reverse()
+      .find((message) => message.role === "assistant");
+    const agent = this as unknown as {
+      continueLastTurn(): Promise<{ status: string }>;
+      _retryLastUserTurn(
+        clientTools?: unknown,
+        body?: unknown,
+      ): Promise<{ status: string }>;
+    };
+    const result =
+      lastAssistant && lastAssistant.id === marker.turnId
+        ? await agent.continueLastTurn()
+        : await agent._retryLastUserTurn();
+    if (result.status === "skipped") {
+      // The recovery entry point declined to re-drive (no continuable assistant
+      // / no unanswered user leaf / conversation changed). Nothing else observes
+      // that outcome, so without cleanup the active-turn marker would keep the
+      // thread "busy" forever. Close the turn out the same way the exhausted
+      // path does.
+      this.recordChatThreadObservabilityEvent("pi_turn_resume_skipped", {
+        operation: "config_change_resume",
+        status: "skipped",
+        severity: "warn",
+      });
+      await this.clearPiActiveTurnAndJournal();
+      this.finishTurn();
+      this.setActiveTurnUserId(null);
+      this.syncAgentState();
+    }
   }
 
   async refreshRunnerConfig(): Promise<void> {
@@ -3104,23 +3401,73 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
     ];
   }
 
-  private async replacePiCoreMessages(messages: AgentMessage[]): Promise<void> {
+  /**
+   * Rewrite pi_core wholesale. Every rewrite invalidates the render-history
+   * high-water mark (its unit is the parsed-render-message COUNT, which a
+   * rewrite renumbers), so each caller must say what happens to the ai-chat
+   * render mirror:
+   *
+   *  - `uiRender: "preserve"` — the rewrite only drops/summarizes old rows that
+   *    were already mirrored (post-turn compaction): keep the render table
+   *    (users keep their full visible history) and re-pin the mark to the new
+   *    parsed count so the top-up never re-walks rewritten rows.
+   *  - `uiRender: "rebuild"` — the rewrite replaces history semantically (fork
+   *    seeding, admin repair): wipe the render table and rebuild it from the
+   *    new pi_core via the shared resync.
+   */
+  private async replacePiCoreMessages(
+    messages: AgentMessage[],
+    options: { uiRender: "preserve" | "rebuild" },
+  ): Promise<void> {
     this.ensurePiCoreTables();
-    this.ctx.storage.sql.exec("DELETE FROM pi_core_messages");
-    const now = Date.now();
+    // Serialize first (this can await R2/image work); swap the table contents
+    // with no await between DELETE and the INSERTs so an eviction or a
+    // concurrent reader never observes a half-written history.
     const aggregateStats = emptyPiSqlStorageStats();
-    for (let index = 0; index < messages.length; index += 1) {
-      const message = messages[index];
+    const payloads: string[] = [];
+    for (const message of messages) {
       const serialized = await this.serializePiMessageForSqlStorageDetailed(message);
       this.addPiSqlStorageStats(aggregateStats, serialized.stats);
+      payloads.push(serialized.payload);
+    }
+    const now = Date.now();
+    this.ctx.storage.sql.exec("DELETE FROM pi_core_messages");
+    for (let index = 0; index < payloads.length; index += 1) {
       this.ctx.storage.sql.exec(
         "INSERT INTO pi_core_messages (idx, payload, created_at) VALUES (?, ?, ?)",
         index,
-        serialized.payload,
+        payloads[index],
         now,
       );
     }
     this.recordPiSqlStorageSanitization("replace", aggregateStats, messages.length);
+    if (options.uiRender === "rebuild") {
+      await this.rebuildUiMessagesFromPiCore();
+    } else {
+      const parsed = await this.getPiCoreParsedMessages(
+        this.chatContext?.threadId ?? "",
+      );
+      this.ctx.storage.kv.put(UI_MESSAGES_PI_CORE_HIGH_WATER_KEY, parsed.length);
+    }
+  }
+
+  /**
+   * Wipe the ai-chat render mirror and rebuild it from pi_core. Shared by the
+   * admin resync RPC and every history-invalidating pi_core rewrite.
+   */
+  private async rebuildUiMessagesFromPiCore(): Promise<void> {
+    this.ctx.storage.sql.exec("DELETE FROM cf_ai_chat_agent_messages");
+    this.ctx.storage.kv.delete(UI_MESSAGES_PI_CORE_HIGH_WATER_KEY);
+    this.ctx.storage.kv.delete(UI_MESSAGES_PI_CORE_LAST_CREATED_AT_KEY);
+    this.messages = [];
+    // ai-chat's persistMessages skips upserts whose serialized form matches its
+    // in-memory persisted cache; after wiping the table those entries are stale
+    // and would silently drop unchanged rows from the rebuild. The framework's
+    // own chat-clear handler clears this cache the same way.
+    (
+      this as unknown as { _persistedMessageCache?: Map<string, string> }
+    )._persistedMessageCache?.clear();
+    await this.topUpUiMessagesFromPiCore({ force: true });
   }
 
   private async appendPiCoreMessages(messages: AgentMessage[]): Promise<void> {
@@ -3286,7 +3633,10 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
    * first message would fold an empty journal, see the prior assistant turn as
    * already complete, and silently drop the accepted prompt.
    */
-  private recordPiTurnJournalUserMessage(userMessage: AgentMessage): void {
+  private recordPiTurnJournalUserMessage(
+    userMessage: AgentMessage,
+    options: { append?: boolean } = {},
+  ): void {
     // Use the SYNCHRONOUS serializer (no R2 image externalization) so the durable
     // journal write happens with NO awaitable I/O before it — otherwise an eviction
     // during an image prompt's R2 PUT could land in a window where the marker is set
@@ -3297,9 +3647,28 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
     const payload = serializePiMessageForSqlStorageDetailed(userMessage).payload;
     this.ensurePiCoreTables();
     const now = Date.now();
+    if (options.append) {
+      // The active-turn marker was already open when this message was accepted
+      // (a second rapid send, or a send while a recovery is pending): APPEND so
+      // the journal keeps every accepted-but-uncommitted user message. The
+      // resume fold (planPiTurnResume) handles multiple trailing user rows.
+      const rows = this.ctx.storage.sql
+        .exec<{ next_seq: number }>(
+          "SELECT COALESCE(MAX(seq) + 1, 0) AS next_seq FROM pi_turn_journal",
+        )
+        .toArray();
+      const nextSeq = Math.max(0, Math.floor(Number(rows[0]?.next_seq) || 0));
+      this.ctx.storage.sql.exec(
+        "INSERT INTO pi_turn_journal (seq, payload, created_at) VALUES (?, ?, ?)",
+        nextSeq,
+        payload,
+        now,
+      );
+      return;
+    }
     this.ctx.storage.sql.exec("DELETE FROM pi_turn_journal");
-    // A fresh prompt only starts when not streaming, so any steer-journal entries
-    // are stale leftovers from a prior run — drop them so they can't fold in here.
+    // A brand-new turn (no marker was open), so any steer-journal entries are
+    // stale leftovers from a prior run — drop them so they can't fold in here.
     this.clearPiTurnSteerJournal();
     this.ctx.storage.sql.exec(
       "INSERT INTO pi_turn_journal (seq, payload, created_at) VALUES (?, ?, ?)",
@@ -3379,12 +3748,16 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
     return this.ctx.storage.kv.get<PiActiveTurnMarker>(PI_ACTIVE_TURN_KEY) ?? null;
   }
 
-  /** Mark a turn in flight (once per turn) so a cold load knows to resume it. */
+  /**
+   * Mark a turn in flight (once per turn) so a cold load knows to resume it and
+   * derives the busy spinner. The minted turnId is the stable assistant-message /
+   * stream id: onChatMessage builds the encoder from it, and a recovery
+   * continuation re-streams into the same ai-chat message under it.
+   */
   private openPiActiveTurnIfAbsent(): void {
     if (this.readPiActiveTurn()) return;
     this.writePiActiveTurn({
       turnId: crypto.randomUUID(),
-      attempt: 0,
       openedAt: Date.now(),
     });
   }
@@ -3402,169 +3775,187 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
   }
 
   /**
-   * Agents SDK hook: called on the next wake when an interrupted durable fiber is
-   * detected (the DO was evicted mid-turn). This runs BEFORE onStart, so the Pi
-   * session isn't built yet — schedule the resume rather than driving Pi inline.
+   * Resume branch of {@link onChatMessage} (commit 6): re-drive an interrupted Pi
+   * turn. Runs inside the stream execute when ai-chat re-invokes onChatMessage for
+   * a recovery (continueLastTurn for a mid-stream partial, _retryLastUserTurn for a
+   * pre-stream eviction) — i.e. when there is no fresh pending prompt. The committed
+   * history + journal tail (and any pending steer) were folded into the rebuilt
+   * session by {@link createPiSession}; from there either the model still owes
+   * output (continue it, streaming into the SAME assistant message via the encoder
+   * onChatMessage already attached) or the final assistant message already landed
+   * pre-eviction (commit the staged tail and finish the turn).
+   *
+   * No attempt budget or fiber wrapping here — chatRecovery owns both. Errors
+   * propagate to onChatMessage's catch, which runs the shared failure cleanup.
    */
-  override async onFiberRecovered(ctx: { name: string }): Promise<void> {
-    if (ctx.name !== PI_TURN_FIBER) return;
-    if (!this.readPiActiveTurn()) return; // turn already committed -> nothing to resume
-    // idempotent: this hook runs inside the SDK's wake-time fiber scan (onStart
-    // context), so a thread re-woken while the marker persists must not stack
-    // duplicate resume callbacks.
-    await this.schedule(0, "resumeInterruptedPiTurn", undefined, { idempotent: true });
+  private async resumeActivePiTurn(): Promise<void> {
+    this.recordChatThreadObservabilityEvent("pi_turn_recovery_attempt", {
+      operation: "resume_interrupted_turn",
+      status: "attempting",
+    });
+    await this.ensurePiSessionReady();
+    const session = this.piSession;
+    if (!session) {
+      throw new Error(
+        "Pi session was not available to resume the interrupted turn",
+      );
+    }
+    const messages = session.state.messages;
+    const last = messages[messages.length - 1] as { role?: string } | undefined;
+    const owesModelOutput = last?.role === "user" || last?.role === "toolResult";
+    if (!owesModelOutput) {
+      // The interrupted turn already produced its final assistant message; commit
+      // whatever the journal staged and close the turn out — nothing to continue.
+      // Fold Code Mode / js_exec artifacts back onto their tool results first, the
+      // same way turn_end does (consume drains the transient KV artifact bucket) —
+      // otherwise the reloaded transcript would be missing those artifacts.
+      const tail = messages.slice(this.piMainBaselineIndex);
+      if (tail.length > 0) {
+        const tailWithArtifacts = await Promise.all(
+          tail.map((message) =>
+            this.attachCodeModeArtifactsToToolResult(message, { consume: true }),
+          ),
+        );
+        await this.appendPiCoreMessagesIfMissing(tailWithArtifacts);
+        this.piMainBaselineIndex = messages.length;
+        // No continuation streams here, so the encoder never emits the
+        // turn/completed metadata. If ai-chat orphan-persisted the interrupted
+        // stream's partial (it did whenever the partial carried settled tool
+        // results — see onChatRecovery), that live render row already SHOWS this
+        // committed content: stamp it with the tail's assistant fork ids so the
+        // top-up backfill skips these rows instead of duplicating them. When no
+        // partial was persisted there is no row to stamp and the top-up converts
+        // the rows exactly once.
+        await this.stampLiveAssistantForkEntryIds(tailWithArtifacts);
+      }
+      await this.clearPiActiveTurnAndJournal();
+      // This is the ONLY completion path for a turn recovered after its final
+      // assistant message but before agent_end ran, so finalize it exactly like
+      // the normal agent_end path via finishTurn({ markUnread }): it drives
+      // recordThreadAssistantCompletion (workspace unread + completion timestamp),
+      // the active automation run -> success, and the completion summary.
+      const completedAt = Date.now();
+      const finalText = this.extractLatestPiAssistantText(messages);
+      const summarySource = extractThreadCompletionSummarySource(
+        messages,
+        finalText,
+      );
+      this.finishTurn({
+        markUnread: true,
+        completedAt,
+        summarySource,
+      });
+      this.setActiveTurnUserId(null);
+      await this.completeTodoStateForTurnEnd();
+      return;
+    }
+    // Turn-start bookkeeping runs from the agent_start event the continuation
+    // emits; the spinner is already derived-on from the active-turn marker. The
+    // Pi runtime events stream into the same assistant message through the encoder.
+    // The ai-chat stall watchdog (chatStreamStallTimeoutMs) bounds this
+    // continuation the same way it bounds a fresh prompt.
+    const active = this.piSession;
+    if (!active) {
+      throw new Error(
+        "Pi session was not available to resume the interrupted turn",
+      );
+    }
+    // If ai-chat orphan-persisted a partial for this turn (only done when it
+    // carried settled tool results — see onChatRecovery), its trailing
+    // incomplete parts (a mid-stream text/reasoning run, a tool call whose input
+    // never finished) describe output Pi does NOT continue: the model regenerates
+    // its interrupted message from the journal-folded transcript. ai-chat's
+    // continuation clones that partial and APPENDS the regenerated stream, so
+    // drop the incomplete trailing parts first — otherwise the message renders
+    // half text followed by the full regenerated text. Settled parts (completed
+    // tools, finished text runs) are earlier, committed work and stay.
+    await this.trimIncompleteLiveAssistantParts();
+    await active.continue();
+    // A successful continuation runs the normal lifecycle; `agent_end` clears the
+    // marker + journal.
   }
 
   /**
-   * Reconcile an interrupted turn (committed history + journal tail are folded in
-   * by {@link createPiSession}) and drive it to completion via `Agent.continue()`
-   * when the model still owes output. Invoked by the scheduler after
-   * {@link onFiberRecovered}; re-wraps the continuation in a fiber so a second
-   * eviction is recovered too. Bounded by the attempt budget on the active-turn
-   * marker.
+   * Stamp the live render row for the in-flight stream (id = the active turnId)
+   * with the assistant fork ids (`responseId`s) of pi_core rows whose content it
+   * already displays, under `metadata.pi.forkEntryIds`. The top-up backfill
+   * treats those ids exactly like the encoder-emitted `forkEntryId`, so the rows
+   * are skipped instead of converted into duplicates. No-op when the stream has
+   * no persisted render row (nothing displays the content — the top-up then
+   * converts it exactly once).
    */
-  async resumeInterruptedPiTurn(): Promise<void> {
-    const marker = this.readPiActiveTurn();
-    if (!marker) return;
-    // Bail only if a turn is genuinely running in THIS process.
-    // `piSession.state.isStreaming` is the live in-memory signal (piSession is null
-    // on a fresh wake, so we proceed to rebuild and continue).
-    if (this.piSession?.state.isStreaming) return;
-    if (!this.chatContext) {
-      // No context to rebuild the session — drop the marker to avoid a hot loop.
-      await this.clearPiActiveTurnAndJournal();
-      return;
-    }
-    if (marker.attempt >= MAX_PI_RESUME_ATTEMPTS) {
-      await this.failPiResume();
-      return;
-    }
-    // Bump the attempt budget before doing work so a crash during resume is bounded.
-    this.writePiActiveTurn({ ...marker, attempt: marker.attempt + 1 });
-
-    try {
-      // Rebuilding the Pi session can fail on its own (e.g. OrgDO/model-provider
-      // config retries exhaust). Keep it INSIDE this try so a setup failure runs
-      // the same release cleanup as a continuation failure — otherwise the marker,
-      // journal, and isStreaming would stay set with the fiber row already consumed
-      // and no remaining trigger to retry recovery, stranding the thread busy.
-      await this.ensurePiSessionReady();
-      const session = this.piSession;
-      if (!session) return;
-      const messages = session.state.messages;
-      const last = messages[messages.length - 1] as { role?: string } | undefined;
-      const owesModelOutput = last?.role === "user" || last?.role === "toolResult";
-      if (!owesModelOutput) {
-        // The interrupted turn already produced its final assistant message; commit
-        // whatever the journal staged and close the turn out — nothing to continue.
-        // Fold Code Mode / js_exec artifacts back onto their tool results first, the
-        // same way turn_end does (consume drains the transient KV artifact bucket) —
-        // otherwise the reloaded transcript would be missing those artifacts.
-        const tail = messages.slice(this.piMainBaselineIndex);
-        if (tail.length > 0) {
-          const tailWithArtifacts = await Promise.all(
-            tail.map((message) =>
-              this.attachCodeModeArtifactsToToolResult(message, { consume: true }),
-            ),
-          );
-          await this.appendPiCoreMessagesIfMissing(tailWithArtifacts);
-          this.piMainBaselineIndex = messages.length;
-        }
-        await this.clearPiActiveTurnAndJournal();
-        // This is the ONLY completion path for a turn recovered after its final
-        // assistant message but before agent_end ran, so finalize it exactly like
-        // the normal agent_end path via finishTurn({ markUnread }): it drives
-        // recordThreadAssistantCompletion (workspace unread + completion timestamp),
-        // the active automation run -> success, and the completion summary.
-        const completedAt = Date.now();
-        const finalText = this.extractLatestPiAssistantText(messages);
-        const summarySource = extractThreadCompletionSummarySource(
-          messages,
-          finalText,
-        );
-        this.finishTurn({
-          markUnread: true,
-          completedAt,
-          summarySource,
-        });
-        this.setActiveTurnUserId(null);
-        await this.completeTodoStateForTurnEnd();
-        return;
+  private async stampLiveAssistantForkEntryIds(
+    committedTail: AgentMessage[],
+  ): Promise<void> {
+    const turnId = this.activePiStreamTurnId;
+    if (!turnId) return;
+    const live = this.messages.find((message) => message.id === turnId);
+    if (!live || live.role !== "assistant") return;
+    // responseId is set on every provider-produced assistant message; a rare
+    // assistant row without one falls back to a row-index-derived parsed id we
+    // cannot know here, so it may still convert once (never a clobber — the
+    // upsert identity check is by tool-call id, and such rows carry none).
+    const forkIds: string[] = [];
+    for (const message of committedTail) {
+      const record = message as unknown as Record<string, unknown>;
+      if (record.role !== "assistant") continue;
+      if (typeof record.responseId === "string" && record.responseId.trim()) {
+        forkIds.push(record.responseId.trim());
       }
-      // Turn-start bookkeeping runs from the agent_start event the continuation
-      // below emits; the spinner is already derived-on from the fiber row.
-      await this.runFiber(PI_TURN_FIBER, async () => {
-        await this.withPiTurnInactivityTimeout(async () => {
-          const active = this.piSession;
-          if (!active) {
-            throw new Error("Pi session was not available to resume the interrupted turn");
-          }
-          await active.continue();
-        });
-      });
-      // A successful continuation runs the normal lifecycle; `agent_end` clears the
-      // marker + journal.
-    } catch (error) {
-      // A genuine eviction tears down the isolate before this catch can run, so
-      // anything reaching here is an in-process failure: a session-rebuild failure
-      // (ensurePiSessionReady), a provider error, the inactivity timeout, or a user
-      // abort. The fiber row is already consumed/deleted, so without this cleanup
-      // the marker, journal, and isStreaming would stay set with no trigger left to
-      // retry recovery — the thread would be stuck busy until manual intervention.
-      // Mirror the initial prompt path's failure cleanup.
-      const isInactivityTimeout = error instanceof PiTurnInactivityTimeoutError;
-      if (
-        !isInactivityTimeout &&
-        error instanceof Error &&
-        (error.name === "AbortError" || /aborted/i.test(error.message))
-      ) {
-        // A user stop keeps the Pi handlers subscribed, so agent_end still runs and
-        // clears the marker + journal + streaming. Leave it to that path.
-        return;
-      }
-      console.error("[ChatThreadDO] Pi turn resume failed", error);
-      this.persistPiAgentLoopErrorForDevelopers(error, { source: "pi_resume" });
-      const errorMessage = isInactivityTimeout
-        ? "The assistant stalled and the resumed turn was stopped after a period of inactivity. Please try again."
-        : error instanceof Error
-          ? error.message
-          : String(error);
-      this.pushChatEvent(this.piProviderErrorEvent(errorMessage));
-      this.updateActiveAutomationRun({
-        status: "error",
-        message: errorMessage,
-        clear: true,
-      });
-      this.finishTurn();
-      this.setActiveTurnUserId(null);
-      await this.clearPiActiveTurnAndJournal();
-    } finally {
-      // Post-settle: broadcast the derived state to clear the spinner once done.
-      this.syncAgentState();
     }
+    if (forkIds.length === 0) return;
+    const metadata = ((live as { metadata?: Record<string, unknown> }).metadata ??
+      {}) as Record<string, unknown>;
+    const pi = (metadata.pi && typeof metadata.pi === "object"
+      ? { ...(metadata.pi as Record<string, unknown>) }
+      : {}) as Record<string, unknown>;
+    const existing = Array.isArray(pi.forkEntryIds)
+      ? (pi.forkEntryIds as unknown[]).filter(
+          (value): value is string => typeof value === "string" && !!value,
+        )
+      : [];
+    pi.forkEntryIds = Array.from(new Set([...existing, ...forkIds]));
+    const updated = {
+      ...live,
+      metadata: { ...metadata, pi },
+    } as UIMessage;
+    await this.persistMessages(
+      this.messages.map((message) => (message.id === turnId ? updated : message)),
+    );
   }
 
-  private async failPiResume(): Promise<void> {
-    await this.clearPiActiveTurnAndJournal();
-    this.finishTurn();
-    // Release turn ownership like the normal completion / resume-error paths,
-    // otherwise getActiveTurnUserId() keeps attributing later sandbox MCP /
-    // integration calls to the abandoned turn's author until the next turn.
-    this.setActiveTurnUserId(null);
-    this.recordChatThreadObservabilityEvent("pi_turn_resume_abandoned", {
-      operation: "resume_interrupted_turn",
-      status: "abandoned",
-      severity: "warn",
-    });
-    try {
-      this.pushChatEvent(
-        this.piProviderErrorEvent(
-          "This turn was interrupted and could not be resumed automatically. Please send your message again.",
-        ),
-      );
-    } catch {
-      // Best effort: the observability event above is the actionable signal.
+  /**
+   * Drop trailing incomplete parts (text/reasoning still `streaming`, tool calls
+   * still `input-streaming`) from the live render row of the in-flight stream
+   * before a resume continuation appends the regenerated output. See the call
+   * site in {@link resumeActivePiTurn}.
+   */
+  private async trimIncompleteLiveAssistantParts(): Promise<void> {
+    const turnId = this.activePiStreamTurnId;
+    if (!turnId) return;
+    const live = this.messages.find((message) => message.id === turnId);
+    if (!live || live.role !== "assistant" || !Array.isArray(live.parts)) return;
+    const parts = [...live.parts];
+    let trimmed = 0;
+    while (parts.length > 0) {
+      const last = parts[parts.length - 1] as { state?: unknown };
+      if (last?.state === "streaming" || last?.state === "input-streaming") {
+        parts.pop();
+        trimmed += 1;
+        continue;
+      }
+      break;
     }
+    if (trimmed === 0) return;
+    const updated = { ...live, parts } as UIMessage;
+    await this.persistMessages(
+      this.messages.map((message) => (message.id === turnId ? updated : message)),
+    );
+    this.recordChatThreadObservabilityEvent("pi_turn_partial_trimmed", {
+      operation: "resume_interrupted_turn",
+      status: "trimmed",
+      count: trimmed,
+    });
   }
 
   private discardUnpersistedPiSessionMessages(): number {
@@ -4408,6 +4799,10 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
         threadId: context.threadId,
         userId: context.userId ?? undefined,
         timestamp: turnTimestamp,
+        // Display fields for the native render-history user bubble (commit 3b):
+        // the user's typed text (unattributed) and the source channel.
+        rawContent,
+        messageSource: options.messageSource ?? "web",
       });
     } catch (error) {
       this.finishTurn();
@@ -4449,9 +4844,9 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
     this.syncAgentState();
 
     // A new turn's user message is now in the canonical transcript (above); the
-    // server builds only the assistant/tool overlay live (see liveMessages).
-    // Steered messages land in the transcript when Pi emits them and on the next
-    // reload.
+    // turn's assistant/tool content streams to the client through ai-chat render
+    // history. Steered messages land in the transcript when Pi emits them and on
+    // the next reload.
     return { status: "accepted" };
   }
 
@@ -4921,6 +5316,10 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
    * todos, and broadcasts state. Invoked once per run from the agent_start event.
    */
   private markTurnStarted(): void {
+    this.recordChatThreadObservabilityEvent("pi_turn_started", {
+      operation: "run_pi_turn",
+      status: "started",
+    });
     this.assistantCompletionRecordedAt = null;
     this.assistantCompletionSummaryRequestedAt = null;
     this.resetRunningActivityState();
@@ -4936,9 +5335,9 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
   /**
    * Turn-completion bookkeeping. Records the assistant completion / summary /
    * automation result exactly once per turn — idempotency rides on
-   * {@link assistantCompletionRecordedAt}, NOT on any stored streaming flag — clears
-   * the live overlay, and broadcasts the now-idle derived state. Safe to call on any
-   * terminal path (agent_end, resume completion, or error/abort cleanup).
+   * {@link assistantCompletionRecordedAt}, NOT on any stored streaming flag — and
+   * broadcasts the now-idle derived state. Safe to call on any terminal path
+   * (agent_end, resume completion, or error/abort cleanup).
    */
   private finishTurn(
     options: { markUnread?: boolean; completedAt?: number; summarySource?: string | null } = {},
@@ -4970,15 +5369,9 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
       });
     }
     this.resetRunningActivityState();
-    // Turn over: ship the turn's messages as the authoritative snapshot on the
-    // clearing frame. The client commits finalMessages to history directly, so
-    // correctness never depends on it having received every throttled delta.
-    const finalMessages = this.liveMessages.map((message) =>
-      message.isStreaming ? { ...message, isStreaming: false } : message,
-    );
-    this.liveMessages = [];
-    this.liveStreamingMessageId = null;
-    this.broadcastLiveOverlay({ finalMessages });
+    // Turn over: the assistant/tool content was streamed and persisted through
+    // ai-chat render history; the stream's `finish` chunk marks it complete. Just
+    // broadcast the now-idle derived state.
     this.syncAgentState();
     const context = this.chatContext;
     if (context?.workspaceId && context.threadId) {
@@ -6242,7 +6635,10 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
     }
 
     session.state.messages = compacted;
-    await this.replacePiCoreMessages(compacted);
+    // Compaction only summarizes away rows the render mirror already shows;
+    // "preserve" keeps the visible history and re-pins the top-up mark to the
+    // rewritten (shorter) parsed count.
+    await this.replacePiCoreMessages(compacted, { uiRender: "preserve" });
     this.clearPiCoreCompaction();
     this.piMainBaselineIndex = compacted.length;
   }
@@ -7740,14 +8136,10 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
       // this re-reads from OrgDO and every later call in the turn reuses it.
       this.cachedLlmProviderConfig = null;
       this.resetRunningActivityState();
-      // New turn: reset the overlay so the browser stops showing the previous
-      // turn's tail (the previous turn-end frame's finalMessages already
-      // committed it to client history).
-      this.hydrateLiveStateFromAgentState();
-      this.liveMessages = [];
-      this.liveStreamingMessageId = null;
-      this.pendingOverlayArtifacts?.clear();
-      // A fresh turn supersedes any prior terminal error.
+      // Hydrate the durable badge/error before clearing lastError below, so a
+      // cold-wake hydrate (guarded once) can't restore the previous turn's error
+      // after we've cleared it. A fresh turn supersedes any prior terminal error.
+      this.hydrateDurableStateOnce();
       this.lastError = null;
       // agent_start is the one turn-start hook for every run (prompt, resume, eval).
       this.markTurnStarted();
@@ -8329,101 +8721,119 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
               ? { metadata: { sentDuringStreaming: true } }
               : {}),
           } as unknown as AgentMessage;
-          // True only once we enter the fibered new-turn branch below, so the error
-          // handler clears recovery state only for a turn THIS call made recoverable
-          // (never a different, already-streaming turn whose steer/refresh threw).
-          let recoverableTurnStarted = false;
-          this.ctx.waitUntil(
-            (async () => {
-              if (!this.piSession) return;
-              if (this.piSession.state.isStreaming) {
-                // Durably journal the accepted message BEFORE any await, so an
-                // eviction in the window before Pi drains the in-memory steering
-                // queue re-delivers it on resume instead of silently losing it. The
-                // in-flight turn's own fiber already makes the run recoverable, so
-                // the model refresh can stay async here.
-                this.recordPiTurnJournalSteerMessage(userMessage);
+          // Display fields for the native render-history user bubble (commit 3b).
+          // rawContent is the user's typed text (before attribution/mention/file-
+          // safety augmentation), which is what the render bubble shows; content
+          // above is the attributed prompt Pi actually receives.
+          const rawContent =
+            typeof message.rawContent === "string" && message.rawContent.trim()
+              ? message.rawContent
+              : content;
+          const messageSource =
+            typeof message.messageSource === "string" && message.messageSource.trim()
+              ? message.messageSource
+              : null;
+          const clientMessageId =
+            typeof message.clientMessageId === "string" && message.clientMessageId.trim()
+              ? message.clientMessageId.trim()
+              : undefined;
+          if (wasStreaming) {
+            // Steering: an in-flight turn is streaming. Durably journal the accepted
+            // message BEFORE any await, so an eviction in the window before Pi drains
+            // the in-memory steering queue re-delivers it on resume instead of losing
+            // it. The in-flight turn's own recovery fiber makes the run recoverable,
+            // so the model refresh + steer can run async.
+            this.recordPiTurnJournalSteerMessage(userMessage);
+            this.ctx.waitUntil(
+              (async () => {
+                if (!this.piSession) return;
                 await this.refreshPiSessionModel();
                 if (!this.piSession) return;
                 this.piSession.steer(userMessage);
-              } else {
-                recoverableTurnStarted = true;
-                // Establish durable recoverability in the SAME synchronous tick that
-                // persisted isStreaming=true upstream (enqueueRunnerUserMessage) — NO
-                // await may run before this. The active-turn marker (kv.put) and
-                // journal (sql.exec) are synchronous, and runFiber's own
-                // cf_agents_runs INSERT runs synchronously too (before its first
-                // keepAlive await), so the marker, journal, AND fiber row are all
-                // durable in one tick. The model refresh therefore moves INSIDE the
-                // fiber, right before prompt(): left here, its await would open a
-                // window where isStreaming is persisted but no run row / marker
-                // exists yet, so an eviction (e.g. a deploy) would strand the thread
-                // "streaming" forever with nothing for onFiberRecovered to resume.
-                this.openPiActiveTurnIfAbsent();
-                this.recordPiTurnJournalUserMessage(userMessage);
-                // Run the turn inside a durable fiber: it holds keepAlive() for the
-                // turn and, if the DO is evicted mid-turn, leaves an orphan run row
-                // the SDK detects on the next wake (onFiberRecovered ->
-                // resumeInterruptedPiTurn). Normal completion/errors delete the row,
-                // so only a true eviction triggers resume.
-                await this.runFiber(PI_TURN_FIBER, async () => {
-                  await this.withPiTurnInactivityTimeout(async () => {
-                    if (!this.piSession) {
-                      throw new Error("Pi session was not available for prompt");
-                    }
-                    await this.refreshPiSessionModel();
-                    await this.piSession.prompt(userMessage);
-                  });
-                });
-              }
-            })().catch((error) => {
-                // An inactivity timeout disposes the Pi session (unsubscribing
-                // handlers) before throwing, so no agent_end handler runs to
-                // reset streaming state. Treat it as an error condition and do
-                // the cleanup here. A genuine user `stop` keeps handlers
-                // subscribed, so its AbortError stays benign below.
-                const isInactivityTimeout =
-                  error instanceof PiTurnInactivityTimeoutError;
-                if (
-                  !isInactivityTimeout &&
-                  error instanceof Error &&
-                  (error.name === "AbortError" || /aborted/i.test(error.message))
-                ) {
-                  return;
-                }
-                console.error("[ChatThreadDO] Pi prompt failed", error);
-                this.persistPiAgentLoopErrorForDevelopers(error, {
-                  source: "pi_prompt",
-                });
-                const errorMessage = isInactivityTimeout
-                  ? "The assistant stalled and the turn was stopped after a period of inactivity. Please try again."
-                  : error instanceof Error
-                    ? error.message
-                    : String(error);
-                this.pushChatEvent(this.piProviderErrorEvent(errorMessage));
-                this.updateActiveAutomationRun({
-                  status: "error",
-                  message: errorMessage,
-                  clear: true,
-                });
-                this.finishTurn();
-                this.setActiveTurnUserId(null);
-                // The turn failed before agent_end could clean up (the inactivity
-                // timeout disposes the session first). The fiber row is already
-                // deleted on error, so clear the recovery marker + journal too —
-                // otherwise the next session build treats this stale tail as an
-                // interrupted turn and reuses the old attempt budget. Only do this
-                // for a turn THIS call made recoverable: a throw from the steer path
-                // or refreshPiSessionModel() must not wipe a still-streaming turn's
-                // recovery state.
-                if (recoverableTurnStarted) {
-                  void this.clearPiActiveTurnAndJournal();
+                // Append the steered bubble to the linear render history directly
+                // (persistMessages, NOT saveMessages — the latter would enqueue a
+                // second ai-chat turn). The in-flight assistant stream keeps its own
+                // ai-chat turn; this is a sibling linear-history write.
+                await this.persistMessages([
+                  ...this.messages,
+                  this.buildUserUiSkeleton({
+                    rawContent,
+                    clientMessageId,
+                    messageSource,
+                    piCoreMessageKey: timestamp,
+                  }),
+                ]);
+              })().catch((error) => {
+                console.error(
+                  "[ChatThreadDO] failed to steer / persist steered user render message",
+                  error,
+                );
+              }),
+            );
+            return true;
+          }
+
+          // Fresh turn. onChatMessage OWNS it (runs the model + streams the Pi
+          // events); here we only make it durable and hand it to ai-chat.
+          //
+          // Establish durable recoverability in the SAME synchronous tick that
+          // persisted isStreaming=true upstream (enqueueRunnerUserMessage) — NO await
+          // runs before these two writes. The active-turn marker (kv.put) mints the
+          // stable stream/message id and derives the busy spinner; the journal
+          // (sql.exec) records the ATTRIBUTED prompt so a pre-stream eviction can
+          // rebuild the model turn from it (the in-memory prompt queue below is
+          // lost on eviction — the journal is the durable copy). From this tick on,
+          // any eviction is recovered by chatRecovery: the ai-chat recovery fiber
+          // wraps the saveMessages turn body, so a mid-stream cut resumes via
+          // continueLastTurn and a pre-stream cut via _retryLastUserTurn, both
+          // re-entering onChatMessage's resume branch.
+          //
+          // A second fresh send can land before the first prompt() flips
+          // isStreaming (or while a recovery for an interrupted turn is still
+          // pending) — the marker is then already open. Queue-correct admission:
+          // APPEND the new user message to the journal (never replace — that
+          // would durably drop the earlier accepted prompt) and push it onto the
+          // FIFO queue for onChatMessage to drain (prompt the first, steer the
+          // rest).
+          const markerAlreadyOpen = this.readPiActiveTurn() !== null;
+          this.openPiActiveTurnIfAbsent();
+          this.recordPiTurnJournalUserMessage(userMessage, {
+            append: markerAlreadyOpen,
+          });
+          this.pendingPiPromptQueue.push({ userMessage });
+          const userSkeleton = this.buildUserUiSkeleton({
+            rawContent,
+            clientMessageId,
+            messageSource,
+            piCoreMessageKey: timestamp,
+          });
+          // Hand the turn to ai-chat. saveMessages persists the user bubble and drives
+          // onChatMessage (wrapped in ai-chat's recovery fiber). Fire-and-forget:
+          // saveMessages resolves only when the whole turn's stream closes, but the
+          // caller's `sent=true` ack means the turn was ACCEPTED, not completed.
+          this.ctx.waitUntil(
+            this.saveMessages((msgs) => [...msgs, userSkeleton])
+              .then((result) => {
+                if (result.status === "error") {
+                  console.error(
+                    "[ChatThreadDO] ai-chat turn reported error",
+                    result.error,
+                  );
                 }
               })
-              .finally(() => {
-                // Post-settle: the fiber row is gone and pi-core is idle, so this
-                // broadcast of the derived state is what clears the client spinner.
-                this.syncAgentState();
+              .catch((error) => {
+                console.error(
+                  "[ChatThreadDO] saveMessages for Pi stream turn failed",
+                  error,
+                );
+                this.recordChatThreadObservabilityEvent(
+                  "pi_stream_save_messages_failed",
+                  {
+                    operation: "save_messages",
+                    status: "error",
+                    error,
+                  },
+                );
               }),
           );
           return true;
@@ -8548,202 +8958,6 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
     this.pushChatEvent({ type: "error", error: message });
   }
 
-  // Publish the current turn's overlay over the non-durable broadcast channel
-  // (no setState/SQLite write — this is live, not durable). Coarse state
-  // (isStreaming, lastCompletedTurn, lastError, todos, …) still goes through
-  // setState; only the high-frequency streaming tail rides the broadcast.
-  private broadcastLiveOverlay(
-    options: { throttle?: boolean; finalMessages?: Message[] } = {},
-  ): void {
-    const threadId = this.chatContext?.threadId;
-    if (!threadId) return;
-    if (options.throttle) {
-      // Coalesce rapid delta broadcasts; a dropped frame only delays rendering —
-      // the turn-end frame's finalMessages carry the authoritative content.
-      const now = Date.now();
-      if (now - this.lastLiveSyncAtMs < LIVE_STATE_SYNC_THROTTLE_MS) return;
-      this.lastLiveSyncAtMs = now;
-    } else {
-      this.lastLiveSyncAtMs = Date.now();
-    }
-    this.broadcastChat({
-      type: "live_overlay",
-      threadId,
-      messages: this.liveMessages,
-      streamingMessageId: this.liveStreamingMessageId,
-      ...(options.finalMessages && options.finalMessages.length > 0
-        ? { finalMessages: options.finalMessages }
-        : {}),
-    });
-  }
-
-  // Send the current overlay to a single (re)connecting client so a warm
-  // reconnect recovers the in-progress turn without it being persisted in state.
-  //
-  // When there IS a live overlay (warm reconnect mid-turn), send it so streaming
-  // resumes. When the overlay is empty we send an empty snapshot ONLY if the thread
-  // is actually idle: if the turn finished while the client was disconnected, the
-  // client still holds its pre-disconnect streaming tail — the empty snapshot
-  // clears it (the reconnect revalidation reloads the committed messages).
-  //
-  // But an empty overlay does NOT imply idle: a cold-woken DO mid-turn also has an
-  // empty overlay (the non-durable tail isn't restored on wake) while
-  // isThreadStreaming() is still true from the durable active-turn marker. Clearing
-  // the client's tail there would blank a still-streaming message, so keep the
-  // no-op and let the resuming turn's deltas drive the client.
-  private sendLiveOverlayToConnection(connection: Connection): void {
-    const threadId = this.chatContext?.threadId;
-    if (!threadId) {
-      return;
-    }
-    const hasOverlay =
-      Array.isArray(this.liveMessages) && this.liveMessages.length > 0;
-    if (!hasOverlay && this.isThreadStreaming()) {
-      return;
-    }
-    try {
-      connection.send(
-        JSON.stringify({
-          type: "live_overlay",
-          threadId,
-          messages: hasOverlay ? this.liveMessages : [],
-          streamingMessageId: this.liveStreamingMessageId,
-        }),
-      );
-    } catch {
-      // Dead connection; ignore.
-    }
-  }
-
-  // Bound oversized streamed tool/text blocks in the live overlay so the
-  // broadcast snapshot stays well under the WS frame limit. Runs every event so
-  // memory stays bounded and subsequent deltas append from the capped content.
-  private boundLiveOverlaySize(): void {
-    if (!Array.isArray(this.liveMessages) || this.liveMessages.length === 0) return;
-    let changed = false;
-    const next = this.liveMessages.map((message) => {
-      if (!Array.isArray(message.content)) return message;
-      let blockChanged = false;
-      const content = message.content.map((block) => {
-        const record = block as unknown as Record<string, unknown>;
-        if (
-          record.type === "tool_result" &&
-          typeof record.content === "string" &&
-          record.content.length > MAX_LIVE_OVERLAY_BLOCK_CHARS
-        ) {
-          blockChanged = true;
-          return { ...block, content: boundLiveOverlayText(record.content) };
-        }
-        if (
-          record.type === "text" &&
-          typeof record.text === "string" &&
-          record.text.length > MAX_LIVE_OVERLAY_BLOCK_CHARS
-        ) {
-          blockChanged = true;
-          return { ...block, text: boundLiveOverlayText(record.text) };
-        }
-        return block;
-      });
-      if (!blockChanged) return message;
-      changed = true;
-      return { ...message, content };
-    });
-    if (changed) this.liveMessages = next;
-  }
-
-  // Build the current turn's assistant/tool messages whole from the broadcast
-  // event stream and publish them as the wholesale overlay in Agent state. The
-  // browser replaces its overlay with this snapshot on every update (it does
-  // not accumulate deltas), so a re-id at turn/completed can never duplicate a
-  // message. This is a per-thread DO, so a single streaming id replaces the old
-  // per-thread map.
-  private applyChatEventToLiveState(payload: Record<string, unknown>): void {
-    this.hydrateLiveStateFromAgentState();
-    const threadId = this.chatContext?.threadId;
-    if (!threadId) return;
-
-    let throttleSync = false;
-    if (payload.type === "runtime_event") {
-      const event = payload.event as
-        | { method?: unknown; params?: Record<string, unknown> }
-        | undefined;
-      // Streamed token/output deltas are high-frequency; coalesce their syncs.
-      // Structural events (item/turn completed, etc.) force a flush.
-      const method = typeof event?.method === "string" ? event.method : "";
-      throttleSync =
-        method.toLowerCase().includes("delta") || method.endsWith("/progress");
-      const previousStreamingId = this.liveStreamingMessageId;
-      const streamingIds: Record<string, string | null> = {
-        [threadId]: this.liveStreamingMessageId,
-      };
-      this.liveMessages = applyRuntimeEventToMessages(
-        this.liveMessages,
-        threadId,
-        payload.event,
-        streamingIds,
-      );
-      // Bound oversized streamed output every event so memory and the broadcast
-      // snapshot stay capped (full output is persisted durably).
-      this.boundLiveOverlaySize();
-      this.liveStreamingMessageId = streamingIds[threadId] ?? null;
-      // Drain any code-mode artifacts whose tool result has now appeared in the
-      // overlay (they were recorded before item/completed built it).
-      if (this.pendingOverlayArtifacts?.size) {
-        for (const [toolUseId, artifacts] of [...this.pendingOverlayArtifacts]) {
-          const result = attachArtifactsToToolResultMessages(
-            this.liveMessages,
-            toolUseId,
-            artifacts,
-          );
-          if (result.attached) {
-            this.liveMessages = result.messages;
-            this.pendingOverlayArtifacts.delete(toolUseId);
-          }
-        }
-      }
-      if (event?.method === "turn/completed") {
-        // Key the badge by the assistant message id the browser renders:
-        // forkEntryId after finalize, else the streaming id it kept.
-        const params = event.params ?? {};
-        const forkEntryId =
-          typeof params.forkEntryId === "string" && params.forkEntryId.trim()
-            ? params.forkEntryId.trim()
-            : null;
-        const completedId = forkEntryId ?? previousStreamingId;
-        if (completedId) {
-          this.lastCompletedTurn = {
-            id: completedId,
-            durationMs:
-              typeof params.turnDurationMs === "number" &&
-              Number.isFinite(params.turnDurationMs)
-                ? Math.max(0, params.turnDurationMs)
-                : 0,
-            completedAtMs:
-              typeof params.completedAtMs === "number" &&
-              Number.isFinite(params.completedAtMs)
-                ? params.completedAtMs
-                : Date.now(),
-          };
-          // lastCompletedTurn is coarse durable state (drives the badge), so it
-          // goes through setState — not the broadcast overlay.
-          this.syncAgentState();
-        }
-      }
-    } else if (payload.type === "error") {
-      const streamingId = this.liveStreamingMessageId;
-      if (streamingId) {
-        this.liveMessages = this.liveMessages.map((message) =>
-          message.id === streamingId ? { ...message, isStreaming: false } : message,
-        );
-      }
-      this.liveStreamingMessageId = null;
-    } else {
-      return;
-    }
-
-    this.broadcastLiveOverlay({ throttle: throttleSync });
-  }
-
   private piProviderErrorEvent(message: string): Record<string, unknown> {
     const metadata = this.piProviderErrorMetadata(message);
     return {
@@ -8758,6 +8972,10 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
 
   private pushChatEvent(payload: Record<string, unknown>): void {
     const sessionId = this.chatContext?.threadId || "";
+    // Set in the error branch below and stamped onto the envelope so the encoder
+    // relay can persist a durable `data-pi-error` part carrying the same id +
+    // billing metadata (groundwork for the future terminal-error cutover).
+    let errorId: string | null = null;
 
     if (payload.type === "error") {
       const message =
@@ -8780,8 +8998,9 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
       // Surface the terminal error through Agent state (with a unique id for
       // one-shot client dedup) so a reconnect after a disconnected/early failure
       // still recovers it — the replay buffer is gone. Cleared at agent_start.
+      errorId = crypto.randomUUID();
       this.lastError = {
-        id: crypto.randomUUID(),
+        id: errorId,
         error: message,
         billingSource:
           typeof payload.billingSource === "string" ? payload.billingSource : null,
@@ -8798,17 +9017,651 @@ export class ChatThreadDO extends Agent<ChatAgentEnv, ChatThreadAgentState> {
     const envelope: Record<string, unknown> = {
       ...payload,
       sessionId,
+      ...(errorId ? { errorId } : {}),
     };
 
-    this.applyChatEventToLiveState(envelope);
-    this.agentEvalEventCollector?.push(envelope);
-    // runtime_event content and error events both reach the browser through
-    // Agent state (the overlay / lastError), not the websocket — broadcasting
-    // them here would duplicate (runtime) or be lost on reconnect (error).
-    // result/side-channel events are still delivered live over the socket.
-    if (envelope.type !== "runtime_event" && envelope.type !== "error") {
-      this.broadcastChat(envelope);
+    // The turn/completed badge now rides `message-metadata.pi` (turnDurationMs /
+    // completedAtMs / forkEntryId) on the assistant message the encoder emits, so
+    // the browser derives it from render history — no Agent-state mirror. Emit the
+    // turn-finish lifecycle event here (once per turn/completed, low cardinality).
+    if (envelope.type === "runtime_event") {
+      const event = envelope.event as
+        | { method?: unknown; params?: Record<string, unknown> }
+        | undefined;
+      if (event?.method === "turn/completed") {
+        const params = event.params ?? {};
+        const durationMs =
+          typeof params.turnDurationMs === "number" &&
+          Number.isFinite(params.turnDurationMs)
+            ? Math.max(0, params.turnDurationMs)
+            : undefined;
+        this.recordChatThreadObservabilityEvent("pi_turn_finished", {
+          operation: "run_pi_turn",
+          status: "completed",
+          durationMs,
+        });
+      }
     }
+
+    // Mirror the event into the native ai-chat stream. All render content reaches
+    // the browser through this stream (assistant/tool messages) or Agent state
+    // (lastError, todos), never a raw websocket fan-out — so there is no socket
+    // broadcast here. The eval collector still consumes every envelope (result
+    // frames included) unchanged.
+    this.writePiStreamChunks(envelope);
+    this.agentEvalEventCollector?.push(envelope);
+  }
+
+  /**
+   * Native UIMessage stream bridge (commit 3b, dual-emit): feed a chat event into
+   * the turn's encoder and relay the resulting chunks to the attached ai-chat
+   * stream writer, or buffer them until onChatMessage attaches one. A no-op when
+   * no turn is bridging (encoder null) — every legacy emission is untouched.
+   */
+  private writePiStreamChunks(envelope: Record<string, unknown>): void {
+    const encoder = this.piChunkEncoder;
+    if (!encoder) return;
+
+    let chunks: PiUiMessageChunk[];
+    if (envelope.type === "runtime_event") {
+      const event = envelope.event;
+      if (!event || typeof event !== "object") return;
+      chunks = encoder.encode(event as PiRuntimeEvent);
+    } else if (envelope.type === "error") {
+      const errorText =
+        typeof envelope.error === "string" && envelope.error.trim()
+          ? envelope.error.trim()
+          : typeof envelope.message === "string" && envelope.message.trim()
+            ? envelope.message.trim()
+            : "Unknown error";
+      // The native `error` chunk is broadcast-only (ai-chat never persists it), so
+      // also emit a durable, non-transient `data-pi-error` part carrying the id +
+      // billing metadata. This keeps the structured error in ai-chat render
+      // history (a reload/late reconnect surfaces it, and the adapter renders it
+      // as an inline error block) and is the groundwork for retiring the
+      // Agent-state `lastError` channel — which still drives the live composer
+      // banner + billing refresh for now.
+      chunks = [{ type: "error", errorText }];
+      const errorId =
+        typeof envelope.errorId === "string" ? envelope.errorId : null;
+      if (errorId) {
+        chunks.push({
+          type: "data-pi-error",
+          id: PI_ERROR_PART_ID,
+          data: {
+            id: errorId,
+            error: errorText,
+            billingSource:
+              typeof envelope.billingSource === "string"
+                ? envelope.billingSource
+                : null,
+            provider:
+              typeof envelope.provider === "string" ? envelope.provider : null,
+            status:
+              typeof envelope.status === "number" ||
+              typeof envelope.status === "string"
+                ? (envelope.status as number | string)
+                : null,
+            errorType:
+              typeof envelope.errorType === "string"
+                ? envelope.errorType
+                : null,
+          },
+        });
+      }
+    } else {
+      return;
+    }
+    this.enqueuePiStreamChunks(chunks);
+  }
+
+  /**
+   * Relay chunks to the attached ai-chat stream writer, or buffer them until
+   * onChatMessage attaches one. Shared by the encoder relay (writePiStreamChunks)
+   * and out-of-band data parts (code-mode artifacts) that aren't produced from a
+   * Pi runtime event.
+   */
+  private enqueuePiStreamChunks(chunks: PiUiMessageChunk[]): void {
+    if (chunks.length === 0) return;
+
+    const writer = this.piStreamWriter;
+    if (writer) {
+      for (const chunk of chunks) writer.write(chunk as never);
+      return;
+    }
+    // Defensive: the turn body runs inside onChatMessage's execute (after the
+    // writer attaches), so this normally never buffers — but a stray between-attach
+    // event is kept (drop-oldest, bounded) rather than dropped.
+    const buffer = (this.piPreAttachChunkBuffer ??= []);
+    for (const chunk of chunks) {
+      if (buffer.length >= PI_STREAM_PRE_ATTACH_CHUNK_CAP) {
+        buffer.shift();
+        console.warn(
+          "[ChatThreadDO] pi stream pre-attach buffer overflow; dropping oldest chunk",
+        );
+      }
+      buffer.push(chunk);
+    }
+  }
+
+  /**
+   * ai-chat turn OWNER (commit 6). Driven by saveMessages for a fresh turn, or by
+   * chatRecovery (continueLastTurn / _retryLastUserTurn) re-driving an interrupted
+   * turn. Returns a native UIMessage stream whose execute RUNS the Pi turn — a
+   * fresh prompt on the warm session, or the resume branch that rebuilds and
+   * continues — relaying the turn's runtime events through the encoder. Returns
+   * undefined when no Pi turn is in flight (no active-turn marker), so any stray
+   * ai-chat frame stays inert.
+   *
+   * The encoder is (re)built from the marker's stable turnId, so a recovery
+   * continuation streams into the SAME persisted assistant message: a fresh turn
+   * has ai-chat adopt `start {messageId: turnId}`; a continuation ignores the start
+   * messageId and appends to the cloned last-assistant message (which already
+   * carries that id). See the ai-chat `_streamSSEReply` continuation handling.
+   */
+  async onChatMessage(
+    _onFinish: unknown,
+    _options?: unknown,
+  ): Promise<Response | undefined> {
+    const marker = this.readPiActiveTurn();
+    // No in-flight turn to own (e.g. the marker was already cleared). Stay inert
+    // WITHOUT draining the prompt queue — a queued admission racing a terminal
+    // clear keeps its entry for the next admitted turn instead of being dropped.
+    if (!marker) return undefined;
+
+    const turnId = marker.turnId;
+    this.activePiStreamTurnId = turnId;
+    this.piChunkEncoder = new PiChunkEncoder({ messageId: turnId });
+    this.piStreamWriter = null;
+    this.piPreAttachChunkBuffer = null;
+
+    // A fresh turn prompts on the already-warm session (built before the marker was
+    // set, so createPiSession did NOT fold the journal and prompt() adds the user
+    // messages exactly once). Rapid double-sends both queue before prompt() flips
+    // isStreaming, so the drain prompts the FIRST message and steer()s the rest
+    // into the run. A recovery re-drive has an empty queue and a cold/disposed
+    // session — its resume branch rebuilds the session (folding the journal, which
+    // durably holds every queued user message) and continues into the same message.
+    // When the resume branch runs with a non-empty queue (e.g. a config-change
+    // dispose raced admission), the drained entries are safe to discard: their
+    // journal rows are what the rebuilt session folds.
+    const drained =
+      this.pendingPiPromptQueue.length > 0
+        ? this.pendingPiPromptQueue.splice(0, this.pendingPiPromptQueue.length)
+        : [];
+    const freshPrompts =
+      drained.length > 0 && this.piSession && !this.piSession.state.isStreaming
+        ? drained
+        : null;
+
+    // Lazy-load `ai`'s stream builders so the heavy package stays out of the
+    // module graph's eager-import cost (see the import note at the top of file).
+    const { createUIMessageStream, createUIMessageStreamResponse } = await import(
+      "ai"
+    );
+
+    const response = createUIMessageStreamResponse({
+      stream: createUIMessageStream({
+        execute: async ({ writer }) => {
+          // Emit the stream head and attach the writer. The turn body runs below
+          // (inside this execute), so every Pi event arrives after the writer is set
+          // — the pre-attach buffer is a defensive drain only.
+          const encoder = this.piChunkEncoder;
+          if (encoder) {
+            for (const chunk of encoder.start()) writer.write(chunk as never);
+          }
+          const buffered = this.piPreAttachChunkBuffer;
+          this.piPreAttachChunkBuffer = null;
+          if (buffered) {
+            for (const chunk of buffered) writer.write(chunk as never);
+          }
+          this.piStreamWriter = writer;
+          try {
+            if (freshPrompts) {
+              // No bespoke inactivity race: the ai-chat stall watchdog
+              // (chatStreamStallTimeoutMs) now bounds inter-chunk gaps and, on a
+              // stall, cancels this reply stream — onPiReplyStreamCancelled
+              // disposes the session, which resolves this prompt() and leaves the
+              // marker for bounded recovery.
+              if (!this.piSession) {
+                throw new Error("Pi session was not available for prompt");
+              }
+              await this.refreshPiSessionModel();
+              const session = this.piSession;
+              if (!session) {
+                throw new Error("Pi session was not available for prompt");
+              }
+              // Prompt the first queued message; steer the rest into the run in
+              // the SAME synchronous tick (prompt() marks the session streaming
+              // before its first await, and pi drains the steering queue at the
+              // run's steering points — including messages queued before the
+              // first poll). Each steered message is steer-journaled first so an
+              // eviction before pi drains it re-delivers on resume; the run's
+              // first message_end rewrites the turn journal from the session
+              // tail, which would otherwise drop the not-yet-drained entries.
+              const [first, ...rest] = freshPrompts;
+              const promptPromise = session.prompt(first.userMessage);
+              for (const queued of rest) {
+                this.recordPiTurnJournalSteerMessage(queued.userMessage);
+                session.steer(queued.userMessage);
+              }
+              await promptPromise;
+            } else {
+              await this.resumeActivePiTurn();
+            }
+            // Drain the Pi event handler chain so agent_end's turn/completed → the
+            // encoder `finish` chunk is flushed before the stream closes.
+            await this.piEventHandlerChain.catch(() => {});
+          } catch (error) {
+            this.handlePiTurnFailure(error);
+          } finally {
+            if (this.piStreamWriter === writer) this.piStreamWriter = null;
+            this.piChunkEncoder = null;
+            this.piPreAttachChunkBuffer = null;
+            this.activePiStreamTurnId = null;
+            // Post-settle: pi-core is idle (or the error path cleared the marker), so
+            // broadcast the derived state to clear the client spinner.
+            this.syncAgentState();
+          }
+        },
+      }),
+    });
+    return this.wrapReplyResponseForStallDisposal(response);
+  }
+
+  /**
+   * Recovery classification hook (finding: half+full text after mid-stream
+   * eviction). Default ai-chat recovery persists the orphaned partial (e.g. a
+   * text part cut mid-stream, still `state: "streaming"`) and then CONTINUES
+   * onto it — but Pi's resume regenerates its interrupted message from the
+   * journal-folded transcript rather than continuing the partial, so the
+   * continuation would append the full regenerated text after the half text.
+   *
+   * `persist: false` skips the orphan persist, so a mid-text eviction leaves the
+   * user message as the leaf and ai-chat classifies the recovery as RETRY
+   * (`_dispatchRecoveredChatTurn`'s lost-partial branch → `_chatRecoveryRetry` →
+   * `_retryLastUserTurn` → onChatMessage's marker resume branch), which
+   * regenerates one clean message under the same turnId. The visible partial is
+   * intentionally sacrificed — the regeneration replaces it.
+   *
+   * The framework's never-drop-settled-work clause overrides `persist: false`
+   * when the partial carries settled tool results (agents/chat
+   * `_shouldPersistOrphanedPartial`): those partials DO persist and recover via
+   * CONTINUE. That path is reconciled in {@link resumeActivePiTurn}, which trims
+   * the partial's trailing incomplete parts before continuing.
+   */
+  override async onChatRecovery(
+    _ctx: ChatRecoveryContext,
+  ): Promise<ChatRecoveryOptions> {
+    return { persist: false };
+  }
+
+  /**
+   * Wrap the onChatMessage reply so the stall watchdog's stream-cancel disposes
+   * the hung Pi session. ai-chat's `chatStreamStallTimeoutMs` watchdog cancels
+   * this response body when the turn stalls; that cancel does NOT fire the
+   * onChatMessage abortSignal, so we hook the body's `cancel()` here. Bytes pass
+   * through untouched (identical SSE); only the cancel path gains the side effect.
+   * A normal turn end reaches `done` (no cancel), and this codebase's user-stop
+   * completes agent_end normally and closes the stream — so cancel() fires only on
+   * a stall (or DO teardown), where disposing the session is correct.
+   */
+  private wrapReplyResponseForStallDisposal(response: Response): Response {
+    const body = response.body;
+    if (!body) return response;
+    const reader = body.getReader();
+    const wrapped = new ReadableStream<Uint8Array>({
+      pull: async (controller) => {
+        try {
+          const { done, value } = await reader.read();
+          if (done) {
+            controller.close();
+            return;
+          }
+          controller.enqueue(value);
+        } catch (error) {
+          controller.error(error);
+        }
+      },
+      cancel: (reason) => {
+        void reader.cancel(reason);
+        this.onPiReplyStreamCancelled();
+      },
+    });
+    return new Response(wrapped, {
+      status: response.status,
+      statusText: response.statusText,
+      headers: response.headers,
+    });
+  }
+
+  /**
+   * The reply stream was cancelled — ordinarily by the stall watchdog. Dispose
+   * the hung Pi session so its in-flight prompt()/continue() resolves (pi-agent-core
+   * catches the abort and settles the run). disposePiSession() unsubscribes the
+   * handlers first, so the synthesized aborted agent_end is dropped and the
+   * active-turn marker is LEFT set — ai-chat then routes the stall into bounded
+   * chatRecovery, which re-drives onChatMessage's resume branch. No-op when no turn
+   * is in flight (a normal completion never cancels the stream).
+   */
+  private onPiReplyStreamCancelled(): void {
+    if (!this.piSession && !this.activePiStreamTurnId) return;
+    this.recordChatThreadObservabilityEvent("pi_turn_stream_stall_abort", {
+      operation: "stream_stall_abort",
+      status: "aborted",
+      severity: "warn",
+    });
+    this.disposePiSession();
+  }
+
+  /**
+   * Shared failure cleanup for a Pi turn that errored inside onChatMessage's stream
+   * execute (a fresh prompt or a resume continuation). Consolidates the old
+   * sendRunnerCommand / resume error paths.
+   *
+   * A genuine user `stop` keeps handlers subscribed, so agent_end already cleared
+   * the marker + journal and its AbortError is benign. A config-change dispose (and
+   * a stall dispose via {@link onPiReplyStreamCancelled}) also abort with no
+   * agent_end but leave the marker set so the pending continuation resumes the turn
+   * — all AbortError cases are swallowed WITHOUT clearing recovery state. (A stall
+   * abort actually resolves prompt() rather than rejecting, so it usually doesn't
+   * reach here at all; the AbortError guard covers the race where it does.)
+   *
+   * Otherwise: surface the error through the encoder relay (a terminal `error`
+   * chunk) plus durable lastError state, run the completion/automation teardown,
+   * and clear the marker + journal so chatRecovery does NOT re-drive a turn that
+   * terminally errored.
+   */
+  private handlePiTurnFailure(error: unknown): void {
+    if (
+      error instanceof Error &&
+      (error.name === "AbortError" || /aborted/i.test(error.message))
+    ) {
+      return;
+    }
+    console.error("[ChatThreadDO] Pi turn failed", error);
+    this.persistPiAgentLoopErrorForDevelopers(error, { source: "pi_turn" });
+    const errorMessage =
+      error instanceof Error ? error.message : String(error);
+    this.pushChatEvent(this.piProviderErrorEvent(errorMessage));
+    this.updateActiveAutomationRun({
+      status: "error",
+      message: errorMessage,
+      clear: true,
+    });
+    this.finishTurn();
+    this.setActiveTurnUserId(null);
+    void this.clearPiActiveTurnAndJournal();
+  }
+
+  /**
+   * chatRecovery `onExhausted` hook (commit 6): an interrupted turn spent its
+   * recovery budget. The framework delivers `terminalMessage` to the client and
+   * records the durable terminal itself; here we run the same give-up teardown the
+   * old failPiResume path did — clear the marker + journal, release turn ownership,
+   * fail any active automation run, surface durable lastError, and log.
+   */
+  private handlePiRecoveryExhausted(ctx: ChatRecoveryExhaustedContext): void {
+    this.recordChatThreadObservabilityEvent("pi_turn_resume_abandoned", {
+      operation: "resume_interrupted_turn",
+      status: "abandoned",
+      severity: "warn",
+    });
+    this.updateActiveAutomationRun({
+      status: "error",
+      message: ctx.terminalMessage,
+      clear: true,
+    });
+    void this.clearPiActiveTurnAndJournal();
+    this.finishTurn();
+    this.setActiveTurnUserId(null);
+    try {
+      this.pushChatEvent(this.piProviderErrorEvent(ctx.terminalMessage));
+    } catch {
+      // Best effort: the framework already delivered the terminal banner; the
+      // observability event above is the actionable signal.
+    }
+  }
+
+  /**
+   * Build a native user render bubble for the linear ai-chat history (commit 3b).
+   * Uses the client-supplied message id when present so the client's optimistic
+   * echo and the durable row share an id.
+   */
+  private buildUserUiSkeleton(args: {
+    rawContent: string;
+    clientMessageId?: string;
+    messageSource?: string | null;
+    channelHistory?: boolean;
+    piCoreMessageKey?: number | string;
+  }): UIMessage {
+    const metadata: Record<string, unknown> = {};
+    if (args.messageSource) metadata.source = args.messageSource;
+    if (args.channelHistory) metadata.channelHistory = true;
+    // Stamp the pi_core timestamp of the row Pi commits for this same user
+    // message so the top-up backfill can recognize the live-written skeleton and
+    // skip re-converting the pi_core row into a duplicate (topUpUiMessagesFromPiCore).
+    if (args.piCoreMessageKey !== undefined && args.piCoreMessageKey !== null) {
+      metadata.piCoreMessageKey = String(args.piCoreMessageKey);
+    }
+    return {
+      id:
+        args.clientMessageId && args.clientMessageId.trim()
+          ? args.clientMessageId.trim()
+          : crypto.randomUUID(),
+      role: "user",
+      parts: [{ type: "text", text: args.rawContent, state: "done" }],
+      ...(Object.keys(metadata).length > 0 ? { metadata } : {}),
+    } as UIMessage;
+  }
+
+  /**
+   * Render history for the live-user chat loader (commit 3b). Runs the pi_core →
+   * ai-chat top-up backfill first, then returns the full ai-chat message list.
+   * DO RPC only — intentionally NOT wired to any HTTP route (auth-sensitive; the
+   * loader wiring is commit 4).
+   */
+  async getUiMessages(): Promise<UIMessage[]> {
+    await this.topUpUiMessagesFromPiCore();
+    return this.messages as UIMessage[];
+  }
+
+  /**
+   * Admin repair RPC (commit 3b): rebuild the entire ai-chat render history from
+   * pi_core. Clears the mirror + high-water mark, then re-runs the top-up. For
+   * flows that rewrite pi_core (fork repair, compaction repair) where the append-
+   * only high-water assumption no longer holds.
+   */
+  async resyncUiMessagesFromPiCore(): Promise<{
+    ok: true;
+    messageCount: number;
+  }> {
+    await this.rebuildUiMessagesFromPiCore();
+    return { ok: true, messageCount: this.messages.length };
+  }
+
+  /**
+   * High-water-mark top-up: convert pi_core render messages beyond the mark into
+   * native UIMessages and persist them into ai-chat's durable render history. The
+   * mark is the count of parsed render messages already mirrored; deterministic
+   * ids (forkEntryId / pi item ids from the shared adapter) make the upsert
+   * idempotent, and explicit monotonic created_at keeps ai-chat's `order by
+   * created_at` load stable (its default per-row timestamp is 1s-resolution insert
+   * time, so a burst of backfilled rows would otherwise tie and shuffle).
+   */
+  private async topUpUiMessagesFromPiCore(
+    options: { force?: boolean } = {},
+  ): Promise<void> {
+    // While a Pi turn is in flight (or awaiting recovery), pi_core rows beyond
+    // the mark belong to that turn: they stream into the live turnId render row
+    // (or its recovery continuation), so converting them here would race the
+    // stream and duplicate/merge-clobber the live message. The turn's terminal
+    // paths clear the marker; the next top-up reconciles. `force` bypasses the
+    // gate for explicit rebuild flows (admin resync, fork seeding).
+    if (!options.force && this.readPiActiveTurn()) return;
+    const startedAt = Date.now();
+    const threadId = this.chatContext?.threadId ?? "";
+    const parsed = await this.getPiCoreParsedMessages(threadId);
+    const mark = this.ctx.storage.kv.get<number>(
+      UI_MESSAGES_PI_CORE_HIGH_WATER_KEY,
+    ) ?? 0;
+    if (parsed.length <= mark) return;
+
+    const newParsed = parsed.slice(mark);
+    let lastCreatedAtMs =
+      this.ctx.storage.kv.get<number>(
+        UI_MESSAGES_PI_CORE_LAST_CREATED_AT_KEY,
+      ) ?? 0;
+    // Live turns already wrote ai-chat rows for this same pi_core content (user
+    // skeletons under clientMessageId / a minted turnId, assistant messages under
+    // the minted turnId). Converting those pi_core rows again would duplicate
+    // them — worse, ai-chat's persistMessages re-ids a converted row that shares
+    // a toolCallId with an existing message onto THAT message (resolveToolMergeId)
+    // and upsert-replaces it, clobbering the live row. So skip any row that
+    // matches an existing ai-chat message:
+    //  - user rows by the stamped pi timestamp (metadata.piCoreMessageKey);
+    //  - assistant rows by fork id — the encoder stamps only the LAST SDK turn's
+    //    responseId as metadata.pi.forkEntryId, plus any ids stamped under
+    //    metadata.pi.forkEntryIds (recovery commit path);
+    //  - assistant rows by tool-call identity — a multi-SDK-turn run commits one
+    //    pi_core assistant row per SDK turn, all streamed into the ONE live
+    //    turnId row; their toolCallIds appearing on an existing message proves
+    //    the content is already rendered (the same identity resolveToolMergeId
+    //    would merge on).
+    // The high-water mark still advances past skipped rows.
+    const existingForkEntryIds = new Set<string>();
+    const existingUserKeys = new Set<string>();
+    const existingToolCallIds = new Set<string>();
+    for (const existing of this.messages) {
+      const metadata = (existing as { metadata?: Record<string, unknown> })
+        .metadata;
+      if (metadata && typeof metadata === "object") {
+        const pi = metadata.pi as
+          | { forkEntryId?: unknown; forkEntryIds?: unknown }
+          | undefined;
+        if (pi && typeof pi.forkEntryId === "string" && pi.forkEntryId) {
+          existingForkEntryIds.add(pi.forkEntryId);
+        }
+        if (pi && Array.isArray(pi.forkEntryIds)) {
+          for (const id of pi.forkEntryIds) {
+            if (typeof id === "string" && id) existingForkEntryIds.add(id);
+          }
+        }
+        if (typeof metadata.piCoreMessageKey === "string" && metadata.piCoreMessageKey) {
+          existingUserKeys.add(metadata.piCoreMessageKey);
+        }
+      }
+      const parts = (existing as { parts?: unknown }).parts;
+      if (existing.role === "assistant" && Array.isArray(parts)) {
+        for (const part of parts) {
+          const toolCallId = (part as { toolCallId?: unknown } | null)?.toolCallId;
+          if (typeof toolCallId === "string" && toolCallId) {
+            existingToolCallIds.add(toolCallId);
+          }
+        }
+      }
+    }
+    const parsedAssistantToolCallIds = (content: unknown): string[] => {
+      if (!Array.isArray(content)) return [];
+      const ids: string[] = [];
+      for (const block of content) {
+        if (!block || typeof block !== "object") continue;
+        const record = block as Record<string, unknown>;
+        if (record.type === "tool_use" && typeof record.id === "string" && record.id) {
+          ids.push(record.id);
+        }
+      }
+      return ids;
+    };
+    const uiMessages: UIMessage[] = [];
+    const createdAtById = new Map<string, number>();
+    for (const parsedMessage of newParsed) {
+      if (parsedMessage.role === "assistant") {
+        if (
+          typeof parsedMessage.forkEntryId === "string" &&
+          existingForkEntryIds.has(parsedMessage.forkEntryId)
+        ) {
+          continue;
+        }
+        const toolCallIds = parsedAssistantToolCallIds(parsedMessage.content);
+        if (toolCallIds.some((id) => existingToolCallIds.has(id))) {
+          continue;
+        }
+      }
+      if (
+        parsedMessage.role === "user" &&
+        existingUserKeys.has(String(parsedMessage.created_at))
+      ) {
+        continue;
+      }
+      const ui = messageToUiMessage(parsedMessage as unknown as Message);
+      const baseMs =
+        typeof parsedMessage.created_at === "number" &&
+        Number.isFinite(parsedMessage.created_at)
+          ? parsedMessage.created_at
+          : Date.now();
+      const createdAtMs = Math.max(baseMs, lastCreatedAtMs + 1);
+      lastCreatedAtMs = createdAtMs;
+      createdAtById.set(ui.id, createdAtMs);
+      uiMessages.push(ui);
+    }
+
+    if (uiMessages.length > 0) {
+      // persistMessages sanitizes, upserts (idempotent by id), refreshes the
+      // in-memory list, and broadcasts — but stamps created_at with the insert-
+      // time default, so overwrite it with the monotonic values and reload the
+      // in-memory order to match a fresh wake's `order by created_at`.
+      await this.persistMessages([...this.messages, ...uiMessages]);
+      for (const [id, createdAtMs] of createdAtById) {
+        this.ctx.storage.sql.exec(
+          "UPDATE cf_ai_chat_agent_messages SET created_at = ? WHERE id = ?",
+          formatAiChatCreatedAt(createdAtMs),
+          id,
+        );
+      }
+      this.reloadAiChatMessagesOrdered();
+      this.ctx.storage.kv.put(
+        UI_MESSAGES_PI_CORE_LAST_CREATED_AT_KEY,
+        lastCreatedAtMs,
+      );
+      this.recordChatThreadObservabilityEvent("pi_ui_messages_backfilled", {
+        operation: "topup_ui_messages",
+        status: "converted",
+        count: uiMessages.length,
+        durationMs: Date.now() - startedAt,
+      });
+    }
+    this.ctx.storage.kv.put(UI_MESSAGES_PI_CORE_HIGH_WATER_KEY, parsed.length);
+  }
+
+  /**
+   * Reload the in-memory ai-chat message list from SQLite ordered by created_at,
+   * matching ai-chat's own load semantics (used after a direct created_at UPDATE
+   * that persistMessages' in-memory refresh predates).
+   */
+  private reloadAiChatMessagesOrdered(): void {
+    const rows = this.ctx.storage.sql
+      .exec<{ id: string; message: string }>(
+        "SELECT id, message FROM cf_ai_chat_agent_messages ORDER BY created_at",
+      )
+      .toArray();
+    const messages: UIMessage[] = [];
+    for (const row of rows) {
+      try {
+        const parsed = JSON.parse(row.message) as UIMessage;
+        if (
+          parsed &&
+          typeof parsed.id === "string" &&
+          typeof parsed.role === "string" &&
+          Array.isArray(parsed.parts)
+        ) {
+          messages.push(parsed);
+        }
+      } catch {
+        // A row that fails to parse is skipped, matching ai-chat's loader.
+      }
+    }
+    this.messages = messages;
   }
 
   private getChatSockets(): WebSocket[] {
