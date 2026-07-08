@@ -8,7 +8,7 @@
 		"dev:app": "react-router dev",
 		"dev:local-auth": "LOCAL_AUTH_BYPASS=1 WORKER_BASE_URL=http://localhost:3001 node scripts/dev-with-project-runtime.mjs",
 		"build": "bun run build:cf && bun run check:pi-bedrock-build",
-		"build:cf": "react-router build",
+		"build:cf": "bun run build:renderer && react-router build",
 		"check:pi-bedrock-build": "node scripts/check-pi-bedrock-build.mjs",
 		"start": "node scripts/wrangler-dev.mjs",
 		"selfhost:init": "node scripts/selfhost-init.mjs",
@@ -67,7 +67,7 @@
 		"test:eval:sandbox": "node scripts/run-agent-eval.mjs sandbox-write-file-live",
 		"test:e2e": "playwright test",
 		"test:e2e:ui": "playwright test --ui",
-		"build:renderer": "vite build --config vite.renderer.config.ts"
+		"build:renderer": "node scripts/build-notebook-renderer.mjs"
 	},
 	"dependencies": {
 		"@anthropic-ai/sdk": "^0.71.2",

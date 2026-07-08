@@ -459,6 +459,9 @@ export interface CloudflareEmailSender {
 }
 
 export interface ChatEnv extends WorkspaceFilesystemEnv, ProjectRuntimeServiceVmEnv {
+  // Main app static assets. Notebook deploys read the pre-built renderer SPA
+  // from /notebook-renderer/ to synthesize published-notebook workers.
+  ASSETS?: Fetcher;
   CHAT_THREAD: DurableObjectNamespace<ChatThreadDO>;
   ORG: DurableObjectNamespace<OrgDO>;
   USER: DurableObjectNamespace<UserDO>;

@@ -224,15 +224,21 @@ set_preview(
 )
 ```
 
-### Publish files as standalone apps
+### Publish notebooks as standalone apps
 
-When a user wants to publish a notebook (or any file) as a standalone app, deploy with:
+When a user wants to publish a notebook as a standalone shareable app, deploy the
+project:
 
-```bash
-publish my-notebook-app --file /path/to/analysis.ipynb
+```text
+deploy_project(project="<project>")
 ```
 
-This deploys a lightweight Cloudflare Worker that serves the file via the main app's embed viewer. No build step required.
+For a data-analysis project this skips the build entirely: it packages the
+executed notebook with the platform notebook renderer into a static Cloudflare
+Worker and registers it like any other deployed app (it appears in `list_apps`,
+supports `set_app_visibility`, custom domains, and rollback). Always run
+`run_notebook` first so the published outputs are fresh; pass `path` if the
+project has more than one notebook.
 
 ### How notebooks are presented
 

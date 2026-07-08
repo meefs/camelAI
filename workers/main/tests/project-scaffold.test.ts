@@ -187,6 +187,7 @@ describe("defaultProjectScaffoldFiles", () => {
     expect(readme).toContain("Report mode");
     expect(readme).toContain("set_preview");
     expect(readme).toContain('"application/x-ipynb+json"');
-    expect(readme).toContain("no build or deploy step");
+    expect(readme).toContain("no build step");
+    expect(readme).toContain("deploy_project");
   });
 });

@@ -36,6 +36,7 @@ import { CodeModeIntegrations } from "./code-mode-integrations";
 import { createSignedToken } from "./signed-tokens";
 import { buildLogTail, cleanBuildLog, projectBuildSandboxKey, runProjectAddDependency, runProjectBuild, type ProjectBuildResult } from "./project-build-service";
 import { collectWorkerBundleFromSandbox, findUnexportedDurableObjectClasses, type ProjectBuildSandboxLike } from "./project-worker-bundle";
+import { buildNotebookWorkerBundle, resolveNotebookDeployPath } from "./notebook-worker-bundle";
 import { defaultProjectScaffoldFiles, normalizeProjectScaffoldTemplate, type ProjectScaffoldResult } from "./project-scaffold";
 import { addShadcnComponentsToProject, normalizeShadcnComponentList, SUPPORTED_SHADCN_COMPONENTS } from "./shadcn-components";
 import { connectAppBrowserSession, launchAppBrowserSession } from "./app-browser-binding";
@@ -210,6 +211,24 @@ function bytesToBase64ForMove(bytes: Uint8Array): string {
     binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
   }
   return btoa(binary);
+}
+
+// Warn (not block) when a notebook is deployed without any cell outputs — the
+// published report would render code and prose but no charts/tables. Parse
+// failures return true so the deploy proceeds without a misleading warning.
+function notebookHasCellOutputs(notebookBytes: Uint8Array): boolean {
+  try {
+    const parsed = JSON.parse(new TextDecoder().decode(notebookBytes)) as { cells?: unknown };
+    const cells = Array.isArray(parsed?.cells) ? parsed.cells : null;
+    if (!cells) return true;
+    return cells.some((cell) => {
+      if (!cell || typeof cell !== "object") return false;
+      const record = cell as { cell_type?: unknown; outputs?: unknown };
+      return record.cell_type === "code" && Array.isArray(record.outputs) && record.outputs.length > 0;
+    });
+  } catch {
+    return true;
+  }
 }
 
 function base64ToBytesForMove(value: string): Uint8Array {
@@ -584,7 +603,7 @@ const CODE_MODE_TOOL_REGISTRY: CodeModeToolRegistration[] = [
   ),
   codeModePassthroughTool(
     "create_project",
-    "Create a new DO-backed project and seed a scaffold. Project names must be unique within the workspace. New projects require a concise description explaining what the project is for. The default scaffold is a deployable React Router SSR app with Tailwind/shadcn-style UI primitives and a deploy manifest writer for deploy_project. Use template='data-analysis' for a notebook-first analysis project: a Report-mode analysis.ipynb plus conventions README, executed with run_notebook instead of build/deploy. Arguments: { name, description, template? }.",
+    "Create a new DO-backed project and seed a scaffold. Project names must be unique within the workspace. New projects require a concise description explaining what the project is for. The default scaffold is a deployable React Router SSR app with Tailwind/shadcn-style UI primitives and a deploy manifest writer for deploy_project. Use template='data-analysis' for a notebook-first analysis project: a Report-mode analysis.ipynb plus conventions README, executed with run_notebook; deploy_project publishes the executed notebook as a static report app. Arguments: { name, description, template? }.",
     Type.Object({
       name: Type.String(),
       description: Type.String(),
@@ -595,7 +614,7 @@ const CODE_MODE_TOOL_REGISTRY: CodeModeToolRegistration[] = [
   ),
   codeModePassthroughTool(
     "scaffold_project",
-    "Seed or repair a standard DO-backed scaffold in an existing project. By default it does not overwrite existing files; pass force: true to replace scaffold paths. Defaults to a React Router SSR app with Tailwind/shadcn-style UI primitives. Use template='data-analysis' for a notebook-first analysis project (Report-mode analysis.ipynb, executed with run_notebook instead of build/deploy). Arguments: { project, template?, force? }.",
+    "Seed or repair a standard DO-backed scaffold in an existing project. By default it does not overwrite existing files; pass force: true to replace scaffold paths. Defaults to a React Router SSR app with Tailwind/shadcn-style UI primitives. Use template='data-analysis' for a notebook-first analysis project (Report-mode analysis.ipynb, executed with run_notebook; deploy_project publishes the executed notebook as a static report app). Arguments: { project, template?, force? }.",
     Type.Object({
       project: Type.String(),
       template: Type.Optional(Type.Union([Type.Literal("react-router"), Type.Literal("data-analysis")], {
@@ -680,10 +699,13 @@ const CODE_MODE_TOOL_REGISTRY: CodeModeToolRegistration[] = [
   ),
   codeModeTool(
     "deploy_project",
-    "Build and deploy a DO-backed project through the platform direct deploy path. Arguments: { project, script_name?, timeoutMs? }.",
+    "Build and deploy a DO-backed project through the platform direct deploy path. Data-analysis (notebook) projects skip the build: the executed .ipynb is published as a static read-only report app using the platform notebook renderer — run_notebook first so outputs are fresh, then deploy. Use path to pick the notebook when the project has more than one. Arguments: { project, script_name?, path?, timeoutMs? }.",
     Type.Object({
       project: Type.String(),
       script_name: Type.Optional(Type.String()),
+      path: Type.Optional(Type.String({
+        description: "Notebook path inside the project to publish (data-analysis projects only). Defaults to analysis.ipynb or the project's single notebook.",
+      })),
       timeoutMs: Type.Optional(Type.Number()),
     }, { additionalProperties: false }),
     { category: "workspace", sideEffect: true },
@@ -825,7 +847,7 @@ const CODE_MODE_TOOL_REGISTRY: CodeModeToolRegistration[] = [
   ),
   codeModePassthroughTool(
     "run_notebook",
-    "Execute a Jupyter notebook (.ipynb) in a DO-backed project and persist the executed notebook + any changed files back to the project. This is the PRIMARY data-analysis path — one call runs `jupyter nbconvert --execute --inplace` then validates the result, so you don't drive nbconvert/validate by hand. The default Python data stack (pandas, numpy, polars, duckdb, pyarrow, altair, plotly, matplotlib, seaborn, scipy, scikit-learn, statsmodels, openpyxl, pdfplumber, jupyter) is PREINSTALLED — no setup needed; use add_python_dependency for anything else. Read big inputs from the read-only mounts — uploaded files at /uploads/<name> (the R2 uploads/<name> reference with a leading slash) and connection exports at '/' + r2_key — keep large intermediates in the per-run $SCRATCH directory (created for you, cleaned up after the run), and put notebooks + small results in the project. After it returns ok, set_preview the .ipynb (location: 'project', project, path). Returns { ok, executed, validation: { clean, issues }, stdout, stderr, exitCode, changedFiles, removedFiles, skippedOversize, durationMs }. If ok is false, fix the failing cells (see validation.issues / stderr) and re-run — never suppress errors. Arguments: { project, path, timeoutMs? }.",
+    "Execute a Jupyter notebook (.ipynb) in a DO-backed project and persist the executed notebook + any changed files back to the project. This is the PRIMARY data-analysis path — one call runs `jupyter nbconvert --execute --inplace` then validates the result, so you don't drive nbconvert/validate by hand. The default Python data stack (pandas, numpy, polars, duckdb, pyarrow, altair, plotly, matplotlib, seaborn, scipy, scikit-learn, statsmodels, openpyxl, pdfplumber, jupyter) is PREINSTALLED — no setup needed; use add_python_dependency for anything else. Read big inputs from the read-only mounts — uploaded files at /uploads/<name> (the R2 uploads/<name> reference with a leading slash) and connection exports at '/' + r2_key — keep large intermediates in the per-run $SCRATCH directory (created for you, cleaned up after the run), and put notebooks + small results in the project. After it returns ok, set_preview the .ipynb (location: 'project', project, path); deploy_project publishes the executed notebook as a static report app when the user wants a shareable link. Returns { ok, executed, validation: { clean, issues }, stdout, stderr, exitCode, changedFiles, removedFiles, skippedOversize, durationMs }. If ok is false, fix the failing cells (see validation.issues / stderr) and re-run — never suppress errors. Arguments: { project, path, timeoutMs? }.",
     Type.Object({
       project: Type.String(),
       path: Type.String(),
@@ -3850,6 +3872,14 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
   private async deployProject(args: Record<string, unknown>): Promise<unknown> {
     return withProjectBuildServiceErrorMapping(async () => {
       const project = await this.resolveDoBackedProjectForAction(args, "deploy_project");
+      const notebookProjectFiles = new ProjectFilesystemClient(this.env, project.id);
+      const notebookPath = await resolveNotebookDeployPath(
+        notebookProjectFiles,
+        typeof args.path === "string" && args.path.trim() ? args.path.trim() : null,
+      );
+      if (notebookPath) {
+        return await this.deployNotebookProject(project, notebookProjectFiles, notebookPath, args);
+      }
       const sandbox = this.projectBuildSandbox();
       const timeoutMs = typeof args.timeoutMs === "number" ? args.timeoutMs : undefined;
       const build = await runProjectBuild({
@@ -3947,6 +3977,93 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
         ...(warnings.length > 0 ? { warnings } : {}),
       };
     });
+  }
+
+  // Publish an executed notebook as a static app: the pre-built renderer SPA
+  // (main app ASSETS, /notebook-renderer/) plus the .ipynb, uploaded through the
+  // same direct-dispatch deploy + app registration path as built projects.
+  private async deployNotebookProject(
+    project: WorkspaceProject,
+    projectFiles: ProjectFilesystemClient,
+    notebookPath: string,
+    args: Record<string, unknown>,
+  ): Promise<unknown> {
+    const rendererAssets = this.env.ASSETS;
+    if (!rendererAssets) {
+      throw new Error("Notebook publishing is unavailable: the ASSETS binding is not configured on this worker");
+    }
+    const read = await projectFiles.readFile(notebookPath);
+    if (!read.success || typeof read.content !== "string") {
+      throw new Error(read.error || `Failed to read notebook ${notebookPath}`);
+    }
+    const notebookBytes = read.encoding === "base64"
+      ? base64ToBytesForMove(read.content)
+      : new TextEncoder().encode(read.content);
+    const warnings: string[] = [];
+    if (!notebookHasCellOutputs(notebookBytes)) {
+      warnings.push(
+        `${notebookPath} has no cell outputs — run run_notebook before deploying so the published report includes charts and tables.`,
+      );
+    }
+    const filename = notebookPath.split("/").filter(Boolean).pop() || "notebook.ipynb";
+    const snapshot = await projectFiles.createSourceSnapshot({ message: `Deploy ${project.name}` });
+    const bundle = await buildNotebookWorkerBundle({ rendererAssets, filename, notebook: notebookBytes });
+    const orgSlug = await this.getOrgSlug();
+    if (!orgSlug) throw new Error("Current org has no slug; cannot deploy project");
+    const scriptName = normalizeDeployScriptName(
+      typeof args.script_name === "string" && args.script_name.trim() ? args.script_name : project.name,
+    );
+    const deploy = await deployWorkerModulesDirect(this.env, {
+      scriptName,
+      hostname: this.deployHostname(),
+      identity: {
+        orgId: this.ctx.props.orgId,
+        orgSlug,
+        workspaceId: this.ctx.props.workspaceId,
+        userId: this.ctx.props.userId,
+        threadId: this.ctx.props.threadId,
+        projectId: project.id,
+      },
+      metadata: bundle.metadata,
+      modules: bundle.modules,
+      assets: bundle.assets,
+      commitSha: snapshot.id,
+    });
+    if (!deploy.success) {
+      return {
+        success: false,
+        stage: "deploy",
+        mode: "notebook",
+        project: project.name,
+        notebook: notebookPath,
+        scriptName: deploy.scriptName,
+        dispatchScriptName: deploy.dispatchScriptName,
+        status: deploy.status,
+        errorSummary: summarizeDeployFailure(deploy),
+        deploy: summarizeDirectDeployResult(deploy),
+      };
+    }
+    await handleDeploySideEffects(this.env as never, deploy.sideEffects);
+    const appUrl = await this.appUrlForScriptName(scriptName);
+    const allWarnings = [...warnings, ...(deploy.warnings ?? []), ...this.localDeployReachabilityWarnings()];
+    return {
+      success: true,
+      mode: "notebook",
+      project: project.name,
+      notebook: notebookPath,
+      scriptName: deploy.scriptName,
+      dispatchScriptName: deploy.dispatchScriptName,
+      status: deploy.status,
+      url: appUrl,
+      appUrl,
+      sourceSnapshot: {
+        id: snapshot.id,
+        fileCount: snapshot.fileCount,
+        totalBytes: snapshot.totalBytes,
+      },
+      deploy: summarizeDirectDeployResult(deploy),
+      ...(allWarnings.length > 0 ? { warnings: allWarnings } : {}),
+    };
   }
 
   private localDeployReachabilityWarnings(): string[] {

@@ -163,6 +163,7 @@ function defaultDataAnalysisScaffoldFiles(projectName: string): ProjectScaffoldF
         `- The default Python data stack (pandas, numpy, polars, duckdb, pyarrow, altair, plotly, scipy, scikit-learn, and more) is preinstalled; use \`add_python_dependency\` for anything else.`,
         `- Read big inputs from the read-only mounts — uploads at \`/uploads/<name>\`, connection exports at \`'/' + r2_key\` — and keep large intermediates in \`$SCRATCH\`; only notebooks and small results belong in the project.`,
         `- After a clean run, preview it in chat: \`set_preview({ location: "project", project: ${JSON.stringify(projectName)}, path: "analysis.ipynb", content_type: "application/x-ipynb+json" })\`.`,
+        `- To share the report outside chat, \`deploy_project({ project: ${JSON.stringify(projectName)} })\` publishes the executed notebook as a static read-only report app (the platform notebook renderer plus the .ipynb — no build step). Always run \`run_notebook\` first so the published outputs are fresh.`,
         ``,
         `## Report conventions`,
         ``,
@@ -171,7 +172,7 @@ function defaultDataAnalysisScaffoldFiles(projectName: string): ProjectScaffoldF
         `- Charts: prefer Altair — Vega-Lite outputs render natively with light/dark theme support (Plotly and PNG outputs also render). Do not set chart backgrounds or hardcode text colors.`,
         `- Tables: output plain pandas DataFrames, not \`df.style\` or hand-built HTML \`<table>\` markup, so they render with theme-aware styling, sorting, and CSV export.`,
         ``,
-        `This project holds analysis deliverables; it has no build or deploy step (\`build_project\`/\`deploy_project\` do not apply).`,
+        `This project holds analysis deliverables; there is no build step (\`build_project\` does not apply — \`deploy_project\` publishes the notebook directly).`,
       ].join("\n") + "\n",
     },
   ];

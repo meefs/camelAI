@@ -257,7 +257,7 @@ function contentTypeForModule(path: string): string {
   return "application/javascript+module";
 }
 
-function contentTypeForAsset(path: string): string | undefined {
+export function contentTypeForAsset(path: string): string | undefined {
   const lower = path.toLowerCase();
   if (lower.endsWith(".html")) return "text/html; charset=utf-8";
   if (lower.endsWith(".css")) return "text/css; charset=utf-8";

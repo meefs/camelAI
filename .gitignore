@@ -86,6 +86,7 @@ package-lock.json
 
 # Pre-built renderer bundle (built at CI time)
 sandbox/create-worker/renderer-dist/
+/public/notebook-renderer/
 desktop/.local/
 desktop-agentos/.local/
 desktop-agentos/.local-dev/
