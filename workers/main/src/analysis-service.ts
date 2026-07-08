@@ -46,6 +46,13 @@ export const ANALYSIS_UPLOADS_BUCKET_BINDING = "R2_BUCKET";
 export const ANALYSIS_UPLOADS_MOUNT_PATH = "/uploads";
 /** Files larger than this are NOT auto-persisted back to the project FS. */
 export const ANALYSIS_MAX_PERSIST_BYTES = 25 * 1024 * 1024;
+/**
+ * Where the baked `camelai` helper package lives (analysis-sandbox.Dockerfile
+ * COPYs it there and sets the same PYTHONPATH as an image ENV). Also set
+ * per-run so helper importability never depends on how the container server
+ * propagates image ENV to exec'd processes.
+ */
+export const ANALYSIS_PYTHONPATH = "/opt/camelai-python";
 const DEFAULT_NOTEBOOK_TIMEOUT_MS = 300_000;
 const MAX_NOTEBOOK_TIMEOUT_MS = 900_000;
 const DEFAULT_EXEC_TIMEOUT_MS = 300_000;
@@ -212,6 +219,49 @@ export function diffManifests(
 export async function sha256Hex(bytes: Uint8Array): Promise<string> {
   const digest = await crypto.subtle.digest("SHA-256", bytes as unknown as ArrayBuffer);
   return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+/**
+ * Inline caps for notebook run outputs, applied at the TOOL layer (see
+ * clampAnalysisRunOutputs in code-mode-tools.ts), keeping the TAIL: nbconvert
+ * writes the failing cell's source and the Python traceback at the END of
+ * stderr, after progress noise, while the model-side tool-result cap truncates
+ * head-first over the whole JSON result. The service itself returns FULL
+ * stdout/stderr so the tool layer can spill the untruncated log to R2 as the
+ * escape hatch before clamping.
+ */
+export const ANALYSIS_NOTEBOOK_STDOUT_MAX_CHARS = 8_000;
+export const ANALYSIS_NOTEBOOK_STDERR_MAX_CHARS = 20_000;
+
+/** Clamp text to its last `maxChars` characters, marking what was dropped. */
+export function clampOutputTail(text: string, maxChars: number): string {
+  if (text.length <= maxChars) return text;
+  const omitted = text.length - maxChars;
+  return `[... ${omitted} earlier characters truncated ...]\n${text.slice(-maxChars)}`;
+}
+
+/**
+ * Extract the Python traceback from nbconvert stderr, so the run's `error`
+ * field leads with the actual exception instead of whatever nbconvert printed
+ * first. Matches the LAST traceback (nested/chained failures end with the one
+ * that killed the run) and returns it tail-clamped.
+ */
+export function extractNotebookTraceback(stderr: string): string | undefined {
+  const markers = ["Traceback (most recent call last)", "CellExecutionError"];
+  let start = -1;
+  for (const marker of markers) {
+    const index = stderr.lastIndexOf(marker);
+    if (index >= 0 && (start === -1 || index < start)) {
+      // Prefer the earliest marker of the final error block so the cell
+      // context nbconvert prints between the two markers is retained.
+      start = index;
+    }
+  }
+  if (start === -1) return undefined;
+  // Back up to the start of the marker's line so the excerpt is line-aligned.
+  const lineStart = stderr.lastIndexOf("\n", start) + 1;
+  const traceback = stderr.slice(lineStart).trim();
+  return traceback ? clampOutputTail(traceback, 6_000) : undefined;
 }
 
 /** validate-notebook prints "OK" (exit 0) or newline-joined issues (exit 1). */
@@ -405,6 +455,8 @@ export async function runAnalysisNotebook(
       ok,
       executed,
       validation,
+      // Full outputs — the tool layer spills them to R2 and clamps for the
+      // model (see ANALYSIS_NOTEBOOK_STDOUT_MAX_CHARS).
       stdout: nb.stdout,
       stderr: nb.stderr,
       exitCode: nb.exitCode,
@@ -676,6 +728,8 @@ function analysisRunEnv(options: { projectId?: string; connections?: boolean } =
   return {
     CI: "1",
     PYTHONUNBUFFERED: "1",
+    // The baked camelai helper package (see ANALYSIS_PYTHONPATH).
+    PYTHONPATH: ANALYSIS_PYTHONPATH,
     // Same protocol + variable the project VMs exposed, so the skill's notebook
     // helper code carries over unchanged. The host is intercepted at the sandbox
     // egress layer and served by the connectionsRpc outbound handler with the
@@ -713,7 +767,14 @@ function emptyNotebookResult(startedAt: number, error: string): AnalysisNotebook
 }
 
 function notebookErrorMessage(nb: { stderr: string; stdout: string; exitCode: number }, validation: { issues: string[] }): string {
-  if (nb.exitCode !== 0) return nb.stderr || nb.stdout || `notebook execution failed with exit code ${nb.exitCode}`;
+  if (nb.exitCode !== 0) {
+    // Lead with the Python traceback when we can find one — it names the
+    // failing cell and exception, which is what the caller needs to fix.
+    const traceback = extractNotebookTraceback(nb.stderr);
+    if (traceback) return traceback;
+    return clampOutputTail(nb.stderr || nb.stdout, ANALYSIS_NOTEBOOK_STDERR_MAX_CHARS)
+      || `notebook execution failed with exit code ${nb.exitCode}`;
+  }
   if (validation.issues.length) return `notebook validation failed:\n${validation.issues.join("\n")}`;
   return "notebook run failed";
 }

@@ -79,3 +79,12 @@ ENV PATH="/opt/analysis-venv/bin:${PATH}"
 # (analysis-service.test.ts); update both together.
 COPY analysis-sandbox-assets/validate-notebook.py /usr/local/bin/validate-notebook
 RUN chmod +x /usr/local/bin/validate-notebook
+
+# --- camelai Python helper package --------------------------------------------
+# In-sandbox helpers for workspace connections and BigQuery (`from camelai
+# import bq`): RPC plumbing, MCP response parsing, and export→DuckDB loading.
+# On PYTHONPATH (not installed into a venv) so it is importable from the baked
+# default venv, per-project uv environments, AND run_code alike. Keep in sync
+# with ANALYSIS_PYTHONPATH in analysis-service.ts.
+COPY analysis-sandbox-assets/camelai /opt/camelai-python/camelai
+ENV PYTHONPATH=/opt/camelai-python

@@ -196,6 +196,23 @@ export function listBigQueryMcpTools(): Array<Record<string, unknown>> {
       },
     },
     {
+      name: 'estimate_query',
+      description:
+        'Dry-run a Standard SQL query WITHOUT executing or billing it. Returns the statement type and totalBytesProcessed (the bytes a real run would scan/bill). Use before querying large tables to size maximumBytesBilled, or to check whether a query fits the default billing cap.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          query: { type: 'string', description: 'Standard SQL query to estimate.' },
+          datasetId: {
+            type: 'string',
+            description: 'Default dataset for unqualified table names. Optional when the connection has a default dataset.',
+          },
+        },
+        required: ['query'],
+        additionalProperties: false,
+      },
+    },
+    {
       name: 'export',
       description:
         'Export the FULL result of a query to the workspace warehouse (R2) — no row cap, streamed server-side as NDJSON (BigQuery has no Parquet-over-API path, so unlike SQL/ClickHouse exports this is NDJSON, NOT Parquet). Returns { ok, r2_key, rows, columns }; read the object with DuckDB read_json_auto (NOT read_parquet). When rows is 0 the NDJSON file is empty (read_json_auto cannot infer columns from it) — treat that as a no-rows result and use the returned columns rather than reading the file. Use for bulk extracts feeding analytics/joins, not for inline display.',
@@ -274,6 +291,8 @@ async function callBigQueryTool(
       ));
     case 'execute_sql_readonly':
       return textToolResult(await executeSqlReadonly(client, args));
+    case 'estimate_query':
+      return textToolResult(await estimateQuery(client, args));
     case 'export':
       return runBigQueryWarehouseExport(
         env,
@@ -502,6 +521,53 @@ function assertBigQueryReadOnly(statementType: string | undefined): void {
       { status: 400 },
     );
   }
+}
+
+/**
+ * Dry-run a query (no execution, no charge) and report what a real run would
+ * scan, so callers can size `maximumBytesBilled` before paying for anything.
+ */
+async function estimateQuery(
+  client: { config: BigQueryConfig; token: string },
+  args: Record<string, unknown>
+): Promise<Record<string, JsonValue>> {
+  const query = requireString(args.query, 'query');
+  const datasetId = datasetFromArgs(client.config, args, false) || null;
+  const dryRun = await bigQueryFetch<BigQueryJobResponse>(
+    client,
+    `/projects/${encodeURIComponent(client.config.projectId)}/jobs`,
+    {
+      method: 'POST',
+      body: {
+        configuration: {
+          dryRun: true,
+          query: {
+            query,
+            useLegacySql: false,
+            ...(datasetId ? { defaultDataset: { projectId: client.config.projectId, datasetId } } : {}),
+          },
+        },
+      },
+    }
+  );
+  const totalBytesProcessed =
+    dryRun.statistics?.query?.totalBytesProcessed
+    ?? dryRun.statistics?.totalBytesProcessed
+    ?? null;
+  const bytes = totalBytesProcessed === null ? null : Number(totalBytesProcessed);
+  return {
+    dryRun: true,
+    statementType: dryRun.statistics?.query?.statementType ?? null,
+    totalBytesProcessed,
+    totalGbProcessed: bytes !== null && Number.isFinite(bytes)
+      ? Math.round((bytes / 1_000_000_000) * 100) / 100
+      : null,
+    cacheHit: dryRun.statistics?.query?.cacheHit ?? null,
+    defaultMaximumBytesBilled: DEFAULT_MAXIMUM_BYTES_BILLED,
+    fitsDefaultBillingCap: bytes !== null && Number.isFinite(bytes)
+      ? bytes <= Number(DEFAULT_MAXIMUM_BYTES_BILLED)
+      : null,
+  };
 }
 
 /** Dry-run a query (no execution, no charge) and return its parsed statement type. */

@@ -273,3 +273,53 @@ describe('BigQuery warehouse export', () => {
     expect(postBody?.defaultDataset).toEqual({ projectId: 'demo-project', datasetId: 'other_ds' });
   });
 });
+
+describe('BigQuery estimate_query', () => {
+  it('dry-runs only and reports scan size against the default billing cap', async () => {
+    const record = await bigQueryRecord({ project_id: 'demo-project', dataset: 'analytics_ds' });
+
+    const calls: Array<{ url: string; method: string; body: Record<string, unknown> }> = [];
+    vi.stubGlobal('fetch', vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      const u = String(url);
+      const method = init?.method ?? 'GET';
+      const body = init?.body ? JSON.parse(String(init.body)) as Record<string, unknown> : {};
+      calls.push({ url: u, method, body });
+      if (isDryRun(u, method)) {
+        return jsonResponse({
+          statistics: { query: { statementType: 'SELECT', totalBytesProcessed: '17000000000', cacheHit: false } },
+        });
+      }
+      throw new Error(`unexpected fetch: ${method} ${u}`);
+    }));
+
+    const result = await bigQueryMcpRpc(
+      { INTEGRATION_SECRET_KEY: SECRET } as never,
+      { workspaceId: 'ws1' },
+      record,
+      'tools/call',
+      { name: 'estimate_query', arguments: { query: 'SELECT COUNT(*) FROM materialized' } },
+    ) as { content: Array<{ text: string }> };
+
+    // Exactly one call — the dry run; nothing was executed or billed.
+    expect(calls).toHaveLength(1);
+    expect((calls[0].body.configuration as { dryRun?: boolean }).dryRun).toBe(true);
+    const payload = JSON.parse(result.content[0].text) as Record<string, unknown>;
+    expect(payload.dryRun).toBe(true);
+    expect(payload.statementType).toBe('SELECT');
+    expect(payload.totalBytesProcessed).toBe('17000000000');
+    expect(payload.totalGbProcessed).toBe(17);
+    expect(payload.fitsDefaultBillingCap).toBe(false);
+    expect(payload.defaultMaximumBytesBilled).toBe('1000000000');
+  });
+
+  it('is listed in the BigQuery tool catalog', async () => {
+    const record = await bigQueryRecord();
+    const result = await bigQueryMcpRpc(
+      { INTEGRATION_SECRET_KEY: SECRET } as never,
+      { workspaceId: 'ws1' },
+      record,
+      'tools/list',
+    ) as { tools: Array<{ name: string }> };
+    expect(result.tools.map((tool) => tool.name)).toContain('estimate_query');
+  });
+});

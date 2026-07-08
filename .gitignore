@@ -113,3 +113,4 @@ workers/main/src/embedded-skills.ts
 .env.selfhost
 
 .firecrawl/
+__pycache__/

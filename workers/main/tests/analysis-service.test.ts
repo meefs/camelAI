@@ -8,7 +8,9 @@ import {
 import { AnalysisService } from "../src/analysis-service.js";
 import {
   ANALYSIS_MAX_PERSIST_BYTES,
+  clampOutputTail,
   diffManifests,
+  extractNotebookTraceback,
   normalizeAnalysisRelPath,
   notebookExecuteCommand,
   parseSha256Manifest,
@@ -179,7 +181,7 @@ function fakeFiles(initial: Record<string, string>, opts?: { failDelete?: boolea
  * notebook-execute command (mutates the notebook + emits a chart PNG), the
  * validator, and the sha256sum tree manifest — to drive the persist-back path.
  */
-function fakeSandbox(opts?: { failManifest?: boolean; removeOnRun?: string }): AnalysisSandboxLike & { execCwds: string[] } {
+function fakeSandbox(opts?: { failManifest?: boolean; removeOnRun?: string; notebookFailure?: { stderr: string } }): AnalysisSandboxLike & { execCwds: string[] } {
   const execCwds: string[] = [];
   const fs = new Map<string, Uint8Array>();
   const sha = async (bytes: Uint8Array) => {
@@ -218,6 +220,9 @@ function fakeSandbox(opts?: { failManifest?: boolean; removeOnRun?: string }): A
       }
       // Notebook execution: mark the notebook executed and emit a chart artifact.
       if (command.includes("nbconvert")) {
+        if (opts?.notebookFailure) {
+          return { exitCode: 1, stdout: "", stderr: opts.notebookFailure.stderr };
+        }
         const nbAbs = `${cwd}/analysis.ipynb`;
         fs.set(nbAbs, new TextEncoder().encode('{"cells":[],"executed":true}'));
         fs.set(`${cwd}/chart.png`, new Uint8Array([0x89, 0x50, 0x4e, 0x47]));
@@ -305,6 +310,66 @@ describe("runAnalysisNotebook", () => {
     // Both run trees were cleaned up afterwards.
     const cleanupTargets = sandbox.execCwds.length; // cleanup execs recorded too
     expect(cleanupTargets).toBeGreaterThan(0);
+  });
+});
+
+describe("notebook failure output", () => {
+  it("clampOutputTail keeps the tail and marks the omission", () => {
+    expect(clampOutputTail("short", 100)).toBe("short");
+    const clamped = clampOutputTail(`${"x".repeat(50)}THE END`, 10);
+    expect(clamped).toContain("[... 47 earlier characters truncated ...]");
+    expect(clamped.endsWith("THE END")).toBe(true);
+  });
+
+  it("extractNotebookTraceback pulls the final traceback block from nbconvert stderr", () => {
+    const stderr = [
+      "[NbConvertApp] Converting notebook analysis.ipynb to notebook",
+      "0.00s - Debugger warning: frozen modules",
+      "Traceback (most recent call last):",
+      '  File "nbclient/client.py", line 1000, in _check_raise_for_error',
+      "    raise CellExecutionError.from_cell_and_msg(cell, exec_reply_content)",
+      "nbconvert.preprocessors.CellExecutionError: An error occurred while executing the following cell:",
+      "------------------",
+      "df = pd.read_csv('missing.csv')",
+      "------------------",
+      "FileNotFoundError: [Errno 2] No such file or directory: 'missing.csv'",
+    ].join("\n");
+    const traceback = extractNotebookTraceback(stderr);
+    expect(traceback).toBeDefined();
+    expect(traceback).toContain("Traceback (most recent call last):");
+    expect(traceback).toContain("FileNotFoundError: [Errno 2]");
+    expect(traceback).not.toContain("[NbConvertApp]");
+  });
+
+  it("extractNotebookTraceback returns undefined when there is no traceback", () => {
+    expect(extractNotebookTraceback("plain warning noise")).toBeUndefined();
+  });
+
+  it("keeps the traceback in error and returns full stderr on a failing run", async () => {
+    const noise = "progress line\n".repeat(5000); // ~70KB of leading noise
+    const stderr =
+      `${noise}Traceback (most recent call last):\n` +
+      "  File \"cell\", line 1, in <module>\n" +
+      "NameError: name 'undefined_var' is not defined\n";
+    const files = fakeFiles({ "analysis.ipynb": '{"cells":[]}' });
+    const result = await runAnalysisNotebook(
+      { path: "analysis.ipynb" },
+      {
+        sandbox: fakeSandbox({ notebookFailure: { stderr } }),
+        files,
+        projectId: "ca-test-proj",
+        newRunId: () => "run1",
+      },
+    );
+
+    expect(result.ok).toBe(false);
+    expect(result.executed).toBe(false);
+    // error leads with the traceback, not the buried head of stderr
+    expect(result.error).toContain("Traceback (most recent call last):");
+    expect(result.error).toContain("NameError: name 'undefined_var' is not defined");
+    // the service returns FULL stderr — the tool layer spills it to R2 and
+    // clamps for the model (clampAnalysisRunOutputs)
+    expect(result.stderr).toBe(stderr);
   });
 });
 

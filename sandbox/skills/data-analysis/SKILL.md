@@ -56,8 +56,8 @@ usql sqlite:./data.db
 # SQL Server
 usql sqlserver://user:pass@host/instance/dbname
 
-# BigQuery — use Python client with access token instead (see BigQuery section below)
-# usql bigquery:// is NOT recommended; use the google-cloud-bigquery Python client
+# BigQuery — use the preinstalled camelai package instead (see BigQuery section below)
+# usql bigquery:// is NOT recommended; use `from camelai import bq`
 ```
 
 Common commands inside usql:
@@ -188,6 +188,11 @@ Notebooks preview reliabily with rich Altair charts and markdown rendering, and 
   additions/removals or broad source changes, read the notebook, update the JSON,
   and write the full notebook back; use tiny text edits only when the exact JSON
   fragment is visible and stable.
+- The `write`/`edit` tools **normalize notebooks on save**: missing
+  `outputs: []` / `execution_count: null` on code cells, missing cell ids, and
+  missing newlines between `source` array elements are repaired automatically
+  (the tool result lists what was fixed). Unparseable notebook JSON is rejected
+  at write time — fix it there rather than debugging the run.
 
 ### Execute notebooks
 
@@ -202,8 +207,11 @@ run_notebook({ project: "<project>", path: "analysis.ipynb" })
 It returns `{ ok, executed, validation: { clean, issues }, stdout, stderr,
 changedFiles, ... }`. The validator catches errors `nbconvert` doesn't surface
 (cell exceptions, charts that fell back to text/plain, blank charts with constant
-data). **If `ok` is false, fix the failing cells (see `validation.issues` /
-`stderr`) and re-run.** Never suppress errors — do not reach for `--allow-errors`,
+data). **If `ok` is false, fix the failing cells and re-run** — on a cell
+exception, `error` carries the Python traceback and `validation.issues` the
+validator findings. Long stdout/stderr are tail-clamped inline (the traceback
+survives); when that happens the result's `fullOutput.path` points at an R2 log
+with the complete output — `read({ location: "r2", path: fullOutput.path })`. Never suppress errors — do not reach for `--allow-errors`,
 which silently embeds tracebacks the user sees in the rendered report.
 
 Setup calls whose return value is not meaningful report content, such as
@@ -282,6 +290,12 @@ BigQuery), or aggregations over more rows than fit comfortably in a notebook —
 pull rows into pandas. Export each source to R2 and reduce it with DuckDB via
 **`run_code`**. This runs in the same analysis sandbox as your notebooks, so a
 reduced result can be charted right after — no separate tier.
+
+(For the single-source case — "give me the full result as a DataFrame" — skip
+the orchestration below and call `camelai.connections.query_full(conn, sql)` /
+`camelai.bq.query_full(sql)` from the notebook; it does export → DuckDB → DataFrame
+in one call. The steps below are for cross-source joins and reductions you want
+to express in SQL over the staged files.)
 
 Three steps, all driven from a single `js_exec` block:
 
@@ -372,12 +386,11 @@ skill can orchestrate the export and the DuckDB step as workflow steps.
 
 | Package | Purpose | Status |
 |---------|---------|--------|
+| `camelai` | Workspace connections + BigQuery helpers (preferred) | preinstalled |
 | `sqlalchemy` | Python ORM and database toolkit | preinstalled |
 | `psycopg` | PostgreSQL driver | preinstalled |
 | `pymysql` | MySQL driver | preinstalled |
-| `google-cloud-bigquery` | BigQuery client | add with `add_python_dependency` |
-| `google-cloud-bigquery-storage` | BigQuery Storage API client for faster downloads | add with `add_python_dependency` |
-| `google-auth` | Google authentication (used for BigQuery tokens) | add with `add_python_dependency` |
+| `google-cloud-bigquery` | Direct BigQuery client (explicit external credentials only) | add with `add_python_dependency` |
 
 ### SQL Server / PostgreSQL / MySQL (Primary: Worker `DATA_PROXY` service binding)
 
@@ -424,110 +437,67 @@ Supported query methods:
 - `DATA_PROXY.mysqlQuery(...)` (positional params array)
 - All query calls require `mode: "read"` or `mode: "modify"` (no auto-detection).
 
-### Workspace connections from notebooks (preferred)
+### Workspace connections from notebooks (preferred): the `camelai` package
 
-The analysis sandbox exposes workspace connections through the stateless RPC endpoint in `CAMELAI_CONNECTIONS_RPC_URL`. Use this from notebooks and Python scripts instead of asking for credentials or looking for connection env vars. The sandbox receives only the proxy URL; camelAI applies workspace identity and stored auth outside it.
-
-This `query`-into-pandas pattern is for **interactive, reasonably-sized** result sets. For bulk extracts or cross-source joins, use the `export` + `run_code` path above instead of pulling every row into the notebook.
-
-Connection query methods run your SQL **exactly as written** — nothing (no `LIMIT`, no `FORMAT`) is appended. Add your own `LIMIT` when you want to cap inline rows, and don't add a ClickHouse `FORMAT` clause (the broker handles output format). Reach for `export` whenever you want the full, uncapped result.
-
-Minimal Python helper:
+The analysis sandbox has a **preinstalled `camelai` Python package** that wraps
+the workspace connections RPC — use it from notebooks and Python scripts
+instead of asking for credentials, looking for connection env vars, or
+hand-rolling urllib calls. Credentials never enter the sandbox; camelAI applies
+workspace identity and stored auth outside it.
 
 ```python
-import json
-import os
-import urllib.error
-import urllib.request
+from camelai import connections
 
-CONNECTIONS_URL = os.environ["CAMELAI_CONNECTIONS_RPC_URL"]
-
-def connection_rpc(action, **params):
-    payload = {"action": action, **params}
-    request = urllib.request.Request(
-        CONNECTIONS_URL,
-        data=json.dumps(payload).encode("utf-8"),
-        headers={
-            "content-type": "application/json",
-            "accept": "application/json",
-        },
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(request, timeout=60) as response:
-            body = json.loads(response.read().decode("utf-8"))
-    except urllib.error.HTTPError as error:
-        text = error.read().decode("utf-8", errors="replace")
-        try:
-            body = json.loads(text)
-        except json.JSONDecodeError:
-            raise RuntimeError(f"connections RPC HTTP {error.code}: {text}") from error
-    if not body.get("ok", False):
-        raise RuntimeError(body.get("error", body))
-    return body["result"]
-
-entry = connection_rpc("find", query="postgres")
-result = connection_rpc(
-    "invoke",
-    connection=entry["connection"]["id"],
-    method="query",
-    input={"query": "SELECT 1 AS ok"},
-)
+df = connections.query("postgres", "SELECT * FROM users LIMIT 1000")   # → DataFrame
+df = connections.query_full("clickhouse", "SELECT * FROM events")      # UNCAPPED: R2 export → DuckDB → DataFrame
+connections.catalog()   # every connection: alias, type, callable methods
 ```
 
-For dataframe workflows:
+- `connections.query(conn, sql)` — inline results into a DataFrame. The broker
+  runs SQL **exactly as written** (no `LIMIT`/`FORMAT` appended), so add your
+  own `LIMIT`; don't add a ClickHouse `FORMAT` clause (the broker handles it).
+- `connections.query_full(conn, sql)` — the automatic export fallback: streams
+  the FULL result to R2 server-side (no row cap), then loads it with DuckDB
+  using the right reader for the export format. Use it whenever the inline cap
+  is in the way.
+- `connections.export(conn, sql)` — the export handle only (`{r2_key, path}`),
+  for feeding `run_code`/DuckDB joins yourself.
+- Lower-level: `connections.find(q)`, `connections.invoke(conn, method, input)`,
+  and `connections.rows(result)` (extracts the row list from any result shape,
+  including MCP `content[0].text` envelopes — never parse those by hand).
+  Failures raise `camelai.ConnectionsRpcError` with the server's message.
+
+The raw protocol (POST `{action, ...}` to `CAMELAI_CONNECTIONS_RPC_URL`)
+remains available, but the package handles the response-shape edge cases for
+you.
+
+#### BigQuery: billing caps, cost estimation, and `camelai.bq`
 
 ```python
-import pandas as pd
+from camelai import bq
 
-def connection_rows(result):
-    for candidate in (
-        result.get("data"),
-        result.get("data", {}).get("rows") if isinstance(result.get("data"), dict) else None,
-        result.get("rows"),
-        result.get("recordset"),
-    ):
-        if isinstance(candidate, list):
-            return candidate
-    for item in result.get("content", []):
-        if item.get("type") != "text":
-            continue
-        try:
-            parsed = json.loads(item.get("text", ""))
-        except json.JSONDecodeError:
-            continue
-        if isinstance(parsed, list):
-            return parsed
-        if isinstance(parsed, dict):
-            for candidate in (
-                parsed.get("data"),
-                parsed.get("data", {}).get("rows") if isinstance(parsed.get("data"), dict) else None,
-                parsed.get("rows"),
-                parsed.get("recordset"),
-            ):
-                if isinstance(candidate, list):
-                    return candidate
-    return []
-
-entry = connection_rpc("find", query="clickhouse")
-result = connection_rpc(
-    "invoke",
-    connection=entry["connection"]["id"],
-    method="query",
-    input={"query": "SELECT * FROM events LIMIT 1000"},
-)
-
-rows = connection_rows(result)
-df = pd.DataFrame(rows)
-df.head()
+bq.estimate("SELECT * FROM hn.materialized")  # DRY RUN: bytes scanned, $0 — run this FIRST on big tables
+bq.table_info("hn.materialized")              # schema + numRows + numBytes, no billed scan
+df = bq.query("SELECT title, score FROM stories ORDER BY score DESC LIMIT 500")
+df = bq.query_full("SELECT * FROM stories WHERE score > 100")   # full result via export
 ```
 
-Discover available connections and schemas:
+BigQuery queries run under a **fail-without-charge billing cap**
+(`maximumBytesBilled`, default ~1 GB scanned). Scanning a large table trips it
+immediately — that is the cap working, not a broken query. The workflow:
 
-```python
-catalog = connection_rpc("methods")
-[(entry["alias"], entry["connection"]["type"], [m["name"] for m in entry["methods"]]) for entry in catalog]
-```
+1. **Never `COUNT(*)` for size** — `bq.table_info(...)` returns `numRows` and
+   `numBytes` for free.
+2. **`bq.estimate(sql)` before big scans** — a dry run reporting
+   `totalGbProcessed` and whether the query fits the default cap, at no cost.
+3. **Raise the cap deliberately** when the estimate justifies it:
+   `bq.query(sql, maximum_bytes_billed="20000000000")` (20 GB). Select only the
+   columns you need — BigQuery bills by columns scanned.
+4. **Results are typed** from the BigQuery schema (the REST API returns all
+   values as strings; `bq.query` converts INTEGER/FLOAT/BOOL/TIMESTAMP columns).
+5. `bq.query` is capped at 1000 inline rows (it warns when truncated);
+   `bq.query_full` / `bq.export` stream every row to R2 as **NDJSON** (read
+   with `read_json_auto`, not `read_parquet`).
 
 ### Direct drivers (explicit external credentials only)
 

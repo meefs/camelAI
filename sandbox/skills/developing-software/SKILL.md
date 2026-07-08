@@ -730,7 +730,7 @@ Inside `js_exec`, these globals are available:
 
 Connection credentials are intentionally hidden behind the virtual binding.
 
-For Python notebooks or scripts running in a project VM, use the RPC endpoint URL from `CAMELAI_CONNECTIONS_RPC_URL` instead of direct credentials. Post JSON actions such as `find`, `methods`, and `invoke`; the project-runtime proxy injects workspace identity outside the VM.
+For Python notebooks or scripts, use the preinstalled `camelai` package (`from camelai import connections, bq`) instead of direct credentials — it wraps the `CAMELAI_CONNECTIONS_RPC_URL` RPC endpoint (`find`/`methods`/`invoke` plus result parsing); workspace identity is injected outside the sandbox. See the data-analysis skill.
 
 Prefer `find()` and normalized methods for common workflows:
 

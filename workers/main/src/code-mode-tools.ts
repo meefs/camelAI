@@ -37,6 +37,7 @@ import { createSignedToken } from "./signed-tokens";
 import { buildLogTail, cleanBuildLog, projectBuildSandboxKey, runProjectAddDependency, runProjectBuild, type ProjectBuildResult } from "./project-build-service";
 import { collectWorkerBundleFromSandbox, findUnexportedDurableObjectClasses, type ProjectBuildSandboxLike } from "./project-worker-bundle";
 import { buildNotebookWorkerBundle, resolveNotebookDeployPath } from "./notebook-worker-bundle";
+import { ANALYSIS_NOTEBOOK_STDERR_MAX_CHARS, ANALYSIS_NOTEBOOK_STDOUT_MAX_CHARS, clampOutputTail } from "./analysis-service";
 import { defaultProjectScaffoldFiles, normalizeProjectScaffoldTemplate, type ProjectScaffoldResult } from "./project-scaffold";
 import { addShadcnComponentsToProject, normalizeShadcnComponentList, SUPPORTED_SHADCN_COMPONENTS } from "./shadcn-components";
 import { connectAppBrowserSession, launchAppBrowserSession } from "./app-browser-binding";
@@ -179,6 +180,36 @@ export function truncateCodeModeText(value: unknown, maxCharacters: number): str
   const text = String(value ?? "");
   if (text.length <= maxCharacters) return text;
   return `${text.slice(0, maxCharacters)}\n\n[Truncated: ${maxCharacters} of ${text.length} characters]`;
+}
+
+/**
+ * Clamp an analysis run result's stdout/stderr for the model, keeping the TAIL
+ * (nbconvert puts the failing cell + Python traceback at the END of stderr,
+ * while the model-side tool-result cap truncates head-first over the whole
+ * JSON). When anything was clamped, `fullLog` carries the untruncated combined
+ * output for the caller to spill to R2 — the escape-hatch log the agent can
+ * read back in full. Pure; exported for tests.
+ */
+export function clampAnalysisRunOutputs(result: Record<string, unknown>): {
+  result: Record<string, unknown>;
+  fullLog: string | null;
+} {
+  const stdout = typeof result.stdout === "string" ? result.stdout : "";
+  const stderr = typeof result.stderr === "string" ? result.stderr : "";
+  if (stdout.length <= ANALYSIS_NOTEBOOK_STDOUT_MAX_CHARS && stderr.length <= ANALYSIS_NOTEBOOK_STDERR_MAX_CHARS) {
+    return { result, fullLog: null };
+  }
+  const fullLog =
+    `=== stdout (${stdout.length} chars) ===\n${stdout}\n\n` +
+    `=== stderr (${stderr.length} chars) ===\n${stderr}\n`;
+  return {
+    result: {
+      ...result,
+      stdout: clampOutputTail(stdout, ANALYSIS_NOTEBOOK_STDOUT_MAX_CHARS),
+      stderr: clampOutputTail(stderr, ANALYSIS_NOTEBOOK_STDERR_MAX_CHARS),
+    },
+    fullLog,
+  };
 }
 
 function basenameForMove(path: string): string {
@@ -847,7 +878,7 @@ const CODE_MODE_TOOL_REGISTRY: CodeModeToolRegistration[] = [
   ),
   codeModePassthroughTool(
     "run_notebook",
-    "Execute a Jupyter notebook (.ipynb) in a DO-backed project and persist the executed notebook + any changed files back to the project. This is the PRIMARY data-analysis path — one call runs `jupyter nbconvert --execute --inplace` then validates the result, so you don't drive nbconvert/validate by hand. The default Python data stack (pandas, numpy, polars, duckdb, pyarrow, altair, plotly, matplotlib, seaborn, scipy, scikit-learn, statsmodels, openpyxl, pdfplumber, jupyter) is PREINSTALLED — no setup needed; use add_python_dependency for anything else. Read big inputs from the read-only mounts — uploaded files at /uploads/<name> (the R2 uploads/<name> reference with a leading slash) and connection exports at '/' + r2_key — keep large intermediates in the per-run $SCRATCH directory (created for you, cleaned up after the run), and put notebooks + small results in the project. After it returns ok, set_preview the .ipynb (location: 'project', project, path); deploy_project publishes the executed notebook as a static report app when the user wants a shareable link. Returns { ok, executed, validation: { clean, issues }, stdout, stderr, exitCode, changedFiles, removedFiles, skippedOversize, durationMs }. If ok is false, fix the failing cells (see validation.issues / stderr) and re-run — never suppress errors. Arguments: { project, path, timeoutMs? }.",
+    "Execute a Jupyter notebook (.ipynb) in a DO-backed project and persist the executed notebook + any changed files back to the project. This is the PRIMARY data-analysis path — one call runs `jupyter nbconvert --execute --inplace` then validates the result, so you don't drive nbconvert/validate by hand. The default Python data stack (pandas, numpy, polars, duckdb, pyarrow, altair, plotly, matplotlib, seaborn, scipy, scikit-learn, statsmodels, openpyxl, pdfplumber, jupyter) is PREINSTALLED — no setup needed; use add_python_dependency for anything else. Read big inputs from the read-only mounts — uploaded files at /uploads/<name> (the R2 uploads/<name> reference with a leading slash) and connection exports at '/' + r2_key — keep large intermediates in the per-run $SCRATCH directory (created for you, cleaned up after the run), and put notebooks + small results in the project. After it returns ok, set_preview the .ipynb (location: 'project', project, path); deploy_project publishes the executed notebook as a static report app when the user wants a shareable link. Returns { ok, executed, validation: { clean, issues }, stdout, stderr, exitCode, changedFiles, removedFiles, skippedOversize, durationMs }. If ok is false, fix the failing cells and re-run — never suppress errors: error carries the Python traceback, and when stdout/stderr are truncated inline, fullOutput.path is an R2 log with the complete output (read({ location: 'r2', path: fullOutput.path })). Arguments: { project, path, timeoutMs? }.",
     Type.Object({
       project: Type.String(),
       path: Type.String(),
@@ -3486,8 +3517,37 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
     const path = typeof args.path === "string" ? args.path.trim() : "";
     if (!path) throw new Error("path is required (the .ipynb to execute)");
     const timeoutMs = typeof args.timeoutMs === "number" ? args.timeoutMs : undefined;
-    const result = await this.analysisService().runNotebook({ projectId: project.id, path, timeoutMs });
-    return { ...(result as Record<string, unknown>), project: project.name };
+    const raw = await this.analysisService().runNotebook({ projectId: project.id, path, timeoutMs });
+    const { result, fullLog } = clampAnalysisRunOutputs(raw as Record<string, unknown>);
+    const fullOutput = fullLog ? await this.storeAnalysisRunLog("run-notebook", fullLog) : undefined;
+    return { ...result, ...(fullOutput ? { fullOutput } : {}), project: project.name };
+  }
+
+  /**
+   * Spill an analysis run's untruncated output to the thread's R2 tmp/ mount —
+   * the same escape-hatch namespace the read tool advertises — so clamped
+   * stdout/stderr never strands information the agent might need. Best-effort:
+   * a storage failure degrades to clamped-only output, never fails the run.
+   */
+  private async storeAnalysisRunLog(
+    label: string,
+    text: string,
+  ): Promise<{ path: string; hint: string } | undefined> {
+    try {
+      const filename = `${Date.now()}-${label}-${crypto.randomUUID().slice(0, 8)}.log`;
+      const key = `${this.r2MountBaseKey("tmp")}${filename}`;
+      await this.env.R2_BUCKET.put(key, text, {
+        httpMetadata: { contentType: "text/plain; charset=utf-8" },
+      });
+      const path = `tmp/${filename}`;
+      return {
+        path,
+        hint: `stdout/stderr were truncated inline. Full output: read({ location: "r2", path: "${path}" })`,
+      };
+    } catch (error) {
+      console.error("[CodeModeTools] failed to store analysis run log in R2", error);
+      return undefined;
+    }
   }
 
   private async analysisExecCommand(args: Record<string, unknown>): Promise<unknown> {

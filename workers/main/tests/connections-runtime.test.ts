@@ -396,6 +396,7 @@ describe('connections runtime', () => {
       { name: 'list_table_ids' },
       { name: 'get_table_info' },
       { name: 'execute_sql_readonly' },
+      { name: 'estimate_query' },
       { name: 'export' },
     ]);
   });
@@ -705,6 +706,7 @@ describe('connections runtime', () => {
           { name: 'listTableIds', tool: 'list_table_ids' },
           { name: 'getTableInfo', tool: 'get_table_info' },
           { name: 'executeSqlReadonly', tool: 'execute_sql_readonly' },
+          { name: 'estimateQuery', tool: 'estimate_query' },
           { name: 'export', tool: 'export' },
           { name: 'executeQuery', tool: 'execute_sql_readonly' },
         ],

@@ -13,6 +13,7 @@ import {
   readImageSniffBytesAndReplayStream,
   readStreamBytes,
 } from "./image-tool-content";
+import { isNotebookPath, normalizeNotebookJson } from "./notebook-normalize";
 
 const CONTAINER_CWD = "/workspace";
 const DEFAULT_MAX_LINES = 2000;
@@ -490,9 +491,10 @@ export class PiContainerTools {
   private async write(args: Record<string, unknown>): Promise<PiContainerToolResult> {
     if (typeof args.content !== "string") throw new Error("content must be a string");
     const path = normalizePath(args.path);
-    const response = await this.workspace.writeFile(path, args.content);
+    const { content, notice } = await this.normalizeNotebookContent(path, args.content);
+    const response = await this.workspace.writeFile(path, content);
     if (!response.success) throw new Error(response.error || `Failed to write ${path}`);
-    return result(`Successfully wrote ${args.content.length} bytes to ${path}`);
+    return result(`Successfully wrote ${content.length} bytes to ${path}${notice}`);
   }
 
   private async edit(args: Record<string, unknown>): Promise<PiContainerToolResult> {
@@ -502,10 +504,66 @@ export class PiContainerTools {
     const file = await this.readWorkspaceFile(path);
     if (file.isBinary) throw new Error(`Cannot edit binary file: ${path}`);
     const before = String(file.content ?? "");
-    const after = applyExactEdits(before, edits, path);
+    const edited = applyExactEdits(before, edits, path);
+    const { content: after, notice } = await this.normalizeNotebookContentForEdit(path, before, edited);
     const response = await this.workspace.writeFile(path, after);
     if (!response.success) throw new Error(response.error || `Failed to write ${path}`);
-    return result(`Successfully replaced ${edits.length} block(s) in ${path}.`, simpleDiff(before, after));
+    return result(`Successfully replaced ${edits.length} block(s) in ${path}.${notice}`, simpleDiff(before, after));
+  }
+
+  /**
+   * Repair nbformat papercuts on .ipynb writes (missing outputs/execution_count,
+   * missing cell ids, source lines missing their separating newlines) and reject
+   * unparseable notebook JSON at write time — a broken notebook is far cheaper to
+   * fix here than as an opaque nbconvert failure on the next run_notebook.
+   *
+   * Async (despite doing no I/O) so a validation throw rejects behind the
+   * caller's await instead of synchronously rejecting the tool promise before
+   * callTool's adoption attaches handlers — workerd reports that one-microtask
+   * gap as an unhandled rejection.
+   */
+  private async normalizeNotebookContent(path: string, content: string): Promise<{ content: string; notice: string }> {
+    if (!isNotebookPath(path)) return { content, notice: "" };
+    const normalized = normalizeNotebookJson(content);
+    if (!normalized.changed) return { content, notice: "" };
+    return {
+      content: normalized.content,
+      notice: `\n[Notebook normalized for nbformat: ${normalized.fixes.join("; ")}]`,
+    };
+  }
+
+  /**
+   * Edit-path variant: an edit must be able to make forward progress on a
+   * notebook that was ALREADY structurally invalid on disk (an edit usually
+   * fixes one region at a time, and failing the whole write because a
+   * different region is still broken would force a full rewrite). So a
+   * post-edit validation failure only rejects the edit when the pre-edit
+   * content was valid — i.e. when this edit is what broke the notebook.
+   */
+  private async normalizeNotebookContentForEdit(
+    path: string,
+    before: string,
+    after: string,
+  ): Promise<{ content: string; notice: string }> {
+    if (!isNotebookPath(path)) return { content: after, notice: "" };
+    let afterError: unknown;
+    try {
+      return await this.normalizeNotebookContent(path, after);
+    } catch (error) {
+      afterError = error;
+    }
+    try {
+      normalizeNotebookJson(before);
+    } catch {
+      // Baseline was already invalid — let the (still-invalid) edit through so
+      // repair can proceed incrementally, and tell the agent what remains.
+      const message = afterError instanceof Error ? afterError.message : String(afterError);
+      return {
+        content: after,
+        notice: `\n[Notebook is still structurally invalid after this edit: ${message}]`,
+      };
+    }
+    throw afterError;
   }
 
   private async delete(args: Record<string, unknown>): Promise<PiContainerToolResult> {
