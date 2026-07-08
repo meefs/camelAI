@@ -3817,6 +3817,7 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
       "waitForSelector",
       "waitForText",
       "waitForFunction",
+      "waitForTimeout",
       "evaluate",
       "textContent",
       "getAttribute",

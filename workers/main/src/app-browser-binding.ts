@@ -433,6 +433,17 @@ export class AppBrowserSession extends RpcTarget {
     });
   }
 
+  async waitForTimeout(ms: number): Promise<{ ok: true; waitedMs: number }> {
+    if (typeof ms !== 'number' || !Number.isFinite(ms) || ms < 0) {
+      throw new Error('ms must be a non-negative number of milliseconds, e.g. waitForTimeout(500)');
+    }
+    const waitedMs = Math.min(Math.floor(ms), BROWSER_SESSION_MAX_ACTION_TIMEOUT_MS);
+    return await this.run(`wait ${waitedMs}ms`, async () => {
+      await new Promise<void>((resolve) => setTimeout(resolve, waitedMs));
+      return { ok: true as const, waitedMs };
+    });
+  }
+
   async evaluate(expression: string): Promise<unknown> {
     if (typeof expression !== 'string' || !expression.trim()) {
       throw new Error('expression must be a non-empty JavaScript string');

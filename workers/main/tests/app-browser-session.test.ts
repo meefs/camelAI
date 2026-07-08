@@ -239,6 +239,20 @@ describe('AppBrowserSession', () => {
     await session2.close();
   });
 
+  it('waitForTimeout sleeps for the floored duration and validates input', async () => {
+    const session = createSession(createFakePage(), createFakeBrowser());
+    const start = Date.now();
+    expect(await session.waitForTimeout(20.9)).toEqual({ ok: true, waitedMs: 20 });
+    expect(Date.now() - start).toBeGreaterThanOrEqual(15);
+    expect(await captureRejection(session.waitForTimeout(-1))).toMatch(/non-negative number/);
+    expect(await captureRejection(session.waitForTimeout(Number.NaN))).toMatch(/non-negative number/);
+    expect(
+      await captureRejection(session.waitForTimeout('500' as unknown as number)),
+    ).toMatch(/non-negative number/);
+    await session.close();
+    expect(await captureRejection(session.waitForTimeout(10))).toMatch(/session is closed/);
+  });
+
   it('trims and truncates textContent', async () => {
     const long = 'x'.repeat(BROWSER_SESSION_MAX_TEXT_CHARS + 10);
     const fakePage = createFakePage({
