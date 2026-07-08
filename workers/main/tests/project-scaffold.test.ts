@@ -84,6 +84,8 @@ describe("defaultProjectScaffoldFiles", () => {
     expect(packageJson.devDependencies).not.toHaveProperty("vite-tsconfig-paths");
 
     expect(scaffoldFile(files, "/wrangler.jsonc")).toContain('"main": "./workers/app.ts"');
+    expect(scaffoldFile(files, "/react-router.config.ts")).toContain("v8_middleware: false");
+    expect(scaffoldFile(files, "/react-router.config.ts")).not.toContain("v8_middleware: true");
     expect(scaffoldFile(files, "/vite.config.ts")).toContain("tailwindcss()");
     expect(scaffoldFile(files, "/vite.config.ts")).toContain('command === "serve"');
     expect(scaffoldFile(files, "/vite.config.ts")).not.toContain("vite-tsconfig-paths");

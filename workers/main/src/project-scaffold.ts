@@ -289,7 +289,7 @@ function defaultReactRouterScaffoldFiles(projectName: string, scriptName: string
         `export default {`,
         `  ssr: true,`,
         `  future: {`,
-        `    v8_middleware: true,`,
+        `    v8_middleware: false,`,
         `    v8_passThroughRequests: true,`,
         `    v8_splitRouteModules: true,`,
         `    v8_trailingSlashAwareDataRequests: true,`,
