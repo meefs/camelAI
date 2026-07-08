@@ -110,6 +110,62 @@ describe("chat group server loading", () => {
 
     expect(result).toHaveLength(1);
     expect(result[0].avatar.status).toBe("default");
+    expect(result[0].open_threads[0].upload_ref_paths).toBeUndefined();
     expect(waitUntil).not.toHaveBeenCalled();
+  });
+
+  it("hydrates upload ref hints from full user messages before truncating summaries", async () => {
+    const waitUntil = vi.fn();
+    const group = makeGroup();
+    const userStub = {
+      listChatGroups: vi.fn(async () => [group]),
+      listThreadViews: vi.fn(async () => ({})),
+      pruneMissingThreads: vi.fn(async () => undefined),
+    };
+    const longUserMessage = `${"x".repeat(520)}\n\n(user uploaded file to uploads/report-1712345678901-abcd.csv)`;
+    getThreadsByIdsMock.mockResolvedValue([
+      {
+        ...makeThread("thread_1"),
+        last_user_message: longUserMessage,
+        last_user_message_at: 150,
+      },
+    ]);
+    getEnvMock.mockReturnValue({
+      AI: {
+        run: vi.fn(),
+      },
+      WORKSPACE: {
+        idFromName: (id: string) => id,
+        get: () => ({
+          listStreamingThreadStatuses: vi.fn(async () => []),
+        }),
+      },
+    });
+    getAuthEnvMock.mockReturnValue({
+      USER: {
+        idFromName: (id: string) => id,
+        get: () => userStub,
+      },
+    });
+
+    const result = await listGroupsForWorkspace(
+      {
+        cloudflare: {
+          ctx: { waitUntil },
+        },
+      } as never,
+      {
+        userId: "user_1",
+        orgId: "org_1",
+        workspaceId: "workspace_1",
+      },
+    );
+
+    const thread = result[0].open_threads[0];
+    expect(thread.upload_ref_paths).toEqual([
+      "uploads/report-1712345678901-abcd.csv",
+    ]);
+    expect(thread.latest_user_message).toHaveLength(500);
+    expect(thread.latest_user_message).not.toContain("uploads/report");
   });
 });

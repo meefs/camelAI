@@ -79,6 +79,8 @@ export interface ChatGroupThreadSummary {
   last_assistant_summary: string | null;
   last_assistant_summary_status: ThreadCompletionSummaryStatus | null;
   running_started_at: number | null;
+  /** Upload mount paths seen in first/latest user messages (pre-truncation); attachment-loading hint. */
+  upload_ref_paths?: string[];
 }
 
 export interface ChatGroupView extends ChatGroupSummary {
@@ -124,6 +126,8 @@ export interface GroupNewChatPayload {
   recentlyUsed: GroupNewChatRecentItems["recentlyUsed"];
   attachmentCards: GroupNewChatAttachmentCard[];
   recentItems?: GroupNewChatRecentItems | Promise<GroupNewChatRecentItems>;
+  /** Expected attachment-card count while recentItems is still streaming. */
+  pendingAttachmentCount?: number;
 }
 
 export interface CondensedTranscriptTurn {

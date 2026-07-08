@@ -117,7 +117,17 @@ function buildGroupNewChatPayload(
 ): GroupNewChatPayload {
   const immediateRecentItems =
     isPromiseLike(recentItems) ? EMPTY_GROUP_NEW_CHAT_RECENT_ITEMS : recentItems;
-  const transcriptCards = getGroupNewChatCandidateThreads(group).map((thread) => ({
+  const candidateThreads = getGroupNewChatCandidateThreads(group);
+  const pendingAttachmentPaths = new Set<string>();
+  for (const thread of candidateThreads) {
+    for (const path of thread.upload_ref_paths ?? []) {
+      pendingAttachmentPaths.add(path);
+    }
+  }
+  const pendingAttachmentCount = isPromiseLike(recentItems)
+    ? Math.min(pendingAttachmentPaths.size, 8)
+    : 0;
+  const transcriptCards = candidateThreads.map((thread) => ({
     threadId: thread.id,
     title: thread.title || "Untitled Chat",
     openingLine:
@@ -139,6 +149,7 @@ function buildGroupNewChatPayload(
     recentlyUsed: immediateRecentItems.recentlyUsed,
     attachmentCards: immediateRecentItems.attachmentCards,
     recentItems,
+    pendingAttachmentCount,
   };
 }
 

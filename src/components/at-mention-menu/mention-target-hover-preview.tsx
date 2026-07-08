@@ -12,7 +12,7 @@ import { IntegrationIcon } from '@/lib/integration-icons';
 import { getIntegrationDefinition } from '@/lib/integration-registry';
 import type { AtMentionConnection, AtMentionEntity } from '@/types';
 
-function formatRelative(timestamp: number): string {
+export function formatRelative(timestamp: number): string {
   const diff = Math.max(0, Date.now() - timestamp);
   const minutes = Math.floor(diff / (1000 * 60));
   const hours = Math.floor(minutes / 60);

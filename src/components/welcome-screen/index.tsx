@@ -208,6 +208,7 @@ function pickRandomPrompts(
 interface WelcomeScreenProps {
   userId: string | null;
   userName: string | null;
+  workspaceId: string | null;
   allApps: WorkerScriptWithCreator[] | Promise<WorkerScriptWithCreator[]>;
   connections: Integration[] | Promise<Integration[]>;
   projects: MentionableProject[] | Promise<MentionableProject[]>;
@@ -340,6 +341,7 @@ function AppsSection({
 export function WelcomeScreen({
   userId,
   userName,
+  workspaceId,
   allApps,
   connections,
   projects,
@@ -551,6 +553,7 @@ export function WelcomeScreen({
           projects={resolvedProjects}
           inputValue={inputValue}
           attachments={attachments}
+          workspaceId={workspaceId}
           mentionSlugMap={connectionSlugMap}
           onTagSelect={handleGroupTagSelect}
           onAttachmentSelect={onRecentAttachmentSelect}

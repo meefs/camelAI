@@ -10,7 +10,7 @@ export interface FilePreviewUrlDescriptor {
   project?: string;
 }
 
-function encodePathSegments(path: string) {
+export function encodePathSegments(path: string) {
   return path
     .split('/')
     .map((segment) => encodeURIComponent(segment))

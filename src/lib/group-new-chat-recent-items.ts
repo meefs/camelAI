@@ -11,6 +11,8 @@ import {
 import { normalizeThreadUserMessageText } from '@/lib/thread-preview';
 import type { GroupNewChatRecentItems, Integration } from '@/types';
 
+const UPLOAD_REF_HINT_LIMIT = 8;
+
 export interface GroupRecentItemsMessage {
   role: 'user' | 'assistant';
   content: unknown;
@@ -23,6 +25,30 @@ export interface GroupRecentItemsThread {
   threadId: string;
   title: string;
   messages: GroupRecentItemsMessage[];
+}
+
+/**
+ * Upload mount paths referenced in a thread's first/latest user message
+ * summaries. Used as a synchronous "attachments are coming" hint while the
+ * full recent-items scan streams; generated transcripts are excluded by
+ * filename since summary normalization strips the upload kind annotation.
+ */
+export function extractUploadRefPathsForHint(
+  ...texts: Array<string | null | undefined>
+): string[] {
+  const paths = new Set<string>();
+  for (const text of texts) {
+    if (!text) continue;
+    for (const ref of parseUploadRefs(text).refs) {
+      if (!isUserUploadMountPath(ref.mountPath)) continue;
+      if (ref.originalName.endsWith('-transcript.md')) continue;
+      paths.add(ref.mountPath);
+      if (paths.size >= UPLOAD_REF_HINT_LIMIT) {
+        return [...paths];
+      }
+    }
+  }
+  return [...paths];
 }
 
 function contentToUserText(content: unknown): string {

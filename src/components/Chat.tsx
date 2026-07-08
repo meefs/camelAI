@@ -4286,6 +4286,7 @@ type SendOptions = {
                 <WelcomeScreen
                   userId={resolvedWelcomeData.userId}
                   userName={resolvedWelcomeData.userName}
+                  workspaceId={resolvedWorkspaceId ?? null}
                   allApps={resolvedWelcomeData.allApps}
                   connections={resolvedWelcomeData.connections}
                   projects={resolvedWelcomeData.projects}

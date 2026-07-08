@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { extractGroupNewChatRecentItems } from '@/lib/group-new-chat-recent-items';
+import {
+  extractGroupNewChatRecentItems,
+  extractUploadRefPathsForHint,
+} from '@/lib/group-new-chat-recent-items';
 import { appendAttachmentReferences } from '@/lib/chat-attachment-refs';
 import type { Integration } from '@/types';
 import type { MentionableProject } from '@/lib/mentions';
@@ -151,5 +154,53 @@ describe('extractGroupNewChatRecentItems', () => {
     });
 
     expect(items.attachmentCards).toEqual([]);
+  });
+});
+
+describe('extractUploadRefPathsForHint', () => {
+  it('extracts and dedupes upload paths from first and latest user messages', () => {
+    expect(
+      extractUploadRefPathsForHint(
+        '(user uploaded file to uploads/report-1712345678901-abcd.csv)',
+        [
+          '(user uploaded file to uploads/report-1712345678901-abcd.csv)',
+          '(user uploaded file to uploads/design.png)',
+        ].join('\n'),
+      ),
+    ).toEqual([
+      'uploads/report-1712345678901-abcd.csv',
+      'uploads/design.png',
+    ]);
+  });
+
+  it('excludes generated transcript-shaped upload filenames', () => {
+    expect(
+      extractUploadRefPathsForHint(
+        '(user uploaded file to uploads/planning-chat-transcript-1751000000000-ab12.md)',
+      ),
+    ).toEqual([]);
+  });
+
+  it('returns an empty list for null and marker-free text', () => {
+    expect(extractUploadRefPathsForHint(null, undefined, 'no uploads here')).toEqual([]);
+  });
+
+  it('extracts markers beyond the 500 character preview truncation point', () => {
+    const longMessage = `${'x'.repeat(520)}\n\n(user uploaded file to uploads/late-1712345678901-abcd.png)`;
+
+    expect(extractUploadRefPathsForHint(longMessage)).toEqual([
+      'uploads/late-1712345678901-abcd.png',
+    ]);
+  });
+
+  it('caps upload-ref hints at the maximum displayed attachment cards', () => {
+    const text = Array.from(
+      { length: 12 },
+      (_, index) => `(user uploaded file to uploads/file-${index}.txt)`,
+    ).join('\n');
+
+    expect(extractUploadRefPathsForHint(text)).toEqual(
+      Array.from({ length: 8 }, (_, index) => `uploads/file-${index}.txt`),
+    );
   });
 });

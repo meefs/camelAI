@@ -1,6 +1,6 @@
 'use client';
 
-import { X, AlertCircle } from 'lucide-react';
+import { X, AlertCircle, Plus } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Badge } from '@/components/ui/badge';
 import {
@@ -32,6 +32,8 @@ interface FileCardProps {
   onRemove?: () => void;
   /** Called when the card is clicked (e.g., to open a preview). */
   onClick?: () => void;
+  /** Swap the category icon for a Plus on hover (cards that add on click). */
+  showAddOnHover?: boolean;
   className?: string;
 }
 
@@ -44,6 +46,7 @@ export function FileCard({
   uploadError,
   onRemove,
   onClick,
+  showAddOnHover,
   className,
 }: FileCardProps) {
   const ext = getFileExtension(filename).toUpperCase() || 'FILE';
@@ -82,6 +85,11 @@ export function FileCard({
           </Badge>
           {isError ? (
             <AlertCircle className="h-3.5 w-3.5 text-destructive" />
+          ) : showAddOnHover ? (
+            <span aria-hidden className="text-muted-foreground">
+              <Icon className="h-3.5 w-3.5 group-hover/card:hidden" />
+              <Plus className="hidden h-3.5 w-3.5 group-hover/card:block" />
+            </span>
           ) : (
             <Icon className="h-3.5 w-3.5 text-muted-foreground" />
           )}

@@ -14,6 +14,7 @@ import type { WorkspaceRunningThreadStatus } from "../../workers/main/src/worksp
 import { maxThreadStatus } from "@/lib/thread-status";
 import { getInitialChatGroupNameFromThreadTitle } from "@/lib/thread-title";
 import { truncateThreadPreviewText } from "@/lib/thread-preview";
+import { extractUploadRefPathsForHint } from "@/lib/group-new-chat-recent-items";
 
 interface UserScopedArgs {
   userId: string;
@@ -55,6 +56,10 @@ function threadToGroupThreadSummary(
     thread.last_user_message,
     500,
   );
+  const uploadRefPaths = extractUploadRefPathsForHint(
+    thread.first_user_message,
+    thread.last_user_message,
+  );
   const latestUserMessageAt =
     thread.last_user_message_at ??
     (latestUserMessage ? thread.updated_at : null);
@@ -80,6 +85,7 @@ function threadToGroupThreadSummary(
       thread.last_assistant_summary_status ?? null,
     running_started_at: status === "running" ? now : null,
     status,
+    ...(uploadRefPaths.length > 0 ? { upload_ref_paths: uploadRefPaths } : {}),
   };
 }
 
@@ -193,6 +199,10 @@ export async function hydrateChatGroups(
       thread.last_user_message,
       500,
     );
+    const uploadRefPaths = extractUploadRefPathsForHint(
+      thread.first_user_message,
+      thread.last_user_message,
+    );
     const runningActivityText = truncateThreadPreviewText(
       runningThreadStatus?.latestActivityText,
       500,
@@ -232,6 +242,7 @@ export async function hydrateChatGroups(
           : isUnread
             ? "unread"
             : "idle",
+      ...(uploadRefPaths.length > 0 ? { upload_ref_paths: uploadRefPaths } : {}),
     };
   };
 

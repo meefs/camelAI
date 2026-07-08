@@ -14,13 +14,14 @@ import type {
 } from '@/types';
 import type { Attachment } from '@/components/attachment-list';
 import { MentionTargetHoverCard } from '@/components/at-mention-menu/mention-target-hover-preview';
-import { FileCard } from '@/components/file-card';
+import { Skeleton } from '@/components/ui/skeleton';
 import { IntegrationIcon, resolveLogoType } from '@/lib/integration-icons';
 import {
   parseMentions,
   type MentionableProject,
 } from '@/lib/mentions';
 import { cn } from '@/lib/utils';
+import { RecentAttachmentCard } from './attachment-card';
 import { TranscriptCard } from './transcript-card';
 import type { TranscriptPreviewState } from './transcript-hover-preview';
 
@@ -30,6 +31,7 @@ interface RecentlyUsedInGroupProps {
   projects: MentionableProject[];
   inputValue: string;
   attachments: Attachment[];
+  workspaceId: string | null;
   mentionSlugMap: ReadonlyMap<string, AtMentionEntity>;
   onTagSelect: (item: AtMentionEntity) => void;
   onAttachmentSelect: (card: GroupNewChatAttachmentCard) => void;
@@ -126,6 +128,7 @@ export function RecentlyUsedInGroup({
   projects,
   inputValue,
   attachments,
+  workspaceId,
   mentionSlugMap,
   onTagSelect,
   onAttachmentSelect,
@@ -136,6 +139,9 @@ export function RecentlyUsedInGroup({
       recentlyUsed: group.recentlyUsed,
       attachmentCards: group.attachmentCards,
     }));
+  const [recentItemsPending, setRecentItemsPending] = useState(() =>
+    isPromiseLike(group.recentItems),
+  );
   const [transcriptStates, setTranscriptStates] = useState<
     Record<string, TranscriptPreviewState>
   >({});
@@ -149,17 +155,25 @@ export function RecentlyUsedInGroup({
     };
     if (!isPromiseLike(group.recentItems)) {
       setResolvedRecentItems(group.recentItems ?? fallbackItems);
+      setRecentItemsPending(false);
       return;
     }
 
     let cancelled = false;
+    setRecentItemsPending(true);
     setResolvedRecentItems(fallbackItems);
     group.recentItems
       .then((items) => {
-        if (!cancelled) setResolvedRecentItems(items);
+        if (!cancelled) {
+          setResolvedRecentItems(items);
+          setRecentItemsPending(false);
+        }
       })
       .catch(() => {
-        if (!cancelled) setResolvedRecentItems(fallbackItems);
+        if (!cancelled) {
+          setResolvedRecentItems(fallbackItems);
+          setRecentItemsPending(false);
+        }
       });
 
     return () => {
@@ -214,6 +228,10 @@ export function RecentlyUsedInGroup({
       ),
     [attachedPaths, resolvedRecentItems.attachmentCards],
   );
+  const showAttachmentSkeletons =
+    recentItemsPending &&
+    (group.pendingAttachmentCount ?? 0) > 0 &&
+    attachmentCards.length === 0;
 
   const attachedTranscriptThreadIds = useMemo(
     () =>
@@ -320,7 +338,12 @@ export function RecentlyUsedInGroup({
     [ensureTranscript, onTranscriptAttach],
   );
 
-  if (tags.length === 0 && attachmentCards.length === 0 && transcriptCards.length === 0) {
+  if (
+    tags.length === 0 &&
+    attachmentCards.length === 0 &&
+    !showAttachmentSkeletons &&
+    transcriptCards.length === 0
+  ) {
     return null;
   }
 
@@ -349,21 +372,27 @@ export function RecentlyUsedInGroup({
         </div>
       ) : null}
 
-      {attachmentCards.length > 0 ? (
+      {attachmentCards.length > 0 || showAttachmentSkeletons ? (
         <div className="space-y-3">
           <h4 className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
             Attachments
           </h4>
           <div className="flex flex-wrap gap-3">
-            {attachmentCards.map((card) => (
-              <FileCard
-                key={card.path}
-                filename={card.originalName || card.filename}
-                fileSize={card.size}
-                contentType={card.contentType}
-                onClick={() => onAttachmentSelect(card)}
-              />
-            ))}
+            {showAttachmentSkeletons
+              ? Array.from(
+                  { length: Math.min(group.pendingAttachmentCount ?? 0, 8) },
+                  (_, index) => (
+                    <Skeleton key={index} className="h-[88px] w-[88px] rounded-lg" />
+                  ),
+                )
+              : attachmentCards.map((card) => (
+                  <RecentAttachmentCard
+                    key={card.path}
+                    card={card}
+                    workspaceId={workspaceId}
+                    onSelect={onAttachmentSelect}
+                  />
+                ))}
           </div>
         </div>
       ) : null}
