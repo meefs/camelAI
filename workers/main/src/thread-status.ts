@@ -11,6 +11,12 @@ export interface WorkspaceThreadStreamingOptions {
   summary?: string | null;
   activityText?: string | null;
   activityAt?: number | null;
+  /**
+   * Liveness-lease heartbeat: bump the running row's updated_at only. Never
+   * creates the row and never broadcasts — a late heartbeat must not
+   * resurrect a turn whose terminal isStreaming=false already cleared it.
+   */
+  refresh?: boolean;
 }
 
 export function recordWorkspaceThreadStreaming(

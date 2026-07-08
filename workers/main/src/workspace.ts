@@ -32,9 +32,17 @@ const TOKEN_REFRESH_RETRY_MIN_MS = 30 * 1000;
 const TOKEN_REFRESH_RETRY_MAX_MS = 60 * 60 * 1000;
 // Fallback when rate-limited but provider omits Retry-After
 const TOKEN_REFRESH_RATE_LIMIT_DEFAULT_MS = 2 * 60 * 1000;
-// Crash-cleanup horizon for detached turns. This should be much longer than a
-// normal coding-agent turn so long-running work does not disappear from status.
-const THREAD_STREAMING_STATUS_TTL_MS = 24 * 60 * 60 * 1000;
+// Liveness lease for running-turn rows. ChatThreadDO refreshes the row every
+// WORKSPACE_STREAMING_LEASE_REFRESH_MS (~1min heartbeat) while a turn is
+// actually executing, so a row whose updated_at is older than this lease
+// belongs to a dead turn — a deploy/eviction/crash killed the DO before it
+// could record isStreaming=false. Sweeping it promptly (delete + idle
+// broadcast, driven by the DO alarm) keeps sidebars and open chats from
+// pinning "running" on a turn that no longer exists. Several missed
+// heartbeats wide so a transiently slow turn does not flicker idle.
+const THREAD_STREAMING_LEASE_TTL_MS = 5 * 60 * 1000;
+// Fire the lease-sweep alarm just past the earliest possible expiry.
+const THREAD_STREAMING_LEASE_ALARM_SLACK_MS = 1000;
 const WORKSPACE_STATUS_SOCKET_TAG = 'status';
 type BroadcastThreadStatus = 'running' | 'idle' | 'unread';
 
@@ -346,19 +354,25 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
     const staleRows = this.sql
       .exec<{ thread_id: string }>(
         'SELECT thread_id FROM thread_streaming_status WHERE updated_at < ?',
-        now - THREAD_STREAMING_STATUS_TTL_MS,
+        now - THREAD_STREAMING_LEASE_TTL_MS,
       )
       .toArray();
-    for (const row of staleRows) {
-      this.lastThreadStatusBroadcasts.delete(row.thread_id);
-    }
+    if (staleRows.length === 0) return;
     this.sql.exec(
       'DELETE FROM thread_streaming_status WHERE updated_at < ?',
-      now - THREAD_STREAMING_STATUS_TTL_MS,
+      now - THREAD_STREAMING_LEASE_TTL_MS,
     );
+    for (const row of staleRows) {
+      this.lastThreadStatusBroadcasts.delete(row.thread_id);
+      // The turn died without a terminal isStreaming=false (its heartbeats
+      // stopped). Tell connected status sockets it is over — an expired lease
+      // pruned silently would leave every viewer's spinner running until the
+      // next snapshot happened to omit it.
+      this.broadcastThreadStatus(row.thread_id, 'idle');
+    }
   }
 
-  recordThreadStreaming(
+  async recordThreadStreaming(
     threadId: string,
     isStreaming: boolean,
     options?: {
@@ -367,8 +381,9 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
       summary?: string | null;
       activityText?: string | null;
       activityAt?: number | null;
+      refresh?: boolean;
     },
-  ): void {
+  ): Promise<void> {
     const normalizedThreadId = threadId.trim();
     if (!normalizedThreadId) return;
     const now = Date.now();
@@ -400,6 +415,18 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
         : null;
     this.pruneStaleStreamingRows(now);
     if (isStreaming) {
+      if (options?.refresh === true) {
+        // Liveness-lease heartbeat from ChatThreadDO while a turn executes.
+        // Update-only and broadcast-free: nothing user-visible changes, and a
+        // late tick racing the terminal isStreaming=false must not resurrect
+        // the cleared row.
+        this.sql.exec(
+          'UPDATE thread_streaming_status SET updated_at = ? WHERE thread_id = ?',
+          now,
+          normalizedThreadId,
+        );
+        return;
+      }
       if (hasActivityTextUpdate) {
         // Activity-carrying updates ride a trailing debounce (and RPC retries)
         // in ChatThreadDO, so one can land AFTER the turn's terminal
@@ -436,6 +463,10 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
           now,
           now,
         );
+        // A running row now exists; make sure the lease-sweep alarm is armed
+        // so the row cannot outlive its lease if the owning turn dies without
+        // a terminal transition.
+        await this.scheduleNextAlarm();
       }
     } else {
       const currentRunning = this.sql
@@ -1179,7 +1210,7 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
 
     // Schedule token refresh alarm when this integration has token expiry.
     if (resolvedTokenExpiresAt) {
-      await this.scheduleNextTokenRefresh();
+      await this.scheduleNextAlarm();
     }
 
     const info = await this.getInfo();
@@ -1251,7 +1282,7 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
 
     // Reschedule token refresh alarm if expiry changed
     if (updates.tokenExpiresAt !== undefined) {
-      await this.scheduleNextTokenRefresh();
+      await this.scheduleNextAlarm();
     }
   }
 
@@ -1315,10 +1346,10 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
   // =============================================================================
 
   /**
-   * Schedule alarm for the next token that needs refreshing.
-   * Uses single-alarm pattern: finds earliest expiring token and sets alarm for it.
+   * When the next managed integration token needs refreshing, or null when no
+   * managed token has an expiry.
    */
-  private async scheduleNextTokenRefresh(): Promise<void> {
+  private getNextTokenRefreshAlarmTime(): number | null {
     // Find the earliest expiring managed integration token
     const rows = this.sql.exec(
       `SELECT MIN(token_expires_at) as token_expires_at
@@ -1330,23 +1361,49 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
     ).toArray() as { token_expires_at: number | null }[];
 
     const nextExpiry = rows[0]?.token_expires_at ?? null;
+    if (!nextExpiry) return null;
 
-    if (!nextExpiry) {
-      // No managed tokens with expiry, clear any existing alarm
+    // Refresh 10 minutes before expiry
+    return nextExpiry - TOKEN_REFRESH_BUFFER_MS;
+  }
+
+  /**
+   * When the earliest running-turn lease can expire, or null when no turn is
+   * running. Sweeping on this schedule is what guarantees a dead turn's row
+   * (heartbeats stopped, no terminal transition) gets pruned and broadcast
+   * idle even if nothing else ever touches this DO.
+   */
+  private getNextStreamingLeaseAlarmTime(): number | null {
+    const rows = this.sql
+      .exec<{ oldest: number | null }>(
+        'SELECT MIN(updated_at) AS oldest FROM thread_streaming_status',
+      )
+      .toArray();
+    const oldest = rows[0]?.oldest ?? null;
+    if (oldest === null) return null;
+    return oldest + THREAD_STREAMING_LEASE_TTL_MS + THREAD_STREAMING_LEASE_ALARM_SLACK_MS;
+  }
+
+  /**
+   * Single-alarm multiplexer: the DO alarm serves both token refresh and the
+   * running-turn lease sweep, so every (re)schedule computes the earliest of
+   * both concerns. The alarm handler runs whatever is due and reschedules.
+   */
+  private async scheduleNextAlarm(): Promise<void> {
+    const candidates = [
+      this.getNextTokenRefreshAlarmTime(),
+      this.getNextStreamingLeaseAlarmTime(),
+    ].filter((time): time is number => time !== null);
+
+    if (candidates.length === 0) {
+      // Nothing pending for either concern; clear any existing alarm
       await this.ctx.storage.deleteAlarm();
       return;
     }
 
-    // Schedule alarm 10 minutes before expiry
-    const alarmTime = nextExpiry - TOKEN_REFRESH_BUFFER_MS;
+    // If already past the alarm time, trigger nearly immediately
     const now = Date.now();
-
-    // If already past the alarm time, trigger immediately
-    if (alarmTime <= now) {
-      await this.ctx.storage.setAlarm(now + 1000); // 1 second from now
-    } else {
-      await this.ctx.storage.setAlarm(alarmTime);
-    }
+    await this.ctx.storage.setAlarm(Math.max(now + 1000, Math.min(...candidates)));
   }
 
   /**
@@ -1363,6 +1420,14 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
     // Dead man's switch: schedule fallback alarm immediately
     // This ensures we retry even if the handler throws unexpectedly
     await this.ctx.storage.setAlarm(now + TOKEN_REFRESH_FALLBACK_MS);
+
+    // Sweep expired running-turn leases first: it is cheap local SQL plus a
+    // socket broadcast, and it must not be starved by token-refresh failures.
+    try {
+      this.pruneStaleStreamingRows(now);
+    } catch (err) {
+      console.error('[WorkspaceDO] Streaming lease sweep failed:', err);
+    }
 
     try {
       const batchCutoff = now + TOKEN_BATCH_WINDOW_MS;
@@ -1427,11 +1492,18 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
         }
       }
 
-      // Schedule alarm for the next expiring token (overwrites fallback)
-      await this.scheduleNextTokenRefresh();
     } catch (err) {
       // Log the error but don't rethrow - fallback alarm is already set
       console.error('[WorkspaceDO] Alarm handler failed, will retry in 1 hour:', err);
+    } finally {
+      // Schedule the next alarm across both concerns (overwrites fallback).
+      // In the finally so a token-refresh failure cannot delay the next lease
+      // sweep to the 1h fallback while turns are running.
+      try {
+        await this.scheduleNextAlarm();
+      } catch (err) {
+        console.error('[WorkspaceDO] Failed to reschedule alarm:', err);
+      }
     }
   }
 

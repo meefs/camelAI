@@ -206,3 +206,86 @@ describe('ChatThreadDO running-activity streaming debounce', () => {
     );
   });
 });
+
+const LEASE_REFRESH_MS = 60_000;
+
+describe('ChatThreadDO streaming lease heartbeat', () => {
+  function createFake() {
+    const recordThreadStreaming = vi.fn(async () => {});
+    const workspaceStub = { recordThreadStreaming };
+    const waitUntilPromises: Promise<unknown>[] = [];
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    fake.chatContext = {
+      threadId: 'thread1',
+      workspaceId: 'workspace1',
+      orgId: 'org1',
+      userId: 'user1',
+    };
+    fake.env = {
+      WORKSPACE: {
+        idFromName: vi.fn((id: string) => id),
+        get: vi.fn(() => workspaceStub),
+      },
+    };
+    fake.ctx = {
+      waitUntil: vi.fn((promise: Promise<unknown>) => {
+        if (promise) waitUntilPromises.push(promise);
+      }),
+    };
+    fake.workspaceStatusStubs = new Map();
+    fake.pendingStreamingActivity = null;
+    fake.streamingActivityFlushTimer = null;
+    fake.streamingLeaseRefreshTimer = null;
+    fake.runningActivityLastText = null;
+    fake.runningActivityLastSentAt = 0;
+    fake.isThreadStreaming = vi.fn(() => true);
+    fake.recordChatThreadObservabilityEvent = vi.fn();
+    fake.retryChatDurableObjectRpc = vi.fn(
+      (_operation: string, op: () => Promise<unknown>) => op(),
+    );
+    return { fake, recordThreadStreaming, waitUntilPromises };
+  }
+
+  it('renews the workspace lease every interval while the turn is streaming', async () => {
+    vi.useFakeTimers();
+    const { fake, recordThreadStreaming, waitUntilPromises } = createFake();
+
+    ChatThreadDO.prototype['startStreamingLeaseHeartbeat'].call(fake);
+    expect(recordThreadStreaming).not.toHaveBeenCalled();
+
+    vi.advanceTimersByTime(LEASE_REFRESH_MS);
+    await Promise.all(waitUntilPromises);
+    expect(recordThreadStreaming).toHaveBeenCalledTimes(1);
+    expect(recordThreadStreaming).toHaveBeenCalledWith('thread1', true, {
+      refresh: true,
+    });
+
+    vi.advanceTimersByTime(LEASE_REFRESH_MS);
+    await Promise.all(waitUntilPromises);
+    expect(recordThreadStreaming).toHaveBeenCalledTimes(2);
+  });
+
+  it('self-cancels when the turn is no longer streaming', async () => {
+    vi.useFakeTimers();
+    const { fake, recordThreadStreaming } = createFake();
+    fake.isThreadStreaming = vi.fn(() => false);
+
+    ChatThreadDO.prototype['startStreamingLeaseHeartbeat'].call(fake);
+    vi.advanceTimersByTime(LEASE_REFRESH_MS * 3);
+
+    expect(recordThreadStreaming).not.toHaveBeenCalled();
+    expect(fake.streamingLeaseRefreshTimer).toBeNull();
+  });
+
+  it('is stopped by resetRunningActivityState (turn boundaries)', async () => {
+    vi.useFakeTimers();
+    const { fake, recordThreadStreaming } = createFake();
+
+    ChatThreadDO.prototype['startStreamingLeaseHeartbeat'].call(fake);
+    ChatThreadDO.prototype['resetRunningActivityState'].call(fake);
+    expect(fake.streamingLeaseRefreshTimer).toBeNull();
+
+    vi.advanceTimersByTime(LEASE_REFRESH_MS * 3);
+    expect(recordThreadStreaming).not.toHaveBeenCalled();
+  });
+});

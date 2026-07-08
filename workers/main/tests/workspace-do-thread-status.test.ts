@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { env } from "cloudflare:test";
+import {
+  env,
+  runDurableObjectAlarm,
+  runInDurableObject,
+} from "cloudflare:test";
 import {
   createOrg,
   createUser,
@@ -201,5 +205,94 @@ describe("WorkspaceDO thread status", () => {
     });
 
     await expect(workspaceStub.listStreamingThreadIds()).resolves.toEqual([]);
+  });
+
+  it("renews the lease on refresh without creating or resurrecting rows", async () => {
+    const workspaceStub = await createWorkspaceStatusStub();
+    const threadId = crypto.randomUUID();
+
+    // A refresh before the turn-start transition must not create the row.
+    await workspaceStub.recordThreadStreaming(threadId, true, { refresh: true });
+    await expect(workspaceStub.listStreamingThreadIds()).resolves.toEqual([]);
+
+    await workspaceStub.recordThreadStreaming(threadId, true);
+    const [before] = await workspaceStub.listStreamingThreadStatuses();
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    await workspaceStub.recordThreadStreaming(threadId, true, { refresh: true });
+    const [after] = await workspaceStub.listStreamingThreadStatuses();
+    expect(after.startedAt).toBe(before.startedAt);
+    expect(after.updatedAt).toBeGreaterThan(before.updatedAt);
+
+    // A late heartbeat after the terminal clear must not resurrect the row.
+    await workspaceStub.recordThreadStreaming(threadId, false, {
+      completedAt: Date.now(),
+    });
+    await workspaceStub.recordThreadStreaming(threadId, true, { refresh: true });
+    await expect(workspaceStub.listStreamingThreadIds()).resolves.toEqual([]);
+  });
+
+  it("arms the lease-sweep alarm when a turn starts", async () => {
+    const workspaceStub = await createWorkspaceStatusStub();
+    const threadId = crypto.randomUUID();
+
+    const beforeStart = Date.now();
+    await workspaceStub.recordThreadStreaming(threadId, true);
+
+    const alarm = await runInDurableObject(workspaceStub, (_instance, state) =>
+      state.storage.getAlarm(),
+    );
+    expect(alarm).not.toBeNull();
+    // startedAt + 5min lease + 1s slack, allowing for test scheduling drift.
+    expect(alarm!).toBeGreaterThan(beforeStart);
+    expect(alarm!).toBeLessThanOrEqual(Date.now() + 5 * 60 * 1000 + 2_000);
+  });
+
+  it("sweeps an expired lease via the alarm and broadcasts idle", async () => {
+    const workspaceStub = await createWorkspaceStatusStub();
+    const threadId = crypto.randomUUID();
+
+    await workspaceStub.recordThreadStreaming(threadId, true);
+
+    const response = await workspaceStub.fetch("https://workspace/status", {
+      headers: { Upgrade: "websocket" },
+    });
+    const socket = response.webSocket;
+    expect(socket).not.toBeNull();
+    socket!.accept();
+    const frames: Array<{ type?: string; threadId?: string; status?: string }> =
+      [];
+    socket!.addEventListener("message", (event) => {
+      frames.push(JSON.parse(event.data as string));
+    });
+
+    // Backdate the lease past the TTL: the turn's heartbeats "stopped".
+    await runInDurableObject(workspaceStub, (instance) => {
+      (instance as unknown as { sql: SqlStorage }).sql.exec(
+        "UPDATE thread_streaming_status SET updated_at = ? WHERE thread_id = ?",
+        Date.now() - 6 * 60 * 1000,
+        threadId,
+      );
+    });
+
+    await expect(runDurableObjectAlarm(workspaceStub)).resolves.toBe(true);
+    await expect(workspaceStub.listStreamingThreadIds()).resolves.toEqual([]);
+
+    // The prune broadcast an idle frame to connected status sockets.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(frames).toContainEqual(
+      expect.objectContaining({
+        type: "thread_status",
+        threadId,
+        status: "idle",
+      }),
+    );
+
+    // Nothing left running and no managed tokens: the alarm is cleared
+    // instead of leaving the 1h dead-man fallback armed.
+    const alarmAfter = await runInDurableObject(
+      workspaceStub,
+      (_instance, state) => state.storage.getAlarm(),
+    );
+    expect(alarmAfter).toBeNull();
   });
 });

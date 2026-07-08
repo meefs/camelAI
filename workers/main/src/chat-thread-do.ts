@@ -289,6 +289,11 @@ const CHAT_ACTIVE_AUTOMATION_RUN_KEY = "activeAutomationRun";
 // transitions (streaming start/stop) bypass this debounce entirely so a
 // workspace UI is never stuck showing "streaming".
 const WORKSPACE_STREAMING_ACTIVITY_DEBOUNCE_MS = 5_000;
+// Liveness-lease heartbeat cadence for the WorkspaceDO running row while a
+// turn executes. Must be several times shorter than the WorkspaceDO's
+// THREAD_STREAMING_LEASE_TTL_MS so a healthy turn always renews well before
+// its lease can expire.
+const WORKSPACE_STREAMING_LEASE_REFRESH_MS = 60_000;
 
 // Prewarm the org-scoped DO-backed build container when a turn starts so its
 // 10s+ cold boot overlaps the model's thinking instead of the deploy. Debounced
@@ -1049,6 +1054,9 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
     coalescedCount: number;
   } | null = null;
   private streamingActivityFlushTimer: ReturnType<typeof setTimeout> | null = null;
+  // Interval renewing the WorkspaceDO running row's liveness lease during a
+  // turn; started by markTurnStarted, stopped by resetRunningActivityState.
+  private streamingLeaseRefreshTimer: ReturnType<typeof setInterval> | null = null;
   private runnerTransitionChain: Promise<void> = Promise.resolve();
   private piSessionPromise: Promise<PiCoreAgent> | null = null;
   private piSession: PiCoreAgent | null = null;
@@ -5104,6 +5112,49 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
     // a "streaming" row. The authoritative streaming state is delivered
     // un-debounced by finishTurn / completion recording.
     this.discardPendingStreamingActivity();
+    this.stopStreamingLeaseHeartbeat();
+  }
+
+  /**
+   * While a turn executes, periodically renew the WorkspaceDO running row's
+   * liveness lease. The row expires THREAD_STREAMING_LEASE_TTL_MS after its
+   * last update and the WorkspaceDO alarm sweeps it (delete + idle broadcast),
+   * so a turn killed without a terminal isStreaming=false — deploy, eviction,
+   * crash — self-heals within minutes instead of pinning "running" in every
+   * viewer's sidebar. The refresh is update-only server-side (`refresh: true`),
+   * so a late tick racing the terminal transition can never resurrect a
+   * cleared row; if the DO dies, the interval dies with it, which is exactly
+   * the loss-of-heartbeat signal the lease exists to detect.
+   */
+  private startStreamingLeaseHeartbeat(): void {
+    this.stopStreamingLeaseHeartbeat();
+    this.streamingLeaseRefreshTimer = setInterval(() => {
+      if (!this.isThreadStreaming()) {
+        // Terminal paths stop the heartbeat via resetRunningActivityState;
+        // this is a backstop so a missed clear-site cannot renew a dead turn
+        // forever (which would recreate the exact stuck state the lease
+        // is meant to prevent).
+        this.stopStreamingLeaseHeartbeat();
+        return;
+      }
+      const context = this.chatContext;
+      if (!context?.workspaceId || !context.threadId) return;
+      this.ctx.waitUntil(
+        this.recordWorkspaceThreadStreaming(
+          context.workspaceId,
+          context.threadId,
+          true,
+          { refresh: true },
+        ),
+      );
+    }, WORKSPACE_STREAMING_LEASE_REFRESH_MS);
+  }
+
+  private stopStreamingLeaseHeartbeat(): void {
+    if (this.streamingLeaseRefreshTimer !== null) {
+      clearInterval(this.streamingLeaseRefreshTimer);
+      this.streamingLeaseRefreshTimer = null;
+    }
   }
 
   private getWorkspaceStatusStub(workspaceId: string): DurableObjectStub<WorkspaceDO> {
@@ -5434,6 +5485,7 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
     }
     this.syncAgentState();
     this.pushWorkspaceStreaming(true);
+    this.startStreamingLeaseHeartbeat();
   }
 
   /**
