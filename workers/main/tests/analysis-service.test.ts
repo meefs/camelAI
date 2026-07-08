@@ -100,12 +100,12 @@ describe("parseValidateNotebookOutput", () => {
 describe("command builders", () => {
   it("routes notebook execution through uv only when a pyproject exists", () => {
     expect(notebookExecuteCommand("a nb.ipynb", false)).toBe(
-      "jupyter nbconvert --to notebook --execute --inplace 'a nb.ipynb'",
+      "python /usr/local/bin/execute-notebook 'a nb.ipynb'",
     );
     // With a pyproject the kernel must see the PROJECT env, and the notebook
     // toolchain is overlaid so execution never falls back to the baked jupyter.
     expect(notebookExecuteCommand("nb.ipynb", true)).toBe(
-      "uv run --project . --with jupyter --with nbconvert --with ipykernel jupyter nbconvert --to notebook --execute --inplace 'nb.ipynb'",
+      "uv run --project . --with jupyter --with nbconvert --with ipykernel python /usr/local/bin/execute-notebook 'nb.ipynb'",
     );
   });
   it("quotes the notebook path for the validator", () => {
@@ -219,7 +219,7 @@ function fakeSandbox(opts?: { failManifest?: boolean; removeOnRun?: string; note
         return { exitCode: 0, stdout: "", stderr: "" };
       }
       // Notebook execution: mark the notebook executed and emit a chart artifact.
-      if (command.includes("nbconvert")) {
+      if (command.includes("execute-notebook")) {
         if (opts?.notebookFailure) {
           return { exitCode: 1, stdout: "", stderr: opts.notebookFailure.stderr };
         }

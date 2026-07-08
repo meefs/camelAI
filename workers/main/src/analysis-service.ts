@@ -318,17 +318,21 @@ const NOTEBOOK_TOOLCHAIN_WITH = ["jupyter", "nbconvert", "ipykernel"]
   .join(" ");
 
 /**
- * The command that executes a notebook in place. When the project declares a
- * `pyproject.toml`, run through `uv` so the kernel sees the PROJECT env (synced
- * from the seeded cache) — never the baked venv's jupyter, which would make
- * project packages invisible. The notebook toolchain is overlaid via `--with`
- * so execution works even for user-authored pyprojects that don't declare
- * jupyter. Without a pyproject, the baked default venv's jupyter (on PATH) runs.
+ * The command that executes a notebook in place, via the baked
+ * `execute-notebook` runner (nbclient with save-after-every-cell, so a failing
+ * run keeps every completed cell's outputs — nbconvert only wrote on full
+ * success). When the project declares a `pyproject.toml`, run through `uv` so
+ * the kernel sees the PROJECT env (synced from the seeded cache) — never the
+ * baked venv, which would make project packages invisible. The notebook
+ * toolchain is overlaid via `--with` so execution works even for user-authored
+ * pyprojects that don't declare jupyter. The runner is invoked as
+ * `python /usr/local/bin/execute-notebook` so it always runs under the active
+ * env's interpreter.
  */
 export function notebookExecuteCommand(notebookRelPath: string, hasPyproject: boolean): string {
   const quoted = shellQuote(notebookRelPath);
-  const nbconvert = `jupyter nbconvert --to notebook --execute --inplace ${quoted}`;
-  return hasPyproject ? `uv run --project . ${NOTEBOOK_TOOLCHAIN_WITH} ${nbconvert}` : nbconvert;
+  const execute = `python /usr/local/bin/execute-notebook ${quoted}`;
+  return hasPyproject ? `uv run --project . ${NOTEBOOK_TOOLCHAIN_WITH} ${execute}` : execute;
 }
 
 /** validate-notebook is a baked system CLI, independent of the project venv. */

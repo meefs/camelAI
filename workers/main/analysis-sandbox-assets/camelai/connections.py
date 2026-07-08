@@ -106,8 +106,18 @@ def find(query):
 
 
 def invoke(connection, method, input=None):
-    """Invoke a connection method and return the raw (unparsed) result."""
-    return rpc("invoke", connection=connection, method=method, input=input or {})
+    """Invoke a connection method and return the raw (unparsed) result.
+
+    ``connection`` may be an id, alias, name, or type — resolution happens
+    server-side. Failures carry the method/connection context so a traceback
+    says which call failed, not just why.
+    """
+    try:
+        return rpc("invoke", connection=connection, method=method, input=input or {})
+    except ConnectionsRpcError as error:
+        raise ConnectionsRpcError(
+            "invoke %r on connection %r failed: %s" % (method, connection, error)
+        ) from error
 
 
 def _find_rows(value):

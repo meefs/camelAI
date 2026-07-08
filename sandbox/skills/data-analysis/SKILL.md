@@ -20,7 +20,9 @@ data stack is preinstalled**, so most analysis needs no environment step at all:
   — it runs `uv add` and persists `pyproject.toml` + `uv.lock` back to the project.
   (You can also just edit `pyproject.toml`; the next run's `uv sync` reconciles it.)
 - **Run a notebook:** `run_notebook` (see below) — execution + validation in one call.
-- **Ad-hoc shell/Python:** `analysis_exec({ command, project? })`.
+- **Ad-hoc shell/Python:** `analysis_exec({ command, project? })`. The `camelai`
+  helper package (see the connections section) is importable here and in
+  `run_code` too, not just in notebooks.
 
 `.venv` is derived state — it is reconstituted in the sandbox from `pyproject.toml` +
 `uv.lock` and is never stored. Do not `uv init` / `uv add` by hand.
@@ -209,9 +211,12 @@ changedFiles, ... }`. The validator catches errors `nbconvert` doesn't surface
 (cell exceptions, charts that fell back to text/plain, blank charts with constant
 data). **If `ok` is false, fix the failing cells and re-run** — on a cell
 exception, `error` carries the Python traceback and `validation.issues` the
-validator findings. Long stdout/stderr are tail-clamped inline (the traceback
-survives); when that happens the result's `fullOutput.path` points at an R2 log
-with the complete output — `read({ location: "r2", path: fullOutput.path })`. Never suppress errors — do not reach for `--allow-errors`,
+validator findings. The notebook is saved after every executed cell, so a
+failed run still persists the outputs of every cell that completed plus the
+failing cell's error output — read the notebook to see the partial results.
+Long stdout/stderr are tail-clamped inline (the traceback survives); when that
+happens the result's `fullOutput.path` points at an R2 log with the complete
+output — `read({ location: "r2", path: fullOutput.path })`. Never suppress errors — do not reach for `--allow-errors`,
 which silently embeds tracebacks the user sees in the rendered report.
 
 Setup calls whose return value is not meaningful report content, such as
@@ -467,9 +472,10 @@ connections.catalog()   # every connection: alias, type, callable methods
   including MCP `content[0].text` envelopes — never parse those by hand).
   Failures raise `camelai.ConnectionsRpcError` with the server's message.
 
-The raw protocol (POST `{action, ...}` to `CAMELAI_CONNECTIONS_RPC_URL`)
-remains available, but the package handles the response-shape edge cases for
-you.
+You should not need the raw protocol (POST `{action, ...}` to
+`CAMELAI_CONNECTIONS_RPC_URL`) directly — the package wraps it and handles
+every response-shape edge case; hand-rolled urllib calls are only for
+environments where `camelai` is unavailable.
 
 #### BigQuery: billing caps, cost estimation, and `camelai.bq`
 

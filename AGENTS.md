@@ -119,7 +119,8 @@ images for amd64 only; under Rosetta/QEMU the Jupyter kernel never answers its h
 `run_notebook` (and every notebook eval) fails on arm64 hosts. `scripts/build-analysis-sandbox-image.mjs`
 builds the pinned sandbox base from source for the host arch and layers the analysis image on top;
 `run-agent-eval.mjs` and `run-eval-suite.sh` invoke it automatically (it also rebuilds when the
-cached image arch doesn't match the host).
+cached image arch doesn't match the host, or when the analysis Dockerfile / baked assets under
+`workers/main/analysis-sandbox-assets/` changed — a content hash is stamped on the image as a label).
 
 **Container egress workaround (workerd#6793).** Evals run the agent in a Cloudflare Container via
 `@cloudflare/vitest-pool-workers`/Miniflare. On newer hosts (Linux kernel ~6.17 / Docker 29.x) the

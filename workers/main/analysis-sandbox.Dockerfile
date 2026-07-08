@@ -80,6 +80,15 @@ ENV PATH="/opt/analysis-venv/bin:${PATH}"
 COPY analysis-sandbox-assets/validate-notebook.py /usr/local/bin/validate-notebook
 RUN chmod +x /usr/local/bin/validate-notebook
 
+# --- execute-notebook runner ---------------------------------------------------
+# In-place notebook executor that saves after EVERY cell (nbconvert only writes
+# on full success, so a failure discarded all completed cells' outputs). Invoked
+# as `python /usr/local/bin/execute-notebook` so it runs under whichever env is
+# active (baked venv or a project's uv env); nbclient/nbformat come with the
+# jupyter toolchain either way. See notebookExecuteCommand in analysis-service.ts.
+COPY analysis-sandbox-assets/execute-notebook.py /usr/local/bin/execute-notebook
+RUN chmod +x /usr/local/bin/execute-notebook
+
 # --- camelai Python helper package --------------------------------------------
 # In-sandbox helpers for workspace connections and BigQuery (`from camelai
 # import bq`): RPC plumbing, MCP response parsing, and export→DuckDB loading.

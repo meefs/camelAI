@@ -179,6 +179,70 @@ print("E2E OK")
     expect(result.stdout).toContain('E2E OK');
   });
 
+  it('re-resolves a stale cached bq connection id once and retries', () => {
+    const result = runPython(`
+import json
+import os
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
+requests = []
+
+
+class Handler(BaseHTTPRequestHandler):
+    def do_POST(self):
+        body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        requests.append(body)
+        status = 200
+        if body["action"] == "find":
+            # second find returns the NEW connection id
+            conn_id = "bq-old" if len([r for r in requests if r["action"] == "find"]) == 1 else "bq-new"
+            envelope = {"ok": True, "result": {"alias": "bq", "connection": {"id": conn_id, "type": "bigquery", "name": "bq"}, "methods": []}}
+        elif body["action"] == "invoke" and body["connection"] == "bq-new":
+            payload = {"rows": [{"n": 1}], "totalRows": "1", "schema": {"fields": []}}
+            envelope = {"ok": True, "result": {"content": [{"type": "text", "text": json.dumps(payload)}]}}
+        else:
+            status = 404
+            envelope = {"ok": False, "error": {"message": "No connected integration matched %s" % body.get("connection")}}
+        out = json.dumps(envelope).encode("utf-8")
+        self.send_response(status)
+        self.send_header("content-type", "application/json")
+        self.send_header("content-length", str(len(out)))
+        self.end_headers()
+        self.wfile.write(out)
+
+    def log_message(self, *args):
+        pass
+
+
+server = HTTPServer(("127.0.0.1", 0), Handler)
+threading.Thread(target=server.serve_forever, daemon=True).start()
+os.environ["CAMELAI_CONNECTIONS_RPC_URL"] = "http://127.0.0.1:%d/" % server.server_port
+
+from camelai import bq
+
+rows, payload = bq.query_rows("SELECT 1")
+assert rows == [{"n": 1}], rows
+# stale id failed → cache dropped → fresh find → retried with the new id
+invokes = [r for r in requests if r["action"] == "invoke"]
+assert [r["connection"] for r in invokes] == ["bq-old", "bq-new"], invokes
+# invoke errors carry method/connection context
+from camelai import connections
+try:
+    connections.invoke("nope", "query")
+except connections.ConnectionsRpcError as error:
+    assert "invoke 'query' on connection 'nope' failed" in str(error), str(error)
+else:
+    raise SystemExit("expected ConnectionsRpcError")
+
+server.shutdown()
+print("RETRY OK")
+`);
+    expect(result.stderr).toBe('');
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('RETRY OK');
+  });
+
   it('adds the mounted read path to export results', () => {
     const result = runPython(`
 import json

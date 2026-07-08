@@ -12,15 +12,22 @@
 // published base image, same as before.
 //
 // Idempotent: exits fast when camelai-analysis-sandbox:latest already exists
-// with the host's architecture. Pass --force to rebuild anyway.
+// with the host's architecture AND was built from the current Dockerfile +
+// analysis-sandbox-assets (a content hash is stamped on the image as a label,
+// so editing an asset — validate-notebook, the camelai package, the
+// execute-notebook runner — triggers a rebuild instead of silently running a
+// stale image). Pass --force to rebuild anyway.
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 
 const ANALYSIS_IMAGE = "camelai-analysis-sandbox:latest";
 const ANALYSIS_DOCKERFILE = "workers/main/analysis-sandbox.Dockerfile";
+const ANALYSIS_ASSETS_DIR = "workers/main/analysis-sandbox-assets";
+const ASSETS_HASH_LABEL = "camelai.assets-hash";
 const SANDBOX_SDK_REPO = "https://github.com/cloudflare/sandbox-sdk.git";
 
 const force = process.argv.includes("--force");
@@ -51,6 +58,30 @@ function sandboxVersionFromDockerfile() {
   return match[1];
 }
 
+// Content hash over the Dockerfile + every baked asset, stamped on the image
+// as a label so a cached image built from stale inputs is detected.
+function analysisAssetsHash() {
+  const hash = createHash("sha256");
+  hash.update(readFileSync(ANALYSIS_DOCKERFILE));
+  const walk = (dir) => {
+    const entries = readdirSync(dir, { withFileTypes: true }).sort((a, b) =>
+      a.name.localeCompare(b.name),
+    );
+    for (const entry of entries) {
+      if (entry.name === "__pycache__") continue;
+      const entryPath = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        walk(entryPath);
+      } else {
+        hash.update(entryPath);
+        hash.update(readFileSync(entryPath));
+      }
+    }
+  };
+  walk(ANALYSIS_ASSETS_DIR);
+  return hash.digest("hex").slice(0, 16);
+}
+
 const dockerArch = capture("docker", ["info", "--format", "{{.Architecture}}"]);
 if (!dockerArch) {
   console.error("[analysis-image] docker is unavailable");
@@ -64,14 +95,26 @@ const existingArch = capture("docker", [
   "--format",
   "{{.Architecture}}",
 ]);
+const assetsHash = analysisAssetsHash();
+const existingAssetsHash = capture("docker", [
+  "image",
+  "inspect",
+  ANALYSIS_IMAGE,
+  "--format",
+  `{{index .Config.Labels "${ASSETS_HASH_LABEL}"}}`,
+]);
 
-if (!force && existingArch === hostArch) {
-  console.log(`[analysis-image] ${ANALYSIS_IMAGE} already built for ${hostArch}`);
+if (!force && existingArch === hostArch && existingAssetsHash === assetsHash) {
+  console.log(`[analysis-image] ${ANALYSIS_IMAGE} already built for ${hostArch} (assets ${assetsHash})`);
   process.exit(0);
 }
 if (existingArch && existingArch !== hostArch) {
   console.log(
     `[analysis-image] ${ANALYSIS_IMAGE} is ${existingArch} but host is ${hostArch}; rebuilding natively`,
+  );
+} else if (existingArch && existingAssetsHash !== assetsHash) {
+  console.log(
+    `[analysis-image] ${ANALYSIS_IMAGE} was built from stale assets (${existingAssetsHash || "unlabeled"} != ${assetsHash}); rebuilding`,
   );
 }
 
@@ -124,10 +167,12 @@ if (hostArch === "arm64") {
   buildArgs.push("--build-arg", `SANDBOX_BASE_IMAGE=${baseImage}`);
 }
 
-console.log(`[analysis-image] Building ${ANALYSIS_IMAGE} for ${hostArch}`);
+console.log(`[analysis-image] Building ${ANALYSIS_IMAGE} for ${hostArch} (assets ${assetsHash})`);
 run("docker", [
   "build",
   ...buildArgs,
+  "--label",
+  `${ASSETS_HASH_LABEL}=${assetsHash}`,
   "-t",
   ANALYSIS_IMAGE,
   "-f",

@@ -28,10 +28,9 @@ __all__ = [
     "tables",
 ]
 
-# Cached for the process lifetime. Notebook runs are a fresh process each
-# time, so this can only go stale in a long-lived interactive process whose
-# BigQuery connection is deleted and re-created mid-session — re-import or
-# restart the kernel if that ever happens.
+# Cached for the process lifetime; _call() drops the cache and re-resolves
+# once when the id stops matching (the connection was deleted and re-created
+# in a long-lived session).
 _CONNECTION_ID = None
 
 
@@ -56,8 +55,17 @@ def _payload(result):
 
 
 def _call(method, **input_kwargs):
+    global _CONNECTION_ID
     args = {key: value for key, value in input_kwargs.items() if value is not None}
-    return _payload(connections.invoke(_connection(), method, args))
+    try:
+        return _payload(connections.invoke(_connection(), method, args))
+    except connections.ConnectionsRpcError as error:
+        # Cached id no longer resolves (connection re-created mid-session):
+        # drop the cache and retry once with a fresh lookup.
+        if "No connected integration matched" not in str(error):
+            raise
+        _CONNECTION_ID = None
+        return _payload(connections.invoke(_connection(), method, args))
 
 
 def query_rows(sql, max_results=None, maximum_bytes_billed=None, dataset_id=None, timeout_ms=None):
