@@ -9024,6 +9024,25 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
           model: payload.model,
           createdAt: Date.now(),
         });
+        // Also surface terminal turn errors (provider faults, loop failures) in the
+        // structured errors dataset. Without this a mid-stream provider failure was
+        // invisible there — indistinguishable from a stall or client disconnect,
+        // since both only funnelled through the reply-stream cancel path.
+        const statusValue = payload.status ?? payload.statusCode;
+        this.recordChatThreadObservabilityEvent("pi_turn_error", {
+          operation: "run_pi_turn",
+          status: "error",
+          severity: "error",
+          provider:
+            typeof payload.provider === "string" ? payload.provider : null,
+          model: typeof payload.model === "string" ? payload.model : null,
+          statusCode: typeof statusValue === "number" ? statusValue : null,
+          error: {
+            name:
+              typeof payload.errorType === "string" ? payload.errorType : "PiTurnError",
+            message,
+          },
+        });
       }
       // Surface the terminal error through Agent state (with a unique id for
       // one-shot client dedup) so a reconnect after a disconnected/early failure
@@ -9399,16 +9418,40 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
   }
 
   /**
-   * The reply stream was cancelled — ordinarily by the stall watchdog. Dispose
-   * the hung Pi session so its in-flight prompt()/continue() resolves (pi-agent-core
-   * catches the abort and settles the run). disposePiSession() unsubscribes the
-   * handlers first, so the synthesized aborted agent_end is dropped and the
-   * active-turn marker is LEFT set — ai-chat then routes the stall into bounded
-   * chatRecovery, which re-drives onChatMessage's resume branch. No-op when no turn
-   * is in flight (a normal completion never cancels the stream).
+   * The reply stream's reader was cancelled. This fires on two distinct paths and
+   * they must be told apart:
+   *
+   *  - A genuine mid-turn interruption (the stall watchdog aborting a hung stream,
+   *    or a deploy/eviction tearing down a live turn) cancels while the turn body
+   *    is still running inside onChatMessage's `execute` — so `activePiStreamTurnId`
+   *    is still set (the `finally` that clears it has not run yet). Here we dispose
+   *    the hung Pi session so its in-flight prompt()/continue() resolves (pi-agent-core
+   *    catches the abort and settles the run); disposePiSession() drops the handlers
+   *    so the synthesized aborted agent_end never runs and the active-turn marker is
+   *    LEFT set, routing the turn into bounded chatRecovery.
+   *
+   *  - A benign post-completion close: ai-chat releases the reader AFTER consuming the
+   *    terminal finish chunk (it does not always drain to `done`), so `cancel()` fires
+   *    on an already-finished turn. By then `execute`'s `finally` has cleared
+   *    `activePiStreamTurnId`, but the Pi session is REUSED (not disposed) for the next
+   *    turn, so it is still truthy. The old `!piSession && !activePiStreamTurnId` guard
+   *    therefore fell through and disposed a healthy idle session while logging a false
+   *    `stall_abort`. Gate on the turn actually being in flight instead: no active turn
+   *    id ⇒ nothing to abort.
    */
   private onPiReplyStreamCancelled(): void {
-    if (!this.piSession && !this.activePiStreamTurnId) return;
+    if (!this.activePiStreamTurnId) {
+      // Post-finish reader release (or a deploy tearing down an already-idle
+      // stream). The turn already settled; do not dispose the reused session and
+      // do not raise a stall alarm. Record a low-severity marker so this remains
+      // visible in telemetry without masquerading as a stall.
+      this.recordChatThreadObservabilityEvent("pi_turn_stream_closed", {
+        operation: "stream_closed",
+        status: "closed",
+        severity: "debug",
+      });
+      return;
+    }
     this.recordChatThreadObservabilityEvent("pi_turn_stream_stall_abort", {
       operation: "stream_stall_abort",
       status: "aborted",

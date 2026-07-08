@@ -1230,6 +1230,54 @@ describe('ChatThreadDO recovery classification and partial reconciliation', () =
       expect.anything(),
     );
   });
+
+  // The reply reader's cancel() fires on TWO paths: a real mid-turn stall/eviction
+  // (turn still in flight, activePiStreamTurnId set) and ai-chat releasing the
+  // reader after the terminal finish chunk (turn already settled, id cleared, but
+  // the Pi session reused). The discriminator is activePiStreamTurnId, NOT
+  // piSession — the reused session stays truthy after a clean finish.
+  describe('onPiReplyStreamCancelled discriminates stall from post-finish close', () => {
+    it('disposes and raises stall_abort when a turn is still in flight', () => {
+      const fake = Object.create(ChatThreadDO.prototype) as any;
+      fake.chatContext = { threadId: 'thread-stall' };
+      fake.activePiStreamTurnId = 'turn-in-flight';
+      fake.piSession = { state: { isStreaming: true } };
+      fake.disposePiSession = vi.fn();
+      fake.recordChatThreadObservabilityEvent = vi.fn();
+
+      ChatThreadDO.prototype['onPiReplyStreamCancelled'].call(fake);
+
+      expect(fake.disposePiSession).toHaveBeenCalledTimes(1);
+      expect(fake.recordChatThreadObservabilityEvent).toHaveBeenCalledWith(
+        'pi_turn_stream_stall_abort',
+        expect.objectContaining({ status: 'aborted' }),
+      );
+    });
+
+    it('does NOT dispose the reused session on a post-finish reader release', () => {
+      const fake = Object.create(ChatThreadDO.prototype) as any;
+      fake.chatContext = { threadId: 'thread-finish-race' };
+      // Turn settled: the execute finally cleared the id, but the Pi session is
+      // reused for the next turn so it is still present (the case the old
+      // `!piSession && !activePiStreamTurnId` guard got wrong).
+      fake.activePiStreamTurnId = null;
+      fake.piSession = { state: { isStreaming: false } };
+      fake.disposePiSession = vi.fn();
+      fake.recordChatThreadObservabilityEvent = vi.fn();
+
+      ChatThreadDO.prototype['onPiReplyStreamCancelled'].call(fake);
+
+      expect(fake.disposePiSession).not.toHaveBeenCalled();
+      expect(fake.recordChatThreadObservabilityEvent).not.toHaveBeenCalledWith(
+        'pi_turn_stream_stall_abort',
+        expect.anything(),
+      );
+      expect(fake.recordChatThreadObservabilityEvent).toHaveBeenCalledWith(
+        'pi_turn_stream_closed',
+        expect.objectContaining({ severity: 'debug' }),
+      );
+    });
+  });
 });
 
 // ai-chat's chatStreamStallTimeoutMs watchdog counts REPLY-STREAM chunks (any

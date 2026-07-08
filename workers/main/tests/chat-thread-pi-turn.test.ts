@@ -398,6 +398,7 @@ describe('ChatThreadDO Pi turn handling', () => {
     fake.piPreAttachChunkBuffer = null;
     fake.ctx = { storage: { sql: {} } };
     fake.recordCurrentThreadError = vi.fn();
+    fake.recordChatThreadObservabilityEvent = vi.fn();
     fake.syncAgentState = vi.fn();
     fake.broadcastChat = vi.fn();
 
@@ -410,6 +411,19 @@ describe('ChatThreadDO Pi turn handling', () => {
       provider: 'bedrock',
       status: 429,
     });
+
+    // Terminal turn errors are also surfaced in the structured errors dataset so a
+    // provider fault is distinguishable from a stall/disconnect in telemetry.
+    expect(fake.recordChatThreadObservabilityEvent).toHaveBeenCalledWith(
+      'pi_turn_error',
+      expect.objectContaining({
+        status: 'error',
+        severity: 'error',
+        provider: 'bedrock',
+        statusCode: 429,
+        error: expect.objectContaining({ message: 'Boom' }),
+      }),
+    );
 
     expect(fake.syncAgentState).toHaveBeenCalled();
     expect(typeof fake.lastError.id).toBe('string');
