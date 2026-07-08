@@ -4917,6 +4917,7 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
       const source = target.source;
       if (
         source !== "workspace" &&
+        source !== "project" &&
         source !== "upload" &&
         source !== "output" &&
         source !== "vm"
@@ -4931,11 +4932,12 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
       if (!workspaceId || !path || path.includes("..")) {
         return null;
       }
+      const requiresProject = source === "project" || source === "vm";
       const project =
-        source === "vm" && typeof target.project === "string"
+        requiresProject && typeof target.project === "string"
           ? target.project.trim()
           : undefined;
-      if (source === "vm" && !project) {
+      if (requiresProject && !project) {
         return null;
       }
 
