@@ -1715,6 +1715,51 @@ describe('ChatThreadDO Pi turn handling', () => {
     expect(fake.piCurrentUsageProvider).toBe('openrouter');
   });
 
+  it('uses local Pi model metadata for Grok 4.5 when the upstream Pi catalog is missing it', async () => {
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    fake.env = {
+      CF_ACCOUNT_ID: 'acct_1',
+      CF_GATEWAY_NAME: 'gateway_1',
+      AI_GATEWAY_AUTH_TOKEN: 'cf-token',
+    };
+    fake.chatContext = {
+      orgId: 'org1',
+      workspaceId: 'workspace1',
+      threadId: 'thread1',
+    };
+    fake.resolveCurrentByokCredentials = vi.fn(async () => null);
+    fake.checkHostedPiModelAccess = vi.fn(async () => true);
+
+    const getModel = vi.fn(() => undefined);
+    const model = await ChatThreadDO.prototype['resolvePiModel'].call(
+      fake,
+      { orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1' },
+      { CHIRIDION_CODEX_MODEL: 'grok-4.5' },
+      getModel,
+    );
+
+    expect(getModel).toHaveBeenCalledWith('openrouter', 'x-ai/grok-4.5');
+    expect(model.model).toMatchObject({
+      id: 'x-ai/grok-4.5:nitro',
+      provider: 'cloudflare-ai-gateway',
+      api: 'openai-responses',
+      baseUrl: 'https://gateway.ai.cloudflare.com/v1/acct_1/gateway_1/openrouter',
+      cost: {
+        input: 2,
+        output: 6,
+        cacheRead: 0.5,
+        cacheWrite: 0,
+      },
+      contextWindow: 500000,
+    });
+    expect(model.apiKey).toBe('cf-token');
+    expect(model.provider).toBe('openrouter');
+    expect(model.modelId).toBe('x-ai/grok-4.5');
+    expect(model.billingSource).toBe('hosted');
+    expect(model.usageProvider).toBe('openrouter');
+    expect(fake.piCurrentUsageProvider).toBe('openrouter');
+  });
+
   it('routes hosted deepseek-v4-auto through the AI Gateway dynamic fallback route', async () => {
     const fake = Object.create(ChatThreadDO.prototype) as any;
     fake.env = {

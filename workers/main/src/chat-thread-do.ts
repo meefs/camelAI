@@ -437,6 +437,23 @@ const PI_MODEL_CATALOG_FALLBACKS: Record<string, Model<any>> = {
     contextWindow: 262144,
     maxTokens: 16384,
   } satisfies Model<"openai-completions">,
+  "openrouter/x-ai/grok-4.5": {
+    id: "x-ai/grok-4.5",
+    name: "xAI: Grok 4.5",
+    api: "openai-responses",
+    provider: "openrouter",
+    baseUrl: "https://openrouter.ai/api/v1",
+    reasoning: true,
+    input: ["text", "image"],
+    cost: {
+      input: 2,
+      output: 6,
+      cacheRead: 0.5,
+      cacheWrite: 0,
+    },
+    contextWindow: 500000,
+    maxTokens: 128000,
+  } satisfies Model<"openai-responses">,
   "openrouter/z-ai/glm-5.2": {
     id: "z-ai/glm-5.2",
     name: "Z.ai: GLM 5.2",
