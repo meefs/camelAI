@@ -793,6 +793,24 @@ function createBrowserFacade(callTool) {
     "logs",
     "close",
   ];
+  const sessionMethodList = sessionMethods.join(", ");
+  const sessionMethodHints = Object.freeze({
+    text: 'To read visible page text, use await session.textContent("body") and then result.text. '
+      + 'To read HTML, use await session.content().',
+    innerText: 'To read visible page text, use await session.textContent("body") and then result.text, '
+      + 'or await session.evaluate("document.body.innerText").',
+    html: 'To read page HTML, use await session.content(). '
+      + 'To read a specific element, use await session.content({ selector: "..." }).',
+    json: 'env.BROWSER is an interactive page session, not a fetch Response. '
+      + 'Use fetch(...).json() for HTTP JSON, or session.evaluate(...) to read page state.',
+  });
+  const unsupportedSessionMethod = (method) => async () => {
+    const hint = sessionMethodHints[method] || 'Run await tools.help({ runtime: "env.BROWSER" }) for examples.';
+    throw new Error(
+      'env.BROWSER session has no method "' + method + '". Supported session methods: '
+        + sessionMethodList + '. ' + hint,
+    );
+  };
   const openSessions = new Map();
   const createSessionFacade = (handle) => {
     let closed = false;
@@ -816,17 +834,40 @@ function createBrowserFacade(callTool) {
         }
       }
     };
-    return Object.freeze(Object.fromEntries(
+    const target = Object.freeze(Object.fromEntries(
       sessionMethods.map((method) => [method, (...args) => call(method, args)]),
     ));
+    return new Proxy(target, {
+      get(object, property, receiver) {
+        if (property === "then") return undefined;
+        if (property in object) return Reflect.get(object, property, receiver);
+        if (typeof property !== "string") return undefined;
+        return unsupportedSessionMethod(property);
+      },
+    });
   };
-  const facade = Object.freeze({
+  const facadeTarget = Object.freeze({
     launch: async (input = {}) => {
       const handle = await callTool("browser_launch", input);
       if (!handle || typeof handle.sessionId !== "string" || !handle.sessionId) {
         throw new Error("env.BROWSER.launch returned an invalid session handle");
       }
       return createSessionFacade(handle);
+    },
+  });
+  const facade = new Proxy(facadeTarget, {
+    get(object, property, receiver) {
+      if (property === "then") return undefined;
+      if (property in object) return Reflect.get(object, property, receiver);
+      if (typeof property !== "string") return undefined;
+      return async () => {
+        throw new Error(
+          'env.BROWSER has no method "' + property + '". '
+            + 'Use await env.BROWSER.launch({ scriptName, path? }) to create a session first, '
+            + 'then call session methods such as click, waitForText, textContent, content, logs, and close. '
+            + 'Run await tools.help({ runtime: "env.BROWSER" }) for examples.',
+        );
+      };
     },
   });
   const cleanup = async () => {

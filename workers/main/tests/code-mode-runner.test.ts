@@ -104,6 +104,18 @@ describe('code mode runner connection facade', () => {
     expect(source).not.toContain('const projects = PROJECTS');
   });
 
+  it('generates helpful env.BROWSER errors for unsupported methods', () => {
+    const source = codeModeWorkerModule(
+      'const b = await env.BROWSER.launch({ scriptName: "app" });\nreturn await b.text();',
+    );
+
+    expect(source).toContain('env.BROWSER session has no method');
+    expect(source).toContain('Supported session methods');
+    expect(source).toContain('use await session.textContent("body") and then result.text');
+    expect(source).toContain('env.BROWSER has no method');
+    expect(source).toContain('Use await env.BROWSER.launch({ scriptName, path? })');
+  });
+
   it('supports object and command/options forms for vm.exec', async () => {
     const calls: unknown[] = [];
     const vm = createVmFacade({
