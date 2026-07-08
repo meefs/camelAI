@@ -19,6 +19,7 @@ import {
   SidebarMenuItem,
   useSidebar,
 } from "@/components/ui/sidebar"
+import { Skeleton } from "@/components/ui/skeleton"
 import { useAuthData } from "@/hooks/use-auth-data"
 import type { OrgMembership } from "@/types"
 import {
@@ -26,6 +27,34 @@ import {
   useSwitchWorkspace,
 } from "@/hooks/use-auth-actions"
 import { getContrastTextColor } from "@/lib/avatar"
+
+export function WorkspaceSwitcherWorkspaceRowText({
+  workspaceName,
+  orgName,
+  isOrgNameLoading,
+}: {
+  workspaceName: string
+  orgName: string | null
+  isOrgNameLoading: boolean
+}) {
+  return (
+    <div className="flex min-w-0 flex-1 flex-col">
+      <span className="truncate text-sm">{workspaceName}</span>
+      <div
+        data-slot="workspace-switcher-org-line"
+        className="flex h-4 items-center gap-1"
+      >
+        {orgName ? (
+          <span className="truncate text-xs text-muted-foreground">
+            {orgName}
+          </span>
+        ) : isOrgNameLoading ? (
+          <Skeleton className="h-3 w-20" />
+        ) : null}
+      </div>
+    </div>
+  )
+}
 
 export function WorkspaceSwitcher() {
   const { isMobile } = useSidebar()
@@ -38,7 +67,6 @@ export function WorkspaceSwitcher() {
   // fan-out was the dominant auth latency). Fetch the full named list lazily, only
   // when the switcher is first opened.
   const orgsFetcher = useFetcher<{ orgs: OrgMembership[] }>()
-  const [orgsRequested, setOrgsRequested] = useState(false)
   const workspaceList = allWorkspaces ?? []
   // Seed names from the auth context (carries the current org's name) and overlay
   // the lazily-fetched full list once it arrives.
@@ -77,8 +105,7 @@ export function WorkspaceSwitcher() {
       <SidebarMenuItem>
         <DropdownMenu
           onOpenChange={(open) => {
-            if (open && !orgsRequested) {
-              setOrgsRequested(true)
+            if (open && !orgsFetcher.data && orgsFetcher.state === "idle") {
               orgsFetcher.load("/api/orgs")
             }
           }}
@@ -167,16 +194,11 @@ export function WorkspaceSwitcher() {
                         {workspace.avatar.content}
                       </AvatarFallback>
                     </Avatar>
-                    <div className="flex min-w-0 flex-1 flex-col">
-                      <span className="truncate text-sm">{workspace.name}</span>
-                      <div className="flex items-center gap-1">
-                        {orgName ? (
-                          <span className="truncate text-xs text-muted-foreground">
-                            {orgName}
-                          </span>
-                        ) : null}
-                      </div>
-                    </div>
+                    <WorkspaceSwitcherWorkspaceRowText
+                      workspaceName={workspace.name}
+                      orgName={orgName}
+                      isOrgNameLoading={!orgsFetcher.data}
+                    />
                     {isPending ? (
                       <Loader2 className="h-4 w-4 shrink-0 animate-spin text-muted-foreground" />
                     ) : isCurrent ? (

@@ -458,6 +458,7 @@ describe("connections loader", () => {
       },
     });
     setEnv();
+    getIntegrationsMock.mockResolvedValue([]);
     listProjectsMock.mockResolvedValue([]);
   });
 
@@ -477,14 +478,19 @@ describe("connections loader", () => {
       params: {},
     } as never);
 
-    await expect(result.connections).resolves.toMatchObject([
-      {
-        id: "pg_1",
-        name: "Primary DB",
-        created_by_name: null,
-        created_by_avatar: null,
-      },
-    ]);
+    await expect(result.pageData).resolves.toMatchObject({
+      connections: [
+        {
+          id: "pg_1",
+          name: "Primary DB",
+          created_by_name: null,
+          created_by_avatar: null,
+        },
+      ],
+      projects: [],
+    });
+    expect(result).not.toHaveProperty("connections");
+    expect(result).not.toHaveProperty("projects");
     expect(consoleErrorSpy).toHaveBeenCalledWith(
       "Failed to load workspace email creator profiles:",
       expect.any(Error),
@@ -495,21 +501,38 @@ describe("connections loader", () => {
     );
   });
 
-  it("loads Slack metadata from config without exposing encrypted credentials", async () => {
+  it("keeps pageData resolved with empty connections when integration loading fails", async () => {
+    getIntegrationsMock.mockRejectedValue(new Error("integration list failed"));
+
+    const result = await loader({
+      request: new Request("https://camelai.test/connections"),
+      context: {},
+      params: {},
+    } as never);
+
+    await expect(result.pageData).resolves.toEqual({
+      connections: [],
+      projects: [],
+    });
+    expect(consoleErrorSpy).toHaveBeenCalledWith(
+      "Failed to load workspace connections:",
+      expect.any(Error),
+    );
+  });
+
+  it("returns connection and project data through one stable pageData promise", async () => {
     getIntegrationsMock.mockResolvedValue([
-      makeRecord({
-        id: "slack_1",
-        integration_type: "slack",
-        name: "Slack Team",
-        category: "communication",
-        auth_method: "oauth2",
-        config: JSON.stringify({
-          team_id: "T123",
-          team_name: "Camel Team",
-          bot_user_id: "B123",
-        }),
-        credentials_encrypted: "not-used",
-      }),
+      makeRecord({ id: "pg_1", created_by: "creator_1" }),
+    ]);
+    listProjectsMock.mockResolvedValue([
+      {
+        id: "ca-ws_1-query-tool",
+        name: "Query Tool",
+        description: "Project exposed to mentions",
+        kind: "project",
+        createdAt: "2026-06-10T12:00:00.000Z",
+        updatedAt: "2026-06-11T12:00:00.000Z",
+      },
     ]);
 
     const result = await loader({
@@ -517,7 +540,53 @@ describe("connections loader", () => {
       context: {},
       params: {},
     } as never);
-    const [connection] = await result.connections;
+
+    expect(result.pageData).toBeInstanceOf(Promise);
+    await expect(result.pageData).resolves.toMatchObject({
+      connections: [
+        {
+          id: "pg_1",
+          name: "Primary DB",
+          created_by_name: "Creator One",
+        },
+      ],
+      projects: [
+        {
+          id: "ca-ws_1-query-tool",
+          name: "Query Tool",
+        },
+      ],
+    });
+    expect(result).not.toHaveProperty("connections");
+    expect(result).not.toHaveProperty("projects");
+  });
+
+  it("loads Slack metadata from config without exposing encrypted credentials", async () => {
+    getIntegrationsMock.mockResolvedValue([
+      {
+        ...makeRecord({
+          id: "slack_1",
+          integration_type: "slack",
+          name: "Slack Team",
+          category: "communication",
+          auth_method: "oauth2",
+          config: JSON.stringify({
+            team_id: "T123",
+            team_name: "Camel Team",
+            bot_user_id: "B123",
+          }),
+          credentials_encrypted: "not-used",
+        }),
+      },
+    ]);
+
+    const result = await loader({
+      request: new Request("https://camelai.test/connections"),
+      context: {},
+      params: {},
+    } as never);
+    const { connections } = await result.pageData;
+    const [connection] = connections;
 
     expect(connection.channelMetadata).toEqual({
       team_id: "T123",
@@ -552,7 +621,8 @@ describe("connections loader", () => {
       context: {},
       params: {},
     } as never);
-    const [connection] = await result.connections;
+    const { connections } = await result.pageData;
+    const [connection] = connections;
 
     expect(connection.channelMetadata).toEqual({
       team_id: "T456",
@@ -602,16 +672,38 @@ describe("connections loader", () => {
       params: {},
     } as never);
 
-    await expect(result.projects).resolves.toEqual([
-      {
-        kind: "project",
-        id: "ca-ws_1-primary-db",
-        name: "Primary DB",
-        description: "Project with colliding slug",
-        created_at: Date.parse("2026-06-10T12:00:00.000Z"),
-        updated_at: Date.parse("2026-06-11T12:00:00.000Z"),
-      },
-    ]);
+    await expect(result.pageData).resolves.toMatchObject({
+      connections: [],
+      projects: [
+        {
+          kind: "project",
+          id: "ca-ws_1-primary-db",
+          name: "Primary DB",
+          description: "Project with colliding slug",
+          created_at: Date.parse("2026-06-10T12:00:00.000Z"),
+          updated_at: Date.parse("2026-06-11T12:00:00.000Z"),
+        },
+      ],
+    });
+  });
+
+  it("keeps pageData resolved with empty projects when project loading fails", async () => {
+    listProjectsMock.mockRejectedValue(new Error("project list failed"));
+
+    const result = await loader({
+      request: new Request("https://camelai.test/connections"),
+      context: {},
+      params: {},
+    } as never);
+
+    await expect(result.pageData).resolves.toEqual({
+      connections: [],
+      projects: [],
+    });
+    expect(consoleErrorSpy).toHaveBeenCalledWith(
+      "Failed to load workspace projects:",
+      expect.any(Error),
+    );
   });
 
   it("handles missing email domain and plan-disabled states", async () => {

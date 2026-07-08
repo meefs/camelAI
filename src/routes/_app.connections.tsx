@@ -543,6 +543,12 @@ export async function loader({ request, context }: Route.LoaderArgs) {
         return [];
       })
     : Promise.resolve([]);
+  // Promises passed to <Await> must be created here in the loader, never inline
+  // in render: a suspended revalidation transition recreates render-scoped
+  // promises on every retry and never commits.
+  const pageDataPromise = Promise.all([connectionsPromise, projectsPromise]).then(
+    ([connections, projects]) => ({ connections, projects }),
+  );
 
   // Get other workspaces in the org for duplication targets
   const otherWorkspaces = (authContext.workspaces ?? [])
@@ -567,8 +573,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     : null;
 
   return {
-    connections: connectionsPromise,
-    projects: projectsPromise,
+    pageData: pageDataPromise,
     integrations,
     categories,
     orgId: authContext.currentOrg.id,
@@ -587,8 +592,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
 
 export default function ConnectionsPage() {
   const {
-    connections,
-    projects,
+    pageData,
     integrations,
     categories,
     orgId,
@@ -611,12 +615,12 @@ export default function ConnectionsPage() {
 
   return (
     <Suspense fallback={<ConnectionsLoadingSkeleton />}>
-      <Await resolve={Promise.all([connections, projects])}>
-        {([resolvedConnections, resolvedProjects]) => (
+      <Await resolve={pageData}>
+        {({ connections, projects }) => (
           <ConnectionsClient
             key={workspaceId}
-            initialConnections={resolvedConnections}
-            initialMentionProjects={resolvedProjects}
+            initialConnections={connections}
+            initialMentionProjects={projects}
             connectionTypes={integrations}
             categories={categories}
             orgId={orgId}

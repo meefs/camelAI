@@ -153,10 +153,16 @@ export function useSwitchWorkspace() {
           throw new Error(data.error ?? 'Failed to switch workspace');
         }
 
-        revalidator.revalidate();
+        await revalidator.revalidate();
+        if (controller.signal.aborted || requestIdRef.current !== requestId) {
+          throw new WorkspaceSwitchSupersededError();
+        }
       } catch (caught) {
         if (isAbortError(caught)) {
           throw new WorkspaceSwitchSupersededError();
+        }
+        if (caught instanceof WorkspaceSwitchSupersededError) {
+          throw caught;
         }
 
         const nextError =
@@ -209,10 +215,16 @@ export function useSwitchOrg() {
 
       try {
         await postJsonAction('/api/auth/switch-org', { orgId }, controller.signal);
-        revalidator.revalidate();
+        await revalidator.revalidate();
+        if (controller.signal.aborted || requestIdRef.current !== requestId) {
+          throw new OrgSwitchSupersededError();
+        }
       } catch (caught) {
         if (isAbortError(caught)) {
           throw new OrgSwitchSupersededError();
+        }
+        if (caught instanceof OrgSwitchSupersededError) {
+          throw caught;
         }
 
         const nextError =
