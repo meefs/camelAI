@@ -158,6 +158,22 @@ const CAMELAI_HOSTED_ONLY_CODEX_MODELS = new Set<LlmModel>([
   "deepseek-v4-auto",
 ]);
 
+const NON_PRODUCTION_ONLY_MODELS = new Set<LlmModel>([
+  "deepseek-v4-auto",
+]);
+
+export function allowNonProductionModelOptions(
+  workerBaseUrl: string | null | undefined,
+): boolean {
+  if (!workerBaseUrl?.trim()) return true;
+  try {
+    const hostname = new URL(workerBaseUrl).hostname.toLowerCase();
+    return hostname !== "camelai.dev" && hostname !== "www.camelai.dev";
+  } catch {
+    return true;
+  }
+}
+
 const BEDROCK_OPENAI_MODEL_REGIONS: Readonly<Record<string, readonly string[]>> = {
   "gpt-5.5": ["us-east-1", "us-east-2"],
   "gpt-5.4": ["us-east-1", "us-east-2", "us-west-2", "us-gov-west-1"],
@@ -263,6 +279,7 @@ export function getVisibleLlmModelOptions(
     customApi?: CustomLlmProviderApi | null;
     customModelId?: string | null;
     awsRegion?: string | null;
+    allowNonProductionModels?: boolean;
   },
 ): ReadonlyArray<{
   value: LlmModel;
@@ -274,12 +291,18 @@ export function getVisibleLlmModelOptions(
     customModelId: options?.customModelId,
     awsRegion: options?.awsRegion,
   });
+  const visibleOptions =
+    options?.allowNonProductionModels === false
+      ? baseOptions.filter(
+          (option) => !NON_PRODUCTION_ONLY_MODELS.has(option.value),
+        )
+      : baseOptions;
 
   if (
     !includeModel ||
-    baseOptions.some((option) => option.value === includeModel)
+    visibleOptions.some((option) => option.value === includeModel)
   ) {
-    return baseOptions;
+    return visibleOptions;
   }
 
   const fallbackOption = [
@@ -287,7 +310,7 @@ export function getVisibleLlmModelOptions(
     ...CLAUDE_LLM_MODEL_OPTIONS,
   ].find((option) => option.value === includeModel);
 
-  return fallbackOption ? [fallbackOption, ...baseOptions] : baseOptions;
+  return fallbackOption ? [fallbackOption, ...visibleOptions] : visibleOptions;
 }
 
 export function isLlmModelAllowedForNewThread(

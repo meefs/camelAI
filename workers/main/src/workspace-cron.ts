@@ -16,6 +16,7 @@ import { prewarmWorkspaceBuildSandboxes } from "./project-build-service";
 import type { WorkspaceFilesystemDO } from "./workspace-filesystem-do";
 import type { ProjectBuildSandbox } from "./project-build-sandbox";
 import {
+  allowNonProductionModelOptions,
   getDefaultLlmModel,
   getStoredCustomLlmProviderApi,
   getStoredCustomLlmProviderModelId,
@@ -339,6 +340,7 @@ export interface WorkspaceCronEnv {
   SELFHOST_AI_AUTH_TYPE?: string;
   SELFHOST_AI_API?: string;
   SELFHOST_AI_AWS_REGION?: string;
+  WORKER_BASE_URL?: string;
 }
 
 export class WorkspaceCronDO extends DurableObject<WorkspaceCronEnv> {
@@ -994,6 +996,9 @@ export class WorkspaceCronDO extends DurableObject<WorkspaceCronEnv> {
       orgProvider: effectiveLlmProviderConfig?.provider,
       customApi,
       customModelId,
+      allowNonProductionModels: allowNonProductionModelOptions(
+        this.env.WORKER_BASE_URL,
+      ),
     });
     const model = resolveDefaultModelForChat({
       effectiveDefaultModel: effectiveConfig.default_model,

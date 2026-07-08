@@ -292,6 +292,7 @@ export function resolveModelPickerCatalog(args: {
   customApi?: CustomLlmProviderApi | null;
   customModelId?: string | null;
   awsRegion?: string | null;
+  allowNonProductionModels?: boolean;
 }): ResolvedModelCatalogEntry[] {
   const visibleModelIds = new Set(
     getVisibleLlmModelOptions(args.experimentalSettings, null, {
@@ -299,6 +300,7 @@ export function resolveModelPickerCatalog(args: {
       customApi: args.customApi,
       customModelId: args.customModelId,
       awsRegion: args.awsRegion,
+      allowNonProductionModels: args.allowNonProductionModels,
     }).map((option) => option.value),
   );
   const platformDefaultModelIds = new Set(

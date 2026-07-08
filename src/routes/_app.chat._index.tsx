@@ -28,6 +28,7 @@ import type { MentionableProject } from "@/lib/mentions";
 import { getWorkerScript } from "@/lib/auth-do";
 import { loadWorkspaceMentionSources } from "@/lib/mention-sources.server";
 import {
+  allowNonProductionModelOptions,
   getDefaultLlmModel,
   getStoredCustomLlmProviderApi,
   getStoredCustomLlmProviderModelId,
@@ -538,6 +539,9 @@ export async function loader({ request, context }: Route.LoaderArgs) {
         customApi,
         customModelId,
         awsRegion,
+        allowNonProductionModels: allowNonProductionModelOptions(
+          env.WORKER_BASE_URL,
+        ),
       },
     ).map((option) => option.value);
     const hasModelFallback = Boolean(workspaceId);

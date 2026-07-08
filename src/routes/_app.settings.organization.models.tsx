@@ -36,6 +36,7 @@ import {
 } from "@/lib/model-catalog";
 import { resolveEffectivePickerConfig } from "@/lib/model-picker-config";
 import {
+  allowNonProductionModelOptions,
   getStoredCustomLlmProviderApi,
   getStoredCustomLlmProviderModelId,
   getStoredBedrockAwsRegion,
@@ -139,6 +140,7 @@ function buildPickerRows(
     customApi?: CustomLlmProviderApi | null;
     customModelId?: string | null;
     awsRegion?: string | null;
+    allowNonProductionModels?: boolean;
   },
 ): PickerModelRow[] {
   return resolveModelPickerCatalog({
@@ -148,6 +150,7 @@ function buildPickerRows(
     customApi: options.customApi,
     customModelId: options.customModelId,
     awsRegion: options.awsRegion,
+    allowNonProductionModels: options.allowNonProductionModels,
   })
     .filter((entry) => visibleModelIds.has(entry.id))
     .map((entry) => ({
@@ -227,12 +230,16 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     effectiveLlmProviderConfig,
   );
   const awsRegion = getStoredBedrockAwsRegion(effectiveLlmProviderConfig);
+  const allowNonProductionModels = allowNonProductionModelOptions(
+    env.WORKER_BASE_URL,
+  );
   const visibleModelIds = getVisibleModelIdsForSettings(
     effectiveLlmProviderConfig?.provider,
     experimentalSettings,
     customApi,
     customModelId,
     awsRegion,
+    allowNonProductionModels,
   );
   const workspaceConfigs = await loadWorkspaceConfigs(authEnv, workspaces);
   const selectedWorkspace =
@@ -256,6 +263,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     customApi,
     customModelId,
     awsRegion,
+    allowNonProductionModels,
   });
   const useOrgDefaults =
     scope === "ws" ? (workspaceConfig?.use_org_defaults ?? true) : false;
@@ -301,12 +309,16 @@ async function loadActionTarget(args: {
     authContext.currentOrgLlmProviderConfig,
   );
   const experimentalSettings = authContext.currentOrgExperimentalSettings;
+  const allowNonProductionModels = allowNonProductionModelOptions(
+    env.WORKER_BASE_URL,
+  );
   const visibleModelIds = getVisibleModelIdsForSettings(
     effectiveLlmProviderConfig?.provider,
     experimentalSettings,
     getStoredCustomLlmProviderApi(effectiveLlmProviderConfig),
     getStoredCustomLlmProviderModelId(effectiveLlmProviderConfig),
     getStoredBedrockAwsRegion(effectiveLlmProviderConfig),
+    allowNonProductionModels,
   );
 
   if (scope === "org") {
@@ -405,6 +417,7 @@ function getVisibleModelIdsForSettings(
   customApi?: CustomLlmProviderApi | null,
   customModelId?: string | null,
   awsRegion?: string | null,
+  allowNonProductionModels?: boolean,
 ): Set<LlmModel> {
   return new Set(
     getVisibleLlmModelOptions(experimentalSettings, null, {
@@ -412,6 +425,7 @@ function getVisibleModelIdsForSettings(
       customApi,
       customModelId,
       awsRegion,
+      allowNonProductionModels,
     }).map((option) => option.value),
   );
 }

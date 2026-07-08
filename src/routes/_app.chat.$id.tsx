@@ -27,6 +27,7 @@ import {
   getDevChatInitialError,
 } from "@/lib/chat-credit-status";
 import {
+  allowNonProductionModelOptions,
   DEFAULT_ORG_EXPERIMENTAL_SETTINGS,
   getDefaultLlmModel,
   getStoredCustomLlmProviderApi,
@@ -769,6 +770,9 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
       customApi,
       customModelId,
       awsRegion,
+      allowNonProductionModels: allowNonProductionModelOptions(
+        env.WORKER_BASE_URL,
+      ),
     },
   ).map((option) => option.value);
 
