@@ -19,6 +19,28 @@ type AgentConnection = Parameters<typeof useAgentChat>[0]["agent"];
 // Transient per-tool live output chunk (never persisted); see the encoder spec.
 const PI_TOOL_STREAM_PART = "data-pi-tool-stream";
 
+/**
+ * Busy-state staleness bound. The server kills any turn whose reply stream goes
+ * chunk-silent for chatStreamStallTimeoutMs (10min) and finalizes the stream —
+ * and a healthy turn emits at least a transient heartbeat every 30s — so a
+ * connected client whose busy indicator sees ZERO progress (no chunk via onData,
+ * no message-list change) for longer than this is attached to a dead stream
+ * (e.g. a resume handshake adopted a stream whose terminal frame was lost).
+ * Clamp the indicator to idle instead of spinning forever; any later genuine
+ * progress (a recovery continuation's chunks) releases the clamp.
+ */
+export const STREAM_PROGRESS_STALE_MS = 12 * 60_000;
+const STREAM_STALL_POLL_MS = 30_000;
+
+/** Pure core of the stall clamp: whether a busy stream with its last observed
+ * progress at `lastProgressAt` should be treated as dead at `now`. */
+export function isStreamProgressStale(
+  lastProgressAt: number,
+  now: number,
+): boolean {
+  return now - lastProgressAt >= STREAM_PROGRESS_STALE_MS;
+}
+
 export interface PiChatStream {
   /** Adapted transcript: UIMessages → legacy Message, with live tool output and
    * per-message streaming flags applied. */
@@ -120,14 +142,33 @@ export function usePiChatStream(opts: {
   );
   const toolStreamCursorsRef = useRef<Map<string, number>>(new Map());
 
-  const onData = useCallback((part: { type: string; data?: unknown }) => {
-    if (part.type !== PI_TOOL_STREAM_PART) return;
-    const data = part.data;
-    setToolStream((prev) => {
-      const next = applyToolStreamData(prev, toolStreamCursorsRef.current, data);
-      return next ?? prev;
-    });
+  // Stall clamp (see STREAM_PROGRESS_STALE_MS): timestamp of the last observed
+  // stream progress — any data-* chunk delivered to onData (tool output AND the
+  // transient server heartbeats) or any change to the message list (text/tool
+  // chunks replace the streaming message object each tick).
+  const lastStreamProgressAtRef = useRef(Date.now());
+  const [stallClamped, setStallClamped] = useState(false);
+  const noteStreamProgress = useCallback(() => {
+    lastStreamProgressAtRef.current = Date.now();
+    setStallClamped(false);
   }, []);
+
+  const onData = useCallback(
+    (part: { type: string; data?: unknown }) => {
+      noteStreamProgress();
+      if (part.type !== PI_TOOL_STREAM_PART) return;
+      const data = part.data;
+      setToolStream((prev) => {
+        const next = applyToolStreamData(
+          prev,
+          toolStreamCursorsRef.current,
+          data,
+        );
+        return next ?? prev;
+      });
+    },
+    [noteStreamProgress],
+  );
 
   const chat = useAgentChat<unknown, UIMessage>({
     agent,
@@ -139,8 +180,41 @@ export function usePiChatStream(opts: {
   });
 
   const uiMessages = chat.messages;
-  const isStreaming = chat.isStreaming;
-  const status = chat.status;
+  const rawIsStreaming = chat.isStreaming;
+  const rawStatus = chat.status;
+
+  // Message-list identity changes are stream progress too (text deltas never
+  // reach onData). setState inside the effect is safe: it bails unless a clamp
+  // was actually set.
+  useEffect(() => {
+    lastStreamProgressAtRef.current = Date.now();
+    setStallClamped(false);
+  }, [uiMessages]);
+
+  // While the hook reports busy, poll for progress; clamp once the stream has
+  // been provably dead for STREAM_PROGRESS_STALE_MS. Reset the progress clock
+  // when a busy window opens so a fresh resume attach gets the full budget.
+  const busy =
+    rawIsStreaming || rawStatus === "streaming" || rawStatus === "submitted";
+  useEffect(() => {
+    if (!busy) {
+      setStallClamped(false);
+      return;
+    }
+    lastStreamProgressAtRef.current = Date.now();
+    const timer = setInterval(() => {
+      if (isStreamProgressStale(lastStreamProgressAtRef.current, Date.now())) {
+        console.warn(
+          "[usePiChatStream] clearing busy indicator: stream reported active with no progress past the stall bound",
+        );
+        setStallClamped(true);
+      }
+    }, STREAM_STALL_POLL_MS);
+    return () => clearInterval(timer);
+  }, [busy]);
+
+  const isStreaming = rawIsStreaming && !stallClamped;
+  const status = stallClamped ? "ready" : rawStatus;
 
   // The streaming assistant is the LAST assistant message, not necessarily the
   // array tail: a steering user skeleton can land below it mid-turn.

@@ -1231,3 +1231,206 @@ describe('ChatThreadDO recovery classification and partial reconciliation', () =
     );
   });
 });
+
+// ai-chat's chatStreamStallTimeoutMs watchdog counts REPLY-STREAM chunks (any
+// bytes reaching the SSE reader reset it — verified against agents/chat
+// iterateWithStallWatchdog), but a healthy long turn has legitimate wire
+// silences: a tool executing with no output deltas, and runtime events the
+// encoder maps to zero chunks. These tests pin the transient heartbeat that
+// converts that genuine liveness into watchdog resets, so only a truly dead
+// session trips the stall.
+describe('ChatThreadDO stall-watchdog heartbeat', () => {
+  function createHeartbeatFake() {
+    const writes: AnyRecord[] = [];
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    fake.chatContext = { threadId: 'thread-heartbeat' };
+    fake.activePiStreamTurnId = 'turn-hb';
+    fake.agentEvalEventCollector = [];
+    fake.piChunkEncoder = new PiChunkEncoder({ messageId: 'turn-hb' });
+    fake.piStreamWriter = { write: (chunk: AnyRecord) => writes.push(chunk) };
+    fake.piPreAttachChunkBuffer = null;
+    fake.syncAgentState = vi.fn();
+    fake.recordChatThreadObservabilityEvent = vi.fn();
+    return { fake, writes };
+  }
+
+  it('converts a zero-chunk runtime event into a transient heartbeat', () => {
+    const { fake, writes } = createHeartbeatFake();
+    ChatThreadDO.prototype['pushChatEvent'].call(
+      fake,
+      runtimeEvent('sdk/turn/started', {}),
+    );
+    expect(writes).toEqual([
+      {
+        type: 'data-pi-heartbeat',
+        transient: true,
+        data: { at: expect.any(Number) },
+      },
+    ]);
+    // The eval collector still consumes the envelope unchanged.
+    expect(fake.agentEvalEventCollector).toHaveLength(1);
+  });
+
+  it('does NOT add a heartbeat to an event that already produced chunks', () => {
+    const { fake, writes } = createHeartbeatFake();
+    ChatThreadDO.prototype['pushChatEvent'].call(
+      fake,
+      runtimeEvent('item/started', {
+        item: { id: 'a1', type: 'agentMessage', text: '' },
+      }),
+    );
+    expect(writes.length).toBeGreaterThan(0);
+    expect(writes.some((chunk) => chunk.type === 'data-pi-heartbeat')).toBe(
+      false,
+    );
+  });
+
+  it('never buffers a heartbeat while no writer is attached', () => {
+    const { fake } = createHeartbeatFake();
+    fake.piStreamWriter = null;
+    ChatThreadDO.prototype['pushChatEvent'].call(
+      fake,
+      runtimeEvent('sdk/turn/started', {}),
+    );
+    // A heartbeat is liveness for the CURRENT stream only; buffering one for a
+    // future stream could evict real chunks from the bounded pre-attach buffer.
+    expect(fake.piPreAttachChunkBuffer).toBeNull();
+  });
+
+  it('swallows a heartbeat write racing stream close', () => {
+    const { fake } = createHeartbeatFake();
+    fake.piStreamWriter = {
+      write: () => {
+        throw new Error('Invalid state: stream closed');
+      },
+    };
+    expect(() =>
+      ChatThreadDO.prototype['writePiStreamHeartbeat'].call(fake),
+    ).not.toThrow();
+  });
+
+  it('emits heartbeats while a harness tool executes silently, and stops when it settles', async () => {
+    vi.useFakeTimers();
+    try {
+      const { fake, writes } = createHeartbeatFake();
+      fake.piTurnLastProgressAtMs = 0;
+
+      let resolveTool!: (value: string) => void;
+      const running = ChatThreadDO.prototype[
+        'keepPiTurnToolProgressAliveWhile'
+      ].call(
+        fake,
+        () => new Promise<string>((resolve) => (resolveTool = resolve)),
+      ) as Promise<string>;
+
+      // Three 30s progress intervals with zero tool output: each one writes a
+      // transient heartbeat so the watchdog never reads the silence as a hang.
+      await vi.advanceTimersByTimeAsync(95_000);
+      expect(
+        writes.filter((chunk) => chunk.type === 'data-pi-heartbeat'),
+      ).toHaveLength(3);
+
+      resolveTool('done');
+      await expect(running).resolves.toBe('done');
+
+      // The keep-alive stops with the tool: a genuinely hung session (no events,
+      // no running tool) emits nothing and the watchdog trips as designed.
+      const settledCount = writes.length;
+      await vi.advanceTimersByTimeAsync(120_000);
+      expect(writes).toHaveLength(settledCount);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+// Page-open healing for a stranded active-turn marker: ai-chat recovery can give
+// up SILENTLY (incident marked "skipped": conversation_changed /
+// no_unanswered_user_message / continueLastTurn with no assistant) with no app
+// callback, leaving the marker set in a warm isolate — onStart's wake-time sweep
+// never re-runs, so isThreadStreaming() (and the workspace running row) would
+// report the dead turn as busy forever. getUiMessages (the SSR loader, the first
+// page-open touch) and onConnect now run the same guarded sweep.
+describe('ChatThreadDO stranded-marker healing on page open', () => {
+  it('sweeps a stranded marker on getUiMessages and lets the gated top-up run', async () => {
+    const stub = await newChatThreadStub('thread-stranded-marker');
+    await runInDurableObject(stub, async (instance: any) => {
+      instance.chatContext = { threadId: 'thread-stranded-marker' };
+      instance.ensurePiCoreTables();
+      seedPiCoreRow(instance, 0, { role: 'user', content: 'q', timestamp: 1000 });
+      seedPiCoreRow(instance, 1, {
+        role: 'assistant',
+        content: [{ type: 'text', text: 'a' }],
+        timestamp: 1100,
+        responseId: 'resp-1',
+      });
+      // A dead turn: stale marker (older than the stall window), no live
+      // session, no queued prompt, no ai-chat recovery incident/flag.
+      instance.ctx.storage.kv.put('piActiveTurn', {
+        turnId: 'turn-dead',
+        openedAt: Date.now() - 11 * 60_000,
+      });
+      // setState needs the PartyServer name bootstrap the test harness skips.
+      instance.syncAgentState = () => {};
+      expect(instance.getRuntimeStatus().isStreaming).toBe(true);
+
+      const messages = await instance.getUiMessages();
+
+      expect(instance.ctx.storage.kv.get('piActiveTurn')).toBeUndefined();
+      expect(instance.getRuntimeStatus().isStreaming).toBe(false);
+      // With the marker swept the top-up is no longer gated: the dead turn's
+      // committed pi_core rows convert into render history on this same load.
+      expect(messages.map((m: AnyRecord) => m.id)).toEqual([
+        'pi_user_1000_0',
+        'resp-1',
+      ]);
+    });
+  });
+
+  it('leaves a live (fresh) marker alone on getUiMessages', async () => {
+    const stub = await newChatThreadStub('thread-live-marker');
+    await runInDurableObject(stub, async (instance: any) => {
+      instance.chatContext = { threadId: 'thread-live-marker' };
+      instance.ensurePiCoreTables();
+      instance.ctx.storage.kv.put('piActiveTurn', {
+        turnId: 'turn-live',
+        openedAt: Date.now(),
+      });
+      instance.syncAgentState = () => {};
+
+      await instance.getUiMessages();
+
+      expect(instance.ctx.storage.kv.get('piActiveTurn')).toMatchObject({
+        turnId: 'turn-live',
+      });
+      expect(instance.getRuntimeStatus().isStreaming).toBe(true);
+    });
+  });
+
+  it('runs the sweep on onConnect before deriving any busy state', async () => {
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    fake.chatContext = { orgId: 'org1', threadId: 't1' };
+    fake.captureChatContextFromRequest = vi.fn();
+    fake.sweepOrphanedActiveTurnMarker = vi.fn(async () => {});
+    fake.messages = [];
+    fake.isThreadStreaming = vi.fn(() => false);
+    fake.currentTodos = [];
+    fake.syncAgentState = vi.fn();
+    fake.maybeGenerateChatGroupAvatarForThread = vi.fn(async () => {});
+    const connection = { send: vi.fn(), close: vi.fn() };
+    const ctx = { request: new Request('https://do/ws?orgId=org1') };
+
+    await ChatThreadDO.prototype.onConnect.call(
+      fake,
+      connection as never,
+      ctx as never,
+    );
+
+    expect(connection.close).not.toHaveBeenCalled();
+    expect(fake.sweepOrphanedActiveTurnMarker).toHaveBeenCalledTimes(1);
+    // The sweep ran before the stale-todo/agent-state derivation read the marker.
+    expect(
+      fake.sweepOrphanedActiveTurnMarker.mock.invocationCallOrder[0],
+    ).toBeLessThan(fake.isThreadStreaming.mock.invocationCallOrder[0]);
+  });
+});

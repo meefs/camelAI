@@ -1101,8 +1101,14 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
   // reply stream within this window the turn is aborted and routed into bounded
   // chatRecovery. Set as a class field (like chatRecovery) so it is live before
   // onStart. This replaces the bespoke `withPiTurnInactivityTimeout` on the
-  // bridged turn paths: every Pi runtime event writes at least one chunk, so an
-  // inter-chunk gap is exactly the old inter-event inactivity signal. onChatMessage
+  // bridged turn paths. The watchdog counts REPLY-STREAM chunks, not Pi session
+  // progress, and a healthy long turn has legitimate multi-minute wire silences
+  // (a tool executing with no output deltas; runtime events the encoder maps to
+  // zero chunks) — so genuine liveness is converted into transient
+  // `data-pi-heartbeat` chunks ({@link writePiStreamHeartbeat}: 30s cadence while
+  // a harness tool executes via keepPiTurnToolProgressAliveWhile, plus one per
+  // zero-chunk runtime event in writePiStreamChunks). The watchdog then only
+  // trips on a truly dead session (no events, no running tool). onChatMessage
   // wires the watchdog's stream-cancel to dispose the hung Pi session (see
   // {@link onPiReplyStreamCancelled}); the eval path keeps the bespoke wrapper
   // since it prompts the session directly, outside the ai-chat stream.
@@ -1560,16 +1566,24 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
   }
 
   /**
-   * Clear an active-turn marker orphaned across the old→new recovery boundary
-   * (commit 7). A marker written by the pre-ai-chat fiber machinery has no ai-chat
-   * incident to re-drive it, so {@link isThreadStreaming} would read "busy"
-   * forever. Runs at wake (after super.onStart) and clears the marker + journal
-   * ONLY when the turn is provably not going to be recovered: no live Pi stream,
-   * no pending prompt, no onChatMessage in flight, ai-chat has no active recovery
-   * incident (detected/scheduled/attempting) and no non-stale recovering flag, and
-   * the marker is not freshly opened (guards a same-wake race with a just-started
-   * turn). A post-migration marker always pairs with an ai-chat incident, so this
-   * never fires for it. Fails safe — any read error leaves the marker untouched.
+   * Clear an active-turn marker whose turn is provably dead — nothing owns it and
+   * nothing will re-drive it — so {@link isThreadStreaming} (and the workspace
+   * thread-list "running" row finishTurn clears) can't report a dead turn as busy
+   * forever. Two orphan sources: a marker written by the pre-ai-chat fiber
+   * machinery across the old→new recovery boundary (commit 7), and a marker
+   * stranded by an ai-chat recovery that gave up SILENTLY — the framework marks
+   * its incident "skipped" (conversation_changed / no_unanswered_user_message /
+   * continueLastTurn with no assistant) and returns without any app callback, so
+   * no terminal path ever clears the marker. Runs at wake (after super.onStart)
+   * AND on the page-open reads (getUiMessages, onConnect): a warm isolate never
+   * re-runs onStart, so a marker stranded on an alarm wake would otherwise stick
+   * for the isolate's whole lifetime — exactly the "thread stuck loading on open"
+   * symptom. Clears the marker + journal ONLY when the turn is provably not
+   * going to be recovered: no live Pi stream, no pending prompt, no onChatMessage
+   * in flight, ai-chat has no active recovery incident
+   * (detected/scheduled/attempting) and no non-stale recovering flag, and the
+   * marker is not freshly opened (guards a same-wake race with a just-started
+   * turn). Fails safe — any read error leaves the marker untouched.
    */
   private async sweepOrphanedActiveTurnMarker(): Promise<void> {
     let marker: PiActiveTurnMarker | null;
@@ -1689,6 +1703,14 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
     }
 
     this.captureChatContextFromRequest(url, ctx.request, connection);
+
+    // Heal a provably-dead turn before this socket derives any busy state from
+    // it (working indicator, stale-todo completion below). onStart only covers
+    // cold wakes; a marker stranded while the isolate stayed warm (e.g. an
+    // ai-chat recovery that skipped silently on an alarm wake) is cleared here,
+    // at the moment the user actually opens the thread. Guarded no-op whenever
+    // the marker is live, freshly opened, or awaiting recovery.
+    await this.sweepOrphanedActiveTurnMarker();
 
     // Deliver the current render history to THIS socket. Turns can complete
     // while a browser is disconnected (headless saveMessages turns from email/
@@ -3979,7 +4001,13 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
 
   private async keepPiTurnToolProgressAliveWhile<T>(fn: () => Promise<T>): Promise<T> {
     this.touchPiTurnProgress();
-    const interval = setInterval(() => this.touchPiTurnProgress(), PI_TURN_PROGRESS_INTERVAL_MS);
+    const interval = setInterval(() => {
+      this.touchPiTurnProgress();
+      // An executing harness tool is genuine turn liveness even when it writes
+      // nothing to the wire (a silent long command/build); keep the ai-chat
+      // stall watchdog satisfied so it only trips on a truly hung session.
+      this.writePiStreamHeartbeat();
+    }, PI_TURN_PROGRESS_INTERVAL_MS);
     try {
       return await fn();
     } finally {
@@ -9067,6 +9095,15 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
       const event = envelope.event;
       if (!event || typeof event !== "object") return;
       chunks = encoder.encode(event as PiRuntimeEvent);
+      if (chunks.length === 0) {
+        // The event carries no render content (sdk/turn boundaries, unknown
+        // methods, no-op item kinds) but IS proof the session is alive. Convert
+        // it into a transient heartbeat so ai-chat's inter-chunk stall watchdog
+        // — which counts wire chunks, not Pi events — doesn't read a healthy
+        // quiet stretch as a hang.
+        this.writePiStreamHeartbeat();
+        return;
+      }
     } else if (envelope.type === "error") {
       const errorText =
         typeof envelope.error === "string" && envelope.error.trim()
@@ -9113,6 +9150,30 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
       return;
     }
     this.enqueuePiStreamChunks(chunks);
+  }
+
+  /**
+   * Write a transient `data-pi-heartbeat` chunk to the live reply stream so
+   * ai-chat's stall watchdog registers genuine turn liveness that produces no
+   * content chunks (see {@link chatStreamStallTimeoutMs}). Writer-attached only,
+   * deliberately: a heartbeat is a liveness signal for the CURRENT stream, so
+   * buffering one for a future stream is meaningless and would evict real chunks
+   * from the bounded pre-attach buffer. Best-effort — a write racing stream
+   * close/cancel (e.g. the tool keep-alive interval firing right after a stall
+   * abort) is swallowed; the watchdog already owns that turn's outcome.
+   */
+  private writePiStreamHeartbeat(): void {
+    const writer = this.piStreamWriter;
+    if (!writer) return;
+    try {
+      writer.write({
+        type: "data-pi-heartbeat",
+        transient: true,
+        data: { at: Date.now() },
+      } as never);
+    } catch {
+      // Stream already closed/cancelled; nothing to keep alive.
+    }
   }
 
   /**
@@ -9462,6 +9523,11 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
    * loader wiring is commit 4).
    */
   async getUiMessages(): Promise<UIMessage[]> {
+    // The SSR loader is the first page-open touch (before the websocket
+    // connects). Heal a provably-dead turn's stranded marker here so the load
+    // doesn't derive a busy indicator from it — and so the top-up below (which
+    // the marker gates) isn't skipped forever for a turn nothing will resume.
+    await this.sweepOrphanedActiveTurnMarker();
     await this.topUpUiMessagesFromPiCore();
     return this.messages as UIMessage[];
   }

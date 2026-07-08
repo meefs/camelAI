@@ -81,6 +81,19 @@ export interface PiArtifactsData {
 }
 
 /**
+ * Transient liveness ping for ai-chat's inter-chunk stall watchdog
+ * (`chatStreamStallTimeoutMs` resets on ANY chunk reaching the reply stream).
+ * Written by the DO — not this encoder — whenever the Pi turn shows genuine
+ * progress that maps to zero content chunks: a harness tool still executing
+ * (30s cadence) or a runtime event the encoder deliberately drops. Transient,
+ * so it never lands in message parts (server builder and browser reducer both
+ * skip transient data parts) and never credits recovery progress.
+ */
+export interface PiHeartbeatData {
+  at: number;
+}
+
+/**
  * Durable terminal-error metadata carried on a non-transient `data-pi-error`
  * part. The native `error` chunk is broadcast-only, so this part is what keeps a
  * terminal error (with the billing/status metadata the composer recovery needs)
@@ -128,6 +141,7 @@ export type PiUiMessageChunk =
   | { type: 'data-pi-user-stop'; id: string; data: PiUserStopData }
   | { type: 'data-pi-artifacts'; id: string; data: PiArtifactsData }
   | { type: 'data-pi-tool-stream'; transient: true; data: PiToolStreamData }
+  | { type: 'data-pi-heartbeat'; transient: true; data: PiHeartbeatData }
   | { type: 'data-pi-error'; id: string; data: PiErrorData }
   | { type: 'message-metadata'; messageMetadata: PiMessageMetadata }
   | { type: 'finish' }
