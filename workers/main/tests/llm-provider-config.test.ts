@@ -26,7 +26,7 @@ const CODEX_MODELS = [
   "deepseek-v4-auto",
   "deepseek-v4-flash",
   "kimi-k2.7-code",
-  "grok-4.3",
+  "grok-4.5",
   "glm-5.2",
 ] as const;
 
@@ -43,7 +43,7 @@ const OPENROUTER_ONLY_MODELS = [
   "deepseek-v4-pro",
   "deepseek-v4-flash",
   "kimi-k2.7-code",
-  "grok-4.3",
+  "grok-4.5",
   "glm-5.2",
 ] as const;
 
@@ -56,7 +56,7 @@ const OPENROUTER_BYOK_CODEX_MODELS = [
   "deepseek-v4-pro",
   "deepseek-v4-flash",
   "kimi-k2.7-code",
-  "grok-4.3",
+  "grok-4.5",
   "glm-5.2",
 ] as const;
 

@@ -396,7 +396,7 @@ describe('getWorkspaceModelPickerState rollout compatibility', () => {
           { id: 'deepseek-v4-pro', added_at: 4 },
           { id: 'deepseek-v4-flash', added_at: 3 },
           { id: 'kimi-k2.6', added_at: 2 },
-          { id: 'grok-4.3', added_at: 1 },
+          { id: 'grok-4.5', added_at: 1 },
         ],
         default_model: null,
       }),

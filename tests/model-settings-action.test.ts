@@ -539,7 +539,7 @@ describe('organization model settings actions', () => {
         { id: 'deepseek-v4-pro', added_at: 94 },
         { id: 'deepseek-v4-flash', added_at: 93 },
         { id: 'kimi-k2.6', added_at: 92 },
-        { id: 'grok-4.3', added_at: 91 },
+        { id: 'grok-4.5', added_at: 91 },
       ],
       default_model: 'sonnet',
     });

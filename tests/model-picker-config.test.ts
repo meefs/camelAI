@@ -142,7 +142,7 @@ describe('model picker config parsing', () => {
         { id: 'deepseek-v4-pro', added_at: 4 },
         { id: 'deepseek-v4-flash', added_at: 3 },
         { id: 'kimi-k2.6', added_at: 2 },
-        { id: 'grok-4.3', added_at: 1 },
+        { id: 'grok-4.5', added_at: 1 },
       ],
       default_model: null,
     });
@@ -267,7 +267,7 @@ describe('model picker config parsing', () => {
     });
   });
 
-  it('remaps legacy Kimi rows and defaults to K2.7 Code', () => {
+  it('remaps legacy Kimi and Grok rows', () => {
     const parsed = parseWorkspaceModelPickerConfig({
       use_org_defaults: false,
       use_platform_defaults: false,
@@ -284,7 +284,7 @@ describe('model picker config parsing', () => {
       use_platform_defaults: false,
       models: [
         { id: 'kimi-k2.7-code', added_at: 4 },
-        { id: 'grok-4.3', added_at: 2 },
+        { id: 'grok-4.5', added_at: 2 },
       ],
       default_model: 'kimi-k2.7-code',
     });

@@ -198,13 +198,15 @@ const modelPricingTable: Record<string, ModelPricing> = {
     inputPerToken: 0.0000007448,
     outputPerToken: 0.000004655,
   },
-  "x-ai/grok-4.3": {
-    inputPerToken: 0.00000125,
-    outputPerToken: 0.0000025,
+  "x-ai/grok-4.5": {
+    inputPerToken: 0.000002,
+    outputPerToken: 0.000006,
+    cacheReadPerToken: 0.0000005,
   },
-  "grok-4.3": {
-    inputPerToken: 0.00000125,
-    outputPerToken: 0.0000025,
+  "grok-4.5": {
+    inputPerToken: 0.000002,
+    outputPerToken: 0.000006,
+    cacheReadPerToken: 0.0000005,
   },
   "z-ai/glm-5.2": {
     inputPerToken: 0.0000012,
@@ -346,7 +348,8 @@ export function lookupPricing(model: string): ModelPricing {
   if (normalized.includes("kimi-k2.6") || normalized.includes("kimi-latest")) {
     return modelPricingTable["~moonshotai/kimi-latest"];
   }
-  if (normalized.includes("grok-4.3")) return modelPricingTable["x-ai/grok-4.3"];
+  if (normalized.includes("grok-4.5")) return modelPricingTable["x-ai/grok-4.5"];
+  if (normalized.includes("grok-4.3")) return modelPricingTable["x-ai/grok-4.5"];
   if (normalized.includes("glm-5.2")) return modelPricingTable["z-ai/glm-5.2"];
   if (normalized.includes("deepseek-v4-auto")) {
     return modelPricingTable["deepseek-v4-auto"];

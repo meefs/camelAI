@@ -619,7 +619,7 @@ export type LlmModel =
   | "gpt-5.4-mini"
   | "custom"
   | "kimi-k2.7-code"
-  | "grok-4.3"
+  | "grok-4.5"
   | "glm-5.2"
   | "gemini-3.5-flash"
   | "gemini-3-flash-preview"

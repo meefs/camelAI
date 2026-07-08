@@ -200,7 +200,7 @@ describe('MODEL_CATALOG', () => {
           { id: 'gpt-5.4', added_at: 3 },
           { id: 'gpt-5.4-mini', added_at: 4 },
           { id: 'kimi-k2.7-code', added_at: 5 },
-          { id: 'grok-4.3', added_at: 6 },
+          { id: 'grok-4.5', added_at: 6 },
           { id: 'gemini-3-flash-preview', added_at: 7 },
           { id: 'gemini-3.5-flash', added_at: 8 },
           { id: 'deepseek-v4-pro', added_at: 9 },
@@ -293,7 +293,7 @@ describe('MODEL_CATALOG', () => {
       'deepseek-v4-pro',
       'deepseek-v4-flash',
       'kimi-k2.7-code',
-      'grok-4.3',
+      'grok-4.5',
       'glm-5.2',
     ]);
   });

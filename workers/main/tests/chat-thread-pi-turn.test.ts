@@ -1697,9 +1697,9 @@ describe('ChatThreadDO Pi turn handling', () => {
     const model = await ChatThreadDO.prototype['resolvePiModel'].call(
       fake,
       { orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1' },
-      { CHIRIDION_CODEX_MODEL: 'grok-4.3' },
+      { CHIRIDION_CODEX_MODEL: 'grok-4.5' },
       vi.fn(() => ({
-        id: 'x-ai/grok-4.3',
+        id: 'x-ai/grok-4.5',
         provider: 'openrouter',
         api: 'openai-completions',
         baseUrl: 'https://openrouter.ai/api/v1',
@@ -1707,7 +1707,7 @@ describe('ChatThreadDO Pi turn handling', () => {
     );
 
     expect(model.model).toMatchObject({
-      id: 'x-ai/grok-4.3:nitro',
+      id: 'x-ai/grok-4.5:nitro',
       provider: 'cloudflare-ai-gateway',
       api: 'openai-responses',
       baseUrl: 'https://gateway.ai.cloudflare.com/v1/acct_1/gateway_1/openrouter',

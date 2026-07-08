@@ -17,6 +17,8 @@ const LEGACY_LLM_MODEL_REPLACEMENTS = {
   "gemini-3.1-pro-preview": "gemini-3.5-flash",
   "kimi-k2.6": "kimi-k2.7-code",
   "kimi-latest": "kimi-k2.7-code",
+  "grok-4.3": "grok-4.5",
+  "grok-latest": "grok-4.5",
   opus: "opus-4.8",
   "opus-4.7": "opus-4.8",
 } as const satisfies Record<string, LlmModel>;
@@ -109,8 +111,8 @@ export const CODEX_LLM_MODEL_OPTIONS: ReadonlyArray<{
     description: "OpenRouter/camelAI hosted model",
   },
   {
-    value: "grok-4.3",
-    label: "Grok 4.3",
+    value: "grok-4.5",
+    label: "Grok 4.5",
     description: "OpenRouter/camelAI hosted model",
   },
   {
@@ -144,7 +146,7 @@ export const LLM_MODEL_OPTIONS: ReadonlyArray<{
 
 const OPENROUTER_ONLY_CODEX_MODELS = new Set<LlmModel>([
   "kimi-k2.7-code",
-  "grok-4.3",
+  "grok-4.5",
   "glm-5.2",
   "gemini-3.5-flash",
   "gemini-3-flash-preview",

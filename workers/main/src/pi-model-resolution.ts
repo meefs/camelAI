@@ -51,8 +51,8 @@ export class PiModelMapping {
         return openAiReference("gpt-5.4");
       case "kimi-k2.7-code":
         return openRouterReference("moonshotai/kimi-k2.7-code");
-      case "grok-4.3":
-        return openRouterResponsesReference("x-ai/grok-4.3");
+      case "grok-4.5":
+        return openRouterResponsesReference("x-ai/grok-4.5");
       case "glm-5.2":
         return openRouterReference("z-ai/glm-5.2");
       case "gemini-3.5-flash":
@@ -107,6 +107,14 @@ export class PiModelMapping {
       lower === "moonshotai/kimi-k2.6"
     ) {
       return "kimi-k2.7-code";
+    }
+    if (
+      lower === "grok-4.3" ||
+      lower === "grok-latest" ||
+      lower === "x-ai/grok-4.3" ||
+      lower === "x-ai/grok-latest"
+    ) {
+      return "grok-4.5";
     }
     return normalized;
   }
