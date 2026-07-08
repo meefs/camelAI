@@ -52,9 +52,11 @@ export function prepareCodeModeUserCode(userCode: string): string {
 
 export function codeModeWorkerModule(userCode: string): string {
   const executableUserCode = prepareCodeModeUserCode(stripTypeScriptFromUserCode(userCode));
-  return `${String.raw`
+  const workerPrefixTemplate = String.raw`
 import { WorkerEntrypoint } from "cloudflare:workers";
 
+const USER_CODE_START_LINE = __USER_CODE_START_LINE__;
+const USER_CODE_END_LINE = __USER_CODE_END_LINE__;
 const store = new Map();
 
 function stringifyOutput(value) {
@@ -79,14 +81,33 @@ function formatRuntimeError(error) {
   const stack = error && typeof error.stack === "string" && error.stack
     ? error.stack
     : "";
+  const location = userCodeLocationFromStack(stack);
   const hints = [];
   if (message.includes('"[object Object]" is not valid JSON')) {
     hints.push(
       "JSON.parse received an object. js_exec tools return { ok, data }; for tools.read text, check result.ok and parse result.data.text.",
     );
   }
-  const formatted = stack || message;
+  const formatted = message + (location ? " at js_exec code line " + location.line + ", column " + location.column : "");
   return formatted + (hints.length ? "\n\nHint: " + hints.join(" ") : "");
+}
+
+function userCodeLocationFromStack(stack) {
+  if (!stack) return null;
+  for (const line of stack.split("\n")) {
+    const match = line.match(/(?:^|[\s(])[^\s()]*index\.js:(\d+):(\d+)/);
+    if (!match) continue;
+    const generatedLine = Number(match[1]);
+    if (!Number.isFinite(generatedLine) || generatedLine < USER_CODE_START_LINE || generatedLine > USER_CODE_END_LINE) {
+      continue;
+    }
+    const column = Number(match[2]);
+    return {
+      line: generatedLine - USER_CODE_START_LINE + 1,
+      column: Number.isFinite(column) ? column : 1,
+    };
+  }
+  return null;
 }
 
 function createOutputConsole(output) {
@@ -984,7 +1005,13 @@ function createProjectsFacade(tools) {
 
 async function runUserCode() {
   "use strict";
-`}${executableUserCode}${String.raw`
+`;
+  const userCodeStartLine = workerPrefixTemplate.split("\n").length;
+  const userCodeEndLine = userCodeStartLine + Math.max(1, executableUserCode.split("\n").length) - 1;
+  const workerPrefix = workerPrefixTemplate
+    .replace("__USER_CODE_START_LINE__", String(userCodeStartLine))
+    .replace("__USER_CODE_END_LINE__", String(userCodeEndLine));
+  return `${workerPrefix}${executableUserCode}${String.raw`
 }
 
 function installRuntimeGlobals(values) {

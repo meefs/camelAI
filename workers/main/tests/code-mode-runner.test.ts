@@ -378,7 +378,7 @@ describe('code mode runner tools.help guide', () => {
   });
 
   it('includes a targeted hint for JSON.parse on a tool result envelope', () => {
-    const formatRuntimeError = loadGeneratedRuntimeErrorFormatter();
+    const { formatRuntimeError } = loadGeneratedRuntimeErrorHelpers();
 
     const result = formatRuntimeError(new SyntaxError('"[object Object]" is not valid JSON'));
 
@@ -387,16 +387,41 @@ describe('code mode runner tools.help guide', () => {
     expect(result).toContain('js_exec tools return { ok, data }');
     expect(result).toContain('parse result.data.text');
   });
+
+  it('reports js_exec code locations without leaking generated stack frames', () => {
+    const { formatRuntimeError, USER_CODE_START_LINE } = loadGeneratedRuntimeErrorHelpers([
+      'const before = true;',
+      'JSON.parse(await tools.read({ location: "project", project: "app", path: "package.json" }));',
+      'const after = true;',
+    ].join('\n'));
+    const error = new SyntaxError('"[object Object]" is not valid JSON');
+    error.stack = [
+      'SyntaxError: "[object Object]" is not valid JSON',
+      `    at runUserCode (index.js:${USER_CODE_START_LINE + 1}:7)`,
+      '    at CodeModeRunner.run (index.js:1101:28)',
+    ].join('\n');
+
+    const result = formatRuntimeError(error);
+
+    expect(result).toContain('at js_exec code line 2, column 7');
+    expect(result).not.toContain('CodeModeRunner');
+    expect(result).not.toContain('runUserCode');
+    expect(result).not.toContain('index.js');
+  });
 });
 
-function loadGeneratedRuntimeErrorFormatter(): (error: unknown) => string {
-  const source = codeModeWorkerModule('');
-  const start = source.indexOf('function formatRuntimeError');
+function loadGeneratedRuntimeErrorHelpers(userCode = ''): {
+  formatRuntimeError: (error: unknown) => string;
+  USER_CODE_START_LINE: number;
+  USER_CODE_END_LINE: number;
+} {
+  const source = codeModeWorkerModule(userCode);
+  const start = source.indexOf('const USER_CODE_START_LINE');
   const end = source.indexOf('\n\nfunction createOutputConsole', start);
   expect(start).toBeGreaterThanOrEqual(0);
   expect(end).toBeGreaterThan(start);
   const slice = source.slice(start, end);
-  return new Function(`${slice}; return formatRuntimeError;`)();
+  return new Function(`${slice}; return { formatRuntimeError, USER_CODE_START_LINE, USER_CODE_END_LINE };`)();
 }
 
 function loadGeneratedToolSearch(): {
