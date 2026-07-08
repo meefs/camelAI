@@ -100,6 +100,31 @@ function loadBedrockDevVars(): Record<string, string> {
   return bindings;
 }
 
+// Attach Docker containers to the sandbox DO bindings ONLY for runs that
+// actually boot them (agent evals, the build-sandbox repro, the sandbox eval
+// prototype — all opt-in via env). Regular unit/CI runs leave the DOs
+// container-less: best-effort container paths (e.g. the per-org build-sandbox
+// prewarm fired on turn start and cron lead wakes) then fail fast in the DO
+// constructor ("Containers have not been enabled…"), which the callers already
+// catch. With containers attached, those same paths make workerd boot real
+// images — and on runners without the images (CI has neither the sandbox
+// images nor the cloudflare/proxy-everything egress interceptor), the
+// container client's background monitor rejects with "Container failed to
+// start" OUTSIDE any test's try/catch, failing the run on unhandled errors
+// even when every test passes.
+const runBootsContainers =
+  process.env.RUN_AGENT_EVALS === '1' ||
+  process.env.RUN_PROJECT_BUILD_SANDBOX_REPRO === '1' ||
+  process.env.RUN_SANDBOX_EVAL_PROTOTYPE === '1';
+
+function sandboxDurableObject(className: string, imageName: string) {
+  return {
+    className,
+    useSQLite: true,
+    ...(runBootsContainers ? { container: { imageName } } : {}),
+  };
+}
+
 export default defineConfig({
   plugins: [
     cloudflareTest({
@@ -110,21 +135,9 @@ export default defineConfig({
         compatibilityDate: '2025-12-01',
         compatibilityFlags: ['nodejs_compat'],
         durableObjects: {
-          EVAL_SANDBOX: {
-            className: 'EvalSandbox',
-            useSQLite: true,
-            container: { imageName: 'camelai-eval-sandbox:latest' },
-          },
-          PROJECT_BUILD_SANDBOX: {
-            className: 'ProjectBuildSandbox',
-            useSQLite: true,
-            container: { imageName: 'camelai-eval-sandbox:latest' },
-          },
-          ANALYSIS_SANDBOX: {
-            className: 'AnalysisSandbox',
-            useSQLite: true,
-            container: { imageName: 'camelai-analysis-sandbox:latest' },
-          },
+          EVAL_SANDBOX: sandboxDurableObject('EvalSandbox', 'camelai-eval-sandbox:latest'),
+          PROJECT_BUILD_SANDBOX: sandboxDurableObject('ProjectBuildSandbox', 'camelai-eval-sandbox:latest'),
+          ANALYSIS_SANDBOX: sandboxDurableObject('AnalysisSandbox', 'camelai-analysis-sandbox:latest'),
         },
         cachePersist: false,
         d1Persist: false,
