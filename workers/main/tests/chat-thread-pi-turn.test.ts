@@ -1780,6 +1780,10 @@ describe('ChatThreadDO Pi turn handling', () => {
       provider: 'openrouter',
       api: 'openai-completions',
       baseUrl: 'https://openrouter.ai/api/v1',
+      reasoning: true,
+      compat: { thinkingFormat: 'openrouter' },
+      contextWindow: 384_000,
+      maxTokens: 384_000,
     }));
     const model = await ChatThreadDO.prototype['resolvePiModel'].call(
       fake,
@@ -1795,11 +1799,24 @@ describe('ChatThreadDO Pi turn handling', () => {
       api: 'openai-completions',
       baseUrl: 'https://gateway.ai.cloudflare.com/v1/acct_1/gateway_1/compat',
     });
-    // Dynamic routes fan out across RTX/Azure/OpenRouter; request-shape knobs
-    // like reasoning effort and giant output caps must stay provider-neutral.
-    expect(model.model.compat).toMatchObject({ supportsReasoningEffort: false });
-    expect(model.model.reasoning).toBe(false);
-    expect(model.model.maxTokens).toBe(32000);
+    // Dynamic routes fan out across RTX/Azure/OpenRouter. Keep xhigh reasoning,
+    // but force the OpenAI-style reasoning_effort shape and clamp the advertised
+    // context to the RTX model's max_model_len. Keep maxTokens one Pi safety
+    // margin below that so non-empty prompts do not exceed vLLM's total context.
+    expect(model.model.compat).toMatchObject({
+      supportsReasoningEffort: true,
+      thinkingFormat: 'openai',
+    });
+    expect(model.model.thinkingLevelMap).toEqual({
+      minimal: 'xhigh',
+      low: 'xhigh',
+      medium: 'xhigh',
+      high: 'xhigh',
+      xhigh: 'xhigh',
+    });
+    expect(model.model.reasoning).toBe(true);
+    expect(model.model.contextWindow).toBe(262144);
+    expect(model.model.maxTokens).toBe(258048);
     expect(fake.piCurrentUsageProvider).toBe('compat');
   });
 
@@ -3484,12 +3501,15 @@ describe('ChatThreadDO Pi turn handling', () => {
       modelId: 'deepseek/deepseek-v4-pro',
       hostedGatewayProvider: 'compat',
       hostedModelId: 'dynamic/deepseek-v4-auto',
+      hostedReasoningEffort: 'xhigh',
       byokAllowed: false,
       hostedRequestProfile: {
         name: 'deepseek-v4-auto-gateway',
-        maxTokens: 32_000,
-        reasoning: false,
-        supportsReasoningEffort: false,
+        contextWindow: 262_144,
+        maxTokens: 258_048,
+        reasoning: true,
+        supportsReasoningEffort: true,
+        thinkingFormat: 'openai',
       },
     });
   });

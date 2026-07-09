@@ -319,9 +319,11 @@ export interface PiResolvedModelReference {
   byokAllowed?: boolean;
   hostedRequestProfile?: {
     name: "deepseek-v4-auto-gateway";
+    contextWindow?: number;
     maxTokens?: number;
-    reasoning?: false;
-    supportsReasoningEffort?: false;
+    reasoning?: boolean;
+    supportsReasoningEffort?: boolean;
+    thinkingFormat?: "openai";
   };
   // Reasoning effort to force on the hosted (AI Gateway) model. The gateway
   // provider reports supportsReasoningEffort=false in pi-ai, so without this
@@ -7155,8 +7157,11 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
     } as Model<any>;
     if (resolvedModel.provider === "cloudflare-ai-gateway" && resolved.hostedRequestProfile) {
       const profile = resolved.hostedRequestProfile;
-      if (profile.reasoning === false) {
-        resolvedModel.reasoning = false;
+      if (profile.reasoning !== undefined) {
+        resolvedModel.reasoning = profile.reasoning;
+      }
+      if (profile.contextWindow) {
+        resolvedModel.contextWindow = profile.contextWindow;
       }
       if (profile.maxTokens) {
         resolvedModel.maxTokens = Math.min(
@@ -7164,10 +7169,13 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
           profile.maxTokens,
         );
       }
-      if (profile.supportsReasoningEffort === false) {
+      if (profile.supportsReasoningEffort !== undefined || profile.thinkingFormat) {
         resolvedModel.compat = {
           ...(resolvedModel.compat ?? {}),
-          supportsReasoningEffort: false,
+          ...(profile.supportsReasoningEffort !== undefined
+            ? { supportsReasoningEffort: profile.supportsReasoningEffort }
+            : {}),
+          ...(profile.thinkingFormat ? { thinkingFormat: profile.thinkingFormat } : {}),
         };
       }
     }
