@@ -65,7 +65,7 @@ export async function collectWorkerBundleFromSandbox(
   const metadata = normalizeWorkerBundleMetadata(manifest);
   const serverRoot = dirnameSandboxPath(absoluteManifestPath);
   const listed = await sandbox.listFiles(serverRoot, { recursive: true, includeHidden: true });
-  const moduleFiles = listed.files.filter((file) => file.type === "file").map((file) => {
+  const candidateFiles = listed.files.filter((file) => file.type === "file").map((file) => {
     const absolutePath = file.absolutePath || joinSandboxPath(serverRoot, file.relativePath || file.name);
     const relativePath = relativeSandboxPath(serverRoot, absolutePath);
     return { absolutePath, relativePath };
@@ -74,6 +74,17 @@ export async function collectWorkerBundleFromSandbox(
     relativePath !== basenameSandboxPath(absoluteManifestPath) &&
     !shouldIgnoreBuildOutputModule(relativePath)
   );
+  // Only genuine module files upload as Worker modules. SSR builds can emit
+  // static assets (fonts, images) into build/server — wrangler wouldn't upload
+  // those either (the plugin's rules cover **/*.js|mjs only), and pushing them
+  // as javascript+module modules fails the deploy.
+  const moduleFiles = candidateFiles.filter(({ relativePath }) => isUploadableModulePath(relativePath));
+  const skippedNonModules = candidateFiles.filter(({ relativePath }) => !isUploadableModulePath(relativePath));
+  if (skippedNonModules.length > 0) {
+    console.warn("[project-worker-bundle] skipped non-module files in the server build output", {
+      files: skippedNonModules.map(({ relativePath }) => relativePath).sort(),
+    });
+  }
   const modules = await mapWithConcurrency(moduleFiles, BUNDLE_READ_CONCURRENCY, async ({ absolutePath, relativePath }) => ({
       name: relativePath,
       contentType: contentTypeForModule(relativePath),
@@ -320,6 +331,10 @@ async function readSandboxFileBytes(sandbox: ProjectBuildSandboxLike, path: stri
 
 function shouldIgnoreBuildOutputModule(path: string): boolean {
   return path.endsWith(".map") || path === "wrangler.json" || path === "wrangler.jsonc";
+}
+
+function isUploadableModulePath(path: string): boolean {
+  return path.endsWith(".js") || path.endsWith(".mjs") || path.endsWith(".wasm") || path.endsWith(".json");
 }
 
 function contentTypeForModule(path: string): string {

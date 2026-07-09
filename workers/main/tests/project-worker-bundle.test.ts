@@ -236,3 +236,19 @@ it("allowlists deploy metadata: lifts vars to bindings, drops unknown config key
   // migrations passes through here; the deploy path normalizes/omits it later
   expect(bundle.metadata).toHaveProperty("migrations");
 });
+
+it("skips non-module server build files (fonts, images) instead of uploading them as modules", async () => {
+  const files = new Map<string, string>([
+    ["/workspace/demo/build/server/wrangler.json", JSON.stringify({
+      main: "index.js",
+      compatibility_date: "2026-06-01",
+      assets: { directory: "../client" },
+    })],
+    ["/workspace/demo/build/server/index.js", "export default {};"],
+    ["/workspace/demo/build/server/assets/figtree-latin-400.woff2", "fontbytes"],
+    ["/workspace/demo/build/server/assets/hero.png", "pngbytes"],
+    ["/workspace/demo/build/client/index.html", "<html></html>"],
+  ]);
+  const bundle = await collectWorkerBundleFromSandbox(fakeBundleSandbox(files), "/workspace/demo");
+  expect(bundle.modules.map((module) => module.name)).toEqual(["index.js"]);
+});
