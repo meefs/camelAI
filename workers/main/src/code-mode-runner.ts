@@ -188,7 +188,7 @@ const TOOL_HELP_DEFINITION = Object.freeze({
 const TOOL_SEARCH_DEFINITION = Object.freeze({
   name: "search",
   description:
-    "Rank harness tools and runtime helpers by relevance to a query. Returns lightweight matches ({ name, category, score }); follow up with await tools.describe(name) to see arguments, then call await tools.<name>(args). Prefer this over loading every tool up front.",
+    "Rank harness tools and runtime helpers by relevance to a query. Returns { query, total, items, usage } DIRECTLY — no { ok, data } wrapper — where items is an array of lightweight matches ({ name, kind, category, score }). Follow up with await tools.describe(name) to see arguments, then call await tools.<name>(args). Prefer this over loading every tool up front.",
   parameters: {
     type: "object",
     properties: {
@@ -454,7 +454,7 @@ function normalizeHelpInput(input) {
 // guidance is fetched on demand the moment the model actually writes code.
 const JS_EXEC_GUIDE = Object.freeze([
   "Results: the final expression is returned automatically and console.log/warn/error output is captured; use an explicit return inside branches or loops. You may write TypeScript — type annotations are stripped before execution.",
-  "Tool results: every await tools.<name>(args) call resolves to { ok: true, data } on success or { ok: false, error: { tool, message } } on failure — branch on result.ok and read result.data; failed calls do not throw, so you can inspect the error, tools.describe the tool, and retry in the same run. Runtime bindings (env.*, vm.exec, connections[alias]) and tools.search/describe/help return their values directly.",
+  "Tool results: every await tools.<name>(args) call resolves to { ok: true, data } on success or { ok: false, error: { tool, message } } on failure — branch on result.ok and read result.data; failed calls do not throw, so you can inspect the error, tools.describe the tool, and retry in the same run. ok only means the call executed: operational tools report outcomes inside data (e.g. build_project/deploy_project set data.success — success: false is a failed build/deploy even though ok is true). EXCEPTION: runtime bindings (env.*, vm.exec, connections[alias]) and tools.search/describe/help return their values directly with NO { ok, data } wrapper — tools.search resolves to { query, total, items, usage } where items is the matches array.",
   "Discovery: await tools.search(\"<intent + key nouns>\") ranks matching tools; await tools.describe(name) returns one definition with a compact inputTypeScript argument shape; await tools.help(\"<category>\") expands a category. Results with kind \"tool\" run as await tools.<name>(args); kind \"runtime\" results are sandbox globals (env.*, connections, text/store/load) used directly, never through tools.",
   "Every top-level harness tool is also on tools, e.g. await tools.create_project(...).",
   "Connections: const entry = await env.CONNECTIONS.find(\"clickhouse\"); return await connections[entry.alias].query({ query: \"SELECT 1 AS ok\" }). Use await env.CONNECTIONS.methods() for the full catalog and await env.CONNECTIONS.test(\"clickhouse\") for a smoke test; custom \"other\" connections expose fetch.",

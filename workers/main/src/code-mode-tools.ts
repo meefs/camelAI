@@ -668,7 +668,7 @@ const CODE_MODE_TOOL_REGISTRY: CodeModeToolRegistration[] = [
   ),
   codeModeTool(
     "build_project",
-    "Build a DO-backed project with the platform build pipeline. This does not deploy. Arguments: { project, timeoutMs? }.",
+    "Build a DO-backed project with the platform build pipeline. This does not deploy. Returns { success, ... }: the js_exec wrapper's ok only means the call executed — success: false is a FAILED build (read errorSummary/logExcerpt and fix before deploying). Arguments: { project, timeoutMs? }.",
     Type.Object({
       project: Type.String(),
       timeoutMs: Type.Optional(Type.Number()),
@@ -718,7 +718,7 @@ const CODE_MODE_TOOL_REGISTRY: CodeModeToolRegistration[] = [
   ),
   codeModeTool(
     "deploy_project",
-    "Build and deploy a DO-backed project through the platform direct deploy path. Data-analysis (notebook) projects skip the build: the executed .ipynb is published as a static read-only report app using the platform notebook renderer — run_notebook first so outputs are fresh, then deploy. Use path to pick the notebook when the project has more than one. Arguments: { project, script_name?, path?, timeoutMs? }.",
+    "Build and deploy a DO-backed project through the platform direct deploy path. Returns { success, stage, ... }: the js_exec wrapper's ok only means the call executed — success: false is a FAILED build or deploy (read stage + errorSummary; the app is NOT live, so do not set_preview or take_screenshot until a deploy succeeds). Data-analysis (notebook) projects skip the build: the executed .ipynb is published as a static read-only report app using the platform notebook renderer — run_notebook first so outputs are fresh, then deploy. Use path to pick the notebook when the project has more than one. Arguments: { project, script_name?, path?, timeoutMs? }.",
     Type.Object({
       project: Type.String(),
       script_name: Type.Optional(Type.String()),

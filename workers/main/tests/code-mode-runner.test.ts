@@ -610,3 +610,21 @@ describe('code mode runner tools.search / tools.describe', () => {
     expect(vm.usage).toContain('vm.exec');
   });
 });
+
+describe('js_exec result-shape contracts', () => {
+  const source = codeModeWorkerModule('return 1;', { orgId: 'o', workspaceId: 'w' });
+
+  it('tools.search returns { query, total, items, usage } directly, never { ok, data }', () => {
+    // The sandbox search helper's return construction — locked so agents can
+    // rely on the documented direct shape (no wrapper).
+    expect(source).toMatch(/return \{\s*query,\s*total: scored\.length,\s*items,\s*usage/);
+    // And the guidance must say exactly that, including the shape.
+    expect(source).toContain('tools.search resolves to { query, total, items, usage }');
+    expect(source).toContain('NO { ok, data } wrapper');
+  });
+
+  it('documents that ok means call-executed and operational outcomes live in data.success', () => {
+    expect(source).toContain('ok only means the call executed');
+    expect(source).toContain('data.success');
+  });
+});

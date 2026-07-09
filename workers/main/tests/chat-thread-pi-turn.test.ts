@@ -3810,6 +3810,10 @@ describe('ChatThreadDO Pi turn handling', () => {
     expect((byName.get('set_project_description') as any).parameters.properties.projectId).toBeUndefined();
     expect((byName.get('set_project_description') as any).parameters.properties.description).toBeDefined();
     expect((byName.get('add_dependency') as any).parameters.properties.project).toBeDefined();
+    // Failed builds/deploys report through data.success, not the wrapper's ok;
+    // the descriptions must teach that so agents don't preview a dead deploy.
+    expect((byName.get('build_project') as any).description).toContain('success: false is a FAILED build');
+    expect((byName.get('deploy_project') as any).description).toContain('do not set_preview or take_screenshot until a deploy succeeds');
     expect((byName.get('add_dependency') as any).parameters.properties.dependency).toBeDefined();
     expect((byName.get('revert_project') as any).parameters.properties.snapshot_id).toBeDefined();
     expect((byName.get('list_commits') as any).parameters.properties.project).toBeDefined();
