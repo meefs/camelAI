@@ -224,9 +224,20 @@ export async function runProjectBuild(input: {
   const buildLog = cleanBuildLog(buildLogRaw) || buildLogRaw;
   const buildLogPersist = await persistProjectBuildLog(input.files, projectId, buildLog);
   const persistStartedAt = Date.now();
-  const lockfilePersisted = result.exitCode === 0
-    ? await persistBunLockfile(input.sandbox, input.files, workdir)
-    : false;
+  // Persist bun.lock even when the build fails: `bun install` typically succeeds and
+  // resolves the lockfile before `bun run build` breaks, and discarding it forces the
+  // next build to pay full dependency resolution again.
+  let lockfilePersisted = false;
+  try {
+    lockfilePersisted = await persistBunLockfile(input.sandbox, input.files, workdir);
+  } catch (error) {
+    if (result.exitCode === 0) throw error;
+    console.warn("[project-build] lockfile persist failed after build failure", {
+      operation: "build",
+      projectId,
+      error: String(error),
+    });
+  }
   const persistMs = Date.now() - persistStartedAt;
   const durationMs = Date.now() - startedAt;
   const timings = zeroProjectBuildTimings({

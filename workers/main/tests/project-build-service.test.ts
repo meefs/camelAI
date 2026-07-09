@@ -173,6 +173,50 @@ describe("runProjectBuild", () => {
     });
   });
 
+  it("persists bun.lock even when the build command fails", async () => {
+    const files = fakeFileStore({
+      "/package.json": JSON.stringify({ scripts: { build: "vite build" } }),
+    });
+    const sandbox = {
+      ...fakeSandbox(),
+      readFile: vi.fn(async () => ({ content: Buffer.from("# lockfile\n").toString("base64") })),
+    };
+    sandbox.exec = vi.fn(async (command: string) => command.includes("bun run build")
+      ? { success: false, stdout: "", stderr: "type error", exitCode: 1 }
+      : { success: true, stdout: "", stderr: "", exitCode: 0 });
+
+    await expect(runProjectBuild({ projectId: "demo", files, sandbox })).resolves.toMatchObject({
+      success: false,
+      exitCode: 1,
+      lockfilePersisted: true,
+      error: "type error",
+    });
+    expect(files.writeFile).toHaveBeenCalledWith("/bun.lock", "# lockfile\n");
+  });
+
+  it("does not mask a build failure when lockfile persistence errors", async () => {
+    const files = fakeFileStore({
+      "/package.json": JSON.stringify({ scripts: { build: "vite build" } }),
+    });
+    const sandbox = {
+      ...fakeSandbox(),
+      readFile: vi.fn(async (path: string) => {
+        if (path.endsWith("/bun.lock")) throw new Error("sandbox exploded");
+        throw new Error("not found");
+      }),
+    };
+    sandbox.exec = vi.fn(async (command: string) => command.includes("bun run build")
+      ? { success: false, stdout: "", stderr: "type error", exitCode: 1 }
+      : { success: true, stdout: "", stderr: "", exitCode: 0 });
+
+    await expect(runProjectBuild({ projectId: "demo", files, sandbox })).resolves.toMatchObject({
+      success: false,
+      exitCode: 1,
+      lockfilePersisted: false,
+      error: "type error",
+    });
+  });
+
   it("persists bun.lock back to the project file store after a successful build", async () => {
     const files = fakeFileStore({
       "/package.json": JSON.stringify({ scripts: { build: "vite build" } }),
