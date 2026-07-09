@@ -128,6 +128,15 @@ import { mergeOverlay } from "@/lib/runtime-message-state";
 import type { ChatAgentStatePayload } from "@/lib/chat-agent-state";
 import { usePiChatStream } from "@/lib/use-pi-chat-stream";
 import {
+  trackChatReconnectFlush,
+  trackChatSendDispatched,
+  trackChatSendQueuedOffline,
+  trackChatSocketClose,
+  trackChatSocketError,
+  trackChatSocketOpen,
+  trackChatSocketTerminalClose,
+} from "@/lib/chat-ws-telemetry";
+import {
   type AppUrlInput,
   getAppUrl,
   getAppIframeUrl,
@@ -716,12 +725,20 @@ export default function Chat({
   const agentCallbacksRef = useRef<{
     onOpen: () => void;
     onMessage: (event: MessageEvent) => void;
-    onClose: () => void;
+    onClose: (event?: CloseEvent) => void;
+    onError: () => void;
+    onConnectionError: (error: {
+      code?: number;
+      reason?: string;
+      wasClean?: boolean;
+    }) => void;
     onStateUpdate: (state: ChatAgentState) => void;
   }>({
     onOpen: () => {},
     onMessage: () => {},
     onClose: () => {},
+    onError: () => {},
+    onConnectionError: () => {},
     onStateUpdate: () => {},
   });
   const agentSocket = useAgent<ChatAgentState>({
@@ -734,7 +751,10 @@ export default function Chat({
     },
     onOpen: () => agentCallbacksRef.current.onOpen(),
     onMessage: (event) => agentCallbacksRef.current.onMessage(event),
-    onClose: () => agentCallbacksRef.current.onClose(),
+    onClose: (event) => agentCallbacksRef.current.onClose(event),
+    onError: () => agentCallbacksRef.current.onError(),
+    onConnectionError: (error) =>
+      agentCallbacksRef.current.onConnectionError(error),
     onStateUpdate: (state) => agentCallbacksRef.current.onStateUpdate(state),
   });
   const piChat = usePiChatStream({
@@ -2452,9 +2472,18 @@ export default function Chat({
         return;
       }
 
+      const sendTracker = trackChatSendDispatched({
+        threadId: activeThreadId,
+        getReadyState: () => chatAgentRef.current?.readyState ?? null,
+      });
       void agent
         .call<SendMessageResult>("sendMessage", [content, clientMessageId])
         .then((result) => {
+          if (result.status === "accepted") {
+            sendTracker.accepted();
+          } else {
+            sendTracker.rejected(result.status ?? "error");
+          }
           if (activeThreadId !== pendingThreadContextRef.current.threadId) {
             return;
           }
@@ -2472,6 +2501,7 @@ export default function Chat({
           );
         })
         .catch((error) => {
+          sendTracker.failed(error);
           if (activeThreadId !== pendingThreadContextRef.current.threadId) {
             return;
           }
@@ -2489,6 +2519,7 @@ export default function Chat({
     const id = threadId;
     if (!id) return;
     setReady(true);
+    trackChatSocketOpen(id);
 
     // History sync on (re)connect is owned by the ai-chat hook now: `resume: true`
     // replays an in-flight turn's stream and the CHAT_MESSAGES broadcast folds in
@@ -2501,6 +2532,7 @@ export default function Chat({
       return !isPendingMessageAccepted(deliveryKey);
     });
     if (queuedMessages.length === 0) return;
+    trackChatReconnectFlush(id, queuedMessages.length);
 
     setLoading(true);
     const currentMessages = messagesRef.current;
@@ -2593,9 +2625,24 @@ export default function Chat({
     [threadId],
   );
 
-  const handleAgentClose = useCallback(() => {
-    setReady(false);
-  }, []);
+  const handleAgentClose = useCallback(
+    (event?: CloseEvent) => {
+      setReady(false);
+      if (threadId) trackChatSocketClose(threadId, event);
+    },
+    [threadId],
+  );
+
+  const handleAgentError = useCallback(() => {
+    if (threadId) trackChatSocketError(threadId);
+  }, [threadId]);
+
+  const handleAgentConnectionError = useCallback(
+    (error: { code?: number; reason?: string; wasClean?: boolean }) => {
+      if (threadId) trackChatSocketTerminalClose(threadId, error);
+    },
+    [threadId],
+  );
 
   const handleAgentStateUpdate = useCallback(
     (state: ChatAgentState) => {
@@ -2687,6 +2734,8 @@ export default function Chat({
     onOpen: handleAgentOpen,
     onMessage: handleAgentMessage,
     onClose: handleAgentClose,
+    onError: handleAgentError,
+    onConnectionError: handleAgentConnectionError,
     onStateUpdate: handleAgentStateUpdate,
   };
 
@@ -3925,6 +3974,10 @@ type SendOptions = {
     } else {
       // Queue the full message object for later delivery (with file refs in content).
       // useAgent reconnects automatically; the ready handler flushes the queue.
+      trackChatSendQueuedOffline(threadId, {
+        readyState: chatAgentRef.current?.readyState ?? null,
+        ready,
+      });
       setLoading(true);
     }
     return true;

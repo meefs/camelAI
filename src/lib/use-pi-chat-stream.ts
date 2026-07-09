@@ -4,6 +4,10 @@ import { useAgentChat } from "@cloudflare/ai-chat/react";
 import type { ContentBlock, Message } from "@/types";
 import { boundBlockText } from "./pi-chunk-encoder";
 import { uiMessageToMessage } from "./ui-message-adapter";
+import {
+  reportChatStreamNoProgress,
+  reportChatStreamStallClamped,
+} from "./chat-ws-telemetry";
 
 /**
  * Client bridge onto ai-chat's owned render history (commit 4). Wraps
@@ -31,6 +35,12 @@ const PI_TOOL_STREAM_PART = "data-pi-tool-stream";
  */
 export const STREAM_PROGRESS_STALE_MS = 12 * 60_000;
 const STREAM_STALL_POLL_MS = 30_000;
+
+/** Early-warning bound: a busy turn with zero observable progress for this
+ * long is reported to telemetry (once per busy window) well before the clamp
+ * fires — a healthy turn heartbeats every 30s, so 90s of silence means the
+ * receive path is likely dead. */
+export const STREAM_NO_PROGRESS_WARN_MS = 90_000;
 
 /** Pure core of the stall clamp: whether a busy stream with its last observed
  * progress at `lastProgressAt` should be treated as dead at `now`. */
@@ -241,14 +251,38 @@ export function usePiChatStream(opts: {
   // when a busy window opens so a fresh resume attach gets the full budget.
   const busy =
     rawIsStreaming || rawStatus === "streaming" || rawStatus === "submitted";
+  // Telemetry context for the poll below without widening its deps (a mid-turn
+  // threadId/status change must not restart the busy window).
+  const stallTelemetryRef = useRef({ threadId, status: rawStatus });
+  stallTelemetryRef.current = { threadId, status: rawStatus };
   useEffect(() => {
     if (!busy) {
       setStallClamped(false);
       return;
     }
     lastStreamProgressAtRef.current = Date.now();
+    // Each report fires at most once per busy window.
+    let noProgressReported = false;
+    let stallReported = false;
     const timer = setInterval(() => {
+      const sinceMs = Date.now() - lastStreamProgressAtRef.current;
+      if (sinceMs >= STREAM_NO_PROGRESS_WARN_MS && !noProgressReported) {
+        noProgressReported = true;
+        reportChatStreamNoProgress(
+          stallTelemetryRef.current.threadId,
+          sinceMs,
+          stallTelemetryRef.current.status,
+        );
+      }
       if (isStreamProgressStale(lastStreamProgressAtRef.current, Date.now())) {
+        if (!stallReported) {
+          stallReported = true;
+          reportChatStreamStallClamped(
+            stallTelemetryRef.current.threadId,
+            sinceMs,
+            stallTelemetryRef.current.status,
+          );
+        }
         console.warn(
           "[usePiChatStream] clearing busy indicator: stream reported active with no progress past the stall bound",
         );
