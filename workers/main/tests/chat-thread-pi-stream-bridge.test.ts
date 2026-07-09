@@ -655,6 +655,116 @@ describe('ChatThreadDO native stream bridge (commit 3b)', () => {
     });
   });
 
+  it('defers the top-up while the reply persist is pending, then skips the landed rows', async () => {
+    const stub = await newChatThreadStub('thread-reply-persist-gate');
+    await runInDurableObject(stub, async (instance: any) => {
+      instance.chatContext = { threadId: 'thread-reply-persist-gate' };
+      instance.ensurePiCoreTables();
+      // The user skeleton was persisted at send time.
+      await instance.persistMessages([
+        {
+          id: 'client-user-1',
+          role: 'user',
+          parts: [{ type: 'text', text: 'q', state: 'done' }],
+          metadata: { piCoreMessageKey: '1000' },
+        },
+      ]);
+      // turn_end committed the turn's rows to pi_core...
+      seedPiCoreRow(instance, 0, { role: 'user', content: 'q', timestamp: 1000 });
+      seedPiCoreRow(instance, 1, {
+        role: 'assistant',
+        content: [{ type: 'text', text: 'streamed answer' }],
+        timestamp: 1100,
+        responseId: 'resp-1',
+      });
+      // ...agent_end cleared the marker and the stream's execute settled
+      // (tightening the gate to the settle grace), but ai-chat's `_reply` has
+      // not persisted the streamed turnId row yet.
+      instance.pendingPiReplyPersist = {
+        turnId: 'turn-live',
+        deadlineAtMs: Date.now() + 15_000,
+      };
+
+      // A loader hit in that gap (e.g. a tab switch back to this thread) must
+      // not mirror the turn's rows under their deterministic backfill ids.
+      const during = await instance.getUiMessages();
+      expect(during.map((m: AnyRecord) => m.id)).toEqual(['client-user-1']);
+      expect(
+        instance.ctx.storage.kv.get('uiMessagesPiCoreHighWaterIdx'),
+      ).toBeUndefined();
+
+      // `_reply` lands the streamed message — the persist hook releases the gate.
+      await instance.persistMessages([
+        ...instance.messages,
+        {
+          id: 'turn-live',
+          role: 'assistant',
+          parts: [{ type: 'text', text: 'streamed answer', state: 'done' }],
+          metadata: { pi: { forkEntryId: 'resp-1' } },
+        },
+      ]);
+      expect(instance.pendingPiReplyPersist).toBeNull();
+
+      // The next top-up skips the turn's rows via the skip-sets: exactly one copy.
+      const after = await instance.getUiMessages();
+      expect(after.map((m: AnyRecord) => m.id)).toEqual([
+        'client-user-1',
+        'turn-live',
+      ]);
+      expect(instance.ctx.storage.kv.get('uiMessagesPiCoreHighWaterIdx')).toBe(2);
+    });
+  });
+
+  it('mid-turn persists of the live row do not release the reply-persist gate', async () => {
+    const stub = await newChatThreadStub('thread-reply-persist-midturn');
+    await runInDurableObject(stub, async (instance: any) => {
+      instance.chatContext = { threadId: 'thread-reply-persist-midturn' };
+      instance.ensurePiCoreTables();
+      // Stream still running: fork-id stamping / partial trims persist the live
+      // turnId row while activePiStreamTurnId is set. The gate must hold until
+      // the post-execute `_reply` persist.
+      instance.activePiStreamTurnId = 'turn-live';
+      instance.pendingPiReplyPersist = {
+        turnId: 'turn-live',
+        deadlineAtMs: Date.now() + 15 * 60_000,
+      };
+      await instance.persistMessages([
+        {
+          id: 'turn-live',
+          role: 'assistant',
+          parts: [{ type: 'text', text: 'partial', state: 'streaming' }],
+        },
+      ]);
+      expect(instance.pendingPiReplyPersist).not.toBeNull();
+      instance.activePiStreamTurnId = null;
+    });
+  });
+
+  it('releases the reply-persist gate after the settle window expires (rollback)', async () => {
+    const stub = await newChatThreadStub('thread-reply-persist-expiry');
+    await runInDurableObject(stub, async (instance: any) => {
+      instance.chatContext = { threadId: 'thread-reply-persist-expiry' };
+      instance.ensurePiCoreTables();
+      seedPiCoreRow(instance, 0, { role: 'user', content: 'q', timestamp: 1000 });
+      seedPiCoreRow(instance, 1, {
+        role: 'assistant',
+        content: [{ type: 'text', text: 'rolled back' }],
+        timestamp: 1100,
+        responseId: 'resp-1',
+      });
+      // The turn rolled back: nothing will ever persist the turnId row. Once the
+      // settle window lapses the top-up must convert the rows (exactly once).
+      instance.pendingPiReplyPersist = {
+        turnId: 'turn-live',
+        deadlineAtMs: Date.now() - 1,
+      };
+      const after = await instance.getUiMessages();
+      expect(after.map((m: AnyRecord) => m.id)).toEqual(['pi_user_1000_0', 'resp-1']);
+      const again = await instance.getUiMessages();
+      expect(again.map((m: AnyRecord) => m.id)).toEqual(['pi_user_1000_0', 'resp-1']);
+    });
+  });
+
   it('post-turn compaction preserves render history and re-pins the mark', async () => {
     const stub = await newChatThreadStub('thread-compaction-mark');
     await runInDurableObject(stub, async (instance: any) => {

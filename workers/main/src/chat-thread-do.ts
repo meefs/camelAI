@@ -988,6 +988,21 @@ const UI_MESSAGES_PI_CORE_LAST_CREATED_AT_KEY = "uiMessagesPiCoreLastCreatedAtMs
 // a writer (e.g. saveMessages skipped) cannot grow memory without bound.
 const PI_STREAM_PRE_ATTACH_CHUNK_CAP = 5000;
 
+// Reply-persist settling window for the top-up gate (see pendingPiReplyPersist).
+// After onChatMessage's execute settles, ai-chat's `_reply` still has to persist
+// the streamed assistant message; a top-up running in that gap would mirror the
+// turn's pi_core rows under their deterministic ids and duplicate the reply once
+// it lands under the minted turnId. GRACE bounds that post-execute gap; the MAX
+// window bounds a stream whose execute never settles (belt over the stall
+// watchdog, which disposes such a stream well inside this cap). When the window
+// expires without a turnId persist (turn rolled back — nothing will write the
+// live row), the gate releases and the top-up converts the rows as before.
+// The grace is deliberately generous: expiring it early re-opens the
+// duplication race under storage contention, while a rollback's rows merely
+// render up to this much later.
+const PI_REPLY_PERSIST_SETTLE_GRACE_MS = 60_000;
+const PI_REPLY_PERSIST_MAX_WINDOW_MS = 15 * 60_000;
+
 // SQLite `current_timestamp` yields "YYYY-MM-DD HH:MM:SS" (UTC, 1s resolution).
 // ai-chat orders render history by that column, so backfilled rows format their
 // explicit created_at the same way but with milliseconds ("...:SS.mmm"): the
@@ -1132,6 +1147,17 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
   // turn marker at the top of onChatMessage so a recovery continuation reuses it.
   // null between turns.
   private activePiStreamTurnId: string | null = null;
+  // Gate for topUpUiMessagesFromPiCore across the whole reply lifecycle: set when
+  // onChatMessage mints a stream, cleared when a persist lands the turnId message
+  // AFTER the execute settled (mid-turn persists of the live row — fork-id stamp,
+  // partial trim, recovery orphan commit — must not release it early; the marker
+  // still gates those phases anyway). deadlineAtMs bounds staleness: the max
+  // window while the stream runs, tightened to the settle grace once execute's
+  // finally runs. See onChatMessage / persistMessages / isPiReplyPersistPending.
+  private pendingPiReplyPersist: {
+    turnId: string;
+    deadlineAtMs: number;
+  } | null = null;
   // The stateful encoder for the in-flight turn (created in onChatMessage from the
   // marker turnId). null when no turn is bridging.
   private piChunkEncoder: PiChunkEncoder | null = null;
@@ -9425,6 +9451,10 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
 
     const turnId = marker.turnId;
     this.activePiStreamTurnId = turnId;
+    this.pendingPiReplyPersist = {
+      turnId,
+      deadlineAtMs: Date.now() + PI_REPLY_PERSIST_MAX_WINDOW_MS,
+    };
     this.piChunkEncoder = new PiChunkEncoder({ messageId: turnId });
     this.piStreamWriter = null;
     this.piPreAttachChunkBuffer = null;
@@ -9521,6 +9551,17 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
             this.piChunkEncoder = null;
             this.piPreAttachChunkBuffer = null;
             this.activePiStreamTurnId = null;
+            // Execute settled; ai-chat's `_reply` persist follows shortly (or
+            // never, on a rollback). Tighten the top-up gate to the settle grace.
+            if (this.pendingPiReplyPersist?.turnId === turnId) {
+              this.pendingPiReplyPersist = {
+                turnId,
+                deadlineAtMs: Math.min(
+                  this.pendingPiReplyPersist.deadlineAtMs,
+                  Date.now() + PI_REPLY_PERSIST_SETTLE_GRACE_MS,
+                ),
+              };
+            }
             // Post-settle: pi-core is idle (or the error path cleared the marker), so
             // broadcast the derived state to clear the client spinner.
             this.syncAgentState();
@@ -10025,6 +10066,46 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
    * DO RPC only — intentionally NOT wired to any HTTP route (auth-sensitive; the
    * loader wiring is commit 4).
    */
+  /**
+   * ai-chat persist hook: release the reply-persist top-up gate once the streamed
+   * reply row has durably landed. Only a persist carrying the pending turnId
+   * AFTER the stream's execute settled counts — mid-turn persists of the live row
+   * (fork-id stamping, partial trims, recovery orphan commits) run while
+   * `activePiStreamTurnId` is still set and must keep the gate closed.
+   */
+  async persistMessages(
+    messages: UIMessage[],
+    excludeBroadcastIds?: string[],
+    options?: { _deleteStaleRows?: boolean },
+  ): Promise<void> {
+    await super.persistMessages(messages, excludeBroadcastIds, options);
+    const pending = this.pendingPiReplyPersist;
+    if (
+      pending &&
+      this.activePiStreamTurnId === null &&
+      messages.some((message) => message.id === pending.turnId)
+    ) {
+      this.pendingPiReplyPersist = null;
+    }
+  }
+
+  /**
+   * Whether a minted reply stream may still persist its turnId render row —
+   * from onChatMessage minting the stream until that persist lands (or the
+   * bounded window expires: a rolled-back turn never persists, and the top-up
+   * must eventually convert its pi_core rows). Gates topUpUiMessagesFromPiCore
+   * alongside the active-turn marker: the marker is cleared at agent_end, but
+   * ai-chat's `_reply` persist happens after the stream closes, and a top-up in
+   * that gap would duplicate the reply under the deterministic backfill ids.
+   */
+  private isPiReplyPersistPending(): boolean {
+    if (this.activePiStreamTurnId !== null) return true;
+    const pending = this.pendingPiReplyPersist;
+    // A lapsed window (rollback: nothing will persist the turnId row) simply
+    // stops gating; the stale record is overwritten at the next turn's mint.
+    return pending !== null && Date.now() < pending.deadlineAtMs;
+  }
+
   async getUiMessages(): Promise<UIMessage[]> {
     // The SSR loader is the first page-open touch (before the websocket
     // connects). Heal a provably-dead turn's stranded marker here so the load
@@ -10065,9 +10146,19 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
     // the mark belong to that turn: they stream into the live turnId render row
     // (or its recovery continuation), so converting them here would race the
     // stream and duplicate/merge-clobber the live message. The turn's terminal
-    // paths clear the marker; the next top-up reconciles. `force` bypasses the
-    // gate for explicit rebuild flows (admin resync, fork seeding).
-    if (!options.force && this.readPiActiveTurn()) return;
+    // paths clear the marker; the next top-up reconciles. The marker alone is
+    // not enough: agent_end clears it before ai-chat's `_reply` persists the
+    // streamed message, and a top-up delivered in that gap would mirror the
+    // turn's rows under the deterministic backfill ids — a durable duplicate
+    // once the turnId row lands (isPiReplyPersistPending covers that window).
+    // `force` bypasses the gate for explicit rebuild flows (admin resync, fork
+    // seeding).
+    if (
+      !options.force &&
+      (this.readPiActiveTurn() || this.isPiReplyPersistPending())
+    ) {
+      return;
+    }
     const startedAt = Date.now();
     const threadId = this.chatContext?.threadId ?? "";
     const parsed = await this.getPiCoreParsedMessages(threadId);
