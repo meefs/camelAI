@@ -3956,8 +3956,14 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
       }
       const orgSlug = await this.getOrgSlug();
       if (!orgSlug) throw new Error("Current org has no slug; cannot deploy project");
+      // Script-name precedence: explicit arg > wrangler config name > project
+      // name. VM-era deploys were driven by the config name, so honoring it
+      // keeps a migrated project's app identity and URL instead of forking a
+      // duplicate app under the durable project name.
       const scriptName = normalizeDeployScriptName(
-        typeof args.script_name === "string" && args.script_name.trim() ? args.script_name : project.name,
+        typeof args.script_name === "string" && args.script_name.trim()
+          ? args.script_name
+          : bundle.configName || project.name,
       );
       const deploy = await deployWorkerModulesDirect(this.env, {
         scriptName,

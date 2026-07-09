@@ -293,3 +293,19 @@ it("honors declared module rules including Text and Data types", async () => {
     { name: "prompts/system.txt", contentType: "text/plain" },
   ]);
 });
+
+it("surfaces the wrangler config name for deploy script-name continuity", async () => {
+  const files = new Map<string, string>([
+    ["/workspace/demo/build/server/wrangler.json", JSON.stringify({
+      name: "frogger-game",
+      main: "index.js",
+      no_bundle: true,
+      compatibility_date: "2026-06-01",
+    })],
+    ["/workspace/demo/build/server/index.js", "export default {};"],
+  ]);
+  const bundle = await collectWorkerBundleFromSandbox(fakeBundleSandbox(files), "/workspace/demo");
+  expect(bundle.configName).toBe("frogger-game");
+  // name still never leaks into the upload metadata
+  expect(bundle.metadata).not.toHaveProperty("name");
+});

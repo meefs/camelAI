@@ -28,6 +28,13 @@ export interface ProjectWorkerBundle {
   modules: DirectWorkerModule[];
   assets: Array<{ path: string; content: Uint8Array; contentType?: string }>;
   manifestPath: string;
+  /**
+   * The wrangler config `name`, when the manifest declares one. Deploys use it
+   * as the default script name so a migrated project keeps the app identity
+   * (and URL) its VM-era `wrangler deploy` created, even when the durable
+   * project was registered under a different name.
+   */
+  configName?: string;
 }
 
 export async function collectWorkerBundleFromSandbox(
@@ -94,11 +101,14 @@ export async function collectWorkerBundleFromSandbox(
       content: await readSandboxFileBytes(sandbox, absolutePath),
     }));
   modules.sort((a, b) => a.name.localeCompare(b.name));
+  const rawConfigName = (manifest as { name?: unknown }).name;
+  const configName = typeof rawConfigName === "string" && rawConfigName ? rawConfigName : undefined;
   return {
     metadata,
     modules,
     assets: await collectAssetsFromManifest(sandbox, serverRoot, metadata),
     manifestPath,
+    ...(configName ? { configName } : {}),
   };
 }
 

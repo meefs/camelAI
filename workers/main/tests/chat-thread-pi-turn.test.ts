@@ -185,6 +185,7 @@ function createProjectToolFake({
       if (command === 'bun install && bun run build' && options?.cwd) {
         sandboxFiles.set(`${options.cwd}/bun.lock`, base64('# lockfile\n'));
         sandboxFiles.set(`${options.cwd}/build/server/wrangler.json`, base64(JSON.stringify({
+          name: 'demo-app',
           main: 'index.js',
           no_bundle: true,
           compatibility_date: '2026-06-01',
