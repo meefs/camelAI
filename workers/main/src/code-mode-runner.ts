@@ -454,7 +454,7 @@ function normalizeHelpInput(input) {
 // guidance is fetched on demand the moment the model actually writes code.
 const JS_EXEC_GUIDE = Object.freeze([
   "Results: the final expression is returned automatically and console.log/warn/error output is captured; use an explicit return inside branches or loops. You may write TypeScript — type annotations are stripped before execution.",
-  "Tool results: every await tools.<name>(args) call resolves to { ok: true, data } on success or { ok: false, error: { tool, message } } on failure — branch on result.ok and read result.data; failed calls do not throw, so you can inspect the error, tools.describe the tool, and retry in the same run. ok only means the call executed: operational tools report outcomes inside data (e.g. build_project/deploy_project set data.success — success: false is a failed build/deploy even though ok is true). EXCEPTION: runtime bindings (env.*, vm.exec, connections[alias]) and tools.search/describe/help return their values directly with NO { ok, data } wrapper — tools.search resolves to { query, total, items, usage } where items is the matches array.",
+  "Tool results: every await tools.<name>(args) call resolves to { ok: true, data } on success or { ok: false, error: { tool, message } } on failure — branch on result.ok and read result.data; failed calls do not throw, so you can inspect the error, tools.describe the tool, and retry in the same run. build_project and deploy_project resolve ok: false when the build or deploy FAILS (error.message carries the summary, error.stage says which phase, and the full result is still in data); for other tools ok means the call executed and outcomes live in data. EXCEPTION: runtime bindings (env.*, vm.exec, connections[alias]) and tools.search/describe/help return their values directly with NO { ok, data } wrapper — tools.search resolves to { query, total, items, usage } where items is the matches array.",
   "Discovery: await tools.search(\"<intent + key nouns>\") ranks matching tools; await tools.describe(name) returns one definition with a compact inputTypeScript argument shape; await tools.help(\"<category>\") expands a category. Results with kind \"tool\" run as await tools.<name>(args); kind \"runtime\" results are sandbox globals (env.*, connections, text/store/load) used directly, never through tools.",
   "Every top-level harness tool is also on tools, e.g. await tools.create_project(...).",
   "Connections: const entry = await env.CONNECTIONS.find(\"clickhouse\"); return await connections[entry.alias].query({ query: \"SELECT 1 AS ok\" }). Use await env.CONNECTIONS.methods() for the full catalog and await env.CONNECTIONS.test(\"clickhouse\") for a smoke test; custom \"other\" connections expose fetch.",
@@ -751,10 +751,38 @@ function createToolDescribe(allTools) {
 // catch here only normalizes transport-level failures. Runtime bindings (env.*,
 // vm.exec, connections[alias]) and tools.search/describe/help keep returning
 // raw values.
+// Build/deploy report their outcome via data.success; surfacing a failed
+// build as ok: true routinely sent agents on to set_preview/screenshot a
+// deploy that never happened. For these tools ok mirrors the operational
+// outcome; the full result stays in data either way.
+const OPERATIONAL_OUTCOME_TOOLS = new Set(["build_project", "deploy_project"]);
+
 function createEnvelopeToolCall(name, invokeEnvelope) {
   return async (args = {}) => {
     try {
-      return await invokeEnvelope(name, args);
+      const envelope = await invokeEnvelope(name, args);
+      if (
+        OPERATIONAL_OUTCOME_TOOLS.has(name) &&
+        envelope && envelope.ok === true &&
+        envelope.data && typeof envelope.data === "object" &&
+        envelope.data.success === false
+      ) {
+        const message = typeof envelope.data.errorSummary === "string" && envelope.data.errorSummary
+          ? envelope.data.errorSummary
+          : typeof envelope.data.error === "string" && envelope.data.error
+            ? envelope.data.error
+            : name + " reported success: false";
+        return {
+          ok: false,
+          error: {
+            tool: name,
+            message,
+            ...(typeof envelope.data.stage === "string" ? { stage: envelope.data.stage } : {}),
+          },
+          data: envelope.data,
+        };
+      }
+      return envelope;
     } catch (error) {
       const message = error && typeof error.message === "string" && error.message
         ? error.message

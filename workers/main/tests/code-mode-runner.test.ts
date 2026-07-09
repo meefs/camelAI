@@ -623,8 +623,10 @@ describe('js_exec result-shape contracts', () => {
     expect(source).toContain('NO { ok, data } wrapper');
   });
 
-  it('documents that ok means call-executed and operational outcomes live in data.success', () => {
-    expect(source).toContain('ok only means the call executed');
-    expect(source).toContain('data.success');
+  it('resolves ok: false for build/deploy operational failures, with the result kept in data', () => {
+    // The wrapper flips ok for these tools when data.success === false.
+    expect(source).toContain('OPERATIONAL_OUTCOME_TOOLS = new Set(["build_project", "deploy_project"])');
+    expect(source).toContain('envelope.data.success === false');
+    expect(source).toContain('resolve ok: false when the build or deploy FAILS');
   });
 });
