@@ -51,7 +51,7 @@ export function FilePreviewChip({
           type="button"
           onClick={handleOpen}
           className={cn(
-            'h-[88px] w-[88px] overflow-hidden rounded-lg transition-opacity hover:opacity-90',
+            'group/thumb relative h-[88px] w-[88px] cursor-pointer overflow-hidden rounded-lg border border-border bg-muted/30 transition-all duration-200 ease-out hover:border-ring hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
             className
           )}
           aria-label={`Open preview for ${filename}`}

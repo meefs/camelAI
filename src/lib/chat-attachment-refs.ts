@@ -1,3 +1,5 @@
+import type { ContentBlock } from "@/types";
+
 export const USER_UPLOAD_MOUNT_PREFIX = "uploads/";
 
 export type UploadReferenceKind = "user_upload" | "generated_transcript";
@@ -125,6 +127,35 @@ export function parseUploadRefs(content: string): {
     .trim();
 
   return { refs, cleanContent: normalized };
+}
+
+export function parseUploadRefsFromContent(
+  content: string | ContentBlock[],
+): {
+  refs: ParsedUploadRef[];
+  cleanContent: string | ContentBlock[];
+} {
+  if (typeof content === "string") {
+    return parseUploadRefs(content);
+  }
+
+  const refs: ParsedUploadRef[] = [];
+  const cleanContent: ContentBlock[] = [];
+
+  for (const block of content) {
+    if (block.type !== "text") {
+      cleanContent.push(block);
+      continue;
+    }
+
+    const parsed = parseUploadRefs(block.text);
+    refs.push(...parsed.refs);
+    if (parsed.cleanContent.length > 0) {
+      cleanContent.push({ ...block, text: parsed.cleanContent });
+    }
+  }
+
+  return { refs, cleanContent };
 }
 
 export function appendAttachmentReferences(

@@ -18,7 +18,7 @@ import { CompactSummaryCard } from '@/components/compact-summary-card';
 import { memo } from 'react';
 import type { ReactNode } from 'react';
 import { useAuthData } from '@/hooks/use-auth-data';
-import { FilePreviewChip, parseUploadRefs } from '@/components/chat-file-preview';
+import { FilePreviewChip } from '@/components/chat-file-preview';
 import { CollapsibleUserMessage } from '@/components/collapsible-user-message';
 import { ChannelLogo } from '@/components/chat/channel-logo';
 import { ChatRateLimitNotice } from '@/components/chat-api-error-notice';
@@ -28,6 +28,7 @@ import {
   isRateLimitChatApiErrorPresentation,
 } from '@/lib/chat-api-errors';
 import { parseByokProvider } from '@/lib/byok-providers';
+import { parseUploadRefsFromContent } from '@/lib/chat-attachment-refs';
 import { getChannelBrand } from '@/lib/channel-branding';
 import {
   type AnnotatedMentionRef,
@@ -789,9 +790,7 @@ function MessageBubbleBase({
       userDisplayContent = stripped.blocks;
     }
 
-    const uploadInfo = typeof userDisplayContent === 'string'
-      ? parseUploadRefs(userDisplayContent)
-      : { refs: [] as ReturnType<typeof parseUploadRefs>['refs'], cleanContent: userDisplayContent };
+    const uploadInfo = parseUploadRefsFromContent(userDisplayContent);
 
     const previewRefs = uploadInfo.refs;
     const cleanedContent = uploadInfo.cleanContent;
