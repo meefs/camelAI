@@ -302,6 +302,7 @@ Every project should ship with polished design fundamentals out of the box. When
 
 ## Common Pitfalls
 
+- **Durable Object SQLite is NOT the D1 API** — `ctx.storage.sql` has no `.prepare()`, `.bind()`, `.all()`, `.first()`, or `.run()`. Use `sql.exec("SELECT * FROM items WHERE id = ?", id)` with `.toArray()`/`.one()` on the returned cursor (see `workers/example-do.ts`). D1-style calls build cleanly and only crash at runtime after deploy; run `bun run typecheck` to catch this early.
 - **Always pass a unique `name` to `useAgent`**: `useAgent({ agent: "Chat", name: sessionId })`. Without `name`, ALL users share the same DO instance ("default"), seeing each other's conversations. Every chat must have a unique session ID.
 - **Generate session IDs in loaders**, not in component body (causes re-render issues). For persistence across refreshes, use `sessionStorage` on the client.
 - **`useAgentChat` does NOT return `input`/`setInput`/`handleSubmit`** — these were removed in AI SDK v3. Manage your own input state with `useState("")` and send messages via `sendMessage({ role: "user", parts: [{ type: "text", text }] })`. Using the removed properties causes `"X is not a function"` errors.

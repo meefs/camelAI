@@ -158,7 +158,8 @@ export async function runProjectBuild(input: {
 
   const sourceCollection = await collectProjectSourceFiles(input.files);
   const sourceFiles = sourceCollection.files;
-  const packageValidationError = validatePackageJsonBuildScript(sourceFiles);
+  const packageValidationError = validatePackageJsonBuildScript(sourceFiles)
+    ?? validateDoSqliteApiUsage(sourceFiles);
   if (packageValidationError) {
     const durationMs = Date.now() - startedAt;
     const buildLog = cleanBuildLog(packageValidationError) || packageValidationError;
@@ -493,6 +494,33 @@ function validatePackageJsonBuildScript(sourceFiles: ProjectSourceFile[]): strin
   if (!scripts || typeof scripts !== "object") return buildScriptMessage;
   const build = (scripts as { build?: unknown }).build;
   return typeof build === "string" && build.trim() ? null : buildScriptMessage;
+}
+
+const DO_SQLITE_CHECK_EXTENSIONS = /\.(?:ts|tsx|js|jsx|mjs|cjs)$/;
+// Matches D1-style `sql.prepare(...)` calls on Durable Object SQLite storage
+// (`this.sql.prepare(`, `ctx.storage.sql.prepare(`). `\b` keeps identifiers like
+// `mysql`/`libsql` from matching.
+const D1_STYLE_PREPARE_PATTERN = /\bsql\s*\.\s*prepare\s*\(/;
+
+// The scaffold build (react-router build via esbuild) strips types without checking
+// them, so D1-style calls on SqlStorage build cleanly and only crash at runtime after
+// deploy. Catch the known footgun here so build_project/deploy_project fails with a
+// corrective message instead.
+function validateDoSqliteApiUsage(sourceFiles: ProjectSourceFile[]): string | null {
+  const decoder = new TextDecoder();
+  for (const file of sourceFiles) {
+    if (!DO_SQLITE_CHECK_EXTENSIONS.test(file.path)) continue;
+    const content = decoder.decode(file.bytes);
+    const match = D1_STYLE_PREPARE_PATTERN.exec(content);
+    if (!match) continue;
+    const line = content.slice(0, match.index).split("\n").length;
+    return [
+      `${file.path}:${line} calls .prepare() on Durable Object SQLite storage, which does not exist and will crash at runtime after deploy.`,
+      `Durable Object SqlStorage is not the D1 API: there is no .prepare(), .bind(), .all(), .first(), .run(), or .batch().`,
+      `Pass parameters directly to exec and read the cursor, e.g. this.ctx.storage.sql.exec("SELECT * FROM items WHERE id = ?", id).toArray() — or .one() for a single row, .raw() for column arrays.`,
+    ].join(" ");
+  }
+  return null;
 }
 
 function sourceManifestForFiles(sourceFiles: ProjectSourceFile[]): SourceManifest {

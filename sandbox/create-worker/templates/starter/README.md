@@ -114,6 +114,8 @@ stored auth settings automatically.
 
 ### Durable Object with SQLite
 
+Note: this is NOT the D1 API — `SqlStorage` has no `.prepare()`, `.bind()`, `.all()`, `.first()`, or `.run()`. Pass parameters directly: `sql.exec("SELECT * FROM items WHERE id = ?", id)` and read the cursor with `.toArray()` / `.one()` / `.raw()`.
+
 ```typescript
 export class MyDO extends DurableObject<Env> {
   private sql: SqlStorage;

@@ -125,6 +125,8 @@ In `wrangler.jsonc`, use `new_sqlite_classes` for SQLite-backed DOs:
 
 ### SQLite Storage API
 
+**This is NOT the D1 API.** `SqlStorage` has no `.prepare()`, `.bind()`, `.all()`, `.first()`, `.run()`, or `.batch()`. D1-style code like `db.prepare("...").bind(x).all()` builds cleanly (the build does not typecheck) and only crashes at runtime after deploy. Pass parameters directly to `exec` — `sql.exec("SELECT * FROM items WHERE id = ?", id)` — and read the returned cursor with `.toArray()`, `.one()`, or `.raw()`.
+
 Access SQLite via `this.ctx.storage.sql`:
 
 ```typescript

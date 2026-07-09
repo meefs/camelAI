@@ -136,6 +136,43 @@ describe("runProjectBuild", () => {
     expect(sandbox.exec).not.toHaveBeenCalled();
   });
 
+  it("fails fast when worker source calls D1-style .prepare() on DO SQLite storage", async () => {
+    const files = fakeFileStore({
+      "/package.json": JSON.stringify({ scripts: { build: "vite build" } }),
+      "/workers/tasks-do.ts": [
+        "export class TasksDO {",
+        "  listTasks() {",
+        '    return this.sql.prepare("SELECT * FROM tasks WHERE owner = ?").bind(1).all();',
+        "  }",
+        "}",
+      ].join("\n"),
+    });
+    const sandbox = fakeSandbox();
+
+    await expect(runProjectBuild({ projectId: "demo", files, sandbox })).resolves.toMatchObject({
+      success: false,
+      exitCode: 1,
+      buildLogPersisted: true,
+      error: expect.stringContaining('workers/tasks-do.ts:3 calls .prepare()'),
+    });
+    expect(sandbox.exec).not.toHaveBeenCalled();
+  });
+
+  it("does not flag sql.exec usage or identifiers like mysql", async () => {
+    const files = fakeFileStore({
+      "/package.json": JSON.stringify({ scripts: { build: "vite build" } }),
+      "/workers/tasks-do.ts": [
+        'const rows = this.sql.exec("SELECT * FROM tasks WHERE owner = ?", ownerId).toArray();',
+        "const stmt = mysql.prepare(query);",
+      ].join("\n"),
+    });
+    const sandbox = fakeSandbox();
+
+    await expect(runProjectBuild({ projectId: "demo", files, sandbox })).resolves.toMatchObject({
+      success: true,
+    });
+  });
+
   it("persists bun.lock back to the project file store after a successful build", async () => {
     const files = fakeFileStore({
       "/package.json": JSON.stringify({ scripts: { build: "vite build" } }),
