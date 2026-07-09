@@ -77,7 +77,7 @@ import {
   type PiRuntimeEvent,
   type PiUiMessageChunk,
 } from '../../../src/lib/pi-chunk-encoder';
-import { messageToUiMessage } from '../../../src/lib/ui-message-adapter';
+import { messageToUiMessage, uiMessageCreatedAtMs } from '../../../src/lib/ui-message-adapter';
 import type { ChatAgentStatePayload } from '../../../src/lib/chat-agent-state';
 import { normalizePiUiMetadata, normalizeRuntimeCallArtifacts, stripPiUiMetadata, type PiUiMetadata, type RuntimeCallArtifact } from '../../../src/lib/runtime-artifacts';
 import type {
@@ -987,6 +987,10 @@ const UI_MESSAGES_PI_CORE_HIGH_WATER_KEY = "uiMessagesPiCoreHighWaterIdx";
 // Last explicit created_at (ms) written by the backfill, persisted so successive
 // top-ups keep strictly increasing timestamps even across DO wakes.
 const UI_MESSAGES_PI_CORE_LAST_CREATED_AT_KEY = "uiMessagesPiCoreLastCreatedAtMs";
+// One-shot marker for healLegacyUiMessageTimes (rows persisted before the
+// pi.createdAtMs / pi.completedAtMs stamps existed render epoch 0 — "4:00 PM"
+// in Pacific — until healed from the row's created_at column).
+const UI_MESSAGES_TIME_HEAL_KEY = "uiMessagesTimeHealDone";
 // Drop-oldest cap for the pre-attach chunk buffer so a turn that never attaches
 // a writer (e.g. saveMessages skipped) cannot grow memory without bound.
 const PI_STREAM_PRE_ATTACH_CHUNK_CAP = 5000;
@@ -10119,7 +10123,59 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
     // the marker gates) isn't skipped forever for a turn nothing will resume.
     await this.sweepOrphanedActiveTurnMarker();
     await this.topUpUiMessagesFromPiCore();
+    await this.healLegacyUiMessageTimes();
     return this.messages as UIMessage[];
+  }
+
+  /**
+   * One-shot lazy migration: rows persisted before the time stamps shipped
+   * (the backfill's `pi.createdAtMs` and the encoder's `pi.completedAtMs`,
+   * both from the ai-chat streaming migration) carry no recoverable creation
+   * time, so the client renders epoch 0 — a fixed "4:00 PM" in Pacific.
+   * Recover the time from the row's own `created_at` column (insert time —
+   * within a turn of the truth for legacy rows) and stamp it durably. Gated
+   * off while a turn is in flight (the streaming row legitimately has no
+   * metadata yet and must not be stamped with an insert-time heal); the
+   * marker is only written once a quiet pass completes.
+   */
+  private async healLegacyUiMessageTimes(): Promise<void> {
+    if (this.ctx.storage.kv.get<boolean>(UI_MESSAGES_TIME_HEAL_KEY)) return;
+    if (this.readPiActiveTurn() || this.activePiStreamTurnId !== null) return;
+    const missing = (this.messages as UIMessage[]).filter(
+      (message) => uiMessageCreatedAtMs(message) === undefined,
+    );
+    if (missing.length > 0) {
+      const rows = this.ctx.storage.sql
+        .exec<{ id: string; created_at: string }>(
+          "SELECT id, created_at FROM cf_ai_chat_agent_messages",
+        )
+        .toArray();
+      const createdById = new Map(rows.map((row) => [row.id, row.created_at]));
+      let changed = false;
+      const healed = (this.messages as UIMessage[]).map((message) => {
+        if (uiMessageCreatedAtMs(message) !== undefined) return message;
+        const raw = createdById.get(message.id);
+        // Column format is SQLite UTC "YYYY-MM-DD HH:MM:SS(.mmm)".
+        const ms = raw ? Date.parse(`${raw.replace(" ", "T")}Z`) : Number.NaN;
+        if (!Number.isFinite(ms) || ms <= 0) return message;
+        const metadata = (message.metadata ?? {}) as Record<string, unknown>;
+        const pi = (metadata.pi && typeof metadata.pi === "object"
+          ? { ...(metadata.pi as Record<string, unknown>) }
+          : {}) as Record<string, unknown>;
+        pi.createdAtMs = ms;
+        changed = true;
+        return { ...message, metadata: { ...metadata, pi } } as UIMessage;
+      });
+      if (changed) {
+        await this.persistMessages(healed);
+        this.recordChatThreadObservabilityEvent("pi_ui_message_times_healed", {
+          operation: "heal_legacy_ui_message_times",
+          status: "healed",
+          count: missing.length,
+        });
+      }
+    }
+    this.ctx.storage.kv.put(UI_MESSAGES_TIME_HEAL_KEY, true);
   }
 
   /**

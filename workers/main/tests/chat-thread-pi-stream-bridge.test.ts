@@ -787,6 +787,75 @@ describe('ChatThreadDO native stream bridge (commit 3b)', () => {
     });
   });
 
+  it('heals legacy rows without time metadata from the created_at column', async () => {
+    const stub = await newChatThreadStub('thread-time-heal');
+    await runInDurableObject(stub, async (instance: any) => {
+      instance.chatContext = { threadId: 'thread-time-heal' };
+      instance.ensurePiCoreTables();
+      // A pre-stamp legacy assistant row (only forkEntryId, like rows persisted
+      // before the ai-chat streaming migration) plus an already-stamped one.
+      await instance.persistMessages([
+        {
+          id: 'legacy-1',
+          role: 'assistant',
+          parts: [{ type: 'text', text: 'old answer', state: 'done' }],
+          metadata: { pi: { forkEntryId: 'resp-old' } },
+        },
+        {
+          id: 'stamped-1',
+          role: 'assistant',
+          parts: [{ type: 'text', text: 'new answer', state: 'done' }],
+          metadata: { pi: { forkEntryId: 'resp-new', completedAtMs: 1751931600000 } },
+        },
+      ]);
+      instance.ctx.storage.sql.exec(
+        "UPDATE cf_ai_chat_agent_messages SET created_at = '2026-07-08 00:29:19.695' WHERE id = 'legacy-1'",
+      );
+      instance.reloadAiChatMessagesOrdered();
+
+      const messages = await instance.getUiMessages();
+      const legacy = messages.find((m: AnyRecord) => m.id === 'legacy-1') as AnyRecord;
+      const pi = (legacy.metadata as AnyRecord).pi as AnyRecord;
+      expect(pi.createdAtMs).toBe(Date.parse('2026-07-08T00:29:19.695Z'));
+      expect(pi.forkEntryId).toBe('resp-old');
+      const stamped = messages.find((m: AnyRecord) => m.id === 'stamped-1') as AnyRecord;
+      expect((stamped.metadata as AnyRecord).pi).toEqual({
+        forkEntryId: 'resp-new',
+        completedAtMs: 1751931600000,
+      });
+      // One-shot: the marker is set and a later legacy-shaped row (mid-turn
+      // streaming rows legitimately lack metadata) is not re-healed.
+      expect(instance.ctx.storage.kv.get('uiMessagesTimeHealDone')).toBe(true);
+    });
+  });
+
+  it('defers the time heal while a turn is in flight', async () => {
+    const stub = await newChatThreadStub('thread-time-heal-gate');
+    await runInDurableObject(stub, async (instance: any) => {
+      instance.chatContext = { threadId: 'thread-time-heal-gate' };
+      instance.ensurePiCoreTables();
+      await instance.persistMessages([
+        {
+          id: 'turn-live',
+          role: 'assistant',
+          parts: [{ type: 'text', text: 'partial', state: 'streaming' }],
+        },
+      ]);
+      instance.ctx.storage.kv.put('piActiveTurn', {
+        turnId: 'turn-live',
+        openedAt: Date.now(),
+      });
+      const during = await instance.getUiMessages();
+      const live = during.find((m: AnyRecord) => m.id === 'turn-live') as AnyRecord;
+      // The in-flight row must NOT be stamped with an insert-time heal.
+      expect(live.metadata).toBeUndefined();
+      expect(
+        instance.ctx.storage.kv.get('uiMessagesTimeHealDone'),
+      ).toBeUndefined();
+      instance.ctx.storage.kv.delete('piActiveTurn');
+    });
+  });
+
   it('post-turn compaction preserves render history and re-pins the mark', async () => {
     const stub = await newChatThreadStub('thread-compaction-mark');
     await runInDurableObject(stub, async (instance: any) => {
