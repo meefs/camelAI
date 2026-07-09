@@ -59,6 +59,12 @@ bun run test:all            # Unit + worker tests
 bun run test:e2e            # Playwright
 ```
 
+The bundled shadcn/ui catalog served by `add_shadcn_component` and the scaffold's seeded
+primitives live in `workers/main/src/shadcn-registry.generated.ts`; refresh it from the public
+registry with `bun scripts/generate-shadcn-registry.mjs` (also update
+`workers/main/project-build-sandbox-warmup/package.json` — `tests/project-scaffold-warmup.test.ts`
+enforces the sync so the build-sandbox image keeps all installable packages in its bun cache).
+
 Common deploy commands:
 
 ```bash

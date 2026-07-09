@@ -38,6 +38,16 @@ describe("defaultProjectScaffoldFiles", () => {
       "/app/components/ui/button.tsx",
       "/app/components/ui/card.tsx",
       "/app/components/ui/badge.tsx",
+      "/app/components/ui/checkbox.tsx",
+      "/app/components/ui/dialog.tsx",
+      "/app/components/ui/dropdown-menu.tsx",
+      "/app/components/ui/input.tsx",
+      "/app/components/ui/label.tsx",
+      "/app/components/ui/select.tsx",
+      "/app/components/ui/separator.tsx",
+      "/app/components/ui/skeleton.tsx",
+      "/app/components/ui/table.tsx",
+      "/app/components/ui/textarea.tsx",
       "/app/root.tsx",
       "/app/routes.ts",
       "/app/routes/home.tsx",
@@ -66,10 +76,7 @@ describe("defaultProjectScaffoldFiles", () => {
         clsx: expect.any(String),
         "tailwind-merge": expect.any(String),
         "lucide-react": expect.any(String),
-        "@radix-ui/react-slot": expect.any(String),
-        "@radix-ui/react-accordion": expect.any(String),
-        "@radix-ui/react-progress": expect.any(String),
-        "@radix-ui/react-tabs": expect.any(String),
+        "radix-ui": expect.any(String),
         "tw-animate-css": expect.any(String),
       },
       devDependencies: {
@@ -97,7 +104,23 @@ describe("defaultProjectScaffoldFiles", () => {
     expect(scaffoldFile(files, "/app/app.css")).toContain("--color-background");
     expect(scaffoldFile(files, "/app/lib/utils.ts")).toContain("twMerge(clsx(inputs))");
     expect(scaffoldFile(files, "/app/components/ui/button.tsx")).toContain("buttonVariants");
-    expect(scaffoldFile(files, "/app/components/ui/button.tsx")).toContain('@radix-ui/react-slot');
+    expect(scaffoldFile(files, "/app/components/ui/button.tsx")).toContain('from "radix-ui"');
+    expect(scaffoldFile(files, "/app/components/ui/button.tsx")).toContain('from "~/lib/utils"');
+    // Seeded components must not import npm packages outside the scaffold deps.
+    const seededUiFiles = files.filter((file) => file.path.startsWith("/app/components/ui/"));
+    expect(seededUiFiles.length).toBeGreaterThanOrEqual(13);
+    const packageDeps = new Set([
+      ...Object.keys(packageJson.dependencies),
+      "react",
+      "react-dom",
+    ]);
+    for (const file of seededUiFiles) {
+      for (const match of file.content.matchAll(/from "([^".~][^"]*)"/g)) {
+        const spec = match[1];
+        const pkg = spec.startsWith("@") ? spec.split("/").slice(0, 2).join("/") : spec.split("/")[0];
+        expect(packageDeps.has(pkg), `${file.path} imports ${pkg} which is not a scaffold dependency`).toBe(true);
+      }
+    }
     expect(scaffoldFile(files, "/app/routes/home.tsx")).toContain('lucide-react/dist/esm/icons/arrow-right.js');
     expect(scaffoldFile(files, "/app/routes/home.tsx")).toContain("Browse shadcn components");
     expect(scaffoldFile(files, "/app/root.tsx")).toContain('import "./app.css"');

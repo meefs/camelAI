@@ -1,201 +1,49 @@
 import type { WorkspaceFileStoreLike } from "./workspace-filesystem-do";
+import {
+  SHADCN_NPM_PACKAGE_VERSIONS,
+  SHADCN_REGISTRY,
+  type ShadcnRegistryItem,
+} from "./shadcn-registry.generated";
 
-export const SUPPORTED_SHADCN_COMPONENTS = ["accordion", "progress", "tabs"] as const;
+function registryNamesOfType(type: ShadcnRegistryItem["type"]): readonly string[] {
+  return Object.values(SHADCN_REGISTRY)
+    .filter((item) => item.type === type)
+    .map((item) => item.name)
+    .sort();
+}
 
-export type SupportedShadcnComponent = typeof SUPPORTED_SHADCN_COMPONENTS[number];
+export const SUPPORTED_SHADCN_COMPONENTS: readonly string[] = registryNamesOfType("ui");
+export const SUPPORTED_SHADCN_BLOCKS: readonly string[] = registryNamesOfType("block");
 
 export interface AddShadcnComponentsResult {
   success: true;
-  components: SupportedShadcnComponent[];
+  components: string[];
+  /** All registry items included after dependency resolution. */
+  resolvedItems: string[];
   filesWritten: string[];
   filesSkipped: string[];
-  supportedComponents: readonly SupportedShadcnComponent[];
+  /** npm packages added to the project package.json (name@pinnedVersion). */
+  packagesAdded: string[];
   message: string;
 }
 
-interface ShadcnComponentFile {
-  path: string;
-  content: string;
-}
-
-const SHADCN_COMPONENT_FILES: Record<SupportedShadcnComponent, ShadcnComponentFile> = {
-  accordion: {
-    path: "/app/components/ui/accordion.tsx",
-    content: `import * as React from "react";
-import * as AccordionPrimitive from "@radix-ui/react-accordion";
-import ChevronDownIcon from "lucide-react/dist/esm/icons/chevron-down.js";
-
-import { cn } from "~/lib/utils";
-
-function Accordion({ ...props }: React.ComponentProps<typeof AccordionPrimitive.Root>) {
-  return <AccordionPrimitive.Root data-slot="accordion" {...props} />;
-}
-
-function AccordionItem({
-  className,
-  ...props
-}: React.ComponentProps<typeof AccordionPrimitive.Item>) {
-  return (
-    <AccordionPrimitive.Item
-      data-slot="accordion-item"
-      className={cn("border-b last:border-b-0", className)}
-      {...props}
-    />
-  );
-}
-
-function AccordionTrigger({
-  className,
-  children,
-  ...props
-}: React.ComponentProps<typeof AccordionPrimitive.Trigger>) {
-  return (
-    <AccordionPrimitive.Header className="flex">
-      <AccordionPrimitive.Trigger
-        data-slot="accordion-trigger"
-        className={cn(
-          "focus-visible:border-ring focus-visible:ring-ring/50 flex flex-1 items-start justify-between gap-4 rounded-md py-4 text-left text-sm font-medium transition-all outline-none hover:underline focus-visible:ring-[3px] disabled:pointer-events-none disabled:opacity-50 [&[data-state=open]>svg]:rotate-180",
-          className,
-        )}
-        {...props}
-      >
-        {children}
-        <ChevronDownIcon className="text-muted-foreground pointer-events-none size-4 shrink-0 translate-y-0.5 transition-transform duration-200" />
-      </AccordionPrimitive.Trigger>
-    </AccordionPrimitive.Header>
-  );
-}
-
-function AccordionContent({
-  className,
-  children,
-  ...props
-}: React.ComponentProps<typeof AccordionPrimitive.Content>) {
-  return (
-    <AccordionPrimitive.Content
-      data-slot="accordion-content"
-      className="data-[state=closed]:animate-accordion-up data-[state=open]:animate-accordion-down overflow-hidden text-sm"
-      {...props}
-    >
-      <div className={cn("pt-0 pb-4", className)}>{children}</div>
-    </AccordionPrimitive.Content>
-  );
-}
-
-export { Accordion, AccordionItem, AccordionTrigger, AccordionContent };
-`,
-  },
-  progress: {
-    path: "/app/components/ui/progress.tsx",
-    content: `import * as React from "react";
-import * as ProgressPrimitive from "@radix-ui/react-progress";
-
-import { cn } from "~/lib/utils";
-
-function Progress({
-  className,
-  value,
-  ...props
-}: React.ComponentProps<typeof ProgressPrimitive.Root>) {
-  return (
-    <ProgressPrimitive.Root
-      data-slot="progress"
-      className={cn("bg-primary/20 relative h-2 w-full overflow-hidden rounded-full", className)}
-      {...props}
-    >
-      <ProgressPrimitive.Indicator
-        data-slot="progress-indicator"
-        className="bg-primary h-full w-full flex-1 transition-all"
-        style={{ transform: \`translateX(-\${100 - (value || 0)}%)\` }}
-      />
-    </ProgressPrimitive.Root>
-  );
-}
-
-export { Progress };
-`,
-  },
-  tabs: {
-    path: "/app/components/ui/tabs.tsx",
-    content: `import * as React from "react";
-import * as TabsPrimitive from "@radix-ui/react-tabs";
-
-import { cn } from "~/lib/utils";
-
-function Tabs({
-  className,
-  ...props
-}: React.ComponentProps<typeof TabsPrimitive.Root>) {
-  return (
-    <TabsPrimitive.Root
-      data-slot="tabs"
-      className={cn("flex flex-col gap-2", className)}
-      {...props}
-    />
-  );
-}
-
-function TabsList({
-  className,
-  ...props
-}: React.ComponentProps<typeof TabsPrimitive.List>) {
-  return (
-    <TabsPrimitive.List
-      data-slot="tabs-list"
-      className={cn("bg-muted text-muted-foreground inline-flex h-9 w-fit items-center justify-center rounded-lg p-[3px]", className)}
-      {...props}
-    />
-  );
-}
-
-function TabsTrigger({
-  className,
-  ...props
-}: React.ComponentProps<typeof TabsPrimitive.Trigger>) {
-  return (
-    <TabsPrimitive.Trigger
-      data-slot="tabs-trigger"
-      className={cn(
-        "data-[state=active]:bg-background dark:data-[state=active]:text-foreground focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:outline-ring dark:data-[state=active]:border-input dark:data-[state=active]:bg-input/30 text-foreground dark:text-muted-foreground inline-flex h-[calc(100%-1px)] flex-1 items-center justify-center gap-1.5 rounded-md border border-transparent px-2 py-1 text-sm font-medium whitespace-nowrap transition-[color,box-shadow] focus-visible:ring-[3px] focus-visible:outline-1 disabled:pointer-events-none disabled:opacity-50 data-[state=active]:shadow-sm [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",
-        className,
-      )}
-      {...props}
-    />
-  );
-}
-
-function TabsContent({
-  className,
-  ...props
-}: React.ComponentProps<typeof TabsPrimitive.Content>) {
-  return (
-    <TabsPrimitive.Content
-      data-slot="tabs-content"
-      className={cn("flex-1 outline-none", className)}
-      {...props}
-    />
-  );
-}
-
-export { Tabs, TabsList, TabsTrigger, TabsContent };
-`,
-  },
-};
-
-export function normalizeShadcnComponentName(value: unknown): SupportedShadcnComponent {
+export function normalizeShadcnComponentName(value: unknown): string {
   const normalized = String(value ?? "").trim().toLowerCase().replace(/^@shadcn\//, "");
-  if ((SUPPORTED_SHADCN_COMPONENTS as readonly string[]).includes(normalized)) {
-    return normalized as SupportedShadcnComponent;
+  const item = SHADCN_REGISTRY[normalized];
+  if (item && (item.type === "ui" || item.type === "block")) {
+    return normalized;
   }
   throw new Error(
-    `Unsupported shadcn component "${String(value ?? "")}". Supported components: ${SUPPORTED_SHADCN_COMPONENTS.join(", ")}`,
+    `Unsupported shadcn component "${String(value ?? "")}". ` +
+      `Supported components: ${SUPPORTED_SHADCN_COMPONENTS.join(", ")}. ` +
+      `Supported blocks: ${SUPPORTED_SHADCN_BLOCKS.join(", ")}.`,
   );
 }
 
 export function normalizeShadcnComponentList(input: {
   component?: unknown;
   components?: unknown;
-}): SupportedShadcnComponent[] {
+}): string[] {
   const rawComponents = input.components !== undefined
     ? Array.isArray(input.components) ? input.components : [input.components]
     : input.component !== undefined
@@ -205,41 +53,128 @@ export function normalizeShadcnComponentList(input: {
   return [...new Set(normalized)];
 }
 
+/** Requested items plus the transitive closure of their registry dependencies. */
+function resolveRegistryItems(components: string[]): ShadcnRegistryItem[] {
+  const resolved = new Map<string, ShadcnRegistryItem>();
+  const queue = [...components];
+  while (queue.length > 0) {
+    const name = queue.shift()!;
+    if (resolved.has(name)) continue;
+    const item = SHADCN_REGISTRY[name];
+    if (!item) {
+      throw new Error(`shadcn registry is missing dependency "${name}" — regenerate shadcn-registry.generated.ts`);
+    }
+    resolved.set(name, item);
+    queue.push(...item.registryDependencies);
+  }
+  return [...resolved.values()];
+}
+
+async function mergePackageJsonDependencies(
+  files: WorkspaceFileStoreLike,
+  packages: string[],
+): Promise<string[]> {
+  if (packages.length === 0) return [];
+  const read = await files.readFile("/package.json");
+  if (!read.success || typeof read.content !== "string") {
+    throw new Error(read.error ?? "Failed to read /package.json to add component dependencies");
+  }
+  let parsed: Record<string, unknown>;
+  try {
+    parsed = JSON.parse(read.content) as Record<string, unknown>;
+  } catch {
+    throw new Error("Failed to parse /package.json to add component dependencies");
+  }
+  const dependencies = { ...(parsed.dependencies as Record<string, string> | undefined) };
+  const devDependencies = (parsed.devDependencies ?? {}) as Record<string, string>;
+  const added: string[] = [];
+  for (const name of packages) {
+    if (dependencies[name] || devDependencies[name]) continue;
+    const version = SHADCN_NPM_PACKAGE_VERSIONS[name];
+    if (!version) {
+      throw new Error(`shadcn registry has no pinned version for npm package "${name}" — regenerate shadcn-registry.generated.ts`);
+    }
+    dependencies[name] = version;
+    added.push(`${name}@${version}`);
+  }
+  if (added.length === 0) return [];
+  parsed.dependencies = Object.fromEntries(
+    Object.entries(dependencies).sort(([a], [b]) => a.localeCompare(b)),
+  );
+  const write = await files.writeFile("/package.json", `${JSON.stringify(parsed, null, 2)}\n`);
+  if (!write.success) {
+    throw new Error(write.error ?? "Failed to write /package.json with component dependencies");
+  }
+  return added;
+}
+
 export async function addShadcnComponentsToProject(
   files: WorkspaceFileStoreLike,
-  components: SupportedShadcnComponent[],
+  components: string[],
   options: { force?: boolean } = {},
 ): Promise<AddShadcnComponentsResult> {
   if (components.length === 0) {
-    throw new Error(`component or components is required. Supported components: ${SUPPORTED_SHADCN_COMPONENTS.join(", ")}`);
+    throw new Error("component or components is required (any shadcn/ui component or block name).");
   }
+
+  const requested = new Set(components);
+  const resolvedItems = resolveRegistryItems(components);
 
   const filesWritten: string[] = [];
   const filesSkipped: string[] = [];
-  for (const component of components) {
-    const file = SHADCN_COMPONENT_FILES[component];
-    if (!options.force) {
-      const exists = await files.exists(file.path);
-      if (exists.exists) {
-        filesSkipped.push(file.path);
-        continue;
+  const writtenPaths = new Set<string>();
+  const itemsWithWrites = new Set<string>();
+  for (const item of resolvedItems) {
+    // `force` overwrites only files of explicitly requested items; files pulled
+    // in as dependencies never clobber existing (possibly customized) copies.
+    const forceItem = options.force === true && requested.has(item.name);
+    for (const file of item.files) {
+      if (writtenPaths.has(file.path)) continue;
+      if (!forceItem) {
+        const exists = await files.exists(file.path);
+        if (exists.exists) {
+          filesSkipped.push(file.path);
+          continue;
+        }
       }
+      const result = await files.writeFile(file.path, file.content);
+      if (!result.success) {
+        throw new Error(result.error ?? `Failed to write ${file.path}`);
+      }
+      writtenPaths.add(file.path);
+      filesWritten.push(file.path);
+      itemsWithWrites.add(item.name);
     }
-    const result = await files.writeFile(file.path, file.content);
-    if (!result.success) {
-      throw new Error(result.error ?? `Failed to write ${file.path}`);
-    }
-    filesWritten.push(file.path);
+  }
+
+  // Ensure every npm package the resolved items rely on is present, so builds
+  // succeed even when a file was skipped but its package was never installed.
+  const npmPackages = [...new Set(resolvedItems.flatMap((item) => item.dependencies))].sort();
+  const packagesAdded = await mergePackageJsonDependencies(files, npmPackages);
+
+  const blockPagesWritten = filesWritten.filter((path) => path.startsWith("/app/blocks/") && path.endsWith("/page.tsx"));
+  const messageParts: string[] = [];
+  messageParts.push(
+    filesWritten.length > 0
+      ? `Added shadcn file${filesWritten.length === 1 ? "" : "s"}: ${filesWritten.join(", ")}`
+      : "All requested shadcn files already exist.",
+  );
+  if (packagesAdded.length > 0) {
+    messageParts.push(`Added npm dependencies to package.json: ${packagesAdded.join(", ")} (installed automatically on the next build).`);
+  }
+  if (blockPagesWritten.length > 0) {
+    messageParts.push(
+      `Block page${blockPagesWritten.length === 1 ? "" : "s"} (${blockPagesWritten.join(", ")}) export a default React component — register each as a route in app/routes.ts and adapt placeholder content to the app.`,
+    );
   }
 
   return {
     success: true,
     components,
+    resolvedItems: resolvedItems.map((item) => item.name).sort(),
     filesWritten,
     filesSkipped,
-    supportedComponents: SUPPORTED_SHADCN_COMPONENTS,
-    message: filesWritten.length > 0
-      ? `Added shadcn component file${filesWritten.length === 1 ? "" : "s"}: ${filesWritten.join(", ")}`
-      : "All requested shadcn component files already exist.",
+    packagesAdded,
+    message: messageParts.join(" "),
   };
 }

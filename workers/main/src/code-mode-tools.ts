@@ -39,7 +39,7 @@ import { collectWorkerBundleFromSandbox, findUnexportedDurableObjectClasses, typ
 import { buildNotebookWorkerBundle, resolveNotebookDeployPath } from "./notebook-worker-bundle";
 import { ANALYSIS_NOTEBOOK_STDERR_MAX_CHARS, ANALYSIS_NOTEBOOK_STDOUT_MAX_CHARS, clampOutputTail } from "./analysis-service";
 import { defaultProjectScaffoldFiles, normalizeProjectScaffoldTemplate, type ProjectScaffoldResult } from "./project-scaffold";
-import { addShadcnComponentsToProject, normalizeShadcnComponentList, SUPPORTED_SHADCN_COMPONENTS } from "./shadcn-components";
+import { addShadcnComponentsToProject, normalizeShadcnComponentList, SUPPORTED_SHADCN_BLOCKS, SUPPORTED_SHADCN_COMPONENTS } from "./shadcn-components";
 import { connectAppBrowserSession, launchAppBrowserSession } from "./app-browser-binding";
 import { deployWorkerModulesDirect, rollbackWorkerDeployFromArtifactCache, type DirectDispatchDeployResult } from "./direct-dispatch-deploy";
 import { handleDeploySideEffects } from "./services/deploy";
@@ -699,7 +699,7 @@ const CODE_MODE_TOOL_REGISTRY: CodeModeToolRegistration[] = [
   ),
   codeModeTool(
     "add_shadcn_component",
-    `Add one or more bundled shadcn/ui primitive files to a DO-backed React Router project without npm registry access. Uses the scaffold's existing Radix primitive packages, ~/lib/utils, and app/components/ui path. Supported components: ${SUPPORTED_SHADCN_COMPONENTS.join(", ")}. Arguments: { project, component? or components?, force? }.`,
+    `Add bundled shadcn/ui components or full blocks (login pages, sidebar layouts, dashboards) to a DO-backed React Router project without npm registry access. Registry dependencies are resolved transitively and any npm packages a component needs are added to package.json automatically (installed on the next build). Prefer this over hand-writing standard UI components. Block pages land under /app/blocks/<name>/page.tsx and must be registered as a route in app/routes.ts. Supported components: ${SUPPORTED_SHADCN_COMPONENTS.join(", ")}. Supported blocks: ${SUPPORTED_SHADCN_BLOCKS.join(", ")}. Arguments: { project, component? or components?, force? }.`,
     Type.Object({
       project: Type.String(),
       component: Type.Optional(Type.String()),

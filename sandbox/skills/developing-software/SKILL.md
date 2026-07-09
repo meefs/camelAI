@@ -14,7 +14,7 @@ This skill guides deployment of production software to Cloudflare's edge network
 2. **Deploy with `deploy_project`** - The platform build/deploy path is already configured
 3. **Use Durable Objects with SQLite backends** - This is the primary persistence mechanism
 4. **Use React Router 7 framework mode for fullstack web apps** - It is the successor to Remix; default to route `loader()`/`action()` patterns, not SPA-style client data fetching
-5. **Use shadcn/ui for frontend components** - Use `add_shadcn_component` for bundled primitives before writing custom component files
+5. **Use shadcn/ui for frontend components** - The full shadcn/ui catalog (60+ components) plus complete blocks (login pages, sidebar layouts, dashboards) is bundled; always call `add_shadcn_component` before hand-writing any standard UI component or page shell — it resolves component dependencies and adds required npm packages to `package.json` automatically
 
 ## Using Agent Teams for Parallel Development
 
@@ -66,7 +66,7 @@ await tools.create_project({
 });
 ```
 
-The default scaffold is a React Router SSR app with Tailwind v4, Cloudflare Worker deploy metadata, `components.json`, `~/lib/utils`, and starter shadcn-style primitives.
+The default scaffold is a React Router SSR app with Tailwind v4, Cloudflare Worker deploy metadata, `components.json`, `~/lib/utils`, and pre-seeded shadcn/ui primitives (button, badge, card, checkbox, dialog, dropdown-menu, input, label, select, separator, skeleton, table, textarea) — import them from `~/components/ui/*` instead of re-creating them.
 
 ## Deployment Commands
 
@@ -411,10 +411,12 @@ For fullstack applications, use `create_project`, project file tools, `add_shadc
 
 ```ts
 await tools.create_project({ name: "my-app", description: "Fullstack app for ..." });
-await tools.add_shadcn_component({ project: "my-app", components: ["accordion", "tabs", "progress"] });
+await tools.add_shadcn_component({ project: "my-app", components: ["accordion", "chart", "sidebar-07"] });
 await tools.build_project({ project: "my-app" });
 await tools.deploy_project({ project: "my-app", script_name: "my-app" });
 ```
+
+`add_shadcn_component` accepts any shadcn/ui component name (accordion, calendar, chart, command, data tables via `table`, form, sheet, sidebar, sonner, …) **and block names** — complete prebuilt page shells: `login-01`–`login-05`, `signup-01`, `otp-01`, `sidebar-01`/`02`/`03`/`07`/`08`/`13`/`15`/`16`, `dashboard-01`, `calendar-04`, `calendar-22`. The tool description lists the full supported set. Prefer installing a block and adapting its content over building page shells from scratch: it is faster, cheaper, and keeps apps visually consistent. Component dependencies resolve transitively; any npm packages needed are added to `package.json` and installed on the next build. Block pages are written to `app/blocks/<name>/page.tsx` (shared block components go to `app/components/`) — register the page in `app/routes.ts`, e.g. `route("login", "blocks/login-03/page.tsx")`, then adapt placeholder text, nav items, and data wiring to the app.
 
 The template includes:
 - React 19 with React Router 7

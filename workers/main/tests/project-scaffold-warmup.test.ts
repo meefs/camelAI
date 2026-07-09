@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { defaultProjectScaffoldFiles, type ProjectScaffoldTemplate } from "../src/project-scaffold";
+import { SHADCN_NPM_PACKAGE_VERSIONS } from "../src/shadcn-registry.generated";
 import warmupManifest from "../project-build-sandbox-warmup/package.json";
 
 // The project build sandbox image (workers/main/project-build-sandbox.Dockerfile)
@@ -52,4 +53,19 @@ describe("project build sandbox warmup manifest", () => {
       }
     });
   }
+
+  // add_shadcn_component can add any package from the bundled shadcn registry
+  // to a project's package.json; keep those cached in the image too so
+  // component/block installs stay as fast as plain scaffold builds.
+  it("covers every npm package the bundled shadcn registry can add", () => {
+    expect(Object.keys(SHADCN_NPM_PACKAGE_VERSIONS).length).toBeGreaterThan(0);
+    for (const [name, range] of Object.entries(SHADCN_NPM_PACKAGE_VERSIONS)) {
+      expect(
+        warmupDependencies[name],
+        `shadcn registry can add "${name}": "${range}", which is missing from `
+        + `workers/main/project-build-sandbox-warmup/package.json. Update the warmup manifest so the `
+        + `prebaked bun cache in project-build-sandbox.Dockerfile stays warm for component installs.`,
+      ).toBe(range);
+    }
+  });
 });

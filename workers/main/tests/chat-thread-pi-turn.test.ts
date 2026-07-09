@@ -5719,6 +5719,9 @@ describe('ChatThreadDO Pi turn handling', () => {
       '/app/components/ui/progress.tsx',
       expect.stringContaining('ProgressPrimitive'),
     );
+    expect(result.packagesAdded).toEqual([expect.stringMatching(/^radix-ui@\^/)]);
+    const packageJson = JSON.parse((await projectStub.projectReadFile('/package.json')).content as string);
+    expect(packageJson.dependencies['radix-ui']).toMatch(/^\^/);
 
     const second = await CodeModeToolsBinding.prototype.callTool.call(fake, 'add_shadcn_component', {
       project: 'Demo App',
@@ -5729,6 +5732,7 @@ describe('ChatThreadDO Pi turn handling', () => {
       success: true,
       filesWritten: [],
       filesSkipped: ['/app/components/ui/tabs.tsx'],
+      packagesAdded: [],
     });
 
     const stringComponents = await CodeModeToolsBinding.prototype.callTool.call(fake, 'add_shadcn_component', {
@@ -5749,8 +5753,34 @@ describe('ChatThreadDO Pi turn handling', () => {
 
     await expect(CodeModeToolsBinding.prototype.callTool.call(fake, 'add_shadcn_component', {
       project: 'Demo App',
-      component: 'command',
-    })).rejects.toThrow('Unsupported shadcn component "command"');
+      component: 'not-a-real-component',
+    })).rejects.toThrow('Unsupported shadcn component "not-a-real-component"');
+  });
+
+  it('adds a shadcn block with resolved dependencies to a DO-backed project', async () => {
+    const { fake, projectStub } = createProjectToolFake();
+
+    const result = await CodeModeToolsBinding.prototype.callTool.call(fake, 'add_shadcn_component', {
+      project: 'Demo App',
+      component: 'login-03',
+    }) as Record<string, unknown>;
+
+    expect(result).toMatchObject({
+      success: true,
+      components: ['login-03'],
+      resolvedItems: ['button', 'card', 'field', 'input', 'label', 'login-03', 'separator'],
+    });
+    const filesWritten = result.filesWritten as string[];
+    expect(filesWritten).toContain('/app/blocks/login-03/page.tsx');
+    expect(filesWritten).toContain('/app/components/login-form.tsx');
+    expect(filesWritten).toContain('/app/components/ui/button.tsx');
+    expect(filesWritten).toContain('/app/components/ui/field.tsx');
+    expect(result.packagesAdded).toEqual([expect.stringMatching(/^radix-ui@\^/)]);
+    expect(result.message).toContain('app/routes.ts');
+    expect(projectStub.projectWriteFile).toHaveBeenCalledWith(
+      '/app/blocks/login-03/page.tsx',
+      expect.stringContaining('~/components/login-form'),
+    );
   });
 
   it('maps build sandbox 503 RPC failures to a friendly project build error', async () => {
