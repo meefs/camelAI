@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { codeModeWorkerModule, stripTypeScriptFromUserCode } from '../src/code-mode-runner';
+import { codeModeWorkerModule, prepareCodeModeUserCode, stripTypeScriptFromUserCode } from '../src/code-mode-runner';
 
 function createConnectionsFacade(binding: any): Record<string, unknown> {
   const legacyInvokeMethod = ['_', '_', 'invoke'].join('');
@@ -628,5 +628,29 @@ describe('js_exec result-shape contracts', () => {
     expect(source).toContain('OPERATIONAL_OUTCOME_TOOLS = new Set(["build_project", "deploy_project"])');
     expect(source).toContain('envelope.data.success === false');
     expect(source).toContain('resolve ok: false when the build or deploy FAILS');
+  });
+});
+
+describe('empty js_exec output', () => {
+  it('explains no-output runs instead of returning a silent blank', () => {
+    const source = codeModeWorkerModule('return 1;', { orgId: 'o', workspaceId: 'w' });
+    // The blank case must be self-explaining: agents receiving "" invented
+    // renderer failures (the "see attached image" incident). The message must
+    // name the if/else pitfall since block-final scripts are the common cause.
+    expect(source).toContain('js_exec completed: no return value and no console output');
+    expect(source).toContain('expressions inside if/else or loop blocks are not');
+    expect(source).toMatch(/if \(output\.length === 0\)/);
+  });
+
+  it('auto-return still skips block-closing final lines (the pitfall the message covers)', () => {
+    const prepared = prepareCodeModeUserCode([
+      'const r = await tools.deploy_project({ project: "x" });',
+      'if (r.ok) {',
+      '  r.data;',
+      '} else {',
+      '  r.error;',
+      '}',
+    ].join('\n'));
+    expect(prepared).not.toContain('return');
   });
 });

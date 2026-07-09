@@ -1198,6 +1198,18 @@ export class CodeModeRunner extends WorkerEntrypoint {
     try {
       const result = await runUserCode();
       if (result !== undefined) output.push(stringifyOutput(result));
+      if (output.length === 0) {
+        // A silent blank reads as a rendering failure and sends agents down
+        // rabbit holes. Common cause: the script's last statement is a block
+        // (if/else, loop), so bare expressions inside it are evaluated and
+        // discarded — only a top-level final expression is auto-returned.
+        return {
+          text:
+            "(js_exec completed: no return value and no console output.) " +
+            "To see results, return a value, end with a top-level expression (auto-returned; " +
+            "expressions inside if/else or loop blocks are not), or print with console.log(...).",
+        };
+      }
       return { text: output.join("\n") };
     } catch (error) {
       const formatted = formatRuntimeError(error);
