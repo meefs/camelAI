@@ -212,22 +212,70 @@ function normalizeWorkerBundleMetadata(
     });
   }
 
-  const {
-    durable_objects: _durableObjects,
-    kv_namespaces: _kvNamespaces,
-    r2_buckets: _r2Buckets,
-    // Build-tool-only keys from the vite-plugin manifest; they must not leak
-    // into the Cloudflare script-upload metadata.
-    main: _main,
-    no_bundle: _noBundle,
-    rules: _rules,
-    ...metadata
-  } = manifest;
-  return {
-    ...metadata,
-    ...(bindings.length > 0 ? { bindings } : {}),
-  };
+  // Wrangler-style `vars` (vite-plugin manifests spread the full normalized
+  // config) become plain_text bindings, exactly as wrangler uploads them.
+  const vars = manifest.vars;
+  if (vars && typeof vars === "object" && !Array.isArray(vars)) {
+    for (const [name, value] of Object.entries(vars as Record<string, unknown>)) {
+      if (value === undefined || value === null) continue;
+      addBinding({
+        type: "plain_text",
+        name,
+        text: typeof value === "string" ? value : JSON.stringify(value),
+      });
+    }
+  }
+
+  // Allowlist what reaches the Cloudflare script-upload metadata. Build
+  // manifests (especially vite-plugin ones, which spread the user's entire
+  // normalized wrangler config) carry many keys whose config shape differs
+  // from the upload API's — each one that leaks through is a user-facing 400
+  // (see the migrations: [] incident). Unknown keys are dropped and logged
+  // instead.
+  const metadata: DirectWorkerMetadata = { main_module: manifest.main_module };
+  const dropped: string[] = [];
+  for (const [key, value] of Object.entries(manifest)) {
+    if (value === undefined || key === "main_module" || key === "bindings") continue;
+    if (PASSTHROUGH_METADATA_KEYS.has(key)) {
+      (metadata as Record<string, unknown>)[key] = value;
+    } else if (!CONSUMED_MANIFEST_KEYS.has(key)) {
+      dropped.push(key);
+    }
+  }
+  if (bindings.length > 0) metadata.bindings = bindings;
+  if (dropped.length > 0) {
+    console.warn("[project-worker-bundle] dropped unsupported build-manifest keys from deploy metadata", {
+      keys: dropped.sort(),
+    });
+  }
+  return metadata;
 }
+
+/** Keys forwarded verbatim to the script-upload metadata. */
+const PASSTHROUGH_METADATA_KEYS = new Set([
+  "compatibility_date",
+  "compatibility_flags",
+  "migrations",
+  "assets",
+  "tail_consumers",
+  "placement",
+  "limits",
+  "observability",
+  "logpush",
+  "usage_model",
+  "config_path",
+]);
+
+/** Keys consumed by this normalizer (lifted into bindings or build-tool-only). */
+const CONSUMED_MANIFEST_KEYS = new Set([
+  "durable_objects",
+  "kv_namespaces",
+  "r2_buckets",
+  "vars",
+  "main",
+  "no_bundle",
+  "rules",
+]);
 
 function asBindingArray(value: unknown): Array<Record<string, unknown>> {
   if (!Array.isArray(value)) return [];

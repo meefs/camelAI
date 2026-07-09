@@ -204,3 +204,35 @@ it("accepts a vite-plugin manifest that uses `main` instead of `main_module`", a
   expect(bundle.metadata).not.toHaveProperty("rules");
   expect(bundle.modules.map((module) => module.name)).toContain("index.js");
 });
+
+it("allowlists deploy metadata: lifts vars to bindings, drops unknown config keys", async () => {
+  const files = new Map<string, string>([
+    ["/workspace/demo/build/server/wrangler.json", JSON.stringify({
+      name: "demo",
+      main: "index.js",
+      compatibility_date: "2026-06-01",
+      vars: { GREETING: "hi", COUNT: 3 },
+      tail_consumers: [{ service: "user-logs" }],
+      // config-only keys the upload API does not accept:
+      dev: { port: 8787 },
+      site: { bucket: "./public" },
+      workers_dev: true,
+      migrations: [],
+      assets: { directory: "../client" },
+    })],
+    ["/workspace/demo/build/server/index.js", "export default {};"],
+    ["/workspace/demo/build/client/index.html", "<html></html>"],
+  ]);
+  const bundle = await collectWorkerBundleFromSandbox(fakeBundleSandbox(files), "/workspace/demo");
+  expect(bundle.metadata.main_module).toBe("index.js");
+  expect(bundle.metadata.bindings).toEqual(expect.arrayContaining([
+    { type: "plain_text", name: "GREETING", text: "hi" },
+    { type: "plain_text", name: "COUNT", text: "3" },
+  ]));
+  expect(bundle.metadata.tail_consumers).toEqual([{ service: "user-logs" }]);
+  for (const key of ["vars", "dev", "site", "workers_dev", "name", "main", "no_bundle"]) {
+    expect(bundle.metadata).not.toHaveProperty(key);
+  }
+  // migrations passes through here; the deploy path normalizes/omits it later
+  expect(bundle.metadata).toHaveProperty("migrations");
+});
