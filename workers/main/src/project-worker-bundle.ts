@@ -49,45 +49,48 @@ export async function collectWorkerBundleFromSandbox(
     no_bundle?: unknown;
     rules?: unknown;
   };
-  // Two manifest producers exist: the camelAI scaffold hand-writes
-  // `main_module`, while @cloudflare/vite-plugin's generateBundle emits the
-  // wrangler-native `main` (entry chunk relative to build/server). Accept both.
-  const mainModule =
-    typeof manifest.main_module === "string" && manifest.main_module
-      ? manifest.main_module
-      : typeof manifest.main === "string" && manifest.main
-        ? manifest.main
-        : null;
-  if (!mainModule) {
-    throw new Error(`Build manifest ${manifestPath} is missing main_module`);
+  // Build contract: the manifest is a wrangler-valid config whose build output
+  // is final (`no_bundle` semantics) — `main` names the entry module and
+  // `rules` globs declare which other files upload as modules. Both producers
+  // emit this: @cloudflare/vite-plugin natively, and the scaffold's
+  // build-manifest.mjs. Nothing outside the declared rules is uploaded.
+  if (typeof manifest.main !== "string" || !manifest.main) {
+    if (typeof manifest.main_module === "string" && manifest.main_module) {
+      throw new Error(
+        `Build manifest ${manifestPath} uses the legacy main_module/bindings shape. ` +
+          `Update scripts/build-manifest.mjs to write a wrangler-valid config: ` +
+          `main: "worker.js", no_bundle: true, rules: [{ type: "ESModule", globs: ["**/*.js", "**/*.mjs"] }], ` +
+          `and wrangler-idiomatic vars/durable_objects/kv_namespaces/r2_buckets instead of a bindings array.`,
+      );
+    }
+    throw new Error(`Build manifest ${manifestPath} is missing a "main" entry module`);
   }
+  const mainModule = manifest.main.replace(/^\.\//, "");
   manifest.main_module = mainModule;
   const metadata = normalizeWorkerBundleMetadata(manifest);
+  const moduleRules = parseModuleRules(manifest.rules);
   const serverRoot = dirnameSandboxPath(absoluteManifestPath);
   const listed = await sandbox.listFiles(serverRoot, { recursive: true, includeHidden: true });
   const candidateFiles = listed.files.filter((file) => file.type === "file").map((file) => {
     const absolutePath = file.absolutePath || joinSandboxPath(serverRoot, file.relativePath || file.name);
     const relativePath = relativeSandboxPath(serverRoot, absolutePath);
     return { absolutePath, relativePath };
-  }).filter(({ relativePath }) =>
-    Boolean(relativePath) &&
-    relativePath !== basenameSandboxPath(absoluteManifestPath) &&
-    !shouldIgnoreBuildOutputModule(relativePath)
-  );
-  // Only genuine module files upload as Worker modules. SSR builds can emit
-  // static assets (fonts, images) into build/server — wrangler wouldn't upload
-  // those either (the plugin's rules cover **/*.js|mjs only), and pushing them
-  // as javascript+module modules fails the deploy.
-  const moduleFiles = candidateFiles.filter(({ relativePath }) => isUploadableModulePath(relativePath));
-  const skippedNonModules = candidateFiles.filter(({ relativePath }) => !isUploadableModulePath(relativePath));
-  if (skippedNonModules.length > 0) {
-    console.warn("[project-worker-bundle] skipped non-module files in the server build output", {
-      files: skippedNonModules.map(({ relativePath }) => relativePath).sort(),
-    });
+  }).filter(({ relativePath }) => Boolean(relativePath) && relativePath !== basenameSandboxPath(absoluteManifestPath));
+  const entryFile = candidateFiles.find(({ relativePath }) => relativePath === mainModule);
+  if (!entryFile) {
+    throw new Error(`Build manifest ${manifestPath} names main "${mainModule}", but the build output does not contain it`);
   }
-  const modules = await mapWithConcurrency(moduleFiles, BUNDLE_READ_CONCURRENCY, async ({ absolutePath, relativePath }) => ({
+  const moduleFiles: Array<{ absolutePath: string; relativePath: string; contentType: string }> = [
+    { ...entryFile, contentType: "application/javascript+module" },
+  ];
+  for (const candidate of candidateFiles) {
+    if (candidate.relativePath === mainModule) continue;
+    const rule = moduleRules.find(({ pattern }) => pattern.test(candidate.relativePath));
+    if (rule) moduleFiles.push({ ...candidate, contentType: rule.contentType });
+  }
+  const modules = await mapWithConcurrency(moduleFiles, BUNDLE_READ_CONCURRENCY, async ({ absolutePath, relativePath, contentType }) => ({
       name: relativePath,
-      contentType: contentTypeForModule(relativePath),
+      contentType,
       content: await readSandboxFileBytes(sandbox, absolutePath),
     }));
   modules.sort((a, b) => a.name.localeCompare(b.name));
@@ -229,11 +232,11 @@ function normalizeWorkerBundleMetadata(
   if (vars && typeof vars === "object" && !Array.isArray(vars)) {
     for (const [name, value] of Object.entries(vars as Record<string, unknown>)) {
       if (value === undefined || value === null) continue;
-      addBinding({
-        type: "plain_text",
-        name,
-        text: typeof value === "string" ? value : JSON.stringify(value),
-      });
+      addBinding(
+        typeof value === "string"
+          ? { type: "plain_text", name, text: value }
+          : { type: "json", name, json: value },
+      );
     }
   }
 
@@ -329,18 +332,59 @@ async function readSandboxFileBytes(sandbox: ProjectBuildSandboxLike, path: stri
   return base64ToBytes(read.content);
 }
 
-function shouldIgnoreBuildOutputModule(path: string): boolean {
-  return path.endsWith(".map") || path === "wrangler.json" || path === "wrangler.jsonc";
+/** Wrangler module rule types → Cloudflare upload content types. */
+const MODULE_RULE_CONTENT_TYPES: Record<string, string> = {
+  ESModule: "application/javascript+module",
+  CommonJS: "application/javascript",
+  CompiledWasm: "application/wasm",
+  Text: "text/plain",
+  Data: "application/octet-stream",
+};
+
+/** The vite-plugin's emitted rules; also the contract default when absent. */
+const DEFAULT_MODULE_RULES = [{ type: "ESModule", globs: ["**/*.js", "**/*.mjs"] }];
+
+function parseModuleRules(rules: unknown): Array<{ pattern: RegExp; contentType: string }> {
+  const source = Array.isArray(rules) && rules.length > 0 ? rules : DEFAULT_MODULE_RULES;
+  const parsed: Array<{ pattern: RegExp; contentType: string }> = [];
+  for (const rule of source) {
+    if (!rule || typeof rule !== "object") continue;
+    const { type, globs } = rule as { type?: unknown; globs?: unknown };
+    const contentType = typeof type === "string" ? MODULE_RULE_CONTENT_TYPES[type] : undefined;
+    if (!contentType || !Array.isArray(globs)) continue;
+    for (const glob of globs) {
+      if (typeof glob !== "string" || !glob) continue;
+      parsed.push({ pattern: globToRegExp(glob), contentType });
+    }
+  }
+  return parsed;
 }
 
-function isUploadableModulePath(path: string): boolean {
-  return path.endsWith(".js") || path.endsWith(".mjs") || path.endsWith(".wasm") || path.endsWith(".json");
-}
-
-function contentTypeForModule(path: string): string {
-  if (path.endsWith(".wasm")) return "application/wasm";
-  if (path.endsWith(".json")) return "application/json";
-  return "application/javascript+module";
+/** Minimal wrangler-style glob: `**` crosses directories, `*` does not. */
+function globToRegExp(glob: string): RegExp {
+  let pattern = "";
+  let index = 0;
+  while (index < glob.length) {
+    const char = glob[index]!;
+    if (char === "*") {
+      if (glob[index + 1] === "*") {
+        if (glob[index + 2] === "/") {
+          pattern += "(?:.*/)?";
+          index += 3;
+        } else {
+          pattern += ".*";
+          index += 2;
+        }
+      } else {
+        pattern += "[^/]*";
+        index += 1;
+      }
+      continue;
+    }
+    pattern += char.replace(/[.+^${}()|[\]\\?]/g, "\\$&");
+    index += 1;
+  }
+  return new RegExp(`^${pattern}$`);
 }
 
 export function contentTypeForAsset(path: string): string | undefined {

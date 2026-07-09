@@ -28,7 +28,8 @@ describe("collectWorkerBundleFromSandbox", () => {
   it("reads the build manifest and module files from build/server", async () => {
     const files = new Map<string, string>([
       ["/workspace/demo/build/server/wrangler.json", JSON.stringify({
-        main_module: "index.js",
+        main: "index.js",
+        no_bundle: true,
         compatibility_date: "2026-06-01",
         bindings: [{ type: "plain_text", name: "GREETING", text: "hi" }],
         assets: { directory: "../client" },
@@ -57,7 +58,8 @@ describe("collectWorkerBundleFromSandbox", () => {
   it("converts wrangler durable object config into upload bindings", async () => {
     const files = new Map<string, string>([
       ["/workspace/demo/build/server/wrangler.json", JSON.stringify({
-        main_module: "index.js",
+        main: "index.js",
+        no_bundle: true,
         durable_objects: {
           bindings: [{ name: "TASK_STORE", class_name: "TaskStore" }],
         },
@@ -79,7 +81,8 @@ describe("collectWorkerBundleFromSandbox", () => {
   it("lifts wrangler kv_namespaces and r2_buckets into upload bindings", async () => {
     const files = new Map<string, string>([
       ["/workspace/demo/build/server/wrangler.json", JSON.stringify({
-        main_module: "index.js",
+        main: "index.js",
+        no_bundle: true,
         kv_namespaces: [
           { binding: "SESSIONS", id: "kv-abc123" },
           { binding: "CACHE" },
@@ -105,7 +108,8 @@ describe("collectWorkerBundleFromSandbox", () => {
   it("does not duplicate a binding already present in manifest.bindings", async () => {
     const files = new Map<string, string>([
       ["/workspace/demo/build/server/wrangler.json", JSON.stringify({
-        main_module: "index.js",
+        main: "index.js",
+        no_bundle: true,
         bindings: [{ type: "kv_namespace", name: "SESSIONS", namespace_id: "explicit" }],
         kv_namespaces: [{ binding: "SESSIONS", id: "duplicate" }],
       })],
@@ -227,7 +231,7 @@ it("allowlists deploy metadata: lifts vars to bindings, drops unknown config key
   expect(bundle.metadata.main_module).toBe("index.js");
   expect(bundle.metadata.bindings).toEqual(expect.arrayContaining([
     { type: "plain_text", name: "GREETING", text: "hi" },
-    { type: "plain_text", name: "COUNT", text: "3" },
+    { type: "json", name: "COUNT", json: 3 },
   ]));
   expect(bundle.metadata.tail_consumers).toEqual([{ service: "user-logs" }]);
   for (const key of ["vars", "dev", "site", "workers_dev", "name", "main", "no_bundle"]) {
@@ -251,4 +255,41 @@ it("skips non-module server build files (fonts, images) instead of uploading the
   ]);
   const bundle = await collectWorkerBundleFromSandbox(fakeBundleSandbox(files), "/workspace/demo");
   expect(bundle.modules.map((module) => module.name)).toEqual(["index.js"]);
+});
+
+it("rejects legacy main_module manifests with a remediation error", async () => {
+  const files = new Map<string, string>([
+    ["/workspace/demo/build/server/wrangler.json", JSON.stringify({
+      main_module: "worker.js",
+      compatibility_date: "2026-06-01",
+      assets: { directory: "../client" },
+    })],
+    ["/workspace/demo/build/server/worker.js", "export default {};"],
+  ]);
+  await expect(collectWorkerBundleFromSandbox(fakeBundleSandbox(files), "/workspace/demo"))
+    .rejects.toThrow(/legacy main_module.*build-manifest\.mjs/s);
+});
+
+it("honors declared module rules including Text and Data types", async () => {
+  const files = new Map<string, string>([
+    ["/workspace/demo/build/server/wrangler.json", JSON.stringify({
+      main: "index.js",
+      no_bundle: true,
+      rules: [
+        { type: "ESModule", globs: ["**/*.js"] },
+        { type: "Text", globs: ["**/*.txt"] },
+      ],
+      compatibility_date: "2026-06-01",
+      assets: { directory: "../client" },
+    })],
+    ["/workspace/demo/build/server/index.js", "export default {};"],
+    ["/workspace/demo/build/server/prompts/system.txt", "be helpful"],
+    ["/workspace/demo/build/server/assets/font.woff2", "fontbytes"],
+    ["/workspace/demo/build/client/index.html", "<html></html>"],
+  ]);
+  const bundle = await collectWorkerBundleFromSandbox(fakeBundleSandbox(files), "/workspace/demo");
+  expect(bundle.modules.map((m) => ({ name: m.name, contentType: m.contentType }))).toEqual([
+    { name: "index.js", contentType: "application/javascript+module" },
+    { name: "prompts/system.txt", contentType: "text/plain" },
+  ]);
 });

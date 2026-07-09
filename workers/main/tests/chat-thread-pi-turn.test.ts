@@ -185,7 +185,8 @@ function createProjectToolFake({
       if (command === 'bun install && bun run build' && options?.cwd) {
         sandboxFiles.set(`${options.cwd}/bun.lock`, base64('# lockfile\n'));
         sandboxFiles.set(`${options.cwd}/build/server/wrangler.json`, base64(JSON.stringify({
-          main_module: 'index.js',
+          main: 'index.js',
+          no_bundle: true,
           compatibility_date: '2026-06-01',
         })));
         sandboxFiles.set(`${options.cwd}/build/server/index.js`, base64('export default { fetch() { return new Response("ok"); } };'));
@@ -5966,7 +5967,8 @@ describe('ChatThreadDO Pi turn handling', () => {
     sandbox.exec.mockImplementation(async (command: string, options?: { cwd?: string }) => {
       if (command === 'bun install && bun run build' && options?.cwd) {
         sandbox.__setFile?.(`${options.cwd}/build/server/wrangler.json`, JSON.stringify({
-          main_module: 'index.js',
+          main: 'index.js',
+          no_bundle: true,
           compatibility_date: '2026-06-01',
           durable_objects: { bindings: [{ name: 'LEADERBOARD', class_name: 'LeaderboardDO' }] },
           migrations: [{ tag: 'v1', new_sqlite_classes: ['LeaderboardDO'] }],
