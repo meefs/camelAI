@@ -1795,17 +1795,11 @@ describe('ChatThreadDO Pi turn handling', () => {
       api: 'openai-completions',
       baseUrl: 'https://gateway.ai.cloudflare.com/v1/acct_1/gateway_1/compat',
     });
-    // Hosted auto is pinned to the highest reasoning effort: the gateway
-    // provider must be told it supports reasoning_effort, and every agent
-    // thinking level maps to xhigh so the medium default is not clamped to high.
-    expect(model.model.compat).toMatchObject({ supportsReasoningEffort: true });
-    expect(model.model.thinkingLevelMap).toEqual({
-      minimal: 'xhigh',
-      low: 'xhigh',
-      medium: 'xhigh',
-      high: 'xhigh',
-      xhigh: 'xhigh',
-    });
+    // Dynamic routes fan out across RTX/Azure/OpenRouter; request-shape knobs
+    // like reasoning effort and giant output caps must stay provider-neutral.
+    expect(model.model.compat).toMatchObject({ supportsReasoningEffort: false });
+    expect(model.model.reasoning).toBe(false);
+    expect(model.model.maxTokens).toBe(32000);
     expect(fake.piCurrentUsageProvider).toBe('compat');
   });
 
@@ -3490,8 +3484,13 @@ describe('ChatThreadDO Pi turn handling', () => {
       modelId: 'deepseek/deepseek-v4-pro',
       hostedGatewayProvider: 'compat',
       hostedModelId: 'dynamic/deepseek-v4-auto',
-      hostedReasoningEffort: 'xhigh',
       byokAllowed: false,
+      hostedRequestProfile: {
+        name: 'deepseek-v4-auto-gateway',
+        maxTokens: 32_000,
+        reasoning: false,
+        supportsReasoningEffort: false,
+      },
     });
   });
 

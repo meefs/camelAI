@@ -317,6 +317,12 @@ export interface PiResolvedModelReference {
   hostedModelId?: string;
   /** False for hosted-only camelAI routes that must not be served by BYOK keys. */
   byokAllowed?: boolean;
+  hostedRequestProfile?: {
+    name: "deepseek-v4-auto-gateway";
+    maxTokens?: number;
+    reasoning?: false;
+    supportsReasoningEffort?: false;
+  };
   // Reasoning effort to force on the hosted (AI Gateway) model. The gateway
   // provider reports supportsReasoningEffort=false in pi-ai, so without this
   // reasoning_effort is never sent and the route uses its upstream default.
@@ -7147,6 +7153,24 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
         ...(configured.headers ?? {}),
       },
     } as Model<any>;
+    if (resolvedModel.provider === "cloudflare-ai-gateway" && resolved.hostedRequestProfile) {
+      const profile = resolved.hostedRequestProfile;
+      if (profile.reasoning === false) {
+        resolvedModel.reasoning = false;
+      }
+      if (profile.maxTokens) {
+        resolvedModel.maxTokens = Math.min(
+          Math.floor(Number(resolvedModel.maxTokens || profile.maxTokens)),
+          profile.maxTokens,
+        );
+      }
+      if (profile.supportsReasoningEffort === false) {
+        resolvedModel.compat = {
+          ...(resolvedModel.compat ?? {}),
+          supportsReasoningEffort: false,
+        };
+      }
+    }
     // Force a fixed reasoning effort on hosted AI Gateway models that need it
     // (e.g. DeepSeek V4 Pro/Auto -> xhigh). pi-ai treats the cloudflare-ai-gateway
     // provider as supportsReasoningEffort=false, so we flip it on and map every
@@ -7154,6 +7178,7 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
     // never emitted and the dynamic route falls back to its upstream default.
     if (
       resolved.hostedReasoningEffort &&
+      resolvedModel.reasoning !== false &&
       resolvedModel.provider === "cloudflare-ai-gateway"
     ) {
       const effort = resolved.hostedReasoningEffort;

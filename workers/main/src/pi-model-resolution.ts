@@ -79,8 +79,13 @@ export class PiModelMapping {
           ...openRouterReference("deepseek/deepseek-v4-pro"),
           hostedGatewayProvider: "compat",
           hostedModelId: "dynamic/deepseek-v4-auto",
-          hostedReasoningEffort: "xhigh",
           byokAllowed: false,
+          hostedRequestProfile: {
+            name: "deepseek-v4-auto-gateway",
+            maxTokens: 32_000,
+            reasoning: false,
+            supportsReasoningEffort: false,
+          },
         };
       case "deepseek-v4-flash":
         return openRouterReference("deepseek/deepseek-v4-flash");
