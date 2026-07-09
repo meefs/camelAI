@@ -139,6 +139,10 @@ import {
   getOrgBanById,
   getUserBanById,
 } from "../../ban-list.js";
+import { ProjectFilesystemClient, WorkspaceFilesystemClient } from "../../workspace-filesystem-do.js";
+import { ProjectRuntimeServiceVmBridge } from "../../project-runtime-service-vm.js";
+import { migrateWorkspaceVmProjects } from "../../project-vm-migration.js";
+import { recordObservabilityEvent } from "../../observability.js";
 import { waitUntil } from "cloudflare:workers";
 import { refreshOrgCustomDomainHostnamesForAdmin } from "../../../../../src/lib/admin-custom-domain.server.js";
 
@@ -614,6 +618,119 @@ routes.post(
       offset: body.offset,
       next_offset: nextOffset,
       workspaces,
+    });
+  },
+);
+
+// ---------------------------------------------------------------------------
+// POST /workspaces/:workspaceId/project-vm-migration
+// ---------------------------------------------------------------------------
+
+const VmProjectMigrationBodySchema = z.object({
+  /** Migrate a single project by name; omit to migrate every legacy project in the workspace. */
+  project: z.string().min(1).optional(),
+  dry_run: z.boolean().default(false),
+  max_file_bytes: z.number().int().positive().optional(),
+  max_project_bytes: z.number().int().positive().optional(),
+});
+
+const VmProjectMigrationResultSchema = z.object({
+  project_id: z.string(),
+  project_name: z.string(),
+  status: z.enum(["migrated", "dry-run", "already-do-r2", "failed"]),
+  classification: z.string(),
+  files_copied: z.number().int(),
+  bytes_copied: z.number().int(),
+  skipped: z.array(
+    z.object({ path: z.string(), size: z.number(), reason: z.string() }),
+  ),
+  missing_vm_checkout: z.boolean(),
+  snapshot_id: z.string().nullable(),
+  error: z.string().nullable(),
+  duration_ms: z.number(),
+});
+
+const VmProjectMigrationResponseSchema = z.object({
+  success: z.boolean(),
+  workspace_id: z.string(),
+  dry_run: z.boolean(),
+  processed: z.number().int(),
+  migrated: z.number().int(),
+  already_do_r2: z.number().int(),
+  failed: z.number().int(),
+  results: z.array(VmProjectMigrationResultSchema),
+});
+
+routes.post(
+  "/workspaces/:workspaceId/project-vm-migration",
+  openApi({
+    summary: "Migrate legacy VM-backed projects in a workspace to DO+R2 storage",
+    request: { json: VmProjectMigrationBodySchema },
+    responses: {
+      200: VmProjectMigrationResponseSchema,
+      404: ErrorSchema,
+    },
+  }),
+  async (c) => {
+    const workspaceId = c.req.param("workspaceId");
+    const body = c.req.valid("json");
+    const workspaceFs = new WorkspaceFilesystemClient(c.env, workspaceId);
+    const bridge = new ProjectRuntimeServiceVmBridge({ env: c.env, workspace: workspaceFs });
+
+    let summary;
+    try {
+      summary = await migrateWorkspaceVmProjects(
+        {
+          bridge,
+          workspaceFs,
+          fileStoreForProject: (projectId) => new ProjectFilesystemClient(c.env, projectId),
+        },
+        workspaceId,
+        {
+          projectName: body.project,
+          dryRun: body.dry_run,
+          maxFileBytes: body.max_file_bytes,
+          maxProjectBytes: body.max_project_bytes,
+        },
+      );
+    } catch (error) {
+      if (error instanceof Error && error.message.startsWith("Project not found:")) {
+        return c.json({ error: error.message }, 404);
+      }
+      throw error;
+    }
+
+    recordObservabilityEvent(c.env, {
+      event: "project_vm_migration",
+      severity: summary.failed > 0 ? "warn" : "info",
+      component: "admin",
+      operation: "project-vm-migration",
+      status: summary.dryRun ? "dry-run" : summary.failed > 0 ? "partial" : "ok",
+      workspaceId,
+      count: summary.processed,
+    });
+
+    return c.json({
+      success: summary.failed === 0,
+      workspace_id: workspaceId,
+      dry_run: summary.dryRun,
+      processed: summary.processed,
+      migrated: summary.migrated,
+      already_do_r2: summary.alreadyDoR2,
+      failed: summary.failed,
+      results: summary.results.map((result) => ({
+        project_id: result.projectId,
+        project_name: result.projectName,
+        status: result.status,
+        classification: result.classification,
+        files_copied: result.filesCopied,
+        bytes_copied: result.bytesCopied,
+        skipped: result.skipped,
+        missing_vm_checkout: result.missingVmCheckout,
+        snapshot_id: result.snapshotId,
+        error: result.error,
+        duration_ms: result.durationMs,
+      })),
     });
   },
 );
