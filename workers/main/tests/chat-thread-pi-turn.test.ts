@@ -6446,6 +6446,11 @@ describe('ChatThreadDO Pi turn handling', () => {
     expect((result as any).build).not.toHaveProperty('stdout');
     expect((result as any).build).not.toHaveProperty('stderr');
     expect((result as any).deploy).not.toHaveProperty('result');
+    // Success results stay compact: no timings blobs or stdout tails for the
+    // model to carry (agent-reported friction rendering large deploy results).
+    expect((result as any).build).not.toHaveProperty('timings');
+    expect((result as any).deploy).not.toHaveProperty('timings');
+    expect((result as any).build).not.toHaveProperty('workdir');
     expect(fetchMock).toHaveBeenCalledWith(
       'https://api.cloudflare.com/client/v4/accounts/account/workers/dispatch/namespaces/namespace/scripts/demo-app--test-org',
       expect.objectContaining({ method: 'PUT', headers: { Authorization: 'Bearer token' } }),

@@ -4005,8 +4005,20 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
           fileCount: snapshot.fileCount,
           totalBytes: snapshot.totalBytes,
         },
-        build: summarizeProjectBuildResult(build),
-        deploy: summarizeDirectDeployResult(deploy),
+        // Deliberately compact on success: full timings/log detail is noise the
+        // model has to carry (and re-render); failures keep the rich shapes.
+        build: {
+          success: true,
+          durationMs: build.durationMs,
+          fileCount: build.fileCount,
+          sourceBytes: build.sourceBytes,
+        },
+        deploy: {
+          success: true,
+          scriptName: deploy.scriptName,
+          dispatchScriptName: deploy.dispatchScriptName,
+          status: deploy.status,
+        },
         ...(warnings.length > 0 ? { warnings } : {}),
       };
     });
