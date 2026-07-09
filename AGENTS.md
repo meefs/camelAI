@@ -14,34 +14,62 @@ React Router SSR + browser WS
         v
 Cloudflare main Worker + Durable Objects
         |
-        | VPC service binding / tunnel
+        | VPC service bindings / tunnel
         v
-Sandbox host on Azure VM
+Azure sandbox host VM (project-runtime-service)
         |
         v
-Docker + gVisor workspace containers
+Docker + gVisor project / analysis containers
 
 Dispatcher Worker routes published user apps.
 R2 stores uploads/assets/previews.
 Cloudflare AI Gateway and BYOK credentials back model access.
 ```
 
+Agent turns run in `ChatThreadDO` (Pi coding agent). File/shell/project
+operations go to the external **project runtime service** on the Azure VM via
+`PROJECT_RUNTIME_HOST` (and related bindings such as `SANDBOX_HOST` /
+`DATA_PROXY`). There is no in-repo Go sandbox-host or data-proxy tree.
+
 ## Repository Map
 
 - `src/` - React Router 7 app, routes, loaders/actions, UI components, shared server/client libraries.
 - `src/routes.ts` - Imperative React Router route config. Add page/API routes here.
-- `src/routes/api/` - React Router API routes served by the main app worker.
+- `src/routes/api/` - React Router API routes for most user-facing REST (billing checkout, workspaces, chat groups, etc.).
 - `src/components/ui/` - shadcn/ui components.
-- `workers/main/` - Main Cloudflare Worker, Durable Objects, WebSocket routing, auth helpers, MCP, admin APIs, proxies.
+- `workers/main/` - Main Cloudflare Worker, Durable Objects, WebSocket routing, MCP, admin APIs, proxies, container image Dockerfiles.
+- `workers/main/src/identity/` - `UserDO` / `OrgDO` and related identity helpers (`auth.ts` is a compatibility barrel).
+- `workers/main/src/routes/` - Worker-native HTTP (WebSockets, Stripe webhook, data-proxy, MCP, most `/api/admin/*` on Hono). Prefer documenting new paths here vs `src/routes/api/` — see **API routing** below.
 - `workers/dispatcher/` - Workers for Platforms dispatcher for deployed user apps.
 - `workers/bedrock-provider/` - AI Gateway custom provider translating Anthropic-style requests to Bedrock.
 - `workers/user-logs-tail/` - Tail worker for deployed app logs.
 - `workers/e2e-reports/` - Public viewer at `e2e-reports.camelai.dev` serving Playwright E2E reports from R2 (uploaded by the E2E workflow); deploy with `bun run deploy:e2e-reports`.
 - `workers/eval-reports/` - Read-only results store + viewer for agent evals at `evals.camelai.dev` (evals run locally; `EVAL_REPORT=1` publishes them); deploy with `bun run deploy:eval-reports`.
 - The data-proxy Go service lives in the external **`qaml-ai/project-runtime-service`** repo (`cmd/data-proxy`), not in this tree. It is the binary deployed to the sandbox host VM and the one behind the `SANDBOX_HOST` / `DATA_PROXY` bindings. There is no in-repo copy — do not reintroduce one. (`scripts/test-local-database-mcp.ts` runs it locally via `PROJECT_RUNTIME_SERVICE_DIR`, default sibling checkout.)
-- `sandbox/` - In-container control plane, Codex/Claude harness integration, MCP helpers, scaffold/publish tooling, sandbox skills.
-- `scripts/` - Deploy and maintenance scripts.
-- `docs/` - Supporting documentation, including shadcn component catalog.
+- `sandbox/` - Agent skills, project scaffold templates (`create-worker/`), and the canonical `validate-notebook.py` (byte-copied into `workers/main/analysis-sandbox-assets/` for the analysis image build context). Not the agent control plane or harness — those live in `workers/main` (`chat-thread-do.ts`, Pi tools, Dockerfiles).
+- `scripts/` - Deploy, eval, self-host, and maintenance scripts. One-off migrations (`migrate-to-workspaces.ts`, `import-legacy-emails.ts`) are break-glass only.
+- `docs/` - Supporting documentation; see `docs/README.md` for the canonical index (many `*-plan.md` / feedback files are historical).
+- `plans/` - Active cross-cutting architecture plans (e.g. OrgDO split, no-VM build/deploy).
+- `infra/` - Azure sandbox-host Terraform for shared VMs; `infra/selfhost/` for self-host cloud templates. See `infra/README.md`.
+- `tests/` - Vitest UI / `src/lib` unit tests (`vitest.config.ts`).
+- `workers/main/tests/` - Worker / Durable Object / Miniflare tests + `evals/` (`vitest.workers.config.ts`).
+- `e2e/` - Playwright end-to-end specs.
+- `.claude/skills/` - Agent skills for this repo (evals, shadcn, writing skills).
+
+### API routing
+
+Two HTTP surfaces share the main worker:
+
+| Surface | Location | Typical contents |
+| --- | --- | --- |
+| React Router | `src/routes/api/` | Session-cookie user REST (workspaces, billing checkout, uploads, chat groups) |
+| Worker-native | `workers/main/src/routes/` | WebSockets, Stripe webhook, MCP, data-proxy, most bearer admin REST |
+
+`workers/main/src/index.ts` routes some paths (e.g. `/api/admin/*`) to worker modules before React Router SSR. When adding an API, match an existing neighbor; do not invent a third pattern.
+
+### Internal vs product names
+
+Product name is **camelAI**. Internal Cloudflare resources, DO/MCP class names, headers, and Analytics Engine datasets often still use legacy internal codenames (for example the `/qaml-backdoor` superuser UI and the `*_observability_*` / `*_errors_*` dataset prefixes). Prefer the existing name in code; do not rename bindings or exported DO classes casually.
 
 ## Development Commands
 
@@ -158,15 +186,16 @@ eval runs at a time (the normal local case); an orchestrator that runs evals con
 
 Important DOs and runtime classes live primarily in `workers/main/src/`:
 
-- `auth.ts` - `UserDO`, `OrgDO`, auth-related org/user behavior.
+- `identity/` (`auth.ts` barrel) - `UserDO`, `OrgDO`, and identity helpers. OrgDO domain extraction is in progress (`plans/split-auth-durable-objects.md`); prefer new org logic in `identity/org/` modules rather than growing `org-do.ts`.
 - `workspace.ts` - `WorkspaceDO`, workspace metadata, integration state, token refresh alarms.
-- `chat-thread-do.ts` - `ChatThreadDO`, chat WebSocket state and agent turn coordination.
+- `chat-thread-do.ts` - `ChatThreadDO`, chat WebSocket state and agent turn coordination (large; extract helpers beside it rather than growing the DO further when practical).
 - `workspace-cron.ts` - `WorkspaceCronDO`, scheduled prompt storage and dispatch.
 - `worker-logs-do.ts` - `WorkerLogsDO`, deployed app log storage/streaming.
 - `admin-index-do.ts` - `AdminIndexDO`, admin indexes and dashboard-style aggregates.
 - `org-slug-registry.ts` - `OrgSlugDO`, atomic org slug ownership.
 - `email-handle-registry.ts` - `EmailHandleDO`, email handle ownership.
 - `mcp-handler.ts` - Internal MCP agent/tools.
+- `*-mcp.ts` / `connections-runtime.ts` - Per-provider connection MCP wrappers and shared connection runtime (candidate for an `integrations/` folder).
 - `observability.ts` - Shared Cloudflare Analytics Engine event/error writer. New structured instrumentation should go through this helper instead of calling `writeDataPoint` directly.
 
 Durable Objects use SQLite-backed storage. Prefer:
@@ -212,7 +241,7 @@ curl "https://api.cloudflare.com/client/v4/accounts/$CF_ACCOUNT_ID/analytics_eng
 
 - Browser chat connects to `/ws/{workspace}`.
 - The main worker validates access and routes to `ChatThreadDO`.
-- `ChatThreadDO` runs the Pi coding agent in the Durable Object. File, shell, and container operations are forwarded to the sandbox-host control plane.
+- `ChatThreadDO` runs the Pi coding agent in the Durable Object. File, shell, and container operations are forwarded to the project runtime service on the sandbox host VM.
 - Transport + render history are owned by `@cloudflare/ai-chat` (`ChatThreadDO extends AIChatAgent`). A turn is a resumable UIMessage stream: `onChatMessage` runs the Pi prompt (or the recovery/resume branch) and relays Pi runtime events through the encoder as native UIMessage chunks; `chatRecovery` owns bounded re-drives of an interrupted turn and `chatStreamStallTimeoutMs` bounds a stalled turn (its stream-cancel disposes the hung Pi session and routes the turn into recovery). The client renders from `useAgentChat` (`resume: true`); no bespoke websocket transcript fan-out.
 - Two message stores: **`pi_core_*`** tables are Pi's model-side transcript (authoritative for the agent and repair/eval tooling); the **ai-chat message table** is the browser render history. A high-water-mark backfill (`topUpUiMessagesFromPiCore` / `getUiMessages` RPC) mirrors new pi_core rows into render history. Same-content-same-id invariant: every pi_core row is stamped with the render message id it streams into (`uiMetadata.renderMessageId` — turnId for assistant rows, the persisted skeleton's id for user rows), so the mirror is an idempotent upsert and a whole turn folds into the one live message id. The chat-route loader calls `getUiMessages` for cold load only; live sync rides the stream + CHAT_MESSAGES broadcasts. See `docs/chat-transcript-simplification.md` for the invariants and the derive-on-read roadmap.
 - The Pi event → UIMessage chunk encoder is `src/lib/pi-chunk-encoder.ts`; the UIMessage → legacy `Message` render adapter (both directions) is `src/lib/ui-message-adapter.ts`. Steering appends via RPC + `persistMessages`. The Agent-state payload (`src/lib/chat-agent-state.ts`, shared DO/client) now carries only coarse fields (preview, todos, title, model, terminal error) — streaming and turn duration/completion are derived from the hook + `message-metadata.pi`.
@@ -236,7 +265,7 @@ live in separate files, and the catalog tests fail if any of them drift apart.
 
 ## Proxies And Bindings
 
-- Sandbox containers do not get a generic Worker API proxy. File, shell, and runtime operations go through explicit sandbox-host control-plane APIs.
+- Sandbox containers do not get a generic Worker API proxy. File, shell, and runtime operations go through explicit project-runtime / host control-plane APIs.
 - BYOK credentials are scoped by org/thread and should not be placed into container environment variables.
 - User app deploys can rewrite internal service bindings such as the data proxy, virtual AI binding, and virtual R2 bucket. Relevant files include `workers/main/src/cf-api-proxy.ts`, `data-proxy-service.ts`, `ai-virtual-binding.ts`, and `r2-virtual-bucket.ts`.
 - Outbound database traffic from the data proxy egresses from the sandbox host VM IP `20.46.233.68`. This IP is surfaced in direct database connection setup UIs (postgres, mysql, clickhouse, mongodb, redis, snowflake) for firewall/VPC allowlisting; constant lives in `src/lib/sandbox-network.ts`.
@@ -279,10 +308,15 @@ live in separate files, and the catalog tests fail if any of them drift apart.
 
 ## Testing Guidance
 
+- Place tests next to the surface they cover:
+  - `tests/` — React Router UI, `src/lib`, and other non-worker unit tests (`bun run test` / `test:run`).
+  - `workers/main/tests/` — Worker, Durable Object, and Miniflare tests (`bun run test:workers`). Agent evals live in `workers/main/tests/evals/`.
+  - `e2e/` — Playwright (`bun run test:e2e`).
 - For UI route/component changes, run at least `bun run typecheck` and the most relevant Vitest test(s).
 - For Worker/DO behavior, prefer focused `bun run test:workers -- <test-file>` or `bun run test:workers` when the surface is shared.
 - For changes crossing browser chat, worker routing, and project runtime behavior, test the smallest representative path plus typecheck.
 - Add tests when changing auth, billing/usage, admin purge/ban behavior, proxy auth, file safety, or persistence semantics.
+- `sandbox/validate-notebook.py` is canonical; `workers/main/analysis-sandbox-assets/validate-notebook.py` must stay byte-identical (`tests/analysis-sandbox-asset-drift.test.ts`).
 
 ## Error Handling Culture
 

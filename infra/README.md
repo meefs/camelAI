@@ -3,13 +3,27 @@
 This Terraform module provisions one Azure sandbox-host environment:
 
 - resource group, VNet, subnet, NSG, public IP, and NIC
-- Ubuntu VM for `chiridion-sandbox-host` and `chiridion-data-proxy`
+- Ubuntu VM that runs the **project runtime service** (and related host agents)
+  from the external **`qaml-ai/project-runtime-service`** repo
 - Premium SSD v2 data disk mounted at `/srv/sandboxes`
 - Azure Container Registry for sandbox images
-- cloud-init bootstrap that runs `services/sandbox-host/scripts/setup-host.sh`
+- cloud-init bootstrap for host setup
 
 Use one Terraform workspace/state per environment. Do not apply staging and prod
 from the same state file.
+
+> **Note:** The in-repo Go `services/sandbox-host` tree and `bun run deploy:go:*`
+> scripts were removed from this app repo. Host binaries (including data-proxy)
+> live in `project-runtime-service`. Deploy and host-setup scripts for the shared
+> Azure VMs are owned there — do not reintroduce an in-repo copy.
+>
+> `main.tf` still references `../services/sandbox-host/scripts/setup-host.sh` for
+> cloud-init. That path is stale in this checkout; treat Terraform apply from
+> this tree as needing a sibling checkout or an updated setup-script source
+> before use. Prefer Tailscale SSH + the runtime-service deploy path for day-to-day
+> host changes. Self-host cloud infra (separate from these shared VMs) lives in
+> [`selfhost/`](./selfhost/) — see [`selfhost/README.md`](./selfhost/README.md)
+> and [`docs/self-hosting.md`](../docs/self-hosting.md).
 
 ## Environments
 
@@ -20,8 +34,8 @@ terraform workspace select prod || terraform workspace new prod
 terraform apply -var-file=prod.tfvars
 ```
 
-Staging should run on its own VM and Cloudflare VPC service so Go deploys and
-sandbox-host state do not affect prod:
+Staging should run on its own VM and Cloudflare VPC service so host deploys and
+runtime state do not affect prod:
 
 ```bash
 terraform workspace select staging || terraform workspace new staging
@@ -36,40 +50,17 @@ Examples are provided in:
 Copy the relevant example to `prod.tfvars` or `staging.tfvars`, fill in secrets,
 and keep those real tfvars files out of git.
 
-## Deploying Go Services
+## Host access
 
-The Go deploy script is environment-aware:
-
-```bash
-bun run deploy:go:prod
-bun run deploy:go:staging
-bun run deploy:go:sandbox-host:prod
-bun run deploy:go:sandbox-host:staging
-bun run deploy:go:data-proxy:prod
-bun run deploy:go:data-proxy:staging
-```
-
-The default `bun run deploy:go` and legacy target-specific commands still deploy
-to prod.
-
-If the SSH target changes, override it without editing the script:
-
-```bash
-SANDBOX_GO_DEPLOY_HOST=chiridion@203.0.113.10 bun run deploy:go:staging
-```
-
-Default SSH targets are `chiridion-vm` for prod and `chiridion-vm-staging`
-for staging. GitHub Actions deploys use the VM Tailscale IPs directly: prod
-`100.112.135.2` (`chiridion-sandbox-prod`) and staging `100.115.221.105`
-(`chiridion-sandbox-staging`).
-
-For interactive access, use Tailscale SSH as user `chiridion`; normal access
+For interactive access, use Tailscale SSH as user `[REDACTED]`; normal access
 should not require shared private keys:
 
 ```bash
-tailscale ssh chiridion@chiridion-sandbox-staging
-tailscale ssh chiridion@chiridion-sandbox-prod
+tailscale ssh [REDACTED]@[REDACTED]-sandbox-staging
+tailscale ssh [REDACTED]@[REDACTED]-sandbox-prod
 ```
+
+Tailscale host IPs: staging `100.115.221.105`, prod `100.112.135.2`.
 
 Public SSH ingress is intentionally not opened by Terraform. Administrative and
 deploy SSH should go through Tailscale. Keep `sshd` running on the host so
@@ -85,6 +76,10 @@ that tag to reach the prod and staging VMs on TCP/22.
 ## Cloudflare Wiring
 
 After provisioning a new staging VM, create a separate Cloudflare Tunnel/VPC
-service for that VM and update `wrangler.staging.jsonc` so the `SANDBOX_HOST`
-binding points at the staging service ID. Production should keep its existing
-service ID.
+service for that VM and update `wrangler.staging.jsonc` so the
+`PROJECT_RUNTIME_HOST` / `SANDBOX_HOST` bindings point at the staging service
+IDs. Production should keep its existing service IDs.
+
+Worker-side clients for the data proxy remain in this repo
+(`workers/main/src/data-proxy.ts`, `data-proxy-service.ts`); the Go binary does
+not.

@@ -75,7 +75,7 @@ ENV PATH="/opt/analysis-venv/bin:${PATH}"
 # Pure-stdlib .ipynb inspector (cell errors, charts fallen back to text/plain,
 # blank/constant charts). Wrangler's container build context is this Dockerfile's
 # directory (workers/main), so we COPY a build-context copy of the canonical
-# sandbox/validate-notebook.py. The copy is kept byte-identical by a drift test
+# sandbox/validate-notebook.py (canonical). The copy is kept byte-identical by a drift test
 # (analysis-service.test.ts); update both together.
 COPY analysis-sandbox-assets/validate-notebook.py /usr/local/bin/validate-notebook
 RUN chmod +x /usr/local/bin/validate-notebook

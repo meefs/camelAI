@@ -56,7 +56,8 @@ bun run deploy:dispatcher:prod
 bun run deploy:dispatcher:staging
 ```
 
-See `AGENTS.md` for full architecture documentation.
+See `AGENTS.md` for architecture and conventions, and `docs/README.md` for the
+canonical docs index.
 
 ## Self-Hosting
 

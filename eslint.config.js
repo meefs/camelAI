@@ -19,10 +19,9 @@ export default [
 		},
 	},
 	{
-		// Only first-party source is linted. Local dev state (.sandbox-host
-		// workspace containers, .claude worktrees), build output, vendored
-		// assets, and generated bundles previously made `eslint .` crawl
-		// ~30k files and take minutes.
+		// Only first-party source is linted. Local/dev state, build output,
+		// vendored assets, and generated bundles previously made `eslint .`
+		// crawl ~30k files and take minutes.
 		ignores: [
 			"**/node_modules/**",
 			"**/build/**",
@@ -31,6 +30,7 @@ export default [
 			"**/.wrangler/**",
 			"**/*.d.ts",
 			"**/*.min.js",
+			// Legacy local host checkout dir (in-repo sandbox-host was removed).
 			".sandbox-host/**",
 			".claude/**",
 			"**/public/**",

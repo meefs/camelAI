@@ -1,0 +1,49 @@
+# Documentation
+
+Start here for current docs. Many files in this directory are completed feature
+plans, feedback rounds, or design handoffs — treat those as historical unless
+listed below. Prefer [`../AGENTS.md`](../AGENTS.md) for architecture and
+conventions. Active cross-cutting architecture work also lives in
+[`../plans/`](../plans/).
+
+## Canonical docs
+
+| Doc | Purpose |
+| --- | --- |
+| [self-hosting.md](./self-hosting.md) | Docker Compose / self-host operator guide |
+| [pomerium-auth.md](./pomerium-auth.md) | Pomerium reverse-proxy auth |
+| [cloudflare-access-auth.md](./cloudflare-access-auth.md) | Cloudflare Access reverse-proxy auth |
+| [admin-api-reference.md](./admin-api-reference.md) | Admin REST API reference |
+| [admin-api-migration-guide.md](./admin-api-migration-guide.md) | Admin API migration notes |
+| [chat-transcript-simplification.md](./chat-transcript-simplification.md) | Chat transcript / UIMessage invariants |
+| [shadcn-components.md](./shadcn-components.md) | shadcn component catalog notes |
+| [pi-system-prompt.md](./pi-system-prompt.md) | Generated / exported Pi system prompt snapshot |
+| [exedev-admin-mcp.md](./exedev-admin-mcp.md) | exe.dev admin MCP + mcporter setup |
+| [slack-staging-app.md](./slack-staging-app.md) | Staging Slack app configuration |
+| [warehouse-binding-design.md](./warehouse-binding-design.md) | Warehouse binding design (active) |
+| [workspace-git-service-design.md](./workspace-git-service-design.md) | Workspace git service design (active) |
+| [channels-architecture.html](./channels-architecture.html) | Channels architecture overview |
+| [deterministic-automations-architecture.html](./deterministic-automations-architecture.html) | Deterministic automations architecture |
+
+## Historical docs
+
+Files matching `*-plan.md`, `*-feedback*.md`, `*-review*.md`, and similar
+one-off design notes are usually completed work. They often describe pre-Pi or
+pre-`project-runtime-service` architecture (including the removed in-repo
+`services/sandbox-host` Go tree). Do not treat them as source of truth for
+current behavior.
+
+When adding a new living doc, link it in the table above. When a plan is fully
+shipped, leave it in place for history (or move it under an `archive/` folder in
+a follow-up) and extract any still-true invariants into a canonical doc or
+`AGENTS.md`.
+
+## Related scripts
+
+One-off migration helpers that are not part of the normal workflow:
+
+- `scripts/migrate-to-workspaces.ts` — workspace schema backfill worker
+- `scripts/import-legacy-emails.ts` — legacy email CSV import
+
+Keep for break-glass re-runs; they are intentionally not wired into
+`package.json` scripts.

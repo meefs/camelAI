@@ -1,9 +1,8 @@
 # Project build sandbox warmup manifest
 
-`package.json` in this directory is the UNION of the dependency sets of both
-project scaffold templates in `workers/main/src/project-scaffold.ts` (the
-minimal worker/api template and the react-router template), with the exact
-same version ranges.
+`package.json` in this directory is the UNION of the dependency sets of the
+project scaffold templates in `workers/main/src/project-scaffold.ts`
+(`react-router` and `data-analysis`), with the exact same version ranges.
 
 It exists solely so `workers/main/project-build-sandbox.Dockerfile` can run
 `bun install` against it at image build time, prebaking a warm bun global
