@@ -300,8 +300,17 @@ interface ChatProps {
   onSnapshotChange?: (snapshot: {
     messages: Message[];
     uiMessages: UIMessage[];
+    streamingMessageId: string | null;
     todos: TodoItem[];
   }) => void;
+  /**
+   * Id of the assistant message the instant-paint snapshot captured mid-stream
+   * and EXCLUDED from `initialUiMessages` (see resolveDisplayChatData). Chat
+   * keeps painting it from the legacy snapshot view until the resumed stream
+   * re-delivers it (or a bounded window lapses — a turn that died renders
+   * whatever the loader/broadcast says instead).
+   */
+  bridgedStreamingMessageId?: string | null;
   welcomeData?: {
     userId: string | null;
     userName: string | null;
@@ -590,6 +599,7 @@ export default function Chat({
   connections,
   projects,
   onSnapshotChange,
+  bridgedStreamingMessageId,
   welcomeData,
 }: ChatProps) {
   const navigate = useNavigate();
@@ -746,12 +756,14 @@ export default function Chat({
     onSnapshotChange?.({
       messages: displayMessagesRef.current,
       uiMessages: piChat.uiMessages,
+      streamingMessageId: piChat.streamingMessageId,
       todos: currentTodos,
     });
   }, [
     currentTodos,
     piChat.messages,
     piChat.uiMessages,
+    piChat.streamingMessageId,
     messages,
     onSnapshotChange,
     readOnly,
@@ -894,14 +906,51 @@ export default function Chat({
     syncCompactionIndicator();
   }, [syncCompactionIndicator]);
   const iframeRef = useRef<HTMLIFrameElement>(null);
+  // Paint bridge for the seed's excluded in-flight message: the snapshot seed
+  // omits the assistant message that was mid-stream at capture so the resumed
+  // stream can rebuild it from scratch (see resolveDisplayChatData). Until the
+  // stream re-delivers that id, keep painting the captured legacy view of it —
+  // bounded so a turn that died while away doesn't pin stale content forever
+  // (the loader/broadcast history is authoritative once the bound lapses).
+  const BRIDGE_MAX_MS = 15_000;
+  const [bridgeExpired, setBridgeExpired] = useState(
+    () => !bridgedStreamingMessageId,
+  );
+  useEffect(() => {
+    if (!bridgedStreamingMessageId) return;
+    const timer = setTimeout(() => setBridgeExpired(true), BRIDGE_MAX_MS);
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- mount-scoped bound
+  }, []);
+  const bridgeMessage = useMemo(() => {
+    if (!bridgedStreamingMessageId || bridgeExpired || readOnly) return null;
+    if (piChat.uiMessages.some((m) => m.id === bridgedStreamingMessageId)) {
+      return null;
+    }
+    return (
+      parsedInitialMessages.find(
+        (message) => message.id === bridgedStreamingMessageId,
+      ) ?? null
+    );
+  }, [
+    bridgedStreamingMessageId,
+    bridgeExpired,
+    readOnly,
+    piChat.uiMessages,
+    parsedInitialMessages,
+  ]);
+
   // The durable transcript comes from ai-chat (piChat.messages). Read-only admin
   // viewers render pi_core directly (parsedInitialMessages), and both branches
   // fall back to the loader payload until the hook seeds/streams — this keeps the
   // instant-paint snapshot on thread switch working through the deferred-load gap.
   const baseMessages = useMemo(() => {
     if (readOnly) return parsedInitialMessages;
-    return piChat.messages.length > 0 ? piChat.messages : parsedInitialMessages;
-  }, [readOnly, parsedInitialMessages, piChat.messages]);
+    if (piChat.messages.length === 0) return parsedInitialMessages;
+    return bridgeMessage
+      ? [...piChat.messages, bridgeMessage]
+      : piChat.messages;
+  }, [readOnly, parsedInitialMessages, piChat.messages, bridgeMessage]);
   // Optimistic pending user bubbles that have not yet echoed back through the
   // hook (matched by id / clientMessageId) are appended for immediate feedback.
   const displayMessages = useMemo(() => {

@@ -29,6 +29,10 @@ export function piCoreMessageToParsedChatMessage(
   content: unknown;
   created_at: number;
   forkEntryId: string;
+  /** Render-history message id this row streams into (uiMetadata stamp); the
+   * backfill folds consecutive assistant rows sharing it into that one
+   * UIMessage. Absent on legacy rows committed before stamping shipped. */
+  renderMessageId?: string;
   sentDuringStreaming?: boolean;
   isCompactSummary?: boolean;
 }> {
@@ -72,6 +76,7 @@ export function piCoreMessageToParsedChatMessage(
     const responseId = typeof record.responseId === "string" && record.responseId.trim()
       ? record.responseId.trim()
       : `pi_assistant_${timestamp}_${index}`;
+    const renderMessageId = normalizePiUiMetadata(record.uiMetadata)?.renderMessageId;
     return [{
       id: responseId,
       thread_id: threadId,
@@ -79,6 +84,7 @@ export function piCoreMessageToParsedChatMessage(
       content,
       created_at: timestamp,
       forkEntryId: responseId,
+      ...(renderMessageId ? { renderMessageId } : {}),
     }];
   }
 

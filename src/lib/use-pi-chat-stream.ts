@@ -100,12 +100,15 @@ export function applyToolStreamData(
  * count) instead of blanking it for the replay's duration. Returns the input
  * array identity when no id repeats.
  *
- * Why duplicates exist at all: a tab switch remounts Chat mid-turn and seeds
- * useAgentChat from the snapshot cache, then `resume: true` replays the whole
- * buffered turn stream. When the seeded streaming assistant is NOT the tail
- * message (a steering user skeleton lands below it mid-turn), the AI SDK's
- * chunk writer only knows "replace last / push", so the replayed `start` pushes
- * a SECOND message under the same id instead of adopting the seeded one.
+ * Why duplicates can exist at all: on a remount, `resume: true` replays the
+ * buffered turn stream over the seeded transcript, and the AI SDK's chunk
+ * writer only knows "replace last / push" — a replayed `start` whose id exists
+ * in the seed but is NOT the tail message (e.g. a steering user skeleton below
+ * a completed assistant) pushes a SECOND message under the same id instead of
+ * adopting the seeded one. Id-identity dedupe is exact (no content
+ * heuristics); part-level duplication is designed out at the seam — seeds
+ * never include the in-flight streaming message (see resolveDisplayChatData),
+ * so a replay always rebuilds it from scratch.
  */
 export function dedupeUiMessagesById(messages: UIMessage[]): UIMessage[] {
   const bestById = new Map<string, UIMessage>();
@@ -124,68 +127,6 @@ export function dedupeUiMessagesById(messages: UIMessage[]): UIMessage[] {
     next.push(bestById.get(message.id) as UIMessage);
   }
   return next;
-}
-
-/**
- * Drop hydrated-remnant parts that a resume replay duplicated inside one
- * assistant message. The same tab-switch replay above, in the tail-seeded case,
- * clones the hydrated assistant as its accumulator and re-appends every
- * replayed part after the already-hydrated ones (the agents package only
- * self-heals duplicated TEXT parts, and only when its tail-only reset matched).
- * A part is a remnant when a LATER part re-states it: same toolCallId (tool
- * parts) or same part id (data parts) supersedes outright; for text/reasoning,
- * an earlier non-empty part where one text is a prefix of the other is the
- * hydrated copy of the replayed part — later-extends-earlier once the replay
- * has caught up, earlier-extends-later while the replayed rebuild is still
- * shorter than the hydrated remnant (keep the later: it is the live, growing
- * copy, and rendering both is exactly the duplication bug). Applied only to messages a
- * replayed `start` actually touched (see replayTouchedIdsRef), so an ordinary
- * transcript with genuinely repeated content is never collapsed. Returns the
- * message identity untouched when nothing drops.
- */
-export function collapseReplayDuplicateParts(message: UIMessage): UIMessage {
-  const parts = message.parts;
-  if (!Array.isArray(parts) || parts.length < 2) return message;
-  const drop = new Set<number>();
-  for (let i = 0; i < parts.length; i += 1) {
-    const part = parts[i] as {
-      type: string;
-      text?: unknown;
-      toolCallId?: unknown;
-      id?: unknown;
-    };
-    for (let j = i + 1; j < parts.length; j += 1) {
-      const later = parts[j] as typeof part;
-      if (later.type !== part.type) continue;
-      if (part.type === "text" || part.type === "reasoning") {
-        const earlierText = typeof part.text === "string" ? part.text : "";
-        const laterText = typeof later.text === "string" ? later.text : "";
-        if (
-          earlierText &&
-          (laterText.startsWith(earlierText) ||
-            earlierText.startsWith(laterText))
-        ) {
-          drop.add(i);
-          break;
-        }
-      } else if (typeof part.toolCallId === "string" && part.toolCallId) {
-        if (later.toolCallId === part.toolCallId) {
-          drop.add(i);
-          break;
-        }
-      } else if (typeof part.id === "string" && part.id) {
-        if (later.id === part.id) {
-          drop.add(i);
-          break;
-        }
-      }
-    }
-  }
-  if (drop.size === 0) return message;
-  return {
-    ...message,
-    parts: parts.filter((_, index) => !drop.has(index)),
-  };
 }
 
 /** Splice a streaming tool_result (accumulated live output) after any tool_use
@@ -276,131 +217,14 @@ export function usePiChatStream(opts: {
     onData,
   });
 
-  // Message ids a resumed-stream replay wrote a `start` chunk for. Replay onto
-  // a snapshot-seeded (already hydrated) transcript is what duplicates
-  // messages/parts (see dedupeUiMessagesById / collapseReplayDuplicateParts);
-  // scoping the normalization to these ids keeps it away from ordinary
-  // transcripts. The set drains when a cf_agent_chat_messages broadcast lands —
-  // that frame replaces local state with the server's clean list in the same
-  // event, so the collapse (with its prefix heuristic) never outlives the
-  // window where replay artifacts can exist. NOTE: this reads the agents
-  // package's ws frame shape (type/replay/body); a shape change here degrades
-  // to the pre-fix behavior, it cannot break the transport.
-  const [replayTouchedIds, setReplayTouchedIds] = useState<Set<string>>(
-    () => new Set(),
+  // Normalized render history: duplicate-id messages collapsed to one exact
+  // entry (see dedupeUiMessagesById). This (not chat.messages) is the
+  // transcript every consumer sees — including the thread-switch snapshot, so
+  // a captured state re-seeds clean.
+  const uiMessages = useMemo(
+    () => dedupeUiMessagesById(chat.messages),
+    [chat.messages],
   );
-  // Live mirrors for the socket listener. rawIsStreamingRef: a broadcast
-  // landing MID-turn (steering persist, fork-id stamp) merges the local live
-  // accumulator back in — replay artifacts can survive it, so only an idle
-  // broadcast may drain the set. chatMessagesRef: a replayed start is only
-  // harmful when it lands on an id already hydrated in the transcript; the
-  // listener needs the current list to tell.
-  const rawIsStreamingRef = useRef(false);
-  rawIsStreamingRef.current = chat.isStreaming;
-  const chatMessagesRef = useRef(chat.messages);
-  chatMessagesRef.current = chat.messages;
-  useEffect(() => {
-    const socket = agent as unknown as {
-      addEventListener?: (
-        type: "message",
-        listener: (event: MessageEvent) => void,
-      ) => void;
-      removeEventListener?: (
-        type: "message",
-        listener: (event: MessageEvent) => void,
-      ) => void;
-    };
-    if (!socket?.addEventListener) return;
-    const onSocketMessage = (event: MessageEvent) => {
-      if (typeof event.data !== "string") return;
-      if (event.data.includes('"cf_agent_chat_messages"')) {
-        // An idle broadcast (e.g. the turn-settling persist) replaced local
-        // state with the server's clean list: replay artifacts (and any need
-        // to collapse them) are gone. Mid-turn broadcasts don't drain — see
-        // rawIsStreamingRef.
-        if (!rawIsStreamingRef.current) {
-          setReplayTouchedIds((prev) => (prev.size > 0 ? new Set() : prev));
-        }
-        return;
-      }
-      // Cheap prescreen: only a replayed `start` frame matters (one per
-      // message), not the O(chunks) delta frames. The body is a JSON string
-      // nested in JSON, so its quotes arrive escaped.
-      if (
-        !event.data.includes('"cf_agent_use_chat_response"') ||
-        !event.data.includes('"replay":true') ||
-        !event.data.includes('\\"start\\"')
-      ) {
-        return;
-      }
-      try {
-        const frame = JSON.parse(event.data) as {
-          type?: unknown;
-          replay?: unknown;
-          body?: unknown;
-        };
-        if (frame.type !== "cf_agent_use_chat_response" || !frame.replay) {
-          return;
-        }
-        if (typeof frame.body !== "string") return;
-        const chunk = JSON.parse(frame.body) as {
-          type?: unknown;
-          messageId?: unknown;
-        };
-        if (chunk.type === "start" && typeof chunk.messageId === "string") {
-          const messageId = chunk.messageId;
-          // Only a replay landing on an ALREADY-HYDRATED copy of the message
-          // can duplicate content (the AI SDK clones or pushes alongside it).
-          // A start for an absent or empty-parts id rebuilds cleanly — marking
-          // it would only expose the collapse heuristic to clean transcripts
-          // (e.g. every reconnect replay of an already-completed turn).
-          const existing = chatMessagesRef.current.find(
-            (message) => message.id === messageId,
-          );
-          if (!existing || existing.parts.length === 0) return;
-          setReplayTouchedIds((prev) =>
-            prev.has(messageId) ? prev : new Set(prev).add(messageId),
-          );
-        }
-      } catch {
-        // Not a JSON frame we understand; the chat transport owns it.
-      }
-    };
-    socket.addEventListener("message", onSocketMessage);
-    return () => socket.removeEventListener?.("message", onSocketMessage);
-  }, [agent]);
-
-  // Normalized render history: duplicate-id messages collapsed to one entry,
-  // replay-touched assistant messages stripped of hydrated-remnant parts. This
-  // (not chat.messages) is the transcript every consumer sees — including the
-  // thread-switch snapshot, so a captured mid-replay state re-seeds clean.
-  // Duplicates can only exist after a replayed start touched an id, so an empty
-  // set skips all normalization work on the ordinary streaming hot path. The
-  // collapse result is cached by input identity so a touched-but-settled
-  // message keeps a stable output identity across ticks (the downstream
-  // adapter cache is keyed on it).
-  const collapseCacheRef = useRef(new WeakMap<UIMessage, UIMessage>());
-  const uiMessages = useMemo(() => {
-    if (replayTouchedIds.size === 0) return chat.messages;
-    const deduped = dedupeUiMessagesById(chat.messages);
-    let changed = false;
-    const collapsed = deduped.map((message) => {
-      if (
-        message.role !== "assistant" ||
-        !replayTouchedIds.has(message.id)
-      ) {
-        return message;
-      }
-      let next = collapseCacheRef.current.get(message);
-      if (!next) {
-        next = collapseReplayDuplicateParts(message);
-        collapseCacheRef.current.set(message, next);
-      }
-      if (next !== message) changed = true;
-      return next;
-    });
-    return changed ? collapsed : deduped;
-  }, [chat.messages, replayTouchedIds]);
   const rawIsStreaming = chat.isStreaming;
   const rawStatus = chat.status;
 
@@ -461,9 +285,6 @@ export function usePiChatStream(opts: {
   }, [clearToolStream, isStreaming]);
   useEffect(() => {
     clearToolStream();
-    // Replay-touched ids clear on thread switch (the persist-broadcast drain in
-    // the socket listener handles turn end).
-    setReplayTouchedIds((prev) => (prev.size > 0 ? new Set() : prev));
   }, [clearToolStream, threadId]);
 
   // Adapt each UIMessage once, cached by object identity — ai-chat replaces only

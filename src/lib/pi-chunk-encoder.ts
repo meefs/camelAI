@@ -166,10 +166,11 @@ export function piArtifactsPartId(toolCallId: string): string {
   return `pi-artifacts:${toolCallId}`;
 }
 
-type OpenPart =
-  | { kind: 'text'; key: string }
-  | { kind: 'reasoning'; key: string; providerMetadata: ProviderMetadata }
-  | null;
+type OpenTextPart = { key: string } | null;
+type OpenReasoningPart = {
+  key: string;
+  providerMetadata: ProviderMetadata;
+} | null;
 
 function isPiThreadItem(item: unknown): item is PiThreadItem {
   return Boolean(
@@ -194,9 +195,15 @@ function reasoningKey(itemId: string, contentIndex = 0): string {
  * Stateful, last-part-oriented encoder from Pi runtime events to AI SDK v6
  * UIMessage chunks. The downstream builder (`applyChunkToParts`) appends
  * `text-delta`/`reasoning-delta` to the *last* text/reasoning part and ignores
- * chunk ids, so this encoder serializes part transitions: it closes the open
- * text/reasoning part when a different item emits and reopens a new part when an
- * earlier item resumes. Pi's stream is sequential per item.
+ * chunk ids — but it tracks the two kinds INDEPENDENTLY, so one text part and
+ * one reasoning part can stream concurrently. The encoder therefore keeps one
+ * open slot per kind: a fast model that interleaves reasoning and text deltas
+ * (self-hosted models flush both channels together) accumulates into two
+ * coherent parts instead of fragmenting into alternating slivers. Within a
+ * kind the builder is append-to-last, so a DIFFERENT item of the same kind
+ * still closes and reopens; genuine sequence breaks (a tool item, the plan
+ * panel's creation, user-stop, turn completion) close both slots so the parts
+ * array keeps arrival order around them.
  *
  * Emits `start`/`start-step` at the head, `text`/`reasoning`/`tool` chunks per
  * item, transient `data-pi-tool-stream` for output deltas, non-transient
@@ -205,7 +212,8 @@ function reasoningKey(itemId: string, contentIndex = 0): string {
  */
 export class PiChunkEncoder {
   private readonly messageId: string;
-  private open: OpenPart = null;
+  private openTextPart: OpenTextPart = null;
+  private openReasoningPart: OpenReasoningPart = null;
   private started = false;
   private finished = false;
   private readonly streamedText = new Set<string>();
@@ -428,8 +436,8 @@ export class PiChunkEncoder {
             chunks.push({ type: 'text-delta', delta: boundBlockText(item.text) });
           }
         }
-        if (this.open?.kind === 'text' && this.open.key === item.id) {
-          chunks.push(...this.closeOpen());
+        if (this.openTextPart?.key === item.id) {
+          chunks.push(...this.closeOpenText());
         }
         return chunks;
       }
@@ -442,8 +450,8 @@ export class PiChunkEncoder {
             chunks.push({ type: 'reasoning-delta', delta: boundBlockText(item.text), providerMetadata: meta });
           }
         }
-        if (this.open?.kind === 'reasoning' && this.open.key === item.id) {
-          chunks.push(...this.closeOpen());
+        if (this.openReasoningPart?.key === item.id) {
+          chunks.push(...this.closeOpenReasoning());
         }
         return chunks;
       }
@@ -458,8 +466,8 @@ export class PiChunkEncoder {
             chunks.push({ type: 'reasoning-delta', delta: boundBlockText(text), providerMetadata: meta });
           }
         }
-        if (this.open?.kind === 'reasoning' && this.open.key === key) {
-          chunks.push(...this.closeOpen());
+        if (this.openReasoningPart?.key === key) {
+          chunks.push(...this.closeOpenReasoning());
         }
         return chunks;
       }
@@ -550,34 +558,45 @@ export class PiChunkEncoder {
   }
 
   private openText(key: string): PiUiMessageChunk[] {
-    if (this.open?.kind === 'text' && this.open.key === key) {
+    if (this.openTextPart?.key === key) {
       this.streamedText.add(key);
       return [];
     }
-    const chunks = this.closeOpen();
+    // Only the TEXT slot closes: a concurrently-streaming reasoning part keeps
+    // accumulating (the builder tracks the kinds independently).
+    const chunks = this.closeOpenText();
     chunks.push({ type: 'text-start' });
-    this.open = { kind: 'text', key };
+    this.openTextPart = { key };
     this.streamedText.add(key);
     return chunks;
   }
 
   private openReasoning(key: string, providerMetadata: ProviderMetadata): PiUiMessageChunk[] {
-    if (this.open?.kind === 'reasoning' && this.open.key === key) {
+    if (this.openReasoningPart?.key === key) {
       return [];
     }
-    const chunks = this.closeOpen();
+    const chunks = this.closeOpenReasoning();
     chunks.push({ type: 'reasoning-start', providerMetadata });
-    this.open = { kind: 'reasoning', key, providerMetadata };
+    this.openReasoningPart = { key, providerMetadata };
     return chunks;
   }
 
+  /** Sequence break: close BOTH open slots (tool items, plan-panel creation,
+   * user-stop, turn completion) so the parts array keeps arrival order. */
   private closeOpen(): PiUiMessageChunk[] {
-    if (!this.open) return [];
-    const open = this.open;
-    this.open = null;
-    if (open.kind === 'text') {
-      return [{ type: 'text-end' }];
-    }
+    return [...this.closeOpenText(), ...this.closeOpenReasoning()];
+  }
+
+  private closeOpenText(): PiUiMessageChunk[] {
+    if (!this.openTextPart) return [];
+    this.openTextPart = null;
+    return [{ type: 'text-end' }];
+  }
+
+  private closeOpenReasoning(): PiUiMessageChunk[] {
+    if (!this.openReasoningPart) return [];
+    const open = this.openReasoningPart;
+    this.openReasoningPart = null;
     return [{ type: 'reasoning-end', providerMetadata: open.providerMetadata }];
   }
 }

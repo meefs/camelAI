@@ -655,12 +655,11 @@ describe('ChatThreadDO native stream bridge (commit 3b)', () => {
     });
   });
 
-  it('defers the top-up while the reply persist is pending, then skips the landed rows', async () => {
-    const stub = await newChatThreadStub('thread-reply-persist-gate');
+  it('skips stamped rows when the live turnId row already landed', async () => {
+    const stub = await newChatThreadStub('thread-stamped-skip');
     await runInDurableObject(stub, async (instance: any) => {
-      instance.chatContext = { threadId: 'thread-reply-persist-gate' };
+      instance.chatContext = { threadId: 'thread-stamped-skip' };
       instance.ensurePiCoreTables();
-      // The user skeleton was persisted at send time.
       await instance.persistMessages([
         {
           id: 'client-user-1',
@@ -668,34 +667,6 @@ describe('ChatThreadDO native stream bridge (commit 3b)', () => {
           parts: [{ type: 'text', text: 'q', state: 'done' }],
           metadata: { piCoreMessageKey: '1000' },
         },
-      ]);
-      // turn_end committed the turn's rows to pi_core...
-      seedPiCoreRow(instance, 0, { role: 'user', content: 'q', timestamp: 1000 });
-      seedPiCoreRow(instance, 1, {
-        role: 'assistant',
-        content: [{ type: 'text', text: 'streamed answer' }],
-        timestamp: 1100,
-        responseId: 'resp-1',
-      });
-      // ...agent_end cleared the marker and the stream's execute settled
-      // (tightening the gate to the settle grace), but ai-chat's `_reply` has
-      // not persisted the streamed turnId row yet.
-      instance.pendingPiReplyPersist = {
-        turnId: 'turn-live',
-        deadlineAtMs: Date.now() + 15_000,
-      };
-
-      // A loader hit in that gap (e.g. a tab switch back to this thread) must
-      // not mirror the turn's rows under their deterministic backfill ids.
-      const during = await instance.getUiMessages();
-      expect(during.map((m: AnyRecord) => m.id)).toEqual(['client-user-1']);
-      expect(
-        instance.ctx.storage.kv.get('uiMessagesPiCoreHighWaterIdx'),
-      ).toBeUndefined();
-
-      // `_reply` lands the streamed message — the persist hook releases the gate.
-      await instance.persistMessages([
-        ...instance.messages,
         {
           id: 'turn-live',
           role: 'assistant',
@@ -703,9 +674,16 @@ describe('ChatThreadDO native stream bridge (commit 3b)', () => {
           metadata: { pi: { forkEntryId: 'resp-1' } },
         },
       ]);
-      expect(instance.pendingPiReplyPersist).toBeNull();
+      seedPiCoreRow(instance, 0, { role: 'user', content: 'q', timestamp: 1000 });
+      seedPiCoreRow(instance, 1, {
+        role: 'assistant',
+        content: [{ type: 'text', text: 'streamed answer' }],
+        timestamp: 1100,
+        responseId: 'resp-1',
+        uiMetadata: { renderMessageId: 'turn-live' },
+      });
 
-      // The next top-up skips the turn's rows via the skip-sets: exactly one copy.
+      // Stamped rows dedup by plain id-existence — no content heuristics.
       const after = await instance.getUiMessages();
       expect(after.map((m: AnyRecord) => m.id)).toEqual([
         'client-user-1',
@@ -715,53 +693,97 @@ describe('ChatThreadDO native stream bridge (commit 3b)', () => {
     });
   });
 
-  it('mid-turn persists of the live row do not release the reply-persist gate', async () => {
-    const stub = await newChatThreadStub('thread-reply-persist-midturn');
+  it('converts stamped rows under the live id, so a later reply persist upserts into one row', async () => {
+    const stub = await newChatThreadStub('thread-stamped-converge');
     await runInDurableObject(stub, async (instance: any) => {
-      instance.chatContext = { threadId: 'thread-reply-persist-midturn' };
+      instance.chatContext = { threadId: 'thread-stamped-converge' };
       instance.ensurePiCoreTables();
-      // Stream still running: fork-id stamping / partial trims persist the live
-      // turnId row while activePiStreamTurnId is set. The gate must hold until
-      // the post-execute `_reply` persist.
-      instance.activePiStreamTurnId = 'turn-live';
-      instance.pendingPiReplyPersist = {
-        turnId: 'turn-live',
-        deadlineAtMs: Date.now() + 15 * 60_000,
-      };
+      // The agent_end → `_reply` persist gap (or a rollback): rows are
+      // committed and the marker is cleared, but no live render row exists.
+      seedPiCoreRow(instance, 0, { role: 'user', content: 'q', timestamp: 1000 });
+      seedPiCoreRow(instance, 1, {
+        role: 'assistant',
+        content: [{ type: 'text', text: 'streamed answer' }],
+        timestamp: 1100,
+        responseId: 'resp-1',
+        uiMetadata: { renderMessageId: 'turn-live' },
+      });
+
+      // A loader hit in the gap converts the rows under the SAME id the live
+      // stream persists.
+      const during = await instance.getUiMessages();
+      expect(during.map((m: AnyRecord) => m.id)).toEqual([
+        'pi_user_1000_0',
+        'turn-live',
+      ]);
+
+      // The delayed `_reply` persist then upserts the same id — one row, no
+      // duplicate, regardless of writer order.
       await instance.persistMessages([
+        ...instance.messages.filter((m: AnyRecord) => m.id !== 'turn-live'),
         {
           id: 'turn-live',
           role: 'assistant',
-          parts: [{ type: 'text', text: 'partial', state: 'streaming' }],
+          parts: [{ type: 'text', text: 'streamed answer', state: 'done' }],
+          metadata: { pi: { forkEntryId: 'resp-1' } },
         },
       ]);
-      expect(instance.pendingPiReplyPersist).not.toBeNull();
-      instance.activePiStreamTurnId = null;
+      const after = await instance.getUiMessages();
+      expect(after.map((m: AnyRecord) => m.id)).toEqual([
+        'pi_user_1000_0',
+        'turn-live',
+      ]);
     });
   });
 
-  it('releases the reply-persist gate after the settle window expires (rollback)', async () => {
-    const stub = await newChatThreadStub('thread-reply-persist-expiry');
+  it('folds a multi-SDK-turn run into the one live message id', async () => {
+    const stub = await newChatThreadStub('thread-stamped-fold');
     await runInDurableObject(stub, async (instance: any) => {
-      instance.chatContext = { threadId: 'thread-reply-persist-expiry' };
+      instance.chatContext = { threadId: 'thread-stamped-fold' };
       instance.ensurePiCoreTables();
       seedPiCoreRow(instance, 0, { role: 'user', content: 'q', timestamp: 1000 });
       seedPiCoreRow(instance, 1, {
         role: 'assistant',
-        content: [{ type: 'text', text: 'rolled back' }],
+        content: [
+          { type: 'text', text: 'step one' },
+          { type: 'toolCall', id: 'call-1', name: 'bash', arguments: { cmd: 'ls' } },
+        ],
         timestamp: 1100,
         responseId: 'resp-1',
+        uiMetadata: { renderMessageId: 'turn-live' },
       });
-      // The turn rolled back: nothing will ever persist the turnId row. Once the
-      // settle window lapses the top-up must convert the rows (exactly once).
-      instance.pendingPiReplyPersist = {
-        turnId: 'turn-live',
-        deadlineAtMs: Date.now() - 1,
-      };
+      seedPiCoreRow(instance, 2, {
+        role: 'toolResult',
+        toolCallId: 'call-1',
+        content: 'file.txt',
+        timestamp: 1150,
+      });
+      seedPiCoreRow(instance, 3, {
+        role: 'assistant',
+        content: [{ type: 'text', text: 'step two' }],
+        timestamp: 1200,
+        responseId: 'resp-2',
+        uiMetadata: { renderMessageId: 'turn-live' },
+      });
+
       const after = await instance.getUiMessages();
-      expect(after.map((m: AnyRecord) => m.id)).toEqual(['pi_user_1000_0', 'resp-1']);
+      expect(after.map((m: AnyRecord) => m.id)).toEqual([
+        'pi_user_1000_0',
+        'turn-live',
+      ]);
+      const folded = after[1] as AnyRecord;
+      const partTypes = (folded.parts as AnyRecord[]).map((p) => p.type);
+      expect(partTypes).toEqual(['text', 'tool-bash', 'text']);
+      const pi = (folded.metadata as AnyRecord).pi as AnyRecord;
+      expect(pi.forkEntryId).toBe('resp-2');
+      expect(pi.forkEntryIds).toEqual(['resp-1', 'resp-2']);
+
+      // Idempotent: a second top-up converts nothing new.
       const again = await instance.getUiMessages();
-      expect(again.map((m: AnyRecord) => m.id)).toEqual(['pi_user_1000_0', 'resp-1']);
+      expect(again.map((m: AnyRecord) => m.id)).toEqual([
+        'pi_user_1000_0',
+        'turn-live',
+      ]);
     });
   });
 

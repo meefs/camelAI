@@ -29,6 +29,14 @@ export interface RuntimeArtifactPreviewTarget {
 
 export interface PiUiMetadata {
   codeModeArtifacts?: RuntimeCallArtifact[];
+  /**
+   * The ai-chat render-history message id this pi_core row streams into (the
+   * minted turnId for assistant rows). Stamped at commit time so the pi_core →
+   * render-history backfill is an idempotent upsert: same content, same id,
+   * regardless of which writer (live stream persist or backfill) runs first.
+   * UI-only — stripPiUiMetadata removes it from model-facing loads.
+   */
+  renderMessageId?: string;
 }
 
 export function isRuntimeCallArtifact(value: unknown): value is RuntimeCallArtifact {
@@ -57,7 +65,15 @@ export function normalizePiUiMetadata(value: unknown): PiUiMetadata | undefined 
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
   const record = value as Record<string, unknown>;
   const codeModeArtifacts = normalizeRuntimeCallArtifacts(record.codeModeArtifacts);
-  return codeModeArtifacts.length > 0 ? { codeModeArtifacts } : undefined;
+  const renderMessageId =
+    typeof record.renderMessageId === "string" && record.renderMessageId.trim()
+      ? record.renderMessageId.trim()
+      : undefined;
+  if (codeModeArtifacts.length === 0 && !renderMessageId) return undefined;
+  return {
+    ...(codeModeArtifacts.length > 0 ? { codeModeArtifacts } : {}),
+    ...(renderMessageId ? { renderMessageId } : {}),
+  };
 }
 
 export function stripPiUiMetadata<T>(message: T): T {

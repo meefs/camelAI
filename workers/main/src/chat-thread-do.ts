@@ -732,6 +732,9 @@ export interface AgentEvalParsedMessage {
   content: unknown;
   created_at: number;
   forkEntryId: string;
+  /** Render-history message id this row streams into (uiMetadata stamp);
+   * absent on rows committed before stamping shipped. */
+  renderMessageId?: string;
 }
 
 export interface AgentEvalSessionRequest extends InitialUserMessageRequest {
@@ -988,21 +991,6 @@ const UI_MESSAGES_PI_CORE_LAST_CREATED_AT_KEY = "uiMessagesPiCoreLastCreatedAtMs
 // a writer (e.g. saveMessages skipped) cannot grow memory without bound.
 const PI_STREAM_PRE_ATTACH_CHUNK_CAP = 5000;
 
-// Reply-persist settling window for the top-up gate (see pendingPiReplyPersist).
-// After onChatMessage's execute settles, ai-chat's `_reply` still has to persist
-// the streamed assistant message; a top-up running in that gap would mirror the
-// turn's pi_core rows under their deterministic ids and duplicate the reply once
-// it lands under the minted turnId. GRACE bounds that post-execute gap; the MAX
-// window bounds a stream whose execute never settles (belt over the stall
-// watchdog, which disposes such a stream well inside this cap). When the window
-// expires without a turnId persist (turn rolled back — nothing will write the
-// live row), the gate releases and the top-up converts the rows as before.
-// The grace is deliberately generous: expiring it early re-opens the
-// duplication race under storage contention, while a rollback's rows merely
-// render up to this much later.
-const PI_REPLY_PERSIST_SETTLE_GRACE_MS = 60_000;
-const PI_REPLY_PERSIST_MAX_WINDOW_MS = 15 * 60_000;
-
 // SQLite `current_timestamp` yields "YYYY-MM-DD HH:MM:SS" (UTC, 1s resolution).
 // ai-chat orders render history by that column, so backfilled rows format their
 // explicit created_at the same way but with milliseconds ("...:SS.mmm"): the
@@ -1147,17 +1135,6 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
   // turn marker at the top of onChatMessage so a recovery continuation reuses it.
   // null between turns.
   private activePiStreamTurnId: string | null = null;
-  // Gate for topUpUiMessagesFromPiCore across the whole reply lifecycle: set when
-  // onChatMessage mints a stream, cleared when a persist lands the turnId message
-  // AFTER the execute settled (mid-turn persists of the live row — fork-id stamp,
-  // partial trim, recovery orphan commit — must not release it early; the marker
-  // still gates those phases anyway). deadlineAtMs bounds staleness: the max
-  // window while the stream runs, tightened to the settle grace once execute's
-  // finally runs. See onChatMessage / persistMessages / isPiReplyPersistPending.
-  private pendingPiReplyPersist: {
-    turnId: string;
-    deadlineAtMs: number;
-  } | null = null;
   // The stateful encoder for the in-flight turn (created in onChatMessage from the
   // marker turnId). null when no turn is bridging.
   private piChunkEncoder: PiChunkEncoder | null = null;
@@ -2532,30 +2509,35 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
     }
     lines.push("</camelai system message>");
 
-    const message = {
-      role: "user" as const,
-      content: lines.join("\n"),
-      timestamp: sentAt,
-    } satisfies AgentMessage;
+    const channelSkeleton = text
+      ? this.buildUserUiSkeleton({
+          rawContent: text,
+          channelHistory: true,
+          piCoreMessageKey: sentAt,
+        })
+      : null;
+    const message = this.withPiRenderMessageId(
+      {
+        role: "user" as const,
+        content: lines.join("\n"),
+        timestamp: sentAt,
+      } satisfies AgentMessage,
+      channelSkeleton?.id ?? null,
+    );
     await this.appendPiCoreMessagesIfMissing([message]);
     // Mirror the channel event into the linear render history (commit 3b). A
     // direct linear append (persistMessages, not saveMessages) — this is history,
     // not a new agent turn.
-    if (text) {
+    if (channelSkeleton) {
       this.ctx.waitUntil(
-        this.persistMessages([
-          ...this.messages,
-          this.buildUserUiSkeleton({
-            rawContent: text,
-            channelHistory: true,
-            piCoreMessageKey: sentAt,
-          }),
-        ]).catch((error) => {
-          console.error(
-            "[ChatThreadDO] failed to persist channel-history render message",
-            error,
-          );
-        }),
+        this.persistMessages([...this.messages, channelSkeleton]).catch(
+          (error) => {
+            console.error(
+              "[ChatThreadDO] failed to persist channel-history render message",
+              error,
+            );
+          },
+        ),
       );
     }
     const normalizedChannelKind = normalizeChannelIndicatorKind(channelKind);
@@ -3679,6 +3661,47 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
     });
   }
 
+  /**
+   * Stamp assistant rows with the render-history message id they stream into
+   * (`uiMetadata.renderMessageId`, the minted turnId) before a pi_core commit.
+   * This is the same-content-same-id invariant: the backfill converts stamped
+   * rows under exactly the id the live stream persists, so whichever writer
+   * runs first, the other's upsert converges on one row — no content-heuristic
+   * dedup or persist-ordering gates needed. Copies are stamped (the session's
+   * own message objects are not mutated); piCoreMessageKey strips uiMetadata,
+   * so dedup keys are unaffected.
+   */
+  private stampPiRenderMessageId(
+    messages: AgentMessage[],
+    renderMessageId: string | null,
+  ): AgentMessage[] {
+    if (!renderMessageId) return messages;
+    return messages.map((message) => {
+      const record = message as unknown as Record<string, unknown>;
+      if (record.role !== "assistant") return message;
+      return this.withPiRenderMessageId(message, renderMessageId);
+    });
+  }
+
+  /** Single-message form of the render-id stamp (any role): user rows carry
+   * the id of the ui skeleton persisted for them, assistant rows the turnId. */
+  private withPiRenderMessageId(
+    message: AgentMessage,
+    renderMessageId: string | null,
+  ): AgentMessage {
+    if (!renderMessageId) return message;
+    const record = message as unknown as Record<string, unknown>;
+    const existing = normalizePiUiMetadata(record.uiMetadata);
+    if (existing?.renderMessageId === renderMessageId) return message;
+    return {
+      ...record,
+      uiMetadata: {
+        ...(existing ?? {}),
+        renderMessageId,
+      } satisfies PiUiMetadata,
+    } as unknown as AgentMessage;
+  }
+
   private async appendPiCoreMessagesIfMissing(messages: AgentMessage[]): Promise<void> {
     if (messages.length === 0) return;
     const existingMessages = await this.loadPiCoreMessages();
@@ -3954,7 +3977,12 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
             this.attachCodeModeArtifactsToToolResult(message, { consume: true }),
           ),
         );
-        await this.appendPiCoreMessagesIfMissing(tailWithArtifacts);
+        await this.appendPiCoreMessagesIfMissing(
+          this.stampPiRenderMessageId(
+            tailWithArtifacts,
+            this.activePiStreamTurnId,
+          ),
+        );
         this.piMainBaselineIndex = messages.length;
         // No continuation streams here, so the encoder never emits the
         // turn/completed metadata. If ai-chat orphan-persisted the interrupted
@@ -4974,12 +5002,23 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
     // with no optimistic client placeholder and no special new-thread loader
     // path. The matching turn-end commit skips it via piCoreMessageKey.
     if (startsNewTurn && options.persistUserMessageImmediately) {
+      // Stamp the render id when the client supplied a message id — the
+      // skeleton sendRunnerCommand persists uses the same id. (Without one the
+      // skeleton id is minted later; the row then just relies on the
+      // piCoreMessageKey linkage as before.)
+      const immediateClientMessageId =
+        typeof data.clientMessageId === "string" && data.clientMessageId.trim()
+          ? data.clientMessageId.trim()
+          : null;
       await this.appendPiCoreMessagesIfMissing([
-        {
-          role: "user",
-          content: attributedContent,
-          timestamp: turnTimestamp,
-        } as unknown as AgentMessage,
+        this.withPiRenderMessageId(
+          {
+            role: "user",
+            content: attributedContent,
+            timestamp: turnTimestamp,
+          } as unknown as AgentMessage,
+          immediateClientMessageId,
+        ),
       ]);
     }
 
@@ -8401,7 +8440,9 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
       );
       const newMessages = this.annotatePiProviderErrorMessages(snapshotMessages);
       if (newMessages.length > 0) {
-        await this.appendPiCoreMessagesIfMissing(newMessages);
+        await this.appendPiCoreMessagesIfMissing(
+          this.stampPiRenderMessageId(newMessages, this.activePiStreamTurnId),
+        );
         this.piMainBaselineIndex = snapshot.length;
       }
       // This turn is committed to pi_core_messages; drop its journaled tail (the
@@ -8652,7 +8693,12 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
           ...newMessages,
         ]);
         if (messagesToPersist.length > 0) {
-          await this.appendPiCoreMessagesIfMissing(messagesToPersist);
+          await this.appendPiCoreMessagesIfMissing(
+            this.stampPiRenderMessageId(
+              messagesToPersist,
+              this.activePiStreamTurnId,
+            ),
+          );
           if (session?.state.messages) {
             const baselineMessages = sessionMessages.slice(0, this.piMainBaselineIndex);
             const baselineKeys = baselineMessages.map((message) =>
@@ -8967,26 +9013,32 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
             // message BEFORE any await, so an eviction in the window before Pi drains
             // the in-memory steering queue re-delivers it on resume instead of losing
             // it. The in-flight turn's own recovery fiber makes the run recoverable,
-            // so the model refresh + steer can run async.
-            this.recordPiTurnJournalSteerMessage(userMessage);
+            // so the model refresh + steer can run async. The pi_core copy is
+            // stamped with the skeleton's id (same-content-same-id invariant).
+            const steeredSkeleton = this.buildUserUiSkeleton({
+              rawContent,
+              clientMessageId,
+              messageSource,
+              piCoreMessageKey: timestamp,
+            });
+            const stampedSteerMessage = this.withPiRenderMessageId(
+              userMessage,
+              steeredSkeleton.id,
+            );
+            this.recordPiTurnJournalSteerMessage(stampedSteerMessage);
             this.ctx.waitUntil(
               (async () => {
                 if (!this.piSession) return;
                 await this.refreshPiSessionModel();
                 if (!this.piSession) return;
-                this.piSession.steer(userMessage);
+                this.piSession.steer(stampedSteerMessage);
                 // Append the steered bubble to the linear render history directly
                 // (persistMessages, NOT saveMessages — the latter would enqueue a
                 // second ai-chat turn). The in-flight assistant stream keeps its own
                 // ai-chat turn; this is a sibling linear-history write.
                 await this.persistMessages([
                   ...this.messages,
-                  this.buildUserUiSkeleton({
-                    rawContent,
-                    clientMessageId,
-                    messageSource,
-                    piCoreMessageKey: timestamp,
-                  }),
+                  steeredSkeleton,
                 ]);
               })().catch((error) => {
                 console.error(
@@ -9022,16 +9074,23 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
           // rest).
           const markerAlreadyOpen = this.readPiActiveTurn() !== null;
           this.openPiActiveTurnIfAbsent();
-          this.recordPiTurnJournalUserMessage(userMessage, {
-            append: markerAlreadyOpen,
-          });
-          this.pendingPiPromptQueue.push({ userMessage });
           const userSkeleton = this.buildUserUiSkeleton({
             rawContent,
             clientMessageId,
             messageSource,
             piCoreMessageKey: timestamp,
           });
+          // The pi_core copy carries the skeleton's id (same-content-same-id
+          // invariant) through the journal, the prompt queue, and the turn_end
+          // commit of the session tail.
+          const stampedUserMessage = this.withPiRenderMessageId(
+            userMessage,
+            userSkeleton.id,
+          );
+          this.recordPiTurnJournalUserMessage(stampedUserMessage, {
+            append: markerAlreadyOpen,
+          });
+          this.pendingPiPromptQueue.push({ userMessage: stampedUserMessage });
           // Hand the turn to ai-chat. saveMessages persists the user bubble and drives
           // onChatMessage (wrapped in ai-chat's recovery fiber). Fire-and-forget:
           // saveMessages resolves only when the whole turn's stream closes, but the
@@ -9451,10 +9510,6 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
 
     const turnId = marker.turnId;
     this.activePiStreamTurnId = turnId;
-    this.pendingPiReplyPersist = {
-      turnId,
-      deadlineAtMs: Date.now() + PI_REPLY_PERSIST_MAX_WINDOW_MS,
-    };
     this.piChunkEncoder = new PiChunkEncoder({ messageId: turnId });
     this.piStreamWriter = null;
     this.piPreAttachChunkBuffer = null;
@@ -9551,17 +9606,6 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
             this.piChunkEncoder = null;
             this.piPreAttachChunkBuffer = null;
             this.activePiStreamTurnId = null;
-            // Execute settled; ai-chat's `_reply` persist follows shortly (or
-            // never, on a rollback). Tighten the top-up gate to the settle grace.
-            if (this.pendingPiReplyPersist?.turnId === turnId) {
-              this.pendingPiReplyPersist = {
-                turnId,
-                deadlineAtMs: Math.min(
-                  this.pendingPiReplyPersist.deadlineAtMs,
-                  Date.now() + PI_REPLY_PERSIST_SETTLE_GRACE_MS,
-                ),
-              };
-            }
             // Post-settle: pi-core is idle (or the error path cleared the marker), so
             // broadcast the derived state to clear the client spinner.
             this.syncAgentState();
@@ -9857,10 +9901,12 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
     const realWork = journalTail.filter(
       (message) => !this.isFailedPiAssistantMessage(message),
     );
-    await this.appendPiCoreMessagesIfMissing([
-      ...realWork,
-      this.createPiUserStopMessage(stoppedAtMs),
-    ]);
+    await this.appendPiCoreMessagesIfMissing(
+      this.stampPiRenderMessageId(
+        [...realWork, this.createPiUserStopMessage(stoppedAtMs)],
+        this.activePiStreamTurnId,
+      ),
+    );
     const turnStartedAtMs =
       this.piAgentStartedAtMs || this.piTurnStartedAtMs || completedAtMs;
     this.piAgentStartedAtMs = 0;
@@ -10066,46 +10112,6 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
    * DO RPC only — intentionally NOT wired to any HTTP route (auth-sensitive; the
    * loader wiring is commit 4).
    */
-  /**
-   * ai-chat persist hook: release the reply-persist top-up gate once the streamed
-   * reply row has durably landed. Only a persist carrying the pending turnId
-   * AFTER the stream's execute settled counts — mid-turn persists of the live row
-   * (fork-id stamping, partial trims, recovery orphan commits) run while
-   * `activePiStreamTurnId` is still set and must keep the gate closed.
-   */
-  async persistMessages(
-    messages: UIMessage[],
-    excludeBroadcastIds?: string[],
-    options?: { _deleteStaleRows?: boolean },
-  ): Promise<void> {
-    await super.persistMessages(messages, excludeBroadcastIds, options);
-    const pending = this.pendingPiReplyPersist;
-    if (
-      pending &&
-      this.activePiStreamTurnId === null &&
-      messages.some((message) => message.id === pending.turnId)
-    ) {
-      this.pendingPiReplyPersist = null;
-    }
-  }
-
-  /**
-   * Whether a minted reply stream may still persist its turnId render row —
-   * from onChatMessage minting the stream until that persist lands (or the
-   * bounded window expires: a rolled-back turn never persists, and the top-up
-   * must eventually convert its pi_core rows). Gates topUpUiMessagesFromPiCore
-   * alongside the active-turn marker: the marker is cleared at agent_end, but
-   * ai-chat's `_reply` persist happens after the stream closes, and a top-up in
-   * that gap would duplicate the reply under the deterministic backfill ids.
-   */
-  private isPiReplyPersistPending(): boolean {
-    if (this.activePiStreamTurnId !== null) return true;
-    const pending = this.pendingPiReplyPersist;
-    // A lapsed window (rollback: nothing will persist the turnId row) simply
-    // stops gating; the stale record is overwritten at the next turn's mint.
-    return pending !== null && Date.now() < pending.deadlineAtMs;
-  }
-
   async getUiMessages(): Promise<UIMessage[]> {
     // The SSR loader is the first page-open touch (before the websocket
     // connects). Heal a provably-dead turn's stranded marker here so the load
@@ -10144,21 +10150,14 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
   ): Promise<void> {
     // While a Pi turn is in flight (or awaiting recovery), pi_core rows beyond
     // the mark belong to that turn: they stream into the live turnId render row
-    // (or its recovery continuation), so converting them here would race the
-    // stream and duplicate/merge-clobber the live message. The turn's terminal
-    // paths clear the marker; the next top-up reconciles. The marker alone is
-    // not enough: agent_end clears it before ai-chat's `_reply` persists the
-    // streamed message, and a top-up delivered in that gap would mirror the
-    // turn's rows under the deterministic backfill ids — a durable duplicate
-    // once the turnId row lands (isPiReplyPersistPending covers that window).
-    // `force` bypasses the gate for explicit rebuild flows (admin resync, fork
-    // seeding).
-    if (
-      !options.force &&
-      (this.readPiActiveTurn() || this.isPiReplyPersistPending())
-    ) {
-      return;
-    }
+    // (or its recovery continuation), so converting them here would churn the
+    // live message mid-stream. The turn's terminal paths clear the marker; the
+    // next top-up reconciles. Ordering beyond the marker doesn't matter for
+    // correctness: stamped rows convert under the SAME id the live stream
+    // persists (uiMetadata.renderMessageId), so whichever writer runs first,
+    // the other's upsert converges on one row. `force` bypasses the gate for
+    // explicit rebuild flows (admin resync, fork seeding).
+    if (!options.force && this.readPiActiveTurn()) return;
     const startedAt = Date.now();
     const threadId = this.chatContext?.threadId ?? "";
     const parsed = await this.getPiCoreParsedMessages(threadId);
@@ -10172,23 +10171,20 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
       this.ctx.storage.kv.get<number>(
         UI_MESSAGES_PI_CORE_LAST_CREATED_AT_KEY,
       ) ?? 0;
-    // Live turns already wrote ai-chat rows for this same pi_core content (user
-    // skeletons under clientMessageId / a minted turnId, assistant messages under
-    // the minted turnId). Converting those pi_core rows again would duplicate
-    // them — worse, ai-chat's persistMessages re-ids a converted row that shares
-    // a toolCallId with an existing message onto THAT message (resolveToolMergeId)
-    // and upsert-replaces it, clobbering the live row. So skip any row that
-    // matches an existing ai-chat message:
-    //  - user rows by the stamped pi timestamp (metadata.piCoreMessageKey);
-    //  - assistant rows by fork id — the encoder stamps only the LAST SDK turn's
-    //    responseId as metadata.pi.forkEntryId, plus any ids stamped under
-    //    metadata.pi.forkEntryIds (recovery commit path);
-    //  - assistant rows by tool-call identity — a multi-SDK-turn run commits one
-    //    pi_core assistant row per SDK turn, all streamed into the ONE live
-    //    turnId row; their toolCallIds appearing on an existing message proves
-    //    the content is already rendered (the same identity resolveToolMergeId
-    //    would merge on).
+    // Dedup against rows the live paths already wrote:
+    //  - STAMPED assistant rows (uiMetadata.renderMessageId, every commit since
+    //    stamping shipped) convert under exactly the live stream's message id,
+    //    so a plain id-existence check is the whole dedup — and when neither
+    //    row exists yet, whichever writer runs first, the other upserts the
+    //    same id and converges.
+    //  - user rows match by the exact pi timestamp stamped on their skeleton
+    //    (metadata.piCoreMessageKey).
+    //  - LEGACY unstamped assistant rows (committed before stamping shipped,
+    //    e.g. a turn that straddled the deploy) fall back to the old content
+    //    heuristics: fork-id and tool-call identity against existing messages.
+    //    Delete this fallback once pre-stamp in-flight turns are gone.
     // The high-water mark still advances past skipped rows.
+    const existingIds = new Set<string>(this.messages.map((m) => m.id));
     const existingForkEntryIds = new Set<string>();
     const existingUserKeys = new Set<string>();
     const existingToolCallIds = new Set<string>();
@@ -10233,32 +10229,91 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
       }
       return ids;
     };
+
+    // Group consecutive stamped assistant rows by renderMessageId: a
+    // multi-SDK-turn run commits one pi_core row per SDK turn, all streamed
+    // into the ONE live message, so the group folds into a single UIMessage
+    // under that id (parts concatenated in commit order; pi metadata merged
+    // the way the encoder stamps it — last responseId as forkEntryId, every
+    // responseId under forkEntryIds).
+    type ParsedRenderMessage = (typeof newParsed)[number];
+    const groups: Array<{
+      id: string | null;
+      rows: ParsedRenderMessage[];
+    }> = [];
+    for (const parsedMessage of newParsed) {
+      const stamp =
+        parsedMessage.role === "assistant" &&
+        typeof parsedMessage.renderMessageId === "string" &&
+        parsedMessage.renderMessageId
+          ? parsedMessage.renderMessageId
+          : null;
+      const previous = groups[groups.length - 1];
+      if (stamp && previous?.id === stamp) {
+        previous.rows.push(parsedMessage);
+      } else {
+        groups.push({ id: stamp, rows: [parsedMessage] });
+      }
+    }
+
     const uiMessages: UIMessage[] = [];
     const createdAtById = new Map<string, number>();
-    for (const parsedMessage of newParsed) {
-      if (parsedMessage.role === "assistant") {
+    for (const group of groups) {
+      const first = group.rows[0];
+      if (group.id) {
+        // Stamped assistant group: skip when the live row already landed.
+        if (existingIds.has(group.id)) continue;
+      } else if (first.role === "assistant") {
+        // Legacy unstamped assistant row: old content heuristics.
         if (
-          typeof parsedMessage.forkEntryId === "string" &&
-          existingForkEntryIds.has(parsedMessage.forkEntryId)
+          typeof first.forkEntryId === "string" &&
+          existingForkEntryIds.has(first.forkEntryId)
         ) {
           continue;
         }
-        const toolCallIds = parsedAssistantToolCallIds(parsedMessage.content);
+        const toolCallIds = parsedAssistantToolCallIds(first.content);
         if (toolCallIds.some((id) => existingToolCallIds.has(id))) {
           continue;
         }
-      }
-      if (
-        parsedMessage.role === "user" &&
-        existingUserKeys.has(String(parsedMessage.created_at))
+      } else if (
+        first.role === "user" &&
+        existingUserKeys.has(String(first.created_at))
       ) {
         continue;
       }
-      const ui = messageToUiMessage(parsedMessage as unknown as Message);
+
+      const converted = group.rows.map(
+        (row) => messageToUiMessage(row as unknown as Message),
+      );
+      let ui: UIMessage;
+      if (group.id) {
+        const forkEntryIds = group.rows
+          .map((row) => row.forkEntryId)
+          .filter((id): id is string => typeof id === "string" && !!id);
+        const pi: Record<string, unknown> = {
+          ...(forkEntryIds.length > 0
+            ? {
+                forkEntryId: forkEntryIds[forkEntryIds.length - 1],
+                forkEntryIds,
+              }
+            : {}),
+        };
+        const firstCreatedAt = (
+          converted[0].metadata as { pi?: { createdAtMs?: unknown } } | undefined
+        )?.pi?.createdAtMs;
+        if (typeof firstCreatedAt === "number") pi.createdAtMs = firstCreatedAt;
+        ui = {
+          id: group.id,
+          role: "assistant",
+          parts: converted.flatMap((message) => message.parts),
+          metadata: { pi },
+        } as UIMessage;
+      } else {
+        ui = converted[0];
+      }
       const baseMs =
-        typeof parsedMessage.created_at === "number" &&
-        Number.isFinite(parsedMessage.created_at)
-          ? parsedMessage.created_at
+        typeof first.created_at === "number" && Number.isFinite(first.created_at)
+          ? first.created_at
           : Date.now();
       const createdAtMs = Math.max(baseMs, lastCreatedAtMs + 1);
       lastCreatedAtMs = createdAtMs;

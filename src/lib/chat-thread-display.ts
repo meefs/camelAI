@@ -22,17 +22,33 @@ export interface DisplaySnapshotFields {
  * loader result's render history and briefly paint another thread's transcript
  * (Chat prefers non-empty `piChat.messages` over the legacy fallback) until the
  * second loader fetch resolves.
+ *
+ * Ownership seam: the useAgentChat seed (`initialUiMessages`) EXCLUDES the
+ * message that was mid-stream at capture time. History comes from the seed;
+ * the in-flight turn comes from the resumed stream, exclusively — it rebuilds
+ * that message from scratch, so a hydrated copy underneath the replay (the old
+ * part-duplication bug) can't exist. `bridgedStreamingMessageId` tells Chat
+ * which message to keep painting from the legacy snapshot view until the
+ * stream re-delivers it.
  */
 export function resolveDisplayChatData<T extends DisplaySnapshotFields>(
   resolvedChatData: T,
   cachedSnapshot: ChatThreadSnapshot | null,
   shouldUseCachedSnapshot: boolean,
-): T {
-  if (!shouldUseCachedSnapshot || !cachedSnapshot) return resolvedChatData;
+): T & { bridgedStreamingMessageId: string | null } {
+  if (!shouldUseCachedSnapshot || !cachedSnapshot) {
+    return { ...resolvedChatData, bridgedStreamingMessageId: null };
+  }
+  const streamingMessageId = cachedSnapshot.streamingMessageId;
   return {
     ...resolvedChatData,
     messages: cachedSnapshot.messages,
-    initialUiMessages: cachedSnapshot.uiMessages,
+    initialUiMessages: streamingMessageId
+      ? cachedSnapshot.uiMessages.filter(
+          (message) => message.id !== streamingMessageId,
+        )
+      : cachedSnapshot.uiMessages,
     todos: cachedSnapshot.todos,
+    bridgedStreamingMessageId: streamingMessageId,
   };
 }

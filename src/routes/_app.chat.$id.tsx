@@ -1229,6 +1229,7 @@ export default function ChatPage() {
     (snapshot: {
       messages: Message[];
       uiMessages: UIMessage[];
+      streamingMessageId: string | null;
       todos: TodoItem[];
     }) => {
       if (!displayThreadId || isLoadingDisplayMessages) return;
@@ -1273,6 +1274,7 @@ export default function ChatPage() {
             chatGroupId={liveActiveChatGroup?.id ?? resolvedActiveGroupId}
             initialMessages={displayChatData.messages}
             initialUiMessages={displayChatData.initialUiMessages}
+            bridgedStreamingMessageId={displayChatData.bridgedStreamingMessageId}
             initialTodos={displayChatData.todos}
             threadModel={displayThreadModel}
             llmProvider={llmProvider}

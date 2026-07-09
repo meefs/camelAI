@@ -18,6 +18,12 @@ export interface ChatThreadSnapshot {
   // loader result's `initialUiMessages` and briefly paint another thread's
   // transcript (Chat prefers non-empty piChat.messages over the legacy fallback).
   uiMessages: UIMessage[];
+  // Id of the assistant message that was mid-stream when this snapshot was
+  // captured (null when idle). The seed derived from this snapshot EXCLUDES
+  // that message (resolveDisplayChatData): the resumed stream owns the
+  // in-flight turn exclusively and rebuilds it from scratch — seeding a
+  // hydrated copy underneath the replay is what used to duplicate parts.
+  streamingMessageId: string | null;
   todos: TodoItem[];
   updatedAt: number;
 }

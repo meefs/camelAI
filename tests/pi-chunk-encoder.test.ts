@@ -61,25 +61,55 @@ describe('PiChunkEncoder unit families', () => {
     expect((chunks[1] as { delta: string }).delta).toBe('Hel');
   });
 
-  it('closes and reopens text/reasoning parts on item transitions', () => {
+  it('keeps concurrent text/reasoning parts open; closes only on a same-kind switch', () => {
     const encoder = new PiChunkEncoder({ messageId: 'm' });
     const chunks = [
       ...encoder.encode({ method: 'item/reasoning/textDelta', params: { itemId: 'r', contentIndex: 0, delta: 'think' } }),
+      // A text item starting does NOT close the streaming reasoning part (the
+      // builder tracks the kinds independently) …
       ...encoder.encode({ method: 'item/agentMessage/delta', params: { itemId: 'a', delta: 'answer' } }),
+      // … but a DIFFERENT reasoning item does close the first one (within a
+      // kind the builder is append-to-last).
       ...encoder.encode({ method: 'item/reasoning/textDelta', params: { itemId: 'r2', contentIndex: 0, delta: 'more' } }),
     ];
     expect(types(chunks)).toEqual([
       'reasoning-start',
       'reasoning-delta',
-      'reasoning-end',
       'text-start',
       'text-delta',
-      'text-end',
+      'reasoning-end',
       'reasoning-start',
       'reasoning-delta',
     ]);
     const firstReasoning = chunks[1] as { providerMetadata?: { pi?: { kind?: string; itemId?: string } } };
     expect(firstReasoning.providerMetadata?.pi).toMatchObject({ kind: 'reasoning', itemId: 'r', contentIndex: 0 });
+  });
+
+  it('accumulates interleaved reasoning/text deltas into two coherent parts', () => {
+    // Fast self-hosted models flush reasoning and message deltas interleaved;
+    // the old single-open-slot encoder fragmented them into alternating
+    // slivers ("Thought … / Now let / Thought … / me rebuild…").
+    const encoder = new PiChunkEncoder({ messageId: 'm' });
+    const chunks = [
+      ...encoder.encode({ method: 'item/reasoning/textDelta', params: { itemId: 'r', contentIndex: 0, delta: 'Now I need to rebuild. ' } }),
+      ...encoder.encode({ method: 'item/agentMessage/delta', params: { itemId: 'a', delta: 'Now let ' } }),
+      ...encoder.encode({ method: 'item/reasoning/textDelta', params: { itemId: 'r', contentIndex: 0, delta: 'Then test the API routes.' } }),
+      ...encoder.encode({ method: 'item/agentMessage/delta', params: { itemId: 'a', delta: 'me rebuild and redeploy.' } }),
+      ...encoder.encode({ method: 'item/completed', params: { item: { id: 'r', type: 'reasoning', content: [] } } }),
+      ...encoder.encode({ method: 'item/completed', params: { item: { id: 'a', type: 'agentMessage', text: 'Now let me rebuild and redeploy.' } } }),
+    ];
+    // Exactly one part of each kind: one start per kind, deltas routed to it,
+    // ends only at the items' own completions.
+    expect(types(chunks)).toEqual([
+      'reasoning-start',
+      'reasoning-delta',
+      'text-start',
+      'text-delta',
+      'reasoning-delta',
+      'text-delta',
+      'reasoning-end',
+      'text-end',
+    ]);
   });
 
   it('opens a tool part at started and settles input+output at completed', () => {
