@@ -502,10 +502,11 @@ const DO_SQLITE_CHECK_EXTENSIONS = /\.(?:ts|tsx|js|jsx|mjs|cjs)$/;
 // `mysql`/`libsql` from matching.
 const D1_STYLE_PREPARE_PATTERN = /\bsql\s*\.\s*prepare\s*\(/;
 
-// The scaffold build (react-router build via esbuild) strips types without checking
-// them, so D1-style calls on SqlStorage build cleanly and only crash at runtime after
-// deploy. Catch the known footgun here so build_project/deploy_project fails with a
-// corrective message instead.
+// Current scaffolds typecheck during the build, but older projects' build scripts
+// (react-router build via esbuild) strip types without checking them, so D1-style
+// calls on SqlStorage build cleanly and only crash at runtime after deploy. Catch the
+// known footgun here for every project, with a corrective message that names the fix
+// (tsc only says the property doesn't exist).
 function validateDoSqliteApiUsage(sourceFiles: ProjectSourceFile[]): string | null {
   const decoder = new TextDecoder();
   for (const file of sourceFiles) {

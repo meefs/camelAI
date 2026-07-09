@@ -65,7 +65,7 @@ describe("defaultProjectScaffoldFiles", () => {
       type: "module",
       scripts: {
         dev: "react-router dev",
-        build: "react-router build && node ./scripts/build-manifest.mjs",
+        build: "react-router typegen && tsc --noEmit && react-router build && node ./scripts/build-manifest.mjs",
         typecheck: "react-router typegen && tsc --noEmit",
       },
       dependencies: {
