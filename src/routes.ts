@@ -158,6 +158,7 @@ export default [
   ),
   route("api/legacy-banner/dismiss", "routes/api/legacy-banner.dismiss.ts"),
   route("api/client-errors", "routes/api/client-errors.ts"),
+  route("api/version", "routes/api/version.ts"),
   route("api/help", "routes/api/help.ts"),
   route("api/history", "routes/api/history.tsx"),
   route("api/automations/:id/runs", "routes/api/automations.$id.runs.ts"),

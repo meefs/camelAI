@@ -7,7 +7,8 @@ type ClientErrorSource =
 export type ClientEventSource =
   | 'chat_runner'
   | 'chat_websocket'
-  | 'chat_new_thread';
+  | 'chat_new_thread'
+  | 'version_skew';
 
 export type ClientTelemetrySeverity =
   | 'debug'

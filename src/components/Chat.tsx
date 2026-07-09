@@ -127,6 +127,7 @@ import {
 import { mergeOverlay } from "@/lib/runtime-message-state";
 import type { ChatAgentStatePayload } from "@/lib/chat-agent-state";
 import { usePiChatStream } from "@/lib/use-pi-chat-stream";
+import { checkForVersionSkew } from "@/lib/version-skew";
 import {
   trackChatReconnectFlush,
   trackChatSendDispatched,
@@ -2515,11 +2516,66 @@ export default function Chat({
     [failPendingMessageDelivery, markPendingDeliveryDraftAccepted],
   );
 
+  // Version-skew check (src/lib/version-skew.ts): a stale bundle that just
+  // reconnected or woke up gets one silent reload when the tab holds no user
+  // state, otherwise an "update available" toast. Safety reads through refs so
+  // the callback stays stable.
+  const versionSkewSafetyRef = useRef({
+    input: "",
+    welcomeInput: "",
+    attachmentCount: 0,
+    loading: false,
+  });
+  versionSkewSafetyRef.current = {
+    input,
+    welcomeInput,
+    attachmentCount: attachments.length,
+    loading,
+  };
+  const runVersionSkewCheck = useCallback(
+    (trigger: "socket_open" | "visibility") => {
+      void checkForVersionSkew({
+        trigger,
+        safeToReload: () => {
+          const safety = versionSkewSafetyRef.current;
+          return (
+            !safety.input.trim() &&
+            !safety.welcomeInput.trim() &&
+            safety.attachmentCount === 0 &&
+            !safety.loading &&
+            !isStreamingRef.current &&
+            pendingMessagesRef.current.length === 0
+          );
+        },
+        onUpdateAvailable: (reload) => {
+          toast("camelAI has been updated", {
+            id: "camelai-version-skew",
+            description: "Reload to get the latest version.",
+            duration: 60_000,
+            action: { label: "Reload", onClick: reload },
+          });
+        },
+      });
+    },
+    [],
+  );
+  useEffect(() => {
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "visible") {
+        runVersionSkewCheck("visibility");
+      }
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () =>
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+  }, [runVersionSkewCheck]);
+
   const handleAgentOpen = useCallback(() => {
     const id = threadId;
     if (!id) return;
     setReady(true);
     trackChatSocketOpen(id);
+    runVersionSkewCheck("socket_open");
 
     // History sync on (re)connect is owned by the ai-chat hook now: `resume: true`
     // replays an in-flight turn's stream and the CHAT_MESSAGES broadcast folds in
@@ -2545,7 +2601,7 @@ export default function Chat({
       sendPendingMessageToAgent(message, id);
     }
     setPendingMessages((prev) => prev);
-  }, [isPendingMessageAccepted, sendPendingMessageToAgent, setMessages, setPendingMessages, threadId]);
+  }, [isPendingMessageAccepted, runVersionSkewCheck, sendPendingMessageToAgent, setMessages, setPendingMessages, threadId]);
 
   // Apply a terminal error (delivered through Agent state, not the websocket, so
   // it survives a reconnect after a disconnected/early failure).
