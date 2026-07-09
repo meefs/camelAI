@@ -620,7 +620,7 @@ export function ContentBlockRenderer({
     }
 
     sections.push(
-      <div key={item.key} className="py-2">{item.node}</div>
+      <div key={item.key}>{item.node}</div>
     );
   });
 
