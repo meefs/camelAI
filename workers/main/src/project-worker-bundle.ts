@@ -4,7 +4,9 @@ import type { WorkerBinding } from "./cf-api-proxy.js";
 const BUNDLE_READ_CONCURRENCY = 16;
 
 export interface ProjectBuildSandboxLike {
-  exec(command: string, options?: { cwd?: string; env?: Record<string, string | undefined>; timeout?: number; timeoutMs?: number }): Promise<{
+  // Matches @cloudflare/sandbox ExecOptions: the execution bound is `timeout`
+  // (ms). Do not add a `timeoutMs` alias — the SDK silently ignores it.
+  exec(command: string, options?: { cwd?: string; env?: Record<string, string | undefined>; timeout?: number }): Promise<{
     success?: boolean;
     stdout?: string;
     stderr?: string;

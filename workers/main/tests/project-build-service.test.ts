@@ -88,7 +88,7 @@ describe("runProjectBuild", () => {
     expect(sandbox.exec).toHaveBeenCalledWith(expect.stringContaining("tar -xf '/workspace/demo-project.source.tar'"), { cwd: "/workspace" });
     expect(sandbox.exec).toHaveBeenCalledWith("bun install && bun run build", {
       cwd: "/workspace/demo-project",
-      timeoutMs: 15_000,
+      timeout: 15_000,
       env: {
         CI: "1",
         WRANGLER_SEND_METRICS: "false",
@@ -229,7 +229,7 @@ describe("runProjectAddDependency", () => {
     });
     expect(sandbox.exec).toHaveBeenCalledWith("bun add -d '@types/node@^22'", {
       cwd: "/workspace/demo-project",
-      timeoutMs: 120_000,
+      timeout: 120_000,
       env: {
         CI: "1",
         WRANGLER_SEND_METRICS: "false",

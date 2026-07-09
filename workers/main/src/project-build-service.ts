@@ -197,7 +197,10 @@ export async function runProjectBuild(input: {
   const commandStartedAt = Date.now();
   const result = normalizeSandboxExecResult(await input.sandbox.exec("bun install && bun run build", {
     cwd: workdir,
-    timeoutMs,
+    // @cloudflare/sandbox ExecOptions bounds execution via `timeout` (ms), not
+    // `timeoutMs` — the wrong name is silently ignored and the session default
+    // (as low as the 25s prewarm timeout) applies instead.
+    timeout: timeoutMs,
     env: {
       CI: "1",
       WRANGLER_SEND_METRICS: "false",
@@ -368,7 +371,7 @@ export async function runProjectAddDependency(input: {
   const commandStartedAt = Date.now();
   const result = normalizeSandboxExecResult(await input.sandbox.exec(command, {
     cwd: workdir,
-    timeoutMs: DEFAULT_BUILD_TIMEOUT_MS,
+    timeout: DEFAULT_BUILD_TIMEOUT_MS,
     env: {
       CI: "1",
       WRANGLER_SEND_METRICS: "false",

@@ -71,7 +71,7 @@ async function r2PrefixHasObjects(bucket: R2Bucket, prefix: string): Promise<boo
 export interface AnalysisSandboxLike {
   exec(
     command: string,
-    options?: { cwd?: string; env?: Record<string, string | undefined>; timeoutMs?: number },
+    options?: { cwd?: string; env?: Record<string, string | undefined>; timeout?: number },
   ): Promise<{ success?: boolean; stdout?: string; stderr?: string; exitCode?: number }>;
   mkdir(path: string, options?: { recursive?: boolean }): Promise<unknown>;
   writeFile(path: string, content: string, options?: { encoding?: "base64" | "utf8" }): Promise<unknown>;
@@ -440,7 +440,7 @@ export async function runAnalysisNotebook(
     const nb = normalizeExec(
       await deps.sandbox.exec(notebookExecuteCommand(notebookRel, hasPyproject), {
         cwd: workdir,
-        timeoutMs,
+        timeout: timeoutMs,
         env: { ...analysisRunEnv({ projectId: deps.projectId }), SCRATCH: scratchDir },
       }),
     );
@@ -448,7 +448,7 @@ export async function runAnalysisNotebook(
     // Always run the validator (nbconvert can "succeed" while embedding error
     // outputs the report would surface); its stdout is the structured issue list.
     const val = normalizeExec(
-      await deps.sandbox.exec(validateNotebookCommand(notebookRel), { cwd: workdir, timeoutMs: 60_000 }),
+      await deps.sandbox.exec(validateNotebookCommand(notebookRel), { cwd: workdir, timeout: 60_000 }),
     );
     const validation = parseValidateNotebookOutput(val.stdout, val.exitCode);
 
@@ -491,7 +491,7 @@ export async function runAnalysisExec(
       await deps.sandbox.mkdir(scratch, { recursive: true });
       const cwd = request.cwd ? joinWithin(scratch, request.cwd) : scratch;
       const res = normalizeExec(
-        await deps.sandbox.exec(request.command, { cwd, timeoutMs, env: { ...analysisRunEnv(), SCRATCH: scratch, ...request.env } }),
+        await deps.sandbox.exec(request.command, { cwd, timeout: timeoutMs, env: { ...analysisRunEnv(), SCRATCH: scratch, ...request.env } }),
       );
       return { ok: res.exitCode === 0, stdout: res.stdout, stderr: res.stderr, exitCode: res.exitCode, changedFiles: [], removedFiles: [], skippedOversize: [], durationMs: Date.now() - startedAt, ...(res.exitCode === 0 ? {} : { error: execError(res) }) };
     } finally {
@@ -510,7 +510,7 @@ export async function runAnalysisExec(
     await deps.sandbox.mkdir(scratchDir, { recursive: true });
     const cwd = request.cwd ? joinWithin(workdir, request.cwd) : workdir;
     const res = normalizeExec(
-      await deps.sandbox.exec(request.command, { cwd, timeoutMs, env: { ...analysisRunEnv({ projectId: deps.projectId }), SCRATCH: scratchDir, ...request.env } }),
+      await deps.sandbox.exec(request.command, { cwd, timeout: timeoutMs, env: { ...analysisRunEnv({ projectId: deps.projectId }), SCRATCH: scratchDir, ...request.env } }),
     );
     const persisted = await persistChangedFiles(deps.sandbox, workdir, deps.files, beforeManifest);
     return {
@@ -552,7 +552,7 @@ export async function runAnalysisAddDependency(
       : `uv init --no-workspace --python 3.13 && uv add ${ANALYSIS_DEFAULT_STACK.map(shellQuote).join(" ")} && `;
     const command = `${initCmd}uv add ${request.dev ? "--dev " : ""}${packages.map(shellQuote).join(" ")}`;
     const res = normalizeExec(
-      await deps.sandbox.exec(command, { cwd: workdir, timeoutMs: DEFAULT_DEP_TIMEOUT_MS, env: analysisRunEnv({ projectId: deps.projectId }) }),
+      await deps.sandbox.exec(command, { cwd: workdir, timeout: DEFAULT_DEP_TIMEOUT_MS, env: analysisRunEnv({ projectId: deps.projectId }) }),
     );
 
     const pyprojectPersisted = res.exitCode === 0 ? await persistSingleFile(deps.sandbox, workdir, deps.files, "pyproject.toml") : false;
@@ -591,7 +591,7 @@ export async function runAnalysisCode(
     const code = withWarehouseParams(request.code, request.params);
     await deps.sandbox.writeFile(scriptPath, base64FromString(code), { encoding: "base64" });
     const res = normalizeExec(
-      await deps.sandbox.exec(`python ${shellQuote(scriptPath)}`, { cwd: scratch, timeoutMs: DEFAULT_EXEC_TIMEOUT_MS, env: { ...analysisRunEnv({ connections: deps.connections }), SCRATCH: scratch } }),
+      await deps.sandbox.exec(`python ${shellQuote(scriptPath)}`, { cwd: scratch, timeout: DEFAULT_EXEC_TIMEOUT_MS, env: { ...analysisRunEnv({ connections: deps.connections }), SCRATCH: scratch } }),
     );
     if (res.exitCode !== 0) {
       return { ok: false, stdout: res.stdout, stderr: res.stderr, error: execError(res) };
