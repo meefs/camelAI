@@ -1,9 +1,8 @@
 'use client';
 
-import type { ReactElement } from 'react';
+import type { ReactElement, ReactNode } from 'react';
 import { useState } from 'react';
 import { MessageSquare } from 'lucide-react';
-import type { GroupNewChatAttachmentCard } from '@/types';
 import {
   getFileExtension,
   getPreviewType,
@@ -16,7 +15,6 @@ import {
 } from '@/components/chat-file-preview/spreadsheet/parse-delimited';
 import { MarkdownRenderer } from '@/components/markdown-renderer';
 import { Skeleton } from '@/components/ui/skeleton';
-import { formatRelative } from '@/components/at-mention-menu/mention-target-hover-preview';
 import { formatFileSize } from '@/components/file-card';
 import { cn } from '@/lib/utils';
 
@@ -36,6 +34,20 @@ export interface DelimitedPreviewShape {
   totalRows: number;
   totalCols: number;
   cols: number;
+}
+
+export interface AttachmentHoverPreviewProps {
+  /** Header title: chat title for transcripts, original filename otherwise. */
+  displayName: string;
+  /** Real filename with extension; drives extension labels and CSV/TSV delimiters. */
+  filename: string;
+  size?: number;
+  contentType?: string;
+  kind: AttachmentHoverKind;
+  imageUrl: string | null;
+  state: AttachmentPreviewState;
+  /** Source-chat attribution text. Row is omitted entirely when absent. */
+  footer?: ReactNode;
 }
 
 export function getAttachmentHoverKind(
@@ -65,10 +77,10 @@ export function getAttachmentHoverKind(
 export function shapeDelimitedPreview(
   text: string,
   truncated: boolean,
-  displayName: string,
+  filename: string,
   contentType?: string,
 ): DelimitedPreviewShape {
-  const rows = parseDelimitedRows(text, getSpreadsheetDelimiter(displayName, contentType));
+  const rows = parseDelimitedRows(text, getSpreadsheetDelimiter(filename, contentType));
   const safeRows = truncated ? rows.slice(0, -1) : rows;
   const header = safeRows[0] ?? [];
   const body = safeRows.slice(1, 9);
@@ -80,13 +92,15 @@ export function shapeDelimitedPreview(
 }
 
 function AttachmentHeader({
-  card,
   displayName,
+  filename,
+  size,
 }: {
-  card: GroupNewChatAttachmentCard;
   displayName: string;
+  filename: string;
+  size?: number;
 }) {
-  const ext = getFileExtension(displayName).toUpperCase() || 'FILE';
+  const ext = getFileExtension(filename).toUpperCase() || 'FILE';
 
   return (
     <div className="space-y-0.5 px-3 py-2.5">
@@ -95,7 +109,7 @@ function AttachmentHeader({
       </p>
       <p className="text-xs text-muted-foreground">
         {ext}
-        {card.size != null ? ` · ${formatFileSize(card.size)}` : ''}
+        {size != null ? ` · ${formatFileSize(size)}` : ''}
       </p>
     </div>
   );
@@ -152,21 +166,17 @@ function ImageBody({
 function TableBody({
   text,
   truncated,
-  displayName,
+  filename,
   contentType,
 }: {
   text: string;
   truncated: boolean;
-  displayName: string;
+  filename: string;
   contentType?: string;
 }) {
-  const shape = shapeDelimitedPreview(text, truncated, displayName, contentType);
+  const shape = shapeDelimitedPreview(text, truncated, filename, contentType);
   if (shape.header.length === 0 && shape.body.length === 0) {
-    return (
-      <MetadataBody
-        message="Empty file."
-      />
-    );
+    return <MetadataBody message="Empty file." />;
   }
 
   const clippedColumns = Math.max(0, shape.totalCols - shape.cols);
@@ -265,24 +275,22 @@ function TextBody({
 }
 
 function AttachmentBody({
-  card,
   kind,
   imageUrl,
   state,
   displayName,
+  filename,
+  contentType,
 }: {
-  card: GroupNewChatAttachmentCard;
   kind: AttachmentHoverKind;
   imageUrl: string | null;
   state: AttachmentPreviewState;
   displayName: string;
+  filename: string;
+  contentType?: string;
 }) {
   if (state.status === 'error') {
-    return (
-      <MetadataBody
-        message={state.message}
-      />
-    );
+    return <MetadataBody message={state.message} />;
   }
 
   if (kind === 'image') {
@@ -306,8 +314,8 @@ function AttachmentBody({
       <TableBody
         text={state.text}
         truncated={state.truncated}
-        displayName={displayName}
-        contentType={card.contentType}
+        filename={filename}
+        contentType={contentType}
       />
     );
   }
@@ -320,41 +328,32 @@ function AttachmentBody({
 }
 
 export function AttachmentHoverPreview({
-  card,
+  displayName,
+  filename,
+  size,
+  contentType,
   kind,
   imageUrl,
   state,
-}: {
-  card: GroupNewChatAttachmentCard;
-  kind: AttachmentHoverKind;
-  imageUrl: string | null;
-  state: AttachmentPreviewState;
-}): ReactElement {
-  const displayName = card.originalName || card.filename;
-
+  footer,
+}: AttachmentHoverPreviewProps): ReactElement {
   return (
     <div className="bg-popover text-popover-foreground">
-      <AttachmentHeader card={card} displayName={displayName} />
+      <AttachmentHeader displayName={displayName} filename={filename} size={size} />
       <AttachmentBody
-        card={card}
         kind={kind}
         imageUrl={imageUrl}
         state={state}
         displayName={displayName}
+        filename={filename}
+        contentType={contentType}
       />
-      <div className="flex items-center gap-1 px-3 py-2 text-xs text-muted-foreground">
-        <MessageSquare className="size-3 shrink-0" aria-hidden />
-        <span className="truncate">
-          {card.sourceTitle ? (
-            <>
-              From &ldquo;{card.sourceTitle}&rdquo;
-            </>
-          ) : (
-            'Used'
-          )}{' '}
-          · {formatRelative(card.lastUsedAt)}
-        </span>
-      </div>
+      {footer != null ? (
+        <div className="flex items-center gap-1 px-3 py-2 text-xs text-muted-foreground">
+          <MessageSquare className="size-3 shrink-0" aria-hidden />
+          <span className="truncate">{footer}</span>
+        </div>
+      ) : null}
     </div>
   );
 }

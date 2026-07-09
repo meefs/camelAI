@@ -6,7 +6,8 @@ import {
   AttachmentHoverPreview,
   getAttachmentHoverKind,
   shapeDelimitedPreview,
-} from '@/components/welcome-screen/attachment-hover-preview';
+  type AttachmentHoverPreviewProps,
+} from '@/components/chat-file-preview/attachment-hover-preview';
 
 const NOW = new Date('2026-07-08T12:00:00Z').getTime();
 
@@ -22,6 +23,19 @@ function makeCard(
     lastUsedAt: NOW - 3 * 24 * 60 * 60 * 1000,
     ...overrides,
   };
+}
+
+function renderHoverPreview(overrides: Partial<AttachmentHoverPreviewProps> = {}) {
+  return render(
+    <AttachmentHoverPreview
+      displayName="stored-file.txt"
+      filename="stored-file.txt"
+      kind="metadata"
+      imageUrl={null}
+      state={{ status: 'idle' }}
+      {...overrides}
+    />,
+  );
 }
 
 afterEach(() => {
@@ -95,17 +109,13 @@ describe('AttachmentHoverPreview', () => {
     vi.useFakeTimers();
     vi.setSystemTime(NOW);
 
-    render(
-      <AttachmentHoverPreview
-        card={makeCard({
-          originalName: 'main.py',
-          size: 1024,
-        })}
-        kind="text"
-        imageUrl={null}
-        state={{ status: 'ready', text: 'print("hello")\nprint("again")', truncated: true }}
-      />,
-    );
+    renderHoverPreview({
+      displayName: 'main.py',
+      filename: 'main.py',
+      size: 1024,
+      kind: 'text',
+      state: { status: 'ready', text: 'print("hello")\nprint("again")', truncated: true },
+    });
 
     expect(screen.getByText('main.py')).toBeInTheDocument();
     expect(screen.getByText('PY · 1.0 KB')).toBeInTheDocument();
@@ -122,14 +132,12 @@ describe('AttachmentHoverPreview', () => {
     vi.useFakeTimers();
     vi.setSystemTime(NOW);
 
-    render(
-      <AttachmentHoverPreview
-        card={makeCard({ originalName: 'events.json' })}
-        kind="text"
-        imageUrl={null}
-        state={{ status: 'ready', text: 'x'.repeat(4_100), truncated: false }}
-      />,
-    );
+    renderHoverPreview({
+      displayName: 'events.json',
+      filename: 'events.json',
+      kind: 'text',
+      state: { status: 'ready', text: 'x'.repeat(4_100), truncated: false },
+    });
 
     const pre = screen.getByText((_, element) => element?.tagName === 'PRE');
     expect(pre.textContent).toHaveLength(4_000);
@@ -142,14 +150,12 @@ describe('AttachmentHoverPreview', () => {
     vi.useFakeTimers();
     vi.setSystemTime(NOW);
 
-    const { container } = render(
-      <AttachmentHoverPreview
-        card={makeCard({ originalName: 'README.md' })}
-        kind="markdown"
-        imageUrl={null}
-        state={{ status: 'ready', text: 'x'.repeat(4_100), truncated: false }}
-      />,
-    );
+    const { container } = renderHoverPreview({
+      displayName: 'README.md',
+      filename: 'README.md',
+      kind: 'markdown',
+      state: { status: 'ready', text: 'x'.repeat(4_100), truncated: false },
+    });
 
     const markdownContent = container.querySelector('.markdown-content');
     expect(markdownContent?.textContent).toHaveLength(4_000);
@@ -166,14 +172,12 @@ describe('AttachmentHoverPreview', () => {
       `user${index}@example.com,pro,4,$96,Ada,active,note`,
     );
 
-    render(
-      <AttachmentHoverPreview
-        card={makeCard({ originalName: 'users.csv' })}
-        kind="table"
-        imageUrl={null}
-        state={{ status: 'ready', text: [header, ...rows].join('\n'), truncated: false }}
-      />,
-    );
+    renderHoverPreview({
+      displayName: 'users.csv',
+      filename: 'users.csv',
+      kind: 'table',
+      state: { status: 'ready', text: [header, ...rows].join('\n'), truncated: false },
+    });
 
     expect(screen.getByRole('columnheader', { name: 'email' })).toBeInTheDocument();
     expect(screen.getByText('user0@example.com')).toBeInTheDocument();
@@ -190,14 +194,12 @@ describe('AttachmentHoverPreview', () => {
       `user${index}@example.com,pro`,
     );
 
-    render(
-      <AttachmentHoverPreview
-        card={makeCard({ originalName: 'users.csv' })}
-        kind="table"
-        imageUrl={null}
-        state={{ status: 'ready', text: [header, ...rows].join('\n'), truncated: false }}
-      />,
-    );
+    renderHoverPreview({
+      displayName: 'users.csv',
+      filename: 'users.csv',
+      kind: 'table',
+      state: { status: 'ready', text: [header, ...rows].join('\n'), truncated: false },
+    });
 
     expect(screen.getByText('user7@example.com')).toBeInTheDocument();
     expect(screen.queryByText(/First 8 rows/)).not.toBeInTheDocument();
@@ -207,34 +209,31 @@ describe('AttachmentHoverPreview', () => {
     vi.useFakeTimers();
     vi.setSystemTime(NOW);
 
-    const { container } = render(
-      <AttachmentHoverPreview
-        card={makeCard({ originalName: 'report.pdf' })}
-        kind="metadata"
-        imageUrl={null}
-        state={{ status: 'idle' }}
-      />,
-    );
+    const { container } = renderHoverPreview({
+      displayName: 'report.pdf',
+      filename: 'report.pdf',
+      kind: 'metadata',
+      state: { status: 'idle' },
+    });
 
     expect(screen.getByText('report.pdf')).toBeInTheDocument();
     expect(screen.getByText('PDF')).toBeInTheDocument();
-    expect(container.firstElementChild?.children).toHaveLength(2);
+    expect(container.firstElementChild?.children).toHaveLength(1);
     expect(screen.queryByText(/No preview/)).not.toBeInTheDocument();
     expect(screen.queryByText('Empty file.')).not.toBeInTheDocument();
+    expect(container.querySelector('svg')).not.toBeInTheDocument();
   });
 
   it('renders error messages in the metadata frame', () => {
     vi.useFakeTimers();
     vi.setSystemTime(NOW);
 
-    render(
-      <AttachmentHoverPreview
-        card={makeCard({ originalName: 'missing.csv' })}
-        kind="table"
-        imageUrl={null}
-        state={{ status: 'error', message: 'This file is no longer available.' }}
-      />,
-    );
+    renderHoverPreview({
+      displayName: 'missing.csv',
+      filename: 'missing.csv',
+      kind: 'table',
+      state: { status: 'error', message: 'This file is no longer available.' },
+    });
 
     expect(screen.getByText('This file is no longer available.')).toBeInTheDocument();
   });
@@ -243,17 +242,13 @@ describe('AttachmentHoverPreview', () => {
     vi.useFakeTimers();
     vi.setSystemTime(NOW);
 
-    render(
-      <AttachmentHoverPreview
-        card={makeCard({
-          originalName: 'long-original-report-name-that-wraps.txt',
-          sourceTitle: 'Churn dashboard',
-        })}
-        kind="metadata"
-        imageUrl={null}
-        state={{ status: 'idle' }}
-      />,
-    );
+    renderHoverPreview({
+      displayName: 'long-original-report-name-that-wraps.txt',
+      filename: 'long-original-report-name-that-wraps.txt',
+      kind: 'metadata',
+      state: { status: 'idle' },
+      footer: <>From &ldquo;Churn dashboard&rdquo; · 3 days ago</>,
+    });
 
     expect(screen.getByText('long-original-report-name-that-wraps.txt')).toBeInTheDocument();
     expect(

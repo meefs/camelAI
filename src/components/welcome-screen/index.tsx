@@ -526,6 +526,7 @@ export function WelcomeScreen({
                 attachments={attachments}
                 onFilesSelected={onFilesSelected}
                 onAttachmentRemove={onAttachmentRemove}
+                workspaceId={workspaceId}
                 model={model}
                 onModelChange={onModelChange}
                 modelOptions={modelOptions}
@@ -582,6 +583,7 @@ export function WelcomeScreen({
             attachments={attachments}
             onFilesSelected={onFilesSelected}
             onAttachmentRemove={onAttachmentRemove}
+            workspaceId={workspaceId}
             model={model}
             onModelChange={onModelChange}
             modelOptions={modelOptions}

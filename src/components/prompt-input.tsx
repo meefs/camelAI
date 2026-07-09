@@ -51,6 +51,7 @@ interface PromptInputProps {
   attachments?: Attachment[];
   onFilesSelected?: (files: File[]) => void;
   onAttachmentRemove?: (id: string) => void;
+  workspaceId?: string | null;
   // Voice recording props
   enableVoiceRecording?: boolean;
   // Context indicator props
@@ -127,6 +128,7 @@ export function PromptInput({
   attachments = [],
   onFilesSelected,
   onAttachmentRemove,
+  workspaceId,
   enableVoiceRecording = true,
   contextUsedPercent,
   onCompact,
@@ -509,6 +511,7 @@ export function PromptInput({
               <AttachmentList
                 attachments={attachments}
                 onRemove={onAttachmentRemove}
+                workspaceId={workspaceId ?? null}
                 className="px-0"
               />
             </InputGroupAddon>

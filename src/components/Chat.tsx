@@ -4122,6 +4122,7 @@ type SendOptions = {
                   attachments={attachments}
                   onFilesSelected={handleFilesSelected}
                   onAttachmentRemove={handleAttachmentRemove}
+                  workspaceId={resolvedWorkspaceId}
                   disabled={Boolean(noModelsMessage)}
                   contextUsedPercent={contextUsedPercent}
                   onCompact={handleCompactFromIndicator}
