@@ -24,6 +24,7 @@
 /build
 /dist
 /dist/desktop/
+/workers/eval-reports/dist/
 
 # misc
 .DS_Store

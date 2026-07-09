@@ -2,10 +2,12 @@
 	"name": "chiridion-eval-reports",
 	"version": "1.0.0",
 	"private": true,
+	"type": "module",
 	"description": "Results store + viewer for camelAI agent evals (evals run locally; this keeps the shared history).",
 	"scripts": {
-		"dev": "wrangler dev",
-		"deploy": "wrangler deploy",
-		"typecheck": "tsc --noEmit"
+		"dev": "vite dev",
+		"build": "vite build",
+		"deploy": "vite build && wrangler deploy -c dist/chiridion_eval_reports/wrangler.json",
+		"typecheck": "tsc --noEmit && tsc -p tsconfig.app.json --noEmit"
 	}
 }

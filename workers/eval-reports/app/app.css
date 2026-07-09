@@ -1,0 +1,39 @@
+@import "tailwindcss" source(none);
+@import "tw-animate-css";
+@import "../../../src/styles/shadcn-theme.css";
+
+@source "./";
+@source "../index.html";
+@source "../../../src/components/ui";
+
+@layer base {
+	* {
+		@apply border-border outline-ring/50;
+	}
+	body {
+		@apply bg-background text-foreground;
+	}
+	html,
+	body,
+	#root {
+		min-height: 100%;
+	}
+}
+
+.md-body :is(h1, h2, h3, h4) { @apply mt-4 mb-1.5 font-semibold; }
+.md-body h1 { @apply text-base; }
+.md-body h2 { @apply text-[0.9375rem]; }
+.md-body h3, .md-body h4 { @apply text-sm; }
+.md-body p { @apply my-1.5 leading-relaxed; }
+.md-body ul, .md-body ol { @apply my-1.5 list-outside pl-5; }
+.md-body ul { @apply list-disc; }
+.md-body ol { @apply list-decimal; }
+.md-body li { @apply my-0.5; }
+.md-body code:not(pre code) { @apply rounded bg-muted px-1 py-0.5 font-mono text-xs; }
+.md-body pre { @apply my-2 overflow-auto rounded-md border bg-muted/40 p-3 font-mono text-xs; }
+.md-body table { @apply my-2 w-full border-collapse text-xs; }
+.md-body th, .md-body td { @apply border px-2 py-1 text-left; }
+.md-body th { @apply bg-muted/50 font-medium; }
+.md-body blockquote { @apply my-2 border-l-2 pl-3 text-muted-foreground; }
+.md-body a { @apply text-primary underline underline-offset-2; }
+.md-body hr { @apply my-3; }

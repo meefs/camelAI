@@ -1,5 +1,6 @@
 interface Env {
 	RUNS_BUCKET: R2Bucket;
+	ASSETS: Fetcher;
 
 	/** Cloudflare Access team domain (issuer), e.g. "https://qaml.cloudflareaccess.com". */
 	CF_ACCESS_TEAM_DOMAIN: string;
@@ -9,17 +10,7 @@ interface Env {
 	CF_ACCESS_ENABLED?: string;
 }
 
-declare module "*.html" {
-	const text: string;
-	export default text;
-}
-
-declare module "*.md" {
-	const text: string;
-	export default text;
-}
-
-declare module "*.svg" {
+declare module "*.md?raw" {
 	const text: string;
 	export default text;
 }

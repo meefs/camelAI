@@ -24,13 +24,15 @@ bun run test:eval <id>  (locally: docker build + Miniflare eval)
 
 ## Layout
 
-- `src/index.ts` — Worker: upload endpoints, read API, dashboard. All routes re-validate the
+- `src/index.ts` — Worker: upload endpoints, read API, and static asset fallback. All routes re-validate the
   Cloudflare Access JWT (`src/access.ts`); there are **no worker secrets** — uploads authenticate
   with an Access service token, humans with their Access login.
 - `src/ingest.ts` — folds transcript artifacts into the run record at report time (pass/fail
   criteria, scorecard, signal, deployed apps; synthesizes a contract failure when an artifact
   carries no valid evaluation).
-- `dashboard/index.html` — single-file read-only dashboard (list, scorecards, transcript, log).
+- `index.html`, `app/`, `vite.config.ts` — Vite-built React SPA dashboard. It imports the main
+  app's shadcn primitives from `src/components/ui` and shared theme tokens from
+  `src/styles/shadcn-theme.css`.
 - `SKILL.md` — usage doc, self-served at `GET /skill` (single source of truth).
 - The reporter lives with the eval runner: `scripts/report-eval-run.mjs`, invoked automatically by
   `scripts/run-agent-eval.mjs` when `EVAL_REPORT=1`.
@@ -48,7 +50,7 @@ main", deploy command `bun run deploy:eval-reports`) — the same Git integratio
 workers use. Deploy by hand when needed:
 
 ```bash
-bun run deploy:eval-reports          # wrangler deploy -c workers/eval-reports/wrangler.jsonc
+bun run deploy:eval-reports          # vite build, then deploy dist/chiridion_eval_reports/wrangler.json
 ```
 
 One-time setup (already done for the production deployment; kept here for reference / re-setup):
@@ -65,10 +67,10 @@ One-time setup (already done for the production deployment; kept here for refere
 ## Local dev
 
 ```bash
-cd workers/eval-reports
-CF_ACCESS_ENABLED=0 ../../node_modules/.bin/wrangler dev --port 8789   # local R2 simulation
+bun run dev:eval-reports             # Vite + Worker on http://localhost:8789
 # report a run into it:
 EVAL_REPORT_BASE=http://localhost:8789 node scripts/report-eval-run.mjs --eval <id> --artifact <file>
 ```
 
-Typecheck: `cd workers/eval-reports && bun run typecheck`.
+Keep `workers/eval-reports/.dev.vars` with `CF_ACCESS_ENABLED=0` for local development. Typecheck:
+`cd workers/eval-reports && bun run typecheck`.

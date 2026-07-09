@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+		<title>camelAI Evals</title>
+		<link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+		<script>
+			// Pre-hydration dark-mode guard (next-themes stores under "theme").
+			(() => {
+				const t = localStorage.getItem("theme");
+				const dark =
+					t === "dark" ||
+					((!t || t === "system") &&
+						matchMedia("(prefers-color-scheme: dark)").matches);
+				document.documentElement.classList.toggle("dark", dark);
+			})();
+		</script>
+		<link rel="preconnect" href="https://fonts.googleapis.com" />
+		<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+		<link
+			rel="stylesheet"
+			href="https://fonts.googleapis.com/css2?family=Figtree:ital,wght@0,300..900;1,300..900&family=Geist+Mono:wght@100..900&display=swap"
+		/>
+	</head>
+	<body>
+		<div id="root"></div>
+		<script type="module" src="/app/main.tsx"></script>
+	</body>
+</html>

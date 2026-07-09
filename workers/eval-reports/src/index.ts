@@ -17,14 +17,7 @@ import { verifyAccess } from "./access";
 import { ingestResults, type ArtifactFile } from "./ingest";
 import type { CompleteRequest, Run } from "./types";
 
-import dashboardHtml from "../dashboard/index.html";
-import faviconSvg from "../dashboard/favicon.svg";
-import skillDoc from "../SKILL.md";
-
-const FAVICON_HEADERS = {
-	"cache-control": "public, max-age=86400",
-	"content-type": "image/svg+xml; charset=utf-8",
-};
+import skillDoc from "../SKILL.md?raw";
 
 const RUNS_PREFIX = "runs/";
 const RUN_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
@@ -226,14 +219,11 @@ app.get("/skill", (c) =>
 	c.text(skillDoc, 200, { "content-type": "text/markdown; charset=utf-8" }),
 );
 
-app.get("/favicon.svg", (c) => c.body(faviconSvg, 200, FAVICON_HEADERS));
-app.get("/favicon.ico", (c) => c.body(faviconSvg, 200, FAVICON_HEADERS));
-
 app.notFound((c) => {
 	if (c.req.path.startsWith("/api/") || c.req.path.startsWith("/upload/")) {
 		return c.json({ error: "Not found" }, 404);
 	}
-	return c.html(dashboardHtml);
+	return c.env.ASSETS.fetch(c.req.raw);
 });
 
 export default {
