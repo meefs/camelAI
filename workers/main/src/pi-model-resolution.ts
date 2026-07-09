@@ -91,7 +91,12 @@ export class PiModelMapping {
           },
         };
       case "deepseek-v4-flash":
-        return openRouterReference("deepseek/deepseek-v4-flash");
+        return {
+          ...openRouterReference("deepseek/deepseek-v4-flash"),
+          hostedGatewayProvider: "compat",
+          hostedModelId: "dynamic/deepseek-v4-flash-fallback",
+          hostedReasoningEffort: "xhigh",
+        };
       default:
         if (normalizedModelId.includes("/")) {
           return openRouterReference(normalizedModelId);

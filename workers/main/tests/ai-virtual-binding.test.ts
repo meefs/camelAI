@@ -188,6 +188,30 @@ describe("resolveRouting", () => {
     expect(routing.byokKey).toBeUndefined();
   });
 
+  it("routes hosted DeepSeek V4 Flash through the flash fallback dynamic route", async () => {
+    const routing = await resolveRouting(
+      {
+        env: {
+          ORG: {
+            idFromName: vi.fn((id: string) => id),
+            get: vi.fn(() => ({
+              getLlmProviderConfig: vi.fn(async () => null),
+            })),
+          } as never,
+        },
+        props: { orgId: "org1", workspaceId: "ws1" },
+        waitUntil: vi.fn(),
+      },
+      "deepseek-v4-flash",
+    );
+
+    expect(routing.provider).toBe("openrouter");
+    expect(routing.gatewayProvider).toBe("compat");
+    expect(routing.usageProvider).toBe("compat");
+    expect(routing.model).toBe("dynamic/deepseek-v4-flash-fallback");
+    expect(routing.byokKey).toBeUndefined();
+  });
+
   it("does not route DeepSeek V4 Auto through OpenRouter BYOK", async () => {
     const encrypted = await encryptCredentials({ api_key: "openrouter-token" }, "secret");
     const routing = await resolveRouting(

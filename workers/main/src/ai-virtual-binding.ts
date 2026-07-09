@@ -131,8 +131,8 @@ const DEEPSEEK_V4_VIRTUAL_AI_ROUTES: Readonly<
   },
   "deepseek-v4-flash": {
     nativeOpenRouterModel: "deepseek/deepseek-v4-flash",
-    hostedModel: "deepseek/deepseek-v4-flash",
-    hostedGatewayProvider: "openrouter",
+    hostedModel: "dynamic/deepseek-v4-flash-fallback",
+    hostedGatewayProvider: "compat",
     allowOpenRouterByok: true,
   },
 };
