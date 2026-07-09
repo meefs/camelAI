@@ -5,6 +5,11 @@ run **locally** in a chiridion-app checkout (`bun run test:eval <id>` — they n
 `.dev.vars`); with `EVAL_REPORT=1` the reporter uploads each finished run here, so the team keeps
 one history of scorecards, transcripts, and logs without any remote runner infrastructure.
 
+Suite and matrix runs carry a shared `batchId`/`batchLabel` through the reporter so the dashboard
+can answer "how did that invocation do?" at `/` and `/batches/:batchId`. Run records also store
+manifest `kind` (`unit`/`skill`), manifest `description`, and ingest-derived `startPrompt` from the
+uploaded artifact; legacy ad-hoc runs without a batch render as singleton batches.
+
 This replaced the retired `qaml-ai/camelai-eval-runner` VM control plane (queue + dispatcher +
 tunnel + SQLite). There is no queue and nothing executes remotely — runs arrive here only after
 they finish.
@@ -41,7 +46,16 @@ bun run test:eval <id>  (locally: docker build + Miniflare eval)
 
 One R2 prefix per run: `runs/<runId>/run.json` (the record the API serves), `output.log`,
 `artifacts/<eval>.json`. Run ids embed a UTC timestamp, so listing the prefixes in reverse order
-is newest-first — no database.
+is newest-first.
+
+Completed reports also update batch indexes: `batch-runs/<batchId>/<runId>.json` stores each
+member run, `batch-summaries/<batchId>.json` stores its complete aggregate, and the CAS-maintained
+`batch-index/recent.json` stores at most 200 time-ordered batch/singleton pointers for the default
+Batches view, plus bounded removal revisions that prevent stale concurrent writers from restoring
+deleted pointers. Empty summaries become conditional tombstones so concurrent reporters cannot
+be deleted accidentally. Pre-index fallback uses bounded `startAfter` probes over timestamped run
+ids to recover the newest canonical tail despite R2's ascending listing order. Batch detail pages
+read only the indexed member runs for that batch instead of scanning the full run history.
 
 ## Deploy
 

@@ -1,84 +1,102 @@
 {
-  "$comment": "Single source of truth for committed agent evals. Adding an eval = create workers/main/tests/evals/<id>.test.ts (gated on RUN_AGENT_EVALS, ending in emitEvalTranscript from ./eval-transcript) and add one entry here. Consumed by scripts/run-agent-eval.mjs and scripts/run-eval-suite.sh. custom-prompt-live is intentionally NOT listed — it's the generic env-driven custom-prompt harness, not a fixed eval. realDeploy:true marks evals that only run when real deploy is enabled (CF_API_TOKEN + EVAL_REAL_DEPLOY!=0).",
+  "$comment": "Single source of truth for committed agent evals. Adding an eval = create workers/main/tests/evals/<id>.test.ts (gated on RUN_AGENT_EVALS, ending in emitEvalTranscript from ./eval-transcript) and add one entry here. Each entry requires kind: unit checks one mechanism; skill checks end-to-end agent ability. Scorecard point budgets should be unit 1-5 pts, skill 6-20 pts scaled to task complexity; pass/fail criteria remain the hard contract. Consumed by scripts/run-agent-eval.mjs and scripts/run-eval-suite.sh. custom-prompt-live is intentionally NOT listed — it's the generic env-driven custom-prompt harness, not a fixed eval. realDeploy:true marks evals that only run when real deploy is enabled (CF_API_TOKEN + EVAL_REAL_DEPLOY!=0).",
   "evals": [
     {
       "id": "dashboard-fake-data-live",
-      "description": "Build a polished static HTML dashboard from fake business data"
+      "description": "Build a polished static HTML dashboard from fake business data",
+      "kind": "skill"
     },
     {
       "id": "shadcn-components-live",
-      "description": "Create a DO-backed React Router app and add new shadcn/ui components"
+      "description": "Create a DO-backed React Router app and add new shadcn/ui components",
+      "kind": "skill"
     },
     {
       "id": "deploy-fake-data-live",
       "description": "Scaffold + deploy a Cloudflare Worker app to the testing-grounds namespace",
+      "kind": "skill",
       "realDeploy": true
     },
     {
       "id": "do-backed-project-deploy-live",
       "description": "Create and deploy a DO-backed project with Durable Object persistence through deploy_project",
+      "kind": "skill",
       "realDeploy": true
     },
     {
       "id": "browser-automation-live",
       "description": "Deploy a small app and verify it with env.BROWSER interactive browser automation",
+      "kind": "skill",
       "realDeploy": true
     },
     {
       "id": "project-update-redeploy-state-live",
       "description": "Update and redeploy a DO-backed app while preserving Durable Object state",
+      "kind": "skill",
       "realDeploy": true
     },
     {
       "id": "space-matching-game-live",
       "description": "Build and deploy a persistent space themed matching game with leaderboard",
+      "kind": "skill",
       "realDeploy": true
     },
     {
       "id": "sandbox-write-file-live",
-      "description": "Write and verify a file in the project sandbox"
+      "description": "Write and verify a file in the project sandbox",
+      "kind": "unit"
     },
     {
       "id": "data-analysis-report-live",
-      "description": "Create a notebook-first data-analysis project, run the notebook, and preview the report"
+      "description": "Create a notebook-first data-analysis project, run the notebook, and preview the report",
+      "kind": "skill"
     },
     {
       "id": "notebook-fix-rerun-live",
-      "description": "Fix a stale failing data-analysis notebook, rerun it, and preview the refreshed report"
+      "description": "Fix a stale failing data-analysis notebook, rerun it, and preview the refreshed report",
+      "kind": "skill"
     },
     {
       "id": "notebook-deploy-live",
       "description": "Create a data-analysis notebook project, run it, and publish the report as a static app with minimal prompting",
+      "kind": "skill",
       "realDeploy": true
     },
     {
       "id": "project-snapshot-revert-live",
-      "description": "Discover and restore a DO-backed project source snapshot with list_commits/revert_project"
+      "description": "Discover and restore a DO-backed project source snapshot with list_commits/revert_project",
+      "kind": "unit"
     },
     {
       "id": "project-revert-redeploy-live",
       "description": "Restore a DO-backed project source snapshot and redeploy the restored live app",
+      "kind": "skill",
       "realDeploy": true
     },
     {
       "id": "scheduled-prompt-live",
-      "description": "Create a scheduled prompt and verify it persisted (exercises the lean-dropped schedules tools via discovery)"
+      "description": "Create a scheduled prompt and verify it persisted (exercises the lean-dropped schedules tools via discovery)",
+      "kind": "unit"
     },
     {
       "id": "workflow-live",
-      "description": "Create a deterministic workflow and verify it persisted (exercises the lean-dropped workflows tools via discovery)"
+      "description": "Create a deterministic workflow and verify it persisted (exercises the lean-dropped workflows tools via discovery)",
+      "kind": "unit"
     },
     {
       "id": "integration-create-live",
-      "description": "Create a remote MCP integration and verify it persisted (exercises the lean-dropped integrations tools via discovery)"
+      "description": "Create a remote MCP integration and verify it persisted (exercises the lean-dropped integrations tools via discovery)",
+      "kind": "unit"
     },
     {
       "id": "custom-domain-live",
-      "description": "Discover and call the custom-domain diagnostics tool (exercises the lean-dropped domains tools via discovery)"
+      "description": "Discover and call the custom-domain diagnostics tool (exercises the lean-dropped domains tools via discovery)",
+      "kind": "unit"
     },
     {
       "id": "warehouse-list-live",
-      "description": "Discover and call the warehouse connection listing tool (exercises the lean-dropped warehouse/connections tools via discovery)"
+      "description": "Discover and call the warehouse connection listing tool (exercises the lean-dropped warehouse/connections tools via discovery)",
+      "kind": "unit"
     }
   ]
 }

@@ -1,5 +1,6 @@
 /** Terminal-only: runs are reported after they finish; there is no queue. */
 export type RunStatus = "completed" | "failed";
+export type EvalKind = "unit" | "skill";
 
 export interface EvalSignalSummary {
 	assistantTurnCount?: number;
@@ -71,6 +72,16 @@ export interface Run {
 	status: RunStatus;
 	/** The eval id that ran (e.g. "deploy-fake-data-live" or "custom-prompt-live"). */
 	evalTarget: string;
+	/** Shared id for all runs reported by one suite/matrix invocation. */
+	batchId?: string;
+	/** Human label for the batch, e.g. "suite: all" or "matrix: 2 models × 3 evals". */
+	batchLabel?: string;
+	/** Structural category from the eval manifest. */
+	kind?: EvalKind;
+	/** One-line description from the eval manifest. */
+	description?: string;
+	/** Initial user prompt, extracted from the transcript artifact at ingest. */
+	startPrompt?: string;
 	/** Branch the reporting checkout was on. */
 	ref?: string;
 	/** Resolved commit SHA of the reporting checkout. */
@@ -94,10 +105,42 @@ export interface Run {
 	evaluation?: EvalCriteriaSummary;
 }
 
+export interface BatchSummary {
+	/** run.batchId, or run.runId for a batchless singleton. */
+	id: string;
+	/** true when this is a synthesized single-run batch with no stored batchId. */
+	singleton: boolean;
+	label: string;
+	/** Distinct eval ids contained in this batch, used for search. */
+	evalTargets: string[];
+	models: string[];
+	ref?: string;
+	commit?: string;
+	passed: number;
+	total: number;
+	kindBreakdown: {
+		unit: { passed: number; total: number };
+		skill: { passed: number; total: number };
+	};
+	score?: { points: number; maxPoints: number; percentage: number; unscored: number };
+	costUsd?: number;
+	totalTokens?: number;
+	badToolCalls: number;
+	startedAt?: string;
+	finishedAt?: string;
+	/** max(run.createdAt), used for list ordering. */
+	createdAt: string;
+	createdBy?: string;
+}
+
 /** Body of POST /upload/:runId/complete — run metadata from the reporter. */
 export interface CompleteRequest {
 	evalTarget: string;
 	exitCode: number;
+	batchId?: string;
+	batchLabel?: string;
+	kind?: EvalKind;
+	description?: string;
 	ref?: string;
 	commit?: string;
 	model?: string;

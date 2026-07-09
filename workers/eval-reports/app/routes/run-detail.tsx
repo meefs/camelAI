@@ -15,7 +15,7 @@ import {
 	TabsTrigger,
 } from "@/components/ui/tabs";
 import {
-	ArrowLeft,
+	ArrowRight,
 	Check,
 	Copy,
 	ExternalLink,
@@ -28,7 +28,10 @@ import {
 	useLoaderData,
 	useSearchParams,
 } from "react-router";
+import { BackButton } from "../components/back-button";
 import { CriteriaCard } from "../components/criteria-card";
+import { EvalKindBadge } from "../components/eval-name-cell";
+import { PromptSection } from "../components/prompt-section";
 import { ScoreValue } from "../components/score";
 import { ScorecardCard } from "../components/scorecard-card";
 import { TextViewer } from "../components/text-viewer";
@@ -60,7 +63,7 @@ export async function runLoader({ params }: LoaderFunctionArgs) {
 	return fetchRun(params.runId);
 }
 
-function SeparatorDot() {
+export function SeparatorDot() {
 	return <span className="text-border">·</span>;
 }
 
@@ -99,7 +102,15 @@ function MetaLine({ run }: { run: Run }) {
 	);
 }
 
-function RunIdLine({ runId }: { runId: string }) {
+export function RunIdLine({
+	runId,
+	copyLabel = "Copy run id",
+	children,
+}: {
+	runId: string;
+	copyLabel?: string;
+	children?: React.ReactNode;
+}) {
 	const [copied, setCopied] = useState(false);
 	async function copyRunId() {
 		await navigator.clipboard.writeText(runId);
@@ -114,16 +125,17 @@ function RunIdLine({ runId }: { runId: string }) {
 				variant="ghost"
 				size="icon"
 				className="size-6"
-				aria-label="Copy run id"
+				aria-label={copyLabel}
 				onClick={copyRunId}
 			>
 				{copied ? <Check /> : <Copy />}
 			</Button>
+			{children}
 		</div>
 	);
 }
 
-function StatTile({
+export function StatTile({
 	label,
 	value,
 	title,
@@ -323,22 +335,31 @@ export function RunDetailPage() {
 
 	return (
 		<div>
-			<Button variant="ghost" size="sm" asChild className="-ml-2 mb-4">
-				<Link to="/">
-					<ArrowLeft />
-					All runs
-				</Link>
-			</Button>
+			<BackButton fallback="/" />
 			<div className="flex items-start justify-between gap-4">
 				<div className="min-w-0 flex-1">
 					<div className="flex items-center gap-3">
 						<VerdictBadge status={run.status} size="lg" />
+						<EvalKindBadge evalTarget={run.evalTarget} kind={run.kind} />
 						<h1 className="min-w-0 truncate text-xl font-semibold tracking-tight">
 							{run.evalTarget}
 						</h1>
 					</div>
 					<MetaLine run={run} />
-					<RunIdLine runId={run.runId} />
+					<RunIdLine runId={run.runId}>
+						{run.batchId ? (
+							<>
+								<SeparatorDot />
+								<Link
+									to={`/batches/${encodeURIComponent(run.batchId)}`}
+									className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
+								>
+									in {run.batchLabel ?? "batch"}
+									<ArrowRight className="size-3" />
+								</Link>
+							</>
+						) : null}
+					</RunIdLine>
 				</div>
 				{score && score.maxPoints > 0 ? (
 					<ScoreValue
@@ -349,6 +370,8 @@ export function RunDetailPage() {
 					/>
 				) : null}
 			</div>
+
+			<PromptSection run={run} />
 
 			<Tabs value={tab} onValueChange={setTab} className="mt-6">
 				<TabsList variant="line">

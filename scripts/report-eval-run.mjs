@@ -8,7 +8,8 @@
 //
 //   node scripts/report-eval-run.mjs --eval deploy-fake-data-live \
 //     --artifact .eval-artifacts/deploy-fake-data-live.json \
-//     [--log <file>] [--exit-code 0] [--model sonnet] [--started <iso>] [--finished <iso>]
+//     [--log <file>] [--exit-code 0] [--model sonnet] [--batch <id>] \
+//     [--kind unit|skill] [--started <iso>] [--finished <iso>]
 //
 // Auth: the viewer sits behind Cloudflare Access. Set CF_ACCESS_CLIENT_ID/SECRET (an
 // Access service token) — or, for humans, the script falls back to minting a token via
@@ -19,6 +20,7 @@ import { readFileSync } from "node:fs";
 import { hostname } from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
+import { retryEvalFinalize } from "./eval-report-utils.mjs";
 
 const base = (process.env.EVAL_REPORT_BASE ?? "https://evals.camelai.dev").replace(/\/+$/, "");
 
@@ -36,6 +38,10 @@ function parseArgs(argv) {
       "--started": "started",
       "--finished": "finished",
       "--run-id": "runId",
+      "--batch": "batch",
+      "--batch-label": "batchLabel",
+      "--kind": "kind",
+      "--description": "description",
     }[arg];
     if (!key) {
       console.error(`Unknown option "${arg}"`);
@@ -124,6 +130,10 @@ try {
   const complete = {
     evalTarget: options.eval,
     exitCode: options.exitCode !== undefined ? Number(options.exitCode) : 1,
+    batchId: options.batch || undefined,
+    batchLabel: options.batchLabel || undefined,
+    kind: options.kind || undefined,
+    description: options.description || undefined,
     ref: git("rev-parse", "--abbrev-ref", "HEAD"),
     commit: git("rev-parse", "HEAD"),
     model: options.model || undefined,
@@ -133,10 +143,20 @@ try {
     finishedAt: options.finished || undefined,
     host: hostname(),
   };
-  const run = await (
-    await send("POST", `/upload/${runId}/complete`, JSON.stringify(complete), "application/json")
-  ).json();
-  console.log(`Reported eval run: ${base}/#/run/${encodeURIComponent(run.runId)} (${run.status})`);
+  const completePath = `/upload/${runId}/complete`;
+  const completeBody = JSON.stringify(complete);
+  const completeResponse = await retryEvalFinalize(
+    () => send("POST", completePath, completeBody, "application/json"),
+    {
+      onRetry(error, attempt, attempts) {
+        console.warn(
+          `Eval report finalization failed (attempt ${attempt}/${attempts}); retrying: ${error instanceof Error ? error.message : error}`,
+        );
+      },
+    },
+  );
+  const run = await completeResponse.json();
+  console.log(`Reported eval run: ${base}/runs/${encodeURIComponent(run.runId)} (${run.status})`);
 } catch (error) {
   // Reporting is best-effort telemetry — never fail the eval over it.
   console.warn(`Eval report upload failed: ${error instanceof Error ? error.message : error}`);

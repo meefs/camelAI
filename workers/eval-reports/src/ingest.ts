@@ -21,6 +21,56 @@ export interface ArtifactFile {
 	json: Record<string, unknown> | undefined;
 }
 
+const START_PROMPT_MAX = 4000;
+
+function cleanPrompt(value: string): string | undefined {
+	const trimmed = value.trim();
+	if (!trimmed) return undefined;
+	return trimmed.length > START_PROMPT_MAX
+		? `${trimmed.slice(0, START_PROMPT_MAX)}…`
+		: trimmed;
+}
+
+function textFromContentBlocks(content: unknown): string | undefined {
+	if (!Array.isArray(content)) return undefined;
+	const text = content
+		.map((block) => {
+			if (!block || typeof block !== "object" || Array.isArray(block)) return "";
+			const record = block as Record<string, unknown>;
+			return record.type === "text" && typeof record.text === "string"
+				? record.text
+				: "";
+		})
+		.filter((part) => part.trim())
+		.join("\n\n");
+	return cleanPrompt(text);
+}
+
+export function extractStartPrompt(artifact: unknown): string | undefined {
+	if (!artifact || typeof artifact !== "object" || Array.isArray(artifact)) {
+		return undefined;
+	}
+	const record = artifact as Record<string, unknown>;
+	if (typeof record.prompt === "string") {
+		const prompt = cleanPrompt(record.prompt);
+		if (prompt) return prompt;
+	}
+	if (!Array.isArray(record.messages)) return undefined;
+	for (const message of record.messages) {
+		if (!message || typeof message !== "object" || Array.isArray(message)) continue;
+		const entry = message as Record<string, unknown>;
+		if (entry.role !== "user") continue;
+		if (typeof entry.content === "string") {
+			const prompt = cleanPrompt(entry.content);
+			if (prompt) return prompt;
+			continue;
+		}
+		const prompt = textFromContentBlocks(entry.content);
+		if (prompt) return prompt;
+	}
+	return undefined;
+}
+
 export function ingestResults(exitCode: number, artifacts: ArtifactFile[]): Partial<Run> {
 	const patch: Partial<Run> = { exitCode };
 	let finalStatus: RunStatus = exitCode === 0 ? "completed" : "failed";
@@ -28,6 +78,7 @@ export function ingestResults(exitCode: number, artifacts: ArtifactFile[]): Part
 	const evaluationContractFailures: string[] = [];
 	for (const { name, json } of artifacts) {
 		if (!json) continue;
+		patch.startPrompt ??= extractStartPrompt(json);
 		const evaluation = summarizeEvaluation(json.evaluation);
 		if (evaluation) {
 			evaluations.push(evaluation);

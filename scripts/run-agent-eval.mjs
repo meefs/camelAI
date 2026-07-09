@@ -580,6 +580,7 @@ child.on("close", async (code) => {
   if (reportRun && !skippedRun) {
     // Failed runs (even without an artifact) are reported too — the viewer
     // synthesizes an evaluation-contract failure for them.
+    const manifestEntry = manifestEvalById.get(evalName);
     const reporterArgs = [
       path.resolve("scripts/report-eval-run.mjs"),
       "--eval", evalName,
@@ -590,6 +591,14 @@ child.on("close", async (code) => {
     ];
     if (existsSync(artifactPath)) reporterArgs.push("--artifact", artifactPath);
     if (artifactModelLabel) reporterArgs.push("--model", artifactModelLabel);
+    if (evalEnv.EVAL_BATCH_ID) reporterArgs.push("--batch", evalEnv.EVAL_BATCH_ID);
+    if (evalEnv.EVAL_BATCH_LABEL) {
+      reporterArgs.push("--batch-label", evalEnv.EVAL_BATCH_LABEL);
+    }
+    if (manifestEntry?.kind) reporterArgs.push("--kind", manifestEntry.kind);
+    if (manifestEntry?.description) {
+      reporterArgs.push("--description", manifestEntry.description);
+    }
     if (evalEnv.EVAL_REAL_DEPLOY !== undefined) {
       reporterArgs.push("--real-deploy", evalEnv.EVAL_REAL_DEPLOY === "0" ? "0" : "1");
     }

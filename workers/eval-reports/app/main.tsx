@@ -10,6 +10,11 @@ import {
 	runsLoader,
 } from "./routes/runs-list";
 import { RunDetailPage, runLoader } from "./routes/run-detail";
+import {
+	BatchDetailPage,
+	BatchDetailSkeleton,
+	batchLoader,
+} from "./routes/batch-detail";
 
 const legacyRun = location.hash.match(/^#\/run\/(.+)$/);
 if (legacyRun) {
@@ -33,6 +38,12 @@ const router = createBrowserRouter([
 				HydrateFallback: RunsListSkeleton,
 			},
 			{ path: "runs/:runId", Component: RunDetailPage, loader: runLoader },
+			{
+				path: "batches/:batchId",
+				Component: BatchDetailPage,
+				loader: batchLoader,
+				HydrateFallback: BatchDetailSkeleton,
+			},
 		],
 	},
 ]);

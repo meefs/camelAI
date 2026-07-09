@@ -25,11 +25,23 @@ Knobs: `--model <id>`, `--timeout-ms <ms>`, `EVAL_REAL_DEPLOY=0/1`, `CUSTOM_EVAL
 Cloudflare API, and judge gateway credentials/settings; ordinary eval knobs such as `EVAL_MODEL`
 and `EVAL_REPORT` should be passed explicitly in the shell or CLI.
 
+When `scripts/run-eval-suite.sh` runs a list or `all`, it automatically mints one
+`EVAL_BATCH_ID` and default `EVAL_BATCH_LABEL` for the whole invocation. Pre-set those env vars to
+join a run into an existing dashboard batch.
+
 Captured artifacts include an advisory `llmJudge` block by default when Cloudflare AI Gateway
 credentials are available. The default judge is fixed to `openai/gpt-5.5` on the `compat` route
 with high reasoning. It is blind to deterministic pass/fail, then records agreement after judging;
 it never changes deterministic pass/fail. Set `EVAL_LLM_JUDGE=0` to disable it, or override with
 `EVAL_JUDGE_MODEL`, `EVAL_JUDGE_GATEWAY_PROVIDER`, or `EVAL_JUDGE_REASONING_EFFORT`.
+
+## Add or update an eval
+
+Committed evals are listed in `workers/main/tests/evals/manifest.json`. Each entry requires
+`kind`: use `unit` for a one-mechanism check and `skill` for end-to-end agent ability. Keep
+scorecard budgets aligned with the dashboard weighting convention: unit evals 1-5 pts, skill evals
+6-20 pts scaled to task complexity. Pass/fail criteria are still the hard contract; scorecard
+points never gate pass/fail by themselves.
 
 ## Run a matrix
 
@@ -38,7 +50,10 @@ bun run test:eval:matrix -- --models sonnet,deepseek-v4-flash --evals do-backed-
 ```
 
 The matrix runner writes `<artifact-dir>/matrix-summary.json` with per-run status, artifact path,
-report URLs, score, signal, and judge agreement/usage metadata.
+report URLs, score, signal, judge agreement/usage metadata, and the shared batch id. It includes
+and prints the batch dashboard URL only when `EVAL_REPORT=1`, the invocation is not a dry run, and
+at least one child report was uploaded successfully. It also sets one `EVAL_BATCH_ID` and default
+label for every child run; pre-set `EVAL_BATCH_ID` / `EVAL_BATCH_LABEL` to override.
 
 ## Report the run to the shared viewer
 
@@ -48,12 +63,23 @@ Set `EVAL_REPORT=1` and the run (artifact, log, scorecard) is uploaded when it f
 EVAL_REPORT=1 bun run test:eval <eval-id>
 ```
 
+The final `POST /upload/:runId/complete` is retried up to three times with the same run id so a
+transient index or canonical-write failure can finish its idempotent reconciliation.
+
 Auth for the upload (and for reading the API): everything on `evals.camelai.dev` is behind
 Cloudflare Access. Either export a service token (`CF_ACCESS_CLIENT_ID`/`CF_ACCESS_CLIENT_SECRET`,
 the `evals-ci` token in Zero Trust → Access → Service Auth), or log in once with
 `cloudflared access login https://evals.camelai.dev` — the reporter picks up either automatically.
 
-Re-report an existing artifact by hand: `node scripts/report-eval-run.mjs --eval <id> --artifact <file>`.
+Re-report an existing artifact by hand:
+
+```bash
+node scripts/report-eval-run.mjs --eval <id> --artifact <file> \
+  [--batch <id>] [--batch-label <text>] [--kind unit|skill] [--description <text>]
+```
+
+The extra flags map directly to `run.json`: `batchId`, `batchLabel`, `kind`, and `description`.
+The uploaded artifact is still the source of `startPrompt`.
 
 ## Read results from the CLI
 
@@ -65,4 +91,7 @@ curl -s https://evals.camelai.dev/api/runs?limit=20 \
 ```
 
 `GET /skill` documents the rest (`/api/runs/:id`, `/log`, `/artifacts`, `/artifact/:name`).
-The dashboard is at `https://evals.camelai.dev/` (log in with an `@camelai.com` email).
+Run JSON may include `batchId`, `batchLabel`, `kind`, `description`, and ingest-derived
+`startPrompt`. The dashboard is at `https://evals.camelai.dev/` (log in with an `@camelai.com`
+email) and now defaults to Batches, with Runs and Evals switcher views plus batch pages at
+`/batches/:id`.

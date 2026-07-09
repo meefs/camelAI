@@ -138,11 +138,13 @@ log and posts metadata (auth via an Access service token in `CF_ACCESS_CLIENT_ID
 local `cloudflared access login`). Use the **`running-agent-evals`** skill for the run/report/read
 workflows; the always-current API doc is served at `GET evals.camelai.dev/skill`. Deploy the
 viewer with `bun run deploy:eval-reports`; see `workers/eval-reports/README.md`.
+Suite and matrix runs share an `EVAL_BATCH_ID`, and the viewer groups those reported runs into
+batches.
 
 **Adding a new eval.** `workers/main/tests/evals/manifest.json` is the single source of truth for the
 committed eval list. To add one: (1) create `workers/main/tests/evals/<id>.test.ts`, gated on
 `RUN_AGENT_EVALS === "1"`, ending in `emitEvalTranscript({...})` from `./eval-transcript` (every eval
-shares one transcript marker pair); (2) add a `{ "id", "description", "realDeploy"? }` entry to
+shares one transcript marker pair); (2) add a `{ "id", "description", "kind", "realDeploy"? }` entry to
 `manifest.json`. It is then runnable via `bun run test:eval <id>` and included in `EVAL_TARGET=all` —
 no other files to edit. `custom-prompt-live` is intentionally not in the manifest (it's the generic
 `CUSTOM_EVAL_*`-driven harness). `run-agent-eval.mjs` runs exactly one eval; `run-eval-suite.sh`

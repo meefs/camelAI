@@ -1,4 +1,4 @@
-import type { Run } from "../../src/types";
+import type { BatchSummary, Run } from "../../src/types";
 import type { TranscriptArtifact } from "./transcript";
 
 async function getJson<T>(path: string): Promise<T> {
@@ -14,6 +14,21 @@ async function getJson<T>(path: string): Promise<T> {
 
 export const fetchRuns = () =>
 	getJson<{ runs: Run[] }>("/api/runs?limit=200").then((data) => data.runs ?? []);
+
+export const fetchBatchSummaries = () =>
+	getJson<{ batches: BatchSummary[] }>("/api/batches?limit=200").then(
+		(data) => data.batches ?? [],
+	);
+
+export const fetchBatch = (id: string) =>
+	getJson<{ batch: BatchSummary; runs: Run[] }>(
+		`/api/batches/${encodeURIComponent(id)}`,
+	);
+
+export const fetchBatchRuns = (id: string) =>
+	getJson<{ runs: Run[] }>(
+		`/api/runs?batch=${encodeURIComponent(id)}`,
+	).then((data) => data.runs ?? []);
 
 export const fetchRun = (id: string) =>
 	getJson<Run>(`/api/runs/${encodeURIComponent(id)}`);

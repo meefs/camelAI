@@ -1,10 +1,4 @@
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import {
-	HoverCard,
-	HoverCardContent,
-	HoverCardTrigger,
-} from "@/components/ui/hover-card";
 import {
 	InputGroup,
 	InputGroupAddon,
@@ -22,32 +16,43 @@ import {
 	Table,
 	TableBody,
 	TableCell,
-	TableHead,
-	TableHeader,
 	TableRow,
 } from "@/components/ui/table";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { cn } from "@/lib/utils";
 import { FlaskConical, Search, SearchX } from "lucide-react";
-import { Link, useLoaderData, useNavigate, useSearchParams } from "react-router";
-import { VerdictBadge } from "../components/verdict-badge";
-import { scoreClass } from "../components/score";
-import { fetchRuns } from "../lib/api";
 import {
-	durationOf,
-	failedCriteria,
-	fmtCost,
-	missing,
-	shortPerson,
-	whenText,
-	whenTitle,
-} from "../lib/format";
-import type { Run } from "../../src/types";
+	type LoaderFunctionArgs,
+	useLoaderData,
+	useSearchParams,
+} from "react-router";
+import { BatchesTable } from "../components/batches-table";
+import { EvalsRollup } from "../components/evals-rollup";
+import { RunsTable } from "../components/runs-table";
+import { fetchBatchSummaries, fetchRuns } from "../lib/api";
+import {
+	rollupByEval,
+	type EvalRollup,
+} from "../lib/batches";
+import type { BatchSummary, Run } from "../../src/types";
 
 const ALL_EVALS = "__all__";
+const views = ["batches", "runs", "evals"] as const;
+type RunsListView = (typeof views)[number];
 
-export async function runsLoader() {
-	return fetchRuns();
+export async function runsLoader({
+	request,
+}: Pick<LoaderFunctionArgs, "request">) {
+	const url = new URL(request.url);
+	const view = normalizeView(url.searchParams.get("view"));
+	if (view === "batches") {
+		return { runs: [], batches: await fetchBatchSummaries() };
+	}
+	return { runs: await fetchRuns(), batches: [] };
+}
+
+function normalizeView(value: string | null): RunsListView {
+	return views.includes(value as RunsListView) ? (value as RunsListView) : "batches";
 }
 
 function setSearchParam(
@@ -59,82 +64,6 @@ function setSearchParam(
 	if (value) next.set(key, value);
 	else next.delete(key);
 	return next;
-}
-
-function BranchCell({ run }: { run: Run }) {
-	if (!run.ref && !run.commit) return <span className="text-muted-foreground">{missing}</span>;
-	return (
-		<div className="max-w-40 truncate font-mono text-xs">
-			{run.ref ? <span>{run.ref}</span> : null}
-			{run.commit ? (
-				<span className="ml-1 text-muted-foreground">{run.commit.slice(0, 7)}</span>
-			) : null}
-		</div>
-	);
-}
-
-function ActivityCell({ run }: { run: Run }) {
-	const signal = run.signal;
-	if (!signal) return <span className="text-muted-foreground">{missing}</span>;
-	const parts = [
-		typeof signal.assistantTurnCount === "number"
-			? `${signal.assistantTurnCount} turns`
-			: "",
-		typeof signal.tokenUsage?.costUsd === "number"
-			? fmtCost(signal.tokenUsage.costUsd)
-			: "",
-	].filter(Boolean);
-	const bad = signal.badToolCallCount ?? 0;
-	const violations = signal.violations?.length ?? 0;
-	if (!parts.length && bad === 0 && violations === 0) {
-		return <span className="text-muted-foreground">{missing}</span>;
-	}
-	return (
-		<div className="flex flex-wrap items-center gap-1 text-xs text-muted-foreground">
-			{parts.length ? <span>{parts.join(" · ")}</span> : null}
-			{bad > 0 ? <Badge variant="destructive">{bad} bad</Badge> : null}
-			{violations > 0 ? (
-				<Badge variant="destructive">
-					{violations} violation{violations === 1 ? "" : "s"}
-				</Badge>
-			) : null}
-		</div>
-	);
-}
-
-function ResultCell({ run }: { run: Run }) {
-	const failed = failedCriteria(run);
-	const badge = <VerdictBadge status={run.status} />;
-	if (run.status !== "failed" || failed.length === 0) return badge;
-	return (
-		<HoverCard openDelay={150}>
-			<HoverCardTrigger asChild>
-				<span className="inline-flex">{badge}</span>
-			</HoverCardTrigger>
-			<HoverCardContent align="start" className="w-80">
-				<p className="text-xs font-medium text-destructive">
-					{failed.length} failed {failed.length === 1 ? "criterion" : "criteria"}
-				</p>
-				<div className="mt-2 space-y-2">
-					{failed.slice(0, 5).map((criterion) => (
-						<div key={criterion.id} className="text-xs">
-							<p className="font-medium">{criterion.label}</p>
-							{criterion.reason ? (
-								<p className="mt-0.5 line-clamp-2 text-muted-foreground">
-									{criterion.reason}
-								</p>
-							) : null}
-						</div>
-					))}
-					{failed.length > 5 ? (
-						<p className="text-xs text-muted-foreground">
-							+{failed.length - 5} more
-						</p>
-					) : null}
-				</div>
-			</HoverCardContent>
-		</HoverCard>
-	);
 }
 
 function EmptyState({
@@ -175,15 +104,32 @@ function EmptyState({
 }
 
 export function RunsListSkeleton() {
-	const widths = ["w-16", "w-48", "w-10", "w-24", "w-28", "w-12", "w-16"];
+	const view =
+		typeof window === "undefined"
+			? "batches"
+			: normalizeView(new URLSearchParams(window.location.search).get("view"));
+	const widths =
+		view === "batches"
+			? ["w-4", "w-16", "w-48", "w-10", "w-10", "w-24", "w-16", "w-16"]
+			: view === "evals"
+				? ["w-64", "w-20", "w-16", "w-16", "w-16"]
+				: ["w-16", "w-48", "w-10", "w-20", "w-24", "w-28", "w-12", "w-16"];
 	return (
 		<div>
 			<Skeleton className="h-6 w-28" />
 			<Skeleton className="mt-2 h-4 w-80" />
 			<div className="mt-6 flex flex-wrap items-center gap-2">
+				<Skeleton className="h-6 w-56" />
 				<Skeleton className="h-8 w-80" />
-				<Skeleton className="h-8 w-44" />
-				<Skeleton className="h-8 w-44" />
+				{view === "runs" ? (
+					<>
+						<Skeleton className="h-8 w-44" />
+						<Skeleton className="h-8 w-44" />
+						<Skeleton className="h-8 w-44" />
+					</>
+				) : view === "evals" ? (
+					<Skeleton className="h-8 w-44" />
+				) : null}
 			</div>
 			<div className="mt-4 overflow-x-auto rounded-xl border">
 				<Table>
@@ -204,33 +150,90 @@ export function RunsListSkeleton() {
 	);
 }
 
+function batchMatches(batch: BatchSummary, query: string): boolean {
+	if (!query) return true;
+	return [
+		batch.label,
+		batch.models.join(" "),
+		batch.ref,
+		batch.commit,
+		batch.createdBy,
+		batch.evalTargets?.join(" "),
+	]
+		.join(" ")
+		.toLowerCase()
+		.includes(query);
+}
+
+function runMatches(run: Run, query: string): boolean {
+	if (!query) return true;
+	return [run.ref, run.evalTarget, run.model, run.runId, run.createdBy]
+		.join(" ")
+		.toLowerCase()
+		.includes(query);
+}
+
+function evalMatches(rollup: EvalRollup, query: string): boolean {
+	if (!query) return true;
+	return [rollup.evalTarget, rollup.description, rollup.kind]
+		.join(" ")
+		.toLowerCase()
+		.includes(query);
+}
+
 export function RunsListPage() {
-	const runs = useLoaderData<typeof runsLoader>();
+	const { runs, batches } = useLoaderData<typeof runsLoader>();
 	const [params, setParams] = useSearchParams();
-	const navigate = useNavigate();
 	const query = params.get("q") ?? "";
 	const status = params.get("status") ?? "";
 	const evalTarget = params.get("eval") ?? "";
-
-	const evalOptions = Array.from(new Set(runs.map((run) => run.evalTarget))).sort();
+	const kind = params.get("kind") ?? "";
+	const view = normalizeView(params.get("view"));
 	const normalizedQuery = query.toLowerCase();
-	const filtered = runs.filter((run) => {
+
+	const evalRollups = rollupByEval(runs);
+	const evalOptions = Array.from(new Set(runs.map((run) => run.evalTarget))).sort();
+
+	const filteredBatches = batches.filter((batch) => batchMatches(batch, normalizedQuery));
+	const filteredRuns = runs.filter((run) => {
 		if (status && run.status !== status) return false;
 		if (evalTarget && run.evalTarget !== evalTarget) return false;
-		if (!normalizedQuery) return true;
-		return [run.ref, run.evalTarget, run.model, run.runId, run.createdBy]
-			.join(" ")
-			.toLowerCase()
-			.includes(normalizedQuery);
+		if (kind && run.kind !== kind) return false;
+		return runMatches(run, normalizedQuery);
 	});
-	const hasFilters = Boolean(query || status || evalTarget);
+	const filteredEvals = evalRollups.filter((rollup) => {
+		if (kind && rollup.kind !== kind) return false;
+		return evalMatches(rollup, normalizedQuery);
+	});
+
+	const activeCount =
+		view === "batches"
+			? filteredBatches.length
+			: view === "runs"
+				? filteredRuns.length
+				: filteredEvals.length;
+	const activeLabel = view === "batches" ? "batch" : view === "runs" ? "run" : "eval";
+	const hasFilters =
+		view === "runs"
+			? Boolean(query || status || evalTarget || kind)
+			: view === "evals"
+				? Boolean(query || kind)
+				: Boolean(query);
+	const searchPlaceholder =
+		view === "batches"
+			? "Search batches…"
+			: view === "runs"
+				? "Search runs…"
+				: "Search evals…";
 
 	function updateParam(key: string, value: string) {
 		setParams((current) => setSearchParam(current, key, value), { replace: true });
 	}
 
 	function clearFilters() {
-		setParams({}, { replace: true });
+		const next = new URLSearchParams();
+		next.set("view", view);
+		setParams(next, { replace: true });
 	}
 
 	return (
@@ -245,6 +248,19 @@ export function RunsListPage() {
 			</p>
 
 			<div className="mt-6 flex flex-wrap items-center gap-2">
+				<ToggleGroup
+					type="single"
+					variant="outline"
+					size="sm"
+					value={view}
+					onValueChange={(value) => {
+						if (value) updateParam("view", value);
+					}}
+				>
+					<ToggleGroupItem value="batches">Batches</ToggleGroupItem>
+					<ToggleGroupItem value="runs">Runs</ToggleGroupItem>
+					<ToggleGroupItem value="evals">Evals</ToggleGroupItem>
+				</ToggleGroup>
 				<InputGroup className="max-w-xs">
 					<InputGroupAddon>
 						<Search />
@@ -252,128 +268,92 @@ export function RunsListPage() {
 					<InputGroupInput
 						value={query}
 						onChange={(event) => updateParam("q", event.currentTarget.value)}
-						placeholder="Filter by eval, model, branch, id, or person..."
+						placeholder={searchPlaceholder}
 					/>
 				</InputGroup>
-				<ToggleGroup
-					type="single"
-					variant="outline"
-					size="sm"
-					value={status || "all"}
-					onValueChange={(value) =>
-						updateParam("status", value && value !== "all" ? value : "")
-					}
-				>
-					<ToggleGroupItem value="all">All</ToggleGroupItem>
-					<ToggleGroupItem value="completed">Passed</ToggleGroupItem>
-					<ToggleGroupItem value="failed">Failed</ToggleGroupItem>
-				</ToggleGroup>
-				<Select
-					value={evalTarget || ALL_EVALS}
-					onValueChange={(value) =>
-						updateParam("eval", value === ALL_EVALS ? "" : value)
-					}
-				>
-					<SelectTrigger size="sm" className="h-8 w-44 text-xs">
-						<SelectValue />
-					</SelectTrigger>
-					<SelectContent>
-						<SelectItem value={ALL_EVALS}>All evals</SelectItem>
-						{evalOptions.map((option) => (
-							<SelectItem key={option} value={option}>
-								{option}
-							</SelectItem>
-						))}
-					</SelectContent>
-				</Select>
+				{view === "runs" ? (
+					<>
+						<ToggleGroup
+							type="single"
+							variant="outline"
+							size="sm"
+							value={status || "all"}
+							onValueChange={(value) =>
+								updateParam("status", value && value !== "all" ? value : "")
+							}
+						>
+							<ToggleGroupItem value="all">All</ToggleGroupItem>
+							<ToggleGroupItem value="completed">Passed</ToggleGroupItem>
+							<ToggleGroupItem value="failed">Failed</ToggleGroupItem>
+						</ToggleGroup>
+						<ToggleGroup
+							type="single"
+							variant="outline"
+							size="sm"
+							value={kind || "all"}
+							onValueChange={(value) =>
+								updateParam("kind", value && value !== "all" ? value : "")
+							}
+						>
+							<ToggleGroupItem value="all">All</ToggleGroupItem>
+							<ToggleGroupItem value="unit">Unit</ToggleGroupItem>
+							<ToggleGroupItem value="skill">Skill</ToggleGroupItem>
+						</ToggleGroup>
+						<Select
+							value={evalTarget || ALL_EVALS}
+							onValueChange={(value) =>
+								updateParam("eval", value === ALL_EVALS ? "" : value)
+							}
+						>
+							<SelectTrigger size="sm" className="h-8 w-44 text-xs">
+								<SelectValue />
+							</SelectTrigger>
+							<SelectContent>
+								<SelectItem value={ALL_EVALS}>All evals</SelectItem>
+								{evalOptions.map((option) => (
+									<SelectItem key={option} value={option}>
+										{option}
+									</SelectItem>
+								))}
+							</SelectContent>
+						</Select>
+					</>
+				) : view === "evals" ? (
+					<ToggleGroup
+						type="single"
+						variant="outline"
+						size="sm"
+						value={kind || "all"}
+						onValueChange={(value) =>
+							updateParam("kind", value && value !== "all" ? value : "")
+						}
+					>
+						<ToggleGroupItem value="all">All</ToggleGroupItem>
+						<ToggleGroupItem value="unit">Unit</ToggleGroupItem>
+						<ToggleGroupItem value="skill">Skill</ToggleGroupItem>
+					</ToggleGroup>
+				) : null}
 				<span className="ml-auto text-sm text-muted-foreground">
-					{filtered.length} run{filtered.length === 1 ? "" : "s"}
+					{activeCount} {activeLabel}
+					{activeCount === 1 ? "" : "s"}
 				</span>
 			</div>
 
 			<div className="mt-4 overflow-x-auto rounded-xl border">
-				{filtered.length ? (
-					<Table>
-						<TableHeader>
-							<TableRow>
-								<TableHead className="w-24">Result</TableHead>
-								<TableHead>Eval</TableHead>
-								<TableHead className="w-24">Score</TableHead>
-								<TableHead className="hidden md:table-cell">Branch</TableHead>
-								<TableHead className="hidden md:table-cell">Activity</TableHead>
-								<TableHead className="hidden w-24 sm:table-cell">Duration</TableHead>
-								<TableHead className="w-28">Finished</TableHead>
-							</TableRow>
-						</TableHeader>
-						<TableBody>
-							{filtered.map((run) => {
-								const score = run.evaluation?.scorecard;
-								const scorePct =
-									score && typeof score.percentage === "number"
-										? Math.round(score.percentage)
-										: null;
-								return (
-									<TableRow
-										key={run.runId}
-										className="cursor-pointer"
-										onClick={() => navigate(`/runs/${encodeURIComponent(run.runId)}`)}
-									>
-										<TableCell>
-											<ResultCell run={run} />
-										</TableCell>
-										<TableCell>
-												<Link
-													to={`/runs/${encodeURIComponent(run.runId)}`}
-													onClick={(event) => event.stopPropagation()}
-													className="block max-w-72 truncate font-medium text-foreground hover:underline"
-												>
-												{run.evalTarget}
-											</Link>
-											<div className="text-xs text-muted-foreground">
-												{run.model ?? "default model"}
-											</div>
-										</TableCell>
-										<TableCell>
-											{scorePct == null || !score ? (
-												<span className="text-muted-foreground">{missing}</span>
-											) : (
-												<div>
-													<div
-														className={`font-medium tabular-nums ${scoreClass(scorePct)}`}
-													>
-														{scorePct}%
-													</div>
-													<div className="text-xs text-muted-foreground tabular-nums">
-														{score.points}/{score.maxPoints}
-													</div>
-												</div>
-											)}
-										</TableCell>
-										<TableCell className="hidden md:table-cell">
-											<BranchCell run={run} />
-										</TableCell>
-										<TableCell className="hidden md:table-cell">
-											<ActivityCell run={run} />
-										</TableCell>
-										<TableCell className="hidden text-sm text-muted-foreground tabular-nums sm:table-cell">
-											{durationOf(run)}
-										</TableCell>
-										<TableCell>
-											<div
-												className="text-sm text-muted-foreground"
-												title={whenTitle(run)}
-											>
-												{whenText(run)}
-											</div>
-											<div className="text-xs text-muted-foreground/70">
-												{shortPerson(run.createdBy)}
-											</div>
-										</TableCell>
-									</TableRow>
-								);
-							})}
-						</TableBody>
-					</Table>
+				{view === "batches" ? (
+					filteredBatches.length ? (
+						<BatchesTable batches={filteredBatches} />
+					) : (
+						<EmptyState hasFilters={hasFilters} onClear={clearFilters} />
+					)
+				) : view === "runs" ? (
+					filteredRuns.length ? (
+						<RunsTable runs={filteredRuns} showBatch />
+					) : (
+						<EmptyState hasFilters={hasFilters} onClear={clearFilters} />
+					)
+				) : filteredEvals.length ? (
+					<EvalsRollup rollups={filteredEvals} />
 				) : (
 					<EmptyState hasFilters={hasFilters} onClear={clearFilters} />
 				)}

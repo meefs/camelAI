@@ -1,6 +1,10 @@
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import {
+  extractReportedRunUrls,
+  matrixBatchUrl,
+} from "./eval-report-utils.mjs";
 
 const DEFAULT_MODELS = [
   "sonnet",
@@ -109,6 +113,15 @@ function safePathPart(value) {
   return value.replace(/[^a-zA-Z0-9._-]/g, "_");
 }
 
+function newBatchId() {
+  const stamp = new Date()
+    .toISOString()
+    .replace(/[-:]/g, "")
+    .replace(/\.\d{3}Z$/, "Z")
+    .replace("T", "-");
+  return `batch-${stamp}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
 function validateEvals(evals) {
   const unknown = evals.filter((evalId) => !knownEvalIds.has(evalId));
   if (unknown.length) {
@@ -190,6 +203,10 @@ const rootArtifactDir = path.resolve(
 mkdirSync(rootArtifactDir, { recursive: true });
 
 const startedAt = new Date().toISOString();
+const batchId = process.env.EVAL_BATCH_ID || newBatchId();
+const batchLabel =
+  process.env.EVAL_BATCH_LABEL ||
+  `matrix: ${options.models.length} models × ${options.evals.length} evals`;
 const results = [];
 
 for (const model of options.models) {
@@ -215,11 +232,12 @@ for (const model of options.models) {
         continue;
       }
 
-      const child = await runEval(args, process.env);
-      const reportUrls = uniqueMatches(
-        child.outputTail,
-        /https:\/\/evals\.camelai\.dev\/#\/run\/[A-Za-z0-9._-]+/g,
-      );
+      const child = await runEval(args, {
+        ...process.env,
+        EVAL_BATCH_ID: batchId,
+        EVAL_BATCH_LABEL: batchLabel,
+      });
+      const reportUrls = extractReportedRunUrls(child.outputTail);
       const artifactPaths = uniqueMatches(
         child.outputTail,
         /(?<=Wrote eval artifact: ).+/g,
@@ -242,6 +260,14 @@ for (const model of options.models) {
 
 const finishedAt = new Date().toISOString();
 const failures = results.filter((result) => result.code !== 0);
+const reportedRunCount = results.filter(
+  (result) => (result.reportUrls?.length ?? 0) > 0,
+).length;
+const batchUrl = matrixBatchUrl({
+  batchId,
+  dryRun: options.dryRun,
+  reportedRunCount,
+});
 const summary = {
   schemaVersion: 1,
   startedAt,
@@ -253,8 +279,12 @@ const summary = {
     passThrough: options.passThrough,
     dryRun: options.dryRun,
   },
+  batchId,
+  batchLabel,
+  ...(batchUrl ? { batchUrl } : {}),
   rootArtifactDir,
   totalRuns: results.length,
+  reportedRuns: reportedRunCount,
   failedRuns: failures.length,
   results,
 };
@@ -275,5 +305,6 @@ for (const result of results) {
 }
 console.log(`[eval-matrix] artifacts: ${rootArtifactDir}`);
 console.log(`[eval-matrix] summary: ${summaryPath}`);
+if (batchUrl) console.log(`[eval-matrix] batch: ${batchUrl}`);
 
 if (failures.length) process.exit(1);

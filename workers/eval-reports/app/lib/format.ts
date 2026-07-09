@@ -25,10 +25,14 @@ function fmtDurationMs(ms: number): string {
 	return minutes ? `${minutes}m ${seconds}s` : `${seconds}s`;
 }
 
-export function durationOf(run: Run): string {
-	const start = timeValue(run.startedAt);
-	const end = timeValue(run.finishedAt);
+export function durationBetween(startIso?: string, endIso?: string): string {
+	const start = timeValue(startIso);
+	const end = timeValue(endIso);
 	return start != null && end != null ? fmtDurationMs(end - start) : missing;
+}
+
+export function durationOf(run: Run): string {
+	return durationBetween(run.startedAt, run.finishedAt);
 }
 
 export function fmtCost(value?: number): string {

@@ -16,6 +16,15 @@ set -uo pipefail
 : "${EVAL_ARGS_JSON:=[]}"
 : "${INSTALL_COMMAND:=bun install --frozen-lockfile}"
 RUN_ID="${RUN_ID:-local}"
+if [ -z "${EVAL_BATCH_ID:-}" ]; then
+  if command -v node >/dev/null 2>&1; then
+    EVAL_BATCH_ID="batch-$(date -u +%Y%m%d-%H%M%SZ)-$(node -e 'process.stdout.write(Math.random().toString(36).slice(2,10))')"
+  else
+    EVAL_BATCH_ID="batch-$(date -u +%Y%m%d-%H%M%SZ)-$(od -An -N4 -tx1 /dev/urandom 2>/dev/null | tr -d ' \n')"
+  fi
+fi
+export EVAL_BATCH_ID
+export EVAL_BATCH_LABEL="${EVAL_BATCH_LABEL:-suite: ${EVAL_TARGET}}"
 
 mkdir -p "$RUN_DIR/artifacts"
 GIT_COMMIT="$(git rev-parse HEAD 2>/dev/null || echo "")"
@@ -25,7 +34,7 @@ write_status() {
   local status="$1"
   local extra="${2:-}"
   cat > "$RUN_DIR/status.json" <<JSON
-{"runId":"$RUN_ID","status":"$status","timestamp":"$(date -Is)","ref":"$GIT_REF","commit":"$GIT_COMMIT","evalTarget":"$EVAL_TARGET"$extra}
+{"runId":"$RUN_ID","status":"$status","timestamp":"$(date -Is)","ref":"$GIT_REF","commit":"$GIT_COMMIT","evalTarget":"$EVAL_TARGET","evalBatchId":"$EVAL_BATCH_ID"$extra}
 JSON
 }
 

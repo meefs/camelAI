@@ -61,18 +61,25 @@ export function RouteError() {
 		: error instanceof Error
 			? error.message
 			: "Unexpected error";
+	const isBatch404 = is404 && String(message).toLowerCase().includes("batch");
 	const Icon = is404 ? SearchX : TriangleAlert;
 
 	return (
 		<div className="flex flex-col items-center gap-3 py-24 text-center">
 			<Icon className="size-8 text-muted-foreground" />
 			<p className="text-sm font-medium">
-				{is404 ? "Run not found" : "Something went wrong"}
+				{is404
+					? isBatch404
+						? "Batch not found"
+						: "Run not found"
+					: "Something went wrong"}
 			</p>
 			<p className="max-w-md text-sm text-muted-foreground">{String(message)}</p>
 			{is404 ? (
 				<Button variant="outline" size="sm" asChild>
-					<Link to="/">All runs</Link>
+					<Link to={isBatch404 ? "/?view=batches" : "/?view=runs"}>
+						{isBatch404 ? "All batches" : "All runs"}
+					</Link>
 				</Button>
 			) : (
 				<Button
