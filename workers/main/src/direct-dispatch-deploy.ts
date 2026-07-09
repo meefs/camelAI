@@ -340,8 +340,17 @@ async function migrationsForDirectDeploy(
   fetcher: typeof fetch,
 ): Promise<DirectWorkerMetadata["migrations"]> {
   const configMigrations = metadata.migrations;
-  if (!Array.isArray(configMigrations) || configMigrations.length === 0) {
+  // Already in the API's object form (or absent): pass through untouched.
+  if (!Array.isArray(configMigrations)) {
     return configMigrations;
+  }
+  // Wrangler-style config carries migrations as an ARRAY of steps, and
+  // @cloudflare/vite-plugin emits `migrations: []` by default in generated
+  // manifests. The upload API's reader unmarshals `migrations` into an
+  // object (internal ActorMigrations) and rejects any array — including an
+  // empty one — so an empty config array must become "no migrations field".
+  if (configMigrations.length === 0) {
+    return undefined;
   }
 
   const migrationTags = configMigrations.map((migration) => {

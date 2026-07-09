@@ -6,6 +6,19 @@ const LEGACY_WORKSPACE_ROOT = "/home/claude";
 const WORKSPACE_ROOT_ALIASES = [LEGACY_WORKSPACE_ROOT, "/workspace"];
 const DEFAULT_INLINE_THRESHOLD = 1_500_000;
 
+/**
+ * The @cloudflare/shell Workspace store (v0.3.7) namespaces its SQLite table
+ * and R2 object keys. We construct it with no `namespace`, so it defaults to
+ * "default": rows live in `cf_workspace_default` and each spilled file's R2
+ * key is `${r2Prefix}/default${normalizedPath}` (see Workspace.r2Key). The
+ * large-file adopt path (`adoptR2FileInto`) replicates that exact key + row
+ * shape so the store reads adopted objects back through its own unmodified
+ * code. If this dependency's namespace default or `r2Key` formula ever
+ * changes, update these constants and `adoptR2FileInto` together.
+ */
+const WORKSPACE_STORE_NAMESPACE = "default";
+const WORKSPACE_STORE_TABLE = `cf_workspace_${WORKSPACE_STORE_NAMESPACE}`;
+
 export interface WorkspaceFilesystemEnv {
   WORKSPACE_FS: DurableObjectNamespace<WorkspaceFilesystemDO>;
   R2_BUCKET: R2Bucket;
@@ -36,6 +49,14 @@ export interface WorkspaceReadFileStreamResponse {
 
 export interface WorkspaceWriteResponse {
   success: boolean;
+  error?: string;
+  code?: string;
+}
+
+export interface WorkspaceAdoptR2FileResponse {
+  success: boolean;
+  /** Bytes actually stored in R2 (authoritative object size). */
+  size?: number;
   error?: string;
   code?: string;
 }
@@ -367,6 +388,111 @@ export class WorkspaceFilesystemDO extends DurableObject<WorkspaceFilesystemEnv>
       return { success: true };
     } catch (error) {
       return { success: false, error: errorMessage(error), code: "EWRITE" };
+    }
+  }
+
+  /**
+   * Adopt a large file into the project store by streaming it straight into R2
+   * and registering the store's spilled-file metadata row — never buffering the
+   * payload in DO memory. This is the only path that supports files larger than
+   * an RPC/base64 payload can carry (writeBinaryFile whole-buffers + inflates
+   * base64, so it caps well below 32 MiB). The bytes flow VM -> R2 through the
+   * migrator's RPC-passed ReadableStream; here we only add the SQL row.
+   */
+  async projectAdoptR2File(
+    path: string,
+    stream: ReadableStream<Uint8Array>,
+    expectedSize: number,
+    contentType?: string,
+  ): Promise<WorkspaceAdoptR2FileResponse> {
+    return this.adoptR2FileInto(this.projectWorkspace, "project", path, stream, expectedSize, contentType);
+  }
+
+  private async adoptR2FileInto(
+    store: Workspace,
+    scope: FileStoreScope,
+    path: string,
+    stream: ReadableStream<Uint8Array>,
+    expectedSize: number,
+    contentType?: string,
+  ): Promise<WorkspaceAdoptR2FileResponse> {
+    const normalized = normalizeWorkspacePath(path);
+    if (normalized === "/") {
+      return { success: false, error: "Cannot adopt an R2 object as the root directory", code: "EISDIR" };
+    }
+    if (!this.env.R2_BUCKET) {
+      return { success: false, error: "R2 bucket is not configured", code: "ENOR2" };
+    }
+    const mimeType = normalizeContentType(contentType);
+    const lastSlash = normalized.lastIndexOf("/");
+    const parentPath = lastSlash === 0 ? "/" : normalized.slice(0, lastSlash);
+    const name = normalized.slice(lastSlash + 1);
+    const key = `${fileStoreR2Prefix(scope, this.ctx.id.toString())}/${WORKSPACE_STORE_NAMESPACE}${normalized}`;
+    try {
+      // Materialize the store's table + ancestor directory rows using the
+      // store's own logic (this also runs its lazy ensureInit). We then insert
+      // the file row directly so the GB payload is never held in memory.
+      if (parentPath === "/") {
+        await store.stat("/");
+      } else {
+        await store.mkdir(parentPath, { recursive: true });
+      }
+
+      const sql = this.ctx.storage.sql;
+      const existing = sql
+        .exec(`SELECT storage_backend, r2_key FROM ${WORKSPACE_STORE_TABLE} WHERE path = ?`, normalized)
+        .toArray()[0] as { storage_backend?: string; r2_key?: string } | undefined;
+
+      if (!Number.isFinite(expectedSize) || expectedSize < 0 || Math.floor(expectedSize) !== expectedSize) {
+        return { success: false, error: `Adopting a file requires its exact byte size; got ${expectedSize}`, code: "ESIZE" };
+      }
+      const measured = await streamToR2(this.env.R2_BUCKET, key, stream, mimeType, expectedSize);
+      if (Number.isFinite(expectedSize) && expectedSize >= 0 && measured.size !== expectedSize) {
+        await this.env.R2_BUCKET.delete(key).catch(() => {});
+        return {
+          success: false,
+          error: `Adopted object size ${measured.size} does not match the reported source size ${expectedSize}`,
+          code: "ESIZE",
+        };
+      }
+
+      // Drop a previously-spilled object if this path used a different key.
+      if (existing?.storage_backend === "r2" && existing.r2_key && existing.r2_key !== key) {
+        await this.env.R2_BUCKET.delete(existing.r2_key).catch(() => {});
+      }
+
+      const now = Math.floor(Date.now() / 1000);
+      try {
+        sql.exec(
+          `INSERT INTO ${WORKSPACE_STORE_TABLE}
+              (path, parent_path, name, type, mime_type, size,
+               storage_backend, r2_key, content_encoding, content, created_at, modified_at)
+            VALUES (?, ?, ?, 'file', ?, ?, 'r2', ?, 'base64', NULL, ?, ?)
+            ON CONFLICT(path) DO UPDATE SET
+              mime_type         = excluded.mime_type,
+              size              = excluded.size,
+              storage_backend   = 'r2',
+              r2_key            = excluded.r2_key,
+              content_encoding  = 'base64',
+              content           = NULL,
+              modified_at       = excluded.modified_at`,
+          normalized,
+          parentPath,
+          name,
+          mimeType,
+          measured.size,
+          key,
+          now,
+          now,
+        );
+      } catch (sqlError) {
+        await this.env.R2_BUCKET.delete(key).catch(() => {});
+        throw sqlError;
+      }
+
+      return { success: true, size: measured.size };
+    } catch (error) {
+      return { success: false, error: errorMessage(error), code: "EADOPT" };
     }
   }
 
@@ -1044,6 +1170,15 @@ export class ProjectFilesystemClient implements WorkspaceFileStoreLike {
     return this.stub.projectWriteBinaryFile(path, base64Content);
   }
 
+  adoptR2File(
+    path: string,
+    stream: ReadableStream<Uint8Array>,
+    expectedSize: number,
+    contentType?: string,
+  ): Promise<WorkspaceAdoptR2FileResponse> {
+    return this.stub.projectAdoptR2File(path, stream, expectedSize, contentType);
+  }
+
   listFiles(
     path: string,
     options?: { recursive?: boolean; includeHidden?: boolean; limit?: number },
@@ -1235,6 +1370,36 @@ function delay(ms: number): Promise<void> {
 
 function fileStoreR2Prefix(scope: FileStoreScope, durableId: string): string {
   return `${scope === "project" ? "project-fs" : "workspace-fs"}/${durableId}`;
+}
+
+function normalizeContentType(contentType?: string): string {
+  const trimmed = typeof contentType === "string" ? contentType.trim() : "";
+  return trimmed || "application/octet-stream";
+}
+
+/**
+ * Stream `source` straight into an R2 object without buffering it, returning
+ * R2's authoritative stored size.
+ *
+ * R2.put requires a *known-length* body. The source here has crossed a DO RPC
+ * boundary, which strips any Content-Length the original fetch body carried
+ * (production R2 rejects it with "must have a known length"), so re-frame it
+ * through a FixedLengthStream sized by the VM-reported length. A byte-count
+ * mismatch errors the pipe, which fails the put — so the declared size is
+ * enforced, not just trusted.
+ */
+async function streamToR2(
+  bucket: R2Bucket,
+  key: string,
+  source: ReadableStream<Uint8Array>,
+  contentType: string,
+  expectedSize: number,
+): Promise<{ size: number }> {
+  const fixed = new FixedLengthStream(expectedSize);
+  const pump = source.pipeTo(fixed.writable);
+  const put = await bucket.put(key, fixed.readable, { httpMetadata: { contentType } });
+  await pump;
+  return { size: typeof put?.size === "number" ? put.size : 0 };
 }
 
 async function optionalStringValue(value: unknown): Promise<string | undefined> {

@@ -504,7 +504,7 @@ function validatePackageJsonBuildScript(sourceFiles: ProjectSourceFile[]): strin
   const parsed = parseProjectPackageJson(packageJson);
   if (typeof parsed === "string") return parsed;
   const scripts = (parsed as { scripts?: unknown }).scripts;
-  const buildScriptMessage = "Project package.json must define scripts.build. Use scaffold_project to seed the react-router scaffold, and list every CLI used by scripts.build in dependencies or devDependencies. Data-analysis projects have no build step — use run_notebook to execute the notebook, then deploy_project to publish it as a static report app.";
+  const buildScriptMessage = "Project package.json must define scripts.build. Create a new project to get the standard react-router scaffold, and list every CLI used by scripts.build in dependencies or devDependencies. Data-analysis projects have no build step — use run_notebook to execute the notebook, then deploy_project to publish it as a static report app.";
   if (!scripts || typeof scripts !== "object") return buildScriptMessage;
   const build = (scripts as { build?: unknown }).build;
   return typeof build === "string" && build.trim() ? null : buildScriptMessage;

@@ -45,10 +45,23 @@ export async function collectWorkerBundleFromSandbox(
     durable_objects?: { bindings?: unknown };
     kv_namespaces?: unknown;
     r2_buckets?: unknown;
+    main?: unknown;
+    no_bundle?: unknown;
+    rules?: unknown;
   };
-  if (!manifest.main_module || typeof manifest.main_module !== "string") {
+  // Two manifest producers exist: the camelAI scaffold hand-writes
+  // `main_module`, while @cloudflare/vite-plugin's generateBundle emits the
+  // wrangler-native `main` (entry chunk relative to build/server). Accept both.
+  const mainModule =
+    typeof manifest.main_module === "string" && manifest.main_module
+      ? manifest.main_module
+      : typeof manifest.main === "string" && manifest.main
+        ? manifest.main
+        : null;
+  if (!mainModule) {
     throw new Error(`Build manifest ${manifestPath} is missing main_module`);
   }
+  manifest.main_module = mainModule;
   const metadata = normalizeWorkerBundleMetadata(manifest);
   const serverRoot = dirnameSandboxPath(absoluteManifestPath);
   const listed = await sandbox.listFiles(serverRoot, { recursive: true, includeHidden: true });
@@ -148,6 +161,9 @@ function normalizeWorkerBundleMetadata(
     durable_objects?: { bindings?: unknown };
     kv_namespaces?: unknown;
     r2_buckets?: unknown;
+    main?: unknown;
+    no_bundle?: unknown;
+    rules?: unknown;
   },
 ): DirectWorkerMetadata {
   const bindings = [...(manifest.bindings ?? [])];
@@ -200,6 +216,11 @@ function normalizeWorkerBundleMetadata(
     durable_objects: _durableObjects,
     kv_namespaces: _kvNamespaces,
     r2_buckets: _r2Buckets,
+    // Build-tool-only keys from the vite-plugin manifest; they must not leak
+    // into the Cloudflare script-upload metadata.
+    main: _main,
+    no_bundle: _noBundle,
+    rules: _rules,
     ...metadata
   } = manifest;
   return {

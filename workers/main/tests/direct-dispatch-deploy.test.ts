@@ -176,6 +176,28 @@ describe("deployWorkerModulesDirect", () => {
     });
   });
 
+  it("omits an empty wrangler migrations array from upload metadata", async () => {
+    // @cloudflare/vite-plugin emits `migrations: []` by default; the upload
+    // API rejects any array (its reader wants the object form), so an empty
+    // config array must not reach the metadata at all.
+    const fetcher = vi.fn(async () => Response.json({ success: true, result: { id: "version-1" } }));
+
+    await deployWorkerModulesDirect(env, {
+      scriptName: "demo-app",
+      hostname: "camelai.dev",
+      identity,
+      metadata: {
+        main_module: "index.js",
+        migrations: [],
+      },
+      modules: [{ name: "index.js", contentType: "application/javascript+module", content: "export default {};" }],
+    }, { fetcher: fetcher as unknown as typeof fetch });
+
+    const form = fetcher.mock.calls[fetcher.mock.calls.length - 1]![1]?.body as FormData;
+    const metadata = JSON.parse(await (form.get("metadata") as Blob).text());
+    expect(metadata).not.toHaveProperty("migrations");
+  });
+
   it("skips durable object migrations that are already applied", async () => {
     const fetcher = vi.fn(async (input: string | URL | Request) => {
       const url = String(input);

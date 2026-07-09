@@ -143,6 +143,9 @@ import { ProjectFilesystemClient, WorkspaceFilesystemClient } from "../../worksp
 import { ProjectRuntimeServiceVmBridge } from "../../project-runtime-service-vm.js";
 import { migrateWorkspaceVmProjects } from "../../project-vm-migration.js";
 import { recordObservabilityEvent } from "../../observability.js";
+import { getSandbox } from "@cloudflare/sandbox";
+import { buildLogTail, cleanBuildLog, projectBuildSandboxKey, runProjectBuild } from "../../project-build-service.js";
+import type { ProjectBuildSandboxLike } from "../../project-worker-bundle.js";
 import { waitUntil } from "cloudflare:workers";
 import { refreshOrgCustomDomainHostnamesForAdmin } from "../../../../../src/lib/admin-custom-domain.server.js";
 
@@ -632,6 +635,10 @@ const VmProjectMigrationBodySchema = z.object({
   dry_run: z.boolean().default(false),
   max_file_bytes: z.number().int().positive().optional(),
   max_project_bytes: z.number().int().positive().optional(),
+  /** Re-migrate projects already on do-r2 (clears the DO tree first). */
+  force: z.boolean().default(false),
+  /** Lift a single nested app directory to the project root. */
+  lift_nested_root: z.boolean().default(true),
 });
 
 const VmProjectMigrationResultSchema = z.object({
@@ -645,6 +652,10 @@ const VmProjectMigrationResultSchema = z.object({
     z.object({ path: z.string(), size: z.number(), reason: z.string() }),
   ),
   missing_vm_checkout: z.boolean(),
+  app_roots: z.array(z.string()),
+  wrangler_configs: z.array(z.string()),
+  verified_files: z.number().int(),
+  lifted_root: z.string().nullable(),
   snapshot_id: z.string().nullable(),
   error: z.string().nullable(),
   duration_ms: z.number(),
@@ -691,6 +702,8 @@ routes.post(
           dryRun: body.dry_run,
           maxFileBytes: body.max_file_bytes,
           maxProjectBytes: body.max_project_bytes,
+          force: body.force,
+          liftNestedRoot: body.lift_nested_root,
         },
       );
     } catch (error) {
@@ -727,10 +740,99 @@ routes.post(
         bytes_copied: result.bytesCopied,
         skipped: result.skipped,
         missing_vm_checkout: result.missingVmCheckout,
+        app_roots: result.appRoots,
+        wrangler_configs: result.wranglerConfigs,
+        verified_files: result.verifiedFiles,
+        lifted_root: result.liftedRoot,
         snapshot_id: result.snapshotId,
         error: result.error,
         duration_ms: result.durationMs,
       })),
+    });
+  },
+);
+
+// ---------------------------------------------------------------------------
+// POST /workspaces/:workspaceId/project-build-verify
+// ---------------------------------------------------------------------------
+
+const ProjectBuildVerifyBodySchema = z.object({
+  project: z.string().min(1),
+  /** Org owning the workspace; keys the per-org build sandbox container. */
+  org_id: z.string().min(1),
+  timeout_ms: z.number().int().positive().max(600_000).optional(),
+});
+
+const ProjectBuildVerifyResponseSchema = z.object({
+  success: z.boolean(),
+  workspace_id: z.string(),
+  project: z.string(),
+  project_id: z.string(),
+  exit_code: z.number().int().nullable(),
+  file_count: z.number().int().nullable(),
+  duration_ms: z.number(),
+  error: z.string().nullable(),
+  log_excerpt: z.string().nullable(),
+});
+
+routes.post(
+  "/workspaces/:workspaceId/project-build-verify",
+  openApi({
+    summary: "Run a validation build (no deploy) for a DO-backed project",
+    request: { json: ProjectBuildVerifyBodySchema },
+    responses: {
+      200: ProjectBuildVerifyResponseSchema,
+      400: ErrorSchema,
+      404: ErrorSchema,
+    },
+  }),
+  async (c) => {
+    const workspaceId = c.req.param("workspaceId");
+    const body = c.req.valid("json");
+    const workspaceFs = new WorkspaceFilesystemClient(c.env, workspaceId);
+    const project = await workspaceFs.getProjectByName(body.project);
+    if (!project) {
+      return c.json({ error: `Project not found: ${body.project}` }, 404);
+    }
+    if ((project.backend ?? "vm") !== "do-r2") {
+      return c.json({ error: `Project "${project.name}" is backend "${project.backend ?? "vm"}"; build verification only supports do-r2 projects` }, 400);
+    }
+    if (!c.env.PROJECT_BUILD_SANDBOX) {
+      return c.json({ error: "PROJECT_BUILD_SANDBOX container binding is not configured" }, 400);
+    }
+
+    const sandbox = getSandbox(c.env.PROJECT_BUILD_SANDBOX, projectBuildSandboxKey(body.org_id), {
+      normalizeId: true,
+      transport: "rpc",
+    }) as unknown as ProjectBuildSandboxLike;
+
+    const result = await runProjectBuild({
+      projectId: project.id,
+      files: new ProjectFilesystemClient(c.env, project.id),
+      sandbox,
+      timeoutMs: body.timeout_ms,
+    });
+
+    recordObservabilityEvent(c.env, {
+      event: "project_vm_migration_build_verify",
+      severity: result.success ? "info" : "warn",
+      component: "admin",
+      operation: "project-build-verify",
+      status: result.success ? "ok" : "failed",
+      workspaceId,
+      durationMs: result.durationMs,
+    });
+
+    return c.json({
+      success: result.success,
+      workspace_id: workspaceId,
+      project: project.name,
+      project_id: project.id,
+      exit_code: result.exitCode ?? null,
+      file_count: result.fileCount ?? null,
+      duration_ms: result.durationMs,
+      error: result.success ? null : (result.error ?? `Build failed with exit code ${result.exitCode}`),
+      log_excerpt: result.success ? null : buildLogTail(cleanBuildLog(`${result.stderr}\n${result.stdout}`)),
     });
   },
 );

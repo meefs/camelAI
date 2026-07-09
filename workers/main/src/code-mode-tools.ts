@@ -644,18 +644,6 @@ const CODE_MODE_TOOL_REGISTRY: CodeModeToolRegistration[] = [
     }, { additionalProperties: false }),
   ),
   codeModePassthroughTool(
-    "scaffold_project",
-    "Seed or repair a standard DO-backed scaffold in an existing project. By default it does not overwrite existing files; pass force: true to replace scaffold paths. Defaults to a React Router SSR app with Tailwind/shadcn-style UI primitives. Use template='data-analysis' for a notebook-first analysis project (Report-mode analysis.ipynb, executed with run_notebook; deploy_project publishes the executed notebook as a static report app). Arguments: { project, template?, force? }.",
-    Type.Object({
-      project: Type.String(),
-      template: Type.Optional(Type.Union([Type.Literal("react-router"), Type.Literal("data-analysis")], {
-        description: "Optional scaffold template. Defaults to react-router. data-analysis seeds a notebook-first analysis project.",
-      })),
-      force: Type.Optional(Type.Boolean({ description: "Overwrite existing scaffold files. Defaults to false." })),
-    }, { additionalProperties: false }),
-    { category: "workspace", sideEffect: true },
-  ),
-  codeModePassthroughTool(
     "set_project_description",
     "Set the description for an existing project by its unique workspace project name. Use this when the project's purpose changes or needs clarification. Arguments: { project, description }.",
     Type.Object({
@@ -1710,7 +1698,7 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
     options: { template?: unknown; force?: boolean } = {},
   ): Promise<ProjectScaffoldResult> {
     if ((project.backend ?? "vm") !== "do-r2") {
-      throw new Error(`Project "${project.name}" is not DO-backed; scaffold_project only supports backend: "do-r2"`);
+      throw new Error(`Project "${project.name}" is not DO-backed; scaffolds can only be seeded into do-r2 projects`);
     }
     const template = normalizeProjectScaffoldTemplate(options.template);
     const files = defaultProjectScaffoldFiles(project.name, template, normalizeDeployScriptName(project.name));
@@ -1739,20 +1727,6 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
     const project = await this.workspaceFs.createProject({ ...args, backend: "do-r2" });
     const scaffold = await this.writeProjectScaffold(project, { template });
     return { ...projectForAgent(project), scaffold };
-  }
-
-  private async scaffoldProject(args: Record<string, unknown>): Promise<Record<string, unknown>> {
-    const project = await this.resolveProjectForAction(args);
-    const scaffold = await this.writeProjectScaffold(project, {
-      template: args.template,
-      force: args.force === true,
-    });
-    return {
-      success: true,
-      project: project.name,
-      backend: project.backend ?? "vm",
-      ...scaffold,
-    };
   }
 
   private async assertVmProjectAllowed(args: Record<string, unknown>, operation: string): Promise<void> {
@@ -2941,8 +2915,6 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
           // to trip workerd's unhandled-rejection detector.
           return await this.createProject(args);
 
-        case "scaffold_project":
-          return this.scaffoldProject(args);
 
         case "set_project_description":
           return projectForAgent(await this.workspaceFs.setProjectDescription(args));

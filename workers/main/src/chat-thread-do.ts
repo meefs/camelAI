@@ -2579,6 +2579,34 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
     return { status: "appended" };
   }
 
+  /**
+   * Append a one-off camelAI system notice to this thread's model transcript.
+   * The agent sees the `<camelai system message>`-wrapped row on its next
+   * cold session build; `visibility: "hidden"` keeps it out of the browser
+   * render history entirely (isInternalPiClientMessage). Intended for manual
+   * post-migration injection via admin_js_exec; warm sessions pick it up on
+   * their next rebuild (a worker deploy resets all sessions). Idempotent per
+   * (text, sentAt) via appendPiCoreMessagesIfMissing.
+   */
+  async appendCamelSystemNotice(input: {
+    text: string;
+    sentAt?: number;
+  }): Promise<{ status: "appended" | "skipped" }> {
+    const text = typeof input.text === "string" ? input.text.trim() : "";
+    if (!text) return { status: "skipped" };
+    const sentAt = Number.isFinite(input.sentAt)
+      ? Math.floor(Number(input.sentAt))
+      : Date.now();
+    const message = {
+      role: "user" as const,
+      content: ["<camelai system message>", text, "</camelai system message>"].join("\n"),
+      timestamp: sentAt,
+      visibility: "hidden",
+    } as AgentMessage;
+    await this.appendPiCoreMessagesIfMissing([message]);
+    return { status: "appended" };
+  }
+
   async getPiCoreForkMessages(options: {
     forkEntryId: string;
     renderedMessageId?: string;

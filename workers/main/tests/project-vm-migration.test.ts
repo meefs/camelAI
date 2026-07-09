@@ -6,6 +6,8 @@ import {
   migrateWorkspaceVmProjects,
   shouldSkipMigrationPath,
   DEFAULT_MAX_FILE_BYTES,
+  DEFAULT_MAX_PROJECT_BYTES,
+  RPC_SAFE_FILE_BYTES,
 } from "../src/project-vm-migration";
 import type { WorkspaceProject } from "../src/workspace-filesystem-do";
 
@@ -27,6 +29,8 @@ function makeProject(overrides: Partial<WorkspaceProject> = {}): WorkspaceProjec
 interface VmFixtureFile {
   relativePath: string;
   content: string;
+  /** Override the size reported by /fs/list (to simulate a large file cheaply). */
+  size?: number;
 }
 
 /** Stub global fetch to emulate the runtime-service /fs endpoints. */
@@ -44,7 +48,7 @@ function stubRuntimeFs(files: VmFixtureFile[], options: { missingCheckout?: bool
         files: files.map((file) => ({
           name: file.relativePath.split("/").pop(),
           type: "file",
-          size: new TextEncoder().encode(file.content).byteLength,
+          size: file.size ?? new TextEncoder().encode(file.content).byteLength,
           relativePath: file.relativePath,
         })),
         count: files.length,
@@ -67,6 +71,7 @@ function stubRuntimeFs(files: VmFixtureFile[], options: { missingCheckout?: bool
 
 function makeDeps(project: WorkspaceProject) {
   const writes: Array<{ path: string; content: string }> = [];
+  const adopted: Array<{ path: string; expectedSize: number; streamed: number; contentType?: string }> = [];
   const snapshots: Array<{ message?: unknown }> = [];
   const backendFlips: Array<Record<string, unknown>> = [];
 
@@ -80,10 +85,32 @@ function makeDeps(project: WorkspaceProject) {
     }),
   };
 
+  const stored = new Map<string, string>();
   const fileStore = {
     writeBinaryFile: vi.fn(async (path: string, base64: string) => {
       writes.push({ path, content: atob(base64) });
+      stored.set(path, base64);
       return { success: true };
+    }),
+    adoptR2File: vi.fn(
+      async (path: string, stream: ReadableStream<Uint8Array>, expectedSize: number, contentType?: string) => {
+        // Drain the stream the way R2 would, then report the source-reported
+        // size back (the real DO cross-checks this against R2's object size).
+        let streamed = 0;
+        const reader = stream.getReader();
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          streamed += value.byteLength;
+        }
+        adopted.push({ path, expectedSize, streamed, contentType });
+        return { success: true, size: expectedSize };
+      },
+    ),
+    readFile: vi.fn(async (path: string) => {
+      const base64 = stored.get(path);
+      if (base64 === undefined) return { success: false, error: `not found: ${path}` };
+      return { success: true, content: base64, encoding: "base64" };
     }),
     createSourceSnapshot: vi.fn(async (input?: { message?: unknown }) => {
       snapshots.push(input ?? {});
@@ -103,6 +130,7 @@ function makeDeps(project: WorkspaceProject) {
       fileStoreForProject: () => fileStore as never,
     },
     writes,
+    adopted,
     snapshots,
     backendFlips,
     workspaceFs,
@@ -112,6 +140,15 @@ function makeDeps(project: WorkspaceProject) {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+});
+
+describe("migration size caps", () => {
+  it("raises the per-file and per-project defaults for large files", () => {
+    expect(DEFAULT_MAX_FILE_BYTES).toBe(1024 * 1024 * 1024);
+    expect(DEFAULT_MAX_PROJECT_BYTES).toBe(4 * 1024 * 1024 * 1024);
+    // The RPC/base64 write path stays well under the 32 MiB DO RPC ceiling.
+    expect(RPC_SAFE_FILE_BYTES).toBeLessThan(23 * 1024 * 1024);
+  });
 });
 
 describe("shouldSkipMigrationPath", () => {
@@ -173,9 +210,57 @@ describe("migrateVmProject", () => {
       "excluded-file",
     ]);
     expect(result.snapshotId).toBe("snap-1");
+    expect(result.appRoots).toEqual([""]);
+    expect(result.verifiedFiles).toBeGreaterThan(0);
     expect(writes.map((write) => write.path).sort()).toEqual(["/.dev.vars", "/package.json", "/src/app.tsx"]);
     expect(snapshots).toHaveLength(1);
     expect(backendFlips).toEqual([{ projectId: project.id, backend: "do-r2" }]);
+  });
+
+  it("streams large files through the R2 adopt path and keeps small files on RPC", async () => {
+    const project = makeProject();
+    const bigSize = 40 * 1024 * 1024; // 40 MiB, above the ~20 MiB RPC threshold
+    stubRuntimeFs([
+      { relativePath: "package.json", content: JSON.stringify({ scripts: { build: "vite build" } }) },
+      { relativePath: "src/app.tsx", content: "export const App = () => null;" },
+      // Report a large size via /fs/list; the streamed bytes stay tiny in the fake.
+      { relativePath: "assets/model.bin", content: "BINARY", size: bigSize },
+    ]);
+    const { deps, writes, adopted, backendFlips } = makeDeps(project);
+
+    const result = await migrateVmProject(deps, project);
+
+    expect(result.status).toBe("migrated");
+    expect(result.filesCopied).toBe(3);
+    // Small files went through writeBinaryFile...
+    expect(writes.map((write) => write.path).sort()).toEqual(["/package.json", "/src/app.tsx"]);
+    // ...and the big file went through the streamed adopt path.
+    expect(adopted).toHaveLength(1);
+    expect(adopted[0]!.path).toBe("/assets/model.bin");
+    expect(adopted[0]!.expectedSize).toBe(bigSize);
+    expect(adopted[0]!.contentType).toBe("application/octet-stream");
+    // bytesCopied reflects the adopted (reported) size, not the tiny fixture body.
+    expect(result.bytesCopied).toBeGreaterThanOrEqual(bigSize);
+    // Big files are never read back through RPC for verification.
+    expect(result.verifiedFiles).toBeGreaterThan(0);
+    expect(backendFlips).toEqual([{ projectId: project.id, backend: "do-r2" }]);
+  });
+
+  it("fails without flipping when adopting a large file mismatches its size", async () => {
+    const project = makeProject();
+    stubRuntimeFs([{ relativePath: "assets/model.bin", content: "BINARY", size: 30 * 1024 * 1024 }]);
+    const { deps, fileStore, backendFlips } = makeDeps(project);
+    (fileStore as Record<string, unknown>).adoptR2File = vi.fn(async () => ({
+      success: false,
+      error: "Adopted object size 6 does not match the reported source size 31457280",
+      code: "ESIZE",
+    }));
+
+    const result = await migrateVmProject(deps, project);
+
+    expect(result.status).toBe("failed");
+    expect(result.error).toContain("does not match the reported source size");
+    expect(backendFlips).toHaveLength(0);
   });
 
   it("dry run copies nothing and flips nothing", async () => {
@@ -236,11 +321,11 @@ describe("migrateVmProject", () => {
     expect(backendFlips).toHaveLength(0);
   });
 
-  it("fails without flipping when a DO write fails", async () => {
+  it("fails without flipping when a DO write persistently fails", async () => {
     const project = makeProject();
     stubRuntimeFs([{ relativePath: "src/app.tsx", content: "code" }]);
     const { deps, fileStore, backendFlips } = makeDeps(project);
-    fileStore.writeBinaryFile.mockResolvedValueOnce({ success: false, error: "boom" });
+    fileStore.writeBinaryFile.mockResolvedValue({ success: false, error: "boom" });
 
     const result = await migrateVmProject(deps, project);
 
@@ -286,5 +371,90 @@ describe("migrateWorkspaceVmProjects", () => {
     await expect(migrateWorkspaceVmProjects(deps, "ws-1", { projectName: "nope" })).rejects.toThrow(
       "Project not found: nope",
     );
+  });
+});
+
+describe("collectAppRoots via migration results", () => {
+  it("surfaces multiple app roots for multi-app VM projects", async () => {
+    const project = makeProject();
+    stubRuntimeFs([
+      { relativePath: "package.json", content: "{}" },
+      { relativePath: "app-two/package.json", content: "{}" },
+      { relativePath: "app-two/wrangler.jsonc", content: "{}" },
+    ]);
+    const { deps } = makeDeps(project);
+
+    const result = await migrateVmProject(deps, project, { dryRun: true });
+
+    expect(result.appRoots).toEqual(["", "app-two"]);
+    expect(result.wranglerConfigs).toEqual(["app-two/wrangler.jsonc"]);
+  });
+});
+
+describe("nested root lift", () => {
+  it("lifts a single nested app directory to the project root", async () => {
+    const project = makeProject();
+    stubRuntimeFs([
+      { relativePath: "period-tracker/package.json", content: JSON.stringify({ scripts: { build: "vite build" } }) },
+      { relativePath: "period-tracker/src/app.tsx", content: "app" },
+      { relativePath: "period-tracker/wrangler.jsonc", content: "{}" },
+      { relativePath: "notes.md", content: "loose sibling file" },
+    ]);
+    const { deps, writes, backendFlips } = makeDeps(project);
+
+    const result = await migrateVmProject(deps, project);
+
+    expect(result.status).toBe("migrated");
+    expect(result.liftedRoot).toBe("period-tracker");
+    expect(result.classification).toBe("package-build");
+    expect(result.appRoots).toEqual([""]);
+    expect(writes.map((write) => write.path).sort()).toEqual([
+      "/notes.md",
+      "/package.json",
+      "/src/app.tsx",
+      "/wrangler.jsonc",
+    ]);
+    expect(backendFlips).toHaveLength(1);
+  });
+
+  it("does not lift multi-app projects or when a root package.json exists", async () => {
+    const project = makeProject();
+    stubRuntimeFs([
+      { relativePath: "app-one/package.json", content: "{}" },
+      { relativePath: "app-two/package.json", content: "{}" },
+    ]);
+    const { deps } = makeDeps(project);
+
+    const result = await migrateVmProject(deps, project, { dryRun: true });
+
+    expect(result.liftedRoot).toBeNull();
+    expect(result.classification).toBe("nested-package");
+    expect(result.appRoots).toEqual(["app-one", "app-two"]);
+  });
+
+  it("force re-migrates a do-r2 project after clearing the tree", async () => {
+    const project = makeProject({ backend: "do-r2" });
+    stubRuntimeFs([
+      { relativePath: "app/package.json", content: JSON.stringify({ scripts: { build: "b" } }) },
+    ]);
+    const { deps, fileStore, writes } = makeDeps(project);
+    (fileStore as Record<string, unknown>).listFiles = vi.fn(async () => ({
+      success: true,
+      files: [
+        { name: "app", type: "directory" },
+        { name: "stale.txt", type: "file" },
+      ],
+    }));
+    (fileStore as Record<string, unknown>).deleteFile = vi.fn(async () => ({ success: true }));
+
+    const result = await migrateVmProject(deps, project, { force: true });
+
+    expect(result.status).toBe("migrated");
+    expect(result.liftedRoot).toBe("app");
+    const deleteMock = (fileStore as { deleteFile: ReturnType<typeof vi.fn> }).deleteFile;
+    expect(deleteMock).toHaveBeenCalledWith("/app", { recursive: true, force: true });
+    expect(deleteMock).toHaveBeenCalledWith("/stale.txt", { recursive: true, force: true });
+    expect(deleteMock).not.toHaveBeenCalledWith("/", expect.anything());
+    expect(writes.map((write) => write.path)).toEqual(["/package.json"]);
   });
 });

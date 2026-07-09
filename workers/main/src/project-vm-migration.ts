@@ -13,12 +13,46 @@
  */
 
 import type { ProjectRuntimeServiceVmBridge, ProjectVmTransferFile } from "./project-runtime-service-vm";
-import type { WorkspaceFilesystemLike, WorkspaceFileStoreLike, WorkspaceProject } from "./workspace-filesystem-do";
+import type {
+  ProjectSourceSnapshot,
+  WorkspaceAdoptR2FileResponse,
+  WorkspaceFileStoreLike,
+  WorkspaceFilesystemLike,
+  WorkspaceProject,
+} from "./workspace-filesystem-do";
 
 /** Default per-file size cap; larger files are skipped and recorded. */
-export const DEFAULT_MAX_FILE_BYTES = 25 * 1024 * 1024;
+export const DEFAULT_MAX_FILE_BYTES = 1024 * 1024 * 1024;
 /** Default per-project cap on total copied bytes; exceeding it fails the project. */
-export const DEFAULT_MAX_PROJECT_BYTES = 512 * 1024 * 1024;
+export const DEFAULT_MAX_PROJECT_BYTES = 4 * 1024 * 1024 * 1024;
+
+/**
+ * Files at or above this size cannot ride the writeBinaryFile DO RPC: it whole-
+ * buffers the file and base64-inflates it 4/3, so a ~32 MiB RPC payload caps
+ * the usable file around 23 MiB. Bigger files stream VM -> R2 through
+ * `adoptR2File` instead, which never buffers the payload. Kept comfortably
+ * under the base64 ceiling.
+ */
+export const RPC_SAFE_FILE_BYTES = 20 * 1024 * 1024;
+
+/**
+ * The per-project store surface the migrator needs. This is the store-like
+ * read/write subset plus the project-only snapshot + large-file adopt methods
+ * that `ProjectFilesystemClient` provides (they are not on the shared
+ * `WorkspaceFileStoreLike`).
+ */
+export type MigrationFileStore = Pick<
+  WorkspaceFileStoreLike,
+  "readFile" | "writeBinaryFile" | "deleteFile"
+> & {
+  adoptR2File(
+    path: string,
+    stream: ReadableStream<Uint8Array>,
+    expectedSize: number,
+    contentType?: string,
+  ): Promise<WorkspaceAdoptR2FileResponse>;
+  createSourceSnapshot(input?: { message?: unknown }): Promise<ProjectSourceSnapshot>;
+};
 
 /**
  * Directory names (any path segment) that never migrate: dependency caches,
@@ -102,6 +136,19 @@ export interface ProjectMigrationResult {
   skipped: MigrationSkippedFile[];
   /** True when the VM has no checkout directory for this project. */
   missingVmCheckout: boolean;
+  /**
+   * Directories containing a package.json ("" = project root). Legacy VM
+   * projects could hold several deployable apps in subfolders (the agent just
+   * ran wrangler in the right directory); more than one root — or a single
+   * non-root one — needs review before the do-r2 root-build assumption holds.
+   */
+  appRoots: string[];
+  /** Relative paths of wrangler config files found in the kept source. */
+  wranglerConfigs: string[];
+  /** Files re-read from DO storage and hash-compared against the VM bytes. */
+  verifiedFiles: number;
+  /** Set when a single nested app directory was lifted to the project root. */
+  liftedRoot: string | null;
   snapshotId: string | null;
   error: string | null;
   durationMs: number;
@@ -111,13 +158,24 @@ export interface MigrateVmProjectOptions {
   dryRun?: boolean;
   maxFileBytes?: number;
   maxProjectBytes?: number;
+  /**
+   * When the project has no root package.json but exactly one nested app
+   * directory, copy that directory's contents as the project root so the
+   * do-r2 root-build convention holds. Default true.
+   */
+  liftNestedRoot?: boolean;
+  /**
+   * Re-migrate a project that is already backend "do-r2": clears the DO file
+   * tree first (so stale layouts don't linger) and re-copies from the VM.
+   */
+  force?: boolean;
 }
 
 export interface MigrateVmProjectDeps {
   bridge: ProjectRuntimeServiceVmBridge;
   workspaceFs: WorkspaceFilesystemLike;
   /** Per-project DO file store factory, keyed by global project id. */
-  fileStoreForProject: (projectId: string) => WorkspaceFileStoreLike;
+  fileStoreForProject: (projectId: string) => MigrationFileStore;
   now?: () => number;
 }
 
@@ -171,6 +229,102 @@ function bytesToBase64(bytes: Uint8Array): string {
   return btoa(binary);
 }
 
+function base64ToBytes(base64: string): Uint8Array {
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
+  return bytes;
+}
+
+async function sha256Hex(bytes: Uint8Array): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", bytes as unknown as ArrayBuffer);
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+export function collectAppRoots(files: Array<{ relativePath: string }>): { appRoots: string[]; wranglerConfigs: string[] } {
+  const appRoots = new Set<string>();
+  const wranglerConfigs: string[] = [];
+  for (const file of files) {
+    const segments = file.relativePath.split("/");
+    const basename = segments[segments.length - 1]!;
+    if (basename === "package.json") {
+      appRoots.add(segments.slice(0, -1).join("/"));
+    }
+    if (/^wrangler\.(toml|json|jsonc)$/.test(basename)) {
+      wranglerConfigs.push(file.relativePath);
+    }
+  }
+  return { appRoots: [...appRoots].sort(), wranglerConfigs: wranglerConfigs.sort() };
+}
+
+interface PlannedCopyFile extends ProjectVmTransferFile {
+  /** Project-relative destination after any nested-root lift. */
+  destination: string;
+}
+
+/**
+ * Plan destinations for kept files. When the tree has no root package.json
+ * but exactly one nested app root, that directory's contents are lifted to
+ * the project root; sibling files keep their paths unless they collide with
+ * a lifted path (collisions are dropped and reported).
+ */
+export function planCopyDestinations(
+  files: ProjectVmTransferFile[],
+  liftNestedRoot: boolean,
+): { planned: PlannedCopyFile[]; liftedRoot: string | null; collisions: MigrationSkippedFile[] } {
+  const { appRoots } = collectAppRoots(files);
+  const liftedRoot =
+    liftNestedRoot && appRoots.length === 1 && appRoots[0] !== "" && appRoots[0] !== undefined
+      ? appRoots[0]
+      : null;
+  if (!liftedRoot) {
+    return { planned: files.map((file) => ({ ...file, destination: file.relativePath })), liftedRoot: null, collisions: [] };
+  }
+  const prefix = `${liftedRoot}/`;
+  const lifted = new Set<string>();
+  const planned: PlannedCopyFile[] = [];
+  const collisions: MigrationSkippedFile[] = [];
+  for (const file of files) {
+    if (file.relativePath.startsWith(prefix)) {
+      const destination = file.relativePath.slice(prefix.length);
+      lifted.add(destination);
+      planned.push({ ...file, destination });
+    }
+  }
+  for (const file of files) {
+    if (file.relativePath.startsWith(prefix)) continue;
+    if (lifted.has(file.relativePath)) {
+      collisions.push({
+        path: file.relativePath,
+        size: typeof file.size === "number" ? file.size : 0,
+        reason: "excluded-file",
+      });
+      continue;
+    }
+    planned.push({ ...file, destination: file.relativePath });
+  }
+  return { planned, liftedRoot, collisions };
+}
+
+/**
+ * Sample paths for post-copy verification: package.json, largest, first, last.
+ * Only small files are eligible — big files stream through the R2 adopt path
+ * and are verified by size during the copy, never read back through RPC (which
+ * would whole-buffer a GB file).
+ */
+function pickVerificationSample(files: PlannedCopyFile[], limit = 5): Set<string> {
+  const sample = new Set<string>();
+  const small = files.filter((file) => (file.size ?? 0) < RPC_SAFE_FILE_BYTES);
+  const rootPackage = small.find((file) => file.destination === "package.json");
+  if (rootPackage) sample.add(rootPackage.destination);
+  const bySize = [...small].sort((a, b) => (b.size ?? 0) - (a.size ?? 0));
+  for (const file of [bySize[0], small[0], small[small.length - 1], bySize[1]]) {
+    if (file) sample.add(file.destination);
+    if (sample.size >= limit) break;
+  }
+  return sample;
+}
+
 function isMissingCheckoutError(error: unknown): boolean {
   return error instanceof Error && /^Path not found:/.test(error.message);
 }
@@ -202,6 +356,10 @@ export async function migrateVmProject(
     bytesCopied: 0,
     skipped: [],
     missingVmCheckout: false,
+    appRoots: [],
+    wranglerConfigs: [],
+    verifiedFiles: 0,
+    liftedRoot: null,
     snapshotId: null,
     durationMs: 0,
   };
@@ -210,7 +368,7 @@ export async function migrateVmProject(
     result: Omit<ProjectMigrationResult, "durationMs">,
   ): ProjectMigrationResult => ({ ...result, durationMs: now() - startedAt });
 
-  if ((project.backend ?? "vm") === "do-r2") {
+  if ((project.backend ?? "vm") === "do-r2" && options.force !== true) {
     return finish({ ...base, status: "already-do-r2", error: null });
   }
 
@@ -253,42 +411,183 @@ export async function migrateVmProject(
     });
   }
 
+  const { planned, liftedRoot, collisions } = planCopyDestinations(
+    kept,
+    options.liftNestedRoot !== false,
+  );
+  skipped.push(...collisions);
+  const { appRoots, wranglerConfigs } = collectAppRoots(
+    planned.map((file) => ({ relativePath: file.destination })),
+  );
   let rootPackageJson: string | null = null;
   let bytesCopied = 0;
   let filesCopied = 0;
+  let verifiedFiles = 0;
   const fileStore = deps.fileStoreForProject(project.id);
 
   if (!dryRun) {
-    for (const file of kept) {
+    if (options.force === true) {
+      // Re-migration: clear the DO tree first so a previous layout (e.g. an
+      // unlifted nested copy) leaves no stale files behind. The store refuses
+      // deleting "/" itself (EPERM), so delete each root entry and fail loudly
+      // if any deletion fails — silently keeping stale files would corrupt the
+      // re-migrated layout.
+      const rootListing = await fileStore.listFiles("/", { includeHidden: true });
+      for (const entry of rootListing.files ?? []) {
+        const name = (entry.relativePath || entry.name || "").replace(/^\/+/, "");
+        if (!name) continue;
+        const deletion = await fileStore.deleteFile(`/${name}`, { recursive: true, force: true });
+        if (!deletion.success) {
+          return finish({
+            ...base,
+            skipped,
+            missingVmCheckout,
+            appRoots,
+            wranglerConfigs,
+            status: "failed",
+            error: `Force re-migration failed to clear /${name}: ${deletion.error ?? "unknown error"}`,
+          });
+        }
+      }
+    }
+    const samplePaths = pickVerificationSample(planned);
+    const sampleHashes = new Map<string, string>();
+    // Copy with bounded concurrency: VM reads dominate wall-clock (one HTTP
+    // round-trip each), so overlapping them matters; DO writes serialize
+    // inside the Durable Object regardless.
+    const copyConcurrency = 10;
+    let nextIndex = 0;
+    let copyError: string | null = null;
+    const copyOne = async (file: PlannedCopyFile): Promise<void> => {
+      const size = typeof file.size === "number" ? file.size : 0;
+      const destination = `/${file.destination}`;
+
+      if (size >= RPC_SAFE_FILE_BYTES) {
+        // Big file: stream VM -> R2 and register the spilled-file row without
+        // ever buffering the payload. Never hashed/read back through RPC; the
+        // adopt path fails loudly if R2's stored size disagrees with the VM's.
+        const { response } = await deps.bridge.readFileStream({ projectId: project.id, path: file.path });
+        const body = response.body;
+        if (!body) {
+          await response.body?.cancel().catch(() => {});
+          throw new Error(`Failed to stream ${file.path}: response body is not streamable`);
+        }
+        const contentType = response.headers.get("content-type") ?? undefined;
+        const adopt = await fileStore.adoptR2File(destination, body, size, contentType);
+        if (!adopt.success) {
+          throw new Error(`Failed to adopt ${destination}: ${adopt.error ?? "unknown error"}`);
+        }
+        bytesCopied += typeof adopt.size === "number" ? adopt.size : size;
+        filesCopied += 1;
+        return;
+      }
+
       const read = await deps.bridge.readFileBytesForTransfer({ projectId: project.id, path: file.path });
-      if (file.relativePath === "package.json") {
+      if (file.destination === "package.json") {
         rootPackageJson = new TextDecoder().decode(read.bytes);
       }
-      const destination = `/${file.relativePath}`;
+      if (samplePaths.has(file.destination)) {
+        sampleHashes.set(file.destination, await sha256Hex(read.bytes));
+      }
       const write = await fileStore.writeBinaryFile(destination, bytesToBase64(read.bytes));
       if (!write.success) {
+        throw new Error(`Failed to write ${destination}: ${write.error ?? "unknown error"}`);
+      }
+      bytesCopied += read.bytes.byteLength;
+      filesCopied += 1;
+    };
+    const copyWorker = async (): Promise<void> => {
+      while (copyError === null) {
+        const index = nextIndex;
+        nextIndex += 1;
+        const file = planned[index];
+        if (!file) return;
+        // Dropped connections under concurrency ("Network connection lost")
+        // are transient; retry each file a couple of times before failing
+        // the whole project.
+        let attempt = 0;
+        for (;;) {
+          try {
+            await copyOne(file);
+            break;
+          } catch (error) {
+            attempt += 1;
+            if (attempt >= 3) {
+              copyError = error instanceof Error ? error.message : String(error);
+              return;
+            }
+          }
+        }
+      }
+    };
+    try {
+      await Promise.all(Array.from({ length: Math.min(copyConcurrency, planned.length) }, copyWorker));
+    } catch (error) {
+      copyError = error instanceof Error ? error.message : String(error);
+    }
+    if (copyError !== null) {
+      return finish({
+        ...base,
+        skipped,
+        missingVmCheckout,
+        appRoots,
+        wranglerConfigs,
+        filesCopied,
+        bytesCopied,
+        status: "failed",
+        error: copyError,
+      });
+    }
+
+    // Re-read the sample from DO storage and hash-compare against the VM
+    // bytes before flipping the backend: catches encoding/store corruption.
+    for (const [relativePath, expectedHash] of sampleHashes) {
+      const stored = await fileStore.readFile(`/${relativePath}`);
+      if (!stored.success || typeof stored.content !== "string") {
         return finish({
           ...base,
           skipped,
           missingVmCheckout,
+          appRoots,
+          wranglerConfigs,
           filesCopied,
           bytesCopied,
           status: "failed",
-          error: `Failed to write ${destination}: ${write.error ?? "unknown error"}`,
+          error: `Post-copy verification failed to read back /${relativePath}: ${stored.error ?? "unknown error"}`,
         });
       }
-      bytesCopied += read.bytes.byteLength;
-      filesCopied += 1;
+      const storedBytes = stored.encoding === "base64"
+        ? base64ToBytes(stored.content)
+        : new TextEncoder().encode(stored.content);
+      const storedHash = await sha256Hex(storedBytes);
+      if (storedHash !== expectedHash) {
+        return finish({
+          ...base,
+          skipped,
+          missingVmCheckout,
+          appRoots,
+          wranglerConfigs,
+          filesCopied,
+          bytesCopied,
+          verifiedFiles,
+          status: "failed",
+          error: `Post-copy verification hash mismatch for /${relativePath}`,
+        });
+      }
+      verifiedFiles += 1;
     }
-  } else if (kept.some((file) => file.relativePath === "package.json")) {
+  } else if (planned.some((file) => file.destination === "package.json")) {
     const read = await deps.bridge.readFileBytesForTransfer({
       projectId: project.id,
-      path: kept.find((file) => file.relativePath === "package.json")!.path,
+      path: planned.find((file) => file.destination === "package.json")!.path,
     });
     rootPackageJson = new TextDecoder().decode(read.bytes);
   }
 
-  const classification = classifyMigrationFiles(kept, rootPackageJson);
+  const classification = classifyMigrationFiles(
+    planned.map((file) => ({ relativePath: file.destination })),
+    rootPackageJson,
+  );
 
   if (dryRun) {
     return finish({
@@ -296,7 +595,10 @@ export async function migrateVmProject(
       classification,
       skipped,
       missingVmCheckout,
-      filesCopied: kept.length,
+      appRoots,
+      wranglerConfigs,
+      liftedRoot,
+      filesCopied: planned.length,
       bytesCopied: plannedBytes,
       status: "dry-run",
       error: null,
@@ -304,7 +606,7 @@ export async function migrateVmProject(
   }
 
   let snapshotId: string | null = null;
-  if (kept.length > 0) {
+  if (planned.length > 0) {
     const snapshot = await fileStore.createSourceSnapshot({ message: "Imported from legacy project VM" });
     snapshotId = snapshot.id;
   }
@@ -316,8 +618,12 @@ export async function migrateVmProject(
     classification,
     skipped,
     missingVmCheckout,
+    appRoots,
+    wranglerConfigs,
     filesCopied,
     bytesCopied,
+    verifiedFiles,
+    liftedRoot,
     snapshotId,
     status: "migrated",
     error: null,

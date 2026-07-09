@@ -3778,7 +3778,6 @@ describe('ChatThreadDO Pi turn handling', () => {
       'list_workflows',
       'list_integrations',
       'create_project',
-      'scaffold_project',
       'set_project_description',
       'add_dependency',
       'revert_project',
@@ -3806,9 +3805,6 @@ describe('ChatThreadDO Pi turn handling', () => {
     expect(JSON.stringify((byName.get('create_project') as any).parameters.properties.template)).toContain('react-router');
     expect((byName.get('create_project') as any).parameters.required).toContain('description');
     expect((byName.get('create_project') as any).parameters.required).toContain('name');
-    expect((byName.get('scaffold_project') as any).parameters.properties.project).toBeDefined();
-    expect((byName.get('scaffold_project') as any).parameters.properties.force).toBeDefined();
-    expect(JSON.stringify((byName.get('scaffold_project') as any).parameters.properties.template)).toContain('react-router');
     expect((byName.get('set_project_description') as any).parameters.properties.project).toBeDefined();
     expect((byName.get('set_project_description') as any).parameters.properties.projectId).toBeUndefined();
     expect((byName.get('set_project_description') as any).parameters.properties.description).toBeDefined();
@@ -4233,7 +4229,7 @@ describe('ChatThreadDO Pi turn handling', () => {
     const piTools = ChatThreadDO.prototype['createPiToolDefinitions'].call(fake, context);
     expect(piTools.find((tool: any) => tool.name === 'list_projects')).toBeTruthy();
     expect(piTools.find((tool: any) => tool.name === 'create_project')).toBeTruthy();
-    expect(piTools.find((tool: any) => tool.name === 'scaffold_project')).toBeTruthy();
+    expect(piTools.find((tool: any) => tool.name === 'scaffold_project')).toBeUndefined();
     expect(piTools.find((tool: any) => tool.name === 'set_project_description')).toBeTruthy();
     expect(piTools.find((tool: any) => tool.name === 'clone_project')).toBeTruthy();
     expect(piTools.find((tool: any) => tool.name === 'send_email')).toBeUndefined();
@@ -6063,60 +6059,35 @@ describe('ChatThreadDO Pi turn handling', () => {
     ]));
   });
 
-  it('scaffolds existing DO-backed projects without overwriting unless forced', async () => {
-    const { fake, projectStub } = createProjectToolFake();
+  it('seeds the notebook-first data-analysis scaffold through create_project', async () => {
+    const { fake, workspaceStub, projectStub } = createProjectToolFake({ projectFileEntries: [] });
 
-    const result = await CodeModeToolsBinding.prototype.callTool.call(fake, 'scaffold_project', {
-      project: 'Demo App',
-    });
-
-    expect(result).toMatchObject({
-      success: true,
-      project: 'Demo App',
-      backend: 'do-r2',
-      template: 'react-router',
-      filesSkipped: expect.arrayContaining(['/package.json']),
-    });
-    expect(projectStub.projectWriteFile).toHaveBeenCalledWith('/wrangler.jsonc', expect.stringContaining('"main": "./workers/app.ts"'));
-    expect(projectStub.projectWriteFile).toHaveBeenCalledWith('/app/app.css', expect.stringContaining('@import "tailwindcss"'));
-
-    await CodeModeToolsBinding.prototype.callTool.call(fake, 'scaffold_project', {
-      project: 'Demo App',
-      force: true,
-    });
-    expect(projectStub.projectWriteFile).toHaveBeenCalledWith('/package.json', expect.stringContaining('"build"'));
-  });
-
-  it('seeds the notebook-first data-analysis scaffold for DO-backed projects', async () => {
-    const { fake, projectStub } = createProjectToolFake({ projectFileEntries: [] });
-
-    const result = await CodeModeToolsBinding.prototype.callTool.call(fake, 'scaffold_project', {
-      project: 'Demo App',
+    const result = await CodeModeToolsBinding.prototype.callTool.call(fake, 'create_project', {
+      name: 'Demo Analysis',
+      description: 'A data analysis project',
       template: 'data-analysis',
     });
 
-    expect(result).toMatchObject({
-      success: true,
-      project: 'Demo App',
-      backend: 'do-r2',
+    expect(workspaceStub.createProject).toHaveBeenCalledWith({
+      name: 'Demo Analysis',
+      description: 'A data analysis project',
       template: 'data-analysis',
-      filesSkipped: [],
+      backend: 'do-r2',
+      workspaceId: 'workspace1',
     });
-    expect((result as any).filesWritten).toEqual(['/analysis.ipynb', '/README.md']);
+    expect(result).toMatchObject({
+      backend: 'do-r2',
+      scaffold: {
+        template: 'data-analysis',
+        filesSkipped: [],
+      },
+    });
+    expect((result as any).scaffold.filesWritten).toEqual(['/analysis.ipynb', '/README.md']);
     expect(projectStub.projectWriteFile).toHaveBeenCalledWith('/analysis.ipynb', expect.stringContaining('"nbformat": 4'));
     expect(projectStub.projectWriteFile).toHaveBeenCalledWith('/README.md', expect.stringContaining('Report mode'));
     const writtenPaths = projectStub.projectWriteFile.mock.calls.map(([path]) => path);
     expect(writtenPaths).not.toContain('/package.json');
     expect(writtenPaths).not.toContain('/app/root.tsx');
-  });
-
-  it('rejects the removed worker/api scaffold templates', async () => {
-    const { fake } = createProjectToolFake({ projectFileEntries: [] });
-
-    await expect(CodeModeToolsBinding.prototype.callTool.call(fake, 'scaffold_project', {
-      project: 'Demo App',
-      template: 'worker',
-    })).rejects.toThrow('template must be "react-router" or "data-analysis"');
   });
 
   it('rejects an invalid create_project template before registering the project', async () => {

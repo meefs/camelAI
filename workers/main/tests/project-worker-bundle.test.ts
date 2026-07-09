@@ -183,3 +183,24 @@ describe("findUnexportedDurableObjectClasses", () => {
     ).toEqual([]);
   });
 });
+
+it("accepts a vite-plugin manifest that uses `main` instead of `main_module`", async () => {
+  const files = new Map<string, string>([
+    ["/workspace/demo/build/server/wrangler.json", JSON.stringify({
+      name: "demo",
+      main: "index.js",
+      no_bundle: true,
+      rules: [{ type: "ESModule", globs: ["**/*.js", "**/*.mjs"] }],
+      compatibility_date: "2026-06-01",
+      assets: { directory: "../client", binding: "ASSETS" },
+    })],
+    ["/workspace/demo/build/server/index.js", "export default {};"],
+    ["/workspace/demo/build/client/index.html", "<html></html>"],
+  ]);
+  const bundle = await collectWorkerBundleFromSandbox(fakeBundleSandbox(files), "/workspace/demo");
+  expect(bundle.metadata).toMatchObject({ main_module: "index.js" });
+  expect(bundle.metadata).not.toHaveProperty("main");
+  expect(bundle.metadata).not.toHaveProperty("no_bundle");
+  expect(bundle.metadata).not.toHaveProperty("rules");
+  expect(bundle.modules.map((module) => module.name)).toContain("index.js");
+});

@@ -85,6 +85,46 @@ describe("ProjectFilesystemClient", () => {
     expect(__testing.isArtifactsBindingUnavailableError("network timeout")).toBe(false);
   });
 
+  it("adopts a streamed R2 object and reads it back through the store's own path", async () => {
+    const client = new ProjectFilesystemClient(env as never, `project-${crypto.randomUUID()}`);
+
+    // A payload larger than the store's inline threshold (1.5 MB) so it truly
+    // lives in R2 and exercises the spilled-file read path, without being so
+    // large it slows the suite.
+    const size = 2 * 1024 * 1024;
+    const payload = new Uint8Array(size);
+    for (let i = 0; i < size; i += 1) payload[i] = i % 251;
+    const source = new Response(payload).body!;
+
+    const adopt = await client.adoptR2File("/assets/model.bin", source, size, "application/octet-stream");
+    expect(adopt.success).toBe(true);
+    expect(adopt.size).toBe(size);
+
+    // The store must surface the adopted file through its own stat/list/read
+    // code — proving the R2 key + metadata row match what the store expects.
+    await expect(client.exists("/assets/model.bin")).resolves.toMatchObject({ exists: true, isFile: true, size });
+    const listing = await client.listFiles("/assets", {});
+    expect(listing.files.map((f) => f.name)).toContain("model.bin");
+
+    const readBack = await client.readFile("/assets/model.bin");
+    expect(readBack.success).toBe(true);
+    expect(readBack.encoding).toBe("base64");
+    const decoded = Uint8Array.from(atob(readBack.content ?? ""), (ch) => ch.charCodeAt(0));
+    expect(decoded.byteLength).toBe(size);
+    expect(decoded[0]).toBe(payload[0]);
+    expect(decoded[size - 1]).toBe(payload[size - 1]);
+
+    // A size mismatch must fail loudly and leave nothing registered.
+    const mismatch = await client.adoptR2File(
+      "/assets/other.bin",
+      new Response(new Uint8Array(10)).body!,
+      999,
+      "application/octet-stream",
+    );
+    expect(mismatch.success).toBe(false);
+    await expect(client.exists("/assets/other.bin")).resolves.toMatchObject({ exists: false });
+  });
+
   it("creates deterministic project source snapshots from real DO-backed files", async () => {
     const client = new ProjectFilesystemClient(env as never, `project-${crypto.randomUUID()}`);
     await expect(client.writeFile("/package.json", JSON.stringify({ scripts: { build: "vite build" } }))).resolves.toEqual({ success: true });
