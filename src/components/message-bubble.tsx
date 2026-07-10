@@ -43,15 +43,34 @@ import {
 } from '@/lib/turn-utils';
 
 const messageTimeCache = new Map<string, string>();
+const dayKeyFormatters = new Map<string, Intl.DateTimeFormat>();
 const EMPTY_ANNOTATED_MENTIONS: AnnotatedMentionRef[] = [];
 
-// Format timestamp to readable time (e.g., "12:25 PM")
+function getDayKey(timestamp: number, timeZone?: string): string {
+  const formatterKey = timeZone ?? 'local';
+  let formatter = dayKeyFormatters.get(formatterKey);
+  if (!formatter) {
+    formatter = new Intl.DateTimeFormat('en-CA', {
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      timeZone,
+    });
+    dayKeyFormatters.set(formatterKey, formatter);
+  }
+  return formatter.format(timestamp);
+}
+
+// Format timestamp to readable time, prefixed with the date for messages
+// sent before today (e.g., "12:25 PM" today, "Jun 25, 2:41 PM" otherwise)
 function formatMessageTime(timestamp: number, timeZone?: string): string {
-  const cacheKey = `${timestamp}:${timeZone ?? 'local'}`;
+  const isToday = getDayKey(timestamp, timeZone) === getDayKey(Date.now(), timeZone);
+  const cacheKey = `${timestamp}:${timeZone ?? 'local'}:${isToday ? 'today' : 'dated'}`;
   const cached = messageTimeCache.get(cacheKey);
   if (cached) return cached;
 
-  const formatted = new Date(timestamp).toLocaleTimeString([], {
+  const formatted = new Date(timestamp).toLocaleString([], {
+    ...(isToday ? {} : { month: 'short', day: 'numeric' }),
     hour: 'numeric',
     minute: '2-digit',
     hour12: true,
