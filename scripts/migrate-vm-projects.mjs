@@ -103,6 +103,8 @@ migrate — copy legacy VM projects to DO+R2, per project, size-aware.
   --force                 Re-copy even already-migrated (do-r2) projects.
   --concurrency <n>       Wide pool for small (<=${SMALL_FILE_THRESHOLD} files) projects (default ${DEFAULT_MIGRATE_CONCURRENCY}).
   --workspace-concurrency <n> Workspaces processed in parallel (default 8 dry-run / 2 real).
+  --active-since-days <n> Skip workspaces with no thread activity in the last n days
+                          (recorded as skipped-dormant; their projects stay on the VM/snapshot).
   --large-concurrency <n> Pool for large projects (default ${DEFAULT_LARGE_CONCURRENCY}, i.e. serial).
   Flow: a per-project dry run first estimates files_copied, then small projects
   migrate wide and large projects migrate serially. Resumable: already-migrated
@@ -161,6 +163,7 @@ function parseArgs(argv) {
     else if (arg === "--concurrency") args.concurrency = Number(argv[++i]);
     else if (arg === "--large-concurrency") args.largeConcurrency = Number(argv[++i]);
     else if (arg === "--workspace-concurrency") args.workspaceConcurrency = Number(argv[++i]);
+    else if (arg === "--active-since-days") args.activeSinceDays = Number(argv[++i]);
     else if (arg === "--migrate-report") args.migrateReport = argv[++i];
     else if (arg === "--sent-at") args.sentAt = Number(argv[++i]);
     else if (arg === "--text-file") args.textFile = argv[++i];
@@ -492,6 +495,25 @@ async function cmdMigrate(client, args) {
       return;
     }
 
+    if (args.activeSinceDays) {
+      const cutoffMs = Date.now() - args.activeSinceDays * 86_400_000;
+      const activity = await client.rpc("admin_js_exec", {
+        code: `const threads = await DO.call('ORG', ${JSON.stringify(ws.org)}, 'getThreadsByWorkspace', [${JSON.stringify(ws.id)}]);
+let latest = 0;
+for (const t of threads) { const u = Number(t.updated_at ?? t.created_at ?? 0); if (u > latest) latest = u; }
+return { latest };`,
+        timeout_ms: 60_000,
+      });
+      const latest = Number(activity?.result?.latest ?? 0);
+      if (!latest || latest < cutoffMs) {
+        totals.dormantSkipped = (totals.dormantSkipped ?? 0) + 1;
+        totals.dormantProjectsSkipped = (totals.dormantProjectsSkipped ?? 0) + legacy.length;
+        console.log(`  skipped-dormant (last activity ${latest ? new Date(latest).toISOString().slice(0, 10) : "never"}), ${legacy.length} project(s) stay on VM`);
+        wsReports.push({ workspaceId: ws.id, orgId: ws.org, migrated: 0, skippedDormant: true, lastActivity: latest || null, results: [] });
+        return;
+      }
+    }
+
     // Estimate pass: per-project dry runs give files_copied so we can size the
     // real pass. In --dry-run mode this pass IS the run.
     const estimates = await runPool(legacy, smallConcurrency, async (project) => {
@@ -557,6 +579,7 @@ async function cmdMigrate(client, args) {
 
   totals.failed = failures.length;
   console.log("\n=== migrate summary ===");
+  if (totals.dormantSkipped) console.log(`dormant skipped:  ${totals.dormantSkipped} workspace(s), ${totals.dormantProjectsSkipped} project(s)`);
   console.log(`workspaces:      ${workspaces.length}`);
   console.log(`legacy projects: ${totals.legacy}`);
   console.log(`${args.dryRun ? "estimated" : "migrated"}:       ${args.dryRun ? "(dry run)" : totals.migrated}`);
