@@ -102,6 +102,7 @@ migrate — copy legacy VM projects to DO+R2, per project, size-aware.
   --dry-run               Estimate only (per-project dry runs, no copy).
   --force                 Re-copy even already-migrated (do-r2) projects.
   --concurrency <n>       Wide pool for small (<=${SMALL_FILE_THRESHOLD} files) projects (default ${DEFAULT_MIGRATE_CONCURRENCY}).
+  --workspace-concurrency <n> Workspaces processed in parallel (default 8 dry-run / 2 real).
   --large-concurrency <n> Pool for large projects (default ${DEFAULT_LARGE_CONCURRENCY}, i.e. serial).
   Flow: a per-project dry run first estimates files_copied, then small projects
   migrate wide and large projects migrate serially. Resumable: already-migrated
@@ -159,6 +160,7 @@ function parseArgs(argv) {
     else if (arg === "--force") args.force = true;
     else if (arg === "--concurrency") args.concurrency = Number(argv[++i]);
     else if (arg === "--large-concurrency") args.largeConcurrency = Number(argv[++i]);
+    else if (arg === "--workspace-concurrency") args.workspaceConcurrency = Number(argv[++i]);
     else if (arg === "--migrate-report") args.migrateReport = argv[++i];
     else if (arg === "--sent-at") args.sentAt = Number(argv[++i]);
     else if (arg === "--text-file") args.textFile = argv[++i];
@@ -463,8 +465,14 @@ async function cmdMigrate(client, args) {
   const wsReports = [];
   const failures = [];
   const totals = { legacy: 0, migrated: 0, failed: 0, filesCopied: 0 };
+  // Most workspaces have zero legacy projects and cost one listing RPC, so the
+  // workspace loop is parallel. Real migrations stay narrow by default because
+  // per-project pools stack on top of this width.
+  const workspaceConcurrency = args.workspaceConcurrency
+    ? positiveInt(args.workspaceConcurrency, "--workspace-concurrency")
+    : args.dryRun ? 8 : 2;
 
-  for (const [wsIndex, ws] of workspaces.entries()) {
+  const processWorkspace = async ({ ws, wsIndex }) => {
     let projects;
     try {
       projects = await listProjects(client, ws.id);
@@ -472,7 +480,7 @@ async function cmdMigrate(client, args) {
       failures.push({ workspace_id: ws.id, project: null, error: String(error) });
       console.error(`[${wsIndex + 1}/${workspaces.length}] ${ws.id}: LIST ERROR ${error}`);
       wsReports.push({ workspaceId: ws.id, orgId: ws.org, error: String(error), migrated: 0, results: [] });
-      continue;
+      return;
     }
     const legacy = projects.filter((p) => (p.backend ?? "vm") !== "do-r2").map((p) => p.name);
     totals.legacy += legacy.length;
@@ -481,7 +489,7 @@ async function cmdMigrate(client, args) {
     );
     if (legacy.length === 0) {
       wsReports.push({ workspaceId: ws.id, orgId: ws.org, migrated: 0, results: [] });
-      continue;
+      return;
     }
 
     // Estimate pass: per-project dry runs give files_copied so we can size the
@@ -501,7 +509,7 @@ async function cmdMigrate(client, args) {
         if (r.status === "call-error" || r.status === "failed") failures.push({ workspace_id: ws.id, ...r });
       }
       wsReports.push({ workspaceId: ws.id, orgId: ws.org, migrated: 0, dryRun: true, results: estimates });
-      continue;
+      return;
     }
 
     // Partition by estimated file count. Unknown/failed estimates are treated
@@ -539,7 +547,13 @@ async function cmdMigrate(client, args) {
     }
     totals.migrated += migrated;
     wsReports.push({ workspaceId: ws.id, orgId: ws.org, migrated, results });
-  }
+  };
+
+  await runPool(
+    workspaces.map((ws, wsIndex) => ({ ws, wsIndex })),
+    workspaceConcurrency,
+    processWorkspace,
+  );
 
   totals.failed = failures.length;
   console.log("\n=== migrate summary ===");
