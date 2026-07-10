@@ -62,6 +62,11 @@ export interface PiUserStopData {
   text: string;
 }
 
+export interface PiSteerMarkerData {
+  steerMessageId: string;
+  acceptedAtMs: number;
+}
+
 export interface PiToolStreamData {
   toolCallId: string;
   text: string;
@@ -139,6 +144,7 @@ export type PiUiMessageChunk =
   | { type: 'tool-output-available'; toolCallId: string; output: PiToolOutput }
   | { type: 'data-pi-todos'; id: string; data: PiTodosData }
   | { type: 'data-pi-user-stop'; id: string; data: PiUserStopData }
+  | { type: 'data-pi-steer-marker'; id: string; data: PiSteerMarkerData }
   | { type: 'data-pi-artifacts'; id: string; data: PiArtifactsData }
   | { type: 'data-pi-tool-stream'; transient: true; data: PiToolStreamData }
   | { type: 'data-pi-heartbeat'; transient: true; data: PiHeartbeatData }
@@ -152,8 +158,14 @@ export const PI_TODOS_PART_ID = 'turn-plan';
 /** Legacy tool_use id the plan panel adapts back to. */
 export const PI_TODOS_TOOL_USE_ID = 'turn:plan:todo';
 export const PI_USER_STOP_PART_ID = 'user-stop';
+export const PI_STEER_MARKER_PART = 'data-pi-steer-marker';
 /** Fixed reconciliation id for the single terminal-error part per turn. */
 export const PI_ERROR_PART_ID = 'pi-error';
+
+/** Per-steer reconciliation id for the durable ordering seam. */
+export function piSteerMarkerPartId(steerMessageId: string): string {
+  return `pi:steer:${steerMessageId}`;
+}
 
 /**
  * Per-tool reconciliation id for the code-mode artifacts data part. Code-mode
@@ -207,8 +219,8 @@ function reasoningKey(itemId: string, contentIndex = 0): string {
  *
  * Emits `start`/`start-step` at the head, `text`/`reasoning`/`tool` chunks per
  * item, transient `data-pi-tool-stream` for output deltas, non-transient
- * `data-pi-todos`/`data-pi-user-stop`, and `message-metadata` + `finish` on
- * `turn/completed`.
+ * `data-pi-todos`/`data-pi-user-stop`/`data-pi-steer-marker`, and
+ * `message-metadata` + `finish` on `turn/completed`.
  */
 export class PiChunkEncoder {
   private readonly messageId: string;
@@ -352,6 +364,25 @@ export class PiChunkEncoder {
       this.todosCreated = true;
     }
     chunks.push({ type: 'data-pi-todos', id: PI_TODOS_PART_ID, data });
+    return chunks;
+  }
+
+  /**
+   * Insert a durable ordering seam at the stream's current position. Closing
+   * both open slots makes every part emitted before acceptance render above the
+   * steered user bubble and every later part render below it.
+   */
+  encodeSteerMarker(
+    steerMessageId: string,
+    acceptedAtMs: number,
+  ): PiUiMessageChunk[] {
+    if (this.finished) return [];
+    const chunks = this.closeOpen();
+    chunks.push({
+      type: PI_STEER_MARKER_PART,
+      id: piSteerMarkerPartId(steerMessageId),
+      data: { steerMessageId, acceptedAtMs },
+    });
     return chunks;
   }
 
@@ -582,7 +613,8 @@ export class PiChunkEncoder {
   }
 
   /** Sequence break: close BOTH open slots (tool items, plan-panel creation,
-   * user-stop, turn completion) so the parts array keeps arrival order. */
+   * user-stop, steer marker, turn completion) so the parts array keeps arrival
+   * order. */
   private closeOpen(): PiUiMessageChunk[] {
     return [...this.closeOpenText(), ...this.closeOpenReasoning()];
   }

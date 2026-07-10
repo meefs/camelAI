@@ -243,7 +243,8 @@ export function uiMessageToMessage(
           appendToolBlocks(blocks, part, artifactsByToolCallId);
         }
         // Transient (data-pi-tool-stream), data-pi-artifacts (folded onto the
-        // tool_result above), and unknown parts are not emitted as blocks.
+        // tool_result above), data-pi-steer-marker (a render-order seam consumed
+        // before adaptation), and unknown parts are not emitted as blocks.
         break;
       }
     }
@@ -270,6 +271,12 @@ export function uiMessageToMessage(
   }
   if (typeof pi?.completedAtMs === 'number') {
     message.completedAtMs = pi.completedAtMs;
+  }
+  const metadata = ui.metadata as
+    | { sentDuringStreaming?: unknown }
+    | undefined;
+  if (metadata?.sentDuringStreaming === true) {
+    message.sentDuringStreaming = true;
   }
 
   return message;
@@ -474,8 +481,13 @@ export function messageToUiMessage(message: Message): UIMessage {
   // (uiMessageCreatedAtMs); without it a backfilled message renders epoch 0.
   const createdAtMs = positiveFiniteNumber(message.created_at);
   if (createdAtMs !== undefined) pi.createdAtMs = createdAtMs;
-  if (Object.keys(pi).length > 0) {
-    uiMessage.metadata = { pi };
+  const metadata: Record<string, unknown> = {};
+  if (Object.keys(pi).length > 0) metadata.pi = pi;
+  if (message.role === 'user' && message.sentDuringStreaming === true) {
+    metadata.sentDuringStreaming = true;
+  }
+  if (Object.keys(metadata).length > 0) {
+    uiMessage.metadata = metadata;
   }
   return uiMessage;
 }

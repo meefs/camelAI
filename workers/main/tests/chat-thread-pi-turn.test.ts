@@ -8440,9 +8440,11 @@ describe('ChatThreadDO Pi turn handling', () => {
     });
 
     it('journals an accepted steering message before handing it to the steer queue', async () => {
-      const { fake } = createPiEventFake();
+      const { fake, events } = createPiEventFake();
       fake.refreshPiSessionModel = vi.fn(async () => undefined);
       fake.recordPiTurnJournalSteerMessage = vi.fn();
+      fake.messages = [];
+      fake.persistMessages = vi.fn(async () => undefined);
       const steer = vi.fn();
       fake.piSession = {
         state: {
@@ -8459,10 +8461,31 @@ describe('ChatThreadDO Pi turn handling', () => {
         content: 'steer me',
       });
       expect(accepted).toBe(true);
+
+      // Acceptance is synchronous through the durable journal + stream marker;
+      // no model refresh or persistence await can move the seam later.
+      expect(fake.recordPiTurnJournalSteerMessage).toHaveBeenCalledTimes(1);
+      expect(events).toContainEqual(
+        expect.objectContaining({
+          type: 'steer-marker',
+          steerMessageId: expect.any(String),
+          acceptedAtMs: expect.any(Number),
+        }),
+      );
+      const stamped = fake.recordPiTurnJournalSteerMessage.mock.calls[0][0];
+      const markerEvent = events.find((event) => event.type === 'steer-marker');
+      expect(markerEvent.steerMessageId).toBe(stamped.uiMetadata.renderMessageId);
+      expect(fake.refreshPiSessionModel).not.toHaveBeenCalled();
       await flushWaitUntil(fake);
 
-      expect(fake.recordPiTurnJournalSteerMessage).toHaveBeenCalledTimes(1);
       expect(steer).toHaveBeenCalledTimes(1);
+      expect(fake.persistMessages).toHaveBeenCalledTimes(1);
+      expect(fake.persistMessages.mock.calls[0][0][0].metadata).toMatchObject({
+        sentDuringStreaming: true,
+      });
+      expect(
+        fake.persistMessages.mock.invocationCallOrder[0],
+      ).toBeLessThan(fake.refreshPiSessionModel.mock.invocationCallOrder[0]);
       // Same message object, journaled strictly before it reaches the queue.
       expect(fake.recordPiTurnJournalSteerMessage.mock.calls[0][0]).toBe(
         steer.mock.calls[0][0],
@@ -10363,6 +10386,8 @@ describe('ChatThreadDO Pi turn handling', () => {
       fake.recordPiTurnJournalSteerMessage = vi.fn();
       fake.buildUserUiSkeleton = vi.fn(() => ({ id: 'u', role: 'user', parts: [] }));
       fake.persistMessages = vi.fn(async () => {});
+      fake.pushChatEvent = vi.fn();
+      fake.emitChatError = vi.fn();
       // The model refresh fails mid-steer (e.g. the BYOK config vanished).
       fake.refreshPiSessionModel = vi.fn(() =>
         Promise.reject(new Error('config gone')),
@@ -10382,6 +10407,12 @@ describe('ChatThreadDO Pi turn handling', () => {
       // onChatMessage — a steer-side failure must NOT erase that turn's
       // marker/journal or tear it down (it is still live).
       expect(fake.recordPiTurnJournalSteerMessage).toHaveBeenCalledTimes(1);
+      expect(fake.persistMessages).toHaveBeenCalledWith([
+        { id: 'u', role: 'user', parts: [] },
+      ]);
+      expect(fake.emitChatError).toHaveBeenCalledWith(
+        'Your message could not be delivered to the running turn. Please resend it.',
+      );
       expect(fake.clearPiActiveTurnAndJournal).not.toHaveBeenCalled();
       expect(fake.finishTurn).not.toHaveBeenCalled();
     });

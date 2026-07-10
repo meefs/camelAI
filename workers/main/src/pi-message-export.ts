@@ -30,8 +30,8 @@ export function piCoreMessageToParsedChatMessage(
   created_at: number;
   forkEntryId: string;
   /** Render-history message id this row streams into (uiMetadata stamp); the
-   * backfill folds consecutive assistant rows sharing it into that one
-   * UIMessage. Absent on legacy rows committed before stamping shipped. */
+   * backfill folds assistant rows sharing it into that one UIMessage and uses
+   * user stamps to rebuild steer bubbles. Absent on legacy rows. */
   renderMessageId?: string;
   sentDuringStreaming?: boolean;
   isCompactSummary?: boolean;
@@ -58,6 +58,7 @@ export function piCoreMessageToParsedChatMessage(
       record.isCompactSummary === true ||
       metadata?.compactSummary === true ||
       metadata?.isCompactSummary === true;
+    const renderMessageId = normalizePiUiMetadata(record.uiMetadata)?.renderMessageId;
     return [{
       id: `pi_user_${timestamp}_${index}`,
       thread_id: threadId,
@@ -65,6 +66,7 @@ export function piCoreMessageToParsedChatMessage(
       content: piUserContentToChatContent(record.content),
       created_at: timestamp,
       forkEntryId: `pi_user_${timestamp}_${index}`,
+      ...(renderMessageId ? { renderMessageId } : {}),
       ...(sentDuringStreaming ? { sentDuringStreaming: true } : {}),
       ...(isCompactSummary ? { isCompactSummary: true } : {}),
     }];

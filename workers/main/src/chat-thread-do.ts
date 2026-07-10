@@ -73,7 +73,9 @@ import type { UIMessage, UIMessageStreamWriter } from 'ai';
 import {
   PiChunkEncoder,
   piArtifactsPartId,
+  piSteerMarkerPartId,
   PI_ERROR_PART_ID,
+  PI_STEER_MARKER_PART,
   type PiRuntimeEvent,
   type PiUiMessageChunk,
 } from '../../../src/lib/pi-chunk-encoder';
@@ -735,6 +737,8 @@ export interface AgentEvalParsedMessage {
   /** Render-history message id this row streams into (uiMetadata stamp);
    * absent on rows committed before stamping shipped. */
   renderMessageId?: string;
+  /** User row accepted while its assistant turn was already streaming. */
+  sentDuringStreaming?: boolean;
 }
 
 export interface AgentEvalSessionRequest extends InitialUserMessageRequest {
@@ -9052,30 +9056,39 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
               clientMessageId,
               messageSource,
               piCoreMessageKey: timestamp,
+              sentDuringStreaming: true,
             });
             const stampedSteerMessage = this.withPiRenderMessageId(
               userMessage,
               steeredSkeleton.id,
             );
             this.recordPiTurnJournalSteerMessage(stampedSteerMessage);
+            this.pushChatEvent({
+              type: "steer-marker",
+              steerMessageId: steeredSkeleton.id,
+              acceptedAtMs: Date.now(),
+            });
             this.ctx.waitUntil(
               (async () => {
-                if (!this.piSession) return;
-                await this.refreshPiSessionModel();
-                if (!this.piSession) return;
-                this.piSession.steer(stampedSteerMessage);
-                // Append the steered bubble to the linear render history directly
-                // (persistMessages, NOT saveMessages — the latter would enqueue a
-                // second ai-chat turn). The in-flight assistant stream keeps its own
-                // ai-chat turn; this is a sibling linear-history write.
+                // Append the steered bubble to linear render history directly
+                // (persistMessages, NOT saveMessages — the latter would enqueue
+                // another ai-chat turn). Persist before model refresh so a
+                // refresh failure cannot erase the accepted render bubble.
                 await this.persistMessages([
                   ...this.messages,
                   steeredSkeleton,
                 ]);
+                if (!this.piSession) return;
+                await this.refreshPiSessionModel();
+                if (!this.piSession) return;
+                this.piSession.steer(stampedSteerMessage);
               })().catch((error) => {
                 console.error(
                   "[ChatThreadDO] failed to steer / persist steered user render message",
                   error,
+                );
+                this.emitChatError(
+                  "Your message could not be delivered to the running turn. Please resend it.",
                 );
               }),
             );
@@ -9414,6 +9427,17 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
         this.writePiStreamHeartbeat();
         return;
       }
+    } else if (envelope.type === "steer-marker") {
+      const steerMessageId =
+        typeof envelope.steerMessageId === "string"
+          ? envelope.steerMessageId
+          : "";
+      const acceptedAtMs =
+        typeof envelope.acceptedAtMs === "number"
+          ? envelope.acceptedAtMs
+          : Date.now();
+      if (!steerMessageId) return;
+      chunks = encoder.encodeSteerMarker(steerMessageId, acceptedAtMs);
     } else if (envelope.type === "error") {
       const errorText =
         typeof envelope.error === "string" && envelope.error.trim()
@@ -10117,10 +10141,12 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
     messageSource?: string | null;
     channelHistory?: boolean;
     piCoreMessageKey?: number | string;
+    sentDuringStreaming?: boolean;
   }): UIMessage {
     const metadata: Record<string, unknown> = {};
     if (args.messageSource) metadata.source = args.messageSource;
     if (args.channelHistory) metadata.channelHistory = true;
+    if (args.sentDuringStreaming) metadata.sentDuringStreaming = true;
     // Stamp the pi_core timestamp of the row Pi commits for this same user
     // message so the top-up backfill can recognize the live-written skeleton and
     // skip re-converting the pi_core row into a duplicate (topUpUiMessagesFromPiCore).
@@ -10270,7 +10296,7 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
     // The high-water mark still advances past skipped rows.
     const existingIds = new Set<string>(this.messages.map((m) => m.id));
     const existingForkEntryIds = new Set<string>();
-    const existingUserKeys = new Set<string>();
+    const existingUserIdsByKey = new Map<string, string>();
     const existingToolCallIds = new Set<string>();
     for (const existing of this.messages) {
       const metadata = (existing as { metadata?: Record<string, unknown> })
@@ -10288,7 +10314,7 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
           }
         }
         if (typeof metadata.piCoreMessageKey === "string" && metadata.piCoreMessageKey) {
-          existingUserKeys.add(metadata.piCoreMessageKey);
+          existingUserIdsByKey.set(metadata.piCoreMessageKey, existing.id);
         }
       }
       const parts = (existing as { parts?: unknown }).parts;
@@ -10314,39 +10340,135 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
       return ids;
     };
 
-    // Group consecutive stamped assistant rows by renderMessageId: a
-    // multi-SDK-turn run commits one pi_core row per SDK turn, all streamed
-    // into the ONE live message, so the group folds into a single UIMessage
-    // under that id (parts concatenated in commit order; pi metadata merged
-    // the way the encoder stamps it — last responseId as forkEntryId, every
-    // responseId under forkEntryIds).
-    type ParsedRenderMessage = (typeof newParsed)[number];
-    const groups: Array<{
-      id: string | null;
-      rows: ParsedRenderMessage[];
-    }> = [];
-    for (const parsedMessage of newParsed) {
-      const stamp =
-        parsedMessage.role === "assistant" &&
-        typeof parsedMessage.renderMessageId === "string" &&
-        parsedMessage.renderMessageId
-          ? parsedMessage.renderMessageId
-          : null;
-      const previous = groups[groups.length - 1];
-      if (stamp && previous?.id === stamp) {
-        previous.rows.push(parsedMessage);
-      } else {
-        groups.push({ id: stamp, rows: [parsedMessage] });
+    const convertedByIndex = new Map<number, UIMessage>();
+    const convertAt = (index: number): UIMessage => {
+      const cached = convertedByIndex.get(index);
+      if (cached) return cached;
+      const row = newParsed[index];
+      let converted = messageToUiMessage(row as unknown as Message);
+      // User pi_core rows are stamped with the id of their live skeleton. A
+      // rebuild must preserve it so a synthetic steer marker can consume the
+      // rebuilt bubble by the same-content-same-id invariant.
+      if (
+        row.role === "user" &&
+        typeof row.renderMessageId === "string" &&
+        row.renderMessageId
+      ) {
+        converted = { ...converted, id: row.renderMessageId } as UIMessage;
       }
+      convertedByIndex.set(index, converted);
+      return converted;
+    };
+    const resolvedUserIdAt = (index: number): string => {
+      const row = newParsed[index];
+      const existingId = existingUserIdsByKey.get(String(row.created_at));
+      if (existingId) return existingId;
+      if (
+        typeof row.renderMessageId === "string" &&
+        row.renderMessageId
+      ) {
+        return row.renderMessageId;
+      }
+      // The deterministic row-derived id is also the id assigned when this
+      // user is converted during the same pass. If its bubble is unavailable,
+      // the client safely joins around the unmatched marker.
+      return convertAt(index).id;
+    };
+
+    // A multi-SDK-turn run commits one pi_core assistant row per SDK turn, all
+    // stamped with the ONE live render id. Steered user rows break contiguity,
+    // so fold by stamp across the whole pass and insert a marker for every user
+    // row between assistant commits. This prevents a later same-id upsert from
+    // clobbering the pre-steer half during a full rebuild.
+    const assistantIndexesByStamp = new Map<string, number[]>();
+    for (let index = 0; index < newParsed.length; index += 1) {
+      const row = newParsed[index];
+      if (
+        row.role !== "assistant" ||
+        typeof row.renderMessageId !== "string" ||
+        !row.renderMessageId
+      ) {
+        continue;
+      }
+      const indexes = assistantIndexesByStamp.get(row.renderMessageId) ?? [];
+      indexes.push(index);
+      assistantIndexesByStamp.set(row.renderMessageId, indexes);
+    }
+
+    const stampedAssistantIndexes = new Set<number>();
+    const foldedAssistantByFirstIndex = new Map<number, UIMessage>();
+    for (const [renderMessageId, indexes] of assistantIndexesByStamp) {
+      for (const index of indexes) stampedAssistantIndexes.add(index);
+      // The live stream already persisted the complete marked row. Every
+      // assistant commit sharing its id is covered by that one exact-id skip.
+      if (existingIds.has(renderMessageId)) continue;
+
+      const firstIndex = indexes[0];
+      const parts: UIMessage["parts"] = [];
+      let previousAssistantIndex = firstIndex;
+      for (let offset = 0; offset < indexes.length; offset += 1) {
+        const assistantIndex = indexes[offset];
+        if (offset > 0) {
+          for (
+            let between = previousAssistantIndex + 1;
+            between < assistantIndex;
+            between += 1
+          ) {
+            const interposed = newParsed[between];
+            if (interposed.role !== "user") continue;
+            const steerMessageId = resolvedUserIdAt(between);
+            const acceptedAtMs =
+              typeof interposed.created_at === "number" &&
+              Number.isFinite(interposed.created_at)
+                ? interposed.created_at
+                : Date.now();
+            parts.push({
+              type: PI_STEER_MARKER_PART,
+              id: piSteerMarkerPartId(steerMessageId),
+              data: { steerMessageId, acceptedAtMs },
+            } as UIMessage["parts"][number]);
+          }
+        }
+        parts.push(...convertAt(assistantIndex).parts);
+        previousAssistantIndex = assistantIndex;
+      }
+
+      const rows = indexes.map((index) => newParsed[index]);
+      const forkEntryIds = rows
+        .map((row) => row.forkEntryId)
+        .filter((id): id is string => typeof id === "string" && !!id);
+      const pi: Record<string, unknown> = {
+        ...(forkEntryIds.length > 0
+          ? {
+              forkEntryId: forkEntryIds[forkEntryIds.length - 1],
+              forkEntryIds,
+            }
+          : {}),
+      };
+      const firstCreatedAt = (
+        convertAt(firstIndex).metadata as
+          | { pi?: { createdAtMs?: unknown } }
+          | undefined
+      )?.pi?.createdAtMs;
+      if (typeof firstCreatedAt === "number") pi.createdAtMs = firstCreatedAt;
+      foldedAssistantByFirstIndex.set(firstIndex, {
+        id: renderMessageId,
+        role: "assistant",
+        parts,
+        metadata: { pi },
+      } as UIMessage);
     }
 
     const uiMessages: UIMessage[] = [];
     const createdAtById = new Map<string, number>();
-    for (const group of groups) {
-      const first = group.rows[0];
-      if (group.id) {
-        // Stamped assistant group: skip when the live row already landed.
-        if (existingIds.has(group.id)) continue;
+    for (let index = 0; index < newParsed.length; index += 1) {
+      const first = newParsed[index];
+      let ui: UIMessage;
+
+      if (stampedAssistantIndexes.has(index)) {
+        const folded = foldedAssistantByFirstIndex.get(index);
+        if (!folded) continue;
+        ui = folded;
       } else if (first.role === "assistant") {
         // Legacy unstamped assistant row: old content heuristics.
         if (
@@ -10359,42 +10481,17 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
         if (toolCallIds.some((id) => existingToolCallIds.has(id))) {
           continue;
         }
+        ui = convertAt(index);
       } else if (
         first.role === "user" &&
-        existingUserKeys.has(String(first.created_at))
+        existingUserIdsByKey.has(String(first.created_at))
       ) {
         continue;
+      } else {
+        ui = convertAt(index);
+        if (existingIds.has(ui.id)) continue;
       }
 
-      const converted = group.rows.map(
-        (row) => messageToUiMessage(row as unknown as Message),
-      );
-      let ui: UIMessage;
-      if (group.id) {
-        const forkEntryIds = group.rows
-          .map((row) => row.forkEntryId)
-          .filter((id): id is string => typeof id === "string" && !!id);
-        const pi: Record<string, unknown> = {
-          ...(forkEntryIds.length > 0
-            ? {
-                forkEntryId: forkEntryIds[forkEntryIds.length - 1],
-                forkEntryIds,
-              }
-            : {}),
-        };
-        const firstCreatedAt = (
-          converted[0].metadata as { pi?: { createdAtMs?: unknown } } | undefined
-        )?.pi?.createdAtMs;
-        if (typeof firstCreatedAt === "number") pi.createdAtMs = firstCreatedAt;
-        ui = {
-          id: group.id,
-          role: "assistant",
-          parts: converted.flatMap((message) => message.parts),
-          metadata: { pi },
-        } as UIMessage;
-      } else {
-        ui = converted[0];
-      }
       const baseMs =
         typeof first.created_at === "number" && Number.isFinite(first.created_at)
           ? first.created_at

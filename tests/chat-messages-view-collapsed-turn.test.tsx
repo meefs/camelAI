@@ -425,6 +425,48 @@ describe("ChatMessagesView collapsed assistant turns", () => {
     ]);
   });
 
+  it("renders marker-derived slices as one logical completed turn", () => {
+    const firstTool: ContentBlock = {
+      type: "tool_use",
+      id: "tool-before-steer",
+      name: "Read",
+      input: {},
+    };
+    const finalTool: ContentBlock = {
+      type: "tool_use",
+      id: "tool-after-steer",
+      name: "Edit",
+      input: {},
+    };
+
+    const { container } = renderView({
+      visibleMessages: [
+        message("u1", "user", "build an app", 1_000),
+        message("turn-1::steer0", "assistant", [firstTool], 2_000),
+        message("u2", "user", "use sqlite", 2_010, {
+          sentDuringStreaming: true,
+        }),
+        message(
+          "turn-1",
+          "assistant",
+          [finalTool, { type: "text", text: "SQLite is wired up." }],
+          3_000,
+        ),
+      ],
+      completedTurns: new Map([
+        ["turn-1", { durationMs: 151_000, completedAtMs: 4_000 }],
+      ]),
+    });
+
+    expect(screen.getAllByText("1 step")).toHaveLength(2);
+    expect(screen.getAllByText("worked for")).toHaveLength(1);
+    expect(screen.getByText("2:31")).toBeInTheDocument();
+    expect(container.querySelectorAll("hr")).toHaveLength(1);
+    expect(screen.getByTestId("message-bubble-final-text-only")).toHaveTextContent(
+      "SQLite is wired up.",
+    );
+  });
+
   it("does not render a fake 0:00 duration for final chunks without real timing", () => {
     const firstTool: ContentBlock = {
       type: "tool_use",

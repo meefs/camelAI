@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   deriveIsAwaitingAssistant,
+  deriveTurnSettled,
   isAssistantLikeMessage,
 } from "@/lib/chat-working-indicator";
 import type { Message } from "@/types";
@@ -149,5 +150,31 @@ describe("isAssistantLikeMessage", () => {
   it("is false for null/undefined", () => {
     expect(isAssistantLikeMessage(null)).toBe(false);
     expect(isAssistantLikeMessage(undefined)).toBe(false);
+  });
+});
+
+describe("deriveTurnSettled", () => {
+  it("is true for a completed assistant reply", () => {
+    expect(deriveTurnSettled(assistantMessage({ completedAtMs: 100 }))).toBe(
+      true,
+    );
+  });
+
+  it("is false for an assistant message without completion metadata", () => {
+    expect(deriveTurnSettled(assistantMessage({ isStreaming: true }))).toBe(
+      false,
+    );
+  });
+
+  it("is false when a newer user message is the transcript tail", () => {
+    expect(deriveTurnSettled(userMessage({ completedAtMs: 100 }))).toBe(false);
+  });
+
+  it("treats a completed compact summary as settled", () => {
+    expect(
+      deriveTurnSettled(
+        userMessage({ isCompactSummary: true, completedAtMs: 100 }),
+      ),
+    ).toBe(true);
   });
 });

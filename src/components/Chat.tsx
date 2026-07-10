@@ -122,9 +122,11 @@ import {
 import { parseMessageContent } from "@/lib/chat-message-content";
 import {
   deriveIsAwaitingAssistant,
+  deriveTurnSettled,
   isAssistantLikeMessage,
 } from "@/lib/chat-working-indicator";
 import { mergeOverlay } from "@/lib/runtime-message-state";
+import { isSteerSliceIdOf } from "@/lib/steer-split";
 import type { ChatAgentStatePayload } from "@/lib/chat-agent-state";
 import { usePiChatStream } from "@/lib/use-pi-chat-stream";
 import { checkForVersionSkew } from "@/lib/version-skew";
@@ -943,15 +945,13 @@ export default function Chat({
     return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- mount-scoped bound
   }, []);
-  const bridgeMessage = useMemo(() => {
-    if (!bridgedStreamingMessageId || bridgeExpired || readOnly) return null;
+  const bridgeMessages = useMemo<Message[]>(() => {
+    if (!bridgedStreamingMessageId || bridgeExpired || readOnly) return [];
     if (piChat.uiMessages.some((m) => m.id === bridgedStreamingMessageId)) {
-      return null;
+      return [];
     }
-    return (
-      parsedInitialMessages.find(
-        (message) => message.id === bridgedStreamingMessageId,
-      ) ?? null
+    return parsedInitialMessages.filter((message) =>
+      isSteerSliceIdOf(bridgedStreamingMessageId, message.id),
     );
   }, [
     bridgedStreamingMessageId,
@@ -968,10 +968,10 @@ export default function Chat({
   const baseMessages = useMemo(() => {
     if (readOnly) return parsedInitialMessages;
     if (piChat.messages.length === 0) return parsedInitialMessages;
-    return bridgeMessage
-      ? [...piChat.messages, bridgeMessage]
+    return bridgeMessages.length > 0
+      ? [...piChat.messages, ...bridgeMessages]
       : piChat.messages;
-  }, [readOnly, parsedInitialMessages, piChat.messages, bridgeMessage]);
+  }, [readOnly, parsedInitialMessages, piChat.messages, bridgeMessages]);
   // Optimistic pending user bubbles that have not yet echoed back through the
   // hook (matched by id / clientMessageId) are appended for immediate feedback.
   const displayMessages = useMemo(() => {
@@ -2887,12 +2887,14 @@ export default function Chat({
   // new chat is awaiting its first reply (isAwaitingAssistant covers the cold
   // pendingFirstTurn gap and clears once the reply lands, so the composer shows
   // the running/stop state and a second submit is treated as a steer).
+  const turnSettled = deriveTurnSettled(lastMessage);
   const assistantTurnActive =
-    loading ||
-    isStreaming ||
-    isAwaitingAssistant ||
-    activeAssistantMessageId !== null ||
-    activeThreadRunningState.isRunning;
+    !turnSettled &&
+    (loading ||
+      isStreaming ||
+      isAwaitingAssistant ||
+      activeAssistantMessageId !== null ||
+      activeThreadRunningState.isRunning);
   const showGlobalAssistantIndicator = assistantTurnActive && !isCompacting;
   const lastUserMessage = useMemo(() => {
     for (let i = visibleMessages.length - 1; i >= 0; i -= 1) {

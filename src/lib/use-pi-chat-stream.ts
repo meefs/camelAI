@@ -4,6 +4,7 @@ import { useAgentChat } from "@cloudflare/ai-chat/react";
 import type { ContentBlock, Message } from "@/types";
 import { boundBlockText } from "./pi-chunk-encoder";
 import { uiMessageToMessage } from "./ui-message-adapter";
+import { splitUiMessagesAtSteerMarkers } from "./steer-split";
 import {
   reportChatStreamNoProgress,
   reportChatStreamStallClamped,
@@ -305,6 +306,15 @@ export function usePiChatStream(opts: {
     return null;
   }, [isStreaming, uiMessages]);
 
+  // Steer markers live inside the one raw UIMessage that owns the whole turn.
+  // Split only the render projection: loader reconciliation, snapshots, resume
+  // seeds, and streaming ids must continue to operate on the raw message list.
+  const displayUiMessages = useMemo(
+    () =>
+      splitUiMessagesAtSteerMarkers(uiMessages, { streamingMessageId }),
+    [uiMessages, streamingMessageId],
+  );
+
   // Clear live tool output at each turn boundary and on thread switch so a stale
   // command tail never lingers into the next turn.
   const clearToolStream = useCallback(() => {
@@ -329,7 +339,7 @@ export function usePiChatStream(opts: {
   const adaptCacheRef = useRef(new WeakMap<UIMessage, Message>());
   const messages = useMemo(() => {
     const cache = adaptCacheRef.current;
-    return uiMessages.map((ui) => {
+    return displayUiMessages.map((ui) => {
       let base = cache.get(ui);
       if (!base) {
         base = uiMessageToMessage(ui, { threadId });
@@ -343,7 +353,7 @@ export function usePiChatStream(opts: {
         ? { ...base, isStreaming: true }
         : { ...withLive, isStreaming: true };
     });
-  }, [uiMessages, streamingMessageId, toolStream, threadId]);
+  }, [displayUiMessages, streamingMessageId, toolStream, threadId]);
 
   const setUiMessages = useCallback(
     (next: UIMessage[]) => {

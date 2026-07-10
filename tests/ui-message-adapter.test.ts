@@ -350,13 +350,48 @@ describe('ui-message-adapter round trip (Message → UIMessage → Message)', ()
     expect(ui.parts).toEqual([{ type: 'text', text: 'Hello there', state: 'done' }]);
   });
 
-  it('drops transient tool-stream and step-start parts on read', () => {
+  it('round-trips the sentDuringStreaming user metadata flag', () => {
+    const ui = messageToUiMessage({
+      id: 'u-steer',
+      thread_id: 'thread-1',
+      role: 'user',
+      content: 'Use SQLite instead',
+      created_at: 5,
+      sentDuringStreaming: true,
+    });
+
+    expect(ui.metadata).toEqual({
+      pi: { createdAtMs: 5 },
+      sentDuringStreaming: true,
+    });
+    expect(
+      uiMessageToMessage(ui, { threadId: 'thread-1' }).sentDuringStreaming,
+    ).toBe(true);
+
+    const live = uiMessageToMessage(
+      {
+        id: 'u-live',
+        role: 'user',
+        parts: [{ type: 'text', text: 'steer', state: 'done' }],
+        metadata: { sentDuringStreaming: true },
+      } as never,
+      { threadId: 'thread-1' },
+    );
+    expect(live.sentDuringStreaming).toBe(true);
+  });
+
+  it('drops transient tool-stream, steer-marker, and step-start parts on read', () => {
     const ui = {
       id: 'm',
       role: 'assistant' as const,
       parts: [
         { type: 'step-start' },
         { type: 'text', text: 'visible', state: 'done' },
+        {
+          type: 'data-pi-steer-marker',
+          id: 'pi:steer:u1',
+          data: { steerMessageId: 'u1', acceptedAtMs: 1 },
+        },
         { type: 'data-pi-tool-stream', data: { toolCallId: 't', text: 'noise' } },
       ],
     };

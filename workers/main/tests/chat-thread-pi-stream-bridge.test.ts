@@ -108,6 +108,37 @@ describe('ChatThreadDO native stream bridge (commit 3b)', () => {
     expect(fake.syncAgentState).not.toHaveBeenCalled();
   });
 
+  it('relays a steer-marker envelope into the active turn stream', () => {
+    const writes: AnyRecord[] = [];
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    fake.piChunkEncoder = new PiChunkEncoder({ messageId: 'turn-1' });
+    fake.piStreamWriter = { write: (chunk: AnyRecord) => writes.push(chunk) };
+    fake.piPreAttachChunkBuffer = null;
+
+    ChatThreadDO.prototype['writePiStreamChunks'].call(
+      fake,
+      runtimeEvent('item/agentMessage/delta', {
+        itemId: 'a1',
+        delta: 'before',
+      }),
+    );
+    writes.length = 0;
+    ChatThreadDO.prototype['writePiStreamChunks'].call(fake, {
+      type: 'steer-marker',
+      steerMessageId: 'u2',
+      acceptedAtMs: 123,
+    });
+
+    expect(writes).toEqual([
+      { type: 'text-end' },
+      {
+        type: 'data-pi-steer-marker',
+        id: 'pi:steer:u2',
+        data: { steerMessageId: 'u2', acceptedAtMs: 123 },
+      },
+    ]);
+  });
+
   it('owns a fresh turn: emits the head from the marker id then streams the prompt events', async () => {
     const fake = Object.create(ChatThreadDO.prototype) as any;
     const turnId = 'turn-buf';
@@ -784,6 +815,75 @@ describe('ChatThreadDO native stream bridge (commit 3b)', () => {
         'pi_user_1000_0',
         'turn-live',
       ]);
+    });
+  });
+
+  it('rebuilds a steered turn as one marked assistant row without clobbering either half', async () => {
+    const stub = await newChatThreadStub('thread-stamped-steer-rebuild');
+    await runInDurableObject(stub, async (instance: any) => {
+      instance.chatContext = { threadId: 'thread-stamped-steer-rebuild' };
+      instance.ensurePiCoreTables();
+      seedPiCoreRow(instance, 0, {
+        role: 'user',
+        content: 'build the app',
+        timestamp: 1000,
+        uiMetadata: { renderMessageId: 'client-u1' },
+      });
+      seedPiCoreRow(instance, 1, {
+        role: 'assistant',
+        content: [{ type: 'text', text: 'before steer' }],
+        timestamp: 1100,
+        responseId: 'resp-before',
+        uiMetadata: { renderMessageId: 'turn-live' },
+      });
+      seedPiCoreRow(instance, 2, {
+        role: 'user',
+        content: 'use sqlite',
+        timestamp: 1200,
+        metadata: { sentDuringStreaming: true },
+        uiMetadata: { renderMessageId: 'client-u2' },
+      });
+      seedPiCoreRow(instance, 3, {
+        role: 'assistant',
+        content: [{ type: 'text', text: 'after steer' }],
+        timestamp: 1300,
+        responseId: 'resp-after',
+        uiMetadata: { renderMessageId: 'turn-live' },
+      });
+
+      await instance.resyncUiMessagesFromPiCore();
+      const messages = await instance.getUiMessages();
+
+      expect(messages.map((message: AnyRecord) => message.id)).toEqual([
+        'client-u1',
+        'turn-live',
+        'client-u2',
+      ]);
+      expect(
+        messages.filter((message: AnyRecord) => message.role === 'assistant'),
+      ).toHaveLength(1);
+      const turn = messages.find(
+        (message: AnyRecord) => message.id === 'turn-live',
+      ) as AnyRecord;
+      expect(turn.parts).toEqual([
+        { type: 'text', text: 'before steer', state: 'done' },
+        {
+          type: 'data-pi-steer-marker',
+          id: 'pi:steer:client-u2',
+          data: { steerMessageId: 'client-u2', acceptedAtMs: 1200 },
+        },
+        { type: 'text', text: 'after steer', state: 'done' },
+      ]);
+      expect((turn.metadata as AnyRecord).pi).toMatchObject({
+        forkEntryId: 'resp-after',
+        forkEntryIds: ['resp-before', 'resp-after'],
+      });
+      const steerBubble = messages.find(
+        (message: AnyRecord) => message.id === 'client-u2',
+      ) as AnyRecord;
+      expect(steerBubble.metadata).toMatchObject({
+        sentDuringStreaming: true,
+      });
     });
   });
 

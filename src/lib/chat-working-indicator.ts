@@ -8,6 +8,20 @@ export function isAssistantLikeMessage(
 }
 
 /**
+ * The transcript ends on a finished assistant reply. Completion metadata is
+ * emitted only by turn/completed, so this safely overrides lagging client or
+ * sidebar busy flags without hiding an in-progress assistant message.
+ */
+export function deriveTurnSettled(
+  lastMessage: Message | null | undefined,
+): boolean {
+  return (
+    isAssistantLikeMessage(lastMessage) &&
+    typeof lastMessage?.completedAtMs === "number"
+  );
+}
+
+/**
  * Whether to show the "assistant is working" indicator under the transcript.
  *
  * True when a turn is genuinely pending — the agent is streaming, a send is

@@ -6,6 +6,8 @@ import type { UIMessage } from 'ai';
 import {
   PiChunkEncoder,
   encodePiEventStream,
+  piSteerMarkerPartId,
+  PI_STEER_MARKER_PART,
   type PiRuntimeEvent,
   type PiUiMessageChunk,
 } from '@/lib/pi-chunk-encoder';
@@ -276,6 +278,43 @@ describe('PiChunkEncoder unit families', () => {
     expect(chunks).toEqual([
       { type: 'data-pi-user-stop', id: 'user-stop', data: { text: 'Stopped by user' } },
     ]);
+  });
+
+  it('closes open content and emits a distinct durable part for each steer', () => {
+    const encoder = new PiChunkEncoder({ messageId: 'm' });
+    encoder.encode({
+      method: 'item/agentMessage/delta',
+      params: { itemId: 'a', delta: 'answer' },
+    });
+    encoder.encode({
+      method: 'item/reasoning/textDelta',
+      params: { itemId: 'r', contentIndex: 0, delta: 'thought' },
+    });
+
+    const first = encoder.encodeSteerMarker('u1', 10);
+    const second = encoder.encodeSteerMarker('u2', 20);
+
+    expect(types(first)).toEqual([
+      'text-end',
+      'reasoning-end',
+      PI_STEER_MARKER_PART,
+    ]);
+    expect(first.at(-1)).toEqual({
+      type: PI_STEER_MARKER_PART,
+      id: piSteerMarkerPartId('u1'),
+      data: { steerMessageId: 'u1', acceptedAtMs: 10 },
+    });
+    expect(second).toEqual([
+      {
+        type: PI_STEER_MARKER_PART,
+        id: piSteerMarkerPartId('u2'),
+        data: { steerMessageId: 'u2', acceptedAtMs: 20 },
+      },
+    ]);
+    expect(piSteerMarkerPartId('u1')).not.toBe(piSteerMarkerPartId('u2'));
+
+    encoder.encode({ method: 'turn/completed', params: {} });
+    expect(encoder.encodeSteerMarker('too-late', 30)).toEqual([]);
   });
 
   it('emits message-metadata + finish on turn/completed and ignores sdk turn events', () => {
