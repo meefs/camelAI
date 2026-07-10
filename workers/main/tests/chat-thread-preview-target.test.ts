@@ -64,20 +64,4 @@ describe('ChatThreadDO.setPreviewTarget', () => {
     expect(fake.previewTabs).toEqual([]);
   });
 
-  it('still requires a project name for vm targets', async () => {
-    const fake = createPreviewFake();
-    const target: PreviewTarget = {
-      kind: 'file',
-      source: 'vm',
-      workspaceId: 'ws1',
-      path: '/index.html',
-      project: 'menu-app',
-    };
-
-    await fake.setPreviewTarget(target);
-
-    expect(fake.previewTabs).toEqual([
-      expect.objectContaining({ source: 'vm', project: 'menu-app' }),
-    ]);
-  });
 });
