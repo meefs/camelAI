@@ -52,11 +52,13 @@ bypasses:
       - 203.0.113.0/24
       - 224.0.0.0/4
       - 240.0.0.0/4
-      # IPv6: unspecified, loopback, v4-mapped, ULA, link-local, multicast,
-      # documentation.
+      # IPv6: unspecified, loopback, ULA, link-local, multicast, documentation.
+      # NOTE: do NOT add ::ffff:0:0/96 (v4-mapped) here — gost normalizes every
+      # IPv4 target to a v4-mapped IPv6 address internally, so that /96 matches
+      # ALL IPv4 literals and would reject every public database. The IPv4 CIDRs
+      # above already cover v4-mapped addresses after gost's normalization.
       - ::/128
       - ::1/128
-      - ::ffff:0:0/96
       - fc00::/7
       - fe80::/10
       - ff00::/8

@@ -17,32 +17,34 @@ const WAREHOUSE_EXPORT_BUCKET_BINDING = "WAREHOUSE_EXPORT_BUCKET";
  * image only carries node, the DB drivers, and cloudflared. Authorization
  * happens entirely worker-side BEFORE a query reaches the container.
  *
- * NETWORK POSTURE depends on whether an egress relay is configured (env
- * `DB_EGRESS_RELAY_HOSTNAME`):
- *   - RELAY mode (relay configured): `enableInternet = false` + a block-all
- *     allowlist opened per-run to exactly the relay hostname
- *     (`ensureRelayEgress`). The only egress is the `cloudflared access tcp`
- *     WSS to the relay; database traffic rides inside it, so the container
- *     never dials a customer host directly and the DB sees the VM's static IP.
- *   - DIRECT mode (no relay): `enableInternet = true` so the container can dial
- *     databases straight out — the DB sees whatever IP the Cloudflare container
- *     uses. This is the opt-out when no relay is configured. The runner still
- *     applies the SSRF guard, so internal/link-local targets are refused.
+ * NETWORK POSTURE — `enableInternet = true`. The container needs public DNS to
+ * resolve customer database hostnames (raw UDP/TCP egress, which an internet-off
+ * container cannot do — the sandbox returns a synthetic address). It does NOT
+ * mean the database sees the container's IP: the STATIC-IP guarantee is enforced
+ * by the RUNNER, which in relay mode dials the database through the on-host SOCKS
+ * relay (`cloudflared access tcp` → tunnel → gost), so egress is always the VM's
+ * static IP. With no relay configured the runner dials directly (the opt-out).
+ * The runner applies the SSRF guard in both modes, and gost re-applies the same
+ * denylist VM-side.
  *
- * DATA OUT (exports): the workspace's warehouse R2 prefix is mounted
- * READ-WRITE via the SDK's credential-less bucket mount (egress interception →
- * the R2 binding, NOT the internet — same mechanism as AnalysisSandbox's
- * read-only mounts), so the export runner writes Parquet extracts straight to
- * R2. One sandbox per workspace + a prefix-scoped mount keeps the bucket
- * multi-tenant-safe: a container can only ever see its own workspace's prefix.
+ * HTTPS interception stays on (`interceptHttps = true`) — independent of the
+ * internet switch — for two things: the `cloudflared access tcp` WSS to the
+ * relay host (opened per-run via `ensureRelayEgress`), and the credential-less
+ * R2 export mount (egress interception → the R2 binding, no S3 keys in the
+ * container), the same mechanism `AnalysisSandbox` uses.
+ *
+ * DATA OUT (exports): the workspace's warehouse R2 prefix is mounted READ-WRITE
+ * via that credential-less bucket mount, so the export runner writes Parquet
+ * extracts straight to R2. One sandbox per workspace + a prefix-scoped mount
+ * keeps the bucket multi-tenant-safe.
  */
 export class DbQuerySandbox extends Sandbox<Env> {
-  enableInternet = false;
-  allowedHosts: string[] = [];
-  // With the internet off, HTTPS to an allowed host only passes when it enters
-  // the SDK's interception chain (same posture as AnalysisSandbox); cloudflared
-  // trusts the interception CA via the base image's SANDBOX_INTERCEPT_HTTPS
-  // handling for spawned processes.
+  // Internet on so the container can resolve customer DB hostnames; the static
+  // IP is preserved by the runner routing DB traffic through the relay (see the
+  // class doc). Both relay and direct modes run with internet on.
+  enableInternet = true;
+  // HTTPS interception governs the relay's cloudflared WSS and the R2 export
+  // mount — kept on regardless of the internet switch.
   interceptHttps = true;
 
   // Mount paths already established in this container + a per-path single-flight
@@ -51,19 +53,10 @@ export class DbQuerySandbox extends Sandbox<Env> {
   private readonly mountedPaths = new Set<string>();
   private readonly mountGates = new Map<string, (run: () => Promise<void>) => Promise<void>>();
 
-  // eslint-disable-next-line @typescript-eslint/no-empty-object-type -- matches the Sandbox base constructor signature
-  constructor(ctx: DurableObjectState<{}>, env: Env) {
-    super(ctx, env);
-    // Direct mode needs general egress (raw TCP to the DB port isn't governed
-    // by the HTTP-only allowlist). Decided by deploy config, not per request.
-    if (!env.DB_EGRESS_RELAY_HOSTNAME?.trim()) {
-      this.enableInternet = true;
-    }
-  }
-
   /**
-   * Open this container's egress to exactly the relay hostname. Called by
-   * db-query-service.ts before each relay-mode run; cheap on a warm container.
+   * Ensure the relay host is reachable through HTTPS interception for the
+   * container's `cloudflared access tcp` forwarder. Called by db-query-service.ts
+   * before each relay-mode run; cheap on a warm container.
    */
   async ensureRelayEgress(relayHostname: string): Promise<void> {
     await this.setAllowedHosts([relayHostname]);
