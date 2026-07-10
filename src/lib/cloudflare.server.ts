@@ -41,7 +41,6 @@ export interface CloudflareEnv {
 
   // Service bindings
   WORKER_SELF_REFERENCE: Fetcher;
-  PROJECT_RUNTIME_HOST?: Fetcher;
 
   // Other bindings
   ASSETS: Fetcher;
@@ -93,10 +92,6 @@ export interface CloudflareEnv {
   BILLING_TRIAL_CREDIT_CENTS?: string;
   BILLING_SUBSCRIPTION_INCLUDED_CREDIT_CENTS?: string;
   LEGACY_STRIPE_MIGRATION_CUSTOMERS?: string;
-  PROJECT_RUNTIME_SERVICE_URL?: string;
-  PROJECT_RUNTIME_SERVICE_BEARER_TOKEN?: string;
-  PROJECT_RUNTIME_DOCKER_PROXY_BASE_URL?: string;
-  PROJECT_RUNTIME_PROXY_SECRET?: string;
   LOCAL_ARTIFACTS_BASE_URL?: string;
   LOCAL_ARTIFACTS_SECRET?: string;
   LOCAL_APP_VANITY_DOMAIN?: string;

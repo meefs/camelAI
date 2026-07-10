@@ -1,7 +1,6 @@
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import fs from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
 import process from "node:process";
 
@@ -58,31 +57,6 @@ export function volumeName(name, env = {}) {
   return `${projectName(env)}_${name}`;
 }
 
-export function runtimeServiceDir(env = {}) {
-  return path.resolve(
-    env.PROJECT_RUNTIME_SERVICE_DIR ||
-      process.env.PROJECT_RUNTIME_SERVICE_DIR ||
-      path.join(os.homedir(), "qaml-ai", "project-runtime-service"),
-  );
-}
-
-export function runtimeImageDockerfile(env = {}) {
-  return path.resolve(
-    runtimeServiceDir(env),
-    env.PROJECT_RUNTIME_IMAGE_DOCKERFILE ||
-      process.env.PROJECT_RUNTIME_IMAGE_DOCKERFILE ||
-      "Dockerfile.sandbox",
-  );
-}
-
-export function runtimeHostStateDir(env = {}) {
-  return path.resolve(
-    env.PROJECT_RUNTIME_HOST_STATE_DIR ||
-      process.env.PROJECT_RUNTIME_HOST_STATE_DIR ||
-      path.join(repoRoot, ".selfhost", "project-runtime"),
-  );
-}
-
 export function composeArgs(env, args) {
   return [
     "compose",
@@ -99,12 +73,6 @@ export function scriptEnv(env = {}, extra = {}) {
     ...process.env,
     ...env,
     ...extra,
-    PROJECT_RUNTIME_SERVICE_DIR: runtimeServiceDir(env),
-    PROJECT_RUNTIME_IMAGE_DOCKERFILE:
-      env.PROJECT_RUNTIME_IMAGE_DOCKERFILE ||
-      process.env.PROJECT_RUNTIME_IMAGE_DOCKERFILE ||
-      "Dockerfile.sandbox",
-    PROJECT_RUNTIME_HOST_STATE_DIR: runtimeHostStateDir(env),
   };
 }
 

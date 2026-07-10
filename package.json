@@ -4,9 +4,9 @@
 	"private": true,
 	"type": "module",
 	"scripts": {
-		"dev": "node scripts/dev-with-project-runtime.mjs",
+		"dev": "react-router dev",
 		"dev:app": "react-router dev",
-		"dev:local-auth": "LOCAL_AUTH_BYPASS=1 WORKER_BASE_URL=http://localhost:3001 node scripts/dev-with-project-runtime.mjs",
+		"dev:local-auth": "LOCAL_AUTH_BYPASS=1 WORKER_BASE_URL=http://localhost:3001 react-router dev",
 		"build": "bun run build:cf && bun run check:pi-bedrock-build",
 		"build:cf": "bun run build:renderer && react-router build",
 		"check:pi-bedrock-build": "node scripts/check-pi-bedrock-build.mjs",

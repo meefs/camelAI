@@ -58,7 +58,7 @@ describe('PreviewToolbar notebook downloads', () => {
     });
   });
 
-  it('copies project VM paths with the project mention slug from preview context', async () => {
+  it('copies project paths with the project mention slug from preview context', async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     Object.defineProperty(navigator, 'clipboard', {
       configurable: true,
@@ -86,7 +86,7 @@ describe('PreviewToolbar notebook downloads', () => {
         <PreviewToolbar
           activeTarget={{
             kind: 'file',
-            source: 'vm',
+            source: 'project',
             workspaceId: 'workspace-123',
             path: '/plans/phase-2-automation.md',
             filename: 'phase-2-automation.md',

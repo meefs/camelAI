@@ -145,8 +145,8 @@ import {
   getAppIframeUrl,
 } from "@/lib/app-url";
 import {
-  collectVmProjectReferencesFromMessages,
-  collectVmProjectReferencesFromPreviewTabs,
+  collectProjectReferencesFromMessages,
+  collectProjectReferencesFromPreviewTabs,
   formatCopyFilePath,
   normalizeProjectCopyLookupKey,
   resolveProjectMentionSlug,
@@ -1777,10 +1777,10 @@ export default function Chat({
       formatCopyFilePath(target, { mentionSlugMap }),
     [mentionSlugMap],
   );
-  const visibleVmProjectReferences = useMemo(
+  const visibleProjectReferences = useMemo(
     () => [
-      ...collectVmProjectReferencesFromPreviewTabs(previewTabs),
-      ...collectVmProjectReferencesFromMessages(visibleMessages),
+      ...collectProjectReferencesFromPreviewTabs(previewTabs),
+      ...collectProjectReferencesFromMessages(visibleMessages),
     ],
     [previewTabs, visibleMessages],
   );
@@ -1792,7 +1792,7 @@ export default function Chat({
     if (!resolvedWorkspaceId) return;
     if (mentionSourcesFetcher.state !== "idle") return;
 
-    for (const reference of visibleVmProjectReferences) {
+    for (const reference of visibleProjectReferences) {
       if (
         resolveProjectMentionSlug(reference.project, mentionSlugMap, {
           projectId: reference.projectId,
@@ -1817,7 +1817,7 @@ export default function Chat({
     mentionSourcesFetcher,
     resolvedWorkspaceId,
     threadId,
-    visibleVmProjectReferences,
+    visibleProjectReferences,
   ]);
   const lastMentionSourcesFetchAtRef = useRef(0);
   const handleMentionMenuOpenChange = useCallback((open: boolean) => {

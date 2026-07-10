@@ -6,7 +6,6 @@ import process from "node:process";
 import {
   readSelfhostEnv,
   run,
-  runtimeHostStateDir,
   scriptEnv,
   volumeName,
   volumeNames,
@@ -34,9 +33,6 @@ for (const name of volumeNames) {
   }
   await restoreVolume(volumeName(name, env), `${name}.tgz`);
 }
-if (existsSync(path.join(backupDir, "project-runtime-state.tgz"))) {
-  await restoreDirectory(runtimeHostStateDir(env), "project-runtime-state.tgz");
-}
 
 console.log(`Restored self-host backup created at ${manifest.createdAt || "unknown time"}.`);
 
@@ -56,18 +52,3 @@ async function restoreVolume(dockerVolume, archiveName) {
   ], { env: scriptEnv(env) });
 }
 
-async function restoreDirectory(targetDir, archiveName) {
-  await fs.mkdir(targetDir, { recursive: true });
-  await run("docker", [
-    "run",
-    "--rm",
-    "-v",
-    `${targetDir}:/data`,
-    "-v",
-    `${backupDir}:/backup:ro`,
-    "alpine:3.20",
-    "sh",
-    "-lc",
-    `rm -rf /data/* /data/.[!.]* /data/..?* 2>/dev/null || true; tar -xzf /backup/${archiveName} -C /data`,
-  ], { env: scriptEnv(env) });
-}

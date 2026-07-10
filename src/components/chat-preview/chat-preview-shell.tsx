@@ -63,16 +63,15 @@ export function coercePreviewTarget(value: unknown): PreviewTarget | null {
       (record.source !== "workspace" &&
         record.source !== "project" &&
         record.source !== "upload" &&
-        record.source !== "output" &&
-        record.source !== "vm")
+        record.source !== "output")
     ) {
       return null;
     }
     const project =
-      (record.source === "project" || record.source === "vm") && typeof record.project === "string"
+      record.source === "project" && typeof record.project === "string"
         ? record.project.trim()
         : undefined;
-    if ((record.source === "project" || record.source === "vm") && !project) {
+    if (record.source === "project" && !project) {
       return null;
     }
     return {

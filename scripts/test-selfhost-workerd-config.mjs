@@ -59,8 +59,6 @@ async function main() {
   includesAll(bindings.vars, [
     'LOCAL_ARTIFACTS_BASE_URL',
     'LOCAL_ARTIFACTS_SECRET',
-    'PROJECT_RUNTIME_SERVICE_URL',
-    'PROJECT_RUNTIME_PROXY_SECRET',
     'WORKER_BASE_URL',
     'LOCAL_APP_VANITY_DOMAIN',
   ], 'vars');

@@ -14,12 +14,11 @@ import type { OrgDO, WorkerScript } from "./auth";
 import type { WorkspaceDO } from "./workspace";
 import type { WorkspaceCronDO } from "./workspace-cron";
 import { ProjectFilesystemClient, WorkspaceFilesystemClient, normalizeWorkspacePath as normalizeDurableWorkspacePath, type WorkspaceFileStoreLike, type WorkspaceProject, type WorkspaceProjectCloneSummary, projectNameKey } from "./workspace-filesystem-do";
-import { ProjectRuntimeServiceVmBridge } from "./project-runtime-service-vm";
 import type { RuntimeCallArtifact, RuntimeCallArtifactKind } from "../../../src/lib/runtime-artifacts";
 import { getPreferredAppUrl } from "../../../src/lib/app-url";
 import { findConnectionMethodEntry, getConnection, invokeConnectionMethod, listConnectionMethods, listConnections, listConnectionTools, testConnectionMethodEntry } from "./connections-runtime";
 import { confirmDestructiveAction, DESTRUCTIVE_CONFIRM_LABEL } from "./confirmed-destructive-action";
-import { collectProjectDeletionTargets, orderProjectsForRuntimeDelete } from "./project-deletion";
+import { collectProjectDeletionTargets } from "./project-deletion";
 import { listPiBundledSkillFiles, readPiBundledSkillFile } from "./pi-skill-bundle-helpers";
 import { PiContainerTools, PI_CONTAINER_TOOL_DEFINITIONS } from "./pi-container-tools";
 import { parseFilePreviewPath } from "./preview-paths";
@@ -33,7 +32,6 @@ import { detectImageMimeType as detectSharedImageMimeType, getSupportedImageMime
 import { CodeModeScheduledPrompts } from "./code-mode-scheduled-prompts";
 import { CodeModeDeterministicAutomations } from "./code-mode-deterministic-automations";
 import { CodeModeIntegrations } from "./code-mode-integrations";
-import { createSignedToken } from "./signed-tokens";
 import { buildLogTail, cleanBuildLog, projectBuildSandboxKey, runProjectAddDependency, runProjectBuild, type ProjectBuildResult } from "./project-build-service";
 import { collectWorkerBundleFromSandbox, findUnexportedDurableObjectClasses, type ProjectBuildSandboxLike } from "./project-worker-bundle";
 import { buildNotebookWorkerBundle, resolveNotebookDeployPath } from "./notebook-worker-bundle";
@@ -131,7 +129,7 @@ interface CodeModeR2Path {
   relativePath: string;
 }
 
-type CodeModeFileLocation = "workspace" | "project" | "vm" | "r2";
+type CodeModeFileLocation = "workspace" | "project" | "r2";
 
 interface CodeModeMoveEndpoint {
   location: CodeModeFileLocation;
@@ -415,7 +413,7 @@ const CODE_MODE_CONTAINER_TOOL_DEFINITIONS = CODE_MODE_CONTAINER_TOOL_NAMES.map(
     const definition = PI_CONTAINER_TOOL_DEFINITIONS[name];
     return codeModeTool(definition.name, definition.description, definition.parameters, {
       category: "workspace",
-      sideEffect: ["bash", "write", "edit"].includes(definition.name),
+      sideEffect: ["write", "edit"].includes(definition.name),
     });
   },
 );
@@ -424,42 +422,20 @@ const MOVE_ENDPOINT_PARAMETERS = Type.Object({
   location: Type.Union([
     Type.Literal("workspace"),
     Type.Literal("project"),
-    Type.Literal("vm"),
     Type.Literal("r2"),
   ], {
-    description: "Required filesystem location: workspace, project, vm, or r2.",
+    description: "Required filesystem location: workspace, project, or r2.",
   }),
   path: Type.String({
     description: "Path at that location. R2 paths must be uploads/<path>, outputs/<path>, or tmp/<path> with no leading slash.",
   }),
   project: Type.Optional(Type.String({
-    description: "Required when location is project or vm; unique workspace project name.",
+    description: "Required when location is project; unique workspace project name.",
   })),
   content_type: Type.Optional(Type.String({
     description: "Destination R2 content type override.",
   })),
 }, { additionalProperties: false });
-
-export const BASH_TOOL = codeModeTool(
-  "bash",
-  "Run a bash command in a legacy project VM only. DO-backed projects reject this; use project file tools plus build_project, deploy_project, and add_dependency instead. Requires the unique workspace project name and a concise description for the UI. Commands run from /workspace by default; pass cwd only for subdirectories in that checkout. Arguments: { command, project, description, cwd?, timeoutMs?, timeoutSeconds?, env? }.",
-  Type.Object({
-    command: Type.String(),
-    project: Type.String(),
-    description: Type.String(),
-    cwd: Type.Optional(Type.String()),
-    timeoutMs: Type.Optional(Type.Number()),
-    timeoutSeconds: Type.Optional(Type.Number()),
-    env: Type.Optional(Type.Object({}, { additionalProperties: true })),
-  }, { additionalProperties: false }),
-);
-
-function vmTargetParameters() {
-  return {
-    location: Type.Optional(Type.Literal("vm")),
-    project: Type.String(),
-  };
-}
 
 const ASK_USER_QUESTION_TOOL = codeModePassthroughTool(
   "AskUserQuestion",
@@ -603,22 +579,9 @@ const EXPLORE_TOOL = codeModeTool(
 
 const CODE_MODE_TOOL_REGISTRY: CodeModeToolRegistration[] = [
   ...CODE_MODE_CONTAINER_TOOL_DEFINITIONS,
-  BASH_TOOL,
-  codeModeTool(
-    "vm_exec",
-    "Run a command in a legacy project VM only. DO-backed projects reject this; use project file tools plus build_project, deploy_project, and add_dependency instead. Prefer the js_exec vm.exec({ command, project, ...options }) facade for legacy projects; vm.exec(command, options) also works. Commands run from /workspace by default; pass cwd only for subdirectories in that checkout. Arguments: { command, project, location?: 'vm', cwd?, timeoutMs?, timeoutSeconds?, env? }.",
-    Type.Object({
-      command: Type.String(),
-      ...vmTargetParameters(),
-      cwd: Type.Optional(Type.String()),
-      timeoutMs: Type.Optional(Type.Number()),
-      timeoutSeconds: Type.Optional(Type.Number()),
-      env: Type.Optional(Type.Object({}, { additionalProperties: true })),
-    }),
-  ),
   codeModeTool(
     "move",
-    "Transfer files between any two explicit locations: workspace, project, vm, or r2. Copies by default and overwrites the destination. Use deleteSource: true only when you intentionally want a destructive move after a successful copy. Arguments: { source: { location, path, project? }, destination: { location, path, project?, content_type? }, deleteSource? }.",
+    "Transfer files between any two explicit locations: workspace, project, or r2. Copies by default and overwrites the destination. Use deleteSource: true only when you intentionally want a destructive move after a successful copy. Arguments: { source: { location, path, project? }, destination: { location, path, project?, content_type? }, deleteSource? }.",
     Type.Object({
       source: MOVE_ENDPOINT_PARAMETERS,
       destination: MOVE_ENDPOINT_PARAMETERS,
@@ -630,7 +593,7 @@ const CODE_MODE_TOOL_REGISTRY: CodeModeToolRegistration[] = [
   ),
   codeModePassthroughTool(
     "list_projects",
-    "List known projects for this workspace as a nested tree, including each project's backend. Use location='project' and platform build/deploy actions for backend='do-r2'; location='vm'/bash are legacy-only. Includes project descriptions. Top-level rows are source projects; clone projects are nested under each source project's clones[] with cloneCount. Arguments: {}.",
+    "List known projects for this workspace as a nested tree, including each project's backend. Use location='project' and platform build/deploy actions for backend='do-r2' projects. Includes project descriptions. Top-level rows are source projects; clone projects are nested under each source project's clones[] with cloneCount. Arguments: {}.",
   ),
   codeModePassthroughTool(
     "create_project",
@@ -649,18 +612,6 @@ const CODE_MODE_TOOL_REGISTRY: CodeModeToolRegistration[] = [
     Type.Object({
       project: Type.String(),
       description: Type.String(),
-    }, { additionalProperties: false }),
-    {
-      sideEffect: true,
-    },
-  ),
-  codeModePassthroughTool(
-    "clone_project",
-    "Legacy VM-only clone: clone an existing legacy project's VM filesystem into a fresh project VM while keeping the same Artifacts Git remote. DO-backed source projects reject this; create a new project or use list_commits/revert_project for DO-backed source history. Optional description overrides the generated clone description. Arguments: { sourceProject, name?, description? }.",
-    Type.Object({
-      sourceProject: Type.String(),
-      name: Type.Optional(Type.String()),
-      description: Type.Optional(Type.String()),
     }, { additionalProperties: false }),
     {
       sideEffect: true,
@@ -792,7 +743,7 @@ const CODE_MODE_TOOL_REGISTRY: CodeModeToolRegistration[] = [
   ),
   codeModePassthroughTool(
     "set_preview",
-    "Set the active preview to exactly one real target: an app or a file. App example: { app_name: 'poll-maker' }. Durable workspace file example: { location: 'workspace', path: '/notes.md' }. DO-backed project file example: { location: 'project', project: 'menu-app', path: 'index.html' }. Legacy project VM file example: { location: 'vm', project: 'menu-app', path: 'index.html' }. R2 file example: { location: 'r2', path: 'outputs/report.html' }. Successful file previews are validated before the preview changes. Arguments: { script_name?, app_name?, is_public?, path?, content_type?, location?, project? }.",
+    "Set the active preview to exactly one real target: an app or a file. App example: { app_name: 'poll-maker' }. Durable workspace file example: { location: 'workspace', path: '/notes.md' }. DO-backed project file example: { location: 'project', project: 'menu-app', path: 'index.html' }. R2 file example: { location: 'r2', path: 'outputs/report.html' }. Successful file previews are validated before the preview changes. Arguments: { script_name?, app_name?, is_public?, path?, content_type?, location?, project? }.",
     Type.Object({
       script_name: Type.Optional(Type.String()),
       app_name: Type.Optional(Type.String()),
@@ -802,7 +753,6 @@ const CODE_MODE_TOOL_REGISTRY: CodeModeToolRegistration[] = [
       location: Type.Optional(Type.Union([
         Type.Literal("workspace"),
         Type.Literal("project"),
-        Type.Literal("vm"),
         Type.Literal("r2"),
       ])),
       project: Type.Optional(Type.String()),
@@ -1238,24 +1188,16 @@ const FILE_TOOL_NAMES = new Set(["read", "write", "edit", "ls", "delete", "grep"
 
 function requireFileLocation(toolName: string, args: Record<string, unknown>): CodeModeFileLocation {
   const location = args.location;
-  if (location !== "workspace" && location !== "project" && location !== "vm" && location !== "r2") {
-    throw new Error(`${toolName} requires an explicit location: "workspace", "project", "vm", or "r2"`);
+  if (location !== "workspace" && location !== "project" && location !== "r2") {
+    throw new Error(`${toolName} requires an explicit location: "workspace", "project", or "r2"`);
   }
-  if ((location === "project" || location === "vm") && (typeof args.project !== "string" || args.project.trim().length === 0)) {
+  if (location === "project" && (typeof args.project !== "string" || args.project.trim().length === 0)) {
     throw new Error(`${toolName} with location "${location}" requires a project name`);
   }
   if ((toolName === "grep" || toolName === "find") && location === "r2") {
     throw new Error(`${toolName} does not support location "r2"; use ls/read for R2 objects`);
   }
   return location;
-}
-
-function hasVmTarget(args: Record<string, unknown>): boolean {
-  return args.location === "vm";
-}
-
-function vmProjectName(args: Record<string, unknown>): string {
-  return typeof args.project === "string" ? args.project.trim() : "";
 }
 
 function hasProjectTarget(args: Record<string, unknown>): boolean {
@@ -1654,7 +1596,7 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
     const project = await this.workspaceFs.getProjectByName(name);
     if (!project) throw new Error(`Project not found: ${name}`);
     if ((project.backend ?? "vm") !== "do-r2") {
-      throw new Error(`Project "${project.name}" is backend: "${project.backend ?? "vm"}"; location: "project" only supports DO-backed projects. Use location: "vm" for legacy projects or migrate it first.`);
+      throw new Error(`This legacy project was archived when camelAI retired project VMs and its files are no longer available.`);
     }
     return new ProjectFilesystemClient(this.env, project.id);
   }
@@ -1687,7 +1629,7 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
     const project = await this.resolveProjectForAction(args);
     if ((project.backend ?? "vm") !== "do-r2") {
       throw new Error(
-        `${action} only supports DO-backed projects. Project "${project.name}" is backend: "${project.backend ?? "vm"}"; use legacy VM tools for this project or migrate it first.`,
+        `This legacy project was archived when camelAI retired project VMs and its files are no longer available.`,
       );
     }
     return project;
@@ -1727,36 +1669,6 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
     const project = await this.workspaceFs.createProject({ ...args, backend: "do-r2" });
     const scaffold = await this.writeProjectScaffold(project, { template });
     return { ...projectForAgent(project), scaffold };
-  }
-
-  private async assertVmProjectAllowed(args: Record<string, unknown>, operation: string): Promise<void> {
-    const name = vmProjectName(args);
-    if (!name) throw new Error(`${operation} requires a project name for legacy VM access`);
-    const project = await this.workspaceFs.getProjectByName(name);
-    if (!project) throw new Error(`Project not found: ${name}`);
-    if (project.backend === "do-r2") {
-      throw new Error(
-        `Project "${project.name}" is DO-backed and cannot use legacy VM ${operation}. ` +
-          `Use location: "project" file tools plus build_project, deploy_project, add_dependency, list_commits, and revert_project instead.`,
-      );
-    }
-  }
-
-  private async assertVmEndpointAllowed(endpoint: CodeModeMoveEndpoint, operation: string): Promise<void> {
-    if (endpoint.location !== "vm") return;
-    await this.assertVmProjectAllowed({ project: endpoint.project }, operation);
-  }
-
-  private get projectVm(): ProjectRuntimeServiceVmBridge {
-    const { workspaceId, orgId } = this.ctx.props;
-    if (!workspaceId || !orgId) {
-      throw new Error("Code mode VM binding is missing workspace scope");
-    }
-    return new ProjectRuntimeServiceVmBridge({
-      env: this.env,
-      workspace: this.workspaceFs,
-      commandEnv: () => this.createContainerCommandEnv(),
-    });
   }
 
   private get orgStub(): DurableObjectStub<OrgDO> {
@@ -1808,70 +1720,6 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
       id: workspaceInfo?.id ?? this.ctx.props.workspaceId,
       name: workspaceInfo?.name ?? null,
       email_address: emailAddress,
-    };
-  }
-
-  private async createContainerCommandEnv(): Promise<Record<string, string>> {
-    return {
-      ...(await this.createWorkspaceCommandEnv()),
-      ...(await this.createWranglerDeployEnv()),
-    };
-  }
-
-  private async createWorkspaceCommandEnv(): Promise<Record<string, string>> {
-    const { orgId, workspaceId, userId, threadId } = this.ctx.props;
-    const env: Record<string, string> = {
-      WORKSPACE_ID: workspaceId,
-      ORG_ID: orgId,
-      WRANGLER_SEND_METRICS: "false",
-      CI: "1",
-    };
-    const dispatchNamespace = this.env.CF_DISPATCH_NAMESPACE?.trim();
-    if (dispatchNamespace) {
-      env.CF_DISPATCH_NAMESPACE = dispatchNamespace;
-    }
-    if (this.env.RUN_AGENT_EVALS === "1") {
-      env.EVAL_ORG_ID = orgId;
-      env.EVAL_WORKSPACE_ID = workspaceId;
-      if (userId) env.EVAL_USER_ID = userId;
-      if (threadId) env.EVAL_THREAD_ID = threadId;
-    }
-    return env;
-  }
-
-  private async createWranglerDeployEnv(): Promise<Record<string, string>> {
-    const { orgId, workspaceId, threadId } = this.ctx.props;
-    if (!orgId || !workspaceId) {
-      return {};
-    }
-
-    const dockerProxyBaseUrl =
-      this.env.SANDBOX_DOCKER_PROXY_BASE_URL?.trim().replace(/\/+$/, "") ||
-      "http://host.docker.internal:8081";
-    let proxyPath =
-      `/v1/workspaces/${encodeURIComponent(orgId)}` +
-      `/${encodeURIComponent(workspaceId)}`;
-    const sandboxProxySecret = this.env.SANDBOX_PROXY_SECRET?.trim();
-    if (threadId && sandboxProxySecret) {
-      const threadToken = await createSignedToken(sandboxProxySecret, {
-        org_id: orgId,
-        // The host only validates org/workspace/thread claims; org_slug is
-        // required by the shared signed-token helper but is not trusted here.
-        org_slug: orgId,
-        workspace_id: workspaceId,
-        thread_id: threadId,
-        scopes: ["sandbox_thread"],
-        name: "sandbox-proxy-thread",
-        exp: Date.now() + 6 * 60 * 60 * 1000,
-      });
-      proxyPath += `/thread-tokens/${encodeURIComponent(threadToken)}`;
-    }
-    proxyPath += "/client/v4";
-
-    return {
-      CLOUDFLARE_API_BASE_URL: `${dockerProxyBaseUrl}${proxyPath}`,
-      CLOUDFLARE_API_TOKEN: "sandbox-outbound-proxy",
-      CLOUDFLARE_ACCOUNT_ID: this.env.CF_ACCOUNT_ID?.trim() || "chiridion",
     };
   }
 
@@ -2388,15 +2236,15 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
     }
     const raw = value as Record<string, unknown>;
     const location = raw.location;
-    if (location !== "workspace" && location !== "project" && location !== "vm" && location !== "r2") {
-      throw new Error(`${label}.location must be "workspace", "project", "vm", or "r2"`);
+    if (location !== "workspace" && location !== "project" && location !== "r2") {
+      throw new Error(`${label}.location must be "workspace", "project", or "r2"`);
     }
     const path = typeof raw.path === "string" ? raw.path.trim().replace(/\\/g, "/") : "";
     if (!path) throw new Error(`${label}.path is required`);
     const project = typeof raw.project === "string" && raw.project.trim()
       ? raw.project.trim()
       : undefined;
-    if ((location === "project" || location === "vm") && !project) {
+    if (location === "project" && !project) {
       throw new Error(`${label}.project is required when ${label}.location is "${location}"`);
     }
     const contentType = typeof raw.content_type === "string" && raw.content_type.trim()
@@ -2408,12 +2256,6 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
   private async collectMoveSourceFiles(source: CodeModeMoveEndpoint): Promise<{ files: CodeModeMoveFile[]; sourceIsDirectory: boolean }> {
     if (source.location === "workspace") return this.collectWorkspaceMoveFiles(source);
     if (source.location === "project") return this.collectProjectMoveFiles(source);
-    if (source.location === "vm") {
-      await this.assertVmEndpointAllowed(source, "file transfer");
-      const stat = await this.projectVm.statPathForTransfer(source);
-      const files = await this.projectVm.collectFilesForTransfer(source);
-      return { files, sourceIsDirectory: stat.isDirectory };
-    }
     return this.collectR2MoveFiles(source);
   }
 
@@ -2532,11 +2374,6 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
         contentType: read.mimeType ?? file.contentType,
       };
     }
-    if (source.location === "vm") {
-      await this.assertVmEndpointAllowed(source, "file transfer");
-      const read = await this.projectVm.readFileBytesForTransfer({ ...source, path: file.path });
-      return { bytes: read.bytes, contentType: read.contentType ?? file.contentType };
-    }
     const target = this.resolveCodeModeR2Path({ ...source, path: file.path });
     const object = await this.env.R2_BUCKET.get(target.key);
     if (!object) throw new Error(`R2 object not found: ${target.path}`);
@@ -2565,10 +2402,6 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
       if (!result.success) throw new Error(result.error || `Failed to write ${normalizedPath}`);
       return { path: normalizedPath, bytes: bytes.byteLength };
     }
-    if (destination.location === "vm") {
-      await this.assertVmEndpointAllowed(destination, "file transfer");
-      return this.projectVm.writeFileBytesForTransfer({ ...destination, path }, bytes);
-    }
     const target = this.resolveCodeModeR2Path({ ...destination, path }, { requireWritable: true });
     await this.env.R2_BUCKET.put(target.key, bytes, {
       httpMetadata: { contentType: destination.contentType ?? contentType ?? "application/octet-stream" },
@@ -2594,11 +2427,6 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
       if (!result.success) throw new Error(result.error || `Failed to delete ${source.path}`);
       return;
     }
-    if (source.location === "vm") {
-      await this.assertVmEndpointAllowed(source, "file transfer");
-      await this.projectVm.deletePathForTransfer(source, { recursive: true });
-      return;
-    }
     const target = this.resolveCodeModeR2Path(source as unknown as Record<string, unknown>, { allowDirectory: true });
     if (target.mount === "uploads") throw new Error("uploads/ is read-only");
     for (const file of files) {
@@ -2614,12 +2442,7 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
     if (endpoint.location === "project") {
       return normalizeDurableWorkspacePath(endpoint.path).replace(/\/+$/g, "") || "/";
     }
-    if (endpoint.location === "r2") {
-      return this.resolveCodeModeR2Path(endpoint as unknown as Record<string, unknown>, { allowDirectory: true }).path.replace(/\/+$/g, "");
-    }
-    await this.assertVmEndpointAllowed(endpoint, "file transfer");
-    const resolved = await this.projectVm.resolvePathForTransfer(endpoint);
-    return resolved.path.replace(/\/+$/g, "") || "/";
+    return this.resolveCodeModeR2Path(endpoint as unknown as Record<string, unknown>, { allowDirectory: true }).path.replace(/\/+$/g, "");
   }
 
   private isMovePathEqualOrDescendant(sourcePath: string, destinationPath: string): boolean {
@@ -2635,7 +2458,6 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
   ): Promise<void> {
     if (source.location !== destination.location) return;
     if (source.location === "project" && source.project !== destination.project) return;
-    if (source.location === "vm" && source.project !== destination.project) return;
 
     const sourcePath = await this.comparableMovePath(source);
     const destinationPath = await this.comparableMovePath(destination);
@@ -2752,17 +2574,9 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
     return this.callToolWithArtifactCapture(name, args, async () => {
       if (FILE_TOOL_NAMES.has(name)) requireFileLocation(name, args);
       switch (name) {
-        case "bash":
-          await this.assertVmProjectAllowed(args, "shell command");
-          return this.projectVm.exec({ ...args, location: "vm" });
-
         case "read":
           if (hasR2Target(args)) return this.readR2File(args);
           if (hasProjectTarget(args)) return (await this.projectContainerTools(args)).callTool("read", args);
-          if (hasVmTarget(args)) {
-            await this.assertVmProjectAllowed(args, "file read");
-            return this.projectVm.read(args);
-          }
         {
           const path = typeof args.path === "string" ? args.path : "";
           if (normalizeAutomationVirtualPath(path) !== null) {
@@ -2792,10 +2606,6 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
         case "write":
           if (hasR2Target(args)) return this.writeR2File(args);
           if (hasProjectTarget(args)) return (await this.projectContainerTools(args)).callTool("write", args);
-          if (hasVmTarget(args)) {
-            await this.assertVmProjectAllowed(args, "file write");
-            return this.projectVm.write(args);
-          }
         {
           const path = typeof args.path === "string" ? args.path : "";
           const content = typeof args.content === "string" ? args.content : "";
@@ -2814,10 +2624,6 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
         case "ls":
           if (hasR2Target(args)) return this.listR2Files(args);
           if (hasProjectTarget(args)) return (await this.projectContainerTools(args)).callTool("ls", args);
-          if (hasVmTarget(args)) {
-            await this.assertVmProjectAllowed(args, "file listing");
-            return this.projectVm.ls(args);
-          }
         {
           if (typeof args.path === "string") {
             if (normalizeAutomationVirtualPath(args.path) !== null) {
@@ -2847,10 +2653,6 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
         case "edit":
           if (hasR2Target(args)) return this.editR2File(args);
           if (hasProjectTarget(args)) return (await this.projectContainerTools(args)).callTool("edit", args);
-          if (hasVmTarget(args)) {
-            await this.assertVmProjectAllowed(args, "file edit");
-            return this.projectVm.edit(args);
-          }
         {
           const path = typeof args.path === "string" ? args.path : "";
           const edits = Array.isArray(args.edits)
@@ -2878,30 +2680,15 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
         case "delete":
           if (hasR2Target(args)) return this.deleteR2File(args);
           if (hasProjectTarget(args)) return (await this.projectContainerTools(args)).callTool("delete", args);
-          if (hasVmTarget(args)) {
-            throw new Error("delete does not support project VM files; use bash or vm_exec with rm for explicit VM deletion");
-          }
           return this.piContainerTools.callTool("delete", args);
 
         case "grep":
           if (hasProjectTarget(args)) return (await this.projectContainerTools(args)).callTool("grep", args);
-          if (hasVmTarget(args)) {
-            await this.assertVmProjectAllowed(args, "file search");
-            return this.projectVm.grep(args);
-          }
           return this.piContainerTools.callTool("grep", args);
 
         case "find":
           if (hasProjectTarget(args)) return (await this.projectContainerTools(args)).callTool("find", args);
-          if (hasVmTarget(args)) {
-            await this.assertVmProjectAllowed(args, "file search");
-            return this.projectVm.find(args);
-          }
           return this.piContainerTools.callTool("find", args);
-
-        case "vm_exec":
-          await this.assertVmProjectAllowed(args, "shell command");
-          return this.projectVm.exec(args);
 
         case "move":
           return this.moveFile(args);
@@ -2918,10 +2705,6 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
 
         case "set_project_description":
           return projectForAgent(await this.workspaceFs.setProjectDescription(args));
-
-        case "clone_project":
-          await this.assertVmProjectAllowed({ project: args.sourceProject ?? args.sourceProjectId }, "clone");
-          return this.projectVm.cloneProject(args);
 
         case "build_project":
           return this.buildProject(args);
@@ -3164,9 +2947,6 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
     }
     const scriptName = scriptNameArg || appNameArg;
     const filePath = typeof args.path === "string" ? args.path.trim() : "";
-    if (args.location === "vm" && !filePath) {
-      throw new Error("path is required when previewing a VM file");
-    }
     const targetKinds = [scriptName ? "app" : "", filePath ? "file" : ""].filter(Boolean);
     if (targetKinds.length === 0) {
       throw new Error("set_preview requires app_name/script_name or path");
@@ -3174,8 +2954,8 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
     if (targetKinds.length > 1) {
       throw new Error("set_preview accepts exactly one target: app_name/script_name or path");
     }
-    if (args.location !== "vm" && args.location !== "project" && typeof args.project === "string" && args.project.trim()) {
-      throw new Error("project is only valid with location: 'project' or 'vm'");
+    if (args.location !== "project" && typeof args.project === "string" && args.project.trim()) {
+      throw new Error("project is only valid with location: 'project'");
     }
     if (filePath && typeof args.is_public === "boolean") {
       throw new Error("is_public is only valid for app previews");
@@ -3196,12 +2976,12 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
       return { success: true, target, app: { name: scriptName, url: await this.getAppUrl(script), is_public: target.isPublic } };
     }
     const location = typeof args.location === "string" ? args.location.trim() : "";
-    if (location && location !== "workspace" && location !== "project" && location !== "vm" && location !== "r2") {
-      throw new Error('set_preview location must be "workspace", "project", "vm", or "r2"');
+    if (location && location !== "workspace" && location !== "project" && location !== "r2") {
+      throw new Error('set_preview location must be "workspace", "project", or "r2"');
     }
     let parsedPath = parseFilePreviewPath(filePath);
     let source: Extract<PreviewTarget, { kind: "file" }>["source"];
-    if (location === "workspace" || location === "project" || location === "vm") {
+    if (location === "workspace" || location === "project") {
       parsedPath = parseFilePreviewPath(filePath.startsWith("/") ? filePath : `/${filePath}`);
       if (!parsedPath || parsedPath.source !== "workspace") {
         throw new Error("Invalid preview file path");
@@ -3224,14 +3004,14 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
       workspaceId: this.ctx.props.workspaceId,
       path: parsedPath.path,
       project:
-        (source === "project" || source === "vm") && typeof args.project === "string"
+        source === "project" && typeof args.project === "string"
           ? args.project.trim()
           : undefined,
       filename: parsedPath.filename,
       contentType: typeof args.content_type === "string" ? args.content_type.trim() : undefined,
     };
-    if ((target.source === "project" || target.source === "vm") && !target.project) {
-      throw new Error(`project is required when previewing a ${target.source === "project" ? "project" : "VM"} file`);
+    if (target.source === "project" && !target.project) {
+      throw new Error(`project is required when previewing a project file`);
     }
     await this.assertPreviewFileReadable(target);
     await this.chatThreadStub.setPreviewTarget(target);
@@ -3283,18 +3063,6 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
           const publicPath = `${target.source === "upload" ? "uploads" : "outputs"}/${relativePath}`;
           throw new Error(`Preview file not found: ${publicPath}`);
         }
-        return;
-      }
-      case "vm": {
-        if (!target.project) {
-          throw new Error("project is required when previewing a VM file");
-        }
-        await this.assertVmProjectAllowed({ project: target.project }, "file preview");
-        await this.projectVm.assertFileReadable({
-          location: "vm",
-          project: target.project,
-          path: target.path,
-        });
         return;
       }
     }
@@ -4246,11 +4014,9 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
     const cloneNames = confirmedTargets
       .filter((project) => project.id !== target.id)
       .map((project) => project.name);
-    const hasDoBackedTargets = confirmedTargets.some((project) => project.backend === "do-r2");
-    const storageLabel = hasDoBackedTargets ? "project files" : "VM checkouts";
     const question = cloneNames.length > 0
-      ? `Delete project "${target.name}" and its ${cloneNames.length} clone project(s) (${cloneNames.join(", ")})? This removes their ${storageLabel} and metadata. This cannot be undone.`
-      : `Delete project "${target.name}"? This removes its ${storageLabel} and metadata. This cannot be undone.`;
+      ? `Delete project "${target.name}" and its ${cloneNames.length} clone project(s) (${cloneNames.join(", ")})? This removes their project files and metadata. This cannot be undone.`
+      : `Delete project "${target.name}"? This removes its project files and metadata. This cannot be undone.`;
     const confirmation = await confirmDestructiveAction(
       (questionArgs) => this.askUserQuestion(questionArgs),
       {
@@ -4275,22 +4041,9 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
       };
     }
 
-    const vmTargets = confirmedTargets.filter((project) => project.backend !== "do-r2");
     const doBackedTargets = confirmedTargets.filter((project) => project.backend === "do-r2");
 
-    if (vmTargets.length > 0 && doBackedTargets.length === 0) {
-      return this.projectVm.deleteProject({ projectIds: orderProjectsForRuntimeDelete(vmTargets) });
-    }
-
     const deletedNames: string[] = [];
-    if (vmTargets.length > 0) {
-      const result = await this.projectVm.deleteProject({ projectIds: orderProjectsForRuntimeDelete(vmTargets) }) as { deleted?: unknown };
-      if (Array.isArray(result.deleted)) {
-        deletedNames.push(...result.deleted.filter((name): name is string => typeof name === "string"));
-      } else {
-        deletedNames.push(...vmTargets.map((project) => project.name));
-      }
-    }
 
     let deletedFileEntries = 0;
     let deletedSourceSnapshots = 0;
@@ -4301,8 +4054,11 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
       deletedSourceSnapshots += cleanup.sourceSnapshots;
       deletedSourceSnapshotBlobs += cleanup.sourceSnapshotBlobs;
     }
-    const cleanup = doBackedTargets.length > 0
-      ? await this.workspaceFs.removeProjects(doBackedTargets.map((project) => project.id))
+    // Remove every confirmed target from the registry. Legacy (non-do-r2) rows
+    // are archived tombstones with no project files, so registry removal is all
+    // that remains for them.
+    const cleanup = confirmedTargets.length > 0
+      ? await this.workspaceFs.removeProjects(confirmedTargets.map((project) => project.id))
       : { deleted: [] };
     deletedNames.push(...cleanup.deleted.map((project) => project.name));
 

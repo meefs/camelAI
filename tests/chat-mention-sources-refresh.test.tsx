@@ -433,10 +433,10 @@ describe('Chat mention source refresh', () => {
     expect(screen.queryByText('Initial Project')).not.toBeInTheDocument();
   });
 
-  it('refreshes mention sources for a VM preview project missing from the current map', async () => {
-    const vmPreviewTarget: PreviewTarget = {
+  it('refreshes mention sources for a preview project missing from the current map', async () => {
+    const projectPreviewTarget: PreviewTarget = {
       kind: 'file',
-      source: 'vm',
+      source: 'project',
       workspaceId: 'ws-1',
       path: '/test.html',
       filename: 'test.html',
@@ -457,7 +457,7 @@ describe('Chat mention source refresh', () => {
         initialMessages={[]}
         connections={[]}
         projects={[initialProject]}
-        initialPreviewTabs={[vmPreviewTarget]}
+        initialPreviewTabs={[projectPreviewTarget]}
       />,
     );
 
@@ -469,7 +469,7 @@ describe('Chat mention source refresh', () => {
     expect(
       latestPreviewContextValue.current?.formatFilePathForCopy?.({
         path: '/test.html',
-        source: 'vm',
+        source: 'project',
         project: 'test',
       }),
     ).toBe('/test.html');
@@ -486,7 +486,7 @@ describe('Chat mention source refresh', () => {
         initialMessages={[]}
         connections={[]}
         projects={[initialProject]}
-        initialPreviewTabs={[vmPreviewTarget]}
+        initialPreviewTabs={[projectPreviewTarget]}
       />,
     );
 
@@ -494,7 +494,7 @@ describe('Chat mention source refresh', () => {
       expect(
         latestPreviewContextValue.current?.formatFilePathForCopy?.({
           path: '/test.html',
-          source: 'vm',
+          source: 'project',
           project: 'test',
         }),
       ).toBe('@test - /test.html');
@@ -502,7 +502,7 @@ describe('Chat mention source refresh', () => {
     expect(mentionFetcher.load).toHaveBeenCalledTimes(1);
   });
 
-  it('refreshes mention sources for a tool-only VM project missing from the current map', async () => {
+  it('refreshes mention sources for a tool-only project missing from the current map', async () => {
     const fetchedProjectForTool: AtMentionEntity = {
       kind: 'project',
       id: 'project-test',
@@ -516,7 +516,7 @@ describe('Chat mention source refresh', () => {
         workspaceId="ws-1"
         initialMessages={[
           assistantToolUseMessage('message-tool-read', 'read', {
-            location: 'vm',
+            location: 'project',
             project: 'test',
             path: '/test.html',
           }),
@@ -543,7 +543,7 @@ describe('Chat mention source refresh', () => {
         workspaceId="ws-1"
         initialMessages={[
           assistantToolUseMessage('message-tool-read', 'read', {
-            location: 'vm',
+            location: 'project',
             project: 'test',
             path: '/test.html',
           }),
@@ -556,7 +556,7 @@ describe('Chat mention source refresh', () => {
     await waitFor(() => {
       expect(
         latestPreviewContextValue.current?.formatFilePathForCopy?.({
-          source: 'vm',
+          source: 'project',
           project: 'test',
           path: '/test.html',
         }),
@@ -565,14 +565,14 @@ describe('Chat mention source refresh', () => {
     expect(mentionFetcher.load).toHaveBeenCalledTimes(1);
   });
 
-  it('does not refresh mention sources for non-file-copy VM tools', () => {
+  it('does not refresh mention sources for non-file-copy project tools', () => {
     render(
       <Chat
         threadId="thread-1"
         workspaceId="ws-1"
         initialMessages={[
           assistantToolUseMessage('message-tool-bash', 'bash', {
-            location: 'vm',
+            location: 'project',
             project: 'test',
             command: 'cat /test.html',
           }),

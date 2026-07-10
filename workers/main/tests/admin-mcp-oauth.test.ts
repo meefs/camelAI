@@ -390,7 +390,6 @@ describe("admin MCP OAuth resource", () => {
           expect.objectContaining({ name: "query_chat_errors" }),
           expect.objectContaining({ name: "get_thread_jsonl" }),
           expect.objectContaining({ name: "search_workspaces" }),
-          expect.objectContaining({ name: "migrate_vm_projects" }),
           expect.objectContaining({ name: "search_apps" }),
           expect.objectContaining({ name: "list_bans" }),
           expect.objectContaining({ name: "grant_org_credits" }),
@@ -405,55 +404,6 @@ describe("admin MCP OAuth resource", () => {
     expect(setCreditsTool.description).toContain(
       "without creating a grant ledger row",
     );
-  });
-
-  it("runs a VM project migration dry run through the dedicated MCP tool", async () => {
-    const { userId } = await createUser(
-      testEnv,
-      `admin-mcp-vm-migration-${crypto.randomUUID()}@example.com`,
-      "password123",
-      "Migration Admin",
-    );
-    await createOrg(testEnv, "Migration Admin Org", userId);
-    await updateUserProfile(testEnv, userId, { is_superuser: true });
-    const token = await issueAdminMcpToken(userId);
-    const workspaceId = crypto.randomUUID();
-
-    const response = await handleAdminMcp({
-      req: mcpRequest(
-        {
-          jsonrpc: "2.0",
-          id: 1,
-          method: "tools/call",
-          params: {
-            name: "migrate_vm_projects",
-            arguments: { workspace_id: workspaceId },
-          },
-        },
-        token,
-      ),
-      env: testEnv,
-      ctx: {} as ExecutionContext,
-      url: new URL("https://example.com/api/admin/mcp"),
-      match: [] as unknown as RegExpMatchArray,
-    });
-
-    expect(response?.status).toBe(200);
-    const rpc = (await response?.json()) as any;
-    const payload = parseToolText(rpc);
-    expect(payload).toMatchObject({
-      status: 200,
-      ok: true,
-      body_json: {
-        success: true,
-        workspace_id: workspaceId,
-        dry_run: true,
-        processed: 0,
-        migrated: 0,
-        failed: 0,
-        results: [],
-      },
-    });
   });
 
   it("lets superusers query chat errors through the dedicated MCP tool", async () => {

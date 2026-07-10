@@ -56,7 +56,6 @@ import {
 } from './routes/billing.js';
 import { handleEmailSendProxy } from './routes/email-send-proxy.js';
 import { handleWorkerAuth } from './routes/worker-auth.js';
-import { handleProjectRuntimeArtifactsProxy } from './routes/project-runtime-artifacts.js';
 import { requireChatWebSocketAccess } from './helpers/auth.js';
 
 // Re-exports for wrangler
@@ -91,7 +90,6 @@ export { SecureFetchBinding } from './secure-fetch-service.js';
 export { AppScreenshotBinding } from './app-screenshot-binding.js';
 export { AppBrowserBinding } from './app-browser-binding.js';
 export { WorkspaceFilesystemDO } from './workspace-filesystem-do.js';
-export { EvalProjectRuntimeService } from './eval-project-runtime-service.js';
 export { EvalSandbox } from './eval-sandbox.js';
 export { AnalysisSandbox } from './analysis-sandbox.js';
 export { ProjectBuildSandbox } from './project-build-sandbox.js';
@@ -210,7 +208,6 @@ const routes: Route[] = [
   { method: 'POST', path: /^\/api\/postgres\/query$/, handler: handlePostgresQuery },
   { method: 'POST', path: /^\/api\/mysql\/query$/, handler: handleMysqlQuery },
   { method: 'GET', path: /^\/api\/internal\/billing\/access$/, handler: handleInternalBillingAccess },
-  { method: 'ALL', path: /^\/api\/internal\/project-runtime\/artifacts(\/|$)/, handler: handleProjectRuntimeArtifactsProxy },
   { method: 'POST', path: /^\/api\/billing\/stripe\/webhook$/, handler: handleStripeWebhook },
 
   // Email sending proxy (for sandbox containers)

@@ -19,12 +19,7 @@
 		{ "pattern": "dev-miguel.camelai.dev/*", "zone_name": "camelai.dev" },
 		{ "pattern": "exe-agent-dev-miguel.camelai.dev/*", "zone_name": "camelai.dev" }
 	],
-	"vpc_services": [
-		{
-			"binding": "PROJECT_RUNTIME_HOST",
-			"service_id": "019e866e-90ab-72f2-b1bf-b044653ff154"
-		}
-	],
+	"vpc_services": [],
 	"vars": {
 		"AI_VIRTUAL_MODEL": "dynamic/auto",
 			"R2_BUCKET_NAME": "chiridion-sandbox",
@@ -38,7 +33,6 @@
 			"CLOUDFLARE_ACCOUNT_ID": "85bbd288051330fb51ee1c86031a299b",
 			"CF_GATEWAY_NAME": "chiridion",
 			"CF_DISPATCH_NAMESPACE": "chiridion-platform-dev-miguel",
-			"PROJECT_RUNTIME_DOCKER_PROXY_BASE_URL": "http://host.docker.internal:8089",
 			"WORKER_BASE_URL": "https://dev-miguel.camelai.dev",
 				"EMAIL_FROM_ADDRESS": "no-reply@mail.camelai.com",
 				"WORKSPACE_EMAIL_DOMAIN": "camelai.dev",

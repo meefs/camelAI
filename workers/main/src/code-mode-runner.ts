@@ -388,7 +388,7 @@ const RUNTIME_HELP_ENTRIES = Object.freeze([
     category: "workspace",
     kind: "runtime_binding",
     description:
-      "Project facade for listing, creating, describing, and cloning workspace projects. Backed by the list_projects/create_project/set_project_description/clone_project tools.",
+      "Project facade for listing, creating, and describing workspace projects. Backed by the list_projects/create_project/set_project_description tools.",
     examples: [
       "await env.PROJECTS.list()",
       "await env.PROJECTS.create({ name: \"my-app\", description: \"What this app does\" })",
@@ -397,23 +397,6 @@ const RUNTIME_HELP_ENTRIES = Object.freeze([
       { name: "list", usage: "await env.PROJECTS.list()" },
       { name: "create", usage: "await env.PROJECTS.create({ name, description, template? })" },
       { name: "setDescription", usage: "await env.PROJECTS.setDescription({ project, description })" },
-      { name: "clone", usage: "await env.PROJECTS.clone({ project, name? })" },
-    ],
-  }),
-  Object.freeze({
-    name: "vm",
-    category: "workspace",
-    kind: "runtime_binding",
-    description:
-      "Project VM shell facade (also exposed as env.VM). vm.exec runs a command in a legacy project VM; the active checkout is /workspace, so don't prepend cd /workspace.",
-    examples: [
-      "await vm.exec({ command: \"bun run build\", project: \"my-app\", timeoutSeconds: 120 })",
-    ],
-    methods: [
-      {
-        name: "exec",
-        usage: "await vm.exec({ command, project, timeoutSeconds? }) or await vm.exec(\"command\", { project })",
-      },
     ],
   }),
   Object.freeze({
@@ -454,12 +437,12 @@ function normalizeHelpInput(input) {
 // guidance is fetched on demand the moment the model actually writes code.
 const JS_EXEC_GUIDE = Object.freeze([
   "Results: the final expression is returned automatically and console.log/warn/error output is captured; use an explicit return inside branches or loops. You may write TypeScript — type annotations are stripped before execution.",
-  "Tool results: every await tools.<name>(args) call resolves to { ok: true, data } on success or { ok: false, error: { tool, message } } on failure — branch on result.ok and read result.data; failed calls do not throw, so you can inspect the error, tools.describe the tool, and retry in the same run. build_project and deploy_project resolve ok: false when the build or deploy FAILS (error.message carries the summary, error.stage says which phase, and the full result is still in data); for other tools ok means the call executed and outcomes live in data. EXCEPTION: runtime bindings (env.*, vm.exec, connections[alias]) and tools.search/describe/help return their values directly with NO { ok, data } wrapper — tools.search resolves to { query, total, items, usage } where items is the matches array.",
+  "Tool results: every await tools.<name>(args) call resolves to { ok: true, data } on success or { ok: false, error: { tool, message } } on failure — branch on result.ok and read result.data; failed calls do not throw, so you can inspect the error, tools.describe the tool, and retry in the same run. build_project and deploy_project resolve ok: false when the build or deploy FAILS (error.message carries the summary, error.stage says which phase, and the full result is still in data); for other tools ok means the call executed and outcomes live in data. EXCEPTION: runtime bindings (env.*, connections[alias]) and tools.search/describe/help return their values directly with NO { ok, data } wrapper — tools.search resolves to { query, total, items, usage } where items is the matches array.",
   "Discovery: await tools.search(\"<intent + key nouns>\") ranks matching tools; await tools.describe(name) returns one definition with a compact inputTypeScript argument shape; await tools.help(\"<category>\") expands a category. Results with kind \"tool\" run as await tools.<name>(args); kind \"runtime\" results are sandbox globals (env.*, connections, text/store/load) used directly, never through tools.",
   "Every top-level harness tool is also on tools, e.g. await tools.create_project(...).",
   "Connections: const entry = await env.CONNECTIONS.find(\"clickhouse\"); return await connections[entry.alias].query({ query: \"SELECT 1 AS ok\" }). Use await env.CONNECTIONS.methods() for the full catalog and await env.CONNECTIONS.test(\"clickhouse\") for a smoke test; custom \"other\" connections expose fetch.",
-  "File tools require an explicit location (\"workspace\" | \"vm\" | \"r2\"), e.g. const file = await tools.read({ location: \"vm\", project: project.name, path: \"/src/App.tsx\" }); if (!file.ok) throw new Error(file.error.message); then use file.data.text for text file contents. R2 mounts are uploads/ (read-only), outputs/ (user-visible), tmp/. tools.grep, tools.find, and tools.move are also available.",
-  "Project VMs: use env.PROJECTS to list/create/clone projects and vm.exec({ command, project, timeoutSeconds }); the active checkout is /workspace (don't prepend cd /workspace), pass cwd only for subdirectories, and don't use /home/claude. Run independent commands concurrently with Promise.all.",
+  "File tools require an explicit location (\"workspace\" | \"project\" | \"r2\"), e.g. const file = await tools.read({ location: \"project\", project: project.name, path: \"src/App.tsx\" }); if (!file.ok) throw new Error(file.error.message); then use file.data.text for text file contents. R2 mounts are uploads/ (read-only), outputs/ (user-visible), tmp/. tools.grep, tools.find, and tools.move are also available.",
+  "Projects: use env.PROJECTS to list/create projects; edit DO-backed project files with the file tools at location \"project\", then build/deploy with tools.build_project/tools.deploy_project.",
   "Deploy verification: after you deploy an app or make changes to it, ALWAYS call set_preview with the newly deployed app and verify by calling list_apps before reporting done.",
   "Hosted helpers: env.AI.run(\"auto\", { messages }) with tiers cheap/fast/auto/smart or any OpenRouter id, env.CAMELAI.generateImage/transcribeAudio, env.WORKSPACE.info(); web access via tools.WebSearch/tools.WebFetch. Global fetch() auto-authenticates to this workspace's deployed apps.",
   "Scratch state: text(value) appends user-visible output; store(key, value)/load(key) keep per-runner scratch state.",
@@ -749,7 +732,7 @@ function createToolDescribe(allTools) {
 // and killing the whole js_exec turn. The envelope is built on the DO side of
 // the RPC (TOOLS.callToolEnvelope) so no exception ever crosses capnweb; the
 // catch here only normalizes transport-level failures. Runtime bindings (env.*,
-// vm.exec, connections[alias]) and tools.search/describe/help keep returning
+// connections[alias]) and tools.search/describe/help keep returning
 // raw values.
 // Build/deploy report their outcome via data.success; surfacing a failed
 // build as ok: true routinely sent agents on to set_preview/screenshot a
@@ -1048,29 +1031,11 @@ function createToolBackedConnectionsBinding(callTool) {
   });
 }
 
-function createVmFacade(tools) {
-  const normalizeExecArgs = (commandOrOptions, options = {}) => {
-    if (
-      commandOrOptions &&
-      typeof commandOrOptions === "object" &&
-      !Array.isArray(commandOrOptions)
-    ) {
-      return commandOrOptions;
-    }
-    return { command: commandOrOptions, ...options };
-  };
-  return Object.freeze({
-    exec: (commandOrOptions, options = {}) =>
-      tools.vm_exec(normalizeExecArgs(commandOrOptions, options)),
-  });
-}
-
 function createProjectsFacade(tools) {
   return Object.freeze({
     list: () => tools.list_projects({}),
     create: (options = {}) => tools.create_project(options),
     setDescription: (options = {}) => tools.set_project_description(options),
-    clone: (options = {}) => tools.clone_project(options),
   });
 }
 
@@ -1163,11 +1128,9 @@ export class CodeModeRunner extends WorkerEntrypoint {
     const browserRuntime = createBrowserFacade(callTool);
     const BROWSER = browserRuntime.facade;
     const WORKSPACE = createWorkspaceFacade(callTool);
-    const VM = createVmFacade(rawTools);
-    const vm = VM;
     const PROJECTS = createProjectsFacade(rawTools);
-    const env = Object.freeze({ CONNECTIONS, AI, CAMELAI, SCREENSHOT, BROWSER, WORKSPACE, VM, PROJECTS });
-    const context = Object.freeze({ cloudflare: Object.freeze({ env, connections, vm, projects: env.PROJECTS }) });
+    const env = Object.freeze({ CONNECTIONS, AI, CAMELAI, SCREENSHOT, BROWSER, WORKSPACE, PROJECTS });
+    const context = Object.freeze({ cloudflare: Object.freeze({ env, connections, projects: env.PROJECTS }) });
     const text = (value) => {
       output.push(stringifyOutput(value));
     };
@@ -1184,8 +1147,6 @@ export class CodeModeRunner extends WorkerEntrypoint {
       tools,
       CONNECTIONS,
       connections,
-      VM,
-      vm,
       PROJECTS,
       env,
       context,

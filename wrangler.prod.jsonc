@@ -22,12 +22,7 @@
   "tail_consumers": [{ "service": "chiridion-user-logs-tail" }],
   "rules": [{ "type": "ESModule", "globs": ["**/*.js", "**/*.mjs"] }],
   "routes": [{ "pattern": "camelai.dev", "custom_domain": true }],
-  "vpc_services": [
-    {
-      "binding": "PROJECT_RUNTIME_HOST",
-      "service_id": "019e8a87-d4d8-7711-a627-91eeb22040a6",
-    },
-  ],
+  "vpc_services": [],
   "vars": {
     "AI_VIRTUAL_MODEL": "google/gemini-3-flash-preview",
     // Static-IP database egress relay (docs/db-egress-relay.md). SOCKS + Access
@@ -44,7 +39,6 @@
     "ARTIFACTS_NAMESPACE": "prod",
     "CF_GATEWAY_NAME": "chiridion",
     "CF_DISPATCH_NAMESPACE": "chiridion-platform",
-    "PROJECT_RUNTIME_DOCKER_PROXY_BASE_URL": "http://host.docker.internal:8089",
     "WORKER_BASE_URL": "https://camelai.dev",
     "EMAIL_FROM_ADDRESS": "no-reply@mail.camelai.com",
     "WORKSPACE_EMAIL_DOMAIN": "camelai.dev",

@@ -1,6 +1,5 @@
 import type { Route } from './+types/workspaces.$id.projects.$project.fs.content.$';
 import { getEnv } from '@/lib/cloudflare.server';
-import { ProjectRuntimeServiceVmBridge } from '../../../workers/main/src/project-runtime-service-vm';
 import { ProjectFilesystemClient, WorkspaceFilesystemClient } from '../../../workers/main/src/workspace-filesystem-do';
 import {
   normalizeWorkspacePath,
@@ -65,7 +64,7 @@ function shouldDisplayInline(contentType: string): boolean {
   return INLINE_MIME_PREFIXES.some((prefix) => normalized.startsWith(prefix));
 }
 
-function decodeVmPath(rawPath: string): string {
+function decodeProjectFilePath(rawPath: string): string {
   const decoded = decodeURIComponent(rawPath);
   const withLeadingSlash = decoded.startsWith('/') ? decoded : `/${decoded}`;
   return normalizeWorkspacePath(withLeadingSlash);
@@ -89,7 +88,7 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
       return Response.json({ error: 'File path required' }, { status: 400 });
     }
 
-    const path = decodeVmPath(rawFilePath);
+    const path = decodeProjectFilePath(rawFilePath);
     const env = getEnv(context);
     const workspaceFs = new WorkspaceFilesystemClient(env as never, workspaceId);
     const projectRecord = await workspaceFs.getProjectByName(project);
@@ -97,39 +96,22 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
       return Response.json({ error: 'Project not found' }, { status: 404 });
     }
 
-    let body: ReadableStream<Uint8Array> | null;
-    let resolvedPath = path;
-    let contentLength: string | null = null;
-    if ((projectRecord.backend ?? 'vm') === 'do-r2') {
-      const projectFs = new ProjectFilesystemClient(env as never, projectRecord.id);
-      const result = await projectFs.readFileStream(path);
-      if (!result.success || !result.stream) {
-        return Response.json({ error: 'File not found' }, { status: 404 });
-      }
-      body = result.stream;
-      contentLength = typeof result.size === 'number' ? String(result.size) : null;
-    } else {
-      const bridge = new ProjectRuntimeServiceVmBridge({
-        env,
-        workspace: workspaceFs,
-      });
-      try {
-        const stream = await bridge.readFileStream({
-          location: 'vm',
-          project,
-          path,
-        });
-        body = stream.response.body;
-        resolvedPath = stream.path;
-        contentLength = stream.response.headers.get('Content-Length');
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        if (message.includes('File not found')) {
-          return Response.json({ error: 'File not found' }, { status: 404 });
-        }
-        throw error;
-      }
+    if ((projectRecord.backend ?? 'vm') !== 'do-r2') {
+      return Response.json(
+        { error: 'This legacy project was archived when camelAI retired project VMs.' },
+        { status: 404 },
+      );
     }
+
+    const resolvedPath = path;
+    let contentLength: string | null = null;
+    const projectFs = new ProjectFilesystemClient(env as never, projectRecord.id);
+    const result = await projectFs.readFileStream(path);
+    if (!result.success || !result.stream) {
+      return Response.json({ error: 'File not found' }, { status: 404 });
+    }
+    const body = result.stream;
+    contentLength = typeof result.size === 'number' ? String(result.size) : null;
 
     if (!body) {
       return Response.json({ error: 'File not found' }, { status: 404 });

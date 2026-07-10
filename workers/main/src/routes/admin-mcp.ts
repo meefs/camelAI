@@ -46,7 +46,6 @@ const TOOL_MANAGE_THREAD_MESSAGE_ROWS = "manage_thread_message_rows";
 const TOOL_REPAIR_PI_MESSAGE_HISTORY = "repair_pi_message_history";
 const TOOL_UPDATE_THREAD = "update_thread";
 const TOOL_SEARCH_WORKSPACES = "search_workspaces";
-const TOOL_MIGRATE_VM_PROJECTS = "migrate_vm_projects";
 const TOOL_VERIFY_PROJECT_BUILD = "verify_project_build";
 const TOOL_SEARCH_APPS = "search_apps";
 const TOOL_GET_DASHBOARD_SUMMARY = "get_dashboard_summary";
@@ -398,30 +397,9 @@ function adminTools() {
       },
     },
     {
-      name: TOOL_MIGRATE_VM_PROJECTS,
-      description:
-        "Migrate a workspace's legacy VM-backed projects to DO+R2 storage (copies VM source files, seeds a snapshot, flips backend to do-r2). VM checkouts are never modified, so a migration is reversible by flipping the backend back. Defaults to dry_run: true, which reports what would migrate without writing.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          workspace_id: { type: "string", description: "Workspace to migrate." },
-          project: { type: "string", description: "Optional project name; omit to migrate every legacy project in the workspace." },
-          dry_run: { type: "boolean", description: "Defaults to true. Pass false to actually migrate." },
-          max_file_bytes: { type: "integer", description: "Per-file size cap; larger files are skipped and recorded. Defaults to 1 GiB. Files above ~20 MiB stream VM -> R2 instead of going through the RPC write path." },
-          max_project_bytes: { type: "integer", description: "Per-project total cap; exceeding it fails the project. Defaults to 4 GiB." },
-          force: { type: "boolean", description: "Re-migrate a project already on do-r2 (clears its DO tree first). Defaults to false." },
-          lift_nested_root: { type: "boolean", description: "Lift a single nested app directory to the project root. Defaults to true." },
-          file_offset: { type: "integer", description: "Resume a chunked copy at this plan offset (use next_file_offset from a prior 'partial' result)." },
-          max_files_per_call: { type: "integer", description: "Copy at most this many files per call. Projects with more planned files return status 'partial' with next_file_offset; loop until 'migrated'. Use for projects with thousands of files, which cannot finish in one request." },
-        },
-        required: ["workspace_id"],
-        additionalProperties: false,
-      },
-    },
-    {
       name: TOOL_VERIFY_PROJECT_BUILD,
       description:
-        "Run a validation build (bun install + bun run build in the platform build sandbox, no deploy) for a DO-backed project. Use after migrate_vm_projects to confirm a migrated project still builds. Only meaningful for projects with a root package.json build script; notebook projects deploy without a build.",
+        "Run a validation build (bun install + bun run build in the platform build sandbox, no deploy) for a DO-backed project. Only meaningful for projects with a root package.json build script; notebook projects deploy without a build.",
       inputSchema: {
         type: "object",
         properties: {
@@ -1497,18 +1475,6 @@ async function callTool(
       method: "GET",
       path: "/api/admin/workspaces",
       query: pickQuery(input, ["limit", "offset", "search", "org_id", "archived", "sort_by", "sort_dir"]),
-    });
-  }
-  if (name === TOOL_MIGRATE_VM_PROJECTS) {
-    const workspaceId = requiredStringArg(input, "workspace_id");
-    if (typeof workspaceId !== "string") return toolText(workspaceId, true);
-    return fetchAdminApiTool(req, env, grant, {
-      method: "POST",
-      path: `/api/admin/workspaces/${encodeURIComponent(workspaceId)}/project-vm-migration`,
-      body: {
-        ...pickBody(input, ["project", "max_file_bytes", "max_project_bytes", "force", "lift_nested_root", "file_offset", "max_files_per_call"]),
-        dry_run: input.dry_run === false ? false : true,
-      },
     });
   }
   if (name === TOOL_VERIFY_PROJECT_BUILD) {

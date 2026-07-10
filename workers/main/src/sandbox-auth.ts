@@ -9,7 +9,6 @@
 
 export interface SandboxProxyAuthEnv {
   SANDBOX_PROXY_SECRET?: string;
-  PROJECT_RUNTIME_PROXY_SECRET?: string;
 }
 
 export interface SandboxProxyIdentity {
@@ -26,13 +25,6 @@ export interface SandboxProxyInvalid {
 }
 
 export type SandboxProxyResult = SandboxProxyIdentity | SandboxProxyInvalid;
-
-export interface ProjectRuntimeProxyIdentity {
-  valid: true;
-  projectId: string;
-}
-
-export type ProjectRuntimeProxyResult = ProjectRuntimeProxyIdentity | SandboxProxyInvalid;
 
 /**
  * Check if a request was forwarded by a trusted runtime proxy.
@@ -58,21 +50,6 @@ export function validateSandboxProxy(
   return { valid: true, orgId, workspaceId, userId, threadId, projectId };
 }
 
-export function validateProjectRuntimeProxy(
-  request: Request,
-  env: SandboxProxyAuthEnv,
-): ProjectRuntimeProxyResult {
-  if (
-    !hasVerifiedClientCertificate(request) &&
-    !hasValidProjectRuntimeSharedSecret(request, env)
-  ) {
-    return { valid: false };
-  }
-  const projectId = request.headers.get("x-project-runtime-project")?.trim();
-  if (!projectId) return { valid: false };
-  return { valid: true, projectId };
-}
-
 type TlsClientAuth = {
   certRevoked?: string;
   certVerified?: string;
@@ -95,7 +72,6 @@ function hasVerifiedClientCertificate(request: Request): boolean {
 
 function hasValidSharedSecret(request: Request, env: SandboxProxyAuthEnv): boolean {
   const providedSecrets = [
-    request.headers.get("x-project-runtime-secret"),
     request.headers.get("x-sandbox-secret"),
     bearerToken(request.headers.get("authorization")),
   ]
@@ -103,25 +79,7 @@ function hasValidSharedSecret(request: Request, env: SandboxProxyAuthEnv): boole
     .filter((value): value is string => !!value);
 
   const expectedSecrets = secretList([
-    env.PROJECT_RUNTIME_PROXY_SECRET,
     env.SANDBOX_PROXY_SECRET,
-  ]);
-
-  return providedSecrets.some((provided) =>
-    expectedSecrets.some((expected) => constantTimeEqual(provided, expected)),
-  );
-}
-
-function hasValidProjectRuntimeSharedSecret(request: Request, env: SandboxProxyAuthEnv): boolean {
-  const providedSecrets = [
-    request.headers.get("x-project-runtime-secret"),
-    bearerToken(request.headers.get("authorization")),
-  ]
-    .map((value) => value?.trim())
-    .filter((value): value is string => !!value);
-
-  const expectedSecrets = secretList([
-    env.PROJECT_RUNTIME_PROXY_SECRET,
   ]);
 
   return providedSecrets.some((provided) =>

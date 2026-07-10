@@ -8,7 +8,6 @@ import {
   readSelfhostEnv,
   repoRoot,
   run,
-  runtimeHostStateDir,
   scriptEnv,
   volumeName,
   volumeNames,
@@ -31,7 +30,6 @@ for (const name of volumeNames) {
   const dockerVolume = volumeName(name, env);
   await backupVolume(dockerVolume, `${name}.tgz`);
 }
-await backupDirectory(runtimeHostStateDir(env), "project-runtime-state.tgz");
 
 await fs.writeFile(
   path.join(backupDir, "manifest.json"),
@@ -43,13 +41,6 @@ await fs.writeFile(
       dockerVolume: volumeName(name, env),
       archive: `${name}.tgz`,
     })),
-    directories: [
-      {
-        name: "project-runtime-state",
-        path: runtimeHostStateDir(env),
-        archive: "project-runtime-state.tgz",
-      },
-    ],
     notes: [
       ".env.selfhost is not included because it contains secrets.",
       "Restore with: bun run selfhost:restore -- <backup-dir>",
@@ -85,29 +76,3 @@ async function backupVolume(dockerVolume, archiveName) {
   ], { env: scriptEnv(env) });
 }
 
-async function backupDirectory(sourceDir, archiveName) {
-  if (!(await pathExists(sourceDir))) {
-    console.warn(`[selfhost:backup] Skipping missing directory ${sourceDir}.`);
-    return;
-  }
-
-  await run("docker", [
-    "run",
-    "--rm",
-    "-v",
-    `${sourceDir}:/data:ro`,
-    "-v",
-    `${backupDir}:/backup`,
-    "alpine:3.20",
-    "tar",
-    "-czf",
-    `/backup/${archiveName}`,
-    "-C",
-    "/data",
-    ".",
-  ], { env: scriptEnv(env) });
-}
-
-async function pathExists(filePath) {
-  return fs.access(filePath).then(() => true, () => false);
-}

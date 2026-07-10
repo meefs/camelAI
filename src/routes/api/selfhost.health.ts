@@ -27,16 +27,10 @@ export async function loader({ context }: LoaderFunctionArgs) {
   checks.push(requiredVar("WORKER_BASE_URL", env.WORKER_BASE_URL));
   checks.push(requiredVar("LOCAL_APP_VANITY_DOMAIN", env.LOCAL_APP_VANITY_DOMAIN));
   checks.push(requiredVar("LOCAL_APP_IFRAME_DOMAIN", env.LOCAL_APP_IFRAME_DOMAIN));
-  checks.push(requiredVar("PROJECT_RUNTIME_SERVICE_URL", env.PROJECT_RUNTIME_SERVICE_URL));
-  checks.push(requiredVar("PROJECT_RUNTIME_DOCKER_PROXY_BASE_URL", env.PROJECT_RUNTIME_DOCKER_PROXY_BASE_URL));
   checks.push(checkAiProviderConfig(env));
 
   if (env.APP_DB) {
     checks.push(await checkD1(env.APP_DB));
-  }
-
-  if (env.PROJECT_RUNTIME_SERVICE_URL) {
-    checks.push(await checkHttp("project-runtime", `${env.PROJECT_RUNTIME_SERVICE_URL.replace(/\/+$/, "")}/health`));
   }
 
   if (env.LOCAL_ARTIFACTS_BASE_URL) {

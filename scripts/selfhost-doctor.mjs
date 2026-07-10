@@ -9,9 +9,6 @@ import {
   pathExists,
   readSelfhostEnv,
   repoRoot,
-  runtimeImageDockerfile,
-  runtimeHostStateDir,
-  runtimeServiceDir,
   scriptEnv,
   volumeName,
   volumeNames,
@@ -29,7 +26,6 @@ await check("env file", async () => {
   for (const key of [
     "TOKEN_SIGNING_SECRET",
     "INTEGRATION_SECRET_KEY",
-    "PROJECT_RUNTIME_PROXY_SECRET",
     "LOCAL_ARTIFACTS_SECRET",
   ]) {
     if (!env[key]) fail(`missing ${key}`);
@@ -46,28 +42,6 @@ await check("required CLIs", async () => {
 await check("Docker daemon", async () => {
   const result = await capture("docker", ["info"], { env: scriptEnv(env) });
   if (result.code !== 0) fail(result.stderr.trim() || "docker info failed");
-});
-
-await check("project runtime checkout", async () => {
-  const runtimeDir = runtimeServiceDir(env);
-  if (!(await pathExists(path.join(runtimeDir, "go.mod")))) {
-    fail(`missing Go module at ${runtimeDir}`);
-  }
-  const dockerfile = runtimeImageDockerfile(env);
-  if (!(await pathExists(dockerfile))) {
-    fail(`missing project runtime image Dockerfile at ${dockerfile}`);
-  }
-  note(`image Dockerfile: ${dockerfile}`);
-});
-
-await check("project runtime quotas", async () => {
-  const enabled = env.PROJECT_RUNTIME_ENABLE_PROJECT_QUOTA === "1" ||
-    env.PROJECT_RUNTIME_ENABLE_PROJECT_QUOTA === "true";
-  if (!enabled) {
-    note("PROJECT_RUNTIME_ENABLE_PROJECT_QUOTA=0; local directory storage will not require xfs_quota");
-    return;
-  }
-  warn("project quotas are enabled; xfsprogs and an XFS prjquota mount are required");
 });
 
 await check("self-host app domains", async () => {
@@ -88,15 +62,6 @@ await check("self-host app domains", async () => {
   }
 });
 
-await check("project runtime host state", async () => {
-  const stateDir = runtimeHostStateDir(env);
-  note(stateDir);
-  if (!path.isAbsolute(stateDir)) fail("PROJECT_RUNTIME_HOST_STATE_DIR must be absolute");
-  if (process.platform === "darwin" && !stateDir.startsWith("/Users/")) {
-    warn("on macOS, use a Docker Desktop file-shared path such as /Users/... for project runtime state");
-  }
-});
-
 await check("compose config", async () => {
   const result = await capture("docker", composeArgs(env, ["config", "--quiet"]), {
     env: scriptEnv(env),
@@ -108,12 +73,10 @@ await check("volume names", async () => {
   for (const name of volumeNames) {
     note(`${name}: ${volumeName(name, env)}`);
   }
-  note(`project-runtime-state: ${runtimeHostStateDir(env)}`);
 });
 
 await check("local services", async () => {
   await optionalHttp(`http://127.0.0.1:${appPort}/api/selfhost/health`, "app self-host health");
-  await optionalHttp("http://127.0.0.1:4410/health", "project runtime");
   await optionalHttp("http://127.0.0.1:7001/health", "local Artifacts");
 });
 

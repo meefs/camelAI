@@ -7,11 +7,9 @@
 
 import type { RouteContext } from '../types.js';
 import {
-  validateProjectRuntimeProxy,
   validateSandboxProxy,
   type SandboxProxyAuthEnv,
 } from '../sandbox-auth.js';
-import { workspaceIdFromGlobalProjectId } from '../project-vm-protocol.js';
 import {
   findConnectionMethodEntry,
   getConnection,
@@ -90,59 +88,15 @@ async function resolveConnectionsContext(
   req: Request,
   env: RouteContext['env'],
 ): Promise<ResolvedConnectionsContext | null> {
-  if (hasProjectRuntimeProjectHeader(req)) {
-    return resolveProjectRuntimeConnectionsContext(req, env);
-  }
-
   const sandboxAuth = validateSandboxProxy(req, sandboxOnlyAuthEnv(env));
   if (sandboxAuth.valid) return sandboxAuth;
 
   return null;
 }
 
-function hasProjectRuntimeProjectHeader(req: Request): boolean {
-  return !!req.headers.get('x-project-runtime-project')?.trim();
-}
-
 function sandboxOnlyAuthEnv(env: RouteContext['env']): SandboxProxyAuthEnv {
   return {
     SANDBOX_PROXY_SECRET: env.SANDBOX_PROXY_SECRET,
-  };
-}
-
-async function resolveProjectRuntimeConnectionsContext(
-  req: Request,
-  env: RouteContext['env'],
-): Promise<ResolvedConnectionsContext | null> {
-  const projectAuth = validateProjectRuntimeProxy(req, env);
-  if (!projectAuth.valid) {
-    return null;
-  }
-
-  const workspaceId = workspaceIdFromGlobalProjectId(projectAuth.projectId);
-  if (!workspaceId) {
-    return null;
-  }
-
-  const workspaceStub = env.WORKSPACE.get(
-    env.WORKSPACE.idFromName(workspaceId),
-  );
-  const workspaceFsStub = env.WORKSPACE_FS.get(
-    env.WORKSPACE_FS.idFromName(workspaceId),
-  );
-  const [workspaceInfo, project] = await Promise.all([
-    workspaceStub.getInfo(),
-    workspaceFsStub.getProject(projectAuth.projectId),
-  ]);
-  if (!workspaceInfo || !project) {
-    return null;
-  }
-
-  return {
-    valid: true,
-    orgId: workspaceInfo.org_id,
-    workspaceId,
-    projectId: projectAuth.projectId,
   };
 }
 

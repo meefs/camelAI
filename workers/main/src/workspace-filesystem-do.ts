@@ -895,7 +895,7 @@ export class WorkspaceFilesystemDO extends DurableObject<WorkspaceFilesystemEnv>
 
     const now = new Date().toISOString();
     const description = requireProjectDescription(input.description);
-    const backend = input.backend === undefined ? "vm" : requireProjectBackend(input.backend);
+    const backend = input.backend === undefined ? "do-r2" : requireProjectBackend(input.backend);
     const project = await this.ensureProjectArtifactRepo({
       id,
       name,

@@ -3,7 +3,7 @@ import type { Message, PreviewTab, ToolUseBlock } from '@/types';
 
 export interface CopyFilePathTarget {
   path: string;
-  source?: 'workspace' | 'upload' | 'output' | 'vm' | string | null;
+  source?: 'workspace' | 'project' | 'upload' | 'output' | string | null;
   project?: string | null;
   projectId?: string | null;
 }
@@ -15,7 +15,7 @@ export interface FormatCopyFilePathOptions<
   fallbackProjectMention?: boolean;
 }
 
-export interface VmProjectReference {
+export interface ProjectReference {
   project: string;
   projectId?: string | null;
   source: 'preview' | 'tool';
@@ -79,12 +79,12 @@ export function resolveProjectMentionSlug<
   return normalizedMatches.length === 1 ? normalizedMatches[0] : null;
 }
 
-function getVmProjectReferenceFromToolInput(
+function getProjectReferenceFromToolInput(
   tool: Pick<ToolUseBlock, 'name' | 'input'>,
-): VmProjectReference | null {
+): ProjectReference | null {
   if (!COPY_FILE_TOOL_NAMES.has(tool.name.toLowerCase())) return null;
   const input = tool.input;
-  if (input.location !== 'vm') return null;
+  if (input.location !== 'project') return null;
   const project = typeof input.project === 'string' ? input.project.trim() : '';
   const projectId =
     typeof input.projectId === 'string'
@@ -100,27 +100,27 @@ function getVmProjectReferenceFromToolInput(
   };
 }
 
-export function collectVmProjectReferencesFromPreviewTabs(
+export function collectProjectReferencesFromPreviewTabs(
   tabs: readonly PreviewTab[],
-): VmProjectReference[] {
+): ProjectReference[] {
   return tabs.flatMap((tab) => {
     const target = tab.target;
-    const project = target.kind === 'file' && target.source === 'vm'
+    const project = target.kind === 'file' && target.source === 'project'
       ? target.project?.trim()
       : '';
     return project ? [{ project, source: 'preview' as const }] : [];
   });
 }
 
-export function collectVmProjectReferencesFromMessages(
+export function collectProjectReferencesFromMessages(
   messages: readonly Message[],
-): VmProjectReference[] {
-  const references: VmProjectReference[] = [];
+): ProjectReference[] {
+  const references: ProjectReference[] = [];
   for (const message of messages) {
     if (!Array.isArray(message.content)) continue;
     for (const block of message.content) {
       if (block.type !== 'tool_use') continue;
-      const reference = getVmProjectReferenceFromToolInput(block);
+      const reference = getProjectReferenceFromToolInput(block);
       if (reference) references.push(reference);
     }
   }
@@ -137,7 +137,7 @@ export function formatCopyFilePath<
   if (!path) return '';
 
   const projectName = target.project?.trim();
-  if (target.source !== 'vm' || !projectName) return path;
+  if (target.source !== 'project' || !projectName) return path;
 
   const mentionSlugMap = options.mentionSlugMap;
   if (mentionSlugMap) {

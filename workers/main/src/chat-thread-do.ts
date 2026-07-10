@@ -47,7 +47,6 @@ import type { WorkspaceCronDO } from "./workspace-cron";
 import type { WorkerLogsDO } from "./worker-logs-do";
 import { WorkspaceFilesystemClient, type WorkspaceFilesystemEnv } from "./workspace-filesystem-do";
 import { prewarmWorkspaceBuildSandboxes } from "./project-build-service";
-import { type ProjectRuntimeServiceVmEnv } from "./project-runtime-service-vm";
 import { formatAttributedUserMessage } from './chat-author-attribution';
 import { injectFileSafetyMessage } from './file-safety';
 import { applyMentionContext } from './mention-context';
@@ -176,7 +175,6 @@ export { prepareCodeModeUserCode } from "./code-mode-runner";
 // (`from "./chat-thread-do"`) keep working for external callers.
 import {
   CodeModeToolsBinding,
-  BASH_TOOL,
   CODE_MODE_COMPATIBILITY_DATE,
   CODE_MODE_DEFAULT_MAX_OUTPUT_CHARACTERS,
   CODE_MODE_DEFAULT_TIMEOUT_MS,
@@ -248,7 +246,7 @@ export type PreviewTarget =
     }
   | {
       kind: "file";
-      source: "workspace" | "project" | "upload" | "output" | "vm";
+      source: "workspace" | "project" | "upload" | "output";
       workspaceId: string;
       path: string;
       project?: string;
@@ -529,7 +527,7 @@ export interface CloudflareEmailSender {
   }): Promise<{ messageId?: string }>;
 }
 
-export interface ChatEnv extends WorkspaceFilesystemEnv, ProjectRuntimeServiceVmEnv {
+export interface ChatEnv extends WorkspaceFilesystemEnv {
   // Main app static assets. Notebook deploys read the pre-built renderer SPA
   // from /notebook-renderer/ to synthesize published-notebook workers.
   ASSETS?: Fetcher;
@@ -948,8 +946,8 @@ const JS_EXEC_ONLY_TOOL_INVENTORY = (() => {
 // is fetched only when the model actually writes code, instead of sitting in
 // every turn's prompt prefix.
 const JS_EXEC_DESCRIPTION =
-  "Run JavaScript or TypeScript (types are stripped) in a Worker-style sandbox with every workspace tool on the global `tools` object plus runtime bindings (`env.CONNECTIONS`, `env.AI`, `env.CAMELAI`, `env.WORKSPACE`, `env.PROJECTS`, `vm.exec`). The final expression is returned and console output is captured. " +
-  "Before writing non-trivial code, run `await tools.help()` once — it returns the full usage guide (file locations, project VMs, connections, hosted helpers) plus the tool catalog by category. " +
+  "Run JavaScript or TypeScript (types are stripped) in a Worker-style sandbox with every workspace tool on the global `tools` object plus runtime bindings (`env.CONNECTIONS`, `env.AI`, `env.CAMELAI`, `env.WORKSPACE`, `env.PROJECTS`). The final expression is returned and console output is captured. " +
+  "Before writing non-trivial code, run `await tools.help()` once — it returns the full usage guide (file locations, projects, connections, hosted helpers) plus the tool catalog by category. " +
   "NEVER guess a tool name: `await tools.search(\"<intent + key nouns>\")`, then `await tools.describe(items[0].name)`, then invoke as the result's `call` field shows (kind \"tool\" runs as `await tools.<name>(args)`; kind \"runtime\" results are sandbox globals, never on `tools`). " +
   "Every `tools.<name>(args)` call resolves to `{ ok: true, data }` or `{ ok: false, error: { message } }` — branch on `result.ok` instead of try/catch; failed calls do not throw, so you can describe the tool and retry in the same run. " +
   `Tools reachable ONLY here (not in your tool list) — ${JS_EXEC_ONLY_TOOL_INVENTORY}. ` +
@@ -5110,8 +5108,7 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
         source !== "workspace" &&
         source !== "project" &&
         source !== "upload" &&
-        source !== "output" &&
-        source !== "vm"
+        source !== "output"
       ) {
         return null;
       }
@@ -5123,7 +5120,7 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
       if (!workspaceId || !path || path.includes("..")) {
         return null;
       }
-      const requiresProject = source === "project" || source === "vm";
+      const requiresProject = source === "project";
       const project =
         requiresProject && typeof target.project === "string"
           ? target.project.trim()
@@ -7903,7 +7900,7 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
     return [{ type: "text", text: this.extractToolText(result) }];
   }
 
-  // Executor-style tool surface: the model sees the core file/bash/js_exec/subagent
+  // Executor-style tool surface: the model sees the core file/js_exec/subagent
   // tools plus the app/project-lifecycle passthrough tools, and reaches everything
   // else by writing code in js_exec (tools.search / tools.describe / tools.<name>).
   private createPiToolDefinitions(
@@ -7956,15 +7953,6 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
         description: `${PI_CONTAINER_TOOL_DEFINITIONS.ls.description} Also supports bundled skill directories.`,
         parameters: PI_CONTAINER_TOOL_DEFINITIONS.ls.parameters,
         execute: async (_id, params) => call("ls", params as Record<string, unknown>),
-      },
-      {
-        name: "bash",
-        label: "bash",
-        description:
-          "Run a bash command in a legacy project VM only. DO-backed projects reject this; use project file tools plus build_project, deploy_project, and add_dependency instead. Requires the unique workspace project name and a concise description. Commands run from /workspace by default; pass cwd only for subdirectories in that checkout. Use js_exec when orchestrating several tool calls in JavaScript.",
-        parameters: BASH_TOOL.parameters,
-        execute: async (_id, params) => call("bash", params as Record<string, unknown>),
-        executionMode: "sequential",
       },
       {
         name: "js_exec",
@@ -8322,21 +8310,6 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
     status: string,
   ): Record<string, unknown> {
     const normalizedArgs = args ?? {};
-    if (toolName.toLowerCase() === "bash") {
-      return {
-        id: toolCallId,
-        type: "commandExecution",
-        command: typeof normalizedArgs.command === "string" ? normalizedArgs.command : "",
-        cwd: normalizedArgs.cwd,
-        status,
-        ...(typeof normalizedArgs.project === "string" && normalizedArgs.project
-          ? { project: normalizedArgs.project }
-          : {}),
-        ...(typeof normalizedArgs.description === "string" && normalizedArgs.description
-          ? { description: normalizedArgs.description }
-          : {}),
-      };
-    }
     return {
       id: toolCallId,
       type: "dynamicToolCall",
@@ -8656,7 +8629,7 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
       const args = this.recallPiToolArgs(toolCallId, this.piEventArgs(eventWithArgs.args));
       const isError = event.isError === true;
       const status = isError ? "failed" : "completed";
-      let item: Record<string, unknown> = {
+      const item: Record<string, unknown> = {
         id: toolCallId,
         type: "dynamicToolCall",
         tool: toolName,
@@ -8668,12 +8641,6 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
       const contentItems = this.piRuntimeContentItems(event.result);
       if (contentItems.length > 0) {
         item.contentItems = contentItems;
-      }
-      if (toolName.toLowerCase() === "bash") {
-        item = this.piRuntimeToolItem(toolCallId, toolName, args, status);
-        item.isError = isError;
-        item.aggregatedOutput = this.piToolResultText(event.result);
-        item.result = event.result;
       }
       this.publishPiToolActivity(
         toolCallId,

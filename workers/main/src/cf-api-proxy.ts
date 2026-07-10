@@ -8,13 +8,11 @@
 import { waitUntil } from "cloudflare:workers";
 import { createSignedToken } from "./signed-tokens.js";
 import {
-  validateProjectRuntimeProxy,
   validateSandboxProxy,
 } from "./sandbox-auth.js";
 import type { OrgDO } from "./auth.js";
 import type { WorkspaceDO } from "./workspace.js";
 import { getBillingPlanLimits } from "../../../src/lib/billing-plans.js";
-import { workspaceIdFromGlobalProjectId } from "./project-vm-protocol.js";
 import type { WorkspaceFilesystemDO } from "./workspace-filesystem-do.js";
 import {
   selfhostWorkerKey,
@@ -1963,68 +1961,16 @@ export async function proxyCloudflareApi(
         orgSlug,
       });
     } else {
-      const projectProxyAuth = validateProjectRuntimeProxy(request, env);
-      if (projectProxyAuth.valid) {
-        projectId = projectProxyAuth.projectId;
-        workspaceId = workspaceIdFromGlobalProjectId(projectId) ?? "";
-        if (!workspaceId) {
-          return cfApiError(
-            10003,
-            "Authentication error: Invalid project id",
-            401,
-          );
-        }
-        const workspaceStub = env.WORKSPACE.get(
-          env.WORKSPACE.idFromName(workspaceId),
-        ) as DurableObjectStub<WorkspaceDO>;
-        const workspaceFsStub = env.WORKSPACE_FS.get(
-          env.WORKSPACE_FS.idFromName(workspaceId),
-        ) as DurableObjectStub<WorkspaceFilesystemDO>;
-        const [workspaceInfo, project] = await Promise.all([
-          workspaceStub.getInfo(),
-          workspaceFsStub.getProject(projectId),
-        ]);
-        if (!workspaceInfo || !project) {
-          return cfApiError(
-            10003,
-            "Authentication error: Project not found",
-            401,
-          );
-        }
-        orgId = workspaceInfo.org_id;
-        const orgStub = env.ORG.get(
-          env.ORG.idFromName(orgId),
-        ) as DurableObjectStub<OrgDO>;
-        orgSlug = (await orgStub.getSlug()) ?? undefined;
-        if (!orgSlug) {
-          console.warn("[cf-api-proxy] project proxy: org has no slug", {
-            orgId,
-            projectId,
-          });
-          return cfApiError(
-            10003,
-            "Authentication error: Org has no slug",
-            401,
-          );
-        }
-        console.log("[cf-api-proxy] authenticated via project runtime proxy", {
-          orgId,
-          workspaceId,
-          orgSlug,
-          projectId,
-        });
-      } else {
-        console.warn("[cf-api-proxy] missing trusted deploy proxy identity", {
-          method: request.method,
-          path: url.pathname,
-          hasAuthorizationHeader: !!request.headers.get("Authorization"),
-        });
-        return cfApiError(
-          10001,
-          "Authentication error: Trusted deploy proxy identity required",
-          401,
-        );
-      }
+      console.warn("[cf-api-proxy] missing trusted deploy proxy identity", {
+        method: request.method,
+        path: url.pathname,
+        hasAuthorizationHeader: !!request.headers.get("Authorization"),
+      });
+      return cfApiError(
+        10001,
+        "Authentication error: Trusted deploy proxy identity required",
+        401,
+      );
     }
   }
 

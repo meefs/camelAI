@@ -31,13 +31,7 @@
 		}
 	],
 	"send_email": [{ "name": "EMAIL" }],
-	"services": [
-		{
-			"binding": "PROJECT_RUNTIME_HOST",
-			"service": "chiridion-app-test",
-			"entrypoint": "EvalProjectRuntimeService"
-		}
-	],
+	"services": [],
 	"vars": {
 		"AI_VIRTUAL_MODEL": "dynamic/auto",
 		"CF_ACCOUNT_ID": "85bbd288051330fb51ee1c86031a299b",

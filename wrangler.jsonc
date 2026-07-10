@@ -159,13 +159,7 @@
 			"service": "chiridion-dispatcher-local",
 		}
 	],
-	"vpc_services": [
-		{
-			"binding": "PROJECT_RUNTIME_HOST",
-			"service_id": "019e866e-90ab-72f2-b1bf-b044653ff154",
-			"remote": true
-		},
-	],
+	"vpc_services": [],
 	"durable_objects": {
 		"bindings": [
 			{ "name": "CHAT_THREAD", "class_name": "ChatThreadDO" },
@@ -235,12 +229,7 @@
 				{ "pattern": "camelai.dev/*", "zone_name": "camelai.dev" },
 				{ "pattern": "www.camelai.dev/*", "zone_name": "camelai.dev" }
 			],
-			"vpc_services": [
-				{
-					"binding": "PROJECT_RUNTIME_HOST",
-					"service_id": "019e8a87-d4d8-7711-a627-91eeb22040a6"
-				}
-			],
+			"vpc_services": [],
 			"vars": {
 				"AI_VIRTUAL_MODEL": "google/gemini-3-flash-preview",
 				"R2_BUCKET_NAME": "chiridion-sandbox",
@@ -251,7 +240,6 @@
 				"CF_DISPATCH_NAMESPACE": "chiridion-platform",
 				"CF_WORKER_NAME": "chiridion-app",
 				"TAIL_WORKER_NAME": "chiridion-user-logs-tail",
-				"PROJECT_RUNTIME_DOCKER_PROXY_BASE_URL": "http://host.docker.internal:8089",
 				"WORKER_BASE_URL": "https://camelai.dev",
 				"CF_GATEWAY_NAME": "chiridion",
 				"BEDROCK_REGION": "us-west-2",
@@ -375,7 +363,6 @@
 				"CF_DISPATCH_NAMESPACE": "chiridion-platform-staging",
 				"CF_WORKER_NAME": "chiridion-app-staging",
 				"TAIL_WORKER_NAME": "chiridion-user-logs-tail-staging",
-				"PROJECT_RUNTIME_DOCKER_PROXY_BASE_URL": "http://host.docker.internal:8089",
 				"WORKER_BASE_URL": "https://staging.camelai.dev",
 				"CF_GATEWAY_NAME": "chiridion",
 				"BEDROCK_REGION": "us-west-2",
@@ -502,7 +489,6 @@
 				"CF_DISPATCH_NAMESPACE": "chiridion-platform-dev-miguel",
 				"CF_WORKER_NAME": "chiridion-app-dev-miguel",
 				"TAIL_WORKER_NAME": "chiridion-user-logs-tail-dev-miguel",
-				"PROJECT_RUNTIME_DOCKER_PROXY_BASE_URL": "http://host.docker.internal:8089",
 				"WORKER_BASE_URL": "https://dev-miguel.camelai.dev",
 				"CF_GATEWAY_NAME": "chiridion",
 				"BEDROCK_REGION": "us-west-2",
@@ -630,7 +616,6 @@
 				"CF_DISPATCH_NAMESPACE": "chiridion-platform-dev-illiana",
 				"CF_WORKER_NAME": "chiridion-app-dev-illiana",
 				"TAIL_WORKER_NAME": "chiridion-user-logs-tail-dev-illiana",
-				"PROJECT_RUNTIME_DOCKER_PROXY_BASE_URL": "http://host.docker.internal:8089",
 				"WORKER_BASE_URL": "https://dev-illiana.camelai.dev",
 				"CF_GATEWAY_NAME": "chiridion",
 				"BEDROCK_REGION": "us-west-2",

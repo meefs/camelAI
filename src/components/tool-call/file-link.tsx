@@ -20,8 +20,6 @@ function getPopoverPreviewDescriptor(
   workspaceId: string,
   target: FilePreviewLinkTarget,
 ) {
-  if (target.source === 'vm') return null;
-
   return {
     workspaceId,
     source: target.source,
@@ -34,7 +32,7 @@ function buildPreviewTarget(
   workspaceId: string,
   target: FilePreviewLinkTarget,
 ): PreviewTarget | null {
-  if ((target.source === 'project' || target.source === 'vm') && !target.project) return null;
+  if (target.source === 'project' && !target.project) return null;
   return {
     kind: 'file',
     source: target.source,

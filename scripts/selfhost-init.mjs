@@ -8,7 +8,6 @@ import {
   defaultProjectName,
   envFile,
   repoRoot,
-  runtimeServiceDir,
   writeEnvValue,
 } from "./selfhost-common.mjs";
 
@@ -20,7 +19,6 @@ if (existsSync(envFile) && !force) {
   process.exit(1);
 }
 
-const runtimeDir = runtimeServiceDir();
 const values = {
   COMPOSE_PROJECT_NAME: defaultProjectName,
   SELFHOST_BIND_ADDRESS: "127.0.0.1",
@@ -29,16 +27,6 @@ const values = {
   SELFHOST_INTERNAL_APP_URL: "http://app:3001",
   LOCAL_APP_VANITY_DOMAIN: "",
   LOCAL_APP_IFRAME_DOMAIN: "",
-  PROJECT_RUNTIME_SERVICE_DIR: runtimeDir,
-  PROJECT_RUNTIME_HOST_STATE_DIR: path.join(repoRoot, ".selfhost", "project-runtime"),
-  PROJECT_RUNTIME_IMAGE: "project-runtime-basic:latest",
-  PROJECT_RUNTIME_IMAGE_DOCKERFILE: "Dockerfile.sandbox",
-  PROJECT_RUNTIME_ENABLE_PROJECT_QUOTA: "0",
-  PROJECT_RUNTIME_CONTAINER_USER: "claude",
-  PROJECT_RUNTIME_CONTAINER_HOME: "/workspace",
-  PROJECT_RUNTIME_CONTAINER_WORKDIR: "/workspace",
-  PROJECT_RUNTIME_CONTAINER_NETWORK_MODE: `${defaultProjectName}_default`,
-  PROJECT_RUNTIME_DOCKER_PROXY_BASE_URL: "http://project-runtime:4411",
   CONTAINER_RUNTIME: "runc",
   CLOUDFLARE_ACCESS_TEAM_DOMAIN: "",
   CLOUDFLARE_ACCESS_AUD: "",
@@ -69,7 +57,6 @@ const values = {
   SELFHOST_AI_AWS_REGION: "us-east-1",
   TOKEN_SIGNING_SECRET: secret(),
   INTEGRATION_SECRET_KEY: secret(),
-  PROJECT_RUNTIME_PROXY_SECRET: secret(),
   LOCAL_ARTIFACTS_SECRET: secret(),
 };
 

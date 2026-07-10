@@ -159,7 +159,7 @@ export type PreviewTarget =
     }
   | {
       kind: "file";
-      source: "workspace" | "project" | "upload" | "output" | "vm";
+      source: "workspace" | "project" | "upload" | "output";
       workspaceId: string;
       path: string;
       project?: string;

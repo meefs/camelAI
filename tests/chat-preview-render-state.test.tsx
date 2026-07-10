@@ -17,10 +17,10 @@ function renderFilePreviewState(target: Extract<PreviewTarget, { kind: 'file' }>
 }
 
 describe('useChatPreviewRenderState file preview routes', () => {
-  it('builds project VM file routes', () => {
+  it('builds project file routes', () => {
     const { result } = renderFilePreviewState({
       kind: 'file',
-      source: 'vm',
+      source: 'project',
       workspaceId: 'thread-ws',
       project: 'demo-app',
       path: '/src/App.tsx',

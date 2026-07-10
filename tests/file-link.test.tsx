@@ -212,7 +212,7 @@ describe('FileLink', () => {
       });
     });
 
-    it('opens VM targets with their project metadata', () => {
+    it('opens project targets with their project metadata', () => {
       mockUseAuthData.mockReturnValue({
         currentWorkspace: { id: 'other-ws' },
       });
@@ -229,7 +229,7 @@ describe('FileLink', () => {
           <FileLink
             path="/src/App.tsx"
             previewTarget={{
-              source: 'vm',
+              source: 'project',
               project: 'demo-app',
               path: '/src/App.tsx',
               filename: 'App.tsx',
@@ -244,7 +244,7 @@ describe('FileLink', () => {
 
       expect(openPreviewTarget).toHaveBeenCalledWith({
         kind: 'file',
-        source: 'vm',
+        source: 'project',
         workspaceId: 'thread-ws',
         project: 'demo-app',
         path: '/src/App.tsx',

@@ -22,12 +22,7 @@
   "tail_consumers": [{ "service": "chiridion-user-logs-tail-staging" }],
   "rules": [{ "type": "ESModule", "globs": ["**/*.js", "**/*.mjs"] }],
   "routes": [{ "pattern": "staging.camelai.dev", "custom_domain": true }],
-  "vpc_services": [
-    {
-      "binding": "PROJECT_RUNTIME_HOST",
-      "service_id": "019e866e-90ab-72f2-b1bf-b044653ff154",
-    },
-  ],
+  "vpc_services": [],
   "vars": {
     "AI_VIRTUAL_MODEL": "dynamic/auto",
     // Static-IP database egress relay (docs/db-egress-relay.md). SOCKS + Access
@@ -43,7 +38,6 @@
     "ARTIFACTS_NAMESPACE": "staging",
     "CF_GATEWAY_NAME": "chiridion",
     "CF_DISPATCH_NAMESPACE": "chiridion-platform-staging",
-    "PROJECT_RUNTIME_DOCKER_PROXY_BASE_URL": "http://host.docker.internal:8089",
     "WORKER_BASE_URL": "https://staging.camelai.dev",
     "EMAIL_FROM_ADDRESS": "agent-staging@camelai.dev",
     "WORKSPACE_EMAIL_DOMAIN": "camelai.dev",

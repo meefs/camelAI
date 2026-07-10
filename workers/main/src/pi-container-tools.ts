@@ -34,14 +34,13 @@ const PI_FILE_LOCATION_PARAMETERS = {
   location: Type.Union([
     Type.Literal("workspace"),
     Type.Literal("project"),
-    Type.Literal("vm"),
     Type.Literal("r2"),
   ], {
     description:
-      "Required. Use 'workspace' for loose durable workspace files, 'project' for DO-backed project source files, 'vm' for a named legacy project VM checkout, or 'r2' for workspace-scoped R2 paths (uploads/..., outputs/..., tmp/...).",
+      "Required. Use 'workspace' for loose durable workspace files, 'project' for DO-backed project source files, or 'r2' for workspace-scoped R2 paths (uploads/..., outputs/..., tmp/...).",
   }),
   project: Type.Optional(Type.String({
-    description: "Unique workspace project name when location is 'project' or 'vm'.",
+    description: "Unique workspace project name when location is 'project'.",
   })),
 };
 
@@ -85,8 +84,6 @@ export const PI_LS_PARAMETERS = Type.Object({
   path: Type.Optional(Type.String({ description: "Directory to list (default: current directory)" })),
   limit: Type.Optional(Type.Number({ description: "Maximum number of entries to return (default: 500)" })),
   cursor: Type.Optional(Type.String({ description: "Continuation cursor for paged R2 listings when location is 'r2'." })),
-  recursive: Type.Optional(Type.Boolean({ description: "Recursively list VM directories when location is 'vm'." })),
-  includeHidden: Type.Optional(Type.Boolean({ description: "Include hidden VM entries when location is 'vm' (default: true)." })),
   ...PI_FILE_LOCATION_PARAMETERS,
 }, { additionalProperties: false });
 
@@ -115,49 +112,49 @@ export const PI_CONTAINER_TOOL_DEFINITIONS = {
     name: "read",
     label: "read",
     description:
-      `Read a file. Required location: use location='workspace' for loose durable workspace files, location='project' plus project for DO-backed project source files, location='vm' plus project for legacy project VM files, or location='r2' for workspace-scoped R2. R2 paths must be uploads/<path> for read-only user uploads, outputs/<path> for user-visible outputs, or tmp/<path> for temporary objects; do not use leading slashes, /mnt paths, /r2 paths, or raw R2 keys. Text output is truncated to ${DEFAULT_MAX_LINES} lines or ${DEFAULT_MAX_BYTES / 1024}KB for workspace/project files. Images are returned as image content when possible.`,
+      `Read a file. Required location: use location='workspace' for loose durable workspace files, location='project' plus project for DO-backed project source files, or location='r2' for workspace-scoped R2. R2 paths must be uploads/<path> for read-only user uploads, outputs/<path> for user-visible outputs, or tmp/<path> for temporary objects; do not use leading slashes, /mnt paths, /r2 paths, or raw R2 keys. Text output is truncated to ${DEFAULT_MAX_LINES} lines or ${DEFAULT_MAX_BYTES / 1024}KB for workspace/project files. Images are returned as image content when possible.`,
     parameters: PI_READ_PARAMETERS,
   },
   write: {
     name: "write",
     label: "write",
     description:
-      "Write content to a required location: use location='workspace' for loose durable workspace files, location='project' plus project for DO-backed project source files, location='vm' plus project for legacy project VM files, or location='r2' for workspace-scoped R2. R2 writable paths are outputs/<path> and tmp/<path>; uploads/<path> is read-only. Do not use leading slashes, /mnt paths, /r2 paths, or raw R2 keys.",
+      "Write content to a required location: use location='workspace' for loose durable workspace files, location='project' plus project for DO-backed project source files, or location='r2' for workspace-scoped R2. R2 writable paths are outputs/<path> and tmp/<path>; uploads/<path> is read-only. Do not use leading slashes, /mnt paths, /r2 paths, or raw R2 keys.",
     parameters: PI_WRITE_PARAMETERS,
   },
   edit: {
     name: "edit",
     label: "edit",
     description:
-      "Edit a single text file at a required location: use location='workspace' for loose durable workspace files, location='project' plus project for DO-backed project source files, location='vm' plus project for legacy project VM files, or location='r2' for workspace-scoped R2. Every edits[].oldText must match a unique, non-overlapping region of the original file.",
+      "Edit a single text file at a required location: use location='workspace' for loose durable workspace files, location='project' plus project for DO-backed project source files, or location='r2' for workspace-scoped R2. Every edits[].oldText must match a unique, non-overlapping region of the original file.",
     parameters: PI_EDIT_PARAMETERS,
   },
   delete: {
     name: "delete",
     label: "delete",
     description:
-      "Delete a file at a required location: use location='workspace' for loose durable workspace files, location='project' plus project for DO-backed project source files, or location='r2' for workspace-scoped R2. For legacy project VM files, use bash/vm_exec with rm so deletion is explicit in the shell command.",
+      "Delete a file at a required location: use location='workspace' for loose durable workspace files, location='project' plus project for DO-backed project source files, or location='r2' for workspace-scoped R2.",
     parameters: PI_DELETE_PARAMETERS,
   },
   ls: {
     name: "ls",
     label: "ls",
     description:
-      "List directory contents at a required location: use location='workspace' for loose durable workspace files, location='project' plus project for DO-backed project source files, location='vm' plus project for legacy project VM files, or location='r2' for workspace-scoped R2. For R2, path must be uploads, outputs, tmp, or a path under one of them with no leading slash. Returns entries sorted alphabetically, with '/' suffix for directories where applicable.",
+      "List directory contents at a required location: use location='workspace' for loose durable workspace files, location='project' plus project for DO-backed project source files, or location='r2' for workspace-scoped R2. For R2, path must be uploads, outputs, tmp, or a path under one of them with no leading slash. Returns entries sorted alphabetically, with '/' suffix for directories where applicable.",
     parameters: PI_LS_PARAMETERS,
   },
   grep: {
     name: "grep",
     label: "grep",
     description:
-      "Search file contents at a required location: use location='workspace' for loose durable workspace files, location='project' plus project for DO-backed project source files, or location='vm' plus project for legacy project VM files. R2 search is not supported. Returns matching lines with file paths and line numbers.",
+      "Search file contents at a required location: use location='workspace' for loose durable workspace files, or location='project' plus project for DO-backed project source files. R2 search is not supported. Returns matching lines with file paths and line numbers.",
     parameters: PI_GREP_PARAMETERS,
   },
   find: {
     name: "find",
     label: "find",
     description:
-      "Search files by glob pattern at a required location: use location='workspace' for loose durable workspace files, location='project' plus project for DO-backed project source files, or location='vm' plus project for legacy project VM files. R2 search is not supported. Returns matching file paths relative to the search directory.",
+      "Search files by glob pattern at a required location: use location='workspace' for loose durable workspace files, or location='project' plus project for DO-backed project source files. R2 search is not supported. Returns matching file paths relative to the search directory.",
     parameters: PI_FIND_PARAMETERS,
   },
 } as const;
@@ -469,7 +466,7 @@ export class PiContainerTools {
       }
     }
     if (file.isBinary) {
-      return result("[Binary file omitted. Use js_exec with tools.move/vm.exec for binary inspection.]", { isBinary: true, size: file.size ?? 0 });
+      return result("[Binary file omitted. Use js_exec with tools.move for binary inspection.]", { isBinary: true, size: file.size ?? 0 });
     }
 
     const lines = String(file.content ?? "").split("\n");

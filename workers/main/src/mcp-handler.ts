@@ -432,7 +432,7 @@ export class ChiridionMcp extends McpAgent<any, Record<string, unknown>, Record<
 
         let parsedPath = parseFilePreviewPath(path);
         let source: Extract<PreviewTarget, { kind: 'file' }>['source'];
-        if (location === 'workspace' || location === 'project' || location === 'vm') {
+        if (location === 'workspace' || location === 'project') {
           parsedPath = parseFilePreviewPath(path.startsWith('/') ? path : `/${path}`);
           if (!parsedPath || parsedPath.source !== 'workspace') {
             return this.textResponse({
@@ -464,14 +464,14 @@ export class ChiridionMcp extends McpAgent<any, Record<string, unknown>, Record<
           source,
           workspaceId,
           path: parsedPath.path,
-          project: source === 'project' || source === 'vm' ? project?.trim() : undefined,
+          project: source === 'project' ? project?.trim() : undefined,
           filename: parsedPath.filename,
           contentType: typeof content_type === 'string' && content_type.trim() ? content_type.trim() : undefined,
         };
-        if ((target.source === 'project' || target.source === 'vm') && !target.project) {
+        if (target.source === 'project' && !target.project) {
           return this.textResponse({
             success: false,
-            error: `project is required when previewing a ${target.source === 'project' ? 'project' : 'VM'} file`,
+            error: `project is required when previewing a project file`,
           });
         }
 
@@ -480,7 +480,7 @@ export class ChiridionMcp extends McpAgent<any, Record<string, unknown>, Record<
 
         const normalizedPath = target.path.replace(/^\/+/, '');
         const encodedPath = this.encodePathSegments(normalizedPath);
-        const route = target.source === 'project' || target.source === 'vm'
+        const route = target.source === 'project'
           ? `projects/${encodeURIComponent(target.project ?? '')}/fs/content/${encodedPath}`
           : target.source === 'workspace'
           ? `fs/content/${encodedPath}`
