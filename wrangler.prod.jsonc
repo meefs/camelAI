@@ -76,10 +76,11 @@
     {
       // Unified analysis container (notebooks + shell + DuckDB) — successor to
       // the warehouse tier. Largest instance type (4 vCPU / 12 GiB / 20 GB disk)
-      // for data-intensive DuckDB. The account-wide container budget is shared
-      // across all environments (~1,500 vCPU default), so cap this tier well
-      // under it (100 × 4 = 400 vCPU, ~27%) — still 100 concurrent containers,
-      // with headroom so it can't starve the eval/staging/other sandboxes.
+      // for data-intensive DuckDB. The account-wide vCPU quota is shared across
+      // all environments and application creation is rejected if the requested
+      // max_instances would exceed it (100 here failed on 2026-07-10 while the
+      // legacy warehousesandbox app still holds 100 × 4 vCPU). 25 × 4 = 100 vCPU
+      // fits today; raise after retiring the legacy warehouse/threadsandbox apps.
       // Ceiling is demand-driven, not reserved; scale-to-zero when idle.
       "class_name": "AnalysisSandbox",
       "image": "./workers/main/analysis-sandbox.Dockerfile",
