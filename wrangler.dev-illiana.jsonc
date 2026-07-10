@@ -37,7 +37,6 @@
 				"EXT_API_CLIENT_ID": "set-me",
 				"CF_WORKER_NAME": "chiridion-app-dev-illiana",
 			"TAIL_WORKER_NAME": "chiridion-user-logs-tail-dev-illiana",
-			"SANDBOX_TRANSPORT": "rpc"
 		},
 	"assets": {
 		"binding": "ASSETS",

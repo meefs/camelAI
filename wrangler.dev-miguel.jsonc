@@ -46,7 +46,6 @@
 				"EXT_API_CLIENT_ID": "set-me",
 				"CF_WORKER_NAME": "chiridion-app-dev-miguel",
 			"TAIL_WORKER_NAME": "chiridion-user-logs-tail-dev-miguel",
-			"SANDBOX_TRANSPORT": "rpc"
 		},
 	"assets": {
 		"binding": "ASSETS",

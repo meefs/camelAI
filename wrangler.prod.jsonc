@@ -61,7 +61,6 @@
     "CF_ZONE_ID": "94f647d6b1658a287820a83d09492c73",
     "CF_CUSTOM_HOSTNAME_FALLBACK": "custom-domains.camelai.app",
     "CF_DCV_DELEGATION_UUID": "1b7fee6764db9b60",
-    "SANDBOX_TRANSPORT": "rpc",
   },
   "assets": {
     "binding": "ASSETS",
