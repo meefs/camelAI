@@ -16,18 +16,18 @@ describe('buildFilePreviewLinkTarget', () => {
     });
   });
 
-  it('requires a project for VM file targets', () => {
+  it('requires a project for project file targets', () => {
     expect(buildFilePreviewLinkTarget({
-      location: 'vm',
+      location: 'project',
       path: 'src/App.tsx',
     })).toBeNull();
 
     expect(buildFilePreviewLinkTarget({
-      location: 'vm',
+      location: 'project',
       project: 'demo-app',
       path: 'src/App.tsx',
     })).toEqual({
-      source: 'vm',
+      source: 'project',
       path: '/src/App.tsx',
       filename: 'App.tsx',
       project: 'demo-app',
@@ -85,14 +85,14 @@ describe('parseFilePreviewTargetFromToolResultText', () => {
       success: true,
       target: {
         kind: 'file',
-        source: 'vm',
+        source: 'project',
         project: 'demo-app',
         path: '/workspace/src/App.tsx',
         filename: 'App.tsx',
         contentType: 'text/typescript',
       },
     }))).toEqual({
-      source: 'vm',
+      source: 'project',
       project: 'demo-app',
       path: '/src/App.tsx',
       filename: 'App.tsx',
@@ -105,7 +105,7 @@ describe('parseFilePreviewTargetFromToolResultText', () => {
     expect(parseFilePreviewTargetFromToolResultText(JSON.stringify({
       target: {
         kind: 'file',
-        source: 'vm',
+        source: 'project',
         path: '/src/App.tsx',
       },
     }))).toBeNull();

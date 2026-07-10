@@ -573,36 +573,16 @@ export function legacyDeployPathEvidence(
 ): string[] {
   const evidence = collectRuntimeEvidence(events);
   const failures: string[] = [];
-  const legacyTools = ["vm_exec", "clone_project"].filter((tool) =>
-    usedTool(events, tool),
-  );
-  if (legacyTools.length) {
-    failures.push(`used legacy project tool(s): ${legacyTools.join(", ")}`);
-  }
 
-  const topLevelDeployCommands = evidence.commands.filter((command) =>
-    /\b(create-worker|bun\s+run\s+deploy|wrangler\s+deploy|wrangler\s+init|npm\s+create\s+cloudflare|pnpm\s+create\s+cloudflare|yarn\s+create\s+cloudflare)\b/i
-      .test(command),
+  // DO-backed projects must build/deploy through the platform tools, never by
+  // shelling out to create-worker / wrangler / create-cloudflare inside js_exec.
+  const legacyDeployPattern =
+    /\b(create-worker|bun\s+run\s+deploy|wrangler\s+deploy|wrangler\s+init|npm\s+create\s+cloudflare|pnpm\s+create\s+cloudflare|yarn\s+create\s+cloudflare)\b/i;
+  const jsExecLegacyDeploy = evidence.jsExecCodeBlocks.some((code) =>
+    legacyDeployPattern.test(stripComments(code)),
   );
-  if (topLevelDeployCommands.length) {
-    failures.push(
-      `used legacy deploy command(s): ${topLevelDeployCommands.join(", ")}`,
-    );
-  }
-
-  const jsExecLegacyDeploy = evidence.jsExecCodeBlocks.some((code) => {
-    const stripped = stripComments(code);
-    const callsShell =
-      jsExecCodeMentionsTool(stripped, "bash") ||
-      jsExecCodeMentionsTool(stripped, "vm_exec") ||
-      /\bvm\s*\.\s*exec\s*\(/i.test(stripped) ||
-      /\bVM\s*\.\s*exec\s*\(/.test(stripped);
-    return callsShell &&
-      /\b(create-worker|bun\s+run\s+deploy|wrangler\s+deploy|wrangler\s+init|npm\s+create\s+cloudflare|pnpm\s+create\s+cloudflare|yarn\s+create\s+cloudflare)\b/i
-        .test(stripped);
-  });
   if (jsExecLegacyDeploy) {
-    failures.push("used shell/vm legacy scaffold or deploy command inside js_exec");
+    failures.push("used a legacy scaffold or deploy command inside js_exec");
   }
 
   return failures;

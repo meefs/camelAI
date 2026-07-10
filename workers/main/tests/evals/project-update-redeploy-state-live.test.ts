@@ -48,7 +48,6 @@ type ProjectUpdateRedeployStateEvalEnv = TestEnv & EvalModelEnv & EvalSignalEnv 
   APP_DB?: D1Database;
   CHAT_THREAD: DurableObjectNamespace<ChatThreadDO>;
   WORKSPACE_FS: DurableObjectNamespace<WorkspaceFilesystemDO>;
-  PROJECT_RUNTIME_HOST: Fetcher;
   R2_BUCKET: R2Bucket;
   RUN_AGENT_EVALS?: string;
   EVAL_REAL_DEPLOY?: string;

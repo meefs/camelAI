@@ -16,7 +16,7 @@ const {
   workspaceReadFileStreamMock,
   workspaceListFilesMock,
   workspaceGetProjectByNameMock,
-  vmReadFileStreamMock,
+  projectReadFileStreamMock,
 } = vi.hoisted(() => ({
   getEnvMock: vi.fn(),
   requireWorkspaceAccessMock: vi.fn(),
@@ -24,7 +24,7 @@ const {
   workspaceReadFileStreamMock: vi.fn(),
   workspaceListFilesMock: vi.fn(),
   workspaceGetProjectByNameMock: vi.fn(),
-  vmReadFileStreamMock: vi.fn(),
+  projectReadFileStreamMock: vi.fn(),
 }));
 
 vi.mock('@/lib/cloudflare.server', () => ({
@@ -45,11 +45,8 @@ vi.mock('../workers/main/src/workspace-filesystem-do', () => ({
     listFiles = workspaceListFilesMock;
     getProjectByName = workspaceGetProjectByNameMock;
   },
-}));
-
-vi.mock('../workers/main/src/project-runtime-service-vm', () => ({
-  ProjectRuntimeServiceVmBridge: class ProjectRuntimeServiceVmBridge {
-    readFileStream = vmReadFileStreamMock;
+  ProjectFilesystemClient: class ProjectFilesystemClient {
+    readFileStream = projectReadFileStreamMock;
   },
 }));
 
@@ -386,16 +383,13 @@ describe('text preview route integration', () => {
     workspaceGetProjectByNameMock.mockResolvedValue({
       id: 'project-1',
       name: 'app',
-      backend: 'vm',
+      backend: 'do-r2',
     });
-    vmReadFileStreamMock.mockResolvedValue({
-      response: new Response('vm text', {
-        headers: {
-          'content-type': 'text/plain; charset=utf-8',
-          'content-length': '7',
-        },
-      }),
-      path: '/workspace/app/main.ts',
+    projectReadFileStreamMock.mockResolvedValue({
+      success: true,
+      stream: streamFromText('project text'),
+      size: 12,
+      mimeType: 'text/plain; charset=utf-8',
     });
     r2GetMock.mockResolvedValue({
       body: streamFromText('r2 text'),
@@ -431,16 +425,36 @@ describe('text preview route integration', () => {
     );
   });
 
-  it('requires a project for VM previews', async () => {
+  it('requires a project for project previews', async () => {
     await expectJsonError(
       loadTextPreviewResponse({
-        request: textPreviewRequest('source=vm&path=/workspace/app/main.ts'),
+        request: textPreviewRequest('source=project&path=/app/main.ts'),
         context: {},
         workspaceId: 'ws_123',
       }),
       400
     );
-    expect(vmReadFileStreamMock).not.toHaveBeenCalled();
+    expect(projectReadFileStreamMock).not.toHaveBeenCalled();
+  });
+
+  it('returns an archived error for legacy VM-backed projects', async () => {
+    workspaceGetProjectByNameMock.mockResolvedValue({
+      id: 'project-1',
+      name: 'app',
+      backend: 'vm',
+    });
+    const response = await expectJsonError(
+      loadTextPreviewResponse({
+        request: textPreviewRequest('source=project&project=app&path=/app/main.ts'),
+        context: {},
+        workspaceId: 'ws_123',
+      }),
+      404
+    );
+    await expect(response.json()).resolves.toEqual({
+      error: 'This legacy project was archived when camelAI retired project VMs.',
+    });
+    expect(projectReadFileStreamMock).not.toHaveBeenCalled();
   });
 
   it('loads workspace streams through WorkspaceFilesystemClient', async () => {
@@ -489,32 +503,28 @@ describe('text preview route integration', () => {
     expect(workspaceReadFileStreamMock).not.toHaveBeenCalled();
   });
 
-  it('loads VM streams when project is provided', async () => {
+  it('loads DO-backed project streams when project is provided', async () => {
     const data = await loadTextPreviewResponse({
       request: textPreviewRequest(
-        'source=vm&project=app&path=/workspace/app/main.ts&mode=full'
+        'source=project&project=app&path=/app/main.ts&mode=full'
       ),
       context: {},
       workspaceId: 'ws_123',
     });
 
-    expect(vmReadFileStreamMock).toHaveBeenCalledWith({
-      location: 'vm',
-      project: 'app',
-      path: '/workspace/app/main.ts',
-    });
+    expect(projectReadFileStreamMock).toHaveBeenCalledWith('/app/main.ts');
     expect(data).toMatchObject({
-      text: 'vm text',
+      text: 'project text',
       totalLines: 1,
-      size: 7,
+      size: 12,
     });
   });
 
-  it('rejects escaping VM paths as invalid input', async () => {
+  it('rejects escaping project paths as invalid input', async () => {
     const response = await expectJsonError(
       loadTextPreviewResponse({
         request: textPreviewRequest(
-          `source=vm&project=app&path=${encodeURIComponent('/../etc/passwd')}`
+          `source=project&project=app&path=${encodeURIComponent('/../etc/passwd')}`
         ),
         context: {},
         workspaceId: 'ws_123',
@@ -523,7 +533,7 @@ describe('text preview route integration', () => {
     );
 
     await expect(response.json()).resolves.toEqual({ error: 'Invalid file path' });
-    expect(vmReadFileStreamMock).not.toHaveBeenCalled();
+    expect(projectReadFileStreamMock).not.toHaveBeenCalled();
   });
 
   it('constructs workspace-scoped R2 keys for upload and output previews', async () => {

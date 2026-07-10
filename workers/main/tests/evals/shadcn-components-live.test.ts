@@ -295,7 +295,6 @@ describe("shadcn components agent eval", () => {
         usedAnalysisExec: usedTool(result.events, "analysis_exec"),
         usedBuildProject: usedTool(result.events, "build_project"),
         usedDeployProject: usedTool(result.events, "deploy_project"),
-        usedLegacyVm: usedTool(result.events, "bash") || usedTool(result.events, "vm_exec"),
         legacyFailures: legacyDeployPathEvidence(result.events),
         usedShadcnAddCommand: commandAndCodeEvidence.some(commandOrCodeMentionsShadcnAdd),
         usedBuildOrTypecheckCommand: commandAndCodeEvidence.some(commandOrCodeMentionsBuild),
@@ -355,18 +354,15 @@ describe("shadcn components agent eval", () => {
             passed:
               validatedProject &&
               !runtimeAssertions.usedDeployProject &&
-              !runtimeAssertions.usedLegacyVm &&
               runtimeAssertions.legacyFailures.length === 0,
             reason:
               validatedProject &&
               !runtimeAssertions.usedDeployProject &&
-              !runtimeAssertions.usedLegacyVm &&
               runtimeAssertions.legacyFailures.length === 0
                 ? undefined
                 : [
                     validatedProject ? "" : "no build_project or build/typecheck command evidence",
                     runtimeAssertions.usedDeployProject ? "used deploy_project" : "",
-                    runtimeAssertions.usedLegacyVm ? "used bash/vm_exec" : "",
                     ...runtimeAssertions.legacyFailures,
                   ].filter(Boolean).join("; "),
             details: runtimeAssertions,

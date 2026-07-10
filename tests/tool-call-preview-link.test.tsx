@@ -115,10 +115,10 @@ describe('ToolCall Preview links', () => {
     });
   });
 
-  it('opens read VM file tags with project metadata', () => {
+  it('opens read project file tags with project metadata', () => {
     const openPreviewTarget = vi.fn();
     const tool = makeTool('read', {
-      location: 'vm',
+      location: 'project',
       project: 'demo-app',
       path: '/src/App.tsx',
     });
@@ -139,7 +139,7 @@ describe('ToolCall Preview links', () => {
 
     expect(openPreviewTarget).toHaveBeenCalledWith({
       kind: 'file',
-      source: 'vm',
+      source: 'project',
       workspaceId: 'thread-ws',
       project: 'demo-app',
       path: '/src/App.tsx',
@@ -239,10 +239,10 @@ describe('ToolCall Preview links', () => {
     });
   });
 
-  it('opens set_preview VM file tags with normalized VM paths', () => {
+  it('opens set_preview project file tags with normalized paths', () => {
     const openPreviewTarget = vi.fn();
     const tool = makeTool('set_preview', {
-      location: 'vm',
+      location: 'project',
       project: 'demo-app',
       path: 'index.html',
     });
@@ -263,7 +263,7 @@ describe('ToolCall Preview links', () => {
 
     expect(openPreviewTarget).toHaveBeenCalledWith({
       kind: 'file',
-      source: 'vm',
+      source: 'project',
       workspaceId: 'thread-ws',
       project: 'demo-app',
       path: '/index.html',

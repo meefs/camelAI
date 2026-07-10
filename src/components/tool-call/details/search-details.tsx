@@ -140,7 +140,7 @@ function parseLine(
   line: string,
   options: {
     mode: SearchDetailsProps['mode'];
-    isVmSearch: boolean;
+    isProjectSearch: boolean;
     searchRoot: string;
   },
 ): ParsedLine | null {
@@ -149,7 +149,7 @@ function parseLine(
   if (isSearchNoticeLine(trimmed)) return null;
 
   if (
-    options.isVmSearch &&
+    options.isProjectSearch &&
     options.mode === 'glob' &&
     isVmGlobBareRelativePath(trimmed)
   ) {
@@ -163,7 +163,7 @@ function parseLine(
     };
   }
 
-  if (options.isVmSearch && options.mode === 'grep' && trimmed.includes(':')) {
+  if (options.isProjectSearch && options.mode === 'grep' && trimmed.includes(':')) {
     const grepMatch = parseGrepMatchLine(trimmed);
     if (!grepMatch) return null;
     const resolvedPath = resolveVmSearchResultPath(
@@ -187,7 +187,7 @@ function parseLine(
     base.startsWith('../') ||
     base.includes('/')
   ) {
-    const resolvedPath = options.isVmSearch
+    const resolvedPath = options.isProjectSearch
       ? resolveVmSearchResultPath(base, options.searchRoot)
       : base;
     if (!resolvedPath) return null;
@@ -204,7 +204,8 @@ function parseLine(
 export function SearchDetails({ tool, result, mode }: SearchDetailsProps) {
   const input = tool?.input ?? {};
   const previewContext = useChatPreviewContext();
-  const isVmSearch = input.location === 'vm';
+  const isProjectSearch =
+    input.location === 'project' || input.location === 'vm';
   const pattern = typeof input.pattern === 'string' ? input.pattern : '';
   const path = typeof input.path === 'string' ? input.path : '';
   const outputMode = typeof input.output_mode === 'string' ? input.output_mode : '';
@@ -216,7 +217,7 @@ export function SearchDetails({ tool, result, mode }: SearchDetailsProps) {
   const parsedLines = resultFailed
     ? []
     : fileLines
-        .map(line => parseLine(line, { mode, isVmSearch, searchRoot: path }))
+        .map(line => parseLine(line, { mode, isProjectSearch, searchRoot: path }))
         .filter((entry): entry is ParsedLine => Boolean(entry));
   const copyValue = parsedLines
     .map((entry) => {

@@ -108,9 +108,6 @@ function classifyFailedToolCall(
 ): string | undefined {
   if (output?.includes("Validation failed for tool")) return "validation_failed";
   if (output?.includes("SessionTerminatedError")) return "session_terminated";
-  if (tool === "js_exec" && output?.includes("command is required")) {
-    return "malformed_vm_exec";
-  }
   if (
     tool === "js_exec" &&
     output?.includes("Identifier 'projects' has already been declared")

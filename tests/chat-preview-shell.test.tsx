@@ -106,11 +106,11 @@ afterEach(() => {
 });
 
 describe("PreviewPanelShell", () => {
-  it("coerces project VM file preview targets", () => {
+  it("coerces project file preview targets", () => {
     expect(
       coercePreviewTarget({
         kind: "file",
-        source: "vm",
+        source: "project",
         workspaceId: "workspace_1",
         project: "demo-project",
         path: "/src/App.tsx",
@@ -119,7 +119,7 @@ describe("PreviewPanelShell", () => {
       }),
     ).toEqual({
       kind: "file",
-      source: "vm",
+      source: "project",
       workspaceId: "workspace_1",
       project: "demo-project",
       path: "/src/App.tsx",
@@ -128,11 +128,11 @@ describe("PreviewPanelShell", () => {
     });
   });
 
-  it("rejects VM file preview targets without a project", () => {
+  it("rejects project file preview targets without a project", () => {
     expect(
       coercePreviewTarget({
         kind: "file",
-        source: "vm",
+        source: "project",
         workspaceId: "workspace_1",
         path: "/src/App.tsx",
       }),

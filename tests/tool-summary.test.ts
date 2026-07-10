@@ -384,16 +384,16 @@ describe('getToolSummaryParts file preview metadata', () => {
     expect(summary.path).toBe('/notes.md');
   });
 
-  it('includes VM file targets with the project for read calls', () => {
+  it('includes project file targets with the project for read calls', () => {
     const summary = getToolSummaryParts(
-      makeReadTool({ location: 'vm', project: 'demo-app', path: '/src/App.tsx' }),
+      makeReadTool({ location: 'project', project: 'demo-app', path: '/src/App.tsx' }),
       undefined,
       false,
       'complete',
     );
 
     expect(summary.filePreview).toEqual({
-      source: 'vm',
+      source: 'project',
       project: 'demo-app',
       path: '/src/App.tsx',
       filename: 'App.tsx',
@@ -484,9 +484,9 @@ describe('getToolSummaryParts set-preview MCP tools', () => {
     });
   });
 
-  it('renders unified set_preview VM file targets', () => {
+  it('renders unified set_preview project file targets', () => {
     const tool = makeMcpTool('set_preview', {
-      location: 'vm',
+      location: 'project',
       project: 'demo-app',
       path: 'index.html',
     });
@@ -497,7 +497,7 @@ describe('getToolSummaryParts set-preview MCP tools', () => {
       filename: 'index.html',
       path: 'index.html',
       filePreview: {
-        source: 'vm',
+        source: 'project',
         project: 'demo-app',
         path: '/index.html',
         filename: 'index.html',

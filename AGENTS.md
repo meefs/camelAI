@@ -4,7 +4,7 @@ Keep this file concise and durable. Add details here only when they help future 
 
 ## What This Is
 
-camelAI is an AI coding assistant platform on Cloudflare Workers + Durable Objects with Docker/gVisor sandbox runtimes on Azure VMs. Users chat with persistent coding workspaces, run either Claude SDK or Codex app-server backed threads, and publish generated apps to `*.camelai.app` / environment-specific app hosts.
+camelAI is an AI coding assistant platform on Cloudflare Workers + Durable Objects with Cloudflare sandbox containers for builds/analysis. Users chat with persistent coding workspaces, run either Claude SDK or Codex app-server backed threads, and publish generated apps to `*.camelai.app` / environment-specific app hosts.
 
 ## High-Level Architecture
 
@@ -14,23 +14,23 @@ React Router SSR + browser WS
         v
 Cloudflare main Worker + Durable Objects
         |
-        | VPC service bindings / tunnel
         v
-Azure sandbox host VM (project-runtime-service)
-        |
-        v
-Docker + gVisor project / analysis containers
+Project files in WorkspaceFilesystemDO + R2 (do-r2 backend)
+Builds/deploys + analysis in Cloudflare sandbox containers
 
 Dispatcher Worker routes published user apps.
 R2 stores uploads/assets/previews.
 Cloudflare AI Gateway and BYOK credentials back model access.
 ```
 
-Agent turns run in `ChatThreadDO` (Pi coding agent). File/shell/project
-operations go to the external **project runtime service** on the Azure VM via
-`PROJECT_RUNTIME_HOST`. SQL queries/exports run in the `DbQuerySandbox`
-Cloudflare container (the `DATA_PROXY` binding is served worker-side). There
-is no in-repo Go sandbox-host or data-proxy tree.
+Agent turns run in `ChatThreadDO` (Pi coding agent). Project source files live
+in `WorkspaceFilesystemDO` + R2 (every project is `backend: "do-r2"`); builds,
+deploys, and analysis run in Cloudflare sandbox containers (`ProjectBuildSandbox`,
+`AnalysisSandbox`, `DbQuerySandbox`). The legacy Azure project-runtime-service VM
+and its `PROJECT_RUNTIME_HOST` bridge are gone; the only remaining VM is the
+static-IP database egress relay (`infra/db-egress-relay/`, see `docs/db-egress-relay.md`).
+SQL queries/exports run in `DbQuerySandbox` (the `DATA_PROXY` binding is served
+worker-side). There is no in-repo Go sandbox-host or data-proxy tree.
 
 ## Repository Map
 
@@ -51,7 +51,7 @@ is no in-repo Go sandbox-host or data-proxy tree.
 - `scripts/` - Deploy, eval, self-host, and maintenance scripts. One-off migrations (`migrate-to-workspaces.ts`, `import-legacy-emails.ts`) are break-glass only.
 - `docs/` - Supporting documentation; see `docs/README.md` for the canonical index (many `*-plan.md` / feedback files are historical).
 - `plans/` - Active cross-cutting architecture plans (e.g. OrgDO split, no-VM build/deploy).
-- `infra/` - Azure sandbox-host Terraform for shared VMs; `infra/selfhost/` for self-host cloud templates. See `infra/README.md`.
+- `infra/` - Terraform for the static-IP database egress relay VM (`infra/db-egress-relay/`); `infra/selfhost/` for self-host cloud templates. See `infra/README.md`.
 - `tests/` - Vitest UI / `src/lib` unit tests (`vitest.config.ts`).
 - `workers/main/tests/` - Worker / Durable Object / Miniflare tests + `evals/` (`vitest.workers.config.ts`).
 - `e2e/` - Playwright end-to-end specs.
@@ -244,7 +244,7 @@ curl "https://api.cloudflare.com/client/v4/accounts/$CF_ACCOUNT_ID/analytics_eng
 
 - Browser chat connects to `/ws/{workspace}`.
 - The main worker validates access and routes to `ChatThreadDO`.
-- `ChatThreadDO` runs the Pi coding agent in the Durable Object. File, shell, and container operations are forwarded to the project runtime service on the sandbox host VM.
+- `ChatThreadDO` runs the Pi coding agent in the Durable Object. Project file operations go to `WorkspaceFilesystemDO` + R2 (`do-r2` backend); builds/deploys/analysis run in Cloudflare sandbox containers. There is no shell/`bash` tool — the agent uses the DO-backed file tools plus `build_project`/`deploy_project`/`add_dependency` and `js_exec`.
 - Transport + render history are owned by `@cloudflare/ai-chat` (`ChatThreadDO extends AIChatAgent`). A turn is a resumable UIMessage stream: `onChatMessage` runs the Pi prompt (or the recovery/resume branch) and relays Pi runtime events through the encoder as native UIMessage chunks; `chatRecovery` owns bounded re-drives of an interrupted turn and `chatStreamStallTimeoutMs` bounds a stalled turn (its stream-cancel disposes the hung Pi session and routes the turn into recovery). The client renders from `useAgentChat` (`resume: true`); no bespoke websocket transcript fan-out.
 - Two message stores: **`pi_core_*`** tables are Pi's model-side transcript (authoritative for the agent and repair/eval tooling); the **ai-chat message table** is the browser render history. A high-water-mark backfill (`topUpUiMessagesFromPiCore` / `getUiMessages` RPC) mirrors new pi_core rows into render history. Same-content-same-id invariant: every pi_core row is stamped with the render message id it streams into (`uiMetadata.renderMessageId` — turnId for assistant rows, the persisted skeleton's id for user rows), so the mirror is an idempotent upsert and a whole turn folds into the one live message id. The chat-route loader calls `getUiMessages` for cold load only; live sync rides the stream + CHAT_MESSAGES broadcasts. See `docs/chat-transcript-simplification.md` for the invariants and the derive-on-read roadmap.
 - The Pi event → UIMessage chunk encoder is `src/lib/pi-chunk-encoder.ts`; the UIMessage → legacy `Message` render adapter (both directions) is `src/lib/ui-message-adapter.ts`. Steering appends via RPC + `persistMessages`. The Agent-state payload (`src/lib/chat-agent-state.ts`, shared DO/client) now carries only coarse fields (preview, todos, title, model, terminal error) — streaming and turn duration/completion are derived from the hook + `message-metadata.pi`.
@@ -306,9 +306,9 @@ live in separate files, and the catalog tests fail if any of them drift apart.
 
 ## Project Runtime
 
-- Projects run through the external project runtime service via the `PROJECT_RUNTIME_HOST` VPC binding and `ProjectRuntimeServiceVmBridge`.
-- Project metadata and DO-backed workspace files live in `WorkspaceFilesystemDO`; project files and shell execution live in the runtime service.
-- The old app-owned sandbox-host service and its deploy/dev scripts have been removed, and the VM data-proxy is retired in favor of `DbQuerySandbox`. Do not add new project VM behavior through retired bindings.
+- Projects are DO+R2 backed (`backend: "do-r2"`): metadata and source files live in `WorkspaceFilesystemDO` (`ProjectFilesystemClient` for per-project files), with Cloudflare Artifacts git history. The `WorkspaceProjectBackend` type still carries archived legacy `"vm"` rows (their files are gone; project/file tools return an "archived when camelAI retired project VMs" error for them).
+- Builds/deploys run in `ProjectBuildSandbox` (`project-build-service.ts`); notebook analysis in `AnalysisSandbox`; SQL in `DbQuerySandbox`.
+- The legacy Azure `project-runtime-service` VM, its `PROJECT_RUNTIME_HOST` bridge, the VM `bash`/`vm_exec`/`clone_project` tools, and all their deploy/dev/migration scripts have been removed. The only remaining VM is the static-IP database egress relay (`infra/db-egress-relay/`). Do not reintroduce a project VM runtime.
 
 ## Testing Guidance
 

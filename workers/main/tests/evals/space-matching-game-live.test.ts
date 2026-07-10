@@ -45,18 +45,9 @@ type SpaceMatchingGameEvalEnv = TestEnv & EvalModelEnv & EvalSignalEnv & {
   APP_DB?: D1Database;
   CHAT_THREAD: DurableObjectNamespace<ChatThreadDO>;
   WORKSPACE_FS: DurableObjectNamespace<WorkspaceFilesystemDO>;
-  PROJECT_RUNTIME_HOST: Fetcher;
   RUN_AGENT_EVALS?: string;
   EVAL_REAL_DEPLOY?: string;
   CF_API_TOKEN?: string;
-};
-
-type RuntimeFileEntry = {
-  name?: string;
-  type?: string;
-  size?: number;
-  relativePath?: string;
-  absolutePath?: string;
 };
 
 type RuntimeItem = Record<string, unknown>;
@@ -73,10 +64,6 @@ type SourceFile = {
   text: string;
   size: number;
 };
-
-// Source inspection retains the historical runtime shape for regression fixtures, while
-// live agents are expected to use the DO-backed create_project/deploy_project path.
-type DeployPath = "vm" | "do";
 
 type SourceInspection = {
   appDir?: string;
@@ -152,53 +139,6 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
 
 function asString(value: unknown): string | undefined {
   return typeof value === "string" ? value : undefined;
-}
-
-function runtimeUrl(
-  projectId: string,
-  subpath: string,
-  params: Record<string, string>,
-): string {
-  const url = new URL(
-    `http://runtime.test/v1/projects/${encodeURIComponent(projectId)}${subpath}`,
-  );
-  for (const [key, value] of Object.entries(params)) {
-    url.searchParams.set(key, value);
-  }
-  return url.toString();
-}
-
-async function listRuntimeFiles(
-  runtime: Fetcher,
-  projectId: string,
-  directory: string,
-  recursive = false,
-): Promise<RuntimeFileEntry[]> {
-  const response = await runtime.fetch(
-    runtimeUrl(projectId, "/fs/list", {
-      path: directory,
-      ...(recursive ? { recursive: "1" } : {}),
-    }),
-  );
-  if (!response.ok) return [];
-  const body = await response.json() as { files?: RuntimeFileEntry[] };
-  return Array.isArray(body.files) ? body.files : [];
-}
-
-async function readRuntimeText(
-  runtime: Fetcher,
-  projectId: string,
-  filePath: string,
-): Promise<string | undefined> {
-  const response = await runtime.fetch(
-    runtimeUrl(projectId, "/fs/read", { path: filePath }),
-  );
-  if (!response.ok) return undefined;
-  return await response.text();
-}
-
-function joinVmPath(base: string, child: string): string {
-  return `${base.replace(/\/+$/, "")}/${child.replace(/^\/+/, "")}`;
 }
 
 function relativeToAppDir(appDir: string, path: string): string {
@@ -661,148 +601,9 @@ function buildPostDeployToolCriteria(
   ];
 }
 
-function normalizedName(value: string): string {
-  return value
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "");
-}
-
-function resemblesPromptApp(value: string): boolean {
-  const normalized = normalizedName(value);
-  return APP_NAME_HINTS.some((hint) => normalized.includes(hint));
-}
-
-function runtimeEntryPath(parent: string, entry: RuntimeFileEntry): string | undefined {
-  if (entry.absolutePath) return entry.absolutePath;
-  const child = entry.relativePath ?? entry.name;
-  return child ? joinVmPath(parent, child) : undefined;
-}
-
-function shouldSearchDirectory(directory: string): boolean {
-  const name = directory.split("/").pop() ?? "";
-  return !/^(?:node_modules|\.wrangler|\.react-router|dist|build|coverage|public)$/
-    .test(name);
-}
-
-async function findGeneratedAppDir(
-  runtime: Fetcher,
-  projectId: string,
-): Promise<string | undefined> {
-  const topLevel = await listRuntimeFiles(runtime, projectId, "/workspace");
-  const candidates = new Set<string>(["/workspace"]);
-  const topLevelDirs = topLevel
-    .filter((entry) => entry.type === "directory")
-    .map((entry) => runtimeEntryPath("/workspace", entry))
-    .filter((directory): directory is string => Boolean(directory))
-    .filter(shouldSearchDirectory);
-
-  for (const directory of topLevelDirs) {
-    candidates.add(directory);
-    const children = await listRuntimeFiles(runtime, projectId, directory);
-    for (const child of children) {
-      if (child.type !== "directory") continue;
-      const childPath = runtimeEntryPath(directory, child);
-      if (childPath && shouldSearchDirectory(childPath)) candidates.add(childPath);
-    }
-  }
-
-  const scored: Array<{ dir: string; score: number }> = [];
-  for (const dir of candidates.values()) {
-    const packageJson = await readRuntimeText(
-      runtime,
-      projectId,
-      joinVmPath(dir, "package.json"),
-    );
-    if (!packageJson) continue;
-    const hasComponentsJson =
-      (await readRuntimeText(runtime, projectId, joinVmPath(dir, "components.json"))) !==
-      undefined;
-    const hasWrangler =
-      (await readRuntimeText(runtime, projectId, joinVmPath(dir, "wrangler.jsonc"))) !==
-      undefined;
-    const wrangler = hasWrangler
-      ? await readRuntimeText(runtime, projectId, joinVmPath(dir, "wrangler.jsonc"))
-      : undefined;
-    const activeWrangler = stripComments(wrangler ?? "").toLowerCase();
-    let score = 1;
-    const parsedPackage = parseJsonObject(packageJson);
-    const packageName = asString(parsedPackage.name) ?? "";
-    const scripts = asRecord(parsedPackage.scripts) ?? {};
-    const dependencies = asRecord(parsedPackage.dependencies) ?? {};
-    const devDependencies = asRecord(parsedPackage.devDependencies) ?? {};
-    const deployScript = asString(scripts.deploy) ?? "";
-    if (resemblesPromptApp(packageName)) score += 4;
-    if (resemblesPromptApp(dir)) score += 4;
-    if (hasComponentsJson) score += 3;
-    if (hasWrangler) score += 3;
-    if (dependencies.react && dependencies["react-dom"] && dependencies["react-router"]) {
-      score += 4;
-    }
-    if (devDependencies["@cloudflare/vite-plugin"] && devDependencies.wrangler) {
-      score += 4;
-    }
-    if (deployScript.includes("wrangler deploy")) score += 3;
-    if (deployScript.includes("dispatch-namespace")) score += 3;
-    if (activeWrangler.includes('"main": "./workers/app.ts"')) score += 4;
-    if (activeWrangler.includes('"assets"') && activeWrangler.includes('"binding": "assets"')) {
-      score += 2;
-    }
-    scored.push({ dir, score });
-  }
-
-  return scored.sort((a, b) => b.score - a.score || a.dir.length - b.dir.length)[0]?.dir;
-}
-
-async function collectSourceFiles(
-  runtime: Fetcher,
-  projectId: string,
-  appDir: string,
-): Promise<SourceFile[]> {
-  const sourceFiles = new Map<string, SourceFile>();
-  const roots = ["app", "workers", "src"];
-  const rootFiles = [
-    "package.json",
-    "components.json",
-    "wrangler.jsonc",
-    "react-router.config.ts",
-  ];
-  const sourceExtension = /\.(?:tsx?|jsx?|css|json|jsonc)$/i;
-  const excluded =
-    /(?:^|\/)(node_modules|\.wrangler|\.react-router|dist|build|public|coverage)(?:\/|$)|bun\.lock$/;
-
-  async function addFile(filePath: string): Promise<void> {
-    if (sourceFiles.has(filePath) || excluded.test(filePath) || !sourceExtension.test(filePath)) {
-      return;
-    }
-    const text = await readRuntimeText(runtime, projectId, filePath);
-    if (text === undefined) return;
-    sourceFiles.set(filePath, { path: filePath, text, size: text.length });
-  }
-
-  for (const file of rootFiles) {
-    await addFile(joinVmPath(appDir, file));
-  }
-
-  for (const root of roots) {
-    const rootPath = joinVmPath(appDir, root);
-    const entries = await listRuntimeFiles(runtime, projectId, rootPath, true);
-    for (const entry of entries) {
-      if (entry.type !== "file") continue;
-      const filePath =
-        entry.absolutePath ??
-        joinVmPath(rootPath, entry.relativePath ?? entry.name ?? "");
-      await addFile(filePath);
-    }
-  }
-
-  return [...sourceFiles.values()].sort((a, b) => a.path.localeCompare(b.path));
-}
-
 function inspectCollectedSource(
   appDir: string,
   sourceFiles: SourceFile[],
-  deployPath: DeployPath = "vm",
 ): SourceInspection {
   const textByBasename = new Map(
     sourceFiles.map((file) => [relativeToAppDir(appDir, file.path), file.text]),
@@ -918,22 +719,12 @@ function inspectCollectedSource(
 
   const failures: string[] = [];
   const deployScript = asString(scripts.deploy);
-  if (deployPath === "vm") {
-    // Legacy VM path deploys with the project's own `bun run deploy` script.
-    if (!deployScript?.includes("wrangler deploy") || !deployScript.includes("dispatch-namespace")) {
-      failures.push("package.json deploy script does not deploy with wrangler dispatch namespace");
-    }
-  }
   if (!dependencies["react-router"] || !dependencies.react || !dependencies["react-dom"]) {
     failures.push("package.json is missing React/React Router scaffold dependencies");
   }
-  if (deployPath === "vm") {
-    if (!devDependencies["@cloudflare/vite-plugin"] || !devDependencies.wrangler) {
-      failures.push("package.json is missing Cloudflare Vite/Wrangler dev dependencies");
-    }
-  } else if (!devDependencies["@react-router/dev"] || !devDependencies.wrangler) {
-    // The DO-backed create_project scaffold builds with @react-router/dev + esbuild
-    // (no @cloudflare/vite-plugin) and deploys through deploy_project.
+  // The DO-backed create_project scaffold builds with @react-router/dev + esbuild
+  // (no @cloudflare/vite-plugin) and deploys through deploy_project.
+  if (!devDependencies["@react-router/dev"] || !devDependencies.wrangler) {
     failures.push("package.json is missing React Router/Wrangler dev dependencies");
   }
   if (
@@ -999,36 +790,6 @@ function inspectCollectedSource(
   };
 }
 
-async function inspectSource(
-  runtime: Fetcher,
-  projectId: string,
-): Promise<SourceInspection> {
-  try {
-    const appDir = await findGeneratedAppDir(runtime, projectId);
-    if (!appDir) {
-      return {
-        checkedFiles: [],
-        sourceFiles: [],
-        signalHits: {},
-        persistenceFiles: [],
-        failures: ["could not find a generated app directory with package.json"],
-      };
-    }
-
-    const sourceFiles = await collectSourceFiles(runtime, projectId, appDir);
-    return inspectCollectedSource(appDir, sourceFiles, "vm");
-  } catch (error) {
-    return {
-      checkedFiles: [],
-      sourceFiles: [],
-      signalHits: {},
-      persistenceFiles: [],
-      failures: ["source inspection failed"],
-      error: error instanceof Error ? error.message : String(error),
-    };
-  }
-}
-
 // DO-backed (create_project) project files live in WorkspaceFilesystemDO, not in the
 // sandbox container filesystem, so read them through ProjectFilesystemClient instead of
 // the project runtime fs API.
@@ -1073,7 +834,7 @@ async function inspectDoBackedProjectSource(
         failures: ["could not read DO-backed project source with a package.json"],
       };
     }
-    return inspectCollectedSource("/", sourceFiles, "do");
+    return inspectCollectedSource("/", sourceFiles);
   } catch (error) {
     return {
       checkedFiles: [],
@@ -1171,7 +932,6 @@ function sourceInspectionScore(inspection: SourceInspection): number {
 }
 
 async function inspectCreatedProjectSources(
-  runtime: Fetcher,
   fsEnv: WorkspaceFilesystemEnv,
   projects: WorkspaceProject[],
 ): Promise<{
@@ -1181,9 +941,7 @@ async function inspectCreatedProjectSources(
 }> {
   const inspected = await Promise.all(
     projects.map(async (project) => {
-      const inspection = project.backend === "do-r2"
-        ? await inspectDoBackedProjectSource(fsEnv, project.id)
-        : await inspectSource(runtime, project.id);
+      const inspection = await inspectDoBackedProjectSource(fsEnv, project.id);
       return {
         project,
         inspection,
@@ -1821,7 +1579,6 @@ describe("space matching game deploy agent eval", () => {
         sourceInspection,
         sourceInspectionCandidates,
       } = await inspectCreatedProjectSources(
-        testEnv.PROJECT_RUNTIME_HOST,
         testEnv as unknown as WorkspaceFilesystemEnv,
         newProjects,
       );

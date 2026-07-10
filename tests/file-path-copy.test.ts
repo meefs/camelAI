@@ -51,14 +51,14 @@ describe('formatCopyFilePath', () => {
     })).toBe('outputs/report.html');
   });
 
-  it('uses the matching project slug from the mention map for VM paths', () => {
+  it('uses the matching project slug from the mention map for project paths', () => {
     const mentionSlugMap = buildSlugMap([
       project({ id: 'project', name: 'Thread Review Dashboard' }),
     ]);
 
     expect(formatCopyFilePath({
       path: '/plans/phase-2-automation.md',
-      source: 'vm',
+      source: 'project',
       project: 'Thread Review Dashboard',
     }, { mentionSlugMap })).toBe(
       '@thread_review_dashboard - /plans/phase-2-automation.md',
@@ -72,7 +72,7 @@ describe('formatCopyFilePath', () => {
 
     expect(formatCopyFilePath({
       path: '/src/App.tsx',
-      source: 'vm',
+      source: 'project',
       project: 'thread-review-dashboard',
     }, { mentionSlugMap })).toBe(
       '@thread_review_dashboard - /src/App.tsx',
@@ -87,7 +87,7 @@ describe('formatCopyFilePath', () => {
 
     expect(formatCopyFilePath({
       path: '/src/App.tsx',
-      source: 'vm',
+      source: 'project',
       project: 'Stripe',
     }, { mentionSlugMap })).toBe('@stripe-2 - /src/App.tsx');
   });
@@ -104,7 +104,7 @@ describe('formatCopyFilePath', () => {
 
     expect(formatCopyFilePath({
       path: '/src/App.tsx',
-      source: 'vm',
+      source: 'project',
       project: 'thread-review-dashboard',
     }, { mentionSlugMap })).toBe(
       '@thread_review_dashboard-2 - /src/App.tsx',
@@ -119,7 +119,7 @@ describe('formatCopyFilePath', () => {
 
     expect(formatCopyFilePath({
       path: '/src/App.tsx',
-      source: 'vm',
+      source: 'project',
       project: 'my-app',
     }, { mentionSlugMap })).toBe('@my_app-2 - /src/App.tsx');
   });
@@ -132,7 +132,7 @@ describe('formatCopyFilePath', () => {
 
     expect(formatCopyFilePath({
       path: '/src/App.tsx',
-      source: 'vm',
+      source: 'project',
       project: 'My App',
       projectId: 'project-b',
     }, { mentionSlugMap })).toBe('@my_app-2 - /src/App.tsx');
@@ -146,7 +146,7 @@ describe('formatCopyFilePath', () => {
 
     expect(formatCopyFilePath({
       path: '/src/App.tsx',
-      source: 'vm',
+      source: 'project',
       project: 'my_app',
     }, { mentionSlugMap })).toBe('/src/App.tsx');
   });
@@ -158,7 +158,7 @@ describe('formatCopyFilePath', () => {
 
     expect(formatCopyFilePath({
       path: '/src/App.tsx',
-      source: 'vm',
+      source: 'project',
       project: 'Thread Review Dashboard',
     }, { mentionSlugMap })).toBe('/src/App.tsx');
   });
@@ -166,7 +166,7 @@ describe('formatCopyFilePath', () => {
   it('uses a best-effort slug fallback when requested without a mention map', () => {
     expect(formatCopyFilePath({
       path: '/src/App.tsx',
-      source: 'vm',
+      source: 'project',
       project: 'Thread Review Dashboard',
     }, { fallbackProjectMention: true })).toBe(
       '@thread_review_dashboard - /src/App.tsx',
@@ -176,7 +176,7 @@ describe('formatCopyFilePath', () => {
   it('returns an empty string for an empty path', () => {
     expect(formatCopyFilePath({
       path: '  ',
-      source: 'vm',
+      source: 'project',
       project: 'Thread Review Dashboard',
     }, { fallbackProjectMention: true })).toBe('');
   });

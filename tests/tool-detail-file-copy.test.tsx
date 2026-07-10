@@ -83,7 +83,7 @@ describe('tool detail file path copying', () => {
     renderWithPreviewContext(
       <ReadDetails
         tool={makeTool('read', {
-          location: 'vm',
+          location: 'project',
           project: 'Thread Review Dashboard',
           path: '/plans/phase-2-automation.md',
         })}
@@ -113,7 +113,7 @@ describe('tool detail file path copying', () => {
       <SearchDetails
         mode="grep"
         tool={makeTool('grep', {
-          location: 'vm',
+          location: 'project',
           project: 'Thread Review Dashboard',
           pattern: 'query',
           path: '/src',
@@ -140,7 +140,7 @@ describe('tool detail file path copying', () => {
     });
   });
 
-  it('copies VM glob root-level search results with the project mention slug', async () => {
+  it('copies project glob root-level search results with the project mention slug', async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     Object.defineProperty(navigator, 'clipboard', {
       configurable: true,
@@ -154,7 +154,7 @@ describe('tool detail file path copying', () => {
       <SearchDetails
         mode="glob"
         tool={makeTool('glob', {
-          location: 'vm',
+          location: 'project',
           project: 'Thread Review Dashboard',
           pattern: '*.html',
           path: '/workspace',
@@ -181,7 +181,7 @@ describe('tool detail file path copying', () => {
     });
   });
 
-  it('resolves VM glob search results against a non-root search path', async () => {
+  it('resolves project glob search results against a non-root search path', async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     Object.defineProperty(navigator, 'clipboard', {
       configurable: true,
@@ -195,7 +195,7 @@ describe('tool detail file path copying', () => {
       <SearchDetails
         mode="glob"
         tool={makeTool('glob', {
-          location: 'vm',
+          location: 'project',
           project: 'Thread Review Dashboard',
           pattern: '*.tsx',
           path: '/src',
@@ -222,7 +222,7 @@ describe('tool detail file path copying', () => {
     });
   });
 
-  it('copies VM glob root-level filenames with spaces', async () => {
+  it('copies project glob root-level filenames with spaces', async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     Object.defineProperty(navigator, 'clipboard', {
       configurable: true,
@@ -236,7 +236,7 @@ describe('tool detail file path copying', () => {
       <SearchDetails
         mode="glob"
         tool={makeTool('glob', {
-          location: 'vm',
+          location: 'project',
           project: 'Thread Review Dashboard',
           pattern: '*',
           path: '/workspace',
@@ -266,7 +266,7 @@ describe('tool detail file path copying', () => {
     });
   });
 
-  it('keeps single VM glob filenames with spaces in the file list', async () => {
+  it('keeps single project glob filenames with spaces in the file list', async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     Object.defineProperty(navigator, 'clipboard', {
       configurable: true,
@@ -280,7 +280,7 @@ describe('tool detail file path copying', () => {
       <SearchDetails
         mode="glob"
         tool={makeTool('glob', {
-          location: 'vm',
+          location: 'project',
           project: 'Thread Review Dashboard',
           pattern: '*',
           path: '/workspace',
@@ -321,7 +321,7 @@ describe('tool detail file path copying', () => {
       <SearchDetails
         mode="grep"
         tool={makeTool('grep', {
-          location: 'vm',
+          location: 'project',
           project: 'Thread Review Dashboard',
           pattern: 'query',
           path: '/src',
@@ -358,7 +358,7 @@ describe('tool detail file path copying', () => {
       <SearchDetails
         mode="grep"
         tool={makeTool('grep', {
-          location: 'vm',
+          location: 'project',
           project: 'Thread Review Dashboard',
           pattern: 'https',
           path: '/src',
@@ -394,7 +394,7 @@ describe('tool detail file path copying', () => {
       <SearchDetails
         mode="glob"
         tool={makeTool('glob', {
-          location: 'vm',
+          location: 'project',
           project: 'Thread Review Dashboard',
           pattern: '*.tsx',
           path: '/src',
@@ -413,7 +413,7 @@ describe('tool detail file path copying', () => {
 
     expect(openPreviewTarget).toHaveBeenCalledWith({
       kind: 'file',
-      source: 'vm',
+      source: 'project',
       workspaceId: 'thread-ws',
       project: 'Thread Review Dashboard',
       path: '/src/App.tsx',
@@ -435,7 +435,7 @@ describe('tool detail file path copying', () => {
       <SearchDetails
         mode="grep"
         tool={makeTool('grep', {
-          location: 'vm',
+          location: 'project',
           project: 'Thread Review Dashboard',
           pattern: 'query',
           path: '/src',
@@ -477,7 +477,7 @@ describe('tool detail file path copying', () => {
       <SearchDetails
         mode="grep"
         tool={makeTool('grep', {
-          location: 'vm',
+          location: 'project',
           project: 'Thread Review Dashboard',
           pattern: 'query',
           path: '/src',
@@ -496,7 +496,7 @@ describe('tool detail file path copying', () => {
     });
   });
 
-  it('omits VM glob bracketed notices from rendered and copied file lists', async () => {
+  it('omits project glob bracketed notices from rendered and copied file lists', async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     Object.defineProperty(navigator, 'clipboard', {
       configurable: true,
@@ -510,7 +510,7 @@ describe('tool detail file path copying', () => {
       <SearchDetails
         mode="glob"
         tool={makeTool('glob', {
-          location: 'vm',
+          location: 'project',
           project: 'Thread Review Dashboard',
           pattern: '*.html',
           path: '/workspace',
@@ -540,7 +540,7 @@ describe('tool detail file path copying', () => {
     });
   });
 
-  it('keeps VM glob no-result sentinels as plain output', async () => {
+  it('keeps project glob no-result sentinels as plain output', async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     Object.defineProperty(navigator, 'clipboard', {
       configurable: true,
@@ -554,7 +554,7 @@ describe('tool detail file path copying', () => {
       <SearchDetails
         mode="glob"
         tool={makeTool('glob', {
-          location: 'vm',
+          location: 'project',
           project: 'Thread Review Dashboard',
           pattern: '*.html',
           path: '/workspace',
