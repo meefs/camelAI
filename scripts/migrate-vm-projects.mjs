@@ -40,6 +40,17 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import process from "node:process";
 
+// Monster projects hold the migrate call open past undici's default 5-minute
+// headers timeout, which surfaces as a bare "TypeError: fetch failed" while
+// the server is still working. Disable the client-side timeouts; the server
+// (Worker request lifetime) remains the real bound.
+try {
+  const { Agent, setGlobalDispatcher } = await import("undici");
+  setGlobalDispatcher(new Agent({ headersTimeout: 0, bodyTimeout: 0 }));
+} catch {
+  // Not running under Node with undici available (e.g. bun); fetch defaults apply.
+}
+
 // ---------------------------------------------------------------------------
 // Tunables (all learned against staging; change deliberately).
 // ---------------------------------------------------------------------------
