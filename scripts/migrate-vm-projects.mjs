@@ -249,11 +249,44 @@ function resolveAccessToken(baseUrl) {
   return cfAccessCache;
 }
 
+/** How long a 401'd run waits for a fresh token before giving up. */
+const REAUTH_WAIT_TOTAL_MS = 10 * 60 * 1000;
+const REAUTH_POLL_MS = 10 * 1000;
+
 /** Build a bound JSON-RPC caller against <base-url>/api/admin/mcp. */
 function makeClient(baseUrl) {
   const endpoint = `${baseUrl}/api/admin/mcp`;
-  const oauth = resolveOAuth(baseUrl);
+  let oauth = resolveOAuth(baseUrl);
   const accessToken = resolveAccessToken(baseUrl);
+
+  /**
+   * OAuth tokens expire hourly, and fleet runs outlive them. On 401, poll the
+   * mcporter credentials file for a FRESH token (the operator re-runs
+   * `bunx mcporter auth <server>` in another terminal) instead of dying and
+   * losing the run's progress.
+   */
+  async function waitForFreshToken() {
+    const staleToken = oauth.token;
+    const deadline = Date.now() + REAUTH_WAIT_TOTAL_MS;
+    console.warn(
+      `OAuth token expired (server ${oauth.name}). Waiting up to ${REAUTH_WAIT_TOTAL_MS / 60000} minutes — ` +
+        `re-authenticate now with: bunx mcporter auth ${oauth.name}`,
+    );
+    while (Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, REAUTH_POLL_MS));
+      try {
+        const fresh = resolveOAuth(baseUrl);
+        if (fresh.token && fresh.token !== staleToken) {
+          oauth = fresh;
+          console.warn("Fresh OAuth token picked up; resuming.");
+          return;
+        }
+      } catch {
+        // credentials file mid-write or missing; keep polling
+      }
+    }
+    throw new AuthError(`No fresh token appeared within ${REAUTH_WAIT_TOTAL_MS / 60000} minutes`, oauth.name);
+  }
 
   /**
    * Direct stateless JSON-RPC tools/call. Returns the tool's decoded text
@@ -262,28 +295,29 @@ function makeClient(baseUrl) {
    */
   async function rpc(name, toolArgs, { timeoutMs = MIGRATE_TIMEOUT_MS } = {}) {
     let response;
-    try {
-      response = await fetch(endpoint, {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          accept: "application/json, text/event-stream",
-          authorization: `Bearer ${oauth.token}`,
-          ...(accessToken ? { "cf-access-token": accessToken } : {}),
-        },
-        body: JSON.stringify({
-          jsonrpc: "2.0",
-          id: 1,
-          method: "tools/call",
-          params: { name, arguments: toolArgs },
-        }),
-        signal: AbortSignal.timeout(timeoutMs),
-      });
-    } catch (error) {
-      throw new Error(`${name}: request failed: ${error}`);
-    }
-    if (response.status === 401) {
-      throw new AuthError(`${name}: 401 Unauthorized`, oauth.name);
+    for (;;) {
+      try {
+        response = await fetch(endpoint, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            accept: "application/json, text/event-stream",
+            authorization: `Bearer ${oauth.token}`,
+            ...(accessToken ? { "cf-access-token": accessToken } : {}),
+          },
+          body: JSON.stringify({
+            jsonrpc: "2.0",
+            id: 1,
+            method: "tools/call",
+            params: { name, arguments: toolArgs },
+          }),
+          signal: AbortSignal.timeout(timeoutMs),
+        });
+      } catch (error) {
+        throw new Error(`${name}: request failed: ${error}`);
+      }
+      if (response.status !== 401) break;
+      await waitForFreshToken();
     }
     if (!response.ok) {
       const text = await response.text().catch(() => "");
