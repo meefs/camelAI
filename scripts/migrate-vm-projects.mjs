@@ -103,6 +103,7 @@ migrate — copy legacy VM projects to DO+R2, per project, size-aware.
   --force                 Re-copy even already-migrated (do-r2) projects.
   --concurrency <n>       Wide pool for small (<=${SMALL_FILE_THRESHOLD} files) projects (default ${DEFAULT_MIGRATE_CONCURRENCY}).
   --workspace-concurrency <n> Workspaces processed in parallel (default 8 dry-run / 2 real).
+  --max-file-bytes <n>    Per-file cap override (bytes); larger files are skipped+recorded.
   --active-since-days <n> Skip workspaces with no thread activity in the last n days
                           (recorded as skipped-dormant; their projects stay on the VM/snapshot).
   --large-concurrency <n> Pool for large projects (default ${DEFAULT_LARGE_CONCURRENCY}, i.e. serial).
@@ -164,6 +165,7 @@ function parseArgs(argv) {
     else if (arg === "--large-concurrency") args.largeConcurrency = Number(argv[++i]);
     else if (arg === "--workspace-concurrency") args.workspaceConcurrency = Number(argv[++i]);
     else if (arg === "--active-since-days") args.activeSinceDays = Number(argv[++i]);
+    else if (arg === "--max-file-bytes") args.maxFileBytes = Number(argv[++i]);
     else if (arg === "--migrate-report") args.migrateReport = argv[++i];
     else if (arg === "--sent-at") args.sentAt = Number(argv[++i]);
     else if (arg === "--text-file") args.textFile = argv[++i];
@@ -421,10 +423,10 @@ async function listProjects(client, workspaceId) {
 }
 
 /** One per-project migrate_vm_projects call, returning the first result row. */
-async function migrateProject(client, workspaceId, project, { dryRun, force }) {
+async function migrateProject(client, workspaceId, project, { dryRun, force, maxFileBytes }) {
   const out = await client.rpc(
     "migrate_vm_projects",
-    { workspace_id: workspaceId, project, dry_run: dryRun, ...(force ? { force: true } : {}) },
+    { workspace_id: workspaceId, project, dry_run: dryRun, ...(force ? { force: true } : {}), ...(maxFileBytes ? { max_file_bytes: maxFileBytes } : {}) },
     { timeoutMs: MIGRATE_TIMEOUT_MS },
   );
   const body = out.body_json;
@@ -518,7 +520,7 @@ return { latest };`,
     // real pass. In --dry-run mode this pass IS the run.
     const estimates = await runPool(legacy, smallConcurrency, async (project) => {
       try {
-        const r = await migrateProject(client, ws.id, project, { dryRun: true, force: args.force });
+        const r = await migrateProject(client, ws.id, project, { dryRun: true, force: args.force, maxFileBytes: args.maxFileBytes });
         return r;
       } catch (error) {
         return { project, status: "call-error", error: String(error), files_copied: null };
@@ -546,7 +548,7 @@ return { latest };`,
 
     const runOne = async (project) => {
       try {
-        const r = await migrateProject(client, ws.id, project, { dryRun: false, force: args.force });
+        const r = await migrateProject(client, ws.id, project, { dryRun: false, force: args.force, maxFileBytes: args.maxFileBytes });
         console.log(`  ${project}: status=${r.status} class=${r.classification} files=${r.files_copied} verified=${r.verified_files}${r.error ? ` err=${String(r.error).slice(0, 140)}` : ""}`);
         return r;
       } catch (error) {
