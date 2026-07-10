@@ -411,6 +411,8 @@ function adminTools() {
           max_project_bytes: { type: "integer", description: "Per-project total cap; exceeding it fails the project. Defaults to 4 GiB." },
           force: { type: "boolean", description: "Re-migrate a project already on do-r2 (clears its DO tree first). Defaults to false." },
           lift_nested_root: { type: "boolean", description: "Lift a single nested app directory to the project root. Defaults to true." },
+          file_offset: { type: "integer", description: "Resume a chunked copy at this plan offset (use next_file_offset from a prior 'partial' result)." },
+          max_files_per_call: { type: "integer", description: "Copy at most this many files per call. Projects with more planned files return status 'partial' with next_file_offset; loop until 'migrated'. Use for projects with thousands of files, which cannot finish in one request." },
         },
         required: ["workspace_id"],
         additionalProperties: false,

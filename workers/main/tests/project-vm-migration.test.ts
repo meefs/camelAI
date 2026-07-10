@@ -293,6 +293,42 @@ describe("migrateVmProject", () => {
     expect(backendFlips).toEqual([{ projectId: project.id, backend: "do-r2" }]);
   });
 
+  it("chunks monster projects across calls and finalizes on the last chunk", async () => {
+    // Projects with thousands of files can't finish one Worker request; the
+    // caller loops with maxFilesPerCall/fileOffset until status "migrated".
+    const project = makeProject();
+    const files = Array.from({ length: 5 }, (_, i) => ({
+      relativePath: i === 0 ? "package.json" : `src/f${i}.ts`,
+      content: i === 0 ? JSON.stringify({ scripts: { build: "vite build" } }) : `export const v${i} = ${i};`,
+    }));
+    stubRuntimeFs(files);
+    const { deps, writes, snapshots, backendFlips } = makeDeps(project);
+
+    const first = await migrateVmProject(deps, project, { maxFilesPerCall: 2 });
+    expect(first.status).toBe("partial");
+    expect(first.filesCopied).toBe(2);
+    expect(first.plannedFiles).toBe(5);
+    expect(first.nextFileOffset).toBe(2);
+    expect(first.snapshotId).toBeNull();
+    expect(backendFlips).toHaveLength(0);
+
+    const second = await migrateVmProject(deps, project, { maxFilesPerCall: 2, fileOffset: first.nextFileOffset! });
+    expect(second.status).toBe("partial");
+    expect(second.nextFileOffset).toBe(4);
+    expect(backendFlips).toHaveLength(0);
+
+    const last = await migrateVmProject(deps, project, { maxFilesPerCall: 2, fileOffset: second.nextFileOffset! });
+    expect(last.status).toBe("migrated");
+    expect(last.error).toBeNull();
+    expect(last.nextFileOffset).toBeNull();
+    // Final chunk classification sees the earlier-chunk package.json.
+    expect(last.classification).toBe("package-build");
+    expect(last.snapshotId).toBe("snap-1");
+    expect(writes).toHaveLength(5);
+    expect(snapshots).toHaveLength(1);
+    expect(backendFlips).toEqual([{ projectId: project.id, backend: "do-r2" }]);
+  });
+
   it("fails without flipping when adopting a large file mismatches its size", async () => {
     const project = makeProject();
     stubRuntimeFs([{ relativePath: "assets/model.bin", content: "BINARY", size: 30 * 1024 * 1024 }]);

@@ -446,29 +446,63 @@ async function listProjects(client, workspaceId) {
   return projects;
 }
 
-/** One per-project migrate_vm_projects call, returning the first result row. */
+/**
+ * Files per chunked migrate call. Monster projects (thousands of files) cannot
+ * finish one request inside Worker CPU/wall limits; the server copies this many
+ * files per call and returns status "partial" + next_file_offset until done.
+ */
+const MIGRATE_CHUNK_FILES = 1500;
+
+/**
+ * One per-project migration, chunked: loops migrate_vm_projects with
+ * max_files_per_call until the server reports a terminal status, aggregating
+ * per-chunk copy counts into the final row.
+ */
 async function migrateProject(client, workspaceId, project, { dryRun, force, maxFileBytes }) {
-  const out = await client.rpc(
-    "migrate_vm_projects",
-    { workspace_id: workspaceId, project, dry_run: dryRun, ...(force ? { force: true } : {}), ...(maxFileBytes ? { max_file_bytes: maxFileBytes } : {}) },
-    { timeoutMs: MIGRATE_TIMEOUT_MS },
-  );
-  const body = out.body_json;
-  if (!body || !Array.isArray(body.results)) {
-    throw new Error(`migrate_vm_projects(${project}) unexpected shape: ${JSON.stringify(out).slice(0, 300)}`);
+  let offset = 0;
+  let filesCopied = 0;
+  let bytesCopied = 0;
+  let verifiedFiles = 0;
+  let chunks = 0;
+  for (;;) {
+    const out = await client.rpc(
+      "migrate_vm_projects",
+      {
+        workspace_id: workspaceId,
+        project,
+        dry_run: dryRun,
+        ...(force ? { force: true } : {}),
+        ...(maxFileBytes ? { max_file_bytes: maxFileBytes } : {}),
+        ...(dryRun ? {} : { max_files_per_call: MIGRATE_CHUNK_FILES, file_offset: offset }),
+      },
+      { timeoutMs: MIGRATE_TIMEOUT_MS },
+    );
+    const body = out.body_json;
+    if (!body || !Array.isArray(body.results)) {
+      throw new Error(`migrate_vm_projects(${project}) unexpected shape: ${JSON.stringify(out).slice(0, 300)}`);
+    }
+    const row = body.results[0] ?? {};
+    filesCopied += row.files_copied ?? 0;
+    bytesCopied += row.bytes_copied ?? 0;
+    verifiedFiles += row.verified_files ?? 0;
+    chunks += 1;
+    if (row.status === "partial" && typeof row.next_file_offset === "number") {
+      offset = row.next_file_offset;
+      continue;
+    }
+    return {
+      project,
+      status: row.status ?? null,
+      classification: row.classification ?? null,
+      files_copied: row.status === "migrated" ? filesCopied : (row.files_copied ?? null),
+      bytes_copied: row.status === "migrated" ? bytesCopied : (row.bytes_copied ?? null),
+      verified_files: row.status === "migrated" ? verifiedFiles : (row.verified_files ?? null),
+      chunks,
+      snapshot_id: row.snapshot_id ?? null,
+      error: row.error ?? null,
+      duration_ms: row.duration_ms ?? null,
+    };
   }
-  const row = body.results[0] ?? {};
-  return {
-    project,
-    status: row.status ?? null,
-    classification: row.classification ?? null,
-    files_copied: row.files_copied ?? null,
-    bytes_copied: row.bytes_copied ?? null,
-    verified_files: row.verified_files ?? null,
-    snapshot_id: row.snapshot_id ?? null,
-    error: row.error ?? null,
-    duration_ms: row.duration_ms ?? null,
-  };
 }
 
 function writeReport(path, payload) {

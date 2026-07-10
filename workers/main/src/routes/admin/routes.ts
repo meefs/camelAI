@@ -639,12 +639,16 @@ const VmProjectMigrationBodySchema = z.object({
   force: z.boolean().default(false),
   /** Lift a single nested app directory to the project root. */
   lift_nested_root: z.boolean().default(true),
+  /** Resume a chunked copy at this plan offset (from a prior "partial" result). */
+  file_offset: z.number().int().min(0).optional(),
+  /** Copy at most this many files per call; longer plans return status "partial". */
+  max_files_per_call: z.number().int().positive().optional(),
 });
 
 const VmProjectMigrationResultSchema = z.object({
   project_id: z.string(),
   project_name: z.string(),
-  status: z.enum(["migrated", "dry-run", "already-do-r2", "failed"]),
+  status: z.enum(["migrated", "dry-run", "already-do-r2", "partial", "failed"]),
   classification: z.string(),
   files_copied: z.number().int(),
   bytes_copied: z.number().int(),
@@ -657,6 +661,8 @@ const VmProjectMigrationResultSchema = z.object({
   verified_files: z.number().int(),
   lifted_root: z.string().nullable(),
   snapshot_id: z.string().nullable(),
+  planned_files: z.number().int(),
+  next_file_offset: z.number().int().nullable(),
   error: z.string().nullable(),
   duration_ms: z.number(),
 });
@@ -704,6 +710,8 @@ routes.post(
           maxProjectBytes: body.max_project_bytes,
           force: body.force,
           liftNestedRoot: body.lift_nested_root,
+          fileOffset: body.file_offset,
+          maxFilesPerCall: body.max_files_per_call,
         },
       );
     } catch (error) {
@@ -745,6 +753,8 @@ routes.post(
         verified_files: result.verifiedFiles,
         lifted_root: result.liftedRoot,
         snapshot_id: result.snapshotId,
+        planned_files: result.plannedFiles,
+        next_file_offset: result.nextFileOffset,
         error: result.error,
         duration_ms: result.durationMs,
       })),

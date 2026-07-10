@@ -125,6 +125,7 @@ export type MigrationStatus =
   | "migrated"
   | "dry-run"
   | "already-do-r2"
+  | "partial"
   | "failed";
 
 export interface ProjectMigrationResult {
@@ -151,6 +152,14 @@ export interface ProjectMigrationResult {
   /** Set when a single nested app directory was lifted to the project root. */
   liftedRoot: string | null;
   snapshotId: string | null;
+  /** Total files in the copy plan (all chunks), once listing succeeded. */
+  plannedFiles: number;
+  /**
+   * Set on status "partial": pass back as `fileOffset` on the next call to
+   * continue the copy. Monster projects (thousands of files) cannot finish in
+   * one Worker request, so callers chunk with `maxFilesPerCall`.
+   */
+  nextFileOffset: number | null;
   error: string | null;
   durationMs: number;
 }
@@ -170,6 +179,17 @@ export interface MigrateVmProjectOptions {
    * tree first (so stale layouts don't linger) and re-copies from the VM.
    */
   force?: boolean;
+  /**
+   * Resume a chunked copy at this index into the (deterministic) copy plan.
+   * Use the `nextFileOffset` from a prior "partial" result. Default 0.
+   */
+  fileOffset?: number;
+  /**
+   * Copy at most this many files in this call. When the plan is longer, the
+   * result is status "partial" with `nextFileOffset` set, and verification/
+   * snapshot/backend-flip are deferred to the final chunk. Default unlimited.
+   */
+  maxFilesPerCall?: number;
 }
 
 export interface MigrateVmProjectDeps {
@@ -355,6 +375,8 @@ export async function migrateVmProject(
     verifiedFiles: 0,
     liftedRoot: null,
     snapshotId: null,
+    plannedFiles: 0,
+    nextFileOffset: null,
     durationMs: 0,
   };
 
@@ -410,6 +432,13 @@ export async function migrateVmProject(
     options.liftNestedRoot !== false,
   );
   skipped.push(...collisions);
+  base.plannedFiles = planned.length;
+  // Chunk bounds: the plan order is deterministic (listing order), so callers
+  // resume with the offset from a prior "partial" result.
+  const chunkStart = Math.min(Math.max(options.fileOffset ?? 0, 0), planned.length);
+  const chunkEnd = options.maxFilesPerCall
+    ? Math.min(chunkStart + options.maxFilesPerCall, planned.length)
+    : planned.length;
   const { appRoots, wranglerConfigs } = collectAppRoots(
     planned.map((file) => ({ relativePath: file.destination })),
   );
@@ -420,7 +449,7 @@ export async function migrateVmProject(
   const fileStore = deps.fileStoreForProject(project.id);
 
   if (!dryRun) {
-    if (options.force === true) {
+    if (options.force === true && chunkStart === 0) {
       // Re-migration: clear the DO tree first so a previous layout (e.g. an
       // unlifted nested copy) leaves no stale files behind. The store refuses
       // deleting "/" itself (EPERM), so delete each root entry and fail loudly
@@ -444,7 +473,9 @@ export async function migrateVmProject(
         }
       }
     }
-    const samplePaths = pickVerificationSample(planned);
+    // Sample only files copied in THIS chunk: their VM hashes are in memory
+    // for this request. Each chunk verifies its own sample before returning.
+    const samplePaths = pickVerificationSample(planned.slice(chunkStart, chunkEnd));
     const sampleHashes = new Map<string, string>();
     // Copy with bounded concurrency: VM reads dominate wall-clock (one HTTP
     // round-trip each), so overlapping them matters; DO writes serialize
@@ -467,7 +498,7 @@ export async function migrateVmProject(
       bytesInFlight -= cost;
       for (const wake of budgetWaiters.splice(0)) wake();
     };
-    let nextIndex = 0;
+    let nextIndex = chunkStart;
     let copyError: string | null = null;
     const isMissingFileError = (error: unknown): boolean =>
       // "is a directory": the VM walk lists symlinks-to-directories as files
@@ -553,6 +584,7 @@ export async function migrateVmProject(
       while (copyError === null) {
         const index = nextIndex;
         nextIndex += 1;
+        if (index >= chunkEnd) return;
         const file = planned[index];
         if (!file) return;
         // Dropped connections under concurrency ("Network connection lost")
@@ -574,7 +606,7 @@ export async function migrateVmProject(
       }
     };
     try {
-      await Promise.all(Array.from({ length: Math.min(copyConcurrency, planned.length) }, copyWorker));
+      await Promise.all(Array.from({ length: Math.min(copyConcurrency, chunkEnd - chunkStart) }, copyWorker));
     } catch (error) {
       copyError = error instanceof Error ? error.message : String(error);
     }
@@ -630,7 +662,30 @@ export async function migrateVmProject(
       }
       verifiedFiles += 1;
     }
-  } else if (planned.some((file) => file.destination === "package.json")) {
+
+    if (chunkEnd < planned.length) {
+      // More chunks to go: report progress and defer snapshot/flip/final
+      // classification to the last chunk. The chunk's own sample verified.
+      return finish({
+        ...base,
+        skipped,
+        missingVmCheckout,
+        appRoots,
+        wranglerConfigs,
+        filesCopied,
+        bytesCopied,
+        verifiedFiles,
+        liftedRoot,
+        status: "partial",
+        nextFileOffset: chunkEnd,
+        error: null,
+      });
+    }
+  }
+
+  if (rootPackageJson === null && planned.some((file) => file.destination === "package.json")) {
+    // package.json wasn't read in this call (dry run, or it was copied in an
+    // earlier chunk); fetch it so classification stays accurate.
     const read = await deps.bridge.readFileBytesForTransfer({
       projectId: project.id,
       path: planned.find((file) => file.destination === "package.json")!.path,
