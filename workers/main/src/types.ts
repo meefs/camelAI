@@ -53,6 +53,16 @@ export interface Env
   ANALYSIS_SANDBOX?: DurableObjectNamespace<import('./analysis-sandbox.js').AnalysisSandbox>;
   // Warm native-toolchain build container for DO+R2-backed projects (per-org).
   PROJECT_BUILD_SANDBOX?: DurableObjectNamespace<import('./project-build-sandbox.js').ProjectBuildSandbox>;
+  // Trusted query-execution container with static-IP database egress via the
+  // sandbox-host SOCKS relay (docs/db-egress-relay.md).
+  DB_QUERY_SANDBOX?: DurableObjectNamespace<import('./db-query-sandbox.js').DbQuerySandbox>;
+  // Static-IP database egress relay coordinates (see infra/db-egress-relay/):
+  // hostname is a var; the token/credential pairs are secrets.
+  DB_EGRESS_RELAY_HOSTNAME?: string;
+  DB_EGRESS_RELAY_ACCESS_CLIENT_ID?: string;
+  DB_EGRESS_RELAY_ACCESS_CLIENT_SECRET?: string;
+  DB_EGRESS_RELAY_SOCKS_USERNAME?: string;
+  DB_EGRESS_RELAY_SOCKS_PASSWORD?: string;
   // Auto-expiring R2 staging bucket for warehouse/analysis connection exports.
   WAREHOUSE_EXPORT_BUCKET?: R2Bucket;
   SESSIONS: KVNamespace;

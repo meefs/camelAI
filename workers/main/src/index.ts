@@ -95,6 +95,7 @@ export { EvalProjectRuntimeService } from './eval-project-runtime-service.js';
 export { EvalSandbox } from './eval-sandbox.js';
 export { AnalysisSandbox } from './analysis-sandbox.js';
 export { ProjectBuildSandbox } from './project-build-sandbox.js';
+export { DbQuerySandbox } from './db-query-sandbox.js';
 
 // Compatibility shim for environments whose deployed migration history still
 // references the old AdminIndexDO class. The app uses the D1-backed index now.

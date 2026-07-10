@@ -13,6 +13,7 @@ import {
 } from '../src/connections-runtime.js';
 import { handleIntegrationsMcp } from '../src/routes/integrations-mcp.js';
 import type { WorkspaceIntegrationRecord } from '../src/workspace.js';
+import { fakeDbQuerySandboxNamespace } from './fake-db-query-sandbox.js';
 
 function integration(overrides: Partial<WorkspaceIntegrationRecord>): WorkspaceIntegrationRecord {
   return {
@@ -2435,26 +2436,24 @@ describe('connections runtime', () => {
     });
   });
 
-  it('executes read-only Postgres SQL through the data proxy MCP broker', async () => {
-    const fetchMock = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
-      expect(String(url)).toBe('https://sandbox.test/v1/workspaces/org_1/ws_1/data-proxy/postgres/query');
-      expect(init?.method).toBe('POST');
-      expect(JSON.parse(String(init?.body))).toMatchObject({
+  it('executes read-only Postgres SQL through the db-query sandbox MCP broker', async () => {
+    const fake = fakeDbQuerySandboxNamespace((request) => {
+      expect(request).toMatchObject({
+        engine: 'postgres',
         mode: 'read',
-        host: 'db.example.com',
-        port: 5432,
-        user: 'app',
-        password: 'secret',
-        database: 'appdb',
-        query: 'select id, email from users',
+        sql: 'select id, email from users',
         params: [],
-        sslmode: 'require',
+        target: {
+          host: 'db.example.com',
+          port: 5432,
+          user: 'app',
+          password: 'secret',
+          database: 'appdb',
+          sslMode: 'require',
+        },
       });
-      return new Response(JSON.stringify({
-        recordset: [{ id: 1, email: 'ada@example.com' }],
-      }));
+      return { ok: true, rows: [{ id: 1, email: 'ada@example.com' }], fields: [{ name: 'id' }, { name: 'email' }], rowCount: 1, truncated: false, durationMs: 2 };
     });
-    vi.stubGlobal('fetch', fetchMock);
     const records = [
       integration({
         id: 'pg_main',
@@ -2483,13 +2482,13 @@ describe('connections runtime', () => {
 
     const result = await callConnectionTool({
       ...envWith(records),
-      SANDBOX_HOST_URL: 'https://sandbox.test',
+      DB_QUERY_SANDBOX: fake.namespace as never,
     }, context, 'pg_main', 'execute_sql_readonly', {
       query: 'select id, email from users',
       limit: 25,
     }) as { content: Array<{ text: string }> };
 
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fake.calls).toHaveLength(1);
     expect(JSON.parse(result.content[0]!.text)).toEqual({
       rows: [{ id: 1, email: 'ada@example.com' }],
       rowsAffected: [],
@@ -2497,16 +2496,13 @@ describe('connections runtime', () => {
   });
 
   it('does not append a default SQL LIMIT when the query has a parameterized LIMIT', async () => {
-    const fetchMock = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
-      expect(JSON.parse(String(init?.body))).toMatchObject({
-        query: 'select id from users LIMIT $1',
+    const fake = fakeDbQuerySandboxNamespace((request) => {
+      expect(request).toMatchObject({
+        sql: 'select id from users LIMIT $1',
         params: [5],
       });
-      return new Response(JSON.stringify({
-        recordset: [{ id: 1 }],
-      }));
+      return { ok: true, rows: [{ id: 1 }], fields: [{ name: 'id' }], rowCount: 1, truncated: false, durationMs: 2 };
     });
-    vi.stubGlobal('fetch', fetchMock);
     const records = [
       integration({
         id: 'pg_main',
@@ -2520,32 +2516,30 @@ describe('connections runtime', () => {
 
     await expect(callConnectionTool({
       ...envWith(records),
-      SANDBOX_HOST_URL: 'https://sandbox.test',
+      DB_QUERY_SANDBOX: fake.namespace as never,
     }, context, 'pg_main', 'execute_sql_readonly', {
       query: 'select id from users LIMIT $1',
       params: [5],
       limit: 25,
     })).resolves.toMatchObject({ content: [{ type: 'text' }] });
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fake.calls).toHaveLength(1);
   });
 
-  it('lists MySQL table metadata through the data proxy MCP broker', async () => {
-    const fetchMock = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
-      expect(String(url)).toBe('https://sandbox.test/v1/workspaces/org_1/ws_1/data-proxy/mysql/query');
-      expect(init?.method).toBe('POST');
-      expect(JSON.parse(String(init?.body))).toMatchObject({
+  it('lists MySQL table metadata through the db-query sandbox MCP broker', async () => {
+    const fake = fakeDbQuerySandboxNamespace((request) => {
+      expect(request).toMatchObject({
+        engine: 'mysql',
         mode: 'read',
-        host: 'mysql.example.com',
-        user: 'app',
-        password: 'secret',
-        database: 'appdb',
         params: ['appdb', 'users'],
+        target: {
+          host: 'mysql.example.com',
+          user: 'app',
+          password: 'secret',
+          database: 'appdb',
+        },
       });
-      return new Response(JSON.stringify({
-        recordset: [{ column_name: 'id', data_type: 'int', is_nullable: 'NO' }],
-      }));
+      return { ok: true, rows: [{ column_name: 'id', data_type: 'int', is_nullable: 'NO' }], fields: [], rowCount: 1, truncated: false, durationMs: 2 };
     });
-    vi.stubGlobal('fetch', fetchMock);
     const records = [
       integration({
         id: 'mysql_main',
@@ -2562,37 +2556,35 @@ describe('connections runtime', () => {
 
     const result = await callConnectionTool({
       ...envWith(records),
-      SANDBOX_HOST_URL: 'https://sandbox.test',
+      DB_QUERY_SANDBOX: fake.namespace as never,
     }, context, 'mysql_main', 'get_table_info', {
       table: 'users',
     }) as { content: Array<{ text: string }> };
 
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fake.calls).toHaveLength(1);
     expect(JSON.parse(result.content[0]!.text)).toEqual({
       rows: [{ column_name: 'id', data_type: 'int', is_nullable: 'NO' }],
       rowsAffected: [],
     });
   });
 
-  it('executes read-only Neon SQL through the Postgres data proxy MCP broker', async () => {
-    const fetchMock = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
-      expect(String(url)).toBe('https://sandbox.test/v1/workspaces/org_1/ws_1/data-proxy/postgres/query');
-      expect(init?.method).toBe('POST');
-      expect(JSON.parse(String(init?.body))).toMatchObject({
+  it('executes read-only Neon SQL through the Postgres db-query sandbox MCP broker', async () => {
+    const fake = fakeDbQuerySandboxNamespace((request) => {
+      expect(request).toMatchObject({
+        engine: 'postgres',
         mode: 'read',
-        host: 'ep-example.us-east-2.aws.neon.tech',
-        user: 'app',
-        password: 'secret',
-        database: 'neondb',
-        query: 'select now()',
+        sql: 'select now()',
         params: [],
-        sslmode: 'require',
+        target: {
+          host: 'ep-example.us-east-2.aws.neon.tech',
+          user: 'app',
+          password: 'secret',
+          database: 'neondb',
+          sslMode: 'require',
+        },
       });
-      return new Response(JSON.stringify({
-        recordset: [{ now: '2026-05-08T00:00:00Z' }],
-      }));
+      return { ok: true, rows: [{ now: '2026-05-08T00:00:00Z' }], fields: [{ name: 'now' }], rowCount: 1, truncated: false, durationMs: 2 };
     });
-    vi.stubGlobal('fetch', fetchMock);
     const records = [
       integration({
         id: 'neon_main',
@@ -2616,38 +2608,37 @@ describe('connections runtime', () => {
 
     const result = await callConnectionTool({
       ...envWith(records),
-      SANDBOX_HOST_URL: 'https://sandbox.test',
+      DB_QUERY_SANDBOX: fake.namespace as never,
     }, context, 'neon_main', 'execute_sql_readonly', {
       query: 'select now()',
       limit: 5,
     }) as { content: Array<{ text: string }> };
 
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fake.calls).toHaveLength(1);
     expect(JSON.parse(result.content[0]!.text)).toEqual({
       rows: [{ now: '2026-05-08T00:00:00Z' }],
       rowsAffected: [],
     });
   });
 
-  it('executes read-only PlanetScale SQL through the MySQL data proxy MCP broker', async () => {
-    const fetchMock = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
-      expect(String(url)).toBe('https://sandbox.test/v1/workspaces/org_1/ws_1/data-proxy/mysql/query');
-      expect(init?.method).toBe('POST');
-      expect(JSON.parse(String(init?.body))).toMatchObject({
+  it('executes read-only PlanetScale SQL through the MySQL db-query sandbox MCP broker', async () => {
+    const fake = fakeDbQuerySandboxNamespace((request) => {
+      expect(request).toMatchObject({
+        engine: 'mysql',
         mode: 'read',
-        host: 'aws.connect.psdb.cloud',
-        user: 'svc',
-        password: 'secret',
-        database: 'appdb',
-        query: 'select id from users',
+        sql: 'select id from users',
         params: [],
-        tls: 'true',
+        target: {
+          host: 'aws.connect.psdb.cloud',
+          user: 'svc',
+          password: 'secret',
+          database: 'appdb',
+          // Legacy tls: 'true' (go-sql-driver full verification) maps to verify-full.
+          sslMode: 'verify-full',
+        },
       });
-      return new Response(JSON.stringify({
-        recordset: [{ id: 1 }],
-      }));
+      return { ok: true, rows: [{ id: 1 }], fields: [{ name: 'id' }], rowCount: 1, truncated: false, durationMs: 2 };
     });
-    vi.stubGlobal('fetch', fetchMock);
     const records = [
       integration({
         id: 'planetscale_main',
@@ -2662,13 +2653,13 @@ describe('connections runtime', () => {
 
     const result = await callConnectionTool({
       ...envWith(records),
-      SANDBOX_HOST_URL: 'https://sandbox.test',
+      DB_QUERY_SANDBOX: fake.namespace as never,
     }, context, 'planetscale_main', 'execute_sql_readonly', {
       query: 'select id from users',
       limit: 3,
     }) as { content: Array<{ text: string }> };
 
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fake.calls).toHaveLength(1);
     expect(JSON.parse(result.content[0]!.text)).toEqual({
       rows: [{ id: 1 }],
       rowsAffected: [],
@@ -2676,14 +2667,15 @@ describe('connections runtime', () => {
   });
 
   it('forwards SQL database MCP queries without keyword filtering', async () => {
-    const fetchMock = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
-      expect(JSON.parse(String(init?.body))).toMatchObject({
+    // The MCP does no keyword filtering: the statement is forwarded verbatim
+    // in read mode — the runner's rolled-back transaction is the safety net.
+    const fake = fakeDbQuerySandboxNamespace((request) => {
+      expect(request).toMatchObject({
         mode: 'read',
-        query: 'delete from users',
+        sql: 'delete from users',
       });
-      return new Response(JSON.stringify({ rowsAffected: [3] }));
+      return { ok: true, rows: [], fields: [], rowCount: 0, truncated: false, durationMs: 2 };
     });
-    vi.stubGlobal('fetch', fetchMock);
     const records = [
       integration({
         id: 'pg_main',
@@ -2697,15 +2689,15 @@ describe('connections runtime', () => {
 
     const result = await callConnectionTool({
       ...envWith(records),
-      SANDBOX_HOST_URL: 'https://sandbox.test',
+      DB_QUERY_SANDBOX: fake.namespace as never,
     }, context, 'pg_main', 'execute_sql_readonly', {
       query: 'delete from users',
     }) as { content: Array<{ text: string }> };
 
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fake.calls).toHaveLength(1);
     expect(JSON.parse(result.content[0]!.text)).toEqual({
       rows: [],
-      rowsAffected: [3],
+      rowsAffected: [],
     });
   });
 

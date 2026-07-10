@@ -1,9 +1,10 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import {
   handleMssqlQuery,
   handleMysqlQuery,
   handlePostgresQuery,
 } from '../src/routes/data-proxy.js';
+import { fakeDbQuerySandboxNamespace } from './fake-db-query-sandbox.js';
 
 function buildRouteContext(req: Request, env: Record<string, unknown>) {
   return {
@@ -19,7 +20,6 @@ const cases = [
   {
     name: 'mssql',
     path: '/api/mssql/query',
-    expectedPath: '/v1/workspaces/org-1/ws-1/data-proxy/mssql/query',
     handler: handleMssqlQuery,
     body: {
       mode: 'read',
@@ -28,11 +28,17 @@ const cases = [
       password: 'pass',
       query: 'SELECT 1',
     },
+    // Legacy Go defaults the compat layer must reproduce.
+    expectedRequest: {
+      engine: 'mssql',
+      mode: 'read',
+      sql: 'SELECT 1',
+      target: { host: 'db.example.com', port: 1433, database: 'master', sslMode: 'require' },
+    },
   },
   {
     name: 'postgres',
     path: '/api/postgres/query',
-    expectedPath: '/v1/workspaces/org-1/ws-1/data-proxy/postgres/query',
     handler: handlePostgresQuery,
     body: {
       mode: 'read',
@@ -42,11 +48,17 @@ const cases = [
       query: 'SELECT $1::int as value',
       params: [123],
     },
+    expectedRequest: {
+      engine: 'postgres',
+      mode: 'read',
+      sql: 'SELECT $1::int as value',
+      params: [123],
+      target: { host: 'db.example.com', port: 5432, database: 'postgres', sslMode: 'require' },
+    },
   },
   {
     name: 'mysql',
     path: '/api/mysql/query',
-    expectedPath: '/v1/workspaces/org-1/ws-1/data-proxy/mysql/query',
     handler: handleMysqlQuery,
     body: {
       mode: 'read',
@@ -56,12 +68,20 @@ const cases = [
       query: 'SELECT ? as value',
       params: [321],
     },
+    expectedRequest: {
+      engine: 'mysql',
+      mode: 'read',
+      sql: 'SELECT ? as value',
+      params: [321],
+      target: { host: 'db.example.com', port: 3306, database: '', sslMode: 'prefer' },
+    },
   },
 ] as const;
 
 describe('data-proxy routes', () => {
   for (const testCase of cases) {
     it(`rejects ${testCase.name} query without sandbox proxy auth`, async () => {
+      const fake = fakeDbQuerySandboxNamespace(() => ({ ok: true, rows: [], fields: [], rowCount: 0, truncated: false, durationMs: 1 }));
       const req = new Request(`https://camelai.dev${testCase.path}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -70,30 +90,20 @@ describe('data-proxy routes', () => {
 
       const res = await testCase.handler(buildRouteContext(req, {
         SANDBOX_PROXY_SECRET: 'test-secret',
-        SANDBOX_HOST: { fetch: vi.fn() } as unknown as Fetcher,
+        DB_QUERY_SANDBOX: fake.namespace,
       }));
 
       expect(res.status).toBe(401);
       expect(await res.json()).toEqual({ error: 'Unauthorized: sandbox proxy auth required' });
+      expect(fake.calls).toHaveLength(0);
     });
 
-    it(`forwards ${testCase.name} query through SANDBOX_HOST using sandbox identity`, async () => {
-      const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-        const url = typeof input === 'string'
-          ? new URL(input)
-          : input instanceof URL
-            ? input
-            : new URL(input.url);
-        expect(url.pathname).toBe(testCase.expectedPath);
-        expect(init?.method).toBe('POST');
-
-        const forwardedBody = JSON.parse(await new Response(init?.body ?? null).text());
-        expect(forwardedBody).toEqual(testCase.body);
-
-        return new Response(JSON.stringify({ recordset: [{ value: 1 }] }), {
-          status: 200,
-          headers: { 'Content-Type': 'application/json' },
-        });
+    it(`runs ${testCase.name} query in the db-query sandbox with the legacy request mapping`, async () => {
+      const fake = fakeDbQuerySandboxNamespace((request) => {
+        expect(request).toMatchObject(testCase.expectedRequest);
+        // Legacy surfaces are uncapped-rows + byte-capped, never row-limited.
+        expect(request.rowLimit).toBeNull();
+        return { ok: true, rows: [{ value: 1 }], fields: [{ name: 'value' }], rowCount: 1, truncated: false, durationMs: 2 };
       });
 
       const req = new Request(`https://camelai.dev${testCase.path}`, {
@@ -109,13 +119,74 @@ describe('data-proxy routes', () => {
 
       const res = await testCase.handler(buildRouteContext(req, {
         SANDBOX_PROXY_SECRET: 'test-secret',
-        SANDBOX_HOST: { fetch: fetchMock } as unknown as Fetcher,
+        DB_QUERY_SANDBOX: fake.namespace,
       }));
 
-      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(fake.calls).toHaveLength(1);
       expect(res.status).toBe(200);
       expect(await res.json()).toEqual({ recordset: [{ value: 1 }] });
     });
-
   }
+
+  it('modify mode returns rowsAffected only', async () => {
+    const fake = fakeDbQuerySandboxNamespace((request) => {
+      expect(request.mode).toBe('modify');
+      return { ok: true, rows: [], fields: [], rowCount: 0, truncated: false, durationMs: 2, rowsAffected: [3] };
+    });
+    const req = new Request('https://camelai.dev/api/postgres/query', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-sandbox-secret': 'test-secret',
+        'x-chiridion-org-id': 'org-1',
+        'x-chiridion-workspace-id': 'ws-1',
+      },
+      body: JSON.stringify({
+        mode: 'modify',
+        host: 'db.example.com',
+        user: 'user',
+        password: 'pass',
+        query: 'UPDATE t SET x = 1',
+      }),
+    });
+
+    const res = await handlePostgresQuery(buildRouteContext(req, {
+      SANDBOX_PROXY_SECRET: 'test-secret',
+      DB_QUERY_SANDBOX: fake.namespace,
+    }));
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ rowsAffected: [3] });
+  });
+
+  it('surfaces runner errors with the legacy status', async () => {
+    const fake = fakeDbQuerySandboxNamespace(() => ({
+      ok: false,
+      error: { message: 'connect ECONNREFUSED', code: 'ECONNREFUSED' },
+    }));
+    const req = new Request('https://camelai.dev/api/postgres/query', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-sandbox-secret': 'test-secret',
+        'x-chiridion-org-id': 'org-1',
+        'x-chiridion-workspace-id': 'ws-1',
+      },
+      body: JSON.stringify({
+        mode: 'read',
+        host: 'db.example.com',
+        user: 'user',
+        password: 'pass',
+        query: 'SELECT 1',
+      }),
+    });
+
+    const res = await handlePostgresQuery(buildRouteContext(req, {
+      SANDBOX_PROXY_SECRET: 'test-secret',
+      DB_QUERY_SANDBOX: fake.namespace,
+    }));
+
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'connect ECONNREFUSED' });
+  });
 });

@@ -18,12 +18,7 @@
 	"routes": [
 		{ "pattern": "dev-illiana.camelai.dev/*", "zone_name": "camelai.dev" }
 	],
-	"vpc_services": [
-		{
-			"binding": "SANDBOX_HOST",
-			"service_id": "019c54ff-d555-7741-8464-3b68f8a18edf"
-		}
-	],
+	"vpc_services": [],
 	"vars": {
 		"AI_VIRTUAL_MODEL": "dynamic/auto",
 			"R2_BUCKET_NAME": "chiridion-sandbox",
@@ -58,6 +53,12 @@
 			"image": "./workers/main/project-build-sandbox.Dockerfile",
 			"instance_type": "standard-4",
 			"max_instances": 10
+		},
+		{
+			"class_name": "DbQuerySandbox",
+			"image": "./workers/main/db-query-sandbox.Dockerfile",
+			"instance_type": "standard-1",
+			"max_instances": 2
 		}
 	],
 	"artifacts": [
@@ -120,6 +121,7 @@
 				{ "name": "WORKER_LOGS", "class_name": "WorkerLogsDO" },
 				{ "name": "WORKSPACE_FS", "class_name": "WorkspaceFilesystemDO" },
 				{ "name": "PROJECT_BUILD_SANDBOX", "class_name": "ProjectBuildSandbox" },
+				{ "name": "DB_QUERY_SANDBOX", "class_name": "DbQuerySandbox" },
 			]
 		},
 	"workflows": [
@@ -156,6 +158,7 @@
 		{ "tag": "v24", "new_sqlite_classes": ["CloudflareSandbox"] },
 		{ "tag": "v25", "new_sqlite_classes": ["WorkspaceFilesystemDO"] },
 			{ "tag": "v27", "new_sqlite_classes": ["MigrationPlanningAgent"] },
-			{ "tag": "v28", "new_sqlite_classes": ["ProjectBuildSandbox"] }
+			{ "tag": "v28", "new_sqlite_classes": ["ProjectBuildSandbox"] },
+			{ "tag": "v29", "new_sqlite_classes": ["DbQuerySandbox"] }
 	]
 }

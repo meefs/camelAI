@@ -28,8 +28,9 @@ Cloudflare AI Gateway and BYOK credentials back model access.
 
 Agent turns run in `ChatThreadDO` (Pi coding agent). File/shell/project
 operations go to the external **project runtime service** on the Azure VM via
-`PROJECT_RUNTIME_HOST` (and related bindings such as `SANDBOX_HOST` /
-`DATA_PROXY`). There is no in-repo Go sandbox-host or data-proxy tree.
+`PROJECT_RUNTIME_HOST`. SQL queries/exports run in the `DbQuerySandbox`
+Cloudflare container (the `DATA_PROXY` binding is served worker-side). There
+is no in-repo Go sandbox-host or data-proxy tree.
 
 ## Repository Map
 
@@ -45,7 +46,7 @@ operations go to the external **project runtime service** on the Azure VM via
 - `workers/user-logs-tail/` - Tail worker for deployed app logs.
 - `workers/e2e-reports/` - Public viewer at `e2e-reports.camelai.dev` serving Playwright E2E reports from R2 (uploaded by the E2E workflow); deploy with `bun run deploy:e2e-reports`.
 - `workers/eval-reports/` - Read-only results store + viewer for agent evals at `evals.camelai.dev` (evals run locally; `EVAL_REPORT=1` publishes them); deploy with `bun run deploy:eval-reports`.
-- The data-proxy Go service lives in the external **`qaml-ai/project-runtime-service`** repo (`cmd/data-proxy`), not in this tree. It is the binary deployed to the sandbox host VM and the one behind the `SANDBOX_HOST` / `DATA_PROXY` bindings. There is no in-repo copy — do not reintroduce one. (`scripts/test-local-database-mcp.ts` runs it locally via `PROJECT_RUNTIME_SERVICE_DIR`, default sibling checkout.)
+- The Go data-proxy (external `qaml-ai/project-runtime-service` `cmd/data-proxy`) is **retired**: SQL queries and warehouse exports now run in the `DbQuerySandbox` Cloudflare container (`workers/main/src/db-query-service.ts` + `data-proxy.ts` compat surface), and the `SANDBOX_HOST` VPC binding is gone. Do not reintroduce either. Decommission checklist: `docs/db-egress-relay.md`.
 - `sandbox/` - Agent skills, project scaffold templates (`create-worker/`), and the canonical `validate-notebook.py` (byte-copied into `workers/main/analysis-sandbox-assets/` for the analysis image build context). Not the agent control plane or harness — those live in `workers/main` (`chat-thread-do.ts`, Pi tools, Dockerfiles).
 - `scripts/` - Deploy, eval, self-host, and maintenance scripts. One-off migrations (`migrate-to-workspaces.ts`, `import-legacy-emails.ts`) are break-glass only.
 - `docs/` - Supporting documentation; see `docs/README.md` for the canonical index (many `*-plan.md` / feedback files are historical).
@@ -270,7 +271,8 @@ live in separate files, and the catalog tests fail if any of them drift apart.
 - Sandbox containers do not get a generic Worker API proxy. File, shell, and runtime operations go through explicit project-runtime / host control-plane APIs.
 - BYOK credentials are scoped by org/thread and should not be placed into container environment variables.
 - User app deploys can rewrite internal service bindings such as the data proxy, virtual AI binding, and virtual R2 bucket. Relevant files include `workers/main/src/cf-api-proxy.ts`, `data-proxy-service.ts`, `ai-virtual-binding.ts`, and `r2-virtual-bucket.ts`.
-- Outbound database traffic from the data proxy egresses from the sandbox host VM IP `20.46.233.68`. This IP is surfaced in direct database connection setup UIs (postgres, mysql, clickhouse, mongodb, redis, snowflake) for firewall/VPC allowlisting; constant lives in `src/lib/sandbox-network.ts`.
+- Outbound database traffic egresses from the sandbox host VM IP `20.46.233.68` (surfaced in direct database connection setup UIs for firewall/VPC allowlisting; constant in `src/lib/sandbox-network.ts`).
+- `DbQuerySandbox` (Cloudflare sandbox container, no user code) is THE SQL query/export path — the connection MCP, the `DATA_PROXY` user-app binding, and the sandbox container routes all go through the legacy-contract surface in `workers/main/src/data-proxy.ts` → `db-query-compat.ts` → `db-query-service.ts`. It keeps the static-IP guarantee by dialing databases through a SOCKS relay on the sandbox host VM (`infra/db-egress-relay/`; design + smoke + decommission checklist in `docs/db-egress-relay.md`); with no relay configured it dials from the container's own IP. The query logic is shipped from the worker per call (not baked): the runner `workers/main/db-query-sandbox-assets/runner/db-query-runner.mjs` is embedded via Vite `?raw` and piped into node over stdin in one stateless exec; exports write Parquet straight into the workspace's mounted warehouse R2 prefix. Keep the SSRF denylists in that runner and `infra/db-egress-relay/gost.yaml.example` in sync.
 
 ## Stripe Billing And Credits
 
@@ -306,7 +308,7 @@ live in separate files, and the catalog tests fail if any of them drift apart.
 
 - Projects run through the external project runtime service via the `PROJECT_RUNTIME_HOST` VPC binding and `ProjectRuntimeServiceVmBridge`.
 - Project metadata and DO-backed workspace files live in `WorkspaceFilesystemDO`; project files and shell execution live in the runtime service.
-- The old app-owned sandbox-host service and its deploy/dev scripts have been removed (the data-proxy now lives in `qaml-ai/project-runtime-service`). Do not add new project VM behavior through the retired sandbox-host binding.
+- The old app-owned sandbox-host service and its deploy/dev scripts have been removed, and the VM data-proxy is retired in favor of `DbQuerySandbox`. Do not add new project VM behavior through retired bindings.
 
 ## Testing Guidance
 
@@ -328,7 +330,7 @@ live in separate files, and the catalog tests fail if any of them drift apart.
 
 ## Local Environment Notes
 
-Minimal prerequisites: Node.js 22+, Bun, Tailscale, and Cloudflare credentials for deployed/bound services. (Go 1.24+ is only needed if you run the external `project-runtime-service` data-proxy locally.)
+Minimal prerequisites: Node.js 22+, Bun, Tailscale, and Cloudflare credentials for deployed/bound services.
 
 Common local secret/config files:
 

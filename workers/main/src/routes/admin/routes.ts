@@ -144,6 +144,11 @@ import { ProjectRuntimeServiceVmBridge } from "../../project-runtime-service-vm.
 import { migrateWorkspaceVmProjects } from "../../project-vm-migration.js";
 import { recordObservabilityEvent } from "../../observability.js";
 import { getSandbox } from "@cloudflare/sandbox";
+import {
+  relayConfigFromEnv,
+  runDbQuery,
+  type DbQuerySandboxStub,
+} from "../../db-query-service.js";
 import { buildLogTail, cleanBuildLog, projectBuildSandboxKey, runProjectBuild } from "../../project-build-service.js";
 import type { ProjectBuildSandboxLike } from "../../project-worker-bundle.js";
 import { waitUntil } from "cloudflare:workers";
@@ -843,6 +848,116 @@ routes.post(
       duration_ms: result.durationMs,
       error: result.success ? null : (result.error ?? `Build failed with exit code ${result.exitCode}`),
       log_excerpt: result.success ? null : buildLogTail(cleanBuildLog(`${result.stderr}\n${result.stdout}`)),
+    });
+  },
+);
+
+// ---------------------------------------------------------------------------
+// POST /db-query-sandbox/query
+// ---------------------------------------------------------------------------
+
+const DbQuerySandboxQueryBodySchema = z.object({
+  engine: z.enum(["postgres", "mysql", "mssql"]),
+  mode: z.enum(["read", "modify"]).optional(),
+  target: z.object({
+    host: z.string().min(1),
+    port: z.number().int().min(1).max(65_535),
+    user: z.string().min(1),
+    password: z.string(),
+    database: z.string().min(1),
+    ssl_mode: z.enum(["disable", "require", "verify-ca", "verify-full", "prefer"]).optional(),
+  }),
+  sql: z.string().min(1),
+  /** Positional array for postgres/mysql; named record for mssql. */
+  params: z.union([z.array(z.unknown()), z.record(z.unknown())]).optional(),
+  row_limit: z.number().int().min(1).max(10_000).optional(),
+  timeout_ms: z.number().int().min(1_000).max(120_000).optional(),
+  /** Container key; defaults to "admin-smoke" so runs share one warm container. */
+  sandbox_key: z.string().min(1).optional(),
+});
+
+const DbQuerySandboxQueryResponseSchema = z.object({
+  ok: z.boolean(),
+  rows: z.array(z.record(z.unknown())).optional(),
+  fields: z.array(z.object({ name: z.string() })).optional(),
+  row_count: z.number().int().optional(),
+  truncated: z.boolean().optional(),
+  duration_ms: z.number().optional(),
+  error: z.string().nullable(),
+});
+
+/**
+ * Smoke path for the static-IP database egress chain (docs/db-egress-relay.md):
+ * DbQuerySandbox container → cloudflared access tcp → sandbox-host tunnel →
+ * gost SOCKS relay → target database, egressing from the VM's static IP.
+ * Admin-only with an explicit target; production traffic goes through the
+ * legacy-contract surface in data-proxy.ts (connection MCP, DATA_PROXY
+ * user-app binding, sandbox routes), not this route.
+ */
+routes.post(
+  "/db-query-sandbox/query",
+  openApi({
+    summary: "Run one SQL query through the static-IP db egress relay (smoke test)",
+    request: { json: DbQuerySandboxQueryBodySchema },
+    responses: {
+      200: DbQuerySandboxQueryResponseSchema,
+      400: ErrorSchema,
+    },
+  }),
+  async (c) => {
+    if (!c.env.DB_QUERY_SANDBOX) {
+      return c.json({ error: "DB_QUERY_SANDBOX container binding is not configured" }, 400);
+    }
+    // Relay is optional: when unset, the query dials the database directly from
+    // the container's IP (no static-IP guarantee).
+    const relay = relayConfigFromEnv(c.env);
+    const body = c.req.valid("json");
+
+    const sandbox = getSandbox(c.env.DB_QUERY_SANDBOX, body.sandbox_key ?? "admin-smoke", {
+      normalizeId: true,
+    }) as unknown as DbQuerySandboxStub;
+
+    const started = Date.now();
+    const result = await runDbQuery(
+      { sandbox, relay },
+      {
+        engine: body.engine,
+        mode: body.mode,
+        target: {
+          host: body.target.host,
+          port: body.target.port,
+          user: body.target.user,
+          password: body.target.password,
+          database: body.target.database,
+          sslMode: body.target.ssl_mode,
+        },
+        sql: body.sql,
+        params: body.params,
+        rowLimit: body.row_limit,
+        timeoutMs: body.timeout_ms,
+      },
+    );
+
+    recordObservabilityEvent(c.env, {
+      event: "db_query_sandbox_smoke",
+      severity: result.ok ? "info" : "warn",
+      component: "admin",
+      operation: "db-query-sandbox-query",
+      status: result.ok ? "ok" : "failed",
+      durationMs: Date.now() - started,
+    });
+
+    if (!result.ok) {
+      return c.json({ ok: false, error: result.error.message });
+    }
+    return c.json({
+      ok: true,
+      rows: result.rows,
+      fields: result.fields,
+      row_count: result.rowCount,
+      truncated: result.truncated,
+      duration_ms: result.durationMs,
+      error: null,
     });
   },
 );

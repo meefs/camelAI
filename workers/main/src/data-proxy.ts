@@ -1,16 +1,45 @@
 /**
- * Data proxy HTTP adapter used by Worker routes.
+ * Legacy data-proxy surface, served by the DbQuerySandbox container.
  *
- * Used by internal Worker entrypoints and forwards requests through the
- * SANDBOX_HOST VPC binding.
+ * This module keeps the request/response contract of the retired Go
+ * data-proxy (project-runtime-service cmd/data-proxy) — the shapes that the
+ * `DATA_PROXY` user-app service binding, the sandbox container routes, and
+ * the connection MCP all speak — but executes queries in the Cloudflare
+ * sandbox container (db-query-service.ts) instead of forwarding to the Azure
+ * VM over the SANDBOX_HOST VPC binding. With an egress relay configured the
+ * database still sees the VM's static IP (docs/db-egress-relay.md); without
+ * one, queries dial from the container's own IP.
+ *
+ * The pure request/response/error mapping lives in db-query-compat.ts; this
+ * file is the thin orchestration (sandbox resolution + dispatch).
  */
 
-const DEFAULT_DATA_PROXY_TIMEOUT_MS = 30_000;
+import { getSandbox } from '@cloudflare/sandbox';
+
+import {
+  relayConfigFromEnv,
+  runDbExport,
+  runDbQuery,
+  type DbEgressRelayEnv,
+  type DbQueryDeps,
+  type DbQueryRequest,
+  type DbQuerySandboxStub,
+} from './db-query-service.js';
+import {
+  dbErrorToLegacy,
+  dbResultToLegacyResponse,
+  exportRequestToDbQuery,
+  mssqlRequestToDbQuery,
+  mysqlRequestToDbQuery,
+  postgresRequestToDbQuery,
+  type LegacyEngine,
+} from './db-query-compat.js';
+import { warehouseWorkspacePrefix } from './warehouse-export.js';
+
 const DEFAULT_DATA_PROXY_MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
 
-export interface DataProxyEnv {
-  SANDBOX_HOST?: Fetcher;
-  SANDBOX_HOST_URL?: string;
+export interface DataProxyEnv extends DbEgressRelayEnv {
+  DB_QUERY_SANDBOX?: DurableObjectNamespace<import('./db-query-sandbox.js').DbQuerySandbox>;
   DATA_PROXY_MAX_RESPONSE_BYTES?: string;
 }
 
@@ -25,64 +54,12 @@ type DataProxyError = Error & {
   number?: number;
 };
 
-function createDataProxyError(message: string, status?: number): DataProxyError {
+function createDataProxyError(message: string, status?: number, code?: string, num?: number): DataProxyError {
   const error = new Error(message) as DataProxyError;
   error.status = status;
+  error.code = code;
+  error.number = num;
   return error;
-}
-
-function resolveSandboxHostUrlOverride(env: DataProxyEnv): URL | null {
-  const raw = (env.SANDBOX_HOST_URL ?? '').trim();
-  if (!raw) return null;
-  let parsed: URL;
-  try {
-    parsed = new URL(raw);
-  } catch {
-    throw createDataProxyError('SANDBOX_HOST_URL is invalid', 500);
-  }
-  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-    throw createDataProxyError('SANDBOX_HOST_URL must use http or https', 500);
-  }
-  return parsed;
-}
-
-function normalizeBaseUrl(url: URL): URL {
-  const copy = new URL(url.toString());
-  copy.search = '';
-  copy.hash = '';
-  copy.pathname = copy.pathname.replace(/\/+$/, '');
-  return copy;
-}
-
-function sandboxDataProxyUrl(
-  env: DataProxyEnv,
-  context: DataProxyContext,
-  subpath: string
-): string {
-  const base = resolveSandboxHostUrlOverride(env);
-  const url = base ? normalizeBaseUrl(base) : new URL('http://sandbox');
-  const cleanedSubpath = subpath.startsWith('/') ? subpath : `/${subpath}`;
-  const workspacePath = `/v1/workspaces/${encodeURIComponent(context.orgId)}/${encodeURIComponent(context.workspaceId)}/data-proxy${cleanedSubpath}`;
-  const basePath = url.pathname === '/' ? '' : url.pathname.replace(/\/+$/, '');
-  url.pathname = `${basePath}${workspacePath}`;
-  return url.toString();
-}
-
-async function fetchSandboxHost(
-  env: DataProxyEnv,
-  url: string,
-  init: RequestInit
-): Promise<Response> {
-  if (resolveSandboxHostUrlOverride(env)) {
-    return fetch(url, init);
-  }
-  if (!env.SANDBOX_HOST) {
-    throw createDataProxyError(
-      'SANDBOX_HOST binding is not configured (or set SANDBOX_HOST_URL for local mode)',
-      500
-    );
-  }
-  return env.SANDBOX_HOST.fetch(url, init);
 }
 
 function resolveMaxResponseBytes(env: DataProxyEnv): number {
@@ -96,100 +73,34 @@ function resolveMaxResponseBytes(env: DataProxyEnv): number {
   return parsed;
 }
 
-async function readTextResponseWithLimit(response: Response, maxBytes: number): Promise<string> {
-  const contentLengthRaw = response.headers.get('content-length') ?? '';
-  if (contentLengthRaw) {
-    const contentLength = Number.parseInt(contentLengthRaw, 10);
-    if (Number.isFinite(contentLength) && contentLength > maxBytes) {
-      throw createDataProxyError(
-        `Data proxy response too large (${contentLength} bytes > limit ${maxBytes} bytes)`,
-        413
-      );
-    }
+/**
+ * Container deps for this workspace's queries. One sandbox per workspace: a
+ * workspace's queries share a warm container (and its relay forwarder) while
+ * tenants never share one.
+ */
+function resolveDbQueryDeps(env: DataProxyEnv, context: DataProxyContext): DbQueryDeps {
+  if (!env.DB_QUERY_SANDBOX) {
+    throw createDataProxyError('DB_QUERY_SANDBOX container binding is not configured', 500);
   }
-
-  if (!response.body) {
-    return response.text();
-  }
-
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let totalBytes = 0;
-  let text = '';
-
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-
-    totalBytes += value.byteLength;
-    if (totalBytes > maxBytes) {
-      await reader.cancel('response exceeds max bytes');
-      throw createDataProxyError(
-        `Data proxy response too large (${totalBytes} bytes > limit ${maxBytes} bytes)`,
-        413
-      );
-    }
-
-    text += decoder.decode(value, { stream: true });
-  }
-
-  text += decoder.decode();
-  return text;
+  const sandbox = getSandbox(env.DB_QUERY_SANDBOX, `ws-${context.workspaceId}`, {
+    normalizeId: true,
+  }) as unknown as DbQuerySandboxStub;
+  return { sandbox, relay: relayConfigFromEnv(env) };
 }
 
-async function readJsonResponse(response: Response, maxBytes: number): Promise<unknown> {
-  const text = await readTextResponseWithLimit(response, maxBytes);
-  if (!text.trim()) return {};
-
-  try {
-    return JSON.parse(text);
-  } catch {
-    throw createDataProxyError(
-      `Data proxy returned non-JSON response (status ${response.status})`,
-      502
-    );
-  }
-}
-
-async function proxyRequest<T>(
+async function executeLegacyQuery(
   env: DataProxyEnv,
   context: DataProxyContext,
-  path: string,
-  requestBody: unknown
-): Promise<T> {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), DEFAULT_DATA_PROXY_TIMEOUT_MS);
-
-  try {
-    const response = await fetchSandboxHost(env, sandboxDataProxyUrl(env, context, path), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(requestBody),
-      signal: controller.signal,
-    });
-
-    const payload = await readJsonResponse(response, resolveMaxResponseBytes(env));
-    if (!response.ok) {
-      const objectPayload = payload as Record<string, unknown>;
-      const message =
-        typeof objectPayload?.error === 'string'
-          ? objectPayload.error
-          : `Data proxy request failed with status ${response.status}`;
-      const error = createDataProxyError(message, response.status);
-      if (typeof objectPayload?.code === 'string') error.code = objectPayload.code;
-      if (typeof objectPayload?.number === 'number') error.number = objectPayload.number;
-      throw error;
-    }
-
-    return payload as T;
-  } catch (error) {
-    if (error instanceof Error && error.name === 'AbortError') {
-      throw createDataProxyError(`Data proxy request timed out after ${DEFAULT_DATA_PROXY_TIMEOUT_MS}ms`, 504);
-    }
-    throw error;
-  } finally {
-    clearTimeout(timeout);
+  engine: LegacyEngine,
+  mode: SqlQueryMode,
+  request: DbQueryRequest,
+): Promise<{ recordset?: Record<string, unknown>[]; rowsAffected?: number[] }> {
+  const result = await runDbQuery(resolveDbQueryDeps(env, context), request);
+  if (!result.ok) {
+    const legacy = dbErrorToLegacy(engine, result.error);
+    throw createDataProxyError(legacy.message, legacy.status, legacy.code, legacy.number);
   }
+  return dbResultToLegacyResponse(mode, result);
 }
 
 export async function mssqlQuery(
@@ -197,7 +108,8 @@ export async function mssqlQuery(
   context: DataProxyContext,
   request: MssqlQueryRequest
 ): Promise<MssqlQueryResponse> {
-  return proxyRequest<MssqlQueryResponse>(env, context, '/mssql/query', request);
+  const mapped = mssqlRequestToDbQuery(request, { maxResponseBytes: resolveMaxResponseBytes(env) });
+  return await executeLegacyQuery(env, context, 'mssql', request.mode, mapped);
 }
 
 export async function postgresQuery(
@@ -205,7 +117,8 @@ export async function postgresQuery(
   context: DataProxyContext,
   request: PostgresQueryRequest
 ): Promise<PostgresQueryResponse> {
-  return proxyRequest<PostgresQueryResponse>(env, context, '/postgres/query', request);
+  const mapped = postgresRequestToDbQuery(request, { maxResponseBytes: resolveMaxResponseBytes(env) });
+  return await executeLegacyQuery(env, context, 'postgres', request.mode, mapped);
 }
 
 export async function mysqlQuery(
@@ -213,45 +126,48 @@ export async function mysqlQuery(
   context: DataProxyContext,
   request: MysqlQueryRequest
 ): Promise<MysqlQueryResponse> {
-  return proxyRequest<MysqlQueryResponse>(env, context, '/mysql/query', request);
+  const mapped = mysqlRequestToDbQuery(request, { maxResponseBytes: resolveMaxResponseBytes(env) });
+  return await executeLegacyQuery(env, context, 'mysql', request.mode, mapped);
 }
 
-export interface SqlExportStreamRequest {
+export interface SqlExportRequest {
   engine: 'mysql' | 'postgres' | 'mssql';
   /** Connection + query payload, identical in shape to the `/query` body. */
   body: Record<string, unknown>;
+  /** Destination R2 key — must live inside this workspace's warehouse prefix. */
+  r2Key: string;
 }
 
 /**
- * Stream a bulk read-only export from the data-proxy VM (`/{engine}/export`,
- * Parquet) and return the raw streaming `Response`. The body is NOT buffered —
- * the caller pipes `response.body` straight to R2, so a multi-GB extract never
- * sits in Worker memory. The VM enforces its own export timeout, so unlike point
- * queries we do not impose a client-side abort that would kill the stream
- * mid-upload. Throws loudly (with the VM's error text) on a non-2xx response.
+ * Run a bulk read-only export (Parquet) in the db-query sandbox, written
+ * DIRECTLY to the workspace's warehouse R2 prefix via the container's
+ * credential-less bucket mount — nothing streams through the Worker. The
+ * runner enforces the export timeout and unlinks a partial file on failure;
+ * callers should still HEAD-verify the staged object. Throws loudly (with the
+ * runner's error) on failure.
  */
-export async function sqlExportStream(
+export async function sqlExportToWarehouse(
   env: DataProxyEnv,
   context: DataProxyContext,
-  request: SqlExportStreamRequest
-): Promise<Response> {
-  const response = await fetchSandboxHost(
-    env,
-    sandboxDataProxyUrl(env, context, `/${request.engine}/export`),
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(request.body),
-    }
-  );
-  if (!response.ok) {
-    const text = await readTextResponseWithLimit(response, resolveMaxResponseBytes(env)).catch(() => '');
+  request: SqlExportRequest
+): Promise<{ rowCount: number; bytes: number }> {
+  const prefix = warehouseWorkspacePrefix(context.workspaceId);
+  if (!request.r2Key.startsWith(`${prefix}/`)) {
+    // Internal invariant: the caller derives the key from the same workspace.
     throw createDataProxyError(
-      text || `Data proxy export failed with status ${response.status}`,
-      response.status
+      `export r2Key "${request.r2Key}" is outside the workspace warehouse prefix "${prefix}/"`,
+      500
     );
   }
-  return response;
+  const mapped = exportRequestToDbQuery(request.engine, request.body, {
+    maxResponseBytes: resolveMaxResponseBytes(env),
+  });
+  const result = await runDbExport(resolveDbQueryDeps(env, context), mapped, prefix, `/${request.r2Key}`);
+  if (!result.ok) {
+    const legacy = dbErrorToLegacy(request.engine, result.error);
+    throw createDataProxyError(legacy.message, legacy.status, legacy.code, legacy.number);
+  }
+  return { rowCount: result.rowCount, bytes: result.bytes };
 }
 
 

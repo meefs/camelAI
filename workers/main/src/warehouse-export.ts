@@ -2,14 +2,15 @@ import type { SqlDatabaseClient } from './sql-database-mcp.js';
 
 /**
  * Warehouse export — the deterministic, Worker-side pieces of a connection's
- * `export` method: the R2 staging key + the data-proxy export request body.
+ * `export` method: the R2 staging key + the SQL export request body.
  *
- * The Python warehouse container is SEALED (no network). Data reaches it only via
- * R2: a connection's `export` method resolves credentials server-side and streams
- * the read result to an R2 staging object (SQL streams run on the project-runtime
- * data-proxy VM with no Worker wall-clock limit; ClickHouse/BigQuery stream from
- * the Worker); the container then reads that object via a read-only R2 mount.
- * See docs/warehouse-binding-design.md.
+ * Data reaches the analysis container only via R2: a connection's `export`
+ * method resolves credentials server-side and stages the read result as an R2
+ * object (SQL engines export in the db-query sandbox, which writes Parquet
+ * straight to its mounted warehouse prefix — see data-proxy.ts
+ * sqlExportToWarehouse; ClickHouse/BigQuery stream from the Worker through
+ * stageWarehouseExport below); the container then reads that object via a
+ * read-only R2 mount. See docs/warehouse-binding-design.md.
  */
 
 /** Stable, non-cryptographic hash for the R2 staging key (cache identity, not security). */
@@ -198,8 +199,9 @@ export async function stageWarehouseExport(
 }
 
 /**
- * Map a resolved SQL connection client to the engine + data-proxy export body.
- * Pure + unit-testable.
+ * Map a resolved SQL connection client to the engine + legacy-shape export
+ * body (the /query body contract the db-query compat layer maps). Pure +
+ * unit-testable.
  */
 export function sqlClientToExportBody(
   client: SqlDatabaseClient,
@@ -219,7 +221,7 @@ export function sqlClientToExportBody(
     : { engine: 'mysql', body: { ...base, tls: client.tls } };
 }
 
-/** A planned export: which engine, the data-proxy request body, and the R2 staging key. */
+/** A planned export: which engine, the export request body, and the R2 staging key. */
 export interface SqlExportPlan {
   engine: 'mysql' | 'postgres';
   body: Record<string, unknown>;
@@ -227,9 +229,9 @@ export interface SqlExportPlan {
 }
 
 /**
- * Build the full export plan for a SQL connection client — the data-proxy export
- * body + the R2 staging key. Pure; the deploy-gated step is handing the body +
- * a presigned PUT for `r2Key` to the VM `/export-to-r2`.
+ * Build the full export plan for a SQL connection client — the export body +
+ * the R2 staging key. Pure; sqlExportToWarehouse (data-proxy.ts) executes it
+ * in the db-query sandbox, which writes the Parquet extract to `r2Key`.
  */
 export function buildSqlExportPlan(
   workspaceId: string,
@@ -238,6 +240,5 @@ export function buildSqlExportPlan(
   sql: string,
 ): SqlExportPlan {
   const { engine, body } = sqlClientToExportBody(client, sql);
-  // The data-proxy /export streams Parquet (see project-runtime-service cmd/data-proxy).
   return { engine, body, r2Key: warehouseExportKey(workspaceId, connectionId, sql, 'parquet') };
 }

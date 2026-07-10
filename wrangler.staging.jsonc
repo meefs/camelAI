@@ -27,13 +27,14 @@
       "binding": "PROJECT_RUNTIME_HOST",
       "service_id": "019e866e-90ab-72f2-b1bf-b044653ff154",
     },
-    {
-      "binding": "SANDBOX_HOST",
-      "service_id": "019dd673-3397-7c93-b55c-e593a1ffd317",
-    },
   ],
   "vars": {
     "AI_VIRTUAL_MODEL": "dynamic/auto",
+    // Static-IP database egress relay (docs/db-egress-relay.md). SOCKS + Access
+    // service-token credentials are secrets (DB_EGRESS_RELAY_SOCKS_* /
+    // DB_EGRESS_RELAY_ACCESS_*); this hostname is the tunnel public host gost
+    // sits behind. Unset ⇒ direct mode (no static IP).
+    "DB_EGRESS_RELAY_HOSTNAME": "db-relay-staging.camelai.dev",
     "R2_BUCKET_NAME": "chiridion-sandbox",
     "R2_ACCOUNT_ID": "85bbd288051330fb51ee1c86031a299b",
     "R2_MOUNT_DIR": "/home/claude",
@@ -82,6 +83,15 @@
       "class_name": "AnalysisSandbox",
       "image": "./workers/main/analysis-sandbox.Dockerfile",
       "instance_type": "standard-4",
+      "max_instances": 10,
+    },
+    {
+      // Trusted db-query runner with static-IP egress via the sandbox-host
+      // SOCKS relay (docs/db-egress-relay.md). No user code runs here. This is
+      // THE SQL query/export path — one warm container per active workspace.
+      "class_name": "DbQuerySandbox",
+      "image": "./workers/main/db-query-sandbox.Dockerfile",
+      "instance_type": "standard-1",
       "max_instances": 10,
     },
   ],
@@ -153,6 +163,7 @@
 	      { "name": "WORKSPACE_FS", "class_name": "WorkspaceFilesystemDO" },
 	      { "name": "ANALYSIS_SANDBOX", "class_name": "AnalysisSandbox" },
 	      { "name": "PROJECT_BUILD_SANDBOX", "class_name": "ProjectBuildSandbox" },
+	      { "name": "DB_QUERY_SANDBOX", "class_name": "DbQuerySandbox" },
 	    ],
 	  },
   "workflows": [
@@ -172,5 +183,6 @@
 	    { "tag": "v33", "new_sqlite_classes": ["ProjectBuildSandbox"] },
 	    { "tag": "v34", "new_sqlite_classes": ["AnalysisSandbox"] },
 	    { "tag": "v35", "deleted_classes": ["WarehouseSandbox"] },
+	    { "tag": "v36", "new_sqlite_classes": ["DbQuerySandbox"] },
 	  ],
 	}

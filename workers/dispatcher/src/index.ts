@@ -99,8 +99,6 @@ interface Env {
   CF_GATEWAY_TOKEN?: string;
   AI_GATEWAY_AUTH_TOKEN?: string;
   AI_VIRTUAL_MODEL?: string;
-  SANDBOX_HOST?: Fetcher;
-  SANDBOX_HOST_URL?: string;
   DATA_PROXY_MAX_RESPONSE_BYTES?: string;
   LOCAL_APP_VANITY_DOMAIN?: string;
   LOCAL_APP_IFRAME_DOMAIN?: string;

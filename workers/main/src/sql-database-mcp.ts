@@ -2,12 +2,12 @@ import { decryptCredentials } from '../../../src/lib/integration-crypto';
 import {
   mysqlQuery,
   postgresQuery,
-  sqlExportStream,
+  sqlExportToWarehouse,
   type DataProxyContext,
   type DataProxyEnv,
 } from './data-proxy.js';
 import type { WorkspaceIntegrationRecord } from './workspace.js';
-import { buildSqlExportPlan, stageWarehouseExport } from './warehouse-export.js';
+import { buildSqlExportPlan } from './warehouse-export.js';
 
 type JsonValue =
   | null
@@ -196,12 +196,13 @@ async function callSqlDatabaseTool(
 }
 
 /**
- * Stream a resolved SQL export to the workspace warehouse (R2) and return the R2
- * handle. The data-proxy VM streams the full result set as Parquet
- * (`/{engine}/export`, see project-runtime-service); we pipe that stream straight
- * into the auto-expiring warehouse bucket without buffering, so the row set never
- * lands in Worker memory. The sealed DuckDB container then reads `r2_key` via
- * `mountBucket`.
+ * Run a resolved SQL export to the workspace warehouse (R2) and return the R2
+ * handle. The db-query sandbox streams the full result set as Parquet straight
+ * into the workspace's mounted warehouse prefix (see data-proxy.ts
+ * sqlExportToWarehouse) — the rows never pass through the Worker. The analysis
+ * container then reads `r2_key` via `mountBucket`. After the runner reports
+ * success we HEAD the key so a silent persistence failure becomes a loud error
+ * instead of a phantom the tool reports `ok` for.
  */
 async function runSqlWarehouseExport(
   env: SqlDatabaseMcpEnv,
@@ -215,8 +216,14 @@ async function runSqlWarehouseExport(
       { status: 501 },
     );
   }
-  const response = await sqlExportStream(env, context, { engine: plan.engine, body: plan.body });
-  await stageWarehouseExport(bucket, plan.r2Key, response.body, 'parquet');
+  await sqlExportToWarehouse(env, context, { engine: plan.engine, body: plan.body, r2Key: plan.r2Key });
+  const head = await bucket.head(plan.r2Key);
+  if (!head) {
+    throw Object.assign(
+      new Error(`warehouse export did not persist: no object at ${plan.r2Key} after write`),
+      { status: 502 },
+    );
+  }
   return { ok: true, r2_key: plan.r2Key };
 }
 

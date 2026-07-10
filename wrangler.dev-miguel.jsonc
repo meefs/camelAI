@@ -23,10 +23,6 @@
 		{
 			"binding": "PROJECT_RUNTIME_HOST",
 			"service_id": "019e866e-90ab-72f2-b1bf-b044653ff154"
-		},
-		{
-			"binding": "SANDBOX_HOST",
-			"service_id": "019c54ff-d555-7741-8464-3b68f8a18edf"
 		}
 	],
 	"vars": {
@@ -66,6 +62,12 @@
 			"image": "./workers/main/project-build-sandbox.Dockerfile",
 			"instance_type": "standard-4",
 			"max_instances": 10
+		},
+		{
+			"class_name": "DbQuerySandbox",
+			"image": "./workers/main/db-query-sandbox.Dockerfile",
+			"instance_type": "standard-1",
+			"max_instances": 2
 		}
 	],
 	"artifacts": [
@@ -129,6 +131,7 @@
 				{ "name": "WORKER_LOGS", "class_name": "WorkerLogsDO" },
 				{ "name": "WORKSPACE_FS", "class_name": "WorkspaceFilesystemDO" },
 				{ "name": "PROJECT_BUILD_SANDBOX", "class_name": "ProjectBuildSandbox" },
+				{ "name": "DB_QUERY_SANDBOX", "class_name": "DbQuerySandbox" },
 			]
 		},
 	"workflows": [
@@ -171,6 +174,7 @@
 				]
 			},
 			{ "tag": "v27", "new_sqlite_classes": ["MigrationPlanningAgent"] },
-			{ "tag": "v28", "new_sqlite_classes": ["ProjectBuildSandbox"] }
+			{ "tag": "v28", "new_sqlite_classes": ["ProjectBuildSandbox"] },
+			{ "tag": "v29", "new_sqlite_classes": ["DbQuerySandbox"] }
 	]
 }

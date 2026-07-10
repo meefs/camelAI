@@ -1,0 +1,70 @@
+# gost v3 config for the database egress relay (SOCKS5).
+#
+# Copy to gost.yaml (0600), replace the REPLACE_ME credentials, and keep the
+# same values in the main worker's DB_EGRESS_RELAY_SOCKS_USERNAME /
+# DB_EGRESS_RELAY_SOCKS_PASSWORD secrets.
+#
+# SECURITY — the bypass list below is the VM-side SSRF guard: it rejects
+# CONNECT targets in loopback/private/link-local space so a relay client can
+# never reach the VM itself, the Azure VNet (10.0.0.0/16 is inside 10/8), or
+# the Azure IMDS endpoint (169.254.169.254). The in-container runner applies
+# the same policy client-side and always CONNECTs to a resolved IP literal
+# (workers/main/db-query-sandbox-assets/runner/db-query-runner.mjs); the domain
+# matchers here are defense in depth for any non-runner client. Keep the two
+# lists in sync when changing either.
+services:
+  - name: db-egress-socks
+    addr: ":1080"
+    bypass: deny-internal
+    handler:
+      type: socks5
+      auther: db-egress-auth
+      metadata:
+        bind: false
+        udp: false
+    listener:
+      type: tcp
+
+authers:
+  - name: db-egress-auth
+    auths:
+      - username: REPLACE_ME
+        password: REPLACE_ME
+
+bypasses:
+  - name: deny-internal
+    # whitelist:false = blacklist mode: a matching target is refused.
+    whitelist: false
+    matchers:
+      # IPv4: loopback, private, link-local (incl. Azure IMDS), CGNAT,
+      # this-network, documentation/benchmark, multicast, reserved.
+      - 0.0.0.0/8
+      - 10.0.0.0/8
+      - 100.64.0.0/10
+      - 127.0.0.0/8
+      - 169.254.0.0/16
+      - 172.16.0.0/12
+      - 192.0.0.0/24
+      - 192.0.2.0/24
+      - 192.168.0.0/16
+      - 198.18.0.0/15
+      - 198.51.100.0/24
+      - 203.0.113.0/24
+      - 224.0.0.0/4
+      - 240.0.0.0/4
+      # IPv6: unspecified, loopback, v4-mapped, ULA, link-local, multicast,
+      # documentation.
+      - ::/128
+      - ::1/128
+      - ::ffff:0:0/96
+      - fc00::/7
+      - fe80::/10
+      - ff00::/8
+      - 2001:db8::/32
+      # Hostname-typed CONNECTs that should never be relayed (the runner
+      # resolves names itself and sends IP literals; these are backstops).
+      - localhost
+      - "*.localhost"
+      - "*.local"
+      - "*.internal"
+      - metadata.google.internal

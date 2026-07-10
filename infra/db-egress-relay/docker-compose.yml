@@ -1,0 +1,23 @@
+# Database egress relay — authenticated SOCKS5 server on the sandbox host VM.
+#
+# Sits behind the VM's existing cloudflared tunnel (no inbound NSG rules):
+# a tunnel public hostname (e.g. db-relay.<env-domain>) maps to
+# tcp://localhost:1080, and Cloudflare Access gates that hostname with a
+# service-token policy. The Cloudflare db-query sandbox containers reach it
+# via `cloudflared access tcp` and CONNECT onward to customer databases, so
+# every database sees the VM's static egress IP (SANDBOX_OUTBOUND_IP in
+# src/lib/sandbox-network.ts).
+#
+# Setup: copy gost.yaml.example to gost.yaml, fill in credentials, then
+# `docker compose up -d`. See README.md in this directory.
+services:
+  db-egress-socks:
+    image: gogost/gost:3.2.6
+    restart: unless-stopped
+    command: ["-C", "/etc/gost/gost.yaml"]
+    volumes:
+      - ./gost.yaml:/etc/gost/gost.yaml:ro
+    ports:
+      # Loopback-only: reachable from the tunnel daemon on the host, never
+      # from the network. The NSG stays deny-all-inbound regardless.
+      - "127.0.0.1:1080:1080"

@@ -27,10 +27,6 @@
       "binding": "PROJECT_RUNTIME_HOST",
       "service_id": "019e8a87-d4d8-7711-a627-91eeb22040a6",
     },
-    {
-      "binding": "SANDBOX_HOST",
-      "service_id": "019c54ff-d555-7741-8464-3b68f8a18edf",
-    },
   ],
   "vars": {
     "AI_VIRTUAL_MODEL": "google/gemini-3-flash-preview",
@@ -88,6 +84,18 @@
       "image": "./workers/main/analysis-sandbox.Dockerfile",
       "instance_type": "standard-4",
       "max_instances": 100,
+    },
+    {
+      // Trusted db-query runner with static-IP egress via the sandbox-host
+      // SOCKS relay (docs/db-egress-relay.md). No user code runs here. This is
+      // THE SQL query/export path (connection MCP, DATA_PROXY user-app binding,
+      // sandbox routes) — one warm container per active workspace, scale-to-zero
+      // when idle, so the cap bounds concurrently-querying workspaces
+      // (25 × standard-1 = 25 vCPU, well under the account container budget).
+      "class_name": "DbQuerySandbox",
+      "image": "./workers/main/db-query-sandbox.Dockerfile",
+      "instance_type": "standard-1",
+      "max_instances": 25,
     },
   ],
   "artifacts": [
@@ -158,6 +166,7 @@
 	      { "name": "WORKSPACE_FS", "class_name": "WorkspaceFilesystemDO" },
 	      { "name": "ANALYSIS_SANDBOX", "class_name": "AnalysisSandbox" },
 	      { "name": "PROJECT_BUILD_SANDBOX", "class_name": "ProjectBuildSandbox" },
+	      { "name": "DB_QUERY_SANDBOX", "class_name": "DbQuerySandbox" },
 	    ],
 	  },
   "workflows": [
@@ -202,5 +211,6 @@
 	    { "tag": "v29", "new_sqlite_classes": ["ProjectBuildSandbox"] },
 	    { "tag": "v30", "new_sqlite_classes": ["AnalysisSandbox"] },
 	    { "tag": "v31", "deleted_classes": ["WarehouseSandbox"] },
+	    { "tag": "v32", "new_sqlite_classes": ["DbQuerySandbox"] },
 	  ],
 	}
