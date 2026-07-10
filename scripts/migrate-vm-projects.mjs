@@ -388,6 +388,18 @@ async function runPool(items, concurrency, fn, onResult) {
 
 /** Enumerate workspaces via search_workspaces (100-page cap). -> [{id, org}]. */
 async function enumerateWorkspaces(client, only) {
+  // Single-workspace runs must not page the entire fleet: try a targeted
+  // search first (the admin index matches ids), falling back to full
+  // pagination only if the search misses.
+  if (only) {
+    const page = await client.rpc(
+      "search_workspaces",
+      { limit: WORKSPACE_PAGE_LIMIT, offset: 0, search: only },
+      { timeoutMs: LIST_TIMEOUT_MS },
+    );
+    const hit = (page.body_json?.items ?? []).find((w) => w.id === only);
+    if (hit) return [{ id: hit.id, org: hit.org_id }];
+  }
   const workspaces = [];
   let offset = 0;
   for (;;) {
