@@ -19,9 +19,14 @@ function fakeBundleSandbox(files: Map<string, string>): ProjectBuildSandboxLike 
         type: "file" as const,
         absolutePath,
         relativePath: absolutePath.slice(root.length + 1),
+        size: Buffer.byteLength(files.get(absolutePath) ?? ""),
       })),
     })),
   };
+}
+
+function readFilePaths(sandbox: ProjectBuildSandboxLike): string[] {
+  return (sandbox.readFile as unknown as { mock: { calls: unknown[][] } }).mock.calls.map((call) => call[0] as string);
 }
 
 describe("collectWorkerBundleFromSandbox", () => {
@@ -41,7 +46,8 @@ describe("collectWorkerBundleFromSandbox", () => {
       ["/workspace/demo/build/client/assets/app.css", "body{}"],
     ]);
 
-    const bundle = await collectWorkerBundleFromSandbox(fakeBundleSandbox(files), "/workspace/demo");
+    const sandbox = fakeBundleSandbox(files);
+    const bundle = await collectWorkerBundleFromSandbox(sandbox, "/workspace/demo");
 
     expect(bundle.metadata).toMatchObject({ main_module: "index.js" });
     expect(bundle.modules.map((module) => module.name)).toEqual(["chunk.js", "index.js"]);
@@ -49,10 +55,22 @@ describe("collectWorkerBundleFromSandbox", () => {
       "application/javascript+module",
       "application/javascript+module",
     ]);
-    expect(bundle.assets.map((asset) => ({ path: asset.path, contentType: asset.contentType }))).toEqual([
-      { path: "assets/app.css", contentType: "text/css; charset=utf-8" },
-      { path: "index.html", contentType: "text/html; charset=utf-8" },
+    expect(bundle.assets.map((asset) => ({ path: asset.path, contentType: asset.contentType, size: asset.size }))).toEqual([
+      { path: "assets/app.css", contentType: "text/css; charset=utf-8", size: 6 },
+      { path: "index.html", contentType: "text/html; charset=utf-8", size: 13 },
     ]);
+
+    // Collection must NOT read asset bytes up front — only the manifest and the
+    // uploadable modules are read. Client assets stay lazy until deploy asks.
+    const readsAfterCollect = readFilePaths(sandbox);
+    expect(readsAfterCollect).toContain("/workspace/demo/build/server/index.js");
+    expect(readsAfterCollect).not.toContain("/workspace/demo/build/client/index.html");
+    expect(readsAfterCollect).not.toContain("/workspace/demo/build/client/assets/app.css");
+
+    // The lazy handle reads the real bytes on demand.
+    const cssAsset = bundle.assets.find((asset) => asset.path === "assets/app.css")!;
+    expect(new TextDecoder().decode(await cssAsset.read())).toBe("body{}");
+    expect(readFilePaths(sandbox)).toContain("/workspace/demo/build/client/assets/app.css");
   });
 
   it("converts wrangler durable object config into upload bindings", async () => {

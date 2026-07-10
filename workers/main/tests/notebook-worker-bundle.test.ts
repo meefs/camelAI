@@ -56,12 +56,12 @@ describe("buildNotebookWorkerBundle", () => {
       "index.html",
     ]);
 
-    const indexHtml = decode(bundle.assets.find((asset) => asset.path === "index.html")!.content);
+    const indexHtml = decode(await bundle.assets.find((asset) => asset.path === "index.html")!.read());
     expect(indexHtml).toContain('window.__FILENAME__="analysis.ipynb"');
     expect(indexHtml).toContain("<title>analysis.ipynb</title>");
 
     const notebookAsset = bundle.assets.find((asset) => asset.path === "files/analysis.ipynb")!;
-    expect(decode(notebookAsset.content)).toBe(JSON.stringify({ cells: [] }));
+    expect(decode(await notebookAsset.read())).toBe(JSON.stringify({ cells: [] }));
     expect(notebookAsset.contentType).toBe("application/x-ipynb+json");
   });
 
@@ -72,7 +72,7 @@ describe("buildNotebookWorkerBundle", () => {
       filename,
       notebook,
     });
-    const indexHtml = decode(bundle.assets.find((asset) => asset.path === "index.html")!.content);
+    const indexHtml = decode(await bundle.assets.find((asset) => asset.path === "index.html")!.read());
     expect(indexHtml).not.toContain("<script>alert(1)");
     expect(indexHtml).toContain("\\u003cscript\\u003ealert(1)\\u0026");
     expect(indexHtml).toContain("<title>x&lt;script&gt;alert(1)&amp;.ipynb</title>");

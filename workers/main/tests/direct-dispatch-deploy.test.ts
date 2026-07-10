@@ -1,7 +1,43 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { deployWorkerModulesDirect, rollbackWorkerDeployFromArtifactCache } from "../src/direct-dispatch-deploy";
+import { deployWorkerModulesDirect, rollbackWorkerDeployFromArtifactCache, type DirectDeployAsset } from "../src/direct-dispatch-deploy";
 import { selfhostAssetObjectKey, selfhostAssetsKey } from "../src/selfhost-assets-registry";
+
+// Instruments lazy asset handles so tests can assert bytes are read on demand
+// and only in bounded batches (never the whole asset set at once).
+function assetTracker() {
+  let inFlight = 0;
+  let maxInFlight = 0;
+  let totalReads = 0;
+  const asset = (path: string, body: string, contentType?: string): DirectDeployAsset => {
+    const bytes = new TextEncoder().encode(body);
+    return {
+      path,
+      ...(contentType ? { contentType } : {}),
+      size: bytes.byteLength,
+      read: async () => {
+        inFlight += 1;
+        totalReads += 1;
+        maxInFlight = Math.max(maxInFlight, inFlight);
+        // Yield so concurrently-started reads overlap before any resolves,
+        // making maxInFlight reflect the real batch width.
+        await Promise.resolve();
+        inFlight -= 1;
+        return bytes;
+      },
+    };
+  };
+  return {
+    asset,
+    get maxInFlight() { return maxInFlight; },
+    get totalReads() { return totalReads; },
+  };
+}
+
+// A single lazy asset for the existing single-asset upload/rollback tests.
+function lazyAsset(path: string, body: string, contentType?: string): DirectDeployAsset {
+  return assetTracker().asset(path, body, contentType);
+}
 
 const env = {
   CF_API_TOKEN: "cf-token",
@@ -287,7 +323,7 @@ describe("deployWorkerModulesDirect", () => {
         assets: { directory: "../client", binding: "STATIC_ASSETS" },
       },
       modules: [{ name: "index.js", contentType: "application/javascript+module", content: "export default {};" }],
-      assets: [{ path: "index.html", content: new TextEncoder().encode("hello"), contentType: "text/html; charset=utf-8" }],
+      assets: [lazyAsset("index.html", "hello", "text/html; charset=utf-8")],
     }, { fetcher: fetcher as unknown as typeof fetch });
 
     expect(result.success).toBe(true);
@@ -343,6 +379,65 @@ describe("deployWorkerModulesDirect", () => {
     });
   });
 
+  it("streams a large asset set through bounded batches and uploads every asset", async () => {
+    const kv = new Map<string, string>();
+    const r2 = new Map<string, { body: string | Uint8Array; options?: unknown }>();
+    // One bucket per asset so the native upload pass touches every asset.
+    const fetcher = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/assets-upload-session")) {
+        const body = JSON.parse(init?.body as string) as { manifest: Record<string, { hash: string }> };
+        return Response.json({
+          success: true,
+          result: { jwt: "upload-jwt", buckets: Object.values(body.manifest).map((entry) => [entry.hash]) },
+        });
+      }
+      if (url.endsWith("/workers/assets/upload?base64=true")) {
+        return Response.json({ success: true, result: { jwt: "assets-jwt" } });
+      }
+      return Response.json({ success: true, result: { id: "version-1", has_assets: true } });
+    });
+
+    const tracker = assetTracker();
+    const assets = Array.from({ length: 20 }, (_, index) =>
+      tracker.asset(`assets/file-${index}.txt`, `payload-${index}`, "text/plain"));
+
+    const result = await deployWorkerModulesDirect({
+      ...env,
+      APP_KV: { put: vi.fn(async (key: string, value: string) => kv.set(key, value)) },
+      R2_BUCKET: { put: vi.fn(async (key: string, body: string | Uint8Array, options?: unknown) => r2.set(key, { body, options })) },
+    }, {
+      scriptName: "demo-app",
+      hostname: "camelai.dev",
+      identity,
+      metadata: { main_module: "index.js", assets: { directory: "../client", binding: "ASSETS" } },
+      modules: [{ name: "index.js", contentType: "application/javascript+module", content: "export default {};" }],
+      assets,
+    }, { fetcher: fetcher as unknown as typeof fetch });
+
+    expect(result.success).toBe(true);
+
+    // Every asset made it into the upload-session manifest with the right size.
+    const sessionBody = JSON.parse(fetcher.mock.calls[0]![1]?.body as string);
+    expect(Object.keys(sessionBody.manifest)).toHaveLength(20);
+    for (let index = 0; index < 20; index += 1) {
+      expect(sessionBody.manifest[`/assets/file-${index}.txt`]).toMatchObject({ size: `payload-${index}`.length });
+    }
+
+    // Every asset was uploaded (one bucket each) and stored to R2 for rollback.
+    const uploadCalls = fetcher.mock.calls.filter(([callUrl]) => String(callUrl).endsWith("/workers/assets/upload?base64=true"));
+    expect(uploadCalls).toHaveLength(20);
+    const storedRecord = JSON.parse(kv.get(selfhostAssetsKey("demo-app--acme"))!);
+    expect(Object.keys(storedRecord.manifest)).toHaveLength(20);
+
+    // Reads are lazy and batched: no more than the batch width were ever in
+    // flight at once, so the whole asset set is never resident together.
+    expect(tracker.maxInFlight).toBeGreaterThan(1);
+    expect(tracker.maxInFlight).toBeLessThanOrEqual(8);
+    // Fingerprint pass + R2 rollback pass + native upload pass each re-read.
+    expect(tracker.totalReads).toBe(60);
+  });
+
   it("does not publish the active self-host asset manifest when script upload fails", async () => {
     const kvPut = vi.fn(async () => undefined);
     const r2 = new Map<string, { body: string | Uint8Array; options?: unknown }>();
@@ -364,7 +459,7 @@ describe("deployWorkerModulesDirect", () => {
       identity,
       metadata: { main_module: "index.js", assets: { directory: "../client" } },
       modules: [{ name: "index.js", contentType: "application/javascript+module", content: "export default {};" }],
-      assets: [{ path: "index.html", content: new TextEncoder().encode("hello"), contentType: "text/html; charset=utf-8" }],
+      assets: [lazyAsset("index.html", "hello", "text/html; charset=utf-8")],
     }, { fetcher: fetcher as unknown as typeof fetch });
 
     expect(result.success).toBe(false);
@@ -397,7 +492,7 @@ describe("deployWorkerModulesDirect", () => {
       identity,
       metadata: { main_module: "index.js", assets: { directory: "../client" } },
       modules: [{ name: "index.js", contentType: "application/javascript+module", content: "export default {};" }],
-      assets: [{ path: "index.html", content: new TextEncoder().encode("hello"), contentType: "text/html; charset=utf-8" }],
+      assets: [lazyAsset("index.html", "hello", "text/html; charset=utf-8")],
     }, { fetcher: fetcher as unknown as typeof fetch });
 
     expect(result).toMatchObject({
@@ -437,7 +532,7 @@ describe("deployWorkerModulesDirect", () => {
       identity,
       metadata: { main_module: "index.js", assets: { directory: "../client" } },
       modules: [{ name: "index.js", contentType: "application/javascript+module", content: "export default {};" }],
-      assets: [{ path: "index.html", content: new TextEncoder().encode("hello"), contentType: "text/html; charset=utf-8" }],
+      assets: [lazyAsset("index.html", "hello", "text/html; charset=utf-8")],
     }, { fetcher: fetcher as unknown as typeof fetch })).rejects.toThrow(/upload session denied/);
   });
 
@@ -477,7 +572,7 @@ describe("deployWorkerModulesDirect", () => {
       identity,
       metadata: { main_module: "index.js", assets: { directory: "../client" } },
       modules: [{ name: "index.js", contentType: "application/javascript+module", content: "export default {};" }],
-      assets: [{ path: "index.html", content: new TextEncoder().encode("hello"), contentType: "text/html; charset=utf-8" }],
+      assets: [lazyAsset("index.html", "hello", "text/html; charset=utf-8")],
     }, { fetcher: fetcher as unknown as typeof fetch });
     kv.clear();
     fetcher.mockClear();

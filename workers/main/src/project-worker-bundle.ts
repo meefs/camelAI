@@ -1,4 +1,4 @@
-import type { DirectWorkerMetadata, DirectWorkerModule } from "./direct-dispatch-deploy.js";
+import type { DirectDeployAsset, DirectWorkerMetadata, DirectWorkerModule } from "./direct-dispatch-deploy.js";
 import type { WorkerBinding } from "./cf-api-proxy.js";
 
 const BUNDLE_READ_CONCURRENCY = 16;
@@ -20,13 +20,17 @@ export interface ProjectBuildSandboxLike {
     type: "file" | "directory";
     relativePath?: string;
     absolutePath?: string;
+    size?: number;
   }> }>;
 }
 
 export interface ProjectWorkerBundle {
   metadata: DirectWorkerMetadata;
   modules: DirectWorkerModule[];
-  assets: Array<{ path: string; content: Uint8Array; contentType?: string }>;
+  // Assets are lazy handles, not buffered bytes: collection lists them (with
+  // sizes) and the deploy path reads each on demand in bounded batches, so an
+  // asset-heavy project never materializes every asset in the isolate at once.
+  assets: DirectDeployAsset[];
   manifestPath: string;
   /**
    * The wrangler config `name`, when the manifest declares one. Deploys use it
@@ -309,11 +313,16 @@ function asBindingArray(value: unknown): Array<Record<string, unknown>> {
   );
 }
 
+// List the build's client assets as lazy handles WITHOUT reading their bytes.
+// Asset-heavy projects (game textures/models, media) can be far larger than the
+// deploy isolate's 128 MB limit, so bytes are only ever read on demand by the
+// deploy path, one bounded batch at a time. Each handle's `read()` fetches the
+// file from the build sandbox when the deploy needs it.
 async function collectAssetsFromManifest(
   sandbox: ProjectBuildSandboxLike,
   serverRoot: string,
   manifest: DirectWorkerMetadata & { assets?: { directory?: string } | string },
-): Promise<Array<{ path: string; content: Uint8Array; contentType?: string }>> {
+): Promise<DirectDeployAsset[]> {
   const rawDirectory = typeof manifest.assets === "string"
     ? manifest.assets
     : typeof manifest.assets?.directory === "string"
@@ -323,16 +332,16 @@ async function collectAssetsFromManifest(
   if (!sandbox.readFile || !sandbox.listFiles) throw new Error("Sandbox does not support asset output reads");
   const assetsRoot = joinSandboxPath(serverRoot, rawDirectory);
   const listed = await sandbox.listFiles(assetsRoot, { recursive: true, includeHidden: true });
-  const assetFiles = listed.files.filter((file) => file.type === "file").map((file) => {
+  const assets = listed.files.filter((file) => file.type === "file").map((file) => {
     const absolutePath = file.absolutePath || joinSandboxPath(assetsRoot, file.relativePath || file.name);
     const relativePath = relativeSandboxPath(assetsRoot, absolutePath);
-    return { absolutePath, relativePath };
-  }).filter(({ relativePath }) => Boolean(relativePath));
-  const assets = await mapWithConcurrency(assetFiles, BUNDLE_READ_CONCURRENCY, async ({ absolutePath, relativePath }) => ({
-      path: relativePath,
-      content: await readSandboxFileBytes(sandbox, absolutePath),
-      contentType: contentTypeForAsset(relativePath),
-    }));
+    return { absolutePath, relativePath, size: file.size ?? 0 };
+  }).filter(({ relativePath }) => Boolean(relativePath)).map(({ absolutePath, relativePath, size }) => ({
+    path: relativePath,
+    contentType: contentTypeForAsset(relativePath),
+    size,
+    read: () => readSandboxFileBytes(sandbox, absolutePath),
+  }));
   return assets.sort((a, b) => a.path.localeCompare(b.path));
 }
 

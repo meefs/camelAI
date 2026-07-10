@@ -125,19 +125,21 @@ export async function buildNotebookWorkerBundle(options: NotebookWorkerBundleOpt
 
   const manifest = await readRendererManifest(options.rendererAssets);
   const assets: ProjectWorkerBundle["assets"] = [];
+  // The renderer SPA + one notebook are small, so the bytes are read here and
+  // held in the handle closures; the lazy-handle shape just matches what the
+  // deploy path consumes (see ProjectWorkerBundle.assets).
   for (const path of manifest.files) {
     const content = await readRendererFile(options.rendererAssets, path);
-    if (path === "index.html") {
-      const html = injectNotebookFilename(new TextDecoder().decode(content), filename);
-      assets.push({ path, content: new TextEncoder().encode(html), contentType: contentTypeForAsset(path) });
-    } else {
-      assets.push({ path, content, contentType: contentTypeForAsset(path) });
-    }
+    const bytes = path === "index.html"
+      ? new TextEncoder().encode(injectNotebookFilename(new TextDecoder().decode(content), filename))
+      : content;
+    assets.push({ path, contentType: contentTypeForAsset(path), size: bytes.byteLength, read: async () => bytes });
   }
   assets.push({
     path: `files/${filename}`,
-    content: options.notebook,
     contentType: filename.toLowerCase().endsWith(".ipynb") ? "application/x-ipynb+json" : contentTypeForAsset(filename),
+    size: options.notebook.byteLength,
+    read: async () => options.notebook,
   });
   assets.sort((a, b) => a.path.localeCompare(b.path));
 

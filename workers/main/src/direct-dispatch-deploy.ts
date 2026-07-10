@@ -15,6 +15,20 @@ import {
 
 const DIRECT_DEPLOY_WRITE_CONCURRENCY = 16;
 
+// Assets are streamed through the deploy in bounded batches so peak isolate
+// memory stays flat regardless of how many (or how large) a project's static
+// assets are. Only this many asset payloads are ever materialized at once for
+// hashing or R2 rollback writes. The Durable Object isolate cap is 128 MB, and
+// an asset-heavy build (game textures/models, media) would otherwise exceed it
+// if every asset were read up front (see collectWorkerBundleFromSandbox).
+const DIRECT_DEPLOY_ASSET_BATCH_SIZE = 8;
+
+// Cloudflare's assets-upload-session groups files into buckets that each must
+// upload as a single multipart request, so one bucket's payloads are the
+// irreducible memory floor. Uploading buckets one at a time keeps peak memory
+// to a single bucket (plus base64 overhead) instead of every bucket at once.
+const DIRECT_DEPLOY_ASSET_UPLOAD_CONCURRENCY = 1;
+
 export interface DirectDispatchDeployEnv {
   CF_API_TOKEN?: string;
   CF_ACCOUNT_ID?: string;
@@ -48,15 +62,36 @@ interface NativeAssetsUploadResult {
   assetCount: number;
 }
 
+/**
+ * A deploy asset the pipeline reads on demand rather than buffering up front.
+ * `read()` fetches the bytes from wherever they live (build sandbox, R2), so an
+ * asset-heavy project never materializes every asset in the isolate at once.
+ * `size` is the listed byte length; the actual bytes are only touched inside a
+ * bounded batch (fingerprint, R2 rollback write, or native upload).
+ */
+export interface DirectDeployAsset {
+  path: string;
+  contentType?: string;
+  size: number;
+  read(): Promise<Uint8Array>;
+}
+
+/**
+ * The hash/size fingerprint of a deploy asset, computed once in a bounded batch
+ * that releases the asset bytes before the next batch. It retains only the
+ * lazy `read()` handle (no bytes/base64), so a full list of prepared assets is
+ * cheap to hold; the native upload and R2 rollback passes re-read each asset on
+ * demand from this handle.
+ */
 interface PreparedDirectAsset {
   path: string;
   normalizedPath: string;
   cfPath: string;
-  content: Uint8Array;
   contentType?: string;
-  base64: string;
+  size: number;
   cfHash: string;
   r2Hash: string;
+  read(): Promise<Uint8Array>;
 }
 
 export interface DirectWorkerModule {
@@ -71,7 +106,7 @@ export interface DirectDispatchDeployRequest {
   identity: DirectDispatchDeployIdentity;
   metadata: DirectWorkerMetadata;
   modules: DirectWorkerModule[];
-  assets?: Array<{ path: string; content: Uint8Array; contentType?: string }>;
+  assets?: DirectDeployAsset[];
   commitSha?: string;
 }
 
@@ -156,7 +191,7 @@ export async function deployWorkerModulesDirect(
 ): Promise<DirectDispatchDeployResult> {
   const startedAt = Date.now();
   const prepareAssetsStartedAt = Date.now();
-  const preparedAssets = await prepareDirectAssets(request.assets ?? []);
+  const preparedAssets = await fingerprintDirectAssets(request.assets ?? []);
   const prepareAssetsMs = Date.now() - prepareAssetsStartedAt;
   const timings: DirectDispatchDeployTimings = {
     totalMs: 0,
@@ -170,7 +205,7 @@ export async function deployWorkerModulesDirect(
     moduleCount: request.modules.length,
     assetCount: preparedAssets.length,
     moduleBytes: request.modules.reduce((sum, module) => sum + contentBytes(module.content).byteLength, 0),
-    assetBytes: preparedAssets.reduce((sum, asset) => sum + asset.content.byteLength, 0),
+    assetBytes: preparedAssets.reduce((sum, asset) => sum + asset.size, 0),
   };
   const cfApiToken = env.CF_API_TOKEN?.trim();
   const accountId = env.CF_ACCOUNT_ID?.trim();
@@ -488,7 +523,7 @@ async function uploadNativeWorkerAssets(
 
   const manifest: Record<string, { hash: string; size: number }> = {};
   for (const asset of preparedAssets) {
-    manifest[asset.cfPath] = { hash: asset.cfHash, size: asset.content.byteLength };
+    manifest[asset.cfPath] = { hash: asset.cfHash, size: asset.size };
   }
 
   const sessionUrl = `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(accountId)}` +
@@ -513,14 +548,18 @@ async function uploadNativeWorkerAssets(
 
   const entriesByHash = new Map(preparedAssets.map((asset) => [asset.cfHash, asset]));
   const uploadUrl = `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(accountId)}/workers/assets/upload?base64=true`;
-  const uploadResults = await Promise.all(buckets.map(async (bucket) => {
+  // Upload one bucket at a time (see DIRECT_DEPLOY_ASSET_UPLOAD_CONCURRENCY) and
+  // re-read each asset's bytes here rather than carrying base64 through from the
+  // fingerprint pass, so only the current bucket's payloads live in memory.
+  const uploadResults = await mapWithConcurrency(buckets, DIRECT_DEPLOY_ASSET_UPLOAD_CONCURRENCY, async (bucket) => {
     const form = new FormData();
     for (const hash of bucket) {
       const entry = entriesByHash.get(hash);
       if (!entry) throw new Error(`Asset upload bucket referenced unknown hash: ${hash}`);
+      const base64 = bytesToBase64(await entry.read());
       form.append(
         hash,
-        new Blob([entry.base64], { type: entry.contentType ?? "application/null" }),
+        new Blob([base64], { type: entry.contentType ?? "application/null" }),
         hash,
       );
     }
@@ -534,7 +573,7 @@ async function uploadNativeWorkerAssets(
       throw new Error(`Asset upload failed: ${uploadBody.errorText ?? "missing result"}`);
     }
     return uploadBody.result.jwt;
-  }));
+  });
   const completionJwt = uploadResults.find((jwt): jwt is string => typeof jwt === "string" && jwt.length > 0) ?? "";
   if (!completionJwt) throw new Error("Asset upload completed without a completion token");
   return { jwt: completionJwt, assetCount: preparedAssets.length };
@@ -572,8 +611,8 @@ export async function rollbackWorkerDeployFromArtifactCache(
 
   let metadata = record.metadata;
   if (record.assetsRecord) {
-    const assets = await loadDirectAssetsFromRecord(env, record.dispatchScriptName, record.assetsRecord);
-    const preparedAssets = await prepareDirectAssets(assets);
+    const assets = loadDirectAssetsFromRecord(env, record.dispatchScriptName, record.assetsRecord);
+    const preparedAssets = await fingerprintDirectAssets(assets);
     const nativeAssets = await uploadNativeWorkerAssets(env, dispatchNamespace, record.dispatchScriptName, {
       scriptName: record.scriptName,
       hostname: request.hostname,
@@ -636,23 +675,26 @@ export async function rollbackWorkerDeployFromArtifactCache(
   };
 }
 
-async function loadDirectAssetsFromRecord(
+// Return lazy handles that fetch each rollback blob from R2 on demand, so a
+// rollback of an asset-heavy app streams its assets through the same bounded
+// batches as a fresh deploy instead of loading every blob into the isolate.
+function loadDirectAssetsFromRecord(
   env: DirectDispatchDeployEnv,
   appId: string,
   record: SelfhostAssetsRecord,
-): Promise<Array<{ path: string; content: Uint8Array; contentType?: string }>> {
+): DirectDeployAsset[] {
   if (!env.R2_BUCKET) throw new Error("R2_BUCKET is required for direct deploy assets");
-  const assets: Array<{ path: string; content: Uint8Array; contentType?: string }> = [];
-  for (const [path, entry] of Object.entries(record.manifest)) {
-    const object = await env.R2_BUCKET.get(selfhostAssetObjectKey(appId, entry.hash));
-    if (!object) throw new Error(`Deploy artifact asset blob not found: ${path}`);
-    assets.push({
-      path,
-      content: new Uint8Array(await object.arrayBuffer()),
-      ...(entry.contentType ? { contentType: entry.contentType } : {}),
-    });
-  }
-  return assets;
+  return Object.entries(record.manifest).map(([path, entry]) => ({
+    path,
+    size: entry.size ?? 0,
+    ...(entry.contentType ? { contentType: entry.contentType } : {}),
+    read: async () => {
+      if (!env.R2_BUCKET) throw new Error("R2_BUCKET is required for direct deploy assets");
+      const object = await env.R2_BUCKET.get(selfhostAssetObjectKey(appId, entry.hash));
+      if (!object) throw new Error(`Deploy artifact asset blob not found: ${path}`);
+      return new Uint8Array(await object.arrayBuffer());
+    },
+  }));
 }
 
 function validateArtifactCacheRecord(value: unknown, key: string): DirectDeployArtifactCacheRecord {
@@ -697,24 +739,28 @@ function assetsBindingName(assets: unknown): string {
   return "ASSETS";
 }
 
-async function prepareDirectAssets(
-  assets: Array<{ path: string; content: Uint8Array; contentType?: string }>,
-): Promise<PreparedDirectAsset[]> {
-  return mapWithConcurrency(assets, DIRECT_DEPLOY_WRITE_CONCURRENCY, async (asset) => {
+// Read each asset once, in bounded batches, to compute its Cloudflare and R2
+// hashes plus size, then release the bytes. The returned fingerprints carry no
+// payload — only the lazy `read()` handle — so the native upload and R2
+// rollback passes re-read on demand without the whole asset set ever being
+// resident at once.
+async function fingerprintDirectAssets(assets: DirectDeployAsset[]): Promise<PreparedDirectAsset[]> {
+  return mapWithConcurrency(assets, DIRECT_DEPLOY_ASSET_BATCH_SIZE, async (asset) => {
+    const bytes = await asset.read();
     const normalizedPath = normalizeSelfhostAssetPath(asset.path);
-    const base64 = bytesToBase64(asset.content);
+    const base64 = bytesToBase64(bytes);
     const extension = asset.path.split(".").pop() ?? "";
     const cfHash = (await sha256Hex(new TextEncoder().encode(`${base64}${extension}`))).slice(0, 32);
-    const r2Hash = await sha256Hex(asset.content);
+    const r2Hash = await sha256Hex(bytes);
     return {
       path: asset.path,
       normalizedPath,
       cfPath: `/${normalizedPath}`,
-      content: asset.content,
       ...(asset.contentType ? { contentType: asset.contentType } : {}),
-      base64,
+      size: bytes.byteLength,
       cfHash,
       r2Hash,
+      read: asset.read,
     };
   });
 }
@@ -734,7 +780,7 @@ function prepareDirectAssetsRecord(
   for (const asset of preparedAssets) {
     manifest[asset.normalizedPath] = {
       hash: asset.r2Hash,
-      size: asset.content.byteLength,
+      size: asset.size,
       ...(asset.contentType ? { contentType: asset.contentType } : {}),
     };
   }
@@ -745,12 +791,14 @@ function prepareDirectAssetsRecord(
     createdAt: new Date().toISOString(),
     manifest,
   };
+  // Write the rollback blobs in bounded batches, re-reading each asset on demand
+  // so at most DIRECT_DEPLOY_ASSET_BATCH_SIZE payloads are resident at a time.
   const store = preparedAssets.length > 0
-    ? mapWithConcurrency(preparedAssets, DIRECT_DEPLOY_WRITE_CONCURRENCY, async (asset) => {
+    ? mapWithConcurrency(preparedAssets, DIRECT_DEPLOY_ASSET_BATCH_SIZE, async (asset) => {
       if (!env.R2_BUCKET) throw new Error("R2_BUCKET is required for direct deploy assets");
       await env.R2_BUCKET.put(
         selfhostAssetObjectKey(appId, asset.r2Hash),
-        asset.content,
+        await asset.read(),
         asset.contentType ? { httpMetadata: { contentType: asset.contentType } } : undefined,
       );
     }).then(() => undefined)
