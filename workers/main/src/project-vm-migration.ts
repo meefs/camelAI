@@ -43,7 +43,7 @@ export const RPC_SAFE_FILE_BYTES = 20 * 1024 * 1024;
  */
 export type MigrationFileStore = Pick<
   WorkspaceFileStoreLike,
-  "readFile" | "writeBinaryFile" | "deleteFile"
+  "readFileStream" | "writeBinaryFile" | "deleteFile"
 > & {
   adoptR2File(
     path: string,
@@ -227,13 +227,6 @@ function bytesToBase64(bytes: Uint8Array): string {
     binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
   }
   return btoa(binary);
-}
-
-function base64ToBytes(base64: string): Uint8Array {
-  const binary = atob(base64);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
-  return bytes;
 }
 
 async function sha256Hex(bytes: Uint8Array): Promise<string> {
@@ -528,6 +521,23 @@ export async function migrateVmProject(
       if (samplePaths.has(file.destination)) {
         sampleHashes.set(file.destination, await sha256Hex(read.bytes));
       }
+      if (read.bytes.byteLength >= RPC_SAFE_FILE_BYTES) {
+        // Active checkouts drift between listing and read: a file that listed
+        // small may have grown past the RPC-safe payload, and its base64 form
+        // would blow workerd's 32MiB RPC value limit. Reroute the buffered
+        // bytes through the streaming adopt path instead.
+        const body = new Response(read.bytes).body;
+        if (!body) {
+          throw new Error(`Failed to stream grown file ${file.path}`);
+        }
+        const adopt = await fileStore.adoptR2File(destination, body, read.bytes.byteLength);
+        if (!adopt.success) {
+          throw new Error(`Failed to adopt ${destination}: ${adopt.error ?? "unknown error"}`);
+        }
+        bytesCopied += read.bytes.byteLength;
+        filesCopied += 1;
+        return;
+      }
       const write = await fileStore.writeBinaryFile(destination, bytesToBase64(read.bytes));
       if (!write.success) {
         throw new Error(`Failed to write ${destination}: ${write.error ?? "unknown error"}`);
@@ -580,9 +590,12 @@ export async function migrateVmProject(
 
     // Re-read the sample from DO storage and hash-compare against the VM
     // bytes before flipping the backend: catches encoding/store corruption.
+    // Must read raw bytes via the stream path — `readFile` text-decodes
+    // mostly-text content, and non-UTF-8 bytes (Latin-1 CSVs) don't survive
+    // the decode/re-encode round trip, producing false hash mismatches.
     for (const [relativePath, expectedHash] of sampleHashes) {
-      const stored = await fileStore.readFile(`/${relativePath}`);
-      if (!stored.success || typeof stored.content !== "string") {
+      const stored = await fileStore.readFileStream(`/${relativePath}`);
+      if (!stored.success || !stored.stream) {
         return finish({
           ...base,
           skipped,
@@ -595,9 +608,7 @@ export async function migrateVmProject(
           error: `Post-copy verification failed to read back /${relativePath}: ${stored.error ?? "unknown error"}`,
         });
       }
-      const storedBytes = stored.encoding === "base64"
-        ? base64ToBytes(stored.content)
-        : new TextEncoder().encode(stored.content);
+      const storedBytes = new Uint8Array(await new Response(stored.stream).arrayBuffer());
       const storedHash = await sha256Hex(storedBytes);
       if (storedHash !== expectedHash) {
         return finish({

@@ -28,9 +28,14 @@ function makeProject(overrides: Partial<WorkspaceProject> = {}): WorkspaceProjec
 
 interface VmFixtureFile {
   relativePath: string;
-  content: string;
+  /** Uint8Array expresses non-UTF-8 source bytes (e.g. Latin-1 CSVs). */
+  content: string | Uint8Array;
   /** Override the size reported by /fs/list (to simulate a large file cheaply). */
   size?: number;
+}
+
+function fixtureBytes(file: VmFixtureFile): Uint8Array {
+  return typeof file.content === "string" ? new TextEncoder().encode(file.content) : file.content;
 }
 
 /** Stub global fetch to emulate the runtime-service /fs endpoints. */
@@ -48,7 +53,7 @@ function stubRuntimeFs(files: VmFixtureFile[], options: { missingCheckout?: bool
         files: files.map((file) => ({
           name: file.relativePath.split("/").pop(),
           type: "file",
-          size: file.size ?? new TextEncoder().encode(file.content).byteLength,
+          size: file.size ?? fixtureBytes(file).byteLength,
           relativePath: file.relativePath,
         })),
         count: files.length,
@@ -59,7 +64,7 @@ function stubRuntimeFs(files: VmFixtureFile[], options: { missingCheckout?: bool
       const path = url.searchParams.get("path") ?? "";
       const match = files.find((file) => path.endsWith(`/${file.relativePath}`));
       if (!match) return new Response("not found", { status: 404 });
-      return new Response(new TextEncoder().encode(match.content), {
+      return new Response(fixtureBytes(match), {
         headers: { "content-type": "application/octet-stream" },
       });
     }
@@ -85,32 +90,27 @@ function makeDeps(project: WorkspaceProject) {
     }),
   };
 
-  const stored = new Map<string, string>();
+  const stored = new Map<string, Uint8Array>();
   const fileStore = {
     writeBinaryFile: vi.fn(async (path: string, base64: string) => {
       writes.push({ path, content: atob(base64) });
-      stored.set(path, base64);
+      stored.set(path, Uint8Array.from(atob(base64), (ch) => ch.charCodeAt(0)));
       return { success: true };
     }),
     adoptR2File: vi.fn(
       async (path: string, stream: ReadableStream<Uint8Array>, expectedSize: number, contentType?: string) => {
-        // Drain the stream the way R2 would, then report the source-reported
+        // Buffer the stream the way R2 would, then report the source-reported
         // size back (the real DO cross-checks this against R2's object size).
-        let streamed = 0;
-        const reader = stream.getReader();
-        for (;;) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          streamed += value.byteLength;
-        }
-        adopted.push({ path, expectedSize, streamed, contentType });
+        const bytes = new Uint8Array(await new Response(stream).arrayBuffer());
+        stored.set(path, bytes);
+        adopted.push({ path, expectedSize, streamed: bytes.byteLength, contentType });
         return { success: true, size: expectedSize };
       },
     ),
-    readFile: vi.fn(async (path: string) => {
-      const base64 = stored.get(path);
-      if (base64 === undefined) return { success: false, error: `not found: ${path}` };
-      return { success: true, content: base64, encoding: "base64" };
+    readFileStream: vi.fn(async (path: string) => {
+      const bytes = stored.get(path);
+      if (bytes === undefined) return { success: false, error: `not found: ${path}` };
+      return { success: true, stream: new Response(bytes).body!, size: bytes.byteLength };
     }),
     createSourceSnapshot: vi.fn(async (input?: { message?: unknown }) => {
       snapshots.push(input ?? {});
@@ -242,6 +242,53 @@ describe("migrateVmProject", () => {
     // bytesCopied reflects the adopted (reported) size, not the tiny fixture body.
     expect(result.bytesCopied).toBeGreaterThanOrEqual(bigSize);
     // Big files are never read back through RPC for verification.
+    expect(result.verifiedFiles).toBeGreaterThan(0);
+    expect(backendFlips).toEqual([{ projectId: project.id, backend: "do-r2" }]);
+  });
+
+  it("verifies non-UTF-8 sample bytes byte-for-byte via the stream readback", async () => {
+    // Latin-1 CSV: 0xE9 ("é") is not valid UTF-8, so a text-decoding readback
+    // would replace it and produce a false hash mismatch (prod: gobingo/CHCC/
+    // chocolate-sales CSVs). The stream readback must verify the raw bytes.
+    const latin1Csv = Uint8Array.from([...new TextEncoder().encode("name,city\nJos"), 0xe9, ...new TextEncoder().encode(",Montr"), 0xe9, ...new TextEncoder().encode("al\n")]);
+    const project = makeProject();
+    stubRuntimeFs([
+      { relativePath: "package.json", content: JSON.stringify({ name: "csv-app" }) },
+      { relativePath: "data.csv", content: latin1Csv },
+    ]);
+    const { deps, backendFlips } = makeDeps(project);
+
+    const result = await migrateVmProject(deps, project);
+
+    expect(result.error).toBeNull();
+    expect(result.status).toBe("migrated");
+    expect(result.verifiedFiles).toBeGreaterThan(0);
+    expect(backendFlips).toEqual([{ projectId: project.id, backend: "do-r2" }]);
+  });
+
+  it("reroutes files that outgrew their listed size through the adopt path", async () => {
+    // Active checkouts drift between list and read: a file listed under the
+    // RPC threshold whose actual content exceeds it must stream via adopt —
+    // its base64 form would blow workerd's 32 MiB RPC value limit (prod:
+    // trading-strategy/nba/nhlc analytics projects).
+    const grown = new Uint8Array(RPC_SAFE_FILE_BYTES + 1024).fill(65);
+    const project = makeProject();
+    stubRuntimeFs([
+      { relativePath: "package.json", content: JSON.stringify({ name: "grown-app" }) },
+      // /fs/list reports a stale small size; /fs/read returns the grown bytes.
+      { relativePath: "data/export.csv", content: grown, size: 4096 },
+    ]);
+    const { deps, writes, adopted, backendFlips } = makeDeps(project);
+
+    const result = await migrateVmProject(deps, project);
+
+    expect(result.error).toBeNull();
+    expect(result.status).toBe("migrated");
+    expect(writes.map((write) => write.path)).toEqual(["/package.json"]);
+    expect(adopted).toHaveLength(1);
+    expect(adopted[0]!.path).toBe("/data/export.csv");
+    expect(adopted[0]!.expectedSize).toBe(grown.byteLength);
+    expect(adopted[0]!.streamed).toBe(grown.byteLength);
     expect(result.verifiedFiles).toBeGreaterThan(0);
     expect(backendFlips).toEqual([{ projectId: project.id, backend: "do-r2" }]);
   });
