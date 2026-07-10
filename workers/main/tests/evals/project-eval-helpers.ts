@@ -1,3 +1,10 @@
+import { defaultProjectScaffoldFiles } from "../../src/project-scaffold";
+import {
+  ProjectFilesystemClient,
+  type WorkspaceFilesystemEnv,
+  type WorkspaceProject,
+} from "../../src/workspace-filesystem-do";
+
 export type RuntimeItem = Record<string, unknown>;
 
 export type RuntimeEvidence = {
@@ -5,6 +12,80 @@ export type RuntimeEvidence = {
   jsExecCodeBlocks: string[];
   tools: string[];
 };
+
+export type ProjectFileSnapshot = Record<string, string>;
+
+export type ProjectFileDiff = {
+  addedPaths: string[];
+  removedPaths: string[];
+  modifiedPaths: string[];
+  changedPaths: string[];
+};
+
+export type WorkspaceFilesystemStub = {
+  createProject(input: {
+    id?: unknown;
+    name?: unknown;
+    description?: unknown;
+    workspaceId?: unknown;
+    backend?: unknown;
+  }): Promise<WorkspaceProject>;
+};
+
+export async function seedDoProjectFiles(
+  workspaceFs: WorkspaceFilesystemStub,
+  testEnv: WorkspaceFilesystemEnv,
+  input: {
+    workspaceId: string;
+    name: string;
+    description: string;
+    template?: "react-router" | "data-analysis";
+    resetNotebookExecution?: boolean;
+    files: Record<string, string>;
+  },
+): Promise<{ project: WorkspaceProject; files: ProjectFilesystemClient }> {
+  const template = input.template ?? "react-router";
+  const project = await workspaceFs.createProject({
+    name: input.name,
+    description: input.description,
+    workspaceId: input.workspaceId,
+    backend: "do-r2",
+  });
+  const files = new ProjectFilesystemClient(testEnv, project.id);
+  for (const file of defaultProjectScaffoldFiles(input.name, template, input.name)) {
+    const content = input.resetNotebookExecution && file.path.endsWith(".ipynb")
+      ? clearNotebookExecutionState(file.content)
+      : file.content;
+    const written = await files.writeFile(file.path, content);
+    if (!written.success) {
+      throw new Error(`Failed to seed scaffold file ${file.path}: ${written.error ?? "unknown error"}`);
+    }
+  }
+  for (const [path, content] of Object.entries(input.files)) {
+    const seededContent = input.resetNotebookExecution && path.endsWith(".ipynb")
+      ? clearNotebookExecutionState(content)
+      : content;
+    const written = await files.writeFile(path, seededContent);
+    if (!written.success) {
+      throw new Error(`Failed to seed fixture file ${path}: ${written.error ?? "unknown error"}`);
+    }
+  }
+  return { project, files };
+}
+
+export function clearNotebookExecutionState(content: string): string {
+  const notebook = JSON.parse(content) as Record<string, unknown>;
+  if (!Array.isArray(notebook.cells)) {
+    throw new Error("Notebook fixture must contain a cells array");
+  }
+  for (const rawCell of notebook.cells) {
+    const cell = asRecord(rawCell);
+    if (cell?.cell_type !== "code") continue;
+    cell.execution_count = null;
+    cell.outputs = [];
+  }
+  return `${JSON.stringify(notebook, null, 1)}\n`;
+}
 
 export function asRecord(value: unknown): Record<string, unknown> | undefined {
   return value && typeof value === "object" && !Array.isArray(value)
@@ -39,6 +120,138 @@ function runtimeToolName(item: RuntimeItem): string | undefined {
 function isJsExecItem(item: RuntimeItem): boolean {
   const tool = runtimeToolName(item);
   return tool === "js_exec" || tool?.endsWith("__js_exec") === true;
+}
+
+function isExecutableCodePosition(code: string, targetIndex: number): boolean {
+  let quote: "'" | '"' | "`" | undefined;
+  let lineComment = false;
+  let blockComment = false;
+  for (let index = 0; index < targetIndex; index += 1) {
+    const char = code[index];
+    const next = code[index + 1];
+    if (lineComment) {
+      if (char === "\n") lineComment = false;
+      continue;
+    }
+    if (blockComment) {
+      if (char === "*" && next === "/") {
+        blockComment = false;
+        index += 1;
+      }
+      continue;
+    }
+    if (quote) {
+      if (char === "\\") {
+        index += 1;
+      } else if (char === quote) {
+        quote = undefined;
+      }
+      continue;
+    }
+    if (char === "/" && next === "/") {
+      lineComment = true;
+      index += 1;
+    } else if (char === "/" && next === "*") {
+      blockComment = true;
+      index += 1;
+    } else if (char === "'" || char === '"' || char === "`") {
+      quote = char;
+    }
+  }
+  return !quote && !lineComment && !blockComment;
+}
+
+function callArgumentsAt(code: string, openParenIndex: number): string | undefined {
+  let depth = 0;
+  let quote: "'" | '"' | "`" | undefined;
+  let lineComment = false;
+  let blockComment = false;
+  for (let index = openParenIndex; index < code.length; index += 1) {
+    const char = code[index];
+    const next = code[index + 1];
+    if (lineComment) {
+      if (char === "\n") lineComment = false;
+      continue;
+    }
+    if (blockComment) {
+      if (char === "*" && next === "/") {
+        blockComment = false;
+        index += 1;
+      }
+      continue;
+    }
+    if (quote) {
+      if (char === "\\") {
+        index += 1;
+      } else if (char === quote) {
+        quote = undefined;
+      }
+      continue;
+    }
+    if (char === "/" && next === "/") {
+      lineComment = true;
+      index += 1;
+    } else if (char === "/" && next === "*") {
+      blockComment = true;
+      index += 1;
+    } else if (char === "'" || char === '"' || char === "`") {
+      quote = char;
+    } else if (char === "(") {
+      depth += 1;
+    } else if (char === ")") {
+      depth -= 1;
+      if (depth === 0) return code.slice(openParenIndex + 1, index);
+    }
+  }
+  return undefined;
+}
+
+function jsExecToolCalls(
+  code: string,
+  toolName: string,
+): Array<{ index: number; argumentsText: string }> {
+  const escaped = escapeRegex(toolName);
+  const patterns = [
+    new RegExp(`\\btools\\s*\\.\\s*${escaped}\\s*\\(`, "gi"),
+    new RegExp("\\btools\\s*\\[\\s*([\"'`])" + escaped + "\\1\\s*\\]\\s*\\(", "gi"),
+    new RegExp("\\bcallTool\\s*\\(\\s*([\"'`])" + escaped + "\\1", "gi"),
+  ];
+  const calls: Array<{ index: number; argumentsText: string }> = [];
+  for (const pattern of patterns) {
+    for (const match of code.matchAll(pattern)) {
+      const index = match.index ?? -1;
+      if (index < 0 || !isExecutableCodePosition(code, index)) continue;
+      const openParenOffset = match[0].indexOf("(");
+      if (openParenOffset < 0) continue;
+      const argumentsText = callArgumentsAt(code, index + openParenOffset);
+      if (argumentsText !== undefined) calls.push({ index, argumentsText });
+    }
+  }
+  return calls.sort((left, right) => left.index - right.index);
+}
+
+function runtimeItemCallsTool(item: RuntimeItem, toolName: string): boolean {
+  const expected = toolName.toLowerCase();
+  const tool = runtimeToolName(item);
+  if (tool === expected || tool?.endsWith(`__${expected}`)) return true;
+  if (!isJsExecItem(item)) return false;
+  const code = asString(asRecord(item.arguments)?.code) ?? "";
+  return jsExecToolCalls(code, expected).length > 0;
+}
+
+function runtimeItemToolCallReferences(
+  item: RuntimeItem,
+  toolName: string,
+  expectedText: string,
+): boolean {
+  const needle = expectedText.toLowerCase();
+  if (isJsExecItem(item)) {
+    const code = asString(asRecord(item.arguments)?.code) ?? "";
+    return jsExecToolCalls(code, toolName)
+      .some((call) => !needle || call.argumentsText.toLowerCase().includes(needle));
+  }
+  return runtimeItemCallsTool(item, toolName) &&
+    (!needle || JSON.stringify(item.arguments ?? {}).toLowerCase().includes(needle));
 }
 
 function collectRuntimeItems(events: Array<Record<string, unknown>>): RuntimeItem[] {
@@ -78,13 +291,7 @@ export function collectRuntimeEvidence(
 }
 
 export function jsExecCodeMentionsTool(code: string, toolName: string): boolean {
-  const stripped = stripComments(code);
-  const escaped = escapeRegex(toolName);
-  return [
-    new RegExp(`\\btools\\s*\\.\\s*${escaped}\\s*\\(`, "i"),
-    new RegExp(`\\btools\\s*\\[\\s*(["'\`])${escaped}\\1\\s*\\]\\s*\\(`, "i"),
-    new RegExp(`\\bcallTool\\s*\\(\\s*(["'\`])${escaped}\\1`, "i"),
-  ].some((pattern) => pattern.test(stripped));
+  return jsExecToolCalls(code, toolName).length > 0;
 }
 
 export function usedTool(
@@ -103,6 +310,188 @@ export function usedTool(
   );
 }
 
+export function toolCallReferences(
+  events: Array<Record<string, unknown>>,
+  toolName: string,
+  expectedText: string,
+): boolean {
+  return collectRuntimeItems(events).some((item) =>
+    runtimeItemSucceeded(item) &&
+    runtimeItemToolCallReferences(item, toolName, expectedText)
+  );
+}
+
+function parseJsonText(value: unknown): unknown {
+  if (typeof value !== "string") return value;
+  try {
+    return JSON.parse(value);
+  } catch {
+    return undefined;
+  }
+}
+
+function hasExplicitRuntimeFailure(value: unknown, depth = 0): boolean {
+  if (depth > 8) return false;
+  const parsed = parseJsonText(value);
+  if (Array.isArray(parsed)) {
+    return parsed.some((entry) => hasExplicitRuntimeFailure(entry, depth + 1));
+  }
+  const record = asRecord(parsed);
+  if (!record) return false;
+  const status = asString(record.status)?.toLowerCase();
+  if (
+    record.success === false ||
+    record.ok === false ||
+    record.isError === true ||
+    status === "failed" ||
+    status === "error" ||
+    status === "cancelled" ||
+    status === "canceled"
+  ) {
+    return true;
+  }
+  return Object.values(record).some((entry) =>
+    hasExplicitRuntimeFailure(entry, depth + 1)
+  );
+}
+
+export function runtimeItemSucceeded(item: RuntimeItem): boolean {
+  const status = asString(item.status)?.toLowerCase();
+  if (
+    item.isError === true ||
+    status === "failed" ||
+    status === "error" ||
+    status === "cancelled" ||
+    status === "canceled"
+  ) {
+    return false;
+  }
+  return !hasExplicitRuntimeFailure(item.result);
+}
+
+export function runtimeToolReferenceOrder(
+  events: Array<Record<string, unknown>>,
+  references: Array<{ id: string; toolName: string; expectedText: string }>,
+): string[] {
+  const ordered: string[] = [];
+  for (const item of collectRuntimeItems(events)) {
+    if (!runtimeItemSucceeded(item)) continue;
+    if (isJsExecItem(item)) {
+      const code = asString(asRecord(item.arguments)?.code) ?? "";
+      const matches = references.flatMap((reference) => {
+        const needle = reference.expectedText.toLowerCase();
+        return jsExecToolCalls(code, reference.toolName)
+          .filter((call) => !needle || call.argumentsText.toLowerCase().includes(needle))
+          .map((call) => ({ index: call.index, id: reference.id }));
+      });
+      matches
+        .sort((left, right) => left.index - right.index)
+        .forEach((match) => ordered.push(match.id));
+      continue;
+    }
+    for (const reference of references) {
+      if (runtimeItemToolCallReferences(
+        item,
+        reference.toolName,
+        reference.expectedText,
+      )) {
+        ordered.push(reference.id);
+      }
+    }
+  }
+  return ordered;
+}
+
+export function countNotebookErrorOutputs(cells: unknown[]): number {
+  return cells
+    .map(asRecord)
+    .filter((cell): cell is Record<string, unknown> => Boolean(cell))
+    .flatMap((cell) => Array.isArray(cell.outputs) ? cell.outputs : [])
+    .map(asRecord)
+    .filter((output): output is Record<string, unknown> => Boolean(output))
+    .filter((output) =>
+      output.output_type === "error" ||
+      (Array.isArray(output.traceback) &&
+        (typeof output.ename === "string" || typeof output.evalue === "string"))
+    )
+    .length;
+}
+
+function isCleanNotebookRunResult(value: unknown, depth = 0): boolean {
+  if (depth > 5) return false;
+  const parsed = parseJsonText(value);
+  if (Array.isArray(parsed)) {
+    return parsed.some((item) => isCleanNotebookRunResult(item, depth + 1));
+  }
+  const record = asRecord(parsed);
+  if (!record) return false;
+  const validation = asRecord(record.validation);
+  if (
+    record.ok === true &&
+    record.executed === true &&
+    validation?.clean === true &&
+    record.exitCode === 0
+  ) {
+    return true;
+  }
+  return [record.data, record.details, record.content, record.text]
+    .some((candidate) => isCleanNotebookRunResult(candidate, depth + 1));
+}
+
+function normalizeProjectPath(path: string): string {
+  return path.trim().replace(/^\.\//, "").replace(/^\/+/, "");
+}
+
+function notebookRunResultReferencesPath(
+  value: unknown,
+  expectedPath: string,
+  depth = 0,
+): boolean {
+  if (depth > 6) return false;
+  const parsed = typeof value === "string"
+    ? parseJsonText(value) ?? value
+    : value;
+  const expected = normalizeProjectPath(expectedPath);
+  if (typeof parsed === "string") {
+    return normalizeProjectPath(parsed) === expected;
+  }
+  if (Array.isArray(parsed)) {
+    return parsed.some((entry) =>
+      notebookRunResultReferencesPath(entry, expected, depth + 1)
+    );
+  }
+  const record = asRecord(parsed);
+  if (!record) return false;
+  const directPathFields = [record.path, record.notebook, record.notebookPath];
+  if (directPathFields.some((entry) =>
+    typeof entry === "string" && normalizeProjectPath(entry) === expected
+  )) {
+    return true;
+  }
+  return [
+    record.changedFiles,
+    record.data,
+    record.details,
+    record.content,
+    record.text,
+  ].some((candidate) =>
+    notebookRunResultReferencesPath(candidate, expected, depth + 1)
+  );
+}
+
+export function hasSuccessfulNotebookRun(
+  events: Array<Record<string, unknown>>,
+  expectedPath: string,
+): boolean {
+  return collectRuntimeItems(events).some((item) => {
+    if (!runtimeItemCallsTool(item, "run_notebook")) return false;
+    if (item.status !== "completed" || !runtimeItemSucceeded(item)) return false;
+    if (!isCleanNotebookRunResult(item.result)) return false;
+    return runtimeItemToolCallReferences(item, "run_notebook", expectedPath) ||
+      notebookRunResultReferencesPath(item.result, expectedPath);
+  });
+}
+
 export function runtimeToolMentionOrder(
   events: Array<Record<string, unknown>>,
   toolNames: string[],
@@ -110,6 +499,7 @@ export function runtimeToolMentionOrder(
   const expected = toolNames.map((toolName) => toolName.toLowerCase());
   const ordered: string[] = [];
   for (const item of collectRuntimeItems(events)) {
+    if (!runtimeItemSucceeded(item)) continue;
     const tool = runtimeToolName(item);
     if (tool && expected.some((name) => tool === name || tool.endsWith(`__${name}`))) {
       ordered.push(tool.includes("__") ? tool.slice(tool.lastIndexOf("__") + 2) : tool);
@@ -117,25 +507,65 @@ export function runtimeToolMentionOrder(
     if (!isJsExecItem(item)) continue;
     const code = asString(asRecord(item.arguments)?.code) ?? "";
     const stripped = stripComments(code);
-    const matches = expected.flatMap((toolName) => {
-      const escaped = escapeRegex(toolName);
-      const patterns = [
-        new RegExp(`\\btools\\s*\\.\\s*${escaped}\\s*\\(`, "gi"),
-        new RegExp(`\\btools\\s*\\[\\s*(["'\`])${escaped}\\1\\s*\\]\\s*\\(`, "gi"),
-        new RegExp(`\\bcallTool\\s*\\(\\s*(["'\`])${escaped}\\1`, "gi"),
-      ];
-      return patterns.flatMap((pattern) =>
-        [...stripped.matchAll(pattern)].map((match) => ({
-          index: match.index ?? Number.MAX_SAFE_INTEGER,
-          toolName,
-        })),
-      );
-    });
+    const matches = expected.flatMap((toolName) =>
+      jsExecToolCalls(stripped, toolName).map((call) => ({
+        index: call.index,
+        toolName,
+      })),
+    );
     matches
       .sort((left, right) => left.index - right.index)
       .forEach((match) => ordered.push(match.toolName));
   }
   return ordered;
+}
+
+export async function snapshotProjectFiles(
+  files: Pick<ProjectFilesystemClient, "listFiles" | "readFile">,
+): Promise<ProjectFileSnapshot> {
+  const listing = await files.listFiles("/", {
+    recursive: true,
+    includeHidden: true,
+    limit: 50_000,
+  });
+  if (!listing.success) {
+    throw new Error(listing.error ?? "Failed to list project files for snapshot");
+  }
+  const snapshot: ProjectFileSnapshot = {};
+  for (const entry of listing.files) {
+    if (entry.type !== "file") continue;
+    const path = entry.absolutePath || `/${entry.relativePath || entry.name}`;
+    const read = await files.readFile(path);
+    if (!read.success || typeof read.content !== "string") {
+      throw new Error(read.error ?? `Failed to read ${path} for snapshot`);
+    }
+    snapshot[path] = JSON.stringify({
+      encoding: read.encoding ?? "utf8",
+      content: read.content,
+    });
+  }
+  return Object.fromEntries(
+    Object.entries(snapshot).sort(([left], [right]) => left.localeCompare(right)),
+  );
+}
+
+export function diffProjectFileSnapshots(
+  before: ProjectFileSnapshot,
+  after: ProjectFileSnapshot,
+): ProjectFileDiff {
+  const beforePaths = new Set(Object.keys(before));
+  const afterPaths = new Set(Object.keys(after));
+  const addedPaths = [...afterPaths].filter((path) => !beforePaths.has(path)).sort();
+  const removedPaths = [...beforePaths].filter((path) => !afterPaths.has(path)).sort();
+  const modifiedPaths = [...beforePaths]
+    .filter((path) => afterPaths.has(path) && before[path] !== after[path])
+    .sort();
+  return {
+    addedPaths,
+    removedPaths,
+    modifiedPaths,
+    changedPaths: [...addedPaths, ...removedPaths, ...modifiedPaths].sort(),
+  };
 }
 
 export function legacyDeployPathEvidence(
@@ -178,15 +608,25 @@ export function legacyDeployPathEvidence(
   return failures;
 }
 
+export function resolveFetchAttempts(
+  init?: RequestInit,
+  attempts?: number,
+): number | undefined {
+  if (attempts !== undefined) return attempts;
+  const method = (init?.method ?? "GET").toUpperCase();
+  return method === "GET" || method === "HEAD" ? undefined : 1;
+}
+
 export async function fetchWithRetry(
   url: string,
   init?: RequestInit,
-  attempts = 8,
+  attempts?: number,
 ): Promise<Response> {
   let lastError: unknown;
   const method = (init?.method ?? "GET").toUpperCase();
   const canRetryResponse = method === "GET" || method === "HEAD";
-  for (let attempt = 0; attempt < attempts; attempt += 1) {
+  const maxAttempts = resolveFetchAttempts(init, attempts) ?? 8;
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
     try {
       const response = await fetch(url, init);
       const shouldRetryStatus =
@@ -195,7 +635,7 @@ export async function fetchWithRetry(
         response.status === 425 ||
         response.status === 429 ||
         response.status >= 500;
-      if (!canRetryResponse || !shouldRetryStatus || attempt === attempts - 1) {
+      if (!canRetryResponse || !shouldRetryStatus || attempt === maxAttempts - 1) {
         return response;
       }
       lastError = new Error(`HTTP ${response.status}`);
@@ -206,7 +646,7 @@ export async function fetchWithRetry(
       }
     } catch (error) {
       lastError = error;
-      if (attempt === attempts - 1) break;
+      if (attempt === maxAttempts - 1) break;
     }
     await new Promise((resolve) => setTimeout(resolve, 750 * (attempt + 1)));
   }

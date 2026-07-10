@@ -1,3 +1,8 @@
+import {
+  fetchWithRetry,
+  resolveFetchAttempts,
+} from "./project-eval-helpers";
+
 // Reusable assertions for "did this eval actually deploy a live app?".
 //
 // Agent eval sessions surface deployed apps via AgentEvalSessionResult.deployedApps (populated
@@ -103,4 +108,77 @@ export async function assertDeployedAppLive(app: EvalDeployedApp): Promise<void>
   if (body.length === 0) {
     throw new Error(`Deployed app "${app.name}" (${app.url}) returned an empty body`);
   }
+}
+
+export async function fetchJsonWithRetry(
+  url: string,
+  init?: RequestInit,
+  attempts?: number,
+): Promise<{ status: number; json: unknown }> {
+  const response = await fetchWithRetry(
+    url,
+    init,
+    resolveEvalFetchAttempts(init, attempts),
+  );
+  let json: unknown;
+  try {
+    json = await response.json();
+  } catch {
+    json = undefined;
+  }
+  return { status: response.status, json };
+}
+
+export function resolveEvalFetchAttempts(
+  init?: RequestInit,
+  attempts?: number,
+): number | undefined {
+  return resolveFetchAttempts(init, attempts);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function describeValue(value: unknown): string {
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
+}
+
+export function assertJsonSubset(
+  actual: unknown,
+  expected: Record<string, unknown>,
+  label: string,
+): string[] {
+  const failures: string[] = [];
+  const compare = (current: unknown, wanted: unknown, path: string): void => {
+    if (isRecord(wanted)) {
+      if (!isRecord(current)) {
+        failures.push(`${path} expected an object, got ${describeValue(current)}`);
+        return;
+      }
+      for (const [key, value] of Object.entries(wanted)) {
+        compare(current[key], value, `${path}.${key}`);
+      }
+      return;
+    }
+    if (Array.isArray(wanted)) {
+      if (!Array.isArray(current)) {
+        failures.push(`${path} expected an array, got ${describeValue(current)}`);
+        return;
+      }
+      wanted.forEach((value, index) => compare(current[index], value, `${path}[${index}]`));
+      return;
+    }
+    if (!Object.is(current, wanted)) {
+      failures.push(
+        `${path} expected ${describeValue(wanted)}, got ${describeValue(current)}`,
+      );
+    }
+  };
+  compare(actual, expected, label);
+  return failures;
 }

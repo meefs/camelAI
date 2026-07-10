@@ -30,7 +30,7 @@ import {
 } from "react-router";
 import { BackButton } from "../components/back-button";
 import { CriteriaCard } from "../components/criteria-card";
-import { EvalKindBadge } from "../components/eval-name-cell";
+import { EvalKindBadge, EvalTierBadge } from "../components/eval-name-cell";
 import { PromptSection } from "../components/prompt-section";
 import { ScoreValue } from "../components/score";
 import { ScorecardCard } from "../components/scorecard-card";
@@ -341,6 +341,7 @@ export function RunDetailPage() {
 					<div className="flex items-center gap-3">
 						<VerdictBadge status={run.status} size="lg" />
 						<EvalKindBadge evalTarget={run.evalTarget} kind={run.kind} />
+						<EvalTierBadge tier={run.tier} />
 						<h1 className="min-w-0 truncate text-xl font-semibold tracking-tight">
 							{run.evalTarget}
 						</h1>

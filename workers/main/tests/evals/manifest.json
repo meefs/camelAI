@@ -1,5 +1,5 @@
 {
-  "$comment": "Single source of truth for committed agent evals. Adding an eval = create workers/main/tests/evals/<id>.test.ts (gated on RUN_AGENT_EVALS, ending in emitEvalTranscript from ./eval-transcript) and add one entry here. Each entry requires kind: unit checks one mechanism; skill checks end-to-end agent ability. Scorecard point budgets should be unit 1-5 pts, skill 6-20 pts scaled to task complexity; pass/fail criteria remain the hard contract. Consumed by scripts/run-agent-eval.mjs and scripts/run-eval-suite.sh. custom-prompt-live is intentionally NOT listed — it's the generic env-driven custom-prompt harness, not a fixed eval. realDeploy:true marks evals that only run when real deploy is enabled (CF_API_TOKEN + EVAL_REAL_DEPLOY!=0).",
+  "$comment": "Single source of truth for committed agent evals. Adding an eval = create workers/main/tests/evals/<id>.test.ts (gated on RUN_AGENT_EVALS, ending in emitEvalTranscript from ./eval-transcript) and add one entry here. Each entry requires kind: unit checks one mechanism; skill checks end-to-end agent ability. Optional tier:\"hard\" marks deterministic high-difficulty evals; absent means standard. Scorecard point budgets should be unit 1-5 pts, skill 6-20 pts scaled to task complexity; pass/fail criteria remain the hard contract. Consumed by scripts/run-agent-eval.mjs and scripts/run-eval-suite.sh. custom-prompt-live is intentionally NOT listed — it's the generic env-driven custom-prompt harness, not a fixed eval. realDeploy:true marks evals that only run when real deploy is enabled (CF_API_TOKEN + EVAL_REAL_DEPLOY!=0).",
   "evals": [
     {
       "id": "dashboard-fake-data-live",
@@ -10,12 +10,6 @@
       "id": "shadcn-components-live",
       "description": "Create a DO-backed React Router app and add new shadcn/ui components",
       "kind": "skill"
-    },
-    {
-      "id": "deploy-fake-data-live",
-      "description": "Scaffold + deploy a Cloudflare Worker app to the testing-grounds namespace",
-      "kind": "skill",
-      "realDeploy": true
     },
     {
       "id": "do-backed-project-deploy-live",
@@ -42,8 +36,8 @@
       "realDeploy": true
     },
     {
-      "id": "sandbox-write-file-live",
-      "description": "Write and verify a file in the project sandbox",
+      "id": "project-write-file-live",
+      "description": "Write and verify a file in a DO-backed project",
       "kind": "unit"
     },
     {
@@ -97,6 +91,26 @@
       "id": "warehouse-list-live",
       "description": "Discover and call the warehouse connection listing tool (exercises the lean-dropped warehouse/connections tools via discovery)",
       "kind": "unit"
+    },
+    {
+      "id": "orders-analytics-api-live",
+      "description": "Build and deploy an order-tracking app whose API math the harness verifies live",
+      "kind": "skill",
+      "realDeploy": true,
+      "tier": "hard"
+    },
+    {
+      "id": "broken-app-rescue-live",
+      "description": "Diagnose and fix a seeded broken app (build, logic, display defects) and redeploy it",
+      "kind": "skill",
+      "realDeploy": true,
+      "tier": "hard"
+    },
+    {
+      "id": "metrics-ground-truth-notebook-live",
+      "description": "Analyze a seeded CSV in a notebook and report four findings the harness checks against computed ground truth",
+      "kind": "skill",
+      "tier": "hard"
     }
   ]
 }

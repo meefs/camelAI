@@ -5,6 +5,9 @@ import { createOrg, createUser, type TestEnv } from "../test-helpers";
 import {
   assertPassFailCriteria,
   buildEvalCriteriaSummary,
+  buildNoAssistantErrorCriterion,
+  buildResultEventCriterion,
+  buildRuntimeEventsCriterion,
   buildSessionCompletedCriterion,
   passFailCriterion,
   scoreCriterion,
@@ -25,6 +28,7 @@ import { isRealEvalDeployEnabled } from "../../src/eval-deploy-context";
 import {
   assertDeployedApp,
   countWorkspaceApps,
+  fetchJsonWithRetry,
   type EvalDeployedApp,
 } from "./eval-deploy-assert";
 import { emitEvalTranscript } from "./eval-transcript";
@@ -35,6 +39,7 @@ import {
   type WorkspaceFilesystemEnv,
   type WorkspaceProject,
 } from "../../src/workspace-filesystem-do";
+import { legacyDeployPathEvidence } from "./project-eval-helpers";
 
 type SpaceMatchingGameEvalEnv = TestEnv & EvalModelEnv & EvalSignalEnv & {
   APP_DB?: D1Database;
@@ -69,9 +74,8 @@ type SourceFile = {
   size: number;
 };
 
-// Agents can build the app through two legitimate paths:
-// - "vm": legacy sandbox VM path (`create-worker ...` + `bun run deploy` + `list_apps`)
-// - "do": DO-backed path (`create_project` + project file writes + `deploy_project`)
+// Source inspection retains the historical runtime shape for regression fixtures, while
+// live agents are expected to use the DO-backed create_project/deploy_project path.
 type DeployPath = "vm" | "do";
 
 type SourceInspection = {
@@ -138,6 +142,7 @@ const APP_NAME_HINTS = [
 const testEnv = env as unknown as SpaceMatchingGameEvalEnv;
 // This eval needs the real testing-grounds deploy path because it asserts a live app.
 const maybeIt = isRealEvalDeployEnabled(testEnv) ? it : it.skip;
+const SESSION_TIMEOUT_MS = getEvalTimeoutMs(testEnv, 900_000);
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
   return value && typeof value === "object" && !Array.isArray(value)
@@ -573,9 +578,7 @@ function evaluateRuntimeAssertions(
   ].join("\n").toLowerCase();
   const failures: string[] = [];
 
-  // The DO-backed path (create_project + deploy_project) is a legitimate alternative to
-  // the legacy VM path (create-worker + bun run deploy + list_apps): deploy_project
-  // returns the live app URL directly.
+  // The live path is create_project + deploy_project; deploy_project returns the URL directly.
   const usedCreateProject = usedTool(result.events, "create_project");
   const usedDeployProject = usedTool(result.events, "deploy_project");
 
@@ -1127,8 +1130,8 @@ async function smokeFetchRoot(app: EvalDeployedApp | undefined): Promise<PageSmo
         "oops",
         "application error",
         "internal server error",
-        "not found",
-        "stack",
+        "cannot get",
+        "exception",
       ].filter((term) => lower.includes(term));
       last = {
         url: app.url,
@@ -1223,36 +1226,31 @@ describe("space matching game runtime assertion extraction", () => {
     expect(jsExecCodeMentionsTool('await callTool("set_preview", {});', "set_preview")).toBe(true);
   });
 
-  it("accepts valid deploy behavior routed through js_exec", () => {
+  it("accepts the top-level create_project plus js_exec deploy path", () => {
     const code = `
-      const project = await env.PROJECTS.create({
-        name: "space-matching-game",
-        description: "Space themed matching game",
-      });
       await tools.read({ location: "workspace", path: "developing-software/SKILL.md" });
-      await vm.exec({ project: project.name, command: "create-worker space-matching-game" });
-      await vm.exec({ project: project.name, command: "bun run deploy", timeoutSeconds: 120 });
-      await tools.list_apps({});
+      await tools.deploy_project({ project: "space-matching-game" });
       await tools.set_preview({ app_name: "space-matching-game" });
     `;
     const runtimeAssertions = evaluateRuntimeAssertions({
       events: [
         completedRuntimeItem({
           type: "dynamicToolCall",
+          tool: "create_project",
+          arguments: { name: "space-matching-game", description: "Space game" },
+          result: { content: [{ type: "text", text: "created" }] },
+        }),
+        completedRuntimeItem({
+          type: "dynamicToolCall",
           tool: "js_exec",
           arguments: { code },
-          result: { content: [{ type: "text", text: "done" }] },
+          result: { content: [{ type: "text", text: '{ "success": true, "url": "https://space-matching-game.evals.camelai.app" }' }] },
         }),
       ],
     });
 
     expect(runtimeAssertions.failures).toEqual([]);
-    expect(runtimeAssertions.commands).toEqual(
-      expect.arrayContaining([
-        "create-worker space-matching-game",
-        "bun run deploy",
-      ]),
-    );
+    expect(runtimeAssertions.commands).toEqual([]);
   });
 
   it("detects unsupported scaffold commands inside js_exec", () => {
@@ -1286,16 +1284,18 @@ describe("space matching game runtime assertion extraction", () => {
   it("accepts the DO-backed create_project + deploy_project path routed through js_exec", () => {
     const code = `
       await tools.read({ location: "workspace", path: "developing-software/SKILL.md" });
-      const project = await tools["create_project"]({
-        name: "space-matching-game",
-        description: "Space themed matching game",
-      });
       await tools.write({ location: "project", project: "space-matching-game", path: "/app/routes/home.tsx", content: "..." });
       const deployed = await tools.deploy_project({ project: "space-matching-game" });
       await tools.set_preview({ app_name: "space-matching-game" });
     `;
     const runtimeAssertions = evaluateRuntimeAssertions({
       events: [
+        completedRuntimeItem({
+          type: "dynamicToolCall",
+          tool: "create_project",
+          arguments: { name: "space-matching-game", description: "Space game" },
+          result: { content: [{ type: "text", text: "created" }] },
+        }),
         completedRuntimeItem({
           type: "dynamicToolCall",
           tool: "js_exec",
@@ -1315,7 +1315,7 @@ describe("space matching game runtime assertion extraction", () => {
     expect(runtimeAssertions.failures).toEqual([]);
   });
 
-  it("detects top-level create_project and deploy_project tool calls", () => {
+  it("detects top-level create_project and js_exec deploy_project calls", () => {
     const runtimeAssertions = evaluateRuntimeAssertions({
       events: [
         completedRuntimeItem({
@@ -1326,8 +1326,8 @@ describe("space matching game runtime assertion extraction", () => {
         }),
         completedRuntimeItem({
           type: "dynamicToolCall",
-          tool: "deploy_project",
-          arguments: { project: "space-matching-game" },
+          tool: "js_exec",
+          arguments: { code: 'await tools.read({ path: "developing-software/SKILL.md" }); await tools.deploy_project({ project: "space-matching-game" }); await tools.set_preview({ app_name: "space-matching-game" });' },
           result: {
             content: [{
               type: "text",
@@ -1354,9 +1354,9 @@ describe("space matching game runtime assertion extraction", () => {
       events: [
         completedRuntimeItem({
           type: "dynamicToolCall",
-          tool: "deploy_project",
+          tool: "js_exec",
           status: "failed",
-          arguments: { project: "space-matching-game" },
+          arguments: { code: 'await tools.deploy_project({ project: "space-matching-game" });' },
           result: {
             content: [{ type: "text", text: "build failed: https://space-matching-game.evals.camelai.app was not deployed" }],
           },
@@ -1370,8 +1370,8 @@ describe("space matching game runtime assertion extraction", () => {
       events: [
         completedRuntimeItem({
           type: "dynamicToolCall",
-          tool: "deploy_project",
-          arguments: { project: "space-matching-game" },
+          tool: "js_exec",
+          arguments: { code: 'await tools.deploy_project({ project: "space-matching-game" });' },
           result: { content: [{ type: "text", text: '{ "success": false, "stage": "build" }' }] },
         }),
       ],
@@ -1386,9 +1386,9 @@ describe("space matching game runtime assertion extraction", () => {
       events: [
         completedRuntimeItem({
           type: "dynamicToolCall",
-          tool: "deploy_project",
+          tool: "js_exec",
           status: "completed",
-          arguments: { project: "space-matching-game" },
+          arguments: { code: 'await tools.deploy_project({ project: "space-matching-game" });' },
           result: {
             content: [{
               type: "text",
@@ -1807,9 +1807,10 @@ describe("space matching game deploy agent eval", () => {
         userName: "Space Game Eval",
         userEmail: `space-game-eval-${suffix}@example.com`,
         messageSource: "eval",
-        timeoutMs: getEvalTimeoutMs(testEnv, 900_000),
+        timeoutMs: SESSION_TIMEOUT_MS,
         message: [
-          "Create a web app that is a space themed matching game with a leaderboard where users can enter their credentials for their high score.",
+          "Create a web app that is a space themed matching game with a leaderboard where users can enter their name with their high score.",
+          "The deployed app must expose a leaderboard API: GET /api/leaderboard returns JSON { entries: [{ name, score }, ...] } and POST /api/leaderboard accepts JSON { name, score } and persists the entry so it survives across requests.",
           "This eval runtime injects CLOUDFLARE_API_BASE_URL and CLOUDFLARE_API_TOKEN, so do not ask for login or real Cloudflare credentials.",
         ].join(" "),
       });
@@ -1837,26 +1838,6 @@ describe("space matching game deploy agent eval", () => {
         }),
       );
       const runtimeAssertions = evaluateRuntimeAssertions(result);
-      const commandText = runtimeAssertions.commands.join("\n").toLowerCase();
-      const unsupportedScaffoldFailures = runtimeAssertions.failures.filter((failure) =>
-        failure.includes("unsupported scaffold"),
-      );
-      const shadcnFailures = sourceInspection.failures.filter((failure) =>
-        /components\.json|shadcn/i.test(failure),
-      );
-      const usedCreateWorker = /\bcreate-worker\b/.test(commandText);
-      const usedBunRunDeploy = /\bbun\s+run\s+deploy\b/.test(commandText);
-      // DO-backed path: tool calls can be top-level (signal.toolCallsByName) or routed
-      // through js_exec code (runtimeAssertions detection covers tools.<name>(...),
-      // tools["<name>"](...), and callTool("<name>", ...)).
-      const usedCreateProject =
-        runtimeAssertions.usedCreateProject ||
-        (signal.toolCallsByName["create_project"] ?? 0) >= 1;
-      const usedDeployProject =
-        runtimeAssertions.usedDeployProject ||
-        (signal.toolCallsByName["deploy_project"] ?? 0) >= 1;
-      // A create_project call is "successful" when the workspace gained a new project.
-      const createdProjectViaTool = usedCreateProject && newProjects.length > 0;
       const appsAfter = await countWorkspaceApps(orgStub, defaultWorkspaceId);
       let deployedApp: EvalDeployedApp | undefined;
       let deployedAppError: string | undefined;
@@ -1865,10 +1846,60 @@ describe("space matching game deploy agent eval", () => {
       } catch (error) {
         deployedAppError = error instanceof Error ? error.message : String(error);
       }
-      // deploy_project registers the app and returns its live URL directly; a captured
-      // deployed-app URL after a deploy_project call is a successful DO-path deploy.
-      const deployedViaDeployProject = usedDeployProject && Boolean(deployedApp);
       const rootSmoke = await smokeFetchRoot(deployedApp);
+      const leaderboardRoundtrip = {
+        postStatus: undefined as number | undefined,
+        getStatus: undefined as number | undefined,
+        entries: [] as unknown[],
+        failures: [] as string[],
+      };
+      if (!deployedApp) {
+        leaderboardRoundtrip.failures.push("no deployed app was captured");
+      } else {
+        try {
+          const post = await fetchJsonWithRetry(
+            new URL("/api/leaderboard", deployedApp.url).toString(),
+            {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({ name: "EvalPilot", score: 4200 }),
+            },
+          );
+          leaderboardRoundtrip.postStatus = post.status;
+          if (post.status < 200 || post.status >= 300) {
+            leaderboardRoundtrip.failures.push(`POST returned HTTP ${post.status}`);
+          }
+          const get = await fetchJsonWithRetry(
+            new URL("/api/leaderboard", deployedApp.url).toString(),
+          );
+          leaderboardRoundtrip.getStatus = get.status;
+          const entries = Array.isArray(asRecord(get.json)?.entries)
+            ? asRecord(get.json)!.entries as unknown[]
+            : [];
+          leaderboardRoundtrip.entries = entries;
+          if (get.status !== 200) leaderboardRoundtrip.failures.push(`GET returned HTTP ${get.status}`);
+          const persisted = entries.some((entry) => {
+            const record = asRecord(entry);
+            return record?.name === "EvalPilot" && record.score === 4200;
+          });
+          if (!persisted) leaderboardRoundtrip.failures.push("GET did not return EvalPilot score 4200");
+        } catch (error) {
+          leaderboardRoundtrip.failures.push(
+            `leaderboard round-trip failed: ${error instanceof Error ? error.message : String(error)}`,
+          );
+        }
+      }
+      const gameRichnessSignals = [
+        (sourceInspection.signalHits.matchingGame?.length ?? 0) >= 4,
+        (sourceInspection.signalHits.leaderboard?.length ?? 0) >= 2,
+        (sourceInspection.signalHits.credentials?.length ?? 0) >= 1,
+        (sourceInspection.signalHits.spaceTheme?.length ?? 0) >= 3,
+        sourceInspection.persistenceFiles.length > 0,
+        sourceInspection.sourceFiles.length >= 3,
+      ];
+      const gameRichnessPoints = gameRichnessSignals.filter(Boolean).length;
+      const legacyFailures = legacyDeployPathEvidence(result.events);
+      const latestPreviewScore = scoreLatestPreview(result.events);
       const evaluation = buildEvalCriteriaSummary({
         passFail: [
           buildSessionCompletedCriterion(result),
@@ -1880,68 +1911,6 @@ describe("space matching game deploy agent eval", () => {
               ? projectCreation.failures.join("; ")
               : undefined,
             details: projectCreation,
-          }),
-          passFailCriterion({
-            id: "read_deploy_skill",
-            label: "Agent read the deploy software skill",
-            passed: readDevelopingSoftwareSkill(result.events),
-            reason: readDevelopingSoftwareSkill(result.events)
-              ? undefined
-              : "No qualifying developing-software/SKILL.md read evidence was found.",
-          }),
-          passFailCriterion({
-            id: "scaffolded_with_create_worker_and_shadcn",
-            label: "Agent scaffolded with create-worker or create_project (with shadcn)",
-            passed:
-              (usedCreateWorker || createdProjectViaTool) &&
-              unsupportedScaffoldFailures.length === 0 &&
-              shadcnFailures.length === 0,
-            reason:
-              (usedCreateWorker || createdProjectViaTool) &&
-              unsupportedScaffoldFailures.length === 0 &&
-              shadcnFailures.length === 0
-                ? undefined
-                : [
-                    ...(usedCreateWorker || createdProjectViaTool
-                      ? []
-                      : ["No create-worker command or successful create_project tool call evidence was found."]),
-                    ...unsupportedScaffoldFailures,
-                    ...shadcnFailures,
-                  ].join(" "),
-            details: {
-              commands: runtimeAssertions.commands,
-              usedCreateWorker,
-              usedCreateProject,
-              createdProjectViaTool,
-              unsupportedScaffoldFailures,
-              shadcnFailures,
-            },
-          }),
-          passFailCriterion({
-            id: "deployed_with_bun_run_deploy",
-            label: "Agent deployed via bun run deploy or deploy_project",
-            passed: usedBunRunDeploy || deployedViaDeployProject,
-            reason: usedBunRunDeploy || deployedViaDeployProject
-              ? undefined
-              : "No bun run deploy command or successful deploy_project evidence was found.",
-            details: {
-              commands: runtimeAssertions.commands,
-              usedBunRunDeploy,
-              usedDeployProject,
-              deployedViaDeployProject,
-            },
-          }),
-          ...buildPostDeployToolCriteria(runtimeAssertions, {
-            deployProjectProvidedAppUrl: deployedViaDeployProject,
-          }),
-          passFailCriterion({
-            id: "source_satisfies_app_requirements",
-            label: "Generated source satisfies required app requirements",
-            passed: sourceInspection.failures.length === 0,
-            reason: sourceInspection.failures.length
-              ? sourceInspection.failures.join("; ")
-              : undefined,
-            details: sourceInspection,
           }),
           passFailCriterion({
             id: "workspace_app_created",
@@ -1961,19 +1930,8 @@ describe("space matching game deploy agent eval", () => {
             details: { deployedApp },
           }),
           passFailCriterion({
-            id: "deployed_app_live",
-            label: "Deployed app is live",
-            passed: rootSmoke.status === 200 && (rootSmoke.bodyLength ?? 0) > 0,
-            reason:
-              rootSmoke.status === 200 && (rootSmoke.bodyLength ?? 0) > 0
-                ? undefined
-                : rootSmoke.error ??
-                  `Root fetch returned HTTP ${rootSmoke.status ?? "unknown"} with body length ${rootSmoke.bodyLength ?? 0}.`,
-            details: rootSmoke,
-          }),
-          passFailCriterion({
-            id: "important_pages_load_without_server_error",
-            label: "Important app pages load without obvious server error",
+            id: "game_page_loads",
+            label: "Game page loads without an explicit server error",
             passed:
               rootSmoke.status === 200 &&
               (rootSmoke.bodyLength ?? 0) > 0 &&
@@ -1989,9 +1947,36 @@ describe("space matching game deploy agent eval", () => {
                     `Root fetch returned HTTP ${rootSmoke.status ?? "unknown"} with body length ${rootSmoke.bodyLength ?? 0}.`,
             details: rootSmoke,
           }),
+          passFailCriterion({
+            id: "leaderboard_roundtrip_correct",
+            label: "Leaderboard POST persists and GET returns the submitted score",
+            passed: leaderboardRoundtrip.failures.length === 0,
+            reason: leaderboardRoundtrip.failures.length
+              ? leaderboardRoundtrip.failures.join("; ")
+              : undefined,
+            details: leaderboardRoundtrip,
+          }),
+          buildNoAssistantErrorCriterion(result),
+          buildRuntimeEventsCriterion(result),
+          buildResultEventCriterion(result),
         ],
         scorecard: [
-          scoreLatestPreview(result.events),
+          latestPreviewScore,
+          scoreCriterion({
+            id: "game_source_richness",
+            label: "Source shows game, leaderboard, theme, and persistence richness",
+            points: gameRichnessPoints,
+            maxPoints: 6,
+            reason: `${gameRichnessPoints}/6 source richness signals passed.`,
+            details: { gameRichnessSignals, sourceInspection },
+          }),
+          scoreCriterion({
+            id: "avoided_legacy_paths",
+            label: "Avoided legacy scaffold/deploy paths",
+            points: legacyFailures.length === 0 ? 2 : 0,
+            maxPoints: 2,
+            reason: legacyFailures.length ? legacyFailures.join("; ") : undefined,
+          }),
           scoreSignalEfficiency(signal, {
             maxPoints: 4,
             fallbackPoints: 1,
@@ -2014,6 +1999,7 @@ describe("space matching game deploy agent eval", () => {
         deployedApps: result.deployedApps,
         projectCreation,
         runtimeAssertions,
+        legacyFailures,
         sourceInspection,
         sourceInspectionCandidates,
         livePageSmoke: rootSmoke,
@@ -2024,6 +2010,6 @@ describe("space matching game deploy agent eval", () => {
       emitEvalTranscript(payload);
       assertPassFailCriteria(evaluation);
     },
-    960_000,
+    SESSION_TIMEOUT_MS + 120_000,
   );
 });

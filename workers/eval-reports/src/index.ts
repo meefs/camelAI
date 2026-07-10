@@ -687,6 +687,7 @@ app.post("/upload/:id/complete", async (c) => {
 		return c.json({ error: "Invalid batch id" }, 400);
 	}
 	const kind = body.kind === "unit" || body.kind === "skill" ? body.kind : undefined;
+	const tier = body.tier === "hard" ? body.tier : undefined;
 
 	const artifacts: ArtifactFile[] = [];
 	const listed = await c.env.RUNS_BUCKET.list({ prefix: runKey(runId, "artifacts/") });
@@ -715,6 +716,7 @@ app.post("/upload/:id/complete", async (c) => {
 		batchId,
 		batchLabel: cleanTextField(body.batchLabel),
 		kind,
+		tier,
 		description: cleanTextField(body.description),
 		startPrompt: ingested.startPrompt,
 		ref: typeof body.ref === "string" ? body.ref : undefined,

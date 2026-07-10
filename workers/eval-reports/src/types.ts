@@ -1,6 +1,7 @@
 /** Terminal-only: runs are reported after they finish; there is no queue. */
 export type RunStatus = "completed" | "failed";
 export type EvalKind = "unit" | "skill";
+export type EvalTier = "hard";
 
 export interface EvalSignalSummary {
 	assistantTurnCount?: number;
@@ -70,7 +71,7 @@ export interface EvalCriteriaSummary {
 export interface Run {
 	runId: string;
 	status: RunStatus;
-	/** The eval id that ran (e.g. "deploy-fake-data-live" or "custom-prompt-live"). */
+	/** The eval id that ran (e.g. "dashboard-fake-data-live" or "custom-prompt-live"). */
 	evalTarget: string;
 	/** Shared id for all runs reported by one suite/matrix invocation. */
 	batchId?: string;
@@ -78,6 +79,8 @@ export interface Run {
 	batchLabel?: string;
 	/** Structural category from the eval manifest. */
 	kind?: EvalKind;
+	/** Optional deterministic difficulty tier from the eval manifest. */
+	tier?: EvalTier;
 	/** One-line description from the eval manifest. */
 	description?: string;
 	/** Initial user prompt, extracted from the transcript artifact at ingest. */
@@ -140,6 +143,7 @@ export interface CompleteRequest {
 	batchId?: string;
 	batchLabel?: string;
 	kind?: EvalKind;
+	tier?: string;
 	description?: string;
 	ref?: string;
 	commit?: string;

@@ -43,6 +43,7 @@ const maybeIt = testEnv.RUN_AGENT_EVALS === "1" ? it : it.skip;
 const INTEGRATION_NAME = "docs-mcp";
 const INTEGRATION_TYPE = "remote_mcp";
 const SERVER_URL = "https://mcp.example.com/sse";
+const SESSION_TIMEOUT_MS = getEvalTimeoutMs(testEnv, 180_000);
 
 describe("integration create agent eval", () => {
   maybeIt(
@@ -82,7 +83,7 @@ describe("integration create agent eval", () => {
         userName: "Integration Eval",
         userEmail: `integration-eval-${suffix}@example.com`,
         messageSource: "eval",
-        timeoutMs: getEvalTimeoutMs(testEnv, 180_000),
+        timeoutMs: SESSION_TIMEOUT_MS,
         message: [
           "Add a remote MCP server integration to this workspace directly — do NOT prompt me to set it up interactively.",
           `Use integration type "${INTEGRATION_TYPE}", name it exactly "${INTEGRATION_NAME}",`,
@@ -102,15 +103,13 @@ describe("integration create agent eval", () => {
       // Verify the integration actually persisted on the workspace, independent of
       // the agent's reply.
       const integrations = await orgStub.getWorkspaceIntegrations(defaultWorkspaceId);
-      const match = integrations.find(
-        (i) => i.name === INTEGRATION_NAME && i.integration_type === INTEGRATION_TYPE,
-      );
-
-      const transcriptText = JSON.stringify({
-        result: result.result,
-        events: result.events,
-        messages: result.messages,
-      }).toLowerCase();
+      const match = integrations.find((integration) => integration.name === INTEGRATION_NAME);
+      let persistedConfig: Record<string, unknown> = {};
+      try {
+        persistedConfig = JSON.parse(match?.config ?? "{}");
+      } catch {
+        persistedConfig = {};
+      }
       const evaluation = buildEvalCriteriaSummary({
         passFail: [
           buildSessionCompletedCriterion(result),
@@ -134,6 +133,18 @@ describe("integration create agent eval", () => {
             details: { integrationType: match?.integration_type ?? null },
           }),
           passFailCriterion({
+            id: "integration_config_correct",
+            label: "Integration has the requested server URL and auth type",
+            passed:
+              persistedConfig.server_url === SERVER_URL &&
+              persistedConfig.auth_type === "none",
+            reason:
+              persistedConfig.server_url === SERVER_URL && persistedConfig.auth_type === "none"
+                ? undefined
+                : `Expected server_url=${SERVER_URL} and auth_type=none.`,
+            details: { config: persistedConfig },
+          }),
+          passFailCriterion({
             id: "produced_token_usage",
             label: "Agent produced token usage",
             passed: signal.tokenUsage.totalTokens > 0,
@@ -143,7 +154,7 @@ describe("integration create agent eval", () => {
                 : "Signal reported zero total tokens.",
             details: { totalTokens: signal.tokenUsage.totalTokens },
           }),
-          buildNoAssistantErrorCriterion(transcriptText),
+          buildNoAssistantErrorCriterion(result),
           buildRuntimeEventsCriterion(result),
           buildResultEventCriterion(result),
         ],
@@ -182,6 +193,6 @@ describe("integration create agent eval", () => {
 
       assertPassFailCriteria(evaluation);
     },
-    240_000,
+    SESSION_TIMEOUT_MS + 60_000,
   );
 });

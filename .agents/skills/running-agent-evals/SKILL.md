@@ -41,7 +41,23 @@ Committed evals are listed in `workers/main/tests/evals/manifest.json`. Each ent
 `kind`: use `unit` for a one-mechanism check and `skill` for end-to-end agent ability. Keep
 scorecard budgets aligned with the dashboard weighting convention: unit evals 1-5 pts, skill evals
 6-20 pts scaled to task complexity. Pass/fail criteria are still the hard contract; scorecard
-points never gate pass/fail by themselves.
+points never gate pass/fail by themselves. Use optional `tier: "hard"` for deterministic
+high-difficulty evals and optional `realDeploy: true` when the eval requires the testing-grounds
+deploy path.
+
+Author evals with these guardrails:
+
+- Always reach `emitEvalTranscript({...})`. Catch post-session/live-verification errors into
+  diagnostic criteria and transcript details instead of throwing before emission.
+- Use structured runtime evidence from `project-eval-helpers.ts`. Associate expected paths with
+  the specific invocation (`toolCallReferences`), and require successful result evidence where
+  outcome matters (`hasSuccessfulNotebookRun`); never hard-gate on serialized event substrings.
+- Clear seeded notebook execution state, require a successful clean `run_notebook`, and reject
+  persisted error outputs. Seed data-analysis fixtures with `resetNotebookExecution: true`.
+- Use `fetchJsonWithRetry`/`fetchWithRetry` for live checks. Mutations default to one attempt to
+  avoid replaying a committed request after a lost response; add idempotency before explicitly
+  retrying them. Isolate harness-created data with run-unique values or baseline deltas when the
+  agent may have tested the API itself.
 
 ## Run a matrix
 
@@ -57,7 +73,8 @@ label for every child run; pre-set `EVAL_BATCH_ID` / `EVAL_BATCH_LABEL` to overr
 
 ## Report the run to the shared viewer
 
-Set `EVAL_REPORT=1` and the run (artifact, log, scorecard) is uploaded when it finishes:
+Set `EVAL_REPORT=1` and the run's log and metadata are uploaded when it finishes; the transcript
+artifact, including its scorecard, is included when the eval emitted it:
 
 ```bash
 EVAL_REPORT=1 bun run test:eval <eval-id>
@@ -65,6 +82,8 @@ EVAL_REPORT=1 bun run test:eval <eval-id>
 
 The final `POST /upload/:runId/complete` is retried up to three times with the same run id so a
 transient index or canonical-write failure can finish its idempotent reconciliation.
+Artifactless harness failures are still reported and ingest synthesizes an `evaluation_contract`
+failure so they remain visible in the dashboard.
 
 Auth for the upload (and for reading the API): everything on `evals.camelai.dev` is behind
 Cloudflare Access. Either export a service token (`CF_ACCESS_CLIENT_ID`/`CF_ACCESS_CLIENT_SECRET`,
@@ -75,11 +94,12 @@ Re-report an existing artifact by hand:
 
 ```bash
 node scripts/report-eval-run.mjs --eval <id> --artifact <file> \
-  [--batch <id>] [--batch-label <text>] [--kind unit|skill] [--description <text>]
+  [--batch <id>] [--batch-label <text>] [--kind unit|skill] [--tier hard] \
+  [--description <text>]
 ```
 
-The extra flags map directly to `run.json`: `batchId`, `batchLabel`, `kind`, and `description`.
-The uploaded artifact is still the source of `startPrompt`.
+The extra flags map directly to `run.json`: `batchId`, `batchLabel`, `kind`, `tier`, and
+`description`. The uploaded artifact is still the source of `startPrompt`.
 
 ## Read results from the CLI
 
@@ -91,7 +111,8 @@ curl -s https://evals.camelai.dev/api/runs?limit=20 \
 ```
 
 `GET /skill` documents the rest (`/api/runs/:id`, `/log`, `/artifacts`, `/artifact/:name`).
-Run JSON may include `batchId`, `batchLabel`, `kind`, `description`, and ingest-derived
-`startPrompt`. The dashboard is at `https://evals.camelai.dev/` (log in with an `@camelai.com`
-email) and now defaults to Batches, with Runs and Evals switcher views plus batch pages at
-`/batches/:id`.
+Run JSON may include `batchId`, `batchLabel`, `kind`, `tier`, `description`, `exitCode`, `error`,
+`signal.violations`, and ingest-derived `startPrompt`. A failed run without a failed criterion is
+shown using `run.error`, then signal violations, then a nonzero-exit fallback. The dashboard is at
+`https://evals.camelai.dev/` (log in with an `@camelai.com` email) and defaults to Batches, with
+Runs and Evals switcher views plus batch pages at `/batches/:id`.

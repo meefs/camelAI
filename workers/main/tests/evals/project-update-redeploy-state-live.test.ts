@@ -525,12 +525,6 @@ describe("project update redeploy state agent eval", () => {
         legacyFailures,
         evidence: runtimeEvidence,
       };
-      const agentOutputText = JSON.stringify({
-        result: result.result,
-        events: result.events,
-        messages: result.messages.filter((message) => message.role !== "user"),
-      }).toLowerCase();
-
       const evaluation = buildEvalCriteriaSummary({
         passFail: [
           buildSessionCompletedCriterion(result),
@@ -560,7 +554,7 @@ describe("project update redeploy state agent eval", () => {
           }),
           passFailCriterion({
             id: "state_seeded_before_redeploy",
-            label: "Eval seeded live state before redeploy",
+            label: "Harness seeded live check-in via the session-1 API",
             passed: seedSmoke.success,
             reason: seedSmoke.success
               ? undefined
@@ -615,19 +609,19 @@ describe("project update redeploy state agent eval", () => {
               : appSmoke.failures.join("; "),
             details: appSmoke,
           }),
-          buildNoAssistantErrorCriterion(agentOutputText),
+          buildNoAssistantErrorCriterion(result),
           buildRuntimeEventsCriterion(result),
           buildResultEventCriterion(result),
         ],
         scorecard: [
           scoreCriterion({
-            id: "state_preserved_after_redeploy",
-            label: "Durable Object state survived redeploy",
-            points: appSmoke.api?.beforeNames?.includes(SEEDED_NAME) ? 5 : 0,
+            id: "state_count_delta_correct",
+            label: "Post-redeploy count exactly matches the one seeded check-in",
+            points: appSmoke.api?.beforeCount === 1 ? 5 : 0,
             maxPoints: 5,
-            reason: appSmoke.api?.beforeNames?.includes(SEEDED_NAME)
+            reason: appSmoke.api?.beforeCount === 1
               ? undefined
-              : `seeded name ${SEEDED_NAME} was missing after redeploy; count=${appSmoke.api?.beforeCount ?? "missing"}`,
+              : `Expected pre-smoke post-redeploy count 1, got ${appSmoke.api?.beforeCount ?? "missing"}.`,
             details: appSmoke.api,
           }),
           scoreCriterion({

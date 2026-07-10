@@ -87,6 +87,9 @@ function classifyKnownEvalEnvToolLimitation(output: string | undefined): string 
   if (output.includes("Screenshot capture requires the BROWSER binding")) {
     return "missing_browser_binding_screenshot";
   }
+  if (output.includes("Screenshot capture requires the DISPATCHER binding")) {
+    return "missing_dispatcher_binding_screenshot";
+  }
   if (output.includes("Browser sessions require the BROWSER binding")) {
     return "missing_browser_binding_session";
   }

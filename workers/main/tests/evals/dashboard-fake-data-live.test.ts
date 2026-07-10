@@ -1,5 +1,5 @@
 import { env } from "cloudflare:test";
-import { describe, it } from "vitest";
+import { describe, expect, it } from "vitest";
 
 import { createOrg, createUser, type TestEnv } from "../test-helpers";
 import {
@@ -25,32 +25,53 @@ import {
   type EvalModelEnv,
 } from "./model-config";
 import type { ChatThreadDO } from "../../src/chat-thread-do";
-import type { WorkspaceFilesystemDO } from "../../src/workspace-filesystem-do";
+import {
+  ProjectFilesystemClient,
+  type WorkspaceFilesystemDO,
+} from "../../src/workspace-filesystem-do";
+import { runtimeToolReferenceOrder } from "./project-eval-helpers";
 
 type DashboardEvalEnv = TestEnv & EvalModelEnv & EvalSignalEnv & {
   CHAT_THREAD: DurableObjectNamespace<ChatThreadDO>;
   WORKSPACE_FS: DurableObjectNamespace<WorkspaceFilesystemDO>;
-  PROJECT_RUNTIME_HOST: Fetcher;
+  R2_BUCKET: R2Bucket;
   RUN_AGENT_EVALS?: string;
 };
 
 const testEnv = env as unknown as DashboardEvalEnv;
 const maybeIt = testEnv.RUN_AGENT_EVALS === "1" ? it : it.skip;
-const DASHBOARD_FILE_PATH = "/workspace/index.html";
-
-function runtimeReadUrl(projectId: string, filePath: string): string {
-  return `http://runtime.test/v1/projects/${encodeURIComponent(projectId)}/fs/read?path=${encodeURIComponent(filePath)}`;
-}
+const DASHBOARD_FILE_PATH = "/index.html";
+const SESSION_TIMEOUT_MS = getEvalTimeoutMs(testEnv, 240_000);
 
 function countHits(text: string, terms: string[]): number {
   return terms.filter((term) => text.includes(term)).length;
 }
 
-function inspectDashboardHtml(html: string): {
+export function wasFileRereadAfterFinalWrite(
+  events: Array<Record<string, unknown>>,
+  path: string,
+): boolean {
+  const normalizedPath = path.replace(/^\/+/, "");
+  const fileOperations = runtimeToolReferenceOrder(events, [
+    { id: "write", toolName: "write", expectedText: normalizedPath },
+    { id: "edit", toolName: "edit", expectedText: normalizedPath },
+    { id: "read", toolName: "read", expectedText: normalizedPath },
+  ]);
+  const finalWriteIndex = Math.max(
+    fileOperations.lastIndexOf("write"),
+    fileOperations.lastIndexOf("edit"),
+  );
+  return finalWriteIndex >= 0 &&
+    fileOperations.slice(finalWriteIndex + 1).includes("read");
+}
+
+export function inspectDashboardHtml(html: string): {
   hasStaticHtml: boolean;
   hasCss: boolean;
   placeholderOnly: boolean;
   metricSignals: string[];
+  hasTableMarkup: boolean;
+  tableRowCount: number;
   hasTable: boolean;
   hasChart: boolean;
   hasFakeData: boolean;
@@ -82,17 +103,11 @@ function inspectDashboardHtml(html: string): {
   const placeholderOnly =
     html.trim().length < 500 ||
     /\b(todo|lorem ipsum|placeholder|coming soon)\b/i.test(html);
-  const hasTable =
-    /<table[\s>]/i.test(html) ||
-    /\b(table|thead|tbody|tr|row|column)\b/i.test(lower);
-  const hasChart =
-    /<canvas[\s>]|<svg[\s>]/i.test(html) ||
-    /\b(chart|graph|bar|line|sparkline|axis|legend|visualization)\b/i.test(lower);
-  const hasFakeData =
-    /\b(fake|sample|mock|demo|acme|globex|initech|northwind|quarter|region|product|customer)\b/i
-      .test(lower) ||
-    /\$[0-9][0-9,]+/.test(html) ||
-    /[0-9]+%/.test(html);
+  const hasTableMarkup = /<table[\s>]/i.test(html);
+  const tableRowCount = html.match(/<tr[\s>]/gi)?.length ?? 0;
+  const hasTable = hasTableMarkup && tableRowCount >= 4;
+  const hasChart = /<canvas[\s>]|<svg[\s>]/i.test(html);
+  const hasFakeData = /\$[0-9][0-9,]+/.test(html) || /[0-9]+%/.test(html);
   const sectionSignalCount = countHits(lower, [
     "metric",
     "card",
@@ -135,6 +150,8 @@ function inspectDashboardHtml(html: string): {
     hasCss,
     placeholderOnly,
     metricSignals,
+    hasTableMarkup,
+    tableRowCount,
     hasTable,
     hasChart,
     hasFakeData,
@@ -143,6 +160,32 @@ function inspectDashboardHtml(html: string): {
     richnessDetails,
   };
 }
+
+describe("dashboard HTML inspection", () => {
+  it("requires table markup and at least four rows", () => {
+    expect(inspectDashboardHtml("<table><tr></tr><tr></tr><tr></tr><tr></tr></table>").hasTable)
+      .toBe(true);
+    expect(inspectDashboardHtml("<table></table>").hasTable).toBe(false);
+    expect(inspectDashboardHtml("<tr></tr><tr></tr><tr></tr><tr></tr>").hasTable).toBe(false);
+  });
+
+  it("requires an /index.html read after its final write", () => {
+    const eventFor = (item: Record<string, unknown>) => ({
+      type: "runtime_event",
+      event: { method: "item/completed", params: { item } },
+    });
+    const events = [
+      eventFor({ tool: "read", arguments: { path: "/README.md" } }),
+      eventFor({ tool: "write", arguments: { path: "index.html" } }),
+      eventFor({ tool: "read", arguments: { path: "/SKILL.md" } }),
+    ];
+    expect(wasFileRereadAfterFinalWrite(events, "/index.html")).toBe(false);
+    expect(wasFileRereadAfterFinalWrite([
+      ...events,
+      eventFor({ tool: "read", arguments: { path: "index.html" } }),
+    ], "/index.html")).toBe(true);
+  });
+});
 
 describe("dashboard fake data agent eval", () => {
   maybeIt(
@@ -179,6 +222,7 @@ describe("dashboard fake data agent eval", () => {
         name: "dashboard-app",
         description: "Dashboard eval project.",
         workspaceId: defaultWorkspaceId,
+        backend: "do-r2",
       });
 
       const chatThread = testEnv.CHAT_THREAD.get(
@@ -192,14 +236,13 @@ describe("dashboard fake data agent eval", () => {
         userName: "Dashboard Eval",
         userEmail: `dashboard-eval-${suffix}@example.com`,
         messageSource: "eval",
-        timeoutMs: getEvalTimeoutMs(testEnv, 240_000),
+        timeoutMs: SESSION_TIMEOUT_MS,
         message: [
-          "In the dashboard-app project, create a polished static HTML dashboard using fake business data.",
-          "Include at least three metric cards, a simple table, and a small chart or chart-like visualization.",
-          "Write the dashboard to /workspace/index.html.",
-          "Use only HTML, CSS, and vanilla JavaScript so the file can be opened directly.",
-          "After creating it, verify the file exists and briefly summarize what you built.",
-        ].join(" "),
+          "In the dashboard-app project, create a polished static HTML dashboard using fake business data, as a single file named index.html at the project root.",
+          "Include at least three metric cards with labeled values, a data table with at least four rows, and a small chart rendered with inline SVG or a <canvas> element.",
+          "Use only HTML, CSS, and vanilla JavaScript in that one file so it can be opened directly.",
+          "After creating it, read the file back to verify it exists, then briefly summarize what you built.",
+        ].join("\n"),
       });
       const signal = evaluateAgentEvalSignal(
         result,
@@ -208,22 +251,15 @@ describe("dashboard fake data agent eval", () => {
           maxBadToolCalls: 0,
         }),
       );
-      const readResponse = await testEnv.PROJECT_RUNTIME_HOST.fetch(
-        runtimeReadUrl(project.id, DASHBOARD_FILE_PATH),
-      );
-      const html = readResponse.ok ? await readResponse.text() : "";
+      const readResponse = await new ProjectFilesystemClient(testEnv, project.id)
+        .readFile(DASHBOARD_FILE_PATH);
+      const html = readResponse.content ?? "";
       const inspection = inspectDashboardHtml(html);
-      const assistantOutputText = JSON.stringify({
-        result: result.result,
-        events: result.events,
-        messages: result.messages.filter((message) => message.role !== "user"),
-      }).toLowerCase();
-      const verifiedOrSummarized =
-        /\b(verified|confirm(?:ed)?|file exists|successfully wrote|built|created|summar)/i
-          .test(`${result.result ?? ""}\n${assistantOutputText}`);
-      const usedDashboardProject =
-        assistantOutputText.includes("dashboard-app") ||
-        assistantOutputText.includes(DASHBOARD_FILE_PATH);
+      const rereadFile = wasFileRereadAfterFinalWrite(
+        result.events,
+        DASHBOARD_FILE_PATH,
+      );
+      const summarizedDashboard = /dashboard/i.test(result.result ?? "");
       const contentPassed =
         inspection.metricSignals.length >= 3 &&
         inspection.hasTable &&
@@ -233,21 +269,13 @@ describe("dashboard fake data agent eval", () => {
         passFail: [
           buildSessionCompletedCriterion(result),
           passFailCriterion({
-            id: "used_dashboard_project",
-            label: "Agent used the dashboard project",
-            passed: usedDashboardProject,
-            reason: usedDashboardProject
-              ? undefined
-              : "Assistant/events output did not reference dashboard-app or /workspace/index.html.",
-          }),
-          passFailCriterion({
             id: "wrote_index_html",
-            label: "Agent wrote /workspace/index.html",
-            passed: readResponse.ok,
-            reason: readResponse.ok
+            label: "Agent wrote /index.html",
+            passed: readResponse.success,
+            reason: readResponse.success
               ? undefined
-              : `Reading ${DASHBOARD_FILE_PATH} returned HTTP ${readResponse.status}.`,
-            details: { status: readResponse.status },
+              : readResponse.error ?? `Reading ${DASHBOARD_FILE_PATH} failed.`,
+            details: readResponse,
           }),
           passFailCriterion({
             id: "valid_static_html",
@@ -270,18 +298,10 @@ describe("dashboard fake data agent eval", () => {
             passed: contentPassed,
             reason: contentPassed
               ? undefined
-              : "Dashboard did not include at least three metric signals, table evidence, chart evidence, and fake business data.",
+              : "Dashboard did not include at least three metric signals, table markup with at least four rows, chart evidence, and fake business data.",
             details: inspection,
           }),
-          passFailCriterion({
-            id: "verified_or_summarized_file",
-            label: "Agent verified or summarized the file",
-            passed: verifiedOrSummarized,
-            reason: verifiedOrSummarized
-              ? undefined
-              : "Transcript/result did not show verification or a final summary.",
-          }),
-          buildNoAssistantErrorCriterion(assistantOutputText),
+          buildNoAssistantErrorCriterion(result),
           buildRuntimeEventsCriterion(result),
           buildResultEventCriterion(result),
         ],
@@ -303,6 +323,13 @@ describe("dashboard fake data agent eval", () => {
               { maxAssistantTurns: 16, maxBadToolCalls: 3, points: 2 },
             ],
           }),
+          scoreCriterion({
+            id: "verified_and_summarized",
+            label: "File re-read and final reply summarizes the dashboard",
+            points: (rereadFile ? 1 : 0) + (summarizedDashboard ? 1 : 0),
+            maxPoints: 2,
+            reason: `file re-read=${rereadFile}; dashboard summary=${summarizedDashboard}.`,
+          }),
         ],
       });
 
@@ -317,7 +344,7 @@ describe("dashboard fake data agent eval", () => {
         messages: result.messages,
         fileInspection: {
           path: DASHBOARD_FILE_PATH,
-          readStatus: readResponse.status,
+          readSuccess: readResponse.success,
           size: html.length,
           dashboard: inspection,
         },
@@ -325,6 +352,6 @@ describe("dashboard fake data agent eval", () => {
 
       assertPassFailCriteria(evaluation);
     },
-    300_000,
+    SESSION_TIMEOUT_MS + 60_000,
   );
 });

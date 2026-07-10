@@ -37,6 +37,7 @@ function fakeSandbox(): ProjectBuildSandboxLike & {
   exec: ReturnType<typeof vi.fn>;
   mkdir: ReturnType<typeof vi.fn>;
   writeFile: ReturnType<typeof vi.fn>;
+  exists: ReturnType<typeof vi.fn>;
   readFile: ReturnType<typeof vi.fn>;
 } {
   return {
@@ -45,6 +46,7 @@ function fakeSandbox(): ProjectBuildSandboxLike & {
       : { success: true, stdout: "", stderr: "", exitCode: 0 }),
     mkdir: vi.fn(async () => undefined),
     writeFile: vi.fn(async () => undefined),
+    exists: vi.fn(async () => ({ exists: false })),
     readFile: vi.fn(async () => {
       throw new Error("not found");
     }),
@@ -85,6 +87,11 @@ describe("runProjectBuild", () => {
       }),
     });
     expect(sandbox.mkdir).toHaveBeenCalledWith("/workspace/demo-project", { recursive: true });
+    expect(sandbox.exists).toHaveBeenCalledWith("/workspace/demo-project.source-manifest.json");
+    expect(sandbox.readFile).not.toHaveBeenCalledWith(
+      "/workspace/demo-project.source-manifest.json",
+      { encoding: "base64" },
+    );
     expect(sandbox.exec).toHaveBeenCalledWith(expect.stringContaining("tar -xf '/workspace/demo-project.source.tar'"), { cwd: "/workspace" });
     expect(sandbox.exec).toHaveBeenCalledWith("bun install && bun run build", {
       cwd: "/workspace/demo-project",

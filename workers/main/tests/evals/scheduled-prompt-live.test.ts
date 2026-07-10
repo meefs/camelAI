@@ -43,6 +43,8 @@ const maybeIt = testEnv.RUN_AGENT_EVALS === "1" ? it : it.skip;
 
 const SCHEDULE_NAME = "daily-standup";
 const SCHEDULE_CRON = "0 9 * * *";
+const SCHEDULE_PROMPT = "Reply with a one-line workspace status summary.";
+const SESSION_TIMEOUT_MS = getEvalTimeoutMs(testEnv, 180_000);
 
 describe("scheduled prompt agent eval", () => {
   maybeIt(
@@ -82,11 +84,11 @@ describe("scheduled prompt agent eval", () => {
         userName: "Scheduled Prompt Eval",
         userEmail: `scheduled-prompt-eval-${suffix}@example.com`,
         messageSource: "eval",
-        timeoutMs: getEvalTimeoutMs(testEnv, 180_000),
+        timeoutMs: SESSION_TIMEOUT_MS,
         message: [
           `Schedule a recurring prompt for this workspace named exactly "${SCHEDULE_NAME}"`,
           `with the cron expression "${SCHEDULE_CRON}" and the prompt text`,
-          `"Summarize the latest commits from yesterday.".`,
+          `"${SCHEDULE_PROMPT}".`,
           "Once it is scheduled, reply with the schedule's name and cron expression.",
         ].join(" "),
       });
@@ -107,11 +109,6 @@ describe("scheduled prompt agent eval", () => {
       const prompts = await cronStub.listScheduledPrompts(defaultWorkspaceId);
       const match = prompts.find((p) => p.name === SCHEDULE_NAME);
 
-      const transcriptText = JSON.stringify({
-        result: result.result,
-        events: result.events,
-        messages: result.messages,
-      }).toLowerCase();
       const evaluation = buildEvalCriteriaSummary({
         passFail: [
           buildSessionCompletedCriterion(result),
@@ -135,13 +132,13 @@ describe("scheduled prompt agent eval", () => {
             details: { cron: match?.cron_expression ?? null },
           }),
           passFailCriterion({
-            id: "schedule_prompt_nonempty",
-            label: "Scheduled prompt has non-empty prompt text",
-            passed: (match?.prompt ?? "").length > 0,
-            reason:
-              (match?.prompt ?? "").length > 0
-                ? undefined
-                : "Persisted scheduled prompt had empty prompt text.",
+            id: "schedule_prompt_exact",
+            label: "Scheduled prompt text exactly matches the request",
+            passed: match?.prompt === SCHEDULE_PROMPT,
+            reason: match?.prompt === SCHEDULE_PROMPT
+              ? undefined
+              : `Expected prompt "${SCHEDULE_PROMPT}", got "${match?.prompt ?? "none"}".`,
+            details: { prompt: match?.prompt ?? null },
           }),
           passFailCriterion({
             id: "produced_token_usage",
@@ -153,7 +150,7 @@ describe("scheduled prompt agent eval", () => {
                 : "Signal reported zero total tokens.",
             details: { totalTokens: signal.tokenUsage.totalTokens },
           }),
-          buildNoAssistantErrorCriterion(transcriptText),
+          buildNoAssistantErrorCriterion(result),
           buildRuntimeEventsCriterion(result),
           buildResultEventCriterion(result),
         ],
@@ -191,6 +188,6 @@ describe("scheduled prompt agent eval", () => {
 
       assertPassFailCriteria(evaluation);
     },
-    240_000,
+    SESSION_TIMEOUT_MS + 60_000,
   );
 });

@@ -7,7 +7,8 @@
 # afterwards (e.g. reporting artifacts via scripts/report-eval-run.mjs). Run from the repo root.
 #
 # Inputs (env): RUN_DIR (required, where status.json + artifacts/ are written), EVAL_TARGET
-# (required: an eval id, comma-separated list, or "all"), EVAL_ARGS_JSON, INSTALL_COMMAND, plus the
+# (required: an eval id, comma-separated list, "all", "hard", or "standard"), EVAL_ARGS_JSON,
+# INSTALL_COMMAND, plus the
 # usual EVAL_*/CUSTOM_EVAL_* knobs which flow through to vitest via the environment.
 set -uo pipefail
 
@@ -78,6 +79,10 @@ run_evals() {
   if [ "$EVAL_TARGET" = "all" ]; then
     # "all" = every eval in the manifest (the single source of truth), run one after another below.
     mapfile -t evals < <(node -e 'for (const e of JSON.parse(require("fs").readFileSync("workers/main/tests/evals/manifest.json","utf8")).evals) console.log(e.id)')
+  elif [ "$EVAL_TARGET" = "hard" ]; then
+    mapfile -t evals < <(node -e 'for (const e of JSON.parse(require("fs").readFileSync("workers/main/tests/evals/manifest.json","utf8")).evals) if (e.tier === "hard") console.log(e.id)')
+  elif [ "$EVAL_TARGET" = "standard" ]; then
+    mapfile -t evals < <(node -e 'for (const e of JSON.parse(require("fs").readFileSync("workers/main/tests/evals/manifest.json","utf8")).evals) if (!e.tier) console.log(e.id)')
   else
     # EVAL_TARGET may be a single eval id or a comma-separated list.
     IFS=',' read -ra evals <<< "$EVAL_TARGET"

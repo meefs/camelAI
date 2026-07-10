@@ -14,6 +14,7 @@ export interface ProjectBuildSandboxLike {
   }>;
   mkdir(path: string, options?: { recursive?: boolean }): Promise<unknown>;
   writeFile(path: string, content: string, options?: { encoding?: "base64" | "utf8" }): Promise<unknown>;
+  exists?(path: string): Promise<{ exists: boolean }>;
   readFile?(path: string, options?: { encoding?: "base64" | "utf8" }): Promise<{ content: string }>;
   listFiles?(path: string, options?: { recursive?: boolean; includeHidden?: boolean }): Promise<{ files: Array<{
     name: string;

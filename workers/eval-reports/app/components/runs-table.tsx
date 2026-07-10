@@ -18,7 +18,7 @@ import { scoreClass } from "./score";
 import { EvalNameCell } from "./eval-name-cell";
 import {
 	durationOf,
-	failedCriteria,
+	displayedFailures,
 	fmtCost,
 	missing,
 	shortPerson,
@@ -79,7 +79,7 @@ function ActivityCell({ run }: { run: Run }) {
 }
 
 function ResultCell({ run }: { run: Run }) {
-	const failed = failedCriteria(run);
+	const failed = displayedFailures(run);
 	const badge = <VerdictBadge status={run.status} />;
 	if (run.status !== "failed" || failed.length === 0) return badge;
 	return (
@@ -134,6 +134,22 @@ function ScoreCell({ run }: { run: Run }) {
 	);
 }
 
+function FailureCell({ run }: { run: Run }) {
+	const criterion = displayedFailures(run)[0];
+	if (run.status !== "failed" || !criterion) {
+		return <span className="text-muted-foreground">{missing}</span>;
+	}
+	const text = `${criterion.label}${criterion.reason ? ` — ${criterion.reason}` : ""}`;
+	return (
+		<div
+			className="max-w-[28rem] truncate text-sm text-muted-foreground"
+			title={text}
+		>
+			{text}
+		</div>
+	);
+}
+
 function BatchLinkCell({ run }: { run: Run }) {
 	if (!run.batchId) return <span className="text-muted-foreground">{missing}</span>;
 	return (
@@ -167,6 +183,7 @@ export function RunsTable({
 					<TableHead className="w-24">Result</TableHead>
 					<TableHead>Eval</TableHead>
 					<TableHead className="w-24">Score</TableHead>
+					<TableHead>Failure</TableHead>
 					{showBatch ? (
 						<TableHead className="hidden w-32 lg:table-cell">Batch</TableHead>
 					) : null}
@@ -197,6 +214,9 @@ export function RunsTable({
 						</TableCell>
 						<TableCell>
 							<ScoreCell run={run} />
+						</TableCell>
+						<TableCell>
+							<FailureCell run={run} />
 						</TableCell>
 						{showBatch ? (
 							<TableCell className="hidden lg:table-cell">

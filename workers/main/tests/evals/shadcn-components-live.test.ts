@@ -41,6 +41,7 @@ import type {
 type ShadcnComponentsEvalEnv = TestEnv & EvalModelEnv & EvalSignalEnv & {
   CHAT_THREAD: DurableObjectNamespace<ChatThreadDO>;
   WORKSPACE_FS: DurableObjectNamespace<WorkspaceFilesystemDO>;
+  R2_BUCKET: R2Bucket;
   RUN_AGENT_EVALS?: string;
 };
 
@@ -61,6 +62,7 @@ type RuntimeItem = Record<string, unknown>;
 
 const testEnv = env as unknown as ShadcnComponentsEvalEnv;
 const maybeIt = testEnv.RUN_AGENT_EVALS === "1" ? it : it.skip;
+const SESSION_TIMEOUT_MS = getEvalTimeoutMs(testEnv, 540_000);
 
 const PROJECT_NAME = "shadcn-install-lab";
 const REQUIRED_COMPONENTS = ["accordion", "tabs", "progress"] as const;
@@ -254,7 +256,7 @@ describe("shadcn components agent eval", () => {
         userName: "Shadcn Eval",
         userEmail: `shadcn-eval-${suffix}@example.com`,
         messageSource: "eval",
-        timeoutMs: getEvalTimeoutMs(testEnv, 540_000),
+        timeoutMs: SESSION_TIMEOUT_MS,
         message: [
           `Create a new DO-backed React Router app project named exactly "${PROJECT_NAME}" using create_project with a concise description.`,
           "Add these shadcn/ui components that are not in the default scaffold: accordion, tabs, and progress. Use add_shadcn_component, not shell package-manager commands or custom replacements.",
@@ -300,11 +302,6 @@ describe("shadcn components agent eval", () => {
         evidence,
         toolArgumentCommands,
       };
-      const transcriptText = JSON.stringify({
-        result: result.result,
-        events: result.events,
-        messages: result.messages.filter((message) => message.role !== "user"),
-      }).toLowerCase();
       const finalMentionsMethodAndValidation = /shadcn|accordion|tabs|progress/i.test(result.result ?? "") &&
         /build|typecheck|validat|success|passed/i.test(result.result ?? "");
       const validatedProject = runtimeAssertions.usedBuildProject ||
@@ -374,16 +371,7 @@ describe("shadcn components agent eval", () => {
                   ].filter(Boolean).join("; "),
             details: runtimeAssertions,
           }),
-          passFailCriterion({
-            id: "final_response_mentions_method_and_validation",
-            label: "Final response mentions method and validation",
-            passed: finalMentionsMethodAndValidation,
-            reason: finalMentionsMethodAndValidation
-              ? undefined
-              : "Final result did not mention both shadcn/component work and validation.",
-            details: { result: result.result },
-          }),
-          buildNoAssistantErrorCriterion(transcriptText),
+          buildNoAssistantErrorCriterion(result),
           buildRuntimeEventsCriterion(result),
           buildResultEventCriterion(result),
         ],
@@ -401,11 +389,21 @@ describe("shadcn components agent eval", () => {
             label: "shadcn workflow quality",
             points:
               (runtimeAssertions.usedAddShadcnComponent ? 3 : 0) +
-              (!runtimeAssertions.usedShadcnAddCommand && !runtimeAssertions.usedAnalysisExec ? 1 : 0) +
+              (!runtimeAssertions.usedShadcnAddCommand ? 1 : 0) +
               (validatedProject ? 1 : 0),
             maxPoints: 5,
             reason: `addShadcnComponent=${runtimeAssertions.usedAddShadcnComponent}, shadcnCommand=${runtimeAssertions.usedShadcnAddCommand}, analysisExec=${runtimeAssertions.usedAnalysisExec}, validated=${validatedProject}`,
             details: runtimeAssertions,
+          }),
+          scoreCriterion({
+            id: "reply_mentions_method_and_validation",
+            label: "Final reply mentions component method and validation result",
+            points: finalMentionsMethodAndValidation ? 1 : 0,
+            maxPoints: 1,
+            reason: finalMentionsMethodAndValidation
+              ? undefined
+              : "Final result did not mention both shadcn/component work and validation.",
+            details: { result: result.result },
           }),
           scoreSignalEfficiency(signal, {
             maxPoints: 4,
@@ -435,6 +433,6 @@ describe("shadcn components agent eval", () => {
 
       assertPassFailCriteria(evaluation);
     },
-    600_000,
+    SESSION_TIMEOUT_MS + 60_000,
   );
 });

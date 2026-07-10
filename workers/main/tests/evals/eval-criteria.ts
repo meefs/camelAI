@@ -1,3 +1,9 @@
+import type { AgentEvalSessionResult } from "../../src/chat-thread-do";
+import {
+  runtimeItemSucceeded,
+  runtimeToolMentionOrder,
+} from "./project-eval-helpers";
+
 export type EvalCriterionStatus = "passed" | "failed";
 
 export interface EvalPassFailCriterion {
@@ -205,10 +211,6 @@ function lowerJson(value: unknown): string {
   }
 }
 
-function eventTexts(events: unknown): string[] {
-  return Array.isArray(events) ? events.map(lowerJson) : [];
-}
-
 function numberFromRecord(record: Record<string, unknown> | undefined, key: string): number {
   const value = record?.[key];
   return typeof value === "number" && Number.isFinite(value) ? value : Number.NaN;
@@ -251,17 +253,37 @@ export function scoreSignalEfficiency(
   });
 }
 
+function completedDeploymentPreviewOrder(events: Record<string, unknown>[]): string[] {
+  const order: string[] = [];
+  for (const rawEvent of events) {
+    const runtimeEvent = asRecord(asRecord(rawEvent)?.event);
+    if (rawEvent.type !== "runtime_event" || runtimeEvent?.method !== "item/completed") {
+      continue;
+    }
+    const item = asRecord(asRecord(runtimeEvent.params)?.item);
+    if (!item || !runtimeItemSucceeded(item)) continue;
+    if (
+      item.type === "commandExecution" &&
+      typeof item.command === "string" &&
+      /\b(?:bun\s+run\s+deploy|wrangler\s+deploy)\b/i.test(item.command)
+    ) {
+      order.push("deploy_command");
+    }
+    order.push(...runtimeToolMentionOrder([rawEvent], ["deploy_project", "set_preview"]));
+  }
+  return order;
+}
+
 export function scoreLatestPreview(events: unknown): EvalScoreCriterion {
-  let finalDeployIndex = -1;
-  let finalPreviewIndex = -1;
-  eventTexts(events).forEach((text, index) => {
-    if (/\b(?:bun\s+run\s+deploy|wrangler\s+deploy)\b/.test(text)) {
-      finalDeployIndex = index;
-    }
-    if (text.includes("set_preview")) {
-      finalPreviewIndex = index;
-    }
-  });
+  const runtimeEvents = Array.isArray(events)
+    ? events.filter((event): event is Record<string, unknown> => Boolean(asRecord(event)))
+    : [];
+  const invocationOrder = completedDeploymentPreviewOrder(runtimeEvents);
+  const finalDeployIndex = Math.max(
+    invocationOrder.lastIndexOf("deploy_project"),
+    invocationOrder.lastIndexOf("deploy_command"),
+  );
+  const finalPreviewIndex = invocationOrder.lastIndexOf("set_preview");
 
   if (finalPreviewIndex === -1) {
     return scoreCriterion({
@@ -278,8 +300,8 @@ export function scoreLatestPreview(events: unknown): EvalScoreCriterion {
       label: "Previewed the latest deployed app",
       points: 2,
       maxPoints: 5,
-      reason: "A set_preview call was found, but not after the final deploy command.",
-      details: { finalDeployIndex, finalPreviewIndex },
+      reason: "A set_preview call was found, but not after the final completed deploy invocation.",
+      details: { invocationOrder, finalDeployIndex, finalPreviewIndex },
     });
   }
   return scoreCriterion({
@@ -287,8 +309,8 @@ export function scoreLatestPreview(events: unknown): EvalScoreCriterion {
     label: "Previewed the latest deployed app",
     points: 5,
     maxPoints: 5,
-    reason: "set_preview was called after the final deploy command.",
-    details: { finalDeployIndex, finalPreviewIndex },
+    reason: "set_preview was called after the final completed deploy invocation.",
+    details: { invocationOrder, finalDeployIndex, finalPreviewIndex },
   });
 }
 
@@ -311,16 +333,24 @@ export function buildSessionCompletedCriterion(result: unknown): EvalPassFailCri
 }
 
 export function buildNoAssistantErrorCriterion(
-  transcriptText: string,
+  result: Pick<AgentEvalSessionResult, "messages">,
 ): EvalPassFailCriterion {
-  const hasAssistantError = transcriptText.toLowerCase().includes("assistant error");
+  const errors = result.messages.flatMap((message) =>
+    Array.isArray(message.content)
+      ? message.content.filter((block) => {
+        const record = asRecord(block);
+        return record?.type === "error" && record.title === "Assistant error";
+      })
+      : []
+  );
   return passFailCriterion({
     id: "no_assistant_error",
     label: "No assistant error",
-    passed: !hasAssistantError,
-    reason: hasAssistantError
-      ? 'Transcript contains the string "assistant error".'
+    passed: errors.length === 0,
+    reason: errors.length
+      ? `Transcript contains ${errors.length} assistant error block(s): ${lowerJson(errors[0]).slice(0, 240)}`
       : undefined,
+    details: errors.length ? { errors } : undefined,
   });
 }
 

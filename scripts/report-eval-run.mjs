@@ -6,10 +6,10 @@
 // Normally invoked automatically by scripts/run-agent-eval.mjs when EVAL_REPORT=1, but
 // can be run by hand on any artifact:
 //
-//   node scripts/report-eval-run.mjs --eval deploy-fake-data-live \
-//     --artifact .eval-artifacts/deploy-fake-data-live.json \
+//   node scripts/report-eval-run.mjs --eval dashboard-fake-data-live \
+//     --artifact .eval-artifacts/dashboard-fake-data-live.json \
 //     [--log <file>] [--exit-code 0] [--model sonnet] [--batch <id>] \
-//     [--kind unit|skill] [--started <iso>] [--finished <iso>]
+//     [--kind unit|skill] [--tier hard] [--started <iso>] [--finished <iso>]
 //
 // Auth: the viewer sits behind Cloudflare Access. Set CF_ACCESS_CLIENT_ID/SECRET (an
 // Access service token) — or, for humans, the script falls back to minting a token via
@@ -41,6 +41,7 @@ function parseArgs(argv) {
       "--batch": "batch",
       "--batch-label": "batchLabel",
       "--kind": "kind",
+      "--tier": "tier",
       "--description": "description",
     }[arg];
     if (!key) {
@@ -133,6 +134,7 @@ try {
     batchId: options.batch || undefined,
     batchLabel: options.batchLabel || undefined,
     kind: options.kind || undefined,
+    tier: options.tier || undefined,
     description: options.description || undefined,
     ref: git("rev-parse", "--abbrev-ref", "HEAD"),
     commit: git("rev-parse", "HEAD"),

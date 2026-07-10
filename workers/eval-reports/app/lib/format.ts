@@ -78,6 +78,45 @@ export function failedCriteria(run: Run): EvalPassFailCriterion[] {
 	);
 }
 
+export function displayedFailures(run: Run): EvalPassFailCriterion[] {
+	const criteria = failedCriteria(run);
+	if (criteria.length > 0 || run.status !== "failed") return criteria;
+	const error = run.error?.trim();
+	if (error) {
+		return [{
+			id: "run_error",
+			label: "Harness error",
+			status: "failed",
+			reason: error,
+		}];
+	}
+	const violations = (run.signal?.violations ?? [])
+		.map((violation) => violation.trim())
+		.filter(Boolean);
+	if (violations.length > 0) {
+		return [{
+			id: "signal_violations",
+			label: violations.length === 1 ? "Signal violation" : "Signal violations",
+			status: "failed",
+			reason: violations.join("; "),
+		}];
+	}
+	if (typeof run.exitCode === "number" && run.exitCode !== 0) {
+		return [{
+			id: "process_exit_failure",
+			label: "Process exit failure",
+			status: "failed",
+			reason: `Eval process exited with code ${run.exitCode}.`,
+		}];
+	}
+	return [{
+		id: "run_failed",
+		label: "Run failed",
+		status: "failed",
+		reason: "No failed criterion or harness error details were reported.",
+	}];
+}
+
 export function contractFailureReason(run: Run): string | undefined {
 	return failedCriteria(run).find((criterion) => criterion.id === "evaluation_contract")
 		?.reason;

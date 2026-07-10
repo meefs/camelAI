@@ -33,7 +33,9 @@ import { emitEvalTranscript } from "./eval-transcript";
 import {
   asRecord,
   collectRuntimeEvidence,
+  countNotebookErrorOutputs,
   fetchWithRetry,
+  hasSuccessfulNotebookRun,
   legacyDeployPathEvidence,
   usedTool,
 } from "./project-eval-helpers";
@@ -60,6 +62,8 @@ type NotebookInspection = {
   hasTitle: boolean;
   hasFinding: boolean;
   hasExecutedOutput: boolean;
+  hasErrorOutput: boolean;
+  errorOutputCount: number;
   parseError?: string;
 };
 
@@ -76,6 +80,8 @@ type NotebookAppSmoke = {
     hasTitle: boolean;
     hasFinding: boolean;
     hasExecutedOutput: boolean;
+    hasErrorOutput: boolean;
+    errorOutputCount: number;
     error?: string;
   };
   failures: string[];
@@ -92,6 +98,7 @@ const REQUIRED_FINDING = "Product Alpha led total revenue.";
 const testEnv = env as unknown as NotebookDeployEvalEnv;
 // Publishes a live notebook app in the testing-grounds namespace.
 const maybeIt = isRealEvalDeployEnabled(testEnv) ? it : it.skip;
+const SESSION_TIMEOUT_MS = getEvalTimeoutMs(testEnv, 600_000);
 
 function cellSourceText(cell: Record<string, unknown>): string {
   const source = cell.source;
@@ -111,16 +118,21 @@ function inspectNotebookJson(text: string): Omit<NotebookInspection, "readSucces
     const executedOutputs = cellRecords.filter((cell) =>
       cell.cell_type === "code" && Array.isArray(cell.outputs) && cell.outputs.length > 0,
     );
+    const errorOutputCount = countNotebookErrorOutputs(cellRecords);
     return {
       hasTitle: sourceText.includes(REPORT_TITLE),
       hasFinding: sourceText.includes(REQUIRED_FINDING),
       hasExecutedOutput: executedOutputs.length > 0,
+      hasErrorOutput: errorOutputCount > 0,
+      errorOutputCount,
     };
   } catch (error) {
     return {
       hasTitle: false,
       hasFinding: false,
       hasExecutedOutput: false,
+      hasErrorOutput: false,
+      errorOutputCount: 0,
       parseError: error instanceof Error ? error.message : String(error),
     };
   }
@@ -129,7 +141,13 @@ function inspectNotebookJson(text: string): Omit<NotebookInspection, "readSucces
 async function inspectProjectNotebook(
   project: WorkspaceProject | undefined,
 ): Promise<NotebookInspection> {
-  const empty = { hasTitle: false, hasFinding: false, hasExecutedOutput: false };
+  const empty = {
+    hasTitle: false,
+    hasFinding: false,
+    hasExecutedOutput: false,
+    hasErrorOutput: false,
+    errorOutputCount: 0,
+  };
   if (!project) return { readSuccess: false, readError: "project was not created", ...empty };
   const read = await new ProjectFilesystemClient(testEnv, project.id).readFile("/analysis.ipynb");
   if (!read.success) {
@@ -196,7 +214,13 @@ async function smokeCheckNotebookApp(
     const notebookText = await notebookResponse.text();
     const inspection = notebookResponse.status === 200
       ? inspectNotebookJson(notebookText)
-      : { hasTitle: false, hasFinding: false, hasExecutedOutput: false };
+      : {
+          hasTitle: false,
+          hasFinding: false,
+          hasExecutedOutput: false,
+          hasErrorOutput: false,
+          errorOutputCount: 0,
+        };
     smoke.notebook = { status: notebookResponse.status, ...inspection };
     if (notebookResponse.status !== 200) {
       failures.push(`/files/analysis.ipynb returned HTTP ${notebookResponse.status}`);
@@ -205,10 +229,20 @@ async function smokeCheckNotebookApp(
       if (!inspection.hasTitle) failures.push("published notebook did not include the report title");
       if (!inspection.hasFinding) failures.push("published notebook did not include the required finding");
       if (!inspection.hasExecutedOutput) failures.push("published notebook had no executed cell outputs");
+      if (inspection.hasErrorOutput) {
+        failures.push(`published notebook had ${inspection.errorOutputCount} error output(s)`);
+      }
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    smoke.notebook = { hasTitle: false, hasFinding: false, hasExecutedOutput: false, error: message };
+    smoke.notebook = {
+      hasTitle: false,
+      hasFinding: false,
+      hasExecutedOutput: false,
+      hasErrorOutput: false,
+      errorOutputCount: 0,
+      error: message,
+    };
     failures.push(`published notebook fetch failed: ${message}`);
   }
 
@@ -257,7 +291,7 @@ describe("notebook deploy agent eval", () => {
         userName: "Notebook Deploy Eval",
         userEmail: `notebook-deploy-eval-${suffix}@example.com`,
         messageSource: "eval",
-        timeoutMs: getEvalTimeoutMs(testEnv, 600_000),
+        timeoutMs: SESSION_TIMEOUT_MS,
         message: [
           `Create a data-analysis project named exactly "${PROJECT_NAME}" that analyzes hardcoded monthly revenue for at least three product lines, with the notebook report titled exactly "${REPORT_TITLE}".`,
           `Include this exact finding in markdown: "${REQUIRED_FINDING}"`,
@@ -293,18 +327,13 @@ describe("notebook deploy agent eval", () => {
         usedCreateProject: usedTool(result.events, "create_project", [
           /\bPROJECTS\s*\.\s*create\s*\(/i,
         ]),
-        usedDataAnalysisTemplate: JSON.stringify(result.events).includes("data-analysis"),
         usedRunNotebook: usedTool(result.events, "run_notebook"),
+        successfulNotebookRun: hasSuccessfulNotebookRun(result.events, "analysis.ipynb"),
         usedDeployProject: usedTool(result.events, "deploy_project"),
         usedBuildProject: usedTool(result.events, "build_project"),
         legacyFailures,
         evidence: collectRuntimeEvidence(result.events),
       };
-      const agentOutputText = JSON.stringify({
-        result: result.result,
-        events: result.events,
-        messages: result.messages.filter((message) => message.role !== "user"),
-      }).toLowerCase();
       const finalResult = result.result ?? "";
       const finalResponseHasUrl = Boolean(
         deployedApp && finalResult.includes(new URL(deployedApp.url).hostname),
@@ -327,16 +356,14 @@ describe("notebook deploy agent eval", () => {
             label: "Agent discovered the notebook analyze/run/deploy flow unprompted",
             passed:
               runtimeAssertions.usedCreateProject &&
-              runtimeAssertions.usedDataAnalysisTemplate &&
-              runtimeAssertions.usedRunNotebook &&
+              runtimeAssertions.successfulNotebookRun &&
               runtimeAssertions.usedDeployProject,
             reason:
               runtimeAssertions.usedCreateProject &&
-              runtimeAssertions.usedDataAnalysisTemplate &&
-              runtimeAssertions.usedRunNotebook &&
+              runtimeAssertions.successfulNotebookRun &&
               runtimeAssertions.usedDeployProject
                 ? undefined
-                : `create_project=${runtimeAssertions.usedCreateProject}, template=data-analysis=${runtimeAssertions.usedDataAnalysisTemplate}, run_notebook=${runtimeAssertions.usedRunNotebook}, deploy_project=${runtimeAssertions.usedDeployProject}`,
+                : `create_project=${runtimeAssertions.usedCreateProject}, run_notebook invoked=${runtimeAssertions.usedRunNotebook}, run_notebook succeeded=${runtimeAssertions.successfulNotebookRun}, deploy_project=${runtimeAssertions.usedDeployProject}`,
             details: runtimeAssertions,
           }),
           passFailCriterion({
@@ -346,17 +373,21 @@ describe("notebook deploy agent eval", () => {
               notebookInspection.readSuccess &&
               notebookInspection.hasTitle &&
               notebookInspection.hasFinding &&
-              notebookInspection.hasExecutedOutput,
+              notebookInspection.hasExecutedOutput &&
+              !notebookInspection.hasErrorOutput &&
+              runtimeAssertions.successfulNotebookRun,
             reason:
               notebookInspection.readSuccess &&
               notebookInspection.hasTitle &&
               notebookInspection.hasFinding &&
-              notebookInspection.hasExecutedOutput
+              notebookInspection.hasExecutedOutput &&
+              !notebookInspection.hasErrorOutput &&
+              runtimeAssertions.successfulNotebookRun
                 ? undefined
                 : notebookInspection.readError ??
                   notebookInspection.parseError ??
-                  `title=${notebookInspection.hasTitle}, finding=${notebookInspection.hasFinding}, executed=${notebookInspection.hasExecutedOutput}`,
-            details: notebookInspection,
+                  `title=${notebookInspection.hasTitle}, finding=${notebookInspection.hasFinding}, executed=${notebookInspection.hasExecutedOutput}, error outputs=${notebookInspection.errorOutputCount}, run_notebook succeeded=${runtimeAssertions.successfulNotebookRun}`,
+            details: { notebookInspection, successfulNotebookRun: runtimeAssertions.successfulNotebookRun },
           }),
           passFailCriterion({
             id: "avoided_build_and_legacy_paths",
@@ -395,7 +426,7 @@ describe("notebook deploy agent eval", () => {
             reason: appSmoke.failures.length ? appSmoke.failures.join("; ") : undefined,
             details: appSmoke,
           }),
-          buildNoAssistantErrorCriterion(agentOutputText),
+          buildNoAssistantErrorCriterion(result),
           buildRuntimeEventsCriterion(result),
           buildResultEventCriterion(result),
         ],
@@ -440,6 +471,6 @@ describe("notebook deploy agent eval", () => {
 
       assertPassFailCriteria(evaluation);
     },
-    720_000,
+    SESSION_TIMEOUT_MS + 120_000,
   );
 });

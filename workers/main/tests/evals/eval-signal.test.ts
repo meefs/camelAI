@@ -207,6 +207,42 @@ describe("eval signal scoring", () => {
     ]);
   });
 
+  it("does not count take_screenshot DISPATCHER-binding failures as bad tool calls", () => {
+    const signal = evaluateAgentEvalSignal(
+      {
+        messages: [],
+        events: [
+          {
+            type: "runtime_event",
+            event: {
+              method: "item/completed",
+              params: {
+                item: {
+                  id: "tool1",
+                  type: "dynamicToolCall",
+                  tool: "take_screenshot",
+                  status: "failed",
+                  arguments: { app_name: "orders-analytics" },
+                  result: {
+                    details: {
+                      text: "Screenshot capture requires the DISPATCHER binding",
+                    },
+                  },
+                },
+              },
+            },
+          },
+        ],
+      },
+      {},
+    );
+
+    expect(signal.badToolCallCount).toBe(0);
+    expect(signal.filteredEnvLimitationsByReason).toEqual({
+      missing_dispatcher_binding_screenshot: 1,
+    });
+  });
+
   it("does not count env.BROWSER.launch BROWSER-binding failures as bad tool calls", () => {
     // Same known eval-env limitation: no BROWSER binding, so js_exec code that
     // calls env.BROWSER.launch fails with the browser-session variant of the

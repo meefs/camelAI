@@ -44,6 +44,7 @@ const maybeIt = testEnv.RUN_AGENT_EVALS === "1" ? it : it.skip;
 
 const WORKFLOW_NAME = "hourly-heartbeat";
 const WORKFLOW_CRON = "0 * * * *";
+const SESSION_TIMEOUT_MS = getEvalTimeoutMs(testEnv, 240_000);
 
 describe("workflow agent eval", () => {
   maybeIt(
@@ -83,7 +84,7 @@ describe("workflow agent eval", () => {
         userName: "Workflow Eval",
         userEmail: `workflow-eval-${suffix}@example.com`,
         messageSource: "eval",
-        timeoutMs: getEvalTimeoutMs(testEnv, 240_000),
+        timeoutMs: SESSION_TIMEOUT_MS,
         message: [
           `Create a workflow for this workspace named exactly "${WORKFLOW_NAME}"`,
           `with the cron expression "${WORKFLOW_CRON}" and a short description.`,
@@ -110,11 +111,13 @@ describe("workflow agent eval", () => {
       const workflows = await cronStub.listDeterministicAutomations(defaultWorkspaceId);
       const match = workflows.find((w) => w.name === WORKFLOW_NAME);
 
-      const transcriptText = JSON.stringify({
-        result: result.result,
-        events: result.events,
-        messages: result.messages,
-      }).toLowerCase();
+      const workflowSource = match?.source ?? "";
+      const importSpecifiers = [
+        ...workflowSource.matchAll(/\bfrom\s+["']([^"']+)["']/g),
+        ...workflowSource.matchAll(/\bimport\s+["']([^"']+)["']/g),
+      ].map((match) => match[1]);
+      const importsOnlyCloudflareWorkers = importSpecifiers.length > 0 &&
+        importSpecifiers.every((specifier) => specifier === "cloudflare:workers");
       const evaluation = buildEvalCriteriaSummary({
         passFail: [
           buildSessionCompletedCriterion(result),
@@ -140,10 +143,20 @@ describe("workflow agent eval", () => {
           passFailCriterion({
             id: "workflow_source_has_entrypoint",
             label: "Workflow source is a real WorkflowEntrypoint module",
-            passed: (match?.source ?? "").includes("WorkflowEntrypoint"),
-            reason: (match?.source ?? "").includes("WorkflowEntrypoint")
+            passed: /class\s+AutomationWorkflow\s+extends\s+WorkflowEntrypoint/.test(workflowSource),
+            reason: /class\s+AutomationWorkflow\s+extends\s+WorkflowEntrypoint/.test(workflowSource)
               ? undefined
-              : "Persisted workflow source did not contain WorkflowEntrypoint.",
+              : "Persisted workflow source did not define AutomationWorkflow extending WorkflowEntrypoint.",
+            details: { source: workflowSource },
+          }),
+          passFailCriterion({
+            id: "imports_only_cloudflare_workers",
+            label: "Workflow imports only cloudflare:workers",
+            passed: importsOnlyCloudflareWorkers,
+            reason: importsOnlyCloudflareWorkers
+              ? undefined
+              : `Expected only cloudflare:workers imports, got ${importSpecifiers.join(", ") || "none"}.`,
+            details: { importSpecifiers },
           }),
           passFailCriterion({
             id: "workflow_description_nonempty",
@@ -164,7 +177,7 @@ describe("workflow agent eval", () => {
                 : "Signal reported zero total tokens.",
             details: { totalTokens: signal.tokenUsage.totalTokens },
           }),
-          buildNoAssistantErrorCriterion(transcriptText),
+          buildNoAssistantErrorCriterion(result),
           buildRuntimeEventsCriterion(result),
           buildResultEventCriterion(result),
         ],
@@ -205,6 +218,6 @@ describe("workflow agent eval", () => {
 
       assertPassFailCriteria(evaluation);
     },
-    300_000,
+    SESSION_TIMEOUT_MS + 60_000,
   );
 });

@@ -1,6 +1,11 @@
 import { env } from "cloudflare:test";
 import { describe, it } from "vitest";
 
+import type { ChatThreadDO } from "../../src/chat-thread-do";
+import {
+  ProjectFilesystemClient,
+  type WorkspaceFilesystemDO,
+} from "../../src/workspace-filesystem-do";
 import { createOrg, createUser, type TestEnv } from "../test-helpers";
 import {
   assertPassFailCriteria,
@@ -10,6 +15,7 @@ import {
   buildRuntimeEventsCriterion,
   buildSessionCompletedCriterion,
   passFailCriterion,
+  scoreCriterion,
   scoreSignalEfficiency,
 } from "./eval-criteria";
 import { emitEvalTranscript } from "./eval-transcript";
@@ -23,34 +29,34 @@ import {
   getEvalTimeoutMs,
   type EvalModelEnv,
 } from "./model-config";
-import type { ChatThreadDO } from "../../src/chat-thread-do";
-import type { WorkspaceFilesystemDO } from "../../src/workspace-filesystem-do";
 
-type SandboxWriteEvalEnv = TestEnv & EvalModelEnv & EvalSignalEnv & {
+type ProjectWriteEvalEnv = TestEnv & EvalModelEnv & EvalSignalEnv & {
   CHAT_THREAD: DurableObjectNamespace<ChatThreadDO>;
   WORKSPACE_FS: DurableObjectNamespace<WorkspaceFilesystemDO>;
-  PROJECT_RUNTIME_HOST: Fetcher;
+  R2_BUCKET: R2Bucket;
   RUN_AGENT_EVALS?: string;
 };
 
-const testEnv = env as unknown as SandboxWriteEvalEnv;
+const testEnv = env as unknown as ProjectWriteEvalEnv;
 const maybeIt = testEnv.RUN_AGENT_EVALS === "1" ? it : it.skip;
-const EXPECTED_FILE_CONTENT = "sandbox write eval ok.";
+const EXPECTED_FILE_CONTENT = "project write eval ok.";
+const SESSION_TIMEOUT_MS = getEvalTimeoutMs(testEnv, 180_000);
 
-describe("sandbox write file agent eval", () => {
+describe("project write file agent eval", () => {
   maybeIt(
-    "asks the agent to write and read back a file in the project runtime",
+    "asks the agent to write and read back a file in a DO-backed project",
     async () => {
       const suffix = crypto.randomUUID().slice(0, 8);
+      const email = `project-write-eval-${suffix}@example.com`;
       const { userId } = await createUser(
         testEnv,
-        `sandbox-write-eval-${suffix}@example.com`,
+        email,
         "password123",
-        "Sandbox Write Eval",
+        "Project Write Eval",
       );
       const { org, defaultWorkspaceId } = await createOrg(
         testEnv,
-        `Sandbox Write Eval ${suffix}`,
+        `Project Write Eval ${suffix}`,
         userId,
       );
 
@@ -58,7 +64,7 @@ describe("sandbox write file agent eval", () => {
       await configureEvalModel(testEnv, orgStub, userId);
       const thread = await orgStub.createThread(
         defaultWorkspaceId,
-        "Sandbox write file eval",
+        "Project write file eval",
         userId,
         undefined,
         testEnv.EVAL_MODEL,
@@ -68,10 +74,11 @@ describe("sandbox write file agent eval", () => {
         testEnv.WORKSPACE_FS.idFromName(defaultWorkspaceId),
       );
       const project = await workspaceFs.createProject({
-        id: "sandbox-write-app",
-        name: "sandbox-write-app",
-        description: "Sandbox write-file eval project.",
+        id: "file-write-app",
+        name: "file-write-app",
+        description: "File write eval project.",
         workspaceId: defaultWorkspaceId,
+        backend: "do-r2",
       });
 
       const chatThread = testEnv.CHAT_THREAD.get(
@@ -82,14 +89,11 @@ describe("sandbox write file agent eval", () => {
         workspaceId: defaultWorkspaceId,
         orgId: org.id,
         userId,
-        userName: "Sandbox Write Eval",
-        userEmail: `sandbox-write-eval-${suffix}@example.com`,
+        userName: "Project Write Eval",
+        userEmail: email,
         messageSource: "eval",
-        timeoutMs: getEvalTimeoutMs(testEnv, 180_000),
-        message: [
-          'Use bash in the sandbox-write-app project to create /workspace/eval-output.txt with exactly this text (everything between the quotes, including the final period): "sandbox write eval ok."',
-          "Then read the file back and reply with the file contents only.",
-        ].join(" "),
+        timeoutMs: SESSION_TIMEOUT_MS,
+        message: 'In the file-write-app project, create a file at the project root named eval-output.txt containing exactly this text (everything between the quotes, including the final period): "project write eval ok." Then read the file back and reply with the file contents only.',
       });
       const signal = evaluateAgentEvalSignal(
         result,
@@ -99,58 +103,46 @@ describe("sandbox write file agent eval", () => {
         }),
       );
 
-      const readResponse = await testEnv.PROJECT_RUNTIME_HOST.fetch(
-        `http://runtime.test/v1/projects/${encodeURIComponent(project.id)}/fs/read?path=${encodeURIComponent("/workspace/eval-output.txt")}`,
-      );
-      const fileContents = readResponse.ok ? await readResponse.text() : "";
-      const normalizedFileContents = fileContents.trimEnd();
+      const readResponse = await new ProjectFilesystemClient(testEnv, project.id)
+        .readFile("/eval-output.txt");
+      const fileContents = readResponse.content ?? "";
+      const normalizedFileContents = fileContents.trim();
       const finalResult = result.result?.trim() ?? "";
       const finalResultLower = finalResult.toLowerCase();
       const finalResultExtra = finalResultLower
         .replace(EXPECTED_FILE_CONTENT, "")
         .trim();
-      const transcriptText = JSON.stringify({
-        result: result.result,
-        events: result.events,
-        messages: result.messages,
-      }).toLowerCase();
       const evaluation = buildEvalCriteriaSummary({
         passFail: [
           buildSessionCompletedCriterion(result),
           passFailCriterion({
             id: "expected_file_written",
             label: "Agent wrote the expected file",
-            passed: readResponse.ok,
-            reason: readResponse.ok
+            passed: readResponse.success,
+            reason: readResponse.success
               ? undefined
-              : `Reading /workspace/eval-output.txt returned HTTP ${readResponse.status}.`,
-            details: { status: readResponse.status },
+              : readResponse.error ?? "Reading /eval-output.txt failed.",
+            details: readResponse,
           }),
           passFailCriterion({
             id: "file_contents_exact",
             label: "File contents are exactly correct",
             passed: normalizedFileContents === EXPECTED_FILE_CONTENT,
-            reason:
-              normalizedFileContents === EXPECTED_FILE_CONTENT
-                ? undefined
-                : `Expected "${EXPECTED_FILE_CONTENT}" after trailing whitespace normalization.`,
+            reason: normalizedFileContents === EXPECTED_FILE_CONTENT
+              ? undefined
+              : `Expected "${EXPECTED_FILE_CONTENT}" after whitespace normalization.`,
             details: { actual: normalizedFileContents },
           }),
           passFailCriterion({
             id: "final_response_includes_file_contents",
-            label: "Agent final response includes the file contents",
-            passed:
-              finalResultLower.includes(EXPECTED_FILE_CONTENT) &&
-              finalResultExtra.length <= 80,
-            reason:
-              finalResultLower.includes(EXPECTED_FILE_CONTENT)
-                ? finalResultExtra.length <= 80
-                  ? undefined
-                  : "Final response included unrelated explanation beyond the requested file contents."
-                : "Final response did not include the expected file contents.",
+            label: "Final response includes the file contents",
+            passed: finalResultLower.includes(EXPECTED_FILE_CONTENT),
+            reason: finalResultLower.includes(EXPECTED_FILE_CONTENT)
+              ? undefined
+              : "Final response did not include the expected file contents.",
             details: { finalResult },
           }),
-          buildNoAssistantErrorCriterion(transcriptText),
+          buildNoAssistantErrorCriterion(result),
           buildRuntimeEventsCriterion(result),
           buildResultEventCriterion(result),
         ],
@@ -163,6 +155,13 @@ describe("sandbox write file agent eval", () => {
               { maxAssistantTurns: 6, maxBadToolCalls: 1, points: 3 },
               { maxAssistantTurns: 10, maxBadToolCalls: 3, points: 2 },
             ],
+          }),
+          scoreCriterion({
+            id: "reply_conciseness",
+            label: "Reply contains no more than 80 extra characters",
+            points: finalResultExtra.length <= 80 ? 1 : 0,
+            maxPoints: 1,
+            reason: `${finalResultExtra.length} extra character(s).`,
           }),
         ],
       });
@@ -177,14 +176,14 @@ describe("sandbox write file agent eval", () => {
         events: result.events,
         messages: result.messages,
         fileInspection: {
-          path: "/workspace/eval-output.txt",
-          readStatus: readResponse.status,
+          path: "/eval-output.txt",
+          success: readResponse.success,
           contents: fileContents,
         },
       });
 
       assertPassFailCriteria(evaluation);
     },
-    240_000,
+    SESSION_TIMEOUT_MS + 60_000,
   );
 });

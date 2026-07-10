@@ -24,6 +24,7 @@ import {
   type EvalModelEnv,
 } from "./model-config";
 import type { ChatThreadDO } from "../../src/chat-thread-do";
+import { usedTool } from "./project-eval-helpers";
 
 // This eval exercises the analysis connections listing (analysis_list_connections;
 // warehouse_list_connections is its hidden source-compat alias). The tool lives in
@@ -40,31 +41,7 @@ type WarehouseEvalEnv = TestEnv & EvalModelEnv & EvalSignalEnv & {
 
 const testEnv = env as unknown as WarehouseEvalEnv;
 const maybeIt = testEnv.RUN_AGENT_EVALS === "1" ? it : it.skip;
-
-// A tool can be invoked either as a top-level tool call (full mode) or via
-// `tools.<name>(...)` / `tools["<name>"](...)` inside js_exec (lean mode) — the
-// tools.search() `call` hint recommends the bracket form — so detect all three.
-// Top-level calls show up in signal.toolCallsByName; js_exec calls only appear
-// in the js_exec `code`.
-function agentInvokedTool(
-  toolName: string,
-  toolCallsByName: Record<string, number>,
-  messages: unknown,
-): boolean {
-  if ((toolCallsByName[toolName] ?? 0) >= 1) return true;
-  const callPattern = new RegExp(`(?:tools\\.|tools\\[\\s*["'])?${toolName}(?:["']\\s*\\])?\\s*\\(`);
-  for (const msg of (Array.isArray(messages) ? messages : []) as Array<{
-    content?: Array<{ type?: string; name?: string; input?: { code?: unknown } }>;
-  }>) {
-    for (const item of msg.content ?? []) {
-      if (item.type === "tool_use" && item.name === "js_exec") {
-        const code = typeof item.input?.code === "string" ? item.input.code : "";
-        if (callPattern.test(code)) return true;
-      }
-    }
-  }
-  return false;
-}
+const SESSION_TIMEOUT_MS = getEvalTimeoutMs(testEnv, 150_000);
 
 describe("warehouse list connections agent eval", () => {
   maybeIt(
@@ -104,7 +81,7 @@ describe("warehouse list connections agent eval", () => {
         userName: "Warehouse Eval",
         userEmail: `warehouse-eval-${suffix}@example.com`,
         messageSource: "eval",
-        timeoutMs: getEvalTimeoutMs(testEnv, 150_000),
+        timeoutMs: SESSION_TIMEOUT_MS,
         message: [
           "Using the data-warehouse query tooling, list the data warehouse connections configured in this workspace",
           "(for example BigQuery, ClickHouse, Snowflake, or Databricks) and report how many there are.",
@@ -122,14 +99,8 @@ describe("warehouse list connections agent eval", () => {
       // The canonical tool is analysis_list_connections; warehouse_list_connections
       // remains a callable-but-hidden source-compat alias, so accept either.
       const calledWarehouseList =
-        agentInvokedTool("analysis_list_connections", signal.toolCallsByName, result.messages) ||
-        agentInvokedTool("warehouse_list_connections", signal.toolCallsByName, result.messages);
-
-      const transcriptText = JSON.stringify({
-        result: result.result,
-        events: result.events,
-        messages: result.messages,
-      }).toLowerCase();
+        usedTool(result.events, "analysis_list_connections") ||
+        usedTool(result.events, "warehouse_list_connections");
       const evaluation = buildEvalCriteriaSummary({
         passFail: [
           buildSessionCompletedCriterion(result),
@@ -154,7 +125,7 @@ describe("warehouse list connections agent eval", () => {
                 : "Signal reported zero total tokens.",
             details: { totalTokens: signal.tokenUsage.totalTokens },
           }),
-          buildNoAssistantErrorCriterion(transcriptText),
+          buildNoAssistantErrorCriterion(result),
           buildRuntimeEventsCriterion(result),
           buildResultEventCriterion(result),
         ],
@@ -185,12 +156,12 @@ describe("warehouse list connections agent eval", () => {
           toolCallsByName: signal.toolCallsByName,
           failures: calledWarehouseList
             ? []
-            : ["agent did not discover/call warehouse_list_connections"],
+            : ["agent did not discover/call analysis_list_connections"],
         },
       });
 
       assertPassFailCriteria(evaluation);
     },
-    240_000,
+    SESSION_TIMEOUT_MS + 60_000,
   );
 });

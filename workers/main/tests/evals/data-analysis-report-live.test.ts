@@ -27,7 +27,10 @@ import {
 import {
   asRecord,
   collectRuntimeEvidence,
+  countNotebookErrorOutputs,
+  hasSuccessfulNotebookRun,
   legacyDeployPathEvidence,
+  toolCallReferences,
   usedTool,
 } from "./project-eval-helpers";
 import { ProjectFilesystemClient } from "../../src/workspace-filesystem-do";
@@ -50,8 +53,10 @@ type NotebookInspection = {
   hasTitle: boolean;
   hasFinding: boolean;
   hasExecutedOutput: boolean;
+  hasErrorOutput: boolean;
   codeCellCount: number;
   executedOutputCount: number;
+  errorOutputCount: number;
   parseError?: string;
 };
 
@@ -61,6 +66,7 @@ const REQUIRED_FINDING = "North region led Q4 revenue.";
 
 const testEnv = env as unknown as DataAnalysisReportEvalEnv;
 const maybeIt = testEnv.RUN_AGENT_EVALS === "1" ? it : it.skip;
+const SESSION_TIMEOUT_MS = getEvalTimeoutMs(testEnv, 420_000);
 
 function cellSourceText(cell: Record<string, unknown>): string {
   const source = cell.source;
@@ -79,8 +85,10 @@ async function inspectNotebook(
       hasTitle: false,
       hasFinding: false,
       hasExecutedOutput: false,
+      hasErrorOutput: false,
       codeCellCount: 0,
       executedOutputCount: 0,
+      errorOutputCount: 0,
     };
   }
   const read = await new ProjectFilesystemClient(testEnv, project.id).readFile(
@@ -93,8 +101,10 @@ async function inspectNotebook(
       hasTitle: false,
       hasFinding: false,
       hasExecutedOutput: false,
+      hasErrorOutput: false,
       codeCellCount: 0,
       executedOutputCount: 0,
+      errorOutputCount: 0,
     };
   }
 
@@ -105,18 +115,25 @@ async function inspectNotebook(
       : [];
     const cellRecords = cells.map(asRecord).filter((cell): cell is Record<string, unknown> => Boolean(cell));
     const sourceText = cellRecords.map(cellSourceText).join("\n");
+    const markdownText = cellRecords
+      .filter((cell) => cell.cell_type === "markdown")
+      .map(cellSourceText)
+      .join("\n");
     const codeCells = cellRecords.filter((cell) => cell.cell_type === "code");
     const executedOutputs = codeCells.filter((cell) =>
       typeof cell.execution_count === "number" ||
       (Array.isArray(cell.outputs) && cell.outputs.length > 0),
     );
+    const errorOutputCount = countNotebookErrorOutputs(codeCells);
     return {
       readSuccess: true,
       hasTitle: sourceText.includes(REPORT_TITLE),
-      hasFinding: sourceText.includes(REQUIRED_FINDING),
+      hasFinding: markdownText.includes(REQUIRED_FINDING),
       hasExecutedOutput: executedOutputs.length > 0,
+      hasErrorOutput: errorOutputCount > 0,
       codeCellCount: codeCells.length,
       executedOutputCount: executedOutputs.length,
+      errorOutputCount,
     };
   } catch (error) {
     return {
@@ -124,8 +141,10 @@ async function inspectNotebook(
       hasTitle: false,
       hasFinding: false,
       hasExecutedOutput: false,
+      hasErrorOutput: false,
       codeCellCount: 0,
       executedOutputCount: 0,
+      errorOutputCount: 0,
       parseError: error instanceof Error ? error.message : String(error),
     };
   }
@@ -169,7 +188,7 @@ describe("data-analysis report agent eval", () => {
         userName: "Data Analysis Eval",
         userEmail: `data-analysis-eval-${suffix}@example.com`,
         messageSource: "eval",
-        timeoutMs: getEvalTimeoutMs(testEnv, 420_000),
+        timeoutMs: SESSION_TIMEOUT_MS,
         message: [
           `Create a new DO-backed project named exactly "${PROJECT_NAME}" using create_project with template "data-analysis" and a concise description.`,
           `Edit analysis.ipynb into a short report titled exactly "${REPORT_TITLE}" that analyzes hardcoded quarterly revenue data for at least three regions.`,
@@ -199,19 +218,14 @@ describe("data-analysis report agent eval", () => {
         usedCreateProject: usedTool(result.events, "create_project", [
           /\bPROJECTS\s*\.\s*create\s*\(/i,
         ]),
-        usedDataAnalysisTemplate: JSON.stringify(result.events).includes("data-analysis"),
         usedRunNotebook: usedTool(result.events, "run_notebook"),
-        usedSetPreview: usedTool(result.events, "set_preview"),
+        successfulNotebookRun: hasSuccessfulNotebookRun(result.events, "analysis.ipynb"),
+        usedSetPreview: toolCallReferences(result.events, "set_preview", "analysis.ipynb"),
         usedBuildProject: usedTool(result.events, "build_project"),
         usedDeployProject: usedTool(result.events, "deploy_project"),
         legacyFailures,
         evidence: collectRuntimeEvidence(result.events),
       };
-      const agentOutputText = JSON.stringify({
-        result: result.result,
-        events: result.events,
-        messages: result.messages.filter((message) => message.role !== "user"),
-      }).toLowerCase();
       const finalResult = result.result ?? "";
       const finalResponseMentionsReport =
         finalResult.includes(REPORT_TITLE) && finalResult.includes(REQUIRED_FINDING);
@@ -233,16 +247,14 @@ describe("data-analysis report agent eval", () => {
             label: "Agent used the data-analysis flow tools",
             passed:
               runtimeAssertions.usedCreateProject &&
-              runtimeAssertions.usedDataAnalysisTemplate &&
-              runtimeAssertions.usedRunNotebook &&
+              runtimeAssertions.successfulNotebookRun &&
               runtimeAssertions.usedSetPreview,
             reason:
               runtimeAssertions.usedCreateProject &&
-              runtimeAssertions.usedDataAnalysisTemplate &&
-              runtimeAssertions.usedRunNotebook &&
+              runtimeAssertions.successfulNotebookRun &&
               runtimeAssertions.usedSetPreview
                 ? undefined
-                : `create_project=${runtimeAssertions.usedCreateProject}, template=data-analysis=${runtimeAssertions.usedDataAnalysisTemplate}, run_notebook=${runtimeAssertions.usedRunNotebook}, set_preview=${runtimeAssertions.usedSetPreview}`,
+                : `create_project=${runtimeAssertions.usedCreateProject}, run_notebook invoked=${runtimeAssertions.usedRunNotebook}, run_notebook succeeded=${runtimeAssertions.successfulNotebookRun}, set_preview(analysis.ipynb)=${runtimeAssertions.usedSetPreview}`,
             details: runtimeAssertions,
           }),
           passFailCriterion({
@@ -262,16 +274,22 @@ describe("data-analysis report agent eval", () => {
           }),
           passFailCriterion({
             id: "notebook_executed",
-            label: "Notebook was executed and output persisted",
-            passed: notebookInspection.hasExecutedOutput,
-            reason: notebookInspection.hasExecutedOutput
+            label: "Notebook ran successfully with clean persisted output",
+            passed:
+              runtimeAssertions.successfulNotebookRun &&
+              notebookInspection.hasExecutedOutput &&
+              !notebookInspection.hasErrorOutput,
+            reason:
+              runtimeAssertions.successfulNotebookRun &&
+              notebookInspection.hasExecutedOutput &&
+              !notebookInspection.hasErrorOutput
               ? undefined
-              : "analysis.ipynb had no executed code-cell outputs.",
-            details: notebookInspection,
+              : `run_notebook succeeded=${runtimeAssertions.successfulNotebookRun}, persisted output=${notebookInspection.hasExecutedOutput}, error outputs=${notebookInspection.errorOutputCount}.`,
+            details: { notebookInspection, successfulNotebookRun: runtimeAssertions.successfulNotebookRun },
           }),
           passFailCriterion({
             id: "avoided_web_deploy_path",
-            label: "Agent avoided build/deploy and legacy VM paths",
+            label: "Agent avoided build/deploy and legacy scaffold/deploy paths",
             passed:
               !runtimeAssertions.usedBuildProject &&
               !runtimeAssertions.usedDeployProject &&
@@ -288,7 +306,7 @@ describe("data-analysis report agent eval", () => {
                   ].filter(Boolean).join("; "),
             details: runtimeAssertions,
           }),
-          buildNoAssistantErrorCriterion(agentOutputText),
+          buildNoAssistantErrorCriterion(result),
           buildRuntimeEventsCriterion(result),
           buildResultEventCriterion(result),
         ],
@@ -331,6 +349,6 @@ describe("data-analysis report agent eval", () => {
 
       assertPassFailCriteria(evaluation);
     },
-    480_000,
+    SESSION_TIMEOUT_MS + 60_000,
   );
 });

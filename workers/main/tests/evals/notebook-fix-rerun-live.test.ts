@@ -66,6 +66,7 @@ const EXPECTED_OUTPUT = `REFRESHED_TOTAL_REVENUE=${EXPECTED_TOTAL}`;
 
 const testEnv = env as unknown as NotebookFixRerunEvalEnv;
 const maybeIt = testEnv.RUN_AGENT_EVALS === "1" ? it : it.skip;
+const SESSION_TIMEOUT_MS = getEvalTimeoutMs(testEnv, 420_000);
 
 function brokenNotebook(): string {
   return JSON.stringify({
@@ -249,7 +250,7 @@ describe("notebook fix and rerun agent eval", () => {
         userName: "Notebook Fix Eval",
         userEmail: `notebook-fix-eval-${suffix}@example.com`,
         messageSource: "eval",
-        timeoutMs: getEvalTimeoutMs(testEnv, 420_000),
+        timeoutMs: SESSION_TIMEOUT_MS,
         message: [
           `The existing DO-backed data-analysis project named exactly "${PROJECT_NAME}" has a stale failing analysis.ipynb report titled "${REPORT_TITLE}".`,
           `Inspect the notebook, fix the execution bug, and remove the stale marker from the report; the literal string "${STALE_MARKER}" must not appear anywhere in the final notebook source.`,
@@ -284,11 +285,6 @@ describe("notebook fix and rerun agent eval", () => {
         legacyFailures,
         evidence: collectRuntimeEvidence(result.events),
       };
-      const agentOutputText = JSON.stringify({
-        result: result.result,
-        events: result.events,
-        messages: result.messages.filter((message) => message.role !== "user"),
-      }).toLowerCase();
       const finalResult = result.result ?? "";
 
       const evaluation = buildEvalCriteriaSummary({
@@ -349,7 +345,7 @@ describe("notebook fix and rerun agent eval", () => {
           }),
           passFailCriterion({
             id: "avoided_web_deploy_path",
-            label: "Agent avoided web deploy and legacy VM paths",
+            label: "Agent avoided web deploy and legacy scaffold/deploy paths",
             passed:
               !runtimeAssertions.usedBuildProject &&
               !runtimeAssertions.usedDeployProject &&
@@ -369,13 +365,13 @@ describe("notebook fix and rerun agent eval", () => {
           passFailCriterion({
             id: "final_response_has_total",
             label: "Final response includes the refreshed total",
-            passed: finalResult.includes(String(EXPECTED_TOTAL)),
-            reason: finalResult.includes(String(EXPECTED_TOTAL))
+            passed: /(^|[^0-9])450([^0-9]|$)/.test(finalResult) || finalResult.includes(EXPECTED_OUTPUT),
+            reason: /(^|[^0-9])450([^0-9]|$)/.test(finalResult) || finalResult.includes(EXPECTED_OUTPUT)
               ? undefined
               : `Final response did not include ${EXPECTED_TOTAL}.`,
             details: { finalResult },
           }),
-          buildNoAssistantErrorCriterion(agentOutputText),
+          buildNoAssistantErrorCriterion(result),
           buildRuntimeEventsCriterion(result),
           buildResultEventCriterion(result),
         ],
@@ -408,6 +404,6 @@ describe("notebook fix and rerun agent eval", () => {
 
       assertPassFailCriteria(evaluation);
     },
-    480_000,
+    SESSION_TIMEOUT_MS + 60_000,
   );
 });

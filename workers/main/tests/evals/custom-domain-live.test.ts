@@ -24,6 +24,7 @@ import {
   type EvalModelEnv,
 } from "./model-config";
 import type { ChatThreadDO } from "../../src/chat-thread-do";
+import { usedTool } from "./project-eval-helpers";
 
 // This eval exercises the custom-domain tools (get_custom_domain). Those tools live in
 // the "domains" category, which the lean tool surface (now the default) drops from the
@@ -39,31 +40,7 @@ type CustomDomainEvalEnv = TestEnv & EvalModelEnv & EvalSignalEnv & {
 
 const testEnv = env as unknown as CustomDomainEvalEnv;
 const maybeIt = testEnv.RUN_AGENT_EVALS === "1" ? it : it.skip;
-
-// A tool can be invoked either as a top-level tool call (full mode) or via
-// `tools.<name>(...)` / `tools["<name>"](...)` inside js_exec (lean mode) — the
-// tools.search() `call` hint recommends the bracket form — so detect all three.
-// Top-level calls show up in signal.toolCallsByName; js_exec calls only appear
-// in the js_exec `code`.
-function agentInvokedTool(
-  toolName: string,
-  toolCallsByName: Record<string, number>,
-  messages: unknown,
-): boolean {
-  if ((toolCallsByName[toolName] ?? 0) >= 1) return true;
-  const callPattern = new RegExp(`(?:tools\\.|tools\\[\\s*["'])?${toolName}(?:["']\\s*\\])?\\s*\\(`);
-  for (const msg of (Array.isArray(messages) ? messages : []) as Array<{
-    content?: Array<{ type?: string; name?: string; input?: { code?: unknown } }>;
-  }>) {
-    for (const item of msg.content ?? []) {
-      if (item.type === "tool_use" && item.name === "js_exec") {
-        const code = typeof item.input?.code === "string" ? item.input.code : "";
-        if (callPattern.test(code)) return true;
-      }
-    }
-  }
-  return false;
-}
+const SESSION_TIMEOUT_MS = getEvalTimeoutMs(testEnv, 150_000);
 
 describe("custom domain agent eval", () => {
   maybeIt(
@@ -103,7 +80,7 @@ describe("custom domain agent eval", () => {
         userName: "Custom Domain Eval",
         userEmail: `custom-domain-eval-${suffix}@example.com`,
         messageSource: "eval",
-        timeoutMs: getEvalTimeoutMs(testEnv, 150_000),
+        timeoutMs: SESSION_TIMEOUT_MS,
         message: [
           "Check whether any of this workspace's deployed apps have a custom domain configured,",
           "and report the custom domain diagnostics for the workspace.",
@@ -118,17 +95,7 @@ describe("custom domain agent eval", () => {
         }),
       );
 
-      const calledGetCustomDomain = agentInvokedTool(
-        "get_custom_domain",
-        signal.toolCallsByName,
-        result.messages,
-      );
-
-      const transcriptText = JSON.stringify({
-        result: result.result,
-        events: result.events,
-        messages: result.messages,
-      }).toLowerCase();
+      const calledGetCustomDomain = usedTool(result.events, "get_custom_domain");
       const evaluation = buildEvalCriteriaSummary({
         passFail: [
           buildSessionCompletedCriterion(result),
@@ -154,7 +121,7 @@ describe("custom domain agent eval", () => {
                 : "Signal reported zero total tokens.",
             details: { totalTokens: signal.tokenUsage.totalTokens },
           }),
-          buildNoAssistantErrorCriterion(transcriptText),
+          buildNoAssistantErrorCriterion(result),
           buildRuntimeEventsCriterion(result),
           buildResultEventCriterion(result),
         ],
@@ -191,6 +158,6 @@ describe("custom domain agent eval", () => {
 
       assertPassFailCriteria(evaluation);
     },
-    240_000,
+    SESSION_TIMEOUT_MS + 60_000,
   );
 });

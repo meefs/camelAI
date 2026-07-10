@@ -25,6 +25,7 @@ import {
 } from "./model-config";
 import type { ChatThreadDO } from "../../src/chat-thread-do";
 import type { WorkspaceFilesystemDO } from "../../src/workspace-filesystem-do";
+import { asRecord } from "./project-eval-helpers";
 
 // Generic, env-driven eval used by the control plane to run custom prompts that are NOT
 // committed to the source tree. The prompt, optional project name, and optional pass/fail
@@ -38,6 +39,7 @@ import type { WorkspaceFilesystemDO } from "../../src/workspace-filesystem-do";
 type CustomEvalEnv = TestEnv & EvalModelEnv & EvalSignalEnv & {
   CHAT_THREAD: DurableObjectNamespace<ChatThreadDO>;
   WORKSPACE_FS: DurableObjectNamespace<WorkspaceFilesystemDO>;
+  R2_BUCKET: R2Bucket;
   RUN_AGENT_EVALS?: string;
   CUSTOM_EVAL_PROMPT?: string;
   CUSTOM_EVAL_PROJECT?: string;
@@ -46,6 +48,7 @@ type CustomEvalEnv = TestEnv & EvalModelEnv & EvalSignalEnv & {
 
 const testEnv = env as unknown as CustomEvalEnv;
 const maybeIt = testEnv.RUN_AGENT_EVALS === "1" ? it : it.skip;
+const SESSION_TIMEOUT_MS = getEvalTimeoutMs(testEnv, 600_000);
 
 function parseRequiredTranscriptSubstrings(raw: string | undefined): string[] {
   if (!raw) return [];
@@ -159,6 +162,7 @@ describe("custom prompt agent eval", () => {
         name: projectName,
         description: "Custom prompt eval project.",
         workspaceId: defaultWorkspaceId,
+        backend: "do-r2",
       });
 
       const chatThread = testEnv.CHAT_THREAD.get(
@@ -172,7 +176,7 @@ describe("custom prompt agent eval", () => {
         userName: "Custom Eval",
         userEmail: `custom-eval-${suffix}@example.com`,
         messageSource: "eval",
-        timeoutMs: getEvalTimeoutMs(testEnv, 600_000),
+        timeoutMs: SESSION_TIMEOUT_MS,
         message: prompt,
       });
       const signal = evaluateAgentEvalSignal(
@@ -180,23 +184,22 @@ describe("custom prompt agent eval", () => {
         getEvalSignalThresholds(testEnv, { maxBadToolCalls: 0 }),
       );
 
-      const transcriptText = JSON.stringify({
+      const runtimeToolItems = result.events.filter((rawEvent) => {
+        if (rawEvent.type !== "runtime_event") return false;
+        return asRecord(rawEvent.event)?.method === "item/completed";
+      });
+      const agentAuthoredText = JSON.stringify({
         result: result.result,
-        events: result.events,
-        messages: result.messages,
+        messages: result.messages.filter((message) => message.role === "assistant"),
+        runtimeToolItems,
       }).toLowerCase();
       const missingSubstrings = requiredTranscriptSubstrings.filter(
-        (substring) => !transcriptText.includes(substring),
+        (substring) => !agentAuthoredText.includes(substring),
       );
       const evaluation = buildEvalCriteriaSummary({
         passFail: [
-          passFailCriterion({
-            id: "custom_prompt_present",
-            label: "Custom prompt is present",
-            passed: true,
-          }),
           buildSessionCompletedCriterion(result),
-          buildNoAssistantErrorCriterion(transcriptText),
+          buildNoAssistantErrorCriterion(result),
           buildRuntimeEventsCriterion(result),
           buildResultEventCriterion(result),
           passFailCriterion({
@@ -239,6 +242,6 @@ describe("custom prompt agent eval", () => {
 
       assertPassFailCriteria(evaluation);
     },
-    660_000,
+    SESSION_TIMEOUT_MS + 60_000,
   );
 });

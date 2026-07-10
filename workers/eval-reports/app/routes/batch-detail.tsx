@@ -4,10 +4,11 @@ import {
 	CardHeader,
 	CardTitle,
 } from "@/components/ui/card";
+import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
-import { CircleX } from "lucide-react";
 import { Link, type LoaderFunctionArgs, useLoaderData } from "react-router";
 import { BackButton } from "../components/back-button";
+import { BatchMatrix } from "../components/batch-matrix";
 import { BatchResultBadge } from "../components/batch-result-badge";
 import { RunsTable } from "../components/runs-table";
 import { ScoreValue } from "../components/score";
@@ -15,7 +16,7 @@ import { fetchBatch } from "../lib/api";
 import type { Batch } from "../lib/batches";
 import {
 	durationBetween,
-	failedCriteria,
+	displayedFailures,
 	fmtCost,
 	fmtTokens,
 	missing,
@@ -84,71 +85,78 @@ function PassedTileValue({ batch }: { batch: Batch }) {
 	);
 }
 
-function FailedCriteriaCard({ batch }: { batch: Batch }) {
-	const failedRuns = batch.runs.filter((run) => run.status === "failed");
-	if (!failedRuns.length) return null;
+export function FailedCriteriaCard({ batch }: { batch: Batch }) {
+	const groups = new Map<string, {
+		id: string;
+		evalTarget: string;
+		label: string;
+		reason?: string;
+		runs: typeof batch.runs;
+	}>();
+	for (const run of batch.runs) {
+		for (const criterion of displayedFailures(run)) {
+			const key = `${run.evalTarget}\u0000${criterion.id}`;
+			const group = groups.get(key);
+			if (group) {
+				group.runs.push(run);
+				if (!group.reason && criterion.reason) group.reason = criterion.reason;
+			} else {
+				groups.set(key, {
+					id: criterion.id,
+					evalTarget: run.evalTarget,
+					label: criterion.label,
+					reason: criterion.reason,
+					runs: [run],
+				});
+			}
+		}
+	}
+	const sortedGroups = [...groups.values()].sort(
+		(left, right) => right.runs.length - left.runs.length ||
+			left.evalTarget.localeCompare(right.evalTarget) || left.label.localeCompare(right.label),
+	);
+	if (!sortedGroups.length) return null;
 	return (
 		<Card>
 			<CardHeader className="border-b">
 				<CardTitle className="flex items-center gap-2">
-					Failed criteria
+					Failures
 					<span className="text-xs font-normal text-muted-foreground">
-						{failedRuns.length} run{failedRuns.length === 1 ? "" : "s"}
+						{sortedGroups.length} group{sortedGroups.length === 1 ? "" : "s"}
 					</span>
 				</CardTitle>
 			</CardHeader>
 			<CardContent>
 				<div className="divide-y">
-					{failedRuns.map((run) => {
-						const failed = failedCriteria(run);
-						const visible = failed.slice(0, 5);
-						return (
-							<div key={run.runId} className="py-3 first:pt-0 last:pb-0">
-								<Link
-									to={`/runs/${encodeURIComponent(run.runId)}?tab=overview`}
-									className="block truncate text-sm font-medium hover:underline"
-								>
-									{run.evalTarget}
-								</Link>
-								<div className="mt-1 space-y-1">
-									{visible.length ? (
-										visible.map((criterion) => (
-											<div
-												key={criterion.id}
-												className="flex min-w-0 items-center gap-1.5 text-xs"
-												title={`${criterion.label}${
-													criterion.reason ? ` — ${criterion.reason}` : ""
-												}`}
-											>
-												<CircleX className="size-3.5 shrink-0 text-red-600 dark:text-red-400" />
-												<span className="min-w-0 truncate">{criterion.label}</span>
-												{criterion.reason ? (
-													<span className="min-w-0 truncate text-muted-foreground">
-														— {criterion.reason}
-													</span>
-												) : null}
-											</div>
-										))
-									) : (
-										<div className="flex min-w-0 items-center gap-1.5 text-xs">
-											<CircleX className="size-3.5 shrink-0 text-red-600 dark:text-red-400" />
-											<span className="min-w-0 truncate">Run failed</span>
-											{run.error ? (
-												<span className="min-w-0 truncate text-muted-foreground">
-													— {run.error}
-												</span>
-											) : null}
-										</div>
-									)}
-									{failed.length > 5 ? (
-										<p className="text-xs text-muted-foreground">
-											+{failed.length - 5} more
-										</p>
-									) : null}
-								</div>
+					{sortedGroups.map((group) => (
+						<div key={`${group.evalTarget}-${group.id}`} className="py-3 first:pt-0 last:pb-0">
+							<div className="flex items-start justify-between gap-3">
+								<p className="min-w-0 text-sm font-medium">
+									{group.label}
+									<span className="font-normal text-muted-foreground"> · {group.evalTarget}</span>
+								</p>
+								<Badge variant="destructive" className="shrink-0">
+									{group.runs.length} run{group.runs.length === 1 ? "" : "s"}
+								</Badge>
 							</div>
-						);
-					})}
+							{group.reason ? (
+								<p className="mt-1 truncate text-xs text-muted-foreground" title={group.reason}>
+									{group.reason}
+								</p>
+							) : null}
+							<div className="mt-1 flex flex-wrap gap-x-2 gap-y-1 text-xs">
+								{group.runs.map((run) => (
+									<Link
+										key={run.runId}
+										to={`/runs/${encodeURIComponent(run.runId)}?tab=overview`}
+										className="text-muted-foreground hover:text-foreground hover:underline"
+									>
+										{run.model ?? "default model"}
+									</Link>
+								))}
+							</div>
+						</div>
+					))}
 				</div>
 			</CardContent>
 		</Card>
@@ -243,6 +251,7 @@ export function BatchDetailPage() {
 			</div>
 
 			<div className="mt-4 space-y-4">
+				<BatchMatrix runs={batch.runs} />
 				<FailedCriteriaCard batch={batch} />
 				<div>
 					<h2 className="text-sm font-medium">Runs ({batch.runs.length})</h2>

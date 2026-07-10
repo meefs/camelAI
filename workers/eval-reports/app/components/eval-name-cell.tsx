@@ -8,7 +8,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
 import type { ReactNode } from "react";
 import { Link } from "react-router";
-import type { EvalKind, Run } from "../../src/types";
+import type { EvalKind, EvalTier, Run } from "../../src/types";
 
 export function EvalKindBadge({
 	evalTarget,
@@ -23,15 +23,28 @@ export function EvalKindBadge({
 	return kind ? <Badge variant="secondary">{kind}</Badge> : null;
 }
 
+export function EvalTierBadge({ tier }: { tier?: EvalTier }) {
+	return tier === "hard" ? (
+		<Badge
+			variant="outline"
+			className="border-amber-500/50 text-amber-600 dark:text-amber-400"
+		>
+			hard
+		</Badge>
+	) : null;
+}
+
 export function EvalHoverCard({
 	evalTarget,
 	kind,
+	tier,
 	description,
 	startPrompt,
 	children,
 }: {
 	evalTarget: string;
 	kind?: EvalKind;
+	tier?: EvalTier;
 	description?: string;
 	startPrompt?: string;
 	children: ReactNode;
@@ -49,6 +62,7 @@ export function EvalHoverCard({
 							{evalTarget}
 						</p>
 						<EvalKindBadge evalTarget={evalTarget} kind={kind} />
+						<EvalTierBadge tier={tier} />
 					</div>
 					{description ? (
 						<p className="text-xs text-muted-foreground">{description}</p>
@@ -89,6 +103,7 @@ export function EvalNameCell({
 				<EvalHoverCard
 					evalTarget={run.evalTarget}
 					kind={run.kind}
+					tier={run.tier}
 					description={run.description}
 					startPrompt={run.startPrompt}
 				>
@@ -101,6 +116,7 @@ export function EvalNameCell({
 					</Link>
 				</EvalHoverCard>
 				<EvalKindBadge evalTarget={run.evalTarget} kind={run.kind} />
+				<EvalTierBadge tier={run.tier} />
 			</div>
 			{showModel ? (
 				<div className="text-xs text-muted-foreground">

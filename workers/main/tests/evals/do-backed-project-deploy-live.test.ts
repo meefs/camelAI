@@ -10,7 +10,6 @@ import {
   buildRuntimeEventsCriterion,
   buildSessionCompletedCriterion,
   passFailCriterion,
-  scoreCriterion,
   scoreSignalEfficiency,
 } from "./eval-criteria";
 import {
@@ -95,6 +94,7 @@ const testEnv = env as unknown as DoBackedDeployEvalEnv;
 // This eval publishes a live app in the testing-grounds namespace and verifies
 // Durable Object persistence through the deployed URL.
 const maybeIt = isRealEvalDeployEnabled(testEnv) ? it : it.skip;
+const SESSION_TIMEOUT_MS = getEvalTimeoutMs(testEnv, 900_000);
 
 function parseJsonObject(text: string | undefined): Record<string, unknown> {
   if (!text) return {};
@@ -307,7 +307,7 @@ describe("DO-backed project deploy agent eval", () => {
         userName: "DO Project Deploy Eval",
         userEmail: `do-project-deploy-eval-${suffix}@example.com`,
         messageSource: "eval",
-        timeoutMs: getEvalTimeoutMs(testEnv, 900_000),
+        timeoutMs: SESSION_TIMEOUT_MS,
         message: [
           `Create a new DO-backed React Router project named exactly "${PROJECT_NAME}" using create_project with a concise description.`,
           "Use the default deployable React Router scaffold; do not use the data-analysis template for this web app.",
@@ -355,11 +355,6 @@ describe("DO-backed project deploy agent eval", () => {
         legacyFailures,
         evidence: runtimeEvidence,
       };
-      const agentOutputText = JSON.stringify({
-        result: result.result,
-        events: result.events,
-        messages: result.messages.filter((message) => message.role !== "user"),
-      }).toLowerCase();
 
       const evaluation = buildEvalCriteriaSummary({
         passFail: [
@@ -416,7 +411,7 @@ describe("DO-backed project deploy agent eval", () => {
           }),
           passFailCriterion({
             id: "avoided_legacy_deploy_path",
-            label: "Agent avoided legacy deploy path",
+            label: "Agent avoided legacy scaffold/deploy paths",
             passed: legacyFailures.length === 0,
             reason: legacyFailures.length ? legacyFailures.join("; ") : undefined,
             details: runtimeAssertions,
@@ -445,21 +440,11 @@ describe("DO-backed project deploy agent eval", () => {
             reason: appSmoke.failures.length ? appSmoke.failures.join("; ") : undefined,
             details: appSmoke,
           }),
-          buildNoAssistantErrorCriterion(agentOutputText),
+          buildNoAssistantErrorCriterion(result),
           buildRuntimeEventsCriterion(result),
           buildResultEventCriterion(result),
         ],
         scorecard: [
-          scoreCriterion({
-            id: "api_persistence_roundtrip",
-            label: "API persistence round-trip",
-            points: appSmoke.failures.length === 0 ? 5 : 0,
-            maxPoints: 5,
-            reason: appSmoke.failures.length
-              ? appSmoke.failures.join("; ")
-              : "POST /api/checkins was reflected by GET /api/checkins.",
-            details: appSmoke,
-          }),
           scoreSignalEfficiency(signal, {
             maxPoints: 4,
             fallbackPoints: 1,
@@ -490,6 +475,6 @@ describe("DO-backed project deploy agent eval", () => {
 
       assertPassFailCriteria(evaluation);
     },
-    960_000,
+    SESSION_TIMEOUT_MS + 120_000,
   );
 });

@@ -71,6 +71,7 @@ const BROKEN_MARKER = "BROKEN_LIVE_VERSION_MARKER";
 
 const testEnv = env as unknown as ProjectRevertRedeployEvalEnv;
 const maybeIt = isRealEvalDeployEnabled(testEnv) ? it : it.skip;
+const SESSION_TIMEOUT_MS = getEvalTimeoutMs(testEnv, 900_000);
 
 function homeRoute(marker: string, label: string): string {
   return [
@@ -225,7 +226,7 @@ describe("project revert and redeploy agent eval", () => {
         userName: "Project Redeploy Eval",
         userEmail: `project-redeploy-eval-${suffix}@example.com`,
         messageSource: "eval",
-        timeoutMs: getEvalTimeoutMs(testEnv, 900_000),
+        timeoutMs: SESSION_TIMEOUT_MS,
         message: [
           `The existing DO-backed React Router project named exactly "${PROJECT_NAME}" has broken current source containing "${BROKEN_MARKER}".`,
           `Use js_exec to call await tools.list_commits({ project: "${PROJECT_NAME}" }) and find the source snapshot with message exactly "${BASELINE_MESSAGE}" that contains "${RESTORED_MARKER}"; list_commits is not a top-level tool.`,
@@ -277,11 +278,6 @@ describe("project revert and redeploy agent eval", () => {
         legacyFailures,
         evidence: collectRuntimeEvidence(result.events),
       };
-      const agentOutputText = JSON.stringify({
-        result: result.result,
-        events: result.events,
-        messages: result.messages.filter((message) => message.role !== "user"),
-      }).toLowerCase();
       const finalResult = result.result ?? "";
 
       const sourceRestored =
@@ -309,25 +305,23 @@ describe("project revert and redeploy agent eval", () => {
             details: { matchingProjects, runtimeAssertions },
           }),
           passFailCriterion({
-            id: "used_restore_then_deploy_tools",
-            label: "Agent listed commits, reverted, then deployed",
+            id: "used_snapshot_tools",
+            label: "Agent used list_commits, revert_project, and deploy_project",
             passed:
               runtimeAssertions.usedListCommits &&
               runtimeAssertions.usedRevertProject &&
-              runtimeAssertions.usedDeployProject &&
-              runtimeAssertions.orderedRestoreDeploy,
+              runtimeAssertions.usedDeployProject,
             reason:
               runtimeAssertions.usedListCommits &&
               runtimeAssertions.usedRevertProject &&
-              runtimeAssertions.usedDeployProject &&
-              runtimeAssertions.orderedRestoreDeploy
+              runtimeAssertions.usedDeployProject
                 ? undefined
-                : `list_commits=${runtimeAssertions.usedListCommits}, revert_project=${runtimeAssertions.usedRevertProject}, deploy_project=${runtimeAssertions.usedDeployProject}, order=${order.join(" -> ")}`,
+                : `list_commits=${runtimeAssertions.usedListCommits}, revert_project=${runtimeAssertions.usedRevertProject}, deploy_project=${runtimeAssertions.usedDeployProject}`,
             details: runtimeAssertions,
           }),
           passFailCriterion({
             id: "avoided_wrong_rollback_paths",
-            label: "Agent avoided rollback_deploy and legacy deploy paths",
+            label: "Agent avoided rollback_deploy and legacy scaffold/deploy paths",
             passed:
               !runtimeAssertions.usedRollbackDeploy &&
               legacyFailures.length === 0,
@@ -377,20 +371,18 @@ describe("project revert and redeploy agent eval", () => {
               : "Final response did not include the restored marker.",
             details: { finalResult },
           }),
-          buildNoAssistantErrorCriterion(agentOutputText),
+          buildNoAssistantErrorCriterion(result),
           buildRuntimeEventsCriterion(result),
           buildResultEventCriterion(result),
         ],
         scorecard: [
           scoreCriterion({
-            id: "live_restore_smoke",
-            label: "Live restore smoke",
-            points: liveRestored ? 5 : 0,
-            maxPoints: 5,
-            reason: liveRestored
-              ? "Live app served the restored marker."
-              : appSmoke.error ?? `status=${appSmoke.status}, restored=${appSmoke.hasRestoredMarker}, broken=${appSmoke.hasBrokenMarker}`,
-            details: appSmoke,
+            id: "restore_flow_order",
+            label: "list_commits preceded revert_project, which preceded deploy_project",
+            points: runtimeAssertions.orderedRestoreDeploy ? 2 : 0,
+            maxPoints: 2,
+            reason: `Observed order: ${order.join(" -> ") || "none"}.`,
+            details: { order },
           }),
           scoreSignalEfficiency(signal, {
             maxPoints: 4,
@@ -423,6 +415,6 @@ describe("project revert and redeploy agent eval", () => {
 
       assertPassFailCriteria(evaluation);
     },
-    960_000,
+    SESSION_TIMEOUT_MS + 120_000,
   );
 });

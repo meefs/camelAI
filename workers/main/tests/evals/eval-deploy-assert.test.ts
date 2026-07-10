@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 
-import { assertDeployedApp, countWorkspaceApps } from "./eval-deploy-assert";
+import {
+  assertDeployedApp,
+  assertJsonSubset,
+  countWorkspaceApps,
+  resolveEvalFetchAttempts,
+} from "./eval-deploy-assert";
 
 const app = (name: string, host: string) => ({ name, url: `https://${host}` });
 
@@ -56,5 +61,32 @@ describe("countWorkspaceApps", () => {
   it("supports a before/after +1 assertion", async () => {
     const before = await countWorkspaceApps(stub(0), "ws");
     expect(await countWorkspaceApps(stub(1), "ws")).toBe(before + 1);
+  });
+});
+
+describe("assertJsonSubset", () => {
+  it("deep-compares only expected object keys", () => {
+    expect(assertJsonSubset(
+      { total: 3, nested: { count: 2, ignored: true }, extra: "ok" },
+      { total: 3, nested: { count: 2 } },
+      "summary",
+    )).toEqual([]);
+  });
+
+  it("returns readable nested mismatches", () => {
+    expect(assertJsonSubset(
+      { byCategory: { gear: { totalCents: 10 } } },
+      { byCategory: { gear: { totalCents: 20 } } },
+      "summary",
+    )).toEqual(["summary.byCategory.gear.totalCents expected 20, got 10"]);
+  });
+});
+
+describe("eval fetch retry policy", () => {
+  it("does not retry mutations unless attempts are explicitly requested", () => {
+    expect(resolveEvalFetchAttempts({ method: "POST" })).toBe(1);
+    expect(resolveEvalFetchAttempts({ method: "PATCH" })).toBe(1);
+    expect(resolveEvalFetchAttempts({ method: "GET" })).toBeUndefined();
+    expect(resolveEvalFetchAttempts({ method: "POST" }, 3)).toBe(3);
   });
 });

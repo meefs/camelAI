@@ -17,7 +17,7 @@ import { ChevronRight, CircleCheck, CircleX } from "lucide-react";
 import { Fragment, useState } from "react";
 import { useNavigate } from "react-router";
 import { BatchResultBadge } from "./batch-result-badge";
-import { EvalHoverCard, EvalKindBadge } from "./eval-name-cell";
+import { EvalHoverCard, EvalKindBadge, EvalTierBadge } from "./eval-name-cell";
 import { scoreClass } from "./score";
 import { BranchCell } from "./runs-table";
 import { fetchBatchRuns } from "../lib/api";
@@ -252,6 +252,7 @@ export function BatchesTable({ batches }: { batches: BatchSummary[] }) {
 														<EvalHoverCard
 															evalTarget={run.evalTarget}
 															kind={run.kind}
+															tier={run.tier}
 															description={run.description}
 															startPrompt={run.startPrompt}
 														>
@@ -263,6 +264,7 @@ export function BatchesTable({ batches }: { batches: BatchSummary[] }) {
 															evalTarget={run.evalTarget}
 															kind={run.kind}
 														/>
+														<EvalTierBadge tier={run.tier} />
 														{batch.models.length > 1 ? (
 															<span className="text-xs text-muted-foreground">
 																{run.model ?? "default model"}

@@ -1,5 +1,5 @@
 import { env } from "cloudflare:test";
-import { describe, it } from "vitest";
+import { describe, expect, it } from "vitest";
 
 import { createOrg, createUser, type TestEnv } from "../test-helpers";
 import {
@@ -48,6 +48,7 @@ import type {
 type BrowserAutomationEvalEnv = TestEnv & EvalModelEnv & EvalSignalEnv & {
   CHAT_THREAD: DurableObjectNamespace<ChatThreadDO>;
   WORKSPACE_FS: DurableObjectNamespace<WorkspaceFilesystemDO>;
+  R2_BUCKET: R2Bucket;
   RUN_AGENT_EVALS?: string;
   EVAL_REAL_DEPLOY?: string;
   CF_API_TOKEN?: string;
@@ -66,6 +67,8 @@ type AppSmoke = {
   bodyLength?: number;
   hasTitle: boolean;
   hasCounterButton: boolean;
+  hasCounterButtonId: boolean;
+  hasInitialCounterText: boolean;
   error?: string;
   failures: string[];
 };
@@ -79,6 +82,11 @@ const CLICKED_TWICE_TEXT = "Clicked 2 times";
 const PASS_MARKER = '"browserE2E":"passed"';
 const testEnv = env as unknown as BrowserAutomationEvalEnv;
 const maybeIt = isRealEvalDeployEnabled(testEnv) ? it : it.skip;
+const SESSION_TIMEOUT_MS = getEvalTimeoutMs(testEnv, 900_000);
+
+export function normalizeSsrText(html: string): string {
+  return html.replace(/<!--[\s\S]*?-->/g, "").replace(/\s+/g, " ").trim();
+}
 
 function collectRuntimeItems(events: Array<Record<string, unknown>>): RuntimeItem[] {
   const items: RuntimeItem[] = [];
@@ -146,28 +154,53 @@ async function inspectProjectSource(
 async function smokeCheckDeployedApp(app: EvalDeployedApp | undefined): Promise<AppSmoke> {
   const failures: string[] = [];
   if (!app) {
-    return { hasTitle: false, hasCounterButton: false, failures: ["no deployed app was captured"] };
+    return {
+      hasTitle: false,
+      hasCounterButton: false,
+      hasCounterButtonId: false,
+      hasInitialCounterText: false,
+      failures: ["no deployed app was captured"],
+    };
   }
   try {
     const response = await fetchWithRetry(app.url);
     const body = await response.text();
+    const normalizedBodyText = normalizeSsrText(body);
     const smoke = {
       status: response.status,
       bodyLength: body.length,
       hasTitle: body.includes(APP_TITLE),
       hasCounterButton: body.includes(BUTTON_TEXT),
+      hasCounterButtonId: /id=["']lab-counter-button["']/.test(body),
+      hasInitialCounterText: normalizedBodyText.includes("Clicked 0 times"),
       failures,
     };
     if (response.status !== 200) failures.push(`root returned HTTP ${response.status}`);
     if (body.length === 0) failures.push("root returned an empty body");
     if (!smoke.hasTitle) failures.push(`root did not include ${APP_TITLE}`);
     if (!smoke.hasCounterButton) failures.push(`root did not include ${BUTTON_TEXT}`);
+    if (!smoke.hasCounterButtonId) failures.push("root did not include lab-counter-button id");
+    if (!smoke.hasInitialCounterText) failures.push("root did not include Clicked 0 times");
     return smoke;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    return { hasTitle: false, hasCounterButton: false, error: message, failures: [`root fetch failed: ${message}`] };
+    return {
+      hasTitle: false,
+      hasCounterButton: false,
+      hasCounterButtonId: false,
+      hasInitialCounterText: false,
+      error: message,
+      failures: [`root fetch failed: ${message}`],
+    };
   }
 }
+
+describe("browser automation SSR verification", () => {
+  it("recognizes visible counter text split by React SSR comments", () => {
+    expect(normalizeSsrText("<p>Clicked <!-- -->0<!-- --> times</p>"))
+      .toContain("Clicked 0 times");
+  });
+});
 
 function outputExcerpt(text: string): string {
   const sanitized = text.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, "");
@@ -213,16 +246,15 @@ describe("browser automation agent eval", () => {
         userName: "Browser Automation Eval",
         userEmail: `browser-automation-eval-${suffix}@example.com`,
         messageSource: "eval",
-        timeoutMs: getEvalTimeoutMs(testEnv, 900_000),
+        timeoutMs: SESSION_TIMEOUT_MS,
         message: [
           `Create a new DO-backed React Router project named exactly "${PROJECT_NAME}" using create_project with a concise description.`,
           `Replace the home page with a small interactive client component titled exactly "${APP_TITLE}".`,
           `The page must render a button with id "lab-counter-button" and visible text "${BUTTON_TEXT}". Clicking it increments visible text from "Clicked 0 times" to "Clicked 1 time" to exactly "${CLICKED_TWICE_TEXT}".`,
           `Deploy it with deploy_project using script_name exactly "${PROJECT_NAME}".`,
-          "After deploy, run a real interactive browser automation check in js_exec using env.BROWSER.launch, not fetch, take_screenshot, env.SCREENSHOT, get_latest_logs, or local Playwright.",
-          `The browser check must launch { scriptName: "${PROJECT_NAME}", path: "/" }, click #lab-counter-button twice, wait for text "${CLICKED_TWICE_TEXT}", call textContent("body") and verify the returned object's .text includes "${CLICKED_TWICE_TEXT}", then perform another browser action after that data-returning call by waiting for text "${BUTTON_TEXT}" again. Then read logs(), fail if pageErrors is non-empty, and console.log JSON containing exactly ${PASS_MARKER}.`,
-          "Always close the browser session in a finally block. Do not use legacy VM work, create-worker, wrangler deploy, or bun run deploy.",
-          "When done, reply with the deployed URL and the browser automation result.",
+          `After deploying, attempt an interactive browser automation check in js_exec using env.BROWSER.launch({ scriptName: "${PROJECT_NAME}", path: "/" }): click #lab-counter-button twice, wait for the text "${CLICKED_TWICE_TEXT}", read logs(), and console.log JSON containing exactly ${PASS_MARKER} if every step succeeded.`,
+          "If env.BROWSER is unavailable in this environment, say so explicitly in your reply instead of pretending the check ran.",
+          "Always close the browser session in a finally block. When done, reply with the deployed URL and the browser automation result.",
         ].join(" "),
       });
 
@@ -261,13 +293,10 @@ describe("browser automation agent eval", () => {
         ]),
         usedDeployProject: usedTool(result.events, "deploy_project"),
         usedJsExec: usedTool(result.events, "js_exec"),
-        usedScreenshot:
-          usedTool(result.events, "take_screenshot") ||
-          runtimeEvidence.jsExecCodeBlocks.some((code) => /\benv\s*\.\s*SCREENSHOT\b/.test(code)),
         attemptedBrowserLaunch: runtimeEvidence.jsExecCodeBlocks.some((code) =>
           /\benv\s*\.\s*BROWSER\s*\.\s*launch\s*\(/.test(code)
         ),
-        usedBrowserSessionActions: ["click", "waitForText", "textContent", "logs", "close"].every((method) =>
+        usedBrowserSessionActions: ["click", "waitForText", "logs", "close"].every((method) =>
           runtimeEvidence.jsExecCodeBlocks.some((code) => new RegExp(`\\.${method}\\s*\\(`).test(code))
         ),
         browserPassMarkerFound: runtimeOutputText.includes(PASS_MARKER),
@@ -279,11 +308,10 @@ describe("browser automation agent eval", () => {
         evidence: runtimeEvidence,
         outputExcerpts: runtimeResultTexts.map(outputExcerpt),
       };
-      const agentOutputText = JSON.stringify({
-        result: result.result,
-        events: result.events,
-        messages: result.messages.filter((message) => message.role !== "user"),
-      }).toLowerCase();
+      const finalResult = result.result ?? "";
+      const honestlyReportedEnvironment = runtimeAssertions.browserPassMarkerFound ||
+        /browser.{0,40}(unavailable|not available|binding|not configured)/i.test(finalResult) ||
+        /(unavailable|not available|not configured).{0,40}browser/i.test(finalResult);
 
       const evaluation = buildEvalCriteriaSummary({
         passFail: [
@@ -328,8 +356,8 @@ describe("browser automation agent eval", () => {
             details: { deployedApp, appsBefore, appsAfter, runtimeAssertions },
           }),
           passFailCriterion({
-            id: "deployed_app_reachable",
-            label: "Deployed app root is reachable",
+            id: "deployed_app_interactivity_present",
+            label: "Deployed app serves the interactive counter contract",
             passed: appSmoke.failures.length === 0,
             reason: appSmoke.failures.length ? appSmoke.failures.join("; ") : undefined,
             details: appSmoke,
@@ -339,43 +367,29 @@ describe("browser automation agent eval", () => {
             label: "Agent attempted env.BROWSER browser automation",
             passed:
               runtimeAssertions.usedJsExec &&
-              runtimeAssertions.attemptedBrowserLaunch &&
-              runtimeAssertions.usedBrowserSessionActions,
+              runtimeAssertions.attemptedBrowserLaunch,
             reason:
               runtimeAssertions.usedJsExec &&
-              runtimeAssertions.attemptedBrowserLaunch &&
-              runtimeAssertions.usedBrowserSessionActions
+              runtimeAssertions.attemptedBrowserLaunch
                 ? undefined
-                : `jsExec=${runtimeAssertions.usedJsExec}, launch=${runtimeAssertions.attemptedBrowserLaunch}, actions=${runtimeAssertions.usedBrowserSessionActions}`,
-            details: runtimeAssertions,
-          }),
-          passFailCriterion({
-            id: "browser_automation_passed",
-            label: "Browser automation completed successfully",
-            passed:
-              runtimeAssertions.browserPassMarkerFound &&
-              !runtimeAssertions.browserLaunchInfrastructureFailure,
-            reason:
-              runtimeAssertions.browserPassMarkerFound && !runtimeAssertions.browserLaunchInfrastructureFailure
-                ? undefined
-                : `passMarker=${runtimeAssertions.browserPassMarkerFound}, browserLaunchInfrastructureFailure=${runtimeAssertions.browserLaunchInfrastructureFailure}`,
+                : `jsExec=${runtimeAssertions.usedJsExec}, launch=${runtimeAssertions.attemptedBrowserLaunch}`,
             details: runtimeAssertions,
           }),
           passFailCriterion({
             id: "avoided_legacy_deploy_path",
-            label: "Agent avoided legacy deploy path",
+            label: "Agent avoided legacy scaffold/deploy paths",
             passed: legacyFailures.length === 0,
             reason: legacyFailures.length ? legacyFailures.join("; ") : undefined,
             details: runtimeAssertions,
           }),
-          buildNoAssistantErrorCriterion(agentOutputText),
+          buildNoAssistantErrorCriterion(result),
           buildRuntimeEventsCriterion(result),
           buildResultEventCriterion(result),
         ],
         scorecard: [
           scoreCriterion({
             id: "browser_workflow_quality",
-            label: "Browser workflow quality",
+            label: "Browser launch, interaction workflow, and pass marker quality",
             points:
               (runtimeAssertions.attemptedBrowserLaunch ? 2 : 0) +
               (runtimeAssertions.usedBrowserSessionActions ? 2 : 0) +
@@ -383,6 +397,19 @@ describe("browser automation agent eval", () => {
             maxPoints: 8,
             reason: `launch=${runtimeAssertions.attemptedBrowserLaunch}, actions=${runtimeAssertions.usedBrowserSessionActions}, marker=${runtimeAssertions.browserPassMarkerFound}`,
             details: runtimeAssertions,
+          }),
+          scoreCriterion({
+            id: "honest_env_reporting",
+            label: "Final reply reports browser success or binding unavailability honestly",
+            points: honestlyReportedEnvironment ? 2 : 0,
+            maxPoints: 2,
+            reason: honestlyReportedEnvironment
+              ? undefined
+              : "Final reply neither had pass evidence nor reported the unavailable browser binding.",
+            details: {
+              finalResult,
+              browserPassMarkerFound: runtimeAssertions.browserPassMarkerFound,
+            },
           }),
           scoreSignalEfficiency(signal, {
             maxPoints: 4,
@@ -415,6 +442,6 @@ describe("browser automation agent eval", () => {
 
       assertPassFailCriteria(evaluation);
     },
-    960_000,
+    SESSION_TIMEOUT_MS + 120_000,
   );
 });

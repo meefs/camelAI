@@ -60,6 +60,7 @@ const BROKEN_README = [
 
 const testEnv = env as unknown as ProjectSnapshotRevertEvalEnv;
 const maybeIt = testEnv.RUN_AGENT_EVALS === "1" ? it : it.skip;
+const SESSION_TIMEOUT_MS = getEvalTimeoutMs(testEnv, 240_000);
 
 describe("project snapshot revert agent eval", () => {
   maybeIt(
@@ -115,7 +116,7 @@ describe("project snapshot revert agent eval", () => {
         userName: "Project Revert Eval",
         userEmail: `project-revert-eval-${suffix}@example.com`,
         messageSource: "eval",
-        timeoutMs: getEvalTimeoutMs(testEnv, 240_000),
+        timeoutMs: SESSION_TIMEOUT_MS,
         message: [
           `The existing DO-backed project named "${PROJECT_NAME}" has a broken README edit.`,
           `Use js_exec to call await tools.list_commits({ project: "${PROJECT_NAME}" }) and find the source snapshot with message exactly "${BASELINE_MESSAGE}"; list_commits is not a top-level tool.`,
@@ -142,11 +143,6 @@ describe("project snapshot revert agent eval", () => {
         legacyFailures,
         evidence: collectRuntimeEvidence(result.events),
       };
-      const agentOutputText = JSON.stringify({
-        result: result.result,
-        events: result.events,
-        messages: result.messages.filter((message) => message.role !== "user"),
-      }).toLowerCase();
       const restored =
         finalRead.success &&
         finalReadme.includes(RESTORED_MARKER) &&
@@ -199,7 +195,16 @@ describe("project snapshot revert agent eval", () => {
               })),
             },
           }),
-          buildNoAssistantErrorCriterion(agentOutputText),
+          passFailCriterion({
+            id: "final_response_mentions_restored_marker",
+            label: "Final response mentions the restored marker",
+            passed: (result.result ?? "").includes(RESTORED_MARKER),
+            reason: (result.result ?? "").includes(RESTORED_MARKER)
+              ? undefined
+              : `Final response did not include ${RESTORED_MARKER}.`,
+            details: { finalResult: result.result },
+          }),
+          buildNoAssistantErrorCriterion(result),
           buildRuntimeEventsCriterion(result),
           buildResultEventCriterion(result),
         ],
@@ -232,6 +237,6 @@ describe("project snapshot revert agent eval", () => {
 
       assertPassFailCriteria(evaluation);
     },
-    300_000,
+    SESSION_TIMEOUT_MS + 60_000,
   );
 });

@@ -37,6 +37,7 @@ import {
 import type { BatchSummary, Run } from "../../src/types";
 
 const ALL_EVALS = "__all__";
+const ALL_MODELS = "__all_models__";
 const views = ["batches", "runs", "evals"] as const;
 type RunsListView = (typeof views)[number];
 
@@ -113,7 +114,7 @@ export function RunsListSkeleton() {
 			? ["w-4", "w-16", "w-48", "w-10", "w-10", "w-24", "w-16", "w-16"]
 			: view === "evals"
 				? ["w-64", "w-20", "w-16", "w-16", "w-16"]
-				: ["w-16", "w-48", "w-10", "w-20", "w-24", "w-28", "w-12", "w-16"];
+				: ["w-16", "w-48", "w-10", "w-64", "w-20", "w-24", "w-28", "w-12", "w-16"];
 	return (
 		<div>
 			<Skeleton className="h-6 w-28" />
@@ -188,17 +189,22 @@ export function RunsListPage() {
 	const status = params.get("status") ?? "";
 	const evalTarget = params.get("eval") ?? "";
 	const kind = params.get("kind") ?? "";
+	const model = params.get("model") ?? "";
 	const view = normalizeView(params.get("view"));
 	const normalizedQuery = query.toLowerCase();
 
 	const evalRollups = rollupByEval(runs);
 	const evalOptions = Array.from(new Set(runs.map((run) => run.evalTarget))).sort();
+	const modelOptions = Array.from(
+		new Set(runs.map((run) => run.model).filter((value): value is string => Boolean(value))),
+	).sort();
 
 	const filteredBatches = batches.filter((batch) => batchMatches(batch, normalizedQuery));
 	const filteredRuns = runs.filter((run) => {
 		if (status && run.status !== status) return false;
 		if (evalTarget && run.evalTarget !== evalTarget) return false;
 		if (kind && run.kind !== kind) return false;
+		if (model && run.model !== model) return false;
 		return runMatches(run, normalizedQuery);
 	});
 	const filteredEvals = evalRollups.filter((rollup) => {
@@ -215,7 +221,7 @@ export function RunsListPage() {
 	const activeLabel = view === "batches" ? "batch" : view === "runs" ? "run" : "eval";
 	const hasFilters =
 		view === "runs"
-			? Boolean(query || status || evalTarget || kind)
+			? Boolean(query || status || evalTarget || kind || model)
 			: view === "evals"
 				? Boolean(query || kind)
 				: Boolean(query);
@@ -311,6 +317,24 @@ export function RunsListPage() {
 							<SelectContent>
 								<SelectItem value={ALL_EVALS}>All evals</SelectItem>
 								{evalOptions.map((option) => (
+									<SelectItem key={option} value={option}>
+										{option}
+									</SelectItem>
+								))}
+							</SelectContent>
+						</Select>
+						<Select
+							value={model || ALL_MODELS}
+							onValueChange={(value) =>
+								updateParam("model", value === ALL_MODELS ? "" : value)
+							}
+						>
+							<SelectTrigger size="sm" className="h-8 w-44 text-xs">
+								<SelectValue />
+							</SelectTrigger>
+							<SelectContent>
+								<SelectItem value={ALL_MODELS}>All models</SelectItem>
+								{modelOptions.map((option) => (
 									<SelectItem key={option} value={option}>
 										{option}
 									</SelectItem>

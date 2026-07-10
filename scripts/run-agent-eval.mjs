@@ -6,6 +6,7 @@ import {
   formatEvalLlmJudgeSummary,
   withLoadedEvalEnv,
 } from "./lib/eval-llm-judge.mjs";
+import { extractVitestUnhandledErrors } from "./eval-harness-errors.mjs";
 
 // Workaround for cloudflare/workerd#6793: the stock proxy-everything egress sidecar's TPROXY rules
 // intercept docker bridge control traffic on newer hosts (e.g. kernel 6.17 / Docker 29.x), so the
@@ -37,6 +38,7 @@ const ANALYSIS_EVAL_IDS = new Set([
   "data-analysis-report-live",
   "notebook-fix-rerun-live",
   "notebook-deploy-live",
+  "metrics-ground-truth-notebook-live",
 ]);
 
 // Evals that publish a notebook as a static app need the pre-built renderer SPA
@@ -112,7 +114,7 @@ const configFor = (id) => ({
 });
 
 const firstArg = process.argv[2];
-const evalName = firstArg && !firstArg.startsWith("--") ? firstArg : "deploy-fake-data-live";
+const evalName = firstArg && !firstArg.startsWith("--") ? firstArg : "project-write-file-live";
 const cliArgs = process.argv.slice(firstArg && !firstArg.startsWith("--") ? 3 : 2);
 
 function usage() {
@@ -306,64 +308,6 @@ let complete = false;
 
 function observeProcessOutput(chunk) {
   processOutputTail = `${processOutputTail}${chunk.toString("utf8")}`.slice(-1_000_000);
-}
-
-function firstMeaningfulLine(text) {
-  return text
-    .split("\n")
-    .map((line) => line.trim())
-    .find((line) => {
-      if (!line) return false;
-      if (/^[⎯\-\s]+$/.test(line)) return false;
-      if (/^Unhandled (?:Rejection|Exception)/i.test(line)) return false;
-      if (/^Vitest caught \d+ unhandled errors?/i.test(line)) return false;
-      if (/^This might cause false positive tests/i.test(line)) return false;
-      if (/^Make sure to resolve/i.test(line)) return false;
-      return true;
-    });
-}
-
-function classifyFilteredHarnessError(piece) {
-  if (piece.includes("callToolEnvelope")) return "enveloped_tool_duplicate";
-  if (piece.includes("Screenshot capture requires the BROWSER binding")) {
-    return "missing_browser_binding_screenshot";
-  }
-  if (piece.includes("Browser sessions require the BROWSER binding")) {
-    return "missing_browser_binding_session";
-  }
-  if (piece.includes("DISPATCHER service binding is not configured")) {
-    return "missing_dispatcher_binding";
-  }
-  if (piece.includes("ServiceStub serialization requires the 'experimental' compat flag")) {
-    return "servicestub_experimental_compat_missing";
-  }
-  return null;
-}
-
-function extractVitestUnhandledErrors(output) {
-  if (!/Unhandled Errors/i.test(output)) return { harnessErrors: [], filteredHarnessErrors: [] };
-  const pieces = output.split(/Unhandled (?:Rejection|Exception)/i).slice(1);
-  const harnessErrors = [];
-  const filteredHarnessErrors = [];
-  for (const piece of pieces) {
-    const line = firstMeaningfulLine(piece);
-    if (!line) continue;
-    const filteredReason = classifyFilteredHarnessError(piece);
-    if (filteredReason) {
-      filteredHarnessErrors.push({
-        tool: "harness",
-        reason: filteredReason,
-        output: line.slice(0, 500),
-      });
-      continue;
-    }
-    harnessErrors.push({
-      tool: "harness",
-      reason: "vitest_unhandled_error",
-      output: line.slice(0, 500),
-    });
-  }
-  return { harnessErrors, filteredHarnessErrors };
 }
 
 function addHarnessSignal(transcript, harnessSignal) {
@@ -596,6 +540,7 @@ child.on("close", async (code) => {
       reporterArgs.push("--batch-label", evalEnv.EVAL_BATCH_LABEL);
     }
     if (manifestEntry?.kind) reporterArgs.push("--kind", manifestEntry.kind);
+    if (manifestEntry?.tier) reporterArgs.push("--tier", manifestEntry.tier);
     if (manifestEntry?.description) {
       reporterArgs.push("--description", manifestEntry.description);
     }
