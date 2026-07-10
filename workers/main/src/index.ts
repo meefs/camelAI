@@ -100,7 +100,7 @@ export { DbQuerySandbox } from './db-query-sandbox.js';
 export class AdminIndexDO extends DurableObject<Env> {}
 
 // Compatibility shim for deployed migration histories that contain the retired
-// Cloudflare Sandbox SDK experiment. Projects now use PROJECT_RUNTIME_HOST.
+// Cloudflare Sandbox SDK experiment. Projects are DO+R2 backed now.
 export class CloudflareSandbox extends DurableObject<Env> {}
 
 // Compatibility shim for deployed migration histories that introduced the

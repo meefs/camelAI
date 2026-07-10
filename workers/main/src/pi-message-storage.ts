@@ -33,9 +33,10 @@ export const PI_R2_IMAGE_REF_METADATA_KEY = "chiridionR2Image";
 export const PI_TOOL_RESULT_MAX_LINES = 2_000;
 export const PI_TOOL_RESULT_MAX_BYTES = 50 * 1024;
 export const PI_TOOL_RESULT_R2_REF_METADATA_KEY = "chiridionR2ToolResult";
-export const PI_TAIL_TRUNCATED_TOOL_NAMES = new Set([
-  "bash",
-]);
+// Tools whose oversized output is truncated from the head (keeping the most
+// recent lines) rather than the tail. Empty now that the shell `bash` tool is
+// gone; kept as an extension point for future streaming/log-style tools.
+export const PI_TAIL_TRUNCATED_TOOL_NAMES = new Set<string>();
 
 export interface PiR2ImageReference {
   key: string;

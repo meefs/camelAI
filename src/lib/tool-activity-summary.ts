@@ -139,8 +139,6 @@ function canonicalizeToolSummaryName(name: string): string {
       return 'ListProjects';
     case 'create_project':
       return 'CreateProject';
-    case 'clone_project':
-      return 'CloneProject';
     default:
       return name;
   }

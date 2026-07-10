@@ -6,7 +6,6 @@ import { piCoreMessageToParsedChatMessage, attachPiToolResultToParsedMessages } 
 import { PiModelMapping } from '../src/pi-model-resolution';
 import { BrowserPromptCoordinator } from '../src/chat-thread-browser-prompts';
 import { CamelAiService } from '../src/camelai-service';
-import { validateSignedToken } from '../src/signed-tokens';
 import { encryptCredentials } from '../../../src/lib/integration-crypto';
 import { stripPiUiMetadata } from '../../../src/lib/runtime-artifacts';
 import { PiChunkEncoder } from '../../../src/lib/pi-chunk-encoder';
@@ -3625,10 +3624,9 @@ describe('ChatThreadDO Pi turn handling', () => {
     expect(capturedWorkerCode.modules['index.js'].js).toContain('createCamelAiFacade');
     expect(capturedWorkerCode.modules['index.js'].js).toContain('createWorkspaceFacade');
     expect(capturedWorkerCode.modules['index.js'].js).toContain('const WORKSPACE = createWorkspaceFacade(callTool)');
-    expect(capturedWorkerCode.modules['index.js'].js).toContain('createVmFacade');
     expect(capturedWorkerCode.modules['index.js'].js).toContain('createProjectsFacade');
-    expect(capturedWorkerCode.modules['index.js'].js).toContain('const env = Object.freeze({ CONNECTIONS, AI, CAMELAI, SCREENSHOT, BROWSER, WORKSPACE, VM, PROJECTS })');
-    expect(capturedWorkerCode.modules['index.js'].js).toContain('const context = Object.freeze({ cloudflare: Object.freeze({ env, connections, vm, projects: env.PROJECTS }) })');
+    expect(capturedWorkerCode.modules['index.js'].js).toContain('const env = Object.freeze({ CONNECTIONS, AI, CAMELAI, SCREENSHOT, BROWSER, WORKSPACE, PROJECTS })');
+    expect(capturedWorkerCode.modules['index.js'].js).toContain('const context = Object.freeze({ cloudflare: Object.freeze({ env, connections, projects: env.PROJECTS }) })');
     expect(capturedWorkerCode.modules['index.js'].js).not.toContain('const projects = PROJECTS');
     expect(capturedWorkerCode.modules['index.js'].js).not.toContain('PROJECTS, projects, env');
     expect(capturedWorkerCode.modules['index.js'].js).toContain('parameters: tool.parameters');
@@ -3758,12 +3756,11 @@ describe('ChatThreadDO Pi turn handling', () => {
     expect(result).toEqual({ text: 'audio transcript' });
   });
 
-  it('advertises restored legacy tools to js_exec through CodeModeToolsBinding', async () => {
+  it('advertises the js_exec tool catalog through CodeModeToolsBinding', async () => {
     const tools = await CodeModeToolsBinding.prototype.listTools.call({} as any);
     const byName = new Map(tools.map((tool: any) => [tool.name, tool]));
 
     expect(tools.map((tool: any) => tool.name)).toEqual(expect.arrayContaining([
-      'bash',
       'read',
       'write',
       'edit',
@@ -3796,9 +3793,6 @@ describe('ChatThreadDO Pi turn handling', () => {
     for (const name of ['AskUserQuestion', 'prompt_connection_setup', 'delete_connection', 'delete_project']) {
       expect(byName.has(name)).toBe(false);
     }
-    expect((byName.get('bash') as any).parameters.properties.command).toBeDefined();
-    expect((byName.get('bash') as any).parameters.properties.project).toBeDefined();
-    expect((byName.get('bash') as any).parameters.properties.projectId).toBeUndefined();
     expect((byName.get('read') as any).parameters.properties.path).toBeDefined();
     expect((byName.get('read') as any).parameters.properties.project).toBeDefined();
     expect((byName.get('create_project') as any).parameters.properties.description).toBeDefined();
@@ -3821,7 +3815,6 @@ describe('ChatThreadDO Pi turn handling', () => {
     expect((byName.get('set_preview') as any).parameters.properties.location).toBeDefined();
     expect(JSON.stringify((byName.get('set_preview') as any).parameters.properties.location)).toContain('workspace');
     expect(JSON.stringify((byName.get('set_preview') as any).parameters.properties.location)).toContain('project');
-    expect(JSON.stringify((byName.get('set_preview') as any).parameters.properties.location)).toContain('vm');
     expect(JSON.stringify((byName.get('set_preview') as any).parameters.properties.location)).toContain('r2');
     expect((byName.get('set_preview') as any).parameters.properties.project).toBeDefined();
     expect((byName.get('set_preview') as any).parameters.properties.clear).toBeUndefined();
@@ -3880,9 +3873,9 @@ describe('ChatThreadDO Pi turn handling', () => {
     });
 
     await expect((CodeModeToolsBinding.prototype as any).setPreview.call(fake, {
-      location: 'vm',
+      location: 'project',
       project: 'menu-app',
-    })).rejects.toThrow('path is required when previewing a VM file');
+    })).rejects.toThrow('set_preview requires app_name/script_name or path');
     await expect((CodeModeToolsBinding.prototype as any).setPreview.call(fake, {}))
       .rejects.toThrow('set_preview requires app_name/script_name or path');
     expect(setPreviewTarget).not.toHaveBeenCalled();
@@ -3991,46 +3984,6 @@ describe('ChatThreadDO Pi turn handling', () => {
       target: {
         kind: 'file',
         source: 'project',
-        workspaceId: 'workspace1',
-        path: '/index.html',
-        project: 'menu-app',
-        filename: 'index.html',
-      },
-    });
-    expect(setPreviewTarget).toHaveBeenCalledWith((result as any).target);
-  });
-
-  it('validates VM file previews before changing preview state', async () => {
-    const setPreviewTarget = vi.fn();
-    const assertFileReadable = vi.fn(async () => ({ path: '/workspace/index.html' }));
-    const fake = Object.create(CodeModeToolsBinding.prototype) as any;
-    fake.ctx = { props: { workspaceId: 'workspace1' } };
-    Object.defineProperty(fake, 'chatThreadStub', {
-      value: { setPreviewTarget },
-    });
-    Object.defineProperty(fake, 'workspaceFs', {
-      value: { getProjectByName: vi.fn(async () => ({ name: 'menu-app', backend: 'vm' })) },
-    });
-    Object.defineProperty(fake, 'projectVm', {
-      value: { assertFileReadable },
-    });
-
-    const result = await (CodeModeToolsBinding.prototype as any).setPreview.call(fake, {
-      location: 'vm',
-      project: 'menu-app',
-      path: 'index.html',
-    });
-
-    expect(assertFileReadable).toHaveBeenCalledWith({
-      location: 'vm',
-      project: 'menu-app',
-      path: '/index.html',
-    });
-    expect(result).toMatchObject({
-      success: true,
-      target: {
-        kind: 'file',
-        source: 'vm',
         workspaceId: 'workspace1',
         path: '/index.html',
         project: 'menu-app',
@@ -4181,7 +4134,7 @@ describe('ChatThreadDO Pi turn handling', () => {
     expect((result?.details as any).truncation.fullOutput.path).toBe(storedPath);
   });
 
-  it('keeps the tail for oversized bash tool results', async () => {
+  it('truncates oversized tool results from the head', async () => {
     const fake = Object.create(ChatThreadDO.prototype) as any;
     fake.chatContext = {
       orgId: 'org1',
@@ -4197,7 +4150,7 @@ describe('ChatThreadDO Pi turn handling', () => {
 
     const big = Array.from({ length: 2600 }, (_, index) => `line-${index}`).join('\n');
     const result = await ChatThreadDO.prototype['afterPiToolCall'].call(fake, {
-      toolCall: { id: 'call_1', name: 'bash' },
+      toolCall: { id: 'call_1', name: 'js_exec' },
       result: {
         content: [{ type: 'text', text: big }],
         details: {},
@@ -4205,11 +4158,11 @@ describe('ChatThreadDO Pi turn handling', () => {
     });
 
     const text = (result?.content?.[0] as any).text as string;
-    expect(text).toContain('line-2599');
-    expect(text).not.toContain('line-0');
+    expect(text).toContain('line-0');
+    expect(text).not.toContain('line-2599');
     expect((result?.details as any).truncation).toMatchObject({
       truncated: true,
-      direction: 'tail',
+      direction: 'head',
       truncatedBy: 'lines',
     });
   });
@@ -4237,7 +4190,6 @@ describe('ChatThreadDO Pi turn handling', () => {
     expect(piTools.find((tool: any) => tool.name === 'create_project')).toBeTruthy();
     expect(piTools.find((tool: any) => tool.name === 'scaffold_project')).toBeUndefined();
     expect(piTools.find((tool: any) => tool.name === 'set_project_description')).toBeTruthy();
-    expect(piTools.find((tool: any) => tool.name === 'clone_project')).toBeTruthy();
     expect(piTools.find((tool: any) => tool.name === 'send_email')).toBeUndefined();
     expect(piTools.find((tool: any) => tool.name === 'send_slack_message')).toBeUndefined();
     expect(piTools.find((tool: any) => tool.name === 'send_telegram_message')).toBeUndefined();
@@ -4257,34 +4209,25 @@ describe('ChatThreadDO Pi turn handling', () => {
       httpMetadata: { contentType: 'text/plain' },
       customMetadata: {},
     }));
-    const writeFileBytesForTransfer = vi.fn(async ({ path }: any, bytes: Uint8Array) => ({
-      path,
-      bytes: bytes.byteLength,
-    }));
+    const writeBinaryFile = vi.fn(async (path: string) => ({ success: true, path }));
     const fake = Object.create(CodeModeToolsBinding.prototype) as any;
     fake.env = { R2_BUCKET: { head, get } };
     fake.ctx = { props: { orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1' } };
     Object.defineProperty(fake, 'workspaceFs', {
-      value: { getProjectByName: vi.fn(async () => ({ name: 'web-app', backend: 'vm' })) },
-    });
-    Object.defineProperty(fake, 'projectVm', {
-      value: { writeFileBytesForTransfer },
+      value: { writeBinaryFile },
     });
 
     const result = await (CodeModeToolsBinding.prototype as any).moveFile.call(fake, {
       source: { location: 'r2', path: 'outputs/report.txt' },
-      destination: { location: 'vm', project: 'web-app', path: '/workspace/report.txt' },
+      destination: { location: 'workspace', path: '/report.txt' },
     });
 
     expect(head).toHaveBeenCalledWith('org1/workspace1/user-outputs/report.txt');
     expect(get).toHaveBeenCalledWith('org1/workspace1/user-outputs/report.txt');
-    expect(writeFileBytesForTransfer).toHaveBeenCalledWith(
-      { location: 'vm', path: '/workspace/report.txt', project: 'web-app', contentType: undefined },
-      new TextEncoder().encode('hello from r2'),
-    );
+    expect(writeBinaryFile).toHaveBeenCalled();
     expect(result.text).toBe('Copied 1 file (13 bytes)');
     expect(result.details.files).toEqual([
-      { from: 'outputs/report.txt', to: '/workspace/report.txt', bytes: 13 },
+      { from: 'outputs/report.txt', to: '/report.txt', bytes: 13 },
     ]);
   });
 
@@ -5994,26 +5937,27 @@ describe('ChatThreadDO Pi turn handling', () => {
     expect(result.errorSummary).toContain('export class LeaderboardDO');
   });
 
-  it('rejects DO-only project actions for legacy VM-backed projects', async () => {
+  it('rejects DO-only project actions for archived legacy projects', async () => {
     const { fake, sandbox, projectStub } = createProjectToolFake({ backend: 'vm' });
 
+    const archivedError = 'archived when camelAI retired project VMs';
     await expect(CodeModeToolsBinding.prototype.callTool.call(fake, 'build_project', {
       project: 'Demo App',
-    })).rejects.toThrow('build_project only supports DO-backed projects');
+    })).rejects.toThrow(archivedError);
     await expect(CodeModeToolsBinding.prototype.callTool.call(fake, 'deploy_project', {
       project: 'Demo App',
-    })).rejects.toThrow('deploy_project only supports DO-backed projects');
+    })).rejects.toThrow(archivedError);
     await expect(CodeModeToolsBinding.prototype.callTool.call(fake, 'add_dependency', {
       project: 'Demo App',
       dependency: 'zod',
-    })).rejects.toThrow('add_dependency only supports DO-backed projects');
+    })).rejects.toThrow(archivedError);
     await expect(CodeModeToolsBinding.prototype.callTool.call(fake, 'list_commits', {
       project: 'Demo App',
-    })).rejects.toThrow('list_commits only supports DO-backed projects');
+    })).rejects.toThrow(archivedError);
     await expect(CodeModeToolsBinding.prototype.callTool.call(fake, 'revert_project', {
       project: 'Demo App',
       snapshot_id: 'a'.repeat(64),
-    })).rejects.toThrow('revert_project only supports DO-backed projects');
+    })).rejects.toThrow(archivedError);
 
     expect(sandbox.exec).not.toHaveBeenCalled();
     expect(projectStub.projectListFiles).not.toHaveBeenCalled();
@@ -6021,14 +5965,14 @@ describe('ChatThreadDO Pi turn handling', () => {
     expect(projectStub.projectRestoreSourceSnapshot).not.toHaveBeenCalled();
   });
 
-  it('rejects project-location file tools for legacy VM-backed projects', async () => {
+  it('rejects project-location file tools for archived legacy projects', async () => {
     const { fake, projectStub } = createProjectToolFake({ backend: 'vm' });
 
     await expect(CodeModeToolsBinding.prototype.callTool.call(fake, 'read', {
       location: 'project',
       project: 'Demo App',
       path: '/package.json',
-    })).rejects.toThrow('location: "project" only supports DO-backed projects');
+    })).rejects.toThrow('archived when camelAI retired project VMs');
 
     expect(projectStub.projectReadFile).not.toHaveBeenCalled();
     expect(projectStub.projectListFiles).not.toHaveBeenCalled();
@@ -6168,59 +6112,6 @@ describe('ChatThreadDO Pi turn handling', () => {
     expect(sourceArchives.at(-1)).toContain('devDependencies');
   });
 
-  it('rejects legacy VM shell and file tools for DO-backed projects', async () => {
-    const { fake, workspaceStub } = createProjectToolFake();
-    const projectVm = {
-      exec: vi.fn(),
-      read: vi.fn(),
-    };
-    Object.defineProperty(fake, 'projectVm', { value: projectVm });
-
-    await expect(CodeModeToolsBinding.prototype.callTool.call(fake, 'bash', {
-      project: 'Demo App',
-      command: 'bun install',
-    })).rejects.toThrow('DO-backed and cannot use legacy VM shell command');
-    await expect(CodeModeToolsBinding.prototype.callTool.call(fake, 'read', {
-      location: 'vm',
-      project: 'Demo App',
-      path: '/workspace/package.json',
-    })).rejects.toThrow('Use location: "project" file tools');
-
-    expect(workspaceStub.getProjectByName).toHaveBeenCalledWith('Demo App');
-    expect(projectVm.exec).not.toHaveBeenCalled();
-    expect(projectVm.read).not.toHaveBeenCalled();
-  });
-
-  it('rejects legacy VM preview, move, and clone for DO-backed projects', async () => {
-    const { fake } = createProjectToolFake();
-    const projectVm = {
-      assertFileReadable: vi.fn(),
-      writeFileBytesForTransfer: vi.fn(),
-      cloneProject: vi.fn(),
-    };
-    Object.defineProperty(fake, 'projectVm', { value: projectVm });
-    Object.defineProperty(fake, 'chatThreadStub', { value: { setPreviewTarget: vi.fn() } });
-    fake.env = { ...fake.env, R2_BUCKET: { get: vi.fn(async () => r2Object('hello', 'text/plain')), head: vi.fn(async () => ({ size: 5 })) } };
-
-    await expect((CodeModeToolsBinding.prototype as any).setPreview.call(fake, {
-      location: 'vm',
-      project: 'Demo App',
-      path: 'index.html',
-    })).rejects.toThrow('DO-backed and cannot use legacy VM file preview');
-    await expect((CodeModeToolsBinding.prototype as any).moveFile.call(fake, {
-      source: { location: 'r2', path: 'outputs/report.txt' },
-      destination: { location: 'vm', project: 'Demo App', path: '/workspace/report.txt' },
-    })).rejects.toThrow('DO-backed and cannot use legacy VM file transfer');
-    await expect(CodeModeToolsBinding.prototype.callTool.call(fake, 'clone_project', {
-      sourceProject: 'Demo App',
-      name: 'Copy',
-    })).rejects.toThrow('DO-backed and cannot use legacy VM clone');
-
-    expect(projectVm.assertFileReadable).not.toHaveBeenCalled();
-    expect(projectVm.writeFileBytesForTransfer).not.toHaveBeenCalled();
-    expect(projectVm.cloneProject).not.toHaveBeenCalled();
-  });
-
   it('restores a DO-backed project from a source snapshot', async () => {
     const { fake, projectStub } = createProjectToolFake();
 
@@ -6264,15 +6155,11 @@ describe('ChatThreadDO Pi turn handling', () => {
     });
   });
 
-  it('deletes DO-backed projects without invoking VM cleanup', async () => {
+  it('deletes DO-backed projects by cleaning files and registry', async () => {
     const { fake, workspaceStub, projectStub } = createProjectToolFake();
-    const projectVm = {
-      deleteProject: vi.fn(),
-    };
     const askUserQuestion = vi.fn(async ({ questions }: any) => ({
       [questions[0].question]: 'Delete',
     }));
-    Object.defineProperty(fake, 'projectVm', { value: projectVm });
     fake.askUserQuestion = askUserQuestion;
 
     const result = await CodeModeToolsBinding.prototype.callTool.call(fake, 'delete_project', {
@@ -6298,7 +6185,6 @@ describe('ChatThreadDO Pi turn handling', () => {
     expect(projectStub.projectListFiles).toHaveBeenCalledWith('/', { recursive: true, includeHidden: true, limit: 50000 });
     expect(projectStub.projectDeleteSourceSnapshots).toHaveBeenCalled();
     expect(workspaceStub.removeProjects).toHaveBeenCalledWith(['project-1']);
-    expect(projectVm.deleteProject).not.toHaveBeenCalled();
   });
 
   it('includes deploy artifact metadata in list_apps results', async () => {
@@ -6723,70 +6609,6 @@ describe('ChatThreadDO Pi turn handling', () => {
     });
   });
 
-  it('builds Wrangler deploy proxy env through the sandbox VM outbound proxy', async () => {
-    const fake = Object.create(CodeModeToolsBinding.prototype) as any;
-    fake.env = {
-      CF_ACCOUNT_ID: 'acct_1',
-      SANDBOX_PROXY_SECRET: 'sandbox-secret',
-    };
-    fake.ctx = {
-      props: {
-        orgId: 'org1',
-        workspaceId: 'workspace1',
-        threadId: 'thread1',
-        userId: 'user1',
-      },
-    };
-
-    const deployEnv = await CodeModeToolsBinding.prototype['createWranglerDeployEnv'].call(fake);
-
-    const prefix = 'http://host.docker.internal:8081/v1/workspaces/org1/workspace1/thread-tokens/';
-    const suffix = '/client/v4';
-    expect(deployEnv.CLOUDFLARE_API_BASE_URL.startsWith(prefix)).toBe(true);
-    expect(deployEnv.CLOUDFLARE_API_BASE_URL.endsWith(suffix)).toBe(true);
-    const threadToken = decodeURIComponent(
-      deployEnv.CLOUDFLARE_API_BASE_URL.slice(prefix.length, -suffix.length),
-    );
-    await expect(validateSignedToken('sandbox-secret', threadToken)).resolves.toMatchObject({
-      org_id: 'org1',
-      workspace_id: 'workspace1',
-      thread_id: 'thread1',
-      scopes: ['sandbox_thread'],
-      name: 'sandbox-proxy-thread',
-    });
-    expect(deployEnv.CLOUDFLARE_ACCOUNT_ID).toBe('acct_1');
-    expect(deployEnv.CLOUDFLARE_API_TOKEN).toBe('sandbox-outbound-proxy');
-  });
-
-  it('merges base container command env with Wrangler deploy env', async () => {
-    const fake = Object.create(CodeModeToolsBinding.prototype) as any;
-    fake.createWorkspaceCommandEnv = vi.fn(async () => ({
-      WORKSPACE_ID: 'workspace1',
-      ORG_ID: 'org1',
-      WRANGLER_SEND_METRICS: 'false',
-      CI: '1',
-      CF_DISPATCH_NAMESPACE: 'staging',
-    }));
-    fake.createWranglerDeployEnv = vi.fn(async () => ({
-      CLOUDFLARE_API_BASE_URL: 'https://staging.camelai.dev/client/v4',
-      CLOUDFLARE_API_TOKEN: 'st_token',
-      CLOUDFLARE_ACCOUNT_ID: 'acct_1',
-    }));
-
-    const commandEnv = await CodeModeToolsBinding.prototype['createContainerCommandEnv'].call(fake);
-
-    expect(commandEnv).toMatchObject({
-      WORKSPACE_ID: 'workspace1',
-      ORG_ID: 'org1',
-      WRANGLER_SEND_METRICS: 'false',
-      CI: '1',
-      CF_DISPATCH_NAMESPACE: 'staging',
-      CLOUDFLARE_API_BASE_URL: 'https://staging.camelai.dev/client/v4',
-      CLOUDFLARE_API_TOKEN: 'st_token',
-      CLOUDFLARE_ACCOUNT_ID: 'acct_1',
-    });
-  });
-
   it('exposes restored legacy Pi tools through the shared code mode binding', async () => {
     const callTool = vi.fn(async (_name: string, args: Record<string, unknown>) => ({
       ok: true,
@@ -7021,9 +6843,7 @@ describe('ChatThreadDO Pi turn handling', () => {
 
     expect((byName.get('edit') as any).parameters.properties.edits).toBeDefined();
     expect((byName.get('edit') as any).parameters.properties.old_string).toBeUndefined();
-    expect((byName.get('bash') as any).parameters.properties.command).toBeDefined();
-    expect((byName.get('bash') as any).parameters.properties.timeoutSeconds).toBeDefined();
-    expect((byName.get('bash') as any).parameters.properties.timeout).toBeUndefined();
+    expect(byName.get('bash')).toBeUndefined();
     expect(byName.get('grep')).toBeUndefined();
     expect(byName.get('find')).toBeUndefined();
   });
@@ -7255,7 +7075,7 @@ describe('ChatThreadDO Pi turn handling', () => {
     );
 
     // Core tools and subagents are always present.
-    for (const name of ['read', 'write', 'edit', 'delete', 'ls', 'bash', 'js_exec', 'Agent', 'Explore']) {
+    for (const name of ['read', 'write', 'edit', 'delete', 'ls', 'js_exec', 'Agent', 'Explore']) {
       expect(toolNames.has(name)).toBe(true);
     }
 
@@ -7400,20 +7220,20 @@ describe('ChatThreadDO Pi turn handling', () => {
     await ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, {
       type: 'tool_execution_start',
       toolCallId: 'tool1',
-      toolName: 'bash',
-      args: { command: 'echo hi', cwd: '/workspace' },
+      toolName: 'js_exec',
+      args: { code: 'return 1', description: 'run it' },
     });
     await ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, {
       type: 'tool_execution_update',
       toolCallId: 'tool1',
-      toolName: 'bash',
+      toolName: 'js_exec',
       args: {},
       partialResult: { content: [{ type: 'text', text: 'hi\n' }], details: {} },
     });
     await ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, {
       type: 'tool_execution_end',
       toolCallId: 'tool1',
-      toolName: 'bash',
+      toolName: 'js_exec',
       result: { content: [{ type: 'text', text: 'hi\n' }], details: {} },
       isError: false,
     });
@@ -7433,9 +7253,8 @@ describe('ChatThreadDO Pi turn handling', () => {
     expect(runtimeEvents[0].event.params.itemId).toMatch(/^pi_reasoning_/);
     expect(runtimeEvents[1].event.params.item).toMatchObject({
       id: 'tool1',
-      type: 'commandExecution',
-      command: 'echo hi',
-      cwd: '/workspace',
+      type: 'dynamicToolCall',
+      tool: 'js_exec',
       status: 'running',
     });
     expect(runtimeEvents[2].event.params).toEqual({
@@ -7445,12 +7264,10 @@ describe('ChatThreadDO Pi turn handling', () => {
     });
     expect(runtimeEvents[3].event.params.item).toMatchObject({
       id: 'tool1',
-      type: 'commandExecution',
-      command: 'echo hi',
-      cwd: '/workspace',
+      type: 'dynamicToolCall',
+      tool: 'js_exec',
       status: 'completed',
       isError: false,
-      aggregatedOutput: 'hi\n',
     });
   });
 
@@ -7460,13 +7277,13 @@ describe('ChatThreadDO Pi turn handling', () => {
     await ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, {
       type: 'tool_execution_start',
       toolCallId: 'tool1',
-      toolName: 'bash',
-      args: { command: 'bun run validate', cwd: '/workspace' },
+      toolName: 'js_exec',
+      args: { code: 'return 1', description: 'validate' },
     });
     await ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, {
       type: 'tool_execution_end',
       toolCallId: 'tool1',
-      toolName: 'bash',
+      toolName: 'js_exec',
       result: { content: [{ type: 'text', text: 'validation failed\n' }], details: {} },
       isError: true,
     });
@@ -7477,11 +7294,10 @@ describe('ChatThreadDO Pi turn handling', () => {
     );
     expect(completedEvent?.event.params.item).toMatchObject({
       id: 'tool1',
-      type: 'commandExecution',
-      command: 'bun run validate',
+      type: 'dynamicToolCall',
+      tool: 'js_exec',
       status: 'failed',
       isError: true,
-      aggregatedOutput: 'validation failed\n',
     });
   });
 

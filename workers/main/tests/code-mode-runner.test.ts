@@ -49,25 +49,6 @@ function createConnectionsFacade(binding: any): Record<string, unknown> {
   });
 }
 
-function createVmFacade(tools: Record<string, (args: unknown) => unknown>): {
-  exec: (...args: unknown[]) => unknown;
-} {
-  const normalizeExecArgs = (commandOrOptions: unknown, options = {}) => {
-    if (
-      commandOrOptions &&
-      typeof commandOrOptions === 'object' &&
-      !Array.isArray(commandOrOptions)
-    ) {
-      return commandOrOptions;
-    }
-    return { command: commandOrOptions, ...options };
-  };
-  return Object.freeze({
-    exec: (commandOrOptions: unknown, options = {}) =>
-      tools.vm_exec(normalizeExecArgs(commandOrOptions, options)),
-  });
-}
-
 function createToolHelp() {
   return (input?: unknown) => {
     const runtime = typeof input === 'object' && input !== null
@@ -100,7 +81,7 @@ describe('code mode runner connection facade', () => {
     expect(source).toContain('const PROJECTS = createProjectsFacade(rawTools)');
     expect(source).toContain('projects: env.PROJECTS');
     expect(source).toContain('const projects = ["local"]; return projects.length;');
-    expect(source).not.toContain('async function runUserCode(tools, CONNECTIONS, connections, VM, vm, PROJECTS, projects');
+    expect(source).not.toContain('async function runUserCode(tools, CONNECTIONS, connections, PROJECTS, projects');
     expect(source).not.toContain('const projects = PROJECTS');
   });
 
@@ -114,34 +95,6 @@ describe('code mode runner connection facade', () => {
     expect(source).toContain('use await session.textContent("body") and then result.text');
     expect(source).toContain('env.BROWSER has no method');
     expect(source).toContain('Use await env.BROWSER.launch({ scriptName, path? })');
-  });
-
-  it('supports object and command/options forms for vm.exec', async () => {
-    const calls: unknown[] = [];
-    const vm = createVmFacade({
-      vm_exec(input: unknown) {
-        calls.push(input);
-        return input;
-      },
-    });
-
-    const objectStyle = await vm.exec({
-      command: 'bun run test:run',
-      project: 'web-app',
-      timeoutSeconds: 120,
-    });
-    const splitStyle = await vm.exec('bun run test:run', {
-      project: 'web-app',
-      timeoutSeconds: 120,
-    });
-
-    expect(objectStyle).toEqual({
-      command: 'bun run test:run',
-      project: 'web-app',
-      timeoutSeconds: 120,
-    });
-    expect(splitStyle).toEqual(objectStyle);
-    expect(calls).toEqual([objectStyle, objectStyle]);
   });
 
   it('supports workflow-style connection method calls in js_exec', async () => {
@@ -216,55 +169,7 @@ describe('code mode runner connection facade', () => {
   });
 });
 
-describe('code mode runner VM facade', () => {
-  it('accepts both vm.exec(command, options) and vm.exec({ command, project })', async () => {
-    const calls: unknown[] = [];
-    const vm = createVmFacade({
-      vm_exec: (args) => {
-        calls.push(args);
-        return { ok: true, args };
-      },
-    });
-
-    expect(vm.exec('bun run deploy', {
-      project: 'deploy-fake-data',
-      timeoutSeconds: 120,
-    })).toEqual({
-      ok: true,
-      args: {
-        command: 'bun run deploy',
-        project: 'deploy-fake-data',
-        timeoutSeconds: 120,
-      },
-    });
-
-    expect(vm.exec({
-      command: 'bun run build',
-      project: 'deploy-fake-data',
-      timeoutSeconds: 120,
-    })).toEqual({
-      ok: true,
-      args: {
-        command: 'bun run build',
-        project: 'deploy-fake-data',
-        timeoutSeconds: 120,
-      },
-    });
-
-    expect(calls).toEqual([
-      {
-        command: 'bun run deploy',
-        project: 'deploy-fake-data',
-        timeoutSeconds: 120,
-      },
-      {
-        command: 'bun run build',
-        project: 'deploy-fake-data',
-        timeoutSeconds: 120,
-      },
-    ]);
-  });
-
+describe('code mode runner js_exec module', () => {
   it('does not pass runtime helper names as runUserCode parameters', () => {
     const source = codeModeWorkerModule(
       'const projects = await tools.list_projects();\nreturn projects;',
@@ -381,7 +286,6 @@ describe('code mode runner tools.help guide', () => {
     expect(guide).toContain('env.CONNECTIONS.find');
     expect(guide).toContain('location');
     expect(guide).toContain('file.data.text');
-    expect(guide).toContain('vm.exec');
     expect(guide).toContain('env.AI.run');
     // Executor-style calling shape: envelope semantics and TypeScript acceptance.
     expect(guide).toContain('{ ok: true, data }');
@@ -545,7 +449,7 @@ describe('code mode runner tools.search / tools.describe', () => {
       type: 'object',
       required: ['location', 'todos'],
       properties: {
-        location: { type: 'string', enum: ['workspace', 'vm', 'r2'] },
+        location: { type: 'string', enum: ['workspace', 'project', 'r2'] },
         limit: { type: ['number', 'null'] },
         todos: {
           type: 'array',
@@ -556,7 +460,7 @@ describe('code mode runner tools.search / tools.describe', () => {
           },
         },
       },
-    })).toBe('{ location: "workspace" | "vm" | "r2", limit?: number | null, todos: { content: string }[] }');
+    })).toBe('{ location: "workspace" | "project" | "r2", limit?: number | null, todos: { content: string }[] }');
     expect(schemaToTypeScript({ type: 'array', items: { enum: ['a', 'b'] } })).toBe('("a" | "b")[]');
     expect(schemaToTypeScript(undefined)).toBe('unknown');
   });
@@ -602,12 +506,8 @@ describe('code mode runner tools.search / tools.describe', () => {
     const projects = describe('env.PROJECTS');
     expect(projects.runtime.name).toBe('env.PROJECTS');
     expect(projects.runtime.methods.map((method: any) => method.name)).toEqual(
-      ['list', 'create', 'setDescription', 'clone'],
+      ['list', 'create', 'setDescription'],
     );
-
-    const vm = describe('vm');
-    expect(vm.runtime.name).toBe('vm');
-    expect(vm.usage).toContain('vm.exec');
   });
 });
 
