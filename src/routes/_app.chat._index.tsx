@@ -1003,16 +1003,23 @@ type ChatInteractiveData = Awaited<
 >;
 
 export default function NewChatPage() {
-  const { workspaceId, interactive } = useLoaderData<typeof loader>();
+  const { workspaceId, activeGroupId, interactive } =
+    useLoaderData<typeof loader>();
 
   if (!workspaceId) {
     return <NoWorkspacesError />;
   }
 
   // The interactive bundle (model picker, billing, chat groups, sales prompt)
-  // is deferred, so render the welcome skeleton until it streams in.
+  // is deferred, so render the welcome skeleton until it streams in. The
+  // group id comes synchronously from the URL, so the skeleton can match the
+  // group new-chat layout before the group itself resolves.
   return (
-    <Suspense fallback={<AppMainSkeleton />}>
+    <Suspense
+      fallback={
+        <AppMainSkeleton variant={activeGroupId ? "group" : "welcome"} />
+      }
+    >
       <Await resolve={interactive}>
         {(resolvedInteractive) => (
           <ChatWelcomeContent interactive={resolvedInteractive} />
