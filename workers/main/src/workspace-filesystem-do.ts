@@ -496,6 +496,91 @@ export class WorkspaceFilesystemDO extends DurableObject<WorkspaceFilesystemEnv>
     }
   }
 
+  /**
+   * The project file store's R2 location, for out-of-band bulk migration:
+   * upload objects to `${r2Prefix}/${namespace}${path}` (path starts with
+   * "/"), then call projectRegisterUploadedR2Objects to create the rows.
+   */
+  projectFileStoreInfo(): { r2Prefix: string; namespace: string } {
+    return {
+      r2Prefix: fileStoreR2Prefix("project", this.ctx.id.toString()),
+      namespace: WORKSPACE_STORE_NAMESPACE,
+    };
+  }
+
+  /**
+   * Register R2 objects that were bulk-uploaded directly to this project
+   * store's final keys (see projectFileStoreInfo). Pure metadata: lists the
+   * store's R2 prefix and upserts a spilled-file row per object — no object
+   * bytes move. Paginated; loop with the returned cursor until done. Sizes
+   * come from R2's listing, so a row always matches its stored object.
+   */
+  async projectRegisterUploadedR2Objects(
+    input: { cursor?: string; limit?: number } = {},
+  ): Promise<{ success: boolean; registered: number; cursor: string | null; done: boolean; error?: string }> {
+    if (!this.env.R2_BUCKET) {
+      return { success: false, registered: 0, cursor: null, done: false, error: "R2 bucket is not configured" };
+    }
+    const keyPrefix = `${fileStoreR2Prefix("project", this.ctx.id.toString())}/${WORKSPACE_STORE_NAMESPACE}`;
+    const limit = Math.min(Math.max(input.limit ?? 1000, 1), 1000);
+    try {
+      // Materialize the store table + root via the store's own init logic.
+      await this.projectWorkspace.stat("/");
+      const listing = await this.env.R2_BUCKET.list({
+        prefix: `${keyPrefix}/`,
+        cursor: input.cursor,
+        limit,
+        include: ["httpMetadata"],
+      });
+      const sql = this.ctx.storage.sql;
+      const ensuredDirs = new Set<string>(["/"]);
+      let registered = 0;
+      for (const object of listing.objects) {
+        const path = normalizeWorkspacePath(object.key.slice(keyPrefix.length));
+        if (path === "/") continue;
+        const lastSlash = path.lastIndexOf("/");
+        const parentPath = lastSlash === 0 ? "/" : path.slice(0, lastSlash);
+        const name = path.slice(lastSlash + 1);
+        if (!ensuredDirs.has(parentPath)) {
+          await this.projectWorkspace.mkdir(parentPath, { recursive: true });
+          ensuredDirs.add(parentPath);
+        }
+        const now = Math.floor(Date.now() / 1000);
+        sql.exec(
+          `INSERT INTO ${WORKSPACE_STORE_TABLE}
+              (path, parent_path, name, type, mime_type, size,
+               storage_backend, r2_key, content_encoding, content, created_at, modified_at)
+            VALUES (?, ?, ?, 'file', ?, ?, 'r2', ?, 'base64', NULL, ?, ?)
+            ON CONFLICT(path) DO UPDATE SET
+              mime_type         = excluded.mime_type,
+              size              = excluded.size,
+              storage_backend   = 'r2',
+              r2_key            = excluded.r2_key,
+              content_encoding  = 'base64',
+              content           = NULL,
+              modified_at       = excluded.modified_at`,
+          path,
+          parentPath,
+          name,
+          normalizeContentType(object.httpMetadata?.contentType),
+          object.size,
+          object.key,
+          now,
+          now,
+        );
+        registered += 1;
+      }
+      return {
+        success: true,
+        registered,
+        cursor: listing.truncated ? listing.cursor : null,
+        done: !listing.truncated,
+      };
+    } catch (error) {
+      return { success: false, registered: 0, cursor: input.cursor ?? null, done: false, error: errorMessage(error) };
+    }
+  }
+
   async listFiles(
     path: string,
     options: { recursive?: boolean; includeHidden?: boolean; limit?: number } = {},
