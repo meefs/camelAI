@@ -74,9 +74,11 @@ const mixedMentionables: AtMentionEntity[] = [
 function ControlledPromptInput({
   mentionMenuSide,
   mentionables = mixedMentionables,
+  onMentionAddNewClick,
 }: {
   mentionMenuSide?: 'top' | 'bottom';
   mentionables?: AtMentionEntity[];
+  onMentionAddNewClick?: () => void;
 }) {
   const [value, setValue] = useState('');
 
@@ -88,6 +90,7 @@ function ControlledPromptInput({
       enableVoiceRecording={false}
       mentionables={mentionables}
       mentionMenuSide={mentionMenuSide}
+      onMentionAddNewClick={onMentionAddNewClick}
     />
   );
 }
@@ -144,6 +147,87 @@ describe('PromptInput mentions', () => {
     await user.keyboard('{Enter}');
 
     expect(textbox).toHaveValue('@customers_db ');
+  });
+
+  it.each([
+    {
+      itemKind: 'connection',
+      query: '@',
+      itemName: 'Customers DB',
+      expectedValue: '@customers_db ',
+    },
+    {
+      itemKind: 'project',
+      query: '@alp',
+      itemName: 'Alpha Site',
+      expectedValue: '@alpha_site ',
+    },
+  ])(
+    'selects a $itemKind mention with a click',
+    async ({ query, itemName, expectedValue }) => {
+      const user = userEvent.setup();
+      render(<ControlledPromptInput />);
+
+      const textbox = screen.getByRole('textbox');
+      await user.type(textbox, query);
+
+      const row = await screen.findByText(itemName);
+      expect(textbox).toHaveFocus();
+      expect(row).toBeVisible();
+
+      await user.click(row);
+
+      expect(textbox).toHaveValue(expectedValue);
+      expect(textbox).toHaveFocus();
+      await waitFor(() => {
+        expect(screen.queryByText(itemName)).not.toBeInTheDocument();
+        expect(textbox).toHaveProperty('selectionStart', expectedValue.length);
+        expect(textbox).toHaveProperty('selectionEnd', expectedValue.length);
+      });
+    },
+  );
+
+  it('keeps the add-connection row clickable when there are no mentionables', async () => {
+    const user = userEvent.setup();
+    const onMentionAddNewClick = vi.fn();
+    render(
+      <ControlledPromptInput
+        mentionables={[]}
+        onMentionAddNewClick={onMentionAddNewClick}
+      />,
+    );
+
+    const textbox = screen.getByRole('textbox');
+    await user.type(textbox, '@');
+    const addConnectionRow = await screen.findByText('Add a connection');
+
+    expect(textbox).toHaveFocus();
+    await user.click(addConnectionRow);
+
+    expect(onMentionAddNewClick).toHaveBeenCalledOnce();
+    expect(screen.queryByText('Add a connection')).not.toBeInTheDocument();
+    expect(textbox).toHaveFocus();
+  });
+
+  it('dismisses the menu without inserting when focus moves outside', async () => {
+    const user = userEvent.setup();
+    render(
+      <>
+        <ControlledPromptInput />
+        <button type="button">Outside</button>
+      </>,
+    );
+
+    const textbox = screen.getByRole('textbox');
+    await user.type(textbox, '@');
+    expect(await screen.findByText('Customers DB')).toBeInTheDocument();
+
+    const outsideButton = screen.getByRole('button', { name: 'Outside' });
+    await user.click(outsideButton);
+
+    expect(outsideButton).toHaveFocus();
+    expect(textbox).toHaveValue('@');
+    expect(screen.queryByText('Customers DB')).not.toBeInTheDocument();
   });
 
   it.each(['@prod', '@big query', '@bigquery'])(

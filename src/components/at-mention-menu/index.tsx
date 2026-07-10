@@ -6,6 +6,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type MouseEvent,
   type RefObject,
 } from 'react';
 import { FolderGit2, Plus } from 'lucide-react';
@@ -43,6 +44,12 @@ export interface AtMentionMenuProps {
 }
 
 const ADD_CONNECTION_VALUE = '__add_connection__';
+
+function keepComposerFocused(event: MouseEvent<HTMLDivElement>) {
+  // The textarea owns menu visibility, so preserve its focus until cmdk's
+  // click handler can select the row.
+  event.preventDefault();
+}
 
 export function mentionItemValue(item: Pick<AtMentionEntity, 'kind' | 'id'>): string {
   return `${item.kind}:${item.id}`;
@@ -125,6 +132,7 @@ export function AtMentionMenu({
       <CommandItem
         key={itemValue}
         value={itemValue}
+        onMouseDown={keepComposerFocused}
         onSelect={() => onSelect(item)}
         className="flex items-center gap-2 px-3 py-1.5 text-sm cursor-pointer"
       >
@@ -193,6 +201,7 @@ export function AtMentionMenu({
               {showAddRow ? (
                 <CommandItem
                   value={ADD_CONNECTION_VALUE}
+                  onMouseDown={keepComposerFocused}
                   onSelect={() => {
                     onAddNewClick();
                     onClose();
