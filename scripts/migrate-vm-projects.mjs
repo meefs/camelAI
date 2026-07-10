@@ -764,7 +764,10 @@ async function cmdNotice(client, args) {
   let totalThreads = 0;
   let totalAppended = 0;
 
-  for (const [i, ws] of workspaces.entries()) {
+  const noticeConcurrency = args.workspaceConcurrency
+    ? positiveInt(args.workspaceConcurrency, "--workspace-concurrency")
+    : 8;
+  const processNoticeWorkspace = async ({ ws, i }) => {
     let wsTotal = 0;
     let wsAppended = 0;
     let wsSkipped = 0;
@@ -792,7 +795,12 @@ async function cmdNotice(client, args) {
       failures.push({ workspaceId: ws.id, error: String(error) });
       console.log(`[${i + 1}/${workspaces.length}] ${ws.id}: ERROR ${String(error).slice(0, 160)}`);
     }
-  }
+  };
+  await runPool(
+    workspaces.map((ws, i) => ({ ws, i })),
+    noticeConcurrency,
+    processNoticeWorkspace,
+  );
 
   console.log("\n=== notice summary ===");
   console.log(`workspaces:      ${workspaces.length}`);
