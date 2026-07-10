@@ -1506,7 +1506,7 @@ async function callTool(
       method: "POST",
       path: `/api/admin/workspaces/${encodeURIComponent(workspaceId)}/project-vm-migration`,
       body: {
-        ...pickBody(input, ["project", "max_file_bytes", "max_project_bytes", "force", "lift_nested_root"]),
+        ...pickBody(input, ["project", "max_file_bytes", "max_project_bytes", "force", "lift_nested_root", "file_offset", "max_files_per_call"]),
         dry_run: input.dry_run === false ? false : true,
       },
     });
