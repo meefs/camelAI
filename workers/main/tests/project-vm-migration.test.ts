@@ -458,3 +458,28 @@ describe("nested root lift", () => {
     expect(writes.map((write) => write.path)).toEqual(["/package.json"]);
   });
 });
+
+it("records ghost files (listed but unreadable) as skipped instead of failing", async () => {
+  const project = makeProject();
+  const fetchMock = stubRuntimeFs([
+    { relativePath: "package.json", content: JSON.stringify({ scripts: { build: "b" } }) },
+    { relativePath: "ghost-symlink.bin", content: "listed-but-vanishes" },
+  ]);
+  // make reads of the ghost file 404 like the runtime service does
+  const original = fetchMock.getMockImplementation()!;
+  fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+    const url = new URL(String(input instanceof Request ? input.url : input));
+    if (url.pathname.endsWith("/fs/read") && (url.searchParams.get("path") ?? "").endsWith("ghost-symlink.bin")) {
+      throw new Error("File not found: /workspace/ghost-symlink.bin");
+    }
+    return original(input as never);
+  });
+  const { deps, backendFlips } = makeDeps(project);
+
+  const result = await migrateVmProject(deps, project);
+
+  expect(result.status).toBe("migrated");
+  expect(result.filesCopied).toBe(1);
+  expect(result.skipped).toEqual([{ path: "ghost-symlink.bin", size: expect.any(Number), reason: "unreadable" }]);
+  expect(backendFlips).toHaveLength(1);
+});

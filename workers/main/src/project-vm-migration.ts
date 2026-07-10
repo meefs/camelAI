@@ -108,7 +108,7 @@ const SKIP_FILE_NAMES = new Set([
 export interface MigrationSkippedFile {
   path: string;
   size: number;
-  reason: "excluded-dir" | "excluded-file" | "file-too-large";
+  reason: "excluded-dir" | "excluded-file" | "file-too-large" | "unreadable";
 }
 
 export type MigrationClassification =
@@ -456,10 +456,49 @@ export async function migrateVmProject(
     // round-trip each), so overlapping them matters; DO writes serialize
     // inside the Durable Object regardless.
     const copyConcurrency = 10;
+    // Bound BYTES in flight, not just file count: ten near-20MB buffered files
+    // at once (with base64 inflation) exceeded the isolate limit on archive-
+    // shaped projects. Streaming adopt-path files cost zero budget; a file
+    // costing more than the whole budget proceeds alone.
+    const COPY_BYTES_BUDGET = 64 * 1024 * 1024;
+    let bytesInFlight = 0;
+    const budgetWaiters: Array<() => void> = [];
+    const acquireCopyBudget = async (cost: number): Promise<void> => {
+      while (bytesInFlight > 0 && bytesInFlight + cost > COPY_BYTES_BUDGET) {
+        await new Promise<void>((resolve) => budgetWaiters.push(resolve));
+      }
+      bytesInFlight += cost;
+    };
+    const releaseCopyBudget = (cost: number): void => {
+      bytesInFlight -= cost;
+      for (const wake of budgetWaiters.splice(0)) wake();
+    };
     let nextIndex = 0;
     let copyError: string | null = null;
+    const isMissingFileError = (error: unknown): boolean =>
+      error instanceof Error && /(File|Path) not found/i.test(error.message);
     const copyOne = async (file: PlannedCopyFile): Promise<void> => {
       const size = typeof file.size === "number" ? file.size : 0;
+      // Buffered small-file reads hold raw bytes + a base64 copy (~2.4x);
+      // streaming adopt-path files hold nothing, so they cost zero budget.
+      const cost = size >= RPC_SAFE_FILE_BYTES ? 0 : Math.ceil(size * 2.4);
+      await acquireCopyBudget(cost);
+      try {
+        await copyOneInner(file, size);
+      } catch (error) {
+        if (isMissingFileError(error)) {
+          // Listed but unreadable: dangling symlink or a file that vanished
+          // between listing and read (VM-as-computer churn). Record and move
+          // on — failing the whole project over a ghost file strands the rest.
+          skipped.push({ path: file.destination, size, reason: "unreadable" });
+          return;
+        }
+        throw error;
+      } finally {
+        releaseCopyBudget(cost);
+      }
+    };
+    const copyOneInner = async (file: PlannedCopyFile, size: number): Promise<void> => {
       const destination = `/${file.destination}`;
 
       if (size >= RPC_SAFE_FILE_BYTES) {
