@@ -77,9 +77,11 @@ that tag to reach the prod and staging VMs on TCP/22.
 
 After provisioning a new staging VM, create a separate Cloudflare Tunnel/VPC
 service for that VM and update `wrangler.staging.jsonc` so the
-`PROJECT_RUNTIME_HOST` / `SANDBOX_HOST` bindings point at the staging service
-IDs. Production should keep its existing service IDs.
+`PROJECT_RUNTIME_HOST` binding points at the staging service ID. Production
+should keep its existing service ID.
 
-Worker-side clients for the data proxy remain in this repo
-(`workers/main/src/data-proxy.ts`, `data-proxy-service.ts`); the Go binary does
-not.
+The `SANDBOX_HOST` VPC binding and the VM Go data-proxy are retired: SQL
+queries/exports now run in the `DbQuerySandbox` Cloudflare container with a
+static egress IP via the on-host gost SOCKS relay (`infra/db-egress-relay/`,
+`docs/db-egress-relay.md`). Worker-side entrypoints (`data-proxy.ts`,
+`data-proxy-service.ts`) remain but dispatch to the container, not the VM.

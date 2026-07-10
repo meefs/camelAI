@@ -1,6 +1,11 @@
 # Surfacing the Sandbox IP for Firewall Whitelisting
 
-**Status:** plan / awaiting alignment
+**Status:** historical — the "how connections work today" audit below predates the
+DbQuerySandbox cutover. SQL queries/exports no longer flow through the
+`SANDBOX_HOST` VPC binding + VM Go data-proxy (both retired); they run in the
+`DbQuerySandbox` Cloudflare container and egress the same static IP via the
+on-host gost SOCKS relay (`docs/db-egress-relay.md`). The static IP to surface
+is unchanged (`20.46.233.68` prod), constant in `src/lib/sandbox-network.ts`.
 **Owner:** illiana
 **IP to surface:** `20.46.233.68` (sandbox-host VM, from `AGENTS.md`)
 
