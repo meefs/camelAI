@@ -79,6 +79,7 @@ const SKIP_DIR_SEGMENTS = new Set([
   "dist",
   "build",
   ".next",
+  ".vercel",
   ".nuxt",
   ".svelte-kit",
   ".wrangler",
@@ -469,7 +470,10 @@ export async function migrateVmProject(
     let nextIndex = 0;
     let copyError: string | null = null;
     const isMissingFileError = (error: unknown): boolean =>
-      error instanceof Error && /(File|Path) not found/i.test(error.message);
+      // "is a directory": the VM walk lists symlinks-to-directories as files
+      // (size = link-text length); reading one errors service-side. Treat like
+      // a ghost file — it has no copyable content.
+      error instanceof Error && /(File|Path) not found|is a directory/i.test(error.message);
     const copyOne = async (file: PlannedCopyFile): Promise<void> => {
       const size = typeof file.size === "number" ? file.size : 0;
       // Buffered small-file reads hold raw bytes + a base64 copy (~2.4x);
