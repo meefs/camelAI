@@ -63,8 +63,9 @@ const DEFAULT_MIGRATE_CONCURRENCY = 8;
 const DEFAULT_LARGE_CONCURRENCY = 1;
 /** Default concurrency for build verification (builds are heavy). */
 const DEFAULT_VERIFY_CONCURRENCY = 2;
-/** Per migrate_vm_projects call timeout. */
-const MIGRATE_TIMEOUT_MS = 600_000;
+/** Per migrate_vm_projects call timeout. Monster projects (multi-GB, thousands
+ * of files) are IO-bound server-side and legitimately run past 10 minutes. */
+const MIGRATE_TIMEOUT_MS = 1_800_000;
 /** verify_project_build's own build budget. */
 const VERIFY_BUILD_TIMEOUT_MS = 300_000;
 /** HTTP timeout for the verify RPC (must comfortably exceed the build budget). */
