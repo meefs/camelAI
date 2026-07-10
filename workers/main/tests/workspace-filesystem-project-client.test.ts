@@ -159,3 +159,27 @@ describe("ProjectFilesystemClient", () => {
     await expect((env as never as { R2_BUCKET: R2Bucket }).R2_BUCKET.head(firstBlobKey)).resolves.toBeNull();
   });
 });
+
+it("snapshots R2-spilled files by streaming, entries matching the adopted content", async () => {
+  const client = new ProjectFilesystemClient(env as never, `project-${crypto.randomUUID()}`);
+  const size = 2 * 1024 * 1024;
+  const payload = new Uint8Array(size);
+  for (let i = 0; i < size; i += 1) payload[i] = (i * 7) % 251;
+  const adopt = await client.adoptR2File("/data/big.bin", new Response(payload).body!, size, "application/octet-stream");
+  expect(adopt.success).toBe(true);
+  await client.writeFile("/README.md", "hello");
+
+  const snapshot = await client.createSourceSnapshot({ message: "stream test" });
+  const big = snapshot.entries.find((e) => e.path === "data/big.bin");
+  expect(big).toBeDefined();
+  expect(big!.size).toBe(size);
+  // digest must match a locally computed SHA-256 of the same payload
+  const digest = await crypto.subtle.digest("SHA-256", payload);
+  const expected = Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, "0")).join("");
+  expect(big!.sha256).toBe(expected);
+  // restore must round-trip the streamed blob through the store
+  await client.deleteFile("/data/big.bin", { recursive: true, force: true });
+  await client.restoreSourceSnapshot(snapshot.id);
+  const back = await client.exists("/data/big.bin");
+  expect(back).toMatchObject({ exists: true, size });
+});

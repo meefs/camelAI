@@ -610,6 +610,42 @@ export class WorkspaceFilesystemDO extends DurableObject<WorkspaceFilesystemEnv>
       if (entry.type !== "file") continue;
       const path = normalizeProjectSnapshotPath(entry.absolutePath);
       if (!path || shouldIgnoreProjectSnapshotPath(path)) continue;
+
+      // R2-spilled files (including GB-scale adopted ones) must never be
+      // buffered in the isolate: whole-reading them OOM'd the DO on projects
+      // with large adopted files. Hash and copy them by streaming instead.
+      const spilled = this.ctx.storage.sql
+        .exec(
+          `SELECT storage_backend, r2_key FROM ${WORKSPACE_STORE_TABLE} WHERE path = ?`,
+          `/${path}`,
+        )
+        .toArray()[0] as { storage_backend?: string; r2_key?: string } | undefined;
+      if (spilled?.storage_backend === "r2" && spilled.r2_key) {
+        const source = await this.env.R2_BUCKET.get(spilled.r2_key);
+        if (!source) continue;
+        const size = source.size;
+        // workers-runtime global; the ambient Crypto type in this tsconfig
+        // predates DigestStream.
+        const digestStream = new (crypto as unknown as { DigestStream: new (algorithm: string) => WritableStream & { digest: Promise<ArrayBuffer> } }).DigestStream("SHA-256");
+        await source.body.pipeTo(digestStream);
+        const sha256 = Array.from(new Uint8Array(await digestStream.digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+        const blobKey = projectSnapshotBlobKey(this.ctx.id.toString(), sha256);
+        const existingBlob = await this.env.R2_BUCKET.head(blobKey);
+        if (!existingBlob) {
+          const copySource = await this.env.R2_BUCKET.get(spilled.r2_key);
+          if (!copySource) continue;
+          const fixed = new FixedLengthStream(size);
+          const pump = copySource.body.pipeTo(fixed.writable);
+          await this.env.R2_BUCKET.put(blobKey, fixed.readable, {
+            customMetadata: { type: "project-source-snapshot", sha256 },
+          });
+          await pump;
+        }
+        entries.push({ path, size, sha256, blobKey });
+        totalBytes += size;
+        continue;
+      }
+
       const bytes = await this.projectWorkspace.readFileBytes(`/${path}`);
       if (!bytes) continue;
       const sha256 = await sha256Hex(bytes);
