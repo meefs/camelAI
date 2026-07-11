@@ -33,30 +33,6 @@ variable "ssh_public_key" {
   type        = string
 }
 
-variable "sandbox_data_disk_size_gb" {
-  description = "Premium SSD v2 data disk size in GB (persistent /srv/sandboxes)"
-  type        = number
-  default     = 2048
-}
-
-variable "sandbox_data_disk_iops" {
-  description = "Provisioned IOPS for Premium SSD v2 data disk"
-  type        = number
-  default     = 20000
-}
-
-variable "sandbox_data_disk_mbps" {
-  description = "Provisioned throughput (MB/s) for Premium SSD v2 data disk"
-  type        = number
-  default     = 1200
-}
-
-variable "sandbox_data_disk_lun" {
-  description = "LUN index for attaching the Premium SSD v2 data disk"
-  type        = number
-  default     = 0
-}
-
 variable "os_disk_size_gb" {
   description = "OS disk size in GB"
   type        = number
@@ -67,28 +43,4 @@ variable "cloudflared_tunnel_token" {
   description = "Cloudflare Tunnel token for VPC connectivity"
   type        = string
   sensitive   = true
-}
-
-variable "r2_access_key_id" {
-  description = "R2 API access key ID used by sandbox-host s3fs mount"
-  type        = string
-  sensitive   = true
-}
-
-variable "r2_secret_access_key" {
-  description = "R2 API secret access key used by sandbox-host s3fs mount"
-  type        = string
-  sensitive   = true
-}
-
-variable "r2_account_id" {
-  description = "Cloudflare account ID for R2 API endpoint"
-  type        = string
-  default     = "85bbd288051330fb51ee1c86031a299b"
-}
-
-variable "r2_bucket_name" {
-  description = "R2 bucket name mounted by sandbox-host"
-  type        = string
-  default     = "chiridion-sandbox"
 }

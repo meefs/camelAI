@@ -66,6 +66,14 @@ resource "azurerm_public_ip" "sandbox" {
   sku                 = "Standard"
   zones               = [var.availability_zone]
   tags                = local.tags
+
+  # This IP is allowlisted in customer database firewalls (see
+  # src/lib/sandbox-network.ts). It must never be released: an Azure
+  # CanNotDelete management lock also protects it out-of-band (created via
+  # az cli 2026-07-10, lock name "protect-static-egress-ip").
+  lifecycle {
+    prevent_destroy = true
+  }
 }
 
 resource "azurerm_network_interface" "sandbox" {
@@ -83,26 +91,6 @@ resource "azurerm_network_interface" "sandbox" {
 }
 
 # ─── Durable Sandbox Data Disk (Premium SSD v2) ──────────────
-
-resource "azurerm_managed_disk" "sandbox_data" {
-  name                 = "datadisk-chiridion-sandbox-${var.environment}"
-  resource_group_name  = azurerm_resource_group.sandbox.name
-  location             = azurerm_resource_group.sandbox.location
-  storage_account_type = "PremiumV2_LRS"
-  create_option        = "Empty"
-  disk_size_gb         = var.sandbox_data_disk_size_gb
-  disk_iops_read_write = var.sandbox_data_disk_iops
-  disk_mbps_read_write = var.sandbox_data_disk_mbps
-  zone                 = var.availability_zone
-  tags                 = local.tags
-
-  # IOPS and throughput can be updated live via `az disk update` without
-  # destroying the disk. Ignore changes here so Terraform doesn't force
-  # a replacement when values are bumped out-of-band.
-  lifecycle {
-    ignore_changes = [disk_iops_read_write, disk_mbps_read_write]
-  }
-}
 
 # ─── Container Registry ───────────────────────────────────────
 
@@ -149,26 +137,12 @@ resource "azurerm_linux_virtual_machine" "sandbox" {
   }
 
   custom_data = base64encode(templatefile("${path.module}/cloud-init.yaml.tpl", {
-    setup_script             = file("${path.module}/../services/sandbox-host/scripts/setup-host.sh")
-    sandbox_data_device      = "/dev/disk/azure/data/by-lun/${var.sandbox_data_disk_lun}"
     cloudflared_tunnel_token = var.cloudflared_tunnel_token
-    acr_login_server         = azurerm_container_registry.sandbox.login_server
-    r2_access_key_id         = var.r2_access_key_id
-    r2_secret_access_key     = var.r2_secret_access_key
-    r2_account_id            = var.r2_account_id
-    r2_bucket_name           = var.r2_bucket_name
   }))
 
   identity {
     type = "SystemAssigned"
   }
-}
-
-resource "azurerm_virtual_machine_data_disk_attachment" "sandbox_data" {
-  managed_disk_id    = azurerm_managed_disk.sandbox_data.id
-  virtual_machine_id = azurerm_linux_virtual_machine.sandbox.id
-  lun                = var.sandbox_data_disk_lun
-  caching            = "None"
 }
 
 # VM managed identity → AcrPull on the container registry

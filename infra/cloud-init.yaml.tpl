@@ -1,28 +1,32 @@
 #cloud-config
 
-# Chiridion sandbox host cloud-init configuration.
-# Writes setup script + secrets, then runs setup-host.sh.
+# Chiridion egress-relay host cloud-init configuration.
+#
+# The sandbox VMs are now static-IP database egress relays only: they run the
+# gost SOCKS5 relay (infra/db-egress-relay compose) fronted by cloudflared,
+# plus tailscaled for management SSH. The legacy project-runtime / sandbox-host
+# services were decommissioned 2026-07-10.
+
+package_update: true
+packages:
+  - docker.io
+  - docker-compose-v2
+  - curl
 
 write_files:
-  - path: /opt/chiridion/sandbox-host/scripts/setup-host.sh
-    permissions: "0755"
-    content: |
-      ${indent(6, setup_script)}
-
-  - path: /etc/chiridion/storage.env
+  - path: /etc/chiridion/relay.env
     permissions: "0600"
     content: |
-      SANDBOX_DATA_DEVICE=${sandbox_data_device}
       CLOUDFLARED_TUNNEL_TOKEN=${cloudflared_tunnel_token}
-      ACR_LOGIN_SERVER=${acr_login_server}
-
-  - path: /etc/chiridion/sandbox-host.env
-    permissions: "0600"
-    content: |
-      R2_ACCESS_KEY_ID=${r2_access_key_id}
-      R2_SECRET_ACCESS_KEY=${r2_secret_access_key}
-      R2_ACCOUNT_ID=${r2_account_id}
-      R2_BUCKET_NAME=${r2_bucket_name}
 
 runcmd:
-  - bash -c '. /etc/chiridion/storage.env && export SANDBOX_DATA_DEVICE CLOUDFLARED_TUNNEL_TOKEN ACR_LOGIN_SERVER && bash /opt/chiridion/sandbox-host/scripts/setup-host.sh'
+  - systemctl enable --now docker
+  # Tailscale for management SSH (interactive `tailscale up` still required once).
+  - curl -fsSL https://tailscale.com/install.sh | sh
+  # cloudflared tunnel (fronts the relay; token provisioned via Terraform).
+  - curl -fsSL -o /tmp/cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
+  - dpkg -i /tmp/cloudflared.deb
+  - bash -c '. /etc/chiridion/relay.env && cloudflared service install "$CLOUDFLARED_TUNNEL_TOKEN"'
+  # gost SOCKS relay: compose file + gost.yaml are provisioned to
+  # /opt/chiridion/db-egress-relay out-of-band (see infra/db-egress-relay/README.md).
+  - mkdir -p /opt/chiridion/db-egress-relay

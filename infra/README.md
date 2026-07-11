@@ -85,3 +85,17 @@ queries/exports now run in the `DbQuerySandbox` Cloudflare container with a
 static egress IP via the on-host gost SOCKS relay (`infra/db-egress-relay/`,
 `docs/db-egress-relay.md`). Worker-side entrypoints (`data-proxy.ts`,
 `data-proxy-service.ts`) remain but dispatch to the container, not the VM.
+
+## Egress-relay era (2026-07-10)
+
+The sandbox VMs were decommissioned down to **static-IP database egress
+relays**: gost SOCKS5 (docker compose in `db-egress-relay/`) + cloudflared +
+tailscaled on `Standard_E2as_v7`, OS disk only. The legacy project-runtime /
+sandbox-host services and both data disks are gone (final backups retained:
+prod in the `bv-chiridion-sandbox-prod` vault, staging as
+`*-final-20260710` snapshots).
+
+**The public IPs must never be released** — they are allowlisted in customer
+database firewalls. Protections: `prevent_destroy` on the Terraform resource
+and an out-of-band Azure `CanNotDelete` lock named `protect-static-egress-ip`
+on each `pip-chiridion-sandbox-*` (created via az cli; not in Terraform state).
