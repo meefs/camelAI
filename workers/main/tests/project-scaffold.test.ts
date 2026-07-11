@@ -132,7 +132,7 @@ describe("defaultProjectScaffoldFiles", () => {
     expect(scaffoldFile(files, "/workers/app.ts")).toContain("createRequestHandler");
     expect(scaffoldFile(files, "/workers/app.ts")).toContain("env.ASSETS.fetch(request)");
     expect(scaffoldFile(files, "/workers/app.ts")).toContain('method !== "GET" && method !== "HEAD"');
-    expect(scaffoldFile(files, "/scripts/build-manifest.mjs")).toContain('main_module: "worker.js"');
+    expect(scaffoldFile(files, "/scripts/build-manifest.mjs")).toContain('main: "worker.js"');
     expect(scaffoldFile(files, "/scripts/build-manifest.mjs")).toContain("node_modules/.bin/esbuild");
     expect(scaffoldFile(files, "/scripts/build-manifest.mjs")).toContain("env.ASSETS.fetch(request)");
     expect(scaffoldFile(files, "/scripts/build-manifest.mjs")).toContain('method !== "GET" && method !== "HEAD"');
@@ -147,20 +147,22 @@ describe("defaultProjectScaffoldFiles", () => {
     expect(buildManifest).toContain("--alias:virtual:react-router/server-build=./build/server/index.js");
     expect(buildManifest).toContain('--define:import.meta.env.MODE="production"');
 
-    // Durable Object bindings and migrations must pass through to the deploy manifest;
-    // wrangler vars are converted to plain_text/json env-var bindings (a top-level vars
-    // key is a no-op on the direct-deploy path, which only reads metadata.bindings).
+    // The manifest is a wrangler-valid config describing the FINAL build output:
+    // no_bundle with an ESModule rule so the deploy pipeline selects modules by
+    // rule globs, and vars/durable_objects/migrations/kv/r2/bindings passed
+    // through as-is (project-worker-bundle lifts them into API bindings server-side).
+    expect(buildManifest).toContain("no_bundle: true");
+    expect(buildManifest).toContain('rules: [{ type: "ESModule", globs: ["**/*.js", "**/*.mjs"] }]');
     expect(buildManifest).toContain("...(config.durable_objects ? { durable_objects: config.durable_objects } : {})");
     expect(buildManifest).toContain("...(config.migrations ? { migrations: config.migrations } : {})");
-    // KV / R2 declared the idiomatic wrangler way must be forwarded so the deploy
-    // pipeline lifts them into bindings (otherwise they are silently dropped).
     expect(buildManifest).toContain("...(config.kv_namespaces ? { kv_namespaces: config.kv_namespaces } : {})");
     expect(buildManifest).toContain("...(config.r2_buckets ? { r2_buckets: config.r2_buckets } : {})");
-    expect(buildManifest).toContain('? { type: "plain_text", name, text: value }');
-    expect(buildManifest).toContain(': { type: "json", name, json: value }');
-    expect(buildManifest).toContain("const bindings = [...(config.bindings ?? []), ...varBindings];");
-    expect(buildManifest).toContain("...(bindings.length > 0 ? { bindings } : {})");
-    expect(buildManifest).not.toContain("{ vars: config.vars }");
+    // vars and bindings are forwarded unchanged — the template no longer inline-lifts
+    // vars into plain_text/json env-var bindings (that moved to project-worker-bundle).
+    expect(buildManifest).toContain("...(config.vars ? { vars: config.vars } : {})");
+    expect(buildManifest).toContain("...(config.bindings ? { bindings: config.bindings } : {})");
+    expect(buildManifest).not.toContain('{ type: "plain_text", name, text: value }');
+    expect(buildManifest).not.toContain("varBindings");
 
     // The generated build step should not infer Durable Object validity from
     // config history. Deploy-time validation checks actual current bindings

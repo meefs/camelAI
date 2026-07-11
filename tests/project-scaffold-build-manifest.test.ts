@@ -123,9 +123,13 @@ describe('react-router scaffold build-manifest.mjs (generated script execution)'
     expect(esbuildArgs).toContain('--external:cloudflare:*');
 
     const manifest = readManifest(dir);
+    // The manifest is a wrangler-valid config for the FINAL build: no_bundle with an
+    // ESModule rule, and vars/durable_objects/migrations/kv/r2/bindings forwarded
+    // verbatim. project-worker-bundle lifts them into typed API bindings server-side.
     expect(manifest).toMatchObject({
-      name: 'demo-app',
-      main_module: 'worker.js',
+      main: 'worker.js',
+      no_bundle: true,
+      rules: [{ type: 'ESModule', globs: ['**/*.js', '**/*.mjs'] }],
       compatibility_date: '2026-06-01',
       compatibility_flags: ['nodejs_compat'],
       assets: { directory: '../client', binding: 'ASSETS' },
@@ -133,19 +137,13 @@ describe('react-router scaffold build-manifest.mjs (generated script execution)'
         bindings: [{ name: 'LEADERBOARD_DO', class_name: 'LeaderboardDO' }],
       },
       migrations: [{ tag: 'v1', new_sqlite_classes: ['LeaderboardDO'] }],
-      // Idiomatic KV/R2 arrays are forwarded verbatim; the deploy pipeline
-      // (project-worker-bundle) lifts them into typed bindings.
+      vars: { APP_TITLE: 'Space Match', MAX_PLAYERS: 8 },
       kv_namespaces: [{ binding: 'SCORES_KV', id: 'kv-1' }],
       r2_buckets: [{ binding: 'ASSETS_BUCKET', bucket_name: 'space-assets' }],
+      // config.bindings pass through unchanged — vars are no longer inline-lifted here.
+      bindings: [{ type: 'plain_text', name: 'EXISTING', text: 'kept' }],
     });
-    // vars become env-var bindings (merged after any explicit config.bindings);
-    // a top-level vars key would be a no-op on the direct-deploy path.
-    expect(manifest.bindings).toEqual([
-      { type: 'plain_text', name: 'EXISTING', text: 'kept' },
-      { type: 'plain_text', name: 'APP_TITLE', text: 'Space Match' },
-      { type: 'json', name: 'MAX_PLAYERS', json: 8 },
-    ]);
-    expect(manifest).not.toHaveProperty('vars');
+    expect(manifest).not.toHaveProperty('main_module');
   });
 
   it('keeps the generated-wrapper path when main is absent and no DO config is declared', () => {
@@ -171,8 +169,9 @@ describe('react-router scaffold build-manifest.mjs (generated script execution)'
       'assets',
       'compatibility_date',
       'compatibility_flags',
-      'main_module',
-      'name',
+      'main',
+      'no_bundle',
+      'rules',
     ]);
   });
 
@@ -195,8 +194,7 @@ describe('react-router scaffold build-manifest.mjs (generated script execution)'
 
     const manifest = readManifest(dir);
     expect(manifest).toMatchObject({
-      name: 'demo-app',
-      main_module: 'worker.js',
+      main: 'worker.js',
       migrations: [
         { tag: 'v1', new_sqlite_classes: ['LeaderboardDO'] },
         { tag: 'v2', deleted_classes: ['LeaderboardDO'] },
@@ -223,8 +221,7 @@ describe('react-router scaffold build-manifest.mjs (generated script execution)'
 
     const manifest = readManifest(dir);
     expect(manifest).toMatchObject({
-      name: 'demo-app',
-      main_module: 'worker.js',
+      main: 'worker.js',
       durable_objects: {
         bindings: [{ name: 'LEADERBOARD_DO', class_name: 'LeaderboardDO' }],
       },
