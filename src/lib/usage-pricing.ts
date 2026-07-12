@@ -3,6 +3,15 @@ export interface ModelPricing {
   outputPerToken: number;
   cacheCreationPerToken?: number;
   cacheReadPerToken?: number;
+  tiers?: readonly ModelPricingTier[];
+}
+
+export interface ModelPricingTier {
+  inputTokensAbove: number;
+  inputPerToken: number;
+  outputPerToken: number;
+  cacheCreationPerToken?: number;
+  cacheReadPerToken?: number;
 }
 
 export interface UsageTokens {
@@ -160,6 +169,44 @@ const modelPricingTable: Record<string, ModelPricing> = {
     inputPerToken: 0.000005,
     outputPerToken: 0.00003,
     cacheReadPerToken: 0.0000005,
+    tiers: [
+      {
+        inputTokensAbove: 272_000,
+        inputPerToken: 0.00001,
+        outputPerToken: 0.000045,
+        cacheReadPerToken: 0.000001,
+      },
+    ],
+  },
+  "gpt-5.6-sol": {
+    inputPerToken: 0.000005,
+    outputPerToken: 0.00003,
+    cacheCreationPerToken: 0.00000625,
+    cacheReadPerToken: 0.0000005,
+    tiers: [
+      {
+        inputTokensAbove: 272_000,
+        inputPerToken: 0.00001,
+        outputPerToken: 0.000045,
+        cacheCreationPerToken: 0.0000125,
+        cacheReadPerToken: 0.000001,
+      },
+    ],
+  },
+  "gpt-5.6-terra": {
+    inputPerToken: 0.0000025,
+    outputPerToken: 0.000015,
+    cacheCreationPerToken: 0.000003125,
+    cacheReadPerToken: 0.00000025,
+    tiers: [
+      {
+        inputTokensAbove: 272_000,
+        inputPerToken: 0.000005,
+        outputPerToken: 0.0000225,
+        cacheCreationPerToken: 0.00000625,
+        cacheReadPerToken: 0.0000005,
+      },
+    ],
   },
   "gpt-5.4": {
     inputPerToken: 0.0000025,
@@ -307,6 +354,12 @@ export function lookupPricing(model: string): ModelPricing {
   const normalized = normalizePricingModel(model);
   if (modelPricingTable[normalized]) return modelPricingTable[normalized];
 
+  if (normalized.startsWith("gpt-5.6-terra")) {
+    return modelPricingTable["gpt-5.6-terra"];
+  }
+  if (normalized.startsWith("gpt-5.6-sol") || normalized === "gpt-5.6") {
+    return modelPricingTable["gpt-5.6-sol"];
+  }
   if (normalized.startsWith("gpt-5.5")) return modelPricingTable["gpt-5.5"];
   if (normalized.startsWith("gpt-5.4-mini")) {
     return modelPricingTable["gpt-5.4-mini"];
@@ -376,7 +429,16 @@ export function lookupPricing(model: string): ModelPricing {
 }
 
 export function calculateUsageCostUsd(usage: UsageTokens): number {
-  const pricing = lookupPricing(usage.model);
+  const basePricing = lookupPricing(usage.model);
+  const totalPromptTokens =
+    Math.max(0, usage.inputTokens) +
+    Math.max(0, usage.cacheCreationInputTokens) +
+    Math.max(0, usage.cacheReadInputTokens);
+  const pricing =
+    basePricing.tiers
+      ?.filter((tier) => totalPromptTokens > tier.inputTokensAbove)
+      .sort((a, b) => b.inputTokensAbove - a.inputTokensAbove)[0] ??
+    basePricing;
   return (
     Math.max(0, usage.inputTokens) * pricing.inputPerToken +
     Math.max(0, usage.outputTokens) * pricing.outputPerToken +

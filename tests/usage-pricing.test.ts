@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   calculateEffectiveUsageCostUsd,
   calculateUsageCostUsd,
+  lookupPricing,
 } from "@/lib/usage-pricing";
 
 describe("calculateEffectiveUsageCostUsd", () => {
@@ -34,6 +35,23 @@ describe("calculateEffectiveUsageCostUsd", () => {
 });
 
 describe("calculateUsageCostUsd", () => {
+  it("prices GPT-5.6 aliases and long prompts", () => {
+    expect(lookupPricing("openai/gpt-5.6-terra")).toMatchObject({
+      inputPerToken: 0.0000025,
+      outputPerToken: 0.000015,
+    });
+    expect(lookupPricing("gpt-5.6")).toBe(lookupPricing("gpt-5.6-sol"));
+    expect(
+      calculateUsageCostUsd({
+        model: "gpt-5.6-sol",
+        inputTokens: 272_001,
+        outputTokens: 0,
+        cacheCreationInputTokens: 0,
+        cacheReadInputTokens: 0,
+      }),
+    ).toBeCloseTo(2.72001);
+  });
+
   it("calculates Fable 5 pricing and hosted prefixes", () => {
     const usage = {
       inputTokens: 1_000_000,

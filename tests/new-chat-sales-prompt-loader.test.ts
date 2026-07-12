@@ -260,12 +260,12 @@ describe('new chat loader sales prompt handling', () => {
       context: {},
     } as never);
     const interactive = await result.interactive;
-    expect(interactive.threadModel).toBe('gpt-5.4');
+    expect(interactive.threadModel).toBe('gpt-5.6-terra');
     expect(interactive.llmProvider).toBe('openai');
     expect(interactive.allowedThreadModels).toEqual([
+      'gpt-5.6-sol',
+      'gpt-5.6-terra',
       'gpt-5.5',
-      'gpt-5.4',
-      'gpt-5.4-mini',
     ]);
 
     consoleError.mockRestore();

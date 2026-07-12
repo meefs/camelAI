@@ -4,7 +4,11 @@
 // via `this`. The stateful resolution orchestrators (resolvePiModel,
 // resolvePiRequestConfig, getCachedLlmProviderConfig, resolveCurrentByokCredentials)
 // remain on ChatThreadDO and call into a PiModelMapping instance.
-import { DEFAULT_LLM_MODEL, normalizeLlmModel } from "../../../src/lib/llm-provider-config";
+import {
+  DEFAULT_CODEX_MODEL,
+  DEFAULT_LLM_MODEL,
+  normalizeLlmModel,
+} from "../../../src/lib/llm-provider-config";
 import type { PiHeaderValue, PiResolvedModelReference } from "./chat-thread-do";
 
 export class PiModelMapping {
@@ -43,12 +47,18 @@ export class PiModelMapping {
         return claudeReference("claude-fable-5");
       case "sonnet":
         return claudeReference("claude-sonnet-5");
+      case "gpt-5.6-sol":
+      case "gpt-5.6-terra":
       case "gpt-5.4-mini":
       case "gpt-5.4":
       case "gpt-5.5":
         return openAiReference(normalizedModelId);
-      case "custom":
+      case "gpt-5.5-bedrock":
+        return openAiReference("gpt-5.5");
+      case "gpt-5.4-bedrock":
         return openAiReference("gpt-5.4");
+      case "custom":
+        return openAiReference(DEFAULT_CODEX_MODEL);
       case "kimi-k2.7-code":
         return openRouterReference("moonshotai/kimi-k2.7-code");
       case "grok-4.5":
@@ -167,7 +177,7 @@ export class PiModelMapping {
     });
     if (model === "custom" && customModelId?.trim()) {
       const lookupModel =
-        api === "anthropic-messages" ? DEFAULT_LLM_MODEL : "gpt-5.4";
+        api === "anthropic-messages" ? DEFAULT_LLM_MODEL : DEFAULT_CODEX_MODEL;
       const lookupReference = this.resolvePiModelReference(lookupModel);
       return {
         provider: lookupReference.provider,

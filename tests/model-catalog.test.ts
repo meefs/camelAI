@@ -196,6 +196,8 @@ describe('MODEL_CATALOG', () => {
         models: [
           { id: 'sonnet', added_at: 1 },
           { id: 'opus-4.8', added_at: 11 },
+          { id: 'gpt-5.6-sol', added_at: 12 },
+          { id: 'gpt-5.6-terra', added_at: 13 },
           { id: 'gpt-5.5', added_at: 12 },
           { id: 'gpt-5.4', added_at: 3 },
           { id: 'gpt-5.4-mini', added_at: 4 },
@@ -212,9 +214,9 @@ describe('MODEL_CATALOG', () => {
     });
 
     expect(visible.map((entry) => entry.id)).toEqual([
+      'gpt-5.6-sol',
+      'gpt-5.6-terra',
       'gpt-5.5',
-      'gpt-5.4',
-      'gpt-5.4-mini',
     ]);
   });
 
@@ -226,6 +228,8 @@ describe('MODEL_CATALOG', () => {
         models: [
         { id: 'sonnet' as const, added_at: 1 },
         { id: 'opus-4.8' as const, added_at: 2 },
+        { id: 'gpt-5.6-sol' as const, added_at: 3 },
+        { id: 'gpt-5.6-terra' as const, added_at: 4 },
         { id: 'gpt-5.5' as const, added_at: 3 },
         { id: 'gpt-5.4' as const, added_at: 4 },
         { id: 'gpt-5.4-mini' as const, added_at: 5 },
@@ -239,7 +243,7 @@ describe('MODEL_CATALOG', () => {
         orgProvider: 'custom',
         customApi: 'openai-responses',
       }).map((entry) => entry.id),
-    ).toEqual(['gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini']);
+    ).toEqual(['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.5']);
     expect(
       resolveModelPickerCatalog({
         effectiveConfig,
@@ -285,9 +289,9 @@ describe('MODEL_CATALOG', () => {
       'opus-4.8',
       'sonnet',
       'haiku',
+      'gpt-5.6-sol',
+      'gpt-5.6-terra',
       'gpt-5.5',
-      'gpt-5.4',
-      'gpt-5.4-mini',
       'gemini-3.5-flash',
       'gemini-3-flash-preview',
       'deepseek-v4-pro',

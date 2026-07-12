@@ -13,32 +13,41 @@ import {
 // The telemetry module reports through navigator.sendBeacon (with a fetch
 // fallback); install a beacon capture to assert on emitted events. jsdom does
 // not implement sendBeacon, so define rather than spy.
-function captureBeacons(): { events: () => Array<Record<string, unknown>> } {
+function captureBeacons(): {
+  events: () => Array<Record<string, unknown>>;
+  flush: () => Promise<void>;
+} {
   const payloads: Array<Record<string, unknown>> = [];
+  const pending: Array<Promise<void>> = [];
   Object.defineProperty(navigator, "sendBeacon", {
     configurable: true,
     writable: true,
     value: (_url: string, body: Blob) => {
       // jsdom's Blob has no .text(); FileReader is implemented.
       const reader = new FileReader();
-      reader.onload = () => {
-        payloads.push(JSON.parse(String(reader.result)) as Record<string, unknown>);
-      };
+      pending.push(
+        new Promise<void>((resolve, reject) => {
+          reader.onload = () => {
+            payloads.push(
+              JSON.parse(String(reader.result)) as Record<string, unknown>,
+            );
+            resolve();
+          };
+          reader.onerror = () => reject(reader.error);
+        }),
+      );
       reader.readAsText(body);
       return true;
     },
   });
   return {
     events: () => payloads,
+    flush: async () => {
+      if (vi.isFakeTimers()) vi.runOnlyPendingTimers();
+      vi.useRealTimers();
+      await Promise.all(pending);
+    },
   };
-}
-
-async function flushBeacons(): Promise<void> {
-  // FileReader's load event may be scheduled on the fake clock; run it before
-  // dropping back to real timers, then yield a real macrotask.
-  if (vi.isFakeTimers()) vi.runOnlyPendingTimers();
-  vi.useRealTimers();
-  await new Promise<void>((resolve) => setTimeout(resolve, 0));
 }
 
 describe("shouldReportFlap", () => {
@@ -100,7 +109,7 @@ describe("chat websocket telemetry events", () => {
       reason: "",
       wasClean: false,
     } as CloseEvent);
-    await flushBeacons();
+    await beacons.flush();
 
     const close = beacons
       .events()
@@ -124,7 +133,7 @@ describe("chat websocket telemetry events", () => {
         wasClean: false,
       } as CloseEvent);
     }
-    await flushBeacons();
+    await beacons.flush();
 
     const flap = beacons
       .events()
@@ -143,7 +152,7 @@ describe("chat websocket telemetry events", () => {
       getReadyState: () => WebSocket.OPEN,
     });
     vi.advanceTimersByTime(SEND_ACK_TIMEOUT_MS + 1);
-    await flushBeacons();
+    await beacons.flush();
 
     const timeout = beacons
       .events()
@@ -163,7 +172,7 @@ describe("chat websocket telemetry events", () => {
     });
     tracker.accepted();
     vi.advanceTimersByTime(SEND_ACK_TIMEOUT_MS + 1);
-    await flushBeacons();
+    await beacons.flush();
 
     const events = beacons.events();
     expect(

@@ -41,7 +41,7 @@ describe('web model provider wiring', () => {
       userId,
       'Reply with pong'
     );
-    expect(thread.model).toBe('gpt-5.4');
+    expect(thread.model).toBe('gpt-5.6-terra');
   });
 
   it('creates standard hosted web threads on Claude and still allows explicit OpenAI models', async () => {

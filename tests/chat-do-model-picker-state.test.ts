@@ -119,7 +119,7 @@ describe('getWorkspaceModelPickerState rollout compatibility', () => {
     });
     expect(state?.allowedThreadModels).toContain('sonnet');
     expect(state?.allowedThreadModels).toContain('gpt-5.5');
-    expect(state?.allowedThreadModels).toContain('gpt-5.4-mini');
+    expect(state?.allowedThreadModels).toContain('gpt-5.6-terra');
     expect(orgStub.getModelPickerConfig).toHaveBeenCalledTimes(2);
     expect(workspaceStub.getModelPickerConfig).toHaveBeenCalledTimes(2);
   });
@@ -685,7 +685,7 @@ describe('getWorkspaceModelPickerState rollout compatibility', () => {
     expect(orgStub.getExperimentalSettings).not.toHaveBeenCalled();
     expect(state?.orgId).toBe('org_123');
     expect(state?.llmProvider).toBe('openai');
-    expect(state?.allowedThreadModels).toContain('gpt-5.4');
+    expect(state?.allowedThreadModels).toContain('gpt-5.6-terra');
   });
 
   it('uses preloaded org model context for thread model updates', async () => {
@@ -719,15 +719,15 @@ describe('getWorkspaceModelPickerState rollout compatibility', () => {
       }),
       getModelPickerConfig: vi.fn().mockResolvedValue({
         use_platform_defaults: false,
-        models: [{ id: 'gpt-5.4', added_at: 1 }],
-        default_model: 'gpt-5.4',
+        models: [{ id: 'gpt-5.6-terra', added_at: 1 }],
+        default_model: 'gpt-5.6-terra',
       }),
       updateThreadModel: vi.fn().mockResolvedValue({
         id: 'thread_123',
         workspace_id: 'ws_123',
         title: 'Existing Chat',
         created_by: 'user_123',
-        model: 'gpt-5.4',
+        model: 'gpt-5.6-terra',
         created_at: 1,
         updated_at: 3,
         user_message_count: 0,
@@ -749,7 +749,7 @@ describe('getWorkspaceModelPickerState rollout compatibility', () => {
     const updated = await updateThreadModel(
       {},
       'thread_123',
-      'gpt-5.4',
+      'gpt-5.6-terra',
       'ws_123',
       {
         orgId: 'org_123',
@@ -770,9 +770,9 @@ describe('getWorkspaceModelPickerState rollout compatibility', () => {
     expect(orgStub.getExperimentalSettings).not.toHaveBeenCalled();
     expect(orgStub.updateThreadModel).toHaveBeenCalledWith(
       'thread_123',
-      'gpt-5.4',
+      'gpt-5.6-terra',
     );
-    expect(updated?.model).toBe('gpt-5.4');
+    expect(updated?.model).toBe('gpt-5.6-terra');
   });
 
   it('uses a known org id for thread reads without loading workspace info', async () => {

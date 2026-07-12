@@ -18,9 +18,9 @@ import {
 } from "../../../src/lib/llm-provider-config";
 
 const CODEX_MODELS = [
+  "gpt-5.6-sol",
+  "gpt-5.6-terra",
   "gpt-5.5",
-  "gpt-5.4",
-  "gpt-5.4-mini",
   "gemini-3.5-flash",
   "gemini-3-flash-preview",
   "deepseek-v4-pro",
@@ -49,9 +49,9 @@ const OPENROUTER_ONLY_MODELS = [
 ] as const;
 
 const OPENROUTER_BYOK_CODEX_MODELS = [
+  "gpt-5.6-sol",
+  "gpt-5.6-terra",
   "gpt-5.5",
-  "gpt-5.4",
-  "gpt-5.4-mini",
   "gemini-3.5-flash",
   "gemini-3-flash-preview",
   "deepseek-v4-pro",
@@ -63,7 +63,10 @@ const OPENROUTER_BYOK_CODEX_MODELS = [
 
 const CAMELAI_HOSTED_ONLY_MODELS = ["deepseek-v4-auto"] as const;
 
-const BEDROCK_OPENAI_MODELS = ["gpt-5.5", "gpt-5.4"] as const;
+const BEDROCK_OPENAI_MODELS = [
+  "gpt-5.5-bedrock",
+  "gpt-5.4-bedrock",
+] as const;
 
 describe("llm provider config helpers", () => {
   it("defaults missing thread model to sonnet", () => {
@@ -93,9 +96,9 @@ describe("llm provider config helpers", () => {
       ...CLAUDE_MODELS,
     ]);
     expect(getLlmModelOptions("openai").map((option) => option.value)).toEqual([
+      "gpt-5.6-sol",
+      "gpt-5.6-terra",
       "gpt-5.5",
-      "gpt-5.4",
-      "gpt-5.4-mini",
     ]);
     expect(getLlmModelOptions("openrouter").map((option) => option.value)).toEqual([
       ...CLAUDE_MODELS,
@@ -109,7 +112,7 @@ describe("llm provider config helpers", () => {
       getLlmModelOptions("custom", { customApi: "openai-responses" }).map(
         (option) => option.value,
       ),
-    ).toEqual(["gpt-5.5", "gpt-5.4", "gpt-5.4-mini"]);
+    ).toEqual(["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.5"]);
     expect(
       getLlmModelOptions("custom", { customApi: "anthropic-messages" }).map(
         (option) => option.value,
@@ -160,7 +163,7 @@ describe("llm provider config helpers", () => {
       getVisibleLlmModelOptions({ claude_proxy_models: false }, null, {
         orgProvider: "openai",
       }).map((option) => option.value),
-    ).toEqual(["gpt-5.5", "gpt-5.4", "gpt-5.4-mini"]);
+    ).toEqual(["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.5"]);
     expect(
       getVisibleLlmModelOptions({ claude_proxy_models: false }).map(
         (option) => option.value,
@@ -189,7 +192,7 @@ describe("llm provider config helpers", () => {
         orgProvider: "bedrock",
         awsRegion: "us-west-2",
       }).map((option) => option.value),
-    ).toEqual([...CLAUDE_MODELS, "gpt-5.4"]);
+    ).toEqual([...CLAUDE_MODELS, "gpt-5.4-bedrock"]);
     expect(
       getVisibleLlmModelOptions({ claude_proxy_models: false }, null, {
         orgProvider: "bedrock",
@@ -243,7 +246,7 @@ describe("llm provider config helpers", () => {
         null,
         { orgProvider: "openai" },
       ).map((option) => option.value),
-    ).toEqual(["gpt-5.5", "gpt-5.4", "gpt-5.4-mini"]);
+    ).toEqual(["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.5"]);
     expect(
       getVisibleLlmModelOptions(
         { claude_proxy_models: true },
@@ -269,7 +272,7 @@ describe("llm provider config helpers", () => {
         { claude_proxy_models: false },
         "gpt-5.4-mini",
       ).map((option) => option.value),
-    ).toEqual([...CLAUDE_MODELS, ...CODEX_MODELS]);
+    ).toEqual(["gpt-5.4-mini", ...CLAUDE_MODELS, ...CODEX_MODELS]);
     expect(
       getVisibleLlmModelOptions(
         { claude_proxy_models: false },
@@ -280,7 +283,7 @@ describe("llm provider config helpers", () => {
 
   it("validates new thread models against BYOK and proxy policy", () => {
     expect(
-      isLlmModelAllowedForNewThread("gpt-5.4", null, {
+      isLlmModelAllowedForNewThread("gpt-5.6-terra", null, {
         claude_proxy_models: false,
       }),
     ).toBe(true);
@@ -303,7 +306,18 @@ describe("llm provider config helpers", () => {
       isLlmModelAllowedForNewThread("gpt-5.4", "openai", {
         claude_proxy_models: true,
       }),
+    ).toBe(false);
+    expect(
+      isLlmModelAllowedForNewThread("gpt-5.4", "bedrock", {
+        claude_proxy_models: true,
+      }),
+    ).toBe(false);
+    expect(
+      isLlmModelAllowedForNewThread("gpt-5.4-bedrock", "bedrock", {
+        claude_proxy_models: true,
+      }),
     ).toBe(true);
+    expect(normalizeLlmModel("gpt-5.4", "bedrock")).toBe("gpt-5.4");
     expect(
       isLlmModelAllowedForNewThread("sonnet", "openai", {
         claude_proxy_models: true,
@@ -313,7 +327,7 @@ describe("llm provider config helpers", () => {
       isLlmModelAllowedForNewThread("gpt-5.4-mini", "openrouter", {
         claude_proxy_models: true,
       }),
-    ).toBe(true);
+    ).toBe(false);
     for (const model of OPENROUTER_ONLY_MODELS) {
       expect(
         isLlmModelAllowedForNewThread(model, "openrouter", {

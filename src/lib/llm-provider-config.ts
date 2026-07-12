@@ -7,7 +7,7 @@ import type {
 import { decryptCredentials } from "./integration-crypto";
 
 export const DEFAULT_LLM_MODEL: LlmModel = "sonnet";
-export const DEFAULT_CODEX_MODEL: LlmModel = "gpt-5.4";
+export const DEFAULT_CODEX_MODEL: LlmModel = "gpt-5.6-terra";
 export const DEFAULT_OPENROUTER_MODEL: LlmModel = "kimi-k2.7-code";
 export const CUSTOM_LLM_MODEL: LlmModel = "custom";
 export const THREAD_MODEL_LOCK_MESSAGE =
@@ -66,9 +66,19 @@ export const CODEX_LLM_MODEL_OPTIONS: ReadonlyArray<{
   description: string;
 }> = [
   {
+    value: "gpt-5.6-sol",
+    label: "GPT-5.6 Sol",
+    description: "Highest-capability OpenAI model",
+  },
+  {
+    value: "gpt-5.6-terra",
+    label: "GPT-5.6 Terra",
+    description: "Default balanced OpenAI model",
+  },
+  {
     value: "gpt-5.5",
     label: "GPT-5.5",
-    description: "OpenAI flagship reasoning model",
+    description: "Previous-generation OpenAI model",
   },
   {
     value: "gpt-5.4",
@@ -79,6 +89,16 @@ export const CODEX_LLM_MODEL_OPTIONS: ReadonlyArray<{
     value: "gpt-5.4-mini",
     label: "GPT-5.4 Mini",
     description: "Faster and cheaper",
+  },
+  {
+    value: "gpt-5.5-bedrock",
+    label: "GPT-5.5 Bedrock",
+    description: "GPT-5.5 through Amazon Bedrock",
+  },
+  {
+    value: "gpt-5.4-bedrock",
+    label: "GPT-5.4 Bedrock",
+    description: "GPT-5.4 through Amazon Bedrock",
   },
   {
     value: "gemini-3.5-flash",
@@ -122,6 +142,26 @@ export const CODEX_LLM_MODEL_OPTIONS: ReadonlyArray<{
   },
 ];
 
+// Retired models remain valid persisted values and can still execute on routes
+// that support them. They are hidden only when choosing a model for a new
+// thread. Provider deprecation belongs at the execution routing boundary, not
+// in persistence readers or API loaders.
+export const RETIRED_LLM_MODELS: ReadonlySet<LlmModel> = new Set([
+  "gpt-5.4",
+  "gpt-5.4-mini",
+]);
+
+function isLlmModelSelectableForOrgProvider(
+  model: LlmModel,
+  orgProvider?: string | null,
+  _options?: LlmProviderModelOptions,
+): boolean {
+  if (orgProvider === "bedrock") {
+    return isClaudeLlmModel(model) || BEDROCK_ONLY_CODEX_MODELS.has(model);
+  }
+  return !RETIRED_LLM_MODELS.has(model);
+}
+
 export const CUSTOM_LLM_MODEL_OPTIONS: ReadonlyArray<{
   value: LlmModel;
   label: string;
@@ -158,6 +198,11 @@ const CAMELAI_HOSTED_ONLY_CODEX_MODELS = new Set<LlmModel>([
   "deepseek-v4-auto",
 ]);
 
+const BEDROCK_ONLY_CODEX_MODELS = new Set<LlmModel>([
+  "gpt-5.5-bedrock",
+  "gpt-5.4-bedrock",
+]);
+
 const NON_PRODUCTION_ONLY_MODELS = new Set<LlmModel>([
   "deepseek-v4-auto",
 ]);
@@ -175,6 +220,9 @@ export function allowNonProductionModelOptions(
 }
 
 const BEDROCK_OPENAI_MODEL_REGIONS: Readonly<Record<string, readonly string[]>> = {
+  "gpt-5.5-bedrock": ["us-east-1", "us-east-2"],
+  "gpt-5.4-bedrock": ["us-east-1", "us-east-2", "us-west-2", "us-gov-west-1"],
+  // Legacy persisted IDs remain executable for existing Bedrock threads.
   "gpt-5.5": ["us-east-1", "us-east-2"],
   "gpt-5.4": ["us-east-1", "us-east-2", "us-west-2", "us-gov-west-1"],
 };
@@ -258,8 +306,10 @@ export function getLlmModelOptions(
   if (orgProvider === "custom" && hasCustomModelId(options?.customModelId)) {
     return CUSTOM_LLM_MODEL_OPTIONS;
   }
-  return LLM_MODEL_OPTIONS.filter((option) =>
-    isLlmModelAllowedForOrgProvider(option.value, orgProvider, options),
+  return LLM_MODEL_OPTIONS.filter(
+    (option) =>
+      isLlmModelSelectableForOrgProvider(option.value, orgProvider, options) &&
+      isLlmModelAllowedForOrgProvider(option.value, orgProvider, options),
   );
 }
 
@@ -321,6 +371,7 @@ export function isLlmModelAllowedForNewThread(
 ): value is LlmModel {
   return (
     isLlmModel(value) &&
+    isLlmModelSelectableForOrgProvider(value, orgProvider, options) &&
     isLlmModelAllowedForOrgProvider(value, orgProvider, options)
   );
 }
@@ -342,13 +393,19 @@ export function isLlmModelAllowedForOrgProvider(
     return false;
   }
   if (orgProvider === "openai") {
-    return isCodexLlmModel(model) && !OPENROUTER_ONLY_CODEX_MODELS.has(model);
+    return isCodexLlmModel(model) &&
+      !OPENROUTER_ONLY_CODEX_MODELS.has(model) &&
+      !BEDROCK_ONLY_CODEX_MODELS.has(model);
   }
   if (orgProvider === "anthropic") {
     return isClaudeLlmModel(model);
   }
   if (orgProvider === "bedrock") {
-    return isClaudeLlmModel(model) || isBedrockOpenAiModelAllowedInRegion(model, options?.awsRegion);
+    return isClaudeLlmModel(model) ||
+      (BEDROCK_ONLY_CODEX_MODELS.has(model) ||
+        model === "gpt-5.5" ||
+        model === "gpt-5.4") &&
+        isBedrockOpenAiModelAllowedInRegion(model, options?.awsRegion);
   }
   if (orgProvider === "custom") {
     if (model === CUSTOM_LLM_MODEL) {
@@ -358,13 +415,16 @@ export function isLlmModelAllowedForOrgProvider(
       return isClaudeLlmModel(model);
     }
     if (isOpenAiCompatibleCustomApi(options?.customApi)) {
-      return isCodexLlmModel(model) && !OPENROUTER_ONLY_CODEX_MODELS.has(model);
+      return isCodexLlmModel(model) &&
+        !OPENROUTER_ONLY_CODEX_MODELS.has(model) &&
+        !BEDROCK_ONLY_CODEX_MODELS.has(model);
     }
-    return true;
+    return !BEDROCK_ONLY_CODEX_MODELS.has(model);
   }
   if (OPENROUTER_ONLY_CODEX_MODELS.has(model)) {
     return orgProvider !== "openai";
   }
+  if (BEDROCK_ONLY_CODEX_MODELS.has(model)) return false;
   if (model === CUSTOM_LLM_MODEL) return false;
   return true;
 }
@@ -380,10 +440,16 @@ export function isLlmModelCoveredByByokProvider(
     return isClaudeLlmModel(model);
   }
   if (provider === "bedrock") {
-    return isClaudeLlmModel(model) || isBedrockOpenAiModelAllowedInRegion(model, undefined);
+    return isClaudeLlmModel(model) ||
+      (BEDROCK_ONLY_CODEX_MODELS.has(model) ||
+        model === "gpt-5.5" ||
+        model === "gpt-5.4") &&
+        isBedrockOpenAiModelAllowedInRegion(model, undefined);
   }
   if (provider === "openai") {
-    return isCodexLlmModel(model) && !OPENROUTER_ONLY_CODEX_MODELS.has(model);
+    return isCodexLlmModel(model) &&
+      !OPENROUTER_ONLY_CODEX_MODELS.has(model) &&
+      !BEDROCK_ONLY_CODEX_MODELS.has(model);
   }
   if (provider === "custom") return true;
   return false;

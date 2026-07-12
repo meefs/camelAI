@@ -268,6 +268,29 @@ function createProjectToolFake({
 }
 
 describe('ChatThreadDO Pi turn handling', () => {
+  it('routes both GPT-5.6 product models to OpenAI', () => {
+    const mapping = new PiModelMapping();
+    expect(mapping.resolvePiModelReference('gpt-5.6-sol')).toMatchObject({
+      provider: 'openai',
+      modelId: 'gpt-5.6-sol',
+    });
+    expect(mapping.resolvePiModelReference('gpt-5.6-terra')).toMatchObject({
+      provider: 'openai',
+      modelId: 'gpt-5.6-terra',
+    });
+  });
+
+  it('routes Bedrock product IDs to their provider model IDs', () => {
+    const mapping = new PiModelMapping();
+    expect(mapping.resolvePiModelReference('gpt-5.5-bedrock')).toMatchObject({
+      provider: 'openai',
+      modelId: 'gpt-5.5',
+    });
+    expect(mapping.resolvePiModelReference('gpt-5.4-bedrock')).toMatchObject({
+      provider: 'openai',
+      modelId: 'gpt-5.4',
+    });
+  });
   function createPiEventFake() {
     const events: any[] = [];
     const activityRecords: any[] = [];
@@ -2568,9 +2591,9 @@ describe('ChatThreadDO Pi turn handling', () => {
       getModel,
     );
 
-    expect(getModel).toHaveBeenCalledWith('openai', 'gpt-5.4');
+    expect(getModel).toHaveBeenCalledWith('openai', 'gpt-5.6-terra');
     expect(model.model).toMatchObject({
-      id: 'gpt-5.4',
+      id: 'gpt-5.6-terra',
       provider: 'custom',
       api: 'openai-responses',
       baseUrl: 'https://custom.example/v1',
@@ -2608,7 +2631,7 @@ describe('ChatThreadDO Pi turn handling', () => {
       getModel,
     );
 
-    expect(getModel).toHaveBeenCalledWith('openai', 'gpt-5.4');
+    expect(getModel).toHaveBeenCalledWith('openai', 'gpt-5.6-terra');
     expect(model.model).toMatchObject({
       id: 'pi-custom-model',
       provider: 'custom',
