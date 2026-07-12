@@ -19,9 +19,7 @@ import {
   useRevalidator,
   useSubmit,
 } from "react-router";
-import {
-  ArrowDown,
-} from "lucide-react";
+import { ArrowDown } from "lucide-react";
 import { toast } from "sonner";
 import type {
   AtMentionEntity,
@@ -49,17 +47,18 @@ import {
   type BillingCreditStatusResourceData,
 } from "@/hooks/use-billing-credit-status";
 import { useOptionalChatGroups } from "@/hooks/use-chat-groups";
+import { useChatCompaction } from "@/hooks/use-chat-compaction";
+import {
+  useChatTranscriptProjection,
+  useInitialChatTranscript,
+} from "@/hooks/use-chat-transcript";
+import { useCheckoutStatus } from "@/hooks/use-checkout-status";
 import { useCompletedTurns } from "@/hooks/use-completed-turns";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { APP_BUILD_ID } from "@/lib/app-build-id";
-import {
-  TooltipProvider,
-} from "@/components/ui/tooltip";
+import { TooltipProvider } from "@/components/ui/tooltip";
 import { PromptInput } from "@/components/prompt-input";
-import {
-  FloatingTodoList,
-  type TodoItem,
-} from "@/components/floating-todo";
+import { FloatingTodoList, type TodoItem } from "@/components/floating-todo";
 import {
   AskUserQuestion,
   type AskUserQuestionData,
@@ -88,7 +87,10 @@ import {
 import { ChatErrorNotice } from "@/components/chat-error-notice";
 import { ChatMessagesView } from "@/components/chat-messages-view";
 import { ShareStatusButton } from "@/components/chat-share-status-button";
-import { isImageFile, type NotebookPreviewLoadState } from "@/components/chat-file-preview";
+import {
+  isImageFile,
+  type NotebookPreviewLoadState,
+} from "@/components/chat-file-preview";
 import { ChatPreviewProvider } from "@/components/chat-preview/preview-context";
 import {
   DEFAULT_NOTEBOOK_PREVIEW_STATE,
@@ -109,24 +111,12 @@ import {
 import { cn } from "@/lib/utils";
 import { buildSlugMap, type MentionableProject } from "@/lib/mentions";
 import { isFileDrag } from "@/lib/file-drag";
-import {
-  createTranscriptNormalizationCaches,
-  mergeTaskNotifications,
-  normalizeToolResultMessages,
-  mergeTeammateMessages,
-} from "@/lib/streaming";
-import {
-  uiMessageToMessage,
-  uiMessagesEquivalent,
-} from "@/lib/ui-message-adapter";
-import { parseMessageContent } from "@/lib/chat-message-content";
+import { uiMessagesEquivalent } from "@/lib/ui-message-adapter";
 import {
   deriveIsAwaitingAssistant,
   deriveTurnSettled,
   isAssistantLikeMessage,
 } from "@/lib/chat-working-indicator";
-import { mergeOverlay } from "@/lib/runtime-message-state";
-import { isSteerSliceIdOf } from "@/lib/steer-split";
 import type { ChatAgentStatePayload } from "@/lib/chat-agent-state";
 import { usePiChatStream } from "@/lib/use-pi-chat-stream";
 import { checkForVersionSkew } from "@/lib/version-skew";
@@ -139,11 +129,7 @@ import {
   trackChatSocketOpen,
   trackChatSocketTerminalClose,
 } from "@/lib/chat-ws-telemetry";
-import {
-  type AppUrlInput,
-  getAppUrl,
-  getAppIframeUrl,
-} from "@/lib/app-url";
+import { type AppUrlInput, getAppUrl, getAppIframeUrl } from "@/lib/app-url";
 import {
   collectProjectReferencesFromMessages,
   collectProjectReferencesFromPreviewTabs,
@@ -173,10 +159,7 @@ import {
   type ModelCatalogEntry,
 } from "@/lib/model-catalog";
 import { resolveDefaultModelForChat } from "@/lib/model-picker-config";
-import {
-  getRecentModel,
-  type RecentModelScope,
-} from "@/lib/recent-model";
+import { getRecentModel, type RecentModelScope } from "@/lib/recent-model";
 import type { BillingCreditStatus } from "@/lib/chat-credit-status";
 import {
   loadDeliveryDraft,
@@ -341,11 +324,12 @@ interface CreditPacksResourceData {
   unavailableReason?: string | null;
 }
 
-function isPromiseLike<T>(value: T | Promise<T> | undefined): value is Promise<T> {
+function isPromiseLike<T>(
+  value: T | Promise<T> | undefined,
+): value is Promise<T> {
   return typeof (value as Promise<T> | undefined)?.then === "function";
 }
 
-const EMPTY_UI_MESSAGES: UIMessage[] = [];
 const EMPTY_WORKER_APPS: WorkerScriptWithCreator[] = [];
 const EMPTY_INTEGRATIONS: Integration[] = [];
 const EMPTY_MENTION_PROJECTS: MentionableProject[] = [];
@@ -428,7 +412,9 @@ function dispatchLocalThreadSummaryUpdate(
   );
 }
 
-function isChatGroupAvatarStatus(value: unknown): value is ChatGroupAvatarStatus {
+function isChatGroupAvatarStatus(
+  value: unknown,
+): value is ChatGroupAvatarStatus {
   return (
     value === "pending" ||
     value === "generated" ||
@@ -439,7 +425,11 @@ function isChatGroupAvatarStatus(value: unknown): value is ChatGroupAvatarStatus
 
 function isChatGroupAvatar(value: unknown): value is ChatGroupAvatar {
   if (!value || typeof value !== "object") return false;
-  const avatar = value as { color?: unknown; content?: unknown; status?: unknown };
+  const avatar = value as {
+    color?: unknown;
+    content?: unknown;
+    status?: unknown;
+  };
   return (
     typeof avatar.color === "string" &&
     typeof avatar.content === "string" &&
@@ -646,27 +636,16 @@ export default function Chat({
   const isSubmittingNewThread =
     navigation.state !== "idle" &&
     navigation.formData?.get("intent") === "createThreadAndStart";
-  // Parse initial messages once. The first user message of a new thread is part
-  // of the persisted transcript (the new-chat action awaits the DO accepting and
-  // persisting it before navigating here), so there is no optimistic placeholder.
-  // A live-user loader no longer fetches the legacy pi_core transcript (the
-  // ai-chat render history is the single transcript RPC), so when the legacy
-  // list is absent the same fallback view is derived from initialUiMessages —
-  // it covers the paint gap until usePiChatStream seeds, and the snapshot cache.
-  const parsedInitialMessages = useMemo(() => {
-    const source =
-      initialMessages && initialMessages.length > 0
-        ? initialMessages
-        : (initialUiMessages ?? []).map((ui) => uiMessageToMessage(ui, { threadId }));
-    return source.map((msg) => ({
-      ...msg,
-      content: parseMessageContent(msg.content),
-    }));
-  }, [initialMessages, initialUiMessages, threadId]);
-
-  // Anchor to the last message when opening a thread that already has messages
-  // (the welcome composer clears its own draft on submit; see startNewChat).
-  const shouldAnchorToLastMessage = parsedInitialMessages.length > 0;
+  const {
+    loaderErrorIdsRef,
+    parsedInitialMessages,
+    shouldAnchorToLastMessage,
+    stableInitialUiMessages,
+  } = useInitialChatTranscript({
+    threadId,
+    initialMessages,
+    initialUiMessages,
+  });
   const initialPreviewSession = useMemo(
     () =>
       normalizePreviewSessionState(
@@ -676,36 +655,6 @@ export default function Chat({
       ),
     [initialPreviewTabs, initialActiveTabId],
   );
-
-  // Stable reference for the ai-chat seed so useAgentChat mounts its initial
-  // history once (deferred/missed-turn refreshes reconcile through setUiMessages).
-  const stableInitialUiMessages = useMemo(
-    () => initialUiMessages ?? EMPTY_UI_MESSAGES,
-    [initialUiMessages],
-  );
-
-  // Error ids already present in a loader-provided render history payload. The
-  // same terminal error rides both the durable data-pi-error part (rendered as
-  // an inline ErrorBlock by the adapter) and Agent-state lastError; on a reload
-  // after a failed turn the transcript shows the inline block, so the one-shot
-  // banner must not fire again for that id. A live turn's error id never
-  // appears in a loader payload, so its banner still shows. Collected during
-  // render (not an effect) so a socket state update racing the first paint
-  // still sees the ids from the payload that seeded this mount.
-  const loaderErrorIdsRef = useRef<Set<string>>(new Set());
-  const loaderErrorIdsSourceRef = useRef<UIMessage[] | null>(null);
-  if (loaderErrorIdsSourceRef.current !== stableInitialUiMessages) {
-    loaderErrorIdsSourceRef.current = stableInitialUiMessages;
-    for (const ui of stableInitialUiMessages) {
-      for (const part of ui.parts) {
-        if (part.type !== "data-pi-error") continue;
-        const errorId = (part as { data?: { id?: unknown } }).data?.id;
-        if (typeof errorId === "string" && errorId) {
-          loaderErrorIdsRef.current.add(errorId);
-        }
-      }
-    }
-  }
 
   // ai-chat owns the durable render history now. `messages` here holds only
   // optimistic pending user bubbles (the just-sent message before its persisted
@@ -799,30 +748,12 @@ export default function Chat({
     () => `${locationPathname}${locationSearch}${locationHash}`,
     [locationHash, locationPathname, locationSearch],
   );
-  const lastHandledCheckoutKeyRef = useRef<string | null>(null);
-
-  useEffect(() => {
-    const searchParams = new URLSearchParams(locationSearch);
-    const checkoutStatus = searchParams.get("checkout");
-    if (!checkoutStatus) return;
-    const checkoutKey = `${locationPathname}${locationSearch}${locationHash}`;
-    if (lastHandledCheckoutKeyRef.current === checkoutKey) return;
-    lastHandledCheckoutKeyRef.current = checkoutKey;
-
-    if (checkoutStatus === "success") {
-      toast.success("Credits added");
-    } else if (checkoutStatus === "cancelled") {
-      toast.message("Credit checkout cancelled");
-    }
-
-    const nextParams = new URLSearchParams(searchParams);
-    nextParams.delete("checkout");
-    const nextSearch = nextParams.toString();
-    navigate(
-      `${locationPathname}${nextSearch ? `?${nextSearch}` : ""}${locationHash}`,
-      { replace: true },
-    );
-  }, [locationHash, locationPathname, locationSearch, navigate]);
+  useCheckoutStatus({
+    hash: locationHash,
+    navigate,
+    pathname: locationPathname,
+    search: locationSearch,
+  });
 
   useEffect(() => {
     if (!initialWelcomeInput) {
@@ -890,141 +821,43 @@ export default function Chat({
     setAttachments(nextDraft?.attachments ?? []);
   }, [initialWelcomeInput, readOnly, resolvedWorkspaceId, threadId]);
 
-  // Compaction in-progress indicator
-  const [isCompacting, setIsCompacting] = useState(false);
-  const hasCapturedCompactionSummaryRef = useRef(false);
-  const queuedManualCompactionsRef = useRef(0);
-  const activeManualCompactionTurnRef = useRef(false);
-  const isAutoCompactingRef = useRef(false);
-  // ID of the assistant message that was active when compaction started.
-  // Used to suppress finalized visuals until compaction is complete.
-  const compactingPriorMessageIdRef = useRef<string | null>(null);
-  const [compactingPriorMessageId, setCompactingPriorMessageId] = useState<
-    string | null
-  >(null);
-  const syncCompactionIndicator = useCallback(() => {
-    const shouldShowIndicator =
-      activeManualCompactionTurnRef.current ||
-      queuedManualCompactionsRef.current > 0 ||
-      isAutoCompactingRef.current;
-    setIsCompacting(shouldShowIndicator);
-  }, [setIsCompacting]);
-  const queueManualCompaction = useCallback(() => {
-    queuedManualCompactionsRef.current += 1;
-    syncCompactionIndicator();
-  }, [syncCompactionIndicator]);
-  const completeActiveManualCompaction = useCallback(() => {
-    if (activeManualCompactionTurnRef.current) {
-      activeManualCompactionTurnRef.current = false;
-    } else if (queuedManualCompactionsRef.current > 0) {
-      // Some reconnect/replay paths can miss `system/init` for the compact turn.
-      // If completion arrives without an active turn, consume one queued entry.
-      queuedManualCompactionsRef.current -= 1;
-    }
-    syncCompactionIndicator();
-  }, [syncCompactionIndicator]);
-  const clearManualCompactionQueue = useCallback(() => {
-    activeManualCompactionTurnRef.current = false;
-    queuedManualCompactionsRef.current = 0;
-    syncCompactionIndicator();
-  }, [syncCompactionIndicator]);
+  const {
+    activeManualCompactionTurnRef,
+    clearManualCompactionQueue,
+    compactingPriorMessageId,
+    compactingPriorMessageIdRef,
+    completeActiveManualCompaction,
+    hasCapturedCompactionSummaryRef,
+    isAutoCompactingRef,
+    isCompacting,
+    queueManualCompaction,
+    setCompactingPriorMessageId,
+    syncCompactionIndicator,
+  } = useChatCompaction();
   const iframeRef = useRef<HTMLIFrameElement>(null);
-  // Paint bridge for the seed's excluded in-flight message: the snapshot seed
-  // omits the assistant message that was mid-stream at capture so the resumed
-  // stream can rebuild it from scratch (see resolveDisplayChatData). Until the
-  // stream re-delivers that id, keep painting the captured legacy view of it —
-  // bounded so a turn that died while away doesn't pin stale content forever
-  // (the loader/broadcast history is authoritative once the bound lapses).
-  const BRIDGE_MAX_MS = 15_000;
-  const [bridgeExpired, setBridgeExpired] = useState(
-    () => !bridgedStreamingMessageId,
-  );
-  useEffect(() => {
-    if (!bridgedStreamingMessageId) return;
-    const timer = setTimeout(() => setBridgeExpired(true), BRIDGE_MAX_MS);
-    return () => clearTimeout(timer);
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- mount-scoped bound
-  }, []);
-  const bridgeMessages = useMemo<Message[]>(() => {
-    if (!bridgedStreamingMessageId || bridgeExpired || readOnly) return [];
-    if (piChat.uiMessages.some((m) => m.id === bridgedStreamingMessageId)) {
-      return [];
-    }
-    return parsedInitialMessages.filter((message) =>
-      isSteerSliceIdOf(bridgedStreamingMessageId, message.id),
-    );
-  }, [
+  const {
+    displayMessages,
+    displayMessagesRef,
+    normalizedMessages,
+    skillSheetsByToolId,
+    visibleMessages,
+  } = useChatTranscriptProjection({
     bridgedStreamingMessageId,
-    bridgeExpired,
-    readOnly,
-    piChat.uiMessages,
+    liveMessages: piChat.messages,
+    liveUiMessages: piChat.uiMessages,
+    optimisticMessages: messages,
     parsedInitialMessages,
-  ]);
-
-  // The durable transcript comes from ai-chat (piChat.messages). Read-only admin
-  // viewers render pi_core directly (parsedInitialMessages), and both branches
-  // fall back to the loader payload until the hook seeds/streams — this keeps the
-  // instant-paint snapshot on thread switch working through the deferred-load gap.
-  const baseMessages = useMemo(() => {
-    if (readOnly) return parsedInitialMessages;
-    if (piChat.messages.length === 0) return parsedInitialMessages;
-    return bridgeMessages.length > 0
-      ? [...piChat.messages, ...bridgeMessages]
-      : piChat.messages;
-  }, [readOnly, parsedInitialMessages, piChat.messages, bridgeMessages]);
-  // Optimistic pending user bubbles that have not yet echoed back through the
-  // hook (matched by id / clientMessageId) are appended for immediate feedback.
-  const displayMessages = useMemo(() => {
-    if (messages.length === 0) return baseMessages;
-    const baseKeys = new Set<string>();
-    for (const message of baseMessages) {
-      baseKeys.add(message.id);
-      if (message.clientMessageId) baseKeys.add(message.clientMessageId);
-    }
-    const optimistic = messages.filter(
-      (message) =>
-        !baseKeys.has(message.id) &&
-        !(message.clientMessageId && baseKeys.has(message.clientMessageId)),
-    );
-    return optimistic.length === 0
-      ? baseMessages
-      : mergeOverlay(baseMessages, optimistic);
-  }, [baseMessages, messages]);
-  const displayMessagesRef = useRef<Message[]>(displayMessages);
-  displayMessagesRef.current = displayMessages;
+    readOnly,
+  });
   // Turn duration/completion badges keyed by the assistant message id, plus the
   // one-shot "freshly completed" highlight. Derived from each completed turn's
   // metadata (turnDurationMs / completedAtMs ride message-metadata.pi on the
   // assistant message). Replaces the retired Agent-state lastCompletedTurn channel.
-  const { completedTurns, freshlyCompletedTurnId, clearFreshlyCompletedTurnId } =
-    useCompletedTurns(displayMessages, threadId);
-  // Per-message work inside the normalize chain is cached by object identity
-  // (only the streaming message's object changes per tick), so this per-tick
-  // re-run over the whole transcript stays cheap. See
-  // TranscriptNormalizationCaches in streaming.ts.
-  const normalizationCachesRef = useRef(createTranscriptNormalizationCaches());
-  const normalizedMessages = useMemo(
-    () =>
-      mergeTaskNotifications(
-        mergeTeammateMessages(
-          normalizeToolResultMessages(
-            displayMessages,
-            normalizationCachesRef.current,
-          ),
-          normalizationCachesRef.current,
-        ),
-        normalizationCachesRef.current,
-      ),
-    [displayMessages],
-  );
-  const visibleMessages = useMemo(
-    () =>
-      normalizedMessages.filter(
-        (message) => !message.isMeta && !message.sourceToolUseID,
-      ),
-    [normalizedMessages],
-  );
-
+  const {
+    completedTurns,
+    freshlyCompletedTurnId,
+    clearFreshlyCompletedTurnId,
+  } = useCompletedTurns(displayMessages, threadId);
   // Refs to track current state for use in callbacks (avoids stale closures)
   // The most recent terminal error already surfaced, so the state-driven error
   // is shown exactly once even across re-renders/reconnects.
@@ -1073,7 +906,8 @@ export default function Chat({
     if (stableInitialUiMessages.length === 0 && currentUiMessages.length > 0) {
       return;
     }
-    if (uiMessagesEquivalent(currentUiMessages, stableInitialUiMessages)) return;
+    if (uiMessagesEquivalent(currentUiMessages, stableInitialUiMessages))
+      return;
     piChatRef.current.setUiMessages(stableInitialUiMessages);
   }, [stableInitialUiMessages, readOnly]);
 
@@ -1129,23 +963,6 @@ export default function Chat({
   const runningStartedAt = activeThreadRunningState.isRunning
     ? activeThreadRunningState.startedAt
     : null;
-  const skillSheetsByToolId = useMemo(() => {
-    const map = new Map<string, string>();
-    for (const message of normalizedMessages) {
-      if (!message.sourceToolUseID) continue;
-      const content =
-        typeof message.content === "string"
-          ? message.content
-          : message.content
-              .map((block) => (block?.type === "text" ? block.text : ""))
-              .filter(Boolean)
-              .join("\n\n");
-      if (content) {
-        map.set(message.sourceToolUseID, content);
-      }
-    }
-    return map;
-  }, [normalizedMessages]);
   const [input, setInput] = useState("");
   const [ready, setReady] = useState(false);
   const [error, setError] = useState<ChatApiErrorPresentation | null>(() =>
@@ -1175,12 +992,7 @@ export default function Chat({
       { orgProvider: llmProvider },
     );
     return modelCatalogEntriesForIds(options.map((option) => option.value));
-  }, [
-    allowedThreadModels,
-    experimentalSettings,
-    llmProvider,
-    threadModel,
-  ]);
+  }, [allowedThreadModels, experimentalSettings, llmProvider, threadModel]);
   const availableThreadModelIds = useMemo(
     () => new Set(availableThreadModels.map((entry) => entry.id)),
     [availableThreadModels],
@@ -1237,9 +1049,7 @@ export default function Chat({
   const [showScrollButton, setShowScrollButton] = useState(false);
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
   const [forkingMessageId, setForkingMessageId] = useState<string | null>(null);
-  const [attachments, setAttachments] = useState<Attachment[]>(
-    () => [],
-  );
+  const [attachments, setAttachments] = useState<Attachment[]>(() => []);
   const [contextUsedPercent, setContextUsedPercent] = useState<number | null>(
     null,
   );
@@ -1298,7 +1108,9 @@ export default function Chat({
       return;
     }
 
-    if (!isComposerVisiblyEmpty(welcomeInputRef.current, attachmentsRef.current)) {
+    if (
+      !isComposerVisiblyEmpty(welcomeInputRef.current, attachmentsRef.current)
+    ) {
       return;
     }
     skipNextEmptyDraftSaveRef.current = true;
@@ -1346,12 +1158,7 @@ export default function Chat({
       pendingSubmission.text,
       pendingSubmission.attachments,
     );
-  }, [
-    newChatActionError,
-    readOnly,
-    resolvedWorkspaceId,
-    threadId,
-  ]);
+  }, [newChatActionError, readOnly, resolvedWorkspaceId, threadId]);
 
   const [previewTabs, setPreviewTabs] = useState<PreviewTab[]>(
     () => initialPreviewSession.tabs,
@@ -1380,9 +1187,8 @@ export default function Chat({
   const [tabFileViewModes, setTabFileViewModes] = useState<
     Record<string, "preview" | "source">
   >({});
-  const tabFileViewModesRef = useRef<Record<string, "preview" | "source">>(
-    tabFileViewModes,
-  );
+  const tabFileViewModesRef =
+    useRef<Record<string, "preview" | "source">>(tabFileViewModes);
   tabFileViewModesRef.current = tabFileViewModes;
   const [tabNotebookStates, setTabNotebookStates] = useState<
     Record<string, NotebookPreviewLoadState>
@@ -1420,9 +1226,9 @@ export default function Chat({
   const stickToBottomRef = useRef(true);
   const forceScrollOnNextUpdate = useRef(false);
   const chatAgentRef = useRef<ChatAgentClient | null>(null);
-  const optimisticallyClearedConnectionSetupRequestIdRef = useRef<string | null>(
-    null,
-  );
+  const optimisticallyClearedConnectionSetupRequestIdRef = useRef<
+    string | null
+  >(null);
   const {
     connectionSetupPrompt,
     handleConnectionSetupCancel: handleConnectionSetupCancelBase,
@@ -1761,13 +1567,16 @@ export default function Chat({
       cancelled = true;
     };
   }, [rawMentionProjects]);
-  const mentionEntities = useMemo<AtMentionEntity[]>(() => [
-    ...resolvedMentionConnections.map((connection) => ({
-      ...connection,
-      kind: "connection" as const,
-    })),
-    ...resolvedMentionProjects,
-  ], [resolvedMentionConnections, resolvedMentionProjects]);
+  const mentionEntities = useMemo<AtMentionEntity[]>(
+    () => [
+      ...resolvedMentionConnections.map((connection) => ({
+        ...connection,
+        kind: "connection" as const,
+      })),
+      ...resolvedMentionProjects,
+    ],
+    [resolvedMentionConnections, resolvedMentionProjects],
+  );
   const mentionSlugMap = useMemo(
     () => buildSlugMap(mentionEntities),
     [mentionEntities],
@@ -1820,16 +1629,19 @@ export default function Chat({
     visibleProjectReferences,
   ]);
   const lastMentionSourcesFetchAtRef = useRef(0);
-  const handleMentionMenuOpenChange = useCallback((open: boolean) => {
-    if (!open || !resolvedWorkspaceId) return;
-    if (mentionSourcesFetcher.state !== "idle") return;
-    const now = Date.now();
-    if (now - lastMentionSourcesFetchAtRef.current < 15_000) return;
-    lastMentionSourcesFetchAtRef.current = now;
-    mentionSourcesFetcher.load(
-      `/api/workspaces/${encodeURIComponent(resolvedWorkspaceId)}/mentions`,
-    );
-  }, [mentionSourcesFetcher, resolvedWorkspaceId]);
+  const handleMentionMenuOpenChange = useCallback(
+    (open: boolean) => {
+      if (!open || !resolvedWorkspaceId) return;
+      if (mentionSourcesFetcher.state !== "idle") return;
+      const now = Date.now();
+      if (now - lastMentionSourcesFetchAtRef.current < 15_000) return;
+      lastMentionSourcesFetchAtRef.current = now;
+      mentionSourcesFetcher.load(
+        `/api/workspaces/${encodeURIComponent(resolvedWorkspaceId)}/mentions`,
+      );
+    },
+    [mentionSourcesFetcher, resolvedWorkspaceId],
+  );
   useEffect(() => {
     const data = mentionSourcesFetcher.data;
     if (data && Array.isArray(data.connections)) {
@@ -1887,7 +1699,11 @@ export default function Chat({
 
     const storedDraft = loadDeliveryDraft(workspaceId, deliveryThreadId);
     return storedDraft
-      ? pendingDeliveryDraftFromStored(workspaceId, deliveryThreadId, storedDraft)
+      ? pendingDeliveryDraftFromStored(
+          workspaceId,
+          deliveryThreadId,
+          storedDraft,
+        )
       : null;
   }, []);
 
@@ -2047,25 +1863,28 @@ export default function Chat({
     [normalizeChatError],
   );
 
-  const isPendingMessageAccepted = useCallback((clientMessageId: string) => {
-    if (acceptedPendingMessageIdsRef.current.has(clientMessageId)) {
-      return true;
-    }
+  const isPendingMessageAccepted = useCallback(
+    (clientMessageId: string) => {
+      if (acceptedPendingMessageIdsRef.current.has(clientMessageId)) {
+        return true;
+      }
 
-    const pendingDraft = pendingDeliveryDraftRef.current;
-    if (
-      pendingDraft?.clientMessageId === clientMessageId &&
-      pendingDraft.acceptedAt
-    ) {
-      return true;
-    }
+      const pendingDraft = pendingDeliveryDraftRef.current;
+      if (
+        pendingDraft?.clientMessageId === clientMessageId &&
+        pendingDraft.acceptedAt
+      ) {
+        return true;
+      }
 
-    const storedDraft = getStoredPendingDeliveryDraft();
-    return Boolean(
-      storedDraft?.clientMessageId === clientMessageId &&
+      const storedDraft = getStoredPendingDeliveryDraft();
+      return Boolean(
+        storedDraft?.clientMessageId === clientMessageId &&
         storedDraft.acceptedAt,
-    );
-  }, [getStoredPendingDeliveryDraft]);
+      );
+    },
+    [getStoredPendingDeliveryDraft],
+  );
 
   const getUnacceptedPendingUserMessages = useCallback(
     () =>
@@ -2096,9 +1915,7 @@ export default function Chat({
         (msg) => !failedIds.has(msg.id),
       );
       setPendingMessages(remainingPendingMessages);
-      setLoading(
-        remainingPendingMessages.length > 0 || isStreamingRef.current,
-      );
+      setLoading(remainingPendingMessages.length > 0 || isStreamingRef.current);
       if (!options?.preserveReady) {
         setReady(false);
       }
@@ -2246,52 +2063,55 @@ export default function Chat({
     setLocalPreviewSessionState,
   ]);
 
-  const cleanupClosedTabState = useCallback((tabId: string) => {
-    setTabIframeKeys((prev) => {
-      if (!(tabId in prev)) return prev;
-      const next = { ...prev };
-      delete next[tabId];
-      return next;
-    });
-    setTabFilePreviewKeys((prev) => {
-      if (!(tabId in prev)) return prev;
-      const next = { ...prev };
-      delete next[tabId];
-      return next;
-    });
-    setTabNotebookViewModes((prev) => {
-      if (!(tabId in prev)) return prev;
-      const next = { ...prev };
-      delete next[tabId];
-      return next;
-    });
-    setTabFileViewModes((prev) => {
-      if (!(tabId in prev)) return prev;
-      const next = { ...prev };
-      delete next[tabId];
-      return next;
-    });
-    setTabNotebookStates((prev) => {
-      if (!(tabId in prev)) return prev;
-      const next = { ...prev };
-      delete next[tabId];
-      return next;
-    });
-    setTabNotebookPdfExporting((prev) => {
-      if (!(tabId in prev)) return prev;
-      const next = { ...prev };
-      delete next[tabId];
-      return next;
-    });
-    setTabAppLoading((prev) => {
-      if (!(tabId in prev)) return prev;
-      const next = { ...prev };
-      delete next[tabId];
-      return next;
-    });
+  const cleanupClosedTabState = useCallback(
+    (tabId: string) => {
+      setTabIframeKeys((prev) => {
+        if (!(tabId in prev)) return prev;
+        const next = { ...prev };
+        delete next[tabId];
+        return next;
+      });
+      setTabFilePreviewKeys((prev) => {
+        if (!(tabId in prev)) return prev;
+        const next = { ...prev };
+        delete next[tabId];
+        return next;
+      });
+      setTabNotebookViewModes((prev) => {
+        if (!(tabId in prev)) return prev;
+        const next = { ...prev };
+        delete next[tabId];
+        return next;
+      });
+      setTabFileViewModes((prev) => {
+        if (!(tabId in prev)) return prev;
+        const next = { ...prev };
+        delete next[tabId];
+        return next;
+      });
+      setTabNotebookStates((prev) => {
+        if (!(tabId in prev)) return prev;
+        const next = { ...prev };
+        delete next[tabId];
+        return next;
+      });
+      setTabNotebookPdfExporting((prev) => {
+        if (!(tabId in prev)) return prev;
+        const next = { ...prev };
+        delete next[tabId];
+        return next;
+      });
+      setTabAppLoading((prev) => {
+        if (!(tabId in prev)) return prev;
+        const next = { ...prev };
+        delete next[tabId];
+        return next;
+      });
 
-    clearIframeTimersForTab(tabId);
-  }, [clearIframeTimersForTab]);
+      clearIframeTimersForTab(tabId);
+    },
+    [clearIframeTimersForTab],
+  );
 
   const openTabForTarget = useCallback(
     (target: PreviewTarget, options?: { sync?: boolean }) => {
@@ -2451,7 +2271,8 @@ export default function Chat({
           bumpIframeKey(nextActiveId);
         }, 1500);
       } else if (nextSession.target.kind === "file") {
-        const fileViewMode = tabFileViewModesRef.current[nextActiveId] ?? "preview";
+        const fileViewMode =
+          tabFileViewModesRef.current[nextActiveId] ?? "preview";
         if (shouldAutoRefreshFilePreview(nextSession.target, fileViewMode)) {
           bumpFilePreviewKey(nextActiveId);
         }
@@ -2593,7 +2414,9 @@ export default function Chat({
     setLoading(true);
     const currentMessages = messagesRef.current;
     const existingIds = new Set(currentMessages.map((message) => message.id));
-    const missing = queuedMessages.filter((message) => !existingIds.has(message.id));
+    const missing = queuedMessages.filter(
+      (message) => !existingIds.has(message.id),
+    );
     if (missing.length > 0) {
       setMessages([...currentMessages, ...missing]);
     }
@@ -2601,7 +2424,14 @@ export default function Chat({
       sendPendingMessageToAgent(message, id);
     }
     setPendingMessages((prev) => prev);
-  }, [isPendingMessageAccepted, runVersionSkewCheck, sendPendingMessageToAgent, setMessages, setPendingMessages, threadId]);
+  }, [
+    isPendingMessageAccepted,
+    runVersionSkewCheck,
+    sendPendingMessageToAgent,
+    setMessages,
+    setPendingMessages,
+    threadId,
+  ]);
 
   // Apply a terminal error (delivered through Agent state, not the websocket, so
   // it survives a reconnect after a disconnected/early failure).
@@ -2638,7 +2468,9 @@ export default function Chat({
       setPendingMessages([]);
       if (id) dispatchLocalThreadStatus(id, "idle");
       if (id && shouldRefreshBillingAfterError) {
-        refreshBillingCreditStatusAfterTurn(`${id}:billing-error:${Date.now()}`);
+        refreshBillingCreditStatusAfterTurn(
+          `${id}:billing-error:${Date.now()}`,
+        );
       }
       restorePendingDeliveryDraft();
       isAutoCompactingRef.current = false;
@@ -2781,7 +2613,12 @@ export default function Chat({
           : null,
       );
     },
-    [applyAgentPreviewState, setConnectionSetupPrompt, handleTerminalError, threadId],
+    [
+      applyAgentPreviewState,
+      setConnectionSetupPrompt,
+      handleTerminalError,
+      threadId,
+    ],
   );
 
   // Route the socket's lifecycle callbacks (mounted at the top of the component)
@@ -2800,7 +2637,9 @@ export default function Chat({
   // hook transitions out of a busy window. `submitted` covers the awaiting-first-
   // token gap; `isServerStreaming` (folded into isStreaming) spans tool rounds.
   const isTurnBusy =
-    isStreaming || piChat.status === "submitted" || piChat.status === "streaming";
+    isStreaming ||
+    piChat.status === "submitted" ||
+    piChat.status === "streaming";
   const wasTurnBusyRef = useRef(false);
   useEffect(() => {
     const wasBusy = wasTurnBusyRef.current;
@@ -2844,7 +2683,13 @@ export default function Chat({
     setLoading(false);
     isAutoCompactingRef.current = false;
     syncCompactionIndicator();
-  }, [threadId, resolvedWorkspaceId, readOnly, setMessages, syncCompactionIndicator]);
+  }, [
+    threadId,
+    resolvedWorkspaceId,
+    readOnly,
+    setMessages,
+    syncCompactionIndicator,
+  ]);
 
   useEffect(() => {
     return () => {
@@ -3226,7 +3071,11 @@ export default function Chat({
           {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ messageId, renderedMessageId, groupId: chatGroupId }),
+            body: JSON.stringify({
+              messageId,
+              renderedMessageId,
+              groupId: chatGroupId,
+            }),
           },
         );
         const data = (await response.json().catch(() => ({}))) as {
@@ -3773,7 +3622,6 @@ export default function Chat({
       createThreadPayload.firstMessage = finalContent;
     }
 
-
     submit(createThreadPayload, {
       method: "post",
       action: "/chat",
@@ -3873,11 +3721,13 @@ export default function Chat({
       if (!resolvedWorkspaceId) return null;
       try {
         const response = await fetch(
-          `/api/workspaces/${encodeURIComponent(resolvedWorkspaceId)}/apps/${encodeURIComponent(scriptName)}/visibility`
+          `/api/workspaces/${encodeURIComponent(resolvedWorkspaceId)}/apps/${encodeURIComponent(scriptName)}/visibility`,
         );
         if (!response.ok) return null;
-        const payload = await response.json() as { is_public?: unknown };
-        return typeof payload.is_public === "boolean" ? payload.is_public : null;
+        const payload = (await response.json()) as { is_public?: unknown };
+        return typeof payload.is_public === "boolean"
+          ? payload.is_public
+          : null;
       } catch {
         return null;
       }
@@ -3885,11 +3735,11 @@ export default function Chat({
     [resolvedWorkspaceId],
   );
 
-type SendOptions = {
-  contentOverride?: string;
-  preserveDraft?: boolean;
-  skipAttachmentRefs?: boolean;
-};
+  type SendOptions = {
+    contentOverride?: string;
+    preserveDraft?: boolean;
+    skipAttachmentRefs?: boolean;
+  };
 
   function sendMessage(opts?: SendOptions): boolean {
     if (readOnly) {
@@ -4013,9 +3863,7 @@ type SendOptions = {
     const userMessageAt = Date.now();
     const isFirstUserTurn = !displayMessagesRef.current.some(
       (message) =>
-        message.role === "user" &&
-        !message.isMeta &&
-        !message.isCompactSummary,
+        message.role === "user" && !message.isMeta && !message.isCompactSummary,
     );
     dispatchLocalThreadStatus(threadId, "running", {
       latestUserMessage: previewUserMessage,
@@ -4277,7 +4125,9 @@ type SendOptions = {
                   onStop={stopGeneration}
                   placeholder="Type a message..."
                   isLoading={isLoadingMessages}
-                  isAssistantRunning={loading || isStreaming || isAwaitingAssistant}
+                  isAssistantRunning={
+                    loading || isStreaming || isAwaitingAssistant
+                  }
                   autoFocus
                   attachments={attachments}
                   onFilesSelected={handleFilesSelected}
@@ -4312,7 +4162,9 @@ type SendOptions = {
                       ? true
                       : creditPacksFetcher.state !== "idle"
                   }
-                  canTopUp={creditPacksFetcher.data?.canTopUp ?? Boolean(isAdmin)}
+                  canTopUp={
+                    creditPacksFetcher.data?.canTopUp ?? Boolean(isAdmin)
+                  }
                   unavailableReason={
                     creditPacksFetcher.data?.unavailableReason ?? null
                   }
@@ -4485,7 +4337,6 @@ type SendOptions = {
           onCancel={handleConnectionSetupCancel}
         />
       )}
-
     </TooltipProvider>
   );
 }
