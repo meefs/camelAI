@@ -1,4 +1,4 @@
-import { Link, useLoaderData, useSearchParams } from 'react-router';
+import { Link, useLoaderData } from 'react-router';
 import type { Route } from './+types/_admin.users';
 import { requireSuperuser } from '@/lib/auth.server';
 import * as authDO from '@/lib/auth-do.server';

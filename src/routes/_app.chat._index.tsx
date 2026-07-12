@@ -70,7 +70,6 @@ import type {
   GroupNewChatRecentItems,
   GroupNewChatPayload,
   Integration,
-  LlmModel,
   Thread,
   WorkerScriptWithCreator,
 } from "@/types";

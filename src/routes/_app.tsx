@@ -212,7 +212,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
         : Promise.resolve(null),
     ]);
     const isLegacyUser = isDevelopment || Boolean(legacyUserValue);
-    return isLegacyUser && !Boolean(dismissedValue);
+    return isLegacyUser && !dismissedValue;
   })().catch(() => {
     // KV failure should never take down the app — degrade to hiding the banner.
     return false;

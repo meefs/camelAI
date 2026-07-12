@@ -1,17 +1,8 @@
 import type { Route } from './+types/ext.oauth.authorize';
-import { redirect, data } from 'react-router';
+import { redirect } from 'react-router';
 import { getEnv } from '@/lib/cloudflare.server';
 import { getOAuth, err, OAuthError, CLI_REDIRECT_URI, verifyWorkspaceAccess, listUserWorkspaces } from '@/lib/ext-api.server';
 import { getSession } from '@/lib/auth.server';
-
-function parseParams(request: Request, url: URL): URLSearchParams {
-  if (request.method === 'POST') {
-    // For POST, params come from the form body — but we can't read it in loader.
-    // The form posts to the same URL with query params, so use those.
-    return url.searchParams;
-  }
-  return url.searchParams;
-}
 
 export async function loader({ request, context }: Route.LoaderArgs) {
   const env = getEnv(context);

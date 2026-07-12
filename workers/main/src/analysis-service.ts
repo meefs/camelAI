@@ -808,7 +808,8 @@ function normalizeDependencySpecs(value: unknown): string[] {
     const spec = raw.trim();
     if (!spec) continue;
     if (spec.length > 214) throw new Error("package spec is too long");
-    if (/\s|[\x00-\x1f\x7f]/.test(spec)) throw new Error("package must be a single spec (no spaces)");
+    // oxlint-disable-next-line no-control-regex -- Package specs must reject ASCII control characters.
+    if (/\s|[\u0000-\u001f\u007f]/.test(spec)) throw new Error("package must be a single spec (no spaces)");
     if (spec.startsWith("-")) throw new Error("package must not be a CLI flag");
     if (spec.includes("://") || /(^|@)(?:file|git|https?):/i.test(spec)) {
       throw new Error("package must be a PyPI package spec");

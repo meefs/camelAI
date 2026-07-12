@@ -71,12 +71,10 @@ export function OrgDangerZone({
             disabled={Boolean(orgBan)}
           />
           <TransferOwnershipDialog
-            orgId={orgId}
             orgName={orgName}
             members={members}
           />
           <ArchiveOrgDialog
-            orgId={orgId}
             orgName={orgName}
             disabled={archived || Boolean(orgBan)}
           />

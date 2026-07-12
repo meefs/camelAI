@@ -197,7 +197,6 @@ export function useChatTranscriptProjection({
   return {
     displayMessages,
     displayMessagesRef,
-    normalizedMessages,
     skillSheetsByToolId,
     visibleMessages,
   };

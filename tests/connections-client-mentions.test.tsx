@@ -93,7 +93,6 @@ function renderConnectionsClient({
             initialMentionProjects={initialMentionProjects}
             connectionTypes={[]}
             categories={[]}
-            orgId="org_1"
             workspaceId="ws_1"
             workspaceEmailAddress={null}
             emailInboxEnabled={false}

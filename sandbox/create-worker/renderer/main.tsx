@@ -1,4 +1,4 @@
-import { useState, useMemo, useCallback, useEffect } from 'react';
+import { useState, useMemo, useCallback } from 'react';
 import { createRoot } from 'react-dom/client';
 import { Download } from 'lucide-react';
 import { Button } from '@/components/ui/button';

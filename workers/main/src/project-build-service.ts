@@ -290,7 +290,9 @@ const BUILD_LOG_EXCERPT_MAX_CHARS = 10_000;
 
 export function cleanBuildLog(raw: string): string | null {
   const cleaned = raw
+    // oxlint-disable-next-line no-control-regex -- These expressions intentionally remove ANSI escape sequences.
     .replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, "")
+    // oxlint-disable-next-line no-control-regex -- Strip any remaining escape characters.
     .replace(/\u001b/g, "")
     .replace(/\r(?!\n)/g, "\n")
     .split(/\r?\n/)
@@ -679,7 +681,8 @@ function tarHeader(path: string, size: number): Uint8Array {
 }
 
 function splitTarPath(path: string): { name: string; prefix?: string } {
-  if (/[\0\r\n]/.test(path)) throw new Error(`Invalid source path for archive: ${path}`);
+  // oxlint-disable-next-line no-control-regex -- Tar paths must reject NUL and newline characters.
+  if (/[\u0000\r\n]/.test(path)) throw new Error(`Invalid source path for archive: ${path}`);
   const encoded = new TextEncoder().encode(path);
   if (encoded.byteLength <= 100) return { name: path };
   const parts = path.split("/");
@@ -827,7 +830,8 @@ function normalizeDependencySpec(value: unknown): string {
   const spec = value.trim();
   if (!spec) throw new Error("dependency is required");
   if (spec.length > 214) throw new Error("dependency is too long");
-  if (/\s|[\x00-\x1f\x7f]/.test(spec)) throw new Error("dependency must be a single npm package spec");
+  // oxlint-disable-next-line no-control-regex -- Dependency specs must reject ASCII control characters.
+  if (/\s|[\u0000-\u001f\u007f]/.test(spec)) throw new Error("dependency must be a single npm package spec");
   if (spec.startsWith("-")) throw new Error("dependency must not be a CLI flag");
   if (/(^|@)(?:file|link|workspace|portal|git|github|http|https):/i.test(spec) || spec.includes("://")) {
     throw new Error("dependency must be an npm registry package spec");
@@ -1052,7 +1056,7 @@ async function mapWithConcurrency<T, R>(
   concurrency: number,
   mapper: (item: T, index: number) => Promise<R>,
 ): Promise<R[]> {
-  const results = new Array<R>(items.length);
+  const results = Array.from<R>({ length: items.length });
   let nextIndex = 0;
   const workerCount = Math.max(1, Math.min(concurrency, items.length));
   await Promise.all(Array.from({ length: workerCount }, async () => {

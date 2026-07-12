@@ -175,7 +175,6 @@ function AttachmentTile({
       contentType={attachment.contentType}
       uploadStatus={attachment.status}
       uploadProgress={attachment.progress}
-      uploadError={attachment.error}
       onRemove={onRemove}
     />
   );

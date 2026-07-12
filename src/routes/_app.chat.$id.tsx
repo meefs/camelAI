@@ -55,7 +55,6 @@ import * as authDO from "@/lib/auth-do.server";
 import * as chatDO from "@/lib/chat-do.server";
 import {
   ensureGroupForThread,
-  getGroupForWorkspace,
   listGroupsForMove,
 } from "@/lib/chat-groups.server";
 import { readThreadMessages } from "@/lib/chat-history.server";
@@ -72,7 +71,6 @@ import type {
   LlmModel,
   Message,
   PreviewTarget,
-  Thread,
   WorkspaceWithAccess,
 } from "@/types";
 import {

@@ -25,7 +25,6 @@ import { maxThreadStatus } from "@/lib/thread-status";
 import { isPlaceholderThreadTitle } from "@/lib/thread-title";
 import {
   ChatGroupsContext,
-  type ChatGroupsContextValue,
 } from "@/hooks/chat-groups-context";
 
 interface AppChatGroupsLoaderData {

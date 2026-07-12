@@ -178,7 +178,7 @@ export async function uploadWorkspaceFile(
     const activeUploadId = uploadId;
     const activeFilename = filename;
 
-    const uploadedParts: MultipartPartResponse[] = new Array(partCount);
+    const uploadedParts = Array.from<MultipartPartResponse>({ length: partCount });
     let nextPartNumber = 1;
 
     const uploadWorker = async () => {

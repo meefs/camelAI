@@ -4,7 +4,6 @@
 // ChatThreadDO and CodeModeToolsBinding construct a ChannelTools to send on a
 // channel, which removed the previous Object.create(ChatThreadDO.prototype)
 // hack and the chat-thread-do <-> code-mode-tools runtime import cycle.
-import { Type } from "typebox";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import type { OrgDO, OrgThread } from "./auth";
 import { decryptCredentials } from "../../../src/lib/integration-crypto";

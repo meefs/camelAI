@@ -115,8 +115,6 @@ export async function loader({ request, context }: Route.LoaderArgs) {
   }
 
   const workspaces = authContext.workspaces ?? [];
-  const workspaceNameMap = new Map(workspaces.map((ws) => [ws.id, ws.name]));
-
   // Fetch connections from relevant workspaces
   const targetWorkspaces = filter === 'all-workspaces'
     ? workspaces
@@ -157,7 +155,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
 }
 
 export default function WorkspaceConnectionsPage() {
-  const { connections, hasWorkspace, filter } = useLoaderData<typeof loader>();
+  const { connections, hasWorkspace } = useLoaderData<typeof loader>();
   const [searchParams, setSearchParams] = useSearchParams();
   const fetcher = useFetcher<{ success?: boolean; error?: string }>();
   const [deleteTarget, setDeleteTarget] = useState<ConnectionRow | null>(null);

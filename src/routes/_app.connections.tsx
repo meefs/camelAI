@@ -595,7 +595,6 @@ export default function ConnectionsPage() {
     pageData,
     integrations,
     categories,
-    orgId,
     workspaceId,
     otherWorkspaces,
     workspaceEmailAddress,
@@ -623,7 +622,6 @@ export default function ConnectionsPage() {
             initialMentionProjects={projects}
             connectionTypes={integrations}
             categories={categories}
-            orgId={orgId}
             workspaceId={workspaceId}
             otherWorkspaces={otherWorkspaces}
             workspaceEmailAddress={workspaceEmailAddress}

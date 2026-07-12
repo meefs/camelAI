@@ -101,14 +101,14 @@ export class WorkerLogsDO extends DurableObject<Env> {
   /**
    * Handle WebSocket close (hibernation API).
    */
-  webSocketClose(ws: WebSocket, code: number, reason: string, wasClean: boolean): void {
+  webSocketClose(_ws: WebSocket, _code: number, _reason: string, _wasClean: boolean): void {
     // Connection closed, nothing to clean up (hibernation handles it).
   }
 
   /**
    * Handle WebSocket error (hibernation API).
    */
-  webSocketError(ws: WebSocket, error: unknown): void {
+  webSocketError(_ws: WebSocket, error: unknown): void {
     console.error('[WorkerLogsDO] WebSocket error:', error);
   }
 
@@ -316,11 +316,11 @@ export class EphemeralWorkerLogsDO extends DurableObject<Env> {
     return new Response(null, { status: 101, webSocket: client });
   }
 
-  webSocketClose(ws: WebSocket, code: number, reason: string, wasClean: boolean): void {
+  webSocketClose(_ws: WebSocket, _code: number, _reason: string, _wasClean: boolean): void {
     // Connection closed, nothing to clean up (hibernation handles it).
   }
 
-  webSocketError(ws: WebSocket, error: unknown): void {
+  webSocketError(_ws: WebSocket, error: unknown): void {
     console.error('[EphemeralWorkerLogsDO] WebSocket error:', error);
   }
 

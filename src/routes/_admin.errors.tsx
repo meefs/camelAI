@@ -23,8 +23,6 @@ const RANGE_OPTIONS = [
   { value: '30d', label: 'Last 30d', durationMs: 30 * 24 * 60 * 60 * 1000 },
 ] as const;
 
-type ErrorRange = (typeof RANGE_OPTIONS)[number]['value'];
-
 const dateFormatter = new Intl.DateTimeFormat('en-US', {
   dateStyle: 'medium',
   timeStyle: 'short',

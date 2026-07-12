@@ -19,13 +19,11 @@ import { Label } from "@/components/ui/label"
 import { Alert, AlertDescription } from "@/components/ui/alert"
 
 interface ArchiveWorkspaceDialogProps {
-  workspaceId: string
   workspaceName: string
   disabled?: boolean
 }
 
 export function ArchiveWorkspaceDialog({
-  workspaceId,
   workspaceName,
   disabled = false,
 }: ArchiveWorkspaceDialogProps) {

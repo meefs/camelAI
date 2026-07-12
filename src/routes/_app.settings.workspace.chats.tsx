@@ -150,7 +150,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
 }
 
 export default function WorkspaceChatsPage() {
-  const { chats, total, hasWorkspace, filter } = useLoaderData<typeof loader>();
+  const { chats, total, hasWorkspace } = useLoaderData<typeof loader>();
   const [searchParams, setSearchParams] = useSearchParams();
   const fetcher = useFetcher<{ success?: boolean; error?: string }>();
   const [deleteTarget, setDeleteTarget] = useState<ChatRow | null>(null);

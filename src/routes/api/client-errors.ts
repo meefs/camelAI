@@ -294,7 +294,8 @@ function normalizeClientPath(
 
 function safeString(value: unknown, maxLength: number): string {
   if (typeof value !== 'string') return '';
-  const normalized = value.replace(/\0/g, '').trim();
+  // oxlint-disable-next-line no-control-regex -- NUL bytes are deliberately stripped from client input.
+  const normalized = value.replace(/\u0000/g, '').trim();
   return normalized.length > maxLength
     ? normalized.slice(0, maxLength)
     : normalized;
@@ -333,7 +334,8 @@ function safeJson(value: unknown, maxLength: number): string {
       normalized = String(value);
     }
   }
-  normalized = normalized.replace(/\0/g, '').trim();
+  // oxlint-disable-next-line no-control-regex -- NUL bytes are deliberately stripped from serialized client input.
+  normalized = normalized.replace(/\u0000/g, '').trim();
   return normalized.length > maxLength
     ? normalized.slice(0, maxLength)
     : normalized;

@@ -31,13 +31,11 @@ interface MemberOption {
 }
 
 interface TransferOwnershipDialogProps {
-  orgId: string
   orgName: string
   members: MemberOption[]
 }
 
 export function TransferOwnershipDialog({
-  orgId,
   orgName,
   members,
 }: TransferOwnershipDialogProps) {

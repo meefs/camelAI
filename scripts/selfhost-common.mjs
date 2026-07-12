@@ -84,7 +84,7 @@ export function run(command, args, options = {}) {
       ...options,
       env: {
         ...process.env,
-        ...(options.env || {}),
+        ...options.env,
       },
     });
     child.on("error", reject);
@@ -102,7 +102,7 @@ export async function capture(command, args, options = {}) {
     ...options,
     env: {
       ...process.env,
-      ...(options.env || {}),
+      ...options.env,
     },
   });
   const stdout = [];

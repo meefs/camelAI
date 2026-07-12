@@ -30,7 +30,7 @@ import {
   getCustomHostnameStatus,
 } from './cf-api-proxy';
 import type { WorkerLogsDO } from './worker-logs-do';
-import { getPreferredAppUrl, getVanityDomain as getAppVanityDomain, isAppCustomDomainReady } from '../../../src/lib/app-url';
+import { getPreferredAppUrl, isAppCustomDomainReady } from '../../../src/lib/app-url';
 import {
   buildCustomDomainDnsCheck,
   getCustomHostnameDnsTarget,
@@ -205,26 +205,6 @@ export class ChiridionMcp extends McpAgent<any, Record<string, unknown>, Record<
   }
 
   /**
-   * Get the vanity domain for deployed apps based on current environment.
-   * E.g., "camelai.app" for production, "staging.camelai.app" for staging
-   */
-  private getVanityDomain(): string {
-    const baseUrl = this.env.WORKER_BASE_URL;
-    if (baseUrl) {
-      try {
-        return getAppVanityDomain({
-          hostname: new URL(baseUrl).host,
-          vanityDomain: this.env.LOCAL_APP_VANITY_DOMAIN,
-          iframeDomain: this.env.LOCAL_APP_IFRAME_DOMAIN,
-        });
-      } catch {
-        return 'camelai.app';
-      }
-    }
-    return 'camelai.app';
-  }
-
-  /**
    * Get the org slug, fetching from OrgDO if not cached.
    */
   private async getOrgSlug(): Promise<string | null> {
@@ -354,7 +334,7 @@ export class ChiridionMcp extends McpAgent<any, Record<string, unknown>, Record<
         is_public: z.boolean().describe('Set to true for public access, false for private (org members only)'),
       },
       async ({ script_name, is_public }) => {
-        const { orgId, userId, workspaceId } = this.requireAuth();
+        const { userId, workspaceId } = this.requireAuth();
         if (!workspaceId) {
           return this.textResponse({ error: 'No workspace context available' });
         }
@@ -1273,7 +1253,7 @@ export class ChiridionMcp extends McpAgent<any, Record<string, unknown>, Record<
           .describe('Credential fields as an object (e.g., api_key, api_secret, client_id, client_secret). These are encrypted at rest.'),
       },
       async ({ integration_type, name, config = {}, credentials = {} }) => {
-        const { orgId, userId, workspaceId } = this.requireAuth();
+        const { userId, workspaceId } = this.requireAuth();
         if (!workspaceId) {
           return this.textResponse({ error: 'No workspace context available' });
         }
@@ -1437,7 +1417,7 @@ export class ChiridionMcp extends McpAgent<any, Record<string, unknown>, Record<
                     error: null,
                   })) ?? currentScript;
               }
-            } catch (err) {
+            } catch {
               // Fall through to diagnostic state derived from cached data
             }
           }

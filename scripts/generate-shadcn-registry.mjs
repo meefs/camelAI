@@ -69,7 +69,7 @@ async function fetchJson(url, { optional = false } = {}) {
 }
 
 async function mapConcurrent(items, limit, fn) {
-  const results = new Array(items.length);
+  const results = Array.from({ length: items.length });
   let next = 0;
   await Promise.all(
     Array.from({ length: Math.min(limit, items.length) }, async () => {

@@ -341,9 +341,7 @@ export async function getOrCreateChannelThread(
     },
   );
 
-  await Promise.all([
-    env.APP_KV.put(mapKey, thread.id, ttlOptions(input.mapTtlSeconds)),
-  ]);
+  await env.APP_KV.put(mapKey, thread.id, ttlOptions(input.mapTtlSeconds));
 
   return {
     threadId: thread.id,

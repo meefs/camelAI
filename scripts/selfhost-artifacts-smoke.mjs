@@ -20,10 +20,6 @@ function relFrom(dir, filePath) {
   return path.relative(dir, filePath).replaceAll(path.sep, '/');
 }
 
-function moduleFile(outDir, name, filePath) {
-  return `(name = ${q(name)}, esModule = embed ${q(relFrom(outDir, filePath))})`;
-}
-
 function moduleSource(name, source) {
   return `(name = ${q(name)}, esModule = ${q(source)})`;
 }
@@ -50,7 +46,7 @@ function spawnLogged(command, args, options = {}) {
     ...options,
     env: {
       ...process.env,
-      ...(options.env ?? {}),
+      ...options.env,
     },
   });
   child.output = [];
@@ -143,7 +139,7 @@ async function run(command, args, options = {}) {
     cwd: options.cwd ?? repoRoot,
     env: {
       ...process.env,
-      ...(options.env ?? {}),
+      ...options.env,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });

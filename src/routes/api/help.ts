@@ -2,7 +2,7 @@ import { parseWithZod } from '@conform-to/zod/v4';
 import type { Route } from './+types/help';
 import { generateHelpSubject } from '@/lib/help-subject.server';
 import { requireAuthContext } from '@/lib/auth.server';
-import { getEnv, type CloudflareEnv } from '@/lib/cloudflare.server';
+import { getEnv } from '@/lib/cloudflare.server';
 import { waitUntil } from '@/lib/wait-until';
 import {
   sendHelpConfirmationEmail,

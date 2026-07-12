@@ -26,7 +26,6 @@ interface AppSettingsDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   app: WorkerScriptWithCreator;
-  orgId: string;
   orgSlug: string;
   isAdmin: boolean;
   hostname?: AppUrlInput;
@@ -82,7 +81,6 @@ export function AppSettingsDialog({
   open,
   onOpenChange,
   app,
-  orgId,
   orgSlug,
   isAdmin,
   hostname,

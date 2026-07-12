@@ -14,17 +14,12 @@ import {
 } from "@/lib/billing-credit-packs";
 import { getEnv } from "@/lib/cloudflare.server";
 
-function isOrgAdminRole(role: string | null | undefined): boolean {
-  return role === "owner" || role === "admin";
-}
-
 export async function loader({ request, context }: Route.LoaderArgs) {
   const authContext = await requireAuthContext(request, context);
   const env = getEnv(context);
   const orgId = authContext.currentOrg.id;
-  const isAdmin = isOrgAdminRole(
-    authContext.orgs.find((org) => org.org_id === orgId)?.role,
-  );
+  const role = authContext.orgs.find((org) => org.org_id === orgId)?.role;
+  const isAdmin = role === "owner" || role === "admin";
 
   if (!isAdmin) {
     return {

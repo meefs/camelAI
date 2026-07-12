@@ -413,46 +413,6 @@ function extractScriptName(pathname: string): string | null {
   }
 }
 
-/**
- * Check if a script is owned by a different org.
- * With org-slug namespacing, scripts are now org-scoped by name ({org-slug}--{script}).
- * This function is now only used for legacy compatibility during migration.
- * Returns null if not owned, the owning org_id if owned by same org.
- */
-async function checkScriptOwnershipLegacy(
-  kv: KVNamespace,
-  scriptName: string,
-  _requestingOrgId: string,
-): Promise<{ owned: boolean; orgId: string | null }> {
-  const data = await kv.get(`${SCRIPT_ORG_PREFIX_LEGACY}${scriptName}`);
-  if (!data) {
-    return { owned: false, orgId: null };
-  }
-  try {
-    const parsed = JSON.parse(data) as { org_id: string; is_public?: boolean };
-    return { owned: true, orgId: parsed.org_id };
-  } catch {
-    // Legacy format: just org_id string
-    return { owned: true, orgId: data };
-  }
-}
-
-/**
- * Get script access info from the new namespaced KV format.
- */
-async function getScriptAccessInfo(
-  kv: KVNamespace,
-  dispatchScriptName: string,
-): Promise<{ org_id: string; is_public: boolean } | null> {
-  const data = await kv.get(`${SCRIPT_PREFIX}${dispatchScriptName}`);
-  if (!data) return null;
-  try {
-    return JSON.parse(data) as { org_id: string; is_public: boolean };
-  } catch {
-    return null;
-  }
-}
-
 // Pattern for tail creation (wrangler tail)
 const DISPATCH_SCRIPT_TAILS =
   /^\/client\/v4\/accounts\/[^/]+\/workers\/dispatch\/namespaces\/[^/]+\/scripts\/([^/]+)\/tails$/;
@@ -1871,7 +1831,7 @@ export async function proxyCloudflareApi(
     // Rewrite account ID if configured
     if (accountId) {
       const accountMatch = pathname.match(
-        /^\/client\/v4\/accounts\/([^\/]+)\/(.*)$/,
+        /^\/client\/v4\/accounts\/([^/]+)\/(.*)$/,
       );
       if (accountMatch) {
         pathname = `/client/v4/accounts/${encodeURIComponent(accountId)}/${accountMatch[2] ?? ""}`;
@@ -1983,7 +1943,7 @@ export async function proxyCloudflareApi(
   // Also rewrite script name to include org-slug suffix: {script-name}--{org-slug}
   // /client/v4/accounts/:account_id/workers/dispatch/namespaces/:dispatch_namespace/scripts/:script/...
   const dispatchMatch = pathname.match(
-    /^\/client\/v4\/accounts\/([^\/]+)\/workers\/dispatch\/namespaces\/([^\/]+)\/(.*)$/,
+    /^\/client\/v4\/accounts\/([^/]+)\/workers\/dispatch\/namespaces\/([^/]+)\/(.*)$/,
   );
   if (dispatchMatch) {
     let rest = dispatchMatch[3] ?? "";
@@ -1992,7 +1952,7 @@ export async function proxyCloudflareApi(
 
     // Rewrite script name to include org-slug suffix
     // rest might be: scripts/{scriptName} or scripts/{scriptName}/settings etc.
-    const scriptPathMatch = rest.match(/^scripts\/([^\/]+)(\/.*)?$/);
+    const scriptPathMatch = rest.match(/^scripts\/([^/]+)(\/.*)?$/);
     if (scriptPathMatch && originalScriptName) {
       const suffix = scriptPathMatch[2] ?? "";
       const dispatchScriptName = `${originalScriptName}--${orgSlug}`;
@@ -2030,10 +1990,10 @@ export async function proxyCloudflareApi(
   // which is configured to deploy to the dispatch namespace directly
   if (!dispatchMatch) {
     const scriptsMatch = pathname.match(
-      /^\/client\/v4\/accounts\/[^\/]+\/workers\/scripts\/[^\/]+/,
+      /^\/client\/v4\/accounts\/[^/]+\/workers\/scripts\/[^/]+/,
     );
     const servicesMatch = pathname.match(
-      /^\/client\/v4\/accounts\/[^\/]+\/workers\/services\/[^\/]+/,
+      /^\/client\/v4\/accounts\/[^/]+\/workers\/services\/[^/]+/,
     );
 
     if (scriptsMatch || servicesMatch) {
@@ -2052,7 +2012,7 @@ export async function proxyCloudflareApi(
   // Opportunistically rewrite account id for any /accounts/:id/... calls.
   if (accountId) {
     const accountMatch = pathname.match(
-      /^\/client\/v4\/accounts\/([^\/]+)\/(.*)$/,
+      /^\/client\/v4\/accounts\/([^/]+)\/(.*)$/,
     );
     if (accountMatch) {
       pathname = `/client/v4/accounts/${encodeURIComponent(accountId)}/${accountMatch[2] ?? ""}`;

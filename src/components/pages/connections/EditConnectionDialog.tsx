@@ -39,7 +39,6 @@ interface EditConnectionDialogProps {
   onOpenChange: (open: boolean) => void;
   connection: Integration;
   connectionTypes: IntegrationDefinition[];
-  orgId: string;
   forceCredentialUpdate?: boolean;
   onSuccess: () => void;
 }
@@ -86,7 +85,6 @@ export function EditConnectionDialog({
   onOpenChange,
   connection,
   connectionTypes,
-  orgId,
   forceCredentialUpdate = false,
   onSuccess,
 }: EditConnectionDialogProps) {

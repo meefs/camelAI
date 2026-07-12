@@ -26,8 +26,6 @@ interface FileCardProps {
   uploadProgress?: number;
   /** Upload status. Omit for read-only (in-chat) usage. */
   uploadStatus?: 'uploading' | 'complete' | 'error';
-  /** Error message for failed uploads */
-  uploadError?: string;
   /**
    * Renders a hover/focus X button in the icon slot.
    * Do not combine with onClick, which would nest a button inside a button.
@@ -46,7 +44,6 @@ export function FileCard({
   contentType,
   uploadProgress,
   uploadStatus,
-  uploadError,
   onRemove,
   onClick,
   showAddOnHover,

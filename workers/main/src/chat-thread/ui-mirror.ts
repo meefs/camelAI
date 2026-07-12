@@ -375,14 +375,12 @@ export class ChatThreadUiMirror {
       const forkEntryIds = rows
         .map((row) => row.forkEntryId)
         .filter((id): id is string => typeof id === "string" && !!id);
-      const pi: Record<string, unknown> = {
-        ...(forkEntryIds.length > 0
-          ? {
-              forkEntryId: forkEntryIds[forkEntryIds.length - 1],
-              forkEntryIds,
-            }
-          : {}),
-      };
+      const pi: Record<string, unknown> = forkEntryIds.length > 0
+        ? {
+            forkEntryId: forkEntryIds[forkEntryIds.length - 1],
+            forkEntryIds,
+          }
+        : {};
       const firstCreatedAt = (
         convertAt(firstIndex).metadata as
           | { pi?: { createdAtMs?: unknown } }

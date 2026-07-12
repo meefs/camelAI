@@ -89,7 +89,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
 }
 
 export default function OrganizationsPage() {
-  const { orgs, currentOrgId, currentUserId } = useLoaderData<typeof loader>();
+  const { orgs } = useLoaderData<typeof loader>();
 
   return (
     <div className="space-y-6">
@@ -98,7 +98,7 @@ export default function OrganizationsPage() {
         description="Switch between or manage your organizations."
       />
       <Separator />
-      <OrgMembershipsList orgs={orgs} currentUserId={currentUserId} />
+      <OrgMembershipsList orgs={orgs} />
     </div>
   );
 }

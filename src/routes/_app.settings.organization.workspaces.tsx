@@ -155,7 +155,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
 }
 
 export default function WorkspacesPage() {
-  const { org, workspaces, currentWorkspaceId, canManage, orgWorkspaceCount } =
+  const { workspaces, currentWorkspaceId, canManage, orgWorkspaceCount } =
     useLoaderData<typeof loader>();
 
   return (

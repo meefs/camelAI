@@ -10,7 +10,6 @@ import type {
   AdminChatErrorThreadRow,
   AdminChatExplorerRow,
   AdminEventType,
-  AdminOrgDirectoryRow,
   AdminThreadListRow,
   AdminUserSummaryRow,
   AppFilters,

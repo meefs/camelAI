@@ -19,13 +19,11 @@ import { Label } from "@/components/ui/label"
 import { Alert, AlertDescription } from "@/components/ui/alert"
 
 interface ArchiveOrgDialogProps {
-  orgId: string
   orgName: string
   disabled?: boolean
 }
 
 export function ArchiveOrgDialog({
-  orgId,
   orgName,
   disabled = false,
 }: ArchiveOrgDialogProps) {

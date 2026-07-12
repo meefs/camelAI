@@ -4,12 +4,14 @@ import { moveThreadToGroup } from "@/lib/chat-groups.server";
 
 function moveThreadErrorResponse(error: unknown): Response {
   const message =
-    error instanceof Error ? error.message : "Failed to move thread";
+    error instanceof Error && error.message
+      ? error.message
+      : "Failed to move thread";
   if (message === "Thread not found" || message === "Chat group not found") {
     return Response.json({ error: message }, { status: 404 });
   }
   return Response.json(
-    { error: message || "Failed to move thread" },
+    { error: message },
     { status: 409 },
   );
 }

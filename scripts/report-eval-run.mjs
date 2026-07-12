@@ -88,11 +88,12 @@ function accessHeaders() {
 const headers = accessHeaders();
 
 async function send(method, urlPath, body, contentType) {
-  const response = await fetch(`${base}${urlPath}`, {
+  const init = {
     method,
     headers: { ...headers, ...(contentType ? { "content-type": contentType } : {}) },
-    body,
-  });
+  };
+  if (body !== undefined) init.body = body;
+  const response = await fetch(`${base}${urlPath}`, init);
   if (!response.ok) {
     throw new Error(`${method} ${urlPath} failed (${response.status}): ${(await response.text()).slice(0, 300)}`);
   }

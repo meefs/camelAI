@@ -53,7 +53,6 @@ export function TransferOwnershipSection({ candidates, orgName }: TransferOwners
     }
   }, [fetcher.state, fetcher.data])
 
-  const selectedCandidate = candidates.find((c) => c.id === selectedId)
   const canSubmit = selectedId && confirmName === orgName
 
   const handleTransfer = () => {

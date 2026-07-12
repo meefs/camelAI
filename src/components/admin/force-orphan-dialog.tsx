@@ -19,13 +19,11 @@ import { Label } from "@/components/ui/label"
 import { Alert, AlertDescription } from "@/components/ui/alert"
 
 interface ForceOrphanDialogProps {
-  userId: string
   userLabel: string
   disabled?: boolean
 }
 
 export function ForceOrphanDialog({
-  userId,
   userLabel,
   disabled = false,
 }: ForceOrphanDialogProps) {

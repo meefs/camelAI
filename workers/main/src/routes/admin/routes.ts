@@ -25,7 +25,6 @@ import {
 import type {
   UserFilters,
   ThreadFilters,
-  OrgFilters,
   WorkspaceFilters,
   AppFilters,
   AdminOrgDirectoryRow,

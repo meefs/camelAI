@@ -530,7 +530,7 @@ export async function handleRemoteMcpOAuthStart({
 export async function handleRemoteMcpOAuthCallback({
   env,
   url,
-  ctx,
+  ctx: _ctx,
 }: RouteContext): Promise<Response> {
   const code = url.searchParams.get("code");
   const state = url.searchParams.get("state");
@@ -688,7 +688,7 @@ export async function handleSlackOAuthStart({
 export async function handleSlackOAuthCallback({
   env,
   url,
-  ctx,
+  ctx: _ctx,
 }: RouteContext): Promise<Response> {
   const code = url.searchParams.get("code");
   const state = url.searchParams.get("state");
@@ -1938,7 +1938,7 @@ export async function handleNotionOAuthStart({
 export async function handleNotionOAuthCallback({
   env,
   url,
-  ctx,
+  ctx: _ctx,
 }: RouteContext): Promise<Response> {
   const code = url.searchParams.get("code");
   const state = url.searchParams.get("state");
@@ -2165,7 +2165,7 @@ export async function handleSalesforceOAuthStart({
 export async function handleSalesforceOAuthCallback({
   env,
   url,
-  ctx,
+  ctx: _ctx,
 }: RouteContext): Promise<Response> {
   const code = url.searchParams.get("code");
   const state = url.searchParams.get("state");

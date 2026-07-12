@@ -1365,13 +1365,6 @@ function normalizeRegistryId(value: unknown, fallback: string): string {
   return normalized || fallback;
 }
 
-function requireRegistryId(value: unknown, label: string): string {
-  if (typeof value !== "string" || !value.trim()) {
-    throw new Error(`${label} is required`);
-  }
-  return normalizeRegistryId(value, label.replace(/[^a-z0-9-]+/gi, "-").toLowerCase());
-}
-
 function requireProjectId(value: unknown, label: string): string {
   if (typeof value !== "string" || !value.trim()) {
     throw new Error(`${label} is required`);

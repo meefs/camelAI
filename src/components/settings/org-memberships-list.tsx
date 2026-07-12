@@ -49,7 +49,6 @@ interface OrgMembershipSummary {
 
 interface OrgMembershipsListProps {
   orgs: OrgMembershipSummary[]
-  currentUserId: string
 }
 
 function formatDate(value: number) {
@@ -66,7 +65,6 @@ function billingPlanBadgeVariant(
 
 export function OrgMembershipsList({
   orgs,
-  currentUserId,
 }: OrgMembershipsListProps) {
   const { currentOrg } = useAuthData()
   const { switchOrg } = useSwitchOrg()

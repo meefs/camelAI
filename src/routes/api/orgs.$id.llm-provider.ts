@@ -425,11 +425,9 @@ export async function action({ request, context, params }: Route.ActionArgs) {
             { status: 200 }
           );
         }
-        const headers: Record<string, string> = {
-          ...(authType === 'x-api-key'
-            ? { 'x-api-key': creds.api_key }
-            : { Authorization: `Bearer ${creds.api_key}` }),
-        };
+        const headers: Record<string, string> = authType === 'x-api-key'
+          ? { 'x-api-key': creds.api_key }
+          : { Authorization: `Bearer ${creds.api_key}` };
         const testUrl =
           config.custom_api === 'anthropic-messages'
             ? `${baseUrl}/v1/messages/count_tokens`

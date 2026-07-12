@@ -41,7 +41,6 @@ import { fetchLog, fetchRun } from "../lib/api";
 import {
 	contractFailureReason,
 	durationOf,
-	failedCriteria,
 	fmtCost,
 	fmtInt,
 	fmtTokens,

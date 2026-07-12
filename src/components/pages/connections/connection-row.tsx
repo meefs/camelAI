@@ -250,7 +250,6 @@ export function ConnectionRow({
   onCopyEmailAddress,
   onManageEmailSettings,
 }: ConnectionRowProps) {
-  const connection = panelItemConnection(item);
   const displayName = panelItemName(item);
 
   return (

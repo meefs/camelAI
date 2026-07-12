@@ -4,12 +4,8 @@
  */
 import type { AppLoadContext } from "react-router";
 import type {
-  User,
   Organization,
-  OrgMembership,
   OrgRole,
-  WorkspaceWithAccess,
-  AuditLogEntry,
   AdminOverview,
   AdminUserSummary,
   AdminWorkspaceSummary,
@@ -25,7 +21,7 @@ import type {
   PreviewTarget,
 } from "@/types";
 import { getEnv, type CloudflareEnv } from "./cloudflare.server";
-import { type AuthEnv, getAuthEnv } from "./auth-helpers";
+import { getAuthEnv } from "./auth-helpers";
 import * as authDO from "./auth-do";
 import {
   getMessages as getThreadMessages,
@@ -258,7 +254,7 @@ async function mapWithConcurrency<T, R>(
 ): Promise<R[]> {
   if (items.length === 0) return [];
 
-  const results: R[] = new Array(items.length);
+  const results = Array.from<R>({ length: items.length });
   let nextIndex = 0;
 
   const runWorker = async () => {

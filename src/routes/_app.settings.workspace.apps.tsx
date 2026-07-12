@@ -182,7 +182,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
 }
 
 export default function WorkspaceAppsPage() {
-  const { apps, hasWorkspace, filter, orgSlug, orgCustomDomain } = useLoaderData<typeof loader>();
+  const { apps, hasWorkspace, orgSlug, orgCustomDomain } = useLoaderData<typeof loader>();
   const [searchParams, setSearchParams] = useSearchParams();
   const fetcher = useFetcher<{ success?: boolean; error?: string }>();
   const [deleteTarget, setDeleteTarget] = useState<AppRow | null>(null);

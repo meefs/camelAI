@@ -27,7 +27,6 @@ import type {
   LlmModel,
   LlmProvider,
   Thread,
-  ToolResultBlock,
   WorkerScriptWithCreator,
   Integration,
   PreviewTarget,
@@ -210,10 +209,6 @@ type SendMessageResult = {
 function sameJson(left: unknown, right: unknown): boolean {
   return left === right || JSON.stringify(left) === JSON.stringify(right);
 }
-
-// Only animate the "just completed" turn highlight for completions this recent;
-// older completions replayed on load/reconnect still get their duration badge.
-const FRESHLY_COMPLETED_TURN_WINDOW_MS = 10_000;
 
 function getThreadRunningState(
   groups: readonly ChatGroupView[] | undefined,
@@ -822,7 +817,6 @@ export default function Chat({
   }, [initialWelcomeInput, readOnly, resolvedWorkspaceId, threadId]);
 
   const {
-    activeManualCompactionTurnRef,
     clearManualCompactionQueue,
     compactingPriorMessageId,
     compactingPriorMessageIdRef,
@@ -838,7 +832,6 @@ export default function Chat({
   const {
     displayMessages,
     displayMessagesRef,
-    normalizedMessages,
     skillSheetsByToolId,
     visibleMessages,
   } = useChatTranscriptProjection({

@@ -41,10 +41,6 @@ function bindingText(name, value) {
   return `(name = ${q(name)}, text = ${q(value)})`;
 }
 
-function bindingJson(name, value) {
-  return `(name = ${q(name)}, json = ${q(JSON.stringify(value))})`;
-}
-
 function bindingService(name, serviceName) {
   return `(name = ${q(name)}, service = (name = ${q(serviceName)}))`;
 }

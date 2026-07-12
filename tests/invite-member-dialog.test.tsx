@@ -151,7 +151,7 @@ describe("InviteMemberDialog", () => {
 
   it("updates disclosed billing fields when submit commits pending text", async () => {
     const user = userEvent.setup()
-    const { container } = render(
+    render(
       <InviteMemberDialog
         open={true}
         onOpenChange={vi.fn()}

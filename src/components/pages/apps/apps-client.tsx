@@ -23,7 +23,6 @@ import { LayoutGrid } from 'lucide-react';
 
 interface AppsClientProps {
   initialApps: WorkerScriptWithCreator[];
-  orgId: string;
   orgSlug: string;
   hostname?: AppUrlInput;
   initialNow: number;
@@ -32,7 +31,6 @@ interface AppsClientProps {
 
 export default function AppsClient({
   initialApps,
-  orgId,
   orgSlug,
   hostname,
   initialNow,
@@ -264,7 +262,6 @@ export default function AppsClient({
           open={settingsDialogOpen}
           onOpenChange={handleSettingsDialogOpenChange}
           app={selectedApp}
-          orgId={orgId}
           orgSlug={orgSlug}
           isAdmin={isAdmin}
           hostname={hostname}

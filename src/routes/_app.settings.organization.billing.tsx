@@ -581,7 +581,6 @@ type View = "overview" | "manage";
 
 export default function BillingPage() {
   const {
-    org,
     overview,
     stripeConfigured,
     paymentMethod,

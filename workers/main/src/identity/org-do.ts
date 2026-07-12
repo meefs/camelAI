@@ -5,7 +5,6 @@ import {
   type WorkspaceIntegrationAuthStatus,
   type WorkspaceIntegrationRecord,
 } from "../workspace";
-import { hashPassword, verifyPassword } from "../password";
 import { decryptCredentials, encryptCredentials } from "../../../../src/lib/integration-crypto";
 import { mintBigQueryAccessTokenFromServiceAccount } from "../google-service-account";
 import { refreshRemoteMcpOAuthToken } from "../remote-mcp-oauth";
@@ -35,8 +34,6 @@ import type {
   LlmModel,
   OrgModelPickerConfig,
   OnboardingPreferences,
-  ChatGroup,
-  ChatGroupSummary,
   ThreadCompletionSummaryStatus,
 } from "../../../../src/types";
 import {
@@ -58,11 +55,8 @@ import {
 } from "../../../../src/lib/model-picker-config";
 import {
   getBillingPlanLimits,
-  getOrgBillingPlan,
   getOrgSeatLimit,
   isTeamSeatBillingSyncable,
-  normalizeBillingPlan,
-  normalizeSeatCount,
 } from "../../../../src/lib/billing-plans";
 import { calculateEffectiveUsageCostUsd } from "../../../../src/lib/usage-pricing";
 import { dispatchAdminEvent } from "./admin-events";
@@ -90,8 +84,6 @@ import {
 // Re-export for consumers that import from this module
 export type { OrgRole, BillingStatus } from "../../../../src/types";
 
-const USER_ONBOARDING_KEY = "onboarding";
-const USER_SIGNUP_IP_KEY = "signup_ip";
 const ORG_EXPERIMENTAL_SETTINGS_KEY = "experimental_settings";
 const ORG_MODEL_PICKER_CONFIG_KEY = "model_picker_config";
 const ORG_INDEX_PREFIX = "org_index:";

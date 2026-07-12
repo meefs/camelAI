@@ -1412,7 +1412,7 @@ function slackApiRequestForTool(
   }
   return {
     method: mapped.method,
-    params: { ...(mapped.params ?? {}), ...input },
+    params: { ...mapped.params, ...input },
     httpMethod: mapped.httpMethod ?? 'POST',
     encoding: 'json',
   };

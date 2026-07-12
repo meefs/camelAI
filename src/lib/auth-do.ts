@@ -25,7 +25,6 @@ import { retryTransientDurableObjectRead } from "./do-rpc-retry.server";
 
 import {
   type AuthEnv,
-  type OrgThread,
   type SessionData,
   type ApiTokenData,
 } from "./auth-helpers";

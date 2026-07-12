@@ -220,6 +220,10 @@ export class PiCoreMessageStore {
               metadata,
             };
           } catch (error) {
+            console.warn("[pi-core] failed to externalize stored image", {
+              key,
+              error: error instanceof Error ? error.message : String(error),
+            });
           }
         }
       }
@@ -245,6 +249,10 @@ export class PiCoreMessageStore {
           const object = await this.deps.r2().get(ref.key);
           data = object ? await object.text() : "";
         } catch (error) {
+          console.warn("[pi-core] failed to hydrate stored image", {
+            key: ref.key,
+            error: error instanceof Error ? error.message : String(error),
+          });
         }
         if (data) {
           return {

@@ -11,20 +11,12 @@ import {
   validateAvatarContent,
 } from "../../../../src/lib/avatar";
 import { isPlaceholderThreadTitle } from "../../../../src/lib/thread-title";
-import {
-  normalizeThreadCompletionSummary,
-  normalizeThreadPreviewUserMessage,
-} from "../../../../src/lib/thread-preview";
-import { slugifyWorkspaceName } from "../../../../src/lib/workspace-email";
 import type {
   OrgRole,
   BillingStatus,
   User,
   Organization,
-  OrganizationExperimentalSettings,
-  Workspace,
   LlmModel,
-  OrgModelPickerConfig,
   OnboardingPreferences,
   ChatGroup,
   ChatGroupAvatar,
@@ -33,28 +25,6 @@ import type {
   ThreadCompletionSummaryStatus,
   Avatar,
 } from "../../../../src/types";
-import {
-  DEFAULT_CODEX_MODEL,
-  DEFAULT_LLM_MODEL,
-  DEFAULT_ORG_EXPERIMENTAL_SETTINGS,
-  isClaudeLlmModel,
-  isCodexLlmModel,
-  normalizeLlmModel,
-  parseOrganizationExperimentalSettings,
-} from "../../../../src/lib/llm-provider-config";
-import {
-  defaultOrgModelPickerConfig,
-  parseOrgModelPickerConfig,
-} from "../../../../src/lib/model-picker-config";
-import {
-  getBillingPlanLimits,
-  getOrgBillingPlan,
-  getOrgSeatLimit,
-  isTeamSeatBillingSyncable,
-  normalizeBillingPlan,
-  normalizeSeatCount,
-} from "../../../../src/lib/billing-plans";
-import { calculateEffectiveUsageCostUsd } from "../../../../src/lib/usage-pricing";
 import { dispatchAdminEvent } from "./admin-events";
 import { getDefaultOnboardingPreferences, sanitizeOnboardingPreferences, toOnboardingPreferences } from "./onboarding";
 import { isSuperuserEmail } from "./superuser";
@@ -64,16 +34,6 @@ export type { OrgRole, BillingStatus } from "../../../../src/types";
 
 const USER_ONBOARDING_KEY = "onboarding";
 const USER_SIGNUP_IP_KEY = "signup_ip";
-
-function usageCost(value: unknown): number | null {
-  if (value === null || value === undefined) return null;
-  const numeric = Number(value);
-  return Number.isFinite(numeric) && numeric >= 0 ? numeric : null;
-}
-
-function usageText(value: unknown): string {
-  return typeof value === "string" ? value.trim() : "";
-}
 
 export interface UserOrg {
   org_id: string;
@@ -169,21 +129,6 @@ export interface WorkerScriptPreviewUpdateResult {
   stale: boolean;
 }
 
-type OrgWorkspaceInfoRow = {
-  id: string;
-  name: string;
-  created_at: number;
-  archived: number;
-  description?: string | null;
-  created_by?: string | null;
-  avatar_color?: string | null;
-  avatar_content?: string | null;
-  archived_at?: number | null;
-  archived_by?: string | null;
-  compute_tier?: Workspace["compute_tier"] | string | null;
-  email_handle?: string | null;
-};
-
 export interface WorkerScriptCustomDomainUpdateInput {
   hostname: string | null;
   cf_hostname_id?: string | null;
@@ -192,27 +137,6 @@ export interface WorkerScriptCustomDomainUpdateInput {
   error?: string | null;
   updated_at?: number;
   deploy_ts?: number;
-}
-
-interface WorkerScriptRow {
-  [key: string]: SqlStorageValue;
-  script_name: string;
-  workspace_id: string;
-  created_by: string;
-  created_at: number;
-  updated_at: number;
-  is_public: number;
-  preview_key: string | null;
-  preview_updated_at: number | null;
-  preview_status: WorkerScriptPreviewStatus | null;
-  preview_error: string | null;
-  config_path: string | null;
-  custom_domain_hostname: string | null;
-  custom_domain_cf_hostname_id: string | null;
-  custom_domain_status: string | null;
-  custom_domain_ssl_status: string | null;
-  custom_domain_error: string | null;
-  custom_domain_updated_at: number | null;
 }
 
 export interface WorkerScriptAccess {
@@ -232,8 +156,6 @@ export interface CustomDomain {
   created_at: number;
   updated_at: number;
 }
-
-type CustomDomainRow = CustomDomain & Record<string, SqlStorageValue>;
 
 export interface OrgThread {
   id: string;
@@ -1503,7 +1425,6 @@ export class UserDO extends DurableObject<DOEnv> {
         typeof opts.position === "number" && Number.isFinite(opts.position)
           ? Math.max(0, Math.floor(opts.position))
           : this.getNextOpenPosition(group.id);
-      const now = Date.now();
       this.sql.exec(
         "UPDATE chat_group_members SET is_open = 1, position = ?, closed_at = NULL WHERE thread_id = ?",
         position,

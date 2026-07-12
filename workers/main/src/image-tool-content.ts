@@ -271,8 +271,6 @@ async function outputImage(
   return outputImageFromStream(images, streamFromBytes(bytes), format, options);
 }
 
-const MAX_INLINE_IMAGE_DIMENSION = 2000;
-
 export async function prepareInlineImageFromStream(
   stream: ReadableStream<Uint8Array>,
   mimeType: string,

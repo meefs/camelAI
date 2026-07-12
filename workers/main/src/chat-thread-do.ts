@@ -32,8 +32,6 @@ import type {
 import { isRetryableAssistantError } from "@earendil-works/pi-ai";
 import type {
   AssistantMessage,
-  AssistantMessageEvent,
-  AssistantMessageEventStream,
   Model,
 } from "@earendil-works/pi-ai";
 import type { OrgDO } from "./auth";
@@ -89,9 +87,7 @@ import {
   type ConnectionSetupResponse,
 } from "./chat-thread-browser-prompts";
 import {
-  applyContextUsageSdkEvent,
   resolveContextUsageForInit,
-  type LastMessageStartUsage,
 } from "./chat-context-usage";
 
 
@@ -150,8 +146,6 @@ import { ChannelTools } from "./chat-channels";
 import {
   PI_USER_STOP_METADATA_REASON,
   isPiUserStopMessage,
-  isInternalPiClientMessage,
-  isCompactSummaryPiMessage,
   piCoreForkMessageIds,
   piCoreMessageToParsedChatMessage,
   attachPiToolResultToParsedMessages,
@@ -179,7 +173,6 @@ import {
   extractLatestPiAssistantText,
   latestPiAssistantMessage,
   isPiSummaryMessage,
-  piAgentLoopErrorDetails,
   piRuntimeToolItem,
   piEventArgs,
   piToolResultText,
@@ -188,7 +181,6 @@ import {
   piRuntimeUsageSummary,
   addPiRuntimeUsageSummaries,
   piUsageSourceId,
-  extractToolText,
   piCoreMessageKey,
   dedupePiMessagesByKey,
   stampPiRenderMessageId,
@@ -198,7 +190,6 @@ import {
 // Pure Pi context-compaction helpers live in ./chat-thread/pi-compaction.
 import {
   piModelContextWindow,
-  piEffectiveMaxOutputTokens,
   piCompactionReserveTokens,
   estimatePiCompactionTokens,
   shouldCompactPiAfterAssistantUsage,
@@ -307,18 +298,13 @@ import {
 
 // Pure Pi message/tool-result storage helpers live in ./pi-message-storage.
 import {
-  PI_TOOL_RESULT_MAX_LINES,
-  PI_TOOL_RESULT_MAX_BYTES,
   PI_TOOL_RESULT_R2_REF_METADATA_KEY,
   PI_TAIL_TRUNCATED_TOOL_NAMES,
   sanitizePiModelMessage,
-  serializePiMessageForSqlStorageDetailed,
 } from "./pi-message-storage";
 import type {
-  PiR2ImageReference,
   PiR2ToolResultReference,
   PiToolResultTruncation,
-  PiSqlStorageStats,
   PiSqlStorageSerialization,
 } from "./pi-message-storage";
 
@@ -778,7 +764,7 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
   }
 
   private async withRunnerTransitionLock<T>(
-    source: string,
+    _source: string,
     fn: () => Promise<T>,
   ): Promise<T> {
     const previous = this.runnerTransitionChain;
@@ -1357,7 +1343,7 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
   }
 
   async onMessage(
-    ws: Connection,
+    _ws: Connection,
     message: WSMessage,
   ): Promise<void> {
     if (typeof message !== "string") return;
@@ -2410,22 +2396,6 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
     this.piCoreStore.ensurePiCoreTables();
   }
 
-  private sha256Hex(value: string): Promise<string> {
-    return this.piCoreStore.sha256Hex(value);
-  }
-
-  private piStoredImageR2Key(sha256: string): string | null {
-    return this.piCoreStore.piStoredImageR2Key(sha256);
-  }
-
-  private piStoredToolResultR2Location(
-    toolName: string,
-    toolCallId: string,
-    sha256: string,
-  ): { key: string; path: string } | null {
-    return this.piCoreStore.piStoredToolResultR2Location(toolName, toolCallId, sha256);
-  }
-
   private storePiFullToolResultInR2(
     toolName: string,
     toolCallId: string,
@@ -2504,14 +2474,6 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
     }
   }
 
-  private readPiR2ImageReference(part: Record<string, unknown>): PiR2ImageReference | null {
-    return this.piCoreStore.readPiR2ImageReference(part);
-  }
-
-  private externalizePiImagesForSqlStorage(value: unknown, stats: PiSqlStorageStats): Promise<unknown> {
-    return this.piCoreStore.externalizePiImagesForSqlStorage(value, stats);
-  }
-
   private hydratePiStoredImages(value: unknown): Promise<unknown> {
     return this.piCoreStore.hydratePiStoredImages(value);
   }
@@ -2544,7 +2506,7 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
     return {
       ...record,
       uiMetadata: {
-        ...(existingMetadata ?? {}),
+        ...existingMetadata,
         codeModeArtifacts: Array.from(artifactsById.values()),
       } satisfies PiUiMetadata,
     } as unknown as AgentMessage;
@@ -2632,7 +2594,8 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
     return this.uiMirror.rebuildUiMessagesFromPiCore();
   }
 
-  private appendPiCoreMessages(messages: AgentMessage[]): Promise<void> {
+  /** Compatibility seam used by direct pi_core persistence tests. */
+  appendPiCoreMessages(messages: AgentMessage[]): Promise<void> {
     return this.piCoreStore.appendPiCoreMessages(messages);
   }
 
@@ -2697,7 +2660,8 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
     return this.piTurnJournal.loadSteerMessages();
   }
 
-  private clearPiTurnSteerJournal(): void {
+  /** Compatibility seam used by synchronous steer-journal tests. */
+  clearPiTurnSteerJournal(): void {
     this.piTurnJournal.clearSteerMessages();
   }
 
@@ -2707,10 +2671,6 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
 
   private openPiActiveTurnIfAbsent(): void {
     this.piTurnJournal.openActiveTurnIfAbsent();
-  }
-
-  private writePiActiveTurn(marker: PiActiveTurnMarker): void {
-    this.piTurnJournal.writeActiveTurn(marker);
   }
 
   private async clearPiActiveTurnAndJournal(): Promise<void> {
@@ -3420,8 +3380,6 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
       persistUserMessageImmediately?: boolean;
     } = {},
   ): Promise<InitialUserMessageResult> {
-    const startedAt = options.startedAt ?? Date.now();
-    const sampleKey = options.sendAttemptId;
     const context = this.chatContext;
     if (!context) {
       return { status: "error", error: "Missing chat context for thread" };
@@ -3433,7 +3391,6 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
       return { status: "error", error: "Empty message" };
     }
 
-    const banCheckStartedAt = Date.now();
     const orgBan = await isOrgBanned(this.env.APP_KV, {
       orgId: context.orgId,
     });
@@ -3446,27 +3403,16 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
     // before ensurePiSessionReady for maximum overlap; debounced + best-effort.
     this.maybePrewarmProjectBuildSandboxes();
 
-    const runnerConnectStartedAt = Date.now();
-    try {
-      await this.ensurePiSessionReady();
-    } catch (error) {
-      throw error;
-    }
+    await this.ensurePiSessionReady();
 
-    const messagePrepareStartedAt = Date.now();
     let attributedContent: string;
-    try {
-      const safeContent = injectFileSafetyMessage(rawContent);
-      const mentionAugmented =
-        await this.applyMentionsForTurn(safeContent);
-      attributedContent = formatAttributedUserMessage(mentionAugmented, {
-        userName: context.userName,
-        userEmail: context.userEmail,
-        messageSource: options.messageSource ?? "web",
-      });
-    } catch (error) {
-      throw error;
-    }
+    const safeContent = injectFileSafetyMessage(rawContent);
+    const mentionAugmented = await this.applyMentionsForTurn(safeContent);
+    attributedContent = formatAttributedUserMessage(mentionAugmented, {
+      userName: context.userName,
+      userEmail: context.userEmail,
+      messageSource: options.messageSource ?? "web",
+    });
     if (!attributedContent) {
       return { status: "error", error: "Empty message" };
     }
@@ -4031,7 +3977,6 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
   async startInitialUserMessage(
     body: InitialUserMessageRequest,
   ): Promise<InitialUserMessageResult> {
-    const startedAt = Date.now();
     const contextError = this.updateExternalChatContext(body);
     if (contextError) {
       return { status: "error", error: contextError };
@@ -4110,7 +4055,6 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
   async runAgentEvalSession(
     body: AgentEvalSessionRequest,
   ): Promise<AgentEvalSessionResult> {
-    const startedAt = Date.now();
     this.agentEvalEventCollector = [];
     const contextError = this.updateExternalChatContext(body);
     if (contextError) {
@@ -6507,7 +6451,6 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
 
   private broadcastChat(message: object): void {
     const json = JSON.stringify(message);
-    const typed = message as { type?: unknown };
     this.broadcast(json);
   }
 

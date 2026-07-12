@@ -3,7 +3,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import {
   INTEGRATION_REGISTRY,
-  type DynamicField,
   type DynamicIntegrationSchema,
   type IntegrationDefinition,
 } from '@/lib/integration-registry';

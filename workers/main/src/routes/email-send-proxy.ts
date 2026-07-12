@@ -274,13 +274,6 @@ export async function handleEmailSendProxy({ req, env }: RouteContext): Promise<
     workspaceId,
     proxyAuth.threadId,
   );
-  // sandbox-host strips caller-supplied Chiridion headers and only forwards
-  // threadId after validating the server-issued thread scope token.
-  const originatingEmailThread =
-    workspaceThread?.source?.trim() === 'channel' &&
-    workspaceThread.channel_kind === 'email'
-      ? workspaceThread
-      : null;
   const emailReferenceIds =
     proxyAuth.threadId && workspaceThread
       ? await readEmailThreadReferenceIds(

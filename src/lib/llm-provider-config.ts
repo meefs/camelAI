@@ -272,7 +272,7 @@ export function isCodexLlmModel(model: unknown): model is LlmModel {
 }
 
 export function getVisibleLlmModelOptions(
-  experimentalSettings?: OrganizationExperimentalSettings | null,
+  _experimentalSettings?: OrganizationExperimentalSettings | null,
   includeModel?: LlmModel | null,
   options?: {
     orgProvider?: string | null;
@@ -316,7 +316,7 @@ export function getVisibleLlmModelOptions(
 export function isLlmModelAllowedForNewThread(
   value: unknown,
   orgProvider: string | null | undefined,
-  experimentalSettings?: OrganizationExperimentalSettings | null,
+  _experimentalSettings?: OrganizationExperimentalSettings | null,
   options?: LlmProviderModelOptions,
 ): value is LlmModel {
   return (

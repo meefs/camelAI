@@ -465,7 +465,7 @@ export function resolveOrgCandidates(
   identity: ProxyIdentity | null,
   options: { includeDefaultFallback?: boolean } = {},
 ): ProxyOrgCandidate[] {
-  const root = { jwt: payload, ...(identity ?? {}) };
+  const root = { jwt: payload, ...identity };
   const candidates: ProxyOrgCandidate[] = [];
 
   const claimPaths =

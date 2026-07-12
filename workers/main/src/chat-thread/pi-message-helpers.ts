@@ -651,7 +651,7 @@ export function withPiRenderMessageId(
   return {
     ...record,
     uiMetadata: {
-      ...(existing ?? {}),
+      ...existing,
       renderMessageId,
     } satisfies PiUiMetadata,
   } as unknown as AgentMessage;

@@ -4,13 +4,11 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { ArchiveWorkspaceDialog } from "@/components/admin/archive-workspace-dialog"
 
 interface WorkspaceDangerZoneProps {
-  workspaceId: string
   workspaceName: string
   archived: boolean
 }
 
 export function WorkspaceDangerZone({
-  workspaceId,
   workspaceName,
   archived,
 }: WorkspaceDangerZoneProps) {
@@ -22,7 +20,6 @@ export function WorkspaceDangerZone({
       </CardHeader>
       <CardContent className="flex flex-wrap items-center gap-3">
         <ArchiveWorkspaceDialog
-          workspaceId={workspaceId}
           workspaceName={workspaceName}
           disabled={archived}
         />

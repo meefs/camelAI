@@ -60,7 +60,9 @@ export function fmtTokens(value?: number): string {
 
 export function stripAnsi(value: string): string {
 	return String(value || "")
+		// oxlint-disable-next-line no-control-regex -- Strip ANSI color sequences from stored logs.
 		.replace(/\x1b\[[0-9;]*m/g, "")
+		// oxlint-disable-next-line no-control-regex -- Strip OSC terminal sequences from stored logs.
 		.replace(/\x1b\][^\x07]*\x07/g, "");
 }
 

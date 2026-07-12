@@ -30,15 +30,6 @@ const requestHandler = createRequestHandler(
   import.meta.env.MODE
 );
 
-/**
- * Parse a named cookie from a Cookie header string.
- */
-function getCookie(request: Request, name: string): string | undefined {
-  const header = request.headers.get("Cookie") ?? "";
-  const match = header.match(new RegExp(`(?:^|;\\s*)${name}=([^;]*)`));
-  return match?.[1];
-}
-
 export default {
   async fetch(request, env, ctx) {
     /* Uncomment to enable Agents SDK routing (WebSocket for Chat DO)

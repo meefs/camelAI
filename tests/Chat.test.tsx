@@ -4,7 +4,7 @@
  * Run with: npx vitest tests/Chat.test.tsx
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import { render, screen, act } from '@testing-library/react';
 import { useState } from 'react';
 import { isFileDrag } from '@/lib/file-drag';

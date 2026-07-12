@@ -7,10 +7,9 @@
 // signature), so there is no runtime import cycle with ./chat-thread-do.
 import { WorkerEntrypoint } from "cloudflare:workers";
 import { getSandbox } from "@cloudflare/sandbox";
-import { Agent, type Connection } from "agents";
+import type { OrgDO, WorkerScript } from "./auth";
 import { Type, type TSchema } from "typebox";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
-import type { OrgDO, WorkerScript } from "./auth";
 import type { WorkspaceDO } from "./workspace";
 import type { WorkspaceCronDO } from "./workspace-cron";
 import { ProjectFilesystemClient, WorkspaceFilesystemClient, normalizeWorkspacePath as normalizeDurableWorkspacePath, type WorkspaceFileStoreLike, type WorkspaceProject, type WorkspaceProjectCloneSummary, projectNameKey } from "./workspace-filesystem-do";
@@ -1625,7 +1624,7 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
     return project;
   }
 
-  private async resolveDoBackedProjectForAction(args: Record<string, unknown>, action: string): Promise<WorkspaceProject> {
+  private async resolveDoBackedProjectForAction(args: Record<string, unknown>, _action: string): Promise<WorkspaceProject> {
     const project = await this.resolveProjectForAction(args);
     if ((project.backend ?? "vm") !== "do-r2") {
       throw new Error(

@@ -38,7 +38,6 @@ interface AddConnectionDialogProps {
   onOpenChange: (open: boolean) => void;
   connectionType: string;
   connectionTypes: IntegrationDefinition[];
-  orgId: string;
   onSuccess: () => void;
 }
 
@@ -81,7 +80,6 @@ export function AddConnectionDialog({
   onOpenChange,
   connectionType,
   connectionTypes,
-  orgId,
   onSuccess,
 }: AddConnectionDialogProps) {
   const fetcher = useFetcher<{ success?: boolean; error?: string; oauthUrl?: string }>();

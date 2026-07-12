@@ -209,9 +209,11 @@ function getFilePreviewSummary(
 ): ToolSummaryParts {
   const path = displayPath || (filePreview ? getDisplayPathForTarget(filePreview) : '');
   const filename = filePreview?.filename ?? (path ? getFilename(path) : undefined);
-  const fileParts = filePreview ? { path, filename: filePreview.filename, filePreview } : {
-    ...(filename ? { filename } : {}),
-  };
+  const fileParts = filePreview
+    ? { path, filename: filePreview.filename, filePreview }
+    : filename
+      ? { filename }
+      : {};
 
   if (isRunning) {
     if (!path && !filename) return { action: 'Opening preview...' };
@@ -240,9 +242,9 @@ function getFileToolSummary(
   const filename = filePreview?.filename ?? (path ? getFilename(path) : undefined);
   const fileParts = filePreview
     ? { filename: filePreview.filename, path, filePreview }
-    : {
-        ...(filename ? { filename } : {}),
-      };
+    : filename
+      ? { filename }
+      : {};
 
   if (isRunning) {
     if (!path && !filename) return { action: labels.runningGeneric };

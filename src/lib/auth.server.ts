@@ -1,9 +1,6 @@
 import { redirect, type AppLoadContext } from "react-router";
 import { getEnv } from "./cloudflare.server";
-import {
-  getSignedSessionFromRequest,
-  type SignedSessionData,
-} from "./cookies.server";
+import { getSignedSessionFromRequest } from "./cookies.server";
 import { redirectIfBannedSession } from "./ban.server";
 import { createSignedSession } from "../../workers/main/src/signed-session";
 import type { OrgAuthContextBootstrap } from "../../workers/main/src/auth";
@@ -422,9 +419,7 @@ async function getLocalAuthBypassSession(
 }
 
 async function getOrgAuthContextBootstrap(
-  authEnv: AuthEnv,
   orgStub: ReturnType<AuthEnv["ORG"]["get"]>,
-  orgId: string,
   userId: string,
 ): Promise<OrgAuthContextBootstrap> {
   return retryTransientDurableObjectRead(
@@ -637,9 +632,7 @@ async function getAuthContextUncached(
       userStub.getAuthBootstrap(),
     ),
     getOrgAuthContextBootstrap(
-      authEnv,
       currentOrgStub,
-      sessionContext.session.org_id,
       sessionContext.session.user_id,
     ),
   ]);

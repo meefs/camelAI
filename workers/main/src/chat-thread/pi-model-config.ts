@@ -292,8 +292,8 @@ export async function resolvePiModelConfig(
     provider: configured.requestProvider ?? modelBase.provider,
     baseUrl: replayBaseUrl || configured.baseUrl || modelBase.baseUrl,
     headers: {
-      ...(modelBase.headers ?? {}),
-      ...(configured.headers ?? {}),
+      ...modelBase.headers,
+      ...configured.headers,
     },
   } as Model<any>;
   if (resolvedModel.provider === "cloudflare-ai-gateway" && resolved.hostedRequestProfile) {
@@ -312,11 +312,11 @@ export async function resolvePiModelConfig(
     }
     if (profile.supportsReasoningEffort !== undefined || profile.thinkingFormat) {
       resolvedModel.compat = {
-        ...(resolvedModel.compat ?? {}),
-        ...(profile.supportsReasoningEffort !== undefined
-          ? { supportsReasoningEffort: profile.supportsReasoningEffort }
-          : {}),
-        ...(profile.thinkingFormat ? { thinkingFormat: profile.thinkingFormat } : {}),
+        ...resolvedModel.compat,
+        ...(profile.supportsReasoningEffort !== undefined && {
+          supportsReasoningEffort: profile.supportsReasoningEffort,
+        }),
+        ...(profile.thinkingFormat && { thinkingFormat: profile.thinkingFormat }),
       };
     }
   }
@@ -332,7 +332,7 @@ export async function resolvePiModelConfig(
   ) {
     const effort = resolved.hostedReasoningEffort;
     resolvedModel.compat = {
-      ...(resolvedModel.compat ?? {}),
+      ...resolvedModel.compat,
       supportsReasoningEffort: true,
     };
     resolvedModel.thinkingLevelMap = {

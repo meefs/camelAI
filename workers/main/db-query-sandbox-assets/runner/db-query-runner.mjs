@@ -148,7 +148,7 @@ export function parseIpv6(text) {
     if (!head || !tail) return null;
     const filled = [...tail, ...tailWords];
     if (head.length + filled.length > 7) return null;
-    words = [...head, ...new Array(8 - head.length - filled.length).fill(0), ...filled];
+    words = [...head, ...Array.from({ length: 8 - head.length - filled.length }, () => 0), ...filled];
   }
   return words;
 }

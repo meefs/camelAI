@@ -52,9 +52,7 @@ function earlierSliceMetadata(source: UIMessage): UIMessage['metadata'] {
     | undefined;
   const createdAtMs = metadata?.pi?.createdAtMs;
   return {
-    pi: {
-      ...(typeof createdAtMs === 'number' ? { createdAtMs } : {}),
-    },
+    pi: typeof createdAtMs === 'number' ? { createdAtMs } : {},
   };
 }
 

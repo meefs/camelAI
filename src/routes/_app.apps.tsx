@@ -238,7 +238,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
 }
 
 export default function AppsPage() {
-  const { apps, orgId, orgSlug, hostname, renderedAt, hasWorkspace, orgCustomDomain } = useLoaderData<typeof loader>();
+  const { apps, orgSlug, hostname, renderedAt, hasWorkspace, orgCustomDomain } = useLoaderData<typeof loader>();
 
   if (!hasWorkspace) {
     return <NoWorkspacesError />;
@@ -250,7 +250,6 @@ export default function AppsPage() {
         {(resolvedApps) => (
           <AppsClient
             initialApps={resolvedApps}
-            orgId={orgId}
             orgSlug={orgSlug}
             hostname={hostname}
             initialNow={renderedAt}

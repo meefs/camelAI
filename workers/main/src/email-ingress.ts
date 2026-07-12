@@ -750,20 +750,17 @@ export async function handleWorkspaceEmailIngress(
       });
     }
   } finally {
-    if (!dedupeKey || !dedupeProcessingValue) {
-      return;
-    }
-
-    if (dedupeHandled) {
-      await env.APP_KV.put(dedupeKey, EMAIL_EVENT_DEDUPE_DONE_VALUE, {
-        expirationTtl: EMAIL_EVENT_DEDUPE_TTL_SECONDS,
-      });
-      return;
-    }
-
-    const currentValue = await env.APP_KV.get(dedupeKey);
-    if (currentValue === dedupeProcessingValue) {
-      await env.APP_KV.delete(dedupeKey);
+    if (dedupeKey && dedupeProcessingValue) {
+      if (dedupeHandled) {
+        await env.APP_KV.put(dedupeKey, EMAIL_EVENT_DEDUPE_DONE_VALUE, {
+          expirationTtl: EMAIL_EVENT_DEDUPE_TTL_SECONDS,
+        });
+      } else {
+        const currentValue = await env.APP_KV.get(dedupeKey);
+        if (currentValue === dedupeProcessingValue) {
+          await env.APP_KV.delete(dedupeKey);
+        }
+      }
     }
   }
 }

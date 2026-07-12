@@ -31,7 +31,6 @@ import {
   validateAndConsumeAuthToken,
   createAuthState,
   DISPATCHER_SESSION_COOKIE,
-  type DispatcherSession,
 } from '../../main/src/worker-auth';
 import {
   getWorkerAccessInfo,
@@ -775,13 +774,6 @@ export class SelfhostAppRunner extends DurableObject<Env> {
 // Helper functions to replace RPC calls
 
 /**
- * Check if a string looks like an environment prefix.
- */
-function isEnvPrefix(s: string): boolean {
-  return s.startsWith('dev-') || s === 'staging' || s === 'prod';
-}
-
-/**
  * New-style org slugs are 6+ purely alphanumeric characters (no hyphens).
  * Old-style slugs (e.g. "ms-workspace-b3c") contain hyphens.
  */
@@ -939,21 +931,6 @@ async function isOrgMember(
 ): Promise<boolean> {
   const stub = orgNamespace.get(orgNamespace.idFromName(orgId)) as DurableObjectStub<OrgDO>;
   return stub.isMember(userId);
-}
-
-/**
- * Get org slug from OrgDO
- */
-async function getOrgSlug(
-  orgNamespace: DurableObjectNamespace<OrgDO>,
-  orgId: string
-): Promise<string | null> {
-  try {
-    const stub = orgNamespace.get(orgNamespace.idFromName(orgId)) as DurableObjectStub<OrgDO>;
-    return await stub.getSlug();
-  } catch {
-    return null;
-  }
 }
 
 /**

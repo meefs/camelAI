@@ -110,7 +110,6 @@ interface ConnectionsClientProps {
   initialMentionProjects: MentionableProject[];
   connectionTypes: IntegrationDefinition[];
   categories: string[];
-  orgId: string;
   workspaceId: string;
   otherWorkspaces?: Array<{ id: string; name: string }>;
   workspaceEmailAddress: string | null;
@@ -173,7 +172,6 @@ export default function ConnectionsClient({
   initialMentionProjects,
   connectionTypes,
   categories,
-  orgId,
   workspaceId,
   otherWorkspaces = [],
   workspaceEmailAddress,
@@ -571,7 +569,7 @@ export default function ConnectionsClient({
     setEditDialogOpen(true);
   };
 
-  const handleNewChat = (item: PanelItem, mentionSlug: string) => {
+  const handleNewChat = (_item: PanelItem, mentionSlug: string) => {
     writeDraft(workspaceId, null, `@${mentionSlug} `, []);
     navigate("/chat");
   };
@@ -931,7 +929,6 @@ export default function ConnectionsClient({
           onOpenChange={handleAddDialogOpenChange}
           connectionType={selectedType}
           connectionTypes={connectionTypes}
-          orgId={orgId}
           onSuccess={handleAddSuccess}
         />
       ) : null}
@@ -942,7 +939,6 @@ export default function ConnectionsClient({
           onOpenChange={handleEditDialogOpenChange}
           connection={selectedConnection}
           connectionTypes={connectionTypes}
-          orgId={orgId}
           forceCredentialUpdate={forceCredentialUpdate}
           onSuccess={handleEditSuccess}
         />

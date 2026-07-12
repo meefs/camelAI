@@ -63,7 +63,6 @@ export function UserAdminActions({
             disabled={Boolean(userBan)}
           />
           <ForceOrphanDialog
-            userId={userId}
             userLabel={userEmail}
             disabled={orphanDisabled || Boolean(userBan)}
           />

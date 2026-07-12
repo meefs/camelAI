@@ -1,4 +1,4 @@
-import { Link, useLoaderData, redirect, useFetcher } from 'react-router';
+import { Link, useLoaderData, redirect } from 'react-router';
 import type { Route } from './+types/_admin.workspaces.$id';
 import { requireSuperuser, getAuthEnv } from '@/lib/auth.server';
 import { getEnv } from '@/lib/cloudflare.server';
@@ -111,7 +111,6 @@ export async function action({ request, context, params }: Route.ActionArgs) {
 
 export default function AdminWorkspaceDetailPage() {
   const { workspace, org, threads, integrations, members, userById } = useLoaderData<typeof loader>();
-  const fetcher = useFetcher();
 
   return (
     <>
@@ -393,7 +392,6 @@ export default function AdminWorkspaceDetailPage() {
             </Card>
 
             <WorkspaceDangerZone
-              workspaceId={workspace.id}
               workspaceName={workspace.name}
               archived={workspace.archived}
             />
