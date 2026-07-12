@@ -1,0 +1,611 @@
+// Pi model / billing-source resolution for ChatThreadDO, extracted as free
+// functions with explicit deps: BYOK credential resolution, hosted-credit
+// gating, per-request provider config (custom/openrouter/bedrock/hosted
+// gateway), and the model catalog fallbacks. Sibling steps arrive as injected
+// callbacks so ChatThreadDO's thin delegates keep routing through `this`
+// (preserving the DO-internal call surface and its test seams).
+import type { Model } from "@earendil-works/pi-ai";
+import type {
+  ChatContextState,
+  ChatEnv,
+  PiHeaderValue,
+  PiResolvedModelReference,
+} from "./types";
+import type { PiModelMapping } from "../pi-model-resolution";
+import { decryptCredentials } from "../../../../src/lib/integration-crypto";
+import {
+  DEFAULT_LLM_MODEL,
+  parseStoredLlmProviderConfig,
+} from "../../../../src/lib/llm-provider-config";
+import {
+  getSelfhostAiProviderCredentials,
+} from "../../../../src/lib/selfhost-ai-provider";
+import { isSelfhostRuntime } from "../../../../src/lib/selfhost-runtime";
+import { buildCloudflareGatewayUrl } from "../../../../src/lib/cloudflare-ai-gateway";
+
+export type PiBillingSource = "hosted" | "byok";
+
+export type LlmProviderConfigRecord = ReturnType<
+  import("../identity/org-do").OrgDO["getLlmProviderConfig"]
+>;
+
+export interface PiRequestConfig {
+  apiKey: string;
+  api?: string;
+  baseUrl?: string;
+  headers?: Record<string, PiHeaderValue>;
+  requestProvider?: string;
+  requestModelId?: string;
+  modelLookupProvider?: string;
+  modelLookupModelId?: string;
+  billingSource: PiBillingSource;
+  creditChargeable: boolean;
+  usageProvider?: string;
+}
+
+export interface PiResolvedModelConfig {
+  model: Model<any>;
+  apiKey: string;
+  headers?: Record<string, PiHeaderValue>;
+  provider: string;
+  modelId: string;
+  billingSource: PiBillingSource;
+  creditChargeable: boolean;
+  usageProvider: string;
+}
+
+export interface ResolvePiModelDeps {
+  env: ChatEnv;
+  modelMapping: PiModelMapping;
+  resolveRequestConfig(
+    resolved: PiResolvedModelReference,
+    context: ChatContextState,
+    requestedModelId: string,
+  ): Promise<PiRequestConfig>;
+  /**
+   * Invoked as soon as the request config settles (before the resolved model
+   * is assembled), mirroring the original mid-method field writes so the
+   * billing fields are updated even when a later model-lookup step throws.
+   */
+  onBillingResolved(
+    billingSource: PiBillingSource,
+    creditChargeable: boolean,
+    usageProvider: string,
+  ): void;
+}
+
+export interface ResolvePiRequestConfigDeps {
+  env: ChatEnv;
+  modelMapping: PiModelMapping;
+  getChatMetadata(): {
+    orgId?: string;
+    workspaceId?: string;
+    threadId?: string;
+  } | null;
+  resolveByokCredentials(
+    context: ChatContextState,
+  ): Promise<Awaited<ReturnType<typeof resolveCurrentByokCredentials>>>;
+  checkHostedModelAccess(context: ChatContextState): Promise<boolean>;
+}
+
+const PI_MODEL_CATALOG_FALLBACKS: Record<string, Model<any>> = {
+  "anthropic/claude-sonnet-5": {
+    id: "claude-sonnet-5",
+    name: "Claude Sonnet 5",
+    api: "anthropic-messages",
+    provider: "anthropic",
+    baseUrl: "https://api.anthropic.com",
+    reasoning: true,
+    input: ["text", "image"],
+    cost: {
+      input: 2,
+      output: 10,
+      cacheRead: 0.2,
+      cacheWrite: 2.5,
+    },
+    contextWindow: 1_000_000,
+    maxTokens: 128_000,
+  } satisfies Model<"anthropic-messages">,
+  "anthropic/claude-fable-5": {
+    id: "claude-fable-5",
+    name: "Claude Fable 5",
+    api: "anthropic-messages",
+    provider: "anthropic",
+    baseUrl: "https://api.anthropic.com",
+    compat: { forceAdaptiveThinking: true },
+    reasoning: true,
+    thinkingLevelMap: { off: null, xhigh: "xhigh" },
+    input: ["text", "image"],
+    cost: {
+      input: 10,
+      output: 50,
+      cacheRead: 1,
+      cacheWrite: 12.5,
+    },
+    contextWindow: 1_000_000,
+    maxTokens: 128_000,
+  } satisfies Model<"anthropic-messages">,
+  "anthropic/claude-opus-4-8": {
+    id: "claude-opus-4-8",
+    name: "Claude Opus 4.8",
+    api: "anthropic-messages",
+    provider: "anthropic",
+    baseUrl: "https://api.anthropic.com",
+    reasoning: true,
+    thinkingLevelMap: { xhigh: "xhigh" },
+    input: ["text", "image"],
+    cost: {
+      input: 5,
+      output: 25,
+      cacheRead: 0.5,
+      cacheWrite: 6.25,
+    },
+    contextWindow: 1_000_000,
+    maxTokens: 128_000,
+  } satisfies Model<"anthropic-messages">,
+  "openrouter/google/gemini-3.5-flash": {
+    id: "google/gemini-3.5-flash",
+    name: "Google: Gemini 3.5 Flash",
+    api: "openai-completions",
+    provider: "openrouter",
+    baseUrl: "https://openrouter.ai/api/v1",
+    reasoning: true,
+    input: ["text", "image"],
+    cost: {
+      input: 1.5,
+      output: 9,
+      cacheRead: 0.15,
+      cacheWrite: 0.08333333333333334,
+    },
+    contextWindow: 1048576,
+    maxTokens: 65536,
+  } satisfies Model<"openai-completions">,
+  "openrouter/moonshotai/kimi-k2.7-code": {
+    id: "moonshotai/kimi-k2.7-code",
+    name: "MoonshotAI: Kimi K2.7 Code",
+    api: "openai-completions",
+    provider: "openrouter",
+    baseUrl: "https://openrouter.ai/api/v1",
+    reasoning: true,
+    input: ["text", "image"],
+    cost: {
+      input: 0.74,
+      output: 3.5,
+      cacheRead: 0.15,
+      cacheWrite: 0,
+    },
+    contextWindow: 262144,
+    maxTokens: 16384,
+  } satisfies Model<"openai-completions">,
+  "openrouter/x-ai/grok-4.5": {
+    id: "x-ai/grok-4.5",
+    name: "xAI: Grok 4.5",
+    api: "openai-responses",
+    provider: "openrouter",
+    baseUrl: "https://openrouter.ai/api/v1",
+    reasoning: true,
+    input: ["text", "image"],
+    cost: {
+      input: 2,
+      output: 6,
+      cacheRead: 0.5,
+      cacheWrite: 0,
+    },
+    contextWindow: 500000,
+    maxTokens: 128000,
+  } satisfies Model<"openai-responses">,
+  "openrouter/z-ai/glm-5.2": {
+    id: "z-ai/glm-5.2",
+    name: "Z.ai: GLM 5.2",
+    api: "openai-completions",
+    provider: "openrouter",
+    baseUrl: "https://openrouter.ai/api/v1",
+    reasoning: true,
+    // GLM 5.2 only accepts reasoning efforts "high" and "xhigh"; the Pi agent
+    // defaults to "medium", so clamp the lower levels up to "high" to avoid
+    // OpenRouter rejecting unsupported efforts.
+    thinkingLevelMap: {
+      minimal: "high",
+      low: "high",
+      medium: "high",
+      high: "high",
+      xhigh: "xhigh",
+    },
+    input: ["text"],
+    cost: {
+      input: 1.2,
+      output: 4.1,
+      cacheRead: 0.2,
+      cacheWrite: 0,
+    },
+    contextWindow: 1048576,
+    maxTokens: 131072,
+  } satisfies Model<"openai-completions">,
+};
+
+function resolvePiModelCatalogFallback(
+  resolved: PiResolvedModelReference,
+): Model<any> | null {
+  return PI_MODEL_CATALOG_FALLBACKS[`${resolved.provider}/${resolved.modelId}`] ?? null;
+}
+
+export async function resolvePiModelConfig(
+  deps: ResolvePiModelDeps,
+  context: ChatContextState,
+  envVars: Record<string, string>,
+  getModelFn: (provider: never, modelId: never) => Model<any>,
+): Promise<PiResolvedModelConfig> {
+  const requestedModelId =
+    envVars.CHIRIDION_MODEL ||
+    envVars.CHIRIDION_CODEX_MODEL ||
+    envVars.CHIRIDION_CLAUDE_MODEL ||
+    DEFAULT_LLM_MODEL;
+  const modelId = deps.modelMapping.normalizePiModelId(requestedModelId);
+  const resolved = deps.modelMapping.resolvePiModelReference(modelId);
+  const model =
+    (getModelFn(
+      resolved.provider as never,
+      resolved.modelId as never,
+    ) as Model<any> | null | undefined) ??
+    resolvePiModelCatalogFallback(resolved);
+  if (!model) {
+    throw new Error(`Unsupported Pi model ${requestedModelId}`);
+  }
+
+  const configured = await deps.resolveRequestConfig(
+    resolved,
+    context,
+    requestedModelId,
+  );
+  const configuredModel =
+    configured.modelLookupProvider && configured.requestModelId
+      ? (getModelFn(
+          configured.modelLookupProvider as never,
+          (configured.modelLookupModelId ?? configured.requestModelId) as never,
+        ) as Model<any> | null | undefined) ??
+        resolvePiModelCatalogFallback({
+          provider: configured.modelLookupProvider,
+          modelId: configured.modelLookupModelId ?? configured.requestModelId,
+          hostedGatewayProvider: resolved.hostedGatewayProvider,
+        })
+      : null;
+  if (configured.modelLookupProvider && !configuredModel) {
+    throw new Error(
+      `Unsupported ${configured.modelLookupProvider} Pi model ${configured.requestModelId}`,
+    );
+  }
+  const modelBase = configuredModel ?? model;
+  const usageProvider = configured.usageProvider ?? resolved.provider;
+  deps.onBillingResolved(configured.billingSource, configured.creditChargeable, usageProvider);
+  // E2E determinism: when TEST_LLM_REPLAY_URL is set, route every provider's
+  // requests to the local deterministic fake LLM (scripts/fake-llm.mjs)
+  // instead of the real model. Auth/headers are left untouched (the fake
+  // ignores them); only the origin changes, so the agent loop runs offline
+  // and deterministically. Unset in production -> no effect.
+  const replayBaseUrl = (
+    deps.env as { TEST_LLM_REPLAY_URL?: string }
+  ).TEST_LLM_REPLAY_URL?.trim();
+  const resolvedModel = {
+    ...modelBase,
+    api: configured.api ?? resolved.api ?? modelBase.api,
+    id: configured.requestModelId ?? modelBase.id,
+    provider: configured.requestProvider ?? modelBase.provider,
+    baseUrl: replayBaseUrl || configured.baseUrl || modelBase.baseUrl,
+    headers: {
+      ...(modelBase.headers ?? {}),
+      ...(configured.headers ?? {}),
+    },
+  } as Model<any>;
+  if (resolvedModel.provider === "cloudflare-ai-gateway" && resolved.hostedRequestProfile) {
+    const profile = resolved.hostedRequestProfile;
+    if (profile.reasoning !== undefined) {
+      resolvedModel.reasoning = profile.reasoning;
+    }
+    if (profile.contextWindow) {
+      resolvedModel.contextWindow = profile.contextWindow;
+    }
+    if (profile.maxTokens) {
+      resolvedModel.maxTokens = Math.min(
+        Math.floor(Number(resolvedModel.maxTokens || profile.maxTokens)),
+        profile.maxTokens,
+      );
+    }
+    if (profile.supportsReasoningEffort !== undefined || profile.thinkingFormat) {
+      resolvedModel.compat = {
+        ...(resolvedModel.compat ?? {}),
+        ...(profile.supportsReasoningEffort !== undefined
+          ? { supportsReasoningEffort: profile.supportsReasoningEffort }
+          : {}),
+        ...(profile.thinkingFormat ? { thinkingFormat: profile.thinkingFormat } : {}),
+      };
+    }
+  }
+  // Force a fixed reasoning effort on hosted AI Gateway models that need it
+  // (e.g. DeepSeek V4 Pro/Auto -> xhigh). pi-ai treats the cloudflare-ai-gateway
+  // provider as supportsReasoningEffort=false, so we flip it on and map every
+  // agent thinking level to the target effort; otherwise reasoning_effort is
+  // never emitted and the dynamic route falls back to its upstream default.
+  if (
+    resolved.hostedReasoningEffort &&
+    resolvedModel.reasoning !== false &&
+    resolvedModel.provider === "cloudflare-ai-gateway"
+  ) {
+    const effort = resolved.hostedReasoningEffort;
+    resolvedModel.compat = {
+      ...(resolvedModel.compat ?? {}),
+      supportsReasoningEffort: true,
+    };
+    resolvedModel.thinkingLevelMap = {
+      minimal: effort,
+      low: effort,
+      medium: effort,
+      high: effort,
+      xhigh: effort,
+    } as Model<any>["thinkingLevelMap"];
+  }
+  return {
+    model: resolvedModel,
+    apiKey: configured.apiKey,
+    headers: configured.headers,
+    provider: resolved.provider,
+    modelId: resolved.modelId,
+    billingSource: configured.billingSource,
+    creditChargeable: configured.creditChargeable,
+    usageProvider,
+  };
+}
+
+export async function resolvePiRequestConfig(
+  deps: ResolvePiRequestConfigDeps,
+  resolved: PiResolvedModelReference,
+  context: ChatContextState,
+  requestedModelId: string,
+): Promise<PiRequestConfig> {
+  const selfhostProvider = getSelfhostAiProviderCredentials(deps.env);
+  const byok = selfhostProvider ?? await deps.resolveByokCredentials(context).catch((error) => {
+    console.error("[ChatThreadDO] failed to resolve Pi BYOK credentials", error);
+    return null;
+  });
+  const byokAllowed = resolved.byokAllowed !== false;
+  if (byokAllowed && byok?.provider === "custom" && byok.apiKey && byok.baseUrl && byok.api) {
+    const customModel = deps.modelMapping.resolveCustomProviderModelReference(
+      byok.api,
+      requestedModelId,
+      byok.modelId,
+    );
+    return {
+      apiKey: byok.apiKey,
+      api: byok.api,
+      billingSource: "byok",
+      creditChargeable: false,
+      requestProvider: "custom",
+      requestModelId: customModel.requestModelId,
+      modelLookupProvider: customModel.provider,
+      modelLookupModelId: customModel.lookupModelId,
+      baseUrl: byok.baseUrl,
+      usageProvider: "custom",
+      headers: deps.modelMapping.customProviderAuthHeaders(byok.api, byok.authType ?? "bearer", byok.apiKey),
+    };
+  }
+  if (byokAllowed && byok?.provider === "openrouter" && byok.apiKey) {
+    return {
+      apiKey: byok.apiKey,
+      billingSource: "byok",
+      creditChargeable: false,
+      usageProvider: "openrouter",
+      // hostedModelId can be a gateway-only dynamic route (e.g.
+      // "dynamic/..." on the AI Gateway compat endpoint); OpenRouter only
+      // understands native model ids, so fall back to the OpenRouter id.
+      requestModelId:
+        resolved.hostedGatewayProvider === "openrouter"
+          ? resolved.hostedModelId
+          : deps.modelMapping.openRouterNitroModel(resolved.modelId),
+      headers: {
+        ...deps.modelMapping.openRouterAttributionHeaders(),
+        ...(resolved.provider === "anthropic"
+          ? { Authorization: `Bearer ${byok.apiKey}` }
+          : {}),
+      },
+      baseUrl: resolved.provider === "anthropic"
+        ? "https://openrouter.ai/api"
+        : "https://openrouter.ai/api/v1",
+    };
+  }
+  if (byokAllowed && byok?.provider === "bedrock" && byok.apiKey && resolved.provider === "anthropic") {
+    return {
+      apiKey: byok.apiKey,
+      api: "anthropic-messages",
+      billingSource: "byok",
+      creditChargeable: false,
+      requestProvider: "custom",
+      requestModelId: deps.modelMapping.bedrockClaudeModel(resolved.modelId),
+      modelLookupProvider: "anthropic",
+      modelLookupModelId: resolved.modelId,
+      baseUrl: deps.modelMapping.bedrockAnthropicMessagesBaseUrl(byok.awsRegion),
+      usageProvider: "bedrock",
+    };
+  }
+  if (byokAllowed && byok?.provider === "bedrock" && byok.apiKey && resolved.provider === "openai") {
+    const bedrockOpenAi = deps.modelMapping.bedrockOpenAiModelConfig(resolved.modelId, byok.awsRegion);
+    if (bedrockOpenAi) {
+      return {
+        apiKey: byok.apiKey,
+        api: "openai-responses",
+        billingSource: "byok",
+        creditChargeable: false,
+        requestProvider: "custom",
+        requestModelId: bedrockOpenAi.modelId,
+        modelLookupProvider: "openai",
+        modelLookupModelId: resolved.modelId,
+        baseUrl: bedrockOpenAi.baseUrl,
+        usageProvider: "bedrock",
+      };
+    }
+  }
+  if (byokAllowed && byok?.provider === resolved.provider && byok.apiKey) {
+    return {
+      apiKey: byok.apiKey,
+      billingSource: "byok",
+      creditChargeable: false,
+      usageProvider: resolved.provider,
+    };
+  }
+
+  const creditChargeable = await deps.checkHostedModelAccess(context);
+  // E2E replay routes hosted calls to a local stub that ignores account/
+  // gateway/auth, so stand in dummy values to clear this gateway-config check
+  // (the real origin is swapped in resolveCloudflareGatewayOrigin). Lets the
+  // credential-free CI path replay hosted turns without gateway secrets.
+  const replay = deps.env.TEST_LLM_REPLAY_URL?.trim() ? "replay" : undefined;
+  const accountId = deps.env.CF_ACCOUNT_ID?.trim() || replay;
+  const gatewayName = deps.env.CF_GATEWAY_NAME?.trim() || replay;
+  const token =
+    deps.env.AI_GATEWAY_AUTH_TOKEN?.trim() ||
+    deps.env.CF_GATEWAY_TOKEN?.trim() ||
+    replay;
+  if (!accountId || !gatewayName || !token) {
+    if (isSelfhostRuntime(deps.env)) {
+      throw new Error(
+        "Self-host chat requires an AI provider. Set SELFHOST_AI_PROVIDER and SELFHOST_AI_API_KEY in the self-host environment, or configure CF_ACCOUNT_ID, CF_GATEWAY_NAME, and AI_GATEWAY_AUTH_TOKEN for a hosted Cloudflare AI Gateway.",
+      );
+    }
+    throw new Error("Cloudflare AI Gateway is not configured for DO Pi");
+  }
+
+  const chatMetadata = deps.getChatMetadata();
+  return {
+    apiKey: token,
+    billingSource: "hosted",
+    creditChargeable,
+    requestProvider: "cloudflare-ai-gateway",
+    requestModelId: resolved.hostedModelId,
+    usageProvider: resolved.hostedGatewayProvider,
+    baseUrl: buildCloudflareGatewayUrl(
+      deps.env,
+      `/v1/${encodeURIComponent(accountId)}/${encodeURIComponent(gatewayName)}/${encodeURIComponent(resolved.hostedGatewayProvider)}`,
+    ),
+    headers: {
+      ...(resolved.hostedGatewayProvider === "openrouter"
+        ? deps.modelMapping.openRouterAttributionHeaders()
+        : {}),
+      "cf-aig-metadata": JSON.stringify({
+        uid: [chatMetadata?.orgId, chatMetadata?.workspaceId, chatMetadata?.threadId]
+          .filter(Boolean)
+          .join(":"),
+        chiridion: {
+          orgId: chatMetadata?.orgId,
+          workspaceId: chatMetadata?.workspaceId,
+          threadId: chatMetadata?.threadId,
+        },
+      }),
+    },
+  };
+}
+
+function formatCreditCents(cents: number): string {
+  return `${(Math.max(0, Math.floor(cents)) / 100).toFixed(2)} credits`;
+}
+
+export async function checkHostedPiModelAccess(
+  env: ChatEnv,
+  context: ChatContextState,
+): Promise<boolean> {
+  if (isSelfhostRuntime(env)) {
+    return false;
+  }
+
+  const orgStub = env.ORG.get(env.ORG.idFromName(context.orgId));
+  const org = await orgStub.getInfo();
+  if (!org) {
+    throw new Error("Organization not found");
+  }
+
+  const status = org.billing_status ?? "inactive";
+  const plan = org.billing_plan ?? "payg";
+  if (status === "enterprise") {
+    return false;
+  }
+  const isPayAsYouGo = plan === "payg";
+  if (status === "past_due") {
+    throw new Error(
+      "Your subscription is past due. Update payment details, switch to Pay as you go in Settings -> Billing, or add your own API key in Settings -> AI Provider to continue. Your workspace is saved.",
+    );
+  }
+  if (status === "canceled") {
+    throw new Error(
+      "Your subscription was canceled. Start a new subscription, switch to Pay as you go in Settings -> Billing, or add your own API key in Settings -> AI Provider to continue. Your workspace is saved.",
+    );
+  }
+  if (!isPayAsYouGo && status !== "trialing" && status !== "active") {
+    throw new Error(
+      "Hosted models require billing access. Choose Pay as you go, start a subscription, or add your own API key in Settings -> AI Provider. Your workspace is saved.",
+    );
+  }
+
+  const usage = await orgStub.getUsageLogSum(0, Date.now(), true);
+  const spentCents = Math.round(Number(usage.total_cost_usd ?? 0) * 100);
+  const totalCreditsCents =
+    (org.billing_credit_purchase_total_cents ?? 0) +
+    (org.billing_credit_grant_total_cents ?? 0);
+  if (totalCreditsCents - spentCents > 0) {
+    return true;
+  }
+
+  throw new Error(
+    `Hosted model credits are used up. You have used ${formatCreditCents(spentCents)} of ${formatCreditCents(totalCreditsCents)}. Buy credits or manage your subscription in Settings -> Billing, or add your own API key in Settings -> AI Provider. Your workspace is saved.`,
+  );
+}
+
+export async function resolveCurrentByokCredentials(
+  env: ChatEnv,
+  getProviderConfig: (orgId: string) => Promise<LlmProviderConfigRecord>,
+  context: ChatContextState,
+): Promise<{
+  provider: string;
+  apiKey?: string;
+  awsRegion?: string;
+  baseUrl?: string;
+  authType?: "bearer" | "x-api-key";
+  api?: "openai-completions" | "openai-responses" | "anthropic-messages";
+  modelId?: string;
+} | null> {
+  const record = await getProviderConfig(context.orgId);
+  if (!record) {
+    return null;
+  }
+
+  const creds = await decryptCredentials<Record<string, string>>(
+    record.credentials_encrypted,
+    env.INTEGRATION_SECRET_KEY,
+  );
+  const config = parseStoredLlmProviderConfig(record.config);
+
+  if (record.provider === "anthropic" && creds.api_key) {
+    return { provider: "anthropic", apiKey: creds.api_key };
+  }
+  if (record.provider === "openai" && creds.api_key) {
+    return { provider: "openai", apiKey: creds.api_key };
+  }
+  if (record.provider === "openrouter" && creds.api_key) {
+    return { provider: "openrouter", apiKey: creds.api_key };
+  }
+  if (record.provider === "custom" && creds.api_key && config.custom_base_url && config.custom_api) {
+    return {
+      provider: "custom",
+      apiKey: creds.api_key,
+      baseUrl: config.custom_base_url,
+      authType: config.custom_auth_type ?? "bearer",
+      api: config.custom_api,
+      modelId: config.custom_model_id,
+    };
+  }
+  if (record.provider === "bedrock" && creds.bearer_token) {
+    return {
+      provider: "bedrock",
+      apiKey: creds.bearer_token,
+      awsRegion: config.aws_region,
+    };
+  }
+
+  return null;
+}

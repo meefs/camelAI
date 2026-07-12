@@ -4,6 +4,14 @@ import { ChatThreadDO, CodeModeToolsBinding, prepareCodeModeUserCode } from '../
 import { ChannelTools } from '../src/chat-channels';
 import { piCoreMessageToParsedChatMessage, attachPiToolResultToParsedMessages } from '../src/pi-message-export';
 import { PiModelMapping } from '../src/pi-model-resolution';
+import {
+  summarizePiMessages,
+  createPiSummaryMessage,
+  piCompactionReserveTokens,
+  piModelContextWindow,
+} from '../src/chat-thread/pi-compaction';
+import { extractToolContent } from '../src/chat-thread/pi-message-helpers';
+import { PiCoreMessageStore } from '../src/chat-thread/pi-core-store';
 import { BrowserPromptCoordinator } from '../src/chat-thread-browser-prompts';
 import { CamelAiService } from '../src/camelai-service';
 import { encryptCredentials } from '../../../src/lib/integration-crypto';
@@ -2884,35 +2892,38 @@ describe('ChatThreadDO Pi turn handling', () => {
     );
   });
 
-  it('preflights Pi context compaction with enough headroom for 1M Bedrock models', async () => {
+  it('reserves ten percent of a 1M context window for compaction headroom', () => {
+    const model = { contextWindow: 1_000_000, maxTokens: 128_000 } as any;
+    const reserveTokens = piCompactionReserveTokens(model);
+
+    expect(reserveTokens).toBe(100_000);
+    expect(piModelContextWindow(model) - reserveTokens).toBe(900_000);
+  });
+
+  it('preflights Pi context compaction once the usable context is exhausted', async () => {
     const fake = Object.create(ChatThreadDO.prototype) as any;
     const messages = [
       { role: 'user', content: 'old context', timestamp: 1 },
-      { role: 'assistant', content: [{ type: 'text', text: 'recent context' }], timestamp: 2 },
+      { role: 'assistant', content: [{ type: 'text', text: `recent context ${'y'.repeat(80_000)}` }], timestamp: 2 },
     ];
-    fake.estimatePiContextTokens = vi.fn(() => 920_000);
     fake.loadPiCoreCompaction = vi.fn(() => null);
-    fake.findPiCompactionCutIndex = vi.fn(() => 1);
-    fake.summarizePiMessages = vi.fn(async () => 'compact summary');
     fake.persistPiCoreCompaction = vi.fn();
-    fake.createPiSummaryMessage = vi.fn((summary: string) => ({
-      role: 'user',
-      content: `[summary] ${summary}`,
-      timestamp: 3,
+    const completeSimple = vi.fn(async () => ({
+      content: [{ type: 'text', text: 'compact summary' }],
     }));
 
     const compacted = await ChatThreadDO.prototype['compactPiContext'].call(
       fake,
       messages,
-      { contextWindow: 1_000_000 },
+      { contextWindow: 32_000 },
       'bedrock-token',
-      vi.fn(),
+      completeSimple,
     );
 
-    expect(fake.summarizePiMessages).toHaveBeenCalled();
+    expect(completeSimple).toHaveBeenCalled();
     expect(fake.persistPiCoreCompaction).toHaveBeenCalledWith('compact summary', 1);
     expect(compacted).toEqual([
-      { role: 'user', content: '[summary] compact summary', timestamp: 3 },
+      expect.objectContaining({ role: 'user', content: '[Context Summary]\n\ncompact summary' }),
       messages[1],
     ]);
   });
@@ -2925,23 +2936,23 @@ describe('ChatThreadDO Pi turn handling', () => {
       updatedAt: 100,
     };
     const messages = [
-      ChatThreadDO.prototype['createPiSummaryMessage'].call(fake, existing.summary, 100),
+      createPiSummaryMessage(existing.summary, 100),
       { role: 'user', content: 'raw row 2', timestamp: 200 },
-      { role: 'assistant', content: [{ type: 'text', text: 'raw row 3' }], timestamp: 300 },
+      { role: 'assistant', content: [{ type: 'text', text: `raw row 3 ${'y'.repeat(80_000)}` }], timestamp: 300 },
       { role: 'user', content: 'raw row 4', timestamp: 400 },
     ];
-    fake.estimatePiContextTokens = vi.fn(() => 920_000);
     fake.loadPiCoreCompaction = vi.fn(() => existing);
-    fake.findPiCompactionCutIndex = vi.fn(() => 2);
-    fake.summarizePiMessages = vi.fn(async () => 'second summary');
     fake.persistPiCoreCompaction = vi.fn();
+    const completeSimple = vi.fn(async () => ({
+      content: [{ type: 'text', text: 'second summary' }],
+    }));
 
     const compacted = await ChatThreadDO.prototype['compactPiContext'].call(
       fake,
       messages,
-      { contextWindow: 1_000_000 },
+      { contextWindow: 32_000 },
       'bedrock-token',
-      vi.fn(),
+      completeSimple,
     );
 
     expect(fake.persistPiCoreCompaction).toHaveBeenCalledWith('second summary', 3);
@@ -2959,23 +2970,20 @@ describe('ChatThreadDO Pi turn handling', () => {
     const fake = Object.create(ChatThreadDO.prototype) as any;
     const messages = [
       { role: 'user', content: 'old context', timestamp: 1 },
-      { role: 'assistant', content: [{ type: 'text', text: 'recent context' }], timestamp: 2 },
+      { role: 'assistant', content: [{ type: 'text', text: `recent context ${'y'.repeat(80_000)}` }], timestamp: 2 },
     ];
-    fake.estimatePiContextTokens = vi.fn(() => 920_000);
     fake.loadPiCoreCompaction = vi.fn(() => null);
-    fake.findPiCompactionCutIndex = vi.fn(() => 1);
-    fake.summarizePiMessages = vi.fn(async () => {
+    fake.persistPiCoreCompaction = vi.fn();
+    const completeSimple = vi.fn(async () => {
       throw new Error('Compaction summary was empty');
     });
-    fake.persistPiCoreCompaction = vi.fn();
-    fake.recordChatThreadObservabilityEvent = vi.fn();
 
     const compacted = await ChatThreadDO.prototype['compactPiContext'].call(
       fake,
       messages,
-      { contextWindow: 1_000_000 },
+      { contextWindow: 32_000 },
       'bedrock-token',
-      vi.fn(),
+      completeSimple,
     );
 
     expect(fake.persistPiCoreCompaction).toHaveBeenCalledWith(
@@ -3124,7 +3132,6 @@ describe('ChatThreadDO Pi turn handling', () => {
   });
 
   it('uses Pi compaction reserve to size summary generation output', async () => {
-    const fake = Object.create(ChatThreadDO.prototype) as any;
     const completeSimple = vi.fn(async () => ({
       content: [{ type: 'text', text: 'summary' }],
     }));
@@ -3137,12 +3144,11 @@ describe('ChatThreadDO Pi turn handling', () => {
       reasoning: true,
     };
 
-    const summary = await ChatThreadDO.prototype['summarizePiMessages'].call(
-      fake,
-      [{ role: 'user', content: 'older context', timestamp: 1 }],
-      model,
+    const summary = await summarizePiMessages(
+      [{ role: 'user', content: 'older context', timestamp: 1 }] as any,
+      model as any,
       'test-key',
-      completeSimple,
+      completeSimple as any,
     );
 
     expect(summary).toBe('summary');
@@ -3158,7 +3164,6 @@ describe('ChatThreadDO Pi turn handling', () => {
   });
 
   it('chunks oversized Pi compaction summary input so already-large context can be summarized', async () => {
-    const fake = Object.create(ChatThreadDO.prototype) as any;
     let summaryIndex = 0;
     const completeSimple = vi.fn(async () => ({
       content: [{ type: 'text', text: `summary ${++summaryIndex}` }],
@@ -3177,12 +3182,11 @@ describe('ChatThreadDO Pi turn handling', () => {
       timestamp: index,
     }));
 
-    const summary = await ChatThreadDO.prototype['summarizePiMessages'].call(
-      fake,
-      messages,
-      model,
+    const summary = await summarizePiMessages(
+      messages as any,
+      model as any,
       'test-key',
-      completeSimple,
+      completeSimple as any,
     );
 
     expect(summary).toBe(`summary ${summaryIndex}`);
@@ -3361,7 +3365,6 @@ describe('ChatThreadDO Pi turn handling', () => {
 
   it('disposes the hung Pi session and preserves the marker for recovery when the reply stream stalls', async () => {
     const { fake, events } = createPiEventFake();
-    fake.persistPiAgentLoopErrorForDevelopers = vi.fn();
     fake.updateActiveAutomationRun = vi.fn();
     fake.refreshPiSessionModel = vi.fn(async () => undefined);
     fake.syncAgentState = vi.fn();
@@ -7658,7 +7661,6 @@ describe('ChatThreadDO Pi turn handling', () => {
     fake.finishTurn = vi.fn();
     fake.setActiveTurnUserId = vi.fn();
     fake.syncAgentState = vi.fn();
-    fake.persistPiAgentLoopErrorForDevelopers = vi.fn();
     fake.updateActiveAutomationRun = vi.fn();
     fake.pushChatEvent = vi.fn();
     fake.piProviderErrorEvent = vi.fn((message: string) => ({ type: 'error', message }));
@@ -7760,10 +7762,6 @@ describe('ChatThreadDO Pi turn handling', () => {
 
     ChatThreadDO.prototype['handlePiTurnFailure'].call(fake, providerError);
 
-    expect(fake.persistPiAgentLoopErrorForDevelopers).toHaveBeenCalledWith(
-      providerError,
-      { source: 'pi_turn' },
-    );
     expect(fake.pushChatEvent).toHaveBeenCalledWith(
       expect.objectContaining({ type: 'error', message: 'Provider exploded' }),
     );
@@ -8469,9 +8467,11 @@ describe('ChatThreadDO Pi turn handling', () => {
 
   it('loads compacted Pi history from the compaction tail instead of every row', async () => {
     const fake = Object.create(ChatThreadDO.prototype) as any;
-    fake.ensurePiCoreTables = vi.fn();
     const exec = vi.fn((sql: string, ...params: unknown[]) => {
-      if (sql.includes('pi_core_compaction')) {
+      if (sql.trimStart().startsWith('CREATE TABLE')) {
+        return { toArray: () => [] };
+      }
+      if (sql.includes('FROM pi_core_compaction')) {
         return {
           toArray: () => [
             {
@@ -8656,23 +8656,20 @@ describe('ChatThreadDO Pi turn handling', () => {
   });
 
   it('sanitizes unsupported image tool outputs before Pi can persist them', () => {
-    const content = ChatThreadDO.prototype['extractToolContent'].call(
-      Object.create(ChatThreadDO.prototype),
-      {
-        content: [
-          {
-            type: 'image',
-            data: 'AA==',
-            mimeType: 'image/vnd.microsoft.icon',
-          },
-          {
-            type: 'image',
-            data: 'BB==',
-            mimeType: 'image/png',
-          },
-        ],
-      },
-    );
+    const content = extractToolContent({
+      content: [
+        {
+          type: 'image',
+          data: 'AA==',
+          mimeType: 'image/vnd.microsoft.icon',
+        },
+        {
+          type: 'image',
+          data: 'BB==',
+          mimeType: 'image/png',
+        },
+      ],
+    });
 
     expect(content).toEqual([
       {
@@ -10266,11 +10263,18 @@ describe('ChatThreadDO Pi turn handling', () => {
     // --- appendPiCoreMessagesIfMissing: piCoreMessageKey dedup ---
 
     it('does not double-store the up-front-persisted first user message (dedup by shared key)', async () => {
-      const fake = Object.create(ChatThreadDO.prototype) as any;
       const existingUser = { role: 'user', content: 'hello', timestamp: 1234 };
       const appended: any[] = [];
-      fake.loadPiCoreMessages = vi.fn(async () => [existingUser]);
-      fake.appendPiCoreMessages = vi.fn(async (msgs: any[]) => {
+      const unusedDependency = () => {
+        throw new Error('unused test dependency');
+      };
+      const store = new PiCoreMessageStore({
+        sql: unusedDependency,
+        r2: unusedDependency,
+        chatContext: () => null,
+      });
+      vi.spyOn(store, 'loadPiCoreMessages').mockResolvedValue([existingUser] as any[]);
+      vi.spyOn(store, 'appendPiCoreMessages').mockImplementation(async (msgs: any[]) => {
         appended.push(...msgs);
       });
 
@@ -10284,7 +10288,7 @@ describe('ChatThreadDO Pi turn handling', () => {
         responseId: 'resp_1',
         timestamp: 1235,
       };
-      await ChatThreadDO.prototype['appendPiCoreMessagesIfMissing'].call(fake, [
+      await store.appendPiCoreMessagesIfMissing([
         duplicateUser,
         newAssistant,
       ]);
@@ -10296,7 +10300,6 @@ describe('ChatThreadDO Pi turn handling', () => {
     });
 
     it('dedups an assistant message by responseId even when its content/timestamp changed', async () => {
-      const fake = Object.create(ChatThreadDO.prototype) as any;
       const existingAssistant = {
         role: 'assistant',
         content: 'partial',
@@ -10304,8 +10307,16 @@ describe('ChatThreadDO Pi turn handling', () => {
         timestamp: 1,
       };
       const appended: any[] = [];
-      fake.loadPiCoreMessages = vi.fn(async () => [existingAssistant]);
-      fake.appendPiCoreMessages = vi.fn(async (msgs: any[]) => {
+      const unusedDependency = () => {
+        throw new Error('unused test dependency');
+      };
+      const store = new PiCoreMessageStore({
+        sql: unusedDependency,
+        r2: unusedDependency,
+        chatContext: () => null,
+      });
+      vi.spyOn(store, 'loadPiCoreMessages').mockResolvedValue([existingAssistant] as any[]);
+      vi.spyOn(store, 'appendPiCoreMessages').mockImplementation(async (msgs: any[]) => {
         appended.push(...msgs);
       });
 
@@ -10316,12 +10327,12 @@ describe('ChatThreadDO Pi turn handling', () => {
         responseId: 'resp_9',
         timestamp: 2,
       };
-      await ChatThreadDO.prototype['appendPiCoreMessagesIfMissing'].call(fake, [
+      await store.appendPiCoreMessagesIfMissing([
         finalizedAssistant,
       ]);
 
       expect(appended).toHaveLength(0);
-      expect(fake.appendPiCoreMessages).toHaveBeenCalledWith([]);
+      expect(store.appendPiCoreMessages).toHaveBeenCalledWith([]);
     });
 
     // --- isThreadStreaming: never throws (called on every state sync) ---
