@@ -132,7 +132,7 @@ describe('chat credit status', () => {
           available_credits_cents: 0,
         }),
         'openai',
-        'gpt-5.4',
+        'gpt-5.5',
       ),
     ).toBeNull();
   });
@@ -159,7 +159,7 @@ describe('chat credit status', () => {
           available_credits_cents: 440,
         }),
         'anthropic',
-        'gpt-5.4',
+        'gpt-5.5',
       ),
     ).toMatchObject({
       availableCreditsCents: 440,

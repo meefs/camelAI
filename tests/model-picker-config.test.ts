@@ -84,9 +84,9 @@ describe('model picker config parsing', () => {
       use_org_defaults: false,
       use_platform_defaults: true,
       models: [
-        { id: 'gpt-5.4', added_at: 10 },
+        { id: 'gpt-5.6-terra', added_at: 10 },
       ],
-      default_model: 'gpt-5.4',
+      default_model: 'gpt-5.6-terra',
     });
   });
 
@@ -361,7 +361,7 @@ describe('model picker config parsing', () => {
 });
 
 describe('default model resolution', () => {
-  const visible = (ids: readonly ('opus-4.8' | 'sonnet' | 'gpt-5.4')[]) =>
+  const visible = (ids: readonly ('opus-4.8' | 'sonnet' | 'gpt-5.6-terra')[]) =>
     ids.map((id) => ({ id }));
 
   it('uses the visible admin default before recent models', () => {
@@ -389,9 +389,9 @@ describe('default model resolution', () => {
       resolveDefaultModelForChat({
         effectiveDefaultModel: 'sonnet',
         recentModel: null,
-        visibleCatalog: visible(['gpt-5.4']),
+        visibleCatalog: visible(['gpt-5.6-terra']),
       }),
-    ).toBe('gpt-5.4');
+    ).toBe('gpt-5.6-terra');
   });
 
   it('uses the fallback model before the first visible model', () => {

@@ -13,7 +13,7 @@ export const CUSTOM_LLM_MODEL: LlmModel = "custom";
 export const THREAD_MODEL_LOCK_MESSAGE =
   "This thread is locked to its original model. Start a new thread to use a different model.";
 
-const LEGACY_LLM_MODEL_REPLACEMENTS = {
+const STORED_LLM_MODEL_REPLACEMENTS: Readonly<Record<string, LlmModel>> = {
   "gemini-3.1-pro-preview": "gemini-3.5-flash",
   "kimi-k2.6": "kimi-k2.7-code",
   "kimi-latest": "kimi-k2.7-code",
@@ -21,19 +21,7 @@ const LEGACY_LLM_MODEL_REPLACEMENTS = {
   "grok-latest": "grok-4.5",
   opus: "opus-4.8",
   "opus-4.7": "opus-4.8",
-} as const satisfies Record<string, LlmModel>;
-
-type LegacyLlmModel = keyof typeof LEGACY_LLM_MODEL_REPLACEMENTS;
-
-export function replaceLegacyLlmModel(value: unknown): unknown {
-  if (
-    typeof value === "string" &&
-    Object.hasOwn(LEGACY_LLM_MODEL_REPLACEMENTS, value)
-  ) {
-    return LEGACY_LLM_MODEL_REPLACEMENTS[value as LegacyLlmModel];
-  }
-  return value;
-}
+};
 
 // When adding a model here, also add it to the picker catalog at
 // src/lib/model-catalog.ts and the pricing table at src/lib/usage-pricing.ts.
@@ -79,16 +67,6 @@ export const CODEX_LLM_MODEL_OPTIONS: ReadonlyArray<{
     value: "gpt-5.5",
     label: "GPT-5.5",
     description: "Previous-generation OpenAI model",
-  },
-  {
-    value: "gpt-5.4",
-    label: "GPT-5.4",
-    description: "Default and recommended",
-  },
-  {
-    value: "gpt-5.4-mini",
-    label: "GPT-5.4 Mini",
-    description: "Faster and cheaper",
   },
   {
     value: "gpt-5.5-bedrock",
@@ -141,26 +119,6 @@ export const CODEX_LLM_MODEL_OPTIONS: ReadonlyArray<{
     description: "OpenRouter/camelAI hosted model",
   },
 ];
-
-// Retired models remain valid persisted values and can still execute on routes
-// that support them. They are hidden only when choosing a model for a new
-// thread. Provider deprecation belongs at the execution routing boundary, not
-// in persistence readers or API loaders.
-export const RETIRED_LLM_MODELS: ReadonlySet<LlmModel> = new Set([
-  "gpt-5.4",
-  "gpt-5.4-mini",
-]);
-
-function isLlmModelSelectableForOrgProvider(
-  model: LlmModel,
-  orgProvider?: string | null,
-  _options?: LlmProviderModelOptions,
-): boolean {
-  if (orgProvider === "bedrock") {
-    return isClaudeLlmModel(model) || BEDROCK_ONLY_CODEX_MODELS.has(model);
-  }
-  return !RETIRED_LLM_MODELS.has(model);
-}
 
 export const CUSTOM_LLM_MODEL_OPTIONS: ReadonlyArray<{
   value: LlmModel;
@@ -222,9 +180,6 @@ export function allowNonProductionModelOptions(
 const BEDROCK_OPENAI_MODEL_REGIONS: Readonly<Record<string, readonly string[]>> = {
   "gpt-5.5-bedrock": ["us-east-1", "us-east-2"],
   "gpt-5.4-bedrock": ["us-east-1", "us-east-2", "us-west-2", "us-gov-west-1"],
-  // Legacy persisted IDs remain executable for existing Bedrock threads.
-  "gpt-5.5": ["us-east-1", "us-east-2"],
-  "gpt-5.4": ["us-east-1", "us-east-2", "us-west-2", "us-gov-west-1"],
 };
 
 export function isBedrockOpenAiModelAllowedInRegion(
@@ -307,9 +262,7 @@ export function getLlmModelOptions(
     return CUSTOM_LLM_MODEL_OPTIONS;
   }
   return LLM_MODEL_OPTIONS.filter(
-    (option) =>
-      isLlmModelSelectableForOrgProvider(option.value, orgProvider, options) &&
-      isLlmModelAllowedForOrgProvider(option.value, orgProvider, options),
+    (option) => isLlmModelAllowedForOrgProvider(option.value, orgProvider, options),
   );
 }
 
@@ -371,7 +324,6 @@ export function isLlmModelAllowedForNewThread(
 ): value is LlmModel {
   return (
     isLlmModel(value) &&
-    isLlmModelSelectableForOrgProvider(value, orgProvider, options) &&
     isLlmModelAllowedForOrgProvider(value, orgProvider, options)
   );
 }
@@ -402,9 +354,7 @@ export function isLlmModelAllowedForOrgProvider(
   }
   if (orgProvider === "bedrock") {
     return isClaudeLlmModel(model) ||
-      (BEDROCK_ONLY_CODEX_MODELS.has(model) ||
-        model === "gpt-5.5" ||
-        model === "gpt-5.4") &&
+      BEDROCK_ONLY_CODEX_MODELS.has(model) &&
         isBedrockOpenAiModelAllowedInRegion(model, options?.awsRegion);
   }
   if (orgProvider === "custom") {
@@ -441,9 +391,7 @@ export function isLlmModelCoveredByByokProvider(
   }
   if (provider === "bedrock") {
     return isClaudeLlmModel(model) ||
-      (BEDROCK_ONLY_CODEX_MODELS.has(model) ||
-        model === "gpt-5.5" ||
-        model === "gpt-5.4") &&
+      BEDROCK_ONLY_CODEX_MODELS.has(model) &&
         isBedrockOpenAiModelAllowedInRegion(model, undefined);
   }
   if (provider === "openai") {
@@ -460,11 +408,32 @@ export function normalizeLlmModel(
   orgProvider?: string | null,
   options?: LlmProviderModelOptions,
 ): LlmModel {
-  const normalizedValue = replaceLegacyLlmModel(value);
-  return isLlmModel(normalizedValue) &&
-    isLlmModelAllowedForOrgProvider(normalizedValue, orgProvider, options)
-    ? normalizedValue
-    : getDefaultLlmModel(orgProvider, options);
+  return resolveStoredLlmModel(value, orgProvider, options) ??
+    getDefaultLlmModel(orgProvider, options);
+}
+
+export function resolveStoredLlmModel(
+  value: unknown,
+  orgProvider?: string | null,
+  options?: LlmProviderModelOptions,
+): LlmModel | null {
+  if (typeof value !== "string") return null;
+
+  let replacement = STORED_LLM_MODEL_REPLACEMENTS[value] ?? value;
+  if (value === "gpt-5.5" && orgProvider === "bedrock") {
+    replacement = "gpt-5.5-bedrock";
+  } else if (value === "gpt-5.4") {
+    replacement = orgProvider === "bedrock"
+      ? "gpt-5.4-bedrock"
+      : DEFAULT_CODEX_MODEL;
+  } else if (value === "gpt-5.4-mini") {
+    replacement = DEFAULT_CODEX_MODEL;
+  }
+
+  return isLlmModel(replacement) &&
+      isLlmModelAllowedForOrgProvider(replacement, orgProvider, options)
+    ? replacement
+    : null;
 }
 
 export function isOpenAiCompatibleCustomApi(

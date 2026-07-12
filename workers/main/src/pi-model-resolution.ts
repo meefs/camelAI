@@ -49,8 +49,6 @@ export class PiModelMapping {
         return claudeReference("claude-sonnet-5");
       case "gpt-5.6-sol":
       case "gpt-5.6-terra":
-      case "gpt-5.4-mini":
-      case "gpt-5.4":
       case "gpt-5.5":
         return openAiReference(normalizedModelId);
       case "gpt-5.5-bedrock":

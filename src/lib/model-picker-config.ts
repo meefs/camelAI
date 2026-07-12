@@ -5,8 +5,7 @@ import type {
   WorkspaceModelPickerConfig,
 } from "../types";
 import {
-  isLlmModel,
-  replaceLegacyLlmModel,
+  resolveStoredLlmModel,
 } from "./llm-provider-config";
 
 export interface EffectiveModelPickerConfig extends OrgModelPickerConfig {
@@ -36,8 +35,8 @@ function normalizeModelRows(raw: unknown): ModelPickerModelConfig[] {
   for (const item of raw) {
     if (!item || typeof item !== "object") continue;
     const record = item as Record<string, unknown>;
-    const id = replaceLegacyLlmModel(record.id);
-    if (!isLlmModel(id) || seen.has(id)) continue;
+    const id = resolveStoredLlmModel(record.id);
+    if (!id || seen.has(id)) continue;
     seen.add(id);
     const addedAt =
       typeof record.added_at === "number" && Number.isFinite(record.added_at)
@@ -50,9 +49,7 @@ function normalizeModelRows(raw: unknown): ModelPickerModelConfig[] {
 }
 
 function normalizeDefaultModel(raw: unknown): LlmModel | null {
-  const normalized = replaceLegacyLlmModel(raw);
-  if (!isLlmModel(normalized)) return null;
-  return normalized;
+  return resolveStoredLlmModel(raw);
 }
 
 export function defaultOrgModelPickerConfig(..._unused: unknown[]): OrgModelPickerConfig {

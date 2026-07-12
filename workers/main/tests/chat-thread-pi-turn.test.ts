@@ -2758,49 +2758,6 @@ describe('ChatThreadDO Pi turn handling', () => {
     expect(fake.checkHostedPiModelAccess).not.toHaveBeenCalled();
   });
 
-  it('lets unsupported Bedrock OpenAI models fall through to hosted routing', async () => {
-    const fake = Object.create(ChatThreadDO.prototype) as any;
-    fake.env = {
-      CF_ACCOUNT_ID: 'acct_1',
-      CF_GATEWAY_NAME: 'gateway_1',
-      AI_GATEWAY_AUTH_TOKEN: 'cf-token',
-    };
-    fake.chatContext = {
-      orgId: 'org1',
-      workspaceId: 'workspace1',
-      threadId: 'thread1',
-    };
-    fake.resolveCurrentByokCredentials = vi.fn(async () => ({
-      provider: 'bedrock',
-      apiKey: 'bedrock-token',
-      awsRegion: 'us-east-2',
-    }));
-    fake.checkHostedPiModelAccess = vi.fn(async () => true);
-    const getModel = vi.fn((provider: string, id: string) => ({
-      id,
-      provider,
-      api: 'openai-responses',
-      baseUrl: 'https://api.openai.com/v1',
-    }));
-
-    const model = await ChatThreadDO.prototype['resolvePiModel'].call(
-      fake,
-      { provider: 'pi', orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1' },
-      { CHIRIDION_CODEX_MODEL: 'gpt-5.4-mini' },
-      getModel,
-    );
-
-    expect(model.model).toMatchObject({
-      id: 'openai/gpt-5.4-mini:nitro',
-      provider: 'cloudflare-ai-gateway',
-      api: 'openai-responses',
-      baseUrl: 'https://gateway.ai.cloudflare.com/v1/acct_1/gateway_1/openrouter',
-    });
-    expect(model.apiKey).toBe('cf-token');
-    expect(model.billingSource).toBe('hosted');
-    expect(model.usageProvider).toBe('openrouter');
-  });
-
   it('rejects Bedrock OpenAI models in unsupported regions before falling back to hosted', async () => {
     const fake = Object.create(ChatThreadDO.prototype) as any;
     fake.env = {};

@@ -57,29 +57,6 @@ export interface ModelCatalogEntry {
   speed: RatingScore;
 }
 
-export const ALL_LLM_MODELS: readonly LlmModel[] = [
-  "opus-4.8",
-  "fable-5",
-  "sonnet",
-  "haiku",
-  "gpt-5.6-sol",
-  "gpt-5.6-terra",
-  "gpt-5.5",
-  "gpt-5.4",
-  "gpt-5.4-mini",
-  "gpt-5.5-bedrock",
-  "gpt-5.4-bedrock",
-  "custom",
-  "gemini-3.5-flash",
-  "gemini-3-flash-preview",
-  "deepseek-v4-pro",
-  "deepseek-v4-auto",
-  "deepseek-v4-flash",
-  "kimi-k2.7-code",
-  "grok-4.5",
-  "glm-5.2",
-];
-
 export const LLM_MODEL_TO_PRICING_KEY: Readonly<Record<LlmModel, string>> = {
   "opus-4.8": "claude-opus-4-8",
   "fable-5": "claude-fable-5",
@@ -88,8 +65,6 @@ export const LLM_MODEL_TO_PRICING_KEY: Readonly<Record<LlmModel, string>> = {
   "gpt-5.6-sol": "gpt-5.6-sol",
   "gpt-5.6-terra": "gpt-5.6-terra",
   "gpt-5.5": "gpt-5.5",
-  "gpt-5.4": "gpt-5.4",
-  "gpt-5.4-mini": "gpt-5.4-mini",
   "gpt-5.5-bedrock": "gpt-5.5",
   "gpt-5.4-bedrock": "gpt-5.4",
   custom: "custom",
@@ -183,26 +158,6 @@ export const MODEL_CATALOG: Readonly<Record<LlmModel, ModelCatalogEntry>> = {
     cost: "$$$$",
     intelligence: 5,
     speed: 3,
-  },
-  "gpt-5.4": {
-    id: "gpt-5.4",
-    label: "GPT-5.4",
-    providerLogo: "openai",
-    providerOrder: 1,
-    modelOrder: 3,
-    cost: "$$$",
-    intelligence: 4,
-    speed: 3.5,
-  },
-  "gpt-5.4-mini": {
-    id: "gpt-5.4-mini",
-    label: "GPT-5.4 Mini",
-    providerLogo: "openai",
-    providerOrder: 1,
-    modelOrder: 4,
-    cost: "$$",
-    intelligence: 2,
-    speed: 5,
   },
   "gpt-5.5-bedrock": {
     id: "gpt-5.5-bedrock",
@@ -315,6 +270,8 @@ export const MODEL_CATALOG: Readonly<Record<LlmModel, ModelCatalogEntry>> = {
     speed: 3,
   },
 };
+
+export const ALL_LLM_MODELS = Object.keys(MODEL_CATALOG) as LlmModel[];
 
 export interface ResolvedModelCatalogEntry extends ModelCatalogEntry {
   addedAt: number;

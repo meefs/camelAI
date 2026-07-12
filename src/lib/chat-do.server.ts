@@ -29,7 +29,6 @@ import {
   isLlmModelAllowedForNewThread,
   isLlmModel,
   normalizeLlmModel,
-  replaceLegacyLlmModel,
 } from "./llm-provider-config";
 import { getEffectiveLlmProviderConfig } from "./selfhost-ai-provider";
 import { resolveModelPickerCatalog } from "./model-catalog";
@@ -80,10 +79,7 @@ interface ModelPickerStateOptions extends KnownOrgOptions {
 export function normalizeStoredThreadModel(
   rawModel: unknown,
 ): { model: LlmModel } {
-  const replacement = replaceLegacyLlmModel(rawModel);
-  return {
-    model: isLlmModel(replacement) ? replacement : normalizeLlmModel(rawModel),
-  };
+  return { model: normalizeLlmModel(rawModel) };
 }
 
 // Full thread records are used by single-thread loaders and new-thread
@@ -276,7 +272,7 @@ async function resolveCreateThreadModel(
   const selectedModel =
     requestedModel == null
       ? pickerState.defaultModel
-      : replaceLegacyLlmModel(requestedModel);
+      : requestedModel;
   if (!selectedModel) {
     throw new Error("No models are available");
   }

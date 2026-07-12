@@ -160,31 +160,30 @@ export const UpdateUserCreditsBodySchema = z.object({
   billing_credit_usage_started_at: z.number().int().min(0).nullable().optional(),
 });
 
+export const LlmModelSchema = z.enum([
+  "haiku",
+  "sonnet",
+  "opus-4.8",
+  "gpt-5.6-sol",
+  "gpt-5.6-terra",
+  "gpt-5.5",
+  "gpt-5.5-bedrock",
+  "gpt-5.4-bedrock",
+  "custom",
+  "kimi-k2.7-code",
+  "grok-4.5",
+  "glm-5.2",
+  "gemini-3.5-flash",
+  "gemini-3-flash-preview",
+  "deepseek-v4-pro",
+  "deepseek-v4-auto",
+  "deepseek-v4-flash",
+]);
+
 export const UpdateThreadBodySchema = z.object({
   title: z.string().optional(),
   created_by: z.string().optional(),
-  model: z
-    .enum([
-      "haiku",
-      "sonnet",
-      "opus-4.8",
-      "gpt-5.6-sol",
-      "gpt-5.6-terra",
-      "gpt-5.5",
-      "gpt-5.4",
-      "gpt-5.4-mini",
-      "gpt-5.5-bedrock",
-      "gpt-5.4-bedrock",
-      "kimi-k2.7-code",
-      "grok-4.5",
-      "glm-5.2",
-      "gemini-3.5-flash",
-      "gemini-3-flash-preview",
-      "deepseek-v4-pro",
-      "deepseek-v4-auto",
-      "deepseek-v4-flash",
-    ])
-    .optional(),
+  model: LlmModelSchema.exclude(["custom"]).optional(),
 });
 
 export const CreateBanBodySchema = z.object({
@@ -256,28 +255,6 @@ export const OrgSchema = z.object({
   member_count: z.number().int(),
   workspace_count: z.number().int(),
 });
-
-export const LlmModelSchema = z.enum([
-  "haiku",
-  "sonnet",
-  "opus-4.8",
-  "gpt-5.6-sol",
-  "gpt-5.6-terra",
-  "gpt-5.5",
-  "gpt-5.4",
-  "gpt-5.4-mini",
-  "gpt-5.5-bedrock",
-  "gpt-5.4-bedrock",
-  "custom",
-  "kimi-k2.7-code",
-  "grok-4.5",
-  "glm-5.2",
-  "gemini-3.5-flash",
-  "gemini-3-flash-preview",
-  "deepseek-v4-pro",
-  "deepseek-v4-auto",
-  "deepseek-v4-flash",
-]);
 
 export const LlmProviderConfigSchema = z.object({
   provider: z.enum(["anthropic", "bedrock", "custom", "openai", "openrouter"]),

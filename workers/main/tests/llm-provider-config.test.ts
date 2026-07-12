@@ -270,12 +270,6 @@ describe("llm provider config helpers", () => {
     expect(
       getVisibleLlmModelOptions(
         { claude_proxy_models: false },
-        "gpt-5.4-mini",
-      ).map((option) => option.value),
-    ).toEqual(["gpt-5.4-mini", ...CLAUDE_MODELS, ...CODEX_MODELS]);
-    expect(
-      getVisibleLlmModelOptions(
-        { claude_proxy_models: false },
         "sonnet",
       ).map((option) => option.value),
     ).toEqual([...CLAUDE_MODELS, ...CODEX_MODELS]);
@@ -317,7 +311,12 @@ describe("llm provider config helpers", () => {
         claude_proxy_models: true,
       }),
     ).toBe(true);
-    expect(normalizeLlmModel("gpt-5.4", "bedrock")).toBe("gpt-5.4");
+    expect(normalizeLlmModel("gpt-5.4", "bedrock")).toBe(
+      "gpt-5.4-bedrock",
+    );
+    expect(normalizeLlmModel("gpt-5.5", "bedrock")).toBe(
+      "gpt-5.5-bedrock",
+    );
     expect(
       isLlmModelAllowedForNewThread("sonnet", "openai", {
         claude_proxy_models: true,

@@ -208,16 +208,6 @@ const modelPricingTable: Record<string, ModelPricing> = {
       },
     ],
   },
-  "gpt-5.4": {
-    inputPerToken: 0.0000025,
-    outputPerToken: 0.000015,
-    cacheReadPerToken: 0.00000025,
-  },
-  "gpt-5.4-mini": {
-    inputPerToken: 0.00000075,
-    outputPerToken: 0.0000045,
-    cacheReadPerToken: 0.000000075,
-  },
   "custom": {
     inputPerToken: 0,
     outputPerToken: 0,
@@ -361,10 +351,9 @@ export function lookupPricing(model: string): ModelPricing {
     return modelPricingTable["gpt-5.6-sol"];
   }
   if (normalized.startsWith("gpt-5.5")) return modelPricingTable["gpt-5.5"];
-  if (normalized.startsWith("gpt-5.4-mini")) {
-    return modelPricingTable["gpt-5.4-mini"];
+  if (normalized.startsWith("gpt-5.4")) {
+    return modelPricingTable["gpt-5.6-terra"];
   }
-  if (normalized.startsWith("gpt-5.4")) return modelPricingTable["gpt-5.4"];
   if (normalized.includes("claude-fable-5")) {
     return modelPricingTable["claude-fable-5"];
   }

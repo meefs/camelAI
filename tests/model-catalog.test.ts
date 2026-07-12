@@ -199,8 +199,6 @@ describe('MODEL_CATALOG', () => {
           { id: 'gpt-5.6-sol', added_at: 12 },
           { id: 'gpt-5.6-terra', added_at: 13 },
           { id: 'gpt-5.5', added_at: 12 },
-          { id: 'gpt-5.4', added_at: 3 },
-          { id: 'gpt-5.4-mini', added_at: 4 },
           { id: 'kimi-k2.7-code', added_at: 5 },
           { id: 'grok-4.5', added_at: 6 },
           { id: 'gemini-3-flash-preview', added_at: 7 },
@@ -231,8 +229,6 @@ describe('MODEL_CATALOG', () => {
         { id: 'gpt-5.6-sol' as const, added_at: 3 },
         { id: 'gpt-5.6-terra' as const, added_at: 4 },
         { id: 'gpt-5.5' as const, added_at: 3 },
-        { id: 'gpt-5.4' as const, added_at: 4 },
-        { id: 'gpt-5.4-mini' as const, added_at: 5 },
         { id: 'kimi-k2.7-code' as const, added_at: 6 },
       ],
     };

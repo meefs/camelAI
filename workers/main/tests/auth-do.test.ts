@@ -342,15 +342,15 @@ describe('Auth flow (full-stack with DOs)', () => {
         'Recovered thread',
         userId,
         'hello',
-        'gpt-5.4'
+        'gpt-5.6-terra'
       );
-      expect(thread.model).toBe('gpt-5.4');
+      expect(thread.model).toBe('gpt-5.6-terra');
       expect(thread.first_user_message).toBe('hello');
       expect(thread.last_user_message).toBe('hello');
       expect(thread.last_user_message_at).toEqual(expect.any(Number));
 
       const stored = await orgStub.getThread(thread.id);
-      expect(stored?.model).toBe('gpt-5.4');
+      expect(stored?.model).toBe('gpt-5.6-terra');
       expect(stored?.first_user_message).toBe('hello');
       expect(stored?.last_user_message).toBe('hello');
       expect(stored?.last_user_message_at).toEqual(expect.any(Number));
@@ -853,15 +853,15 @@ describe('Auth flow (full-stack with DOs)', () => {
       const orgStub = testEnv.ORG.get(testEnv.ORG.idFromName(org.id));
 
       const thread = await orgStub.createThread(defaultWorkspaceId, 'Model thread', userId, undefined, 'opus-4.8');
-      const updated = await orgStub.updateThreadModel(thread.id, 'gpt-5.4-mini', userId);
+      const updated = await orgStub.updateThreadModel(thread.id, 'gpt-5.6-terra', userId);
 
-      expect(updated?.model).toBe('gpt-5.4-mini');
+      expect(updated?.model).toBe('gpt-5.6-terra');
 
       const stored = await orgStub.getThread(thread.id);
-      expect(stored?.model).toBe('gpt-5.4-mini');
+      expect(stored?.model).toBe('gpt-5.6-terra');
     });
 
-    it('preserves Codex models when creating a thread without an explicit provider', async () => {
+    it('maps retired Codex models when creating a thread without an explicit provider', async () => {
       const email = testEmail();
       const { userId } = await createUser(testEnv, email, 'password123', 'Thread Owner');
       const { org, defaultWorkspaceId } = await createOrg(testEnv, 'Thread Org', userId);
@@ -875,9 +875,9 @@ describe('Auth flow (full-stack with DOs)', () => {
         'gpt-5.4',
       );
 
-      expect(thread.model).toBe('gpt-5.4');
+      expect(thread.model).toBe('gpt-5.6-terra');
       const stored = await orgStub.getThread(thread.id);
-      expect(stored?.model).toBe('gpt-5.4');
+      expect(stored?.model).toBe('gpt-5.6-terra');
     });
 
     it('preserves the custom provider model marker when creating a thread', async () => {

@@ -630,15 +630,15 @@ describe('organization model settings actions', () => {
       use_platform_defaults: false,
       models: [
         { id: 'gpt-5.5', added_at: 20 },
-        { id: 'gpt-5.4', added_at: 10 },
+        { id: 'gpt-5.6-terra', added_at: 10 },
       ],
-      default_model: 'gpt-5.4',
+      default_model: 'gpt-5.6-terra',
     });
 
     const response = await action({
       request: formRequest({
         intent: 'removeModel',
-        model: 'gpt-5.4',
+        model: 'gpt-5.6-terra',
       }),
       context: {},
       params: {},
@@ -661,7 +661,7 @@ describe('organization model settings actions', () => {
         actorId: 'user_123',
         details: {
           intent: 'removeModel',
-          model: 'gpt-5.4',
+          model: 'gpt-5.6-terra',
         },
       },
     );

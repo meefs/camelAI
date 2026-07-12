@@ -170,7 +170,7 @@ describe('organization model settings UI', () => {
             isDefault: true,
           },
         ],
-        additional: [MODEL_CATALOG['gpt-5.4']],
+        additional: [MODEL_CATALOG['gpt-5.6-terra']],
         capacity: { used: 1, max: 10 },
       },
     }));
@@ -232,7 +232,7 @@ describe('organization model settings UI', () => {
             isDefault: true,
           },
           {
-            entry: MODEL_CATALOG['gpt-5.4'],
+            entry: MODEL_CATALOG['gpt-5.6-terra'],
             addedAt: 2,
             isDefault: false,
           },
@@ -268,7 +268,7 @@ describe('organization model settings UI', () => {
             isDefault: false,
           },
         ],
-        additional: [MODEL_CATALOG['gpt-5.4']],
+        additional: [MODEL_CATALOG['gpt-5.6-terra']],
         capacity: { used: 1, max: 10 },
       },
     }));
@@ -332,7 +332,7 @@ describe('organization model settings UI', () => {
             isDefault: false,
           },
         ],
-        additional: [MODEL_CATALOG['gpt-5.4']],
+        additional: [MODEL_CATALOG['gpt-5.6-terra']],
         capacity: { used: 1, max: 10 },
       },
     }));
