@@ -102,7 +102,7 @@ export class PiModelMapping {
           ...openRouterReference("deepseek/deepseek-v4-pro"),
           hostedGatewayProvider: "compat",
           hostedModelId: "dynamic/deepseek-v4-auto",
-          hostedReasoningEffort: "xhigh",
+          hostedReasoningEffort: "high",
           byokAllowed: false,
           hostedRequestProfile: DEEPSEEK_V4_FLASH_RTX_PROFILE,
         };

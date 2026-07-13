@@ -1834,7 +1834,7 @@ describe('ChatThreadDO Pi turn handling', () => {
     expect(model.model.headers).toMatchObject({
       'x-sticky-key': 'thread1',
     });
-    // Dynamic routes fan out across RTX/Azure/OpenRouter. Keep xhigh reasoning,
+    // Dynamic routes fan out across RTX/Azure/OpenRouter. Keep high reasoning,
     // but use a conservative working window because Pi's estimate does not
     // include every vLLM chat-template and tool-schema token.
     expect(model.model.compat).toMatchObject({
@@ -1842,11 +1842,11 @@ describe('ChatThreadDO Pi turn handling', () => {
       thinkingFormat: 'openai',
     });
     expect(model.model.thinkingLevelMap).toEqual({
-      minimal: 'xhigh',
-      low: 'xhigh',
-      medium: 'xhigh',
-      high: 'xhigh',
-      xhigh: 'xhigh',
+      minimal: 'high',
+      low: 'high',
+      medium: 'high',
+      high: 'high',
+      xhigh: 'high',
     });
     expect(model.model.contextWindow).toBe(220000);
     expect(model.model.maxTokens).toBe(262144);
@@ -3489,7 +3489,7 @@ describe('ChatThreadDO Pi turn handling', () => {
       modelId: 'deepseek/deepseek-v4-pro',
       hostedGatewayProvider: 'compat',
       hostedModelId: 'dynamic/deepseek-v4-auto',
-      hostedReasoningEffort: 'xhigh',
+      hostedReasoningEffort: 'high',
       byokAllowed: false,
       hostedRequestProfile: {
         name: 'deepseek-v4-flash-rtx',
