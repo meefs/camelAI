@@ -17,7 +17,10 @@ import type { PiHeaderValue, PiResolvedModelReference } from "./chat-thread-do";
 const DEEPSEEK_V4_FLASH_RTX_PROFILE = {
   name: "deepseek-v4-flash-rtx" as const,
   contextWindow: 220_000,
-  maxTokens: 32_000,
+  // This is the RTX service's real maximum output for an empty prompt. Pi's
+  // compaction reserve remains independently bounded; this must not become an
+  // artificial 32k generation limit for clients that need a longer response.
+  maxTokens: 262_144,
   reasoning: true,
   supportsReasoningEffort: true,
   thinkingFormat: "openai" as const,
