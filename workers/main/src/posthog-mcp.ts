@@ -1,4 +1,6 @@
 import { decryptCredentials } from '../../../src/lib/integration-crypto';
+import { boundedInteger } from './mcp-bounded-integer.js';
+import { parseJsonObject, requireString, textToolResult } from './mcp-values.js';
 import type { WorkspaceIntegrationRecord } from './workspace.js';
 
 type JsonValue =
@@ -203,17 +205,6 @@ async function postHogFetch<T>(
   return payload as T;
 }
 
-function textToolResult(value: unknown): Record<string, unknown> {
-  return {
-    content: [
-      {
-        type: 'text',
-        text: typeof value === 'string' ? value : JSON.stringify(value, null, 2),
-      },
-    ],
-  };
-}
-
 function projectIdFromArgs(client: PostHogClient, args: Record<string, unknown>): string {
   if (typeof args.projectId === 'string' && args.projectId.trim()) return args.projectId.trim();
   if (client.projectId) return client.projectId;
@@ -261,38 +252,4 @@ function validatePostHogHost(rawHost: string): string {
   url.search = '';
   url.hash = '';
   return url.toString().replace(/\/+$/, '');
-}
-
-function requireString(value: unknown, field: string): string {
-  if (typeof value !== 'string' || !value.trim()) {
-    throw Object.assign(new Error(`${field} is required`), { status: 400 });
-  }
-  return value.trim();
-}
-
-function boundedInteger(
-  value: unknown,
-  defaultValue: number,
-  min: number,
-  max: number,
-  field: string
-): number {
-  if (value == null) return defaultValue;
-  const parsed = Number(value);
-  if (!Number.isInteger(parsed) || parsed < min || parsed > max) {
-    throw Object.assign(new Error(`${field} must be an integer from ${min} to ${max}.`), { status: 400 });
-  }
-  return parsed;
-}
-
-function parseJsonObject(value: string | null | undefined): Record<string, unknown> {
-  if (!value) return {};
-  try {
-    const parsed = JSON.parse(value);
-    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
-      ? parsed as Record<string, unknown>
-      : {};
-  } catch {
-    return {};
-  }
 }

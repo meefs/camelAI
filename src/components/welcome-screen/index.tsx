@@ -1,6 +1,6 @@
 'use client';
 
-import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Suspense, useCallback, useMemo, useRef, useState } from 'react';
 import { Await, useNavigate } from 'react-router';
 import { ChevronUp, Plus } from 'lucide-react';
 import type {
@@ -38,172 +38,10 @@ import { AppCardsRow } from './app-cards-row';
 import { RecentChatsRow } from './recent-chats-row';
 import { GroupNewChatHeader } from './group-new-chat-header';
 import { RecentlyUsedInGroup } from './recently-used-in-group';
+import { STARTER_PROMPTS, pickStarterPrompts } from './starter-prompt-catalog';
+import { useResolvedList } from './use-resolved-list';
 import type { ModelCatalogEntry } from '@/lib/model-catalog';
 import type { RecentModelScope } from '@/lib/recent-model';
-
-const STARTER_PROMPTS: StarterPromptItem[] = [
-  // Strong keepers from before
-  {
-    title: 'Feedback form + dashboard',
-    description: 'Collect responses and see live results',
-    prompt: 'Build me a feedback form with a simple admin dashboard to view all submissions in real-time',
-    icon: 'BarChart3',
-  },
-  {
-    title: 'Internal admin panel',
-    description: 'View and edit customer records',
-    prompt: 'Create an internal admin panel where I can view, search, and edit customer data',
-    icon: 'Shield',
-  },
-  {
-    title: 'Webhook to Slack alerts',
-    description: 'Stripe events → formatted messages',
-    prompt: 'Set up a webhook endpoint that receives Stripe events and posts formatted notifications to a Slack channel',
-    icon: 'Zap',
-  },
-  {
-    title: 'Booking page',
-    description: 'Let people grab time on your calendar',
-    prompt: 'Build a booking page where visitors can see my availability, pick a slot, and get a calendar invite automatically',
-    icon: 'Calendar',
-  },
-  {
-    title: 'Waitlist with referrals',
-    description: 'Track signups and who invited who',
-    prompt: 'Create a waitlist page that gives each signup a unique referral link and shows their position in line',
-    icon: 'Users',
-  },
-  {
-    title: 'Changelog',
-    description: 'Ship notes your users will actually read',
-    prompt: 'Build a changelog page where I can post updates with dates, tags, and nice formatting',
-    icon: 'Megaphone',
-  },
-  {
-    title: 'Invoice generator',
-    description: 'Pull from Stripe, email as PDF',
-    prompt: 'Build an invoice generator that pulls customer and payment data from Stripe and lets me send branded PDF invoices',
-    icon: 'Receipt',
-  },
-  {
-    title: 'Status page',
-    description: 'Show uptime, post incidents',
-    prompt: 'Create a public status page for my API where I can post incidents and show current system health',
-    icon: 'Activity',
-  },
-  {
-    title: 'Team standup bot',
-    description: 'Async check-ins, daily digest',
-    prompt: 'Build a standup tool where my team submits daily updates and everyone gets a morning summary',
-    icon: 'MessageCircle',
-  },
-  {
-    title: 'Customer health dashboard',
-    description: 'Usage signals across all your tools',
-    prompt: 'Create a dashboard that pulls from Stripe, PostHog, and my database to show which customers are thriving vs at risk',
-    icon: 'HeartPulse',
-  },
-  {
-    title: 'Bug report portal',
-    description: 'Intake, triage, track status',
-    prompt: 'Build an internal bug reporting form that collects screenshots and details, with a board to track status',
-    icon: 'Bug',
-  },
-  {
-    title: 'Event RSVP page',
-    description: 'Signups, cap, waitlist',
-    prompt: 'Create an event page where people can RSVP, with a capacity limit and automatic waitlist when full',
-    icon: 'Ticket',
-  },
-  {
-    title: 'Content calendar',
-    description: "Plan and track what you're shipping",
-    prompt: 'Build a simple content calendar where I can plan posts, set publish dates, and mark things as done',
-    icon: 'CalendarDays',
-  },
-  {
-    title: 'Competitive intel tracker',
-    description: 'Log what competitors ship',
-    prompt: 'Create a simple tool where my team can log competitor updates with links, screenshots, and tags',
-    icon: 'Eye',
-  },
-  {
-    title: 'Simple poll',
-    description: 'Quick vote, shareable link',
-    prompt: 'Build a poll maker where I can create a question with options and share a link to collect votes',
-    icon: 'Vote',
-  },
-  {
-    title: 'Link in bio page',
-    description: 'Your links + click analytics',
-    prompt: 'Create a link-in-bio page where I can add links and see how many clicks each one gets',
-    icon: 'Link',
-  },
-
-  // Your new additions
-  {
-    title: 'Chrome extension',
-    description: 'Add superpowers to your browser',
-    prompt: 'Build a Chrome extension that lets me save and pin anything I find on the internet to a personal collection',
-    icon: 'Puzzle',
-  },
-  {
-    title: 'Personal site',
-    description: 'Your corner of the internet',
-    prompt: 'Build me a personal website with my bio, work history, projects, and a way for people to get in touch',
-    icon: 'Globe',
-  },
-  {
-    title: 'Launch page',
-    description: 'Build hype before you ship',
-    prompt: 'Create a coming soon page for my product with a signup form, countdown timer, and social links',
-    icon: 'Rocket',
-  },
-  {
-    title: 'Report from CSV',
-    description: 'Turn raw data into insights',
-    prompt: 'Take this CSV and turn it into a clean report with charts, key metrics, and a summary I can share with my team',
-    icon: 'FileSpreadsheet',
-  },
-  {
-    title: 'Daily Wordle clone',
-    description: 'A word game for your friends',
-    prompt: 'Build a Wordle-style word guessing game with daily puzzles and a way to share my score',
-    icon: 'Dices',
-  },
-  {
-    title: 'Sudoku',
-    description: 'Classic puzzle, fresh build',
-    prompt: 'Create a Sudoku game with multiple difficulty levels, a timer, and the ability to check my progress',
-    icon: 'Grid3x3',
-  },
-
-  // A couple more I think could hit
-  {
-    title: 'Meeting notes → action items',
-    description: 'Paste transcript, get tasks',
-    prompt: 'Build a tool where I paste meeting notes or a transcript and it extracts action items with owners and deadlines',
-    icon: 'ListChecks',
-  },
-  {
-    title: 'Price calculator',
-    description: 'Interactive quote builder',
-    prompt: 'Create a pricing calculator for my service where visitors can select options and see a live quote',
-    icon: 'Calculator',
-  },
-];
-function pickRandomPrompts(
-  allPrompts: StarterPromptItem[],
-  count: number,
-  random: () => number = Math.random
-) {
-  const copy = [...allPrompts];
-  for (let i = copy.length - 1; i > 0; i -= 1) {
-    const j = Math.floor(random() * (i + 1));
-    [copy[i], copy[j]] = [copy[j], copy[i]];
-  }
-  return copy.slice(0, count);
-}
 
 interface WelcomeScreenProps {
   userId: string | null;
@@ -237,10 +75,12 @@ interface WelcomeScreenProps {
 }
 
 const EMPTY_INTEGRATIONS: Integration[] = [];
-
-function isPromiseLike<T>(value: T | Promise<T> | undefined): value is Promise<T> {
-  return typeof (value as Promise<T> | undefined)?.then === 'function';
-}
+const EMPTY_PROJECTS: MentionableProject[] = [];
+const ALL_INTEGRATION_DEFS = Object.values(INTEGRATION_REGISTRY).map((def) => ({
+  type: def.type,
+  displayName: def.displayName,
+  category: def.category,
+}));
 
 function RecentChatsFallback() {
   return (
@@ -367,35 +207,8 @@ export function WelcomeScreen({
 }: WelcomeScreenProps) {
   const navigate = useNavigate();
   const [referenceTime] = useState(() => renderedAt ?? Date.now());
-  const [resolvedConnections, setResolvedConnections] = useState<Integration[]>(
-    () => (Array.isArray(connections) ? connections : EMPTY_INTEGRATIONS),
-  );
-  const [resolvedProjects, setResolvedProjects] = useState<MentionableProject[]>(
-    () => (Array.isArray(projects) ? projects : []),
-  );
-  useEffect(() => {
-    if (Array.isArray(connections)) {
-      setResolvedConnections(connections);
-      return;
-    }
-    if (!isPromiseLike(connections)) {
-      setResolvedConnections(EMPTY_INTEGRATIONS);
-      return;
-    }
-
-    let cancelled = false;
-    connections
-      .then((nextConnections) => {
-        if (!cancelled) setResolvedConnections(nextConnections);
-      })
-      .catch(() => {
-        if (!cancelled) setResolvedConnections(EMPTY_INTEGRATIONS);
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [connections]);
+  const resolvedConnections = useResolvedList(connections, EMPTY_INTEGRATIONS);
+  const resolvedProjects = useResolvedList(projects, EMPTY_PROJECTS);
   const mentionableConnections = useMemo(
     () => filterMentionables(
       resolvedConnections.map((connection) => ({
@@ -405,29 +218,6 @@ export function WelcomeScreen({
     ),
     [resolvedConnections],
   );
-  useEffect(() => {
-    if (Array.isArray(projects)) {
-      setResolvedProjects(projects);
-      return;
-    }
-    if (!isPromiseLike(projects)) {
-      setResolvedProjects([]);
-      return;
-    }
-
-    let cancelled = false;
-    projects
-      .then((nextProjects) => {
-        if (!cancelled) setResolvedProjects(nextProjects);
-      })
-      .catch(() => {
-        if (!cancelled) setResolvedProjects([]);
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [projects]);
   const mentionEntities = useMemo<AtMentionEntity[]>(() => [
     ...mentionableConnections,
     ...resolvedProjects,
@@ -449,16 +239,6 @@ export function WelcomeScreen({
   }, [navigate]);
   const [addConnectionOpen, setAddConnectionOpen] = useState(false);
 
-  const allIntegrationDefs = useMemo(
-    () =>
-      Object.values(INTEGRATION_REGISTRY).map((def) => ({
-        type: def.type,
-        displayName: def.displayName,
-        category: def.category,
-      })),
-    []
-  );
-
   const [shuffleKey, setShuffleKey] = useState(0);
   const initialPromptSeed = useMemo(
     () => hashStringToSeed(`starter-prompts:${referenceTime}:${userId ?? 'anonymous'}`),
@@ -467,8 +247,8 @@ export function WelcomeScreen({
   const promptsToDisplay = useMemo(
     () =>
       shuffleKey === 0
-        ? pickRandomPrompts(STARTER_PROMPTS, 4, createSeededRandom(initialPromptSeed))
-        : pickRandomPrompts(STARTER_PROMPTS, 4),
+        ? pickStarterPrompts(STARTER_PROMPTS, 4, createSeededRandom(initialPromptSeed))
+        : pickStarterPrompts(STARTER_PROMPTS, 4),
     [initialPromptSeed, shuffleKey]
   );
 
@@ -504,6 +284,37 @@ export function WelcomeScreen({
     onPromptChange(`Let's connect ${integration.displayName}`);
     focusInput();
   }, [onPromptChange, focusInput]);
+  const promptComposer = (
+    <AnimatedPlaceholder isActive={shouldAnimatePlaceholder}>
+      {(animatedText) => (
+        <PromptInput
+          textareaRef={textareaRef}
+          value={inputValue}
+          onChange={onPromptChange}
+          onSubmit={onSubmit}
+          placeholder="Ask anything..."
+          animatedPlaceholder={shouldAnimatePlaceholder ? animatedText : undefined}
+          isLoading={isCreatingThread}
+          minHeight="80px"
+          autoFocus
+          attachments={attachments}
+          onFilesSelected={onFilesSelected}
+          onAttachmentRemove={onAttachmentRemove}
+          workspaceId={workspaceId}
+          model={model}
+          onModelChange={onModelChange}
+          modelOptions={modelOptions}
+          modelDisabled={isCreatingThread}
+          disabled={Boolean(noModelsMessage)}
+          isOrgAdmin={isOrgAdmin}
+          recentModelScope={recentModelScope}
+          mentionables={mentionEntities}
+          mentionMenuSide="top"
+          onMentionAddNewClick={() => navigate('/connections')}
+        />
+      )}
+    </AnimatedPlaceholder>
+  );
 
   if (group) {
     return (
@@ -511,35 +322,7 @@ export function WelcomeScreen({
         <GroupNewChatHeader group={group} />
 
         <div>
-          <AnimatedPlaceholder isActive={shouldAnimatePlaceholder}>
-            {(animatedText) => (
-              <PromptInput
-                textareaRef={textareaRef}
-                value={inputValue}
-                onChange={onPromptChange}
-                onSubmit={onSubmit}
-                placeholder="Ask anything..."
-                animatedPlaceholder={shouldAnimatePlaceholder ? animatedText : undefined}
-                isLoading={isCreatingThread}
-                minHeight="80px"
-                autoFocus
-                attachments={attachments}
-                onFilesSelected={onFilesSelected}
-                onAttachmentRemove={onAttachmentRemove}
-                workspaceId={workspaceId}
-                model={model}
-                onModelChange={onModelChange}
-                modelOptions={modelOptions}
-                modelDisabled={isCreatingThread}
-                disabled={Boolean(noModelsMessage)}
-                isOrgAdmin={isOrgAdmin}
-                recentModelScope={recentModelScope}
-                mentionables={mentionEntities}
-                mentionMenuSide="top"
-                onMentionAddNewClick={() => navigate('/connections')}
-              />
-            )}
-          </AnimatedPlaceholder>
+          {promptComposer}
 
           {noModelsMessage && (
             <p className="mt-2 text-sm text-muted-foreground">
@@ -568,35 +351,7 @@ export function WelcomeScreen({
     <div className="w-full max-w-5xl space-y-10">
       <WelcomeGreeting userName={userName} seed={referenceTime} />
 
-      <AnimatedPlaceholder isActive={shouldAnimatePlaceholder}>
-        {(animatedText) => (
-          <PromptInput
-            textareaRef={textareaRef}
-            value={inputValue}
-            onChange={onPromptChange}
-            onSubmit={onSubmit}
-            placeholder="Ask anything..."
-            animatedPlaceholder={shouldAnimatePlaceholder ? animatedText : undefined}
-            isLoading={isCreatingThread}
-            minHeight="80px"
-            autoFocus
-            attachments={attachments}
-            onFilesSelected={onFilesSelected}
-            onAttachmentRemove={onAttachmentRemove}
-            workspaceId={workspaceId}
-            model={model}
-            onModelChange={onModelChange}
-            modelOptions={modelOptions}
-            modelDisabled={isCreatingThread}
-            disabled={Boolean(noModelsMessage)}
-            isOrgAdmin={isOrgAdmin}
-            recentModelScope={recentModelScope}
-            mentionables={mentionEntities}
-            mentionMenuSide="top"
-            onMentionAddNewClick={() => navigate('/connections')}
-          />
-        )}
-      </AnimatedPlaceholder>
+      {promptComposer}
 
       {noModelsMessage && (
         <p className="-mt-8 text-sm text-muted-foreground">
@@ -674,7 +429,7 @@ export function WelcomeScreen({
           <CollapsibleContent className="overflow-hidden data-[state=open]:animate-collapsible-down data-[state=closed]:animate-collapsible-up">
             <div className="pt-4">
               <ConnectionPicker
-                integrations={allIntegrationDefs}
+                integrations={ALL_INTEGRATION_DEFS}
                 mode="single-action"
                 variant="compact"
                 maxHeight="240px"

@@ -1,4 +1,6 @@
 import { decryptCredentials } from '../../../src/lib/integration-crypto';
+import { boundedInteger } from './mcp-bounded-integer.js';
+import { parseJsonObject, requireString, textToolResult } from './mcp-values.js';
 import type { WorkspaceIntegrationRecord } from './workspace.js';
 
 type JsonValue =
@@ -182,28 +184,6 @@ async function zendeskFetch<T>(client: ZendeskClient, path: string): Promise<T> 
   return payload as T;
 }
 
-function parseJsonObject(value: string | null | undefined): Record<string, unknown> {
-  if (!value) return {};
-  try {
-    const parsed = JSON.parse(value);
-    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
-      ? parsed as Record<string, unknown>
-      : {};
-  } catch {
-    return {};
-  }
-}
-
-function textToolResult(value: unknown): Record<string, unknown> {
-  return {
-    content: [
-      {
-        type: 'text',
-        text: typeof value === 'string' ? value : JSON.stringify(value, null, 2),
-      },
-    ],
-  };
-}
 
 function requireSubdomain(value: unknown): string {
   const subdomain = requireString(value, 'subdomain').replace(/\.zendesk\.com$/i, '');
@@ -211,24 +191,4 @@ function requireSubdomain(value: unknown): string {
     throw Object.assign(new Error('subdomain must be a Zendesk subdomain, not a full URL.'), { status: 400 });
   }
   return subdomain;
-}
-
-function requireString(value: unknown, field: string): string {
-  if (typeof value !== 'string' || !value.trim()) {
-    throw Object.assign(new Error(`${field} is required`), { status: 400 });
-  }
-  return value.trim();
-}
-
-function boundedInteger(
-  value: unknown,
-  min: number,
-  max: number,
-  field: string
-): number {
-  const parsed = Number(value);
-  if (!Number.isInteger(parsed) || parsed < min || parsed > max) {
-    throw Object.assign(new Error(`${field} must be an integer from ${min} to ${max}.`), { status: 400 });
-  }
-  return parsed;
 }

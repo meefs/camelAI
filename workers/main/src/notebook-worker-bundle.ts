@@ -7,6 +7,7 @@
 // upload + app registration path as built react-router projects.
 
 import type { DirectWorkerMetadata } from "./direct-dispatch-deploy.js";
+import { base64ToBytes } from "./base64-codec.js";
 import { contentTypeForAsset, type ProjectWorkerBundle } from "./project-worker-bundle.js";
 import { normalizeWorkspacePath } from "./workspace-filesystem-do.js";
 
@@ -98,15 +99,6 @@ async function projectHasBuildScript(projectFiles: NotebookProjectFileStore): Pr
   } catch {
     return false;
   }
-}
-
-function base64ToBytes(value: string): Uint8Array {
-  const binary = atob(value.replace(/\s/g, ""));
-  const bytes = new Uint8Array(binary.length);
-  for (let index = 0; index < binary.length; index += 1) {
-    bytes[index] = binary.charCodeAt(index);
-  }
-  return bytes;
 }
 
 export interface NotebookWorkerBundleOptions {

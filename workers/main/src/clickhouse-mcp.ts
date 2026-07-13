@@ -1,4 +1,5 @@
 import { decryptCredentials } from '../../../src/lib/integration-crypto';
+import { parseJsonObject, requireString, textToolResult } from './mcp-values.js';
 import type { WorkspaceIntegrationRecord } from './workspace.js';
 import { warehouseExportKey, stageWarehouseExport } from './warehouse-export.js';
 
@@ -288,36 +289,6 @@ function requireIdentifier(value: unknown, field: string): string {
   return id;
 }
 
-function requireString(value: unknown, field: string): string {
-  if (typeof value !== 'string' || !value.trim()) {
-    throw Object.assign(new Error(`${field} is required`), { status: 400 });
-  }
-  return value.trim();
-}
-
 function sqlString(value: string): string {
   return `'${value.replace(/'/g, "''")}'`;
-}
-
-function textToolResult(value: unknown): Record<string, unknown> {
-  return {
-    content: [
-      {
-        type: 'text',
-        text: typeof value === 'string' ? value : JSON.stringify(value, null, 2),
-      },
-    ],
-  };
-}
-
-function parseJsonObject(value: string | null | undefined): Record<string, unknown> {
-  if (!value) return {};
-  try {
-    const parsed = JSON.parse(value);
-    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
-      ? parsed as Record<string, unknown>
-      : {};
-  } catch {
-    return {};
-  }
 }

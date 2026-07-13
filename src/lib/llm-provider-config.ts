@@ -501,12 +501,6 @@ export function parseStoredLlmProviderConfig(
   };
 }
 
-export function parseLlmProviderStoredConfig(
-  raw: unknown,
-): LlmProviderStoredConfig {
-  return parseStoredLlmProviderConfig(raw);
-}
-
 export function stringifyStoredLlmProviderConfig(
   config: Partial<LlmProviderStoredConfig>,
 ): string {

@@ -1,4 +1,6 @@
 import { decryptCredentials } from '../../../src/lib/integration-crypto';
+import { boundedInteger } from './mcp-bounded-integer.js';
+import { requireString, textToolResult } from './mcp-values.js';
 import type { WorkspaceIntegrationRecord } from './workspace.js';
 
 type JsonValue =
@@ -178,43 +180,10 @@ async function airtableFetch<T>(client: AirtableClient, path: string): Promise<T
   return payload as T;
 }
 
-function textToolResult(value: unknown): Record<string, unknown> {
-  return {
-    content: [
-      {
-        type: 'text',
-        text: typeof value === 'string' ? value : JSON.stringify(value, null, 2),
-      },
-    ],
-  };
-}
-
 function requireAirtableId(value: unknown, field: string): string {
   const id = requireString(value, field);
   if (!AIRTABLE_ID_RE.test(id)) {
     throw Object.assign(new Error(`${field} contains invalid characters.`), { status: 400 });
   }
   return id;
-}
-
-function requireString(value: unknown, field: string): string {
-  if (typeof value !== 'string' || !value.trim()) {
-    throw Object.assign(new Error(`${field} is required`), { status: 400 });
-  }
-  return value.trim();
-}
-
-function boundedInteger(
-  value: unknown,
-  defaultValue: number,
-  min: number,
-  max: number,
-  field: string
-): number {
-  if (value == null) return defaultValue;
-  const parsed = Number(value);
-  if (!Number.isInteger(parsed) || parsed < min || parsed > max) {
-    throw Object.assign(new Error(`${field} must be an integer from ${min} to ${max}.`), { status: 400 });
-  }
-  return parsed;
 }

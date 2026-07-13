@@ -1,4 +1,5 @@
 import { decryptCredentials } from '../../../src/lib/integration-crypto';
+import { objectArg, parseJsonObject, requireString, textToolResult } from './mcp-values.js';
 import type { WorkspaceIntegrationRecord } from './workspace.js';
 
 type JsonValue = null | string | number | boolean | JsonValue[] | { [key: string]: JsonValue };
@@ -158,33 +159,8 @@ function quoteSqlIdentifier(value: string): string {
   return `"${value.replace(/"/g, '""')}"`;
 }
 
-function textToolResult(value: unknown): Record<string, unknown> {
-  return { content: [{ type: 'text', text: typeof value === 'string' ? value : JSON.stringify(value, null, 2) }] };
-}
-
-function objectArg(value: unknown): Record<string, unknown> {
-  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
-}
-
 function arrayArg(value: unknown, field: string): unknown[] {
   if (value == null) return [];
   if (!Array.isArray(value)) throw Object.assign(new Error(`${field} must be an array.`), { status: 400 });
   return value;
-}
-
-function requireString(value: unknown, field: string): string {
-  if (typeof value !== 'string' || !value.trim()) {
-    throw Object.assign(new Error(`${field} is required`), { status: 400 });
-  }
-  return value.trim();
-}
-
-function parseJsonObject(value: string | null | undefined): Record<string, unknown> {
-  if (!value) return {};
-  try {
-    const parsed = JSON.parse(value);
-    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as Record<string, unknown> : {};
-  } catch {
-    return {};
-  }
 }

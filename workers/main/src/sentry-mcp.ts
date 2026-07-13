@@ -1,4 +1,6 @@
 import { decryptCredentials } from '../../../src/lib/integration-crypto';
+import { boundedInteger } from './mcp-bounded-integer.js';
+import { parseJsonObject, requireString, textToolResult } from './mcp-values.js';
 import type { WorkspaceIntegrationRecord } from './workspace.js';
 
 type JsonValue =
@@ -214,17 +216,6 @@ async function sentryFetch<T>(client: SentryClient, path: string): Promise<T> {
   return payload as T;
 }
 
-function textToolResult(value: unknown): Record<string, unknown> {
-  return {
-    content: [
-      {
-        type: 'text',
-        text: typeof value === 'string' ? value : JSON.stringify(value, null, 2),
-      },
-    ],
-  };
-}
-
 function organizationFromArgs(client: SentryClient, args: Record<string, unknown>): string {
   if (typeof args.organization === 'string' && args.organization.trim()) {
     return requireSlug(args.organization, 'organization');
@@ -249,38 +240,4 @@ function requireNumericId(value: unknown, field: string): string {
     throw Object.assign(new Error(`${field} must be a numeric Sentry id.`), { status: 400 });
   }
   return id;
-}
-
-function requireString(value: unknown, field: string): string {
-  if (typeof value !== 'string' || !value.trim()) {
-    throw Object.assign(new Error(`${field} is required`), { status: 400 });
-  }
-  return value.trim();
-}
-
-function boundedInteger(
-  value: unknown,
-  defaultValue: number,
-  min: number,
-  max: number,
-  field: string
-): number {
-  if (value == null) return defaultValue;
-  const parsed = Number(value);
-  if (!Number.isInteger(parsed) || parsed < min || parsed > max) {
-    throw Object.assign(new Error(`${field} must be an integer from ${min} to ${max}.`), { status: 400 });
-  }
-  return parsed;
-}
-
-function parseJsonObject(value: string | null | undefined): Record<string, unknown> {
-  if (!value) return {};
-  try {
-    const parsed = JSON.parse(value);
-    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
-      ? parsed as Record<string, unknown>
-      : {};
-  } catch {
-    return {};
-  }
 }

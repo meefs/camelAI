@@ -1,6 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { buildLogTail, projectBuildSandboxKey, runProjectAddDependency, runProjectBuild } from "../src/project-build-service";
+import {
+  __testing as projectBuildTesting,
+  buildLogTail,
+  projectBuildSandboxKey,
+  runProjectAddDependency,
+  runProjectBuild,
+} from "../src/project-build-service";
 import type { ProjectBuildSandboxLike } from "../src/project-worker-bundle";
 import type { WorkspaceFileStoreLike, WorkspaceListEntry } from "../src/workspace-filesystem-do";
 
@@ -240,6 +246,23 @@ describe("runProjectBuild", () => {
     expect(files.writeFile).toHaveBeenCalledWith("/bun.lock", "# lockfile\n");
     expect(sandbox.readFile).toHaveBeenCalledWith("/workspace/demo/bun.lock", { encoding: "base64" });
   });
+
+  it("reports build-log persistence failures without changing a successful command result", async () => {
+    const files = fakeFileStore({
+      "/package.json": JSON.stringify({ scripts: { build: "vite build" } }),
+    });
+    vi.mocked(files.writeFile).mockImplementation(async (path) => path === "/.camelai/tmp/build.log"
+      ? { success: false, error: "storage unavailable" }
+      : { success: true });
+
+    await expect(runProjectBuild({ projectId: "demo", files, sandbox: fakeSandbox() }))
+      .resolves.toMatchObject({
+        success: true,
+        buildLogPath: "/.camelai/tmp/build.log",
+        buildLogPersisted: false,
+        buildLogBytes: 5,
+      });
+  });
 });
 
 describe("runProjectAddDependency", () => {
@@ -348,6 +371,16 @@ describe("projectBuildSandboxKey", () => {
     expect(projectBuildSandboxKey(
       "local-dev-org-with-a-very-long-name-that-still-needs-a-different-stable-build-sandbox-key",
     )).not.toBe(key);
+  });
+});
+
+describe("project build testing surface", () => {
+  it("keeps the exact source-policy helper inventory", () => {
+    expect(Object.keys(projectBuildTesting).sort()).toEqual([
+      "collectProjectSourceFiles",
+      "normalizeRelativeBuildPath",
+      "shouldIgnoreBuildSourcePath",
+    ]);
   });
 });
 

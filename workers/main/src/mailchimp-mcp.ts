@@ -1,4 +1,6 @@
 import { decryptCredentials } from '../../../src/lib/integration-crypto';
+import { boundedInteger } from './mcp-bounded-integer.js';
+import { parseJsonObject, requireString, textToolResult } from './mcp-values.js';
 import type { WorkspaceIntegrationRecord } from './workspace.js';
 
 type JsonValue =
@@ -201,28 +203,6 @@ async function mailchimpFetch<T>(client: MailchimpClient, path: string): Promise
   return payload as T;
 }
 
-function parseJsonObject(value: string | null | undefined): Record<string, unknown> {
-  if (!value) return {};
-  try {
-    const parsed = JSON.parse(value);
-    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
-      ? parsed as Record<string, unknown>
-      : {};
-  } catch {
-    return {};
-  }
-}
-
-function textToolResult(value: unknown): Record<string, unknown> {
-  return {
-    content: [
-      {
-        type: 'text',
-        text: typeof value === 'string' ? value : JSON.stringify(value, null, 2),
-      },
-    ],
-  };
-}
 
 function requireDataCenter(value: unknown): string {
   const dataCenter = requireString(value, 'data_center');
@@ -238,24 +218,4 @@ function requireResourceId(value: unknown, field: string): string {
     throw Object.assign(new Error(`${field} contains invalid characters.`), { status: 400 });
   }
   return id;
-}
-
-function requireString(value: unknown, field: string): string {
-  if (typeof value !== 'string' || !value.trim()) {
-    throw Object.assign(new Error(`${field} is required`), { status: 400 });
-  }
-  return value.trim();
-}
-
-function boundedInteger(
-  value: unknown,
-  min: number,
-  max: number,
-  field: string
-): number {
-  const parsed = Number(value);
-  if (!Number.isInteger(parsed) || parsed < min || parsed > max) {
-    throw Object.assign(new Error(`${field} must be an integer from ${min} to ${max}.`), { status: 400 });
-  }
-  return parsed;
 }

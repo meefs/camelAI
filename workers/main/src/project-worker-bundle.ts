@@ -1,5 +1,7 @@
 import type { DirectDeployAsset, DirectWorkerMetadata, DirectWorkerModule } from "./direct-dispatch-deploy.js";
 import type { WorkerBinding } from "./cf-api-proxy.js";
+import { mapWithConcurrency } from "../../../src/lib/map-with-concurrency";
+import { base64ToBytes } from "./base64-codec.js";
 
 const BUNDLE_READ_CONCURRENCY = 16;
 
@@ -454,31 +456,4 @@ function relativeSandboxPath(root: string, path: string): string {
   if (cleanRoot === "/") return cleanPath.replace(/^\/+/, "");
   if (cleanPath === cleanRoot) return "";
   return cleanPath.startsWith(`${cleanRoot}/`) ? cleanPath.slice(cleanRoot.length + 1) : cleanPath.replace(/^\/+/, "");
-}
-
-function base64ToBytes(value: string): Uint8Array {
-  const binary = atob(value.replace(/\s/g, ""));
-  const bytes = new Uint8Array(binary.length);
-  for (let index = 0; index < binary.length; index += 1) {
-    bytes[index] = binary.charCodeAt(index);
-  }
-  return bytes;
-}
-
-async function mapWithConcurrency<T, R>(
-  items: T[],
-  concurrency: number,
-  mapper: (item: T, index: number) => Promise<R>,
-): Promise<R[]> {
-  const results = Array.from<R>({ length: items.length });
-  let nextIndex = 0;
-  const workerCount = Math.max(1, Math.min(concurrency, items.length));
-  await Promise.all(Array.from({ length: workerCount }, async () => {
-    while (nextIndex < items.length) {
-      const index = nextIndex;
-      nextIndex += 1;
-      results[index] = await mapper(items[index]!, index);
-    }
-  }));
-  return results;
 }

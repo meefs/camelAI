@@ -1,4 +1,6 @@
 import { decryptCredentials } from '../../../src/lib/integration-crypto';
+import { boundedInteger } from './mcp-bounded-integer.js';
+import { requireString, textToolResult } from './mcp-values.js';
 import type { WorkspaceIntegrationRecord } from './workspace.js';
 
 type JsonValue =
@@ -203,41 +205,10 @@ async function twilioFetch<T>(client: TwilioClient, path: string): Promise<T> {
   return payload as T;
 }
 
-function textToolResult(value: unknown): Record<string, unknown> {
-  return {
-    content: [
-      {
-        type: 'text',
-        text: typeof value === 'string' ? value : JSON.stringify(value, null, 2),
-      },
-    ],
-  };
-}
-
 function requireSid(value: unknown, field: string, prefix: string): string {
   const sid = requireString(value, field);
   if (!SID_RE.test(sid) || !sid.toUpperCase().startsWith(prefix)) {
     throw Object.assign(new Error(`${field} must be a valid Twilio ${prefix} SID.`), { status: 400 });
   }
   return sid;
-}
-
-function requireString(value: unknown, field: string): string {
-  if (typeof value !== 'string' || !value.trim()) {
-    throw Object.assign(new Error(`${field} is required`), { status: 400 });
-  }
-  return value.trim();
-}
-
-function boundedInteger(
-  value: unknown,
-  min: number,
-  max: number,
-  field: string
-): number {
-  const parsed = Number(value);
-  if (!Number.isInteger(parsed) || parsed < min || parsed > max) {
-    throw Object.assign(new Error(`${field} must be an integer from ${min} to ${max}.`), { status: 400 });
-  }
-  return parsed;
 }

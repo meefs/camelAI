@@ -11,6 +11,7 @@ vi.mock("@cloudflare/sandbox", () => ({
 }));
 
 import {
+  ProjectBuildService,
   prewarmProjectBuildSandbox,
   prewarmWorkspaceBuildSandboxes,
   projectBuildSandboxKey,
@@ -88,6 +89,42 @@ describe("prewarmProjectBuildSandbox", () => {
     });
 
     expect(result).toBe(false);
+  });
+
+  it("clamps tiny timeouts to one second", async () => {
+    await expect(prewarmProjectBuildSandbox({
+      env: { PROJECT_BUILD_SANDBOX: SANDBOX_NS },
+      orgId: "org",
+      timeoutMs: 12,
+    })).resolves.toBe(true);
+
+    expect(execMock).toHaveBeenCalledWith("true", { timeout: 1_000 });
+  });
+});
+
+describe("ProjectBuildService admission", () => {
+  it("exposes only the two WorkerEntrypoint RPC methods", () => {
+    expect(Object.getOwnPropertyNames(ProjectBuildService.prototype).sort()).toEqual([
+      "addDependency",
+      "buildProject",
+      "constructor",
+    ]);
+  });
+
+  it("keeps the binding and org-scope validation errors at the WorkerEntrypoint boundary", async () => {
+    await expect(ProjectBuildService.prototype.buildProject.call({
+      env: {},
+      ctx: { props: { orgId: "org" } },
+    } as never, { projectId: "demo" })).rejects.toThrow(
+      "PROJECT_BUILD_SANDBOX container binding is not configured",
+    );
+    await expect(ProjectBuildService.prototype.addDependency.call({
+      env: { PROJECT_BUILD_SANDBOX: SANDBOX_NS },
+      ctx: { props: { orgId: "" } },
+    } as never, { projectId: "demo", dependency: "react" })).rejects.toThrow(
+      "Project build service requires org scope",
+    );
+    expect(getSandboxMock).not.toHaveBeenCalled();
   });
 });
 

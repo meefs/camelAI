@@ -1,7 +1,6 @@
 import type { ContentBlock } from '@/types';
-import { stripMentionAnnotations } from '@/lib/mentions';
+import { stripSystemMessageTags } from '@/lib/message-text';
 
-const SYSTEM_MESSAGE_TAG_REGEX = /<camelai system message>[\s\S]*?<\/camelai system message>/g;
 const TASK_NOTIFICATION_REGEX = /^<task-notification\b[^>]*>([\s\S]*?)<\/task-notification>([\s\S]*)$/;
 const TRAILING_INSTRUCTION_REGEX = /^Read the output file to retrieve the result:.*$/i;
 
@@ -10,10 +9,6 @@ export interface ParsedTaskNotification {
   outputFile: string;
   status: string;
   summary: string;
-}
-
-function stripSystemMessageTags(text: string): string {
-  return stripMentionAnnotations(text.replace(SYSTEM_MESSAGE_TAG_REGEX, '')).trim();
 }
 
 function extractTagValue(body: string, tag: string): string | null {

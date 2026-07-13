@@ -1,4 +1,5 @@
 import { decryptCredentials } from '../../../src/lib/integration-crypto';
+import { parseJsonObject, requireString, textToolResult } from './mcp-values.js';
 import {
   mysqlQuery,
   postgresQuery,
@@ -396,17 +397,6 @@ function schemaFromArgs(client: SqlDatabaseClient, args: Record<string, unknown>
   return optionalString(args.schema) || client.schema;
 }
 
-function parseJsonObject(value: string | null | undefined): Record<string, unknown> {
-  if (!value) return {};
-  try {
-    const parsed = JSON.parse(value);
-    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
-      ? parsed as Record<string, unknown>
-      : {};
-  } catch {
-    return {};
-  }
-}
 
 function parseDatabaseUrl(
   raw: string | undefined,
@@ -460,24 +450,6 @@ function decodeUrlComponent(value: string, field: string): string {
   } catch {
     throw Object.assign(new Error(`${field} must be URL encoded correctly`), { status: 400 });
   }
-}
-
-function textToolResult(value: unknown): Record<string, unknown> {
-  return {
-    content: [
-      {
-        type: 'text',
-        text: typeof value === 'string' ? value : JSON.stringify(value, null, 2),
-      },
-    ],
-  };
-}
-
-function requireString(value: unknown, field: string): string {
-  if (typeof value !== 'string' || !value.trim()) {
-    throw Object.assign(new Error(`${field} is required`), { status: 400 });
-  }
-  return value.trim();
 }
 
 function optionalString(value: unknown): string | undefined {
