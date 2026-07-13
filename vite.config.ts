@@ -205,6 +205,12 @@ export default defineConfig(({ command }) => {
       dedupe: ['react', 'react-dom'],
       alias: [
         {
+          find: 'virtual:db-query-runner-source',
+          replacement: `${path.resolve(
+            'workers/main/db-query-sandbox-assets/runner/db-query-runner.mjs',
+          )}?raw`,
+        },
+        {
           find: '@smithy/core/config',
           replacement: smithyCoreConfigNodeEntry,
         },

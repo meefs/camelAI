@@ -52,8 +52,9 @@ data-proxy.ts (worker; legacy request/response contract, caller ALREADY authoriz
   into `node --input-type=module` over stdin with the request + SOCKS creds in
   the exec env, and parses the single JSON line the runner writes to stdout.
   The runner source (`db-query-sandbox-assets/runner/db-query-runner.mjs`) is
-  embedded in the worker at build time via Vite `?raw`, so **changing how we
-  query/export is a worker-only deploy — no image rebuild.**
+  embedded in the worker at build time through `virtual:db-query-runner-source`
+  (Vite `?raw` in the main worker, Wrangler `Text` in dispatchers), so
+  **changing how we query/export is a worker-only deploy — no image rebuild.**
 - **Runner** — engines `postgres` (pg), `mysql` (mysql2), `mssql` (tedious
   with its custom `connector` socket hook). `mode: "read"` runs inside a
   transaction that is always rolled back (Go-parity safety net; postgres/mysql

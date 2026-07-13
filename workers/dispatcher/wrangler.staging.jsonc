@@ -2,6 +2,12 @@
 	"$schema": "../../node_modules/wrangler/config-schema.json",
 	"name": "chiridion-dispatcher-staging",
 	"main": "src/index.ts",
+	"alias": {
+		"virtual:db-query-runner-source": "./src/db-query-runner-source.ts"
+	},
+	"rules": [
+		{ "type": "Text", "globs": ["**/db-query-runner.mjs"], "fallthrough": true }
+	],
 	"compatibility_date": "2024-12-01",
 	"compatibility_flags": ["nodejs_compat"],
 	"vars": {

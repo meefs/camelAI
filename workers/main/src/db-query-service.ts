@@ -17,8 +17,9 @@
  * and the admin smoke route (POST /api/admin/db-query-sandbox/query).
  */
 
-// Embedded at build time (Vite `?raw`); shipped verbatim into the container.
-import RUNNER_SOURCE from "../db-query-sandbox-assets/runner/db-query-runner.mjs?raw";
+// Embedded at build time; the Vite and Wrangler builds alias this virtual
+// module to the runner source using their respective raw-text mechanisms.
+import RUNNER_SOURCE from "virtual:db-query-runner-source";
 
 /**
  * Directory holding the baked drivers. `node` runs with this as its cwd so the
