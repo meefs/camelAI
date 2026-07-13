@@ -374,13 +374,23 @@ export async function resolvePiRequestConfig(
     byok.openAiSubscription &&
     resolved.provider === "openai"
   ) {
+    const proxyBaseUrl = deps.env.OPENAI_CODEX_PROXY_BASE_URL?.trim();
+    const proxyToken = deps.env.OPENAI_CODEX_PROXY_TOKEN?.trim();
+    if (Boolean(proxyBaseUrl) !== Boolean(proxyToken)) {
+      throw new Error(
+        "OPENAI_CODEX_PROXY_BASE_URL and OPENAI_CODEX_PROXY_TOKEN must be configured together.",
+      );
+    }
     return {
       apiKey: byok.openAiSubscription.accessToken,
       api: "openai-codex-responses",
       billingSource: "byok",
       creditChargeable: false,
       requestProvider: "openai-codex",
-      baseUrl: OPENAI_CODEX_API_BASE_URL,
+      baseUrl: proxyBaseUrl || OPENAI_CODEX_API_BASE_URL,
+      headers: proxyToken
+        ? { "X-CamelAI-Proxy-Token": proxyToken }
+        : undefined,
       usageProvider: "openai",
     };
   }

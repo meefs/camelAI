@@ -1,0 +1,36 @@
+{
+  admin off
+  log {
+    output discard
+  }
+}
+
+PROXY_HOSTNAME {
+  log {
+    output discard
+  }
+
+  route {
+    @health path /healthz
+    respond @health "ok" 200
+
+    @codex path /backend-api/codex/*
+    handle @codex {
+      @authorized header X-CamelAI-Proxy-Token {$PROXY_TOKEN}
+      handle @authorized {
+        reverse_proxy https://chatgpt.com {
+          header_up Host chatgpt.com
+          header_up -X-CamelAI-Proxy-Token
+          header_down -Set-Cookie
+          flush_interval -1
+          transport http {
+            tls_server_name chatgpt.com
+          }
+        }
+      }
+      respond "Forbidden" 403
+    }
+
+    respond "Not Found" 404
+  }
+}

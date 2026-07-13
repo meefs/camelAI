@@ -111,6 +111,8 @@ export interface ChatEnv extends WorkspaceFilesystemEnv {
   CF_GATEWAY_NAME?: string;
   CF_GATEWAY_BASE_URL?: string;
   CF_GATEWAY_TOKEN?: string;
+  OPENAI_CODEX_PROXY_BASE_URL?: string;
+  OPENAI_CODEX_PROXY_TOKEN?: string;
   INTEGRATION_SECRET_KEY: string;
   TOKEN_SIGNING_SECRET: string;
   AI_GATEWAY_AUTH_TOKEN?: string;
