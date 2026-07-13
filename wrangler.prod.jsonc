@@ -31,7 +31,7 @@
     // sits behind on the prod sandbox VM (egress from SANDBOX_OUTBOUND_IP
     // 20.46.233.68). Unset ⇒ direct mode (no static IP).
     "DB_EGRESS_RELAY_HOSTNAME": "db-relay.camelai.dev",
-    "OPENAI_CODEX_PROXY_BASE_URL": "https://54-69-172-210.sslip.io/backend-api/codex",
+    "OPENAI_CODEX_PROXY_BASE_URL": "https://codex-egress.camelai.dev/backend-api/codex",
     "R2_BUCKET_NAME": "chiridion-sandbox",
     "R2_ACCOUNT_ID": "85bbd288051330fb51ee1c86031a299b",
     "R2_MOUNT_DIR": "/home/claude",

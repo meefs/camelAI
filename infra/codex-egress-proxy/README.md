@@ -12,12 +12,7 @@ Production resources (AWS account `904534089871`, `us-west-2`):
 - Security group: `camelai-codex-egress` (TCP/443 only; no SSH)
 - IAM role/profile: `camelai-codex-egress` (SSM plus read-only access to its token)
 - Secrets Manager: `camelai/codex-egress/proxy-token`
-- Temporary hostname: `54-69-172-210.sslip.io`
-
-Replace the temporary hostname with a DNS-only `codex-egress.camelai.dev` A
-record when a DNS-edit Cloudflare token is available. Update
-`OPENAI_CODEX_PROXY_BASE_URL` in the production and staging Wrangler configs at
-the same time.
+- DNS-only hostname: `codex-egress.camelai.dev`
 
 The proxy accepts only `/backend-api/codex/*`, requires
 `X-CamelAI-Proxy-Token`, strips that header before forwarding, and discards
@@ -33,7 +28,7 @@ Use AWS Systems Manager Session Manager; do not open SSH. Useful checks:
 aws ssm start-session --region us-west-2 --target <instance-id>
 sudo systemctl status camelai-codex-egress
 sudo docker logs camelai-codex-egress
-curl https://54-69-172-210.sslip.io/healthz
+curl https://codex-egress.camelai.dev/healthz
 ```
 
 Rotate the token in Secrets Manager, update the Worker secrets, then restart
