@@ -34,6 +34,60 @@ vi.mock('@/components/ui/tooltip', () => ({
 }));
 
 describe('MessageBubble streaming indicator order', () => {
+  it('omits the epoch timestamp while streaming and shows the completion time afterward', () => {
+    const completedAt = Date.UTC(2024, 0, 2, 20, 5);
+    const streamingMessage: Message = {
+      id: 'assistant-timestamp',
+      thread_id: 'thread-1',
+      role: 'assistant',
+      content: [{ type: 'text', text: 'Streaming response' }],
+      created_at: 0,
+      isStreaming: true,
+    };
+    const { rerender } = render(
+      <div className="group">
+        <MessageBubble
+          message={streamingMessage}
+          onCopy={vi.fn()}
+          copiedId={null}
+          messageTimeZone="America/Los_Angeles"
+        />
+      </div>
+    );
+
+    expect(screen.getByLabelText('Message actions')).toHaveTextContent(
+      /^Copy message$/,
+    );
+
+    rerender(
+      <div className="group">
+        <MessageBubble
+          message={{
+            ...streamingMessage,
+            created_at: completedAt,
+            completedAtMs: completedAt,
+            isStreaming: false,
+          }}
+          onCopy={vi.fn()}
+          copiedId={null}
+          messageTimeZone="UTC"
+        />
+      </div>
+    );
+
+    const expectedCompletionTime = new Date(completedAt).toLocaleString([], {
+      month: 'short',
+      day: 'numeric',
+      hour: 'numeric',
+      minute: '2-digit',
+      hour12: true,
+      timeZone: 'UTC',
+    });
+    expect(screen.getByLabelText('Message actions')).toHaveTextContent(
+      expectedCompletionTime,
+    );
+  });
+
   it('renders loading dots after the assistant action row', () => {
     const message: Message = {
       id: 'assistant-1',

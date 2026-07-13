@@ -717,7 +717,6 @@ function MessageBubbleBase({
 }: MessageBubbleProps) {
   const { currentWorkspace } = useAuthData();
   const workspaceId = currentWorkspace?.id;
-  const messageTime = formatMessageTime(message.created_at, messageTimeZone);
 
   if (message.isMeta || message.sourceToolUseID) {
     return null;
@@ -786,6 +785,10 @@ function MessageBubbleBase({
   const forkTargetId = message.forkEntryId || message.id;
   const isForking = forkingId === message.id || forkingId === forkTargetId;
   const isStreaming = (message.isStreaming ?? false) || suppressFinalizedState;
+  const messageTime =
+    message.created_at > 0 && !(message.role === 'assistant' && isStreaming)
+      ? formatMessageTime(message.created_at, messageTimeZone)
+      : null;
   const actionVisibilityClassName = cn(
     "transition-opacity",
     actionHoverClassName,
@@ -872,9 +875,11 @@ function MessageBubbleBase({
                   Sent by {author.displayName} at
                 </span>
               )}
-              <span className="text-muted-foreground text-xs mr-1">
-                {messageTime}
-              </span>
+              {messageTime && (
+                <span className="text-muted-foreground text-xs mr-1">
+                  {messageTime}
+                </span>
+              )}
               <Tooltip>
                 <TooltipTrigger asChild>
                   <Button
@@ -910,9 +915,11 @@ function MessageBubbleBase({
                 Sent by {author.displayName} at
               </span>
             )}
-            <span className="text-muted-foreground text-xs mr-1">
-              {messageTime}
-            </span>
+            {messageTime && (
+              <span className="text-muted-foreground text-xs mr-1">
+                {messageTime}
+              </span>
+            )}
             <Tooltip>
               <TooltipTrigger asChild>
                 <Button
@@ -958,9 +965,11 @@ function MessageBubbleBase({
           role="group"
           aria-label="Message actions"
         >
-          <span className="text-muted-foreground text-xs mr-1">
-            {messageTime}
-          </span>
+          {messageTime && (
+            <span className="text-muted-foreground text-xs mr-1">
+              {messageTime}
+            </span>
+          )}
           {onFork && !isStreaming && (
             <Tooltip>
               <TooltipTrigger asChild>
