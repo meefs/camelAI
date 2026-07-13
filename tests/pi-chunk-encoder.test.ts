@@ -245,6 +245,34 @@ describe('PiChunkEncoder unit families', () => {
     expect(completed[1]).toMatchObject({ type: 'tool-output-available', output: { isError: true } });
   });
 
+  it('carries bounded structured edit details on the settled tool output', () => {
+    const encoder = new PiChunkEncoder({ messageId: 'm' });
+    const completed = encoder.encode({
+      method: 'item/completed',
+      params: {
+        item: {
+          id: 'edit-1',
+          type: 'dynamicToolCall',
+          tool: 'edit',
+          arguments: { path: 'a.ts', edits: [{ oldText: 'old', newText: 'new' }] },
+          status: 'completed',
+          contentItems: [{ type: 'inputText', text: 'edited' }],
+          result: {
+            details: {
+              details: { diff: '-1 old\n+1 new', patch: '@@ patch', replacementCount: 1 },
+            },
+          },
+        },
+      },
+    });
+
+    expect(completed.find((chunk) => chunk.type === 'tool-output-available')).toMatchObject({
+      output: {
+        details: { diff: '-1 old\n+1 new', patch: '@@ patch', replacementCount: 1 },
+      },
+    });
+  });
+
   it('emits a non-transient data-pi-todos part with fixed id, reconciled in place', () => {
     const encoder = new PiChunkEncoder({ messageId: 'm' });
     const first = encoder.encode({

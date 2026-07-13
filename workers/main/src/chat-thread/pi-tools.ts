@@ -173,8 +173,14 @@ export function createPiToolDefinitions(
   options: PiToolDefinitionOptions = {},
 ): AgentTool[] {
   const tools = deps.scopedCodeModeTools(context);
-  const call = async (name: string, args: Record<string, unknown>) => {
+  const call = async (name: string, args: Record<string, unknown>, signal?: AbortSignal) => {
+    // Let the caller attach its rejection handler before an already-aborted
+    // signal rejects; workerd otherwise reports the synchronous async-function
+    // rejection as unhandled for one microtask.
+    await Promise.resolve();
+    if (signal?.aborted) throw new Error("Operation aborted");
     const result = await deps.keepPiTurnToolProgressAliveWhile(() => tools.callTool(name, args));
+    if (signal?.aborted) throw new Error("Operation aborted");
     return {
       content: extractToolContent(result),
       details: result,
@@ -187,21 +193,22 @@ export function createPiToolDefinitions(
       label: PI_CONTAINER_TOOL_DEFINITIONS.read.label,
       description: `${PI_CONTAINER_TOOL_DEFINITIONS.read.description} Also supports bundled skill files.`,
       parameters: PI_CONTAINER_TOOL_DEFINITIONS.read.parameters,
-      execute: async (_id, params) => call("read", params as Record<string, unknown>),
+      execute: async (_id, params, signal) => call("read", params as Record<string, unknown>, signal),
     },
     {
       name: PI_CONTAINER_TOOL_DEFINITIONS.write.name,
       label: PI_CONTAINER_TOOL_DEFINITIONS.write.label,
       description: PI_CONTAINER_TOOL_DEFINITIONS.write.description,
       parameters: PI_CONTAINER_TOOL_DEFINITIONS.write.parameters,
-      execute: async (_id, params) => call("write", params as Record<string, unknown>),
+      execute: async (_id, params, signal) => call("write", params as Record<string, unknown>, signal),
+      executionMode: "sequential",
     },
     {
       name: PI_CONTAINER_TOOL_DEFINITIONS.edit.name,
       label: PI_CONTAINER_TOOL_DEFINITIONS.edit.label,
       description: PI_CONTAINER_TOOL_DEFINITIONS.edit.description,
       parameters: PI_CONTAINER_TOOL_DEFINITIONS.edit.parameters,
-      execute: async (_id, params) => call("edit", params as Record<string, unknown>),
+      execute: async (_id, params, signal) => call("edit", params as Record<string, unknown>, signal),
       executionMode: "sequential",
     },
     {
@@ -209,7 +216,7 @@ export function createPiToolDefinitions(
       label: PI_CONTAINER_TOOL_DEFINITIONS.delete.label,
       description: PI_CONTAINER_TOOL_DEFINITIONS.delete.description,
       parameters: PI_CONTAINER_TOOL_DEFINITIONS.delete.parameters,
-      execute: async (_id, params) => call("delete", params as Record<string, unknown>),
+      execute: async (_id, params, signal) => call("delete", params as Record<string, unknown>, signal),
       executionMode: "sequential",
     },
     {
@@ -217,7 +224,7 @@ export function createPiToolDefinitions(
       label: PI_CONTAINER_TOOL_DEFINITIONS.ls.label,
       description: `${PI_CONTAINER_TOOL_DEFINITIONS.ls.description} Also supports bundled skill directories.`,
       parameters: PI_CONTAINER_TOOL_DEFINITIONS.ls.parameters,
-      execute: async (_id, params) => call("ls", params as Record<string, unknown>),
+      execute: async (_id, params, signal) => call("ls", params as Record<string, unknown>, signal),
     },
     {
       name: "js_exec",

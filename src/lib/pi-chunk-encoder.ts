@@ -31,6 +31,15 @@ function boundBlockContent(content: string | ContentBlock[]): string | ContentBl
   return typeof content === 'string' ? boundBlockText(content) : content;
 }
 
+function boundToolDetails(details: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(details).map(([key, value]) => [
+    key,
+    (key === 'diff' || key === 'patch') && typeof value === 'string'
+      ? boundBlockText(value)
+      : value,
+  ]));
+}
+
 export type PiRuntimeEvent = {
   method: string;
   params?: Record<string, unknown>;
@@ -49,6 +58,7 @@ export interface PiMessageMetadata {
 export interface PiToolOutput {
   content: string | ContentBlock[];
   isError: boolean;
+  details?: Record<string, unknown>;
   status?: string;
   durationMs?: number;
 }
@@ -526,6 +536,7 @@ export class PiChunkEncoder {
           content: result ? boundBlockContent(result.content) : '',
           isError: result ? result.isError : isFailedRuntimeItem(item),
         };
+        if (result?.details) output.details = boundToolDetails(result.details);
         if (typeof item.status === 'string') output.status = item.status;
         if (typeof item.durationMs === 'number') output.durationMs = item.durationMs;
         chunks.push({ type: 'tool-output-available', toolCallId: item.id, output });

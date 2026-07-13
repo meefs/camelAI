@@ -1,6 +1,6 @@
 "use client";
 
-import type { ToolUseBlock } from '@/types';
+import type { ToolResultBlock, ToolUseBlock } from '@/types';
 import { cn } from '@/lib/utils';
 import { buildFilePreviewLinkTarget } from '@/lib/file-preview-target';
 import { DetailRow, ProjectDetailRow } from './shared';
@@ -8,11 +8,14 @@ import { copyTargetFromToolInput } from './file-copy';
 
 interface EditDetailsProps {
   tool?: ToolUseBlock;
+  result?: ToolResultBlock;
 }
 
 type EditEntry = {
   old_string?: string;
   new_string?: string;
+  oldText?: string;
+  newText?: string;
 };
 
 type DiffLine = {
@@ -22,8 +25,16 @@ type DiffLine = {
 
 function buildDiffLines(edit: EditEntry, maxLines = 6): DiffLine[] {
   const lines: DiffLine[] = [];
-  const oldText = typeof edit.old_string === 'string' ? edit.old_string : '';
-  const newText = typeof edit.new_string === 'string' ? edit.new_string : '';
+  const oldText = typeof edit.old_string === 'string'
+    ? edit.old_string
+    : typeof edit.oldText === 'string'
+      ? edit.oldText
+      : '';
+  const newText = typeof edit.new_string === 'string'
+    ? edit.new_string
+    : typeof edit.newText === 'string'
+      ? edit.newText
+      : '';
 
   const oldLines = oldText ? oldText.split(/\r?\n/) : [];
   const newLines = newText ? newText.split(/\r?\n/) : [];
@@ -39,7 +50,22 @@ function buildDiffLines(edit: EditEntry, maxLines = 6): DiffLine[] {
   return lines;
 }
 
-export function EditDetails({ tool }: EditDetailsProps) {
+function buildAppliedDiffLines(diff: unknown, maxLines = 200): DiffLine[] {
+  if (typeof diff !== 'string' || !diff) return [];
+  const lines = diff.split('\n');
+  const visible = lines.slice(0, maxLines).map((line): DiffLine => ({
+    type: line.startsWith('+')
+      ? 'add'
+      : line.startsWith('-')
+        ? 'remove'
+        : 'context',
+    text: line,
+  }));
+  if (lines.length > maxLines) visible.push({ type: 'context', text: '... [diff truncated]' });
+  return visible;
+}
+
+export function EditDetails({ tool, result }: EditDetailsProps) {
   const input = tool?.input ?? {};
   const path =
     (typeof input.file_path === 'string' && input.file_path) ||
@@ -58,11 +84,19 @@ export function EditDetails({ tool }: EditDetailsProps) {
         {
           old_string: typeof input.old_string === 'string' ? input.old_string : undefined,
           new_string: typeof input.new_string === 'string' ? input.new_string : undefined,
+          oldText: typeof input.oldText === 'string' ? input.oldText : undefined,
+          newText: typeof input.newText === 'string' ? input.newText : undefined,
         },
       ];
 
-  const replacementCount = edits.filter(edit => edit.old_string || edit.new_string).length;
-  const diffLines = edits.flatMap(edit => buildDiffLines(edit));
+  const replacementCount = typeof result?.details?.replacementCount === 'number'
+    ? result.details.replacementCount
+    : edits.filter(edit => edit.old_string || edit.new_string || edit.oldText || edit.newText).length;
+  const appliedDiffLines = buildAppliedDiffLines(result?.details?.diff);
+  const diffLines = appliedDiffLines.length > 0
+    ? appliedDiffLines
+    : edits.flatMap(edit => buildDiffLines(edit));
+  const showingAppliedDiff = appliedDiffLines.length > 0;
 
   return (
     <div className="space-y-1">
@@ -89,7 +123,7 @@ export function EditDetails({ tool }: EditDetailsProps) {
                   line.type === 'context' && "text-muted-foreground/60"
                 )}
               >
-                {line.type === 'add' ? '+ ' : line.type === 'remove' ? '- ' : ''}{line.text}
+                {showingAppliedDiff ? line.text : `${line.type === 'add' ? '+ ' : line.type === 'remove' ? '- ' : ''}${line.text}`}
               </div>
             ))}
           </div>

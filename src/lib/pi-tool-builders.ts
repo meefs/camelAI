@@ -9,6 +9,7 @@ export type PiThreadItem = {
 export type RuntimeToolResult = {
   content: string | ContentBlock[];
   isError: boolean;
+  details?: Record<string, unknown>;
 };
 
 export type PiTodoStatus = 'pending' | 'in_progress' | 'completed';
@@ -213,9 +214,22 @@ function buildRuntimeToolResult(
   if (Array.isArray(content) && content.length === 0) {
     return null;
   }
+  const runtimeResult = item.result && typeof item.result === 'object' && !Array.isArray(item.result)
+    ? item.result as Record<string, unknown>
+    : null;
+  const outerDetails = runtimeResult?.details && typeof runtimeResult.details === 'object' && !Array.isArray(runtimeResult.details)
+    ? runtimeResult.details as Record<string, unknown>
+    : null;
+  const nestedDetails = outerDetails?.details && typeof outerDetails.details === 'object' && !Array.isArray(outerDetails.details)
+    ? outerDetails.details as Record<string, unknown>
+    : null;
+  const details = item.type === 'dynamicToolCall' && canonicalizeDynamicToolName(item.tool) === 'Edit'
+    ? nestedDetails ?? outerDetails ?? undefined
+    : undefined;
   return {
     content,
     isError: isFailedRuntimeItem(item),
+    ...(details ? { details } : {}),
   };
 }
 
@@ -323,6 +337,15 @@ export function canonicalizeDynamicToolName(tool: unknown): string {
 export function normalizeEditArguments(args: Record<string, unknown>): Record<string, unknown> {
   const next = { ...args };
 
+  if (typeof next.edits === 'string') {
+    try {
+      const parsed = JSON.parse(next.edits);
+      if (Array.isArray(parsed)) next.edits = parsed;
+    } catch {
+      // Preserve the original value for error rendering.
+    }
+  }
+
   if (typeof next.old_string !== 'string' && typeof next.oldText === 'string') {
     next.old_string = next.oldText;
   }
@@ -331,7 +354,7 @@ export function normalizeEditArguments(args: Record<string, unknown>): Record<st
   }
 
   if (Array.isArray(next.edits)) {
-    next.edits = next.edits.map((edit) => {
+    const edits = next.edits.map((edit) => {
       if (!edit || typeof edit !== 'object' || Array.isArray(edit)) return edit;
       const editRecord = edit as Record<string, unknown>;
       return {
@@ -346,6 +369,10 @@ export function normalizeEditArguments(args: Record<string, unknown>): Record<st
             : editRecord.newText,
       };
     });
+    if (typeof next.old_string === 'string' && typeof next.new_string === 'string') {
+      edits.push({ old_string: next.old_string, new_string: next.new_string });
+    }
+    next.edits = edits;
   }
 
   return next;

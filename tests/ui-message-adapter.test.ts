@@ -111,6 +111,24 @@ describe('ui-message-adapter round trip (Message → UIMessage → Message)', ()
     ]);
   });
 
+  it('round-trips structured tool result details', () => {
+    const message = assistant([
+      { type: 'tool_use', id: 'edit-1', name: 'Edit', input: { path: 'a.ts' }, itemKind: 'dynamicToolCall' },
+      {
+        type: 'tool_result',
+        tool_use_id: 'edit-1',
+        content: 'edited',
+        status: 'succeeded',
+        details: { diff: '-1 old\n+1 new', replacementCount: 1 },
+      },
+    ]);
+    const round = uiMessageToMessage(messageToUiMessage(message), { threadId: 'thread-1' });
+    const result = (round.content as ContentBlock[]).find((block) => block.type === 'tool_result');
+    expect(result).toMatchObject({
+      details: { diff: '-1 old\n+1 new', replacementCount: 1 },
+    });
+  });
+
   it('folds a code-mode artifact data part onto its tool_result at read time', () => {
     // The artifact part can arrive after the tool's completed output (recorded
     // mid-js_exec), so read-time folding must not depend on wire order: put it

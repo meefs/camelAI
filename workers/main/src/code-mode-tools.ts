@@ -41,6 +41,7 @@ import { connectAppBrowserSession, launchAppBrowserSession } from "./app-browser
 import { deployWorkerModulesDirect, rollbackWorkerDeployFromArtifactCache, type DirectDispatchDeployResult } from "./direct-dispatch-deploy";
 import { handleDeploySideEffects } from "./services/deploy";
 import { editAutomationVirtualFile, listAutomationVirtualFiles, normalizeAutomationVirtualPath, readAutomationVirtualFile, writeAutomationVirtualFile } from "./deterministic-automation-virtual-files";
+import { applyTextEdits, normalizeTextEditArguments } from "./text-edit";
 import type { DynamicIntegrationSchema } from "../../../src/lib/integration-registry";
 import type { ChatThreadDO } from "./chat-thread-do";
 import { ChannelTools } from "./chat-channels";
@@ -2052,7 +2053,10 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
     };
   }
 
-  private async writeR2File(args: Record<string, unknown>): Promise<Record<string, unknown>> {
+  private async writeR2File(
+    args: Record<string, unknown>,
+    options: { expectedEtag?: string } = {},
+  ): Promise<Record<string, unknown>> {
     const target = this.resolveCodeModeR2Path(args, { requireWritable: true });
     const content = typeof args.content === "string" ? args.content : "";
     const contentBytes = new TextEncoder().encode(content).byteLength;
@@ -2063,6 +2067,7 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
       ? args.content_type.trim()
       : "text/plain; charset=utf-8";
     const object = await this.env.R2_BUCKET.put(target.key, content, {
+      ...(options.expectedEtag ? { onlyIf: { etagMatches: options.expectedEtag } } : {}),
       httpMetadata: { contentType },
       customMetadata: {
         type: "code-mode-r2-file",
@@ -2071,6 +2076,9 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
         threadId: this.ctx.props.threadId ?? "",
       },
     });
+    if (!object && options.expectedEtag) {
+      throw new Error(`Edit conflict for ${target.path}: the R2 object changed while the edit was running. Read it again and retry.`);
+    }
     const text = `Wrote ${contentBytes} bytes to ${target.path}`;
     return {
       text,
@@ -2091,27 +2099,7 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
 
   private async editR2File(args: Record<string, unknown>): Promise<Record<string, unknown>> {
     const target = this.resolveCodeModeR2Path(args, { requireWritable: true });
-    const edits = Array.isArray(args.edits)
-      ? args.edits.map((entry, index) => {
-          if (!entry || typeof entry !== "object") {
-            throw new Error(`edits[${index}] must be an object`);
-          }
-          const raw = entry as Record<string, unknown>;
-          const oldText = typeof raw.oldText === "string"
-            ? raw.oldText
-            : typeof raw.old_string === "string"
-              ? raw.old_string
-              : "";
-          const newText = typeof raw.newText === "string"
-            ? raw.newText
-            : typeof raw.new_string === "string"
-              ? raw.new_string
-              : "";
-          if (!oldText) throw new Error(`edits[${index}].oldText is required`);
-          return { oldText, newText };
-        })
-      : [];
-    if (edits.length === 0) throw new Error("edits must be a non-empty array");
+    const edits = normalizeTextEditArguments(args);
 
     const head = await this.env.R2_BUCKET.head(target.key);
     if (!head) throw new Error(`R2 object not found: ${target.path}`);
@@ -2123,39 +2111,27 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
     const object = await this.env.R2_BUCKET.get(target.key);
     if (!object) throw new Error(`R2 object not found: ${target.path}`);
     const originalContent = await object.text();
-    const replacements = edits.map((edit, index) => {
-      const start = originalContent.indexOf(edit.oldText);
-      if (start === -1) throw new Error(`edits[${index}].oldText not found in ${target.path}`);
-      if (originalContent.indexOf(edit.oldText, start + edit.oldText.length) !== -1) {
-        throw new Error(`edits[${index}].oldText is not unique in ${target.path}`);
-      }
-      return {
-        index,
-        start,
-        end: start + edit.oldText.length,
-        newText: edit.newText,
-      };
-    }).sort((a, b) => a.start - b.start);
-
-    for (let index = 1; index < replacements.length; index += 1) {
-      const previous = replacements[index - 1]!;
-      const current = replacements[index]!;
-      if (current.start < previous.end) {
-        throw new Error(`edits[${current.index}].oldText overlaps another edit in ${target.path}`);
-      }
-    }
-
-    let content = originalContent;
-    for (const replacement of replacements.slice().reverse()) {
-      content = `${content.slice(0, replacement.start)}${replacement.newText}${content.slice(replacement.end)}`;
-    }
-
-    return this.writeR2File({
+    const applied = applyTextEdits(originalContent, edits, target.path);
+    const written = await this.writeR2File({
       ...args,
       path: target.path,
-      content,
+      content: applied.after,
       content_type: head.httpMetadata?.contentType ?? "text/plain; charset=utf-8",
-    });
+    }, { expectedEtag: object.etag });
+    const text = `Successfully replaced ${edits.length} block(s) in ${target.path}.`;
+    return {
+      ...written,
+      text,
+      content: [{ type: "text", text }],
+      details: {
+        ...((written.details && typeof written.details === "object") ? written.details : {}),
+        diff: applied.diff,
+        patch: applied.patch,
+        firstChangedLine: applied.firstChangedLine,
+        usedFuzzyMatch: applied.usedFuzzyMatch,
+        replacementCount: edits.length,
+      },
+    };
   }
 
   private async listR2Files(args: Record<string, unknown>): Promise<Record<string, unknown>> {
@@ -2654,16 +2630,7 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
           if (hasProjectTarget(args)) return (await this.projectContainerTools(args)).callTool("edit", args);
         {
           const path = typeof args.path === "string" ? args.path : "";
-          const edits = Array.isArray(args.edits)
-            ? args.edits.flatMap((entry) => {
-                if (!entry || typeof entry !== "object") return [];
-                const raw = entry as Record<string, unknown>;
-                return [{
-                  oldText: String(raw.oldText ?? raw.old_string ?? ""),
-                  newText: String(raw.newText ?? raw.new_string ?? ""),
-                }];
-              })
-            : [];
+          const edits = normalizeTextEditArguments(args);
           if (normalizeAutomationVirtualPath(path) !== null) {
             const automationFile = await editAutomationVirtualFile({
               cronStub: this.cronStub,

@@ -3,6 +3,27 @@ import { PiContainerTools } from "../src/pi-container-tools";
 import type { WorkspaceFilesystemLike } from "../src/workspace-filesystem-do";
 
 describe("PiContainerTools", () => {
+  it("uses the store-owned atomic edit operation when available", async () => {
+    const editTextFile = vi.fn(async () => ({
+      success: true,
+      replacementCount: 1,
+      diff: "-1 old\n+1 new",
+      patch: "@@ patch",
+      firstChangedLine: 1,
+      usedFuzzyMatch: true,
+    }));
+    const workspace = { editTextFile } as unknown as WorkspaceFilesystemLike;
+    const tools = new PiContainerTools(workspace);
+
+    const output = await tools.callTool("edit", {
+      path: "/example.txt",
+      edits: JSON.stringify([{ oldText: "old", newText: "new" }]),
+    });
+
+    expect(editTextFile).toHaveBeenCalledWith("/example.txt", [{ oldText: "old", newText: "new" }]);
+    expect(output.details).toMatchObject({ patch: "@@ patch", usedFuzzyMatch: true });
+  });
+
   it("writes files through the workspace filesystem", async () => {
     const writeFile = vi.fn(async () => ({ success: true }));
     const workspace = { writeFile } as unknown as WorkspaceFilesystemLike;

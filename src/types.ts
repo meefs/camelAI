@@ -204,6 +204,8 @@ export interface ToolResultBlock {
   itemId?: string;
   itemKind?: string;
   artifacts?: RuntimeCallArtifact[];
+  /** Structured tool metadata such as an edit diff or unified patch. */
+  details?: Record<string, unknown>;
 }
 
 export interface ThinkingBlock {

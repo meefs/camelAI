@@ -286,6 +286,23 @@ export class AutomationWorkflow extends WorkflowEntrypoint {
     expect(updated?.enabled).toBe(true);
     expect(updated?.next_run_at).toBeTypeOf('number');
 
+    await expectRemoteRejectionMessage(
+      cronStub.updateDeterministicAutomation({
+        workspaceId: workspaceId!,
+        id: created.id,
+        source: automationSource('stale'),
+        expectedSourceVersion: 1,
+      }),
+      'Automation edit conflict',
+    );
+    const conditionallyUpdated = await cronStub.updateDeterministicAutomation({
+      workspaceId: workspaceId!,
+      id: created.id,
+      source: automationSource('conditional'),
+      expectedSourceVersion: 2,
+    });
+    expect(conditionallyUpdated?.source_version).toBe(3);
+
     const previousVersion = await cronStub.getDeterministicAutomationSource(
       workspaceId!,
       created.id,
@@ -295,9 +312,9 @@ export class AutomationWorkflow extends WorkflowEntrypoint {
     const currentVersion = await cronStub.getDeterministicAutomationSource(
       workspaceId!,
       created.id,
-      2,
+      3,
     );
-    expect(currentVersion?.source).toContain('updated');
+    expect(currentVersion?.source).toContain('conditional');
 
     const listAfterCreate = await cronStub.listDeterministicAutomations(workspaceId!);
     expect(listAfterCreate).toHaveLength(1);

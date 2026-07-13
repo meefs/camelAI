@@ -1,4 +1,5 @@
 import type { WorkspaceCronDO } from "./workspace-cron";
+import { applyTextEdits } from "./text-edit";
 
 export const AUTOMATIONS_VIRTUAL_ROOT = "/workspace/.camelai/automations";
 
@@ -27,44 +28,6 @@ function automationIdFromPath(rawPath: string): string | null {
   if (parts.length !== 1 || !parts[0].endsWith(".js")) return null;
   const id = parts[0].slice(0, -3).trim();
   return id || null;
-}
-
-function exactEdits(
-  content: string,
-  edits: Array<{ oldText: string; newText: string }>,
-  path: string,
-): string {
-  const matches = edits
-    .map((edit, index) => {
-      if (!edit.oldText) {
-        throw new Error(`edits[${index}].oldText must not be empty in ${path}`);
-      }
-      const first = content.indexOf(edit.oldText);
-      if (first === -1) throw new Error(`Could not find edits[${index}] in ${path}`);
-      if (content.indexOf(edit.oldText, first + edit.oldText.length) !== -1) {
-        throw new Error(`Found multiple occurrences of edits[${index}] in ${path}`);
-      }
-      return {
-        start: first,
-        end: first + edit.oldText.length,
-        newText: edit.newText,
-      };
-    })
-    .sort((a, b) => a.start - b.start);
-
-  for (let i = 1; i < matches.length; i += 1) {
-    if (matches[i - 1].end > matches[i].start) {
-      throw new Error(`Automation edits overlap in ${path}`);
-    }
-  }
-
-  let next = content;
-  for (let i = matches.length - 1; i >= 0; i -= 1) {
-    const match = matches[i];
-    next = `${next.slice(0, match.start)}${match.newText}${next.slice(match.end)}`;
-  }
-  if (next === content) throw new Error(`No changes made to ${path}`);
-  return next;
 }
 
 export async function readAutomationVirtualFile(input: {
@@ -164,11 +127,30 @@ export async function editAutomationVirtualFile(input: {
     automationId,
   );
   if (!snapshot) throw new Error(`Workflow "${automationId}" not found`);
-  const next = exactEdits(snapshot.source, input.edits, input.path);
-  return writeAutomationVirtualFile({
-    cronStub: input.cronStub,
+  const applied = applyTextEdits(snapshot.source, input.edits, input.path);
+  const updated = await input.cronStub.updateDeterministicAutomation({
     workspaceId: input.workspaceId,
-    path: input.path,
-    content: next,
+    id: automationId,
+    source: applied.after,
+    expectedSourceVersion: snapshot.source_version,
   });
+  if (!updated) throw new Error(`Workflow "${automationId}" not found`);
+  const text =
+    `Successfully replaced ${input.edits.length} block(s) in ${input.path}; ` +
+    `updated workflow ${automationId} to source version ${updated.source_version}.`;
+  return {
+    text,
+    content: [{ type: "text", text }],
+    details: {
+      path: `${AUTOMATIONS_VIRTUAL_ROOT}/${automationId}.js`,
+      source: "deterministic_automation",
+      automation_id: automationId,
+      source_version: updated.source_version,
+      replacementCount: input.edits.length,
+      usedFuzzyMatch: applied.usedFuzzyMatch,
+      diff: applied.diff,
+      patch: applied.patch,
+      firstChangedLine: applied.firstChangedLine,
+    },
+  };
 }

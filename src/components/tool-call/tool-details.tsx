@@ -78,7 +78,7 @@ export function ToolCallDetails({ tool, result, results, skillSheet, progressCou
       content = <WriteDetails tool={tool} />;
       break;
     case 'Edit':
-      content = <EditDetails tool={tool} />;
+      content = <EditDetails tool={tool} result={result} />;
       break;
     case 'Bash':
       content = <BashDetails tool={tool} result={result} />;

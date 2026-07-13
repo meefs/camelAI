@@ -15,6 +15,27 @@ import {
 // builders directly.
 
 describe('buildToolResultFromPiItem error status', () => {
+  it('surfaces nested structured edit details', () => {
+    const result = buildToolResultFromPiItem({
+      id: 'tool-edit',
+      type: 'dynamicToolCall',
+      tool: 'edit',
+      status: 'completed',
+      contentItems: [{ type: 'inputText', text: 'edited' }],
+      result: {
+        details: {
+          text: 'edited',
+          details: { diff: '-1 old\n+1 new', patch: '@@ patch', replacementCount: 1 },
+        },
+      },
+    });
+    expect(result?.details).toEqual({
+      diff: '-1 old\n+1 new',
+      patch: '@@ patch',
+      replacementCount: 1,
+    });
+  });
+
   it('marks a failed commandExecution as an error result', () => {
     const item: PiThreadItem = {
       id: 'tool-bash',
@@ -111,6 +132,22 @@ describe('buildToolUseFromPiItem name canonicalization + input', () => {
     expect(buildToolUseFromPiItem(dynamicTool('find', { pattern: '*.tsx', path: '/workspace/src' }))).toMatchObject({
       name: 'Find',
       input: { pattern: '*.tsx' },
+    });
+  });
+
+  it('normalizes stringified and legacy edit arguments for rendering', () => {
+    expect(buildToolUseFromPiItem(dynamicTool('edit', {
+      edits: JSON.stringify([{ oldText: 'one', newText: 'two' }]),
+      oldText: 'three',
+      newText: 'four',
+    }))).toMatchObject({
+      name: 'Edit',
+      input: {
+        edits: [
+          { oldText: 'one', newText: 'two', old_string: 'one', new_string: 'two' },
+          { old_string: 'three', new_string: 'four' },
+        ],
+      },
     });
   });
 

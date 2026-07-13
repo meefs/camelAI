@@ -1,6 +1,13 @@
 import { DurableObject } from "cloudflare:workers";
 import { Workspace, type FileInfo } from "@cloudflare/shell";
 import { normalizeGlobalProjectId } from "./project-vm-protocol.js";
+import { isNotebookPath, normalizeNotebookJson } from "./notebook-normalize";
+import {
+  applyTextEdits,
+  generateTextEditDetails,
+  type TextEdit,
+  type TextEditDetails,
+} from "./text-edit";
 
 const LEGACY_WORKSPACE_ROOT = "/home/claude";
 const WORKSPACE_ROOT_ALIASES = [LEGACY_WORKSPACE_ROOT, "/workspace"];
@@ -51,6 +58,14 @@ export interface WorkspaceWriteResponse {
   success: boolean;
   error?: string;
   code?: string;
+}
+
+export interface WorkspaceEditFileResponse extends WorkspaceWriteResponse, Partial<TextEditDetails> {
+  before?: string;
+  after?: string;
+  replacementCount?: number;
+  usedFuzzyMatch?: boolean;
+  notice?: string;
 }
 
 export interface WorkspaceAdoptR2FileResponse {
@@ -179,7 +194,9 @@ export type WorkspaceFileStoreLike = Pick<WorkspaceFilesystemLike,
   | "listFiles"
   | "mkdir"
   | "deleteFile"
->;
+> & {
+  editTextFile?: (path: string, edits: TextEdit[]) => Promise<WorkspaceEditFileResponse>;
+};
 
 export interface ProjectArtifactToken {
   project: WorkspaceProject;
@@ -255,6 +272,7 @@ interface ReadyArtifactsRepoInfo extends ArtifactsRepoInfo {
 export class WorkspaceFilesystemDO extends DurableObject<WorkspaceFilesystemEnv> {
   private workspaceFiles?: Workspace;
   private projectFiles?: Workspace;
+  private readonly fileMutationQueues = new Map<string, Promise<void>>();
 
   constructor(ctx: DurableObjectState, env: WorkspaceFilesystemEnv) {
     super(ctx, env);
@@ -279,6 +297,28 @@ export class WorkspaceFilesystemDO extends DurableObject<WorkspaceFilesystemEnv>
       inlineThreshold: DEFAULT_INLINE_THRESHOLD,
       name: durableId,
     });
+  }
+
+  private async withFileMutationQueue<T>(
+    scope: FileStoreScope,
+    path: string,
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    const key = `${scope}:${normalizeWorkspacePath(path)}`;
+    const previous = this.fileMutationQueues.get(key) ?? Promise.resolve();
+    let release!: () => void;
+    const current = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const tail = previous.then(() => current);
+    this.fileMutationQueues.set(key, tail);
+    await previous;
+    try {
+      return await operation();
+    } finally {
+      release();
+      if (this.fileMutationQueues.get(key) === tail) this.fileMutationQueues.delete(key);
+    }
   }
 
   async fetch(_request: Request): Promise<Response> {
@@ -355,11 +395,13 @@ export class WorkspaceFilesystemDO extends DurableObject<WorkspaceFilesystemEnv>
   }
 
   async writeFile(path: string, content: string): Promise<WorkspaceWriteResponse> {
-    return this.writeFileTo(this.workspace, path, content);
+    return this.withFileMutationQueue("workspace", path, () =>
+      this.writeFileTo(this.workspace, path, content));
   }
 
   async projectWriteFile(path: string, content: string): Promise<WorkspaceWriteResponse> {
-    return this.writeFileTo(this.projectWorkspace, path, content);
+    return this.withFileMutationQueue("project", path, () =>
+      this.writeFileTo(this.projectWorkspace, path, content));
   }
 
   private async writeFileTo(files: Workspace, path: string, content: string): Promise<WorkspaceWriteResponse> {
@@ -372,11 +414,13 @@ export class WorkspaceFilesystemDO extends DurableObject<WorkspaceFilesystemEnv>
   }
 
   async writeBinaryFile(path: string, base64Content: string): Promise<WorkspaceWriteResponse> {
-    return this.writeBinaryFileTo(this.workspace, path, base64Content);
+    return this.withFileMutationQueue("workspace", path, () =>
+      this.writeBinaryFileTo(this.workspace, path, base64Content));
   }
 
   async projectWriteBinaryFile(path: string, base64Content: string): Promise<WorkspaceWriteResponse> {
-    return this.writeBinaryFileTo(this.projectWorkspace, path, base64Content);
+    return this.withFileMutationQueue("project", path, () =>
+      this.writeBinaryFileTo(this.projectWorkspace, path, base64Content));
   }
 
   private async writeBinaryFileTo(files: Workspace, path: string, base64Content: string): Promise<WorkspaceWriteResponse> {
@@ -388,6 +432,69 @@ export class WorkspaceFilesystemDO extends DurableObject<WorkspaceFilesystemEnv>
       return { success: true };
     } catch (error) {
       return { success: false, error: errorMessage(error), code: "EWRITE" };
+    }
+  }
+
+  async editTextFile(path: string, edits: TextEdit[]): Promise<WorkspaceEditFileResponse> {
+    return this.withFileMutationQueue("workspace", path, () =>
+      this.editTextFileIn(this.workspace, path, edits));
+  }
+
+  async projectEditTextFile(path: string, edits: TextEdit[]): Promise<WorkspaceEditFileResponse> {
+    return this.withFileMutationQueue("project", path, () =>
+      this.editTextFileIn(this.projectWorkspace, path, edits));
+  }
+
+  private async editTextFileIn(
+    files: Workspace,
+    path: string,
+    edits: TextEdit[],
+  ): Promise<WorkspaceEditFileResponse> {
+    const normalizedPath = normalizeWorkspacePath(path);
+    try {
+      const bytes = await files.readFileBytes(normalizedPath);
+      if (!bytes) return { success: false, error: `File not found: ${path}`, code: "ENOENT" };
+      const decoded = decodeMaybeText(bytes);
+      if (decoded.isBinary) {
+        return { success: false, error: `Cannot edit binary file: ${path}`, code: "EBINARY" };
+      }
+      const applied = applyTextEdits(decoded.content, edits, path);
+      let after = applied.after;
+      let notice = "";
+      if (isNotebookPath(path)) {
+        try {
+          const normalized = normalizeNotebookJson(after);
+          after = normalized.content;
+          if (normalized.changed) {
+            notice = `Notebook normalized for nbformat: ${normalized.fixes.join("; ")}`;
+          }
+        } catch (afterError) {
+          try {
+            normalizeNotebookJson(applied.before);
+          } catch {
+            const message = afterError instanceof Error ? afterError.message : String(afterError);
+            notice = `Notebook is still structurally invalid after this edit: ${message}`;
+          }
+          if (!notice) throw afterError;
+        }
+      }
+      const details = after === applied.after
+        ? applied
+        : generateTextEditDetails(path, applied.before, after);
+      await files.writeFile(normalizedPath, after);
+      return {
+        success: true,
+        before: applied.before,
+        after,
+        replacementCount: edits.length,
+        usedFuzzyMatch: applied.usedFuzzyMatch,
+        diff: details.diff,
+        patch: details.patch,
+        firstChangedLine: details.firstChangedLine,
+        notice,
+      };
+    } catch (error) {
+      return { success: false, error: errorMessage(error), code: "EEDIT" };
     }
   }
 
@@ -405,7 +512,8 @@ export class WorkspaceFilesystemDO extends DurableObject<WorkspaceFilesystemEnv>
     expectedSize: number,
     contentType?: string,
   ): Promise<WorkspaceAdoptR2FileResponse> {
-    return this.adoptR2FileInto(this.projectWorkspace, "project", path, stream, expectedSize, contentType);
+    return this.withFileMutationQueue("project", path, () =>
+      this.adoptR2FileInto(this.projectWorkspace, "project", path, stream, expectedSize, contentType));
   }
 
   private async adoptR2FileInto(
@@ -656,14 +764,16 @@ export class WorkspaceFilesystemDO extends DurableObject<WorkspaceFilesystemEnv>
     path: string,
     options: { recursive?: boolean; force?: boolean } = {},
   ): Promise<WorkspaceWriteResponse> {
-    return this.deleteFileFrom(this.workspace, path, options);
+    return this.withFileMutationQueue("workspace", path, () =>
+      this.deleteFileFrom(this.workspace, path, options));
   }
 
   async projectDeleteFile(
     path: string,
     options: { recursive?: boolean; force?: boolean } = {},
   ): Promise<WorkspaceWriteResponse> {
-    return this.deleteFileFrom(this.projectWorkspace, path, options);
+    return this.withFileMutationQueue("project", path, () =>
+      this.deleteFileFrom(this.projectWorkspace, path, options));
   }
 
   private async deleteFileFrom(
@@ -1181,6 +1291,10 @@ export class WorkspaceFilesystemClient implements WorkspaceFilesystemLike {
     return this.stub.writeFile(path, content);
   }
 
+  editTextFile(path: string, edits: TextEdit[]): Promise<WorkspaceEditFileResponse> {
+    return this.stub.editTextFile(path, edits);
+  }
+
   writeBinaryFile(path: string, base64Content: string): Promise<WorkspaceWriteResponse> {
     return this.stub.writeBinaryFile(path, base64Content);
   }
@@ -1285,6 +1399,10 @@ export class ProjectFilesystemClient implements WorkspaceFileStoreLike {
 
   writeFile(path: string, content: string): Promise<WorkspaceWriteResponse> {
     return this.stub.projectWriteFile(path, content);
+  }
+
+  editTextFile(path: string, edits: TextEdit[]): Promise<WorkspaceEditFileResponse> {
+    return this.stub.projectEditTextFile(path, edits);
   }
 
   writeBinaryFile(path: string, base64Content: string): Promise<WorkspaceWriteResponse> {

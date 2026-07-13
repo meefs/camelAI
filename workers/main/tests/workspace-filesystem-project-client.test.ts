@@ -18,6 +18,7 @@ describe("ProjectFilesystemClient", () => {
   it("uses project-scoped DO instances and project file RPC methods", async () => {
     const stub = {
       projectWriteFile: vi.fn(async () => ({ success: true })),
+      projectEditTextFile: vi.fn(async () => ({ success: true, replacementCount: 1 })),
       projectReadFile: vi.fn(async () => ({ success: true, content: "hello", encoding: "utf8" })),
       projectListFiles: vi.fn(async () => ({ success: true, files: [], count: 0, path: "/" })),
       projectCreateSourceSnapshot: vi.fn(async () => ({ id: "snapshot-1", createdAt: "2026-01-01T00:00:00.000Z", fileCount: 1, totalBytes: 5, entries: [] })),
@@ -32,6 +33,8 @@ describe("ProjectFilesystemClient", () => {
     );
 
     await expect(client.writeFile("/src/index.ts", "hello")).resolves.toEqual({ success: true });
+    await expect(client.editTextFile("/src/index.ts", [{ oldText: "hello", newText: "goodbye" }]))
+      .resolves.toMatchObject({ success: true, replacementCount: 1 });
     await expect(client.readFile("/src/index.ts")).resolves.toMatchObject({ content: "hello" });
     await client.listFiles("/", { recursive: true });
     await expect(client.createSourceSnapshot({ message: "deploy" })).resolves.toMatchObject({ id: "snapshot-1" });
@@ -41,6 +44,10 @@ describe("ProjectFilesystemClient", () => {
 
     expect(workspaces.idFromName).toHaveBeenCalledWith("ca-aaaaaaaa-aaaaaaaa-aaaaaaaa-aaaaaaaa-demo-app");
     expect(stub.projectWriteFile).toHaveBeenCalledWith("/src/index.ts", "hello");
+    expect(stub.projectEditTextFile).toHaveBeenCalledWith(
+      "/src/index.ts",
+      [{ oldText: "hello", newText: "goodbye" }],
+    );
     expect(stub.projectReadFile).toHaveBeenCalledWith("/src/index.ts");
     expect(stub.projectListFiles).toHaveBeenCalledWith("/", { recursive: true });
     expect(stub.projectCreateSourceSnapshot).toHaveBeenCalledWith({ message: "deploy" });
@@ -53,6 +60,7 @@ describe("ProjectFilesystemClient", () => {
   it("keeps the workspace client on workspace-scoped file RPC methods", async () => {
     const stub = {
       writeFile: vi.fn(async () => ({ success: true })),
+      editTextFile: vi.fn(async () => ({ success: true, replacementCount: 1 })),
       readFile: vi.fn(async () => ({ success: true, content: "workspace", encoding: "utf8" })),
       createProject: vi.fn(async () => ({ id: "project-1", name: "demo", description: "Demo", defaultVmId: "main", backend: "do-r2" })),
       setProjectBackend: vi.fn(async () => ({ id: "project-1", name: "demo", description: "Demo", defaultVmId: "main", backend: "do-r2" })),
@@ -61,10 +69,15 @@ describe("ProjectFilesystemClient", () => {
     const client = new WorkspaceFilesystemClient({ WORKSPACE_FS: workspaces } as never, "workspace-1");
 
     await client.writeFile("/notes.md", "workspace");
+    await client.editTextFile("/notes.md", [{ oldText: "workspace", newText: "updated" }]);
     await expect(client.readFile("/notes.md")).resolves.toMatchObject({ content: "workspace" });
 
     expect(workspaces.idFromName).toHaveBeenCalledWith("workspace-1");
     expect(stub.writeFile).toHaveBeenCalledWith("/notes.md", "workspace");
+    expect(stub.editTextFile).toHaveBeenCalledWith(
+      "/notes.md",
+      [{ oldText: "workspace", newText: "updated" }],
+    );
     expect(stub.readFile).toHaveBeenCalledWith("/notes.md");
     expect(stub).not.toHaveProperty("projectWriteFile.mock");
 
@@ -78,6 +91,65 @@ describe("ProjectFilesystemClient", () => {
   it("uses a distinct R2 prefix for project source blobs", () => {
     expect(__testing.fileStoreR2Prefix("workspace", "do-123")).toBe("workspace-fs/do-123");
     expect(__testing.fileStoreR2Prefix("project", "do-123")).toBe("project-fs/do-123");
+  });
+
+  it("serializes concurrent edits in the owning file Durable Object", async () => {
+    const client = new ProjectFilesystemClient(env as never, `project-${crypto.randomUUID()}`);
+    await expect(client.writeFile("/src/value.ts", "const one = 1;\nconst two = 2;\n"))
+      .resolves.toEqual({ success: true });
+
+    await Promise.all([
+      client.editTextFile("/src/value.ts", [{ oldText: "one = 1", newText: "one = 10" }]),
+      client.editTextFile("/src/value.ts", [{ oldText: "two = 2", newText: "two = 20" }]),
+    ]);
+
+    await expect(client.readFile("/src/value.ts")).resolves.toMatchObject({
+      content: "const one = 10;\nconst two = 20;\n",
+    });
+  });
+
+  it("keeps notebook validation inside the atomic edit mutation", async () => {
+    const client = new ProjectFilesystemClient(env as never, `project-${crypto.randomUUID()}`);
+    const validNotebook = JSON.stringify({
+      nbformat: 4,
+      nbformat_minor: 5,
+      metadata: {},
+      cells: [{
+        cell_type: "code",
+        id: "a",
+        metadata: {},
+        source: "print(1)",
+        outputs: [],
+        execution_count: null,
+      }],
+    });
+    await client.writeFile("/valid.ipynb", validNotebook);
+
+    await expect(client.editTextFile(
+      "/valid.ipynb",
+      [{ oldText: '"cells":[', newText: '"cells":' }],
+    )).resolves.toMatchObject({ success: false, code: "EEDIT" });
+    await expect(client.readFile("/valid.ipynb")).resolves.toMatchObject({ content: validNotebook });
+
+    const invalidNotebook = JSON.stringify({
+      nbformat: 4,
+      nbformat_minor: 5,
+      metadata: {},
+      cells: [
+        { cell_type: "code", id: "a", metadata: {}, source: "print('typo)", outputs: [], execution_count: null },
+        { cell_type: "code", id: "b", metadata: {}, source: [42], outputs: [], execution_count: null },
+      ],
+    });
+    await client.writeFile("/invalid.ipynb", invalidNotebook);
+    const repaired = await client.editTextFile(
+      "/invalid.ipynb",
+      [{ oldText: "print('typo)", newText: "print('fixed')" }],
+    );
+    expect(repaired).toMatchObject({ success: true });
+    expect(repaired.notice).toContain("still structurally invalid");
+    await expect(client.readFile("/invalid.ipynb")).resolves.toMatchObject({
+      content: expect.stringContaining("print('fixed')"),
+    });
   });
 
   it("recognizes local unavailable Artifacts bindings", () => {

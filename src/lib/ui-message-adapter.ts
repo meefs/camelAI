@@ -302,6 +302,7 @@ function appendToolBlocks(
           content?: string | ContentBlock[];
           isError?: unknown;
           status?: unknown;
+          details?: unknown;
         })
       : undefined;
 
@@ -326,7 +327,7 @@ function appendToolBlocks(
     const content = output.content ?? '';
     const isError = output.isError === true;
     if (hasContent(content) || isError || (artifacts && artifacts.length > 0)) {
-      blocks.push(toolResultBlock(toolCallId, content, isError, itemKind, artifacts));
+      blocks.push(toolResultBlock(toolCallId, content, isError, itemKind, artifacts, output.details));
     }
   } else if (state === 'output-error') {
     blocks.push(
@@ -341,6 +342,7 @@ function toolResultBlock(
   isError: boolean,
   itemKind: unknown,
   artifacts?: RuntimeCallArtifact[],
+  details?: unknown,
 ): ToolResultBlock {
   const block: ToolResultBlock = {
     type: 'tool_result',
@@ -353,6 +355,9 @@ function toolResultBlock(
   };
   if (typeof itemKind === 'string') block.itemKind = itemKind;
   if (artifacts && artifacts.length > 0) block.artifacts = artifacts;
+  if (details && typeof details === 'object' && !Array.isArray(details)) {
+    block.details = details as Record<string, unknown>;
+  }
   return block;
 }
 
@@ -513,6 +518,7 @@ function toolUiPart(
       output: {
         content: result.content,
         isError,
+        ...(result.details ? { details: result.details } : {}),
       },
       ...(callProviderMetadata ? { callProviderMetadata } : {}),
     } as UiPart;

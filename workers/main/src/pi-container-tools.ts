@@ -14,6 +14,11 @@ import {
   readStreamBytes,
 } from "./image-tool-content";
 import { isNotebookPath, normalizeNotebookJson } from "./notebook-normalize";
+import {
+  applyTextEdits,
+  generateTextEditDetails,
+  normalizeTextEditArguments,
+} from "./text-edit";
 
 const CONTAINER_CWD = "/workspace";
 const DEFAULT_MAX_LINES = 2000;
@@ -60,16 +65,21 @@ export const PI_WRITE_PARAMETERS = Type.Object({
 
 export const PI_EDIT_PARAMETERS = Type.Object({
   path: Type.String({ description: "Path to the file to edit (relative or absolute)" }),
-  edits: Type.Array(Type.Object({
-    oldText: Type.String({
-      description:
-        "Exact text for one targeted replacement. It must be unique in the original file and must not overlap with any other edits[].oldText in the same call.",
-    }),
-    newText: Type.String({ description: "Replacement text for this targeted edit." }),
-  }, { additionalProperties: false }), {
+  edits: Type.Optional(Type.Union([
+    Type.Array(Type.Object({
+      oldText: Type.String({
+        description:
+          "Exact text for one targeted replacement. It must be unique in the original file and must not overlap with any other edits[].oldText in the same call.",
+      }),
+      newText: Type.String({ description: "Replacement text for this targeted edit." }),
+    }, { additionalProperties: false })),
+    Type.String({ description: "Compatibility form: a JSON-encoded edits array." }),
+  ], {
     description:
       "One or more targeted replacements. Each edit is matched against the original file, not incrementally. Do not include overlapping or nested edits.",
-  }),
+  })),
+  oldText: Type.Optional(Type.String({ description: "Compatibility form for a single replacement." })),
+  newText: Type.Optional(Type.String({ description: "Compatibility form for a single replacement." })),
   ...PI_FILE_LOCATION_PARAMETERS,
 }, { additionalProperties: false });
 
@@ -126,7 +136,7 @@ export const PI_CONTAINER_TOOL_DEFINITIONS = {
     name: "edit",
     label: "edit",
     description:
-      "Edit a single text file at a required location: use location='workspace' for loose durable workspace files, location='project' plus project for DO-backed project source files, or location='r2' for workspace-scoped R2. Every edits[].oldText must match a unique, non-overlapping region of the original file.",
+      "Edit a single text file at a required location: use location='workspace' for loose durable workspace files, location='project' plus project for DO-backed project source files, or location='r2' for workspace-scoped R2. Use one call with multiple entries for disjoint changes. Every edits[].oldText is matched against the original file and must identify a unique, non-overlapping region. Merge nearby changes, and keep oldText as small as possible while still unique; do not pad it with large unchanged regions.",
     parameters: PI_EDIT_PARAMETERS,
   },
   delete: {
@@ -294,81 +304,6 @@ function workspaceImageResult({
   };
 }
 
-function normalizeEdits(args: Record<string, unknown>): Array<{ oldText: string; newText: string }> {
-  if (Array.isArray(args.edits)) {
-    return args.edits.flatMap((entry) => {
-      if (!entry || typeof entry !== "object") return [];
-      const raw = entry as Record<string, unknown>;
-      return [{
-        oldText: String(raw.oldText ?? raw.old_string ?? ""),
-        newText: String(raw.newText ?? raw.new_string ?? ""),
-      }];
-    });
-  }
-  const oldText = typeof args.oldText === "string"
-    ? args.oldText
-    : typeof args.old_string === "string"
-      ? args.old_string
-      : "";
-  const newText = typeof args.newText === "string"
-    ? args.newText
-    : typeof args.new_string === "string"
-      ? args.new_string
-      : "";
-  return oldText || newText ? [{ oldText, newText }] : [];
-}
-
-function applyExactEdits(content: string, edits: Array<{ oldText: string; newText: string }>, path: string) {
-  const matches = edits.map((edit, index) => {
-    if (!edit.oldText) throw new Error(`edits[${index}].oldText must not be empty in ${path}`);
-    const first = content.indexOf(edit.oldText);
-    if (first === -1) throw new Error(`Could not find edits[${index}] in ${path}`);
-    if (content.indexOf(edit.oldText, first + edit.oldText.length) !== -1) {
-      throw new Error(`Found multiple occurrences of edits[${index}] in ${path}. Add more context.`);
-    }
-    return { index, start: first, end: first + edit.oldText.length, newText: edit.newText };
-  }).sort((a, b) => a.start - b.start);
-
-  for (let i = 1; i < matches.length; i += 1) {
-    if (matches[i - 1].end > matches[i].start) {
-      throw new Error(`edits[${matches[i - 1].index}] and edits[${matches[i].index}] overlap in ${path}`);
-    }
-  }
-
-  let next = content;
-  for (let i = matches.length - 1; i >= 0; i -= 1) {
-    const match = matches[i];
-    next = `${next.slice(0, match.start)}${match.newText}${next.slice(match.end)}`;
-  }
-  if (next === content) throw new Error(`No changes made to ${path}`);
-  return next;
-}
-
-function simpleDiff(before: string, after: string) {
-  const oldLines = before.split("\n");
-  const newLines = after.split("\n");
-  let start = 0;
-  while (start < oldLines.length && start < newLines.length && oldLines[start] === newLines[start]) start += 1;
-  let oldEnd = oldLines.length - 1;
-  let newEnd = newLines.length - 1;
-  while (oldEnd >= start && newEnd >= start && oldLines[oldEnd] === newLines[newEnd]) {
-    oldEnd -= 1;
-    newEnd -= 1;
-  }
-  const from = Math.max(0, start - 4);
-  const toOld = Math.min(oldLines.length - 1, oldEnd + 4);
-  const toNew = Math.min(newLines.length - 1, newEnd + 4);
-  const width = String(Math.max(oldLines.length, newLines.length)).length;
-  const lines: string[] = [];
-  if (from > 0) lines.push(` ${" ".repeat(width)} ...`);
-  for (let i = from; i < start; i += 1) lines.push(` ${String(i + 1).padStart(width, " ")} ${oldLines[i]}`);
-  for (let i = start; i <= oldEnd; i += 1) lines.push(`-${String(i + 1).padStart(width, " ")} ${oldLines[i]}`);
-  for (let i = start; i <= newEnd; i += 1) lines.push(`+${String(i + 1).padStart(width, " ")} ${newLines[i]}`);
-  for (let i = Math.max(start, newEnd + 1); i <= toNew; i += 1) lines.push(` ${String(i + 1).padStart(width, " ")} ${newLines[i]}`);
-  if (toOld < oldLines.length - 1 || toNew < newLines.length - 1) lines.push(` ${" ".repeat(width)} ...`);
-  return { diff: lines.join("\n"), firstChangedLine: start + 1 };
-}
-
 export class PiContainerTools {
   constructor(
     private readonly workspace: WorkspaceFileStoreLike,
@@ -496,16 +431,37 @@ export class PiContainerTools {
 
   private async edit(args: Record<string, unknown>): Promise<PiContainerToolResult> {
     const path = normalizePath(args.path);
-    const edits = normalizeEdits(args);
-    if (edits.length === 0) throw new Error("Edit tool input is invalid. edits must contain at least one replacement.");
+    const edits = normalizeTextEditArguments(args);
+    if (this.workspace.editTextFile) {
+      const response = await this.workspace.editTextFile(path, edits);
+      if (!response.success) throw new Error(response.error || `Failed to edit ${path}`);
+      const notice = response.notice ? `\n[${response.notice}]` : "";
+      return result(
+        `Successfully replaced ${response.replacementCount ?? edits.length} block(s) in ${path}.${notice}`,
+        {
+          diff: response.diff ?? "",
+          patch: response.patch ?? "",
+          firstChangedLine: response.firstChangedLine,
+          usedFuzzyMatch: response.usedFuzzyMatch ?? false,
+        },
+      );
+    }
     const file = await this.readWorkspaceFile(path);
     if (file.isBinary) throw new Error(`Cannot edit binary file: ${path}`);
     const before = String(file.content ?? "");
-    const edited = applyExactEdits(before, edits, path);
-    const { content: after, notice } = await this.normalizeNotebookContentForEdit(path, before, edited);
+    const applied = applyTextEdits(before, edits, path);
+    const { content: after, notice } = await this.normalizeNotebookContentForEdit(path, before, applied.after);
     const response = await this.workspace.writeFile(path, after);
     if (!response.success) throw new Error(response.error || `Failed to write ${path}`);
-    return result(`Successfully replaced ${edits.length} block(s) in ${path}.${notice}`, simpleDiff(before, after));
+    const details = after === applied.after
+      ? applied
+      : generateTextEditDetails(path, before, after);
+    return result(`Successfully replaced ${edits.length} block(s) in ${path}.${notice}`, {
+      diff: details.diff,
+      patch: details.patch,
+      firstChangedLine: details.firstChangedLine,
+      usedFuzzyMatch: applied.usedFuzzyMatch,
+    });
   }
 
   /**

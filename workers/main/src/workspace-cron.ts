@@ -287,6 +287,8 @@ export interface UpdateDeterministicAutomationInput {
   source?: string;
   cronExpression?: string;
   enabled?: boolean;
+  /** Reject the update if another writer changed the automation source first. */
+  expectedSourceVersion?: number;
 }
 
 export interface RunScheduledPromptNowResult {
@@ -1722,6 +1724,15 @@ export class WorkspaceCronDO extends DurableObject<WorkspaceCronEnv> {
 
     const workspace = await this.getWorkspaceInfo(workspaceId);
     const existingAutomation = this.toAutomation(existing);
+    if (
+      input.expectedSourceVersion !== undefined &&
+      input.expectedSourceVersion !== existingAutomation.source_version
+    ) {
+      throw new Error(
+        `Automation edit conflict: expected source version ${input.expectedSourceVersion}, ` +
+        `found ${existingAutomation.source_version}. Read it again and retry.`,
+      );
+    }
     const name =
       input.name !== undefined
         ? this.parseName(input.name)
@@ -1777,20 +1788,42 @@ export class WorkspaceCronDO extends DurableObject<WorkspaceCronEnv> {
       }
     }
 
-    this.sql.exec(
-      `UPDATE deterministic_automations
-       SET name = ?, description = ?, source = ?, source_version = ?, cron_expression = ?, enabled = ?, updated_at = ?, next_run_at = ?
-       WHERE id = ?`,
-      name,
-      description,
-      source,
-      sourceVersion,
-      cronExpression,
-      enabled ? 1 : 0,
-      now,
-      nextRunAt,
-      existingAutomation.id,
-    );
+    const updateResult = input.expectedSourceVersion === undefined
+      ? this.sql.exec(
+          `UPDATE deterministic_automations
+           SET name = ?, description = ?, source = ?, source_version = ?, cron_expression = ?, enabled = ?, updated_at = ?, next_run_at = ?
+           WHERE id = ?`,
+          name,
+          description,
+          source,
+          sourceVersion,
+          cronExpression,
+          enabled ? 1 : 0,
+          now,
+          nextRunAt,
+          existingAutomation.id,
+        )
+      : this.sql.exec(
+          `UPDATE deterministic_automations
+           SET name = ?, description = ?, source = ?, source_version = ?, cron_expression = ?, enabled = ?, updated_at = ?, next_run_at = ?
+           WHERE id = ? AND source_version = ?`,
+          name,
+          description,
+          source,
+          sourceVersion,
+          cronExpression,
+          enabled ? 1 : 0,
+          now,
+          nextRunAt,
+          existingAutomation.id,
+          input.expectedSourceVersion,
+        );
+    if (updateResult.rowsWritten === 0 && input.expectedSourceVersion !== undefined) {
+      throw new Error(
+        `Automation edit conflict: source version ${input.expectedSourceVersion} changed while the edit was running. ` +
+        "Read it again and retry.",
+      );
+    }
     if (sourceChanged) {
       this.insertAutomationVersion(
         workspaceId,

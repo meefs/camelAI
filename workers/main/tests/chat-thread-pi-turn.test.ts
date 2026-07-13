@@ -4061,6 +4061,31 @@ describe('ChatThreadDO Pi turn handling', () => {
     expect(containerTool).not.toHaveBeenCalled();
   });
 
+  it('does not dispatch a file edit after its tool signal is aborted', async () => {
+    const callTool = vi.fn(async () => ({ text: 'edited' }));
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    fake.ctx = {
+      exports: {
+        CodeModeToolsBinding: vi.fn(() => ({ callTool })),
+      },
+    };
+    const tools = ChatThreadDO.prototype['createPiToolDefinitions'].call(fake, {
+      orgId: 'org1',
+      workspaceId: 'workspace1',
+      threadId: 'thread1',
+    });
+    const edit = tools.find((tool: any) => tool.name === 'edit');
+    const controller = new AbortController();
+    controller.abort();
+
+    await expect(edit.execute('edit-1', {
+      location: 'workspace',
+      path: '/example.txt',
+      edits: [{ oldText: 'old', newText: 'new' }],
+    }, controller.signal)).rejects.toThrow('Operation aborted');
+    expect(callTool).not.toHaveBeenCalled();
+  });
+
   it('leaves bounded Pi tool results unchanged', async () => {
     const fake = Object.create(ChatThreadDO.prototype) as any;
     fake.recordChatThreadObservabilityEvent = vi.fn();
@@ -4741,9 +4766,82 @@ describe('ChatThreadDO Pi turn handling', () => {
         { oldText: 'a', newText: 'x' },
         { oldText: 'x', newText: 'y' },
       ],
-    })).rejects.toThrow('edits[1].oldText not found in outputs/edit.txt');
+    })).rejects.toThrow('Could not find edits[1] in outputs/edit.txt');
 
     expect(put).not.toHaveBeenCalled();
+  });
+
+  it('conditionally writes R2 edits and returns structured diff details', async () => {
+    const key = 'org1/workspace1/user-outputs/edit.txt';
+    const head = {
+      key,
+      size: 12,
+      etag: 'etag-before',
+      uploaded: new Date('2026-01-01T00:00:00Z'),
+      httpMetadata: { contentType: 'text/plain' },
+      customMetadata: { type: 'code-mode-r2-file' },
+    };
+    const put = vi.fn(async (_key: string, value: string, options: R2PutOptions) => ({
+      ...head,
+      size: new TextEncoder().encode(value).byteLength,
+      etag: 'etag-after',
+      httpMetadata: options.httpMetadata as R2HTTPMetadata,
+    }));
+    const fake = Object.create(CodeModeToolsBinding.prototype) as any;
+    fake.ctx = { props: { orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1' } };
+    fake.env = {
+      R2_BUCKET: {
+        head: vi.fn(async () => head),
+        get: vi.fn(async () => ({ ...head, text: async () => 'old\r\nvalue\r\n' })),
+        put,
+      },
+    };
+    fake.recordCodeModeArtifactBestEffort = vi.fn();
+
+    const result = await CodeModeToolsBinding.prototype.callTool.call(fake, 'edit', {
+      location: 'r2',
+      path: 'outputs/edit.txt',
+      edits: [{ oldText: 'old\nvalue', newText: 'new\nvalue' }],
+    });
+
+    expect(put).toHaveBeenCalledWith(
+      key,
+      'new\r\nvalue\r\n',
+      expect.objectContaining({ onlyIf: { etagMatches: 'etag-before' } }),
+    );
+    expect((result as any).details).toMatchObject({
+      replacementCount: 1,
+      firstChangedLine: 1,
+      patch: expect.stringContaining('@@'),
+    });
+  });
+
+  it('rejects an R2 edit when the object changes before the conditional write', async () => {
+    const key = 'org1/workspace1/user-outputs/edit.txt';
+    const head = {
+      key,
+      size: 3,
+      etag: 'etag-before',
+      uploaded: new Date('2026-01-01T00:00:00Z'),
+      httpMetadata: { contentType: 'text/plain' },
+      customMetadata: { type: 'code-mode-r2-file' },
+    };
+    const fake = Object.create(CodeModeToolsBinding.prototype) as any;
+    fake.ctx = { props: { orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1' } };
+    fake.env = {
+      R2_BUCKET: {
+        head: vi.fn(async () => head),
+        get: vi.fn(async () => ({ ...head, text: async () => 'old' })),
+        put: vi.fn(async () => null),
+      },
+    };
+    fake.recordCodeModeArtifactBestEffort = vi.fn();
+
+    await expect(CodeModeToolsBinding.prototype.callTool.call(fake, 'edit', {
+      location: 'r2',
+      path: 'outputs/edit.txt',
+      edits: [{ oldText: 'old', newText: 'new' }],
+    })).rejects.toThrow('Edit conflict');
   });
 
   it('writes and deletes R2 output files but keeps uploads read-only', async () => {
@@ -6530,6 +6628,7 @@ describe('ChatThreadDO Pi turn handling', () => {
       workspaceId: 'workspace1',
       id: 'automation-1',
       source: updatedSource,
+      expectedSourceVersion: 1,
     });
     expect(containerTool).not.toHaveBeenCalled();
   });
