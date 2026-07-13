@@ -1835,9 +1835,8 @@ describe('ChatThreadDO Pi turn handling', () => {
       'x-sticky-key': 'thread1',
     });
     // Dynamic routes fan out across RTX/Azure/OpenRouter. Keep xhigh reasoning,
-    // but force the OpenAI-style reasoning_effort shape and clamp the advertised
-    // context to the RTX model's max_model_len. Keep maxTokens one Pi safety
-    // margin below that so non-empty prompts do not exceed vLLM's total context.
+    // but use a conservative working window because Pi's estimate does not
+    // include every vLLM chat-template and tool-schema token.
     expect(model.model.compat).toMatchObject({
       supportsReasoningEffort: true,
       thinkingFormat: 'openai',
@@ -1850,8 +1849,8 @@ describe('ChatThreadDO Pi turn handling', () => {
       xhigh: 'xhigh',
     });
     expect(model.model.reasoning).toBe(true);
-    expect(model.model.contextWindow).toBe(262144);
-    expect(model.model.maxTokens).toBe(258048);
+    expect(model.model.contextWindow).toBe(220000);
+    expect(model.model.maxTokens).toBe(32000);
     expect(fake.piCurrentUsageProvider).toBe('compat');
   });
 
@@ -3492,8 +3491,8 @@ describe('ChatThreadDO Pi turn handling', () => {
       byokAllowed: false,
       hostedRequestProfile: {
         name: 'deepseek-v4-auto-gateway',
-        contextWindow: 262_144,
-        maxTokens: 258_048,
+        contextWindow: 220_000,
+        maxTokens: 32_000,
         reasoning: true,
         supportsReasoningEffort: true,
         thinkingFormat: 'openai',

@@ -91,8 +91,12 @@ export class PiModelMapping {
           byokAllowed: false,
           hostedRequestProfile: {
             name: "deepseek-v4-auto-gateway",
-            contextWindow: 262_144,
-            maxTokens: 258_048,
+            // RTX vLLM is limited to 262,144 tokens, but Pi's character-based
+            // estimate omits chat-template and tool-schema overhead. Advertise
+            // a smaller working window so compaction happens before the RTX hop
+            // overflows; Azure/OpenRouter can still serve as fallbacks.
+            contextWindow: 220_000,
+            maxTokens: 32_000,
             reasoning: true,
             supportsReasoningEffort: true,
             thinkingFormat: "openai",
