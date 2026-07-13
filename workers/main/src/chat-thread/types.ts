@@ -55,7 +55,7 @@ export interface PiResolvedModelReference {
   /** False for hosted-only camelAI routes that must not be served by BYOK keys. */
   byokAllowed?: boolean;
   hostedRequestProfile?: {
-    name: "deepseek-v4-auto-gateway";
+    name: "deepseek-v4-flash-rtx";
     contextWindow?: number;
     maxTokens?: number;
     reasoning?: boolean;

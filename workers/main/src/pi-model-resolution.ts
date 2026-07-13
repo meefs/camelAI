@@ -11,6 +11,18 @@ import {
 } from "../../../src/lib/llm-provider-config";
 import type { PiHeaderValue, PiResolvedModelReference } from "./chat-thread-do";
 
+// This is the public client-side contract for the AWS RTX Flash pool. It is
+// mirrored by the router's /router/capabilities endpoint. The working limit
+// deliberately leaves room for the vLLM chat template and tool schemas.
+const DEEPSEEK_V4_FLASH_RTX_PROFILE = {
+  name: "deepseek-v4-flash-rtx" as const,
+  contextWindow: 220_000,
+  maxTokens: 32_000,
+  reasoning: true,
+  supportsReasoningEffort: true,
+  thinkingFormat: "openai" as const,
+};
+
 export class PiModelMapping {
   resolvePiModelReference(modelId: string): PiResolvedModelReference {
     const normalizedModelId = this.normalizePiModelId(modelId);
@@ -89,18 +101,7 @@ export class PiModelMapping {
           hostedModelId: "dynamic/deepseek-v4-auto",
           hostedReasoningEffort: "xhigh",
           byokAllowed: false,
-          hostedRequestProfile: {
-            name: "deepseek-v4-auto-gateway",
-            // RTX vLLM is limited to 262,144 tokens, but Pi's character-based
-            // estimate omits chat-template and tool-schema overhead. Advertise
-            // a smaller working window so compaction happens before the RTX hop
-            // overflows; Azure/OpenRouter can still serve as fallbacks.
-            contextWindow: 220_000,
-            maxTokens: 32_000,
-            reasoning: true,
-            supportsReasoningEffort: true,
-            thinkingFormat: "openai",
-          },
+          hostedRequestProfile: DEEPSEEK_V4_FLASH_RTX_PROFILE,
         };
       case "deepseek-v4-flash":
         return {
@@ -108,6 +109,7 @@ export class PiModelMapping {
           hostedGatewayProvider: "compat",
           hostedModelId: "dynamic/deepseek-v4-flash-fallback",
           hostedReasoningEffort: "xhigh",
+          hostedRequestProfile: DEEPSEEK_V4_FLASH_RTX_PROFILE,
         };
       default:
         if (normalizedModelId.includes("/")) {

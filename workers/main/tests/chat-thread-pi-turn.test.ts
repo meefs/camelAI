@@ -1848,9 +1848,9 @@ describe('ChatThreadDO Pi turn handling', () => {
       high: 'xhigh',
       xhigh: 'xhigh',
     });
-    expect(model.model.reasoning).toBe(true);
     expect(model.model.contextWindow).toBe(220000);
     expect(model.model.maxTokens).toBe(32000);
+    expect(model.model.reasoning).toBe(true);
     expect(fake.piCurrentUsageProvider).toBe('compat');
   });
 
@@ -2022,6 +2022,8 @@ describe('ChatThreadDO Pi turn handling', () => {
       high: 'xhigh',
       xhigh: 'xhigh',
     });
+    expect(model.model.contextWindow).toBe(220000);
+    expect(model.model.maxTokens).toBe(32000);
     expect(fake.piCurrentUsageProvider).toBe('compat');
   });
 
@@ -3490,7 +3492,7 @@ describe('ChatThreadDO Pi turn handling', () => {
       hostedReasoningEffort: 'xhigh',
       byokAllowed: false,
       hostedRequestProfile: {
-        name: 'deepseek-v4-auto-gateway',
+        name: 'deepseek-v4-flash-rtx',
         contextWindow: 220_000,
         maxTokens: 32_000,
         reasoning: true,
@@ -3509,6 +3511,14 @@ describe('ChatThreadDO Pi turn handling', () => {
       hostedGatewayProvider: 'compat',
       hostedModelId: 'dynamic/deepseek-v4-flash-fallback',
       hostedReasoningEffort: 'xhigh',
+      hostedRequestProfile: {
+        name: 'deepseek-v4-flash-rtx',
+        contextWindow: 220_000,
+        maxTokens: 32_000,
+        reasoning: true,
+        supportsReasoningEffort: true,
+        thinkingFormat: 'openai',
+      },
     });
   });
 
