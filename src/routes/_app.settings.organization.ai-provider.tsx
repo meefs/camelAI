@@ -9,7 +9,9 @@ import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
 import { ByokKeyForm } from "@/components/byok/byok-key-form";
 import { RemoveKeyDialog } from "@/components/byok/remove-key-dialog";
+import { OpenAiSubscriptionSettings } from "@/components/settings/openai-subscription-settings";
 import {
+  getAuthEnv,
   requireAuthContext,
   requireOrgAdmin,
 } from "@/lib/auth.server";
@@ -42,7 +44,7 @@ export function meta() {
     {
       name: "description",
       content:
-        "Bring your own API key to use camelAI with your LLM provider.",
+        "Bring your own AI inference with an API key or OpenAI subscription.",
     },
   ];
 }
@@ -62,9 +64,20 @@ export async function loader({ request, context }: Route.LoaderArgs) {
         valid: selfhostAiProvider.valid,
         message: selfhostAiProvider.message ?? null,
       },
+      openAiSubscription: null,
     };
   }
 
+  const authEnv = getAuthEnv(env);
+  const orgStub = authEnv.ORG.get(authEnv.ORG.idFromName(authContext.currentOrg.id));
+  const storedOpenAiSubscription = await orgStub.getOpenAiSubscription();
+  const openAiSubscription = storedOpenAiSubscription
+    ? {
+        accountEmail: storedOpenAiSubscription.account_email,
+        planType: storedOpenAiSubscription.plan_type,
+        updatedAt: storedOpenAiSubscription.updated_at,
+      }
+    : null;
   const record = authContext.currentOrgLlmProviderConfig;
 
   if (!record) {
@@ -72,6 +85,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
       config: null,
       orgId: authContext.currentOrg.id,
       selfhostAiProvider: null,
+      openAiSubscription,
     };
   }
 
@@ -84,6 +98,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     config,
     orgId: authContext.currentOrg.id,
     selfhostAiProvider: null,
+    openAiSubscription,
   };
 }
 
@@ -100,7 +115,7 @@ function isOnboardingByokProvider(
 }
 
 export default function AiProviderPage() {
-  const { config, orgId, selfhostAiProvider } = useLoaderData<typeof loader>();
+  const { config, orgId, selfhostAiProvider, openAiSubscription } = useLoaderData<typeof loader>();
   const fetcher = useFetcher<ProviderActionResponse>();
 
   const initialProvider: OnboardingByokProvider =
@@ -356,8 +371,12 @@ export default function AiProviderPage() {
     <div className="space-y-6">
       <SettingsHeader
         title="AI Provider"
-        description="Bring your own API key to use camelAI with your LLM provider."
+        description="Bring your own AI inference with an API key or OpenAI subscription."
       />
+      <Separator />
+
+      <OpenAiSubscriptionSettings orgId={orgId} subscription={openAiSubscription} />
+
       <Separator />
 
       {config ? (

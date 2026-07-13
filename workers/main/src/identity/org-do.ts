@@ -6,6 +6,10 @@ import {
   type WorkspaceIntegrationRecord,
 } from "../workspace";
 import { decryptCredentials, encryptCredentials } from "../../../../src/lib/integration-crypto";
+import {
+  type OpenAiSubscriptionCredentials,
+  refreshOpenAiSubscriptionCredentials,
+} from "../../../../src/lib/openai-subscription.server";
 import { mintBigQueryAccessTokenFromServiceAccount } from "../google-service-account";
 import { refreshRemoteMcpOAuthToken } from "../remote-mcp-oauth";
 import {
@@ -1643,7 +1647,21 @@ export class OrgDO extends DurableObject<DOEnv> {
       this.ensureBrowserSessionsSchema();
     }
 
-    const CURRENT_SCHEMA_VERSION = 39;
+    if (version < 40) {
+      // V40: One shared ChatGPT/Codex subscription per organization.
+      this.sql.exec(`
+        CREATE TABLE IF NOT EXISTS openai_subscription (
+          id TEXT PRIMARY KEY DEFAULT 'active',
+          credentials_encrypted TEXT NOT NULL,
+          account_email TEXT,
+          plan_type TEXT,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL
+        )
+      `);
+    }
+
+    const CURRENT_SCHEMA_VERSION = 40;
     if (version < CURRENT_SCHEMA_VERSION) {
       this.ctx.storage.kv.put("schemaVersion", CURRENT_SCHEMA_VERSION);
     }
@@ -5921,6 +5939,7 @@ export class OrgDO extends DurableObject<DOEnv> {
     this.sql.exec("DELETE FROM worker_scripts");
     this.sql.exec("DELETE FROM threads");
     this.sql.exec("DELETE FROM proxy_usage");
+    this.sql.exec("DELETE FROM openai_subscription");
 
     console.log("[OrgDO] hard deleted org", {
       orgId: info.id,
@@ -7103,6 +7122,93 @@ export class OrgDO extends DurableObject<DOEnv> {
   }
 
   // ─── LLM Provider BYOK Config ─────────────────────────────────
+
+  getOpenAiSubscription(): {
+    credentials_encrypted: string;
+    account_email: string | null;
+    plan_type: string | null;
+    created_at: number;
+    updated_at: number;
+  } | null {
+    return this.sql.exec<{
+      credentials_encrypted: string;
+      account_email: string | null;
+      plan_type: string | null;
+      created_at: number;
+      updated_at: number;
+    }>(
+      `SELECT credentials_encrypted, account_email, plan_type, created_at, updated_at
+       FROM openai_subscription WHERE id = 'active'`,
+    ).toArray()[0] ?? null;
+  }
+
+  async getFreshOpenAiSubscription(): Promise<ReturnType<OrgDO["getOpenAiSubscription"]>> {
+    const initial = this.getOpenAiSubscription();
+    if (!initial) return null;
+    const secret = this.env.INTEGRATION_SECRET_KEY;
+    if (!secret) {
+      throw new Error("OpenAI subscription credentials cannot be read without INTEGRATION_SECRET_KEY.");
+    }
+    const initialCredentials = await decryptCredentials<Record<string, string>>(
+      initial.credentials_encrypted,
+      secret,
+    );
+    if (Number(initialCredentials.expires_at) > Date.now() + 5 * 60 * 1000) return initial;
+
+    await this.ctx.blockConcurrencyWhile(async () => {
+      const current = this.getOpenAiSubscription();
+      if (!current) return;
+      const credentials = await decryptCredentials<Record<string, string>>(
+        current.credentials_encrypted,
+        secret,
+      );
+      if (Number(credentials.expires_at) > Date.now() + 5 * 60 * 1000) return;
+      if (!credentials.access_token || !credentials.refresh_token || !credentials.account_id) {
+        throw new Error("Stored OpenAI subscription credentials are incomplete.");
+      }
+      const refreshed = await refreshOpenAiSubscriptionCredentials({
+        access_token: credentials.access_token,
+        refresh_token: credentials.refresh_token,
+        ...(credentials.id_token ? { id_token: credentials.id_token } : {}),
+        account_id: credentials.account_id,
+        expires_at: Number(credentials.expires_at) || 0,
+      } satisfies OpenAiSubscriptionCredentials);
+      const encrypted = await encryptCredentials({ ...refreshed.credentials }, secret);
+      this.setOpenAiSubscription(
+        encrypted,
+        refreshed.identity.email ?? current.account_email,
+        refreshed.identity.planType ?? current.plan_type,
+      );
+    });
+    return this.getOpenAiSubscription();
+  }
+
+  setOpenAiSubscription(
+    credentialsEncrypted: string,
+    accountEmail: string | null,
+    planType: string | null,
+  ): void {
+    const now = Date.now();
+    this.sql.exec(
+      `INSERT INTO openai_subscription
+         (id, credentials_encrypted, account_email, plan_type, created_at, updated_at)
+       VALUES ('active', ?, ?, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET
+         credentials_encrypted = excluded.credentials_encrypted,
+         account_email = excluded.account_email,
+         plan_type = excluded.plan_type,
+         updated_at = excluded.updated_at`,
+      credentialsEncrypted,
+      accountEmail,
+      planType,
+      now,
+      now,
+    );
+  }
+
+  deleteOpenAiSubscription(): void {
+    this.sql.exec("DELETE FROM openai_subscription WHERE id = 'active'");
+  }
 
   getLlmProviderConfig(): {
     provider: string;

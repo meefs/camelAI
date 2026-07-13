@@ -298,6 +298,7 @@ export function resolveModelPickerCatalog(args: {
   customModelId?: string | null;
   awsRegion?: string | null;
   allowNonProductionModels?: boolean;
+  allowOpenAiSubscription?: boolean;
 }): ResolvedModelCatalogEntry[] {
   const visibleModelIds = new Set(
     getVisibleLlmModelOptions(args.experimentalSettings, null, {
@@ -306,6 +307,7 @@ export function resolveModelPickerCatalog(args: {
       customModelId: args.customModelId,
       awsRegion: args.awsRegion,
       allowNonProductionModels: args.allowNonProductionModels,
+      allowOpenAiSubscription: args.allowOpenAiSubscription,
     }).map((option) => option.value),
   );
   const platformDefaultModelIds = new Set(

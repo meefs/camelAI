@@ -2447,6 +2447,42 @@ describe('ChatThreadDO Pi turn handling', () => {
     expect(fake.checkHostedPiModelAccess).not.toHaveBeenCalled();
   });
 
+  it('routes OpenAI subscription inference through the ChatGPT Codex backend', async () => {
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    fake.env = {};
+    fake.resolveCurrentByokCredentials = vi.fn(async () => ({
+      provider: 'none',
+      openAiSubscription: {
+        accessToken: 'chatgpt-access-token',
+        accountId: 'chatgpt-account-1',
+      },
+    }));
+    fake.checkHostedPiModelAccess = vi.fn(async () => {
+      throw new Error('hosted billing should not be checked for subscription auth');
+    });
+
+    const model = await ChatThreadDO.prototype['resolvePiModel'].call(
+      fake,
+      { orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1' },
+      { CHIRIDION_CODEX_MODEL: 'gpt-5.5' },
+      vi.fn(() => ({
+        id: 'gpt-5.5',
+        provider: 'openai',
+        api: 'openai-responses',
+        baseUrl: 'https://api.openai.com/v1',
+      })),
+    );
+
+    expect(model.model).toMatchObject({
+      provider: 'openai-codex',
+      api: 'openai-codex-responses',
+      baseUrl: 'https://chatgpt.com/backend-api/codex',
+    });
+    expect(model.apiKey).toBe('chatgpt-access-token');
+    expect(model.billingSource).toBe('byok');
+    expect(fake.checkHostedPiModelAccess).not.toHaveBeenCalled();
+  });
+
   it('prefixes hosted OpenAI aliases when routing through OpenRouter BYOK', async () => {
     const fake = Object.create(ChatThreadDO.prototype) as any;
     fake.env = {};

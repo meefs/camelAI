@@ -143,6 +143,7 @@ export interface WorkspaceModelPickerState {
   customApi: CustomLlmProviderApi | null;
   customModelId: string | null;
   awsRegion: string | null;
+  allowOpenAiSubscription: boolean;
   experimentalSettings: import("@/types").OrganizationExperimentalSettings;
   allowedThreadModels: LlmModel[];
   effectivePickerDefaultModel: LlmModel | null;
@@ -194,7 +195,7 @@ async function getWorkspaceModelPickerStateForOrg(
   const wsStub = env.WORKSPACE.get(
     env.WORKSPACE.idFromName(workspaceId),
   ) as unknown as WorkspaceDO;
-  const [llmProviderConfig, experimentalSettings] = await Promise.all([
+  const [llmProviderConfig, experimentalSettings, openAiSubscription] = await Promise.all([
     options.llmProviderConfig !== undefined
       ? Promise.resolve(options.llmProviderConfig)
       : retryTransientDurableObjectRead("OrgDO.getLlmProviderConfig", () =>
@@ -205,7 +206,11 @@ async function getWorkspaceModelPickerStateForOrg(
       : retryTransientDurableObjectRead("OrgDO.getExperimentalSettings", () =>
           Promise.resolve(orgStub.getExperimentalSettings()),
         ),
+    typeof orgStub.getOpenAiSubscription === "function"
+      ? Promise.resolve(orgStub.getOpenAiSubscription())
+      : Promise.resolve(null),
   ]);
+  const allowOpenAiSubscription = openAiSubscription !== null;
   const effectiveLlmProviderConfig = getEffectiveLlmProviderConfig(
     env,
     llmProviderConfig,
@@ -232,6 +237,7 @@ async function getWorkspaceModelPickerStateForOrg(
     customModelId,
     awsRegion,
     allowNonProductionModels,
+    allowOpenAiSubscription,
   });
   const defaultModel = resolveDefaultModelForChat({
     effectiveDefaultModel: effectiveConfig.default_model,
@@ -248,6 +254,7 @@ async function getWorkspaceModelPickerStateForOrg(
     customApi,
     customModelId,
     awsRegion,
+    allowOpenAiSubscription,
     experimentalSettings,
     allowedThreadModels: visibleCatalog.map((entry) => entry.id),
     effectivePickerDefaultModel: effectiveConfig.default_model,
@@ -286,6 +293,7 @@ async function resolveCreateThreadModel(
         customApi: pickerState.customApi,
         customModelId: pickerState.customModelId,
         awsRegion: pickerState.awsRegion,
+        allowOpenAiSubscription: pickerState.allowOpenAiSubscription,
       },
     ) ||
     !pickerState.allowedThreadModels.includes(selectedModel)
@@ -593,6 +601,7 @@ export async function updateThreadModel(
         customApi: pickerState.customApi,
         customModelId: pickerState.customModelId,
         awsRegion: pickerState.awsRegion,
+        allowOpenAiSubscription: pickerState.allowOpenAiSubscription,
       },
     ) ||
     !pickerState.allowedThreadModels.includes(model)

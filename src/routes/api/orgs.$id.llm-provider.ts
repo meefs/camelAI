@@ -13,6 +13,10 @@ import {
   getSelfhostAiProviderStatus,
 } from '@/lib/selfhost-ai-provider';
 import { waitUntil } from '@/lib/wait-until';
+import {
+  pollOpenAiDeviceAuthorization,
+  startOpenAiDeviceAuthorization,
+} from '@/lib/openai-subscription.server';
 import type { LlmProvider, LlmProviderConfigPublic } from '@/types';
 
 const VALID_PROVIDERS: LlmProvider[] = ['anthropic', 'bedrock', 'custom', 'openai', 'openrouter'];
@@ -85,7 +89,6 @@ export async function action({ request, context, params }: Route.ActionArgs) {
   }
 
   const intent = body.intent as string;
-
   if (selfhostAiProvider.configured) {
     return Response.json(
       {
@@ -95,6 +98,108 @@ export async function action({ request, context, params }: Route.ActionArgs) {
       },
       { status: 409 },
     );
+  }
+
+  if (intent === 'startOpenAiSubscription') {
+    try {
+      const device = await startOpenAiDeviceAuthorization();
+      const pending_token = await encryptCredentials(
+        {
+          kind: 'openai-device-auth',
+          org_id: orgId,
+          device_auth_id: device.deviceAuthId,
+          user_code: device.userCode,
+          expires_at: device.expiresAt,
+        },
+        env.INTEGRATION_SECRET_KEY,
+      );
+      return Response.json({
+        success: true,
+        status: 'pending',
+        pending_token,
+        user_code: device.userCode,
+        verification_url: device.verificationUrl,
+        interval_seconds: device.intervalSeconds,
+        expires_at: device.expiresAt,
+      });
+    } catch (error) {
+      console.error('[llm-provider] Failed to start OpenAI subscription sign-in:', error);
+      return Response.json(
+        { error: error instanceof Error ? error.message : 'Could not start OpenAI sign-in.' },
+        { status: 502 },
+      );
+    }
+  }
+
+  if (intent === 'pollOpenAiSubscription') {
+    const pendingToken = typeof body.pending_token === 'string' ? body.pending_token : '';
+    if (!pendingToken) {
+      return Response.json({ error: 'Missing OpenAI sign-in state.' }, { status: 400 });
+    }
+    try {
+      const pending = await decryptCredentials<Record<string, unknown>>(
+        pendingToken,
+        env.INTEGRATION_SECRET_KEY,
+      );
+      if (
+        pending.kind !== 'openai-device-auth' ||
+        pending.org_id !== orgId ||
+        typeof pending.device_auth_id !== 'string' ||
+        typeof pending.user_code !== 'string' ||
+        typeof pending.expires_at !== 'number'
+      ) {
+        return Response.json({ error: 'Invalid OpenAI sign-in state.' }, { status: 400 });
+      }
+      if (pending.expires_at <= Date.now()) {
+        return Response.json({ error: 'OpenAI sign-in code expired. Start again.' }, { status: 410 });
+      }
+      const result = await pollOpenAiDeviceAuthorization(
+        pending.device_auth_id,
+        pending.user_code,
+      );
+      if (result.status === 'pending') {
+        return Response.json({ success: true, status: 'pending' });
+      }
+
+      const encrypted = await encryptCredentials(
+        { ...result.credentials },
+        env.INTEGRATION_SECRET_KEY,
+      );
+      const orgStub = authEnv.ORG.get(authEnv.ORG.idFromName(orgId));
+      await orgStub.setOpenAiSubscription(
+        encrypted,
+        result.identity.email,
+        result.identity.planType,
+      );
+      waitUntil(
+        orgStub.notifyByokChanged().catch((error: unknown) => {
+          console.error('[llm-provider] Failed to notify threads after OpenAI subscription connect:', error);
+        }),
+      );
+      return Response.json({
+        success: true,
+        status: 'complete',
+        account_email: result.identity.email,
+        plan_type: result.identity.planType,
+      });
+    } catch (error) {
+      console.error('[llm-provider] Failed to finish OpenAI subscription sign-in:', error);
+      return Response.json(
+        { error: error instanceof Error ? error.message : 'Could not finish OpenAI sign-in.' },
+        { status: 502 },
+      );
+    }
+  }
+
+  if (intent === 'deleteOpenAiSubscription') {
+    const orgStub = authEnv.ORG.get(authEnv.ORG.idFromName(orgId));
+    await orgStub.deleteOpenAiSubscription();
+    waitUntil(
+      orgStub.notifyByokChanged().catch((error: unknown) => {
+        console.error('[llm-provider] Failed to notify threads after OpenAI subscription disconnect:', error);
+      }),
+    );
+    return Response.json({ success: true });
   }
 
   if (intent === 'setProvider') {

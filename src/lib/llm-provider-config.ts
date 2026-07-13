@@ -209,6 +209,7 @@ interface LlmProviderModelOptions {
   customApi?: CustomLlmProviderApi | null;
   customModelId?: string | null;
   awsRegion?: string | null;
+  allowOpenAiSubscription?: boolean;
 }
 
 export const DEFAULT_ORG_EXPERIMENTAL_SETTINGS: OrganizationExperimentalSettings =
@@ -283,6 +284,7 @@ export function getVisibleLlmModelOptions(
     customModelId?: string | null;
     awsRegion?: string | null;
     allowNonProductionModels?: boolean;
+    allowOpenAiSubscription?: boolean;
   },
 ): ReadonlyArray<{
   value: LlmModel;
@@ -293,6 +295,7 @@ export function getVisibleLlmModelOptions(
     customApi: options?.customApi,
     customModelId: options?.customModelId,
     awsRegion: options?.awsRegion,
+    allowOpenAiSubscription: options?.allowOpenAiSubscription,
   });
   const visibleOptions =
     options?.allowNonProductionModels === false
@@ -341,6 +344,15 @@ export function isLlmModelAllowedForOrgProvider(
   orgProvider?: string | null,
   options?: LlmProviderModelOptions,
 ): boolean {
+  if (
+    options?.allowOpenAiSubscription &&
+    isCodexLlmModel(model) &&
+    !OPENROUTER_ONLY_CODEX_MODELS.has(model) &&
+    !BEDROCK_ONLY_CODEX_MODELS.has(model) &&
+    !CAMELAI_HOSTED_ONLY_CODEX_MODELS.has(model)
+  ) {
+    return true;
+  }
   if (CAMELAI_HOSTED_ONLY_CODEX_MODELS.has(model) && orgProvider) {
     return false;
   }

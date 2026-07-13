@@ -14,6 +14,9 @@ import type {
 import type { PiModelMapping } from "../pi-model-resolution";
 import { decryptCredentials } from "../../../../src/lib/integration-crypto";
 import {
+  OPENAI_CODEX_API_BASE_URL,
+} from "../../../../src/lib/openai-subscription.server";
+import {
   DEFAULT_LLM_MODEL,
   parseStoredLlmProviderConfig,
 } from "../../../../src/lib/llm-provider-config";
@@ -362,11 +365,25 @@ export async function resolvePiRequestConfig(
   requestedModelId: string,
 ): Promise<PiRequestConfig> {
   const selfhostProvider = getSelfhostAiProviderCredentials(deps.env);
-  const byok = selfhostProvider ?? await deps.resolveByokCredentials(context).catch((error) => {
-    console.error("[ChatThreadDO] failed to resolve Pi BYOK credentials", error);
-    return null;
-  });
+  const byok = selfhostProvider ?? await deps.resolveByokCredentials(context);
   const byokAllowed = resolved.byokAllowed !== false;
+  if (
+    byokAllowed &&
+    byok &&
+    "openAiSubscription" in byok &&
+    byok.openAiSubscription &&
+    resolved.provider === "openai"
+  ) {
+    return {
+      apiKey: byok.openAiSubscription.accessToken,
+      api: "openai-codex-responses",
+      billingSource: "byok",
+      creditChargeable: false,
+      requestProvider: "openai-codex",
+      baseUrl: OPENAI_CODEX_API_BASE_URL,
+      usageProvider: "openai",
+    };
+  }
   if (byokAllowed && byok?.provider === "custom" && byok.apiKey && byok.baseUrl && byok.api) {
     const customModel = deps.modelMapping.resolveCustomProviderModelReference(
       byok.api,
@@ -573,10 +590,37 @@ export async function resolveCurrentByokCredentials(
   authType?: "bearer" | "x-api-key";
   api?: "openai-completions" | "openai-responses" | "anthropic-messages";
   modelId?: string;
+  openAiSubscription?: {
+    accessToken: string;
+    accountId: string;
+  };
 } | null> {
   const record = await getProviderConfig(context.orgId);
+  let openAiSubscription:
+    | { accessToken: string; accountId: string }
+    | undefined;
+  const orgStub = env.ORG.get(env.ORG.idFromName(context.orgId));
+  const storedSubscription = await orgStub.getFreshOpenAiSubscription();
+  if (storedSubscription) {
+    const creds = await decryptCredentials<Record<string, string>>(
+      storedSubscription.credentials_encrypted,
+      env.INTEGRATION_SECRET_KEY,
+    );
+    if (creds.access_token && creds.refresh_token && creds.account_id) {
+      openAiSubscription = {
+        accessToken: creds.access_token,
+        accountId: creds.account_id,
+      };
+    }
+  }
+  const withSubscription = <T extends { provider: string }>(value: T): T & {
+    openAiSubscription?: { accessToken: string; accountId: string };
+  } => ({ ...value, ...(openAiSubscription ? { openAiSubscription } : {}) });
+
   if (!record) {
-    return null;
+    return openAiSubscription
+      ? { provider: "none", openAiSubscription }
+      : null;
   }
 
   const creds = await decryptCredentials<Record<string, string>>(
@@ -586,31 +630,31 @@ export async function resolveCurrentByokCredentials(
   const config = parseStoredLlmProviderConfig(record.config);
 
   if (record.provider === "anthropic" && creds.api_key) {
-    return { provider: "anthropic", apiKey: creds.api_key };
+    return withSubscription({ provider: "anthropic", apiKey: creds.api_key });
   }
   if (record.provider === "openai" && creds.api_key) {
-    return { provider: "openai", apiKey: creds.api_key };
+    return withSubscription({ provider: "openai", apiKey: creds.api_key });
   }
   if (record.provider === "openrouter" && creds.api_key) {
-    return { provider: "openrouter", apiKey: creds.api_key };
+    return withSubscription({ provider: "openrouter", apiKey: creds.api_key });
   }
   if (record.provider === "custom" && creds.api_key && config.custom_base_url && config.custom_api) {
-    return {
+    return withSubscription({
       provider: "custom",
       apiKey: creds.api_key,
       baseUrl: config.custom_base_url,
       authType: config.custom_auth_type ?? "bearer",
       api: config.custom_api,
       modelId: config.custom_model_id,
-    };
+    });
   }
   if (record.provider === "bedrock" && creds.bearer_token) {
-    return {
+    return withSubscription({
       provider: "bedrock",
       apiKey: creds.bearer_token,
       awsRegion: config.aws_region,
-    };
+    });
   }
 
-  return null;
+  return openAiSubscription ? { provider: record.provider, openAiSubscription } : null;
 }

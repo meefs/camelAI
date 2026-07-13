@@ -218,6 +218,24 @@ describe('MODEL_CATALOG', () => {
     ]);
   });
 
+  it('adds direct OpenAI models for an organization subscription', () => {
+    const visible = resolveModelPickerCatalog({
+      effectiveConfig: {
+        source: 'org',
+        use_platform_defaults: true,
+        default_model: null,
+        models: [],
+      },
+      orgProvider: 'anthropic',
+      allowOpenAiSubscription: true,
+    }).map((entry) => entry.id);
+
+    expect(visible).toContain('sonnet');
+    expect(visible).toContain('gpt-5.6-terra');
+    expect(visible).not.toContain('kimi-k2.7-code');
+    expect(visible).not.toContain('gpt-5.5-bedrock');
+  });
+
   it('filters custom provider picker models by API mode', () => {
     const effectiveConfig = {
       source: 'org' as const,
