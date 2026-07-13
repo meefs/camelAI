@@ -488,6 +488,11 @@ export async function resolvePiRequestConfig(
       ...(resolved.hostedGatewayProvider === "openrouter"
         ? deps.modelMapping.openRouterAttributionHeaders()
         : {}),
+      // Pi's session is the chat thread. Forward it explicitly so the
+      // self-hosted DeepSeek router can keep a thread on one warm KV cache.
+      ...(chatMetadata?.threadId
+        ? { "x-sticky-key": chatMetadata.threadId }
+        : {}),
       "cf-aig-metadata": JSON.stringify({
         uid: [chatMetadata?.orgId, chatMetadata?.workspaceId, chatMetadata?.threadId]
           .filter(Boolean)

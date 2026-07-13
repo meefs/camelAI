@@ -1831,6 +1831,9 @@ describe('ChatThreadDO Pi turn handling', () => {
       api: 'openai-completions',
       baseUrl: 'https://gateway.ai.cloudflare.com/v1/acct_1/gateway_1/compat',
     });
+    expect(model.model.headers).toMatchObject({
+      'x-sticky-key': 'thread1',
+    });
     // Dynamic routes fan out across RTX/Azure/OpenRouter. Keep xhigh reasoning,
     // but force the OpenAI-style reasoning_effort shape and clamp the advertised
     // context to the RTX model's max_model_len. Keep maxTokens one Pi safety
