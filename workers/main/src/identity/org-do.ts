@@ -2741,14 +2741,6 @@ export class OrgDO extends DurableObject<DOEnv> {
         normalized.grantCents > 0;
       const nextInfo: Organization = {
         ...existingOrg,
-        billing_customer_id: normalized.customerId,
-        billing_subscription_id: normalized.subscriptionId,
-        billing_plan:
-          existingOrg.billing_status === "enterprise" ? "enterprise" : normalized.plan,
-        billing_seat_count:
-          existingOrg.billing_status === "enterprise"
-            ? existingOrg.billing_seat_count
-            : normalized.seatCount,
         billing_credit_grant_total_cents: credited
           ? (existingOrg.billing_credit_grant_total_cents ?? 0) + normalized.grantCents
           : (existingOrg.billing_credit_grant_total_cents ?? 0),

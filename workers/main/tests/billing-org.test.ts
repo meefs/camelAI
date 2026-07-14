@@ -534,7 +534,11 @@ describe("OrgDO billing grant idempotency", () => {
     const orgStub = testEnv.ORG.get(testEnv.ORG.idFromName(org.id));
     await orgStub.updateBillingState({
       billing_status: "active",
-      billing_plan: "starter",
+      billing_plan: "team",
+      billing_seat_count: 7,
+      billing_customer_id: "cus_current",
+      billing_subscription_id: "sub_current",
+      billing_subscription_status: "active",
       billing_credit_grant_total_cents: 300,
     });
     const command = {
@@ -555,10 +559,10 @@ describe("OrgDO billing grant idempotency", () => {
 
     expect([first?.applied, duplicate?.applied].sort()).toEqual([false, true]);
     await expect(orgStub.getInfo()).resolves.toMatchObject({
-      billing_customer_id: "cus_ledger",
-      billing_subscription_id: "sub_ledger",
-      billing_plan: "pro",
-      billing_seat_count: 1,
+      billing_customer_id: "cus_current",
+      billing_subscription_id: "sub_current",
+      billing_plan: "team",
+      billing_seat_count: 7,
       billing_credit_grant_total_cents: 4300,
       billing_last_included_credit_invoice_id: command.invoiceId,
     });

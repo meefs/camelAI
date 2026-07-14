@@ -7,6 +7,7 @@ const testState = vi.hoisted(() => ({
   fetcher: {
     state: "idle",
     data: undefined,
+    formData: undefined as FormData | undefined,
     submit: vi.fn(),
   },
   revalidate: vi.fn(),
@@ -89,6 +90,7 @@ describe("BillingPage overview", () => {
   beforeEach(() => {
     testState.fetcher.state = "idle";
     testState.fetcher.data = undefined;
+    testState.fetcher.formData = undefined;
     testState.fetcher.submit.mockClear();
   });
 
@@ -206,8 +208,36 @@ describe("BillingPage overview", () => {
 
     fireEvent.click(manageButton);
     expect(testState.fetcher.submit).toHaveBeenCalledWith(
-      { intent: "manageBilling" },
+      { intent: "manageBilling", plan: "pro" },
       { method: "post" },
     );
+  });
+
+  it("disables Manage in Stripe and shows progress while its request is pending", () => {
+    testState.loaderData.current = {
+      ...makeLoaderData(),
+      org: {
+        ...makeLoaderData().org,
+        billing_plan: "pro",
+        billing_seat_count: 1,
+      },
+      overview: {
+        ...makeLoaderData().overview,
+        billing_plan: "pro",
+        billing_seat_count: 1,
+      },
+    };
+    const formData = new FormData();
+    formData.set("intent", "manageBilling");
+    formData.set("plan", "pro");
+    testState.fetcher.state = "submitting";
+    testState.fetcher.formData = formData;
+
+    render(<BillingPage />);
+    fireEvent.click(screen.getByRole("button", { name: "Manage plan" }));
+
+    expect(
+      screen.getByRole("button", { name: "Opening Stripe…" }),
+    ).toBeDisabled();
   });
 });

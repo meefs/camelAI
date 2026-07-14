@@ -101,6 +101,8 @@ export interface StripeSubscriptionItem {
   id: string;
   quantity?: number | null;
   price?: string | StripePriceSummary | null;
+  current_period_start?: number | null;
+  current_period_end?: number | null;
 }
 
 export interface LegacyStripeMigrationEligibility {
@@ -206,11 +208,15 @@ export interface StripeInvoiceLine {
     } | null;
   } | null;
   proration?: boolean | null;
+  type?: string | null;
+  subscription_item?: string | null;
   parent?: {
+    type?: string | null;
     subscription_item_details?: {
       proration?: boolean | null;
       subscription_item?: string | null;
     } | null;
+    invoice_item_details?: unknown;
   } | null;
 }
 
@@ -583,13 +589,44 @@ function stripeTimestampMs(seconds: number | null | undefined): number | null {
   return seconds * 1000;
 }
 
+function getSubscriptionPeriodEndSeconds(
+  env: StripeBillingEnv,
+  subscription: StripeSubscription,
+): number | null | undefined {
+  const paidPriceIds = new Set(
+    (["starter", "pro", "team"] as const)
+      .map((plan) => getConfiguredSubscriptionPriceId(env, plan))
+      .filter((priceId): priceId is string => Boolean(priceId)),
+  );
+  const items = subscription.items?.data ?? [];
+  const paidItems = items.filter((item) =>
+    paidPriceIds.has(getStripePriceId(item.price) ?? ""),
+  );
+  if (paidItems.length === 1 && paidItems[0].current_period_end) {
+    return paidItems[0].current_period_end;
+  }
+  const itemPeriodEnds = items
+    .map((item) => item.current_period_end)
+    .filter(
+      (periodEnd): periodEnd is number =>
+        typeof periodEnd === "number" &&
+        Number.isFinite(periodEnd) &&
+        periodEnd > 0,
+    );
+  return itemPeriodEnds.length > 0
+    ? Math.min(...itemPeriodEnds)
+    : subscription.current_period_end;
+}
+
 function getSubscriptionCancellationDateMs(
+  env: StripeBillingEnv,
   subscription: StripeSubscription,
 ): number | null {
   const seconds =
     subscription.cancel_at ??
     (subscription.cancel_at_period_end
-      ? (subscription.current_period_end ?? subscription.trial_end)
+      ? (getSubscriptionPeriodEndSeconds(env, subscription) ??
+        subscription.trial_end)
       : null) ??
     (subscription.status === "canceled"
       ? (subscription.canceled_at ?? null)
@@ -1318,10 +1355,6 @@ export async function syncTeamSubscriptionSeatCount(
       : normalizeSeatCount("team", options.targetSeatCount);
   if (!seatCount) return org;
 
-  if (org.billing_seat_count === seatCount) {
-    return org;
-  }
-
   const subscriptionId = org.billing_subscription_id?.trim();
   if (!subscriptionId) return org;
 
@@ -1333,22 +1366,41 @@ export async function syncTeamSubscriptionSeatCount(
     item.quantity ?? org.billing_seat_count,
   );
 
-  const itemBody = new URLSearchParams();
-  itemBody.set("quantity", String(seatCount));
-  itemBody.set(
-    "proration_behavior",
-    options.prorationBehavior ??
-      (seatCount > currentSeatCount ? "always_invoice" : "none"),
-  );
-  await stripeRequest<StripeSubscriptionItem>(
-    env,
-    `/subscription_items/${item.id}`,
-    {
-      method: "POST",
-      body: itemBody,
-      idempotencyKey: options.itemUpdateIdempotencyKey,
-    },
-  );
+  if (seatCount !== currentSeatCount) {
+    const isIncrease = seatCount > currentSeatCount;
+    const prorationBehavior = isIncrease ? "always_invoice" : "none";
+    if (
+      options.prorationBehavior &&
+      options.prorationBehavior !== prorationBehavior
+    ) {
+      throw new Error(
+        `Unsafe Team seat proration behavior: expected ${prorationBehavior}.`,
+      );
+    }
+    const itemBody = new URLSearchParams();
+    itemBody.set("quantity", String(seatCount));
+    itemBody.set("proration_behavior", prorationBehavior);
+    if (isIncrease) {
+      itemBody.set("payment_behavior", "error_if_incomplete");
+    }
+    const updatedItem = await stripeRequest<StripeSubscriptionItem>(
+      env,
+      `/subscription_items/${item.id}`,
+      {
+        method: "POST",
+        body: itemBody,
+        idempotencyKey: options.itemUpdateIdempotencyKey,
+      },
+    );
+    if (
+      typeof updatedItem.quantity !== "number" ||
+      normalizeSeatCount("team", updatedItem.quantity) !== seatCount
+    ) {
+      throw new Error(
+        "Stripe did not confirm the requested Team seat quantity.",
+      );
+    }
+  }
 
   const includedCreditCents = getSubscriptionIncludedCreditCentsForPlan(
     env,
@@ -1879,16 +1931,26 @@ async function verifySubscriptionCustomerOwnership(args: {
   org: Organization;
   subscription: StripeSubscription;
 }): Promise<string> {
+  const subscriptionOrgId = args.subscription.metadata?.org_id?.trim();
+  if (subscriptionOrgId && subscriptionOrgId !== args.org.id) {
+    throw new Error(
+      "Stripe subscription does not belong to this organization.",
+    );
+  }
   const customerId = getStripeCustomerId(args.subscription.customer);
-  if (!customerId) throw new Error("Stripe subscription does not have a customer.");
-  if (args.org.billing_customer_id && args.org.billing_customer_id !== customerId) {
+  if (!customerId)
+    throw new Error("Stripe subscription does not have a customer.");
+  const cachedCustomerId = args.org.billing_customer_id?.trim() || null;
+  if (!cachedCustomerId || cachedCustomerId !== customerId) {
     const metadata = await fetchStripeCustomerMetadata(args.env, customerId);
     if (resolveOrgIdFromStripeCustomerMetadata(metadata) !== args.org.id) {
       throw new Error("Stripe subscription customer does not belong to this organization.");
     }
   }
-  if (args.org.billing_customer_id !== customerId) {
-    await getOrgStub(args.env, args.org.id).updateBillingState({ billing_customer_id: customerId });
+  if (cachedCustomerId !== customerId) {
+    await getOrgStub(args.env, args.org.id).updateBillingState({
+      billing_customer_id: customerId,
+    });
   }
   return customerId;
 }
@@ -1944,11 +2006,12 @@ export type StripeCancellationPortalResult =
     };
 
 function stripeCancellationScheduledResult(
+  env: StripeBillingEnv,
   subscription: StripeSubscription,
 ): StripeCancellationPortalResult {
   return {
     kind: "already_scheduled",
-    cancellationDateMs: getSubscriptionCancellationDateMs(subscription),
+    cancellationDateMs: getSubscriptionCancellationDateMs(env, subscription),
     subscriptionStatus: subscription.status,
   };
 }
@@ -1988,7 +2051,7 @@ export async function createSubscriptionCancellationPortalSession(args: {
   const subscription = await fetchStripeSubscription(env, subscriptionId);
   if (isSubscriptionCanceling(subscription)) {
     await bestEffortSyncCancelingStripeSubscription({ env, subscription });
-    return stripeCancellationScheduledResult(subscription);
+    return stripeCancellationScheduledResult(env, subscription);
   }
 
   const customerId = await verifySubscriptionCustomerOwnership({
@@ -2048,7 +2111,7 @@ export async function createSubscriptionCancellationPortalSession(args: {
         env,
         subscription: refreshedSubscription,
       });
-      return stripeCancellationScheduledResult(refreshedSubscription);
+      return stripeCancellationScheduledResult(env, refreshedSubscription);
     }
 
     throw error;
@@ -3095,6 +3158,66 @@ function recognizedSubscriptionItem(
   return matches[0] ?? null;
 }
 
+function isRecurringSubscriptionInvoiceLine(line: StripeInvoiceLine): boolean {
+  if (isStripeProrationLine(line)) return false;
+  if (line.parent?.invoice_item_details || line.type === "invoiceitem") {
+    return false;
+  }
+  return Boolean(
+    line.parent?.subscription_item_details ||
+    line.subscription_item ||
+    line.type === "subscription" ||
+    getInvoiceLinePriceId(line),
+  );
+}
+
+function getInvoiceLineSeatCount(
+  invoiceId: string,
+  line: StripeInvoiceLine,
+  plan: SubscriptionBillingPlan,
+): number {
+  if (
+    typeof line.quantity !== "number" ||
+    !Number.isFinite(line.quantity) ||
+    line.quantity <= 0
+  ) {
+    throw new Error(
+      `Paid invoice ${invoiceId} has no valid quantity for ${plan}.`,
+    );
+  }
+  return normalizeSeatCount(plan, line.quantity);
+}
+
+function recognizedRecurringInvoiceLine(
+  invoice: StripeInvoice,
+  lines: StripeInvoiceLine[],
+  catalog: CanonicalPaidPlanCatalogEntry[],
+): {
+  entry: CanonicalPaidPlanCatalogEntry;
+  line: StripeInvoiceLine;
+  seatCount: number;
+} | null {
+  const matches = lines.flatMap((line) => {
+    if (!isRecurringSubscriptionInvoiceLine(line)) return [];
+    const entry = catalogEntryForPrice(catalog, getInvoiceLinePriceId(line));
+    return entry
+      ? [
+          {
+            entry,
+            line,
+            seatCount: getInvoiceLineSeatCount(invoice.id, line, entry.plan),
+          },
+        ]
+      : [];
+  });
+  if (matches.length > 1) {
+    throw new Error(
+      `Paid ${invoice.billing_reason ?? "subscription"} invoice ${invoice.id} has multiple recognized recurring plan lines.`,
+    );
+  }
+  return matches[0] ?? null;
+}
+
 export function resolveSubscriptionInvoiceGrant(args: {
   env: Pick<StripeBillingEnv, "BILLING_SUBSCRIPTION_INCLUDED_CREDIT_CENTS">;
   invoice: StripeInvoice;
@@ -3120,8 +3243,13 @@ export function resolveSubscriptionInvoiceGrant(args: {
   ) {
     return { command: null, ignoredReason: "unsupported_billing_reason" };
   }
-  const recognized = recognizedSubscriptionItem(subscription, catalog);
-  const pendingMigration = getPendingLegacyMigrationCustomerMetadata(args.customerMetadata);
+  const recognized =
+    billingReason === "subscription_update"
+      ? recognizedSubscriptionItem(subscription, catalog)
+      : null;
+  const pendingMigration = getPendingLegacyMigrationCustomerMetadata(
+    args.customerMetadata,
+  );
   const isLegacyMigration =
     billingReason === "subscription_update" &&
     recognized !== null &&
@@ -3150,6 +3278,10 @@ export function resolveSubscriptionInvoiceGrant(args: {
   if (billingReason === "subscription_update") {
     if (!recognized) throw new Error(`Paid update invoice ${invoice.id} has no recognized plan.`);
     let netAllowance = 0;
+    const positiveTargets: Array<{
+      plan: SubscriptionBillingPlan;
+      seatCount: number;
+    }> = [];
     for (const line of args.lines) {
       if (!isStripeProrationLine(line)) continue;
       const priceId = getInvoiceLinePriceId(line);
@@ -3166,10 +3298,33 @@ export function resolveSubscriptionInvoiceGrant(args: {
       }
       netAllowance +=
         (line.amount / denominator) *
-        getSubscriptionIncludedCreditCentsForPlan(args.env, entry.plan, quantity);
+        getSubscriptionIncludedCreditCentsForPlan(
+          args.env,
+          entry.plan,
+          quantity,
+        );
+      if (line.amount > 0) {
+        positiveTargets.push({ plan: entry.plan, seatCount: quantity });
+      }
     }
-    const plan = recognized.entry.plan;
-    const seatCount = normalizeSeatCount(plan, recognized.item.quantity);
+    const distinctPositiveTargets = positiveTargets.filter(
+      (target, index, all) =>
+        all.findIndex(
+          (candidate) =>
+            candidate.plan === target.plan &&
+            candidate.seatCount === target.seatCount,
+        ) === index,
+    );
+    if (distinctPositiveTargets.length > 1) {
+      throw new Error(
+        `Paid subscription update invoice ${invoice.id} has ambiguous target plan lines.`,
+      );
+    }
+    const invoiceTarget = distinctPositiveTargets[0];
+    const plan = invoiceTarget?.plan ?? recognized.entry.plan;
+    const seatCount =
+      invoiceTarget?.seatCount ??
+      normalizeSeatCount(plan, recognized.item.quantity);
     return {
       command: {
         invoiceId: invoice.id,
@@ -3184,15 +3339,18 @@ export function resolveSubscriptionInvoiceGrant(args: {
       ignoredReason: null,
     };
   }
-  let plan = recognized?.entry.plan ?? null;
-  let seatCount = recognized
-    ? normalizeSeatCount(recognized.entry.plan, recognized.item.quantity)
-    : null;
+  const recurringLine = recognizedRecurringInvoiceLine(
+    invoice,
+    args.lines,
+    catalog,
+  );
+  let plan = recurringLine?.entry.plan ?? null;
+  let seatCount = recurringLine?.seatCount ?? null;
   if (!plan || seatCount === null) {
-    const fallback = normalizeBillingPlan(
-      subscription.metadata?.billing_plan ?? getInvoiceMetadata(invoice)?.billing_plan,
-    );
+    const invoiceMetadata = getInvoiceMetadata(invoice);
+    const fallback = normalizeBillingPlan(invoiceMetadata?.billing_plan);
     const hasLegacyPrice = args.lines.some((line) => {
+      if (!isRecurringSubscriptionInvoiceLine(line)) return false;
       const priceId = getInvoiceLinePriceId(line);
       return Boolean(priceId && LEGACY_MIGRATION_PRICE_IDS.has(priceId));
     });
@@ -3204,7 +3362,7 @@ export function resolveSubscriptionInvoiceGrant(args: {
       throw new Error(`Paid ${billingReason} invoice ${invoice.id} has no recognized plan.`);
     }
     plan = fallback as SubscriptionBillingPlan;
-    seatCount = getMetadataSeatCount(subscription.metadata, plan);
+    seatCount = getMetadataSeatCount(invoiceMetadata, plan);
   }
   return {
     command: {
@@ -3250,6 +3408,7 @@ export async function retrieveCanonicalStripeInvoice(args: {
 
 type EligibleInvoiceGrant = {
   invoice: StripeInvoice;
+  subscription: StripeSubscription;
   command: SubscriptionInvoiceGrantCommand;
   orgId: string;
   customerId: string;
@@ -3316,7 +3475,6 @@ async function preparePaidSubscriptionInvoice(
   const orgStub = getOrgStub(env, orgId);
   const org = await orgStub.getInfo();
   if (!org) throw new Error(`Organization ${orgId} does not exist.`);
-  const syncedOrg = await syncOrgSubscriptionFromStripe(env, subscription);
   const resolution = resolveSubscriptionInvoiceGrant({
     env,
     invoice,
@@ -3329,7 +3487,7 @@ async function preparePaidSubscriptionInvoice(
   });
   if (
     resolution.command?.source === "renewal" &&
-    !recognizedSubscriptionItem(subscription, catalog)
+    !recognizedRecurringInvoiceLine(invoice, lines, catalog)
   ) {
     console.warn("[billing] using legacy renewal price metadata fallback", {
       invoiceId: invoice.id,
@@ -3358,11 +3516,12 @@ async function preparePaidSubscriptionInvoice(
     kind: "eligible",
     grant: {
       invoice,
+      subscription,
       command: resolution.command,
       orgId,
       customerId,
       customerMetadata,
-      org: syncedOrg ?? org,
+      org,
       orgStub,
       oldKvMarker,
       existingLedger,
@@ -3377,9 +3536,13 @@ async function applyEligibleInvoiceGrant(
   result: Extract<PaidSubscriptionInvoiceProcessingResult, { status: "processed" | "duplicate" }>;
   grantResult: ApplySubscriptionInvoiceGrantResult;
 }> {
-  const grantResult = await grant.orgStub.applySubscriptionInvoiceGrant(grant.command, {
-    legacyProcessed: grant.oldKvMarker,
-  });
+  await syncOrgSubscriptionFromStripe(env, grant.subscription);
+  const grantResult = await grant.orgStub.applySubscriptionInvoiceGrant(
+    grant.command,
+    {
+      legacyProcessed: grant.oldKvMarker,
+    },
+  );
   if (!grantResult) throw new Error(`Organization ${grant.orgId} disappeared.`);
   if (grantResult.invariantError) throw new Error(grantResult.invariantError);
   await markIncludedCreditInvoiceProcessed(env, grant.invoice.id);
@@ -3611,9 +3774,11 @@ export async function getStripeSubscriptionSummary(
   return {
     id: subscription.id,
     status: subscription.status,
-    current_period_end_ms: stripeTimestampMs(subscription.current_period_end),
+    current_period_end_ms: stripeTimestampMs(
+      getSubscriptionPeriodEndSeconds(env, subscription),
+    ),
     cancel_at_ms: stripeTimestampMs(subscription.cancel_at),
-    cancellation_date_ms: getSubscriptionCancellationDateMs(subscription),
+    cancellation_date_ms: getSubscriptionCancellationDateMs(env, subscription),
     cancel_at_period_end: Boolean(subscription.cancel_at_period_end),
     is_canceling: isSubscriptionCanceling(subscription),
     trial_end_ms: stripeTimestampMs(subscription.trial_end),

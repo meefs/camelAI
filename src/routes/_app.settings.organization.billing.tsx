@@ -825,7 +825,10 @@ function ManagePlanView({
       return;
     }
     if (cta.kind === "manage") {
-      fetcher.submit({ intent: "manageBilling" }, { method: "post" });
+      fetcher.submit(
+        { intent: "manageBilling", plan: currentPlan },
+        { method: "post" },
+      );
       return;
     }
     if (cta.kind === "migrate") {

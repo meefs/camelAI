@@ -42,6 +42,7 @@ import {
   migrateLegacyStripeSubscription,
   parseStripePriceIdList,
   processPaidSubscriptionInvoice,
+  reconcilePaidSubscriptionInvoice,
   resolveSubscriptionInvoiceGrant,
   resolveOrgBillingAccess,
   StaleTrialingSubscriptionStatusError,
@@ -90,6 +91,16 @@ describe("billing helpers", () => {
       billing_subscription_id: "sub_team",
       ...args.org,
     } as Organization;
+    const invoiceGrants = new Map<string, {
+      invoiceId: string;
+      subscriptionId: string;
+      customerId: string;
+      billingReason: string;
+      source: string;
+      plan: string;
+      seatCount: number;
+      grantCents: number;
+    }>();
     const orgStub = {
       getInfo: vi.fn(async () => org),
       getMemberCount: vi.fn(async () => args.memberCount),
@@ -123,12 +134,33 @@ describe("billing helpers", () => {
           return { org };
         },
       ),
-      getSubscriptionInvoiceGrant: vi.fn(async () => null),
+      getSubscriptionInvoiceGrant: vi.fn(async (invoiceId: string) => {
+        const command = invoiceGrants.get(invoiceId);
+        return command
+          ? {
+              invoice_id: command.invoiceId,
+              subscription_id: command.subscriptionId,
+              customer_id: command.customerId,
+              billing_reason: command.billingReason,
+              source: command.source,
+              plan: command.plan,
+              seat_count: command.seatCount,
+              amount_cents: command.grantCents,
+              created_at: Date.now(),
+            }
+          : null;
+      }),
       applySubscriptionInvoiceGrant: vi.fn(async (command) => {
-        org.billing_customer_id = command.customerId;
-        org.billing_subscription_id = command.subscriptionId;
-        org.billing_plan = command.plan;
-        org.billing_seat_count = command.seatCount;
+        if (invoiceGrants.has(command.invoiceId)) {
+          return {
+            org,
+            applied: false,
+            credited: false,
+            legacyProcessed: false,
+            invariantError: null,
+          };
+        }
+        invoiceGrants.set(command.invoiceId, { ...command });
         org.billing_credit_grant_total_cents =
           (org.billing_credit_grant_total_cents ?? 0) + command.grantCents;
         if (command.grantCents > 0) {
@@ -1286,6 +1318,150 @@ describe("billing helpers", () => {
     expect(portalParams.get("configuration")).toBe("bpc_management");
   });
 
+  it("repairs a missing cached customer only after verifying Stripe ownership", async () => {
+    const { env, org, orgStub } = makeBillingOrgEnv({
+      org: {
+        billing_plan: "pro",
+        billing_customer_id: null,
+        billing_subscription_id: "sub_team",
+      },
+      memberCount: 1,
+    });
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url.endsWith("/subscriptions/sub_team")) {
+        return {
+          ok: true,
+          json: async () => ({
+            id: "sub_team",
+            status: "active",
+            customer: "cus_verified",
+            metadata: { org_id: "org_team" },
+          }),
+        };
+      }
+      if (url.endsWith("/customers/cus_verified")) {
+        return {
+          ok: true,
+          json: async () => ({
+            id: "cus_verified",
+            metadata: { org_id: "org_team" },
+          }),
+        };
+      }
+      if (url.endsWith("/billing_portal/configurations")) {
+        return { ok: true, json: async () => ({ id: "bpc_management" }) };
+      }
+      if (url.endsWith("/billing_portal/sessions")) {
+        return {
+          ok: true,
+          json: async () => ({ url: "https://billing.stripe.test/session" }),
+        };
+      }
+      throw new Error(
+        `Unexpected Stripe request: ${url} ${init?.method ?? "GET"}`,
+      );
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      createBillingPortalSession({
+        env: env as never,
+        org,
+        customerEmail: "owner@example.com",
+        returnUrl: "https://camelai.dev/settings/organization/billing",
+      }),
+    ).resolves.toBe("https://billing.stripe.test/session");
+
+    expect(orgStub.updateBillingState).toHaveBeenCalledWith({
+      billing_customer_id: "cus_verified",
+    });
+    expect(org.billing_customer_id).toBe("cus_verified");
+  });
+
+  it("rejects an unverified customer when repairing a missing cached customer", async () => {
+    const { env, org, orgStub } = makeBillingOrgEnv({
+      org: {
+        billing_plan: "pro",
+        billing_customer_id: null,
+        billing_subscription_id: "sub_team",
+      },
+      memberCount: 1,
+    });
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url.endsWith("/subscriptions/sub_team")) {
+        return {
+          ok: true,
+          json: async () => ({
+            id: "sub_team",
+            status: "active",
+            customer: "cus_other_org",
+            metadata: { org_id: "org_team" },
+          }),
+        };
+      }
+      if (url.endsWith("/customers/cus_other_org")) {
+        return {
+          ok: true,
+          json: async () => ({
+            id: "cus_other_org",
+            metadata: { org_id: "org_other" },
+          }),
+        };
+      }
+      throw new Error(`Unexpected Stripe request: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      createBillingPortalSession({
+        env: env as never,
+        org,
+        customerEmail: "owner@example.com",
+        returnUrl: "https://camelai.dev/settings/organization/billing",
+      }),
+    ).rejects.toThrow(/customer does not belong/);
+    expect(orgStub.updateBillingState).not.toHaveBeenCalled();
+    expect(org.billing_customer_id).toBeNull();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("rejects a cross-linked subscription before creating a Portal session", async () => {
+    const { env, org, orgStub } = makeBillingOrgEnv({
+      org: {
+        billing_plan: "pro",
+        billing_customer_id: "cus_team",
+        billing_subscription_id: "sub_team",
+      },
+      memberCount: 1,
+    });
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url.endsWith("/subscriptions/sub_team")) {
+        return {
+          ok: true,
+          json: async () => ({
+            id: "sub_team",
+            status: "active",
+            customer: "cus_team",
+            metadata: { org_id: "org_other" },
+          }),
+        };
+      }
+      throw new Error(`Unexpected Stripe request: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      createBillingPortalSession({
+        env: env as never,
+        org,
+        customerEmail: "owner@example.com",
+        returnUrl: "https://camelai.dev/settings/organization/billing",
+      }),
+    ).rejects.toThrow(/subscription does not belong/);
+    expect(orgStub.updateBillingState).not.toHaveBeenCalled();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
   it("keeps general management separate from cancellation deep links", async () => {
     let portalRequestBody: string | null = null;
     vi.stubGlobal(
@@ -1332,10 +1508,20 @@ describe("billing helpers", () => {
         json: async () => ({
           id: "sub_123",
           status: "active",
-          current_period_end: 1_778_342_400,
           cancel_at: 1_778_342_400,
           cancel_at_period_end: true,
           trial_end: 1_776_787_200,
+          items: {
+            data: [
+              {
+                id: "si_pro",
+                quantity: 1,
+                price: "price_pro",
+                current_period_start: 1_775_750_400,
+                current_period_end: 1_778_342_400,
+              },
+            ],
+          },
         }),
       })
       .mockResolvedValueOnce({
@@ -1343,10 +1529,20 @@ describe("billing helpers", () => {
         json: async () => ({
           id: "sub_123",
           status: "active",
-          current_period_end: 1_781_020_800,
           cancel_at: null,
           cancel_at_period_end: true,
           trial_end: null,
+          items: {
+            data: [
+              {
+                id: "si_pro",
+                quantity: 1,
+                price: "price_pro",
+                current_period_start: 1_778_342_400,
+                current_period_end: 1_781_020_800,
+              },
+            ],
+          },
         }),
       });
     vi.stubGlobal("fetch", fetchMock);
@@ -1355,6 +1551,7 @@ describe("billing helpers", () => {
       ORG: {} as never,
       STRIPE_MODE: "test",
       STRIPE_SECRET_KEY: "sk_test_123",
+      STRIPE_PRO_PRICE_ID: "price_pro",
     };
     const org = {
       id: "org_123",
@@ -1363,6 +1560,7 @@ describe("billing helpers", () => {
 
     await expect(getStripeSubscriptionSummary(env, org)).resolves.toMatchObject(
       {
+        current_period_end_ms: 1_778_342_400_000,
         cancel_at_ms: 1_778_342_400_000,
         cancellation_date_ms: 1_778_342_400_000,
         cancel_at_period_end: true,
@@ -1372,6 +1570,7 @@ describe("billing helpers", () => {
 
     await expect(getStripeSubscriptionSummary(env, org)).resolves.toMatchObject(
       {
+        current_period_end_ms: 1_781_020_800_000,
         cancel_at_ms: null,
         cancellation_date_ms: 1_781_020_800_000,
         cancel_at_period_end: true,
@@ -2942,31 +3141,486 @@ describe("billing helpers", () => {
   });
 
   it.each([
-    ["starter", 1, 1000],
-    ["pro", 1, 4000],
-    ["team", 3, 15000],
-  ] as const)("computes exact full-cycle %s credits from the live subscription", (plan, quantity, grantCents) => {
+    ["starter", 1, "pro", 1, 1000],
+    ["pro", 1, "starter", 1, 4000],
+    ["team", 3, "team", 8, 15000],
+  ] as const)(
+    "computes exact full-cycle %s credits from the paid invoice after a later subscription change",
+    (plan, quantity, livePlan, liveQuantity, grantCents) => {
+      const resolution = resolveSubscriptionInvoiceGrant({
+        env: {},
+        invoice: {
+          id: `in_${plan}`,
+          status: "paid",
+          billing_reason: "subscription_cycle",
+          parent: { subscription_details: { subscription: `sub_${plan}` } },
+        },
+        lines: [{ price: `price_${plan}`, quantity }],
+        subscription: {
+          id: `sub_${plan}`,
+          status: "active",
+          customer: "cus_123",
+          items: {
+            data: [
+              {
+                id: `si_${livePlan}`,
+                quantity: liveQuantity,
+                price: `price_${livePlan}`,
+              },
+            ],
+          },
+        },
+        catalog: paidPlanCatalog,
+        orgId: "org_team",
+        customerId: "cus_123",
+      });
+
+      expect(resolution.command).toMatchObject({
+        plan,
+        seatCount: quantity,
+        grantCents,
+        source: "renewal",
+      });
+    },
+  );
+
+  it.each([
+    ["starter", 1, "pro", 1, 1000],
+    ["pro", 1, "team", 5, 4000],
+    ["team", 3, "team", 8, 15000],
+  ] as const)(
+    "processes a delayed %s renewal once without regressing the current subscription",
+    async (invoicePlan, invoiceSeats, livePlan, liveSeats, grantCents) => {
+      const includedCreditCents =
+        livePlan === "pro" ? 4000 : 5000 * liveSeats;
+      const { env, org } = makeBillingOrgEnv({
+        org: {
+          billing_status: "active",
+          billing_plan: livePlan,
+          billing_seat_count: liveSeats,
+          billing_customer_id: "cus_delayed",
+          billing_subscription_id: "sub_delayed",
+          billing_subscription_status: "active",
+          billing_credit_grant_total_cents: 0,
+        },
+        memberCount: liveSeats,
+      });
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async (url: string, init?: RequestInit) => {
+          if (url.endsWith(`/invoices/in_delayed_${invoicePlan}`)) {
+            return {
+              ok: true,
+              json: async () => ({
+                id: `in_delayed_${invoicePlan}`,
+                status: "paid",
+                customer: "cus_delayed",
+                billing_reason: "subscription_cycle",
+                parent: {
+                  subscription_details: {
+                    subscription: "sub_delayed",
+                    metadata: { org_id: "org_team" },
+                  },
+                },
+              }),
+            };
+          }
+          if (url.includes(`/invoices/in_delayed_${invoicePlan}/lines?`)) {
+            return {
+              ok: true,
+              json: async () => ({
+                data: [
+                  {
+                    id: `line_${invoicePlan}`,
+                    amount:
+                      invoicePlan === "starter"
+                        ? 1000
+                        : invoicePlan === "pro"
+                          ? 4000
+                          : 5000 * invoiceSeats,
+                    quantity: invoiceSeats,
+                    pricing: {
+                      price_details: { price: `price_${invoicePlan}` },
+                    },
+                    parent: {
+                      type: "subscription_item_details",
+                      subscription_item_details: {
+                        proration: false,
+                        subscription_item: `si_old_${invoicePlan}`,
+                      },
+                    },
+                  },
+                ],
+                has_more: false,
+              }),
+            };
+          }
+          if (
+            url.endsWith("/subscriptions/sub_delayed") &&
+            init?.method === "GET"
+          ) {
+            return {
+              ok: true,
+              json: async () => ({
+                id: "sub_delayed",
+                status: "active",
+                customer: "cus_delayed",
+                metadata: {
+                  org_id: "org_team",
+                  billing_plan: livePlan,
+                  seat_count: String(liveSeats),
+                  subscription_included_credit_cents: String(
+                    includedCreditCents,
+                  ),
+                },
+                items: {
+                  data: [
+                    {
+                      id: `si_live_${livePlan}`,
+                      quantity: liveSeats,
+                      price: `price_${livePlan}`,
+                    },
+                  ],
+                },
+              }),
+            };
+          }
+          if (url.includes("/prices/") && init?.method === "GET") {
+            return {
+              ok: true,
+              json: async () =>
+                configuredTestPrice(url.split("/prices/")[1]),
+            };
+          }
+          throw new Error(
+            `Unexpected Stripe request: ${init?.method ?? "GET"} ${url}`,
+          );
+        }),
+      );
+
+      await expect(
+        processPaidSubscriptionInvoice(
+          env as never,
+          `in_delayed_${invoicePlan}`,
+        ),
+      ).resolves.toMatchObject({
+        status: "processed",
+        plan: invoicePlan,
+        seatCount: invoiceSeats,
+        grantCents,
+      });
+      await expect(
+        processPaidSubscriptionInvoice(
+          env as never,
+          `in_delayed_${invoicePlan}`,
+        ),
+      ).resolves.toMatchObject({ status: "duplicate", grantCents: 0 });
+      expect(org).toMatchObject({
+        billing_plan: livePlan,
+        billing_seat_count: liveSeats,
+        billing_customer_id: "cus_delayed",
+        billing_subscription_id: "sub_delayed",
+        billing_credit_grant_total_cents: grantCents,
+      });
+    },
+  );
+
+  it("uses the single recurring invoice line for an initial grant and ignores one-off items", () => {
     const resolution = resolveSubscriptionInvoiceGrant({
       env: {},
       invoice: {
-        id: `in_${plan}`,
+        id: "in_initial_pro",
         status: "paid",
-        billing_reason: "subscription_cycle",
-        parent: { subscription_details: { subscription: `sub_${plan}` } },
+        billing_reason: "subscription_create",
+        parent: { subscription_details: { subscription: "sub_initial" } },
       },
-      lines: [{ price: `price_${plan}`, quantity }],
+      lines: [
+        {
+          id: "line_recurring_pro",
+          amount: 4000,
+          quantity: 1,
+          price: "price_pro",
+          type: "subscription",
+        },
+        {
+          id: "line_one_off_starter_price",
+          amount: 1000,
+          quantity: 1,
+          price: "price_starter",
+          parent: {
+            type: "invoice_item_details",
+            invoice_item_details: {},
+          },
+        },
+      ],
       subscription: {
-        id: `sub_${plan}`,
+        id: "sub_initial",
         status: "active",
-        customer: "cus_123",
-        items: { data: [{ id: `si_${plan}`, quantity, price: `price_${plan}` }] },
+        items: {
+          data: [{ id: "si_live_team", quantity: 9, price: "price_team" }],
+        },
       },
       catalog: paidPlanCatalog,
       orgId: "org_team",
       customerId: "cus_123",
     });
 
-    expect(resolution.command).toMatchObject({ plan, seatCount: quantity, grantCents, source: "renewal" });
+    expect(resolution.command).toMatchObject({
+      plan: "pro",
+      seatCount: 1,
+      grantCents: 4000,
+      source: "initial",
+    });
+  });
+
+  it("fails closed when a full-cycle invoice has multiple recurring plan lines", () => {
+    expect(() =>
+      resolveSubscriptionInvoiceGrant({
+        env: {},
+        invoice: {
+          id: "in_ambiguous_cycle",
+          status: "paid",
+          billing_reason: "subscription_cycle",
+          subscription: "sub_ambiguous",
+        },
+        lines: [
+          { quantity: 1, price: "price_starter", type: "subscription" },
+          { quantity: 1, price: "price_pro", type: "subscription" },
+        ],
+        subscription: { id: "sub_ambiguous", status: "active" },
+        catalog: paidPlanCatalog,
+        orgId: "org_team",
+        customerId: "cus_123",
+      }),
+    ).toThrow(/multiple recognized recurring plan lines/);
+  });
+
+  it("uses invoice metadata only for an explicit retired-price renewal fallback", () => {
+    const resolution = resolveSubscriptionInvoiceGrant({
+      env: {},
+      invoice: {
+        id: "in_legacy_cycle",
+        status: "paid",
+        billing_reason: "subscription_cycle",
+        subscription: "sub_legacy",
+        metadata: { billing_plan: "starter", seat_count: "1" },
+      },
+      lines: [
+        {
+          quantity: 1,
+          price: "price_1QIfnqGvliMKf4vHaDTMG2Mu",
+          type: "subscription",
+        },
+      ],
+      subscription: {
+        id: "sub_legacy",
+        status: "active",
+        metadata: { billing_plan: "pro", seat_count: "1" },
+        items: {
+          data: [{ id: "si_live_pro", quantity: 1, price: "price_pro" }],
+        },
+      },
+      catalog: paidPlanCatalog,
+      orgId: "org_team",
+      customerId: "cus_123",
+    });
+
+    expect(resolution.command).toMatchObject({
+      plan: "starter",
+      seatCount: 1,
+      grantCents: 1000,
+      source: "renewal",
+    });
+  });
+
+  it("does not use mutable live metadata for a retired-price renewal", () => {
+    expect(() =>
+      resolveSubscriptionInvoiceGrant({
+        env: {},
+        invoice: {
+          id: "in_legacy_without_invoice_metadata",
+          status: "paid",
+          billing_reason: "subscription_cycle",
+          subscription: "sub_legacy",
+        },
+        lines: [
+          {
+            quantity: 1,
+            price: "price_1QIfnqGvliMKf4vHaDTMG2Mu",
+            type: "subscription",
+          },
+        ],
+        subscription: {
+          id: "sub_legacy",
+          status: "active",
+          metadata: { billing_plan: "pro", seat_count: "1" },
+          items: {
+            data: [{ id: "si_live_pro", quantity: 1, price: "price_pro" }],
+          },
+        },
+        catalog: paidPlanCatalog,
+        orgId: "org_team",
+        customerId: "cus_123",
+      }),
+    ).toThrow(/has no recognized plan/);
+  });
+
+  it("grants only the paid incremental Team-seat allowance", () => {
+    const resolution = resolveSubscriptionInvoiceGrant({
+      env: {},
+      invoice: {
+        id: "in_team_seat_increase",
+        status: "paid",
+        billing_reason: "subscription_update",
+        parent: { subscription_details: { subscription: "sub_team" } },
+      },
+      lines: [
+        {
+          amount: -7500,
+          quantity: 3,
+          price: "price_team",
+          proration: true,
+        },
+        {
+          amount: 10000,
+          quantity: 4,
+          price: "price_team",
+          proration: true,
+        },
+      ],
+      subscription: {
+        id: "sub_team",
+        status: "active",
+        customer: "cus_team",
+        items: {
+          data: [{ id: "si_team", quantity: 4, price: "price_team" }],
+        },
+      },
+      catalog: paidPlanCatalog,
+      orgId: "org_team",
+      customerId: "cus_team",
+    });
+
+    expect(resolution.command).toMatchObject({
+      plan: "team",
+      seatCount: 4,
+      grantCents: 2500,
+      source: "plan_change",
+    });
+  });
+
+  it("applies a paid Team-seat increase invoice exactly once", async () => {
+    const { env, org } = makeBillingOrgEnv({
+      org: {
+        billing_status: "active",
+        billing_plan: "team",
+        billing_seat_count: 4,
+        billing_customer_id: "cus_team",
+        billing_subscription_id: "sub_team",
+        billing_credit_grant_total_cents: 0,
+      },
+      memberCount: 4,
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string, init?: RequestInit) => {
+        if (url.endsWith("/invoices/in_team_seat_paid")) {
+          return {
+            ok: true,
+            json: async () => ({
+              id: "in_team_seat_paid",
+              status: "paid",
+              customer: "cus_team",
+              billing_reason: "subscription_update",
+              parent: {
+                subscription_details: {
+                  subscription: "sub_team",
+                  metadata: { org_id: "org_team" },
+                },
+              },
+            }),
+          };
+        }
+        if (url.includes("/invoices/in_team_seat_paid/lines?")) {
+          return {
+            ok: true,
+            json: async () => ({
+              data: [
+                {
+                  id: "line_old_seats",
+                  amount: -7500,
+                  quantity: 3,
+                  price: "price_team",
+                  proration: true,
+                },
+                {
+                  id: "line_new_seats",
+                  amount: 10000,
+                  quantity: 4,
+                  price: "price_team",
+                  proration: true,
+                },
+              ],
+              has_more: false,
+            }),
+          };
+        }
+        if (url.endsWith("/subscriptions/sub_team") && init?.method === "GET") {
+          return {
+            ok: true,
+            json: async () => ({
+              id: "sub_team",
+              status: "active",
+              customer: "cus_team",
+              metadata: {
+                org_id: "org_team",
+                billing_plan: "team",
+                seat_count: "4",
+                subscription_included_credit_cents: "20000",
+              },
+              items: {
+                data: [{ id: "si_team", quantity: 4, price: "price_team" }],
+              },
+            }),
+          };
+        }
+        if (url.endsWith("/customers/cus_team") && init?.method === "GET") {
+          return {
+            ok: true,
+            json: async () => ({
+              id: "cus_team",
+              metadata: { org_id: "org_team" },
+            }),
+          };
+        }
+        if (url.includes("/prices/") && init?.method === "GET") {
+          return {
+            ok: true,
+            json: async () => configuredTestPrice(url.split("/prices/")[1]),
+          };
+        }
+        throw new Error(
+          `Unexpected Stripe request: ${init?.method ?? "GET"} ${url}`,
+        );
+      }),
+    );
+
+    await expect(
+      processPaidSubscriptionInvoice(env as never, "in_team_seat_paid"),
+    ).resolves.toMatchObject({
+      status: "processed",
+      plan: "team",
+      seatCount: 4,
+      grantCents: 2500,
+    });
+    await expect(
+      processPaidSubscriptionInvoice(env as never, "in_team_seat_paid"),
+    ).resolves.toMatchObject({ status: "duplicate", grantCents: 0 });
+    expect(org).toMatchObject({
+      billing_plan: "team",
+      billing_seat_count: 4,
+      billing_credit_grant_total_cents: 2500,
+    });
   });
 
   it("uses signed Stripe proration lines and ignores taxes when computing plan-change credits", () => {
@@ -3232,6 +3886,119 @@ describe("billing helpers", () => {
     );
   });
 
+  it("previews an eligible paid invoice without mutating Stripe, OrgDO, KV, or the ledger", async () => {
+    const { env, org, orgStub } = makeBillingOrgEnv({
+      org: {
+        billing_status: "active",
+        billing_plan: "team",
+        billing_seat_count: 5,
+        billing_customer_id: "cus_preview",
+        billing_subscription_id: "sub_preview",
+        billing_credit_grant_total_cents: 700,
+      },
+      memberCount: 5,
+    });
+    const kv = {
+      get: vi.fn(async () => null),
+      put: vi.fn(async () => undefined),
+    };
+    Object.assign(env, { APP_KV: kv });
+    const before = structuredClone(org);
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url.endsWith("/invoices/in_preview")) {
+        return {
+          ok: true,
+          json: async () => ({
+            id: "in_preview",
+            status: "paid",
+            customer: "cus_preview",
+            billing_reason: "subscription_cycle",
+            parent: {
+              subscription_details: {
+                subscription: "sub_preview",
+                metadata: { org_id: "org_team", billing_plan: "starter" },
+              },
+            },
+          }),
+        };
+      }
+      if (url.includes("/invoices/in_preview/lines?")) {
+        return {
+          ok: true,
+          json: async () => ({
+            data: [
+              {
+                id: "line_starter_cycle",
+                amount: 1000,
+                quantity: 1,
+                pricing: { price_details: { price: "price_starter" } },
+                parent: {
+                  type: "subscription_item_details",
+                  subscription_item_details: {
+                    proration: false,
+                    subscription_item: "si_old_starter",
+                  },
+                },
+              },
+            ],
+            has_more: false,
+          }),
+        };
+      }
+      if (url.endsWith("/subscriptions/sub_preview")) {
+        return {
+          ok: true,
+          json: async () => ({
+            id: "sub_preview",
+            status: "active",
+            customer: "cus_preview",
+            metadata: {
+              org_id: "org_team",
+              billing_plan: "starter",
+              seat_count: "1",
+              subscription_included_credit_cents: "1000",
+            },
+            items: {
+              data: [{ id: "si_live_pro", quantity: 1, price: "price_pro" }],
+            },
+          }),
+        };
+      }
+      if (url.includes("/prices/")) {
+        return {
+          ok: true,
+          json: async () => configuredTestPrice(url.split("/prices/")[1]),
+        };
+      }
+      throw new Error(
+        `Unexpected Stripe request: ${init?.method ?? "GET"} ${url}`,
+      );
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      reconcilePaidSubscriptionInvoice(env as never, "in_preview"),
+    ).resolves.toMatchObject({
+      status: "preview",
+      plan: "starter",
+      seatCount: 1,
+      computedGrantCents: 1000,
+      creditedGrantCents: 1000,
+      ledgerStatus: "not_recorded",
+    });
+
+    expect(
+      fetchMock.mock.calls.every(
+        ([, init]) => !init?.method || init.method === "GET",
+      ),
+    ).toBe(true);
+    expect(org).toEqual(before);
+    expect(orgStub.updateBillingState).not.toHaveBeenCalled();
+    expect(orgStub.syncSubscriptionBillingState).not.toHaveBeenCalled();
+    expect(orgStub.applySubscriptionInvoiceGrant).not.toHaveBeenCalled();
+    expect(kv.put).not.toHaveBeenCalled();
+  });
+
   it("updates Stripe subscription item quantity and metadata for team seats", async () => {
     const { env, orgStub } = makeBillingOrgEnv({
       org: { billing_seat_count: 3 },
@@ -3257,11 +4024,19 @@ describe("billing helpers", () => {
           }),
         };
       }
+      if (url.includes("/subscription_items/")) {
+        const params = new URLSearchParams(init?.body as string);
+        return {
+          ok: true,
+          json: async () => ({
+            id: "si_team",
+            quantity: Number(params.get("quantity")),
+          }),
+        };
+      }
       return {
         ok: true,
-        json: async () => ({
-          id: url.includes("subscription_items") ? "si_team" : "sub_team",
-        }),
+        json: async () => ({ id: "sub_team" }),
       };
     });
     vi.stubGlobal("fetch", fetchMock);
@@ -3281,6 +4056,7 @@ describe("billing helpers", () => {
     const itemParams = new URLSearchParams(itemUpdate[1]?.body as string);
     expect(itemParams.get("quantity")).toBe("4");
     expect(itemParams.get("proration_behavior")).toBe("always_invoice");
+    expect(itemParams.get("payment_behavior")).toBe("error_if_incomplete");
     expect((itemUpdate[1]?.headers as Headers).get("Idempotency-Key")).toBe(
       "team-seat-sync:org_team:4:batch_1",
     );
@@ -3327,11 +4103,19 @@ describe("billing helpers", () => {
           }),
         };
       }
+      if (url.includes("/subscription_items/")) {
+        const params = new URLSearchParams(init?.body as string);
+        return {
+          ok: true,
+          json: async () => ({
+            id: "si_team",
+            quantity: Number(params.get("quantity")),
+          }),
+        };
+      }
       return {
         ok: true,
-        json: async () => ({
-          id: url.includes("subscription_items") ? "si_team" : "sub_team",
-        }),
+        json: async () => ({ id: "sub_team" }),
       };
     });
     vi.stubGlobal("fetch", fetchMock);
@@ -3349,6 +4133,66 @@ describe("billing helpers", () => {
     );
     expect(itemParams.get("quantity")).toBe("4");
     expect(itemParams.get("proration_behavior")).toBe("always_invoice");
+    expect(itemParams.get("payment_behavior")).toBe("error_if_incomplete");
+  });
+
+  it("does not commit Team seats or credits when the immediate charge fails", async () => {
+    const { env, org, orgStub } = makeBillingOrgEnv({
+      org: {
+        billing_seat_count: 3,
+        billing_credit_grant_total_cents: 900,
+      },
+      memberCount: 4,
+    });
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url.endsWith("/subscriptions/sub_team") && init?.method === "GET") {
+        return {
+          ok: true,
+          json: async () => ({
+            id: "sub_team",
+            status: "active",
+            items: {
+              data: [
+                {
+                  id: "si_team",
+                  quantity: 3,
+                  price: { id: "price_team" },
+                },
+              ],
+            },
+          }),
+        };
+      }
+      if (url.endsWith("/subscription_items/si_team")) {
+        return {
+          ok: false,
+          status: 402,
+          text: async () => "The card was declined.",
+        };
+      }
+      throw new Error(
+        `Unexpected Stripe request: ${init?.method ?? "GET"} ${url}`,
+      );
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      syncTeamSubscriptionSeatCount(env as never, "org_team", {
+        targetSeatCount: 4,
+      }),
+    ).rejects.toThrow(/returned 402/);
+
+    const itemUpdate = fetchMock.mock.calls[1];
+    const itemParams = new URLSearchParams(itemUpdate[1]?.body as string);
+    expect(itemParams.get("quantity")).toBe("4");
+    expect(itemParams.get("proration_behavior")).toBe("always_invoice");
+    expect(itemParams.get("payment_behavior")).toBe("error_if_incomplete");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(orgStub.updateBillingState).not.toHaveBeenCalled();
+    expect(org).toMatchObject({
+      billing_seat_count: 3,
+      billing_credit_grant_total_cents: 900,
+    });
   });
 
   it("uses no immediate proration when a Team seat count decreases", async () => {
@@ -3375,11 +4219,19 @@ describe("billing helpers", () => {
           }),
         };
       }
+      if (url.includes("/subscription_items/")) {
+        const params = new URLSearchParams(init?.body as string);
+        return {
+          ok: true,
+          json: async () => ({
+            id: "si_team",
+            quantity: Number(params.get("quantity")),
+          }),
+        };
+      }
       return {
         ok: true,
-        json: async () => ({
-          id: url.includes("subscription_items") ? "si_team" : "sub_team",
-        }),
+        json: async () => ({ id: "sub_team" }),
       };
     });
     vi.stubGlobal("fetch", fetchMock);
@@ -3393,6 +4245,7 @@ describe("billing helpers", () => {
     );
     expect(itemParams.get("quantity")).toBe("4");
     expect(itemParams.get("proration_behavior")).toBe("none");
+    expect(itemParams.has("payment_behavior")).toBe(false);
   });
 
   it("does not update a Stripe subscription item when the configured team price is missing", async () => {

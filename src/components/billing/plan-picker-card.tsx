@@ -63,7 +63,9 @@ export function PlanPickerCard({
       : content.ctaLabel;
   const ctaLabel = isCurrent
     ? currentAction === "manage"
-      ? "Manage in Stripe"
+      ? pending
+        ? "Opening Stripe…"
+        : "Manage in Stripe"
       : "Current plan"
     : isDowngrade
       ? "Downgrade"
