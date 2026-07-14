@@ -282,13 +282,13 @@ describe('ChatThreadDO Pi turn handling', () => {
 
   it('routes Bedrock product IDs to their provider model IDs', () => {
     const mapping = new PiModelMapping();
-    expect(mapping.resolvePiModelReference('gpt-5.5-bedrock')).toMatchObject({
+    expect(mapping.resolvePiModelReference('gpt-5.6-sol-bedrock')).toMatchObject({
       provider: 'openai',
-      modelId: 'gpt-5.5',
+      modelId: 'gpt-5.6-sol',
     });
-    expect(mapping.resolvePiModelReference('gpt-5.4-bedrock')).toMatchObject({
+    expect(mapping.resolvePiModelReference('gpt-5.6-terra-bedrock')).toMatchObject({
       provider: 'openai',
-      modelId: 'gpt-5.4',
+      modelId: 'gpt-5.6-terra',
     });
   });
   function createPiEventFake() {
@@ -2823,13 +2823,13 @@ describe('ChatThreadDO Pi turn handling', () => {
     const model = await ChatThreadDO.prototype['resolvePiModel'].call(
       fake,
       { provider: 'pi', orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1' },
-      { CHIRIDION_CODEX_MODEL: 'gpt-5.5' },
+      { CHIRIDION_CODEX_MODEL: 'gpt-5.6-terra' },
       getModel,
     );
 
-    expect(getModel).toHaveBeenCalledWith('openai', 'gpt-5.5');
+    expect(getModel).toHaveBeenCalledWith('openai', 'gpt-5.6-terra');
     expect(model.model).toMatchObject({
-      id: 'openai.gpt-5.5',
+      id: 'openai.gpt-5.6-terra',
       provider: 'custom',
       api: 'openai-responses',
       baseUrl: 'https://bedrock-mantle.us-east-2.api.aws/openai/v1',
@@ -2855,9 +2855,9 @@ describe('ChatThreadDO Pi turn handling', () => {
     await expect(ChatThreadDO.prototype['resolvePiModel'].call(
       fake,
       { provider: 'pi', orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1' },
-      { CHIRIDION_CODEX_MODEL: 'gpt-5.5' },
+      { CHIRIDION_CODEX_MODEL: 'gpt-5.6-sol' },
       vi.fn((provider: string, id: string) => ({ id, provider, api: 'openai-responses' })),
-    )).rejects.toThrow('OpenAI gpt-5.5 on Amazon Bedrock is not available in eu-west-1');
+    )).rejects.toThrow('OpenAI gpt-5.6-sol on Amazon Bedrock is not available in eu-west-1');
     expect(fake.checkHostedPiModelAccess).not.toHaveBeenCalled();
   });
 

@@ -66,10 +66,10 @@ export class PiModelMapping {
       case "gpt-5.6-terra":
       case "gpt-5.5":
         return openAiReference(normalizedModelId);
-      case "gpt-5.5-bedrock":
-        return openAiReference("gpt-5.5");
-      case "gpt-5.4-bedrock":
-        return openAiReference("gpt-5.4");
+      case "gpt-5.6-sol-bedrock":
+        return openAiReference("gpt-5.6-sol");
+      case "gpt-5.6-terra-bedrock":
+        return openAiReference("gpt-5.6-terra");
       case "custom":
         return openAiReference(DEFAULT_CODEX_MODEL);
       case "kimi-k2.7-code":
@@ -296,8 +296,8 @@ export class PiModelMapping {
   ): { modelId: string; baseUrl: string } | null {
     const normalizedModel = modelId.trim().toLowerCase();
     const supportedRegionsByModel: Record<string, readonly string[]> = {
-      "gpt-5.5": ["us-east-1", "us-east-2"],
-      "gpt-5.4": ["us-east-1", "us-east-2", "us-west-2", "us-gov-west-1"],
+      "gpt-5.6-sol": ["us-east-1", "us-east-2"],
+      "gpt-5.6-terra": ["us-east-1", "us-east-2", "us-west-2"],
     };
     const supportedRegions = supportedRegionsByModel[normalizedModel];
     if (!supportedRegions) return null;

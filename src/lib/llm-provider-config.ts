@@ -69,14 +69,14 @@ export const CODEX_LLM_MODEL_OPTIONS: ReadonlyArray<{
     description: "Previous-generation OpenAI model",
   },
   {
-    value: "gpt-5.5-bedrock",
-    label: "GPT-5.5 Bedrock",
-    description: "GPT-5.5 through Amazon Bedrock",
+    value: "gpt-5.6-sol-bedrock",
+    label: "GPT-5.6 Sol Bedrock",
+    description: "GPT-5.6 Sol through Amazon Bedrock",
   },
   {
-    value: "gpt-5.4-bedrock",
-    label: "GPT-5.4 Bedrock",
-    description: "GPT-5.4 through Amazon Bedrock",
+    value: "gpt-5.6-terra-bedrock",
+    label: "GPT-5.6 Terra Bedrock",
+    description: "GPT-5.6 Terra through Amazon Bedrock",
   },
   {
     value: "gemini-3.5-flash",
@@ -181,13 +181,13 @@ function sortVisibleLlmModelOptions<
 }
 
 const BEDROCK_ONLY_CODEX_MODELS = new Set<LlmModel>([
-  "gpt-5.5-bedrock",
-  "gpt-5.4-bedrock",
+  "gpt-5.6-sol-bedrock",
+  "gpt-5.6-terra-bedrock",
 ]);
 
 const BEDROCK_OPENAI_MODEL_REGIONS: Readonly<Record<string, readonly string[]>> = {
-  "gpt-5.5-bedrock": ["us-east-1", "us-east-2"],
-  "gpt-5.4-bedrock": ["us-east-1", "us-east-2", "us-west-2", "us-gov-west-1"],
+  "gpt-5.6-sol-bedrock": ["us-east-1", "us-east-2"],
+  "gpt-5.6-terra-bedrock": ["us-east-1", "us-east-2", "us-west-2"],
 };
 
 export function isBedrockOpenAiModelAllowedInRegion(
@@ -436,12 +436,16 @@ export function resolveStoredLlmModel(
   if (typeof value !== "string") return null;
 
   let replacement = STORED_LLM_MODEL_REPLACEMENTS[value] ?? value;
-  if (value === "gpt-5.5" && orgProvider === "bedrock") {
-    replacement = "gpt-5.5-bedrock";
-  } else if (value === "gpt-5.4") {
+  if (value === "gpt-5.6-sol" && orgProvider === "bedrock") {
+    replacement = "gpt-5.6-sol-bedrock";
+  } else if (value === "gpt-5.6-terra" && orgProvider === "bedrock") {
+    replacement = "gpt-5.6-terra-bedrock";
+  } else if (value === "gpt-5.5" || value === "gpt-5.4") {
     replacement = orgProvider === "bedrock"
-      ? "gpt-5.4-bedrock"
+      ? "gpt-5.6-terra-bedrock"
       : DEFAULT_CODEX_MODEL;
+  } else if (value === "gpt-5.5-bedrock" || value === "gpt-5.4-bedrock") {
+    replacement = "gpt-5.6-terra-bedrock";
   } else if (value === "gpt-5.4-mini") {
     replacement = DEFAULT_CODEX_MODEL;
   }

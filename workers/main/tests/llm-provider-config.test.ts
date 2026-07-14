@@ -69,8 +69,8 @@ const OPENROUTER_BYOK_CODEX_MODELS = [
 const CAMELAI_HOSTED_ONLY_MODELS = ["deepseek-v4-auto"] as const;
 
 const BEDROCK_OPENAI_MODELS = [
-  "gpt-5.5-bedrock",
-  "gpt-5.4-bedrock",
+  "gpt-5.6-sol-bedrock",
+  "gpt-5.6-terra-bedrock",
 ] as const;
 
 describe("llm provider config helpers", () => {
@@ -197,7 +197,7 @@ describe("llm provider config helpers", () => {
         orgProvider: "bedrock",
         awsRegion: "us-west-2",
       }).map((option) => option.value),
-    ).toEqual([...CLAUDE_MODELS, "gpt-5.4-bedrock"]);
+    ).toEqual([...CLAUDE_MODELS, "gpt-5.6-terra-bedrock"]);
     expect(
       getVisibleLlmModelOptions({ claude_proxy_models: false }, null, {
         orgProvider: "bedrock",
@@ -299,15 +299,15 @@ describe("llm provider config helpers", () => {
       }),
     ).toBe(false);
     expect(
-      isLlmModelAllowedForNewThread("gpt-5.4-bedrock", "bedrock", {
+      isLlmModelAllowedForNewThread("gpt-5.6-terra-bedrock", "bedrock", {
         claude_proxy_models: true,
       }),
     ).toBe(true);
     expect(normalizeLlmModel("gpt-5.4", "bedrock")).toBe(
-      "gpt-5.4-bedrock",
+      "gpt-5.6-terra-bedrock",
     );
     expect(normalizeLlmModel("gpt-5.5", "bedrock")).toBe(
-      "gpt-5.5-bedrock",
+      "gpt-5.6-terra-bedrock",
     );
     expect(
       isLlmModelAllowedForNewThread("sonnet", "openai", {
