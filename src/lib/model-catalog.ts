@@ -279,12 +279,14 @@ export interface ResolvedModelCatalogEntry extends ModelCatalogEntry {
 }
 
 const EXPLICIT_OPT_IN_MODELS = new Set<LlmModel>(["fable-5"]);
+const PINNED_MODEL_IDS = new Set<LlmModel>(["deepseek-v4-auto"]);
 
 export function compareModelCatalogEntries(
   a: ModelCatalogEntry,
   b: ModelCatalogEntry,
 ): number {
   return (
+    Number(PINNED_MODEL_IDS.has(b.id)) - Number(PINNED_MODEL_IDS.has(a.id)) ||
     a.providerOrder - b.providerOrder ||
     a.modelOrder - b.modelOrder ||
     a.label.localeCompare(b.label)

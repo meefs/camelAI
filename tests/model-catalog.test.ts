@@ -353,7 +353,7 @@ describe('MODEL_CATALOG', () => {
       orgProvider: null,
     });
 
-    expect(visible.map((entry) => entry.id)).toContain('deepseek-v4-auto');
+    expect(visible[0]?.id).toBe('deepseek-v4-auto');
   });
 
   it('uses explicit custom overrides as an allowlist', () => {
