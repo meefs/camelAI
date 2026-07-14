@@ -23,6 +23,7 @@ import type { EffectiveModelPickerConfig } from "./model-picker-config";
 //    not drift apart.
 
 export type ProviderLogoType =
+  | "camelai"
   | "claude"
   | "openai"
   | "kimi"
@@ -30,7 +31,7 @@ export type ProviderLogoType =
   | "glm"
   | "gemini"
   | "deepseek";
-export type CostBucket = "$" | "$$" | "$$$" | "$$$$" | "$$$$$";
+export type CostBucket = "Free" | "$" | "$$" | "$$$" | "$$$$" | "$$$$$";
 export const COST_BUCKET_MAX = 5;
 // Half-step rating, 0.5 through 5.0. Used for both intelligence and speed.
 // Renders as 5 circles in the model picker hover tooltip.
@@ -222,10 +223,10 @@ export const MODEL_CATALOG: Readonly<Record<LlmModel, ModelCatalogEntry>> = {
   "deepseek-v4-auto": {
     id: "deepseek-v4-auto",
     label: "Camel Free",
-    providerLogo: "deepseek",
+    providerLogo: "camelai",
     providerOrder: 3,
     modelOrder: 1,
-    cost: "$",
+    cost: "Free",
     intelligence: 3,
     speed: 3.5,
   },

@@ -28,6 +28,7 @@ export const logoRegistry: Record<string, IntegrationLogoVariant> = {
   asana: 'single',
   azure: 'single',
   bigquery: 'single',
+  camelai: 'single',
   claude: 'single',
   cloudflare: 'single',
   databricks: 'single',

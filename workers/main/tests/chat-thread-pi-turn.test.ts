@@ -1805,7 +1805,7 @@ describe('ChatThreadDO Pi turn handling', () => {
       threadId: 'thread1',
     };
     fake.resolveCurrentByokCredentials = vi.fn(async () => null);
-    fake.checkHostedPiModelAccess = vi.fn(async () => true);
+    fake.checkHostedPiModelAccess = vi.fn(async () => false);
 
     const getModel = vi.fn(() => ({
       id: 'deepseek/deepseek-v4-pro',
@@ -1851,6 +1851,11 @@ describe('ChatThreadDO Pi turn handling', () => {
     expect(model.model.contextWindow).toBe(220000);
     expect(model.model.maxTokens).toBe(262144);
     expect(model.model.reasoning).toBe(true);
+    expect(model.creditChargeable).toBe(false);
+    expect(fake.checkHostedPiModelAccess).toHaveBeenCalledWith(
+      expect.anything(),
+      'deepseek-v4-auto',
+    );
     expect(fake.piCurrentUsageProvider).toBe('compat');
   });
 

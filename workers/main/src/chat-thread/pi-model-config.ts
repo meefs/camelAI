@@ -18,6 +18,7 @@ import {
 } from "../../../../src/lib/openai-subscription.server";
 import {
   DEFAULT_LLM_MODEL,
+  isCreditFreeHostedModel,
   parseStoredLlmProviderConfig,
 } from "../../../../src/lib/llm-provider-config";
 import {
@@ -88,7 +89,10 @@ export interface ResolvePiRequestConfigDeps {
   resolveByokCredentials(
     context: ChatContextState,
   ): Promise<Awaited<ReturnType<typeof resolveCurrentByokCredentials>>>;
-  checkHostedModelAccess(context: ChatContextState): Promise<boolean>;
+  checkHostedModelAccess(
+    context: ChatContextState,
+    model: string,
+  ): Promise<boolean>;
 }
 
 const PI_MODEL_CATALOG_FALLBACKS: Record<string, Model<any>> = {
@@ -478,7 +482,10 @@ export async function resolvePiRequestConfig(
     };
   }
 
-  const creditChargeable = await deps.checkHostedModelAccess(context);
+  const creditChargeable = await deps.checkHostedModelAccess(
+    context,
+    requestedModelId,
+  );
   // E2E replay routes hosted calls to a local stub that ignores account/
   // gateway/auth, so stand in dummy values to clear this gateway-config check
   // (the real origin is swapped in resolveCloudflareGatewayOrigin). Lets the
@@ -541,6 +548,7 @@ function formatCreditCents(cents: number): string {
 export async function checkHostedPiModelAccess(
   env: ChatEnv,
   context: ChatContextState,
+  model?: string,
 ): Promise<boolean> {
   if (isSelfhostRuntime(env)) {
     return false;
@@ -572,6 +580,10 @@ export async function checkHostedPiModelAccess(
     throw new Error(
       "Hosted models require billing access. Choose Pay as you go, start a subscription, or add your own API key in Settings -> AI Provider. Your workspace is saved.",
     );
+  }
+
+  if (isCreditFreeHostedModel(model)) {
+    return false;
   }
 
   const usage = await orgStub.getUsageLogSum(0, Date.now(), true);

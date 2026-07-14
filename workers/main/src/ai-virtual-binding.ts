@@ -1,7 +1,10 @@
 import { WorkerEntrypoint } from "cloudflare:workers";
 import type { OrgDO } from "./auth";
 import { decryptCredentials } from "../../../src/lib/integration-crypto";
-import { parseStoredLlmProviderConfig } from "../../../src/lib/llm-provider-config";
+import {
+  isCreditFreeHostedModel,
+  parseStoredLlmProviderConfig,
+} from "../../../src/lib/llm-provider-config";
 import {
   DEFAULT_CLOUDFLARE_AI_GATEWAY_ORIGIN,
   resolveCloudflareGatewayOrigin,
@@ -311,7 +314,11 @@ export async function executeVirtualAiRun(
   const usesByok = routing.byokKey !== undefined;
   const access = usesByok
     ? { creditChargeable: false }
-    : await checkHostedModelAccess(scope.env, scope.props);
+    : await checkHostedModelAccess(
+        scope.env,
+        scope.props,
+        isCreditFreeHostedModel(requestedModel),
+      );
   const billingSource: "byok" | "hosted" = usesByok ? "byok" : "hosted";
 
   const settings = routing.provider === "bedrock"
@@ -416,6 +423,7 @@ async function runLegacyAutoImage(
 async function checkHostedModelAccess(
   env: AIVirtualBindingEnv,
   props: AIVirtualBindingProps,
+  creditFree = false,
 ): Promise<{ creditChargeable: boolean }> {
   const orgStub = env.ORG.get(env.ORG.idFromName(props.orgId));
   const org = await orgStub.getInfo();
@@ -441,6 +449,7 @@ async function checkHostedModelAccess(
       "Hosted models require billing access. Choose Pay as you go, start a subscription, or add your own API key in Settings -> AI Provider.",
     );
   }
+  if (creditFree) return { creditChargeable: false };
   const usage = await orgStub.getUsageLogSum(0, Date.now(), true);
   const spentCents = Math.round(Number(usage.total_cost_usd ?? 0) * 100);
   const totalCreditsCents =

@@ -328,11 +328,17 @@ describe("resolveRouting", () => {
 describe("executeVirtualAiRun", () => {
   it("posts hosted DeepSeek V4 Auto to the compat dynamic route", async () => {
     const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      new Response(JSON.stringify({ id: "chatcmpl_deepseek_auto" }), {
+      new Response(JSON.stringify({
+        id: "chatcmpl_deepseek_auto",
+        usage: { prompt_tokens: 2, completion_tokens: 3 },
+      }), {
         status: 200,
         headers: { "Content-Type": "application/json" },
       }),
     );
+    const getUsageLogSum = vi.fn(async () => ({ total_cost_usd: 0 }));
+    const recordUsage = vi.fn(async () => undefined);
+    const backgroundTasks: Promise<unknown>[] = [];
 
     try {
       await executeVirtualAiRun(
@@ -348,16 +354,16 @@ describe("executeVirtualAiRun", () => {
                 getInfo: vi.fn(async () => ({
                   billing_status: "active",
                   billing_plan: "payg",
-                  billing_credit_purchase_total_cents: 1000,
+                  billing_credit_purchase_total_cents: 0,
                   billing_credit_grant_total_cents: 0,
                 })),
-                getUsageLogSum: vi.fn(async () => ({ total_cost_usd: 0 })),
-                recordUsage: vi.fn(async () => undefined),
+                getUsageLogSum,
+                recordUsage,
               })),
             } as never,
           },
           props: { orgId: "org1", workspaceId: "ws1" },
-          waitUntil: vi.fn(),
+          waitUntil: (task) => backgroundTasks.push(task),
         },
         "deepseek-v4-auto",
         { messages: [{ role: "user", content: "hello" }] },
@@ -372,6 +378,15 @@ describe("executeVirtualAiRun", () => {
       expect(headers.get("cf-aig-authorization")).toBeNull();
       const body = JSON.parse(String(init.body)) as { model: string };
       expect(body.model).toBe("dynamic/deepseek-v4-auto");
+      expect(getUsageLogSum).not.toHaveBeenCalled();
+      await Promise.all(backgroundTasks);
+      expect(recordUsage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          credit_chargeable: false,
+          input_tokens: 2,
+          output_tokens: 3,
+        }),
+      );
     } finally {
       fetchMock.mockRestore();
     }

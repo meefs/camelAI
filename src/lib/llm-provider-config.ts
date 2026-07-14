@@ -156,6 +156,16 @@ const CAMELAI_HOSTED_ONLY_CODEX_MODELS = new Set<LlmModel>([
   "deepseek-v4-auto",
 ]);
 
+// These hosted models remain metered for operational visibility, but their
+// usage does not consume an organization's camelAI credits.
+const CREDIT_FREE_HOSTED_MODELS = new Set<LlmModel>([
+  "deepseek-v4-auto",
+]);
+
+export function isCreditFreeHostedModel(model: string | null | undefined): boolean {
+  return Boolean(model && CREDIT_FREE_HOSTED_MODELS.has(model as LlmModel));
+}
+
 const BEDROCK_ONLY_CODEX_MODELS = new Set<LlmModel>([
   "gpt-5.5-bedrock",
   "gpt-5.4-bedrock",

@@ -74,6 +74,7 @@ function renderPicker() {
       options={[
         MODEL_CATALOG['opus-4.8'],
         MODEL_CATALOG.sonnet,
+        MODEL_CATALOG['deepseek-v4-auto'],
         MODEL_CATALOG['deepseek-v4-flash'],
       ]}
       isOrgAdmin={false}
@@ -141,6 +142,11 @@ describe('ModelPicker metadata card state', () => {
 
   it('renders cost buckets with muted placeholder dollar signs', () => {
     renderPicker();
+
+    fireEvent.focus(getModelItem('Camel Free'));
+    expect(screen.getByRole('tooltip')).toHaveTextContent('Camel Free');
+    expect(screen.getByText('Free')).toBeInTheDocument();
+    expect(screen.queryByLabelText(/Cost rating:/)).not.toBeInTheDocument();
 
     fireEvent.focus(getModelItem('DeepSeek V4 Flash'));
     expect(screen.getByRole('tooltip')).toHaveTextContent('DeepSeek V4 Flash');

@@ -4675,7 +4675,8 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
         modelMapping: this.piModelMapping,
         getChatMetadata: () => this.chatContext,
         resolveByokCredentials: (ctx) => this.resolveCurrentByokCredentials(ctx),
-        checkHostedModelAccess: (ctx) => this.checkHostedPiModelAccess(ctx),
+        checkHostedModelAccess: (ctx, model) =>
+          this.checkHostedPiModelAccess(ctx, model),
       },
       resolved,
       context,
@@ -4684,8 +4685,11 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
   }
 
 
-  private checkHostedPiModelAccess(context: ChatContextState): Promise<boolean> {
-    return checkHostedPiModelAccess(this.env, context);
+  private checkHostedPiModelAccess(
+    context: ChatContextState,
+    model?: string,
+  ): Promise<boolean> {
+    return checkHostedPiModelAccess(this.env, context, model);
   }
 
   /**

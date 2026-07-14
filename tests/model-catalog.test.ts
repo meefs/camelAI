@@ -56,11 +56,11 @@ const NEW_ROUTED_MODELS: Array<{
   {
     id: 'deepseek-v4-auto',
     label: 'Camel Free',
-    providerLogo: 'deepseek',
+    providerLogo: 'camelai',
     providerOrder: 3,
     modelOrder: 1,
     pricingKey: 'deepseek-v4-auto',
-    cost: '$',
+    cost: 'Free',
     intelligence: 3,
     speed: 3.5,
   },
@@ -119,9 +119,11 @@ describe('MODEL_CATALOG', () => {
     for (const entry of Object.values(MODEL_CATALOG)) {
       expect([0, 1, 2, 3, 4, 5, 6]).toContain(entry.providerOrder);
       expect(entry.modelOrder).toBeGreaterThanOrEqual(0);
-      expect(entry.cost.length).toBeGreaterThanOrEqual(1);
-      expect(entry.cost.length).toBeLessThanOrEqual(COST_BUCKET_MAX);
-      expect(entry.cost).toMatch(/^\$+$/);
+      expect(entry.cost === 'Free' || /^\$+$/.test(entry.cost)).toBe(true);
+      if (entry.cost !== 'Free') {
+        expect(entry.cost.length).toBeGreaterThanOrEqual(1);
+        expect(entry.cost.length).toBeLessThanOrEqual(COST_BUCKET_MAX);
+      }
       expect(ALLOWED_SCORES).toContain(entry.intelligence);
       expect(ALLOWED_SCORES).toContain(entry.speed);
       expect(entry.label.trim()).not.toBe('');

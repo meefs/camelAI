@@ -94,6 +94,15 @@ function RatingDots({
 }
 
 function CostRow({ cost }: { cost: CostBucket }) {
+  if (cost === 'Free') {
+    return (
+      <div className="flex items-center justify-between gap-6">
+        <span className="text-muted-foreground">cost</span>
+        <span className="font-medium text-emerald-600 dark:text-emerald-400">Free</span>
+      </div>
+    );
+  }
+
   const filled = cost.length;
 
   return (

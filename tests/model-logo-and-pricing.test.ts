@@ -13,6 +13,7 @@ const root = process.cwd();
 describe('model logo registry', () => {
   it('registers model provider logos with expected variants', () => {
     expect(logoRegistry.claude).toBe('single');
+    expect(logoRegistry.camelai).toBe('single');
     expect(logoRegistry.deepseek).toBe('single');
     expect(logoRegistry.gemini).toBe('single');
     expect(logoRegistry.grok).toBe('themed');

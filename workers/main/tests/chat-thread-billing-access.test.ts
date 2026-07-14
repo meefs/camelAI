@@ -76,4 +76,32 @@ describe("ChatThreadDO hosted billing access", () => {
     );
     expect((error as Error).message).not.toContain("Trial hosted-model");
   });
+
+  it("allows Camel Free without credits", async () => {
+    const { userId } = await createUser(
+      testEnv,
+      testEmail(),
+      "password123",
+      "Camel Free User",
+    );
+    const { org } = await createOrg(testEnv, "Camel Free Org", userId, {
+      billingPlan: "starter",
+    });
+    const orgStub = testEnv.ORG.get(testEnv.ORG.idFromName(org.id));
+    await orgStub.updateBillingState({
+      billing_status: "trialing",
+      billing_credit_purchase_total_cents: 0,
+      billing_credit_grant_total_cents: 0,
+    });
+
+    const fake = createFakeThread();
+
+    await expect(
+      ChatThreadDO.prototype["checkHostedPiModelAccess"].call(
+        fake,
+        { orgId: org.id },
+        "deepseek-v4-auto",
+      ),
+    ).resolves.toBe(false);
+  });
 });
