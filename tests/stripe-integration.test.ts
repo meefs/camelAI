@@ -427,12 +427,12 @@ describeStripe("Stripe billing integration", () => {
     const [starter, pro, team, credit] = await Promise.all([
       createPrice({
         product: starterProduct.id,
-        unitAmount: 4000,
+        unitAmount: 1000,
         recurring: true,
       }),
       createPrice({
         product: proProduct.id,
-        unitAmount: 15000,
+        unitAmount: 4000,
         recurring: true,
       }),
       createPrice({
@@ -504,7 +504,7 @@ describeStripe("Stripe billing integration", () => {
       billing_plan: "team",
       seat_count: "25",
       trial_credit_cents: "1000",
-      subscription_included_credit_cents: "25000",
+      subscription_included_credit_cents: "125000",
     });
 
     const subscriptionLineItems = await stripeRequest<
@@ -551,7 +551,7 @@ describeStripe("Stripe billing integration", () => {
       quantity: 1,
       orgId,
       plan: "pro",
-      includedCreditCents: 3000,
+      includedCreditCents: 4000,
     });
     subscriptionIds.push(subscription.id);
 
@@ -618,7 +618,7 @@ describeStripe("Stripe billing integration", () => {
       orgId,
       plan: "pro",
       seatCount: 1,
-      includedCreditCents: 3000,
+      includedCreditCents: 4000,
     });
     await syncOrgSubscriptionFromStripe(
       env,
@@ -664,7 +664,7 @@ describeStripe("Stripe billing integration", () => {
       quantity: 3,
       orgId,
       plan: "team",
-      includedCreditCents: 3000,
+      includedCreditCents: 15000,
     });
     subscriptionIds.push(subscription.id);
 
@@ -688,7 +688,7 @@ describeStripe("Stripe billing integration", () => {
     expect(updatedSubscription.metadata).toMatchObject({
       billing_plan: "team",
       seat_count: "4",
-      subscription_included_credit_cents: "4000",
+      subscription_included_credit_cents: "20000",
     });
     expect(updatedSubscription.items?.data?.[0]?.quantity).toBe(4);
   }, 60_000);

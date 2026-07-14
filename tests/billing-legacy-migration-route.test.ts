@@ -69,7 +69,7 @@ describe("legacy billing migration route", () => {
         amountDueTodayCents: 11996,
         legacyCreditCents: 3004,
         newPlanProrationCents: 15000,
-        includedCreditCents: 3000,
+        includedCreditCents: 15000,
       },
     });
 
@@ -99,7 +99,7 @@ describe("legacy billing migration route", () => {
         amountDueTodayCents: 11996,
         legacyCreditCents: 3004,
         newPlanProrationCents: 15000,
-        includedCreditCents: 3000,
+        includedCreditCents: 15000,
       },
     });
     expect(createLegacyStripeMigrationPortalSessionMock).toHaveBeenCalledWith(

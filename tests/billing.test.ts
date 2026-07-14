@@ -46,6 +46,14 @@ import {
 } from "@/lib/billing.server";
 import type { Organization } from "@/types";
 
+// Unit amounts served for GET /v1/prices/{id} by checkout fetch stubs; must
+// match BILLING_PLAN_LIMITS or createSubscriptionCheckoutSession fails closed.
+const CONFIGURED_TEST_PRICE_UNIT_AMOUNTS: Record<string, number> = {
+  price_starter: 1000,
+  price_pro: 4000,
+  price_team: 5000,
+};
+
 describe("billing helpers", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
@@ -141,8 +149,8 @@ describe("billing helpers", () => {
     expect(normalizeBillingPlan(undefined, "inactive")).toBe("payg");
     expect(normalizeSeatCount("team", 2)).toBe(3);
     expect(getIncludedCreditCentsForPlan("starter", 1)).toBe(1000);
-    expect(getIncludedCreditCentsForPlan("pro", 1)).toBe(3000);
-    expect(getIncludedCreditCentsForPlan("team", 4)).toBe(4000);
+    expect(getIncludedCreditCentsForPlan("pro", 1)).toBe(4000);
+    expect(getIncludedCreditCentsForPlan("team", 4)).toBe(20000);
     expect(
       getOrgSeatLimit({
         billing_status: "active",
@@ -238,7 +246,7 @@ describe("billing helpers", () => {
     });
 
     expect(BILLING_PLAN_LIMITS.starter).toMatchObject({
-      monthlyPriceCents: 4000,
+      monthlyPriceCents: 1000,
       minimumSeats: 1,
       includedWorkspaceCount: 1,
       storageGbPerWorkspace: 50,
@@ -254,11 +262,11 @@ describe("billing helpers", () => {
     });
 
     expect(BILLING_PLAN_LIMITS.pro).toMatchObject({
-      monthlyPriceCents: 15000,
+      monthlyPriceCents: 4000,
       minimumSeats: 1,
       includedWorkspaceCount: 1,
       storageGbPerWorkspace: 100,
-      includedCreditCentsBase: 3000,
+      includedCreditCentsBase: 4000,
       includedCreditCentsPerSeat: 0,
       maxDeployedAppsPerWorkspace: null,
       maxCustomDomains: null,
@@ -275,7 +283,7 @@ describe("billing helpers", () => {
       includedWorkspaceCount: 2,
       storageGbPerWorkspace: 100,
       includedCreditCentsBase: 0,
-      includedCreditCentsPerSeat: 1000,
+      includedCreditCentsPerSeat: 5000,
       maxDeployedAppsPerWorkspace: null,
       maxCustomDomains: null,
       maxCronJobsPerWorkspace: null,
@@ -643,9 +651,9 @@ describe("billing helpers", () => {
       preview: {
         amountDueTodayCents: 996,
         currency: "usd",
-        includedCreditCents: 3000,
+        includedCreditCents: 4000,
         legacyCreditCents: 3004,
-        monthlyPriceCents: 15000,
+        monthlyPriceCents: 4000,
         newPlanProrationCents: 4000,
         plan: "pro",
         seatCount: 1,
@@ -656,7 +664,7 @@ describe("billing helpers", () => {
     expect(customerParams.get("metadata[v2_mig_org]")).toBe("org_team");
     expect(customerParams.get("metadata[v2_mig_sub]")).toBe("sub_legacy");
     expect(customerParams.get("metadata[v2_mig_plan]")).toBe("pro");
-    expect(customerParams.get("metadata[v2_mig_credits]")).toBe("3000");
+    expect(customerParams.get("metadata[v2_mig_credits]")).toBe("4000");
     expect(
       customerParams.has(
         "metadata[pending_legacy_migration_included_credit_cents]",
@@ -857,11 +865,11 @@ describe("billing helpers", () => {
       billing_status: "active",
       billing_plan: "pro",
       billing_subscription_id: "sub_legacy",
-      billing_credit_grant_total_cents: 3000,
+      billing_credit_grant_total_cents: 4000,
     });
 
     expect(orgStub.applyManualCreditGrant).toHaveBeenCalledWith(
-      3000,
+      4000,
       "Legacy Stripe migration current-period included credits",
       "legacy-migration:org_team:sub_legacy:pro:current-period-included-credits",
       { source: "stripe-migration" },
@@ -1060,11 +1068,11 @@ describe("billing helpers", () => {
     ).resolves.toMatchObject({
       billing_plan: "team",
       billing_seat_count: 5,
-      billing_credit_grant_total_cents: 5000,
+      billing_credit_grant_total_cents: 25000,
     });
 
     expect(orgStub.applyManualCreditGrant).toHaveBeenCalledWith(
-      5000,
+      25000,
       "Legacy Stripe migration current-period included credits",
       "legacy-migration:org_team:sub_legacy:team:current-period-included-credits",
       { source: "stripe-migration" },
@@ -1389,7 +1397,7 @@ describe("billing helpers", () => {
               org_id: "org_team",
               billing_plan: "pro",
               seat_count: "1",
-              subscription_included_credit_cents: "3000",
+              subscription_included_credit_cents: "4000",
             },
             items: {
               data: [
@@ -1431,7 +1439,7 @@ describe("billing helpers", () => {
         billing_plan: "pro",
         billing_subscription_id: "sub_team",
       }),
-      3000,
+      4000,
     );
   });
 
@@ -1459,7 +1467,7 @@ describe("billing helpers", () => {
         org_id: "org_team",
         billing_plan: "pro",
         seat_count: "1",
-        subscription_included_credit_cents: "3000",
+        subscription_included_credit_cents: "4000",
       },
       items: {
         data: [{ id: "si_pro", quantity: 1, price: { id: "price_pro" } }],
@@ -1526,7 +1534,7 @@ describe("billing helpers", () => {
         org_id: "org_team",
         billing_plan: "pro",
         seat_count: "1",
-        subscription_included_credit_cents: "3000",
+        subscription_included_credit_cents: "4000",
       },
       items: {
         data: [{ id: "si_pro", quantity: 1, price: { id: "price_pro" } }],
@@ -1592,7 +1600,7 @@ describe("billing helpers", () => {
               org_id: "org_team",
               billing_plan: "pro",
               seat_count: "1",
-              subscription_included_credit_cents: "3000",
+              subscription_included_credit_cents: "4000",
             },
             items: {
               data: [
@@ -2039,7 +2047,7 @@ describe("billing helpers", () => {
               billing_plan: "pro",
               seat_count: "1",
               trial_credit_cents: "1000",
-              subscription_included_credit_cents: "3000",
+              subscription_included_credit_cents: "4000",
             },
             items: {
               data: [
@@ -2079,7 +2087,7 @@ describe("billing helpers", () => {
     expect(updateParams.get("metadata[trial_credit_cents]")).toBe("1000");
     expect(
       updateParams.get("metadata[subscription_included_credit_cents]"),
-    ).toBe("3000");
+    ).toBe("4000");
     expect(
       (updateRequestHeaders as Headers | null)?.get("Idempotency-Key") ?? null,
     ).toBeNull();
@@ -2236,7 +2244,7 @@ describe("billing helpers", () => {
     expect(subscriptionParams.get("metadata[seat_count]")).toBe("4");
     expect(
       subscriptionParams.get("metadata[subscription_included_credit_cents]"),
-    ).toBe("4000");
+    ).toBe("20000");
     expect(orgStub.syncSubscriptionBillingState).toHaveBeenCalledWith(
       expect.objectContaining({
         billing_plan: "team",
@@ -2540,7 +2548,20 @@ describe("billing helpers", () => {
     let checkoutRequestBody: string | null = null;
     vi.stubGlobal(
       "fetch",
-      vi.fn(async (_url, init) => {
+      vi.fn(async (url: string, init?: RequestInit) => {
+        const priceId = String(url).split("/prices/")[1];
+        if (priceId) {
+          return {
+            ok: true,
+            json: async () => ({
+              id: priceId,
+              unit_amount: CONFIGURED_TEST_PRICE_UNIT_AMOUNTS[priceId] ?? 0,
+              currency: "usd",
+              active: true,
+              recurring: { interval: "month", interval_count: 1 },
+            }),
+          };
+        }
         checkoutRequestBody = init?.body as string;
         return {
           ok: true,
@@ -2596,10 +2617,10 @@ describe("billing helpers", () => {
       params.get(
         "subscription_data[metadata][subscription_included_credit_cents]",
       ),
-    ).toBe("3000");
+    ).toBe("15000");
     expect(
       params.get("subscription_data[metadata][initial_included_credit_cents]"),
-    ).toBe("3000");
+    ).toBe("15000");
   });
 
   it("blocks Checkout for persisted enterprise orgs", async () => {
@@ -2632,7 +2653,20 @@ describe("billing helpers", () => {
     let checkoutRequestBody: string | null = null;
     vi.stubGlobal(
       "fetch",
-      vi.fn(async (_url, init) => {
+      vi.fn(async (url: string, init?: RequestInit) => {
+        const priceId = String(url).split("/prices/")[1];
+        if (priceId) {
+          return {
+            ok: true,
+            json: async () => ({
+              id: priceId,
+              unit_amount: CONFIGURED_TEST_PRICE_UNIT_AMOUNTS[priceId] ?? 0,
+              currency: "usd",
+              active: true,
+              recurring: { interval: "month", interval_count: 1 },
+            }),
+          };
+        }
         checkoutRequestBody = init?.body as string;
         return {
           ok: true,
@@ -2681,17 +2715,30 @@ describe("billing helpers", () => {
       params.get(
         "subscription_data[metadata][subscription_included_credit_cents]",
       ),
-    ).toBe("25000");
+    ).toBe("125000");
     expect(
       params.get("subscription_data[metadata][initial_included_credit_cents]"),
-    ).toBe("25000");
+    ).toBe("125000");
   });
 
   it("sets a Team checkout adjustable maximum above large starting quantities", async () => {
     let checkoutRequestBody: string | null = null;
     vi.stubGlobal(
       "fetch",
-      vi.fn(async (_url, init) => {
+      vi.fn(async (url: string, init?: RequestInit) => {
+        const priceId = String(url).split("/prices/")[1];
+        if (priceId) {
+          return {
+            ok: true,
+            json: async () => ({
+              id: priceId,
+              unit_amount: CONFIGURED_TEST_PRICE_UNIT_AMOUNTS[priceId] ?? 0,
+              currency: "usd",
+              active: true,
+              recurring: { interval: "month", interval_count: 1 },
+            }),
+          };
+        }
         checkoutRequestBody = init?.body as string;
         return {
           ok: true,
@@ -2736,7 +2783,20 @@ describe("billing helpers", () => {
     let checkoutRequestBody: string | null = null;
     vi.stubGlobal(
       "fetch",
-      vi.fn(async (_url, init) => {
+      vi.fn(async (url: string, init?: RequestInit) => {
+        const priceId = String(url).split("/prices/")[1];
+        if (priceId) {
+          return {
+            ok: true,
+            json: async () => ({
+              id: priceId,
+              unit_amount: CONFIGURED_TEST_PRICE_UNIT_AMOUNTS[priceId] ?? 0,
+              currency: "usd",
+              active: true,
+              recurring: { interval: "month", interval_count: 1 },
+            }),
+          };
+        }
         checkoutRequestBody = init?.body as string;
         return {
           ok: true,
@@ -2778,10 +2838,172 @@ describe("billing helpers", () => {
       params.get(
         "subscription_data[metadata][subscription_included_credit_cents]",
       ),
-    ).toBe("3000");
+    ).toBe("4000");
     expect(
       params.get("subscription_data[metadata][initial_included_credit_cents]"),
-    ).toBe("3000");
+    ).toBe("4000");
+  });
+
+  it("refuses subscription checkout when the Stripe price drifts from plan constants", async () => {
+    const fetchMock = vi.fn(async (url: string) => {
+      if (String(url).includes("/prices/")) {
+        return {
+          ok: true,
+          json: async () => ({
+            id: "price_pro",
+            unit_amount: 15000,
+            currency: "usd",
+            active: true,
+            recurring: { interval: "month", interval_count: 1 },
+          }),
+        };
+      }
+      return {
+        ok: true,
+        json: async () => ({ url: "https://checkout.stripe.test/session" }),
+      };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      createSubscriptionCheckoutSession({
+        env: {
+          ORG: {} as never,
+          STRIPE_MODE: "test",
+          STRIPE_SECRET_KEY: "sk_test_123",
+          STRIPE_PRO_PRICE_ID: "price_pro",
+        },
+        org: {
+          id: "org_123",
+          name: "Test Org",
+          billing_status: "inactive",
+          billing_plan: "free",
+          billing_seat_count: 1,
+          billing_customer_id: "cus_123",
+        } as never,
+        customerEmail: "owner@example.com",
+        successUrl: "https://camelai.dev/success",
+        cancelUrl: "https://camelai.dev/cancel",
+        plan: "pro",
+      }),
+    ).rejects.toThrow(/does not match the advertised/);
+
+    expect(
+      fetchMock.mock.calls.some(([url]) =>
+        String(url).includes("/checkout/sessions"),
+      ),
+    ).toBe(false);
+  });
+
+  it.each([
+    {
+      plan: "pro" as const,
+      configuredPriceId: "price_pro",
+      quantity: 1,
+      expectedCreditCents: 4000,
+    },
+    {
+      plan: "team" as const,
+      configuredPriceId: "price_team",
+      quantity: 3,
+      expectedCreditCents: 15000,
+    },
+  ])(
+    "recomputes $plan renewal credits from a matching invoice line despite stale metadata",
+    async ({ plan, configuredPriceId, quantity, expectedCreditCents }) => {
+      const { env, orgStub } = makeBillingOrgEnv({
+        org: {
+          billing_status: "active",
+          billing_plan: plan,
+          billing_seat_count: quantity,
+          billing_credit_grant_total_cents: 0,
+        },
+        memberCount: quantity,
+      });
+      Object.assign(env, {
+        STRIPE_PRO_PRICE_ID: "price_pro",
+        STRIPE_TEAM_PRICE_ID: "price_team",
+      });
+
+      await expect(
+        applySubscriptionIncludedCreditsFromInvoice(env as never, {
+          id: `in_${plan}_renewal`,
+          subscription: {
+            id: `sub_${plan}`,
+            status: "active",
+            metadata: {
+              org_id: "org_team",
+              billing_plan: plan,
+              seat_count: String(quantity),
+              subscription_included_credit_cents: "3000",
+            },
+          },
+          lines: {
+            data: [{ price: configuredPriceId, quantity }],
+          },
+          status: "paid",
+          paid: true,
+          billing_reason: "subscription_cycle",
+        }),
+      ).resolves.toMatchObject({
+        billing_credit_grant_total_cents: expectedCreditCents,
+        billing_last_included_credit_invoice_id: `in_${plan}_renewal`,
+      });
+
+      expect(orgStub.updateBillingState).toHaveBeenCalledWith(
+        expect.objectContaining({
+          billing_plan: plan,
+          billing_seat_count: quantity,
+          billing_credit_grant_total_cents: expectedCreditCents,
+        }),
+      );
+    },
+  );
+
+  it("uses stale subscription metadata for a renewal on an unconfigured migration-window price", async () => {
+    const { env, orgStub } = makeBillingOrgEnv({
+      org: {
+        billing_status: "active",
+        billing_plan: "pro",
+        billing_seat_count: 1,
+        billing_credit_grant_total_cents: 0,
+      },
+      memberCount: 1,
+    });
+    Object.assign(env, { STRIPE_PRO_PRICE_ID: "price_pro_new" });
+
+    await expect(
+      applySubscriptionIncludedCreditsFromInvoice(env as never, {
+        id: "in_pro_old_price_renewal",
+        subscription: {
+          id: "sub_pro",
+          status: "active",
+          metadata: {
+            org_id: "org_team",
+            billing_plan: "pro",
+            seat_count: "1",
+            subscription_included_credit_cents: "3000",
+          },
+        },
+        lines: {
+          data: [{ price: "price_pro_old", quantity: 1 }],
+        },
+        status: "paid",
+        paid: true,
+        billing_reason: "subscription_cycle",
+      }),
+    ).resolves.toMatchObject({
+      billing_credit_grant_total_cents: 3000,
+      billing_last_included_credit_invoice_id: "in_pro_old_price_renewal",
+    });
+
+    expect(orgStub.updateBillingState).toHaveBeenCalledWith(
+      expect.objectContaining({
+        billing_plan: "pro",
+        billing_seat_count: 1,
+        billing_credit_grant_total_cents: 3000,
+      }),
+    );
   });
 
   it("applies included credits for explicit no-trial initial paid subscription invoices", async () => {
@@ -2805,24 +3027,24 @@ describe("billing helpers", () => {
             org_id: "org_team",
             billing_plan: "pro",
             seat_count: "1",
-            subscription_included_credit_cents: "3000",
-            initial_included_credit_cents: "3000",
+            subscription_included_credit_cents: "4000",
+            initial_included_credit_cents: "4000",
           },
         },
         status: "paid",
         paid: true,
-        amount_paid: 15000,
+        amount_paid: 4000,
         billing_reason: "subscription_create",
       }),
     ).resolves.toMatchObject({
-      billing_credit_grant_total_cents: 3000,
+      billing_credit_grant_total_cents: 4000,
       billing_last_included_credit_invoice_id: "in_initial_paid",
     });
 
     expect(orgStub.updateBillingState).toHaveBeenCalledWith(
       expect.objectContaining({
         billing_plan: "pro",
-        billing_credit_grant_total_cents: 3000,
+        billing_credit_grant_total_cents: 4000,
         billing_last_included_credit_invoice_id: "in_initial_paid",
       }),
     );
@@ -2868,7 +3090,7 @@ describe("billing helpers", () => {
         billing_reason: "subscription_create",
       }),
     ).resolves.toMatchObject({
-      billing_credit_grant_total_cents: 8000,
+      billing_credit_grant_total_cents: 40000,
       billing_last_included_credit_invoice_id: "in_initial_team_paid",
       billing_seat_count: 8,
     });
@@ -2877,7 +3099,7 @@ describe("billing helpers", () => {
       expect.objectContaining({
         billing_plan: "team",
         billing_seat_count: 8,
-        billing_credit_grant_total_cents: 8000,
+        billing_credit_grant_total_cents: 40000,
         billing_last_included_credit_invoice_id: "in_initial_team_paid",
       }),
     );
@@ -2947,7 +3169,7 @@ describe("billing helpers", () => {
     expect(subscriptionParams.get("metadata[seat_count]")).toBe("4");
     expect(
       subscriptionParams.get("metadata[subscription_included_credit_cents]"),
-    ).toBe("4000");
+    ).toBe("20000");
     expect(orgStub.updateBillingState).toHaveBeenCalledWith({
       billing_seat_count: 4,
     });
@@ -3064,7 +3286,20 @@ describe("billing helpers", () => {
     let checkoutRequestBody: string | null = null;
     vi.stubGlobal(
       "fetch",
-      vi.fn(async (_url, init) => {
+      vi.fn(async (url: string, init?: RequestInit) => {
+        const priceId = String(url).split("/prices/")[1];
+        if (priceId) {
+          return {
+            ok: true,
+            json: async () => ({
+              id: priceId,
+              unit_amount: CONFIGURED_TEST_PRICE_UNIT_AMOUNTS[priceId] ?? 0,
+              currency: "usd",
+              active: true,
+              recurring: { interval: "month", interval_count: 1 },
+            }),
+          };
+        }
         checkoutRequestBody = init?.body as string;
         return {
           ok: true,

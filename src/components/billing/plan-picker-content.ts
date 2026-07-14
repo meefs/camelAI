@@ -58,7 +58,7 @@ export const PLAN_CONTENT: Record<BillingPlan, PlanContent> = {
     ctaLabel: "Subscribe",
     ctaKind: "subscribe",
     features: [
-      "$30 of model credits / mo (at cost)",
+      "$40 of model credits / mo (at cost)",
       "Unlimited deployed apps",
       "Unlimited custom domains",
       "Automations every 5 minutes",
@@ -71,7 +71,7 @@ export const PLAN_CONTENT: Record<BillingPlan, PlanContent> = {
     ctaLabel: "Subscribe",
     ctaKind: "subscribe",
     features: [
-      "$10 of model credits / seat / mo",
+      "$50 of model credits / seat / mo",
       "2 shared workspaces",
       "Role-based access (admin / member)",
     ],

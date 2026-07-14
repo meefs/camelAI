@@ -142,9 +142,9 @@ function planSubtitle(plan: BillingPlan): string {
     case "starter":
       return "$10/month in hosted credits.";
     case "pro":
-      return "$30/month in hosted credits.";
+      return "$40/month in hosted credits.";
     case "team":
-      return "$10/seat/month in hosted credits.";
+      return "$50/seat/month in hosted credits.";
     case "enterprise":
       return "Custom enterprise plan billed outside Stripe.";
   }

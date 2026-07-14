@@ -48,7 +48,7 @@ describe("OrgDO billing grant idempotency", () => {
             quantity: 1,
             price: {
               id: "price_starter_test",
-              unit_amount: 4000,
+              unit_amount: 1000,
               currency: "usd",
             },
           },
@@ -76,7 +76,7 @@ describe("OrgDO billing grant idempotency", () => {
             quantity: 1,
             price: {
               id: "price_starter_test",
-              unit_amount: 4000,
+              unit_amount: 1000,
               currency: "usd",
             },
           },
@@ -160,6 +160,15 @@ describe("OrgDO billing grant idempotency", () => {
       .spyOn(globalThis, "fetch")
       .mockResolvedValueOnce(
         Response.json({
+          id: "price_starter_test",
+          unit_amount: 1000,
+          currency: "usd",
+          active: true,
+          recurring: { interval: "month", interval_count: 1 },
+        }),
+      )
+      .mockResolvedValueOnce(
+        Response.json({
           id: "cs_test",
           mode: "subscription",
           url: "https://checkout.stripe.test/session",
@@ -184,7 +193,7 @@ describe("OrgDO billing grant idempotency", () => {
         }),
       ).resolves.toBe("https://checkout.stripe.test/session");
 
-      const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+      const [, init] = fetchMock.mock.calls[1] as [string, RequestInit];
       const body = new URLSearchParams(String(init.body));
 
       expect(body.get("mode")).toBe("subscription");
