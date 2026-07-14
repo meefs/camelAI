@@ -159,6 +159,8 @@ function describeCta(cta: PlanPickerCta): string {
       return `Start checkout for ${cta.plan}`;
     case "migrate":
       return `Legacy migration to ${cta.plan}`;
+    case "manage":
+      return `Manage ${cta.plan} in Stripe`;
     case "contact":
       return "Contact sales selected";
     case "downgrade":

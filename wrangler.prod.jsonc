@@ -44,7 +44,6 @@
     "EMAIL_FROM_ADDRESS": "no-reply@mail.camelai.com",
     "WORKSPACE_EMAIL_DOMAIN": "camelai.dev",
     "STRIPE_MODE": "live",
-    "STRIPE_BILLING_PORTAL_CONFIGURATION_ID": "bpc_1TRzFFGvliMKf4vHONtqkRyn",
     "STRIPE_SUBSCRIPTION_PRICE_ID": "price_1TtCX7GvliMKf4vHRVJ6LKLl",
     "STRIPE_STARTER_PRICE_ID": "price_1TtCX7GvliMKf4vHRVJ6LKLl",
     "STRIPE_PRO_PRICE_ID": "price_1TtCXFGvliMKf4vHZNyZsrD0",

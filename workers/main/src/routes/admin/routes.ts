@@ -63,6 +63,8 @@ import {
   RefreshOrgCustomDomainResponseSchema,
   GrantOrgCreditsBodySchema,
   GrantOrgCreditsResponseSchema,
+  ReconcileSubscriptionInvoicesBodySchema,
+  ReconcileSubscriptionInvoicesResponseSchema,
   UpdateOrgModelAccessBodySchema,
   UpdateThreadBodySchema,
   BlockSignupIpBodySchema,
@@ -150,6 +152,7 @@ import { buildLogTail, cleanBuildLog, projectBuildSandboxKey, runProjectBuild } 
 import type { ProjectBuildSandboxLike } from "../../project-worker-bundle.js";
 import { waitUntil } from "cloudflare:workers";
 import { refreshOrgCustomDomainHostnamesForAdmin } from "../../../../../src/lib/admin-custom-domain.server.js";
+import { reconcilePaidSubscriptionInvoice } from "../../../../../src/lib/billing.server.js";
 
 type HonoEnv = { Bindings: Env };
 
@@ -1524,6 +1527,82 @@ routes.post(
       source: result.source,
       billing_credit_grant_total_cents:
         result.org.billing_credit_grant_total_cents ?? 0,
+    });
+  },
+);
+
+routes.post(
+  "/billing/reconcile-subscription-invoices",
+  openApi({
+    summary: "Dry-run or apply paid subscription invoice reconciliation",
+    request: { json: ReconcileSubscriptionInvoicesBodySchema },
+    responses: { 200: ReconcileSubscriptionInvoicesResponseSchema },
+  }),
+  async (c) => {
+    const body = c.req.valid("json");
+    const results = [];
+    for (const invoiceId of body.invoice_ids) {
+      try {
+        const result = await reconcilePaidSubscriptionInvoice(c.env, invoiceId, {
+          apply: body.apply,
+        });
+        if (result.status === "ignored") {
+          results.push({
+            invoice_id: result.invoiceId,
+            status: result.status,
+            subscription_id: result.subscriptionId,
+            org_id: null,
+            billing_reason: null,
+            plan: null,
+            seat_count: null,
+            source: null,
+            computed_grant_cents: null,
+            credited_grant_cents: null,
+            old_kv_marker: null,
+            last_invoice_marker: null,
+            ledger_status: null,
+            reason: result.reason,
+          });
+        } else {
+          results.push({
+            invoice_id: result.invoiceId,
+            status: result.status,
+            subscription_id: result.subscriptionId,
+            org_id: result.orgId,
+            billing_reason: result.billingReason,
+            plan: result.plan,
+            seat_count: result.seatCount,
+            source: result.source,
+            computed_grant_cents: result.computedGrantCents,
+            credited_grant_cents: result.creditedGrantCents,
+            old_kv_marker: result.oldKvMarker,
+            last_invoice_marker: result.lastInvoiceMarker,
+            ledger_status: result.ledgerStatus,
+            reason: null,
+          });
+        }
+      } catch (error) {
+        results.push({
+          invoice_id: invoiceId,
+          status: "failed" as const,
+          subscription_id: null,
+          org_id: null,
+          billing_reason: null,
+          plan: null,
+          seat_count: null,
+          source: null,
+          computed_grant_cents: null,
+          credited_grant_cents: null,
+          old_kv_marker: null,
+          last_invoice_marker: null,
+          ledger_status: null,
+          reason: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+    return c.json({
+      mode: body.apply ? ("apply" as const) : ("dry-run" as const),
+      results,
     });
   },
 );

@@ -1,12 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 import {
-  Form,
   redirect,
   useFetcher,
   useLoaderData,
   useSearchParams,
 } from "react-router";
-import { ArrowLeft, CreditCard } from "lucide-react";
+import { ArrowLeft } from "lucide-react";
 import { toast } from "sonner";
 import type { Route } from "./+types/_app.settings.organization.billing";
 import { requireAuthContext, requireOrgAdmin } from "@/lib/auth.server";
@@ -22,9 +21,9 @@ import {
   getOrgBillingOverview,
   getLegacyStripeMigrationEligibility,
   getVerifiedLegacyStripeMigrationEligibility,
-  getStripeDefaultPaymentMethodSummary,
   getStripeSubscriptionSummary,
   isStaleTrialingSubscriptionStatusError,
+  isStripeSubscriptionRequiresManagementError,
   isStripeBillingConfigured,
   listStripeInvoicesForOrg,
   updateTrialingStripeSubscriptionPlan,
@@ -73,8 +72,6 @@ const EXISTING_STRIPE_SUBSCRIPTION_STATUSES = new Set([
 
 const PORTAL_UPDATABLE_STRIPE_SUBSCRIPTION_STATUSES = new Set([
   "active",
-  "past_due",
-  "unpaid",
 ]);
 
 const NON_RECOVERABLE_STRIPE_SUBSCRIPTION_STATUSES = new Set([
@@ -155,7 +152,7 @@ export function meta() {
     { title: "Billing - Settings - camelAI" },
     {
       name: "description",
-      content: "Manage your plan, payment method, and invoices.",
+      content: "Manage your plan and invoices.",
     },
   ];
 }
@@ -170,14 +167,8 @@ export async function loader({ request, context }: Route.LoaderArgs) {
 
   const stripeConfigured = isStripeBillingConfigured(env);
 
-  const [overview, paymentMethod, invoices, subscription] = await Promise.all([
+  const [overview, invoices, subscription] = await Promise.all([
     getOrgBillingOverview(env, authContext.currentOrg),
-    stripeConfigured
-      ? getStripeDefaultPaymentMethodSummary(
-          env,
-          authContext.currentOrg,
-        ).catch(() => null)
-      : Promise.resolve(null),
     stripeConfigured
       ? listStripeInvoicesForOrg(env, authContext.currentOrg).catch(() => [])
       : Promise.resolve([]),
@@ -205,7 +196,6 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     org: authContext.currentOrg,
     overview,
     stripeConfigured,
-    paymentMethod,
     invoices: invoiceRows,
     subscription,
     byokProviderLabel: getByokProviderLabel(effectiveLlmProviderConfig?.provider),
@@ -234,6 +224,19 @@ export async function action({ request, context }: Route.ActionArgs) {
 
   switch (intent) {
     case "manageBilling": {
+      const currentPlan = normalizeBillingPlan(
+        billingOrg.billing_plan,
+        billingOrg.billing_status,
+      );
+      if (
+        billingOrg.billing_status === "enterprise" ||
+        !["starter", "pro", "team"].includes(currentPlan) ||
+        !hasRecoverableStripeSubscription(billingOrg)
+      ) {
+        return {
+          error: "A recoverable paid Stripe subscription is required to manage billing.",
+        };
+      }
       const url = await createBillingPortalSession({
         env,
         org: billingOrg,
@@ -449,6 +452,26 @@ export async function action({ request, context }: Route.ActionArgs) {
             });
             return { billingPortalUrl: url };
           } catch (error) {
+            if (isStripeSubscriptionRequiresManagementError(error)) {
+              try {
+                const url = await createBillingPortalSession({
+                  env,
+                  org: billingOrg,
+                  customerEmail: authContext.user.email,
+                  returnUrl: billingUrl.toString(),
+                });
+                return { billingPortalUrl: url };
+              } catch (portalError) {
+                console.error("[billing] failed to create recovery portal", {
+                  orgId: billingOrg.id,
+                  plan: rawPlan,
+                  error:
+                    portalError instanceof Error
+                      ? portalError.message
+                      : String(portalError),
+                });
+              }
+            }
             console.error(
               "[billing] failed to create Stripe subscription update portal session",
               {
@@ -581,9 +604,9 @@ type View = "overview" | "manage";
 
 export default function BillingPage() {
   const {
+    org,
     overview,
     stripeConfigured,
-    paymentMethod,
     invoices,
     subscription,
     byokProviderLabel,
@@ -673,6 +696,13 @@ export default function BillingPage() {
     return (
       <ManagePlanView
         currentPlan={plan}
+        currentPaidPlanAction={
+          stripeConfigured &&
+          ["starter", "pro", "team"].includes(plan) &&
+          hasRecoverableStripeSubscription(org)
+            ? "manage"
+            : undefined
+        }
         stripeConfigured={stripeConfigured}
         byokProviderLabel={byokProviderLabel}
         legacyMigration={legacyMigration}
@@ -685,7 +715,7 @@ export default function BillingPage() {
     <div className="space-y-6">
       <SettingsHeader
         title="Billing"
-        description="Manage your plan, payment method, and invoices."
+        description="Manage your plan and invoices."
       />
       <Separator />
 
@@ -709,49 +739,6 @@ export default function BillingPage() {
 
       {!isEnterprise ? (
         <>
-          <Separator />
-          <section className="space-y-3">
-            <h2 className="text-base font-semibold">Payment</h2>
-            {paymentMethod ? (
-              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                <div className="flex items-center gap-3 text-sm">
-                  <CreditCard
-                    className="size-5 text-muted-foreground"
-                    aria-hidden="true"
-                  />
-                  <span>
-                    <span className="capitalize">{paymentMethod.brand}</span>{" "}
-                    ending in {paymentMethod.last4}
-                  </span>
-                </div>
-                <Form method="post">
-                  <input type="hidden" name="intent" value="manageBilling" />
-                  <Button
-                    type="submit"
-                    variant="outline"
-                    disabled={!stripeConfigured}
-                  >
-                    Update
-                  </Button>
-                </Form>
-              </div>
-            ) : (
-              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                <p className="text-sm text-muted-foreground">
-                  No payment method on file.
-                </p>
-                {stripeConfigured && hasActiveSubscription ? (
-                  <Form method="post">
-                    <input type="hidden" name="intent" value="manageBilling" />
-                    <Button type="submit" variant="outline">
-                      Add payment method
-                    </Button>
-                  </Form>
-                ) : null}
-              </div>
-            )}
-          </section>
-
           <Separator />
           <section className="space-y-3">
             <h2 className="text-base font-semibold">Invoices</h2>
@@ -796,12 +783,14 @@ export default function BillingPage() {
 
 function ManagePlanView({
   currentPlan,
+  currentPaidPlanAction,
   stripeConfigured,
   byokProviderLabel,
   legacyMigration,
   onBack,
 }: {
   currentPlan: BillingPlan;
+  currentPaidPlanAction?: "manage";
   stripeConfigured: boolean;
   byokProviderLabel: string | null;
   legacyMigration: LegacyMigrationDialogData | null;
@@ -833,6 +822,10 @@ function ManagePlanView({
         { intent: "changePlan", plan: "free" },
         { method: "post" },
       );
+      return;
+    }
+    if (cta.kind === "manage") {
+      fetcher.submit({ intent: "manageBilling" }, { method: "post" });
       return;
     }
     if (cta.kind === "migrate") {
@@ -911,6 +904,7 @@ function ManagePlanView({
 
       <PlanPicker
         currentPlan={currentPlan}
+        currentPaidPlanAction={currentPaidPlanAction}
         onSelectPlan={handleSelectPlan}
         pendingPlan={pendingPlan}
         byokProviderLabel={byokProviderLabel}

@@ -16,7 +16,6 @@ import {
   normalizeSeatCount,
 } from "@/lib/billing-plans";
 import {
-  applySubscriptionIncludedCreditsFromInvoice,
   bestEffortSyncTeamSubscriptionSeatCount,
   createBillingPortalSession,
   createLegacyStripeMigrationPortalSession,
@@ -29,21 +28,28 @@ import {
   getOrgBillingOverview,
   getConfiguredSubscriptionPriceId,
   getLegacyStripeMigrationEligibility,
-  getStripeDefaultPaymentMethodSummary,
+  getOrCreateBillingPortalConfiguration,
+  getInvoiceLinePriceId,
+  getInvoiceSubscriptionId,
   getStripeSubscriptionSummary,
   getVerifiedLegacyStripeMigrationEligibility,
   isBillingSetupPath,
   isOrgBillingAccessReady,
   isRecurringSubscriptionInvoice,
   isStripeSecretKeyAllowedForMode,
+  isStripeProrationLine,
+  loadCanonicalPaidPlanCatalog,
   migrateLegacyStripeSubscription,
   parseStripePriceIdList,
+  processPaidSubscriptionInvoice,
+  resolveSubscriptionInvoiceGrant,
   resolveOrgBillingAccess,
   StaleTrialingSubscriptionStatusError,
   syncTeamSubscriptionSeatCount,
   syncOrgSubscriptionFromStripe,
   updateTrialingStripeSubscriptionPlan,
 } from "@/lib/billing.server";
+import type { CanonicalPaidPlanCatalogEntry } from "@/lib/billing.server";
 import type { Organization } from "@/types";
 
 // Unit amounts served for GET /v1/prices/{id} by checkout fetch stubs; must
@@ -53,6 +59,17 @@ const CONFIGURED_TEST_PRICE_UNIT_AMOUNTS: Record<string, number> = {
   price_pro: 4000,
   price_team: 5000,
 };
+
+function configuredTestPrice(priceId: string) {
+  return {
+    id: priceId,
+    unit_amount: CONFIGURED_TEST_PRICE_UNIT_AMOUNTS[priceId] ?? 0,
+    currency: "usd",
+    active: true,
+    product: `prod_${priceId.replace(/^price_/, "")}`,
+    recurring: { interval: "month", interval_count: 1 },
+  };
+}
 
 describe("billing helpers", () => {
   afterEach(() => {
@@ -106,6 +123,25 @@ describe("billing helpers", () => {
           return { org };
         },
       ),
+      getSubscriptionInvoiceGrant: vi.fn(async () => null),
+      applySubscriptionInvoiceGrant: vi.fn(async (command) => {
+        org.billing_customer_id = command.customerId;
+        org.billing_subscription_id = command.subscriptionId;
+        org.billing_plan = command.plan;
+        org.billing_seat_count = command.seatCount;
+        org.billing_credit_grant_total_cents =
+          (org.billing_credit_grant_total_cents ?? 0) + command.grantCents;
+        if (command.grantCents > 0) {
+          org.billing_last_included_credit_invoice_id = command.invoiceId;
+        }
+        return {
+          org,
+          applied: true,
+          credited: command.grantCents > 0,
+          legacyProcessed: false,
+          invariantError: null,
+        };
+      }),
     };
     const env = {
       ORG: {
@@ -114,6 +150,8 @@ describe("billing helpers", () => {
       },
       STRIPE_MODE: "test",
       STRIPE_SECRET_KEY: "sk_test_123",
+      STRIPE_STARTER_PRICE_ID: "price_starter",
+      STRIPE_PRO_PRICE_ID: "price_pro",
       STRIPE_TEAM_PRICE_ID: "price_team",
     };
     return { env, org, orgStub };
@@ -624,6 +662,12 @@ describe("billing helpers", () => {
           }),
         };
       }
+      if (url.includes("/prices/")) {
+        return { ok: true, json: async () => configuredTestPrice(url.split("/prices/")[1]) };
+      }
+      if (url.endsWith("/billing_portal/configurations")) {
+        return { ok: true, json: async () => ({ id: "bpc_upgrade" }) };
+      }
       if (url.endsWith("/billing_portal/sessions")) {
         portalRequestBody = init?.body as string;
         return {
@@ -744,8 +788,11 @@ describe("billing helpers", () => {
           json: async () => ({ amount_due: 0, total: 0, lines: { data: [] } }),
         };
       }
+      if (url.includes("/prices/")) {
+        return { ok: true, json: async () => configuredTestPrice(url.split("/prices/")[1]) };
+      }
       if (url.endsWith("/billing_portal/configurations")) {
-        throw new Error("legacy migration should not create a Team picker");
+        return { ok: true, json: async () => ({ id: "bpc_upgrade" }) };
       }
       if (url.endsWith("/billing_portal/sessions")) {
         portalRequestBody = init?.body as string;
@@ -770,7 +817,7 @@ describe("billing helpers", () => {
     });
 
     const portalParams = new URLSearchParams(portalRequestBody ?? "");
-    expect(portalParams.has("configuration")).toBe(false);
+    expect(portalParams.get("configuration")).toBe("bpc_upgrade");
     expect(portalParams.get("flow_data[type]")).toBe(
       "subscription_update_confirm",
     );
@@ -792,7 +839,7 @@ describe("billing helpers", () => {
     ).toBe("5");
   });
 
-  it("syncs portal-confirmed legacy migrations and grants current-period credits once", async () => {
+  it("syncs portal-confirmed legacy migrations without granting before invoice payment", async () => {
     const { env, orgStub } = makeBillingOrgEnv({
       org: {
         billing_status: "inactive",
@@ -865,31 +912,16 @@ describe("billing helpers", () => {
       billing_status: "active",
       billing_plan: "pro",
       billing_subscription_id: "sub_legacy",
-      billing_credit_grant_total_cents: 4000,
+      billing_credit_grant_total_cents: 0,
     });
 
-    expect(orgStub.applyManualCreditGrant).toHaveBeenCalledWith(
-      4000,
-      "Legacy Stripe migration current-period included credits",
-      "legacy-migration:org_team:sub_legacy:pro:current-period-included-credits",
-      { source: "stripe-migration" },
-    );
+    expect(orgStub.applyManualCreditGrant).not.toHaveBeenCalled();
     const subscriptionParams = new URLSearchParams(
       subscriptionMetadataBody ?? "",
     );
     expect(subscriptionParams.get("metadata[org_id]")).toBe("org_team");
     expect(subscriptionParams.get("metadata[billing_plan]")).toBe("pro");
-    const customerParams = new URLSearchParams(customerClearBody ?? "");
-    expect(customerParams.get("metadata[org_id]")).toBe("org_team");
-    expect(customerParams.get("metadata[v2_mig_org]")).toBe("");
-    expect(customerParams.get("metadata[pending_legacy_migration_org_id]")).toBe(
-      "",
-    );
-    expect(
-      customerParams.has(
-        "metadata[pending_legacy_migration_included_credit_cents]",
-      ),
-    ).toBe(false);
+    expect(customerClearBody).toBeNull();
   });
 
   it("respects zero included-credit override for portal-confirmed legacy migrations", async () => {
@@ -1016,7 +1048,7 @@ describe("billing helpers", () => {
     expect(orgStub.applyManualCreditGrant).not.toHaveBeenCalled();
   });
 
-  it("grants Team legacy migration credits from the confirmed Stripe seat quantity", async () => {
+  it("syncs Team legacy migration seats without granting before payment", async () => {
     const { env, orgStub } = makeBillingOrgEnv({
       org: {
         billing_status: "inactive",
@@ -1068,15 +1100,10 @@ describe("billing helpers", () => {
     ).resolves.toMatchObject({
       billing_plan: "team",
       billing_seat_count: 5,
-      billing_credit_grant_total_cents: 25000,
+      billing_credit_grant_total_cents: 0,
     });
 
-    expect(orgStub.applyManualCreditGrant).toHaveBeenCalledWith(
-      25000,
-      "Legacy Stripe migration current-period included credits",
-      "legacy-migration:org_team:sub_legacy:team:current-period-included-credits",
-      { source: "stripe-migration" },
-    );
+    expect(orgStub.applyManualCreditGrant).not.toHaveBeenCalled();
   });
 
   it("resolves org billing access from one shared rule", () => {
@@ -1219,60 +1246,16 @@ describe("billing helpers", () => {
     }
   });
 
-  it("does not apply included credits for subscription update invoices", async () => {
-    await expect(
-      applySubscriptionIncludedCreditsFromInvoice({} as never, {
-        id: "in_update",
-        subscription: "sub_123",
-        status: "paid",
-        amount_paid: 1000,
-        billing_reason: "subscription_update",
-        metadata: { org_id: "org_123" },
-      }),
-    ).resolves.toBeNull();
-  });
-
-  it("passes a configured billing portal configuration to Stripe", async () => {
+  it("creates and attaches the code-owned management portal configuration", async () => {
     let portalRequestBody: string | null = null;
     vi.stubGlobal(
       "fetch",
-      vi.fn(async (_url, init) => {
-        portalRequestBody = init?.body as string;
-        return {
-          ok: true,
-          json: async () => ({ url: "https://billing.stripe.test/session" }),
-        };
-      }),
-    );
-
-    await expect(
-      createBillingPortalSession({
-        env: {
-          ORG: {} as never,
-          STRIPE_MODE: "test",
-          STRIPE_SECRET_KEY: "sk_test_123",
-          STRIPE_BILLING_PORTAL_CONFIGURATION_ID: " bpc_v2 ",
-        },
-        org: {
-          id: "org_123",
-          name: "Test Org",
-          billing_customer_id: "cus_123",
-        } as never,
-        customerEmail: "owner@example.com",
-        returnUrl: "https://camelai.dev/settings/organization/billing",
-      }),
-    ).resolves.toBe("https://billing.stripe.test/session");
-
-    const portalParams = new URLSearchParams(portalRequestBody ?? "");
-    expect(portalParams.get("customer")).toBe("cus_123");
-    expect(portalParams.get("configuration")).toBe("bpc_v2");
-  });
-
-  it("can deep-link billing portal sessions to subscription cancellation", async () => {
-    let portalRequestBody: string | null = null;
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async (_url, init) => {
+      vi.fn(async (url: string, init) => {
+        if (url.endsWith("/billing_portal/configurations")) {
+          const params = new URLSearchParams(String(init?.body));
+          expect(params.get("features[subscription_update][enabled]")).toBe("false");
+          return { ok: true, json: async () => ({ id: "bpc_management" }) };
+        }
         portalRequestBody = init?.body as string;
         return {
           ok: true,
@@ -1295,22 +1278,50 @@ describe("billing helpers", () => {
         } as never,
         customerEmail: "owner@example.com",
         returnUrl: "https://camelai.dev/settings/organization/billing",
-        cancellationSubscriptionId: " sub_123 ",
       }),
     ).resolves.toBe("https://billing.stripe.test/session");
 
     const portalParams = new URLSearchParams(portalRequestBody ?? "");
     expect(portalParams.get("customer")).toBe("cus_123");
-    expect(portalParams.get("flow_data[type]")).toBe("subscription_cancel");
-    expect(
-      portalParams.get("flow_data[subscription_cancel][subscription]"),
-    ).toBe("sub_123");
-    expect(portalParams.get("flow_data[after_completion][type]")).toBe(
-      "redirect",
+    expect(portalParams.get("configuration")).toBe("bpc_management");
+  });
+
+  it("keeps general management separate from cancellation deep links", async () => {
+    let portalRequestBody: string | null = null;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string, init) => {
+        if (url.endsWith("/billing_portal/configurations")) {
+          return { ok: true, json: async () => ({ id: "bpc_management" }) };
+        }
+        portalRequestBody = init?.body as string;
+        return {
+          ok: true,
+          json: async () => ({ url: "https://billing.stripe.test/session" }),
+        };
+      }),
     );
-    expect(
-      portalParams.get("flow_data[after_completion][redirect][return_url]"),
-    ).toBe("https://camelai.dev/settings/organization/billing");
+
+    await expect(
+      createBillingPortalSession({
+        env: {
+          ORG: {} as never,
+          STRIPE_MODE: "test",
+          STRIPE_SECRET_KEY: "sk_test_123",
+        },
+        org: {
+          id: "org_123",
+          name: "Test Org",
+          billing_customer_id: "cus_123",
+        } as never,
+        customerEmail: "owner@example.com",
+        returnUrl: "https://camelai.dev/settings/organization/billing",
+      }),
+    ).resolves.toBe("https://billing.stripe.test/session");
+
+    const portalParams = new URLSearchParams(portalRequestBody ?? "");
+    expect(portalParams.get("customer")).toBe("cus_123");
+    expect(portalParams.has("flow_data[type]")).toBe(false);
   });
 
   it("reports Stripe subscription cancellation summary metadata", async () => {
@@ -1411,6 +1422,9 @@ describe("billing helpers", () => {
           }),
         };
       }
+      if (url.endsWith("/billing_portal/configurations")) {
+        return { ok: true, json: async () => ({ id: "bpc_management" }) };
+      }
       throw new Error(`Unexpected Stripe request: ${url}`);
     });
     vi.stubGlobal("fetch", fetchMock);
@@ -1493,6 +1507,9 @@ describe("billing helpers", () => {
           text: async () => "portal failed",
         };
       }
+      if (url.endsWith("/billing_portal/configurations")) {
+        return { ok: true, json: async () => ({ id: "bpc_management" }) };
+      }
       throw new Error(`Unexpected Stripe request: ${url}`);
     });
     vi.stubGlobal("fetch", fetchMock);
@@ -1556,6 +1573,9 @@ describe("billing helpers", () => {
             text: async () => "portal failed",
           };
         }
+        if (url.endsWith("/billing_portal/configurations")) {
+          return { ok: true, json: async () => ({ id: "bpc_management" }) };
+        }
         throw new Error(`Unexpected Stripe request: ${url}`);
       }),
     );
@@ -1582,7 +1602,6 @@ describe("billing helpers", () => {
     });
     Object.assign(env, {
       STRIPE_PRO_PRICE_ID: "price_pro",
-      STRIPE_BILLING_PORTAL_CONFIGURATION_ID: "bpc_v2",
     });
 
     let portalRequestBody: string | null = null;
@@ -1614,6 +1633,15 @@ describe("billing helpers", () => {
           }),
         };
       }
+      if (url.endsWith("/customers/cus_subscription")) {
+        return {
+          ok: true,
+          json: async () => ({ id: "cus_subscription", metadata: { org_id: "org_team" } }),
+        };
+      }
+      if (url.endsWith("/billing_portal/configurations")) {
+        return { ok: true, json: async () => ({ id: "bpc_management" }) };
+      }
       if (url.endsWith("/billing_portal/sessions")) {
         portalRequestBody = init?.body as string;
         return {
@@ -1641,7 +1669,7 @@ describe("billing helpers", () => {
 
     const portalParams = new URLSearchParams(portalRequestBody ?? "");
     expect(portalParams.get("customer")).toBe("cus_subscription");
-    expect(portalParams.get("configuration")).toBe("bpc_v2");
+    expect(portalParams.get("configuration")).toBe("bpc_management");
     expect(portalParams.get("flow_data[type]")).toBe("subscription_cancel");
     expect(
       portalParams.get("flow_data[subscription_cancel][subscription]"),
@@ -1652,12 +1680,10 @@ describe("billing helpers", () => {
     expect(orgStub.updateBillingState).toHaveBeenCalledWith({
       billing_customer_id: "cus_subscription",
     });
-    expect(
-      fetchMock.mock.calls.some(([url]) => String(url).endsWith("/customers")),
-    ).toBe(false);
+    expect(fetchMock.mock.calls.some(([url]) => String(url).includes("/customers/"))).toBe(true);
   });
 
-  it("creates an interactive Stripe portal update session for Team plan changes", async () => {
+  it("creates an exact Stripe confirmation for Team with server-computed seats", async () => {
     const { env, org } = makeBillingOrgEnv({
       org: {
         billing_status: "active",
@@ -1671,7 +1697,6 @@ describe("billing helpers", () => {
     Object.assign(env, {
       STRIPE_PRO_PRICE_ID: "price_pro",
       STRIPE_TEAM_PRICE_ID: "price_team",
-      STRIPE_BILLING_PORTAL_CONFIGURATION_ID: "bpc_v2",
     });
 
     let portalConfigRequestBody: string | null = null;
@@ -1697,26 +1722,14 @@ describe("billing helpers", () => {
           }),
         };
       }
-      if (url.endsWith("/prices/price_team") && !init?.body) {
-        return {
-          ok: true,
-          json: async () => ({
-            id: "price_team",
-            unit_amount: 5000,
-            currency: "usd",
-            product: "prod_team",
-            recurring: { interval: "month" },
-          }),
-        };
+      if (url.includes("/prices/") && !init?.body) {
+        return { ok: true, json: async () => configuredTestPrice(url.split("/prices/")[1]) };
       }
       if (url.endsWith("/billing_portal/configurations")) {
         portalConfigRequestBody = init?.body as string;
-        expect((init?.headers as Headers).get("Idempotency-Key")).toBe(
-          "team-portal-config:price_team:8",
-        );
         return {
           ok: true,
-          json: async () => ({ id: "bpc_team_dynamic" }),
+          json: async () => ({ id: "bpc_upgrade" }),
         };
       }
       if (url.endsWith("/billing_portal/sessions")) {
@@ -1747,52 +1760,36 @@ describe("billing helpers", () => {
     const portalConfigParams = new URLSearchParams(
       portalConfigRequestBody ?? "",
     );
-    expect(
-      portalConfigParams.get(
-        "features[subscription_update][products][0][product]",
-      ),
-    ).toBe("prod_team");
+    expect(portalConfigParams.get("features[subscription_update][proration_behavior]")).toBe("always_invoice");
     expect(
       portalConfigParams.getAll(
         "features[subscription_update][default_allowed_updates][]",
       ),
     ).toEqual(["price", "quantity"]);
-    expect(
-      portalConfigParams.get(
-        "features[subscription_update][products][0][adjustable_quantity][enabled]",
-      ),
-    ).toBe("true");
-    expect(
-      portalConfigParams.get(
-        "features[subscription_update][products][0][adjustable_quantity][minimum]",
-      ),
-    ).toBe("8");
+    expect(portalConfigParams.get("features[subscription_update][products][2][adjustable_quantity][enabled]")).toBe("false");
 
     const portalParams = new URLSearchParams(portalRequestBody ?? "");
     expect(portalParams.get("customer")).toBe("cus_123");
-    expect(portalParams.get("configuration")).toBe("bpc_team_dynamic");
-    expect(portalParams.get("flow_data[type]")).toBe("subscription_update");
+    expect(portalParams.get("configuration")).toBe("bpc_upgrade");
+    expect(portalParams.get("flow_data[type]")).toBe("subscription_update_confirm");
     expect(
-      portalParams.get("flow_data[subscription_update][subscription]"),
+      portalParams.get("flow_data[subscription_update_confirm][subscription]"),
     ).toBe("sub_team");
-    // Team upgrades stay on the interactive portal flow so customers can pick
-    // more seats. The server-calculated billable seat floor is enforced by the
-    // dynamic portal configuration adjustable_quantity minimum, not confirm items.
     expect(
-      portalParams.has("flow_data[subscription_update_confirm][items][0][id]"),
-    ).toBe(false);
+      portalParams.get("flow_data[subscription_update_confirm][items][0][id]"),
+    ).toBe("si_pro");
     expect(
-      portalParams.has(
+      portalParams.get(
         "flow_data[subscription_update_confirm][items][0][quantity]",
       ),
-    ).toBe(false);
+    ).toBe("3");
     expect(portalParams.get("flow_data[after_completion][type]")).toBe(
       "redirect",
     );
     expect(
       portalParams.get("flow_data[after_completion][redirect][return_url]"),
     ).toBe("https://camelai.dev/settings/organization/billing");
-    expect(fetchMock).toHaveBeenCalledTimes(4);
+    expect(fetchMock).toHaveBeenCalledTimes(6);
   });
 
   it("creates a Stripe portal confirmation session for individual plan changes", async () => {
@@ -1809,7 +1806,6 @@ describe("billing helpers", () => {
     Object.assign(env, {
       STRIPE_STARTER_PRICE_ID: "price_starter",
       STRIPE_PRO_PRICE_ID: "price_pro",
-      STRIPE_BILLING_PORTAL_CONFIGURATION_ID: "bpc_v2",
     });
 
     let portalRequestBody: string | null = null;
@@ -1832,6 +1828,18 @@ describe("billing helpers", () => {
               ],
             },
           }),
+        };
+      }
+      if (url.includes("/prices/") && !init?.body) {
+        return {
+          ok: true,
+          json: async () => configuredTestPrice(url.split("/prices/")[1]),
+        };
+      }
+      if (url.endsWith("/billing_portal/configurations")) {
+        return {
+          ok: true,
+          json: async () => ({ id: "bpc_v2" }),
         };
       }
       if (url.endsWith("/billing_portal/sessions")) {
@@ -1886,6 +1894,71 @@ describe("billing helpers", () => {
     );
   });
 
+  it("uses a no-proration exact confirmation for a lower monthly total", async () => {
+    const { env, org } = makeBillingOrgEnv({
+      org: {
+        billing_status: "active",
+        billing_plan: "team",
+        billing_seat_count: 3,
+        billing_customer_id: "cus_123",
+        billing_subscription_id: "sub_team",
+      },
+      memberCount: 3,
+    });
+    let portalConfigRequestBody: string | null = null;
+    let portalRequestBody: string | null = null;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string, init?: RequestInit) => {
+        if (url.endsWith("/subscriptions/sub_team") && !init?.body) {
+          return {
+            ok: true,
+            json: async () => ({
+              id: "sub_team",
+              status: "active",
+              customer: "cus_123",
+              items: { data: [{ id: "si_team", quantity: 3, price: "price_team" }] },
+            }),
+          };
+        }
+        if (url.includes("/prices/") && !init?.body) {
+          return {
+            ok: true,
+            json: async () => configuredTestPrice(url.split("/prices/")[1]),
+          };
+        }
+        if (url.endsWith("/billing_portal/configurations")) {
+          portalConfigRequestBody = init?.body as string;
+          return { ok: true, json: async () => ({ id: "bpc_downgrade" }) };
+        }
+        if (url.endsWith("/billing_portal/sessions")) {
+          portalRequestBody = init?.body as string;
+          return {
+            ok: true,
+            json: async () => ({ url: "https://billing.stripe.test/session" }),
+          };
+        }
+        throw new Error(`Unexpected Stripe request: ${url}`);
+      }),
+    );
+
+    await createSubscriptionUpdatePortalSession({
+      env: env as never,
+      org,
+      customerEmail: "owner@example.com",
+      returnUrl: "https://camelai.dev/settings/organization/billing",
+      plan: "pro",
+    });
+
+    const config = new URLSearchParams(portalConfigRequestBody ?? "");
+    expect(config.get("features[subscription_update][proration_behavior]")).toBe("none");
+    const portal = new URLSearchParams(portalRequestBody ?? "");
+    expect(portal.get("configuration")).toBe("bpc_downgrade");
+    expect(portal.get("flow_data[type]")).toBe("subscription_update_confirm");
+    expect(portal.get("flow_data[subscription_update_confirm][items][0][price]")).toBe("price_pro");
+    expect(portal.get("flow_data[subscription_update_confirm][items][0][quantity]")).toBe("1");
+  });
+
   it("uses the subscription customer for existing plan change portal sessions", async () => {
     const { env, org, orgStub } = makeBillingOrgEnv({
       org: {
@@ -1924,16 +1997,16 @@ describe("billing helpers", () => {
           }),
         };
       }
-      if (url.endsWith("/prices/price_team") && !init?.body) {
+      if (url.endsWith("/customers/cus_subscription") && !init?.body) {
         return {
           ok: true,
-          json: async () => ({
-            id: "price_team",
-            unit_amount: 5000,
-            currency: "usd",
-            product: "prod_team",
-            recurring: { interval: "month" },
-          }),
+          json: async () => ({ id: "cus_subscription", metadata: { org_id: "org_team" } }),
+        };
+      }
+      if (url.includes("/prices/") && !init?.body) {
+        return {
+          ok: true,
+          json: async () => configuredTestPrice(url.split("/prices/")[1]),
         };
       }
       if (url.endsWith("/billing_portal/configurations")) {
@@ -2389,161 +2462,6 @@ describe("billing helpers", () => {
     );
   });
 
-  it("reads payment method summary from the subscription default payment method", async () => {
-    const fetchMock = vi.fn(async (url: string) => {
-      if (url.includes("/customers/cus_123?")) {
-        return {
-          ok: true,
-          json: async () => ({
-            id: "cus_123",
-            invoice_settings: { default_payment_method: null },
-          }),
-        };
-      }
-      if (url.includes("/subscriptions/sub_123?")) {
-        return {
-          ok: true,
-          json: async () => ({
-            id: "sub_123",
-            status: "active",
-            default_payment_method: {
-              id: "pm_123",
-              type: "card",
-              card: { brand: "visa", last4: "4242" },
-            },
-          }),
-        };
-      }
-      return {
-        ok: true,
-        json: async () => ({ data: [] }),
-      };
-    });
-    vi.stubGlobal("fetch", fetchMock);
-
-    await expect(
-      getStripeDefaultPaymentMethodSummary(
-        {
-          ORG: {} as never,
-          STRIPE_MODE: "test",
-          STRIPE_SECRET_KEY: "sk_test_123",
-        },
-        {
-          id: "org_123",
-          name: "Test Org",
-          billing_customer_id: "cus_123",
-          billing_subscription_id: "sub_123",
-        } as never,
-      ),
-    ).resolves.toEqual({ brand: "visa", last4: "4242" });
-  });
-
-  it("falls back to attached customer card payment methods", async () => {
-    const fetchMock = vi.fn(async (url: string) => {
-      if (url.includes("/customers/cus_123?")) {
-        return {
-          ok: true,
-          json: async () => ({
-            id: "cus_123",
-            invoice_settings: { default_payment_method: null },
-          }),
-        };
-      }
-      if (url.includes("/payment_methods?")) {
-        return {
-          ok: true,
-          json: async () => ({
-            data: [
-              {
-                id: "pm_123",
-                type: "card",
-                card: { brand: "mastercard", last4: "4444" },
-              },
-            ],
-          }),
-        };
-      }
-      return {
-        ok: true,
-        json: async () => ({ data: [] }),
-      };
-    });
-    vi.stubGlobal("fetch", fetchMock);
-
-    await expect(
-      getStripeDefaultPaymentMethodSummary(
-        {
-          ORG: {} as never,
-          STRIPE_MODE: "test",
-          STRIPE_SECRET_KEY: "sk_test_123",
-        },
-        {
-          id: "org_123",
-          name: "Test Org",
-          billing_customer_id: "cus_123",
-        } as never,
-      ),
-    ).resolves.toEqual({ brand: "mastercard", last4: "4444" });
-
-    expect(
-      fetchMock.mock.calls.some((call) =>
-        String(call[0]).includes("/payment_methods?"),
-      ),
-    ).toBe(true);
-  });
-
-  it("falls back to legacy customer default source cards", async () => {
-    const fetchMock = vi.fn(async (url: string) => {
-      if (url.includes("/customers/cus_123?")) {
-        return {
-          ok: true,
-          json: async () => ({
-            id: "cus_123",
-            invoice_settings: { default_payment_method: null },
-            default_source: "card_123",
-          }),
-        };
-      }
-      if (url.includes("/payment_methods?")) {
-        return {
-          ok: true,
-          json: async () => ({ data: [] }),
-        };
-      }
-      if (url.includes("/customers/cus_123/sources/card_123")) {
-        return {
-          ok: true,
-          json: async () => ({
-            id: "card_123",
-            object: "card",
-            brand: "visa",
-            last4: "4242",
-          }),
-        };
-      }
-      return {
-        ok: true,
-        json: async () => ({ data: [] }),
-      };
-    });
-    vi.stubGlobal("fetch", fetchMock);
-
-    await expect(
-      getStripeDefaultPaymentMethodSummary(
-        {
-          ORG: {} as never,
-          STRIPE_MODE: "test",
-          STRIPE_SECRET_KEY: "sk_test_123",
-        },
-        {
-          id: "org_123",
-          name: "Test Org",
-          billing_customer_id: "cus_123",
-        } as never,
-      ),
-    ).resolves.toEqual({ brand: "visa", last4: "4242" });
-  });
-
   it("uses tier-specific subscription price, quantity, and included credit metadata", async () => {
     let checkoutRequestBody: string | null = null;
     vi.stubGlobal(
@@ -2558,6 +2476,7 @@ describe("billing helpers", () => {
               unit_amount: CONFIGURED_TEST_PRICE_UNIT_AMOUNTS[priceId] ?? 0,
               currency: "usd",
               active: true,
+              product: `prod_${priceId.replace(/^price_/, "")}`,
               recurring: { interval: "month", interval_count: 1 },
             }),
           };
@@ -2663,6 +2582,7 @@ describe("billing helpers", () => {
               unit_amount: CONFIGURED_TEST_PRICE_UNIT_AMOUNTS[priceId] ?? 0,
               currency: "usd",
               active: true,
+              product: `prod_${priceId.replace(/^price_/, "")}`,
               recurring: { interval: "month", interval_count: 1 },
             }),
           };
@@ -2735,6 +2655,7 @@ describe("billing helpers", () => {
               unit_amount: CONFIGURED_TEST_PRICE_UNIT_AMOUNTS[priceId] ?? 0,
               currency: "usd",
               active: true,
+              product: `prod_${priceId.replace(/^price_/, "")}`,
               recurring: { interval: "month", interval_count: 1 },
             }),
           };
@@ -2793,6 +2714,7 @@ describe("billing helpers", () => {
               unit_amount: CONFIGURED_TEST_PRICE_UNIT_AMOUNTS[priceId] ?? 0,
               currency: "usd",
               active: true,
+              product: `prod_${priceId.replace(/^price_/, "")}`,
               recurring: { interval: "month", interval_count: 1 },
             }),
           };
@@ -2854,6 +2776,7 @@ describe("billing helpers", () => {
             unit_amount: 15000,
             currency: "usd",
             active: true,
+            product: "prod_pro",
             recurring: { interval: "month", interval_count: 1 },
           }),
         };
@@ -2896,212 +2819,416 @@ describe("billing helpers", () => {
   });
 
   it.each([
-    {
-      plan: "pro" as const,
-      configuredPriceId: "price_pro",
-      quantity: 1,
-      expectedCreditCents: 4000,
-    },
-    {
-      plan: "team" as const,
-      configuredPriceId: "price_team",
-      quantity: 3,
-      expectedCreditCents: 15000,
-    },
-  ])(
-    "recomputes $plan renewal credits from a matching invoice line despite stale metadata",
-    async ({ plan, configuredPriceId, quantity, expectedCreditCents }) => {
-      const { env, orgStub } = makeBillingOrgEnv({
-        org: {
-          billing_status: "active",
-          billing_plan: plan,
-          billing_seat_count: quantity,
-          billing_credit_grant_total_cents: 0,
-        },
-        memberCount: quantity,
-      });
-      Object.assign(env, {
+    ["inactive", { active: false }],
+    ["wrong currency", { currency: "eur" }],
+    ["non-monthly", { recurring: { interval: "year", interval_count: 1 } }],
+    ["missing product", { product: null }],
+  ])("fails closed when a canonical catalog price is %s", async (_case, override) => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) => {
+        const priceId = url.split("/prices/")[1];
+        return {
+          ok: true,
+          json: async () => ({
+            ...configuredTestPrice(priceId),
+            ...(priceId === "price_pro" ? override : {}),
+          }),
+        };
+      }),
+    );
+
+    await expect(
+      loadCanonicalPaidPlanCatalog({
+        ORG: {} as never,
+        STRIPE_MODE: "test",
+        STRIPE_SECRET_KEY: "sk_test_123",
+        STRIPE_STARTER_PRICE_ID: "price_starter",
         STRIPE_PRO_PRICE_ID: "price_pro",
         STRIPE_TEAM_PRICE_ID: "price_team",
-      });
+      }),
+    ).rejects.toThrow(/does not match the advertised/);
+  });
 
-      await expect(
-        applySubscriptionIncludedCreditsFromInvoice(env as never, {
-          id: `in_${plan}_renewal`,
-          subscription: {
-            id: `sub_${plan}`,
-            status: "active",
-            metadata: {
-              org_id: "org_team",
-              billing_plan: plan,
-              seat_count: String(quantity),
-              subscription_included_credit_cents: "3000",
-            },
-          },
-          lines: {
-            data: [{ price: configuredPriceId, quantity }],
-          },
-          status: "paid",
-          paid: true,
-          billing_reason: "subscription_cycle",
-        }),
-      ).resolves.toMatchObject({
-        billing_credit_grant_total_cents: expectedCreditCents,
-        billing_last_included_credit_invoice_id: `in_${plan}_renewal`,
-      });
+  const paidPlanCatalog: CanonicalPaidPlanCatalogEntry[] = [
+    { plan: "starter", priceId: "price_starter", productId: "prod_starter", unitAmount: 1000, currency: "usd", interval: "month", intervalCount: 1 },
+    { plan: "pro", priceId: "price_pro", productId: "prod_pro", unitAmount: 4000, currency: "usd", interval: "month", intervalCount: 1 },
+    { plan: "team", priceId: "price_team", productId: "prod_team", unitAmount: 5000, currency: "usd", interval: "month", intervalCount: 1 },
+  ];
 
-      expect(orgStub.updateBillingState).toHaveBeenCalledWith(
-        expect.objectContaining({
-          billing_plan: plan,
-          billing_seat_count: quantity,
-          billing_credit_grant_total_cents: expectedCreditCents,
-        }),
-      );
-    },
-  );
-
-  it("uses stale subscription metadata for a renewal on an unconfigured migration-window price", async () => {
-    const { env, orgStub } = makeBillingOrgEnv({
-      org: {
-        billing_status: "active",
-        billing_plan: "pro",
-        billing_seat_count: 1,
-        billing_credit_grant_total_cents: 0,
-      },
-      memberCount: 1,
+  it("caches immutable portal configurations by behavior and catalog fingerprint", async () => {
+    const cache = new Map<string, string>();
+    let configurationRequestBody: string | null = null;
+    let idempotencyKey: string | null = null;
+    const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
+      configurationRequestBody = init?.body as string;
+      idempotencyKey = new Headers(init?.headers).get("Idempotency-Key");
+      return {
+        ok: true,
+        json: async () => ({ id: "bpc_cached_upgrade" }),
+      };
     });
-    Object.assign(env, { STRIPE_PRO_PRICE_ID: "price_pro_new" });
+    vi.stubGlobal("fetch", fetchMock);
+    const env = {
+      ORG: {} as never,
+      STRIPE_MODE: "test",
+      STRIPE_SECRET_KEY: "sk_test_123",
+      APP_KV: {
+        get: vi.fn(async (key: string) => cache.get(key) ?? null),
+        put: vi.fn(async (key: string, value: string) => {
+          cache.set(key, value);
+        }),
+      },
+    };
 
     await expect(
-      applySubscriptionIncludedCreditsFromInvoice(env as never, {
-        id: "in_pro_old_price_renewal",
-        subscription: {
-          id: "sub_pro",
-          status: "active",
-          metadata: {
-            org_id: "org_team",
-            billing_plan: "pro",
-            seat_count: "1",
-            subscription_included_credit_cents: "3000",
-          },
-        },
-        lines: {
-          data: [{ price: "price_pro_old", quantity: 1 }],
-        },
+      getOrCreateBillingPortalConfiguration(
+        env as never,
+        "upgrade",
+        paidPlanCatalog,
+      ),
+    ).resolves.toBe("bpc_cached_upgrade");
+    await expect(
+      getOrCreateBillingPortalConfiguration(
+        env as never,
+        "upgrade",
+        paidPlanCatalog,
+      ),
+    ).resolves.toBe("bpc_cached_upgrade");
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(idempotencyKey).toMatch(/^camelai-billing-portal-v1:upgrade:/);
+    const configurationBody = new URLSearchParams(
+      configurationRequestBody ?? "",
+    );
+    expect(
+      configurationBody.getAll(
+        "features[subscription_update][default_allowed_updates][]",
+      ),
+    ).toEqual(["price", "quantity"]);
+    expect(
+      [0, 1, 2].map((index) =>
+        configurationBody.get(
+          `features[subscription_update][products][${index}][prices][]`,
+        ),
+      ),
+    ).toEqual(["price_starter", "price_pro", "price_team"]);
+  });
+
+  it("reads both legacy and Dahlia invoice subscription and line shapes", () => {
+    expect(
+      getInvoiceSubscriptionId({
+        id: "in_dahlia",
+        subscription: "sub_legacy_fallback",
+        parent: { subscription_details: { subscription: "sub_dahlia" } },
+      }),
+    ).toBe("sub_dahlia");
+    expect(getInvoiceSubscriptionId({ id: "in_legacy", subscription: "sub_legacy" })).toBe(
+      "sub_legacy",
+    );
+    expect(
+      getInvoiceLinePriceId({
+        price: "price_legacy_fallback",
+        pricing: { price_details: { price: "price_dahlia" } },
+      }),
+    ).toBe("price_dahlia");
+    expect(getInvoiceLinePriceId({ price: "price_legacy" })).toBe("price_legacy");
+    expect(
+      isStripeProrationLine({
+        parent: { subscription_item_details: { proration: true } },
+      }),
+    ).toBe(true);
+    expect(isStripeProrationLine({ proration: true })).toBe(true);
+  });
+
+  it.each([
+    ["starter", 1, 1000],
+    ["pro", 1, 4000],
+    ["team", 3, 15000],
+  ] as const)("computes exact full-cycle %s credits from the live subscription", (plan, quantity, grantCents) => {
+    const resolution = resolveSubscriptionInvoiceGrant({
+      env: {},
+      invoice: {
+        id: `in_${plan}`,
         status: "paid",
+        billing_reason: "subscription_cycle",
+        parent: { subscription_details: { subscription: `sub_${plan}` } },
+      },
+      lines: [{ price: `price_${plan}`, quantity }],
+      subscription: {
+        id: `sub_${plan}`,
+        status: "active",
+        customer: "cus_123",
+        items: { data: [{ id: `si_${plan}`, quantity, price: `price_${plan}` }] },
+      },
+      catalog: paidPlanCatalog,
+      orgId: "org_team",
+      customerId: "cus_123",
+    });
+
+    expect(resolution.command).toMatchObject({ plan, seatCount: quantity, grantCents, source: "renewal" });
+  });
+
+  it("uses signed Stripe proration lines and ignores taxes when computing plan-change credits", () => {
+    const resolution = resolveSubscriptionInvoiceGrant({
+      env: {},
+      invoice: {
+        id: "in_upgrade",
+        status: "paid",
+        billing_reason: "subscription_update",
+        parent: { subscription_details: { subscription: "sub_123" } },
+      },
+      lines: [
+        { amount: -500, quantity: 1, price: "price_starter", proration: true },
+        { amount: 2000, quantity: 1, pricing: { price_details: { price: "price_pro" } }, parent: { subscription_item_details: { proration: true } } },
+        { amount: 150, description: "Tax", proration: false },
+      ],
+      subscription: {
+        id: "sub_123",
+        status: "active",
+        customer: "cus_123",
+        items: { data: [{ id: "si_123", quantity: 1, price: "price_pro" }] },
+      },
+      catalog: paidPlanCatalog,
+      orgId: "org_team",
+      customerId: "cus_123",
+    });
+
+    expect(resolution.command).toMatchObject({ plan: "pro", grantCents: 1500, source: "plan_change" });
+  });
+
+  it("prorates the configured allowance override by the Stripe line fraction", () => {
+    const resolution = resolveSubscriptionInvoiceGrant({
+      env: { BILLING_SUBSCRIPTION_INCLUDED_CREDIT_CENTS: "8000" },
+      invoice: {
+        id: "in_override",
+        status: "paid",
+        billing_reason: "subscription_update",
+        subscription: "sub_override",
+      },
+      lines: [
+        {
+          amount: 1000,
+          quantity: 1,
+          price: "price_pro",
+          proration: true,
+        },
+      ],
+      subscription: {
+        id: "sub_override",
+        status: "active",
+        items: {
+          data: [{ id: "si_override", quantity: 1, price: "price_pro" }],
+        },
+      },
+      catalog: paidPlanCatalog,
+      orgId: "org_team",
+      customerId: "cus_123",
+    });
+
+    expect(resolution.command).toMatchObject({ grantCents: 2000 });
+  });
+
+  it("grants a full legacy-migration allowance only for the matching paid update", () => {
+    const resolution = resolveSubscriptionInvoiceGrant({
+      env: {},
+      invoice: {
+        id: "in_migration",
+        status: "paid",
+        billing_reason: "subscription_update",
+        subscription: "sub_migration",
+      },
+      lines: [],
+      subscription: {
+        id: "sub_migration",
+        status: "active",
+        items: {
+          data: [{ id: "si_migration", quantity: 1, price: "price_pro" }],
+        },
+      },
+      catalog: paidPlanCatalog,
+      orgId: "org_team",
+      customerId: "cus_migration",
+      customerMetadata: {
+        org_id: "org_team",
+        v2_mig_org: "org_team",
+        v2_mig_sub: "sub_migration",
+        v2_mig_plan: "pro",
+        v2_mig_seats: "1",
+      },
+    });
+
+    expect(resolution.command).toMatchObject({
+      source: "legacy_migration",
+      plan: "pro",
+      grantCents: 4000,
+    });
+  });
+
+  it("clamps downgrade grants to zero and fails closed on unknown proration prices", () => {
+    const base: Omit<
+      Parameters<typeof resolveSubscriptionInvoiceGrant>[0],
+      "lines"
+    > = {
+      env: {},
+      invoice: {
+        id: "in_downgrade",
+        status: "paid",
+        billing_reason: "subscription_update",
+        parent: { subscription_details: { subscription: "sub_123" } },
+      },
+      subscription: {
+        id: "sub_123",
+        status: "active",
+        customer: "cus_123",
+        items: { data: [{ id: "si_123", quantity: 1, price: "price_starter" }] },
+      },
+      catalog: paidPlanCatalog,
+      orgId: "org_team",
+      customerId: "cus_123",
+    };
+    expect(
+      resolveSubscriptionInvoiceGrant({
+        ...base,
+        lines: [
+          { amount: -4000, quantity: 1, price: "price_pro", proration: true },
+          { amount: 1000, quantity: 1, price: "price_starter", proration: true },
+        ],
+      }).command,
+    ).toMatchObject({ grantCents: 0 });
+    expect(() =>
+      resolveSubscriptionInvoiceGrant({
+        ...base,
+        lines: [{ amount: 100, quantity: 1, price: "price_unknown", proration: true }],
+      }),
+    ).toThrow(/unknown proration price/);
+  });
+
+  it("ignores invoices unless Stripe's canonical status is paid", () => {
+    const resolution = resolveSubscriptionInvoiceGrant({
+      env: {},
+      invoice: {
+        id: "in_open",
+        status: "open",
         paid: true,
         billing_reason: "subscription_cycle",
-      }),
-    ).resolves.toMatchObject({
-      billing_credit_grant_total_cents: 3000,
-      billing_last_included_credit_invoice_id: "in_pro_old_price_renewal",
+        parent: { subscription_details: { subscription: "sub_123" } },
+      },
+      lines: [],
+      subscription: { id: "sub_123", status: "active", items: { data: [] } },
+      catalog: paidPlanCatalog,
+      orgId: "org_team",
+      customerId: "cus_123",
     });
-
-    expect(orgStub.updateBillingState).toHaveBeenCalledWith(
-      expect.objectContaining({
-        billing_plan: "pro",
-        billing_seat_count: 1,
-        billing_credit_grant_total_cents: 3000,
-      }),
-    );
+    expect(resolution).toEqual({ command: null, ignoredReason: "invoice_not_paid" });
   });
 
-  it("applies included credits for explicit no-trial initial paid subscription invoices", async () => {
+  it("retrieves every canonical invoice-line page before applying through the ledger", async () => {
     const { env, orgStub } = makeBillingOrgEnv({
       org: {
         billing_status: "active",
-        billing_plan: "pro",
-        billing_seat_count: 1,
+        billing_plan: "starter",
         billing_credit_grant_total_cents: 0,
       },
       memberCount: 1,
     });
-
-    await expect(
-      applySubscriptionIncludedCreditsFromInvoice(env as never, {
-        id: "in_initial_paid",
-        subscription: {
-          id: "sub_pro",
-          status: "active",
-          metadata: {
-            org_id: "org_team",
-            billing_plan: "pro",
-            seat_count: "1",
-            subscription_included_credit_cents: "4000",
-            initial_included_credit_cents: "4000",
-          },
-        },
-        status: "paid",
-        paid: true,
-        amount_paid: 4000,
-        billing_reason: "subscription_create",
-      }),
-    ).resolves.toMatchObject({
-      billing_credit_grant_total_cents: 4000,
-      billing_last_included_credit_invoice_id: "in_initial_paid",
-    });
-
-    expect(orgStub.updateBillingState).toHaveBeenCalledWith(
-      expect.objectContaining({
-        billing_plan: "pro",
-        billing_credit_grant_total_cents: 4000,
-        billing_last_included_credit_invoice_id: "in_initial_paid",
+    const fetchedLinePages: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string, init?: RequestInit) => {
+        if (url.endsWith("/invoices/in_process")) {
+          return {
+            ok: true,
+            json: async () => ({
+              id: "in_process",
+              status: "paid",
+              customer: "cus_process",
+              billing_reason: "subscription_update",
+              parent: {
+                subscription_details: {
+                  subscription: "sub_process",
+                  metadata: { org_id: "org_team" },
+                },
+              },
+            }),
+          };
+        }
+        if (url.includes("/invoices/in_process/lines?")) {
+          fetchedLinePages.push(url);
+          const secondPage = url.includes("starting_after=line_debit");
+          return {
+            ok: true,
+            json: async () =>
+              secondPage
+                ? {
+                    data: [
+                      {
+                        id: "line_credit",
+                        amount: 2000,
+                        quantity: 1,
+                        pricing: { price_details: { price: "price_pro" } },
+                        parent: { subscription_item_details: { proration: true } },
+                      },
+                    ],
+                    has_more: false,
+                  }
+                : {
+                    data: [
+                      {
+                        id: "line_debit",
+                        amount: -500,
+                        quantity: 1,
+                        price: "price_starter",
+                        proration: true,
+                      },
+                    ],
+                    has_more: true,
+                  },
+          };
+        }
+        if (url.endsWith("/subscriptions/sub_process") && !init?.body) {
+          return {
+            ok: true,
+            json: async () => ({
+              id: "sub_process",
+              status: "active",
+              customer: "cus_process",
+              metadata: { org_id: "org_team", billing_plan: "pro" },
+              items: { data: [{ id: "si_process", quantity: 1, price: "price_pro" }] },
+            }),
+          };
+        }
+        if (url.endsWith("/customers/cus_process") && !init?.body) {
+          return {
+            ok: true,
+            json: async () => ({ id: "cus_process", metadata: { org_id: "org_team" } }),
+          };
+        }
+        if (url.includes("/prices/") && !init?.body) {
+          return {
+            ok: true,
+            json: async () => configuredTestPrice(url.split("/prices/")[1]),
+          };
+        }
+        if (url.endsWith("/subscriptions/sub_process") && init?.body) {
+          return { ok: true, json: async () => ({ id: "sub_process" }) };
+        }
+        throw new Error(`Unexpected Stripe request: ${url}`);
       }),
     );
-  });
-
-  it("uses invoice line quantity for initial team included credits", async () => {
-    const { env, orgStub } = makeBillingOrgEnv({
-      org: {
-        billing_status: "active",
-        billing_plan: "team",
-        billing_seat_count: 3,
-        billing_credit_grant_total_cents: 0,
-      },
-      memberCount: 3,
-    });
 
     await expect(
-      applySubscriptionIncludedCreditsFromInvoice(env as never, {
-        id: "in_initial_team_paid",
-        customer: "cus_team",
-        subscription: {
-          id: "sub_team",
-          status: "active",
-          metadata: {
-            org_id: "org_team",
-            billing_plan: "team",
-            seat_count: "3",
-            subscription_included_credit_cents: "3000",
-            initial_included_credit_cents: "3000",
-          },
-        },
-        lines: {
-          data: [
-            {
-              price: "price_team",
-              quantity: 8,
-            },
-          ],
-        },
-        status: "paid",
-        paid: true,
-        amount_paid: 40000,
-        billing_reason: "subscription_create",
-      }),
+      processPaidSubscriptionInvoice(env as never, "in_process"),
     ).resolves.toMatchObject({
-      billing_credit_grant_total_cents: 40000,
-      billing_last_included_credit_invoice_id: "in_initial_team_paid",
-      billing_seat_count: 8,
+      status: "processed",
+      grantCents: 1500,
+      plan: "pro",
+      source: "plan_change",
     });
-
-    expect(orgStub.updateBillingState).toHaveBeenCalledWith(
-      expect.objectContaining({
-        billing_plan: "team",
-        billing_seat_count: 8,
-        billing_credit_grant_total_cents: 40000,
-        billing_last_included_credit_invoice_id: "in_initial_team_paid",
-      }),
+    expect(fetchedLinePages).toHaveLength(2);
+    expect(orgStub.applySubscriptionInvoiceGrant).toHaveBeenCalledWith(
+      expect.objectContaining({ invoiceId: "in_process", grantCents: 1500 }),
+      { legacyProcessed: false },
     );
   });
 
@@ -3221,6 +3348,51 @@ describe("billing helpers", () => {
       fetchMock.mock.calls[1][1]?.body as string,
     );
     expect(itemParams.get("quantity")).toBe("4");
+    expect(itemParams.get("proration_behavior")).toBe("always_invoice");
+  });
+
+  it("uses no immediate proration when a Team seat count decreases", async () => {
+    const { env } = makeBillingOrgEnv({
+      org: { billing_seat_count: 5 },
+      memberCount: 4,
+    });
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url.endsWith("/subscriptions/sub_team") && !init?.body) {
+        return {
+          ok: true,
+          json: async () => ({
+            id: "sub_team",
+            status: "active",
+            items: {
+              data: [
+                {
+                  id: "si_team",
+                  quantity: 5,
+                  price: "price_team",
+                },
+              ],
+            },
+          }),
+        };
+      }
+      return {
+        ok: true,
+        json: async () => ({
+          id: url.includes("subscription_items") ? "si_team" : "sub_team",
+        }),
+      };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await syncTeamSubscriptionSeatCount(env as never, "org_team", {
+      targetSeatCount: 4,
+    });
+
+    const itemParams = new URLSearchParams(
+      fetchMock.mock.calls[1][1]?.body as string,
+    );
+    expect(itemParams.get("quantity")).toBe("4");
+    expect(itemParams.get("proration_behavior")).toBe("none");
   });
 
   it("does not update a Stripe subscription item when the configured team price is missing", async () => {
@@ -3296,6 +3468,7 @@ describe("billing helpers", () => {
               unit_amount: CONFIGURED_TEST_PRICE_UNIT_AMOUNTS[priceId] ?? 0,
               currency: "usd",
               active: true,
+              product: `prod_${priceId.replace(/^price_/, "")}`,
               recurring: { interval: "month", interval_count: 1 },
             }),
           };

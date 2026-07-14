@@ -15,4 +15,17 @@ describe("PlanPicker BYOK state", () => {
     ).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Continue" })).toBeInTheDocument();
   });
+
+  it("keeps the current-plan action disabled unless a caller opts in", () => {
+    render(
+      <PlanPicker
+        currentPlan="pro"
+        byokProviderLabel="OpenRouter"
+        onSelectPlan={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: "Current plan" })).toBeDisabled();
+    expect(screen.queryByRole("button", { name: "Manage in Stripe" })).not.toBeInTheDocument();
+  });
 });

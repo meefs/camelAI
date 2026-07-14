@@ -1,5 +1,9 @@
 import type { BillingPlan, BillingStatus, Organization } from "@/types";
-import type { OrgDO } from "../../workers/main/src/auth";
+import type {
+  ApplySubscriptionInvoiceGrantResult,
+  OrgDO,
+  SubscriptionInvoiceGrantCommand,
+} from "../../workers/main/src/auth";
 import {
   BILLING_PLAN_LIMITS,
   type BillingPlanLimits,
@@ -15,9 +19,11 @@ import { canBuyCreditsForBillingState } from "@/lib/billing-credit-packs";
 import { isSelfhostRuntime, type SelfhostRuntimeEnv } from "@/lib/selfhost-runtime";
 
 const STRIPE_API_BASE = "https://api.stripe.com/v1";
-const STRIPE_API_VERSION = "2026-02-25.clover";
+export const STRIPE_API_VERSION = "2026-06-24.dahlia";
 const CREDIT_CHECKOUT_EVENT_PREFIX = "stripe_checkout_credits:";
 const INCLUDED_CREDIT_INVOICE_EVENT_PREFIX = "stripe_invoice_included_credit:";
+const BILLING_PORTAL_CONFIGURATION_SCHEMA_VERSION = 1;
+const BILLING_PORTAL_CONFIGURATION_KV_PREFIX = "stripe_billing_portal_configuration:";
 const LEGACY_MIGRATION_META_ORG_ID = "v2_mig_org";
 const LEGACY_MIGRATION_META_SUBSCRIPTION_ID = "v2_mig_sub";
 const LEGACY_MIGRATION_META_TARGET_PLAN = "v2_mig_plan";
@@ -42,13 +48,13 @@ export interface StripeBillingEnv {
   STRIPE_MODE?: string;
   STRIPE_SECRET_KEY?: string;
   STRIPE_WEBHOOK_SECRET?: string;
+  STRIPE_WEBHOOK_SECRET_NEXT?: string;
   STRIPE_SUBSCRIPTION_PRICE_ID?: string;
   STRIPE_STARTER_PRICE_ID?: string;
   STRIPE_PRO_PRICE_ID?: string;
   STRIPE_TEAM_PRICE_ID?: string;
   STRIPE_CREDIT_PRICE_ID?: string;
   STRIPE_CREDIT_PRICE_IDS?: string;
-  STRIPE_BILLING_PORTAL_CONFIGURATION_ID?: string;
   LEGACY_STRIPE_MIGRATION_CUSTOMERS?: string;
   BILLING_TRIAL_CREDIT_CENTS?: string;
   BILLING_SUBSCRIPTION_INCLUDED_CREDIT_CENTS?: string;
@@ -68,7 +74,6 @@ export interface StripeSubscription {
   customer?: string | StripeCustomer | null;
   metadata?: Record<string, string>;
   quantity?: number | null;
-  default_payment_method?: string | StripePaymentMethod | null;
   trial_start?: number | null;
   trial_end?: number | null;
   current_period_end?: number | null;
@@ -78,6 +83,18 @@ export interface StripeSubscription {
   items?: {
     data?: StripeSubscriptionItem[];
   } | null;
+}
+
+export type BillingPortalMode = "management" | "upgrade" | "downgrade";
+
+export interface CanonicalPaidPlanCatalogEntry {
+  plan: SubscriptionBillingPlan;
+  productId: string;
+  priceId: string;
+  unitAmount: number;
+  currency: "usd";
+  interval: "month";
+  intervalCount: 1;
 }
 
 export interface StripeSubscriptionItem {
@@ -125,11 +142,6 @@ export interface StripeInvoiceListEntry {
   hosted_invoice_url?: string | null;
 }
 
-export interface StripePaymentMethodSummary {
-  brand: string;
-  last4: string;
-}
-
 export interface StripeSubscriptionSummary {
   id: string;
   status: string;
@@ -168,22 +180,81 @@ export interface StripeInvoice {
   subscription_details?: {
     metadata?: Record<string, string>;
   } | null;
+  parent?: {
+    subscription_details?: {
+      subscription?: string | StripeSubscription | null;
+      metadata?: Record<string, string>;
+    } | null;
+  } | null;
   lines?: {
-    data?: Array<{
-      amount?: number | null;
-      currency?: string | null;
-      description?: string | null;
-      quantity?: number | null;
-      price?: string | StripePriceSummary | null;
-      proration?: boolean | null;
-      parent?: {
-        subscription_item_details?: {
-          proration?: boolean | null;
-        } | null;
-      } | null;
-    }>;
+    data?: StripeInvoiceLine[];
+    has_more?: boolean;
   } | null;
 }
+
+export interface StripeInvoiceLine {
+  id?: string | null;
+  amount?: number | null;
+  currency?: string | null;
+  description?: string | null;
+  quantity?: number | null;
+  price?: string | StripePriceSummary | null;
+  pricing?: {
+    price_details?: {
+      price?: string | StripePriceSummary | null;
+      product?: string | { id?: string | null } | null;
+    } | null;
+  } | null;
+  proration?: boolean | null;
+  parent?: {
+    subscription_item_details?: {
+      proration?: boolean | null;
+      subscription_item?: string | null;
+    } | null;
+  } | null;
+}
+
+export type PaidSubscriptionInvoiceProcessingResult =
+  | {
+      status: "ignored";
+      reason: string;
+      invoiceId: string;
+      subscriptionId?: string | null;
+    }
+  | {
+      status: "processed" | "duplicate";
+      invoiceId: string;
+      subscriptionId: string;
+      orgId: string;
+      plan: SubscriptionBillingPlan;
+      seatCount: number;
+      grantCents: number;
+      source: SubscriptionInvoiceGrantCommand["source"];
+      org: Organization;
+    };
+
+export type SubscriptionInvoiceReconciliationReport =
+  | {
+      status: "ignored";
+      invoiceId: string;
+      subscriptionId: string | null;
+      reason: string;
+    }
+  | {
+      status: "preview" | "processed" | "duplicate";
+      invoiceId: string;
+      subscriptionId: string;
+      orgId: string;
+      billingReason: SubscriptionInvoiceGrantCommand["billingReason"];
+      plan: SubscriptionBillingPlan;
+      seatCount: number;
+      source: SubscriptionInvoiceGrantCommand["source"];
+      computedGrantCents: number;
+      creditedGrantCents: number;
+      oldKvMarker: boolean;
+      lastInvoiceMarker: string | null;
+      ledgerStatus: "not_recorded" | "recorded" | "legacy_processed";
+    };
 
 export interface StripeWebhookEvent<T = unknown> {
   id: string;
@@ -201,6 +272,27 @@ export class StaleTrialingSubscriptionStatusError extends Error {
     this.name = "StaleTrialingSubscriptionStatusError";
     this.stripeSubscriptionStatus = stripeSubscriptionStatus;
   }
+}
+
+export class StripeSubscriptionRequiresManagementError extends Error {
+  stripeSubscriptionStatus: string | null | undefined;
+
+  constructor(stripeSubscriptionStatus: string | null | undefined) {
+    super("This Stripe subscription must be managed in the billing portal.");
+    this.name = "StripeSubscriptionRequiresManagementError";
+    this.stripeSubscriptionStatus = stripeSubscriptionStatus;
+  }
+}
+
+export function isStripeSubscriptionRequiresManagementError(
+  error: unknown,
+): error is StripeSubscriptionRequiresManagementError {
+  return (
+    error instanceof StripeSubscriptionRequiresManagementError ||
+    (typeof error === "object" &&
+      error !== null &&
+      (error as { name?: unknown }).name === "StripeSubscriptionRequiresManagementError")
+  );
 }
 
 export function isStaleTrialingSubscriptionStatusError(
@@ -1036,6 +1128,55 @@ export async function fetchStripePriceSummary(
   return response;
 }
 
+function validateCanonicalPaidPlanPrice(
+  plan: SubscriptionBillingPlan,
+  priceId: string,
+  price: StripePriceSummary | null,
+): CanonicalPaidPlanCatalogEntry {
+  const advertisedAmount = getBillingPlanLimits(plan).monthlyPriceCents;
+  const productId = getStripeProductId(price);
+  if (
+    !price ||
+    price.id !== priceId ||
+    price.active !== true ||
+    advertisedAmount === null ||
+    price.unit_amount !== advertisedAmount ||
+    price.currency?.toLowerCase() !== "usd" ||
+    price.recurring?.interval !== "month" ||
+    (price.recurring.interval_count ?? 1) !== 1 ||
+    !productId
+  ) {
+    throw new Error(
+      `Stripe ${plan} price ${priceId} does not match the advertised subscription catalog requirements.`,
+    );
+  }
+  return {
+    plan,
+    productId,
+    priceId,
+    unitAmount: price.unit_amount,
+    currency: "usd",
+    interval: "month",
+    intervalCount: 1,
+  };
+}
+
+export async function loadCanonicalPaidPlanCatalog(
+  env: StripeBillingEnv,
+): Promise<CanonicalPaidPlanCatalogEntry[]> {
+  return Promise.all(
+    (["starter", "pro", "team"] as const).map(async (plan) => {
+      const priceId = getConfiguredSubscriptionPriceId(env, plan);
+      if (!priceId) throw new Error(`Stripe ${plan} subscription price is not configured`);
+      return validateCanonicalPaidPlanPrice(
+        plan,
+        priceId,
+        await fetchStripePriceSummary(env, priceId),
+      );
+    }),
+  );
+}
+
 async function fetchStripeSubscription(
   env: StripeBillingEnv,
   subscriptionId: string,
@@ -1187,12 +1328,17 @@ export async function syncTeamSubscriptionSeatCount(
   const priceId = getConfiguredSubscriptionPriceId(env, "team");
   const subscription = await fetchStripeSubscription(env, subscriptionId);
   const item = getStripeSubscriptionItemForPlan(subscription, priceId);
+  const currentSeatCount = normalizeSeatCount(
+    "team",
+    item.quantity ?? org.billing_seat_count,
+  );
 
   const itemBody = new URLSearchParams();
   itemBody.set("quantity", String(seatCount));
   itemBody.set(
     "proration_behavior",
-    options.prorationBehavior ?? "create_prorations",
+    options.prorationBehavior ??
+      (seatCount > currentSeatCount ? "always_invoice" : "none"),
   );
   await stripeRequest<StripeSubscriptionItem>(
     env,
@@ -1470,25 +1616,11 @@ export async function createSubscriptionCheckoutSession(args: {
   if (!priceId) {
     throw new Error(`Stripe ${plan} subscription price is not configured`);
   }
-  const advertisedAmountCents = getBillingPlanLimits(plan).monthlyPriceCents;
-  if (advertisedAmountCents === null) {
-    throw new Error(`Plan ${plan} does not have a fixed monthly price`);
-  }
-  // Fail closed on config drift: never sell at a configured Stripe price that
-  // disagrees with the advertised BILLING_PLAN_LIMITS amount.
-  const priceSummary = await fetchStripePriceSummary(env, priceId);
-  const priceMatchesAdvertised =
-    priceSummary !== null &&
-    priceSummary.unit_amount === advertisedAmountCents &&
-    priceSummary.currency?.toLowerCase() === "usd" &&
-    priceSummary.recurring != null &&
-    priceSummary.recurring.interval === "month" &&
-    (priceSummary.recurring.interval_count ?? 1) === 1;
-  if (!priceMatchesAdvertised) {
-    throw new Error(
-      `Stripe ${plan} price ${priceId} (unit_amount=${priceSummary?.unit_amount ?? "unknown"}, currency=${priceSummary?.currency ?? "unknown"}, interval=${priceSummary?.recurring?.interval ?? "unknown"}x${priceSummary?.recurring?.interval_count ?? 1}) does not match the advertised ${advertisedAmountCents} cents/month; refusing to create a mispriced checkout session`,
-    );
-  }
+  validateCanonicalPaidPlanPrice(
+    plan,
+    priceId,
+    await fetchStripePriceSummary(env, priceId),
+  );
   const seatCount = normalizeSeatCount(
     plan,
     args.seatCount ?? latestOrg.billing_seat_count ?? getMinimumSeats(plan),
@@ -1657,33 +1789,132 @@ export async function activatePayAsYouGoPlan(args: {
   return updated;
 }
 
+async function sha256Hex(value: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
+  return Array.from(new Uint8Array(digest))
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+export async function getOrCreateBillingPortalConfiguration(
+  env: StripeBillingEnv,
+  mode: BillingPortalMode,
+  suppliedCatalog?: CanonicalPaidPlanCatalogEntry[],
+): Promise<string> {
+  const catalog =
+    mode === "management" ? [] : (suppliedCatalog ?? (await loadCanonicalPaidPlanCatalog(env)));
+  const fingerprint = await sha256Hex(
+    JSON.stringify({
+      schema: BILLING_PORTAL_CONFIGURATION_SCHEMA_VERSION,
+      mode,
+      catalog: catalog.map(({ plan, productId, priceId, unitAmount }) => ({
+        plan,
+        productId,
+        priceId,
+        unitAmount,
+      })),
+      behavior: {
+        allowedUpdates: mode === "management" ? [] : ["price", "quantity"],
+        proration:
+          mode === "upgrade"
+            ? "always_invoice"
+            : mode === "downgrade"
+              ? "none"
+              : null,
+        cancellation: mode === "management" ? "at_period_end" : "disabled",
+        billingCycleAnchor: mode === "management" ? null : "unchanged",
+        trialUpdate: mode === "management" ? null : "continue_trial",
+        adjustableQuantity: false,
+      },
+    }),
+  );
+  const cacheKey = `${BILLING_PORTAL_CONFIGURATION_KV_PREFIX}${mode}:${fingerprint}`;
+  if (env.APP_KV) {
+    const cached = await env.APP_KV.get(cacheKey).catch(() => null);
+    if (cached?.trim()) return cached.trim();
+  }
+
+  const body = new URLSearchParams();
+  body.set("business_profile[headline]", "Manage your camelAI subscription");
+  body.set("features[invoice_history][enabled]", "true");
+  body.set("features[payment_method_update][enabled]", "true");
+  body.set("features[subscription_cancel][enabled]", mode === "management" ? "true" : "false");
+  if (mode === "management") {
+    body.set("features[subscription_cancel][mode]", "at_period_end");
+    body.set("features[subscription_update][enabled]", "false");
+  } else {
+    body.set("features[subscription_update][enabled]", "true");
+    body.append("features[subscription_update][default_allowed_updates][]", "price");
+    body.append("features[subscription_update][default_allowed_updates][]", "quantity");
+    body.set(
+      "features[subscription_update][proration_behavior]",
+      mode === "upgrade" ? "always_invoice" : "none",
+    );
+    body.set("features[subscription_update][billing_cycle_anchor]", "unchanged");
+    body.set("features[subscription_update][trial_update_behavior]", "continue_trial");
+    catalog.forEach((entry, index) => {
+      const prefix = `features[subscription_update][products][${index}]`;
+      body.set(`${prefix}[product]`, entry.productId);
+      body.append(`${prefix}[prices][]`, entry.priceId);
+      body.set(`${prefix}[adjustable_quantity][enabled]`, "false");
+    });
+  }
+  const configuration = await stripeRequest<{ id?: string | null }>(
+    env,
+    "/billing_portal/configurations",
+    {
+      method: "POST",
+      body,
+      idempotencyKey: `camelai-billing-portal-v${BILLING_PORTAL_CONFIGURATION_SCHEMA_VERSION}:${mode}:${fingerprint}`,
+    },
+  );
+  const configurationId = configuration.id?.trim();
+  if (!configurationId) throw new Error("Stripe did not return a billing portal configuration.");
+  if (env.APP_KV) await env.APP_KV.put(cacheKey, configurationId).catch(() => undefined);
+  return configurationId;
+}
+
+async function verifySubscriptionCustomerOwnership(args: {
+  env: StripeBillingEnv;
+  org: Organization;
+  subscription: StripeSubscription;
+}): Promise<string> {
+  const customerId = getStripeCustomerId(args.subscription.customer);
+  if (!customerId) throw new Error("Stripe subscription does not have a customer.");
+  if (args.org.billing_customer_id && args.org.billing_customer_id !== customerId) {
+    const metadata = await fetchStripeCustomerMetadata(args.env, customerId);
+    if (resolveOrgIdFromStripeCustomerMetadata(metadata) !== args.org.id) {
+      throw new Error("Stripe subscription customer does not belong to this organization.");
+    }
+  }
+  if (args.org.billing_customer_id !== customerId) {
+    await getOrgStub(args.env, args.org.id).updateBillingState({ billing_customer_id: customerId });
+  }
+  return customerId;
+}
+
 export async function createBillingPortalSession(args: {
   env: StripeBillingEnv;
   org: Organization;
   customerEmail: string | null | undefined;
   returnUrl: string;
-  cancellationSubscriptionId?: string | null;
 }): Promise<string> {
-  const { env, org, customerEmail, returnUrl, cancellationSubscriptionId } =
-    args;
-  const customerId = await ensureStripeCustomerForOrg(env, org, customerEmail);
+  const { env, org, customerEmail, returnUrl } = args;
+  const latestOrg = await getLatestOrgInfo(env, org);
+  const subscriptionId = latestOrg.billing_subscription_id?.trim();
+  const customerId = subscriptionId
+    ? await (async () => {
+        const subscription = await fetchStripeSubscription(env, subscriptionId);
+        if (isTerminalStripeSubscriptionStatus(subscription.status)) {
+          throw new Error("This organization does not have a recoverable Stripe subscription.");
+        }
+        return verifySubscriptionCustomerOwnership({ env, org: latestOrg, subscription });
+      })()
+    : await ensureStripeCustomerForOrg(env, latestOrg, customerEmail);
   const body = new URLSearchParams();
   body.set("customer", customerId);
   body.set("return_url", returnUrl);
-  if (cancellationSubscriptionId?.trim()) {
-    body.set("flow_data[type]", "subscription_cancel");
-    body.set(
-      "flow_data[subscription_cancel][subscription]",
-      cancellationSubscriptionId.trim(),
-    );
-    body.set("flow_data[after_completion][type]", "redirect");
-    body.set("flow_data[after_completion][redirect][return_url]", returnUrl);
-  }
-  const portalConfigurationId =
-    env.STRIPE_BILLING_PORTAL_CONFIGURATION_ID?.trim();
-  if (portalConfigurationId) {
-    body.set("configuration", portalConfigurationId);
-  }
+  body.set("configuration", await getOrCreateBillingPortalConfiguration(env, "management"));
 
   const session = await stripeRequest<{ url?: string | null }>(
     env,
@@ -1760,22 +1991,11 @@ export async function createSubscriptionCancellationPortalSession(args: {
     return stripeCancellationScheduledResult(subscription);
   }
 
-  const customerId = getStripeCustomerId(subscription.customer);
-  if (!customerId) {
-    throw new Error("Stripe subscription does not have a customer.");
-  }
-  if (latestOrg.billing_customer_id !== customerId) {
-    await getOrgStub(env, latestOrg.id)
-      .updateBillingState({ billing_customer_id: customerId })
-      .catch((error) => {
-        console.error("[billing] failed to sync subscription customer id", {
-          orgId: latestOrg.id,
-          subscriptionId,
-          customerId,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      });
-  }
+  const customerId = await verifySubscriptionCustomerOwnership({
+    env,
+    org: latestOrg,
+    subscription,
+  });
 
   const body = new URLSearchParams();
   body.set("customer", customerId);
@@ -1787,11 +2007,7 @@ export async function createSubscriptionCancellationPortalSession(args: {
     "flow_data[after_completion][redirect][return_url]",
     args.afterCompletionReturnUrl ?? returnUrl,
   );
-  const portalConfigurationId =
-    env.STRIPE_BILLING_PORTAL_CONFIGURATION_ID?.trim();
-  if (portalConfigurationId) {
-    body.set("configuration", portalConfigurationId);
-  }
+  body.set("configuration", await getOrCreateBillingPortalConfiguration(env, "management"));
 
   try {
     const session = await stripeRequest<{ url?: string | null }>(
@@ -1839,63 +2055,6 @@ export async function createSubscriptionCancellationPortalSession(args: {
   }
 }
 
-async function createTeamSubscriptionUpdatePortalConfiguration(args: {
-  env: StripeBillingEnv;
-  priceId: string;
-  minimumSeatCount: number;
-}): Promise<string> {
-  const { env, priceId, minimumSeatCount } = args;
-  const minimumQuantity = Math.max(
-    getMinimumSeats("team"),
-    Math.floor(minimumSeatCount),
-  );
-  const price = await fetchStripePriceSummary(env, priceId);
-  const productId = getStripeProductId(price);
-  if (!productId) {
-    throw new Error("Stripe Team price does not include a product.");
-  }
-
-  const body = new URLSearchParams();
-  body.set("business_profile[headline]", "Manage your camelAI subscription");
-  body.set("features[invoice_history][enabled]", "true");
-  body.set("features[payment_method_update][enabled]", "true");
-  body.set("features[subscription_cancel][enabled]", "true");
-  body.set("features[subscription_update][enabled]", "true");
-  body.append(
-    "features[subscription_update][default_allowed_updates][]",
-    "price",
-  );
-  body.append(
-    "features[subscription_update][default_allowed_updates][]",
-    "quantity",
-  );
-  body.set("features[subscription_update][products][0][product]", productId);
-  body.append("features[subscription_update][products][0][prices][]", priceId);
-  body.set(
-    "features[subscription_update][products][0][adjustable_quantity][enabled]",
-    "true",
-  );
-  body.set(
-    "features[subscription_update][products][0][adjustable_quantity][minimum]",
-    String(minimumQuantity),
-  );
-
-  const configuration = await stripeRequest<{ id?: string | null }>(
-    env,
-    "/billing_portal/configurations",
-    {
-      method: "POST",
-      body,
-      idempotencyKey: `team-portal-config:${priceId}:${minimumQuantity}`,
-    },
-  );
-  const configurationId = configuration.id?.trim();
-  if (!configurationId) {
-    throw new Error("Stripe did not return a billing portal configuration.");
-  }
-  return configurationId;
-}
-
 export async function createSubscriptionUpdatePortalSession(args: {
   env: StripeBillingEnv;
   org: Organization;
@@ -1914,84 +2073,52 @@ export async function createSubscriptionUpdatePortalSession(args: {
     throw new Error("Enterprise organizations are billed outside Stripe.");
   }
 
-  const priceId = getConfiguredSubscriptionPriceId(env, plan);
-  if (!priceId) {
-    throw new Error(`Stripe ${plan} subscription price is not configured`);
+  const [catalog, subscription] = await Promise.all([
+    loadCanonicalPaidPlanCatalog(env),
+    fetchStripeSubscription(env, subscriptionId),
+  ]);
+  if (
+    subscription.status !== "active" ||
+    subscription.cancel_at_period_end === true ||
+    Boolean(subscription.cancel_at)
+  ) {
+    throw new StripeSubscriptionRequiresManagementError(subscription.status);
   }
-
-  const seatCount = normalizeSeatCount(
-    plan,
-    args.seatCount ?? latestOrg.billing_seat_count ?? getMinimumSeats(plan),
+  const customerId = await verifySubscriptionCustomerOwnership({
+    env,
+    org: latestOrg,
+    subscription,
+  });
+  const item = getStripeSubscriptionItemForPlanChange(subscription, null);
+  const currentEntry = catalog.find((entry) => entry.priceId === getStripePriceId(item.price));
+  const targetEntry = catalog.find((entry) => entry.plan === plan);
+  if (!currentEntry) {
+    throw new Error("Stripe subscription item is not in the configured paid-plan catalog.");
+  }
+  if (!targetEntry) throw new Error(`Stripe ${plan} subscription price is not configured`);
+  const seatCount =
+    plan === "team"
+      ? await getBillableTeamSeatCountForOrg(env, latestOrg.id)
+      : getMinimumSeats(plan);
+  const currentSeatCount = normalizeSeatCount(
+    currentEntry.plan,
+    item.quantity ?? getMinimumSeats(currentEntry.plan),
   );
-  const subscription = await fetchStripeSubscription(env, subscriptionId);
-
-  const customerId = getStripeCustomerId(subscription.customer);
-  if (!customerId) {
-    throw new Error("Stripe subscription does not have a customer.");
-  }
-  if (latestOrg.billing_customer_id !== customerId) {
-    await getOrgStub(env, latestOrg.id)
-      .updateBillingState({ billing_customer_id: customerId })
-      .catch((error) => {
-        console.error("[billing] failed to sync subscription customer id", {
-          orgId: latestOrg.id,
-          subscriptionId,
-          customerId,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      });
-  }
+  const mode: BillingPortalMode =
+    targetEntry.unitAmount * seatCount > currentEntry.unitAmount * currentSeatCount
+      ? "upgrade"
+      : "downgrade";
   const body = new URLSearchParams();
   body.set("customer", customerId);
   body.set("return_url", returnUrl);
-  if (plan === "team") {
-    // The interactive subscription_update flow lets the customer choose the
-    // Team price and seat quantity from the portal. Use a per-seat-floor
-    // configuration so Stripe cannot confirm fewer seats than the org already
-    // bills for locally.
-    const portalConfigurationId =
-      await createTeamSubscriptionUpdatePortalConfiguration({
-        env,
-        priceId,
-        minimumSeatCount: seatCount,
-      });
-    body.set("configuration", portalConfigurationId);
-    body.set("flow_data[type]", "subscription_update");
-    body.set("flow_data[subscription_update][subscription]", subscriptionId);
-  } else {
-    const currentPlan = getOrgBillingPlan(latestOrg);
-    const currentPriceId =
-      currentPlan === "free" ||
-      currentPlan === "payg" ||
-      currentPlan === "enterprise"
-        ? null
-        : getConfiguredSubscriptionPriceId(env, currentPlan);
-    const item = getStripeSubscriptionItemForPlanChange(
-      subscription,
-      currentPriceId,
-    );
-    body.set("flow_data[type]", "subscription_update_confirm");
-    body.set(
-      "flow_data[subscription_update_confirm][subscription]",
-      subscriptionId,
-    );
-    body.set("flow_data[subscription_update_confirm][items][0][id]", item.id);
-    body.set(
-      "flow_data[subscription_update_confirm][items][0][price]",
-      priceId,
-    );
-    body.set(
-      "flow_data[subscription_update_confirm][items][0][quantity]",
-      String(seatCount),
-    );
-  }
+  body.set("configuration", await getOrCreateBillingPortalConfiguration(env, mode, catalog));
+  body.set("flow_data[type]", "subscription_update_confirm");
+  body.set("flow_data[subscription_update_confirm][subscription]", subscriptionId);
+  body.set("flow_data[subscription_update_confirm][items][0][id]", item.id);
+  body.set("flow_data[subscription_update_confirm][items][0][price]", targetEntry.priceId);
+  body.set("flow_data[subscription_update_confirm][items][0][quantity]", String(seatCount));
   body.set("flow_data[after_completion][type]", "redirect");
   body.set("flow_data[after_completion][redirect][return_url]", returnUrl);
-  const portalConfigurationId =
-    env.STRIPE_BILLING_PORTAL_CONFIGURATION_ID?.trim();
-  if (portalConfigurationId && !body.has("configuration")) {
-    body.set("configuration", portalConfigurationId);
-  }
 
   const session = await stripeRequest<{ url?: string | null }>(
     env,
@@ -2317,14 +2444,6 @@ function getPlanMonthlyPriceCents(
   return monthlyPriceCents * (plan === "team" ? seatCount : 1);
 }
 
-function isStripeProrationLine(
-  line: NonNullable<NonNullable<StripeInvoice["lines"]>["data"]>[number],
-): boolean {
-  return Boolean(
-    line.proration || line.parent?.subscription_item_details?.proration,
-  );
-}
-
 async function createLegacyStripeMigrationPreview(args: {
   env: StripeBillingEnv;
   selection: LegacySubscriptionSelection;
@@ -2395,6 +2514,24 @@ export async function migrateLegacyStripeSubscription(args: {
   } = await prepareLegacyStripeMigration(args);
   const idempotencyKeyPrefix = `legacy-migration:${org.id}:${selection.subscription.id}:${plan}`;
 
+  const customerBody = new URLSearchParams();
+  customerBody.set(`metadata[${LEGACY_MIGRATION_META_ORG_ID}]`, org.id);
+  customerBody.set(
+    `metadata[${LEGACY_MIGRATION_META_SUBSCRIPTION_ID}]`,
+    selection.subscription.id,
+  );
+  customerBody.set(`metadata[${LEGACY_MIGRATION_META_TARGET_PLAN}]`, plan);
+  customerBody.set(`metadata[${LEGACY_MIGRATION_META_SEAT_COUNT}]`, String(seatCount));
+  customerBody.set(
+    `metadata[${LEGACY_MIGRATION_META_INCLUDED_CREDIT_CENTS}]`,
+    String(includedCreditCents),
+  );
+  customerBody.set(`metadata[${LEGACY_MIGRATION_META_SOURCE_PRICE_ID}]`, selection.priceId);
+  await stripeRequest<StripeCustomer>(env, `/customers/${candidate.customerId}`, {
+    method: "POST",
+    body: customerBody,
+  });
+
   const body = new URLSearchParams();
   body.set("items[0][id]", selection.item.id);
   body.set("items[0][price]", priceId);
@@ -2437,14 +2574,7 @@ export async function migrateLegacyStripeSubscription(args: {
       billing_subscription_status: updatedSubscription.status,
     }));
 
-  const grantResult = await orgStub.applyManualCreditGrant(
-    includedCreditCents,
-    "Legacy Stripe migration current-period included credits",
-    `${idempotencyKeyPrefix}:current-period-included-credits`,
-    { source: "stripe-migration" },
-  );
-
-  return grantResult?.org ?? synced ?? latestOrg;
+  return synced ?? latestOrg;
 }
 
 export async function createLegacyStripeMigrationPortalSession(args: {
@@ -2549,11 +2679,10 @@ export async function createLegacyStripeMigrationPortalSession(args: {
     "flow_data[after_completion][redirect][return_url]",
     args.returnUrl,
   );
-  const portalConfigurationId =
-    env.STRIPE_BILLING_PORTAL_CONFIGURATION_ID?.trim();
-  if (portalConfigurationId && !body.has("configuration")) {
-    body.set("configuration", portalConfigurationId);
-  }
+  body.set(
+    "configuration",
+    await getOrCreateBillingPortalConfiguration(env, "upgrade"),
+  );
 
   const session = await stripeRequest<{ url?: string | null }>(
     env,
@@ -2591,15 +2720,6 @@ function resolveOrgIdFromStripeCustomerMetadata(
   return metadata?.org_id?.trim() || null;
 }
 
-async function resolveOrgIdFromStripeCustomer(
-  env: StripeBillingEnv,
-  customerId: string | null | undefined,
-): Promise<string | null> {
-  return resolveOrgIdFromStripeCustomerMetadata(
-    await fetchStripeCustomerMetadata(env, customerId),
-  );
-}
-
 function parsePositiveInteger(value: string | null | undefined): number | null {
   if (!value) return null;
   const parsed = Number(value);
@@ -2634,18 +2754,6 @@ function getMetadataTrialCreditCents(
   return (
     parsePositiveInteger(metadata?.trial_credit_cents) ??
     getTrialCreditCentsForPlan(env, plan, seatCount)
-  );
-}
-
-function getMetadataSubscriptionIncludedCreditCents(
-  metadata: Record<string, string> | null | undefined,
-  env: Pick<StripeBillingEnv, "BILLING_SUBSCRIPTION_INCLUDED_CREDIT_CENTS">,
-  plan: BillingPlan,
-  seatCount: number,
-): number {
-  return (
-    parsePositiveInteger(metadata?.subscription_included_credit_cents) ??
-    getSubscriptionIncludedCreditCentsForPlan(env, plan, seatCount)
   );
 }
 
@@ -2707,6 +2815,7 @@ interface PendingLegacyMigrationCustomerMetadata {
   subscriptionId: string;
   targetPlan: BillingPlan;
   includedCreditCents: number;
+  seatCount: number;
 }
 
 function getPendingLegacyMigrationCustomerMetadata(
@@ -2739,6 +2848,11 @@ function getPendingLegacyMigrationCustomerMetadata(
         metadata?.[LEGACY_MIGRATION_META_INCLUDED_CREDIT_CENTS] ||
           metadata?.pending_legacy_migration_included_credit_cents,
       ) ?? 0,
+    seatCount:
+      parsePositiveInteger(
+        metadata?.[LEGACY_MIGRATION_META_SEAT_COUNT] ||
+          metadata?.pending_legacy_migration_seat_count,
+      ) ?? getMinimumSeats(targetPlan),
   };
 }
 
@@ -2887,38 +3001,7 @@ export async function syncOrgSubscriptionFromStripe(
     trialCreditCents,
   );
 
-  const syncedOrg = result?.org ?? null;
-  if (
-    syncedOrg &&
-    itemPlan &&
-    pendingLegacyMigration &&
-    pendingLegacyMigration.orgId === orgId &&
-    pendingLegacyMigration.subscriptionId === subscription.id &&
-    pendingLegacyMigration.targetPlan === nextPlan
-  ) {
-    const amountCents = getSubscriptionIncludedCreditCentsForPlan(
-      env,
-      nextPlan,
-      seatCount,
-    );
-    const grantResult =
-      amountCents > 0
-        ? await orgStub.applyManualCreditGrant(
-            amountCents,
-            "Legacy Stripe migration current-period included credits",
-            `legacy-migration:${orgId}:${subscription.id}:${nextPlan}:current-period-included-credits`,
-            { source: "stripe-migration" },
-          )
-        : null;
-    await bestEffortClearPendingLegacyMigrationCustomerMetadata({
-      env,
-      customerId,
-      orgId,
-    });
-    return grantResult?.org ?? syncedOrg;
-  }
-
-  return syncedOrg;
+  return result?.org ?? null;
 }
 
 async function hasProcessedIncludedCreditInvoice(
@@ -2943,11 +3026,28 @@ async function markIncludedCreditInvoiceProcessed(
   );
 }
 
-function getInvoiceSubscriptionId(invoice: StripeInvoice): string | null {
-  if (typeof invoice.subscription === "string") {
-    return invoice.subscription;
-  }
-  return invoice.subscription?.id ?? null;
+export function getInvoiceSubscriptionId(invoice: StripeInvoice): string | null {
+  const subscription =
+    invoice.parent?.subscription_details?.subscription ?? invoice.subscription;
+  return typeof subscription === "string" ? subscription : (subscription?.id ?? null);
+}
+
+export function getInvoiceSubscriptionMetadata(
+  invoice: StripeInvoice,
+): Record<string, string> | null | undefined {
+  return (
+    invoice.parent?.subscription_details?.metadata ||
+    invoice.subscription_details?.metadata ||
+    (typeof invoice.subscription === "object" ? invoice.subscription?.metadata : null)
+  );
+}
+
+export function getInvoiceLinePriceId(line: StripeInvoiceLine): string | null {
+  return getStripePriceId(line.pricing?.price_details?.price ?? line.price);
+}
+
+export function isStripeProrationLine(line: StripeInvoiceLine): boolean {
+  return Boolean(line.proration || line.parent?.subscription_item_details?.proration);
 }
 
 export function isRecurringSubscriptionInvoice(
@@ -2962,120 +3062,412 @@ function getInvoiceMetadata(
   invoice: StripeInvoice,
 ): Record<string, string> | null | undefined {
   return (
-    invoice.subscription_details?.metadata ||
-    (typeof invoice.subscription === "object"
-      ? invoice.subscription?.metadata
-      : null) ||
+    getInvoiceSubscriptionMetadata(invoice) ||
     invoice.metadata
   );
 }
 
-function getInvoiceLineItemSeatQuantity(
-  env: StripeBillingEnv,
-  invoice: StripeInvoice,
-  plan: BillingPlan,
-): number | null {
-  if (plan === "free" || plan === "payg" || plan === "enterprise") return null;
-  const priceId = getConfiguredSubscriptionPriceId(env, plan);
-  const lines = invoice.lines?.data ?? [];
-  const matchingLine = priceId
-    ? lines.find((line) => getStripePriceId(line.price) === priceId)
-    : null;
-  const quantity = matchingLine?.quantity;
-  return typeof quantity === "number" && Number.isFinite(quantity)
-    ? quantity
-    : null;
-}
-
 function isPaidInvoice(invoice: StripeInvoice): boolean {
-  return invoice.status === "paid" || invoice.paid === true;
+  return invoice.status === "paid";
 }
 
-function isInitialIncludedCreditInvoice(invoice: StripeInvoice): boolean {
-  if (invoice.billing_reason !== "subscription_create") return false;
-  if (!isPaidInvoice(invoice)) return false;
-  return (
-    (invoice.amount_paid ?? invoice.amount_due ?? invoice.total ?? 0) > 0 &&
-    (parsePositiveInteger(
-      getInvoiceMetadata(invoice)?.initial_included_credit_cents,
-    ) ?? 0) > 0
+export interface SubscriptionInvoiceGrantResolution {
+  command: SubscriptionInvoiceGrantCommand | null;
+  ignoredReason: string | null;
+}
+
+function catalogEntryForPrice(
+  catalog: CanonicalPaidPlanCatalogEntry[],
+  priceId: string | null | undefined,
+): CanonicalPaidPlanCatalogEntry | null {
+  return catalog.find((entry) => entry.priceId === priceId) ?? null;
+}
+
+function recognizedSubscriptionItem(
+  subscription: StripeSubscription,
+  catalog: CanonicalPaidPlanCatalogEntry[],
+): { entry: CanonicalPaidPlanCatalogEntry; item: StripeSubscriptionItem } | null {
+  const matches = (subscription.items?.data ?? []).flatMap((item) => {
+    const entry = catalogEntryForPrice(catalog, getStripePriceId(item.price));
+    return entry ? [{ entry, item }] : [];
+  });
+  if (matches.length > 1) throw new Error("Stripe subscription has multiple paid-plan items.");
+  return matches[0] ?? null;
+}
+
+export function resolveSubscriptionInvoiceGrant(args: {
+  env: Pick<StripeBillingEnv, "BILLING_SUBSCRIPTION_INCLUDED_CREDIT_CENTS">;
+  invoice: StripeInvoice;
+  lines: StripeInvoiceLine[];
+  subscription: StripeSubscription;
+  catalog: CanonicalPaidPlanCatalogEntry[];
+  orgId: string;
+  customerId: string;
+  customerMetadata?: Record<string, string> | null;
+}): SubscriptionInvoiceGrantResolution {
+  const { invoice, subscription, catalog } = args;
+  if (!isPaidInvoice(invoice)) return { command: null, ignoredReason: "invoice_not_paid" };
+  const subscriptionId = getInvoiceSubscriptionId(invoice);
+  if (!subscriptionId) return { command: null, ignoredReason: "not_subscription_invoice" };
+  if (subscriptionId !== subscription.id) {
+    throw new Error(`Invoice ${invoice.id} references a different subscription.`);
+  }
+  const billingReason = invoice.billing_reason;
+  if (
+    billingReason !== "subscription_create" &&
+    billingReason !== "subscription_cycle" &&
+    billingReason !== "subscription_update"
+  ) {
+    return { command: null, ignoredReason: "unsupported_billing_reason" };
+  }
+  const recognized = recognizedSubscriptionItem(subscription, catalog);
+  const pendingMigration = getPendingLegacyMigrationCustomerMetadata(args.customerMetadata);
+  const isLegacyMigration =
+    billingReason === "subscription_update" &&
+    recognized !== null &&
+    pendingMigration?.orgId === args.orgId &&
+    pendingMigration.subscriptionId === subscription.id &&
+    pendingMigration.targetPlan === recognized.entry.plan &&
+    normalizeSeatCount(recognized.entry.plan, pendingMigration.seatCount) ===
+      normalizeSeatCount(recognized.entry.plan, recognized.item.quantity);
+  if (isLegacyMigration) {
+    const plan = recognized!.entry.plan;
+    const seatCount = normalizeSeatCount(plan, recognized!.item.quantity);
+    return {
+      command: {
+        invoiceId: invoice.id,
+        subscriptionId,
+        customerId: args.customerId,
+        billingReason,
+        source: "legacy_migration",
+        plan,
+        seatCount,
+        grantCents: getSubscriptionIncludedCreditCentsForPlan(args.env, plan, seatCount),
+      },
+      ignoredReason: null,
+    };
+  }
+  if (billingReason === "subscription_update") {
+    if (!recognized) throw new Error(`Paid update invoice ${invoice.id} has no recognized plan.`);
+    let netAllowance = 0;
+    for (const line of args.lines) {
+      if (!isStripeProrationLine(line)) continue;
+      const priceId = getInvoiceLinePriceId(line);
+      const entry = catalogEntryForPrice(catalog, priceId);
+      if (!entry) {
+        throw new Error(
+          `Paid subscription update invoice ${invoice.id} contains unknown proration price ${priceId ?? "missing"}.`,
+        );
+      }
+      const quantity = normalizeSeatCount(entry.plan, line.quantity ?? getMinimumSeats(entry.plan));
+      const denominator = entry.unitAmount * quantity;
+      if (typeof line.amount !== "number" || denominator <= 0) {
+        throw new Error(`Stripe proration line for ${entry.priceId} is invalid.`);
+      }
+      netAllowance +=
+        (line.amount / denominator) *
+        getSubscriptionIncludedCreditCentsForPlan(args.env, entry.plan, quantity);
+    }
+    const plan = recognized.entry.plan;
+    const seatCount = normalizeSeatCount(plan, recognized.item.quantity);
+    return {
+      command: {
+        invoiceId: invoice.id,
+        subscriptionId,
+        customerId: args.customerId,
+        billingReason,
+        source: "plan_change",
+        plan,
+        seatCount,
+        grantCents: Math.max(0, Math.floor(netAllowance)),
+      },
+      ignoredReason: null,
+    };
+  }
+  let plan = recognized?.entry.plan ?? null;
+  let seatCount = recognized
+    ? normalizeSeatCount(recognized.entry.plan, recognized.item.quantity)
+    : null;
+  if (!plan || seatCount === null) {
+    const fallback = normalizeBillingPlan(
+      subscription.metadata?.billing_plan ?? getInvoiceMetadata(invoice)?.billing_plan,
+    );
+    const hasLegacyPrice = args.lines.some((line) => {
+      const priceId = getInvoiceLinePriceId(line);
+      return Boolean(priceId && LEGACY_MIGRATION_PRICE_IDS.has(priceId));
+    });
+    if (
+      billingReason !== "subscription_cycle" ||
+      !["starter", "pro", "team"].includes(fallback) ||
+      !hasLegacyPrice
+    ) {
+      throw new Error(`Paid ${billingReason} invoice ${invoice.id} has no recognized plan.`);
+    }
+    plan = fallback as SubscriptionBillingPlan;
+    seatCount = getMetadataSeatCount(subscription.metadata, plan);
+  }
+  return {
+    command: {
+      invoiceId: invoice.id,
+      subscriptionId,
+      customerId: args.customerId,
+      billingReason,
+      source: billingReason === "subscription_create" ? "initial" : "renewal",
+      plan,
+      seatCount,
+      grantCents: getSubscriptionIncludedCreditCentsForPlan(args.env, plan, seatCount),
+    },
+    ignoredReason: null,
+  };
+}
+
+export async function retrieveCanonicalStripeInvoice(args: {
+  env: StripeBillingEnv;
+  invoiceId: string;
+}): Promise<{ invoice: StripeInvoice; lines: StripeInvoiceLine[] }> {
+  const invoiceId = args.invoiceId.trim();
+  if (!invoiceId) throw new Error("Stripe invoice id is required.");
+  const invoice = await stripeRequest<StripeInvoice>(
+    args.env,
+    `/invoices/${encodeURIComponent(invoiceId)}`,
   );
+  const lines: StripeInvoiceLine[] = [];
+  let startingAfter: string | null = null;
+  do {
+    const params = new URLSearchParams({ limit: "100" });
+    if (startingAfter) params.set("starting_after", startingAfter);
+    const page = await stripeRequest<StripeListResponse<StripeInvoiceLine>>(
+      args.env,
+      `/invoices/${encodeURIComponent(invoiceId)}/lines?${params.toString()}`,
+    );
+    lines.push(...(page.data ?? []));
+    if (!page.has_more) break;
+    startingAfter = page.data?.at(-1)?.id?.trim() ?? null;
+    if (!startingAfter) throw new Error(`Stripe invoice ${invoiceId} pagination has no cursor.`);
+  } while (startingAfter);
+  return { invoice, lines };
+}
+
+type EligibleInvoiceGrant = {
+  invoice: StripeInvoice;
+  command: SubscriptionInvoiceGrantCommand;
+  orgId: string;
+  customerId: string;
+  customerMetadata: Record<string, string> | null | undefined;
+  org: Organization;
+  orgStub: ReturnType<typeof getOrgStub>;
+  oldKvMarker: boolean;
+  existingLedger: Awaited<
+    ReturnType<ReturnType<typeof getOrgStub>["getSubscriptionInvoiceGrant"]>
+  >;
+};
+
+async function preparePaidSubscriptionInvoice(
+  env: StripeBillingEnv,
+  invoiceId: string,
+): Promise<
+  | { kind: "ignored"; result: Extract<PaidSubscriptionInvoiceProcessingResult, { status: "ignored" }> }
+  | { kind: "eligible"; grant: EligibleInvoiceGrant }
+> {
+  const { invoice, lines } = await retrieveCanonicalStripeInvoice({ env, invoiceId });
+  if (!isPaidInvoice(invoice)) {
+    return {
+      kind: "ignored",
+      result: {
+        status: "ignored",
+        reason: "invoice_not_paid",
+        invoiceId: invoice.id,
+        subscriptionId: getInvoiceSubscriptionId(invoice),
+      },
+    };
+  }
+  const subscriptionId = getInvoiceSubscriptionId(invoice);
+  if (!subscriptionId) {
+    return { kind: "ignored", result: { status: "ignored", reason: "not_subscription_invoice", invoiceId: invoice.id } };
+  }
+  if (!invoice.billing_reason || !["subscription_create", "subscription_cycle", "subscription_update"].includes(invoice.billing_reason)) {
+    return {
+      kind: "ignored",
+      result: { status: "ignored", reason: "unsupported_billing_reason", invoiceId: invoice.id, subscriptionId },
+    };
+  }
+  const [subscription, catalog] = await Promise.all([
+    fetchStripeSubscription(env, subscriptionId),
+    loadCanonicalPaidPlanCatalog(env),
+  ]);
+  const invoiceCustomerId = getStripeCustomerId(invoice.customer);
+  const subscriptionCustomerId = getStripeCustomerId(subscription.customer);
+  if (invoiceCustomerId && subscriptionCustomerId && invoiceCustomerId !== subscriptionCustomerId) {
+    throw new Error(`Invoice ${invoice.id} and subscription ${subscription.id} have different customers.`);
+  }
+  const customerId = subscriptionCustomerId ?? invoiceCustomerId;
+  if (!customerId) throw new Error(`Paid subscription invoice ${invoice.id} has no customer.`);
+  const directOrgId =
+    subscription.metadata?.org_id?.trim() ||
+    getInvoiceSubscriptionMetadata(invoice)?.org_id?.trim() ||
+    null;
+  let customerMetadata =
+    typeof subscription.customer === "object" ? subscription.customer?.metadata : null;
+  if (!customerMetadata && (!directOrgId || invoice.billing_reason === "subscription_update")) {
+    customerMetadata = await fetchStripeCustomerMetadata(env, customerId);
+  }
+  const orgId = directOrgId || resolveOrgIdFromStripeCustomerMetadata(customerMetadata);
+  if (!orgId) throw new Error(`Paid subscription invoice ${invoice.id} has no organization.`);
+  const orgStub = getOrgStub(env, orgId);
+  const org = await orgStub.getInfo();
+  if (!org) throw new Error(`Organization ${orgId} does not exist.`);
+  const syncedOrg = await syncOrgSubscriptionFromStripe(env, subscription);
+  const resolution = resolveSubscriptionInvoiceGrant({
+    env,
+    invoice,
+    lines,
+    subscription,
+    catalog,
+    orgId,
+    customerId,
+    customerMetadata,
+  });
+  if (
+    resolution.command?.source === "renewal" &&
+    !recognizedSubscriptionItem(subscription, catalog)
+  ) {
+    console.warn("[billing] using legacy renewal price metadata fallback", {
+      invoiceId: invoice.id,
+      subscriptionId,
+      orgId,
+      plan: resolution.command.plan,
+      seatCount: resolution.command.seatCount,
+    });
+  }
+  if (!resolution.command) {
+    return {
+      kind: "ignored",
+      result: {
+        status: "ignored",
+        reason: resolution.ignoredReason ?? "not_eligible",
+        invoiceId: invoice.id,
+        subscriptionId,
+      },
+    };
+  }
+  const [oldKvMarker, existingLedger] = await Promise.all([
+    hasProcessedIncludedCreditInvoice(env, invoice.id),
+    orgStub.getSubscriptionInvoiceGrant(invoice.id),
+  ]);
+  return {
+    kind: "eligible",
+    grant: {
+      invoice,
+      command: resolution.command,
+      orgId,
+      customerId,
+      customerMetadata,
+      org: syncedOrg ?? org,
+      orgStub,
+      oldKvMarker,
+      existingLedger,
+    },
+  };
+}
+
+async function applyEligibleInvoiceGrant(
+  env: StripeBillingEnv,
+  grant: EligibleInvoiceGrant,
+): Promise<{
+  result: Extract<PaidSubscriptionInvoiceProcessingResult, { status: "processed" | "duplicate" }>;
+  grantResult: ApplySubscriptionInvoiceGrantResult;
+}> {
+  const grantResult = await grant.orgStub.applySubscriptionInvoiceGrant(grant.command, {
+    legacyProcessed: grant.oldKvMarker,
+  });
+  if (!grantResult) throw new Error(`Organization ${grant.orgId} disappeared.`);
+  if (grantResult.invariantError) throw new Error(grantResult.invariantError);
+  await markIncludedCreditInvoiceProcessed(env, grant.invoice.id);
+  if (grant.command.source === "legacy_migration") {
+    await bestEffortClearPendingLegacyMigrationCustomerMetadata({
+      env,
+      customerId: grant.customerId,
+      orgId: grant.orgId,
+    });
+  }
+  return {
+    grantResult,
+    result: {
+      status: grantResult.applied ? "processed" : "duplicate",
+      invoiceId: grant.invoice.id,
+      subscriptionId: grant.command.subscriptionId,
+      orgId: grant.orgId,
+      plan: grant.command.plan,
+      seatCount: grant.command.seatCount,
+      grantCents: grantResult.credited ? grant.command.grantCents : 0,
+      source: grant.command.source,
+      org: grantResult.org,
+    },
+  };
+}
+
+export async function processPaidSubscriptionInvoice(
+  env: StripeBillingEnv,
+  invoiceId: string,
+): Promise<PaidSubscriptionInvoiceProcessingResult> {
+  const prepared = await preparePaidSubscriptionInvoice(env, invoiceId);
+  if (prepared.kind === "ignored") return prepared.result;
+  return (await applyEligibleInvoiceGrant(env, prepared.grant)).result;
+}
+
+export async function reconcilePaidSubscriptionInvoice(
+  env: StripeBillingEnv,
+  invoiceId: string,
+  options: { apply?: boolean } = {},
+): Promise<SubscriptionInvoiceReconciliationReport> {
+  const prepared = await preparePaidSubscriptionInvoice(env, invoiceId);
+  if (prepared.kind === "ignored") {
+    return {
+      status: "ignored",
+      invoiceId: prepared.result.invoiceId,
+      subscriptionId: prepared.result.subscriptionId ?? null,
+      reason: prepared.result.reason,
+    };
+  }
+  const grant = prepared.grant;
+  const applied = options.apply ? await applyEligibleInvoiceGrant(env, grant) : null;
+  const legacyMarker =
+    grant.oldKvMarker || grant.org.billing_last_included_credit_invoice_id === grant.invoice.id;
+  const wouldCredit =
+    !legacyMarker && !grant.existingLedger && grant.org.billing_status !== "enterprise";
+  return {
+    status: applied ? applied.result.status : "preview",
+    invoiceId: grant.invoice.id,
+    subscriptionId: grant.command.subscriptionId,
+    orgId: grant.orgId,
+    billingReason: grant.command.billingReason,
+    plan: grant.command.plan,
+    seatCount: grant.command.seatCount,
+    source: grant.command.source,
+    computedGrantCents: grant.command.grantCents,
+    creditedGrantCents: applied
+      ? applied.grantResult.credited
+        ? grant.command.grantCents
+        : 0
+      : wouldCredit
+        ? grant.command.grantCents
+        : 0,
+    oldKvMarker: grant.oldKvMarker,
+    lastInvoiceMarker: grant.org.billing_last_included_credit_invoice_id ?? null,
+    ledgerStatus: grant.existingLedger
+      ? grant.existingLedger.source === "legacy_processed"
+        ? "legacy_processed"
+        : "recorded"
+      : "not_recorded",
+  };
 }
 
 export async function applySubscriptionIncludedCreditsFromInvoice(
   env: StripeBillingEnv,
   invoice: StripeInvoice,
 ): Promise<Organization | null> {
-  if (!getInvoiceSubscriptionId(invoice)) return null;
-  if (
-    !isRecurringSubscriptionInvoice(invoice) &&
-    !isInitialIncludedCreditInvoice(invoice)
-  ) {
-    return null;
-  }
-  if (!isPaidInvoice(invoice)) return null;
-  if (await hasProcessedIncludedCreditInvoice(env, invoice.id)) return null;
-
-  const customerId = getStripeCustomerId(invoice.customer);
-  const orgId =
-    invoice.metadata?.org_id?.trim() ||
-    invoice.subscription_details?.metadata?.org_id?.trim() ||
-    (typeof invoice.subscription === "object"
-      ? invoice.subscription?.metadata?.org_id?.trim()
-      : null) ||
-    (await resolveOrgIdFromStripeCustomer(env, customerId));
-  if (!orgId) {
-    return null;
-  }
-
-  const orgStub = getOrgStub(env, orgId);
-  const existing = await orgStub.getInfo();
-  if (!existing) {
-    return null;
-  }
-  if (existing.billing_status === "enterprise") {
-    await markIncludedCreditInvoiceProcessed(env, invoice.id);
-    return existing;
-  }
-  if (existing.billing_last_included_credit_invoice_id === invoice.id) {
-    await markIncludedCreditInvoiceProcessed(env, invoice.id);
-    return existing;
-  }
-  const invoiceMetadata = getInvoiceMetadata(invoice);
-  const plan = getMetadataBillingPlan(invoiceMetadata, existing.billing_status);
-  const invoiceLineSeatQuantity = getInvoiceLineItemSeatQuantity(
-    env,
-    invoice,
-    plan,
-  );
-  const seatCount = invoiceLineSeatQuantity
-    ? normalizeSeatCount(plan, invoiceLineSeatQuantity)
-    : getMetadataSeatCount(invoiceMetadata, plan, existing.billing_seat_count);
-  const includedCreditCents =
-    invoiceLineSeatQuantity !== null
-      ? getSubscriptionIncludedCreditCentsForPlan(env, plan, seatCount)
-      : getMetadataSubscriptionIncludedCreditCents(
-          invoiceMetadata,
-          env,
-          plan,
-          seatCount,
-        );
-  if (includedCreditCents <= 0) {
-    await markIncludedCreditInvoiceProcessed(env, invoice.id);
-    return existing;
-  }
-
-  await orgStub.updateBillingState({
-    billing_customer_id: customerId ?? existing.billing_customer_id ?? null,
-    billing_plan: plan,
-    billing_seat_count: seatCount,
-    billing_credit_grant_total_cents:
-      (existing.billing_credit_grant_total_cents ?? 0) + includedCreditCents,
-    billing_last_included_credit_invoice_id: invoice.id,
-  });
-  await markIncludedCreditInvoiceProcessed(env, invoice.id);
-
-  return orgStub.getInfo();
+  const result = await processPaidSubscriptionInvoice(env, invoice.id);
+  return result.status === "ignored" ? null : result.org;
 }
 
 async function hasProcessedCreditCheckout(
@@ -3200,117 +3592,6 @@ export async function listStripeInvoicesForOrg(
     StripeListResponse<StripeInvoiceListEntry>
   >(env, `/invoices?${params.toString()}`);
   return response.data ?? [];
-}
-
-interface StripePaymentMethod {
-  id: string;
-  type?: string | null;
-  brand?: string | null;
-  last4?: string | null;
-  card?: {
-    brand?: string | null;
-    last4?: string | null;
-  } | null;
-}
-
-interface StripeCustomerWithPaymentMethod extends StripeCustomer {
-  invoice_settings?: {
-    default_payment_method?: string | StripePaymentMethod | null;
-  } | null;
-  default_source?: string | null;
-}
-
-function getPaymentMethodSummary(
-  paymentMethod: StripePaymentMethod | null | undefined,
-): StripePaymentMethodSummary | null {
-  const last4 = paymentMethod?.card?.last4 ?? paymentMethod?.last4 ?? null;
-  if (!last4) return null;
-  return {
-    brand:
-      paymentMethod?.card?.brand?.trim() ||
-      paymentMethod?.brand?.trim() ||
-      "card",
-    last4,
-  };
-}
-
-async function fetchPaymentMethodSummary(
-  env: StripeBillingEnv,
-  paymentMethodId: string | null | undefined,
-): Promise<StripePaymentMethodSummary | null> {
-  const trimmedPaymentMethodId = paymentMethodId?.trim();
-  if (!trimmedPaymentMethodId) return null;
-  const expanded = await stripeRequest<StripePaymentMethod>(
-    env,
-    `/payment_methods/${trimmedPaymentMethodId}`,
-  );
-  return getPaymentMethodSummary(expanded);
-}
-
-async function getExpandedPaymentMethodSummary(
-  env: StripeBillingEnv,
-  paymentMethod: string | StripePaymentMethod | null | undefined,
-): Promise<StripePaymentMethodSummary | null> {
-  if (!paymentMethod) return null;
-  if (typeof paymentMethod === "object") {
-    return getPaymentMethodSummary(paymentMethod);
-  }
-  return fetchPaymentMethodSummary(env, paymentMethod);
-}
-
-export async function getStripeDefaultPaymentMethodSummary(
-  env: StripeBillingEnv,
-  org: Organization,
-): Promise<StripePaymentMethodSummary | null> {
-  // FIXME(billing-stripe): support non-card payment methods (Link, bank, etc.).
-  if (!org.billing_customer_id) return null;
-  if (!env.STRIPE_SECRET_KEY?.trim()) return null;
-
-  const customer = await stripeRequest<StripeCustomerWithPaymentMethod>(
-    env,
-    `/customers/${org.billing_customer_id}?expand[]=invoice_settings.default_payment_method`,
-  );
-
-  const defaultPm = customer.invoice_settings?.default_payment_method;
-  const customerSummary = await getExpandedPaymentMethodSummary(env, defaultPm);
-  if (customerSummary) return customerSummary;
-
-  const subscriptionId = org.billing_subscription_id?.trim();
-  if (subscriptionId) {
-    const subscription = await stripeRequest<StripeSubscription>(
-      env,
-      `/subscriptions/${subscriptionId}?expand[]=default_payment_method`,
-    ).catch(() => null);
-    if (subscription) {
-      const subscriptionSummary = await getExpandedPaymentMethodSummary(
-        env,
-        subscription.default_payment_method,
-      );
-      if (subscriptionSummary) return subscriptionSummary;
-    }
-  }
-
-  const params = new URLSearchParams();
-  params.set("customer", org.billing_customer_id);
-  params.set("type", "card");
-  params.set("limit", "1");
-  const paymentMethods = await stripeRequest<
-    StripeListResponse<StripePaymentMethod>
-  >(env, `/payment_methods?${params.toString()}`);
-  const attachedSummary = getPaymentMethodSummary(
-    paymentMethods.data?.[0] ?? null,
-  );
-  if (attachedSummary) return attachedSummary;
-
-  if (customer.default_source) {
-    const source = await stripeRequest<StripePaymentMethod>(
-      env,
-      `/customers/${org.billing_customer_id}/sources/${customer.default_source}`,
-    );
-    return getPaymentMethodSummary(source);
-  }
-
-  return null;
 }
 
 export async function getStripeSubscriptionSummary(

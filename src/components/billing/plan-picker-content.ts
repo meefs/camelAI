@@ -5,6 +5,7 @@ export type PlanPickerCtaKind =
   | "byok"
   | "payg"
   | "subscribe"
+  | "manage"
   | "contact"
   | "downgrade";
 

@@ -43,7 +43,6 @@
     "EMAIL_FROM_ADDRESS": "agent-staging@camelai.dev",
     "WORKSPACE_EMAIL_DOMAIN": "camelai.dev",
     "STRIPE_MODE": "test",
-    "STRIPE_BILLING_PORTAL_CONFIGURATION_ID": "bpc_1TS5SyGvliMKf4vHI6CvOx6n",
     "STRIPE_SUBSCRIPTION_PRICE_ID": "price_1TtBYWGvliMKf4vH0F0649xi",
     "STRIPE_STARTER_PRICE_ID": "price_1TtBYWGvliMKf4vH0F0649xi",
     "STRIPE_PRO_PRICE_ID": "price_1TtBYXGvliMKf4vHICMV2nnX",

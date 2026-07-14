@@ -46,7 +46,6 @@ vi.mock("@/lib/billing.server", async (importOriginal) => {
     createBillingPortalSession: vi.fn(),
     createSubscriptionCheckoutSession: vi.fn(),
     getOrgBillingOverview: vi.fn(),
-    getStripeDefaultPaymentMethodSummary: vi.fn(),
     getStripeSubscriptionSummary: vi.fn(),
     hasOrgUsedSubscriptionTrial: vi.fn(),
     isStripeBillingConfigured: vi.fn(),
@@ -97,7 +96,6 @@ function makeLoaderData({
       billing_subscription_status: null,
     },
     stripeConfigured: true,
-    paymentMethod: null,
     invoices: [],
     subscription: null,
     legacyMigration: {

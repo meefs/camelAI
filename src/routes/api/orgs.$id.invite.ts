@@ -3,7 +3,7 @@ import { getEnv } from '@/lib/cloudflare.server';
 import { getAuthEnv } from '@/lib/auth-helpers';
 import { getSession } from '@/lib/auth.server';
 import {
-  createInvitation,
+  createInvitations,
   getInvitation,
   isOrgAdmin,
 } from '@/lib/auth-do';
@@ -16,6 +16,8 @@ import {
 } from '@/lib/email.server';
 import {
   bestEffortSyncTeamSubscriptionSeatCount,
+  getBillableTeamSeatCountForOrg,
+  syncTeamSubscriptionSeatCount,
 } from '@/lib/billing.server';
 
 const legacyInviteMemberFormSchema = z.object({
@@ -54,15 +56,31 @@ export async function action({ request, context, params }: Route.ActionArgs) {
       const email = parsed.data.email.toLowerCase().trim();
       const role = parsed.data.role;
 
-      let invitation: Awaited<ReturnType<typeof createInvitation>>;
+      const orgStub = authEnv.ORG.get(authEnv.ORG.idFromName(orgId));
+      const existingInvitation = await orgStub.getInvitationByEmail(email);
+      if (existingInvitation) {
+        return Response.json(
+          { error: `An active invitation already exists for ${email}` },
+          { status: 409 },
+        );
+      }
+
+      let invitation: Awaited<ReturnType<typeof createInvitations>>[number];
       try {
-        invitation = await createInvitation(
+        const targetSeatCount = await getBillableTeamSeatCountForOrg(env, orgId, 1);
+        await syncTeamSubscriptionSeatCount(env, orgId, {
+          targetSeatCount,
+          itemUpdateIdempotencyKey: `team-seat-sync:${orgId}:${targetSeatCount}:invite:${crypto.randomUUID()}`,
+          prorationBehavior: 'always_invoice',
+        });
+        invitation = (await createInvitations(
           authEnv,
           orgId,
-          email,
+          [email],
           role,
-          session.user_id
-        );
+          session.user_id,
+          { pendingBillingSeatAllowance: 0 },
+        ))[0];
       } catch (error) {
         await bestEffortSyncTeamSubscriptionSeatCount(env, orgId, {
           reason: 'api_invite_create_failed',

@@ -30,6 +30,7 @@ export interface PlanPickerCardProps {
   disabled: boolean;
   byokProviderLabel?: string | null;
   legacyMode?: boolean;
+  currentAction?: "manage" | null;
   onSelect: (cta: { kind: PlanPickerCtaKind; plan: BillingPlan }) => void;
 }
 
@@ -40,6 +41,7 @@ export function PlanPickerCard({
   disabled,
   byokProviderLabel = null,
   legacyMode = false,
+  currentAction = null,
   onSelect,
 }: PlanPickerCardProps) {
   const limits = BILLING_PLAN_LIMITS[plan];
@@ -49,7 +51,9 @@ export function PlanPickerCard({
   const isCurrent = state.kind === "current";
   const isDowngrade = state.kind === "downgrade";
 
-  const ctaKind: PlanPickerCtaKind = isDowngrade
+  const ctaKind: PlanPickerCtaKind = isCurrent && currentAction === "manage"
+    ? "manage"
+    : isDowngrade
     ? "downgrade"
     : content.ctaKind;
   const isPaidLegacyCta = legacyMode && ctaKind === "subscribe";
@@ -58,7 +62,9 @@ export function PlanPickerCard({
       ? `Continue with ${byokProviderLabel}`
       : content.ctaLabel;
   const ctaLabel = isCurrent
-    ? "Current plan"
+    ? currentAction === "manage"
+      ? "Manage in Stripe"
+      : "Current plan"
     : isDowngrade
       ? "Downgrade"
       : pending
@@ -71,7 +77,9 @@ export function PlanPickerCard({
           ? `Switch to ${limits.label}`
           : freeByokCtaLabel;
   const ctaVariant: "default" | "outline" | "secondary" = isCurrent
-    ? "secondary"
+    ? currentAction === "manage"
+      ? "default"
+      : "secondary"
     : isHighlighted
       ? "default"
       : "outline";
@@ -141,7 +149,7 @@ export function PlanPickerCard({
             size="lg"
             className="w-full"
             variant={ctaVariant}
-            disabled={disabled || isCurrent || pending}
+            disabled={disabled || (isCurrent && currentAction !== "manage") || pending}
             onClick={() => onSelect({ kind: ctaKind, plan })}
           >
             {pending ? (

@@ -37,7 +37,10 @@ vi.mock("@/lib/billing.server", async (importOriginal) => {
 });
 
 const { action } = await import("@/routes/_app.settings.organization.billing");
-const { StaleTrialingSubscriptionStatusError } =
+const {
+  StaleTrialingSubscriptionStatusError,
+  StripeSubscriptionRequiresManagementError,
+} =
   await import("@/lib/billing.server");
 
 function makeIntentRequest(
@@ -239,7 +242,7 @@ describe("billing settings plan changes", () => {
     expect(createSubscriptionCheckoutSessionMock).not.toHaveBeenCalled();
   });
 
-  it("uses the Stripe update portal for unpaid subscribers changing plans", async () => {
+  it("uses the management portal for unpaid subscribers changing plans", async () => {
     const org = {
       id: "org_123",
       name: "Unpaid Org",
@@ -262,18 +265,16 @@ describe("billing settings plan changes", () => {
     } as never);
 
     expect(result).toEqual({
-      billingPortalUrl: "https://billing.stripe.test/update-session",
+      billingPortalUrl: "https://billing.stripe.test/session",
     });
-    expect(createSubscriptionUpdatePortalSessionMock).toHaveBeenCalledWith(
+    expect(createBillingPortalSessionMock).toHaveBeenCalledWith(
       expect.objectContaining({
         env,
         org,
         customerEmail: "owner@example.com",
-        plan: "team",
-        seatCount: 3,
       }),
     );
-    expect(createBillingPortalSessionMock).not.toHaveBeenCalled();
+    expect(createSubscriptionUpdatePortalSessionMock).not.toHaveBeenCalled();
     expect(createSubscriptionCheckoutSessionMock).not.toHaveBeenCalled();
   });
 
@@ -313,6 +314,95 @@ describe("billing settings plan changes", () => {
     );
     expect(createBillingPortalSessionMock).not.toHaveBeenCalled();
     expect(createSubscriptionCheckoutSessionMock).not.toHaveBeenCalled();
+  });
+
+  it("falls back to management when the live paid subscription is not updateable", async () => {
+    const org = {
+      id: "org_123",
+      name: "Canceling Org",
+      billing_status: "active",
+      billing_plan: "pro",
+      billing_seat_count: 1,
+      billing_subscription_id: "sub_123",
+      billing_subscription_status: "active",
+    };
+    const env = makeEnv(org);
+    getEnvMock.mockReturnValue(env);
+    requireAuthContextMock.mockResolvedValue({
+      user: { id: "user_123", email: "owner@example.com" },
+      currentOrg: org,
+    });
+    createSubscriptionUpdatePortalSessionMock.mockRejectedValueOnce(
+      new StripeSubscriptionRequiresManagementError("active"),
+    );
+
+    const result = await action({
+      request: makeFormRequest("starter"),
+      context: {},
+    } as never);
+
+    expect(result).toEqual({
+      billingPortalUrl: "https://billing.stripe.test/session",
+    });
+    expect(createBillingPortalSessionMock).toHaveBeenCalled();
+  });
+
+  it("opens management for a current recoverable paid subscription", async () => {
+    const org = {
+      id: "org_123",
+      name: "Paid Org",
+      billing_status: "active",
+      billing_plan: "pro",
+      billing_seat_count: 1,
+      billing_subscription_id: "sub_123",
+      billing_subscription_status: "active",
+    };
+    const env = makeEnv(org);
+    getEnvMock.mockReturnValue(env);
+    requireAuthContextMock.mockResolvedValue({
+      user: { id: "user_123", email: "owner@example.com" },
+      currentOrg: org,
+    });
+
+    await expect(
+      action({
+        request: makeIntentRequest("manageBilling"),
+        context: {},
+      } as never),
+    ).rejects.toMatchObject({ status: 302 });
+    expect(createBillingPortalSessionMock).toHaveBeenCalledWith(
+      expect.objectContaining({ env, org, customerEmail: "owner@example.com" }),
+    );
+  });
+
+  it.each([
+    ["inactive", "payg"],
+    ["enterprise", "enterprise"],
+  ])("rejects spoofed management for %s organizations", async (billingStatus, billingPlan) => {
+    const org = {
+      id: "org_123",
+      name: "Non Stripe Org",
+      billing_status: billingStatus,
+      billing_plan: billingPlan,
+      billing_seat_count: 1,
+      billing_subscription_id: null,
+    };
+    const env = makeEnv(org);
+    getEnvMock.mockReturnValue(env);
+    requireAuthContextMock.mockResolvedValue({
+      user: { id: "user_123", email: "owner@example.com" },
+      currentOrg: org,
+    });
+
+    await expect(
+      action({
+        request: makeIntentRequest("manageBilling"),
+        context: {},
+      } as never),
+    ).resolves.toEqual({
+      error: "A recoverable paid Stripe subscription is required to manage billing.",
+    });
+    expect(createBillingPortalSessionMock).not.toHaveBeenCalled();
   });
 
   it("updates trialing subscriptions directly so Stripe does not end the trial in the portal", async () => {

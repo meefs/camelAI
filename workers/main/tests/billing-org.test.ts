@@ -164,6 +164,7 @@ describe("OrgDO billing grant idempotency", () => {
           unit_amount: 1000,
           currency: "usd",
           active: true,
+          product: "prod_starter_test",
           recurring: { interval: "month", interval_count: 1 },
         }),
       )
@@ -520,5 +521,217 @@ describe("OrgDO billing grant idempotency", () => {
       { grant_id: "grant-list-3" },
       { grant_id: "grant-list-2" },
     ]);
+  });
+
+  it("atomically records and credits each Stripe invoice exactly once", async () => {
+    const { userId: ownerId } = await createUser(
+      testEnv,
+      testEmail(),
+      "password",
+      "Owner",
+    );
+    const { org } = await createOrg(testEnv, "Invoice Ledger Org", ownerId);
+    const orgStub = testEnv.ORG.get(testEnv.ORG.idFromName(org.id));
+    await orgStub.updateBillingState({
+      billing_status: "active",
+      billing_plan: "starter",
+      billing_credit_grant_total_cents: 300,
+    });
+    const command = {
+      invoiceId: `in_${crypto.randomUUID()}`,
+      subscriptionId: "sub_ledger",
+      customerId: "cus_ledger",
+      billingReason: "subscription_cycle" as const,
+      source: "renewal" as const,
+      plan: "pro" as const,
+      seatCount: 1,
+      grantCents: 4000,
+    };
+
+    const [first, duplicate] = await Promise.all([
+      orgStub.applySubscriptionInvoiceGrant(command),
+      orgStub.applySubscriptionInvoiceGrant(command),
+    ]);
+
+    expect([first?.applied, duplicate?.applied].sort()).toEqual([false, true]);
+    await expect(orgStub.getInfo()).resolves.toMatchObject({
+      billing_customer_id: "cus_ledger",
+      billing_subscription_id: "sub_ledger",
+      billing_plan: "pro",
+      billing_seat_count: 1,
+      billing_credit_grant_total_cents: 4300,
+      billing_last_included_credit_invoice_id: command.invoiceId,
+    });
+    await expect(
+      orgStub.getSubscriptionInvoiceGrant(command.invoiceId),
+    ).resolves.toMatchObject({
+      invoice_id: command.invoiceId,
+      amount_cents: 4000,
+      source: "renewal",
+    });
+  });
+
+  it("rejects immutable conflicts for an already-recorded invoice", async () => {
+    const { userId: ownerId } = await createUser(
+      testEnv,
+      testEmail(),
+      "password",
+      "Owner",
+    );
+    const { org } = await createOrg(testEnv, "Invoice Conflict Org", ownerId, {
+      billingPlan: "pro",
+    });
+    const orgStub = testEnv.ORG.get(testEnv.ORG.idFromName(org.id));
+    const command = {
+      invoiceId: `in_${crypto.randomUUID()}`,
+      subscriptionId: "sub_conflict",
+      customerId: "cus_conflict",
+      billingReason: "subscription_update" as const,
+      source: "plan_change" as const,
+      plan: "team" as const,
+      seatCount: 3,
+      grantCents: 1500,
+    };
+    await orgStub.applySubscriptionInvoiceGrant(command);
+
+    await expect(
+      orgStub.applySubscriptionInvoiceGrant({ ...command, grantCents: 1600 }),
+    ).resolves.toMatchObject({
+      applied: false,
+      credited: false,
+      invariantError: expect.stringContaining("conflicting immutable grant fields"),
+    });
+    await expect(orgStub.getInfo()).resolves.toMatchObject({
+      billing_credit_grant_total_cents: 1500,
+    });
+  });
+
+  it("records zero grants and suppresses credits for enterprise organizations", async () => {
+    const { userId: ownerId } = await createUser(
+      testEnv,
+      testEmail(),
+      "password",
+      "Owner",
+    );
+    const { org } = await createOrg(testEnv, "Invoice Enterprise Org", ownerId);
+    const orgStub = testEnv.ORG.get(testEnv.ORG.idFromName(org.id));
+    await orgStub.updateBillingState({
+      billing_status: "enterprise",
+      billing_plan: "enterprise",
+      billing_credit_grant_total_cents: 700,
+    });
+    const enterpriseInvoiceId = `in_${crypto.randomUUID()}`;
+    const result = await orgStub.applySubscriptionInvoiceGrant({
+      invoiceId: enterpriseInvoiceId,
+      subscriptionId: "sub_enterprise",
+      customerId: "cus_enterprise",
+      billingReason: "subscription_cycle",
+      source: "renewal",
+      plan: "pro",
+      seatCount: 1,
+      grantCents: 4000,
+    });
+
+    expect(result).toMatchObject({ applied: true, credited: false });
+    expect(result?.org).toMatchObject({
+      billing_status: "enterprise",
+      billing_plan: "enterprise",
+      billing_credit_grant_total_cents: 700,
+    });
+    const zeroInvoiceId = `in_${crypto.randomUUID()}`;
+    await expect(
+      orgStub.applySubscriptionInvoiceGrant({
+        invoiceId: zeroInvoiceId,
+        subscriptionId: "sub_enterprise",
+        customerId: "cus_enterprise",
+        billingReason: "subscription_update",
+        source: "plan_change",
+        plan: "starter",
+        seatCount: 1,
+        grantCents: 0,
+      }),
+    ).resolves.toMatchObject({ applied: true, credited: false });
+    await expect(
+      orgStub.getSubscriptionInvoiceGrant(zeroInvoiceId),
+    ).resolves.toMatchObject({ amount_cents: 0 });
+  });
+
+  it("seeds a legacy-processed ledger row from the last-invoice compatibility marker", async () => {
+    const { userId: ownerId } = await createUser(
+      testEnv,
+      testEmail(),
+      "password",
+      "Owner",
+    );
+    const { org } = await createOrg(testEnv, "Invoice Bridge Org", ownerId, {
+      billingPlan: "pro",
+    });
+    const orgStub = testEnv.ORG.get(testEnv.ORG.idFromName(org.id));
+    const invoiceId = `in_${crypto.randomUUID()}`;
+    await orgStub.updateBillingState({
+      billing_credit_grant_total_cents: 4000,
+      billing_last_included_credit_invoice_id: invoiceId,
+    });
+
+    await expect(
+      orgStub.applySubscriptionInvoiceGrant({
+        invoiceId,
+        subscriptionId: "sub_bridge",
+        customerId: "cus_bridge",
+        billingReason: "subscription_cycle",
+        source: "renewal",
+        plan: "pro",
+        seatCount: 1,
+        grantCents: 4000,
+      }),
+    ).resolves.toMatchObject({
+      applied: true,
+      credited: false,
+      legacyProcessed: true,
+    });
+    await expect(orgStub.getInfo()).resolves.toMatchObject({
+      billing_credit_grant_total_cents: 4000,
+    });
+    await expect(
+      orgStub.getSubscriptionInvoiceGrant(invoiceId),
+    ).resolves.toMatchObject({ source: "legacy_processed", amount_cents: 0 });
+  });
+
+  it("does not re-grant a migration covered by the deterministic legacy manual grant", async () => {
+    const { userId: ownerId } = await createUser(
+      testEnv,
+      testEmail(),
+      "password",
+      "Owner",
+    );
+    const { org } = await createOrg(testEnv, "Migration Grant Bridge Org", ownerId, {
+      billingPlan: "pro",
+    });
+    const orgStub = testEnv.ORG.get(testEnv.ORG.idFromName(org.id));
+    const subscriptionId = "sub_migration_bridge";
+    await orgStub.applyManualCreditGrant(
+      4000,
+      "Legacy Stripe migration current-period included credits",
+      `legacy-migration:${org.id}:${subscriptionId}:pro:current-period-included-credits`,
+      { source: "stripe-migration" },
+    );
+
+    const result = await orgStub.applySubscriptionInvoiceGrant({
+      invoiceId: `in_${crypto.randomUUID()}`,
+      subscriptionId,
+      customerId: "cus_migration_bridge",
+      billingReason: "subscription_update",
+      source: "legacy_migration",
+      plan: "pro",
+      seatCount: 1,
+      grantCents: 4000,
+    });
+
+    expect(result).toMatchObject({
+      applied: true,
+      credited: false,
+      legacyProcessed: true,
+    });
+    expect(result?.org.billing_credit_grant_total_cents).toBe(4000);
   });
 });

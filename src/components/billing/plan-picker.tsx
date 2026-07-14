@@ -16,6 +16,7 @@ export type PlanPickerCta =
   | { kind: "payg"; plan: "payg" }
   | { kind: "subscribe"; plan: "starter" | "pro" | "team" }
   | { kind: "migrate"; plan: "starter" | "pro" | "team" }
+  | { kind: "manage"; plan: "starter" | "pro" | "team" }
   | { kind: "contact" }
   | { kind: "downgrade"; plan: BillingPlan };
 
@@ -31,6 +32,7 @@ export interface PlanPickerProps {
   onSelectPlan: (cta: PlanPickerCta) => void;
   onLegacyWhyClick?: () => void;
   pendingPlan?: BillingPlan | null;
+  currentPaidPlanAction?: "manage";
 }
 
 const DEFAULT_HEADING = {
@@ -78,7 +80,15 @@ function ctaForPlan(
   plan: BillingPlan,
   state: PlanCardState,
   legacyMode: boolean,
+  currentPaidPlanAction?: "manage",
 ): PlanPickerCta {
+  if (
+    state.kind === "current" &&
+    currentPaidPlanAction === "manage" &&
+    isMigratePlan(plan)
+  ) {
+    return { kind: "manage", plan };
+  }
   if (state.kind === "downgrade") {
     return { kind: "downgrade", plan };
   }
@@ -109,6 +119,7 @@ export function PlanPicker({
   onSelectPlan,
   onLegacyWhyClick,
   pendingPlan = null,
+  currentPaidPlanAction,
 }: PlanPickerProps) {
   const [billingMode, setBillingMode] = useState<"individual" | "team">(
     defaultBillingMode,
@@ -137,7 +148,7 @@ export function PlanPicker({
     >
       {plans.map((plan) => {
         const state = resolveCardState(plan, highlight, currentPlan);
-        const cta = ctaForPlan(plan, state, legacyMode);
+        const cta = ctaForPlan(plan, state, legacyMode, currentPaidPlanAction);
         const disabled =
           (cta.kind === "subscribe" ||
             cta.kind === "migrate" ||
@@ -152,6 +163,7 @@ export function PlanPicker({
             disabled={disabled}
             byokProviderLabel={byokProviderLabel}
             legacyMode={legacyMode}
+            currentAction={cta.kind === "manage" ? "manage" : null}
             onSelect={() => onSelectPlan(cta)}
           />
         );

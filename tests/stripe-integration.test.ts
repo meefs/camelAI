@@ -4,6 +4,7 @@ import {
   createCreditsCheckoutSession,
   createSubscriptionCheckoutSession,
   isStripeSecretKeyAllowedForMode,
+  STRIPE_API_VERSION,
   syncOrgSubscriptionFromStripe,
   syncTeamSubscriptionSeatCount,
   type StripeBillingEnv,
@@ -22,7 +23,6 @@ import type { Organization } from "@/types";
  * on external Stripe availability and a real test-mode API key.
  */
 const STRIPE_API_BASE = "https://api.stripe.com/v1";
-const STRIPE_API_VERSION = "2026-02-25.clover";
 
 const stripeSecretKey =
   process.env.STRIPE_INTEGRATION_SECRET_KEY || process.env.STRIPE_SECRET_KEY;
@@ -61,10 +61,6 @@ interface StripeLineItem {
 
 interface StripeList<T> {
   data: T[];
-}
-
-interface StripeBillingPortalConfiguration {
-  id: string;
 }
 
 interface MutableOrgStub {
@@ -144,61 +140,6 @@ async function createPrice(args: {
   return stripePost<StripePrice>("/prices", params);
 }
 
-async function createPortalConfiguration(args: {
-  starterProduct: string;
-  proProduct: string;
-  teamProduct: string;
-  starterPrice: string;
-  proPrice: string;
-  teamPrice: string;
-}): Promise<StripeBillingPortalConfiguration> {
-  const params = new URLSearchParams();
-  params.set("business_profile[headline]", "camelAI test billing portal");
-  params.set("features[invoice_history][enabled]", "true");
-  params.set("features[payment_method_update][enabled]", "true");
-  params.set("features[subscription_cancel][enabled]", "true");
-  params.set("features[subscription_update][enabled]", "true");
-  params.append("features[subscription_update][default_allowed_updates][]", "price");
-  params.append("features[subscription_update][default_allowed_updates][]", "quantity");
-  params.set(
-    "features[subscription_update][products][0][product]",
-    args.starterProduct,
-  );
-  params.append(
-    "features[subscription_update][products][0][prices][]",
-    args.starterPrice,
-  );
-  params.set(
-    "features[subscription_update][products][1][product]",
-    args.proProduct,
-  );
-  params.append(
-    "features[subscription_update][products][1][prices][]",
-    args.proPrice,
-  );
-  params.set(
-    "features[subscription_update][products][2][product]",
-    args.teamProduct,
-  );
-  params.append(
-    "features[subscription_update][products][2][prices][]",
-    args.teamPrice,
-  );
-  params.set(
-    "features[subscription_update][products][2][adjustable_quantity][enabled]",
-    "true",
-  );
-  params.set(
-    "features[subscription_update][products][2][adjustable_quantity][minimum]",
-    "3",
-  );
-
-  return stripePost<StripeBillingPortalConfiguration>(
-    "/billing_portal/configurations",
-    params,
-  );
-}
-
 async function createStripeCustomer(
   email: string,
   orgId: string,
@@ -232,15 +173,6 @@ async function deactivateProduct(productId: string): Promise<void> {
   await stripePost<StripeProduct>(`/products/${productId}`, {
     active: "false",
   }).catch(() => undefined);
-}
-
-async function deactivatePortalConfiguration(
-  configurationId: string,
-): Promise<void> {
-  await stripePost<StripeBillingPortalConfiguration>(
-    `/billing_portal/configurations/${configurationId}`,
-    { active: "false" },
-  ).catch(() => undefined);
 }
 
 async function createTrialSubscription(args: {
@@ -336,7 +268,6 @@ function makeEnv(args: {
   org: Organization;
   memberCount?: number;
   invitations?: Array<{ expires_at: number }>;
-  portalConfigurationId?: string;
 }): StripeBillingEnv & { orgStub: MutableOrgStub } {
   let currentOrg = args.org;
   const orgStub: MutableOrgStub = {
@@ -384,7 +315,6 @@ function makeEnv(args: {
     STRIPE_PRO_PRICE_ID: testPrices.pro,
     STRIPE_TEAM_PRICE_ID: testPrices.team,
     STRIPE_CREDIT_PRICE_IDS: testPrices.credit,
-    STRIPE_BILLING_PORTAL_CONFIGURATION_ID: args.portalConfigurationId,
     orgStub,
   };
 }
@@ -394,7 +324,6 @@ const customerIds: string[] = [];
 const subscriptionIds: string[] = [];
 const productIds: string[] = [];
 const priceIds: string[] = [];
-const portalConfigurationIds: string[] = [];
 
 const testPrices: {
   starter: string;
@@ -451,15 +380,6 @@ describeStripe("Stripe billing integration", () => {
     testPrices.team = team.id;
     testPrices.credit = credit.id;
 
-    const portalConfiguration = await createPortalConfiguration({
-      starterProduct: starterProduct.id,
-      proProduct: proProduct.id,
-      teamProduct: teamProduct.id,
-      starterPrice: starter.id,
-      proPrice: pro.id,
-      teamPrice: team.id,
-    });
-    portalConfigurationIds.push(portalConfiguration.id);
   }, 60_000);
 
   beforeEach(() => {
@@ -471,7 +391,6 @@ describeStripe("Stripe billing integration", () => {
   afterAll(async () => {
     await Promise.all(subscriptionIds.map(cancelSubscription));
     await Promise.all(customerIds.map(deleteCustomer));
-    await Promise.all(portalConfigurationIds.map(deactivatePortalConfiguration));
     await Promise.all(priceIds.map(deactivatePrice));
     await Promise.all(productIds.map(deactivateProduct));
   }, 60_000);
@@ -562,10 +481,7 @@ describeStripe("Stripe billing integration", () => {
       billing_subscription_id: subscription.id,
       billing_subscription_status: subscription.status,
     });
-    const env = makeEnv({
-      org,
-      portalConfigurationId: portalConfigurationIds[0],
-    });
+    const env = makeEnv({ org });
 
     const portalUrl = await createBillingPortalSession({
       env,

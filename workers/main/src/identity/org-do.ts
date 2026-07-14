@@ -586,6 +586,37 @@ export interface ApplyCreditCheckoutResult {
   applied: boolean;
 }
 
+export interface SubscriptionInvoiceGrantCommand {
+  invoiceId: string;
+  subscriptionId: string;
+  customerId: string;
+  billingReason: "subscription_create" | "subscription_cycle" | "subscription_update";
+  source: "initial" | "renewal" | "plan_change" | "legacy_migration";
+  plan: "starter" | "pro" | "team";
+  seatCount: number;
+  grantCents: number;
+}
+
+export interface ApplySubscriptionInvoiceGrantResult {
+  org: Organization;
+  applied: boolean;
+  credited: boolean;
+  legacyProcessed: boolean;
+  invariantError: string | null;
+}
+
+export interface SubscriptionInvoiceGrantRow extends Record<string, SqlStorageValue> {
+  invoice_id: string;
+  subscription_id: string;
+  customer_id: string;
+  billing_reason: string;
+  source: string;
+  plan: string;
+  seat_count: number;
+  amount_cents: number;
+  created_at: number;
+}
+
 export interface ManualCreditGrantRecord {
   grant_id: string;
   amount_cents: number;
@@ -1661,7 +1692,11 @@ export class OrgDO extends DurableObject<DOEnv> {
       `);
     }
 
-    const CURRENT_SCHEMA_VERSION = 40;
+    if (version < 41) {
+      this.ensureStripeSubscriptionInvoiceGrantsTable();
+    }
+
+    const CURRENT_SCHEMA_VERSION = 41;
     if (version < CURRENT_SCHEMA_VERSION) {
       this.ctx.storage.kv.put("schemaVersion", CURRENT_SCHEMA_VERSION);
     }
@@ -2607,6 +2642,171 @@ export class OrgDO extends DurableObject<DOEnv> {
       });
     }
     return result;
+  }
+
+  private ensureStripeSubscriptionInvoiceGrantsTable(): void {
+    this.sql.exec(`
+      CREATE TABLE IF NOT EXISTS stripe_subscription_invoice_grants (
+        invoice_id TEXT PRIMARY KEY,
+        subscription_id TEXT NOT NULL,
+        customer_id TEXT NOT NULL,
+        billing_reason TEXT NOT NULL,
+        source TEXT NOT NULL,
+        plan TEXT NOT NULL,
+        seat_count INTEGER NOT NULL,
+        amount_cents INTEGER NOT NULL,
+        created_at INTEGER NOT NULL
+      )
+    `);
+  }
+
+  applySubscriptionInvoiceGrant(
+    command: SubscriptionInvoiceGrantCommand,
+    options: { legacyProcessed?: boolean } = {},
+  ): ApplySubscriptionInvoiceGrantResult | null {
+    const normalized: SubscriptionInvoiceGrantCommand = {
+      invoiceId: command.invoiceId.trim(),
+      subscriptionId: command.subscriptionId.trim(),
+      customerId: command.customerId.trim(),
+      billingReason: command.billingReason,
+      source: command.source,
+      plan: command.plan,
+      seatCount: Math.max(1, Math.floor(command.seatCount)),
+      grantCents: Math.max(0, Math.floor(command.grantCents)),
+    };
+    if (
+      !normalized.invoiceId ||
+      !normalized.subscriptionId ||
+      !normalized.customerId ||
+      !["subscription_create", "subscription_cycle", "subscription_update"].includes(
+        normalized.billingReason,
+      ) ||
+      !["initial", "renewal", "plan_change", "legacy_migration"].includes(normalized.source) ||
+      !["starter", "pro", "team"].includes(normalized.plan)
+    ) {
+      throw new Error("Invalid Stripe subscription invoice grant command.");
+    }
+
+    this.ensureStripeSubscriptionInvoiceGrantsTable();
+    this.ensureAdminCreditGrantsTable();
+    const result = this.ctx.storage.transactionSync(() => {
+      const existingRow = this.sql
+        .exec<SubscriptionInvoiceGrantRow>(
+          `SELECT invoice_id, subscription_id, customer_id, billing_reason, source,
+                  plan, seat_count, amount_cents, created_at
+           FROM stripe_subscription_invoice_grants WHERE invoice_id = ?`,
+          normalized.invoiceId,
+        )
+        .toArray()[0];
+      if (existingRow) {
+        const existingOrg = this.getInfoSync();
+        if (!existingOrg) return null;
+        const legacy = existingRow.source === "legacy_processed";
+        const matches =
+          existingRow.subscription_id === normalized.subscriptionId &&
+          existingRow.customer_id === normalized.customerId &&
+          existingRow.billing_reason === normalized.billingReason &&
+          (legacy || existingRow.source === normalized.source) &&
+          existingRow.plan === normalized.plan &&
+          Number(existingRow.seat_count) === normalized.seatCount &&
+          (legacy || Number(existingRow.amount_cents) === normalized.grantCents);
+        return {
+          org: existingOrg,
+          applied: false,
+          credited: false,
+          legacyProcessed: legacy,
+          invariantError: matches
+            ? null
+            : `Invoice ${normalized.invoiceId} was already recorded with conflicting immutable grant fields.`,
+        };
+      }
+
+      const existingOrg = this.getInfoSync();
+      if (!existingOrg) return null;
+      const legacyGrantId = `legacy-migration:${existingOrg.id}:${normalized.subscriptionId}:${normalized.plan}:current-period-included-credits`;
+      const hasLegacyManualGrant =
+        normalized.source === "legacy_migration" &&
+        this.sql
+          .exec("SELECT grant_id FROM admin_credit_grants WHERE grant_id = ?", legacyGrantId)
+          .toArray().length > 0;
+      const legacyProcessed = Boolean(
+        options.legacyProcessed ||
+          existingOrg.billing_last_included_credit_invoice_id === normalized.invoiceId ||
+          hasLegacyManualGrant,
+      );
+      const createdAt = Date.now();
+      const credited =
+        !legacyProcessed &&
+        existingOrg.billing_status !== "enterprise" &&
+        normalized.grantCents > 0;
+      const nextInfo: Organization = {
+        ...existingOrg,
+        billing_customer_id: normalized.customerId,
+        billing_subscription_id: normalized.subscriptionId,
+        billing_plan:
+          existingOrg.billing_status === "enterprise" ? "enterprise" : normalized.plan,
+        billing_seat_count:
+          existingOrg.billing_status === "enterprise"
+            ? existingOrg.billing_seat_count
+            : normalized.seatCount,
+        billing_credit_grant_total_cents: credited
+          ? (existingOrg.billing_credit_grant_total_cents ?? 0) + normalized.grantCents
+          : (existingOrg.billing_credit_grant_total_cents ?? 0),
+        billing_last_included_credit_invoice_id: credited
+          ? normalized.invoiceId
+          : (existingOrg.billing_last_included_credit_invoice_id ?? null),
+        billing_credit_usage_started_at: credited
+          ? (existingOrg.billing_credit_usage_started_at ?? createdAt)
+          : (existingOrg.billing_credit_usage_started_at ?? null),
+      };
+      normalizeOrgBillingFields(nextInfo);
+      this.sql.exec(
+        `INSERT INTO stripe_subscription_invoice_grants
+          (invoice_id, subscription_id, customer_id, billing_reason, source,
+           plan, seat_count, amount_cents, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        normalized.invoiceId,
+        normalized.subscriptionId,
+        normalized.customerId,
+        normalized.billingReason,
+        legacyProcessed ? "legacy_processed" : normalized.source,
+        normalized.plan,
+        normalized.seatCount,
+        legacyProcessed ? 0 : normalized.grantCents,
+        createdAt,
+      );
+      this.sql.exec(
+        "INSERT OR REPLACE INTO org_info (key, value) VALUES (?, ?)",
+        "data",
+        JSON.stringify(nextInfo),
+      );
+      return {
+        org: nextInfo,
+        applied: true,
+        credited,
+        legacyProcessed,
+        invariantError: null,
+      };
+    });
+
+    if (result?.applied) {
+      dispatchAdminEvent(this.ctx, this.env, { type: "org_upsert", payload: result.org });
+    }
+    return result;
+  }
+
+  getSubscriptionInvoiceGrant(invoiceId: string): SubscriptionInvoiceGrantRow | null {
+    this.ensureStripeSubscriptionInvoiceGrantsTable();
+    return (
+      this.sql
+        .exec<SubscriptionInvoiceGrantRow>(
+          `SELECT invoice_id, subscription_id, customer_id, billing_reason, source,
+                  plan, seat_count, amount_cents, created_at
+           FROM stripe_subscription_invoice_grants WHERE invoice_id = ?`,
+          invoiceId.trim(),
+        )
+        .toArray()[0] ?? null
+    );
   }
 
   applyManualCreditGrant(

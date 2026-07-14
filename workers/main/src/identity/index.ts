@@ -1,6 +1,11 @@
 export type { DOEnv } from "./env";
 export { UserDO } from "./user-do";
 export { OrgDO } from "./org-do";
+export type {
+  SubscriptionInvoiceGrantCommand,
+  ApplySubscriptionInvoiceGrantResult,
+  SubscriptionInvoiceGrantRow,
+} from "./org-do";
 export { dispatchAdminEvent } from "./admin-events";
 export type { OrgRole, BillingStatus } from "../../../../src/types";
 export type {

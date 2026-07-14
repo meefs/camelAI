@@ -1,6 +1,6 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import type { ComponentProps } from "react";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const testState = vi.hoisted(() => ({
   loaderData: { current: undefined as unknown },
@@ -47,7 +47,6 @@ vi.mock("@/lib/billing.server", async (importOriginal) => {
     createSubscriptionCheckoutSession: vi.fn(),
     createSubscriptionUpdatePortalSession: vi.fn(),
     getOrgBillingOverview: vi.fn(),
-    getStripeDefaultPaymentMethodSummary: vi.fn(),
     getStripeSubscriptionSummary: vi.fn(),
     hasOrgUsedSubscriptionTrial: vi.fn(),
     isStripeBillingConfigured: vi.fn(),
@@ -80,7 +79,6 @@ function makeLoaderData() {
       billing_subscription_status: "active",
     },
     stripeConfigured: true,
-    paymentMethod: null,
     invoices: [],
     subscription: null,
     legacyMigration: null,
@@ -88,6 +86,12 @@ function makeLoaderData() {
 }
 
 describe("BillingPage overview", () => {
+  beforeEach(() => {
+    testState.fetcher.state = "idle";
+    testState.fetcher.data = undefined;
+    testState.fetcher.submit.mockClear();
+  });
+
   it("shows the billed Team seat count in the plan heading", () => {
     testState.loaderData.current = makeLoaderData();
 
@@ -168,5 +172,42 @@ describe("BillingPage overview", () => {
     expect(
       screen.getByRole("heading", { name: "Cancellation" }),
     ).toBeInTheDocument();
+  });
+
+  it("does not render local payment-method details", () => {
+    testState.loaderData.current = makeLoaderData();
+
+    render(<BillingPage />);
+
+    expect(screen.queryByRole("heading", { name: "Payment" })).not.toBeInTheDocument();
+    expect(screen.queryByText(/payment method/i)).not.toBeInTheDocument();
+  });
+
+  it("shows an enabled current-plan Manage in Stripe action and submits the management intent", () => {
+    testState.loaderData.current = {
+      ...makeLoaderData(),
+      org: {
+        ...makeLoaderData().org,
+        billing_plan: "pro",
+        billing_seat_count: 1,
+      },
+      overview: {
+        ...makeLoaderData().overview,
+        billing_plan: "pro",
+        billing_seat_count: 1,
+      },
+    };
+
+    render(<BillingPage />);
+    fireEvent.click(screen.getByRole("button", { name: "Manage plan" }));
+    const manageButton = screen.getByRole("button", { name: "Manage in Stripe" });
+    expect(manageButton).toBeEnabled();
+    expect(screen.getByText("Current plan")).toBeInTheDocument();
+
+    fireEvent.click(manageButton);
+    expect(testState.fetcher.submit).toHaveBeenCalledWith(
+      { intent: "manageBilling" },
+      { method: "post" },
+    );
   });
 });
