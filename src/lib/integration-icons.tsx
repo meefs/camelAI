@@ -14,7 +14,7 @@ interface IntegrationIconProps {
  * Uses SVG files from public/logos/.
  *
  * File naming convention:
- * - Single variant: public/logos/{type}.svg
+ * - Single variant: public/logos/{type}.svg (camelAI uses the existing root favicon)
  * - Themed variants: public/logos/{type}_light.svg and public/logos/{type}_dark.svg
  */
 export function IntegrationIcon({
@@ -50,7 +50,9 @@ export function IntegrationIcon({
     );
   }
 
-  const src = `/logos/${type}.svg`;
+  // The camelAI mark is the application favicon, rather than an integration
+  // asset. Reference it directly so nested SVG image loading cannot hide it.
+  const src = type === 'camelai' ? '/favicon.svg' : `/logos/${type}.svg`;
 
   return (
     <img

@@ -31,6 +31,15 @@ describe("IntegrationIcon", () => {
     expect(icon).toHaveAttribute("src", "/logos/claude.svg");
   });
 
+  it("uses the camelAI favicon directly", () => {
+    render(<IntegrationIcon type="camelai" size={16} />);
+
+    expect(screen.getByRole("img", { name: "camelai" })).toHaveAttribute(
+      "src",
+      "/favicon.svg",
+    );
+  });
+
   it("uses the Telegram logo as a single-variant image", () => {
     render(<IntegrationIcon type="telegram" size={16} />);
 
