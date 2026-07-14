@@ -92,10 +92,6 @@ function createViewProps(
   const divRef = createRef<HTMLDivElement>();
   return {
     visibleMessages: [],
-    lastUserMessageId: null,
-    lastMessageId: null,
-    isAwaitingAssistant: false,
-    isLastMessageAssistantLike: false,
     copyMessage: vi.fn(),
     copiedMessageId: null,
     runningStartedAt: null,
@@ -112,11 +108,6 @@ function createViewProps(
     compactingPriorMessageId: null,
     isLoadingMessages: false,
     showGlobalAssistantIndicator: false,
-    shouldRenderSpacer: false,
-    lastUserMessageRef: divRef,
-    assistantMeasureRef: divRef,
-    assistantPendingMeasureRef: divRef,
-    assistantSpacerRef: divRef,
     messagesEndRef: divRef,
     ...overrides,
   };
@@ -190,8 +181,6 @@ describe("ChatMessagesView collapsed assistant turns", () => {
           2_000,
         ),
       ],
-      lastMessageId: "a1",
-      isLastMessageAssistantLike: true,
       completedTurns: new Map([
         ["a1", { durationMs: 138_000, completedAtMs: 3_000 }],
       ]),
@@ -690,8 +679,6 @@ describe("ChatMessagesView collapsed assistant turns", () => {
     ];
     const props = createViewProps({
       visibleMessages,
-      lastMessageId: "a1",
-      isLastMessageAssistantLike: true,
     });
     const { rerender } = render(<ChatMessagesView {...props} />);
     const firstFinalOutputMessage = latestFinalOutputMessage();

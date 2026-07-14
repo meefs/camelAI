@@ -54,7 +54,6 @@ describe("chat transcript hooks", () => {
 
     expect(result.current.parsedInitialMessages).toHaveLength(1);
     expect(result.current.parsedInitialMessages[0].id).toBe("assistant-1");
-    expect(result.current.shouldAnchorToLastMessage).toBe(true);
     expect(result.current.loaderErrorIdsRef.current.has("error-1")).toBe(true);
   });
 

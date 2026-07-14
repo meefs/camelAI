@@ -64,10 +64,6 @@ function haveSameMessageRefs(left: Message[], right: Message[]): boolean {
 
 interface ChatMessagesViewProps {
   visibleMessages: Message[];
-  lastUserMessageId: string | null;
-  lastMessageId: string | null;
-  isAwaitingAssistant: boolean;
-  isLastMessageAssistantLike: boolean;
   copyMessage: (messageId: string, content: string) => void;
   copiedMessageId: string | null;
   forkMessage?: (messageId: string, renderedMessageId?: string) => void;
@@ -88,21 +84,12 @@ interface ChatMessagesViewProps {
   isLoadingMessages: boolean;
   deferRendering?: boolean;
   showGlobalAssistantIndicator: boolean;
-  shouldRenderSpacer: boolean;
-  lastUserMessageRef: RefObject<HTMLDivElement | null>;
-  assistantMeasureRef: RefObject<HTMLDivElement | null>;
-  assistantPendingMeasureRef: RefObject<HTMLDivElement | null>;
-  assistantSpacerRef: RefObject<HTMLDivElement | null>;
   messagesEndRef: RefObject<HTMLDivElement | null>;
   mentionSlugMap?: Map<string, AtMentionEntity>;
 }
 
 export const ChatMessagesView = memo(function ChatMessagesView({
   visibleMessages,
-  lastUserMessageId,
-  lastMessageId,
-  isAwaitingAssistant,
-  isLastMessageAssistantLike,
   copyMessage,
   copiedMessageId,
   forkMessage,
@@ -123,11 +110,6 @@ export const ChatMessagesView = memo(function ChatMessagesView({
   isLoadingMessages,
   deferRendering = false,
   showGlobalAssistantIndicator,
-  shouldRenderSpacer,
-  lastUserMessageRef,
-  assistantMeasureRef,
-  assistantPendingMeasureRef,
-  assistantSpacerRef,
   messagesEndRef,
   mentionSlugMap,
 }: ChatMessagesViewProps) {
@@ -343,23 +325,12 @@ export const ChatMessagesView = memo(function ChatMessagesView({
             omitMessageAnchor?: boolean;
           },
         ) => {
-          const isLastUserMessage = msg.id === lastUserMessageId;
-          const isLastAssistantMessage =
-            !isAwaitingAssistant &&
-            isLastMessageAssistantLike &&
-            msg.id === lastMessageId;
-          const messageRef = isLastUserMessage
-            ? lastUserMessageRef
-            : isLastAssistantMessage
-              ? assistantMeasureRef
-              : undefined;
           const isTurnActionMessage = msg.id === messageGroup.actionMessageId;
           const renderMode = options?.renderMode ?? "full";
 
           return (
             <div
               key={`${msg.id}-${renderMode}`}
-              ref={options?.omitMessageAnchor ? undefined : messageRef}
               data-message-id={options?.omitMessageAnchor ? undefined : msg.id}
               style={MESSAGE_LAYOUT_CONTAINMENT_STYLE}
               className={cn(
@@ -412,18 +383,6 @@ export const ChatMessagesView = memo(function ChatMessagesView({
             isFinalChunkOfTurn && finalOutputMessage !== null;
           const showDuration = renderFinalAnswer && durationMs >= 1000;
           const showSeparator = renderFinalAnswer;
-          const isLastAssistantMessage =
-            !isAwaitingAssistant &&
-            isLastMessageAssistantLike &&
-            messageGroup.actionMessageId === lastMessageId;
-          const finalMessageRef =
-            renderFinalAnswer && isLastAssistantMessage
-              ? assistantMeasureRef
-              : undefined;
-          const summaryMessageRef =
-            !renderFinalAnswer && isLastAssistantMessage
-              ? assistantMeasureRef
-              : undefined;
 
           return (
             <div
@@ -432,7 +391,6 @@ export const ChatMessagesView = memo(function ChatMessagesView({
               className="group/turn"
             >
               <div
-                ref={summaryMessageRef}
                 data-message-id={
                   !renderFinalAnswer ? messageGroup.actionMessageId : undefined
                 }
@@ -470,7 +428,6 @@ export const ChatMessagesView = memo(function ChatMessagesView({
               </div>
               {renderFinalAnswer && finalOutputMessage ? (
                 <div
-                  ref={finalMessageRef}
                   data-message-id={finalOutputMessage.id}
                   style={MESSAGE_LAYOUT_CONTAINMENT_STYLE}
                   className="group"
@@ -515,29 +472,12 @@ export const ChatMessagesView = memo(function ChatMessagesView({
         <ChatErrorNotice error={error} onDismiss={() => setError(null)} />
       ) : null}
 
-      {isCompacting && (
-        <div ref={assistantPendingMeasureRef}>
-          <CompactingIndicator />
-        </div>
-      )}
+      {isCompacting && <CompactingIndicator />}
 
       {showGlobalAssistantIndicator && !isCompacting && (
-        <div ref={assistantPendingMeasureRef}>
-          <ChatThreadWorkingIndicator startedAt={runningStartedAt} />
-        </div>
+        <ChatThreadWorkingIndicator startedAt={runningStartedAt} />
       )}
-      {shouldRenderSpacer ? (
-        <div className="flex flex-col">
-          <div
-            ref={assistantSpacerRef}
-            aria-hidden="true"
-            className="pointer-events-none w-full shrink-0"
-          />
-          <div ref={messagesEndRef} />
-        </div>
-      ) : (
-        <div ref={messagesEndRef} />
-      )}
+      <div ref={messagesEndRef} />
     </>
   );
 });

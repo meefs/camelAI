@@ -67,7 +67,6 @@ export function useInitialChatTranscript({
   return {
     loaderErrorIdsRef,
     parsedInitialMessages,
-    shouldAnchorToLastMessage: parsedInitialMessages.length > 0,
     stableInitialUiMessages,
   };
 }

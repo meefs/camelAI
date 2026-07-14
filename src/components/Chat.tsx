@@ -73,10 +73,6 @@ import {
   ResizablePanel,
   ResizablePanelGroup,
 } from "@/components/ui/resizable";
-import {
-  isInterruptMessage,
-  parseLocalCommandStdout,
-} from "@/components/message-bubble";
 import { WelcomeScreen } from "@/components/welcome-screen";
 import { BillingCreditNotice } from "@/components/chat-billing-credit-notice";
 import {
@@ -115,7 +111,6 @@ import { uiMessagesEquivalent } from "@/lib/ui-message-adapter";
 import {
   deriveIsAwaitingAssistant,
   deriveTurnSettled,
-  isAssistantLikeMessage,
 } from "@/lib/chat-working-indicator";
 import type { ChatAgentStatePayload } from "@/lib/chat-agent-state";
 import { usePiChatStream } from "@/lib/use-pi-chat-stream";
@@ -551,17 +546,6 @@ function sanitizeGeneratedFilename(value: string): string {
   return basename || "chat";
 }
 
-/**
- * User-authored messages that should anchor the page-style spacer animation.
- * Slash commands count; compact summaries and synthetic stdout/interrupt rows do not.
- */
-function isUserTurnAnchorMessage(msg: Message): boolean {
-  if (msg.role !== "user" || msg.isCompactSummary) return false;
-  if (isInterruptMessage(msg.content)) return false;
-  if (parseLocalCommandStdout(msg.content)) return false;
-  return true;
-}
-
 const STREAM_MESSAGE_RENDER_THROTTLE_MS = 50;
 
 const CHAT_SCROLL_CONTAINER_STYLE = {
@@ -635,7 +619,6 @@ export default function Chat({
   const {
     loaderErrorIdsRef,
     parsedInitialMessages,
-    shouldAnchorToLastMessage,
     stableInitialUiMessages,
   } = useInitialChatTranscript({
     threadId,
@@ -1210,12 +1193,6 @@ export default function Chat({
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const messageColumnRef = useRef<HTMLDivElement>(null);
-  const lastUserMessageRef = useRef<HTMLDivElement>(null);
-  const assistantMeasureRef = useRef<HTMLDivElement>(null);
-  const assistantPendingMeasureRef = useRef<HTMLDivElement>(null);
-  const assistantSpacerRef = useRef<HTMLDivElement>(null);
-  const spacerHeightRef = useRef(0);
-  const spacerMeasureFrameRef = useRef<number | null>(null);
   const initialScrollDoneRef = useRef(false);
   const stickToBottomRef = useRef(true);
   const forceScrollOnNextUpdate = useRef(false);
@@ -2706,7 +2683,6 @@ export default function Chat({
   const lastMessage = visibleMessages[visibleMessages.length - 1];
   const visibleMessageCount = visibleMessages.length;
   const lastVisibleMessageId = lastMessage?.id ?? null;
-  const isLastMessageAssistantLike = isAssistantLikeMessage(lastMessage);
   // See deriveIsAwaitingAssistant: shows the working indicator while a turn is
   // pending (streaming / queued send / freshly-started new chat) and the
   // transcript ends on a non-assistant message. pendingFirstTurn is a loader
@@ -2735,19 +2711,6 @@ export default function Chat({
       activeAssistantMessageId !== null ||
       activeThreadRunningState.isRunning);
   const showGlobalAssistantIndicator = assistantTurnActive && !isCompacting;
-  const lastUserMessage = useMemo(() => {
-    for (let i = visibleMessages.length - 1; i >= 0; i -= 1) {
-      if (isUserTurnAnchorMessage(visibleMessages[i])) {
-        return visibleMessages[i];
-      }
-    }
-    return null;
-  }, [visibleMessages]);
-  const shouldRenderSpacer =
-    Boolean(lastUserMessage) &&
-    !lastUserMessage?.sentDuringStreaming &&
-    !error &&
-    (isAwaitingAssistant || isLastMessageAssistantLike);
   const handleFreshlyCompletedTurnAnimationScheduled =
     clearFreshlyCompletedTurnId;
 
@@ -2780,186 +2743,11 @@ export default function Chat({
     prevErrorRef.current = error;
   }, [error]);
 
-  useLayoutEffect(() => {
-    if (!shouldShowChat || !threadId) return;
-    if (!hasHydratedChatTranscript) return;
-    if (initialScrollDoneRef.current) return;
-    if (visibleMessages.length === 0) return;
-
-    if (shouldAnchorToLastMessage && lastMessage) {
-      const container = scrollContainerRef.current;
-      const target = container?.querySelector(
-        `[data-message-id="${lastMessage.id}"]`,
-      ) as HTMLElement | null;
-      if (target) {
-        target.scrollIntoView({ behavior: "auto", block: "end" });
-      } else {
-        scrollToBottom("auto");
-      }
-    } else {
-      scrollToBottom("auto");
-    }
-    setShowScrollButton(false);
-    initialScrollDoneRef.current = true;
-  }, [
-    shouldShowChat,
-    threadId,
-    hasHydratedChatTranscript,
-    visibleMessages.length,
-    scrollToBottom,
-    shouldAnchorToLastMessage,
-    lastMessage,
-    lastMessage?.id,
-  ]);
-
-  useLayoutEffect(() => {
-    if (spacerMeasureFrameRef.current !== null) {
-      cancelAnimationFrame(spacerMeasureFrameRef.current);
-      spacerMeasureFrameRef.current = null;
-    }
-
-    if (!shouldRenderSpacer) {
-      spacerHeightRef.current = 0;
-      return;
-    }
-
-    const container = scrollContainerRef.current;
-    const spacer = assistantSpacerRef.current;
-    const userEl = lastUserMessageRef.current;
-    const assistantEl = assistantMeasureRef.current;
-    const pendingAssistantEl = assistantPendingMeasureRef.current;
-    if (!container || !spacer) {
-      spacerHeightRef.current = 0;
-      return;
-    }
-
-    const updateSpacer = () => {
-      const measureUser = lastUserMessageRef.current;
-      const measureAssistant = assistantMeasureRef.current;
-      const measurePendingAssistant = assistantPendingMeasureRef.current;
-
-      if (!measureUser) {
-        spacer.style.height = "0px";
-        return;
-      }
-
-      const containerRect = container.getBoundingClientRect();
-      const userRect = measureUser.getBoundingClientRect();
-      const userStyle = getComputedStyle(measureUser);
-      const userMarginTopValue = parseFloat(userStyle.marginTop || "0");
-      const userMarginTop = Number.isNaN(userMarginTopValue)
-        ? 0
-        : userMarginTopValue;
-
-      let exchangeHeight: number;
-
-      if (measureAssistant) {
-        const assistantRect = measureAssistant.getBoundingClientRect();
-        const assistantStyle = getComputedStyle(measureAssistant);
-        const assistantMarginBottomValue = parseFloat(
-          assistantStyle.marginBottom || "0",
-        );
-        const assistantMarginBottom = Number.isNaN(assistantMarginBottomValue)
-          ? 0
-          : assistantMarginBottomValue;
-        const exchangeTop = userRect.top - userMarginTop;
-        const exchangeBottom = assistantRect.bottom + assistantMarginBottom;
-        exchangeHeight = Math.max(exchangeBottom - exchangeTop, 0);
-      } else if (measurePendingAssistant) {
-        const pendingRect = measurePendingAssistant.getBoundingClientRect();
-        const pendingStyle = getComputedStyle(measurePendingAssistant);
-        const pendingMarginBottomValue = parseFloat(
-          pendingStyle.marginBottom || "0",
-        );
-        const pendingMarginBottom = Number.isNaN(pendingMarginBottomValue)
-          ? 0
-          : pendingMarginBottomValue;
-        const exchangeTop = userRect.top - userMarginTop;
-        const exchangeBottom = pendingRect.bottom + pendingMarginBottom;
-        exchangeHeight = Math.max(exchangeBottom - exchangeTop, 0);
-      } else {
-        const userMarginBottomValue = parseFloat(userStyle.marginBottom || "0");
-        const userMarginBottom = Number.isNaN(userMarginBottomValue)
-          ? 0
-          : userMarginBottomValue;
-        exchangeHeight = userRect.height + userMarginTop + userMarginBottom;
-      }
-
-      const column = messageColumnRef.current;
-      const columnStyle = column ? getComputedStyle(column) : null;
-      const gapValue = columnStyle ? parseFloat(columnStyle.rowGap || "0") : 0;
-      const rowGap = Number.isNaN(gapValue) ? 0 : gapValue;
-      const paddingBottomValue = columnStyle
-        ? parseFloat(columnStyle.paddingBottom || "0")
-        : 0;
-      const paddingBottom = Number.isNaN(paddingBottomValue)
-        ? 0
-        : paddingBottomValue;
-
-      const header = document.querySelector("header");
-      const headerRect = header ? header.getBoundingClientRect() : null;
-      const overlap = headerRect
-        ? Math.max(0, headerRect.bottom - containerRect.top)
-        : 0;
-      const availableHeight = container.clientHeight - overlap;
-
-      const height = Math.max(
-        availableHeight - exchangeHeight - rowGap - paddingBottom,
-        0,
-      );
-      const nextHeight = Math.max(Math.round(height), 0);
-      if (spacerHeightRef.current !== nextHeight) {
-        spacer.style.height = `${nextHeight}px`;
-        spacerHeightRef.current = nextHeight;
-      }
-    };
-
-    updateSpacer();
-
-    if (typeof ResizeObserver === "undefined") return;
-
-    const scheduleSpacerUpdate = () => {
-      if (spacerMeasureFrameRef.current !== null) return;
-      spacerMeasureFrameRef.current = requestAnimationFrame(() => {
-        spacerMeasureFrameRef.current = null;
-        updateSpacer();
-      });
-    };
-
-    const observer = new ResizeObserver(() => {
-      scheduleSpacerUpdate();
-    });
-
-    observer.observe(container);
-    if (userEl) {
-      observer.observe(userEl);
-    }
-    if (assistantEl) {
-      observer.observe(assistantEl);
-    }
-    if (pendingAssistantEl) {
-      observer.observe(pendingAssistantEl);
-    }
-
-    return () => {
-      if (spacerMeasureFrameRef.current !== null) {
-        cancelAnimationFrame(spacerMeasureFrameRef.current);
-        spacerMeasureFrameRef.current = null;
-      }
-      observer.disconnect();
-    };
-  }, [
-    shouldRenderSpacer,
-    isAwaitingAssistant,
-    lastMessage?.id,
-    lastUserMessage?.id,
-    visibleMessages.length,
-    isStreaming,
-    loading,
-  ]);
-
-  // Handle scroll position tracking
-  const handleScroll = useCallback(() => {
+  // Derives pin state + scroll-button visibility from the current geometry.
+  // Called on scroll events AND on content/container resize — resizes (e.g. the
+  // turn trace collapsing to fit the viewport) change distance-from-bottom
+  // without firing any scroll event.
+  const syncScrollPosition = useCallback(() => {
     const container = scrollContainerRef.current;
     if (!container) return;
 
@@ -2972,22 +2760,26 @@ export default function Chat({
   useEffect(() => {
     if (!shouldShowChat || !threadId) return;
 
+    const container = scrollContainerRef.current;
     const column = messageColumnRef.current;
     if (!column || typeof ResizeObserver === "undefined") return;
 
     let frameId: number | null = null;
     const observer = new ResizeObserver(() => {
-      if (!stickToBottomRef.current) return;
-      if (shouldRenderSpacer) return;
       if (frameId !== null) {
         cancelAnimationFrame(frameId);
       }
       frameId = requestAnimationFrame(() => {
-        scrollToBottom("auto");
+        frameId = null;
+        if (stickToBottomRef.current) {
+          scrollToBottom("auto");
+        }
+        syncScrollPosition();
       });
     });
 
     observer.observe(column);
+    if (container) observer.observe(container);
 
     return () => {
       if (frameId !== null) {
@@ -2995,15 +2787,16 @@ export default function Chat({
       }
       observer.disconnect();
     };
-  }, [scrollToBottom, shouldShowChat, threadId, shouldRenderSpacer]);
+  }, [scrollToBottom, shouldShowChat, syncScrollPosition, threadId]);
 
-  // Auto-scroll on new messages (only if near bottom, or forced after user sends)
+  // Auto-scroll on new messages (initial load, own sends, and while pinned)
   useLayoutEffect(() => {
     if (!shouldShowChat || !threadId) return;
     if (!hasHydratedChatTranscript) return;
 
     if (!initialScrollDoneRef.current && visibleMessageCount > 0) {
       initialScrollDoneRef.current = true;
+      stickToBottomRef.current = true;
       scrollToBottom("auto");
       setShowScrollButton(false);
       return;
@@ -3012,23 +2805,13 @@ export default function Chat({
     const shouldForce = forceScrollOnNextUpdate.current;
     forceScrollOnNextUpdate.current = false;
 
-    const container = scrollContainerRef.current;
-    if (!container) {
+    if (shouldForce) {
+      stickToBottomRef.current = true;
       scrollToBottom("auto");
       return;
     }
 
-    const { scrollTop, scrollHeight, clientHeight } = container;
-    const distanceFromBottom = scrollHeight - scrollTop - clientHeight;
-
-    if (shouldForce) {
-      scrollToBottom(shouldRenderSpacer ? "auto" : "smooth");
-      return;
-    }
-
-    if (shouldRenderSpacer) return;
-
-    if (stickToBottomRef.current || distanceFromBottom < 150) {
+    if (stickToBottomRef.current) {
       scrollToBottom("auto");
     }
   }, [
@@ -3036,7 +2819,6 @@ export default function Chat({
     lastVisibleMessageId,
     scrollToBottom,
     shouldShowChat,
-    shouldRenderSpacer,
     threadId,
     hasHydratedChatTranscript,
   ]);
@@ -3824,6 +3606,10 @@ export default function Chat({
       messageSource: "web",
     };
 
+    // Sending your own message always brings the bottom into view. /compact is
+    // operational and can happen while users read older messages — don't jump.
+    forceScrollOnNextUpdate.current = !shouldShowCompactingIndicator;
+
     if (wasSentDuringStreaming) {
       // Steering: the assistant keeps streaming in the live overlay. Echo the
       // user's message into committed history optimistically; it reconciles with
@@ -3840,9 +3626,6 @@ export default function Chat({
           : [...prev, userMsg],
       );
     } else {
-      // /compact is operational and can happen while users read older messages.
-      // Avoid forcing a jump to bottom in that case.
-      forceScrollOnNextUpdate.current = !shouldShowCompactingIndicator;
       setMessages((prev) => [...prev, userMsg]);
     }
     setPendingMessages((prev) => {
@@ -4004,7 +3787,7 @@ export default function Chat({
       {/* Chat Body - Single Scroll Container */}
       <div
         ref={scrollContainerRef}
-        onScroll={handleScroll}
+        onScroll={syncScrollPosition}
         tabIndex={0}
         role="region"
         aria-label="Chat messages"
@@ -4018,10 +3801,6 @@ export default function Chat({
         >
           <ChatMessagesView
             visibleMessages={visibleMessages}
-            lastUserMessageId={lastUserMessage?.id ?? null}
-            lastMessageId={lastMessage?.id ?? null}
-            isAwaitingAssistant={isAwaitingAssistant}
-            isLastMessageAssistantLike={isLastMessageAssistantLike}
             copyMessage={copyMessage}
             copiedMessageId={copiedMessageId}
             forkMessage={readOnly ? undefined : forkMessage}
@@ -4044,11 +3823,6 @@ export default function Chat({
             isLoadingMessages={isLoadingMessages}
             deferRendering={!hasHydratedChatTranscript}
             showGlobalAssistantIndicator={showGlobalAssistantIndicator}
-            shouldRenderSpacer={shouldRenderSpacer}
-            lastUserMessageRef={lastUserMessageRef}
-            assistantMeasureRef={assistantMeasureRef}
-            assistantPendingMeasureRef={assistantPendingMeasureRef}
-            assistantSpacerRef={assistantSpacerRef}
             messagesEndRef={messagesEndRef}
             mentionSlugMap={mentionSlugMap}
           />
