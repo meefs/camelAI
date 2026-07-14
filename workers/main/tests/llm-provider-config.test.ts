@@ -37,6 +37,12 @@ const CLAUDE_MODELS = [
   "haiku",
 ] as const;
 
+const PINNED_HOSTED_MODELS = [
+  "deepseek-v4-auto",
+  ...CLAUDE_MODELS,
+  ...CODEX_MODELS.filter((model) => model !== "deepseek-v4-auto"),
+] as const;
+
 const OPENROUTER_ONLY_MODELS = [
   "gemini-3.5-flash",
   "gemini-3-flash-preview",
@@ -167,7 +173,7 @@ describe("llm provider config helpers", () => {
       getVisibleLlmModelOptions({ claude_proxy_models: false }).map(
         (option) => option.value,
       ),
-    ).toEqual([...CLAUDE_MODELS, ...CODEX_MODELS]);
+    ).toEqual([...PINNED_HOSTED_MODELS]);
     expect(
       getVisibleLlmModelOptions({ claude_proxy_models: false }, null, {
         orgProvider: "openrouter",
@@ -202,10 +208,7 @@ describe("llm provider config helpers", () => {
       getVisibleLlmModelOptions({ claude_proxy_models: false }, null, {
         orgProvider: null,
       }).map((option) => option.value),
-    ).toEqual([
-      ...CLAUDE_MODELS,
-      ...CODEX_MODELS,
-    ]);
+    ).toEqual([...PINNED_HOSTED_MODELS]);
   });
 
   it("keeps Camel Free visible in hosted model options", () => {
@@ -228,10 +231,7 @@ describe("llm provider config helpers", () => {
         null,
         { orgProvider: null },
       ).map((option) => option.value),
-    ).toEqual([
-      ...CLAUDE_MODELS,
-      ...CODEX_MODELS,
-    ]);
+    ).toEqual([...PINNED_HOSTED_MODELS]);
     expect(
       getVisibleLlmModelOptions(
         { claude_proxy_models: true },
@@ -264,7 +264,7 @@ describe("llm provider config helpers", () => {
         { claude_proxy_models: false },
         "sonnet",
       ).map((option) => option.value),
-    ).toEqual([...CLAUDE_MODELS, ...CODEX_MODELS]);
+    ).toEqual([...PINNED_HOSTED_MODELS]);
   });
 
   it("validates new thread models against BYOK and proxy policy", () => {

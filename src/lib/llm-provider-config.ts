@@ -162,8 +162,22 @@ const CREDIT_FREE_HOSTED_MODELS = new Set<LlmModel>([
   "deepseek-v4-auto",
 ]);
 
+const PINNED_VISIBLE_LLM_MODELS = new Set<LlmModel>([
+  "deepseek-v4-auto",
+]);
+
 export function isCreditFreeHostedModel(model: string | null | undefined): boolean {
   return Boolean(model && CREDIT_FREE_HOSTED_MODELS.has(model as LlmModel));
+}
+
+function sortVisibleLlmModelOptions<
+  T extends { value: LlmModel },
+>(options: readonly T[]): T[] {
+  return [...options].sort(
+    (a, b) =>
+      Number(PINNED_VISIBLE_LLM_MODELS.has(b.value)) -
+      Number(PINNED_VISIBLE_LLM_MODELS.has(a.value)),
+  );
 }
 
 const BEDROCK_ONLY_CODEX_MODELS = new Set<LlmModel>([
@@ -290,7 +304,7 @@ export function getVisibleLlmModelOptions(
     awsRegion: options?.awsRegion,
     allowOpenAiSubscription: options?.allowOpenAiSubscription,
   });
-  const visibleOptions = baseOptions;
+  const visibleOptions = sortVisibleLlmModelOptions(baseOptions);
 
   if (
     !includeModel ||
@@ -304,7 +318,9 @@ export function getVisibleLlmModelOptions(
     ...CLAUDE_LLM_MODEL_OPTIONS,
   ].find((option) => option.value === includeModel);
 
-  return fallbackOption ? [fallbackOption, ...visibleOptions] : visibleOptions;
+  return fallbackOption
+    ? sortVisibleLlmModelOptions([fallbackOption, ...visibleOptions])
+    : visibleOptions;
 }
 
 export function isLlmModelAllowedForNewThread(
