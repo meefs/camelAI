@@ -31,6 +31,11 @@ import { parseByokProvider } from '@/lib/byok-providers';
 import { parseUploadRefsFromContent } from '@/lib/chat-attachment-refs';
 import { getChannelBrand } from '@/lib/channel-branding';
 import {
+  parseMessageAuthor,
+  resolveMessageAuthorDisplayName,
+  stripSystemMessageTagsOnly,
+} from '@/lib/message-author';
+import {
   type AnnotatedMentionRef,
   stripMentionAnnotations,
   stripMentionAnnotationsWithMetadata,
@@ -140,38 +145,12 @@ export function parseLocalCommandStdout(content: string | ContentBlock[]): strin
 }
 
 /**
- * Parse author attribution from message content.
- * Messages are prefixed with [web message from Name]:, [Name (email)]:, or [email]:
- * Returns { author, content } where author has { name, email, displayName }
- */
-interface ParsedAuthor {
-  name: string | null;
-  email: string | null;
-  displayName: string; // Name if available, otherwise email
-  source: string | null;
-}
-
-interface ParsedMessage {
-  author: ParsedAuthor | null;
-  content: string;
-}
-
-const AUTHOR_PREFIX_WITH_EMAIL_REGEX = /^\[([^\]]+)\s+\(([^)]+)\)\]:\s*/;
-const AUTHOR_PREFIX_WITH_SOURCE_REGEX = /^\[([a-z0-9 _-]+)\s+message(?:\s+from\s+([^\]]+))?\]:\s*/i;
-const AUTHOR_PREFIX_SIMPLE_REGEX = /^\[([^\]]+)\]:\s*/;
-const SYSTEM_MESSAGE_TAG_REGEX = /<camelai system message>[\s\S]*?<\/camelai system message>/g;
-
-/**
  * Strip camelAI system message tags from content.
  * These tags are used internally to pass context to the AI but shouldn't
  * be shown verbosely to users.
  */
 function stripSystemMessageTags(text: string): string {
   return stripMentionAnnotations(stripSystemMessageTagsOnly(text)).trim();
-}
-
-function stripSystemMessageTagsOnly(text: string): string {
-  return text.replace(SYSTEM_MESSAGE_TAG_REGEX, '').trim();
 }
 
 function prepareDisplayText(text: string): {
@@ -186,98 +165,6 @@ function prepareDisplayText(text: string): {
     annotatedMentions:
       annotatedMentions.length > 0 ? annotatedMentions : EMPTY_ANNOTATED_MENTIONS,
   };
-}
-
-export function parseMessageAuthor(rawContent: string): ParsedMessage {
-  const content = stripSystemMessageTagsOnly(rawContent);
-  // Match [web message from Name]: at the start of the message.
-  const matchWithSource = content.match(AUTHOR_PREFIX_WITH_SOURCE_REGEX);
-  if (matchWithSource) {
-    const authorText = matchWithSource[2]?.trim() || '';
-    const authorWithEmail = authorText.match(/^(.+?)\s+\(([^)]+)\)$/);
-    const name = authorWithEmail
-      ? authorWithEmail[1]?.trim() || null
-      : authorText || null;
-    const email = authorWithEmail?.[2]?.trim() || null;
-    return {
-      author: {
-        name,
-        email,
-        displayName: name || email || matchWithSource[1]?.trim() || 'Unknown',
-        source: matchWithSource[1]?.trim().toLowerCase() || null,
-      },
-      content: content.slice(matchWithSource[0].length),
-    };
-  }
-
-  // Match [Name (email)]: or [email]: at the start of the message.
-  const matchWithEmail = content.match(AUTHOR_PREFIX_WITH_EMAIL_REGEX);
-  if (matchWithEmail) {
-    const name = matchWithEmail[1]?.trim() || null;
-    const email = matchWithEmail[2]?.trim() || null;
-    return {
-      author: {
-        name,
-        email,
-        displayName: name || email || 'Unknown',
-        source: null,
-      },
-      content: content.slice(matchWithEmail[0].length),
-    };
-  }
-
-  // Match [Name]: or [email]: (no parentheses)
-  const matchSimple = content.match(AUTHOR_PREFIX_SIMPLE_REGEX);
-  if (matchSimple) {
-    const value = matchSimple[1]?.trim() || '';
-    // Check if it looks like an email
-    const isEmail = value.includes('@');
-    return {
-      author: {
-        name: isEmail ? null : value,
-        email: isEmail ? value : null,
-        displayName: value || 'Unknown',
-        source: null,
-      },
-      content: content.slice(matchSimple[0].length),
-    };
-  }
-
-  return { author: null, content };
-}
-
-/**
- * Strip author prefix from ContentBlock array.
- * Returns { author, blocks } where blocks has the prefix removed from the first text block.
- */
-function stripAuthorFromBlocks(blocks: ContentBlock[]): { author: ParsedAuthor | null; blocks: ContentBlock[] } {
-  if (blocks.length === 0) {
-    return { author: null, blocks };
-  }
-
-  // Find the first text block
-  const firstTextIndex = blocks.findIndex(block => block.type === 'text');
-  if (firstTextIndex === -1) {
-    return { author: null, blocks };
-  }
-
-  const firstTextBlock = blocks[firstTextIndex];
-  if (firstTextBlock.type !== 'text') {
-    return { author: null, blocks };
-  }
-
-  // Parse author from the first text block
-  const { author, content: strippedText } = parseMessageAuthor(firstTextBlock.text);
-
-  if (!author) {
-    return { author: null, blocks };
-  }
-
-  // Create new blocks array with stripped first text block
-  const newBlocks = [...blocks];
-  newBlocks[firstTextIndex] = { type: 'text', text: strippedText };
-
-  return { author, blocks: newBlocks };
 }
 
 function safeJsonStringify(value: unknown): string {
@@ -798,19 +685,21 @@ function MessageBubbleBase({
     : displayContent.length > 0;
 
   if (message.role === 'user') {
-    // Parse author attribution from content and strip prefix for display
-    let author: ParsedAuthor | null = null;
-    let userDisplayContent: string | ContentBlock[];
-
-    if (typeof displayContent === 'string') {
-      const parsed = parseMessageAuthor(displayContent);
-      author = parsed.author;
-      userDisplayContent = parsed.content;
-    } else {
-      const stripped = stripAuthorFromBlocks(displayContent);
-      author = stripped.author;
-      userDisplayContent = stripped.blocks;
-    }
+    // Structured render metadata is authoritative; the model-prefix parser is
+    // retained for old/backfilled rows and always cleans model-only content.
+    const parsed = parseMessageAuthor(displayContent);
+    const displayName =
+      resolveMessageAuthorDisplayName(message.authorDisplayName, null) ??
+      parsed.author?.displayName ??
+      null;
+    const source =
+      (typeof message.messageSource === 'string'
+        ? message.messageSource.trim() || null
+        : null) ??
+      parsed.source ??
+      null;
+    const userDisplayContent = parsed.content;
+    const authorStamp = [displayName, messageTime].filter(Boolean).join(' ');
 
     const uploadInfo = parseUploadRefsFromContent(userDisplayContent);
 
@@ -819,7 +708,7 @@ function MessageBubbleBase({
     const hasCleanContent = typeof cleanedContent === 'string'
       ? cleanedContent.length > 0
       : cleanedContent.length > 0;
-    const channelBrand = getChannelBrand(author?.source);
+    const channelBrand = getChannelBrand(source);
 
     return (
       <div className="flex flex-col items-end gap-2">
@@ -870,14 +759,9 @@ function MessageBubbleBase({
                 actionVisibilityClassName,
               )}
             >
-              {author && (
+              {authorStamp && (
                 <span className="text-muted-foreground text-xs mr-1">
-                  Sent by {author.displayName} at
-                </span>
-              )}
-              {messageTime && (
-                <span className="text-muted-foreground text-xs mr-1">
-                  {messageTime}
+                  {authorStamp}
                 </span>
               )}
               <Tooltip>
@@ -910,14 +794,9 @@ function MessageBubbleBase({
             role="group"
             aria-label="Message actions"
           >
-            {author && (
+            {authorStamp && (
               <span className="text-muted-foreground text-xs mr-1">
-                Sent by {author.displayName} at
-              </span>
-            )}
-            {messageTime && (
-              <span className="text-muted-foreground text-xs mr-1">
-                {messageTime}
+                {authorStamp}
               </span>
             )}
             <Tooltip>

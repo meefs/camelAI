@@ -39,6 +39,7 @@ import type { WorkspaceDO } from "./workspace";
 import { WorkspaceFilesystemClient } from "./workspace-filesystem-do";
 import { prewarmWorkspaceBuildSandboxes } from "./project-build-service";
 import { formatAttributedUserMessage } from './chat-author-attribution';
+import { resolveMessageAuthorDisplayName } from '../../../src/lib/message-author';
 import { injectFileSafetyMessage } from './file-safety';
 import { applyMentionContext } from './mention-context';
 import { extractThreadCompletionSummarySource } from '../../../src/lib/thread-completion-summary-generation.server';
@@ -1249,6 +1250,7 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
     // at the moment the user actually opens the thread. Guarded no-op whenever
     // the marker is live, freshly opened, or awaiting recovery.
     await this.sweepOrphanedActiveTurnMarker();
+    await this.healLegacyUiMessageAuthors();
 
     // Deliver the current render history to THIS socket. Turns can complete
     // while a browser is disconnected (headless saveMessages turns from email/
@@ -3384,6 +3386,13 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
     if (!context) {
       return { status: "error", error: "Missing chat context for thread" };
     }
+    // Capture the presentation identity beside the model attribution before
+    // any await can let another connection replace this DO's mutable context.
+    const authorDisplayName = resolveMessageAuthorDisplayName(
+      context.userName,
+      context.userEmail,
+    );
+    const messageSource = options.messageSource?.trim() || "web";
 
     const rawContent =
       typeof data.content === "string" ? data.content.trim() : "";
@@ -3411,7 +3420,7 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
     attributedContent = formatAttributedUserMessage(mentionAugmented, {
       userName: context.userName,
       userEmail: context.userEmail,
-      messageSource: options.messageSource ?? "web",
+      messageSource,
     });
     if (!attributedContent) {
       return { status: "error", error: "Empty message" };
@@ -3433,7 +3442,7 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
       this.ctx.waitUntil(
         this.updateThreadMetadataForUserMessage(
           attributedContent,
-          options.messageSource ?? "web",
+          messageSource,
         ).catch((err) => {
           console.error(
             '[ChatThreadDO] failed to update thread metadata after browser user message',
@@ -3452,7 +3461,8 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
         // Display fields for the native render-history user bubble (commit 3b):
         // the user's typed text (unattributed) and the source channel.
         rawContent,
-        messageSource: options.messageSource ?? "web",
+        authorDisplayName,
+        messageSource,
       });
     } catch (error) {
       this.finishTurn();
@@ -5411,6 +5421,12 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
             typeof message.messageSource === "string" && message.messageSource.trim()
               ? message.messageSource
               : null;
+          const authorDisplayName = resolveMessageAuthorDisplayName(
+            typeof message.authorDisplayName === "string"
+              ? message.authorDisplayName
+              : null,
+            null,
+          );
           const clientMessageId =
             typeof message.clientMessageId === "string" && message.clientMessageId.trim()
               ? message.clientMessageId.trim()
@@ -5425,6 +5441,7 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
             const steeredSkeleton = this.buildUserUiSkeleton({
               rawContent,
               clientMessageId,
+              authorDisplayName,
               messageSource,
               piCoreMessageKey: timestamp,
               sentDuringStreaming: true,
@@ -5493,6 +5510,7 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
           const userSkeleton = this.buildUserUiSkeleton({
             rawContent,
             clientMessageId,
+            authorDisplayName,
             messageSource,
             piCoreMessageKey: timestamp,
           });
@@ -6403,6 +6421,7 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
   private buildUserUiSkeleton(args: {
     rawContent: string;
     clientMessageId?: string;
+    authorDisplayName?: string | null;
     messageSource?: string | null;
     channelHistory?: boolean;
     piCoreMessageKey?: number | string;
@@ -6425,11 +6444,16 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
     await this.sweepOrphanedActiveTurnMarker();
     await this.topUpUiMessagesFromPiCore();
     await this.healLegacyUiMessageTimes();
+    await this.healLegacyUiMessageAuthors();
     return this.messages as UIMessage[];
   }
 
   private healLegacyUiMessageTimes(): Promise<void> {
     return this.uiMirror.healLegacyUiMessageTimes();
+  }
+
+  private healLegacyUiMessageAuthors(): Promise<void> {
+    return this.uiMirror.healLegacyUiMessageAuthors();
   }
 
   /**

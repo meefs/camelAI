@@ -837,6 +837,8 @@ describe('ChatThreadDO Pi turn handling', () => {
       threadId: 'thread1',
       userId: 'user1',
       clientMessageId: 'initial:thread1',
+      authorDisplayName: 'Miguel',
+      messageSource: 'email',
     });
     expect(sentCommands[0].content).toBe('[email message from Miguel (miguel@example.com)]: hello');
     // The initial send commits the user's message to the transcript up front so a
@@ -967,12 +969,21 @@ describe('ChatThreadDO Pi turn handling', () => {
       type: 'message',
       content: 'do the thing',
       rawContent: 'do the thing',
+      authorDisplayName: 'Illiana Reed',
+      messageSource: 'web',
     });
     expect(accepted).toBe(true);
 
     // Recoverability is established up front, in the same tick as acceptance.
     expect(fake.openPiActiveTurnIfAbsent).toHaveBeenCalledTimes(1);
     expect(fake.recordPiTurnJournalUserMessage).toHaveBeenCalledTimes(1);
+    expect(fake.buildUserUiSkeleton).toHaveBeenCalledWith({
+      rawContent: 'do the thing',
+      clientMessageId: undefined,
+      authorDisplayName: 'Illiana Reed',
+      messageSource: 'web',
+      piCoreMessageKey: expect.any(Number),
+    });
     expect(order.slice(0, 2)).toEqual(['marker', 'journal']);
     // The attributed prompt is queued for onChatMessage's fresh path (the durable
     // copy for a pre-stream eviction lives in the journal above).
@@ -1381,8 +1392,41 @@ describe('ChatThreadDO Pi turn handling', () => {
       threadId: 'thread1',
       userId: 'user1',
       clientMessageId: 'client_followup_1',
+      authorDisplayName: 'Miguel',
+      messageSource: 'web',
     });
     expect(sentCommands[0].content).toBe('[web message from Miguel (miguel@example.com)]: please also add tests');
+  });
+
+  it('keeps render attribution aligned with the context captured before awaits', async () => {
+    const sentCommands: any[] = [];
+    const fake = makeNewTurnEnqueueFake([]);
+    fake.ensurePiSessionReady = vi.fn(async () => {
+      fake.chatContext = {
+        ...fake.chatContext,
+        userId: 'other-user',
+        userName: 'Other User',
+        userEmail: 'other@example.com',
+      };
+    });
+    fake.sendRunnerCommand = vi.fn((command: any) => {
+      sentCommands.push(command);
+      return true;
+    });
+
+    await ChatThreadDO.prototype['enqueueRunnerUserMessage'].call(
+      fake,
+      { type: 'message', content: 'hello' },
+      { messageSource: 'slack' },
+    );
+
+    expect(sentCommands).toHaveLength(1);
+    expect(sentCommands[0]).toMatchObject({
+      content: '[slack message from Miguel (miguel@example.com)]: hello',
+      authorDisplayName: 'Miguel',
+      messageSource: 'slack',
+      userId: 'user1',
+    });
   });
 
   it('returns acceptance from the sendMessage RPC after enqueue accepts', async () => {
@@ -9420,6 +9464,7 @@ describe('ChatThreadDO Pi turn handling', () => {
     fake.chatIsStreaming = false;
     fake.currentTodos = [{ content: 'Old task', status: 'in_progress' }];
     fake.syncAgentState = vi.fn();
+    fake.healLegacyUiMessageAuthors = vi.fn(async () => {});
     // Mirror the real method: it clears the todos and syncs an override marking
     // them completed.
     fake.completeTodoStateForTurnEnd = vi.fn(async () => {
@@ -10406,6 +10451,9 @@ describe('ChatThreadDO Pi turn handling', () => {
       const accepted = ChatThreadDO.prototype['sendRunnerCommand'].call(fake, {
         type: 'message',
         content: 'also rename the table',
+        rawContent: 'also rename the table',
+        authorDisplayName: 'Illiana Reed',
+        messageSource: 'slack',
       });
       expect(accepted).toBe(true);
       await flushWaitUntil(fake);
@@ -10415,6 +10463,14 @@ describe('ChatThreadDO Pi turn handling', () => {
       // onChatMessage — a steer-side failure must NOT erase that turn's
       // marker/journal or tear it down (it is still live).
       expect(fake.recordPiTurnJournalSteerMessage).toHaveBeenCalledTimes(1);
+      expect(fake.buildUserUiSkeleton).toHaveBeenCalledWith({
+        rawContent: 'also rename the table',
+        clientMessageId: undefined,
+        authorDisplayName: 'Illiana Reed',
+        messageSource: 'slack',
+        piCoreMessageKey: expect.any(Number),
+        sentDuringStreaming: true,
+      });
       expect(fake.persistMessages).toHaveBeenCalledWith([
         { id: 'u', role: 'user', parts: [] },
       ]);

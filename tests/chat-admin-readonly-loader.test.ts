@@ -286,10 +286,12 @@ describe('chat loader workspace mismatch handling', () => {
       currentWorkspace: { id: 'ws_active' },
       currentOrg: { id: 'org_active', slug: 'acme' },
       orgs: [{ org_id: 'org_active', role: 'admin' }],
+      user: { id: 'user_123', name: 'Illiana Reed', email: 'illiana@example.com' },
     });
     getThreadMock.mockResolvedValue({
       id: 'thread_123',
       workspace_id: 'ws_active',
+      created_by: 'user_123',
       title: 'New Chat',
       model: 'sonnet',
       user_message_count: 0,
@@ -309,6 +311,8 @@ describe('chat loader workspace mismatch handling', () => {
           id: 'pending-first:thread_123',
           role: 'user',
           content: 'Build an analytics dashboard',
+          authorDisplayName: 'Illiana Reed',
+          messageSource: 'web',
         }),
       ],
       messagesError: null,
@@ -334,10 +338,12 @@ describe('chat loader workspace mismatch handling', () => {
       currentWorkspace: { id: 'ws_active' },
       currentOrg: { id: 'org_active', slug: 'acme' },
       orgs: [{ org_id: 'org_active', role: 'admin' }],
+      user: { id: 'user_123', name: null, email: 'illiana@example.com' },
     });
     getThreadMock.mockResolvedValue({
       id: 'thread_123',
       workspace_id: 'ws_active',
+      created_by: 'user_123',
       title: 'New Chat',
       model: 'sonnet',
       user_message_count: 0,
@@ -366,8 +372,47 @@ describe('chat loader workspace mismatch handling', () => {
         id: 'pending-first:thread_123',
         role: 'user',
         content: 'Build an analytics dashboard',
+        authorDisplayName: 'illiana@example.com',
+        messageSource: 'web',
       }),
     ]);
+  });
+
+  it('does not attribute a pending first message to a different viewer', async () => {
+    requireAuthContextMock.mockResolvedValue({
+      currentWorkspace: { id: 'ws_active' },
+      currentOrg: { id: 'org_active', slug: 'acme' },
+      orgs: [{ org_id: 'org_active', role: 'member' }],
+      user: { id: 'viewer_456', name: 'Different Viewer', email: 'viewer@example.com' },
+    });
+    getThreadMock.mockResolvedValue({
+      id: 'thread_123',
+      workspace_id: 'ws_active',
+      created_by: 'creator_123',
+      title: 'New Chat',
+      model: 'sonnet',
+      user_message_count: 0,
+      first_user_message: 'Build an analytics dashboard',
+    });
+
+    const result = await loader({
+      request: new Request('https://camelai.com/chat/thread_123?newThread=1'),
+      context: {},
+      params: { id: 'thread_123' },
+    } as never);
+
+    expect(result.pendingFirstTurn).toBe(true);
+    const chatData = await result.chatData;
+    expect(chatData.messages).toEqual([
+      expect.objectContaining({
+        id: 'pending-first:thread_123',
+        role: 'user',
+        content: 'Build an analytics dashboard',
+        messageSource: 'web',
+      }),
+    ]);
+    expect(chatData.messages[0]).not.toHaveProperty('authorDisplayName');
+    expect(getUiMessagesMock).not.toHaveBeenCalled();
   });
 
   it('does NOT take the pending-first-turn fast path without ?newThread=1 (e.g. an API-created thread)', async () => {

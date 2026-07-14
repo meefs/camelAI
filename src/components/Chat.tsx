@@ -108,6 +108,7 @@ import {
   shouldAutoRefreshFilePreview,
 } from "@/components/preview-panel/preview-utils";
 import { cn } from "@/lib/utils";
+import { resolveMessageAuthorDisplayName } from "@/lib/message-author";
 import { buildSlugMap, type MentionableProject } from "@/lib/mentions";
 import { isFileDrag } from "@/lib/file-drag";
 import { uiMessagesEquivalent } from "@/lib/ui-message-adapter";
@@ -3807,6 +3808,10 @@ export default function Chat({
     setError(null);
 
     // Add user message to state immediately (optimistic)
+    const authorDisplayName = resolveMessageAuthorDisplayName(
+      user?.name,
+      user?.email,
+    );
     const userMsg: Message = {
       id: clientMessageId,
       clientMessageId,
@@ -3815,6 +3820,8 @@ export default function Chat({
       content: finalContent,
       created_at: Date.now(),
       sentDuringStreaming: wasSentDuringStreaming,
+      ...(authorDisplayName ? { authorDisplayName } : {}),
+      messageSource: "web",
     };
 
     if (wasSentDuringStreaming) {

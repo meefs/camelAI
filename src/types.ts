@@ -262,6 +262,10 @@ export interface Message {
   role: "user" | "assistant";
   content: string | ContentBlock[];
   created_at: number;
+  /** Presentation snapshot from UI-message metadata; never an authorization source. */
+  authorDisplayName?: string;
+  /** Presentation-only channel source from UI-message metadata, separate from authorship. */
+  messageSource?: string;
   /** Client-generated delivery id used to recover sends across reconnects. */
   clientMessageId?: string;
   /** Stable runtime/session entry id used for fork operations. */

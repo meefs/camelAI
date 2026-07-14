@@ -46,6 +46,7 @@ import {
 import type { ProxyAuthValidationEnv } from "../../workers/main/src/helpers/proxy-auth-core";
 import { getChatDebugFlags } from "@/lib/chat-debug-flags";
 import { shouldRevalidateActiveChatRoute } from "@/lib/chat-route-revalidation";
+import { resolveMessageAuthorDisplayName } from "@/lib/message-author";
 import {
   saveChatGroupRename,
   type ChatGroupRenameInput,
@@ -70,6 +71,7 @@ import type {
   LlmModel,
   Message,
   PreviewTarget,
+  User,
   WorkspaceWithAccess,
 } from "@/types";
 import {
@@ -299,13 +301,23 @@ function isPromiseLike<T>(value: T | Promise<T>): value is Promise<T> {
 // record so the page paints instantly without booting the ChatThreadDO. The real
 // turn (and its persisted, attributed copy) streams/loads in afterward; the
 // reconciliation effect in Chat swaps this out once the transcript arrives.
-function pendingFirstUserMessage(threadId: string, content: string): Message {
+function pendingFirstUserMessage(
+  threadId: string,
+  content: string,
+  user: Pick<User, "name" | "email"> | null,
+): Message {
+  const authorDisplayName = resolveMessageAuthorDisplayName(
+    user?.name,
+    user?.email,
+  );
   return {
     id: `pending-first:${threadId}`,
     thread_id: threadId,
     role: "user",
     content,
     created_at: Date.now(),
+    ...(authorDisplayName ? { authorDisplayName } : {}),
+    messageSource: "web",
   };
 }
 
@@ -786,7 +798,13 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
     ? {
         ...EMPTY_CHAT_DATA,
         messages: [
-          pendingFirstUserMessage(params.id, thread.first_user_message ?? ""),
+          pendingFirstUserMessage(
+            params.id,
+            thread.first_user_message ?? "",
+            thread.created_by === authContext.user.id
+              ? authContext.user
+              : null,
+          ),
         ],
       }
     : thread

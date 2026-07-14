@@ -1220,6 +1220,7 @@ describe('ChatThreadDO onConnect render-history delivery', () => {
     fake.piSession = null;
     fake.currentTodos = [];
     fake.ctx = { storage: { kv: { get: vi.fn(() => undefined), put: vi.fn() } } };
+    fake.healLegacyUiMessageAuthors = vi.fn(async () => {});
     fake.syncAgentState = vi.fn();
     fake.maybeGenerateChatGroupAvatarForThread = vi.fn(async () => {});
     return fake;
@@ -1761,6 +1762,7 @@ describe('ChatThreadDO stranded-marker healing on page open', () => {
     fake.chatContext = { orgId: 'org1', threadId: 't1' };
     fake.captureChatContextFromRequest = vi.fn();
     fake.sweepOrphanedActiveTurnMarker = vi.fn(async () => {});
+    fake.healLegacyUiMessageAuthors = vi.fn(async () => {});
     fake.messages = [];
     fake.isThreadStreaming = vi.fn(() => false);
     fake.currentTodos = [];

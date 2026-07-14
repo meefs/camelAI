@@ -15,10 +15,14 @@
 import type { UIMessage } from "ai";
 import { messageToUiMessage, uiMessageCreatedAtMs } from "../../../../src/lib/ui-message-adapter";
 import {
+  parseMessageAuthor,
+  resolveMessageAuthorDisplayName,
+} from "../../../../src/lib/message-author";
+import {
   PI_STEER_MARKER_PART,
   piSteerMarkerPartId,
 } from "../../../../src/lib/pi-chunk-encoder";
-import type { Message } from "../../../../src/types";
+import type { ContentBlock, Message } from "../../../../src/types";
 import type { PiActiveTurnMarker, SyncKvStorage } from "./pi-turn-journal";
 import type { AgentEvalParsedMessage, ChatContextState } from "./types";
 
@@ -37,6 +41,13 @@ const UI_MESSAGES_PI_CORE_LAST_CREATED_AT_KEY = "uiMessagesPiCoreLastCreatedAtMs
 // pi.createdAtMs / pi.completedAtMs stamps existed render epoch 0 — "4:00 PM"
 // in Pacific — until healed from the row's created_at column).
 const UI_MESSAGES_TIME_HEAL_KEY = "uiMessagesTimeHealDone";
+const UI_MESSAGES_AUTHOR_ATTRIBUTION_HEAL_KEY =
+  "uiMessagesAuthorAttributionHealV1";
+
+function normalizedMetadataString(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  return value.trim() || null;
+}
 
 // SQLite `current_timestamp` yields "YYYY-MM-DD HH:MM:SS" (UTC, 1s resolution).
 // ai-chat orders render history by that column, so backfilled rows format their
@@ -90,13 +101,20 @@ export class ChatThreadUiMirror {
   buildUserUiSkeleton(args: {
     rawContent: string;
     clientMessageId?: string;
+    authorDisplayName?: string | null;
     messageSource?: string | null;
     channelHistory?: boolean;
     piCoreMessageKey?: number | string;
     sentDuringStreaming?: boolean;
   }): UIMessage {
     const metadata: Record<string, unknown> = {};
-    if (args.messageSource) metadata.source = args.messageSource;
+    const authorDisplayName = resolveMessageAuthorDisplayName(
+      args.authorDisplayName,
+      null,
+    );
+    const messageSource = normalizedMetadataString(args.messageSource);
+    if (authorDisplayName) metadata.authorDisplayName = authorDisplayName;
+    if (messageSource) metadata.source = messageSource;
     if (args.channelHistory) metadata.channelHistory = true;
     if (args.sentDuringStreaming) metadata.sentDuringStreaming = true;
     // Stamp the pi_core timestamp of the row Pi commits for this same user
@@ -165,6 +183,126 @@ export class ChatThreadUiMirror {
       }
     }
     this.deps.kv().put(UI_MESSAGES_TIME_HEAL_KEY, true);
+  }
+
+  /**
+   * One-shot lazy repair for raw user render rows created before structured
+   * author metadata shipped. The render-message id is the authoritative join;
+   * piCoreMessageKey is only a fallback when its timestamp identifies exactly
+   * one canonical Pi user row. Only metadata is merged into the raw UI message,
+   * so ids, visible parts, timestamps, and unknown metadata stay intact.
+   */
+  async healLegacyUiMessageAuthors(): Promise<void> {
+    if (
+      this.deps.kv().get<boolean>(
+        UI_MESSAGES_AUTHOR_ATTRIBUTION_HEAL_KEY,
+      )
+    ) {
+      return;
+    }
+    if (
+      this.deps.readPiActiveTurn() ||
+      this.deps.activePiStreamTurnId() !== null
+    ) {
+      return;
+    }
+
+    const renderMessages = this.deps.getRenderMessages();
+    const candidates = renderMessages.filter((message) => {
+      if (message.role !== "user") return false;
+      const metadata = (message.metadata ?? {}) as Record<string, unknown>;
+      return (
+        !normalizedMetadataString(metadata.authorDisplayName) &&
+        typeof metadata.piCoreMessageKey === "string"
+      );
+    });
+
+    let changedCount = 0;
+    if (candidates.length > 0) {
+      const threadId = this.deps.chatContext()?.threadId ?? "";
+      const parsedPiMessages = await this.deps.getPiCoreParsedMessages(threadId);
+      // The Pi read above can yield. If a turn started in that window, leave the
+      // repair unmarked so a later quiet history read can retry safely.
+      if (
+        this.deps.readPiActiveTurn() ||
+        this.deps.activePiStreamTurnId() !== null
+      ) {
+        return;
+      }
+      const piUsersByRenderMessageId = new Map<
+        string,
+        AgentEvalParsedMessage
+      >();
+      const piUsersByTimestamp = new Map<
+        string,
+        AgentEvalParsedMessage[]
+      >();
+      for (const message of parsedPiMessages) {
+        if (message.role !== "user") continue;
+        const renderMessageId = normalizedMetadataString(
+          message.renderMessageId,
+        );
+        if (renderMessageId) {
+          piUsersByRenderMessageId.set(renderMessageId, message);
+        }
+        const timestamp = String(message.created_at);
+        const timestampMatches = piUsersByTimestamp.get(timestamp) ?? [];
+        timestampMatches.push(message);
+        piUsersByTimestamp.set(timestamp, timestampMatches);
+      }
+
+      const candidateIds = new Set(candidates.map((message) => message.id));
+      const healed = renderMessages.map((message) => {
+        if (!candidateIds.has(message.id)) return message;
+        const metadata = (message.metadata ?? {}) as Record<string, unknown>;
+        const piCoreMessageKey = metadata.piCoreMessageKey;
+        if (typeof piCoreMessageKey !== "string") return message;
+        const exact = piUsersByRenderMessageId.get(message.id);
+        const timestampMatches =
+          piUsersByTimestamp.get(piCoreMessageKey) ?? [];
+        const canonical =
+          exact ??
+          (timestampMatches.length === 1 ? timestampMatches[0] : undefined);
+        if (!canonical) return message;
+
+        const canonicalContent = canonical.content;
+        const parsed = typeof canonicalContent === "string"
+          ? parseMessageAuthor(canonicalContent)
+          : Array.isArray(canonicalContent)
+            ? parseMessageAuthor(canonicalContent as ContentBlock[])
+            : null;
+        if (!parsed) return message;
+
+        const authorDisplayName = parsed.author?.displayName ?? null;
+        const source = normalizedMetadataString(parsed.source);
+        const existingSource = normalizedMetadataString(metadata.source);
+        if (!authorDisplayName && (!source || existingSource)) return message;
+
+        changedCount += 1;
+        return {
+          ...message,
+          metadata: {
+            ...metadata,
+            ...(authorDisplayName ? { authorDisplayName } : {}),
+            ...(!existingSource && source ? { source } : {}),
+          },
+        } as UIMessage;
+      });
+
+      if (changedCount > 0) {
+        await this.deps.persistRenderMessages(healed);
+        this.deps.recordChatThreadObservabilityEvent(
+          "pi_ui_message_authors_healed",
+          {
+            operation: "heal_legacy_ui_message_authors",
+            status: "healed",
+            count: changedCount,
+          },
+        );
+      }
+    }
+
+    this.deps.kv().put(UI_MESSAGES_AUTHOR_ATTRIBUTION_HEAL_KEY, true);
   }
 
   /**

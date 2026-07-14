@@ -75,6 +75,12 @@ function positiveFiniteNumber(value: unknown): number | undefined {
     : undefined;
 }
 
+function normalizedMetadataString(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const normalized = value.trim();
+  return normalized || undefined;
+}
+
 /**
  * Creation time (ms since epoch) recoverable from a UIMessage's metadata:
  * the backfill stamp (`pi.createdAtMs`, written by messageToUiMessage from the
@@ -127,12 +133,20 @@ export function uiMessageContentSignature(ui: UIMessage): string {
     partsSig += ';';
   }
   const meta = ui.metadata as
-    | { pi?: { completedAtMs?: unknown; forkEntryId?: unknown } }
+    | {
+        pi?: { completedAtMs?: unknown; forkEntryId?: unknown };
+        authorDisplayName?: unknown;
+        source?: unknown;
+      }
     | undefined;
   const completedAtMs =
     typeof meta?.pi?.completedAtMs === 'number' ? meta.pi.completedAtMs : '';
   const forkEntryId = meta?.pi?.forkEntryId ? '1' : '0';
-  return `${ui.id}|${ui.role}|${ui.parts.length}|${partsSig}|${completedAtMs}|${forkEntryId}`;
+  const attribution = JSON.stringify([
+    normalizedMetadataString(meta?.authorDisplayName) ?? '',
+    normalizedMetadataString(meta?.source) ?? '',
+  ]);
+  return `${ui.id}|${ui.role}|${ui.parts.length}|${partsSig}|${completedAtMs}|${forkEntryId}|${attribution}`;
 }
 
 /**
@@ -273,11 +287,21 @@ export function uiMessageToMessage(
     message.completedAtMs = pi.completedAtMs;
   }
   const metadata = ui.metadata as
-    | { sentDuringStreaming?: unknown }
+    | {
+        sentDuringStreaming?: unknown;
+        authorDisplayName?: unknown;
+        source?: unknown;
+      }
     | undefined;
   if (metadata?.sentDuringStreaming === true) {
     message.sentDuringStreaming = true;
   }
+  const authorDisplayName = normalizedMetadataString(
+    metadata?.authorDisplayName,
+  );
+  if (authorDisplayName) message.authorDisplayName = authorDisplayName;
+  const messageSource = normalizedMetadataString(metadata?.source);
+  if (messageSource) message.messageSource = messageSource;
 
   return message;
 }
@@ -491,6 +515,10 @@ export function messageToUiMessage(message: Message): UIMessage {
   if (message.role === 'user' && message.sentDuringStreaming === true) {
     metadata.sentDuringStreaming = true;
   }
+  const authorDisplayName = normalizedMetadataString(message.authorDisplayName);
+  if (authorDisplayName) metadata.authorDisplayName = authorDisplayName;
+  const messageSource = normalizedMetadataString(message.messageSource);
+  if (messageSource) metadata.source = messageSource;
   if (Object.keys(metadata).length > 0) {
     uiMessage.metadata = metadata;
   }

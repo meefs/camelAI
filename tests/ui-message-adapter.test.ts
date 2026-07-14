@@ -398,6 +398,47 @@ describe('ui-message-adapter round trip (Message → UIMessage → Message)', ()
     expect(live.sentDuringStreaming).toBe(true);
   });
 
+  it('maps valid author/source metadata both directions', () => {
+    const fromUi = uiMessageToMessage(
+      {
+        id: 'u-attributed',
+        role: 'user',
+        parts: [{ type: 'text', text: 'Hello', state: 'done' }],
+        metadata: {
+          authorDisplayName: '  Illiana Reed  ',
+          source: ' slack ',
+        },
+      } as never,
+      { threadId: 'thread-1' },
+    );
+    expect(fromUi).toMatchObject({
+      authorDisplayName: 'Illiana Reed',
+      messageSource: 'slack',
+    });
+
+    const ui = messageToUiMessage({
+      ...fromUi,
+      created_at: 5,
+    });
+    expect(ui.metadata).toMatchObject({
+      authorDisplayName: 'Illiana Reed',
+      source: 'slack',
+    });
+  });
+
+  it('ignores blank and malformed author/source metadata', () => {
+    const message = uiMessageToMessage(
+      {
+        id: 'u-invalid-attribution',
+        role: 'user',
+        parts: [{ type: 'text', text: 'Hello', state: 'done' }],
+        metadata: { authorDisplayName: 42, source: '   ' },
+      } as never,
+    );
+    expect(message.authorDisplayName).toBeUndefined();
+    expect(message.messageSource).toBeUndefined();
+  });
+
   it('drops transient tool-stream, steer-marker, and step-start parts on read', () => {
     const ui = {
       id: 'm',
@@ -473,6 +514,22 @@ describe('uiMessagesEquivalent', () => {
       }),
     ];
     expect(uiMessagesEquivalent(before, afterFork)).toBe(false);
+  });
+
+  it('detects metadata-only author and source repairs under identical parts', () => {
+    const before = [ui('u1', [{ type: 'text', text: 'x', state: 'done' }])];
+    const afterAuthor = [
+      ui('u1', [{ type: 'text', text: 'x', state: 'done' }], {
+        authorDisplayName: 'Illiana Reed',
+      }),
+    ];
+    const afterSource = [
+      ui('u1', [{ type: 'text', text: 'x', state: 'done' }], {
+        source: 'email',
+      }),
+    ];
+    expect(uiMessagesEquivalent(before, afterAuthor)).toBe(false);
+    expect(uiMessagesEquivalent(before, afterSource)).toBe(false);
   });
 
   it('detects a grown text part with the same part count', () => {
