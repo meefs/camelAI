@@ -4088,7 +4088,6 @@ export default function Chat({
                     {currentTodos.length > 0 && (
                       <FloatingTodoList
                         todos={currentTodos}
-                        isStreaming={isStreaming}
                         className="mb-3"
                       />
                     )}

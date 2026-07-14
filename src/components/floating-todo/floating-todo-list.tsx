@@ -1,6 +1,6 @@
 "use client";
 
-import { useLayoutEffect, useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 import { cn } from '@/lib/utils';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import { ScrollArea } from '@/components/ui/scroll-area';
@@ -17,7 +17,6 @@ export interface TodoItem {
 
 interface FloatingTodoListProps {
   todos: TodoItem[];
-  isStreaming: boolean;
   className?: string;
 }
 
@@ -93,20 +92,12 @@ function normalizeTodosForDisplay(todos: TodoItem[]): TodoItem[] {
     .filter((todo): todo is TodoItem => todo !== null);
 }
 
-export function FloatingTodoList({ todos, isStreaming, className }: FloatingTodoListProps) {
+export function FloatingTodoList({ todos, className }: FloatingTodoListProps) {
   const [isExpanded, setIsExpanded] = useState(false);
   const displayTodos = useMemo(() => normalizeTodosForDisplay(todos), [todos]);
 
   const completedCount = displayTodos.filter(todo => todo.status === 'completed').length;
   const totalCount = displayTodos.length;
-
-  useLayoutEffect(() => {
-    if (!displayTodos.length) return;
-    const hasInProgress = displayTodos.some(todo => todo.status === 'in_progress');
-    if (hasInProgress) {
-      setIsExpanded(true);
-    }
-  }, [displayTodos, isStreaming]);
 
   if (displayTodos.length === 0) return null;
 
