@@ -221,7 +221,7 @@ export const MODEL_CATALOG: Readonly<Record<LlmModel, ModelCatalogEntry>> = {
   },
   "deepseek-v4-auto": {
     id: "deepseek-v4-auto",
-    label: "DeepSeek V4 Auto",
+    label: "Camel Free",
     providerLogo: "deepseek",
     providerOrder: 3,
     modelOrder: 1,
@@ -297,7 +297,6 @@ export function resolveModelPickerCatalog(args: {
   customApi?: CustomLlmProviderApi | null;
   customModelId?: string | null;
   awsRegion?: string | null;
-  allowNonProductionModels?: boolean;
   allowOpenAiSubscription?: boolean;
 }): ResolvedModelCatalogEntry[] {
   const visibleModelIds = new Set(
@@ -306,7 +305,6 @@ export function resolveModelPickerCatalog(args: {
       customApi: args.customApi,
       customModelId: args.customModelId,
       awsRegion: args.awsRegion,
-      allowNonProductionModels: args.allowNonProductionModels,
       allowOpenAiSubscription: args.allowOpenAiSubscription,
     }).map((option) => option.value),
   );

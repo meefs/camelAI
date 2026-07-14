@@ -55,7 +55,7 @@ const NEW_ROUTED_MODELS: Array<{
   },
   {
     id: 'deepseek-v4-auto',
-    label: 'DeepSeek V4 Auto',
+    label: 'Camel Free',
     providerLogo: 'deepseek',
     providerOrder: 3,
     modelOrder: 1,
@@ -340,7 +340,7 @@ describe('MODEL_CATALOG', () => {
     expect(explicitOverride.map((entry) => entry.id)).toEqual(['fable-5']);
   });
 
-  it('keeps DeepSeek V4 Auto in non-production hosted camelAI platform models', () => {
+  it('keeps Camel Free in hosted camelAI platform models', () => {
     const visible = resolveModelPickerCatalog({
       effectiveConfig: {
         source: 'org',
@@ -352,21 +352,6 @@ describe('MODEL_CATALOG', () => {
     });
 
     expect(visible.map((entry) => entry.id)).toContain('deepseek-v4-auto');
-  });
-
-  it('hides DeepSeek V4 Auto from production hosted camelAI platform models', () => {
-    const visible = resolveModelPickerCatalog({
-      effectiveConfig: {
-        source: 'org',
-        use_platform_defaults: true,
-        default_model: null,
-        models: [],
-      },
-      orgProvider: null,
-      allowNonProductionModels: false,
-    });
-
-    expect(visible.map((entry) => entry.id)).not.toContain('deepseek-v4-auto');
   });
 
   it('uses explicit custom overrides as an allowlist', () => {

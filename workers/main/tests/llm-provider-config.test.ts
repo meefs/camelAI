@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { encryptCredentials } from "../../../src/lib/integration-crypto";
 import {
-  allowNonProductionModelOptions,
   DEFAULT_CODEX_MODEL,
   DEFAULT_OPENROUTER_MODEL,
   buildPublicLlmProviderConfig,
@@ -209,19 +208,12 @@ describe("llm provider config helpers", () => {
     ]);
   });
 
-  it("hides non-production-only hosted models when production visibility is requested", () => {
-    expect(allowNonProductionModelOptions("https://staging.camelai.dev")).toBe(
-      true,
-    );
-    expect(allowNonProductionModelOptions("https://camelai.dev")).toBe(false);
+  it("keeps Camel Free visible in hosted model options", () => {
     expect(
       getVisibleLlmModelOptions({ claude_proxy_models: false }, null, {
         orgProvider: null,
-        allowNonProductionModels: allowNonProductionModelOptions(
-          "https://camelai.dev",
-        ),
       }).map((option) => option.value),
-    ).not.toContain("deepseek-v4-auto");
+    ).toContain("deepseek-v4-auto");
     expect(
       isLlmModelAllowedForNewThread("deepseek-v4-auto", null, {
         claude_proxy_models: false,

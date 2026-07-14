@@ -21,7 +21,6 @@ import { WorkspaceDO } from "../../workers/main/src/workspace";
 import {
   type CustomLlmProviderApi,
   type LlmProviderConfigRecord,
-  allowNonProductionModelOptions,
   getDefaultLlmModel,
   getStoredCustomLlmProviderApi,
   getStoredCustomLlmProviderModelId,
@@ -218,9 +217,6 @@ async function getWorkspaceModelPickerStateForOrg(
   const customApi = getStoredCustomLlmProviderApi(effectiveLlmProviderConfig);
   const customModelId = getStoredCustomLlmProviderModelId(effectiveLlmProviderConfig);
   const awsRegion = getStoredBedrockAwsRegion(effectiveLlmProviderConfig);
-  const allowNonProductionModels = allowNonProductionModelOptions(
-    env.WORKER_BASE_URL,
-  );
   const [orgPickerConfig, workspacePickerConfig] = await Promise.all([
     getOrgModelPickerConfigCompat(orgStub),
     getWorkspaceModelPickerConfigCompat(wsStub),
@@ -236,7 +232,6 @@ async function getWorkspaceModelPickerStateForOrg(
     customApi,
     customModelId,
     awsRegion,
-    allowNonProductionModels,
     allowOpenAiSubscription,
   });
   const defaultModel = resolveDefaultModelForChat({

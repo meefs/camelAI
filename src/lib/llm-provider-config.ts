@@ -95,8 +95,8 @@ export const CODEX_LLM_MODEL_OPTIONS: ReadonlyArray<{
   },
   {
     value: "deepseek-v4-auto",
-    label: "DeepSeek V4 Auto",
-    description: "camelAI hosted DeepSeek Pro-first fallback route",
+    label: "Camel Free",
+    description: "camelAI hosted model with automatic routing",
   },
   {
     value: "deepseek-v4-flash",
@@ -160,22 +160,6 @@ const BEDROCK_ONLY_CODEX_MODELS = new Set<LlmModel>([
   "gpt-5.5-bedrock",
   "gpt-5.4-bedrock",
 ]);
-
-const NON_PRODUCTION_ONLY_MODELS = new Set<LlmModel>([
-  "deepseek-v4-auto",
-]);
-
-export function allowNonProductionModelOptions(
-  workerBaseUrl: string | null | undefined,
-): boolean {
-  if (!workerBaseUrl?.trim()) return true;
-  try {
-    const hostname = new URL(workerBaseUrl).hostname.toLowerCase();
-    return hostname !== "camelai.dev" && hostname !== "www.camelai.dev";
-  } catch {
-    return true;
-  }
-}
 
 const BEDROCK_OPENAI_MODEL_REGIONS: Readonly<Record<string, readonly string[]>> = {
   "gpt-5.5-bedrock": ["us-east-1", "us-east-2"],
@@ -283,7 +267,6 @@ export function getVisibleLlmModelOptions(
     customApi?: CustomLlmProviderApi | null;
     customModelId?: string | null;
     awsRegion?: string | null;
-    allowNonProductionModels?: boolean;
     allowOpenAiSubscription?: boolean;
   },
 ): ReadonlyArray<{
@@ -297,12 +280,7 @@ export function getVisibleLlmModelOptions(
     awsRegion: options?.awsRegion,
     allowOpenAiSubscription: options?.allowOpenAiSubscription,
   });
-  const visibleOptions =
-    options?.allowNonProductionModels === false
-      ? baseOptions.filter(
-          (option) => !NON_PRODUCTION_ONLY_MODELS.has(option.value),
-        )
-      : baseOptions;
+  const visibleOptions = baseOptions;
 
   if (
     !includeModel ||

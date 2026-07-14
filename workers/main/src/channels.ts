@@ -5,7 +5,6 @@ import type {
 import { getOrgStub, getWorkspaceStub } from "./helpers/stubs.js";
 import {
   CUSTOM_LLM_MODEL,
-  allowNonProductionModelOptions,
   getDefaultLlmModel,
   getStoredCustomLlmProviderApi,
   getStoredCustomLlmProviderModelId,
@@ -279,7 +278,6 @@ export async function resolveDefaultChannelThreadModel(
     orgProvider: effectiveLlmProviderConfig?.provider,
     customApi,
     customModelId,
-    allowNonProductionModels: allowNonProductionModelOptions(env.WORKER_BASE_URL),
   });
   const model = resolveDefaultModelForChat({
     effectiveDefaultModel: effectiveConfig.default_model,
