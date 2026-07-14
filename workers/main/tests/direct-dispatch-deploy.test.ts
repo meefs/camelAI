@@ -87,6 +87,7 @@ describe("deployWorkerModulesDirect", () => {
         threadId: "thread-1",
         projectId: "project-1",
         configPath: "wrangler.jsonc",
+        scriptVersion: "version-1",
       },
     });
     expect(fetcher).toHaveBeenCalledTimes(1);
@@ -119,7 +120,39 @@ describe("deployWorkerModulesDirect", () => {
         props: { orgId: "org-1", workspaceId: "workspace-1", userId: "user-1" },
       },
     ]);
+    expect(metadata.observability).toEqual({
+      enabled: true,
+      traces: { enabled: true, persist: true, head_sampling_rate: 1 },
+    });
     expect(form.get("index.js")).toBeInstanceOf(Blob);
+  });
+
+  it("overrides project trace disabling while preserving log preferences", async () => {
+    const fetcher = vi.fn(async () => Response.json({ success: true, result: { deployment_id: "deploy-1" } }));
+
+    const result = await deployWorkerModulesDirect(env, {
+      scriptName: "demo-app",
+      hostname: "camelai.dev",
+      identity,
+      metadata: {
+        main_module: "index.js",
+        observability: {
+          enabled: false,
+          logs: { enabled: false },
+          traces: { enabled: false, persist: false, head_sampling_rate: 0.01 },
+        },
+      },
+      modules: [{ name: "index.js", contentType: "application/javascript+module", content: "export default {};" }],
+    }, { fetcher: fetcher as unknown as typeof fetch });
+
+    const form = fetcher.mock.calls[0]![1]?.body as FormData;
+    const metadata = JSON.parse(await (form.get("metadata") as Blob).text());
+    expect(metadata.observability).toEqual({
+      enabled: true,
+      logs: { enabled: false },
+      traces: { enabled: true, persist: true, head_sampling_rate: 1 },
+    });
+    expect(result.sideEffects.scriptVersion).toBe("deploy-1");
   });
 
   it("attaches the tail worker as a tail consumer when TAIL_WORKER_NAME is set", async () => {
@@ -229,7 +262,8 @@ describe("deployWorkerModulesDirect", () => {
       modules: [{ name: "index.js", contentType: "application/javascript+module", content: "export default {};" }],
     }, { fetcher: fetcher as unknown as typeof fetch });
 
-    const form = fetcher.mock.calls[fetcher.mock.calls.length - 1]![1]?.body as FormData;
+    const upload = fetcher.mock.calls.find((call) => call[1]?.method === "PUT")!;
+    const form = upload[1]?.body as FormData;
     const metadata = JSON.parse(await (form.get("metadata") as Blob).text());
     expect(metadata).not.toHaveProperty("migrations");
   });
@@ -238,7 +272,7 @@ describe("deployWorkerModulesDirect", () => {
     const fetcher = vi.fn(async (input: string | URL | Request) => {
       const url = String(input);
       if (url.endsWith("/scripts/demo-app--acme")) {
-        return Response.json({ success: true, result: { script: { migration_tag: "v2" } } });
+        return Response.json({ success: true, result: { script: { migration_tag: "v2", version_id: "version-1" } } });
       }
       return Response.json({ success: true, result: { id: "version-1" } });
     });
@@ -266,7 +300,7 @@ describe("deployWorkerModulesDirect", () => {
     const fetcher = vi.fn(async (input: string | URL | Request) => {
       const url = String(input);
       if (url.endsWith("/scripts/demo-app--acme")) {
-        return Response.json({ success: true, result: { script: { migration_tag: "v1" } } });
+        return Response.json({ success: true, result: { script: { migration_tag: "v1", version_id: "version-1" } } });
       }
       return Response.json({ success: true, result: { id: "version-1" } });
     });
@@ -519,7 +553,7 @@ describe("deployWorkerModulesDirect", () => {
           result: null,
         }, { status: 400 });
       }
-      return Response.json({ success: true });
+      return Response.json({ success: true, result: { id: "version-1" } });
     });
 
     await expect(deployWorkerModulesDirect({
@@ -548,7 +582,7 @@ describe("deployWorkerModulesDirect", () => {
       if (url.endsWith("/workers/assets/upload?base64=true")) {
         return Response.json({ success: true, result: { jwt: "assets-jwt" } });
       }
-      return Response.json({ success: true });
+      return Response.json({ success: true, result: { id: "version-1" } });
     });
     const rollbackEnv = {
       ...env,
@@ -611,7 +645,7 @@ describe("deployWorkerModulesDirect", () => {
 
   it("re-applies the platform tail consumer when rolling back an artifact cached without one", async () => {
     const r2 = new Map<string, { body: string | Uint8Array; options?: unknown }>();
-    const fetcher = vi.fn(async () => Response.json({ success: true }));
+    const fetcher = vi.fn(async () => Response.json({ success: true, result: { id: "version-1" } }));
     const rollbackEnv = {
       ...env,
       TAIL_WORKER_NAME: "chiridion-user-logs-tail",
@@ -645,7 +679,8 @@ describe("deployWorkerModulesDirect", () => {
       expected: { orgId: "org-1", workspaceId: "workspace-1", scriptName: "demo-app" },
     }, { fetcher: fetcher as unknown as typeof fetch });
 
-    const form = fetcher.mock.calls.at(-1)![1]?.body as FormData;
+    const upload = fetcher.mock.calls.find((call) => call[1]?.method === "PUT")!;
+    const form = upload[1]?.body as FormData;
     const metadata = JSON.parse(await (form.get("metadata") as Blob).text());
     expect(metadata.tail_consumers).toEqual([{ service: "chiridion-user-logs-tail" }]);
   });

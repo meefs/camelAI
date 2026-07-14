@@ -99,6 +99,17 @@ export function error503Page(homeUrl: string): ErrorPageOptions {
   };
 }
 
+export function suspendedAppPage(homeUrl: string): ErrorPageOptions {
+  return {
+    statusCode: 503,
+    statusLabel: 'APP SUSPENDED',
+    title: 'This app needs an update',
+    description: 'The app was temporarily paused after unusually high database usage. Its owner can deploy an updated version to bring it back online.',
+    homeUrl,
+    icon: ICON_ALERT_TRIANGLE,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Response helpers
 // ---------------------------------------------------------------------------

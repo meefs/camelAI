@@ -42,6 +42,7 @@ worker-side). There is no in-repo Go sandbox-host or data-proxy tree.
 - `workers/main/src/identity/` - `UserDO` / `OrgDO` and related identity helpers (`auth.ts` is a compatibility barrel).
 - `workers/main/src/routes/` - Worker-native HTTP (WebSockets, Stripe webhook, data-proxy, MCP, most `/api/admin/*` on Hono). Prefer documenting new paths here vs `src/routes/api/` — see **API routing** below.
 - `workers/dispatcher/` - Workers for Platforms dispatcher for deployed user apps.
+- `workers/app-usage-guard/` - Account-wide Durable Object SQLite usage monitor and reversible app quarantine Worker; see `docs/deployed-app-usage-guard-design.md`.
 - `workers/bedrock-provider/` - AI Gateway custom provider translating Anthropic-style requests to Bedrock.
 - `workers/user-logs-tail/` - Tail worker for deployed app logs.
 - `workers/e2e-reports/` - Public viewer at `e2e-reports.camelai.dev` serving Playwright E2E reports from R2 (uploaded by the E2E workflow); deploy with `bun run deploy:e2e-reports`.
@@ -102,6 +103,8 @@ bun run deploy:main:staging
 bun run deploy:dispatcher:prod
 bun run deploy:dispatcher:staging
 bun run deploy:dispatcher:evals       # testing-grounds dispatcher for real-deploy evals
+bun run deploy:usage-guard:prod
+bun run deploy:usage-guard:staging
 bun run deploy:bedrock-provider:prod
 ```
 

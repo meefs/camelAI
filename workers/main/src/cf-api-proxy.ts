@@ -27,6 +27,11 @@ import {
   type SelfhostAssetsRecord,
   type SelfhostAssetsUploadSession,
 } from "./selfhost-assets-registry.js";
+import { resolveUploadedDispatchScriptVersion, withUsageGuardTracing } from "./usage-guard-config.js";
+import {
+  acquireUsageGuardOperationLease,
+  releaseUsageGuardOperationLease,
+} from "./usage-guard-state.js";
 
 const VIRTUAL_DATA_PROXY_BINDING_NAME = "DATA_PROXY";
 const VIRTUAL_CONNECTIONS_BINDING_NAME = "CONNECTIONS";
@@ -291,6 +296,7 @@ export interface CfApiProxyEnv {
   INTEGRATION_SECRET_KEY: string;
   EMAIL_TO_USER: KVNamespace;
   APP_KV: KVNamespace;
+  APP_DB?: D1Database;
   R2_BUCKET: R2Bucket;
   WORKSPACE: DurableObjectNamespace<WorkspaceDO>;
   WORKSPACE_FS: DurableObjectNamespace<WorkspaceFilesystemDO>;
@@ -318,6 +324,8 @@ export interface DeploySideEffectsInfo {
   configPath?: string;
   commitSha?: string;
   artifactCacheKey?: string;
+  /** Cloudflare deployment/version id returned by the successful upload. */
+  scriptVersion?: string;
 }
 
 /**
@@ -1133,26 +1141,10 @@ function transformVirtualBindings(
   const connectionsBindings = existingBindings.filter(
     (b) => b.type === "service" && b.name === VIRTUAL_CONNECTIONS_BINDING_NAME,
   );
-  const injectConnectionsBinding = !existingBindings.some(
-    (b) => b.name === VIRTUAL_CONNECTIONS_BINDING_NAME,
-  );
   const aiBindings = existingBindings.filter((b) => b.type === "ai");
   const camelaiBindings = existingBindings.filter(
     (b) => b.type === "service" && b.name === VIRTUAL_CAMELAI_BINDING_NAME,
   );
-  if (
-    kvBindings.length === 0 &&
-    r2Bindings.length === 0 &&
-    assetBindings.length === 0 &&
-    dataProxyBindings.length === 0 &&
-    connectionsBindings.length === 0 &&
-    !injectConnectionsBinding &&
-    aiBindings.length === 0 &&
-    camelaiBindings.length === 0 &&
-    ignoredBindings.length === 0
-  )
-    return body;
-
   // Parse and transform the metadata
   let metadata: WorkerMetadata;
   try {
@@ -1176,6 +1168,7 @@ function transformVirtualBindings(
     workerServiceName,
     appId,
   );
+  metadata = withUsageGuardTracing(metadata);
 
   const newMetadataJson = JSON.stringify(metadata);
 
@@ -2531,7 +2524,30 @@ export async function proxyCloudflareApi(
     return cfApiSuccess({ ok: true });
   }
 
-  const resp = await fetch(upstreamUrl, { method, headers, body });
+  const operationAppId = method === "PUT" && isUploadRequest(pathname, method) && originalScriptName
+    ? `${orgId}:${originalScriptName}`
+    : null;
+  const operationLeaseHolder = operationAppId ? crypto.randomUUID() : null;
+  if (
+    operationAppId &&
+    operationLeaseHolder &&
+    env.APP_DB &&
+    !(await acquireUsageGuardOperationLease({ db: env.APP_DB, appId: operationAppId, holder: operationLeaseHolder }))
+  ) {
+    return cfApiError(10008, "App deployment is temporarily busy; retry shortly", 409);
+  }
+  const releaseOperationLease = async () => {
+    if (operationAppId && operationLeaseHolder && env.APP_DB) {
+      await releaseUsageGuardOperationLease({ db: env.APP_DB, appId: operationAppId, holder: operationLeaseHolder });
+    }
+  };
+  let resp: Response;
+  try {
+    resp = await fetch(upstreamUrl, { method, headers, body });
+  } catch (error) {
+    await releaseOperationLease();
+    throw error;
+  }
   const respBody = await resp.arrayBuffer();
 
   if (!resp.ok) {
@@ -2552,6 +2568,7 @@ export async function proxyCloudflareApi(
       contentType: ct,
       bodyPreview: preview,
     });
+    await releaseOperationLease();
     return new Response(respBody, {
       status: resp.status,
       headers: resp.headers,
@@ -2563,34 +2580,51 @@ export async function proxyCloudflareApi(
     if (scriptMatch && originalScriptName && dispatchScriptName) {
       const account = decodeURIComponent(scriptMatch[1]!);
       const dispatchNs = decodeURIComponent(scriptMatch[2]!);
+      let uploadBody: unknown;
+      try {
+        uploadBody = JSON.parse(new TextDecoder().decode(respBody));
+      } catch {}
+      let scriptVersion: string | undefined;
+      try {
+        scriptVersion = upstreamApiToken
+          ? await resolveUploadedDispatchScriptVersion({
+              uploadBody,
+              accountId: account,
+              dispatchNamespace: dispatchNs,
+              dispatchScriptName,
+              apiToken: upstreamApiToken,
+            })
+          : undefined;
+      } catch (error) {
+        await releaseOperationLease();
+        throw error;
+      }
 
-      // Register script ownership and enqueue screenshots
-      waitUntil(
-        options
-          .onDeploySideEffects({
-            scriptName: originalScriptName,
-            dispatchScriptName,
-            orgId,
-            orgSlug,
-            workspaceId,
-            hostname: url.hostname,
-            threadId,
-            projectId,
-            configPath,
-          })
-          .catch((err) => {
-            console.error(
-              "[cf-api-proxy] failed to process deploy side effects",
-              {
-                scriptName: originalScriptName,
-                dispatchScriptName,
-                orgId,
-                workspaceId,
-                error: String(err),
-              },
-            );
-          }),
-      );
+      // Keep the per-app operation lease through canonical D1/KV eligibility.
+      try {
+        await options.onDeploySideEffects({
+          scriptName: originalScriptName,
+          dispatchScriptName,
+          orgId,
+          orgSlug,
+          workspaceId,
+          hostname: url.hostname,
+          threadId,
+          projectId,
+          configPath,
+          scriptVersion,
+        });
+      } catch (error) {
+        console.error("[cf-api-proxy] failed to process deploy side effects", {
+          scriptName: originalScriptName,
+          dispatchScriptName,
+          orgId,
+          workspaceId,
+          error: String(error),
+        });
+        await releaseOperationLease();
+        throw error;
+      }
 
       // Attach tail worker for log capture
       if (env.TAIL_WORKER_NAME && upstreamApiToken) {
@@ -2698,5 +2732,6 @@ export async function proxyCloudflareApi(
     }
   }
 
+  await releaseOperationLease();
   return new Response(respBody, { status: resp.status, headers: resp.headers });
 }

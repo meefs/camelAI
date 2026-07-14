@@ -1,0 +1,23 @@
+{
+  "$schema": "../../../node_modules/wrangler/config-schema.json",
+  "name": "usage-guard-smoke-20260713--guard-smoke",
+  "main": "app.ts",
+  "compatibility_date": "2026-07-13",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": {
+    "enabled": true,
+    "traces": {
+      "enabled": true,
+      "persist": true,
+      "head_sampling_rate": 1
+    }
+  },
+  "durable_objects": {
+    "bindings": [
+      { "name": "SMOKE_DO", "class_name": "SmokeDurableObject" }
+    ]
+  },
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["SmokeDurableObject"] }
+  ]
+}

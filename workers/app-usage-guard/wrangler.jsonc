@@ -1,0 +1,56 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "chiridion-app-usage-guard",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-07-13",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": {
+    "enabled": true
+  },
+  "env": {
+    "prod": {
+      "name": "chiridion-app-usage-guard",
+      "vars": {
+        "CF_ACCOUNT_ID": "85bbd288051330fb51ee1c86031a299b",
+        "CF_DISPATCH_NAMESPACE": "chiridion-platform",
+        "USAGE_GUARD_MODE": "enforce",
+        "USAGE_GUARD_INGESTION_LAG_MINUTES": "5"
+      },
+      "triggers": {
+        "crons": ["*/5 * * * *"]
+      },
+      "d1_databases": [
+        {
+          "binding": "APP_DB",
+          "database_name": "chiridion-app-db",
+          "database_id": "d4e6f5ca-08ec-4920-a4da-5651336beb79"
+        }
+      ],
+      "kv_namespaces": [
+        { "binding": "APP_KV", "id": "0ee80299e67c4c7fa0c1ad618b7e7a9c" }
+      ]
+    },
+    "staging": {
+      "name": "chiridion-app-usage-guard-staging",
+      "vars": {
+        "CF_ACCOUNT_ID": "85bbd288051330fb51ee1c86031a299b",
+        "CF_DISPATCH_NAMESPACE": "chiridion-platform-staging",
+        "USAGE_GUARD_MODE": "enforce",
+        "USAGE_GUARD_INGESTION_LAG_MINUTES": "5"
+      },
+      "triggers": {
+        "crons": ["*/5 * * * *"]
+      },
+      "d1_databases": [
+        {
+          "binding": "APP_DB",
+          "database_name": "chiridion-app-staging-db",
+          "database_id": "f73a764a-e6e2-4813-aa5c-6058b0212c51"
+        }
+      ],
+      "kv_namespaces": [
+        { "binding": "APP_KV", "id": "e894eb2caf1641ad8870da994b992fce" }
+      ]
+    }
+  }
+}

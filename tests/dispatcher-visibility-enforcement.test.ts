@@ -14,6 +14,23 @@ function createKv(seed: Record<string, string>) {
 }
 
 describe('dispatcher visibility enforcement', () => {
+  it('preserves usage guard suspension metadata from the registry', async () => {
+    const kv = createKv({
+      'script:my-app--acme-85b': JSON.stringify({
+        org_id: 'org-1',
+        org_slug: 'acme-85b',
+        is_public: true,
+        usage_guard_status: 'suspended',
+        usage_guard_reason: 'sustained_sqlite_usage',
+      }),
+    });
+
+    const access = await getWorkerAccessInfo(kv, 'my-app--acme-85b', 'my-app', 'acme-85b');
+    expect(access).toMatchObject({
+      usage_guard_status: 'suspended',
+      usage_guard_reason: 'sustained_sqlite_usage',
+    });
+  });
   it('reads private visibility from canonical script--org key', async () => {
     const kv = createKv({
       'script:my-app--acme-85b': JSON.stringify({

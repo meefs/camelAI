@@ -45,6 +45,7 @@ import {
   error404Page,
   error500Page,
   error503Page,
+  suspendedAppPage,
 } from './error-pages';
 import { getSessionCookieName } from '../../main/src/cookies';
 import { parseSignedSession } from '../../main/src/signed-session';
@@ -1383,6 +1384,18 @@ async function handleWorkerRequest(
     }
     console.warn(`[dispatcher] Worker "${effectiveDispatchScriptName}" not in registry, denying access (fail closed)`);
     return errorResponse(error404Page(getMainAppUrl(hostname, env.MAIN_APP_URL), effectiveScriptName));
+  }
+
+  if (
+    accessInfo.usage_guard_status === 'suspending' ||
+    accessInfo.usage_guard_status === 'suspended' ||
+    accessInfo.usage_guard_status === 'error'
+  ) {
+    const response = errorResponse(suspendedAppPage(getMainAppUrl(hostname, env.MAIN_APP_URL)));
+    response.headers.set('Retry-After', '300');
+    response.headers.set('Cache-Control', 'no-store');
+    response.headers.set('X-CamelAI-App-Status', 'suspended');
+    return response;
   }
 
   // Legacy URL redirect: If using old URL format AND the worker was deployed with the

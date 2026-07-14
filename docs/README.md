@@ -22,6 +22,7 @@ conventions. Active cross-cutting architecture work also lives in
 | [slack-staging-app.md](./slack-staging-app.md) | Staging Slack app configuration |
 | [warehouse-binding-design.md](./warehouse-binding-design.md) | Warehouse binding design (active) |
 | [workspace-git-service-design.md](./workspace-git-service-design.md) | Workspace git service design (active) |
+| [deployed-app-usage-guard-design.md](./deployed-app-usage-guard-design.md) | Durable Object usage monitoring and runaway-app suspension design |
 | [channels-architecture.html](./channels-architecture.html) | Channels architecture overview |
 | [deterministic-automations-architecture.html](./deterministic-automations-architecture.html) | Deterministic automations architecture |
 

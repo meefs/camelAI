@@ -12,6 +12,11 @@ import {
   selfhostAssetsKey,
   type SelfhostAssetsRecord,
 } from "./selfhost-assets-registry.js";
+import { resolveUploadedDispatchScriptVersion, withUsageGuardTracing } from "./usage-guard-config.js";
+import {
+  acquireUsageGuardOperationLease,
+  releaseUsageGuardOperationLease,
+} from "./usage-guard-state.js";
 
 const DIRECT_DEPLOY_WRITE_CONCURRENCY = 16;
 
@@ -36,6 +41,7 @@ export interface DirectDispatchDeployEnv {
   CF_WORKER_NAME?: string;
   TAIL_WORKER_NAME?: string;
   APP_KV?: KVNamespace;
+  APP_DB?: D1Database;
   R2_BUCKET?: R2Bucket;
 }
 
@@ -181,7 +187,10 @@ type CloudflareResultRead<T> = {
 export async function deployWorkerModulesDirect(
   env: DirectDispatchDeployEnv,
   request: DirectDispatchDeployRequest,
-  options: { fetcher?: typeof fetch } = {},
+  options: {
+    fetcher?: typeof fetch;
+    onDeploySideEffects?: (info: DeploySideEffectsInfo) => Promise<void>;
+  } = {},
 ): Promise<DirectDispatchDeployResult> {
   const startedAt = Date.now();
   const prepareAssetsStartedAt = Date.now();
@@ -252,7 +261,7 @@ export async function deployWorkerModulesDirect(
     options.fetcher ?? fetch,
   );
   timings.migrationsMs = Date.now() - migrationsStartedAt;
-  const metadata: DirectWorkerMetadata = {
+  const metadata: DirectWorkerMetadata = withUsageGuardTracing({
     ...request.metadata,
     migrations,
     assets: nativeAssets
@@ -275,7 +284,7 @@ export async function deployWorkerModulesDirect(
     ...(tailWorkerName
       ? { tail_consumers: withPlatformTailConsumer(request.metadata.tail_consumers, tailWorkerName) }
       : {}),
-  };
+  });
   let artifactCacheKey: string | undefined;
   let artifactCacheTask: Promise<string | undefined> | null = null;
   const artifactCacheStartedAt = Date.now();
@@ -309,55 +318,88 @@ export async function deployWorkerModulesDirect(
     `/scripts/${encodeURIComponent(dispatchScriptName)}`;
   const fetcher = options.fetcher ?? fetch;
   const cloudflareUploadStartedAt = Date.now();
-  const response = await fetcher(url, {
-    method: "PUT",
-    headers: { Authorization: `Bearer ${cfApiToken}` },
-    body: form,
-  });
-  timings.cloudflareUploadMs = Date.now() - cloudflareUploadStartedAt;
-  const body = await readJsonOrText(response);
-  if (response.ok && assetsRecord) {
-    const publishAssetsStartedAt = Date.now();
-    scheduleDeployBackgroundTask(
-      Promise.resolve(storeAssetsTask)
-        .then(() => publishDirectAssetsRecord(env, dispatchScriptName, assetsRecord))
-        .catch((error) => console.warn("[direct-deploy] asset cache publish failed", { dispatchScriptName, error: errorMessage(error) })),
-    );
-    timings.publishAssetsRecordMs = Date.now() - publishAssetsStartedAt;
+  const operationLeaseHolder = crypto.randomUUID();
+  const operationAppId = `${request.identity.orgId}:${request.scriptName}`;
+  if (env.APP_DB && !(await acquireUsageGuardOperationLease({ db: env.APP_DB, appId: operationAppId, holder: operationLeaseHolder }))) {
+    throw new Error("App deployment is temporarily busy; retry shortly");
   }
-  if (response.ok && artifactCacheTask) {
-    const artifactCacheStoreStartedAt = Date.now();
-    try {
-      artifactCacheKey = await artifactCacheTask;
-    } catch (error) {
-      warnings.push(`Deploy artifact cache unavailable: ${errorMessage(error)}`);
+  let response: Response;
+  try {
+    response = await fetcher(url, {
+      method: "PUT",
+      headers: { Authorization: `Bearer ${cfApiToken}` },
+      body: form,
+    });
+  } catch (error) {
+    if (env.APP_DB) {
+      await releaseUsageGuardOperationLease({ db: env.APP_DB, appId: operationAppId, holder: operationLeaseHolder });
     }
-    timings.artifactCacheMs += Date.now() - artifactCacheStoreStartedAt;
+    throw error;
   }
-  timings.totalMs = Date.now() - startedAt;
-  const sideEffects: DeploySideEffectsInfo = {
-    scriptName: request.scriptName,
-    dispatchScriptName,
-    orgId: request.identity.orgId,
-    orgSlug: request.identity.orgSlug,
-    workspaceId: request.identity.workspaceId,
-    hostname: request.hostname,
-    threadId: request.identity.threadId,
-    projectId: request.identity.projectId,
-    configPath: typeof request.metadata.config_path === "string" ? request.metadata.config_path : undefined,
-    commitSha: request.commitSha,
-    artifactCacheKey,
-  };
-  return {
-    success: response.ok,
-    scriptName: request.scriptName,
-    dispatchScriptName,
-    status: response.status,
-    timings,
-    sideEffects,
-    ...(warnings.length > 0 ? { warnings } : {}),
-    ...(response.ok ? { result: body } : { error: typeof body === "string" ? body : JSON.stringify(body) }),
-  };
+  try {
+    timings.cloudflareUploadMs = Date.now() - cloudflareUploadStartedAt;
+    const body = await readJsonOrText(response);
+    const scriptVersion = response.ok
+      ? await resolveUploadedDispatchScriptVersion({
+          uploadBody: body,
+          accountId,
+          dispatchNamespace,
+          dispatchScriptName,
+          apiToken: cfApiToken,
+          fetcher,
+        })
+      : undefined;
+    if (response.ok && assetsRecord) {
+      const publishAssetsStartedAt = Date.now();
+      scheduleDeployBackgroundTask(
+        Promise.resolve(storeAssetsTask)
+          .then(() => publishDirectAssetsRecord(env, dispatchScriptName, assetsRecord))
+          .catch((error) => console.warn("[direct-deploy] asset cache publish failed", { dispatchScriptName, error: errorMessage(error) })),
+      );
+      timings.publishAssetsRecordMs = Date.now() - publishAssetsStartedAt;
+    }
+    if (response.ok && artifactCacheTask) {
+      const artifactCacheStoreStartedAt = Date.now();
+      try {
+        artifactCacheKey = await artifactCacheTask;
+      } catch (error) {
+        warnings.push(`Deploy artifact cache unavailable: ${errorMessage(error)}`);
+      }
+      timings.artifactCacheMs += Date.now() - artifactCacheStoreStartedAt;
+    }
+    timings.totalMs = Date.now() - startedAt;
+    const sideEffects: DeploySideEffectsInfo = {
+      scriptName: request.scriptName,
+      dispatchScriptName,
+      orgId: request.identity.orgId,
+      orgSlug: request.identity.orgSlug,
+      workspaceId: request.identity.workspaceId,
+      hostname: request.hostname,
+      threadId: request.identity.threadId,
+      projectId: request.identity.projectId,
+      configPath: typeof request.metadata.config_path === "string" ? request.metadata.config_path : undefined,
+      commitSha: request.commitSha,
+      artifactCacheKey,
+      scriptVersion,
+    };
+    if (response.ok && options.onDeploySideEffects) {
+      await options.onDeploySideEffects(sideEffects);
+    }
+    return {
+      success: response.ok,
+      scriptName: request.scriptName,
+      dispatchScriptName,
+      status: response.status,
+      timings,
+      sideEffects,
+      ...(warnings.length > 0 ? { warnings } : {}),
+      ...(response.ok ? { result: body } : { error: typeof body === "string" ? body : JSON.stringify(body) }),
+    };
+  } finally {
+    if (env.APP_DB) {
+      await releaseUsageGuardOperationLease({ db: env.APP_DB, appId: operationAppId, holder: operationLeaseHolder });
+    }
+  }
 }
 
 async function migrationsForDirectDeploy(
@@ -576,7 +618,10 @@ async function uploadNativeWorkerAssets(
 export async function rollbackWorkerDeployFromArtifactCache(
   env: DirectDispatchDeployEnv,
   request: DirectDeployRollbackRequest,
-  options: { fetcher?: typeof fetch } = {},
+  options: {
+    fetcher?: typeof fetch;
+    onDeploySideEffects?: (info: DeploySideEffectsInfo) => Promise<void>;
+  } = {},
 ): Promise<DirectDispatchDeployResult> {
   const cfApiToken = env.CF_API_TOKEN?.trim();
   const accountId = env.CF_ACCOUNT_ID?.trim();
@@ -624,6 +669,7 @@ export async function rollbackWorkerDeployFromArtifactCache(
   if (tailWorkerName) {
     metadata = { ...metadata, tail_consumers: withPlatformTailConsumer(metadata.tail_consumers, tailWorkerName) };
   }
+  metadata = withUsageGuardTracing(metadata);
 
   const form = new FormData();
   form.append("metadata", new Blob([JSON.stringify(metadata)], { type: "application/json" }));
@@ -638,35 +684,68 @@ export async function rollbackWorkerDeployFromArtifactCache(
   const url = `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(accountId)}` +
     `/workers/dispatch/namespaces/${encodeURIComponent(dispatchNamespace)}` +
     `/scripts/${encodeURIComponent(record.dispatchScriptName)}`;
-  const response = await fetcher(url, {
-    method: "PUT",
-    headers: { Authorization: `Bearer ${cfApiToken}` },
-    body: form,
-  });
-  const body = await readJsonOrText(response);
-  if (response.ok && record.assetsRecord) {
-    await publishDirectAssetsRecord(env, record.dispatchScriptName, record.assetsRecord);
+  const operationLeaseHolder = crypto.randomUUID();
+  const operationAppId = `${record.identity.orgId}:${record.scriptName}`;
+  if (env.APP_DB && !(await acquireUsageGuardOperationLease({ db: env.APP_DB, appId: operationAppId, holder: operationLeaseHolder }))) {
+    throw new Error("App deployment is temporarily busy; retry shortly");
   }
-  const sideEffects: DeploySideEffectsInfo = {
-    scriptName: record.scriptName,
-    dispatchScriptName: record.dispatchScriptName,
-    orgId: record.identity.orgId,
-    orgSlug: record.identity.orgSlug,
-    workspaceId: record.identity.workspaceId,
-    hostname: request.hostname,
-    threadId: request.threadId ?? record.identity.threadId,
-    projectId: record.identity.projectId,
-    configPath: typeof metadata.config_path === "string" ? metadata.config_path : undefined,
-    artifactCacheKey,
-  };
-  return {
-    success: response.ok,
-    scriptName: record.scriptName,
-    dispatchScriptName: record.dispatchScriptName,
-    status: response.status,
-    sideEffects,
-    ...(response.ok ? { result: body } : { error: typeof body === "string" ? body : JSON.stringify(body) }),
-  };
+  let response: Response;
+  try {
+    response = await fetcher(url, {
+      method: "PUT",
+      headers: { Authorization: `Bearer ${cfApiToken}` },
+      body: form,
+    });
+  } catch (error) {
+    if (env.APP_DB) {
+      await releaseUsageGuardOperationLease({ db: env.APP_DB, appId: operationAppId, holder: operationLeaseHolder });
+    }
+    throw error;
+  }
+  try {
+    const body = await readJsonOrText(response);
+    const scriptVersion = response.ok
+      ? await resolveUploadedDispatchScriptVersion({
+          uploadBody: body,
+          accountId,
+          dispatchNamespace,
+          dispatchScriptName: record.dispatchScriptName,
+          apiToken: cfApiToken,
+          fetcher,
+        })
+      : undefined;
+    if (response.ok && record.assetsRecord) {
+      await publishDirectAssetsRecord(env, record.dispatchScriptName, record.assetsRecord);
+    }
+    const sideEffects: DeploySideEffectsInfo = {
+      scriptName: record.scriptName,
+      dispatchScriptName: record.dispatchScriptName,
+      orgId: record.identity.orgId,
+      orgSlug: record.identity.orgSlug,
+      workspaceId: record.identity.workspaceId,
+      hostname: request.hostname,
+      threadId: request.threadId ?? record.identity.threadId,
+      projectId: record.identity.projectId,
+      configPath: typeof metadata.config_path === "string" ? metadata.config_path : undefined,
+      artifactCacheKey,
+      scriptVersion,
+    };
+    if (response.ok && options.onDeploySideEffects) {
+      await options.onDeploySideEffects(sideEffects);
+    }
+    return {
+      success: response.ok,
+      scriptName: record.scriptName,
+      dispatchScriptName: record.dispatchScriptName,
+      status: response.status,
+      sideEffects,
+      ...(response.ok ? { result: body } : { error: typeof body === "string" ? body : JSON.stringify(body) }),
+    };
+  } finally {
+    if (env.APP_DB) {
+      await releaseUsageGuardOperationLease({ db: env.APP_DB, appId: operationAppId, holder: operationLeaseHolder });
+    }
+  }
 }
 
 // Return lazy handles that fetch each rollback blob from R2 on demand, so a

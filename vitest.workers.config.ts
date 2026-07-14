@@ -152,6 +152,10 @@ export default defineConfig({
     alias: [
       { find: '@', replacement: path.resolve(__dirname, './src') },
       {
+        find: 'virtual:db-query-runner-source',
+        replacement: `${path.resolve(__dirname, 'workers/main/db-query-sandbox-assets/runner/db-query-runner.mjs')}?raw`,
+      },
+      {
         find: '@smithy/core/config',
         replacement: smithyCoreConfigNodeEntry,
       },

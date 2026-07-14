@@ -3714,6 +3714,8 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
         modules: bundle.modules,
         assets: bundle.assets,
         commitSha: snapshot.id,
+      }, {
+        onDeploySideEffects: (info) => handleDeploySideEffects(this.env as never, info),
       });
       if (!deploy.success) {
         return {
@@ -3728,7 +3730,6 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
           deploy: summarizeDirectDeployResult(deploy),
         };
       }
-      await handleDeploySideEffects(this.env as never, deploy.sideEffects);
       const appUrl = await this.appUrlForScriptName(scriptName);
       const warnings = [...(deploy.warnings ?? []), ...this.localDeployReachabilityWarnings()];
       return {
@@ -3813,6 +3814,8 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
       modules: bundle.modules,
       assets: bundle.assets,
       commitSha: snapshot.id,
+    }, {
+      onDeploySideEffects: (info) => handleDeploySideEffects(this.env as never, info),
     });
     if (!deploy.success) {
       return {
@@ -3828,7 +3831,6 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
         deploy: summarizeDirectDeployResult(deploy),
       };
     }
-    await handleDeploySideEffects(this.env as never, deploy.sideEffects);
     const appUrl = await this.appUrlForScriptName(scriptName);
     const allWarnings = [...warnings, ...(deploy.warnings ?? []), ...this.localDeployReachabilityWarnings()];
     return {
@@ -3908,11 +3910,12 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
         scriptName,
       },
       threadId: this.ctx.props.threadId,
+    }, {
+      onDeploySideEffects: (info) => handleDeploySideEffects(this.env as never, info),
     });
     if (!deploy.success) {
       return { success: false, app: scriptName, deploy };
     }
-    await handleDeploySideEffects(this.env as never, deploy.sideEffects);
     return {
       success: true,
       app: scriptName,

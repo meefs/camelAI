@@ -6,6 +6,9 @@ export interface WorkerAccessInfo {
   org_id: string;
   org_slug?: string;
   is_legacy?: boolean;
+  usage_guard_status?: 'active' | 'warned' | 'suspending' | 'suspended' | 'probation' | 'error' | 'exempt';
+  usage_guard_reason?: string | null;
+  usage_guard_probation_until?: number | null;
 }
 
 interface KvReader {
@@ -54,7 +57,7 @@ export async function getWorkerAccessInfo(
   let data = await kv.get(`${SCRIPT_PREFIX}${dispatchScriptName}`);
   let primary: WorkerAccessInfo | null = null;
   if (data) {
-    primary = { ...(JSON.parse(data) as { org_id: string; org_slug?: string; is_public: boolean }), is_legacy: false };
+    primary = { ...(JSON.parse(data) as WorkerAccessInfo), is_legacy: false };
   }
 
   // Compatibility fallback for historical key writes that used swapped dispatch name.
@@ -64,7 +67,7 @@ export async function getWorkerAccessInfo(
     if (swappedDispatchScriptName !== dispatchScriptName) {
       const swappedData = await kv.get(`${SCRIPT_PREFIX}${swappedDispatchScriptName}`);
       if (swappedData) {
-        const swapped = { ...(JSON.parse(swappedData) as { org_id: string; org_slug?: string; is_public: boolean }), is_legacy: false };
+        const swapped = { ...(JSON.parse(swappedData) as WorkerAccessInfo), is_legacy: false };
         if (!primary) {
           primary = swapped;
         } else if (primary.org_id === swapped.org_id && primary.is_public && !swapped.is_public) {
@@ -83,7 +86,7 @@ export async function getWorkerAccessInfo(
   if (legacyScriptName) {
     data = await kv.get(`${SCRIPT_ORG_PREFIX_LEGACY}${legacyScriptName}`);
     if (data) {
-      const parsed = JSON.parse(data) as { org_id: string; org_slug?: string; is_public: boolean };
+      const parsed = JSON.parse(data) as WorkerAccessInfo;
       return { ...parsed, is_legacy: true };
     }
   }
