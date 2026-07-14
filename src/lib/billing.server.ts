@@ -1470,6 +1470,25 @@ export async function createSubscriptionCheckoutSession(args: {
   if (!priceId) {
     throw new Error(`Stripe ${plan} subscription price is not configured`);
   }
+  const advertisedAmountCents = getBillingPlanLimits(plan).monthlyPriceCents;
+  if (advertisedAmountCents === null) {
+    throw new Error(`Plan ${plan} does not have a fixed monthly price`);
+  }
+  // Fail closed on config drift: never sell at a configured Stripe price that
+  // disagrees with the advertised BILLING_PLAN_LIMITS amount.
+  const priceSummary = await fetchStripePriceSummary(env, priceId);
+  const priceMatchesAdvertised =
+    priceSummary !== null &&
+    priceSummary.unit_amount === advertisedAmountCents &&
+    priceSummary.currency?.toLowerCase() === "usd" &&
+    priceSummary.recurring != null &&
+    priceSummary.recurring.interval === "month" &&
+    (priceSummary.recurring.interval_count ?? 1) === 1;
+  if (!priceMatchesAdvertised) {
+    throw new Error(
+      `Stripe ${plan} price ${priceId} (unit_amount=${priceSummary?.unit_amount ?? "unknown"}, currency=${priceSummary?.currency ?? "unknown"}, interval=${priceSummary?.recurring?.interval ?? "unknown"}x${priceSummary?.recurring?.interval_count ?? 1}) does not match the advertised ${advertisedAmountCents} cents/month; refusing to create a mispriced checkout session`,
+    );
+  }
   const seatCount = normalizeSeatCount(
     plan,
     args.seatCount ?? latestOrg.billing_seat_count ?? getMinimumSeats(plan),
@@ -2962,7 +2981,7 @@ function getInvoiceLineItemSeatQuantity(
   const matchingLine = priceId
     ? lines.find((line) => getStripePriceId(line.price) === priceId)
     : null;
-  const quantity = matchingLine?.quantity ?? lines[0]?.quantity;
+  const quantity = matchingLine?.quantity;
   return typeof quantity === "number" && Number.isFinite(quantity)
     ? quantity
     : null;

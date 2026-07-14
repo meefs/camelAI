@@ -130,7 +130,7 @@ describe("BillingPage overview", () => {
     ).toBeInTheDocument();
     expect(screen.getByText("Cancels May 8, 2026")).toBeInTheDocument();
     expect(
-      screen.getByText("$30/month in hosted credits."),
+      screen.getByText("$40/month in hosted credits."),
     ).toBeInTheDocument();
     expect(
       screen.queryByRole("heading", { name: "Cancellation" }),
