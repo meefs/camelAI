@@ -41,6 +41,31 @@
       "kind": "unit"
     },
     {
+      "id": "template-select-crud-live",
+      "description": "Choose the CRUD project starter from a stateful internal-tool request",
+      "kind": "unit"
+    },
+    {
+      "id": "template-select-ai-chat-live",
+      "description": "Choose the AI chat project starter from a conversational-assistant request",
+      "kind": "unit"
+    },
+    {
+      "id": "template-select-integration-dashboard-live",
+      "description": "Choose the integration dashboard starter from a connected-services request",
+      "kind": "unit"
+    },
+    {
+      "id": "template-select-data-dashboard-live",
+      "description": "Choose the data dashboard starter from an interactive-metrics request",
+      "kind": "unit"
+    },
+    {
+      "id": "template-select-data-analysis-live",
+      "description": "Choose the data-analysis starter from a notebook-report request",
+      "kind": "unit"
+    },
+    {
       "id": "data-analysis-report-live",
       "description": "Create a notebook-first data-analysis project, run the notebook, and preview the report",
       "kind": "skill"

@@ -597,12 +597,18 @@ const CODE_MODE_TOOL_REGISTRY: CodeModeToolRegistration[] = [
   ),
   codeModePassthroughTool(
     "create_project",
-    "Create a new DO-backed project and seed a scaffold. Project names must be unique within the workspace. New projects require a concise description explaining what the project is for. The default scaffold is a deployable React Router SSR app with Tailwind/shadcn-style UI primitives and a deploy manifest writer for deploy_project. Use template='data-analysis' for a notebook-first analysis project: a Report-mode analysis.ipynb plus conventions README, executed with run_notebook; deploy_project publishes the executed notebook as a static report app. Arguments: { name, description, template? }.",
+    "REQUIRED PRECONDITION: before calling create_project for the first time in a task, read the developing-software skill by calling read with location='workspace' and path='/opt/chiridion-host-pi/skills/developing-software/SKILL.md', then read the entire skill. Skip that read only if it already succeeded during the current task. Do not treat this as optional guidance. This tool creates a new DO-backed project and seeds a scaffold. The skill explains template selection, how to reshape each starter, and the build/deploy workflow. Project names must be unique within the workspace. New projects require a concise description. The default template is 'crud': a deployable React Router app with a SQLite Durable Object and working list/create/update/delete flow. Other templates: 'ai-chat' for a virtual-AI-powered assistant, 'integration-dashboard' for workspace connection catalogs, 'data-dashboard' for interactive charts/tables, and 'data-analysis' for a notebook report. Arguments: { name, description, template? }.",
     Type.Object({
       name: Type.String(),
       description: Type.String(),
-      template: Type.Optional(Type.Union([Type.Literal("react-router"), Type.Literal("data-analysis")], {
-        description: "Optional scaffold template. Defaults to react-router. data-analysis seeds a notebook-first analysis project.",
+      template: Type.Optional(Type.Union([
+        Type.Literal("crud"),
+        Type.Literal("ai-chat"),
+        Type.Literal("integration-dashboard"),
+        Type.Literal("data-dashboard"),
+        Type.Literal("data-analysis"),
+      ], {
+        description: "Optional scaffold template. Defaults to crud. Choose the closest product foundation; use data-analysis only for notebook-first reports.",
       })),
     }, { additionalProperties: false }),
   ),

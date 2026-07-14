@@ -107,7 +107,7 @@ async function seedVersionedProject(workspaceId: string): Promise<{
     workspaceId,
   });
   const files = new ProjectFilesystemClient(testEnv, project.id);
-  for (const file of defaultProjectScaffoldFiles(PROJECT_NAME, "react-router", PROJECT_NAME)) {
+  for (const file of defaultProjectScaffoldFiles(PROJECT_NAME, "crud", PROJECT_NAME)) {
     await files.writeFile(file.path, file.content);
   }
   await files.writeFile(

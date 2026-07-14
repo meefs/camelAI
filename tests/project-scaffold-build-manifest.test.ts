@@ -36,7 +36,7 @@ const STUB_ESBUILD = [
 ].join('\n');
 
 function generatedBuildManifestScript(): string {
-  const files = defaultProjectScaffoldFiles('Demo App', 'react-router', 'demo-app');
+  const files = defaultProjectScaffoldFiles('Demo App', 'crud', 'demo-app');
   const file = files.find((candidate) => candidate.path === '/scripts/build-manifest.mjs');
   if (!file) throw new Error('scaffold is missing /scripts/build-manifest.mjs');
   return file.content;

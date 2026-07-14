@@ -3941,7 +3941,14 @@ describe('ChatThreadDO Pi turn handling', () => {
     expect((byName.get('create_project') as any).parameters.properties.description).toBeDefined();
     expect((byName.get('create_project') as any).parameters.properties.name).toBeDefined();
     expect((byName.get('create_project') as any).parameters.properties.template).toBeDefined();
-    expect(JSON.stringify((byName.get('create_project') as any).parameters.properties.template)).toContain('react-router');
+    expect(JSON.stringify((byName.get('create_project') as any).parameters.properties.template)).toContain('crud');
+    expect(JSON.stringify((byName.get('create_project') as any).parameters.properties.template)).toContain('ai-chat');
+    expect(JSON.stringify((byName.get('create_project') as any).parameters.properties.template)).toContain('integration-dashboard');
+    expect(JSON.stringify((byName.get('create_project') as any).parameters.properties.template)).toContain('data-dashboard');
+    expect((byName.get('create_project') as any).description).toContain('developing-software skill');
+    expect((byName.get('create_project') as any).description).toContain('REQUIRED PRECONDITION');
+    expect((byName.get('create_project') as any).description).toContain('/opt/chiridion-host-pi/skills/developing-software/SKILL.md');
+    expect((byName.get('create_project') as any).description).toContain('during the current task');
     expect((byName.get('create_project') as any).parameters.required).toContain('description');
     expect((byName.get('create_project') as any).parameters.required).toContain('name');
     expect((byName.get('set_project_description') as any).parameters.properties.project).toBeDefined();
@@ -4205,6 +4212,13 @@ describe('ChatThreadDO Pi turn handling', () => {
     });
     expect(skill.content[0].text).toContain('name: developing-software');
     expect(skill.details.details.source).toBe('bundled_skill');
+
+    const durableObjectsReference = await read.execute('tool3', {
+      location: 'workspace',
+      path: '/opt/chiridion-host-pi/skills/developing-software/DURABLE-OBJECTS.md',
+    });
+    expect(durableObjectsReference.content[0].text).toContain('# Durable Objects');
+    expect(durableObjectsReference.details.details.source).toBe('bundled_skill');
     expect(bindingFactory).toHaveBeenCalled();
     expect(containerTool).not.toHaveBeenCalled();
   });
@@ -5226,6 +5240,9 @@ describe('ChatThreadDO Pi turn handling', () => {
     expect(prompt).toContain('## Available Skills');
     expect(prompt).toContain('Pay close attention to these skills');
     expect(prompt).toContain('a common and costly mistake');
+    expect(prompt).toContain('before the first `create_project` call in a task');
+    expect(prompt).toContain('/opt/chiridion-host-pi/skills/developing-software/SKILL.md');
+    expect(prompt).toContain('Do not create a scaffold first and read the skill afterward');
     expect(prompt).toContain('answer in chat only');
     expect(prompt).toContain('set_preview({ location: "workspace", path: "/notes.md" })');
     expect(prompt).toContain('set_preview({ location: "r2", path: "outputs/report.html" })');
@@ -6239,7 +6256,7 @@ describe('ChatThreadDO Pi turn handling', () => {
       description: 'A new app',
       backend: 'do-r2',
       scaffold: {
-        template: 'react-router',
+        template: 'crud',
         filesSkipped: [],
       },
     });
@@ -6289,7 +6306,7 @@ describe('ChatThreadDO Pi turn handling', () => {
       name: 'New App',
       description: 'A new app',
       template: 'worker',
-    })).rejects.toThrow('template must be "react-router" or "data-analysis"');
+    })).rejects.toThrow('template must be one of: crud, ai-chat, integration-dashboard, data-dashboard, data-analysis');
     // Validation must run first — otherwise the name is burned and a retry
     // with a valid template fails with "Project already exists".
     expect(workspaceStub.createProject).not.toHaveBeenCalled();

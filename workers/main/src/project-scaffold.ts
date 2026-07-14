@@ -1,6 +1,19 @@
 import { SHADCN_NPM_PACKAGE_VERSIONS, SHADCN_REGISTRY } from "./shadcn-registry.generated";
 
-export type ProjectScaffoldTemplate = "react-router" | "data-analysis";
+export type ProjectScaffoldTemplate =
+  | "crud"
+  | "ai-chat"
+  | "integration-dashboard"
+  | "data-dashboard"
+  | "data-analysis";
+
+export const PROJECT_SCAFFOLD_TEMPLATES: readonly ProjectScaffoldTemplate[] = [
+  "crud",
+  "ai-chat",
+  "integration-dashboard",
+  "data-dashboard",
+  "data-analysis",
+];
 
 // UI primitives pre-seeded into every React Router scaffold, sourced from the
 // generated shadcn registry so seeded files and add_shadcn_component output
@@ -54,10 +67,11 @@ export interface ProjectScaffoldResult {
 }
 
 export function normalizeProjectScaffoldTemplate(value: unknown): ProjectScaffoldTemplate {
-  if (value === undefined || value === null || value === "") return "react-router";
-  if (value === "react-router") return "react-router";
-  if (value === "data-analysis") return "data-analysis";
-  throw new Error('template must be "react-router" or "data-analysis"');
+  if (value === undefined || value === null || value === "") return "crud";
+  if (PROJECT_SCAFFOLD_TEMPLATES.includes(value as ProjectScaffoldTemplate)) {
+    return value as ProjectScaffoldTemplate;
+  }
+  throw new Error(`template must be one of: ${PROJECT_SCAFFOLD_TEMPLATES.join(", ")}`);
 }
 
 function scaffoldPackageName(projectName: string): string {
@@ -868,11 +882,430 @@ function defaultReactRouterScaffoldFiles(projectName: string, scriptName: string
   ];
 }
 
+function replaceScaffoldFile(files: ProjectScaffoldFile[], path: string, content: string): void {
+  const index = files.findIndex((file) => file.path === path);
+  const next = { path, content: content.endsWith("\n") ? content : `${content}\n` };
+  if (index === -1) files.push(next);
+  else files[index] = next;
+}
+
+function updateScaffoldJson(
+  files: ProjectScaffoldFile[],
+  path: string,
+  update: (value: Record<string, unknown>) => void,
+): void {
+  const current = files.find((file) => file.path === path);
+  if (!current) throw new Error(`Missing scaffold file ${path}`);
+  const value = JSON.parse(current.content) as Record<string, unknown>;
+  update(value);
+  current.content = `${JSON.stringify(value, null, 2)}\n`;
+}
+
+function crudScaffoldFiles(projectName: string, scriptName: string): ProjectScaffoldFile[] {
+  const files = defaultReactRouterScaffoldFiles(projectName, scriptName);
+  updateScaffoldJson(files, "/wrangler.jsonc", (config) => {
+    config.durable_objects = { bindings: [{ name: "ITEMS", class_name: "ItemStore" }] };
+    config.migrations = [{ tag: "v1", new_sqlite_classes: ["ItemStore"] }];
+  });
+  replaceScaffoldFile(files, "/workers/item-store.ts", `import { DurableObject } from "cloudflare:workers";
+
+interface ItemStoreEnv {}
+
+export interface Item extends Record<string, SqlStorageValue> {
+  id: number;
+  title: string;
+  status: "todo" | "in-progress" | "done";
+  createdAt: string;
+}
+
+export class ItemStore extends DurableObject<ItemStoreEnv> {
+  constructor(ctx: DurableObjectState, env: ItemStoreEnv) {
+    super(ctx, env);
+    this.ctx.storage.sql.exec(\`
+      CREATE TABLE IF NOT EXISTS items (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        title TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'todo',
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      )
+    \`);
+  }
+
+  list(): Item[] {
+    return this.ctx.storage.sql.exec<Item>(
+      "SELECT id, title, status, created_at AS createdAt FROM items ORDER BY id DESC",
+    ).toArray();
+  }
+
+  create(title: string): Item {
+    return this.ctx.storage.sql.exec<Item>(
+      "INSERT INTO items (title) VALUES (?) RETURNING id, title, status, created_at AS createdAt",
+      title,
+    ).one();
+  }
+
+  updateStatus(id: number, status: Item["status"]): void {
+    this.ctx.storage.sql.exec("UPDATE items SET status = ? WHERE id = ?", status, id);
+  }
+
+  remove(id: number): void {
+    this.ctx.storage.sql.exec("DELETE FROM items WHERE id = ?", id);
+  }
+}
+`);
+  replaceScaffoldFile(files, "/workers/app.ts", `import { createRequestHandler } from "react-router";
+import type { ItemStore } from "./item-store";
+
+export { ItemStore } from "./item-store";
+
+interface Env {
+  ASSETS?: { fetch(request: Request): Promise<Response> | Response };
+  ITEMS: DurableObjectNamespace<ItemStore>;
+}
+
+declare module "react-router" {
+  export interface AppLoadContext {
+    cloudflare: { env: Env; ctx: ExecutionContext };
+  }
+}
+
+const requestHandler = createRequestHandler(
+  () => import("virtual:react-router/server-build"),
+  import.meta.env.MODE,
+);
+
+function shouldServeAsset(request: Request): boolean {
+  const method = request.method.toUpperCase();
+  if (method !== "GET" && method !== "HEAD") return false;
+  const pathname = new URL(request.url).pathname;
+  return pathname.startsWith("/assets/") || pathname.includes(".") || pathname === "/robots.txt";
+}
+
+export default {
+  async fetch(request: Request, env: Env, ctx: ExecutionContext) {
+    if (env.ASSETS && shouldServeAsset(request)) {
+      const assetResponse = await env.ASSETS.fetch(request);
+      if (assetResponse.status !== 404) return assetResponse;
+    }
+    return requestHandler(request, { cloudflare: { env, ctx } });
+  },
+} satisfies ExportedHandler<Env>;
+`);
+  replaceScaffoldFile(files, "/app/routes/home.tsx", `import { Form, useLoaderData, useSubmit } from "react-router";
+import ClipboardList from "lucide-react/dist/esm/icons/clipboard-list.js";
+import Plus from "lucide-react/dist/esm/icons/plus.js";
+import Trash2 from "lucide-react/dist/esm/icons/trash-2.js";
+
+import { Badge } from "~/components/ui/badge";
+import { Button } from "~/components/ui/button";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "~/components/ui/card";
+import { Input } from "~/components/ui/input";
+import { Label } from "~/components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "~/components/ui/select";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "~/components/ui/table";
+import type { Route } from "./+types/home";
+
+function store(context: Route.LoaderArgs["context"]) {
+  const namespace = context.cloudflare.env.ITEMS;
+  return namespace.get(namespace.idFromName("default"));
+}
+
+export async function loader({ context }: Route.LoaderArgs) {
+  return { items: await store(context).list() };
+}
+
+export async function action({ request, context }: Route.ActionArgs) {
+  const form = await request.formData();
+  const intent = String(form.get("intent") ?? "create");
+  const items = store(context);
+  if (intent === "create") {
+    const title = String(form.get("title") ?? "").trim();
+    if (title) await items.create(title);
+  } else if (intent === "status") {
+    const id = Number(form.get("id"));
+    const status = String(form.get("status"));
+    if (Number.isInteger(id) && ["todo", "in-progress", "done"].includes(status)) {
+      await items.updateStatus(id, status as "todo" | "in-progress" | "done");
+    }
+  } else if (intent === "delete") {
+    const id = Number(form.get("id"));
+    if (Number.isInteger(id)) await items.remove(id);
+  }
+  return { ok: true };
+}
+
+export function meta() {
+  return [{ title: ${JSON.stringify(projectName)} }, { name: "description", content: "A durable CRUD app" }];
+}
+
+export default function Home() {
+  const { items } = useLoaderData<typeof loader>();
+  const submit = useSubmit();
+  return (
+    <main className="min-h-svh bg-muted/30 px-6 py-10">
+      <div className="mx-auto flex w-full max-w-5xl flex-col gap-6">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <Badge variant="outline" className="mb-3"><ClipboardList className="size-3" /> Durable CRUD starter</Badge>
+            <h1 className="font-display text-4xl font-semibold tracking-tight">${projectName}</h1>
+            <p className="mt-2 text-muted-foreground">A server-first list backed by Durable Object SQLite.</p>
+          </div>
+          <Badge>{items.length} items</Badge>
+        </div>
+
+        <Card>
+          <CardHeader><CardTitle>Add an item</CardTitle><CardDescription>React Router actions write directly to the Durable Object.</CardDescription></CardHeader>
+          <CardContent>
+            <Form method="post" className="flex flex-col gap-3 sm:flex-row sm:items-end">
+              <input type="hidden" name="intent" value="create" />
+              <div className="grid flex-1 gap-2"><Label htmlFor="title">Title</Label><Input id="title" name="title" required placeholder="What needs doing?" /></div>
+              <Button type="submit"><Plus className="size-4" /> Add item</Button>
+            </Form>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader><CardTitle>Items</CardTitle><CardDescription>Use this route as the pattern for your own entities and workflows.</CardDescription></CardHeader>
+          <CardContent>
+            {items.length === 0 ? (
+              <div className="rounded-lg border border-dashed p-10 text-center text-sm text-muted-foreground">No items yet. Add the first one above.</div>
+            ) : (
+              <Table>
+                <TableHeader><TableRow><TableHead>Title</TableHead><TableHead>Status</TableHead><TableHead>Created</TableHead><TableHead className="w-16" /></TableRow></TableHeader>
+                <TableBody>{items.map((item) => (
+                  <TableRow key={item.id}>
+                    <TableCell className="font-medium">{item.title}</TableCell>
+                    <TableCell><Select defaultValue={item.status} onValueChange={(status) => submit({ intent: "status", id: String(item.id), status }, { method: "post" })}><SelectTrigger className="w-36"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="todo">To do</SelectItem><SelectItem value="in-progress">In progress</SelectItem><SelectItem value="done">Done</SelectItem></SelectContent></Select></TableCell>
+                    <TableCell className="text-muted-foreground">{item.createdAt}</TableCell>
+                    <TableCell><Form method="post"><input type="hidden" name="intent" value="delete" /><input type="hidden" name="id" value={item.id} /><Button type="submit" size="icon" variant="ghost" aria-label={\`Delete \${item.title}\`}><Trash2 className="size-4" /></Button></Form></TableCell>
+                  </TableRow>
+                ))}</TableBody>
+              </Table>
+            )}
+          </CardContent>
+        </Card>
+      </div>
+    </main>
+  );
+}
+`);
+  return files;
+}
+
+function aiChatScaffoldFiles(projectName: string, scriptName: string): ProjectScaffoldFile[] {
+  const files = defaultReactRouterScaffoldFiles(projectName, scriptName);
+  updateScaffoldJson(files, "/wrangler.jsonc", (config) => {
+    config.ai = { binding: "AI" };
+  });
+  replaceScaffoldFile(files, "/workers/app.ts", `import { createRequestHandler } from "react-router";
+
+interface AiBinding {
+  run(model: string, input: { messages: Array<{ role: string; content: string }> }): Promise<unknown>;
+}
+
+interface Env {
+  ASSETS?: { fetch(request: Request): Promise<Response> | Response };
+  AI: AiBinding;
+}
+
+declare module "react-router" {
+  export interface AppLoadContext {
+    cloudflare: { env: Env; ctx: ExecutionContext };
+  }
+}
+
+const requestHandler = createRequestHandler(() => import("virtual:react-router/server-build"), import.meta.env.MODE);
+
+function shouldServeAsset(request: Request): boolean {
+  const method = request.method.toUpperCase();
+  if (method !== "GET" && method !== "HEAD") return false;
+  const pathname = new URL(request.url).pathname;
+  return pathname.startsWith("/assets/") || pathname.includes(".") || pathname === "/robots.txt";
+}
+
+export default {
+  async fetch(request: Request, env: Env, ctx: ExecutionContext) {
+    if (env.ASSETS && shouldServeAsset(request)) {
+      const assetResponse = await env.ASSETS.fetch(request);
+      if (assetResponse.status !== 404) return assetResponse;
+    }
+    return requestHandler(request, { cloudflare: { env, ctx } });
+  },
+} satisfies ExportedHandler<Env>;
+`);
+  replaceScaffoldFile(files, "/app/routes/home.tsx", `import { Form, useActionData, useNavigation } from "react-router";
+import Bot from "lucide-react/dist/esm/icons/bot.js";
+import Send from "lucide-react/dist/esm/icons/send.js";
+import Sparkles from "lucide-react/dist/esm/icons/sparkles.js";
+
+import { Badge } from "~/components/ui/badge";
+import { Button } from "~/components/ui/button";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "~/components/ui/card";
+import { Label } from "~/components/ui/label";
+import { Textarea } from "~/components/ui/textarea";
+import type { Route } from "./+types/home";
+
+function responseText(result: unknown): string {
+  if (typeof result === "string") return result;
+  if (result && typeof result === "object" && "response" in result && typeof result.response === "string") return result.response;
+  return JSON.stringify(result, null, 2);
+}
+
+export async function action({ request, context }: Route.ActionArgs) {
+  const form = await request.formData();
+  const message = String(form.get("message") ?? "").trim();
+  if (!message) return { message: "", response: "Enter a message to begin." };
+  const result = await context.cloudflare.env.AI.run("auto", {
+    messages: [
+      { role: "system", content: "You are a concise, helpful assistant." },
+      { role: "user", content: message },
+    ],
+  });
+  return { message, response: responseText(result) };
+}
+
+export function meta() { return [{ title: ${JSON.stringify(projectName)} }, { name: "description", content: "An AI chat starter" }]; }
+
+export default function Home() {
+  const result = useActionData<typeof action>();
+  const navigation = useNavigation();
+  const busy = navigation.state !== "idle";
+  return (
+    <main className="min-h-svh bg-muted/30 px-6 py-10">
+      <div className="mx-auto flex w-full max-w-3xl flex-col gap-6">
+        <div><Badge variant="outline" className="mb-3"><Sparkles className="size-3" /> AI starter</Badge><h1 className="font-display text-4xl font-semibold tracking-tight">${projectName}</h1><p className="mt-2 text-muted-foreground">A server-rendered chat surface wired to camelAI's virtual AI binding.</p></div>
+        <Card>
+          <CardHeader><CardTitle className="flex items-center gap-2"><Bot className="size-5" /> Assistant</CardTitle><CardDescription>Replace the system instruction and add your product context or tools.</CardDescription></CardHeader>
+          <CardContent className="space-y-5">
+            {result ? <div className="space-y-3"><div className="ml-auto max-w-[85%] rounded-xl bg-primary px-4 py-3 text-sm text-primary-foreground">{result.message}</div><div className="max-w-[85%] whitespace-pre-wrap rounded-xl border bg-background px-4 py-3 text-sm leading-6">{result.response}</div></div> : <div className="rounded-xl border border-dashed p-8 text-center text-sm text-muted-foreground">Ask a question to test the AI binding.</div>}
+            <Form method="post" className="grid gap-3"><Label htmlFor="message">Message</Label><Textarea id="message" name="message" required rows={4} placeholder="How can you help me today?" /><Button type="submit" disabled={busy}>{busy ? "Thinking…" : "Send message"}<Send className="size-4" /></Button></Form>
+          </CardContent>
+        </Card>
+      </div>
+    </main>
+  );
+}
+`);
+  return files;
+}
+
+function integrationDashboardScaffoldFiles(projectName: string, scriptName: string): ProjectScaffoldFile[] {
+  const files = defaultReactRouterScaffoldFiles(projectName, scriptName);
+  replaceScaffoldFile(files, "/workers/app.ts", `import { createRequestHandler } from "react-router";
+
+interface ConnectionMethod { name: string; tool: string; description?: string }
+interface ConnectionEntry { alias: string; connection: { id: string; type: string; displayName: string }; methods: ConnectionMethod[]; error?: { message: string } }
+interface ConnectionsBinding { methods(): Promise<ConnectionEntry[]> }
+interface Env { ASSETS?: { fetch(request: Request): Promise<Response> | Response }; CONNECTIONS: ConnectionsBinding }
+
+declare module "react-router" {
+  export interface AppLoadContext { cloudflare: { env: Env; ctx: ExecutionContext } }
+}
+
+const requestHandler = createRequestHandler(() => import("virtual:react-router/server-build"), import.meta.env.MODE);
+function shouldServeAsset(request: Request): boolean { const method = request.method.toUpperCase(); if (method !== "GET" && method !== "HEAD") return false; const pathname = new URL(request.url).pathname; return pathname.startsWith("/assets/") || pathname.includes(".") || pathname === "/robots.txt"; }
+export default { async fetch(request: Request, env: Env, ctx: ExecutionContext) { if (env.ASSETS && shouldServeAsset(request)) { const assetResponse = await env.ASSETS.fetch(request); if (assetResponse.status !== 404) return assetResponse; } return requestHandler(request, { cloudflare: { env, ctx } }); } } satisfies ExportedHandler<Env>;
+`);
+  replaceScaffoldFile(files, "/app/routes/home.tsx", `import { useLoaderData } from "react-router";
+import Cable from "lucide-react/dist/esm/icons/cable.js";
+import Database from "lucide-react/dist/esm/icons/database.js";
+import RefreshCw from "lucide-react/dist/esm/icons/refresh-cw.js";
+
+import { Badge } from "~/components/ui/badge";
+import { Button } from "~/components/ui/button";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "~/components/ui/card";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "~/components/ui/table";
+import type { Route } from "./+types/home";
+
+export async function loader({ context }: Route.LoaderArgs) {
+  try { return { connections: await context.cloudflare.env.CONNECTIONS.methods(), error: null }; }
+  catch (error) { return { connections: [], error: error instanceof Error ? error.message : "Connections unavailable" }; }
+}
+export function meta() { return [{ title: ${JSON.stringify(projectName)} }, { name: "description", content: "A workspace integration dashboard" }]; }
+export default function Home() {
+  const { connections, error } = useLoaderData<typeof loader>();
+  const methodCount = connections.reduce((sum, entry) => sum + entry.methods.length, 0);
+  return <main className="min-h-svh bg-muted/30 px-6 py-10"><div className="mx-auto flex w-full max-w-6xl flex-col gap-6">
+    <div className="flex items-start justify-between gap-4"><div><Badge variant="outline" className="mb-3"><Cable className="size-3" /> Integration starter</Badge><h1 className="font-display text-4xl font-semibold tracking-tight">${projectName}</h1><p className="mt-2 text-muted-foreground">Inspect connected services and build workflows on their typed methods.</p></div><Button asChild variant="outline"><a href="/"><RefreshCw className="size-4" /> Refresh</a></Button></div>
+    <div className="grid gap-4 sm:grid-cols-2"><Card><CardHeader><CardDescription>Connections</CardDescription><CardTitle className="text-3xl">{connections.length}</CardTitle></CardHeader></Card><Card><CardHeader><CardDescription>Callable methods</CardDescription><CardTitle className="text-3xl">{methodCount}</CardTitle></CardHeader></Card></div>
+    <Card><CardHeader><CardTitle className="flex items-center gap-2"><Database className="size-5" /> Workspace connections</CardTitle><CardDescription>{error ?? "Credentials stay behind the platform binding and are never exposed to the app."}</CardDescription></CardHeader><CardContent>{connections.length === 0 ? <div className="rounded-lg border border-dashed p-10 text-center text-sm text-muted-foreground">{error ?? "No connections configured yet."}</div> : <Table><TableHeader><TableRow><TableHead>Name</TableHead><TableHead>Type</TableHead><TableHead>Alias</TableHead><TableHead>Methods</TableHead></TableRow></TableHeader><TableBody>{connections.map((entry) => <TableRow key={entry.connection.id}><TableCell className="font-medium">{entry.connection.displayName}</TableCell><TableCell><Badge variant="secondary">{entry.connection.type}</Badge></TableCell><TableCell className="font-mono text-xs">{entry.alias}</TableCell><TableCell>{entry.methods.map((method) => method.name).join(", ") || "—"}</TableCell></TableRow>)}</TableBody></Table>}</CardContent></Card>
+  </div></main>;
+}
+`);
+  return files;
+}
+
+function dataDashboardScaffoldFiles(projectName: string, scriptName: string): ProjectScaffoldFile[] {
+  const files = defaultReactRouterScaffoldFiles(projectName, scriptName);
+  const chart = SHADCN_REGISTRY.chart;
+  if (!chart) throw new Error("The data-dashboard scaffold requires the bundled shadcn chart component");
+  for (const chartFile of chart.files) replaceScaffoldFile(files, chartFile.path, chartFile.content);
+  updateScaffoldJson(files, "/package.json", (packageJson) => {
+    const dependencies = packageJson.dependencies as Record<string, string>;
+    for (const name of chart.dependencies) {
+      const version = SHADCN_NPM_PACKAGE_VERSIONS[name];
+      if (!version) throw new Error(`Missing bundled version for chart dependency ${name}`);
+      dependencies[name] = version;
+    }
+  });
+  replaceScaffoldFile(files, "/app/routes/home.tsx", `import { Form, useLoaderData } from "react-router";
+import BarChart3 from "lucide-react/dist/esm/icons/chart-no-axes-column-increasing.js";
+import Download from "lucide-react/dist/esm/icons/download.js";
+import TrendingUp from "lucide-react/dist/esm/icons/trending-up.js";
+import { Bar, BarChart, CartesianGrid, XAxis } from "recharts";
+
+import { Badge } from "~/components/ui/badge";
+import { Button } from "~/components/ui/button";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "~/components/ui/card";
+import { ChartContainer, ChartTooltip, ChartTooltipContent, type ChartConfig } from "~/components/ui/chart";
+import { Label } from "~/components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "~/components/ui/select";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "~/components/ui/table";
+import type { Route } from "./+types/home";
+
+const allRows = [
+  { month: "Jan", revenue: 18200, customers: 124 }, { month: "Feb", revenue: 21400, customers: 138 },
+  { month: "Mar", revenue: 23900, customers: 151 }, { month: "Apr", revenue: 27800, customers: 169 },
+  { month: "May", revenue: 30100, customers: 184 }, { month: "Jun", revenue: 34700, customers: 203 },
+];
+const chartConfig = { revenue: { label: "Revenue", color: "var(--color-primary)" } } satisfies ChartConfig;
+
+export function loader({ request }: Route.LoaderArgs) {
+  const range = new URL(request.url).searchParams.get("range") ?? "6";
+  const count = range === "3" ? 3 : 6;
+  return { rows: allRows.slice(-count), range };
+}
+export function meta() { return [{ title: ${JSON.stringify(projectName)} }, { name: "description", content: "An interactive data dashboard" }]; }
+export default function Home() {
+  const { rows, range } = useLoaderData<typeof loader>();
+  const revenue = rows.reduce((sum, row) => sum + row.revenue, 0);
+  const latest = rows.at(-1);
+  return <main className="min-h-svh bg-muted/30 px-6 py-10"><div className="mx-auto flex w-full max-w-6xl flex-col gap-6">
+    <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-end"><div><Badge variant="outline" className="mb-3"><BarChart3 className="size-3" /> Data dashboard starter</Badge><h1 className="font-display text-4xl font-semibold tracking-tight">${projectName}</h1><p className="mt-2 text-muted-foreground">Replace the sample loader data with a database or workspace connection.</p></div><Form method="get" className="flex items-end gap-2"><div className="grid gap-2"><Label htmlFor="range">Range</Label><Select name="range" defaultValue={range}><SelectTrigger id="range" className="w-40"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="3">Last 3 months</SelectItem><SelectItem value="6">Last 6 months</SelectItem></SelectContent></Select></div><Button type="submit" variant="outline">Apply</Button></Form></div>
+    <div className="grid gap-4 sm:grid-cols-3"><Card><CardHeader><CardDescription>Total revenue</CardDescription><CardTitle className="text-3xl">\${revenue.toLocaleString()}</CardTitle></CardHeader></Card><Card><CardHeader><CardDescription>Customers</CardDescription><CardTitle className="text-3xl">{latest?.customers ?? 0}</CardTitle></CardHeader></Card><Card><CardHeader><CardDescription>Trend</CardDescription><CardTitle className="flex items-center gap-2 text-3xl"><TrendingUp className="size-6" /> +18%</CardTitle></CardHeader></Card></div>
+    <Card><CardHeader><CardTitle>Revenue</CardTitle><CardDescription>Monthly performance for the selected range.</CardDescription></CardHeader><CardContent><ChartContainer config={chartConfig} className="max-h-80 w-full"><BarChart accessibilityLayer data={rows}><CartesianGrid vertical={false} /><XAxis dataKey="month" tickLine={false} axisLine={false} /><ChartTooltip content={<ChartTooltipContent />} /><Bar dataKey="revenue" fill="var(--color-revenue)" radius={6} /></BarChart></ChartContainer></CardContent></Card>
+    <Card><CardHeader className="flex-row items-center justify-between"><div><CardTitle>Monthly detail</CardTitle><CardDescription>Keep export and drill-down actions close to the data.</CardDescription></div><Button variant="outline" size="sm"><Download className="size-4" /> Export</Button></CardHeader><CardContent><Table><TableHeader><TableRow><TableHead>Month</TableHead><TableHead>Revenue</TableHead><TableHead>Customers</TableHead></TableRow></TableHeader><TableBody>{rows.map((row) => <TableRow key={row.month}><TableCell className="font-medium">{row.month}</TableCell><TableCell>\${row.revenue.toLocaleString()}</TableCell><TableCell>{row.customers}</TableCell></TableRow>)}</TableBody></Table></CardContent></Card>
+  </div></main>;
+}
+`);
+  return files;
+}
+
 export function defaultProjectScaffoldFiles(
   projectName: string,
   template: ProjectScaffoldTemplate,
   scriptName: string,
 ): ProjectScaffoldFile[] {
-  if (template === "data-analysis") return defaultDataAnalysisScaffoldFiles(projectName);
-  return defaultReactRouterScaffoldFiles(projectName, scriptName);
+  switch (template) {
+    case "crud":
+      return crudScaffoldFiles(projectName, scriptName);
+    case "ai-chat":
+      return aiChatScaffoldFiles(projectName, scriptName);
+    case "integration-dashboard":
+      return integrationDashboardScaffoldFiles(projectName, scriptName);
+    case "data-dashboard":
+      return dataDashboardScaffoldFiles(projectName, scriptName);
+    case "data-analysis":
+      return defaultDataAnalysisScaffoldFiles(projectName);
+  }
 }

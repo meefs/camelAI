@@ -1,4 +1,4 @@
-import { defaultProjectScaffoldFiles } from "../../src/project-scaffold";
+import { defaultProjectScaffoldFiles, type ProjectScaffoldTemplate } from "../../src/project-scaffold";
 import {
   ProjectFilesystemClient,
   type WorkspaceFilesystemEnv,
@@ -39,12 +39,12 @@ export async function seedDoProjectFiles(
     workspaceId: string;
     name: string;
     description: string;
-    template?: "react-router" | "data-analysis";
+    template?: ProjectScaffoldTemplate;
     resetNotebookExecution?: boolean;
     files: Record<string, string>;
   },
 ): Promise<{ project: WorkspaceProject; files: ProjectFilesystemClient }> {
-  const template = input.template ?? "react-router";
+  const template = input.template ?? "crud";
   const project = await workspaceFs.createProject({
     name: input.name,
     description: input.description,

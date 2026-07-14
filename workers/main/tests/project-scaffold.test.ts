@@ -9,23 +9,56 @@ function scaffoldFile(files: Array<{ path: string; content: string }>, path: str
 }
 
 describe("normalizeProjectScaffoldTemplate", () => {
-  it("defaults to React Router while preserving explicit templates", () => {
-    expect(normalizeProjectScaffoldTemplate(undefined)).toBe("react-router");
-    expect(normalizeProjectScaffoldTemplate(null)).toBe("react-router");
-    expect(normalizeProjectScaffoldTemplate("")).toBe("react-router");
-    expect(normalizeProjectScaffoldTemplate("react-router")).toBe("react-router");
+  it("defaults to CRUD while preserving explicit templates", () => {
+    expect(normalizeProjectScaffoldTemplate(undefined)).toBe("crud");
+    expect(normalizeProjectScaffoldTemplate(null)).toBe("crud");
+    expect(normalizeProjectScaffoldTemplate("")).toBe("crud");
+    expect(normalizeProjectScaffoldTemplate("crud")).toBe("crud");
+    expect(normalizeProjectScaffoldTemplate("ai-chat")).toBe("ai-chat");
+    expect(normalizeProjectScaffoldTemplate("integration-dashboard")).toBe("integration-dashboard");
+    expect(normalizeProjectScaffoldTemplate("data-dashboard")).toBe("data-dashboard");
     expect(normalizeProjectScaffoldTemplate("data-analysis")).toBe("data-analysis");
   });
 
-  it("rejects the removed worker/api templates", () => {
-    expect(() => normalizeProjectScaffoldTemplate("worker")).toThrow(/react-router.*data-analysis/);
-    expect(() => normalizeProjectScaffoldTemplate("api")).toThrow(/react-router.*data-analysis/);
+  it("rejects removed and unknown templates", () => {
+    expect(() => normalizeProjectScaffoldTemplate("react-router")).toThrow(/crud.*ai-chat.*integration-dashboard.*data-dashboard.*data-analysis/);
+    expect(() => normalizeProjectScaffoldTemplate("worker")).toThrow(/crud.*ai-chat.*integration-dashboard.*data-dashboard.*data-analysis/);
+    expect(() => normalizeProjectScaffoldTemplate("api")).toThrow(/crud.*data-analysis/);
   });
 });
 
 describe("defaultProjectScaffoldFiles", () => {
-  it("generates the React Router Tailwind/shadcn-style scaffold", () => {
-    const files = defaultProjectScaffoldFiles("Demo App", "react-router", "demo-app");
+  it("generates the default stateful CRUD scaffold", () => {
+    const files = defaultProjectScaffoldFiles("Demo App", "crud", "demo-app");
+    const wrangler = JSON.parse(scaffoldFile(files, "/wrangler.jsonc"));
+
+    expect(wrangler.durable_objects.bindings).toContainEqual({ name: "ITEMS", class_name: "ItemStore" });
+    expect(wrangler.migrations).toContainEqual({ tag: "v1", new_sqlite_classes: ["ItemStore"] });
+    expect(scaffoldFile(files, "/workers/item-store.ts")).toContain("CREATE TABLE IF NOT EXISTS items");
+    expect(scaffoldFile(files, "/workers/item-store.ts")).toContain("this.ctx.storage.sql.exec");
+    expect(scaffoldFile(files, "/workers/app.ts")).toContain('export { ItemStore }');
+    expect(scaffoldFile(files, "/app/routes/home.tsx")).toContain("export async function loader");
+    expect(scaffoldFile(files, "/app/routes/home.tsx")).toContain("export async function action");
+    expect(scaffoldFile(files, "/app/routes/home.tsx")).toContain("Durable CRUD starter");
+  });
+
+  it("generates the specialized web scaffolds", () => {
+    const ai = defaultProjectScaffoldFiles("AI App", "ai-chat", "ai-app");
+    expect(JSON.parse(scaffoldFile(ai, "/wrangler.jsonc")).ai).toEqual({ binding: "AI" });
+    expect(scaffoldFile(ai, "/app/routes/home.tsx")).toContain('AI.run("auto"');
+
+    const integrations = defaultProjectScaffoldFiles("Connected App", "integration-dashboard", "connected-app");
+    expect(scaffoldFile(integrations, "/workers/app.ts")).toContain("CONNECTIONS: ConnectionsBinding");
+    expect(scaffoldFile(integrations, "/app/routes/home.tsx")).toContain("env.CONNECTIONS.methods()");
+
+    const dashboard = defaultProjectScaffoldFiles("Metrics", "data-dashboard", "metrics");
+    expect(JSON.parse(scaffoldFile(dashboard, "/package.json")).dependencies.recharts).toBeDefined();
+    expect(scaffoldFile(dashboard, "/app/components/ui/chart.tsx")).toContain("ChartContainer");
+    expect(scaffoldFile(dashboard, "/app/routes/home.tsx")).toContain("<BarChart");
+  });
+
+  it("generates the shared React Router Tailwind/shadcn foundation", () => {
+    const files = defaultProjectScaffoldFiles("Demo App", "crud", "demo-app");
 
     expect(files.map((file) => file.path)).toEqual(expect.arrayContaining([
       "/package.json",
@@ -121,8 +154,7 @@ describe("defaultProjectScaffoldFiles", () => {
         expect(packageDeps.has(pkg), `${file.path} imports ${pkg} which is not a scaffold dependency`).toBe(true);
       }
     }
-    expect(scaffoldFile(files, "/app/routes/home.tsx")).toContain('lucide-react/dist/esm/icons/arrow-right.js');
-    expect(scaffoldFile(files, "/app/routes/home.tsx")).toContain("Browse shadcn components");
+    expect(scaffoldFile(files, "/app/routes/home.tsx")).toContain("Durable CRUD starter");
     expect(scaffoldFile(files, "/app/root.tsx")).toContain('import "./app.css"');
     expect(scaffoldFile(files, "/app/entry.server.tsx")).toContain('from "react-dom/server.edge"');
     expect(scaffoldFile(files, "/app/entry.server.tsx")).not.toContain('from "react-dom/server";');

@@ -30,7 +30,7 @@ const warmupDependencies: Record<string, string> = {
 describe("project build sandbox warmup manifest", () => {
   // Only templates that seed a /package.json matter here; data-analysis projects
   // are notebook-only and never hit the build sandbox.
-  const templates: ProjectScaffoldTemplate[] = ["react-router"];
+  const templates: ProjectScaffoldTemplate[] = ["crud", "ai-chat", "integration-dashboard", "data-dashboard"];
 
   for (const template of templates) {
     it(`covers every dependency of the "${template}" scaffold template`, () => {
