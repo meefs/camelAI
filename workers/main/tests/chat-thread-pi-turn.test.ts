@@ -2949,6 +2949,32 @@ describe('ChatThreadDO Pi turn handling', () => {
     );
   });
 
+  it('forces proxied Codex subscription streams onto SSE', () => {
+    const streamSimple = vi.fn(() => ({ [Symbol.asyncIterator]: vi.fn() }));
+    const model = { api: 'openai-codex-responses', maxTokens: 1000 };
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    fake.env = {
+      OPENAI_CODEX_PROXY_BASE_URL: 'https://codex-egress.example.com/backend-api/codex',
+    };
+
+    ChatThreadDO.prototype['streamPiModel'].call(
+      fake,
+      model,
+      { systemPrompt: '', messages: [] },
+      { apiKey: 'subscription-token', transport: 'auto' },
+      streamSimple,
+    );
+
+    expect(streamSimple).toHaveBeenCalledWith(
+      model,
+      { systemPrompt: '', messages: [] },
+      expect.objectContaining({
+        apiKey: 'subscription-token',
+        transport: 'sse',
+      }),
+    );
+  });
+
   it('reserves ten percent of a 1M context window for compaction headroom', () => {
     const model = { contextWindow: 1_000_000, maxTokens: 128_000 } as any;
     const reserveTokens = piCompactionReserveTokens(model);

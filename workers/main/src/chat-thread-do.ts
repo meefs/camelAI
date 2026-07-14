@@ -4748,10 +4748,17 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
     options: Parameters<typeof import("@earendil-works/pi-ai/compat").streamSimple>[2],
     streamSimple: typeof import("@earendil-works/pi-ai/compat").streamSimple,
   ): ReturnType<typeof import("@earendil-works/pi-ai/compat").streamSimple> {
+    // The subscription egress endpoint is an HTTP reverse proxy. Keep Codex
+    // traffic on the Responses SSE transport so Pi does not attempt a separate
+    // WebSocket upgrade path before making the proven HTTP request.
+    const effectiveOptions =
+      model.api === "openai-codex-responses" && this.env.OPENAI_CODEX_PROXY_BASE_URL
+        ? { ...options, transport: "sse" as const }
+        : options;
     return streamPiModelWithTransientRetry(
       model,
-      options,
-      () => streamSimple(model, context, options),
+      effectiveOptions,
+      () => streamSimple(model, context, effectiveOptions),
       (message, status, attempt, forwardedEvent) =>
         this.recordPiProviderStreamTerminalError(model, message, status, attempt, forwardedEvent),
     ) as ReturnType<typeof import("@earendil-works/pi-ai/compat").streamSimple>;

@@ -1,0 +1,23 @@
+[Unit]
+Description=camelAI Codex inference request relay
+After=docker.service network-online.target
+Requires=docker.service
+Wants=network-online.target
+
+[Service]
+Restart=always
+RestartSec=5
+ExecStartPre=-/usr/bin/docker rm -f camelai-codex-inference-relay
+ExecStartPre=-/usr/bin/docker network create camelai-codex-egress
+ExecStart=/usr/bin/docker run --name camelai-codex-inference-relay \
+  --network camelai-codex-egress \
+  --read-only \
+  --cap-drop ALL \
+  --security-opt no-new-privileges \
+  --user bun \
+  --volume /opt/camelai-codex-egress/inference-relay.mjs:/app/inference-relay.mjs:ro \
+  oven/bun:1.3.14-alpine bun /app/inference-relay.mjs
+ExecStop=/usr/bin/docker stop camelai-codex-inference-relay
+
+[Install]
+WantedBy=multi-user.target

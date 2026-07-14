@@ -1,0 +1,23 @@
+[Unit]
+Description=camelAI Codex subscription egress proxy
+After=docker.service network-online.target camelai-codex-inference-relay.service
+Requires=docker.service camelai-codex-inference-relay.service
+Wants=network-online.target
+
+[Service]
+Restart=always
+RestartSec=5
+ExecStartPre=-/usr/bin/docker rm -f camelai-codex-egress
+ExecStartPre=-/usr/bin/docker network create camelai-codex-egress
+ExecStart=/usr/bin/docker run --name camelai-codex-egress \
+  --network camelai-codex-egress \
+  --env-file /opt/camelai-codex-egress/proxy.env \
+  --publish 443:443 \
+  --volume /opt/camelai-codex-egress/Caddyfile:/etc/caddy/Caddyfile:ro \
+  --volume /opt/camelai-codex-egress/data:/data \
+  --volume /opt/camelai-codex-egress/config:/config \
+  caddy:2.10.2-alpine
+ExecStop=/usr/bin/docker stop camelai-codex-egress
+
+[Install]
+WantedBy=multi-user.target
