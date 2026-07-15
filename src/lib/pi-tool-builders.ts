@@ -223,9 +223,14 @@ function buildRuntimeToolResult(
   const nestedDetails = outerDetails?.details && typeof outerDetails.details === 'object' && !Array.isArray(outerDetails.details)
     ? outerDetails.details as Record<string, unknown>
     : null;
-  const details = item.type === 'dynamicToolCall' && canonicalizeDynamicToolName(item.tool) === 'Edit'
+  const dynamicToolName = item.type === 'dynamicToolCall'
+    ? canonicalizeDynamicToolName(item.tool)
+    : null;
+  const details = dynamicToolName === 'Edit'
     ? nestedDetails ?? outerDetails ?? undefined
-    : undefined;
+    : dynamicToolName && ['Agent', 'Explore', 'Research', 'Oracle'].includes(dynamicToolName)
+      ? outerDetails ?? undefined
+      : undefined;
   return {
     content,
     isError: isFailedRuntimeItem(item),
@@ -248,7 +253,7 @@ export function canonicalizeDynamicToolName(tool: unknown): string {
       return 'Agent';
     case 'Explore':
     case 'explore':
-      return 'Agent';
+      return 'Explore';
     case 'web_search':
       return 'WebSearch';
     case 'web_fetch':

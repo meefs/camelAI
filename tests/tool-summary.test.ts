@@ -220,6 +220,33 @@ describe('getToolSummaryParts tense follows status', () => {
   });
 });
 
+describe('getToolSummaryParts agent progress', () => {
+  const oracle: ToolUseBlock = {
+    type: 'tool_use',
+    id: 'oracle-1',
+    name: 'Oracle',
+    input: { question: 'Fix the failing flow' },
+  };
+
+  it('shows the latest meaningful activity while the child agent is running', () => {
+    const update: ToolResultBlock = {
+      type: 'tool_result',
+      tool_use_id: 'oracle-1',
+      content: 'Reviewing the problem\nInspecting the workspace\n',
+      isTaskUpdate: true,
+    };
+    expect(getToolSummaryParts(oracle, update, true, 'running').action).toBe(
+      'Oracle · Inspecting the workspace',
+    );
+  });
+
+  it('only uses completion wording for the terminal state', () => {
+    expect(getToolSummaryParts(oracle, undefined, false, 'complete').action).toBe(
+      'Oracle completed',
+    );
+  });
+});
+
 describe('getToolSummaryParts JavaScript', () => {
   it('renders friendly code-mode copy for each status', () => {
     const tool: ToolUseBlock = {

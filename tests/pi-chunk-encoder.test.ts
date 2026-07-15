@@ -186,6 +186,53 @@ describe('PiChunkEncoder unit families', () => {
     expect(available.input).toMatchObject({ name: 'daily-sync', arguments: { name: 'daily-sync' }, status: 'completed' });
   });
 
+  it('carries completed child-agent activity into the durable tool output', () => {
+    const encoder = new PiChunkEncoder({ messageId: 'm' });
+    encoder.encode({
+      method: 'item/started',
+      params: {
+        item: {
+          id: 'oracle-1',
+          type: 'dynamicToolCall',
+          tool: 'Oracle',
+          arguments: { question: 'Fix the issue' },
+          status: 'running',
+        },
+      },
+    });
+    const chunks = encoder.encode({
+      method: 'item/completed',
+      params: {
+        item: {
+          id: 'oracle-1',
+          type: 'dynamicToolCall',
+          tool: 'Oracle',
+          arguments: { question: 'Fix the issue' },
+          status: 'completed',
+          contentItems: [{ type: 'inputText', text: 'Fixed.' }],
+          result: {
+            details: {
+              activities: ['Reviewing the problem', 'Making changes'],
+              durationMs: 5_000,
+              toolUseCount: 2,
+            },
+          },
+        },
+      },
+    });
+    expect(chunks).toContainEqual(expect.objectContaining({
+      type: 'tool-output-available',
+      toolCallId: 'oracle-1',
+      output: expect.objectContaining({
+        details: {
+          activities: ['Reviewing the problem', 'Making changes'],
+          durationMs: 5_000,
+          toolUseCount: 2,
+        },
+      }),
+    }));
+  });
+
   it('preserves started-only input fields when item/completed omits them', () => {
     const encoder = new PiChunkEncoder({ messageId: 'm' });
     encoder.encode({

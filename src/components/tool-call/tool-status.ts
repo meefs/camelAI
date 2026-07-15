@@ -44,6 +44,12 @@ export function getToolStatus(
       (result && !result.isTaskUpdate ? result : undefined);
     if (isFailedToolResult(finalResult)) return 'error';
     if (finalResult) return 'complete';
+    // Live sub-agent progress is projected as a temporary tool_result so the
+    // card can render its activity. It is not the terminal result and must not
+    // make the parent look complete while the child is still working.
+    if (results?.some(block => block.isTaskUpdate) && isStreaming !== false) {
+      return 'running';
+    }
     if (agentContinued) return 'complete';
     if (isStreaming === false) return 'complete';
     return 'running';

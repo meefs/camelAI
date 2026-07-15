@@ -23,10 +23,21 @@ import { encryptCredentials } from '../../../src/lib/integration-crypto';
 import { stripPiUiMetadata } from '../../../src/lib/runtime-artifacts';
 import { PiChunkEncoder } from '../../../src/lib/pi-chunk-encoder';
 import { CodeModeWebSearch } from '../src/code-mode-web-search';
+import { describeChildAgentActivity } from '../src/chat-thread/pi-tools';
 
 afterEach(() => {
   vi.useRealTimers();
   vi.unstubAllGlobals();
+});
+
+describe('child agent progress labels', () => {
+  it('groups low-level tools into user-facing work stages', () => {
+    expect(describeChildAgentActivity('Read')).toBe('Inspecting the workspace');
+    expect(describeChildAgentActivity('edit')).toBe('Making changes');
+    expect(describeChildAgentActivity('WebSearch')).toBe('Searching the web');
+    expect(describeChildAgentActivity('web_fetch')).toBe('Reading and comparing sources');
+    expect(describeChildAgentActivity('build_project')).toBe('Running and verifying the work');
+  });
 });
 
 function r2Object(content: string, contentType: string) {

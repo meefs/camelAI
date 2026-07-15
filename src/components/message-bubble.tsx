@@ -451,7 +451,6 @@ export function ContentBlockRenderer({
             callIdentity={`${messageId ?? 'message'}:tool:${block.id || index}`}
             isStreaming={isStreaming}
             skillSheet={skillSheet}
-            progressCount={isTaskTool ? results.length : undefined}
             agentContinued={agentContinued}
           />
         ),

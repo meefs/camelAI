@@ -369,7 +369,7 @@ export function toolProgressText(
     const params = asRecord(runtimeEvent.params);
     const itemId = asString(params?.itemId);
     const delta = asString(params?.delta);
-    if (itemId && itemIds.has(itemId) && delta) deltas.push(delta);
+    if (itemId && itemIds.has(itemId) && delta.trim()) deltas.push(delta.trim());
   }
   return deltas;
 }

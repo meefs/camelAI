@@ -144,7 +144,13 @@ export function dedupeUiMessagesById(messages: UIMessage[]): UIMessage[] {
  * that has not yet settled. Mirrors the legacy overlay's streaming command
  * output; the settled block replaces it once tool-output-available arrives.
  * Returns the message unchanged (same identity) when nothing merges. */
-function mergeLiveToolOutput(
+function isAgentProgressTool(name: string): boolean {
+  return name === "Task" || name === "Agent" || name === "agent" ||
+    name === "Explore" || name === "explore" || name === "Research" ||
+    name === "Oracle";
+}
+
+export function mergeLiveToolOutput(
   message: Message,
   toolStream: Map<string, string>,
 ): Message {
@@ -165,6 +171,7 @@ function mergeLiveToolOutput(
           tool_use_id: block.id,
           content: liveText,
           status: "succeeded",
+          ...(isAgentProgressTool(block.name) ? { isTaskUpdate: true } : {}),
           itemId: block.id,
           ...(block.itemKind ? { itemKind: block.itemKind } : {}),
         });

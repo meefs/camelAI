@@ -36,6 +36,29 @@ describe('buildToolResultFromPiItem error status', () => {
     });
   });
 
+  it('preserves agent activity metadata for the completed task card', () => {
+    const result = buildToolResultFromPiItem({
+      id: 'tool-oracle',
+      type: 'dynamicToolCall',
+      tool: 'Oracle',
+      status: 'completed',
+      contentItems: [{ type: 'inputText', text: 'fixed' }],
+      result: {
+        details: {
+          status: 'completed',
+          activities: ['Reviewing the problem', 'Making changes'],
+          durationMs: 12_000,
+          toolUseCount: 2,
+        },
+      },
+    });
+    expect(result?.details).toMatchObject({
+      activities: ['Reviewing the problem', 'Making changes'],
+      durationMs: 12_000,
+      toolUseCount: 2,
+    });
+  });
+
   it('marks a failed commandExecution as an error result', () => {
     const item: PiThreadItem = {
       id: 'tool-bash',
@@ -132,6 +155,10 @@ describe('buildToolUseFromPiItem name canonicalization + input', () => {
     expect(buildToolUseFromPiItem(dynamicTool('find', { pattern: '*.tsx', path: '/workspace/src' }))).toMatchObject({
       name: 'Find',
       input: { pattern: '*.tsx' },
+    });
+    expect(buildToolUseFromPiItem(dynamicTool('explore', { prompt: 'Map the project' }))).toMatchObject({
+      name: 'Explore',
+      input: { prompt: 'Map the project' },
     });
   });
 

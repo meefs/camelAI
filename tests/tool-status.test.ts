@@ -64,6 +64,23 @@ describe('getToolStatus', () => {
     ).toBe('error');
   });
 
+  it('keeps a sub-agent running while only live progress results exist', () => {
+    const progressResult = makeResult({
+      tool_use_id: 'tool-agent',
+      content: 'Inspecting the workspace',
+      isTaskUpdate: true,
+    });
+    expect(
+      getToolStatus(
+        makeTool('Oracle'),
+        progressResult,
+        [progressResult],
+        true,
+        true,
+      ),
+    ).toBe('running');
+  });
+
   it('returns complete when result status is succeeded', () => {
     const result = makeResult({ status: 'succeeded' });
     expect(getToolStatus(makeTool(), result, [result], false)).toBe('complete');

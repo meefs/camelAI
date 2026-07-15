@@ -55,6 +55,71 @@ export interface PiToolDefinitionOptions {
 const RESEARCH_CAPABILITY_MODEL = "deepseek-v4-auto";
 const ORACLE_CAPABILITY_MODEL = "gpt-5.6-luna";
 
+function humanizeToolName(toolName: string): string {
+  return toolName
+    .replace(/^mcp__/, "")
+    .replace(/__/g, " ")
+    .replace(/_/g, " ")
+    .replace(/([a-z])([A-Z])/g, "$1 $2")
+    .trim()
+    .toLowerCase();
+}
+
+export function describeChildAgentActivity(toolName: string): string {
+  switch (toolName.toLowerCase()) {
+    case "read":
+    case "ls":
+    case "find":
+    case "grep":
+    case "glob":
+      return "Inspecting the workspace";
+    case "write":
+    case "edit":
+      return "Making changes";
+    case "bash":
+    case "javascript":
+    case "js_exec":
+    case "build_project":
+    case "run_notebook":
+      return "Running and verifying the work";
+    case "websearch":
+    case "web_search":
+      return "Searching the web";
+    case "webfetch":
+    case "web_fetch":
+      return "Reading and comparing sources";
+    case "todowrite":
+    case "todo_write":
+    case "update_todo":
+      return "Updating the plan";
+    case "create_project":
+      return "Setting up the project";
+    case "deploy_project":
+      return "Deploying the project";
+    default: {
+      const name = humanizeToolName(toolName);
+      return name ? `Using ${name}` : "Working through the task";
+    }
+  }
+}
+
+function createAgentProgressReporter(
+  onUpdate?: (partialResult: AgentToolResult<unknown>) => void,
+) {
+  const activities: string[] = [];
+  return {
+    activities,
+    report(activity: string, details: Record<string, unknown> = {}) {
+      if (activities[activities.length - 1] === activity) return;
+      activities.push(activity);
+      onUpdate?.({
+        content: [{ type: "text", text: `${activity}\n` }],
+        details: { status: "running", activity, ...details },
+      });
+    },
+  };
+}
+
 // Passthrough harness tools in these categories are NOT advertised in the model's
 // top-level tool list. They remain fully callable inside js_exec via `tools.<name>()`
 // and discoverable through `tools.search()` / `tools.help()`; we simply stop spending
@@ -477,13 +542,7 @@ export async function runPiSubagentTool(
   let turnStartedAtMs = Date.now();
   let finalMessages: AgentMessage[] = [];
   const startedAtMs = Date.now();
-
-  const update = (text: string, details: Record<string, unknown>) => {
-    onUpdate?.({
-      content: [{ type: "text", text }],
-      details,
-    });
-  };
+  const progress = createAgentProgressReporter(onUpdate);
 
   const unsubscribe = child.subscribe((event) => {
     try {
@@ -507,8 +566,7 @@ export async function runPiSubagentTool(
       }
       if (event.type === "tool_execution_start") {
         toolUseCount += 1;
-        update(`Running ${event.toolName}...`, {
-          status: "running",
+        progress.report(describeChildAgentActivity(event.toolName), {
           toolName: event.toolName,
           toolUseCount,
         });
@@ -545,8 +603,7 @@ export async function runPiSubagentTool(
   signal?.addEventListener("abort", abort, { once: true });
 
   try {
-    update(`${toolName} started.`, {
-      status: "running",
+    progress.report(isExplore ? "Mapping the workspace" : "Reviewing the task", {
       toolName,
     });
     await child.prompt({
@@ -573,6 +630,7 @@ export async function runPiSubagentTool(
       toolName,
       durationMs: Math.max(0, Date.now() - startedAtMs),
       toolUseCount,
+      activities: progress.activities,
     },
   };
 }
@@ -692,9 +750,7 @@ export async function runPiCapabilityAgentTool(
   let turnStartedAtMs = Date.now();
   let finalMessages: AgentMessage[] = [];
   const startedAtMs = Date.now();
-  const update = (text: string, details: Record<string, unknown>) => {
-    onUpdate?.({ content: [{ type: "text", text }], details });
-  };
+  const progress = createAgentProgressReporter(onUpdate);
 
   const unsubscribe = child.subscribe((event) => {
     try {
@@ -719,8 +775,7 @@ export async function runPiCapabilityAgentTool(
       if (event.type === "tool_execution_start") {
         toolUseCount += 1;
         childToolsUsed.push(event.toolName);
-        update(`Running ${event.toolName}...`, {
-          status: "running",
+        progress.report(describeChildAgentActivity(event.toolName), {
           toolName: event.toolName,
           toolUseCount,
         });
@@ -757,8 +812,7 @@ export async function runPiCapabilityAgentTool(
   signal?.addEventListener("abort", abort, { once: true });
 
   try {
-    update(`${toolName} started.`, {
-      status: "running",
+    progress.report(isResearch ? "Planning the research" : "Reviewing the problem", {
       toolName,
       ...(isResearch ? { model: capabilityModel } : {}),
       remaining: allowance.remaining,
@@ -788,6 +842,7 @@ export async function runPiCapabilityAgentTool(
       durationMs: Math.max(0, Date.now() - startedAtMs),
       toolUseCount,
       childToolsUsed: [...new Set(childToolsUsed)],
+      activities: progress.activities,
       remaining: allowance.remaining,
       resetAtMs: allowance.reset_at_ms,
     },

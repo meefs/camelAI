@@ -18,13 +18,15 @@ import { TeamCreateDetails } from './details/team-create-details';
 import { AskUserQuestionDetails } from './details/ask-user-question-details';
 import { JavaScriptDetails } from './details/javascript-details';
 import { isAskUserQuestionToolName, isMcpTool } from './mcp-utils';
+import { isSubAgentTool } from './tool-utils';
+import { cn } from '@/lib/utils';
 
 interface ToolCallDetailsProps {
   tool?: ToolUseBlock;
   result?: ToolResultBlock;
   results?: ToolResultBlock[];
   skillSheet?: string;
-  progressCount?: number;
+  status?: 'running' | 'complete' | 'error';
 }
 
 function normalizeToolDetailsName(name?: string): string | undefined {
@@ -59,7 +61,7 @@ function normalizeToolDetailsName(name?: string): string | undefined {
   }
 }
 
-export function ToolCallDetails({ tool, result, results, skillSheet, progressCount }: ToolCallDetailsProps) {
+export function ToolCallDetails({ tool, result, results, skillSheet, status }: ToolCallDetailsProps) {
   const name = normalizeToolDetailsName(tool?.name);
 
   let content: ReactNode;
@@ -102,7 +104,7 @@ export function ToolCallDetails({ tool, result, results, skillSheet, progressCou
           tool={tool}
           result={result}
           results={results}
-          progressCount={progressCount}
+          status={status}
         />
       );
       break;
@@ -129,7 +131,12 @@ export function ToolCallDetails({ tool, result, results, skillSheet, progressCou
   }
 
   return (
-    <div className="pl-4 mt-1 text-xs text-muted-foreground/80 border-l border-border/50 ml-1">
+    <div className={cn(
+      "text-xs text-muted-foreground/80",
+      isSubAgentTool(name)
+        ? "px-3 pb-3"
+        : "pl-4 mt-1 border-l border-border/50 ml-1",
+    )}>
       {content}
     </div>
   );

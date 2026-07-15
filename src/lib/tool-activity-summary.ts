@@ -51,6 +51,15 @@ function parseCountFromResult(result?: ToolResultBlock): number | null {
   return Number.parseInt(match[1], 10);
 }
 
+function latestAgentProgress(result?: ToolResultBlock): string {
+  if (!result?.isTaskUpdate) return '';
+  const lines = getResultText(result)
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  return lines[lines.length - 1]?.replace(/[.]+$/, '') ?? '';
+}
+
 function canonicalizeToolSummaryName(name: string): string {
   switch (name) {
     case 'bash':
@@ -538,6 +547,8 @@ export function getToolSummaryParts(
     case 'explore': {
       const description = typeof inputRecord.description === 'string' ? inputRecord.description : '';
       if (isRunning) {
+        const progress = latestAgentProgress(result);
+        if (progress) return { action: `${name} · ${progress}` };
         const summary = description || 'subtask...';
         return { action: `Working on ${summary}` };
       }
@@ -551,9 +562,13 @@ export function getToolSummaryParts(
     case 'Oracle': {
       const question = typeof inputRecord.question === 'string' ? inputRecord.question : '';
       const noun = name === 'Research' ? 'research' : 'Oracle';
-      if (isRunning) return { action: `Running ${noun}${question ? `: ${truncate(question, 48)}` : '...'}` };
+      if (isRunning) {
+        const progress = latestAgentProgress(result);
+        if (progress) return { action: `${name} · ${progress}` };
+        return { action: `Running ${noun}${question ? `: ${truncate(question, 48)}` : '...'}` };
+      }
       if (isError) return { action: `${name} could not finish` };
-      return { action: `${name} finished` };
+      return { action: `${name} completed` };
     }
     case 'TeamCreate': {
       const teamName = typeof inputRecord.team_name === 'string' ? inputRecord.team_name : '';
