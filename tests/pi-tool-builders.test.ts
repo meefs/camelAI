@@ -67,6 +67,19 @@ describe('buildToolResultFromPiItem error status', () => {
     });
   });
 
+  it('renders structured Oracle text as plain response content without redundant status', () => {
+    const result = buildToolResultFromPiItem({
+      id: 'tool-oracle-text',
+      type: 'dynamicToolCall',
+      tool: 'Oracle',
+      status: 'completed',
+      success: true,
+      contentItems: [{ type: 'text', text: '### Defects fixed\n\n- Pawn attacks' }],
+    });
+
+    expect(result?.content).toBe('### Defects fixed\n\n- Pawn attacks');
+  });
+
   it('marks a failed commandExecution as an error result', () => {
     const item: PiThreadItem = {
       id: 'tool-bash',

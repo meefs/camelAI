@@ -119,6 +119,46 @@ function resultLabel(name?: string): string {
   }
 }
 
+function unwrapTextEnvelope(value: unknown): string | null {
+  if (!isRecord(value)) return null;
+  const type = value.type;
+  if (
+    (type === 'text' || type === 'inputText' || type === 'outputText') &&
+    typeof value.text === 'string'
+  ) {
+    return value.text;
+  }
+  return null;
+}
+
+/**
+ * Older dynamic-agent results serialized Pi text content items and appended
+ * their completed status. Keep those durable transcripts readable while new
+ * results arrive as plain text from pi-tool-builders.
+ */
+export function normalizeTaskResultText(value: string): string {
+  const withoutCompletionMetadata = value
+    .replace(/(?:\r?\n\s*)+(?:success:\s*true\s*(?:\r?\n\s*)+)?status:\s*(?:completed|succeeded)\s*$/i, '')
+    .trim();
+  if (!withoutCompletionMetadata) return '';
+
+  try {
+    const parsed = JSON.parse(withoutCompletionMetadata) as unknown;
+    const singleText = unwrapTextEnvelope(parsed);
+    if (singleText !== null) return singleText.trim();
+    if (Array.isArray(parsed)) {
+      const textParts = parsed.map(unwrapTextEnvelope);
+      if (textParts.every((part): part is string => part !== null)) {
+        return textParts.map((part) => part.trim()).filter(Boolean).join('\n\n');
+      }
+    }
+  } catch {
+    // Ordinary Markdown is expected to fail JSON parsing.
+  }
+
+  return withoutCompletionMetadata;
+}
+
 export function TaskDetails({ tool, result, results, status = 'running' }: TaskDetailsProps) {
   const input = tool?.input ?? {};
   const description = typeof input.description === 'string' ? input.description.trim() : '';
@@ -129,7 +169,7 @@ export function TaskDetails({ tool, result, results, status = 'running' }: TaskD
   const request = question || prompt || description;
   const resolvedResults = results ?? (result ? [result] : []);
   const finalResult = resolvedResults.find((block) => !block.isTaskUpdate);
-  const finalResultText = finalResult ? getResultText(finalResult) : '';
+  const finalResultText = finalResult ? normalizeTaskResultText(getResultText(finalResult)) : '';
   const activities = getTaskToolActivities(resolvedResults);
   const visibleActivities = activities.slice(-10);
   const hiddenActivityCount = Math.max(0, activities.length - visibleActivities.length);

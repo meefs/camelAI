@@ -5,6 +5,7 @@ import {
   TaskDetails,
   getTaskActivities,
   getTaskToolActivities,
+  normalizeTaskResultText,
 } from '@/components/tool-call/details/task-details';
 import type { ToolResultBlock, ToolUseBlock } from '@/types';
 
@@ -18,6 +19,13 @@ function progress(content: string): ToolResultBlock {
 }
 
 describe('TaskDetails agent progress', () => {
+  it('unwraps serialized text envelopes from older Oracle results', () => {
+    const markdown = 'Investigated and fixed the chess game.\n\n### Defects found and fixed\n\n- Pawn attacks';
+    expect(normalizeTaskResultText(
+      `${JSON.stringify({ type: 'text', text: markdown })}\n\nstatus: completed`,
+    )).toBe(markdown);
+  });
+
   it('preserves the actual child tool calls from legacy streamed updates', () => {
     expect(getTaskActivities([
       progress('Oracle started.Running Read...Running Read...Running Edit...'),
@@ -62,6 +70,31 @@ describe('TaskDetails agent progress', () => {
     expect(screen.getByText('Fixed', { selector: 'strong' })).toBeInTheDocument();
     expect(screen.getByText('1m 5s')).toBeInTheDocument();
     expect(screen.getByText('3')).toBeInTheDocument();
+  });
+
+  it('renders a legacy structured Oracle response as Markdown instead of JSON', () => {
+    const tool: ToolUseBlock = {
+      type: 'tool_use',
+      id: 'oracle-structured',
+      name: 'Oracle',
+      input: { question: 'Fix the chess game.' },
+    };
+    const result: ToolResultBlock = {
+      type: 'tool_result',
+      tool_use_id: 'oracle-structured',
+      content: `${JSON.stringify({
+        type: 'text',
+        text: 'Investigated and fixed the game.\n\n### Defects found and fixed\n\n- Pawn attacks',
+      })}\n\nstatus: completed`,
+      status: 'succeeded',
+    };
+
+    render(<TaskDetails tool={tool} result={result} results={[result]} status="complete" />);
+
+    expect(screen.getByText('Defects found and fixed', { selector: 'h3' })).toBeInTheDocument();
+    expect(screen.getByText('Pawn attacks')).toBeInTheDocument();
+    expect(screen.queryByText(/\{\s*"type":\s*"text"/)).not.toBeInTheDocument();
+    expect(screen.queryByText('status: completed')).not.toBeInTheDocument();
   });
 
   it('explains why an older completed run has no detailed activity', () => {

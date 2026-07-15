@@ -130,14 +130,17 @@ function formatMcpToolResult(item: PiThreadItem): string {
 
 function formatDynamicToolResult(item: PiThreadItem): string {
   const parts: string[] = [];
+  const dynamicToolName = canonicalizeDynamicToolName(item.tool);
+  const isAgentCapability = ['Agent', 'Explore', 'Research', 'Oracle'].includes(dynamicToolName);
   if (Array.isArray(item.contentItems)) {
     for (const contentItem of item.contentItems) {
       if (!contentItem || typeof contentItem !== 'object') {
         parts.push(stringifyPiValue(contentItem));
         continue;
       }
+      const contentType = (contentItem as { type?: unknown }).type;
       if (
-        (contentItem as { type?: unknown }).type === 'inputText' &&
+        (contentType === 'inputText' || contentType === 'outputText' || contentType === 'text') &&
         typeof (contentItem as { text?: unknown }).text === 'string'
       ) {
         parts.push((contentItem as { text: string }).text);
@@ -146,10 +149,13 @@ function formatDynamicToolResult(item: PiThreadItem): string {
       parts.push(stringifyPiValue(contentItem));
     }
   }
-  if (typeof item.success === 'boolean') {
+  if (typeof item.success === 'boolean' && (!isAgentCapability || item.success === false)) {
     parts.push(`success: ${item.success}`);
   }
-  if (typeof item.status === 'string') {
+  if (
+    typeof item.status === 'string' &&
+    (!isAgentCapability || item.status === 'failed' || item.status === 'error')
+  ) {
     parts.push(`status: ${item.status}`);
   }
   return parts.join('\n\n');
