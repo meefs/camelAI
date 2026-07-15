@@ -5,12 +5,14 @@ import { beforeEach, describe, expect, it, vi } from "vitest"
 const fetcherMock = vi.hoisted(() => ({
   state: "idle",
   data: undefined as unknown,
+  submit: vi.fn(),
 }))
 
 vi.mock("react-router", () => ({
   useFetcher: () => ({
     state: fetcherMock.state,
     data: fetcherMock.data,
+    submit: fetcherMock.submit,
     Form: "form",
   }),
 }))
@@ -37,7 +39,7 @@ describe("InviteMemberDialog", () => {
     vi.clearAllMocks()
   })
 
-  it("shows the live Team seat billing notice when invites add seats", async () => {
+  it("requires a separate Stripe capacity purchase when invites exceed paid seats", async () => {
     const user = userEvent.setup()
     render(
       <InviteMemberDialog
@@ -55,19 +57,25 @@ describe("InviteMemberDialog", () => {
 
     await user.type(screen.getByPlaceholderText("Type or paste emails..."), "ana@example.com{enter}")
 
-    expect(screen.getByText("Adding 1 seat to your Team plan")).toBeInTheDocument()
+    expect(screen.getByText("Buy 1 more seat first")).toBeInTheDocument()
+    expect(screen.getByText(/You have 3 paid seats/)).toBeInTheDocument()
+    await user.click(screen.getByRole("button", { name: "Buy 1 seat in Stripe" }))
+    expect(fetcherMock.submit).toHaveBeenCalledWith(
+      { intent: "buyTeamCapacity", requestedInviteCount: "1" },
+      { method: "post" },
+    )
     expect(
-      screen.getByText(
-        "Your Team subscription will go from 3 to 4 seats. We'll bill a prorated amount for the rest of your current billing period today, and your future monthly invoices will increase by $50.00.",
+      screen.getAllByRole("button", { name: "Send invite" }).every(
+        (button) => button.hasAttribute("disabled"),
       ),
-    ).toBeInTheDocument()
+    ).toBe(true)
   })
 
   it("hides the Team seat billing notice by default", () => {
     render(<InviteMemberDialog open={true} onOpenChange={vi.fn()} />)
 
     expect(
-      screen.queryByText("Adding 1 seat to your Team plan"),
+      screen.queryByText("Buy 1 more seat first"),
     ).not.toBeInTheDocument()
   })
 
@@ -89,8 +97,8 @@ describe("InviteMemberDialog", () => {
 
     await user.type(screen.getByPlaceholderText("Type or paste emails..."), "ana@example.com{enter}")
 
-    expect(screen.getByText("No billing change")).toBeInTheDocument()
-    expect(screen.queryByText("Billing update is paused")).not.toBeInTheDocument()
+    expect(screen.getByText("Seats available")).toBeInTheDocument()
+    expect(screen.queryByText("Subscription needs attention")).not.toBeInTheDocument()
     expect(
       screen.getAllByRole("button", { name: "Send invite" }).every((button) => !button.hasAttribute("disabled")),
     ).toBe(true)
@@ -114,7 +122,7 @@ describe("InviteMemberDialog", () => {
 
     await user.type(screen.getByPlaceholderText("Type or paste emails..."), "ana@example.com{enter}")
 
-    expect(screen.getByText("Billing update is paused")).toBeInTheDocument()
+    expect(screen.getByText("Subscription needs attention")).toBeInTheDocument()
     expect(
       screen.getAllByRole("button", { name: "Send invite" }).every((button) => button.hasAttribute("disabled")),
     ).toBe(true)
@@ -149,41 +157,7 @@ describe("InviteMemberDialog", () => {
     })
   })
 
-  it("updates disclosed billing fields when submit commits pending text", async () => {
-    const user = userEvent.setup()
-    render(
-      <InviteMemberDialog
-        open={true}
-        onOpenChange={vi.fn()}
-        teamInviteBillingContext={{
-          occupiedSeatCount: 3,
-          coveredSeatCount: 3,
-          unitMonthlyAmountCents: 5000,
-          minimumSeats: 3,
-          syncable: true,
-        }}
-      />,
-    )
-
-    const input = document.querySelector<HTMLInputElement>("#invite-emails")!
-    await user.type(input, "ana@example.com{enter}ben@example.com{enter}cam@example.com")
-
-    expect(
-      document.querySelector<HTMLInputElement>('input[name="disclosed_added_seat_count"]')?.value,
-    ).toBe("2")
-
-    fireEvent.submit(document.querySelector("form")!)
-
-    expect(
-      document.querySelector<HTMLInputElement>('input[name="disclosed_added_seat_count"]')?.value,
-    ).toBe("3")
-    expect(
-      document.querySelector<HTMLInputElement>('input[name="disclosed_next_seat_count"]')?.value,
-    ).toBe("6")
-    expect(document.querySelectorAll('input[name="emails"]')).toHaveLength(3)
-  })
-
-  it("uses the server billing snapshot when resubmitting after stale billing", async () => {
+  it("uses an atomic server capacity conflict to refresh the buy-seats state", async () => {
     const user = userEvent.setup()
     const dialogProps = {
       open: true,
@@ -198,14 +172,14 @@ describe("InviteMemberDialog", () => {
     }
     const view = render(<InviteMemberDialog {...dialogProps} />)
 
-    await user.type(screen.getByPlaceholderText("Type or paste emails..."), "ana@example.com{enter}")
-    expect(
-      document.querySelector<HTMLInputElement>('input[name="disclosed_added_seat_count"]')?.value,
-    ).toBe("1")
+    await user.type(
+      screen.getByPlaceholderText("Type or paste emails..."),
+      "ana@example.com{enter}",
+    )
 
     fetcherMock.data = {
       success: false,
-      error: "stale_billing_context",
+      error: "insufficient_paid_seats",
       billing: {
         coveredSeatCount: 3,
         occupiedSeatCount: 4,
@@ -217,17 +191,11 @@ describe("InviteMemberDialog", () => {
     }
     view.rerender(<InviteMemberDialog {...dialogProps} />)
 
-    expect(await screen.findByText("Billing changed since you opened this")).toBeInTheDocument()
-    fireEvent.submit(document.querySelector("form")!)
-
+    expect(await screen.findByText("Buy 2 more seats first")).toBeInTheDocument()
     expect(
-      document.querySelector<HTMLInputElement>('input[name="disclosed_added_seat_count"]')?.value,
-    ).toBe("2")
-    expect(
-      document.querySelector<HTMLInputElement>('input[name="disclosed_next_seat_count"]')?.value,
-    ).toBe("5")
+      screen.getByRole("button", { name: "Buy 2 seats in Stripe" }),
+    ).toBeInTheDocument()
   })
-
   it("closes after invitations are created even when email delivery fails", () => {
     const onOpenChange = vi.fn()
     fetcherMock.data = {

@@ -316,33 +316,6 @@ export const GrantOrgCreditsResponseSchema = z.object({
   billing_credit_grant_total_cents: z.number().int(),
 });
 
-export const ReconcileSubscriptionInvoicesBodySchema = z.object({
-  invoice_ids: z.array(z.string().trim().min(1)).min(1).max(100),
-  apply: z.boolean().optional().default(false),
-});
-
-export const ReconcileSubscriptionInvoiceResultSchema = z.object({
-  invoice_id: z.string(),
-  status: z.enum(["ignored", "preview", "processed", "duplicate", "failed"]),
-  subscription_id: z.string().nullable(),
-  org_id: z.string().nullable(),
-  billing_reason: z.string().nullable(),
-  plan: z.string().nullable(),
-  seat_count: z.number().int().nullable(),
-  source: z.string().nullable(),
-  computed_grant_cents: z.number().int().nullable(),
-  credited_grant_cents: z.number().int().nullable(),
-  old_kv_marker: z.boolean().nullable(),
-  last_invoice_marker: z.string().nullable(),
-  ledger_status: z.string().nullable(),
-  reason: z.string().nullable(),
-});
-
-export const ReconcileSubscriptionInvoicesResponseSchema = z.object({
-  mode: z.enum(["dry-run", "apply"]),
-  results: z.array(ReconcileSubscriptionInvoiceResultSchema),
-});
-
 export const RefreshOrgCustomDomainBodySchema = z.object({
   include_active: z.boolean().optional().default(false),
 });

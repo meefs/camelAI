@@ -11,22 +11,13 @@ import {
   retrieveCanonicalStripeInvoice,
   STRIPE_API_VERSION,
   syncOrgSubscriptionFromStripe,
-  syncTeamSubscriptionSeatCount,
-  updateActiveStripeSubscriptionPlan,
+  createSubscriptionUpdatePortalSession,
   type StripeBillingEnv,
   type StripeInvoice,
   type StripeSubscription,
 } from "@/lib/billing.server";
 import type { Organization } from "@/types";
 import { handleStripeWebhook } from "../workers/main/src/routes/billing";
-import type {
-  TeamSeatMutationAcquireInput,
-  TeamSeatMutationAcquireResult,
-  TeamSeatMutationCompleteInput,
-  TeamSeatMutationCompleteResult,
-  TeamSeatMutationFenceInput,
-  TeamSeatMutationFenceResult,
-} from "../workers/main/src/auth";
 
 /**
  * Opt-in tests against Stripe test mode.
@@ -149,23 +140,6 @@ interface MutableOrgStub {
   updateBillingState: (
     state: Partial<Organization>,
   ) => Promise<Organization>;
-  acquireTeamSeatMutation: (
-    input: TeamSeatMutationAcquireInput,
-  ) => Promise<TeamSeatMutationAcquireResult>;
-  refreshTeamSeatMutation: (
-    input: TeamSeatMutationFenceInput,
-  ) => Promise<TeamSeatMutationFenceResult>;
-  confirmTeamSeatMutationTarget: (
-    input: TeamSeatMutationFenceInput,
-  ) => Promise<TeamSeatMutationFenceResult>;
-  completeTeamSeatMutation: (
-    input: TeamSeatMutationCompleteInput,
-  ) => Promise<TeamSeatMutationCompleteResult>;
-  abortTeamSeatMutation: (input: {
-    operationId: string;
-    subscriptionId: string;
-    revision: number;
-  }) => Promise<boolean>;
   syncSubscriptionBillingState: (
     state: Partial<Organization>,
     trialCreditGrantCents: number,
@@ -509,30 +483,6 @@ function parseCheckoutSessionId(url: string): string {
   return decodeURIComponent(match[1]);
 }
 
-async function captureStripePostBody<T>(
-  path: string,
-  operation: () => Promise<T>,
-): Promise<{ result: T; body: URLSearchParams }> {
-  const originalFetch = globalThis.fetch;
-  let capturedBody: string | null = null;
-  globalThis.fetch = async (input, init) => {
-    const url = typeof input === "string" ? input : input.toString();
-    if (url.endsWith(path) && init?.method === "POST") {
-      capturedBody = typeof init.body === "string" ? init.body : null;
-    }
-    return originalFetch(input, init);
-  };
-  try {
-    const result = await operation();
-    if (capturedBody === null) {
-      throw new Error(`Did not capture Stripe POST ${path}.`);
-    }
-    return { result, body: new URLSearchParams(capturedBody) };
-  } finally {
-    globalThis.fetch = originalFetch;
-  }
-}
-
 async function stripeSignature(
   payload: string,
   secret: string,
@@ -617,179 +567,11 @@ function makeEnv(args: {
   let currentOrg = args.org;
   const invoiceGrants = new Map<string, LocalSubscriptionInvoiceGrant>();
   const kv = new Map<string, string>();
-  let teamSeatMutationRevision = 0;
-  let teamSeatMutationOwner: {
-    operationId: string;
-    subscriptionId: string;
-    revision: number;
-    mode: "exact" | "ensure_at_least";
-    confirmedTargetSeatCount: number | null;
-  } | null = null;
-  let confirmedTeamSeatFloor = Math.max(
-    3,
-    Math.floor(currentOrg.billing_seat_count ?? 3),
-  );
-  const teamSeatReservations = new Map<string, number>();
-  const normalizeTeamSeats = (seatCount: number | null | undefined) =>
-    Math.max(3, Math.floor(seatCount ?? 3));
-  const requiredTeamSeatFloor = (mode: "exact" | "ensure_at_least") =>
-    Math.max(
-      mode === "ensure_at_least" ? confirmedTeamSeatFloor : 3,
-      3,
-      ...teamSeatReservations.values(),
-    );
   const orgStub: MutableOrgStub = {
     getInfo: async () => currentOrg,
     updateBillingState: async (state) => {
       currentOrg = { ...currentOrg, ...state };
       return currentOrg;
-    },
-    acquireTeamSeatMutation: async (input) => {
-      if (input.mode === "ensure_at_least") {
-        teamSeatReservations.set(
-          input.operationId,
-          Math.max(
-            teamSeatReservations.get(input.operationId) ?? 3,
-            normalizeTeamSeats(input.requestedSeatCount),
-          ),
-        );
-      }
-      if (
-        teamSeatMutationOwner &&
-        teamSeatMutationOwner.operationId !== input.operationId
-      ) {
-        return {
-          status: "busy",
-          requiredSeatFloor: requiredTeamSeatFloor(input.mode),
-          retryAfterMs: 10,
-        };
-      }
-      if (!teamSeatMutationOwner) {
-        teamSeatMutationRevision += 1;
-        teamSeatMutationOwner = {
-          operationId: input.operationId,
-          subscriptionId: input.subscriptionId,
-          revision: teamSeatMutationRevision,
-          mode: input.mode,
-          confirmedTargetSeatCount: null,
-        };
-      }
-      return {
-        status: "acquired",
-        revision: teamSeatMutationOwner.revision,
-        requiredSeatFloor: requiredTeamSeatFloor(input.mode),
-        leaseExpiresAt: Date.now() + 300_000,
-      };
-    },
-    refreshTeamSeatMutation: async (input) => {
-      const owner = teamSeatMutationOwner;
-      if (
-        !owner ||
-        owner.operationId !== input.operationId ||
-        owner.subscriptionId !== input.subscriptionId ||
-        owner.revision !== input.revision
-      ) {
-        return { status: "lost" };
-      }
-      if (
-        owner.mode === "ensure_at_least" &&
-        input.requestedSeatCount !== undefined
-      ) {
-        teamSeatReservations.set(
-          input.operationId,
-          Math.max(
-            teamSeatReservations.get(input.operationId) ?? 3,
-            normalizeTeamSeats(input.requestedSeatCount),
-          ),
-        );
-      }
-      const requiredSeatFloor = requiredTeamSeatFloor(owner.mode);
-      if (
-        input.targetSeatCount !== undefined &&
-        normalizeTeamSeats(input.targetSeatCount) < requiredSeatFloor
-      ) {
-        return {
-          status: "target_too_low",
-          requiredSeatFloor,
-          confirmedTargetSeatCount: owner.confirmedTargetSeatCount,
-          leaseExpiresAt: Date.now() + 300_000,
-        };
-      }
-      if (
-        input.targetSeatCount !== undefined &&
-        owner.confirmedTargetSeatCount !==
-          normalizeTeamSeats(input.targetSeatCount)
-      ) {
-        return { status: "lost" };
-      }
-      return {
-        status: "active",
-        requiredSeatFloor,
-        confirmedTargetSeatCount: owner.confirmedTargetSeatCount,
-        leaseExpiresAt: Date.now() + 300_000,
-      };
-    },
-    confirmTeamSeatMutationTarget: async (input) => {
-      const owner = teamSeatMutationOwner;
-      if (
-        !owner ||
-        owner.operationId !== input.operationId ||
-        owner.subscriptionId !== input.subscriptionId ||
-        owner.revision !== input.revision
-      ) {
-        return { status: "lost" };
-      }
-      const requiredSeatFloor = requiredTeamSeatFloor(owner.mode);
-      const targetSeatCount = normalizeTeamSeats(input.targetSeatCount);
-      if (targetSeatCount < requiredSeatFloor) {
-        return {
-          status: "target_too_low",
-          requiredSeatFloor,
-          confirmedTargetSeatCount: owner.confirmedTargetSeatCount,
-          leaseExpiresAt: Date.now() + 300_000,
-        };
-      }
-      owner.confirmedTargetSeatCount = targetSeatCount;
-      return {
-        status: "active",
-        requiredSeatFloor,
-        confirmedTargetSeatCount: targetSeatCount,
-        leaseExpiresAt: Date.now() + 300_000,
-      };
-    },
-    completeTeamSeatMutation: async (input) => {
-      const owner = teamSeatMutationOwner;
-      if (
-        !owner ||
-        owner.operationId !== input.operationId ||
-        owner.subscriptionId !== input.subscriptionId ||
-        owner.revision !== input.revision
-      ) {
-        return { status: "lost" };
-      }
-      const targetSeatCount = normalizeTeamSeats(input.targetSeatCount);
-      const requiredSeatFloor = requiredTeamSeatFloor(owner.mode);
-      if (
-        targetSeatCount < requiredSeatFloor ||
-        owner.confirmedTargetSeatCount !== targetSeatCount
-      ) {
-        return { status: "target_too_low", requiredSeatFloor };
-      }
-      confirmedTeamSeatFloor = targetSeatCount;
-      teamSeatReservations.delete(input.operationId);
-      teamSeatMutationOwner = null;
-      return { status: "completed" };
-    },
-    abortTeamSeatMutation: async (input) => {
-      teamSeatReservations.delete(input.operationId);
-      if (
-        teamSeatMutationOwner?.operationId === input.operationId &&
-        teamSeatMutationOwner.revision === input.revision
-      ) {
-        teamSeatMutationOwner = null;
-        return true;
-      }
-      return false;
     },
     syncSubscriptionBillingState: async (state, trialCreditGrantCents) => {
       const existingTrialUsed = Boolean(
@@ -889,11 +671,18 @@ function makeEnv(args: {
       get: async (key: string) => kv.get(key) ?? null,
       put: async (key: string, value: string) => {
         kv.set(key, value);
+        const configurationId = (() => {
+          try {
+            return (JSON.parse(value) as { id?: string }).id ?? null;
+          } catch {
+            return value.startsWith("bpc_") ? value : null;
+          }
+        })();
         if (
-          value.startsWith("bpc_") &&
-          !portalConfigurationIds.includes(value)
+          configurationId &&
+          !portalConfigurationIds.includes(configurationId)
         ) {
-          portalConfigurationIds.push(value);
+          portalConfigurationIds.push(configurationId);
         }
       },
     } as unknown as KVNamespace,
@@ -1086,8 +875,8 @@ describeStripe("Stripe billing integration", () => {
     expect(portalUrl).toMatch(/^https:\/\/billing\.stripe\.com\//);
   }, 60_000);
 
-  it("runs paid upgrades through real Portal config, invoice resolution, and an idempotent ledger", async () => {
-    const orgId = `${runId}-paid-upgrades`;
+  it("creates a real Stripe-hosted exact Team capacity change", async () => {
+    const orgId = `${runId}-hosted-team-capacity`;
     const customer = await createStripeCustomer(`${orgId}@example.com`, orgId);
     customerIds.push(customer.id);
     const paymentMethod = await createCardPaymentMethod("tok_visa");
@@ -1103,7 +892,6 @@ describeStripe("Stripe billing integration", () => {
       includedCreditCents: 1000,
     });
     subscriptionIds.push(subscription.id);
-    expect(subscription.status).toBe("active");
 
     const org = makeOrg(orgId, {
       billing_status: "active",
@@ -1115,279 +903,24 @@ describeStripe("Stripe billing integration", () => {
     });
     const env = makeEnv({ org, memberCount: 3 });
 
-    const [upgradeConfigurationId, downgradeConfigurationId] =
-      await Promise.all([
-        getOrCreateBillingPortalConfiguration(env, "upgrade"),
-        getOrCreateBillingPortalConfiguration(env, "downgrade"),
-      ]);
-    const [upgradeConfiguration, downgradeConfiguration] = await Promise.all([
-      stripeRequest<StripePortalConfiguration>(
-        `/billing_portal/configurations/${upgradeConfigurationId}?expand[]=features.subscription_update.products`,
-      ),
-      stripeRequest<StripePortalConfiguration>(
-        `/billing_portal/configurations/${downgradeConfigurationId}?expand[]=features.subscription_update.products`,
-      ),
-    ]);
-    expect(upgradeConfiguration.features.subscription_update).toMatchObject({
-      enabled: true,
-      proration_behavior: "always_invoice",
-    });
-    expect(downgradeConfiguration.features.subscription_update).toMatchObject({
-      enabled: true,
-      proration_behavior: "none",
-    });
-    for (const configuration of [
-      upgradeConfiguration,
-      downgradeConfiguration,
-    ]) {
-      expect(
-        configuration.features.subscription_update?.default_allowed_updates,
-      ).toEqual(["price"]);
-      const products =
-        configuration.features.subscription_update?.products ?? [];
-      expect(products.flatMap((product) => product.prices ?? [])).toEqual(
-        expect.arrayContaining([
-          testPrices.starter,
-          testPrices.pro,
-          testPrices.team,
-        ]),
-      );
-      expect(
-        products.every(
-          (product) => product.adjustable_quantity?.enabled === false,
-        ),
-      ).toBe(true);
-    }
-
-    const starterSubscription = await fetchSubscription(subscription.id);
-    const subscriptionItem = starterSubscription.items?.data?.[0];
-    expect(subscriptionItem?.id).toBeTruthy();
-    const invoiceIdsBeforePro = new Set(
-      (await listSubscriptionInvoices(subscription.id)).map(
-        (invoice) => invoice.id,
-      ),
-    );
-    const proUpdate = await captureStripePostBody(
-      `/subscriptions/${subscription.id}`,
-      () =>
-        updateActiveStripeSubscriptionPlan({
-          env,
-          org,
-          plan: "pro",
-        }),
-    );
-    expect(proUpdate.body.get("items[0][id]")).toBe(subscriptionItem!.id);
-    expect(proUpdate.body.get("items[0][price]")).toBe(testPrices.pro);
-    expect(proUpdate.body.get("items[0][quantity]")).toBe("1");
-    expect(proUpdate.body.get("proration_behavior")).toBe("always_invoice");
-    expect(proUpdate.body.get("payment_behavior")).toBe(
-      "error_if_incomplete",
-    );
-    const proInvoice = await waitForNewSubscriptionInvoice({
-      subscriptionId: subscription.id,
-      billingReason: "subscription_update",
-      excludedInvoiceIds: invoiceIdsBeforePro,
-    });
-    expect(proInvoice.status).toBe("paid");
-
-    const proCanonical = await retrieveCanonicalStripeInvoice({
+    const portalUrl = await createSubscriptionUpdatePortalSession({
       env,
-      invoiceId: proInvoice.id,
-    });
-    const catalog = await loadCanonicalPaidPlanCatalog(env);
-    const liveProSubscription = await fetchSubscription(subscription.id);
-    const proResolution = resolveSubscriptionInvoiceGrant({
-      env,
-      ...proCanonical,
-      subscription: liveProSubscription,
-      catalog,
-      orgId,
-      customerId: customer.id,
-      customerMetadata: { org_id: orgId },
-    });
-    expect(proResolution.command).toMatchObject({
-      plan: "pro",
-      seatCount: 1,
-      source: "plan_change",
-      grantCents: 3000,
-    });
-    await expect(
-      processPaidSubscriptionInvoice(env, proInvoice.id),
-    ).resolves.toMatchObject({ status: "processed", grantCents: 3000 });
-    await expect(
-      processPaidSubscriptionInvoice(env, proInvoice.id),
-    ).resolves.toMatchObject({ status: "duplicate", grantCents: 0 });
-
-    const invoiceIdsBeforeTeam = new Set(
-      (await listSubscriptionInvoices(subscription.id)).map(
-        (invoice) => invoice.id,
-      ),
-    );
-    const teamUpdate = await captureStripePostBody(
-      `/subscriptions/${subscription.id}`,
-      () =>
-        updateActiveStripeSubscriptionPlan({
-          env,
-          org,
-          plan: "team",
-        }),
-    );
-    expect(teamUpdate.body.get("items[0][id]")).toBe(subscriptionItem!.id);
-    expect(teamUpdate.body.get("items[0][price]")).toBe(testPrices.team);
-    expect(teamUpdate.body.get("items[0][quantity]")).toBe("3");
-    expect(teamUpdate.body.get("proration_behavior")).toBe("always_invoice");
-    expect(teamUpdate.body.get("payment_behavior")).toBe(
-      "error_if_incomplete",
-    );
-    const teamInvoice = await waitForNewSubscriptionInvoice({
-      subscriptionId: subscription.id,
-      billingReason: "subscription_update",
-      excludedInvoiceIds: invoiceIdsBeforeTeam,
-    });
-    expect(teamInvoice.status).toBe("paid");
-    const teamCanonical = await retrieveCanonicalStripeInvoice({
-      env,
-      invoiceId: teamInvoice.id,
-    });
-    const liveTeamSubscription = await fetchSubscription(subscription.id);
-    const teamResolution = resolveSubscriptionInvoiceGrant({
-      env,
-      ...teamCanonical,
-      subscription: liveTeamSubscription,
-      catalog,
-      orgId,
-      customerId: customer.id,
-      customerMetadata: { org_id: orgId },
-    });
-    expect(teamResolution.command).toMatchObject({
+      org,
       plan: "team",
       seatCount: 3,
-      source: "plan_change",
-      grantCents: 11000,
-    });
-    await expect(
-      processPaidSubscriptionInvoice(env, teamInvoice.id),
-    ).resolves.toMatchObject({ status: "processed", grantCents: 11000 });
-    await expect(
-      processPaidSubscriptionInvoice(env, teamInvoice.id),
-    ).resolves.toMatchObject({ status: "duplicate", grantCents: 0 });
-    await expect(env.orgStub.getInfo()).resolves.toMatchObject({
-      billing_plan: "team",
-      billing_seat_count: 3,
-      billing_credit_grant_total_cents: 14000,
-    });
-    expect(env.orgStub.getSubscriptionInvoiceGrantCount()).toBe(2);
-
-    const webhookResponse = await sendNextVersionPaidWebhook({
-      env,
-      invoiceId: teamInvoice.id,
-    });
-    expect(webhookResponse.status).toBe(200);
-    expect(env.orgStub.getSubscriptionInvoiceGrantCount()).toBe(2);
-    await expect(env.orgStub.getInfo()).resolves.toMatchObject({
-      billing_credit_grant_total_cents: 14000,
+      returnUrl: "https://example.com/settings/organization/team",
     });
 
-    const invoiceIdsBeforeDowngrade = new Set(
-      (await listSubscriptionInvoices(subscription.id)).map(
-        (invoice) => invoice.id,
-      ),
-    );
-    const downgradeUpdate = await captureStripePostBody(
-      `/subscriptions/${subscription.id}`,
-      () =>
-        updateActiveStripeSubscriptionPlan({
-          env,
-          org,
-          plan: "pro",
-        }),
-    );
-    expect(downgradeUpdate.body.get("items[0][price]")).toBe(testPrices.pro);
-    expect(downgradeUpdate.body.get("items[0][quantity]")).toBe("1");
-    expect(downgradeUpdate.body.get("proration_behavior")).toBe("none");
-    expect(downgradeUpdate.body.has("payment_behavior")).toBe(false);
-    const invoicesAfterDowngrade = await listSubscriptionInvoices(
-      subscription.id,
-    );
-    expect(
-      invoicesAfterDowngrade.filter(
-        (invoice) => !invoiceIdsBeforeDowngrade.has(invoice.id),
-      ),
-    ).toEqual([]);
-    await expect(env.orgStub.getInfo()).resolves.toMatchObject({
-      billing_plan: "pro",
-      billing_seat_count: 1,
-      billing_credit_grant_total_cents: 14000,
-    });
-    expect(env.orgStub.getSubscriptionInvoiceGrantCount()).toBe(2);
-  }, 120_000);
-
-  it("does not commit or grant a paid update when Stripe declines payment", async () => {
-    const orgId = `${runId}-failed-payment`;
-    const customer = await createStripeCustomer(`${orgId}@example.com`, orgId);
-    customerIds.push(customer.id);
-    const goodPaymentMethod = await createCardPaymentMethod("tok_visa");
-    await attachPaymentMethod(goodPaymentMethod.id, customer.id);
-    await setCustomerDefaultPaymentMethod(customer.id, goodPaymentMethod.id);
-    const subscription = await createPaidSubscription({
-      customer: customer.id,
-      paymentMethod: goodPaymentMethod.id,
-      price: testPrices.starter,
-      quantity: 1,
-      orgId,
-      plan: "starter",
-      includedCreditCents: 1000,
-    });
-    subscriptionIds.push(subscription.id);
-
-    const org = makeOrg(orgId, {
-      billing_status: "active",
-      billing_plan: "starter",
-      billing_seat_count: 1,
-      billing_customer_id: customer.id,
-      billing_subscription_id: subscription.id,
-      billing_subscription_status: "active",
-    });
-    const env = makeEnv({ org });
-    const declinedPaymentMethod =
-      await createCardPaymentMethod("tok_chargeCustomerFail");
-    await attachPaymentMethod(declinedPaymentMethod.id, customer.id);
-    await setSubscriptionDefaultPaymentMethod(
-      subscription.id,
-      declinedPaymentMethod.id,
-    );
-
-    const invoiceIdsBefore = new Set(
-      (await listSubscriptionInvoices(subscription.id)).map(
-        (invoice) => invoice.id,
-      ),
-    );
-    await expect(
-      updateActiveStripeSubscriptionPlan({
-        env,
-        org,
-        plan: "pro",
-      }),
-    ).rejects.toThrow(/subscriptions.*returned 402/i);
-
-    const liveAfter = await fetchSubscription(subscription.id);
-    expect(liveAfter.items?.data?.[0]?.price).toMatchObject({
+    expect(portalUrl).toMatch(/^https:\/\/billing\.stripe\.com\//);
+    const unchangedSubscription = await fetchSubscription(subscription.id);
+    expect(unchangedSubscription.items?.data?.[0]?.price).toMatchObject({
       id: testPrices.starter,
     });
-    const newInvoices = (
-      await listSubscriptionInvoices(subscription.id)
-    ).filter((invoice) => !invoiceIdsBefore.has(invoice.id));
-    expect(newInvoices.some((invoice) => invoice.status === "paid")).toBe(
-      false,
-    );
     await expect(env.orgStub.getInfo()).resolves.toMatchObject({
       billing_plan: "starter",
       billing_seat_count: 1,
-      billing_credit_grant_total_cents: 0,
     });
-    expect(env.orgStub.getSubscriptionInvoiceGrantCount()).toBe(0);
-  }, 120_000);
-
+  }, 60_000);
   it("grants a real paid renewal invoice exactly once", async () => {
     const orgId = `${runId}-renewal`;
     const frozenTime = Math.floor(Date.now() / 1000);
@@ -1531,43 +1064,4 @@ describeStripe("Stripe billing integration", () => {
     });
   }, 60_000);
 
-  it("updates real Stripe team subscription quantity and per-seat credit metadata", async () => {
-    const orgId = `${runId}-team-seats`;
-    const customer = await createStripeCustomer(`${orgId}@example.com`, orgId);
-    customerIds.push(customer.id);
-
-    const subscription = await createTrialSubscription({
-      customer: customer.id,
-      price: testPrices.team,
-      quantity: 3,
-      orgId,
-      plan: "team",
-      includedCreditCents: 15000,
-    });
-    subscriptionIds.push(subscription.id);
-
-    const org = makeOrg(orgId, {
-      billing_status: "trialing",
-      billing_plan: "team",
-      billing_customer_id: customer.id,
-      billing_subscription_id: subscription.id,
-      billing_subscription_status: subscription.status,
-      billing_seat_count: 3,
-    });
-    const env = makeEnv({ org, memberCount: 4 });
-
-    await syncTeamSubscriptionSeatCount(env, orgId);
-
-    await expect(env.orgStub.getInfo()).resolves.toMatchObject({
-      billing_seat_count: 4,
-    });
-
-    const updatedSubscription = await fetchSubscription(subscription.id);
-    expect(updatedSubscription.metadata).toMatchObject({
-      billing_plan: "team",
-      seat_count: "4",
-      subscription_included_credit_cents: "20000",
-    });
-    expect(updatedSubscription.items?.data?.[0]?.quantity).toBe(4);
-  }, 60_000);
 });

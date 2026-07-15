@@ -123,34 +123,11 @@ export function TeamTable({
   const upgradeCurrentPlan: "free" | "starter" | "pro" =
     currentPlan === "starter" || currentPlan === "pro" ? currentPlan : "free"
 
-  // Removing a member or canceling a pending invite frees one occupied seat,
-  // which the team route's bestEffortSyncTeamSubscriptionSeatCount call then
-  // pushes down to Stripe (clamped to the team minimum). Surface that
-  // projected change in the confirm dialogs so admins know what to expect.
-  const seatDecreaseNote = useMemo(() => {
-    if (!teamInviteBillingContext) return null
-    if (!teamInviteBillingContext.syncable) return null
-    const { coveredSeatCount, occupiedSeatCount, minimumSeats } = teamInviteBillingContext
-    const projectedSeatCount = Math.max(minimumSeats, occupiedSeatCount - 1)
-    if (projectedSeatCount > coveredSeatCount) {
-      return `Your Team plan will sync from ${coveredSeatCount} to ${projectedSeatCount} seats after this change, so your bill may increase.`
-    }
-    if (projectedSeatCount === coveredSeatCount) {
-      if (coveredSeatCount <= minimumSeats) {
-        return `Your Team plan stays at the ${minimumSeats}-seat minimum, so this won't change your bill.`
-      }
-      return null
-    }
-    return `Your Team plan will go from ${coveredSeatCount} to ${projectedSeatCount} seats. You'll get a prorated credit on your next invoice.`
-  }, [teamInviteBillingContext])
+  const removeMemberDescription =
+    "This member will lose access to this organization and its workspaces. Your paid seat capacity will remain available for someone else."
 
-  const removeMemberDescription = seatDecreaseNote
-    ? `This member will lose access to this organization and its workspaces. ${seatDecreaseNote}`
-    : "This member will lose access to this organization and its workspaces."
-
-  const cancelInvitationDescription = seatDecreaseNote
-    ? `This invitation will be revoked and the recipient won't be able to accept it. ${seatDecreaseNote}`
-    : "This invitation will be revoked and the recipient won't be able to accept it."
+  const cancelInvitationDescription =
+    "This invitation will be revoked and the paid seat capacity will remain available."
 
   // Handle fetcher response - show toasts and handle special cases
   useEffect(() => {

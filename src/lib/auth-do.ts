@@ -1441,15 +1441,12 @@ export async function createInvitations(
   emails: string[],
   role: OrgRole,
   invitedBy: string,
-  options: { pendingBillingSeatAllowance?: number } = {},
 ): Promise<Array<{ id: string; email: string; expires_at: number }>> {
   if (role === "owner") {
     throw new Error("Cannot invite as owner");
   }
   const stub = env.ORG.get(env.ORG.idFromName(orgId));
-  const invitations = await stub.createInvitations(emails, role, invitedBy, {
-    pendingBillingSeatAllowance: options.pendingBillingSeatAllowance,
-  });
+  const invitations = await stub.createInvitations(emails, role, invitedBy);
   return invitations.map((invitation) => ({
     id: invitation.id,
     email: invitation.email,

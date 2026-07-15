@@ -60,8 +60,6 @@ import {
 import {
   getBillingPlanLimits,
   getOrgSeatLimit,
-  isTeamSeatBillingSyncable,
-  normalizeSeatCount,
 } from "../../../../src/lib/billing-plans";
 import { calculateEffectiveUsageCostUsd } from "../../../../src/lib/usage-pricing";
 import { dispatchAdminEvent } from "./admin-events";
@@ -618,90 +616,6 @@ export interface SubscriptionInvoiceGrantRow extends Record<string, SqlStorageVa
   created_at: number;
 }
 
-export type TeamSeatMutationMode = "exact" | "ensure_at_least";
-
-export interface TeamSeatMutationAcquireInput {
-  operationId: string;
-  subscriptionId: string;
-  mode: TeamSeatMutationMode;
-  requestedSeatCount?: number;
-  reservedSeatDelta?: number;
-}
-
-export type TeamSeatMutationAcquireResult =
-  | {
-      status: "acquired";
-      revision: number;
-      requiredSeatFloor: number;
-      leaseExpiresAt: number;
-    }
-  | {
-      status: "busy";
-      requiredSeatFloor: number;
-      retryAfterMs: number;
-    };
-
-export interface TeamSeatMutationFenceInput {
-  operationId: string;
-  subscriptionId: string;
-  revision: number;
-  requestedSeatCount?: number;
-  reservedSeatDelta?: number;
-  targetSeatCount?: number;
-}
-
-export type TeamSeatMutationFenceResult =
-  | {
-      status: "active";
-      requiredSeatFloor: number;
-      confirmedTargetSeatCount: number | null;
-      leaseExpiresAt: number;
-    }
-  | { status: "lost" }
-  | {
-      status: "target_too_low";
-      requiredSeatFloor: number;
-      confirmedTargetSeatCount: number | null;
-      leaseExpiresAt: number;
-    };
-
-export interface TeamSeatMutationCompleteInput {
-  operationId: string;
-  subscriptionId: string;
-  revision: number;
-  targetSeatCount: number;
-}
-
-export type TeamSeatMutationCompleteResult =
-  | { status: "completed" }
-  | { status: "lost" }
-  | { status: "target_too_low"; requiredSeatFloor: number };
-
-interface TeamSeatMutationReservation {
-  operationId: string;
-  seatCount: number;
-  baseSeatCount: number;
-  reservedSeatDelta: number;
-  expiresAt: number;
-}
-
-interface TeamSeatMutationOwner {
-  operationId: string;
-  revision: number;
-  mode: TeamSeatMutationMode;
-  expiresAt: number;
-  confirmedTargetSeatCount: number | null;
-}
-
-interface TeamSeatMutationState {
-  version: 1;
-  subscriptionId: string;
-  nextRevision: number;
-  confirmedSeatFloor: number;
-  owner: TeamSeatMutationOwner | null;
-  ensureReservations: TeamSeatMutationReservation[];
-}
-
 export interface ManualCreditGrantRecord {
   grant_id: string;
   amount_cents: number;
@@ -758,11 +672,6 @@ export class OrgDO extends DurableObject<DOEnv> {
     "workspaceTenantDataMigrated:access:";
   private static readonly WORKSPACE_INTEGRATIONS_MIGRATION_PREFIX =
     "workspaceTenantDataMigrated:integrations:";
-  private static readonly TEAM_SEAT_MUTATION_STATE_KEY =
-    "teamSeatMutationState:v1";
-  private static readonly TEAM_SEAT_MUTATION_LEASE_MS = 5 * 60 * 1000;
-  private static readonly TEAM_SEAT_RESERVATION_TTL_MS = 10 * 60 * 1000;
-
   constructor(ctx: DurableObjectState, env: DOEnv) {
     super(ctx, env);
     this.sql = ctx.storage.sql;
@@ -770,438 +679,6 @@ export class OrgDO extends DurableObject<DOEnv> {
     ctx.blockConcurrencyWhile(async () => {
       this.migrate();
     });
-  }
-
-  private normalizeTeamSeatMutationId(value: string, label: string): string {
-    const normalized = value.trim();
-    if (!normalized || normalized.length > 200) {
-      throw new Error(`${label} must be between 1 and 200 characters.`);
-    }
-    return normalized;
-  }
-
-  private readTeamSeatMutationState(
-    subscriptionId: string,
-    now: number,
-  ): TeamSeatMutationState {
-    const stored = this.ctx.storage.kv.get<TeamSeatMutationState>(
-      OrgDO.TEAM_SEAT_MUTATION_STATE_KEY,
-    );
-    if (
-      !stored ||
-      stored.version !== 1 ||
-      stored.subscriptionId !== subscriptionId
-    ) {
-      return {
-        version: 1,
-        subscriptionId,
-        nextRevision: 0,
-        confirmedSeatFloor: normalizeSeatCount("team", null),
-        owner: null,
-        ensureReservations: [],
-      };
-    }
-
-    const ensureReservations = Array.isArray(stored.ensureReservations)
-      ? stored.ensureReservations.flatMap((reservation) => {
-          if (
-            !reservation?.operationId ||
-            !Number.isFinite(reservation.seatCount) ||
-            !Number.isFinite(reservation.expiresAt) ||
-            reservation.expiresAt <= now
-          ) {
-            return [];
-          }
-          const seatCount = normalizeSeatCount("team", reservation.seatCount);
-          const reservedSeatDelta = Number.isFinite(
-            reservation.reservedSeatDelta,
-          )
-            ? Math.max(0, Math.floor(reservation.reservedSeatDelta || 0))
-            : 0;
-          return [
-            {
-              operationId: reservation.operationId,
-              seatCount,
-              baseSeatCount: normalizeSeatCount(
-                "team",
-                reservation.baseSeatCount ?? seatCount - reservedSeatDelta,
-              ),
-              reservedSeatDelta,
-              expiresAt: reservation.expiresAt,
-            },
-          ];
-        })
-      : [];
-    const owner =
-      stored.owner &&
-      Number.isFinite(stored.owner.expiresAt) &&
-      stored.owner.expiresAt > now
-        ? stored.owner
-        : null;
-
-    return {
-      version: 1,
-      subscriptionId,
-      nextRevision: Math.max(0, Math.floor(stored.nextRevision || 0)),
-      confirmedSeatFloor: normalizeSeatCount(
-        "team",
-        stored.confirmedSeatFloor,
-      ),
-      owner,
-      ensureReservations,
-    };
-  }
-
-  private writeTeamSeatMutationState(state: TeamSeatMutationState): void {
-    this.ctx.storage.kv.put(OrgDO.TEAM_SEAT_MUTATION_STATE_KEY, state);
-  }
-
-  private resetTeamSeatMutationStateForBillingScopeChange(
-    previous: Organization,
-    next: Organization,
-  ): void {
-    if (
-      previous.billing_subscription_id !== next.billing_subscription_id ||
-      !isTeamSeatBillingSyncable(previous) ||
-      !isTeamSeatBillingSyncable(next)
-    ) {
-      this.ctx.storage.kv.delete(OrgDO.TEAM_SEAT_MUTATION_STATE_KEY);
-    }
-  }
-
-  private getTeamSeatMutationRequiredFloor(
-    state: TeamSeatMutationState,
-    mode: TeamSeatMutationMode,
-  ): number {
-    const absoluteReservationFloor = state.ensureReservations.reduce(
-      (maximum, reservation) => Math.max(maximum, reservation.seatCount),
-      normalizeSeatCount("team", null),
-    );
-    const additiveReservations = state.ensureReservations.filter(
-      (reservation) => reservation.reservedSeatDelta > 0,
-    );
-    const additiveReservationFloor = additiveReservations.length
-      ? Math.max(
-          ...additiveReservations.map((reservation) =>
-            normalizeSeatCount("team", reservation.baseSeatCount),
-          ),
-        ) +
-        additiveReservations.reduce(
-          (total, reservation) => total + reservation.reservedSeatDelta,
-          0,
-        )
-      : normalizeSeatCount("team", null);
-    const reservationFloor = Math.max(
-      absoluteReservationFloor,
-      additiveReservationFloor,
-    );
-    return mode === "ensure_at_least"
-      ? Math.max(state.confirmedSeatFloor, reservationFloor)
-      : reservationFloor;
-  }
-
-  private upsertTeamSeatReservation(
-    state: TeamSeatMutationState,
-    operationId: string,
-    requestedSeatCount: number,
-    reservedSeatDelta: number | undefined,
-    now: number,
-  ): void {
-    const seatCount = normalizeSeatCount("team", requestedSeatCount);
-    const normalizedReservedSeatDelta = Number.isFinite(reservedSeatDelta)
-      ? Math.max(0, Math.floor(reservedSeatDelta ?? 0))
-      : 0;
-    const baseSeatCount = normalizeSeatCount(
-      "team",
-      seatCount - normalizedReservedSeatDelta,
-    );
-    const existing = state.ensureReservations.find(
-      (reservation) => reservation.operationId === operationId,
-    );
-    if (existing) {
-      existing.seatCount = Math.max(existing.seatCount, seatCount);
-      existing.baseSeatCount = Math.max(existing.baseSeatCount, baseSeatCount);
-      existing.reservedSeatDelta = Math.max(
-        existing.reservedSeatDelta,
-        normalizedReservedSeatDelta,
-      );
-      existing.expiresAt = now + OrgDO.TEAM_SEAT_RESERVATION_TTL_MS;
-      return;
-    }
-    state.ensureReservations.push({
-      operationId,
-      seatCount,
-      baseSeatCount,
-      reservedSeatDelta: normalizedReservedSeatDelta,
-      expiresAt: now + OrgDO.TEAM_SEAT_RESERVATION_TTL_MS,
-    });
-  }
-
-  acquireTeamSeatMutation(
-    input: TeamSeatMutationAcquireInput,
-  ): TeamSeatMutationAcquireResult {
-    const operationId = this.normalizeTeamSeatMutationId(
-      input.operationId,
-      "Team seat mutation operation id",
-    );
-    const subscriptionId = this.normalizeTeamSeatMutationId(
-      input.subscriptionId,
-      "Stripe subscription id",
-    );
-    if (input.mode === "ensure_at_least") {
-      if (!Number.isFinite(input.requestedSeatCount)) {
-        throw new Error("An ensure Team seat mutation requires a seat count.");
-      }
-    } else if (input.mode !== "exact") {
-      throw new Error("Unknown Team seat mutation mode.");
-    }
-
-    const now = Date.now();
-    const state = this.readTeamSeatMutationState(subscriptionId, now);
-    if (input.mode === "ensure_at_least") {
-      this.upsertTeamSeatReservation(
-        state,
-        operationId,
-        input.requestedSeatCount!,
-        input.reservedSeatDelta,
-        now,
-      );
-    }
-
-    if (state.owner?.operationId === operationId) {
-      if (state.owner.mode !== input.mode) {
-        throw new Error("Team seat mutation operation id was reused.");
-      }
-      state.owner.expiresAt = now + OrgDO.TEAM_SEAT_MUTATION_LEASE_MS;
-      this.writeTeamSeatMutationState(state);
-      return {
-        status: "acquired",
-        revision: state.owner.revision,
-        requiredSeatFloor: this.getTeamSeatMutationRequiredFloor(
-          state,
-          input.mode,
-        ),
-        leaseExpiresAt: state.owner.expiresAt,
-      };
-    }
-
-    if (state.owner) {
-      this.writeTeamSeatMutationState(state);
-      return {
-        status: "busy",
-        requiredSeatFloor: this.getTeamSeatMutationRequiredFloor(
-          state,
-          input.mode,
-        ),
-        retryAfterMs: Math.max(10, state.owner.expiresAt - now),
-      };
-    }
-
-    const revision = state.nextRevision + 1;
-    state.nextRevision = revision;
-    state.owner = {
-      operationId,
-      revision,
-      mode: input.mode,
-      expiresAt: now + OrgDO.TEAM_SEAT_MUTATION_LEASE_MS,
-      confirmedTargetSeatCount: null,
-    };
-    this.writeTeamSeatMutationState(state);
-    return {
-      status: "acquired",
-      revision,
-      requiredSeatFloor: this.getTeamSeatMutationRequiredFloor(
-        state,
-        input.mode,
-      ),
-      leaseExpiresAt: state.owner.expiresAt,
-    };
-  }
-
-  refreshTeamSeatMutation(
-    input: TeamSeatMutationFenceInput,
-  ): TeamSeatMutationFenceResult {
-    return this.fenceTeamSeatMutation(input, false);
-  }
-
-  confirmTeamSeatMutationTarget(
-    input: TeamSeatMutationFenceInput,
-  ): TeamSeatMutationFenceResult {
-    return this.fenceTeamSeatMutation(input, true);
-  }
-
-  private fenceTeamSeatMutation(
-    input: TeamSeatMutationFenceInput,
-    confirmTarget: boolean,
-  ): TeamSeatMutationFenceResult {
-    const operationId = this.normalizeTeamSeatMutationId(
-      input.operationId,
-      "Team seat mutation operation id",
-    );
-    const subscriptionId = this.normalizeTeamSeatMutationId(
-      input.subscriptionId,
-      "Stripe subscription id",
-    );
-    const now = Date.now();
-    const state = this.readTeamSeatMutationState(subscriptionId, now);
-    const owner = state.owner;
-    if (
-      !owner ||
-      owner.operationId !== operationId ||
-      owner.revision !== input.revision
-    ) {
-      this.writeTeamSeatMutationState(state);
-      return { status: "lost" };
-    }
-
-    if (
-      owner.mode === "ensure_at_least" &&
-      Number.isFinite(input.requestedSeatCount)
-    ) {
-      this.upsertTeamSeatReservation(
-        state,
-        operationId,
-        input.requestedSeatCount!,
-        input.reservedSeatDelta,
-        now,
-      );
-    }
-    owner.expiresAt = now + OrgDO.TEAM_SEAT_MUTATION_LEASE_MS;
-    const requiredSeatFloor = this.getTeamSeatMutationRequiredFloor(
-      state,
-      owner.mode,
-    );
-    const targetSeatCount = Number.isFinite(input.targetSeatCount)
-      ? normalizeSeatCount("team", input.targetSeatCount)
-      : null;
-    if (targetSeatCount !== null && targetSeatCount < requiredSeatFloor) {
-      this.writeTeamSeatMutationState(state);
-      return {
-        status: "target_too_low",
-        requiredSeatFloor,
-        confirmedTargetSeatCount: owner.confirmedTargetSeatCount,
-        leaseExpiresAt: owner.expiresAt,
-      };
-    }
-    if (confirmTarget) {
-      if (targetSeatCount === null) {
-        throw new Error("A confirmed Team seat mutation target is required.");
-      }
-      owner.confirmedTargetSeatCount = targetSeatCount;
-    } else if (
-      targetSeatCount !== null &&
-      owner.confirmedTargetSeatCount !== targetSeatCount
-    ) {
-      this.writeTeamSeatMutationState(state);
-      return { status: "lost" };
-    }
-
-    this.writeTeamSeatMutationState(state);
-    return {
-      status: "active",
-      requiredSeatFloor,
-      confirmedTargetSeatCount: owner.confirmedTargetSeatCount,
-      leaseExpiresAt: owner.expiresAt,
-    };
-  }
-
-  completeTeamSeatMutation(
-    input: TeamSeatMutationCompleteInput,
-  ): TeamSeatMutationCompleteResult {
-    const operationId = this.normalizeTeamSeatMutationId(
-      input.operationId,
-      "Team seat mutation operation id",
-    );
-    const subscriptionId = this.normalizeTeamSeatMutationId(
-      input.subscriptionId,
-      "Stripe subscription id",
-    );
-    const now = Date.now();
-    const state = this.readTeamSeatMutationState(subscriptionId, now);
-    const owner = state.owner;
-    if (
-      !owner ||
-      owner.operationId !== operationId ||
-      owner.revision !== input.revision
-    ) {
-      this.writeTeamSeatMutationState(state);
-      return { status: "lost" };
-    }
-
-    const targetSeatCount = normalizeSeatCount("team", input.targetSeatCount);
-    const requiredSeatFloor = this.getTeamSeatMutationRequiredFloor(
-      state,
-      owner.mode,
-    );
-    if (
-      targetSeatCount < requiredSeatFloor ||
-      owner.confirmedTargetSeatCount !== targetSeatCount
-    ) {
-      owner.expiresAt = now + OrgDO.TEAM_SEAT_MUTATION_LEASE_MS;
-      this.writeTeamSeatMutationState(state);
-      return { status: "target_too_low", requiredSeatFloor };
-    }
-
-    state.confirmedSeatFloor = targetSeatCount;
-    const reservation = state.ensureReservations.find(
-      (candidate) => candidate.operationId === operationId,
-    );
-    if (!reservation || reservation.reservedSeatDelta === 0) {
-      state.ensureReservations = state.ensureReservations.filter(
-        (candidate) => candidate.operationId !== operationId,
-      );
-    } else {
-      reservation.expiresAt = now + OrgDO.TEAM_SEAT_RESERVATION_TTL_MS;
-    }
-    state.owner = null;
-    this.writeTeamSeatMutationState(state);
-    return { status: "completed" };
-  }
-
-  releaseTeamSeatMutationReservation(input: {
-    operationId: string;
-    subscriptionId: string;
-  }): boolean {
-    const operationId = this.normalizeTeamSeatMutationId(
-      input.operationId,
-      "Team seat mutation operation id",
-    );
-    const subscriptionId = this.normalizeTeamSeatMutationId(
-      input.subscriptionId,
-      "Stripe subscription id",
-    );
-    const state = this.readTeamSeatMutationState(subscriptionId, Date.now());
-    const previousLength = state.ensureReservations.length;
-    state.ensureReservations = state.ensureReservations.filter(
-      (reservation) => reservation.operationId !== operationId,
-    );
-    this.writeTeamSeatMutationState(state);
-    return state.ensureReservations.length !== previousLength;
-  }
-
-  abortTeamSeatMutation(input: {
-    operationId: string;
-    subscriptionId: string;
-    revision: number;
-  }): boolean {
-    const operationId = this.normalizeTeamSeatMutationId(
-      input.operationId,
-      "Team seat mutation operation id",
-    );
-    const subscriptionId = this.normalizeTeamSeatMutationId(
-      input.subscriptionId,
-      "Stripe subscription id",
-    );
-    const state = this.readTeamSeatMutationState(subscriptionId, Date.now());
-    state.ensureReservations = state.ensureReservations.filter(
-      (reservation) => reservation.operationId !== operationId,
-    );
-    const ownsMutation =
-      state.owner?.operationId === operationId &&
-      state.owner.revision === input.revision;
-    if (ownsMutation) state.owner = null;
-    this.writeTeamSeatMutationState(state);
-    return ownsMutation;
   }
 
   private getOrgIndexKey(orgId: string): string {
@@ -3035,7 +2512,6 @@ export class OrgDO extends DurableObject<DOEnv> {
     normalizeOrgBillingFields(nextInfo);
 
     await this.setInfo(nextInfo);
-    this.resetTeamSeatMutationStateForBillingScopeChange(info, nextInfo);
     return nextInfo;
   }
 
@@ -3092,10 +2568,6 @@ export class OrgDO extends DurableObject<DOEnv> {
         "INSERT OR REPLACE INTO org_info (key, value) VALUES (?, ?)",
         "data",
         JSON.stringify(nextInfo),
-      );
-      this.resetTeamSeatMutationStateForBillingScopeChange(
-        existingOrg,
-        nextInfo,
       );
 
       return { org: nextInfo, trialCreditGranted };
@@ -3564,23 +3036,27 @@ export class OrgDO extends DurableObject<DOEnv> {
     userId: string,
     role: OrgRole,
     actorId: string,
-    reservedInvitations?: number,
-    pendingBillingSeatAllowance = 0,
   ): Promise<void> {
-    const existing = await this.getMember(userId);
-    if (!existing) {
-      await this.assertSeatCapacityForNewMember(
-        reservedInvitations,
-        pendingBillingSeatAllowance,
-      );
-    }
     const now = Date.now();
-    this.sql.exec(
-      "INSERT OR REPLACE INTO members (user_id, role, joined_at) VALUES (?, ?, ?)",
-      userId,
-      role,
-      now,
-    );
+    let existing: OrgMember | null = null;
+    this.ctx.storage.transactionSync(() => {
+      existing =
+        (this.sql
+          .exec<OrgMember & Record<string, SqlStorageValue>>(
+            "SELECT user_id, role, joined_at FROM members WHERE user_id = ?",
+            userId,
+          )
+          .next().value as OrgMember | undefined) ?? null;
+      if (!existing) {
+        this.assertSeatCapacityForNewMember();
+      }
+      this.sql.exec(
+        "INSERT OR REPLACE INTO members (user_id, role, joined_at) VALUES (?, ?, ?)",
+        userId,
+        role,
+        now,
+      );
+    });
     if (!existing) {
       this.log("member_added", actorId, userId, { role });
       const info = await this.getInfo();
@@ -3594,23 +3070,15 @@ export class OrgDO extends DurableObject<DOEnv> {
     }
   }
 
-  private async assertSeatCapacityForNewMember(
-    reservedInvitations?: number,
-    pendingBillingSeatAllowance = 0,
-  ): Promise<void> {
-    await this.assertSeatCapacityForAdditionalMembers(
-      1,
-      reservedInvitations,
-      pendingBillingSeatAllowance,
-    );
+  private assertSeatCapacityForNewMember(): void {
+    this.assertSeatCapacityForAdditionalMembers(1);
   }
 
-  private async assertSeatCapacityForAdditionalMembers(
+  private assertSeatCapacityForAdditionalMembers(
     additionalSeatCount: number,
     reservedInvitations?: number,
-    pendingBillingSeatAllowance = 0,
-  ): Promise<void> {
-    const info = await this.getInfo();
+  ): void {
+    const info = this.getInfoSync();
     if (!info) return;
 
     const seatLimit = getOrgSeatLimit(info);
@@ -3629,18 +3097,11 @@ export class OrgDO extends DurableObject<DOEnv> {
         )
         .next().value?.count ??
         0);
-    if (
-      currentMembers + activeInvitations + normalizedAdditionalSeatCount >
-      seatLimit + pendingBillingSeatAllowance
-    ) {
+    if (currentMembers + activeInvitations + normalizedAdditionalSeatCount > seatLimit) {
       throw new Error(
         `Your current billing plan includes ${seatLimit} seat${seatLimit === 1 ? "" : "s"}.`,
       );
     }
-  }
-
-  private getPendingBillingSeatAllowance(info: Organization): number {
-    return isTeamSeatBillingSyncable(info) ? 1 : 0;
   }
 
   async removeMember(userId: string, actorId: string): Promise<void> {
@@ -3825,48 +3286,9 @@ export class OrgDO extends DurableObject<DOEnv> {
     invitedBy: string,
     workspaceAccess?: Record<string, "full" | "none"> | null,
   ): Promise<OrgInvitation> {
-    const id = crypto.randomUUID();
-    const now = Date.now();
-    const expiresAt = now + 7 * 24 * 60 * 60 * 1000; // 7 days
-    const activeInvitations =
-      this.sql
-        .exec<{ count: number }>(
-          "SELECT COUNT(*) as count FROM invitations WHERE expires_at > ?",
-          now,
-        )
-        .next().value?.count ?? 0;
-    const info = await this.getInfo();
-    await this.assertSeatCapacityForNewMember(
-      activeInvitations,
-      info ? this.getPendingBillingSeatAllowance(info) : 0,
-    );
-
-    const invitation: OrgInvitation = {
-      id,
-      email: email.toLowerCase(),
-      role,
-      invited_by: invitedBy,
-      created_at: now,
-      expires_at: expiresAt,
-      workspace_access: workspaceAccess ?? null,
-    };
-
-    this.sql.exec(
-      "INSERT INTO invitations (id, email, role, invited_by, created_at, expires_at, workspace_access) VALUES (?, ?, ?, ?, ?, ?, ?)",
-      id,
-      email.toLowerCase(),
-      role,
-      invitedBy,
-      now,
-      expiresAt,
-      workspaceAccess ? JSON.stringify(workspaceAccess) : null,
-    );
-
-    if (info)
-      dispatchAdminEvent(this.ctx, this.env, {
-        type: "invitation_upsert",
-        payload: { ...invitation, org_id: info.id },
-      });
+    const [invitation] = await this.createInvitations([email], role, invitedBy, {
+      workspaceAccess,
+    });
     return invitation;
   }
 
@@ -3876,7 +3298,6 @@ export class OrgDO extends DurableObject<DOEnv> {
     invitedBy: string,
     options: {
       workspaceAccess?: Record<string, "full" | "none"> | null;
-      pendingBillingSeatAllowance?: number;
     } = {},
   ): Promise<OrgInvitation[]> {
     if (role === "owner") {
@@ -3893,32 +3314,6 @@ export class OrgDO extends DurableObject<DOEnv> {
     }
 
     const now = Date.now();
-    const activeInvitations =
-      this.sql
-        .exec<{ count: number }>(
-          "SELECT COUNT(*) as count FROM invitations WHERE expires_at > ?",
-          now,
-        )
-        .next().value?.count ?? 0;
-    await this.assertSeatCapacityForAdditionalMembers(
-      normalizedEmails.length,
-      activeInvitations,
-      options.pendingBillingSeatAllowance ?? 0,
-    );
-
-    for (const email of normalizedEmails) {
-      const existing = this.sql
-        .exec<{ id: string }>(
-          "SELECT id FROM invitations WHERE email = ? AND expires_at > ? LIMIT 1",
-          email,
-          now,
-        )
-        .next().value;
-      if (existing) {
-        throw new Error(`An active invitation already exists for ${email}`);
-      }
-    }
-
     const expiresAt = now + 7 * 24 * 60 * 60 * 1000;
     const workspaceAccess = options.workspaceAccess ?? null;
     const invitations = normalizedEmails.map((email) => ({
@@ -3932,6 +3327,31 @@ export class OrgDO extends DurableObject<DOEnv> {
     })) satisfies OrgInvitation[];
 
     this.ctx.storage.transactionSync(() => {
+      const activeInvitations =
+        this.sql
+          .exec<{ count: number }>(
+            "SELECT COUNT(*) as count FROM invitations WHERE expires_at > ?",
+            now,
+          )
+          .next().value?.count ?? 0;
+      this.assertSeatCapacityForAdditionalMembers(
+        normalizedEmails.length,
+        activeInvitations,
+      );
+
+      for (const email of normalizedEmails) {
+        const existing = this.sql
+          .exec<{ id: string }>(
+            "SELECT id FROM invitations WHERE email = ? AND expires_at > ? LIMIT 1",
+            email,
+            now,
+          )
+          .next().value;
+        if (existing) {
+          throw new Error(`An active invitation already exists for ${email}`);
+        }
+      }
+
       for (const invitation of invitations) {
         this.sql.exec(
           "INSERT INTO invitations (id, email, role, invited_by, created_at, expires_at, workspace_access) VALUES (?, ?, ?, ?, ?, ?, ?)",
@@ -3946,7 +3366,7 @@ export class OrgDO extends DurableObject<DOEnv> {
       }
     });
 
-    const info = await this.getInfo();
+    const info = this.getInfoSync();
     if (info) {
       for (const invitation of invitations) {
         dispatchAdminEvent(this.ctx, this.env, {
@@ -3985,38 +3405,83 @@ export class OrgDO extends DurableObject<DOEnv> {
     invitationId: string,
     userId: string,
   ): Promise<OrgInvitation | null> {
-    const invitation = await this.getInvitation(invitationId);
-    if (!invitation) return null;
-
     const now = Date.now();
-    const activeInvitationsExcludingAccepted = Math.max(
-      0,
-      (this.sql
-        .exec<{ count: number }>(
-          "SELECT COUNT(*) as count FROM invitations WHERE expires_at > ?",
+    let invitation: OrgInvitation | null = null;
+    let existingMember: OrgMember | null = null;
+    this.ctx.storage.transactionSync(() => {
+      const row = this.sql
+        .exec<{
+          id: string;
+          email: string;
+          role: OrgRole;
+          invited_by: string;
+          created_at: number;
+          expires_at: number;
+          workspace_access: string | null;
+        }>(
+          "SELECT id, email, role, invited_by, created_at, expires_at, workspace_access FROM invitations WHERE id = ? AND expires_at > ?",
+          invitationId,
           now,
         )
-        .next().value?.count ?? 0) - 1,
-    );
-    const info = await this.getInfo();
+        .next().value;
+      if (!row) return;
 
-    // Add user as member with invited role
-    await this.addMember(
-      userId,
-      invitation.role,
-      userId,
-      activeInvitationsExcludingAccepted,
-      info ? this.getPendingBillingSeatAllowance(info) : 0,
-    );
+      invitation = {
+        ...row,
+        workspace_access: row.workspace_access
+          ? JSON.parse(row.workspace_access)
+          : null,
+      };
+      existingMember =
+        (this.sql
+          .exec<OrgMember & Record<string, SqlStorageValue>>(
+            "SELECT user_id, role, joined_at FROM members WHERE user_id = ?",
+            userId,
+          )
+          .next().value as OrgMember | undefined) ?? null;
+      if (!existingMember) {
+        const activeInvitations =
+          this.sql
+            .exec<{ count: number }>(
+              "SELECT COUNT(*) as count FROM invitations WHERE expires_at > ?",
+              now,
+            )
+            .next().value?.count ?? 0;
+        this.assertSeatCapacityForAdditionalMembers(
+          1,
+          Math.max(0, activeInvitations - 1),
+        );
+      }
 
-    // Delete the invitation (single use)
-    await this.deleteInvitation(invitationId);
+      this.sql.exec(
+        "INSERT OR REPLACE INTO members (user_id, role, joined_at) VALUES (?, ?, ?)",
+        userId,
+        row.role,
+        now,
+      );
+      this.sql.exec("DELETE FROM invitations WHERE id = ?", invitationId);
+    });
 
+    const acceptedInvitation = invitation as OrgInvitation | null;
+    if (!acceptedInvitation) return null;
+    if (!existingMember) {
+      this.log("member_added", userId, userId, {
+        role: acceptedInvitation.role,
+      });
+      const info = await this.getInfo();
+      if (info) {
+        dispatchAdminEvent(this.ctx, this.env, {
+          type: "org_member_delta",
+          payload: { org_id: info.id, delta: 1 },
+        });
+      }
+      this.dispatchOrgMembershipUpsert(userId, acceptedInvitation.role, now);
+    }
     dispatchAdminEvent(this.ctx, this.env, {
       type: "invitation_delete",
       payload: { id: invitationId },
     });
-    return invitation;
+    return acceptedInvitation;
   }
 
   async getWorkspaceIntegrations(

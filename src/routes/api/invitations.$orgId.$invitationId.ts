@@ -9,7 +9,6 @@ import {
   listOrgWorkspaces,
   switchSessionOrg,
 } from '@/lib/auth-do';
-import { bestEffortEnsureTeamSubscriptionSeatCapacity } from '@/lib/billing.server';
 import { requireAccessMappedOrg } from '@/lib/cloudflare-access-auth.server';
 
 export async function loader({ params, context }: Route.LoaderArgs) {
@@ -86,18 +85,10 @@ export async function action({ request, context, params }: Route.ActionArgs) {
     const accessDenied = await requireAccessMappedOrg(request, env, session, orgId);
     if (accessDenied) return accessDenied;
 
-    await bestEffortEnsureTeamSubscriptionSeatCapacity(env, orgId, {
-      reason: 'invitation_accept_before_membership',
-    });
-
     const accepted = await acceptInvitation(authEnv, orgId, invitationId, session.user_id);
     if (!accepted) {
       return Response.json({ error: 'Invitation not found' }, { status: 404 });
     }
-
-    await bestEffortEnsureTeamSubscriptionSeatCapacity(env, orgId, {
-      reason: 'invitation_accepted',
-    });
 
     const workspaces = await listOrgWorkspaces(authEnv, orgId);
     const workspaceId = workspaces[0]?.id ?? null;

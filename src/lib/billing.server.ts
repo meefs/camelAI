@@ -12,7 +12,6 @@ import {
   getIncludedCreditCentsForPlan,
   getMinimumSeats,
   getOrgBillingPlan,
-  isTeamSeatBillingSyncable,
   normalizeBillingPlan,
   normalizeSeatCount,
 } from "@/lib/billing-plans";
@@ -23,10 +22,8 @@ const STRIPE_API_BASE = "https://api.stripe.com/v1";
 export const STRIPE_API_VERSION = "2026-06-24.dahlia";
 const CREDIT_CHECKOUT_EVENT_PREFIX = "stripe_checkout_credits:";
 const INCLUDED_CREDIT_INVOICE_EVENT_PREFIX = "stripe_invoice_included_credit:";
-const BILLING_PORTAL_CONFIGURATION_SCHEMA_VERSION = 3;
+const BILLING_PORTAL_CONFIGURATION_SCHEMA_VERSION = 4;
 const BILLING_PORTAL_CONFIGURATION_KV_PREFIX = "stripe_billing_portal_configuration:";
-const TEAM_SEAT_MUTATION_WAIT_TIMEOUT_MS = 30_000;
-const TEAM_SEAT_MUTATION_MAX_STABILIZATION_ATTEMPTS = 20;
 const LEGACY_MIGRATION_META_ORG_ID = "v2_mig_org";
 const LEGACY_MIGRATION_META_SUBSCRIPTION_ID = "v2_mig_sub";
 const LEGACY_MIGRATION_META_TARGET_PLAN = "v2_mig_plan";
@@ -1252,26 +1249,6 @@ async function fetchStripeSubscription(
   );
 }
 
-function getStripeSubscriptionItemForPlan(
-  subscription: StripeSubscription,
-  priceId: string | null,
-): StripeSubscriptionItem {
-  const items = subscription.items?.data ?? [];
-  const matchingItem = priceId
-    ? items.find((item) => getStripePriceId(item.price) === priceId)
-    : null;
-  if (priceId && !matchingItem) {
-    throw new Error(
-      `Stripe subscription does not have an item for configured price ${priceId}`,
-    );
-  }
-  const item = matchingItem ?? items[0];
-  if (!item?.id) {
-    throw new Error("Stripe subscription does not have a billable item");
-  }
-  return item;
-}
-
 function getStripeSubscriptionItemForPlanChange(
   subscription: StripeSubscription,
   currentPriceId: string | null,
@@ -1322,10 +1299,6 @@ function getSubscriptionPlanFromItems(
   return null;
 }
 
-function shouldSyncTeamSeats(org: Organization): boolean {
-  return isTeamSeatBillingSyncable(org);
-}
-
 export async function getBillableTeamSeatCount(
   env: Pick<StripeBillingEnv, "ORG">,
   orgId: string,
@@ -1356,581 +1329,6 @@ export async function getBillableTeamSeatCountForOrg(
     "team",
     memberCount + activeInvitationCount + pendingReservedSeatDelta,
   );
-}
-
-export type TeamSubscriptionSeatSyncResult =
-  | {
-      status: "not_applicable";
-      reason:
-        | "organization_not_found"
-        | "billing_not_syncable"
-        | "seat_count_unavailable"
-        | "subscription_missing";
-      org: Organization | null;
-    }
-  | {
-      status: "capacity_confirmed";
-      org: Organization;
-      requestedSeatCount: number;
-      targetSeatCount: number;
-      previousStripeSeatCount: number;
-      stripeQuantityChanged: boolean;
-      paidIncreaseConfirmed: boolean;
-      metadataSynced: boolean;
-      orgSeatStateSynced: boolean;
-      pendingBillingSeatAllowance: number;
-      seatReservation: TeamSeatCapacityReservation | null;
-    };
-
-export interface TeamSeatCapacityReservation {
-  operationId: string;
-  subscriptionId: string;
-}
-
-export interface TeamSubscriptionSeatSyncOptions {
-  pendingReservedSeatDelta?: number;
-  targetSeatCount?: number;
-  itemUpdateIdempotencyKey?: string;
-  prorationBehavior?: "create_prorations" | "always_invoice" | "none";
-}
-
-interface TeamSeatMutationLease {
-  operationId: string;
-  subscriptionId: string;
-  revision: number;
-}
-
-async function acquireTeamSeatMutationLease(args: {
-  orgStub: ReturnType<typeof getOrgStub>;
-  subscriptionId: string;
-  mode: "exact" | "ensure_at_least";
-  requestedSeatCount?: number;
-  reservedSeatDelta?: number;
-}): Promise<TeamSeatMutationLease> {
-  const operationId = crypto.randomUUID();
-  const deadline = Date.now() + TEAM_SEAT_MUTATION_WAIT_TIMEOUT_MS;
-  while (true) {
-    const result = await args.orgStub.acquireTeamSeatMutation({
-      operationId,
-      subscriptionId: args.subscriptionId,
-      mode: args.mode,
-      requestedSeatCount: args.requestedSeatCount,
-      reservedSeatDelta: args.reservedSeatDelta,
-    });
-    if (result.status === "acquired") {
-      return {
-        operationId,
-        subscriptionId: args.subscriptionId,
-        revision: result.revision,
-      };
-    }
-    if (Date.now() >= deadline) {
-      if (args.mode === "ensure_at_least") {
-        await args.orgStub
-          .abortTeamSeatMutation({
-            operationId,
-            subscriptionId: args.subscriptionId,
-            revision: 0,
-          })
-          .catch(() => false);
-      }
-      throw new Error(
-        "Timed out waiting for another Team seat billing update to finish.",
-      );
-    }
-    await new Promise((resolve) =>
-      setTimeout(resolve, Math.min(50, Math.max(10, result.retryAfterMs))),
-    );
-  }
-}
-
-async function bestEffortAbortTeamSeatMutationLease(args: {
-  env: StripeBillingEnv;
-  orgId: string;
-  lease: TeamSeatMutationLease | null;
-  operation: string;
-}): Promise<void> {
-  if (!args.lease) return;
-  await getOrgStub(args.env, args.orgId)
-    .abortTeamSeatMutation(args.lease)
-    .catch((error: unknown) =>
-      console.error(`[billing] failed to release ${args.operation}`, {
-        orgId: args.orgId,
-        subscriptionId: args.lease?.subscriptionId,
-        revision: args.lease?.revision,
-        error: error instanceof Error ? error.message : String(error),
-      }),
-    );
-}
-
-function teamSeatMutationItemIdempotencyKey(args: {
-  orgId: string;
-  lease: TeamSeatMutationLease;
-  targetSeatCount: number;
-  suppliedKey?: string;
-}): string {
-  const root =
-    args.suppliedKey?.trim().slice(0, 160) ||
-    `team-seat-sync:${args.orgId.slice(0, 100)}`;
-  return `${root}:revision:${args.lease.revision}:target:${args.targetSeatCount}`;
-}
-
-/**
- * Throws while the requested Stripe quantity is still unconfirmed. Once the
- * quantity is confirmed, metadata and OrgDO repair failures are represented in
- * the result so callers preserve the paid capacity and can continue or retry.
- */
-async function updateTeamSubscriptionSeatCount(
-  env: StripeBillingEnv,
-  orgId: string,
-  options: TeamSubscriptionSeatSyncOptions,
-  quantityMode: "exact" | "ensure_at_least",
-): Promise<TeamSubscriptionSeatSyncResult> {
-  const orgStub = getOrgStub(env, orgId);
-  const org = await orgStub.getInfo();
-  if (!org) {
-    return {
-      status: "not_applicable",
-      reason: "organization_not_found",
-      org: null,
-    };
-  }
-  if (!shouldSyncTeamSeats(org)) {
-    return {
-      status: "not_applicable",
-      reason: "billing_not_syncable",
-      org,
-    };
-  }
-
-  const subscriptionId = org.billing_subscription_id?.trim();
-  if (!subscriptionId) {
-    return {
-      status: "not_applicable",
-      reason: "subscription_missing",
-      org,
-    };
-  }
-
-  const suppliedTargetSeatCount =
-    options.targetSeatCount === undefined
-      ? null
-      : normalizeSeatCount("team", options.targetSeatCount);
-  const reservedSeatDelta = Number.isFinite(options.pendingReservedSeatDelta)
-    ? Math.max(0, Math.floor(options.pendingReservedSeatDelta ?? 0))
-    : 0;
-  const preLockRequestedSeatCount =
-    quantityMode === "ensure_at_least"
-      ? Math.max(
-          suppliedTargetSeatCount ?? normalizeSeatCount("team", null),
-          (await getBillableTeamSeatCount(env, orgId, reservedSeatDelta)) ??
-            normalizeSeatCount("team", null),
-        )
-      : suppliedTargetSeatCount;
-  if (
-    quantityMode === "ensure_at_least" &&
-    preLockRequestedSeatCount === null
-  ) {
-    return {
-      status: "not_applicable",
-      reason: "seat_count_unavailable",
-      org,
-    };
-  }
-
-  const lease = await acquireTeamSeatMutationLease({
-    orgStub,
-    subscriptionId,
-    mode: quantityMode,
-    requestedSeatCount: preLockRequestedSeatCount ?? undefined,
-    reservedSeatDelta,
-  });
-  let mutationCompleted = false;
-  let preserveConfirmedReservation = false;
-  try {
-    const lockedOrg = await orgStub.getInfo();
-    if (!lockedOrg || !shouldSyncTeamSeats(lockedOrg)) {
-      return {
-        status: "not_applicable",
-        reason: lockedOrg ? "billing_not_syncable" : "organization_not_found",
-        org: lockedOrg,
-      };
-    }
-    if (lockedOrg.billing_subscription_id?.trim() !== subscriptionId) {
-      return {
-        status: "not_applicable",
-        reason: "subscription_missing",
-        org: lockedOrg,
-      };
-    }
-
-    // Occupancy is authoritative only after this operation owns the durable
-    // org-scoped mutation lease. Explicit targets may reserve more capacity,
-    // but can never force an exact release below current occupancy.
-    const authoritativeSeatCount = await getBillableTeamSeatCountForOrg(
-      env,
-      orgId,
-      options.pendingReservedSeatDelta ?? 0,
-    );
-    const requestedSeatCount = Math.max(
-      authoritativeSeatCount,
-      preLockRequestedSeatCount ?? authoritativeSeatCount,
-    );
-
-    let fence = await orgStub.refreshTeamSeatMutation({
-      ...lease,
-      requestedSeatCount:
-        quantityMode === "ensure_at_least" ? requestedSeatCount : undefined,
-      reservedSeatDelta:
-        quantityMode === "ensure_at_least" ? reservedSeatDelta : undefined,
-    });
-    if (fence.status === "lost") {
-      throw new Error("Lost the Team seat billing mutation lease.");
-    }
-
-    const priceId = getConfiguredSubscriptionPriceId(env, "team");
-    const subscription = await fetchStripeSubscription(env, subscriptionId);
-    const item = getStripeSubscriptionItemForPlan(subscription, priceId);
-    const previousStripeSeatCount = normalizeSeatCount(
-      "team",
-      item.quantity ?? lockedOrg.billing_seat_count,
-    );
-    let stripeSeatCount = previousStripeSeatCount;
-    let stripeQuantityChanged = false;
-    let metadata = { ...subscription.metadata };
-    let latestOrg = lockedOrg;
-    let metadataSynced = false;
-    let orgSeatStateSynced = false;
-
-    for (
-      let attempt = 0;
-      attempt < TEAM_SEAT_MUTATION_MAX_STABILIZATION_ATTEMPTS;
-      attempt += 1
-    ) {
-      fence = await orgStub.refreshTeamSeatMutation({
-        ...lease,
-        requestedSeatCount:
-          quantityMode === "ensure_at_least" ? requestedSeatCount : undefined,
-        reservedSeatDelta:
-          quantityMode === "ensure_at_least" ? reservedSeatDelta : undefined,
-      });
-      if (fence.status === "lost") {
-        if (stripeQuantityChanged) preserveConfirmedReservation = true;
-        throw new Error("Lost the Team seat billing mutation lease.");
-      }
-      const seatCount =
-        quantityMode === "ensure_at_least"
-          ? Math.max(
-              requestedSeatCount,
-              stripeSeatCount,
-              fence.requiredSeatFloor,
-            )
-          : Math.max(requestedSeatCount, fence.requiredSeatFloor);
-
-      if (seatCount !== stripeSeatCount) {
-        const isIncrease = seatCount > stripeSeatCount;
-        const prorationBehavior = isIncrease ? "always_invoice" : "none";
-        if (
-          options.prorationBehavior &&
-          options.prorationBehavior !== prorationBehavior
-        ) {
-          throw new Error(
-            `Unsafe Team seat proration behavior: expected ${prorationBehavior}.`,
-          );
-        }
-        const itemBody = new URLSearchParams();
-        itemBody.set("quantity", String(seatCount));
-        itemBody.set("proration_behavior", prorationBehavior);
-        if (isIncrease) {
-          itemBody.set("payment_behavior", "error_if_incomplete");
-        }
-        const updatedItem = await stripeRequest<StripeSubscriptionItem>(
-          env,
-          `/subscription_items/${item.id}`,
-          {
-            method: "POST",
-            body: itemBody,
-            idempotencyKey: teamSeatMutationItemIdempotencyKey({
-              orgId,
-              lease,
-              targetSeatCount: seatCount,
-              suppliedKey: options.itemUpdateIdempotencyKey,
-            }),
-          },
-        );
-        if (
-          typeof updatedItem.quantity !== "number" ||
-          normalizeSeatCount("team", updatedItem.quantity) !== seatCount
-        ) {
-          throw new Error(
-            "Stripe did not confirm the requested Team seat quantity.",
-          );
-        }
-        stripeSeatCount = seatCount;
-        stripeQuantityChanged = true;
-      }
-
-      const confirmed = await orgStub.confirmTeamSeatMutationTarget({
-        ...lease,
-        requestedSeatCount:
-          quantityMode === "ensure_at_least" ? requestedSeatCount : undefined,
-        reservedSeatDelta:
-          quantityMode === "ensure_at_least" ? reservedSeatDelta : undefined,
-        targetSeatCount: stripeSeatCount,
-      });
-      if (confirmed.status === "lost") {
-        preserveConfirmedReservation = true;
-        throw new Error("Lost the Team seat billing mutation lease.");
-      }
-      if (confirmed.status === "target_too_low") continue;
-      preserveConfirmedReservation = true;
-
-      const includedCreditCents = getSubscriptionIncludedCreditCentsForPlan(
-        env,
-        "team",
-        stripeSeatCount,
-      );
-      metadataSynced =
-        metadata.org_id === lockedOrg.id &&
-        metadata.billing_plan === "team" &&
-        metadata.seat_count === String(stripeSeatCount) &&
-        metadata.subscription_included_credit_cents ===
-          String(includedCreditCents);
-      if (!metadataSynced) {
-        const metadataFence = await orgStub.refreshTeamSeatMutation({
-          ...lease,
-          targetSeatCount: stripeSeatCount,
-        });
-        if (metadataFence.status === "lost") {
-          throw new Error("Lost the Team seat billing mutation lease.");
-        }
-        if (metadataFence.status === "target_too_low") continue;
-        const subscriptionBody = new URLSearchParams();
-        subscriptionBody.set("metadata[org_id]", lockedOrg.id);
-        subscriptionBody.set("metadata[billing_plan]", "team");
-        subscriptionBody.set(
-          "metadata[seat_count]",
-          String(stripeSeatCount),
-        );
-        subscriptionBody.set(
-          "metadata[subscription_included_credit_cents]",
-          String(includedCreditCents),
-        );
-        subscriptionBody.set(
-          "metadata[team_seat_mutation_revision]",
-          String(lease.revision),
-        );
-        subscriptionBody.set(
-          "metadata[team_seat_mutation_target]",
-          String(stripeSeatCount),
-        );
-        try {
-          await stripeRequest<StripeSubscription>(
-            env,
-            `/subscriptions/${subscriptionId}`,
-            {
-              method: "POST",
-              body: subscriptionBody,
-            },
-          );
-          metadata = {
-            ...metadata,
-            org_id: lockedOrg.id,
-            billing_plan: "team",
-            seat_count: String(stripeSeatCount),
-            subscription_included_credit_cents: String(includedCreditCents),
-          };
-          metadataSynced = true;
-        } catch (error) {
-          console.error(
-            "[billing] confirmed Team capacity but failed to sync subscription metadata",
-            {
-              orgId,
-              subscriptionId,
-              seatCount: stripeSeatCount,
-              revision: lease.revision,
-              error: error instanceof Error ? error.message : String(error),
-            },
-          );
-        }
-      }
-
-      const orgFence = await orgStub.refreshTeamSeatMutation({
-        ...lease,
-        targetSeatCount: stripeSeatCount,
-      });
-      if (orgFence.status === "lost") {
-        throw new Error("Lost the Team seat billing mutation lease.");
-      }
-      if (orgFence.status === "target_too_low") continue;
-      orgSeatStateSynced =
-        normalizeSeatCount("team", latestOrg.billing_seat_count) ===
-        stripeSeatCount;
-      if (!orgSeatStateSynced) {
-        try {
-          const updatedOrg = await orgStub.updateBillingState({
-            billing_seat_count: stripeSeatCount,
-          });
-          if (updatedOrg) {
-            latestOrg = updatedOrg;
-            orgSeatStateSynced =
-              normalizeSeatCount("team", updatedOrg.billing_seat_count) ===
-              stripeSeatCount;
-          }
-        } catch (error) {
-          console.error(
-            "[billing] confirmed Team capacity but failed to sync organization seats",
-            {
-              orgId,
-              subscriptionId,
-              seatCount: stripeSeatCount,
-              revision: lease.revision,
-              error: error instanceof Error ? error.message : String(error),
-            },
-          );
-        }
-      }
-
-      const finalFence = await orgStub.refreshTeamSeatMutation({
-        ...lease,
-        targetSeatCount: stripeSeatCount,
-      });
-      if (finalFence.status === "lost") {
-        throw new Error("Lost the Team seat billing mutation lease.");
-      }
-      if (finalFence.status === "target_too_low") continue;
-      const completion = await orgStub.completeTeamSeatMutation({
-        ...lease,
-        targetSeatCount: stripeSeatCount,
-      });
-      if (completion.status === "target_too_low") continue;
-      if (completion.status === "lost") {
-        throw new Error("Lost the Team seat billing mutation lease.");
-      }
-
-      mutationCompleted = true;
-      preserveConfirmedReservation = false;
-      return {
-        status: "capacity_confirmed",
-        org: latestOrg,
-        requestedSeatCount,
-        targetSeatCount: stripeSeatCount,
-        previousStripeSeatCount,
-        stripeQuantityChanged,
-        paidIncreaseConfirmed:
-          stripeQuantityChanged &&
-          stripeSeatCount > previousStripeSeatCount,
-        metadataSynced,
-        orgSeatStateSynced,
-        pendingBillingSeatAllowance: Math.max(
-          0,
-          stripeSeatCount -
-            normalizeSeatCount("team", latestOrg.billing_seat_count),
-        ),
-        seatReservation:
-          quantityMode === "ensure_at_least" && reservedSeatDelta > 0
-            ? {
-                operationId: lease.operationId,
-                subscriptionId: lease.subscriptionId,
-              }
-            : null,
-      };
-    }
-
-    throw new Error(
-      "Team seat billing did not stabilize while reservations were changing.",
-    );
-  } finally {
-    if (!mutationCompleted && !preserveConfirmedReservation) {
-      await orgStub
-        .abortTeamSeatMutation(lease)
-        .catch((error: unknown) =>
-          console.error("[billing] failed to release Team seat mutation", {
-            orgId,
-            subscriptionId,
-            revision: lease.revision,
-            error: error instanceof Error ? error.message : String(error),
-          }),
-        );
-    }
-  }
-}
-
-export async function syncTeamSubscriptionSeatCount(
-  env: StripeBillingEnv,
-  orgId: string,
-  options: TeamSubscriptionSeatSyncOptions = {},
-): Promise<TeamSubscriptionSeatSyncResult> {
-  return updateTeamSubscriptionSeatCount(env, orgId, options, "exact");
-}
-
-export async function ensureTeamSubscriptionSeatCapacity(
-  env: StripeBillingEnv,
-  orgId: string,
-  options: TeamSubscriptionSeatSyncOptions = {},
-): Promise<TeamSubscriptionSeatSyncResult> {
-  return updateTeamSubscriptionSeatCount(
-    env,
-    orgId,
-    options,
-    "ensure_at_least",
-  );
-}
-
-export async function bestEffortReleaseTeamSeatCapacityReservation(
-  env: StripeBillingEnv,
-  orgId: string,
-  reservation: TeamSeatCapacityReservation | null | undefined,
-): Promise<void> {
-  if (!reservation) return;
-  try {
-    await getOrgStub(env, orgId).releaseTeamSeatMutationReservation(
-      reservation,
-    );
-  } catch (error) {
-    console.error("[billing] failed to release Team seat reservation", {
-      orgId,
-      subscriptionId: reservation.subscriptionId,
-      error: error instanceof Error ? error.message : String(error),
-    });
-  }
-}
-
-export async function bestEffortSyncTeamSubscriptionSeatCount(
-  env: StripeBillingEnv,
-  orgId: string,
-  options: {
-    pendingReservedSeatDelta?: number;
-    reason?: string;
-  } = {},
-): Promise<TeamSubscriptionSeatSyncResult | null> {
-  try {
-    return await syncTeamSubscriptionSeatCount(env, orgId, options);
-  } catch (error) {
-    console.error("[billing] failed to sync team subscription seats", {
-      orgId,
-      reason: options.reason ?? "unknown",
-      error: error instanceof Error ? error.message : String(error),
-    });
-    return null;
-  }
-}
-
-export async function bestEffortEnsureTeamSubscriptionSeatCapacity(
-  env: StripeBillingEnv,
-  orgId: string,
-  options: TeamSubscriptionSeatSyncOptions & { reason?: string } = {},
-): Promise<TeamSubscriptionSeatSyncResult | null> {
-  try {
-    return await ensureTeamSubscriptionSeatCapacity(env, orgId, options);
-  } catch (error) {
-    console.error("[billing] failed to ensure team subscription seats", {
-      orgId,
-      reason: options.reason ?? "unknown",
-      error: error instanceof Error ? error.message : String(error),
-    });
-    return null;
-  }
 }
 
 export async function fetchConfiguredCreditPacks(
@@ -2331,13 +1729,34 @@ async function sha256Hex(value: string): Promise<string> {
     .join("");
 }
 
+interface CachedBillingPortalConfiguration {
+  id: string;
+  fingerprint: string;
+}
+
+function parseCachedBillingPortalConfiguration(
+  value: string | null,
+): CachedBillingPortalConfiguration | null {
+  if (!value) return null;
+  try {
+    const parsed = JSON.parse(value) as Partial<CachedBillingPortalConfiguration>;
+    const id = parsed.id?.trim();
+    const fingerprint = parsed.fingerprint?.trim();
+    return id && fingerprint ? { id, fingerprint } : null;
+  } catch {
+    return null;
+  }
+}
+
 export async function getOrCreateBillingPortalConfiguration(
   env: StripeBillingEnv,
   mode: BillingPortalMode,
   suppliedCatalog?: CanonicalPaidPlanCatalogEntry[],
 ): Promise<string> {
   const catalog =
-    mode === "management" ? [] : (suppliedCatalog ?? (await loadCanonicalPaidPlanCatalog(env)));
+    mode === "management"
+      ? []
+      : (suppliedCatalog ?? (await loadCanonicalPaidPlanCatalog(env)));
   const fingerprint = await sha256Hex(
     JSON.stringify({
       schema: BILLING_PORTAL_CONFIGURATION_SCHEMA_VERSION,
@@ -2357,36 +1776,48 @@ export async function getOrCreateBillingPortalConfiguration(
               ? "none"
               : null,
         cancellation: mode === "management" ? "at_period_end" : "disabled",
-        billingCycleAnchor: mode === "management" ? null : "unchanged",
-        trialUpdate: mode === "management" ? null : "continue_trial",
-        adjustableQuantity:
-          mode === "management" ? null : "disabled_exact_target",
       },
     }),
   );
-  const cacheKey = `${BILLING_PORTAL_CONFIGURATION_KV_PREFIX}${mode}:${fingerprint}`;
-  if (env.APP_KV) {
-    const cached = await env.APP_KV.get(cacheKey).catch(() => null);
-    if (cached?.trim()) return cached.trim();
-  }
+  const cacheKey =
+    `${BILLING_PORTAL_CONFIGURATION_KV_PREFIX}v${BILLING_PORTAL_CONFIGURATION_SCHEMA_VERSION}:${mode}`;
+  const cached = env.APP_KV
+    ? parseCachedBillingPortalConfiguration(
+        await env.APP_KV.get(cacheKey).catch(() => null),
+      )
+    : null;
+  if (cached?.fingerprint === fingerprint) return cached.id;
 
   const body = new URLSearchParams();
+  body.set("active", "true");
   body.set("business_profile[headline]", "Manage your camelAI subscription");
   body.set("features[invoice_history][enabled]", "true");
   body.set("features[payment_method_update][enabled]", "true");
-  body.set("features[subscription_cancel][enabled]", mode === "management" ? "true" : "false");
+  body.set(
+    "features[subscription_cancel][enabled]",
+    mode === "management" ? "true" : "false",
+  );
   if (mode === "management") {
     body.set("features[subscription_cancel][mode]", "at_period_end");
     body.set("features[subscription_update][enabled]", "false");
   } else {
     body.set("features[subscription_update][enabled]", "true");
-    body.append("features[subscription_update][default_allowed_updates][]", "price");
+    body.append(
+      "features[subscription_update][default_allowed_updates][]",
+      "price",
+    );
     body.set(
       "features[subscription_update][proration_behavior]",
       mode === "upgrade" ? "always_invoice" : "none",
     );
-    body.set("features[subscription_update][billing_cycle_anchor]", "unchanged");
-    body.set("features[subscription_update][trial_update_behavior]", "continue_trial");
+    body.set(
+      "features[subscription_update][billing_cycle_anchor]",
+      "unchanged",
+    );
+    body.set(
+      "features[subscription_update][trial_update_behavior]",
+      "continue_trial",
+    );
     catalog.forEach((entry, index) => {
       const prefix = `features[subscription_update][products][${index}]`;
       body.set(`${prefix}[product]`, entry.productId);
@@ -2394,53 +1825,37 @@ export async function getOrCreateBillingPortalConfiguration(
       body.set(`${prefix}[adjustable_quantity][enabled]`, "false");
     });
   }
+
   const configuration = await stripeRequest<{
     id?: string | null;
     active?: boolean;
   }>(
     env,
-    "/billing_portal/configurations",
+    cached
+      ? `/billing_portal/configurations/${cached.id}`
+      : "/billing_portal/configurations",
     {
       method: "POST",
       body,
-      idempotencyKey: `camelai-billing-portal-v${BILLING_PORTAL_CONFIGURATION_SCHEMA_VERSION}:${mode}:${fingerprint}`,
+      idempotencyKey: cached
+        ? undefined
+        : `camelai-billing-portal-v${BILLING_PORTAL_CONFIGURATION_SCHEMA_VERSION}:${mode}:${fingerprint}`,
     },
   );
-  const configurationId = configuration.id?.trim();
-  if (!configurationId) throw new Error("Stripe did not return a billing portal configuration.");
-  let configurationActive = configuration.active;
-  if (env.APP_KV && configurationActive !== false) {
-    const current = await stripeRequest<{ active?: boolean }>(
-      env,
-      `/billing_portal/configurations/${configurationId}`,
-    );
-    configurationActive = current.active;
-    if (configurationActive === undefined) {
-      throw new Error("Stripe did not return billing portal configuration status.");
-    }
+  const configurationId = (configuration.id ?? cached?.id)?.trim();
+  if (!configurationId) {
+    throw new Error("Stripe did not return a billing portal configuration.");
   }
-  // Stripe can replay a previously-created configuration for the deterministic
-  // idempotency key. If that configuration was deactivated out of band, make
-  // it usable again before caching or attaching it to a Portal Session.
-  if (configurationActive === false) {
-    const activationBody = new URLSearchParams();
-    activationBody.set("active", "true");
-    const activated = await stripeRequest<{ active?: boolean }>(
-      env,
-      `/billing_portal/configurations/${configurationId}`,
-      {
-        method: "POST",
-        body: activationBody,
-      },
-    );
-    if (activated.active !== true) {
-      throw new Error("Stripe billing portal configuration remained inactive.");
-    }
+  if (configuration.active === false) {
+    throw new Error("Stripe billing portal configuration remained inactive.");
   }
-  if (env.APP_KV) await env.APP_KV.put(cacheKey, configurationId).catch(() => undefined);
+  if (env.APP_KV) {
+    await env.APP_KV
+      .put(cacheKey, JSON.stringify({ id: configurationId, fingerprint }))
+      .catch(() => undefined);
+  }
   return configurationId;
 }
-
 async function verifySubscriptionCustomerOwnership(args: {
   env: StripeBillingEnv;
   org: Organization;
@@ -2634,17 +2049,20 @@ export async function createSubscriptionCancellationPortalSession(args: {
 }
 
 /**
- * Applies a customer-confirmed active plan change with server-owned line-item
- * fields. Customer Portal requires adjustable quantities for Team transitions,
- * so active changes use Stripe Billing directly after the app confirmation.
+ * Creates a Stripe-hosted confirmation flow for an exact plan and quantity,
+ * or returns null after repairing the local projection when Stripe already
+ * has the requested state.
+ * Stripe owns payment collection, proration, and authentication; webhooks
+ * project the confirmed subscription back into camelAI.
  */
-export async function updateActiveStripeSubscriptionPlan(args: {
+export async function createSubscriptionUpdatePortalSession(args: {
   env: StripeBillingEnv;
   org: Organization;
   plan: SubscriptionBillingPlan;
   seatCount?: number | null;
-}): Promise<Organization> {
-  const { env, org, plan } = args;
+  returnUrl: string;
+}): Promise<string | null> {
+  const { env, org, plan, returnUrl } = args;
   const latestOrg = await getLatestOrgInfo(env, org);
   const subscriptionId = latestOrg.billing_subscription_id?.trim();
   if (!subscriptionId) {
@@ -2654,27 +2072,18 @@ export async function updateActiveStripeSubscriptionPlan(args: {
     throw new Error("Enterprise organizations are billed outside Stripe.");
   }
 
-  const teamSeatLease =
-    getOrgBillingPlan(latestOrg) === "team" || plan === "team"
-      ? await acquireTeamSeatMutationLease({
-          orgStub: getOrgStub(env, latestOrg.id),
-          subscriptionId,
-          mode: "exact",
-        })
-      : null;
-  try {
   const [catalog, subscription] = await Promise.all([
     loadCanonicalPaidPlanCatalog(env),
     fetchStripeSubscription(env, subscriptionId),
   ]);
   if (
-    subscription.status !== "active" ||
+    !["active", "trialing"].includes(subscription.status) ||
     subscription.cancel_at_period_end === true ||
     Boolean(subscription.cancel_at)
   ) {
     throw new StripeSubscriptionRequiresManagementError(subscription.status);
   }
-  await verifySubscriptionCustomerOwnership({
+  const customerId = await verifySubscriptionCustomerOwnership({
     env,
     org: latestOrg,
     subscription,
@@ -2693,83 +2102,86 @@ export async function updateActiveStripeSubscriptionPlan(args: {
     throw new Error(`Stripe ${plan} subscription price is not configured`);
   }
 
-  const targetSeatCount =
-    plan === "team"
-      ? await getBillableTeamSeatCountForOrg(env, latestOrg.id)
-      : getMinimumSeats(plan);
   const currentSeatCount = normalizeSeatCount(
     currentEntry.plan,
     item.quantity ?? getMinimumSeats(currentEntry.plan),
   );
-  const isUpgrade =
-    targetEntry.unitAmount * targetSeatCount >
-    currentEntry.unitAmount * currentSeatCount;
-  const includedCreditCents = getSubscriptionIncludedCreditCentsForPlan(
-    env,
+  const requestedSeatCount = normalizeSeatCount(
     plan,
-    targetSeatCount,
+    args.seatCount ??
+      latestOrg.billing_seat_count ??
+      getMinimumSeats(plan),
   );
-  const body = new URLSearchParams();
-  body.set("items[0][id]", item.id);
-  body.set("items[0][price]", targetEntry.priceId);
-  body.set("items[0][quantity]", String(targetSeatCount));
-  body.set("proration_behavior", isUpgrade ? "always_invoice" : "none");
-  if (isUpgrade) {
-    body.set("payment_behavior", "error_if_incomplete");
+  const occupiedTargetSeatCount =
+    plan === "team"
+      ? Math.max(
+          requestedSeatCount,
+          await getBillableTeamSeatCountForOrg(env, latestOrg.id),
+        )
+      : getMinimumSeats(plan);
+  // Buying Team capacity is increase-only. Membership and invitation changes
+  // must never silently reduce a quantity that Stripe already knows about.
+  const targetSeatCount =
+    currentEntry.plan === "team" && plan === "team"
+      ? Math.max(occupiedTargetSeatCount, currentSeatCount)
+      : occupiedTargetSeatCount;
+
+  if (
+    currentEntry.priceId === targetEntry.priceId &&
+    currentSeatCount === targetSeatCount
+  ) {
+    // Stripe may be ahead of the webhook projection (for example, after a
+    // concurrent capacity purchase). Repair the projection without opening a
+    // no-op Portal confirmation or accidentally turning the request into a
+    // decrease.
+    await syncOrgSubscriptionFromStripe(env, subscription);
+    return null;
   }
-  body.set("metadata[org_id]", latestOrg.id);
-  body.set("metadata[billing_plan]", plan);
-  body.set("metadata[seat_count]", String(targetSeatCount));
+  const mode: Exclude<BillingPortalMode, "management"> =
+    targetEntry.unitAmount * targetSeatCount >
+    currentEntry.unitAmount * currentSeatCount
+      ? "upgrade"
+      : "downgrade";
+
+  const body = new URLSearchParams();
+  body.set("customer", customerId);
+  body.set("return_url", returnUrl);
+  body.set("configuration", await getOrCreateBillingPortalConfiguration(env, mode, catalog));
+  body.set("flow_data[type]", "subscription_update_confirm");
   body.set(
-    "metadata[subscription_included_credit_cents]",
-    String(includedCreditCents),
+    "flow_data[subscription_update_confirm][subscription]",
+    subscriptionId,
+  );
+  body.set(
+    "flow_data[subscription_update_confirm][items][0][id]",
+    item.id,
+  );
+  body.set(
+    "flow_data[subscription_update_confirm][items][0][price]",
+    targetEntry.priceId,
+  );
+  body.set(
+    "flow_data[subscription_update_confirm][items][0][quantity]",
+    String(targetSeatCount),
+  );
+  body.set("flow_data[after_completion][type]", "redirect");
+  body.set(
+    "flow_data[after_completion][redirect][return_url]",
+    returnUrl,
   );
 
-  const updatedSubscription = await stripeRequest<StripeSubscription>(
+  const session = await stripeRequest<{ url?: string | null }>(
     env,
-    `/subscriptions/${subscriptionId}`,
+    "/billing_portal/sessions",
     {
       method: "POST",
       body,
-      idempotencyKey: `active-plan-change:${latestOrg.id}:${subscriptionId}:${plan}:${targetSeatCount}:${crypto.randomUUID()}`,
     },
   );
-  const updatedItem = getStripeSubscriptionItemForPlanChange(
-    updatedSubscription,
-    null,
-  );
-  if (
-    getStripePriceId(updatedItem.price) !== targetEntry.priceId ||
-    normalizeSeatCount(plan, updatedItem.quantity) !== targetSeatCount
-  ) {
-    throw new Error(
-      "Stripe did not confirm the server-owned plan price and quantity.",
-    );
+  if (!session.url) {
+    throw new Error("Stripe did not return a billing portal URL");
   }
-
-  const synced = await syncOrgSubscriptionFromStripe(
-    env,
-    updatedSubscription,
-  );
-  if (synced) return synced;
-  const updatedOrg = await getOrgStub(env, latestOrg.id).updateBillingState({
-    billing_status: mapStripeSubscriptionBillingStatus(updatedSubscription),
-    billing_plan: plan,
-    billing_seat_count: targetSeatCount,
-    billing_subscription_status: updatedSubscription.status,
-  });
-  if (!updatedOrg) {
-    throw new Error("Failed to update organization billing state.");
-  }
-  return updatedOrg;
-  } finally {
-    await bestEffortAbortTeamSeatMutationLease({
-      env,
-      orgId: latestOrg.id,
-      lease: teamSeatLease,
-      operation: "plan-change seat mutation",
-    });
-  }
+  return session.url;
 }
 
 export async function updateTrialingStripeSubscriptionPlan(args: {
@@ -2792,15 +2204,6 @@ export async function updateTrialingStripeSubscriptionPlan(args: {
     throw new Error(`Stripe ${plan} subscription price is not configured`);
   }
 
-  const teamSeatLease =
-    getOrgBillingPlan(latestOrg) === "team" || plan === "team"
-      ? await acquireTeamSeatMutationLease({
-          orgStub: getOrgStub(env, latestOrg.id),
-          subscriptionId,
-          mode: "exact",
-        })
-      : null;
-  try {
   const subscription = await fetchStripeSubscription(env, subscriptionId);
   if (subscription.status !== "trialing") {
     await syncOrgSubscriptionFromStripe(env, subscription).catch((error) => {
@@ -2900,14 +2303,6 @@ export async function updateTrialingStripeSubscriptionPlan(args: {
     throw new Error("Failed to update organization billing state.");
   }
   return updatedOrg;
-  } finally {
-    await bestEffortAbortTeamSeatMutationLease({
-      env,
-      orgId: latestOrg.id,
-      lease: teamSeatLease,
-      operation: "trial plan-change seat mutation",
-    });
-  }
 }
 
 interface LegacySubscriptionSelection {

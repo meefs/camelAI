@@ -219,7 +219,7 @@ describe('TeamTable - copy invite link', () => {
     );
   });
 
-  it('shows the seat-decrease billing note for a syncable Team-plan org', () => {
+  it('explains that canceling an invitation preserves paid capacity', () => {
     renderTeamTable({
       teamInviteBillingContext: {
         occupiedSeatCount: 5,
@@ -236,11 +236,11 @@ describe('TeamTable - copy invite link', () => {
       name: 'Cancel pending invitation?',
     });
     expect(
-      within(dialog).getByText(/Your Team plan will go from 5 to 4 seats\. You'll get a prorated credit on your next invoice\./)
+      within(dialog).getByText(/paid seat capacity will remain available/)
     ).toBeInTheDocument();
   });
 
-  it('omits the billing note when the org is at the Team minimum seat count', () => {
+  it('does not imply an automatic quantity decrease at the Team minimum', () => {
     renderTeamTable({
       teamInviteBillingContext: {
         occupiedSeatCount: 3,
@@ -257,11 +257,11 @@ describe('TeamTable - copy invite link', () => {
       name: 'Cancel pending invitation?',
     });
     expect(
-      within(dialog).getByText(/Your Team plan stays at the 3-seat minimum, so this won't change your bill\./)
+      within(dialog).getByText(/paid seat capacity will remain available/)
     ).toBeInTheDocument();
   });
 
-  it('warns when removing an invite still leaves the org above covered seats', () => {
+  it('does not mutate billing when local occupancy is temporarily above projection', () => {
     renderTeamTable({
       teamInviteBillingContext: {
         occupiedSeatCount: 5,
@@ -278,7 +278,7 @@ describe('TeamTable - copy invite link', () => {
       name: 'Cancel pending invitation?',
     });
     expect(
-      within(dialog).getByText(/Your Team plan will sync from 3 to 4 seats after this change, so your bill may increase\./)
+      within(dialog).getByText(/paid seat capacity will remain available/)
     ).toBeInTheDocument();
   });
 

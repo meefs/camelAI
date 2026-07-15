@@ -84,14 +84,20 @@ export function InviteMemberDialog({
     failed?: Array<{ email: string; reason: string }>;
     billing?: BillableTeamInviteSeatChange;
   }>()
+  const capacityFetcher = useFetcher<{
+    success?: boolean;
+    billingPortalUrl?: string;
+    alreadyCovered?: boolean;
+    error?: string;
+    message?: string;
+  }>()
   const saving = fetcher.state !== "idle"
+  const buyingCapacity = capacityFetcher.state !== "idle"
 
   const [selectedRole, setSelectedRole] = useState<string>("member")
   const [chips, setChips] = useState<EmailChip[]>([])
-  const [staleBilling, setStaleBilling] = useState<BillableTeamInviteSeatChange | null>(null)
+  const [serverBilling, setServerBilling] = useState<BillableTeamInviteSeatChange | null>(null)
   const emailInputRef = useRef<EmailChipInputHandle>(null)
-  const disclosedNextSeatCountRef = useRef<HTMLInputElement>(null)
-  const disclosedAddedSeatCountRef = useRef<HTMLInputElement>(null)
 
   const roleDescriptions: Record<string, string> = {
     admin: "Full access to everything. Can manage team members, workspaces, and all settings.",
@@ -139,7 +145,8 @@ export function InviteMemberDialog({
     () => getBillingForInviteCount(requestedInviteCount),
     [getBillingForInviteCount, requestedInviteCount],
   )
-  const visibleBilling = staleBilling ?? liveBilling
+  const visibleBilling = serverBilling ?? liveBilling
+  const needsCapacity = Boolean(visibleBilling?.addedSeatCount)
   const billingPaused =
     Boolean(
       teamInviteBillingContext &&
@@ -150,6 +157,7 @@ export function InviteMemberDialog({
   const submitDisabled =
     saving ||
     requestedInviteCount === 0 ||
+    needsCapacity ||
     billingPaused ||
     teamInviteBillingContext === undefined
   const submitLabel =
@@ -189,11 +197,14 @@ export function InviteMemberDialog({
         } else {
           toast.success("Invites sent")
         }
-        setStaleBilling(null)
+        setServerBilling(null)
         onOpenChange(false)
       } else if (fetcher.data.error) {
-        if (fetcher.data.error === "stale_billing_context" && fetcher.data.billing) {
-          setStaleBilling(fetcher.data.billing)
+        if (
+          fetcher.data.error === "insufficient_paid_seats" &&
+          fetcher.data.billing
+        ) {
+          setServerBilling(fetcher.data.billing)
           return
         }
         toast.error(fetcher.data.message ?? fetcher.data.error)
@@ -203,31 +214,36 @@ export function InviteMemberDialog({
 
   useEffect(() => {
     if (fetcher.state === "idle") return
-    setStaleBilling(null)
+    setServerBilling(null)
   }, [fetcher.state])
 
   useEffect(() => {
-    if (!staleBilling) return
-    if (staleBilling.requestedInviteCount === requestedInviteCount) return
-    setStaleBilling(null)
-  }, [requestedInviteCount, staleBilling])
+    if (!serverBilling) return
+    if (serverBilling.requestedInviteCount === requestedInviteCount) return
+    setServerBilling(null)
+  }, [requestedInviteCount, serverBilling])
+
+  useEffect(() => {
+    if (capacityFetcher.state !== "idle" || !capacityFetcher.data) return
+    if (capacityFetcher.data.billingPortalUrl) {
+      window.location.assign(capacityFetcher.data.billingPortalUrl)
+      return
+    }
+    if (capacityFetcher.data.error) {
+      toast.error(
+        capacityFetcher.data.message ?? capacityFetcher.data.error,
+      )
+      return
+    }
+    if (capacityFetcher.data.success && capacityFetcher.data.alreadyCovered) {
+      toast.success("Paid seat capacity is available. You can send the invitations now.")
+    }
+  }, [capacityFetcher.data, capacityFetcher.state])
 
   const handleSubmit = () => {
-    let committedChips = chips
     flushSync(() => {
-      committedChips = emailInputRef.current?.commitPending() ?? chips
+      emailInputRef.current?.commitPending()
     })
-    const committedInviteCount = committedChips.filter((chip) => chip.state === "valid").length
-    const committedBilling =
-      staleBilling?.requestedInviteCount === committedInviteCount
-        ? staleBilling
-        : getBillingForInviteCount(committedInviteCount)
-    if (disclosedNextSeatCountRef.current) {
-      disclosedNextSeatCountRef.current.value = String(committedBilling?.nextSeatCount ?? 0)
-    }
-    if (disclosedAddedSeatCountRef.current) {
-      disclosedAddedSeatCountRef.current.value = String(committedBilling?.addedSeatCount ?? 0)
-    }
   }
 
   const billingAlert = (() => {
@@ -243,27 +259,13 @@ export function InviteMemberDialog({
     }
     if (!visibleBilling || requestedInviteCount === 0) return null
 
-    if (staleBilling) {
-      return (
-        <Alert variant="destructive">
-          <AlertCircleIcon className="size-4" />
-          <AlertTitle>Billing changed since you opened this</AlertTitle>
-          <AlertDescription>
-            Another admin made a change in the meantime. Sending these invitations would now add{" "}
-            {staleBilling.addedSeatCount} {staleBilling.addedSeatCount === 1 ? "seat" : "seats"} for{" "}
-            {formatUsdFromCents(staleBilling.addedMonthlyAmountCents)} more per month. Review the updated total, then resend.
-          </AlertDescription>
-        </Alert>
-      )
-    }
-
     if (billingPaused) {
       return (
         <Alert variant="destructive">
           <AlertCircleIcon className="size-4" />
-          <AlertTitle>Billing update is paused</AlertTitle>
+          <AlertTitle>Subscription needs attention</AlertTitle>
           <AlertDescription>
-            Your subscription needs attention before we can add seats. Resolve billing first.
+            Resolve the subscription in Stripe before buying more seat capacity.
           </AlertDescription>
           <AlertAction>
             <Button asChild variant="outline" size="sm">
@@ -278,12 +280,10 @@ export function InviteMemberDialog({
       return (
         <Alert>
           <InfoIcon className="size-4" />
-          <AlertTitle>No billing change</AlertTitle>
+          <AlertTitle>Seats available</AlertTitle>
           <AlertDescription>
-            {visibleBilling.coveredSeatCount <= (teamInviteBillingContext?.minimumSeats ?? 0)
-              ? `Your Team plan already covers these invitations under the ${teamInviteBillingContext?.minimumSeats ?? 0}-seat minimum.`
-              : `Your Team plan already covers these invitations within the ${visibleBilling.coveredSeatCount} seats you've already paid for.`}{" "}
-            You'll only be charged when invitations exceed the seats you've already paid for.
+            These invitations fit within the {visibleBilling.coveredSeatCount}{" "}
+            seats already on your Team subscription.
           </AlertDescription>
         </Alert>
       )
@@ -293,32 +293,44 @@ export function InviteMemberDialog({
       <Alert>
         <InfoIcon className="size-4" />
         <AlertTitle>
-          Adding {visibleBilling.addedSeatCount} {visibleBilling.addedSeatCount === 1 ? "seat" : "seats"} to your Team plan
+          Buy {visibleBilling.addedSeatCount} more{" "}
+          {visibleBilling.addedSeatCount === 1 ? "seat" : "seats"} first
         </AlertTitle>
         <AlertDescription>
-          Your Team subscription will go from {visibleBilling.coveredSeatCount} to{" "}
-          {visibleBilling.nextSeatCount} seats. We'll bill a prorated amount for the rest of your current billing period today, and your future monthly invoices will increase by{" "}
-          {formatUsdFromCents(visibleBilling.addedMonthlyAmountCents)}.
+          You have {visibleBilling.coveredSeatCount} paid seats and{" "}
+          {visibleBilling.occupiedSeatCount} currently occupied or reserved.
+          Stripe will confirm today&apos;s prorated charge and the{" "}
+          {formatUsdFromCents(visibleBilling.addedMonthlyAmountCents)} monthly
+          increase. Return here after checkout to send the invitations.
         </AlertDescription>
+        <AlertAction>
+          <Button
+            type="button"
+            size="sm"
+            disabled={buyingCapacity}
+            onClick={() =>
+              capacityFetcher.submit(
+                {
+                  intent: "buyTeamCapacity",
+                  requestedInviteCount: String(
+                    visibleBilling.requestedInviteCount,
+                  ),
+                },
+                { method: "post" },
+              )
+            }
+          >
+            {buyingCapacity
+              ? "Opening Stripe..."
+              : `Buy ${visibleBilling.addedSeatCount} ${visibleBilling.addedSeatCount === 1 ? "seat" : "seats"} in Stripe`}
+          </Button>
+        </AlertAction>
       </Alert>
     )
   })()
-
   const formContent = (
     <fetcher.Form method="post" {...getFormProps(form)} className="space-y-4" onSubmit={handleSubmit}>
       <input type="hidden" name="intent" value="createInvitation" />
-      <input
-        ref={disclosedNextSeatCountRef}
-        type="hidden"
-        name="disclosed_next_seat_count"
-        value={visibleBilling?.nextSeatCount ?? 0}
-      />
-      <input
-        ref={disclosedAddedSeatCountRef}
-        type="hidden"
-        name="disclosed_added_seat_count"
-        value={visibleBilling?.addedSeatCount ?? 0}
-      />
 
       <div className="space-y-2">
         <Label id="invite-emails-label" htmlFor="invite-emails">Emails</Label>

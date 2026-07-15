@@ -23,13 +23,9 @@ import {
   sendOrgInvitationEmail,
 } from '@/lib/email.server';
 import {
-  bestEffortEnsureTeamSubscriptionSeatCapacity,
-  bestEffortReleaseTeamSeatCapacityReservation,
-  bestEffortSyncTeamSubscriptionSeatCount,
-  ensureTeamSubscriptionSeatCapacity,
   getVerifiedLegacyStripeMigrationEligibility,
   isStripeBillingConfigured,
-  type TeamSeatCapacityReservation,
+  createSubscriptionUpdatePortalSession,
 } from '@/lib/billing.server';
 import {
   MAX_INVITE_EMAILS,
@@ -41,12 +37,6 @@ export function meta() {
     { title: 'Team - Settings - camelAI' },
     { name: 'description', content: 'Manage team members' },
   ];
-}
-
-function readNumberField(formData: FormData, name: string): number {
-  const value = formData.get(name);
-  const parsed = typeof value === 'string' ? Number(value) : 0;
-  return Number.isFinite(parsed) ? parsed : 0;
 }
 
 function getInviteRequestEmails(formData: FormData) {
@@ -102,15 +92,10 @@ function getInviteBillingSnapshot(
   };
 }
 
-function isStaleBillingDisclosure(
-  billingSnapshot: ReturnType<typeof getInviteBillingSnapshot>,
-  disclosedNextSeatCount: number,
-  disclosedAddedSeatCount: number,
-) {
+function isSeatCapacityError(error: unknown): boolean {
   return (
-    billingSnapshot.addedSeatCount > disclosedAddedSeatCount ||
-    (billingSnapshot.addedSeatCount > 0 &&
-      billingSnapshot.nextSeatCount > disclosedNextSeatCount)
+    error instanceof Error &&
+    error.message.startsWith('Your current billing plan includes ')
   );
 }
 
@@ -134,14 +119,83 @@ export async function action({ request, context }: Route.ActionArgs) {
       await requireOrgAdmin(request, context, orgId);
     }
     await removeOrgMember(authEnv, orgId, userId, actorId);
-    await bestEffortSyncTeamSubscriptionSeatCount(env, orgId, {
-      reason: 'member_removed',
-    });
     return { success: true };
   }
 
   // All remaining actions require admin/owner
   await requireOrgAdmin(request, context, orgId);
+
+  if (intent === 'buyTeamCapacity') {
+    const requestedInviteCount = Number(formData.get('requestedInviteCount'));
+    if (
+      !Number.isInteger(requestedInviteCount) ||
+      requestedInviteCount <= 0 ||
+      requestedInviteCount > MAX_INVITE_EMAILS
+    ) {
+      return { error: 'A valid invitation count is required' };
+    }
+
+    const orgStub = authEnv.ORG.get(authEnv.ORG.idFromName(orgId));
+    const freshOrg = await orgStub.getInfo();
+    if (!freshOrg) return { error: 'Organization not found' };
+    if (
+      getOrgBillingPlan(freshOrg) !== 'team' ||
+      freshOrg.billing_status === 'enterprise'
+    ) {
+      return { error: 'Team seat capacity is not managed through Stripe' };
+    }
+
+    const subscriptionStatus =
+      freshOrg.billing_subscription_status ?? freshOrg.billing_status;
+    if (!['active', 'trialing'].includes(subscriptionStatus)) {
+      return {
+        error: 'billing_update_paused',
+        message:
+          'Your subscription needs attention before you can buy more seats.',
+      };
+    }
+
+    const [members, invitations] = await Promise.all([
+      getOrgMembersWithWorkspaceAccess(authEnv, orgId),
+      getOrgInvitations(authEnv, orgId),
+    ]);
+    const coveredSeatCount = getOrgSeatCount(freshOrg);
+    const occupiedSeatCount = members.length + invitations.length;
+    const targetSeatCount = normalizeSeatCount(
+      'team',
+      occupiedSeatCount + requestedInviteCount,
+    );
+    if (targetSeatCount <= coveredSeatCount) {
+      return { success: true, alreadyCovered: true };
+    }
+    if (targetSeatCount < occupiedSeatCount) {
+      return { error: 'Seat count cannot be lower than current usage' };
+    }
+
+    try {
+      const returnUrl = new URL('/settings/organization/team', request.url).toString();
+      const billingPortalUrl = await createSubscriptionUpdatePortalSession({
+        env,
+        org: freshOrg,
+        plan: 'team',
+        seatCount: targetSeatCount,
+        returnUrl,
+      });
+      if (!billingPortalUrl) {
+        return { success: true, alreadyCovered: true };
+      }
+      return { billingPortalUrl };
+    } catch (error) {
+      console.error('Failed to create Team capacity purchase flow', {
+        orgId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return {
+        error: 'billing_update_failed',
+        message: 'Could not open Stripe. Please try again.',
+      };
+    }
+  }
 
   if (intent === 'createInvitation') {
     const parsedEmails = getInviteRequestEmails(formData);
@@ -216,117 +270,13 @@ export async function action({ request, context }: Route.ActionArgs) {
       newEmails.length,
       isTeamSeatManaged,
     );
-    const disclosedNextSeatCount = readNumberField(
-      formData,
-      'disclosed_next_seat_count',
-    );
-    const disclosedAddedSeatCount = readNumberField(
-      formData,
-      'disclosed_added_seat_count',
-    );
-
-    if (
-      isStaleBillingDisclosure(
-        billingSnapshot,
-        disclosedNextSeatCount,
-        disclosedAddedSeatCount,
-      )
-    ) {
+    if (billingSnapshot.addedSeatCount > 0) {
       return {
         success: false,
-        error: 'stale_billing_context',
+        error: 'insufficient_paid_seats',
         billing: billingSnapshot,
-      };
-    }
-
-    if (
-      isTeamSeatManaged &&
-      billingSnapshot.addedSeatCount > 0 &&
-      !isTeamSeatBillingSyncable(freshOrg)
-    ) {
-      return {
-        success: false,
-        error: 'billing_update_paused',
         message:
-          'Your subscription needs attention before we can add seats. Resolve billing first.',
-      };
-    }
-
-    const batchId = crypto.randomUUID();
-    let pendingBillingSeatAllowance = 0;
-    let confirmedCapacityTarget: number | undefined;
-    let seatReservation: TeamSeatCapacityReservation | null = null;
-    try {
-      if (isTeamSeatManaged && billingSnapshot.addedSeatCount > 0) {
-        const latestOrg = await orgStub.getInfo();
-        if (!latestOrg) {
-          return { error: 'Organization not found' };
-        }
-
-        const [latestMembers, latestInvitations] = await Promise.all([
-          getOrgMembersWithWorkspaceAccess(authEnv, orgId),
-          getOrgInvitations(authEnv, orgId),
-        ]);
-        const latestBillingSnapshot = getInviteBillingSnapshot(
-          latestOrg,
-          latestMembers.length + latestInvitations.length,
-          newEmails.length,
-          true,
-        );
-
-        if (
-          isStaleBillingDisclosure(
-            latestBillingSnapshot,
-            disclosedNextSeatCount,
-            disclosedAddedSeatCount,
-          )
-        ) {
-          return {
-            success: false,
-            error: 'stale_billing_context',
-            billing: latestBillingSnapshot,
-          };
-        }
-
-        if (
-          latestBillingSnapshot.addedSeatCount > 0 &&
-          !isTeamSeatBillingSyncable(latestOrg)
-        ) {
-          return {
-            success: false,
-            error: 'billing_update_paused',
-            message:
-              'Your subscription needs attention before we can add seats. Resolve billing first.',
-          };
-        }
-
-        if (latestBillingSnapshot.addedSeatCount > 0) {
-          const seatSync = await ensureTeamSubscriptionSeatCapacity(env, orgId, {
-            pendingReservedSeatDelta: latestBillingSnapshot.addedSeatCount,
-            targetSeatCount: latestBillingSnapshot.nextSeatCount,
-            itemUpdateIdempotencyKey: `team-seat-sync:${orgId}:${latestBillingSnapshot.nextSeatCount}:${batchId}`,
-            prorationBehavior: 'always_invoice',
-          });
-          if (seatSync.status !== 'capacity_confirmed') {
-            throw new Error(
-              `Team seat capacity was not confirmed (${seatSync.reason}).`,
-            );
-          }
-          pendingBillingSeatAllowance =
-            seatSync.pendingBillingSeatAllowance;
-          confirmedCapacityTarget = seatSync.targetSeatCount;
-          seatReservation = seatSync.seatReservation;
-        }
-      }
-    } catch (error) {
-      console.error('Bulk invitation billing sync failed', {
-        orgId,
-        error: error instanceof Error ? error.message : String(error),
-      });
-      return {
-        success: false,
-        error: 'billing_update_failed',
-        message: "Couldn't update billing - no invites were created.",
+          'Buy the additional Team capacity in Stripe before sending these invitations.',
       };
     }
 
@@ -338,27 +288,36 @@ export async function action({ request, context }: Route.ActionArgs) {
         newEmails,
         role,
         actorId,
-        { pendingBillingSeatAllowance },
       );
     } catch (error) {
+      if (isSeatCapacityError(error)) {
+        const [latestOrg, latestMembers, latestInvitations] = await Promise.all([
+          orgStub.getInfo(),
+          getOrgMembersWithWorkspaceAccess(authEnv, orgId),
+          getOrgInvitations(authEnv, orgId),
+        ]);
+        return {
+          success: false,
+          error: 'insufficient_paid_seats',
+          billing: latestOrg
+            ? getInviteBillingSnapshot(
+                latestOrg,
+                latestMembers.length + latestInvitations.length,
+                newEmails.length,
+                getOrgBillingPlan(latestOrg) === 'team' &&
+                  latestOrg.billing_status !== 'enterprise',
+              )
+            : billingSnapshot,
+          message:
+            'Available paid seat capacity changed. Buy more seats before retrying.',
+        };
+      }
       return {
         success: false,
         error:
           error instanceof Error ? error.message : 'Failed to create invitations',
       };
-    } finally {
-      await bestEffortReleaseTeamSeatCapacityReservation(
-        env,
-        orgId,
-        seatReservation,
-      );
     }
-
-    await bestEffortEnsureTeamSubscriptionSeatCapacity(env, orgId, {
-      reason: 'bulk_invitations_created',
-      targetSeatCount: confirmedCapacityTarget,
-    });
-
     const baseUrl = resolveAppBaseUrl(env, new URL(request.url));
     const deliveries = await Promise.allSettled(
       invitations.map(async (invitation) => {
@@ -433,9 +392,6 @@ export async function action({ request, context }: Route.ActionArgs) {
     }
     const stub = authEnv.ORG.get(authEnv.ORG.idFromName(orgId));
     await stub.deleteInvitation(invitationId);
-    await bestEffortSyncTeamSubscriptionSeatCount(env, orgId, {
-      reason: 'invitation_deleted',
-    });
     return { success: true };
   }
 

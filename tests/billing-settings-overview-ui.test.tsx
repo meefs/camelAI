@@ -47,7 +47,7 @@ vi.mock("@/lib/billing.server", async (importOriginal) => {
     ...actual,
     createBillingPortalSession: vi.fn(),
     createSubscriptionCheckoutSession: vi.fn(),
-    updateActiveStripeSubscriptionPlan: vi.fn(),
+    createSubscriptionUpdatePortalSession: vi.fn(),
     getOrgBillingOverview: vi.fn(),
     getStripeSubscriptionSummary: vi.fn(),
     hasOrgUsedSubscriptionTrial: vi.fn(),
@@ -214,7 +214,7 @@ describe("BillingPage overview", () => {
     );
   });
 
-  it("requires app confirmation before submitting an active paid plan change", async () => {
+  it("submits an active plan selection once and lets Stripe confirm it", async () => {
     const user = userEvent.setup();
     testState.loaderData.current = {
       ...makeLoaderData(),
@@ -235,17 +235,13 @@ describe("BillingPage overview", () => {
     await user.click(screen.getByRole("tab", { name: "Team" }));
     await user.click(screen.getByRole("button", { name: "Subscribe" }));
 
-    expect(testState.fetcher.submit).not.toHaveBeenCalled();
-    expect(
-      screen.getByRole("heading", { name: "Confirm plan change" }),
-    ).toBeInTheDocument();
-    await user.click(
-      screen.getByRole("button", { name: "Confirm plan change" }),
-    );
     expect(testState.fetcher.submit).toHaveBeenCalledWith(
       { intent: "changePlan", plan: "team" },
       { method: "post" },
     );
+    expect(
+      screen.queryByRole("heading", { name: "Confirm plan change" }),
+    ).not.toBeInTheDocument();
   });
 
   it("disables Manage in Stripe and shows progress while its request is pending", () => {

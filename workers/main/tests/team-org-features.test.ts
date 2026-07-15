@@ -428,7 +428,42 @@ describe('Billing status from OrgDO', () => {
     expect(members).toHaveLength(3);
   });
 
-  it('allows one pending team invite while billing sync catches up and then enforces the seat count', async () => {
+  it('atomically consumes an invitation when two users try to accept it', async () => {
+    const ownerEmail = testEmail();
+    const { userId: ownerId } = await createUser(testEnv, ownerEmail, 'password', 'Owner');
+    const { org } = await createBaseOrg(testEnv, 'Single Use Team Invite Org', ownerId);
+    const orgStub = testEnv.ORG.get(testEnv.ORG.idFromName(org.id));
+    await orgStub.updateBillingState({
+      billing_status: 'active',
+      billing_plan: 'team',
+      billing_seat_count: 3,
+      billing_subscription_id: 'sub_team',
+      billing_subscription_status: 'active',
+    });
+
+    const invitedEmail = testEmail();
+    const { id: invitationId } = await createInvitation(
+      testEnv,
+      org.id,
+      invitedEmail,
+      'member',
+      ownerId,
+    );
+    const [{ userId: firstUserId }, { userId: secondUserId }] = await Promise.all([
+      createUser(testEnv, invitedEmail, 'password', 'First Invitee'),
+      createUser(testEnv, testEmail(), 'password', 'Second Invitee'),
+    ]);
+
+    const results = await Promise.all([
+      acceptInvitation(testEnv, org.id, invitationId, firstUserId),
+      acceptInvitation(testEnv, org.id, invitationId, secondUserId),
+    ]);
+
+    expect(results.filter(Boolean)).toHaveLength(1);
+    expect(await getOrgMembers(testEnv, org.id)).toHaveLength(2);
+  });
+
+  it('requires paid Team capacity before creating another pending invite', async () => {
     const ownerEmail = testEmail();
     const { userId: ownerId } = await createUser(testEnv, ownerEmail, 'password', 'Owner');
     const { org } = await createBaseOrg(testEnv, 'Team Invitation Cap Org', ownerId);
@@ -456,7 +491,6 @@ describe('Billing status from OrgDO', () => {
       ownerId,
     );
     await createInvitation(testEnv, org.id, testEmail(), 'member', ownerId);
-    await createInvitation(testEnv, org.id, testEmail(), 'member', ownerId);
 
     await expect(
       createInvitation(testEnv, org.id, testEmail(), 'member', ownerId),
@@ -466,7 +500,7 @@ describe('Billing status from OrgDO', () => {
     ).resolves.toBe(true);
   });
 
-  it('does not grant the pending team seat when Stripe subscription status is not syncable', async () => {
+  it('enforces paid capacity when the subscription needs attention', async () => {
     const ownerEmail = testEmail();
     const { userId: ownerId } = await createUser(testEnv, ownerEmail, 'password', 'Owner');
     const { org } = await createBaseOrg(testEnv, 'Canceled Team Invitation Cap Org', ownerId);
@@ -487,7 +521,7 @@ describe('Billing status from OrgDO', () => {
     ).rejects.toThrow('Your current billing plan includes 3 seats.');
   });
 
-  it('grants the pending team seat when Stripe status is syncable even if billing status is stale', async () => {
+  it('does not grant an unprojected Team seat when Stripe status is active', async () => {
     const ownerEmail = testEmail();
     const { userId: ownerId } = await createUser(testEnv, ownerEmail, 'password', 'Owner');
     const { org } = await createBaseOrg(testEnv, 'Stale Team Invitation Cap Org', ownerId);
@@ -503,9 +537,6 @@ describe('Billing status from OrgDO', () => {
     await createInvitation(testEnv, org.id, testEmail(), 'member', ownerId);
     await createInvitation(testEnv, org.id, testEmail(), 'member', ownerId);
 
-    await expect(
-      createInvitation(testEnv, org.id, testEmail(), 'member', ownerId),
-    ).resolves.toMatchObject({ id: expect.any(String) });
     await expect(
       createInvitation(testEnv, org.id, testEmail(), 'member', ownerId),
     ).rejects.toThrow('Your current billing plan includes 3 seats.');

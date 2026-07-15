@@ -68,7 +68,6 @@
 		"test:connections:rpc": "node scripts/test-connections-rpc.mjs",
 		"test:connections:local-db": "tsx scripts/test-local-database-mcp.ts",
 		"test:stripe": "RUN_STRIPE_INTEGRATION_TESTS=1 vitest run tests/stripe-integration.test.ts",
-		"billing:reconcile-invoices": "bun scripts/reconcile-stripe-subscription-invoices.ts",
 		"eval:chat-group-icons:live": "bun scripts/evaluate-chat-group-icon-selection.mjs",
 		"test:workers": "vitest run --config vitest.workers.config.ts",
 		"test:workers:codex-web": "vitest run --config vitest.workers.config.ts workers/main/tests/web-codex-provider.test.ts",

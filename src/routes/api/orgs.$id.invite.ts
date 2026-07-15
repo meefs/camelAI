@@ -14,20 +14,18 @@ import {
   resolveAppBaseUrl,
   sendOrgInvitationEmail,
 } from '@/lib/email.server';
-import {
-  bestEffortEnsureTeamSubscriptionSeatCapacity,
-  bestEffortReleaseTeamSeatCapacityReservation,
-  bestEffortSyncTeamSubscriptionSeatCount,
-  ensureTeamSubscriptionSeatCapacity,
-  getBillableTeamSeatCountForOrg,
-  type TeamSeatCapacityReservation,
-} from '@/lib/billing.server';
-import { isTeamSeatBillingSyncable } from '@/lib/billing-plans';
 
 const legacyInviteMemberFormSchema = z.object({
   email: inviteEmailSchema,
   role: z.enum(['admin', 'member', 'viewer']).default('member'),
 });
+
+function isSeatCapacityError(error: unknown): error is Error {
+  return (
+    error instanceof Error &&
+    error.message.startsWith('Your current billing plan includes ')
+  );
+}
 
 export async function action({ request, context, params }: Route.ActionArgs) {
   const orgId = params.id;
@@ -73,54 +71,13 @@ export async function action({ request, context, params }: Route.ActionArgs) {
       if (!org) {
         return Response.json({ error: 'Organization not found' }, { status: 404 });
       }
-      const syncPaidTeamSeat = isTeamSeatBillingSyncable(org);
-      let pendingBillingSeatAllowance = 0;
-      let confirmedCapacityTarget: number | null = null;
-      let seatReservation: TeamSeatCapacityReservation | null = null;
-      if (syncPaidTeamSeat) {
-        const targetSeatCount = await getBillableTeamSeatCountForOrg(
-          env,
-          orgId,
-          1,
-        );
-        const seatSync = await ensureTeamSubscriptionSeatCapacity(env, orgId, {
-          pendingReservedSeatDelta: 1,
-          targetSeatCount,
-          itemUpdateIdempotencyKey: `team-seat-sync:${orgId}:${targetSeatCount}:invite:${crypto.randomUUID()}`,
-          prorationBehavior: 'always_invoice',
-        });
-        if (seatSync.status !== 'capacity_confirmed') {
-          throw new Error(
-            `Team seat capacity was not confirmed (${seatSync.reason}).`,
-          );
-        }
-        pendingBillingSeatAllowance = seatSync.pendingBillingSeatAllowance;
-        confirmedCapacityTarget = seatSync.targetSeatCount;
-        seatReservation = seatSync.seatReservation;
-      }
-      let invitation: Awaited<ReturnType<typeof createInvitations>>[number];
-      try {
-        invitation = (await createInvitations(
-          authEnv,
-          orgId,
-          [email],
-          role,
-          session.user_id,
-          syncPaidTeamSeat ? { pendingBillingSeatAllowance } : undefined,
-        ))[0];
-      } finally {
-        await bestEffortReleaseTeamSeatCapacityReservation(
-          env,
-          orgId,
-          seatReservation,
-        );
-      }
-      if (syncPaidTeamSeat) {
-        await bestEffortEnsureTeamSubscriptionSeatCapacity(env, orgId, {
-          reason: 'api_invitation_created',
-          targetSeatCount: confirmedCapacityTarget ?? undefined,
-        });
-      }
+      const invitation = (await createInvitations(
+        authEnv,
+        orgId,
+        [email],
+        role,
+        session.user_id,
+      ))[0];
       const inviter = await authEnv.USER.get(
         authEnv.USER.idFromName(session.user_id)
       ).getProfile();
@@ -148,6 +105,15 @@ export async function action({ request, context, params }: Route.ActionArgs) {
       });
     } catch (error) {
       console.error('Create invitation error:', error);
+      if (isSeatCapacityError(error)) {
+        return Response.json(
+          {
+            error: 'insufficient_paid_seats',
+            message: error.message,
+          },
+          { status: 409 },
+        );
+      }
       return Response.json(
         {
           error:
@@ -192,9 +158,6 @@ export async function action({ request, context, params }: Route.ActionArgs) {
 
       const orgStub = authEnv.ORG.get(authEnv.ORG.idFromName(orgId));
       await orgStub.deleteInvitation(invitationId);
-      await bestEffortSyncTeamSubscriptionSeatCount(env, orgId, {
-        reason: 'api_invitation_deleted',
-      });
 
       return Response.json({ success: true });
     } catch (error) {

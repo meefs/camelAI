@@ -7,7 +7,7 @@ const createBillingPortalSessionMock = vi.fn();
 const previewLegacyStripeMigrationMock = vi.fn();
 const migrateLegacyStripeSubscriptionMock = vi.fn();
 const createSubscriptionCancellationPortalSessionMock = vi.fn();
-const updateActiveStripeSubscriptionPlanMock = vi.fn();
+const createSubscriptionUpdatePortalSessionMock = vi.fn();
 const createSubscriptionCheckoutSessionMock = vi.fn();
 const updateTrialingStripeSubscriptionPlanMock = vi.fn();
 
@@ -29,8 +29,8 @@ vi.mock("@/lib/billing.server", async (importOriginal) => {
     migrateLegacyStripeSubscription: migrateLegacyStripeSubscriptionMock,
     createSubscriptionCancellationPortalSession:
       createSubscriptionCancellationPortalSessionMock,
-    updateActiveStripeSubscriptionPlan:
-      updateActiveStripeSubscriptionPlanMock,
+    createSubscriptionUpdatePortalSession:
+      createSubscriptionUpdatePortalSessionMock,
     createSubscriptionCheckoutSession: createSubscriptionCheckoutSessionMock,
     updateTrialingStripeSubscriptionPlan:
       updateTrialingStripeSubscriptionPlanMock,
@@ -96,7 +96,9 @@ describe("billing settings plan changes", () => {
     createSubscriptionCheckoutSessionMock.mockResolvedValue(
       "https://checkout.stripe.test/session",
     );
-    updateActiveStripeSubscriptionPlanMock.mockResolvedValue({});
+    createSubscriptionUpdatePortalSessionMock.mockResolvedValue(
+      "https://billing.stripe.test/confirm",
+    );
     previewLegacyStripeMigrationMock.mockResolvedValue({
       plan: "pro",
       seatCount: 1,
@@ -313,11 +315,11 @@ describe("billing settings plan changes", () => {
         customerEmail: "owner@example.com",
       }),
     );
-    expect(updateActiveStripeSubscriptionPlanMock).not.toHaveBeenCalled();
+    expect(createSubscriptionUpdatePortalSessionMock).not.toHaveBeenCalled();
     expect(createSubscriptionCheckoutSessionMock).not.toHaveBeenCalled();
   });
 
-  it("applies server-owned Stripe price and quantity for paid plan changes", async () => {
+  it("opens a Stripe-hosted exact price and quantity change", async () => {
     const org = {
       id: "org_123",
       name: "Paid Org",
@@ -339,13 +341,16 @@ describe("billing settings plan changes", () => {
       context: {},
     } as never);
 
-    expect(result).toEqual({ planChanged: true });
-    expect(updateActiveStripeSubscriptionPlanMock).toHaveBeenCalledWith(
+    expect(result).toEqual({
+      billingPortalUrl: "https://billing.stripe.test/confirm",
+    });
+    expect(createSubscriptionUpdatePortalSessionMock).toHaveBeenCalledWith(
       expect.objectContaining({
         env,
         org,
         plan: "team",
         seatCount: 3,
+        returnUrl: "https://camelai.test/settings/organization/billing",
       }),
     );
     expect(createBillingPortalSessionMock).not.toHaveBeenCalled();
@@ -368,7 +373,7 @@ describe("billing settings plan changes", () => {
       user: { id: "user_123", email: "owner@example.com" },
       currentOrg: org,
     });
-    updateActiveStripeSubscriptionPlanMock.mockRejectedValueOnce(
+    createSubscriptionUpdatePortalSessionMock.mockRejectedValueOnce(
       new StripeSubscriptionRequiresManagementError("active"),
     );
 
@@ -472,12 +477,12 @@ describe("billing settings plan changes", () => {
         seatCount: 1,
       }),
     );
-    expect(updateActiveStripeSubscriptionPlanMock).not.toHaveBeenCalled();
+    expect(createSubscriptionUpdatePortalSessionMock).not.toHaveBeenCalled();
     expect(createBillingPortalSessionMock).not.toHaveBeenCalled();
     expect(createSubscriptionCheckoutSessionMock).not.toHaveBeenCalled();
   });
 
-  it("applies the locked active update when local trial status is stale", async () => {
+  it("opens the hosted active update when local trial status is stale", async () => {
     const org = {
       id: "org_123",
       name: "Stale Trial Org",
@@ -502,14 +507,17 @@ describe("billing settings plan changes", () => {
       context: {},
     } as never);
 
-    expect(result).toEqual({ planChanged: true });
+    expect(result).toEqual({
+      billingPortalUrl: "https://billing.stripe.test/confirm",
+    });
     expect(updateTrialingStripeSubscriptionPlanMock).toHaveBeenCalled();
-    expect(updateActiveStripeSubscriptionPlanMock).toHaveBeenCalledWith(
+    expect(createSubscriptionUpdatePortalSessionMock).toHaveBeenCalledWith(
       expect.objectContaining({
         env,
         org,
         plan: "pro",
         seatCount: 1,
+        returnUrl: "https://camelai.test/settings/organization/billing",
       }),
     );
     expect(createBillingPortalSessionMock).not.toHaveBeenCalled();
@@ -552,7 +560,7 @@ describe("billing settings plan changes", () => {
         customerEmail: "owner@example.com",
       }),
     );
-    expect(updateActiveStripeSubscriptionPlanMock).not.toHaveBeenCalled();
+    expect(createSubscriptionUpdatePortalSessionMock).not.toHaveBeenCalled();
     expect(createSubscriptionCheckoutSessionMock).not.toHaveBeenCalled();
   });
 
@@ -588,7 +596,7 @@ describe("billing settings plan changes", () => {
         customerEmail: "owner@example.com",
       }),
     );
-    expect(updateActiveStripeSubscriptionPlanMock).not.toHaveBeenCalled();
+    expect(createSubscriptionUpdatePortalSessionMock).not.toHaveBeenCalled();
     expect(createSubscriptionCheckoutSessionMock).not.toHaveBeenCalled();
   });
 

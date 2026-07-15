@@ -5,13 +5,6 @@ export type {
   SubscriptionInvoiceGrantCommand,
   ApplySubscriptionInvoiceGrantResult,
   SubscriptionInvoiceGrantRow,
-  TeamSeatMutationMode,
-  TeamSeatMutationAcquireInput,
-  TeamSeatMutationAcquireResult,
-  TeamSeatMutationFenceInput,
-  TeamSeatMutationFenceResult,
-  TeamSeatMutationCompleteInput,
-  TeamSeatMutationCompleteResult,
 } from "./org-do";
 export { dispatchAdminEvent } from "./admin-events";
 export type { OrgRole, BillingStatus } from "../../../../src/types";
