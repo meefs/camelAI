@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { ExternalLink } from "lucide-react";
 import { useFetcher } from "react-router";
 import { toast } from "sonner";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -143,10 +144,13 @@ export function OpenAiSubscriptionSettings({
             <p className="font-mono text-xl font-semibold tracking-widest text-foreground">
               {device.userCode}
             </p>
-            <Button asChild size="sm">
-              <a href={device.verificationUrl} target="_blank" rel="noreferrer">
-                Open OpenAI sign-in
-              </a>
+            <Button
+              onClick={() =>
+                window.open(device.verificationUrl, "_blank", "noopener,noreferrer")
+              }
+            >
+              Sign into OpenAI
+              <ExternalLink />
             </Button>
             <p className="text-xs">Waiting for authorization…</p>
           </AlertDescription>
