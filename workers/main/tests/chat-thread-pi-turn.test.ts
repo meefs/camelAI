@@ -7626,6 +7626,255 @@ describe('ChatThreadDO Pi turn handling', () => {
     }
   });
 
+  it('uses directly served markdown before Browser Run for WebFetch', async () => {
+    const quickAction = vi.fn();
+    const toMarkdown = vi.fn();
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      expect(init).toMatchObject({ redirect: 'manual' });
+      expect(init?.headers).toMatchObject({
+        accept: expect.stringContaining('text/markdown'),
+        'user-agent': expect.stringContaining('Mozilla/5.0'),
+      });
+      return new Response('# Direct page\n\nServed as Markdown without launching a browser. This additional useful paragraph clears the content-quality threshold.', {
+        headers: { 'content-type': 'text/markdown; charset=utf-8' },
+      });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    try {
+      const client = new CodeModeWebSearch(
+        {
+          APP_KV: { get: vi.fn(), put: vi.fn() } as any,
+          AI: { toMarkdown } as any,
+          BROWSER: { quickAction } as unknown as Fetcher,
+        },
+        'thread1',
+      );
+
+      const result = await client.fetch({ url: 'https://example.com/docs' }) as any;
+
+      expect(result).toMatchObject({
+        provider: 'direct',
+        costUSD: 0,
+        results: [{
+          url: 'https://example.com/docs',
+          text: '# Direct page\n\nServed as Markdown without launching a browser. This additional useful paragraph clears the content-quality threshold.',
+        }],
+      });
+      expect(toMarkdown).not.toHaveBeenCalled();
+      expect(quickAction).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('converts directly fetched HTML with Workers AI before Browser Run', async () => {
+    const quickAction = vi.fn();
+    const convertedMarkdown = [
+      '# Converted page',
+      '',
+      'Useful article content from the direct HTML response. '.repeat(12),
+    ].join('\n');
+    const toMarkdown = vi.fn(async () => ({
+      id: 'conversion-1',
+      name: 'page.html',
+      mimeType: 'text/html',
+      format: 'markdown',
+      tokens: 20,
+      data: convertedMarkdown,
+    }));
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(
+      '<!doctype html><html><body><main><h1>Converted page</h1><p>Useful article content from the direct HTML response.</p></main></body></html>',
+      { headers: { 'content-type': 'text/html; charset=utf-8' } },
+    )));
+    try {
+      const client = new CodeModeWebSearch(
+        {
+          APP_KV: { get: vi.fn(), put: vi.fn() } as any,
+          AI: { toMarkdown } as any,
+          BROWSER: { quickAction } as unknown as Fetcher,
+        },
+        'thread1',
+      );
+
+      const result = await client.fetch({ url: 'https://example.com/article' }) as any;
+
+      expect(result).toMatchObject({
+        provider: 'cloudflare-ai',
+        costUSD: 0,
+        results: [{ text: convertedMarkdown.trim() }],
+      });
+      expect(toMarkdown).toHaveBeenCalledWith(
+        expect.objectContaining({ name: 'page.html', blob: expect.any(Blob) }),
+        { conversionOptions: { html: { hostname: 'example.com' } } },
+      );
+      expect(quickAction).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('falls back to Browser Run when direct HTML conversion has no useful content', async () => {
+    const quickAction = vi.fn(async () => Response.json({
+      success: true,
+      result: '# Browser page\n\nBrowser-rendered content survived the quality check.',
+    }, { headers: { 'X-Browser-Ms-Used': '150' } }));
+    const shellMarkdown = `# Application\n\n${'Loading client-side application shell. '.repeat(8)}`;
+    expect(shellMarkdown.length).toBeGreaterThan(100);
+    expect(shellMarkdown.length).toBeLessThan(500);
+    const toMarkdown = vi.fn(async () => ({
+      id: 'conversion-1',
+      name: 'page.html',
+      mimeType: 'text/html',
+      format: 'markdown',
+      tokens: 30,
+      data: shellMarkdown,
+    }));
+    const onProviderFailure = vi.fn(async () => undefined);
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(
+      '<!doctype html><html><body><div id="app"></div></body></html>',
+      { headers: { 'content-type': 'text/html' } },
+    )));
+    try {
+      const client = new CodeModeWebSearch(
+        {
+          APP_KV: { get: vi.fn(), put: vi.fn() } as any,
+          AI: { toMarkdown } as any,
+          BROWSER: { quickAction } as unknown as Fetcher,
+        },
+        'thread1',
+        { onProviderFailure },
+      );
+
+      const result = await client.fetch({ url: 'https://example.com/app' }) as any;
+
+      expect(result).toMatchObject({
+        provider: 'cloudflare',
+        results: [{ text: '# Browser page\n\nBrowser-rendered content survived the quality check.' }],
+      });
+      expect(quickAction).toHaveBeenCalledOnce();
+      expect(onProviderFailure).toHaveBeenCalledWith(expect.objectContaining({
+        provider: 'cloudflare-ai',
+        durationMs: expect.any(Number),
+      }));
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('falls back without converting an oversized direct response', async () => {
+    const quickAction = vi.fn(async () => Response.json({
+      success: true,
+      result: '# Browser fallback\n\nThe oversized direct response was not treated as complete.',
+    }));
+    const toMarkdown = vi.fn();
+    const onProviderFailure = vi.fn(async () => undefined);
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(
+      '<!doctype html><html><body>oversized</body></html>',
+      {
+        headers: {
+          'content-type': 'text/html',
+          'content-length': '1900001',
+        },
+      },
+    )));
+    try {
+      const client = new CodeModeWebSearch(
+        {
+          APP_KV: { get: vi.fn(), put: vi.fn() } as any,
+          AI: { toMarkdown } as any,
+          BROWSER: { quickAction } as unknown as Fetcher,
+        },
+        'thread1',
+        { onProviderFailure },
+      );
+
+      const result = await client.fetch({ url: 'https://example.com/large' }) as any;
+
+      expect(toMarkdown).not.toHaveBeenCalled();
+      expect(quickAction).toHaveBeenCalledOnce();
+      expect(result).toMatchObject({ provider: 'cloudflare' });
+      expect(onProviderFailure).toHaveBeenCalledWith(expect.objectContaining({ provider: 'direct' }));
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('follows and resolves validated public direct-fetch redirects', async () => {
+    const quickAction = vi.fn();
+    const toMarkdown = vi.fn();
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input) === 'https://example.com/start') {
+        return new Response(null, { status: 302, headers: { location: '/docs/final' } });
+      }
+      expect(String(input)).toBe('https://example.com/docs/final');
+      return new Response(
+        '# Redirected page\n\nThe public relative redirect resolved safely and returned enough useful Markdown content.',
+        { headers: { 'content-type': 'text/markdown' } },
+      );
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    try {
+      const client = new CodeModeWebSearch(
+        {
+          APP_KV: { get: vi.fn(), put: vi.fn() } as any,
+          AI: { toMarkdown } as any,
+          BROWSER: { quickAction } as unknown as Fetcher,
+        },
+        'thread1',
+      );
+
+      const result = await client.fetch({ url: 'https://example.com/start' }) as any;
+
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(result).toMatchObject({
+        provider: 'direct',
+        results: [{ url: 'https://example.com/docs/final' }],
+      });
+      expect(toMarkdown).not.toHaveBeenCalled();
+      expect(quickAction).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('does not follow direct-fetch redirects to private targets', async () => {
+    const quickAction = vi.fn(async () => Response.json({
+      success: true,
+      result: '# Safe fallback\n\nFetched without following the private redirect.',
+    }));
+    const toMarkdown = vi.fn();
+    const fetchMock = vi.fn(async () => new Response(null, {
+      status: 302,
+      headers: { location: 'http://169.254.169.254/latest/meta-data/' },
+    }));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    vi.stubGlobal('fetch', fetchMock);
+    try {
+      const client = new CodeModeWebSearch(
+        {
+          APP_KV: { get: vi.fn(), put: vi.fn() } as any,
+          AI: { toMarkdown } as any,
+          BROWSER: { quickAction } as unknown as Fetcher,
+        },
+        'thread1',
+      );
+
+      const result = await client.fetch({ url: 'https://example.com/redirect' }) as any;
+
+      expect(fetchMock).toHaveBeenCalledOnce();
+      expect(toMarkdown).not.toHaveBeenCalled();
+      expect(quickAction).toHaveBeenCalledOnce();
+      expect(result).toMatchObject({ provider: 'cloudflare' });
+      expect(warn).toHaveBeenCalledWith(
+        'Direct web fetch failed; falling back to hosted fetch providers',
+        expect.objectContaining({ hostname: 'example.com', errorName: 'Error' }),
+      );
+    } finally {
+      warn.mockRestore();
+      vi.unstubAllGlobals();
+    }
+  });
+
   it('uses the Cloudflare Browser Run Markdown Quick Action first for WebFetch', async () => {
     const quickAction = vi.fn(async () => Response.json({
       success: true,

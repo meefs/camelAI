@@ -1,9 +1,11 @@
 type WebProvider = "cloudflare" | "firecrawl" | "parallel" | "exa";
 type SearchProvider = Exclude<WebProvider, "cloudflare">;
+type WebResultProvider = WebProvider | "direct" | "cloudflare-ai";
 
 interface CodeModeWebSearchEnv {
   APP_KV: KVNamespace;
   BROWSER?: Fetcher;
+  AI?: Ai;
   FIRECRAWL_API_KEY?: string;
   FIRECRAWL_BASE_URL?: string;
   PARALLEL_API_KEY?: string;
@@ -24,7 +26,7 @@ interface WebResult {
 }
 
 interface WebProviderResult {
-  provider: WebProvider;
+  provider: WebResultProvider;
   results: WebResult[];
   costUSD: number;
   durationMs?: number;
@@ -37,6 +39,12 @@ const WEB_PROVIDER_TIMEOUT_MS = 20_000;
 const CLOUDFLARE_BROWSER_GOTO_TIMEOUT_MS = 3_000;
 const CLOUDFLARE_BROWSER_ACTION_TIMEOUT_MS = 5_000;
 const CLOUDFLARE_BROWSER_DEADLINE_MS = 9_000;
+const DIRECT_WEB_FETCH_TIMEOUT_MS = 2_500;
+const DIRECT_WEB_FETCH_MAX_REDIRECTS = 5;
+const DIRECT_WEB_FETCH_MAX_BYTES = 1_900_000;
+const DIRECT_WEB_FETCH_USER_AGENT =
+  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) " +
+  "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36";
 const WEB_FETCH_REJECT_REQUEST_PATTERNS = [
   "/^https?:\\/\\/[^@\\/]+@/i",
   "/^https?:\\/\\/(?:localhost(?:\\.localdomain)?|[^\\/]+\\.(?:localhost|local|internal))(?::\\d+)?(?:[\\/?#]|$)/i",
@@ -184,6 +192,79 @@ function assertPublicWebURL(url: URL): void {
   ) {
     throw new Error("Web fetch URL must not point to a private, loopback, or link-local IP address");
   }
+}
+
+async function readResponseTextLimited(
+  response: Response,
+  maxBytes: number,
+): Promise<{ text: string; truncated: boolean }> {
+  if (!response.body) return { text: "", truncated: false };
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  const parts: string[] = [];
+  let bytesRead = 0;
+  let truncated = false;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      const remaining = maxBytes - bytesRead;
+      if (remaining <= 0) {
+        truncated = true;
+        await reader.cancel();
+        break;
+      }
+      const chunk = value.byteLength > remaining ? value.subarray(0, remaining) : value;
+      bytesRead += chunk.byteLength;
+      parts.push(decoder.decode(chunk, { stream: true }));
+      if (chunk.byteLength < value.byteLength) {
+        truncated = true;
+        await reader.cancel();
+        break;
+      }
+    }
+  } finally {
+    try {
+      await reader.cancel();
+    } catch {
+      // The stream may already be closed after a complete read.
+    }
+  }
+  parts.push(decoder.decode());
+  return { text: parts.join(""), truncated };
+}
+
+function isLikelyHTML(contentType: string, text: string): boolean {
+  return /(?:text\/html|application\/xhtml\+xml)/i.test(contentType) ||
+    /^\s*(?:<!doctype\s+html|<html\b)/i.test(text);
+}
+
+function isLikelyBlockPage(text: string): boolean {
+  if (text.length > 50_000) return false;
+  const sample = text.slice(0, 8_000).toLowerCase();
+  return [
+    "just a moment",
+    "verify you are human",
+    "enable javascript and cookies to continue",
+    "checking your browser",
+    "attention required! | cloudflare",
+    "captcha",
+    "access denied",
+    "request blocked",
+    "please enable javascript",
+    "javascript is required",
+    "you need to enable javascript",
+  ].some((marker) => sample.includes(marker));
+}
+
+function isUsableDirectText(text: string): boolean {
+  const trimmed = text.trim();
+  return trimmed.length >= 100 && trimmed.replace(/\s/g, "").length >= 80 && !isLikelyBlockPage(trimmed);
+}
+
+function isUsableConvertedMarkdown(text: string): boolean {
+  const trimmed = text.trim();
+  return trimmed.length >= 500 && trimmed.replace(/\s/g, "").length >= 400 && !isLikelyBlockPage(trimmed);
 }
 
 function normalizeDomains(value: unknown): string[] {
@@ -404,7 +485,20 @@ export class CodeModeWebSearch {
     }
     assertPublicWebURL(url);
     const maxCharacters = clampInteger(args.maxCharacters, 12_000, 500, 30_000);
-    const providerResult = await this.withProviderFallback("fetch", (provider) =>
+    let providerResult: WebProviderResult | null = null;
+    if (this.env.AI) {
+      try {
+        // The toMarkdown binding does not expose cancellation. Await it before
+        // fallback so a slow conversion cannot become orphaned duplicate work.
+        providerResult = await this.directFetch(url, maxCharacters);
+      } catch (error) {
+        console.warn("Direct web fetch failed; falling back to hosted fetch providers", {
+          hostname: url.hostname,
+          errorName: error instanceof Error ? error.name : "UnknownError",
+        });
+      }
+    }
+    providerResult ??= await this.withProviderFallback("fetch", (provider) =>
       this.fetchWithProvider(provider, args, url.toString(), maxCharacters)
     );
     const text = formatResults(
@@ -422,6 +516,110 @@ export class CodeModeWebSearch {
       url: url.toString(),
       text,
     };
+  }
+
+  private async directFetch(
+    initialURL: URL,
+    maxCharacters: number,
+  ): Promise<WebProviderResult | null> {
+    const ai = this.env.AI;
+    if (!ai) return null;
+    const startedAt = Date.now();
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), DIRECT_WEB_FETCH_TIMEOUT_MS);
+    let currentURL = new URL(initialURL);
+    let attemptedProvider: WebResultProvider = "direct";
+    let failureRecorded = false;
+    const fail = async (provider: WebResultProvider): Promise<null> => {
+      failureRecorded = true;
+      await this.options.onProviderFailure?.({
+        provider,
+        results: [],
+        costUSD: 0,
+        durationMs: Math.max(0, Date.now() - startedAt),
+      });
+      return null;
+    };
+    try {
+      let response: Response | undefined;
+      for (let redirects = 0; redirects <= DIRECT_WEB_FETCH_MAX_REDIRECTS; redirects += 1) {
+        assertPublicWebURL(currentURL);
+        response = await globalThis.fetch(currentURL.toString(), {
+          headers: {
+            accept: "text/markdown, text/html;q=0.9, text/plain;q=0.8, */*;q=0.1",
+            "user-agent": DIRECT_WEB_FETCH_USER_AGENT,
+          },
+          redirect: "manual",
+          signal: controller.signal,
+        });
+        if (![301, 302, 303, 307, 308].includes(response.status)) break;
+        const location = response.headers.get("location");
+        await response.body?.cancel();
+        if (!location) return await fail("direct");
+        if (redirects === DIRECT_WEB_FETCH_MAX_REDIRECTS) return await fail("direct");
+        currentURL = new URL(location, currentURL);
+        if (currentURL.protocol !== "http:" && currentURL.protocol !== "https:") {
+          return await fail("direct");
+        }
+      }
+      if (!response?.ok) {
+        await response?.body?.cancel();
+        return await fail("direct");
+      }
+
+      const contentType = response.headers.get("content-type") || "";
+      const potentiallyTextual = /^text\//i.test(contentType) ||
+        /(?:json|xml|yaml|javascript|xhtml)/i.test(contentType);
+      if (!potentiallyTextual) {
+        await response.body?.cancel();
+        return await fail("direct");
+      }
+      const contentLength = Number(response.headers.get("content-length") || "0");
+      if (Number.isFinite(contentLength) && contentLength > DIRECT_WEB_FETCH_MAX_BYTES) {
+        await response.body?.cancel();
+        return await fail("direct");
+      }
+      const { text: body, truncated } = await readResponseTextLimited(response, DIRECT_WEB_FETCH_MAX_BYTES);
+      if (truncated) return await fail("direct");
+      if (!isLikelyHTML(contentType, body)) {
+        if (!isUsableDirectText(body)) return await fail("direct");
+        return {
+          provider: "direct",
+          results: truncateResults([{ url: currentURL.toString(), text: body.trim() }], 1, maxCharacters),
+          costUSD: 0,
+          durationMs: Math.max(0, Date.now() - startedAt),
+        };
+      }
+      if (isLikelyBlockPage(body)) return await fail("direct");
+
+      attemptedProvider = "cloudflare-ai";
+      const converted = await ai.toMarkdown(
+        {
+          name: "page.html",
+          blob: new Blob([body], { type: "text/html" }),
+        },
+        {
+          conversionOptions: {
+            html: { hostname: currentURL.hostname },
+          },
+          // Cloudflare's runtime supports hostname for resolving relative HTML
+          // links, but the generated Workers type bundled here still lags it.
+        } as Parameters<Ai["toMarkdown"]>[1],
+      );
+      const markdown = converted.format === "markdown" ? converted.data.trim() : "";
+      if (!isUsableConvertedMarkdown(markdown)) return await fail("cloudflare-ai");
+      return {
+        provider: "cloudflare-ai",
+        results: truncateResults([{ url: currentURL.toString(), text: markdown }], 1, maxCharacters),
+        costUSD: 0,
+        durationMs: Math.max(0, Date.now() - startedAt),
+      };
+    } catch (error) {
+      if (!failureRecorded) await fail(attemptedProvider);
+      throw error;
+    } finally {
+      clearTimeout(timeoutId);
+    }
   }
 
   private providerBaseURL(provider: WebProvider): string {
