@@ -24,20 +24,21 @@ export interface LegacyMigrationPreview {
 }
 
 export interface LegacyMigrationConfirmation {
-  billingPortalUrl: string;
-  preview: LegacyMigrationPreview | null;
+  preview: LegacyMigrationPreview;
 }
 
 interface LegacyMigrationConfirmDialogProps {
   confirmation: LegacyMigrationConfirmation | null;
   onOpenChange: (open: boolean) => void;
   onContinue: () => void;
+  submitting?: boolean;
 }
 
 export function LegacyMigrationConfirmDialog({
   confirmation,
   onOpenChange,
   onContinue,
+  submitting = false,
 }: LegacyMigrationConfirmDialogProps) {
   return (
     <Dialog
@@ -51,8 +52,8 @@ export function LegacyMigrationConfirmDialog({
           </DialogTitle>
           <DialogDescription className="text-base leading-7">
             Your previous camelAI subscription will be replaced by your new
-            plan. It will not renew or bill again next month after you confirm
-            the switch in Stripe.
+            plan. The exact plan and seat quantity shown here are locked by
+            camelAI before the update is sent to Stripe.
           </DialogDescription>
         </DialogHeader>
 
@@ -73,12 +74,13 @@ export function LegacyMigrationConfirmDialog({
           <Button
             type="button"
             variant="ghost"
+            disabled={submitting}
             onClick={() => onOpenChange(false)}
           >
             Back
           </Button>
-          <Button type="button" onClick={onContinue}>
-            Continue to Stripe
+          <Button type="button" disabled={submitting} onClick={onContinue}>
+            {submitting ? "Confirming…" : "Confirm subscription switch"}
             <ArrowRight className="size-4" aria-hidden="true" />
           </Button>
         </DialogFooter>

@@ -13,9 +13,7 @@ import { getEnv } from "@/lib/cloudflare.server";
 import {
   activatePayAsYouGoPlan,
   createBillingPortalSession,
-  createLegacyStripeMigrationPortalSession,
   createSubscriptionCancellationPortalSession,
-  createSubscriptionUpdatePortalSession,
   createSubscriptionCheckoutSession,
   getBillableTeamSeatCountForOrg,
   getOrgBillingOverview,
@@ -26,6 +24,9 @@ import {
   isStripeSubscriptionRequiresManagementError,
   isStripeBillingConfigured,
   listStripeInvoicesForOrg,
+  migrateLegacyStripeSubscription,
+  previewLegacyStripeMigration,
+  updateActiveStripeSubscriptionPlan,
   updateTrialingStripeSubscriptionPlan,
 } from "@/lib/billing.server";
 import {
@@ -40,6 +41,16 @@ import { getEffectiveLlmProviderConfig } from "@/lib/selfhost-ai-provider";
 import { isSelfhostRuntime } from "@/lib/selfhost-runtime";
 import type { BillingPlan, Organization } from "@/types";
 import { Button } from "@/components/ui/button";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Separator } from "@/components/ui/separator";
 import { SettingsHeader } from "@/components/settings/settings-header";
 import {
@@ -247,6 +258,8 @@ export async function action({ request, context }: Route.ActionArgs) {
     }
     case "changePlan": {
       const rawPlan = String(formData.get("plan") || "").trim();
+      const confirmLegacyMigration =
+        formData.get("confirmLegacyMigration") === "true";
       if (!isBillingPlan(rawPlan)) {
         return { error: "Choose a valid billing plan." };
       }
@@ -298,17 +311,25 @@ export async function action({ request, context }: Route.ActionArgs) {
                   authContext.currentOrg.id,
                 )
               : getMinimumSeats(rawPlan);
-          const migrationSession = await createLegacyStripeMigrationPortalSession({
+          if (confirmLegacyMigration) {
+            await migrateLegacyStripeSubscription({
+              env,
+              org: billingOrg,
+              userEmail: authContext.user.email,
+              plan: rawPlan,
+              seatCount,
+            });
+            return { planChanged: true };
+          }
+          const preview = await previewLegacyStripeMigration({
             env,
             org: billingOrg,
             userEmail: authContext.user.email,
-            returnUrl: billingUrl.toString(),
             plan: rawPlan,
             seatCount,
           });
           return {
-            billingPortalUrl: migrationSession.billingPortalUrl,
-            legacyMigrationPreview: migrationSession.preview,
+            legacyMigrationPreview: preview,
           };
         } catch (error) {
           console.error("[billing] failed to migrate legacy subscription", {
@@ -360,18 +381,16 @@ export async function action({ request, context }: Route.ActionArgs) {
                         authContext.currentOrg.id,
                       )
                     : getMinimumSeats(rawPlan);
-                const url = await createSubscriptionUpdatePortalSession({
+                await updateActiveStripeSubscriptionPlan({
                   env,
                   org: billingOrg,
-                  customerEmail: authContext.user.email,
-                  returnUrl: billingUrl.toString(),
                   plan: rawPlan,
                   seatCount,
                 });
-                return { billingPortalUrl: url };
+                return { planChanged: true };
               } catch (portalError) {
                 console.error(
-                  "[billing] failed to create Stripe portal session after stale trial status",
+                  "[billing] failed to apply active plan change after stale trial status",
                   {
                     orgId: billingOrg.id,
                     plan: rawPlan,
@@ -442,15 +461,13 @@ export async function action({ request, context }: Route.ActionArgs) {
                     authContext.currentOrg.id,
                   )
                 : getMinimumSeats(rawPlan);
-            const url = await createSubscriptionUpdatePortalSession({
+            await updateActiveStripeSubscriptionPlan({
               env,
               org: billingOrg,
-              customerEmail: authContext.user.email,
-              returnUrl: billingUrl.toString(),
               plan: rawPlan,
               seatCount,
             });
-            return { billingPortalUrl: url };
+            return { planChanged: true };
           } catch (error) {
             if (isStripeSubscriptionRequiresManagementError(error)) {
               try {
@@ -473,7 +490,7 @@ export async function action({ request, context }: Route.ActionArgs) {
               }
             }
             console.error(
-              "[billing] failed to create Stripe subscription update portal session",
+              "[billing] failed to apply Stripe subscription plan change",
               {
                 orgId: billingOrg.id,
                 plan: rawPlan,
@@ -807,12 +824,14 @@ function ManagePlanView({
   }>();
   const [legacyConfirmation, setLegacyConfirmation] =
     useState<LegacyMigrationConfirmation | null>(null);
+  const [activePlanConfirmation, setActivePlanConfirmation] =
+    useState<Extract<PlanPickerCta, { plan: BillingPlan }> | null>(null);
   const isSubmitting = fetcher.state !== "idle";
   const pendingPlan = isSubmitting
     ? ((fetcher.formData?.get("plan") as BillingPlan | null) ?? null)
     : null;
 
-  function handleSelectPlan(cta: PlanPickerCta) {
+  function submitPlanSelection(cta: PlanPickerCta) {
     if (cta.kind === "contact") {
       window.open("mailto:sales@camelai.com", "_blank");
       return;
@@ -854,6 +873,20 @@ function ManagePlanView({
     );
   }
 
+  function handleSelectPlan(cta: PlanPickerCta) {
+    if (
+      currentPaidPlanAction === "manage" &&
+      "plan" in cta &&
+      cta.plan !== currentPlan &&
+      (cta.plan === "starter" || cta.plan === "pro" || cta.plan === "team") &&
+      (cta.kind === "subscribe" || cta.kind === "downgrade")
+    ) {
+      setActivePlanConfirmation(cta);
+      return;
+    }
+    submitPlanSelection(cta);
+  }
+
   useEffect(() => {
     if (fetcher.state !== "idle") return;
     const nextUrl =
@@ -861,15 +894,10 @@ function ManagePlanView({
       fetcher.data?.billingPortalUrl ??
       fetcher.data?.redirectTo;
     if (
-      fetcher.data?.billingPortalUrl &&
-      Object.prototype.hasOwnProperty.call(
-        fetcher.data,
-        "legacyMigrationPreview",
-      )
+      fetcher.data?.legacyMigrationPreview
     ) {
       setLegacyConfirmation({
-        billingPortalUrl: fetcher.data.billingPortalUrl,
-        preview: fetcher.data.legacyMigrationPreview ?? null,
+        preview: fetcher.data.legacyMigrationPreview,
       });
       return;
     }
@@ -928,15 +956,52 @@ function ManagePlanView({
       />
       <LegacyMigrationConfirmDialog
         confirmation={legacyConfirmation}
+        submitting={isSubmitting}
         onOpenChange={(open) => {
           if (!open) setLegacyConfirmation(null);
         }}
         onContinue={() => {
-          if (legacyConfirmation?.billingPortalUrl) {
-            window.location.assign(legacyConfirmation.billingPortalUrl);
-          }
+          if (!legacyConfirmation) return;
+          fetcher.submit(
+            {
+              intent: "changePlan",
+              plan: legacyConfirmation.preview.plan,
+              confirmLegacyMigration: "true",
+            },
+            { method: "post" },
+          );
         }}
       />
+      <AlertDialog
+        open={Boolean(activePlanConfirmation)}
+        onOpenChange={(open) => {
+          if (!open) setActivePlanConfirmation(null);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Confirm plan change</AlertDialogTitle>
+            <AlertDialogDescription>
+              {activePlanConfirmation
+                ? `Change to ${BILLING_PLAN_LIMITS[activePlanConfirmation.plan].label} using camelAI's exact server-calculated seat quantity. Stripe invoices any prorated increase now; downgrades do not refund the current billing period.`
+                : "Confirm this subscription change."}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={isSubmitting}>Back</AlertDialogCancel>
+            <AlertDialogAction
+              disabled={isSubmitting}
+              onClick={() => {
+                if (!activePlanConfirmation) return;
+                submitPlanSelection(activePlanConfirmation);
+                setActivePlanConfirmation(null);
+              }}
+            >
+              Confirm plan change
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
       {fetcher.data &&
       typeof fetcher.data === "object" &&
       "error" in fetcher.data ? (

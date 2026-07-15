@@ -7,7 +7,9 @@ const getEnvMock = vi.fn();
 const createInvitationsMock = vi.fn();
 const getOrgMembersWithWorkspaceAccessMock = vi.fn();
 const getOrgInvitationsMock = vi.fn();
-const syncTeamSubscriptionSeatCountMock = vi.fn();
+const ensureTeamSubscriptionSeatCapacityMock = vi.fn();
+const bestEffortEnsureTeamSubscriptionSeatCapacityMock = vi.fn();
+const bestEffortReleaseTeamSeatCapacityReservationMock = vi.fn();
 const bestEffortSyncTeamSubscriptionSeatCountMock = vi.fn();
 const sendOrgInvitationEmailMock = vi.fn();
 
@@ -37,7 +39,12 @@ vi.mock("@/lib/billing.server", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/billing.server")>();
   return {
     ...actual,
-    syncTeamSubscriptionSeatCount: syncTeamSubscriptionSeatCountMock,
+    ensureTeamSubscriptionSeatCapacity:
+      ensureTeamSubscriptionSeatCapacityMock,
+    bestEffortEnsureTeamSubscriptionSeatCapacity:
+      bestEffortEnsureTeamSubscriptionSeatCapacityMock,
+    bestEffortReleaseTeamSeatCapacityReservation:
+      bestEffortReleaseTeamSeatCapacityReservationMock,
     bestEffortSyncTeamSubscriptionSeatCount:
       bestEffortSyncTeamSubscriptionSeatCountMock,
   };
@@ -83,10 +90,56 @@ function makeRequest(fields: Record<string, string | string[]>) {
   });
 }
 
+function confirmedSeatSync(overrides: Record<string, unknown> = {}) {
+  return {
+    status: "capacity_confirmed",
+    org: makeOrg({ billing_seat_count: 4 }),
+    targetSeatCount: 4,
+    previousStripeSeatCount: 3,
+    stripeQuantityChanged: true,
+    paidIncreaseConfirmed: true,
+    metadataSynced: true,
+    orgSeatStateSynced: true,
+    pendingBillingSeatAllowance: 0,
+    seatReservation: {
+      operationId: "reserve_batch",
+      subscriptionId: "sub_team",
+    },
+    ...overrides,
+  };
+}
+
+function arrangePaidSeatInvitation() {
+  const org = makeOrg({ billing_seat_count: 3 });
+  const env = {
+    ORG: {
+      idFromName: vi.fn((id: string) => id),
+      get: vi.fn(() => ({ getInfo: vi.fn(async () => org) })),
+    },
+  };
+  getEnvMock.mockReturnValue(env);
+  requireAuthContextMock.mockResolvedValue({
+    currentOrg: org,
+    user: { id: "owner_123", email: "owner@example.com" },
+  });
+  getOrgMembersWithWorkspaceAccessMock.mockResolvedValue([
+    { user: { id: "owner_123", email: "owner@example.com" }, role: "owner" },
+    { user: { id: "a", email: "a@example.com" }, role: "member" },
+    { user: { id: "b", email: "b@example.com" }, role: "member" },
+  ]);
+  getOrgInvitationsMock.mockResolvedValue([]);
+  return { env, org };
+}
+
 describe("team settings bulk invitation action", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     requireOrgAdminMock.mockResolvedValue(undefined);
+    ensureTeamSubscriptionSeatCapacityMock.mockResolvedValue(
+      confirmedSeatSync(),
+    );
+    bestEffortEnsureTeamSubscriptionSeatCapacityMock.mockResolvedValue(null);
+    bestEffortReleaseTeamSeatCapacityReservationMock.mockResolvedValue(null);
     bestEffortSyncTeamSubscriptionSeatCountMock.mockResolvedValue(null);
     sendOrgInvitationEmailMock.mockResolvedValue({ status: "sent" });
   });
@@ -143,7 +196,7 @@ describe("team settings bulk invitation action", () => {
       "owner_123",
       { pendingBillingSeatAllowance: 0 },
     );
-    expect(syncTeamSubscriptionSeatCountMock).not.toHaveBeenCalled();
+    expect(ensureTeamSubscriptionSeatCapacityMock).not.toHaveBeenCalled();
     expect(sendOrgInvitationEmailMock).toHaveBeenCalledTimes(2);
     expect(result).toMatchObject({
       success: true,
@@ -194,7 +247,7 @@ describe("team settings bulk invitation action", () => {
       error: "stale_billing_context",
       billing: { addedSeatCount: 1, nextSeatCount: 4 },
     });
-    expect(syncTeamSubscriptionSeatCountMock).not.toHaveBeenCalled();
+    expect(ensureTeamSubscriptionSeatCapacityMock).not.toHaveBeenCalled();
     expect(createInvitationsMock).not.toHaveBeenCalled();
   });
 
@@ -220,7 +273,7 @@ describe("team settings bulk invitation action", () => {
       { user: { id: "b", email: "b@example.com" }, role: "member" },
     ]);
     getOrgInvitationsMock.mockResolvedValue([]);
-    syncTeamSubscriptionSeatCountMock.mockRejectedValue(
+    ensureTeamSubscriptionSeatCapacityMock.mockRejectedValue(
       new Error("Stripe unavailable"),
     );
 
@@ -237,10 +290,11 @@ describe("team settings bulk invitation action", () => {
       success: false,
       error: "billing_update_failed",
     });
-    expect(syncTeamSubscriptionSeatCountMock).toHaveBeenCalledWith(
+    expect(ensureTeamSubscriptionSeatCapacityMock).toHaveBeenCalledWith(
       env,
       "org_123",
       expect.objectContaining({
+        pendingReservedSeatDelta: 1,
         targetSeatCount: 4,
         prorationBehavior: "always_invoice",
         itemUpdateIdempotencyKey: expect.stringMatching(
@@ -294,7 +348,7 @@ describe("team settings bulk invitation action", () => {
       error: "stale_billing_context",
       billing: { addedSeatCount: 2, nextSeatCount: 5 },
     });
-    expect(syncTeamSubscriptionSeatCountMock).not.toHaveBeenCalled();
+    expect(ensureTeamSubscriptionSeatCapacityMock).not.toHaveBeenCalled();
     expect(createInvitationsMock).not.toHaveBeenCalled();
   });
 
@@ -318,7 +372,9 @@ describe("team settings bulk invitation action", () => {
       { user: { id: "b", email: "b@example.com" }, role: "member" },
     ]);
     getOrgInvitationsMock.mockResolvedValue([]);
-    syncTeamSubscriptionSeatCountMock.mockResolvedValue(undefined);
+    ensureTeamSubscriptionSeatCapacityMock.mockResolvedValue(
+      confirmedSeatSync(),
+    );
     createInvitationsMock.mockResolvedValue([
       { id: "inv_new", email: "new@example.com", expires_at: 123 },
     ]);
@@ -332,10 +388,11 @@ describe("team settings bulk invitation action", () => {
       context: {},
     } as never);
 
-    expect(syncTeamSubscriptionSeatCountMock).toHaveBeenCalledWith(
+    expect(ensureTeamSubscriptionSeatCapacityMock).toHaveBeenCalledWith(
       env,
       "org_123",
       expect.objectContaining({
+        pendingReservedSeatDelta: 1,
         targetSeatCount: 4,
         prorationBehavior: "always_invoice",
         itemUpdateIdempotencyKey: expect.stringMatching(
@@ -351,11 +408,265 @@ describe("team settings bulk invitation action", () => {
       "owner_123",
       { pendingBillingSeatAllowance: 0 },
     );
+    expect(
+      createInvitationsMock.mock.invocationCallOrder[0],
+    ).toBeLessThan(
+      bestEffortReleaseTeamSeatCapacityReservationMock.mock
+        .invocationCallOrder[0],
+    );
+    expect(bestEffortReleaseTeamSeatCapacityReservationMock).toHaveBeenCalledWith(
+      env,
+      "org_123",
+      {
+        operationId: "reserve_batch",
+        subscriptionId: "sub_team",
+      },
+    );
     expect(result).toMatchObject({
       success: true,
       invited: [{ email: "new@example.com", invitation_id: "inv_new" }],
       skipped: [],
       failed: [],
     });
+  });
+
+  it("creates invitations after confirmed capacity even when metadata repair fails", async () => {
+    const { env } = arrangePaidSeatInvitation();
+    ensureTeamSubscriptionSeatCapacityMock.mockResolvedValue(
+      confirmedSeatSync({ metadataSynced: false }),
+    );
+    createInvitationsMock.mockResolvedValue([
+      { id: "inv_new", email: "new@example.com", expires_at: 123 },
+    ]);
+
+    const result = await action({
+      request: makeRequest({
+        emails: ["new@example.com"],
+        disclosed_next_seat_count: "4",
+        disclosed_added_seat_count: "1",
+      }),
+      context: {},
+    } as never);
+
+    expect(result).toMatchObject({ success: true });
+    expect(createInvitationsMock).toHaveBeenCalledWith(
+      env,
+      "org_123",
+      ["new@example.com"],
+      "member",
+      "owner_123",
+      { pendingBillingSeatAllowance: 0 },
+    );
+    expect(
+      bestEffortEnsureTeamSubscriptionSeatCapacityMock,
+    ).toHaveBeenCalledWith(
+      env,
+      "org_123",
+      { reason: "bulk_invitations_created", targetSeatCount: 4 },
+    );
+  });
+
+  it("creates invitations against confirmed capacity while Org seat repair retries", async () => {
+    const { env, org } = arrangePaidSeatInvitation();
+    ensureTeamSubscriptionSeatCapacityMock.mockResolvedValue(
+      confirmedSeatSync({
+        org,
+        orgSeatStateSynced: false,
+        pendingBillingSeatAllowance: 1,
+      }),
+    );
+    createInvitationsMock.mockResolvedValue([
+      { id: "inv_new", email: "new@example.com", expires_at: 123 },
+    ]);
+
+    const result = await action({
+      request: makeRequest({
+        emails: ["new@example.com"],
+        disclosed_next_seat_count: "4",
+        disclosed_added_seat_count: "1",
+      }),
+      context: {},
+    } as never);
+
+    expect(result).toMatchObject({ success: true });
+    expect(createInvitationsMock).toHaveBeenCalledWith(
+      env,
+      "org_123",
+      ["new@example.com"],
+      "member",
+      "owner_123",
+      { pendingBillingSeatAllowance: 1 },
+    );
+  });
+
+  it("preserves paid capacity after invitation failure and succeeds on retry", async () => {
+    const { env } = arrangePaidSeatInvitation();
+    ensureTeamSubscriptionSeatCapacityMock
+      .mockResolvedValueOnce(confirmedSeatSync())
+      .mockResolvedValueOnce(
+        confirmedSeatSync({
+          previousStripeSeatCount: 4,
+          stripeQuantityChanged: false,
+          paidIncreaseConfirmed: false,
+        }),
+      );
+    createInvitationsMock
+      .mockRejectedValueOnce(new Error("temporary invitation failure"))
+      .mockResolvedValueOnce([
+        { id: "inv_retry", email: "new@example.com", expires_at: 123 },
+      ]);
+    const requestFields = {
+      emails: ["new@example.com"],
+      disclosed_next_seat_count: "4",
+      disclosed_added_seat_count: "1",
+    };
+
+    await expect(
+      action({
+        request: makeRequest(requestFields),
+        context: {},
+      } as never),
+    ).resolves.toMatchObject({
+      success: false,
+      error: "temporary invitation failure",
+    });
+    await expect(
+      action({
+        request: makeRequest(requestFields),
+        context: {},
+      } as never),
+    ).resolves.toMatchObject({
+      success: true,
+      invited: [{ invitation_id: "inv_retry" }],
+    });
+
+    expect(ensureTeamSubscriptionSeatCapacityMock).toHaveBeenCalledTimes(2);
+    expect(createInvitationsMock).toHaveBeenCalledTimes(2);
+    expect(
+      bestEffortEnsureTeamSubscriptionSeatCapacityMock,
+    ).toHaveBeenCalledTimes(
+      1,
+    );
+    expect(
+      bestEffortEnsureTeamSubscriptionSeatCapacityMock,
+    ).toHaveBeenCalledWith(
+      env,
+      "org_123",
+      { reason: "bulk_invitations_created", targetSeatCount: 4 },
+    );
+    expect(bestEffortSyncTeamSubscriptionSeatCountMock).not.toHaveBeenCalled();
+  });
+
+  it("keeps a 3-to-5 paid increase through partial retries of a failed batch", async () => {
+    const { env, org } = arrangePaidSeatInvitation();
+    const invitations: Array<{
+      id: string;
+      email: string;
+      expires_at: number;
+    }> = [];
+    getOrgInvitationsMock.mockImplementation(async () => invitations);
+    ensureTeamSubscriptionSeatCapacityMock.mockImplementation(async () => {
+      org.billing_seat_count = 5;
+      return confirmedSeatSync({
+        org,
+        requestedSeatCount: 5,
+        targetSeatCount: 5,
+        previousStripeSeatCount: 3,
+      });
+    });
+    createInvitationsMock
+      .mockRejectedValueOnce(new Error("temporary batch persistence failure"))
+      .mockImplementationOnce(async (_env, _orgId, emails: string[]) => {
+        const created = {
+          id: "inv_a",
+          email: emails[0],
+          expires_at: Date.now() + 60_000,
+        };
+        invitations.push(created);
+        return [created];
+      })
+      .mockImplementationOnce(async (_env, _orgId, emails: string[]) => {
+        const created = {
+          id: "inv_b",
+          email: emails[0],
+          expires_at: Date.now() + 60_000,
+        };
+        invitations.push(created);
+        return [created];
+      });
+
+    await expect(
+      action({
+        request: makeRequest({
+          emails: ["first@example.com", "second@example.com"],
+          disclosed_next_seat_count: "5",
+          disclosed_added_seat_count: "2",
+        }),
+        context: {},
+      } as never),
+    ).resolves.toMatchObject({
+      success: false,
+      error: "temporary batch persistence failure",
+    });
+
+    await expect(
+      action({
+        request: makeRequest({
+          emails: ["first@example.com"],
+          disclosed_next_seat_count: "4",
+          disclosed_added_seat_count: "0",
+        }),
+        context: {},
+      } as never),
+    ).resolves.toMatchObject({
+      success: true,
+      invited: [{ email: "first@example.com", invitation_id: "inv_a" }],
+    });
+
+    await expect(
+      action({
+        request: makeRequest({
+          emails: ["second@example.com"],
+          disclosed_next_seat_count: "5",
+          disclosed_added_seat_count: "0",
+        }),
+        context: {},
+      } as never),
+    ).resolves.toMatchObject({
+      success: true,
+      invited: [{ email: "second@example.com", invitation_id: "inv_b" }],
+    });
+
+    expect(ensureTeamSubscriptionSeatCapacityMock).toHaveBeenCalledTimes(1);
+    expect(ensureTeamSubscriptionSeatCapacityMock).toHaveBeenCalledWith(
+      env,
+      "org_123",
+      expect.objectContaining({
+        pendingReservedSeatDelta: 2,
+        targetSeatCount: 5,
+      }),
+    );
+    expect(createInvitationsMock).toHaveBeenCalledTimes(3);
+    expect(bestEffortEnsureTeamSubscriptionSeatCapacityMock).toHaveBeenCalledTimes(
+      2,
+    );
+    expect(
+      bestEffortEnsureTeamSubscriptionSeatCapacityMock,
+    ).toHaveBeenNthCalledWith(1, env, "org_123", {
+      reason: "bulk_invitations_created",
+      targetSeatCount: undefined,
+    });
+    expect(
+      bestEffortEnsureTeamSubscriptionSeatCapacityMock,
+    ).toHaveBeenNthCalledWith(2, env, "org_123", {
+      reason: "bulk_invitations_created",
+      targetSeatCount: undefined,
+    });
+    expect(bestEffortSyncTeamSubscriptionSeatCountMock).not.toHaveBeenCalled();
+    expect(org.billing_seat_count).toBe(5);
+    expect(invitations.map(({ email }) => email)).toEqual([
+      "first@example.com",
+      "second@example.com",
+    ]);
   });
 });

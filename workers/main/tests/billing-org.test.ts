@@ -85,6 +85,117 @@ describe("OrgDO billing grant idempotency", () => {
     };
   }
 
+  it("persists and fences Team seat mutation reservations per organization", async () => {
+    const { userId: ownerId } = await createUser(
+      testEnv,
+      testEmail(),
+      "password",
+      "Owner",
+    );
+    const { org } = await createOrg(testEnv, "Seat Mutation Org", ownerId, {
+      billingPlan: "team",
+    });
+    const orgStub = testEnv.ORG.get(testEnv.ORG.idFromName(org.id));
+    await orgStub.updateBillingState({
+      billing_status: "active",
+      billing_plan: "team",
+      billing_seat_count: 3,
+      billing_subscription_id: "sub_team_mutation",
+      billing_subscription_status: "active",
+    });
+
+    const first = await orgStub.acquireTeamSeatMutation({
+      operationId: "reserve-batch",
+      subscriptionId: "sub_team_mutation",
+      mode: "ensure_at_least",
+      requestedSeatCount: 5,
+      reservedSeatDelta: 2,
+    });
+    expect(first).toMatchObject({
+      status: "acquired",
+      revision: 1,
+      requiredSeatFloor: 5,
+    });
+    if (first.status !== "acquired") throw new Error("Expected lease");
+
+    await expect(
+      orgStub.acquireTeamSeatMutation({
+        operationId: "reserve-single",
+        subscriptionId: "sub_team_mutation",
+        mode: "ensure_at_least",
+        requestedSeatCount: 4,
+        reservedSeatDelta: 1,
+      }),
+    ).resolves.toMatchObject({
+      status: "busy",
+      requiredSeatFloor: 6,
+    });
+    await expect(
+      orgStub.confirmTeamSeatMutationTarget({
+        operationId: "reserve-batch",
+        subscriptionId: "sub_team_mutation",
+        revision: first.revision,
+        targetSeatCount: 5,
+      }),
+    ).resolves.toMatchObject({
+      status: "target_too_low",
+      requiredSeatFloor: 6,
+    });
+    await expect(
+      orgStub.confirmTeamSeatMutationTarget({
+        operationId: "reserve-batch",
+        subscriptionId: "sub_team_mutation",
+        revision: first.revision,
+        targetSeatCount: 6,
+      }),
+    ).resolves.toMatchObject({
+      status: "active",
+      confirmedTargetSeatCount: 6,
+    });
+    await expect(
+      orgStub.completeTeamSeatMutation({
+        operationId: "reserve-batch",
+        subscriptionId: "sub_team_mutation",
+        revision: first.revision,
+        targetSeatCount: 6,
+      }),
+    ).resolves.toEqual({ status: "completed" });
+
+    const second = await orgStub.acquireTeamSeatMutation({
+      operationId: "reserve-single",
+      subscriptionId: "sub_team_mutation",
+      mode: "ensure_at_least",
+      requestedSeatCount: 4,
+      reservedSeatDelta: 1,
+    });
+    expect(second).toMatchObject({
+      status: "acquired",
+      revision: 2,
+      requiredSeatFloor: 6,
+    });
+    if (second.status !== "acquired") throw new Error("Expected lease");
+    await expect(
+      orgStub.refreshTeamSeatMutation({
+        operationId: "reserve-batch",
+        subscriptionId: "sub_team_mutation",
+        revision: first.revision,
+      }),
+    ).resolves.toEqual({ status: "lost" });
+    await expect(
+      orgStub.abortTeamSeatMutation({
+        operationId: "reserve-single",
+        subscriptionId: "sub_team_mutation",
+        revision: second.revision,
+      }),
+    ).resolves.toBe(true);
+    await expect(
+      orgStub.releaseTeamSeatMutationReservation({
+        operationId: "reserve-batch",
+        subscriptionId: "sub_team_mutation",
+      }),
+    ).resolves.toBe(true);
+  });
+
   it("keeps pending-cancel trial subscriptions trialing until Stripe cancels them", async () => {
     const { userId: ownerId } = await createUser(
       testEnv,

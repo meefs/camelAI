@@ -308,7 +308,6 @@ export default function OnboardingWelcomeRoute() {
     error?: string;
   }>();
   const migrationFetcher = useFetcher<{
-    billingPortalUrl?: string;
     legacyMigrationPreview?: LegacyMigrationConfirmation["preview"];
     success?: boolean;
     error?: string;
@@ -381,10 +380,9 @@ export default function OnboardingWelcomeRoute() {
     if (migrationFetcher.state !== "idle") {
       return;
     }
-    if (migrationFetcher.data?.billingPortalUrl) {
+    if (migrationFetcher.data?.legacyMigrationPreview) {
       setLegacyConfirmation({
-        billingPortalUrl: migrationFetcher.data.billingPortalUrl,
-        preview: migrationFetcher.data.legacyMigrationPreview ?? null,
+        preview: migrationFetcher.data.legacyMigrationPreview,
       });
       return;
     }
@@ -570,15 +568,22 @@ export default function OnboardingWelcomeRoute() {
                 />
                 <LegacyMigrationConfirmDialog
                   confirmation={legacyConfirmation}
+                  submitting={isMigrating}
                   onOpenChange={(open) => {
                     if (!open) setLegacyConfirmation(null);
                   }}
                   onContinue={() => {
-                    if (legacyConfirmation?.billingPortalUrl) {
-                      window.location.assign(
-                        legacyConfirmation.billingPortalUrl,
-                      );
-                    }
+                    if (!legacyConfirmation) return;
+                    migrationFetcher.submit(
+                      {
+                        plan: legacyConfirmation.preview.plan,
+                        confirm: "true",
+                      },
+                      {
+                        method: "post",
+                        action: "/api/billing/legacy-migration",
+                      },
+                    );
                   }}
                 />
               </>

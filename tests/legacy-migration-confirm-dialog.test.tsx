@@ -10,7 +10,6 @@ function makeConfirmation(
   overrides: Partial<LegacyMigrationConfirmation["preview"]> = {},
 ): LegacyMigrationConfirmation {
   return {
-    billingPortalUrl: "https://billing.stripe.test/session",
     preview: {
       plan: "starter",
       seatCount: 1,
@@ -26,7 +25,7 @@ function makeConfirmation(
 }
 
 describe("LegacyMigrationConfirmDialog", () => {
-  it("explains the old subscription cancellation before Stripe", () => {
+  it("explains that the confirmed Stripe fields are server-owned", () => {
     render(
       <LegacyMigrationConfirmDialog
         confirmation={makeConfirmation()}
@@ -36,7 +35,7 @@ describe("LegacyMigrationConfirmDialog", () => {
     );
 
     expect(
-      screen.getByText(/will not renew or bill again next month/i),
+      screen.getByText(/exact plan and seat quantity.*locked by camelAI/i),
     ).toBeInTheDocument();
     expect(
       screen.getByText(/not create a second subscription/i),
@@ -45,7 +44,7 @@ describe("LegacyMigrationConfirmDialog", () => {
     expect(screen.queryByText("$9.96")).not.toBeInTheDocument();
   });
 
-  it("continues to Stripe from the primary action", async () => {
+  it("confirms the locked migration from the primary action", async () => {
     const user = userEvent.setup();
     const handleContinue = vi.fn();
     render(
@@ -56,7 +55,9 @@ describe("LegacyMigrationConfirmDialog", () => {
       />,
     );
 
-    await user.click(screen.getByRole("button", { name: /continue to stripe/i }));
+    await user.click(
+      screen.getByRole("button", { name: /confirm subscription switch/i }),
+    );
 
     expect(handleContinue).toHaveBeenCalledTimes(1);
   });

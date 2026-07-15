@@ -4,9 +4,10 @@ const requireAuthContextMock = vi.fn();
 const requireOrgAdminMock = vi.fn();
 const getEnvMock = vi.fn();
 const createBillingPortalSessionMock = vi.fn();
-const createLegacyStripeMigrationPortalSessionMock = vi.fn();
+const previewLegacyStripeMigrationMock = vi.fn();
+const migrateLegacyStripeSubscriptionMock = vi.fn();
 const createSubscriptionCancellationPortalSessionMock = vi.fn();
-const createSubscriptionUpdatePortalSessionMock = vi.fn();
+const updateActiveStripeSubscriptionPlanMock = vi.fn();
 const createSubscriptionCheckoutSessionMock = vi.fn();
 const updateTrialingStripeSubscriptionPlanMock = vi.fn();
 
@@ -24,12 +25,12 @@ vi.mock("@/lib/billing.server", async (importOriginal) => {
   return {
     ...actual,
     createBillingPortalSession: createBillingPortalSessionMock,
-    createLegacyStripeMigrationPortalSession:
-      createLegacyStripeMigrationPortalSessionMock,
+    previewLegacyStripeMigration: previewLegacyStripeMigrationMock,
+    migrateLegacyStripeSubscription: migrateLegacyStripeSubscriptionMock,
     createSubscriptionCancellationPortalSession:
       createSubscriptionCancellationPortalSessionMock,
-    createSubscriptionUpdatePortalSession:
-      createSubscriptionUpdatePortalSessionMock,
+    updateActiveStripeSubscriptionPlan:
+      updateActiveStripeSubscriptionPlanMock,
     createSubscriptionCheckoutSession: createSubscriptionCheckoutSessionMock,
     updateTrialingStripeSubscriptionPlan:
       updateTrialingStripeSubscriptionPlanMock,
@@ -95,22 +96,18 @@ describe("billing settings plan changes", () => {
     createSubscriptionCheckoutSessionMock.mockResolvedValue(
       "https://checkout.stripe.test/session",
     );
-    createSubscriptionUpdatePortalSessionMock.mockResolvedValue(
-      "https://billing.stripe.test/update-session",
-    );
-    createLegacyStripeMigrationPortalSessionMock.mockResolvedValue({
-      billingPortalUrl: "https://billing.stripe.test/legacy-migration",
-      preview: {
-        plan: "pro",
-        seatCount: 1,
-        currency: "usd",
-        monthlyPriceCents: 15000,
-        amountDueTodayCents: 11996,
-        legacyCreditCents: 3004,
-        newPlanProrationCents: 15000,
-        includedCreditCents: 3000,
-      },
+    updateActiveStripeSubscriptionPlanMock.mockResolvedValue({});
+    previewLegacyStripeMigrationMock.mockResolvedValue({
+      plan: "pro",
+      seatCount: 1,
+      currency: "usd",
+      monthlyPriceCents: 15000,
+      amountDueTodayCents: 11996,
+      legacyCreditCents: 3004,
+      newPlanProrationCents: 15000,
+      includedCreditCents: 3000,
     });
+    migrateLegacyStripeSubscriptionMock.mockResolvedValue({});
     createSubscriptionCancellationPortalSessionMock.mockResolvedValue({
       kind: "portal",
       billingPortalUrl: "https://billing.stripe.test/session",
@@ -153,7 +150,7 @@ describe("billing settings plan changes", () => {
     expect(createBillingPortalSessionMock).not.toHaveBeenCalled();
   });
 
-  it("opens Stripe portal for legacy-eligible paid plan selections instead of creating new Checkout", async () => {
+  it("previews a legacy-eligible plan selection before applying it", async () => {
     const org = {
       id: "org_123",
       name: "Legacy Org",
@@ -181,7 +178,6 @@ describe("billing settings plan changes", () => {
     } as never);
 
     expect(result).toEqual({
-      billingPortalUrl: "https://billing.stripe.test/legacy-migration",
       legacyMigrationPreview: {
         plan: "pro",
         seatCount: 1,
@@ -193,18 +189,61 @@ describe("billing settings plan changes", () => {
         includedCreditCents: 3000,
       },
     });
-    expect(createLegacyStripeMigrationPortalSessionMock).toHaveBeenCalledWith(
+    expect(previewLegacyStripeMigrationMock).toHaveBeenCalledWith(
       expect.objectContaining({
         env,
         org,
         userEmail: "owner@example.com",
-        returnUrl: "https://camelai.test/settings/organization/billing",
         plan: "pro",
         seatCount: 1,
       }),
     );
     expect(createSubscriptionCheckoutSessionMock).not.toHaveBeenCalled();
     expect(createBillingPortalSessionMock).not.toHaveBeenCalled();
+  });
+
+  it("applies a legacy migration only after the app confirmation", async () => {
+    const org = {
+      id: "org_123",
+      name: "Legacy Org",
+      slug: "legacy-org",
+      billing_status: "inactive",
+      billing_plan: "free",
+      billing_seat_count: 1,
+      billing_subscription_id: null,
+    };
+    const env = {
+      ...makeEnv(org),
+      LEGACY_STRIPE_MIGRATION_CUSTOMERS: [
+        "email,customer_id,active_legacy_subscription_count,legacy_subscription_ids,legacy_subscription_item_ids,legacy_price_ids,total_legacy_quantity",
+        "owner@example.com,cus_legacy,1,sub_legacy,si_legacy,price_1QIfnqGvliMKf4vHaDTMG2Mu,1",
+      ].join("\n"),
+    };
+    getEnvMock.mockReturnValue(env);
+    requireAuthContextMock.mockResolvedValue({
+      user: { id: "user_123", email: "owner@example.com" },
+      currentOrg: org,
+    });
+
+    const result = await action({
+      request: makeIntentRequest("changePlan", {
+        plan: "pro",
+        confirmLegacyMigration: "true",
+      }),
+      context: {},
+    } as never);
+
+    expect(result).toEqual({ planChanged: true });
+    expect(migrateLegacyStripeSubscriptionMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        env,
+        org,
+        userEmail: "owner@example.com",
+        plan: "pro",
+        seatCount: 1,
+      }),
+    );
+    expect(previewLegacyStripeMigrationMock).not.toHaveBeenCalled();
   });
 
   it("uses the Billing Portal for active subscribers changing plans", async () => {
@@ -274,11 +313,11 @@ describe("billing settings plan changes", () => {
         customerEmail: "owner@example.com",
       }),
     );
-    expect(createSubscriptionUpdatePortalSessionMock).not.toHaveBeenCalled();
+    expect(updateActiveStripeSubscriptionPlanMock).not.toHaveBeenCalled();
     expect(createSubscriptionCheckoutSessionMock).not.toHaveBeenCalled();
   });
 
-  it("uses the Stripe update portal for paid plan changes", async () => {
+  it("applies server-owned Stripe price and quantity for paid plan changes", async () => {
     const org = {
       id: "org_123",
       name: "Paid Org",
@@ -300,14 +339,11 @@ describe("billing settings plan changes", () => {
       context: {},
     } as never);
 
-    expect(result).toEqual({
-      billingPortalUrl: "https://billing.stripe.test/update-session",
-    });
-    expect(createSubscriptionUpdatePortalSessionMock).toHaveBeenCalledWith(
+    expect(result).toEqual({ planChanged: true });
+    expect(updateActiveStripeSubscriptionPlanMock).toHaveBeenCalledWith(
       expect.objectContaining({
         env,
         org,
-        customerEmail: "owner@example.com",
         plan: "team",
         seatCount: 3,
       }),
@@ -332,7 +368,7 @@ describe("billing settings plan changes", () => {
       user: { id: "user_123", email: "owner@example.com" },
       currentOrg: org,
     });
-    createSubscriptionUpdatePortalSessionMock.mockRejectedValueOnce(
+    updateActiveStripeSubscriptionPlanMock.mockRejectedValueOnce(
       new StripeSubscriptionRequiresManagementError("active"),
     );
 
@@ -436,12 +472,12 @@ describe("billing settings plan changes", () => {
         seatCount: 1,
       }),
     );
-    expect(createSubscriptionUpdatePortalSessionMock).not.toHaveBeenCalled();
+    expect(updateActiveStripeSubscriptionPlanMock).not.toHaveBeenCalled();
     expect(createBillingPortalSessionMock).not.toHaveBeenCalled();
     expect(createSubscriptionCheckoutSessionMock).not.toHaveBeenCalled();
   });
 
-  it("falls back to the update portal when local trial status is stale", async () => {
+  it("applies the locked active update when local trial status is stale", async () => {
     const org = {
       id: "org_123",
       name: "Stale Trial Org",
@@ -466,15 +502,12 @@ describe("billing settings plan changes", () => {
       context: {},
     } as never);
 
-    expect(result).toEqual({
-      billingPortalUrl: "https://billing.stripe.test/update-session",
-    });
+    expect(result).toEqual({ planChanged: true });
     expect(updateTrialingStripeSubscriptionPlanMock).toHaveBeenCalled();
-    expect(createSubscriptionUpdatePortalSessionMock).toHaveBeenCalledWith(
+    expect(updateActiveStripeSubscriptionPlanMock).toHaveBeenCalledWith(
       expect.objectContaining({
         env,
         org,
-        customerEmail: "owner@example.com",
         plan: "pro",
         seatCount: 1,
       }),
@@ -519,7 +552,7 @@ describe("billing settings plan changes", () => {
         customerEmail: "owner@example.com",
       }),
     );
-    expect(createSubscriptionUpdatePortalSessionMock).not.toHaveBeenCalled();
+    expect(updateActiveStripeSubscriptionPlanMock).not.toHaveBeenCalled();
     expect(createSubscriptionCheckoutSessionMock).not.toHaveBeenCalled();
   });
 
@@ -555,7 +588,7 @@ describe("billing settings plan changes", () => {
         customerEmail: "owner@example.com",
       }),
     );
-    expect(createSubscriptionUpdatePortalSessionMock).not.toHaveBeenCalled();
+    expect(updateActiveStripeSubscriptionPlanMock).not.toHaveBeenCalled();
     expect(createSubscriptionCheckoutSessionMock).not.toHaveBeenCalled();
   });
 

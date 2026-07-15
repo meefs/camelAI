@@ -61,6 +61,7 @@ import {
   getBillingPlanLimits,
   getOrgSeatLimit,
   isTeamSeatBillingSyncable,
+  normalizeSeatCount,
 } from "../../../../src/lib/billing-plans";
 import { calculateEffectiveUsageCostUsd } from "../../../../src/lib/usage-pricing";
 import { dispatchAdminEvent } from "./admin-events";
@@ -617,6 +618,90 @@ export interface SubscriptionInvoiceGrantRow extends Record<string, SqlStorageVa
   created_at: number;
 }
 
+export type TeamSeatMutationMode = "exact" | "ensure_at_least";
+
+export interface TeamSeatMutationAcquireInput {
+  operationId: string;
+  subscriptionId: string;
+  mode: TeamSeatMutationMode;
+  requestedSeatCount?: number;
+  reservedSeatDelta?: number;
+}
+
+export type TeamSeatMutationAcquireResult =
+  | {
+      status: "acquired";
+      revision: number;
+      requiredSeatFloor: number;
+      leaseExpiresAt: number;
+    }
+  | {
+      status: "busy";
+      requiredSeatFloor: number;
+      retryAfterMs: number;
+    };
+
+export interface TeamSeatMutationFenceInput {
+  operationId: string;
+  subscriptionId: string;
+  revision: number;
+  requestedSeatCount?: number;
+  reservedSeatDelta?: number;
+  targetSeatCount?: number;
+}
+
+export type TeamSeatMutationFenceResult =
+  | {
+      status: "active";
+      requiredSeatFloor: number;
+      confirmedTargetSeatCount: number | null;
+      leaseExpiresAt: number;
+    }
+  | { status: "lost" }
+  | {
+      status: "target_too_low";
+      requiredSeatFloor: number;
+      confirmedTargetSeatCount: number | null;
+      leaseExpiresAt: number;
+    };
+
+export interface TeamSeatMutationCompleteInput {
+  operationId: string;
+  subscriptionId: string;
+  revision: number;
+  targetSeatCount: number;
+}
+
+export type TeamSeatMutationCompleteResult =
+  | { status: "completed" }
+  | { status: "lost" }
+  | { status: "target_too_low"; requiredSeatFloor: number };
+
+interface TeamSeatMutationReservation {
+  operationId: string;
+  seatCount: number;
+  baseSeatCount: number;
+  reservedSeatDelta: number;
+  expiresAt: number;
+}
+
+interface TeamSeatMutationOwner {
+  operationId: string;
+  revision: number;
+  mode: TeamSeatMutationMode;
+  expiresAt: number;
+  confirmedTargetSeatCount: number | null;
+}
+
+interface TeamSeatMutationState {
+  version: 1;
+  subscriptionId: string;
+  nextRevision: number;
+  confirmedSeatFloor: number;
+  owner: TeamSeatMutationOwner | null;
+  ensureReservations: TeamSeatMutationReservation[];
+}
+
 export interface ManualCreditGrantRecord {
   grant_id: string;
   amount_cents: number;
@@ -673,6 +758,10 @@ export class OrgDO extends DurableObject<DOEnv> {
     "workspaceTenantDataMigrated:access:";
   private static readonly WORKSPACE_INTEGRATIONS_MIGRATION_PREFIX =
     "workspaceTenantDataMigrated:integrations:";
+  private static readonly TEAM_SEAT_MUTATION_STATE_KEY =
+    "teamSeatMutationState:v1";
+  private static readonly TEAM_SEAT_MUTATION_LEASE_MS = 5 * 60 * 1000;
+  private static readonly TEAM_SEAT_RESERVATION_TTL_MS = 10 * 60 * 1000;
 
   constructor(ctx: DurableObjectState, env: DOEnv) {
     super(ctx, env);
@@ -681,6 +770,438 @@ export class OrgDO extends DurableObject<DOEnv> {
     ctx.blockConcurrencyWhile(async () => {
       this.migrate();
     });
+  }
+
+  private normalizeTeamSeatMutationId(value: string, label: string): string {
+    const normalized = value.trim();
+    if (!normalized || normalized.length > 200) {
+      throw new Error(`${label} must be between 1 and 200 characters.`);
+    }
+    return normalized;
+  }
+
+  private readTeamSeatMutationState(
+    subscriptionId: string,
+    now: number,
+  ): TeamSeatMutationState {
+    const stored = this.ctx.storage.kv.get<TeamSeatMutationState>(
+      OrgDO.TEAM_SEAT_MUTATION_STATE_KEY,
+    );
+    if (
+      !stored ||
+      stored.version !== 1 ||
+      stored.subscriptionId !== subscriptionId
+    ) {
+      return {
+        version: 1,
+        subscriptionId,
+        nextRevision: 0,
+        confirmedSeatFloor: normalizeSeatCount("team", null),
+        owner: null,
+        ensureReservations: [],
+      };
+    }
+
+    const ensureReservations = Array.isArray(stored.ensureReservations)
+      ? stored.ensureReservations.flatMap((reservation) => {
+          if (
+            !reservation?.operationId ||
+            !Number.isFinite(reservation.seatCount) ||
+            !Number.isFinite(reservation.expiresAt) ||
+            reservation.expiresAt <= now
+          ) {
+            return [];
+          }
+          const seatCount = normalizeSeatCount("team", reservation.seatCount);
+          const reservedSeatDelta = Number.isFinite(
+            reservation.reservedSeatDelta,
+          )
+            ? Math.max(0, Math.floor(reservation.reservedSeatDelta || 0))
+            : 0;
+          return [
+            {
+              operationId: reservation.operationId,
+              seatCount,
+              baseSeatCount: normalizeSeatCount(
+                "team",
+                reservation.baseSeatCount ?? seatCount - reservedSeatDelta,
+              ),
+              reservedSeatDelta,
+              expiresAt: reservation.expiresAt,
+            },
+          ];
+        })
+      : [];
+    const owner =
+      stored.owner &&
+      Number.isFinite(stored.owner.expiresAt) &&
+      stored.owner.expiresAt > now
+        ? stored.owner
+        : null;
+
+    return {
+      version: 1,
+      subscriptionId,
+      nextRevision: Math.max(0, Math.floor(stored.nextRevision || 0)),
+      confirmedSeatFloor: normalizeSeatCount(
+        "team",
+        stored.confirmedSeatFloor,
+      ),
+      owner,
+      ensureReservations,
+    };
+  }
+
+  private writeTeamSeatMutationState(state: TeamSeatMutationState): void {
+    this.ctx.storage.kv.put(OrgDO.TEAM_SEAT_MUTATION_STATE_KEY, state);
+  }
+
+  private resetTeamSeatMutationStateForBillingScopeChange(
+    previous: Organization,
+    next: Organization,
+  ): void {
+    if (
+      previous.billing_subscription_id !== next.billing_subscription_id ||
+      !isTeamSeatBillingSyncable(previous) ||
+      !isTeamSeatBillingSyncable(next)
+    ) {
+      this.ctx.storage.kv.delete(OrgDO.TEAM_SEAT_MUTATION_STATE_KEY);
+    }
+  }
+
+  private getTeamSeatMutationRequiredFloor(
+    state: TeamSeatMutationState,
+    mode: TeamSeatMutationMode,
+  ): number {
+    const absoluteReservationFloor = state.ensureReservations.reduce(
+      (maximum, reservation) => Math.max(maximum, reservation.seatCount),
+      normalizeSeatCount("team", null),
+    );
+    const additiveReservations = state.ensureReservations.filter(
+      (reservation) => reservation.reservedSeatDelta > 0,
+    );
+    const additiveReservationFloor = additiveReservations.length
+      ? Math.max(
+          ...additiveReservations.map((reservation) =>
+            normalizeSeatCount("team", reservation.baseSeatCount),
+          ),
+        ) +
+        additiveReservations.reduce(
+          (total, reservation) => total + reservation.reservedSeatDelta,
+          0,
+        )
+      : normalizeSeatCount("team", null);
+    const reservationFloor = Math.max(
+      absoluteReservationFloor,
+      additiveReservationFloor,
+    );
+    return mode === "ensure_at_least"
+      ? Math.max(state.confirmedSeatFloor, reservationFloor)
+      : reservationFloor;
+  }
+
+  private upsertTeamSeatReservation(
+    state: TeamSeatMutationState,
+    operationId: string,
+    requestedSeatCount: number,
+    reservedSeatDelta: number | undefined,
+    now: number,
+  ): void {
+    const seatCount = normalizeSeatCount("team", requestedSeatCount);
+    const normalizedReservedSeatDelta = Number.isFinite(reservedSeatDelta)
+      ? Math.max(0, Math.floor(reservedSeatDelta ?? 0))
+      : 0;
+    const baseSeatCount = normalizeSeatCount(
+      "team",
+      seatCount - normalizedReservedSeatDelta,
+    );
+    const existing = state.ensureReservations.find(
+      (reservation) => reservation.operationId === operationId,
+    );
+    if (existing) {
+      existing.seatCount = Math.max(existing.seatCount, seatCount);
+      existing.baseSeatCount = Math.max(existing.baseSeatCount, baseSeatCount);
+      existing.reservedSeatDelta = Math.max(
+        existing.reservedSeatDelta,
+        normalizedReservedSeatDelta,
+      );
+      existing.expiresAt = now + OrgDO.TEAM_SEAT_RESERVATION_TTL_MS;
+      return;
+    }
+    state.ensureReservations.push({
+      operationId,
+      seatCount,
+      baseSeatCount,
+      reservedSeatDelta: normalizedReservedSeatDelta,
+      expiresAt: now + OrgDO.TEAM_SEAT_RESERVATION_TTL_MS,
+    });
+  }
+
+  acquireTeamSeatMutation(
+    input: TeamSeatMutationAcquireInput,
+  ): TeamSeatMutationAcquireResult {
+    const operationId = this.normalizeTeamSeatMutationId(
+      input.operationId,
+      "Team seat mutation operation id",
+    );
+    const subscriptionId = this.normalizeTeamSeatMutationId(
+      input.subscriptionId,
+      "Stripe subscription id",
+    );
+    if (input.mode === "ensure_at_least") {
+      if (!Number.isFinite(input.requestedSeatCount)) {
+        throw new Error("An ensure Team seat mutation requires a seat count.");
+      }
+    } else if (input.mode !== "exact") {
+      throw new Error("Unknown Team seat mutation mode.");
+    }
+
+    const now = Date.now();
+    const state = this.readTeamSeatMutationState(subscriptionId, now);
+    if (input.mode === "ensure_at_least") {
+      this.upsertTeamSeatReservation(
+        state,
+        operationId,
+        input.requestedSeatCount!,
+        input.reservedSeatDelta,
+        now,
+      );
+    }
+
+    if (state.owner?.operationId === operationId) {
+      if (state.owner.mode !== input.mode) {
+        throw new Error("Team seat mutation operation id was reused.");
+      }
+      state.owner.expiresAt = now + OrgDO.TEAM_SEAT_MUTATION_LEASE_MS;
+      this.writeTeamSeatMutationState(state);
+      return {
+        status: "acquired",
+        revision: state.owner.revision,
+        requiredSeatFloor: this.getTeamSeatMutationRequiredFloor(
+          state,
+          input.mode,
+        ),
+        leaseExpiresAt: state.owner.expiresAt,
+      };
+    }
+
+    if (state.owner) {
+      this.writeTeamSeatMutationState(state);
+      return {
+        status: "busy",
+        requiredSeatFloor: this.getTeamSeatMutationRequiredFloor(
+          state,
+          input.mode,
+        ),
+        retryAfterMs: Math.max(10, state.owner.expiresAt - now),
+      };
+    }
+
+    const revision = state.nextRevision + 1;
+    state.nextRevision = revision;
+    state.owner = {
+      operationId,
+      revision,
+      mode: input.mode,
+      expiresAt: now + OrgDO.TEAM_SEAT_MUTATION_LEASE_MS,
+      confirmedTargetSeatCount: null,
+    };
+    this.writeTeamSeatMutationState(state);
+    return {
+      status: "acquired",
+      revision,
+      requiredSeatFloor: this.getTeamSeatMutationRequiredFloor(
+        state,
+        input.mode,
+      ),
+      leaseExpiresAt: state.owner.expiresAt,
+    };
+  }
+
+  refreshTeamSeatMutation(
+    input: TeamSeatMutationFenceInput,
+  ): TeamSeatMutationFenceResult {
+    return this.fenceTeamSeatMutation(input, false);
+  }
+
+  confirmTeamSeatMutationTarget(
+    input: TeamSeatMutationFenceInput,
+  ): TeamSeatMutationFenceResult {
+    return this.fenceTeamSeatMutation(input, true);
+  }
+
+  private fenceTeamSeatMutation(
+    input: TeamSeatMutationFenceInput,
+    confirmTarget: boolean,
+  ): TeamSeatMutationFenceResult {
+    const operationId = this.normalizeTeamSeatMutationId(
+      input.operationId,
+      "Team seat mutation operation id",
+    );
+    const subscriptionId = this.normalizeTeamSeatMutationId(
+      input.subscriptionId,
+      "Stripe subscription id",
+    );
+    const now = Date.now();
+    const state = this.readTeamSeatMutationState(subscriptionId, now);
+    const owner = state.owner;
+    if (
+      !owner ||
+      owner.operationId !== operationId ||
+      owner.revision !== input.revision
+    ) {
+      this.writeTeamSeatMutationState(state);
+      return { status: "lost" };
+    }
+
+    if (
+      owner.mode === "ensure_at_least" &&
+      Number.isFinite(input.requestedSeatCount)
+    ) {
+      this.upsertTeamSeatReservation(
+        state,
+        operationId,
+        input.requestedSeatCount!,
+        input.reservedSeatDelta,
+        now,
+      );
+    }
+    owner.expiresAt = now + OrgDO.TEAM_SEAT_MUTATION_LEASE_MS;
+    const requiredSeatFloor = this.getTeamSeatMutationRequiredFloor(
+      state,
+      owner.mode,
+    );
+    const targetSeatCount = Number.isFinite(input.targetSeatCount)
+      ? normalizeSeatCount("team", input.targetSeatCount)
+      : null;
+    if (targetSeatCount !== null && targetSeatCount < requiredSeatFloor) {
+      this.writeTeamSeatMutationState(state);
+      return {
+        status: "target_too_low",
+        requiredSeatFloor,
+        confirmedTargetSeatCount: owner.confirmedTargetSeatCount,
+        leaseExpiresAt: owner.expiresAt,
+      };
+    }
+    if (confirmTarget) {
+      if (targetSeatCount === null) {
+        throw new Error("A confirmed Team seat mutation target is required.");
+      }
+      owner.confirmedTargetSeatCount = targetSeatCount;
+    } else if (
+      targetSeatCount !== null &&
+      owner.confirmedTargetSeatCount !== targetSeatCount
+    ) {
+      this.writeTeamSeatMutationState(state);
+      return { status: "lost" };
+    }
+
+    this.writeTeamSeatMutationState(state);
+    return {
+      status: "active",
+      requiredSeatFloor,
+      confirmedTargetSeatCount: owner.confirmedTargetSeatCount,
+      leaseExpiresAt: owner.expiresAt,
+    };
+  }
+
+  completeTeamSeatMutation(
+    input: TeamSeatMutationCompleteInput,
+  ): TeamSeatMutationCompleteResult {
+    const operationId = this.normalizeTeamSeatMutationId(
+      input.operationId,
+      "Team seat mutation operation id",
+    );
+    const subscriptionId = this.normalizeTeamSeatMutationId(
+      input.subscriptionId,
+      "Stripe subscription id",
+    );
+    const now = Date.now();
+    const state = this.readTeamSeatMutationState(subscriptionId, now);
+    const owner = state.owner;
+    if (
+      !owner ||
+      owner.operationId !== operationId ||
+      owner.revision !== input.revision
+    ) {
+      this.writeTeamSeatMutationState(state);
+      return { status: "lost" };
+    }
+
+    const targetSeatCount = normalizeSeatCount("team", input.targetSeatCount);
+    const requiredSeatFloor = this.getTeamSeatMutationRequiredFloor(
+      state,
+      owner.mode,
+    );
+    if (
+      targetSeatCount < requiredSeatFloor ||
+      owner.confirmedTargetSeatCount !== targetSeatCount
+    ) {
+      owner.expiresAt = now + OrgDO.TEAM_SEAT_MUTATION_LEASE_MS;
+      this.writeTeamSeatMutationState(state);
+      return { status: "target_too_low", requiredSeatFloor };
+    }
+
+    state.confirmedSeatFloor = targetSeatCount;
+    const reservation = state.ensureReservations.find(
+      (candidate) => candidate.operationId === operationId,
+    );
+    if (!reservation || reservation.reservedSeatDelta === 0) {
+      state.ensureReservations = state.ensureReservations.filter(
+        (candidate) => candidate.operationId !== operationId,
+      );
+    } else {
+      reservation.expiresAt = now + OrgDO.TEAM_SEAT_RESERVATION_TTL_MS;
+    }
+    state.owner = null;
+    this.writeTeamSeatMutationState(state);
+    return { status: "completed" };
+  }
+
+  releaseTeamSeatMutationReservation(input: {
+    operationId: string;
+    subscriptionId: string;
+  }): boolean {
+    const operationId = this.normalizeTeamSeatMutationId(
+      input.operationId,
+      "Team seat mutation operation id",
+    );
+    const subscriptionId = this.normalizeTeamSeatMutationId(
+      input.subscriptionId,
+      "Stripe subscription id",
+    );
+    const state = this.readTeamSeatMutationState(subscriptionId, Date.now());
+    const previousLength = state.ensureReservations.length;
+    state.ensureReservations = state.ensureReservations.filter(
+      (reservation) => reservation.operationId !== operationId,
+    );
+    this.writeTeamSeatMutationState(state);
+    return state.ensureReservations.length !== previousLength;
+  }
+
+  abortTeamSeatMutation(input: {
+    operationId: string;
+    subscriptionId: string;
+    revision: number;
+  }): boolean {
+    const operationId = this.normalizeTeamSeatMutationId(
+      input.operationId,
+      "Team seat mutation operation id",
+    );
+    const subscriptionId = this.normalizeTeamSeatMutationId(
+      input.subscriptionId,
+      "Stripe subscription id",
+    );
+    const state = this.readTeamSeatMutationState(subscriptionId, Date.now());
+    state.ensureReservations = state.ensureReservations.filter(
+      (reservation) => reservation.operationId !== operationId,
+    );
+    const ownsMutation =
+      state.owner?.operationId === operationId &&
+      state.owner.revision === input.revision;
+    if (ownsMutation) state.owner = null;
+    this.writeTeamSeatMutationState(state);
+    return ownsMutation;
   }
 
   private getOrgIndexKey(orgId: string): string {
@@ -2514,6 +3035,7 @@ export class OrgDO extends DurableObject<DOEnv> {
     normalizeOrgBillingFields(nextInfo);
 
     await this.setInfo(nextInfo);
+    this.resetTeamSeatMutationStateForBillingScopeChange(info, nextInfo);
     return nextInfo;
   }
 
@@ -2570,6 +3092,10 @@ export class OrgDO extends DurableObject<DOEnv> {
         "INSERT OR REPLACE INTO org_info (key, value) VALUES (?, ?)",
         "data",
         JSON.stringify(nextInfo),
+      );
+      this.resetTeamSeatMutationStateForBillingScopeChange(
+        existingOrg,
+        nextInfo,
       );
 
       return { org: nextInfo, trialCreditGranted };

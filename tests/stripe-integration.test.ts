@@ -3,7 +3,6 @@ import {
   createBillingPortalSession,
   createCreditsCheckoutSession,
   createSubscriptionCheckoutSession,
-  createSubscriptionUpdatePortalSession,
   getOrCreateBillingPortalConfiguration,
   isStripeSecretKeyAllowedForMode,
   loadCanonicalPaidPlanCatalog,
@@ -13,12 +12,21 @@ import {
   STRIPE_API_VERSION,
   syncOrgSubscriptionFromStripe,
   syncTeamSubscriptionSeatCount,
+  updateActiveStripeSubscriptionPlan,
   type StripeBillingEnv,
   type StripeInvoice,
   type StripeSubscription,
 } from "@/lib/billing.server";
 import type { Organization } from "@/types";
 import { handleStripeWebhook } from "../workers/main/src/routes/billing";
+import type {
+  TeamSeatMutationAcquireInput,
+  TeamSeatMutationAcquireResult,
+  TeamSeatMutationCompleteInput,
+  TeamSeatMutationCompleteResult,
+  TeamSeatMutationFenceInput,
+  TeamSeatMutationFenceResult,
+} from "../workers/main/src/auth";
 
 /**
  * Opt-in tests against Stripe test mode.
@@ -82,7 +90,11 @@ interface StripePortalConfiguration {
       products?: Array<{
         product?: string;
         prices?: string[];
-        adjustable_quantity?: { enabled?: boolean };
+        adjustable_quantity?: {
+          enabled?: boolean;
+          minimum?: number | null;
+          maximum?: number | null;
+        };
       }>;
     };
   };
@@ -116,13 +128,44 @@ interface LocalSubscriptionInvoiceGrant {
   grantCents: number;
 }
 
+interface LocalSubscriptionInvoiceGrantRow {
+  invoice_id: string;
+  subscription_id: string;
+  customer_id: string;
+  billing_reason: LocalSubscriptionInvoiceGrant["billingReason"];
+  source: LocalSubscriptionInvoiceGrant["source"];
+  plan: LocalSubscriptionInvoiceGrant["plan"];
+  seat_count: number;
+  amount_cents: number;
+  created_at: number;
+}
+
 interface StripeList<T> {
   data: T[];
 }
 
 interface MutableOrgStub {
   getInfo: () => Promise<Organization>;
-  updateBillingState: (state: Partial<Organization>) => Promise<void>;
+  updateBillingState: (
+    state: Partial<Organization>,
+  ) => Promise<Organization>;
+  acquireTeamSeatMutation: (
+    input: TeamSeatMutationAcquireInput,
+  ) => Promise<TeamSeatMutationAcquireResult>;
+  refreshTeamSeatMutation: (
+    input: TeamSeatMutationFenceInput,
+  ) => Promise<TeamSeatMutationFenceResult>;
+  confirmTeamSeatMutationTarget: (
+    input: TeamSeatMutationFenceInput,
+  ) => Promise<TeamSeatMutationFenceResult>;
+  completeTeamSeatMutation: (
+    input: TeamSeatMutationCompleteInput,
+  ) => Promise<TeamSeatMutationCompleteResult>;
+  abortTeamSeatMutation: (input: {
+    operationId: string;
+    subscriptionId: string;
+    revision: number;
+  }) => Promise<boolean>;
   syncSubscriptionBillingState: (
     state: Partial<Organization>,
     trialCreditGrantCents: number,
@@ -131,7 +174,7 @@ interface MutableOrgStub {
   getInvitations: () => Promise<Array<{ expires_at: number }>>;
   getSubscriptionInvoiceGrant: (
     invoiceId: string,
-  ) => Promise<LocalSubscriptionInvoiceGrant | null>;
+  ) => Promise<LocalSubscriptionInvoiceGrantRow | null>;
   applySubscriptionInvoiceGrant: (
     command: LocalSubscriptionInvoiceGrant,
     options?: { legacyProcessed?: boolean },
@@ -389,29 +432,6 @@ async function updateSubscriptionItem(args: {
   });
 }
 
-async function updatePaidSubscriptionItem(args: {
-  itemId: string;
-  price: string;
-  quantity: number;
-  prorationBehavior: "always_invoice" | "none";
-  paymentBehavior?: "error_if_incomplete";
-}) {
-  const params: Record<string, string> = {
-    price: args.price,
-    quantity: String(args.quantity),
-    proration_behavior: args.prorationBehavior,
-  };
-  if (args.paymentBehavior) {
-    params.payment_behavior = args.paymentBehavior;
-  }
-  return stripePost<{
-    id: string;
-    quantity: number;
-    current_period_start?: number;
-    current_period_end?: number;
-  }>(`/subscription_items/${args.itemId}`, params);
-}
-
 async function setSubscriptionDefaultPaymentMethod(
   subscriptionId: string,
   paymentMethodId: string,
@@ -597,10 +617,179 @@ function makeEnv(args: {
   let currentOrg = args.org;
   const invoiceGrants = new Map<string, LocalSubscriptionInvoiceGrant>();
   const kv = new Map<string, string>();
+  let teamSeatMutationRevision = 0;
+  let teamSeatMutationOwner: {
+    operationId: string;
+    subscriptionId: string;
+    revision: number;
+    mode: "exact" | "ensure_at_least";
+    confirmedTargetSeatCount: number | null;
+  } | null = null;
+  let confirmedTeamSeatFloor = Math.max(
+    3,
+    Math.floor(currentOrg.billing_seat_count ?? 3),
+  );
+  const teamSeatReservations = new Map<string, number>();
+  const normalizeTeamSeats = (seatCount: number | null | undefined) =>
+    Math.max(3, Math.floor(seatCount ?? 3));
+  const requiredTeamSeatFloor = (mode: "exact" | "ensure_at_least") =>
+    Math.max(
+      mode === "ensure_at_least" ? confirmedTeamSeatFloor : 3,
+      3,
+      ...teamSeatReservations.values(),
+    );
   const orgStub: MutableOrgStub = {
     getInfo: async () => currentOrg,
     updateBillingState: async (state) => {
       currentOrg = { ...currentOrg, ...state };
+      return currentOrg;
+    },
+    acquireTeamSeatMutation: async (input) => {
+      if (input.mode === "ensure_at_least") {
+        teamSeatReservations.set(
+          input.operationId,
+          Math.max(
+            teamSeatReservations.get(input.operationId) ?? 3,
+            normalizeTeamSeats(input.requestedSeatCount),
+          ),
+        );
+      }
+      if (
+        teamSeatMutationOwner &&
+        teamSeatMutationOwner.operationId !== input.operationId
+      ) {
+        return {
+          status: "busy",
+          requiredSeatFloor: requiredTeamSeatFloor(input.mode),
+          retryAfterMs: 10,
+        };
+      }
+      if (!teamSeatMutationOwner) {
+        teamSeatMutationRevision += 1;
+        teamSeatMutationOwner = {
+          operationId: input.operationId,
+          subscriptionId: input.subscriptionId,
+          revision: teamSeatMutationRevision,
+          mode: input.mode,
+          confirmedTargetSeatCount: null,
+        };
+      }
+      return {
+        status: "acquired",
+        revision: teamSeatMutationOwner.revision,
+        requiredSeatFloor: requiredTeamSeatFloor(input.mode),
+        leaseExpiresAt: Date.now() + 300_000,
+      };
+    },
+    refreshTeamSeatMutation: async (input) => {
+      const owner = teamSeatMutationOwner;
+      if (
+        !owner ||
+        owner.operationId !== input.operationId ||
+        owner.subscriptionId !== input.subscriptionId ||
+        owner.revision !== input.revision
+      ) {
+        return { status: "lost" };
+      }
+      if (
+        owner.mode === "ensure_at_least" &&
+        input.requestedSeatCount !== undefined
+      ) {
+        teamSeatReservations.set(
+          input.operationId,
+          Math.max(
+            teamSeatReservations.get(input.operationId) ?? 3,
+            normalizeTeamSeats(input.requestedSeatCount),
+          ),
+        );
+      }
+      const requiredSeatFloor = requiredTeamSeatFloor(owner.mode);
+      if (
+        input.targetSeatCount !== undefined &&
+        normalizeTeamSeats(input.targetSeatCount) < requiredSeatFloor
+      ) {
+        return {
+          status: "target_too_low",
+          requiredSeatFloor,
+          confirmedTargetSeatCount: owner.confirmedTargetSeatCount,
+          leaseExpiresAt: Date.now() + 300_000,
+        };
+      }
+      if (
+        input.targetSeatCount !== undefined &&
+        owner.confirmedTargetSeatCount !==
+          normalizeTeamSeats(input.targetSeatCount)
+      ) {
+        return { status: "lost" };
+      }
+      return {
+        status: "active",
+        requiredSeatFloor,
+        confirmedTargetSeatCount: owner.confirmedTargetSeatCount,
+        leaseExpiresAt: Date.now() + 300_000,
+      };
+    },
+    confirmTeamSeatMutationTarget: async (input) => {
+      const owner = teamSeatMutationOwner;
+      if (
+        !owner ||
+        owner.operationId !== input.operationId ||
+        owner.subscriptionId !== input.subscriptionId ||
+        owner.revision !== input.revision
+      ) {
+        return { status: "lost" };
+      }
+      const requiredSeatFloor = requiredTeamSeatFloor(owner.mode);
+      const targetSeatCount = normalizeTeamSeats(input.targetSeatCount);
+      if (targetSeatCount < requiredSeatFloor) {
+        return {
+          status: "target_too_low",
+          requiredSeatFloor,
+          confirmedTargetSeatCount: owner.confirmedTargetSeatCount,
+          leaseExpiresAt: Date.now() + 300_000,
+        };
+      }
+      owner.confirmedTargetSeatCount = targetSeatCount;
+      return {
+        status: "active",
+        requiredSeatFloor,
+        confirmedTargetSeatCount: targetSeatCount,
+        leaseExpiresAt: Date.now() + 300_000,
+      };
+    },
+    completeTeamSeatMutation: async (input) => {
+      const owner = teamSeatMutationOwner;
+      if (
+        !owner ||
+        owner.operationId !== input.operationId ||
+        owner.subscriptionId !== input.subscriptionId ||
+        owner.revision !== input.revision
+      ) {
+        return { status: "lost" };
+      }
+      const targetSeatCount = normalizeTeamSeats(input.targetSeatCount);
+      const requiredSeatFloor = requiredTeamSeatFloor(owner.mode);
+      if (
+        targetSeatCount < requiredSeatFloor ||
+        owner.confirmedTargetSeatCount !== targetSeatCount
+      ) {
+        return { status: "target_too_low", requiredSeatFloor };
+      }
+      confirmedTeamSeatFloor = targetSeatCount;
+      teamSeatReservations.delete(input.operationId);
+      teamSeatMutationOwner = null;
+      return { status: "completed" };
+    },
+    abortTeamSeatMutation: async (input) => {
+      teamSeatReservations.delete(input.operationId);
+      if (
+        teamSeatMutationOwner?.operationId === input.operationId &&
+        teamSeatMutationOwner.revision === input.revision
+      ) {
+        teamSeatMutationOwner = null;
+        return true;
+      }
+      return false;
     },
     syncSubscriptionBillingState: async (state, trialCreditGrantCents) => {
       const existingTrialUsed = Boolean(
@@ -629,8 +818,22 @@ function makeEnv(args: {
     },
     getMemberCount: async () => args.memberCount ?? 1,
     getInvitations: async () => args.invitations ?? [],
-    getSubscriptionInvoiceGrant: async (invoiceId) =>
-      invoiceGrants.get(invoiceId) ?? null,
+    getSubscriptionInvoiceGrant: async (invoiceId) => {
+      const command = invoiceGrants.get(invoiceId);
+      return command
+        ? {
+            invoice_id: command.invoiceId,
+            subscription_id: command.subscriptionId,
+            customer_id: command.customerId,
+            billing_reason: command.billingReason,
+            source: command.source,
+            plan: command.plan,
+            seat_count: command.seatCount,
+            amount_cents: command.grantCents,
+            created_at: Date.now(),
+          }
+        : null;
+    },
     applySubscriptionInvoiceGrant: async (command, options = {}) => {
       const existing = invoiceGrants.get(command.invoiceId);
       if (existing) {
@@ -812,7 +1015,7 @@ describeStripe("Stripe billing integration", () => {
       purchase_type: "subscription",
       billing_plan: "team",
       seat_count: "25",
-      trial_credit_cents: "1000",
+      trial_credit_cents: "0",
       subscription_included_credit_cents: "125000",
     });
 
@@ -919,10 +1122,10 @@ describeStripe("Stripe billing integration", () => {
       ]);
     const [upgradeConfiguration, downgradeConfiguration] = await Promise.all([
       stripeRequest<StripePortalConfiguration>(
-        `/billing_portal/configurations/${upgradeConfigurationId}`,
+        `/billing_portal/configurations/${upgradeConfigurationId}?expand[]=features.subscription_update.products`,
       ),
       stripeRequest<StripePortalConfiguration>(
-        `/billing_portal/configurations/${downgradeConfigurationId}`,
+        `/billing_portal/configurations/${downgradeConfigurationId}?expand[]=features.subscription_update.products`,
       ),
     ]);
     expect(upgradeConfiguration.features.subscription_update).toMatchObject({
@@ -939,7 +1142,7 @@ describeStripe("Stripe billing integration", () => {
     ]) {
       expect(
         configuration.features.subscription_update?.default_allowed_updates,
-      ).toEqual(expect.arrayContaining(["price", "quantity"]));
+      ).toEqual(["price"]);
       const products =
         configuration.features.subscription_update?.products ?? [];
       expect(products.flatMap((product) => product.prices ?? [])).toEqual(
@@ -956,31 +1159,6 @@ describeStripe("Stripe billing integration", () => {
       ).toBe(true);
     }
 
-    const portal = await captureStripePostBody("/billing_portal/sessions", () =>
-      createSubscriptionUpdatePortalSession({
-        env,
-        org,
-        customerEmail: `${orgId}@example.com`,
-        returnUrl: "https://example.com/settings/organization/billing",
-        plan: "team",
-      }),
-    );
-    expect(portal.result).toMatch(/^https:\/\/billing\.stripe\.com\//);
-    expect(portal.body.get("configuration")).toBe(upgradeConfigurationId);
-    expect(portal.body.get("flow_data[type]")).toBe(
-      "subscription_update_confirm",
-    );
-    expect(
-      portal.body.get(
-        "flow_data[subscription_update_confirm][items][0][price]",
-      ),
-    ).toBe(testPrices.team);
-    expect(
-      portal.body.get(
-        "flow_data[subscription_update_confirm][items][0][quantity]",
-      ),
-    ).toBe("3");
-
     const starterSubscription = await fetchSubscription(subscription.id);
     const subscriptionItem = starterSubscription.items?.data?.[0];
     expect(subscriptionItem?.id).toBeTruthy();
@@ -989,15 +1167,22 @@ describeStripe("Stripe billing integration", () => {
         (invoice) => invoice.id,
       ),
     );
-    const proItem = await updatePaidSubscriptionItem({
-      itemId: subscriptionItem!.id,
-      price: testPrices.pro,
-      quantity: 1,
-      prorationBehavior: "always_invoice",
-      paymentBehavior: "error_if_incomplete",
-    });
-    expect(proItem.quantity).toBe(1);
-    expect(proItem.current_period_end).toEqual(expect.any(Number));
+    const proUpdate = await captureStripePostBody(
+      `/subscriptions/${subscription.id}`,
+      () =>
+        updateActiveStripeSubscriptionPlan({
+          env,
+          org,
+          plan: "pro",
+        }),
+    );
+    expect(proUpdate.body.get("items[0][id]")).toBe(subscriptionItem!.id);
+    expect(proUpdate.body.get("items[0][price]")).toBe(testPrices.pro);
+    expect(proUpdate.body.get("items[0][quantity]")).toBe("1");
+    expect(proUpdate.body.get("proration_behavior")).toBe("always_invoice");
+    expect(proUpdate.body.get("payment_behavior")).toBe(
+      "error_if_incomplete",
+    );
     const proInvoice = await waitForNewSubscriptionInvoice({
       subscriptionId: subscription.id,
       billingReason: "subscription_update",
@@ -1038,13 +1223,22 @@ describeStripe("Stripe billing integration", () => {
         (invoice) => invoice.id,
       ),
     );
-    await updatePaidSubscriptionItem({
-      itemId: subscriptionItem!.id,
-      price: testPrices.team,
-      quantity: 3,
-      prorationBehavior: "always_invoice",
-      paymentBehavior: "error_if_incomplete",
-    });
+    const teamUpdate = await captureStripePostBody(
+      `/subscriptions/${subscription.id}`,
+      () =>
+        updateActiveStripeSubscriptionPlan({
+          env,
+          org,
+          plan: "team",
+        }),
+    );
+    expect(teamUpdate.body.get("items[0][id]")).toBe(subscriptionItem!.id);
+    expect(teamUpdate.body.get("items[0][price]")).toBe(testPrices.team);
+    expect(teamUpdate.body.get("items[0][quantity]")).toBe("3");
+    expect(teamUpdate.body.get("proration_behavior")).toBe("always_invoice");
+    expect(teamUpdate.body.get("payment_behavior")).toBe(
+      "error_if_incomplete",
+    );
     const teamInvoice = await waitForNewSubscriptionInvoice({
       subscriptionId: subscription.id,
       billingReason: "subscription_update",
@@ -1099,12 +1293,19 @@ describeStripe("Stripe billing integration", () => {
         (invoice) => invoice.id,
       ),
     );
-    await updatePaidSubscriptionItem({
-      itemId: subscriptionItem!.id,
-      price: testPrices.pro,
-      quantity: 1,
-      prorationBehavior: "none",
-    });
+    const downgradeUpdate = await captureStripePostBody(
+      `/subscriptions/${subscription.id}`,
+      () =>
+        updateActiveStripeSubscriptionPlan({
+          env,
+          org,
+          plan: "pro",
+        }),
+    );
+    expect(downgradeUpdate.body.get("items[0][price]")).toBe(testPrices.pro);
+    expect(downgradeUpdate.body.get("items[0][quantity]")).toBe("1");
+    expect(downgradeUpdate.body.get("proration_behavior")).toBe("none");
+    expect(downgradeUpdate.body.has("payment_behavior")).toBe(false);
     const invoicesAfterDowngrade = await listSubscriptionInvoices(
       subscription.id,
     );
@@ -1113,10 +1314,6 @@ describeStripe("Stripe billing integration", () => {
         (invoice) => !invoiceIdsBeforeDowngrade.has(invoice.id),
       ),
     ).toEqual([]);
-    await syncOrgSubscriptionFromStripe(
-      env,
-      await fetchSubscription(subscription.id),
-    );
     await expect(env.orgStub.getInfo()).resolves.toMatchObject({
       billing_plan: "pro",
       billing_seat_count: 1,
@@ -1153,30 +1350,25 @@ describeStripe("Stripe billing integration", () => {
     });
     const env = makeEnv({ org });
     const declinedPaymentMethod =
-      await createCardPaymentMethod("tok_chargeDeclined");
+      await createCardPaymentMethod("tok_chargeCustomerFail");
     await attachPaymentMethod(declinedPaymentMethod.id, customer.id);
     await setSubscriptionDefaultPaymentMethod(
       subscription.id,
       declinedPaymentMethod.id,
     );
 
-    const liveBefore = await fetchSubscription(subscription.id);
-    const item = liveBefore.items?.data?.[0];
-    expect(item?.id).toBeTruthy();
     const invoiceIdsBefore = new Set(
       (await listSubscriptionInvoices(subscription.id)).map(
         (invoice) => invoice.id,
       ),
     );
     await expect(
-      updatePaidSubscriptionItem({
-        itemId: item!.id,
-        price: testPrices.pro,
-        quantity: 1,
-        prorationBehavior: "always_invoice",
-        paymentBehavior: "error_if_incomplete",
+      updateActiveStripeSubscriptionPlan({
+        env,
+        org,
+        plan: "pro",
       }),
-    ).rejects.toThrow(/subscription_items.*failed with 402/i);
+    ).rejects.toThrow(/subscriptions.*returned 402/i);
 
     const liveAfter = await fetchSubscription(subscription.id);
     expect(liveAfter.items?.data?.[0]?.price).toMatchObject({

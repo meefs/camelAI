@@ -1,4 +1,5 @@
 import { fireEvent, render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import type { ComponentProps } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -46,7 +47,7 @@ vi.mock("@/lib/billing.server", async (importOriginal) => {
     ...actual,
     createBillingPortalSession: vi.fn(),
     createSubscriptionCheckoutSession: vi.fn(),
-    createSubscriptionUpdatePortalSession: vi.fn(),
+    updateActiveStripeSubscriptionPlan: vi.fn(),
     getOrgBillingOverview: vi.fn(),
     getStripeSubscriptionSummary: vi.fn(),
     hasOrgUsedSubscriptionTrial: vi.fn(),
@@ -209,6 +210,40 @@ describe("BillingPage overview", () => {
     fireEvent.click(manageButton);
     expect(testState.fetcher.submit).toHaveBeenCalledWith(
       { intent: "manageBilling", plan: "pro" },
+      { method: "post" },
+    );
+  });
+
+  it("requires app confirmation before submitting an active paid plan change", async () => {
+    const user = userEvent.setup();
+    testState.loaderData.current = {
+      ...makeLoaderData(),
+      org: {
+        ...makeLoaderData().org,
+        billing_plan: "pro",
+        billing_seat_count: 1,
+      },
+      overview: {
+        ...makeLoaderData().overview,
+        billing_plan: "pro",
+        billing_seat_count: 1,
+      },
+    };
+
+    render(<BillingPage />);
+    await user.click(screen.getByRole("button", { name: "Manage plan" }));
+    await user.click(screen.getByRole("tab", { name: "Team" }));
+    await user.click(screen.getByRole("button", { name: "Subscribe" }));
+
+    expect(testState.fetcher.submit).not.toHaveBeenCalled();
+    expect(
+      screen.getByRole("heading", { name: "Confirm plan change" }),
+    ).toBeInTheDocument();
+    await user.click(
+      screen.getByRole("button", { name: "Confirm plan change" }),
+    );
+    expect(testState.fetcher.submit).toHaveBeenCalledWith(
+      { intent: "changePlan", plan: "team" },
       { method: "post" },
     );
   });

@@ -15,10 +15,14 @@ import {
   sendOrgInvitationEmail,
 } from '@/lib/email.server';
 import {
+  bestEffortEnsureTeamSubscriptionSeatCapacity,
+  bestEffortReleaseTeamSeatCapacityReservation,
   bestEffortSyncTeamSubscriptionSeatCount,
+  ensureTeamSubscriptionSeatCapacity,
   getBillableTeamSeatCountForOrg,
-  syncTeamSubscriptionSeatCount,
+  type TeamSeatCapacityReservation,
 } from '@/lib/billing.server';
+import { isTeamSeatBillingSyncable } from '@/lib/billing-plans';
 
 const legacyInviteMemberFormSchema = z.object({
   email: inviteEmailSchema,
@@ -65,35 +69,61 @@ export async function action({ request, context, params }: Route.ActionArgs) {
         );
       }
 
-      let invitation: Awaited<ReturnType<typeof createInvitations>>[number];
-      try {
-        const targetSeatCount = await getBillableTeamSeatCountForOrg(env, orgId, 1);
-        await syncTeamSubscriptionSeatCount(env, orgId, {
+      const org = await orgStub.getInfo();
+      if (!org) {
+        return Response.json({ error: 'Organization not found' }, { status: 404 });
+      }
+      const syncPaidTeamSeat = isTeamSeatBillingSyncable(org);
+      let pendingBillingSeatAllowance = 0;
+      let confirmedCapacityTarget: number | null = null;
+      let seatReservation: TeamSeatCapacityReservation | null = null;
+      if (syncPaidTeamSeat) {
+        const targetSeatCount = await getBillableTeamSeatCountForOrg(
+          env,
+          orgId,
+          1,
+        );
+        const seatSync = await ensureTeamSubscriptionSeatCapacity(env, orgId, {
+          pendingReservedSeatDelta: 1,
           targetSeatCount,
           itemUpdateIdempotencyKey: `team-seat-sync:${orgId}:${targetSeatCount}:invite:${crypto.randomUUID()}`,
           prorationBehavior: 'always_invoice',
         });
+        if (seatSync.status !== 'capacity_confirmed') {
+          throw new Error(
+            `Team seat capacity was not confirmed (${seatSync.reason}).`,
+          );
+        }
+        pendingBillingSeatAllowance = seatSync.pendingBillingSeatAllowance;
+        confirmedCapacityTarget = seatSync.targetSeatCount;
+        seatReservation = seatSync.seatReservation;
+      }
+      let invitation: Awaited<ReturnType<typeof createInvitations>>[number];
+      try {
         invitation = (await createInvitations(
           authEnv,
           orgId,
           [email],
           role,
           session.user_id,
-          { pendingBillingSeatAllowance: 0 },
+          syncPaidTeamSeat ? { pendingBillingSeatAllowance } : undefined,
         ))[0];
-      } catch (error) {
-        await bestEffortSyncTeamSubscriptionSeatCount(env, orgId, {
-          reason: 'api_invite_create_failed',
-        });
-        throw error;
+      } finally {
+        await bestEffortReleaseTeamSeatCapacityReservation(
+          env,
+          orgId,
+          seatReservation,
+        );
       }
-      await bestEffortSyncTeamSubscriptionSeatCount(env, orgId, {
-        reason: 'api_invitation_created',
-      });
+      if (syncPaidTeamSeat) {
+        await bestEffortEnsureTeamSubscriptionSeatCapacity(env, orgId, {
+          reason: 'api_invitation_created',
+          targetSeatCount: confirmedCapacityTarget ?? undefined,
+        });
+      }
       const inviter = await authEnv.USER.get(
         authEnv.USER.idFromName(session.user_id)
       ).getProfile();
-      const org = await authEnv.ORG.get(authEnv.ORG.idFromName(orgId)).getInfo();
 
       const baseUrl = resolveAppBaseUrl(env, new URL(request.url));
       const invitationUrl = buildInvitationUrl(baseUrl, orgId, invitation.id);

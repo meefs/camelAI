@@ -2,8 +2,9 @@ import type { Route } from "./+types/billing.legacy-migration";
 import { requireAuthContext, requireOrgAdmin } from "@/lib/auth.server";
 import { getEnv } from "@/lib/cloudflare.server";
 import {
-  createLegacyStripeMigrationPortalSession,
   getBillableTeamSeatCountForOrg,
+  migrateLegacyStripeSubscription,
+  previewLegacyStripeMigration,
 } from "@/lib/billing.server";
 import { getMinimumSeats, isBillingPlan } from "@/lib/billing-plans";
 
@@ -17,6 +18,7 @@ export async function action({ request, context }: Route.ActionArgs) {
   const env = getEnv(context);
   const formData = await request.formData();
   const rawPlan = String(formData.get("plan") || "").trim();
+  const confirmed = formData.get("confirm") === "true";
   if (
     !isBillingPlan(rawPlan) ||
     rawPlan === "free" ||
@@ -37,32 +39,27 @@ export async function action({ request, context }: Route.ActionArgs) {
       rawPlan === "team"
         ? await getBillableTeamSeatCountForOrg(env, authContext.currentOrg.id)
         : getMinimumSeats(rawPlan);
-    const requestUrl = new URL(request.url);
-    let returnUrl = new URL("/onboarding", request.url);
-    const referer = request.headers.get("referer");
-    if (referer) {
-      try {
-        const refererUrl = new URL(referer);
-        if (refererUrl.origin === requestUrl.origin) {
-          returnUrl = refererUrl;
-        }
-      } catch {
-        // Ignore malformed Referer headers and use the onboarding fallback.
-      }
+    if (confirmed) {
+      await migrateLegacyStripeSubscription({
+        env,
+        org: latestOrg,
+        userEmail: authContext.user.email,
+        plan: rawPlan,
+        seatCount,
+      });
+      return Response.json({ success: true });
     }
-    returnUrl.searchParams.set("legacy_migration", "returned");
-    const migrationSession = await createLegacyStripeMigrationPortalSession({
+
+    const preview = await previewLegacyStripeMigration({
       env,
       org: latestOrg,
       userEmail: authContext.user.email,
-      returnUrl: returnUrl.toString(),
       plan: rawPlan,
       seatCount,
     });
 
     return Response.json({
-      billingPortalUrl: migrationSession.billingPortalUrl,
-      legacyMigrationPreview: migrationSession.preview,
+      legacyMigrationPreview: preview,
     });
   } catch (error) {
     console.error("[billing] legacy migration failed", {

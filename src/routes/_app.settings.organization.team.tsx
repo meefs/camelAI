@@ -23,10 +23,13 @@ import {
   sendOrgInvitationEmail,
 } from '@/lib/email.server';
 import {
+  bestEffortEnsureTeamSubscriptionSeatCapacity,
+  bestEffortReleaseTeamSeatCapacityReservation,
   bestEffortSyncTeamSubscriptionSeatCount,
+  ensureTeamSubscriptionSeatCapacity,
   getVerifiedLegacyStripeMigrationEligibility,
   isStripeBillingConfigured,
-  syncTeamSubscriptionSeatCount,
+  type TeamSeatCapacityReservation,
 } from '@/lib/billing.server';
 import {
   MAX_INVITE_EMAILS,
@@ -250,7 +253,9 @@ export async function action({ request, context }: Route.ActionArgs) {
     }
 
     const batchId = crypto.randomUUID();
-    let billingExpanded = false;
+    let pendingBillingSeatAllowance = 0;
+    let confirmedCapacityTarget: number | undefined;
+    let seatReservation: TeamSeatCapacityReservation | null = null;
     try {
       if (isTeamSeatManaged && billingSnapshot.addedSeatCount > 0) {
         const latestOrg = await orgStub.getInfo();
@@ -296,12 +301,21 @@ export async function action({ request, context }: Route.ActionArgs) {
         }
 
         if (latestBillingSnapshot.addedSeatCount > 0) {
-          await syncTeamSubscriptionSeatCount(env, orgId, {
+          const seatSync = await ensureTeamSubscriptionSeatCapacity(env, orgId, {
+            pendingReservedSeatDelta: latestBillingSnapshot.addedSeatCount,
             targetSeatCount: latestBillingSnapshot.nextSeatCount,
             itemUpdateIdempotencyKey: `team-seat-sync:${orgId}:${latestBillingSnapshot.nextSeatCount}:${batchId}`,
             prorationBehavior: 'always_invoice',
           });
-          billingExpanded = true;
+          if (seatSync.status !== 'capacity_confirmed') {
+            throw new Error(
+              `Team seat capacity was not confirmed (${seatSync.reason}).`,
+            );
+          }
+          pendingBillingSeatAllowance =
+            seatSync.pendingBillingSeatAllowance;
+          confirmedCapacityTarget = seatSync.targetSeatCount;
+          seatReservation = seatSync.seatReservation;
         }
       }
     } catch (error) {
@@ -324,23 +338,25 @@ export async function action({ request, context }: Route.ActionArgs) {
         newEmails,
         role,
         actorId,
-        { pendingBillingSeatAllowance: 0 },
+        { pendingBillingSeatAllowance },
       );
     } catch (error) {
-      if (billingExpanded) {
-        await bestEffortSyncTeamSubscriptionSeatCount(env, orgId, {
-          reason: 'bulk_invite_create_failed',
-        });
-      }
       return {
         success: false,
         error:
           error instanceof Error ? error.message : 'Failed to create invitations',
       };
+    } finally {
+      await bestEffortReleaseTeamSeatCapacityReservation(
+        env,
+        orgId,
+        seatReservation,
+      );
     }
 
-    await bestEffortSyncTeamSubscriptionSeatCount(env, orgId, {
+    await bestEffortEnsureTeamSubscriptionSeatCapacity(env, orgId, {
       reason: 'bulk_invitations_created',
+      targetSeatCount: confirmedCapacityTarget,
     });
 
     const baseUrl = resolveAppBaseUrl(env, new URL(request.url));

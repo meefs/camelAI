@@ -6,7 +6,9 @@ const getSessionMock = vi.fn();
 const createInvitationsMock = vi.fn();
 const isOrgAdminMock = vi.fn();
 const getBillableTeamSeatCountForOrgMock = vi.fn();
-const syncTeamSubscriptionSeatCountMock = vi.fn();
+const ensureTeamSubscriptionSeatCapacityMock = vi.fn();
+const bestEffortEnsureTeamSubscriptionSeatCapacityMock = vi.fn();
+const bestEffortReleaseTeamSeatCapacityReservationMock = vi.fn();
 const bestEffortSyncTeamSubscriptionSeatCountMock = vi.fn();
 const sendOrgInvitationEmailMock = vi.fn();
 
@@ -33,7 +35,12 @@ vi.mock("@/lib/billing.server", async (importOriginal) => {
   return {
     ...actual,
     getBillableTeamSeatCountForOrg: getBillableTeamSeatCountForOrgMock,
-    syncTeamSubscriptionSeatCount: syncTeamSubscriptionSeatCountMock,
+    ensureTeamSubscriptionSeatCapacity:
+      ensureTeamSubscriptionSeatCapacityMock,
+    bestEffortEnsureTeamSubscriptionSeatCapacity:
+      bestEffortEnsureTeamSubscriptionSeatCapacityMock,
+    bestEffortReleaseTeamSeatCapacityReservation:
+      bestEffortReleaseTeamSeatCapacityReservationMock,
     bestEffortSyncTeamSubscriptionSeatCount:
       bestEffortSyncTeamSubscriptionSeatCountMock,
   };
@@ -56,10 +63,36 @@ function makeRequest() {
   });
 }
 
+function confirmedSeatSync(overrides: Record<string, unknown> = {}) {
+  return {
+    status: "capacity_confirmed",
+    org: { id: "org_team", name: "Team Org", billing_seat_count: 4 },
+    targetSeatCount: 4,
+    previousStripeSeatCount: 3,
+    stripeQuantityChanged: true,
+    paidIncreaseConfirmed: true,
+    metadataSynced: true,
+    orgSeatStateSynced: true,
+    pendingBillingSeatAllowance: 0,
+    seatReservation: {
+      operationId: "reserve_invite",
+      subscriptionId: "sub_team",
+    },
+    ...overrides,
+  };
+}
+
 describe("legacy organization invitation API billing guard", () => {
   const orgStub = {
     getInvitationByEmail: vi.fn(async () => null),
-    getInfo: vi.fn(async () => ({ id: "org_team", name: "Team Org" })),
+    getInfo: vi.fn(async () => ({
+      id: "org_team",
+      name: "Team Org",
+      billing_status: "active",
+      billing_plan: "team",
+      billing_subscription_id: "sub_team",
+      billing_subscription_status: "active",
+    })),
   };
   const env = {
     ORG: {
@@ -84,6 +117,11 @@ describe("legacy organization invitation API billing guard", () => {
     getSessionMock.mockResolvedValue({ session: { user_id: "owner_123" } });
     isOrgAdminMock.mockResolvedValue(true);
     getBillableTeamSeatCountForOrgMock.mockResolvedValue(4);
+    ensureTeamSubscriptionSeatCapacityMock.mockResolvedValue(
+      confirmedSeatSync(),
+    );
+    bestEffortEnsureTeamSubscriptionSeatCapacityMock.mockResolvedValue(null);
+    bestEffortReleaseTeamSeatCapacityReservationMock.mockResolvedValue(null);
     bestEffortSyncTeamSubscriptionSeatCountMock.mockResolvedValue(null);
     sendOrgInvitationEmailMock.mockResolvedValue({ status: "sent" });
   });
@@ -92,7 +130,7 @@ describe("legacy organization invitation API billing guard", () => {
     const consoleError = vi
       .spyOn(console, "error")
       .mockImplementation(() => undefined);
-    syncTeamSubscriptionSeatCountMock.mockRejectedValue(
+    ensureTeamSubscriptionSeatCapacityMock.mockRejectedValue(
       new Error("Stripe payment failed"),
     );
 
@@ -106,10 +144,11 @@ describe("legacy organization invitation API billing guard", () => {
     await expect(response.json()).resolves.toEqual({
       error: "Stripe payment failed",
     });
-    expect(syncTeamSubscriptionSeatCountMock).toHaveBeenCalledWith(
+    expect(ensureTeamSubscriptionSeatCapacityMock).toHaveBeenCalledWith(
       env,
       "org_team",
       expect.objectContaining({
+        pendingReservedSeatDelta: 1,
         targetSeatCount: 4,
         prorationBehavior: "always_invoice",
         itemUpdateIdempotencyKey: expect.stringMatching(
@@ -119,16 +158,17 @@ describe("legacy organization invitation API billing guard", () => {
     );
     expect(createInvitationsMock).not.toHaveBeenCalled();
     expect(sendOrgInvitationEmailMock).not.toHaveBeenCalled();
-    expect(bestEffortSyncTeamSubscriptionSeatCountMock).toHaveBeenCalledWith(
-      env,
-      "org_team",
-      { reason: "api_invite_create_failed" },
-    );
+    expect(bestEffortSyncTeamSubscriptionSeatCountMock).not.toHaveBeenCalled();
+    expect(
+      bestEffortEnsureTeamSubscriptionSeatCapacityMock,
+    ).not.toHaveBeenCalled();
     consoleError.mockRestore();
   });
 
   it("creates the invitation only after Stripe confirms the paid seat", async () => {
-    syncTeamSubscriptionSeatCountMock.mockResolvedValue(undefined);
+    ensureTeamSubscriptionSeatCapacityMock.mockResolvedValue(
+      confirmedSeatSync(),
+    );
     createInvitationsMock.mockResolvedValue([
       {
         id: "inv_new",
@@ -151,8 +191,22 @@ describe("legacy organization invitation API billing guard", () => {
       email_delivery: "sent",
     });
     expect(
-      syncTeamSubscriptionSeatCountMock.mock.invocationCallOrder[0],
+      ensureTeamSubscriptionSeatCapacityMock.mock.invocationCallOrder[0],
     ).toBeLessThan(createInvitationsMock.mock.invocationCallOrder[0]);
+    expect(
+      createInvitationsMock.mock.invocationCallOrder[0],
+    ).toBeLessThan(
+      bestEffortReleaseTeamSeatCapacityReservationMock.mock
+        .invocationCallOrder[0],
+    );
+    expect(bestEffortReleaseTeamSeatCapacityReservationMock).toHaveBeenCalledWith(
+      env,
+      "org_team",
+      {
+        operationId: "reserve_invite",
+        subscriptionId: "sub_team",
+      },
+    );
     expect(createInvitationsMock).toHaveBeenCalledWith(
       env,
       "org_team",
@@ -160,6 +214,145 @@ describe("legacy organization invitation API billing guard", () => {
       "member",
       "owner_123",
       { pendingBillingSeatAllowance: 0 },
+    );
+    expect(
+      bestEffortEnsureTeamSubscriptionSeatCapacityMock,
+    ).toHaveBeenCalledWith(env, "org_team", {
+      reason: "api_invitation_created",
+      targetSeatCount: 4,
+    });
+  });
+
+  it("keeps confirmed paid capacity when invitation persistence fails", async () => {
+    ensureTeamSubscriptionSeatCapacityMock.mockResolvedValue(
+      confirmedSeatSync({
+        org: { id: "org_team", name: "Team Org", billing_seat_count: 3 },
+        orgSeatStateSynced: false,
+        pendingBillingSeatAllowance: 1,
+      }),
+    );
+    createInvitationsMock.mockRejectedValue(
+      new Error("temporary invitation failure"),
+    );
+    const consoleError = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => undefined);
+
+    const response = await action({
+      request: makeRequest(),
+      context: {},
+      params: { id: "org_team" },
+    } as never);
+
+    expect(response.status).toBe(500);
+    await expect(response.json()).resolves.toEqual({
+      error: "temporary invitation failure",
+    });
+    expect(createInvitationsMock).toHaveBeenCalledWith(
+      env,
+      "org_team",
+      ["new@example.com"],
+      "member",
+      "owner_123",
+      { pendingBillingSeatAllowance: 1 },
+    );
+    expect(bestEffortReleaseTeamSeatCapacityReservationMock).toHaveBeenCalledWith(
+      env,
+      "org_team",
+      expect.objectContaining({ operationId: "reserve_invite" }),
+    );
+    expect(bestEffortSyncTeamSubscriptionSeatCountMock).not.toHaveBeenCalled();
+    expect(
+      bestEffortEnsureTeamSubscriptionSeatCapacityMock,
+    ).not.toHaveBeenCalled();
+    consoleError.mockRestore();
+  });
+
+  it("uses an already-paid fifth seat for a one-address partial retry", async () => {
+    ensureTeamSubscriptionSeatCapacityMock.mockResolvedValue(
+      confirmedSeatSync({
+        org: { id: "org_team", name: "Team Org", billing_seat_count: 5 },
+        requestedSeatCount: 4,
+        targetSeatCount: 5,
+        previousStripeSeatCount: 5,
+        stripeQuantityChanged: false,
+        paidIncreaseConfirmed: false,
+      }),
+    );
+    createInvitationsMock.mockResolvedValue([
+      {
+        id: "inv_partial_retry",
+        email: "new@example.com",
+        role: "member",
+        expires_at: 1_800_000_000_000,
+      },
+    ]);
+
+    const response = await action({
+      request: makeRequest(),
+      context: {},
+      params: { id: "org_team" },
+    } as never);
+
+    expect(response.status).toBe(200);
+    expect(ensureTeamSubscriptionSeatCapacityMock).toHaveBeenCalledWith(
+      env,
+      "org_team",
+      expect.objectContaining({
+        pendingReservedSeatDelta: 1,
+        targetSeatCount: 4,
+      }),
+    );
+    expect(
+      bestEffortEnsureTeamSubscriptionSeatCapacityMock,
+    ).toHaveBeenCalledWith(env, "org_team", {
+      reason: "api_invitation_created",
+      targetSeatCount: 5,
+    });
+    expect(bestEffortSyncTeamSubscriptionSeatCountMock).not.toHaveBeenCalled();
+  });
+
+  it("creates enterprise invitations without calling Team seat billing", async () => {
+    orgStub.getInfo.mockResolvedValueOnce({
+      id: "org_team",
+      name: "Enterprise Org",
+      billing_status: "enterprise",
+      billing_plan: "enterprise",
+      billing_subscription_id: null,
+      billing_subscription_status: null,
+    } as never);
+    createInvitationsMock.mockResolvedValue([
+      {
+        id: "inv_enterprise",
+        email: "new@example.com",
+        role: "member",
+        expires_at: 1_800_000_000_000,
+      },
+    ]);
+
+    const response = await action({
+      request: makeRequest(),
+      context: {},
+      params: { id: "org_team" },
+    } as never);
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      id: "inv_enterprise",
+      email: "new@example.com",
+    });
+    expect(getBillableTeamSeatCountForOrgMock).not.toHaveBeenCalled();
+    expect(ensureTeamSubscriptionSeatCapacityMock).not.toHaveBeenCalled();
+    expect(
+      bestEffortEnsureTeamSubscriptionSeatCapacityMock,
+    ).not.toHaveBeenCalled();
+    expect(createInvitationsMock).toHaveBeenCalledWith(
+      env,
+      "org_team",
+      ["new@example.com"],
+      "member",
+      "owner_123",
+      undefined,
     );
   });
 });
