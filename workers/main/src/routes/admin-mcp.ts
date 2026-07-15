@@ -15,6 +15,11 @@ import {
 } from "../admin-mcp-oauth.js";
 import { fetchAdminApiWithValidatedAuth } from "./admin/index.js";
 import { getAdminIndexStub } from "./admin/helpers.js";
+import {
+  errorToObservabilityFields,
+  recordErrorEvent,
+  recordObservabilityEvent,
+} from "../observability.js";
 
 type JsonRpcId = string | number | null;
 
@@ -66,6 +71,10 @@ const ADMIN_JS_EXEC_DEFAULT_MAX_OUTPUT_CHARACTERS = 120_000;
 const ADMIN_JS_EXEC_MAX_OUTPUT_CHARACTERS = 1_000_000;
 const ADMIN_JS_EXEC_DO_BRIDGE_BINDING = "ADMIN_DO";
 const ADMIN_JS_EXEC_DO_NAMESPACES_BINDING = "ADMIN_DO_NAMESPACES";
+const ADMIN_JS_EXEC_RUNTIME_BRIDGE_BINDING = "ADMIN_RUNTIME";
+const ADMIN_JS_EXEC_INPUT_BINDING = "ADMIN_INPUT";
+const ADMIN_JS_EXEC_BLOCKED_BINDINGS = new Set(["CODE_MODE_LOADER"]);
+const ADMIN_JS_EXEC_MAX_HTTP_BODY_CHARACTERS = 1_000_000;
 
 function getBaseUrl(req: Request): string {
   const url = new URL(req.url);
@@ -559,14 +568,18 @@ function adminTools() {
     {
       name: TOOL_ADMIN_JS_EXEC,
       description:
-        "Run admin-only JavaScript in an ephemeral Worker with Durable Object RPC helpers. Available globals: DO.namespaces, DO.stub(namespace, id, { idFrom }), DO.call(namespace, id, method, args, { idFrom }), and text(value). idFrom defaults to name and can be name or string.",
+        "Run admin-only JavaScript in an ephemeral Worker as a generic remote console for the current environment. Available globals: env (non-secret binding proxies), ENV (binding discovery/call/fetch), DO (Durable Object RPC), SELF.fetch (same Worker), ADMIN.fetch (authenticated admin API), fetch (outbound HTTP), assert, test, runtime, sleep, and text. Primitive environment values and secrets are intentionally not readable.",
       inputSchema: {
         type: "object",
         properties: {
           code: {
             type: "string",
             description:
-              "JavaScript function body. Use return for the final result, for example: return await DO.call('ORG', 'org_id', 'getInfo');",
+              "JavaScript function body. Use return for the final result. Example: await test('org exists', async () => assert.ok(await DO.call('ORG', 'org_id', 'getInfo'))); return runtime;",
+          },
+          input: {
+            description:
+              "Optional JSON-serializable parameters exposed to the script as the read-only input global. Use this for reusable checked-in smoke suites instead of interpolating values into code.",
           },
           timeout_ms: {
             type: "integer",
@@ -834,6 +847,369 @@ function createAdminJsExecDoBridge(
   };
 }
 
+type AdminJsExecRuntimeProps = {
+  adminUserId: string;
+  baseUrl: string;
+};
+
+type AdminJsExecBindingDescriptor = {
+  name: string;
+  kind: string;
+  accessible: boolean;
+  methods: string[];
+};
+
+type AdminJsExecFetchInit = {
+  method?: string;
+  headers?: Record<string, string> | [string, string][];
+  body?: string | null;
+  redirect?: RequestRedirect;
+  cache?: RequestCache;
+};
+
+type AdminJsExecFetchResult = {
+  url: string;
+  status: number;
+  statusText: string;
+  ok: boolean;
+  redirected: boolean;
+  headers: [string, string][];
+  body: string;
+  truncated: boolean;
+};
+
+type AdminJsExecRuntimeBridge = {
+  runtime(): Promise<{
+    baseUrl: string;
+    adminUserId: string;
+    stripeMode: string | null;
+    bindings: AdminJsExecBindingDescriptor[];
+  }>;
+  call(binding: string, method: string, args?: unknown[]): Promise<unknown>;
+  chain(
+    binding: string,
+    steps: { method: string; args?: unknown[] }[],
+  ): Promise<unknown>;
+  fetchBinding(
+    binding: string,
+    input: string,
+    init?: AdminJsExecFetchInit,
+  ): Promise<AdminJsExecFetchResult>;
+  fetchSelf(
+    input: string,
+    init?: AdminJsExecFetchInit,
+  ): Promise<AdminJsExecFetchResult>;
+  fetchAdmin(
+    input: string,
+    init?: AdminJsExecFetchInit,
+  ): Promise<AdminJsExecFetchResult>;
+  fetchOutbound(
+    input: string,
+    init?: AdminJsExecFetchInit,
+  ): Promise<AdminJsExecFetchResult>;
+};
+
+function callableMethodNames(value: object): string[] {
+  const names = new Set<string>();
+  let current: object | null = value;
+  while (current && current !== Object.prototype) {
+    let propertyNames: string[];
+    try {
+      propertyNames = Object.getOwnPropertyNames(current);
+    } catch {
+      break;
+    }
+    for (const name of propertyNames) {
+      if (name === "constructor" || name.startsWith("__")) continue;
+      try {
+        if (typeof (value as Record<string, unknown>)[name] === "function") {
+          names.add(name);
+        }
+      } catch {}
+    }
+    try {
+      current = Object.getPrototypeOf(current) as object | null;
+    } catch {
+      break;
+    }
+  }
+  return [...names].sort();
+}
+
+function classifyAdminJsExecBinding(value: unknown): string {
+  if (isDurableObjectNamespace(value)) return "durable_object_namespace";
+  if (!isRecord(value)) return "value";
+  const methods = new Set(callableMethodNames(value));
+  if (methods.has("prepare") && methods.has("exec")) return "d1";
+  if (methods.has("createMultipartUpload") && methods.has("head")) return "r2_bucket";
+  if (methods.has("getWithMetadata") && methods.has("list")) return "kv_namespace";
+  if (methods.has("send") && methods.has("sendBatch")) return "queue";
+  if (methods.has("writeDataPoint")) return "analytics_engine";
+  if (methods.has("fetch")) return "fetcher";
+  return "rpc_binding";
+}
+
+function adminJsExecBindingDescriptors(env: Env): AdminJsExecBindingDescriptor[] {
+  return Object.entries(env as unknown as Record<string, unknown>)
+    .map(([name, value]) => {
+      const objectValue = isRecord(value) ? value : null;
+      const blocked = ADMIN_JS_EXEC_BLOCKED_BINDINGS.has(name);
+      return {
+        name,
+        kind: classifyAdminJsExecBinding(value),
+        accessible: Boolean(objectValue) && !blocked,
+        methods: objectValue && !blocked ? callableMethodNames(objectValue) : [],
+      };
+    })
+    .sort((left, right) => left.name.localeCompare(right.name));
+}
+
+function getAdminJsExecBinding(env: Env, name: string): Record<string, unknown> {
+  if (typeof name !== "string" || !name.trim()) {
+    throw new Error("Binding name must be a non-empty string");
+  }
+  const normalizedName = name.trim();
+  if (ADMIN_JS_EXEC_BLOCKED_BINDINGS.has(normalizedName)) {
+    throw new Error(`Binding is not available in admin_js_exec: ${normalizedName}`);
+  }
+  const value = (env as unknown as Record<string, unknown>)[normalizedName];
+  if (!isRecord(value)) {
+    throw new Error(
+      `Binding is unavailable or is a protected primitive value: ${normalizedName}`,
+    );
+  }
+  return value;
+}
+
+function normalizeAdminJsExecUrl(input: string, baseUrl: string): string {
+  if (typeof input !== "string" || !input.trim()) {
+    throw new Error("Fetch input must be a non-empty URL or path");
+  }
+  return new URL(input.trim(), baseUrl).toString();
+}
+
+function adminJsExecRequestInit(init: AdminJsExecFetchInit = {}): RequestInit {
+  const headers = new Headers(init.headers);
+  return {
+    method: init.method?.toUpperCase() || (init.body == null ? "GET" : "POST"),
+    headers,
+    body: init.body == null ? undefined : init.body,
+    redirect: init.redirect,
+    cache: init.cache,
+  };
+}
+
+async function serializeAdminJsExecResponse(
+  response: Response,
+): Promise<AdminJsExecFetchResult> {
+  const rawBody = await response.text();
+  const truncated = rawBody.length > ADMIN_JS_EXEC_MAX_HTTP_BODY_CHARACTERS;
+  return {
+    url: response.url,
+    status: response.status,
+    statusText: response.statusText,
+    ok: response.ok,
+    redirected: response.redirected,
+    headers: [...response.headers.entries()],
+    body: truncated
+      ? `${rawBody.slice(0, ADMIN_JS_EXEC_MAX_HTTP_BODY_CHARACTERS)}\n...[truncated]`
+      : rawBody,
+    truncated,
+  };
+}
+
+async function toAdminJsExecRpcValue(value: unknown): Promise<unknown> {
+  if (
+    value === undefined ||
+    value === null ||
+    typeof value === "string" ||
+    typeof value === "number" ||
+    typeof value === "boolean"
+  ) {
+    return value;
+  }
+  if (typeof value === "bigint") return value.toString();
+  if (value instanceof Response) return serializeAdminJsExecResponse(value);
+  if (value instanceof Date) return value.toISOString();
+  if (value instanceof ArrayBuffer || ArrayBuffer.isView(value)) return value;
+  try {
+    const json = JSON.stringify(value, (_key, nested) =>
+      typeof nested === "bigint" ? nested.toString() : nested,
+    );
+    if (json !== undefined) return JSON.parse(json);
+  } catch {}
+  return {
+    type:
+      typeof value === "object" && value
+        ? value.constructor?.name || "Object"
+        : typeof value,
+    serialized: false,
+  };
+}
+
+export class AdminJsExecRuntimeBinding extends WorkerEntrypoint<
+  Env,
+  AdminJsExecRuntimeProps
+> {
+  runtime() {
+    return {
+      baseUrl: this.ctx.props.baseUrl,
+      adminUserId: this.ctx.props.adminUserId,
+      stripeMode: this.env.STRIPE_MODE?.trim() || null,
+      bindings: adminJsExecBindingDescriptors(this.env),
+    };
+  }
+
+  async call(
+    bindingName: string,
+    method: string,
+    args: unknown[] = [],
+  ): Promise<unknown> {
+    if (typeof method !== "string" || !method.trim()) {
+      throw new Error("Binding method must be a non-empty string");
+    }
+    const binding = getAdminJsExecBinding(this.env, bindingName);
+    const normalizedMethod = method.trim();
+    const fn = binding[normalizedMethod];
+    if (typeof fn !== "function") {
+      throw new Error(`Binding method not found on ${bindingName}: ${normalizedMethod}`);
+    }
+    return toAdminJsExecRpcValue(
+      await (fn as (...callArgs: unknown[]) => unknown).apply(
+        binding,
+        Array.isArray(args) ? args : [args],
+      ),
+    );
+  }
+
+  async chain(
+    bindingName: string,
+    steps: { method: string; args?: unknown[] }[],
+  ): Promise<unknown> {
+    if (!Array.isArray(steps) || steps.length === 0) {
+      throw new Error("Binding chain requires at least one method step");
+    }
+    let target: unknown = getAdminJsExecBinding(this.env, bindingName);
+    for (const [index, step] of steps.entries()) {
+      if (!isRecord(step) || typeof step.method !== "string" || !step.method.trim()) {
+        throw new Error(`Binding chain step ${index} requires a method`);
+      }
+      if (!isRecord(target)) {
+        throw new Error(
+          `Binding chain step ${index} cannot call ${step.method} on a non-object result`,
+        );
+      }
+      const method = step.method.trim();
+      const fn = target[method];
+      if (typeof fn !== "function") {
+        throw new Error(`Binding chain method not found at step ${index}: ${method}`);
+      }
+      target = await (fn as (...callArgs: unknown[]) => unknown).apply(
+        target,
+        Array.isArray(step.args) ? step.args : [],
+      );
+    }
+    return toAdminJsExecRpcValue(target);
+  }
+
+  async fetchBinding(
+    bindingName: string,
+    input: string,
+    init: AdminJsExecFetchInit = {},
+  ): Promise<AdminJsExecFetchResult> {
+    const binding = getAdminJsExecBinding(this.env, bindingName);
+    const fetchMethod = binding.fetch;
+    if (typeof fetchMethod !== "function") {
+      throw new Error(`Binding does not implement fetch: ${bindingName}`);
+    }
+    const request = new Request(
+      normalizeAdminJsExecUrl(input, this.ctx.props.baseUrl),
+      adminJsExecRequestInit(init),
+    );
+    const response = await (fetchMethod as (request: Request) => Promise<Response>).call(
+      binding,
+      request,
+    );
+    return serializeAdminJsExecResponse(response);
+  }
+
+  async fetchSelf(
+    input: string,
+    init: AdminJsExecFetchInit = {},
+  ): Promise<AdminJsExecFetchResult> {
+    const binding = getAdminJsExecBinding(this.env, "WORKER_SELF_REFERENCE");
+    const fetchMethod = binding.fetch;
+    if (typeof fetchMethod !== "function") {
+      throw new Error("WORKER_SELF_REFERENCE does not implement fetch");
+    }
+    const request = new Request(
+      normalizeAdminJsExecUrl(input, this.ctx.props.baseUrl),
+      adminJsExecRequestInit(init),
+    );
+    const response = await (fetchMethod as (request: Request) => Promise<Response>).call(
+      binding,
+      request,
+    );
+    return serializeAdminJsExecResponse(response);
+  }
+
+  async fetchAdmin(
+    input: string,
+    init: AdminJsExecFetchInit = {},
+  ): Promise<AdminJsExecFetchResult> {
+    const url = new URL(
+      normalizeAdminJsExecUrl(input, this.ctx.props.baseUrl),
+    );
+    const path = normalizeAdminApiPath(`${url.pathname}${url.search}`);
+    if (!path) {
+      throw new Error(
+        "ADMIN.fetch only accepts /api/admin/* paths other than MCP and OAuth endpoints",
+      );
+    }
+    const requestInit = adminJsExecRequestInit(init);
+    const headers = new Headers(requestInit.headers);
+    headers.set("x-admin-mcp-user-id", this.ctx.props.adminUserId);
+    const request = new Request(new URL(path, this.ctx.props.baseUrl), {
+      ...requestInit,
+      headers,
+    });
+    return serializeAdminJsExecResponse(
+      await fetchAdminApiWithValidatedAuth(request, this.env),
+    );
+  }
+
+  async fetchOutbound(
+    input: string,
+    init: AdminJsExecFetchInit = {},
+  ): Promise<AdminJsExecFetchResult> {
+    const url = normalizeAdminJsExecUrl(input, this.ctx.props.baseUrl);
+    return serializeAdminJsExecResponse(
+      await fetch(url, adminJsExecRequestInit(init)),
+    );
+  }
+}
+
+function createAdminJsExecRuntimeBridge(
+  ctx: ExecutionContext,
+  grant: AdminMcpTokenGrantRecord,
+  baseUrl: string,
+): AdminJsExecRuntimeBridge | null {
+  const factory = (ctx as unknown as {
+    exports?: {
+      AdminJsExecRuntimeBinding?: (options: {
+        props: AdminJsExecRuntimeProps;
+      }) => AdminJsExecRuntimeBridge;
+    };
+  }).exports?.AdminJsExecRuntimeBinding;
+  if (typeof factory !== "function") return null;
+  return factory({
+    props: {
+      adminUserId: grant.user_id,
+      baseUrl,
+    },
+  });
+}
+
 function adminJsExecWorkerModule(userCode: string): string {
   return `${String.raw`
 import { WorkerEntrypoint } from "cloudflare:workers";
@@ -963,7 +1339,252 @@ function createDoFacade(bridge, namespaceNames) {
   });
 }
 
-async function runUserCode(DO, text) {
+function normalizeFetchInit(init = {}) {
+  const headers = new Headers(init.headers || {});
+  let body = init.body;
+  if (body instanceof URLSearchParams) {
+    body = body.toString();
+    if (!headers.has("content-type")) {
+      headers.set("content-type", "application/x-www-form-urlencoded;charset=UTF-8");
+    }
+  } else if (body instanceof FormData) {
+    throw new Error("Remote console fetch does not support FormData; send a string, URLSearchParams, or JSON value");
+  } else if (
+    body !== undefined &&
+    body !== null &&
+    typeof body !== "string" &&
+    !(body instanceof ArrayBuffer) &&
+    !ArrayBuffer.isView(body)
+  ) {
+    body = JSON.stringify(body);
+    if (!headers.has("content-type")) {
+      headers.set("content-type", "application/json");
+    }
+  }
+  if (body instanceof ArrayBuffer || ArrayBuffer.isView(body)) {
+    throw new Error("Remote console fetch bodies must be strings or JSON-serializable values");
+  }
+  return {
+    method: init.method,
+    headers: [...headers.entries()],
+    body: body == null ? null : String(body),
+    redirect: init.redirect,
+    cache: init.cache,
+  };
+}
+
+function createRemoteResponse(result) {
+  const body = [101, 204, 205, 304].includes(result.status) ? null : result.body;
+  const response = new Response(body, {
+    status: result.status,
+    statusText: result.statusText,
+    headers: result.headers,
+  });
+  Object.defineProperties(response, {
+    url: { value: result.url, enumerable: true },
+    redirected: { value: result.redirected, enumerable: true },
+    truncated: { value: result.truncated, enumerable: true },
+  });
+  return response;
+}
+
+function createRuntimeFacades(bridge, runtime) {
+  if (!bridge || typeof bridge.call !== "function") {
+    throw new Error("Admin runtime bridge is not configured");
+  }
+  const descriptors = Array.isArray(runtime.bindings) ? runtime.bindings : [];
+  const descriptorMap = new Map(descriptors.map((entry) => [entry.name, entry]));
+
+  const assertAccessible = (name) => {
+    if (typeof name !== "string" || !name) {
+      throw new Error("Binding name must be a non-empty string");
+    }
+    const descriptor = descriptorMap.get(name);
+    if (!descriptor || descriptor.accessible !== true) {
+      throw new Error("Binding is unavailable or is a protected primitive value: " + name);
+    }
+    return descriptor;
+  };
+
+  const call = async (name, method, args = []) => {
+    assertAccessible(name);
+    return await bridge.call(name, method, Array.isArray(args) ? args : [args]);
+  };
+
+  const fetchBinding = async (name, input, init = {}) => {
+    assertAccessible(name);
+    return createRemoteResponse(
+      await bridge.fetchBinding(name, String(input), normalizeFetchInit(init)),
+    );
+  };
+
+  const binding = (name) => {
+    const descriptor = assertAccessible(name);
+    return new Proxy(Object.freeze({ name, kind: descriptor.kind }), {
+      get(target, property) {
+        if (property === "then") return undefined;
+        if (property === "name" || property === "kind") return target[property];
+        if (property === "fetch") {
+          return (input, init) => fetchBinding(name, input, init);
+        }
+        if (property === "chain") {
+          return (steps) => bridge.chain(name, steps);
+        }
+        if (typeof property !== "string") return undefined;
+        return (...args) => call(name, property, args);
+      },
+    });
+  };
+
+  const ENV = Object.freeze({
+    list: () => descriptors,
+    has: (name) => descriptorMap.get(name)?.accessible === true,
+    describe: (name) => descriptorMap.get(name) || null,
+    binding,
+    call,
+    chain: (name, steps) => {
+      assertAccessible(name);
+      return bridge.chain(name, steps);
+    },
+    fetch: fetchBinding,
+  });
+
+  const env = new Proxy(Object.create(null), {
+    get(_target, property) {
+      if (property === "then") return undefined;
+      if (typeof property !== "string") return undefined;
+      return binding(property);
+    },
+    has(_target, property) {
+      return typeof property === "string" && ENV.has(property);
+    },
+    ownKeys() {
+      return descriptors.filter((entry) => entry.accessible).map((entry) => entry.name);
+    },
+    getOwnPropertyDescriptor(_target, property) {
+      if (typeof property !== "string" || !ENV.has(property)) return undefined;
+      return { configurable: true, enumerable: true };
+    },
+  });
+
+  const makeFetchFacade = (method) => Object.freeze({
+    fetch: async (input, init = {}) => createRemoteResponse(
+      await bridge[method](String(input), normalizeFetchInit(init)),
+    ),
+  });
+
+  return {
+    env,
+    ENV,
+    SELF: makeFetchFacade("fetchSelf"),
+    ADMIN: makeFetchFacade("fetchAdmin"),
+    fetch: async (input, init = {}) => createRemoteResponse(
+      await bridge.fetchOutbound(String(input), normalizeFetchInit(init)),
+    ),
+  };
+}
+
+function createAssert() {
+  const canonicalize = (value) => {
+    if (typeof value === "bigint") return { __bigint: value.toString() };
+    if (Array.isArray(value)) return value.map(canonicalize);
+    if (value && typeof value === "object") {
+      return Object.fromEntries(
+        Object.keys(value).sort().map((key) => [key, canonicalize(value[key])]),
+      );
+    }
+    return value;
+  };
+  const inspect = (value) => {
+    try {
+      return JSON.stringify(canonicalize(value));
+    } catch {
+      return String(value);
+    }
+  };
+  const fail = (message) => {
+    throw new Error(message || "Assertion failed");
+  };
+  const assert = (value, message) => {
+    if (!value) fail(message || "Expected value to be truthy, received " + inspect(value));
+  };
+  assert.ok = assert;
+  assert.equal = (actual, expected, message) => {
+    if (!Object.is(actual, expected)) {
+      fail(message || "Expected " + inspect(actual) + " to equal " + inspect(expected));
+    }
+  };
+  assert.notEqual = (actual, expected, message) => {
+    if (Object.is(actual, expected)) {
+      fail(message || "Expected " + inspect(actual) + " not to equal " + inspect(expected));
+    }
+  };
+  assert.deepEqual = (actual, expected, message) => {
+    if (inspect(actual) !== inspect(expected)) {
+      fail(message || "Expected " + inspect(actual) + " to deeply equal " + inspect(expected));
+    }
+  };
+  assert.match = (actual, expected, message) => {
+    const pattern = expected instanceof RegExp ? expected : new RegExp(String(expected));
+    if (!pattern.test(String(actual))) {
+      fail(message || "Expected " + inspect(actual) + " to match " + pattern);
+    }
+  };
+  assert.rejects = async (operation, expected, message) => {
+    try {
+      await (typeof operation === "function" ? operation() : operation);
+    } catch (error) {
+      if (expected !== undefined) {
+        const detail = error instanceof Error ? error.message : String(error);
+        assert.match(detail, expected, message);
+      }
+      return error;
+    }
+    fail(message || "Expected operation to reject");
+  };
+  return Object.freeze(assert);
+}
+
+function createTestHarness() {
+  const cases = [];
+  const test = async (name, operation) => {
+    if (typeof name !== "string" || !name.trim()) {
+      throw new Error("Test name must be a non-empty string");
+    }
+    if (typeof operation !== "function") {
+      throw new Error("Test operation must be a function");
+    }
+    const startedAt = Date.now();
+    try {
+      const value = await operation();
+      cases.push({ name, status: "passed", duration_ms: Date.now() - startedAt });
+      return value;
+    } catch (error) {
+      cases.push({
+        name,
+        status: "failed",
+        duration_ms: Date.now() - startedAt,
+        error: error instanceof Error ? error.message : String(error),
+        stack: error instanceof Error ? error.stack : undefined,
+      });
+      return undefined;
+    }
+  };
+  const report = () => {
+    const passed = cases.filter((entry) => entry.status === "passed").length;
+    const failed = cases.length - passed;
+    return { total: cases.length, passed, failed, cases: [...cases] };
+  };
+  return { test: Object.freeze(test), report };
+}
+
+function deepFreeze(value) {
+  if (!value || typeof value !== "object" || Object.isFrozen(value)) return value;
+  for (const child of Object.values(value)) deepFreeze(child);
+  return Object.freeze(value);
+}
+
+async function runUserCode(DO, env, ENV, SELF, ADMIN, fetch, assert, test, runtime, input, sleep, text) {
   "use strict";
 `}${userCode}${String.raw`
 }
@@ -973,13 +1594,35 @@ export class AdminJsExecRunner extends WorkerEntrypoint {
     const output = [];
     globalThis.console = createOutputConsole(output);
     const DO = createDoFacade(this.env.${ADMIN_JS_EXEC_DO_BRIDGE_BINDING}, this.env.${ADMIN_JS_EXEC_DO_NAMESPACES_BINDING});
+    const runtimeBridge = this.env.${ADMIN_JS_EXEC_RUNTIME_BRIDGE_BINDING};
+    const runtime = Object.freeze(await runtimeBridge.runtime());
+    const input = deepFreeze(this.env.${ADMIN_JS_EXEC_INPUT_BINDING} ?? {});
+    const facades = createRuntimeFacades(runtimeBridge, runtime);
+    const assert = createAssert();
+    const harness = createTestHarness();
+    const sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, Math.max(0, Number(milliseconds) || 0)));
     const text = (value) => output.push(stringifyOutput(value));
     const startedAt = Date.now();
-    const result = await runUserCode(DO, text);
+    const result = await runUserCode(
+      DO,
+      facades.env,
+      facades.ENV,
+      facades.SELF,
+      facades.ADMIN,
+      facades.fetch,
+      assert,
+      harness.test,
+      runtime,
+      input,
+      sleep,
+      text,
+    );
     return {
       result: serializeResult(result),
       output,
       namespaces: DO.namespaces,
+      runtime,
+      tests: harness.report(),
       duration_ms: Date.now() - startedAt,
     };
   }
@@ -1003,8 +1646,10 @@ function truncateAdminJsExecResult(result: unknown, maxCharacters: number): unkn
 }
 
 async function adminJsExecTool(
+  req: Request,
   ctx: ExecutionContext,
   env: Env,
+  grant: AdminMcpTokenGrantRecord,
   args: Record<string, unknown>,
 ) {
   const code = stringArg(args, "code");
@@ -1038,6 +1683,14 @@ async function adminJsExecTool(
   if (!doBridge.namespaces.length) {
     return toolText({ error: "No Durable Object namespace bindings are available" }, true);
   }
+  const runtimeBridge = createAdminJsExecRuntimeBridge(
+    ctx,
+    grant,
+    getBaseUrl(req),
+  );
+  if (!runtimeBridge) {
+    return toolText({ error: "AdminJsExecRuntimeBinding export is not available" }, true);
+  }
 
   const workerCode: WorkerLoaderWorkerCode = {
     compatibilityDate: ADMIN_JS_EXEC_COMPATIBILITY_DATE,
@@ -1048,6 +1701,8 @@ async function adminJsExecTool(
     env: {
       [ADMIN_JS_EXEC_DO_BRIDGE_BINDING]: doBridge.binding,
       [ADMIN_JS_EXEC_DO_NAMESPACES_BINDING]: doBridge.namespaces,
+      [ADMIN_JS_EXEC_RUNTIME_BRIDGE_BINDING]: runtimeBridge,
+      [ADMIN_JS_EXEC_INPUT_BINDING]: args.input ?? {},
     },
     globalOutbound: null,
   };
@@ -1061,6 +1716,8 @@ async function adminJsExecTool(
         result?: unknown;
         output?: unknown;
         namespaces?: unknown;
+        runtime?: unknown;
+        tests?: { total?: unknown; passed?: unknown; failed?: unknown };
         duration_ms?: unknown;
       }>;
     };
@@ -1074,18 +1731,64 @@ async function adminJsExecTool(
         );
       }),
     ]);
+    const failedTests =
+      typeof result.tests?.failed === "number" ? result.tests.failed : 0;
+    const success = failedTests === 0;
+    recordObservabilityEvent(env, {
+      event: "admin_js_exec",
+      component: "admin-mcp",
+      operation: "execute",
+      status: success ? "success" : "test_failure",
+      route: "/api/admin/mcp",
+      method: "POST",
+      path: "/api/admin/mcp",
+      userId: grant.user_id,
+      requestId: req.headers.get("cf-ray") || null,
+      durationMs:
+        typeof result.duration_ms === "number" ? result.duration_ms : null,
+      count:
+        typeof result.tests?.total === "number" ? result.tests.total : null,
+      size: code.length,
+      sampleIndex: grant.user_id,
+    });
+    const runtimeResult = isRecord(result.runtime) ? result.runtime : {};
+    const runtimeBindings = Array.isArray(runtimeResult.bindings)
+      ? runtimeResult.bindings
+      : [];
     return toolText(truncateAdminJsExecResult({
-      success: true,
+      success,
       duration_ms: result.duration_ms,
       namespaces: result.namespaces,
+      runtime: {
+        baseUrl: runtimeResult.baseUrl,
+        adminUserId: runtimeResult.adminUserId,
+        stripeMode: runtimeResult.stripeMode,
+        bindingCount: runtimeBindings.length,
+      },
+      tests: result.tests,
       output: result.output,
       result: result.result,
-    }, maxOutputCharacters));
+    }, maxOutputCharacters), !success);
   } catch (error) {
+    recordErrorEvent(env, {
+      event: "admin_js_exec",
+      component: "admin-mcp",
+      operation: "execute",
+      status: "error",
+      route: "/api/admin/mcp",
+      method: "POST",
+      path: "/api/admin/mcp",
+      userId: grant.user_id,
+      requestId: req.headers.get("cf-ray") || null,
+      size: code.length,
+      sampleIndex: grant.user_id,
+      error,
+    });
+    const details = errorToObservabilityFields(error);
     return toolText(
       {
-        error: error instanceof Error ? error.message : "JavaScript execution failed",
-        stack: error instanceof Error ? error.stack : undefined,
+        error: details.errorMessage || "JavaScript execution failed",
+        stack: details.errorStack || undefined,
       },
       true,
     );
@@ -1593,7 +2296,7 @@ async function callTool(
     });
   }
   if (name === TOOL_ADMIN_JS_EXEC) {
-    return adminJsExecTool(ctx, env, input);
+    return adminJsExecTool(req, ctx, env, grant, input);
   }
   if (name === TOOL_ADMIN_API_REQUEST) {
     return fetchAdminApiTool(req, env, grant, args);

@@ -1,0 +1,57 @@
+// JavaScript function body for admin_js_exec.
+// Required input: { org_id: string }
+// This suite is intentionally read-only. It verifies the deployed staging
+// environment and the paid-seat projection without manufacturing local state.
+
+await test("running against Stripe test mode", () => {
+  assert.equal(runtime.stripeMode, "test");
+});
+
+await test("admin API is healthy", async () => {
+  const response = await ADMIN.fetch("/api/admin/stats");
+  assert.equal(response.status, 200);
+  const stats = await response.json();
+  assert.ok(stats.total_users >= 1);
+  assert.ok(stats.total_orgs >= 1);
+});
+
+await test("target organization exists", async () => {
+  assert.ok(input.org_id, "input.org_id is required");
+  const org = await DO.call("ORG", input.org_id, "getInfo");
+  assert.ok(org, `Organization not found: ${input.org_id}`);
+  assert.equal(org.id, input.org_id);
+});
+
+await test("paid seat projection covers occupied seats", async () => {
+  const org = DO.stub("ORG", input.org_id);
+  const [info, memberCount, invitations] = await Promise.all([
+    org.getInfo(),
+    org.getMemberCount(),
+    org.listInvitations(),
+  ]);
+  const activeInvitations = invitations.filter(
+    (invitation) => invitation.expires_at > Date.now(),
+  ).length;
+  const occupiedSeats = memberCount + activeInvitations;
+  const guardedStatuses = new Set(["active", "trialing", "past_due"]);
+
+  if (guardedStatuses.has(info.billing_status)) {
+    assert.ok(
+      info.billing_seat_count >= occupiedSeats,
+      `Projected ${info.billing_seat_count} seats for ${occupiedSeats} occupied seats`,
+    );
+  }
+
+  text({
+    org_id: info.id,
+    billing_status: info.billing_status,
+    billing_plan: info.billing_plan,
+    billing_seat_count: info.billing_seat_count,
+    occupied_seats: occupiedSeats,
+  });
+});
+
+return {
+  environment: runtime.baseUrl,
+  org_id: input.org_id,
+};

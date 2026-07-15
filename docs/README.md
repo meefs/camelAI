@@ -15,6 +15,7 @@ conventions. Active cross-cutting architecture work also lives in
 | [cloudflare-access-auth.md](./cloudflare-access-auth.md) | Cloudflare Access reverse-proxy auth |
 | [admin-api-reference.md](./admin-api-reference.md) | Admin REST API reference |
 | [admin-api-migration-guide.md](./admin-api-migration-guide.md) | Admin API migration notes |
+| [admin-js-exec.md](./admin-js-exec.md) | Generic remote JavaScript console for staging and production |
 | [chat-transcript-simplification.md](./chat-transcript-simplification.md) | Chat transcript / UIMessage invariants |
 | [shadcn-components.md](./shadcn-components.md) | shadcn component catalog notes |
 | [pi-system-prompt.md](./pi-system-prompt.md) | Generated / exported Pi system prompt snapshot |
@@ -48,3 +49,6 @@ One-off migration helpers that are not part of the normal workflow:
 
 Keep for break-glass re-runs; they are intentionally not wired into
 `package.json` scripts.
+
+Reusable remote-console smoke suites live under `scripts/admin-js-exec/`; see
+[admin-js-exec.md](./admin-js-exec.md) for invocation and runtime globals.

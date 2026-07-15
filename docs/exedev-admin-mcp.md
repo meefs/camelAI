@@ -10,8 +10,13 @@ Useful read-only commands:
 
 ```bash
 bunx mcporter list admin-prod --brief --timeout 30000
-bunx mcporter call admin-prod.admin_js_exec code:='return { ok: true }' timeout_ms=10000 max_output_characters=30000
+bunx mcporter call admin-prod.admin_js_exec code:='return { runtime, bindings: ENV.list() }' timeout_ms=10000 max_output_characters=30000
 ```
+
+`admin_js_exec` is a generic remote Worker console with Durable Object,
+binding, same-worker/admin/outbound fetch, assertion, and integration-test
+helpers. See [admin-js-exec.md](./admin-js-exec.md) before using it for staging
+or production mutations.
 
 Keep mcporter calls serial. During OAuth and tool calls, mcporter binds local port `3334`; parallel invocations can collide and produce "Port 3334 unbound" or callback failures.
 

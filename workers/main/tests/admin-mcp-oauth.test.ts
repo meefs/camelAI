@@ -615,6 +615,170 @@ describe("admin MCP OAuth resource", () => {
     });
   });
 
+  it("runs reusable integration tests through generic bindings and the admin API", async () => {
+    const { userId } = await createUser(
+      testEnv,
+      `admin-mcp-console-${crypto.randomUUID()}@example.com`,
+      "password123",
+      "Console Admin",
+    );
+    await createOrg(testEnv, "MCP Console Admin Org", userId);
+    await updateUserProfile(testEnv, userId, { is_superuser: true });
+    const token = await issueAdminMcpToken(userId);
+    const key = `admin-console-${crypto.randomUUID()}`;
+
+    const response = await SELF.fetch(
+      mcpRequest(
+        {
+          jsonrpc: "2.0",
+          id: 1,
+          method: "tools/call",
+          params: {
+            name: "admin_js_exec",
+            arguments: {
+              input: { key },
+              code: `
+                await test("KV binding round trip", async () => {
+                  await env.APP_KV.put(input.key, "console-value");
+                  assert.equal(await env.APP_KV.get(input.key), "console-value");
+                  await env.APP_KV.delete(input.key);
+                });
+                await test("authenticated admin API", async () => {
+                  const response = await ADMIN.fetch("/api/admin/stats");
+                  assert.equal(response.status, 200);
+                  const stats = await response.json();
+                  assert.ok(stats.total_users >= 1);
+                });
+                await test("chained binding APIs", async () => {
+                  const row = await env.APP_DB.chain([
+                    { method: "prepare", args: ["SELECT 1 AS value"] },
+                    { method: "first" },
+                  ]);
+                  assert.deepEqual(row, { value: 1 });
+                });
+                await test("R2 object body chains", async () => {
+                  await env.R2_BUCKET.put(input.key, "r2-console-value");
+                  const value = await env.R2_BUCKET.chain([
+                    { method: "get", args: [input.key] },
+                    { method: "text" },
+                  ]);
+                  assert.equal(value, "r2-console-value");
+                  await env.R2_BUCKET.delete(input.key);
+                });
+                await test("fetch-capable bindings", async () => {
+                  const response = await env.ASSETS.fetch("/__admin-console-missing__");
+                  assert.ok(response.status >= 200);
+                  assert.ok(response.url.startsWith("https://example.com/"));
+                });
+                await test("primitive secrets stay protected", async () => {
+                  const descriptor = ENV.describe("TOKEN_SIGNING_SECRET");
+                  assert.equal(descriptor.kind, "value");
+                  assert.equal(descriptor.accessible, false);
+                  await assert.rejects(
+                    () => env.TOKEN_SIGNING_SECRET.get(),
+                    /protected primitive value/,
+                  );
+                });
+                return {
+                  baseUrl: runtime.baseUrl,
+                  kvKind: ENV.describe("APP_KV").kind,
+                  hasLoader: ENV.has("CODE_MODE_LOADER"),
+                  secretDescriptor: ENV.describe("TOKEN_SIGNING_SECRET"),
+                };
+              `,
+            },
+          },
+        },
+        token,
+      ),
+    );
+
+    expect(response.status).toBe(200);
+    const rpc = (await response.json()) as any;
+    const payload = parseToolText(rpc);
+    expect(rpc.result.isError).toBeUndefined();
+    expect(payload).toMatchObject({
+      success: true,
+      result: {
+        baseUrl: "https://example.com",
+        kvKind: "kv_namespace",
+        hasLoader: false,
+        secretDescriptor: {
+          name: "TOKEN_SIGNING_SECRET",
+          kind: "value",
+          accessible: false,
+          methods: [],
+        },
+      },
+      tests: {
+        total: 6,
+        passed: 6,
+        failed: 0,
+      },
+      runtime: {
+        baseUrl: "https://example.com",
+        adminUserId: userId,
+        bindingCount: expect.any(Number),
+      },
+    });
+    expect(payload.runtime.bindingCount).toBeGreaterThan(0);
+  });
+
+  it("returns a failing tool result when a console test fails", async () => {
+    const { userId } = await createUser(
+      testEnv,
+      `admin-mcp-console-failure-${crypto.randomUUID()}@example.com`,
+      "password123",
+      "Console Failure Admin",
+    );
+    await createOrg(testEnv, "MCP Console Failure Org", userId);
+    await updateUserProfile(testEnv, userId, { is_superuser: true });
+    const token = await issueAdminMcpToken(userId);
+
+    const response = await SELF.fetch(
+      mcpRequest(
+        {
+          jsonrpc: "2.0",
+          id: 1,
+          method: "tools/call",
+          params: {
+            name: "admin_js_exec",
+            arguments: {
+              code: `
+                await test("intentional failure", () => {
+                  assert.equal(1, 2);
+                });
+                return "finished";
+              `,
+            },
+          },
+        },
+        token,
+      ),
+    );
+
+    expect(response.status).toBe(200);
+    const rpc = (await response.json()) as any;
+    const payload = parseToolText(rpc);
+    expect(rpc.result.isError).toBe(true);
+    expect(payload).toMatchObject({
+      success: false,
+      result: "finished",
+      tests: {
+        total: 1,
+        passed: 0,
+        failed: 1,
+        cases: [
+          expect.objectContaining({
+            name: "intentional failure",
+            status: "failed",
+            error: expect.stringContaining("Expected 1 to equal 2"),
+          }),
+        ],
+      },
+    });
+  });
+
   it("grants org credits through MCP with a grant ledger row", async () => {
     const { userId } = await createUser(
       testEnv,

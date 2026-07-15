@@ -60,7 +60,10 @@ import { requireChatWebSocketAccess } from './helpers/auth.js';
 
 // Re-exports for wrangler
 export { ChiridionMcp } from './mcp-handler.js';
-export { AdminJsExecDoBinding } from './routes/admin-mcp.js';
+export {
+  AdminJsExecDoBinding,
+  AdminJsExecRuntimeBinding,
+} from './routes/admin-mcp.js';
 export { ChatThreadDO, CodeModeToolsBinding } from './chat-thread-do.js';
 export { UserDO, OrgDO } from './auth.js';
 export { OrgSlugDO } from './org-slug-registry.js';
