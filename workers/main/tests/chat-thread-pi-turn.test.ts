@@ -2622,9 +2622,9 @@ describe('ChatThreadDO Pi turn handling', () => {
     const model = await ChatThreadDO.prototype['resolvePiModel'].call(
       fake,
       { orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1' },
-      { CHIRIDION_CODEX_MODEL: 'gpt-5.5' },
+      { CHIRIDION_CODEX_MODEL: 'gpt-5.6-terra' },
       vi.fn(() => ({
-        id: 'gpt-5.5',
+        id: 'gpt-5.6-terra',
         provider: 'openai',
         api: 'openai-responses',
         baseUrl: 'https://api.openai.com/v1',
@@ -2632,7 +2632,7 @@ describe('ChatThreadDO Pi turn handling', () => {
     );
 
     expect(model.model).toMatchObject({
-      id: 'gpt-5.5',
+      id: 'gpt-5.6-terra',
       provider: 'custom',
       api: 'openai-completions',
       baseUrl: 'https://custom.example/v1',
@@ -6676,7 +6676,7 @@ describe('ChatThreadDO Pi turn handling', () => {
 
   it('builds and directly deploys a DO-backed project through the deploy action', async () => {
     const { fake, env, orgStub } = createProjectToolFake({ deploy: true });
-    const fetchMock = vi.fn(async () => Response.json({ success: true }, { status: 200 }));
+    const fetchMock = vi.fn(async () => Response.json({ success: true, result: { id: 'version-1' } }, { status: 200 }));
     vi.stubGlobal('fetch', fetchMock);
 
     const result = await CodeModeToolsBinding.prototype.callTool.call(fake, 'deploy_project', {
@@ -6719,7 +6719,7 @@ describe('ChatThreadDO Pi turn handling', () => {
   it('warns when a local deploy may need the local dispatcher worker for reachability', async () => {
     const { fake } = createProjectToolFake({ deploy: true });
     fake.env = { ...fake.env, WORKER_BASE_URL: 'https://snowboard-owl.exe.xyz:3001' };
-    vi.stubGlobal('fetch', vi.fn(async () => Response.json({ success: true }, { status: 200 })));
+    vi.stubGlobal('fetch', vi.fn(async () => Response.json({ success: true, result: { id: 'version-1' } }, { status: 200 })));
 
     const result = await CodeModeToolsBinding.prototype.callTool.call(fake, 'deploy_project', {
       project: 'Demo App',
@@ -6740,7 +6740,7 @@ describe('ChatThreadDO Pi turn handling', () => {
       LOCAL_APP_VANITY_DOMAIN: 'evals.camelai.app',
       LOCAL_APP_IFRAME_DOMAIN: 'apps.evals.camelai.dev',
     };
-    const fetchMock = vi.fn(async () => Response.json({ success: true }, { status: 200 }));
+    const fetchMock = vi.fn(async () => Response.json({ success: true, result: { id: 'version-1' } }, { status: 200 }));
     vi.stubGlobal('fetch', fetchMock);
 
     const result = await CodeModeToolsBinding.prototype.callTool.call(fake, 'deploy_project', {

@@ -62,10 +62,10 @@ describe('web model provider wiring', () => {
       'Explicit Codex thread',
       userId,
       'Reply with pong',
-      'gpt-5.5'
+      'gpt-5.6-terra'
     );
 
-    expect(codexThread.model).toBe('gpt-5.5');
+    expect(codexThread.model).toBe('gpt-5.6-terra');
   });
 
   it('does not require the proxy model-access flag for Claude defaults', async () => {

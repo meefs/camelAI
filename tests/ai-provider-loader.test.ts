@@ -3,11 +3,13 @@ import { encryptCredentials } from "@/lib/integration-crypto";
 
 const requireAuthContextMock = vi.fn();
 const requireOrgAdminMock = vi.fn();
+const getAuthEnvMock = vi.fn((env) => env);
 const getEnvMock = vi.fn();
 
 vi.mock("@/lib/auth.server", () => ({
   requireAuthContext: requireAuthContextMock,
   requireOrgAdmin: requireOrgAdminMock,
+  getAuthEnv: getAuthEnvMock,
 }));
 
 vi.mock("@/lib/cloudflare.server", () => ({
@@ -27,11 +29,12 @@ describe("AI provider settings loader", () => {
     const getLlmProviderConfig = vi.fn(async () => {
       throw new Error("unexpected provider config read");
     });
+    const getOpenAiSubscription = vi.fn(async () => null);
     getEnvMock.mockReturnValue({
       INTEGRATION_SECRET_KEY: integrationSecret,
       ORG: {
         idFromName: vi.fn((id: string) => id),
-        get: vi.fn(() => ({ getLlmProviderConfig })),
+        get: vi.fn(() => ({ getLlmProviderConfig, getOpenAiSubscription })),
       },
     });
     requireAuthContextMock.mockResolvedValue({

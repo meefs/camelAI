@@ -7,6 +7,10 @@ export default defineConfig({
   resolve: {
     alias: {
       '@': path.resolve(__dirname, './src'),
+      'virtual:db-query-runner-source': `${path.resolve(
+        __dirname,
+        './workers/main/db-query-sandbox-assets/runner/db-query-runner.mjs',
+      )}?raw`,
     },
   },
   test: {
