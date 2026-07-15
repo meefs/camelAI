@@ -153,6 +153,9 @@ function ChatGroupsProviderProbe({ threadId = "thread_1" }: { threadId?: string 
       <div data-testid="groups-loading">
         {isLoading ? "loading" : "loaded"}
       </div>
+      <div data-testid="group-order">
+        {groups.map((candidate) => candidate.id).join(",")}
+      </div>
     </>
   );
 }
@@ -697,17 +700,52 @@ describe("ChatGroupsList", () => {
     expect(document.querySelectorAll('[data-sidebar="menu-skeleton"]')).toHaveLength(5);
   });
 
+  it("renders rows in the order of the groups prop", () => {
+    const researchGroup: ChatGroupView = {
+      ...groupView,
+      id: "group_2",
+      name: "Research",
+    };
+    const renderList = (groups: ChatGroupView[]) => (
+      <SidebarProvider>
+        <ChatGroupsList
+          groups={groups}
+          activeGroupId={null}
+          onSelectGroup={vi.fn()}
+          onCloseGroup={vi.fn()}
+        />
+      </SidebarProvider>
+    );
+    const rowIds = () =>
+      Array.from(document.querySelectorAll("[data-flip-id]")).map((row) =>
+        row.getAttribute("data-flip-id"),
+      );
+
+    const { rerender } = render(renderList([groupView, researchGroup]));
+    expect(rowIds()).toEqual(["group_1", "group_2"]);
+
+    rerender(renderList([researchGroup, groupView]));
+    expect(rowIds()).toEqual(["group_2", "group_1"]);
+  });
+
   it("renders count-only idle group slots and status icons for active groups", () => {
-    const { rerender } = render(<ChatGroupRightSlot status="idle" count={3} />);
+    const { container, rerender } = render(
+      <ChatGroupRightSlot status="idle" count={3} />,
+    );
     expect(screen.getByLabelText("3 open chats")).toBeInTheDocument();
     expect(screen.queryByLabelText("Agent is working")).not.toBeInTheDocument();
 
     rerender(<ChatGroupRightSlot status="running" count={3} />);
-    expect(screen.getByLabelText("Agent is working")).toHaveAttribute("width", "16");
+    const loader = screen.getByLabelText("Agent is working");
+    expect(loader).toHaveAttribute("width", "16");
+    expect(loader.parentElement).toHaveAttribute("aria-hidden", "true");
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
     expect(screen.getByLabelText("3 open chats")).toHaveClass("tabular-nums");
 
     rerender(<ChatGroupRightSlot status="unread" count={3} />);
-    expect(screen.getByLabelText("Awaiting your review")).toHaveClass("bg-amber-500");
+    const unreadDot = container.querySelector(".bg-amber-500");
+    expect(unreadDot).toHaveAttribute("aria-hidden", "true");
+    expect(screen.queryByLabelText("Awaiting your review")).not.toBeInTheDocument();
     expect(screen.getByLabelText("3 open chats")).toBeInTheDocument();
     const rightSlot = screen.getByLabelText("3 open chats").parentElement;
     expect(rightSlot).not.toBeNull();
@@ -775,12 +813,16 @@ describe("ChatGroupsList", () => {
     );
     expect(collapsedChip).not.toBeNull();
     expect(collapsedChip?.querySelector("svg")).not.toBeNull();
-    const loader = within(container).getByLabelText("Agent is working");
-    expect(loader).toBeInTheDocument();
-    expect(loader.parentElement).toHaveClass("bg-background/65");
-    expect(loader.parentElement).not.toHaveClass("backdrop-blur-[2px]");
-    expect(loader.parentElement).toHaveClass("text-foreground");
-    expect(loader.parentElement).toHaveClass("rounded-[28%]");
+    const loader = container.querySelector('svg[aria-label="Agent is working"]');
+    expect(loader).not.toBeNull();
+    expect(loader?.closest('[aria-hidden="true"]')).not.toBeNull();
+    expect(within(container).getByRole("status")).toHaveTextContent(
+      "Agent is working",
+    );
+    expect(loader?.parentElement).toHaveClass("bg-background/65");
+    expect(loader?.parentElement).not.toHaveClass("backdrop-blur-[2px]");
+    expect(loader?.parentElement).toHaveClass("text-foreground");
+    expect(loader?.parentElement).toHaveClass("rounded-[28%]");
 
     rerender(
       <ChatGroupIcon
@@ -796,9 +838,57 @@ describe("ChatGroupsList", () => {
     );
     expect(collapsedChip).not.toBeNull();
     expect(collapsedChip?.querySelector("svg")).not.toBeNull();
-    expect(within(container).getByLabelText("Awaiting your review")).toHaveClass(
-      "ring-sidebar",
+    const unreadDot = container.querySelector(".ring-sidebar");
+    expect(unreadDot).not.toBeNull();
+    expect(unreadDot?.closest('[aria-hidden="true"]')).not.toBeNull();
+    expect(within(container).getByRole("status")).toHaveTextContent(
+      "Awaiting your review",
     );
+  });
+
+  it("exposes one semantic group status while keeping both visual layers decorative", () => {
+    const runningGroup: ChatGroupView = {
+      ...groupView,
+      status: "running",
+    };
+    const renderList = (group: ChatGroupView) => (
+      <SidebarProvider>
+        <ChatGroupsList
+          groups={[group]}
+          activeGroupId={null}
+          onSelectGroup={vi.fn()}
+          onCloseGroup={vi.fn()}
+        />
+      </SidebarProvider>
+    );
+    const { rerender } = render(renderList(runningGroup));
+
+    let row = screen.getByRole("button", { name: "Launch" });
+    let statuses = within(row).getAllByRole("status");
+    expect(statuses).toHaveLength(1);
+    expect(statuses[0]).toHaveTextContent("Agent is working");
+    const loaders = row.querySelectorAll('svg[role="status"]');
+    expect(loaders).toHaveLength(2);
+    for (const loader of loaders) {
+      expect(loader.closest('[aria-hidden="true"]')).not.toBeNull();
+    }
+
+    rerender(renderList({ ...runningGroup, status: "unread" }));
+
+    row = screen.getByRole("button", { name: "Launch" });
+    statuses = within(row).getAllByRole("status");
+    expect(statuses).toHaveLength(1);
+    expect(statuses[0]).toHaveTextContent("Awaiting your review");
+    const unreadDots = row.querySelectorAll(".bg-amber-500");
+    expect(unreadDots).toHaveLength(2);
+    for (const unreadDot of unreadDots) {
+      expect(unreadDot.closest('[aria-hidden="true"]')).not.toBeNull();
+    }
+
+    rerender(renderList({ ...runningGroup, status: "idle" }));
+
+    row = screen.getByRole("button", { name: "Launch" });
+    expect(within(row).queryByRole("status")).not.toBeInTheDocument();
   });
 
   it("selects and opens close confirmation for a single-chat group by default", () => {
@@ -1599,6 +1689,95 @@ describe("reconcileGroupAvatarPatchesWithGroups", () => {
 });
 
 describe("ChatGroupsProvider summary patches", () => {
+  it("drops unconfirmed optimistic recency on the next loader snapshot", async () => {
+    const newerGroup: ChatGroupView = {
+      ...groupView,
+      id: "group_newer",
+      name: "Newer",
+      updated_at: 200,
+      open_thread_ids: ["thread_newer"],
+      open_threads: [
+        makeThreadSummary({
+          id: "thread_newer",
+          title: "Newer thread",
+          updated_at: 200,
+          last_active_at: 200,
+        }),
+      ],
+    };
+    const optimisticGroup: ChatGroupView = {
+      ...groupView,
+      id: "group_optimistic",
+      name: "Optimistic",
+      updated_at: 100,
+      open_thread_ids: ["thread_optimistic"],
+      open_threads: [
+        makeThreadSummary({
+          id: "thread_optimistic",
+          title: "Optimistic thread",
+          updated_at: 100,
+          last_active_at: 100,
+          latest_user_message_at: 100,
+          last_user_message_at: null,
+        }),
+      ],
+    };
+    let loaderState = authLoaderState([newerGroup, optimisticGroup]);
+    const loader = vi.fn(() => loaderState);
+    const router = createMemoryRouter(
+      [
+        {
+          id: "routes/_app",
+          path: "/",
+          loader,
+          element: (
+            <ChatGroupsProvider>
+              <ChatGroupsProviderProbe />
+            </ChatGroupsProvider>
+          ),
+        },
+      ],
+      { initialEntries: ["/"] },
+    );
+
+    render(<RouterProvider router={router} />);
+    expect(await screen.findByTestId("group-order")).toHaveTextContent(
+      "group_newer,group_optimistic",
+    );
+
+    act(() => {
+      window.dispatchEvent(
+        new CustomEvent("camelai:thread-status", {
+          detail: {
+            threadId: "thread_optimistic",
+            status: "running",
+            latestUserMessage: "optimistic prompt",
+            latestUserMessageAt: 300,
+          },
+        }),
+      );
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId("group-order")).toHaveTextContent(
+        "group_optimistic,group_newer",
+      );
+    });
+
+    loaderState = authLoaderState([
+      { ...newerGroup },
+      { ...optimisticGroup },
+    ]);
+    act(() => {
+      void router.revalidate();
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("group-order")).toHaveTextContent(
+        "group_newer,group_optimistic",
+      );
+    });
+  });
+
   it("does not suspend children while app chat groups are deferred", async () => {
     let resolveGroups: (groups: ChatGroupView[]) => void = () => {};
     const deferredGroups = new Promise<ChatGroupView[]>((resolve) => {
@@ -2353,6 +2532,7 @@ describe("applyLiveRunningStatuses", () => {
               title: "API plan",
               updated_at: 10,
               last_active_at: 10,
+              last_user_message_at: 10,
               status: "idle",
               latest_user_message: "stale prompt",
             }),
@@ -2378,6 +2558,7 @@ describe("applyLiveRunningStatuses", () => {
     expect(group.open_threads[0].status).toBe("running");
     expect(group.open_threads[0].latest_user_message).toBe("fresh prompt");
     expect(group.open_threads[0].latest_user_message_at).toBe(20);
+    expect(group.open_threads[0].last_user_message_at).toBe(10);
   });
 
   it("overlays first user messages from live metadata without dropping latest message data", () => {

@@ -81,7 +81,12 @@ describe("chat group server loading", () => {
       listThreadViews: vi.fn(async () => ({})),
       pruneMissingThreads: vi.fn(async () => undefined),
     };
-    getThreadsByIdsMock.mockResolvedValue([makeThread("thread_1")]);
+    getThreadsByIdsMock.mockResolvedValue([
+      {
+        ...makeThread("thread_1"),
+        last_user_message: "legacy prompt",
+      },
+    ]);
     getEnvMock.mockReturnValue({
       AI: {
         run: vi.fn(),
@@ -116,6 +121,8 @@ describe("chat group server loading", () => {
     expect(result).toHaveLength(1);
     expect(result[0].avatar.status).toBe("default");
     expect(result[0].open_threads[0].upload_ref_paths).toBeUndefined();
+    expect(result[0].open_threads[0].latest_user_message_at).toBe(200);
+    expect(result[0].open_threads[0].last_user_message_at).toBeNull();
     expect(drainChatGroupAvatarMigrationMock).toHaveBeenCalledWith(
       expect.objectContaining({ AI: expect.any(Object) }),
       userStub,
@@ -181,5 +188,6 @@ describe("chat group server loading", () => {
     ]);
     expect(thread.latest_user_message).toHaveLength(500);
     expect(thread.latest_user_message).not.toContain("uploads/report");
+    expect(thread.last_user_message_at).toBe(150);
   });
 });

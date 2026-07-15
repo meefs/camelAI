@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { X } from "lucide-react";
 import type { ChatGroupThreadSummary, ChatGroupView, ThreadStatus } from "@/types";
 import { ChatGroupAvatar } from "@/components/avatar/chat-group-avatar";
@@ -29,6 +29,7 @@ import {
   SidebarMenuItem,
   SidebarMenuSkeleton,
 } from "@/components/ui/sidebar";
+import { useFlipList } from "@/hooks/use-flip-list";
 import { cn } from "@/lib/utils";
 
 const THREAD_DRAG_MIME = "application/x-camelai-thread-id";
@@ -82,14 +83,14 @@ export function ChatGroupRightSlot({
 }) {
   const countLabel = `${count} open ${count === 1 ? "chat" : "chats"}`;
   return (
-    <span className="ml-auto flex shrink-0 items-center gap-1.5 text-xs tabular-nums text-muted-foreground group-data-[collapsible=icon]:hidden">
+    <span className="ml-auto flex shrink-0 items-center gap-1.5 text-xs tabular-nums text-muted-foreground starting:opacity-0 transition-[display,opacity] transition-discrete duration-100 ease-linear group-data-[collapsible=icon]:hidden group-data-[collapsible=icon]:opacity-0 motion-reduce:transition-none">
       {status === "running" ? (
-        <span className="text-muted-foreground">
+        <span aria-hidden className="text-muted-foreground">
           <CamelLoader size={16} ariaLabel="Agent is working" />
         </span>
       ) : status === "unread" ? (
         <span
-          aria-label="Awaiting your review"
+          aria-hidden
           className="size-2 rounded-full bg-amber-500"
         />
       ) : null}
@@ -106,15 +107,23 @@ export function ChatGroupRightSlot({
 export function ChatGroupIcon({ group }: { group: ChatGroupView }) {
   const isRunning = group.status === "running";
   const isUnread = group.status === "unread";
+  const statusLabel = isRunning
+    ? "Agent is working"
+    : isUnread
+      ? "Awaiting your review"
+      : null;
+  // Both avatar sizes stay mounted, stacked in one grid cell, so the collapse
+  // toggle is a pure-opacity cross-fade while the wrapper morphs 20px -> 24px
+  // on the sidebar shell's 200ms/linear timeline.
   return (
-    <>
+    <span className="relative grid size-5 shrink-0 grid-cols-[100%] grid-rows-[100%] place-items-center transition-[width,height] duration-200 ease-linear group-data-[collapsible=icon]:size-6 motion-reduce:transition-none">
       <ChatGroupAvatar
         avatar={group.avatar}
         fallbackName={group.name}
         size="sm"
-        className="group-data-[collapsible=icon]:hidden"
+        className="col-start-1 row-start-1 transition-opacity duration-100 ease-linear group-data-[collapsible=icon]:opacity-0 motion-reduce:transition-none"
       />
-      <span className="relative hidden size-6 group-data-[collapsible=icon]:block">
+      <span aria-hidden className="col-start-1 row-start-1 relative size-6 opacity-0 transition-opacity duration-100 ease-linear group-data-[collapsible=icon]:opacity-100 group-data-[collapsible=icon]:delay-100 motion-reduce:transition-none">
         <ChatGroupAvatar
           avatar={group.avatar}
           fallbackName={group.name}
@@ -126,12 +135,16 @@ export function ChatGroupIcon({ group }: { group: ChatGroupView }) {
           </span>
         ) : isUnread ? (
           <span
-            aria-label="Awaiting your review"
             className="absolute -right-0.5 -top-0.5 size-2.5 rounded-full bg-amber-500 ring-2 ring-sidebar"
           />
         ) : null}
       </span>
-    </>
+      {statusLabel ? (
+        <span role="status" className="sr-only">
+          {statusLabel}
+        </span>
+      ) : null}
+    </span>
   );
 }
 
@@ -162,6 +175,8 @@ export function ChatGroupsList({
   const [rememberSuppression, setRememberSuppression] = useState(false);
   const [dragOverGroupId, setDragOverGroupId] = useState<string | null>(null);
   const [openHoverGroupId, setOpenHoverGroupId] = useState<string | null>(null);
+  const menuRef = useRef<HTMLUListElement | null>(null);
+  useFlipList(menuRef, groups.map((group) => group.id).join("\n"));
 
   if (isLoading && groups.length === 0) {
     return (
@@ -188,11 +203,11 @@ export function ChatGroupsList({
 
   return (
     <>
-      <SidebarMenu>
+      <SidebarMenu ref={menuRef}>
         {groups.map((group) => {
           const isActive = group.id === activeGroupId;
           return (
-            <SidebarMenuItem key={group.id}>
+            <SidebarMenuItem key={group.id} data-flip-id={group.id}>
               <HoverCard
                 open={openHoverGroupId === group.id}
                 onOpenChange={(open) => setOpenHoverGroupId(open ? group.id : null)}
@@ -230,7 +245,7 @@ export function ChatGroupsList({
                     }}
                   >
                     <ChatGroupIcon group={group} />
-                    <span className="min-w-0 flex-1 truncate text-left group-data-[collapsible=icon]:hidden">
+                    <span className="min-w-0 flex-1 truncate text-left starting:opacity-0 transition-[display,opacity] transition-discrete duration-100 ease-linear group-data-[collapsible=icon]:hidden group-data-[collapsible=icon]:opacity-0 motion-reduce:transition-none">
                       {group.name}
                     </span>
                     <ChatGroupRightSlot

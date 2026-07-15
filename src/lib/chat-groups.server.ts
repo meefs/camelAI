@@ -77,6 +77,7 @@ function threadToGroupThreadSummary(
     first_user_message: firstUserMessage,
     latest_user_message: latestUserMessage,
     latest_user_message_at: latestUserMessageAt,
+    last_user_message_at: thread.last_user_message_at ?? null,
     running_activity_text:
       status === "running" ? latestUserMessage : null,
     running_activity_at: status === "running" ? (latestUserMessageAt ?? now) : null,
@@ -230,6 +231,7 @@ export async function hydrateChatGroups(
       first_user_message: firstUserMessage,
       latest_user_message: latestUserMessage,
       latest_user_message_at: latestUserMessageAt,
+      last_user_message_at: thread.last_user_message_at ?? null,
       running_activity_text: runningActivityText,
       running_activity_at: runningThreadStatus?.latestActivityAt ?? null,
       last_assistant_completed_at: completedAt,

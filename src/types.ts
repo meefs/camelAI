@@ -73,6 +73,8 @@ export interface ChatGroupThreadSummary {
   first_user_message: string | null;
   latest_user_message: string | null;
   latest_user_message_at: number | null;
+  /** Canonical user-send timestamp; never synthesized from thread.updated_at. */
+  last_user_message_at?: number | null;
   running_activity_text: string | null;
   running_activity_at: number | null;
   last_assistant_completed_at: number | null;

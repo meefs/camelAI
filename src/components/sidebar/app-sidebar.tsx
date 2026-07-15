@@ -25,10 +25,26 @@ import {
   SidebarMenuButton,
   SidebarMenuItem,
   SidebarRail,
-  SidebarSeparator,
 } from "@/components/ui/sidebar"
 
 type AppSidebarProps = React.ComponentProps<typeof Sidebar>;
+
+// Collapsed-rail section separator. A constant-height in-flow hairline: it
+// occupies the same 1px in both sidebar states, so toggling the rail never
+// shifts content — only opacity animates. Sitting between the two sections'
+// 4px paddings, it gets equal space above and below. Fixed w-8 (the collapsed
+// icon-column width) so it never paints wide mid-collapse. shrink-0 is
+// load-bearing: SidebarContent is a flex column, and when it overflows, a
+// shrinkable empty div's min-content height is 0 — the line would vanish.
+// Expanded mode still delineates sections with the group headers.
+function CollapsedRailSeparator() {
+  return (
+    <div
+      aria-hidden
+      className="ml-2 h-px w-8 shrink-0 bg-sidebar-border opacity-0 transition-opacity duration-150 ease-linear group-data-[collapsible=icon]:opacity-100 group-data-[collapsible=icon]:delay-100 motion-reduce:transition-none"
+    />
+  );
+}
 
 export function AppSidebar(props: AppSidebarProps) {
   const [helpOpen, setHelpOpen] = useState(false)
@@ -114,10 +130,7 @@ export function AppSidebar(props: AppSidebarProps) {
             </SidebarMenuItem>
           </SidebarMenu>
         </SidebarGroup>
-        {/* Section separators are only for the collapsed icon rail; expanded mode
-            already delineates sections with the group headers. w-auto overrides
-            the base Separator's w-full so the line matches the icon button width. */}
-        <SidebarSeparator className="my-1 hidden group-data-[collapsible=icon]:block data-[orientation=horizontal]:w-auto" />
+        <CollapsedRailSeparator />
         <SidebarGroup>
           <SidebarGroupLabel>Workspace</SidebarGroupLabel>
           <SidebarMenu>
@@ -155,10 +168,7 @@ export function AppSidebar(props: AppSidebarProps) {
             </SidebarMenuItem>
           </SidebarMenu>
         </SidebarGroup>
-        {/* Section separators are only for the collapsed icon rail; expanded mode
-            already delineates sections with the group headers. w-auto overrides
-            the base Separator's w-full so the line matches the icon button width. */}
-        <SidebarSeparator className="my-1 hidden group-data-[collapsible=icon]:block data-[orientation=horizontal]:w-auto" />
+        {(groups.length > 0 || isLoading) && <CollapsedRailSeparator />}
         <SidebarGroup>
           <SidebarGroupLabel>Chat Groups</SidebarGroupLabel>
           <ChatGroupsList

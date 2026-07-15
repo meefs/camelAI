@@ -69,6 +69,11 @@ export type ThreadSummaryPatch = Partial<
   updatedAt: number;
 };
 
+export type OptimisticUserMessageRecencyPatch = {
+  sentAt: number;
+  snapshotVersion: number;
+};
+
 export type GroupAvatarPatch = {
   avatar: ChatGroupAvatar;
   updatedAt: number;
@@ -280,6 +285,59 @@ export function mergeActiveChatGroup(
   return next;
 }
 
+/**
+ * Effective recency for display ordering. Must only run AHEAD of the server's
+ * `chat_groups.updated_at` for events that also bump the server key — a user
+ * message landing bumps `updated_at` via touchGroupForThread, and the same
+ * send adds a snapshot-bounded optimistic recency overlay on the client.
+ * `latest_user_message_at` is intentionally not used because legacy summaries
+ * may synthesize it from thread.updated_at. Closed threads are included because
+ * Chat History can open one directly without reopening its group membership.
+ * Anything broader (e.g. thread.last_active_at, which also moves on assistant
+ * activity) would make the client order disagree with the next revalidation
+ * and bounce rows.
+ */
+export function getChatGroupRecency(
+  group: ChatGroupView,
+  optimisticPatches: ReadonlyMap<
+    string,
+    OptimisticUserMessageRecencyPatch
+  > = new Map(),
+): number {
+  let recency = group.updated_at;
+  for (const thread of [...group.open_threads, ...group.closed_threads]) {
+    const sentAt = Math.max(
+      thread.last_user_message_at ?? 0,
+      optimisticPatches.get(thread.id)?.sentAt ?? 0,
+    );
+    if (sentAt > recency) recency = sentAt;
+  }
+  return recency;
+}
+
+export function orderChatGroupsForDisplay(
+  groups: ChatGroupView[],
+  pinnedFirstGroupId: string | null = null,
+  optimisticPatches: ReadonlyMap<
+    string,
+    OptimisticUserMessageRecencyPatch
+  > = new Map(),
+): ChatGroupView[] {
+  const sorted = [...groups].sort(
+    (a, b) =>
+      getChatGroupRecency(b, optimisticPatches) -
+      getChatGroupRecency(a, optimisticPatches),
+  );
+  if (pinnedFirstGroupId !== null) {
+    const index = sorted.findIndex((group) => group.id === pinnedFirstGroupId);
+    if (index > 0) {
+      const [pinned] = sorted.splice(index, 1);
+      sorted.unshift(pinned);
+    }
+  }
+  return sorted;
+}
+
 function mergeThreadSummaries(
   activeThreads: ChatGroupThreadSummary[],
   existingThreads: ChatGroupThreadSummary[],
@@ -424,6 +482,22 @@ export function reconcileThreadSummaryPatchesWithGroups(
   }
 
   return next ?? (patches as Map<string, ThreadSummaryPatch>);
+}
+
+export function reconcileOptimisticUserMessageRecencyPatches(
+  patches: ReadonlyMap<string, OptimisticUserMessageRecencyPatch>,
+  snapshotVersion: number,
+): Map<string, OptimisticUserMessageRecencyPatch> {
+  if (patches.size === 0) {
+    return patches as Map<string, OptimisticUserMessageRecencyPatch>;
+  }
+  let next: Map<string, OptimisticUserMessageRecencyPatch> | null = null;
+  for (const [threadId, patch] of patches) {
+    if (snapshotVersion <= patch.snapshotVersion) continue;
+    next ??= new Map(patches);
+    next.delete(threadId);
+  }
+  return next ?? (patches as Map<string, OptimisticUserMessageRecencyPatch>);
 }
 
 function isFinalChatGroupAvatarStatus(
@@ -873,6 +947,8 @@ export function ChatGroupsProvider({
   const [localThreadSummaryPatches, setLocalThreadSummaryPatches] = useState<
     Map<string, ThreadSummaryPatch>
   >(() => new Map());
+  const [optimisticUserMessageRecencyPatches, setOptimisticUserMessageRecencyPatches] =
+    useState<Map<string, OptimisticUserMessageRecencyPatch>>(() => new Map());
   const [localGroupAvatarPatches, setLocalGroupAvatarPatches] = useState<
     Map<string, GroupAvatarPatch>
   >(() => new Map());
@@ -923,6 +999,12 @@ export function ChatGroupsProvider({
       reconcileThreadSummaryPatchesWithGroups(
         current,
         resolvedChatGroups ?? undefined,
+      ),
+    );
+    setOptimisticUserMessageRecencyPatches((current) =>
+      reconcileOptimisticUserMessageRecencyPatches(
+        current,
+        resolvedChatGroupsSnapshotVersionRef.current,
       ),
     );
     setLocalGroupAvatarPatches((current) =>
@@ -1011,6 +1093,9 @@ export function ChatGroupsProvider({
   useEffect(() => {
     const workspaceChanged = previousWorkspaceIdRef.current !== currentWorkspaceId;
     previousWorkspaceIdRef.current = currentWorkspaceId;
+    if (workspaceChanged) {
+      setOptimisticUserMessageRecencyPatches(new Map());
+    }
     const markRawSnapshotChanged = () => {
       if (rawChatGroupsRef.current === rawChatGroups) return;
       rawChatGroupsRef.current = rawChatGroups;
@@ -1158,6 +1243,18 @@ export function ChatGroupsProvider({
           : payload.latestUserMessageAt === null
             ? null
             : undefined;
+      if (typeof latestUserMessageAt === "number") {
+        setOptimisticUserMessageRecencyPatches((current) => {
+          const existing = current.get(threadId);
+          if (existing && existing.sentAt >= latestUserMessageAt) return current;
+          const next = new Map(current);
+          next.set(threadId, {
+            sentAt: latestUserMessageAt,
+            snapshotVersion: resolvedChatGroupsSnapshotVersionRef.current,
+          });
+          return next;
+        });
+      }
       const runningActivityText =
         typeof payload.runningActivityText === "string"
           ? payload.runningActivityText
@@ -1236,6 +1333,7 @@ export function ChatGroupsProvider({
       setLiveThreadStatuses(new Map());
       setLocalThreadStatuses(new Map());
       setLocalThreadSummaryPatches(new Map());
+      setOptimisticUserMessageRecencyPatches(new Map());
       setLocalGroupAvatarPatches(new Map());
       setExpiredPendingGroupAvatarIds(new Set());
       pendingGroupAvatarStartedAtRef.current.clear();
@@ -1620,15 +1718,16 @@ export function ChatGroupsProvider({
 
   const groupsBeforePendingExpiry = useMemo(() => {
     const loaderGroups = resolvedChatGroups ?? [];
-    const source = mergeActiveChatGroup(
-      loaderGroups,
-      getActiveChatGroupFromMatches(matches),
-    );
+    const activeGroup = getActiveChatGroupFromMatches(matches);
+    const activeGroupWasMissing =
+      activeGroup !== null &&
+      !loaderGroups.some((group) => group.id === activeGroup.id);
+    const source = mergeActiveChatGroup(loaderGroups, activeGroup);
     const avatarPatchedSource = applyLocalGroupAvatarPatches(
       source,
       localGroupAvatarPatches,
     );
-    return applyLiveRunningStatuses(
+    const withLiveStatuses = applyLiveRunningStatuses(
       avatarPatchedSource,
       runningThreadIds,
       hasStatusSnapshot,
@@ -1636,12 +1735,23 @@ export function ChatGroupsProvider({
       resolvedThreadStatuses,
       localThreadSummaryPatches,
     );
+    // Sorting must run last: the snapshot-bounded optimistic recency overlay
+    // lets a local send run ahead of the server key without mutating canonical
+    // timestamps. Pin the active group to the top only when it is missing from
+    // the LIMIT-bounded loader list (mergeActiveChatGroup prepends it); a strict
+    // recency sort would sink it below the fold.
+    return orderChatGroupsForDisplay(
+      withLiveStatuses,
+      activeGroupWasMissing ? activeGroup.id : null,
+      optimisticUserMessageRecencyPatches,
+    );
   }, [
     activeThreadId,
     hasStatusSnapshot,
     localGroupAvatarPatches,
     localThreadSummaryPatches,
     matches,
+    optimisticUserMessageRecencyPatches,
     resolvedChatGroups,
     resolvedThreadStatuses,
     runningThreadIds,
