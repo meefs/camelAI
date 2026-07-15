@@ -18,8 +18,6 @@ import { TeamCreateDetails } from './details/team-create-details';
 import { AskUserQuestionDetails } from './details/ask-user-question-details';
 import { JavaScriptDetails } from './details/javascript-details';
 import { isAskUserQuestionToolName, isMcpTool } from './mcp-utils';
-import { isSubAgentTool } from './tool-utils';
-import { cn } from '@/lib/utils';
 
 interface ToolCallDetailsProps {
   tool?: ToolUseBlock;
@@ -131,12 +129,7 @@ export function ToolCallDetails({ tool, result, results, skillSheet, status }: T
   }
 
   return (
-    <div className={cn(
-      "text-xs text-muted-foreground/80",
-      isSubAgentTool(name)
-        ? "px-3 pb-3"
-        : "pl-4 mt-1 border-l border-border/50 ml-1",
-    )}>
+    <div className="ml-1 mt-1 border-l border-border/50 pl-4 text-xs text-muted-foreground/80">
       {content}
     </div>
   );

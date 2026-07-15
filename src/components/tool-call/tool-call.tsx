@@ -1,10 +1,8 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Bot, ChevronRight, Compass, Search, Sparkles } from 'lucide-react';
+import { ChevronRight } from 'lucide-react';
 import type { ToolResultBlock, ToolUseBlock } from '@/types';
-import { Badge } from '@/components/ui/badge';
-import { Card } from '@/components/ui/card';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import { cn } from '@/lib/utils';
 import { ToolCallDetails } from './tool-details';
@@ -131,13 +129,6 @@ export function ToolCall({
   callIdentityRef.current = resolvedCallIdentity;
   statusRef.current = status;
   const isAgentCall = isSubAgentTool(tool?.name);
-  const AgentIcon = tool?.name === 'Oracle'
-    ? Sparkles
-    : tool?.name === 'Research'
-      ? Search
-      : tool?.name === 'Explore' || tool?.name === 'explore'
-        ? Compass
-        : Bot;
 
   useEffect(() => {
     if (
@@ -160,7 +151,6 @@ export function ToolCall({
             "tool-call group/toolcall flex w-full items-center gap-2 py-1 text-sm text-muted-foreground",
             "hover:bg-muted/30 rounded px-2 -mx-2 cursor-pointer text-left",
             "transition-colors duration-150 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring/50",
-            isAgentCall && "mx-0 px-3 py-2.5 hover:bg-muted/20",
           )}
           onKeyDown={(event) => {
             if (event.key === 'Enter' || event.key === ' ') {
@@ -169,28 +159,9 @@ export function ToolCall({
             }
           }}
         >
-          {isAgentCall ? (
-            <span className={cn(
-              "flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-muted",
-              status === 'running' && "text-blue-500",
-              status === 'complete' && "text-green-600 dark:text-green-400",
-              status === 'error' && "text-destructive",
-            )}>
-              <AgentIcon className="h-3.5 w-3.5" />
-            </span>
-          ) : (
-            <span className={cn("tool-call__dot w-1.5 h-1.5 rounded-full shrink-0", getStatusClass(status))} />
-          )}
+          <span className={cn("tool-call__dot w-1.5 h-1.5 rounded-full shrink-0", getStatusClass(status))} />
           <ToolCallSummary tool={tool} result={result} isStreaming={isStreaming} status={status} />
           <div className="ml-auto flex items-center gap-2">
-            {isAgentCall ? (
-              <Badge
-                variant={status === 'error' ? 'destructive' : status === 'running' ? 'secondary' : 'outline'}
-                className={cn(status === 'running' && 'text-blue-600 dark:text-blue-400')}
-              >
-                {status === 'running' ? 'Working' : status === 'error' ? 'Failed' : 'Done'}
-              </Badge>
-            ) : null}
             <ChevronRight
               className={cn(
                 "tool-call__chevron h-4 w-4 text-muted-foreground/50 opacity-0 transition-all duration-150",
@@ -218,7 +189,5 @@ export function ToolCall({
     </Collapsible>
   );
 
-  return isAgentCall ? (
-    <Card size="sm" className="my-2 gap-0 py-0">{content}</Card>
-  ) : content;
+  return content;
 }

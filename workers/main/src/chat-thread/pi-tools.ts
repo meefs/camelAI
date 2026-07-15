@@ -55,67 +55,89 @@ export interface PiToolDefinitionOptions {
 const RESEARCH_CAPABILITY_MODEL = "deepseek-v4-auto";
 const ORACLE_CAPABILITY_MODEL = "gpt-5.6-luna";
 
-function humanizeToolName(toolName: string): string {
-  return toolName
-    .replace(/^mcp__/, "")
-    .replace(/__/g, " ")
-    .replace(/_/g, " ")
-    .replace(/([a-z])([A-Z])/g, "$1 $2")
-    .trim()
-    .toLowerCase();
+type ChildToolActivity = {
+  toolCallId: string;
+  toolName: string;
+  label: string;
+  status: "running" | "complete" | "error";
+};
+
+function stringToolArg(args: unknown, ...names: string[]): string {
+  if (!args || typeof args !== "object" || Array.isArray(args)) return "";
+  const record = args as Record<string, unknown>;
+  for (const name of names) {
+    const value = record[name];
+    if (typeof value === "string" && value.trim()) return value.trim();
+  }
+  return "";
 }
 
-export function describeChildAgentActivity(toolName: string): string {
-  switch (toolName.toLowerCase()) {
-    case "read":
-    case "ls":
-    case "find":
-    case "grep":
-    case "glob":
-      return "Inspecting the workspace";
-    case "write":
-    case "edit":
-      return "Making changes";
-    case "bash":
-    case "javascript":
-    case "js_exec":
-    case "build_project":
-    case "run_notebook":
-      return "Running and verifying the work";
-    case "websearch":
-    case "web_search":
-      return "Searching the web";
-    case "webfetch":
-    case "web_fetch":
-      return "Reading and comparing sources";
-    case "todowrite":
-    case "todo_write":
-    case "update_todo":
-      return "Updating the plan";
-    case "create_project":
-      return "Setting up the project";
-    case "deploy_project":
-      return "Deploying the project";
-    default: {
-      const name = humanizeToolName(toolName);
-      return name ? `Using ${name}` : "Working through the task";
-    }
+function truncateActivityDetail(value: string, max = 72): string {
+  const singleLine = value.replace(/\s+/g, " ").trim();
+  return singleLine.length > max ? `${singleLine.slice(0, max - 1)}…` : singleLine;
+}
+
+/** Keep the real child tool name visible, with only a small useful argument summary. */
+export function describeChildAgentActivity(toolName: string, args?: unknown): string {
+  const normalized = toolName.toLowerCase();
+  let detail = "";
+  if (["read", "write", "edit", "delete", "ls", "find", "grep", "glob"].includes(normalized)) {
+    detail = stringToolArg(args, "path", "file_path", "pattern");
+  } else if (["javascript", "js_exec"].includes(normalized)) {
+    detail = stringToolArg(args, "description");
+  } else if (["websearch", "web_search"].includes(normalized)) {
+    detail = stringToolArg(args, "query");
+  } else if (["webfetch", "web_fetch"].includes(normalized)) {
+    detail = stringToolArg(args, "url");
+  } else if (["create_project", "build_project", "deploy_project"].includes(normalized)) {
+    detail = stringToolArg(args, "project", "name", "script_name");
+  } else if (normalized === "take_screenshot") {
+    detail = stringToolArg(args, "script_name");
   }
+  return detail ? `${toolName} · ${truncateActivityDetail(detail)}` : toolName;
 }
 
 function createAgentProgressReporter(
   onUpdate?: (partialResult: AgentToolResult<unknown>) => void,
 ) {
   const activities: string[] = [];
+  const toolActivities: ChildToolActivity[] = [];
+  const emit = (activity: string, details: Record<string, unknown> = {}) => {
+    onUpdate?.({
+      content: [{ type: "text", text: `${activity}\n` }],
+      details: { status: "running", activity, ...details },
+    });
+  };
   return {
     activities,
-    report(activity: string, details: Record<string, unknown> = {}) {
-      if (activities[activities.length - 1] === activity) return;
-      activities.push(activity);
-      onUpdate?.({
-        content: [{ type: "text", text: `${activity}\n` }],
-        details: { status: "running", activity, ...details },
-      });
+    toolActivities,
+    reportStatus(activity: string, details: Record<string, unknown> = {}) {
+      emit(activity, details);
+    },
+    startTool(
+      toolCallId: string,
+      toolName: string,
+      args: unknown,
+      details: Record<string, unknown> = {},
+    ) {
+      const label = describeChildAgentActivity(toolName, args);
+      const activity: ChildToolActivity = {
+        toolCallId,
+        toolName,
+        label,
+        status: "running",
+      };
+      activities.push(label);
+      toolActivities.push(activity);
+      emit(label, { ...details, toolActivity: activity });
+    },
+    finishTool(toolCallId: string, isError: boolean) {
+      for (let index = toolActivities.length - 1; index >= 0; index -= 1) {
+        const activity = toolActivities[index];
+        if (activity?.toolCallId !== toolCallId) continue;
+        activity.status = isError ? "error" : "complete";
+        break;
+      }
     },
   };
 }
@@ -566,10 +588,14 @@ export async function runPiSubagentTool(
       }
       if (event.type === "tool_execution_start") {
         toolUseCount += 1;
-        progress.report(describeChildAgentActivity(event.toolName), {
+        progress.startTool(event.toolCallId, event.toolName, event.args, {
           toolName: event.toolName,
           toolUseCount,
         });
+        return;
+      }
+      if (event.type === "tool_execution_end") {
+        progress.finishTool(event.toolCallId, event.isError);
         return;
       }
       if (event.type === "turn_end") {
@@ -603,7 +629,7 @@ export async function runPiSubagentTool(
   signal?.addEventListener("abort", abort, { once: true });
 
   try {
-    progress.report(isExplore ? "Mapping the workspace" : "Reviewing the task", {
+    progress.reportStatus(isExplore ? "Starting exploration" : "Starting agent", {
       toolName,
     });
     await child.prompt({
@@ -631,6 +657,7 @@ export async function runPiSubagentTool(
       durationMs: Math.max(0, Date.now() - startedAtMs),
       toolUseCount,
       activities: progress.activities,
+      toolActivities: progress.toolActivities,
     },
   };
 }
@@ -775,10 +802,14 @@ export async function runPiCapabilityAgentTool(
       if (event.type === "tool_execution_start") {
         toolUseCount += 1;
         childToolsUsed.push(event.toolName);
-        progress.report(describeChildAgentActivity(event.toolName), {
+        progress.startTool(event.toolCallId, event.toolName, event.args, {
           toolName: event.toolName,
           toolUseCount,
         });
+        return;
+      }
+      if (event.type === "tool_execution_end") {
+        progress.finishTool(event.toolCallId, event.isError);
         return;
       }
       if (event.type === "turn_end") {
@@ -812,7 +843,7 @@ export async function runPiCapabilityAgentTool(
   signal?.addEventListener("abort", abort, { once: true });
 
   try {
-    progress.report(isResearch ? "Planning the research" : "Reviewing the problem", {
+    progress.reportStatus(isResearch ? "Starting research" : "Starting Oracle", {
       toolName,
       ...(isResearch ? { model: capabilityModel } : {}),
       remaining: allowance.remaining,
@@ -843,6 +874,7 @@ export async function runPiCapabilityAgentTool(
       toolUseCount,
       childToolsUsed: [...new Set(childToolsUsed)],
       activities: progress.activities,
+      toolActivities: progress.toolActivities,
       remaining: allowance.remaining,
       resetAtMs: allowance.reset_at_ms,
     },

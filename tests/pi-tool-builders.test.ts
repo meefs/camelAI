@@ -46,14 +46,22 @@ describe('buildToolResultFromPiItem error status', () => {
       result: {
         details: {
           status: 'completed',
-          activities: ['Reviewing the problem', 'Making changes'],
+          activities: ['read · public/main.js', 'edit · public/main.js'],
+          toolActivities: [
+            { toolCallId: 'child-read', toolName: 'read', label: 'read · public/main.js', status: 'complete' },
+            { toolCallId: 'child-edit', toolName: 'edit', label: 'edit · public/main.js', status: 'complete' },
+          ],
           durationMs: 12_000,
           toolUseCount: 2,
         },
       },
     });
     expect(result?.details).toMatchObject({
-      activities: ['Reviewing the problem', 'Making changes'],
+      activities: ['read · public/main.js', 'edit · public/main.js'],
+      toolActivities: [
+        { toolCallId: 'child-read', toolName: 'read', label: 'read · public/main.js', status: 'complete' },
+        { toolCallId: 'child-edit', toolName: 'edit', label: 'edit · public/main.js', status: 'complete' },
+      ],
       durationMs: 12_000,
       toolUseCount: 2,
     });

@@ -212,7 +212,11 @@ describe('PiChunkEncoder unit families', () => {
           contentItems: [{ type: 'inputText', text: 'Fixed.' }],
           result: {
             details: {
-              activities: ['Reviewing the problem', 'Making changes'],
+              activities: ['read · public/main.js', 'edit · public/main.js'],
+              toolActivities: [
+                { toolCallId: 'child-read', toolName: 'read', label: 'read · public/main.js', status: 'complete' },
+                { toolCallId: 'child-edit', toolName: 'edit', label: 'edit · public/main.js', status: 'complete' },
+              ],
               durationMs: 5_000,
               toolUseCount: 2,
             },
@@ -225,7 +229,11 @@ describe('PiChunkEncoder unit families', () => {
       toolCallId: 'oracle-1',
       output: expect.objectContaining({
         details: {
-          activities: ['Reviewing the problem', 'Making changes'],
+          activities: ['read · public/main.js', 'edit · public/main.js'],
+          toolActivities: [
+            { toolCallId: 'child-read', toolName: 'read', label: 'read · public/main.js', status: 'complete' },
+            { toolCallId: 'child-edit', toolName: 'edit', label: 'edit · public/main.js', status: 'complete' },
+          ],
           durationMs: 5_000,
           toolUseCount: 2,
         },

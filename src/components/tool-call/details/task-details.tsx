@@ -1,12 +1,9 @@
 "use client";
 
-import { Check, Circle, LoaderCircle, X } from 'lucide-react';
 import type { ToolResultBlock, ToolUseBlock } from '@/types';
-import { Badge } from '@/components/ui/badge';
-import { Separator } from '@/components/ui/separator';
 import { MarkdownRenderer } from '@/components/markdown-renderer';
 import { cn } from '@/lib/utils';
-import { CopyButton } from './shared';
+import { CopyButton, DetailRow } from './shared';
 import { getResultText } from '../tool-utils';
 
 interface TaskDetailsProps {
@@ -16,29 +13,20 @@ interface TaskDetailsProps {
   status?: 'running' | 'complete' | 'error';
 }
 
+export interface TaskToolActivity {
+  toolName: string;
+  label: string;
+  status: 'running' | 'complete' | 'error';
+}
+
 function friendlyLegacyActivity(line: string): string {
   const trimmed = line.trim();
-  const started = trimmed.match(/^(Agent|Explore|Research|Oracle) started\.?$/i);
-  if (started) {
-    switch (started[1]?.toLowerCase()) {
-      case 'explore': return 'Mapping the workspace';
-      case 'research': return 'Planning the research';
-      case 'oracle': return 'Reviewing the problem';
-      default: return 'Reviewing the task';
-    }
-  }
+  if (/^(Agent|Explore|Research|Oracle) started\.?$/i.test(trimmed)) return '';
+  if (/^Starting (agent|exploration|research|Oracle)\.?$/i.test(trimmed)) return '';
 
   const running = trimmed.match(/^Running\s+(.+?)\.{2,}$/i);
-  if (!running) return trimmed.replace(/[.]+$/, '');
-  const toolName = running[1]?.toLowerCase() ?? '';
-  if (['read', 'ls', 'find', 'grep', 'glob'].includes(toolName)) return 'Inspecting the workspace';
-  if (['write', 'edit'].includes(toolName)) return 'Making changes';
-  if (['bash', 'javascript', 'js_exec', 'build_project', 'run_notebook'].includes(toolName)) {
-    return 'Running and verifying the work';
-  }
-  if (['websearch', 'web_search'].includes(toolName)) return 'Searching the web';
-  if (['webfetch', 'web_fetch'].includes(toolName)) return 'Reading and comparing sources';
-  return `Using ${running[1]}`;
+  if (running?.[1]) return running[1].trim();
+  return trimmed.replace(/[.]+$/, '');
 }
 
 export function getTaskActivities(results: ToolResultBlock[]): string[] {
@@ -46,8 +34,7 @@ export function getTaskActivities(results: ToolResultBlock[]): string[] {
   const append = (value: unknown) => {
     if (typeof value !== 'string') return;
     const normalized = friendlyLegacyActivity(value);
-    if (!normalized || activities[activities.length - 1] === normalized) return;
-    activities.push(normalized);
+    if (normalized) activities.push(normalized);
   };
 
   for (const result of results) {
@@ -56,14 +43,61 @@ export function getTaskActivities(results: ToolResultBlock[]): string[] {
     }
     if (!result.isTaskUpdate) continue;
     const text = getResultText(result)
-      // Old streamed updates did not include newlines. Split their recognizable
-      // boundaries so historical in-flight cards remain readable.
       .replace(/((?:Agent|Explore|Research|Oracle) started\.)/gi, '$1\n')
       .replace(/(Running\s+[^\n.]+\.{2,})/gi, '$1\n');
     for (const line of text.split(/\r?\n/)) append(line);
   }
 
   return activities;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+function normalizeActivityStatus(value: unknown): TaskToolActivity['status'] {
+  if (value === 'running' || value === 'error') return value;
+  return 'complete';
+}
+
+export function getTaskToolActivities(results: ToolResultBlock[]): TaskToolActivity[] {
+  for (let resultIndex = results.length - 1; resultIndex >= 0; resultIndex -= 1) {
+    const raw = results[resultIndex]?.details?.toolActivities;
+    if (!Array.isArray(raw)) continue;
+    return raw.flatMap((value) => {
+      if (!isRecord(value) || typeof value.toolName !== 'string' || !value.toolName.trim()) return [];
+      const toolName = value.toolName.trim();
+      const label = typeof value.label === 'string' && value.label.trim()
+        ? value.label.trim()
+        : toolName;
+      return [{
+        toolName,
+        label,
+        status: normalizeActivityStatus(value.status),
+      }];
+    });
+  }
+
+  const streamedActivities = getTaskActivities(results);
+  if (streamedActivities.length > 0) return streamedActivities.map((label) => {
+    const [candidate = '', ...rest] = label.split(/\s+·\s+/);
+    const looksLikeToolName = /^[A-Za-z][A-Za-z0-9_-]*$/.test(candidate);
+    return {
+      toolName: looksLikeToolName ? candidate : '',
+      label: rest.length > 0 ? rest.join(' · ') : label,
+      status: 'complete' as const,
+    };
+  });
+
+  for (let resultIndex = results.length - 1; resultIndex >= 0; resultIndex -= 1) {
+    const raw = results[resultIndex]?.details?.childToolsUsed;
+    if (!Array.isArray(raw)) continue;
+    return raw.flatMap((value) => typeof value === 'string' && value.trim()
+      ? [{ toolName: value.trim(), label: value.trim(), status: 'complete' as const }]
+      : []);
+  }
+
+  return [];
 }
 
 function formatDuration(durationMs: unknown): string | null {
@@ -96,113 +130,93 @@ export function TaskDetails({ tool, result, results, status = 'running' }: TaskD
   const resolvedResults = results ?? (result ? [result] : []);
   const finalResult = resolvedResults.find((block) => !block.isTaskUpdate);
   const finalResultText = finalResult ? getResultText(finalResult) : '';
-  const activities = getTaskActivities(resolvedResults);
-  const visibleActivities = activities.slice(-6);
+  const activities = getTaskToolActivities(resolvedResults);
+  const visibleActivities = activities.slice(-10);
   const hiddenActivityCount = Math.max(0, activities.length - visibleActivities.length);
   const duration = formatDuration(finalResult?.details?.durationMs);
   const toolUseCount = typeof finalResult?.details?.toolUseCount === 'number'
     ? finalResult.details.toolUseCount
     : null;
-  const statusLabel = status === 'running'
-    ? 'In progress'
+  const hasConcreteToolNames = activities.some((activity) => activity.toolName);
+  const isLegacyToolSet = !resolvedResults.some((block) => Array.isArray(block.details?.toolActivities)) &&
+    resolvedResults.some((block) => Array.isArray(block.details?.childToolsUsed));
+  const emptyActivityText = status === 'running'
+    ? 'Waiting for the first tool call...'
     : status === 'error'
-      ? 'Needs attention'
-      : 'Complete';
+      ? 'No tool activity was recorded before this run stopped.'
+      : 'Detailed tool activity was not recorded for this earlier run.';
 
   return (
-    <div className="space-y-3">
-      {(description && description !== request) || agent || model ? (
-        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
-          {description && description !== request ? (
-            <span className="font-medium text-foreground/80">{description}</span>
-          ) : null}
-          {agent ? <span>Agent: {agent}</span> : null}
-          {model ? <span>Model: {model}</span> : null}
-        </div>
-      ) : null}
-
+    <div className="space-y-1">
+      {description && description !== request ? <DetailRow label="Task:" value={description} /> : null}
+      {agent ? <DetailRow label="Agent:" value={agent} /> : null}
+      {model ? <DetailRow label="Model:" value={model} /> : null}
       {request ? (
-        <div className="rounded-md bg-muted/35 px-3 py-2.5">
-          <div className="mb-1 text-[0.65rem] font-medium uppercase tracking-wide text-muted-foreground/70">
-            Request
-          </div>
-          <p className="whitespace-pre-wrap text-xs leading-relaxed text-foreground/80">{request}</p>
-        </div>
+        <DetailRow
+          label="Request:"
+          value={<span className="whitespace-pre-wrap break-words text-foreground/80">{request}</span>}
+        />
       ) : null}
 
-      <div>
-        <div className="mb-2 flex items-center justify-between gap-2">
-          <span className="text-[0.7rem] font-medium text-muted-foreground">Activity</span>
-          <Badge
-            variant={status === 'error' ? 'destructive' : status === 'running' ? 'secondary' : 'outline'}
-            className={cn(status === 'running' && 'text-blue-600 dark:text-blue-400')}
-          >
-            {statusLabel}
-          </Badge>
+      <div className="mt-2">
+        <div className="mb-1 text-[0.7rem] text-muted-foreground/60">
+          {isLegacyToolSet ? 'Tools used' : hasConcreteToolNames ? 'Tool calls' : 'Activity'}
         </div>
-        <div className="space-y-1.5" aria-live="polite">
-          {hiddenActivityCount > 0 ? (
-            <div className="pl-6 text-[0.7rem] text-muted-foreground/60">
-              {hiddenActivityCount} earlier {hiddenActivityCount === 1 ? 'step' : 'steps'}
-            </div>
-          ) : null}
-          {(visibleActivities.length > 0
-            ? visibleActivities
-            : [status === 'running' ? 'Starting' : status === 'error' ? 'Task stopped' : 'Work completed']
-          ).map((activity, index, list) => {
-            const isCurrent = index === list.length - 1;
-            const isActive = status === 'running' && isCurrent;
-            const isFailed = status === 'error' && isCurrent;
-            const Icon = isActive ? LoaderCircle : isFailed ? X : status === 'complete' || !isCurrent ? Check : Circle;
-            return (
-              <div
-                key={`${activity}-${index}`}
-                className={cn(
-                  "flex items-start gap-2 text-xs",
-                  isCurrent ? "text-foreground/85" : "text-muted-foreground/70",
-                )}
-              >
-                <Icon
-                  className={cn(
-                    "mt-0.5 h-3.5 w-3.5 shrink-0",
-                    isActive && "animate-spin text-blue-500 motion-reduce:animate-none",
-                    isFailed && "text-destructive",
-                    !isActive && !isFailed && "text-muted-foreground/60",
-                  )}
-                />
-                <span className="leading-relaxed">{activity}</span>
-              </div>
-            );
-          })}
-        </div>
+        {hiddenActivityCount > 0 ? (
+          <div className="mb-1 text-[0.7rem] text-muted-foreground/50">
+            {hiddenActivityCount} earlier {hiddenActivityCount === 1 ? 'call' : 'calls'}
+          </div>
+        ) : null}
+        {visibleActivities.length > 0 ? (
+          <div className="space-y-1" aria-live="polite">
+            {visibleActivities.map((activity, index) => {
+              const isLatest = index === visibleActivities.length - 1;
+              const activityStatus = status === 'running' && isLatest && activity.status !== 'error'
+                ? 'running'
+                : activity.status;
+              const summary = activity.toolName && activity.label.startsWith(`${activity.toolName} · `)
+                ? activity.label.slice(activity.toolName.length + 3)
+                : activity.label;
+              return (
+                <div key={`${activity.toolName}-${activity.label}-${index}`} className="flex min-w-0 items-center gap-2">
+                  <span className={cn(
+                    "h-1.5 w-1.5 shrink-0 rounded-full bg-muted-foreground/40",
+                    activityStatus === 'running' && "animate-pulse bg-blue-500 motion-reduce:animate-none",
+                    activityStatus === 'error' && "bg-red-500",
+                  )} />
+                  {activity.toolName ? (
+                    <span className="shrink-0 font-mono text-[0.7rem] text-foreground/75">{activity.toolName}</span>
+                  ) : null}
+                  {summary && summary !== activity.toolName ? (
+                    <span className="min-w-0 truncate text-muted-foreground/70">{summary}</span>
+                  ) : null}
+                </div>
+              );
+            })}
+          </div>
+        ) : (
+          <div className="text-muted-foreground/60">{emptyActivityText}</div>
+        )}
       </div>
 
       {finalResultText ? (
-        <>
-          <Separator />
-          <div className="group/agent-result">
-            <div className="mb-1.5 flex items-center justify-between text-[0.7rem] font-medium text-muted-foreground">
-              <span>{resultLabel(tool?.name)}</span>
-              <CopyButton
-                value={finalResultText}
-                label="Copy response"
-                hoverClassName="group-hover/agent-result:opacity-100"
-              />
-            </div>
-            <div className="max-h-72 overflow-auto rounded-md border border-border/60 bg-background px-3 py-2.5 text-sm text-foreground/90">
-              <MarkdownRenderer content={finalResultText} />
-            </div>
+        <div className="group/agent-result mt-2">
+          <div className="mb-1 flex items-center justify-between text-[0.7rem] text-muted-foreground/60">
+            <span>{resultLabel(tool?.name)}</span>
+            <CopyButton
+              value={finalResultText}
+              label="Copy response"
+              hoverClassName="group-hover/agent-result:opacity-100"
+            />
           </div>
-        </>
-      ) : null}
-
-      {(duration || toolUseCount !== null) ? (
-        <div className="text-[0.65rem] text-muted-foreground/60">
-          {duration ? `${status === 'error' ? 'Stopped after' : 'Completed in'} ${duration}` : null}
-          {duration && toolUseCount !== null ? ' · ' : null}
-          {toolUseCount !== null ? `${toolUseCount} ${toolUseCount === 1 ? 'action' : 'actions'}` : null}
+          <div className="max-h-72 overflow-auto rounded bg-muted/30 p-2 text-sm text-foreground/90">
+            <MarkdownRenderer content={finalResultText} />
+          </div>
         </div>
       ) : null}
+
+      {duration ? <DetailRow label="Duration:" value={duration} /> : null}
+      {toolUseCount !== null ? <DetailRow label="Tool calls:" value={String(toolUseCount)} /> : null}
     </div>
   );
 }

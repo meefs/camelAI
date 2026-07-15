@@ -31,12 +31,13 @@ afterEach(() => {
 });
 
 describe('child agent progress labels', () => {
-  it('groups low-level tools into user-facing work stages', () => {
-    expect(describeChildAgentActivity('Read')).toBe('Inspecting the workspace');
-    expect(describeChildAgentActivity('edit')).toBe('Making changes');
-    expect(describeChildAgentActivity('WebSearch')).toBe('Searching the web');
-    expect(describeChildAgentActivity('web_fetch')).toBe('Reading and comparing sources');
-    expect(describeChildAgentActivity('build_project')).toBe('Running and verifying the work');
+  it('keeps concrete child tool names and adds useful arguments', () => {
+    expect(describeChildAgentActivity('Read', { path: 'public/main.js' })).toBe('Read · public/main.js');
+    expect(describeChildAgentActivity('edit', { path: 'public/styles.css' })).toBe('edit · public/styles.css');
+    expect(describeChildAgentActivity('WebSearch', { query: 'Cloudflare Workers limits' })).toBe('WebSearch · Cloudflare Workers limits');
+    expect(describeChildAgentActivity('web_fetch', { url: 'https://example.com/docs' })).toBe('web_fetch · https://example.com/docs');
+    expect(describeChildAgentActivity('build_project', { project: 'chess-game' })).toBe('build_project · chess-game');
+    expect(describeChildAgentActivity('unknown_tool')).toBe('unknown_tool');
   });
 });
 
