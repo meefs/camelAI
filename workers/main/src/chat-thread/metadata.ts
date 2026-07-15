@@ -1,6 +1,6 @@
 // Thread metadata generation for ChatThreadDO, extracted as a collaborator:
 // per-user-message org metadata updates (first message, preview, title kick),
-// OpenAI-backed thread title generation, chat group avatar/emoji generation,
+// OpenAI-backed thread title generation, chat group icon generation,
 // and the assistant-completion record + hover-summary persistence pipeline.
 // All state lives on the owning DO (chatContext, the title-generation and
 // completion high-water fields) and in Org/User/Workspace DOs; the class
@@ -17,7 +17,12 @@ import {
   isPlaceholderThreadTitle,
 } from "../../../../src/lib/thread-title";
 import { AUXILIARY_AI_MODEL } from "../../../../src/lib/auxiliary-ai.server";
-import { generateChatGroupEmojiWithOpenAI } from "../../../../src/lib/chat-group-avatar-generation.server";
+import {
+  CHAT_GROUP_ICON_SELECTION_STRATEGY,
+  generateChatGroupIconWithOpenAI,
+  type ChatGroupIconSelectionOutcome,
+} from "../../../../src/lib/chat-group-avatar-generation.server";
+import { normalizeChatGroupIconName } from "../../../../src/lib/chat-group-icons";
 import { generateThreadTitleWithOpenAI } from "../../../../src/lib/thread-title-generation.server";
 import { generateThreadCompletionSummaryWithOpenAI } from "../../../../src/lib/thread-completion-summary-generation.server";
 import type {
@@ -25,6 +30,7 @@ import type {
   ThreadCompletionSummaryStatus,
 } from "../../../../src/types";
 import type { OrgDO, UserDO } from "../auth";
+import type { ChatGroupIconGenerationClaim } from "../identity/user-do";
 import type { WorkspaceThreadStreamingOptions } from "../thread-status";
 import type { ChatContextState } from "./types";
 
@@ -104,13 +110,23 @@ export interface ChatThreadMetadataDeps {
   generateThreadTitleFromMessage(threadId: string, message: string): Promise<void>;
   generateClaimedChatGroupAvatar(
     threadId: string,
-    claim: { id: string; name: string; avatar: ChatGroupAvatar },
+    claim: ChatGroupIconGenerationClaim,
     userStub: {
-      setGeneratedChatGroupEmoji: (groupId: string, emoji: string) => unknown;
-      markChatGroupAvatarGenerationFailed: (groupId: string) => unknown;
+      setGeneratedChatGroupIcon: (
+        groupId: string,
+        claimId: string,
+        icon: string,
+      ) => unknown;
+      markChatGroupAvatarGenerationFailed: (
+        groupId: string,
+        claimId: string,
+      ) => unknown;
     },
   ): Promise<void>;
-  maybeGenerateChatGroupAvatarForThread(threadId: string): Promise<void>;
+  maybeGenerateChatGroupAvatarForThread(
+    threadId: string,
+    trigger?: ChatGroupIconGenerationClaim["trigger"],
+  ): Promise<void>;
   errorLogFields(error: unknown): {
     errorName: string;
     errorMessage: string;
@@ -330,10 +346,17 @@ export class ChatThreadMetadata {
 
   async generateClaimedChatGroupAvatar(
     threadId: string,
-    claim: { id: string; name: string; avatar: ChatGroupAvatar },
+    claim: ChatGroupIconGenerationClaim,
     userStub: {
-      setGeneratedChatGroupEmoji: (groupId: string, emoji: string) => unknown;
-      markChatGroupAvatarGenerationFailed: (groupId: string) => unknown;
+      setGeneratedChatGroupIcon: (
+        groupId: string,
+        claimId: string,
+        icon: string,
+      ) => unknown;
+      markChatGroupAvatarGenerationFailed: (
+        groupId: string,
+        claimId: string,
+      ) => unknown;
     },
   ): Promise<void> {
     const context = this.deps.chatContext();
@@ -346,11 +369,12 @@ export class ChatThreadMetadata {
       avatar: { ...claim.avatar, status: "pending" },
     });
 
-    let generatedEmoji: string | null = null;
+    let generatedIcon: string | null = null;
     const generationStartedAt = Date.now();
     let aiErrored = false;
+    let selectionOutcome: ChatGroupIconSelectionOutcome = "ai_error";
     try {
-      generatedEmoji = await generateChatGroupEmojiWithOpenAI(
+      generatedIcon = await generateChatGroupIconWithOpenAI(
         this.deps.env().AI,
         claim.name,
         {
@@ -359,11 +383,16 @@ export class ChatThreadMetadata {
           threadId,
           groupId: claim.id,
         },
-        { gatewayName: this.deps.env().CF_GATEWAY_NAME },
+        {
+          gatewayName: this.deps.env().CF_GATEWAY_NAME,
+          onOutcome: (outcome) => {
+            selectionOutcome = outcome;
+          },
+        },
       );
     } catch (error) {
       aiErrored = true;
-      console.error("[ChatThreadDO] failed to generate chat group emoji", {
+      console.error("[ChatThreadDO] failed to generate chat group icon", {
         reason: "ai_error",
         threadId,
         groupId: claim.id,
@@ -371,8 +400,8 @@ export class ChatThreadMetadata {
         orgId: context.orgId,
         ...this.deps.errorLogFields(error),
       });
-      this.deps.recordChatThreadObservabilityEvent("chat_group_emoji_generation", {
-        operation: "generate",
+      this.deps.recordChatThreadObservabilityEvent("chat_group_icon_generation", {
+        operation: `${CHAT_GROUP_ICON_SELECTION_STRATEGY}:${claim.trigger}`,
         status: "ai_error",
         model: AUXILIARY_AI_MODEL,
         durationMs: Date.now() - generationStartedAt,
@@ -381,24 +410,34 @@ export class ChatThreadMetadata {
     }
     // One event per generation outcome so the failure rate is measurable.
     if (!aiErrored) {
-      this.deps.recordChatThreadObservabilityEvent("chat_group_emoji_generation", {
-        operation: "generate",
-        status: generatedEmoji ? "ok" : "no_emoji",
-        severity: generatedEmoji ? "info" : "warn",
+      this.deps.recordChatThreadObservabilityEvent("chat_group_icon_generation", {
+        operation: `${CHAT_GROUP_ICON_SELECTION_STRATEGY}:${claim.trigger}`,
+        status: selectionOutcome,
+        severity: generatedIcon ? "info" : "warn",
         model: AUXILIARY_AI_MODEL,
         durationMs: Date.now() - generationStartedAt,
       });
     }
 
-    if (!generatedEmoji) {
-      // No emoji: record the one-shot attempt (so reconnects don't retry) and
+    if (!generatedIcon) {
+      // No icon: record the one-shot attempt (so reconnects don't retry) and
       // broadcast the group's *actual* current avatar to clear the pending
       // state. Re-reading avoids clobbering an avatar the user set while the AI
       // was in flight.
       try {
         const avatar = (await userStub.markChatGroupAvatarGenerationFailed(
           claim.id,
+          claim.claimId,
         )) as ChatGroupAvatar | null;
+        if (avatar?.status !== "default") {
+          this.deps.recordChatThreadObservabilityEvent(
+            "chat_group_icon_generation",
+            {
+              operation: `${CHAT_GROUP_ICON_SELECTION_STRATEGY}:${claim.trigger}`,
+              status: "claim_lost",
+            },
+          );
+        }
         if (avatar) {
           this.deps.broadcastChat({
             type: "chat_group_avatar_updated",
@@ -416,6 +455,15 @@ export class ChatThreadMetadata {
           orgId: context.orgId,
           ...this.deps.errorLogFields(error),
         });
+        this.deps.recordChatThreadObservabilityEvent(
+          "chat_group_icon_generation",
+          {
+            operation: `${CHAT_GROUP_ICON_SELECTION_STRATEGY}:${claim.trigger}:persist`,
+            status: "write_error",
+            severity: "error",
+            error,
+          },
+        );
       }
       return;
     }
@@ -423,10 +471,24 @@ export class ChatThreadMetadata {
     try {
       // The write re-reads and returns the current avatar (which may be a
       // user-set avatar if it changed while the AI ran), so broadcast that.
-      const avatar = (await userStub.setGeneratedChatGroupEmoji(
+      const avatar = (await userStub.setGeneratedChatGroupIcon(
         claim.id,
-        generatedEmoji,
+        claim.claimId,
+        generatedIcon,
       )) as ChatGroupAvatar | null;
+      const normalizedIcon = normalizeChatGroupIconName(generatedIcon);
+      if (
+        avatar?.status !== "generated" ||
+        avatar.content !== normalizedIcon
+      ) {
+        this.deps.recordChatThreadObservabilityEvent(
+          "chat_group_icon_generation",
+          {
+            operation: `${CHAT_GROUP_ICON_SELECTION_STRATEGY}:${claim.trigger}`,
+            status: "claim_lost",
+          },
+        );
+      }
       if (avatar) {
         this.deps.broadcastChat({
           type: "chat_group_avatar_updated",
@@ -437,18 +499,25 @@ export class ChatThreadMetadata {
       }
     } catch (error) {
       console.error("[ChatThreadDO] failed to write chat group avatar", {
-        reason: "write_skipped",
+        reason: "write_error",
         threadId,
         groupId: claim.id,
         workspaceId: context.workspaceId,
         orgId: context.orgId,
         ...this.deps.errorLogFields(error),
       });
+      this.deps.recordChatThreadObservabilityEvent("chat_group_icon_generation", {
+        operation: `${CHAT_GROUP_ICON_SELECTION_STRATEGY}:${claim.trigger}:persist`,
+        status: "write_error",
+        severity: "error",
+        error,
+      });
     }
   }
 
   async maybeGenerateChatGroupAvatarForThread(
     threadId: string,
+    trigger?: ChatGroupIconGenerationClaim["trigger"],
   ): Promise<void> {
     const normalizedThreadId = threadId.trim();
     const context = this.deps.chatContext();
@@ -472,9 +541,14 @@ export class ChatThreadMetadata {
 
     try {
       const userStub = this.deps.env().USER.get(this.deps.env().USER.idFromName(context.userId));
-      const claim = await userStub.claimChatGroupAvatarGenerationForThread(
-        normalizedThreadId,
-      );
+      const claim = trigger
+        ? await userStub.claimChatGroupAvatarGenerationForThread(
+            normalizedThreadId,
+            trigger,
+          )
+        : await userStub.claimChatGroupAvatarGenerationForThread(
+            normalizedThreadId,
+          );
       if (!claim) return;
       await this.deps.generateClaimedChatGroupAvatar(
         normalizedThreadId,
@@ -520,12 +594,14 @@ export class ChatThreadMetadata {
         await userStub.renameEmptySingleThreadGroupForThread(threadId, title);
         if (!isPlaceholderThreadTitle(title)) {
           this.deps.waitUntil(
-            this.deps.maybeGenerateChatGroupAvatarForThread(threadId).catch((error) => {
-              console.error("[ChatThreadDO] failed to update chat group avatar", {
-                threadId,
-                ...this.deps.errorLogFields(error),
-              });
-            }),
+            this.deps
+              .maybeGenerateChatGroupAvatarForThread(threadId, "first_title")
+              .catch((error) => {
+                console.error("[ChatThreadDO] failed to update chat group avatar", {
+                  threadId,
+                  ...this.deps.errorLogFields(error),
+                });
+              }),
           );
         }
       }

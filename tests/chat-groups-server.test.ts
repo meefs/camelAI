@@ -4,6 +4,7 @@ import type { ChatGroupSummary, Thread } from "@/types";
 const getEnvMock = vi.fn();
 const getAuthEnvMock = vi.fn();
 const getThreadsByIdsMock = vi.fn();
+const drainChatGroupAvatarMigrationMock = vi.fn(async () => undefined);
 
 vi.mock("@/lib/cloudflare.server", () => ({
   getEnv: getEnvMock,
@@ -15,6 +16,10 @@ vi.mock("@/lib/auth-helpers", () => ({
 
 vi.mock("@/lib/chat-do.server", () => ({
   getThreadsByIds: getThreadsByIdsMock,
+}));
+
+vi.mock("@/lib/chat-group-avatar-migration.server", () => ({
+  drainChatGroupAvatarMigration: drainChatGroupAvatarMigrationMock,
 }));
 
 const { listGroupsForWorkspace } = await import("@/lib/chat-groups.server");
@@ -68,7 +73,7 @@ describe("chat group server loading", () => {
     vi.clearAllMocks();
   });
 
-  it("does not claim or schedule emoji generation from the sidebar list loader", async () => {
+  it("schedules avatar migration without delaying the sidebar loader", async () => {
     const waitUntil = vi.fn();
     const group = makeGroup();
     const userStub = {
@@ -111,7 +116,16 @@ describe("chat group server loading", () => {
     expect(result).toHaveLength(1);
     expect(result[0].avatar.status).toBe("default");
     expect(result[0].open_threads[0].upload_ref_paths).toBeUndefined();
-    expect(waitUntil).not.toHaveBeenCalled();
+    expect(drainChatGroupAvatarMigrationMock).toHaveBeenCalledWith(
+      expect.objectContaining({ AI: expect.any(Object) }),
+      userStub,
+      expect.objectContaining({
+        userId: "user_1",
+        orgId: "org_1",
+        workspaceId: "workspace_1",
+      }),
+    );
+    expect(waitUntil).toHaveBeenCalledWith(expect.any(Promise));
   });
 
   it("hydrates upload ref hints from full user messages before truncating summaries", async () => {

@@ -1,5 +1,5 @@
 // Single utility model for all auxiliary generation (thread titles, chat
-// group emoji, completion summaries, help-ticket subjects). Chosen over the
+// group icons, completion summaries, help-ticket subjects). Chosen over the
 // small llamas and the newer Gemma/GLM/Qwen/gpt-oss models after live
 // benchmarking: ~340ms median (as fast as the 3B), perfect instruction
 // following on trivial-output tasks, and no hidden thinking mode — the new
@@ -22,6 +22,7 @@ export interface AuxiliaryAiBinding {
     inputs: {
       messages: Array<{ role: "system" | "user" | "assistant"; content: string }>;
       max_tokens?: number;
+      temperature?: number;
     },
     options?: {
       gateway?: {
@@ -105,6 +106,7 @@ export async function runAuxiliaryAiChatCompletion(
     systemPrompt: string;
     userMessage: string;
     maxTokens: number;
+    temperature?: number;
     metadata?: AuxiliaryAiMetadata;
     context?: AuxiliaryAiRunContext;
   },
@@ -121,6 +123,9 @@ export async function runAuxiliaryAiChatCompletion(
         { role: "user", content: options.userMessage },
       ],
       max_tokens: options.maxTokens,
+      ...(options.temperature === undefined
+        ? {}
+        : { temperature: options.temperature }),
     },
     buildAuxiliaryAiRunOptions(options.metadata, options.context),
   )) as AuxiliaryAiChatCompletion;

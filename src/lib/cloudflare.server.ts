@@ -119,6 +119,7 @@ export interface CloudflareEnv {
 export interface CloudflareLoadContext extends AppLoadContext {
   cloudflare: {
     env: CloudflareEnv;
+    ctx?: Pick<ExecutionContext, "waitUntil">;
   };
 }
 

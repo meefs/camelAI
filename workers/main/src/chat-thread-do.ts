@@ -57,10 +57,10 @@ import {
 } from '../../../src/lib/pi-chunk-encoder';
 import { normalizePiUiMetadata, type PiUiMetadata, type RuntimeCallArtifact } from '../../../src/lib/runtime-artifacts';
 import type {
-  ChatGroupAvatar,
   LlmModel,
   ThreadCompletionSummaryStatus,
 } from '../../../src/types';
+import type { ChatGroupIconGenerationClaim } from "./identity/user-do";
 import {
   CUSTOM_LLM_MODEL,
   getStoredCustomLlmProviderApi,
@@ -1704,7 +1704,10 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
       });
       return;
     }
-    await this.maybeGenerateChatGroupAvatarForThread(context.threadId);
+    await this.maybeGenerateChatGroupAvatarForThread(
+      context.threadId,
+      "first_title",
+    );
   }
 
   async setModel(model: LlmModel, updatedAt?: number): Promise<void> {
@@ -3958,8 +3961,8 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
         this.generateThreadTitleFromMessage(threadId, message),
       generateClaimedChatGroupAvatar: (threadId, claim, userStub) =>
         this.generateClaimedChatGroupAvatar(threadId, claim, userStub),
-      maybeGenerateChatGroupAvatarForThread: (threadId) =>
-        this.maybeGenerateChatGroupAvatarForThread(threadId),
+      maybeGenerateChatGroupAvatarForThread: (threadId, trigger) =>
+        this.maybeGenerateChatGroupAvatarForThread(threadId, trigger),
       errorLogFields: (error) => this.errorLogFields(error),
     }));
   }
@@ -4337,10 +4340,17 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
 
   private generateClaimedChatGroupAvatar(
     threadId: string,
-    claim: { id: string; name: string; avatar: ChatGroupAvatar },
+    claim: ChatGroupIconGenerationClaim,
     userStub: {
-      setGeneratedChatGroupEmoji: (groupId: string, emoji: string) => unknown;
-      markChatGroupAvatarGenerationFailed: (groupId: string) => unknown;
+      setGeneratedChatGroupIcon: (
+        groupId: string,
+        claimId: string,
+        icon: string,
+      ) => unknown;
+      markChatGroupAvatarGenerationFailed: (
+        groupId: string,
+        claimId: string,
+      ) => unknown;
     },
   ): Promise<void> {
     return this.threadMetadata.generateClaimedChatGroupAvatar(
@@ -4352,8 +4362,12 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
 
   private maybeGenerateChatGroupAvatarForThread(
     threadId: string,
+    trigger?: ChatGroupIconGenerationClaim["trigger"],
   ): Promise<void> {
-    return this.threadMetadata.maybeGenerateChatGroupAvatarForThread(threadId);
+    return this.threadMetadata.maybeGenerateChatGroupAvatarForThread(
+      threadId,
+      trigger,
+    );
   }
 
   private generateThreadTitleFromMessage(threadId: string, message: string): Promise<void> {

@@ -37,6 +37,7 @@ import {
   useChatGroups,
 } from "@/hooks/use-chat-groups";
 import { SidebarProvider } from "@/components/ui/sidebar";
+import { DEFAULT_CHAT_GROUP_ICON } from "@/lib/chat-group-icons";
 import type { ChatGroup, ChatGroupThreadSummary, ChatGroupView } from "@/types";
 
 const moveGroups: ChatGroup[] = [
@@ -309,46 +310,57 @@ describe("Avatar chips", () => {
     );
   });
 
-  it("renders chat group emoji chips and falls back to the group initial for invalid content", () => {
+  it("renders a Lucide icon with no background or outline instead of a colored emoji", () => {
     const { container, rerender } = render(
       <ChatGroupAvatar
-        avatar={{ color: "#e0476b", content: "🌊" }}
+        avatar={{ color: "#e0476b", content: "bar-chart-3" }}
         fallbackName="Launch"
       />,
     );
 
+    const fallback = container.querySelector('[data-slot="avatar-fallback"]');
     expect(container.querySelector('[data-slot="avatar"]')).toHaveAttribute(
       "data-shape",
       "rounded",
     );
-    expect(container.querySelector('[data-slot="avatar-fallback"]')).toHaveTextContent(
-      "🌊",
+    // The Lucide symbol renders through the shared sprite; the per-group
+    // background color is gone.
+    expect(fallback?.querySelector("svg")).not.toBeNull();
+    expect(fallback?.querySelector("use")?.getAttribute("href")).toMatch(
+      /#bar-chart-3$/,
     );
+    expect(fallback).not.toHaveStyle({ backgroundColor: "#e0476b" });
+    expect(fallback).toHaveClass("bg-transparent");
+    expect(fallback).not.toHaveClass("border");
 
+    // Legacy emoji / unknown content falls back to the default chat icon.
     rerender(
       <ChatGroupAvatar
-        avatar={{ color: "not-a-color", content: "not emoji" }}
+        avatar={{ color: "not-a-color", content: "🌊" }}
         fallbackName="Launch"
       />,
     );
 
-    expect(container.querySelector('[data-slot="avatar-fallback"]')).toHaveTextContent(
-      "L",
-    );
+    expect(
+      container
+        .querySelector('[data-slot="avatar-fallback"] use')
+        ?.getAttribute("href"),
+    ).toMatch(/#messages-square$/);
   });
 
-  it("skeletonizes only the emoji while an avatar is pending", () => {
+  it("skeletonizes the icon while an avatar is pending", () => {
     const { container } = render(
       <ChatGroupAvatar
-        avatar={{ color: "#7C3AED", content: "💬", status: "pending" }}
+        avatar={{ color: "#7C3AED", content: "messages-square", status: "pending" }}
         fallbackName="Launch"
       />,
     );
 
     const fallback = container.querySelector('[data-slot="avatar-fallback"]');
     expect(fallback).not.toBeNull();
-    expect(fallback).toHaveStyle({ backgroundColor: "#7C3AED" });
-    expect(fallback).not.toHaveTextContent("💬");
+    // No colored fill; the pending state shows a pulse placeholder, not the icon.
+    expect(fallback).not.toHaveStyle({ backgroundColor: "#7C3AED" });
+    expect(fallback?.querySelector("svg")).toBeNull();
     expect(fallback?.querySelector(".animate-pulse")).not.toBeNull();
   });
 });
@@ -411,6 +423,18 @@ describe("ChatTabBar", () => {
     fireEvent.click(await screen.findByText("Archived idea"));
 
     expect(onReopenClosedTab).toHaveBeenCalledWith("thread_3");
+  });
+
+  it("loads the rename group dialog when the group option is selected", async () => {
+    const user = userEvent.setup();
+    renderTabBar();
+
+    expect(screen.queryByText("Rename chat group")).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Group options" }));
+    await user.click(await screen.findByRole("menuitem", { name: "Rename group" }));
+
+    expect(await screen.findByText("Rename chat group")).toBeInTheDocument();
+    expect(screen.getByLabelText("Search icons")).toBeInTheDocument();
   });
 
   it("closes the move-to-group context submenu immediately after selecting a group", async () => {
@@ -594,12 +618,17 @@ describe("ChatTabBar", () => {
     const input = screen.getByLabelText("Name");
     expect(input).toHaveValue("Launch");
     expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
+    expect(
+      screen
+        .getByRole("button", { name: "Select Messages Square" })
+        .querySelector("use")
+        ?.getAttribute("href"),
+    ).toMatch(/#messages-square$/);
 
     fireEvent.change(input, { target: { value: "  Planning  " } });
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
     expect(onSubmit).toHaveBeenCalledWith({
       name: "Planning",
-      avatar: moveGroups[0].avatar,
     });
 
     rerender(
@@ -730,14 +759,14 @@ describe("ChatGroupsList", () => {
     expect(collapsedIcon).not.toBeNull();
     expect(collapsedIcon).toHaveAttribute("aria-hidden", "true");
     expect(collapsedIcon).toHaveClass("select-none");
-    expect(collapsedIcon).toHaveTextContent("💬");
+    expect(collapsedIcon?.querySelector("svg")).not.toBeNull();
   });
 
   it("keeps collapsed group identity visible while overlaying status", () => {
     const runningGroup: ChatGroupView = {
       ...groupView,
       status: "running",
-      avatar: { color: "#7C3AED", content: "🚀" },
+      avatar: { color: "#7C3AED", content: "Rocket" },
     };
     const { container, rerender } = render(<ChatGroupIcon group={runningGroup} />);
 
@@ -745,7 +774,7 @@ describe("ChatGroupsList", () => {
       '[data-slot="avatar"][data-shape="rounded"][data-size="md"]',
     );
     expect(collapsedChip).not.toBeNull();
-    expect(collapsedChip).toHaveTextContent("🚀");
+    expect(collapsedChip?.querySelector("svg")).not.toBeNull();
     const loader = within(container).getByLabelText("Agent is working");
     expect(loader).toBeInTheDocument();
     expect(loader.parentElement).toHaveClass("bg-background/65");
@@ -766,7 +795,7 @@ describe("ChatGroupsList", () => {
       '[data-slot="avatar"][data-shape="rounded"][data-size="md"]',
     );
     expect(collapsedChip).not.toBeNull();
-    expect(collapsedChip).toHaveTextContent("🚀");
+    expect(collapsedChip?.querySelector("svg")).not.toBeNull();
     expect(within(container).getByLabelText("Awaiting your review")).toHaveClass(
       "ring-sidebar",
     );

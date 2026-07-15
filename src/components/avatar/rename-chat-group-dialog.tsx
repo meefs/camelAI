@@ -2,8 +2,8 @@
 
 import { useEffect, useId, useMemo, useState } from "react"
 
-import { AvatarEditor } from "@/components/avatar/avatar-editor"
 import { ChatGroupAvatar } from "@/components/avatar/chat-group-avatar"
+import { ChatGroupIconPicker } from "@/components/avatar/chat-group-icon-picker"
 import { Button } from "@/components/ui/button"
 import {
   Dialog,
@@ -24,19 +24,18 @@ import {
   SheetTitle,
 } from "@/components/ui/sheet"
 import { useIsMobile } from "@/hooks/use-mobile"
-import {
-  AVATAR_COLORS,
-  DEFAULT_CHAT_GROUP_EMOJI,
-  isEmoji,
-  normalizeAvatarColor,
-} from "@/lib/avatar"
+import { normalizeAvatarColor } from "@/lib/avatar"
+import { resolveChatGroupIconName } from "@/lib/chat-group-icons"
 import type { Avatar as AvatarShape } from "@/types"
 
+// Chat group avatars no longer carry a user-chosen color; the color field is
+// preserved on the stored shape but ignored when rendering. We carry it through
+// unchanged so we never widen the avatar contract.
+const FALLBACK_AVATAR_COLOR = "#3B82F6"
+
 function normalizeInitialAvatar(avatar: AvatarShape): AvatarShape {
-  const color = normalizeAvatarColor(avatar.color) ?? AVATAR_COLORS[0]
-  const content = isEmoji(avatar.content)
-    ? avatar.content.trim()
-    : DEFAULT_CHAT_GROUP_EMOJI
+  const color = normalizeAvatarColor(avatar.color) ?? FALLBACK_AVATAR_COLOR
+  const content = resolveChatGroupIconName(avatar.content)
   return { color, content }
 }
 
@@ -51,7 +50,7 @@ export function RenameChatGroupDialog({
   onOpenChange: (open: boolean) => void
   initialName: string
   initialAvatar: AvatarShape
-  onSubmit: (next: { name: string; avatar: AvatarShape }) => void
+  onSubmit: (next: { name: string; avatar?: AvatarShape }) => void
 }) {
   const isMobile = useIsMobile()
   const nameInputId = useId()
@@ -74,15 +73,18 @@ export function RenameChatGroupDialog({
   const trimmedName = name.trim()
   const avatar = { color, content }
   const previewName = trimmedName || "Untitled group"
+  const avatarChanged = content !== normalizedInitialAvatar.content
   const changed =
     trimmedName !== initialName.trim() ||
-    color !== normalizedInitialAvatar.color ||
-    content !== normalizedInitialAvatar.content
+    avatarChanged
   const canSave = trimmedName.length > 0 && changed
 
   const submit = () => {
     if (!canSave) return
-    onSubmit({ name: trimmedName, avatar })
+    onSubmit({
+      name: trimmedName,
+      ...(avatarChanged ? { avatar } : {}),
+    })
     onOpenChange(false)
   }
 
@@ -115,14 +117,10 @@ export function RenameChatGroupDialog({
         />
       </div>
 
-      <AvatarEditor
-        shape="rounded"
-        allowInitials={false}
-        color={color}
-        content={content}
-        onColorChange={setColor}
-        onContentChange={setContent}
-      />
+      <div className="space-y-2">
+        <p className="text-xs font-medium text-muted-foreground">Icon</p>
+        <ChatGroupIconPicker value={content} onSelect={setContent} />
+      </div>
     </form>
   )
 
@@ -151,7 +149,7 @@ export function RenameChatGroupDialog({
           <SheetHeader className="shrink-0">
             <SheetTitle>Rename chat group</SheetTitle>
             <SheetDescription>
-              Pick a name, color, and emoji for this group.
+              Pick a name and icon for this group.
             </SheetDescription>
           </SheetHeader>
           <div className="min-h-0 flex-1 overflow-y-auto px-6 py-4">
@@ -169,7 +167,7 @@ export function RenameChatGroupDialog({
         <DialogHeader className="shrink-0">
           <DialogTitle>Rename chat group</DialogTitle>
           <DialogDescription>
-            Pick a name, color, and emoji for this group.
+            Pick a name and icon for this group.
           </DialogDescription>
         </DialogHeader>
         <div className="min-h-0 flex-1 overflow-y-auto px-2">

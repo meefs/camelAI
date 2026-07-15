@@ -5,11 +5,14 @@ import {
   DEFAULT_CHAT_GROUP_EMOJI,
   generateDefaultAvatar,
   generateDefaultChatGroupAvatar,
-  isEmoji,
   normalizeAvatarColor,
   normalizeChatGroupAvatar,
   validateAvatarContent,
 } from "../../../../src/lib/avatar";
+import {
+  DEFAULT_CHAT_GROUP_ICON,
+  normalizeChatGroupIconName,
+} from "../../../../src/lib/chat-group-icons";
 import { isPlaceholderThreadTitle } from "../../../../src/lib/thread-title";
 import type {
   OrgRole,
@@ -28,12 +31,30 @@ import type {
 import { dispatchAdminEvent } from "./admin-events";
 import { getDefaultOnboardingPreferences, sanitizeOnboardingPreferences, toOnboardingPreferences } from "./onboarding";
 import { isSuperuserEmail } from "./superuser";
+import { recordObservabilityEvent } from "../observability";
 
 // Re-export for consumers that import from this module
 export type { OrgRole, BillingStatus } from "../../../../src/types";
 
 const USER_ONBOARDING_KEY = "onboarding";
 const USER_SIGNUP_IP_KEY = "signup_ip";
+const CHAT_GROUP_ICON_GENERATION_LEASE_MS = 2 * 60 * 1000;
+const CHAT_GROUP_ICON_MAX_CONCURRENCY = 3;
+
+type ChatGroupIconGenerationState =
+  | "idle"
+  | "queued"
+  | "generating"
+  | "failed";
+
+export interface ChatGroupIconGenerationClaim {
+  id: string;
+  name: string;
+  avatar: ChatGroupAvatar;
+  claimId: string;
+  claimedAt: number;
+  trigger: "first_title" | "legacy_migration";
+}
 
 export interface UserOrg {
   org_id: string;
@@ -610,7 +631,92 @@ export class UserDO extends DurableObject<DOEnv> {
       }
     }
 
-    const CURRENT_SCHEMA_VERSION = 10;
+    if (version < 11) {
+      // V11: Durable, claim-fenced Lucide avatar generation. Provenance stays
+      // in avatar_content_source; these columns describe pending work only.
+      try {
+        this.sql.exec(
+          "ALTER TABLE chat_groups ADD COLUMN avatar_icon_generation_state TEXT NOT NULL DEFAULT 'idle'",
+        );
+      } catch {
+        // Column may already exist after a partially completed migration.
+      }
+      try {
+        this.sql.exec(
+          "ALTER TABLE chat_groups ADD COLUMN avatar_icon_generation_claim_id TEXT",
+        );
+      } catch {
+        // Column may already exist after a partially completed migration.
+      }
+      try {
+        this.sql.exec(
+          "ALTER TABLE chat_groups ADD COLUMN avatar_icon_generation_claimed_at INTEGER",
+        );
+      } catch {
+        // Column may already exist after a partially completed migration.
+      }
+
+      const rows = this.sql
+        .exec<{
+          id: string;
+          name: string;
+          avatar_content: string | null;
+          avatar_icon_generation_state: ChatGroupIconGenerationState;
+        }>(
+          `SELECT id, name, avatar_content, avatar_icon_generation_state
+           FROM chat_groups`,
+        )
+        .toArray();
+      let queuedCount = 0;
+      for (const row of rows) {
+        const normalizedContent = normalizeChatGroupIconName(row.avatar_content);
+        if (normalizedContent) {
+          // A fresh V10 row has just received the generation columns with their
+          // idle/null defaults. On a V11 retry, however, this may be a legacy
+          // row already converted to messages-square + queued before the
+          // schema-version write was interrupted. Preserve that durable work
+          // state and only canonicalize the valid icon value.
+          this.sql.exec(
+            `UPDATE chat_groups
+             SET avatar_content = ?
+             WHERE id = ?`,
+            normalizedContent,
+            row.id,
+          );
+          if (row.avatar_icon_generation_state === "queued") queuedCount += 1;
+          continue;
+        }
+
+        const state: ChatGroupIconGenerationState = isPlaceholderThreadTitle(
+          row.name,
+        )
+          ? "idle"
+          : "queued";
+        if (state === "queued") queuedCount += 1;
+        this.sql.exec(
+          `UPDATE chat_groups
+           SET avatar_content = ?,
+               avatar_content_source = 'default',
+               avatar_icon_generation_state = ?,
+               avatar_icon_generation_claim_id = NULL,
+               avatar_icon_generation_claimed_at = NULL
+           WHERE id = ?`,
+          DEFAULT_CHAT_GROUP_ICON,
+          state,
+          row.id,
+        );
+      }
+
+      recordObservabilityEvent(this.env, {
+        event: "chat_group_icon_generation",
+        component: "UserDO",
+        operation: "legacy_migration",
+        status: "queued",
+        count: queuedCount,
+      });
+    }
+
+    const CURRENT_SCHEMA_VERSION = 11;
     if (version < CURRENT_SCHEMA_VERSION) {
       this.ctx.storage.kv.put("schemaVersion", CURRENT_SCHEMA_VERSION);
     }
@@ -999,11 +1105,12 @@ export class UserDO extends DurableObject<DOEnv> {
 
   private getChatGroupAvatarStatus(
     source: string | null | undefined,
+    generationState: string | null | undefined,
   ): ChatGroupAvatarStatus {
+    if (generationState === "queued" || generationState === "generating") {
+      return "pending";
+    }
     if (source === "generated" || source === "user") return source;
-    // Anything else (including legacy "fallback" rows) is the resting default
-    // avatar. The transient "pending" state only exists as a live broadcast
-    // while generation is in flight; it is never persisted.
     return "default";
   }
 
@@ -1019,13 +1126,14 @@ export class UserDO extends DurableObject<DOEnv> {
       avatar_color?: string | null;
       avatar_content?: string | null;
       avatar_content_source?: string | null;
+      avatar_icon_generation_state?: string | null;
     };
     const fallbackAvatar = generateDefaultChatGroupAvatar();
     const avatarColor = normalizeAvatarColor(group.avatar_color) ?? fallbackAvatar.color;
+    // `avatar_content` now stores a Lucide icon name; legacy emoji rows (and any
+    // unknown value) fall back to the default chat icon.
     const avatarContent =
-      typeof group.avatar_content === "string" && isEmoji(group.avatar_content)
-        ? group.avatar_content.trim()
-        : fallbackAvatar.content;
+      normalizeChatGroupIconName(group.avatar_content) ?? fallbackAvatar.content;
     return {
       id: group.id,
       org_id: group.org_id,
@@ -1037,7 +1145,10 @@ export class UserDO extends DurableObject<DOEnv> {
       avatar: {
         color: avatarColor,
         content: avatarContent,
-        status: this.getChatGroupAvatarStatus(group.avatar_content_source),
+        status: this.getChatGroupAvatarStatus(
+          group.avatar_content_source,
+          group.avatar_icon_generation_state,
+        ),
       },
     };
   }
@@ -1211,51 +1322,82 @@ export class UserDO extends DurableObject<DOEnv> {
     groupId: string,
     updates: { name?: string; avatar?: Avatar },
   ): void {
-    if (updates.name !== undefined) {
-      const nextName = this.normalizeChatGroupName(updates.name);
-      this.sql.exec(
-        "UPDATE chat_groups SET name = ? WHERE id = ?",
-        nextName,
-        groupId,
-      );
-    }
-    if (updates.avatar !== undefined) {
-      const avatar = normalizeChatGroupAvatar(updates.avatar);
-      if (!avatar) {
-        throw new Error("Invalid chat group avatar");
+    this.ctx.storage.transactionSync(() => {
+      if (updates.name !== undefined) {
+        const nextName = this.normalizeChatGroupName(updates.name);
+        const nextState: ChatGroupIconGenerationState =
+          isPlaceholderThreadTitle(nextName) ? "idle" : "queued";
+        this.sql.exec(
+          `UPDATE chat_groups
+           SET name = ?,
+               avatar_icon_generation_state = CASE
+                 WHEN avatar_content_source = 'default' THEN ?
+                 ELSE avatar_icon_generation_state
+               END,
+               avatar_icon_generation_claim_id = CASE
+                 WHEN avatar_content_source = 'default' THEN NULL
+                 ELSE avatar_icon_generation_claim_id
+               END,
+               avatar_icon_generation_claimed_at = CASE
+                 WHEN avatar_content_source = 'default' THEN NULL
+                 ELSE avatar_icon_generation_claimed_at
+               END
+           WHERE id = ? AND name <> ?`,
+          nextName,
+          nextState,
+          groupId,
+          nextName,
+        );
       }
-      this.sql.exec(
-        `UPDATE chat_groups
-         SET avatar_color = ?,
-             avatar_content = ?,
-             avatar_content_source = 'user'
-         WHERE id = ?`,
-        avatar.color,
-        avatar.content,
-        groupId,
-      );
-    }
+      if (updates.avatar !== undefined) {
+        const avatar = normalizeChatGroupAvatar(updates.avatar);
+        if (!avatar) {
+          throw new Error("Invalid chat group avatar");
+        }
+        this.sql.exec(
+          `UPDATE chat_groups
+           SET avatar_color = ?,
+               avatar_content = ?,
+               avatar_content_source = 'user',
+               avatar_icon_generation_state = 'idle',
+               avatar_icon_generation_claim_id = NULL,
+               avatar_icon_generation_claimed_at = NULL
+           WHERE id = ?`,
+          avatar.color,
+          avatar.content,
+          groupId,
+        );
+      }
+    });
   }
 
   updateChatGroupAvatar(groupId: string, avatar: Avatar): void {
     this.updateChatGroup(groupId, { avatar });
   }
 
-  setGeneratedChatGroupEmoji(groupId: string, emoji: string): ChatGroupAvatar | null {
-    const content = emoji.trim();
-    if (!isEmoji(content)) return null;
+  setGeneratedChatGroupIcon(
+    groupId: string,
+    claimId: string,
+    icon: string,
+  ): ChatGroupAvatar | null {
+    const content = normalizeChatGroupIconName(icon);
+    if (!content) return this.getChatGroupRow(groupId)?.avatar ?? null;
     let avatar: ChatGroupAvatar | null = null;
     this.ctx.storage.transactionSync(() => {
-      // Only fill in an avatar the user hasn't set and that hasn't already been
-      // generated. Legacy "fallback" rows are eligible (NOT IN covers them).
       this.sql.exec(
         `UPDATE chat_groups
          SET avatar_content = ?,
-             avatar_content_source = 'generated'
+             avatar_content_source = 'generated',
+             avatar_icon_generation_state = 'idle',
+             avatar_icon_generation_claim_id = NULL,
+             avatar_icon_generation_claimed_at = NULL
          WHERE id = ?
-           AND avatar_content_source NOT IN ('user', 'generated')`,
+           AND avatar_content_source = 'default'
+           AND avatar_icon_generation_state = 'generating'
+           AND avatar_icon_generation_claim_id = ?`,
         content,
         groupId,
+        claimId,
       );
       const group = this.getChatGroupRow(groupId);
       avatar = group?.avatar ?? null;
@@ -1265,49 +1407,214 @@ export class UserDO extends DurableObject<DOEnv> {
 
   claimChatGroupAvatarGenerationForThread(
     threadId: string,
-  ): { id: string; name: string; avatar: ChatGroupAvatar } | null {
-    // One-shot, fire-and-forget: only generate for a titled group that is still
-    // on its default avatar AND has not been attempted yet. Generation is
-    // triggered on every websocket connection, so without the attempt marker a
-    // group whose generation keeps failing would re-invoke the model on each
-    // reconnect. Success flips the source to 'generated'; failure stamps
-    // avatar_emoji_last_attempt_at — either way the group stops being claimable.
+    requestedTrigger?: ChatGroupIconGenerationClaim["trigger"],
+  ): ChatGroupIconGenerationClaim | null {
     const group = this.getChatGroupForThreadRow(threadId);
     if (!group || isPlaceholderThreadTitle(group.name)) return null;
-    if (group.avatar.status !== "default") return null;
-    const rows = this.sql
-      .exec<{ avatar_emoji_last_attempt_at: number | null }>(
-        "SELECT avatar_emoji_last_attempt_at FROM chat_groups WHERE id = ?",
+    const state = this.sql
+      .exec<{ avatar_icon_generation_state: ChatGroupIconGenerationState }>(
+        "SELECT avatar_icon_generation_state FROM chat_groups WHERE id = ?",
         group.id,
       )
-      .toArray();
-    if (rows[0]?.avatar_emoji_last_attempt_at != null) return null;
-    return { id: group.id, name: group.name, avatar: group.avatar };
+      .toArray()[0]?.avatar_icon_generation_state;
+    const trigger =
+      requestedTrigger ??
+      (state === "idle" ? "first_title" : "legacy_migration");
+    return this.claimChatGroupIconGeneration(
+      group.id,
+      trigger,
+      new Set(["idle", "queued", "generating"]),
+    );
   }
 
   markChatGroupAvatarGenerationFailed(
     groupId: string,
-    at: number = Date.now(),
+    claimId: string,
   ): ChatGroupAvatar | null {
     let avatar: ChatGroupAvatar | null = null;
     this.ctx.storage.transactionSync(() => {
-      // Record the one-shot attempt so reconnects don't keep retrying a title
-      // whose generation fails. Matches the same rows the claim/write paths
-      // treat as eligible (including legacy "fallback" rows); never touches a
-      // user-set or already-generated avatar.
       this.sql.exec(
         `UPDATE chat_groups
-         SET avatar_emoji_last_attempt_at = ?
+         SET avatar_icon_generation_state = 'failed',
+             avatar_icon_generation_claim_id = NULL
          WHERE id = ?
-           AND avatar_content_source NOT IN ('user', 'generated')
-           AND avatar_emoji_last_attempt_at IS NULL`,
-        at,
+           AND avatar_content_source = 'default'
+           AND avatar_icon_generation_state = 'generating'
+           AND avatar_icon_generation_claim_id = ?`,
         groupId,
+        claimId,
       );
       const group = this.getChatGroupRow(groupId);
       avatar = group?.avatar ?? null;
     });
     return avatar;
+  }
+
+  claimChatGroupAvatarMigrationBatch(
+    orgId: string,
+    workspaceId: string,
+    limit: number,
+  ): ChatGroupIconGenerationClaim[] {
+    const staleBefore = Date.now() - CHAT_GROUP_ICON_GENERATION_LEASE_MS;
+    const freshGeneratingCount =
+      this.sql
+        .exec<{ count: number }>(
+          `SELECT COUNT(*) AS count
+           FROM chat_groups
+           WHERE org_id = ?
+             AND workspace_id = ?
+             AND avatar_content_source = 'default'
+             AND avatar_icon_generation_state = 'generating'
+             AND avatar_icon_generation_claimed_at > ?`,
+          orgId,
+          workspaceId,
+          staleBefore,
+        )
+        .toArray()[0]?.count ?? 0;
+    const availableCapacity = Math.max(
+      0,
+      CHAT_GROUP_ICON_MAX_CONCURRENCY - freshGeneratingCount,
+    );
+    if (availableCapacity === 0) return [];
+    const boundedLimit = Math.max(
+      1,
+      Math.min(
+        Math.floor(limit),
+        CHAT_GROUP_ICON_MAX_CONCURRENCY,
+        availableCapacity,
+      ),
+    );
+    const candidates = this.sql
+      .exec<{ id: string }>(
+        `SELECT id
+         FROM chat_groups
+         WHERE org_id = ?
+           AND workspace_id = ?
+           AND avatar_content_source = 'default'
+           AND (
+             avatar_icon_generation_state = 'queued'
+             OR (
+               avatar_icon_generation_state = 'generating'
+               AND (
+                 avatar_icon_generation_claimed_at IS NULL
+                 OR avatar_icon_generation_claimed_at <= ?
+               )
+             )
+           )
+         ORDER BY updated_at DESC, id ASC
+         LIMIT ?`,
+        orgId,
+        workspaceId,
+        staleBefore,
+        boundedLimit,
+      )
+      .toArray();
+
+    const claims: ChatGroupIconGenerationClaim[] = [];
+    for (const candidate of candidates) {
+      const claim = this.claimChatGroupIconGeneration(
+        candidate.id,
+        "legacy_migration",
+        new Set(["queued", "generating"]),
+      );
+      if (claim) claims.push(claim);
+    }
+    return claims;
+  }
+
+  hasChatGroupAvatarMigrationCandidates(
+    orgId: string,
+    workspaceId: string,
+  ): boolean {
+    const staleBefore = Date.now() - CHAT_GROUP_ICON_GENERATION_LEASE_MS;
+    return (
+      this.sql
+        .exec(
+          `SELECT 1
+           FROM chat_groups
+           WHERE org_id = ?
+             AND workspace_id = ?
+             AND avatar_content_source = 'default'
+             AND (
+               avatar_icon_generation_state = 'queued'
+               OR (
+                 avatar_icon_generation_state = 'generating'
+                 AND (
+                   avatar_icon_generation_claimed_at IS NULL
+                   OR avatar_icon_generation_claimed_at <= ?
+                 )
+               )
+             )
+           LIMIT 1`,
+          orgId,
+          workspaceId,
+          staleBefore,
+        )
+        .toArray().length > 0
+    );
+  }
+
+  private claimChatGroupIconGeneration(
+    groupId: string,
+    trigger: ChatGroupIconGenerationClaim["trigger"],
+    allowedStates: ReadonlySet<ChatGroupIconGenerationState>,
+  ): ChatGroupIconGenerationClaim | null {
+    let claim: ChatGroupIconGenerationClaim | null = null;
+    this.ctx.storage.transactionSync(() => {
+      const row = this.sql
+        .exec<{
+          id: string;
+          name: string;
+          avatar_content_source: string;
+          avatar_icon_generation_state: ChatGroupIconGenerationState;
+          avatar_icon_generation_claimed_at: number | null;
+        }>(
+          `SELECT id, name, avatar_content_source,
+                  avatar_icon_generation_state,
+                  avatar_icon_generation_claimed_at
+           FROM chat_groups
+           WHERE id = ?`,
+          groupId,
+        )
+        .toArray()[0];
+      if (!row || row.avatar_content_source !== "default") return;
+      if (isPlaceholderThreadTitle(row.name)) return;
+      if (!allowedStates.has(row.avatar_icon_generation_state)) return;
+
+      const now = Date.now();
+      if (
+        row.avatar_icon_generation_state === "generating" &&
+        row.avatar_icon_generation_claimed_at !== null &&
+        row.avatar_icon_generation_claimed_at >
+          now - CHAT_GROUP_ICON_GENERATION_LEASE_MS
+      ) {
+        return;
+      }
+
+      const claimId = crypto.randomUUID();
+      this.sql.exec(
+        `UPDATE chat_groups
+         SET avatar_icon_generation_state = 'generating',
+             avatar_icon_generation_claim_id = ?,
+             avatar_icon_generation_claimed_at = ?
+         WHERE id = ?
+           AND avatar_content_source = 'default'`,
+        claimId,
+        now,
+        row.id,
+      );
+      const avatar = this.getChatGroupRow(row.id)?.avatar;
+      if (!avatar) return;
+      claim = {
+        id: row.id,
+        name: row.name,
+        avatar,
+        claimId,
+        claimedAt: now,
+        trigger,
+      };
+    });
+    return claim;
   }
 
   closeChatGroup(groupId: string): void {
@@ -1579,11 +1886,9 @@ export class UserDO extends DurableObject<DOEnv> {
   renameEmptySingleThreadGroupForThread(
     threadId: string,
     title: string,
-    opts: { generatedEmoji?: string | null } = {},
   ): void {
     const name = this.normalizeChatGroupName(title);
-    const generatedEmoji = opts.generatedEmoji?.trim() || null;
-    if (!name && !generatedEmoji) return;
+    if (!name) return;
     this.ctx.storage.transactionSync(() => {
       const group = this.getChatGroupForThreadRow(threadId);
       if (!group) return;
@@ -1600,13 +1905,24 @@ export class UserDO extends DurableObject<DOEnv> {
         isPlaceholderThreadTitle(group.name)
       ) {
         this.sql.exec(
-          "UPDATE chat_groups SET name = ? WHERE id = ?",
+          `UPDATE chat_groups
+           SET name = ?,
+               avatar_icon_generation_state = CASE
+                 WHEN avatar_content_source = 'default' THEN 'queued'
+                 ELSE avatar_icon_generation_state
+               END,
+               avatar_icon_generation_claim_id = CASE
+                 WHEN avatar_content_source = 'default' THEN NULL
+                 ELSE avatar_icon_generation_claim_id
+               END,
+               avatar_icon_generation_claimed_at = CASE
+                 WHEN avatar_content_source = 'default' THEN NULL
+                 ELSE avatar_icon_generation_claimed_at
+               END
+           WHERE id = ?`,
           name,
           group.id,
         );
-      }
-      if (generatedEmoji) {
-        this.setGeneratedChatGroupEmoji(group.id, generatedEmoji);
       }
     });
   }

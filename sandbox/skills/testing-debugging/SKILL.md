@@ -275,6 +275,7 @@ try {
   await b.fill("#todo-input", "buy milk");
   await b.click("button[type=submit]");
   await b.waitForText("buy milk");           // throws if it never appears
+  if (!await b.hasText("buy milk")) throw new Error("todo is not visible");
   const count = await b.count(".todo-item");
   if (count !== 1) throw new Error(`expected 1 todo, got ${count}`);
   const logs = await b.logs();               // { console, pageErrors, requestFailures }
@@ -284,7 +285,7 @@ try {
 }
 ```
 
-Other session methods: `goto`, `type`, `press`, `select`, `hover`, `waitForSelector`, `waitForFunction`, `waitForTimeout` (fixed sleep in ms — prefer the condition-based waits), `evaluate` (run JS in the page), `textContent`, `getAttribute`, `exists`, `content` (HTML), `url`, `title`, `screenshot`. Run `await tools.help({ runtime: "env.BROWSER" })` for full usage. Keep the whole test inside one js_exec call, always `close()` the session, and note sessions auto-close after 5 minutes.
+Other session methods: `goto`, `type`, `press`, `select`, `hover`, `waitForSelector`, `waitForFunction`, `waitForTimeout` (fixed sleep in ms — prefer the condition-based waits), `evaluate` (run JS in the page), `textContent` (no selector returns visible body text), `hasText` (immediate boolean check), `getAttribute`, `exists`, `content` (HTML), `url`, `title`, `screenshot`. `press(key)` dispatches to the currently focused element/page; pass `{ selector }` to focus first, and verify its effect from UI state rather than assuming an application listener handled it. Run `await tools.help({ runtime: "env.BROWSER" })` for full usage. Keep the whole test inside one js_exec call, always `close()` the session, and note sessions auto-close after 5 minutes.
 
 **Limitation:** for **private** apps, server-streamed responses (Server-Sent Events / streaming `fetch`) are buffered by the session's request proxy, so realtime/SSE-driven UI updates won't arrive mid-session. Standard request/response and interaction testing works normally; to exercise realtime/streaming flows, test against a public deploy of the app.
 

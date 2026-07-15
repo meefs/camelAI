@@ -1,5 +1,5 @@
 import type { AppLoadContext } from "react-router";
-import { getEnv } from "./cloudflare.server";
+import { getEnv, type CloudflareLoadContext } from "./cloudflare.server";
 import type {
   ChatGroup,
   ChatGroupSummary,
@@ -15,6 +15,7 @@ import { maxThreadStatus } from "@/lib/thread-status";
 import { getInitialChatGroupNameFromThreadTitle } from "@/lib/thread-title";
 import { truncateThreadPreviewText } from "@/lib/thread-preview";
 import { extractUploadRefPathsForHint } from "@/lib/group-new-chat-recent-items";
+import { drainChatGroupAvatarMigration } from "@/lib/chat-group-avatar-migration.server";
 
 interface UserScopedArgs {
   userId: string;
@@ -280,6 +281,18 @@ export async function listGroupsForWorkspace(
   const groups = await userStub.listChatGroups(args.orgId, args.workspaceId, {
     limit: args.limit,
   });
+  const env = getEnv(context);
+  const executionContext = (context as CloudflareLoadContext).cloudflare.ctx;
+  executionContext?.waitUntil(
+    drainChatGroupAvatarMigration(env, userStub, args).catch((error) => {
+      console.error("Failed to drain chat group avatar migration", {
+        userId: args.userId,
+        orgId: args.orgId,
+        workspaceId: args.workspaceId,
+        errorName: error instanceof Error ? error.name : "UnknownError",
+      });
+    }),
+  );
   const hydrated = await hydrateChatGroups(
     context,
     args.userId,

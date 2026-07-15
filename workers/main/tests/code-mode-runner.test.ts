@@ -92,7 +92,8 @@ describe('code mode runner connection facade', () => {
 
     expect(source).toContain('env.BROWSER session has no method');
     expect(source).toContain('Supported session methods');
-    expect(source).toContain('use await session.textContent("body") and then result.text');
+    expect(source).toContain('use await session.textContent() and then result.text');
+    expect(source).toContain('"hasText"');
     expect(source).toContain('env.BROWSER has no method');
     expect(source).toContain('Use await env.BROWSER.launch({ scriptName, path? })');
   });

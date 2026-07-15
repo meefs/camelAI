@@ -309,7 +309,7 @@ describe("chat group tab routes", () => {
     const response = await groupRoute.action(
       makePatchGroupArgs({
         name: "  Planning  ",
-        avatar: { color: "#e0476b", content: "🌊" },
+        avatar: { color: "#e0476b", content: "waves" },
       }),
     );
 
@@ -317,7 +317,7 @@ describe("chat group tab routes", () => {
     await expect(response.json()).resolves.toEqual({ success: true });
     expect(updateChatGroupMock).toHaveBeenCalledWith("group_1", {
       name: "Planning",
-      avatar: { color: "#E0476B", content: "🌊" },
+      avatar: { color: "#E0476B", content: "waves" },
     });
   });
 

@@ -1,10 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { env, runInDurableObject } from "cloudflare:test";
 import { createUser, getUserSchemaVersion, type TestEnv } from "./test-helpers";
-import {
-  AVATAR_COLORS,
-  DEFAULT_CHAT_GROUP_EMOJI,
-} from "../../../src/lib/avatar";
+import { AVATAR_COLORS } from "../../../src/lib/avatar";
+import { DEFAULT_CHAT_GROUP_ICON } from "../../../src/lib/chat-group-icons";
 
 const testEmail = () =>
   `chat-groups-${Date.now()}-${Math.random().toString(36).slice(2)}@example.com`;
@@ -25,10 +23,309 @@ describe("UserDO chat groups", () => {
     };
   }
 
-  it("migrates UserDO to schema V10", async () => {
+  it("migrates UserDO to schema V11", async () => {
     const { userId } = await createUserStub();
 
-    await expect(getUserSchemaVersion(testEnv, userId)).resolves.toBe(10);
+    await expect(getUserSchemaVersion(testEnv, userId)).resolves.toBe(11);
+  });
+
+  it("classifies V10 avatar rows without changing group recency", async () => {
+    const { userId, userStub } = await createUserStub();
+    const orgId = crypto.randomUUID();
+    const workspaceId = crypto.randomUUID();
+    const generatedEmoji = await userStub.createChatGroup(orgId, workspaceId, {
+      name: "Generated emoji",
+    });
+    const userEmoji = await userStub.createChatGroup(orgId, workspaceId, {
+      name: "User emoji",
+    });
+    const unknown = await userStub.createChatGroup(orgId, workspaceId, {
+      name: "Unknown avatar",
+    });
+    const placeholder = await userStub.createChatGroup(orgId, workspaceId, {
+      name: "New Chat",
+    });
+    const generatedIcon = await userStub.createChatGroup(orgId, workspaceId, {
+      name: "Generated icon",
+    });
+    const userIcon = await userStub.createChatGroup(orgId, workspaceId, {
+      name: "User icon",
+    });
+    const intentionalDefault = await userStub.createChatGroup(
+      orgId,
+      workspaceId,
+      { name: "Intentional default" },
+    );
+    const canonicalized = await userStub.createChatGroup(orgId, workspaceId, {
+      name: "Canonicalized",
+    });
+    const originalUpdatedAt = 123_456;
+
+    await runInDurableObject(userStub, async (instance) => {
+      const sql = instance.ctx.storage.sql;
+      sql.exec(
+        "UPDATE chat_groups SET avatar_content = '🚀', avatar_content_source = 'generated', updated_at = ? WHERE id = ?",
+        originalUpdatedAt,
+        generatedEmoji.id,
+      );
+      sql.exec(
+        "UPDATE chat_groups SET avatar_content = '✨', avatar_content_source = 'user', updated_at = ? WHERE id = ?",
+        originalUpdatedAt,
+        userEmoji.id,
+      );
+      sql.exec(
+        "UPDATE chat_groups SET avatar_content = 'not-an-icon', avatar_content_source = 'fallback', updated_at = ? WHERE id = ?",
+        originalUpdatedAt,
+        unknown.id,
+      );
+      sql.exec(
+        "UPDATE chat_groups SET avatar_content = '💬', avatar_content_source = 'generated', updated_at = ? WHERE id = ?",
+        originalUpdatedAt,
+        placeholder.id,
+      );
+      sql.exec(
+        "UPDATE chat_groups SET avatar_content = 'rocket', avatar_content_source = 'generated', updated_at = ? WHERE id = ?",
+        originalUpdatedAt,
+        generatedIcon.id,
+      );
+      sql.exec(
+        "UPDATE chat_groups SET avatar_content = 'sparkles', avatar_content_source = 'user', updated_at = ? WHERE id = ?",
+        originalUpdatedAt,
+        userIcon.id,
+      );
+      sql.exec(
+        "UPDATE chat_groups SET avatar_content = 'messages-square', avatar_content_source = 'user', updated_at = ? WHERE id = ?",
+        originalUpdatedAt,
+        intentionalDefault.id,
+      );
+      sql.exec(
+        "UPDATE chat_groups SET avatar_content = 'BarChart3', avatar_content_source = 'generated', updated_at = ? WHERE id = ?",
+        originalUpdatedAt,
+        canonicalized.id,
+      );
+      instance.ctx.storage.kv.put("schemaVersion", 10);
+      (instance as unknown as { migrate(): void }).migrate();
+    });
+
+    await expect(getUserSchemaVersion(testEnv, userId)).resolves.toBe(11);
+    await expect(userStub.getChatGroup(generatedEmoji.id)).resolves.toMatchObject({
+      updated_at: originalUpdatedAt,
+      avatar: {
+        content: DEFAULT_CHAT_GROUP_ICON,
+        status: "pending",
+      },
+    });
+    await expect(userStub.getChatGroup(userEmoji.id)).resolves.toMatchObject({
+      avatar: { content: DEFAULT_CHAT_GROUP_ICON, status: "pending" },
+    });
+    await expect(userStub.getChatGroup(unknown.id)).resolves.toMatchObject({
+      avatar: { content: DEFAULT_CHAT_GROUP_ICON, status: "pending" },
+    });
+    await expect(userStub.getChatGroup(placeholder.id)).resolves.toMatchObject({
+      avatar: { content: DEFAULT_CHAT_GROUP_ICON, status: "default" },
+    });
+    await expect(userStub.getChatGroup(generatedIcon.id)).resolves.toMatchObject({
+      avatar: { content: "rocket", status: "generated" },
+    });
+    await expect(userStub.getChatGroup(userIcon.id)).resolves.toMatchObject({
+      avatar: { content: "sparkles", status: "user" },
+    });
+    await expect(
+      userStub.getChatGroup(intentionalDefault.id),
+    ).resolves.toMatchObject({
+      avatar: { content: "messages-square", status: "user" },
+    });
+    await expect(userStub.getChatGroup(canonicalized.id)).resolves.toMatchObject({
+      avatar: { content: "bar-chart-3", status: "generated" },
+    });
+  });
+
+  it("upgrades an actual V10 table shape and preserves queued work across migration retries", async () => {
+    const { userId, userStub } = await createUserStub();
+    const orgId = crypto.randomUUID();
+    const workspaceId = crypto.randomUUID();
+    const legacyEmoji = await userStub.createChatGroup(orgId, workspaceId, {
+      name: "Deploy API to Staging",
+    });
+    const validDefault = await userStub.createChatGroup(orgId, workspaceId, {
+      name: "Intentional default",
+    });
+
+    await runInDurableObject(userStub, async (instance) => {
+      const sql = instance.ctx.storage.sql;
+      sql.exec(
+        "UPDATE chat_groups SET avatar_content = '🚀', avatar_content_source = 'generated' WHERE id = ?",
+        legacyEmoji.id,
+      );
+      sql.exec(
+        "UPDATE chat_groups SET avatar_content = 'messages-square', avatar_content_source = 'default' WHERE id = ?",
+        validDefault.id,
+      );
+      sql.exec(
+        "ALTER TABLE chat_groups DROP COLUMN avatar_icon_generation_claimed_at",
+      );
+      sql.exec(
+        "ALTER TABLE chat_groups DROP COLUMN avatar_icon_generation_claim_id",
+      );
+      sql.exec(
+        "ALTER TABLE chat_groups DROP COLUMN avatar_icon_generation_state",
+      );
+      const v10Columns = sql
+        .exec<{ name: string }>("PRAGMA table_info(chat_groups)")
+        .toArray()
+        .map((column) => column.name);
+      expect(v10Columns).not.toContain("avatar_icon_generation_state");
+      expect(v10Columns).not.toContain("avatar_icon_generation_claim_id");
+      expect(v10Columns).not.toContain("avatar_icon_generation_claimed_at");
+
+      instance.ctx.storage.kv.put("schemaVersion", 10);
+      (instance as unknown as { migrate(): void }).migrate();
+    });
+
+    await expect(getUserSchemaVersion(testEnv, userId)).resolves.toBe(11);
+    await expect(userStub.getChatGroup(legacyEmoji.id)).resolves.toMatchObject({
+      avatar: { content: DEFAULT_CHAT_GROUP_ICON, status: "pending" },
+    });
+    await expect(userStub.getChatGroup(validDefault.id)).resolves.toMatchObject({
+      avatar: { content: DEFAULT_CHAT_GROUP_ICON, status: "default" },
+    });
+
+    // Model an interruption after row conversion but before the V11 version
+    // write by restoring only the recorded version, then rerun twice. The
+    // converted default icon must retain its queued state on every retry.
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      await runInDurableObject(userStub, async (instance) => {
+        instance.ctx.storage.kv.put("schemaVersion", 10);
+        (instance as unknown as { migrate(): void }).migrate();
+      });
+      await expect(getUserSchemaVersion(testEnv, userId)).resolves.toBe(11);
+      await expect(userStub.getChatGroup(legacyEmoji.id)).resolves.toMatchObject({
+        avatar: { content: DEFAULT_CHAT_GROUP_ICON, status: "pending" },
+      });
+      await expect(userStub.getChatGroup(validDefault.id)).resolves.toMatchObject({
+        avatar: { content: DEFAULT_CHAT_GROUP_ICON, status: "default" },
+      });
+    }
+
+    const claims = await userStub.claimChatGroupAvatarMigrationBatch(
+      orgId,
+      workspaceId,
+      3,
+    );
+    expect(claims.map((claim) => claim.id)).toEqual([legacyEmoji.id]);
+  });
+
+  it("claims migration batches deterministically within one workspace", async () => {
+    const { userStub } = await createUserStub();
+    const orgId = crypto.randomUUID();
+    const workspaceId = crypto.randomUUID();
+    const otherWorkspaceId = crypto.randomUUID();
+    const first = await userStub.createChatGroup(orgId, workspaceId, {
+      name: "First",
+    });
+    const second = await userStub.createChatGroup(orgId, workspaceId, {
+      name: "Second",
+    });
+    const third = await userStub.createChatGroup(orgId, workspaceId, {
+      name: "Third",
+    });
+    const other = await userStub.createChatGroup(orgId, otherWorkspaceId, {
+      name: "Other",
+    });
+
+    await runInDurableObject(userStub, async (instance) => {
+      const sql = instance.ctx.storage.sql;
+      for (const [group, updatedAt] of [
+        [first, 100],
+        [second, 300],
+        [third, 200],
+        [other, 400],
+      ] as const) {
+        sql.exec(
+          `UPDATE chat_groups
+           SET avatar_icon_generation_state = 'queued', updated_at = ?
+           WHERE id = ?`,
+          updatedAt,
+          group.id,
+        );
+      }
+    });
+
+    const firstBatch = await userStub.claimChatGroupAvatarMigrationBatch(
+      orgId,
+      workspaceId,
+      2,
+    );
+    expect(firstBatch.map((item) => item.name)).toEqual(["Second", "Third"]);
+    expect(firstBatch.every((item) => item.avatar.status === "pending")).toBe(true);
+    const secondBatch = await userStub.claimChatGroupAvatarMigrationBatch(
+      orgId,
+      workspaceId,
+      2,
+    );
+    expect(secondBatch.map((item) => item.name)).toEqual(["First"]);
+    expect(
+      await userStub.claimChatGroupAvatarMigrationBatch(orgId, workspaceId, 2),
+    ).toEqual([]);
+  });
+
+  it("fences stale completions after lease replacement and name-only rename", async () => {
+    const { userStub } = await createUserStub();
+    const orgId = crypto.randomUUID();
+    const workspaceId = crypto.randomUUID();
+    const threadId = crypto.randomUUID();
+    const group = await userStub.ensureGroupForThread(
+      orgId,
+      workspaceId,
+      threadId,
+      "Name A",
+    );
+    const firstClaim = await userStub.claimChatGroupAvatarGenerationForThread(
+      threadId,
+    );
+    expect(firstClaim).not.toBeNull();
+    await expect(
+      userStub.claimChatGroupAvatarGenerationForThread(threadId),
+    ).resolves.toBeNull();
+
+    await runInDurableObject(userStub, async (instance) => {
+      instance.ctx.storage.sql.exec(
+        "UPDATE chat_groups SET avatar_icon_generation_claimed_at = 0 WHERE id = ?",
+        group.id,
+      );
+    });
+    const replacement = await userStub.claimChatGroupAvatarGenerationForThread(
+      threadId,
+    );
+    expect(replacement?.claimId).not.toBe(firstClaim?.claimId);
+    const staleResult = await userStub.setGeneratedChatGroupIcon(
+      group.id,
+      firstClaim!.claimId,
+      "rocket",
+    );
+    expect(staleResult?.status).toBe("pending");
+
+    await userStub.updateChatGroup(group.id, { name: "Name B" });
+    const renamedResult = await userStub.setGeneratedChatGroupIcon(
+      group.id,
+      replacement!.claimId,
+      "rocket",
+    );
+    expect(renamedResult?.status).toBe("pending");
+    const renamedClaim = await userStub.claimChatGroupAvatarGenerationForThread(
+      threadId,
+    );
+    expect(renamedClaim?.name).toBe("Name B");
+
+    await userStub.updateChatGroup(group.id, {
+      avatar: { color: "#e0476b", content: "sparkles" },
+    });
+    const userWon = await userStub.setGeneratedChatGroupIcon(
+      group.id,
+      renamedClaim!.claimId,
+      "rocket",
+    );
+    expect(userWon).toMatchObject({ content: "sparkles", status: "user" });
   });
 
   it("assigns deterministic default avatars to new groups", async () => {
@@ -49,17 +346,17 @@ describe("UserDO chat groups", () => {
 
     expect(first.avatar).toEqual({
       color: AVATAR_COLORS[0],
-      content: DEFAULT_CHAT_GROUP_EMOJI,
+      content: DEFAULT_CHAT_GROUP_ICON,
       status: "default",
     });
     expect(second.avatar).toEqual({
       color: AVATAR_COLORS[1],
-      content: DEFAULT_CHAT_GROUP_EMOJI,
+      content: DEFAULT_CHAT_GROUP_ICON,
       status: "default",
     });
     expect(otherWorkspace.avatar).toEqual({
       color: AVATAR_COLORS[0],
-      content: DEFAULT_CHAT_GROUP_EMOJI,
+      content: DEFAULT_CHAT_GROUP_ICON,
       status: "default",
     });
   });
@@ -71,27 +368,38 @@ describe("UserDO chat groups", () => {
     const group = await userStub.createChatGroup(orgId, workspaceId, {
       name: "Design",
     });
+    const threadId = crypto.randomUUID();
+    await userStub.addThreadToGroup(group.id, threadId);
+    const claim = await userStub.claimChatGroupAvatarGenerationForThread(
+      threadId,
+      "first_title",
+    );
+    expect(claim).not.toBeNull();
 
-    await userStub.setGeneratedChatGroupEmoji(group.id, "🧠");
+    await userStub.setGeneratedChatGroupIcon(
+      group.id,
+      claim!.claimId,
+      "rocket",
+    );
     let summary = await userStub.getChatGroupSummary(group.id);
-    expect(summary?.avatar.content).toBe("🧠");
+    expect(summary?.avatar.content).toBe("rocket");
 
     await userStub.updateChatGroup(group.id, {
       name: "Design systems",
-      avatar: { color: "#e0476b", content: "🌊" },
+      avatar: { color: "#e0476b", content: "sparkles" },
     });
     summary = await userStub.getChatGroupSummary(group.id);
     expect(summary?.name).toBe("Design systems");
     expect(summary?.avatar).toEqual({
       color: "#E0476B",
-      content: "🌊",
+      content: "sparkles",
       status: "user",
     });
     expect(summary?.updated_at).toBe(group.updated_at);
 
-    await userStub.setGeneratedChatGroupEmoji(group.id, "🔥");
+    await userStub.setGeneratedChatGroupIcon(group.id, claim!.claimId, "bug");
     summary = await userStub.getChatGroupSummary(group.id);
-    expect(summary?.avatar.content).toBe("🌊");
+    expect(summary?.avatar.content).toBe("sparkles");
   });
 
   it("claims avatar generation for an eligible titled thread group", async () => {
@@ -111,20 +419,29 @@ describe("UserDO chat groups", () => {
       "Generated title",
     );
 
-    await expect(
-      userStub.claimChatGroupAvatarGenerationForThread(threadId),
-    ).resolves.toEqual({
+    const claim = await userStub.claimChatGroupAvatarGenerationForThread(
+      threadId,
+      "first_title",
+    );
+    expect(claim).toMatchObject({
       id: group.id,
       name: "Generated title",
       avatar: {
         color: AVATAR_COLORS[0],
-        content: DEFAULT_CHAT_GROUP_EMOJI,
-        status: "default",
+        content: DEFAULT_CHAT_GROUP_ICON,
+        status: "pending",
       },
+      trigger: "first_title",
     });
+    expect(claim?.claimId).toEqual(expect.any(String));
+    expect(claim?.claimedAt).toEqual(expect.any(Number));
 
-    // Once an emoji is generated, the group is no longer claimable.
-    await userStub.setGeneratedChatGroupEmoji(group.id, "🧠");
+    // Once an icon is generated, the group is no longer claimable.
+    await userStub.setGeneratedChatGroupIcon(
+      group.id,
+      claim!.claimId,
+      "rocket",
+    );
     await expect(
       userStub.claimChatGroupAvatarGenerationForThread(threadId),
     ).resolves.toBeNull();
@@ -142,15 +459,17 @@ describe("UserDO chat groups", () => {
       "Generated title",
     );
 
-    await expect(
-      userStub.claimChatGroupAvatarGenerationForThread(threadId),
-    ).resolves.toMatchObject({ id: group.id });
+    const claim = await userStub.claimChatGroupAvatarGenerationForThread(threadId);
+    expect(claim).toMatchObject({ id: group.id });
 
     // A failed attempt is a one-shot: it stays on the default avatar but is not
     // claimed again on the next websocket connection.
-    const marked = await userStub.markChatGroupAvatarGenerationFailed(group.id);
+    const marked = await userStub.markChatGroupAvatarGenerationFailed(
+      group.id,
+      claim!.claimId,
+    );
     expect(marked).toMatchObject({
-      content: DEFAULT_CHAT_GROUP_EMOJI,
+      content: DEFAULT_CHAT_GROUP_ICON,
       status: "default",
     });
     await expect(
@@ -158,7 +477,7 @@ describe("UserDO chat groups", () => {
     ).resolves.toBeNull();
   });
 
-  it("marks failed attempts on legacy fallback rows so they stop being claimable", async () => {
+  it("claims queued migration rows from an accessed thread", async () => {
     const { userStub } = await createUserStub();
     const orgId = crypto.randomUUID();
     const workspaceId = crypto.randomUUID();
@@ -170,23 +489,26 @@ describe("UserDO chat groups", () => {
       "Generated title",
     );
 
-    // Simulate a legacy prod row from the old fallback machinery.
+    // Simulate a V11 row queued by legacy classification.
     await runInDurableObject(userStub, async (instance) => {
       instance.ctx.storage.sql.exec(
-        "UPDATE chat_groups SET avatar_content_source = 'fallback' WHERE id = ?",
+        `UPDATE chat_groups
+         SET avatar_content_source = 'default',
+             avatar_icon_generation_state = 'queued'
+         WHERE id = ?`,
         group.id,
       );
     });
 
-    // Legacy fallback rows get a fresh shot at generation...
-    await expect(
-      userStub.claimChatGroupAvatarGenerationForThread(threadId),
-    ).resolves.toMatchObject({ id: group.id });
+    const claim = await userStub.claimChatGroupAvatarGenerationForThread(threadId);
+    expect(claim).toMatchObject({ id: group.id });
 
-    // ...but a failed attempt is still one-shot, not retried on reconnect.
-    const marked = await userStub.markChatGroupAvatarGenerationFailed(group.id);
+    const marked = await userStub.markChatGroupAvatarGenerationFailed(
+      group.id,
+      claim!.claimId,
+    );
     expect(marked).toMatchObject({
-      content: DEFAULT_CHAT_GROUP_EMOJI,
+      content: DEFAULT_CHAT_GROUP_ICON,
       status: "default",
     });
     await expect(
@@ -206,11 +528,15 @@ describe("UserDO chat groups", () => {
       "Generated title",
     );
 
+    const claim = await userStub.claimChatGroupAvatarGenerationForThread(threadId);
     await userStub.updateChatGroup(group.id, {
-      avatar: { color: "#e0476b", content: "🌊" },
+      avatar: { color: "#e0476b", content: "sparkles" },
     });
-    const marked = await userStub.markChatGroupAvatarGenerationFailed(group.id);
-    expect(marked).toMatchObject({ content: "🌊", status: "user" });
+    const marked = await userStub.markChatGroupAvatarGenerationFailed(
+      group.id,
+      claim!.claimId,
+    );
+    expect(marked).toMatchObject({ content: "sparkles", status: "user" });
   });
 
   it("claims accessed multi-thread groups but skips placeholder names", async () => {
@@ -242,8 +568,8 @@ describe("UserDO chat groups", () => {
       id: multiGroup.id,
       name: "Implementation plan",
       avatar: {
-        content: DEFAULT_CHAT_GROUP_EMOJI,
-        status: "default",
+        content: DEFAULT_CHAT_GROUP_ICON,
+        status: "pending",
       },
     });
   });
@@ -268,9 +594,19 @@ describe("UserDO chat groups", () => {
     );
 
     await userStub.updateChatGroup(userGroup.id, {
-      avatar: { color: "#e0476b", content: "🌊" },
+      avatar: { color: "#e0476b", content: "sparkles" },
     });
-    await userStub.setGeneratedChatGroupEmoji(generatedGroup.id, "🧠");
+    const generatedClaim =
+      await userStub.claimChatGroupAvatarGenerationForThread(generatedThreadId);
+    await userStub.setGeneratedChatGroupIcon(
+      generatedGroup.id,
+      generatedClaim!.claimId,
+      "rocket",
+    );
+    await userStub.updateChatGroup(userGroup.id, { name: "Renamed user avatar" });
+    await userStub.updateChatGroup(generatedGroup.id, {
+      name: "Renamed generated avatar",
+    });
 
     await expect(
       userStub.claimChatGroupAvatarGenerationForThread(userThreadId),
@@ -483,7 +819,7 @@ describe("UserDO chat groups", () => {
     expect(summary?.name).toBe("Manual");
   });
 
-  it("writes generated emoji for single-thread groups with non-empty fallback names", async () => {
+  it("writes generated icons for claimed single-thread groups with fallback names", async () => {
     const { userStub } = await createUserStub();
     const orgId = crypto.randomUUID();
     const workspaceId = crypto.randomUUID();
@@ -496,15 +832,16 @@ describe("UserDO chat groups", () => {
       "Fallback title",
     );
 
-    await userStub.renameEmptySingleThreadGroupForThread(
-      threadId,
-      "Generated title",
-      { generatedEmoji: "🧠" },
+    const claim = await userStub.claimChatGroupAvatarGenerationForThread(threadId);
+    await userStub.setGeneratedChatGroupIcon(
+      summary.id,
+      claim!.claimId,
+      "rocket",
     );
 
     const updated = await userStub.getChatGroupSummary(summary.id);
     expect(updated?.name).toBe("Fallback title");
-    expect(updated?.avatar.content).toBe("🧠");
+    expect(updated?.avatar.content).toBe("rocket");
   });
 
   it("removes memberships and deletes empty groups during cleanup", async () => {
