@@ -156,7 +156,7 @@ describe('organization model settings actions', () => {
         models: [
           { id: 'gpt-5.6-sol', added_at: expect.any(Number) },
           { id: 'gpt-5.6-terra', added_at: expect.any(Number) },
-          { id: 'gpt-5.5', added_at: expect.any(Number) },
+          { id: 'gpt-5.6-luna', added_at: expect.any(Number) },
         ],
         default_model: null,
       },
@@ -205,7 +205,7 @@ describe('organization model settings actions', () => {
         models: [
           { id: 'gpt-5.6-sol', added_at: expect.any(Number) },
           { id: 'gpt-5.6-terra', added_at: expect.any(Number) },
-          { id: 'gpt-5.5', added_at: expect.any(Number) },
+          { id: 'gpt-5.6-luna', added_at: expect.any(Number) },
         ],
         default_model: null,
       },
@@ -453,7 +453,7 @@ describe('organization model settings actions', () => {
         models: [
           { id: 'gpt-5.6-sol', added_at: expect.any(Number) },
           { id: 'gpt-5.6-terra', added_at: expect.any(Number) },
-          { id: 'gpt-5.5', added_at: expect.any(Number) },
+          { id: 'gpt-5.6-luna', added_at: expect.any(Number) },
         ],
         default_model: null,
       },
@@ -563,7 +563,7 @@ describe('organization model settings actions', () => {
         models: [
           { id: 'gpt-5.6-sol', added_at: expect.any(Number) },
           { id: 'gpt-5.6-terra', added_at: expect.any(Number) },
-          { id: 'gpt-5.5', added_at: expect.any(Number) },
+          { id: 'gpt-5.6-luna', added_at: expect.any(Number) },
         ],
         default_model: null,
       },
@@ -607,7 +607,7 @@ describe('organization model settings actions', () => {
         use_platform_defaults: false,
         models: [
           { id: 'gpt-5.6-terra', added_at: expect.any(Number) },
-          { id: 'gpt-5.5', added_at: expect.any(Number) },
+          { id: 'gpt-5.6-luna', added_at: expect.any(Number) },
         ],
         default_model: null,
       },
@@ -629,7 +629,7 @@ describe('organization model settings actions', () => {
       use_org_defaults: false,
       use_platform_defaults: false,
       models: [
-        { id: 'gpt-5.5', added_at: 20 },
+        { id: 'gpt-5.6-luna', added_at: 20 },
         { id: 'gpt-5.6-terra', added_at: 10 },
       ],
       default_model: 'gpt-5.6-terra',
@@ -653,7 +653,7 @@ describe('organization model settings actions', () => {
         use_org_defaults: false,
         use_platform_defaults: false,
         models: [
-          { id: 'gpt-5.5', added_at: 20 },
+          { id: 'gpt-5.6-luna', added_at: 20 },
         ],
         default_model: null,
       },
@@ -734,7 +734,7 @@ describe('organization model settings loader', () => {
     expect(result.config.inPicker.map((row) => row.entry.id)).toEqual([
       'gpt-5.6-sol',
       'gpt-5.6-terra',
-      'gpt-5.5',
+      'gpt-5.6-luna',
     ]);
     expect(result.config.additional).toEqual([]);
     expect(result.config.capacity.used).toBe(3);
@@ -756,10 +756,8 @@ describe('organization model settings loader', () => {
     } as never);
 
     expect(result.config.usePlatformDefaults).toBe(true);
-    expect(
-      result.config.inPicker.find((row) => row.entry.id === 'gpt-5.5')
-        ?.isDefault,
-    ).toBe(false);
+    expect(result.config.inPicker.some((row) => row.entry.id === 'gpt-5.6-terra')).toBe(true);
+    expect(result.config.inPicker.every((row) => row.isDefault === false)).toBe(true);
   });
 
   it('shows the synthetic custom model for custom providers with a model id', async () => {
@@ -809,7 +807,7 @@ describe('organization model settings loader', () => {
     expect(result.config.inPicker.map((row) => row.entry.id)).toEqual([
       'gpt-5.6-sol',
       'gpt-5.6-terra',
-      'gpt-5.5',
+      'gpt-5.6-luna',
     ]);
     expect(result.config.additional).toEqual([]);
     expect(result.config.capacity.used).toBe(3);

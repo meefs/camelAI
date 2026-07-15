@@ -41,6 +41,9 @@ const bedrockDevVarNames = new Set([
   'EVAL_MAX_SDK_TURNS',
   'EVAL_MODEL',
   'EVAL_TIMEOUT_MS',
+  'EXA_API_KEY',
+  'FIRECRAWL_API_KEY',
+  'PARALLEL_API_KEY',
   'RUN_AGENT_EVALS',
   'RUN_PROJECT_BUILD_SANDBOX_REPRO',
   'RUN_SANDBOX_EVAL_PROTOTYPE',
@@ -132,7 +135,7 @@ export default defineConfig({
       wrangler: { configPath: './wrangler.test.jsonc' },
       miniflare: {
         bindings: loadBedrockDevVars(),
-        compatibilityDate: '2025-12-01',
+        compatibilityDate: '2026-03-24',
         compatibilityFlags: ['nodejs_compat'],
         durableObjects: {
           EVAL_SANDBOX: sandboxDurableObject('EvalSandbox', 'camelai-eval-sandbox:latest'),

@@ -64,7 +64,7 @@ export class PiModelMapping {
         return claudeReference("claude-sonnet-5");
       case "gpt-5.6-sol":
       case "gpt-5.6-terra":
-      case "gpt-5.5":
+      case "gpt-5.6-luna":
         return openAiReference(normalizedModelId);
       case "gpt-5.6-sol-bedrock":
         return openAiReference("gpt-5.6-sol");
@@ -118,7 +118,7 @@ export class PiModelMapping {
         if (normalizedModelId.includes("/")) {
           return openRouterReference(normalizedModelId);
         }
-        return openAiReference("gpt-5.5");
+        return openAiReference(DEFAULT_CODEX_MODEL);
     }
   }
 

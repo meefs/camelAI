@@ -132,7 +132,20 @@ describe('chat credit status', () => {
           available_credits_cents: 0,
         }),
         'openai',
-        'gpt-5.5',
+        'gpt-5.6-luna',
+      ),
+    ).toBeNull();
+  });
+
+  it('hides hosted credit status while a thread uses Camel Free', () => {
+    expect(
+      buildBillingCreditStatus(
+        makeOverview({
+          available_credits_cents: 0,
+          total_credit_limit_cents: 0,
+        }),
+        false,
+        'deepseek-v4-auto',
       ),
     ).toBeNull();
   });
@@ -159,7 +172,7 @@ describe('chat credit status', () => {
           available_credits_cents: 440,
         }),
         'anthropic',
-        'gpt-5.5',
+        'gpt-5.6-luna',
       ),
     ).toMatchObject({
       availableCreditsCents: 440,

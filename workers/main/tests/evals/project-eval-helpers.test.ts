@@ -3,6 +3,8 @@ import { describe, expect, it } from "vitest";
 
 import type { WorkspaceFilesystemDO } from "../../src/workspace-filesystem-do";
 import {
+  capabilityChildUsedTools,
+  completedToolDetails,
   countNotebookErrorOutputs,
   diffProjectFileSnapshots,
   hasSuccessfulNotebookRun,
@@ -14,6 +16,7 @@ import {
   seedDoProjectFiles,
   snapshotProjectFiles,
   toolCallReferences,
+  toolProgressText,
 } from "./project-eval-helpers";
 
 const testEnv = env as unknown as {
@@ -22,6 +25,56 @@ const testEnv = env as unknown as {
 };
 
 describe("project eval runtime evidence extraction", () => {
+  it("extracts completed capability details and child tool evidence", () => {
+    const events = [{
+      type: "runtime_event",
+      event: {
+        method: "item/completed",
+        params: {
+          item: {
+            tool: "Oracle",
+            status: "completed",
+            result: {
+              content: [{ type: "text", text: "done" }],
+              details: { status: "completed", childToolsUsed: ["read", "edit", "write"] },
+            },
+          },
+        },
+      },
+    }];
+
+    expect(completedToolDetails(events, "Oracle")).toMatchObject({ status: "completed" });
+    expect(capabilityChildUsedTools(events, "Oracle")).toEqual(["read", "edit", "write"]);
+  });
+
+  it("associates streamed progress text with its parent capability call", () => {
+    const events = [
+      {
+        type: "runtime_event",
+        event: {
+          method: "item/started",
+          params: { item: { id: "oracle-1", tool: "Oracle", status: "running" } },
+        },
+      },
+      {
+        type: "runtime_event",
+        event: {
+          method: "item/commandExecution/outputDelta",
+          params: { itemId: "oracle-1", delta: "Oracle started." },
+        },
+      },
+      {
+        type: "runtime_event",
+        event: {
+          method: "item/commandExecution/outputDelta",
+          params: { itemId: "research-1", delta: "Research started." },
+        },
+      },
+    ];
+
+    expect(toolProgressText(events, "Oracle")).toEqual(["Oracle started."]);
+  });
+
   it("does not treat bare tool-name mentions as tool calls", () => {
     expect(jsExecCodeMentionsTool('const next = "list_apps";', "list_apps")).toBe(false);
     expect(jsExecCodeMentionsTool("list_apps;", "list_apps")).toBe(false);

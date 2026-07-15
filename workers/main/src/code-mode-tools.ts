@@ -24,6 +24,7 @@ import { PiContainerTools, PI_CONTAINER_TOOL_DEFINITIONS } from "./pi-container-
 import { parseFilePreviewPath } from "./preview-paths";
 import type { ConnectionSetupResponse } from "./chat-thread-browser-prompts";
 import { CodeModeWebSearch } from "./code-mode-web-search";
+import type { HostedCapability } from "../../../src/lib/capability-allowances";
 import { buildWorkspaceScopedR2Key } from "../../../src/lib/workspace-r2-paths";
 import { retryR2Read } from "../../../src/lib/r2-read-retry";
 import { buildWorkspaceEmailAddress, getWorkspaceEmailDomain } from "../../../src/lib/workspace-email";
@@ -70,6 +71,33 @@ export interface AIVirtualBindingProps {
   orgId: string;
   workspaceId: string;
   userId?: string;
+}
+
+function simplifyAgentWebToolResult(name: string, value: unknown): unknown {
+  if (name !== "WebSearch" && name !== "WebFetch") return value;
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return name === "WebSearch" ? [] : "";
+  }
+  const record = value as Record<string, unknown>;
+  const results = Array.isArray(record.results)
+    ? record.results.filter((result): result is Record<string, unknown> => (
+      Boolean(result) && typeof result === "object" && !Array.isArray(result)
+    ))
+    : [];
+  if (name === "WebSearch") {
+    return results.map((result) => {
+      const compact: Record<string, string> = {};
+      for (const key of ["title", "url", "snippet"] as const) {
+        const field = result[key];
+        if (typeof field === "string" && field.trim()) compact[key] = field;
+      }
+      return compact;
+    }).filter((result) => Object.keys(result).length > 0);
+  }
+  const first = results[0];
+  if (!first) return "";
+  if (typeof first.text === "string" && first.text.trim()) return first.text;
+  return typeof first.snippet === "string" ? first.snippet : "";
 }
 
 interface CodeModeToolDefinition {
@@ -518,7 +546,7 @@ const SEND_TELEGRAM_MESSAGE_TOOL = codeModeTool(
 );
 const WEB_SEARCH_TOOL = codeModePassthroughTool(
   "WebSearch",
-  "Search the web. Arguments: { query, numResults?, maxCharacters? }.",
+  "Search the web. Arguments: { query, numResults?, maxCharacters? }. In js_exec, result.data is an array of { title?, url?, snippet? } results.",
   Type.Object({
     query: Type.String(),
     numResults: Type.Optional(Type.Number()),
@@ -537,12 +565,11 @@ const WEB_SEARCH_TOOL = codeModePassthroughTool(
 );
 const WEB_FETCH_TOOL = codeModePassthroughTool(
   "WebFetch",
-  "Fetch text from a URL. Arguments: { url, maxCharacters? }.",
+  "Fetch text from a URL. Arguments: { url, maxCharacters? }. In js_exec, result.data is the fetched markdown string.",
   Type.Object({
     url: Type.String(),
     maxCharacters: Type.Optional(Type.Number()),
     query: Type.Optional(Type.String()),
-    fresh: Type.Optional(Type.Boolean()),
     content: Type.Optional(Type.String()),
   }),
   {
@@ -2585,7 +2612,8 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
     rawArgs: unknown = {},
   ): Promise<{ ok: true; data: unknown } | { ok: false; error: { tool: string; message: string } }> {
     try {
-      return { ok: true, data: await this.callTool(name, rawArgs) };
+      const result = await this.callTool(name, rawArgs);
+      return { ok: true, data: simplifyAgentWebToolResult(name, result) };
     } catch (error) {
       const message = error instanceof Error && error.message ? error.message : String(error);
       return { ok: false, error: { tool: name, message } };
@@ -4171,18 +4199,87 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
     return this.customDomains.retryHostnames();
   }
 
-  private get webSearchClient(): CodeModeWebSearch {
+  private webSearchClient(
+    onProviderFailure?: (result: unknown) => Promise<void>,
+  ): CodeModeWebSearch {
     return new CodeModeWebSearch(
       this.env,
       this.ctx.props.threadId || this.ctx.props.workspaceId,
+      { onProviderFailure },
     );
   }
 
+  private async consumeHostedCapability(
+    capability: HostedCapability,
+    args: Record<string, unknown>,
+  ): Promise<string> {
+    const explicitKey = typeof args.toolUseId === "string"
+      ? args.toolUseId.trim()
+      : "";
+    const idempotencyKey = explicitKey || crypto.randomUUID();
+    const invocationScope = this.ctx.props.threadId || this.ctx.props.workspaceId;
+    const scopedIdempotencyKey = `${invocationScope}:${idempotencyKey}`;
+    const allowance = await this.orgStub.consumeCapabilityAllowance({
+      capability,
+      user_id: this.ctx.props.userId,
+      idempotency_key: scopedIdempotencyKey,
+    });
+    if (!allowance.allowed) {
+      throw new Error(
+        `Daily ${capability.replaceAll("_", " ")} allowance reached. ` +
+        `This allowance resets at ${new Date(allowance.reset_at_ms).toISOString()}.`,
+      );
+    }
+    return scopedIdempotencyKey;
+  }
+
+  private async recordHostedCapabilityCost(
+    capability: HostedCapability,
+    idempotencyKey: string,
+    result: unknown,
+  ): Promise<void> {
+    if (!result || typeof result !== "object" || Array.isArray(result)) return;
+    const record = result as Record<string, unknown>;
+    const costUsd = Number(record.costUSD ?? 0);
+    const provider = typeof record.provider === "string"
+      ? record.provider
+      : "unknown";
+    const durationMs = Number(record.durationMs ?? 0);
+    await this.orgStub.recordUsage({
+      workspace_id: this.ctx.props.workspaceId,
+      user_id: this.ctx.props.userId ?? "",
+      thread_id: this.ctx.props.threadId ?? "",
+      model: capability,
+      provider,
+      billing_source: "hosted_capability",
+      credit_chargeable: false,
+      cost_usd: Number.isFinite(costUsd) && costUsd > 0 ? costUsd : 0,
+      duration_ms: Number.isFinite(durationMs) && durationMs > 0 ? durationMs : undefined,
+      created_at_ms: Date.now(),
+      source: capability,
+      source_id: `${capability}:${idempotencyKey}`,
+    });
+  }
+
   private async webFetch(args: Record<string, unknown>): Promise<unknown> {
-    return this.webSearchClient.fetch(args);
+    const idempotencyKey = await this.consumeHostedCapability("web_fetch", args);
+    let failedAttempt = 0;
+    const result = await this.webSearchClient(async (failure) => {
+      failedAttempt += 1;
+      await this.recordHostedCapabilityCost(
+        "web_fetch",
+        `${idempotencyKey}:failed-attempt:${failedAttempt}`,
+        failure,
+      );
+    }).fetch(args);
+    await this.recordHostedCapabilityCost("web_fetch", idempotencyKey, result);
+    return result;
   }
 
   private async webSearch(args: Record<string, unknown>): Promise<unknown> {
-    return this.webSearchClient.search(args);
+    const idempotencyKey = await this.consumeHostedCapability("web_search", args);
+    const result = await this.webSearchClient().search(args);
+    await this.recordHostedCapabilityCost("web_search", idempotencyKey, result);
+    return result;
   }
 }

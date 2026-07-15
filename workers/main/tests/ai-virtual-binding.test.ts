@@ -110,7 +110,8 @@ describe("normalizeLegacyModel (back-compat shim)", () => {
   });
 
   it("maps old friendly model names to their OpenRouter ids", () => {
-    expect(normalizeLegacyModel("gpt-5.5")).toBe("openai/gpt-5.5");
+    expect(normalizeLegacyModel("gpt-5.5")).toBe("openai/gpt-5.6-terra");
+    expect(normalizeLegacyModel("openai/gpt-5.5")).toBe("openai/gpt-5.6-terra");
     expect(normalizeLegacyModel("kimi-k2.6")).toBe("moonshotai/kimi-k2.7-code");
     expect(normalizeLegacyModel("kimi-latest")).toBe("moonshotai/kimi-k2.7-code");
     expect(normalizeLegacyModel("opus")).toBe("anthropic/claude-opus-4.8");
@@ -132,11 +133,11 @@ describe("normalizeLegacyModel (back-compat shim)", () => {
     expect(normalizeLegacyModel("deepseek-v4-auto")).toBe("deepseek-v4-auto");
     expect(normalizeLegacyModel("deepseek-v4-flash")).toBe("deepseek-v4-flash");
     expect(normalizeLegacyModel("anthropic/claude-sonnet-4.6")).toBe("anthropic/claude-sonnet-4.6");
-    expect(normalizeLegacyModel(normalizeLegacyModel("gpt-5.5"))).toBe("openai/gpt-5.5");
+    expect(normalizeLegacyModel(normalizeLegacyModel("gpt-5.5"))).toBe("openai/gpt-5.6-terra");
   });
 
   it("trims whitespace before matching", () => {
-    expect(normalizeLegacyModel("  gpt-5.5  ")).toBe("openai/gpt-5.5");
+    expect(normalizeLegacyModel("  gpt-5.5  ")).toBe("openai/gpt-5.6-terra");
   });
 });
 
@@ -444,7 +445,7 @@ describe("appendNitro", () => {
     expect(appendNitro("anthropic/claude-sonnet-4.6:nitro")).toBe(
       "anthropic/claude-sonnet-4.6:nitro",
     );
-    expect(appendNitro("openai/gpt-5.5:online")).toBe("openai/gpt-5.5:online");
+    expect(appendNitro("openai/gpt-5.6-terra:online")).toBe("openai/gpt-5.6-terra:online");
   });
 
   it("returns empty string for empty input", () => {
@@ -508,7 +509,7 @@ describe("runViaGatewayHTTP", () => {
       { accountID: "acct_1", gatewayID: "gw_1", authToken: "gateway-tok" },
       { orgId: "org_1", workspaceId: "ws_1" },
       { messages: [{ role: "user", content: "hi" }] },
-      "openai/gpt-5.5",
+      "openai/gpt-5.6-terra",
       "compat",
       "sk-user-byok",
     );
@@ -556,7 +557,7 @@ describe("runViaGatewayHTTP", () => {
         { accountID: "acct_1", gatewayID: "gw_1", authToken: "tok_1" },
         { orgId: "org_1", workspaceId: "ws_1" },
         { messages: [{ role: "user", content: "hello" }] },
-        "openai/gpt-5.5",
+        "openai/gpt-5.6-terra",
         "compat",
       ),
     ).rejects.toThrow("gateway rejected request");

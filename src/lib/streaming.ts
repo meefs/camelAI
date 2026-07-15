@@ -364,7 +364,7 @@ function buildToolUseIndex(
 }
 
 function isSubAgentTool(name?: string): boolean {
-  return name === 'Task' || name === 'Agent' || name === 'agent' || name === 'Explore' || name === 'explore';
+  return name === 'Task' || name === 'Agent' || name === 'agent' || name === 'Explore' || name === 'explore' || name === 'Research' || name === 'Oracle';
 }
 
 function findTaskToolUseIdByPrompt(messages: Message[], prompt?: string): string | undefined {

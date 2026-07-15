@@ -62,11 +62,13 @@ import type {
 } from '../../../src/types';
 import type { ChatGroupIconGenerationClaim } from "./identity/user-do";
 import {
+  CAMEL_FREE_LLM_MODEL,
   CUSTOM_LLM_MODEL,
   getStoredCustomLlmProviderApi,
   getStoredCustomLlmProviderModelId,
   normalizeLlmModel,
 } from "../../../src/lib/llm-provider-config";
+import type { HostedCapability } from "../../../src/lib/capability-allowances";
 import { getEffectiveLlmProviderConfig } from "../../../src/lib/selfhost-ai-provider";
 import { isOrgBanned } from "./ban-list";
 import type { WorkspaceThreadStreamingOptions } from "./thread-status";
@@ -217,9 +219,12 @@ import {
   type PiBillingSource,
   type PiRequestConfig,
   type PiResolvedModelConfig,
+  type HostedModelAccess,
+  type HostedModelFallbackReason,
   type LlmProviderConfigRecord,
   isPiImageBlindModel,
 } from "./chat-thread/pi-model-config";
+import { FREE_VLLM_PRIORITY } from "./hosted-vllm-priority";
 
 // Provider-level transient-retry ladder for Pi model streams.
 import {
@@ -503,7 +508,7 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
   private chatContext: ChatContextState | null = null;
   private agentEvalEventCollector: Array<Record<string, unknown>> | null = null;
   private lastError: ChatThreadAgentState["lastError"] = null;
-  // Guards the one-time cold-wake reload of lastError.
+  // Guards the one-time cold-wake reload of durable notification/error state.
   private durableStateHydrated: boolean = false;
   // In-memory debounce marker for build-container prewarm (see
   // maybePrewarmProjectBuildSandboxes). Best-effort only; a DO eviction resets
@@ -521,6 +526,7 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
   private currentTitleUpdatedAt: number | null = null;
   private currentThreadModel: LlmModel | null = null;
   private currentThreadModelUpdatedAt: number | null = null;
+  private modelFallbackNotice: ChatThreadAgentState["modelFallbackNotice"] = null;
   private assistantCompletionRecordedAt: number | null = null;
   private assistantCompletionSummaryRequestedAt: number | null = null;
   private readonly browserPrompts = new BrowserPromptCoordinator({
@@ -681,6 +687,7 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
     titleUpdatedAt: null,
     model: null,
     modelUpdatedAt: null,
+    modelFallbackNotice: null,
     lastError: null,
   };
 
@@ -721,16 +728,17 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
       titleUpdatedAt: this.currentTitleUpdatedAt,
       model: this.currentThreadModel,
       modelUpdatedAt: this.currentThreadModelUpdatedAt,
+      modelFallbackNotice: this.modelFallbackNotice,
       lastError: this.lastError,
       ...overrides,
     };
   }
 
-  // Restore the coarse durable error from Agent state on a cold wake, once.
+  // Restore coarse durable notification/error state from Agent state on a
+  // cold wake, once.
   // Render history comes from ai-chat; streaming state is derived on read
-  // ({@link isThreadStreaming}); only lastError is an instance field that a fresh
-  // isolate must reload before the next syncAgentState() would otherwise
-  // overwrite it with null.
+  // ({@link isThreadStreaming}); these instance fields must be reloaded before
+  // the next syncAgentState() would otherwise overwrite them with null.
   private hydrateDurableStateOnce(): void {
     if (this.durableStateHydrated) return;
     this.durableStateHydrated = true;
@@ -742,6 +750,12 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
     // pending resume; a completed one reports idle) with no flag to resurrect.
     if (state.lastError && typeof state.lastError === "object") {
       this.lastError = cloneDurableState(state.lastError);
+    }
+    if (
+      state.modelFallbackNotice &&
+      typeof state.modelFallbackNotice === "object"
+    ) {
+      this.modelFallbackNotice = cloneDurableState(state.modelFallbackNotice);
     }
   }
 
@@ -1716,6 +1730,7 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
       typeof updatedAt === "number" && Number.isFinite(updatedAt)
         ? updatedAt
         : Date.now();
+    this.modelFallbackNotice = null;
     this.syncAgentState();
   }
 
@@ -4424,6 +4439,19 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
               customApi,
               customModelId,
             });
+      // Keep the in-memory model aligned with the durable thread before any
+      // refresh rebuilds the tool surface. Without this, an explicitly selected
+      // Camel Free thread initially receives Oracle, then refreshPiSessionModel()
+      // immediately removes it because currentThreadModel is still null.
+      this.currentThreadModel = threadModel;
+      const storedModelChangedAt =
+        thread && typeof thread === "object" && "last_model_changed_at" in thread
+          ? (thread as { last_model_changed_at?: unknown }).last_model_changed_at
+          : null;
+      this.currentThreadModelUpdatedAt =
+        typeof storedModelChangedAt === "number" && Number.isFinite(storedModelChangedAt)
+          ? storedModelChangedAt
+          : this.currentThreadModelUpdatedAt;
       await this.ensurePiSession(context, {
         CHIRIDION_MODEL: threadModel,
         CHIRIDION_CLAUDE_MODEL: threadModel,
@@ -4519,7 +4547,9 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
       initialState: {
         systemPrompt: this.createPiSystemPrompt(context),
         model: modelConfig.model,
-        tools: this.createPiToolDefinitions(context),
+        tools: this.createPiToolDefinitions(context, {
+          includeOracle: this.isCamelFreeActive(envVars),
+        }),
         messages: initialMessages,
         thinkingLevel: "medium",
       },
@@ -4543,6 +4573,9 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
         const current = await resolveCurrentModel();
         if (this.piSession) {
           this.piSession.state.model = current.model;
+          this.piSession.state.tools = this.createPiToolDefinitions(context, {
+            includeOracle: this.isCamelFreeActive(envVars),
+          });
         }
         return current.apiKey;
       },
@@ -4702,18 +4735,33 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
     context: ChatContextState,
     envVars: Record<string, string>,
     getModelFn: (provider: never, modelId: never) => Model<any>,
+    options: { sponsoredCapability?: boolean } = {},
   ): Promise<PiResolvedModelConfig> {
+    const sponsoredCapability = options.sponsoredCapability === true;
     return resolvePiModelConfig(
       {
         env: this.env,
         modelMapping: this.piModelMapping,
         resolveRequestConfig: (resolved, ctx, requestedModelId) =>
-          this.resolvePiRequestConfig(resolved, ctx, requestedModelId),
+          this.resolvePiRequestConfig(resolved, ctx, requestedModelId, {
+            forceHosted: sponsoredCapability,
+            creditChargeable: sponsoredCapability ? false : undefined,
+          }),
         onBillingResolved: (billingSource, creditChargeable, usageProvider) => {
+          if (sponsoredCapability) return;
           this.piCurrentBillingSource = billingSource;
           this.piCurrentCreditChargeable = creditChargeable;
           this.piCurrentUsageProvider = usageProvider;
         },
+        onHostedModelFallback: sponsoredCapability
+          ? undefined
+          : (requestedModel, fallbackModel, reason) =>
+              this.fallbackThreadToFreeModel(
+                context,
+                requestedModel,
+                fallbackModel,
+                reason,
+              ),
       },
       context,
       envVars,
@@ -4725,15 +4773,21 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
     resolved: PiResolvedModelReference,
     context: ChatContextState,
     requestedModelId: string,
+    options: { forceHosted?: boolean; creditChargeable?: boolean } = {},
   ): Promise<PiRequestConfig> {
     return resolvePiRequestConfig(
       {
         env: this.env,
         modelMapping: this.piModelMapping,
+        forceHosted: options.forceHosted,
         getChatMetadata: () => this.chatContext,
         resolveByokCredentials: (ctx) => this.resolveCurrentByokCredentials(ctx),
-        checkHostedModelAccess: (ctx, model) =>
-          this.checkHostedPiModelAccess(ctx, model),
+        checkHostedModelAccess: options.creditChargeable === undefined
+          ? (ctx, model) => this.checkHostedPiModelAccess(ctx, model)
+          : async () => ({
+              creditChargeable: options.creditChargeable ?? false,
+              vllmPriority: FREE_VLLM_PRIORITY,
+            }),
       },
       resolved,
       context,
@@ -4741,12 +4795,85 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
     );
   }
 
+  private resolvePiCapabilityModel(
+    context: ChatContextState,
+    modelId: string,
+    getModelFn: (provider: never, modelId: never) => Model<any>,
+  ): Promise<PiResolvedModelConfig> {
+    return this.resolvePiModel(
+      context,
+      {
+        CHIRIDION_MODEL: modelId,
+        CHIRIDION_CODEX_MODEL: modelId,
+        CHIRIDION_CLAUDE_MODEL: modelId,
+      },
+      getModelFn,
+      { sponsoredCapability: true },
+    );
+  }
+
+  private async consumeCapabilityAllowance(
+    context: ChatContextState,
+    capability: HostedCapability,
+    idempotencyKey: string,
+  ): Promise<{ allowed: boolean; remaining: number | null; reset_at_ms: number }> {
+    const orgStub = this.env.ORG.get(this.env.ORG.idFromName(context.orgId));
+    return await orgStub.consumeCapabilityAllowance({
+      capability,
+      user_id: context.userId ?? undefined,
+      idempotency_key: idempotencyKey,
+    });
+  }
+
+  private isCamelFreeActive(envVars?: Record<string, string>): boolean {
+    const requested =
+      envVars?.CHIRIDION_MODEL ||
+      envVars?.CHIRIDION_CODEX_MODEL ||
+      envVars?.CHIRIDION_CLAUDE_MODEL;
+    return (requested ?? this.currentThreadModel) === CAMEL_FREE_LLM_MODEL;
+  }
+
 
   private checkHostedPiModelAccess(
     context: ChatContextState,
     model?: string,
-  ): Promise<boolean> {
+  ): Promise<HostedModelAccess> {
     return checkHostedPiModelAccess(this.env, context, model);
+  }
+
+  private async fallbackThreadToFreeModel(
+    context: ChatContextState,
+    requestedModel: string,
+    fallbackModel: string,
+    reason: HostedModelFallbackReason = "hosted_credits_exhausted",
+  ): Promise<void> {
+    if (fallbackModel !== CAMEL_FREE_LLM_MODEL) {
+      throw new Error(`Unsupported hosted-credit fallback model ${fallbackModel}`);
+    }
+
+    const orgStub = this.env.ORG.get(this.env.ORG.idFromName(context.orgId));
+    const updated = await orgStub.updateThreadModel(
+      context.threadId,
+      CAMEL_FREE_LLM_MODEL,
+      context.userId ?? undefined,
+      normalizeLlmModel(requestedModel),
+    );
+    if (!updated) {
+      // A user may have selected another model while hosted access was being
+      // checked. The compare-and-set in OrgDO protects that newer choice.
+      return;
+    }
+
+    this.currentThreadModel = updated.model;
+    this.currentThreadModelUpdatedAt = updated.updated_at;
+    this.modelFallbackNotice = {
+      id: crypto.randomUUID(),
+      fromModel: requestedModel,
+      toModel: CAMEL_FREE_LLM_MODEL,
+      reason,
+      createdAt: Date.now(),
+    };
+    this.syncAgentState();
   }
 
   /**
@@ -4870,6 +4997,10 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
       runCodeModeJavascript: (request) => this.runCodeModeJavascript(request),
       resolvePiModel: (context, envVars, getModelFn) =>
         this.resolvePiModel(context, envVars, getModelFn),
+      resolvePiCapabilityModel: (context, modelId, getModelFn) =>
+        this.resolvePiCapabilityModel(context, modelId, getModelFn),
+      consumeCapabilityAllowance: (context, capability, idempotencyKey) =>
+        this.consumeCapabilityAllowance(context, capability, idempotencyKey),
       piModelResolver: () => this.piModelResolver,
       afterPiToolCall: (toolContext, signal) =>
         this.afterPiToolCall(toolContext, signal),
@@ -5629,6 +5760,11 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
     }
     const current = await this.piModelResolver();
     this.piSession.state.model = current.model;
+    if (this.chatContext) {
+      this.piSession.state.tools = this.createPiToolDefinitions(this.chatContext, {
+        includeOracle: this.isCamelFreeActive(),
+      });
+    }
   }
 
   private recordCurrentThreadError(input: {

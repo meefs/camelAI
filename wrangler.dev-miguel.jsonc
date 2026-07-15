@@ -3,7 +3,7 @@
 	"name": "chiridion-app-dev-miguel",
 	"main": "build/server/index.js",
 	"no_bundle": true,
-	"compatibility_date": "2025-12-01",
+	"compatibility_date": "2026-03-24",
 	"compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
 	"upload_source_maps": true,
 	"observability": {
@@ -46,7 +46,7 @@
 		"directory": "build/client"
 	},
 	"images": { "binding": "IMAGES" },
-	"browser": { "binding": "BROWSER" },
+	"browser": { "binding": "BROWSER", "remote": true },
 	"ai": { "binding": "AI", "remote": true },
 	"worker_loaders": [{ "binding": "CODE_MODE_LOADER" }],
 	"containers": [

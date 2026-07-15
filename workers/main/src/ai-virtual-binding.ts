@@ -48,7 +48,7 @@ const TIER_MODELS: Readonly<Record<ProviderKind, Readonly<Record<TierName, strin
     cheap: "gpt-5.4-nano",
     fast: "gpt-5.4-mini",
     auto: "gpt-5.4-mini",
-    smart: "gpt-5.5",
+    smart: "gpt-5.6-sol",
   },
   anthropic: {
     cheap: "claude-haiku-4-5-20251001",
@@ -76,8 +76,8 @@ const DEFAULT_BEDROCK_REGION = "us-east-1";
 /**
  * Back-compat shim for already-deployed user workers that still call the old
  * model strings the pre-tier `resolveModel` accepted. Without this, the
- * pass-through path would turn `gpt-5.5` into `gpt-5.5:nitro` (a non-existent
- * OpenRouter id) and `auto_search` into `auto_search:nitro`, breaking those
+ * pass-through path would turn removed friendly model ids into non-existent
+ * OpenRouter ids and `auto_search` into `auto_search:nitro`, breaking those
  * apps on rollout.
  *
  * - The old "auto"-family routes (`dynamic/auto`, `auto_search`) map to the
@@ -93,7 +93,8 @@ const LEGACY_MODEL_ALIASES: Readonly<Record<string, string>> = {
   auto_search: "auto",
   "dynamic/auto_search": "auto",
   "dynamic/auto_image": "auto_image",
-  "gpt-5.5": "openai/gpt-5.5",
+  "gpt-5.5": "openai/gpt-5.6-terra",
+  "openai/gpt-5.5": "openai/gpt-5.6-terra",
   "kimi-k2.6": "moonshotai/kimi-k2.7-code",
   "kimi-latest": "moonshotai/kimi-k2.7-code",
   opus: "anthropic/claude-opus-4.8",

@@ -118,7 +118,7 @@ describe('getWorkspaceModelPickerState rollout compatibility', () => {
       defaultModel: 'sonnet',
     });
     expect(state?.allowedThreadModels).toContain('sonnet');
-    expect(state?.allowedThreadModels).toContain('gpt-5.5');
+    expect(state?.allowedThreadModels).toContain('gpt-5.6-luna');
     expect(state?.allowedThreadModels).toContain('gpt-5.6-terra');
     expect(orgStub.getModelPickerConfig).toHaveBeenCalledTimes(2);
     expect(workspaceStub.getModelPickerConfig).toHaveBeenCalledTimes(2);
@@ -416,7 +416,7 @@ describe('getWorkspaceModelPickerState rollout compatibility', () => {
 
     const state = await getWorkspaceModelPickerState({}, 'ws_123');
     expect(state?.allowedThreadModels).not.toContain('fable-5');
-    expect(state?.allowedThreadModels[0]).toBe('opus-4.8');
+    expect(state?.allowedThreadModels[0]).toBe('deepseek-v4-auto');
     expect(state?.allowedThreadModels).toContain('opus-4.8');
 
     await expect(

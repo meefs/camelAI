@@ -62,19 +62,22 @@ export function TaskDetails({ tool, result, results, progressCount }: TaskDetail
   const input = tool?.input ?? {};
   const description = typeof input.description === 'string' ? input.description : '';
   const prompt = typeof input.prompt === 'string' ? input.prompt : '';
+  const question = typeof input.question === 'string' ? input.question : '';
   const agent = typeof input.agent === 'string' ? input.agent : '';
   const model = typeof input.model === 'string' ? input.model : '';
   const resolvedResults = results ?? (result ? [result] : []);
   const totalResults = typeof progressCount === 'number' ? progressCount : resolvedResults.length;
   const finalResult = resolvedResults.find((block) => !block.isTaskUpdate);
   const finalResultText = finalResult ? getResultText(finalResult) : '';
-  const hasHeaderDetails = Boolean(agent || model || description || prompt);
+  const hasHeaderDetails = Boolean(agent || model || description || prompt || question);
   const isAgent =
     tool?.name === 'Task' ||
     tool?.name === 'Agent' ||
     tool?.name === 'agent' ||
     tool?.name === 'Explore' ||
-    tool?.name === 'explore';
+    tool?.name === 'explore' ||
+    tool?.name === 'Research' ||
+    tool?.name === 'Oracle';
   const showProgress = isAgent && totalResults > 0;
   const showResultsList = isAgent && resolvedResults.length > 0;
 
@@ -84,6 +87,7 @@ export function TaskDetails({ tool, result, results, progressCount }: TaskDetail
       {model ? <DetailRow label="Model:" value={model} /> : null}
       {description ? <DetailRow label="Description:" value={description} /> : null}
       {prompt ? <DetailRow label="Prompt:" value={prompt} copyValue={prompt} /> : null}
+      {question ? <DetailRow label="Question:" value={question} copyValue={question} /> : null}
       {(hasHeaderDetails && (showProgress || finalResultText)) ? <Separator className="my-2" /> : null}
       {showResultsList ? (
         <Collapsible open={resultsExpanded} onOpenChange={setResultsExpanded}>

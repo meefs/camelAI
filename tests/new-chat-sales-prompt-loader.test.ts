@@ -265,7 +265,7 @@ describe('new chat loader sales prompt handling', () => {
     expect(interactive.allowedThreadModels).toEqual([
       'gpt-5.6-sol',
       'gpt-5.6-terra',
-      'gpt-5.5',
+      'gpt-5.6-luna',
     ]);
 
     consoleError.mockRestore();

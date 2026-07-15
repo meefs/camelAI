@@ -316,14 +316,14 @@ export default function OrganizationUsagePage() {
               {renewalLabel ? ` Resets ${renewalLabel}.` : ""}
             </p>
             <p className="text-sm text-muted-foreground">
-              Credits cover hosted LLM calls and built-in tools like web search.
+              Credits cover hosted LLM calls. Built-in capabilities use separate daily allowances.
               Bringing your own LLM key only avoids the LLM cost.
             </p>
             {llmProviderConfig ? (
               <p className="text-sm text-muted-foreground">
                 Using your{" "}
                 {getByokProviderLabel(llmProviderConfig.provider)} key for LLM
-                turns. Built-in tools still draw from credits.{" "}
+                turns. Built-in capabilities use the same plan allowances.{" "}
                 <Link
                   to="/settings/organization/ai-provider"
                   className="text-primary hover:underline"

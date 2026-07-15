@@ -40,6 +40,14 @@ describe("calculateUsageCostUsd", () => {
       inputPerToken: 0.0000025,
       outputPerToken: 0.000015,
     });
+    expect(lookupPricing("openai/gpt-5.6-luna")).toMatchObject({
+      inputPerToken: 0.000001,
+      outputPerToken: 0.000006,
+      cacheReadPerToken: 0.0000001,
+    });
+    expect(lookupPricing("openai/gpt-5.6-luna:nitro")).toBe(
+      lookupPricing("gpt-5.6-luna"),
+    );
     expect(lookupPricing("gpt-5.6")).toBe(lookupPricing("gpt-5.6-sol"));
     expect(
       calculateUsageCostUsd({

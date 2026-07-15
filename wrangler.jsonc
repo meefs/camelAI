@@ -2,7 +2,7 @@
 	"$schema": "node_modules/wrangler/config-schema.json",
 	"name": "chiridion-app",
 	"main": "workers/main/src/index.ts",
-	"compatibility_date": "2025-12-01",
+	"compatibility_date": "2026-03-24",
 	"keep_names": false,
 	"compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
 	"rules": [{ "type": "Text", "globs": ["**/*.md"], "fallthrough": true }],
@@ -42,7 +42,8 @@
 		"binding": "IMAGES"
 	},
 	"browser": {
-		"binding": "BROWSER"
+		"binding": "BROWSER",
+		"remote": true
 	},
 	"ai": {
 		"binding": "AI",

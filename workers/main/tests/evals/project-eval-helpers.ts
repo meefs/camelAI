@@ -321,6 +321,59 @@ export function toolCallReferences(
   );
 }
 
+export function completedToolDetails(
+  events: Array<Record<string, unknown>>,
+  toolName: string,
+): Record<string, unknown> | undefined {
+  const expected = toolName.toLowerCase();
+  const item = collectRuntimeItems(events).find((candidate) => {
+    const tool = runtimeToolName(candidate);
+    return runtimeItemSucceeded(candidate) &&
+      (tool === expected || tool?.endsWith(`__${expected}`));
+  });
+  return asRecord(asRecord(item?.result)?.details);
+}
+
+export function capabilityChildUsedTools(
+  events: Array<Record<string, unknown>>,
+  capability: string,
+): string[] {
+  const details = completedToolDetails(events, capability);
+  return Array.isArray(details?.childToolsUsed)
+    ? details.childToolsUsed.filter((value): value is string => typeof value === "string")
+    : [];
+}
+
+export function toolProgressText(
+  events: Array<Record<string, unknown>>,
+  toolName: string,
+): string[] {
+  const expected = toolName.toLowerCase();
+  const itemIds = new Set<string>();
+  for (const rawEvent of events) {
+    const event = asRecord(rawEvent);
+    if (event?.type !== "runtime_event") continue;
+    const runtimeEvent = asRecord(event.event);
+    if (runtimeEvent?.method !== "item/started") continue;
+    const item = asRecord(asRecord(runtimeEvent.params)?.item);
+    const tool = runtimeToolName(item ?? {});
+    const id = asString(item?.id);
+    if (id && (tool === expected || tool?.endsWith(`__${expected}`))) itemIds.add(id);
+  }
+  const deltas: string[] = [];
+  for (const rawEvent of events) {
+    const event = asRecord(rawEvent);
+    if (event?.type !== "runtime_event") continue;
+    const runtimeEvent = asRecord(event.event);
+    if (runtimeEvent?.method !== "item/commandExecution/outputDelta") continue;
+    const params = asRecord(runtimeEvent.params);
+    const itemId = asString(params?.itemId);
+    const delta = asString(params?.delta);
+    if (itemId && itemIds.has(itemId) && delta) deltas.push(delta);
+  }
+  return deltas;
+}
+
 function parseJsonText(value: unknown): unknown {
   if (typeof value !== "string") return value;
   try {

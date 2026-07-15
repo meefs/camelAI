@@ -134,6 +134,41 @@
       "kind": "unit"
     },
     {
+      "id": "hosted-credit-camel-free-fallback-live",
+      "description": "Automatically persist Camel Free and complete the turn when a hosted model has no credits",
+      "kind": "unit"
+    },
+    {
+      "id": "camel-free-oracle-live",
+      "description": "Use the Camel Free-only Oracle for a focused second opinion",
+      "kind": "unit"
+    },
+    {
+      "id": "camel-free-oracle-trivial-live",
+      "description": "Reserve Oracle for non-trivial work instead of delegating simple arithmetic",
+      "kind": "unit"
+    },
+    {
+      "id": "camel-free-oracle-fix-live",
+      "description": "Delegate a blocked implementation issue for Oracle to inspect and repair directly",
+      "kind": "skill"
+    },
+    {
+      "id": "camel-free-oracle-project-start-live",
+      "description": "Delegate an ambitious project start for Oracle to create a concrete workspace foundation",
+      "kind": "skill"
+    },
+    {
+      "id": "research-agent-live",
+      "description": "Delegate a multi-source web investigation to the DeepSeek Auto Research agent",
+      "kind": "skill"
+    },
+    {
+      "id": "web-tools-contract-live",
+      "description": "Use WebSearch and WebFetch through js_exec and verify their compact array/string return contract",
+      "kind": "unit"
+    },
+    {
       "id": "orders-analytics-api-live",
       "description": "Build and deploy an order-tracking app whose API math the harness verifies live",
       "kind": "skill",

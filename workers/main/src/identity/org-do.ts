@@ -62,6 +62,13 @@ import {
   getOrgSeatLimit,
 } from "../../../../src/lib/billing-plans";
 import { calculateEffectiveUsageCostUsd } from "../../../../src/lib/usage-pricing";
+import {
+  getCapabilityAllowancePolicy,
+  isHostedCapability,
+  nextUtcDayStart,
+  utcDayKey,
+  type HostedCapability,
+} from "../../../../src/lib/capability-allowances";
 import { dispatchAdminEvent } from "./admin-events";
 import { normalizeOrgBillingFields } from "./billing-state";
 import { recordErrorEvent, recordObservabilityEvent } from "../observability";
@@ -481,6 +488,22 @@ export interface UsageRecordInput {
   created_at_ms?: number | null;
   source?: string | null;
   source_id?: string | null;
+}
+
+export interface ConsumeCapabilityAllowanceInput {
+  capability: HostedCapability;
+  user_id?: string | null;
+  idempotency_key?: string | null;
+  now_ms?: number | null;
+}
+
+export interface CapabilityAllowanceResult {
+  allowed: boolean;
+  capability: HostedCapability;
+  daily_limit: number | null;
+  used: number;
+  remaining: number | null;
+  reset_at_ms: number;
 }
 
 export interface UsageLogQuery {
@@ -1695,7 +1718,35 @@ export class OrgDO extends DurableObject<DOEnv> {
       this.ensureStripeSubscriptionInvoiceGrantsTable();
     }
 
-    const CURRENT_SCHEMA_VERSION = 41;
+    if (version < 42) {
+      // V42: Per-user daily product allowances for hosted capabilities. These
+      // are deliberately separate from usage_log and credit charging.
+      this.sql.exec(`
+        CREATE TABLE IF NOT EXISTS capability_daily_usage (
+          day_key TEXT NOT NULL,
+          capability TEXT NOT NULL,
+          user_id TEXT NOT NULL,
+          used INTEGER NOT NULL DEFAULT 0,
+          updated_at_ms INTEGER NOT NULL,
+          PRIMARY KEY (day_key, capability, user_id)
+        )
+      `);
+      this.sql.exec(`
+        CREATE TABLE IF NOT EXISTS capability_usage_events (
+          idempotency_key TEXT NOT NULL,
+          day_key TEXT NOT NULL,
+          capability TEXT NOT NULL,
+          user_id TEXT NOT NULL,
+          created_at_ms INTEGER NOT NULL,
+          PRIMARY KEY (day_key, capability, user_id, idempotency_key)
+        )
+      `);
+      this.sql.exec(
+        "CREATE INDEX IF NOT EXISTS idx_capability_events_day ON capability_usage_events(day_key)",
+      );
+    }
+
+    const CURRENT_SCHEMA_VERSION = 42;
     if (version < CURRENT_SCHEMA_VERSION) {
       this.ctx.storage.kv.put("schemaVersion", CURRENT_SCHEMA_VERSION);
     }
@@ -6805,9 +6856,16 @@ export class OrgDO extends DurableObject<DOEnv> {
     id: string,
     model: LlmModel,
     actorId?: string,
+    expectedModel?: LlmModel,
   ): OrgThread | null {
     const existing = this.getThread(id);
     if (!existing) return null;
+    if (
+      expectedModel !== undefined &&
+      existing.model !== normalizeThreadModelForStorage(expectedModel)
+    ) {
+      return null;
+    }
     const normalizedModel = normalizeThreadModelForStorage(model);
     if (normalizedModel === existing.model) {
       return existing;
@@ -7613,6 +7671,128 @@ export class OrgDO extends DurableObject<DOEnv> {
       tokenId ?? null,
       now,
     );
+  }
+
+  consumeCapabilityAllowance(
+    input: ConsumeCapabilityAllowanceInput,
+  ): CapabilityAllowanceResult {
+    if (!isHostedCapability(input.capability)) {
+      throw new Error(`Unknown hosted capability: ${String(input.capability)}`);
+    }
+
+    const now = usageInteger(input.now_ms) || Date.now();
+    const dayKey = utcDayKey(now);
+    const resetAtMs = nextUtcDayStart(now);
+    const userId = usageText(input.user_id) || "org";
+    const idempotencyKey = usageText(input.idempotency_key);
+    const info = this.getInfoSync();
+    const policy = getCapabilityAllowancePolicy(
+      input.capability,
+      info?.billing_plan,
+      info?.billing_status,
+    );
+    const dailyLimit = policy.dailyLimit;
+
+    if (dailyLimit === null) {
+      return {
+        allowed: true,
+        capability: input.capability,
+        daily_limit: null,
+        used: 0,
+        remaining: null,
+        reset_at_ms: resetAtMs,
+      };
+    }
+
+    return this.ctx.storage.transactionSync(() => {
+      // Retain only today's small counter/event set. Usage telemetry remains in
+      // usage_log; this table is solely the current allowance window.
+      this.sql.exec("DELETE FROM capability_daily_usage WHERE day_key != ?", dayKey);
+      this.sql.exec("DELETE FROM capability_usage_events WHERE day_key != ?", dayKey);
+
+      const readUsed = () => Number(
+        this.sql
+          .exec<{ used: number }>(
+            `SELECT used FROM capability_daily_usage
+             WHERE day_key = ? AND capability = ? AND user_id = ?`,
+            dayKey,
+            input.capability,
+            userId,
+          )
+          .toArray()[0]?.used ?? 0,
+      );
+
+      if (idempotencyKey) {
+        const existing = this.sql
+          .exec<{ idempotency_key: string }>(
+            `SELECT idempotency_key FROM capability_usage_events
+             WHERE day_key = ? AND capability = ? AND user_id = ? AND idempotency_key = ?`,
+            dayKey,
+            input.capability,
+            userId,
+            idempotencyKey,
+          )
+          .toArray()[0];
+        if (existing) {
+          const used = readUsed();
+          return {
+            allowed: true,
+            capability: input.capability,
+            daily_limit: dailyLimit,
+            used,
+            remaining: Math.max(0, dailyLimit - used),
+            reset_at_ms: resetAtMs,
+          };
+        }
+      }
+
+      const used = readUsed();
+      if (used >= dailyLimit) {
+        return {
+          allowed: false,
+          capability: input.capability,
+          daily_limit: dailyLimit,
+          used,
+          remaining: 0,
+          reset_at_ms: resetAtMs,
+        };
+      }
+
+      const nextUsed = used + 1;
+      this.sql.exec(
+        `INSERT INTO capability_daily_usage (
+           day_key, capability, user_id, used, updated_at_ms
+         ) VALUES (?, ?, ?, 1, ?)
+         ON CONFLICT(day_key, capability, user_id) DO UPDATE SET
+           used = used + 1,
+           updated_at_ms = excluded.updated_at_ms`,
+        dayKey,
+        input.capability,
+        userId,
+        now,
+      );
+      if (idempotencyKey) {
+        this.sql.exec(
+          `INSERT INTO capability_usage_events (
+            idempotency_key, day_key, capability, user_id, created_at_ms
+           ) VALUES (?, ?, ?, ?, ?)`,
+          idempotencyKey,
+          dayKey,
+          input.capability,
+          userId,
+          now,
+        );
+      }
+
+      return {
+        allowed: true,
+        capability: input.capability,
+        daily_limit: dailyLimit,
+        used: nextUsed,
+        remaining: Math.max(0, dailyLimit - nextUsed),
+        reset_at_ms: resetAtMs,
+      };
+    });
   }
 
   recordUsage(usage: UsageRecordInput): {

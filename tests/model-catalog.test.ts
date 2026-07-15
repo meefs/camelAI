@@ -85,11 +85,11 @@ const NEW_FRONTIER_MODELS: Array<{
   cost: string;
 }> = [
   {
-    id: 'gpt-5.5',
-    label: 'GPT-5.5',
+    id: 'gpt-5.6-luna',
+    label: 'GPT-5.6 Luna',
     providerLogo: 'openai',
-    pricingKey: 'gpt-5.5',
-    cost: '$$$$',
+    pricingKey: 'gpt-5.6-luna',
+    cost: '$$',
   },
   {
     id: 'opus-4.8',
@@ -166,7 +166,7 @@ describe('MODEL_CATALOG', () => {
     }
   });
 
-  it('adds GPT-5.5 and Opus 4.8 as distinct priced models', () => {
+  it('adds Luna and Opus 4.8 as distinct priced models', () => {
     for (const expected of NEW_FRONTIER_MODELS) {
       expect(MODEL_CATALOG[expected.id]).toMatchObject({
         id: expected.id,
@@ -180,6 +180,8 @@ describe('MODEL_CATALOG', () => {
     expect(MODEL_CATALOG).not.toHaveProperty('opus-4.7');
     expect(LLM_MODEL_TO_PRICING_KEY).not.toHaveProperty('opus');
     expect(LLM_MODEL_TO_PRICING_KEY).not.toHaveProperty('opus-4.7');
+    expect(MODEL_CATALOG).not.toHaveProperty('gpt-5.5');
+    expect(LLM_MODEL_TO_PRICING_KEY).not.toHaveProperty('gpt-5.5');
     expect(MODEL_CATALOG['fable-5']).toMatchObject({
       id: 'fable-5',
       label: 'Fable 5',
@@ -200,7 +202,7 @@ describe('MODEL_CATALOG', () => {
           { id: 'opus-4.8', added_at: 11 },
           { id: 'gpt-5.6-sol', added_at: 12 },
           { id: 'gpt-5.6-terra', added_at: 13 },
-          { id: 'gpt-5.5', added_at: 12 },
+          { id: 'gpt-5.6-luna', added_at: 14 },
           { id: 'kimi-k2.7-code', added_at: 5 },
           { id: 'grok-4.5', added_at: 6 },
           { id: 'gemini-3-flash-preview', added_at: 7 },
@@ -216,7 +218,7 @@ describe('MODEL_CATALOG', () => {
     expect(visible.map((entry) => entry.id)).toEqual([
       'gpt-5.6-sol',
       'gpt-5.6-terra',
-      'gpt-5.5',
+      'gpt-5.6-luna',
     ]);
   });
 
@@ -248,7 +250,7 @@ describe('MODEL_CATALOG', () => {
         { id: 'opus-4.8' as const, added_at: 2 },
         { id: 'gpt-5.6-sol' as const, added_at: 3 },
         { id: 'gpt-5.6-terra' as const, added_at: 4 },
-        { id: 'gpt-5.5' as const, added_at: 3 },
+        { id: 'gpt-5.6-luna' as const, added_at: 5 },
         { id: 'kimi-k2.7-code' as const, added_at: 6 },
       ],
     };
@@ -259,7 +261,7 @@ describe('MODEL_CATALOG', () => {
         orgProvider: 'custom',
         customApi: 'openai-responses',
       }).map((entry) => entry.id),
-    ).toEqual(['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.5']);
+    ).toEqual(['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna']);
     expect(
       resolveModelPickerCatalog({
         effectiveConfig,
@@ -307,7 +309,7 @@ describe('MODEL_CATALOG', () => {
       'haiku',
       'gpt-5.6-sol',
       'gpt-5.6-terra',
-      'gpt-5.5',
+      'gpt-5.6-luna',
       'gemini-3.5-flash',
       'gemini-3-flash-preview',
       'deepseek-v4-pro',

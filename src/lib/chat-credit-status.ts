@@ -1,5 +1,8 @@
 import type { OrgBillingOverview } from '@/lib/billing.server';
-import { isLlmModelCoveredByByokProvider } from '@/lib/llm-provider-config';
+import {
+  isCreditFreeHostedModel,
+  isLlmModelCoveredByByokProvider,
+} from '@/lib/llm-provider-config';
 import type { LlmModel } from '@/types';
 
 export interface BillingCreditStatus {
@@ -45,6 +48,9 @@ export function buildBillingCreditStatus(
   threadModel?: LlmModel | null,
 ): BillingCreditStatus | null {
   if (!overview || overview.billing_status === 'enterprise') {
+    return null;
+  }
+  if (isCreditFreeHostedModel(threadModel)) {
     return null;
   }
   const hasByokProvider = Boolean(byokProvider);

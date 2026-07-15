@@ -13,11 +13,16 @@ import {
 } from '../src/chat-thread/pi-compaction';
 import { extractToolContent } from '../src/chat-thread/pi-message-helpers';
 import { PiCoreMessageStore } from '../src/chat-thread/pi-core-store';
+import {
+  HostedModelCreditsExhaustedError,
+  HostedModelSubscriptionUnavailableError,
+} from '../src/chat-thread/pi-model-config';
 import { BrowserPromptCoordinator } from '../src/chat-thread-browser-prompts';
 import { CamelAiService } from '../src/camelai-service';
 import { encryptCredentials } from '../../../src/lib/integration-crypto';
 import { stripPiUiMetadata } from '../../../src/lib/runtime-artifacts';
 import { PiChunkEncoder } from '../../../src/lib/pi-chunk-encoder';
+import { CodeModeWebSearch } from '../src/code-mode-web-search';
 
 afterEach(() => {
   vi.useRealTimers();
@@ -269,7 +274,7 @@ function createProjectToolFake({
 }
 
 describe('ChatThreadDO Pi turn handling', () => {
-  it('routes both GPT-5.6 product models to OpenAI', () => {
+  it('routes GPT-5.6 product models to OpenAI', () => {
     const mapping = new PiModelMapping();
     expect(mapping.resolvePiModelReference('gpt-5.6-sol')).toMatchObject({
       provider: 'openai',
@@ -278,6 +283,10 @@ describe('ChatThreadDO Pi turn handling', () => {
     expect(mapping.resolvePiModelReference('gpt-5.6-terra')).toMatchObject({
       provider: 'openai',
       modelId: 'gpt-5.6-terra',
+    });
+    expect(mapping.resolvePiModelReference('gpt-5.6-luna')).toMatchObject({
+      provider: 'openai',
+      modelId: 'gpt-5.6-luna',
     });
   });
 
@@ -1757,12 +1766,56 @@ describe('ChatThreadDO Pi turn handling', () => {
     );
 
     expect(model.model).toMatchObject({
-      id: 'openai/gpt-5.5:nitro',
+      id: 'openai/gpt-5.6-terra:nitro',
       provider: 'cloudflare-ai-gateway',
       api: 'openai-responses',
       baseUrl: 'https://gateway.ai.cloudflare.com/v1/acct_1/gateway_1/openrouter',
     });
     expect(fake.piCurrentUsageProvider).toBe('openrouter');
+  });
+
+  it('runs sponsored capability agents on hosted GPT-5.6 Luna without BYOK or credit charging', async () => {
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    fake.env = {
+      CF_ACCOUNT_ID: 'acct_1',
+      CF_GATEWAY_NAME: 'gateway_1',
+      AI_GATEWAY_AUTH_TOKEN: 'cf-token',
+    };
+    fake.chatContext = {
+      orgId: 'org1',
+      workspaceId: 'workspace1',
+      threadId: 'thread1',
+    };
+    fake.resolveCurrentByokCredentials = vi.fn(async () => ({
+      provider: 'openai',
+      apiKey: 'user-key',
+    }));
+    fake.checkHostedPiModelAccess = vi.fn(async () => true);
+
+    const model = await ChatThreadDO.prototype['resolvePiCapabilityModel'].call(
+      fake,
+      { orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1' },
+      'gpt-5.6-luna',
+      vi.fn(() => ({
+        id: 'gpt-5.6-luna',
+        provider: 'openai',
+        api: 'openai-responses',
+        baseUrl: 'https://api.openai.com/v1',
+      })),
+    );
+
+    expect(model).toMatchObject({
+      billingSource: 'hosted',
+      creditChargeable: false,
+      usageProvider: 'openrouter',
+    });
+    expect(model.model).toMatchObject({
+      id: 'openai/gpt-5.6-luna:nitro',
+      provider: 'cloudflare-ai-gateway',
+      api: 'openai-responses',
+    });
+    expect(fake.resolveCurrentByokCredentials).not.toHaveBeenCalled();
+    expect(fake.checkHostedPiModelAccess).not.toHaveBeenCalled();
   });
 
   it('uses the Responses API shape for Grok while routing through OpenRouter AI Gateway', async () => {
@@ -1921,6 +1974,180 @@ describe('ChatThreadDO Pi turn handling', () => {
       'deepseek-v4-auto',
     );
     expect(fake.piCurrentUsageProvider).toBe('compat');
+  });
+
+  it('falls back to Camel Free when hosted credits are exhausted', async () => {
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    fake.env = {
+      CF_ACCOUNT_ID: 'acct_1',
+      CF_GATEWAY_NAME: 'gateway_1',
+      AI_GATEWAY_AUTH_TOKEN: 'cf-token',
+    };
+    fake.chatContext = {
+      orgId: 'org1',
+      workspaceId: 'workspace1',
+      threadId: 'thread1',
+    };
+    fake.resolveCurrentByokCredentials = vi.fn(async () => null);
+    fake.checkHostedPiModelAccess = vi.fn(async (_context: unknown, model: string) => {
+      if (model !== 'deepseek-v4-auto') {
+        throw new HostedModelCreditsExhaustedError('Hosted model credits are used up.');
+      }
+      return { creditChargeable: false, vllmPriority: '100' };
+    });
+    fake.fallbackThreadToFreeModel = vi.fn(async () => undefined);
+    const envVars = { CHIRIDION_CODEX_MODEL: 'gpt-5.5' };
+
+    const model = await ChatThreadDO.prototype['resolvePiModel'].call(
+      fake,
+      { orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1' },
+      envVars,
+      vi.fn((_provider: string, modelId: string) => ({
+        id: modelId,
+        provider: modelId === 'gpt-5.5' ? 'openai' : 'openrouter',
+        api: modelId === 'gpt-5.5' ? 'openai-responses' : 'openai-completions',
+        baseUrl: 'https://example.com',
+      })),
+    );
+
+    expect(envVars).toMatchObject({
+      CHIRIDION_MODEL: 'deepseek-v4-auto',
+      CHIRIDION_CODEX_MODEL: 'deepseek-v4-auto',
+      CHIRIDION_CLAUDE_MODEL: 'deepseek-v4-auto',
+    });
+    expect(fake.fallbackThreadToFreeModel).toHaveBeenCalledWith(
+      expect.anything(),
+      'gpt-5.5',
+      'deepseek-v4-auto',
+      'hosted_credits_exhausted',
+    );
+    expect(fake.checkHostedPiModelAccess).toHaveBeenNthCalledWith(
+      2,
+      expect.anything(),
+      'deepseek-v4-auto',
+    );
+    expect(model).toMatchObject({
+      billingSource: 'hosted',
+      creditChargeable: false,
+      model: {
+        id: 'dynamic/deepseek-v4-auto',
+        provider: 'cloudflare-ai-gateway',
+      },
+    });
+  });
+
+  it('falls back to Camel Free when the paid subscription is unavailable', async () => {
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    fake.env = {
+      CF_ACCOUNT_ID: 'acct_1',
+      CF_GATEWAY_NAME: 'gateway_1',
+      AI_GATEWAY_AUTH_TOKEN: 'cf-token',
+    };
+    fake.chatContext = { orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1' };
+    fake.resolveCurrentByokCredentials = vi.fn(async () => null);
+    fake.checkHostedPiModelAccess = vi.fn(async (_context: unknown, model: string) => {
+      if (model !== 'deepseek-v4-auto') {
+        throw new HostedModelSubscriptionUnavailableError('Paid hosted access is inactive.');
+      }
+      return { creditChargeable: false, vllmPriority: '100' };
+    });
+    fake.fallbackThreadToFreeModel = vi.fn(async () => undefined);
+
+    await ChatThreadDO.prototype['resolvePiModel'].call(
+      fake,
+      { orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1' },
+      { CHIRIDION_MODEL: 'gpt-5.5' },
+      vi.fn((_provider: string, modelId: string) => ({
+        id: modelId,
+        provider: modelId === 'gpt-5.5' ? 'openai' : 'openrouter',
+        api: modelId === 'gpt-5.5' ? 'openai-responses' : 'openai-completions',
+        baseUrl: 'https://example.com',
+      })),
+    );
+
+    expect(fake.fallbackThreadToFreeModel).toHaveBeenCalledWith(
+      expect.anything(),
+      'gpt-5.5',
+      'deepseek-v4-auto',
+      'hosted_subscription_unavailable',
+    );
+  });
+
+  it('persists and broadcasts a Camel Free credit fallback', async () => {
+    const updated = {
+      model: 'deepseek-v4-auto',
+      updated_at: 1234,
+    };
+    const orgStub = {
+      updateThreadModel: vi.fn(async () => updated),
+    };
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    fake.env = {
+      ORG: {
+        idFromName: vi.fn((id: string) => id),
+        get: vi.fn(() => orgStub),
+      },
+    };
+    fake.syncAgentState = vi.fn();
+
+    await ChatThreadDO.prototype['fallbackThreadToFreeModel'].call(
+      fake,
+      {
+        orgId: 'org1',
+        workspaceId: 'workspace1',
+        threadId: 'thread1',
+        userId: 'user1',
+      },
+      'gpt-5.5',
+      'deepseek-v4-auto',
+    );
+
+    expect(orgStub.updateThreadModel).toHaveBeenCalledWith(
+      'thread1',
+      'deepseek-v4-auto',
+      'user1',
+      'gpt-5.6-terra',
+    );
+    expect(fake.currentThreadModel).toBe('deepseek-v4-auto');
+    expect(fake.currentThreadModelUpdatedAt).toBe(1234);
+    expect(fake.modelFallbackNotice).toMatchObject({
+      fromModel: 'gpt-5.5',
+      toModel: 'deepseek-v4-auto',
+      reason: 'hosted_credits_exhausted',
+      createdAt: expect.any(Number),
+    });
+    expect(fake.syncAgentState).toHaveBeenCalledOnce();
+  });
+
+  it('does not overwrite a newer model selection during fallback', async () => {
+    const orgStub = { updateThreadModel: vi.fn(async () => null) };
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    fake.env = {
+      ORG: {
+        idFromName: vi.fn((id: string) => id),
+        get: vi.fn(() => orgStub),
+      },
+    };
+    fake.currentThreadModel = 'gpt-5.5';
+    fake.modelFallbackNotice = null;
+    fake.syncAgentState = vi.fn();
+
+    await ChatThreadDO.prototype['fallbackThreadToFreeModel'].call(
+      fake,
+      { orgId: 'org1', threadId: 'thread1', userId: 'user1' },
+      'gpt-5.5',
+      'deepseek-v4-auto',
+    );
+
+    expect(orgStub.updateThreadModel).toHaveBeenCalledWith(
+      'thread1',
+      'deepseek-v4-auto',
+      'user1',
+      'gpt-5.6-terra',
+    );
+    expect(fake.currentThreadModel).toBe('gpt-5.5');
+    expect(fake.modelFallbackNotice).toBeNull();
+    expect(fake.syncAgentState).not.toHaveBeenCalled();
   });
 
   it('routes hosted deepseek-v4-pro through the AI Gateway dynamic fallback route', async () => {
@@ -2628,7 +2855,7 @@ describe('ChatThreadDO Pi turn handling', () => {
     );
 
     expect(model.model).toMatchObject({
-      id: 'openai/gpt-5.5:nitro',
+      id: 'openai/gpt-5.6-terra:nitro',
       provider: 'openai',
       api: 'openai-responses',
       baseUrl: 'https://openrouter.ai/api/v1',
@@ -7145,7 +7372,19 @@ describe('ChatThreadDO Pi turn handling', () => {
       put: vi.fn(async () => undefined),
     };
     const fake = Object.create(CodeModeToolsBinding.prototype) as any;
+    const orgStub = {
+      consumeCapabilityAllowance: vi.fn(async () => ({
+        allowed: true,
+        remaining: 99,
+        reset_at_ms: Date.now() + 60_000,
+      })),
+      recordUsage: vi.fn(async () => undefined),
+    };
     fake.env = {
+      ORG: {
+        idFromName: vi.fn((name: string) => name),
+        get: vi.fn(() => orgStub),
+      },
       APP_KV: kv,
       FIRECRAWL_API_KEY: 'firecrawl-key',
       PARALLEL_API_KEY: 'parallel-key',
@@ -7203,6 +7442,16 @@ describe('ChatThreadDO Pi turn handling', () => {
         title: 'Workers docs',
         url: 'https://developers.cloudflare.com/workers/',
       })]);
+      expect(orgStub.consumeCapabilityAllowance).toHaveBeenCalledWith(
+        expect.objectContaining({ capability: 'web_search', user_id: 'user1' }),
+      );
+      expect(orgStub.recordUsage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          source: 'web_search',
+          cost_usd: 0.005,
+          credit_chargeable: false,
+        }),
+      );
     } finally {
       vi.unstubAllGlobals();
     }
@@ -7210,11 +7459,28 @@ describe('ChatThreadDO Pi turn handling', () => {
 
   it('runs Worker-side WebFetch through the configured provider API', async () => {
     const fake = Object.create(CodeModeToolsBinding.prototype) as any;
+    const quickAction = vi.fn(async () => Response.json({
+      success: false,
+      errors: [{ message: 'Unsupported page' }],
+    }, { status: 400, headers: { 'X-Browser-Ms-Used': '55' } }));
+    const orgStub = {
+      consumeCapabilityAllowance: vi.fn(async () => ({
+        allowed: true,
+        remaining: 199,
+        reset_at_ms: Date.now() + 60_000,
+      })),
+      recordUsage: vi.fn(async () => undefined),
+    };
     fake.env = {
+      ORG: {
+        idFromName: vi.fn((name: string) => name),
+        get: vi.fn(() => orgStub),
+      },
       APP_KV: {
         get: vi.fn(async () => '0'),
         put: vi.fn(async () => undefined),
       },
+      BROWSER: { quickAction },
       EXA_API_KEY: 'exa-key',
       WEB_PROVIDER_ORDER: 'exa',
     };
@@ -7233,7 +7499,7 @@ describe('ChatThreadDO Pi turn handling', () => {
       const body = JSON.parse(String(init?.body));
       expect(body).toMatchObject({
         urls: ['https://example.com/article'],
-        livecrawl: 'always',
+        livecrawl: 'fallback',
         text: { maxCharacters: 1200 },
       });
       return new Response(JSON.stringify({
@@ -7249,17 +7515,179 @@ describe('ChatThreadDO Pi turn handling', () => {
     try {
       const result = await CodeModeToolsBinding.prototype.callTool.call(fake, 'WebFetch', {
         url: 'https://example.com/article',
-        fresh: true,
         maxCharacters: 1200,
       }) as any;
 
       expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(quickAction).toHaveBeenCalledOnce();
       expect(result.provider).toBe('exa');
       expect(result.costUSD).toBe(0.002);
       expect(result.content[0].text).toContain('Fetched article text.');
+      expect(orgStub.consumeCapabilityAllowance).toHaveBeenCalledWith(
+        expect.objectContaining({ capability: 'web_fetch', user_id: 'user1' }),
+      );
+      expect(orgStub.recordUsage).toHaveBeenCalledWith(
+        expect.objectContaining({ source: 'web_fetch', cost_usd: 0.002 }),
+      );
+      expect(orgStub.recordUsage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          source: 'web_fetch',
+          provider: 'cloudflare',
+          duration_ms: 55,
+          cost_usd: 0,
+        }),
+      );
     } finally {
       vi.unstubAllGlobals();
     }
+  });
+
+  it('uses the Cloudflare Browser Run Markdown Quick Action first for WebFetch', async () => {
+    const quickAction = vi.fn(async () => Response.json({
+      success: true,
+      result: '# Rendered page\n\nRendered by Cloudflare.',
+    }, { headers: { 'X-Browser-Ms-Used': '142' } }));
+    const client = new CodeModeWebSearch(
+      {
+        APP_KV: { get: vi.fn(), put: vi.fn() } as any,
+        BROWSER: { quickAction } as unknown as Fetcher,
+        EXA_API_KEY: 'exa-key',
+      },
+      'thread1',
+    );
+
+    const result = await client.fetch({ url: 'https://example.com/article' }) as any;
+
+    expect(quickAction).toHaveBeenCalledWith('markdown', expect.objectContaining({
+      url: 'https://example.com/article',
+      cacheTTL: 300,
+      actionTimeout: 20_000,
+      bestAttempt: true,
+      rejectResourceTypes: ['image', 'media', 'font'],
+      rejectRequestPattern: expect.arrayContaining([
+        expect.stringContaining('localhost'),
+        expect.stringContaining('169'),
+      ]),
+    }));
+    const quickActionOptions = quickAction.mock.calls[0][1] as {
+      rejectRequestPattern: string[];
+    };
+    const redirectDenyRegexes = quickActionOptions.rejectRequestPattern.map((pattern) => {
+      const match = pattern.match(/^\/(.*)\/([a-z]*)$/i);
+      if (!match) throw new Error(`Invalid reject request pattern: ${pattern}`);
+      return new RegExp(match[1], match[2]);
+    });
+    for (const redirectUrl of [
+      'http://localhost/',
+      'http://localhost.localdomain/',
+      'http://nested.dev.localhost/',
+      'http://service.local/',
+      'http://metadata.internal/',
+      'http://100.64.0.1/',
+      'http://100.127.255.255/',
+      'http://224.0.0.1/',
+      'http://255.255.255.255/',
+      'http://[fe90::1]/',
+      'https://user:secret@example.com/',
+    ]) {
+      expect(
+        redirectDenyRegexes.some((pattern) => pattern.test(redirectUrl)),
+        `redirect deny policy should cover ${redirectUrl}`,
+      ).toBe(true);
+    }
+    expect(result).toMatchObject({
+      provider: 'cloudflare',
+      durationMs: 142,
+      results: [{ text: '# Rendered page\n\nRendered by Cloudflare.' }],
+    });
+  });
+
+  it('rejects local and private WebFetch targets before calling a provider', async () => {
+    const quickAction = vi.fn();
+    const client = new CodeModeWebSearch(
+      {
+        APP_KV: { get: vi.fn(), put: vi.fn() } as any,
+        BROWSER: { quickAction } as unknown as Fetcher,
+      },
+      'thread1',
+    );
+
+    for (const url of [
+      'http://localhost/admin',
+      'http://127.0.0.1/',
+      'http://10.0.0.1/',
+      'http://169.254.169.254/latest/meta-data/',
+      'http://192.168.1.1/',
+      'http://[::1]/',
+      'http://[fe90::1]/',
+      'http://[febf::1]/',
+      'https://user:secret@example.com/',
+    ]) {
+      await expect(client.fetch({ url })).rejects.toThrow();
+    }
+    expect(quickAction).not.toHaveBeenCalled();
+  });
+
+  it('surfaces Cloudflare Browser Run errors from the errors array', async () => {
+    const onProviderFailure = vi.fn(async () => undefined);
+    const quickAction = vi.fn(async () => Response.json({
+      success: false,
+      errors: [{ code: 1001, message: 'Quick Action does not support this site' }],
+    }, { status: 400, headers: { 'X-Browser-Ms-Used': '77' } }));
+    const client = new CodeModeWebSearch(
+      {
+        APP_KV: { get: vi.fn(), put: vi.fn() } as any,
+        BROWSER: { quickAction } as unknown as Fetcher,
+      },
+      'thread1',
+      { onProviderFailure },
+    );
+
+    await expect(client.fetch({ url: 'https://example.com/' })).rejects.toThrow(
+      'Quick Action does not support this site (1001)',
+    );
+    expect(onProviderFailure).toHaveBeenCalledWith(expect.objectContaining({
+      provider: 'cloudflare',
+      durationMs: 77,
+    }));
+  });
+
+  it('falls back from Cloudflare Browser Run to Exa for unsupported pages', async () => {
+    const cloudflareFetch = vi.fn(async () => {
+      throw new Error('page contained no readable text');
+    });
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
+      costDollars: { total: 0.002 },
+      results: [{
+        title: 'Fallback page',
+        url: 'https://example.com/article',
+        text: 'Fetched through Exa.',
+      }],
+    })));
+    vi.stubGlobal('fetch', fetchMock);
+    const client = new CodeModeWebSearch(
+      {
+        APP_KV: { get: vi.fn(), put: vi.fn() } as any,
+        BROWSER: {} as Fetcher,
+        EXA_API_KEY: 'exa-key',
+        FIRECRAWL_API_KEY: 'firecrawl-key',
+        WEB_PROVIDER_ORDER: 'firecrawl,parallel,exa',
+      },
+      'thread1',
+      { cloudflareFetch },
+    );
+
+    const result = await client.fetch({ url: 'https://example.com/article' }) as any;
+
+    expect(cloudflareFetch).toHaveBeenCalledOnce();
+    expect(fetchMock).toHaveBeenCalledWith(
+      'https://api.exa.ai/contents',
+      expect.any(Object),
+    );
+    expect(result).toMatchObject({
+      provider: 'exa',
+      results: [{ text: 'Fetched through Exa.' }],
+    });
   });
 
   it('uses Pi-style schemas for restored file and shell tools', () => {
@@ -7458,7 +7886,7 @@ describe('ChatThreadDO Pi turn handling', () => {
     });
   });
 
-  it('exposes Pi subagent tools and omits recursive subagents for child agents', () => {
+  it('exposes shared Research and Camel Free-only Oracle without recursive capability agents', () => {
     const fake = Object.create(ChatThreadDO.prototype) as any;
     fake.ctx = {
       exports: {
@@ -7476,8 +7904,9 @@ describe('ChatThreadDO Pi turn handling', () => {
     };
     const rootTools = ChatThreadDO.prototype['createPiToolDefinitions'].call(fake, context);
     expect(rootTools.map((tool: any) => tool.name)).toEqual(
-      expect.arrayContaining(['Agent', 'Explore']),
+      expect.arrayContaining(['Agent', 'Explore', 'Research']),
     );
+    expect(rootTools.map((tool: any) => tool.name)).not.toContain('Oracle');
     expect(rootTools.map((tool: any) => tool.name)).not.toEqual(
       expect.arrayContaining(['agent', 'explore']),
     );
@@ -7488,6 +7917,100 @@ describe('ChatThreadDO Pi turn handling', () => {
     });
     expect(childTools.map((tool: any) => tool.name)).not.toEqual(
       expect.arrayContaining(['Agent', 'Explore']),
+    );
+
+    const camelFreeTools = ChatThreadDO.prototype['createPiToolDefinitions'].call(fake, context, {
+      includeOracle: true,
+    });
+    expect(camelFreeTools.map((tool: any) => tool.name)).toEqual(
+      expect.arrayContaining(['Research', 'Oracle']),
+    );
+    const oracle = camelFreeTools.find((tool: any) => tool.name === 'Oracle');
+    expect(oracle?.description).toContain('when you are stuck');
+    expect(oracle?.description).toContain('directly investigate and fix issues');
+    expect(oracle?.description).toContain('create or start ambitious projects');
+    expect(oracle?.description).not.toMatch(/gpt|luna|model/i);
+
+    for (const activeModel of [
+      'gpt-5.5',
+      'gpt-5.6-sol',
+      'gpt-5.6-terra',
+      'deepseek-v4-pro',
+      'claude-sonnet-4-6',
+      'custom',
+      null,
+    ]) {
+      fake.currentThreadModel = activeModel;
+      expect(
+        ChatThreadDO.prototype['isCamelFreeActive'].call(fake),
+        `Oracle policy must be disabled for ${activeModel ?? 'no active model'}`,
+      ).toBe(false);
+    }
+    fake.currentThreadModel = 'deepseek-v4-auto';
+    expect(ChatThreadDO.prototype['isCamelFreeActive'].call(fake)).toBe(true);
+    expect(ChatThreadDO.prototype['isCamelFreeActive'].call(fake, {
+      CHIRIDION_MODEL: 'gpt-5.5',
+    })).toBe(false);
+    expect(ChatThreadDO.prototype['isCamelFreeActive'].call(fake, {
+      CHIRIDION_MODEL: 'deepseek-v4-auto',
+    })).toBe(true);
+
+    const capabilityChildTools = ChatThreadDO.prototype['createPiToolDefinitions'].call(fake, context, {
+      includeSubagents: false,
+      includeResearch: false,
+      includeOracle: false,
+    });
+    expect(capabilityChildTools.map((tool: any) => tool.name)).not.toEqual(
+      expect.arrayContaining(['Agent', 'Explore', 'Research', 'Oracle']),
+    );
+  });
+
+  it('keeps Oracle when refreshing an active Camel Free session', async () => {
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    const refreshedModel = { id: 'dynamic/deepseek-v4-auto' };
+    fake.piSession = { state: { model: null, tools: [] } };
+    fake.piModelResolver = vi.fn(async () => ({ model: refreshedModel }));
+    fake.chatContext = {
+      orgId: 'org1',
+      workspaceId: 'workspace1',
+      threadId: 'thread1',
+      userId: 'user1',
+    };
+    fake.currentThreadModel = 'deepseek-v4-auto';
+    fake.createPiToolDefinitions = vi.fn(() => []);
+
+    await ChatThreadDO.prototype['refreshPiSessionModel'].call(fake);
+
+    expect(fake.piSession.state.model).toBe(refreshedModel);
+    expect(fake.createPiToolDefinitions).toHaveBeenCalledWith(
+      fake.chatContext,
+      { includeOracle: true },
+    );
+  });
+
+  it('removes Oracle when refreshing any non-Camel Free session', async () => {
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    const refreshedModel = { id: 'openai/gpt-5.5' };
+    fake.piSession = { state: { model: null, tools: [{ name: 'Oracle' }] } };
+    fake.piModelResolver = vi.fn(async () => ({ model: refreshedModel }));
+    fake.chatContext = {
+      orgId: 'org1',
+      workspaceId: 'workspace1',
+      threadId: 'thread1',
+      userId: 'user1',
+    };
+    fake.currentThreadModel = 'gpt-5.5';
+    fake.createPiToolDefinitions = vi.fn((_context: unknown, options: any) =>
+      options.includeOracle ? [{ name: 'Oracle' }] : []
+    );
+
+    await ChatThreadDO.prototype['refreshPiSessionModel'].call(fake);
+
+    expect(fake.piSession.state.model).toBe(refreshedModel);
+    expect(fake.piSession.state.tools).toEqual([]);
+    expect(fake.createPiToolDefinitions).toHaveBeenCalledWith(
+      fake.chatContext,
+      { includeOracle: false },
     );
   });
 
@@ -7514,7 +8037,7 @@ describe('ChatThreadDO Pi turn handling', () => {
     );
 
     // Core tools and subagents are always present.
-    for (const name of ['read', 'write', 'edit', 'delete', 'ls', 'js_exec', 'Agent', 'Explore']) {
+    for (const name of ['read', 'write', 'edit', 'delete', 'ls', 'js_exec', 'Agent', 'Explore', 'Research']) {
       expect(toolNames.has(name)).toBe(true);
     }
 
@@ -7550,6 +8073,38 @@ describe('ChatThreadDO Pi turn handling', () => {
     await expect(fake.callToolEnvelope('boom', {})).resolves.toEqual({
       ok: false,
       error: { tool: 'boom', message: 'cron_expression is required' },
+    });
+  });
+
+  it('returns compact, provider-agnostic WebSearch and WebFetch values to js_exec', async () => {
+    const fake = Object.create(CodeModeToolsBinding.prototype) as any;
+    fake.callTool = vi.fn(async (name: string) => ({
+      content: [{ type: 'text', text: 'formatted legacy content' }],
+      costUSD: 0.007,
+      provider: 'exa',
+      success: true,
+      url: 'https://example.com/article',
+      results: [{
+        title: 'Example',
+        url: 'https://example.com/article',
+        publishedDate: '2026-07-15',
+        author: 'Camel',
+        snippet: 'Short result.',
+        text: name === 'WebFetch' ? 'Full page text.' : '',
+      }],
+    }));
+
+    await expect(fake.callToolEnvelope('WebSearch', {})).resolves.toEqual({
+      ok: true,
+      data: [{
+        title: 'Example',
+        url: 'https://example.com/article',
+        snippet: 'Short result.',
+      }],
+    });
+    await expect(fake.callToolEnvelope('WebFetch', {})).resolves.toEqual({
+      ok: true,
+      data: 'Full page text.',
     });
   });
 

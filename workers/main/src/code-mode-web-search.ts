@@ -1,7 +1,9 @@
-type WebProvider = "firecrawl" | "parallel" | "exa";
+type WebProvider = "cloudflare" | "firecrawl" | "parallel" | "exa";
+type SearchProvider = Exclude<WebProvider, "cloudflare">;
 
 interface CodeModeWebSearchEnv {
   APP_KV: KVNamespace;
+  BROWSER?: Fetcher;
   FIRECRAWL_API_KEY?: string;
   FIRECRAWL_BASE_URL?: string;
   PARALLEL_API_KEY?: string;
@@ -25,11 +27,21 @@ interface WebProviderResult {
   provider: WebProvider;
   results: WebResult[];
   costUSD: number;
+  durationMs?: number;
 }
 
-const WEB_PROVIDER_DEFAULT_ORDER: WebProvider[] = ["firecrawl", "parallel", "exa"];
+const WEB_SEARCH_PROVIDER_DEFAULT_ORDER: SearchProvider[] = ["firecrawl", "parallel", "exa"];
+const WEB_FETCH_PROVIDER_DEFAULT_ORDER: WebProvider[] = ["cloudflare", "exa", "firecrawl", "parallel"];
 const WEB_PROVIDER_ROUND_ROBIN_KEY = "code-mode:web-provider:index";
 const WEB_PROVIDER_TIMEOUT_MS = 20_000;
+const WEB_FETCH_REJECT_REQUEST_PATTERNS = [
+  "/^https?:\\/\\/[^@\\/]+@/i",
+  "/^https?:\\/\\/(?:localhost(?:\\.localdomain)?|[^\\/]+\\.(?:localhost|local|internal))(?::\\d+)?(?:[\\/?#]|$)/i",
+  "/^https?:\\/\\/(?:0|10|127|169\\.254|172\\.(?:1[6-9]|2\\d|3[01])|192\\.(?:0|168)|198\\.1[89])(?:\\.\\d{1,3}){0,3}(?::\\d+)?(?:[\\/?#]|$)/i",
+  "/^https?:\\/\\/100\\.(?:6[4-9]|[7-9]\\d|1[01]\\d|12[0-7])(?:\\.\\d{1,3}){2}(?::\\d+)?(?:[\\/?#]|$)/i",
+  "/^https?:\\/\\/(?:22[4-9]|2[3-4]\\d|25[0-5])(?:\\.\\d{1,3}){3}(?::\\d+)?(?:[\\/?#]|$)/i",
+  "/^https?:\\/\\/\\[(?:::|::1|::ffff:|fc|fd|fe[89ab])[^\\]]*\\](?::\\d+)?(?:[\\/?#]|$)/i",
+];
 
 function clampInteger(value: unknown, fallback: number, min: number, max: number): number {
   const parsed = typeof value === "number" ? Math.trunc(value) : Number.parseInt(String(value ?? ""), 10);
@@ -46,10 +58,6 @@ function truncateText(value: unknown, maxCharacters: number): string {
 function stringParam(params: Record<string, unknown>, key: string): string {
   const value = params[key];
   return typeof value === "string" ? value.trim() : "";
-}
-
-function boolParam(params: Record<string, unknown>, key: string): boolean {
-  return params[key] === true;
 }
 
 function defaultString(value: string, fallback: string): string {
@@ -100,7 +108,79 @@ function payloadMessage(payload: Record<string, unknown>): string {
   }
   const message = payload.message;
   if (typeof message === "string" && message.trim()) return message.trim();
+  if (Array.isArray(payload.errors)) {
+    const messages = payload.errors.flatMap((entry) => {
+      if (typeof entry === "string" && entry.trim()) return [entry.trim()];
+      if (!entry || typeof entry !== "object" || Array.isArray(entry)) return [];
+      const errorRecord = entry as Record<string, unknown>;
+      const errorMessage = typeof errorRecord.message === "string"
+        ? errorRecord.message.trim()
+        : "";
+      const code = typeof errorRecord.code === "number" || typeof errorRecord.code === "string"
+        ? String(errorRecord.code)
+        : "";
+      if (!errorMessage) return [];
+      return [code ? `${errorMessage} (${code})` : errorMessage];
+    });
+    if (messages.length > 0) return messages.join("; ");
+  }
   return "unknown error";
+}
+
+function parseIPv4(hostname: string): number[] | null {
+  const parts = hostname.split(".");
+  if (parts.length !== 4) return null;
+  const octets = parts.map((part) => /^\d+$/.test(part) ? Number.parseInt(part, 10) : Number.NaN);
+  return octets.every((octet) => Number.isInteger(octet) && octet >= 0 && octet <= 255)
+    ? octets
+    : null;
+}
+
+function isBlockedIPv4(octets: number[]): boolean {
+  const [a, b] = octets;
+  return (
+    a === 0 ||
+    a === 10 ||
+    a === 127 ||
+    (a === 100 && b >= 64 && b <= 127) ||
+    (a === 169 && b === 254) ||
+    (a === 172 && b >= 16 && b <= 31) ||
+    (a === 192 && b === 0) ||
+    (a === 192 && b === 168) ||
+    (a === 198 && (b === 18 || b === 19)) ||
+    a >= 224
+  );
+}
+
+function assertPublicWebURL(url: URL): void {
+  if (url.username || url.password) {
+    throw new Error("Web fetch URL must not include embedded credentials");
+  }
+  const hostname = url.hostname.toLowerCase().replace(/^\[|\]$/g, "").replace(/\.$/, "");
+  if (
+    hostname === "localhost" ||
+    hostname === "localhost.localdomain" ||
+    hostname.endsWith(".localhost") ||
+    hostname.endsWith(".local") ||
+    hostname.endsWith(".internal")
+  ) {
+    throw new Error("Web fetch URL must not point to a local hostname");
+  }
+  const ipv4 = parseIPv4(hostname);
+  if (ipv4 && isBlockedIPv4(ipv4)) {
+    throw new Error("Web fetch URL must not point to a private, loopback, or link-local IP address");
+  }
+  if (
+    hostname.includes(":") &&
+    (hostname === "::" ||
+      hostname === "::1" ||
+      hostname.startsWith("::ffff:") ||
+      hostname.startsWith("fc") ||
+      hostname.startsWith("fd") ||
+      /^fe[89ab]/.test(hostname))
+  ) {
+    throw new Error("Web fetch URL must not point to a private, loopback, or link-local IP address");
+  }
 }
 
 function normalizeDomains(value: unknown): string[] {
@@ -282,6 +362,10 @@ export class CodeModeWebSearch {
   constructor(
     private readonly env: CodeModeWebSearchEnv,
     private readonly sessionId: string,
+    private readonly options: {
+      cloudflareFetch?: (targetURL: string, maxCharacters: number) => Promise<WebProviderResult>;
+      onProviderFailure?: (result: unknown) => Promise<void>;
+    } = {},
   ) {}
 
   async search(args: Record<string, unknown>): Promise<unknown> {
@@ -315,6 +399,7 @@ export class CodeModeWebSearch {
     if (url.protocol !== "http:" && url.protocol !== "https:") {
       throw new Error("Only http and https URLs are supported");
     }
+    assertPublicWebURL(url);
     const maxCharacters = clampInteger(args.maxCharacters, 12_000, 500, 30_000);
     const providerResult = await this.withProviderFallback("fetch", (provider) =>
       this.fetchWithProvider(provider, args, url.toString(), maxCharacters)
@@ -327,6 +412,7 @@ export class CodeModeWebSearch {
     return {
       content: [{ type: "text", text }],
       costUSD: providerResult.costUSD,
+      durationMs: providerResult.durationMs,
       provider: providerResult.provider,
       results: providerResult.results,
       success: true,
@@ -337,6 +423,8 @@ export class CodeModeWebSearch {
 
   private providerBaseURL(provider: WebProvider): string {
     switch (provider) {
+      case "cloudflare":
+        return "";
       case "firecrawl":
         return (this.env.FIRECRAWL_BASE_URL || "https://api.firecrawl.dev").replace(/\/+$/, "");
       case "parallel":
@@ -348,6 +436,8 @@ export class CodeModeWebSearch {
 
   private providerAPIKey(provider: WebProvider): string {
     switch (provider) {
+      case "cloudflare":
+        return "";
       case "firecrawl":
         return (this.env.FIRECRAWL_API_KEY || "").trim();
       case "parallel":
@@ -361,19 +451,38 @@ export class CodeModeWebSearch {
     operation: "search" | "fetch",
     call: (provider: WebProvider) => Promise<WebProviderResult>,
   ): Promise<WebProviderResult> {
-    const configuredOrder = (this.env.WEB_PROVIDER_ORDER || this.env.CHIRIDION_WEB_PROVIDER_ORDER || "firecrawl,parallel,exa")
+    const configuredProviderOrder = (
+      this.env.WEB_PROVIDER_ORDER ||
+      this.env.CHIRIDION_WEB_PROVIDER_ORDER ||
+      ""
+    ).trim();
+    const configuredOrder = configuredProviderOrder
       .split(",")
       .map((value) => value.trim().toLowerCase())
-      .filter((value): value is WebProvider => value === "firecrawl" || value === "parallel" || value === "exa");
-    const preferred = [...configuredOrder];
-    for (const provider of WEB_PROVIDER_DEFAULT_ORDER) {
+      .filter((value): value is SearchProvider => value === "firecrawl" || value === "parallel" || value === "exa");
+    const defaultOrder = operation === "fetch"
+      ? WEB_FETCH_PROVIDER_DEFAULT_ORDER
+      : WEB_SEARCH_PROVIDER_DEFAULT_ORDER;
+    // Fetch is deterministic and independent of search tuning: Cloudflare Browser Run's
+    // Markdown Quick Action gets the first try, followed by Exa, Firecrawl, and Parallel.
+    // Search keeps its configured order and round-robin behavior because
+    // Browser Run is a page fetcher, not a search index.
+    const preferred: WebProvider[] = operation === "fetch"
+      ? [...WEB_FETCH_PROVIDER_DEFAULT_ORDER]
+      : configuredOrder.length > 0
+        ? [...configuredOrder]
+        : [...defaultOrder];
+    for (const provider of defaultOrder) {
       if (!preferred.includes(provider)) preferred.push(provider);
     }
     const providers: WebProvider[] = [];
     for (const provider of preferred) {
-      if (!providers.includes(provider) && this.providerAPIKey(provider) !== "") providers.push(provider);
+      const available = provider === "cloudflare"
+        ? Boolean(this.env.BROWSER)
+        : this.providerAPIKey(provider) !== "";
+      if (!providers.includes(provider) && available) providers.push(provider);
     }
-    if (providers.length > 1) {
+    if (operation === "search" && providers.length > 1) {
       let start = 0;
       try {
         const raw = await this.env.APP_KV.get(WEB_PROVIDER_ROUND_ROBIN_KEY);
@@ -391,7 +500,11 @@ export class CodeModeWebSearch {
     const failures: string[] = [];
     for (const provider of providers) {
       try {
-        return await call(provider);
+        const result = await call(provider);
+        if (operation === "fetch" && result.results.length === 0) {
+          throw new Error("returned no usable content");
+        }
+        return result;
       } catch (error) {
         failures.push(`${provider}: ${error instanceof Error ? error.message : String(error)}`);
       }
@@ -446,6 +559,8 @@ export class CodeModeWebSearch {
     maxCharacters: number,
   ): Promise<WebProviderResult> {
     switch (provider) {
+      case "cloudflare":
+        throw new Error("Cloudflare Browser Run does not provide web search");
       case "firecrawl":
         return this.firecrawlSearch(args, query, numResults, maxCharacters);
       case "parallel":
@@ -462,13 +577,132 @@ export class CodeModeWebSearch {
     maxCharacters: number,
   ): Promise<WebProviderResult> {
     switch (provider) {
+      case "cloudflare":
+        return this.cloudflareFetch(targetURL, maxCharacters);
       case "firecrawl":
-        return this.firecrawlFetch(args, targetURL, maxCharacters);
+        return this.firecrawlFetch(targetURL, maxCharacters);
       case "parallel":
         return this.parallelFetch(args, targetURL, maxCharacters);
       case "exa":
         return this.exaFetch(args, targetURL, maxCharacters);
     }
+  }
+
+  private async cloudflareFetch(
+    targetURL: string,
+    maxCharacters: number,
+  ): Promise<WebProviderResult> {
+    if (this.options.cloudflareFetch) {
+      return await this.options.cloudflareFetch(targetURL, maxCharacters);
+    }
+    if (!this.env.BROWSER) {
+      throw new Error("Cloudflare Browser Run binding is unavailable");
+    }
+
+    const browserRun = this.env.BROWSER as Fetcher & {
+      quickAction?: (
+        action: "markdown",
+        options: Record<string, unknown>,
+      ) => Promise<Response>;
+    };
+    if (typeof browserRun.quickAction !== "function") {
+      throw new Error("Cloudflare Browser Run Quick Actions are unavailable");
+    }
+
+    const startedAt = Date.now();
+    let deadlineId: ReturnType<typeof setTimeout> | undefined;
+    let response: Response;
+    try {
+      response = await Promise.race([
+        browserRun.quickAction("markdown", {
+          url: targetURL,
+          gotoOptions: {
+            waitUntil: "domcontentloaded",
+            timeout: WEB_PROVIDER_TIMEOUT_MS,
+          },
+          actionTimeout: WEB_PROVIDER_TIMEOUT_MS,
+          rejectResourceTypes: ["image", "media", "font"],
+          // Quick Actions follow redirects internally. Keep the same local/private
+          // destinations blocked throughout navigation, not only for the initial URL.
+          rejectRequestPattern: WEB_FETCH_REJECT_REQUEST_PATTERNS,
+          bestAttempt: true,
+          cacheTTL: 300,
+        }),
+        new Promise<never>((_resolve, reject) => {
+          deadlineId = setTimeout(
+            () => reject(new Error(`Cloudflare Browser Run timed out after ${WEB_PROVIDER_TIMEOUT_MS}ms`)),
+            WEB_PROVIDER_TIMEOUT_MS,
+          );
+        }),
+      ]);
+    } catch (error) {
+      await this.options.onProviderFailure?.({
+        provider: "cloudflare",
+        results: [],
+        costUSD: 0,
+        durationMs: Math.max(0, Date.now() - startedAt),
+      });
+      throw error;
+    } finally {
+      if (deadlineId !== undefined) clearTimeout(deadlineId);
+    }
+    const durationMs = numberValue(response.headers.get("X-Browser-Ms-Used")) ??
+      Math.max(0, Date.now() - startedAt);
+    let raw: string;
+    try {
+      raw = await response.text();
+    } catch (error) {
+      await this.options.onProviderFailure?.({
+        provider: "cloudflare",
+        results: [],
+        costUSD: 0,
+        durationMs,
+      });
+      throw error;
+    }
+    let payload: Record<string, unknown> = {};
+    if (raw.trim()) {
+      try {
+        payload = JSON.parse(raw) as Record<string, unknown>;
+      } catch {
+        await this.options.onProviderFailure?.({
+          provider: "cloudflare",
+          results: [],
+          costUSD: 0,
+          durationMs,
+        });
+        throw new Error("Cloudflare Browser Run returned an invalid response");
+      }
+    }
+    if (!response.ok || payload.success !== true) {
+      await this.options.onProviderFailure?.({
+        provider: "cloudflare",
+        results: [],
+        costUSD: 0,
+        durationMs,
+      });
+      throw new Error(
+        `Cloudflare Browser Run request failed with HTTP ${response.status}: ${payloadMessage(payload)}`,
+      );
+    }
+    const markdown = typeof payload.result === "string" ? payload.result.trim() : "";
+    if (!markdown) {
+      await this.options.onProviderFailure?.({
+        provider: "cloudflare",
+        results: [],
+        costUSD: 0,
+        durationMs,
+      });
+      throw new Error("page contained no readable markdown");
+    }
+    return {
+      provider: "cloudflare",
+      results: truncateResults([{ url: targetURL, text: markdown }], 1, maxCharacters),
+      // Quick Actions expose browser-time headers, not a per-request dollar meter.
+      // Provider and cost remain internal telemetry and are stripped from js_exec.
+      costUSD: 0,
+      durationMs,
+    };
   }
 
   private async firecrawlSearch(
@@ -524,7 +758,6 @@ export class CodeModeWebSearch {
   }
 
   private async firecrawlFetch(
-    args: Record<string, unknown>,
     targetURL: string,
     maxCharacters: number,
   ): Promise<WebProviderResult> {
@@ -535,7 +768,7 @@ export class CodeModeWebSearch {
       formats: ["markdown"],
       onlyMainContent: true,
       timeout: 30000,
-      maxAge: boolParam(args, "fresh") ? 0 : 172800000,
+      maxAge: 172800000,
     });
     const data = payload.data && typeof payload.data === "object" && !Array.isArray(payload.data)
       ? { ...(payload.data as Record<string, unknown>), url: targetURL }
@@ -600,7 +833,7 @@ export class CodeModeWebSearch {
       session_id: this.sessionId,
       advanced_settings: {
         fetch_policy: {
-          max_age_seconds: boolParam(args, "fresh") ? 600 : 172800,
+          max_age_seconds: 172800,
           timeout_seconds: 30,
           disable_cache_fallback: false,
         },
@@ -655,7 +888,7 @@ export class CodeModeWebSearch {
   ): Promise<WebProviderResult> {
     const body: Record<string, unknown> = {
       urls: [targetURL],
-      livecrawl: boolParam(args, "fresh") ? "always" : "fallback",
+      livecrawl: "fallback",
       livecrawlTimeout: 15000,
     };
     switch (stringParam(args, "content")) {

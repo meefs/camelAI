@@ -213,7 +213,7 @@ describe('model picker config parsing', () => {
     expect(parsed).toEqual({
       use_platform_defaults: false,
       models: [
-        { id: 'gpt-5.5', added_at: 5 },
+        { id: 'gpt-5.6-terra', added_at: 5 },
         { id: 'opus-4.8', added_at: 4 },
         { id: 'gemini-3-flash-preview', added_at: 4 },
         { id: 'gemini-3.5-flash', added_at: 3 },
@@ -228,7 +228,7 @@ describe('model picker config parsing', () => {
     const parsed = parseOrgModelPickerConfig({
       use_platform_defaults: false,
       models: [
-        { id: 'gpt-5.5', added_at: 5 },
+        { id: 'gpt-5.6-terra', added_at: 5 },
         { id: 'gemini-3.1-pro-preview', added_at: 4 },
       ],
       default_model: 'gemini-3.1-pro-preview',
@@ -237,7 +237,7 @@ describe('model picker config parsing', () => {
     expect(parsed).toEqual({
       use_platform_defaults: false,
       models: [
-        { id: 'gpt-5.5', added_at: 5 },
+        { id: 'gpt-5.6-terra', added_at: 5 },
         { id: 'gemini-3.5-flash', added_at: 4 },
       ],
       default_model: 'gemini-3.5-flash',

@@ -19,7 +19,7 @@ import {
 const CODEX_MODELS = [
   "gpt-5.6-sol",
   "gpt-5.6-terra",
-  "gpt-5.5",
+  "gpt-5.6-luna",
   "gemini-3.5-flash",
   "gemini-3-flash-preview",
   "deepseek-v4-pro",
@@ -56,7 +56,7 @@ const OPENROUTER_ONLY_MODELS = [
 const OPENROUTER_BYOK_CODEX_MODELS = [
   "gpt-5.6-sol",
   "gpt-5.6-terra",
-  "gpt-5.5",
+  "gpt-5.6-luna",
   "gemini-3.5-flash",
   "gemini-3-flash-preview",
   "deepseek-v4-pro",
@@ -103,7 +103,7 @@ describe("llm provider config helpers", () => {
     expect(getLlmModelOptions("openai").map((option) => option.value)).toEqual([
       "gpt-5.6-sol",
       "gpt-5.6-terra",
-      "gpt-5.5",
+      "gpt-5.6-luna",
     ]);
     expect(getLlmModelOptions("openrouter").map((option) => option.value)).toEqual([
       ...CLAUDE_MODELS,
@@ -117,7 +117,7 @@ describe("llm provider config helpers", () => {
       getLlmModelOptions("custom", { customApi: "openai-responses" }).map(
         (option) => option.value,
       ),
-    ).toEqual(["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.5"]);
+    ).toEqual(["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]);
     expect(
       getLlmModelOptions("custom", { customApi: "anthropic-messages" }).map(
         (option) => option.value,
@@ -168,7 +168,7 @@ describe("llm provider config helpers", () => {
       getVisibleLlmModelOptions({ claude_proxy_models: false }, null, {
         orgProvider: "openai",
       }).map((option) => option.value),
-    ).toEqual(["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.5"]);
+    ).toEqual(["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]);
     expect(
       getVisibleLlmModelOptions({ claude_proxy_models: false }).map(
         (option) => option.value,
@@ -238,7 +238,7 @@ describe("llm provider config helpers", () => {
         null,
         { orgProvider: "openai" },
       ).map((option) => option.value),
-    ).toEqual(["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.5"]);
+    ).toEqual(["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]);
     expect(
       getVisibleLlmModelOptions(
         { claude_proxy_models: true },

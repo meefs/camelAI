@@ -39,7 +39,10 @@ describe("ChatThreadDO hosted billing access", () => {
       ChatThreadDO.prototype["checkHostedPiModelAccess"].call(fake, {
         orgId: org.id,
       }),
-    ).resolves.toBe(false);
+    ).resolves.toEqual({
+      creditChargeable: false,
+      vllmPriority: "0",
+    });
   });
 
   it("uses generic hosted credit exhaustion wording for legacy trialing orgs", async () => {
@@ -102,6 +105,40 @@ describe("ChatThreadDO hosted billing access", () => {
         { orgId: org.id },
         "deepseek-v4-auto",
       ),
-    ).resolves.toBe(false);
+    ).resolves.toEqual({
+      creditChargeable: false,
+      vllmPriority: "100",
+    });
+  });
+
+  it("allows Camel Free without an active paid subscription", async () => {
+    const { userId } = await createUser(
+      testEnv,
+      testEmail(),
+      "password123",
+      "Inactive Camel Free User",
+    );
+    const { org } = await createOrg(testEnv, "Inactive Camel Free Org", userId, {
+      billingPlan: "starter",
+    });
+    const orgStub = testEnv.ORG.get(testEnv.ORG.idFromName(org.id));
+    await orgStub.updateBillingState({
+      billing_status: "inactive",
+      billing_credit_purchase_total_cents: 0,
+      billing_credit_grant_total_cents: 0,
+    });
+
+    const fake = createFakeThread();
+
+    await expect(
+      ChatThreadDO.prototype["checkHostedPiModelAccess"].call(
+        fake,
+        { orgId: org.id },
+        "deepseek-v4-auto",
+      ),
+    ).resolves.toEqual({
+      creditChargeable: false,
+      vllmPriority: "100",
+    });
   });
 });

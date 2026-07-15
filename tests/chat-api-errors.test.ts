@@ -86,7 +86,7 @@ describe('chat API error classification', () => {
   it('falls back to BYOK when the configured provider can serve the thread model', () => {
     const presentation = getChatApiErrorPresentation(ANTHROPIC_2B_RATE_LIMIT, {
       llmProvider: 'openai',
-      threadModel: 'gpt-5.5',
+      threadModel: 'gpt-5.6-luna',
     });
 
     expect(presentation.kind).toBe('byok_rate_limit');

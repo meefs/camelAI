@@ -94,6 +94,8 @@ export function ToolCallDetails({ tool, result, results, skillSheet, progressCou
     case 'agent':
     case 'Explore':
     case 'explore':
+    case 'Research':
+    case 'Oracle':
     case 'TaskOutput':
       content = (
         <TaskDetails

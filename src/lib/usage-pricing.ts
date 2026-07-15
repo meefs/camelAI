@@ -208,6 +208,21 @@ const modelPricingTable: Record<string, ModelPricing> = {
       },
     ],
   },
+  "gpt-5.6-luna": {
+    inputPerToken: 0.000001,
+    outputPerToken: 0.000006,
+    cacheCreationPerToken: 0.00000125,
+    cacheReadPerToken: 0.0000001,
+    tiers: [
+      {
+        inputTokensAbove: 272_000,
+        inputPerToken: 0.000002,
+        outputPerToken: 0.000009,
+        cacheCreationPerToken: 0.0000025,
+        cacheReadPerToken: 0.0000002,
+      },
+    ],
+  },
   "custom": {
     inputPerToken: 0,
     outputPerToken: 0,
@@ -346,6 +361,9 @@ export function lookupPricing(model: string): ModelPricing {
 
   if (normalized.startsWith("gpt-5.6-terra")) {
     return modelPricingTable["gpt-5.6-terra"];
+  }
+  if (normalized.startsWith("gpt-5.6-luna")) {
+    return modelPricingTable["gpt-5.6-luna"];
   }
   if (normalized.startsWith("gpt-5.6-sol") || normalized === "gpt-5.6") {
     return modelPricingTable["gpt-5.6-sol"];

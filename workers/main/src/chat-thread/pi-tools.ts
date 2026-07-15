@@ -44,10 +44,16 @@ import type {
   CodeModeJavascriptRequest,
   CodeModeJavascriptResult,
 } from "./types";
+import type { HostedCapability } from "../../../../src/lib/capability-allowances";
 
 export interface PiToolDefinitionOptions {
   includeSubagents?: boolean;
+  includeResearch?: boolean;
+  includeOracle?: boolean;
 }
+
+const RESEARCH_CAPABILITY_MODEL = "deepseek-v4-auto";
+const ORACLE_CAPABILITY_MODEL = "gpt-5.6-luna";
 
 // Passthrough harness tools in these categories are NOT advertised in the model's
 // top-level tool list. They remain fully callable inside js_exec via `tools.<name>()`
@@ -124,6 +130,20 @@ export interface PiToolSurfaceDeps {
     envVars: Record<string, string>,
     getModelFn: (provider: never, modelId: never) => Model<any>,
   ): Promise<PiResolvedModelConfig>;
+  resolvePiCapabilityModel(
+    context: ChatContextState,
+    modelId: string,
+    getModelFn: (provider: never, modelId: never) => Model<any>,
+  ): Promise<PiResolvedModelConfig>;
+  consumeCapabilityAllowance(
+    context: ChatContextState,
+    capability: HostedCapability,
+    idempotencyKey: string,
+  ): Promise<{
+    allowed: boolean;
+    remaining: number | null;
+    reset_at_ms: number;
+  }>;
   /** Reads the DO's current `piModelResolver` field (null when no main turn set one). */
   piModelResolver(): (() => Promise<PiResolvedModelConfig>) | null;
   afterPiToolCall(
@@ -347,6 +367,54 @@ export function createPiToolDefinitions(
     );
   }
 
+  const runCapability = (
+    capability: "Research" | "Oracle",
+    toolUseId: string,
+    params: unknown,
+    signal?: AbortSignal,
+    onUpdate?: (partialResult: AgentToolResult<unknown>) => void,
+  ) => deps.keepPiTurnToolProgressAliveWhile(() =>
+    runPiCapabilityAgentTool(
+      deps,
+      context,
+      capability,
+      toolUseId,
+      params,
+      signal,
+      onUpdate,
+    )
+  );
+
+  if (options.includeResearch !== false) {
+    definitions.push({
+      name: "Research",
+      label: "Research",
+      description:
+        "Delegate an open-ended, multi-source web investigation to a focused research agent. Use WebSearch for one quick lookup and WebFetch for a known URL; use Research when the answer needs several sources or synthesis.",
+      parameters: Type.Object({
+        question: Type.String(),
+      }),
+      execute: async (toolUseId, params, signal, onUpdate) =>
+        runCapability("Research", toolUseId, params, signal, onUpdate),
+      executionMode: "sequential",
+    });
+  }
+
+  if (options.includeOracle === true) {
+    definitions.push({
+      name: "Oracle",
+      label: "Oracle",
+      description:
+        "Use Oracle when you are stuck or repeatedly hitting an issue, or when stronger reasoning is likely to materially improve a difficult architecture, debugging, planning, or implementation task. Oracle can directly investigate and fix issues for you, and can create or start ambitious projects rather than only advising about them.",
+      parameters: Type.Object({
+        question: Type.String(),
+      }),
+      execute: async (toolUseId, params, signal, onUpdate) =>
+        runCapability("Oracle", toolUseId, params, signal, onUpdate),
+      executionMode: "sequential",
+    });
+  }
+
   return definitions;
 }
 
@@ -383,6 +451,8 @@ export async function runPiSubagentTool(
       model: modelConfig.model,
       tools: deps.createPiToolDefinitions(context, {
         includeSubagents: false,
+        includeResearch: false,
+        includeOracle: false,
       }),
       messages: [],
       thinkingLevel: "medium",
@@ -503,6 +573,223 @@ export async function runPiSubagentTool(
       toolName,
       durationMs: Math.max(0, Date.now() - startedAtMs),
       toolUseCount,
+    },
+  };
+}
+
+export async function runPiCapabilityAgentTool(
+  deps: PiToolSurfaceDeps,
+  context: ChatContextState,
+  toolName: "Research" | "Oracle",
+  toolUseId: string,
+  params: unknown,
+  signal?: AbortSignal,
+  onUpdate?: (partialResult: AgentToolResult<unknown>) => void,
+): Promise<AgentToolResult<unknown>> {
+  const raw = params && typeof params === "object"
+    ? params as Record<string, unknown>
+    : {};
+  const question = typeof raw.question === "string" ? raw.question.trim() : "";
+  if (!question) {
+    throw new Error(`${toolName} requires a question`);
+  }
+
+  const capability: HostedCapability = toolName === "Research" ? "research" : "oracle";
+  const allowance = await deps.consumeCapabilityAllowance(
+    context,
+    capability,
+    `${context.threadId}:${toolUseId}`,
+  );
+  if (!allowance.allowed) {
+    throw new Error(
+      `${toolName} daily allowance reached. It resets at ${new Date(allowance.reset_at_ms).toISOString()}.`,
+    );
+  }
+
+  const { Agent } = await import("@earendil-works/pi-agent-core");
+  const { getModel, streamSimple } = await import("@earendil-works/pi-ai/compat");
+  const isResearch = toolName === "Research";
+  const capabilityModel = isResearch
+    ? RESEARCH_CAPABILITY_MODEL
+    : ORACLE_CAPABILITY_MODEL;
+  let modelConfig = await deps.resolvePiCapabilityModel(
+    context,
+    capabilityModel,
+    getModel,
+  );
+  const capOutputTokens = (model: Model<any>): Model<any> => ({
+    ...model,
+    maxTokens: Math.min(Number(model.maxTokens || 16_384), 16_384),
+  });
+  let researchRequestCount = 0;
+  const capabilityTools = isResearch
+    ? deps.createPiToolDefinitions(context, {
+        includeSubagents: false,
+        includeResearch: false,
+        includeOracle: false,
+      })
+        .filter((tool) => tool.name === "WebSearch" || tool.name === "WebFetch")
+        .map((tool) => ({
+          ...tool,
+          execute: async (...args: Parameters<AgentTool["execute"]>) => {
+            if (researchRequestCount >= 8) {
+              throw new Error("Research reached its per-job limit of 8 web requests");
+            }
+            researchRequestCount += 1;
+            return await tool.execute(...args);
+          },
+        }))
+    : deps.createPiToolDefinitions(context, {
+        includeSubagents: false,
+        includeResearch: false,
+        includeOracle: false,
+      });
+  const systemPrompt = isResearch
+    ? [
+        "You are camelAI's focused web research agent.",
+        "Investigate the question using WebSearch and WebFetch, then return a concise synthesis with direct source URLs.",
+        "Use multiple independent sources when the claim warrants it. Distinguish facts from inference and mention important uncertainty.",
+        "Keep the task bounded: use no more than 3 searches and 5 fetches. Do not attempt workspace edits or unrelated work.",
+      ].join(" ")
+    : [
+        "You are camelAI's Oracle, a high-capability reasoning and execution agent.",
+        "Handle only the supplied question or task. For advice, give a direct recommendation, the strongest reasoning, important tradeoffs, and uncertainty.",
+        "When asked to investigate or fix an issue, inspect the workspace and use your tools to implement and verify the fix directly rather than only describing it.",
+        "When asked to create or start an ambitious project, use your tools to establish a concrete, working foundation and report what you completed.",
+        "Do not delegate to other agents. Keep the work focused, actionable, and honest about anything you could not verify.",
+      ].join(" ");
+
+  const child = new Agent({
+    initialState: {
+      systemPrompt,
+      model: capOutputTokens(modelConfig.model),
+      tools: capabilityTools,
+      messages: [],
+      thinkingLevel: isResearch ? "medium" : "high",
+    },
+    getApiKey: async () => {
+      const current = await deps.resolvePiCapabilityModel(
+        context,
+        capabilityModel,
+        getModel,
+      );
+      modelConfig = current;
+      child.state.model = capOutputTokens(current.model);
+      return current.apiKey;
+    },
+    afterToolCall: (toolContext, childSignal) =>
+      deps.afterPiToolCall(toolContext, childSignal),
+    streamFn: (model, llmContext, options) =>
+      deps.streamPiModel(model, llmContext, options, streamSimple),
+    sessionId: `${context.threadId}:${toolName}:${crypto.randomUUID()}`,
+    toolExecution: "sequential",
+  });
+
+  let assistantText = "";
+  let latestAssistantText = "";
+  let toolUseCount = 0;
+  const childToolsUsed: string[] = [];
+  let turnStartedAtMs = Date.now();
+  let finalMessages: AgentMessage[] = [];
+  const startedAtMs = Date.now();
+  const update = (text: string, details: Record<string, unknown>) => {
+    onUpdate?.({ content: [{ type: "text", text }], details });
+  };
+
+  const unsubscribe = child.subscribe((event) => {
+    try {
+      if (event.type === "turn_start") {
+        turnStartedAtMs = Date.now();
+        return;
+      }
+      if (event.type === "message_update") {
+        const assistantEvent = event.assistantMessageEvent as {
+          type?: string;
+          delta?: string;
+        };
+        if (assistantEvent.type === "text_delta" && assistantEvent.delta) {
+          assistantText += assistantEvent.delta;
+        }
+        return;
+      }
+      if (event.type === "message_end") {
+        latestAssistantText = extractPiMessageText(event.message) || assistantText;
+        return;
+      }
+      if (event.type === "tool_execution_start") {
+        toolUseCount += 1;
+        childToolsUsed.push(event.toolName);
+        update(`Running ${event.toolName}...`, {
+          status: "running",
+          toolName: event.toolName,
+          toolUseCount,
+        });
+        return;
+      }
+      if (event.type === "turn_end") {
+        const durationMs = Math.max(0, Date.now() - turnStartedAtMs);
+        deps.waitUntil(
+          deps.recordPiAssistantUsage(
+            event.message,
+            durationMs,
+            modelConfig.billingSource,
+            modelConfig.creditChargeable,
+            modelConfig.usageProvider,
+          ).catch((error) => {
+            console.error(`[ChatThreadDO] failed to record Pi ${capability} usage`, error);
+          }),
+        );
+        return;
+      }
+      if (event.type === "agent_end") {
+        finalMessages = event.messages;
+      }
+    } catch (error) {
+      console.error(`[ChatThreadDO] Pi ${capability} event handler failed`, error);
+    }
+  });
+
+  const abort = () => child.abort();
+  if (signal?.aborted) {
+    unsubscribe();
+    throw new Error(`${toolName} was aborted`);
+  }
+  signal?.addEventListener("abort", abort, { once: true });
+
+  try {
+    update(`${toolName} started.`, {
+      status: "running",
+      toolName,
+      ...(isResearch ? { model: capabilityModel } : {}),
+      remaining: allowance.remaining,
+      resetAtMs: allowance.reset_at_ms,
+    });
+    await child.prompt({
+      role: "user",
+      content: question,
+      timestamp: Date.now(),
+    } as AgentMessage);
+  } finally {
+    signal?.removeEventListener("abort", abort);
+    unsubscribe();
+  }
+
+  const finalText =
+    latestAssistantText ||
+    extractLatestPiAssistantText(finalMessages) ||
+    assistantText.trim() ||
+    `${toolName} completed without text output.`;
+  return {
+    content: [{ type: "text", text: finalText }],
+    details: {
+      status: "completed",
+      toolName,
+      ...(isResearch ? { model: capabilityModel } : {}),
+      durationMs: Math.max(0, Date.now() - startedAtMs),
+      toolUseCount,
+      childToolsUsed: [...new Set(childToolsUsed)],
+      remaining: allowance.remaining,
+      resetAtMs: allowance.reset_at_ms,
     },
   };
 }

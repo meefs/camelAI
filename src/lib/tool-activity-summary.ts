@@ -547,6 +547,14 @@ export function getToolSummaryParts(
       }
       return { action: `Finished ${description || 'subtask'}` };
     }
+    case 'Research':
+    case 'Oracle': {
+      const question = typeof inputRecord.question === 'string' ? inputRecord.question : '';
+      const noun = name === 'Research' ? 'research' : 'Oracle';
+      if (isRunning) return { action: `Running ${noun}${question ? `: ${truncate(question, 48)}` : '...'}` };
+      if (isError) return { action: `${name} could not finish` };
+      return { action: `${name} finished` };
+    }
     case 'TeamCreate': {
       const teamName = typeof inputRecord.team_name === 'string' ? inputRecord.team_name : '';
       if (isRunning) {

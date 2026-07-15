@@ -237,7 +237,7 @@ describe('organization model settings UI', () => {
             isDefault: false,
           },
         ],
-        additional: [MODEL_CATALOG['gpt-5.5']],
+        additional: [MODEL_CATALOG['gpt-5.6-sol']],
         capacity: { used: 2, max: 10 },
       },
     }));

@@ -2,7 +2,7 @@ import type { ContentBlock, ToolResultBlock } from '@/types';
 
 /** True when the tool name represents a sub-agent invocation. */
 export function isSubAgentTool(name?: string): boolean {
-  return name === 'Task' || name === 'Agent' || name === 'agent' || name === 'Explore' || name === 'explore';
+  return name === 'Task' || name === 'Agent' || name === 'agent' || name === 'Explore' || name === 'explore' || name === 'Research' || name === 'Oracle';
 }
 
 /**

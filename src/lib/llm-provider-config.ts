@@ -64,9 +64,9 @@ export const CODEX_LLM_MODEL_OPTIONS: ReadonlyArray<{
     description: "Default balanced OpenAI model",
   },
   {
-    value: "gpt-5.5",
-    label: "GPT-5.5",
-    description: "Previous-generation OpenAI model",
+    value: "gpt-5.6-luna",
+    label: "GPT-5.6 Luna",
+    description: "Efficient high-volume OpenAI reasoning model",
   },
   {
     value: "gpt-5.6-sol-bedrock",
@@ -158,12 +158,14 @@ const CAMELAI_HOSTED_ONLY_CODEX_MODELS = new Set<LlmModel>([
 
 // These hosted models remain metered for operational visibility, but their
 // usage does not consume an organization's camelAI credits.
+export const CAMEL_FREE_LLM_MODEL = "deepseek-v4-auto" satisfies LlmModel;
+
 const CREDIT_FREE_HOSTED_MODELS = new Set<LlmModel>([
-  "deepseek-v4-auto",
+  CAMEL_FREE_LLM_MODEL,
 ]);
 
 const PINNED_VISIBLE_LLM_MODELS = new Set<LlmModel>([
-  "deepseek-v4-auto",
+  CAMEL_FREE_LLM_MODEL,
 ]);
 
 export function isCreditFreeHostedModel(model: string | null | undefined): boolean {

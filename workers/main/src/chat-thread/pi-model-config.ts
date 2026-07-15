@@ -17,6 +17,7 @@ import {
   OPENAI_CODEX_API_BASE_URL,
 } from "../../../../src/lib/openai-subscription.server";
 import {
+  CAMEL_FREE_LLM_MODEL,
   DEFAULT_LLM_MODEL,
   isCreditFreeHostedModel,
   parseStoredLlmProviderConfig,
@@ -89,11 +90,46 @@ export interface ResolvePiModelDeps {
     creditChargeable: boolean,
     usageProvider: string,
   ): void;
+  onHostedModelFallback?(
+    requestedModel: string,
+    fallbackModel: string,
+    reason: HostedModelFallbackReason,
+  ): Promise<void>;
+}
+
+export type HostedModelFallbackReason =
+  | "hosted_credits_exhausted"
+  | "hosted_subscription_unavailable";
+
+export class HostedModelFallbackRequiredError extends Error {
+  constructor(
+    message: string,
+    readonly fallbackReason: HostedModelFallbackReason,
+  ) {
+    super(message);
+    this.name = "HostedModelFallbackRequiredError";
+  }
+}
+
+export class HostedModelCreditsExhaustedError extends HostedModelFallbackRequiredError {
+  constructor(message: string) {
+    super(message, "hosted_credits_exhausted");
+    this.name = "HostedModelCreditsExhaustedError";
+  }
+}
+
+export class HostedModelSubscriptionUnavailableError extends HostedModelFallbackRequiredError {
+  constructor(message: string) {
+    super(message, "hosted_subscription_unavailable");
+    this.name = "HostedModelSubscriptionUnavailableError";
+  }
 }
 
 export interface ResolvePiRequestConfigDeps {
   env: ChatEnv;
   modelMapping: PiModelMapping;
+  /** Platform-sponsored capability agents must use the hosted route, never user credentials. */
+  forceHosted?: boolean;
   getChatMetadata(): {
     orgId?: string;
     workspaceId?: string;
@@ -168,6 +204,23 @@ const PI_MODEL_CATALOG_FALLBACKS: Record<string, Model<any>> = {
     contextWindow: 1_000_000,
     maxTokens: 128_000,
   } satisfies Model<"anthropic-messages">,
+  "openai/gpt-5.6-luna": {
+    id: "gpt-5.6-luna",
+    name: "GPT-5.6 Luna",
+    api: "openai-responses",
+    provider: "openai",
+    baseUrl: "https://api.openai.com/v1",
+    reasoning: true,
+    input: ["text", "image"],
+    cost: {
+      input: 1,
+      output: 6,
+      cacheRead: 0.1,
+      cacheWrite: 1.25,
+    },
+    contextWindow: 1_050_000,
+    maxTokens: 128_000,
+  } satisfies Model<"openai-responses">,
   "openrouter/google/gemini-3.5-flash": {
     id: "google/gemini-3.5-flash",
     name: "Google: Gemini 3.5 Flash",
@@ -277,11 +330,40 @@ export async function resolvePiModelConfig(
     throw new Error(`Unsupported Pi model ${requestedModelId}`);
   }
 
-  const configured = await deps.resolveRequestConfig(
-    resolved,
-    context,
-    requestedModelId,
-  );
+  let configured: PiRequestConfig;
+  try {
+    configured = await deps.resolveRequestConfig(
+      resolved,
+      context,
+      requestedModelId,
+    );
+  } catch (error) {
+    if (
+      error instanceof HostedModelFallbackRequiredError &&
+      requestedModelId !== CAMEL_FREE_LLM_MODEL
+    ) {
+      const fallbackEnvVars = {
+        ...envVars,
+        CHIRIDION_MODEL: CAMEL_FREE_LLM_MODEL,
+        CHIRIDION_CODEX_MODEL: CAMEL_FREE_LLM_MODEL,
+        CHIRIDION_CLAUDE_MODEL: CAMEL_FREE_LLM_MODEL,
+      };
+      const fallback = await resolvePiModelConfig(
+        deps,
+        context,
+        fallbackEnvVars,
+        getModelFn,
+      );
+      await deps.onHostedModelFallback?.(
+        requestedModelId,
+        CAMEL_FREE_LLM_MODEL,
+        error.fallbackReason,
+      );
+      Object.assign(envVars, fallbackEnvVars);
+      return fallback;
+    }
+    throw error;
+  }
   const configuredModel =
     configured.modelLookupProvider && configured.requestModelId
       ? (getModelFn(
@@ -386,8 +468,12 @@ export async function resolvePiRequestConfig(
   context: ChatContextState,
   requestedModelId: string,
 ): Promise<PiRequestConfig> {
-  const selfhostProvider = getSelfhostAiProviderCredentials(deps.env);
-  const byok = selfhostProvider ?? await deps.resolveByokCredentials(context);
+  const selfhostProvider = deps.forceHosted
+    ? null
+    : getSelfhostAiProviderCredentials(deps.env);
+  const byok = deps.forceHosted
+    ? null
+    : selfhostProvider ?? await deps.resolveByokCredentials(context);
   const byokAllowed = resolved.byokAllowed !== false;
   if (
     byokAllowed &&
@@ -590,25 +676,24 @@ export async function checkHostedPiModelAccess(
   if (status === "enterprise") {
     return { creditChargeable: false, vllmPriority };
   }
+  if (isCreditFreeHostedModel(model)) {
+    return { creditChargeable: false, vllmPriority };
+  }
   const isPayAsYouGo = plan === "payg";
   if (status === "past_due") {
-    throw new Error(
+    throw new HostedModelSubscriptionUnavailableError(
       "Your subscription is past due. Update payment details, switch to Pay as you go in Settings -> Billing, or add your own API key in Settings -> AI Provider to continue. Your workspace is saved.",
     );
   }
   if (status === "canceled") {
-    throw new Error(
+    throw new HostedModelSubscriptionUnavailableError(
       "Your subscription was canceled. Start a new subscription, switch to Pay as you go in Settings -> Billing, or add your own API key in Settings -> AI Provider to continue. Your workspace is saved.",
     );
   }
   if (!isPayAsYouGo && status !== "trialing" && status !== "active") {
-    throw new Error(
+    throw new HostedModelSubscriptionUnavailableError(
       "Hosted models require billing access. Choose Pay as you go, start a subscription, or add your own API key in Settings -> AI Provider. Your workspace is saved.",
     );
-  }
-
-  if (isCreditFreeHostedModel(model)) {
-    return { creditChargeable: false, vllmPriority };
   }
 
   const usage = await orgStub.getUsageLogSum(0, Date.now(), true);
@@ -620,7 +705,7 @@ export async function checkHostedPiModelAccess(
     return { creditChargeable: true, vllmPriority };
   }
 
-  throw new Error(
+  throw new HostedModelCreditsExhaustedError(
     `Hosted model credits are used up. You have used ${formatCreditCents(spentCents)} of ${formatCreditCents(totalCreditsCents)}. Buy credits or manage your subscription in Settings -> Billing, or add your own API key in Settings -> AI Provider. Your workspace is saved.`,
   );
 }

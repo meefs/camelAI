@@ -104,6 +104,7 @@ import {
   shouldAutoRefreshFilePreview,
 } from "@/components/preview-panel/preview-utils";
 import { cn } from "@/lib/utils";
+import { CAMEL_FREE_LLM_MODEL } from "@/lib/llm-provider-config";
 import { resolveMessageAuthorDisplayName } from "@/lib/message-author";
 import { buildSlugMap, type MentionableProject } from "@/lib/mentions";
 import { isFileDrag } from "@/lib/file-drag";
@@ -112,7 +113,10 @@ import {
   deriveIsAwaitingAssistant,
   deriveTurnSettled,
 } from "@/lib/chat-working-indicator";
-import type { ChatAgentStatePayload } from "@/lib/chat-agent-state";
+import {
+  shouldShowModelFallbackNotice,
+  type ChatAgentStatePayload,
+} from "@/lib/chat-agent-state";
 import { usePiChatStream } from "@/lib/use-pi-chat-stream";
 import { checkForVersionSkew } from "@/lib/version-skew";
 import {
@@ -839,6 +843,7 @@ export default function Chat({
   // The most recent terminal error already surfaced, so the state-driven error
   // is shown exactly once even across re-renders/reconnects.
   const lastAppliedErrorIdRef = useRef<string | null>(null);
+  const lastAppliedModelFallbackNoticeIdRef = useRef<string | null>(null);
   const pendingMessagesRef = useRef(pendingMessages);
   const acceptedPendingMessageIdsRef = useRef<Set<string>>(new Set());
   const pendingThreadContextRef = useRef({
@@ -1021,6 +1026,10 @@ export default function Chat({
       selectedThreadModelRef,
       locationSearchRef,
     });
+  const displayedBillingCreditStatus =
+    selectedThreadModel === CAMEL_FREE_LLM_MODEL
+      ? null
+      : currentBillingCreditStatus;
 
   const lastAppliedWelcomeInputRef = useRef(initialWelcomeInput ?? "");
   const [showScrollButton, setShowScrollButton] = useState(false);
@@ -1233,6 +1242,7 @@ export default function Chat({
     setPendingQuestion(null);
     setContextUsedPercent(null);
     lastAppliedErrorIdRef.current = null;
+    lastAppliedModelFallbackNoticeIdRef.current = null;
     compactingPriorMessageIdRef.current = null;
     setCompactingPriorMessageId(null);
   }, [threadId]);
@@ -2521,6 +2531,29 @@ export default function Chat({
           handleTerminalError(lastError);
         }
       }
+      const fallbackNotice = state.modelFallbackNotice;
+      if (
+        shouldShowModelFallbackNotice(fallbackNotice, state.model) &&
+        fallbackNotice.id !== lastAppliedModelFallbackNoticeIdRef.current
+      ) {
+        lastAppliedModelFallbackNoticeIdRef.current = fallbackNotice.id;
+        const storageKey = `chat-model-fallback-notice:${fallbackNotice.id}`;
+        let wasShown = false;
+        try {
+          wasShown = window.sessionStorage.getItem(storageKey) === "shown";
+          window.sessionStorage.setItem(storageKey, "shown");
+        } catch {
+          // The in-memory id still prevents duplicate notices in this mount.
+        }
+        if (!wasShown) {
+          toast.info("Switched to Camel Free", {
+            description:
+              fallbackNotice.reason === "hosted_credits_exhausted"
+                ? "Your hosted credits are used up, so this thread is now using the free model."
+                : "Your paid hosted model is unavailable, so this thread is now using the free model.",
+          });
+        }
+      }
       applyAgentPreviewState(state);
       if (Array.isArray(state.currentTodos)) {
         setCurrentTodos(state.currentTodos as TodoItem[]);
@@ -2571,6 +2604,7 @@ export default function Chat({
           Number.isFinite(state.modelUpdatedAt)
             ? state.modelUpdatedAt
             : Date.now();
+        selectedThreadModelRef.current = state.model;
         setSelectedThreadModel(state.model);
         dispatchLocalThreadSummaryUpdate(threadId, {
           model: state.model,
@@ -3879,9 +3913,9 @@ export default function Chat({
                     {noModelsMessage}
                   </p>
                 )}
-                {currentBillingCreditStatus ? (
+                {displayedBillingCreditStatus ? (
                   <BillingCreditNotice
-                    status={currentBillingCreditStatus}
+                    status={displayedBillingCreditStatus}
                     onOpenUsage={() => navigate("/settings/organization/usage")}
                     onTopUp={handleBillingTopUp}
                     canTopUp={Boolean(isAdmin)}
