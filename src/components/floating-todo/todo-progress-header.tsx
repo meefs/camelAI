@@ -1,17 +1,18 @@
 "use client";
 
 import * as React from 'react';
-import { ChevronDown, ChevronUp, ListTodo } from 'lucide-react';
+import { ChevronDown, ChevronUp, ListTodo, Loader2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 interface TodoProgressHeaderProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
   completed: number;
   total: number;
   isExpanded: boolean;
+  isInProgress: boolean;
 }
 
 export const TodoProgressHeader = React.forwardRef<HTMLButtonElement, TodoProgressHeaderProps>(
-  ({ completed, total, isExpanded, className, ...props }, ref) => {
+  ({ completed, total, isExpanded, isInProgress, className, ...props }, ref) => {
     return (
       <button
         ref={ref}
@@ -24,7 +25,11 @@ export const TodoProgressHeader = React.forwardRef<HTMLButtonElement, TodoProgre
         )}
         {...props}
       >
-        <ListTodo className="h-4 w-4 text-muted-foreground/60" />
+        {!isExpanded && isInProgress ? (
+          <Loader2 className="h-4 w-4 text-foreground animate-spin motion-reduce:animate-none" />
+        ) : (
+          <ListTodo className="h-4 w-4 text-muted-foreground/60" />
+        )}
         <span className="flex-1 text-left">
           {completed} out of {total} tasks completed
         </span>

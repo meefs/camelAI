@@ -98,6 +98,7 @@ export function FloatingTodoList({ todos, className }: FloatingTodoListProps) {
 
   const completedCount = displayTodos.filter(todo => todo.status === 'completed').length;
   const totalCount = displayTodos.length;
+  const hasInProgress = displayTodos.some(todo => todo.status === 'in_progress');
 
   if (displayTodos.length === 0) return null;
 
@@ -116,6 +117,7 @@ export function FloatingTodoList({ todos, className }: FloatingTodoListProps) {
             completed={completedCount}
             total={totalCount}
             isExpanded={isExpanded}
+            isInProgress={hasInProgress}
           />
         </CollapsibleTrigger>
 
