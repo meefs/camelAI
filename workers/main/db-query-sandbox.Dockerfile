@@ -17,15 +17,25 @@ ARG SANDBOX_BASE_IMAGE=docker.io/cloudflare/sandbox:0.12.0
 FROM ${SANDBOX_BASE_IMAGE}
 
 # --- cloudflared (Access TCP client for the egress relay) --------------------
-# Pinned via Cloudflare's apt repo (arch-aware). Bump deliberately; the runner
-# only uses `cloudflared access tcp`, a stable long-lived subcommand.
+# Cloudflare's apt repository retains only its current package, so an exact apt
+# pin breaks as soon as that index rotates. Download the immutable release asset
+# instead and verify it against the checksums published with the release.
+ARG CLOUDFLARED_VERSION=2026.7.2
 RUN set -eux; \
     apt-get update; \
-    apt-get install -y --no-install-recommends ca-certificates curl gnupg; \
-    curl -fsSL https://pkg.cloudflare.com/cloudflare-main.gpg -o /usr/share/keyrings/cloudflare-main.gpg; \
-    echo "deb [signed-by=/usr/share/keyrings/cloudflare-main.gpg] https://pkg.cloudflare.com/cloudflared any main" > /etc/apt/sources.list.d/cloudflared.list; \
-    apt-get update; \
-    apt-get install -y --no-install-recommends cloudflared=2026.7.1; \
+    apt-get install -y --no-install-recommends ca-certificates curl; \
+    arch="$(dpkg --print-architecture)"; \
+    case "$arch" in \
+      amd64) sha256="88195157a136199a86977c122a22084dae6907480bbe3640222b7b55834afc3a" ;; \
+      arm64) sha256="ddd7d2a0d55a1879485ac34354e936424f1df92e306bfa6428a81908aaddbe87" ;; \
+      *) echo "Unsupported architecture: $arch" >&2; exit 1 ;; \
+    esac; \
+    curl -fsSL \
+      "https://github.com/cloudflare/cloudflared/releases/download/${CLOUDFLARED_VERSION}/cloudflared-linux-${arch}.deb" \
+      -o /tmp/cloudflared.deb; \
+    echo "$sha256  /tmp/cloudflared.deb" | sha256sum --check --strict; \
+    apt-get install -y --no-install-recommends /tmp/cloudflared.deb; \
+    rm -f /tmp/cloudflared.deb; \
     rm -rf /var/lib/apt/lists/*; \
     cloudflared --version
 
