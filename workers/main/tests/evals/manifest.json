@@ -46,6 +46,17 @@
       "kind": "unit"
     },
     {
+      "id": "template-select-vanilla-live",
+      "description": "Choose the dependency-light starter from a client-only browser-game request",
+      "kind": "unit"
+    },
+    {
+      "id": "vanilla-project-deploy-live",
+      "description": "Build, deploy, and fetch the untouched vanilla scaffold through the testing-grounds stack",
+      "kind": "skill",
+      "realDeploy": true
+    },
+    {
       "id": "template-select-ai-chat-live",
       "description": "Choose the AI chat project starter from a conversational-assistant request",
       "kind": "unit"

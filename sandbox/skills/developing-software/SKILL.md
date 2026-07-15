@@ -1,6 +1,6 @@
 ---
 name: developing-software
-description: Build and deploy software with camelAI projects on Cloudflare Workers. Use whenever creating, scaffolding, modifying, building, testing, or deploying an API, web app, fullstack application, internal tool, dashboard, or AI-powered app. Covers create_project template selection, scaffold adaptation, React Router, Durable Objects, workspace connections, AI bindings, validation, and deployment.
+description: Build and deploy software with camelAI projects on Cloudflare Workers. Use whenever creating, scaffolding, modifying, building, testing, or deploying an API, website, browser game, fullstack application, internal tool, dashboard, or AI-powered app. Covers create_project template selection, scaffold adaptation, vanilla web apps, React Router, Durable Objects, workspace connections, AI bindings, validation, and deployment.
 ---
 
 # Developing Software
@@ -13,7 +13,7 @@ Read this file completely once per task before the first `create_project` call. 
 2. Create the project with a concise description and an explicit `template`.
 3. Inspect the seeded files before editing. Treat the scaffold as working architecture, not disposable sample code.
 4. Reshape the starter into the requested product. Rename the example entity, schema, routes, actions, validation, and UI copy consistently instead of adding a second implementation beside the demo.
-5. Add standard UI through `add_shadcn_component`; do not hand-write components or page shells that the bundled registry provides.
+5. In React Router projects, add standard UI through `add_shadcn_component`; do not hand-write components or page shells that the bundled registry provides. In `vanilla` projects, work directly in `public/`.
 6. Validate with `build_project` when only a build is requested. Use `deploy_project` directly when publishing because it already builds first.
 7. After a successful deployment, call `set_preview`, exercise important flows with `env.BROWSER`, and inspect `logs.pageErrors`. Use a screenshot for visual verification.
 
@@ -24,6 +24,7 @@ Use camelAI project tools for scaffolding, dependencies, builds, and deploys. Do
 | Template | Choose when |
 | --- | --- |
 | `crud` | The product is primarily a stateful app, admin tool, tracker, portal, or workflow. This is the default and includes React Router loaders/actions plus Durable Object SQLite CRUD. |
+| `vanilla` | The experience is client-only plain HTML/CSS/JavaScript: a small site, landing page, calculator, quiz, interactive demo, or simple DOM/canvas game. Prefer `crud` when it needs accounts, durable server records, a shared leaderboard, or multiplayer state. |
 | `ai-chat` | Conversation or direct model interaction is the primary experience. An otherwise stateful app with one AI-assisted feature should normally remain `crud` and add the `AI` binding. |
 | `integration-dashboard` | Discovering, monitoring, or operating workspace-connected SaaS/database services is central. If connections only provide business metrics, prefer `data-dashboard`. |
 | `data-dashboard` | Users interact with KPIs, filters, charts, tables, exports, or drill-downs. |
@@ -39,11 +40,11 @@ await tools.create_project({
 });
 ```
 
-Every web template includes React Router SSR, Tailwind v4, Cloudflare deployment metadata, `components.json`, `~/lib/utils`, and common shadcn primitives. Import seeded components from `~/components/ui/*`.
+The React Router templates include SSR, Tailwind v4, Cloudflare deployment metadata, `components.json`, `~/lib/utils`, and common shadcn primitives. Import seeded components from `~/components/ui/*`. The `vanilla` template deliberately has no React, router, Tailwind, or shadcn layer.
 
 ## Platform Invariants
 
-- Use React Router framework mode: route `loader`/`action`, `<Form>`, and `useFetcher` instead of client-only fetching in `useEffect`.
+- In React Router projects, use framework mode: route `loader`/`action`, `<Form>`, and `useFetcher` instead of client-only fetching in `useEffect`.
 - Durable Object SQL is not D1. Use `ctx.storage.sql.exec(sql, ...params)` and cursor methods; never use `.prepare()`, `.bind()`, `.all()`, `.first()`, or `.run()`.
 - Keep Durable Object exports, `durable_objects.bindings`, and `migrations.new_sqlite_classes` aligned.
 - Use virtual `AI`, `CONNECTIONS`, and R2 bindings; never place connection credentials in source or environment variables.
@@ -53,6 +54,7 @@ Every web template includes React Router SSR, Tailwind v4, Cloudflare deployment
 
 ## Read Only the Relevant Reference
 
+- Read [VANILLA-APPS.md](VANILLA-APPS.md) when using the `vanilla` template or building a client-only browser game.
 - Read [REACT-ROUTER.md](REACT-ROUTER.md) when adding routes, forms, APIs, or UI behavior.
 - Read [DURABLE-OBJECTS.md](DURABLE-OBJECTS.md) when changing persistence, migrations, instance identity, transactions, or WebSockets.
 - Read [AI-APPS.md](AI-APPS.md) when adding model calls, chat persistence, agents, tool orchestration, or image generation.

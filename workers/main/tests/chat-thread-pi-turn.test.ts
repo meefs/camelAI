@@ -3973,6 +3973,7 @@ describe('ChatThreadDO Pi turn handling', () => {
     expect((byName.get('create_project') as any).parameters.properties.name).toBeDefined();
     expect((byName.get('create_project') as any).parameters.properties.template).toBeDefined();
     expect(JSON.stringify((byName.get('create_project') as any).parameters.properties.template)).toContain('crud');
+    expect(JSON.stringify((byName.get('create_project') as any).parameters.properties.template)).toContain('vanilla');
     expect(JSON.stringify((byName.get('create_project') as any).parameters.properties.template)).toContain('ai-chat');
     expect(JSON.stringify((byName.get('create_project') as any).parameters.properties.template)).toContain('integration-dashboard');
     expect(JSON.stringify((byName.get('create_project') as any).parameters.properties.template)).toContain('data-dashboard');
@@ -5320,6 +5321,7 @@ describe('ChatThreadDO Pi turn handling', () => {
     expect(prompt).toContain('before the first `create_project` call in a task');
     expect(prompt).toContain('/opt/chiridion-host-pi/skills/developing-software/SKILL.md');
     expect(prompt).toContain('Do not create a scaffold first and read the skill afterward');
+    expect(prompt).toContain('`vanilla` for dependency-light client-only HTML/CSS/JavaScript experiences');
     expect(prompt).toContain('answer in chat only');
     expect(prompt).toContain('set_preview({ location: "workspace", path: "/notes.md" })');
     expect(prompt).toContain('set_preview({ location: "r2", path: "outputs/report.html" })');
@@ -6376,6 +6378,39 @@ describe('ChatThreadDO Pi turn handling', () => {
     expect(writtenPaths).not.toContain('/app/root.tsx');
   });
 
+  it('seeds the dependency-light vanilla scaffold through create_project', async () => {
+    const { fake, workspaceStub, projectStub } = createProjectToolFake({ projectFileEntries: [] });
+
+    const result = await CodeModeToolsBinding.prototype.callTool.call(fake, 'create_project', {
+      name: 'Tiny Game',
+      description: 'A client-only browser game',
+      template: 'vanilla',
+    });
+
+    expect(workspaceStub.createProject).toHaveBeenCalledWith({
+      name: 'Tiny Game',
+      description: 'A client-only browser game',
+      template: 'vanilla',
+      backend: 'do-r2',
+      workspaceId: 'workspace1',
+    });
+    expect(result).toMatchObject({
+      backend: 'do-r2',
+      scaffold: { template: 'vanilla', filesSkipped: [] },
+    });
+    expect((result as any).scaffold.filesWritten).toEqual(expect.arrayContaining([
+      '/package.json',
+      '/public/index.html',
+      '/public/main.js',
+      '/scripts/build.mjs',
+      '/worker.js',
+    ]));
+    expect(projectStub.projectWriteFile).toHaveBeenCalledWith('/public/index.html', expect.stringContaining('Vanilla web starter'));
+    const writtenPaths = projectStub.projectWriteFile.mock.calls.map(([path]) => path);
+    expect(writtenPaths).not.toContain('/app/root.tsx');
+    expect(writtenPaths).not.toContain('/components.json');
+  });
+
   it('rejects an invalid create_project template before registering the project', async () => {
     const { fake, workspaceStub } = createProjectToolFake({ projectFileEntries: [] });
 
@@ -6383,7 +6418,7 @@ describe('ChatThreadDO Pi turn handling', () => {
       name: 'New App',
       description: 'A new app',
       template: 'worker',
-    })).rejects.toThrow('template must be one of: crud, ai-chat, integration-dashboard, data-dashboard, data-analysis');
+    })).rejects.toThrow('template must be one of: crud, vanilla, ai-chat, integration-dashboard, data-dashboard, data-analysis');
     // Validation must run first — otherwise the name is burned and a retry
     // with a valid template fails with "Project already exists".
     expect(workspaceStub.createProject).not.toHaveBeenCalled();
