@@ -5,7 +5,7 @@ description: Build and deploy software with camelAI projects on Cloudflare Worke
 
 # Developing Software
 
-Read this file completely once per task before the first `create_project` call. Do not reread it during the same task unless the instructions change.
+Read this file completely once per task before the first `create_project` call. Do not reread it during the same task unless the instructions change. Read a reference below with `read_skill({ skill: "developing-software", file: "<filename>" })`; do not use the generic project/workspace file tools for skill files.
 
 ## Workflow
 
@@ -54,11 +54,11 @@ The React Router templates include SSR, Tailwind v4, Cloudflare deployment metad
 
 ## Read Only the Relevant Reference
 
-- Read [VANILLA-APPS.md](VANILLA-APPS.md) when using the `vanilla` template or building a client-only browser game.
-- Read [REACT-ROUTER.md](REACT-ROUTER.md) when adding routes, forms, APIs, or UI behavior.
-- Read [DURABLE-OBJECTS.md](DURABLE-OBJECTS.md) when changing persistence, migrations, instance identity, transactions, or WebSockets.
-- Read [AI-APPS.md](AI-APPS.md) when adding model calls, chat persistence, agents, tool orchestration, or image generation.
-- Read [CONNECTIONS-AND-STORAGE.md](CONNECTIONS-AND-STORAGE.md) when using workspace connections, databases, external providers, uploads, or R2.
+- Call `read_skill({ skill: "developing-software", file: "VANILLA-APPS.md" })` when using the `vanilla` template or building a client-only browser game.
+- Call `read_skill({ skill: "developing-software", file: "REACT-ROUTER.md" })` when adding routes, forms, APIs, or UI behavior.
+- Call `read_skill({ skill: "developing-software", file: "DURABLE-OBJECTS.md" })` when changing persistence, migrations, instance identity, transactions, or WebSockets.
+- Call `read_skill({ skill: "developing-software", file: "AI-APPS.md" })` when adding model calls, chat persistence, agents, tool orchestration, or image generation.
+- Call `read_skill({ skill: "developing-software", file: "CONNECTIONS-AND-STORAGE.md" })` when using workspace connections, databases, external providers, uploads, or R2.
 
 Do not load references unrelated to the requested feature.
 

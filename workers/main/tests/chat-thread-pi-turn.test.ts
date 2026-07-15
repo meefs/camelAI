@@ -3961,6 +3961,7 @@ describe('ChatThreadDO Pi turn handling', () => {
       'WebSearch',
       'WebFetch',
       'connections_methods',
+      'read_skill',
     ]));
     // Human-blocking tools stay top-level only: they must not be in the js_exec
     // catalog where tools.search() would advertise them inside the sandbox timeout.
@@ -3969,6 +3970,10 @@ describe('ChatThreadDO Pi turn handling', () => {
     }
     expect((byName.get('read') as any).parameters.properties.path).toBeDefined();
     expect((byName.get('read') as any).parameters.properties.project).toBeDefined();
+    expect((byName.get('read_skill') as any).parameters.properties.skill).toBeDefined();
+    expect((byName.get('read_skill') as any).parameters.properties.file).toBeDefined();
+    expect((byName.get('read_skill') as any).parameters.properties.location).toBeUndefined();
+    expect((byName.get('read_skill') as any).parameters.properties.project).toBeUndefined();
     expect((byName.get('create_project') as any).parameters.properties.description).toBeDefined();
     expect((byName.get('create_project') as any).parameters.properties.name).toBeDefined();
     expect((byName.get('create_project') as any).parameters.properties.template).toBeDefined();
@@ -3979,7 +3984,7 @@ describe('ChatThreadDO Pi turn handling', () => {
     expect(JSON.stringify((byName.get('create_project') as any).parameters.properties.template)).toContain('data-dashboard');
     expect((byName.get('create_project') as any).description).toContain('developing-software skill');
     expect((byName.get('create_project') as any).description).toContain('REQUIRED PRECONDITION');
-    expect((byName.get('create_project') as any).description).toContain('/opt/chiridion-host-pi/skills/developing-software/SKILL.md');
+    expect((byName.get('create_project') as any).description).toContain("read_skill with skill='developing-software'");
     expect((byName.get('create_project') as any).description).toContain('during the current task');
     expect((byName.get('create_project') as any).parameters.required).toContain('description');
     expect((byName.get('create_project') as any).parameters.required).toContain('name');
@@ -4208,7 +4213,7 @@ describe('ChatThreadDO Pi turn handling', () => {
     });
   });
 
-  it('serves bundled skills through the Pi core read and ls tools', async () => {
+  it('serves bundled skills only through the Pi read_skill tool', async () => {
     const containerTool = vi.fn(async () => {
       throw new Error('workspace tool should not be called for bundled skills');
     });
@@ -4229,28 +4234,43 @@ describe('ChatThreadDO Pi turn handling', () => {
       workspaceId: 'workspace1',
       threadId: 'thread1',
     });
-    const read = tools.find((tool: any) => tool.name === 'read');
-    const ls = tools.find((tool: any) => tool.name === 'ls');
+    const readSkill = tools.find((tool: any) => tool.name === 'read_skill');
 
-    const listing = await ls.execute('tool1', {
-      location: 'workspace',
-      path: '/opt/chiridion-host-pi/skills',
+    const directSkill = await readSkill.execute('tool1', {
+      skill: 'developing-software',
     });
-    expect(listing.content[0].text).toContain('developing-software');
+    expect(directSkill.content[0].text).toContain('name: developing-software');
+    expect(directSkill.details.details.source).toBe('bundled_skill');
 
-    const skill = await read.execute('tool2', {
-      location: 'workspace',
-      path: '/opt/chiridion-host-pi/skills/developing-software/SKILL.md',
+    const directReference = await readSkill.execute('tool2', {
+      skill: 'developing-software',
+      file: 'VANILLA-APPS.md',
     });
-    expect(skill.content[0].text).toContain('name: developing-software');
-    expect(skill.details.details.source).toBe('bundled_skill');
+    expect(directReference.content[0].text).toContain('# Vanilla Apps');
+    expect(directReference.details.details.source).toBe('bundled_skill');
 
-    const durableObjectsReference = await read.execute('tool3', {
-      location: 'workspace',
-      path: '/opt/chiridion-host-pi/skills/developing-software/DURABLE-OBJECTS.md',
+    const durableObjectsReference = await readSkill.execute('tool3', {
+      skill: 'developing-software',
+      file: 'DURABLE-OBJECTS.md',
     });
     expect(durableObjectsReference.content[0].text).toContain('# Durable Objects');
-    expect(durableObjectsReference.details.details.source).toBe('bundled_skill');
+    expect(durableObjectsReference.details.details).toMatchObject({
+      skill: 'developing-software',
+      file: 'DURABLE-OBJECTS.md',
+      source: 'bundled_skill',
+    });
+
+    await expect(
+      CodeModeToolsBinding.prototype.callTool.call(toolsBinding, 'read_skill', {
+        skill: 'developing-software',
+        file: '../SKILL.md',
+      }),
+    ).rejects.toThrow('relative path within the skill');
+    await expect(
+      CodeModeToolsBinding.prototype.callTool.call(toolsBinding, 'read_skill', {
+        skill: 'developing-softwar',
+      }),
+    ).rejects.toThrow('Available skills:');
     expect(bindingFactory).toHaveBeenCalled();
     expect(containerTool).not.toHaveBeenCalled();
   });
@@ -5319,7 +5339,8 @@ describe('ChatThreadDO Pi turn handling', () => {
     expect(prompt).toContain('Pay close attention to these skills');
     expect(prompt).toContain('a common and costly mistake');
     expect(prompt).toContain('before the first `create_project` call in a task');
-    expect(prompt).toContain('/opt/chiridion-host-pi/skills/developing-software/SKILL.md');
+    expect(prompt).toContain('read_skill({ skill: "developing-software" })');
+    expect(prompt).toContain('Never use the generic file `read` tool for bundled skills');
     expect(prompt).toContain('Do not create a scaffold first and read the skill afterward');
     expect(prompt).toContain('`vanilla` for dependency-light client-only HTML/CSS/JavaScript experiences');
     expect(prompt).toContain('answer in chat only');
@@ -5941,29 +5962,42 @@ describe('ChatThreadDO Pi turn handling', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
-  it('serves bundled skills through js_exec tools.read and tools.ls', async () => {
-    const containerTool = vi.fn(async () => {
-      throw new Error('workspace tool should not be called for bundled skills');
-    });
+  it('serves bundled skills through js_exec tools.read_skill without virtual file paths', async () => {
+    const containerTool = vi.fn(async (name: string) => ({ text: `ordinary workspace ${name}` }));
     const fake = Object.create(CodeModeToolsBinding.prototype) as any;
     Object.defineProperty(fake, 'piContainerTools', {
       value: { callTool: containerTool },
     });
 
-    const skill = await CodeModeToolsBinding.prototype.callTool.call(fake, 'read', {
-      location: 'workspace',
-      path: '/opt/chiridion-host-pi/skills/data-analysis/SKILL.md',
+    const skill = await CodeModeToolsBinding.prototype.callTool.call(fake, 'read_skill', {
+      skill: 'data-analysis',
     });
     expect((skill as any).text).toContain('name: data-analysis');
     expect((skill as any).details.source).toBe('bundled_skill');
-
-    const listing = await CodeModeToolsBinding.prototype.callTool.call(fake, 'ls', {
-      location: 'workspace',
-      path: '/opt/chiridion-host-pi/skills',
+    expect((skill as any).details).toMatchObject({
+      skill: 'data-analysis',
+      file: 'SKILL.md',
     });
-    expect((listing as any).text).toContain('data-analysis');
-    expect((listing as any).details.source).toBe('bundled_skill');
     expect(containerTool).not.toHaveBeenCalled();
+
+    const ordinaryFileCalls = [
+      ['read', '/opt/chiridion-host-pi/skills/data-analysis/SKILL.md'],
+      ['read', '.agents/skills/data-analysis/SKILL.md'],
+      ['read', '/workspace/.claude/skills/data-analysis/SKILL.md'],
+      ['read', '/home/claude/.agents/skills/data-analysis/SKILL.md'],
+      ['ls', '/opt/chiridion-host-pi/skills'],
+    ] as const;
+    for (const [name, path] of ordinaryFileCalls) {
+      const result = await CodeModeToolsBinding.prototype.callTool.call(fake, name, {
+        location: 'workspace',
+        path,
+      });
+      expect(result).toEqual({ text: `ordinary workspace ${name}` });
+      expect(containerTool).toHaveBeenCalledWith(name, {
+        location: 'workspace',
+        path,
+      });
+    }
   });
 
   it('builds a DO-backed project through the project build action', async () => {
@@ -7457,7 +7491,7 @@ describe('ChatThreadDO Pi turn handling', () => {
 
     // App/project-lifecycle tools stay top-level (discovery-sensitive on complex
     // build+deploy tasks).
-    for (const name of ['list_projects', 'create_project', 'list_apps', 'set_preview', 'TodoWrite']) {
+    for (const name of ['read_skill', 'list_projects', 'create_project', 'list_apps', 'set_preview', 'TodoWrite']) {
       expect(toolNames.has(name)).toBe(true);
     }
 

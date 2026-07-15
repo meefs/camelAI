@@ -1,8 +1,4 @@
 // Discovered from sandbox/skills at build time via import.meta.glob (Vite ?raw; Wrangler Text).
-import { PI_SKILLS_ROOT } from "./pi-system-prompt";
-
-export { PI_SKILLS_ROOT };
-
 const skillModules = import.meta.glob("../../../sandbox/skills/**/*.md", {
   query: "?raw",
   import: "default",

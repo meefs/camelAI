@@ -19,6 +19,7 @@ import { findConnectionMethodEntry, getConnection, invokeConnectionMethod, listC
 import { confirmDestructiveAction, DESTRUCTIVE_CONFIRM_LABEL } from "./confirmed-destructive-action";
 import { collectProjectDeletionTargets } from "./project-deletion";
 import { listPiBundledSkillFiles, readPiBundledSkillFile } from "./pi-skill-bundle-helpers";
+import { PI_SKILL_NAMES } from "./pi-skills-bundle";
 import { PiContainerTools, PI_CONTAINER_TOOL_DEFINITIONS } from "./pi-container-tools";
 import { parseFilePreviewPath } from "./preview-paths";
 import type { ConnectionSetupResponse } from "./chat-thread-browser-prompts";
@@ -592,12 +593,24 @@ const CODE_MODE_TOOL_REGISTRY: CodeModeToolRegistration[] = [
     { category: "workspace", sideEffect: true },
   ),
   codeModePassthroughTool(
+    "read_skill",
+    "Read a bundled agent skill or one of its Markdown reference files. Use this instead of the generic read tool for skills; it never reads from project storage and needs no location, project, or absolute path. Omit file to read SKILL.md. Arguments: { skill, file? }.",
+    Type.Object({
+      skill: Type.String({
+        description: "Bundled skill name, for example 'developing-software'.",
+      }),
+      file: Type.Optional(Type.String({
+        description: "Markdown file within the skill, for example 'VANILLA-APPS.md' or 'references/example.md'. Defaults to SKILL.md.",
+      })),
+    }, { additionalProperties: false }),
+  ),
+  codeModePassthroughTool(
     "list_projects",
     "List known projects for this workspace as a nested tree, including each project's backend. Use location='project' and platform build/deploy actions for backend='do-r2' projects. Includes project descriptions. Top-level rows are source projects; clone projects are nested under each source project's clones[] with cloneCount. Arguments: {}.",
   ),
   codeModePassthroughTool(
     "create_project",
-    "REQUIRED PRECONDITION: before calling create_project for the first time in a task, read the developing-software skill by calling read with location='workspace' and path='/opt/chiridion-host-pi/skills/developing-software/SKILL.md', then read the entire skill. Skip that read only if it already succeeded during the current task. Do not treat this as optional guidance. This tool creates a new DO-backed project and seeds a scaffold. The skill explains template selection, how to reshape each starter, and the build/deploy workflow. Project names must be unique within the workspace. New projects require a concise description. The default template is 'crud': a deployable React Router app with a SQLite Durable Object and working list/create/update/delete flow. Other templates: 'vanilla' for dependency-light client-only HTML/CSS/JavaScript experiences and simple browser games, 'ai-chat' for a virtual-AI-powered assistant, 'integration-dashboard' for workspace connection catalogs, 'data-dashboard' for interactive charts/tables, and 'data-analysis' for a notebook report. Arguments: { name, description, template? }.",
+    "REQUIRED PRECONDITION: before calling create_project for the first time in a task, read the developing-software skill by calling read_skill with skill='developing-software', then read the entire result. Skip that read only if it already succeeded during the current task. Do not treat this as optional guidance. This tool creates a new DO-backed project and seeds a scaffold. The skill explains template selection, how to reshape each starter, and the build/deploy workflow. Project names must be unique within the workspace. New projects require a concise description. The default template is 'crud': a deployable React Router app with a SQLite Durable Object and working list/create/update/delete flow. Other templates: 'vanilla' for dependency-light client-only HTML/CSS/JavaScript experiences and simple browser games, 'ai-chat' for a virtual-AI-powered assistant, 'integration-dashboard' for workspace connection catalogs, 'data-dashboard' for interactive charts/tables, and 'data-analysis' for a notebook report. Arguments: { name, description, template? }.",
     Type.Object({
       name: Type.String(),
       description: Type.String(),
@@ -1213,6 +1226,42 @@ function hasProjectTarget(args: Record<string, unknown>): boolean {
 
 function hasR2Target(args: Record<string, unknown>): boolean {
   return args.location === "r2";
+}
+
+function bundledSkillReadResponse(skill: NonNullable<ReturnType<typeof readPiBundledSkillFile>>) {
+  return {
+    text: skill.text,
+    content: [{ type: "text", text: skill.text }],
+    details: {
+      skill: skill.skill,
+      file: skill.file,
+      size: skill.size,
+      encoding: skill.encoding,
+      source: skill.source,
+    },
+  };
+}
+
+function bundledSkillTargetFromArgs(args: Record<string, unknown>): { skill: string; file: string } {
+  const skill = typeof args.skill === "string" ? args.skill.trim() : "";
+  if (!skill || !/^[a-z0-9][a-z0-9._-]*$/i.test(skill)) {
+    throw new Error(`read_skill requires one of these bundled skill names: ${PI_SKILL_NAMES.join(", ")}`);
+  }
+
+  if (args.file != null && typeof args.file !== "string") {
+    throw new Error("read_skill file must be a string when provided");
+  }
+  const file = typeof args.file === "string" ? args.file.trim() : "SKILL.md";
+  const segments = file.split("/");
+  if (
+    !file ||
+    file.startsWith("/") ||
+    file.includes("\\") ||
+    segments.some((segment) => !segment || segment === "." || segment === "..")
+  ) {
+    throw new Error("read_skill file must be a relative path within the skill");
+  }
+  return { skill, file };
 }
 
 function normalizeDeployScriptName(value: unknown): string {
@@ -2556,6 +2605,25 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
     return this.callToolWithArtifactCapture(name, args, async () => {
       if (FILE_TOOL_NAMES.has(name)) requireFileLocation(name, args);
       switch (name) {
+        case "read_skill":
+        {
+          const target = bundledSkillTargetFromArgs(args);
+          const skill = readPiBundledSkillFile(target.skill, target.file);
+          if (!skill) {
+            const availableFiles = listPiBundledSkillFiles(target.skill);
+            if (availableFiles.length === 0) {
+              throw new Error(
+                `Bundled skill not found: ${target.skill}. Available skills: ${PI_SKILL_NAMES.join(", ")}`,
+              );
+            }
+            throw new Error(
+              `Bundled skill file not found: ${target.skill}/${target.file}. ` +
+              `Available files: ${availableFiles.join(", ")}.`,
+            );
+          }
+          return bundledSkillReadResponse(skill);
+        }
+
         case "read":
           if (hasR2Target(args)) return this.readR2File(args);
           if (hasProjectTarget(args)) return (await this.projectContainerTools(args)).callTool("read", args);
@@ -2568,19 +2636,6 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
               path,
             });
             if (automationFile) return automationFile;
-          }
-          const skill = readPiBundledSkillFile(path);
-          if (skill) {
-            return {
-              text: skill.text,
-              content: [{ type: "text", text: skill.text }],
-              details: {
-                path: skill.path,
-                size: skill.size,
-                encoding: skill.encoding,
-                source: skill.source,
-              },
-            };
           }
         }
         return this.piContainerTools.callTool("read", args);
@@ -2615,18 +2670,6 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
                 path: args.path,
               });
               if (automationListing) return automationListing;
-            }
-            const listing = listPiBundledSkillFiles(args.path);
-            if (listing) {
-              return {
-                text: listing.text,
-                content: [{ type: "text", text: listing.text }],
-                details: {
-                  path: listing.path,
-                  files: listing.files,
-                  source: listing.source,
-                },
-              };
             }
           }
         }

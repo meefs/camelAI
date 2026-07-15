@@ -3,7 +3,6 @@
 import { mkdir, readdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import {
-  PI_SKILLS_ROOT,
   createPiSubagentSystemPrompt,
   createPiSystemPrompt,
   type PiSystemPromptContext,
@@ -142,7 +141,6 @@ function renderMarkdown(
     `Thread ID: ${context.threadId}`,
     `Workspace ID: ${context.workspaceId}`,
     `Organization ID: ${context.orgId}`,
-    `Skill root: ${PI_SKILLS_ROOT}`,
     `Skill count: ${skillMetadata.names.length}`,
     "",
     ...sections,
@@ -185,7 +183,6 @@ async function main(): Promise<void> {
     ? JSON.stringify(
       {
         context,
-        skillRoot: PI_SKILLS_ROOT,
         skillNames: skillMetadata.names,
         skillDescriptions: skillMetadata.descriptions,
         prompts,

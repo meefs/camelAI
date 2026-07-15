@@ -7,6 +7,7 @@ import {
   withLoadedEvalEnv,
 } from "./lib/eval-llm-judge.mjs";
 import { extractVitestUnhandledErrors } from "./eval-harness-errors.mjs";
+import { createEvalTranscriptCapture } from "./lib/eval-transcript-capture.mjs";
 
 // Workaround for cloudflare/workerd#6793: the stock proxy-everything egress sidecar's TPROXY rules
 // intercept docker bridge control traffic on newer hosts (e.g. kernel 6.17 / Docker 29.x), so the
@@ -300,11 +301,8 @@ if (reportRun) {
   rmSync(artifactPath, { force: true });
 }
 
-let captured = "";
-let tail = "";
 let processOutputTail = "";
-let capturing = false;
-let complete = false;
+const transcriptCapture = createEvalTranscriptCapture(config.startMarker, config.endMarker);
 
 function observeProcessOutput(chunk) {
   processOutputTail = `${processOutputTail}${chunk.toString("utf8")}`.slice(-1_000_000);
@@ -390,40 +388,6 @@ function isExpectedMarkerlessSkip(exitCode, output) {
   });
 }
 
-function observeChunk(chunk) {
-  if (complete) return;
-
-  let text = tail + chunk.toString("utf8");
-  tail = "";
-
-  while (text.length > 0 && !complete) {
-    if (!capturing) {
-      const startIndex = text.indexOf(config.startMarker);
-      if (startIndex === -1) {
-        tail = text.slice(-config.startMarker.length);
-        return;
-      }
-      capturing = true;
-      text = text.slice(startIndex + config.startMarker.length);
-    }
-
-    const endIndex = text.indexOf(config.endMarker);
-    if (endIndex === -1) {
-      const keep = Math.max(config.endMarker.length - 1, 0);
-      if (text.length > keep) {
-        captured += text.slice(0, -keep);
-        tail = text.slice(-keep);
-      } else {
-        tail = text;
-      }
-      return;
-    }
-
-    captured += text.slice(0, endIndex);
-    complete = true;
-  }
-}
-
 sweepEvalContainers("pre-run");
 
 const child = spawn(
@@ -452,14 +416,16 @@ child.stdout.on("data", (chunk) => {
   process.stdout.write(chunk);
   if (reportRun) appendFileSync(logPath, chunk);
   observeProcessOutput(chunk);
-  observeChunk(chunk);
+  transcriptCapture.observe(chunk);
 });
 
 child.stderr.on("data", (chunk) => {
   process.stderr.write(chunk);
   if (reportRun) appendFileSync(logPath, chunk);
   observeProcessOutput(chunk);
-  observeChunk(chunk);
+  // emitEvalTranscript writes its marker pair to stdout. Never feed stderr
+  // into the marker parser: a concurrent warning can otherwise be spliced
+  // into a large JSON transcript between stdout chunks and corrupt it.
 });
 
 child.on("error", (error) => {
@@ -472,11 +438,11 @@ child.on("close", async (code) => {
   // A real-deploy eval that legitimately skipped (no CF_API_TOKEN / EVAL_REAL_DEPLOY=0)
   // produced no result — reporting it would record a bogus contract failure.
   let skippedRun = false;
-  if (complete) {
+  if (transcriptCapture.complete) {
     try {
       mkdirSync(artifactDir, { recursive: true });
       const transcript = addHarnessSignal(
-        JSON.parse(captured),
+        JSON.parse(transcriptCapture.captured),
         extractVitestUnhandledErrors(processOutputTail),
       );
       validateEvaluationContract(transcript);

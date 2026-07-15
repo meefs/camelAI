@@ -9,8 +9,22 @@ import {
 	matrixBatchUrl,
 	retryEvalFinalize,
 } from "../scripts/eval-report-utils.mjs";
+import { createEvalTranscriptCapture } from "../scripts/lib/eval-transcript-capture.mjs";
 
 describe("eval report scripts", () => {
+	it("captures a stdout transcript split across chunks without including concurrent stderr", () => {
+		const capture = createEvalTranscriptCapture("START ", " END");
+		capture.observe(Buffer.from("noise STA"));
+		capture.observe(Buffer.from('RT {"status":"com'));
+		// stderr is deliberately not observed by the caller.
+		const stderr = Buffer.from("warning between stdout chunks\n");
+		capture.observe(Buffer.from('pleted","value":1} END trailing'));
+
+		expect(stderr.toString()).toContain("warning between stdout chunks");
+		expect(capture.complete).toBe(true);
+		expect(JSON.parse(capture.captured)).toEqual({ status: "completed", value: 1 });
+	});
+
 	it("retries finalization with the same run path", async () => {
 		const paths: string[] = [];
 		const delays: number[] = [];

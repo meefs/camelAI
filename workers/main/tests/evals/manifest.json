@@ -51,6 +51,11 @@
       "kind": "unit"
     },
     {
+      "id": "skill-reference-read-live",
+      "description": "Read a starter-specific skill reference without misrouting it into project storage",
+      "kind": "unit"
+    },
+    {
       "id": "vanilla-project-deploy-live",
       "description": "Build, deploy, and fetch the untouched vanilla scaffold through the testing-grounds stack",
       "kind": "skill",
