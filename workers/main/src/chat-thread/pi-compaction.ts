@@ -94,6 +94,31 @@ export function estimatePiContextTokens(messages: AgentMessage[]): number {
   );
 }
 
+/**
+ * Base64 is much less token-dense than ordinary prose for the models we use.
+ * In particular, `take_screenshot({ include_image_data_url: true })` places a
+ * data URL inside a text tool result. Counting all characters at 4 chars/token
+ * can undercount such a payload by several times and skip compaction until the
+ * provider has no usable output budget left. Treat an inline data URL
+ * conservatively while retaining the ordinary heuristic for the surrounding
+ * JSON/text.
+ */
+export function estimatePiTextTokens(text: string): number {
+  const dataUrl = /data:[^,\s"']+;base64,([A-Za-z0-9+/_=-]+)/g;
+  let tokens = 0;
+  let offset = 0;
+  for (const match of text.matchAll(dataUrl)) {
+    const start = match.index ?? offset;
+    tokens += Math.ceil((start - offset) / 4);
+    // Base64's high-entropy alphabet tokenizes much closer to one token per
+    // character than natural language. 0.75 is deliberately conservative.
+    tokens += Math.ceil((match[1]?.length ?? 0) * 0.75);
+    offset = start + match[0].length;
+  }
+  tokens += Math.ceil((text.length - offset) / 4);
+  return tokens;
+}
+
 export function estimatePiMessageTokens(message: AgentMessage): number {
   const record = message as unknown as { role?: unknown; content?: unknown };
   let text = "";
@@ -110,7 +135,7 @@ export function estimatePiMessageTokens(message: AgentMessage): number {
       text = String(message);
     }
   }
-  return Math.ceil(text.length / 4);
+  return estimatePiTextTokens(text);
 }
 
 export function stringifyPiUserContentForCompaction(content: unknown): string {

@@ -2,6 +2,7 @@ import { SHADCN_NPM_PACKAGE_VERSIONS, SHADCN_REGISTRY } from "./shadcn-registry.
 
 export type ProjectScaffoldTemplate =
   | "crud"
+  | "vanilla"
   | "ai-chat"
   | "integration-dashboard"
   | "data-dashboard"
@@ -9,6 +10,7 @@ export type ProjectScaffoldTemplate =
 
 export const PROJECT_SCAFFOLD_TEMPLATES: readonly ProjectScaffoldTemplate[] = [
   "crud",
+  "vanilla",
   "ai-chat",
   "integration-dashboard",
   "data-dashboard",
@@ -1291,6 +1293,209 @@ export default function Home() {
   return files;
 }
 
+function vanillaScaffoldFiles(projectName: string, scriptName: string): ProjectScaffoldFile[] {
+  const packageName = scaffoldPackageName(projectName);
+  const escapedProjectName = escapeXmlText(projectName);
+  const file = (lines: string[]) => `${lines.join("\n")}\n`;
+  return [
+    {
+      path: "/package.json",
+      content: `${JSON.stringify({
+        name: packageName,
+        private: true,
+        type: "module",
+        scripts: {
+          dev: "wrangler dev",
+          build: "node ./scripts/build.mjs",
+          deploy: "wrangler deploy",
+        },
+        devDependencies: {
+          wrangler: "^4.97.0",
+        },
+      }, null, 2)}\n`,
+    },
+    {
+      path: "/wrangler.jsonc",
+      content: `${JSON.stringify({
+        name: scriptName,
+        main: "./worker.js",
+        compatibility_date: "2026-06-01",
+        assets: {
+          directory: "./public",
+          binding: "ASSETS",
+        },
+      }, null, 2)}\n`,
+    },
+    {
+      path: "/worker.js",
+      content: file([
+        `export default {`,
+        `  async fetch(request, env) {`,
+        `    const assetResponse = await env.ASSETS.fetch(request);`,
+        `    if (assetResponse.status !== 404) return assetResponse;`,
+        ``,
+        `    const method = request.method.toUpperCase();`,
+        `    const acceptsHtml = request.headers.get("accept")?.includes("text/html");`,
+        `    if ((method === "GET" || method === "HEAD") && acceptsHtml) {`,
+        `      return env.ASSETS.fetch(new URL("/index.html", request.url));`,
+        `    }`,
+        ``,
+        `    return assetResponse;`,
+        `  },`,
+        `};`,
+      ]),
+    },
+    {
+      path: "/public/index.html",
+      content: file([
+        `<!doctype html>`,
+        `<html lang="en">`,
+        `  <head>`,
+        `    <meta charset="UTF-8" />`,
+        `    <meta name="viewport" content="width=device-width, initial-scale=1" />`,
+        `    <meta name="description" content="A lightweight web experience built with plain HTML, CSS, and JavaScript." />`,
+        `    <meta property="og:title" content="${escapedProjectName}" />`,
+        `    <meta property="og:description" content="A lightweight web experience built with plain HTML, CSS, and JavaScript." />`,
+        `    <meta property="og:image" content="/og-image.svg" />`,
+        `    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />`,
+        `    <link rel="stylesheet" href="/styles.css" />`,
+        `    <title>${escapedProjectName}</title>`,
+        `  </head>`,
+        `  <body>`,
+        `    <main class="shell">`,
+        `      <section class="hero" aria-labelledby="page-title">`,
+        `        <p class="eyebrow">Vanilla web starter</p>`,
+        `        <h1 id="page-title">${escapedProjectName}</h1>`,
+        `        <p class="lede">A fast, focused starting point for a landing page, calculator, quiz, or browser game.</p>`,
+        `        <button id="demo-action" type="button">Try the interaction</button>`,
+        `        <p id="demo-status" class="status" role="status" aria-live="polite">Ready when you are.</p>`,
+        `      </section>`,
+        `      <section class="card-grid" aria-label="Starter capabilities">`,
+        `        <article><span>01</span><h2>HTML</h2><p>Semantic structure ready to reshape.</p></article>`,
+        `        <article><span>02</span><h2>CSS</h2><p>Responsive styles without a framework.</p></article>`,
+        `        <article><span>03</span><h2>JavaScript</h2><p>A small module for your interaction or game loop.</p></article>`,
+        `      </section>`,
+        `    </main>`,
+        `    <script type="module" src="/main.js"></script>`,
+        `  </body>`,
+        `</html>`,
+      ]),
+    },
+    {
+      path: "/public/styles.css",
+      content: file([
+        `:root {`,
+        `  color-scheme: light dark;`,
+        `  font-family: Inter, ui-sans-serif, system-ui, sans-serif;`,
+        `  color: #f7f7f2;`,
+        `  background: #10120f;`,
+        `  font-synthesis: none;`,
+        `}`,
+        `* { box-sizing: border-box; }`,
+        `body { margin: 0; min-width: 320px; min-height: 100vh; background: radial-gradient(circle at 80% 0%, #33492d 0, transparent 36rem), #10120f; }`,
+        `button { font: inherit; }`,
+        `.shell { width: min(1120px, calc(100% - 2rem)); margin: 0 auto; padding: clamp(3rem, 9vw, 8rem) 0; }`,
+        `.hero { max-width: 760px; }`,
+        `.eyebrow { margin: 0 0 1rem; color: #b9e7a9; font-size: .78rem; font-weight: 800; letter-spacing: .16em; text-transform: uppercase; }`,
+        `h1 { margin: 0; font-size: clamp(3.5rem, 10vw, 7.5rem); line-height: .9; letter-spacing: -.07em; }`,
+        `.lede { max-width: 640px; margin: 1.75rem 0; color: #c5c9c1; font-size: clamp(1.1rem, 2.4vw, 1.45rem); line-height: 1.6; }`,
+        `button { border: 0; border-radius: 999px; padding: .9rem 1.3rem; color: #10200c; background: #b9e7a9; font-weight: 800; cursor: pointer; transition: transform 160ms ease, background 160ms ease; }`,
+        `button:hover { transform: translateY(-2px); background: #d2f6c5; }`,
+        `button:focus-visible { outline: 3px solid #f7f7f2; outline-offset: 4px; }`,
+        `.status { min-height: 1.5rem; color: #979e93; }`,
+        `.card-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; margin-top: clamp(4rem, 10vw, 8rem); }`,
+        `.card-grid article { min-height: 180px; padding: 1.4rem; border: 1px solid #363b34; border-radius: 1.25rem; background: rgb(24 27 23 / 78%); }`,
+        `.card-grid span { color: #9bd68a; font: 700 .75rem ui-monospace, monospace; }`,
+        `.card-grid h2 { margin: 2.5rem 0 .5rem; }`,
+        `.card-grid p { margin: 0; color: #aeb3aa; line-height: 1.5; }`,
+        `@media (max-width: 700px) { .card-grid { grid-template-columns: 1fr; } .card-grid article { min-height: auto; } .card-grid h2 { margin-top: 1.5rem; } }`,
+        `@media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; } }`,
+      ]),
+    },
+    {
+      path: "/public/main.js",
+      content: file([
+        `const action = document.querySelector("#demo-action");`,
+        `const status = document.querySelector("#demo-status");`,
+        `let count = 0;`,
+        ``,
+        `action?.addEventListener("click", () => {`,
+        `  count += 1;`,
+        `  if (status) status.textContent = count === 1 ? "It works — now make it yours." : "Interaction count: " + count;`,
+        `});`,
+      ]),
+    },
+    {
+      path: "/public/favicon.svg",
+      content: file([
+        `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="${escapedProjectName} icon">`,
+        `  <rect width="64" height="64" rx="18" fill="#b9e7a9"/>`,
+        `  <path d="M19 20h26L34 44h-9l7-15H19z" fill="#10200c"/>`,
+        `</svg>`,
+      ]),
+    },
+    {
+      path: "/public/og-image.svg",
+      content: file([
+        `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 630" role="img" aria-label="${escapedProjectName} preview">`,
+        `  <rect width="1200" height="630" fill="#10120f"/>`,
+        `  <circle cx="1040" cy="80" r="330" fill="#33492d"/>`,
+        `  <text x="90" y="210" fill="#b9e7a9" font-family="Arial, sans-serif" font-size="34" font-weight="700">VANILLA WEB STARTER</text>`,
+        `  <text x="90" y="355" fill="#f7f7f2" font-family="Arial, sans-serif" font-size="84" font-weight="800">${escapedProjectName}</text>`,
+        `  <text x="90" y="440" fill="#aeb3aa" font-family="Arial, sans-serif" font-size="34">Plain HTML, CSS, and JavaScript on Cloudflare</text>`,
+        `</svg>`,
+      ]),
+    },
+    { path: "/public/robots.txt", content: "User-agent: *\nAllow: /\n" },
+    {
+      path: "/scripts/build.mjs",
+      content: file([
+        `import { cpSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";`,
+        ``,
+        `rmSync("build", { recursive: true, force: true });`,
+        `mkdirSync("build/client", { recursive: true });`,
+        `mkdirSync("build/server", { recursive: true });`,
+        `cpSync("public", "build/client", { recursive: true });`,
+        `cpSync("worker.js", "build/server/worker.js");`,
+        ``,
+        `const rawConfig = readFileSync("wrangler.jsonc", "utf8");`,
+        `const config = JSON.parse(rawConfig.replace(/\\/\\/[^\\n]*/g, "").replace(/,(\\s*[}\\]])/g, "$1"));`,
+        `const manifest = {`,
+        `  main: "worker.js",`,
+        `  no_bundle: true,`,
+        `  rules: [{ type: "ESModule", globs: ["**/*.js", "**/*.mjs"] }],`,
+        `  compatibility_date: config.compatibility_date,`,
+        `  compatibility_flags: config.compatibility_flags ?? [],`,
+        `  assets: { directory: "../client", binding: "ASSETS" },`,
+        `  ...(config.vars ? { vars: config.vars } : {}),`,
+        `  ...(config.durable_objects ? { durable_objects: config.durable_objects } : {}),`,
+        `  ...(config.migrations ? { migrations: config.migrations } : {}),`,
+        `  ...(config.kv_namespaces ? { kv_namespaces: config.kv_namespaces } : {}),`,
+        `  ...(config.r2_buckets ? { r2_buckets: config.r2_buckets } : {}),`,
+        `  ...(config.bindings ? { bindings: config.bindings } : {}),`,
+        `};`,
+        `writeFileSync("build/server/wrangler.json", JSON.stringify(manifest, null, 2) + "\\n");`,
+      ]),
+    },
+    {
+      path: "/README.md",
+      content: file([
+        `# ${projectName}`,
+        ``,
+        `A dependency-light HTML, CSS, and JavaScript project scaffolded by camelAI.`,
+        ``,
+        `## Structure`,
+        ``,
+        `- Edit the browser experience in \`public/index.html\`, \`public/styles.css\`, and \`public/main.js\`.`,
+        `- \`worker.js\` serves static assets and falls back to \`index.html\` for browser routes. It is also the upgrade seam for small server endpoints.`,
+        `- \`bun run build\` copies deployable assets into \`build/client\` and writes the Worker manifest to \`build/server\`.`,
+        ``,
+        `This starter is best for client-only experiences. If the product needs durable records, accounts, a shared leaderboard, or multiplayer state, the \`crud\` template is usually the better foundation.`,
+      ]),
+    },
+  ];
+}
+
 export function defaultProjectScaffoldFiles(
   projectName: string,
   template: ProjectScaffoldTemplate,
@@ -1299,6 +1504,8 @@ export function defaultProjectScaffoldFiles(
   switch (template) {
     case "crud":
       return crudScaffoldFiles(projectName, scriptName);
+    case "vanilla":
+      return vanillaScaffoldFiles(projectName, scriptName);
     case "ai-chat":
       return aiChatScaffoldFiles(projectName, scriptName);
     case "integration-dashboard":

@@ -14,6 +14,7 @@ describe("normalizeProjectScaffoldTemplate", () => {
     expect(normalizeProjectScaffoldTemplate(null)).toBe("crud");
     expect(normalizeProjectScaffoldTemplate("")).toBe("crud");
     expect(normalizeProjectScaffoldTemplate("crud")).toBe("crud");
+    expect(normalizeProjectScaffoldTemplate("vanilla")).toBe("vanilla");
     expect(normalizeProjectScaffoldTemplate("ai-chat")).toBe("ai-chat");
     expect(normalizeProjectScaffoldTemplate("integration-dashboard")).toBe("integration-dashboard");
     expect(normalizeProjectScaffoldTemplate("data-dashboard")).toBe("data-dashboard");
@@ -21,8 +22,8 @@ describe("normalizeProjectScaffoldTemplate", () => {
   });
 
   it("rejects removed and unknown templates", () => {
-    expect(() => normalizeProjectScaffoldTemplate("react-router")).toThrow(/crud.*ai-chat.*integration-dashboard.*data-dashboard.*data-analysis/);
-    expect(() => normalizeProjectScaffoldTemplate("worker")).toThrow(/crud.*ai-chat.*integration-dashboard.*data-dashboard.*data-analysis/);
+    expect(() => normalizeProjectScaffoldTemplate("react-router")).toThrow(/crud.*vanilla.*ai-chat.*integration-dashboard.*data-dashboard.*data-analysis/);
+    expect(() => normalizeProjectScaffoldTemplate("worker")).toThrow(/crud.*vanilla.*ai-chat.*integration-dashboard.*data-dashboard.*data-analysis/);
     expect(() => normalizeProjectScaffoldTemplate("api")).toThrow(/crud.*data-analysis/);
   });
 });
@@ -43,6 +44,19 @@ describe("defaultProjectScaffoldFiles", () => {
   });
 
   it("generates the specialized web scaffolds", () => {
+    const vanilla = defaultProjectScaffoldFiles("Tiny Game", "vanilla", "tiny-game");
+    expect(JSON.parse(scaffoldFile(vanilla, "/package.json"))).toMatchObject({
+      scripts: { build: "node ./scripts/build.mjs" },
+      devDependencies: { wrangler: expect.any(String) },
+    });
+    expect(JSON.parse(scaffoldFile(vanilla, "/package.json"))).not.toHaveProperty("dependencies");
+    expect(scaffoldFile(vanilla, "/public/index.html")).toContain("Vanilla web starter");
+    expect(scaffoldFile(vanilla, "/public/index.html")).toContain('src="/main.js"');
+    expect(scaffoldFile(vanilla, "/worker.js")).toContain("env.ASSETS.fetch");
+    expect(scaffoldFile(vanilla, "/scripts/build.mjs")).toContain('cpSync("public", "build/client"');
+    expect(vanilla.map((file) => file.path)).not.toContain("/app/root.tsx");
+    expect(vanilla.map((file) => file.path)).not.toContain("/components.json");
+
     const ai = defaultProjectScaffoldFiles("AI App", "ai-chat", "ai-app");
     expect(JSON.parse(scaffoldFile(ai, "/wrangler.jsonc")).ai).toEqual({ binding: "AI" });
     expect(scaffoldFile(ai, "/app/routes/home.tsx")).toContain('AI.run("auto"');
