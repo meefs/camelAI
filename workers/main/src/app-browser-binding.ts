@@ -455,17 +455,42 @@ export class AppBrowserSession extends RpcTarget {
   }
 
   async textContent(
-    selector: string,
+    selector?: string,
     options?: AppBrowserActionOptions,
   ): Promise<{ text: string; truncated: boolean }> {
-    requireSelector(selector);
-    return await this.run(`read text of ${selector}`, async () => {
-      await this.waitForSelectorInternal(selector, options?.timeoutMs, false);
+    const target = selector === undefined ? 'body' : requireSelector(selector);
+    return await this.run(`read text of ${target}`, async () => {
+      await this.waitForSelectorInternal(target, options?.timeoutMs, false);
       const raw = await this.page.$eval(
-        selector,
+        target,
         (element) => (element instanceof HTMLElement ? element.innerText : element.textContent) ?? '',
       );
       return truncateText(raw.trim(), BROWSER_SESSION_MAX_TEXT_CHARS);
+    });
+  }
+
+  async hasText(
+    text: string,
+    options?: { selector?: string },
+  ): Promise<boolean> {
+    if (typeof text !== 'string' || !text.trim()) {
+      throw new Error('text must be a non-empty string');
+    }
+    const target = options?.selector === undefined
+      ? 'body'
+      : requireSelector(options.selector);
+    return await this.run(`check text ${JSON.stringify(text)} in ${target}`, async () => {
+      if (!await this.page.$(target)) return false;
+      return await this.page.$eval(
+        target,
+        (element, expected) => {
+          const visibleText = element instanceof HTMLElement
+            ? element.innerText
+            : element.textContent ?? '';
+          return visibleText.includes(expected);
+        },
+        text,
+      );
     });
   }
 

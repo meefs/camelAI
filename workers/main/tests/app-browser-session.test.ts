@@ -265,6 +265,49 @@ describe('AppBrowserSession', () => {
     await session.close();
   });
 
+  it('defaults textContent to visible body text when the selector is omitted', async () => {
+    const selectors: string[] = [];
+    const fakePage = createFakePage({
+      $eval: async (selector: string) => {
+        selectors.push(selector);
+        return '  page body  ';
+      },
+    });
+    const session = createSession(fakePage, createFakeBrowser());
+
+    expect(await session.textContent()).toEqual({ text: 'page body', truncated: false });
+    expect(selectors).toEqual(['body']);
+    await session.close();
+  });
+
+  it('checks visible text immediately in the body or a selected element', async () => {
+    const selectors: string[] = [];
+    const fakePage = createFakePage({
+      $: async () => ({}),
+      $eval: async (selector: string, _fn: unknown, expected: string) => {
+        selectors.push(selector);
+        return `${selector} says Saved`.includes(expected);
+      },
+    });
+    const session = createSession(fakePage, createFakeBrowser());
+
+    expect(await session.hasText('Saved')).toBe(true);
+    expect(await session.hasText('Missing')).toBe(false);
+    expect(await session.hasText('Saved', { selector: '.toast' })).toBe(true);
+    expect(selectors).toEqual(['body', 'body', '.toast']);
+    expect(await captureRejection(session.hasText(''))).toMatch(/text must be a non-empty string/);
+    expect(await captureRejection(session.hasText('Saved', { selector: ' ' }))).toMatch(
+      /selector must be a non-empty string/,
+    );
+    await session.close();
+  });
+
+  it('returns false from hasText when the target does not exist', async () => {
+    const session = createSession(createFakePage(), createFakeBrowser());
+    expect(await session.hasText('Saved', { selector: '.missing' })).toBe(false);
+    await session.close();
+  });
+
   it('captures console messages, page errors, and failed responses in logs', async () => {
     const fakePage = createFakePage();
     const session = createSession(fakePage, createFakeBrowser());

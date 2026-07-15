@@ -3533,6 +3533,7 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
       "waitForTimeout",
       "evaluate",
       "textContent",
+      "hasText",
       "getAttribute",
       "count",
       "exists",

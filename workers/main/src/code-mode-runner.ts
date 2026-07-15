@@ -363,7 +363,7 @@ const RUNTIME_HELP_ENTRIES = Object.freeze([
       { name: "click", usage: "await session.click(\"button.submit\", { timeoutMs? })" },
       { name: "fill", usage: "await session.fill(\"#email\", \"a@b.com\") — clears the field first" },
       { name: "type", usage: "await session.type(\"#search\", \"query\") — appends keystrokes" },
-      { name: "press", usage: "await session.press(\"Enter\", { selector? })" },
+      { name: "press", usage: "await session.press(\"Enter\", { selector? }) — without selector, dispatches to the currently focused element/page; verify the resulting UI state" },
       { name: "select", usage: "await session.select(\"select#plan\", \"pro\")" },
       { name: "hover", usage: "await session.hover(\".menu\")" },
       { name: "waitForSelector", usage: "await session.waitForSelector(\".toast\", { timeoutMs?, hidden? })" },
@@ -371,7 +371,8 @@ const RUNTIME_HELP_ENTRIES = Object.freeze([
       { name: "waitForFunction", usage: "await session.waitForFunction(\"document.querySelectorAll('li').length >= 3\")" },
       { name: "waitForTimeout", usage: "await session.waitForTimeout(500) — fixed sleep in ms (max 60s); prefer waitForSelector/waitForText when possible" },
       { name: "evaluate", usage: "await session.evaluate(\"document.title\")", returns: "JSON-safe result" },
-      { name: "textContent", usage: "await session.textContent(\"h1\")", returns: "{ text, truncated }" },
+      { name: "textContent", usage: "await session.textContent(selector?) — defaults to visible body text", returns: "{ text, truncated }" },
+      { name: "hasText", usage: "await session.hasText(\"Saved\", { selector? }) — immediate check; defaults to body", returns: "boolean" },
       { name: "getAttribute", usage: "await session.getAttribute(\"a.cta\", \"href\")" },
       { name: "count", usage: "await session.count(\".todo-item\")", returns: "number" },
       { name: "exists", usage: "await session.exists(\".error-banner\")", returns: "boolean" },
@@ -796,6 +797,7 @@ function createBrowserFacade(callTool) {
     "waitForTimeout",
     "evaluate",
     "textContent",
+    "hasText",
     "getAttribute",
     "count",
     "exists",
@@ -808,9 +810,9 @@ function createBrowserFacade(callTool) {
   ];
   const sessionMethodList = sessionMethods.join(", ");
   const sessionMethodHints = Object.freeze({
-    text: 'To read visible page text, use await session.textContent("body") and then result.text. '
+    text: 'To read visible page text, use await session.textContent() and then result.text. '
       + 'To read HTML, use await session.content().',
-    innerText: 'To read visible page text, use await session.textContent("body") and then result.text, '
+    innerText: 'To read visible page text, use await session.textContent() and then result.text, '
       + 'or await session.evaluate("document.body.innerText").',
     html: 'To read page HTML, use await session.content(). '
       + 'To read a specific element, use await session.content({ selector: "..." }).',
@@ -877,7 +879,7 @@ function createBrowserFacade(callTool) {
         throw new Error(
           'env.BROWSER has no method "' + property + '". '
             + 'Use await env.BROWSER.launch({ scriptName, path? }) to create a session first, '
-            + 'then call session methods such as click, waitForText, textContent, content, logs, and close. '
+            + 'then call session methods such as click, waitForText, hasText, textContent, content, logs, and close. '
             + 'Run await tools.help({ runtime: "env.BROWSER" }) for examples.',
         );
       };
