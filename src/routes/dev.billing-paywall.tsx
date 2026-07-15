@@ -1,7 +1,6 @@
 import { Link, useSearchParams } from "react-router";
 import { useEffect, useState } from "react";
 import type { Route } from "./+types/dev.billing-paywall";
-import type { LegacyMigrationDialogData } from "@/components/billing/legacy-migration-dialog";
 import { PaywallTakeover } from "@/components/billing/paywall-takeover";
 import { type PlanPickerCta } from "@/components/billing/plan-picker";
 import { Alert, AlertDescription } from "@/components/ui/alert";
@@ -23,8 +22,6 @@ import type { BillingPlan } from "@/types";
 
 type PreviewState =
   | "default"
-  | "legacy"
-  | "legacy-multiple"
   | "byok-configured"
   | "current-starter"
   | "current-pro"
@@ -32,7 +29,6 @@ type PreviewState =
 
 interface PreviewConfig {
   description: string;
-  migration: LegacyMigrationDialogData | null;
   orgName: string;
   multiOrg: boolean;
   currentPlan: BillingPlan | null;
@@ -43,8 +39,6 @@ interface PreviewConfig {
 
 const PREVIEW_STATES: Array<{ value: PreviewState; label: string }> = [
   { value: "default", label: "New paywall" },
-  { value: "legacy", label: "Legacy migration" },
-  { value: "legacy-multiple", label: "Manual migration" },
   { value: "byok-configured", label: "BYOK connected" },
   { value: "current-starter", label: "Starter upgrade" },
   { value: "current-pro", label: "Pro downgrade" },
@@ -59,7 +53,7 @@ function isLocalPreviewRequest(request: Request): boolean {
 function parsePreviewState(value: string | null): PreviewState {
   return PREVIEW_STATES.some((state) => state.value === value)
     ? (value as PreviewState)
-    : "legacy";
+    : "default";
 }
 
 function parseByokProvider(value: string | null): OnboardingByokProvider {
@@ -75,7 +69,6 @@ function getPreviewConfig(
   const base: PreviewConfig = {
     description:
       "A new org must choose hosted billing or bring their own API key before continuing.",
-    migration: null,
     orgName: "Org B",
     multiOrg: true,
     currentPlan: null,
@@ -85,32 +78,6 @@ function getPreviewConfig(
   };
 
   switch (state) {
-    case "legacy":
-      return {
-        ...base,
-        description:
-          "A logged-in legacy customer sees the migration modal first, then a slim alert and a switched-over plan picker.",
-        migration: {
-          eligible: true,
-          customerId: "cus_preview",
-          activeLegacySubscriptionCount: 1,
-          defaultPlan: "pro",
-        },
-      };
-    case "legacy-multiple":
-      return {
-        ...base,
-        description:
-          "Customers with multiple active legacy subscriptions are routed to manual migration; the picker is disabled.",
-        migration: {
-          eligible: true,
-          customerId: "cus_preview_multiple",
-          activeLegacySubscriptionCount: 2,
-          defaultPlan: "team",
-        },
-        disabledReason:
-          "This account has multiple active subscriptions. Contact support@camelai.com to switch over without double billing.",
-      };
     case "byok-configured":
       return {
         ...base,
@@ -157,8 +124,6 @@ function describeCta(cta: PlanPickerCta): string {
       return "Pay as you go selected";
     case "subscribe":
       return `Start checkout for ${cta.plan}`;
-    case "migrate":
-      return `Legacy migration to ${cta.plan}`;
     case "manage":
       return `Manage ${cta.plan} in Stripe`;
     case "contact":
@@ -189,7 +154,7 @@ export default function DevBillingPaywallPreviewRoute() {
 
   useEffect(() => {
     setLastAction(null);
-  }, [config.migration?.eligible, state]);
+  }, [state]);
 
   return (
     <main className="mx-auto flex min-h-svh w-full max-w-6xl flex-col gap-6 px-4 py-6 sm:px-6">
@@ -204,7 +169,7 @@ export default function DevBillingPaywallPreviewRoute() {
           </h1>
           <p className="max-w-2xl text-sm text-muted-foreground">
             This route uses fake billing state and does not call Stripe. Use it
-            to inspect paywall and migration UI without setting up a customer.
+            to inspect paywall UI without setting up a customer.
           </p>
         </div>
         <Button asChild variant="outline">
@@ -273,7 +238,6 @@ export default function DevBillingPaywallPreviewRoute() {
             multiOrg: config.multiOrg,
             byokProviderLabel: config.byokProviderLabel,
           }}
-          legacyMigration={config.migration}
           onPreviewSelectPlan={(cta) => {
             setLastAction(describeCta(cta));
           }}

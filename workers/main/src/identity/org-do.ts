@@ -578,6 +578,7 @@ export interface OrgBillingStateUpdate {
 export interface SyncSubscriptionBillingStateResult {
   org: Organization;
   trialCreditGranted: boolean;
+  capacityInvariantError?: string | null;
 }
 
 export interface ApplyCreditCheckoutResult {
@@ -2564,13 +2565,26 @@ export class OrgDO extends DurableObject<DOEnv> {
       }
 
       normalizeOrgBillingFields(nextInfo);
+      const capacityInvariantError =
+        this.getBillingStateCapacityInvariantError(nextInfo);
+      if (capacityInvariantError) {
+        return {
+          org: existingOrg,
+          trialCreditGranted: false,
+          capacityInvariantError,
+        };
+      }
       this.sql.exec(
         "INSERT OR REPLACE INTO org_info (key, value) VALUES (?, ?)",
         "data",
         JSON.stringify(nextInfo),
       );
 
-      return { org: nextInfo, trialCreditGranted };
+      return {
+        org: nextInfo,
+        trialCreditGranted,
+        capacityInvariantError: null,
+      };
     });
 
     return result;
@@ -3072,6 +3086,36 @@ export class OrgDO extends DurableObject<DOEnv> {
 
   private assertSeatCapacityForNewMember(): void {
     this.assertSeatCapacityForAdditionalMembers(1);
+  }
+
+  private getBillingStateCapacityInvariantError(
+    info: Organization,
+  ): string | null {
+    if (
+      info.billing_status !== "active" &&
+      info.billing_status !== "trialing" &&
+      info.billing_status !== "past_due"
+    ) {
+      return null;
+    }
+    const seatLimit = getOrgSeatLimit(info);
+    if (seatLimit === null) return null;
+
+    const currentMembers =
+      this.sql.exec<{ count: number }>("SELECT COUNT(*) as count FROM members")
+        .next().value?.count ?? 0;
+    const activeInvitations =
+      this.sql
+        .exec<{ count: number }>(
+          "SELECT COUNT(*) as count FROM invitations WHERE expires_at > ?",
+          Date.now(),
+        )
+        .next().value?.count ?? 0;
+    const occupiedSeatCount = currentMembers + activeInvitations;
+    if (occupiedSeatCount > seatLimit) {
+      return `The projected billing plan includes ${seatLimit} seat${seatLimit === 1 ? "" : "s"}, but this organization has ${occupiedSeatCount} occupied seats.`;
+    }
+    return null;
   }
 
   private assertSeatCapacityForAdditionalMembers(

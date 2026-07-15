@@ -29,7 +29,6 @@ export interface PlanPickerCardProps {
   pending: boolean;
   disabled: boolean;
   byokProviderLabel?: string | null;
-  legacyMode?: boolean;
   currentAction?: "manage" | null;
   onSelect: (cta: { kind: PlanPickerCtaKind; plan: BillingPlan }) => void;
 }
@@ -40,7 +39,6 @@ export function PlanPickerCard({
   pending,
   disabled,
   byokProviderLabel = null,
-  legacyMode = false,
   currentAction = null,
   onSelect,
 }: PlanPickerCardProps) {
@@ -56,7 +54,6 @@ export function PlanPickerCard({
     : isDowngrade
     ? "downgrade"
     : content.ctaKind;
-  const isPaidLegacyCta = legacyMode && ctaKind === "subscribe";
   const freeByokCtaLabel =
     plan === "free" && byokProviderLabel
       ? `Continue with ${byokProviderLabel}`
@@ -70,14 +67,10 @@ export function PlanPickerCard({
     : isDowngrade
       ? "Downgrade"
       : pending
-        ? isPaidLegacyCta
-          ? "Switching…"
-          : ctaKind === "payg"
+        ? ctaKind === "payg"
             ? "Setting up…"
             : "Opening Stripe…"
-        : isPaidLegacyCta
-          ? `Switch to ${limits.label}`
-          : freeByokCtaLabel;
+        : freeByokCtaLabel;
   const ctaVariant: "default" | "outline" | "secondary" = isCurrent
     ? currentAction === "manage"
       ? "default"
@@ -93,7 +86,7 @@ export function PlanPickerCard({
           variant="default"
           className="absolute top-0 left-4 z-10 -translate-y-1/2"
         >
-          {legacyMode ? "Recommended" : "Most popular"}
+          Most popular
         </Badge>
       ) : null}
       {isCurrent ? (

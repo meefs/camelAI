@@ -46,7 +46,7 @@ vi.mock('@/components/settings/invite-member-dialog', () => ({
 }));
 
 vi.mock('@/components/settings/team-upgrade-dialog', () => ({
-  TeamUpgradeDialog: (props: { open: boolean; legacyMigration?: unknown }) => {
+  TeamUpgradeDialog: (props: { open: boolean }) => {
     upgradeDialogPropsSpy(props);
     const { open } = props;
     upgradeDialogOpenSpy(open);
@@ -300,23 +300,4 @@ describe('TeamTable - copy invite link', () => {
     expect(inviteDialogOpenSpy).not.toHaveBeenCalledWith(true);
   });
 
-  it('passes legacy migration details to the TeamUpgradeDialog', () => {
-    const legacyMigration = {
-      eligible: true,
-      customerId: 'cus_test',
-      activeLegacySubscriptionCount: 2,
-      defaultPlan: 'team' as const,
-    };
-
-    renderTeamTable({ requiresTeamUpgrade: true, legacyMigration });
-
-    fireEvent.click(screen.getAllByText('Invite member')[0]);
-
-    expect(upgradeDialogPropsSpy).toHaveBeenLastCalledWith(
-      expect.objectContaining({
-        open: true,
-        legacyMigration,
-      }),
-    );
-  });
 });

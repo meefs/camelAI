@@ -51,7 +51,6 @@ import { getContrastTextColor } from "@/lib/avatar"
 import type {
   TeamInviteBillingContext,
 } from "@/lib/billing-plans"
-import type { LegacyMigrationDialogData } from "@/components/billing/legacy-migration-dialog"
 import type {
   OrgRole,
   User,
@@ -89,7 +88,6 @@ interface TeamTableProps {
   requiresTeamUpgrade?: boolean
   currentPlan?: "free" | "payg" | "starter" | "pro" | "team" | "enterprise"
   stripeConfigured?: boolean
-  legacyMigration?: LegacyMigrationDialogData | null
   teamInviteBillingContext?: TeamInviteBillingContext | null
 }
 
@@ -107,7 +105,6 @@ export function TeamTable({
   requiresTeamUpgrade = false,
   currentPlan = "free",
   stripeConfigured = true,
-  legacyMigration = null,
   teamInviteBillingContext = null,
 }: TeamTableProps) {
   const { logout } = useLogout()
@@ -709,7 +706,6 @@ export function TeamTable({
         onOpenChange={setUpgradeOpen}
         currentPlan={upgradeCurrentPlan}
         stripeConfigured={stripeConfigured}
-        legacyMigration={legacyMigration}
       />
       <ConfirmDialog
         open={Boolean(pendingRemoveMemberId)}

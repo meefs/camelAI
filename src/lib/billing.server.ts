@@ -6,7 +6,6 @@ import type {
   SubscriptionInvoiceGrantRow,
 } from "../../workers/main/src/auth";
 import {
-  BILLING_PLAN_LIMITS,
   type BillingPlanLimits,
   getBillingPlanLimits,
   getIncludedCreditCentsForPlan,
@@ -55,7 +54,6 @@ export interface StripeBillingEnv {
   STRIPE_TEAM_PRICE_ID?: string;
   STRIPE_CREDIT_PRICE_ID?: string;
   STRIPE_CREDIT_PRICE_IDS?: string;
-  LEGACY_STRIPE_MIGRATION_CUSTOMERS?: string;
   BILLING_TRIAL_CREDIT_CENTS?: string;
   BILLING_SUBSCRIPTION_INCLUDED_CREDIT_CENTS?: string;
   CF_ACCOUNT_ID?: string;
@@ -103,34 +101,6 @@ export interface StripeSubscriptionItem {
   price?: string | StripePriceSummary | null;
   current_period_start?: number | null;
   current_period_end?: number | null;
-}
-
-export interface LegacyStripeMigrationEligibility {
-  eligible: boolean;
-  customerId: string | null;
-  activeLegacySubscriptionCount: number;
-  defaultPlan: SubscriptionBillingPlan;
-}
-
-export interface LegacyStripeMigrationPreview {
-  plan: SubscriptionBillingPlan;
-  seatCount: number;
-  currency: string;
-  monthlyPriceCents: number | null;
-  amountDueTodayCents: number | null;
-  legacyCreditCents: number | null;
-  newPlanProrationCents: number | null;
-  includedCreditCents: number;
-}
-
-interface LegacyStripeMigrationCandidate {
-  email: string;
-  customerId: string;
-  subscriptionIds: string[];
-  subscriptionItemIds: string[];
-  legacyPriceIds: string[];
-  totalLegacyQuantity: number | null;
-  activeLegacySubscriptionCount: number;
 }
 
 export interface StripeInvoiceListEntry {
@@ -331,28 +301,33 @@ const LEGACY_MIGRATION_PRICE_IDS = new Set([
   ...LEGACY_TEAM_PRICE_IDS,
 ]);
 
-// Prices retired by the July 2026 Starter/Pro pricing rollout. These remain
-// recognizable only for already-issued initial or renewal invoices that can
-// be paid after the live subscription has moved to the replacement price.
-const RETIRED_PRICING_ROLLOUT_INVOICE_PRICES = new Map<
+// Prices retired by the July 2026 Starter/Pro pricing rollout. Keep recognizing
+// them while the out-of-band subscription migration converges, and for
+// already-issued invoices that can be paid after a subscription has moved to
+// the replacement price.
+const RETIRED_PRICING_ROLLOUT_PRICES = new Map<
   string,
-  { plan: "starter" | "pro"; includedCreditCents: number }
+  {
+    plan: "starter" | "pro";
+    unitAmount: number;
+    includedCreditCents: number;
+  }
 >([
   [
     "price_1TS5SoGvliMKf4vHohXqB19x",
-    { plan: "starter", includedCreditCents: 1000 },
+    { plan: "starter", unitAmount: 4000, includedCreditCents: 1000 },
   ],
   [
     "price_1TS5SoGvliMKf4vHmzDcxSXF",
-    { plan: "pro", includedCreditCents: 3000 },
+    { plan: "pro", unitAmount: 15000, includedCreditCents: 3000 },
   ],
   [
     "price_1TRzJ5GvliMKf4vHt5P6ODiY",
-    { plan: "starter", includedCreditCents: 1000 },
+    { plan: "starter", unitAmount: 4000, includedCreditCents: 1000 },
   ],
   [
     "price_1TRzJDGvliMKf4vHiCvInGpn",
-    { plan: "pro", includedCreditCents: 3000 },
+    { plan: "pro", unitAmount: 15000, includedCreditCents: 3000 },
   ],
 ]);
 
@@ -750,272 +725,12 @@ export function parseStripePriceIdList(
   return ids;
 }
 
-function normalizeEmail(value: string | null | undefined): string {
-  return value?.trim().toLowerCase() ?? "";
-}
-
 function getStripeCustomerId(
   customer: string | StripeCustomer | null | undefined,
 ): string | null {
   return typeof customer === "string" ? customer : (customer?.id ?? null);
 }
 
-function splitMultiValue(value: string | null | undefined): string[] {
-  if (!value) return [];
-  return value
-    .split(/[|;\s]+/)
-    .map((part) => part.trim())
-    .filter(Boolean);
-}
-
-function parsePositiveIntegerOrNull(
-  value: string | null | undefined,
-): number | null {
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed) || parsed <= 0) return null;
-  return Math.floor(parsed);
-}
-
-function parseNonNegativeIntegerOrNull(
-  value: string | null | undefined,
-): number | null {
-  if (!value?.trim()) return null;
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed) || parsed < 0) return null;
-  return Math.floor(parsed);
-}
-
-function parseCsvLine(line: string): string[] {
-  const values: string[] = [];
-  let current = "";
-  let inQuotes = false;
-
-  for (let index = 0; index < line.length; index += 1) {
-    const char = line[index];
-    if (char === '"') {
-      if (inQuotes && line[index + 1] === '"') {
-        current += '"';
-        index += 1;
-      } else {
-        inQuotes = !inQuotes;
-      }
-      continue;
-    }
-    if (char === "," && !inQuotes) {
-      values.push(current);
-      current = "";
-      continue;
-    }
-    current += char;
-  }
-  values.push(current);
-  return values.map((value) => value.trim());
-}
-
-function parseLegacyMigrationCsv(
-  rawValue: string,
-): LegacyStripeMigrationCandidate[] {
-  const lines = rawValue
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean);
-  if (lines.length < 2) return [];
-
-  const headers = parseCsvLine(lines[0]).map((header) =>
-    header.trim().toLowerCase(),
-  );
-  const indexOf = (name: string) => headers.indexOf(name);
-  const emailIndex = indexOf("email");
-  const customerIndex = indexOf("customer_id");
-  if (emailIndex < 0 || customerIndex < 0) return [];
-
-  const subscriptionIdsIndex = indexOf("legacy_subscription_ids");
-  const itemIdsIndex = indexOf("legacy_subscription_item_ids");
-  const priceIdsIndex = indexOf("legacy_price_ids");
-  const quantityIndex = indexOf("total_legacy_quantity");
-  const activeCountIndex = indexOf("active_legacy_subscription_count");
-
-  return lines.slice(1).flatMap((line) => {
-    const values = parseCsvLine(line);
-    const email = normalizeEmail(values[emailIndex]);
-    const customerId = values[customerIndex]?.trim() ?? "";
-    if (!email || !customerId) return [];
-    return [
-      {
-        email,
-        customerId,
-        subscriptionIds: splitMultiValue(values[subscriptionIdsIndex]),
-        subscriptionItemIds: splitMultiValue(values[itemIdsIndex]),
-        legacyPriceIds: splitMultiValue(values[priceIdsIndex]),
-        totalLegacyQuantity: parsePositiveIntegerOrNull(values[quantityIndex]),
-        activeLegacySubscriptionCount:
-          parseNonNegativeIntegerOrNull(values[activeCountIndex]) ?? 1,
-      },
-    ];
-  });
-}
-
-function parseLegacyMigrationJson(
-  rawValue: string,
-): LegacyStripeMigrationCandidate[] {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(rawValue);
-  } catch {
-    return [];
-  }
-  if (!Array.isArray(parsed)) return [];
-
-  return parsed.flatMap((entry) => {
-    if (typeof entry === "string") {
-      const email = normalizeEmail(entry);
-      return email
-        ? [
-            {
-              email,
-              customerId: "",
-              subscriptionIds: [],
-              subscriptionItemIds: [],
-              legacyPriceIds: [],
-              totalLegacyQuantity: null,
-              activeLegacySubscriptionCount: 1,
-            },
-          ]
-        : [];
-    }
-    if (!entry || typeof entry !== "object") return [];
-    const record = entry as Record<string, unknown>;
-    const email = normalizeEmail(String(record.email ?? ""));
-    const customerId = String(
-      record.customer_id ?? record.customerId ?? "",
-    ).trim();
-    if (!email || !customerId) return [];
-    return [
-      {
-        email,
-        customerId,
-        subscriptionIds: Array.isArray(record.subscription_ids)
-          ? record.subscription_ids.map(String)
-          : splitMultiValue(String(record.legacy_subscription_ids ?? "")),
-        subscriptionItemIds: Array.isArray(record.subscription_item_ids)
-          ? record.subscription_item_ids.map(String)
-          : splitMultiValue(String(record.legacy_subscription_item_ids ?? "")),
-        legacyPriceIds: Array.isArray(record.legacy_price_ids)
-          ? record.legacy_price_ids.map(String)
-          : splitMultiValue(String(record.legacy_price_ids ?? "")),
-        totalLegacyQuantity: parsePositiveIntegerOrNull(
-          String(record.total_legacy_quantity ?? ""),
-        ),
-        activeLegacySubscriptionCount:
-          parseNonNegativeIntegerOrNull(
-            String(record.active_legacy_subscription_count ?? ""),
-          ) ?? 1,
-      },
-    ];
-  });
-}
-
-function getLegacyMigrationCandidates(
-  env: Pick<StripeBillingEnv, "LEGACY_STRIPE_MIGRATION_CUSTOMERS">,
-): LegacyStripeMigrationCandidate[] {
-  const rawValue = env.LEGACY_STRIPE_MIGRATION_CUSTOMERS?.trim();
-  if (!rawValue) return [];
-  if (rawValue.startsWith("[")) {
-    return parseLegacyMigrationJson(rawValue);
-  }
-  return parseLegacyMigrationCsv(rawValue);
-}
-
-function getLegacyMigrationCandidateForEmail(
-  env: Pick<StripeBillingEnv, "LEGACY_STRIPE_MIGRATION_CUSTOMERS">,
-  email: string | null | undefined,
-): LegacyStripeMigrationCandidate | null {
-  const normalizedEmail = normalizeEmail(email);
-  if (!normalizedEmail) return null;
-  return (
-    getLegacyMigrationCandidates(env).find(
-      (candidate) => candidate.email === normalizedEmail,
-    ) ?? null
-  );
-}
-
-function getDefaultLegacyMigrationPlan(
-  candidate: LegacyStripeMigrationCandidate | null,
-): SubscriptionBillingPlan {
-  if (
-    candidate?.legacyPriceIds.some((priceId) =>
-      LEGACY_TEAM_PRICE_IDS.has(priceId),
-    )
-  ) {
-    return "team";
-  }
-  return "pro";
-}
-
-export function getLegacyStripeMigrationEligibility(args: {
-  env: Pick<StripeBillingEnv, "LEGACY_STRIPE_MIGRATION_CUSTOMERS">;
-  org: Organization;
-  userEmail: string | null | undefined;
-}): LegacyStripeMigrationEligibility | null {
-  if (
-    args.org.billing_status === "enterprise" ||
-    args.org.billing_status === "active" ||
-    args.org.billing_status === "trialing" ||
-    args.org.billing_subscription_id
-  ) {
-    return null;
-  }
-
-  const candidate = getLegacyMigrationCandidateForEmail(
-    args.env,
-    args.userEmail,
-  );
-  if (!candidate?.customerId) return null;
-  if (candidate.activeLegacySubscriptionCount < 1) return null;
-
-  return {
-    eligible: true,
-    customerId: candidate.customerId,
-    activeLegacySubscriptionCount: candidate.activeLegacySubscriptionCount,
-    defaultPlan: getDefaultLegacyMigrationPlan(candidate),
-  };
-}
-
-export async function getVerifiedLegacyStripeMigrationEligibility(args: {
-  env: StripeBillingEnv;
-  org: Organization;
-  userEmail: string | null | undefined;
-}): Promise<LegacyStripeMigrationEligibility | null> {
-  const eligibility = getLegacyStripeMigrationEligibility(args);
-  if (!eligibility) return null;
-
-  const candidate = getLegacyMigrationCandidateForEmail(
-    args.env,
-    args.userEmail,
-  );
-  if (!candidate) return null;
-
-  try {
-    const subscriptions = await fetchLegacyCandidateSubscriptions(
-      args.env,
-      candidate,
-    );
-    const activeLegacySubscriptionCount =
-      getActiveLegacySubscriptionCount(subscriptions);
-    if (activeLegacySubscriptionCount < 1) return null;
-    return {
-      ...eligibility,
-      activeLegacySubscriptionCount,
-    };
-  } catch (error) {
-    console.error("[billing] failed to verify legacy migration eligibility", {
-      orgId: args.org.id,
-      customerId: candidate.customerId,
-      error: error instanceof Error ? error.message : String(error),
-    });
-    return null;
-  }
-}
 
 const BILLING_SETUP_PATHS = new Set([
   "/settings/organization/billing",
@@ -1316,6 +1031,16 @@ export async function getBillableTeamSeatCountForOrg(
   orgId: string,
   pendingReservedSeatDelta = 0,
 ): Promise<number> {
+  return normalizeSeatCount(
+    "team",
+    (await getOccupiedSeatCountForOrg(env, orgId)) + pendingReservedSeatDelta,
+  );
+}
+
+async function getOccupiedSeatCountForOrg(
+  env: Pick<StripeBillingEnv, "ORG">,
+  orgId: string,
+): Promise<number> {
   const orgStub = getOrgStub(env as StripeBillingEnv, orgId);
   const [memberCount, invitations] = await Promise.all([
     orgStub.getMemberCount(),
@@ -1325,9 +1050,17 @@ export async function getBillableTeamSeatCountForOrg(
   const activeInvitationCount = invitations.filter(
     (invitation) => invitation.expires_at > now,
   ).length;
-  return normalizeSeatCount(
-    "team",
-    memberCount + activeInvitationCount + pendingReservedSeatDelta,
+  return memberCount + activeInvitationCount;
+}
+
+function assertPlanCoversOccupiedSeats(
+  plan: SubscriptionBillingPlan,
+  seatCount: number,
+  occupiedSeatCount: number,
+): void {
+  if (occupiedSeatCount <= seatCount) return;
+  throw new Error(
+    `The ${plan} plan includes ${seatCount} seat${seatCount === 1 ? "" : "s"}, but this organization has ${occupiedSeatCount} occupied seats. Remove members or active invitations before changing plans.`,
   );
 }
 
@@ -2089,11 +1822,18 @@ export async function createSubscriptionUpdatePortalSession(args: {
     subscription,
   });
   const item = getStripeSubscriptionItemForPlanChange(subscription, null);
-  const currentEntry = catalog.find(
-    (entry) => entry.priceId === getStripePriceId(item.price),
+  const currentPriceId = getStripePriceId(item.price);
+  const currentCatalogEntry = catalog.find(
+    (entry) => entry.priceId === currentPriceId,
   );
+  const retiredCurrentPrice = currentPriceId
+    ? RETIRED_PRICING_ROLLOUT_PRICES.get(currentPriceId)
+    : undefined;
+  const currentPlan = currentCatalogEntry?.plan ?? retiredCurrentPrice?.plan;
+  const currentUnitAmount =
+    currentCatalogEntry?.unitAmount ?? retiredCurrentPrice?.unitAmount;
   const targetEntry = catalog.find((entry) => entry.plan === plan);
-  if (!currentEntry) {
+  if (!currentPlan || currentUnitAmount === undefined) {
     throw new Error(
       "Stripe subscription item is not in the configured paid-plan catalog.",
     );
@@ -2103,8 +1843,8 @@ export async function createSubscriptionUpdatePortalSession(args: {
   }
 
   const currentSeatCount = normalizeSeatCount(
-    currentEntry.plan,
-    item.quantity ?? getMinimumSeats(currentEntry.plan),
+    currentPlan,
+    item.quantity ?? getMinimumSeats(currentPlan),
   );
   const requestedSeatCount = normalizeSeatCount(
     plan,
@@ -2112,22 +1852,33 @@ export async function createSubscriptionUpdatePortalSession(args: {
       latestOrg.billing_seat_count ??
       getMinimumSeats(plan),
   );
+  const occupiedSeatCount = await getOccupiedSeatCountForOrg(
+    env,
+    latestOrg.id,
+  );
+  if (plan !== "team") {
+    assertPlanCoversOccupiedSeats(
+      plan,
+      requestedSeatCount,
+      occupiedSeatCount,
+    );
+  }
   const occupiedTargetSeatCount =
     plan === "team"
       ? Math.max(
           requestedSeatCount,
-          await getBillableTeamSeatCountForOrg(env, latestOrg.id),
+          normalizeSeatCount("team", occupiedSeatCount),
         )
       : getMinimumSeats(plan);
   // Buying Team capacity is increase-only. Membership and invitation changes
   // must never silently reduce a quantity that Stripe already knows about.
   const targetSeatCount =
-    currentEntry.plan === "team" && plan === "team"
+    currentPlan === "team" && plan === "team"
       ? Math.max(occupiedTargetSeatCount, currentSeatCount)
       : occupiedTargetSeatCount;
 
   if (
-    currentEntry.priceId === targetEntry.priceId &&
+    currentPriceId === targetEntry.priceId &&
     currentSeatCount === targetSeatCount
   ) {
     // Stripe may be ahead of the webhook projection (for example, after a
@@ -2139,7 +1890,7 @@ export async function createSubscriptionUpdatePortalSession(args: {
   }
   const mode: Exclude<BillingPortalMode, "management"> =
     targetEntry.unitAmount * targetSeatCount >
-    currentEntry.unitAmount * currentSeatCount
+    currentUnitAmount * currentSeatCount
       ? "upgrade"
       : "downgrade";
 
@@ -2228,10 +1979,28 @@ export async function updateTrialingStripeSubscriptionPlan(args: {
     throw new StaleTrialingSubscriptionStatusError(subscription.status);
   }
 
-  const seatCount = normalizeSeatCount(
+  const requestedSeatCount = normalizeSeatCount(
     plan,
     args.seatCount ?? latestOrg.billing_seat_count ?? getMinimumSeats(plan),
   );
+  const occupiedSeatCount = await getOccupiedSeatCountForOrg(
+    env,
+    latestOrg.id,
+  );
+  if (plan !== "team") {
+    assertPlanCoversOccupiedSeats(
+      plan,
+      requestedSeatCount,
+      occupiedSeatCount,
+    );
+  }
+  const seatCount =
+    plan === "team"
+      ? Math.max(
+          requestedSeatCount,
+          normalizeSeatCount("team", occupiedSeatCount),
+        )
+      : requestedSeatCount;
   const currentPlan = getOrgBillingPlan(latestOrg);
   const currentPriceId =
     currentPlan === "free" ||
@@ -2303,360 +2072,6 @@ export async function updateTrialingStripeSubscriptionPlan(args: {
     throw new Error("Failed to update organization billing state.");
   }
   return updatedOrg;
-}
-
-interface LegacySubscriptionSelection {
-  subscription: StripeSubscription;
-  item: StripeSubscriptionItem;
-  priceId: string;
-}
-
-function isLegacyMigrationSubscriptionStatus(
-  status: string | null | undefined,
-) {
-  return status === "active" || status === "past_due";
-}
-
-function getLegacyMigrationSelection(
-  subscriptions: StripeSubscription[],
-  candidate: LegacyStripeMigrationCandidate,
-): LegacySubscriptionSelection | null {
-  const candidateSubscriptionIds = new Set(candidate.subscriptionIds);
-  const candidateItemIds = new Set(candidate.subscriptionItemIds);
-
-  const selections: LegacySubscriptionSelection[] = [];
-  for (const subscription of subscriptions) {
-    if (!isLegacyMigrationSubscriptionStatus(subscription.status)) continue;
-    if (
-      candidateSubscriptionIds.size > 0 &&
-      !candidateSubscriptionIds.has(subscription.id)
-    ) {
-      continue;
-    }
-    for (const item of subscription.items?.data ?? []) {
-      if (candidateItemIds.size > 0 && !candidateItemIds.has(item.id)) {
-        continue;
-      }
-      const priceId = getStripePriceId(item.price);
-      if (!priceId || !LEGACY_MIGRATION_PRICE_IDS.has(priceId)) continue;
-      selections.push({ subscription, item, priceId });
-    }
-  }
-
-  return (
-    selections.find((selection) =>
-      LEGACY_TEAM_PRICE_IDS.has(selection.priceId),
-    ) ??
-    selections[0] ??
-    null
-  );
-}
-
-async function fetchLegacyCandidateSubscriptions(
-  env: StripeBillingEnv,
-  candidate: LegacyStripeMigrationCandidate,
-): Promise<StripeSubscription[]> {
-  if (candidate.subscriptionIds.length > 0) {
-    return Promise.all(
-      candidate.subscriptionIds.map((subscriptionId) =>
-        fetchStripeSubscription(env, subscriptionId),
-      ),
-    );
-  }
-
-  const params = new URLSearchParams();
-  params.set("customer", candidate.customerId);
-  params.set("status", "all");
-  params.set("limit", "100");
-  const response = await stripeRequest<StripeListResponse<StripeSubscription>>(
-    env,
-    `/subscriptions?${params.toString()}`,
-  );
-  return response.data ?? [];
-}
-
-function getActiveLegacySubscriptionCount(
-  subscriptions: StripeSubscription[],
-): number {
-  const activeLegacySubscriptionIds = new Set<string>();
-  for (const subscription of subscriptions) {
-    if (!isLegacyMigrationSubscriptionStatus(subscription.status)) continue;
-    const hasLegacyItem = (subscription.items?.data ?? []).some((item) => {
-      const priceId = getStripePriceId(item.price);
-      return Boolean(priceId && LEGACY_MIGRATION_PRICE_IDS.has(priceId));
-    });
-    if (hasLegacyItem) {
-      activeLegacySubscriptionIds.add(subscription.id);
-    }
-  }
-  return activeLegacySubscriptionIds.size;
-}
-
-interface PreparedLegacyStripeMigration {
-  orgStub: DurableObjectStub<OrgDO>;
-  latestOrg: Organization;
-  candidate: LegacyStripeMigrationCandidate;
-  selection: LegacySubscriptionSelection;
-  plan: SubscriptionBillingPlan;
-  priceId: string;
-  seatCount: number;
-  includedCreditCents: number;
-}
-
-async function prepareLegacyStripeMigration(args: {
-  env: StripeBillingEnv;
-  org: Organization;
-  userEmail: string | null | undefined;
-  plan: BillingPlan;
-  seatCount?: number | null;
-}): Promise<PreparedLegacyStripeMigration> {
-  const { env, org, userEmail } = args;
-  const candidate = getLegacyMigrationCandidateForEmail(env, userEmail);
-  if (!candidate?.customerId) {
-    throw new Error(
-      "This account is not eligible for legacy billing migration.",
-    );
-  }
-  if (candidate.activeLegacySubscriptionCount < 1) {
-    throw new Error(
-      "This account is not eligible for legacy billing migration.",
-    );
-  }
-  const plan = normalizeBillingPlan(args.plan, org.billing_status);
-  if (plan === "free" || plan === "payg" || plan === "enterprise") {
-    throw new Error("Choose Starter, Pro, or Team for migration.");
-  }
-
-  const priceId = getConfiguredSubscriptionPriceId(env, plan);
-  if (!priceId) {
-    throw new Error(`Stripe ${plan} subscription price is not configured`);
-  }
-
-  const orgStub = getOrgStub(env, org.id);
-  const latestOrg = (await orgStub.getInfo()) ?? org;
-  if (
-    latestOrg.billing_status === "enterprise" ||
-    latestOrg.billing_status === "active" ||
-    latestOrg.billing_status === "trialing" ||
-    latestOrg.billing_subscription_id
-  ) {
-    throw new Error("This organization already has v2 billing.");
-  }
-
-  const subscriptions = await fetchLegacyCandidateSubscriptions(env, candidate);
-  if (getActiveLegacySubscriptionCount(subscriptions) > 1) {
-    throw new Error(
-      "This account has multiple active legacy subscriptions. Contact support to migrate without double billing.",
-    );
-  }
-  const selection = getLegacyMigrationSelection(subscriptions, candidate);
-  if (!selection) {
-    throw new Error(
-      "No active legacy subscription was found for this account.",
-    );
-  }
-
-  const seatCount = normalizeSeatCount(
-    plan,
-    plan === "team"
-      ? (args.seatCount ??
-          selection.item.quantity ??
-          candidate.totalLegacyQuantity ??
-          getMinimumSeats("team"))
-      : 1,
-  );
-  const includedCreditCents = getSubscriptionIncludedCreditCentsForPlan(
-    env,
-    plan,
-    seatCount,
-  );
-
-  return {
-    orgStub,
-    latestOrg,
-    candidate,
-    selection,
-    plan,
-    priceId,
-    seatCount,
-    includedCreditCents,
-  };
-}
-
-function getPlanMonthlyPriceCents(
-  plan: SubscriptionBillingPlan,
-  seatCount: number,
-): number | null {
-  const monthlyPriceCents = BILLING_PLAN_LIMITS[plan].monthlyPriceCents;
-  if (typeof monthlyPriceCents !== "number") return null;
-  return monthlyPriceCents * (plan === "team" ? seatCount : 1);
-}
-
-async function createLegacyStripeMigrationPreview(args: {
-  env: StripeBillingEnv;
-  selection: LegacySubscriptionSelection;
-  candidate: LegacyStripeMigrationCandidate;
-  plan: SubscriptionBillingPlan;
-  priceId: string;
-  seatCount: number;
-  includedCreditCents: number;
-}): Promise<LegacyStripeMigrationPreview> {
-  const params = new URLSearchParams();
-  params.set("customer", args.candidate.customerId);
-  params.set("subscription", args.selection.subscription.id);
-  params.set("subscription_details[proration_behavior]", "always_invoice");
-  params.set("subscription_details[items][0][id]", args.selection.item.id);
-  params.set("subscription_details[items][0][price]", args.priceId);
-  params.set(
-    "subscription_details[items][0][quantity]",
-    String(args.seatCount),
-  );
-
-  const invoice = await stripeRequest<StripeInvoice>(
-    args.env,
-    `/invoices/create_preview?${params.toString()}`,
-  );
-  const lines = invoice.lines?.data ?? [];
-  const prorationLines = lines.filter(isStripeProrationLine);
-  const legacyCreditCents = Math.abs(
-    prorationLines
-      .filter((line) => (line.amount ?? 0) < 0)
-      .reduce((sum, line) => sum + (line.amount ?? 0), 0),
-  );
-  const newPlanProrationCents = prorationLines
-    .filter((line) => (line.amount ?? 0) > 0)
-    .reduce((sum, line) => sum + (line.amount ?? 0), 0);
-
-  return {
-    plan: args.plan,
-    seatCount: args.seatCount,
-    currency:
-      invoice.lines?.data?.find((line) => line.currency)?.currency ??
-      "usd",
-    monthlyPriceCents: getPlanMonthlyPriceCents(args.plan, args.seatCount),
-    amountDueTodayCents: invoice.amount_due ?? invoice.total ?? null,
-    legacyCreditCents: legacyCreditCents > 0 ? legacyCreditCents : null,
-    newPlanProrationCents:
-      newPlanProrationCents > 0 ? newPlanProrationCents : null,
-    includedCreditCents: args.includedCreditCents,
-  };
-}
-
-export async function previewLegacyStripeMigration(args: {
-  env: StripeBillingEnv;
-  org: Organization;
-  userEmail: string | null | undefined;
-  plan: BillingPlan;
-  seatCount?: number | null;
-}): Promise<LegacyStripeMigrationPreview> {
-  const prepared = await prepareLegacyStripeMigration(args);
-  return createLegacyStripeMigrationPreview({
-    env: args.env,
-    candidate: prepared.candidate,
-    selection: prepared.selection,
-    plan: prepared.plan,
-    priceId: prepared.priceId,
-    seatCount: prepared.seatCount,
-    includedCreditCents: prepared.includedCreditCents,
-  });
-}
-
-export async function migrateLegacyStripeSubscription(args: {
-  env: StripeBillingEnv;
-  org: Organization;
-  userEmail: string | null | undefined;
-  plan: BillingPlan;
-  seatCount?: number | null;
-}): Promise<Organization> {
-  const { env, org } = args;
-  const {
-    orgStub,
-    latestOrg,
-    candidate,
-    selection,
-    plan,
-    priceId,
-    seatCount,
-    includedCreditCents,
-  } = await prepareLegacyStripeMigration(args);
-  const idempotencyKeyPrefix =
-    `legacy-migration:${org.id}:${selection.subscription.id}:` +
-    `${plan}:${priceId}:${seatCount}`;
-
-  const customerBody = new URLSearchParams();
-  customerBody.set(`metadata[${LEGACY_MIGRATION_META_ORG_ID}]`, org.id);
-  customerBody.set(
-    `metadata[${LEGACY_MIGRATION_META_SUBSCRIPTION_ID}]`,
-    selection.subscription.id,
-  );
-  customerBody.set(`metadata[${LEGACY_MIGRATION_META_TARGET_PLAN}]`, plan);
-  customerBody.set(`metadata[${LEGACY_MIGRATION_META_SEAT_COUNT}]`, String(seatCount));
-  customerBody.set(
-    `metadata[${LEGACY_MIGRATION_META_INCLUDED_CREDIT_CENTS}]`,
-    String(includedCreditCents),
-  );
-  customerBody.set(`metadata[${LEGACY_MIGRATION_META_SOURCE_PRICE_ID}]`, selection.priceId);
-  await stripeRequest<StripeCustomer>(env, `/customers/${candidate.customerId}`, {
-    method: "POST",
-    body: customerBody,
-  });
-
-  const body = new URLSearchParams();
-  body.set("items[0][id]", selection.item.id);
-  body.set("items[0][price]", priceId);
-  body.set("items[0][quantity]", String(seatCount));
-  body.set("proration_behavior", "always_invoice");
-  body.set("payment_behavior", "error_if_incomplete");
-  body.set("metadata[org_id]", org.id);
-  body.set("metadata[billing_plan]", plan);
-  body.set("metadata[seat_count]", String(seatCount));
-  body.set("metadata[trial_credit_cents]", "0");
-  body.set(
-    "metadata[subscription_included_credit_cents]",
-    String(includedCreditCents),
-  );
-  body.set("metadata[migrated_from_legacy_customer_id]", candidate.customerId);
-  body.set(
-    "metadata[migrated_from_legacy_subscription_id]",
-    selection.subscription.id,
-  );
-  body.set("metadata[migrated_from_legacy_price_id]", selection.priceId);
-  body.set("metadata[migrated_to_v2_at]", String(Date.now()));
-
-  const updatedSubscription = await stripeRequest<StripeSubscription>(
-    env,
-    `/subscriptions/${selection.subscription.id}`,
-    {
-      method: "POST",
-      body,
-      idempotencyKey: `${idempotencyKeyPrefix}:subscription-update`,
-    },
-  );
-  const updatedItem = getStripeSubscriptionItemForPlanChange(
-    updatedSubscription,
-    null,
-  );
-  if (
-    getStripePriceId(updatedItem.price) !== priceId ||
-    normalizeSeatCount(plan, updatedItem.quantity) !== seatCount
-  ) {
-    throw new Error(
-      "Stripe did not confirm the server-owned migration price and quantity.",
-    );
-  }
-
-  const synced =
-    (await syncOrgSubscriptionFromStripe(env, updatedSubscription)) ??
-    (await orgStub.updateBillingState({
-      billing_status: mapStripeSubscriptionBillingStatus(updatedSubscription),
-      billing_plan: plan,
-      billing_seat_count: seatCount,
-      billing_customer_id: candidate.customerId,
-      billing_subscription_id: updatedSubscription.id,
-      billing_subscription_status: updatedSubscription.status,
-    }));
-
-  return synced ?? latestOrg;
 }
 
 async function fetchStripeCustomerMetadata(
@@ -2859,12 +2274,140 @@ async function bestEffortClearPendingLegacyMigrationCustomerMetadata(args: {
   }
 }
 
+function getPaidSubscriptionPlanSeatState(
+  env: StripeBillingEnv,
+  subscription: StripeSubscription,
+): { plan: SubscriptionBillingPlan; seatCount: number } | null {
+  if (
+    !["active", "trialing", "past_due", "unpaid"].includes(
+      subscription.status,
+    )
+  ) {
+    return null;
+  }
+  const itemPlan = getSubscriptionPlanFromItems(env, subscription);
+  const fallbackPlan = getMetadataBillingPlan(
+    subscription.metadata,
+    mapStripeSubscriptionBillingStatus(subscription),
+  );
+  const plan = itemPlan?.plan ?? fallbackPlan;
+  if (plan === "free" || plan === "payg" || plan === "enterprise") {
+    return null;
+  }
+  const quantity =
+    itemPlan?.item.quantity ??
+    getStripeSubscriptionSeatQuantity(
+      subscription,
+      getConfiguredSubscriptionPriceId(env, plan),
+    ) ??
+    parsePositiveInteger(subscription.metadata?.seat_count);
+  return { plan, seatCount: normalizeSeatCount(plan, quantity) };
+}
+
+async function enforceTeamSubscriptionCapacityInvariant(args: {
+  env: StripeBillingEnv;
+  org: Organization;
+  subscription: StripeSubscription;
+}): Promise<StripeSubscription> {
+  const { env, org } = args;
+  if (org.billing_status === "enterprise") return args.subscription;
+
+  const existingPlan = getOrgBillingPlan(org);
+  const incomingState = getPaidSubscriptionPlanSeatState(
+    env,
+    args.subscription,
+  );
+  if (
+    !incomingState ||
+    (existingPlan !== "team" && incomingState.plan !== "team")
+  ) {
+    return args.subscription;
+  }
+
+  const occupiedSeatCount = await getOccupiedSeatCountForOrg(env, org.id);
+  const protectedTeamSeatCount = normalizeSeatCount(
+    "team",
+    Math.max(
+      occupiedSeatCount,
+      existingPlan === "team" ? (org.billing_seat_count ?? 0) : 0,
+    ),
+  );
+  const violatesCapacityInvariant = (state: {
+    plan: SubscriptionBillingPlan;
+    seatCount: number;
+  } | null): boolean => {
+    if (!state) return false;
+    if (state.plan === "team") {
+      return state.seatCount < protectedTeamSeatCount;
+    }
+    return existingPlan === "team" && occupiedSeatCount > state.seatCount;
+  };
+  if (!violatesCapacityInvariant(incomingState)) return args.subscription;
+
+  const liveSubscription = await fetchStripeSubscription(
+    env,
+    args.subscription.id,
+  );
+  const liveState = getPaidSubscriptionPlanSeatState(env, liveSubscription);
+  if (!violatesCapacityInvariant(liveState)) return liveSubscription;
+
+  const teamPriceId = getConfiguredSubscriptionPriceId(env, "team");
+  if (!teamPriceId) {
+    throw new Error("Stripe team subscription price is not configured");
+  }
+  const item = getStripeSubscriptionItemForPlanChange(liveSubscription, null);
+  const includedCreditCents = getSubscriptionIncludedCreditCentsForPlan(
+    env,
+    "team",
+    protectedTeamSeatCount,
+  );
+  const body = new URLSearchParams();
+  body.set("items[0][id]", item.id);
+  body.set("items[0][price]", teamPriceId);
+  body.set("items[0][quantity]", String(protectedTeamSeatCount));
+  body.set("proration_behavior", "none");
+  body.set("metadata[org_id]", org.id);
+  body.set("metadata[billing_plan]", "team");
+  body.set("metadata[seat_count]", String(protectedTeamSeatCount));
+  body.set(
+    "metadata[subscription_included_credit_cents]",
+    String(includedCreditCents),
+  );
+
+  const repairedSubscription = await stripeRequest<StripeSubscription>(
+    env,
+    `/subscriptions/${liveSubscription.id}`,
+    { method: "POST", body },
+  );
+  const repairedState = getPaidSubscriptionPlanSeatState(
+    env,
+    repairedSubscription,
+  );
+  if (
+    repairedState?.plan !== "team" ||
+    repairedState.seatCount < protectedTeamSeatCount
+  ) {
+    throw new Error(
+      `Stripe subscription ${liveSubscription.id} did not preserve the organization's Team seat capacity.`,
+    );
+  }
+  console.warn("[billing] repaired regressed Team subscription capacity", {
+    orgId: org.id,
+    subscriptionId: liveSubscription.id,
+    incomingPlan: incomingState.plan,
+    incomingSeatCount: incomingState.seatCount,
+    restoredSeatCount: protectedTeamSeatCount,
+    occupiedSeatCount,
+  });
+  return repairedSubscription;
+}
+
 export async function syncOrgSubscriptionFromStripe(
   env: StripeBillingEnv,
   subscription: StripeSubscription,
 ): Promise<Organization | null> {
   const directOrgId = subscription.metadata?.org_id?.trim();
-  const customerId = getStripeCustomerId(subscription.customer);
+  let customerId = getStripeCustomerId(subscription.customer);
   let customerMetadata =
     typeof subscription.customer === "object"
       ? (subscription.customer?.metadata ?? null)
@@ -2872,7 +2415,7 @@ export async function syncOrgSubscriptionFromStripe(
   if (!directOrgId && customerId && !customerMetadata) {
     customerMetadata = await fetchStripeCustomerMetadata(env, customerId);
   }
-  const itemPlan = getSubscriptionPlanFromItems(env, subscription);
+  let itemPlan = getSubscriptionPlanFromItems(env, subscription);
   const pendingLegacyMigration =
     getPendingLegacyMigrationCustomerMetadata(customerMetadata);
   const pendingLegacyMigrationOrgId =
@@ -2893,6 +2436,14 @@ export async function syncOrgSubscriptionFromStripe(
   const orgStub = getOrgStub(env, orgId);
   const existing = await orgStub.getInfo();
   if (!existing) return null;
+
+  subscription = await enforceTeamSubscriptionCapacityInvariant({
+    env,
+    org: existing,
+    subscription,
+  });
+  customerId = getStripeCustomerId(subscription.customer) ?? customerId;
+  itemPlan = getSubscriptionPlanFromItems(env, subscription);
 
   const nextStatus = mapStripeSubscriptionBillingStatus(subscription);
   const shouldClearStripeSubscription = isTerminalStripeSubscriptionStatus(
@@ -2960,6 +2511,9 @@ export async function syncOrgSubscriptionFromStripe(
     },
     trialCreditCents,
   );
+  if (result?.capacityInvariantError) {
+    throw new Error(result.capacityInvariantError);
+  }
 
   return result?.org ?? null;
 }
@@ -3131,7 +2685,7 @@ function recognizedRetiredPricingRolloutInvoiceLine(
 } | null {
   const matches = lines.flatMap((line) => {
     if (!isRecurringSubscriptionInvoiceLine(line)) return [];
-    const retired = RETIRED_PRICING_ROLLOUT_INVOICE_PRICES.get(
+    const retired = RETIRED_PRICING_ROLLOUT_PRICES.get(
       getInvoiceLinePriceId(line) ?? "",
     );
     if (!retired) return [];

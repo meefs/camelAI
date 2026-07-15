@@ -6,7 +6,6 @@ import { getAuthEnv, requireSession } from "@/lib/auth.server";
 import { getOrgProviderContext } from "@/lib/auth-do";
 import { getEnv } from "@/lib/cloudflare.server";
 import {
-  getVerifiedLegacyStripeMigrationEligibility,
   isOrgBillingAccessReady,
   resolveOrgBillingAccess,
 } from "@/lib/billing.server";
@@ -15,7 +14,6 @@ import { hasCompletedOnboarding } from "@/lib/onboarding";
 import { OnboardingLayout } from "@/components/onboarding/onboarding-layout";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
-import type { LegacyMigrationDialogData } from "@/components/billing/legacy-migration-dialog";
 
 interface OnboardingLoaderData {
   userEmail: string;
@@ -24,7 +22,6 @@ interface OnboardingLoaderData {
   billingAccessReady: boolean;
   emailVerificationRequired: boolean;
   emailVerified: boolean;
-  legacyMigration: LegacyMigrationDialogData | null;
 }
 
 const AUTO_COMPLETE_MAX_ATTEMPTS = 3;
@@ -66,7 +63,6 @@ export interface OnboardingRouteContext {
   userEmail: string;
   emailVerificationRequired: boolean;
   emailVerified: boolean;
-  legacyMigration: LegacyMigrationDialogData | null;
 }
 
 export async function loader({ request, context }: Route.LoaderArgs) {
@@ -121,13 +117,6 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     billingAccessReady,
     emailVerificationRequired,
     emailVerified: emailVerificationStatus.verified,
-    legacyMigration: orgInfo
-      ? await getVerifiedLegacyStripeMigrationEligibility({
-          env,
-          org: orgInfo,
-          userEmail: authBootstrap.profile.email,
-        })
-      : null,
   } satisfies OnboardingLoaderData;
 }
 
@@ -300,7 +289,6 @@ export default function OnboardingRoute() {
     userEmail: loaderData.userEmail,
     emailVerificationRequired: loaderData.emailVerificationRequired,
     emailVerified: loaderData.emailVerified,
-    legacyMigration: loaderData.legacyMigration,
   };
 
   return <Outlet context={contextValue} />;

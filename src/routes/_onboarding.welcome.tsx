@@ -27,11 +27,6 @@ import {
 } from "@/lib/auth-do";
 import { getEnv } from "@/lib/cloudflare.server";
 import { OnboardingLayout } from "@/components/onboarding/onboarding-layout";
-import { LegacyMigrationDialog } from "@/components/billing/legacy-migration-dialog";
-import {
-  LegacyMigrationConfirmDialog,
-  type LegacyMigrationConfirmation,
-} from "@/components/billing/legacy-migration-confirm-dialog";
 import {
   TopUpDialog,
   type TopUpDialogPack,
@@ -286,11 +281,6 @@ export default function OnboardingWelcomeRoute() {
   const [paygChoiceOpen, setPaygChoiceOpen] = useState(false);
   const [topUpOpen, setTopUpOpen] = useState(false);
   const [showProviderError, setShowProviderError] = useState(true);
-  const [legacyIntroOpen, setLegacyIntroOpen] = useState(
-    () => context.legacyMigration?.eligible ?? false,
-  );
-  const [legacyConfirmation, setLegacyConfirmation] =
-    useState<LegacyMigrationConfirmation | null>(null);
   const completionStartedRef = useRef(false);
   const providerCompletionStartedRef = useRef(false);
   const verificationFetcher = useFetcher<{
@@ -304,11 +294,6 @@ export default function OnboardingWelcomeRoute() {
     error?: string;
   }>();
   const providerFetcher = useFetcher<{
-    success?: boolean;
-    error?: string;
-  }>();
-  const migrationFetcher = useFetcher<{
-    legacyMigrationPreview?: LegacyMigrationConfirmation["preview"];
     success?: boolean;
     error?: string;
   }>();
@@ -353,18 +338,7 @@ export default function OnboardingWelcomeRoute() {
       : undefined;
   const isSavingProvider = providerFetcher.state !== "idle";
   const isStartingCheckout = checkoutFetcher.state !== "idle";
-  const isMigrating = migrationFetcher.state !== "idle";
   const creditTopUpUnavailable = !stripeConfigured || creditPacks.length === 0;
-  const migrationError =
-    migrationFetcher.state === "idle"
-      ? migrationFetcher.data?.error
-      : undefined;
-  const pendingMigrationPlanValue = String(
-    migrationFetcher.formData?.get("plan") || "",
-  );
-  const pendingMigrationPlan = isSubscriptionPlan(pendingMigrationPlanValue)
-    ? pendingMigrationPlanValue
-    : null;
 
   useEffect(() => {
     if (checkoutFetcher.state !== "idle") {
@@ -375,22 +349,6 @@ export default function OnboardingWelcomeRoute() {
     if (!nextUrl) return;
     window.location.assign(nextUrl);
   }, [checkoutFetcher.data, checkoutFetcher.state]);
-
-  useEffect(() => {
-    if (migrationFetcher.state !== "idle") {
-      return;
-    }
-    if (migrationFetcher.data?.legacyMigrationPreview) {
-      setLegacyConfirmation({
-        preview: migrationFetcher.data.legacyMigrationPreview,
-      });
-      return;
-    }
-    if (!migrationFetcher.data?.success) {
-      return;
-    }
-    window.location.reload();
-  }, [migrationFetcher.data, migrationFetcher.state]);
 
   const completeWithByok = useCallback(() => {
     if (providerCompletionStartedRef.current) {
@@ -551,87 +509,22 @@ export default function OnboardingWelcomeRoute() {
           </Alert>
         ) : null}
 
-        {migrationError ? (
-          <Alert variant="destructive" className="text-left">
-            <AlertDescription>{migrationError}</AlertDescription>
-          </Alert>
-        ) : null}
-
         {isBillingChoiceRequired ? (
           <div className="space-y-5 text-left">
-            {context.legacyMigration?.eligible ? (
-              <>
-                <LegacyMigrationDialog
-                  migration={context.legacyMigration}
-                  open={legacyIntroOpen}
-                  onOpenChange={setLegacyIntroOpen}
-                />
-                <LegacyMigrationConfirmDialog
-                  confirmation={legacyConfirmation}
-                  submitting={isMigrating}
-                  onOpenChange={(open) => {
-                    if (!open) setLegacyConfirmation(null);
-                  }}
-                  onContinue={() => {
-                    if (!legacyConfirmation) return;
-                    migrationFetcher.submit(
-                      {
-                        plan: legacyConfirmation.preview.plan,
-                        confirm: "true",
-                      },
-                      {
-                        method: "post",
-                        action: "/api/billing/legacy-migration",
-                      },
-                    );
-                  }}
-                />
-              </>
-            ) : null}
-
             <PlanPicker
               defaultBillingMode="individual"
               heading={{
                 title: "Choose your plan",
-                subtitle: context.legacyMigration?.eligible
-                  ? "Pick a paid plan to switch over from your existing subscription, or bring your own API key to keep using camelAI on the free tier."
-                  : byokProviderLabel
-                    ? `Your ${byokProviderLabel} API key is connected. Continue on Free, use prepaid hosted credits, or start a subscription.`
-                    : "Choose a plan, use prepaid hosted credits, or bring your own API key.",
+                subtitle: byokProviderLabel
+                  ? `Your ${byokProviderLabel} API key is connected. Continue on Free, use prepaid hosted credits, or start a subscription.`
+                  : "Choose a plan, use prepaid hosted credits, or bring your own API key.",
               }}
               byokProviderLabel={byokProviderLabel}
-              legacyMigration={context.legacyMigration}
-              disabledReason={
-                context.legacyMigration?.eligible &&
-                context.legacyMigration.activeLegacySubscriptionCount > 1
-                  ? "This account has multiple active subscriptions. Contact support@camelai.com to switch over without double billing."
-                  : null
-              }
-              onLegacyWhyClick={() => setLegacyIntroOpen(true)}
-              pendingPlan={
-                isStartingCheckout
-                  ? pendingCheckoutPlan
-                  : isMigrating
-                    ? pendingMigrationPlan
-                    : null
-              }
+              pendingPlan={isStartingCheckout ? pendingCheckoutPlan : null}
               onSelectPlan={(cta) => {
                 setError(null);
                 if (cta.kind === "byok") {
                   continueWithOwnApiKey();
-                  return;
-                }
-                if (cta.kind === "migrate") {
-                  if (isMigrating) {
-                    return;
-                  }
-                  migrationFetcher.submit(
-                    { plan: cta.plan },
-                    {
-                      method: "post",
-                      action: "/api/billing/legacy-migration",
-                    },
-                  );
                   return;
                 }
                 if (cta.kind === "subscribe") {

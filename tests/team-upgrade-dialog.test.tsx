@@ -2,7 +2,6 @@ import { fireEvent, render, screen } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import type React from "react"
-import type { LegacyMigrationDialogData } from "@/components/billing/legacy-migration-dialog"
 
 const { toastErrorMock } = vi.hoisted(() => ({
   toastErrorMock: vi.fn(),
@@ -53,18 +52,6 @@ function resetFetcher() {
   toastErrorMock.mockClear()
 }
 
-function makeLegacyMigration(
-  overrides: Partial<LegacyMigrationDialogData> = {},
-): LegacyMigrationDialogData {
-  return {
-    eligible: true,
-    customerId: "cus_test",
-    activeLegacySubscriptionCount: 1,
-    defaultPlan: "team",
-    ...overrides,
-  }
-}
-
 describe("TeamUpgradeDialog", () => {
   beforeEach(() => {
     resetFetcher()
@@ -87,7 +74,6 @@ describe("TeamUpgradeDialog", () => {
           onOpenChange={vi.fn()}
           currentPlan={currentPlan}
           stripeConfigured
-          legacyMigration={null}
         />,
       )
 
@@ -102,7 +88,6 @@ describe("TeamUpgradeDialog", () => {
         onOpenChange={vi.fn()}
         currentPlan="pro"
         stripeConfigured
-        legacyMigration={null}
       />,
     )
 
@@ -114,49 +99,6 @@ describe("TeamUpgradeDialog", () => {
     )
   })
 
-  it("submits to the legacy-migration action when legacy migration is eligible", () => {
-    render(
-      <TeamUpgradeDialog
-        open
-        onOpenChange={vi.fn()}
-        currentPlan="pro"
-        stripeConfigured
-        legacyMigration={makeLegacyMigration()}
-      />,
-    )
-
-    fireEvent.click(screen.getByRole("button", { name: /switch to team/i }))
-
-    expect(fetcherSubmitMock).toHaveBeenCalledWith(
-      { plan: "team" },
-      { method: "post", action: "/api/billing/legacy-migration" },
-    )
-  })
-
-  it("disables legacy migration when multiple active subscriptions need manual review", () => {
-    render(
-      <TeamUpgradeDialog
-        open
-        onOpenChange={vi.fn()}
-        currentPlan="pro"
-        stripeConfigured
-        legacyMigration={makeLegacyMigration({
-          activeLegacySubscriptionCount: 2,
-        })}
-      />,
-    )
-
-    expect(
-      screen.getByText(/multiple active subscriptions/i),
-    ).toBeInTheDocument()
-
-    const cta = screen.getByRole("button", { name: /switch to team/i })
-    expect(cta).toBeDisabled()
-
-    fireEvent.click(cta)
-    expect(fetcherSubmitMock).not.toHaveBeenCalled()
-  })
-
   it("disables the CTA and the Compare plans button and renders helper text when Stripe is unconfigured", () => {
     render(
       <TeamUpgradeDialog
@@ -164,7 +106,6 @@ describe("TeamUpgradeDialog", () => {
         onOpenChange={vi.fn()}
         currentPlan="pro"
         stripeConfigured={false}
-        legacyMigration={null}
       />,
     )
 
@@ -197,7 +138,6 @@ describe("TeamUpgradeDialog", () => {
         onOpenChange={onOpenChange}
         currentPlan="free"
         stripeConfigured
-        legacyMigration={null}
       />,
     )
 
@@ -228,7 +168,6 @@ describe("TeamUpgradeDialog", () => {
         onOpenChange={onOpenChange}
         currentPlan="pro"
         stripeConfigured
-        legacyMigration={makeLegacyMigration()}
       />,
     )
 
@@ -241,7 +180,7 @@ describe("TeamUpgradeDialog", () => {
     })
   })
 
-  it("redirects back to /settings/organization/team when legacy migration succeeds", () => {
+  it("redirects back to /settings/organization/team when the update succeeds", () => {
     const onOpenChange = vi.fn()
     const assignMock = vi.fn()
     const originalLocation = window.location
@@ -259,7 +198,6 @@ describe("TeamUpgradeDialog", () => {
         onOpenChange={onOpenChange}
         currentPlan="pro"
         stripeConfigured
-        legacyMigration={makeLegacyMigration()}
       />,
     )
 
@@ -282,7 +220,6 @@ describe("TeamUpgradeDialog", () => {
         onOpenChange={vi.fn()}
         currentPlan="pro"
         stripeConfigured
-        legacyMigration={null}
       />,
     )
 
@@ -307,7 +244,6 @@ describe("TeamUpgradeDialog", () => {
         onOpenChange={onOpenChange}
         currentPlan="pro"
         stripeConfigured
-        legacyMigration={null}
       />,
     )
 
@@ -322,7 +258,6 @@ describe("TeamUpgradeDialog", () => {
         onOpenChange={onOpenChange}
         currentPlan="pro"
         stripeConfigured
-        legacyMigration={null}
       />,
     )
 

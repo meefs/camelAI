@@ -120,6 +120,68 @@ describe("OrgDO billing grant idempotency", () => {
       billing_subscription_id: "sub_team_capacity",
     });
   });
+
+  it("atomically rejects a paid billing projection below occupied seats", async () => {
+    const { userId: ownerId } = await createUser(
+      testEnv,
+      testEmail(),
+      "password",
+      "Owner",
+    );
+    const { org } = await createOrg(testEnv, "Team Projection Guard", ownerId, {
+      billingPlan: "team",
+    });
+    const orgStub = testEnv.ORG.get(testEnv.ORG.idFromName(org.id));
+    await orgStub.updateBillingState({
+      billing_status: "active",
+      billing_plan: "team",
+      billing_seat_count: 3,
+      billing_subscription_id: "sub_team_guard",
+      billing_subscription_status: "active",
+    });
+    await orgStub.createInvitations(
+      ["reserved@example.com"],
+      "member",
+      ownerId,
+    );
+
+    await expect(
+      orgStub.syncSubscriptionBillingState(
+        {
+          billing_status: "active",
+          billing_plan: "pro",
+          billing_seat_count: 1,
+          billing_subscription_id: "sub_team_guard",
+          billing_subscription_status: "active",
+        },
+        0,
+      ),
+    ).resolves.toMatchObject({
+      capacityInvariantError:
+        "The projected billing plan includes 1 seat, but this organization has 2 occupied seats.",
+    });
+    await expect(orgStub.getInfo()).resolves.toMatchObject({
+      billing_status: "active",
+      billing_plan: "team",
+      billing_seat_count: 3,
+    });
+
+    await expect(
+      orgStub.syncSubscriptionBillingState(
+        {
+          billing_status: "inactive",
+          billing_plan: "payg",
+          billing_seat_count: 1,
+          billing_subscription_id: null,
+          billing_subscription_status: null,
+        },
+        0,
+      ),
+    ).resolves.toMatchObject({
+      org: { billing_status: "inactive", billing_plan: "payg" },
+    });
+  });
+
   it("keeps pending-cancel trial subscriptions trialing until Stripe cancels them", async () => {
     const { userId: ownerId } = await createUser(
       testEnv,

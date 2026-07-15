@@ -4,8 +4,6 @@ const requireAuthContextMock = vi.fn();
 const requireOrgAdminMock = vi.fn();
 const getEnvMock = vi.fn();
 const createBillingPortalSessionMock = vi.fn();
-const previewLegacyStripeMigrationMock = vi.fn();
-const migrateLegacyStripeSubscriptionMock = vi.fn();
 const createSubscriptionCancellationPortalSessionMock = vi.fn();
 const createSubscriptionUpdatePortalSessionMock = vi.fn();
 const createSubscriptionCheckoutSessionMock = vi.fn();
@@ -25,8 +23,6 @@ vi.mock("@/lib/billing.server", async (importOriginal) => {
   return {
     ...actual,
     createBillingPortalSession: createBillingPortalSessionMock,
-    previewLegacyStripeMigration: previewLegacyStripeMigrationMock,
-    migrateLegacyStripeSubscription: migrateLegacyStripeSubscriptionMock,
     createSubscriptionCancellationPortalSession:
       createSubscriptionCancellationPortalSessionMock,
     createSubscriptionUpdatePortalSession:
@@ -99,17 +95,6 @@ describe("billing settings plan changes", () => {
     createSubscriptionUpdatePortalSessionMock.mockResolvedValue(
       "https://billing.stripe.test/confirm",
     );
-    previewLegacyStripeMigrationMock.mockResolvedValue({
-      plan: "pro",
-      seatCount: 1,
-      currency: "usd",
-      monthlyPriceCents: 15000,
-      amountDueTodayCents: 11996,
-      legacyCreditCents: 3004,
-      newPlanProrationCents: 15000,
-      includedCreditCents: 3000,
-    });
-    migrateLegacyStripeSubscriptionMock.mockResolvedValue({});
     createSubscriptionCancellationPortalSessionMock.mockResolvedValue({
       kind: "portal",
       billingPortalUrl: "https://billing.stripe.test/session",
@@ -150,102 +135,6 @@ describe("billing settings plan changes", () => {
       }),
     );
     expect(createBillingPortalSessionMock).not.toHaveBeenCalled();
-  });
-
-  it("previews a legacy-eligible plan selection before applying it", async () => {
-    const org = {
-      id: "org_123",
-      name: "Legacy Org",
-      slug: "legacy-org",
-      billing_status: "inactive",
-      billing_plan: "free",
-      billing_seat_count: 1,
-      billing_subscription_id: null,
-    };
-    const env = {
-      ...makeEnv(org),
-      LEGACY_STRIPE_MIGRATION_CUSTOMERS: [
-        "email,customer_id,active_legacy_subscription_count,legacy_subscription_ids,legacy_subscription_item_ids,legacy_price_ids,total_legacy_quantity",
-        "owner@example.com,cus_legacy,1,sub_legacy,si_legacy,price_1QIfnqGvliMKf4vHaDTMG2Mu,1",
-      ].join("\n"),
-    };
-    getEnvMock.mockReturnValue(env);
-    requireAuthContextMock.mockResolvedValue({
-      user: { id: "user_123", email: "owner@example.com" },
-      currentOrg: org,
-    });
-    const result = await action({
-      request: makeFormRequest("pro"),
-      context: {},
-    } as never);
-
-    expect(result).toEqual({
-      legacyMigrationPreview: {
-        plan: "pro",
-        seatCount: 1,
-        currency: "usd",
-        monthlyPriceCents: 15000,
-        amountDueTodayCents: 11996,
-        legacyCreditCents: 3004,
-        newPlanProrationCents: 15000,
-        includedCreditCents: 3000,
-      },
-    });
-    expect(previewLegacyStripeMigrationMock).toHaveBeenCalledWith(
-      expect.objectContaining({
-        env,
-        org,
-        userEmail: "owner@example.com",
-        plan: "pro",
-        seatCount: 1,
-      }),
-    );
-    expect(createSubscriptionCheckoutSessionMock).not.toHaveBeenCalled();
-    expect(createBillingPortalSessionMock).not.toHaveBeenCalled();
-  });
-
-  it("applies a legacy migration only after the app confirmation", async () => {
-    const org = {
-      id: "org_123",
-      name: "Legacy Org",
-      slug: "legacy-org",
-      billing_status: "inactive",
-      billing_plan: "free",
-      billing_seat_count: 1,
-      billing_subscription_id: null,
-    };
-    const env = {
-      ...makeEnv(org),
-      LEGACY_STRIPE_MIGRATION_CUSTOMERS: [
-        "email,customer_id,active_legacy_subscription_count,legacy_subscription_ids,legacy_subscription_item_ids,legacy_price_ids,total_legacy_quantity",
-        "owner@example.com,cus_legacy,1,sub_legacy,si_legacy,price_1QIfnqGvliMKf4vHaDTMG2Mu,1",
-      ].join("\n"),
-    };
-    getEnvMock.mockReturnValue(env);
-    requireAuthContextMock.mockResolvedValue({
-      user: { id: "user_123", email: "owner@example.com" },
-      currentOrg: org,
-    });
-
-    const result = await action({
-      request: makeIntentRequest("changePlan", {
-        plan: "pro",
-        confirmLegacyMigration: "true",
-      }),
-      context: {},
-    } as never);
-
-    expect(result).toEqual({ planChanged: true });
-    expect(migrateLegacyStripeSubscriptionMock).toHaveBeenCalledWith(
-      expect.objectContaining({
-        env,
-        org,
-        userEmail: "owner@example.com",
-        plan: "pro",
-        seatCount: 1,
-      }),
-    );
-    expect(previewLegacyStripeMigrationMock).not.toHaveBeenCalled();
   });
 
   it("uses the Billing Portal for active subscribers changing plans", async () => {

@@ -17,15 +17,11 @@ import {
   createSubscriptionCheckoutSession,
   getBillableTeamSeatCountForOrg,
   getOrgBillingOverview,
-  getLegacyStripeMigrationEligibility,
-  getVerifiedLegacyStripeMigrationEligibility,
   getStripeSubscriptionSummary,
   isStaleTrialingSubscriptionStatusError,
   isStripeSubscriptionRequiresManagementError,
   isStripeBillingConfigured,
   listStripeInvoicesForOrg,
-  migrateLegacyStripeSubscription,
-  previewLegacyStripeMigration,
   createSubscriptionUpdatePortalSession,
   updateTrialingStripeSubscriptionPlan,
 } from "@/lib/billing.server";
@@ -47,11 +43,6 @@ import {
   PlanPicker,
   type PlanPickerCta,
 } from "@/components/billing/plan-picker";
-import type { LegacyMigrationDialogData } from "@/components/billing/legacy-migration-dialog";
-import {
-  LegacyMigrationConfirmDialog,
-  type LegacyMigrationConfirmation,
-} from "@/components/billing/legacy-migration-confirm-dialog";
 import {
   InvoicesTable,
   type InvoiceRow,
@@ -200,11 +191,6 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     invoices: invoiceRows,
     subscription,
     byokProviderLabel: getByokProviderLabel(effectiveLlmProviderConfig?.provider),
-    legacyMigration: await getVerifiedLegacyStripeMigrationEligibility({
-      env,
-      org: authContext.currentOrg,
-      userEmail: authContext.user.email,
-    }),
   };
 }
 
@@ -248,8 +234,6 @@ export async function action({ request, context }: Route.ActionArgs) {
     }
     case "changePlan": {
       const rawPlan = String(formData.get("plan") || "").trim();
-      const confirmLegacyMigration =
-        formData.get("confirmLegacyMigration") === "true";
       if (!isBillingPlan(rawPlan)) {
         return { error: "Choose a valid billing plan." };
       }
@@ -283,55 +267,6 @@ export async function action({ request, context }: Route.ActionArgs) {
               error instanceof Error
                 ? error.message
                 : "We couldn't activate Pay as you go. Please try again in a moment.",
-          };
-        }
-      }
-
-      const legacyMigration = getLegacyStripeMigrationEligibility({
-        env,
-        org: billingOrg,
-        userEmail: authContext.user.email,
-      });
-      if (legacyMigration?.eligible && rawPlan !== "free") {
-        try {
-          const seatCount =
-            rawPlan === "team"
-              ? await getBillableTeamSeatCountForOrg(
-                  env,
-                  authContext.currentOrg.id,
-                )
-              : getMinimumSeats(rawPlan);
-          if (confirmLegacyMigration) {
-            await migrateLegacyStripeSubscription({
-              env,
-              org: billingOrg,
-              userEmail: authContext.user.email,
-              plan: rawPlan,
-              seatCount,
-            });
-            return { planChanged: true };
-          }
-          const preview = await previewLegacyStripeMigration({
-            env,
-            org: billingOrg,
-            userEmail: authContext.user.email,
-            plan: rawPlan,
-            seatCount,
-          });
-          return {
-            legacyMigrationPreview: preview,
-          };
-        } catch (error) {
-          console.error("[billing] failed to migrate legacy subscription", {
-            orgId: billingOrg.id,
-            plan: rawPlan,
-            error: error instanceof Error ? error.message : String(error),
-          });
-          return {
-            error:
-              error instanceof Error
-                ? error.message
-                : "We couldn't migrate your legacy subscription. Please try again in a moment.",
           };
         }
       }
@@ -621,7 +556,6 @@ export default function BillingPage() {
     invoices,
     subscription,
     byokProviderLabel,
-    legacyMigration,
   } = useLoaderData<typeof loader>();
   const [searchParams] = useSearchParams();
   const showPlansView = searchParams.get("view") === "plans";
@@ -716,7 +650,6 @@ export default function BillingPage() {
         }
         stripeConfigured={stripeConfigured}
         byokProviderLabel={byokProviderLabel}
-        legacyMigration={legacyMigration}
         onBack={() => setView("overview")}
       />
     );
@@ -797,27 +730,22 @@ function ManagePlanView({
   currentPaidPlanAction,
   stripeConfigured,
   byokProviderLabel,
-  legacyMigration,
   onBack,
 }: {
   currentPlan: BillingPlan;
   currentPaidPlanAction?: "manage";
   stripeConfigured: boolean;
   byokProviderLabel: string | null;
-  legacyMigration: LegacyMigrationDialogData | null;
   onBack: () => void;
 }) {
   const fetcher = useFetcher<{
     checkoutUrl?: string;
     billingPortalUrl?: string;
     redirectTo?: string;
-    legacyMigrationPreview?: LegacyMigrationConfirmation["preview"];
     planChanged?: boolean;
     success?: boolean;
     error?: string;
   }>();
-  const [legacyConfirmation, setLegacyConfirmation] =
-    useState<LegacyMigrationConfirmation | null>(null);
   const isSubmitting = fetcher.state !== "idle";
   const pendingPlan = isSubmitting
     ? ((fetcher.formData?.get("plan") as BillingPlan | null) ?? null)
@@ -842,16 +770,6 @@ function ManagePlanView({
       );
       return;
     }
-    if (cta.kind === "migrate") {
-      fetcher.submit(
-        { plan: cta.plan },
-        {
-          method: "post",
-          action: "/api/billing/legacy-migration",
-        },
-      );
-      return;
-    }
     if (cta.kind === "payg") {
       fetcher.submit(
         { intent: "changePlan", plan: cta.plan },
@@ -871,14 +789,6 @@ function ManagePlanView({
       fetcher.data?.checkoutUrl ??
       fetcher.data?.billingPortalUrl ??
       fetcher.data?.redirectTo;
-    if (
-      fetcher.data?.legacyMigrationPreview
-    ) {
-      setLegacyConfirmation({
-        preview: fetcher.data.legacyMigrationPreview,
-      });
-      return;
-    }
     if (nextUrl) {
       window.location.assign(nextUrl);
       return;
@@ -893,12 +803,6 @@ function ManagePlanView({
       window.location.assign("/settings/organization/billing");
     }
   }, [fetcher.data, fetcher.state]);
-
-  const legacyDisabledReason =
-    legacyMigration?.eligible &&
-    legacyMigration.activeLegacySubscriptionCount > 1
-      ? "This account has multiple active subscriptions. Contact support@camelai.com to switch over without double billing."
-      : null;
 
   return (
     <div className="space-y-6">
@@ -917,38 +821,7 @@ function ManagePlanView({
         onSelectPlan={submitPlanSelection}
         pendingPlan={pendingPlan}
         byokProviderLabel={byokProviderLabel}
-        legacyMigration={legacyMigration}
-        heading={
-          legacyMigration?.eligible
-            ? {
-                title: "Choose your plan",
-                subtitle:
-                  "Pick a paid plan to switch over from your existing subscription, or bring your own API key to keep using camelAI on the free tier.",
-              }
-            : undefined
-        }
-        disabledReason={
-          legacyDisabledReason ??
-          (stripeConfigured ? null : "Stripe billing is not configured.")
-        }
-      />
-      <LegacyMigrationConfirmDialog
-        confirmation={legacyConfirmation}
-        submitting={isSubmitting}
-        onOpenChange={(open) => {
-          if (!open) setLegacyConfirmation(null);
-        }}
-        onContinue={() => {
-          if (!legacyConfirmation) return;
-          fetcher.submit(
-            {
-              intent: "changePlan",
-              plan: legacyConfirmation.preview.plan,
-              confirmLegacyMigration: "true",
-            },
-            { method: "post" },
-          );
-        }}
+        disabledReason={stripeConfigured ? null : "Stripe billing is not configured."}
       />
       {fetcher.data &&
       typeof fetcher.data === "object" &&

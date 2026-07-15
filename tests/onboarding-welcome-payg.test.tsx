@@ -35,7 +35,6 @@ const testState = vi.hoisted(() => ({
       userEmail: "new@example.com",
       emailVerificationRequired: false,
       emailVerified: true,
-      legacyMigration: null,
     },
   },
 }));

@@ -1,13 +1,5 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useFetcher } from "react-router";
-import {
-  LegacyMigrationConfirmDialog,
-  type LegacyMigrationConfirmation,
-} from "@/components/billing/legacy-migration-confirm-dialog";
-import {
-  LegacyMigrationDialog,
-  type LegacyMigrationDialogData,
-} from "@/components/billing/legacy-migration-dialog";
 import {
   PlanPicker,
   type PlanPickerCta,
@@ -43,7 +35,6 @@ interface PlanPickerOverrides {
 
 interface PaywallTakeoverProps {
   paywallContext: PaywallTakeoverContext;
-  legacyMigration: LegacyMigrationDialogData | null;
   currentOrgId?: string | null;
   onPreviewSelectPlan?: (cta: PlanPickerCta) => void;
   planPickerOverrides?: PlanPickerOverrides;
@@ -56,22 +47,8 @@ function isSubscriptionPlan(plan: string): plan is "starter" | "pro" | "team" {
   return isBillingPlan(plan) && SUBSCRIPTION_PLANS.has(plan);
 }
 
-function buildLegacyMigrationKey(
-  legacyMigration: LegacyMigrationDialogData | null,
-): string | null {
-  if (!legacyMigration?.eligible) {
-    return null;
-  }
-  return [
-    legacyMigration.customerId ?? "unknown-customer",
-    legacyMigration.activeLegacySubscriptionCount,
-    legacyMigration.defaultPlan,
-  ].join(":");
-}
-
 export function PaywallTakeover({
   paywallContext,
-  legacyMigration,
   currentOrgId,
   onPreviewSelectPlan,
   planPickerOverrides,
@@ -86,13 +63,6 @@ export function PaywallTakeover({
   const [byokDialogOpen, setByokDialogOpen] = useState(false);
   const [paygChoiceOpen, setPaygChoiceOpen] = useState(false);
   const [showProviderError, setShowProviderError] = useState(true);
-  const [legacyConfirmation, setLegacyConfirmation] =
-    useState<LegacyMigrationConfirmation | null>(null);
-  const legacyMigrationKey = buildLegacyMigrationKey(legacyMigration);
-  const [legacyIntroOpen, setLegacyIntroOpen] = useState(
-    () => legacyMigrationKey !== null,
-  );
-  const legacyDialogKeyRef = useRef<string | null>(legacyMigrationKey);
   const checkoutFetcher = useFetcher<{
     checkoutUrl?: string;
     redirectTo?: string;
@@ -103,21 +73,12 @@ export function PaywallTakeover({
     success?: boolean;
     error?: string;
   }>();
-  const migrationFetcher = useFetcher<{
-    legacyMigrationPreview?: LegacyMigrationConfirmation["preview"];
-    success?: boolean;
-    error?: string;
-  }>();
 
   const checkoutError =
     checkoutFetcher.state === "idle" ? checkoutFetcher.data?.error : undefined;
   const providerError =
     showProviderError && providerFetcher.state === "idle"
       ? providerFetcher.data?.error
-      : undefined;
-  const migrationError =
-    migrationFetcher.state === "idle"
-      ? migrationFetcher.data?.error
       : undefined;
   const pendingCheckoutPlanValue = String(
     checkoutFetcher.formData?.get("plan") || "",
@@ -126,44 +87,16 @@ export function PaywallTakeover({
     ? pendingCheckoutPlanValue
     : pendingCheckoutPlanValue === "payg"
       ? "payg"
-    : null;
-  const pendingMigrationPlanValue = String(
-    migrationFetcher.formData?.get("plan") || "",
-  );
-  const pendingMigrationPlan = isSubscriptionPlan(pendingMigrationPlanValue)
-    ? pendingMigrationPlanValue
-    : null;
+      : null;
   const isSavingProvider = providerFetcher.state !== "idle";
   const isStartingCheckout = checkoutFetcher.state !== "idle";
-  const isMigrating = migrationFetcher.state !== "idle";
-
-  const subtitle = legacyMigration?.eligible
-    ? "Pick a paid plan to switch over from your existing subscription, or bring your own API key to keep using camelAI on the free tier."
-    : paywallContext.multiOrg
-      ? `${paywallContext.currentOrgName} is on the Free plan with no API key set up. Pick a plan, or switch to an organization with an active plan using the sidebar.`
+  const subtitle = paywallContext.multiOrg
+    ? `${paywallContext.currentOrgName} is on the Free plan with no API key set up. Pick a plan, or switch to an organization with an active plan using the sidebar.`
     : paywallContext.byokProviderLabel
-        ? `Your ${paywallContext.byokProviderLabel} API key is connected. Continue on Free, use prepaid hosted credits, or start a subscription.`
-        : "Choose a plan, use prepaid hosted credits, or bring your own API key.";
+      ? `Your ${paywallContext.byokProviderLabel} API key is connected. Continue on Free, use prepaid hosted credits, or start a subscription.`
+      : "Choose a plan, use prepaid hosted credits, or bring your own API key.";
 
-  const disabledReason =
-    planPickerOverrides?.disabledReason ??
-    (legacyMigration?.eligible &&
-    legacyMigration.activeLegacySubscriptionCount > 1
-      ? "This account has multiple active subscriptions. Contact support@camelai.com to switch over without double billing."
-      : null);
-
-  useEffect(() => {
-    if (!legacyMigrationKey) {
-      legacyDialogKeyRef.current = null;
-      setLegacyIntroOpen(false);
-      return;
-    }
-
-    if (legacyDialogKeyRef.current !== legacyMigrationKey) {
-      legacyDialogKeyRef.current = legacyMigrationKey;
-      setLegacyIntroOpen(true);
-    }
-  }, [legacyMigrationKey]);
+  const disabledReason = planPickerOverrides?.disabledReason ?? null;
 
   useEffect(() => {
     if (checkoutFetcher.state !== "idle") {
@@ -174,22 +107,6 @@ export function PaywallTakeover({
     if (!nextUrl) return;
     window.location.assign(nextUrl);
   }, [checkoutFetcher.data, checkoutFetcher.state]);
-
-  useEffect(() => {
-    if (migrationFetcher.state !== "idle") {
-      return;
-    }
-    if (migrationFetcher.data?.legacyMigrationPreview) {
-      setLegacyConfirmation({
-        preview: migrationFetcher.data.legacyMigrationPreview,
-      });
-      return;
-    }
-    if (!migrationFetcher.data?.success) {
-      return;
-    }
-    window.location.reload();
-  }, [migrationFetcher.data, migrationFetcher.state]);
 
   useEffect(() => {
     if (providerFetcher.state !== "idle" || !providerFetcher.data?.success) {
@@ -281,19 +198,6 @@ export function PaywallTakeover({
       onPreviewSelectPlan(cta);
       return;
     }
-    if (cta.kind === "migrate") {
-      if (isMigrating) {
-        return;
-      }
-      migrationFetcher.submit(
-        { plan: cta.plan },
-        {
-          method: "post",
-          action: "/api/billing/legacy-migration",
-        },
-      );
-      return;
-    }
     if (cta.kind === "subscribe") {
       if (isStartingCheckout) {
         return;
@@ -316,36 +220,6 @@ export function PaywallTakeover({
     <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
       <div className="m-auto w-full max-w-4xl px-4 py-8 sm:px-6">
         <div className="space-y-5 text-left">
-          {legacyMigration?.eligible ? (
-            <>
-              <LegacyMigrationDialog
-                migration={legacyMigration}
-                open={legacyIntroOpen}
-                onOpenChange={setLegacyIntroOpen}
-              />
-              <LegacyMigrationConfirmDialog
-                confirmation={legacyConfirmation}
-                submitting={isMigrating}
-                onOpenChange={(open) => {
-                  if (!open) setLegacyConfirmation(null);
-                }}
-                onContinue={() => {
-                  if (!legacyConfirmation) return;
-                  migrationFetcher.submit(
-                    {
-                      plan: legacyConfirmation.preview.plan,
-                      confirm: "true",
-                    },
-                    {
-                      method: "post",
-                      action: "/api/billing/legacy-migration",
-                    },
-                  );
-                }}
-              />
-            </>
-          ) : null}
-
           {error && !byokDialogOpen ? (
             <Alert variant="destructive" className="text-left">
               <AlertDescription>{error}</AlertDescription>
@@ -355,12 +229,6 @@ export function PaywallTakeover({
           {checkoutError ? (
             <Alert variant="destructive" className="text-left">
               <AlertDescription>{checkoutError}</AlertDescription>
-            </Alert>
-          ) : null}
-
-          {migrationError ? (
-            <Alert variant="destructive" className="text-left">
-              <AlertDescription>{migrationError}</AlertDescription>
             </Alert>
           ) : null}
 
@@ -376,15 +244,7 @@ export function PaywallTakeover({
             }}
             highlightedPlan={planPickerOverrides?.highlightedPlan}
             byokProviderLabel={paywallContext.byokProviderLabel}
-            legacyMigration={legacyMigration}
-            onLegacyWhyClick={() => setLegacyIntroOpen(true)}
-            pendingPlan={
-              isStartingCheckout
-                ? pendingCheckoutPlan
-                : isMigrating
-                  ? pendingMigrationPlan
-                  : null
-            }
+            pendingPlan={isStartingCheckout ? pendingCheckoutPlan : null}
             onSelectPlan={handleSelectPlan}
           />
 

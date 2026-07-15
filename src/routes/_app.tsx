@@ -1,18 +1,16 @@
-import { Suspense, useEffect, useRef, useState } from "react";
+import { Suspense } from "react";
 import {
   Await,
   Outlet,
   redirect,
   data,
   useLoaderData,
-  useNavigate,
 } from "react-router";
 import type { Route } from "./+types/_app";
 import { requireAuthContext } from "@/lib/auth.server";
 import { getEnv } from "@/lib/cloudflare.server";
 import { parseCookies, createSessionCookieHeader } from "@/lib/cookies.server";
 import { LegacyUserBanner } from "@/components/legacy-user-banner";
-import { LegacyMigrationDialog } from "@/components/billing/legacy-migration-dialog";
 import {
   PaywallTakeover,
   type PaywallTakeoverContext,
@@ -24,14 +22,12 @@ import { ChatThreadSnapshotsProvider } from "@/hooks/use-chat-thread-snapshots";
 import type { AuthState } from "@/types";
 import type { ChatGroupView } from "@/types";
 import {
-  getVerifiedLegacyStripeMigrationEligibility,
   isOrgBillingAccessReady,
   resolveOrgBillingAccess,
 } from "@/lib/billing.server";
 import { listGroupsForWorkspace } from "@/lib/chat-groups.server";
 import { getByokProviderLabel } from "@/lib/byok-providers";
 import { getEffectiveLlmProviderConfig } from "@/lib/selfhost-ai-provider";
-import { isSelfhostRuntime } from "@/lib/selfhost-runtime";
 import { isConnectionsUiOnlySearchChange } from "@/lib/connections-route-revalidation";
 
 const SIDEBAR_COOKIE_NAME = "sidebar_state";
@@ -110,7 +106,6 @@ export async function loader({ request, context }: Route.LoaderArgs) {
       authState,
       defaultSidebarOpen,
       showLegacyBanner: Promise.resolve(false),
-      legacyMigration: Promise.resolve(null),
       chatGroups: Promise.resolve([] as ChatGroupView[]),
       billingAccessReady: true,
       appRouteAccessible: true,
@@ -136,7 +131,6 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     env,
     authContext.currentOrgLlmProviderConfig,
   );
-  const selfhostRuntime = isSelfhostRuntime(env);
   const currentOrg = authContext.currentOrg;
   const billingAccess = resolveOrgBillingAccess({
     env,
@@ -182,18 +176,6 @@ export async function loader({ request, context }: Route.LoaderArgs) {
         throw error;
       })
     : Promise.resolve([]);
-  const legacyMigrationPromise = selfhostRuntime
-    ? Promise.resolve(null)
-    : Promise.resolve(
-        getVerifiedLegacyStripeMigrationEligibility({
-          env,
-          org: currentOrg,
-          userEmail: authContext.user?.email ?? authContext.session?.user_email ?? "",
-        }),
-      ).catch((error) => {
-    console.error("Failed to load legacy migration eligibility:", error);
-    return null;
-      });
   const showLegacyBannerPromise = (async () => {
     const normalizedEmail = (
       authContext.user?.email ??
@@ -221,7 +203,6 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     authState,
     defaultSidebarOpen,
     showLegacyBanner: showLegacyBannerPromise,
-    legacyMigration: legacyMigrationPromise,
     chatGroups: currentChatGroupsPromise,
     billingAccessReady,
     appRouteAccessible,
@@ -249,15 +230,11 @@ export default function AppLayout() {
     authState,
     defaultSidebarOpen,
     showLegacyBanner,
-    legacyMigration,
-    billingAccessReady,
     appRouteAccessible,
     paywallContext,
     embedMode,
   } =
     useLoaderData<typeof loader>();
-  const navigate = useNavigate();
-
   return (
     <SidebarProvider defaultOpen={defaultSidebarOpen}>
       <ChatGroupsProvider disableLiveStatus={embedMode}>
@@ -267,23 +244,7 @@ export default function AppLayout() {
             {embedMode || appRouteAccessible ? (
               <Outlet />
             ) : paywallContext ? (
-              <Suspense
-                fallback={
-                  <PaywallTakeover
-                    paywallContext={paywallContext}
-                    legacyMigration={null}
-                  />
-                }
-              >
-                <Await resolve={legacyMigration}>
-                  {(resolvedLegacyMigration) => (
-                    <PaywallTakeover
-                      paywallContext={paywallContext}
-                      legacyMigration={resolvedLegacyMigration}
-                    />
-                  )}
-                </Await>
-              </Suspense>
+              <PaywallTakeover paywallContext={paywallContext} />
             ) : null}
           </SidebarInset>
         </ChatThreadSnapshotsProvider>
@@ -300,76 +261,8 @@ export default function AppLayout() {
               )}
             </Await>
           </Suspense>
-          {billingAccessReady ? (
-            <Suspense fallback={null}>
-              <Await resolve={legacyMigration}>
-                {(resolvedLegacyMigration) => (
-                  <LegacyMigrationDisclosure
-                    authState={authState}
-                    legacyMigration={resolvedLegacyMigration}
-                    navigate={navigate}
-                  />
-                )}
-              </Await>
-            </Suspense>
-          ) : null}
         </>
       )}
     </SidebarProvider>
-  );
-}
-
-type LegacyMigrationData = Awaited<
-  ReturnType<typeof getVerifiedLegacyStripeMigrationEligibility>
->;
-
-function LegacyMigrationDisclosure({
-  authState,
-  legacyMigration,
-  navigate,
-}: {
-  authState: AuthState;
-  legacyMigration: LegacyMigrationData;
-  navigate: ReturnType<typeof useNavigate>;
-}) {
-  const legacyMigrationKey = legacyMigration?.eligible
-    ? [
-        authState.currentOrg?.id ?? "unknown-org",
-        legacyMigration.customerId,
-        legacyMigration.activeLegacySubscriptionCount,
-        legacyMigration.defaultPlan,
-      ].join(":")
-    : null;
-  const [legacyDialogOpen, setLegacyDialogOpen] = useState(
-    () => legacyMigrationKey !== null,
-  );
-  const legacyDialogKeyRef = useRef<string | null>(legacyMigrationKey);
-
-  useEffect(() => {
-    if (!legacyMigrationKey) {
-      legacyDialogKeyRef.current = null;
-      setLegacyDialogOpen(false);
-      return;
-    }
-
-    if (legacyDialogKeyRef.current !== legacyMigrationKey) {
-      legacyDialogKeyRef.current = legacyMigrationKey;
-      setLegacyDialogOpen(true);
-    }
-  }, [legacyMigrationKey]);
-
-  return (
-    <LegacyMigrationDialog
-      migration={legacyMigration}
-      open={legacyDialogOpen}
-      onOpenChange={setLegacyDialogOpen}
-      primaryAction={{
-        label: "See plans",
-        onClick: () => {
-          setLegacyDialogOpen(false);
-          navigate("/settings/organization/billing?view=plans");
-        },
-      }}
-    />
   );
 }

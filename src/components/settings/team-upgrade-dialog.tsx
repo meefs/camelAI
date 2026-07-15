@@ -4,7 +4,6 @@ import { useEffect, useRef } from "react"
 import { Link, useFetcher } from "react-router"
 import { toast } from "sonner"
 
-import type { LegacyMigrationDialogData } from "@/components/billing/legacy-migration-dialog"
 import { PlanPickerCard } from "@/components/billing/plan-picker-card"
 import { Button } from "@/components/ui/button"
 import {
@@ -33,8 +32,6 @@ export interface TeamUpgradeDialogProps {
   currentPlan: "free" | "starter" | "pro"
   /** Whether Stripe billing is configured in this environment. Disables the CTA when false. */
   stripeConfigured: boolean
-  /** Legacy Stripe migration details, used to switch CTA copy and preserve migration guardrails. */
-  legacyMigration?: LegacyMigrationDialogData | null
 }
 
 export function TeamUpgradeDialog({
@@ -42,7 +39,6 @@ export function TeamUpgradeDialog({
   onOpenChange,
   currentPlan,
   stripeConfigured,
-  legacyMigration = null,
 }: TeamUpgradeDialogProps) {
   const isMobile = useIsMobile()
   const fetcher = useFetcher<{
@@ -89,22 +85,10 @@ export function TeamUpgradeDialog({
 
   const planLabel = BILLING_PLAN_LIMITS[currentPlan].label
   const description = `Your ${planLabel} plan includes 1 seat. Upgrade to Team to invite teammates and collaborate in shared workspaces.`
-  const legacyMigrationEligible = Boolean(legacyMigration?.eligible)
-  const legacyMigrationRequiresManualReview = Boolean(
-    legacyMigration?.eligible &&
-      legacyMigration.activeLegacySubscriptionCount > 1,
-  )
-  const disabled = !stripeConfigured || legacyMigrationRequiresManualReview
+  const disabled = !stripeConfigured
 
   const handleUpgrade = () => {
     if (disabled) return
-    if (legacyMigrationEligible) {
-      fetcher.submit(
-        { plan: "team" },
-        { method: "post", action: "/api/billing/legacy-migration" },
-      )
-      return
-    }
     fetcher.submit(
       { intent: "changePlan", plan: "team" },
       { method: "post", action: "/settings/organization/billing" },
@@ -117,23 +101,11 @@ export function TeamUpgradeDialog({
       state={{ kind: "highlighted" }}
       pending={pending}
       disabled={disabled}
-      legacyMode={legacyMigrationEligible}
       onSelect={handleUpgrade}
     />
   )
 
-  const disabledReason = legacyMigrationRequiresManualReview ? (
-    <p className="text-xs text-muted-foreground">
-      This account has multiple active subscriptions. Contact{" "}
-      <a
-        className="underline underline-offset-2 hover:text-foreground"
-        href="mailto:support@camelai.com?subject=Legacy%20subscription%20migration"
-      >
-        support@camelai.com
-      </a>{" "}
-      to switch over without double billing.
-    </p>
-  ) : !stripeConfigured ? (
+  const disabledReason = !stripeConfigured ? (
     <p className="text-xs text-muted-foreground">
       Hosted billing isn't configured in this environment. Contact{" "}
       <a

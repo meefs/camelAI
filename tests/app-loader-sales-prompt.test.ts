@@ -12,7 +12,6 @@ vi.mock("@/lib/cloudflare.server", () => ({
 }));
 
 vi.mock("@/lib/billing.server", () => ({
-  getVerifiedLegacyStripeMigrationEligibility: vi.fn(() => null),
   isOrgBillingAccessReady: vi.fn(
     (access: { kind: string }) => access.kind === "ready",
   ),

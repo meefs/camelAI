@@ -23,7 +23,6 @@ import {
   sendOrgInvitationEmail,
 } from '@/lib/email.server';
 import {
-  getVerifiedLegacyStripeMigrationEligibility,
   isStripeBillingConfigured,
   createSubscriptionUpdatePortalSession,
 } from '@/lib/billing.server';
@@ -441,13 +440,6 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     canManageMembers && seatLimit !== null && seatLimit <= 1;
 
   const stripeConfigured = isStripeBillingConfigured(env);
-  const legacyMigration = requiresTeamUpgrade
-    ? await getVerifiedLegacyStripeMigrationEligibility({
-        env,
-        org: authContext.currentOrg,
-        userEmail: authContext.user.email,
-      })
-    : null;
   const currentPlan = getOrgBillingPlan(authContext.currentOrg);
 
   return {
@@ -472,7 +464,6 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     requiresTeamUpgrade,
     currentPlan,
     stripeConfigured,
-    legacyMigration,
   };
 }
 
@@ -488,7 +479,6 @@ export default function TeamPage() {
     requiresTeamUpgrade,
     currentPlan,
     stripeConfigured,
-    legacyMigration,
   } =
     useLoaderData<typeof loader>();
 
@@ -509,7 +499,6 @@ export default function TeamPage() {
         requiresTeamUpgrade={requiresTeamUpgrade}
         currentPlan={currentPlan}
         stripeConfigured={stripeConfigured}
-        legacyMigration={legacyMigration}
         teamInviteBillingContext={teamInviteBillingContext}
       />
     </div>

@@ -53,7 +53,6 @@ vi.mock("@/lib/billing.server", async (importOriginal) => {
     hasOrgUsedSubscriptionTrial: vi.fn(),
     isStripeBillingConfigured: vi.fn(),
     listStripeInvoicesForOrg: vi.fn(),
-    migrateLegacyStripeSubscription: vi.fn(),
     updateTrialingStripeSubscriptionPlan: vi.fn(),
   };
 });
@@ -83,7 +82,6 @@ function makeLoaderData() {
     stripeConfigured: true,
     invoices: [],
     subscription: null,
-    legacyMigration: null,
   };
 }
 
