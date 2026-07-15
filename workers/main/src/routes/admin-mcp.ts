@@ -20,6 +20,7 @@ import {
   recordErrorEvent,
   recordObservabilityEvent,
 } from "../observability.js";
+import { createSignedSession } from "../signed-session.js";
 
 type JsonRpcId = string | number | null;
 
@@ -568,7 +569,7 @@ function adminTools() {
     {
       name: TOOL_ADMIN_JS_EXEC,
       description:
-        "Run admin-only JavaScript in an ephemeral Worker as a generic remote console for the current environment. Available globals: env (non-secret binding proxies), ENV (binding discovery/call/fetch), DO (Durable Object RPC), SELF.fetch (same Worker), ADMIN.fetch (authenticated admin API), fetch (outbound HTTP), assert, test, runtime, sleep, and text. Primitive environment values and secrets are intentionally not readable.",
+        "Run admin-only JavaScript in an ephemeral Worker as a generic remote console for the current environment. Available globals: env (non-secret binding proxies), ENV (binding discovery/call/fetch), DO (Durable Object RPC), SELF.fetch (same Worker), ADMIN.fetch (authenticated admin API), ACTOR.fetch (same Worker as a validated org member), fetch (outbound HTTP), assert, test, runtime, sleep, and text. Primitive environment values and secrets are intentionally not readable.",
       inputSchema: {
         type: "object",
         properties: {
@@ -852,6 +853,12 @@ type AdminJsExecRuntimeProps = {
   baseUrl: string;
 };
 
+type AdminJsExecActor = {
+  userId: string;
+  orgId: string;
+  workspaceId?: string | null;
+};
+
 type AdminJsExecBindingDescriptor = {
   name: string;
   kind: string;
@@ -903,6 +910,11 @@ type AdminJsExecRuntimeBridge = {
     input: string,
     init?: AdminJsExecFetchInit,
   ): Promise<AdminJsExecFetchResult>;
+  fetchActor(
+    actor: AdminJsExecActor,
+    input: string,
+    init?: AdminJsExecFetchInit,
+  ): Promise<AdminJsExecFetchResult>;
   fetchOutbound(
     input: string,
     init?: AdminJsExecFetchInit,
@@ -938,7 +950,7 @@ function callableMethodNames(value: object): string[] {
 
 function classifyAdminJsExecBinding(value: unknown): string {
   if (isDurableObjectNamespace(value)) return "durable_object_namespace";
-  if (!isRecord(value)) return "value";
+  if (!isAdminJsExecBindingObject(value)) return "value";
   const methods = new Set(callableMethodNames(value));
   if (methods.has("prepare") && methods.has("exec")) return "d1";
   if (methods.has("createMultipartUpload") && methods.has("head")) return "r2_bucket";
@@ -949,10 +961,17 @@ function classifyAdminJsExecBinding(value: unknown): string {
   return "rpc_binding";
 }
 
+function isAdminJsExecBindingObject(
+  value: unknown,
+): value is Record<string, unknown> {
+  return (typeof value === "object" && value !== null && !Array.isArray(value)) ||
+    typeof value === "function";
+}
+
 function adminJsExecBindingDescriptors(env: Env): AdminJsExecBindingDescriptor[] {
   return Object.entries(env as unknown as Record<string, unknown>)
     .map(([name, value]) => {
-      const objectValue = isRecord(value) ? value : null;
+      const objectValue = isAdminJsExecBindingObject(value) ? value : null;
       const blocked = ADMIN_JS_EXEC_BLOCKED_BINDINGS.has(name);
       return {
         name,
@@ -973,7 +992,7 @@ function getAdminJsExecBinding(env: Env, name: string): Record<string, unknown> 
     throw new Error(`Binding is not available in admin_js_exec: ${normalizedName}`);
   }
   const value = (env as unknown as Record<string, unknown>)[normalizedName];
-  if (!isRecord(value)) {
+  if (!isAdminJsExecBindingObject(value)) {
     throw new Error(
       `Binding is unavailable or is a protected primitive value: ${normalizedName}`,
     );
@@ -1176,6 +1195,120 @@ export class AdminJsExecRuntimeBinding extends WorkerEntrypoint<
     return serializeAdminJsExecResponse(
       await fetchAdminApiWithValidatedAuth(request, this.env),
     );
+  }
+
+  async fetchActor(
+    actor: AdminJsExecActor,
+    input: string,
+    init: AdminJsExecFetchInit = {},
+  ): Promise<AdminJsExecFetchResult> {
+    if (!isRecord(actor)) {
+      throw new Error("ACTOR.fetch requires an actor object");
+    }
+    const userId = typeof actor.userId === "string" ? actor.userId.trim() : "";
+    const orgId = typeof actor.orgId === "string" ? actor.orgId.trim() : "";
+    const workspaceId = actor.workspaceId == null
+      ? null
+      : typeof actor.workspaceId === "string"
+        ? actor.workspaceId.trim()
+        : "";
+    if (!userId || !orgId) {
+      throw new Error("ACTOR.fetch requires non-empty userId and orgId values");
+    }
+    if (actor.workspaceId != null && !workspaceId) {
+      throw new Error("ACTOR.fetch workspaceId must be a non-empty string or null");
+    }
+
+    const url = new URL(normalizeAdminJsExecUrl(input, this.ctx.props.baseUrl));
+    const baseUrl = new URL(this.ctx.props.baseUrl);
+    if (url.origin !== baseUrl.origin) {
+      throw new Error("ACTOR.fetch only accepts same-Worker URLs and paths");
+    }
+    if (url.pathname.startsWith("/api/admin/")) {
+      throw new Error("ACTOR.fetch cannot call admin API paths; use ADMIN.fetch instead");
+    }
+
+    const userStub = this.env.USER.get(this.env.USER.idFromName(userId));
+    const orgStub = this.env.ORG.get(this.env.ORG.idFromName(orgId));
+    const [profile, member] = await Promise.all([
+      userStub.getProfile(),
+      orgStub.getMember(userId),
+    ]);
+    if (!profile) throw new Error(`ACTOR.fetch user not found: ${userId}`);
+    if (!member) {
+      throw new Error(`ACTOR.fetch user ${userId} is not a member of org ${orgId}`);
+    }
+    if (workspaceId) {
+      const workspace = await orgStub.getWorkspaceRecord(workspaceId);
+      if (!workspace) {
+        throw new Error(
+          `ACTOR.fetch workspace ${workspaceId} does not belong to org ${orgId}`,
+        );
+      }
+    }
+
+    const signedToken = await createSignedSession(this.env.TOKEN_SIGNING_SECRET, {
+      user_id: userId,
+      org_id: orgId,
+      workspace_id: workspaceId,
+      created_at: Date.now(),
+      user_name: profile.name ?? null,
+      user_email: profile.email ?? null,
+      auth_source: null,
+    });
+    const requestInit = adminJsExecRequestInit(init);
+    const headers = new Headers(requestInit.headers);
+    headers.delete("cookie");
+    headers.set("x-chiridion-session-id", signedToken);
+    const request = new Request(url, { ...requestInit, headers });
+    const binding = getAdminJsExecBinding(this.env, "WORKER_SELF_REFERENCE");
+    const fetchMethod = binding.fetch;
+    if (typeof fetchMethod !== "function") {
+      throw new Error("WORKER_SELF_REFERENCE does not implement fetch");
+    }
+
+    const startedAt = Date.now();
+    try {
+      const response = await (fetchMethod as (request: Request) => Promise<Response>).call(
+        binding,
+        request,
+      );
+      recordObservabilityEvent(this.env, {
+        event: "admin_js_exec_actor_fetch",
+        component: "admin-mcp",
+        operation: "actor_fetch",
+        status: response.ok ? "success" : "http_error",
+        route: url.pathname,
+        method: request.method,
+        path: url.pathname,
+        workspaceId,
+        orgId,
+        userId,
+        requestId: `admin:${this.ctx.props.adminUserId}`,
+        durationMs: Date.now() - startedAt,
+        statusCode: response.status,
+        sampleIndex: this.ctx.props.adminUserId,
+      });
+      return serializeAdminJsExecResponse(response);
+    } catch (error) {
+      recordErrorEvent(this.env, {
+        event: "admin_js_exec_actor_fetch_error",
+        component: "admin-mcp",
+        operation: "actor_fetch",
+        status: "error",
+        route: url.pathname,
+        method: request.method,
+        path: url.pathname,
+        workspaceId,
+        orgId,
+        userId,
+        requestId: `admin:${this.ctx.props.adminUserId}`,
+        durationMs: Date.now() - startedAt,
+        sampleIndex: this.ctx.props.adminUserId,
+        error,
+      });
+      throw error;
+    }
   }
 
   async fetchOutbound(
@@ -1478,6 +1611,11 @@ function createRuntimeFacades(bridge, runtime) {
     ENV,
     SELF: makeFetchFacade("fetchSelf"),
     ADMIN: makeFetchFacade("fetchAdmin"),
+    ACTOR: Object.freeze({
+      fetch: async (actor, input, init = {}) => createRemoteResponse(
+        await bridge.fetchActor(actor, String(input), normalizeFetchInit(init)),
+      ),
+    }),
     fetch: async (input, init = {}) => createRemoteResponse(
       await bridge.fetchOutbound(String(input), normalizeFetchInit(init)),
     ),
@@ -1584,7 +1722,7 @@ function deepFreeze(value) {
   return Object.freeze(value);
 }
 
-async function runUserCode(DO, env, ENV, SELF, ADMIN, fetch, assert, test, runtime, input, sleep, text) {
+async function runUserCode(DO, env, ENV, SELF, ADMIN, ACTOR, fetch, assert, test, runtime, input, sleep, text) {
   "use strict";
 `}${userCode}${String.raw`
 }
@@ -1609,6 +1747,7 @@ export class AdminJsExecRunner extends WorkerEntrypoint {
       facades.ENV,
       facades.SELF,
       facades.ADMIN,
+      facades.ACTOR,
       facades.fetch,
       assert,
       harness.test,

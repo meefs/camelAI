@@ -649,6 +649,9 @@ describe("admin MCP OAuth resource", () => {
                   const stats = await response.json();
                   assert.ok(stats.total_users >= 1);
                 });
+                await test("actor request facade", async () => {
+                  assert.equal(typeof ACTOR.fetch, "function");
+                });
                 await test("chained binding APIs", async () => {
                   const row = await env.APP_DB.chain([
                     { method: "prepare", args: ["SELECT 1 AS value"] },
@@ -711,8 +714,8 @@ describe("admin MCP OAuth resource", () => {
         },
       },
       tests: {
-        total: 6,
-        passed: 6,
+        total: 7,
+        passed: 7,
         failed: 0,
       },
       runtime: {

@@ -20,6 +20,7 @@ the MCP server you call selects the environment.
 | `DO` | Durable Object namespace, stub, and RPC helpers. |
 | `SELF.fetch()` | Fetch the current Worker without adding user or admin authentication. |
 | `ADMIN.fetch()` | Fetch an `/api/admin/*` endpoint as the authenticated MCP admin. |
+| `ACTOR.fetch()` | Fetch the current Worker with an ephemeral signed session for a validated user/org membership. |
 | `fetch()` | Make an outbound HTTP request from the deployed Worker environment. |
 | `assert` | Assertions: `ok`, `equal`, `notEqual`, `deepEqual`, `match`, and `rejects`. |
 | `test()` | Run and report a named async integration test without stopping later tests. |
@@ -87,6 +88,10 @@ const stats = await ADMIN.fetch("/api/admin/stats");
 assert.equal(stats.status, 200);
 
 const health = await SELF.fetch("/health");
+const billing = await ACTOR.fetch(
+  { userId: "user_id", orgId: "org_id" },
+  "/settings/organization/billing",
+);
 const external = await fetch("https://example.com/status");
 
 return {
@@ -99,6 +104,13 @@ return {
 `ADMIN.fetch()` only accepts admin API paths and refuses the MCP and OAuth
 endpoints. `SELF.fetch()` does not invent a browser session, which keeps
 authentication behavior honest when testing public or signed endpoints.
+
+`ACTOR.fetch()` accepts `{ userId, orgId, workspaceId? }`, confirms that the
+user exists and belongs to the organization, mints an ephemeral in-memory
+session, and sends it only to the same Worker origin. It rejects admin API
+paths and external URLs. The session token is never returned to console code.
+Every actor request records the admin id, actor ids, route, method, status, and
+duration without recording request or response bodies.
 
 Response bodies are capped at 1 MB inside the bridge, and the final console
 result is independently capped by `max_output_characters`.
