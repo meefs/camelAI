@@ -837,7 +837,7 @@ function MessageBubbleBase({
         </div>
       )}
       {/* Hover action row */}
-      {hasContent && !suppressFinalizedState && showActionRow && (
+      {hasContent && !isStreaming && showActionRow && (
         <div
           className={cn("flex items-center gap-0.5 pointer-coarse:gap-1", actionVisibilityClassName)}
           role="group"

@@ -34,7 +34,7 @@ vi.mock('@/components/ui/tooltip', () => ({
 }));
 
 describe('MessageBubble streaming indicator order', () => {
-  it('omits the epoch timestamp while streaming and shows the completion time afterward', () => {
+  it('hides the action row while streaming and shows the completion time afterward', () => {
     const completedAt = Date.UTC(2024, 0, 2, 20, 5);
     const streamingMessage: Message = {
       id: 'assistant-timestamp',
@@ -55,9 +55,7 @@ describe('MessageBubble streaming indicator order', () => {
       </div>
     );
 
-    expect(screen.getByLabelText('Message actions')).toHaveTextContent(
-      /^Copy message$/,
-    );
+    expect(screen.queryByLabelText('Message actions')).toBeNull();
 
     rerender(
       <div className="group">
@@ -88,7 +86,7 @@ describe('MessageBubble streaming indicator order', () => {
     );
   });
 
-  it('renders loading dots after the assistant action row', () => {
+  it('renders loading dots without an action row while streaming', () => {
     const message: Message = {
       id: 'assistant-1',
       thread_id: 'thread-1',
@@ -109,12 +107,8 @@ describe('MessageBubble streaming indicator order', () => {
       </div>
     );
 
-    const actionRow = screen.getByLabelText('Message actions');
-    const dots = screen.getByTestId('loading-dots');
-    const actionBeforeDots = Boolean(
-      actionRow.compareDocumentPosition(dots) & Node.DOCUMENT_POSITION_FOLLOWING
-    );
-    expect(actionBeforeDots).toBe(true);
+    expect(screen.queryByLabelText('Message actions')).toBeNull();
+    expect(screen.getByTestId('loading-dots')).toBeTruthy();
   });
 
   it('still renders loading dots when streaming message has no visible content', () => {

@@ -93,6 +93,20 @@ describe('MessageBubble suppressFinalizedState', () => {
     expect(screen.getByLabelText('Message actions')).toBeInTheDocument();
   });
 
+  it('hides assistant hover actions while the message is streaming', () => {
+    render(
+      <div className="group">
+        <MessageBubble
+          message={{ ...createAssistantToolMessage(), isStreaming: true }}
+          onCopy={vi.fn()}
+          copiedId={null}
+        />
+      </div>
+    );
+
+    expect(screen.queryByLabelText('Message actions')).not.toBeInTheDocument();
+  });
+
   it('sends forkEntryId instead of the rendered message id when forking', () => {
     const onFork = vi.fn();
     render(
