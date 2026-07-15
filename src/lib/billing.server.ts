@@ -21,7 +21,7 @@ const STRIPE_API_BASE = "https://api.stripe.com/v1";
 export const STRIPE_API_VERSION = "2026-06-24.dahlia";
 const CREDIT_CHECKOUT_EVENT_PREFIX = "stripe_checkout_credits:";
 const INCLUDED_CREDIT_INVOICE_EVENT_PREFIX = "stripe_invoice_included_credit:";
-const BILLING_PORTAL_CONFIGURATION_SCHEMA_VERSION = 4;
+const BILLING_PORTAL_CONFIGURATION_SCHEMA_VERSION = 5;
 const BILLING_PORTAL_CONFIGURATION_KV_PREFIX = "stripe_billing_portal_configuration:";
 const LEGACY_MIGRATION_META_ORG_ID = "v2_mig_org";
 const LEGACY_MIGRATION_META_SUBSCRIPTION_ID = "v2_mig_sub";
@@ -1499,9 +1499,11 @@ export async function getOrCreateBillingPortalConfiguration(
         productId,
         priceId,
         unitAmount,
+        minimumSeats: getMinimumSeats(plan),
+        maximumSeats: plan === "team" ? null : 2,
       })),
       behavior: {
-        allowedUpdates: mode === "management" ? [] : ["price"],
+        allowedUpdates: mode === "management" ? [] : ["price", "quantity"],
         proration:
           mode === "upgrade"
             ? "always_invoice"
@@ -1522,7 +1524,9 @@ export async function getOrCreateBillingPortalConfiguration(
   if (cached?.fingerprint === fingerprint) return cached.id;
 
   const body = new URLSearchParams();
-  body.set("active", "true");
+  // Stripe accepts `active` when updating a portal configuration, but not when
+  // creating one. New configurations are active by default.
+  if (cached) body.set("active", "true");
   body.set("business_profile[headline]", "Manage your camelAI subscription");
   body.set("features[invoice_history][enabled]", "true");
   body.set("features[payment_method_update][enabled]", "true");
@@ -1538,6 +1542,10 @@ export async function getOrCreateBillingPortalConfiguration(
     body.append(
       "features[subscription_update][default_allowed_updates][]",
       "price",
+    );
+    body.append(
+      "features[subscription_update][default_allowed_updates][]",
+      "quantity",
     );
     body.set(
       "features[subscription_update][proration_behavior]",
@@ -1555,7 +1563,17 @@ export async function getOrCreateBillingPortalConfiguration(
       const prefix = `features[subscription_update][products][${index}]`;
       body.set(`${prefix}[product]`, entry.productId);
       body.append(`${prefix}[prices][]`, entry.priceId);
-      body.set(`${prefix}[adjustable_quantity][enabled]`, "false");
+      body.set(`${prefix}[adjustable_quantity][enabled]`, "true");
+      body.set(
+        `${prefix}[adjustable_quantity][minimum]`,
+        String(getMinimumSeats(entry.plan)),
+      );
+      if (entry.plan !== "team") {
+        body.set(
+          `${prefix}[adjustable_quantity][maximum]`,
+          "2",
+        );
+      }
     });
   }
 

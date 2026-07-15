@@ -2856,19 +2856,20 @@ describe("billing helpers", () => {
     ).resolves.toBe("bpc_cached_upgrade");
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(idempotencyKey).toMatch(/^camelai-billing-portal-v4:upgrade:/);
+    expect(idempotencyKey).toMatch(/^camelai-billing-portal-v5:upgrade:/);
     expect(env.APP_KV.put).toHaveBeenCalledWith(
-      "stripe_billing_portal_configuration:v4:upgrade",
+      "stripe_billing_portal_configuration:v5:upgrade",
       expect.stringContaining('"id":"bpc_cached_upgrade"'),
     );
     const configurationBody = new URLSearchParams(
       configurationRequestBody ?? "",
     );
+    expect(configurationBody.has("active")).toBe(false);
     expect(
       configurationBody.getAll(
         "features[subscription_update][default_allowed_updates][]",
       ),
-    ).toEqual(["price"]);
+    ).toEqual(["price", "quantity"]);
     expect(
       [0, 1, 2].map((index) =>
         configurationBody.get(
@@ -2882,14 +2883,30 @@ describe("billing helpers", () => {
           `features[subscription_update][products][${index}][adjustable_quantity][enabled]`,
         ),
       ),
-    ).toEqual(["false", "false", "false"]);
+    ).toEqual(["true", "true", "true"]);
+    expect(
+      [0, 1, 2].map((index) =>
+        configurationBody.get(
+          `features[subscription_update][products][${index}][adjustable_quantity][minimum]`,
+        ),
+      ),
+    ).toEqual(["1", "1", "3"]);
+    expect(
+      [0, 1, 2].map((index) =>
+        configurationBody.get(
+          `features[subscription_update][products][${index}][adjustable_quantity][maximum]`,
+        ),
+      ),
+    ).toEqual(["2", "2", null]);
   });
 
   it("updates the stable portal configuration when the catalog changes", async () => {
     const cache = new Map<string, string>();
     const requestUrls: string[] = [];
-    const fetchMock = vi.fn(async (url: string) => {
+    const requestBodies: URLSearchParams[] = [];
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
       requestUrls.push(url);
+      requestBodies.push(new URLSearchParams(init?.body as string));
       return {
         ok: true,
         json: async () => ({ id: "bpc_stable", active: true }),
@@ -2929,8 +2946,10 @@ describe("billing helpers", () => {
       "https://api.stripe.com/v1/billing_portal/configurations",
       "https://api.stripe.com/v1/billing_portal/configurations/bpc_stable",
     ]);
+    expect(requestBodies[0]?.has("active")).toBe(false);
+    expect(requestBodies[1]?.get("active")).toBe("true");
     expect(env.APP_KV.put).toHaveBeenLastCalledWith(
-      "stripe_billing_portal_configuration:v4:upgrade",
+      "stripe_billing_portal_configuration:v5:upgrade",
       expect.stringContaining('"id":"bpc_stable"'),
     );
   });
