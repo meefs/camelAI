@@ -706,7 +706,10 @@ describe('ChatThreadDO Pi turn handling', () => {
       threadId: 'thread1',
     };
     fake.resolveCurrentByokCredentials = vi.fn(async () => null);
-    fake.checkHostedPiModelAccess = vi.fn(async () => true);
+    fake.checkHostedPiModelAccess = vi.fn(async () => ({
+      creditChargeable: true,
+      vllmPriority: '0',
+    }));
 
     const model = await ChatThreadDO.prototype['resolvePiModel'].call(
       fake,
@@ -745,7 +748,10 @@ describe('ChatThreadDO Pi turn handling', () => {
       threadId: 'thread1',
     };
     fake.resolveCurrentByokCredentials = vi.fn(async () => null);
-    fake.checkHostedPiModelAccess = vi.fn(async () => true);
+    fake.checkHostedPiModelAccess = vi.fn(async () => ({
+      creditChargeable: true,
+      vllmPriority: '0',
+    }));
 
     const getModel = vi.fn(() => undefined);
     const model = await ChatThreadDO.prototype['resolvePiModel'].call(
@@ -1733,7 +1739,10 @@ describe('ChatThreadDO Pi turn handling', () => {
       threadId: 'thread1',
     };
     fake.resolveCurrentByokCredentials = vi.fn(async () => null);
-    fake.checkHostedPiModelAccess = vi.fn(async () => true);
+    fake.checkHostedPiModelAccess = vi.fn(async () => ({
+      creditChargeable: true,
+      vllmPriority: '0',
+    }));
 
     const model = await ChatThreadDO.prototype['resolvePiModel'].call(
       fake,
@@ -1769,7 +1778,10 @@ describe('ChatThreadDO Pi turn handling', () => {
       threadId: 'thread1',
     };
     fake.resolveCurrentByokCredentials = vi.fn(async () => null);
-    fake.checkHostedPiModelAccess = vi.fn(async () => true);
+    fake.checkHostedPiModelAccess = vi.fn(async () => ({
+      creditChargeable: true,
+      vllmPriority: '0',
+    }));
 
     const model = await ChatThreadDO.prototype['resolvePiModel'].call(
       fake,
@@ -1805,7 +1817,10 @@ describe('ChatThreadDO Pi turn handling', () => {
       threadId: 'thread1',
     };
     fake.resolveCurrentByokCredentials = vi.fn(async () => null);
-    fake.checkHostedPiModelAccess = vi.fn(async () => true);
+    fake.checkHostedPiModelAccess = vi.fn(async () => ({
+      creditChargeable: true,
+      vllmPriority: '0',
+    }));
 
     const getModel = vi.fn(() => undefined);
     const model = await ChatThreadDO.prototype['resolvePiModel'].call(
@@ -1850,7 +1865,10 @@ describe('ChatThreadDO Pi turn handling', () => {
       threadId: 'thread1',
     };
     fake.resolveCurrentByokCredentials = vi.fn(async () => null);
-    fake.checkHostedPiModelAccess = vi.fn(async () => false);
+    fake.checkHostedPiModelAccess = vi.fn(async () => ({
+      creditChargeable: false,
+      vllmPriority: '100',
+    }));
 
     const getModel = vi.fn(() => ({
       id: 'deepseek/deepseek-v4-pro',
@@ -1878,6 +1896,7 @@ describe('ChatThreadDO Pi turn handling', () => {
     });
     expect(model.model.headers).toMatchObject({
       'x-sticky-key': 'thread1',
+      'X-Chiridion-VLLM-Priority': '100',
     });
     // Dynamic routes fan out across RTX/Azure/OpenRouter. Keep high reasoning,
     // but use a conservative working window because Pi's estimate does not
@@ -1917,7 +1936,10 @@ describe('ChatThreadDO Pi turn handling', () => {
       threadId: 'thread1',
     };
     fake.resolveCurrentByokCredentials = vi.fn(async () => null);
-    fake.checkHostedPiModelAccess = vi.fn(async () => true);
+    fake.checkHostedPiModelAccess = vi.fn(async () => ({
+      creditChargeable: true,
+      vllmPriority: '0',
+    }));
 
     const getModel = vi.fn(() => ({
       id: 'deepseek/deepseek-v4-pro',
@@ -1938,6 +1960,9 @@ describe('ChatThreadDO Pi turn handling', () => {
       provider: 'cloudflare-ai-gateway',
       api: 'openai-completions',
       baseUrl: 'https://gateway.ai.cloudflare.com/v1/acct_1/gateway_1/compat',
+    });
+    expect(model.model.headers).toMatchObject({
+      'X-Chiridion-VLLM-Priority': '0',
     });
     expect(model.model.compat).toMatchObject({ supportsReasoningEffort: true });
     expect(model.model.thinkingLevelMap).toEqual({
@@ -2004,7 +2029,10 @@ describe('ChatThreadDO Pi turn handling', () => {
       provider: 'openrouter',
       apiKey: 'sk-or-test',
     }));
-    fake.checkHostedPiModelAccess = vi.fn(async () => true);
+    fake.checkHostedPiModelAccess = vi.fn(async () => ({
+      creditChargeable: true,
+      vllmPriority: '0',
+    }));
 
     const model = await ChatThreadDO.prototype['resolvePiModel'].call(
       fake,
@@ -2042,7 +2070,10 @@ describe('ChatThreadDO Pi turn handling', () => {
       threadId: 'thread1',
     };
     fake.resolveCurrentByokCredentials = vi.fn(async () => null);
-    fake.checkHostedPiModelAccess = vi.fn(async () => true);
+    fake.checkHostedPiModelAccess = vi.fn(async () => ({
+      creditChargeable: true,
+      vllmPriority: '0',
+    }));
 
     const getModel = vi.fn(() => ({
       id: 'deepseek/deepseek-v4-flash',
@@ -2132,7 +2163,10 @@ describe('ChatThreadDO Pi turn handling', () => {
         threadId: 'thread1',
       };
       fake.resolveCurrentByokCredentials = vi.fn(async () => null);
-      fake.checkHostedPiModelAccess = vi.fn(async () => true);
+      fake.checkHostedPiModelAccess = vi.fn(async () => ({
+        creditChargeable: true,
+        vllmPriority: '0',
+      }));
 
       const getModel = vi.fn(() => undefined);
       const model = await ChatThreadDO.prototype['resolvePiModel'].call(

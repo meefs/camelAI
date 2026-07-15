@@ -26,6 +26,10 @@ import {
 } from "../../../../src/lib/selfhost-ai-provider";
 import { isSelfhostRuntime } from "../../../../src/lib/selfhost-runtime";
 import { buildCloudflareGatewayUrl } from "../../../../src/lib/cloudflare-ai-gateway";
+import {
+  FREE_VLLM_PRIORITY,
+  getHostedVllmPriority,
+} from "../hosted-vllm-priority";
 
 export type PiBillingSource = "hosted" | "byok";
 
@@ -101,7 +105,12 @@ export interface ResolvePiRequestConfigDeps {
   checkHostedModelAccess(
     context: ChatContextState,
     model: string,
-  ): Promise<boolean>;
+  ): Promise<HostedModelAccess>;
+}
+
+export interface HostedModelAccess {
+  creditChargeable: boolean;
+  vllmPriority: string;
 }
 
 const PI_MODEL_CATALOG_FALLBACKS: Record<string, Model<any>> = {
@@ -491,10 +500,11 @@ export async function resolvePiRequestConfig(
     };
   }
 
-  const creditChargeable = await deps.checkHostedModelAccess(
+  const hostedAccess = await deps.checkHostedModelAccess(
     context,
     requestedModelId,
   );
+  const creditChargeable = hostedAccess.creditChargeable;
   // E2E replay routes hosted calls to a local stub that ignores account/
   // gateway/auth, so stand in dummy values to clear this gateway-config check
   // (the real origin is swapped in resolveCloudflareGatewayOrigin). Lets the
@@ -536,6 +546,11 @@ export async function resolvePiRequestConfig(
       ...(chatMetadata?.threadId
         ? { "x-sticky-key": chatMetadata.threadId }
         : {}),
+      // The self-hosted DeepSeek provider translates this trusted header to
+      // vLLM's request priority. Do not add it to unrelated model routes.
+      ...(resolved.hostedModelId?.startsWith("dynamic/deepseek-v4-")
+        ? { "X-Chiridion-VLLM-Priority": hostedAccess.vllmPriority }
+        : {}),
       "cf-aig-metadata": JSON.stringify({
         uid: [chatMetadata?.orgId, chatMetadata?.workspaceId, chatMetadata?.threadId]
           .filter(Boolean)
@@ -558,9 +573,9 @@ export async function checkHostedPiModelAccess(
   env: ChatEnv,
   context: ChatContextState,
   model?: string,
-): Promise<boolean> {
+): Promise<HostedModelAccess> {
   if (isSelfhostRuntime(env)) {
-    return false;
+    return { creditChargeable: false, vllmPriority: FREE_VLLM_PRIORITY };
   }
 
   const orgStub = env.ORG.get(env.ORG.idFromName(context.orgId));
@@ -571,8 +586,9 @@ export async function checkHostedPiModelAccess(
 
   const status = org.billing_status ?? "inactive";
   const plan = org.billing_plan ?? "payg";
+  const vllmPriority = getHostedVllmPriority(org);
   if (status === "enterprise") {
-    return false;
+    return { creditChargeable: false, vllmPriority };
   }
   const isPayAsYouGo = plan === "payg";
   if (status === "past_due") {
@@ -592,7 +608,7 @@ export async function checkHostedPiModelAccess(
   }
 
   if (isCreditFreeHostedModel(model)) {
-    return false;
+    return { creditChargeable: false, vllmPriority };
   }
 
   const usage = await orgStub.getUsageLogSum(0, Date.now(), true);
@@ -601,7 +617,7 @@ export async function checkHostedPiModelAccess(
     (org.billing_credit_purchase_total_cents ?? 0) +
     (org.billing_credit_grant_total_cents ?? 0);
   if (totalCreditsCents - spentCents > 0) {
-    return true;
+    return { creditChargeable: true, vllmPriority };
   }
 
   throw new Error(

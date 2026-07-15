@@ -10,6 +10,7 @@ import {
   resolveCloudflareGatewayOrigin,
 } from "../../../src/lib/cloudflare-ai-gateway";
 import { chatCompletionToPiCall, runBedrockViaPi } from "./bedrock-pi-adapter";
+import { getHostedVllmPriority } from "./hosted-vllm-priority";
 
 export interface AIVirtualBindingEnv {
   ORG: DurableObjectNamespace<OrgDO>;
@@ -312,7 +313,7 @@ export async function executeVirtualAiRun(
 
   const routing = await resolveRouting(scope, requestedModel);
   const usesByok = routing.byokKey !== undefined;
-  const access = usesByok
+  const access: { creditChargeable: boolean; vllmPriority?: string } = usesByok
     ? { creditChargeable: false }
     : await checkHostedModelAccess(
         scope.env,
@@ -345,6 +346,9 @@ export async function executeVirtualAiRun(
           routing.model,
           routing.gatewayProvider,
           routing.byokKey,
+          requestedModel.startsWith("deepseek-v4-") && !usesByok
+            ? access.vllmPriority
+            : undefined,
         );
 
   const fallbackModel = routing.model;
@@ -424,7 +428,7 @@ async function checkHostedModelAccess(
   env: AIVirtualBindingEnv,
   props: AIVirtualBindingProps,
   creditFree = false,
-): Promise<{ creditChargeable: boolean }> {
+): Promise<{ creditChargeable: boolean; vllmPriority: string }> {
   const orgStub = env.ORG.get(env.ORG.idFromName(props.orgId));
   const org = await orgStub.getInfo();
   if (!org) {
@@ -432,7 +436,10 @@ async function checkHostedModelAccess(
   }
   const status = org.billing_status ?? "inactive";
   const plan = org.billing_plan ?? "payg";
-  if (status === "enterprise") return { creditChargeable: false };
+  const vllmPriority = getHostedVllmPriority(org);
+  if (status === "enterprise") {
+    return { creditChargeable: false, vllmPriority };
+  }
   const isPayAsYouGo = plan === "payg";
   if (status === "past_due") {
     throw new Error(
@@ -449,7 +456,7 @@ async function checkHostedModelAccess(
       "Hosted models require billing access. Choose Pay as you go, start a subscription, or add your own API key in Settings -> AI Provider.",
     );
   }
-  if (creditFree) return { creditChargeable: false };
+  if (creditFree) return { creditChargeable: false, vllmPriority };
   const usage = await orgStub.getUsageLogSum(0, Date.now(), true);
   const spentCents = Math.round(Number(usage.total_cost_usd ?? 0) * 100);
   const totalCreditsCents =
@@ -460,7 +467,7 @@ async function checkHostedModelAccess(
       `Hosted model credits are used up. You have used ${(spentCents / 100).toFixed(2)} of ${(totalCreditsCents / 100).toFixed(2)} credits.`,
     );
   }
-  return { creditChargeable: true };
+  return { creditChargeable: true, vllmPriority };
 }
 
 async function recordVirtualAiUsage(
@@ -664,6 +671,7 @@ export async function runViaGatewayHTTP(
   model: string,
   provider: GatewayProvider = "compat",
   byokKey?: string,
+  vllmPriority?: string,
 ): Promise<unknown> {
   const headers = new Headers();
   headers.set("Authorization", `Bearer ${byokKey ?? settings.authToken}`);
@@ -672,6 +680,9 @@ export async function runViaGatewayHTTP(
   }
   headers.set("Content-Type", "application/json");
   headers.set("cf-aig-metadata", buildGatewayMetadata(props));
+  if (vllmPriority) {
+    headers.set("X-Chiridion-VLLM-Priority", vllmPriority);
+  }
   const payload = toGatewayPayload(input, model);
 
   const resp = await fetch(

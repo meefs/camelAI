@@ -376,6 +376,7 @@ describe("executeVirtualAiRun", () => {
       const headers = new Headers(init.headers);
       expect(headers.get("authorization")).toBe("Bearer tok_1");
       expect(headers.get("cf-aig-authorization")).toBeNull();
+      expect(headers.get("X-Chiridion-VLLM-Priority")).toBe("0");
       const body = JSON.parse(String(init.body)) as { model: string };
       expect(body.model).toBe("dynamic/deepseek-v4-auto");
       expect(getUsageLogSum).not.toHaveBeenCalled();
