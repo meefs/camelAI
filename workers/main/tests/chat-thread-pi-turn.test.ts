@@ -123,23 +123,28 @@ function createProjectToolFake({
     createdAt: '2026-01-01T00:00:00.000Z',
     updatedAt: '2026-01-01T00:00:00.000Z',
   };
+  const projectsByName = new Map<string, typeof project>([[project.name, project]]);
   const projectFiles = new Map<string, string>(projectFileEntries ?? [
     ['/package.json', '{"scripts":{"build":"vite build"}}'],
     ['/src/index.ts', 'export default { fetch() { return new Response("ok"); } }'],
   ]);
   const workspaceStub = {
-    getProjectByName: vi.fn(async (name: string) => name === 'Demo App' ? project : null),
+    getProjectByName: vi.fn(async (name: string) => projectsByName.get(name) ?? null),
     listProjectsForMigrationReset: vi.fn(async () => [project]),
     removeProjects: vi.fn(async (ids: string[]) => ({
       deleted: ids.includes(project.id) ? [project] : [],
       retained: ids.includes(project.id) ? [] : [project],
     })),
-    createProject: vi.fn(async (input: any) => ({
-      ...project,
-      name: input.name,
-      description: input.description,
-      backend: input.backend,
-    })),
+    createProject: vi.fn(async (input: any) => {
+      const createdProject = {
+        ...project,
+        name: input.name,
+        description: input.description,
+        backend: input.backend,
+      };
+      projectsByName.set(createdProject.name, createdProject);
+      return createdProject;
+    }),
   };
   const projectStub = {
     projectExists: vi.fn(async (path: string) => ({
@@ -256,6 +261,9 @@ function createProjectToolFake({
     updateWorkerScriptPreview: vi.fn(async () => ({ stale: false })),
     getWorkerScript: vi.fn(async () => script),
   };
+  const chatThreadStub = {
+    recordProjectActivity: vi.fn(async () => undefined),
+  };
   const env = {
     WORKER_BASE_URL: 'https://staging.camelai.dev',
     LOCAL_APP_VANITY_DOMAIN: 'camelai.app',
@@ -266,6 +274,10 @@ function createProjectToolFake({
     ORG: {
       idFromName: vi.fn((id: string) => id),
       get: vi.fn(() => orgStub),
+    },
+    CHAT_THREAD: {
+      idFromName: vi.fn((id: string) => id),
+      get: vi.fn(() => chatThreadStub),
     },
     APP_KV: {
       put: vi.fn(async () => undefined),
@@ -282,7 +294,15 @@ function createProjectToolFake({
   fake.ctx = { props: { orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1', userId: 'user1' } };
   fake.env = env;
   fake.projectBuildSandbox = vi.fn(() => sandbox);
-  return { fake, env, sandbox, workspaceStub, projectStub, orgStub };
+  return {
+    fake,
+    env,
+    sandbox,
+    workspaceStub,
+    projectStub,
+    orgStub,
+    chatThreadStub,
+  };
 }
 
 describe('ChatThreadDO Pi turn handling', () => {
@@ -6624,7 +6644,7 @@ describe('ChatThreadDO Pi turn handling', () => {
   });
 
   it('creates new code-mode projects as DO-backed projects', async () => {
-    const { fake, workspaceStub, projectStub } = createProjectToolFake({ projectFileEntries: [] });
+    const { fake, workspaceStub, projectStub, chatThreadStub } = createProjectToolFake({ projectFileEntries: [] });
 
     const result = await CodeModeToolsBinding.prototype.callTool.call(fake, 'create_project', {
       name: 'New App',
@@ -6652,6 +6672,52 @@ describe('ChatThreadDO Pi turn handling', () => {
       '/app/root.tsx',
       '/scripts/build-manifest.mjs',
     ]));
+    expect(chatThreadStub.recordProjectActivity).toHaveBeenCalledWith({
+      projectId: 'project-1',
+      activityType: 'created',
+    });
+  });
+
+  it('does not require thread scope when project activity bookkeeping is unavailable', async () => {
+    const { fake, chatThreadStub } = createProjectToolFake({ projectFileEntries: [] });
+    delete fake.ctx.props.threadId;
+
+    await expect(CodeModeToolsBinding.prototype.callTool.call(fake, 'create_project', {
+      name: 'New App',
+      description: 'A new app',
+    })).resolves.toMatchObject({ name: 'New App' });
+
+    expect(chatThreadStub.recordProjectActivity).not.toHaveBeenCalled();
+  });
+
+  it('preserves a successful project tool result when activity recording fails', async () => {
+    const { fake, env, chatThreadStub } = createProjectToolFake({ projectFileEntries: [] });
+    chatThreadStub.recordProjectActivity.mockRejectedValueOnce(
+      new Error('temporary activity storage failure'),
+    );
+    env.OBSERVABILITY_EVENTS = { writeDataPoint: vi.fn() } as any;
+    env.ERROR_ANALYTICS = { writeDataPoint: vi.fn() } as any;
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    try {
+      await expect(CodeModeToolsBinding.prototype.callTool.call(fake, 'create_project', {
+        name: 'New App',
+        description: 'A new app',
+      })).resolves.toMatchObject({ name: 'New App' });
+      expect(consoleError).toHaveBeenCalledWith(
+        'Failed to record thread project activity',
+        expect.objectContaining({
+          toolName: 'create_project',
+          workspaceId: 'workspace1',
+          threadId: 'thread1',
+          error: 'temporary activity storage failure',
+        }),
+      );
+      expect(env.OBSERVABILITY_EVENTS.writeDataPoint).toHaveBeenCalledTimes(1);
+      expect(env.ERROR_ANALYTICS.writeDataPoint).toHaveBeenCalledTimes(1);
+    } finally {
+      consoleError.mockRestore();
+    }
   });
 
   it('seeds the notebook-first data-analysis scaffold through create_project', async () => {
@@ -6732,7 +6798,7 @@ describe('ChatThreadDO Pi turn handling', () => {
   });
 
   it('adds a dependency to a DO-backed project through the dependency action', async () => {
-    const { fake, sandbox, projectStub } = createProjectToolFake();
+    const { fake, sandbox, projectStub, chatThreadStub } = createProjectToolFake();
 
     const result = await CodeModeToolsBinding.prototype.callTool.call(fake, 'add_dependency', {
       project: 'Demo App',
@@ -6757,6 +6823,7 @@ describe('ChatThreadDO Pi turn handling', () => {
     }));
     expect(projectStub.projectWriteFile).toHaveBeenCalledWith('/package.json', expect.stringContaining('devDependencies'));
     expect(projectStub.projectWriteFile).toHaveBeenCalledWith('/bun.lock', '# zod lockfile\n');
+    expect(chatThreadStub.recordProjectActivity).not.toHaveBeenCalled();
   });
 
   it('builds a DO-backed project immediately after dependency changes are persisted', async () => {
@@ -6982,7 +7049,7 @@ describe('ChatThreadDO Pi turn handling', () => {
   });
 
   it('builds and directly deploys a DO-backed project through the deploy action', async () => {
-    const { fake, env, orgStub } = createProjectToolFake({ deploy: true });
+    const { fake, env, orgStub, chatThreadStub } = createProjectToolFake({ deploy: true });
     const fetchMock = vi.fn(async () => Response.json({ success: true, result: { id: 'version-1' } }, { status: 200 }));
     vi.stubGlobal('fetch', fetchMock);
 
@@ -7021,6 +7088,10 @@ describe('ChatThreadDO Pi turn handling', () => {
     );
     expect(orgStub.registerWorkerScript).toHaveBeenCalledWith('demo-app', 'workspace1', 'user1', undefined, 'project-1', 'snapshot-1', expect.stringMatching(/^deploy-artifacts\//));
     expect(env.APP_KV.put).toHaveBeenCalledWith('script:demo-app--test-org', JSON.stringify({ org_id: 'org1', org_slug: 'test-org', is_public: false }));
+    expect(chatThreadStub.recordProjectActivity).toHaveBeenCalledWith({
+      projectId: 'project-1',
+      activityType: 'deployed',
+    });
   });
 
   it('warns when a local deploy may need the local dispatcher worker for reachability', async () => {
@@ -7063,7 +7134,7 @@ describe('ChatThreadDO Pi turn handling', () => {
   });
 
   it('returns a concise deploy-stage error summary without full build logs', async () => {
-    const { fake } = createProjectToolFake({ deploy: true });
+    const { fake, chatThreadStub } = createProjectToolFake({ deploy: true });
     vi.stubGlobal('fetch', vi.fn(async () => Response.json({
       success: false,
       errors: [{ message: 'Uncaught Error: Dynamic require of "util" is not supported' }],
@@ -7094,6 +7165,7 @@ describe('ChatThreadDO Pi turn handling', () => {
     });
     expect((result as any).build).not.toHaveProperty('stdout');
     expect((result as any).build).not.toHaveProperty('stderr');
+    expect(chatThreadStub.recordProjectActivity).not.toHaveBeenCalled();
   });
 
   it('keeps take_screenshot output concise unless inline image data is requested', async () => {

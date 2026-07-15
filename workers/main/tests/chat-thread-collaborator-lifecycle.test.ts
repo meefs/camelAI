@@ -8,6 +8,7 @@ describe("ChatThreadDO collaborator lifecycle", () => {
     fake.env = {};
     const collaboratorKeys = [
       "codeModeArtifacts",
+      "projectActivity",
       "automationRun",
       "piCoreStore",
       "uiMirror",

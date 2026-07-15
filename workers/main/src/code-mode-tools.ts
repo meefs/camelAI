@@ -33,6 +33,7 @@ import { detectImageMimeType as detectSharedImageMimeType, getSupportedImageMime
 import { CodeModeScheduledPrompts } from "./code-mode-scheduled-prompts";
 import { CodeModeDeterministicAutomations } from "./code-mode-deterministic-automations";
 import { CodeModeIntegrations } from "./code-mode-integrations";
+import { recordErrorEvent } from "./observability";
 import { buildLogTail, cleanBuildLog, projectBuildSandboxKey, runProjectAddDependency, runProjectBuild, type ProjectBuildResult } from "./project-build-service";
 import { collectWorkerBundleFromSandbox, findUnexportedDurableObjectClasses, type ProjectBuildSandboxLike } from "./project-worker-bundle";
 import { buildNotebookWorkerBundle, resolveNotebookDeployPath } from "./notebook-worker-bundle";
@@ -2796,11 +2797,84 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
   ): Promise<unknown> {
     try {
       const result = await execute();
-      await this.recordCodeModeArtifactBestEffort(name, args, result);
+      await Promise.all([
+        this.recordCodeModeArtifactBestEffort(name, args, result),
+        this.recordProjectActivityBestEffort(name, args, result),
+      ]);
       return result;
     } catch (error) {
       await this.recordCodeModeArtifactBestEffort(name, args, undefined, error);
       throw error;
+    }
+  }
+
+  private async recordProjectActivityBestEffort(
+    name: string,
+    args: Record<string, unknown>,
+    result: unknown,
+  ): Promise<void> {
+    const props = this.ctx?.props;
+    const threadId = props?.threadId?.trim();
+    if (!threadId) return;
+
+    try {
+      let projectName = '';
+      let activityType: 'created' | 'deployed' | null = null;
+      const resultRecord =
+        result && typeof result === 'object' && !Array.isArray(result)
+          ? (result as Record<string, unknown>)
+          : null;
+
+      if (name === 'create_project') {
+        projectName =
+          (typeof resultRecord?.name === 'string' && resultRecord.name.trim()) ||
+          (typeof args.name === 'string' && args.name.trim()) ||
+          '';
+        activityType = 'created';
+      } else if (name === 'deploy_project' && resultRecord?.success === true) {
+        projectName =
+          (typeof resultRecord.project === 'string' &&
+            resultRecord.project.trim()) ||
+          (typeof args.project === 'string' && args.project.trim()) ||
+          '';
+        activityType = 'deployed';
+      }
+
+      if (!activityType) return;
+      if (!projectName) {
+        throw new Error(`Successful ${name} result did not identify a project`);
+      }
+
+      const project = await this.workspaceFs.getProjectByName(projectName);
+      if (!project) {
+        throw new Error('Project activity target was not found');
+      }
+      await (
+        this.chatThreadStub as unknown as {
+          recordProjectActivity(input: {
+            projectId: string;
+            activityType: 'created' | 'deployed';
+          }): Promise<void>;
+        }
+      ).recordProjectActivity({ projectId: project.id, activityType });
+    } catch (error) {
+      console.error('Failed to record thread project activity', {
+        toolName: name,
+        workspaceId: props?.workspaceId,
+        threadId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      recordErrorEvent(this.env, {
+        event: 'thread_project_activity_record_failed',
+        component: 'CodeModeToolsBinding',
+        operation: `recordProjectActivity:${name}`,
+        status: 'error',
+        workspaceId: props?.workspaceId,
+        threadId,
+        orgId: props?.orgId,
+        userId: props?.userId,
+        error,
+      });
     }
   }
 

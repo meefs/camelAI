@@ -9,6 +9,7 @@ import {
   type MentionableProject,
 } from '@/lib/mentions';
 import { normalizeThreadUserMessageText } from '@/lib/thread-preview';
+import type { ThreadProjectActivity } from '@/lib/thread-project-activity';
 import type { GroupNewChatRecentItems, Integration } from '@/types';
 
 const UPLOAD_REF_HINT_LIMIT = 8;
@@ -25,6 +26,7 @@ export interface GroupRecentItemsThread {
   threadId: string;
   title: string;
   messages: GroupRecentItemsMessage[];
+  projectActivity?: ThreadProjectActivity[];
 }
 
 /**
@@ -86,7 +88,11 @@ export function extractGroupNewChatRecentItems({
   const connectionIds = new Set(connections.map((connection) => connection.id));
   const projectIds = new Set(projects.map((project) => project.id));
   const seenConnectionIds = new Set<string>();
-  const seenProjectIds = new Set<string>();
+  const projectRecency = new Map<
+    string,
+    { lastUsedAt: number; firstSeenOrder: number }
+  >();
+  let nextProjectSeenOrder = 0;
   const seenAttachmentPaths = new Set<string>();
   const recentlyUsed: GroupNewChatRecentItems['recentlyUsed'] = {
     connectionIds: [],
@@ -99,10 +105,23 @@ export function extractGroupNewChatRecentItems({
     seenConnectionIds.add(id);
     recentlyUsed.connectionIds.push(id);
   };
-  const addProject = (id: string | null | undefined) => {
-    if (!id || !projectIds.has(id) || seenProjectIds.has(id)) return;
-    seenProjectIds.add(id);
-    recentlyUsed.projectIds.push(id);
+  const addProject = (
+    id: string | null | undefined,
+    lastUsedAt: number,
+  ) => {
+    if (!id || !projectIds.has(id)) return;
+    const normalizedLastUsedAt =
+      Number.isFinite(lastUsedAt) && lastUsedAt > 0 ? lastUsedAt : 0;
+    const existing = projectRecency.get(id);
+    if (existing) {
+      existing.lastUsedAt = Math.max(existing.lastUsedAt, normalizedLastUsedAt);
+      return;
+    }
+    projectRecency.set(id, {
+      lastUsedAt: normalizedLastUsedAt,
+      firstSeenOrder: nextProjectSeenOrder,
+    });
+    nextProjectSeenOrder += 1;
   };
 
   for (const thread of threads) {
@@ -123,7 +142,7 @@ export function extractGroupNewChatRecentItems({
         stripMentionAnnotationsWithMetadata(rawText);
       for (const mention of annotatedMentions) {
         addConnection(mention.id);
-        addProject(mention.id);
+        addProject(mention.id, message.created_at);
       }
 
       const normalizedTextWithUploadAnnotations = normalizeThreadUserMessageText(
@@ -158,11 +177,32 @@ export function extractGroupNewChatRecentItems({
         if (match.target.kind === 'connection') {
           addConnection(match.target.id);
         } else {
-          addProject(match.target.id);
+          addProject(match.target.id, message.created_at);
         }
       }
     }
+
+    for (const activity of thread.projectActivity ?? []) {
+      if (
+        (activity.activityType !== 'created' &&
+          activity.activityType !== 'deployed') ||
+        !Number.isFinite(activity.lastUsedAt) ||
+        activity.lastUsedAt <= 0
+      ) {
+        continue;
+      }
+      addProject(activity.projectId, activity.lastUsedAt);
+    }
   }
+
+  recentlyUsed.projectIds = [...projectRecency.entries()]
+    .sort(([, left], [, right]) => {
+      if (left.lastUsedAt !== right.lastUsedAt) {
+        return right.lastUsedAt - left.lastUsedAt;
+      }
+      return left.firstSeenOrder - right.firstSeenOrder;
+    })
+    .map(([projectId]) => projectId);
 
   return {
     recentlyUsed,

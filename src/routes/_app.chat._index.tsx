@@ -166,17 +166,23 @@ async function loadGroupNewChatRecentItems(
   const threadMessages = await Promise.all(
     candidateThreads.map(async (thread) => {
       try {
+        const source = await chatDO.getGroupNewChatRecentSource(
+          context,
+          thread.id,
+        );
         return {
           threadId: thread.id,
           title: thread.title || "Untitled Chat",
-          messages: await chatDO.getPiCoreMessages(context, thread.id),
+          messages: source.messages,
+          projectActivity: source.projectActivity,
         };
       } catch (error) {
-        console.error("Failed to scan group thread mentions:", error);
+        console.error("Failed to load group thread recent-items source:", error);
         return {
           threadId: thread.id,
           title: thread.title || "Untitled Chat",
           messages: [],
+          projectActivity: [],
         };
       }
     }),

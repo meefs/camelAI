@@ -60,6 +60,10 @@ import type {
   LlmModel,
   ThreadCompletionSummaryStatus,
 } from '../../../src/types';
+import type {
+  ThreadProjectActivity,
+  ThreadProjectActivityType,
+} from '../../../src/lib/thread-project-activity';
 import type { ChatGroupIconGenerationClaim } from "./identity/user-do";
 import {
   CAMEL_FREE_LLM_MODEL,
@@ -286,6 +290,9 @@ import {
 // Code-mode artifact buffer (ChatThreadCodeModeArtifacts): per-tool-call KV
 // artifact accumulation, live stream delivery, and the read/consume path.
 import { ChatThreadCodeModeArtifacts } from "./chat-thread/code-mode-artifacts";
+
+// Bounded per-thread rollup of successful project create/deploy activity.
+import { ChatThreadProjectActivity } from "./chat-thread/project-activity";
 
 // Chat send failure / error payload helpers (ChatThreadErrors): send-failure
 // status + billing classification, error payload construction, and the
@@ -541,6 +548,7 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
   // callbacks dereference live owner state, so caching avoids repeated adapter
   // allocation without freezing mutable fields or prototype-fake test seams.
   private codeModeArtifactsInstance?: ChatThreadCodeModeArtifacts;
+  private projectActivityInstance?: ChatThreadProjectActivity;
   private automationRunInstance?: ChatThreadAutomationRun;
   private uiMirrorInstance?: ChatThreadUiMirror;
   private piTurnJournalInstance?: PiTurnJournal;
@@ -1103,6 +1111,27 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
 
   private codeModeArtifactsKey(parentToolUseId: string): string {
     return this.codeModeArtifacts.codeModeArtifactsKey(parentToolUseId);
+  }
+
+  private get projectActivity(): ChatThreadProjectActivity {
+    return (this.projectActivityInstance ??= new ChatThreadProjectActivity({
+      kv: () => this.ctx.storage.kv,
+    }));
+  }
+
+  async recordProjectActivity(input: {
+    projectId: string;
+    activityType: ThreadProjectActivityType;
+  }): Promise<void> {
+    this.projectActivity.recordProjectActivity({
+      projectId: input.projectId,
+      activityType: input.activityType,
+      lastUsedAt: Date.now(),
+    });
+  }
+
+  async listProjectActivity(): Promise<ThreadProjectActivity[]> {
+    return this.projectActivity.listProjectActivity();
   }
 
   override async onStart(props?: unknown): Promise<void> {
@@ -1872,6 +1901,16 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
       parsed.push(...piCoreMessageToParsedChatMessage(message, index, normalizedThreadId));
     });
     return parsed;
+  }
+
+  async getGroupNewChatRecentSource(threadId: string): Promise<{
+    messages: AgentEvalParsedMessage[];
+    projectActivity: ThreadProjectActivity[];
+  }> {
+    return {
+      messages: await this.getPiCoreParsedMessages(threadId),
+      projectActivity: await this.listProjectActivity(),
+    };
   }
 
   async getAdminExplorerSummary(input: {

@@ -39,6 +39,7 @@ import {
 import { retryTransientDurableObjectRead } from "./do-rpc-retry.server";
 import { truncateThreadPreviewText } from "./thread-preview";
 import { getThreadTitleSourceMessage } from "./thread-title";
+import type { ThreadProjectActivity } from "./thread-project-activity";
 
 interface ParsedThreadMessage {
   id: string;
@@ -720,6 +721,42 @@ export async function getPiCoreMessages(
     ).getPiCoreParsedMessages(threadId),
   );
   return Array.isArray(messages) ? messages : [];
+}
+
+export interface GroupNewChatRecentSource {
+  messages: ParsedThreadMessage[];
+  projectActivity: ThreadProjectActivity[];
+}
+
+export async function getGroupNewChatRecentSource(
+  context: AppLoadContext,
+  threadId: string,
+): Promise<GroupNewChatRecentSource> {
+  const env = getEnv(context);
+  if (
+    !env ||
+    typeof env !== "object" ||
+    !("CHAT_THREAD" in env) ||
+    !env.CHAT_THREAD
+  ) {
+    throw new Error("CHAT_THREAD binding is not available");
+  }
+  const threadStub = env.CHAT_THREAD.get(env.CHAT_THREAD.idFromName(threadId));
+  const source = await Promise.resolve(
+    (
+      threadStub as unknown as {
+        getGroupNewChatRecentSource(threadId: string):
+          | Promise<GroupNewChatRecentSource>
+          | GroupNewChatRecentSource;
+      }
+    ).getGroupNewChatRecentSource(threadId),
+  );
+  return {
+    messages: Array.isArray(source?.messages) ? source.messages : [],
+    projectActivity: Array.isArray(source?.projectActivity)
+      ? source.projectActivity
+      : [],
+  };
 }
 
 export async function getUiMessages(

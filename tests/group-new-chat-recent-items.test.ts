@@ -29,7 +29,151 @@ const project: MentionableProject = {
   updated_at: 2,
 };
 
+const secondProject: MentionableProject = {
+  ...project,
+  id: 'project_2',
+  name: 'API Service',
+};
+
+const thirdProject: MentionableProject = {
+  ...project,
+  id: 'project_3',
+  name: 'Admin Portal',
+};
+
 describe('extractGroupNewChatRecentItems', () => {
+  it.each([
+    ['created' as const, 'project_1'],
+    ['deployed' as const, 'project_1'],
+  ])('includes a project from successful %s activity without a user mention', (activityType, projectId) => {
+    const items = extractGroupNewChatRecentItems({
+      connections: [],
+      projects: [project],
+      threads: [
+        {
+          threadId: 'thread_1',
+          title: 'Build chat',
+          messages: [],
+          projectActivity: [{ projectId, activityType, lastUsedAt: 50 }],
+        },
+      ],
+    });
+
+    expect(items.recentlyUsed.projectIds).toEqual(['project_1']);
+  });
+
+  it('dedupes mention and lifecycle evidence for the same project', () => {
+    const items = extractGroupNewChatRecentItems({
+      connections: [],
+      projects: [project],
+      threads: [
+        {
+          threadId: 'thread_1',
+          title: 'Build chat',
+          messages: [
+            { role: 'user', created_at: 10, content: 'Update @frontend_app' },
+          ],
+          projectActivity: [
+            { projectId: project.id, activityType: 'deployed', lastUsedAt: 20 },
+          ],
+        },
+      ],
+    });
+
+    expect(items.recentlyUsed.projectIds).toEqual(['project_1']);
+  });
+
+  it('orders projects by their newest mention or lifecycle evidence', () => {
+    const items = extractGroupNewChatRecentItems({
+      connections: [],
+      projects: [project, secondProject, thirdProject],
+      threads: [
+        {
+          threadId: 'thread_1',
+          title: 'Build chat',
+          messages: [
+            { role: 'user', created_at: 20, content: 'Use @frontend_app' },
+            { role: 'user', created_at: 10, content: 'Use @api_service' },
+          ],
+          projectActivity: [
+            {
+              projectId: secondProject.id,
+              activityType: 'deployed',
+              lastUsedAt: 40,
+            },
+            {
+              projectId: thirdProject.id,
+              activityType: 'created',
+              lastUsedAt: 30,
+            },
+          ],
+        },
+      ],
+    });
+
+    expect(items.recentlyUsed.projectIds).toEqual([
+      'project_2',
+      'project_3',
+      'project_1',
+    ]);
+  });
+
+  it('keeps deterministic first-seen order when evidence timestamps match', () => {
+    const items = extractGroupNewChatRecentItems({
+      connections: [],
+      projects: [project, secondProject, thirdProject],
+      threads: [
+        {
+          threadId: 'thread_1',
+          title: 'Build chat',
+          messages: [
+            {
+              role: 'user',
+              created_at: 50,
+              content: 'Use @frontend_app and @api_service',
+            },
+          ],
+          projectActivity: [
+            {
+              projectId: thirdProject.id,
+              activityType: 'created',
+              lastUsedAt: 50,
+            },
+          ],
+        },
+      ],
+    });
+
+    expect(items.recentlyUsed.projectIds).toEqual([
+      'project_1',
+      'project_2',
+      'project_3',
+    ]);
+  });
+
+  it('ignores lifecycle activity for projects that are no longer mentionable', () => {
+    const items = extractGroupNewChatRecentItems({
+      connections: [],
+      projects: [project],
+      threads: [
+        {
+          threadId: 'thread_1',
+          title: 'Build chat',
+          messages: [],
+          projectActivity: [
+            {
+              projectId: 'deleted_project',
+              activityType: 'deployed',
+              lastUsedAt: 50,
+            },
+          ],
+        },
+      ],
+    });
+
+    expect(items.recentlyUsed.projectIds).toEqual([]);
+  });
+
   it('extracts mentions and deduped upload refs from sibling user messages', () => {
     const items = extractGroupNewChatRecentItems({
       connections: [connection],
