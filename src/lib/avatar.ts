@@ -1,5 +1,9 @@
 import type { Avatar } from '@/types';
 import emojiRegex from 'emoji-regex';
+import {
+  DEFAULT_CHAT_GROUP_ICON,
+  normalizeChatGroupIconName,
+} from '@/lib/chat-group-icons';
 
 export const AVATAR_COLORS = [
   '#5C63A6', // indigo
@@ -55,11 +59,12 @@ export function normalizeChatGroupAvatar(input: unknown): Avatar | null {
   const keys = Object.keys(input as Record<string, unknown>);
   if (keys.some((key) => key !== 'color' && key !== 'content')) return null;
   const candidate = input as { color?: unknown; content?: unknown };
-  const color = normalizeAvatarColor(candidate.color);
-  const content = typeof candidate.content === 'string'
-    ? candidate.content.trim()
-    : '';
-  if (!color || !isEmoji(content)) return null;
+  // Chat group avatars now store a Lucide icon name in `content`. `color` is
+  // vestigial (ignored when rendering) but kept on the shape; default it rather
+  // than reject so callers that omit it still validate.
+  const content = normalizeChatGroupIconName(candidate.content);
+  if (!content) return null;
+  const color = normalizeAvatarColor(candidate.color) ?? AVATAR_COLORS[0];
   return { color, content };
 }
 
@@ -70,10 +75,10 @@ export function generateDefaultChatGroupAvatar(options: {
   const groupIndex = Number.isFinite(options.groupIndex)
     ? Math.max(0, Math.floor(options.groupIndex ?? 0))
     : 0;
-  const content = options.content?.trim();
   return {
+    // Color is retained for storage compatibility only; the renderer ignores it.
     color: AVATAR_COLORS[groupIndex % AVATAR_COLORS.length],
-    content: content && isEmoji(content) ? content : DEFAULT_CHAT_GROUP_EMOJI,
+    content: normalizeChatGroupIconName(options.content) ?? DEFAULT_CHAT_GROUP_ICON,
   };
 }
 

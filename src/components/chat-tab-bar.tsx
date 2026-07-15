@@ -1,6 +1,14 @@
 "use client";
 
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import {
+  lazy,
+  Suspense,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { useNavigate } from "react-router";
 import {
   CircleFadingPlus,
@@ -11,7 +19,6 @@ import {
 } from "lucide-react";
 import type { Avatar, ChatGroup, LlmModel, ThreadStatus } from "@/types";
 import { ChatGroupAvatar } from "@/components/avatar/chat-group-avatar";
-import { RenameChatGroupDialog } from "@/components/avatar/rename-chat-group-dialog";
 import { CamelLoader } from "@/components/camel-loader/camel-loader";
 import { ModelLogo } from "@/components/model-logo";
 import { Button } from "@/components/ui/button";
@@ -50,6 +57,11 @@ import {
 import { cn } from "@/lib/utils";
 
 const THREAD_DRAG_MIME = "application/x-camelai-thread-id";
+const LazyRenameChatGroupDialog = lazy(() =>
+  import("@/components/avatar/rename-chat-group-dialog").then((module) => ({
+    default: module.RenameChatGroupDialog,
+  })),
+);
 // Soft UI limit only: reopening closed chats can still take a group past this.
 export const MAX_OPEN_CHAT_TABS_PER_GROUP = 10;
 
@@ -74,7 +86,7 @@ interface ChatTabBarProps {
   onReorderTabs: (orderedThreadIds: string[]) => void;
   onNewTab: () => void;
   onReopenClosedTab: (threadId: string) => void;
-  onRenameGroup: (next: { name: string; avatar: Avatar }) => void;
+  onRenameGroup: (next: { name: string; avatar?: Avatar }) => void;
   onMoveTabToGroup: (threadId: string, targetGroupId: string | "new") => void;
 }
 
@@ -138,6 +150,8 @@ export function ChatTabBar({
   });
   const { renamingThreadId, draftName, contextMenuResetVersion } = localState;
   const [isRenameGroupOpen, setIsRenameGroupOpen] = useState(false);
+  const [hasOpenedRenameGroupDialog, setHasOpenedRenameGroupDialog] =
+    useState(false);
   const renameInputRef = useRef<HTMLInputElement | null>(null);
   const preventNextContextMenuFocusRestoreRef = useRef(false);
   const pendingContextMenuRenameTimeoutRef = useRef<ReturnType<
@@ -522,19 +536,28 @@ export function ChatTabBar({
             <TooltipContent>Settings</TooltipContent>
           </Tooltip>
           <DropdownMenuContent align="end" className="w-56">
-            <DropdownMenuItem onSelect={() => setIsRenameGroupOpen(true)}>
+            <DropdownMenuItem
+              onSelect={() => {
+                setHasOpenedRenameGroupDialog(true);
+                setIsRenameGroupOpen(true);
+              }}
+            >
               Rename group
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
       </div>
-      <RenameChatGroupDialog
-        open={isRenameGroupOpen}
-        onOpenChange={setIsRenameGroupOpen}
-        initialName={groupName}
-        initialAvatar={groupAvatar}
-        onSubmit={onRenameGroup}
-      />
+      {hasOpenedRenameGroupDialog ? (
+        <Suspense fallback={null}>
+          <LazyRenameChatGroupDialog
+            open={isRenameGroupOpen}
+            onOpenChange={setIsRenameGroupOpen}
+            initialName={groupName}
+            initialAvatar={groupAvatar}
+            onSubmit={onRenameGroup}
+          />
+        </Suspense>
+      ) : null}
       </div>
     </div>
   );

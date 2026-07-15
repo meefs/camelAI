@@ -57,6 +57,30 @@ describe("saveChatGroupRename", () => {
     expect(toastErrorMock).not.toHaveBeenCalled();
   });
 
+  it("omits avatar side effects for a name-only save", async () => {
+    const fetchFn = vi.fn().mockResolvedValue(new Response(null, { status: 200 }));
+    const dispatchEvent = vi.fn();
+    const revalidate = vi.fn();
+
+    await saveChatGroupRename(
+      "group_1",
+      { name: "Renamed only" },
+      {
+        fetchFn: fetchFn as unknown as typeof fetch,
+        dispatchEvent,
+        revalidate,
+      },
+    );
+
+    expect(fetchFn).toHaveBeenCalledWith("/api/chat-groups/group_1", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: "Renamed only" }),
+    });
+    expect(dispatchEvent).not.toHaveBeenCalled();
+    expect(revalidate).toHaveBeenCalledTimes(1);
+  });
+
   it("does not dispatch a local avatar event and shows an error toast when the update fails", async () => {
     const fetchFn = vi.fn().mockResolvedValue(new Response(null, { status: 500 }));
     const dispatchEvent = vi.fn();

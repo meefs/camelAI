@@ -25,6 +25,7 @@ import {
   SidebarMenuButton,
   SidebarMenuItem,
   SidebarRail,
+  SidebarSeparator,
 } from "@/components/ui/sidebar"
 
 type AppSidebarProps = React.ComponentProps<typeof Sidebar>;
@@ -113,6 +114,10 @@ export function AppSidebar(props: AppSidebarProps) {
             </SidebarMenuItem>
           </SidebarMenu>
         </SidebarGroup>
+        {/* Section separators are only for the collapsed icon rail; expanded mode
+            already delineates sections with the group headers. w-auto overrides
+            the base Separator's w-full so the line matches the icon button width. */}
+        <SidebarSeparator className="my-1 hidden group-data-[collapsible=icon]:block data-[orientation=horizontal]:w-auto" />
         <SidebarGroup>
           <SidebarGroupLabel>Workspace</SidebarGroupLabel>
           <SidebarMenu>
@@ -150,6 +155,10 @@ export function AppSidebar(props: AppSidebarProps) {
             </SidebarMenuItem>
           </SidebarMenu>
         </SidebarGroup>
+        {/* Section separators are only for the collapsed icon rail; expanded mode
+            already delineates sections with the group headers. w-auto overrides
+            the base Separator's w-full so the line matches the icon button width. */}
+        <SidebarSeparator className="my-1 hidden group-data-[collapsible=icon]:block data-[orientation=horizontal]:w-auto" />
         <SidebarGroup>
           <SidebarGroupLabel>Chat Groups</SidebarGroupLabel>
           <ChatGroupsList

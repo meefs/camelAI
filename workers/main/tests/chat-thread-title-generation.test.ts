@@ -1,22 +1,30 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { CHAT_GROUP_ICON_SELECTION_STRATEGY } from "../../../src/lib/chat-group-avatar-generation.server";
 import { ChatThreadDO } from "../src/chat-thread-do";
 
-function createFakeThread(options: { emojiFails?: boolean; aiMissing?: boolean } = {}) {
+function makeClaim() {
+  return {
+    id: "group1",
+    name: "Database Migrations",
+    avatar: {
+      color: "#4F46E5",
+      content: "messages-square",
+      status: "pending" as const,
+    },
+    claimId: "claim1",
+    claimedAt: 123,
+    trigger: "first_title" as const,
+  };
+}
+
+function createFakeThread(options: { iconFails?: boolean; aiMissing?: boolean } = {}) {
   const waitUntilPromises: Promise<unknown>[] = [];
   const order: string[] = [];
   let resolveClaim:
-    | ((claim: {
-        id: string;
-        name: string;
-        avatar: { color: string; content: string; status: "default" };
-      }) => void)
+    | ((claim: ReturnType<typeof makeClaim>) => void)
     | null = null;
-  const claimPromise = new Promise<{
-    id: string;
-    name: string;
-    avatar: { color: string; content: string; status: "default" };
-  }>((resolve) => {
+  const claimPromise = new Promise<ReturnType<typeof makeClaim>>((resolve) => {
     resolveClaim = resolve;
   });
   const aiRun = vi.fn(async (_model: string, input: { max_tokens?: number }) => {
@@ -24,11 +32,11 @@ function createFakeThread(options: { emojiFails?: boolean; aiMissing?: boolean }
       order.push("title-ai");
       return { choices: [{ message: { content: "database migrations" } }] };
     }
-    order.push("emoji-ai");
-    if (options.emojiFails) {
-      throw new Error("emoji unavailable");
+    order.push("icon-ai");
+    if (options.iconFails) {
+      throw new Error("icon unavailable");
     }
-    return { choices: [{ message: { content: "🗄️" } }] };
+    return { choices: [{ message: { content: "database" } }] };
   });
   const orgStub = {
     updateThread: vi.fn(async () => {
@@ -41,12 +49,12 @@ function createFakeThread(options: { emojiFails?: boolean; aiMissing?: boolean }
       order.push("rename-group");
     }),
     claimChatGroupAvatarGenerationForThread: vi.fn(() => {
-      order.push("claim-emoji");
+      order.push("claim-icon");
       return claimPromise;
     }),
-    setGeneratedChatGroupEmoji: vi.fn(async () => {
+    setGeneratedChatGroupIcon: vi.fn(async () => {
       order.push("set-generated");
-      return { color: "#4F46E5", content: "🗄️", status: "generated" };
+      return { color: "#4F46E5", content: "database", status: "generated" };
     }),
     markChatGroupAvatarGenerationFailed: vi.fn(async () => {
       order.push("mark-failed");
@@ -68,6 +76,7 @@ function createFakeThread(options: { emojiFails?: boolean; aiMissing?: boolean }
     order.push("broadcast");
     return message;
   });
+  fake.recordChatThreadObservabilityEvent = vi.fn();
   fake.ctx = {
     storage: {
       kv: {
@@ -108,7 +117,7 @@ describe("ChatThreadDO title generation", () => {
     vi.restoreAllMocks();
   });
 
-  it("renames the group before scheduling generated emoji work", async () => {
+  it("renames the group before scheduling generated icon work", async () => {
     const {
       fake,
       order,
@@ -141,33 +150,37 @@ describe("ChatThreadDO title generation", () => {
       order.indexOf("wait-until"),
     );
 
-    resolveClaim({
-      id: "group1",
-      name: "Database Migrations",
-      avatar: { color: "#4F46E5", content: "💬", status: "default" },
-    });
+    resolveClaim(makeClaim());
     await Promise.all(waitUntilPromises);
 
     expect(aiRun).toHaveBeenCalledTimes(2);
-    expect(userStub.setGeneratedChatGroupEmoji).toHaveBeenCalledWith(
+    expect(userStub.setGeneratedChatGroupIcon).toHaveBeenCalledWith(
       "group1",
-      "🗄️",
+      "claim1",
+      "database",
+    );
+    expect(fake.recordChatThreadObservabilityEvent).toHaveBeenCalledWith(
+      "chat_group_icon_generation",
+      expect.objectContaining({
+        operation: `${CHAT_GROUP_ICON_SELECTION_STRATEGY}:first_title`,
+        status: "metadata_match",
+      }),
     );
     expect(fake.broadcastChat).toHaveBeenNthCalledWith(1, {
       type: "chat_group_avatar_updated",
       threadId: "thread1",
       groupId: "group1",
-      avatar: { color: "#4F46E5", content: "💬", status: "pending" },
+      avatar: { color: "#4F46E5", content: "messages-square", status: "pending" },
     });
     expect(fake.broadcastChat).toHaveBeenNthCalledWith(2, {
       type: "chat_group_avatar_updated",
       threadId: "thread1",
       groupId: "group1",
-      avatar: { color: "#4F46E5", content: "🗄️", status: "generated" },
+      avatar: { color: "#4F46E5", content: "database", status: "generated" },
     });
   });
 
-  it("leaves the default avatar after emoji generation failure without blocking title naming", async () => {
+  it("leaves the default avatar after icon generation failure without blocking title naming", async () => {
     vi.spyOn(console, "error").mockImplementation(() => undefined);
     const {
       fake,
@@ -175,7 +188,7 @@ describe("ChatThreadDO title generation", () => {
       userStub,
       waitUntilPromises,
       resolveClaim,
-    } = createFakeThread({ emojiFails: true });
+    } = createFakeThread({ iconFails: true });
 
     await ChatThreadDO.prototype["generateThreadTitleFromMessage"].call(
       fake,
@@ -186,16 +199,20 @@ describe("ChatThreadDO title generation", () => {
     expect(fake.titleGenerationInFlight).toBe(false);
     expect(aiRun).toHaveBeenCalledTimes(1);
 
-    resolveClaim({
-      id: "group1",
-      name: "Database Migrations",
-      avatar: { color: "#4F46E5", content: "💬", status: "default" },
-    });
+    resolveClaim(makeClaim());
     await Promise.all(waitUntilPromises);
 
-    expect(userStub.setGeneratedChatGroupEmoji).not.toHaveBeenCalled();
+    expect(userStub.setGeneratedChatGroupIcon).not.toHaveBeenCalled();
     expect(userStub.markChatGroupAvatarGenerationFailed).toHaveBeenCalledWith(
       "group1",
+      "claim1",
+    );
+    expect(fake.recordChatThreadObservabilityEvent).toHaveBeenCalledWith(
+      "chat_group_icon_generation",
+      expect.objectContaining({
+        operation: `${CHAT_GROUP_ICON_SELECTION_STRATEGY}:first_title`,
+        status: "ai_error",
+      }),
     );
     expect(fake.broadcastChat).toHaveBeenLastCalledWith({
       type: "chat_group_avatar_updated",
@@ -220,30 +237,53 @@ describe("ChatThreadDO title generation", () => {
     expect(userStub.claimChatGroupAvatarGenerationForThread).toHaveBeenCalledWith(
       "thread1",
     );
-    resolveClaim({
-      id: "group1",
-      name: "Database Migrations",
-      avatar: { color: "#4F46E5", content: "💬", status: "default" },
-    });
+    resolveClaim(makeClaim());
     await task;
 
     expect(aiRun).toHaveBeenCalledTimes(1);
-    expect(userStub.setGeneratedChatGroupEmoji).toHaveBeenCalledWith(
+    expect(userStub.setGeneratedChatGroupIcon).toHaveBeenCalledWith(
       "group1",
-      "🗄️",
+      "claim1",
+      "database",
     );
     expect(fake.broadcastChat).toHaveBeenNthCalledWith(1, {
       type: "chat_group_avatar_updated",
       threadId: "thread1",
       groupId: "group1",
-      avatar: { color: "#4F46E5", content: "💬", status: "pending" },
+      avatar: { color: "#4F46E5", content: "messages-square", status: "pending" },
     });
     expect(fake.broadcastChat).toHaveBeenNthCalledWith(2, {
       type: "chat_group_avatar_updated",
       threadId: "thread1",
       groupId: "group1",
-      avatar: { color: "#4F46E5", content: "🗄️", status: "generated" },
+      avatar: { color: "#4F46E5", content: "database", status: "generated" },
     });
+  });
+
+  it("broadcasts the actual user avatar when a generated completion loses its claim", async () => {
+    const { fake, userStub, resolveClaim } = createFakeThread();
+    userStub.setGeneratedChatGroupIcon.mockResolvedValueOnce({
+      color: "#E0476B",
+      content: "sparkles",
+      status: "user",
+    });
+
+    const task = ChatThreadDO.prototype[
+      "maybeGenerateChatGroupAvatarForThread"
+    ].call(fake, "thread1");
+    resolveClaim(makeClaim());
+    await task;
+
+    expect(fake.broadcastChat).toHaveBeenLastCalledWith({
+      type: "chat_group_avatar_updated",
+      threadId: "thread1",
+      groupId: "group1",
+      avatar: { color: "#E0476B", content: "sparkles", status: "user" },
+    });
+    expect(fake.recordChatThreadObservabilityEvent).toHaveBeenCalledWith(
+      "chat_group_icon_generation",
+      expect.objectContaining({ status: "claim_lost" }),
+    );
   });
 
   it("generates a chat group avatar from explicit app-side thread context", async () => {
@@ -265,12 +305,9 @@ describe("ChatThreadDO title generation", () => {
 
     expect(userStub.claimChatGroupAvatarGenerationForThread).toHaveBeenCalledWith(
       "thread1",
+      "first_title",
     );
-    resolveClaim({
-      id: "group1",
-      name: "Database Migrations",
-      avatar: { color: "#4F46E5", content: "💬", status: "default" },
-    });
+    resolveClaim(makeClaim());
     await task;
 
     expect(fake.ctx.storage.kv.put).toHaveBeenCalledWith(
@@ -286,7 +323,7 @@ describe("ChatThreadDO title generation", () => {
       type: "chat_group_avatar_updated",
       threadId: "thread1",
       groupId: "group1",
-      avatar: { color: "#4F46E5", content: "🗄️", status: "generated" },
+      avatar: { color: "#4F46E5", content: "database", status: "generated" },
     });
   });
 
@@ -299,7 +336,7 @@ describe("ChatThreadDO title generation", () => {
     ].call(fake, "thread1");
 
     expect(userStub.claimChatGroupAvatarGenerationForThread).not.toHaveBeenCalled();
-    expect(userStub.setGeneratedChatGroupEmoji).not.toHaveBeenCalled();
+    expect(userStub.setGeneratedChatGroupIcon).not.toHaveBeenCalled();
     expect(userStub.markChatGroupAvatarGenerationFailed).not.toHaveBeenCalled();
     expect(fake.broadcastChat).not.toHaveBeenCalled();
     expect(aiRun).not.toHaveBeenCalled();

@@ -4,7 +4,7 @@ import type { Avatar } from "@/types"
 
 export type ChatGroupRenameInput = {
   name: string
-  avatar: Avatar
+  avatar?: Avatar
 }
 
 type SaveChatGroupRenameOptions = {
@@ -36,15 +36,17 @@ export async function saveChatGroupRename(
   )
 
   if (response.ok) {
-    dispatchEvent(
-      new CustomEvent("camelai:chat-group-avatar", {
-        detail: {
-          groupId,
-          avatar: { ...next.avatar, status: "user" },
-          updatedAt: now(),
-        },
-      }),
-    )
+    if (next.avatar) {
+      dispatchEvent(
+        new CustomEvent("camelai:chat-group-avatar", {
+          detail: {
+            groupId,
+            avatar: { ...next.avatar, status: "user" },
+            updatedAt: now(),
+          },
+        }),
+      )
+    }
     toast.success("Chat group updated")
   } else {
     toast.error("Failed to update chat group")
