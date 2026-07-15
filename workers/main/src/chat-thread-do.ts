@@ -218,6 +218,7 @@ import {
   type PiRequestConfig,
   type PiResolvedModelConfig,
   type LlmProviderConfigRecord,
+  isPiImageBlindModel,
 } from "./chat-thread/pi-model-config";
 
 // Provider-level transient-retry ladder for Pi model streams.
@@ -302,10 +303,10 @@ import {
   PI_TOOL_RESULT_R2_REF_METADATA_KEY,
   PI_TAIL_TRUNCATED_TOOL_NAMES,
   sanitizePiModelMessage,
+  stripPiInlineImageDataUrls,
 } from "./pi-message-storage";
 import type {
   PiR2ToolResultReference,
-  PiToolResultTruncation,
   PiSqlStorageSerialization,
 } from "./pi-message-storage";
 
@@ -2414,50 +2415,82 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
       : [];
     const textParts: string[] = [];
     const nonTextContent: AfterToolCallResult["content"] = [];
+    const imageBlindModel = isPiImageBlindModel(this.piSession?.state.model);
+    let omittedImageParts = 0;
+    let omittedImageBytes = 0;
     for (const part of content) {
       if (!part || typeof part !== "object") continue;
       if (part.type === "text" && typeof part.text === "string") {
         textParts.push(part.text);
       } else if (part.type === "image") {
-        nonTextContent.push(part);
+        if (imageBlindModel) {
+          omittedImageParts += 1;
+          omittedImageBytes += typeof part.data === "string"
+            ? Math.floor((part.data.length * 3) / 4)
+            : 0;
+        } else {
+          nonTextContent.push(part);
+        }
       }
     }
-    if (textParts.length === 0) return undefined;
+    if (textParts.length === 0 && omittedImageParts === 0) return undefined;
 
     const fullText = textParts.join(textParts.length > 1 ? "\n" : "");
+    const inlineImages = imageBlindModel
+      ? stripPiInlineImageDataUrls(fullText)
+      : { text: fullText, count: 0, bytes: 0 };
+    const imagePartNotice = omittedImageParts > 0
+      ? `[${omittedImageParts} image tool result${omittedImageParts === 1 ? "" : "s"} omitted: ${omittedImageBytes} bytes; active model cannot inspect images]`
+      : "";
+    const modelText = [inlineImages.text, imagePartNotice]
+      .filter(Boolean)
+      .join("\n");
     const direction = PI_TAIL_TRUNCATED_TOOL_NAMES.has(context.toolCall.name)
       ? "tail"
       : "head";
-    const truncated = truncatePiToolResultText(fullText, direction);
-    if (!truncated.truncation) return undefined;
+    const truncated = truncatePiToolResultText(modelText, direction);
+    if (!truncated.truncation && inlineImages.count === 0 && omittedImageParts === 0) return undefined;
 
     let fullOutput: PiR2ToolResultReference | undefined;
-    try {
-      fullOutput = await this.storePiFullToolResultInR2(
-        context.toolCall.name,
-        context.toolCall.id,
-        fullText,
-      );
-    } catch (error) {
-      console.error("[ChatThreadDO] failed to store oversized Pi tool result in R2", error);
+    if (truncated.truncation) {
+      try {
+        fullOutput = await this.storePiFullToolResultInR2(
+          context.toolCall.name,
+          context.toolCall.id,
+          modelText,
+        );
+      } catch (error) {
+        console.error("[ChatThreadDO] failed to store oversized Pi tool result in R2", error);
+      }
     }
 
-    const truncation: PiToolResultTruncation = {
-      ...truncated.truncation,
-      ...(fullOutput ? { fullOutput } : {}),
-    };
+    const truncation = truncated.truncation
+      ? { ...truncated.truncation, ...(fullOutput ? { fullOutput } : {}) }
+      : undefined;
 
     return {
       content: [
         {
           type: "text",
-          text: `${truncated.content}\n\n${piToolResultTruncationNotice(truncation)}`,
+          text: truncated.truncation
+            ? `${truncated.content}\n\n${piToolResultTruncationNotice(truncation!)}`
+            : truncated.content,
         },
         ...nonTextContent,
       ],
       details: mergePiToolResultDetails(context.result.details, {
-        [PI_TOOL_RESULT_R2_REF_METADATA_KEY]: fullOutput,
-        truncation,
+        ...(truncated.truncation && {
+          [PI_TOOL_RESULT_R2_REF_METADATA_KEY]: fullOutput,
+          truncation,
+        }),
+        ...(inlineImages.count > 0 || omittedImageParts > 0 ? {
+          imageDataOmitted: {
+            inlineDataUrls: inlineImages.count,
+            imageParts: omittedImageParts,
+            bytes: inlineImages.bytes + omittedImageBytes,
+            reason: "active_model_cannot_inspect_images",
+          },
+        } : {}),
         originalTextBlockCount: textParts.length,
       }),
     };

@@ -26,6 +26,28 @@ export function piUnsupportedImageText(mimeType: unknown): string {
   return `(image omitted: unsupported MIME type ${label})`;
 }
 
+export interface PiInlineImageDataStripResult {
+  text: string;
+  count: number;
+  bytes: number;
+}
+
+/** Remove inline image data URLs for model routes that cannot inspect images. */
+export function stripPiInlineImageDataUrls(text: string): PiInlineImageDataStripResult {
+  let count = 0;
+  let bytes = 0;
+  const stripped = text.replace(
+    /data:image\/[a-z0-9.+-]+(?:;[a-z0-9=.+-]+)*;base64,([A-Za-z0-9+/_=-]+)/gi,
+    (_match, data: string) => {
+      count += 1;
+      const imageBytes = Math.floor((data.length * 3) / 4);
+      bytes += imageBytes;
+      return `[inline image omitted: ${imageBytes} bytes; active model cannot inspect images]`;
+    },
+  );
+  return { text: stripped, count, bytes };
+}
+
 export const PI_SQLITE_STORAGE_SOFT_LIMIT_CHARS = 1_500_000;
 export const PI_MAX_PERSISTED_IMAGE_DATA_CHARS = 512_000;
 export const PI_MAX_PERSISTED_TEXT_CHARS = 200_000;
