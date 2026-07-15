@@ -7645,9 +7645,13 @@ describe('ChatThreadDO Pi turn handling', () => {
     expect(quickAction).toHaveBeenCalledWith('markdown', expect.objectContaining({
       url: 'https://example.com/article',
       cacheTTL: 300,
-      actionTimeout: 20_000,
+      actionTimeout: 5_000,
       bestAttempt: true,
-      rejectResourceTypes: ['image', 'media', 'font'],
+      gotoOptions: {
+        waitUntil: 'domcontentloaded',
+        timeout: 3_000,
+      },
+      rejectResourceTypes: ['stylesheet', 'image', 'media', 'font'],
       rejectRequestPattern: expect.arrayContaining([
         expect.stringContaining('localhost'),
         expect.stringContaining('169'),

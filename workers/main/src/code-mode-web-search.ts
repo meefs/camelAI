@@ -34,6 +34,9 @@ const WEB_SEARCH_PROVIDER_DEFAULT_ORDER: SearchProvider[] = ["firecrawl", "paral
 const WEB_FETCH_PROVIDER_DEFAULT_ORDER: WebProvider[] = ["cloudflare", "exa", "firecrawl", "parallel"];
 const WEB_PROVIDER_ROUND_ROBIN_KEY = "code-mode:web-provider:index";
 const WEB_PROVIDER_TIMEOUT_MS = 20_000;
+const CLOUDFLARE_BROWSER_GOTO_TIMEOUT_MS = 3_000;
+const CLOUDFLARE_BROWSER_ACTION_TIMEOUT_MS = 5_000;
+const CLOUDFLARE_BROWSER_DEADLINE_MS = 9_000;
 const WEB_FETCH_REJECT_REQUEST_PATTERNS = [
   "/^https?:\\/\\/[^@\\/]+@/i",
   "/^https?:\\/\\/(?:localhost(?:\\.localdomain)?|[^\\/]+\\.(?:localhost|local|internal))(?::\\d+)?(?:[\\/?#]|$)/i",
@@ -618,10 +621,10 @@ export class CodeModeWebSearch {
           url: targetURL,
           gotoOptions: {
             waitUntil: "domcontentloaded",
-            timeout: WEB_PROVIDER_TIMEOUT_MS,
+            timeout: CLOUDFLARE_BROWSER_GOTO_TIMEOUT_MS,
           },
-          actionTimeout: WEB_PROVIDER_TIMEOUT_MS,
-          rejectResourceTypes: ["image", "media", "font"],
+          actionTimeout: CLOUDFLARE_BROWSER_ACTION_TIMEOUT_MS,
+          rejectResourceTypes: ["stylesheet", "image", "media", "font"],
           // Quick Actions follow redirects internally. Keep the same local/private
           // destinations blocked throughout navigation, not only for the initial URL.
           rejectRequestPattern: WEB_FETCH_REJECT_REQUEST_PATTERNS,
@@ -630,8 +633,8 @@ export class CodeModeWebSearch {
         }),
         new Promise<never>((_resolve, reject) => {
           deadlineId = setTimeout(
-            () => reject(new Error(`Cloudflare Browser Run timed out after ${WEB_PROVIDER_TIMEOUT_MS}ms`)),
-            WEB_PROVIDER_TIMEOUT_MS,
+            () => reject(new Error(`Cloudflare Browser Run timed out after ${CLOUDFLARE_BROWSER_DEADLINE_MS}ms`)),
+            CLOUDFLARE_BROWSER_DEADLINE_MS,
           );
         }),
       ]);
