@@ -6,6 +6,10 @@ import {
   resolveDefaultModelForChat,
   resolveEffectivePickerConfig,
 } from '@/lib/model-picker-config';
+import {
+  CAMEL_FREE_LLM_MODEL,
+  getVisibleLlmModelOptions,
+} from '@/lib/llm-provider-config';
 
 describe('model picker config parsing', () => {
   beforeEach(() => {
@@ -414,4 +418,17 @@ describe('default model resolution', () => {
       }),
     ).toBeNull();
   });
+});
+
+describe('provider model visibility', () => {
+  it.each(['openai', 'anthropic', 'openrouter'])(
+    'keeps Camel Free visible with the %s provider configured',
+    (orgProvider) => {
+      expect(
+        getVisibleLlmModelOptions(null, null, { orgProvider }).map(
+          (option) => option.value,
+        ),
+      ).toContain(CAMEL_FREE_LLM_MODEL);
+    },
+  );
 });

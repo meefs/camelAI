@@ -19,6 +19,7 @@ import { AppSidebar } from "@/components/sidebar/app-sidebar";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 import { ChatGroupsProvider } from "@/hooks/use-chat-groups";
 import { ChatThreadSnapshotsProvider } from "@/hooks/use-chat-thread-snapshots";
+import { BillingDialogPresenceProvider } from "@/hooks/use-billing-dialog-presence";
 import type { AuthState } from "@/types";
 import type { ChatGroupView } from "@/types";
 import {
@@ -109,6 +110,8 @@ export async function loader({ request, context }: Route.LoaderArgs) {
       chatGroups: Promise.resolve([] as ChatGroupView[]),
       billingAccessReady: true,
       appRouteAccessible: true,
+      billingAccessMode: null,
+      isOrgAdmin: false,
       paywallContext: null,
       embedMode: true,
     };
@@ -141,6 +144,13 @@ export async function loader({ request, context }: Route.LoaderArgs) {
   const billingAccessReady = isOrgBillingAccessReady(billingAccess);
   const appRouteAccessible =
     billingAccessReady || billingAccess.setupRouteAccessible;
+  const billingAccessMode =
+    billingAccess.kind === "ready" ? billingAccess.mode : null;
+  const isOrgAdmin = authContext.orgs.some(
+    (membership) =>
+      membership.org_id === currentOrg.id &&
+      (membership.role === "owner" || membership.role === "admin"),
+  );
   const paywallContext: PaywallTakeoverContext | null = billingAccessReady
     ? null
     : {
@@ -206,6 +216,8 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     chatGroups: currentChatGroupsPromise,
     billingAccessReady,
     appRouteAccessible,
+    billingAccessMode,
+    isOrgAdmin,
     paywallContext,
     embedMode: false,
   };
@@ -231,6 +243,8 @@ export default function AppLayout() {
     defaultSidebarOpen,
     showLegacyBanner,
     appRouteAccessible,
+    billingAccessMode,
+    isOrgAdmin,
     paywallContext,
     embedMode,
   } =
@@ -238,16 +252,24 @@ export default function AppLayout() {
   return (
     <SidebarProvider defaultOpen={defaultSidebarOpen}>
       <ChatGroupsProvider disableLiveStatus={embedMode}>
-        <ChatThreadSnapshotsProvider>
-          {embedMode ? null : <AppSidebar />}
-          <SidebarInset className="h-svh overflow-hidden flex flex-col">
-            {embedMode || appRouteAccessible ? (
-              <Outlet />
-            ) : paywallContext ? (
-              <PaywallTakeover paywallContext={paywallContext} />
-            ) : null}
-          </SidebarInset>
-        </ChatThreadSnapshotsProvider>
+        <BillingDialogPresenceProvider>
+          <ChatThreadSnapshotsProvider>
+            {embedMode ? null : (
+              <AppSidebar
+                billingAccessMode={billingAccessMode}
+                isOrgAdmin={isOrgAdmin}
+                orgId={authState.currentOrg?.id ?? null}
+              />
+            )}
+            <SidebarInset className="h-svh overflow-hidden flex flex-col">
+              {embedMode || appRouteAccessible ? (
+                <Outlet />
+              ) : paywallContext ? (
+                <PaywallTakeover paywallContext={paywallContext} />
+              ) : null}
+            </SidebarInset>
+          </ChatThreadSnapshotsProvider>
+        </BillingDialogPresenceProvider>
       </ChatGroupsProvider>
       {embedMode ? null : (
         <>

@@ -36,6 +36,7 @@ import {
 } from "@/lib/llm-provider-config";
 import { getEffectiveLlmProviderConfig } from "@/lib/selfhost-ai-provider";
 import { isSelfhostRuntime } from "@/lib/selfhost-runtime";
+import { modelCatalogEntriesForIds } from "@/lib/model-catalog";
 import * as chatDO from "@/lib/chat-do.server";
 import {
   addThreadToExistingGroup,
@@ -563,12 +564,18 @@ export async function loader({ request, context }: Route.LoaderArgs) {
 
     return {
       threadModel,
+      modelOptions:
+        pickerState?.modelOptions ??
+        modelCatalogEntriesForIds(
+          hasModelFallback ? fallbackAllowedThreadModels : [],
+        ),
       allowedThreadModels:
         pickerState?.allowedThreadModels ??
         (hasModelFallback ? fallbackAllowedThreadModels : []),
       effectivePickerDefaultModel:
         pickerState?.effectivePickerDefaultModel ?? null,
       hasEffectivePickerDefault: pickerState?.hasEffectivePickerDefault ?? false,
+      billingAccessMode: pickerState?.billingAccessMode ?? null,
       billingCreditStatus: applyDevBillingCreditStatusOverride(
         buildBillingCreditStatus(billingOverview, llmProvider, threadModel),
         url.searchParams,
@@ -1059,8 +1066,10 @@ function ChatWelcomeContent({
     llmProvider,
     threadModel,
     allowedThreadModels,
+    modelOptions,
     effectivePickerDefaultModel,
     hasEffectivePickerDefault,
+    billingAccessMode,
     billingCreditStatus,
     salesPrompt,
     activeChatGroup,
@@ -1219,8 +1228,10 @@ function ChatWelcomeContent({
           llmProvider={llmProvider}
           threadModel={threadModel}
           allowedThreadModels={allowedThreadModels}
+          modelOptions={modelOptions}
           effectivePickerDefaultModel={effectivePickerDefaultModel}
           hasEffectivePickerDefault={hasEffectivePickerDefault}
+          billingAccessMode={billingAccessMode}
           isOrgAdmin={isOrgAdmin}
           recentModelScope={recentModelScope}
           billingCreditStatus={billingCreditStatus}

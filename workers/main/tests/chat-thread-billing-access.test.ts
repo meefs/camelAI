@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { env } from "cloudflare:test";
 import { ChatThreadDO } from "../src/chat-thread-do";
 import { createOrg, createUser, type TestEnv } from "./test-helpers";
@@ -140,5 +140,49 @@ describe("ChatThreadDO hosted billing access", () => {
       creditChargeable: false,
       vllmPriority: "100",
     });
+  });
+
+  it("starts a hosted thread without a stored model on Camel Free", async () => {
+    const orgStub = {
+      getThread: vi.fn(async () => ({
+        id: "thread_free",
+        workspace_id: "workspace_free",
+      })),
+      getInfo: vi.fn(async () => ({
+        billing_status: "past_due",
+        billing_credit_purchase_total_cents: 0,
+        billing_credit_grant_total_cents: 0,
+      })),
+    };
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    fake.chatContext = {
+      threadId: "thread_free",
+      workspaceId: "workspace_free",
+      orgId: "org_free",
+      userId: "user_free",
+    };
+    fake.env = {
+      ORG: {
+        idFromName: vi.fn((name: string) => name),
+        get: vi.fn(() => orgStub),
+      },
+    };
+    fake.ctx = { storage: { kv: { put: vi.fn() } } };
+    fake.runnerTransitionChain = Promise.resolve();
+    fake.lastRunnerSeq = 0;
+    fake.trace = vi.fn();
+    fake.getCachedLlmProviderConfig = vi.fn(async () => null);
+    fake.ensurePiSession = vi.fn(async () => undefined);
+
+    await ChatThreadDO.prototype["ensurePiSessionReady"].call(fake);
+
+    expect(fake.ensurePiSession).toHaveBeenCalledWith(
+      expect.objectContaining({ threadId: "thread_free" }),
+      expect.objectContaining({
+        CHIRIDION_MODEL: "deepseek-v4-auto",
+        CHIRIDION_CLAUDE_MODEL: "deepseek-v4-auto",
+        CHIRIDION_CODEX_MODEL: "deepseek-v4-auto",
+      }),
+    );
   });
 });

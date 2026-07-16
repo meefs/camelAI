@@ -3,6 +3,7 @@ import type { HTMLAttributes, ReactNode } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ModelPicker } from '@/components/model-picker';
 import { MODEL_CATALOG } from '@/lib/model-catalog';
+import { CAMEL_FREE_LLM_MODEL } from '@/lib/llm-provider-config';
 
 vi.mock('@/components/model-logo', () => ({
   ModelLogo: ({ model }: { model: string }) => (
@@ -23,7 +24,7 @@ vi.mock('@/components/ui/dropdown-menu', () => ({
   }: Omit<HTMLAttributes<HTMLDivElement>, 'onSelect'> & {
     asChild?: boolean;
     children: ReactNode;
-    onSelect?: () => void;
+    onSelect?: (event: { preventDefault: () => void }) => void;
   }) => {
     void asChild;
     return (
@@ -31,13 +32,16 @@ vi.mock('@/components/ui/dropdown-menu', () => ({
         data-slot="dropdown-menu-item"
         role="menuitem"
         tabIndex={0}
-        onClick={() => onSelect?.()}
+        onClick={() => onSelect?.({ preventDefault: vi.fn() })}
         {...props}
       >
         {children}
       </div>
     );
   },
+  DropdownMenuLabel: ({ children }: { children: ReactNode }) => (
+    <div data-slot="dropdown-menu-label">{children}</div>
+  ),
   DropdownMenuSeparator: () => <div data-slot="dropdown-menu-separator" />,
   DropdownMenuTrigger: ({ children }: { children: ReactNode }) => (
     <>{children}</>
@@ -74,7 +78,7 @@ function renderPicker() {
       options={[
         MODEL_CATALOG['opus-4.8'],
         MODEL_CATALOG.sonnet,
-        MODEL_CATALOG['deepseek-v4-auto'],
+        MODEL_CATALOG[CAMEL_FREE_LLM_MODEL],
         MODEL_CATALOG['deepseek-v4-flash'],
       ]}
       isOrgAdmin={false}
@@ -158,6 +162,109 @@ describe('ModelPicker metadata card state', () => {
     expect(screen.getByRole('tooltip')).toHaveTextContent('Opus 4.8');
     expect(screen.getByLabelText('Cost rating: 4 out of 5')).toHaveTextContent(
       '$$$$$',
+    );
+  });
+
+  it('keeps locked rows selectable as unlock actions without changing models', () => {
+    const onValueChange = vi.fn();
+    const onLockedModelSelect = vi.fn();
+    const onUnlockRequest = vi.fn();
+    render(
+      <ModelPicker
+        value={CAMEL_FREE_LLM_MODEL}
+        onValueChange={onValueChange}
+        options={[
+          MODEL_CATALOG[CAMEL_FREE_LLM_MODEL],
+          {
+            ...MODEL_CATALOG['gpt-5.6-sol'],
+            locked: true,
+            unlockHint: 'openai',
+          },
+        ]}
+        isOrgAdmin={false}
+        onLockedModelSelect={onLockedModelSelect}
+        onUnlockRequest={onUnlockRequest}
+      />,
+    );
+
+    expect(screen.getByText('Premium models')).toBeInTheDocument();
+    fireEvent.click(getModelItem('GPT-5.6 Sol'));
+    expect(onLockedModelSelect).toHaveBeenCalledWith('gpt-5.6-sol');
+    expect(onValueChange).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByText('Unlock premium models'));
+    expect(onUnlockRequest).toHaveBeenCalledTimes(1);
+  });
+
+  it('groups every unlocked model before the premium models section', () => {
+    render(
+      <ModelPicker
+        value={CAMEL_FREE_LLM_MODEL}
+        onValueChange={vi.fn()}
+        options={[
+          MODEL_CATALOG[CAMEL_FREE_LLM_MODEL],
+          { ...MODEL_CATALOG.sonnet, locked: true, unlockHint: 'generic' },
+          MODEL_CATALOG['gpt-5.6-sol'],
+          {
+            ...MODEL_CATALOG['grok-4.5'],
+            locked: true,
+            unlockHint: 'generic',
+          },
+        ]}
+        isOrgAdmin={false}
+      />,
+    );
+
+    const gptItem = getModelItem('GPT-5.6 Sol');
+    const premiumLabel = screen
+      .getByText('Premium models')
+      .closest('[data-slot="dropdown-menu-label"]');
+    const sonnetItem = getModelItem('Sonnet 5');
+    expect(premiumLabel).not.toBeNull();
+    expect(gptItem.compareDocumentPosition(premiumLabel!)).toBe(
+      Node.DOCUMENT_POSITION_FOLLOWING,
+    );
+    expect(premiumLabel!.compareDocumentPosition(sonnetItem)).toBe(
+      Node.DOCUMENT_POSITION_FOLLOWING,
+    );
+  });
+
+  it('explains Camel Free and OpenAI unlock coverage in metadata', () => {
+    render(
+      <ModelPicker
+        value={CAMEL_FREE_LLM_MODEL}
+        onValueChange={vi.fn()}
+        options={[
+          MODEL_CATALOG[CAMEL_FREE_LLM_MODEL],
+          {
+            ...MODEL_CATALOG['gpt-5.6-sol'],
+            locked: true,
+            unlockHint: 'openai',
+          },
+          {
+            ...MODEL_CATALOG['grok-4.5'],
+            locked: true,
+            unlockHint: 'generic',
+          },
+        ]}
+        isOrgAdmin={false}
+      />,
+    );
+
+    fireEvent.focus(getModelItem('Camel Free'));
+    expect(screen.getByRole('tooltip')).toHaveTextContent(
+      'Free and always included',
+    );
+    fireEvent.focus(getModelItem('GPT-5.6 Sol'));
+    expect(screen.getByRole('tooltip')).toHaveTextContent(
+      'or your OpenAI account',
+    );
+    fireEvent.focus(getModelItem('Grok 4.5'));
+    expect(screen.getByRole('tooltip')).toHaveTextContent(
+      'Unlock with a plan, credits, or an API key.',
+    );
+    expect(screen.getByRole('tooltip')).not.toHaveTextContent(
+      'your OpenAI account',
     );
   });
 });

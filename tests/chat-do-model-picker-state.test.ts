@@ -232,6 +232,98 @@ describe('getWorkspaceModelPickerState rollout compatibility', () => {
     expect(state?.defaultModel).toBe('sonnet');
   });
 
+  it('locks premium models in free mode while preserving paid and OpenAI coverage', async () => {
+    async function loadState({
+      billingStatus,
+      openAiSubscription = null,
+    }: {
+      billingStatus: 'inactive' | 'active';
+      openAiSubscription?: object | null;
+    }) {
+      const workspaceStub = {
+        getInfo: vi.fn().mockResolvedValue({ org_id: 'org_123' }),
+        getModelPickerConfig: vi.fn().mockResolvedValue({
+          use_org_defaults: true,
+          models: [],
+          default_model: null,
+        }),
+      };
+      const orgStub = {
+        getInfo: vi.fn().mockResolvedValue({
+          billing_status: billingStatus,
+          billing_credit_purchase_total_cents: 0,
+          billing_credit_grant_total_cents: 0,
+        }),
+        getLlmProviderConfig: vi.fn().mockResolvedValue(null),
+        getExperimentalSettings: vi
+          .fn()
+          .mockResolvedValue({ claude_proxy_models: false }),
+        getOpenAiSubscription: vi.fn().mockResolvedValue(openAiSubscription),
+        getModelPickerConfig: vi.fn().mockResolvedValue({
+          use_platform_defaults: false,
+          models: [
+            { id: 'sonnet', added_at: 3 },
+            { id: 'gpt-5.6-sol', added_at: 2 },
+            { id: 'grok-4.5', added_at: 1 },
+          ],
+          default_model: 'sonnet',
+        }),
+      };
+
+      getEnvMock.mockReturnValue({
+        WORKSPACE: {
+          idFromName: (id: string) => id,
+          get: () => workspaceStub,
+        },
+        ORG: {
+          idFromName: (id: string) => id,
+          get: () => orgStub,
+        },
+      });
+
+      return getWorkspaceModelPickerState({}, 'ws_123');
+    }
+
+    const freeState = await loadState({ billingStatus: 'inactive' });
+    expect(freeState).toMatchObject({
+      billingAccessMode: 'camel_free',
+      defaultModel: 'deepseek-v4-auto',
+      effectivePickerDefaultModel: 'deepseek-v4-auto',
+    });
+    expect(freeState?.allowedThreadModels).toEqual(['deepseek-v4-auto']);
+    expect(
+      freeState?.modelOptions.find((option) => option.id === 'sonnet'),
+    ).toMatchObject({ locked: true, unlockHint: 'generic' });
+    expect(
+      freeState?.modelOptions.find((option) => option.id === 'gpt-5.6-sol'),
+    ).toMatchObject({ locked: true, unlockHint: 'openai' });
+    expect(
+      freeState?.modelOptions.find((option) => option.id === 'grok-4.5'),
+    ).toMatchObject({ locked: true, unlockHint: 'generic' });
+
+    const openAiState = await loadState({
+      billingStatus: 'inactive',
+      openAiSubscription: { account_id: 'acct_123' },
+    });
+    expect(openAiState?.billingAccessMode).toBe('camel_free');
+    expect(openAiState?.allowedThreadModels).toContain('gpt-5.6-sol');
+    expect(
+      openAiState?.modelOptions.find(
+        (option) => option.id === 'gpt-5.6-sol',
+      )?.locked,
+    ).not.toBe(true);
+    expect(
+      openAiState?.modelOptions.find((option) => option.id === 'sonnet'),
+    ).toMatchObject({ locked: true, unlockHint: 'generic' });
+    expect(
+      openAiState?.modelOptions.find((option) => option.id === 'grok-4.5'),
+    ).toMatchObject({ locked: true, unlockHint: 'generic' });
+
+    const paidState = await loadState({ billingStatus: 'active' });
+    expect(paidState?.billingAccessMode).toBe('subscription');
+    expect(paidState?.modelOptions.some((option) => option.locked)).toBe(false);
+  });
+
   it('rethrows picker config errors other than missing RPC rollout errors', async () => {
     const storageError = new Error('storage temporarily unavailable');
     const workspaceStub = {

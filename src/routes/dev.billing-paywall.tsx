@@ -3,6 +3,9 @@ import { useEffect, useState } from "react";
 import type { Route } from "./+types/dev.billing-paywall";
 import { PaywallTakeover } from "@/components/billing/paywall-takeover";
 import { type PlanPickerCta } from "@/components/billing/plan-picker";
+import { PlanUpgradeDialog } from "@/components/billing/plan-upgrade-dialog";
+import { UnlockPremiumModal } from "@/components/billing/unlock-premium-modal";
+import { CamelFreeWelcomeDialog } from "@/components/camel-free-welcome-dialog";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -21,6 +24,7 @@ import {
 import type { BillingPlan } from "@/types";
 
 type PreviewState =
+  | "free"
   | "default"
   | "byok-configured"
   | "current-starter"
@@ -38,7 +42,8 @@ interface PreviewConfig {
 }
 
 const PREVIEW_STATES: Array<{ value: PreviewState; label: string }> = [
-  { value: "default", label: "New paywall" },
+  { value: "free", label: "Free mode" },
+  { value: "default", label: "Delinquent paywall" },
   { value: "byok-configured", label: "BYOK connected" },
   { value: "current-starter", label: "Starter upgrade" },
   { value: "current-pro", label: "Pro downgrade" },
@@ -68,7 +73,7 @@ function getPreviewConfig(
 ): PreviewConfig {
   const base: PreviewConfig = {
     description:
-      "A new org must choose hosted billing or bring their own API key before continuing.",
+      "A delinquent org must repair billing or bring its own API key before continuing.",
     orgName: "Org B",
     multiOrg: true,
     currentPlan: null,
@@ -78,6 +83,13 @@ function getPreviewConfig(
   };
 
   switch (state) {
+    case "free":
+      return {
+        ...base,
+        description:
+          "A free org enters the app on Camel Free and can open the upgrade dialog without seeing a takeover.",
+        multiOrg: false,
+      };
     case "byok-configured":
       return {
         ...base,
@@ -151,9 +163,14 @@ export default function DevBillingPaywallPreviewRoute() {
   const byokProvider = parseByokProvider(searchParams.get("provider"));
   const config = getPreviewConfig(state, byokProvider);
   const [lastAction, setLastAction] = useState<string | null>(null);
+  const [upgradeOpen, setUpgradeOpen] = useState(false);
+  const [welcomeOpen, setWelcomeOpen] = useState(state === "free");
+  const [unlockOpen, setUnlockOpen] = useState(false);
 
   useEffect(() => {
     setLastAction(null);
+    setWelcomeOpen(state === "free");
+    setUnlockOpen(false);
   }, [state]);
 
   return (
@@ -231,24 +248,61 @@ export default function DevBillingPaywallPreviewRoute() {
       ) : null}
 
       <section className="min-h-[80vh] overflow-hidden rounded-lg border">
-        <PaywallTakeover
-          currentOrgId="org_preview"
-          paywallContext={{
-            currentOrgName: config.orgName,
-            multiOrg: config.multiOrg,
-            byokProviderLabel: config.byokProviderLabel,
-          }}
-          onPreviewSelectPlan={(cta) => {
-            setLastAction(describeCta(cta));
-          }}
-          planPickerOverrides={{
-            currentPlan: config.currentPlan,
-            defaultBillingMode: config.defaultBillingMode,
-            disabledReason: config.disabledReason,
-            highlightedPlan: state === "team" ? "team" : undefined,
-          }}
-        />
+        {state === "free" ? (
+          <div className="flex min-h-[80vh] items-center justify-center gap-2 bg-muted/20 p-6">
+            <Button onClick={() => setWelcomeOpen(true)}>
+              Open Camel Free welcome
+            </Button>
+            <Button variant="outline" onClick={() => setUnlockOpen(true)}>
+              Open premium models
+            </Button>
+          </div>
+        ) : (
+          <PaywallTakeover
+            currentOrgId="org_preview"
+            paywallContext={{
+              currentOrgName: config.orgName,
+              multiOrg: config.multiOrg,
+              byokProviderLabel: config.byokProviderLabel,
+            }}
+            onPreviewSelectPlan={(cta) => {
+              setLastAction(describeCta(cta));
+            }}
+            planPickerOverrides={{
+              currentPlan: config.currentPlan,
+              defaultBillingMode: config.defaultBillingMode,
+              disabledReason: config.disabledReason,
+              highlightedPlan: state === "team" ? "team" : undefined,
+            }}
+          />
+        )}
       </section>
+      <CamelFreeWelcomeDialog
+        open={welcomeOpen}
+        onOpenChange={setWelcomeOpen}
+        onSeePremiumModels={() => setUnlockOpen(true)}
+      />
+      <UnlockPremiumModal
+        open={unlockOpen}
+        onOpenChange={setUnlockOpen}
+        triggerModel="gpt-5.6-sol"
+        isOrgAdmin
+        orgId="org_preview"
+        onSeePlans={() => {
+          setUnlockOpen(false);
+          setUpgradeOpen(true);
+        }}
+        onTopUp={() => setLastAction("Top up selected")}
+        onAddKey={() => setLastAction("Add API key selected")}
+        onOpenAiSignIn={() => setLastAction("OpenAI sign-in selected")}
+      />
+      <PlanUpgradeDialog
+        open={upgradeOpen}
+        onOpenChange={setUpgradeOpen}
+        onTopUp={() => setLastAction("Top up selected")}
+        onAddKey={() => setLastAction("Add API key selected")}
+        onOpenAiSignIn={() => setLastAction("OpenAI sign-in selected")}
+      />
     </main>
   );
 }

@@ -18,8 +18,8 @@ import { LLM_MODEL_OPTIONS } from '@/lib/llm-provider-config';
 import { ModelPicker } from '@/components/model-picker';
 import {
   modelCatalogEntriesForIds,
-  type ModelCatalogEntry,
 } from '@/lib/model-catalog';
+import type { ModelPickerOption } from '@/lib/chat-do.server';
 import type { RecentModelScope } from '@/lib/recent-model';
 import type { AtMentionEntity, LlmModel } from '@/types';
 import { AtMentionMenu, mentionItemValue } from '@/components/at-mention-menu';
@@ -59,9 +59,11 @@ interface PromptInputProps {
   onCompact?: () => void;
   model?: LlmModel;
   onModelChange?: (model: LlmModel) => void;
-  modelOptions?: ReadonlyArray<ModelCatalogEntry>;
+  modelOptions?: ReadonlyArray<ModelPickerOption>;
   modelDisabled?: boolean;
   isOrgAdmin?: boolean;
+  onLockedModelSelect?: (model: LlmModel) => void;
+  onUnlockRequest?: () => void;
   recentModelScope?: RecentModelScope | null;
   // Ref for programmatic focus
   textareaRef?: React.RefObject<HTMLTextAreaElement | null>;
@@ -137,6 +139,8 @@ export function PromptInput({
   modelOptions = DEFAULT_MODEL_OPTIONS,
   modelDisabled = false,
   isOrgAdmin = false,
+  onLockedModelSelect,
+  onUnlockRequest,
   recentModelScope,
   textareaRef,
   mentionables,
@@ -616,6 +620,8 @@ export function PromptInput({
                       onValueChange={onModelChange}
                       options={modelOptions}
                       isOrgAdmin={isOrgAdmin}
+                      onLockedModelSelect={onLockedModelSelect}
+                      onUnlockRequest={onUnlockRequest}
                       recentModelScope={recentModelScope}
                       disabled={modelDisabled || disabled}
                     />

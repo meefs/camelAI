@@ -285,6 +285,17 @@ export function isCodexLlmModel(model: unknown): model is LlmModel {
   return CODEX_LLM_MODEL_OPTIONS.some((option) => option.value === model);
 }
 
+export function isLlmModelCoveredByOpenAiSubscription(
+  model: LlmModel,
+): boolean {
+  return (
+    isCodexLlmModel(model) &&
+    !OPENROUTER_ONLY_CODEX_MODELS.has(model) &&
+    !BEDROCK_ONLY_CODEX_MODELS.has(model) &&
+    !CAMELAI_HOSTED_ONLY_CODEX_MODELS.has(model)
+  );
+}
+
 export function getVisibleLlmModelOptions(
   _experimentalSettings?: OrganizationExperimentalSettings | null,
   includeModel?: LlmModel | null,
@@ -352,13 +363,11 @@ export function isLlmModelAllowedForOrgProvider(
 ): boolean {
   if (
     options?.allowOpenAiSubscription &&
-    isCodexLlmModel(model) &&
-    !OPENROUTER_ONLY_CODEX_MODELS.has(model) &&
-    !BEDROCK_ONLY_CODEX_MODELS.has(model) &&
-    !CAMELAI_HOSTED_ONLY_CODEX_MODELS.has(model)
+    isLlmModelCoveredByOpenAiSubscription(model)
   ) {
     return true;
   }
+  if (model === CAMEL_FREE_LLM_MODEL) return true;
   if (CAMELAI_HOSTED_ONLY_CODEX_MODELS.has(model) && orgProvider) {
     return false;
   }

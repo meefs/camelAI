@@ -53,6 +53,8 @@ import {
 } from "@/hooks/use-chat-transcript";
 import { useCheckoutStatus } from "@/hooks/use-checkout-status";
 import { useCompletedTurns } from "@/hooks/use-completed-turns";
+import { useFreeTierUpgradePrompt } from "@/hooks/use-free-tier-upgrade-prompt";
+import { useBillingDialogPresence } from "@/hooks/use-billing-dialog-presence";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { APP_BUILD_ID } from "@/lib/app-build-id";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -79,6 +81,12 @@ import {
   TopUpDialog,
   type TopUpDialogPack,
 } from "@/components/billing/top-up-dialog";
+import { UnlockPremiumModal } from "@/components/billing/unlock-premium-modal";
+import { PlanUpgradeDialog } from "@/components/billing/plan-upgrade-dialog";
+import { OpenAiSignInDialog } from "@/components/billing/openai-sign-in-dialog";
+import { ByokKeyDialog } from "@/components/onboarding/byok-key-dialog";
+import { CamelFreeWelcomeDialog } from "@/components/camel-free-welcome-dialog";
+import { ModelFallbackBanner } from "@/components/model-fallback-banner";
 import { ChatErrorNotice } from "@/components/chat-error-notice";
 import { ChatMessagesView } from "@/components/chat-messages-view";
 import { ShareStatusButton } from "@/components/chat-share-status-button";
@@ -121,6 +129,17 @@ import {
 import { usePiChatStream } from "@/lib/use-pi-chat-stream";
 import { checkForVersionSkew } from "@/lib/version-skew";
 import {
+  recordCamelFreeWelcomeDismissal,
+  shouldShowCamelFreeWelcome,
+} from "@/lib/camel-free-welcome";
+import {
+  getBillingDialogIdentityKey,
+  getWelcomeAutoOpenState,
+  hasActiveBillingDialog,
+  transitionBillingDialogState,
+  type BillingDialogState,
+} from "@/lib/billing-dialog-state";
+import {
   trackChatReconnectFlush,
   trackChatSendDispatched,
   trackChatSendQueuedOffline,
@@ -153,11 +172,17 @@ import {
   getChatApiErrorPresentation,
   isChatBillingOrCreditError,
 } from "@/lib/chat-api-errors";
-import { parseByokProvider } from "@/lib/byok-providers";
 import {
-  modelCatalogEntriesForIds,
-  type ModelCatalogEntry,
-} from "@/lib/model-catalog";
+  parseByokProvider,
+  type OnboardingByokProvider,
+} from "@/lib/byok-providers";
+import {
+  EMPTY_BYOK_CREDENTIAL,
+  resolveOrgScopedByokApiKey,
+  type OrgScopedByokCredential,
+} from "@/lib/byok-credential-state";
+import { modelCatalogEntriesForIds } from "@/lib/model-catalog";
+import type { ModelPickerOption } from "@/lib/chat-do.server";
 import { resolveDefaultModelForChat } from "@/lib/model-picker-config";
 import { getRecentModel, type RecentModelScope } from "@/lib/recent-model";
 import {
@@ -210,6 +235,14 @@ type SendMessageResult = {
   status: "accepted" | "busy" | "error";
   error?: string;
 };
+
+type ChatBillingAccessMode =
+  | "enterprise"
+  | "subscription"
+  | "byok"
+  | "credits"
+  | "selfhost"
+  | "camel_free";
 
 function sameJson(left: unknown, right: unknown): boolean {
   return left === right || JSON.stringify(left) === JSON.stringify(right);
@@ -264,8 +297,10 @@ interface ChatProps {
   threadModel?: LlmModel | null;
   llmProvider?: LlmProvider | null;
   allowedThreadModels?: LlmModel[] | null;
+  modelOptions?: ReadonlyArray<ModelPickerOption> | null;
   effectivePickerDefaultModel?: LlmModel | null;
   hasEffectivePickerDefault?: boolean;
+  billingAccessMode?: ChatBillingAccessMode | null;
   isOrgAdmin?: boolean;
   recentModelScope?: RecentModelScope | null;
   billingCreditStatus?: BillingCreditStatus | null;
@@ -340,7 +375,7 @@ export function resolveSelectedThreadModel(args: {
   threadModel?: LlmModel | null;
   allowedThreadModels?: LlmModel[] | null;
   llmProvider?: LlmProvider | null;
-  availableThreadModels: ReadonlyArray<ModelCatalogEntry>;
+  availableThreadModels: ReadonlyArray<ModelPickerOption>;
   effectivePickerDefaultModel: LlmModel | null;
   hasEffectivePickerDefault: boolean;
   recentModel?: LlmModel | null;
@@ -348,10 +383,16 @@ export function resolveSelectedThreadModel(args: {
   const availableModelIds = new Set(
     args.availableThreadModels.map((entry) => entry.id),
   );
+  const selectableModels = args.availableThreadModels.filter(
+    (entry) => !entry.locked,
+  );
   const threadModelIsAvailable =
     Boolean(args.threadModel) && availableModelIds.has(args.threadModel!);
 
-  if (args.threadId && args.threadModel && threadModelIsAvailable) {
+  // Existing threads keep their explicit model even if an admin later removes
+  // it from the picker or free-mode billing now presents it as locked. The
+  // server can still roll inaccessible hosted models over to Camel Free.
+  if (args.threadId && args.threadModel) {
     return args.threadModel;
   }
 
@@ -361,7 +402,7 @@ export function resolveSelectedThreadModel(args: {
       : null,
     recentModel: args.recentModel,
     fallbackModel: args.threadModel ?? getDefaultLlmModel(args.llmProvider),
-    visibleCatalog: args.availableThreadModels,
+    visibleCatalog: selectableModels,
   });
 
   return (
@@ -381,7 +422,7 @@ export function resolveAgentFallbackOptimisticModel(args: {
   if (
     !args.threadId ||
     !isLlmModel(args.model) ||
-    !shouldShowModelFallbackNotice(args.notice, args.model, args.now)
+    !shouldShowModelFallbackNotice(args.notice, args.model)
   ) {
     return null;
   }
@@ -625,8 +666,10 @@ export default function Chat({
   threadModel,
   llmProvider,
   allowedThreadModels,
+  modelOptions,
   effectivePickerDefaultModel = null,
   hasEffectivePickerDefault = false,
+  billingAccessMode = null,
   isOrgAdmin = false,
   recentModelScope,
   billingCreditStatus,
@@ -666,6 +709,10 @@ export default function Chat({
     error?: string;
   }>();
   const creditPacksFetcher = useFetcher<CreditPacksResourceData>();
+  const providerFetcher = useFetcher<{
+    success?: boolean;
+    error?: string;
+  }>();
   const billingStatusFetcher = useFetcher<BillingCreditStatusResourceData>();
   const mentionSourcesFetcher = useFetcher<{
     connections?: Integration[];
@@ -673,6 +720,7 @@ export default function Chat({
     error?: string;
   }>();
   const { user, currentWorkspace, currentOrg, orgs } = useAuthData();
+  const { isSidebarBillingDialogOpen } = useBillingDialogPresence();
   const isMobile = useIsMobile();
   const resolvedWorkspaceId = readOnly
     ? workspaceId
@@ -709,7 +757,37 @@ export default function Chat({
     setImmediate: setMessages,
   } = useBufferedState<Message[]>([], STREAM_MESSAGE_RENDER_THROTTLE_MS);
   const [loading, setLoading] = useState(false);
-  const [topUpOpen, setTopUpOpen] = useState(false);
+  const [billingDialog, setBillingDialog] = useState<BillingDialogState>({
+    kind: "none",
+  });
+  const billingDialogRef = useRef(billingDialog);
+  billingDialogRef.current = billingDialog;
+  const billingIdentityKey = getBillingDialogIdentityKey(
+    user?.id,
+    currentOrg?.id,
+  );
+  const previousBillingIdentityKeyRef = useRef(billingIdentityKey);
+  const autoOpenedWelcomeIdentityKeysRef = useRef(new Set<string>());
+  const openWelcomeIdentityRef = useRef<{
+    userId: string;
+    orgId: string;
+  } | null>(null);
+  const [selectedProvider, setSelectedProvider] =
+    useState<OnboardingByokProvider>("openrouter");
+  const [providerCredential, setProviderCredential] =
+    useState<OrgScopedByokCredential>(EMPTY_BYOK_CREDENTIAL);
+  const providerApiKey = resolveOrgScopedByokApiKey(
+    providerCredential,
+    currentOrg?.id,
+  );
+  const [awsRegion, setAwsRegion] = useState("us-east-1");
+  const [providerError, setProviderError] = useState<string | null>(null);
+  const resetByokForm = useCallback(() => {
+    setProviderCredential(EMPTY_BYOK_CREDENTIAL);
+    setProviderError(null);
+  }, []);
+  const [modelFallbackNotice, setModelFallbackNotice] =
+    useState<ChatAgentModelFallbackNotice | null>(null);
   const [pendingMessages, setPendingMessagesState] = useState<Message[]>([]);
   const [currentTodos, setCurrentTodos] = useState<TodoItem[]>(initialTodos);
 
@@ -791,6 +869,170 @@ export default function Chat({
     () => `${locationPathname}${locationSearch}${locationHash}`,
     [locationHash, locationPathname, locationSearch],
   );
+  const transitionBillingDialog = useCallback(
+    (next: BillingDialogState) => {
+      const previous = billingDialogRef.current;
+      const transition = transitionBillingDialogState(
+        previous,
+        next,
+      );
+      if (previous.kind === "byok" && next.kind !== "byok") {
+        resetByokForm();
+      }
+      if (transition.shouldRecordWelcomeDismissal) {
+        const welcomeIdentity = openWelcomeIdentityRef.current;
+        try {
+          if (welcomeIdentity) {
+            recordCamelFreeWelcomeDismissal(
+              window.localStorage,
+              welcomeIdentity.userId,
+              welcomeIdentity.orgId,
+            );
+          }
+        } catch {
+          // Storage is optional. Closing the dialog must always succeed.
+        }
+        openWelcomeIdentityRef.current = null;
+      }
+      billingDialogRef.current = transition.state;
+      setBillingDialog(transition.state);
+    },
+    [resetByokForm],
+  );
+  const handleBillingDialogOpenChange = useCallback(
+    (open: boolean) => {
+      if (!open) transitionBillingDialog({ kind: "none" });
+    },
+    [transitionBillingDialog],
+  );
+  useEffect(() => {
+    if (previousBillingIdentityKeyRef.current === billingIdentityKey) return;
+    previousBillingIdentityKeyRef.current = billingIdentityKey;
+    resetByokForm();
+    transitionBillingDialog({ kind: "none" });
+  }, [billingIdentityKey, resetByokForm, transitionBillingDialog]);
+  useEffect(() => {
+    if (
+      billingDialog.kind !== "none" ||
+      !billingIdentityKey
+    ) {
+      return;
+    }
+
+    let shouldShowWelcome = false;
+    try {
+      shouldShowWelcome = shouldShowCamelFreeWelcome(window.localStorage, {
+        billingAccessMode,
+        userId: user?.id ?? null,
+        orgId: currentOrg?.id ?? null,
+        hasActiveThread: Boolean(threadId),
+      });
+    } catch {
+      return;
+    }
+
+    const next = getWelcomeAutoOpenState(
+      billingDialog,
+      autoOpenedWelcomeIdentityKeysRef.current,
+      billingIdentityKey,
+      shouldShowWelcome,
+    );
+    if (!next || !user?.id || !currentOrg?.id) return;
+
+    autoOpenedWelcomeIdentityKeysRef.current.add(billingIdentityKey);
+    openWelcomeIdentityRef.current = {
+      userId: user.id,
+      orgId: currentOrg.id,
+    };
+    transitionBillingDialog(next);
+  }, [
+    billingAccessMode,
+    billingDialog,
+    billingIdentityKey,
+    currentOrg?.id,
+    threadId,
+    transitionBillingDialog,
+    user?.id,
+  ]);
+  const openUnlockPremium = useCallback((triggerModel: LlmModel | null) => {
+    transitionBillingDialog({ kind: "unlock", triggerModel });
+  }, [transitionBillingDialog]);
+  const openPlanUpgrade = useCallback(() => {
+    transitionBillingDialog({ kind: "plans" });
+  }, [transitionBillingDialog]);
+  const openBillingTopUp = useCallback(() => {
+    transitionBillingDialog({ kind: "topup" });
+    if (
+      !creditPacksFetcher.data &&
+      creditPacksFetcher.state === "idle" &&
+      typeof creditPacksFetcher.load === "function"
+    ) {
+      creditPacksFetcher.load("/api/billing/credit-packs");
+    }
+  }, [creditPacksFetcher, transitionBillingDialog]);
+  const openByokDialog = useCallback(() => {
+    resetByokForm();
+    transitionBillingDialog({ kind: "byok" });
+  }, [resetByokForm, transitionBillingDialog]);
+  const openOpenAiSignIn = useCallback(() => {
+    transitionBillingDialog({ kind: "openai" });
+  }, [transitionBillingDialog]);
+  const isAnyBillingDialogOpen = hasActiveBillingDialog(
+    billingDialog,
+    isSidebarBillingDialogOpen,
+  );
+
+  useEffect(() => {
+    if (providerFetcher.state !== "idle" || !providerFetcher.data) return;
+    if (providerFetcher.data.error) {
+      setProviderError(providerFetcher.data.error);
+      return;
+    }
+    if (providerFetcher.data.success) {
+      if (billingDialogRef.current.kind === "byok") {
+        transitionBillingDialog({ kind: "none" });
+      }
+      revalidator.revalidate();
+    }
+  }, [
+    providerFetcher.data,
+    providerFetcher.state,
+    revalidator,
+    transitionBillingDialog,
+  ]);
+
+  const saveByokProvider = useCallback(() => {
+    if (!currentOrg?.id) {
+      setProviderError("We couldn't identify the current organization.");
+      return;
+    }
+    if (!providerApiKey.trim()) {
+      setProviderError("Enter an API key to continue.");
+      return;
+    }
+    setProviderError(null);
+    const payload: Record<string, string> = {
+      intent: "setProvider",
+      provider: selectedProvider,
+    };
+    if (selectedProvider === "bedrock") {
+      payload.bearer_token = providerApiKey.trim();
+      payload.aws_region = awsRegion;
+    } else {
+      payload.api_key = providerApiKey.trim();
+    }
+    providerFetcher.submit(payload, {
+      method: "POST",
+      action: `/api/orgs/${currentOrg.id}/llm-provider`,
+      encType: "application/json",
+    });
+  }, [
+    awsRegion,
+    currentOrg?.id,
+    providerApiKey,
+    providerFetcher,
+    selectedProvider,
+  ]);
   useCheckoutStatus({
     hash: locationHash,
     navigate,
@@ -899,11 +1141,19 @@ export default function Chat({
     freshlyCompletedTurnId,
     clearFreshlyCompletedTurnId,
   } = useCompletedTurns(displayMessages, threadId);
+  useFreeTierUpgradePrompt({
+    freshlyCompletedTurnId,
+    enabled: billingAccessMode === "camel_free" && !readOnly,
+    userId: user?.id ?? null,
+    orgId: currentOrg?.id ?? null,
+    isOrgAdmin,
+    isAnyBillingDialogOpen,
+    onShow: openPlanUpgrade,
+  });
   // Refs to track current state for use in callbacks (avoids stale closures)
   // The most recent terminal error already surfaced, so the state-driven error
   // is shown exactly once even across re-renders/reconnects.
   const lastAppliedErrorIdRef = useRef<string | null>(null);
-  const lastAppliedModelFallbackNoticeIdRef = useRef<string | null>(null);
   const pendingMessagesRef = useRef(pendingMessages);
   const acceptedPendingMessageIdsRef = useRef<Set<string>>(new Set());
   const billingRefreshSequenceRef = useRef(0);
@@ -1027,7 +1277,10 @@ export default function Chat({
   const authoritativeThreadModelRef = useRef<AuthoritativeThreadModel | null>(
     null,
   );
-  const availableThreadModels = useMemo<ModelCatalogEntry[]>(() => {
+  const availableThreadModels = useMemo<ModelPickerOption[]>(() => {
+    if (Array.isArray(modelOptions)) {
+      return [...modelOptions];
+    }
     if (Array.isArray(allowedThreadModels)) {
       return modelCatalogEntriesForIds(allowedThreadModels);
     }
@@ -1038,9 +1291,24 @@ export default function Chat({
       { orgProvider: llmProvider },
     );
     return modelCatalogEntriesForIds(options.map((option) => option.value));
-  }, [allowedThreadModels, experimentalSettings, llmProvider, threadModel]);
+  }, [
+    allowedThreadModels,
+    experimentalSettings,
+    llmProvider,
+    modelOptions,
+    threadModel,
+  ]);
   const availableThreadModelIds = useMemo(
-    () => new Set(availableThreadModels.map((entry) => entry.id)),
+    () =>
+      new Set(
+        availableThreadModels
+          .filter((entry) => !entry.locked)
+          .map((entry) => entry.id),
+      ),
+    [availableThreadModels],
+  );
+  const selectableThreadModels = useMemo(
+    () => availableThreadModels.filter((entry) => !entry.locked),
     [availableThreadModels],
   );
   // A Camel Free model supplied by the loader is a billing decision, not a
@@ -1075,7 +1343,7 @@ export default function Chat({
   const selectedThreadModelRef = useRef<LlmModel>(selectedThreadModel);
   const locationSearchRef = useRef(locationSearch);
   const noModelsMessage =
-    availableThreadModels.length === 0
+    selectableThreadModels.length === 0 && !(threadId && threadModel)
       ? "No models are available. Ask an admin to add a model in Settings > Models."
       : null;
 
@@ -1314,7 +1582,7 @@ export default function Chat({
     setPendingQuestion(null);
     setContextUsedPercent(null);
     lastAppliedErrorIdRef.current = null;
-    lastAppliedModelFallbackNoticeIdRef.current = null;
+    setModelFallbackNotice(null);
     compactingPriorMessageIdRef.current = null;
     setCompactingPriorMessageId(null);
   }, [threadId]);
@@ -2623,27 +2891,12 @@ export default function Chat({
               : (fallbackNotice?.createdAt ?? Date.now()),
         };
       }
-      if (
-        shouldShowModelFallbackNotice(fallbackNotice, state.model) &&
-        fallbackNotice.id !== lastAppliedModelFallbackNoticeIdRef.current
-      ) {
-        lastAppliedModelFallbackNoticeIdRef.current = fallbackNotice.id;
-        const storageKey = `chat-model-fallback-notice:${fallbackNotice.id}`;
-        let wasShown = false;
-        try {
-          wasShown = window.sessionStorage.getItem(storageKey) === "shown";
-          window.sessionStorage.setItem(storageKey, "shown");
-        } catch {
-          // The in-memory id still prevents duplicate notices in this mount.
-        }
-        if (!wasShown) {
-          toast.info("Switched to Camel Free", {
-            description:
-              fallbackNotice.reason === "hosted_credits_exhausted"
-                ? "Your hosted credits are used up, so this thread is now using the free model."
-                : "Your paid hosted model is unavailable, so this thread is now using the free model.",
-          });
-        }
+      if ("modelFallbackNotice" in state) {
+        setModelFallbackNotice((current) =>
+          current?.id === fallbackNotice?.id
+            ? current
+            : (fallbackNotice ?? null),
+        );
       }
       applyAgentPreviewState(state);
       if (Array.isArray(state.currentTodos)) {
@@ -3461,13 +3714,13 @@ export default function Chat({
       effectiveDefaultModel: null,
       recentModel,
       fallbackModel: getDefaultLlmModel(llmProvider),
-      visibleCatalog: availableThreadModels,
+      visibleCatalog: selectableThreadModels,
     });
     if (nextModel && nextModel !== selectedThreadModel) {
       handleThreadModelChange(nextModel);
     }
   }, [
-    availableThreadModels,
+    selectableThreadModels,
     handleThreadModelChange,
     llmProvider,
     modelRecentScope,
@@ -3485,6 +3738,7 @@ export default function Chat({
       loading ||
       isStreaming ||
       updateThreadModelFetcher.state !== "idle" ||
+      (threadModel !== null && selectedThreadModel === threadModel) ||
       availableThreadModelIds.has(selectedThreadModel)
     ) {
       return;
@@ -3495,14 +3749,14 @@ export default function Chat({
         ? effectivePickerDefaultModel
         : null,
       fallbackModel: getDefaultLlmModel(llmProvider),
-      visibleCatalog: availableThreadModels,
+      visibleCatalog: selectableThreadModels,
     });
     if (nextModel && nextModel !== selectedThreadModel) {
       handleThreadModelChange(nextModel);
     }
   }, [
     availableThreadModelIds,
-    availableThreadModels,
+    selectableThreadModels,
     effectivePickerDefaultModel,
     hasEffectivePickerDefault,
     handleThreadModelChange,
@@ -3512,6 +3766,7 @@ export default function Chat({
     noModelsMessage,
     readOnly,
     selectedThreadModel,
+    threadModel,
     threadId,
     updateThreadModelFetcher.state,
   ]);
@@ -3954,16 +4209,6 @@ export default function Chat({
   );
   const isAdmin =
     currentMembership?.role === "owner" || currentMembership?.role === "admin";
-  function handleBillingTopUp() {
-    setTopUpOpen(true);
-    if (
-      !creditPacksFetcher.data &&
-      creditPacksFetcher.state === "idle" &&
-      typeof creditPacksFetcher.load === "function"
-    ) {
-      creditPacksFetcher.load("/api/billing/credit-packs");
-    }
-  }
   const previewShareButton = useMemo(() => {
     if (readOnly) return undefined;
     if (previewTarget?.kind !== "app") return undefined;
@@ -4108,11 +4353,21 @@ export default function Chat({
                     {noModelsMessage}
                   </p>
                 )}
+                <ModelFallbackBanner
+                  notice={modelFallbackNotice}
+                  activeModel={selectedThreadModel}
+                  isOrgAdmin={isOrgAdmin}
+                  onTopUp={openBillingTopUp}
+                  onUpgrade={openPlanUpgrade}
+                  onAddKey={openByokDialog}
+                  onOpenAiSignIn={openOpenAiSignIn}
+                  className="mb-2 shrink-0"
+                />
                 {displayedBillingCreditStatus ? (
                   <BillingCreditNotice
                     status={displayedBillingCreditStatus}
                     onOpenUsage={() => navigate("/settings/organization/usage")}
-                    onTopUp={handleBillingTopUp}
+                    onTopUp={openBillingTopUp}
                     canTopUp={Boolean(isAdmin)}
                     userId={user?.id ?? null}
                     orgId={currentOrg?.id ?? null}
@@ -4147,29 +4402,13 @@ export default function Chat({
                     updateThreadModelFetcher.state !== "idle"
                   }
                   isOrgAdmin={isOrgAdmin}
+                  onLockedModelSelect={openUnlockPremium}
+                  onUnlockRequest={() => openUnlockPremium(null)}
                   recentModelScope={modelRecentScope}
                   textareaRef={composerTextareaRef}
                   mentionables={mentionEntities}
                   onMentionAddNewClick={() => navigate("/connections")}
                   onMentionMenuOpenChange={handleMentionMenuOpenChange}
-                />
-                <TopUpDialog
-                  open={topUpOpen}
-                  onOpenChange={setTopUpOpen}
-                  packs={creditPacksFetcher.data?.packs ?? []}
-                  action="/api/billing/credit-packs"
-                  returnTo={currentChatPath}
-                  loading={
-                    topUpOpen && !creditPacksFetcher.data
-                      ? true
-                      : creditPacksFetcher.state !== "idle"
-                  }
-                  canTopUp={
-                    creditPacksFetcher.data?.canTopUp ?? Boolean(isAdmin)
-                  }
-                  unavailableReason={
-                    creditPacksFetcher.data?.unavailableReason ?? null
-                  }
                 />
               </div>
             </div>
@@ -4322,6 +4561,8 @@ export default function Chat({
                   onModelChange={handleThreadModelChange}
                   modelOptions={availableThreadModels}
                   isOrgAdmin={isOrgAdmin}
+                  onLockedModelSelect={openUnlockPremium}
+                  onUnlockRequest={() => openUnlockPremium(null)}
                   recentModelScope={modelRecentScope}
                   noModelsMessage={noModelsMessage}
                 />
@@ -4330,6 +4571,87 @@ export default function Chat({
           )}
         </>
       </ChatPreviewProvider>
+
+      <CamelFreeWelcomeDialog
+        open={billingDialog.kind === "welcome"}
+        onOpenChange={handleBillingDialogOpenChange}
+        onSeePremiumModels={() => openUnlockPremium(null)}
+      />
+      {currentOrg?.id ? (
+        <UnlockPremiumModal
+          open={billingDialog.kind === "unlock"}
+          onOpenChange={handleBillingDialogOpenChange}
+          triggerModel={
+            billingDialog.kind === "unlock"
+              ? billingDialog.triggerModel
+              : null
+          }
+          isOrgAdmin={isOrgAdmin}
+          orgId={currentOrg.id}
+          onSeePlans={openPlanUpgrade}
+          onTopUp={openBillingTopUp}
+          onAddKey={openByokDialog}
+          onOpenAiSignIn={openOpenAiSignIn}
+        />
+      ) : null}
+      <PlanUpgradeDialog
+        open={billingDialog.kind === "plans"}
+        onOpenChange={handleBillingDialogOpenChange}
+        onTopUp={openBillingTopUp}
+        onAddKey={openByokDialog}
+        onOpenAiSignIn={openOpenAiSignIn}
+      />
+      <TopUpDialog
+        open={billingDialog.kind === "topup"}
+        onOpenChange={handleBillingDialogOpenChange}
+        packs={creditPacksFetcher.data?.packs ?? []}
+        action="/api/billing/credit-packs"
+        returnTo={currentChatPath}
+        loading={
+          billingDialog.kind === "topup" && !creditPacksFetcher.data
+            ? true
+            : creditPacksFetcher.state !== "idle"
+        }
+        canTopUp={creditPacksFetcher.data?.canTopUp ?? Boolean(isAdmin)}
+        unavailableReason={creditPacksFetcher.data?.unavailableReason ?? null}
+      />
+      <ByokKeyDialog
+        open={billingDialog.kind === "byok"}
+        onOpenChange={(open) => {
+          if (!open) {
+            transitionBillingDialog({ kind: "none" });
+          }
+        }}
+        selectedProvider={selectedProvider}
+        onProviderChange={(provider) => {
+          setSelectedProvider(provider);
+          setProviderError(null);
+        }}
+        apiKey={providerApiKey}
+        onApiKeyChange={(key) => {
+          setProviderCredential({
+            orgId: currentOrg?.id ?? null,
+            apiKey: key,
+          });
+          setProviderError(null);
+        }}
+        awsRegion={awsRegion}
+        onAwsRegionChange={(region) => {
+          setAwsRegion(region);
+          setProviderError(null);
+        }}
+        onSubmit={saveByokProvider}
+        isSubmitting={providerFetcher.state !== "idle"}
+        errorMessage={providerError}
+      />
+      {currentOrg?.id ? (
+        <OpenAiSignInDialog
+          open={billingDialog.kind === "openai"}
+          onOpenChange={handleBillingDialogOpenChange}
+          orgId={currentOrg.id}
+          onSuccess={() => revalidator.revalidate()}
+        />
+      ) : null}
 
       {/* Connection Setup Prompt Modal */}
       {connectionSetupPrompt && (

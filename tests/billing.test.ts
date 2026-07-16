@@ -190,7 +190,7 @@ describe("billing helpers", () => {
   });
 
   it("maps billing statuses to stable labels and variants", () => {
-    expect(billingStatusLabel("inactive")).toBe("Pay as you go");
+    expect(billingStatusLabel("inactive")).toBe("Free");
     expect(billingStatusLabel("enterprise")).toBe("Enterprise");
     expect(billingStatusLabel("past_due")).toBe("Past due");
     expect(billingStatusBadgeVariant("active")).toBe("default");
@@ -292,6 +292,7 @@ describe("billing helpers", () => {
   });
 
   it("matches the v1 billing design plan matrix", () => {
+    expect(BILLING_PLAN_LIMITS.payg.label).toBe("Free");
     expect(BILLING_PLAN_LIMITS.free).toMatchObject({
       monthlyPriceCents: 0,
       minimumSeats: 1,
@@ -698,7 +699,7 @@ describe("billing helpers", () => {
     expect(
       resolveOrgBillingAccess({
         org: {
-          billing_status: "inactive",
+          billing_status: "past_due",
           billing_plan: "payg",
           billing_credit_purchase_total_cents: 0,
           billing_credit_grant_total_cents: 0,
@@ -720,6 +721,41 @@ describe("billing helpers", () => {
       kind: "setup_required",
       setupRouteAccessible: true,
     });
+
+    for (const billing_status of ["past_due", "canceled"] as const) {
+      expect(
+        resolveOrgBillingAccess({
+          org: {
+            billing_status,
+            billing_plan: "payg",
+            billing_credit_purchase_total_cents: 0,
+            billing_credit_grant_total_cents: 0,
+          } as Organization,
+        }),
+      ).toMatchObject({ kind: "ready", mode: "camel_free" });
+    }
+
+    expect(
+      resolveOrgBillingAccess({
+        org: {
+          billing_status: "past_due",
+          billing_plan: "starter",
+          billing_credit_purchase_total_cents: 500,
+          billing_credit_grant_total_cents: 0,
+        } as Organization,
+      }),
+    ).toMatchObject({ kind: "ready", mode: "credits" });
+    expect(
+      resolveOrgBillingAccess({
+        org: {
+          billing_status: "canceled",
+          billing_plan: "starter",
+          billing_credit_purchase_total_cents: 0,
+          billing_credit_grant_total_cents: 0,
+        } as Organization,
+        llmProviderConfig: { provider: "openrouter" },
+      }),
+    ).toMatchObject({ kind: "ready", mode: "byok" });
   });
 
   it("uses configurable capped credit allowances", () => {

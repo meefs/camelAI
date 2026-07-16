@@ -40,7 +40,7 @@ import { GroupNewChatHeader } from './group-new-chat-header';
 import { RecentlyUsedInGroup } from './recently-used-in-group';
 import { STARTER_PROMPTS, pickStarterPrompts } from './starter-prompt-catalog';
 import { useResolvedList } from './use-resolved-list';
-import type { ModelCatalogEntry } from '@/lib/model-catalog';
+import type { ModelPickerOption } from '@/lib/chat-do.server';
 import type { RecentModelScope } from '@/lib/recent-model';
 
 interface WelcomeScreenProps {
@@ -68,8 +68,10 @@ interface WelcomeScreenProps {
   isCreatingThread: boolean;
   model: LlmModel;
   onModelChange: (model: LlmModel) => void;
-  modelOptions: ReadonlyArray<ModelCatalogEntry>;
+  modelOptions: ReadonlyArray<ModelPickerOption>;
   isOrgAdmin?: boolean;
+  onLockedModelSelect?: (model: LlmModel) => void;
+  onUnlockRequest?: () => void;
   recentModelScope?: RecentModelScope | null;
   noModelsMessage?: string | null;
 }
@@ -202,6 +204,8 @@ export function WelcomeScreen({
   onModelChange,
   modelOptions,
   isOrgAdmin = false,
+  onLockedModelSelect,
+  onUnlockRequest,
   recentModelScope,
   noModelsMessage,
 }: WelcomeScreenProps) {
@@ -285,35 +289,41 @@ export function WelcomeScreen({
     focusInput();
   }, [onPromptChange, focusInput]);
   const promptComposer = (
-    <AnimatedPlaceholder isActive={shouldAnimatePlaceholder}>
-      {(animatedText) => (
-        <PromptInput
-          textareaRef={textareaRef}
-          value={inputValue}
-          onChange={onPromptChange}
-          onSubmit={onSubmit}
-          placeholder="Ask anything..."
-          animatedPlaceholder={shouldAnimatePlaceholder ? animatedText : undefined}
-          isLoading={isCreatingThread}
-          minHeight="80px"
-          autoFocus
-          attachments={attachments}
-          onFilesSelected={onFilesSelected}
-          onAttachmentRemove={onAttachmentRemove}
-          workspaceId={workspaceId}
-          model={model}
-          onModelChange={onModelChange}
-          modelOptions={modelOptions}
-          modelDisabled={isCreatingThread}
-          disabled={Boolean(noModelsMessage)}
-          isOrgAdmin={isOrgAdmin}
-          recentModelScope={recentModelScope}
-          mentionables={mentionEntities}
-          mentionMenuSide="top"
-          onMentionAddNewClick={() => navigate('/connections')}
-        />
-      )}
-    </AnimatedPlaceholder>
+    <div>
+      <AnimatedPlaceholder isActive={shouldAnimatePlaceholder}>
+        {(animatedText) => (
+          <PromptInput
+            textareaRef={textareaRef}
+            value={inputValue}
+            onChange={onPromptChange}
+            onSubmit={onSubmit}
+            placeholder="Ask anything..."
+            animatedPlaceholder={
+              shouldAnimatePlaceholder ? animatedText : undefined
+            }
+            isLoading={isCreatingThread}
+            minHeight="80px"
+            autoFocus
+            attachments={attachments}
+            onFilesSelected={onFilesSelected}
+            onAttachmentRemove={onAttachmentRemove}
+            workspaceId={workspaceId}
+            model={model}
+            onModelChange={onModelChange}
+            modelOptions={modelOptions}
+            modelDisabled={isCreatingThread}
+            disabled={Boolean(noModelsMessage)}
+            isOrgAdmin={isOrgAdmin}
+            onLockedModelSelect={onLockedModelSelect}
+            onUnlockRequest={onUnlockRequest}
+            recentModelScope={recentModelScope}
+            mentionables={mentionEntities}
+            mentionMenuSide="top"
+            onMentionAddNewClick={() => navigate('/connections')}
+          />
+        )}
+      </AnimatedPlaceholder>
+    </div>
   );
 
   if (group) {

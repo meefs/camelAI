@@ -3,6 +3,9 @@ import { Link, useSearchParams } from 'react-router';
 import type { Route } from './+types/dev.chat-credit-states';
 import { BillingCreditNotice, ChatErrorNotice } from '@/components/Chat';
 import { TopUpDialog } from '@/components/billing/top-up-dialog';
+import { UnlockPremiumModal } from '@/components/billing/unlock-premium-modal';
+import { CamelFreeWelcomeDialog } from '@/components/camel-free-welcome-dialog';
+import { ModelFallbackBanner } from '@/components/model-fallback-banner';
 import { ContentBlockRenderer } from '@/components/message-bubble';
 import { getDevBillingCreditStatus, getDevChatInitialError } from '@/lib/chat-credit-status';
 import { getChatApiErrorPresentation } from '@/lib/chat-api-errors';
@@ -10,6 +13,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import type { LlmProvider } from '@/types';
+import type { ChatAgentModelFallbackNotice } from '@/lib/chat-agent-state';
 
 type PreviewState =
   | 'healthy'
@@ -19,6 +23,8 @@ type PreviewState =
   | 'low-50'
   | 'exhausted'
   | 'exhausted-byok'
+  | 'fallback-credits'
+  | 'fallback-subscription'
   | 'send-error'
   | 'byok-anthropic-429'
   | 'byok-openrouter-429'
@@ -39,6 +45,8 @@ const PREVIEW_STATES: Array<{ value: PreviewState; label: string }> = [
   { value: 'low-50', label: '0.45 credits left' },
   { value: 'exhausted', label: 'No credits' },
   { value: 'exhausted-byok', label: 'No credits + BYOK' },
+  { value: 'fallback-credits', label: 'Fallback · credits' },
+  { value: 'fallback-subscription', label: 'Fallback · subscription' },
   { value: 'send-error', label: 'Send failure' },
   { value: 'byok-anthropic-429', label: 'Anthropic 429' },
   { value: 'byok-openrouter-429', label: 'OpenRouter 429' },
@@ -145,6 +153,8 @@ export default function DevChatCreditStatesRoute() {
   const [searchParams] = useSearchParams();
   const [topUpOpen, setTopUpOpen] = useState(false);
   const [loadingPreviewOpen, setLoadingPreviewOpen] = useState(false);
+  const [welcomeOpen, setWelcomeOpen] = useState(false);
+  const [unlockOpen, setUnlockOpen] = useState(false);
   const state = parseState(searchParams.get('state'));
   const effectiveSearchParams = new URLSearchParams(stateToSearch(state));
   const creditStatus = getDevBillingCreditStatus(effectiveSearchParams);
@@ -158,6 +168,24 @@ export default function DevChatCreditStatesRoute() {
     : devInitialError
       ? getChatApiErrorPresentation(devInitialError)
       : null;
+  const fallbackNotice: ChatAgentModelFallbackNotice | null =
+    state === 'fallback-credits'
+      ? {
+          id: 'dev-fallback-credits',
+          fromModel: 'gpt-5.6-sol',
+          toModel: 'deepseek-v4-auto',
+          reason: 'hosted_credits_exhausted',
+          createdAt: 1,
+        }
+      : state === 'fallback-subscription'
+        ? {
+            id: 'dev-fallback-subscription',
+            fromModel: 'sonnet',
+            toModel: 'deepseek-v4-auto',
+            reason: 'hosted_subscription_unavailable',
+            createdAt: 1,
+          }
+        : null;
 
   return (
     <main className="mx-auto flex min-h-svh w-full max-w-5xl flex-col gap-6 px-4 py-6 sm:px-6">
@@ -223,6 +251,15 @@ export default function DevChatCreditStatesRoute() {
         <div className="border-t p-4">
           <div className="mx-auto w-full max-w-3xl space-y-2">
             {error ? <ChatErrorNotice error={error} /> : null}
+            <ModelFallbackBanner
+              notice={fallbackNotice}
+              activeModel="deepseek-v4-auto"
+              isOrgAdmin
+              onTopUp={() => setTopUpOpen(true)}
+              onUpgrade={() => undefined}
+              onAddKey={() => undefined}
+              onOpenAiSignIn={() => undefined}
+            />
             {creditStatus ? (
               <BillingCreditNotice
                 status={creditStatus}
@@ -244,6 +281,27 @@ export default function DevChatCreditStatesRoute() {
 
       <Card>
         <CardHeader>
+          <CardTitle>Free-tier modals</CardTitle>
+          <CardDescription>
+            Preview the first-run welcome and premium-model choices.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="flex flex-wrap gap-2">
+          <Button type="button" onClick={() => setWelcomeOpen(true)}>
+            Open welcome
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            onClick={() => setUnlockOpen(true)}
+          >
+            Open premium models
+          </Button>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
           <CardTitle>Top-up modal</CardTitle>
           <CardDescription>
             Opens the in-chat top-up picker with mocked pack data.
@@ -262,6 +320,25 @@ export default function DevChatCreditStatesRoute() {
           </Button>
         </CardContent>
       </Card>
+      <CamelFreeWelcomeDialog
+        open={welcomeOpen}
+        onOpenChange={setWelcomeOpen}
+        onSeePremiumModels={() => setUnlockOpen(true)}
+      />
+      <UnlockPremiumModal
+        open={unlockOpen}
+        onOpenChange={setUnlockOpen}
+        triggerModel="gpt-5.6-sol"
+        isOrgAdmin
+        orgId="dev-org"
+        onSeePlans={() => setUnlockOpen(false)}
+        onTopUp={() => {
+          setUnlockOpen(false);
+          setTopUpOpen(true);
+        }}
+        onAddKey={() => setUnlockOpen(false)}
+        onOpenAiSignIn={() => setUnlockOpen(false)}
+      />
       <TopUpDialog
         open={topUpOpen}
         onOpenChange={setTopUpOpen}

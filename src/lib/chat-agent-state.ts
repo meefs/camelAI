@@ -40,19 +40,11 @@ export interface ChatAgentModelFallbackNotice {
   createdAt: number;
 }
 
-export const MODEL_FALLBACK_NOTICE_MAX_AGE_MS = 5 * 60_000;
-
 export function shouldShowModelFallbackNotice(
   notice: ChatAgentModelFallbackNotice | null | undefined,
   activeModel: string | null | undefined,
-  now = Date.now(),
 ): notice is ChatAgentModelFallbackNotice {
-  return Boolean(
-    notice &&
-    notice.toModel === activeModel &&
-    now >= notice.createdAt &&
-    now - notice.createdAt < MODEL_FALLBACK_NOTICE_MAX_AGE_MS
-  );
+  return Boolean(notice && notice.toModel === activeModel);
 }
 
 export interface ChatAgentStatePayload<

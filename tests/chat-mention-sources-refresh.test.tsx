@@ -71,7 +71,21 @@ let fetchers: MockFetcher[] = [];
 
 function resetFetchers() {
   fetcherCallIndex = 0;
-  fetchers = [createFetcher(), createFetcher(), createFetcher(), createFetcher()];
+  fetchers = [
+    createFetcher(),
+    createFetcher(),
+    createFetcher(),
+    createFetcher(),
+    createFetcher(),
+  ];
+}
+
+function findMentionFetcher() {
+  return fetchers.find((fetcher) =>
+    fetcher.load.mock.calls.some(
+      ([url]) => url === '/api/workspaces/ws-1/mentions',
+    ),
+  );
 }
 
 vi.mock('react-router', async () => {
@@ -368,7 +382,9 @@ describe('Chat mention source refresh', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Open mentions' }));
 
-    const mentionFetcher = fetchers[3]!;
+    const mentionFetcher = findMentionFetcher();
+    expect(mentionFetcher).toBeDefined();
+    if (!mentionFetcher) throw new Error('Missing mention fetcher');
     expect(mentionFetcher.load).toHaveBeenCalledWith('/api/workspaces/ws-1/mentions');
 
     mentionFetcher.data = {
@@ -408,7 +424,9 @@ describe('Chat mention source refresh', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Open mentions' }));
 
-    const mentionFetcher = fetchers[3]!;
+    const mentionFetcher = findMentionFetcher();
+    expect(mentionFetcher).toBeDefined();
+    if (!mentionFetcher) throw new Error('Missing mention fetcher');
     expect(mentionFetcher.load).toHaveBeenCalledWith('/api/workspaces/ws-1/mentions');
 
     mentionFetcher.data = {
@@ -461,10 +479,11 @@ describe('Chat mention source refresh', () => {
       />,
     );
 
-    const mentionFetcher = fetchers[3]!;
     await waitFor(() => {
-      expect(mentionFetcher.load).toHaveBeenCalledWith('/api/workspaces/ws-1/mentions');
+      expect(findMentionFetcher()).toBeDefined();
     });
+    const mentionFetcher = findMentionFetcher();
+    if (!mentionFetcher) throw new Error('Missing mention fetcher');
     expect(mentionFetcher.load).toHaveBeenCalledTimes(1);
     expect(
       latestPreviewContextValue.current?.formatFilePathForCopy?.({
@@ -526,10 +545,11 @@ describe('Chat mention source refresh', () => {
       />,
     );
 
-    const mentionFetcher = fetchers[3]!;
     await waitFor(() => {
-      expect(mentionFetcher.load).toHaveBeenCalledWith('/api/workspaces/ws-1/mentions');
+      expect(findMentionFetcher()).toBeDefined();
     });
+    const mentionFetcher = findMentionFetcher();
+    if (!mentionFetcher) throw new Error('Missing mention fetcher');
     expect(mentionFetcher.load).toHaveBeenCalledTimes(1);
 
     mentionFetcher.data = {
@@ -582,6 +602,8 @@ describe('Chat mention source refresh', () => {
       />,
     );
 
-    expect(fetchers[3]!.load).not.toHaveBeenCalled();
+    expect(fetchers.every((fetcher) => fetcher.load.mock.calls.length === 0)).toBe(
+      true,
+    );
   });
 });

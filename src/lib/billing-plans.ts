@@ -51,7 +51,7 @@ export const BILLING_PLAN_LIMITS: Record<BillingPlan, BillingPlanLimits> = {
   },
   payg: {
     plan: "payg",
-    label: "Pay as you go",
+    label: "Free",
     monthlyPriceCents: 0,
     minimumSeats: 1,
     includedWorkspaceCount: 1,

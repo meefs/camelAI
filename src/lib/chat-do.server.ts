@@ -27,13 +27,17 @@ import {
   getStoredCustomLlmProviderApi,
   getStoredCustomLlmProviderModelId,
   getStoredBedrockAwsRegion,
+  isLlmModelCoveredByOpenAiSubscription,
   isLlmModelAllowedForNewThread,
   isLlmModel,
   normalizeLlmModel,
 } from "./llm-provider-config";
-import { resolveOrgBillingAccess } from "./billing.server";
 import { getEffectiveLlmProviderConfig } from "./selfhost-ai-provider";
-import { resolveModelPickerCatalog } from "./model-catalog";
+import {
+  MODEL_CATALOG,
+  resolveModelPickerCatalog,
+  type ModelCatalogEntry,
+} from "./model-catalog";
 import { parseChannelIndicatorKindsJson } from "./channel-kinds";
 import {
   resolveDefaultModelForChat,
@@ -43,6 +47,11 @@ import { retryTransientDurableObjectRead } from "./do-rpc-retry.server";
 import { truncateThreadPreviewText } from "./thread-preview";
 import { getThreadTitleSourceMessage } from "./thread-title";
 import type { ThreadProjectActivity } from "./thread-project-activity";
+import {
+  isOrgBillingAccessReady,
+  resolveOrgBillingAccess,
+  type OrgBillingAccessState,
+} from "./billing.server";
 
 interface ParsedThreadMessage {
   id: string;
@@ -153,12 +162,22 @@ export interface WorkspaceModelPickerState {
   customModelId: string | null;
   awsRegion: string | null;
   allowOpenAiSubscription: boolean;
+  billingAccessMode: Extract<
+    OrgBillingAccessState,
+    { kind: "ready" }
+  >["mode"] | null;
   experimentalSettings: import("@/types").OrganizationExperimentalSettings;
+  modelOptions: ModelPickerOption[];
   allowedThreadModels: LlmModel[];
   effectivePickerDefaultModel: LlmModel | null;
   hasEffectivePickerDefault: boolean;
   defaultModel: LlmModel | null;
 }
+
+export type ModelPickerOption = ModelCatalogEntry & {
+  locked?: boolean;
+  unlockHint?: "openai" | "generic";
+};
 
 async function getOrgModelPickerConfigCompat(
   orgStub: OrgDO,
@@ -249,7 +268,16 @@ async function getWorkspaceModelPickerStateForOrg(
     orgPickerConfig,
     workspacePickerConfig,
   );
-  const visibleCatalog = resolveModelPickerCatalog({
+  const resolvedBillingAccess = resolveOrgBillingAccess({
+    env,
+    org: orgInfo,
+    llmProviderConfig: effectiveLlmProviderConfig,
+  });
+  const billingAccessMode = isOrgBillingAccessReady(resolvedBillingAccess)
+    ? resolvedBillingAccess.mode
+    : null;
+  const isFreeMode = billingAccessMode === "camel_free";
+  const resolvedCatalog = resolveModelPickerCatalog({
     effectiveConfig,
     experimentalSettings,
     orgProvider: effectiveLlmProviderConfig?.provider,
@@ -258,21 +286,47 @@ async function getWorkspaceModelPickerStateForOrg(
     awsRegion,
     allowOpenAiSubscription,
   });
-  const billingAccess = resolveOrgBillingAccess({
-    env,
-    org: orgInfo,
-    llmProviderConfig: effectiveLlmProviderConfig,
+  const visibleCatalog =
+    isFreeMode &&
+    !resolvedCatalog.some((entry) => entry.id === CAMEL_FREE_LLM_MODEL)
+      ? [MODEL_CATALOG[CAMEL_FREE_LLM_MODEL], ...resolvedCatalog]
+      : resolvedCatalog;
+  const modelOptions: ModelPickerOption[] = visibleCatalog.map((entry) => {
+    const isOpenAiCovered =
+      allowOpenAiSubscription &&
+      isLlmModelCoveredByOpenAiSubscription(entry.id);
+    if (
+      !isFreeMode ||
+      entry.id === CAMEL_FREE_LLM_MODEL ||
+      isOpenAiCovered
+    ) {
+      return entry;
+    }
+    return {
+      ...entry,
+      locked: true,
+      unlockHint: isLlmModelCoveredByOpenAiSubscription(entry.id)
+        ? "openai"
+        : "generic",
+    };
   });
+  const selectableCatalog = modelOptions.filter((entry) => !entry.locked);
+  const configuredDefault = effectiveConfig.default_model;
+  const configuredDefaultIsLocked = modelOptions.some(
+    (entry) => entry.id === configuredDefault && entry.locked,
+  );
+  const effectivePickerDefaultModel = configuredDefaultIsLocked
+    ? CAMEL_FREE_LLM_MODEL
+    : configuredDefault;
   const defaultModel = resolveDefaultModelForChat({
-    effectiveDefaultModel: effectiveConfig.default_model,
-    fallbackModel:
-      billingAccess.kind === "ready" && billingAccess.mode === "camel_free"
-        ? CAMEL_FREE_LLM_MODEL
-        : getDefaultLlmModel(effectiveLlmProviderConfig?.provider, {
-            customApi,
-            customModelId,
-          }),
-    visibleCatalog,
+    effectiveDefaultModel: effectivePickerDefaultModel,
+    fallbackModel: isFreeMode
+      ? CAMEL_FREE_LLM_MODEL
+      : getDefaultLlmModel(effectiveLlmProviderConfig?.provider, {
+          customApi,
+          customModelId,
+        }),
+    visibleCatalog: selectableCatalog,
   });
 
   return {
@@ -282,10 +336,12 @@ async function getWorkspaceModelPickerStateForOrg(
     customModelId,
     awsRegion,
     allowOpenAiSubscription,
+    billingAccessMode,
     experimentalSettings,
-    allowedThreadModels: visibleCatalog.map((entry) => entry.id),
-    effectivePickerDefaultModel: effectiveConfig.default_model,
-    hasEffectivePickerDefault: effectiveConfig.default_model !== null,
+    modelOptions,
+    allowedThreadModels: selectableCatalog.map((entry) => entry.id),
+    effectivePickerDefaultModel,
+    hasEffectivePickerDefault: effectivePickerDefaultModel !== null,
     defaultModel,
   };
 }

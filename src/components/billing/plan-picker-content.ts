@@ -20,32 +20,30 @@ export interface PlanContent {
 
 export const PLAN_CONTENT: Record<BillingPlan, PlanContent> = {
   free: {
-    // Not rendered by the picker — INDIVIDUAL_PLANS does not include "free".
-    // Exists only to satisfy Record<BillingPlan, PlanContent>. Pay as you go is
-    // the actual free tier shown to users.
+    // Not rendered by the upgrade picker. It exists to keep BillingPlan content
+    // exhaustive for callers that inspect legacy plan ids.
     tagline: "Try it out",
     ctaLabel: "Continue",
     ctaKind: "payg",
     features: [],
   },
   payg: {
-    tagline: "Try it out",
-    ctaLabel: "Continue",
+    // Internal legacy id for the Free plan. Credit purchases are exposed as a
+    // separate Top up action, never as a plan card.
+    tagline: "",
+    ctaLabel: "",
     ctaKind: "payg",
-    features: [
-      "Pay only for what you use, or bring your own API key",
-      "3 deployed apps",
-      "1 automated task daily",
-      "5 GB storage",
-    ],
+    features: [],
   },
   starter: {
     tagline: "Solo builders",
-    upsellPrefix: "Everything in Pay as you go, plus:",
+    upsellPrefix: "Everything in Free, plus:",
     ctaLabel: "Subscribe",
     ctaKind: "subscribe",
     features: [
       "$10 of model credits / mo (at cost)",
+      "5× daily web search, research, and Oracle allowances",
+      "Priority over free traffic on Camel Free",
       "30 deployed apps",
       "10 custom domains",
       "1 automated task hourly",
@@ -60,6 +58,8 @@ export const PLAN_CONTENT: Record<BillingPlan, PlanContent> = {
     ctaKind: "subscribe",
     features: [
       "$40 of model credits / mo (at cost)",
+      "20× daily web search, research, and Oracle allowances",
+      "Priority over free traffic on Camel Free",
       "Unlimited deployed apps",
       "Unlimited custom domains",
       "Automations every 5 minutes",
@@ -73,6 +73,8 @@ export const PLAN_CONTENT: Record<BillingPlan, PlanContent> = {
     ctaKind: "subscribe",
     features: [
       "$50 of model credits / seat / mo",
+      "20× daily web search, research, and Oracle allowances",
+      "Priority over free traffic on Camel Free",
       "2 shared workspaces",
       "Role-based access (admin / member)",
     ],
@@ -83,6 +85,7 @@ export const PLAN_CONTENT: Record<BillingPlan, PlanContent> = {
     ctaLabel: "Contact sales",
     ctaKind: "contact",
     features: [
+      "Priority over free traffic on Camel Free",
       "SSO / SAML",
       "Bring your own cloud (BYOCloud)",
       "Multiple workspaces",
@@ -113,9 +116,5 @@ export function formatPlanPrice(plan: BillingPlan): {
   return { amount, suffix, subtitle: "+ usage after credits" };
 }
 
-export const INDIVIDUAL_PLANS: BillingPlan[] = [
-  "payg",
-  "starter",
-  "pro",
-];
+export const INDIVIDUAL_PLANS: BillingPlan[] = ["starter", "pro"];
 export const TEAM_PLANS: BillingPlan[] = ["team", "enterprise"];

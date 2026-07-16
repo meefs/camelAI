@@ -1,16 +1,23 @@
 "use client"
 
-import { useState } from "react"
-import { Cable, CircleHelp, Clock, LayoutGrid, MessagesSquare, Plus } from "lucide-react"
-import { Link, useLocation, useNavigate, useRevalidator } from "react-router"
+import { useCallback, useEffect, useState } from "react"
+import { Cable, CircleHelp, Clock, LayoutGrid, MessagesSquare, Plus, Sparkles } from "lucide-react"
+import { Link, useFetcher, useLocation, useNavigate, useRevalidator } from "react-router"
 import type { ChatGroupThreadSummary } from "@/types"
 
+import { OpenAiSignInDialog } from "@/components/billing/openai-sign-in-dialog"
+import { PlanUpgradeDialog } from "@/components/billing/plan-upgrade-dialog"
+import {
+  TopUpDialog,
+  type TopUpDialogPack,
+} from "@/components/billing/top-up-dialog"
 import {
   getCloseGroupRedirect,
   getGroupLandingHref,
   useChatGroups,
 } from "@/hooks/use-chat-groups"
 import { GetHelpDialog } from "@/components/get-help-dialog"
+import { ByokKeyDialog } from "@/components/onboarding/byok-key-dialog"
 import { ChatGroupsList } from "@/components/sidebar/chat-groups-list"
 import { NavUser } from "@/components/sidebar/nav-user"
 import { WorkspaceSwitcher } from "@/components/sidebar/workspace-switcher"
@@ -26,8 +33,33 @@ import {
   SidebarMenuItem,
   SidebarRail,
 } from "@/components/ui/sidebar"
+import type { OnboardingByokProvider } from "@/lib/byok-providers"
+import {
+  EMPTY_BYOK_CREDENTIAL,
+  resolveOrgScopedByokApiKey,
+  type OrgScopedByokCredential,
+} from "@/lib/byok-credential-state"
+import { useBillingDialogPresence } from "@/hooks/use-billing-dialog-presence"
 
-type AppSidebarProps = React.ComponentProps<typeof Sidebar>;
+type BillingAccessMode =
+  | "enterprise"
+  | "subscription"
+  | "byok"
+  | "credits"
+  | "selfhost"
+  | "camel_free"
+
+type AppSidebarProps = React.ComponentProps<typeof Sidebar> & {
+  billingAccessMode?: BillingAccessMode | null
+  isOrgAdmin?: boolean
+  orgId?: string | null
+}
+
+interface CreditPacksResourceData {
+  packs: TopUpDialogPack[]
+  canTopUp: boolean
+  unavailableReason?: string | null
+}
 
 // Collapsed-rail section separator. A constant-height in-flow hairline: it
 // occupies the same 1px in both sidebar states, so toggling the rail never
@@ -46,17 +78,131 @@ function CollapsedRailSeparator() {
   );
 }
 
-export function AppSidebar(props: AppSidebarProps) {
+export function AppSidebar({
+  billingAccessMode = null,
+  isOrgAdmin = false,
+  orgId = null,
+  ...props
+}: AppSidebarProps) {
   const [helpOpen, setHelpOpen] = useState(false)
-  const { pathname } = useLocation()
+  const [planUpgradeOpen, setPlanUpgradeOpen] = useState(false)
+  const [topUpOpen, setTopUpOpen] = useState(false)
+  const [byokDialogOpen, setByokDialogOpen] = useState(false)
+  const [openAiSignInOpen, setOpenAiSignInOpen] = useState(false)
+  const [selectedProvider, setSelectedProvider] =
+    useState<OnboardingByokProvider>("openrouter")
+  const [providerCredential, setProviderCredential] =
+    useState<OrgScopedByokCredential>(EMPTY_BYOK_CREDENTIAL)
+  const providerApiKey = resolveOrgScopedByokApiKey(providerCredential, orgId)
+  const [awsRegion, setAwsRegion] = useState("us-east-1")
+  const [providerError, setProviderError] = useState<string | null>(null)
+  const creditPacksFetcher = useFetcher<CreditPacksResourceData>()
+  const providerFetcher = useFetcher<{ success?: boolean; error?: string }>()
+  const location = useLocation()
+  const { pathname } = location
   const navigate = useNavigate()
   const revalidator = useRevalidator()
+  const { setSidebarBillingDialogOpen } = useBillingDialogPresence()
   const { groups, activeGroupId, isLoading } = useChatGroups()
   const isHistory = pathname === "/history"
   const isConnections = pathname === "/connections"
   const isApps = pathname === "/apps"
   const isAutomations = pathname === "/automations"
   const activeGroup = groups.find((group) => group.id === activeGroupId) ?? null
+  const currentPath = `${location.pathname}${location.search}${location.hash}`
+
+  const closeBillingDialogs = useCallback(() => {
+    setPlanUpgradeOpen(false)
+    setTopUpOpen(false)
+    setByokDialogOpen(false)
+    setOpenAiSignInOpen(false)
+    setSidebarBillingDialogOpen(false)
+    setProviderCredential(EMPTY_BYOK_CREDENTIAL)
+    setProviderError(null)
+  }, [setSidebarBillingDialogOpen])
+
+  const openPlanUpgrade = useCallback(() => {
+    closeBillingDialogs()
+    setPlanUpgradeOpen(true)
+    setSidebarBillingDialogOpen(true)
+  }, [closeBillingDialogs, setSidebarBillingDialogOpen])
+
+  const openTopUp = useCallback(() => {
+    closeBillingDialogs()
+    setTopUpOpen(true)
+    setSidebarBillingDialogOpen(true)
+    if (!creditPacksFetcher.data && creditPacksFetcher.state === "idle") {
+      creditPacksFetcher.load("/api/billing/credit-packs")
+    }
+  }, [closeBillingDialogs, creditPacksFetcher, setSidebarBillingDialogOpen])
+
+  const openByok = useCallback(() => {
+    closeBillingDialogs()
+    setProviderError(null)
+    setByokDialogOpen(true)
+    setSidebarBillingDialogOpen(true)
+  }, [closeBillingDialogs, setSidebarBillingDialogOpen])
+
+  const openOpenAiSignIn = useCallback(() => {
+    closeBillingDialogs()
+    setOpenAiSignInOpen(true)
+    setSidebarBillingDialogOpen(true)
+  }, [closeBillingDialogs, setSidebarBillingDialogOpen])
+
+  useEffect(
+    () => () => {
+      setSidebarBillingDialogOpen(false)
+    },
+    [setSidebarBillingDialogOpen],
+  )
+
+  useEffect(() => {
+    closeBillingDialogs()
+  }, [closeBillingDialogs, orgId])
+
+  useEffect(() => {
+    if (providerFetcher.state !== "idle" || !providerFetcher.data) return
+    if (providerFetcher.data.error) {
+      setProviderError(providerFetcher.data.error)
+      return
+    }
+    if (providerFetcher.data.success) {
+      closeBillingDialogs()
+      revalidator.revalidate()
+    }
+  }, [
+    closeBillingDialogs,
+    providerFetcher.data,
+    providerFetcher.state,
+    revalidator,
+  ])
+
+  const saveByokProvider = useCallback(() => {
+    if (!orgId) {
+      setProviderError("We couldn't identify the current organization.")
+      return
+    }
+    if (!providerApiKey.trim()) {
+      setProviderError("Enter an API key to continue.")
+      return
+    }
+    const payload: Record<string, string> = {
+      intent: "setProvider",
+      provider: selectedProvider,
+    }
+    if (selectedProvider === "bedrock") {
+      payload.bearer_token = providerApiKey.trim()
+      payload.aws_region = awsRegion
+    } else {
+      payload.api_key = providerApiKey.trim()
+    }
+    setProviderError(null)
+    providerFetcher.submit(payload, {
+      method: "POST",
+      action: `/api/orgs/${orgId}/llm-provider`,
+      encType: "application/json",
+    })
+  }, [awsRegion, orgId, providerApiKey, providerFetcher, selectedProvider])
 
   const handleCloseGroup = async (groupId: string) => {
     const redirect = getCloseGroupRedirect(groups, activeGroupId, groupId)
@@ -187,6 +333,14 @@ export function AppSidebar(props: AppSidebarProps) {
       </SidebarContent>
       <SidebarFooter className="[--safe-area-padding-left:0.5rem] [--safe-area-padding-right:0.5rem] [--safe-area-padding-bottom:0.5rem] pl-safe pr-safe pb-safe">
         <SidebarMenu>
+          {billingAccessMode === "camel_free" && isOrgAdmin ? (
+            <SidebarMenuItem>
+              <SidebarMenuButton tooltip="Upgrade" onClick={openPlanUpgrade}>
+                <Sparkles />
+                <span>Upgrade</span>
+              </SidebarMenuButton>
+            </SidebarMenuItem>
+          ) : null}
           <SidebarMenuItem>
             <SidebarMenuButton
               tooltip="Get Help"
@@ -200,6 +354,67 @@ export function AppSidebar(props: AppSidebarProps) {
         <NavUser />
       </SidebarFooter>
       <GetHelpDialog open={helpOpen} onOpenChange={setHelpOpen} />
+      <PlanUpgradeDialog
+        open={planUpgradeOpen}
+        onOpenChange={(open) => {
+          if (!open) closeBillingDialogs()
+        }}
+        onTopUp={openTopUp}
+        onAddKey={openByok}
+        onOpenAiSignIn={openOpenAiSignIn}
+      />
+      <TopUpDialog
+        open={topUpOpen}
+        onOpenChange={(open) => {
+          if (!open) closeBillingDialogs()
+        }}
+        packs={creditPacksFetcher.data?.packs ?? []}
+        action="/api/billing/credit-packs"
+        returnTo={currentPath}
+        loading={
+          topUpOpen && !creditPacksFetcher.data
+            ? true
+            : creditPacksFetcher.state !== "idle"
+        }
+        canTopUp={creditPacksFetcher.data?.canTopUp ?? isOrgAdmin}
+        unavailableReason={creditPacksFetcher.data?.unavailableReason ?? null}
+      />
+      <ByokKeyDialog
+        open={byokDialogOpen}
+        onOpenChange={(open) => {
+          if (!open) {
+            closeBillingDialogs()
+          }
+        }}
+        selectedProvider={selectedProvider}
+        onProviderChange={(provider) => {
+          setSelectedProvider(provider)
+          setProviderError(null)
+        }}
+        apiKey={providerApiKey}
+        onApiKeyChange={(key) => {
+          setProviderCredential({ orgId, apiKey: key })
+          setProviderError(null)
+        }}
+        awsRegion={awsRegion}
+        onAwsRegionChange={(region) => {
+          setAwsRegion(region)
+          setProviderError(null)
+        }}
+        onSubmit={saveByokProvider}
+        isSubmitting={providerFetcher.state !== "idle"}
+        errorMessage={providerError}
+      />
+      {orgId ? (
+        <OpenAiSignInDialog
+          open={openAiSignInOpen}
+          onOpenChange={(open) => {
+            if (!open) closeBillingDialogs()
+          }}
+          orgId={orgId}
+          onSuccess={() => revalidator.revalidate()}
+        />
+      ) : null}
       <SidebarRail />
     </Sidebar>
   )

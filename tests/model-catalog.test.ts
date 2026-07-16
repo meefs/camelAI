@@ -216,6 +216,7 @@ describe('MODEL_CATALOG', () => {
     });
 
     expect(visible.map((entry) => entry.id)).toEqual([
+      'deepseek-v4-auto',
       'gpt-5.6-sol',
       'gpt-5.6-terra',
       'gpt-5.6-luna',
@@ -304,6 +305,7 @@ describe('MODEL_CATALOG', () => {
     });
 
     expect(visible.map((entry) => entry.id)).toEqual([
+      'deepseek-v4-auto',
       'opus-4.8',
       'sonnet',
       'haiku',

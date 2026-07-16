@@ -175,12 +175,22 @@ export function PlanPicker({
           <TabsTrigger value="individual">Individual</TabsTrigger>
           <TabsTrigger value="team">Team</TabsTrigger>
         </TabsList>
-        <TabsContent value="individual" className="mt-5 w-full">
-          {renderGrid(INDIVIDUAL_PLANS, individualHighlight)}
-        </TabsContent>
-        <TabsContent value="team" className="mt-5 w-full">
-          {renderGrid(TEAM_PLANS, teamHighlight)}
-        </TabsContent>
+        <div className="mt-5 grid w-full">
+          <TabsContent
+            forceMount
+            value="individual"
+            className="col-start-1 row-start-1 w-full data-[state=inactive]:invisible data-[state=inactive]:pointer-events-none"
+          >
+            {renderGrid(INDIVIDUAL_PLANS, individualHighlight)}
+          </TabsContent>
+          <TabsContent
+            forceMount
+            value="team"
+            className="col-start-1 row-start-1 w-full data-[state=inactive]:invisible data-[state=inactive]:pointer-events-none"
+          >
+            {renderGrid(TEAM_PLANS, teamHighlight)}
+          </TabsContent>
+        </div>
       </Tabs>
 
       {disabledReason ? (

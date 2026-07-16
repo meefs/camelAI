@@ -36,7 +36,7 @@ export function billingStatusLabel(
       return "Canceled";
     case "inactive":
     default:
-      return "Pay as you go";
+      return "Free";
   }
 }
 

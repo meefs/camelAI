@@ -73,7 +73,10 @@ import {
   normalizeLlmModel,
 } from "../../../src/lib/llm-provider-config";
 import type { HostedCapability } from "../../../src/lib/capability-allowances";
-import { getEffectiveLlmProviderConfig } from "../../../src/lib/selfhost-ai-provider";
+import {
+  getEffectiveLlmProviderConfig,
+  isSelfhostRuntime,
+} from "../../../src/lib/selfhost-ai-provider";
 import { isOrgBanned } from "./ban-list";
 import type { WorkspaceThreadStreamingOptions } from "./thread-status";
 
@@ -4441,13 +4444,20 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
 
       const orgId = this.env.ORG.idFromName(baseContext.orgId);
       const getOrgStub = () => this.env.ORG.get(orgId);
-      const [thread, llmProviderRecord] = await Promise.all([
+      const [thread, llmProviderRecord, orgInfo] = await Promise.all([
         this.retryChatDurableObjectRpc(
           "OrgDO.getThread",
           () => getOrgStub().getThread(baseContext.threadId),
           { attempts: 4, initialDelayMs: 150 },
         ),
         this.getCachedLlmProviderConfig(baseContext.orgId),
+        typeof getOrgStub().getInfo === "function"
+          ? this.retryChatDurableObjectRpc(
+              "OrgDO.getInfo",
+              () => getOrgStub().getInfo(),
+              { attempts: 4, initialDelayMs: 150 },
+            )
+          : Promise.resolve(null),
       ]);
       const context: ChatContextState = { ...baseContext };
       this.chatContext = context;
@@ -4462,6 +4472,19 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
       );
       const customApi = getStoredCustomLlmProviderApi(effectiveLlmProviderRecord);
       const customModelId = getStoredCustomLlmProviderModelId(effectiveLlmProviderRecord);
+      const billingStatus = orgInfo?.billing_status ?? "inactive";
+      const totalCreditsCents =
+        (orgInfo?.billing_credit_purchase_total_cents ?? 0) +
+        (orgInfo?.billing_credit_grant_total_cents ?? 0);
+      const isCamelFreeMode = Boolean(
+        orgInfo &&
+          !isSelfhostRuntime(this.env) &&
+          !effectiveLlmProviderRecord &&
+          billingStatus !== "enterprise" &&
+          billingStatus !== "trialing" &&
+          billingStatus !== "active" &&
+          totalCreditsCents <= 0,
+      );
       const storedThreadModel =
         thread && threadWorkspaceId === context.workspaceId
           ? (thread as { model?: unknown }).model
@@ -4474,10 +4497,12 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
             })
           : storedThreadModel !== undefined
             ? normalizeLlmModel(storedThreadModel)
-          : normalizeLlmModel(undefined, effectiveLlmProviderRecord?.provider, {
-              customApi,
-              customModelId,
-            });
+          : isCamelFreeMode
+            ? CAMEL_FREE_LLM_MODEL
+            : normalizeLlmModel(undefined, effectiveLlmProviderRecord?.provider, {
+                customApi,
+                customModelId,
+              });
       // Keep the in-memory model aligned with the durable thread before any
       // refresh rebuilds the tool surface. Without this, an explicitly selected
       // Camel Free thread initially receives Oracle, then refreshPiSessionModel()

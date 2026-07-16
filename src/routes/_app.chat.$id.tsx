@@ -37,6 +37,7 @@ import {
 } from "@/lib/llm-provider-config";
 import { getEffectiveLlmProviderConfig } from "@/lib/selfhost-ai-provider";
 import { isSelfhostRuntime } from "@/lib/selfhost-runtime";
+import { modelCatalogEntriesForIds } from "@/lib/model-catalog";
 import { getOrg, getWorkerScript } from "@/lib/auth-do";
 import { switchSessionOrg, switchSessionWorkspace } from "@/lib/auth-do";
 import {
@@ -604,9 +605,11 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
         (threadContext.model as LlmModel | undefined) ??
         getDefaultLlmModel(),
       llmProvider: null as LlmProvider | null,
+      modelOptions: null,
       allowedThreadModels: null,
       effectivePickerDefaultModel: null,
       hasEffectivePickerDefault: false,
+      billingAccessMode: null,
       experimentalSettings: DEFAULT_ORG_EXPERIMENTAL_SETTINGS,
       billingCreditStatus: null,
       initialChatError: null,
@@ -635,9 +638,11 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
       threadTitle: null,
       threadModel: getDefaultLlmModel(),
       llmProvider: null as LlmProvider | null,
+      modelOptions: [],
       allowedThreadModels: [],
       effectivePickerDefaultModel: null,
       hasEffectivePickerDefault: false,
+      billingAccessMode: null,
       experimentalSettings: DEFAULT_ORG_EXPERIMENTAL_SETTINGS,
       billingCreditStatus: null,
       initialChatError: getDevChatInitialError(url.searchParams),
@@ -897,12 +902,16 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
     customApi: pickerState?.customApi ?? customApi,
     customModelId: pickerState?.customModelId ?? customModelId,
     awsRegion: pickerState?.awsRegion ?? awsRegion,
+    modelOptions:
+      pickerState?.modelOptions ??
+      modelCatalogEntriesForIds(fallbackAllowedThreadModels),
     allowedThreadModels:
       pickerState?.allowedThreadModels ?? fallbackAllowedThreadModels,
     effectivePickerDefaultModel:
       pickerState?.effectivePickerDefaultModel ?? null,
     hasEffectivePickerDefault:
       pickerState?.hasEffectivePickerDefault ?? false,
+    billingAccessMode: pickerState?.billingAccessMode ?? null,
     experimentalSettings:
       pickerState?.experimentalSettings ?? experimentalSettings,
     billingCreditStatus: applyDevBillingCreditStatusOverride(
@@ -939,12 +948,11 @@ export default function ChatPage() {
     chatData,
     threadModel,
     llmProvider,
-    customApi,
-    customModelId,
-    awsRegion,
+    modelOptions,
     allowedThreadModels,
     effectivePickerDefaultModel,
     hasEffectivePickerDefault,
+    billingAccessMode,
     experimentalSettings,
     billingCreditStatus,
     initialChatError,
@@ -1029,19 +1037,7 @@ export default function ChatPage() {
   const displayThreadModel = isDisplayingLoaderThread
     ? threadModel
     : (activeThreadSummary?.model ?? threadModel);
-  const displayAllowedThreadModels =
-    displayThreadModel
-      ? getVisibleLlmModelOptions(
-          experimentalSettings,
-          displayThreadModel,
-          {
-            orgProvider: llmProvider,
-            customApi,
-            customModelId,
-            awsRegion,
-          },
-        ).map((option) => option.value)
-      : allowedThreadModels;
+  const displayAllowedThreadModels = allowedThreadModels;
   const cachedSnapshot = displayThreadId ? getSnapshot(displayThreadId) : null;
   const shouldUseCachedSnapshot = Boolean(
     cachedSnapshot &&
@@ -1292,8 +1288,10 @@ export default function ChatPage() {
             threadModel={displayThreadModel}
             llmProvider={llmProvider}
             allowedThreadModels={displayAllowedThreadModels}
+            modelOptions={modelOptions ?? undefined}
             effectivePickerDefaultModel={effectivePickerDefaultModel}
             hasEffectivePickerDefault={hasEffectivePickerDefault}
+            billingAccessMode={billingAccessMode}
             experimentalSettings={experimentalSettings}
             billingCreditStatus={billingCreditStatus}
             initialError={initialChatError ?? displayChatData.messagesError}

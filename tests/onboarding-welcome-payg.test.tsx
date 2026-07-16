@@ -7,22 +7,12 @@ const testState = vi.hoisted(() => ({
   fetcherSubmit: vi.fn(),
   loaderData: {
     current: {
-      orgId: "org_123",
       orgName: "camelAI",
       teamContext: {
         memberCount: 0,
         appCount: 0,
         integrations: [],
       },
-      byokProviderLabel: null,
-      stripeConfigured: true,
-      creditPacks: [
-        {
-          id: "price_credit_1000",
-          creditsLabel: "10.00 credits",
-          priceLabel: "$10.00",
-        },
-      ],
     },
   },
   outletContext: {
@@ -60,50 +50,25 @@ vi.mock("react-router", async () => {
 const { default: OnboardingWelcomeRoute } =
   await import("@/routes/_onboarding.welcome");
 
-describe("OnboardingWelcomeRoute Pay as you go", () => {
+describe("OnboardingWelcomeRoute free onboarding", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    testState.outletContext.current.completeOnboarding.mockResolvedValue(
+      undefined,
+    );
   });
 
-  it("opens the Pay as you go choice dialog before starting hosted credits", async () => {
+  it("continues directly to chat without a billing choice", async () => {
     const user = userEvent.setup();
     render(<OnboardingWelcomeRoute />);
 
-    await user.click(screen.getByRole("button", { name: "Continue" }));
-
-    expect(
-      screen.getByRole("dialog", { name: /continue with pay as you go/i }),
-    ).toBeInTheDocument();
-    expect(testState.fetcherSubmit).not.toHaveBeenCalled();
-  });
-
-  it("opens the API key dialog from the Pay as you go choice", async () => {
-    const user = userEvent.setup();
-    render(<OnboardingWelcomeRoute />);
-
-    await user.click(screen.getByRole("button", { name: "Continue" }));
     await user.click(
-      screen.getByRole("button", { name: /bring your own api key/i }),
+      screen.getByRole("button", { name: "Continue to chat" }),
     );
 
-    expect(
-      screen.getByRole("dialog", { name: /add your api key/i }),
-    ).toBeInTheDocument();
+    expect(testState.outletContext.current.completeOnboarding).toHaveBeenCalledTimes(1);
     expect(testState.fetcherSubmit).not.toHaveBeenCalled();
-  });
-
-  it("opens credit pack selection from the Pay as you go choice", async () => {
-    const user = userEvent.setup();
-    render(<OnboardingWelcomeRoute />);
-
-    await user.click(screen.getByRole("button", { name: "Continue" }));
-    await user.click(screen.getByRole("button", { name: /purchase credits/i }));
-
-    expect(
-      screen.getByRole("dialog", { name: /top up credits/i }),
-    ).toBeInTheDocument();
-    expect(screen.getByText("10.00 credits")).toBeInTheDocument();
-    expect(screen.getByText("$10.00")).toBeInTheDocument();
-    expect(testState.fetcherSubmit).not.toHaveBeenCalled();
+    expect(screen.queryByText("Pay as you go")).not.toBeInTheDocument();
+    expect(screen.queryByText("Bring your own API key")).not.toBeInTheDocument();
   });
 });

@@ -1,13 +1,14 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
-import { Check } from 'lucide-react';
+import { Fragment, useEffect, useRef, useState } from 'react';
+import { Check, Lock, LockOpen } from 'lucide-react';
 import { Link } from 'react-router';
 import { ModelLogo } from '@/components/model-logo';
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuLabel,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
@@ -20,20 +21,23 @@ import {
   COST_BUCKET_MAX,
   MODEL_CATALOG,
   type CostBucket,
-  type ModelCatalogEntry,
 } from '@/lib/model-catalog';
+import { CAMEL_FREE_LLM_MODEL } from '@/lib/llm-provider-config';
 import {
   setRecentModel,
   type RecentModelScope,
 } from '@/lib/recent-model';
 import { cn } from '@/lib/utils';
 import type { LlmModel } from '@/types';
+import type { ModelPickerOption } from '@/lib/chat-do.server';
 
 interface ModelPickerProps {
   value: LlmModel;
   onValueChange: (model: LlmModel) => void;
-  options: ReadonlyArray<ModelCatalogEntry>;
+  options: ReadonlyArray<ModelPickerOption>;
   isOrgAdmin: boolean;
+  onLockedModelSelect?: (model: LlmModel) => void;
+  onUnlockRequest?: () => void;
   recentModelScope?: RecentModelScope | null;
   disabled?: boolean;
   manageModelsHref?: string;
@@ -139,9 +143,17 @@ function RatingRow({
   );
 }
 
-function ModelMetadataCard({ entry }: { entry: ModelCatalogEntry }) {
+function ModelMetadataCard({ entry }: { entry: ModelPickerOption }) {
+  const unlockCopy = entry.locked
+    ? entry.unlockHint === 'openai'
+      ? 'Unlock with a plan, credits, an API key — or your OpenAI account.'
+      : 'Unlock with a plan, credits, or an API key.'
+    : entry.id === CAMEL_FREE_LLM_MODEL
+      ? "Free and always included. Text-only — it can't see images. Comes with daily research and Oracle boosts powered by premium models."
+      : null;
+
   return (
-    <HoverCardContent side="right" align="start" sideOffset={8} className="w-48">
+    <HoverCardContent side="right" align="start" sideOffset={8} className="w-64">
       <div className="space-y-2">
         <div className="font-medium">{entry.label}</div>
         <div className="h-px bg-border/60" />
@@ -158,6 +170,11 @@ function ModelMetadataCard({ entry }: { entry: ModelCatalogEntry }) {
             ariaLabel={`Speed rating: ${entry.speed} out of 5`}
           />
         </div>
+        {unlockCopy ? (
+          <p className="border-t border-border/60 pt-2 text-xs text-muted-foreground">
+            {unlockCopy}
+          </p>
+        ) : null}
       </div>
     </HoverCardContent>
   );
@@ -168,6 +185,8 @@ export function ModelPicker({
   onValueChange,
   options,
   isOrgAdmin,
+  onLockedModelSelect = () => {},
+  onUnlockRequest = () => {},
   recentModelScope,
   disabled = false,
   manageModelsHref = '/settings/organization/models',
@@ -177,6 +196,11 @@ export function ModelPicker({
   const openTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const selectedEntry =
     options.find((option) => option.id === value) ?? MODEL_CATALOG[value];
+  const unlockedOptions = options.filter((option) => !option.locked);
+  const lockedOptions = options.filter((option) => option.locked);
+  const orderedOptions = [...unlockedOptions, ...lockedOptions];
+  const firstLockedIndex = unlockedOptions.length;
+  const hasLockedOptions = lockedOptions.length > 0;
 
   function clearPendingOpen() {
     if (openTimerRef.current === null) return;
@@ -241,43 +265,82 @@ export function ModelPicker({
           {selectedEntry.label}
         </button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="start" className="w-56">
-        {options.map((entry) => {
+      <DropdownMenuContent align="start" className="w-64">
+        {orderedOptions.map((entry, index) => {
           const isSelected = entry.id === value;
           return (
-            <HoverCard
-              key={entry.id}
-              open={openModelId === entry.id}
-              openDelay={0}
-              closeDelay={0}
-            >
-              <HoverCardTrigger asChild>
-                <DropdownMenuItem
-                  onSelect={() => handleSelect(entry.id)}
-                  onPointerEnter={() => queueMetadataOpen(entry.id)}
-                  onPointerLeave={() => closeMetadata(entry.id)}
-                  onFocus={(event) => {
-                    if (event.currentTarget.matches(':hover')) return;
-                    clearPendingOpen();
-                    setOpenModelId(entry.id);
-                  }}
-                  onBlur={() => closeMetadata(entry.id)}
-                  className={cn(
-                    'gap-2 pr-2',
-                    isSelected && 'bg-accent text-accent-foreground',
-                  )}
-                >
-                  <ModelLogo model={entry.id} size={16} className="size-4" />
-                  <span className="min-w-0 flex-1 truncate">
-                    {entry.label}
-                  </span>
-                  {isSelected && <Check className="ml-auto size-3.5" />}
-                </DropdownMenuItem>
-              </HoverCardTrigger>
-              {openModelId === entry.id && <ModelMetadataCard entry={entry} />}
-            </HoverCard>
+            <Fragment key={entry.id}>
+              {index === firstLockedIndex ? (
+                <>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuLabel className="py-1 text-[0.65rem] font-medium uppercase tracking-wider">
+                    Premium models
+                  </DropdownMenuLabel>
+                </>
+              ) : null}
+              <HoverCard
+                open={openModelId === entry.id}
+                openDelay={0}
+                closeDelay={0}
+              >
+                <HoverCardTrigger asChild>
+                  <DropdownMenuItem
+                    onSelect={(event) => {
+                      if (entry.locked) {
+                        event?.preventDefault();
+                        closeAllMetadata();
+                        setMenuOpen(false);
+                        onLockedModelSelect(entry.id);
+                        return;
+                      }
+                      handleSelect(entry.id);
+                    }}
+                    onPointerEnter={() => queueMetadataOpen(entry.id)}
+                    onPointerLeave={() => closeMetadata(entry.id)}
+                    onFocus={(event) => {
+                      if (event.currentTarget.matches(':hover')) return;
+                      clearPendingOpen();
+                      setOpenModelId(entry.id);
+                    }}
+                    onBlur={() => closeMetadata(entry.id)}
+                    className={cn(
+                      'gap-2 pr-2',
+                      isSelected && 'bg-accent text-accent-foreground',
+                      entry.locked && 'opacity-60',
+                    )}
+                  >
+                    <ModelLogo model={entry.id} size={16} className="size-4" />
+                    <span className="min-w-0 flex-1 truncate">
+                      {entry.label}
+                    </span>
+                    {entry.locked ? (
+                      <Lock className="ml-auto size-3.5" aria-label="Locked" />
+                    ) : isSelected ? (
+                      <Check className="ml-auto size-3.5" />
+                    ) : null}
+                  </DropdownMenuItem>
+                </HoverCardTrigger>
+                {openModelId === entry.id && <ModelMetadataCard entry={entry} />}
+              </HoverCard>
+            </Fragment>
           );
         })}
+        {hasLockedOptions ? (
+          <>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem
+              className="font-medium text-primary focus:text-primary"
+              onSelect={() => {
+                setMenuOpen(false);
+                onUnlockRequest();
+              }}
+            >
+              <LockOpen className="size-3.5" />
+              <span className="flex-1">Unlock premium models</span>
+              <span aria-hidden="true">→</span>
+            </DropdownMenuItem>
+          </>
+        ) : null}
         {isOrgAdmin && (
           <>
             <DropdownMenuSeparator />

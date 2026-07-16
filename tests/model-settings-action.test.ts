@@ -154,6 +154,7 @@ describe('organization model settings actions', () => {
         use_org_defaults: false,
         use_platform_defaults: false,
         models: [
+          { id: 'deepseek-v4-auto', added_at: expect.any(Number) },
           { id: 'gpt-5.6-sol', added_at: expect.any(Number) },
           { id: 'gpt-5.6-terra', added_at: expect.any(Number) },
           { id: 'gpt-5.6-luna', added_at: expect.any(Number) },
@@ -203,6 +204,7 @@ describe('organization model settings actions', () => {
         use_org_defaults: false,
         use_platform_defaults: false,
         models: [
+          { id: 'deepseek-v4-auto', added_at: expect.any(Number) },
           { id: 'gpt-5.6-sol', added_at: expect.any(Number) },
           { id: 'gpt-5.6-terra', added_at: expect.any(Number) },
           { id: 'gpt-5.6-luna', added_at: expect.any(Number) },
@@ -451,6 +453,7 @@ describe('organization model settings actions', () => {
         use_org_defaults: false,
         use_platform_defaults: false,
         models: [
+          { id: 'deepseek-v4-auto', added_at: expect.any(Number) },
           { id: 'gpt-5.6-sol', added_at: expect.any(Number) },
           { id: 'gpt-5.6-terra', added_at: expect.any(Number) },
           { id: 'gpt-5.6-luna', added_at: expect.any(Number) },
@@ -561,6 +564,7 @@ describe('organization model settings actions', () => {
         use_org_defaults: false,
         use_platform_defaults: false,
         models: [
+          { id: 'deepseek-v4-auto', added_at: expect.any(Number) },
           { id: 'gpt-5.6-sol', added_at: expect.any(Number) },
           { id: 'gpt-5.6-terra', added_at: expect.any(Number) },
           { id: 'gpt-5.6-luna', added_at: expect.any(Number) },
@@ -606,6 +610,7 @@ describe('organization model settings actions', () => {
         use_org_defaults: false,
         use_platform_defaults: false,
         models: [
+          { id: 'deepseek-v4-auto', added_at: expect.any(Number) },
           { id: 'gpt-5.6-terra', added_at: expect.any(Number) },
           { id: 'gpt-5.6-luna', added_at: expect.any(Number) },
         ],
@@ -732,12 +737,13 @@ describe('organization model settings loader', () => {
     } as never);
 
     expect(result.config.inPicker.map((row) => row.entry.id)).toEqual([
+      'deepseek-v4-auto',
       'gpt-5.6-sol',
       'gpt-5.6-terra',
       'gpt-5.6-luna',
     ]);
     expect(result.config.additional).toEqual([]);
-    expect(result.config.capacity.used).toBe(3);
+    expect(result.config.capacity.used).toBe(4);
   });
 
   it('does not mark retained defaults as active in platform-default settings', async () => {
@@ -805,15 +811,16 @@ describe('organization model settings loader', () => {
     } as never);
 
     expect(result.config.inPicker.map((row) => row.entry.id)).toEqual([
+      'deepseek-v4-auto',
       'gpt-5.6-sol',
       'gpt-5.6-terra',
       'gpt-5.6-luna',
     ]);
     expect(result.config.additional).toEqual([]);
-    expect(result.config.capacity.used).toBe(3);
+    expect(result.config.capacity.used).toBe(4);
   });
 
-  it('shows only Claude-family models for Anthropic BYOK orgs', async () => {
+  it('shows Camel Free plus Claude-family models for Anthropic BYOK orgs', async () => {
     mockAuthContext({
       currentOrgLlmProviderConfig: providerRecord('anthropic'),
     });
@@ -835,11 +842,12 @@ describe('organization model settings loader', () => {
     } as never);
 
     expect(result.config.inPicker.map((row) => row.entry.id)).toEqual([
+      'deepseek-v4-auto',
       'opus-4.8',
       'sonnet',
       'haiku',
     ]);
     expect(result.config.additional).toEqual([]);
-    expect(result.config.capacity.used).toBe(3);
+    expect(result.config.capacity.used).toBe(4);
   });
 });
