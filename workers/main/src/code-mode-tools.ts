@@ -1305,6 +1305,7 @@ function normalizeDeployScriptName(value: unknown): string {
 
 const PROJECT_BUILD_SERVICE_UNAVAILABLE_MESSAGE =
   "Build service temporarily unavailable. Please try again in a moment.";
+const PROJECT_BUILD_SERVICE_RETRY_DELAYS_MS = [1_000, 2_000, 4_000, 8_000] as const;
 
 function isProjectBuildServiceUnavailableError(error: unknown): boolean {
   const message = String(
@@ -1318,14 +1319,28 @@ function isProjectBuildServiceUnavailableError(error: unknown): boolean {
     /Container failed to start/i.test(message);
 }
 
-async function withProjectBuildServiceErrorMapping<T>(operation: () => Promise<T>): Promise<T> {
-  try {
-    return await operation();
-  } catch (error) {
-    if (isProjectBuildServiceUnavailableError(error)) {
-      throw new Error(PROJECT_BUILD_SERVICE_UNAVAILABLE_MESSAGE, { cause: error });
+async function withProjectBuildServiceErrorMapping<T>(
+  operationName: "build_project" | "add_dependency" | "deploy_project",
+  operation: () => Promise<T>,
+): Promise<T> {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await operation();
+    } catch (error) {
+      if (!isProjectBuildServiceUnavailableError(error)) throw error;
+      const retryDelayMs = PROJECT_BUILD_SERVICE_RETRY_DELAYS_MS[attempt];
+      if (retryDelayMs == null) {
+        throw new Error(PROJECT_BUILD_SERVICE_UNAVAILABLE_MESSAGE, { cause: error });
+      }
+      console.warn("[project-build] transient service failure; retrying", {
+        operation: operationName,
+        attempt: attempt + 1,
+        maxAttempts: PROJECT_BUILD_SERVICE_RETRY_DELAYS_MS.length + 1,
+        retryDelayMs,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
     }
-    throw error;
   }
 }
 
@@ -3590,7 +3605,7 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
   }
 
   private async buildProject(args: Record<string, unknown>): Promise<unknown> {
-    return withProjectBuildServiceErrorMapping(async () => {
+    return withProjectBuildServiceErrorMapping("build_project", async () => {
       const project = await this.resolveDoBackedProjectForAction(args, "build_project");
       const timeoutMs = typeof args.timeoutMs === "number" ? args.timeoutMs : undefined;
       const result = await runProjectBuild({
@@ -3612,7 +3627,7 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
   }
 
   private async addDependency(args: Record<string, unknown>): Promise<unknown> {
-    return withProjectBuildServiceErrorMapping(async () => {
+    return withProjectBuildServiceErrorMapping("add_dependency", async () => {
       const project = await this.resolveDoBackedProjectForAction(args, "add_dependency");
       const dependency = typeof args.dependency === "string" ? args.dependency : "";
       const result = await runProjectAddDependency({
@@ -3790,7 +3805,7 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
   }
 
   private async deployProject(args: Record<string, unknown>): Promise<unknown> {
-    return withProjectBuildServiceErrorMapping(async () => {
+    return withProjectBuildServiceErrorMapping("deploy_project", async () => {
       const project = await this.resolveDoBackedProjectForAction(args, "deploy_project");
       const notebookProjectFiles = new ProjectFilesystemClient(this.env, project.id);
       const notebookPath = await resolveNotebookDeployPath(

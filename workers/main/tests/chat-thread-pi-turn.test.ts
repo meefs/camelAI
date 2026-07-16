@@ -6412,13 +6412,18 @@ describe('ChatThreadDO Pi turn handling', () => {
     );
   });
 
-  it('maps build sandbox 503 RPC failures to a friendly project build error', async () => {
+  it('retries a transient build sandbox 503 RPC failure', async () => {
+    vi.useFakeTimers();
     const { fake, sandbox } = createProjectToolFake();
     sandbox.mkdir.mockRejectedValueOnce(new Error('RPCTransportError: WebSocket upgrade failed: 503 Service Unavailable'));
 
-    await expect(CodeModeToolsBinding.prototype.callTool.call(fake, 'build_project', {
+    const resultPromise = CodeModeToolsBinding.prototype.callTool.call(fake, 'build_project', {
       project: 'Demo App',
-    })).rejects.toThrow('Build service temporarily unavailable. Please try again in a moment.');
+    });
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    await expect(resultPromise).resolves.toMatchObject({ success: true, project: 'Demo App' });
+    expect(sandbox.mkdir).toHaveBeenCalledTimes(2);
   });
 
   it('surfaces the last diagnostic line as errorSummary on build failures', async () => {
@@ -6527,13 +6532,37 @@ describe('ChatThreadDO Pi turn handling', () => {
     expect(result.logExcerpt).not.toContain('\r');
   });
 
-  it('maps deploy sandbox 503 RPC failures to a friendly project build error', async () => {
+  it('retries a transient deploy sandbox 503 RPC failure', async () => {
+    vi.useFakeTimers();
     const { fake, sandbox } = createProjectToolFake({ deploy: true });
     sandbox.mkdir.mockRejectedValueOnce(new Error('RPCTransportError: WebSocket upgrade failed: 503 Service Unavailable'));
+    vi.stubGlobal('fetch', vi.fn(async () =>
+      Response.json({ success: true, result: { id: 'version-1' } }, { status: 200 })));
 
-    await expect(CodeModeToolsBinding.prototype.callTool.call(fake, 'deploy_project', {
+    const resultPromise = CodeModeToolsBinding.prototype.callTool.call(fake, 'deploy_project', {
       project: 'Demo App',
-    })).rejects.toThrow('Build service temporarily unavailable. Please try again in a moment.');
+    });
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    await expect(resultPromise).resolves.toMatchObject({ success: true, project: 'Demo App' });
+    expect(sandbox.mkdir).toHaveBeenCalledTimes(2);
+  });
+
+  it('returns the friendly build service error after transient deploy retries are exhausted', async () => {
+    vi.useFakeTimers();
+    const { fake, sandbox } = createProjectToolFake({ deploy: true });
+    sandbox.mkdir.mockRejectedValue(new Error('Container failed to start'));
+
+    const resultPromise = CodeModeToolsBinding.prototype.callTool.call(fake, 'deploy_project', {
+      project: 'Demo App',
+    });
+    const rejection = expect(resultPromise).rejects.toThrow(
+      'Build service temporarily unavailable. Please try again in a moment.',
+    );
+    await vi.advanceTimersByTimeAsync(15_000);
+
+    await rejection;
+    expect(sandbox.mkdir).toHaveBeenCalledTimes(5);
   });
 
   it('returns build diagnostics and the temp build log path on deploy build failures', async () => {
