@@ -74,4 +74,5 @@ export interface ProjectBuildTimings {
 
 export interface ProjectBuildSandboxNamespaceEnv {
   PROJECT_BUILD_SANDBOX?: DurableObjectNamespace<ProjectBuildSandbox>;
+  DISABLE_PROJECT_BUILD_SANDBOX_PREWARM?: string;
 }

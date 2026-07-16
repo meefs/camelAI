@@ -5,7 +5,7 @@ import { AttachmentList, type Attachment } from '@/components/attachment-list';
 
 describe('AttachmentList', () => {
   it('renders transcript attachments as chat tiles and removes them', async () => {
-    const user = userEvent.setup();
+    const user = userEvent.setup({ skipHover: true });
     const onRemove = vi.fn();
     const attachments: Attachment[] = [
       {
@@ -35,7 +35,7 @@ describe('AttachmentList', () => {
   });
 
   it('renders file attachments and removes them from the icon slot', async () => {
-    const user = userEvent.setup();
+    const user = userEvent.setup({ skipHover: true });
     const onRemove = vi.fn();
     const attachments: Attachment[] = [
       {
@@ -58,7 +58,7 @@ describe('AttachmentList', () => {
   });
 
   it('renders image attachments with blob thumbnails and remove badges', async () => {
-    const user = userEvent.setup();
+    const user = userEvent.setup({ skipHover: true });
     const onRemove = vi.fn();
     const attachments: Attachment[] = [
       {
@@ -123,7 +123,7 @@ describe('AttachmentList', () => {
   });
 
   it('renders tiles and remove buttons when workspaceId is unavailable', async () => {
-    const user = userEvent.setup();
+    const user = userEvent.setup({ skipHover: true });
     const onRemove = vi.fn();
     const attachments: Attachment[] = [
       {

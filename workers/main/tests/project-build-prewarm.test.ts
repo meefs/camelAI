@@ -192,4 +192,16 @@ describe("prewarmWorkspaceBuildSandboxes", () => {
     expect(warmed).toBe(0);
     expect(getSandboxMock).not.toHaveBeenCalled();
   });
+
+  it("returns 0 when prewarming is disabled by the runtime", async () => {
+    const { env } = fakeWorkspaceEnv([{ id: "app-one", backend: "do-r2" }]);
+    const warmed = await prewarmWorkspaceBuildSandboxes(
+      { ...env, DISABLE_PROJECT_BUILD_SANDBOX_PREWARM: "1" },
+      "acme",
+      "ws-1",
+    );
+
+    expect(warmed).toBe(0);
+    expect(getSandboxMock).not.toHaveBeenCalled();
+  });
 });

@@ -58,6 +58,7 @@ export async function prewarmWorkspaceBuildSandboxes(
   _workspaceId: string,
   options: { timeoutMs?: number; maxTargets?: number } = {},
 ): Promise<number> {
+  if (env.DISABLE_PROJECT_BUILD_SANDBOX_PREWARM === "1") return 0;
   if (!env.PROJECT_BUILD_SANDBOX) return 0;
   if (!orgId?.trim()) return 0;
   const warmed = await prewarmProjectBuildSandbox({ env, orgId, timeoutMs: options.timeoutMs });

@@ -1,4 +1,4 @@
-import { act, render, screen } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ConnectedTools } from '@/components/welcome-screen/connected-tools';
@@ -67,10 +67,15 @@ describe('recent mention and attachment pills', () => {
 
     render(<ConnectedTools connections={[connection]} onSelect={vi.fn()} />);
 
-    await hoverWithDelay(user, screen.getByRole('button', { name: /Prod DB/ }));
+    const trigger = screen.getByRole('button', { name: /Prod DB/ });
+    await hoverWithDelay(user, trigger);
 
     expect(await screen.findByText('No credentials configured')).toBeInTheDocument();
     expect(screen.getByText(/Updated/)).toBeInTheDocument();
+    await user.unhover(trigger);
+    await waitFor(() => {
+      expect(screen.queryByText('No credentials configured')).not.toBeInTheDocument();
+    });
   });
 
   it('shows shared project and connection hover previews for group recent tags', async () => {
@@ -107,12 +112,17 @@ describe('recent mention and attachment pills', () => {
     await hoverWithDelay(user, screen.getByRole('button', { name: 'Add Frontend App to chat' }));
     expect(await screen.findByText('Main UI project')).toBeInTheDocument();
 
-    await hoverWithDelay(user, screen.getByRole('button', { name: 'Add Prod DB to chat' }));
+    const connectionTrigger = screen.getByRole('button', { name: 'Add Prod DB to chat' });
+    await hoverWithDelay(user, connectionTrigger);
     expect(await screen.findByText('No credentials configured')).toBeInTheDocument();
+    await user.unhover(connectionTrigger);
+    await waitFor(() => {
+      expect(screen.queryByText('No credentials configured')).not.toBeInTheDocument();
+    });
   });
 
   it('renders recent attachments as FileCard buttons and inserts by card path', async () => {
-    const user = userEvent.setup();
+    const user = userEvent.setup({ skipHover: true });
     const onAttachmentSelect = vi.fn();
 
     render(

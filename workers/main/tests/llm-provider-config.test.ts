@@ -60,6 +60,7 @@ const OPENROUTER_BYOK_CODEX_MODELS = [
   "gemini-3.5-flash",
   "gemini-3-flash-preview",
   "deepseek-v4-pro",
+  "deepseek-v4-auto",
   "deepseek-v4-flash",
   "kimi-k2.7-code",
   "grok-4.5",
@@ -99,11 +100,13 @@ describe("llm provider config helpers", () => {
   it("returns provider-specific model options", () => {
     expect(getLlmModelOptions("anthropic").map((option) => option.value)).toEqual([
       ...CLAUDE_MODELS,
+      "deepseek-v4-auto",
     ]);
     expect(getLlmModelOptions("openai").map((option) => option.value)).toEqual([
       "gpt-5.6-sol",
       "gpt-5.6-terra",
       "gpt-5.6-luna",
+      "deepseek-v4-auto",
     ]);
     expect(getLlmModelOptions("openrouter").map((option) => option.value)).toEqual([
       ...CLAUDE_MODELS,
@@ -117,12 +120,17 @@ describe("llm provider config helpers", () => {
       getLlmModelOptions("custom", { customApi: "openai-responses" }).map(
         (option) => option.value,
       ),
-    ).toEqual(["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]);
+    ).toEqual([
+      "gpt-5.6-sol",
+      "gpt-5.6-terra",
+      "gpt-5.6-luna",
+      "deepseek-v4-auto",
+    ]);
     expect(
       getLlmModelOptions("custom", { customApi: "anthropic-messages" }).map(
         (option) => option.value,
       ),
-    ).toEqual([...CLAUDE_MODELS]);
+    ).toEqual([...CLAUDE_MODELS, "deepseek-v4-auto"]);
     expect(
       getLlmModelOptions("custom", {
         customApi: "openai-responses",
@@ -144,7 +152,7 @@ describe("llm provider config helpers", () => {
     expect(normalizeLlmModel("opus-4.7")).toBe("opus-4.8");
     expect(normalizeLlmModel("deepseek-v4-auto")).toBe("deepseek-v4-auto");
     expect(normalizeLlmModel("deepseek-v4-auto", "openrouter")).toBe(
-      DEFAULT_OPENROUTER_MODEL,
+      "deepseek-v4-auto",
     );
     expect(
       normalizeLlmModel("sonnet", "custom", { customApi: "openai-completions" }),
@@ -160,7 +168,7 @@ describe("llm provider config helpers", () => {
     ).toBe("custom");
   });
 
-  it("keeps BYOK provider-scoped and defaults hosted orgs to Claude", () => {
+  it("keeps BYOK models provider-scoped while Camel Free stays global", () => {
     expect(parseOrganizationExperimentalSettings(null)).toEqual({
       claude_proxy_models: false,
     });
@@ -168,7 +176,12 @@ describe("llm provider config helpers", () => {
       getVisibleLlmModelOptions({ claude_proxy_models: false }, null, {
         orgProvider: "openai",
       }).map((option) => option.value),
-    ).toEqual(["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]);
+    ).toEqual([
+      "deepseek-v4-auto",
+      "gpt-5.6-sol",
+      "gpt-5.6-terra",
+      "gpt-5.6-luna",
+    ]);
     expect(
       getVisibleLlmModelOptions({ claude_proxy_models: false }).map(
         (option) => option.value,
@@ -179,31 +192,42 @@ describe("llm provider config helpers", () => {
         orgProvider: "openrouter",
       }).map((option) => option.value),
     ).toEqual([
+      "deepseek-v4-auto",
       ...CLAUDE_MODELS,
-      ...OPENROUTER_BYOK_CODEX_MODELS,
+      ...OPENROUTER_BYOK_CODEX_MODELS.filter(
+        (model) => model !== "deepseek-v4-auto",
+      ),
     ]);
     expect(
       getVisibleLlmModelOptions({ claude_proxy_models: false }, null, {
         orgProvider: "anthropic",
       }).map((option) => option.value),
-    ).toEqual([...CLAUDE_MODELS]);
+    ).toEqual(["deepseek-v4-auto", ...CLAUDE_MODELS]);
     expect(
       getVisibleLlmModelOptions({ claude_proxy_models: false }, null, {
         orgProvider: "bedrock",
       }).map((option) => option.value),
-    ).toEqual([...CLAUDE_MODELS, ...BEDROCK_OPENAI_MODELS]);
+    ).toEqual([
+      "deepseek-v4-auto",
+      ...CLAUDE_MODELS,
+      ...BEDROCK_OPENAI_MODELS,
+    ]);
     expect(
       getVisibleLlmModelOptions({ claude_proxy_models: false }, null, {
         orgProvider: "bedrock",
         awsRegion: "us-west-2",
       }).map((option) => option.value),
-    ).toEqual([...CLAUDE_MODELS, "gpt-5.6-terra-bedrock"]);
+    ).toEqual([
+      "deepseek-v4-auto",
+      ...CLAUDE_MODELS,
+      "gpt-5.6-terra-bedrock",
+    ]);
     expect(
       getVisibleLlmModelOptions({ claude_proxy_models: false }, null, {
         orgProvider: "bedrock",
         awsRegion: "eu-west-1",
       }).map((option) => option.value),
-    ).toEqual([...CLAUDE_MODELS]);
+    ).toEqual(["deepseek-v4-auto", ...CLAUDE_MODELS]);
     expect(
       getVisibleLlmModelOptions({ claude_proxy_models: false }, null, {
         orgProvider: null,
@@ -238,7 +262,12 @@ describe("llm provider config helpers", () => {
         null,
         { orgProvider: "openai" },
       ).map((option) => option.value),
-    ).toEqual(["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]);
+    ).toEqual([
+      "deepseek-v4-auto",
+      "gpt-5.6-sol",
+      "gpt-5.6-terra",
+      "gpt-5.6-luna",
+    ]);
     expect(
       getVisibleLlmModelOptions(
         { claude_proxy_models: true },
@@ -246,8 +275,11 @@ describe("llm provider config helpers", () => {
         { orgProvider: "openrouter" },
       ).map((option) => option.value),
     ).toEqual([
+      "deepseek-v4-auto",
       ...CLAUDE_MODELS,
-      ...OPENROUTER_BYOK_CODEX_MODELS,
+      ...OPENROUTER_BYOK_CODEX_MODELS.filter(
+        (model) => model !== "deepseek-v4-auto",
+      ),
     ]);
     expect(
       getVisibleLlmModelOptions(
@@ -255,7 +287,7 @@ describe("llm provider config helpers", () => {
         null,
         { orgProvider: "anthropic" },
       ).map((option) => option.value),
-    ).toEqual([...CLAUDE_MODELS]);
+    ).toEqual(["deepseek-v4-auto", ...CLAUDE_MODELS]);
   });
 
   it("keeps the current model visible for existing locked threads regardless of new-chat policy", () => {
@@ -346,12 +378,12 @@ describe("llm provider config helpers", () => {
         isLlmModelAllowedForNewThread(model, "openrouter", {
           claude_proxy_models: true,
         }),
-      ).toBe(false);
+      ).toBe(true);
       expect(
         isLlmModelAllowedForNewThread(model, "openai", {
           claude_proxy_models: true,
         }),
-      ).toBe(false);
+      ).toBe(true);
     }
     expect(
       isLlmModelAllowedForNewThread("haiku", "openrouter", {

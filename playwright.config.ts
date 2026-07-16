@@ -22,8 +22,11 @@ export default defineConfig({
   testDir: './e2e',
   // Under LOCAL_AUTH_BYPASS the app auto-authenticates and the _auth layout
   // redirects away from /login and /signup, so the form-based auth specs can't
-  // run — skip them on the local-bypass path.
-  testIgnore: useLocalServer ? ['**/auth.spec.ts'] : [],
+  // run. The manual staging-billing suite has its own config, global setup, and
+  // runner, so it must not be collected by the deterministic local suite.
+  testIgnore: useLocalServer
+    ? ['**/auth.spec.ts', '**/staging-billing/**']
+    : [],
   fullyParallel: true,
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 2 : 0,
