@@ -15,7 +15,9 @@ export default defineConfig({
   use: {
     ...devices["Desktop Chrome"],
     baseURL: process.env.STAGING_BASE_URL || "https://staging.camelai.dev",
-    trace: "on",
+    // The public report viewer should contain videos and sanitized checkpoints,
+    // not browser traces that embed session cookies and synthetic credentials.
+    trace: "off",
     video: "on",
     screenshot: "only-on-failure",
     actionTimeout: 30_000,
@@ -23,4 +25,3 @@ export default defineConfig({
   },
   projects: [{ name: "staging-billing-chromium", use: { ...devices["Desktop Chrome"] } }],
 });
-
