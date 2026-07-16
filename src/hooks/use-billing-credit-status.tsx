@@ -8,6 +8,9 @@ export type BillingCreditStatusResourceData =
   | {
       ok: true;
       billingCreditStatus: BillingCreditStatus | null;
+      requestedModel?: LlmModel | null;
+      threadModel?: LlmModel | null;
+      threadModelUpdatedAt?: number | null;
     }
   | {
       ok: false;
@@ -16,6 +19,7 @@ export type BillingCreditStatusResourceData =
 
 export interface UseBillingCreditStatusResult {
   currentBillingCreditStatus: BillingCreditStatus | null;
+  refreshedThreadModel: RefreshedThreadModel | null;
   /**
    * Reload the credit status after a turn, deduped per completion key so the same
    * turn only triggers one fetch. Reads the model/dev flags from the passed refs
@@ -26,10 +30,15 @@ export interface UseBillingCreditStatusResult {
   ) => void;
 }
 
+export interface RefreshedThreadModel {
+  requestedModel: LlmModel;
+  model: LlmModel;
+  updatedAt: number | null;
+}
+
 /**
- * Owns the chat's live billing-credit-status: seeds from the loader value,
- * updates it from a resource fetcher, and exposes a deduped post-turn refresh.
- * Extracted from Chat.tsx as pure code motion — behavior is unchanged.
+ * Owns the chat's live billing-credit status and the canonical thread-model
+ * snapshot returned by the same deduped post-turn resource refresh.
  */
 export function useBillingCreditStatus(options: {
   /**
@@ -38,28 +47,48 @@ export function useBillingCreditStatus(options: {
    */
   billingStatusFetcher: FetcherWithComponents<BillingCreditStatusResourceData>;
   initialStatus: BillingCreditStatus | null | undefined;
+  threadId: string | null | undefined;
   selectedThreadModelRef: RefObject<LlmModel>;
   locationSearchRef: RefObject<string>;
 }): UseBillingCreditStatusResult {
   const {
     billingStatusFetcher,
     initialStatus,
+    threadId,
     selectedThreadModelRef,
     locationSearchRef,
   } = options;
   const [currentBillingCreditStatus, setCurrentBillingCreditStatus] =
     useState<BillingCreditStatus | null>(() => initialStatus ?? null);
+  const [refreshedThreadModel, setRefreshedThreadModel] =
+    useState<RefreshedThreadModel | null>(null);
   const lastBillingRefreshCompletionKeyRef = useRef<string | null>(null);
 
   useEffect(() => {
     setCurrentBillingCreditStatus(initialStatus ?? null);
+    setRefreshedThreadModel(null);
     lastBillingRefreshCompletionKeyRef.current = null;
-  }, [initialStatus]);
+  }, [initialStatus, threadId]);
 
   useEffect(() => {
     if (!billingStatusFetcher.data) return;
     if (!billingStatusFetcher.data.ok) return;
     setCurrentBillingCreditStatus(billingStatusFetcher.data.billingCreditStatus);
+    const { requestedModel, threadModel, threadModelUpdatedAt } =
+      billingStatusFetcher.data;
+    setRefreshedThreadModel(
+      requestedModel && threadModel
+        ? {
+            requestedModel,
+            model: threadModel,
+            updatedAt:
+              typeof threadModelUpdatedAt === "number" &&
+              Number.isFinite(threadModelUpdatedAt)
+                ? threadModelUpdatedAt
+                : null,
+          }
+        : null,
+    );
   }, [billingStatusFetcher.data]);
 
   const refreshBillingCreditStatusAfterTurn = useCallback(
@@ -75,6 +104,7 @@ export function useBillingCreditStatus(options: {
 
       const params = new URLSearchParams();
       params.set("model", selectedThreadModelRef.current);
+      if (threadId) params.set("threadId", threadId);
       const currentSearchParams = new URLSearchParams(
         locationSearchRef.current,
       );
@@ -87,8 +117,12 @@ export function useBillingCreditStatus(options: {
         `/api/billing/chat-credit-status?${params.toString()}`,
       );
     },
-    [billingStatusFetcher, selectedThreadModelRef, locationSearchRef],
+    [billingStatusFetcher, selectedThreadModelRef, locationSearchRef, threadId],
   );
 
-  return { currentBillingCreditStatus, refreshBillingCreditStatusAfterTurn };
+  return {
+    currentBillingCreditStatus,
+    refreshedThreadModel,
+    refreshBillingCreditStatusAfterTurn,
+  };
 }

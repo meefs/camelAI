@@ -124,6 +124,114 @@ describe('getWorkspaceModelPickerState rollout compatibility', () => {
     expect(workspaceStub.getModelPickerConfig).toHaveBeenCalledTimes(2);
   });
 
+  it('defaults an inactive zero-credit hosted organization to Camel Free', async () => {
+    const workspaceStub = {
+      getInfo: vi.fn().mockResolvedValue({ org_id: 'org_123' }),
+      getModelPickerConfig: vi.fn().mockResolvedValue({
+        use_org_defaults: true,
+        models: [],
+        default_model: null,
+      }),
+    };
+    const orgStub = {
+      getInfo: vi.fn().mockResolvedValue({
+        billing_status: 'inactive',
+        billing_credit_purchase_total_cents: 0,
+        billing_credit_grant_total_cents: 0,
+      }),
+      getLlmProviderConfig: vi.fn().mockResolvedValue(null),
+      getExperimentalSettings: vi
+        .fn()
+        .mockResolvedValue({ claude_proxy_models: false }),
+      getModelPickerConfig: vi.fn().mockResolvedValue({
+        use_platform_defaults: true,
+        models: [],
+        default_model: null,
+      }),
+      createThread: vi.fn().mockResolvedValue({
+        id: 'thread_free',
+        workspace_id: 'ws_123',
+        title: 'New Chat',
+        created_by: 'user_123',
+        model: 'deepseek-v4-auto',
+        created_at: 1,
+        updated_at: 1,
+        user_message_count: 0,
+        first_user_message: null,
+      }),
+    };
+
+    getEnvMock.mockReturnValue({
+      WORKSPACE: {
+        idFromName: (id: string) => id,
+        get: () => workspaceStub,
+      },
+      ORG: {
+        idFromName: (id: string) => id,
+        get: () => orgStub,
+      },
+    });
+
+    const state = await getWorkspaceModelPickerState({}, 'ws_123');
+
+    expect(state).toMatchObject({
+      llmProvider: null,
+      effectivePickerDefaultModel: null,
+      defaultModel: 'deepseek-v4-auto',
+    });
+
+    await createThread({}, 'ws_123', 'New Chat', 'user_123');
+    expect(orgStub.createThread).toHaveBeenCalledWith(
+      'ws_123',
+      'New Chat',
+      'user_123',
+      undefined,
+      'deepseek-v4-auto',
+    );
+  });
+
+  it('keeps the hosted premium default for a subscribed organization', async () => {
+    const workspaceStub = {
+      getInfo: vi.fn().mockResolvedValue({ org_id: 'org_123' }),
+      getModelPickerConfig: vi.fn().mockResolvedValue({
+        use_org_defaults: true,
+        models: [],
+        default_model: null,
+      }),
+    };
+    const orgStub = {
+      getInfo: vi.fn().mockResolvedValue({
+        billing_status: 'active',
+        billing_credit_purchase_total_cents: 0,
+        billing_credit_grant_total_cents: 0,
+      }),
+      getLlmProviderConfig: vi.fn().mockResolvedValue(null),
+      getExperimentalSettings: vi
+        .fn()
+        .mockResolvedValue({ claude_proxy_models: false }),
+      getModelPickerConfig: vi.fn().mockResolvedValue({
+        use_platform_defaults: true,
+        models: [],
+        default_model: null,
+      }),
+    };
+
+    getEnvMock.mockReturnValue({
+      WORKSPACE: {
+        idFromName: (id: string) => id,
+        get: () => workspaceStub,
+      },
+      ORG: {
+        idFromName: (id: string) => id,
+        get: () => orgStub,
+      },
+    });
+
+    const state = await getWorkspaceModelPickerState({}, 'ws_123');
+
+    expect(state?.defaultModel).toBe('sonnet');
+  });
+
   it('rethrows picker config errors other than missing RPC rollout errors', async () => {
     const storageError = new Error('storage temporarily unavailable');
     const workspaceStub = {
@@ -643,6 +751,9 @@ describe('getWorkspaceModelPickerState rollout compatibility', () => {
       }),
     };
     const orgStub = {
+      getInfo: vi.fn(async () => {
+        throw new Error('unexpected org billing state read');
+      }),
       getLlmProviderConfig: vi.fn(async () => {
         throw new Error('unexpected provider config read');
       }),
@@ -669,6 +780,11 @@ describe('getWorkspaceModelPickerState rollout compatibility', () => {
 
     const state = await getWorkspaceModelPickerState({}, 'ws_123', {
       orgId: 'org_123',
+      orgBillingState: {
+        billing_status: 'active',
+        billing_credit_purchase_total_cents: 0,
+        billing_credit_grant_total_cents: 0,
+      },
       llmProviderConfig: {
         provider: 'openai',
         credentials_encrypted: 'encrypted',
@@ -681,6 +797,7 @@ describe('getWorkspaceModelPickerState rollout compatibility', () => {
     });
 
     expect(workspaceStub.getInfo).not.toHaveBeenCalled();
+    expect(orgStub.getInfo).not.toHaveBeenCalled();
     expect(orgStub.getLlmProviderConfig).not.toHaveBeenCalled();
     expect(orgStub.getExperimentalSettings).not.toHaveBeenCalled();
     expect(state?.orgId).toBe('org_123');

@@ -729,6 +729,7 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
   const pickerStatePromise = chatDO
     .getWorkspaceModelPickerState(context, workspaceId, {
       orgId: authContext.currentOrg.id,
+      orgBillingState: authContext.currentOrg,
       llmProviderConfig: authContext.currentOrgLlmProviderConfig,
       experimentalSettings: authContext.currentOrgExperimentalSettings,
     })

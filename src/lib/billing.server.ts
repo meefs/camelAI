@@ -688,6 +688,130 @@ async function stripeRequest<T>(
   return response.json() as Promise<T>;
 }
 
+async function stripeTestCleanupRequest<T>(
+  env: StripeBillingEnv,
+  path: string,
+  method = "GET",
+): Promise<T | null> {
+  const secretKey = env.STRIPE_SECRET_KEY?.trim();
+  if (!secretKey) {
+    throw new Error("Stripe secret key is not configured");
+  }
+  assertStripeSecretKeyMatchesMode(secretKey, env.STRIPE_MODE);
+  const response = await fetch(`${STRIPE_API_BASE}${path}`, {
+    method,
+    headers: stripeAuthHeaders(secretKey),
+  });
+  if (response.status === 404) return null;
+  if (!response.ok) {
+    throw new Error(`Stripe test cleanup request failed with ${response.status}`);
+  }
+  return response.json() as Promise<T>;
+}
+
+/**
+ * Permanently remove an organization's Stripe test customer and cancel its
+ * projected subscription. This is intentionally a server-only cleanup helper
+ * for authenticated admin tooling; it must never operate in live mode.
+ */
+export async function deleteStripeTestCustomerForOrg(
+  env: StripeBillingEnv,
+  org: Organization,
+): Promise<{
+  subscription_deleted: boolean;
+  customer_deleted: boolean;
+  org: Organization;
+}> {
+  if (env.STRIPE_MODE?.trim().toLowerCase() !== "test") {
+    throw new Error("Stripe test customer deletion requires STRIPE_MODE=test");
+  }
+
+  const customerId = org.billing_customer_id?.trim() || null;
+  const subscriptionId = org.billing_subscription_id?.trim() || null;
+  let customerAlreadyDeleted = false;
+
+  if (customerId) {
+    const customer = await stripeTestCleanupRequest<
+      StripeCustomer & { deleted?: boolean }
+    >(
+      env,
+      `/customers/${customerId}`,
+    ).catch(() => {
+      throw new Error("Failed to load the Stripe test customer for cleanup");
+    });
+    customerAlreadyDeleted = !customer || customer.deleted === true;
+    const metadataOrgId = customer?.metadata?.org_id?.trim();
+    if (!customerAlreadyDeleted && metadataOrgId !== org.id) {
+      throw new Error(
+        "Stripe customer metadata does not match the target organization",
+      );
+    }
+  }
+
+  if (subscriptionId) {
+    const subscription = await stripeTestCleanupRequest<StripeSubscription>(
+      env,
+      `/subscriptions/${subscriptionId}`,
+    ).catch(() => {
+      throw new Error("Failed to load the Stripe test subscription for cleanup");
+    });
+    if (subscription && subscription.metadata?.org_id?.trim() !== org.id) {
+      throw new Error(
+        "Stripe subscription metadata does not match the target organization",
+      );
+    }
+    const subscriptionCustomerId = getStripeCustomerId(subscription?.customer);
+    if (
+      customerId &&
+      subscriptionCustomerId &&
+      subscriptionCustomerId !== customerId
+    ) {
+      throw new Error(
+        "Stripe subscription customer does not match the target organization",
+      );
+    }
+    if (subscription) {
+      await stripeTestCleanupRequest<{
+        id: string;
+        status?: string;
+        deleted?: boolean;
+      }>(env, `/subscriptions/${subscriptionId}`, "DELETE").catch(() => {
+        throw new Error("Failed to cancel the Stripe test subscription");
+      });
+    }
+  }
+
+  if (customerId && !customerAlreadyDeleted) {
+    await stripeTestCleanupRequest<{ id: string; deleted?: boolean }>(
+      env,
+      `/customers/${customerId}`,
+      "DELETE",
+    ).catch(() => {
+      throw new Error("Failed to delete the Stripe test customer");
+    });
+  }
+
+  const updated = await getOrgStub(env, org.id).updateBillingState({
+    billing_status: "inactive",
+    billing_plan: "payg",
+    billing_seat_count: 1,
+    billing_customer_id: null,
+    billing_subscription_id: null,
+    billing_subscription_status: null,
+    billing_trial_started_at: null,
+    billing_trial_ends_at: null,
+  });
+  if (!updated) {
+    throw new Error("Organization not found");
+  }
+
+  return {
+    subscription_deleted: Boolean(subscriptionId),
+    customer_deleted: Boolean(customerId && !customerAlreadyDeleted),
+    org: updated,
+  };
+}
+
 export function isStripeBillingConfigured(
   env: Pick<
     StripeBillingEnv,
@@ -740,7 +864,13 @@ const BILLING_SETUP_PATHS = new Set([
 export type OrgBillingAccessState =
   | {
       kind: "ready";
-      mode: "enterprise" | "subscription" | "byok" | "credits" | "selfhost";
+      mode:
+        | "enterprise"
+        | "subscription"
+        | "byok"
+        | "credits"
+        | "camel_free"
+        | "selfhost";
       setupRouteAccessible: true;
     }
   | {
@@ -792,6 +922,13 @@ export function resolveOrgBillingAccess(args: {
     (org?.billing_credit_grant_total_cents ?? 0);
   if (totalCreditsCents > 0) {
     return { kind: "ready", mode: "credits", setupRouteAccessible: true };
+  }
+
+  // Camel Free is always available to hosted organizations. A subscription,
+  // purchased credits, or a BYOK provider unlocks additional models, but is
+  // not required to finish onboarding or enter the application.
+  if (org) {
+    return { kind: "ready", mode: "camel_free", setupRouteAccessible: true };
   }
 
   return {

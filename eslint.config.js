@@ -36,7 +36,7 @@ export default [
 			"**/public/**",
 			"**/coverage/**",
 			"**/test-results/**",
-			"**/playwright-report/**",
+			"**/playwright-report*/**",
 			"sandbox/create-worker/renderer-dist/**",
 		],
 	},

@@ -3,6 +3,7 @@ import { env } from "cloudflare:test";
 import { createOrg, createUser, type TestEnv } from "./test-helpers";
 import {
   createSubscriptionCheckoutSession,
+  deleteStripeTestCustomerForOrg,
   getBillingAccessSnapshot,
   syncOrgSubscriptionFromStripe,
   type StripeBillingEnv,
@@ -308,6 +309,186 @@ describe("OrgDO billing grant idempotency", () => {
       fetchMock.mockRestore();
     }
   });
+
+  it("deletes only a matching Stripe test customer and clears its projection", async () => {
+    const { userId: ownerId } = await createUser(
+      testEnv,
+      testEmail(),
+      "password",
+      "Owner",
+    );
+    const { org } = await createOrg(testEnv, "Test Customer Cleanup Org", ownerId, {
+      billingPlan: "starter",
+    });
+    const orgStub = testEnv.ORG.get(testEnv.ORG.idFromName(org.id));
+    const billingOrg = await orgStub.updateBillingState({
+      billing_status: "active",
+      billing_plan: "starter",
+      billing_customer_id: "cus_cleanup",
+      billing_subscription_id: "sub_cleanup",
+      billing_subscription_status: "active",
+    });
+    expect(billingOrg).not.toBeNull();
+
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(
+        Response.json({
+          id: "cus_cleanup",
+          metadata: { org_id: org.id },
+        }),
+      )
+      .mockResolvedValueOnce(
+        Response.json({
+          id: "sub_cleanup",
+          status: "active",
+          customer: "cus_cleanup",
+          metadata: { org_id: org.id },
+        }),
+      )
+      .mockResolvedValueOnce(
+        Response.json({ id: "sub_cleanup", status: "canceled" }),
+      )
+      .mockResolvedValueOnce(
+        Response.json({ id: "cus_cleanup", deleted: true }),
+      );
+
+    try {
+      await expect(
+        deleteStripeTestCustomerForOrg(
+          {
+            ...stripeBillingEnv(),
+            STRIPE_MODE: "test",
+            STRIPE_SECRET_KEY: "sk_test_cleanup",
+          },
+          billingOrg!,
+        ),
+      ).resolves.toMatchObject({
+        subscription_deleted: true,
+        customer_deleted: true,
+        org: {
+          billing_status: "inactive",
+          billing_plan: "payg",
+          billing_customer_id: null,
+          billing_subscription_id: null,
+          billing_subscription_status: null,
+        },
+      });
+      expect(fetchMock.mock.calls.map(([url]) => String(url))).toEqual([
+        "https://api.stripe.com/v1/customers/cus_cleanup",
+        "https://api.stripe.com/v1/subscriptions/sub_cleanup",
+        "https://api.stripe.com/v1/subscriptions/sub_cleanup",
+        "https://api.stripe.com/v1/customers/cus_cleanup",
+      ]);
+      expect(fetchMock.mock.calls[2]?.[1]?.method).toBe("DELETE");
+      expect(fetchMock.mock.calls[3]?.[1]?.method).toBe("DELETE");
+    } finally {
+      fetchMock.mockRestore();
+    }
+  });
+
+  it("refuses Stripe customer deletion outside test mode before making a request", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch");
+    try {
+      await expect(
+        deleteStripeTestCustomerForOrg(
+          {
+            ...stripeBillingEnv(),
+            STRIPE_MODE: "live",
+            STRIPE_SECRET_KEY: "sk_live_cleanup",
+          },
+          {
+            id: "org_live",
+            billing_customer_id: "cus_live",
+          } as never,
+        ),
+      ).rejects.toThrow("STRIPE_MODE=test");
+      expect(fetchMock).not.toHaveBeenCalled();
+    } finally {
+      fetchMock.mockRestore();
+    }
+  });
+
+  it("clears a late OrgDO projection for an already-deleted Stripe test customer", async () => {
+    const { userId: ownerId } = await createUser(
+      testEnv,
+      testEmail(),
+      "password",
+      "Owner",
+    );
+    const { org } = await createOrg(testEnv, "Deleted Customer Cleanup Org", ownerId, {
+      billingPlan: "starter",
+    });
+    const orgStub = testEnv.ORG.get(testEnv.ORG.idFromName(org.id));
+    const billingOrg = await orgStub.updateBillingState({
+      billing_status: "active",
+      billing_plan: "starter",
+      billing_customer_id: "cus_deleted",
+      billing_subscription_id: null,
+    });
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(
+        Response.json({ id: "cus_deleted", deleted: true }),
+      );
+
+    try {
+      await expect(
+        deleteStripeTestCustomerForOrg(
+          {
+            ...stripeBillingEnv(),
+            STRIPE_MODE: "test",
+            STRIPE_SECRET_KEY: "sk_test_cleanup",
+          },
+          billingOrg!,
+        ),
+      ).resolves.toMatchObject({
+        customer_deleted: false,
+        org: {
+          billing_status: "inactive",
+          billing_plan: "payg",
+          billing_customer_id: null,
+        },
+      });
+      expect(fetchMock).toHaveBeenCalledOnce();
+      expect(fetchMock.mock.calls[0]?.[1]?.method).toBe("GET");
+    } finally {
+      fetchMock.mockRestore();
+    }
+  });
+
+  it.each([
+    ["missing", {}],
+    ["mismatched", { org_id: "org_other" }],
+  ])(
+    "fails closed when Stripe customer ownership metadata is %s",
+    async (_case, metadata) => {
+      const fetchMock = vi
+        .spyOn(globalThis, "fetch")
+        .mockResolvedValueOnce(Response.json({ id: "cus_unowned", metadata }));
+      try {
+        await expect(
+          deleteStripeTestCustomerForOrg(
+            {
+              ...stripeBillingEnv(),
+              STRIPE_MODE: "test",
+              STRIPE_SECRET_KEY: "sk_test_cleanup",
+            },
+            {
+              id: "org_expected",
+              billing_customer_id: "cus_unowned",
+            } as never,
+          ),
+        ).rejects.toThrow(
+          "Stripe customer metadata does not match the target organization",
+        );
+        expect(fetchMock).toHaveBeenCalledOnce();
+        expect(fetchMock.mock.calls[0]?.[1]?.method).toBe("GET");
+      } finally {
+        fetchMock.mockRestore();
+      }
+    },
+  );
 
   it("continues granting first-trial credits when the Stripe trial is not canceling", async () => {
     const { userId: ownerId } = await createUser(

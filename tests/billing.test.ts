@@ -29,7 +29,6 @@ import {
   getInvoiceSubscriptionId,
   getStripeSubscriptionSummary,
   isBillingSetupPath,
-  isOrgBillingAccessReady,
   isRecurringSubscriptionInvoice,
   isStripeSecretKeyAllowedForMode,
   isStripeProrationLine,
@@ -633,17 +632,15 @@ describe("billing helpers", () => {
 
   it("resolves org billing access from one shared rule", () => {
     expect(
-      isOrgBillingAccessReady(
-        resolveOrgBillingAccess({
-          org: {
-            billing_status: "inactive",
-            billing_plan: "payg",
-            billing_credit_purchase_total_cents: 0,
-            billing_credit_grant_total_cents: 0,
-          } as Organization,
-        }),
-      ),
-    ).toBe(false);
+      resolveOrgBillingAccess({
+        org: {
+          billing_status: "inactive",
+          billing_plan: "payg",
+          billing_credit_purchase_total_cents: 0,
+          billing_credit_grant_total_cents: 0,
+        } as Organization,
+      }),
+    ).toMatchObject({ kind: "ready", mode: "camel_free" });
 
     expect(
       resolveOrgBillingAccess({
@@ -692,7 +689,7 @@ describe("billing helpers", () => {
     ).toMatchObject({ kind: "ready", mode: "byok" });
   });
 
-  it("limits setup access to billing setup paths", () => {
+  it("allows Camel Free throughout the app and retains missing-org setup state", () => {
     expect(isBillingSetupPath("/settings/organization/billing")).toBe(true);
     expect(isBillingSetupPath("/settings/organization/usage")).toBe(true);
     expect(isBillingSetupPath("/settings/organization/team")).toBe(false);
@@ -706,6 +703,17 @@ describe("billing helpers", () => {
           billing_credit_purchase_total_cents: 0,
           billing_credit_grant_total_cents: 0,
         } as Organization,
+        pathname: "/settings/organization/usage",
+      }),
+    ).toMatchObject({
+      kind: "ready",
+      mode: "camel_free",
+      setupRouteAccessible: true,
+    });
+
+    expect(
+      resolveOrgBillingAccess({
+        org: null,
         pathname: "/settings/organization/usage",
       }),
     ).toMatchObject({

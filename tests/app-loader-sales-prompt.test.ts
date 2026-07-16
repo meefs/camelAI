@@ -16,38 +16,11 @@ vi.mock("@/lib/billing.server", () => ({
     (access: { kind: string }) => access.kind === "ready",
   ),
   resolveOrgBillingAccess: vi.fn(
-    ({
-      org,
-      llmProviderConfig,
-      pathname,
-    }: {
-      org: {
-        billing_status?: string | null;
-        billing_credit_purchase_total_cents?: number | null;
-        billing_credit_grant_total_cents?: number | null;
-      };
-      llmProviderConfig?: unknown;
-      pathname?: string;
-    }) => {
-      const setupRouteAccessible =
-        pathname === "/settings/organization/billing" ||
-        pathname === "/settings/organization/usage";
-      const ready =
-        org.billing_status === "trialing" ||
-        org.billing_status === "active" ||
-        org.billing_status === "enterprise" ||
-        Boolean(llmProviderConfig) ||
-        (org.billing_credit_purchase_total_cents ?? 0) +
-          (org.billing_credit_grant_total_cents ?? 0) >
-          0;
-      return ready
-        ? { kind: "ready", mode: "subscription", setupRouteAccessible: true }
-        : {
-            kind: "setup_required",
-            reason: "missing_llm_provider",
-            setupRouteAccessible,
-          };
-    },
+    () => ({
+      kind: "ready",
+      mode: "camel_free",
+      setupRouteAccessible: true,
+    }),
   ),
   hasOrgUsedSubscriptionTrial: vi.fn(
     (org: {
@@ -149,7 +122,7 @@ describe("_app loader onboarding redirect", () => {
     });
   });
 
-  it("returns paywall context for onboarded users without org billing access", async () => {
+  it("allows onboarded users to use Camel Free without paid billing access", async () => {
     const org = {
       id: "org_free",
       name: "Org B",
@@ -211,18 +184,14 @@ describe("_app loader onboarding redirect", () => {
     } as never);
 
     expect(result).toMatchObject({
-      billingAccessReady: false,
-      appRouteAccessible: false,
-      paywallContext: {
-        currentOrgName: "Org B",
-        multiOrg: true,
-        byokProviderLabel: null,
-      },
+      billingAccessReady: true,
+      appRouteAccessible: true,
+      paywallContext: null,
     });
     expect(orgStub.getLlmProviderConfig).not.toHaveBeenCalled();
   });
 
-  it("allows billing setup routes for onboarded users without org billing access", async () => {
+  it("keeps billing setup routes accessible to Camel Free users", async () => {
     const org = {
       id: "org_payg",
       name: "Payg Org",
@@ -282,11 +251,9 @@ describe("_app loader onboarding redirect", () => {
     } as never);
 
     expect(result).toMatchObject({
-      billingAccessReady: false,
+      billingAccessReady: true,
       appRouteAccessible: true,
-      paywallContext: {
-        currentOrgName: "Payg Org",
-      },
+      paywallContext: null,
     });
   });
 

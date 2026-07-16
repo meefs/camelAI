@@ -8564,6 +8564,30 @@ describe('ChatThreadDO Pi turn handling', () => {
     );
   });
 
+  it('does not mutate a Pi session disposed while its model is resolving', async () => {
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    const session = { state: { model: null, tools: [] } };
+    fake.piSession = session;
+    fake.piModelResolver = vi.fn(async () => {
+      fake.piSession = null;
+      return { model: { id: 'dynamic/deepseek-v4-auto' } };
+    });
+    fake.chatContext = {
+      orgId: 'org1',
+      workspaceId: 'workspace1',
+      threadId: 'thread1',
+      userId: 'user1',
+    };
+    fake.createPiToolDefinitions = vi.fn(() => []);
+
+    await expect(
+      ChatThreadDO.prototype['refreshPiSessionModel'].call(fake),
+    ).resolves.toBeUndefined();
+
+    expect(session.state.model).toBeNull();
+    expect(fake.createPiToolDefinitions).not.toHaveBeenCalled();
+  });
+
   it('removes Oracle when refreshing any non-Camel Free session', async () => {
     const fake = Object.create(ChatThreadDO.prototype) as any;
     const refreshedModel = { id: 'openai/gpt-5.5' };

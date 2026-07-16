@@ -21,6 +21,8 @@ the MCP server you call selects the environment.
 | `SELF.fetch()` | Fetch the current Worker without adding user or admin authentication. |
 | `ADMIN.fetch()` | Fetch an `/api/admin/*` endpoint as the authenticated MCP admin. |
 | `ACTOR.fetch()` | Fetch the current Worker with an ephemeral signed session for a validated user/org membership. |
+| `IDENTITY` | Provision, reset, and hard-delete password-login E2E actors through production identity helpers. |
+| `BILLING` | Read sanitized billing state, set exact available credits, and remove Stripe test customers. |
 | `fetch()` | Make an outbound HTTP request from the deployed Worker environment. |
 | `assert` | Assertions: `ok`, `equal`, `notEqual`, `deepEqual`, `match`, and `rejects`. |
 | `test()` | Run and report a named async integration test without stopping later tests. |
@@ -115,6 +117,72 @@ duration without recording request or response bodies.
 Response bodies are capped at 1 MB inside the bridge, and the final console
 result is independently capped by `max_output_characters`.
 
+## Manual E2E controls
+
+`IDENTITY` and `BILLING` are first-class control-plane facades for manual
+staging browser tests. They execute inside the selected Worker environment and
+do not add fixture HTTP endpoints. Passwords are accepted as inputs but never
+returned by the facade or written to observability.
+
+Create a normal password-login account using the same user/org helpers as the
+signup route. The account is email-verified and its onboarding record is reset
+to the incomplete state:
+
+```js
+const actor = await IDENTITY.createActor({
+  email: input.email,
+  password: input.password,
+  name: "Billing E2E",
+});
+// actor is { userId, orgId, workspaceId }; credentials are not returned.
+return actor;
+```
+
+Reset onboarding for another pass, or clean up the fixture:
+
+```js
+await IDENTITY.resetActor(actor.userId);
+const deletion = await IDENTITY.deleteActor(actor.userId);
+```
+
+`deleteActor` uses the production organization and user hard-delete routines.
+As a safety boundary it refuses users with multiple organizations and only
+deletes an organization when the actor created it and remains its sole owner.
+It also refuses actors with linked Stripe objects until
+`BILLING.deleteTestCustomer` succeeds. It returns counts and warning totals,
+not deleted profile data. Repeating a successful deletion is a no-op with
+`alreadyDeleted: true`.
+
+Read and mutate billing state while Playwright keeps the browser and chat open:
+
+```js
+const before = await BILLING.snapshot(actor.orgId);
+const change = await BILLING.setAvailableCredits(actor.orgId, 0);
+const after = await BILLING.snapshot(actor.orgId);
+return { before, change, after };
+```
+
+Snapshots include normalized plan/status, credit limits, chargeable usage,
+available credits, and booleans indicating whether Stripe objects are linked.
+Stripe customer and subscription identifiers are intentionally omitted.
+`setAvailableCredits` preserves purchased-credit accounting and adjusts the
+grant total against chargeable usage, matching the admin credit-set behavior.
+
+After a payment test, remove the Stripe fixture before deleting the actor:
+
+```js
+await BILLING.deleteTestCustomer(actor.orgId);
+await IDENTITY.deleteActor(actor.userId);
+```
+
+`deleteTestCustomer` hard-fails unless the deployed Worker reports
+`STRIPE_MODE=test`. It verifies customer metadata and subscription ownership
+where available, cancels the subscription, deletes the test customer, and
+clears the local Stripe projection. It never returns Stripe identifiers or
+credentials. If cleanup fails, keep the actor ids and retry explicitly rather
+than hiding the failure. Repeating cleanup after the organization was already
+deleted is a no-op with `alreadyDeleted: true`.
+
 ## Integration tests
 
 Use named tests for staging smoke suites. All cases run, and any failure marks
@@ -166,8 +234,10 @@ maintaining a heavily escaped one-liner.
 ## Auditing and limits
 
 Executions emit an `admin_js_exec` observability event with the admin user id,
-duration, code size, case count, and success/failure status. Code, output,
-request bodies, and credentials are not written to Analytics Engine.
+duration, code size, case count, and success/failure status. First-class
+identity and billing mutations also emit `admin_js_exec_control` events with
+the admin id, operation, affected ids, status, and duration. Code, output,
+request bodies, passwords, and credentials are not written to Analytics Engine.
 
 The default timeout is 30 seconds and the maximum is 120 seconds. The default
 final output limit is 120,000 characters and the maximum is 1,000,000.

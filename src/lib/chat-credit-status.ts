@@ -69,6 +69,31 @@ export function buildBillingCreditStatus(
   };
 }
 
+export function shouldSwitchExhaustedThreadToCamelFree(
+  status: BillingCreditStatus | null | undefined,
+  threadModel: LlmModel | null | undefined,
+): boolean {
+  return Boolean(
+    status?.isExhausted &&
+      threadModel &&
+      !isCreditFreeHostedModel(threadModel),
+  );
+}
+
+export function resolveRefreshedThreadModel(
+  currentModel: LlmModel,
+  refresh:
+    | {
+        requestedModel: LlmModel;
+        model: LlmModel;
+      }
+    | null
+    | undefined,
+): LlmModel | null {
+  if (!refresh || refresh.requestedModel !== currentModel) return null;
+  return refresh.model === currentModel ? null : refresh.model;
+}
+
 export function parseDevChatCreditState(searchParams: URLSearchParams): DevChatCreditState | null {
   if (!import.meta.env.DEV) return null;
   const value = searchParams.get('devCreditState');

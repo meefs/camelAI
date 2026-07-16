@@ -4,7 +4,9 @@ import {
   applyDevBillingCreditStatusOverride,
   buildBillingCreditStatus,
   getDevChatInitialError,
+  resolveRefreshedThreadModel,
   shouldShowLowCreditAlert,
+  shouldSwitchExhaustedThreadToCamelFree,
 } from '@/lib/chat-credit-status';
 import type { OrgBillingOverview } from '@/lib/billing.server';
 
@@ -37,6 +39,48 @@ function makeOverview(overrides: Partial<OrgBillingOverview>): OrgBillingOvervie
 }
 
 describe('chat credit status', () => {
+  it('applies a canonical refreshed model only if selection did not change in flight', () => {
+    const refresh = {
+      requestedModel: 'gemini-3-flash-preview' as const,
+      model: 'deepseek-v4-auto' as const,
+    };
+    expect(
+      resolveRefreshedThreadModel('gemini-3-flash-preview', refresh),
+    ).toBe('deepseek-v4-auto');
+    expect(resolveRefreshedThreadModel('sonnet', refresh)).toBeNull();
+    expect(
+      resolveRefreshedThreadModel('deepseek-v4-auto', {
+        requestedModel: 'deepseek-v4-auto',
+        model: 'deepseek-v4-auto',
+      }),
+    ).toBeNull();
+  });
+
+  it('reconciles an exhausted premium thread to Camel Free', () => {
+    expect(
+      shouldSwitchExhaustedThreadToCamelFree(
+        {
+          availableCreditsCents: 0,
+          totalCreditLimitCents: 500,
+          isExhausted: true,
+          hasByokProvider: false,
+        },
+        'gemini-3-flash-preview',
+      ),
+    ).toBe(true);
+    expect(
+      shouldSwitchExhaustedThreadToCamelFree(
+        {
+          availableCreditsCents: 0,
+          totalCreditLimitCents: 0,
+          isExhausted: true,
+          hasByokProvider: false,
+        },
+        'deepseek-v4-auto',
+      ),
+    ).toBe(false);
+  });
+
   it('maps available credit balances to low-credit tiers', () => {
     expect(activeLowCreditTier(600)).toBeNull();
     expect(activeLowCreditTier(500)).toBeNull();

@@ -115,6 +115,7 @@ import {
 } from "@/lib/chat-working-indicator";
 import {
   shouldShowModelFallbackNotice,
+  type ChatAgentModelFallbackNotice,
   type ChatAgentStatePayload,
 } from "@/lib/chat-agent-state";
 import { usePiChatStream } from "@/lib/use-pi-chat-stream";
@@ -159,7 +160,11 @@ import {
 } from "@/lib/model-catalog";
 import { resolveDefaultModelForChat } from "@/lib/model-picker-config";
 import { getRecentModel, type RecentModelScope } from "@/lib/recent-model";
-import type { BillingCreditStatus } from "@/lib/chat-credit-status";
+import {
+  resolveRefreshedThreadModel,
+  shouldSwitchExhaustedThreadToCamelFree,
+  type BillingCreditStatus,
+} from "@/lib/chat-credit-status";
 import {
   loadDeliveryDraft,
   loadDraft,
@@ -330,7 +335,7 @@ const EMPTY_INTEGRATIONS: Integration[] = [];
 const EMPTY_MENTION_PROJECTS: MentionableProject[] = [];
 const EMPTY_RECENT_THREADS: Thread[] = [];
 
-function resolveSelectedThreadModel(args: {
+export function resolveSelectedThreadModel(args: {
   threadId?: string;
   threadModel?: LlmModel | null;
   allowedThreadModels?: LlmModel[] | null;
@@ -355,7 +360,7 @@ function resolveSelectedThreadModel(args: {
       ? args.effectivePickerDefaultModel
       : null,
     recentModel: args.recentModel,
-    fallbackModel: getDefaultLlmModel(args.llmProvider),
+    fallbackModel: args.threadModel ?? getDefaultLlmModel(args.llmProvider),
     visibleCatalog: args.availableThreadModels,
   });
 
@@ -364,6 +369,61 @@ function resolveSelectedThreadModel(args: {
     (threadModelIsAvailable ? args.threadModel : null) ??
     args.allowedThreadModels?.[0] ??
     getDefaultLlmModel(args.llmProvider)
+  );
+}
+
+export function resolveAgentFallbackOptimisticModel(args: {
+  threadId: string | null | undefined;
+  model: unknown;
+  notice: ChatAgentModelFallbackNotice | null | undefined;
+  now?: number;
+}): { threadId: string; model: LlmModel } | null {
+  if (
+    !args.threadId ||
+    !isLlmModel(args.model) ||
+    !shouldShowModelFallbackNotice(args.notice, args.model, args.now)
+  ) {
+    return null;
+  }
+  return { threadId: args.threadId, model: args.model };
+}
+
+export function shouldIgnoreStaleThreadModelResult(args: {
+  threadId: string | null | undefined;
+  nextModel: LlmModel;
+  optimistic: { threadId: string; model: LlmModel } | null;
+}): boolean {
+  return Boolean(
+    args.threadId &&
+      args.optimistic?.threadId === args.threadId &&
+      args.optimistic.model !== args.nextModel,
+  );
+}
+
+type AuthoritativeThreadModel = {
+  threadId: string;
+  model: LlmModel;
+  updatedAt: number;
+};
+
+export function shouldIgnoreOlderThreadModelUpdate(args: {
+  threadId: string | null | undefined;
+  nextModel: LlmModel;
+  nextUpdatedAt: number | null | undefined;
+  authoritative: AuthoritativeThreadModel | null;
+}): boolean {
+  const current = args.authoritative;
+  if (
+    !args.threadId ||
+    current?.threadId !== args.threadId ||
+    current.model === args.nextModel
+  ) {
+    return false;
+  }
+  return (
+    typeof args.nextUpdatedAt !== "number" ||
+    !Number.isFinite(args.nextUpdatedAt) ||
+    args.nextUpdatedAt <= current.updatedAt
   );
 }
 
@@ -846,6 +906,7 @@ export default function Chat({
   const lastAppliedModelFallbackNoticeIdRef = useRef<string | null>(null);
   const pendingMessagesRef = useRef(pendingMessages);
   const acceptedPendingMessageIdsRef = useRef<Set<string>>(new Set());
+  const billingRefreshSequenceRef = useRef(0);
   const pendingThreadContextRef = useRef({
     workspaceId: resolvedWorkspaceId,
     threadId,
@@ -963,6 +1024,9 @@ export default function Chat({
     threadId: string;
     model: LlmModel;
   } | null>(null);
+  const authoritativeThreadModelRef = useRef<AuthoritativeThreadModel | null>(
+    null,
+  );
   const availableThreadModels = useMemo<ModelCatalogEntry[]>(() => {
     if (Array.isArray(allowedThreadModels)) {
       return modelCatalogEntriesForIds(allowedThreadModels);
@@ -979,7 +1043,11 @@ export default function Chat({
     () => new Set(availableThreadModels.map((entry) => entry.id)),
     [availableThreadModels],
   );
-  const shouldUseRecentModelFallback = !hasEffectivePickerDefault;
+  // A Camel Free model supplied by the loader is a billing decision, not a
+  // generic platform fallback. Do not let a stale premium recent-model choice
+  // replace it for a zero-credit new chat.
+  const shouldUseRecentModelFallback =
+    !hasEffectivePickerDefault && threadModel !== CAMEL_FREE_LLM_MODEL;
   const modelRecentScope = useMemo<RecentModelScope | null>(() => {
     if (readOnly) return null;
     if (!shouldUseRecentModelFallback) return null;
@@ -1019,13 +1087,17 @@ export default function Chat({
     locationSearchRef.current = locationSearch;
   }, [locationSearch]);
 
-  const { currentBillingCreditStatus, refreshBillingCreditStatusAfterTurn } =
-    useBillingCreditStatus({
-      billingStatusFetcher,
-      initialStatus: billingCreditStatus,
-      selectedThreadModelRef,
-      locationSearchRef,
-    });
+  const {
+    currentBillingCreditStatus,
+    refreshedThreadModel,
+    refreshBillingCreditStatusAfterTurn,
+  } = useBillingCreditStatus({
+    billingStatusFetcher,
+    initialStatus: billingCreditStatus,
+    threadId,
+    selectedThreadModelRef,
+    locationSearchRef,
+  });
   const displayedBillingCreditStatus =
     selectedThreadModel === CAMEL_FREE_LLM_MODEL
       ? null
@@ -2532,6 +2604,25 @@ export default function Chat({
         }
       }
       const fallbackNotice = state.modelFallbackNotice;
+      const optimisticFallbackModel = resolveAgentFallbackOptimisticModel({
+        threadId,
+        model: state.model,
+        notice: fallbackNotice,
+      });
+      if (optimisticFallbackModel) {
+        // Agent state is newer than the route's loader snapshot. Hold this as
+        // the optimistic model so the prop-sync effect cannot restore the stale
+        // premium model before a later loader catches up.
+        optimisticThreadModelRef.current = optimisticFallbackModel;
+        authoritativeThreadModelRef.current = {
+          ...optimisticFallbackModel,
+          updatedAt:
+            typeof state.modelUpdatedAt === "number" &&
+            Number.isFinite(state.modelUpdatedAt)
+              ? state.modelUpdatedAt
+              : (fallbackNotice?.createdAt ?? Date.now()),
+        };
+      }
       if (
         shouldShowModelFallbackNotice(fallbackNotice, state.model) &&
         fallbackNotice.id !== lastAppliedModelFallbackNoticeIdRef.current
@@ -2604,12 +2695,28 @@ export default function Chat({
           Number.isFinite(state.modelUpdatedAt)
             ? state.modelUpdatedAt
             : Date.now();
-        selectedThreadModelRef.current = state.model;
-        setSelectedThreadModel(state.model);
-        dispatchLocalThreadSummaryUpdate(threadId, {
-          model: state.model,
-          updatedAt,
-        });
+        if (
+          !shouldIgnoreOlderThreadModelUpdate({
+            threadId,
+            nextModel: state.model,
+            nextUpdatedAt: updatedAt,
+            authoritative: authoritativeThreadModelRef.current,
+          })
+        ) {
+          if (
+            authoritativeThreadModelRef.current?.model !== state.model &&
+            updatedAt >
+              (authoritativeThreadModelRef.current?.updatedAt ?? -Infinity)
+          ) {
+            authoritativeThreadModelRef.current = null;
+          }
+          selectedThreadModelRef.current = state.model;
+          setSelectedThreadModel(state.model);
+          dispatchLocalThreadSummaryUpdate(threadId, {
+            model: state.model,
+            updatedAt,
+          });
+        }
       }
       const usedPercent = state.contextUsedPercent;
       setContextUsedPercent(
@@ -2660,7 +2767,12 @@ export default function Chat({
     if (id) dispatchLocalThreadStatus(id, "idle");
     completeActiveManualCompaction();
     clearPendingDeliveryDraft();
-    if (id) refreshBillingCreditStatusAfterTurn(id);
+    if (id) {
+      billingRefreshSequenceRef.current += 1;
+      refreshBillingCreditStatusAfterTurn(
+        `${id}:turn:${billingRefreshSequenceRef.current}`,
+      );
+    }
     if (getUnacceptedPendingUserMessages().length === 0) setLoading(false);
   }, [
     isTurnBusy,
@@ -3193,6 +3305,28 @@ export default function Chat({
     if (updateThreadModelFetcher.data.thread?.model) {
       const nextModel = updateThreadModelFetcher.data.thread.model;
       const updatedAt = updateThreadModelFetcher.data.thread.updated_at;
+      if (
+        shouldIgnoreStaleThreadModelResult({
+          threadId,
+          nextModel,
+          optimistic: optimisticThreadModelRef.current,
+        }) ||
+        shouldIgnoreOlderThreadModelUpdate({
+          threadId,
+          nextModel,
+          nextUpdatedAt: updatedAt,
+          authoritative: authoritativeThreadModelRef.current,
+        })
+      ) {
+        return;
+      }
+      if (
+        authoritativeThreadModelRef.current?.model !== nextModel &&
+        updatedAt >
+          (authoritativeThreadModelRef.current?.updatedAt ?? -Infinity)
+      ) {
+        authoritativeThreadModelRef.current = null;
+      }
       const nextSelectionKey = nextModel;
       optimisticThreadModelRef.current = null;
       setSelectedThreadModel(nextModel);
@@ -3235,6 +3369,7 @@ export default function Chat({
       ) {
         return;
       }
+      authoritativeThreadModelRef.current = null;
       setSelectedThreadModel(nextModel);
       optimisticThreadModelRef.current = { threadId, model: nextModel };
       updateThreadModelFetcher.submit(
@@ -3249,6 +3384,66 @@ export default function Chat({
       updateThreadModelFetcher,
     ],
   );
+
+  // The post-turn resource refresh reads the canonical OrgDO thread. Apply a
+  // newer persisted model directly when Agent state was missed, but only while
+  // the picker still shows the model for which that refresh was requested.
+  useEffect(() => {
+    if (!threadId || readOnly) return;
+    const canonicalModel = resolveRefreshedThreadModel(
+      selectedThreadModel,
+      refreshedThreadModel,
+    );
+    if (!canonicalModel) return;
+    optimisticThreadModelRef.current = {
+      threadId,
+      model: canonicalModel,
+    };
+    authoritativeThreadModelRef.current = {
+      threadId,
+      model: canonicalModel,
+      updatedAt: refreshedThreadModel?.updatedAt ?? Date.now(),
+    };
+    selectedThreadModelRef.current = canonicalModel;
+    setSelectedThreadModel(canonicalModel);
+    dispatchLocalThreadSummaryUpdate(threadId, {
+      model: canonicalModel,
+      updatedAt: refreshedThreadModel?.updatedAt ?? Date.now(),
+    });
+  }, [readOnly, refreshedThreadModel, selectedThreadModel, threadId]);
+
+  // The Durable Object persists hosted-credit fallback and normally broadcasts
+  // the new model through Agent state. Reconcile from the independent
+  // post-turn billing refresh as well so a missed state frame cannot leave the
+  // picker showing (or re-persisting) an exhausted premium model.
+  useEffect(() => {
+    if (
+      !threadId ||
+      readOnly ||
+      resolveRefreshedThreadModel(
+        selectedThreadModel,
+        refreshedThreadModel,
+      ) !== null ||
+      updateThreadModelFetcher.state !== "idle" ||
+      !availableThreadModelIds.has(CAMEL_FREE_LLM_MODEL) ||
+      !shouldSwitchExhaustedThreadToCamelFree(
+        currentBillingCreditStatus,
+        selectedThreadModel,
+      )
+    ) {
+      return;
+    }
+    handleThreadModelChange(CAMEL_FREE_LLM_MODEL);
+  }, [
+    availableThreadModelIds,
+    currentBillingCreditStatus,
+    handleThreadModelChange,
+    readOnly,
+    refreshedThreadModel,
+    selectedThreadModel,
+    threadId,
+    updateThreadModelFetcher.state,
+  ]);
 
   useEffect(() => {
     if (threadId || readOnly || !modelRecentScope || noModelsMessage) {

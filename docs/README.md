@@ -16,6 +16,7 @@ conventions. Active cross-cutting architecture work also lives in
 | [admin-api-reference.md](./admin-api-reference.md) | Admin REST API reference |
 | [admin-api-migration-guide.md](./admin-api-migration-guide.md) | Admin API migration notes |
 | [admin-js-exec.md](./admin-js-exec.md) | Generic remote JavaScript console for staging and production |
+| [staging-onboarding-billing-e2e.md](./staging-onboarding-billing-e2e.md) | Manual staging onboarding, agent fallback, and Stripe browser tests |
 | [chat-transcript-simplification.md](./chat-transcript-simplification.md) | Chat transcript / UIMessage invariants |
 | [shadcn-components.md](./shadcn-components.md) | shadcn component catalog notes |
 | [pi-system-prompt.md](./pi-system-prompt.md) | Generated / exported Pi system prompt snapshot |

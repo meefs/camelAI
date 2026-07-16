@@ -816,6 +816,10 @@ export class OrgDO extends DurableObject<DOEnv> {
       }
     }
 
+    // Repair columns before version-gated migrations read from them. Some
+    // legacy objects were stamped at a newer version despite missing columns.
+    this.ensureThreadSchemaColumns();
+
     if (version < 1) {
       // V1: Fresh start
       this.sql.exec("DROP TABLE IF EXISTS org_info");

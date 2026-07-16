@@ -652,6 +652,16 @@ describe("admin MCP OAuth resource", () => {
                 await test("actor request facade", async () => {
                   assert.equal(typeof ACTOR.fetch, "function");
                 });
+                await test("identity control facade", async () => {
+                  assert.equal(typeof IDENTITY.createActor, "function");
+                  assert.equal(typeof IDENTITY.resetActor, "function");
+                  assert.equal(typeof IDENTITY.deleteActor, "function");
+                });
+                await test("billing control facade", async () => {
+                  assert.equal(typeof BILLING.snapshot, "function");
+                  assert.equal(typeof BILLING.setAvailableCredits, "function");
+                  assert.equal(typeof BILLING.deleteTestCustomer, "function");
+                });
                 await test("chained binding APIs", async () => {
                   const row = await env.APP_DB.chain([
                     { method: "prepare", args: ["SELECT 1 AS value"] },
@@ -714,8 +724,8 @@ describe("admin MCP OAuth resource", () => {
         },
       },
       tests: {
-        total: 7,
-        passed: 7,
+        total: 9,
+        passed: 9,
         failed: 0,
       },
       runtime: {
@@ -725,6 +735,120 @@ describe("admin MCP OAuth resource", () => {
       },
     });
     expect(payload.runtime.bindingCount).toBeGreaterThan(0);
+  });
+
+  it("provisions and cleans up a verified onboarding actor through console controls", async () => {
+    const { userId: adminUserId } = await createUser(
+      testEnv,
+      `admin-mcp-control-${crypto.randomUUID()}@example.com`,
+      "password123",
+      "Control Admin",
+    );
+    await createOrg(testEnv, "MCP Control Admin Org", adminUserId);
+    await updateUserProfile(testEnv, adminUserId, { is_superuser: true });
+    const token = await issueAdminMcpToken(adminUserId);
+    const email = `admin-console-actor-${crypto.randomUUID()}@example.com`;
+    const password = "fixture-password-123";
+
+    const response = await SELF.fetch(
+      mcpRequest(
+        {
+          jsonrpc: "2.0",
+          id: 1,
+          method: "tools/call",
+          params: {
+            name: "admin_js_exec",
+            arguments: {
+              timeout_ms: 120_000,
+              input: { email, password },
+              code: `
+                const actor = await IDENTITY.createActor({
+                  email: input.email,
+                  password: input.password,
+                  name: "Staging E2E Actor",
+                });
+                const verifiedPassword = await DO.call(
+                  "USER",
+                  actor.userId,
+                  "verifyPassword",
+                  [input.password],
+                );
+                assert.equal(verifiedPassword, true);
+                const verification = await DO.call(
+                  "USER",
+                  actor.userId,
+                  "getEmailVerificationStatus",
+                );
+                assert.deepEqual(verification, {
+                  required: true,
+                  verified: true,
+                  email_verified_at: verification.email_verified_at,
+                });
+                const onboarding = await DO.call(
+                  "USER",
+                  actor.userId,
+                  "getOnboarding",
+                );
+                assert.ok(!onboarding.completed_at);
+
+                const initial = await BILLING.snapshot(actor.orgId);
+                assert.equal(initial.available_credits_cents, 0);
+                assert.equal(initial.stripe_customer_configured, false);
+                assert.equal(initial.stripe_subscription_configured, false);
+
+                const changed = await BILLING.setAvailableCredits(actor.orgId, 250);
+                assert.equal(changed.previous.available_credits_cents, 0);
+                assert.equal(changed.current.available_credits_cents, 250);
+                await IDENTITY.resetActor(actor.userId);
+                const deleted = await IDENTITY.deleteActor(actor.userId);
+                assert.equal(deleted.orgDeleted, true);
+                const deletedAgain = await IDENTITY.deleteActor(actor.userId);
+                assert.equal(deletedAgain.alreadyDeleted, true);
+                return {
+                  actor,
+                  initial,
+                  changed: changed.current,
+                  deleted,
+                  deletedAgain,
+                };
+              `,
+            },
+          },
+        },
+        token,
+      ),
+    );
+
+    expect(response.status).toBe(200);
+    const rpc = (await response.json()) as any;
+    const payload = parseToolText(rpc);
+    expect(rpc.result.isError).toBeUndefined();
+    expect(payload).toMatchObject({
+      success: true,
+      result: {
+        actor: {
+          userId: expect.any(String),
+          orgId: expect.any(String),
+          workspaceId: expect.any(String),
+        },
+        initial: {
+          billing_status: "inactive",
+          available_credits_cents: 0,
+        },
+        changed: {
+          available_credits_cents: 250,
+        },
+        deleted: {
+          orgDeleted: true,
+          deletedWorkspaces: 1,
+        },
+      },
+    });
+    const actorUserId = payload.result.actor.userId as string;
+    expect(
+      await testEnv.USER.get(testEnv.USER.idFromName(actorUserId)).getProfile(),
+    ).toBeNull();
+    expect(await testEnv.EMAIL_TO_USER.get(`email:${email}`)).toBeNull();
   });
 
   it("returns a failing tool result when a console test fails", async () => {

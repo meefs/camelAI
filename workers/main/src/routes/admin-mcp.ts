@@ -21,6 +21,15 @@ import {
   recordObservabilityEvent,
 } from "../observability.js";
 import { createSignedSession } from "../signed-session.js";
+import {
+  createAdminJsExecActor,
+  deleteAdminJsExecActor,
+  deleteAdminJsExecTestCustomer,
+  getAdminJsExecBillingSnapshot,
+  resetAdminJsExecActor,
+  setAdminJsExecAvailableCredits,
+  type AdminJsExecActorCreateInput,
+} from "../admin-js-exec-controls.js";
 
 type JsonRpcId = string | number | null;
 
@@ -569,7 +578,7 @@ function adminTools() {
     {
       name: TOOL_ADMIN_JS_EXEC,
       description:
-        "Run admin-only JavaScript in an ephemeral Worker as a generic remote console for the current environment. Available globals: env (non-secret binding proxies), ENV (binding discovery/call/fetch), DO (Durable Object RPC), SELF.fetch (same Worker), ADMIN.fetch (authenticated admin API), ACTOR.fetch (same Worker as a validated org member), fetch (outbound HTTP), assert, test, runtime, sleep, and text. Primitive environment values and secrets are intentionally not readable.",
+        "Run admin-only JavaScript in an ephemeral Worker as a generic remote console for the current environment. Available globals: env (non-secret binding proxies), ENV (binding discovery/call/fetch), DO (Durable Object RPC), SELF.fetch (same Worker), ADMIN.fetch (authenticated admin API), ACTOR.fetch (same Worker as a validated org member), IDENTITY (manual E2E actor lifecycle), BILLING (sanitized billing controls), fetch (outbound HTTP), assert, test, runtime, sleep, and text. Primitive environment values and secrets are intentionally not readable.",
       inputSchema: {
         type: "object",
         properties: {
@@ -919,6 +928,12 @@ type AdminJsExecRuntimeBridge = {
     input: string,
     init?: AdminJsExecFetchInit,
   ): Promise<AdminJsExecFetchResult>;
+  createActor(input: AdminJsExecActorCreateInput): Promise<unknown>;
+  resetActor(userId: string): Promise<unknown>;
+  deleteActor(userId: string): Promise<unknown>;
+  billingSnapshot(orgId: string): Promise<unknown>;
+  setAvailableCredits(orgId: string, cents: number): Promise<unknown>;
+  deleteTestCustomer(orgId: string): Promise<unknown>;
 };
 
 function callableMethodNames(value: object): string[] {
@@ -1077,6 +1092,51 @@ export class AdminJsExecRuntimeBinding extends WorkerEntrypoint<
       stripeMode: this.env.STRIPE_MODE?.trim() || null,
       bindings: adminJsExecBindingDescriptors(this.env),
     };
+  }
+
+  async createActor(input: AdminJsExecActorCreateInput): Promise<unknown> {
+    return await createAdminJsExecActor(
+      this.env,
+      this.ctx.props.adminUserId,
+      input,
+    );
+  }
+
+  async resetActor(userId: string): Promise<unknown> {
+    return await resetAdminJsExecActor(
+      this.env,
+      this.ctx.props.adminUserId,
+      userId,
+    );
+  }
+
+  async deleteActor(userId: string): Promise<unknown> {
+    return await deleteAdminJsExecActor(
+      this.env,
+      this.ctx.props.adminUserId,
+      userId,
+    );
+  }
+
+  async billingSnapshot(orgId: string): Promise<unknown> {
+    return await getAdminJsExecBillingSnapshot(this.env, orgId);
+  }
+
+  async setAvailableCredits(orgId: string, cents: number): Promise<unknown> {
+    return await setAdminJsExecAvailableCredits(
+      this.env,
+      this.ctx.props.adminUserId,
+      orgId,
+      cents,
+    );
+  }
+
+  async deleteTestCustomer(orgId: string): Promise<unknown> {
+    return await deleteAdminJsExecTestCustomer(
+      this.env,
+      this.ctx.props.adminUserId,
+      orgId,
+    );
   }
 
   async call(
@@ -1616,6 +1676,17 @@ function createRuntimeFacades(bridge, runtime) {
         await bridge.fetchActor(actor, String(input), normalizeFetchInit(init)),
       ),
     }),
+    IDENTITY: Object.freeze({
+      createActor: (actor) => bridge.createActor(actor),
+      resetActor: (userId) => bridge.resetActor(String(userId)),
+      deleteActor: (userId) => bridge.deleteActor(String(userId)),
+    }),
+    BILLING: Object.freeze({
+      snapshot: (orgId) => bridge.billingSnapshot(String(orgId)),
+      setAvailableCredits: (orgId, cents) =>
+        bridge.setAvailableCredits(String(orgId), cents),
+      deleteTestCustomer: (orgId) => bridge.deleteTestCustomer(String(orgId)),
+    }),
     fetch: async (input, init = {}) => createRemoteResponse(
       await bridge.fetchOutbound(String(input), normalizeFetchInit(init)),
     ),
@@ -1722,7 +1793,7 @@ function deepFreeze(value) {
   return Object.freeze(value);
 }
 
-async function runUserCode(DO, env, ENV, SELF, ADMIN, ACTOR, fetch, assert, test, runtime, input, sleep, text) {
+async function runUserCode(DO, env, ENV, SELF, ADMIN, ACTOR, IDENTITY, BILLING, fetch, assert, test, runtime, input, sleep, text) {
   "use strict";
 `}${userCode}${String.raw`
 }
@@ -1748,6 +1819,8 @@ export class AdminJsExecRunner extends WorkerEntrypoint {
       facades.SELF,
       facades.ADMIN,
       facades.ACTOR,
+      facades.IDENTITY,
+      facades.BILLING,
       facades.fetch,
       assert,
       harness.test,

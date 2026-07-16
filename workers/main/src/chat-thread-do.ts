@@ -5794,13 +5794,19 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
   }
 
   private async refreshPiSessionModel(): Promise<void> {
-    if (!this.piSession || !this.piModelResolver) {
+    const session = this.piSession;
+    const modelResolver = this.piModelResolver;
+    if (!session || !modelResolver) {
       return;
     }
-    const current = await this.piModelResolver();
-    this.piSession.state.model = current.model;
+    const current = await modelResolver();
+    // Model resolution can cross DO/RPC boundaries. A concurrent stream cancel
+    // may dispose (or replace) the Pi session while it is in flight; never
+    // dereference or mutate that stale session after the await.
+    if (this.piSession !== session) return;
+    session.state.model = current.model;
     if (this.chatContext) {
-      this.piSession.state.tools = this.createPiToolDefinitions(this.chatContext, {
+      session.state.tools = this.createPiToolDefinitions(this.chatContext, {
         includeOracle: this.isCamelFreeActive(),
       });
     }

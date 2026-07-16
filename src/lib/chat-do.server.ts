@@ -8,6 +8,7 @@ import type {
   PaginationParams,
   LlmProvider,
   LlmModel,
+  Organization,
   OrgModelPickerConfig,
   OrganizationExperimentalSettings,
   PreviewTarget,
@@ -19,6 +20,7 @@ import {
 import { OrgDO, type OrgThread } from "../../workers/main/src/auth";
 import { WorkspaceDO } from "../../workers/main/src/workspace";
 import {
+  CAMEL_FREE_LLM_MODEL,
   type CustomLlmProviderApi,
   type LlmProviderConfigRecord,
   getDefaultLlmModel,
@@ -29,6 +31,7 @@ import {
   isLlmModel,
   normalizeLlmModel,
 } from "./llm-provider-config";
+import { resolveOrgBillingAccess } from "./billing.server";
 import { getEffectiveLlmProviderConfig } from "./selfhost-ai-provider";
 import { resolveModelPickerCatalog } from "./model-catalog";
 import { parseChannelIndicatorKindsJson } from "./channel-kinds";
@@ -74,6 +77,12 @@ interface KnownOrgOptions {
 interface ModelPickerStateOptions extends KnownOrgOptions {
   llmProviderConfig?: LlmProviderConfigRecord | null;
   experimentalSettings?: OrganizationExperimentalSettings;
+  orgBillingState?: Pick<
+    Organization,
+    | "billing_status"
+    | "billing_credit_purchase_total_cents"
+    | "billing_credit_grant_total_cents"
+  > | null;
 }
 
 export function normalizeStoredThreadModel(
@@ -195,7 +204,20 @@ async function getWorkspaceModelPickerStateForOrg(
   const wsStub = env.WORKSPACE.get(
     env.WORKSPACE.idFromName(workspaceId),
   ) as unknown as WorkspaceDO;
-  const [llmProviderConfig, experimentalSettings, openAiSubscription] = await Promise.all([
+  const orgInfoPromise =
+    options.orgBillingState !== undefined
+      ? Promise.resolve(options.orgBillingState)
+      : typeof orgStub.getInfo === "function"
+        ? retryTransientDurableObjectRead("OrgDO.getInfo", () =>
+            Promise.resolve(orgStub.getInfo()),
+          )
+        : Promise.resolve(null);
+  const [
+    llmProviderConfig,
+    experimentalSettings,
+    openAiSubscription,
+    orgInfo,
+  ] = await Promise.all([
     options.llmProviderConfig !== undefined
       ? Promise.resolve(options.llmProviderConfig)
       : retryTransientDurableObjectRead("OrgDO.getLlmProviderConfig", () =>
@@ -209,6 +231,7 @@ async function getWorkspaceModelPickerStateForOrg(
     typeof orgStub.getOpenAiSubscription === "function"
       ? Promise.resolve(orgStub.getOpenAiSubscription())
       : Promise.resolve(null),
+    orgInfoPromise,
   ]);
   const allowOpenAiSubscription = openAiSubscription !== null;
   const effectiveLlmProviderConfig = getEffectiveLlmProviderConfig(
@@ -235,12 +258,20 @@ async function getWorkspaceModelPickerStateForOrg(
     awsRegion,
     allowOpenAiSubscription,
   });
+  const billingAccess = resolveOrgBillingAccess({
+    env,
+    org: orgInfo,
+    llmProviderConfig: effectiveLlmProviderConfig,
+  });
   const defaultModel = resolveDefaultModelForChat({
     effectiveDefaultModel: effectiveConfig.default_model,
-    fallbackModel: getDefaultLlmModel(effectiveLlmProviderConfig?.provider, {
-      customApi,
-      customModelId,
-    }),
+    fallbackModel:
+      billingAccess.kind === "ready" && billingAccess.mode === "camel_free"
+        ? CAMEL_FREE_LLM_MODEL
+        : getDefaultLlmModel(effectiveLlmProviderConfig?.provider, {
+            customApi,
+            customModelId,
+          }),
     visibleCatalog,
   });
 

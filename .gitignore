@@ -63,6 +63,7 @@ infra/*.tfstate*
 # Playwright
 test-results/
 playwright-report/
+playwright-report-staging-billing/
 
 # Claude Code worktrees
 .claude/worktrees

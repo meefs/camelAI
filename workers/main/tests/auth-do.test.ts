@@ -359,6 +359,19 @@ describe('Auth flow (full-stack with DOs)', () => {
       expect(stored?.last_assistant_summary_status).toBeNull();
     });
 
+    it('self-heals missing thread columns even when the stored schema version is current', async () => {
+      const email = testEmail();
+      const { userId } = await createUser(testEnv, email, 'password123', 'Current Version Owner');
+      const { org } = await createOrg(testEnv, 'Current Version Repair Org', userId);
+      const orgStub = testEnv.ORG.get(testEnv.ORG.idFromName(org.id));
+
+      await orgStub.downgradeThreadSchemaForTest();
+      await orgStub.setSchemaVersionForTest(999);
+      await orgStub.remigrate();
+
+      await expect(orgStub.getMember(userId)).resolves.toMatchObject({ user_id: userId });
+    });
+
     it('stores and preserves the first user message separately from the thread title', async () => {
       const email = testEmail();
       const { userId } = await createUser(testEnv, email, 'password123', 'Thread Owner');

@@ -9,6 +9,7 @@ import { getEnv } from "@/lib/cloudflare.server";
 import { isLlmModel } from "@/lib/llm-provider-config";
 import { getEffectiveLlmProviderConfig } from "@/lib/selfhost-ai-provider";
 import { isSelfhostRuntime } from "@/lib/selfhost-runtime";
+import * as chatDO from "@/lib/chat-do.server";
 
 export async function loader({ request, context }: Route.LoaderArgs) {
   const authContext = await requireAuthContext(request, context);
@@ -16,17 +17,31 @@ export async function loader({ request, context }: Route.LoaderArgs) {
   const url = new URL(request.url);
   const rawModel = url.searchParams.get("model");
   const model = isLlmModel(rawModel) ? rawModel : null;
+  const threadId = url.searchParams.get("threadId")?.trim() || null;
   const orgId = authContext.currentOrg.id;
 
   if (isSelfhostRuntime(env)) {
     return {
       ok: true,
       billingCreditStatus: null,
+      requestedModel: model,
+      threadModel: null,
+      threadModelUpdatedAt: null,
     };
   }
 
   try {
-    const overview = await getOrgBillingOverview(env, authContext.currentOrg);
+    const [overview, thread] = await Promise.all([
+      getOrgBillingOverview(env, authContext.currentOrg),
+      threadId && authContext.currentWorkspace?.id
+        ? chatDO.getThread(
+            context,
+            threadId,
+            authContext.currentWorkspace.id,
+            { orgId },
+          )
+        : Promise.resolve(null),
+    ]);
     const effectiveLlmProviderConfig = getEffectiveLlmProviderConfig(
       env,
       authContext.currentOrgLlmProviderConfig,
@@ -34,6 +49,9 @@ export async function loader({ request, context }: Route.LoaderArgs) {
 
     return {
       ok: true,
+      requestedModel: model,
+      threadModel: thread?.model ?? null,
+      threadModelUpdatedAt: thread?.updated_at ?? null,
       billingCreditStatus: applyDevBillingCreditStatusOverride(
         buildBillingCreditStatus(
           overview,

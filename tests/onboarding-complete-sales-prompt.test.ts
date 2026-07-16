@@ -155,7 +155,7 @@ describe("onboarding complete flow", () => {
     });
   });
 
-  it("requires billing access before completing onboarding", async () => {
+  it("completes onboarding with Camel Free and no paid billing access", async () => {
     setAuthContext({
       currentOrg: makeCurrentOrg({
         billingStatus: "inactive",
@@ -168,10 +168,13 @@ describe("onboarding complete flow", () => {
       context: {},
     } as never);
 
-    expect(response.status).toBe(402);
-    expect(userStub.updateOnboarding).not.toHaveBeenCalled();
+    expect(response.status).toBe(200);
+    expect(userStub.updateOnboarding).toHaveBeenCalledWith({
+      completed_at: expect.any(Number),
+    });
     await expect(response.json()).resolves.toEqual({
-      error: "Choose a billing option before continuing.",
+      success: true,
+      redirectTo: "/chat",
     });
   });
 

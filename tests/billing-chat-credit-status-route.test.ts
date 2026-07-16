@@ -4,6 +4,7 @@ import type { OrgBillingOverview } from "@/lib/billing.server";
 const requireAuthContextMock = vi.fn();
 const getEnvMock = vi.fn();
 const getOrgBillingOverviewMock = vi.fn();
+const getThreadMock = vi.fn();
 
 vi.mock("@/lib/auth.server", () => ({
   requireAuthContext: requireAuthContextMock,
@@ -11,6 +12,10 @@ vi.mock("@/lib/auth.server", () => ({
 
 vi.mock("@/lib/cloudflare.server", () => ({
   getEnv: getEnvMock,
+}));
+
+vi.mock("@/lib/chat-do.server", () => ({
+  getThread: getThreadMock,
 }));
 
 vi.mock("@/lib/billing.server", async (importOriginal) => {
@@ -95,6 +100,49 @@ describe("billing chat credit status route", () => {
     expect(result).toMatchObject({
       ok: true,
       billingCreditStatus: null,
+    });
+  });
+
+  it("returns the canonical persisted thread model with the refreshed status", async () => {
+    getEnvMock.mockReturnValue({});
+    requireAuthContextMock.mockResolvedValue({
+      currentOrg: {
+        id: "org_123",
+        name: "Org",
+        billing_status: "active",
+        billing_plan: "starter",
+      },
+      currentWorkspace: { id: "workspace_123" },
+      currentOrgLlmProviderConfig: null,
+    });
+    getOrgBillingOverviewMock.mockResolvedValue(makeOverview());
+    getThreadMock.mockResolvedValue({
+      id: "thread_123",
+      workspace_id: "workspace_123",
+      model: "deepseek-v4-auto",
+      updated_at: 1234,
+    });
+
+    const result = await loader({
+      request: new Request(
+        "https://camelai.test/api/billing/chat-credit-status?model=gemini-3-flash-preview&threadId=thread_123",
+      ),
+      context: {},
+      params: {},
+    } as never);
+
+    expect(getThreadMock).toHaveBeenCalledWith(
+      {},
+      "thread_123",
+      "workspace_123",
+      { orgId: "org_123" },
+    );
+    expect(result).toMatchObject({
+      ok: true,
+      requestedModel: "gemini-3-flash-preview",
+      threadModel: "deepseek-v4-auto",
+      threadModelUpdatedAt: 1234,
+      billingCreditStatus: { isExhausted: true },
     });
   });
 });
