@@ -7578,6 +7578,9 @@ describe('ChatThreadDO Pi turn handling', () => {
     };
 
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) === 'https://example.com/article') {
+        return new Response('', { status: 403 });
+      }
       expect(String(input)).toBe('https://api.exa.ai/contents');
       expect(init?.headers).toMatchObject({ 'x-api-key': 'exa-key' });
       const body = JSON.parse(String(init?.body));
@@ -7602,7 +7605,7 @@ describe('ChatThreadDO Pi turn handling', () => {
         maxCharacters: 1200,
       }) as any;
 
-      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(fetchMock).toHaveBeenCalledTimes(2);
       expect(quickAction).toHaveBeenCalledOnce();
       expect(result.provider).toBe('exa');
       expect(result.costUSD).toBe(0.002);
@@ -7667,30 +7670,266 @@ describe('ChatThreadDO Pi turn handling', () => {
     }
   });
 
-  it('converts directly fetched HTML with Workers AI before Browser Run', async () => {
+  it('normalizes negotiated MDX and preserves a structured omitted-section outline', async () => {
     const quickAction = vi.fn();
-    const convertedMarkdown = [
-      '# Converted page',
+    const sections = Array.from({ length: 20 }, (_value, index) => [
+      `## Section ${index + 1} {/*section-${index + 1}*/}`,
       '',
-      'Useful article content from the direct HTML response. '.repeat(12),
+      `Useful documentation paragraph ${index + 1}. ${'Detailed explanation. '.repeat(8)}`,
+    ].join('\n')).join('\n\n');
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(
+      `<Intro>\n\n# Reference {/*reference*/}\n\n<InlineToc />\n\n${sections}\n\n</Intro>`,
+      { headers: { 'content-type': 'text/markdown' } },
+    )));
+    try {
+      const client = new CodeModeWebSearch(
+        {
+          APP_KV: { get: vi.fn(), put: vi.fn() } as any,
+          BROWSER: { quickAction } as unknown as Fetcher,
+        },
+        'thread1',
+      );
+
+      const result = await client.fetch({
+        url: 'https://example.com/reference',
+        maxCharacters: 1200,
+      }) as any;
+      const text = result.results[0].text as string;
+
+      expect(result.provider).toBe('direct');
+      expect(text.length).toBeLessThanOrEqual(1200);
+      expect(text).not.toContain('<Intro>');
+      expect(text).not.toContain('<InlineToc />');
+      expect(text).not.toContain('{/*');
+      expect(text).toContain('Content shortened: showing structured excerpt');
+      expect(text).toContain('Omitted sections:');
+      expect(text).toContain('Section 20');
+      expect(quickAction).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('does not report heading-like lines inside omitted code fences', async () => {
+    const markdown = [
+      '# Guide',
+      '',
+      `Introductory material. ${'Useful explanation. '.repeat(28)}`,
+      '',
+      '```sh',
+      '# not a document section',
+      'echo example',
+      '```',
+      '',
+      '## Real omitted section',
+      '',
+      'More useful documentation.',
     ].join('\n');
-    const toMarkdown = vi.fn(async () => ({
-      id: 'conversion-1',
-      name: 'page.html',
-      mimeType: 'text/html',
-      format: 'markdown',
-      tokens: 20,
-      data: convertedMarkdown,
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(markdown, {
+      headers: { 'content-type': 'text/markdown' },
+    })));
+    try {
+      const client = new CodeModeWebSearch(
+        { APP_KV: { get: vi.fn(), put: vi.fn() } as any },
+        'thread1',
+      );
+      const result = await client.fetch({
+        url: 'https://example.com/guide',
+        maxCharacters: 800,
+      }) as any;
+      const text = result.results[0].text as string;
+
+      expect(text).toContain('Real omitted section');
+      expect(text).not.toContain('- not a document section');
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('falls back when negotiated MDX normalizes to an empty shell', async () => {
+    const browserMarkdown = '# Compact page\n\nA concise but useful rendered answer with enough concrete information for an agent to act on safely.';
+    const quickAction = vi.fn(async () => Response.json({
+      success: true,
+      result: browserMarkdown,
     }));
     vi.stubGlobal('fetch', vi.fn(async () => new Response(
-      '<!doctype html><html><body><main><h1>Converted page</h1><p>Useful article content from the direct HTML response.</p></main></body></html>',
+      `${'<Intro>\n<InlineToc />\n<Steps>\n</Steps>\n</Intro>\n'.repeat(4)}`,
+      { headers: { 'content-type': 'text/markdown' } },
+    )));
+    try {
+      const client = new CodeModeWebSearch(
+        {
+          APP_KV: { get: vi.fn(), put: vi.fn() } as any,
+          BROWSER: { quickAction } as unknown as Fetcher,
+        },
+        'thread1',
+      );
+      const result = await client.fetch({ url: 'https://example.com/shell' }) as any;
+
+      expect(result.provider).toBe('cloudflare');
+      expect(result.results[0].text).toBe(browserMarkdown);
+      expect(quickAction).toHaveBeenCalledOnce();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('extracts semantic HTML content without page chrome before Browser Run', async () => {
+    const quickAction = vi.fn();
+    const chrome = Array.from({ length: 40 }, (_value, index) =>
+      `<a href="/navigation-${index}">Navigation item ${index}</a>`).join('');
+    const forecast = Array.from({ length: 12 }, (_value, index) =>
+      `<section><h2>Forecast period ${index + 1}</h2><p>${'Clear conditions with useful forecast details. '.repeat(5)}</p></section>`).join('');
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(
+      `<!doctype html><html><body><nav>${chrome}</nav><main><h1>Local forecast</h1><p>Current conditions: sunny and 68 degrees.</p>${forecast}</main><footer>${chrome}</footer></body></html>`,
+      { headers: { 'content-type': 'text/html' } },
+    )));
+    try {
+      const client = new CodeModeWebSearch(
+        {
+          APP_KV: { get: vi.fn(), put: vi.fn() } as any,
+          BROWSER: { quickAction } as unknown as Fetcher,
+        },
+        'thread1',
+      );
+
+      const result = await client.fetch({ url: 'https://example.com/forecast' }) as any;
+      const text = result.results[0].text as string;
+
+      expect(result.provider).toBe('direct');
+      expect(text).toContain('Current conditions: sunny and 68 degrees.');
+      expect(text).toContain('Forecast period 12');
+      expect(text).not.toContain('Navigation item');
+      expect(quickAction).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('removes sequential source gutters and closes an oversized fenced-code excerpt', async () => {
+    const quickAction = vi.fn();
+    const lineNumbers = Array.from({ length: 180 }, (_value, index) => `<p>${index + 1}</p>`).join('');
+    const codeLines = Array.from({ length: 180 }, (_value, index) =>
+      `<p>export const value${index + 1} = ${index + 1};</p>`).join('');
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(
+      `<!doctype html><html><body><main><h1>source.ts</h1><div role="presentation">${lineNumbers}${codeLines}</div></main></body></html>`,
+      { headers: { 'content-type': 'text/html' } },
+    )));
+    try {
+      const client = new CodeModeWebSearch(
+        {
+          APP_KV: { get: vi.fn(), put: vi.fn() } as any,
+          BROWSER: { quickAction } as unknown as Fetcher,
+        },
+        'thread1',
+      );
+
+      const result = await client.fetch({
+        url: 'https://example.com/source.ts',
+        maxCharacters: 1200,
+      }) as any;
+      const text = result.results[0].text as string;
+
+      expect(result.provider).toBe('direct');
+      expect(text.length).toBeLessThanOrEqual(1200);
+      expect(text).toMatch(/^```\nexport const value1 = 1;/);
+      expect(text).not.toMatch(/```\n1\n2\n3/);
+      expect(text.match(/^```$/gm)).toHaveLength(2);
+      expect(text).toContain('Content shortened: showing structured excerpt');
+      expect(quickAction).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('preserves prose around a guttered code sample', async () => {
+    const lineNumbers = Array.from({ length: 120 }, (_value, index) => `<p>${index + 1}</p>`).join('');
+    const codeLines = Array.from({ length: 120 }, (_value, index) =>
+      `<p>const sample${index + 1} = ${index + 1};</p>`).join('');
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(
+      `<!doctype html><html><body><article><h1>Integration guide</h1><div role="presentation"><p>${'Important setup prose that must remain. '.repeat(8)}</p>${lineNumbers}${codeLines}<h2>After the example</h2><p>${'Important follow-up prose. '.repeat(8)}</p></div></article></body></html>`,
+      { headers: { 'content-type': 'text/html' } },
+    )));
+    try {
+      const client = new CodeModeWebSearch(
+        { APP_KV: { get: vi.fn(), put: vi.fn() } as any },
+        'thread1',
+      );
+      const result = await client.fetch({
+        url: 'https://example.com/integration-guide',
+        maxCharacters: 5000,
+      }) as any;
+      const text = result.results[0].text as string;
+
+      expect(text).toContain('Important setup prose that must remain.');
+      expect(text).toContain('```');
+      expect(text).toContain('const sample1 = 1;');
+      expect(text).not.toMatch(/```\n1\n2\n3/);
+      expect(text).toContain('After the example');
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('removes row-wise source line-number cells', async () => {
+    const rows = Array.from({ length: 40 }, (_value, index) =>
+      `<tr><td class="blob-num" data-line-number="${index + 1}"></td><td class="blob-code"><code>const row${index + 1} = ${index + 1};</code></td></tr>`
+    ).join('');
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(
+      `<!doctype html><html><body><main><h1>source.ts</h1><table class="source-code"><tbody>${rows}</tbody></table></main></body></html>`,
+      { headers: { 'content-type': 'text/html' } },
+    )));
+    try {
+      const client = new CodeModeWebSearch(
+        { APP_KV: { get: vi.fn(), put: vi.fn() } as any },
+        'thread1',
+      );
+      const result = await client.fetch({ url: 'https://example.com/source.ts' }) as any;
+      const text = result.results[0].text as string;
+
+      expect(text).toContain('const row1 = 1;');
+      expect(text).toContain('const row40 = 40;');
+      expect(text).not.toMatch(/```\n1\s+const row1/);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('does not treat a legitimate numeric sequence as a source gutter', async () => {
+    const timeline = Array.from({ length: 120 }, (_value, index) => `<p>${index + 1}</p>`).join('');
+    const prose = Array.from({ length: 30 }, (_value, index) =>
+      `<p>Milestone ${index + 1} uses equation x = ${index + 1}; the result is documented.</p>`).join('');
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(
+      `<!doctype html><html><body><main><h1>Numbered timeline</h1><div role="presentation">${timeline}${prose}</div></main></body></html>`,
+      { headers: { 'content-type': 'text/html' } },
+    )));
+    try {
+      const client = new CodeModeWebSearch(
+        { APP_KV: { get: vi.fn(), put: vi.fn() } as any },
+        'thread1',
+      );
+      const result = await client.fetch({ url: 'https://example.com/timeline' }) as any;
+      const text = result.results[0].text as string;
+
+      expect(text).toContain('120');
+      expect(text).toContain('Milestone 30 uses equation x = 30;');
+      expect(text).not.toContain('```');
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('converts directly fetched HTML locally before Browser Run', async () => {
+    const quickAction = vi.fn();
+    const articleContent = 'Useful article content from the direct HTML response. '.repeat(12);
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(
+      `<!doctype html><html><body><main><h1>Converted page</h1><p>${articleContent}</p></main></body></html>`,
       { headers: { 'content-type': 'text/html; charset=utf-8' } },
     )));
     try {
       const client = new CodeModeWebSearch(
         {
           APP_KV: { get: vi.fn(), put: vi.fn() } as any,
-          AI: { toMarkdown } as any,
           BROWSER: { quickAction } as unknown as Fetcher,
         },
         'thread1',
@@ -7699,14 +7938,10 @@ describe('ChatThreadDO Pi turn handling', () => {
       const result = await client.fetch({ url: 'https://example.com/article' }) as any;
 
       expect(result).toMatchObject({
-        provider: 'cloudflare-ai',
+        provider: 'direct',
         costUSD: 0,
-        results: [{ text: convertedMarkdown.trim() }],
+        results: [{ text: expect.stringContaining(articleContent.trim()) }],
       });
-      expect(toMarkdown).toHaveBeenCalledWith(
-        expect.objectContaining({ name: 'page.html', blob: expect.any(Blob) }),
-        { conversionOptions: { html: { hostname: 'example.com' } } },
-      );
       expect(quickAction).not.toHaveBeenCalled();
     } finally {
       vi.unstubAllGlobals();
@@ -7714,21 +7949,11 @@ describe('ChatThreadDO Pi turn handling', () => {
   });
 
   it('falls back to Browser Run when direct HTML conversion has no useful content', async () => {
+    const browserMarkdown = `# Browser page\n\n${'Browser-rendered content survived the quality check. '.repeat(12)}`;
     const quickAction = vi.fn(async () => Response.json({
       success: true,
-      result: '# Browser page\n\nBrowser-rendered content survived the quality check.',
+      result: browserMarkdown,
     }, { headers: { 'X-Browser-Ms-Used': '150' } }));
-    const shellMarkdown = `# Application\n\n${'Loading client-side application shell. '.repeat(8)}`;
-    expect(shellMarkdown.length).toBeGreaterThan(100);
-    expect(shellMarkdown.length).toBeLessThan(500);
-    const toMarkdown = vi.fn(async () => ({
-      id: 'conversion-1',
-      name: 'page.html',
-      mimeType: 'text/html',
-      format: 'markdown',
-      tokens: 30,
-      data: shellMarkdown,
-    }));
     const onProviderFailure = vi.fn(async () => undefined);
     vi.stubGlobal('fetch', vi.fn(async () => new Response(
       '<!doctype html><html><body><div id="app"></div></body></html>',
@@ -7738,7 +7963,6 @@ describe('ChatThreadDO Pi turn handling', () => {
       const client = new CodeModeWebSearch(
         {
           APP_KV: { get: vi.fn(), put: vi.fn() } as any,
-          AI: { toMarkdown } as any,
           BROWSER: { quickAction } as unknown as Fetcher,
         },
         'thread1',
@@ -7749,11 +7973,11 @@ describe('ChatThreadDO Pi turn handling', () => {
 
       expect(result).toMatchObject({
         provider: 'cloudflare',
-        results: [{ text: '# Browser page\n\nBrowser-rendered content survived the quality check.' }],
+        results: [{ text: browserMarkdown.trim() }],
       });
       expect(quickAction).toHaveBeenCalledOnce();
       expect(onProviderFailure).toHaveBeenCalledWith(expect.objectContaining({
-        provider: 'cloudflare-ai',
+        provider: 'direct',
         durationMs: expect.any(Number),
       }));
     } finally {
@@ -7762,9 +7986,10 @@ describe('ChatThreadDO Pi turn handling', () => {
   });
 
   it('falls back without converting an oversized direct response', async () => {
+    const browserFallback = `# Browser fallback\n\n${'The oversized direct response was not treated as complete. '.repeat(12)}`;
     const quickAction = vi.fn(async () => Response.json({
       success: true,
-      result: '# Browser fallback\n\nThe oversized direct response was not treated as complete.',
+      result: browserFallback,
     }));
     const toMarkdown = vi.fn();
     const onProviderFailure = vi.fn(async () => undefined);
@@ -7838,9 +8063,10 @@ describe('ChatThreadDO Pi turn handling', () => {
   });
 
   it('does not follow direct-fetch redirects to private targets', async () => {
+    const safeFallback = `# Safe fallback\n\n${'Fetched without following the private redirect. '.repeat(12)}`;
     const quickAction = vi.fn(async () => Response.json({
       success: true,
-      result: '# Safe fallback\n\nFetched without following the private redirect.',
+      result: safeFallback,
     }));
     const toMarkdown = vi.fn();
     const fetchMock = vi.fn(async () => new Response(null, {
@@ -7875,11 +8101,13 @@ describe('ChatThreadDO Pi turn handling', () => {
     }
   });
 
-  it('uses the Cloudflare Browser Run Markdown Quick Action first for WebFetch', async () => {
+  it('uses the Cloudflare Browser Run Content Quick Action first for WebFetch', async () => {
+    const renderedMarkdown = `# Rendered page\n\n${'Rendered by Cloudflare with useful page content. '.repeat(12)}`;
     const quickAction = vi.fn(async () => Response.json({
       success: true,
-      result: '# Rendered page\n\nRendered by Cloudflare.',
+      result: renderedMarkdown,
     }, { headers: { 'X-Browser-Ms-Used': '142' } }));
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('', { status: 403 })));
     const client = new CodeModeWebSearch(
       {
         APP_KV: { get: vi.fn(), put: vi.fn() } as any,
@@ -7891,7 +8119,7 @@ describe('ChatThreadDO Pi turn handling', () => {
 
     const result = await client.fetch({ url: 'https://example.com/article' }) as any;
 
-    expect(quickAction).toHaveBeenCalledWith('markdown', expect.objectContaining({
+    expect(quickAction).toHaveBeenCalledWith('content', expect.objectContaining({
       url: 'https://example.com/article',
       cacheTTL: 300,
       actionTimeout: 5_000,
@@ -7935,8 +8163,9 @@ describe('ChatThreadDO Pi turn handling', () => {
     expect(result).toMatchObject({
       provider: 'cloudflare',
       durationMs: 142,
-      results: [{ text: '# Rendered page\n\nRendered by Cloudflare.' }],
+      results: [{ text: renderedMarkdown.trim() }],
     });
+    vi.unstubAllGlobals();
   });
 
   it('rejects local and private WebFetch targets before calling a provider', async () => {
@@ -7966,6 +8195,7 @@ describe('ChatThreadDO Pi turn handling', () => {
   });
 
   it('surfaces Cloudflare Browser Run errors from the errors array', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('blocked', { status: 403 })));
     const onProviderFailure = vi.fn(async () => undefined);
     const quickAction = vi.fn(async () => Response.json({
       success: false,
@@ -7980,27 +8210,36 @@ describe('ChatThreadDO Pi turn handling', () => {
       { onProviderFailure },
     );
 
-    await expect(client.fetch({ url: 'https://example.com/' })).rejects.toThrow(
-      'Quick Action does not support this site (1001)',
-    );
-    expect(onProviderFailure).toHaveBeenCalledWith(expect.objectContaining({
-      provider: 'cloudflare',
-      durationMs: 77,
-    }));
+    try {
+      await expect(client.fetch({ url: 'https://example.com/' })).rejects.toThrow(
+        'Quick Action does not support this site (1001)',
+      );
+      expect(onProviderFailure).toHaveBeenCalledWith(expect.objectContaining({
+        provider: 'cloudflare',
+        durationMs: 77,
+      }));
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it('falls back from Cloudflare Browser Run to Exa for unsupported pages', async () => {
     const cloudflareFetch = vi.fn(async () => {
       throw new Error('page contained no readable text');
     });
-    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
-      costDollars: { total: 0.002 },
-      results: [{
-        title: 'Fallback page',
-        url: 'https://example.com/article',
-        text: 'Fetched through Exa.',
-      }],
-    })));
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input) === 'https://example.com/article') {
+        return new Response('', { status: 403 });
+      }
+      return new Response(JSON.stringify({
+        costDollars: { total: 0.002 },
+        results: [{
+          title: 'Fallback page',
+          url: 'https://example.com/article',
+          text: 'Fetched through Exa.',
+        }],
+      }));
+    });
     vi.stubGlobal('fetch', fetchMock);
     const client = new CodeModeWebSearch(
       {

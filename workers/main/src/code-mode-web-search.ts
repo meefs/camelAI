@@ -1,11 +1,14 @@
+import Defuddle from "defuddle";
+import { parseHTML } from "linkedom";
+import TurndownService from "turndown";
+
 type WebProvider = "cloudflare" | "firecrawl" | "parallel" | "exa";
 type SearchProvider = Exclude<WebProvider, "cloudflare">;
-type WebResultProvider = WebProvider | "direct" | "cloudflare-ai";
+type WebResultProvider = WebProvider | "direct";
 
 interface CodeModeWebSearchEnv {
   APP_KV: KVNamespace;
   BROWSER?: Fetcher;
-  AI?: Ai;
   FIRECRAWL_API_KEY?: string;
   FIRECRAWL_BASE_URL?: string;
   PARALLEL_API_KEY?: string;
@@ -42,6 +45,10 @@ const CLOUDFLARE_BROWSER_DEADLINE_MS = 9_000;
 const DIRECT_WEB_FETCH_TIMEOUT_MS = 2_500;
 const DIRECT_WEB_FETCH_MAX_REDIRECTS = 5;
 const DIRECT_WEB_FETCH_MAX_BYTES = 1_900_000;
+const BROWSER_WEB_FETCH_MAX_BYTES = 2_500_000;
+const WEB_MARKDOWN_INPUT_TEXT_LIMIT = 20_000;
+const WEB_RESULT_TITLE_MAX_CHARACTERS = 500;
+const WEB_RESULT_AUTHOR_MAX_CHARACTERS = 300;
 const DIRECT_WEB_FETCH_USER_AGENT =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) " +
   "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36";
@@ -264,7 +271,360 @@ function isUsableDirectText(text: string): boolean {
 
 function isUsableConvertedMarkdown(text: string): boolean {
   const trimmed = text.trim();
-  return trimmed.length >= 500 && trimmed.replace(/\s/g, "").length >= 400 && !isLikelyBlockPage(trimmed);
+  if (trimmed.length < 100 || trimmed.replace(/\s/g, "").length < 80 || isLikelyBlockPage(trimmed)) {
+    return false;
+  }
+  if (trimmed.length < 500) {
+    const sample = trimmed.toLowerCase();
+    if ([
+      "loading client-side",
+      "loading application",
+      "application shell",
+      "initializing application",
+      "please wait while the application",
+    ].some((marker) => sample.includes(marker))) return false;
+  }
+  return true;
+}
+
+function normalizeMarkdown(markdown: string): string {
+  const withoutImages = markdown.replace(
+    /!\[([^\]]*)\]\([^\n]*?\)(?=\s|$)/g,
+    (_match, alt: string) => alt.trim(),
+  );
+  const withoutJavascriptLinks = withoutImages.replace(
+    /\[([^\]]+)\]\(javascript:[^\n]*?\)/gi,
+    "$1",
+  );
+  const normalized: string[] = [];
+  let fence: string | null = null;
+  for (const rawLine of withoutJavascriptLinks.split("\n")) {
+    const fenceMatch = /^\s*(`{3,}|~{3,})/.exec(rawLine);
+    if (fenceMatch) {
+      if (!fence) fence = fenceMatch[1][0];
+      else if (fence === fenceMatch[1][0]) fence = null;
+      normalized.push(rawLine);
+      continue;
+    }
+    if (fence) {
+      normalized.push(rawLine);
+      continue;
+    }
+    // Negotiated Markdown is often MDX. Strip only standalone presentation
+    // wrappers; inline components may contain meaningful prose.
+    if (/^\s*<\/?[A-Z][A-Za-z0-9_.:-]*(?:\s[^<>]*)?\/?>\s*$/.test(rawLine)) continue;
+    const line = rawLine
+      .replace(/^(#{1,6}\s+.*?)\s+\{\/\*.*?\*\/\}\s*$/, "$1")
+      .replace(/[ \t]+$/g, "");
+    if (line.trim() && normalized.at(-1)?.trim() === line.trim()) continue;
+    normalized.push(line);
+  }
+  return normalized.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+}
+
+function fitMarkdown(markdown: string, maxCharacters: number): string {
+  if (markdown.length <= maxCharacters) return markdown;
+  const reserve = Math.min(2_000, Math.max(400, Math.floor(maxCharacters * 0.18)));
+  const contentBudget = Math.max(200, maxCharacters - reserve);
+  const lines = markdown.split("\n");
+  const blocks: Array<{ start: number; end: number; text: string }> = [];
+  let blockStart = 0;
+  let inFence = false;
+  for (let index = 0; index <= lines.length; index += 1) {
+    const line = lines[index] ?? "";
+    if (/^\s*(`{3,}|~{3,})/.test(line)) inFence = !inFence;
+    if (index === lines.length || (!inFence && line.trim() === "")) {
+      if (index > blockStart) {
+        blocks.push({
+          start: blockStart,
+          end: index,
+          text: lines.slice(blockStart, index).join("\n"),
+        });
+      }
+      blockStart = index + 1;
+    }
+  }
+
+  const kept: string[] = [];
+  let used = 0;
+  let cutoffLine = lines.length;
+  for (const block of blocks) {
+    const addition = (kept.length ? 2 : 0) + block.text.length;
+    if (used + addition > contentBudget) {
+      cutoffLine = block.start;
+      break;
+    }
+    kept.push(block.text);
+    used += addition;
+  }
+  if (kept.length === 0) {
+    const firstBlock = blocks[0];
+    const fenceMatch = firstBlock && /^\s*(`{3,}|~{3,})[^\n]*\n/.exec(firstBlock.text);
+    if (firstBlock && fenceMatch) {
+      const closingFence = fenceMatch[1];
+      const available = Math.max(100, contentBudget - closingFence.length - 2);
+      let excerpt = firstBlock.text.slice(0, available).trimEnd();
+      const lastNewline = excerpt.lastIndexOf("\n");
+      if (lastNewline > fenceMatch[0].length) excerpt = excerpt.slice(0, lastNewline);
+      kept.push(`${excerpt}\n${closingFence}`);
+      cutoffLine = firstBlock.end;
+    } else {
+      let excerpt = markdown.slice(0, contentBudget).trimEnd();
+      const lastNewline = excerpt.lastIndexOf("\n");
+      if (lastNewline > contentBudget * 0.7) excerpt = excerpt.slice(0, lastNewline);
+      kept.push(excerpt);
+      cutoffLine = excerpt.split("\n").length;
+    }
+  }
+
+  const headings: string[] = [];
+  let omittedFence: string | null = null;
+  for (const line of lines.slice(cutoffLine)) {
+    const omittedFenceMatch = /^\s*(`{3,}|~{3,})/.exec(line);
+    if (omittedFenceMatch) {
+      if (!omittedFence) omittedFence = omittedFenceMatch[1][0];
+      else if (omittedFence === omittedFenceMatch[1][0]) omittedFence = null;
+      continue;
+    }
+    if (omittedFence) continue;
+    const match = /^(#{1,6})\s+(.+?)\s*$/.exec(line);
+    if (!match) continue;
+    const title = match[2].replace(/\s+\{\/\*.*?\*\/\}\s*$/, "").trim();
+    if (title) headings.push(`${"  ".repeat(Math.max(0, match[1].length - 2))}- ${title}`);
+  }
+  const suffixParts = [
+    `[Content shortened: showing structured excerpt from ${markdown.length.toLocaleString()} characters.]`,
+  ];
+  if (headings.length) suffixParts.push(`Omitted sections:\n${headings.join("\n")}`);
+  const prefix = kept.join("\n\n");
+  const suffix = suffixParts.join("\n\n");
+  const availableSuffix = Math.max(0, maxCharacters - prefix.length - 2);
+  return `${prefix}\n\n${suffix.slice(0, availableSuffix)}`.trimEnd();
+}
+
+function removeSequentialNumberGutters(html: string): {
+  html: string;
+  sequentialRunsRemoved: number;
+} {
+  const { document } = parseHTML("<html><body></body></html>");
+  const body = document.body;
+  body.innerHTML = html;
+  let sequentialRunsRemoved = 0;
+  const codeLeadingPattern = /^\s*(?:import|export|const|let|var|function|class|def|from|package|#include|select|create)\b/i;
+  const hasExplicitSourceHint = (element: Element): boolean =>
+    ["class", "id", "aria-label", "data-testid", "title"]
+      .some((attribute) => /(?:source|code|blob|diff|gutter|line[-_ ]?(?:number|num))/i.test(
+        element.getAttribute(attribute) ?? "",
+      ));
+  const sourceLineNumber = (cell: Element | null): number => {
+    if (!cell) return Number.NaN;
+    const candidates = [
+      cell.textContent?.trim() ?? "",
+      cell.getAttribute("data-line-number") ?? "",
+      cell.getAttribute("aria-label") ?? "",
+      cell.getAttribute("title") ?? "",
+      cell.getAttribute("id") ?? "",
+    ];
+    for (const candidate of candidates) {
+      const match = /^(?:line\s*|L)?(\d{1,7})$/i.exec(candidate.trim());
+      if (match) return Number(match[1]);
+    }
+    return Number.NaN;
+  };
+
+  // Source viewers commonly render one row per line with a numeric first cell.
+  for (const element of Array.from(body.querySelectorAll("*"))) {
+    const rows = Array.from(element.children);
+    if (rows.length < 20) continue;
+    const rowNumbers = rows.map((row) => sourceLineNumber(row.firstElementChild));
+    let runStart = 0;
+    for (let index = 1; index <= rowNumbers.length; index += 1) {
+      const continues = index < rowNumbers.length &&
+        Number.isFinite(rowNumbers[index - 1]) &&
+        rowNumbers[index] === rowNumbers[index - 1] + 1;
+      if (continues) continue;
+      const runLength = Number.isFinite(rowNumbers[index - 1]) ? index - runStart : 0;
+      const run = rows.slice(runStart, index);
+      const sourceHint = hasExplicitSourceHint(element) || run.some((row) =>
+        hasExplicitSourceHint(row) ||
+        (row.firstElementChild ? hasExplicitSourceHint(row.firstElementChild) : false) ||
+        Boolean(row.querySelector("pre, code"))
+      );
+      const sourceLines = run.map((row) =>
+        Array.from(row.children).slice(1).map((cell) => cell.textContent ?? "").join(" ").trim()
+      );
+      const strongCodeLines = sourceLines.filter((line) => codeLeadingPattern.test(line)).length;
+      if (runLength >= 20 && sourceHint && strongCodeLines >= Math.max(5, Math.ceil(runLength * 0.05))) {
+        for (const row of run) row.firstElementChild?.remove();
+        element.setAttribute("data-web-source-lines", "true");
+        sequentialRunsRemoved += 1;
+      }
+      runStart = index;
+    }
+  }
+
+  for (const element of Array.from(body.querySelectorAll("*"))) {
+    const children = Array.from(element.children);
+    if (children.length < 20) continue;
+    const numbers = children.map((child) => {
+      const value = child.textContent?.trim() ?? "";
+      return /^\d{1,7}$/.test(value) ? Number(value) : Number.NaN;
+    });
+    let runStart = 0;
+    for (let index = 1; index <= numbers.length; index += 1) {
+      const continues = index < numbers.length &&
+        Number.isFinite(numbers[index - 1]) &&
+        numbers[index] === numbers[index - 1] + 1;
+      if (continues) continue;
+      const runLength = Number.isFinite(numbers[index - 1]) ? index - runStart : 0;
+      const remainingLines = children
+        .slice(0, runStart)
+        .concat(children.slice(index))
+        .map((child) => child.textContent?.trim() ?? "")
+        .filter(Boolean);
+      const codeLikeLines = remainingLines.filter((line) =>
+        /[{}();=]/.test(line) || codeLeadingPattern.test(line)
+      ).length;
+      const strongCodeLines = remainingLines.filter((line) => codeLeadingPattern.test(line)).length;
+      const hasAdjacentSource = remainingLines.length >= 20 &&
+        codeLikeLines >= Math.max(5, Math.ceil(remainingLines.length * 0.1)) &&
+        (hasExplicitSourceHint(element) || strongCodeLines >= 5);
+      if (runLength >= 20 && hasAdjacentSource) {
+        for (const child of children.slice(runStart, index)) child.remove();
+        element.setAttribute("data-web-source-lines", "true");
+        sequentialRunsRemoved += 1;
+      }
+      runStart = index;
+    }
+  }
+  return { html: body.innerHTML, sequentialRunsRemoved };
+}
+
+function limitHtmlText(html: string, maxTextCharacters: number): {
+  html: string;
+  originalTextCharacters: number;
+  truncated: boolean;
+} {
+  const { document } = parseHTML("<html><body></body></html>");
+  const body = document.body;
+  body.innerHTML = html;
+  const originalTextCharacters = body.textContent?.length ?? 0;
+  if (originalTextCharacters <= maxTextCharacters) {
+    return { html, originalTextCharacters, truncated: false };
+  }
+  let remaining = maxTextCharacters;
+  const trim = (node: Node): void => {
+    for (const child of Array.from(node.childNodes)) {
+      if (remaining <= 0) {
+        child.remove();
+        continue;
+      }
+      if (child.nodeType === 3) {
+        const text = child.textContent ?? "";
+        if (text.length > remaining) child.textContent = text.slice(0, remaining);
+        remaining -= Math.min(text.length, remaining);
+      } else {
+        trim(child);
+      }
+    }
+  };
+  trim(body);
+  return { html: body.innerHTML, originalTextCharacters, truncated: true };
+}
+
+function convertPresentationCodeContainers(html: string): string {
+  const { document } = parseHTML("<html><body></body></html>");
+  document.body.innerHTML = html;
+  for (const element of Array.from(document.body.querySelectorAll('[data-web-source-lines="true"]'))) {
+    const children = Array.from(element.children);
+    const looksLikeCode = (child: Element): boolean =>
+      /[{}();=]|^\s*(?:import|export|const|let|var|function|class|def|from|package|#include|select|create)\b/i
+        .test(child.textContent ?? "");
+    const firstCodeIndex = children.findIndex(looksLikeCode);
+    let lastCodeIndex = -1;
+    for (let index = children.length - 1; index >= 0; index -= 1) {
+      if (looksLikeCode(children[index])) {
+        lastCodeIndex = index;
+        break;
+      }
+    }
+    if (firstCodeIndex < 0 || lastCodeIndex < firstCodeIndex) continue;
+    const codeChildren = children.slice(firstCodeIndex, lastCodeIndex + 1);
+    const codeText = codeChildren.map((child) => child.textContent ?? "").join("\n").trimEnd();
+    if (codeChildren.length < 20 || codeText.length < 500) continue;
+    const pre = document.createElement("pre");
+    const code = document.createElement("code");
+    code.textContent = codeText;
+    pre.appendChild(code);
+    codeChildren[0].replaceWith(pre);
+    for (const child of codeChildren.slice(1)) child.remove();
+    element.removeAttribute("data-web-source-lines");
+  }
+  return document.body.innerHTML;
+}
+
+function serializeHtmlToMarkdown(html: string): string {
+  const { document } = parseHTML("<html><body></body></html>");
+  document.body.innerHTML = html;
+  const turndown = new TurndownService({
+    bulletListMarker: "*",
+    codeBlockStyle: "fenced",
+    headingStyle: "atx",
+  });
+  turndown.remove(["script", "style", "noscript"]);
+  return turndown.turndown(document.body as unknown as HTMLElement);
+}
+
+async function extractReadableMarkdown(
+  html: string,
+  targetURL: URL,
+  maxCharacters: number,
+): Promise<{ text: string; title?: string; author?: string } | null> {
+  const { document } = parseHTML(html);
+  for (const key of ["URL", "documentURI", "baseURI"] as const) {
+    Object.defineProperty(document, key, {
+      value: targetURL.toString(),
+      configurable: true,
+    });
+  }
+  const parsed = new Defuddle(document as unknown as Document, {
+    markdown: false,
+    useAsync: false,
+  }).parse();
+  const resolvedContent = absolutizeHtmlUrls(parsed.content ?? "", targetURL);
+  const gutterCleanup = removeSequentialNumberGutters(resolvedContent);
+  const limited = limitHtmlText(gutterCleanup.html, WEB_MARKDOWN_INPUT_TEXT_LIMIT);
+  const preparedHtml = gutterCleanup.sequentialRunsRemoved > 0
+    ? convertPresentationCodeContainers(limited.html)
+    : limited.html;
+  let markdown = serializeHtmlToMarkdown(preparedHtml);
+  markdown = normalizeMarkdown(markdown);
+  if (!isUsableConvertedMarkdown(markdown)) return null;
+  if (limited.truncated) {
+    markdown += `\n\n[Content extraction capped from ${limited.originalTextCharacters.toLocaleString()} text characters.]`;
+  }
+  return {
+    text: fitMarkdown(markdown, maxCharacters),
+    title: truncateMetadata(parsed.title, WEB_RESULT_TITLE_MAX_CHARACTERS) || undefined,
+    author: truncateMetadata(parsed.author, WEB_RESULT_AUTHOR_MAX_CHARACTERS) || undefined,
+  };
+}
+
+function absolutizeHtmlUrls(html: string, baseURL: URL): string {
+  const { document } = parseHTML("<html><body></body></html>");
+  document.body.innerHTML = html;
+  for (const [selector, attribute] of [["a[href]", "href"], ["img[src]", "src"]] as const) {
+    for (const element of Array.from(document.body.querySelectorAll(selector))) {
+      const value = element.getAttribute(attribute);
+      if (!value) continue;
+      try {
+        element.setAttribute(attribute, new URL(value, baseURL).href);
+      } catch {
+        // Preserve malformed URLs as text rather than dropping page content.
+      }
+    }
+  }
+  return document.body.innerHTML;
 }
 
 function normalizeDomains(value: unknown): string[] {
@@ -419,9 +779,15 @@ function truncateResultText(text: unknown, maxCharacters: number): string {
   return truncateText(String(text ?? "").trim(), maxCharacters).trim();
 }
 
+function truncateMetadata(value: unknown, maxCharacters: number): string {
+  return String(value ?? "").trim().slice(0, maxCharacters);
+}
+
 function truncateResults(results: WebResult[], limit: number, maxCharacters: number): WebResult[] {
   return results.slice(0, Math.max(0, limit)).map((result) => ({
     ...result,
+    title: truncateMetadata(result.title, WEB_RESULT_TITLE_MAX_CHARACTERS),
+    author: truncateMetadata(result.author, WEB_RESULT_AUTHOR_MAX_CHARACTERS),
     snippet: truncateResultText(result.snippet, maxCharacters),
     text: truncateResultText(result.text, maxCharacters),
   }));
@@ -430,10 +796,12 @@ function truncateResults(results: WebResult[], limit: number, maxCharacters: num
 function formatResults(results: WebResult[], maxCharacters: number, empty: string): string {
   if (results.length === 0) return empty;
   return results.map((result, index) => {
-    const lines = [`${index + 1}. ${result.title?.trim() || "Untitled"}`];
+    const title = truncateMetadata(result.title, WEB_RESULT_TITLE_MAX_CHARACTERS);
+    const lines = [`${index + 1}. ${title || "Untitled"}`];
     if (result.url) lines.push(`URL: ${result.url}`);
     if (result.publishedDate) lines.push(`Published: ${result.publishedDate}`);
-    if (result.author) lines.push(`Author: ${result.author}`);
+    const author = truncateMetadata(result.author, WEB_RESULT_AUTHOR_MAX_CHARACTERS);
+    if (author) lines.push(`Author: ${author}`);
     const snippet = truncateResultText(result.snippet, maxCharacters);
     if (snippet) lines.push(`Snippet: ${snippet}`);
     const text = truncateResultText(result.text, maxCharacters);
@@ -486,17 +854,13 @@ export class CodeModeWebSearch {
     assertPublicWebURL(url);
     const maxCharacters = clampInteger(args.maxCharacters, 12_000, 500, 30_000);
     let providerResult: WebProviderResult | null = null;
-    if (this.env.AI) {
-      try {
-        // The toMarkdown binding does not expose cancellation. Await it before
-        // fallback so a slow conversion cannot become orphaned duplicate work.
-        providerResult = await this.directFetch(url, maxCharacters);
-      } catch (error) {
-        console.warn("Direct web fetch failed; falling back to hosted fetch providers", {
-          hostname: url.hostname,
-          errorName: error instanceof Error ? error.name : "UnknownError",
-        });
-      }
+    try {
+      providerResult = await this.directFetch(url, maxCharacters);
+    } catch (error) {
+      console.warn("Direct web fetch failed; falling back to hosted fetch providers", {
+        hostname: url.hostname,
+        errorName: error instanceof Error ? error.name : "UnknownError",
+      });
     }
     providerResult ??= await this.withProviderFallback("fetch", (provider) =>
       this.fetchWithProvider(provider, args, url.toString(), maxCharacters)
@@ -522,13 +886,10 @@ export class CodeModeWebSearch {
     initialURL: URL,
     maxCharacters: number,
   ): Promise<WebProviderResult | null> {
-    const ai = this.env.AI;
-    if (!ai) return null;
     const startedAt = Date.now();
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), DIRECT_WEB_FETCH_TIMEOUT_MS);
     let currentURL = new URL(initialURL);
-    let attemptedProvider: WebResultProvider = "direct";
     let failureRecorded = false;
     const fail = async (provider: WebResultProvider): Promise<null> => {
       failureRecorded = true;
@@ -583,39 +944,42 @@ export class CodeModeWebSearch {
       if (truncated) return await fail("direct");
       if (!isLikelyHTML(contentType, body)) {
         if (!isUsableDirectText(body)) return await fail("direct");
+        const markdown = fitMarkdown(normalizeMarkdown(body), maxCharacters);
+        if (!isUsableConvertedMarkdown(markdown)) return await fail("direct");
         return {
           provider: "direct",
-          results: truncateResults([{ url: currentURL.toString(), text: body.trim() }], 1, maxCharacters),
+          results: [{ url: currentURL.toString(), text: markdown }],
           costUSD: 0,
           durationMs: Math.max(0, Date.now() - startedAt),
         };
       }
       if (isLikelyBlockPage(body)) return await fail("direct");
 
-      attemptedProvider = "cloudflare-ai";
-      const converted = await ai.toMarkdown(
-        {
-          name: "page.html",
-          blob: new Blob([body], { type: "text/html" }),
-        },
-        {
-          conversionOptions: {
-            html: { hostname: currentURL.hostname },
-          },
-          // Cloudflare's runtime supports hostname for resolving relative HTML
-          // links, but the generated Workers type bundled here still lags it.
-        } as Parameters<Ai["toMarkdown"]>[1],
-      );
-      const markdown = converted.format === "markdown" ? converted.data.trim() : "";
-      if (!isUsableConvertedMarkdown(markdown)) return await fail("cloudflare-ai");
-      return {
-        provider: "cloudflare-ai",
-        results: truncateResults([{ url: currentURL.toString(), text: markdown }], 1, maxCharacters),
-        costUSD: 0,
-        durationMs: Math.max(0, Date.now() - startedAt),
-      };
+      try {
+        const extracted = await extractReadableMarkdown(body, currentURL, maxCharacters);
+        if (extracted) {
+          return {
+            provider: "direct",
+            results: [{
+              url: currentURL.toString(),
+              text: extracted.text,
+              title: extracted.title,
+              author: extracted.author,
+            }],
+            costUSD: 0,
+            durationMs: Math.max(0, Date.now() - startedAt),
+          };
+        }
+      } catch (error) {
+        console.warn("Local web content extraction failed", {
+          hostname: currentURL.hostname,
+          errorName: error instanceof Error ? error.name : "UnknownError",
+        });
+      }
+
+      return await fail("direct");
     } catch (error) {
-      if (!failureRecorded) await fail(attemptedProvider);
+      if (!failureRecorded) await fail("direct");
       throw error;
     } finally {
       clearTimeout(timeoutId);
@@ -665,7 +1029,7 @@ export class CodeModeWebSearch {
       ? WEB_FETCH_PROVIDER_DEFAULT_ORDER
       : WEB_SEARCH_PROVIDER_DEFAULT_ORDER;
     // Fetch is deterministic and independent of search tuning: Cloudflare Browser Run's
-    // Markdown Quick Action gets the first try, followed by Exa, Firecrawl, and Parallel.
+    // Content Quick Action gets the first rendered try, followed by Exa, Firecrawl, and Parallel.
     // Search keeps its configured order and round-robin behavior because
     // Browser Run is a page fetcher, not a search index.
     const preferred: WebProvider[] = operation === "fetch"
@@ -802,7 +1166,7 @@ export class CodeModeWebSearch {
 
     const browserRun = this.env.BROWSER as Fetcher & {
       quickAction?: (
-        action: "markdown",
+        action: "content" | "markdown",
         options: Record<string, unknown>,
       ) => Promise<Response>;
     };
@@ -815,7 +1179,7 @@ export class CodeModeWebSearch {
     let response: Response;
     try {
       response = await Promise.race([
-        browserRun.quickAction("markdown", {
+        browserRun.quickAction("content", {
           url: targetURL,
           gotoOptions: {
             waitUntil: "domcontentloaded",
@@ -851,7 +1215,11 @@ export class CodeModeWebSearch {
       Math.max(0, Date.now() - startedAt);
     let raw: string;
     try {
-      raw = await response.text();
+      const limited = await readResponseTextLimited(response, BROWSER_WEB_FETCH_MAX_BYTES);
+      if (limited.truncated) {
+        throw new Error("Cloudflare Browser Run response exceeded the size limit");
+      }
+      raw = limited.text;
     } catch (error) {
       await this.options.onProviderFailure?.({
         provider: "cloudflare",
@@ -886,19 +1254,49 @@ export class CodeModeWebSearch {
         `Cloudflare Browser Run request failed with HTTP ${response.status}: ${payloadMessage(payload)}`,
       );
     }
-    const markdown = typeof payload.result === "string" ? payload.result.trim() : "";
-    if (!markdown) {
+    const result = typeof payload.result === "string" ? payload.result.trim() : "";
+    if (!result || isLikelyBlockPage(result)) {
       await this.options.onProviderFailure?.({
         provider: "cloudflare",
         results: [],
         costUSD: 0,
         durationMs,
       });
-      throw new Error("page contained no readable markdown");
+      throw new Error("page contained no readable content");
+    }
+    let extracted: { text: string; title?: string; author?: string } | null = null;
+    const looksLikeHTML = /^\s*(?:<!doctype\s+html|<html\b)/i.test(result) ||
+      /<(?:body|main|article|section|div|table)\b/i.test(result.slice(0, 8_000));
+    if (looksLikeHTML) {
+      try {
+        extracted = await extractReadableMarkdown(result, new URL(targetURL), maxCharacters);
+      } catch (error) {
+        console.warn("Rendered web content extraction failed", {
+          hostname: new URL(targetURL).hostname,
+          errorName: error instanceof Error ? error.name : "UnknownError",
+        });
+      }
+    } else {
+      const markdown = fitMarkdown(normalizeMarkdown(result), maxCharacters);
+      if (isUsableConvertedMarkdown(markdown)) extracted = { text: markdown };
+    }
+    if (!extracted) {
+      await this.options.onProviderFailure?.({
+        provider: "cloudflare",
+        results: [],
+        costUSD: 0,
+        durationMs,
+      });
+      throw new Error("page contained no readable content after extraction");
     }
     return {
       provider: "cloudflare",
-      results: truncateResults([{ url: targetURL, text: markdown }], 1, maxCharacters),
+      results: [{
+        url: targetURL,
+        text: extracted.text,
+        title: extracted.title,
+        author: extracted.author,
+      }],
       // Quick Actions expose browser-time headers, not a per-request dollar meter.
       // Provider and cost remain internal telemetry and are stripped from js_exec.
       costUSD: 0,
