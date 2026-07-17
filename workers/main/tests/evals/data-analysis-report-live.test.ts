@@ -195,7 +195,7 @@ describe("data-analysis report agent eval", () => {
           `Include this exact finding in markdown: "${REQUIRED_FINDING}"`,
           "Use pandas and Altair or pandas-only outputs; the default Python stack is already installed, so do not install packages unless you truly need one.",
           "Run the notebook with run_notebook until it succeeds, then set_preview for analysis.ipynb as a project notebook preview.",
-          "Do not use build_project, deploy_project, wrangler, or legacy VM shell commands for this notebook-only analysis project.",
+          "Do not deploy this notebook-only analysis project or use wrangler or legacy VM shell commands.",
           "Reply with the report title and the key finding once the notebook has run successfully.",
         ].join(" "),
       });

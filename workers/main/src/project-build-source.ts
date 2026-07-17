@@ -165,7 +165,7 @@ export async function materializeProjectSourceFiles(
 
 export function validatePackageJsonBuildScript(sourceFiles: ProjectSourceFile[]): string | null {
   const packageJson = sourceFiles.find((file) => file.path === "package.json");
-  if (!packageJson) return "Project package.json is required for build_project";
+  if (!packageJson) return "Project package.json is required for deploy_project";
   const parsed = parseProjectPackageJson(packageJson);
   if (typeof parsed === "string") return parsed;
   const scripts = (parsed as { scripts?: unknown }).scripts;

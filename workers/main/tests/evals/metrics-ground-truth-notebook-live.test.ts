@@ -176,7 +176,7 @@ The report must contain a markdown section headed exactly "## Key Findings" with
 - TOP_MONTH=<YYYY-MM month with the highest total revenue>
 - REVENUE_PER_UNIT_CENTS=<total revenue divided by total units, rounded to the nearest integer>
 Run the notebook with run_notebook until it executes cleanly, then set_preview for analysis.ipynb.
-Do not use build_project, deploy_project, or wrangler for this notebook-only project. Reply with the four Key Findings lines.`,
+Do not deploy or use wrangler for this notebook-only project. Reply with the four Key Findings lines.`,
       });
 
       const read = await files.readFile("/analysis.ipynb");

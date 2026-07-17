@@ -539,8 +539,11 @@ function evaluateRuntimeAssertions(
   ) {
     failures.push("agent did not call list_apps after deploy");
   }
-  if (!usedTool(result.events, "set_preview")) {
-    failures.push("agent did not call set_preview for the deployed app");
+  if (
+    !usedTool(result.events, "set_preview") &&
+    !(usedDeployProject && deployProjectYieldedAppUrl(result.events))
+  ) {
+    failures.push("agent did not preview the deployed app");
   }
 
   const wrongScaffoldCommands = commands.filter((command) =>
@@ -572,8 +575,8 @@ function buildPostDeployToolCriteria(
   const listAppsFailure = runtimeAssertions.failures.find((failure) =>
     failure.includes("list_apps"),
   );
-  const setPreviewFailure = runtimeAssertions.failures.find((failure) =>
-    failure.includes("set_preview"),
+  const previewFailure = runtimeAssertions.failures.find((failure) =>
+    failure.includes("preview"),
   );
   // deploy_project returns the live app URL directly, so a successful deploy_project
   // whose result carried the app URL is equivalent evidence to calling list_apps.
@@ -593,10 +596,13 @@ function buildPostDeployToolCriteria(
     }),
     passFailCriterion({
       id: "called_set_preview",
-      label: "Agent called set_preview for the deployed app",
-      passed: !setPreviewFailure,
-      reason: setPreviewFailure,
-      details: { failures: runtimeAssertions.failures },
+      label: "Latest deployed app was opened in preview",
+      passed: !previewFailure || options.deployProjectProvidedAppUrl === true,
+      reason: options.deployProjectProvidedAppUrl === true ? undefined : previewFailure,
+      details: {
+        failures: runtimeAssertions.failures,
+        deployProjectProvidedAppUrl: options.deployProjectProvidedAppUrl === true,
+      },
     }),
   ];
 }
@@ -1201,7 +1207,7 @@ describe("space matching game runtime assertion extraction", () => {
       {
         failures: [
           "agent did not call list_apps after deploy",
-          "agent did not call set_preview for the deployed app",
+          "agent did not preview the deployed app",
         ],
       },
       { deployProjectProvidedAppUrl: true },
@@ -1211,8 +1217,7 @@ describe("space matching game runtime assertion extraction", () => {
       { id: "called_list_apps", status: "passed" },
       {
         id: "called_set_preview",
-        status: "failed",
-        reason: "agent did not call set_preview for the deployed app",
+        status: "passed",
       },
     ]);
   });
@@ -1453,7 +1458,7 @@ describe("space matching game runtime assertion extraction", () => {
     const criteria = buildPostDeployToolCriteria({
       failures: [
         "agent did not call list_apps after deploy",
-        "agent did not call set_preview for the deployed app",
+        "agent did not preview the deployed app",
       ],
     });
 
@@ -1466,7 +1471,7 @@ describe("space matching game runtime assertion extraction", () => {
       {
         id: "called_set_preview",
         status: "failed",
-        reason: "agent did not call set_preview for the deployed app",
+        reason: "agent did not preview the deployed app",
       },
     ]);
   });

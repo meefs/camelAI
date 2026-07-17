@@ -257,7 +257,7 @@ describe("notebook fix and rerun agent eval", () => {
           `Add the exact markdown marker "${REFRESHED_MARKER}" after the notebook is fixed.`,
           `The executed notebook output must include the exact text "${EXPECTED_OUTPUT}".`,
           "Run the notebook with run_notebook until it succeeds, then set_preview for analysis.ipynb.",
-          "Do not create a new project, do not use build_project or deploy_project, and do not use legacy VM shell commands.",
+          "Do not create a new project, do not deploy it, and do not use legacy VM shell commands.",
           "Reply with the refreshed total revenue number from the executed notebook output.",
         ].join(" "),
       });

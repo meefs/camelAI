@@ -41,6 +41,6 @@ describe("hidden source-compat alias tools", () => {
   it("hides nothing else", async () => {
     const tools = await CodeModeToolsBinding.prototype.listTools.call({} as never);
     const hidden = tools.filter((tool) => tool.hidden).map((tool) => tool.name).sort();
-    expect(hidden).toEqual(["warehouse_list_connections", "warehouse_run_code"]);
+    expect(hidden).toEqual(["build_project", "warehouse_list_connections", "warehouse_run_code"]);
   });
 });

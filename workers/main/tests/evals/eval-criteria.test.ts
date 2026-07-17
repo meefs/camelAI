@@ -81,21 +81,19 @@ describe("eval criteria helpers", () => {
   it("awards full preview points after a deploy_project invocation", () => {
     const events = [
       { type: "runtime_event", event: { method: "item/completed", params: { item: { tool: "js_exec", arguments: { code: "await tools.deploy_project({ project: 'demo' });" } } } } },
-      { type: "runtime_event", event: { method: "item/completed", params: { item: { tool: "set_preview", arguments: { app_name: "demo" } } } } },
     ];
-    expect(scoreLatestPreview(events).points).toBe(5);
+    expect(scoreLatestPreview(events)).toMatchObject({
+      points: 5,
+      reason: "The final successful deploy_project invocation opened the app in preview automatically.",
+    });
   });
 
-  it("does not award full preview points when preview precedes the final deploy", () => {
+  it("awards full preview points when an earlier preview precedes deploy_project", () => {
     const events = [
       { type: "runtime_event", event: { method: "item/completed", params: { item: { tool: "set_preview", arguments: { app_name: "demo" } } } } },
       { type: "runtime_event", event: { method: "item/completed", params: { item: { tool: "js_exec", arguments: { code: "await tools.deploy_project({ project: 'demo' });" } } } } },
     ];
-    expect(scoreLatestPreview(events)).toMatchObject({
-      points: 2,
-      maxPoints: 5,
-      reason: "A set_preview call was found, but not after the final completed deploy invocation.",
-    });
+    expect(scoreLatestPreview(events).points).toBe(5);
   });
 
   it("ignores deploy_project mentions in result text after the preview", () => {
@@ -148,9 +146,6 @@ describe("eval criteria helpers", () => {
       { type: "runtime_event", event: { method: "item/completed", params: { item: { tool: "deploy_project", status: "completed", result: { success: true } } } } },
       { type: "runtime_event", event: { method: "item/completed", params: { item: { tool: "set_preview", status: "completed", isError: true, result: { ok: false } } } } },
     ];
-    expect(scoreLatestPreview(failedPreviewEvents)).toMatchObject({
-      points: 0,
-      reason: "No set_preview call was found.",
-    });
+    expect(scoreLatestPreview(failedPreviewEvents).points).toBe(5);
   });
 });

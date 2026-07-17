@@ -263,6 +263,7 @@ function createProjectToolFake({
   };
   const chatThreadStub = {
     recordProjectActivity: vi.fn(async () => undefined),
+    setPreviewTarget: vi.fn(async () => undefined),
   };
   const env = {
     WORKER_BASE_URL: 'https://staging.camelai.dev',
@@ -4263,6 +4264,8 @@ describe('ChatThreadDO Pi turn handling', () => {
     }
     expect((byName.get('read') as any).parameters.properties.path).toBeDefined();
     expect((byName.get('read') as any).parameters.properties.project).toBeDefined();
+    expect((byName.get('build_project') as any).hidden).toBe(true);
+    expect((byName.get('deploy_project') as any).parameters.properties.dry_run).toBeDefined();
     expect((byName.get('read_skill') as any).parameters.properties.skill).toBeDefined();
     expect((byName.get('read_skill') as any).parameters.properties.file).toBeDefined();
     expect((byName.get('read_skill') as any).parameters.properties.location).toBeUndefined();
@@ -4285,10 +4288,9 @@ describe('ChatThreadDO Pi turn handling', () => {
     expect((byName.get('set_project_description') as any).parameters.properties.projectId).toBeUndefined();
     expect((byName.get('set_project_description') as any).parameters.properties.description).toBeDefined();
     expect((byName.get('add_dependency') as any).parameters.properties.project).toBeDefined();
-    // Failed builds/deploys report through data.success, not the wrapper's ok;
-    // the descriptions must teach that so agents don't preview a dead deploy.
-    expect((byName.get('build_project') as any).description).toContain('resolves ok: false when the build FAILS');
-    expect((byName.get('deploy_project') as any).description).toContain('do not set_preview or take_screenshot until a deploy succeeds');
+    expect((byName.get('build_project') as any).description).toContain('Deprecated compatibility alias');
+    expect((byName.get('deploy_project') as any).description).toContain('build, or deploy FAILS');
+    expect((byName.get('deploy_project') as any).description).toContain('changing preview');
     expect((byName.get('add_dependency') as any).parameters.properties.dependency).toBeDefined();
     expect((byName.get('revert_project') as any).parameters.properties.snapshot_id).toBeDefined();
     expect((byName.get('list_commits') as any).parameters.properties.project).toBeDefined();
@@ -4533,6 +4535,12 @@ describe('ChatThreadDO Pi turn handling', () => {
       skill: 'developing-software',
     });
     expect(directSkill.content[0].text).toContain('name: developing-software');
+    expect(directSkill.content[0].text).toContain(
+      'build, publish, return the live URL, and open the app in preview',
+    );
+    expect(directSkill.content[0].text).toContain('dry_run: true');
+    expect(directSkill.content[0].text).not.toContain('tools.build_project');
+    expect(directSkill.content[0].text).not.toContain('tools.set_preview({ app_name');
     expect(directSkill.details.details.source).toBe('bundled_skill');
 
     const directReference = await readSkill.execute('tool2', {
@@ -5639,6 +5647,12 @@ describe('ChatThreadDO Pi turn handling', () => {
     expect(prompt).toContain('answer in chat only');
     expect(prompt).toContain('set_preview({ location: "workspace", path: "/notes.md" })');
     expect(prompt).toContain('set_preview({ location: "r2", path: "outputs/report.html" })');
+    expect(prompt).toContain('deploy_project` returns the live URL and opens successfully deployed apps automatically');
+    expect(prompt).toContain('pass `dry_run: true`');
+    expect(prompt).toContain('no manual app `set_preview` or `list_apps` call is needed after deploy');
+    expect(prompt).toContain('`set_preview` remains available when you explicitly want to reopen or switch');
+    expect(prompt).not.toContain('tools.build_project');
+    expect(prompt).not.toContain('call `build_project` before');
     expect(prompt).not.toContain('tools.send_email');
     expect(prompt).not.toContain('tools.send_slack_message');
     expect(prompt).not.toContain('tools.send_telegram_message');
@@ -6303,6 +6317,7 @@ describe('ChatThreadDO Pi turn handling', () => {
 
     expect(result).toMatchObject({
       success: true,
+      dryRun: true,
       project: 'Demo App',
       backend: 'do-r2',
       projectId: 'project-1',
@@ -7079,6 +7094,7 @@ describe('ChatThreadDO Pi turn handling', () => {
 
   it('builds and directly deploys a DO-backed project through the deploy action', async () => {
     const { fake, env, orgStub, chatThreadStub } = createProjectToolFake({ deploy: true });
+    const consoleLog = vi.spyOn(console, 'log').mockImplementation(() => undefined);
     const fetchMock = vi.fn(async () => Response.json({ success: true, result: { id: 'version-1' } }, { status: 200 }));
     vi.stubGlobal('fetch', fetchMock);
 
@@ -7103,6 +7119,12 @@ describe('ChatThreadDO Pi turn handling', () => {
     });
     expect((result as any).url).toContain('demo-app--test-org');
     expect((result as any).appUrl).toContain('demo-app--test-org');
+    expect((result as any).message).toBe(`Deployed and previewed at ${(result as any).appUrl}`);
+    expect(consoleLog).toHaveBeenCalledWith(`Deployed and previewed at ${(result as any).appUrl}`);
+    expect((result as any).preview).toMatchObject({
+      success: true,
+      target: { kind: 'app', scriptName: 'demo-app', isPublic: false },
+    });
     expect((result as any).build).not.toHaveProperty('stdout');
     expect((result as any).build).not.toHaveProperty('stderr');
     expect((result as any).deploy).not.toHaveProperty('result');
@@ -7121,6 +7143,34 @@ describe('ChatThreadDO Pi turn handling', () => {
       projectId: 'project-1',
       activityType: 'deployed',
     });
+    expect(chatThreadStub.setPreviewTarget).toHaveBeenCalledWith({
+      kind: 'app',
+      scriptName: 'demo-app',
+      isPublic: false,
+    });
+  });
+
+  it('validates through deploy_project dry_run without deploying or changing preview', async () => {
+    const { fake, sandbox, orgStub, chatThreadStub } = createProjectToolFake({ deploy: true });
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await CodeModeToolsBinding.prototype.callTool.call(fake, 'deploy_project', {
+      project: 'Demo App',
+      dry_run: true,
+    });
+
+    expect(result).toMatchObject({
+      success: true,
+      dryRun: true,
+      stage: 'build',
+      project: 'Demo App',
+    });
+    expect(sandbox.exec).toHaveBeenCalledWith('bun install && bun run build', expect.anything());
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(orgStub.registerWorkerScript).not.toHaveBeenCalled();
+    expect(chatThreadStub.setPreviewTarget).not.toHaveBeenCalled();
+    expect(chatThreadStub.recordProjectActivity).not.toHaveBeenCalled();
   });
 
   it('warns when a local deploy may need the local dispatcher worker for reachability', async () => {
@@ -8767,14 +8817,15 @@ describe('ChatThreadDO Pi turn handling', () => {
     // js_exec-only inventory (they are named only in the cannot-run-here caveat).
     const inventory = description.slice(
       description.indexOf('Tools reachable ONLY here'),
-      description.indexOf('After you deploy'),
+      description.indexOf('`deploy_project` returns'),
     );
     expect(inventory).toContain('send_email');
     expect(inventory).not.toContain('prompt_connection_setup');
     expect(inventory).not.toContain('delete_connection');
     // The eval-critical post-deploy verification nudge stays inline.
-    expect(description).toContain('set_preview');
-    expect(description).toContain('list_apps');
+    expect(description).toContain('automatically opens');
+    expect(description).toContain('no manual `set_preview` or `list_apps` call is needed');
+    expect(description).toContain('`set_preview` remains available');
     // Executor-style calling shape: result envelope and TypeScript acceptance.
     expect(description).toContain('result.ok');
     expect(description).toContain('TypeScript');

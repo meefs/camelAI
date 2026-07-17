@@ -248,10 +248,14 @@ deploy_project(project="<project>")
 
 For a data-analysis project this skips the build entirely: it packages the
 executed notebook with the platform notebook renderer into a static Cloudflare
-Worker and registers it like any other deployed app (it appears in `list_apps`,
-supports `set_app_visibility`, custom domains, and rollback). Always run
-`run_notebook` first so the published outputs are fresh; pass `path` if the
-project has more than one notebook.
+Worker, registers it like any other deployed app, returns the live URL, and opens
+the deployed app in preview automatically. No manual `set_preview` or `list_apps`
+call is needed after deploy; `set_preview` remains available when you explicitly
+want to reopen or switch previews. The app supports
+`set_app_visibility`, custom domains, and rollback. Always run `run_notebook`
+first so the published outputs are fresh; pass `path` if the project has more
+than one notebook. Pass `dry_run: true` only to validate publishing without
+deploying or changing preview.
 
 ### How notebooks are presented
 

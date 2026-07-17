@@ -283,7 +283,7 @@ describe('code mode runner tools.help guide', () => {
     expect(Array.isArray(result.guide)).toBe(true);
     const guide = result.guide.join('\n');
     // The long-form guidance moved out of the js_exec tool description lives here.
-    expect(guide).toContain('set_preview');
+    expect(guide).toContain('opens successful deploys in preview automatically');
     expect(guide).toContain('env.CONNECTIONS.find');
     expect(guide).toContain('location');
     expect(guide).toContain('file.data.text');
@@ -528,7 +528,7 @@ describe('js_exec result-shape contracts', () => {
     // The wrapper flips ok for these tools when data.success === false.
     expect(source).toContain('OPERATIONAL_OUTCOME_TOOLS = new Set(["build_project", "deploy_project"])');
     expect(source).toContain('envelope.data.success === false');
-    expect(source).toContain('resolve ok: false when the build or deploy FAILS');
+    expect(source).toContain('resolves ok: false when validation, build, or deploy FAILS');
   });
 });
 

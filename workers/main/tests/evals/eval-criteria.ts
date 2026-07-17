@@ -283,7 +283,25 @@ export function scoreLatestPreview(events: unknown): EvalScoreCriterion {
     invocationOrder.lastIndexOf("deploy_project"),
     invocationOrder.lastIndexOf("deploy_command"),
   );
+  const finalDeployProjectIndex = invocationOrder.lastIndexOf("deploy_project");
+  const finalDeployCommandIndex = invocationOrder.lastIndexOf("deploy_command");
   const finalPreviewIndex = invocationOrder.lastIndexOf("set_preview");
+
+  // deploy_project owns preview activation. A separate set_preview is only
+  // required for legacy/raw deploy commands that bypass the platform tool.
+  if (
+    finalDeployProjectIndex !== -1 &&
+    finalDeployProjectIndex >= finalDeployCommandIndex
+  ) {
+    return scoreCriterion({
+      id: "previewed_latest_app",
+      label: "Previewed the latest deployed app",
+      points: 5,
+      maxPoints: 5,
+      reason: "The final successful deploy_project invocation opened the app in preview automatically.",
+      details: { invocationOrder, finalDeployIndex, finalPreviewIndex },
+    });
+  }
 
   if (finalPreviewIndex === -1) {
     return scoreCriterion({
@@ -291,7 +309,7 @@ export function scoreLatestPreview(events: unknown): EvalScoreCriterion {
       label: "Previewed the latest deployed app",
       points: 0,
       maxPoints: 5,
-      reason: "No set_preview call was found.",
+      reason: "No successful deploy_project or set_preview call was found.",
     });
   }
   if (finalDeployIndex === -1 || finalPreviewIndex < finalDeployIndex) {

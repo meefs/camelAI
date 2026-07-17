@@ -86,7 +86,7 @@ After writing an output, provide a URL so the user can access it. The URL format
 
 Images will display inline in the chat; other files will download when clicked.
 
-**For HTML pages** - Write the HTML to `outputs/<path>` for download, or set the preview pane to a deployed app, durable workspace file, or project VM file with `set_preview()` as described in the system prompt.
+**For HTML pages** - Write the HTML to `outputs/<path>` for download, or use `set_preview()` for a durable file or an already-deployed app as described in the system prompt. New app deployments open preview automatically through `deploy_project`.
 
 ## Best Practices
 

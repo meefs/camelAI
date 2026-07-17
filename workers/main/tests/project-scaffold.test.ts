@@ -32,6 +32,7 @@ describe("defaultProjectScaffoldFiles", () => {
   it("generates the default stateful CRUD scaffold", () => {
     const files = defaultProjectScaffoldFiles("Demo App", "crud", "demo-app");
     const wrangler = JSON.parse(scaffoldFile(files, "/wrangler.jsonc"));
+    const readme = scaffoldFile(files, "/README.md");
 
     expect(wrangler.durable_objects.bindings).toContainEqual({ name: "ITEMS", class_name: "ItemStore" });
     expect(wrangler.migrations).toContainEqual({ tag: "v1", new_sqlite_classes: ["ItemStore"] });
@@ -41,6 +42,11 @@ describe("defaultProjectScaffoldFiles", () => {
     expect(scaffoldFile(files, "/app/routes/home.tsx")).toContain("export async function loader");
     expect(scaffoldFile(files, "/app/routes/home.tsx")).toContain("export async function action");
     expect(scaffoldFile(files, "/app/routes/home.tsx")).toContain("Durable CRUD starter");
+    expect(readme).toContain('deploy_project({ project: "<project>" })');
+    expect(readme).toContain("return the live URL, and open the app in preview");
+    expect(readme).toContain("dry_run: true");
+    expect(readme).toContain("hidden `build_project` name is compatibility-only");
+    expect(readme).toContain("`set_preview` remains available for an explicit preview switch");
   });
 
   it("generates the specialized web scaffolds", () => {
@@ -262,5 +268,8 @@ describe("defaultProjectScaffoldFiles", () => {
     expect(readme).toContain('"application/x-ipynb+json"');
     expect(readme).toContain("no build step");
     expect(readme).toContain("deploy_project");
+    expect(readme).toContain("opens it in preview automatically");
+    expect(readme).toContain("No manual `set_preview` or `list_apps` call is needed");
+    expect(readme).toContain("`set_preview` remains available for an explicit preview switch");
   });
 });

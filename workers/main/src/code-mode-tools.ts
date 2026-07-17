@@ -667,12 +667,12 @@ const CODE_MODE_TOOL_REGISTRY: CodeModeToolRegistration[] = [
   ),
   codeModeTool(
     "build_project",
-    "Build a DO-backed project with the platform build pipeline. This does not deploy. In js_exec the call resolves ok: false when the build FAILS (error.message has the summary; full result in data — read logExcerpt and fix before deploying). Arguments: { project, timeoutMs? }.",
+    "Deprecated compatibility alias for deploy_project({ dry_run: true }).",
     Type.Object({
       project: Type.String(),
       timeoutMs: Type.Optional(Type.Number()),
     }, { additionalProperties: false }),
-    { category: "workspace", sideEffect: true },
+    { category: "workspace", sideEffect: true, hidden: true },
   ),
   codeModeTool(
     "add_dependency",
@@ -717,7 +717,7 @@ const CODE_MODE_TOOL_REGISTRY: CodeModeToolRegistration[] = [
   ),
   codeModeTool(
     "deploy_project",
-    "Build and deploy a DO-backed project through the platform direct deploy path. In js_exec the call resolves ok: false when the build or deploy FAILS (error.stage says which phase, error.message has the summary, full result in data; the app is NOT live — do not set_preview or take_screenshot until a deploy succeeds). Data-analysis (notebook) projects skip the build: the executed .ipynb is published as a static read-only report app using the platform notebook renderer — run_notebook first so outputs are fresh, then deploy. Use path to pick the notebook when the project has more than one. Arguments: { project, script_name?, path?, timeoutMs? }.",
+    "Build, deploy, return the live URL, and open a DO-backed project in preview through the platform direct deploy path. A successful call is the complete publish workflow, so no manual set_preview or list_apps call is needed. set_preview remains available if you explicitly want to reopen or switch previews. Pass dry_run=true only when you want to validate the build without publishing or changing preview. In js_exec the call resolves ok: false when validation, build, or deploy FAILS (error.stage says which phase, error.message has the summary, full result in data). Data-analysis (notebook) projects publish the executed .ipynb as a static read-only report app using the platform notebook renderer — run_notebook first so outputs are fresh. Use path to pick the notebook when the project has more than one. Arguments: { project, script_name?, path?, timeoutMs?, dry_run? }.",
     Type.Object({
       project: Type.String(),
       script_name: Type.Optional(Type.String()),
@@ -725,6 +725,9 @@ const CODE_MODE_TOOL_REGISTRY: CodeModeToolRegistration[] = [
         description: "Notebook path inside the project to publish (data-analysis projects only). Defaults to analysis.ipynb or the project's single notebook.",
       })),
       timeoutMs: Type.Optional(Type.Number()),
+      dry_run: Type.Optional(Type.Boolean({
+        description: "Validate/build without deploying or changing the active preview. Defaults to false.",
+      })),
     }, { additionalProperties: false }),
     { category: "workspace", sideEffect: true },
   ),
@@ -791,7 +794,7 @@ const CODE_MODE_TOOL_REGISTRY: CodeModeToolRegistration[] = [
   ),
   codeModePassthroughTool(
     "set_preview",
-    "Set the active preview to exactly one real target: an app or a file. App example: { app_name: 'poll-maker' }. Durable workspace file example: { location: 'workspace', path: '/notes.md' }. DO-backed project file example: { location: 'project', project: 'menu-app', path: 'index.html' }. R2 file example: { location: 'r2', path: 'outputs/report.html' }. Successful file previews are validated before the preview changes. Arguments: { script_name?, app_name?, is_public?, path?, content_type?, location?, project? }.",
+    "Manually set the active preview to exactly one existing app or file. deploy_project already previews a successful new deploy, so a follow-up call is not required, but this tool remains available whenever you explicitly want to reopen, switch, or override the preview. App example: { app_name: 'poll-maker' }. Durable workspace file example: { location: 'workspace', path: '/notes.md' }. DO-backed project file example: { location: 'project', project: 'menu-app', path: 'index.html' }. R2 file example: { location: 'r2', path: 'outputs/report.html' }. Successful file previews are validated before the preview changes. Arguments: { script_name?, app_name?, is_public?, path?, content_type?, location?, project? }.",
     Type.Object({
       script_name: Type.Optional(Type.String()),
       app_name: Type.Optional(Type.String()),
@@ -812,7 +815,7 @@ const CODE_MODE_TOOL_REGISTRY: CodeModeToolRegistration[] = [
   ),
   codeModePassthroughTool(
     "list_apps",
-    "List deployed apps for the current workspace. Optional filters keep agent output small: name matches app/custom-domain names, project matches project_id or app name, limit caps results, and sort defaults to updated_desc. Arguments: { name?, project?, limit?, sort? }.",
+    "List previously deployed apps for discovery or inspection. deploy_project already returns the new app URL and confirms successful publishing, so list_apps is not needed merely to verify a successful deploy. Optional filters keep output small: name matches app/custom-domain names, project matches project_id or app name, limit caps results, and sort defaults to updated_desc. Arguments: { name?, project?, limit?, sort? }.",
     Type.Object({
       name: Type.Optional(Type.String()),
       project: Type.Optional(Type.String()),
@@ -864,7 +867,7 @@ const CODE_MODE_TOOL_REGISTRY: CodeModeToolRegistration[] = [
   ),
   codeModePassthroughTool(
     "run_notebook",
-    "Execute a Jupyter notebook (.ipynb) in a DO-backed project and persist the executed notebook + any changed files back to the project. This is the PRIMARY data-analysis path — one call runs `jupyter nbconvert --execute --inplace` then validates the result, so you don't drive nbconvert/validate by hand. The default Python data stack (pandas, numpy, polars, duckdb, pyarrow, altair, plotly, matplotlib, seaborn, scipy, scikit-learn, statsmodels, openpyxl, pdfplumber, jupyter) is PREINSTALLED — no setup needed; use add_python_dependency for anything else. Read big inputs from the read-only mounts — uploaded files at /uploads/<name> (the R2 uploads/<name> reference with a leading slash) and connection exports at '/' + r2_key — keep large intermediates in the per-run $SCRATCH directory (created for you, cleaned up after the run), and put notebooks + small results in the project. After it returns ok, set_preview the .ipynb (location: 'project', project, path); deploy_project publishes the executed notebook as a static report app when the user wants a shareable link. Returns { ok, executed, validation: { clean, issues }, stdout, stderr, exitCode, changedFiles, removedFiles, skippedOversize, durationMs }. If ok is false, fix the failing cells and re-run — never suppress errors: error carries the Python traceback, and when stdout/stderr are truncated inline, fullOutput.path is an R2 log with the complete output (read({ location: 'r2', path: fullOutput.path })). Arguments: { project, path, timeoutMs? }.",
+    "Execute a Jupyter notebook (.ipynb) in a DO-backed project and persist the executed notebook + any changed files back to the project. This is the PRIMARY data-analysis path — one call runs `jupyter nbconvert --execute --inplace` then validates the result, so you don't drive nbconvert/validate by hand. The default Python data stack (pandas, numpy, polars, duckdb, pyarrow, altair, plotly, matplotlib, seaborn, scipy, scikit-learn, statsmodels, openpyxl, pdfplumber, jupyter) is PREINSTALLED — no setup needed; use add_python_dependency for anything else. Read big inputs from the read-only mounts — uploaded files at /uploads/<name> (the R2 uploads/<name> reference with a leading slash) and connection exports at '/' + r2_key — keep large intermediates in the per-run $SCRATCH directory (created for you, cleaned up after the run), and put notebooks + small results in the project. After it returns ok, set_preview the .ipynb (location: 'project', project, path) when the user wants the notebook file in chat; deploy_project publishes it as a static report app, returns the live URL, and opens that app in preview automatically when the user wants a shareable link. Returns { ok, executed, validation: { clean, issues }, stdout, stderr, exitCode, changedFiles, removedFiles, skippedOversize, durationMs }. If ok is false, fix the failing cells and re-run — never suppress errors: error carries the Python traceback, and when stdout/stderr are truncated inline, fullOutput.path is an R2 log with the complete output (read({ location: 'r2', path: fullOutput.path })). Arguments: { project, path, timeoutMs? }.",
     Type.Object({
       project: Type.String(),
       path: Type.String(),
@@ -888,7 +891,7 @@ const CODE_MODE_TOOL_REGISTRY: CodeModeToolRegistration[] = [
   ),
   codeModePassthroughTool(
     "analysis_exec",
-    "Run a shell command in the workspace analysis sandbox. Pass a `project` to run inside that DO-backed project's working tree; changed files persist back to project storage. Use purpose-built project tools first (`add_dependency`, `add_shadcn_component`, `build_project`, `deploy_project`); use analysis_exec only for project-local CLIs those tools do not cover. It is also the escape hatch for data work run_notebook doesn't cover (usql/sqlite3 schema poking, file-format conversions, quick `python -c` probes over a mounted upload). Omit `project` for scratch work over the read-only mounts. Returns { ok, stdout, stderr, exitCode, changedFiles, removedFiles, skippedOversize, durationMs }. Arguments: { command, project?, cwd?, env?, timeoutMs? }.",
+    "Run a shell command in the workspace analysis sandbox. Pass a `project` to run inside that DO-backed project's working tree; changed files persist back to project storage. Use purpose-built project tools first (`add_dependency`, `add_shadcn_component`, `deploy_project`); use analysis_exec only for project-local CLIs those tools do not cover. It is also the escape hatch for data work run_notebook doesn't cover (usql/sqlite3 schema poking, file-format conversions, quick `python -c` probes over a mounted upload). Omit `project` for scratch work over the read-only mounts. Returns { ok, stdout, stderr, exitCode, changedFiles, removedFiles, skippedOversize, durationMs }. Arguments: { command, project?, cwd?, env?, timeoutMs? }.",
     Type.Object({
       command: Type.String(),
       project: Type.Optional(Type.String()),
@@ -2846,7 +2849,11 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
           (typeof args.name === 'string' && args.name.trim()) ||
           '';
         activityType = 'created';
-      } else if (name === 'deploy_project' && resultRecord?.success === true) {
+      } else if (
+        name === 'deploy_project' &&
+        resultRecord?.success === true &&
+        resultRecord.dryRun !== true
+      ) {
         projectName =
           (typeof resultRecord.project === 'string' &&
             resultRecord.project.trim()) ||
@@ -3605,25 +3612,7 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
   }
 
   private async buildProject(args: Record<string, unknown>): Promise<unknown> {
-    return withProjectBuildServiceErrorMapping("build_project", async () => {
-      const project = await this.resolveDoBackedProjectForAction(args, "build_project");
-      const timeoutMs = typeof args.timeoutMs === "number" ? args.timeoutMs : undefined;
-      const result = await runProjectBuild({
-        projectId: project.id,
-        files: new ProjectFilesystemClient(this.env, project.id),
-        sandbox: this.projectBuildSandbox(),
-        timeoutMs,
-      });
-      // Same summarized shape as deploy_project's build payload: on failure the
-      // agent gets errorSummary + a capped logExcerpt instead of the raw
-      // stdout/stderr flood; on success a capped stdout tail is kept for context.
-      return {
-        ...summarizeProjectBuildResult(result),
-        ...(result.success && result.stdout ? { stdout: buildLogTail(result.stdout) } : {}),
-        project: project.name,
-        backend: project.backend ?? "vm",
-      };
-    });
+    return this.deployProject({ ...args, dry_run: true });
   }
 
   private async addDependency(args: Record<string, unknown>): Promise<unknown> {
@@ -3832,6 +3821,19 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
           errorSummary: summarizeBuildFailure(build),
           ...pickBuildFailureFields(summarizedBuild),
           build: summarizedBuild,
+          ...(args.dry_run === true ? { dryRun: true } : {}),
+        };
+      }
+      if (args.dry_run === true) {
+        return {
+          ...summarizeProjectBuildResult(build),
+          ...(build.stdout ? { stdout: buildLogTail(build.stdout) } : {}),
+          success: true,
+          dryRun: true,
+          stage: "build",
+          project: project.name,
+          backend: project.backend ?? "vm",
+          message: "Build validation passed; nothing was deployed and preview was unchanged.",
         };
       }
       const projectFiles = new ProjectFilesystemClient(this.env, project.id);
@@ -3900,6 +3902,9 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
       }
       const appUrl = await this.appUrlForScriptName(scriptName);
       const warnings = [...(deploy.warnings ?? []), ...this.localDeployReachabilityWarnings()];
+      const preview = await this.setPreview({ app_name: scriptName });
+      const message = `Deployed and previewed at ${appUrl}`;
+      console.log(message);
       return {
         success: true,
         project: project.name,
@@ -3908,6 +3913,8 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
         status: deploy.status,
         url: appUrl,
         appUrl,
+        preview,
+        message,
         buildSuccess: true,
         sourceSnapshot: {
           id: snapshot.id,
@@ -3960,8 +3967,20 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
       );
     }
     const filename = notebookPath.split("/").filter(Boolean).pop() || "notebook.ipynb";
-    const snapshot = await projectFiles.createSourceSnapshot({ message: `Deploy ${project.name}` });
     const bundle = await buildNotebookWorkerBundle({ rendererAssets, filename, notebook: notebookBytes });
+    if (args.dry_run === true) {
+      return {
+        success: true,
+        dryRun: true,
+        stage: "validate",
+        mode: "notebook",
+        project: project.name,
+        notebook: notebookPath,
+        message: "Notebook publish validation passed; nothing was deployed and preview was unchanged.",
+        ...(warnings.length > 0 ? { warnings } : {}),
+      };
+    }
+    const snapshot = await projectFiles.createSourceSnapshot({ message: `Deploy ${project.name}` });
     const orgSlug = await this.getOrgSlug();
     if (!orgSlug) throw new Error("Current org has no slug; cannot deploy project");
     const scriptName = normalizeDeployScriptName(
@@ -4001,6 +4020,9 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
     }
     const appUrl = await this.appUrlForScriptName(scriptName);
     const allWarnings = [...warnings, ...(deploy.warnings ?? []), ...this.localDeployReachabilityWarnings()];
+    const preview = await this.setPreview({ app_name: scriptName });
+    const message = `Deployed and previewed at ${appUrl}`;
+    console.log(message);
     return {
       success: true,
       mode: "notebook",
@@ -4011,6 +4033,8 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
       status: deploy.status,
       url: appUrl,
       appUrl,
+      preview,
+      message,
       sourceSnapshot: {
         id: snapshot.id,
         fileCount: snapshot.fileCount,

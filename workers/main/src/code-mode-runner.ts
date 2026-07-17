@@ -438,13 +438,13 @@ function normalizeHelpInput(input) {
 // guidance is fetched on demand the moment the model actually writes code.
 const JS_EXEC_GUIDE = Object.freeze([
   "Results: the final expression is returned automatically and console.log/warn/error output is captured; use an explicit return inside branches or loops. You may write TypeScript — type annotations are stripped before execution.",
-  "Tool results: every await tools.<name>(args) call resolves to { ok: true, data } on success or { ok: false, error: { tool, message } } on failure — branch on result.ok and read result.data; failed calls do not throw, so you can inspect the error, tools.describe the tool, and retry in the same run. build_project and deploy_project resolve ok: false when the build or deploy FAILS (error.message carries the summary, error.stage says which phase, and the full result is still in data); for other tools ok means the call executed and outcomes live in data. EXCEPTION: runtime bindings (env.*, connections[alias]) and tools.search/describe/help return their values directly with NO { ok, data } wrapper — tools.search resolves to { query, total, items, usage } where items is the matches array.",
+  "Tool results: every await tools.<name>(args) call resolves to { ok: true, data } on success or { ok: false, error: { tool, message } } on failure — branch on result.ok and read result.data; failed calls do not throw, so you can inspect the error, tools.describe the tool, and retry in the same run. deploy_project resolves ok: false when validation, build, or deploy FAILS (error.message carries the summary, error.stage says which phase, and the full result is still in data); for other tools ok means the call executed and outcomes live in data. EXCEPTION: runtime bindings (env.*, connections[alias]) and tools.search/describe/help return their values directly with NO { ok, data } wrapper — tools.search resolves to { query, total, items, usage } where items is the matches array.",
   "Discovery: await tools.search(\"<intent + key nouns>\") ranks matching tools; await tools.describe(name) returns one definition with a compact inputTypeScript argument shape; await tools.help(\"<category>\") expands a category. Results with kind \"tool\" run as await tools.<name>(args); kind \"runtime\" results are sandbox globals (env.*, connections, text/store/load) used directly, never through tools.",
   "Every top-level harness tool is also on tools, e.g. await tools.create_project(...).",
   "Connections: const entry = await env.CONNECTIONS.find(\"clickhouse\"); return await connections[entry.alias].query({ query: \"SELECT 1 AS ok\" }). Use await env.CONNECTIONS.methods() for the full catalog and await env.CONNECTIONS.test(\"clickhouse\") for a smoke test; custom \"other\" connections expose fetch.",
   "File tools require an explicit location (\"workspace\" | \"project\" | \"r2\"), e.g. const file = await tools.read({ location: \"project\", project: project.name, path: \"src/App.tsx\" }); if (!file.ok) throw new Error(file.error.message); then use file.data.text for text file contents. R2 mounts are uploads/ (read-only), outputs/ (user-visible), tmp/. tools.grep, tools.find, and tools.move are also available.",
-  "Projects: use env.PROJECTS to list/create projects; edit DO-backed project files with the file tools at location \"project\", then build/deploy with tools.build_project/tools.deploy_project.",
-  "Deploy verification: after you deploy an app or make changes to it, ALWAYS call set_preview with the newly deployed app and verify by calling list_apps before reporting done.",
+  "Projects: use env.PROJECTS to list/create projects; edit DO-backed project files with the file tools at location \"project\", then call tools.deploy_project to build, deploy, and open preview. Pass dry_run: true only for validation without publishing.",
+  "Deploy results: deploy_project returns the live app URL and opens successful deploys in preview automatically, so no manual set_preview or list_apps call is needed. set_preview remains available for an explicit preview switch.",
   "Hosted helpers: env.AI.run(\"auto\", { messages }) with tiers cheap/fast/auto/smart or any OpenRouter id, env.CAMELAI.generateImage/transcribeAudio, env.WORKSPACE.info(); web access via tools.WebSearch/tools.WebFetch. Global fetch() auto-authenticates to this workspace's deployed apps.",
   "Scratch state: text(value) appends user-visible output; store(key, value)/load(key) keep per-runner scratch state.",
   "Interactive tools that wait for the user (prompt_connection_setup, delete_connection, delete_project, AskUserQuestion) are top-level only and cannot be called from js_exec.",
@@ -735,10 +735,9 @@ function createToolDescribe(allTools) {
 // catch here only normalizes transport-level failures. Runtime bindings (env.*,
 // connections[alias]) and tools.search/describe/help keep returning
 // raw values.
-// Build/deploy report their outcome via data.success; surfacing a failed
-// build as ok: true routinely sent agents on to set_preview/screenshot a
-// deploy that never happened. For these tools ok mirrors the operational
-// outcome; the full result stays in data either way.
+// Deploy (and the hidden build_project compatibility alias) reports its outcome
+// via data.success. For these tools ok mirrors the operational outcome; the
+// full result stays in data either way.
 const OPERATIONAL_OUTCOME_TOOLS = new Set(["build_project", "deploy_project"]);
 
 function createEnvelopeToolCall(name, invokeEnvelope) {
