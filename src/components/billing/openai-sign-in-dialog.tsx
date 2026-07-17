@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { ExternalLink } from "lucide-react";
+import { Check, Copy, ExternalLink } from "lucide-react";
 import { useFetcher } from "react-router";
 import { toast } from "sonner";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -48,6 +48,7 @@ export function OpenAiSignInFlow({
   const fetcher = useFetcher<OpenAiSubscriptionActionResponse>();
   const [intent, setIntent] = useState<SignInIntent>(null);
   const [device, setDevice] = useState<DeviceState | null>(null);
+  const [copied, setCopied] = useState(false);
   const action = `/api/orgs/${orgId}/llm-provider`;
   const isSubmitting = fetcher.state !== "idle";
 
@@ -108,6 +109,12 @@ export function OpenAiSignInFlow({
     return () => window.clearTimeout(timeout);
   }, [action, device, fetcher, fetcher.state, intent]);
 
+  useEffect(() => {
+    if (!copied) return;
+    const timeout = window.setTimeout(() => setCopied(false), 2000);
+    return () => window.clearTimeout(timeout);
+  }, [copied]);
+
   const start = () => {
     setDevice(null);
     setIntent("start");
@@ -123,9 +130,23 @@ export function OpenAiSignInFlow({
         <AlertTitle>Finish signing in with OpenAI</AlertTitle>
         <AlertDescription className="mt-2 space-y-3">
           <p>Open the device sign-in page and enter this one-time code:</p>
-          <p className="font-mono text-xl font-semibold tracking-widest text-foreground">
-            {device.userCode}
-          </p>
+          <div className="flex items-center gap-2">
+            <span className="font-mono text-xl font-semibold tracking-widest text-foreground">
+              {device.userCode}
+            </span>
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              onClick={async () => {
+                await navigator.clipboard.writeText(device.userCode);
+                setCopied(true);
+              }}
+              aria-label={copied ? "Copied" : "Copy code"}
+            >
+              {copied ? <Check /> : <Copy />}
+            </Button>
+          </div>
           <Button
             type="button"
             onClick={() =>
