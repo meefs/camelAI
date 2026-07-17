@@ -29,19 +29,23 @@ When `scripts/run-eval-suite.sh` runs a list or `all`, it automatically mints on
 `EVAL_BATCH_ID` and default `EVAL_BATCH_LABEL` for the whole invocation. Pre-set those env vars to
 join a run into an existing dashboard batch.
 
-Captured artifacts include an advisory `llmJudge` block by default when Cloudflare AI Gateway
-credentials are available. The default judge is fixed to `openai/gpt-5.5` on the `compat` route
-with high reasoning. It is blind to deterministic pass/fail, then records agreement after judging;
-it never changes deterministic pass/fail. Set `EVAL_LLM_JUDGE=0` to disable it, or override with
-`EVAL_JUDGE_MODEL`, `EVAL_JUDGE_GATEWAY_PROVIDER`, or `EVAL_JUDGE_REASONING_EFFORT`.
+Captured artifacts use `openai/gpt-5.6-luna` on the `compat` route as the primary rollout judge
+when Cloudflare AI Gateway credentials are available. The judge is blind to machine verdicts and
+target-model identity, grades the task rubric from rollout/final-state evidence, and writes the
+authoritative result to `grading`. Machine criteria remain diagnostic evidence; true harness and
+artifact-contract failures still fail the run. Set `EVAL_LLM_JUDGE=0` to use machine-check fallback,
+or override with `EVAL_JUDGE_MODEL`, `EVAL_JUDGE_GATEWAY_PROVIDER`, or
+`EVAL_JUDGE_REASONING_EFFORT`.
 
 ## Add or update an eval
 
 Committed evals are listed in `workers/main/tests/evals/manifest.json`. Each entry requires
 `kind`: use `unit` for a one-mechanism check and `skill` for end-to-end agent ability. Keep
 scorecard budgets aligned with the dashboard weighting convention: unit evals 1-5 pts, skill evals
-6-20 pts scaled to task complexity. Pass/fail criteria are still the hard contract; scorecard
-points never gate pass/fail by themselves. Use optional `tier: "hard"` for deterministic
+6-20 pts scaled to task complexity. New evals should emit a task-specific `rubric` with 3-8
+criteria whose positive weights total 100, a pass threshold (normally 75), and critical criteria
+where applicable. Machine pass/fail and scorecard checks are evidence, not the primary grade. Use
+optional `tier: "hard"` for
 high-difficulty evals and optional `realDeploy: true` when the eval requires the testing-grounds
 deploy path.
 
@@ -63,6 +67,7 @@ Author evals with these guardrails:
 
 ```bash
 bun run test:eval:matrix -- --models sonnet,deepseek-v4-flash --evals do-backed-project-deploy-live --repeat 3
+bun run test:eval:matrix -- --models deepseek-v4-auto --evals all --concurrency max
 ```
 
 The matrix runner writes `<artifact-dir>/matrix-summary.json` with per-run status, artifact path,
@@ -70,6 +75,12 @@ report URLs, score, signal, judge agreement/usage metadata, and the shared batch
 and prints the batch dashboard URL only when `EVAL_REPORT=1`, the invocation is not a dry run, and
 at least one child report was uploaded successfully. It also sets one `EVAL_BATCH_ID` and default
 label for every child run; pre-set `EVAL_BATCH_ID` / `EVAL_BATCH_LABEL` to override.
+`--concurrency auto` (the default) uses twice the available CPU count because evals are primarily
+I/O-bound, capped by the run count and a 2 GiB-per-eval memory budget. `--concurrency max` uses
+every memory-safe slot, so a 36-cell suite runs all 36 cells together on a host with at least 72 GiB
+available. A numeric value requests that many slots subject only to the same run-count and memory
+guards. Concurrent jobs run in waves so leaked Miniflare containers can be reaped safely between
+waves; individual children set `EVAL_MANAGED_CLEANUP=1` and never sweep active siblings.
 
 ## Report the run to the shared viewer
 

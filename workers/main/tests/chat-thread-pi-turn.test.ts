@@ -23,7 +23,11 @@ import { encryptCredentials } from '../../../src/lib/integration-crypto';
 import { stripPiUiMetadata } from '../../../src/lib/runtime-artifacts';
 import { PiChunkEncoder } from '../../../src/lib/pi-chunk-encoder';
 import { CodeModeWebSearch } from '../src/code-mode-web-search';
-import { describeChildAgentActivity } from '../src/chat-thread/pi-tools';
+import {
+  capabilityAgentSystemPrompt,
+  capabilityAgentToolOptions,
+  describeChildAgentActivity,
+} from '../src/chat-thread/pi-tools';
 
 afterEach(() => {
   vi.useRealTimers();
@@ -38,6 +42,40 @@ describe('child agent progress labels', () => {
     expect(describeChildAgentActivity('web_fetch', { url: 'https://example.com/docs' })).toBe('web_fetch · https://example.com/docs');
     expect(describeChildAgentActivity('build_project', { project: 'chess-game' })).toBe('build_project · chess-game');
     expect(describeChildAgentActivity('unknown_tool')).toBe('unknown_tool');
+  });
+});
+
+describe('capability agent tool boundaries', () => {
+  it('gives Oracle Research without exposing raw web tools or recursive agents', () => {
+    expect(capabilityAgentToolOptions('Oracle')).toEqual({
+      includeSubagents: false,
+      includeResearch: true,
+      includeOracle: false,
+      includeWebTools: false,
+    });
+  });
+
+  it('gives Research only its raw web tools', () => {
+    expect(capabilityAgentToolOptions('Research')).toEqual({
+      includeSubagents: false,
+      includeResearch: false,
+      includeOracle: false,
+      includeWebTools: true,
+    });
+  });
+
+  it('keeps capability-agent guidance focused and safe', () => {
+    const researchPrompt = capabilityAgentSystemPrompt('Research');
+    expect(researchPrompt).toContain('fewest web calls needed');
+    expect(researchPrompt).toContain('at most 8 total web requests');
+    expect(researchPrompt).not.toContain('Oracle');
+
+    const oraclePrompt = capabilityAgentSystemPrompt('Oracle');
+    expect(oraclePrompt).toContain('mutate files only when asked');
+    expect(oraclePrompt).toContain('unless the supplied task explicitly requests it');
+    expect(oraclePrompt).not.toContain('WebSearch');
+    expect(oraclePrompt).not.toContain('WebFetch');
+    expect(oraclePrompt).not.toMatch(/gpt|luna/i);
   });
 });
 
@@ -4040,6 +4078,7 @@ describe('ChatThreadDO Pi turn handling', () => {
         threadId: 'thread_1',
         userId: 'user_1',
         parentToolUseId: undefined,
+        allowWebTools: false,
       },
     });
     expect(fake.ctx.exports.AIVirtualBinding).toHaveBeenCalledWith({
@@ -4225,7 +4264,9 @@ describe('ChatThreadDO Pi turn handling', () => {
   });
 
   it('advertises the js_exec tool catalog through CodeModeToolsBinding', async () => {
-    const tools = await CodeModeToolsBinding.prototype.listTools.call({} as any);
+    const tools = await CodeModeToolsBinding.prototype.listTools.call({
+      ctx: { props: { allowWebTools: true } },
+    } as any);
     const byName = new Map(tools.map((tool: any) => [tool.name, tool]));
 
     expect(tools.map((tool: any) => tool.name)).toEqual(expect.arrayContaining([
@@ -4345,6 +4386,18 @@ describe('ChatThreadDO Pi turn handling', () => {
     });
     expect(byName.has('list_deterministic_automations')).toBe(false);
     expect(byName.has('prompt_connection_setup')).toBe(false);
+  });
+
+  it('removes web helpers from main-agent js_exec and rejects direct calls', async () => {
+    const mainBinding = Object.create(CodeModeToolsBinding.prototype) as any;
+    mainBinding.ctx = { props: { allowWebTools: false } };
+
+    const names = (await CodeModeToolsBinding.prototype.listTools.call(mainBinding))
+      .map((tool: any) => tool.name);
+    expect(names).not.toEqual(expect.arrayContaining(['WebSearch', 'WebFetch']));
+    await expect(
+      CodeModeToolsBinding.prototype.callTool.call(mainBinding, 'WebSearch', { query: 'test' }),
+    ).rejects.toThrow('reserved for the Research agent');
   });
 
   it('requires set_preview to receive an explicit target', async () => {
@@ -4621,6 +4674,35 @@ describe('ChatThreadDO Pi turn handling', () => {
 
     expect(result).toBeUndefined();
     expect(fake.recordChatThreadObservabilityEvent).not.toHaveBeenCalled();
+  });
+
+  it('warns after a repeated identical failure and blocks the third retry', async () => {
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    const failure = (id: string) => ({
+      args: { path: '/missing.txt', location: 'workspace' },
+      toolCall: { id, name: 'read' },
+      isError: true,
+      result: {
+        content: [{ type: 'text', text: 'File not found' }],
+        details: { success: false },
+      },
+    });
+
+    expect(await ChatThreadDO.prototype['afterPiToolCall'].call(fake, failure('call_1'))).toBeUndefined();
+    const second = await ChatThreadDO.prototype['afterPiToolCall'].call(fake, failure('call_2'));
+    expect((second?.content?.at(-1) as { text: string }).text).toContain('failed twice');
+
+    const blocked = await ChatThreadDO.prototype['beforePiToolCall'].call(fake, {
+      args: { location: 'workspace', path: '/missing.txt' },
+      toolCall: { id: 'call_3', name: 'read' },
+    });
+    expect(blocked).toMatchObject({ block: true });
+
+    const changed = await ChatThreadDO.prototype['beforePiToolCall'].call(fake, {
+      args: { location: 'workspace', path: '/different.txt' },
+      toolCall: { id: 'call_4', name: 'read' },
+    });
+    expect(changed).toBeUndefined();
   });
 
   it('removes inline screenshot data from image-blind tool results before it reaches model context', async () => {
@@ -5661,17 +5743,53 @@ describe('ChatThreadDO Pi turn handling', () => {
     expect(prompt).toContain('Do not launch `env.BROWSER` or capture a screenshot merely because an app was deployed');
     expect(prompt).not.toContain('tools.build_project');
     expect(prompt).not.toContain('call `build_project` before');
+    expect(prompt).toContain('Use `Research` for current or external information');
+    expect(prompt).toContain('Give it one focused question');
+    expect(prompt).not.toContain('WebSearch');
+    expect(prompt).not.toContain('WebFetch');
+    expect(prompt).not.toContain('Oracle');
     expect(prompt).not.toContain('tools.send_email');
     expect(prompt).not.toContain('tools.send_slack_message');
     expect(prompt).not.toContain('tools.send_telegram_message');
 
+    fake.currentThreadModel = 'deepseek-v4-auto';
+    const camelFreePrompt = ChatThreadDO.prototype['createPiSystemPrompt'].call(fake, context);
+    expect(camelFreePrompt).toContain('Use `Oracle` when the user asks for it');
+    expect(camelFreePrompt).toContain('stuck after failed attempts');
+    expect(camelFreePrompt).toContain('difficult architecture, debugging, planning, or implementation');
+    expect(camelFreePrompt).toContain('Handle routine work directly');
+    expect(camelFreePrompt).not.toContain('WebSearch');
+    expect(camelFreePrompt).not.toContain('WebFetch');
+
     const piTools = ChatThreadDO.prototype['createPiToolDefinitions'].call(fake, context);
+    expect(piTools.map((tool: any) => tool.description ?? '').join('\n')).not.toContain('WebSearch');
+    expect(piTools.map((tool: any) => tool.description ?? '').join('\n')).not.toContain('WebFetch');
     const jsExec = piTools.find((tool: any) => tool.name === 'js_exec');
     // The js_exec description must not advertise outbound channel sends; the opt-in
     // caution itself lives in the system prompt ("answer in chat only", asserted above).
     expect(jsExec?.description).not.toContain('tools.send_email');
     expect(jsExec?.description).not.toContain('tools.send_slack_message');
     expect(jsExec?.description).not.toContain('tools.send_telegram_message');
+  });
+
+  it('tells isolated subagents to hand external research back to the primary agent', async () => {
+    const context = {
+      orgId: 'org1',
+      workspaceId: 'workspace1',
+      threadId: 'thread1',
+      userId: 'user1',
+    };
+
+    const prompt = await ChatThreadDO.prototype['createPiSubagentSystemPrompt'].call(
+      Object.create(ChatThreadDO.prototype),
+      context,
+      false,
+    );
+
+    expect(prompt).toContain('If the task needs external research');
+    expect(prompt).toContain('the primary agent can handle it');
+    expect(prompt).not.toContain('WebSearch');
+    expect(prompt).not.toContain('WebFetch');
   });
 
   it('sends email from any workspace context', async () => {
@@ -7442,6 +7560,7 @@ describe('ChatThreadDO Pi turn handling', () => {
         workspaceId: 'workspace1',
         threadId: 'thread1',
         userId: 'user1',
+        allowWebTools: false,
       },
     });
   });
@@ -7474,9 +7593,8 @@ describe('ChatThreadDO Pi turn handling', () => {
       'list_apps',
       'get_latest_logs',
       'prompt_connection_setup',
-      'WebSearch',
-      'WebFetch',
     ]));
+    expect(toolNames).not.toEqual(expect.arrayContaining(['WebSearch', 'WebFetch']));
     expect(toolNames).not.toContain('grep');
     expect(toolNames).not.toContain('find');
     expect(toolNames).not.toContain('list_deterministic_automations');
@@ -7499,15 +7617,16 @@ describe('ChatThreadDO Pi turn handling', () => {
     expect(result.content[0].text).toContain('"ok": true');
   });
 
-  it('defines argument schemas for Pi web tools and routes them through code mode tools', async () => {
+  it('exposes Pi web tools only when assembling the Research child', async () => {
     const callTool = vi.fn(async (_name: string, args: Record<string, unknown>) => ({
       ok: true,
       args,
     }));
+    const bindingFactory = vi.fn(() => ({ callTool }));
     const fake = Object.create(ChatThreadDO.prototype) as any;
     fake.ctx = {
       exports: {
-        CodeModeToolsBinding: vi.fn(() => ({ callTool })),
+        CodeModeToolsBinding: bindingFactory,
       },
     };
 
@@ -7516,6 +7635,11 @@ describe('ChatThreadDO Pi turn handling', () => {
       workspaceId: 'workspace1',
       threadId: 'thread1',
       userId: 'user1',
+    }, {
+      includeSubagents: false,
+      includeResearch: false,
+      includeOracle: false,
+      includeWebTools: true,
     });
     const webSearch = tools.find((tool: any) => tool.name === 'WebSearch');
     const webFetch = tools.find((tool: any) => tool.name === 'WebFetch');
@@ -7535,6 +7659,15 @@ describe('ChatThreadDO Pi turn handling', () => {
       toolUseId: 'search-tool-id',
     });
     expect(result.content[0].text).toContain('"ok": true');
+    expect(bindingFactory).toHaveBeenCalledWith({
+      props: {
+        orgId: 'org1',
+        workspaceId: 'workspace1',
+        threadId: 'thread1',
+        userId: 'user1',
+        allowWebTools: true,
+      },
+    });
   });
 
   it('runs Worker-side WebSearch through provider round-robin with fallback', async () => {
@@ -8570,6 +8703,12 @@ describe('ChatThreadDO Pi turn handling', () => {
       expect.arrayContaining(['Agent', 'Explore', 'Research']),
     );
     expect(rootTools.map((tool: any) => tool.name)).not.toContain('Oracle');
+    expect(rootTools.map((tool: any) => tool.name)).not.toContain('WebSearch');
+    expect(rootTools.map((tool: any) => tool.name)).not.toContain('WebFetch');
+    const research = rootTools.find((tool: any) => tool.name === 'Research');
+    expect(research?.description).toContain('one focused question');
+    expect(research?.description).toContain('current or external factual lookup');
+    expect(research?.description).not.toContain('Oracle');
     expect(rootTools.map((tool: any) => tool.name)).not.toEqual(
       expect.arrayContaining(['agent', 'explore']),
     );
@@ -8588,14 +8727,16 @@ describe('ChatThreadDO Pi turn handling', () => {
     expect(camelCodeTools.map((tool: any) => tool.name)).toEqual(
       expect.arrayContaining(['Research', 'Oracle']),
     );
+    const camelCodeResearch = camelCodeTools.find((tool: any) => tool.name === 'Research');
+    expect(camelCodeResearch?.description).toBe(research?.description);
     const oracle = camelCodeTools.find((tool: any) => tool.name === 'Oracle');
-    expect(oracle?.description).toContain('when you are stuck');
-    expect(oracle?.description).toContain('directly investigate and fix issues');
-    expect(oracle?.description).toContain('create or start ambitious projects');
+    expect(oracle?.description).toContain('especially after failed attempts');
+    expect(oracle?.description).toContain('inspect, edit, and verify the workspace');
+    expect(oracle?.description).toContain('difficult architecture, debugging, planning, or implementation');
+    expect(oracle?.description).not.toContain('Research');
     expect(oracle?.description).not.toMatch(/gpt|luna|model/i);
 
     for (const activeModel of [
-      'gpt-5.5',
       'gpt-5.6-sol',
       'gpt-5.6-terra',
       'deepseek-v4-pro',
@@ -8612,7 +8753,7 @@ describe('ChatThreadDO Pi turn handling', () => {
     fake.currentThreadModel = 'deepseek-v4-auto';
     expect(ChatThreadDO.prototype['isCamelCodeActive'].call(fake)).toBe(true);
     expect(ChatThreadDO.prototype['isCamelCodeActive'].call(fake, {
-      CHIRIDION_MODEL: 'gpt-5.5',
+      CHIRIDION_MODEL: 'gpt-5.6-sol',
     })).toBe(false);
     expect(ChatThreadDO.prototype['isCamelCodeActive'].call(fake, {
       CHIRIDION_MODEL: 'deepseek-v4-auto',
@@ -8626,6 +8767,21 @@ describe('ChatThreadDO Pi turn handling', () => {
     expect(capabilityChildTools.map((tool: any) => tool.name)).not.toEqual(
       expect.arrayContaining(['Agent', 'Explore', 'Research', 'Oracle']),
     );
+    expect(capabilityChildTools.map((tool: any) => tool.name)).not.toContain('WebSearch');
+    expect(capabilityChildTools.map((tool: any) => tool.name)).not.toContain('WebFetch');
+
+    const oracleChildTools = ChatThreadDO.prototype['createPiToolDefinitions'].call(
+      fake,
+      context,
+      capabilityAgentToolOptions('Oracle'),
+    );
+    const oracleChildToolNames = oracleChildTools.map((tool: any) => tool.name);
+    expect(oracleChildToolNames).toContain('Research');
+    expect(oracleChildToolNames).not.toContain('Agent');
+    expect(oracleChildToolNames).not.toContain('Explore');
+    expect(oracleChildToolNames).not.toContain('Oracle');
+    expect(oracleChildToolNames).not.toContain('WebSearch');
+    expect(oracleChildToolNames).not.toContain('WebFetch');
   });
 
   it('keeps Oracle when refreshing an active camelCode session', async () => {
@@ -8645,6 +8801,7 @@ describe('ChatThreadDO Pi turn handling', () => {
     await ChatThreadDO.prototype['refreshPiSessionModel'].call(fake);
 
     expect(fake.piSession.state.model).toBe(refreshedModel);
+    expect(fake.piSession.state.systemPrompt).toContain('Use `Oracle` when the user asks for it');
     expect(fake.createPiToolDefinitions).toHaveBeenCalledWith(
       fake.chatContext,
       { includeOracle: true },
@@ -8677,7 +8834,7 @@ describe('ChatThreadDO Pi turn handling', () => {
 
   it('removes Oracle when refreshing any non-camelCode session', async () => {
     const fake = Object.create(ChatThreadDO.prototype) as any;
-    const refreshedModel = { id: 'openai/gpt-5.5' };
+    const refreshedModel = { id: 'openai/gpt-5.6-sol' };
     fake.piSession = { state: { model: null, tools: [{ name: 'Oracle' }] } };
     fake.piModelResolver = vi.fn(async () => ({ model: refreshedModel }));
     fake.chatContext = {
@@ -8686,7 +8843,7 @@ describe('ChatThreadDO Pi turn handling', () => {
       threadId: 'thread1',
       userId: 'user1',
     };
-    fake.currentThreadModel = 'gpt-5.5';
+    fake.currentThreadModel = 'gpt-5.6-sol';
     fake.createPiToolDefinitions = vi.fn((_context: unknown, options: any) =>
       options.includeOracle ? [{ name: 'Oracle' }] : []
     );
@@ -8695,6 +8852,7 @@ describe('ChatThreadDO Pi turn handling', () => {
 
     expect(fake.piSession.state.model).toBe(refreshedModel);
     expect(fake.piSession.state.tools).toEqual([]);
+    expect(fake.piSession.state.systemPrompt).not.toContain('Oracle');
     expect(fake.createPiToolDefinitions).toHaveBeenCalledWith(
       fake.chatContext,
       { includeOracle: false },
@@ -8727,6 +8885,8 @@ describe('ChatThreadDO Pi turn handling', () => {
     for (const name of ['read', 'write', 'edit', 'delete', 'ls', 'js_exec', 'Agent', 'Explore', 'Research']) {
       expect(toolNames.has(name)).toBe(true);
     }
+    expect(toolNames.has('WebSearch')).toBe(false);
+    expect(toolNames.has('WebFetch')).toBe(false);
 
     // Human-input passthrough tools stay top-level (cannot run inside js_exec).
     for (const name of ['prompt_connection_setup', 'delete_connection', 'delete_project', 'AskUserQuestion']) {

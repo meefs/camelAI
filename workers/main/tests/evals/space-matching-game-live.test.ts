@@ -1611,6 +1611,8 @@ describe("space matching game deploy agent eval", () => {
       const rootSmoke = await smokeFetchRoot(deployedApp);
       const leaderboardRoundtrip = {
         postStatus: undefined as number | undefined,
+        postJson: undefined as unknown,
+        postAttempts: 0,
         getStatus: undefined as number | undefined,
         entries: [] as unknown[],
         failures: [] as string[],
@@ -1619,17 +1621,34 @@ describe("space matching game deploy agent eval", () => {
         leaderboardRoundtrip.failures.push("no deployed app was captured");
       } else {
         try {
-          const post = await fetchJsonWithRetry(
-            new URL("/api/leaderboard", deployedApp.url).toString(),
-            {
-              method: "POST",
-              headers: { "content-type": "application/json" },
-              body: JSON.stringify({ name: "EvalPilot", score: 4200 }),
-            },
-          );
-          leaderboardRoundtrip.postStatus = post.status;
-          if (post.status < 200 || post.status >= 300) {
-            leaderboardRoundtrip.failures.push(`POST returned HTTP ${post.status}`);
+          // A newly deployed DO class can briefly return a 5xx while its script
+          // and migration propagate. Retry this eval-only, idempotent fixture
+          // write with the same distinctive payload before grading the app.
+          for (let attempt = 0; attempt < 5; attempt += 1) {
+            leaderboardRoundtrip.postAttempts = attempt + 1;
+            const post = await fetchJsonWithRetry(
+              new URL("/api/leaderboard", deployedApp.url).toString(),
+              {
+                method: "POST",
+                headers: { "content-type": "application/json" },
+                body: JSON.stringify({ name: "EvalPilot", score: 4200 }),
+              },
+            );
+            leaderboardRoundtrip.postStatus = post.status;
+            leaderboardRoundtrip.postJson = post.json;
+            if (post.status >= 200 && post.status < 300) break;
+            if (attempt < 4) {
+              await new Promise((resolve) => setTimeout(resolve, 1_000 * (attempt + 1)));
+            }
+          }
+          if (
+            leaderboardRoundtrip.postStatus === undefined ||
+            leaderboardRoundtrip.postStatus < 200 ||
+            leaderboardRoundtrip.postStatus >= 300
+          ) {
+            leaderboardRoundtrip.failures.push(
+              `POST returned HTTP ${leaderboardRoundtrip.postStatus ?? "unknown"}`,
+            );
           }
           const get = await fetchJsonWithRetry(
             new URL("/api/leaderboard", deployedApp.url).toString(),
@@ -1765,6 +1784,7 @@ describe("space matching game deploy agent eval", () => {
         sourceInspection,
         sourceInspectionCandidates,
         livePageSmoke: rootSmoke,
+        leaderboardRoundtrip,
         result: result.result,
         events: result.events,
         messages: result.messages,

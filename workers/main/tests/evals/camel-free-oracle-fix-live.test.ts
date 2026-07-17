@@ -42,6 +42,18 @@ const SESSION_TIMEOUT_MS = getEvalTimeoutMs(testEnv, 300_000);
 const CAMEL_CODE_MODEL = "deepseek-v4-auto";
 const FIX_MARKER = "ORACLE_FIXED_HALF_OFF";
 const PROOF = "Oracle directly repaired the discount implementation.";
+const RUBRIC = {
+  version: 1,
+  objective: "Use Oracle to get unstuck and directly complete and verify a concrete implementation repair.",
+  passThreshold: 75,
+  criticalMinimum: 3,
+  criteria: [
+    { id: "correct_repair", description: "The implementation is correctly repaired to apply a true half-off discount and the requested project proof file is present. Missing either result scores at most 2.", weight: 45, critical: true, evidenceHints: ["runtimeAssertions", "trajectory"] },
+    { id: "appropriate_delegation", description: "After the stated failed attempts, the primary delegates a specific, bounded repair task to Oracle instead of repeating the same approach.", weight: 25, critical: true, evidenceHints: ["trajectory"] },
+    { id: "direct_execution", description: "Oracle performs all requested file mutations, including the proof file, while the primary avoids file mutation tools and only verifies the final state.", weight: 20, critical: true, evidenceHints: ["trajectory", "runtimeAssertions.childToolsUsed"] },
+    { id: "accurate_report", description: "The final response clearly and truthfully reports what was repaired and verified.", weight: 10, critical: false, evidenceHints: ["result"] },
+  ],
+} as const;
 
 describe("camelCode Oracle direct-fix agent eval", () => {
   maybeIt(
@@ -107,9 +119,9 @@ describe("camelCode Oracle direct-fix agent eval", () => {
         timeoutMs: SESSION_TIMEOUT_MS,
         message: [
           `You have already made two unsuccessful attempts at a bug in the existing project "${projectName}" and are now stuck.`,
-          "Get unstuck and complete the repair, but do not edit or write project files yourself.",
+          "Get unstuck by delegating the complete task to Oracle; do not use edit or write tools yourself.",
           `Inspect /discount.ts, change the HALF path to return exactly subtotal * 0.5, add the comment // ${FIX_MARKER} immediately above that return, and verify the result.`,
-          `Also create /oracle-fix-proof.txt containing exactly: ${PROOF}`,
+          `Also have Oracle create /oracle-fix-proof.txt in that same project containing exactly: ${PROOF}`,
           "After the repair finishes, report whether it was completed directly.",
         ].join(" "),
       });
@@ -194,6 +206,7 @@ describe("camelCode Oracle direct-fix agent eval", () => {
 
       emitEvalTranscript({
         status: result.status,
+        rubric: RUBRIC,
         evaluation,
         error: result.error,
         model: CAMEL_CODE_MODEL,

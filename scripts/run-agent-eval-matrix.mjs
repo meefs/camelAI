@@ -1,10 +1,14 @@
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import {
   extractReportedRunUrls,
   matrixBatchUrl,
 } from "./eval-report-utils.mjs";
+import {
+  resolveEvalConcurrency,
+  runEvalWaves,
+} from "./lib/eval-concurrency.mjs";
 
 const DEFAULT_MODELS = [
   "sonnet",
@@ -41,6 +45,9 @@ Options:
   --models <ids>          Comma-separated model ids. Default: ${DEFAULT_MODELS.join(",")}
   --evals <ids>           Comma-separated eval ids. Default: ${DEFAULT_EVALS.join(",")}
   --repeat <n>            Sequential repeats per eval/model cell. Default: 1
+  --concurrency <n|auto|max>
+                          Parallel evals. auto uses 2x CPUs subject to memory;
+                          max uses all memory-safe slots. Default: auto
   --artifact-dir <path>   Root artifact directory. Default: .eval-artifacts/matrix-<timestamp>
   --dry-run               Print commands without running them
   --help                  Show this help message
@@ -69,6 +76,7 @@ function parseOptions(args) {
     models: DEFAULT_MODELS,
     evals: DEFAULT_EVALS,
     repeat: 1,
+    concurrency: "auto",
     artifactDir: undefined,
     dryRun: false,
     passThrough: [],
@@ -88,12 +96,13 @@ function parseOptions(args) {
       options.dryRun = true;
       continue;
     }
-    if (arg === "--models" || arg === "--evals" || arg === "--repeat" || arg === "--artifact-dir") {
+    if (arg === "--models" || arg === "--evals" || arg === "--repeat" || arg === "--concurrency" || arg === "--artifact-dir") {
       const value = args[index + 1];
       if (!value || value.startsWith("--")) throw new Error(`Missing value for ${arg}`);
       if (arg === "--models") options.models = splitList(value, "--models");
       if (arg === "--evals") options.evals = splitList(value, "--evals");
       if (arg === "--repeat") options.repeat = parsePositiveInteger(value, "--repeat");
+      if (arg === "--concurrency") options.concurrency = value;
       if (arg === "--artifact-dir") options.artifactDir = value;
       index += 1;
       continue;
@@ -150,6 +159,16 @@ function summarizeArtifact(artifactPath) {
       sdkTurnStartCount: artifact.signal?.sdkTurnStartCount,
       badToolCallCount: artifact.signal?.badToolCallCount,
       tokenUsage: artifact.signal?.tokenUsage,
+      grading: artifact.grading
+        ? {
+          mode: artifact.grading.mode,
+          outcome: artifact.grading.outcome,
+          passed: artifact.grading.passed,
+          confidence: artifact.grading.confidence,
+          weightedScore: artifact.grading.weightedScore,
+          judgeModel: artifact.grading.judgeModel,
+        }
+        : undefined,
       llmJudge: artifact.llmJudge
         ? {
           status: artifact.llmJudge.status,
@@ -194,6 +213,9 @@ function runEval(args, env) {
 }
 
 const options = parseOptions(process.argv.slice(2));
+if (options.evals.length === 1 && options.evals[0] === "all") {
+  options.evals = manifest.evals.map((entry) => entry.id);
+}
 validateEvals(options.evals);
 
 const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
@@ -208,7 +230,7 @@ const batchLabel =
   process.env.EVAL_BATCH_LABEL ||
   `matrix: ${options.models.length} models × ${options.evals.length} evals`;
 const results = [];
-
+const jobs = [];
 for (const model of options.models) {
   for (const evalName of options.evals) {
     for (let repeatIndex = 1; repeatIndex <= options.repeat; repeatIndex += 1) {
@@ -225,17 +247,48 @@ for (const model of options.models) {
         artifactDir,
         ...options.passThrough,
       ];
-      console.log(`\n[eval-matrix] ${evalName} model=${model} repeat=${repeatIndex}/${options.repeat}`);
+      jobs.push({ evalName, model, repeat: repeatIndex, artifactDir, args });
+    }
+  }
+}
+
+const concurrency = resolveEvalConcurrency(options.concurrency, jobs.length);
+console.log(`[eval-matrix] running ${jobs.length} cell(s) with concurrency=${concurrency}`);
+
+function sweepEvalContainers(reason) {
+  if (options.dryRun) return;
+  const list = spawnSync("docker", ["ps", "-a", "--format", "{{.ID}}\t{{.Names}}"], {
+    encoding: "utf8",
+  });
+  if (list.status !== 0) return;
+  const classNames = ["EvalSandbox", "ProjectBuildSandbox", "AnalysisSandbox"];
+  const ids = (list.stdout || "").split("\n").flatMap((line) => {
+    const [id, name = ""] = line.split("\t");
+    return name.startsWith("workerd-vitest-pool-workers-runner--") &&
+      classNames.some((className) => name.includes(`--${className}-`))
+      ? [id.trim()]
+      : [];
+  });
+  if (!ids.length) return;
+  spawnSync("docker", ["rm", "-f", ...ids], { stdio: "ignore" });
+  console.log(`[eval-matrix] pruned ${ids.length} leaked eval container(s) (${reason})`);
+}
+
+sweepEvalContainers("before matrix");
+const completed = await runEvalWaves(
+  jobs,
+  concurrency,
+  async ({ evalName, model, repeat, artifactDir, args }, jobIndex) => {
+      console.log(`\n[eval-matrix] start ${jobIndex + 1}/${jobs.length} ${evalName} model=${model} repeat=${repeat}/${options.repeat}`);
       console.log(`bun ${args.map(shellQuote).join(" ")}`);
       if (options.dryRun) {
-        results.push({ evalName, model, repeat: repeatIndex, code: 0, skipped: true, artifactDir });
-        continue;
+        return { evalName, model, repeat, code: 0, skipped: true, artifactDir };
       }
-
       const child = await runEval(args, {
         ...process.env,
         EVAL_BATCH_ID: batchId,
         EVAL_BATCH_LABEL: batchLabel,
+        EVAL_MANAGED_CLEANUP: "1",
       });
       const reportUrls = extractReportedRunUrls(child.outputTail);
       const artifactPaths = uniqueMatches(
@@ -243,20 +296,24 @@ for (const model of options.models) {
         /(?<=Wrote eval artifact: ).+/g,
       ).map((value) => value.trim());
       const artifactPath = artifactPaths.at(-1);
-      results.push({
+      return {
         evalName,
         model,
-        repeat: repeatIndex,
+        repeat,
         code: child.code,
         artifactDir,
         artifactPath,
         reportUrls,
         spawnError: child.spawnError,
         summary: summarizeArtifact(artifactPath),
-      });
-    }
-  }
-}
+      };
+  },
+  async ({ waveNumber, completed: completedCount, total }) => {
+    sweepEvalContainers(`after wave ${waveNumber}`);
+    console.log(`[eval-matrix] wave ${waveNumber} complete (${completedCount}/${total})`);
+  },
+);
+results.push(...completed);
 
 const finishedAt = new Date().toISOString();
 const failures = results.filter((result) => result.code !== 0);
@@ -276,6 +333,7 @@ const summary = {
     models: options.models,
     evals: options.evals,
     repeat: options.repeat,
+    concurrency,
     passThrough: options.passThrough,
     dryRun: options.dryRun,
   },

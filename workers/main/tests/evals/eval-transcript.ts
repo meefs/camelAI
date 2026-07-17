@@ -13,6 +13,10 @@ export interface EvalTranscriptPayload {
   [key: string]: unknown;
   status: unknown;
   evaluation: EvalCriteriaSummary;
+  /** Immutable task-specific rubric used by the rollout judge. */
+  rubric?: unknown;
+  /** Frozen factual ground truth for current-information evals; never agent-authored. */
+  referenceEvidence?: unknown;
   error?: unknown;
   /** EVAL_MODEL used for the run (for the dashboard's per-model view). */
   model?: unknown;

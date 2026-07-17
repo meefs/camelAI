@@ -445,7 +445,11 @@ Reply with the live URL and the correct total dollars shown on the page.`,
       } else {
         try {
           smoke.summary = await fetchJsonWithRetry(new URL("/api/expenses/summary", deployedApp.url).toString());
-          const pageResponse = await fetchWithRetry(deployedApp.url);
+          const pageUrl = new URL(deployedApp.url);
+          pageUrl.searchParams.set("eval_smoke", String(Date.now()));
+          const pageResponse = await fetchWithRetry(pageUrl.toString(), {
+            headers: { "cache-control": "no-cache" },
+          });
           smoke.page = { status: pageResponse.status, body: await pageResponse.text() };
         } catch (error) {
           smoke.failures.push(

@@ -316,7 +316,7 @@ export function toolCallReferences(
   expectedText: string,
 ): boolean {
   return collectRuntimeItems(events).some((item) =>
-    runtimeItemSucceeded(item) &&
+    item.isError !== true && asString(item.status)?.toLowerCase() === "completed" &&
     runtimeItemToolCallReferences(item, toolName, expectedText)
   );
 }
@@ -328,7 +328,8 @@ export function completedToolDetails(
   const expected = toolName.toLowerCase();
   const item = collectRuntimeItems(events).find((candidate) => {
     const tool = runtimeToolName(candidate);
-    return runtimeItemSucceeded(candidate) &&
+    return candidate.isError !== true &&
+      asString(candidate.status)?.toLowerCase() === "completed" &&
       (tool === expected || tool?.endsWith(`__${expected}`));
   });
   return asRecord(asRecord(item?.result)?.details);

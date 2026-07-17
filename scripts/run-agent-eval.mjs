@@ -4,6 +4,7 @@ import { spawn, spawnSync } from "node:child_process";
 import {
   attachEvalLlmJudge,
   formatEvalLlmJudgeSummary,
+  validateEvalRubric,
   withLoadedEvalEnv,
 } from "./lib/eval-llm-judge.mjs";
 import { extractVitestUnhandledErrors } from "./eval-harness-errors.mjs";
@@ -139,8 +140,8 @@ Options:
   --help                    Show this help message
 
 Environment:
-  EVAL_LLM_JUDGE=0 disables the advisory LLM judge
-  EVAL_JUDGE_MODEL overrides the judge model (default: openai/gpt-5.5)
+  EVAL_LLM_JUDGE=0 disables the primary LLM judge and uses machine-check fallback
+  EVAL_JUDGE_MODEL overrides the judge model (default: openai/gpt-5.6-luna)
   EVAL_JUDGE_GATEWAY_PROVIDER overrides the AI Gateway route (default: compat)
   EVAL_JUDGE_REASONING_EFFORT overrides judge reasoning effort (default: high)
 `);
@@ -365,6 +366,7 @@ function validateEvaluationContract(transcript) {
   if (!Array.isArray(evaluation.scorecard.criteria)) {
     throw new Error("evaluation.scorecard.criteria must be an array");
   }
+  validateEvalRubric(transcript.rubric);
 }
 
 function isRealEvalDeployEnabled(env) {
@@ -450,6 +452,7 @@ child.on("close", async (code) => {
         env: evalEnv,
         evalName,
         targetModel: artifactModelLabel,
+        manifestEntry: manifestEvalById.get(evalName),
       });
       writeFileSync(artifactPath, JSON.stringify(transcript, null, 2));
       console.log(`Wrote eval artifact: ${artifactPath}`);
@@ -461,11 +464,16 @@ child.on("close", async (code) => {
       // also silences REAL unhandled errors. Any that survived the filter must
       // still fail the run here.
       const realHarnessErrors = transcript?.signal?.harnessErrorCount ?? 0;
-      if (exitCode === 0 && realHarnessErrors > 0) {
+      if (realHarnessErrors > 0) {
         console.error(
           `Failing eval: ${realHarnessErrors} unfiltered harness unhandled error(s).`,
         );
         exitCode = 1;
+      } else if (transcript?.grading?.primary === true) {
+        exitCode = transcript.grading.passed === true ? 0 : 1;
+        console.log(
+          `Primary eval grade: ${transcript.grading.outcome} via ${transcript.grading.judgeModel}`,
+        );
       }
     } catch (error) {
       console.error(

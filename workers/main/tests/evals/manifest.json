@@ -1,5 +1,5 @@
 {
-  "$comment": "Single source of truth for committed agent evals. Adding an eval = create workers/main/tests/evals/<id>.test.ts (gated on RUN_AGENT_EVALS, ending in emitEvalTranscript from ./eval-transcript) and add one entry here. Each entry requires kind: unit checks one mechanism; skill checks end-to-end agent ability. Optional tier:\"hard\" marks deterministic high-difficulty evals; absent means standard. Scorecard point budgets should be unit 1-5 pts, skill 6-20 pts scaled to task complexity; pass/fail criteria remain the hard contract. Consumed by scripts/run-agent-eval.mjs and scripts/run-eval-suite.sh. custom-prompt-live is intentionally NOT listed — it's the generic env-driven custom-prompt harness, not a fixed eval. realDeploy:true marks evals that only run when real deploy is enabled (CF_API_TOKEN + EVAL_REAL_DEPLOY!=0).",
+  "$comment": "Single source of truth for committed agent evals. Adding an eval = create workers/main/tests/evals/<id>.test.ts (gated on RUN_AGENT_EVALS, ending in emitEvalTranscript from ./eval-transcript) and add one entry here. Each entry requires kind: unit checks one mechanism; skill checks end-to-end agent ability. Optional tier:\"hard\" marks high-difficulty evals; absent means standard. New evals should emit a task-specific 0-4 anchored rubric with 3-8 criteria whose positive weights total 100. Machine checks and scorecards remain diagnostic evidence; the rollout judge is primary when available, while harness and artifact-contract failures remain hard gates. Consumed by scripts/run-agent-eval.mjs and scripts/run-eval-suite.sh. custom-prompt-live is intentionally NOT listed — it's the generic env-driven custom-prompt harness, not a fixed eval. realDeploy:true marks evals that only run when real deploy is enabled (CF_API_TOKEN + EVAL_REAL_DEPLOY!=0).",
   "evals": [
     {
       "id": "dashboard-fake-data-live",
@@ -149,6 +149,11 @@
       "kind": "unit"
     },
     {
+      "id": "camel-free-routine-restraint-live",
+      "description": "Complete a routine local fix directly without unnecessary Oracle, Research, Agent, or Explore delegation",
+      "kind": "unit"
+    },
+    {
       "id": "camel-free-oracle-fix-live",
       "description": "Delegate a blocked implementation issue for Oracle to inspect and repair directly",
       "kind": "skill"
@@ -164,9 +169,9 @@
       "kind": "skill"
     },
     {
-      "id": "web-tools-contract-live",
-      "description": "Use WebSearch and WebFetch through js_exec and verify their compact array/string return contract",
-      "kind": "unit"
+      "id": "research-known-url-live",
+      "description": "Delegate a supplied external URL to one efficient Research fetch without needless search",
+      "kind": "skill"
     },
     {
       "id": "orders-analytics-api-live",

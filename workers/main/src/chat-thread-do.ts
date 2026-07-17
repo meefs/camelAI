@@ -24,6 +24,8 @@ import type {
   Agent as PiCoreAgent,
   AfterToolCallContext,
   AfterToolCallResult,
+  BeforeToolCallContext,
+  BeforeToolCallResult,
   AgentEvent,
   AgentMessage,
   AgentTool,
@@ -604,6 +606,8 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
   private piActiveItemText = "";
   private piReasoningItemId: string | null = null;
   private piToolArgs: Map<string, Record<string, unknown>> = new Map();
+  private piToolFailures = new Map<string, { count: number; error: string }>();
+  private piToolFailureRecordedCallIds = new Set<string>();
   private piAssistantText = "";
   private runningActivityLastText: string | null = null;
   private runningActivityLastSentAt = 0;
@@ -988,6 +992,7 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
         userId: request.userId,
         threadId: request.threadId,
         parentToolUseId: request.toolUseId,
+        allowWebTools: false,
       },
     });
     const ai = (this.ctx.exports as unknown as {
@@ -2562,11 +2567,101 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
   ): Promise<AfterToolCallResult | undefined> {
     if (signal?.aborted) return undefined;
     try {
-      return await this.truncatePiToolResultForModel(context);
+      const truncated = await this.truncatePiToolResultForModel(context);
+      const repeatedFailure = ChatThreadDO.prototype.recordPiToolFailure.call(this, {
+        toolCallId: context.toolCall.id,
+        toolName: context.toolCall.name,
+        args: context.args,
+        result: context.result,
+        isError: context.isError,
+      });
+      if (repeatedFailure !== 2) return truncated;
+      const content = truncated?.content ?? context.result.content;
+      return {
+        ...truncated,
+        content: [
+          ...content,
+          {
+            type: "text",
+            text: "Recovery hint: this exact tool call has failed twice with the same error. Change the arguments or approach before retrying; use tools.search/describe when the contract is unclear.",
+          },
+        ],
+        details: truncated?.details ?? context.result.details,
+      };
     } catch (error) {
       console.error("[ChatThreadDO] Pi afterToolCall hook failed", error);
       return undefined;
     }
+  }
+
+  private piToolFailureKey(toolName: string, args: unknown): string {
+    const canonicalize = (value: unknown): unknown => {
+      if (Array.isArray(value)) return value.map(canonicalize);
+      if (!value || typeof value !== "object") return value;
+      return Object.fromEntries(
+        Object.entries(value as Record<string, unknown>)
+          .sort(([left], [right]) => left.localeCompare(right))
+          .map(([key, item]) => [key, canonicalize(item)]),
+      );
+    };
+    try {
+      return `${toolName}:${JSON.stringify(canonicalize(args))}`;
+    } catch {
+      return `${toolName}:${String(args)}`;
+    }
+  }
+
+  private piToolFailureText(result: unknown, isError: boolean): string | null {
+    const record = result && typeof result === "object" && !Array.isArray(result)
+      ? result as Record<string, unknown>
+      : undefined;
+    const details = record?.details && typeof record.details === "object" && !Array.isArray(record.details)
+      ? record.details as Record<string, unknown>
+      : undefined;
+    const failed = isError || details?.ok === false || details?.success === false ||
+      details?.status === "failed" || details?.status === "error";
+    if (!failed) return null;
+    const text = piToolResultText(result).replace(/\s+/g, " ").trim();
+    return (text || "tool call failed").slice(0, 600);
+  }
+
+  private recordPiToolFailure(input: {
+    toolCallId: string;
+    toolName: string;
+    args: unknown;
+    result: unknown;
+    isError: boolean;
+  }): number {
+    this.piToolFailureRecordedCallIds ??= new Set();
+    this.piToolFailures ??= new Map();
+    if (this.piToolFailureRecordedCallIds.has(input.toolCallId)) return 0;
+    this.piToolFailureRecordedCallIds.add(input.toolCallId);
+    const key = ChatThreadDO.prototype.piToolFailureKey.call(this, input.toolName, input.args);
+    const error = ChatThreadDO.prototype.piToolFailureText.call(this, input.result, input.isError);
+    if (!error) {
+      this.piToolFailures.delete(key);
+      return 0;
+    }
+    const previous = this.piToolFailures.get(key);
+    const count = previous?.error === error ? previous.count + 1 : 1;
+    this.piToolFailures.set(key, { count, error });
+    return count;
+  }
+
+  private async beforePiToolCall(
+    context: BeforeToolCallContext,
+    signal?: AbortSignal,
+  ): Promise<BeforeToolCallResult | undefined> {
+    if (signal?.aborted) return undefined;
+    this.piToolFailures ??= new Map();
+    const previous = this.piToolFailures.get(
+      ChatThreadDO.prototype.piToolFailureKey.call(this, context.toolCall.name, context.args),
+    );
+    if (!previous || previous.count < 2) return undefined;
+    return {
+      block: true,
+      reason: "Blocked an identical third retry after the same tool call failed twice. Change the arguments, inspect the tool contract, or use a different approach.",
+    };
   }
 
   private hydratePiStoredImages(value: unknown): Promise<unknown> {
@@ -4609,7 +4704,7 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
     }
     const session = new Agent({
       initialState: {
-        systemPrompt: this.createPiSystemPrompt(context),
+        systemPrompt: this.createPiSystemPrompt(context, envVars),
         model: modelConfig.model,
         tools: this.createPiToolDefinitions(context, {
           includeOracle: this.isCamelCodeActive(envVars),
@@ -4637,12 +4732,12 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
         const current = await resolveCurrentModel();
         if (this.piSession) {
           this.piSession.state.model = current.model;
-          this.piSession.state.tools = this.createPiToolDefinitions(context, {
-            includeOracle: this.isCamelCodeActive(envVars),
-          });
+          this.refreshPiSessionCapabilitySurface(context, envVars);
         }
         return current.apiKey;
       },
+      beforeToolCall: (toolContext, signal) =>
+        this.beforePiToolCall(toolContext, signal),
       afterToolCall: (toolContext, signal) =>
         this.afterPiToolCall(toolContext, signal),
       streamFn: (model, llmContext, options) =>
@@ -4666,10 +4761,14 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
     return session;
   }
 
-  private createPiSystemPrompt(context: ChatContextState): string {
+  private createPiSystemPrompt(
+    context: ChatContextState,
+    envVars?: Record<string, string>,
+  ): string {
     return createPiSystemPrompt(context, {
       skillNames: PI_SKILL_NAMES,
       skillDescriptions: PI_SKILL_DESCRIPTIONS,
+      oracleAvailable: this.isCamelCodeActive(envVars),
     });
   }
 
@@ -5035,7 +5134,10 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
   }
 
 
-  private scopedCodeModeTools(context: ChatContextState): CodeModeToolsBinding {
+  private scopedCodeModeTools(
+    context: ChatContextState,
+    options: { allowWebTools?: boolean } = {},
+  ): CodeModeToolsBinding {
     return (this.ctx.exports as unknown as {
       CodeModeToolsBinding(init: { props: CodeModeToolsProps }): CodeModeToolsBinding;
     }).CodeModeToolsBinding({
@@ -5044,6 +5146,7 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
         workspaceId: context.workspaceId,
         threadId: context.threadId,
         userId: context.userId ?? undefined,
+        allowWebTools: options.allowWebTools === true,
       },
     });
   }
@@ -5055,7 +5158,7 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
   // subclass overrides, prototype `.call(fake)` test seams) is preserved.
   private piToolSurfaceDeps(): PiToolSurfaceDeps {
     return {
-      scopedCodeModeTools: (context) => this.scopedCodeModeTools(context),
+      scopedCodeModeTools: (context, options) => this.scopedCodeModeTools(context, options),
       keepPiTurnToolProgressAliveWhile: <T,>(fn: () => Promise<T>) =>
         this.keepPiTurnToolProgressAliveWhile(fn),
       runCodeModeJavascript: (request) => this.runCodeModeJavascript(request),
@@ -5068,6 +5171,8 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
       piModelResolver: () => this.piModelResolver,
       afterPiToolCall: (toolContext, signal) =>
         this.afterPiToolCall(toolContext, signal),
+      beforePiToolCall: (toolContext, signal) =>
+        this.beforePiToolCall(toolContext, signal),
       streamPiModel: (model, llmContext, options, streamSimple) =>
         this.streamPiModel(model, llmContext, options, streamSimple),
       recordPiAssistantUsage: (message, durationMs, billingSource, creditChargeable, usageProvider) =>
@@ -5142,6 +5247,8 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
       this.piActiveItemId = null;
       this.piReasoningItemId = null;
       this.piToolArgs = new Map();
+      this.piToolFailures = new Map();
+      this.piToolFailureRecordedCallIds = new Set();
       this.piAgentStartedAtMs = Date.now();
       this.piTurnStartedAtMs = Date.now();
       this.piUserStopRequestedAtMs = 0;
@@ -5378,6 +5485,13 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
       const eventWithArgs = event as typeof event & { args?: unknown };
       const args = this.recallPiToolArgs(toolCallId, piEventArgs(eventWithArgs.args));
       const isError = event.isError === true;
+      ChatThreadDO.prototype.recordPiToolFailure.call(this, {
+        toolCallId,
+        toolName,
+        args,
+        result: event.result,
+        isError,
+      });
       const status = isError ? "failed" : "completed";
       const item: Record<string, unknown> = {
         id: toolCallId,
@@ -5535,6 +5649,8 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
       this.piActiveItemText = "";
       this.piReasoningItemId = null;
       this.piToolArgs = new Map();
+      this.piToolFailures = new Map();
+      this.piToolFailureRecordedCallIds = new Set();
       this.piAssistantText = "";
       this.piUserStopRequestedAtMs = 0;
       this.resetRunningActivityState();
@@ -5831,10 +5947,19 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
     if (this.piSession !== session) return;
     session.state.model = current.model;
     if (this.chatContext) {
-      session.state.tools = this.createPiToolDefinitions(this.chatContext, {
-        includeOracle: this.isCamelCodeActive(),
-      });
+      this.refreshPiSessionCapabilitySurface(this.chatContext);
     }
+  }
+
+  private refreshPiSessionCapabilitySurface(
+    context: ChatContextState,
+    envVars?: Record<string, string>,
+  ): void {
+    if (!this.piSession) return;
+    this.piSession.state.systemPrompt = this.createPiSystemPrompt(context, envVars);
+    this.piSession.state.tools = this.createPiToolDefinitions(context, {
+      includeOracle: this.isCamelCodeActive(envVars),
+    });
   }
 
   private recordCurrentThreadError(input: {

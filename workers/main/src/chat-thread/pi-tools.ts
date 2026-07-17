@@ -12,6 +12,8 @@ import { Type } from "typebox";
 import type {
   AfterToolCallContext,
   AfterToolCallResult,
+  BeforeToolCallContext,
+  BeforeToolCallResult,
   AgentMessage,
   AgentTool,
   AgentToolResult,
@@ -50,10 +52,44 @@ export interface PiToolDefinitionOptions {
   includeSubagents?: boolean;
   includeResearch?: boolean;
   includeOracle?: boolean;
+  /** WebSearch/WebFetch are reserved for the Research capability agent. */
+  includeWebTools?: boolean;
 }
 
 const RESEARCH_CAPABILITY_MODEL = "deepseek-v4-auto";
 const ORACLE_CAPABILITY_MODEL = "gpt-5.6-luna";
+
+export function capabilityAgentToolOptions(
+  toolName: "Research" | "Oracle",
+): PiToolDefinitionOptions {
+  return {
+    includeSubagents: false,
+    includeResearch: toolName === "Oracle",
+    includeOracle: false,
+    includeWebTools: toolName === "Research",
+  };
+}
+
+export function capabilityAgentSystemPrompt(toolName: "Research" | "Oracle"): string {
+  if (toolName === "Research") {
+    return [
+      "You are camelAI's focused web research agent.",
+      "Answer the exact question using the fewest web calls needed. Fetch a supplied or known URL directly; search only when source discovery is needed.",
+      "Prefer authoritative primary sources. Add independent sources when claims are consequential, contested, or explicitly require synthesis, and stop once the answer is adequately supported.",
+      "For exact dates, versions, limits, or compatibility requirements, use a source that explicitly states the requirement. Do not infer a cutoff or requirement from an announcement or publication date.",
+      "Return a compact direct answer, key findings, URLs tied to claims, and material uncertainty. Distinguish fact from inference and omit search narration; do not repeat large source passages.",
+      "Keep the task bounded to at most 8 total web requests and roughly 1,200 words.",
+    ].join(" ");
+  }
+  return [
+    "You are camelAI's Oracle, a high-capability reasoning and execution agent.",
+    "Work only on the supplied bounded task. Advise or execute according to the request; mutate files only when asked to implement, fix, or create.",
+    "Do not send messages or change external systems unless the supplied task explicitly requests it.",
+    "Start from workspace evidence. For advice, give a direct recommendation, the strongest reasoning, important tradeoffs, and uncertainty. For implementation, establish or repair a concrete working foundation and verify it.",
+    "When starting an ambitious project, leave an ordered roadmap whose phases each name a concrete next action or deliverable.",
+    "Return the outcome or recommendation, strongest evidence or verified changes, and remaining uncertainty.",
+  ].join(" ");
+}
 
 type ChildToolActivity = {
   toolCallId: string;
@@ -142,13 +178,20 @@ function createAgentProgressReporter(
   };
 }
 
+function extractCapabilitySources(text: string): Array<{ url: string }> {
+  const urls = text.match(/https?:\/\/[^\s)>\]}'"]+/g) ?? [];
+  return [...new Set(urls.map((url) => url.replace(/[.,;:!?]+$/, "")))]
+    .slice(0, 20)
+    .map((url) => ({ url }));
+}
+
 // Passthrough harness tools in these categories are NOT advertised in the model's
 // top-level tool list. They remain fully callable inside js_exec via `tools.<name>()`
 // and discoverable through `tools.search()` / `tools.help()`; we simply stop spending
 // per-turn context on their schemas (the executor-style "search → describe → call"
 // approach). These are long-tail, rarely-needed tools the agent reliably rediscovers
-// by category; the app/project lifecycle categories (workspace, apps, user_interaction,
-// web, agents) intentionally STAY top-level, because dropping them led the agent to
+// by category; the app/project lifecycle and agent categories intentionally STAY
+// top-level, because dropping them led the agent to
 // guess tool names on complex build+deploy tasks instead of searching.
 const TOP_LEVEL_EXCLUDED_CATEGORIES = new Set<string>([
   "workflows",
@@ -207,7 +250,10 @@ const JS_EXEC_DESCRIPTION =
 
 export interface PiToolSurfaceDeps {
   // DO operations the tool closures invoke.
-  scopedCodeModeTools(context: ChatContextState): CodeModeToolsBinding;
+  scopedCodeModeTools(
+    context: ChatContextState,
+    options?: { allowWebTools?: boolean },
+  ): CodeModeToolsBinding;
   keepPiTurnToolProgressAliveWhile<T>(fn: () => Promise<T>): Promise<T>;
   runCodeModeJavascript(
     request: CodeModeJavascriptRequest,
@@ -237,6 +283,10 @@ export interface PiToolSurfaceDeps {
     context: AfterToolCallContext,
     signal?: AbortSignal,
   ): Promise<AfterToolCallResult | undefined>;
+  beforePiToolCall(
+    context: BeforeToolCallContext,
+    signal?: AbortSignal,
+  ): Promise<BeforeToolCallResult | undefined>;
   streamPiModel(
     model: Model<any>,
     context: Parameters<typeof import("@earendil-works/pi-ai/compat").streamSimple>[1],
@@ -279,7 +329,8 @@ export function createPiToolDefinitions(
   context: ChatContextState,
   options: PiToolDefinitionOptions = {},
 ): AgentTool[] {
-  const tools = deps.scopedCodeModeTools(context);
+  const includeWebTools = options.includeWebTools === true;
+  const tools = deps.scopedCodeModeTools(context, { allowWebTools: includeWebTools });
   const call = async (name: string, args: Record<string, unknown>, signal?: AbortSignal) => {
     // Let the caller attach its rejection handler before an already-aborted
     // signal rejects; workerd otherwise reports the synchronous async-function
@@ -382,6 +433,8 @@ export function createPiToolDefinitions(
     const { name } = definition;
     // Hidden tools (deprecated aliases) never register top-level.
     if (definition.hidden) continue;
+    // Web schemas and execution are reserved for the focused Research child.
+    if (!includeWebTools && (name === "WebSearch" || name === "WebFetch")) continue;
     // Drop long-tail-category passthrough tools from the top-level list; they stay
     // reachable inside js_exec and discoverable via tools.search(). Human-input tools
     // and app/project-lifecycle categories are always kept top-level.
@@ -472,32 +525,32 @@ export function createPiToolDefinitions(
     )
   );
 
-  if (options.includeResearch !== false) {
-    definitions.push({
-      name: "Research",
-      label: "Research",
-      description:
-        "Delegate an open-ended, multi-source web investigation to a focused research agent. Use WebSearch for one quick lookup and WebFetch for a known URL; use Research when the answer needs several sources or synthesis.",
-      parameters: Type.Object({
-        question: Type.String(),
-      }),
-      execute: async (toolUseId, params, signal, onUpdate) =>
-        runCapability("Research", toolUseId, params, signal, onUpdate),
-      executionMode: "sequential",
-    });
-  }
-
   if (options.includeOracle === true) {
     definitions.push({
       name: "Oracle",
       label: "Oracle",
       description:
-        "Use Oracle when you are stuck or repeatedly hitting an issue, or when stronger reasoning is likely to materially improve a difficult architecture, debugging, planning, or implementation task. Oracle can directly investigate and fix issues for you, and can create or start ambitious projects rather than only advising about them.",
+        "Delegate difficult architecture, debugging, planning, or implementation when stronger reasoning would materially help, especially after failed attempts. Oracle can inspect, edit, and verify the workspace.",
       parameters: Type.Object({
         question: Type.String(),
       }),
       execute: async (toolUseId, params, signal, onUpdate) =>
         runCapability("Oracle", toolUseId, params, signal, onUpdate),
+      executionMode: "sequential",
+    });
+  }
+
+  if (options.includeResearch !== false) {
+    definitions.push({
+      name: "Research",
+      label: "Research",
+      description:
+        "Delegate current or external factual lookup, reading a URL, or source synthesis. Send one focused question with the relevant scope and source requirements. Research returns compact findings with direct URLs; use them directly unless requested evidence is missing or conflicting.",
+      parameters: Type.Object({
+        question: Type.String(),
+      }),
+      execute: async (toolUseId, params, signal, onUpdate) =>
+        runCapability("Research", toolUseId, params, signal, onUpdate),
       executionMode: "sequential",
     });
   }
@@ -540,6 +593,7 @@ export async function runPiSubagentTool(
         includeSubagents: false,
         includeResearch: false,
         includeOracle: false,
+        includeWebTools: false,
       }),
       messages: [],
       thinkingLevel: "medium",
@@ -550,6 +604,8 @@ export async function runPiSubagentTool(
       child.state.model = current.model;
       return current.apiKey;
     },
+    beforeToolCall: (toolContext, signal) =>
+      deps.beforePiToolCall(toolContext, signal),
     afterToolCall: (toolContext, signal) =>
       deps.afterPiToolCall(toolContext, signal),
     streamFn: (model, llmContext, options) =>
@@ -649,11 +705,16 @@ export async function runPiSubagentTool(
     extractLatestPiAssistantText(finalMessages) ||
     assistantText.trim() ||
     `${toolName} completed without text output.`;
+  const sources = extractCapabilitySources(finalText);
   return {
     content: [{ type: "text", text: finalText }],
     details: {
       status: "completed",
       toolName,
+      response: {
+        answer: finalText,
+        sources,
+      },
       durationMs: Math.max(0, Date.now() - startedAtMs),
       toolUseCount,
       activities: progress.activities,
@@ -704,15 +765,18 @@ export async function runPiCapabilityAgentTool(
   );
   const capOutputTokens = (model: Model<any>): Model<any> => ({
     ...model,
-    maxTokens: Math.min(Number(model.maxTokens || 16_384), 16_384),
+    maxTokens: Math.min(
+      Number(model.maxTokens || 16_384),
+      isResearch ? 6_000 : 16_384,
+    ),
   });
   let researchRequestCount = 0;
+  const childToolDefinitions = deps.createPiToolDefinitions(
+    context,
+    capabilityAgentToolOptions(toolName),
+  );
   const capabilityTools = isResearch
-    ? deps.createPiToolDefinitions(context, {
-        includeSubagents: false,
-        includeResearch: false,
-        includeOracle: false,
-      })
+    ? childToolDefinitions
         .filter((tool) => tool.name === "WebSearch" || tool.name === "WebFetch")
         .map((tool) => ({
           ...tool,
@@ -724,25 +788,8 @@ export async function runPiCapabilityAgentTool(
             return await tool.execute(...args);
           },
         }))
-    : deps.createPiToolDefinitions(context, {
-        includeSubagents: false,
-        includeResearch: false,
-        includeOracle: false,
-      });
-  const systemPrompt = isResearch
-    ? [
-        "You are camelAI's focused web research agent.",
-        "Investigate the question using WebSearch and WebFetch, then return a concise synthesis with direct source URLs.",
-        "Use multiple independent sources when the claim warrants it. Distinguish facts from inference and mention important uncertainty.",
-        "Keep the task bounded: use no more than 3 searches and 5 fetches. Do not attempt workspace edits or unrelated work.",
-      ].join(" ")
-    : [
-        "You are camelAI's Oracle, a high-capability reasoning and execution agent.",
-        "Handle only the supplied question or task. For advice, give a direct recommendation, the strongest reasoning, important tradeoffs, and uncertainty.",
-        "When asked to investigate or fix an issue, inspect the workspace and use your tools to implement and verify the fix directly rather than only describing it.",
-        "When asked to create or start an ambitious project, use your tools to establish a concrete, working foundation and report what you completed.",
-        "Do not delegate to other agents. Keep the work focused, actionable, and honest about anything you could not verify.",
-      ].join(" ");
+    : childToolDefinitions;
+  const systemPrompt = capabilityAgentSystemPrompt(toolName);
 
   const child = new Agent({
     initialState: {
@@ -762,6 +809,8 @@ export async function runPiCapabilityAgentTool(
       child.state.model = capOutputTokens(current.model);
       return current.apiKey;
     },
+    beforeToolCall: (toolContext, childSignal) =>
+      deps.beforePiToolCall(toolContext, childSignal),
     afterToolCall: (toolContext, childSignal) =>
       deps.afterPiToolCall(toolContext, childSignal),
     streamFn: (model, llmContext, options) =>

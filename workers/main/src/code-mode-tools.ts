@@ -66,6 +66,8 @@ export interface CodeModeToolsProps {
   threadId?: string;
   userId?: string;
   parentToolUseId?: string;
+  /** Explicitly false for main-agent js_exec; Research opts in to web tools. */
+  allowWebTools?: boolean;
 }
 
 export interface AIVirtualBindingProps {
@@ -919,7 +921,7 @@ const CODE_MODE_TOOL_REGISTRY: CodeModeToolRegistration[] = [
   ),
   codeModePassthroughTool(
     "analysis_list_connections",
-    "List the workspace connections usable for analysis. Returns [{ id, name, type, displayName, exportable, exportFormat }]: `exportable: true` connections (SQL databases, ClickHouse, BigQuery) have an `export` method that streams a query's full result to R2 — `connections[alias].export({ query })` — which run_code then reads with DuckDB. `exportFormat` is `'parquet'` (SQL + ClickHouse → read with read_parquet) or `'ndjson'` (BigQuery → read with read_json_auto), so you pick the right DuckDB reader. Reference connections BY NAME.",
+    "List workspace data, database, and warehouse connections usable for analytics or analysis. Use this when asked to list warehouse connections. Returns [{ id, name, type, displayName, exportable, exportFormat }]: `exportable: true` connections (SQL databases, ClickHouse, BigQuery) have an `export` method that streams a query's full result to R2 — `connections[alias].export({ query })` — which run_code then reads with DuckDB. `exportFormat` is `'parquet'` (SQL + ClickHouse → read with read_parquet) or `'ndjson'` (BigQuery → read with read_json_auto), so you pick the right DuckDB reader. Reference connections BY NAME.",
     EMPTY_PARAMETERS,
     {
       category: "connections",
@@ -1236,6 +1238,7 @@ export const CODE_MODE_PI_PASSTHROUGH_TOOL_DEFINITIONS: CodeModeToolDefinition[]
     .map(codeModeDefinition);
 
 const FILE_TOOL_NAMES = new Set(["read", "write", "edit", "ls", "delete", "grep", "find"]);
+const AGENT_WEB_TOOL_NAMES = new Set(["WebSearch", "WebFetch"]);
 
 function requireFileLocation(toolName: string, args: Record<string, unknown>): CodeModeFileLocation {
   const location = args.location;
@@ -2619,7 +2622,10 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
 
   async listTools(): Promise<CodeModeToolDefinition[]> {
     return CODE_MODE_TOOL_DEFINITIONS
-      .filter((definition) => !JS_EXEC_EXCLUDED_TOOL_NAMES.has(definition.name));
+      .filter((definition) => !JS_EXEC_EXCLUDED_TOOL_NAMES.has(definition.name))
+      .filter((definition) => (
+        this.ctx?.props?.allowWebTools !== false || !AGENT_WEB_TOOL_NAMES.has(definition.name)
+      ));
   }
 
   // Executor-style result envelope for js_exec's `tools.<name>()` calls. Catching
@@ -2640,6 +2646,9 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
   }
 
   async callTool(name: string, rawArgs: unknown = {}): Promise<unknown> {
+    if (this.ctx?.props?.allowWebTools === false && AGENT_WEB_TOOL_NAMES.has(name)) {
+      throw new Error(`${name} is reserved for the Research agent; delegate web lookup to Research instead`);
+    }
     if (rawArgs != null && (typeof rawArgs !== "object" || Array.isArray(rawArgs))) {
       throw new Error("tool arguments must be an object");
     }

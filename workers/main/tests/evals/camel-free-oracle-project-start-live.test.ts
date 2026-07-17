@@ -42,6 +42,18 @@ const SESSION_TIMEOUT_MS = getEvalTimeoutMs(testEnv, 360_000);
 const CAMEL_CODE_MODEL = "deepseek-v4-auto";
 const PRODUCT_MARKER = "Moonshot Mission Control";
 const KICKOFF_MARKER = "ORACLE_AMBITIOUS_KICKOFF";
+const RUBRIC = {
+  version: 1,
+  objective: "Delegate an ambitious project start to Oracle and leave a concrete, useful working foundation.",
+  passThreshold: 75,
+  criticalMinimum: 3,
+  criteria: [
+    { id: "working_foundation", description: "Oracle creates the requested project foundation with the essential structure and requested marker, not merely a prose proposal.", weight: 40, critical: true, evidenceHints: ["runtimeAssertions", "trajectory"] },
+    { id: "appropriate_delegation", description: "The primary gives Oracle one clear, bounded ambitious-project brief and lets it execute the requested start.", weight: 25, critical: true, evidenceHints: ["trajectory"] },
+    { id: "actionable_roadmap", description: "The result includes a concrete, ordered roadmap that meaningfully continues from the implemented foundation.", weight: 20, critical: false, evidenceHints: ["runtimeAssertions", "trajectory"] },
+    { id: "clear_handoff", description: "The final response accurately summarizes what now exists and what remains next.", weight: 15, critical: false, evidenceHints: ["result"] },
+  ],
+} as const;
 
 describe("camelCode Oracle ambitious-project agent eval", () => {
   maybeIt(
@@ -85,7 +97,7 @@ describe("camelCode Oracle ambitious-project agent eval", () => {
         message: [
           "Delegate this ambitious project start to Oracle exactly once; do not create or edit the project yourself.",
           `Ask Oracle to create a new React Router project named exactly "${projectName}" with a concise mission-control description.`,
-          `Oracle must establish a concrete foundation by making the home route visibly contain "${PRODUCT_MARKER}" and by creating /ORACLE_KICKOFF.md containing the marker ${KICKOFF_MARKER} plus a short three-phase roadmap.`,
+          `Oracle must establish a concrete foundation by making the home route visibly contain "${PRODUCT_MARKER}" and by creating /ORACLE_KICKOFF.md containing the marker ${KICKOFF_MARKER} plus a short three-phase roadmap with one concrete next action or deliverable per phase.`,
           "Do not deploy. After Oracle finishes, summarize the foundation it created.",
         ].join(" "),
       });
@@ -197,6 +209,7 @@ describe("camelCode Oracle ambitious-project agent eval", () => {
 
       emitEvalTranscript({
         status: result.status,
+        rubric: RUBRIC,
         evaluation,
         error: result.error,
         model: CAMEL_CODE_MODEL,

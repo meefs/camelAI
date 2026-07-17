@@ -37,6 +37,18 @@ const maybeIt = testEnv.RUN_AGENT_EVALS === "1" ? it : it.skip;
 const SESSION_TIMEOUT_MS = getEvalTimeoutMs(testEnv, 240_000);
 const CAMEL_CODE_MODEL = "deepseek-v4-auto";
 const EXPECTED_MARKER = "ORACLE_CHECK_231";
+const RUBRIC = {
+  version: 1,
+  objective: "Consult Oracle once for a difficult second opinion, then give an accurate, well-integrated recommendation.",
+  passThreshold: 75,
+  criticalMinimum: 3,
+  criteria: [
+    { id: "accurate_analysis", description: "The final answer correctly computes the combined success probability and gives a sound migration recommendation.", weight: 40, critical: true, evidenceHints: ["result", "messages"] },
+    { id: "requested_consultation", description: "The primary follows the user's request to consult Oracle once on the supplied question before answering.", weight: 25, critical: true, evidenceHints: ["trajectory"] },
+    { id: "useful_integration", description: "The primary uses Oracle's reasoning in its own answer instead of merely reporting that a tool ran or dumping opaque output.", weight: 20, critical: false, evidenceHints: ["trajectory", "result"] },
+    { id: "clear_completion", description: "The final response is concise, directly actionable, and includes the requested completion marker.", weight: 15, critical: false, evidenceHints: ["result"] },
+  ],
+} as const;
 
 describe("camelCode Oracle agent eval", () => {
   maybeIt(
@@ -174,6 +186,7 @@ describe("camelCode Oracle agent eval", () => {
 
       emitEvalTranscript({
         status: result.status,
+        rubric: RUBRIC,
         evaluation,
         error: result.error,
         model: CAMEL_CODE_MODEL,

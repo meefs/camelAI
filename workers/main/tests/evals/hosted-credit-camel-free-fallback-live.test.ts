@@ -31,10 +31,21 @@ const maybeIt = testEnv.RUN_AGENT_EVALS === "1" ? it : it.skip;
 const SESSION_TIMEOUT_MS = getEvalTimeoutMs(testEnv, 180_000);
 const REQUESTED_MODEL = "gpt-5.6-sol";
 const FALLBACK_MODEL = "deepseek-v4-auto";
+const RUBRIC = {
+  version: 1,
+  objective: "Fall back a zero-credit hosted thread to Camel Free and complete the user's exact request.",
+  passThreshold: 75,
+  criticalMinimum: 3,
+  criteria: [
+    { id: "fallback_persisted", description: `The thread model changes from ${REQUESTED_MODEL} to the Camel Free model id ${FALLBACK_MODEL}.`, weight: 45, critical: true, evidenceHints: ["runtimeAssertions.persistedModel"] },
+    { id: "request_completed", description: "The fallback model completes the request with exactly FALLBACK_OK.", weight: 35, critical: true, evidenceHints: ["result"] },
+    { id: "clean_runtime", description: "The session completes without a terminal assistant, provider, or harness error and records runtime/final-result events.", weight: 20, critical: false, evidenceHints: ["events", "signal"] },
+  ],
+} as const;
 
-describe("hosted credit camelCode fallback agent eval", () => {
+describe("hosted credit Camel Free fallback agent eval", () => {
   maybeIt(
-    "switches a zero-credit hosted thread to camelCode and completes the turn",
+    "switches a zero-credit hosted thread to Camel Free and completes the turn",
     async () => {
       const suffix = crypto.randomUUID().slice(0, 8);
       const email = `credit-fallback-eval-${suffix}@example.com`;
@@ -93,7 +104,7 @@ describe("hosted credit camelCode fallback agent eval", () => {
           buildSessionCompletedCriterion(result),
           passFailCriterion({
             id: "thread_switched_to_camel_free",
-            label: "Thread model persisted as camelCode",
+            label: `Thread model persisted as Camel Free (${FALLBACK_MODEL})`,
             passed: persistedModel === FALLBACK_MODEL,
             reason: persistedModel === FALLBACK_MODEL
               ? undefined
@@ -128,6 +139,7 @@ describe("hosted credit camelCode fallback agent eval", () => {
 
       emitEvalTranscript({
         status: result.status,
+        rubric: RUBRIC,
         evaluation,
         error: result.error,
         model: `${REQUESTED_MODEL} -> ${FALLBACK_MODEL}`,

@@ -64,6 +64,18 @@ export interface EvalCriteriaSummary {
 	};
 }
 
+export interface EvalGradingSummary {
+	schemaVersion: number;
+	mode: "llm-judge" | "machine-fallback";
+	primary: boolean;
+	passed: boolean;
+	outcome: "passed" | "failed" | "inconclusive";
+	confidence?: number;
+	weightedScore?: number;
+	judgeModel?: string;
+	reason?: string;
+}
+
 /**
  * One finished eval run, stored as `runs/<runId>/run.json` in R2 next to its
  * `output.log` and `artifacts/<eval>.json` transcript(s).
@@ -106,6 +118,8 @@ export interface Run {
 	deployedApps?: DeployedAppSummary[];
 	/** Real or synthesized (contract-failure) evaluation summary. */
 	evaluation?: EvalCriteriaSummary;
+	/** Authoritative rollout grade when an LLM judge completed; otherwise machine fallback. */
+	grading?: EvalGradingSummary;
 }
 
 export interface BatchSummary {

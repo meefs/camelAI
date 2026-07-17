@@ -27,7 +27,6 @@ import {
 import {
   asRecord,
   asString,
-  runtimeItemSucceeded,
   usedTool,
 } from "./project-eval-helpers";
 
@@ -41,6 +40,18 @@ const maybeIt = testEnv.RUN_AGENT_EVALS === "1" ? it : it.skip;
 const SESSION_TIMEOUT_MS = getEvalTimeoutMs(testEnv, 300_000);
 const EXPECTED_MARKER = "RESEARCH_COMPLETE";
 const RESEARCH_MODEL = "deepseek-v4-auto";
+const RUBRIC = {
+  version: 1,
+  objective: "Use Research to answer a current multi-source question accurately, efficiently, and with traceable sources.",
+  passThreshold: 75,
+  criticalMinimum: 3,
+  criteria: [
+    { id: "accurate_synthesis", description: "The answer accurately identifies the relevant Quick Action and compatibility requirement and distinguishes documented facts from inference.", weight: 40, critical: true, evidenceHints: ["result", "messages"] },
+    { id: "appropriate_delegation", description: "The primary delegates the external-source investigation to Research and meaningfully integrates the findings.", weight: 25, critical: true, evidenceHints: ["trajectory"] },
+    { id: "source_quality", description: "The research uses relevant, authoritative sources and ties direct URLs to the important claims without padding the answer with needless searches.", weight: 25, critical: false, evidenceHints: ["trajectory", "result"] },
+    { id: "clear_response", description: "The final response is concise, directly answers the question, and includes the requested completion marker.", weight: 10, critical: false, evidenceHints: ["result"] },
+  ],
+} as const;
 
 function distinctHttpUrls(text: string): string[] {
   return [...new Set(text.match(/https?:\/\/[^\s)>\]}"']+/g) ?? [])];
@@ -55,7 +66,10 @@ function successfulResearchResult(
     if (runtimeEvent?.method !== "item/completed") continue;
     const item = asRecord(asRecord(runtimeEvent.params)?.item);
     if (!item || asString(item.tool)?.toLowerCase() !== "research") continue;
-    if (!runtimeItemSucceeded(item)) continue;
+    // Research can complete after recovering from an individual child request
+    // failure. Judge the capability item itself instead of recursively treating
+    // an errored child activity as a failed Research call.
+    if (item.isError === true || asString(item.status)?.toLowerCase() !== "completed") continue;
     const result = asRecord(item.result);
     const content = Array.isArray(result?.content) ? result.content : [];
     const text = content
@@ -117,10 +131,9 @@ describe("Research capability agent eval", () => {
         messageSource: "eval",
         timeoutMs: SESSION_TIMEOUT_MS,
         message: [
-          "Use the Research tool exactly once for this multi-source investigation:",
+          "Please investigate this using current external sources:",
           researchQuestion,
-          "Do not call WebSearch or WebFetch yourself after Research returns.",
-          `Synthesize the returned research and end with ${EXPECTED_MARKER}.`,
+          `Synthesize what you find and end with ${EXPECTED_MARKER}.`,
         ].join(" "),
       });
       const signal = evaluateAgentEvalSignal(
@@ -131,6 +144,8 @@ describe("Research capability agent eval", () => {
         }),
       );
       const calledResearch = usedTool(result.events, "Research");
+      const attemptedDirectWeb = usedTool(result.events, "WebSearch") ||
+        usedTool(result.events, "WebFetch");
       const finalResult = result.result ?? "";
       const research = successfulResearchResult(result.events);
       const researchOutput = research.output;
@@ -142,9 +157,11 @@ describe("Research capability agent eval", () => {
           buildSessionCompletedCriterion(result),
           passFailCriterion({
             id: "called_research",
-            label: "Agent delegated the investigation to Research",
-            passed: calledResearch,
-            reason: calledResearch ? undefined : "Research was not called.",
+            label: "Agent chose Research for an ordinary web request without being told a tool name",
+            passed: calledResearch && !attemptedDirectWeb,
+            reason: calledResearch && !attemptedDirectWeb
+              ? undefined
+              : "The agent did not cleanly delegate the web request to Research.",
             details: { toolCallsByName: signal.toolCallsByName },
           }),
           passFailCriterion({
@@ -192,6 +209,20 @@ describe("Research capability agent eval", () => {
 
       emitEvalTranscript({
         status: result.status,
+        rubric: RUBRIC,
+        referenceEvidence: {
+          frozenAt: "2026-07-17",
+          facts: [
+            "The Markdown Quick Action is /markdown (action name markdown).",
+            "Workers binding quickAction usage requires compatibility date 2026-03-24 or later.",
+            "The official launch changelog URL is dated 2026-05-28, not 2025.",
+          ],
+          sources: [
+            "https://developers.cloudflare.com/browser-run/quick-actions/",
+            "https://developers.cloudflare.com/browser-run/quick-actions/markdown-endpoint/",
+            "https://developers.cloudflare.com/changelog/post/2026-05-28-use-browser-run-quick-actions-directly-from-workers/",
+          ],
+        },
         evaluation,
         error: result.error,
         model: testEnv.EVAL_MODEL,
@@ -201,6 +232,7 @@ describe("Research capability agent eval", () => {
         messages: result.messages,
         runtimeAssertions: {
           calledResearch,
+          attemptedDirectWeb,
           successfulResearchCall,
           researchModel: research.model,
           includesCoreFinding,

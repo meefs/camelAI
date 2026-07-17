@@ -288,6 +288,8 @@ describe('code mode runner tools.help guide', () => {
     expect(guide).toContain('location');
     expect(guide).toContain('file.data.text');
     expect(guide).toContain('env.AI.run');
+    expect(guide).not.toContain('WebSearch');
+    expect(guide).not.toContain('WebFetch');
     // Executor-style calling shape: envelope semantics and TypeScript acceptance.
     expect(guide).toContain('{ ok: true, data }');
     expect(guide).toContain('type annotations are stripped');

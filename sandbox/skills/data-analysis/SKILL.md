@@ -186,6 +186,10 @@ Notebooks preview reliabily with rich Altair charts and markdown rendering, and 
   - markdown cell: what to look for
   - code cell: chart/query
   - markdown cell: interpretation and takeaway
+- Treat requested headings, labels, and literal result lines as an output
+  contract. Put them verbatim in the persisted notebook—not only in the chat
+  response—and re-read the executed notebook to confirm each exact value is in
+  the requested section before reporting completion.
 - When modifying an existing `.ipynb`, treat it as structured JSON. For cell
   additions/removals or broad source changes, read the notebook, update the JSON,
   and write the full notebook back; use tiny text edits only when the exact JSON

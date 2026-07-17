@@ -8,6 +8,7 @@
 import type {
 	DeployedAppSummary,
 	EvalCriteriaSummary,
+	EvalGradingSummary,
 	EvalPassFailCriterion,
 	EvalScoreCriterion,
 	EvalSignalSummary,
@@ -76,6 +77,7 @@ export function ingestResults(exitCode: number, artifacts: ArtifactFile[]): Part
 	let finalStatus: RunStatus = exitCode === 0 ? "completed" : "failed";
 	const evaluations: EvalCriteriaSummary[] = [];
 	const evaluationContractFailures: string[] = [];
+	let primaryGrade: EvalGradingSummary | undefined;
 	for (const { name, json } of artifacts) {
 		if (!json) continue;
 		patch.startPrompt ??= extractStartPrompt(json);
@@ -92,6 +94,11 @@ export function ingestResults(exitCode: number, artifacts: ArtifactFile[]): Part
 		if (sig) patch.signal = sig;
 		const apps = summarizeApps(json.deployedApps);
 		if (apps) patch.deployedApps = apps;
+		const grading = summarizeGrading(json.grading);
+		if (grading) {
+			patch.grading = grading;
+			if (grading.primary) primaryGrade = grading;
+		}
 	}
 	if (evaluationContractFailures.length) {
 		evaluations.push(contractFailureEvaluation(evaluationContractFailures.join(" ")));
@@ -99,7 +106,7 @@ export function ingestResults(exitCode: number, artifacts: ArtifactFile[]): Part
 	}
 	if (evaluations.length) {
 		patch.evaluation = aggregateEvaluations(evaluations);
-		if (patch.evaluation.passFail.failed > 0) finalStatus = "failed";
+		if (!primaryGrade && patch.evaluation.passFail.failed > 0) finalStatus = "failed";
 	} else {
 		patch.evaluation = contractFailureEvaluation(
 			"No valid evaluation object was found in the eval artifact.",
@@ -107,8 +114,36 @@ export function ingestResults(exitCode: number, artifacts: ArtifactFile[]): Part
 		patch.error ??= "No valid evaluation object was found in the eval artifact.";
 		finalStatus = "failed";
 	}
+	if (primaryGrade) {
+		// Machine probes remain visible evidence. A non-zero runner exit still
+		// wins because it represents either a negative primary grade or a true
+		// harness/contract failure.
+		finalStatus = primaryGrade.passed && exitCode === 0 ? "completed" : "failed";
+	}
 	patch.status = finalStatus;
 	return patch;
+}
+
+function summarizeGrading(value: unknown): EvalGradingSummary | undefined {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+	const grading = value as Record<string, unknown>;
+	if (
+		(grading.mode !== "llm-judge" && grading.mode !== "machine-fallback") ||
+		typeof grading.primary !== "boolean" ||
+		typeof grading.passed !== "boolean" ||
+		!(["passed", "failed", "inconclusive"] as unknown[]).includes(grading.outcome)
+	) return undefined;
+	return {
+		schemaVersion: num(grading.schemaVersion) ?? 1,
+		mode: grading.mode,
+		primary: grading.primary,
+		passed: grading.passed,
+		outcome: grading.outcome as EvalGradingSummary["outcome"],
+		confidence: num(grading.confidence),
+		weightedScore: num(grading.weightedScore),
+		judgeModel: typeof grading.judgeModel === "string" ? grading.judgeModel : undefined,
+		reason: typeof grading.reason === "string" ? grading.reason : undefined,
+	};
 }
 
 function num(value: unknown): number | undefined {

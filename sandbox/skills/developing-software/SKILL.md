@@ -46,6 +46,7 @@ The React Router templates include SSR, Tailwind v4, Cloudflare deployment metad
 
 - In React Router projects, use framework mode: route `loader`/`action`, `<Form>`, and `useFetcher` instead of client-only fetching in `useEffect`.
 - Durable Object SQL is not D1. Use `ctx.storage.sql.exec(sql, ...params)` and cursor methods; never use `.prepare()`, `.bind()`, `.all()`, `.first()`, or `.run()`.
+- Calls through a Durable Object binding/stub are RPCs and always return promises, even when the class method itself is synchronous. `await` every stub result before passing it to `Response.json`, loaders, actions, or UI data.
 - Keep Durable Object exports, `durable_objects.bindings`, and `migrations.new_sqlite_classes` aligned.
 - Use virtual `AI`, `CONNECTIONS`, and R2 bindings; never place connection credentials in source or environment variables.
 - Declare every package and build CLI in `package.json`. Add packages with `add_dependency`.
@@ -73,6 +74,7 @@ await tools.deploy_project({ project: "my-app", dry_run: true });
 ```
 
 If a build or deploy fails, read the returned error and log excerpt, fix the source, and retry. Never report success for a failed deploy.
+When the task explicitly requires live API or runtime correctness, verify response bodies and semantic values—not only HTTP 200 statuses—before reporting success.
 
 ### Optional Browser Verification
 

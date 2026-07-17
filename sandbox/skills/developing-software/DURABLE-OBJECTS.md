@@ -48,6 +48,18 @@ this.ctx.storage.transactionSync(() => {
 
 Use `ctx.storage.kv` for simple object-local configuration or session values. It is synchronous; do not add `await`.
 
+Calls made through a Durable Object binding are RPCs and always return promises, regardless of
+whether the class method is synchronous. Await the stub result before serializing or rendering it:
+
+```ts
+const stub = context.cloudflare.env.ORDERS.getByName("global");
+const summary = await stub.summary();
+return Response.json(summary);
+```
+
+Passing `stub.summary()` directly to `Response.json` serializes a promise-like RPC handle rather
+than the data and can still return HTTP 200, so verify the response body shape and values.
+
 ## Object Identity
 
 A Durable Object instance owns an isolated database. Choose the id/name from the intended tenancy boundary—workspace, user, room, document, or another domain key. Do not accidentally route every user to one global instance unless shared state is the product requirement.

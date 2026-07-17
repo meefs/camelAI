@@ -77,16 +77,19 @@ Reads and uploads both need an Access credential (the worker re-validates the JW
 | `PUT /upload/:id/log`, `PUT /upload/:id/artifacts/:name`, `POST /upload/:id/complete` | Used by the reporter |
 | `GET /skill` | This document |
 
-A run is `completed` or `failed`. A nonzero exit (including unfiltered Vitest/harness errors), a
-failed pass/fail criterion, or a missing/invalid evaluation artifact makes it failed. When no
-criterion explains a failed run, the dashboard displays `run.error`, then `signal.violations`,
-then the nonzero exit code, with a generic fallback if none is available. The dashboard at
+A run is `completed` or `failed`. When a primary rollout judge grade is present, that grade
+determines task success and machine criteria remain diagnostic evidence. A nonzero exit from a
+negative primary grade or a true harness/contract failure, and a missing or invalid evaluation
+artifact, still fail the run. Without a primary judge grade, machine pass/fail criteria determine
+success. When no criterion explains a failed run, the dashboard displays `run.error`, then
+`signal.violations`, then the nonzero exit code, with a generic fallback if none is available. The
+dashboard at
 `https://evals.camelai.dev/` defaults to Batches, with Runs and Evals views plus batch detail pages
 at `/batches/:batchId`.
 
 Run records may include `batchId` and `batchLabel` (reporter-supplied suite/matrix grouping),
 `kind` (`unit` or `skill`, from the manifest), `description` (manifest one-liner), and
-`tier` (`hard` for deterministic high-difficulty evals), plus `exitCode`, `error`,
+`tier` (`hard` for high-difficulty evals), plus `exitCode`, `error`,
 `signal.violations`, and `startPrompt` (ingest-derived from the uploaded artifact; prefer top-level
 `prompt`, else first user message). `POST /upload/:id/complete` accepts `batchId`, `batchLabel`,
 `kind`, `tier`, and `description`; `startPrompt` is never client-supplied.
@@ -97,9 +100,10 @@ Add `workers/main/tests/evals/<id>.test.ts` (gated on `RUN_AGENT_EVALS === "1"`,
 `emitEvalTranscript({...})`) and register it in `workers/main/tests/evals/manifest.json` with
 `id`, `description`, required `kind`, optional `tier: "hard"`, and optional `realDeploy`. Use
 `kind: "unit"` for one mechanism check and `kind: "skill"` for end-to-end agent ability.
-Scorecard point budgets should be unit 1-5 pts and skill 6-20 pts scaled to task complexity, so
-batch totals stay meaningfully weighted. Pass/fail criteria remain the hard contract; the
-scorecard never gates a pass.
+New evals should emit a task-specific 0-4 anchored rubric with 3-8 criteria whose positive weights
+total 100. The rollout judge's `grading` result is primary when available; machine pass/fail and
+scorecard criteria remain visible evidence. Harness and artifact-contract failures remain hard
+gates.
 
 Always catch post-session verification errors into diagnostic criteria and still emit the
 transcript. Use structured successful tool evidence and path-associated helpers instead of raw

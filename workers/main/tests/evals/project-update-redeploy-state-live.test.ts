@@ -222,7 +222,13 @@ async function smokeCheckDeployedApp(
   try {
     for (let attempt = 0; attempt < 8; attempt += 1) {
       rootAttempts = attempt + 1;
-      const root = await fetchWithRetry(app.url, undefined, 2);
+      const rootUrl = new URL(app.url);
+      // A redeploy keeps the public hostname, so bypass an edge-cached copy of
+      // the initial HTML while waiting for the new script to become visible.
+      rootUrl.searchParams.set("eval_smoke", `${Date.now()}-${attempt}`);
+      const root = await fetchWithRetry(rootUrl.toString(), {
+        headers: { "cache-control": "no-cache" },
+      }, 2);
       const body = await root.text();
       smoke.root = {
         status: root.status,
@@ -312,7 +318,7 @@ async function waitForCheckinsApiReady(
     attempts: 0,
     durationMs: 0,
   };
-  for (let attempt = 0; attempt < 8; attempt += 1) {
+  for (let attempt = 0; attempt < 20; attempt += 1) {
     try {
       const response = await fetch(appUrl(app, "/api/checkins"));
       const json = await responseJson(response);
@@ -335,7 +341,7 @@ async function waitForCheckinsApiReady(
         error: error instanceof Error ? error.message : String(error),
       };
     }
-    await new Promise((resolve) => setTimeout(resolve, 750 * (attempt + 1)));
+    await new Promise((resolve) => setTimeout(resolve, 2_000));
   }
   return last;
 }
@@ -440,7 +446,7 @@ describe("project update redeploy state agent eval", () => {
           `Make the root page contain the exact text "${INITIAL_MARKER}".`,
           `Deploy it using js_exec with await tools.deploy_project({ project: "${PROJECT_NAME}", script_name: "${PROJECT_NAME}" }); deploy_project is not a top-level tool.`,
           "Do not use legacy VM work, create-worker, wrangler deploy, or bun run deploy for this DO-backed project.",
-          "Do not use screenshots, browser sessions, WebFetch/WebSearch, get_latest_logs, or live-app fetch verification in this eval; those bindings may be unavailable locally. The eval harness will verify the public app and seed one live check-in before asking for the update.",
+          "Leave live-app verification to the eval harness, which will verify the public app and seed one live check-in before asking for the update.",
           "When done, reply with the deployed URL.",
         ].join(" "),
       });
@@ -472,7 +478,7 @@ describe("project update redeploy state agent eval", () => {
           "Preserve the same Durable Object binding name CHECKINS, Durable Object class, API behavior, and migrations so existing live state is preserved.",
           `Redeploy the same project using js_exec with await tools.deploy_project({ project: "${PROJECT_NAME}", script_name: "${PROJECT_NAME}" }) again, using the same script_name.`,
           "Do not use legacy VM work, create-worker, wrangler deploy, bun run deploy, rollback_deploy, or a new project.",
-          "Do not use screenshots, browser sessions, WebFetch/WebSearch, get_latest_logs, or live-app fetch verification in this eval; those bindings may be unavailable locally. The eval harness will verify the updated marker and current Durable Object count after the redeploy.",
+          "Leave live-app verification to the eval harness, which will verify the updated marker and current Durable Object count after the redeploy.",
           "When done, reply with the deployed URL and state that the existing Durable Object data was preserved by keeping the same binding/class/migrations.",
         ].join(" "),
       });

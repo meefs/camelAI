@@ -5,6 +5,10 @@ Critique of the Pi system prompt as composed in
 [pi-system-prompt.md](pi-system-prompt.md). No code is changed by this doc — it
 is feedback for whoever edits the prompt next.
 
+This is a historical critique, not current agent guidance. Some examples may
+describe an older tool surface; verify current behavior in the source and
+generated prompt snapshot before acting on them.
+
 ## Framing: system prompt vs. skill
 
 A skill is pulled in on demand for one task; a system prompt is paid for on
@@ -193,8 +197,8 @@ prompt — verify it's still load-bearing.
 
 ### 11. No security/untrusted-input posture
 
-Pi reads uploaded files, browses the web (`WebFetch`/`WebSearch`), and can send
-external messages — a classic prompt-injection surface, and
+Pi reads uploaded files, can receive external web content through the Research
+agent, and can send external messages — a classic prompt-injection surface, and
 [file-safety.ts](../workers/main/src/file-safety.ts) already exists to guard
 parts of it. The prompt has nothing on treating uploaded-file/web content as
 untrusted data rather than instructions, or on not exfiltrating workspace
