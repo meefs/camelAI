@@ -2008,7 +2008,7 @@ describe('ChatThreadDO Pi turn handling', () => {
     expect(fake.piCurrentUsageProvider).toBe('compat');
   });
 
-  it('falls back to Camel Free when hosted credits are exhausted', async () => {
+  it('falls back to camelCode when hosted credits are exhausted', async () => {
     const fake = Object.create(ChatThreadDO.prototype) as any;
     fake.env = {
       CF_ACCOUNT_ID: 'acct_1',
@@ -2068,7 +2068,7 @@ describe('ChatThreadDO Pi turn handling', () => {
     });
   });
 
-  it('falls back to Camel Free when the paid subscription is unavailable', async () => {
+  it('falls back to camelCode when the paid subscription is unavailable', async () => {
     const fake = Object.create(ChatThreadDO.prototype) as any;
     fake.env = {
       CF_ACCOUNT_ID: 'acct_1',
@@ -2105,7 +2105,7 @@ describe('ChatThreadDO Pi turn handling', () => {
     );
   });
 
-  it('persists and broadcasts a Camel Free credit fallback', async () => {
+  it('persists and broadcasts a camelCode credit fallback', async () => {
     const updated = {
       model: 'deepseek-v4-auto',
       updated_at: 1234,
@@ -8491,7 +8491,7 @@ describe('ChatThreadDO Pi turn handling', () => {
     });
   });
 
-  it('exposes shared Research and Camel Free-only Oracle without recursive capability agents', () => {
+  it('exposes shared Research and camelCode-only Oracle without recursive capability agents', () => {
     const fake = Object.create(ChatThreadDO.prototype) as any;
     fake.ctx = {
       exports: {
@@ -8524,13 +8524,13 @@ describe('ChatThreadDO Pi turn handling', () => {
       expect.arrayContaining(['Agent', 'Explore']),
     );
 
-    const camelFreeTools = ChatThreadDO.prototype['createPiToolDefinitions'].call(fake, context, {
+    const camelCodeTools = ChatThreadDO.prototype['createPiToolDefinitions'].call(fake, context, {
       includeOracle: true,
     });
-    expect(camelFreeTools.map((tool: any) => tool.name)).toEqual(
+    expect(camelCodeTools.map((tool: any) => tool.name)).toEqual(
       expect.arrayContaining(['Research', 'Oracle']),
     );
-    const oracle = camelFreeTools.find((tool: any) => tool.name === 'Oracle');
+    const oracle = camelCodeTools.find((tool: any) => tool.name === 'Oracle');
     expect(oracle?.description).toContain('when you are stuck');
     expect(oracle?.description).toContain('directly investigate and fix issues');
     expect(oracle?.description).toContain('create or start ambitious projects');
@@ -8547,16 +8547,16 @@ describe('ChatThreadDO Pi turn handling', () => {
     ]) {
       fake.currentThreadModel = activeModel;
       expect(
-        ChatThreadDO.prototype['isCamelFreeActive'].call(fake),
+        ChatThreadDO.prototype['isCamelCodeActive'].call(fake),
         `Oracle policy must be disabled for ${activeModel ?? 'no active model'}`,
       ).toBe(false);
     }
     fake.currentThreadModel = 'deepseek-v4-auto';
-    expect(ChatThreadDO.prototype['isCamelFreeActive'].call(fake)).toBe(true);
-    expect(ChatThreadDO.prototype['isCamelFreeActive'].call(fake, {
+    expect(ChatThreadDO.prototype['isCamelCodeActive'].call(fake)).toBe(true);
+    expect(ChatThreadDO.prototype['isCamelCodeActive'].call(fake, {
       CHIRIDION_MODEL: 'gpt-5.5',
     })).toBe(false);
-    expect(ChatThreadDO.prototype['isCamelFreeActive'].call(fake, {
+    expect(ChatThreadDO.prototype['isCamelCodeActive'].call(fake, {
       CHIRIDION_MODEL: 'deepseek-v4-auto',
     })).toBe(true);
 
@@ -8570,7 +8570,7 @@ describe('ChatThreadDO Pi turn handling', () => {
     );
   });
 
-  it('keeps Oracle when refreshing an active Camel Free session', async () => {
+  it('keeps Oracle when refreshing an active camelCode session', async () => {
     const fake = Object.create(ChatThreadDO.prototype) as any;
     const refreshedModel = { id: 'dynamic/deepseek-v4-auto' };
     fake.piSession = { state: { model: null, tools: [] } };
@@ -8617,7 +8617,7 @@ describe('ChatThreadDO Pi turn handling', () => {
     expect(fake.createPiToolDefinitions).not.toHaveBeenCalled();
   });
 
-  it('removes Oracle when refreshing any non-Camel Free session', async () => {
+  it('removes Oracle when refreshing any non-camelCode session', async () => {
     const fake = Object.create(ChatThreadDO.prototype) as any;
     const refreshedModel = { id: 'openai/gpt-5.5' };
     fake.piSession = { state: { model: null, tools: [{ name: 'Oracle' }] } };

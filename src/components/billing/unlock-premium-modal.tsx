@@ -76,7 +76,7 @@ export function UnlockPremiumModal({
         <DialogHeader>
           <DialogTitle>Unlock premium models</DialogTitle>
           <DialogDescription>
-            Camel Free is always included. Premium models like {triggerLabel} need
+            camelCode is always included. Premium models like {triggerLabel} need
             one of these:
           </DialogDescription>
         </DialogHeader>

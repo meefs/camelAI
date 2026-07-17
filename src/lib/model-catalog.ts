@@ -222,7 +222,7 @@ export const MODEL_CATALOG: Readonly<Record<LlmModel, ModelCatalogEntry>> = {
   },
   "deepseek-v4-auto": {
     id: "deepseek-v4-auto",
-    label: "Camel Free",
+    label: "camelCode",
     providerLogo: "camelai",
     providerOrder: 3,
     modelOrder: 1,

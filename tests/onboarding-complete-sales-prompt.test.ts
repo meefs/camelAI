@@ -155,7 +155,7 @@ describe("onboarding complete flow", () => {
     });
   });
 
-  it("completes onboarding with Camel Free and no paid billing access", async () => {
+  it("completes onboarding with camelCode and no paid billing access", async () => {
     setAuthContext({
       currentOrg: makeCurrentOrg({
         billingStatus: "inactive",

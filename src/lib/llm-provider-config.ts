@@ -95,7 +95,7 @@ export const CODEX_LLM_MODEL_OPTIONS: ReadonlyArray<{
   },
   {
     value: "deepseek-v4-auto",
-    label: "Camel Free",
+    label: "camelCode",
     description: "camelAI hosted model with automatic routing",
   },
   {
@@ -158,14 +158,14 @@ const CAMELAI_HOSTED_ONLY_CODEX_MODELS = new Set<LlmModel>([
 
 // These hosted models remain metered for operational visibility, but their
 // usage does not consume an organization's camelAI credits.
-export const CAMEL_FREE_LLM_MODEL = "deepseek-v4-auto" satisfies LlmModel;
+export const CAMEL_CODE_LLM_MODEL = "deepseek-v4-auto" satisfies LlmModel;
 
 const CREDIT_FREE_HOSTED_MODELS = new Set<LlmModel>([
-  CAMEL_FREE_LLM_MODEL,
+  CAMEL_CODE_LLM_MODEL,
 ]);
 
 const PINNED_VISIBLE_LLM_MODELS = new Set<LlmModel>([
-  CAMEL_FREE_LLM_MODEL,
+  CAMEL_CODE_LLM_MODEL,
 ]);
 
 export function isCreditFreeHostedModel(model: string | null | undefined): boolean {
@@ -367,7 +367,7 @@ export function isLlmModelAllowedForOrgProvider(
   ) {
     return true;
   }
-  if (model === CAMEL_FREE_LLM_MODEL) return true;
+  if (model === CAMEL_CODE_LLM_MODEL) return true;
   if (CAMELAI_HOSTED_ONLY_CODEX_MODELS.has(model) && orgProvider) {
     return false;
   }

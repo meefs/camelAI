@@ -39,11 +39,11 @@ type OracleProjectEvalEnv = TestEnv & EvalModelEnv & EvalSignalEnv & {
 const testEnv = env as unknown as OracleProjectEvalEnv;
 const maybeIt = testEnv.RUN_AGENT_EVALS === "1" ? it : it.skip;
 const SESSION_TIMEOUT_MS = getEvalTimeoutMs(testEnv, 360_000);
-const CAMEL_FREE_MODEL = "deepseek-v4-auto";
+const CAMEL_CODE_MODEL = "deepseek-v4-auto";
 const PRODUCT_MARKER = "Moonshot Mission Control";
 const KICKOFF_MARKER = "ORACLE_AMBITIOUS_KICKOFF";
 
-describe("Camel Free Oracle ambitious-project agent eval", () => {
+describe("camelCode Oracle ambitious-project agent eval", () => {
   maybeIt(
     "delegates an ambitious project start for Oracle to create directly",
     async () => {
@@ -68,7 +68,7 @@ describe("Camel Free Oracle ambitious-project agent eval", () => {
         "Oracle ambitious project eval",
         userId,
         undefined,
-        CAMEL_FREE_MODEL,
+        CAMEL_CODE_MODEL,
       );
       const chatThread = testEnv.CHAT_THREAD.get(
         testEnv.CHAT_THREAD.idFromName(thread.id),
@@ -199,7 +199,7 @@ describe("Camel Free Oracle ambitious-project agent eval", () => {
         status: result.status,
         evaluation,
         error: result.error,
-        model: CAMEL_FREE_MODEL,
+        model: CAMEL_CODE_MODEL,
         signal,
         result: result.result,
         events: result.events,

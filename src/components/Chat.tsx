@@ -85,7 +85,7 @@ import { UnlockPremiumModal } from "@/components/billing/unlock-premium-modal";
 import { PlanUpgradeDialog } from "@/components/billing/plan-upgrade-dialog";
 import { OpenAiSignInDialog } from "@/components/billing/openai-sign-in-dialog";
 import { ByokKeyDialog } from "@/components/onboarding/byok-key-dialog";
-import { CamelFreeWelcomeDialog } from "@/components/camel-free-welcome-dialog";
+import { CamelCodeWelcomeDialog } from "@/components/camel-code-welcome-dialog";
 import { ModelFallbackBanner } from "@/components/model-fallback-banner";
 import { ChatErrorNotice } from "@/components/chat-error-notice";
 import { ChatMessagesView } from "@/components/chat-messages-view";
@@ -112,7 +112,7 @@ import {
   shouldAutoRefreshFilePreview,
 } from "@/components/preview-panel/preview-utils";
 import { cn } from "@/lib/utils";
-import { CAMEL_FREE_LLM_MODEL } from "@/lib/llm-provider-config";
+import { CAMEL_CODE_LLM_MODEL } from "@/lib/llm-provider-config";
 import { resolveMessageAuthorDisplayName } from "@/lib/message-author";
 import { buildSlugMap, type MentionableProject } from "@/lib/mentions";
 import { isFileDrag } from "@/lib/file-drag";
@@ -129,9 +129,9 @@ import {
 import { usePiChatStream } from "@/lib/use-pi-chat-stream";
 import { checkForVersionSkew } from "@/lib/version-skew";
 import {
-  recordCamelFreeWelcomeDismissal,
-  shouldShowCamelFreeWelcome,
-} from "@/lib/camel-free-welcome";
+  recordCamelCodeWelcomeDismissal,
+  shouldShowCamelCodeWelcome,
+} from "@/lib/camel-code-welcome";
 import {
   getBillingDialogIdentityKey,
   getWelcomeAutoOpenState,
@@ -187,7 +187,7 @@ import { resolveDefaultModelForChat } from "@/lib/model-picker-config";
 import { getRecentModel, type RecentModelScope } from "@/lib/recent-model";
 import {
   resolveRefreshedThreadModel,
-  shouldSwitchExhaustedThreadToCamelFree,
+  shouldSwitchExhaustedThreadToCamelCode,
   type BillingCreditStatus,
 } from "@/lib/chat-credit-status";
 import {
@@ -391,7 +391,7 @@ export function resolveSelectedThreadModel(args: {
 
   // Existing threads keep their explicit model even if an admin later removes
   // it from the picker or free-mode billing now presents it as locked. The
-  // server can still roll inaccessible hosted models over to Camel Free.
+  // server can still roll inaccessible hosted models over to camelCode.
   if (args.threadId && args.threadModel) {
     return args.threadModel;
   }
@@ -883,7 +883,7 @@ export default function Chat({
         const welcomeIdentity = openWelcomeIdentityRef.current;
         try {
           if (welcomeIdentity) {
-            recordCamelFreeWelcomeDismissal(
+            recordCamelCodeWelcomeDismissal(
               window.localStorage,
               welcomeIdentity.userId,
               welcomeIdentity.orgId,
@@ -921,7 +921,7 @@ export default function Chat({
 
     let shouldShowWelcome = false;
     try {
-      shouldShowWelcome = shouldShowCamelFreeWelcome(window.localStorage, {
+      shouldShowWelcome = shouldShowCamelCodeWelcome(window.localStorage, {
         billingAccessMode,
         userId: user?.id ?? null,
         orgId: currentOrg?.id ?? null,
@@ -1311,11 +1311,11 @@ export default function Chat({
     () => availableThreadModels.filter((entry) => !entry.locked),
     [availableThreadModels],
   );
-  // A Camel Free model supplied by the loader is a billing decision, not a
+  // A camelCode model supplied by the loader is a billing decision, not a
   // generic platform fallback. Do not let a stale premium recent-model choice
   // replace it for a zero-credit new chat.
   const shouldUseRecentModelFallback =
-    !hasEffectivePickerDefault && threadModel !== CAMEL_FREE_LLM_MODEL;
+    !hasEffectivePickerDefault && threadModel !== CAMEL_CODE_LLM_MODEL;
   const modelRecentScope = useMemo<RecentModelScope | null>(() => {
     if (readOnly) return null;
     if (!shouldUseRecentModelFallback) return null;
@@ -1367,7 +1367,7 @@ export default function Chat({
     locationSearchRef,
   });
   const displayedBillingCreditStatus =
-    selectedThreadModel === CAMEL_FREE_LLM_MODEL
+    selectedThreadModel === CAMEL_CODE_LLM_MODEL
       ? null
       : currentBillingCreditStatus;
 
@@ -3678,15 +3678,15 @@ export default function Chat({
         refreshedThreadModel,
       ) !== null ||
       updateThreadModelFetcher.state !== "idle" ||
-      !availableThreadModelIds.has(CAMEL_FREE_LLM_MODEL) ||
-      !shouldSwitchExhaustedThreadToCamelFree(
+      !availableThreadModelIds.has(CAMEL_CODE_LLM_MODEL) ||
+      !shouldSwitchExhaustedThreadToCamelCode(
         currentBillingCreditStatus,
         selectedThreadModel,
       )
     ) {
       return;
     }
-    handleThreadModelChange(CAMEL_FREE_LLM_MODEL);
+    handleThreadModelChange(CAMEL_CODE_LLM_MODEL);
   }, [
     availableThreadModelIds,
     currentBillingCreditStatus,
@@ -4572,7 +4572,7 @@ export default function Chat({
         </>
       </ChatPreviewProvider>
 
-      <CamelFreeWelcomeDialog
+      <CamelCodeWelcomeDialog
         open={billingDialog.kind === "welcome"}
         onOpenChange={handleBillingDialogOpenChange}
         onSeePremiumModels={() => openUnlockPremium(null)}

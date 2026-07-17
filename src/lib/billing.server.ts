@@ -924,7 +924,7 @@ export function resolveOrgBillingAccess(args: {
     return { kind: "ready", mode: "credits", setupRouteAccessible: true };
   }
 
-  // Camel Free is always available to hosted organizations. A subscription,
+  // camelCode is always available to hosted organizations. A subscription,
   // purchased credits, or a BYOK provider unlocks additional models, but is
   // not required to finish onboarding or enter the application.
   if (org) {

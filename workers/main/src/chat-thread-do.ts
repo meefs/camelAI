@@ -66,7 +66,7 @@ import type {
 } from '../../../src/lib/thread-project-activity';
 import type { ChatGroupIconGenerationClaim } from "./identity/user-do";
 import {
-  CAMEL_FREE_LLM_MODEL,
+  CAMEL_CODE_LLM_MODEL,
   CUSTOM_LLM_MODEL,
   getStoredCustomLlmProviderApi,
   getStoredCustomLlmProviderModelId,
@@ -4476,7 +4476,7 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
       const totalCreditsCents =
         (orgInfo?.billing_credit_purchase_total_cents ?? 0) +
         (orgInfo?.billing_credit_grant_total_cents ?? 0);
-      const isCamelFreeMode = Boolean(
+      const shouldDefaultToCamelCode = Boolean(
         orgInfo &&
           !isSelfhostRuntime(this.env) &&
           !effectiveLlmProviderRecord &&
@@ -4497,15 +4497,15 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
             })
           : storedThreadModel !== undefined
             ? normalizeLlmModel(storedThreadModel)
-          : isCamelFreeMode
-            ? CAMEL_FREE_LLM_MODEL
+          : shouldDefaultToCamelCode
+            ? CAMEL_CODE_LLM_MODEL
             : normalizeLlmModel(undefined, effectiveLlmProviderRecord?.provider, {
                 customApi,
                 customModelId,
               });
       // Keep the in-memory model aligned with the durable thread before any
       // refresh rebuilds the tool surface. Without this, an explicitly selected
-      // Camel Free thread initially receives Oracle, then refreshPiSessionModel()
+      // camelCode thread initially receives Oracle, then refreshPiSessionModel()
       // immediately removes it because currentThreadModel is still null.
       this.currentThreadModel = threadModel;
       const storedModelChangedAt =
@@ -4612,7 +4612,7 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
         systemPrompt: this.createPiSystemPrompt(context),
         model: modelConfig.model,
         tools: this.createPiToolDefinitions(context, {
-          includeOracle: this.isCamelFreeActive(envVars),
+          includeOracle: this.isCamelCodeActive(envVars),
         }),
         messages: initialMessages,
         thinkingLevel: "medium",
@@ -4638,7 +4638,7 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
         if (this.piSession) {
           this.piSession.state.model = current.model;
           this.piSession.state.tools = this.createPiToolDefinitions(context, {
-            includeOracle: this.isCamelFreeActive(envVars),
+            includeOracle: this.isCamelCodeActive(envVars),
           });
         }
         return current.apiKey;
@@ -4889,12 +4889,12 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
     });
   }
 
-  private isCamelFreeActive(envVars?: Record<string, string>): boolean {
+  private isCamelCodeActive(envVars?: Record<string, string>): boolean {
     const requested =
       envVars?.CHIRIDION_MODEL ||
       envVars?.CHIRIDION_CODEX_MODEL ||
       envVars?.CHIRIDION_CLAUDE_MODEL;
-    return (requested ?? this.currentThreadModel) === CAMEL_FREE_LLM_MODEL;
+    return (requested ?? this.currentThreadModel) === CAMEL_CODE_LLM_MODEL;
   }
 
 
@@ -4911,14 +4911,14 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
     fallbackModel: string,
     reason: HostedModelFallbackReason = "hosted_credits_exhausted",
   ): Promise<void> {
-    if (fallbackModel !== CAMEL_FREE_LLM_MODEL) {
+    if (fallbackModel !== CAMEL_CODE_LLM_MODEL) {
       throw new Error(`Unsupported hosted-credit fallback model ${fallbackModel}`);
     }
 
     const orgStub = this.env.ORG.get(this.env.ORG.idFromName(context.orgId));
     const updated = await orgStub.updateThreadModel(
       context.threadId,
-      CAMEL_FREE_LLM_MODEL,
+      CAMEL_CODE_LLM_MODEL,
       context.userId ?? undefined,
       normalizeLlmModel(requestedModel),
     );
@@ -4933,7 +4933,7 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
     this.modelFallbackNotice = {
       id: crypto.randomUUID(),
       fromModel: requestedModel,
-      toModel: CAMEL_FREE_LLM_MODEL,
+      toModel: CAMEL_CODE_LLM_MODEL,
       reason,
       createdAt: Date.now(),
     };
@@ -5832,7 +5832,7 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
     session.state.model = current.model;
     if (this.chatContext) {
       session.state.tools = this.createPiToolDefinitions(this.chatContext, {
-        includeOracle: this.isCamelFreeActive(),
+        includeOracle: this.isCamelCodeActive(),
       });
     }
   }

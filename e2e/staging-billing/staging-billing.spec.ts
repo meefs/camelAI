@@ -21,13 +21,13 @@ const admin = new StagingAdminClient();
 const premiumModel = process.env.STAGING_E2E_PREMIUM_MODEL || "Gemini 3 Flash Preview";
 
 test.describe("manual staging onboarding and billing", () => {
-  test("fresh free onboarding chats, then an open premium chat falls back to Camel Free", async ({ page }, testInfo) => {
+  test("fresh free onboarding chats, then an open premium chat falls back to camelCode", async ({ page }, testInfo) => {
     const { primary } = await readFixtureState();
     await login(page, primary);
     await waitForChat(page);
 
     const modelPicker = page.getByRole("button", { name: "Thread model" });
-    await expect(modelPicker).toHaveText("Camel Free");
+    await expect(modelPicker).toHaveText("camelCode");
     await sendChatAndWait(page, "Reply with exactly: free onboarding chat works");
     await checkpoint(page, testInfo, "01-free-onboarding-chat");
     await attachSnapshot(testInfo, "01-free-billing-snapshot", await admin.snapshot(primary.orgId));
@@ -42,16 +42,18 @@ test.describe("manual staging onboarding and billing", () => {
     const drained = await admin.setAvailableCredits(primary.orgId, 0);
     await attachSnapshot(testInfo, "02-credit-drain", drained);
     const fallbackTurn = sendChatAndWait(page, "Reply with exactly: fallback chat works");
-    await expect(page.getByText("Switched to Camel Free", { exact: true })).toBeVisible({
-      timeout: 60_000,
-    });
+    await expect(
+      page.getByText("Monthly credits used up — switched to camelCode.", {
+        exact: true,
+      }),
+    ).toBeVisible({ timeout: 60_000 });
     await fallbackTurn;
-    await expect(modelPicker).toHaveText("Camel Free");
-    await checkpoint(page, testInfo, "03-camel-free-fallback");
+    await expect(modelPicker).toHaveText("camelCode");
+    await checkpoint(page, testInfo, "03-camel-code-fallback");
 
     await page.reload();
     await waitForChat(page);
-    await expect(page.getByRole("button", { name: "Thread model" })).toHaveText("Camel Free");
+    await expect(page.getByRole("button", { name: "Thread model" })).toHaveText("camelCode");
     await sendChatAndWait(page, "Reply with exactly: fallback persisted");
   });
 

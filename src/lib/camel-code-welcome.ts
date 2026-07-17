@@ -12,14 +12,16 @@ type BillingAccessMode =
   | "camel_free"
   | null;
 
-export function getCamelFreeWelcomeStorageKey(
+export function getCamelCodeWelcomeStorageKey(
   userId: string,
   orgId: string,
 ): string {
+  // Compatibility: existing dismissals use this legacy key. Do not rename it
+  // without migrating stored browser state.
   return `camel-free-welcome-dismissed:${userId}:${orgId}`;
 }
 
-export function shouldShowCamelFreeWelcome(
+export function shouldShowCamelCodeWelcome(
   storage: StorageLike,
   {
     billingAccessMode,
@@ -43,13 +45,13 @@ export function shouldShowCamelFreeWelcome(
   }
 
   try {
-    return storage.getItem(getCamelFreeWelcomeStorageKey(userId, orgId)) === null;
+    return storage.getItem(getCamelCodeWelcomeStorageKey(userId, orgId)) === null;
   } catch {
     return false;
   }
 }
 
-export function recordCamelFreeWelcomeDismissal(
+export function recordCamelCodeWelcomeDismissal(
   storage: StorageLike,
   userId: string | null,
   orgId: string | null,
@@ -57,7 +59,7 @@ export function recordCamelFreeWelcomeDismissal(
   if (!userId || !orgId) return;
 
   try {
-    storage.setItem(getCamelFreeWelcomeStorageKey(userId, orgId), "1");
+    storage.setItem(getCamelCodeWelcomeStorageKey(userId, orgId), "1");
   } catch {
     // Storage is optional. The dialog remains dismissed for this render.
   }

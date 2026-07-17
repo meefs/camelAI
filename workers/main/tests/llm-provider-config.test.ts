@@ -16,6 +16,8 @@ import {
   stringifyStoredLlmProviderConfig,
 } from "../../../src/lib/llm-provider-config";
 
+const CAMEL_CODE_MODEL = "deepseek-v4-auto" as const;
+
 const CODEX_MODELS = [
   "gpt-5.6-sol",
   "gpt-5.6-terra",
@@ -23,7 +25,7 @@ const CODEX_MODELS = [
   "gemini-3.5-flash",
   "gemini-3-flash-preview",
   "deepseek-v4-pro",
-  "deepseek-v4-auto",
+  CAMEL_CODE_MODEL,
   "deepseek-v4-flash",
   "kimi-k2.7-code",
   "grok-4.5",
@@ -38,9 +40,9 @@ const CLAUDE_MODELS = [
 ] as const;
 
 const PINNED_HOSTED_MODELS = [
-  "deepseek-v4-auto",
+  CAMEL_CODE_MODEL,
   ...CLAUDE_MODELS,
-  ...CODEX_MODELS.filter((model) => model !== "deepseek-v4-auto"),
+  ...CODEX_MODELS.filter((model) => model !== CAMEL_CODE_MODEL),
 ] as const;
 
 const OPENROUTER_ONLY_MODELS = [
@@ -53,21 +55,27 @@ const OPENROUTER_ONLY_MODELS = [
   "glm-5.2",
 ] as const;
 
-const OPENROUTER_BYOK_CODEX_MODELS = [
+const OPENROUTER_CODEX_MODELS = [
   "gpt-5.6-sol",
   "gpt-5.6-terra",
   "gpt-5.6-luna",
   "gemini-3.5-flash",
   "gemini-3-flash-preview",
   "deepseek-v4-pro",
-  "deepseek-v4-auto",
+  CAMEL_CODE_MODEL,
   "deepseek-v4-flash",
   "kimi-k2.7-code",
   "grok-4.5",
   "glm-5.2",
 ] as const;
 
-const CAMELAI_HOSTED_ONLY_MODELS = ["deepseek-v4-auto"] as const;
+const PINNED_OPENROUTER_MODELS = [
+  CAMEL_CODE_MODEL,
+  ...CLAUDE_MODELS,
+  ...OPENROUTER_CODEX_MODELS.filter((model) => model !== CAMEL_CODE_MODEL),
+] as const;
+
+const CAMELAI_HOSTED_ONLY_MODELS = [CAMEL_CODE_MODEL] as const;
 
 const BEDROCK_OPENAI_MODELS = [
   "gpt-5.6-sol-bedrock",
@@ -100,17 +108,17 @@ describe("llm provider config helpers", () => {
   it("returns provider-specific model options", () => {
     expect(getLlmModelOptions("anthropic").map((option) => option.value)).toEqual([
       ...CLAUDE_MODELS,
-      "deepseek-v4-auto",
+      CAMEL_CODE_MODEL,
     ]);
     expect(getLlmModelOptions("openai").map((option) => option.value)).toEqual([
       "gpt-5.6-sol",
       "gpt-5.6-terra",
       "gpt-5.6-luna",
-      "deepseek-v4-auto",
+      CAMEL_CODE_MODEL,
     ]);
     expect(getLlmModelOptions("openrouter").map((option) => option.value)).toEqual([
       ...CLAUDE_MODELS,
-      ...OPENROUTER_BYOK_CODEX_MODELS,
+      ...OPENROUTER_CODEX_MODELS,
     ]);
     expect(getLlmModelOptions(null).map((option) => option.value)).toEqual([
       ...CLAUDE_MODELS,
@@ -124,13 +132,13 @@ describe("llm provider config helpers", () => {
       "gpt-5.6-sol",
       "gpt-5.6-terra",
       "gpt-5.6-luna",
-      "deepseek-v4-auto",
+      CAMEL_CODE_MODEL,
     ]);
     expect(
       getLlmModelOptions("custom", { customApi: "anthropic-messages" }).map(
         (option) => option.value,
       ),
-    ).toEqual([...CLAUDE_MODELS, "deepseek-v4-auto"]);
+    ).toEqual([...CLAUDE_MODELS, CAMEL_CODE_MODEL]);
     expect(
       getLlmModelOptions("custom", {
         customApi: "openai-responses",
@@ -152,7 +160,7 @@ describe("llm provider config helpers", () => {
     expect(normalizeLlmModel("opus-4.7")).toBe("opus-4.8");
     expect(normalizeLlmModel("deepseek-v4-auto")).toBe("deepseek-v4-auto");
     expect(normalizeLlmModel("deepseek-v4-auto", "openrouter")).toBe(
-      "deepseek-v4-auto",
+      CAMEL_CODE_MODEL,
     );
     expect(
       normalizeLlmModel("sonnet", "custom", { customApi: "openai-completions" }),
@@ -168,7 +176,7 @@ describe("llm provider config helpers", () => {
     ).toBe("custom");
   });
 
-  it("keeps BYOK models provider-scoped while Camel Free stays global", () => {
+  it("keeps BYOK models provider-scoped while camelCode stays global", () => {
     expect(parseOrganizationExperimentalSettings(null)).toEqual({
       claude_proxy_models: false,
     });
@@ -177,7 +185,7 @@ describe("llm provider config helpers", () => {
         orgProvider: "openai",
       }).map((option) => option.value),
     ).toEqual([
-      "deepseek-v4-auto",
+      CAMEL_CODE_MODEL,
       "gpt-5.6-sol",
       "gpt-5.6-terra",
       "gpt-5.6-luna",
@@ -191,24 +199,18 @@ describe("llm provider config helpers", () => {
       getVisibleLlmModelOptions({ claude_proxy_models: false }, null, {
         orgProvider: "openrouter",
       }).map((option) => option.value),
-    ).toEqual([
-      "deepseek-v4-auto",
-      ...CLAUDE_MODELS,
-      ...OPENROUTER_BYOK_CODEX_MODELS.filter(
-        (model) => model !== "deepseek-v4-auto",
-      ),
-    ]);
+    ).toEqual([...PINNED_OPENROUTER_MODELS]);
     expect(
       getVisibleLlmModelOptions({ claude_proxy_models: false }, null, {
         orgProvider: "anthropic",
       }).map((option) => option.value),
-    ).toEqual(["deepseek-v4-auto", ...CLAUDE_MODELS]);
+    ).toEqual([CAMEL_CODE_MODEL, ...CLAUDE_MODELS]);
     expect(
       getVisibleLlmModelOptions({ claude_proxy_models: false }, null, {
         orgProvider: "bedrock",
       }).map((option) => option.value),
     ).toEqual([
-      "deepseek-v4-auto",
+      CAMEL_CODE_MODEL,
       ...CLAUDE_MODELS,
       ...BEDROCK_OPENAI_MODELS,
     ]);
@@ -218,7 +220,7 @@ describe("llm provider config helpers", () => {
         awsRegion: "us-west-2",
       }).map((option) => option.value),
     ).toEqual([
-      "deepseek-v4-auto",
+      CAMEL_CODE_MODEL,
       ...CLAUDE_MODELS,
       "gpt-5.6-terra-bedrock",
     ]);
@@ -227,7 +229,7 @@ describe("llm provider config helpers", () => {
         orgProvider: "bedrock",
         awsRegion: "eu-west-1",
       }).map((option) => option.value),
-    ).toEqual(["deepseek-v4-auto", ...CLAUDE_MODELS]);
+    ).toEqual([CAMEL_CODE_MODEL, ...CLAUDE_MODELS]);
     expect(
       getVisibleLlmModelOptions({ claude_proxy_models: false }, null, {
         orgProvider: null,
@@ -235,7 +237,7 @@ describe("llm provider config helpers", () => {
     ).toEqual([...PINNED_HOSTED_MODELS]);
   });
 
-  it("keeps Camel Free visible in hosted model options", () => {
+  it("keeps camelCode visible in hosted model options", () => {
     expect(
       getVisibleLlmModelOptions({ claude_proxy_models: false }, null, {
         orgProvider: null,
@@ -263,7 +265,7 @@ describe("llm provider config helpers", () => {
         { orgProvider: "openai" },
       ).map((option) => option.value),
     ).toEqual([
-      "deepseek-v4-auto",
+      CAMEL_CODE_MODEL,
       "gpt-5.6-sol",
       "gpt-5.6-terra",
       "gpt-5.6-luna",
@@ -274,20 +276,14 @@ describe("llm provider config helpers", () => {
         null,
         { orgProvider: "openrouter" },
       ).map((option) => option.value),
-    ).toEqual([
-      "deepseek-v4-auto",
-      ...CLAUDE_MODELS,
-      ...OPENROUTER_BYOK_CODEX_MODELS.filter(
-        (model) => model !== "deepseek-v4-auto",
-      ),
-    ]);
+    ).toEqual([...PINNED_OPENROUTER_MODELS]);
     expect(
       getVisibleLlmModelOptions(
         { claude_proxy_models: false },
         null,
         { orgProvider: "anthropic" },
       ).map((option) => option.value),
-    ).toEqual(["deepseek-v4-auto", ...CLAUDE_MODELS]);
+    ).toEqual([CAMEL_CODE_MODEL, ...CLAUDE_MODELS]);
   });
 
   it("keeps the current model visible for existing locked threads regardless of new-chat policy", () => {
@@ -420,7 +416,7 @@ describe("llm provider config helpers", () => {
     });
     expect(getLlmModelOptions("custom").map((option) => option.value)).toEqual([
       ...CLAUDE_MODELS,
-      ...OPENROUTER_BYOK_CODEX_MODELS,
+      ...OPENROUTER_CODEX_MODELS,
     ]);
   });
 

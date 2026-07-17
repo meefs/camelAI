@@ -69,7 +69,7 @@ export function buildBillingCreditStatus(
   };
 }
 
-export function shouldSwitchExhaustedThreadToCamelFree(
+export function shouldSwitchExhaustedThreadToCamelCode(
   status: BillingCreditStatus | null | undefined,
   threadModel: LlmModel | null | undefined,
 ): boolean {

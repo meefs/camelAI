@@ -39,11 +39,11 @@ type OracleFixEvalEnv = TestEnv & EvalModelEnv & EvalSignalEnv & {
 const testEnv = env as unknown as OracleFixEvalEnv;
 const maybeIt = testEnv.RUN_AGENT_EVALS === "1" ? it : it.skip;
 const SESSION_TIMEOUT_MS = getEvalTimeoutMs(testEnv, 300_000);
-const CAMEL_FREE_MODEL = "deepseek-v4-auto";
+const CAMEL_CODE_MODEL = "deepseek-v4-auto";
 const FIX_MARKER = "ORACLE_FIXED_HALF_OFF";
 const PROOF = "Oracle directly repaired the discount implementation.";
 
-describe("Camel Free Oracle direct-fix agent eval", () => {
+describe("camelCode Oracle direct-fix agent eval", () => {
   maybeIt(
     "delegates a blocked implementation issue for Oracle to repair directly",
     async () => {
@@ -91,7 +91,7 @@ describe("Camel Free Oracle direct-fix agent eval", () => {
         "Oracle direct fix eval",
         userId,
         undefined,
-        CAMEL_FREE_MODEL,
+        CAMEL_CODE_MODEL,
       );
       const chatThread = testEnv.CHAT_THREAD.get(
         testEnv.CHAT_THREAD.idFromName(thread.id),
@@ -196,7 +196,7 @@ describe("Camel Free Oracle direct-fix agent eval", () => {
         status: result.status,
         evaluation,
         error: result.error,
-        model: CAMEL_FREE_MODEL,
+        model: CAMEL_CODE_MODEL,
         signal,
         result: result.result,
         events: result.events,

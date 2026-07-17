@@ -30,9 +30,9 @@ type OracleTrivialEvalEnv = TestEnv & EvalModelEnv & EvalSignalEnv & {
 const testEnv = env as unknown as OracleTrivialEvalEnv;
 const maybeIt = testEnv.RUN_AGENT_EVALS === "1" ? it : it.skip;
 const SESSION_TIMEOUT_MS = getEvalTimeoutMs(testEnv, 120_000);
-const CAMEL_FREE_MODEL = "deepseek-v4-auto";
+const CAMEL_CODE_MODEL = "deepseek-v4-auto";
 
-describe("Camel Free Oracle restraint eval", () => {
+describe("camelCode Oracle restraint eval", () => {
   maybeIt(
     "answers a trivial question without Oracle",
     async () => {
@@ -48,10 +48,10 @@ describe("Camel Free Oracle restraint eval", () => {
       const orgStub = testEnv.ORG.get(testEnv.ORG.idFromName(org.id));
       const thread = await orgStub.createThread(
         defaultWorkspaceId,
-        "Camel Free Oracle restraint eval",
+        "camelCode Oracle restraint eval",
         userId,
         undefined,
-        CAMEL_FREE_MODEL,
+        CAMEL_CODE_MODEL,
       );
       const chatThread = testEnv.CHAT_THREAD.get(testEnv.CHAT_THREAD.idFromName(thread.id));
       const result = await chatThread.runAgentEvalSession({
@@ -80,13 +80,13 @@ describe("Camel Free Oracle restraint eval", () => {
           buildSessionCompletedCriterion(result),
           passFailCriterion({
             id: "oracle_not_used_for_trivial_question",
-            label: "Camel Free reserved Oracle for work that warrants it",
+            label: "camelCode reserved Oracle for work that warrants it",
             passed: !calledOracle,
             reason: calledOracle ? "Oracle was unnecessarily called for trivial arithmetic." : undefined,
           }),
           passFailCriterion({
             id: "trivial_answer_correct",
-            label: "Camel Free answered the trivial question correctly",
+            label: "camelCode answered the trivial question correctly",
             passed: answeredCorrectly,
             reason: answeredCorrectly ? undefined : `Unexpected answer: ${result.result ?? ""}`,
           }),
@@ -110,7 +110,7 @@ describe("Camel Free Oracle restraint eval", () => {
         status: result.status,
         evaluation,
         error: result.error,
-        model: CAMEL_FREE_MODEL,
+        model: CAMEL_CODE_MODEL,
         signal,
         result: result.result,
         events: result.events,

@@ -43,7 +43,7 @@ export const PLAN_CONTENT: Record<BillingPlan, PlanContent> = {
     features: [
       "$10 of model credits / mo (at cost)",
       "5× daily web search, research, and Oracle allowances",
-      "Priority over free traffic on Camel Free",
+      "Priority over free traffic on camelCode",
       "30 deployed apps",
       "10 custom domains",
       "1 automated task hourly",
@@ -59,7 +59,7 @@ export const PLAN_CONTENT: Record<BillingPlan, PlanContent> = {
     features: [
       "$40 of model credits / mo (at cost)",
       "20× daily web search, research, and Oracle allowances",
-      "Priority over free traffic on Camel Free",
+      "Priority over free traffic on camelCode",
       "Unlimited deployed apps",
       "Unlimited custom domains",
       "Automations every 5 minutes",
@@ -74,7 +74,7 @@ export const PLAN_CONTENT: Record<BillingPlan, PlanContent> = {
     features: [
       "$50 of model credits / seat / mo",
       "20× daily web search, research, and Oracle allowances",
-      "Priority over free traffic on Camel Free",
+      "Priority over free traffic on camelCode",
       "2 shared workspaces",
       "Role-based access (admin / member)",
     ],
@@ -85,7 +85,7 @@ export const PLAN_CONTENT: Record<BillingPlan, PlanContent> = {
     ctaLabel: "Contact sales",
     ctaKind: "contact",
     features: [
-      "Priority over free traffic on Camel Free",
+      "Priority over free traffic on camelCode",
       "SSO / SAML",
       "Bring your own cloud (BYOCloud)",
       "Multiple workspaces",

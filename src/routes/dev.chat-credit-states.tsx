@@ -4,7 +4,7 @@ import type { Route } from './+types/dev.chat-credit-states';
 import { BillingCreditNotice, ChatErrorNotice } from '@/components/Chat';
 import { TopUpDialog } from '@/components/billing/top-up-dialog';
 import { UnlockPremiumModal } from '@/components/billing/unlock-premium-modal';
-import { CamelFreeWelcomeDialog } from '@/components/camel-free-welcome-dialog';
+import { CamelCodeWelcomeDialog } from '@/components/camel-code-welcome-dialog';
 import { ModelFallbackBanner } from '@/components/model-fallback-banner';
 import { ContentBlockRenderer } from '@/components/message-bubble';
 import { getDevBillingCreditStatus, getDevChatInitialError } from '@/lib/chat-credit-status';
@@ -320,7 +320,7 @@ export default function DevChatCreditStatesRoute() {
           </Button>
         </CardContent>
       </Card>
-      <CamelFreeWelcomeDialog
+      <CamelCodeWelcomeDialog
         open={welcomeOpen}
         onOpenChange={setWelcomeOpen}
         onSeePremiumModels={() => setUnlockOpen(true)}

@@ -35,12 +35,12 @@ type OracleEvalEnv = TestEnv & EvalModelEnv & EvalSignalEnv & {
 const testEnv = env as unknown as OracleEvalEnv;
 const maybeIt = testEnv.RUN_AGENT_EVALS === "1" ? it : it.skip;
 const SESSION_TIMEOUT_MS = getEvalTimeoutMs(testEnv, 240_000);
-const CAMEL_FREE_MODEL = "deepseek-v4-auto";
+const CAMEL_CODE_MODEL = "deepseek-v4-auto";
 const EXPECTED_MARKER = "ORACLE_CHECK_231";
 
-describe("Camel Free Oracle agent eval", () => {
+describe("camelCode Oracle agent eval", () => {
   maybeIt(
-    "uses the Camel Free-only Oracle and incorporates its answer",
+    "uses the camelCode-only Oracle and incorporates its answer",
     async () => {
       const suffix = crypto.randomUUID().slice(0, 8);
       const email = `oracle-eval-${suffix}@example.com`;
@@ -59,10 +59,10 @@ describe("Camel Free Oracle agent eval", () => {
       const orgStub = testEnv.ORG.get(testEnv.ORG.idFromName(org.id));
       const thread = await orgStub.createThread(
         defaultWorkspaceId,
-        "Camel Free Oracle eval",
+        "camelCode Oracle eval",
         userId,
         undefined,
-        CAMEL_FREE_MODEL,
+        CAMEL_CODE_MODEL,
       );
       const chatThread = testEnv.CHAT_THREAD.get(
         testEnv.CHAT_THREAD.idFromName(thread.id),
@@ -115,7 +115,7 @@ describe("Camel Free Oracle agent eval", () => {
           buildSessionCompletedCriterion(result),
           passFailCriterion({
             id: "called_oracle",
-            label: "Camel Free agent called Oracle",
+            label: "camelCode agent called Oracle",
             passed: calledOracle,
             reason: calledOracle ? undefined : "Oracle was not called.",
             details: { toolCallsByName: signal.toolCallsByName },
@@ -176,7 +176,7 @@ describe("Camel Free Oracle agent eval", () => {
         status: result.status,
         evaluation,
         error: result.error,
-        model: CAMEL_FREE_MODEL,
+        model: CAMEL_CODE_MODEL,
         signal,
         result: result.result,
         events: result.events,

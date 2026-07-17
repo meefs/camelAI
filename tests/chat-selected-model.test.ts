@@ -78,7 +78,7 @@ describe("new-chat selected model", () => {
     ).toBe(false);
   });
 
-  it("keeps the loader-selected Camel Free model instead of the platform default", () => {
+  it("keeps the loader-selected camelCode model instead of the platform default", () => {
     expect(
       resolveSelectedThreadModel({
         threadModel: "deepseek-v4-auto",
@@ -91,7 +91,7 @@ describe("new-chat selected model", () => {
     ).toBe("deepseek-v4-auto");
   });
 
-  it("still honors an available recent model when billing did not force Camel Free", () => {
+  it("still honors an available recent model when billing did not force camelCode", () => {
     expect(
       resolveSelectedThreadModel({
         threadModel: "sonnet",

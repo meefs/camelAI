@@ -23,7 +23,7 @@ describe("model fallback notices", () => {
     ).toBe(false);
   });
 
-  it("does not expire an old notice while Camel Free remains selected", () => {
+  it("does not expire an old notice while camelCode remains selected", () => {
     expect(
       shouldShowModelFallbackNotice(notice(1), "deepseek-v4-auto"),
     ).toBe(true);

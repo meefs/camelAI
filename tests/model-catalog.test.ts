@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { logoRegistry } from '@/lib/integration-logo-registry';
+import { CODEX_LLM_MODEL_OPTIONS } from '@/lib/llm-provider-config';
 import {
   ALL_LLM_MODELS,
   COST_BUCKET_MAX,
@@ -55,7 +56,7 @@ const NEW_ROUTED_MODELS: Array<{
   },
   {
     id: 'deepseek-v4-auto',
-    label: 'Camel Free',
+    label: 'camelCode',
     providerLogo: 'camelai',
     providerOrder: 3,
     modelOrder: 1,
@@ -101,6 +102,15 @@ const NEW_FRONTIER_MODELS: Array<{
 ];
 
 describe('MODEL_CATALOG', () => {
+  it('uses camelCode in both free-model label sources', () => {
+    expect(MODEL_CATALOG['deepseek-v4-auto'].label).toBe('camelCode');
+    expect(
+      CODEX_LLM_MODEL_OPTIONS.find(
+        (option) => option.value === 'deepseek-v4-auto',
+      )?.label,
+    ).toBe('camelCode');
+  });
+
   it('has one entry for every supported LlmModel', () => {
     for (const model of ALL_LLM_MODELS) {
       expect(MODEL_CATALOG[model]).toBeDefined();
@@ -346,7 +356,7 @@ describe('MODEL_CATALOG', () => {
     expect(explicitOverride.map((entry) => entry.id)).toEqual(['fable-5']);
   });
 
-  it('keeps Camel Free in hosted camelAI platform models', () => {
+  it('keeps camelCode in hosted camelAI platform models', () => {
     const visible = resolveModelPickerCatalog({
       effectiveConfig: {
         source: 'org',

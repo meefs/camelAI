@@ -7,9 +7,9 @@ import {
   type BillingDialogState,
 } from "@/lib/billing-dialog-state";
 import {
-  recordCamelFreeWelcomeDismissal,
-  shouldShowCamelFreeWelcome,
-} from "@/lib/camel-free-welcome";
+  recordCamelCodeWelcomeDismissal,
+  shouldShowCamelCodeWelcome,
+} from "@/lib/camel-code-welcome";
 
 describe("billing dialog state", () => {
   it("transitions welcome to unlock with a dismissal effect and only unlock active", () => {
@@ -65,7 +65,7 @@ describe("billing dialog state", () => {
       state,
       autoOpenedIdentityKeys,
       orgAIdentityKey,
-      shouldShowCamelFreeWelcome(storage, welcomeContext),
+      shouldShowCamelCodeWelcome(storage, welcomeContext),
     );
     expect(firstAutoOpen).toEqual({ kind: "welcome" });
     state = firstAutoOpen!;
@@ -76,7 +76,7 @@ describe("billing dialog state", () => {
     });
     expect(closeTransition.shouldRecordWelcomeDismissal).toBe(true);
     expect(() =>
-      recordCamelFreeWelcomeDismissal(
+      recordCamelCodeWelcomeDismissal(
         storage,
         welcomeContext.userId,
         welcomeContext.orgId,
@@ -84,13 +84,13 @@ describe("billing dialog state", () => {
     ).not.toThrow();
     state = closeTransition.state;
 
-    expect(shouldShowCamelFreeWelcome(storage, welcomeContext)).toBe(true);
+    expect(shouldShowCamelCodeWelcome(storage, welcomeContext)).toBe(true);
     expect(
       getWelcomeAutoOpenState(
         state,
         autoOpenedIdentityKeys,
         orgAIdentityKey,
-        shouldShowCamelFreeWelcome(storage, welcomeContext),
+        shouldShowCamelCodeWelcome(storage, welcomeContext),
       ),
     ).toBeNull();
 
@@ -104,7 +104,7 @@ describe("billing dialog state", () => {
         state,
         autoOpenedIdentityKeys,
         orgBIdentityKey,
-        shouldShowCamelFreeWelcome(storage, orgBContext),
+        shouldShowCamelCodeWelcome(storage, orgBContext),
       ),
     ).toEqual({ kind: "welcome" });
 
@@ -114,7 +114,7 @@ describe("billing dialog state", () => {
         state,
         autoOpenedIdentityKeys,
         orgAIdentityKey,
-        shouldShowCamelFreeWelcome(storage, welcomeContext),
+        shouldShowCamelCodeWelcome(storage, welcomeContext),
       ),
     ).toBeNull();
   });

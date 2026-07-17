@@ -124,7 +124,7 @@ describe('getWorkspaceModelPickerState rollout compatibility', () => {
     expect(workspaceStub.getModelPickerConfig).toHaveBeenCalledTimes(2);
   });
 
-  it('defaults an inactive zero-credit hosted organization to Camel Free', async () => {
+  it('defaults an inactive zero-credit hosted organization to camelCode', async () => {
     const workspaceStub = {
       getInfo: vi.fn().mockResolvedValue({ org_id: 'org_123' }),
       getModelPickerConfig: vi.fn().mockResolvedValue({

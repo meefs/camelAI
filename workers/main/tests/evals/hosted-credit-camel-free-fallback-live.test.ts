@@ -32,9 +32,9 @@ const SESSION_TIMEOUT_MS = getEvalTimeoutMs(testEnv, 180_000);
 const REQUESTED_MODEL = "gpt-5.6-sol";
 const FALLBACK_MODEL = "deepseek-v4-auto";
 
-describe("hosted credit Camel Free fallback agent eval", () => {
+describe("hosted credit camelCode fallback agent eval", () => {
   maybeIt(
-    "switches a zero-credit hosted thread to Camel Free and completes the turn",
+    "switches a zero-credit hosted thread to camelCode and completes the turn",
     async () => {
       const suffix = crypto.randomUUID().slice(0, 8);
       const email = `credit-fallback-eval-${suffix}@example.com`;
@@ -93,7 +93,7 @@ describe("hosted credit Camel Free fallback agent eval", () => {
           buildSessionCompletedCriterion(result),
           passFailCriterion({
             id: "thread_switched_to_camel_free",
-            label: "Thread model persisted as Camel Free",
+            label: "Thread model persisted as camelCode",
             passed: persistedModel === FALLBACK_MODEL,
             reason: persistedModel === FALLBACK_MODEL
               ? undefined

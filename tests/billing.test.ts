@@ -690,7 +690,7 @@ describe("billing helpers", () => {
     ).toMatchObject({ kind: "ready", mode: "byok" });
   });
 
-  it("allows Camel Free throughout the app and retains missing-org setup state", () => {
+  it("allows camelCode throughout the app and retains missing-org setup state", () => {
     expect(isBillingSetupPath("/settings/organization/billing")).toBe(true);
     expect(isBillingSetupPath("/settings/organization/usage")).toBe(true);
     expect(isBillingSetupPath("/settings/organization/team")).toBe(false);

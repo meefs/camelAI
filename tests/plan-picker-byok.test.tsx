@@ -18,7 +18,7 @@ describe("PlanPicker BYOK state", () => {
       ),
     ).toBeInTheDocument();
     expect(
-      screen.getAllByText("Priority over free traffic on Camel Free"),
+      screen.getAllByText("Priority over free traffic on camelCode"),
     ).not.toHaveLength(0);
   });
 

@@ -820,7 +820,7 @@ describe('organization model settings loader', () => {
     expect(result.config.capacity.used).toBe(4);
   });
 
-  it('shows Camel Free plus Claude-family models for Anthropic BYOK orgs', async () => {
+  it('shows camelCode plus Claude-family models for Anthropic BYOK orgs', async () => {
     mockAuthContext({
       currentOrgLlmProviderConfig: providerRecord('anthropic'),
     });

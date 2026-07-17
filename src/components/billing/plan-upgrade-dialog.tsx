@@ -78,7 +78,7 @@ export function PlanUpgradeDialog({
         <DialogHeader>
           <DialogTitle>Choose your plan</DialogTitle>
           <DialogDescription>
-            You&apos;re on the Free plan — Camel Free included forever. Upgrade
+            You&apos;re on the Free plan — camelCode included forever. Upgrade
             for premium models, more apps, and automations.
           </DialogDescription>
         </DialogHeader>

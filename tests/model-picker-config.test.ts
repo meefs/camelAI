@@ -7,7 +7,7 @@ import {
   resolveEffectivePickerConfig,
 } from '@/lib/model-picker-config';
 import {
-  CAMEL_FREE_LLM_MODEL,
+  CAMEL_CODE_LLM_MODEL,
   getVisibleLlmModelOptions,
 } from '@/lib/llm-provider-config';
 
@@ -422,13 +422,13 @@ describe('default model resolution', () => {
 
 describe('provider model visibility', () => {
   it.each(['openai', 'anthropic', 'openrouter'])(
-    'keeps Camel Free visible with the %s provider configured',
+    'keeps camelCode visible with the %s provider configured',
     (orgProvider) => {
       expect(
         getVisibleLlmModelOptions(null, null, { orgProvider }).map(
           (option) => option.value,
         ),
-      ).toContain(CAMEL_FREE_LLM_MODEL);
+      ).toContain(CAMEL_CODE_LLM_MODEL);
     },
   );
 });

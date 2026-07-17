@@ -56,10 +56,10 @@ navigation to Stripe.
 The serial suite covers:
 
 1. A verified new account completes onboarding with no payment, lands in chat
-   on Camel Free, and completes a real agent turn.
+   on camelCode, and completes a real agent turn.
 2. The same open chat receives credits, completes a premium turn, has its
    credits remotely drained to zero, falls back on the next turn, shows the
-   fallback notice, and persists Camel Free across reload.
+   fallback notice, and persists camelCode across reload.
 3. The account purchases Starter through Stripe Checkout and waits for the
    webhook-projected OrgDO state.
 4. Starter upgrades to Pro, handling either direct trial updates or Stripe's

@@ -87,8 +87,8 @@ export function ModelFallbackBanner({
             <div className="space-y-0.5">
               <p className="text-sm font-semibold">
                 {creditsExhausted
-                  ? "Monthly credits used up — switched to Camel Free."
-                  : "Your subscription is unavailable — switched to Camel Free."}
+                  ? "Monthly credits used up — switched to camelCode."
+                  : "Your subscription is unavailable — switched to camelCode."}
               </p>
               {creditsExhausted && isOrgAdmin ? (
                 <p className="text-xs text-muted-foreground">

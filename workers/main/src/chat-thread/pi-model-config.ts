@@ -17,7 +17,7 @@ import {
   OPENAI_CODEX_API_BASE_URL,
 } from "../../../../src/lib/openai-subscription.server";
 import {
-  CAMEL_FREE_LLM_MODEL,
+  CAMEL_CODE_LLM_MODEL,
   DEFAULT_LLM_MODEL,
   isCreditFreeHostedModel,
   parseStoredLlmProviderConfig,
@@ -340,13 +340,13 @@ export async function resolvePiModelConfig(
   } catch (error) {
     if (
       error instanceof HostedModelFallbackRequiredError &&
-      requestedModelId !== CAMEL_FREE_LLM_MODEL
+      requestedModelId !== CAMEL_CODE_LLM_MODEL
     ) {
       const fallbackEnvVars = {
         ...envVars,
-        CHIRIDION_MODEL: CAMEL_FREE_LLM_MODEL,
-        CHIRIDION_CODEX_MODEL: CAMEL_FREE_LLM_MODEL,
-        CHIRIDION_CLAUDE_MODEL: CAMEL_FREE_LLM_MODEL,
+        CHIRIDION_MODEL: CAMEL_CODE_LLM_MODEL,
+        CHIRIDION_CODEX_MODEL: CAMEL_CODE_LLM_MODEL,
+        CHIRIDION_CLAUDE_MODEL: CAMEL_CODE_LLM_MODEL,
       };
       const fallback = await resolvePiModelConfig(
         deps,
@@ -356,7 +356,7 @@ export async function resolvePiModelConfig(
       );
       await deps.onHostedModelFallback?.(
         requestedModelId,
-        CAMEL_FREE_LLM_MODEL,
+        CAMEL_CODE_LLM_MODEL,
         error.fallbackReason,
       );
       Object.assign(envVars, fallbackEnvVars);

@@ -80,14 +80,14 @@ describe("ChatThreadDO hosted billing access", () => {
     expect((error as Error).message).not.toContain("Trial hosted-model");
   });
 
-  it("allows Camel Free without credits", async () => {
+  it("allows camelCode without credits", async () => {
     const { userId } = await createUser(
       testEnv,
       testEmail(),
       "password123",
-      "Camel Free User",
+      "camelCode User",
     );
-    const { org } = await createOrg(testEnv, "Camel Free Org", userId, {
+    const { org } = await createOrg(testEnv, "camelCode Org", userId, {
       billingPlan: "starter",
     });
     const orgStub = testEnv.ORG.get(testEnv.ORG.idFromName(org.id));
@@ -111,14 +111,14 @@ describe("ChatThreadDO hosted billing access", () => {
     });
   });
 
-  it("allows Camel Free without an active paid subscription", async () => {
+  it("allows camelCode without an active paid subscription", async () => {
     const { userId } = await createUser(
       testEnv,
       testEmail(),
       "password123",
-      "Inactive Camel Free User",
+      "Inactive camelCode User",
     );
-    const { org } = await createOrg(testEnv, "Inactive Camel Free Org", userId, {
+    const { org } = await createOrg(testEnv, "Inactive camelCode Org", userId, {
       billingPlan: "starter",
     });
     const orgStub = testEnv.ORG.get(testEnv.ORG.idFromName(org.id));
@@ -142,7 +142,7 @@ describe("ChatThreadDO hosted billing access", () => {
     });
   });
 
-  it("starts a hosted thread without a stored model on Camel Free", async () => {
+  it("starts a hosted thread without a stored model on camelCode", async () => {
     const orgStub = {
       getThread: vi.fn(async () => ({
         id: "thread_free",

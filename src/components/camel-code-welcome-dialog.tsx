@@ -9,7 +9,7 @@ import {
 } from "@/components/ui/dialog";
 import { WaveRibbon } from "@/components/wave-ribbon";
 
-export function CamelFreeWelcomeDialog({
+export function CamelCodeWelcomeDialog({
   open,
   onOpenChange,
   onSeePremiumModels,
@@ -32,7 +32,7 @@ export function CamelFreeWelcomeDialog({
         <div className="space-y-4 px-6 pb-6">
           <DialogHeader className="text-center">
             <DialogTitle className="text-base">
-              You&apos;re on Camel Free
+              You&apos;re on camelCode
             </DialogTitle>
             <DialogDescription className="mx-auto max-w-[44ch] text-pretty text-sm/relaxed">
               <span className="block">

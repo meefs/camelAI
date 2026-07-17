@@ -135,12 +135,12 @@
     },
     {
       "id": "hosted-credit-camel-free-fallback-live",
-      "description": "Automatically persist Camel Free and complete the turn when a hosted model has no credits",
+      "description": "Automatically persist camelCode and complete the turn when a hosted model has no credits",
       "kind": "unit"
     },
     {
       "id": "camel-free-oracle-live",
-      "description": "Use the Camel Free-only Oracle for a focused second opinion",
+      "description": "Use the camelCode-only Oracle for a focused second opinion",
       "kind": "unit"
     },
     {

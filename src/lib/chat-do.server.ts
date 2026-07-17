@@ -20,7 +20,7 @@ import {
 import { OrgDO, type OrgThread } from "../../workers/main/src/auth";
 import { WorkspaceDO } from "../../workers/main/src/workspace";
 import {
-  CAMEL_FREE_LLM_MODEL,
+  CAMEL_CODE_LLM_MODEL,
   type CustomLlmProviderApi,
   type LlmProviderConfigRecord,
   getDefaultLlmModel,
@@ -288,8 +288,8 @@ async function getWorkspaceModelPickerStateForOrg(
   });
   const visibleCatalog =
     isFreeMode &&
-    !resolvedCatalog.some((entry) => entry.id === CAMEL_FREE_LLM_MODEL)
-      ? [MODEL_CATALOG[CAMEL_FREE_LLM_MODEL], ...resolvedCatalog]
+    !resolvedCatalog.some((entry) => entry.id === CAMEL_CODE_LLM_MODEL)
+      ? [MODEL_CATALOG[CAMEL_CODE_LLM_MODEL], ...resolvedCatalog]
       : resolvedCatalog;
   const modelOptions: ModelPickerOption[] = visibleCatalog.map((entry) => {
     const isOpenAiCovered =
@@ -297,7 +297,7 @@ async function getWorkspaceModelPickerStateForOrg(
       isLlmModelCoveredByOpenAiSubscription(entry.id);
     if (
       !isFreeMode ||
-      entry.id === CAMEL_FREE_LLM_MODEL ||
+      entry.id === CAMEL_CODE_LLM_MODEL ||
       isOpenAiCovered
     ) {
       return entry;
@@ -316,12 +316,12 @@ async function getWorkspaceModelPickerStateForOrg(
     (entry) => entry.id === configuredDefault && entry.locked,
   );
   const effectivePickerDefaultModel = configuredDefaultIsLocked
-    ? CAMEL_FREE_LLM_MODEL
+    ? CAMEL_CODE_LLM_MODEL
     : configuredDefault;
   const defaultModel = resolveDefaultModelForChat({
     effectiveDefaultModel: effectivePickerDefaultModel,
     fallbackModel: isFreeMode
-      ? CAMEL_FREE_LLM_MODEL
+      ? CAMEL_CODE_LLM_MODEL
       : getDefaultLlmModel(effectiveLlmProviderConfig?.provider, {
           customApi,
           customModelId,

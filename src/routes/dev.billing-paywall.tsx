@@ -5,7 +5,7 @@ import { PaywallTakeover } from "@/components/billing/paywall-takeover";
 import { type PlanPickerCta } from "@/components/billing/plan-picker";
 import { PlanUpgradeDialog } from "@/components/billing/plan-upgrade-dialog";
 import { UnlockPremiumModal } from "@/components/billing/unlock-premium-modal";
-import { CamelFreeWelcomeDialog } from "@/components/camel-free-welcome-dialog";
+import { CamelCodeWelcomeDialog } from "@/components/camel-code-welcome-dialog";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -87,7 +87,7 @@ function getPreviewConfig(
       return {
         ...base,
         description:
-          "A free org enters the app on Camel Free and can open the upgrade dialog without seeing a takeover.",
+          "A free org enters the app on camelCode and can open the upgrade dialog without seeing a takeover.",
         multiOrg: false,
       };
     case "byok-configured":
@@ -251,7 +251,7 @@ export default function DevBillingPaywallPreviewRoute() {
         {state === "free" ? (
           <div className="flex min-h-[80vh] items-center justify-center gap-2 bg-muted/20 p-6">
             <Button onClick={() => setWelcomeOpen(true)}>
-              Open Camel Free welcome
+              Open camelCode welcome
             </Button>
             <Button variant="outline" onClick={() => setUnlockOpen(true)}>
               Open premium models
@@ -277,7 +277,7 @@ export default function DevBillingPaywallPreviewRoute() {
           />
         )}
       </section>
-      <CamelFreeWelcomeDialog
+      <CamelCodeWelcomeDialog
         open={welcomeOpen}
         onOpenChange={setWelcomeOpen}
         onSeePremiumModels={() => setUnlockOpen(true)}

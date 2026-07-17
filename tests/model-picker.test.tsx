@@ -3,7 +3,7 @@ import type { HTMLAttributes, ReactNode } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ModelPicker } from '@/components/model-picker';
 import { MODEL_CATALOG } from '@/lib/model-catalog';
-import { CAMEL_FREE_LLM_MODEL } from '@/lib/llm-provider-config';
+import { CAMEL_CODE_LLM_MODEL } from '@/lib/llm-provider-config';
 
 vi.mock('@/components/model-logo', () => ({
   ModelLogo: ({ model }: { model: string }) => (
@@ -78,7 +78,7 @@ function renderPicker() {
       options={[
         MODEL_CATALOG['opus-4.8'],
         MODEL_CATALOG.sonnet,
-        MODEL_CATALOG[CAMEL_FREE_LLM_MODEL],
+        MODEL_CATALOG[CAMEL_CODE_LLM_MODEL],
         MODEL_CATALOG['deepseek-v4-flash'],
       ]}
       isOrgAdmin={false}
@@ -147,8 +147,8 @@ describe('ModelPicker metadata card state', () => {
   it('renders cost buckets with muted placeholder dollar signs', () => {
     renderPicker();
 
-    fireEvent.focus(getModelItem('Camel Free'));
-    expect(screen.getByRole('tooltip')).toHaveTextContent('Camel Free');
+    fireEvent.focus(getModelItem('camelCode'));
+    expect(screen.getByRole('tooltip')).toHaveTextContent('camelCode');
     expect(screen.getByText('Free')).toBeInTheDocument();
     expect(screen.queryByLabelText(/Cost rating:/)).not.toBeInTheDocument();
 
@@ -171,10 +171,10 @@ describe('ModelPicker metadata card state', () => {
     const onUnlockRequest = vi.fn();
     render(
       <ModelPicker
-        value={CAMEL_FREE_LLM_MODEL}
+        value={CAMEL_CODE_LLM_MODEL}
         onValueChange={onValueChange}
         options={[
-          MODEL_CATALOG[CAMEL_FREE_LLM_MODEL],
+          MODEL_CATALOG[CAMEL_CODE_LLM_MODEL],
           {
             ...MODEL_CATALOG['gpt-5.6-sol'],
             locked: true,
@@ -199,10 +199,10 @@ describe('ModelPicker metadata card state', () => {
   it('groups every unlocked model before the premium models section', () => {
     render(
       <ModelPicker
-        value={CAMEL_FREE_LLM_MODEL}
+        value={CAMEL_CODE_LLM_MODEL}
         onValueChange={vi.fn()}
         options={[
-          MODEL_CATALOG[CAMEL_FREE_LLM_MODEL],
+          MODEL_CATALOG[CAMEL_CODE_LLM_MODEL],
           { ...MODEL_CATALOG.sonnet, locked: true, unlockHint: 'generic' },
           MODEL_CATALOG['gpt-5.6-sol'],
           {
@@ -229,13 +229,13 @@ describe('ModelPicker metadata card state', () => {
     );
   });
 
-  it('explains Camel Free and OpenAI unlock coverage in metadata', () => {
+  it('explains camelCode and OpenAI unlock coverage in metadata', () => {
     render(
       <ModelPicker
-        value={CAMEL_FREE_LLM_MODEL}
+        value={CAMEL_CODE_LLM_MODEL}
         onValueChange={vi.fn()}
         options={[
-          MODEL_CATALOG[CAMEL_FREE_LLM_MODEL],
+          MODEL_CATALOG[CAMEL_CODE_LLM_MODEL],
           {
             ...MODEL_CATALOG['gpt-5.6-sol'],
             locked: true,
@@ -251,7 +251,7 @@ describe('ModelPicker metadata card state', () => {
       />,
     );
 
-    fireEvent.focus(getModelItem('Camel Free'));
+    fireEvent.focus(getModelItem('camelCode'));
     expect(screen.getByRole('tooltip')).toHaveTextContent(
       'Free and always included',
     );

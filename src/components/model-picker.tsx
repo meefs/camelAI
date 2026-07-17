@@ -22,7 +22,7 @@ import {
   MODEL_CATALOG,
   type CostBucket,
 } from '@/lib/model-catalog';
-import { CAMEL_FREE_LLM_MODEL } from '@/lib/llm-provider-config';
+import { CAMEL_CODE_LLM_MODEL } from '@/lib/llm-provider-config';
 import {
   setRecentModel,
   type RecentModelScope,
@@ -148,8 +148,8 @@ function ModelMetadataCard({ entry }: { entry: ModelPickerOption }) {
     ? entry.unlockHint === 'openai'
       ? 'Unlock with a plan, credits, an API key — or your OpenAI account.'
       : 'Unlock with a plan, credits, or an API key.'
-    : entry.id === CAMEL_FREE_LLM_MODEL
-      ? "Free and always included. Text-only — it can't see images. Comes with daily research and Oracle boosts powered by premium models."
+    : entry.id === CAMEL_CODE_LLM_MODEL
+      ? "Free and always included. Text-only."
       : null;
 
   return (

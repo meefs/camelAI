@@ -6,7 +6,7 @@ import {
   getDevChatInitialError,
   resolveRefreshedThreadModel,
   shouldShowLowCreditAlert,
-  shouldSwitchExhaustedThreadToCamelFree,
+  shouldSwitchExhaustedThreadToCamelCode,
 } from '@/lib/chat-credit-status';
 import type { OrgBillingOverview } from '@/lib/billing.server';
 
@@ -56,9 +56,9 @@ describe('chat credit status', () => {
     ).toBeNull();
   });
 
-  it('reconciles an exhausted premium thread to Camel Free', () => {
+  it('reconciles an exhausted premium thread to camelCode', () => {
     expect(
-      shouldSwitchExhaustedThreadToCamelFree(
+      shouldSwitchExhaustedThreadToCamelCode(
         {
           availableCreditsCents: 0,
           totalCreditLimitCents: 500,
@@ -69,7 +69,7 @@ describe('chat credit status', () => {
       ),
     ).toBe(true);
     expect(
-      shouldSwitchExhaustedThreadToCamelFree(
+      shouldSwitchExhaustedThreadToCamelCode(
         {
           availableCreditsCents: 0,
           totalCreditLimitCents: 0,
@@ -181,7 +181,7 @@ describe('chat credit status', () => {
     ).toBeNull();
   });
 
-  it('hides hosted credit status while a thread uses Camel Free', () => {
+  it('hides hosted credit status while a thread uses camelCode', () => {
     expect(
       buildBillingCreditStatus(
         makeOverview({

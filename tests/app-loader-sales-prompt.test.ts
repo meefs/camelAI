@@ -122,7 +122,7 @@ describe("_app loader onboarding redirect", () => {
     });
   });
 
-  it("allows onboarded users to use Camel Free without paid billing access", async () => {
+  it("allows onboarded users to use camelCode without paid billing access", async () => {
     const org = {
       id: "org_free",
       name: "Org B",
@@ -191,7 +191,7 @@ describe("_app loader onboarding redirect", () => {
     expect(orgStub.getLlmProviderConfig).not.toHaveBeenCalled();
   });
 
-  it("keeps billing setup routes accessible to Camel Free users", async () => {
+  it("keeps billing setup routes accessible to camelCode users", async () => {
     const org = {
       id: "org_payg",
       name: "Payg Org",
