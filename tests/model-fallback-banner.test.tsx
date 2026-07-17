@@ -37,7 +37,9 @@ describe("ModelFallbackBanner OpenAI guidance", () => {
   it("names camelCode in both fallback variants", () => {
     const { unmount } = renderBanner("gpt-5.6-sol");
     expect(
-      screen.getByText("Monthly credits used up — switched to camelCode."),
+      screen.getByText(
+        "Premium model credits used. You've been switched to camelCode.",
+      ),
     ).toBeInTheDocument();
 
     unmount();

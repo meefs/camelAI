@@ -80,19 +80,19 @@ export function ModelFallbackBanner({
 
   return (
     <div className={cn("w-full", className)} role="status">
-      <div className="relative overflow-hidden rounded-lg border bg-card px-3 py-3 text-card-foreground">
+      <div className="relative overflow-hidden rounded-lg border px-3 py-3">
         <div className="flex items-start gap-2 pr-8">
           <Info className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
           <div className="min-w-0 flex-1 space-y-2">
             <div className="space-y-0.5">
               <p className="text-sm font-semibold">
                 {creditsExhausted
-                  ? "Monthly credits used up — switched to camelCode."
+                  ? <>Premium model credits used. You&apos;ve been switched to camelCode.</>
                   : "Your subscription is unavailable — switched to camelCode."}
               </p>
               {creditsExhausted && isOrgAdmin ? (
                 <p className="text-xs text-muted-foreground">
-                  Get back on {fromModelLabel}:
+                  Get back on {fromModelLabel}
                 </p>
               ) : !isOrgAdmin ? (
                 <p className="text-xs text-muted-foreground">

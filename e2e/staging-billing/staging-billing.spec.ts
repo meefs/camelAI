@@ -43,9 +43,12 @@ test.describe("manual staging onboarding and billing", () => {
     await attachSnapshot(testInfo, "02-credit-drain", drained);
     const fallbackTurn = sendChatAndWait(page, "Reply with exactly: fallback chat works");
     await expect(
-      page.getByText("Monthly credits used up — switched to camelCode.", {
-        exact: true,
-      }),
+      page.getByText(
+        "Premium model credits used. You've been switched to camelCode.",
+        {
+          exact: true,
+        },
+      ),
     ).toBeVisible({ timeout: 60_000 });
     await fallbackTurn;
     await expect(modelPicker).toHaveText("camelCode");
