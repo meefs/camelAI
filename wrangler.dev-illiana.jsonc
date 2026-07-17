@@ -108,6 +108,7 @@
 		"bindings": [
 			{ "name": "CHAT_THREAD", "class_name": "ChatThreadDO" },
 			{ "name": "USER", "class_name": "UserDO" },
+			{ "name": "SIGNUP", "class_name": "SignupDO" },
 			{ "name": "ORG", "class_name": "OrgDO" },
 			{ "name": "ORG_SLUG", "class_name": "OrgSlugDO" },
 			{ "name": "EMAIL_HANDLE", "class_name": "EmailHandleDO" },
@@ -157,6 +158,7 @@
 		{ "tag": "v25", "new_sqlite_classes": ["WorkspaceFilesystemDO"] },
 			{ "tag": "v27", "new_sqlite_classes": ["MigrationPlanningAgent"] },
 			{ "tag": "v28", "new_sqlite_classes": ["ProjectBuildSandbox"] },
-			{ "tag": "v29", "new_sqlite_classes": ["DbQuerySandbox"] }
+			{ "tag": "v29", "new_sqlite_classes": ["DbQuerySandbox"] },
+			{ "tag": "v30", "new_sqlite_classes": ["SignupDO"] }
 	]
 }

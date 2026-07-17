@@ -1,9 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const authDoMocks = vi.hoisted(() => ({
-  getUserByEmail: vi.fn(),
-  createUser: vi.fn(),
-  createOrg: vi.fn(),
+  completePasswordSignup: vi.fn(),
   createSession: vi.fn(),
   isSignupIpBlocked: vi.fn(),
 }));
@@ -48,14 +46,12 @@ describe('signup action IP handling', () => {
     vi.clearAllMocks();
 
     authDoMocks.isSignupIpBlocked.mockResolvedValue(false);
-    authDoMocks.getUserByEmail.mockResolvedValue(null);
-    authDoMocks.createUser.mockResolvedValue({
+    authDoMocks.completePasswordSignup.mockResolvedValue({
+      status: 'ready',
       userId: 'user-1',
       user: { email: 'person@example.com', name: 'Person' },
-    });
-    authDoMocks.createOrg.mockResolvedValue({
-      org: { id: 'org-1' },
-      defaultWorkspaceId: 'ws-1',
+      orgId: 'org-1',
+      workspaceId: 'ws-1',
     });
     authDoMocks.createSession.mockResolvedValue({
       signedToken: 'signed-token',
@@ -86,12 +82,14 @@ describe('signup action IP handling', () => {
 
     expect(response.status).toBe(200);
     expect(authDoMocks.isSignupIpBlocked).toHaveBeenCalledWith(expect.anything(), '203.0.113.10');
-    expect(authDoMocks.createUser).toHaveBeenCalledWith(
+    expect(authDoMocks.completePasswordSignup).toHaveBeenCalledWith(
       expect.anything(),
-      'person@example.com',
-      'password123',
-      'Person',
-      '203.0.113.10'
+      expect.objectContaining({
+        email: 'person@example.com',
+        password: 'password123',
+        name: 'Person',
+        signupIp: '203.0.113.10',
+      }),
     );
   });
 
@@ -121,6 +119,6 @@ describe('signup action IP handling', () => {
       error: 'Signups from this IP address are blocked',
     });
     expect(authDoMocks.isSignupIpBlocked).toHaveBeenCalledWith(expect.anything(), '198.51.100.7');
-    expect(authDoMocks.createUser).not.toHaveBeenCalled();
+    expect(authDoMocks.completePasswordSignup).not.toHaveBeenCalled();
   });
 });

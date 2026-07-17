@@ -10,6 +10,7 @@ import type { McpEnv } from "./mcp-handler.js";
 import type { WorkspaceDO } from "./workspace.js";
 import type { WorkerLogsDO } from "./worker-logs-do.js";
 import type { EmailHandleDO } from "./email-handle-registry.js";
+import type { SignupDO } from "./signup-do.js";
 import type {
   SlackTeamRegistryDO,
   TelegramRegistryDO,
@@ -147,6 +148,7 @@ export interface Env
   POMERIUM_REQUIRED_EMAIL_DOMAIN?: string;
   // Email handle registry (atomic handle claims)
   EMAIL_HANDLE?: DurableObjectNamespace<EmailHandleDO>;
+  SIGNUP: DurableObjectNamespace<SignupDO>;
   // Channel routing registries (strongly consistent routing state)
   TELEGRAM_REGISTRY?: DurableObjectNamespace<TelegramRegistryDO>;
   SLACK_TEAM_REGISTRY?: DurableObjectNamespace<SlackTeamRegistryDO>;

@@ -3,9 +3,7 @@ import { getEnv } from "@/lib/cloudflare.server";
 import { createSessionCookieHeader } from "@/lib/cookies.server";
 import { getAuthEnv } from "@/lib/auth-helpers";
 import {
-  getUserByEmail,
-  createUser,
-  createOrg,
+  completePasswordSignup,
   createSession,
   isSignupIpBlocked,
 } from "@/lib/auth-do";
@@ -34,8 +32,16 @@ export async function action({ request, context }: Route.ActionArgs) {
       name?: string;
       redirectTo?: string;
       turnstileToken?: string;
+      signupAttemptId?: string;
     };
-    const { email, password, name, redirectTo, turnstileToken } = body;
+    const {
+      email,
+      password,
+      name,
+      redirectTo,
+      turnstileToken,
+      signupAttemptId,
+    } = body;
 
     if (!email || !password) {
       return Response.json(
@@ -94,29 +100,23 @@ export async function action({ request, context }: Route.ActionArgs) {
       );
     }
 
-    const existingUser = await getUserByEmail(authEnv, email);
-    if (existingUser) {
+    const signup = await completePasswordSignup(authEnv, {
+      attemptId: signupAttemptId || crypto.randomUUID(),
+      email,
+      password,
+      name: name ?? null,
+      signupIp,
+    });
+    if (signup.status === "exists") {
       return Response.json({ error: "User already exists" }, { status: 400 });
     }
 
-    const { userId, user } = await createUser(
-      authEnv,
-      email,
-      password,
-      name ?? null,
-      signupIp,
-    );
-    const orgName = name || email.split("@")[0];
-    const { org, defaultWorkspaceId } = await createOrg(
-      authEnv,
-      orgName,
-      userId,
-    );
+    const { userId, user, orgId, workspaceId } = signup;
     const { signedToken } = await createSession(
       authEnv,
       userId,
-      org.id,
-      defaultWorkspaceId,
+      orgId,
+      workspaceId,
       {
         name: user.name,
         email: user.email,

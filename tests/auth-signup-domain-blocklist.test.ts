@@ -1,9 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const getEnvMock = vi.fn();
-const getUserByEmailMock = vi.fn();
-const createUserMock = vi.fn();
-const createOrgMock = vi.fn();
+const completePasswordSignupMock = vi.fn();
 const createSessionMock = vi.fn();
 const isSignupIpBlockedMock = vi.fn();
 const createSessionCookieHeaderMock = vi.fn();
@@ -23,9 +21,7 @@ describe('auth signup domain blocklist', () => {
       getEnv: getEnvMock,
     }));
     vi.doMock('@/lib/auth-do', () => ({
-      getUserByEmail: getUserByEmailMock,
-      createUser: createUserMock,
-      createOrg: createOrgMock,
+      completePasswordSignup: completePasswordSignupMock,
       createSession: createSessionMock,
       isSignupIpBlocked: isSignupIpBlockedMock,
     }));
@@ -54,14 +50,12 @@ describe('auth signup domain blocklist', () => {
       TOKEN_SIGNING_SECRET: 'secret',
     });
     appKvGetMock.mockResolvedValue(JSON.stringify(['mailinator.com']));
-    getUserByEmailMock.mockResolvedValue(null);
-    createUserMock.mockResolvedValue({
+    completePasswordSignupMock.mockResolvedValue({
+      status: 'ready',
       userId: 'user_123',
       user: { email: 'user@example.com', name: 'Test User' },
-    });
-    createOrgMock.mockResolvedValue({
-      org: { id: 'org_123' },
-      defaultWorkspaceId: 'ws_123',
+      orgId: 'org_123',
+      workspaceId: 'ws_123',
     });
     createSessionMock.mockResolvedValue({ signedToken: 'signed-token' });
     isSignupIpBlockedMock.mockResolvedValue(false);
@@ -90,8 +84,7 @@ describe('auth signup domain blocklist', () => {
     await expect(response.json()).resolves.toEqual({
       error: 'Email signups from this domain are not allowed',
     });
-    expect(getUserByEmailMock).not.toHaveBeenCalled();
-    expect(createUserMock).not.toHaveBeenCalled();
+    expect(completePasswordSignupMock).not.toHaveBeenCalled();
     expect(sendUserVerificationEmailMock).not.toHaveBeenCalled();
   });
 });

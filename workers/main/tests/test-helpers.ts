@@ -13,6 +13,7 @@
 import type { UserDO, OrgDO, OrgRole, User } from '../src/auth';
 import type { WorkspaceDO, Workspace, WorkspaceAccessLevel as WorkspaceAccessLevelDO } from '../src/workspace';
 import type { AuthEnv } from '../../../src/lib/auth-helpers';
+import type { SignupDO } from '../src/signup-do';
 import { hashPassword, verifyPassword } from '../src/password';
 import { getSession, updateSession, destroySession, type SessionData } from '../src/session-kv';
 import { encryptCredentials } from '../../../src/lib/integration-crypto';
@@ -38,6 +39,7 @@ import {
 
 export interface TestEnv {
   USER: DurableObjectNamespace<UserDO>;
+  SIGNUP: DurableObjectNamespace<SignupDO>;
   ORG: DurableObjectNamespace<OrgDO>;
   WORKSPACE: DurableObjectNamespace<WorkspaceDO>;
   APP_DB?: D1Database;

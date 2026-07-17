@@ -330,6 +330,24 @@ export async function createUser(
   }
 }
 
+export async function completePasswordSignup(
+  env: AuthEnv,
+  input: {
+    attemptId: string;
+    email: string;
+    password: string;
+    name: string | null;
+    signupIp: string | null;
+  },
+) {
+  const normalizedEmail = input.email.trim().toLowerCase();
+  if (!env.SIGNUP) {
+    throw new Error("SIGNUP Durable Object binding is not configured");
+  }
+  const stub = env.SIGNUP.get(env.SIGNUP.idFromName(normalizedEmail));
+  return stub.completePasswordSignup({ ...input, email: normalizedEmail });
+}
+
 export async function isSignupIpBlocked(
   env: AuthEnv,
   ip: string | null | undefined,

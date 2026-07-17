@@ -4,6 +4,7 @@ import type { WorkspaceDO } from "../workspace";
 import type { ChatThreadDO } from "../chat-thread-do";
 import type { EmailHandleDO } from "../email-handle-registry";
 import type { WorkspaceCronDO } from "../workspace-cron";
+import type { SignupDO } from "../signup-do";
 
 // Environment bindings needed by identity Durable Objects
 export interface DOEnv {
@@ -15,6 +16,7 @@ export interface DOEnv {
   OBSERVABILITY_EVENTS?: AnalyticsEngineDataset;
   ERROR_ANALYTICS?: AnalyticsEngineDataset;
   EMAIL_TO_USER: KVNamespace;
+  SIGNUP: DurableObjectNamespace<SignupDO>;
   APP_KV: KVNamespace;
   EMAIL_HANDLE?: DurableObjectNamespace<EmailHandleDO>;
   WORKSPACE_CRON?: DurableObjectNamespace<WorkspaceCronDO>;

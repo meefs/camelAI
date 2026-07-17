@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useLayoutEffect } from "react";
+import { useState, useEffect, useLayoutEffect, useRef } from "react";
 import { useNavigate, Link, useFetcher } from "react-router";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -44,6 +44,7 @@ export function SignupForm({
   const [turnstileToken, setTurnstileToken] = useState<string | null>(null);
   const [turnstileResetKey, setTurnstileResetKey] = useState(0);
   const [validationError, setValidationError] = useState("");
+  const signupAttemptId = useRef(crypto.randomUUID());
 
   const submitting = fetcher.state !== "idle";
   const serverError = fetcher.data?.error as string | undefined;
@@ -111,6 +112,7 @@ export function SignupForm({
         name: name || undefined,
         redirectTo,
         turnstileToken: turnstileToken || undefined,
+        signupAttemptId: signupAttemptId.current,
       }),
       {
         method: "post",

@@ -5,6 +5,7 @@ import type { WorkspaceFilesystemDO } from "../../workers/main/src/workspace-fil
 import type { ChatThreadDO } from "../../workers/main/src/chat-thread-do";
 import type { WorkspaceCronDO } from "../../workers/main/src/workspace-cron";
 import type { WorkerLogsDO } from "../../workers/main/src/worker-logs-do";
+import type { SignupDO } from "../../workers/main/src/signup-do";
 import type {
   SlackTeamRegistryDO,
   TelegramRegistryDO,
@@ -19,6 +20,7 @@ export interface CloudflareEnv {
   // Durable Objects
   CHAT_THREAD: DurableObjectNamespace<ChatThreadDO>;
   USER: DurableObjectNamespace<UserDO>;
+  SIGNUP: DurableObjectNamespace<SignupDO>;
   ORG: DurableObjectNamespace<OrgDO>;
   WORKSPACE: DurableObjectNamespace<WorkspaceDO>;
   WORKSPACE_FS: DurableObjectNamespace<WorkspaceFilesystemDO>;

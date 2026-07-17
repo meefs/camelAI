@@ -3,9 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const waitUntilMock = vi.fn();
 const getEnvMock = vi.fn();
 const createSessionCookieHeaderMock = vi.fn();
-const getUserByEmailMock = vi.fn();
-const createUserMock = vi.fn();
-const createOrgMock = vi.fn();
+const completePasswordSignupMock = vi.fn();
 const createSessionMock = vi.fn();
 const isSignupIpBlockedMock = vi.fn();
 const sendUserVerificationEmailMock = vi.fn();
@@ -37,6 +35,7 @@ function buildSignupBody(overrides: Record<string, unknown> = {}) {
     name: "Test User",
     redirectTo: "/chat?prompt_key=sales-key-123",
     turnstileToken: "turnstile-token",
+    signupAttemptId: "signup-attempt-123",
     turnstileResponse: "turnstile-token",
     "cf-turnstile-response": "turnstile-token",
     ...overrides,
@@ -62,9 +61,7 @@ describe("auth signup sales prompt flow", () => {
       createSessionCookieHeader: createSessionCookieHeaderMock,
     }));
     vi.doMock("@/lib/auth-do", () => ({
-      getUserByEmail: getUserByEmailMock,
-      createUser: createUserMock,
-      createOrg: createOrgMock,
+      completePasswordSignup: completePasswordSignupMock,
       createSession: createSessionMock,
       isSignupIpBlocked: isSignupIpBlockedMock,
     }));
@@ -112,14 +109,12 @@ describe("auth signup sales prompt flow", () => {
       TURNSTILE_SITE_KEY: "turnstile-site-key",
     });
     createSessionCookieHeaderMock.mockReturnValue("session-cookie");
-    getUserByEmailMock.mockResolvedValue(null);
-    createUserMock.mockResolvedValue({
+    completePasswordSignupMock.mockResolvedValue({
+      status: "ready",
       userId: "user_123",
       user: { email: "test@example.com", name: "Test User" },
-    });
-    createOrgMock.mockResolvedValue({
-      org: { id: "org_123" },
-      defaultWorkspaceId: "ws_123",
+      orgId: "org_123",
+      workspaceId: "ws_123",
     });
     createSessionMock.mockResolvedValue({ signedToken: "signed-token" });
     isSignupIpBlockedMock.mockResolvedValue(false);
@@ -197,6 +192,25 @@ describe("auth signup sales prompt flow", () => {
     );
   });
 
+  it("returns the coordinator's existing-account result", async () => {
+    completePasswordSignupMock.mockResolvedValue({ status: "exists" });
+
+    const response = await action({
+      request: new Request("https://camelai.dev/api/auth/signup", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: buildSignupBody(),
+      }),
+      context: {},
+    } as never);
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({
+      error: "User already exists",
+    });
+    expect(createSessionMock).not.toHaveBeenCalled();
+  });
+
   it("rejects signup when turnstile verification fails before creating a user", async () => {
     fetchMock.mockResolvedValueOnce(
       new Response(
@@ -228,9 +242,7 @@ describe("auth signup sales prompt flow", () => {
         error: expect.stringMatching(/security check failed/i),
       }),
     );
-    expect(getUserByEmailMock).not.toHaveBeenCalled();
-    expect(createUserMock).not.toHaveBeenCalled();
-    expect(createOrgMock).not.toHaveBeenCalled();
+    expect(completePasswordSignupMock).not.toHaveBeenCalled();
     expect(createSessionMock).not.toHaveBeenCalled();
   });
 
@@ -266,9 +278,7 @@ describe("auth signup sales prompt flow", () => {
         error: expect.stringMatching(/security check failed/i),
       }),
     );
-    expect(getUserByEmailMock).not.toHaveBeenCalled();
-    expect(createUserMock).not.toHaveBeenCalled();
-    expect(createOrgMock).not.toHaveBeenCalled();
+    expect(completePasswordSignupMock).not.toHaveBeenCalled();
     expect(createSessionMock).not.toHaveBeenCalled();
   });
 
@@ -289,9 +299,7 @@ describe("auth signup sales prompt flow", () => {
 
     expect(response.status).toBe(400);
     expect(fetchMock).not.toHaveBeenCalled();
-    expect(getUserByEmailMock).not.toHaveBeenCalled();
-    expect(createUserMock).not.toHaveBeenCalled();
-    expect(createOrgMock).not.toHaveBeenCalled();
+    expect(completePasswordSignupMock).not.toHaveBeenCalled();
     expect(createSessionMock).not.toHaveBeenCalled();
   });
 });

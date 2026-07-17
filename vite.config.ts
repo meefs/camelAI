@@ -58,6 +58,7 @@ function withLocalDevVars(config: WorkerConfig): Partial<WorkerConfig> | void {
   const localAuthBypassHosts = process.env.LOCAL_AUTH_BYPASS_HOSTS;
   const localAuthUserEmail = process.env.LOCAL_AUTH_USER_EMAIL;
   const localAuthUserName = process.env.LOCAL_AUTH_USER_NAME;
+  const tokenSigningSecret = process.env.TOKEN_SIGNING_SECRET;
   const workerBaseUrl = process.env.WORKER_BASE_URL;
   const cfDispatchNamespace = process.env.CF_DISPATCH_NAMESPACE;
   const cfWorkerName = process.env.CF_WORKER_NAME;
@@ -76,6 +77,7 @@ function withLocalDevVars(config: WorkerConfig): Partial<WorkerConfig> | void {
     !localAuthBypassHosts &&
     !localAuthUserEmail &&
     !localAuthUserName &&
+    !tokenSigningSecret &&
     !workerBaseUrl &&
     !cfDispatchNamespace &&
     !cfWorkerName &&
@@ -102,6 +104,7 @@ function withLocalDevVars(config: WorkerConfig): Partial<WorkerConfig> | void {
         ? { LOCAL_AUTH_USER_EMAIL: localAuthUserEmail }
         : {}),
       ...(localAuthUserName ? { LOCAL_AUTH_USER_NAME: localAuthUserName } : {}),
+      ...(tokenSigningSecret ? { TOKEN_SIGNING_SECRET: tokenSigningSecret } : {}),
       ...(workerBaseUrl ? { WORKER_BASE_URL: workerBaseUrl } : {}),
       ...(cfDispatchNamespace ? { CF_DISPATCH_NAMESPACE: cfDispatchNamespace } : {}),
       ...(cfWorkerName ? { CF_WORKER_NAME: cfWorkerName } : {}),

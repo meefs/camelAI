@@ -904,6 +904,45 @@ export class UserDO extends DurableObject<DOEnv> {
     return profile;
   }
 
+  /**
+   * Idempotent password-user bootstrap used by SignupDO. The coordinator
+   * persists the user id before calling across Durable Objects, so retries can
+   * safely finish a write that stopped between profile and password storage.
+   */
+  async ensurePasswordUser(
+    id: string,
+    email: string,
+    password: string,
+    name: string | null,
+    signupIp: string | null = null,
+  ): Promise<User> {
+    const existing = await this.getProfile();
+    if (!existing) {
+      return this.createUser(id, email, password, name, signupIp);
+    }
+    if (existing.id !== id || existing.email !== email) {
+      throw new Error("signup_user_conflict");
+    }
+
+    const passwordHash = await this.getPasswordHash();
+    if (passwordHash) {
+      if (!(await verifyPassword(password, passwordHash))) {
+        throw new Error("signup_attempt_conflict");
+      }
+    } else {
+      await this.setPasswordHash(await hashPassword(password));
+    }
+
+    if (signupIp && !this.getSignupIp()) {
+      this.setSignupIp(signupIp);
+      dispatchAdminEvent(this.ctx, this.env, {
+        type: "user_upsert",
+        payload: { ...existing, signup_ip: signupIp },
+      });
+    }
+    return existing;
+  }
+
   async setOrphaned(isOrphaned: boolean): Promise<void> {
     const profile = await this.getProfile();
     if (!profile) return;

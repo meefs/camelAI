@@ -2422,50 +2422,76 @@ export class OrgDO extends DurableObject<DOEnv> {
     createdBy: string,
     initialRole: OrgRole = "owner",
   ): Promise<{ org: Organization; defaultWorkspaceId: string }> {
-    const now = Date.now();
-    const slug = await generateUniqueOrgSlug(id, this.env.APP_KV);
-    await registerOrgSlug(this.env.APP_KV, slug, id);
+    const workspaceId = crypto.randomUUID();
+    return this.ensureInitialOrg(id, name, createdBy, workspaceId, initialRole);
+  }
 
-    const info: Organization = {
-      id,
-      name,
-      slug,
-      created_at: now,
-      created_by: createdBy,
-      billing_status: "inactive",
-      billing_plan: "payg",
-      billing_seat_count: 1,
-      billing_customer_id: null,
-      billing_subscription_id: null,
-      billing_subscription_status: null,
-      billing_trial_started_at: null,
-      billing_trial_ends_at: null,
-      billing_credit_purchase_total_cents: 0,
-      billing_credit_grant_total_cents: 0,
-      billing_trial_credit_grant_cents: 0,
-      billing_trial_credit_granted_at: null,
-      billing_last_included_credit_invoice_id: null,
-      billing_credit_usage_started_at: null,
-      archived: false,
-      archived_at: null,
-      archived_by: null,
-    };
+  /** Idempotent initial org/workspace bootstrap for the signup coordinator. */
+  async ensureInitialOrg(
+    id: string,
+    name: string,
+    createdBy: string,
+    workspaceId: string,
+    initialRole: OrgRole = "owner",
+  ): Promise<{ org: Organization; defaultWorkspaceId: string }> {
+    const now = Date.now();
+    let info = await this.getInfo();
+    let created = false;
+
+    if (!info) {
+      const slug = await generateUniqueOrgSlug(id, this.env.APP_KV);
+      await registerOrgSlug(this.env.APP_KV, slug, id);
+      info = {
+        id,
+        name,
+        slug,
+        created_at: now,
+        created_by: createdBy,
+        billing_status: "inactive",
+        billing_plan: "payg",
+        billing_seat_count: 1,
+        billing_customer_id: null,
+        billing_subscription_id: null,
+        billing_subscription_status: null,
+        billing_trial_started_at: null,
+        billing_trial_ends_at: null,
+        billing_credit_purchase_total_cents: 0,
+        billing_credit_grant_total_cents: 0,
+        billing_trial_credit_grant_cents: 0,
+        billing_trial_credit_granted_at: null,
+        billing_last_included_credit_invoice_id: null,
+        billing_credit_usage_started_at: null,
+        archived: false,
+        archived_at: null,
+        archived_by: null,
+      };
+      await this.setInfo(info);
+      created = true;
+    } else if (info.id !== id || info.created_by !== createdBy) {
+      throw new Error("signup_org_conflict");
+    }
 
     try {
-      await this.setInfo(info);
-
       // Add creator with the role chosen by the auth flow. Normal app-created
       // orgs use the default owner role; SSO-created orgs may start as members.
-      await this.addMember(createdBy, initialRole, createdBy);
-      this.log("org_created", createdBy, id, { name });
+      if (!(await this.getMember(createdBy))) {
+        await this.addMember(createdBy, initialRole, createdBy);
+      }
+      if (created) {
+        this.log("org_created", createdBy, id, { name });
+      }
 
-      const workspaceId = crypto.randomUUID();
-      await this.createWorkspaceRecord(
-        workspaceId,
-        "Default Workspace",
-        createdBy,
-        null,
+      const workspaceExists = (await this.getWorkspaces()).some(
+        (workspace) => workspace.id === workspaceId,
       );
+      if (!workspaceExists) {
+        await this.createWorkspaceRecord(
+          workspaceId,
+          "Default Workspace",
+          createdBy,
+          null,
+        );
+      }
       await this.setWorkspaceAccess(workspaceId, createdBy, "full", createdBy);
 
       try {

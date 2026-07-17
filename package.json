@@ -77,6 +77,7 @@
 		"test:eval:deploy": "node scripts/run-agent-eval.mjs do-backed-project-deploy-live",
 		"test:eval:sandbox": "node scripts/run-agent-eval.mjs project-write-file-live",
 		"test:e2e": "playwright test",
+		"test:e2e:signup": "playwright test --config playwright.signup.config.ts",
 		"test:e2e:ui": "playwright test --ui",
 		"test:e2e:staging-billing": "node scripts/run-staging-billing-e2e.mjs",
 		"publish:e2e:staging-billing": "E2E_REPORT_DIR=playwright-report-staging-billing node scripts/publish-e2e-report.mjs",
