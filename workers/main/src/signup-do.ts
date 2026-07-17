@@ -12,15 +12,11 @@ interface SignupEnv {
 }
 
 interface PasswordSignupState {
-  version: 1;
   attemptId: string;
   email: string;
   userId: string;
   orgId: string;
   workspaceId: string;
-  status: "provisioning" | "complete";
-  createdAt: number;
-  completedAt: number | null;
 }
 
 export interface CompletePasswordSignupInput {
@@ -73,7 +69,13 @@ export class SignupDO extends DurableObject<SignupEnv> {
       if (existingUserId) {
         return { status: "exists" };
       }
-      state = this.newState(attemptId, email, crypto.randomUUID());
+      state = {
+        attemptId,
+        email,
+        userId: crypto.randomUUID(),
+        orgId: crypto.randomUUID(),
+        workspaceId: crypto.randomUUID(),
+      };
       this.ctx.storage.kv.put(SIGNUP_STATE_KEY, state);
     }
 
@@ -83,7 +85,7 @@ export class SignupDO extends DurableObject<SignupEnv> {
     }
 
     const userStub = this.env.USER.get(this.env.USER.idFromName(state.userId));
-    const user = await userStub.ensurePasswordUser(
+    const user = await userStub.createUser(
       state.userId,
       email,
       input.password,
@@ -94,23 +96,15 @@ export class SignupDO extends DurableObject<SignupEnv> {
 
     const orgName = input.name || user.name || email.split("@")[0];
     const orgStub = this.env.ORG.get(this.env.ORG.idFromName(state.orgId));
-    await orgStub.ensureInitialOrg(
+    await orgStub.createOrg(
       state.orgId,
       orgName,
       state.userId,
+      "owner",
       state.workspaceId,
     );
     if (!(await userStub.hasOrg(state.orgId))) {
       await userStub.addOrg(state.orgId, "owner", state.workspaceId);
-    }
-
-    if (state.status !== "complete") {
-      state = {
-        ...state,
-        status: "complete",
-        completedAt: Date.now(),
-      };
-      this.ctx.storage.kv.put(SIGNUP_STATE_KEY, state);
     }
 
     return {
@@ -119,24 +113,6 @@ export class SignupDO extends DurableObject<SignupEnv> {
       user,
       orgId: state.orgId,
       workspaceId: state.workspaceId,
-    };
-  }
-
-  private newState(
-    attemptId: string,
-    email: string,
-    userId: string,
-  ): PasswordSignupState {
-    return {
-      version: 1,
-      attemptId,
-      email,
-      userId,
-      orgId: crypto.randomUUID(),
-      workspaceId: crypto.randomUUID(),
-      status: "provisioning",
-      createdAt: Date.now(),
-      completedAt: null,
     };
   }
 }

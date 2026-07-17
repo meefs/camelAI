@@ -2421,18 +2421,7 @@ export class OrgDO extends DurableObject<DOEnv> {
     name: string,
     createdBy: string,
     initialRole: OrgRole = "owner",
-  ): Promise<{ org: Organization; defaultWorkspaceId: string }> {
-    const workspaceId = crypto.randomUUID();
-    return this.ensureInitialOrg(id, name, createdBy, workspaceId, initialRole);
-  }
-
-  /** Idempotent initial org/workspace bootstrap for the signup coordinator. */
-  async ensureInitialOrg(
-    id: string,
-    name: string,
-    createdBy: string,
-    workspaceId: string,
-    initialRole: OrgRole = "owner",
+    workspaceId: string = crypto.randomUUID(),
   ): Promise<{ org: Organization; defaultWorkspaceId: string }> {
     const now = Date.now();
     let info = await this.getInfo();

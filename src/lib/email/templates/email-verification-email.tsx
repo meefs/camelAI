@@ -54,7 +54,7 @@ export function EmailVerificationEmailTemplate({
 
           <Section style={{ margin: '24px 0' }}>
             <Button href={verificationUrl} style={buttonStyle}>
-              Verify email
+              Verify email and continue
             </Button>
           </Section>
 
@@ -72,4 +72,3 @@ export function EmailVerificationEmailTemplate({
     </Html>
   );
 }
-

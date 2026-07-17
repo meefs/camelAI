@@ -42,4 +42,14 @@ describe("email verification token", () => {
     const payload = await validateEmailVerificationToken(secret, token);
     expect(payload).toBeNull();
   });
+
+  it("rejects tokens issued for longer than 15 minutes", async () => {
+    const token = await createEmailVerificationToken(secret, {
+      user_id: "user-123",
+      email: "test@example.com",
+      ttlMs: 16 * 60 * 1000,
+    });
+
+    expect(await validateEmailVerificationToken(secret, token)).toBeNull();
+  });
 });

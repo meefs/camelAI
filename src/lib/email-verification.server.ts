@@ -4,9 +4,10 @@ import {
   sendEmailVerificationEmail,
   type EmailDeliveryResult,
 } from "./email.server";
-import { createEmailVerificationToken } from "./email-verification-token";
-
-const EMAIL_VERIFICATION_TOKEN_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
+import {
+  createEmailVerificationToken,
+  EMAIL_VERIFICATION_TOKEN_TTL_MS,
+} from "./email-verification-token";
 
 export async function sendUserVerificationEmail(args: {
   env: Pick<

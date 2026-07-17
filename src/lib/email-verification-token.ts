@@ -1,5 +1,5 @@
 const TOKEN_PREFIX = "ev_";
-const DEFAULT_TOKEN_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
+export const EMAIL_VERIFICATION_TOKEN_TTL_MS = 15 * 60 * 1000;
 
 export interface EmailVerificationTokenPayload {
   purpose: "email_verification";
@@ -44,7 +44,7 @@ export async function createEmailVerificationToken(
   },
 ): Promise<string> {
   const issuedAt = data.issuedAt ?? Date.now();
-  const ttlMs = data.ttlMs ?? DEFAULT_TOKEN_TTL_MS;
+  const ttlMs = data.ttlMs ?? EMAIL_VERIFICATION_TOKEN_TTL_MS;
   const payload: EmailVerificationTokenPayload = {
     purpose: "email_verification",
     user_id: data.user_id,
@@ -104,7 +104,12 @@ export async function validateEmailVerificationToken(
       return null;
     if (typeof payload.email !== "string" || payload.email.length === 0)
       return null;
-    if (typeof payload.exp !== "number" || payload.exp < Date.now())
+    if (
+      typeof payload.iat !== "number" ||
+      typeof payload.exp !== "number" ||
+      payload.exp < Date.now() ||
+      payload.exp - payload.iat > EMAIL_VERIFICATION_TOKEN_TTL_MS
+    )
       return null;
 
     return payload;
