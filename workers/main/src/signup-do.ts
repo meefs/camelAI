@@ -14,6 +14,7 @@ interface SignupEnv {
 interface PasswordSignupState {
   attemptId: string;
   email: string;
+  orgName?: string;
   userId: string;
   orgId: string;
   workspaceId: string;
@@ -64,14 +65,15 @@ export class SignupDO extends DurableObject<SignupEnv> {
       return { status: "exists" };
     }
 
+    const mappedUserId = await this.env.EMAIL_TO_USER.get(`email:${email}`);
     if (!state) {
-      const existingUserId = await this.env.EMAIL_TO_USER.get(`email:${email}`);
-      if (existingUserId) {
+      if (mappedUserId) {
         return { status: "exists" };
       }
       state = {
         attemptId,
         email,
+        orgName: input.name?.trim() || email.split("@")[0],
         userId: crypto.randomUUID(),
         orgId: crypto.randomUUID(),
         workspaceId: crypto.randomUUID(),
@@ -79,33 +81,33 @@ export class SignupDO extends DurableObject<SignupEnv> {
       this.ctx.storage.kv.put(SIGNUP_STATE_KEY, state);
     }
 
-    const mappedUserId = await this.env.EMAIL_TO_USER.get(`email:${email}`);
     if (mappedUserId && mappedUserId !== state.userId) {
       return { status: "exists" };
     }
 
     const userStub = this.env.USER.get(this.env.USER.idFromName(state.userId));
-    const user = await userStub.createUser(
-      state.userId,
-      email,
-      input.password,
-      input.name,
-      input.signupIp,
-    );
-    await this.env.EMAIL_TO_USER.put(`email:${email}`, state.userId);
-
-    const orgName = input.name || user.name || email.split("@")[0];
     const orgStub = this.env.ORG.get(this.env.ORG.idFromName(state.orgId));
-    await orgStub.createOrg(
-      state.orgId,
-      orgName,
-      state.userId,
-      "owner",
-      state.workspaceId,
-    );
-    if (!(await userStub.hasOrg(state.orgId))) {
-      await userStub.addOrg(state.orgId, "owner", state.workspaceId);
-    }
+    const [user] = await Promise.all([
+      userStub.createUser(
+        state.userId,
+        email,
+        input.password,
+        input.name,
+        input.signupIp,
+      ),
+      orgStub.createOrg(
+        state.orgId,
+        state.orgName || input.name?.trim() || email.split("@")[0],
+        state.userId,
+        "owner",
+        state.workspaceId,
+      ),
+    ]);
+
+    await Promise.all([
+      this.env.EMAIL_TO_USER.put(`email:${email}`, state.userId),
+      userStub.ensureOrg(state.orgId, "owner", state.workspaceId),
+    ]);
 
     return {
       status: "ready",

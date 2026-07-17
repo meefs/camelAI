@@ -65,6 +65,28 @@ describe("SignupDO", () => {
     expect(await orgStub.getWorkspaces()).toHaveLength(1);
   });
 
+  it("keeps initial membership idempotent when provisioning is replayed", async () => {
+    const email = testEmail("membership-retry");
+    const input = signupInput(email);
+    const stub = signupStub(email);
+
+    const first = await stub.completePasswordSignup(input);
+    const retry = await stub.completePasswordSignup(input);
+
+    expect(first.status).toBe("ready");
+    expect(retry).toEqual(first);
+    if (first.status !== "ready") return;
+
+    const userStub = testEnv.USER.get(testEnv.USER.idFromName(first.userId));
+    expect(await userStub.getOrgs()).toEqual([
+      expect.objectContaining({
+        org_id: first.orgId,
+        role: "owner",
+        last_workspace_id: first.workspaceId,
+      }),
+    ]);
+  });
+
   it("rejects a different attempt after an email has been claimed", async () => {
     const email = testEmail("claimed");
     const stub = signupStub(email);

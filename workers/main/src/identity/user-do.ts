@@ -1084,6 +1084,33 @@ export class UserDO extends DurableObject<DOEnv> {
       });
   }
 
+  async ensureOrg(
+    orgId: string,
+    role: OrgRole,
+    lastWorkspaceId: string | null,
+  ): Promise<boolean> {
+    const existing = this.sql
+      .exec("SELECT 1 FROM orgs WHERE org_id = ?", orgId)
+      .toArray();
+    if (existing.length > 0) return false;
+
+    this.sql.exec(
+      "INSERT INTO orgs (org_id, role, joined_at, last_workspace_id) VALUES (?, ?, ?, ?)",
+      orgId,
+      role,
+      Date.now(),
+      lastWorkspaceId,
+    );
+    const profile = await this.getProfile();
+    if (profile) {
+      dispatchAdminEvent(this.ctx, this.env, {
+        type: "user_org_delta",
+        payload: { user_id: profile.id, delta: 1 },
+      });
+    }
+    return true;
+  }
+
   async removeOrg(orgId: string): Promise<void> {
     this.sql.exec("DELETE FROM orgs WHERE org_id = ?", orgId);
     const profile = await this.getProfile();
