@@ -852,7 +852,7 @@ const CODE_MODE_TOOL_REGISTRY: CodeModeToolRegistration[] = [
   ),
   codeModePassthroughTool(
     "take_screenshot",
-    "Capture a screenshot of a deployed workspace app. Returns concise metadata by default; pass include_image_data_url=true only when the inline base64 image is needed. Arguments: { script_name, path?, width?, height?, wait_ms?, include_image_data_url? }.",
+    "Opt-in visual verification for a deployed workspace app. Do not capture a screenshot automatically after every successful deploy; use this when the user or task explicitly requests a visual check or when diagnosing a deployed UI issue. Returns concise metadata by default; pass include_image_data_url=true only when the inline base64 image is needed. Arguments: { script_name, path?, width?, height?, wait_ms?, include_image_data_url? }.",
     Type.Object({
       script_name: Type.String(),
       path: Type.Optional(Type.String()),

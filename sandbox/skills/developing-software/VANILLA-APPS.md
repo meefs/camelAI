@@ -55,4 +55,4 @@ Use a Durable Object when state must be shared, durable on the server, transacti
 
 ## Verification
 
-After deployment, exercise the primary input path with `env.BROWSER`, test keyboard operation, reload to verify intended persistence, resize through narrow and wide layouts, and inspect `logs.pageErrors`. For games, also test pause/resume, reset, win/loss boundaries, and rapid or simultaneous inputs.
+A successful deploy is sufficient for routine build-and-ship requests. Do not automatically launch `env.BROWSER` or capture screenshots after deployment. If the user requests browser/E2E verification, the task is specifically debugging deployed behavior, or browser evidence is explicitly required, test only the relevant interactions and inspect `logs.pageErrors`. For a requested game verification pass, relevant checks can include keyboard operation, pause/resume, reset, win/loss boundaries, persistence, layout sizing, and rapid or simultaneous inputs.

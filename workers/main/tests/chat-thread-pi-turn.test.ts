@@ -4539,6 +4539,9 @@ describe('ChatThreadDO Pi turn handling', () => {
       'build, publish, return the live URL, and open the app in preview',
     );
     expect(directSkill.content[0].text).toContain('dry_run: true');
+    expect(directSkill.content[0].text).toContain(
+      'Do not automatically launch `env.BROWSER` or capture screenshots after every deploy',
+    );
     expect(directSkill.content[0].text).not.toContain('tools.build_project');
     expect(directSkill.content[0].text).not.toContain('tools.set_preview({ app_name');
     expect(directSkill.details.details.source).toBe('bundled_skill');
@@ -4548,6 +4551,9 @@ describe('ChatThreadDO Pi turn handling', () => {
       file: 'VANILLA-APPS.md',
     });
     expect(directReference.content[0].text).toContain('# Vanilla Apps');
+    expect(directReference.content[0].text).toContain(
+      'Do not automatically launch `env.BROWSER` or capture screenshots after deployment',
+    );
     expect(directReference.details.details.source).toBe('bundled_skill');
 
     const durableObjectsReference = await readSkill.execute('tool3', {
@@ -5651,6 +5657,8 @@ describe('ChatThreadDO Pi turn handling', () => {
     expect(prompt).toContain('pass `dry_run: true`');
     expect(prompt).toContain('no manual app `set_preview` or `list_apps` call is needed after deploy');
     expect(prompt).toContain('`set_preview` remains available when you explicitly want to reopen or switch');
+    expect(prompt).toContain('Browser and screenshot tools are opt-in verification tools');
+    expect(prompt).toContain('Do not launch `env.BROWSER` or capture a screenshot merely because an app was deployed');
     expect(prompt).not.toContain('tools.build_project');
     expect(prompt).not.toContain('call `build_project` before');
     expect(prompt).not.toContain('tools.send_email');

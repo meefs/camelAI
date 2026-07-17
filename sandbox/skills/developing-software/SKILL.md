@@ -15,7 +15,7 @@ Read this file completely once per task before the first `create_project` call. 
 4. Reshape the starter into the requested product. Rename the example entity, schema, routes, actions, validation, and UI copy consistently instead of adding a second implementation beside the demo.
 5. In React Router projects, add standard UI through `add_shadcn_component`; do not hand-write components or page shells that the bundled registry provides. In `vanilla` projects, work directly in `public/`.
 6. Use `deploy_project` directly to build, publish, return the live URL, and open the app in preview. No manual `set_preview` or `list_apps` call is needed afterward; `set_preview` remains available when you explicitly want to reopen or switch previews. Pass `dry_run: true` only when the user explicitly wants validation without publishing.
-7. After a successful deployment, exercise important flows with `env.BROWSER`, and inspect `logs.pageErrors`. Use a screenshot for visual verification.
+7. Treat a successful deploy as sufficient completion evidence for routine build-and-ship requests. Do not automatically launch `env.BROWSER` or capture screenshots after every deploy. Use browser or visual verification only when the user asks for it, the task is specifically diagnosing a deployed UI/runtime issue, or the task explicitly requires browser evidence.
 
 Use camelAI project tools for scaffolding, dependencies, builds, and deploys. Do not run `create-worker`, `wrangler init`, `npm create cloudflare`, package-manager deploy commands, or shell-based scaffolding.
 
@@ -74,7 +74,9 @@ await tools.deploy_project({ project: "my-app", dry_run: true });
 
 If a build or deploy fails, read the returned error and log excerpt, fix the source, and retry. Never report success for a failed deploy.
 
-For an interactive deployed app:
+### Optional Browser Verification
+
+Do not run browser automation merely because deployment succeeded. When the user requests browser/E2E verification, the task is specifically debugging deployed behavior, or the task explicitly requires browser evidence, use a focused check:
 
 ```ts
 const browser = await env.BROWSER.launch({ scriptName: "my-app" });
@@ -84,4 +86,4 @@ const logs = await browser.logs();
 await browser.close();
 ```
 
-Check the primary flow, persistence across a reload when applicable, empty/error states, and `logs.pageErrors`.
+Limit the check to the relevant flow and inspect `logs.pageErrors`. Avoid expanding a routine deploy into a broad E2E test pass.

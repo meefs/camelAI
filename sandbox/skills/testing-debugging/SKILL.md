@@ -255,7 +255,9 @@ bun test --coverage
 
 ## Visual Verification
 
-For deployed app UI checks, use js_exec:
+Screenshots and browser sessions are opt-in verification tools, not an automatic post-deploy step. A successful deploy is enough for routine build-and-ship requests. Use these tools when the user asks for visual/browser/E2E verification, the task is specifically diagnosing a deployed UI/runtime issue, or browser evidence is explicitly required.
+
+For a requested deployed app UI check, use js_exec:
 
 ```javascript
 await env.SCREENSHOT.capture({ scriptName: "my-app", path: "/" });
@@ -267,7 +269,7 @@ This uses Cloudflare Browser Rendering through the platform binding, including f
 
 ## Interactive Browser Testing
 
-For end-to-end checks of a deployed app — clicking buttons, filling forms, asserting rendered text, catching console errors — launch an interactive browser session in js_exec with `env.BROWSER`. It runs on Cloudflare Browser Rendering (private apps included) and exposes a Playwright-style API:
+For requested or task-required end-to-end checks of a deployed app — clicking buttons, filling forms, asserting rendered text, catching console errors — launch an interactive browser session in js_exec with `env.BROWSER`. Do not add this pass automatically after a successful deploy. It runs on Cloudflare Browser Rendering (private apps included) and exposes a Playwright-style API:
 
 ```javascript
 const b = await env.BROWSER.launch({ scriptName: "my-app", path: "/" });
