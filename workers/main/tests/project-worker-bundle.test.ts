@@ -123,6 +123,22 @@ describe("collectWorkerBundleFromSandbox", () => {
     expect(bundle.metadata.r2_buckets).toBeUndefined();
   });
 
+  it("lifts a wrangler AI binding into upload bindings", async () => {
+    const files = new Map<string, string>([
+      ["/workspace/demo/build/server/wrangler.json", JSON.stringify({
+        main: "index.js",
+        no_bundle: true,
+        ai: { binding: "AI" },
+      })],
+      ["/workspace/demo/build/server/index.js", "export default {};"],
+    ]);
+
+    const bundle = await collectWorkerBundleFromSandbox(fakeBundleSandbox(files), "/workspace/demo");
+
+    expect(bundle.metadata.bindings).toEqual([{ type: "ai", name: "AI" }]);
+    expect(bundle.metadata.ai).toBeUndefined();
+  });
+
   it("does not duplicate a binding already present in manifest.bindings", async () => {
     const files = new Map<string, string>([
       ["/workspace/demo/build/server/wrangler.json", JSON.stringify({

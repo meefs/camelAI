@@ -59,6 +59,7 @@ export async function collectWorkerBundleFromSandbox(
     durable_objects?: { bindings?: unknown };
     kv_namespaces?: unknown;
     r2_buckets?: unknown;
+    ai?: unknown;
     main?: unknown;
     no_bundle?: unknown;
     rules?: unknown;
@@ -74,7 +75,7 @@ export async function collectWorkerBundleFromSandbox(
         `Build manifest ${manifestPath} uses the legacy main_module/bindings shape. ` +
           `Update scripts/build-manifest.mjs to write a wrangler-valid config: ` +
           `main: "worker.js", no_bundle: true, rules: [{ type: "ESModule", globs: ["**/*.js", "**/*.mjs"] }], ` +
-          `and wrangler-idiomatic vars/durable_objects/kv_namespaces/r2_buckets instead of a bindings array.`,
+          `and wrangler-idiomatic vars/durable_objects/kv_namespaces/r2_buckets/ai instead of a bindings array.`,
       );
     }
     throw new Error(`Build manifest ${manifestPath} is missing a "main" entry module`);
@@ -192,6 +193,7 @@ function normalizeWorkerBundleMetadata(
     durable_objects?: { bindings?: unknown };
     kv_namespaces?: unknown;
     r2_buckets?: unknown;
+    ai?: unknown;
     main?: unknown;
     no_bundle?: unknown;
     rules?: unknown;
@@ -218,7 +220,7 @@ function normalizeWorkerBundleMetadata(
     }
   }
 
-  // Wrangler's idiomatic top-level `kv_namespaces` / `r2_buckets` arrays are
+  // Wrangler's idiomatic top-level resource declarations are
   // otherwise dropped by the deploy metadata (which only reads `bindings`), so a
   // KV/R2 binding declared the normal way silently never reaches the worker and
   // env.<NAME> is undefined at runtime. Lift them into typed bindings the same
@@ -241,6 +243,10 @@ function normalizeWorkerBundleMetadata(
       name,
       ...(typeof entry.bucket_name === "string" ? { bucket_name: entry.bucket_name } : {}),
     });
+  }
+  if (manifest.ai && typeof manifest.ai === "object" && !Array.isArray(manifest.ai)) {
+    const name = (manifest.ai as Record<string, unknown>).binding;
+    if (typeof name === "string" && name) addBinding({ type: "ai", name });
   }
 
   // Wrangler-style `vars` (vite-plugin manifests spread the full normalized
@@ -302,6 +308,7 @@ const CONSUMED_MANIFEST_KEYS = new Set([
   "durable_objects",
   "kv_namespaces",
   "r2_buckets",
+  "ai",
   "vars",
   "main",
   "no_bundle",
