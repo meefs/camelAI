@@ -39,6 +39,12 @@ describe("defaultProjectScaffoldFiles", () => {
     expect(scaffoldFile(files, "/workers/item-store.ts")).toContain("CREATE TABLE IF NOT EXISTS items");
     expect(scaffoldFile(files, "/workers/item-store.ts")).toContain("this.ctx.storage.sql.exec");
     expect(scaffoldFile(files, "/workers/app.ts")).toContain('export { ItemStore }');
+    expect(scaffoldFile(files, "/workers/app.ts")).toContain("CAMELAI: CamelAiBinding");
+    const camelaiBinding = scaffoldFile(files, "/workers/camelai-binding.ts");
+    expect(camelaiBinding).toContain("export interface CamelAiBinding");
+    expect(camelaiBinding).toContain("generateImage(input:");
+    expect(camelaiBinding).toContain("transcribeAudio(input:");
+    expect(camelaiBinding).not.toContain("mediaType");
     expect(scaffoldFile(files, "/app/routes/home.tsx")).toContain("export async function loader");
     expect(scaffoldFile(files, "/app/routes/home.tsx")).toContain("export async function action");
     expect(scaffoldFile(files, "/app/routes/home.tsx")).toContain("Durable CRUD starter");
@@ -65,14 +71,17 @@ describe("defaultProjectScaffoldFiles", () => {
 
     const ai = defaultProjectScaffoldFiles("AI App", "ai-chat", "ai-app");
     expect(JSON.parse(scaffoldFile(ai, "/wrangler.jsonc")).ai).toEqual({ binding: "AI" });
+    expect(scaffoldFile(ai, "/workers/app.ts")).toContain("CAMELAI: CamelAiBinding");
     expect(scaffoldFile(ai, "/app/routes/home.tsx")).toContain('AI.run("auto"');
 
     const integrations = defaultProjectScaffoldFiles("Connected App", "integration-dashboard", "connected-app");
+    expect(scaffoldFile(integrations, "/workers/app.ts")).toContain("CAMELAI: CamelAiBinding");
     expect(scaffoldFile(integrations, "/workers/app.ts")).toContain("CONNECTIONS: ConnectionsBinding");
     expect(scaffoldFile(integrations, "/app/routes/home.tsx")).toContain("env.CONNECTIONS.methods()");
 
     const dashboard = defaultProjectScaffoldFiles("Metrics", "data-dashboard", "metrics");
     expect(JSON.parse(scaffoldFile(dashboard, "/package.json")).dependencies.recharts).toBeDefined();
+    expect(scaffoldFile(dashboard, "/workers/app.ts")).toContain("CAMELAI: CamelAiBinding");
     expect(scaffoldFile(dashboard, "/app/components/ui/chart.tsx")).toContain("ChartContainer");
     expect(scaffoldFile(dashboard, "/app/routes/home.tsx")).toContain("<BarChart");
   });
@@ -106,6 +115,7 @@ describe("defaultProjectScaffoldFiles", () => {
       "/app/routes/home.tsx",
       "/app/entry.server.tsx",
       "/workers/app.ts",
+      "/workers/camelai-binding.ts",
       "/public/robots.txt",
       "/public/favicon.svg",
       "/public/og-image.svg",

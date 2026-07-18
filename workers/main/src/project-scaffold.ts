@@ -696,12 +696,34 @@ function defaultReactRouterScaffoldFiles(projectName: string, scriptName: string
       ]),
     },
     {
+      path: "/workers/camelai-binding.ts",
+      content: file([
+        `export interface CamelAiGeneratedImage {`,
+        `  dataUrl: string;`,
+        `  index: number;`,
+        `}`,
+        ``,
+        `export interface CamelAiGenerateImageResult {`,
+        `  text: string | null;`,
+        `  imageDataUrl: string | null;`,
+        `  images: CamelAiGeneratedImage[];`,
+        `}`,
+        ``,
+        `export interface CamelAiBinding {`,
+        `  generateImage(input: string | { prompt: string; referenceImageUrl?: string }): Promise<CamelAiGenerateImageResult>;`,
+        `  transcribeAudio(input: string | { path?: string; audio?: string; base64?: string; data?: string }): Promise<{ text: string }>;`,
+        `}`,
+      ]),
+    },
+    {
       path: "/workers/app.ts",
       content: file([
         `import { createRequestHandler } from "react-router";`,
+        `import type { CamelAiBinding } from "./camelai-binding";`,
         ``,
         `interface Env {`,
         `  ASSETS?: { fetch(request: Request): Promise<Response> | Response };`,
+        `  CAMELAI: CamelAiBinding;`,
         `}`,
         ``,
         `const requestHandler = createRequestHandler(`,
@@ -959,12 +981,14 @@ export class ItemStore extends DurableObject<ItemStoreEnv> {
 }
 `);
   replaceScaffoldFile(files, "/workers/app.ts", `import { createRequestHandler } from "react-router";
+import type { CamelAiBinding } from "./camelai-binding";
 import type { ItemStore } from "./item-store";
 
 export { ItemStore } from "./item-store";
 
 interface Env {
   ASSETS?: { fetch(request: Request): Promise<Response> | Response };
+  CAMELAI: CamelAiBinding;
   ITEMS: DurableObjectNamespace<ItemStore>;
 }
 
@@ -1103,6 +1127,7 @@ function aiChatScaffoldFiles(projectName: string, scriptName: string): ProjectSc
     config.ai = { binding: "AI" };
   });
   replaceScaffoldFile(files, "/workers/app.ts", `import { createRequestHandler } from "react-router";
+import type { CamelAiBinding } from "./camelai-binding";
 
 interface AiBinding {
   run(model: string, input: { messages: Array<{ role: string; content: string }> }): Promise<unknown>;
@@ -1111,6 +1136,7 @@ interface AiBinding {
 interface Env {
   ASSETS?: { fetch(request: Request): Promise<Response> | Response };
   AI: AiBinding;
+  CAMELAI: CamelAiBinding;
 }
 
 declare module "react-router" {
@@ -1197,11 +1223,12 @@ export default function Home() {
 function integrationDashboardScaffoldFiles(projectName: string, scriptName: string): ProjectScaffoldFile[] {
   const files = defaultReactRouterScaffoldFiles(projectName, scriptName);
   replaceScaffoldFile(files, "/workers/app.ts", `import { createRequestHandler } from "react-router";
+import type { CamelAiBinding } from "./camelai-binding";
 
 interface ConnectionMethod { name: string; tool: string; description?: string }
 interface ConnectionEntry { alias: string; connection: { id: string; type: string; displayName: string }; methods: ConnectionMethod[]; error?: { message: string } }
 interface ConnectionsBinding { methods(): Promise<ConnectionEntry[]> }
-interface Env { ASSETS?: { fetch(request: Request): Promise<Response> | Response }; CONNECTIONS: ConnectionsBinding }
+interface Env { ASSETS?: { fetch(request: Request): Promise<Response> | Response }; CAMELAI: CamelAiBinding; CONNECTIONS: ConnectionsBinding }
 
 declare module "react-router" {
   export interface AppLoadContext { cloudflare: { env: Env; ctx: ExecutionContext } }
