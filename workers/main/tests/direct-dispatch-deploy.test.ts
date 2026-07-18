@@ -119,6 +119,13 @@ describe("deployWorkerModulesDirect", () => {
         entrypoint: "ConnectionsService",
         props: { orgId: "org-1", workspaceId: "workspace-1", userId: "user-1" },
       },
+      {
+        type: "service",
+        name: "CAMELAI",
+        service: "chiridion-main",
+        entrypoint: "CamelAiService",
+        props: { orgId: "org-1", workspaceId: "workspace-1", userId: "user-1" },
+      },
     ]);
     expect(metadata.observability).toEqual({
       enabled: true,

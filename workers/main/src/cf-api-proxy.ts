@@ -1372,26 +1372,29 @@ export function mapVirtualizedBindings(
 
     return binding;
   });
-  if (
-    mapped.some((binding) => binding.name === VIRTUAL_CONNECTIONS_BINDING_NAME)
-  ) {
-    return mapped;
-  }
-
   const props: Record<string, string> = { workspaceId, orgId };
   if (userId) {
     props.userId = userId;
   }
-  return [
-    ...mapped,
-    {
+  if (!mapped.some((binding) => binding.name === VIRTUAL_CONNECTIONS_BINDING_NAME)) {
+    mapped.push({
       type: "service",
       name: VIRTUAL_CONNECTIONS_BINDING_NAME,
       service: workerServiceName,
       entrypoint: "ConnectionsService",
       props,
-    },
-  ];
+    });
+  }
+  if (!mapped.some((binding) => binding.name === VIRTUAL_CAMELAI_BINDING_NAME)) {
+    mapped.push({
+      type: "service",
+      name: VIRTUAL_CAMELAI_BINDING_NAME,
+      service: workerServiceName,
+      entrypoint: "CamelAiService",
+      props,
+    });
+  }
+  return mapped;
 }
 
 async function callCloudflareApi<T>(

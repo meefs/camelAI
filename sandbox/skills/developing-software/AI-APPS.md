@@ -59,12 +59,18 @@ The codemode UI part uses `type === "tool-codemode"`, completed state `output-av
 
 ## Image Generation
 
-Use the virtual CAMELAI service instead of calling an image provider directly:
+Deployed apps receive the virtual `CAMELAI` service automatically. Do not add a
+`camelai`, `cam-el-ai`, or placeholder `services` entry to `wrangler.jsonc`.
+Use the service instead of calling media providers directly:
 
 ```ts
 const image = await context.cloudflare.env.CAMELAI.generateImage(
   "Editorial illustration of ...",
 );
+
+const transcript = await context.cloudflare.env.CAMELAI.transcribeAudio({
+  path: "uploads/interview.ogg",
+});
 ```
 
 On camelAI deploys, virtual bindings are rewritten to workspace-scoped platform services. Do not embed provider credentials.

@@ -351,7 +351,7 @@ describe('Worker Binding Validation', () => {
   });
 
   describe('mapVirtualizedBindings', () => {
-    it('rewrites KV, R2, assets, DATA_PROXY, CONNECTIONS, and AI bindings to internal service entrypoints', () => {
+    it('rewrites declared virtual bindings and injects CAMELAI', () => {
       const bindings: WorkerBinding[] = [
         { type: 'kv_namespace', name: 'KV', namespace_id: 'messages' },
         { type: 'r2_bucket', name: 'FILES', bucket_name: 'workspace-files' },
@@ -408,6 +408,13 @@ describe('Worker Binding Validation', () => {
           props: { workspaceId: 'ws_123', orgId: 'org_456', userId: 'user_789' },
         },
         { type: 'plain_text', name: 'APP_ENV', text: 'prod' },
+        {
+          type: 'service',
+          name: 'CAMELAI',
+          service: 'chiridion-app',
+          entrypoint: 'CamelAiService',
+          props: { workspaceId: 'ws_123', orgId: 'org_456', userId: 'user_789' },
+        },
       ]);
     });
 
@@ -433,6 +440,13 @@ describe('Worker Binding Validation', () => {
           name: 'CONNECTIONS',
           service: 'chiridion-app',
           entrypoint: 'ConnectionsService',
+          props: { workspaceId: 'ws_123', orgId: 'org_456', userId: 'user_789' },
+        },
+        {
+          type: 'service',
+          name: 'CAMELAI',
+          service: 'chiridion-app',
+          entrypoint: 'CamelAiService',
           props: { workspaceId: 'ws_123', orgId: 'org_456', userId: 'user_789' },
         },
       ]);
@@ -487,7 +501,7 @@ describe('Worker Binding Validation', () => {
       ]);
     });
 
-    it('injects CONNECTIONS when user metadata does not declare it', () => {
+    it('injects CONNECTIONS and CAMELAI when user metadata does not declare them', () => {
       const bindings: WorkerBinding[] = [
         { type: 'plain_text', name: 'APP_ENV', text: 'prod' },
       ];
@@ -501,6 +515,13 @@ describe('Worker Binding Validation', () => {
           name: 'CONNECTIONS',
           service: 'chiridion-app',
           entrypoint: 'ConnectionsService',
+          props: { workspaceId: 'ws_auto', orgId: 'org_auto', userId: 'user_auto' },
+        },
+        {
+          type: 'service',
+          name: 'CAMELAI',
+          service: 'chiridion-app',
+          entrypoint: 'CamelAiService',
           props: { workspaceId: 'ws_auto', orgId: 'org_auto', userId: 'user_auto' },
         },
       ]);
