@@ -139,6 +139,33 @@ describe("collectWorkerBundleFromSandbox", () => {
     expect(bundle.metadata.ai).toBeUndefined();
   });
 
+  it("lifts wrangler service bindings into upload bindings", async () => {
+    const files = new Map<string, string>([
+      ["/workspace/demo/build/server/wrangler.json", JSON.stringify({
+        main: "index.js",
+        no_bundle: true,
+        services: [{
+          binding: "CAMELAI",
+          service: "demo",
+          entrypoint: "LocalCamelAiService",
+          props: { local: true },
+        }],
+      })],
+      ["/workspace/demo/build/server/index.js", "export default {};"],
+    ]);
+
+    const bundle = await collectWorkerBundleFromSandbox(fakeBundleSandbox(files), "/workspace/demo");
+
+    expect(bundle.metadata.bindings).toEqual([{
+      type: "service",
+      name: "CAMELAI",
+      service: "demo",
+      entrypoint: "LocalCamelAiService",
+      props: { local: true },
+    }]);
+    expect(bundle.metadata.services).toBeUndefined();
+  });
+
   it("does not duplicate a binding already present in manifest.bindings", async () => {
     const files = new Map<string, string>([
       ["/workspace/demo/build/server/wrangler.json", JSON.stringify({

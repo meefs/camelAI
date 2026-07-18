@@ -60,6 +60,7 @@ export async function collectWorkerBundleFromSandbox(
     kv_namespaces?: unknown;
     r2_buckets?: unknown;
     ai?: unknown;
+    services?: unknown;
     main?: unknown;
     no_bundle?: unknown;
     rules?: unknown;
@@ -75,7 +76,7 @@ export async function collectWorkerBundleFromSandbox(
         `Build manifest ${manifestPath} uses the legacy main_module/bindings shape. ` +
           `Update scripts/build-manifest.mjs to write a wrangler-valid config: ` +
           `main: "worker.js", no_bundle: true, rules: [{ type: "ESModule", globs: ["**/*.js", "**/*.mjs"] }], ` +
-          `and wrangler-idiomatic vars/durable_objects/kv_namespaces/r2_buckets/ai instead of a bindings array.`,
+          `and wrangler-idiomatic vars/durable_objects/kv_namespaces/r2_buckets/ai/services instead of a bindings array.`,
       );
     }
     throw new Error(`Build manifest ${manifestPath} is missing a "main" entry module`);
@@ -194,6 +195,7 @@ function normalizeWorkerBundleMetadata(
     kv_namespaces?: unknown;
     r2_buckets?: unknown;
     ai?: unknown;
+    services?: unknown;
     main?: unknown;
     no_bundle?: unknown;
     rules?: unknown;
@@ -222,7 +224,7 @@ function normalizeWorkerBundleMetadata(
 
   // Wrangler's idiomatic top-level resource declarations are
   // otherwise dropped by the deploy metadata (which only reads `bindings`), so a
-  // KV/R2 binding declared the normal way silently never reaches the worker and
+  // resource binding declared the normal way silently never reaches the worker and
   // env.<NAME> is undefined at runtime. Lift them into typed bindings the same
   // way durable_objects are; mapVirtualizedBindings then virtualizes them.
   // Wrangler uses `binding` for the env var name (vs `name` for DOs).
@@ -247,6 +249,20 @@ function normalizeWorkerBundleMetadata(
   if (manifest.ai && typeof manifest.ai === "object" && !Array.isArray(manifest.ai)) {
     const name = (manifest.ai as Record<string, unknown>).binding;
     if (typeof name === "string" && name) addBinding({ type: "ai", name });
+  }
+  for (const entry of asBindingArray(manifest.services)) {
+    const name = typeof entry.binding === "string" ? entry.binding : undefined;
+    const service = typeof entry.service === "string" ? entry.service : undefined;
+    if (!name || !service) continue;
+    addBinding({
+      type: "service",
+      name,
+      service,
+      ...(typeof entry.entrypoint === "string" ? { entrypoint: entry.entrypoint } : {}),
+      ...(entry.props && typeof entry.props === "object" && !Array.isArray(entry.props)
+        ? { props: entry.props }
+        : {}),
+    });
   }
 
   // Wrangler-style `vars` (vite-plugin manifests spread the full normalized
@@ -309,6 +325,7 @@ const CONSUMED_MANIFEST_KEYS = new Set([
   "kv_namespaces",
   "r2_buckets",
   "ai",
+  "services",
   "vars",
   "main",
   "no_bundle",

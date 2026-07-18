@@ -17,8 +17,8 @@ import { defaultProjectScaffoldFiles } from '../workers/main/src/project-scaffol
 // Executes the react-router scaffold's generated /scripts/build-manifest.mjs against a
 // fixture project with a stub esbuild, and asserts the deploy manifest and esbuild
 // invocation. This guards the DO-binding regression where the generated build discarded
-// the wrangler.jsonc `main` worker module and dropped durable_objects/migrations/vars
-// from build/server/wrangler.json.
+// the wrangler.jsonc `main` worker module and dropped bindings from
+// build/server/wrangler.json.
 
 const STUB_ESBUILD = [
   '#!/usr/bin/env node',
@@ -110,6 +110,7 @@ describe('react-router scaffold build-manifest.mjs (generated script execution)'
       vars: { APP_TITLE: 'Space Match', MAX_PLAYERS: 8 },
       kv_namespaces: [{ binding: 'SCORES_KV', id: 'kv-1' }],
       r2_buckets: [{ binding: 'ASSETS_BUCKET', bucket_name: 'space-assets' }],
+      services: [{ binding: 'CAMELAI', service: 'demo-app', entrypoint: 'LocalCamelAiService' }],
     });
 
     const result = runBuildManifest(dir);
@@ -124,7 +125,7 @@ describe('react-router scaffold build-manifest.mjs (generated script execution)'
 
     const manifest = readManifest(dir);
     // The manifest is a wrangler-valid config for the FINAL build: no_bundle with an
-    // ESModule rule, and vars/durable_objects/migrations/kv/r2/bindings forwarded
+    // ESModule rule, and vars/durable_objects/migrations/kv/r2/services/bindings forwarded
     // verbatim. project-worker-bundle lifts them into typed API bindings server-side.
     expect(manifest).toMatchObject({
       main: 'worker.js',
@@ -140,6 +141,7 @@ describe('react-router scaffold build-manifest.mjs (generated script execution)'
       vars: { APP_TITLE: 'Space Match', MAX_PLAYERS: 8 },
       kv_namespaces: [{ binding: 'SCORES_KV', id: 'kv-1' }],
       r2_buckets: [{ binding: 'ASSETS_BUCKET', bucket_name: 'space-assets' }],
+      services: [{ binding: 'CAMELAI', service: 'demo-app', entrypoint: 'LocalCamelAiService' }],
       // config.bindings pass through unchanged — vars are no longer inline-lifted here.
       bindings: [{ type: 'plain_text', name: 'EXISTING', text: 'kept' }],
     });

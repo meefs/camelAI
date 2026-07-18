@@ -201,7 +201,7 @@ describe("defaultProjectScaffoldFiles", () => {
 
     // The manifest is a wrangler-valid config describing the FINAL build output:
     // no_bundle with an ESModule rule so the deploy pipeline selects modules by
-    // rule globs, and vars/durable_objects/migrations/kv/r2/ai/bindings passed
+    // rule globs, and vars/durable_objects/migrations/kv/r2/ai/services/bindings passed
     // through as-is (project-worker-bundle lifts them into API bindings server-side).
     expect(buildManifest).toContain("no_bundle: true");
     expect(buildManifest).toContain('rules: [{ type: "ESModule", globs: ["**/*.js", "**/*.mjs"] }]');
@@ -210,6 +210,7 @@ describe("defaultProjectScaffoldFiles", () => {
     expect(buildManifest).toContain("...(config.kv_namespaces ? { kv_namespaces: config.kv_namespaces } : {})");
     expect(buildManifest).toContain("...(config.r2_buckets ? { r2_buckets: config.r2_buckets } : {})");
     expect(buildManifest).toContain("...(config.ai ? { ai: config.ai } : {})");
+    expect(buildManifest).toContain("...(config.services ? { services: config.services } : {})");
     // vars and bindings are forwarded unchanged — the template no longer inline-lifts
     // vars into plain_text/json env-var bindings (that moved to project-worker-bundle).
     expect(buildManifest).toContain("...(config.vars ? { vars: config.vars } : {})");
