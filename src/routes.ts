@@ -184,6 +184,10 @@ export default [
   ),
   route("api/dev/sent-emails", "routes/api/dev.sent-emails.ts"),
   route("api/dev/sent-emails/:id", "routes/api/dev.sent-emails.$id.ts"),
+  route(
+    "api/dev/email-verification/latest",
+    "routes/api/dev.email-verification.latest.ts",
+  ),
   route("api/dev/verify-email", "routes/api/dev.verify-email.ts"),
   route("api/admin/oauth/register", "routes/api/admin.oauth.register.ts"),
   route("api/admin/oauth/authorize", "routes/api/admin.oauth.authorize.tsx"),

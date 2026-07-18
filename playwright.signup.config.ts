@@ -27,7 +27,9 @@ export default defineConfig({
     timeout: 120_000,
     reuseExistingServer: false,
     env: {
+      E2E_LOCAL: "1",
       LOCAL_AUTH_BYPASS: "0",
+      NEXTJS_ENV: "development",
       TOKEN_SIGNING_SECRET: "signup-e2e-token-signing-secret-32",
       WORKER_BASE_URL: baseURL,
     },
