@@ -242,7 +242,16 @@ function AllowlistCallout() {
 }
 
 function ConnectionDetails({ connection }: { connection: ConnectionListItem }) {
-  const detailRows = getConnectionDetailRows(connection);
+  const detailRows = [
+    ...getConnectionDetailRows(connection),
+    ...(connection.definitionMetadata
+      ? [
+          { label: "Definition", value: connection.definitionMetadata.source },
+          { label: "Typed operations", value: String(connection.definitionMetadata.operationCount) },
+          { label: "Generic fetch", value: connection.definitionMetadata.genericFetch ? "Available" : "Unavailable" },
+        ]
+      : []),
+  ];
   const needsAllowlist = connectionRequiresOutboundIpAllowlist(connection);
   if (detailRows.length === 0 && !needsAllowlist) return null;
 

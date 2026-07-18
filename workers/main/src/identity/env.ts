@@ -23,6 +23,10 @@ export interface DOEnv {
   INTEGRATION_SECRET_KEY?: string;
   NOTION_CLIENT_ID?: string;
   NOTION_CLIENT_SECRET?: string;
+  GOOGLE_CLIENT_ID?: string;
+  GOOGLE_CLIENT_SECRET?: string;
+  GOOGLE_ANALYTICS_CLIENT_ID?: string;
+  GOOGLE_ANALYTICS_CLIENT_SECRET?: string;
   SLACK_CLIENT_ID?: string;
   SLACK_CLIENT_SECRET?: string;
 }

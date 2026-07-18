@@ -4,13 +4,22 @@ import type { Route } from './+types/_app.connections';
 import { requireAuthContext, getAuthEnv, requireWorkspaceAccess } from '@/lib/auth.server';
 import {
   createWorkspaceIntegrationRecord,
+  createWorkspaceIntegrationDefinitionRecord,
   deleteWorkspaceIntegrationRecord,
   getWorkspaceIntegrationRecord,
+  getWorkspaceIntegrationDefinitionRecord,
   isOrgAdmin,
   listWorkspaceIntegrationRecords,
   updateWorkspaceIntegrationRecord,
   workspaceIntegrationNameExists,
 } from '@/lib/auth-do';
+import { discoverIntegrationSurfaces } from '@/lib/openapi-integration.server';
+import {
+  integrationDefinitionRequiresEndpointConfirmation,
+  parseWorkspaceIntegrationDefinition,
+  resolveIntegrationDefinitionVariables,
+  type IntegrationAuthKind,
+} from '@/lib/integration-definition';
 import { getEnv, type CloudflareEnv } from '@/lib/cloudflare.server';
 import {
   INTEGRATION_REGISTRY,
@@ -24,6 +33,7 @@ import { decryptCredentials, encryptCredentials } from '@/lib/integration-crypto
 import {
   normalizeRemoteMcpUrl,
   validateRemoteMcpConnection,
+  validateRemoteMcpUrl,
 } from '@/lib/remote-mcp';
 import {
   buildTelegramDeepLink,
@@ -56,6 +66,8 @@ const CONNECTION_MANAGEMENT_INTENTS = new Set([
   'updateIntegration',
   'deleteIntegration',
   'duplicateIntegration',
+  'discoverIntegration',
+  'createDiscoveredIntegration',
 ]);
 
 export function shouldRevalidate(
@@ -169,6 +181,7 @@ async function recordToIntegration(
   env: CloudflareEnv,
 ): Promise<ConnectionListItem> {
   const config = parseIntegrationConfig(record.config);
+  const importedDefinition = parseWorkspaceIntegrationDefinition(record.definition);
   const creator = creators.get(record.created_by);
   return {
     id: record.id,
@@ -190,6 +203,13 @@ async function recordToIntegration(
     created_by_name: creator ? creator.name || creator.email : null,
     created_by_avatar: creator?.avatar ?? null,
     channelMetadata: await slackChannelMetadata(record, config, env),
+    definitionMetadata: importedDefinition
+      ? {
+          source: importedDefinition.source,
+          operationCount: importedDefinition.operations.length,
+          genericFetch: true,
+        }
+      : undefined,
   };
 }
 
@@ -352,6 +372,174 @@ export async function action({ request, context }: Route.ActionArgs) {
     }
   }
 
+  if (intent === 'discoverIntegration') {
+    const sourceUrl = String(formData.get('source_url') ?? '').trim();
+    if (!sourceUrl) return { error: 'Enter a service, API, GraphQL, or MCP URL' };
+    try {
+      const definitions = await discoverIntegrationSurfaces(sourceUrl);
+      return { success: true, definition: definitions[0], definitions };
+    } catch (err) {
+      return {
+        error: err instanceof Error ? err.message : 'Could not discover this service',
+        genericFallback: true,
+      };
+    }
+  }
+
+  if (intent === 'createDiscoveredIntegration') {
+    const sourceUrl = String(formData.get('source_url') ?? '').trim();
+    const requestedName = String(formData.get('name') ?? '').trim();
+    const authType = String(formData.get('auth_type') ?? 'none').trim().toLowerCase();
+    const authHeader = String(formData.get('auth_header') ?? '').trim();
+    const endpointConfirmed = formData.get('endpoint_confirmed') === 'true';
+    const surfaceSlug = String(formData.get('surface_slug') ?? '').trim();
+    const operationPolicy = formData.get('operation_policy') === 'all' ? 'all' : 'read_only';
+    const credentialsStr = String(formData.get('credentials') ?? '{}');
+    const variablesStr = String(formData.get('surface_variables') ?? '{}');
+    try {
+      const definitions = await discoverIntegrationSurfaces(sourceUrl);
+      const definition = definitions.find((candidate) => candidate.slug === surfaceSlug) ?? definitions[0];
+      if (!definition) return { error: 'The selected integration surface is no longer available' };
+      if (integrationDefinitionRequiresEndpointConfirmation(definition, sourceUrl) && !endpointConfirmed) {
+        return { error: 'Confirm the integrations.sh endpoint before creating this connection' };
+      }
+      const variableValues = JSON.parse(variablesStr) as Record<string, unknown>;
+      const resolvedDefinition = resolveIntegrationDefinitionVariables(definition, variableValues);
+      const resolvedUrlErrors = validateRemoteMcpUrl(resolvedDefinition.baseUrl);
+      if (resolvedUrlErrors.length > 0) {
+        return { error: resolvedUrlErrors[0]!.replace('Remote MCP server URL', 'Endpoint URL').replace('Server URL', 'Endpoint URL') };
+      }
+      const supportedAuth = new Set(definition.auth.map((auth) => auth.kind));
+      const allowedAuth = definition.surface === 'mcp'
+        ? ['none', 'bearer', 'header', 'oauth2']
+        : ['none', 'bearer', 'basic', 'header'];
+      if (authType === 'unknown') {
+        return { error: 'Choose an authentication method after verifying the service documentation' };
+      }
+      if (!allowedAuth.includes(authType)) {
+        return { error: `This authentication type is not supported for imported ${definition.surface} surfaces yet` };
+      }
+      if (
+        !supportedAuth.has('unknown') &&
+        !supportedAuth.has(authType as IntegrationAuthKind) &&
+        !(authType === 'bearer' && supportedAuth.has('oauth2'))
+      ) {
+        return { error: `The discovered surface does not declare ${authType} authentication` };
+      }
+      const credentials = JSON.parse(credentialsStr) as Record<string, unknown>;
+      if (
+        (authType === 'bearer' || authType === 'header') &&
+        (typeof credentials.api_key !== 'string' || !credentials.api_key.trim())
+      ) {
+        return { error: authType === 'bearer' ? 'Access token is required' : 'Header value is required' };
+      }
+      if (
+        authType === 'basic' &&
+        (
+          typeof credentials.client_id !== 'string' || !credentials.client_id.trim() ||
+          typeof credentials.client_secret !== 'string' || !credentials.client_secret.trim()
+        )
+      ) {
+        return { error: 'Username and password are required for basic authentication' };
+      }
+      const definitionId = crypto.randomUUID();
+      const integrationId = crypto.randomUUID();
+      const connectionName = requestedName || definition.displayName;
+      const integrationType = definition.surface === 'mcp' ? 'remote_mcp' : 'other';
+      if (await workspaceIntegrationNameExists(authEnv, workspaceId, integrationType, connectionName)) {
+        return { error: `A ${definition.surface} connection named "${connectionName}" already exists` };
+      }
+      const selectedTemplate = definition.auth.find((auth) => auth.kind === authType);
+      if (definition.surface === 'mcp') {
+        const remoteCredentials = authType === 'bearer' || authType === 'header'
+          ? { token: credentials.api_key }
+          : {};
+        const remoteConfig = {
+          server_url: normalizeRemoteMcpUrl(resolvedDefinition.baseUrl),
+          auth_type: authType === 'oauth2' ? 'oauth' : authType === 'header' ? 'custom_header' : authType,
+          ...(authType === 'header'
+            ? { auth_header: authHeader || selectedTemplate?.header || 'X-API-Key' }
+            : {}),
+          discovery_source: definition.sourceUrl,
+        };
+        const remoteErrors = validateRemoteMcpConnection(remoteConfig, remoteCredentials);
+        if (remoteErrors.length > 0) return { error: remoteErrors.join(', ') };
+        const credentialsEncrypted = hasNonEmptyCredentialValue(remoteCredentials)
+          ? await encryptCredentials(remoteCredentials, env.INTEGRATION_SECRET_KEY)
+          : '';
+        await createWorkspaceIntegrationRecord(
+          authEnv,
+          workspaceId,
+          integrationId,
+          'remote_mcp',
+          connectionName,
+          'saas',
+          'api_key',
+          JSON.stringify(remoteConfig),
+          credentialsEncrypted,
+          authContext.user.id,
+        );
+        if (authType === 'oauth2') {
+          const params = new URLSearchParams({
+            integration_id: integrationId,
+            redirect: '/connections',
+          });
+          return { success: true, integrationId, oauthUrl: `/api/integrations/remote_mcp/oauth?${params.toString()}` };
+        }
+        return { success: true, integrationId };
+      }
+      const config = {
+        display_name: resolvedDefinition.displayName,
+        description: resolvedDefinition.description,
+        base_url: resolvedDefinition.baseUrl,
+        auth_type: authType,
+        ...(authType === 'header'
+          ? { auth_header: authHeader || selectedTemplate?.header || 'X-API-Key' }
+          : {}),
+        operation_policy: operationPolicy,
+        restrict_to_base_origin: true,
+        generic_fetch_enabled: true,
+      };
+      if (
+        authType === 'header' &&
+        !/^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/.test(String(config.auth_header ?? ''))
+      ) {
+        return { error: 'Custom authentication header name is invalid' };
+      }
+      const requiresCredentials = authType !== 'none';
+      const credentialsEncrypted = requiresCredentials
+        ? await encryptCredentials(credentials, env.INTEGRATION_SECRET_KEY)
+        : '';
+      await createWorkspaceIntegrationDefinitionRecord(
+        authEnv,
+        workspaceId,
+        definitionId,
+        resolvedDefinition.slug,
+        JSON.stringify(resolvedDefinition),
+        resolvedDefinition.source,
+        resolvedDefinition.sourceUrl ?? sourceUrl,
+        authContext.user.id,
+      );
+      await createWorkspaceIntegrationRecord(
+        authEnv,
+        workspaceId,
+        integrationId,
+        'other',
+        connectionName,
+        'saas',
+        'api_key',
+        JSON.stringify(config),
+        credentialsEncrypted,
+        authContext.user.id,
+        null,
+        definitionId,
+      );
+      return { success: true, integrationId };
+    } catch (err) {
+      return { error: err instanceof Error ? err.message : 'Failed to import API connection' };
+    }
+  }
+
   if (intent === 'updateIntegration') {
     const integrationId = formData.get('integrationId') as string;
     const name = formData.get('name') as string | null;
@@ -484,19 +672,58 @@ export async function action({ request, context }: Route.ActionArgs) {
       }
 
       // Copy to target workspace with new ID
-      await createWorkspaceIntegrationRecord(
-        authEnv,
-        targetWorkspaceId,
-        crypto.randomUUID(),
-        sourceRecord.integration_type,
-        copyName,
-        sourceRecord.category,
-        sourceRecord.auth_method,
-        sourceRecord.config,
-        sourceRecord.credentials_encrypted,
-        authContext.user.id,
-        sourceRecord.token_expires_at ?? null
-      );
+      let targetDefinitionId: string | null = null;
+      if (sourceRecord.definition_id) {
+        const sourceDefinition = await getWorkspaceIntegrationDefinitionRecord(
+          authEnv,
+          workspaceId,
+          sourceRecord.definition_id,
+        );
+        if (sourceDefinition) {
+          targetDefinitionId = crypto.randomUUID();
+          await createWorkspaceIntegrationDefinitionRecord(
+            authEnv,
+            targetWorkspaceId,
+            targetDefinitionId,
+            sourceDefinition.slug,
+            sourceDefinition.payload,
+            sourceDefinition.source,
+            sourceDefinition.source_url,
+            authContext.user.id,
+          );
+        }
+      }
+      const copyId = crypto.randomUUID();
+      if (targetDefinitionId) {
+        await createWorkspaceIntegrationRecord(
+          authEnv,
+          targetWorkspaceId,
+          copyId,
+          sourceRecord.integration_type,
+          copyName,
+          sourceRecord.category,
+          sourceRecord.auth_method,
+          sourceRecord.config,
+          sourceRecord.credentials_encrypted,
+          authContext.user.id,
+          sourceRecord.token_expires_at ?? null,
+          targetDefinitionId,
+        );
+      } else {
+        await createWorkspaceIntegrationRecord(
+          authEnv,
+          targetWorkspaceId,
+          copyId,
+          sourceRecord.integration_type,
+          copyName,
+          sourceRecord.category,
+          sourceRecord.auth_method,
+          sourceRecord.config,
+          sourceRecord.credentials_encrypted,
+          authContext.user.id,
+          sourceRecord.token_expires_at ?? null,
+        );
+      }
 
       return { success: true };
     } catch (err) {

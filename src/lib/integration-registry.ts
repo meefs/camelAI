@@ -440,6 +440,30 @@ export const INTEGRATION_REGISTRY: Record<string, IntegrationDefinition> = {
     ],
   },
 
+  google_analytics: {
+    type: 'google_analytics',
+    displayName: 'Google Analytics 4',
+    description: 'Read GA4 properties, metadata, reports, realtime data, and pivots',
+    category: 'saas',
+    authMethod: 'oauth2',
+    oauthConfig: {
+      authorizationUrl: 'https://accounts.google.com/o/oauth2/v2/auth',
+      tokenUrl: 'https://oauth2.googleapis.com/token',
+      scopes: ['https://www.googleapis.com/auth/analytics.readonly'],
+    },
+    configSchema: [
+      {
+        name: 'property_id',
+        label: 'Default GA4 Property ID',
+        type: 'string',
+        required: false,
+        placeholder: '123456789',
+        description: 'Selected automatically during OAuth when possible; it can be changed later.',
+      },
+    ],
+    credentialSchema: [],
+  },
+
   mixpanel: {
     type: 'mixpanel',
     displayName: 'Mixpanel',
@@ -1433,7 +1457,7 @@ export const INTEGRATION_REGISTRY: Record<string, IntegrationDefinition> = {
     configSchema: [
       { name: 'display_name', label: 'Display Name', type: 'string', required: true, placeholder: 'My Custom API' },
       { name: 'description', label: 'Description', type: 'string', required: false, placeholder: 'What this integration does' },
-      { name: 'base_url', label: 'Base URL', type: 'string', required: false, placeholder: 'https://api.example.com' },
+      { name: 'base_url', label: 'Base URL', type: 'string', required: true, placeholder: 'https://api.example.com' },
       {
         name: 'auth_type',
         label: 'Authentication Type',
@@ -1448,6 +1472,18 @@ export const INTEGRATION_REGISTRY: Record<string, IntegrationDefinition> = {
         ],
       },
       { name: 'auth_header', label: 'Custom Auth Header Name', type: 'string', required: false, placeholder: 'X-API-Key' },
+      {
+        name: 'operation_policy',
+        label: 'Imported Operation Policy',
+        type: 'select',
+        required: false,
+        default: 'read_only',
+        options: [
+          { value: 'read_only', label: 'Read operations only' },
+          { value: 'all', label: 'Allow read and write operations' },
+        ],
+        description: 'Applies to discovered typed operations. Generic fetch remains available as a fallback.',
+      },
     ],
     credentialSchema: [
       { name: 'api_key', label: 'API Key / Token', type: 'password', required: false },
@@ -1567,6 +1603,9 @@ export function shouldShowConfigField(
   // Only relevant when authenticating via a custom header.
   if (type === 'other' && fieldName === 'auth_header') {
     return otherAuthType(config) === 'header';
+  }
+  if (type === 'other' && fieldName === 'operation_policy') {
+    return config.generic_fetch_enabled === true;
   }
   return true;
 }

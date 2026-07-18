@@ -306,6 +306,7 @@ live in separate files, and the catalog tests fail if any of them drift apart.
 - Local Email Worker ingress can be simulated with `POST /cdn-cgi/handler/email` on the local dev server, passing `from` and `to` query params plus a raw RFC 822-style body. Real MX-routed inbound email always reaches the deployed Worker route, not localhost.
 - Local outbound email uses the `send_email` binding from Wrangler config. For agent email, sender addresses must resolve to workspace email handles on `WORKSPACE_EMAIL_DOMAIN`; do not fall back to `EMAIL_FROM_ADDRESS`/`no-reply` for agent sends.
 - OAuth integration code is split across `workers/main/src/services/oauth.ts`, `external-api-oauth.ts`, route files, and workspace integration storage.
+- Imported API definitions, typed operation policies, generic HTTP fallback, and GA4 behavior are documented in `docs/integrations-runtime.md`; use `docs/connections-improvement-guide.md` for the living UX, quality, safety, and evaluation strategy.
 - Scheduled prompts are owned by `WorkspaceCronDO` and exposed through MCP tools.
 
 ## Project Runtime

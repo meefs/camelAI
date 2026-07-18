@@ -74,6 +74,8 @@ export interface CloudflareEnv {
   WORKER_BASE_URL: string;
   TOKEN_SIGNING_SECRET: string;
   INTEGRATION_SECRET_KEY: string;
+  GOOGLE_ANALYTICS_CLIENT_ID?: string;
+  GOOGLE_ANALYTICS_CLIENT_SECRET?: string;
   WORKSPACE_EMAIL_DOMAIN?: string;
   EMAIL_FROM_ADDRESS?: string;
   TELEGRAM_BOT_TOKEN?: string;

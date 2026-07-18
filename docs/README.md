@@ -22,6 +22,8 @@ conventions. Active cross-cutting architecture work also lives in
 | [pi-system-prompt.md](./pi-system-prompt.md) | Generated / exported Pi system prompt snapshot |
 | [exedev-admin-mcp.md](./exedev-admin-mcp.md) | exe.dev admin MCP + mcporter setup |
 | [slack-staging-app.md](./slack-staging-app.md) | Staging Slack app configuration |
+| [integrations-runtime.md](./integrations-runtime.md) | Connection definitions, OpenAPI import, policies, generic fetch, and GA4 |
+| [connections-improvement-guide.md](./connections-improvement-guide.md) | Living product, UX, quality, safety, and evaluation strategy for connections |
 | [warehouse-binding-design.md](./warehouse-binding-design.md) | Warehouse binding design (active) |
 | [workspace-git-service-design.md](./workspace-git-service-design.md) | Workspace git service design (active) |
 | [deployed-app-usage-guard-design.md](./deployed-app-usage-guard-design.md) | Durable Object usage monitoring and runaway-app suspension design |

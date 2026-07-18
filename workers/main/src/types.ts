@@ -76,6 +76,8 @@ export interface Env
   ARTIFACTS?: ArtifactsBinding;
   GOOGLE_CLIENT_ID?: string;
   GOOGLE_CLIENT_SECRET?: string;
+  GOOGLE_ANALYTICS_CLIENT_ID?: string;
+  GOOGLE_ANALYTICS_CLIENT_SECRET?: string;
   GITHUB_CLIENT_ID?: string;
   GITHUB_CLIENT_SECRET?: string;
   SLACK_CLIENT_ID?: string;

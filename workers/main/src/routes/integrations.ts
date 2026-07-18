@@ -389,6 +389,13 @@ function sanitizeRedirectPath(input: string): string {
   }
 }
 
+export function integrationOAuthCallbackUrl(url: URL, integrationType: string): string {
+  return new URL(
+    `/api/integrations/${encodeURIComponent(integrationType)}/callback`,
+    url.origin,
+  ).toString();
+}
+
 function reauthIntegrationId(stateData: IntegrationOAuthState): string | null {
   const value = stateData.extra_config?.reauth_integration_id;
   return typeof value === "string" && value.trim() ? value.trim() : null;
@@ -2103,6 +2110,213 @@ export async function handleNotionOAuthCallback({
     return redirect(redirectUrl.toString());
   } catch (err) {
     console.error("[notion-oauth] OAuth flow failed:", err);
+    return redirect(`${url.origin}/connections?error=oauth_failed`);
+  }
+}
+
+// =============================================================================
+// Google Analytics 4 OAuth
+// =============================================================================
+
+function googleAnalyticsOAuthCredentials(env: RouteContext['env']): {
+  clientId: string;
+  clientSecret: string;
+} | null {
+  const clientId = env.GOOGLE_ANALYTICS_CLIENT_ID || env.GOOGLE_CLIENT_ID;
+  const clientSecret = env.GOOGLE_ANALYTICS_CLIENT_SECRET || env.GOOGLE_CLIENT_SECRET;
+  return clientId && clientSecret ? { clientId, clientSecret } : null;
+}
+
+export async function handleGoogleAnalyticsOAuthStart({
+  req,
+  env,
+  url,
+}: RouteContext): Promise<Response> {
+  const definition = INTEGRATION_REGISTRY.google_analytics;
+  const oauth = googleAnalyticsOAuthCredentials(env);
+  if (!definition?.oauthConfig || !oauth) {
+    return text('Google Analytics OAuth is not configured', 500);
+  }
+  const auth = await requireSession(req, env);
+  if ('error' in auth) return redirect(`${url.origin}/login?error=unauthorized`);
+  const { session } = auth;
+  if (!session.workspace_id) return redirect(`${url.origin}/connections?error=no_workspace`);
+  const access = await verifyWorkspaceManageConnectionsAccess(env, session.workspace_id, session.user_id);
+  if (!access.ok) return redirect(`${url.origin}/connections?error=${access.error}`);
+
+  const redirectTo = sanitizeRedirectPath(url.searchParams.get('redirect') || '/connections');
+  const reauthId = url.searchParams.get('integration_id')?.trim();
+  const state = await createIntegrationOAuthState(
+    env.SESSIONS,
+    'google_analytics',
+    session.workspace_id,
+    session.user_id,
+    redirectTo,
+    buildConnectionSetupOAuthExtraConfig(
+      reauthId,
+      url.searchParams.get('chat_request_id'),
+      url.searchParams.get('chat_thread_id'),
+    ),
+  );
+  const authUrl = new URL(definition.oauthConfig.authorizationUrl);
+  const callbackUrl = integrationOAuthCallbackUrl(url, 'google_analytics');
+  authUrl.searchParams.set('client_id', oauth.clientId);
+  authUrl.searchParams.set('redirect_uri', callbackUrl);
+  authUrl.searchParams.set('response_type', 'code');
+  authUrl.searchParams.set('scope', definition.oauthConfig.scopes.join(' '));
+  authUrl.searchParams.set('access_type', 'offline');
+  authUrl.searchParams.set('prompt', 'consent');
+  authUrl.searchParams.set('include_granted_scopes', 'true');
+  authUrl.searchParams.set('state', state);
+  return redirect(authUrl.toString());
+}
+
+interface GoogleAnalyticsPropertySummary {
+  property: string;
+  displayName?: string;
+  propertyType?: string;
+  parent?: string;
+}
+
+interface GoogleAnalyticsAccountSummary {
+  account?: string;
+  displayName?: string;
+  propertySummaries?: GoogleAnalyticsPropertySummary[];
+}
+
+export async function handleGoogleAnalyticsOAuthCallback({
+  env,
+  url,
+}: RouteContext): Promise<Response> {
+  const code = url.searchParams.get('code');
+  const state = url.searchParams.get('state');
+  if (url.searchParams.get('error')) return redirect(`${url.origin}/connections?error=oauth_denied`);
+  if (!code || !state) return redirect(`${url.origin}/connections?error=oauth_invalid`);
+  const stateData = await validateAndConsumeIntegrationOAuthState(env.SESSIONS, state);
+  if (!stateData || stateData.integration_type !== 'google_analytics') {
+    return redirect(`${url.origin}/connections?error=oauth_state_invalid`);
+  }
+  const oauth = googleAnalyticsOAuthCredentials(env);
+  if (!oauth) return redirect(`${url.origin}/connections?error=oauth_config`);
+
+  try {
+    const tokenResponse = await fetch('https://oauth2.googleapis.com/token', {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        grant_type: 'authorization_code',
+        client_id: oauth.clientId,
+        client_secret: oauth.clientSecret,
+        code,
+        redirect_uri: integrationOAuthCallbackUrl(url, 'google_analytics'),
+      }),
+    });
+    const tokenData = await tokenResponse.json() as {
+      access_token?: string;
+      refresh_token?: string;
+      expires_in?: number;
+      token_type?: string;
+      scope?: string;
+      error?: string;
+      error_description?: string;
+    };
+    if (!tokenResponse.ok || !tokenData.access_token) {
+      console.error('[google-analytics-oauth] token exchange failed', tokenData.error, tokenData.error_description);
+      return redirect(`${url.origin}/connections?error=oauth_token_failed`);
+    }
+
+    const access = await verifyWorkspaceManageConnectionsAccess(
+      env,
+      stateData.workspace_id,
+      stateData.user_id,
+    );
+    if (!access.ok) return redirect(`${url.origin}/connections?error=${access.error}`);
+    const owner = await getWorkspaceOrgStub(env, stateData.workspace_id);
+    if (!owner) return redirect(`${url.origin}/connections?error=workspace_not_found`);
+
+    const summariesResponse = await fetch(
+      'https://analyticsadmin.googleapis.com/v1beta/accountSummaries?pageSize=200',
+      { headers: { authorization: `Bearer ${tokenData.access_token}` } },
+    );
+    const summariesData = await summariesResponse.json() as {
+      accountSummaries?: GoogleAnalyticsAccountSummary[];
+      error?: { message?: string };
+    };
+    if (!summariesResponse.ok) {
+      console.error('[google-analytics-oauth] account discovery failed', summariesData.error?.message);
+      return redirect(`${url.origin}/connections?error=oauth_failed`);
+    }
+    const properties = (summariesData.accountSummaries ?? []).flatMap((account) =>
+      (account.propertySummaries ?? []).map((property) => ({
+        id: property.property?.replace(/^properties\//, ''),
+        name: property.displayName,
+        account: account.account,
+        account_name: account.displayName,
+      })),
+    ).filter((property) => property.id);
+    const defaultProperty = properties[0];
+    if (defaultProperty) {
+      const healthResponse = await fetch(
+        `https://analyticsdata.googleapis.com/v1beta/properties/${encodeURIComponent(defaultProperty.id)}/metadata`,
+        { headers: { authorization: `Bearer ${tokenData.access_token}` } },
+      );
+      if (!healthResponse.ok && healthResponse.status !== 404) {
+        console.error('[google-analytics-oauth] metadata health check failed', healthResponse.status);
+        return redirect(`${url.origin}/connections?error=oauth_failed`);
+      }
+    }
+
+    const expiresAt = Date.now() + (tokenData.expires_in ?? 3600) * 1000;
+    const credentials = await encryptCredentials({
+      access_token: tokenData.access_token,
+      refresh_token: tokenData.refresh_token,
+      expires_at: expiresAt,
+      token_type: tokenData.token_type ?? 'Bearer',
+      scope: tokenData.scope,
+    }, env.INTEGRATION_SECRET_KEY);
+    const config = JSON.stringify({
+      property_id: defaultProperty?.id,
+      property_name: defaultProperty?.name,
+      available_properties: properties,
+    });
+    const requestedReauthId = reauthIntegrationId(stateData);
+    const existing = requestedReauthId
+      ? await owner.orgStub.getWorkspaceIntegration(stateData.workspace_id, requestedReauthId)
+      : null;
+    if (requestedReauthId && existing?.integration_type !== 'google_analytics') {
+      return redirect(`${url.origin}/connections?error=reauth_integration_not_found`);
+    }
+    const integrationId = requestedReauthId ?? crypto.randomUUID();
+    const name = defaultProperty?.name ? `GA4 — ${defaultProperty.name}` : 'Google Analytics 4';
+    if (requestedReauthId) {
+      await owner.orgStub.updateWorkspaceIntegration(
+        stateData.workspace_id,
+        requestedReauthId,
+        { name, config, credentialsEncrypted: credentials, tokenExpiresAt: expiresAt },
+        stateData.user_id,
+      );
+    } else {
+      await owner.orgStub.createWorkspaceIntegration(
+        stateData.workspace_id,
+        integrationId,
+        'google_analytics',
+        name,
+        'saas',
+        'oauth2',
+        config,
+        credentials,
+        stateData.user_id,
+        expiresAt,
+      );
+    }
+    if (hasConnectionSetupPromptContext(stateData)) {
+      await completeConnectionSetupPrompt(env, stateData, integrationId, 'google_analytics', name);
+    }
+    const redirectUrl = new URL(sanitizeRedirectPath(stateData.redirect_url), url.origin);
+    redirectUrl.searchParams.set('success', 'google_analytics_connected');
+    return redirect(redirectUrl.toString());
+  } catch (error) {
+    console.error('[google-analytics-oauth] OAuth flow failed', error);
     return redirect(`${url.origin}/connections?error=oauth_failed`);
   }
 }

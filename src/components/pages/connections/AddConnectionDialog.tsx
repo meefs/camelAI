@@ -170,6 +170,15 @@ export function AddConnectionDialog({
               </Alert>
             )}
 
+            {connectionType === 'other' ? (
+              <Alert>
+                <AlertCircle className="size-4" />
+                <AlertDescription>
+                  Generic HTTP is the escape hatch: the agent can call any HTTP(S) URL and camelAI applies these stored credentials. Prefer API discovery when available and only use credentials you trust for this purpose.
+                </AlertDescription>
+              </Alert>
+            ) : null}
+
             {/* Name field */}
             <div className="grid gap-1.5">
               <Label htmlFor="name">Name</Label>

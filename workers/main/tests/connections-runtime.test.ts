@@ -3387,4 +3387,181 @@ describe('connections runtime', () => {
       status: 404,
     });
   });
+
+  it('exposes imported OpenAPI operations alongside generic fetch and enforces write policy', async () => {
+    const definition = {
+      schemaVersion: 1,
+      slug: 'example',
+      displayName: 'Example API',
+      surface: 'openapi',
+      source: 'discovered',
+      sourceUrl: 'https://api.example.com/openapi.json',
+      baseUrl: 'https://api.example.com/v2',
+      auth: [{ kind: 'bearer' }],
+      provenance: { kind: 'discovered' },
+      operations: [
+        {
+          id: 'getItem',
+          name: 'getItem',
+          method: 'GET',
+          path: '/items/{itemId}',
+          access: 'read',
+          inputSchema: { type: 'object' },
+        },
+        {
+          id: 'deleteItem',
+          name: 'deleteItem',
+          method: 'DELETE',
+          path: '/items/{itemId}',
+          access: 'write',
+          inputSchema: { type: 'object' },
+        },
+      ],
+    };
+    const records = [integration({
+      id: 'imported_api',
+      integration_type: 'other',
+      name: 'example',
+      category: 'saas',
+      config: JSON.stringify({
+        base_url: 'https://api.example.com/v2',
+        auth_type: 'bearer',
+        operation_policy: 'read_only',
+        restrict_to_base_origin: true,
+      }),
+      credentials_encrypted: await encryptedCredentials({ api_key: 'secret-token' }),
+      definition_id: 'definition_1',
+      definition: JSON.stringify(definition),
+    })];
+
+    const catalog = await listConnectionMethods(envWith(records), context);
+    expect(catalog[0]?.methods).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: 'getItem', access: 'read' }),
+      expect.objectContaining({ name: 'deleteItem', access: 'write' }),
+      expect.objectContaining({ name: 'fetch', tool: 'authenticated_fetch' }),
+    ]));
+
+    const fetchMock = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      expect(String(url)).toBe('https://api.example.com/v2/items/item-1?expand=owner');
+      expect(new Headers(init?.headers).get('authorization')).toBe('Bearer secret-token');
+      return Response.json({ id: 'item-1' });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    await expect(invokeConnectionMethod(envWith(records), context, {
+      connection: 'otherExample',
+      method: 'getItem',
+      input: { path: { itemId: 'item-1' }, query: { expand: 'owner' } },
+    })).resolves.toMatchObject({ status: 200 });
+    await expect(invokeConnectionMethod(envWith(records), context, {
+      connection: 'otherExample',
+      method: 'deleteItem',
+      input: { path: { itemId: 'item-1' } },
+    })).rejects.toMatchObject({ status: 403, code: 'CONNECTION_POLICY_BLOCKED' });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('executes a discovered GraphQL operation against the exact endpoint URL', async () => {
+    const definition = {
+      schemaVersion: 1,
+      slug: 'graphql-api',
+      displayName: 'Example GraphQL',
+      surface: 'graphql',
+      source: 'discovered',
+      sourceUrl: 'https://integrations.sh/api/example.com/surface',
+      baseUrl: 'https://api.example.com/graphql',
+      auth: [{ kind: 'header', header: 'X-API-Key' }],
+      provenance: { kind: 'discovered' },
+      operations: [{
+        id: 'graphql.execute',
+        name: 'executeGraphql',
+        method: 'POST',
+        path: '',
+        access: 'write',
+        inputSchema: { type: 'object' },
+      }],
+    };
+    const records = [integration({
+      id: 'graphql_api',
+      integration_type: 'other',
+      name: 'graphql',
+      category: 'saas',
+      config: JSON.stringify({
+        base_url: 'https://api.example.com/graphql',
+        auth_type: 'header',
+        auth_header: 'X-API-Key',
+        operation_policy: 'all',
+        restrict_to_base_origin: true,
+      }),
+      credentials_encrypted: await encryptedCredentials({ api_key: 'graphql-token' }),
+      definition_id: 'definition_graphql',
+      definition: JSON.stringify(definition),
+    })];
+    const fetchMock = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      expect(String(url)).toBe('https://api.example.com/graphql');
+      expect(init?.method).toBe('POST');
+      expect(new Headers(init?.headers).get('x-api-key')).toBe('graphql-token');
+      expect(JSON.parse(String(init?.body))).toEqual({
+        query: 'query Viewer { viewer { id } }',
+        variables: {},
+      });
+      return Response.json({ data: { viewer: { id: 'user_1' } } });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(invokeConnectionMethod(envWith(records), context, {
+      connection: 'otherGraphql',
+      method: 'executeGraphql',
+      input: {
+        body: {
+          query: 'query Viewer { viewer { id } }',
+          variables: {},
+        },
+      },
+    })).resolves.toMatchObject({
+      status: 200,
+      bodyText: JSON.stringify({ data: { viewer: { id: 'user_1' } } }),
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('runs GA4 reports as curated read operations with the stored OAuth token', async () => {
+    const records = [integration({
+      id: 'ga4_prod',
+      integration_type: 'google_analytics',
+      name: 'production',
+      category: 'saas',
+      auth_method: 'oauth2',
+      config: JSON.stringify({ property_id: '123456789' }),
+      credentials_encrypted: await encryptedCredentials({ access_token: 'ga4-token' }),
+    })];
+    const catalog = await listConnectionMethods(envWith(records), context);
+    expect(catalog[0]).toMatchObject({
+      alias: 'googleAnalyticsProduction',
+      connection: { capabilities: ['typed_operations'] },
+    });
+    expect(catalog[0]?.methods).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: 'runReport', tool: 'run_report', access: 'read' }),
+      expect.objectContaining({ name: 'topPages', tool: 'top_pages', access: 'read' }),
+    ]));
+
+    const fetchMock = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      expect(String(url)).toBe('https://analyticsdata.googleapis.com/v1beta/properties/123456789:runReport');
+      expect(init?.method).toBe('POST');
+      expect(new Headers(init?.headers).get('authorization')).toBe('Bearer ga4-token');
+      expect(JSON.parse(String(init?.body))).toMatchObject({
+        dimensions: [{ name: 'country' }],
+        metrics: [{ name: 'activeUsers' }],
+      });
+      return Response.json({ rows: [] });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    await expect(invokeConnectionMethod(envWith(records), context, {
+      connection: 'googleAnalyticsProduction',
+      method: 'runReport',
+      input: {
+        dimensions: [{ name: 'country' }],
+        metrics: [{ name: 'activeUsers' }],
+      },
+    })).resolves.toEqual({ rows: [] });
+  });
 });

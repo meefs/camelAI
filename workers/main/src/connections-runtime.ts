@@ -2,6 +2,10 @@ import { decryptCredentials } from '../../../src/lib/integration-crypto';
 import { getIntegrationDefinition } from '../../../src/lib/integration-registry';
 import { validateRemoteMcpUrl } from '../../../src/lib/remote-mcp';
 import {
+  parseWorkspaceIntegrationDefinition,
+  type IntegrationOperationDefinition,
+} from '../../../src/lib/integration-definition';
+import {
   PROVIDER_MCP_REGISTRY,
   type ProviderMcpDefinition,
 } from '../../../src/lib/provider-mcp-registry';
@@ -85,6 +89,11 @@ import {
   isTeamsMcpIntegration,
   teamsMcpRpc,
 } from './teams-mcp.js';
+import {
+  GOOGLE_ANALYTICS_INTEGRATION_TYPE,
+  GOOGLE_ANALYTICS_METHODS,
+  googleAnalyticsTool,
+} from './google-analytics-mcp.js';
 import type {
   WorkspaceIntegrationAuthStatus,
   WorkspaceIntegrationRecord,
@@ -172,6 +181,7 @@ export interface ConnectionMethodSummary {
   invokeVia?: string;
   inputSchema?: unknown;
   outputSchema?: unknown;
+  access?: 'read' | 'write';
 }
 
 export interface ConnectionMethodCatalogEntry {
@@ -210,6 +220,7 @@ export interface ConnectionSmokeTestResult {
 
 const NATIVE_MCP_SERVERS = PROVIDER_MCP_REGISTRY;
 const OTHER_CONNECTION_FETCH_TOOL = 'authenticated_fetch';
+const IMPORTED_OPERATION_TOOL_PREFIX = 'integration_operation:';
 type NativeHttpApiConnection = {
   displayName: string;
   baseUrl: string;
@@ -509,6 +520,9 @@ function fallbackCapabilities(integrationType: string, config: Record<string, un
   if (integrationType === 'remote_mcp') {
     return [];
   }
+  if (integrationType === GOOGLE_ANALYTICS_INTEGRATION_TYPE) {
+    return ['typed_operations'];
+  }
   const nativeMcp = NATIVE_MCP_SERVERS[integrationType];
   if (!nativeMcp) {
     if (integrationType === 'postgres' || integrationType === 'mysql') {
@@ -711,6 +725,7 @@ function mcpDefinitionForRecord(
 
 function summarizeConnection(record: WorkspaceIntegrationRecord, context: ConnectionsContext): ConnectionSummary {
   const config = parseJsonObject(record.config);
+  const importedDefinition = parseWorkspaceIntegrationDefinition(record.definition);
   const definition = getIntegrationDefinition(record.integration_type);
   const nativeMcp = mcpDefinitionForRecord(record, config);
   const resolvedAuthStatus = authStatus(record);
@@ -733,6 +748,7 @@ function summarizeConnection(record: WorkspaceIntegrationRecord, context: Connec
     hasCredentials: Boolean(record.credentials_encrypted),
     capabilities: [
       ...(nativeMcp ? ['mcp_tools'] : []),
+      ...(importedDefinition?.operations.length ? ['typed_operations'] : []),
       ...fallbackCapabilities(record.integration_type, config),
     ],
     recommendedActions: recommendedConnectionActions(record, config),
@@ -897,6 +913,23 @@ function authenticatedFetchMethods(connection: ConnectionSummary): ConnectionMet
   return [OTHER_CONNECTION_FETCH_METHOD];
 }
 
+function importedOperationMethods(record: WorkspaceIntegrationRecord): ConnectionMethodSummary[] {
+  const definition = parseWorkspaceIntegrationDefinition(record.definition);
+  if (!definition) return [];
+  return definition.operations.map((operation) => ({
+    name: operation.name,
+    tool: `${IMPORTED_OPERATION_TOOL_PREFIX}${operation.id}`,
+    description: operation.description ?? `${operation.method} ${operation.path}`,
+    inputSchema: operation.inputSchema,
+    access: operation.access,
+  }));
+}
+
+function curatedOperationMethods(connection: ConnectionSummary): ConnectionMethodSummary[] {
+  if (connection.type !== GOOGLE_ANALYTICS_INTEGRATION_TYPE) return [];
+  return GOOGLE_ANALYTICS_METHODS.map((method) => ({ ...method }));
+}
+
 function virtualChannelMethods(connection: ConnectionSummary): ConnectionMethodSummary[] {
   if (connection.type === 'slack') {
     return [
@@ -1049,7 +1082,8 @@ export async function listConnectionMethods(
   env: ConnectionsRuntimeEnv,
   context: ConnectionsContext
 ): Promise<ConnectionMethodCatalogEntry[]> {
-  const connections = await listConnections(env, context);
+  const records = await getWorkspaceIntegrations(env, context);
+  const connections = records.map((record) => summarizeConnection(record, context));
   const usedAliases = new Set<string>();
   return Promise.all(connections.map(async (connection) => {
     const entry: ConnectionMethodCatalogEntry = {
@@ -1062,6 +1096,8 @@ export async function listConnectionMethods(
         connection,
         [
           ...virtualChannelMethods(connection),
+          ...curatedOperationMethods(connection),
+          ...importedOperationMethods(records.find((record) => record.id === connection.id)!),
           ...authenticatedFetchMethods(connection),
         ]
       ));
@@ -1232,6 +1268,24 @@ export async function invokeConnectionMethod(
   ) {
     return callAuthenticatedConnectionFetch(env, context, target.connection.id, request.input);
   }
+  if (targetMethod.tool.startsWith(IMPORTED_OPERATION_TOOL_PREFIX)) {
+    return callImportedIntegrationOperation(
+      env,
+      context,
+      target.connection.id,
+      targetMethod.tool.slice(IMPORTED_OPERATION_TOOL_PREFIX.length),
+      input,
+    );
+  }
+  if (target.connection.type === GOOGLE_ANALYTICS_INTEGRATION_TYPE) {
+    return callGoogleAnalyticsConnectionTool(
+      env,
+      context,
+      target.connection.id,
+      targetMethod.tool,
+      input,
+    );
+  }
   if (target.connection.type === 'slack' && targetMethod.tool === SLACK_SEND_TOOL) {
     throw Object.assign(
       new Error(
@@ -1281,6 +1335,16 @@ async function callAuthenticatedConnectionFetch(
     : requireConfiguredUrl(config.base_url, 'base_url');
   const request = normalizeOtherFetchInput(input);
   const requestUrl = resolveOtherFetchUrl(baseUrl, request.input, nativeProvider);
+  if (
+    !nativeProvider &&
+    config.restrict_to_base_origin === true &&
+    requestUrl.origin !== baseUrl.origin
+  ) {
+    throw Object.assign(
+      new Error(`This imported API connection only allows requests to ${baseUrl.origin}.`),
+      { status: 400 },
+    );
+  }
 
   const credentials = record.credentials_encrypted
     ? await decryptCredentials<Record<string, unknown>>(record.credentials_encrypted, env.INTEGRATION_SECRET_KEY)
@@ -1304,7 +1368,9 @@ async function callAuthenticatedConnectionFetch(
     }
   }
 
-  const response = await fetch(requestUrl, init);
+  const response = config.restrict_to_base_origin === true
+    ? await fetchPinnedOrigin(requestUrl, init, baseUrl.origin)
+    : await fetch(requestUrl, init);
   // Self-heal stale auth status: a successful authenticated fetch proves the
   // connection is usable again, so clear a previously recorded setup/reauth
   // problem. This covers config-only fixes (e.g. switching an "other" connection
@@ -1328,6 +1394,136 @@ async function callAuthenticatedConnectionFetch(
     bodyText: responseBody.text,
     truncated: responseBody.truncated,
   };
+}
+
+async function fetchPinnedOrigin(url: URL, init: RequestInit, allowedOrigin: string): Promise<Response> {
+  let requestUrl = url;
+  let requestInit = { ...init, redirect: 'manual' as const };
+  for (let redirects = 0; redirects <= 5; redirects += 1) {
+    const response = await fetch(requestUrl, requestInit);
+    if (![301, 302, 303, 307, 308].includes(response.status)) return response;
+    const location = response.headers.get('location');
+    if (!location) return response;
+    if (redirects === 5) {
+      throw Object.assign(new Error('Imported API request exceeded the redirect limit.'), { status: 502 });
+    }
+    const nextUrl = new URL(location, requestUrl);
+    if (nextUrl.origin !== allowedOrigin) {
+      throw Object.assign(
+        new Error(`Imported API redirect was blocked because it left ${allowedOrigin}.`),
+        { status: 400 },
+      );
+    }
+    if (
+      response.status === 303 ||
+      ((response.status === 301 || response.status === 302) && requestInit.method === 'POST')
+    ) {
+      requestInit = { ...requestInit, method: 'GET', body: undefined };
+    }
+    requestUrl = nextUrl;
+  }
+  throw Object.assign(new Error('Imported API request could not resolve its redirect.'), { status: 502 });
+}
+
+async function callImportedIntegrationOperation(
+  env: ConnectionsRuntimeEnv,
+  context: ConnectionsContext,
+  connection: string,
+  operationId: string,
+  input: Record<string, unknown>,
+): Promise<unknown> {
+  const records = await getWorkspaceIntegrations(env, context);
+  const resolved = resolveIntegration(records, connection);
+  if (!resolved.ok) {
+    throw Object.assign(new Error(resolved.error), {
+      status: resolved.status,
+      matches: resolved.matches,
+    });
+  }
+  const record = resolved.record;
+  const definition = parseWorkspaceIntegrationDefinition(record.definition);
+  const operation = definition?.operations.find((candidate) => candidate.id === operationId);
+  if (!definition || !operation) {
+    throw Object.assign(new Error(`Imported operation "${operationId}" was not found.`), { status: 404 });
+  }
+  const config = parseJsonObject(record.config);
+  if (operation.access === 'write' && config.operation_policy !== 'all') {
+    throw Object.assign(
+      new Error(
+        `Operation "${operation.name}" is classified as write access. Enable write operations in the connection settings before invoking it.`,
+      ),
+      { status: 403, code: 'CONNECTION_POLICY_BLOCKED' },
+    );
+  }
+  const requestPath = renderOperationPath(operation, input.path);
+  const url = requestPath
+    ? new URL(`${definition.baseUrl.replace(/\/$/, '')}/${requestPath.replace(/^\//, '')}`)
+    : new URL(definition.baseUrl);
+  if (input.query && typeof input.query === 'object' && !Array.isArray(input.query)) {
+    for (const [key, value] of Object.entries(input.query as Record<string, unknown>)) {
+      if (value === undefined || value === null) continue;
+      if (Array.isArray(value)) {
+        for (const item of value) url.searchParams.append(key, String(item));
+      } else {
+        url.searchParams.set(key, String(value));
+      }
+    }
+  }
+  return callAuthenticatedConnectionFetch(env, context, record.id, {
+    input: url.toString(),
+    init: {
+      method: operation.method,
+      ...(Object.prototype.hasOwnProperty.call(input, 'body') ? { body: input.body } : {}),
+    },
+  });
+}
+
+function renderOperationPath(operation: IntegrationOperationDefinition, rawPath: unknown): string {
+  const pathValues = rawPath && typeof rawPath === 'object' && !Array.isArray(rawPath)
+    ? rawPath as Record<string, unknown>
+    : {};
+  return operation.path.replace(/\{([^}]+)\}/g, (_match, key: string) => {
+    const value = pathValues[key];
+    if (value === undefined || value === null || value === '') {
+      throw Object.assign(new Error(`Operation "${operation.name}" requires path.${key}.`), { status: 400 });
+    }
+    return encodeURIComponent(String(value));
+  });
+}
+
+async function callGoogleAnalyticsConnectionTool(
+  env: ConnectionsRuntimeEnv,
+  context: ConnectionsContext,
+  connection: string,
+  tool: string,
+  input: Record<string, unknown>,
+): Promise<unknown> {
+  const records = await getWorkspaceIntegrations(env, context);
+  const resolved = resolveIntegration(records, connection);
+  if (!resolved.ok) {
+    throw Object.assign(new Error(resolved.error), {
+      status: resolved.status,
+      matches: resolved.matches,
+    });
+  }
+  const record = resolved.record;
+  try {
+    const result = await googleAnalyticsTool(env, record, tool, input);
+    if (record.auth_status && record.auth_status !== 'connected') {
+      await markConnectionAuthStatus(env, context, record, 'connected', '', '');
+    }
+    return result;
+  } catch (error) {
+    const status = (error as { status?: unknown }).status;
+    if (status === 401 || status === 403) {
+      const auth = status === 403 ? 'missing_scopes' : 'needs_reauth';
+      const code = status === 403 ? 'AUTH_MISSING_SCOPES' : 'AUTH_REAUTH_REQUIRED';
+      const message = error instanceof Error ? error.message : 'Google Analytics authorization failed.';
+      await markConnectionAuthStatus(env, context, record, auth, code, message);
+      throw connectionAuthError(record, context, auth, code, message, status);
+    }
+    throw error;
+  }
 }
 
 async function callSlackConnectionTool(

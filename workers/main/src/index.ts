@@ -41,6 +41,8 @@ import {
   handleSalesforceOAuthCallback,
   handleRemoteMcpOAuthStart,
   handleRemoteMcpOAuthCallback,
+  handleGoogleAnalyticsOAuthStart,
+  handleGoogleAnalyticsOAuthCallback,
 } from './routes/integrations.js';
 import { handleWorkspaceStatusWebSocket } from './routes/websocket.js';
 import { handleLogsWebSocket } from './routes/logs-websocket.js';
@@ -246,6 +248,8 @@ const routes: Route[] = [
   { method: 'GET', path: /^\/api\/integrations\/notion\/callback$/, handler: handleNotionOAuthCallback },
   { method: 'GET', path: /^\/api\/integrations\/salesforce\/oauth$/, handler: handleSalesforceOAuthStart },
   { method: 'GET', path: /^\/api\/integrations\/salesforce\/callback$/, handler: handleSalesforceOAuthCallback },
+  { method: 'GET', path: /^\/api\/integrations\/google_analytics\/oauth$/, handler: handleGoogleAnalyticsOAuthStart },
+  { method: 'GET', path: /^\/api\/integrations\/google_analytics\/callback$/, handler: handleGoogleAnalyticsOAuthCallback },
   { method: 'GET', path: /^\/api\/integrations\/remote_mcp\/oauth$/, handler: handleRemoteMcpOAuthStart },
   { method: 'GET', path: /^\/api\/integrations\/remote_mcp\/callback$/, handler: handleRemoteMcpOAuthCallback },
 

@@ -124,6 +124,11 @@
       "kind": "unit"
     },
     {
+      "id": "integration-definition-discovery-live",
+      "description": "Discover imported typed API operations and the generic fetch fallback from a linked connection definition",
+      "kind": "unit"
+    },
+    {
       "id": "custom-domain-live",
       "description": "Discover and call the custom-domain diagnostics tool (exercises the lean-dropped domains tools via discovery)",
       "kind": "unit"

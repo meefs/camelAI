@@ -1,5 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
-import { verifyWorkspaceManageConnectionsAccess } from "../src/routes/integrations.js";
+import {
+  integrationOAuthCallbackUrl,
+  verifyWorkspaceManageConnectionsAccess,
+} from "../src/routes/integrations.js";
 
 function makeEnv({
   isAdmin,
@@ -100,5 +103,22 @@ describe("verifyWorkspaceManageConnectionsAccess", () => {
     await expect(
       verifyWorkspaceManageConnectionsAccess(env as never, "ws_1", "user_1"),
     ).resolves.toEqual({ ok: true, orgId: "org_1" });
+  });
+});
+
+describe("integrationOAuthCallbackUrl", () => {
+  it("derives the public callback origin from the incoming request URL", () => {
+    expect(
+      integrationOAuthCallbackUrl(
+        new URL("https://staging.camelai.dev/api/integrations/google_analytics/oauth?redirect=/connections"),
+        "google_analytics",
+      ),
+    ).toBe("https://staging.camelai.dev/api/integrations/google_analytics/callback");
+  });
+
+  it("preserves local ports and safely encodes the integration type", () => {
+    expect(
+      integrationOAuthCallbackUrl(new URL("http://localhost:3001/connections"), "custom provider"),
+    ).toBe("http://localhost:3001/api/integrations/custom%20provider/callback");
   });
 });

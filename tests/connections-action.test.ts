@@ -9,6 +9,9 @@ const isOrgAdminMock = vi.fn();
 const authUserGetMock = vi.fn();
 const authUserGetProfileMock = vi.fn();
 const createIntegrationMock = vi.fn();
+const createDefinitionMock = vi.fn();
+const getDefinitionMock = vi.fn();
+const discoverSurfacesMock = vi.fn();
 const updateIntegrationMock = vi.fn();
 const deleteIntegrationMock = vi.fn();
 const getIntegrationMock = vi.fn();
@@ -30,8 +33,18 @@ vi.mock("@/lib/cloudflare.server", () => ({
   getEnv: getEnvMock,
 }));
 
+vi.mock("@/lib/openapi-integration.server", () => ({
+  discoverIntegrationSurfaces: discoverSurfacesMock,
+}));
+
 vi.mock("@/lib/auth-do", () => ({
   isOrgAdmin: isOrgAdminMock,
+  createWorkspaceIntegrationDefinitionRecord: vi.fn(
+    (_authEnv, _workspaceId: string, ...args: unknown[]) => createDefinitionMock(...args),
+  ),
+  getWorkspaceIntegrationDefinitionRecord: vi.fn(
+    (_authEnv, _workspaceId: string, definitionId: string) => getDefinitionMock(definitionId),
+  ),
   createWorkspaceIntegrationRecord: vi.fn(
     (
       _authEnv,
@@ -169,6 +182,7 @@ function setEnv(overrides: Record<string, unknown> = {}) {
 describe("connections action admin guard", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    discoverSurfacesMock.mockReset();
     requireAuthContextMock.mockResolvedValue({
       currentOrg: { id: "org_1" },
       currentWorkspace: { id: "ws_1" },
@@ -409,6 +423,182 @@ describe("connections action admin guard", () => {
     });
     expect(credentialsEncrypted).toBe("");
     expect(response.oauthUrl).toContain(`integration_id=${integrationId}`);
+  });
+
+  it("creates a discovered MCP surface as a remote MCP OAuth connection", async () => {
+    isOrgAdminMock.mockResolvedValue(true);
+    discoverSurfacesMock.mockResolvedValue([{
+      schemaVersion: 1,
+      slug: "example-mcp",
+      displayName: "Example MCP",
+      surface: "mcp",
+      source: "discovered",
+      sourceUrl: "https://integrations.sh/api/example.com/surface",
+      baseUrl: "https://mcp.example.com/mcp",
+      auth: [{ kind: "oauth2" }],
+      operations: [],
+      provenance: { kind: "discovered" },
+    }]);
+
+    const response = await action({
+      request: postForm({
+        intent: "createDiscoveredIntegration",
+        source_url: "https://example.com",
+        surface_slug: "example-mcp",
+        name: "Example MCP",
+        auth_type: "oauth2",
+        operation_policy: "read_only",
+        credentials: "{}",
+      }),
+      context: {},
+      params: {},
+    } as never);
+
+    expect(response).toMatchObject({ success: true });
+    expect(response.oauthUrl).toContain("/api/integrations/remote_mcp/oauth?");
+    const [, integrationType, name, , , configJson, credentialsEncrypted] = createIntegrationMock.mock.calls[0];
+    expect(integrationType).toBe("remote_mcp");
+    expect(name).toBe("Example MCP");
+    expect(JSON.parse(configJson)).toEqual({
+      server_url: "https://mcp.example.com/mcp",
+      auth_type: "oauth",
+      discovery_source: "https://integrations.sh/api/example.com/surface",
+    });
+    expect(credentialsEncrypted).toBe("");
+    expect(createDefinitionMock).not.toHaveBeenCalled();
+  });
+
+  it("persists a discovered GraphQL surface with generic fetch and a guarded operation", async () => {
+    isOrgAdminMock.mockResolvedValue(true);
+    discoverSurfacesMock.mockResolvedValue([{
+      schemaVersion: 1,
+      slug: "example-graphql",
+      displayName: "Example GraphQL",
+      surface: "graphql",
+      source: "discovered",
+      sourceUrl: "https://integrations.sh/api/example.com/surface",
+      baseUrl: "https://api.example.com/graphql",
+      auth: [{ kind: "none" }],
+      operations: [{
+        id: "graphql.execute",
+        name: "executeGraphql",
+        method: "POST",
+        path: "",
+        access: "write",
+      }],
+      provenance: { kind: "discovered" },
+    }]);
+
+    const response = await action({
+      request: postForm({
+        intent: "createDiscoveredIntegration",
+        source_url: "https://example.com",
+        surface_slug: "example-graphql",
+        name: "Example GraphQL",
+        auth_type: "none",
+        operation_policy: "read_only",
+        credentials: "{}",
+      }),
+      context: {},
+      params: {},
+    } as never);
+
+    expect(response).toMatchObject({ success: true });
+    expect(createDefinitionMock).toHaveBeenCalledWith(
+      expect.any(String),
+      "example-graphql",
+      expect.stringContaining('"surface":"graphql"'),
+      "discovered",
+      "https://integrations.sh/api/example.com/surface",
+      "user_1",
+    );
+    const [, integrationType, , , , configJson, credentialsEncrypted] = createIntegrationMock.mock.calls[0];
+    expect(integrationType).toBe("other");
+    expect(JSON.parse(configJson)).toMatchObject({
+      base_url: "https://api.example.com/graphql",
+      operation_policy: "read_only",
+      restrict_to_base_origin: true,
+      generic_fetch_enabled: true,
+    });
+    expect(credentialsEncrypted).toBe("");
+  });
+
+  it("resolves tenant URL variables before persisting a discovered connection", async () => {
+    isOrgAdminMock.mockResolvedValue(true);
+    discoverSurfacesMock.mockResolvedValue([{
+      schemaVersion: 1,
+      slug: "shopify-graphql",
+      displayName: "Shopify GraphQL",
+      surface: "graphql",
+      source: "discovered",
+      sourceUrl: "https://integrations.sh/api/shopify.com/surface",
+      baseUrl: "https://{shop}.myshopify.com/admin/api/%7Bapi_version%7D/graphql.json",
+      auth: [{ kind: "unknown" }],
+      variables: [
+        { name: "shop", in: "url" },
+        { name: "api_version", in: "url" },
+      ],
+      warnings: ["The discovered endpoint is hosted outside shopify.com."],
+      operations: [{
+        id: "graphql.execute",
+        name: "executeGraphql",
+        method: "POST",
+        path: "",
+        access: "write",
+      }],
+      provenance: { kind: "discovered" },
+    }]);
+
+    const unconfirmedResponse = await action({
+      request: postForm({
+        intent: "createDiscoveredIntegration",
+        source_url: "https://shopify.com",
+        surface_slug: "shopify-graphql",
+        name: "Storefront",
+        auth_type: "bearer",
+        operation_policy: "read_only",
+        credentials: JSON.stringify({ api_key: "shop-token" }),
+        surface_variables: JSON.stringify({ shop: "acme-store", api_version: "2026-07" }),
+      }),
+      context: {},
+      params: {},
+    } as never);
+
+    expect(unconfirmedResponse).toEqual({
+      error: "Confirm the integrations.sh endpoint before creating this connection",
+    });
+    expect(createIntegrationMock).not.toHaveBeenCalled();
+
+    const response = await action({
+      request: postForm({
+        intent: "createDiscoveredIntegration",
+        source_url: "https://shopify.com",
+        surface_slug: "shopify-graphql",
+        name: "Storefront",
+        auth_type: "bearer",
+        operation_policy: "read_only",
+        credentials: JSON.stringify({ api_key: "shop-token" }),
+        surface_variables: JSON.stringify({ shop: "acme-store", api_version: "2026-07" }),
+        endpoint_confirmed: "true",
+      }),
+      context: {},
+      params: {},
+    } as never);
+
+    expect(response).toMatchObject({ success: true });
+    expect(createDefinitionMock).toHaveBeenCalledWith(
+      expect.any(String),
+      "shopify-graphql",
+      expect.stringContaining("https://acme-store.myshopify.com/admin/api/2026-07/graphql.json"),
+      "discovered",
+      "https://integrations.sh/api/shopify.com/surface",
+      "user_1",
+    );
+    const configJson = createIntegrationMock.mock.calls[0][5];
+    expect(JSON.parse(configJson)).toMatchObject({
+      base_url: "https://acme-store.myshopify.com/admin/api/2026-07/graphql.json",
+      auth_type: "bearer",
+    });
   });
 });
 

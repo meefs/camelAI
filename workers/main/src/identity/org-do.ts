@@ -82,6 +82,7 @@ import { normalizeThreadCompletionSummaryStatus } from "./thread-summary";
 import { usageCost, usageInteger, usageText } from "./usage";
 import { generateEmailHandle } from "../../../../src/lib/workspace-email";
 import type { EmailHandleDO } from "../email-handle-registry";
+import type { WorkspaceIntegrationDefinitionRecord } from "../../../../src/lib/integration-definition";
 import {
   getCustomDomain as getOrgCustomDomain,
   removeCustomDomain as removeOrgCustomDomain,
@@ -1750,7 +1751,31 @@ export class OrgDO extends DurableObject<DOEnv> {
       );
     }
 
-    const CURRENT_SCHEMA_VERSION = 42;
+    if (version < 43) {
+      // V43: Separate reusable API/tool definitions from account credentials.
+      this.sql.exec(`
+        CREATE TABLE IF NOT EXISTS integration_definitions (
+          id TEXT PRIMARY KEY,
+          workspace_id TEXT NOT NULL,
+          slug TEXT NOT NULL,
+          payload TEXT NOT NULL,
+          source TEXT NOT NULL,
+          source_url TEXT,
+          created_by TEXT NOT NULL,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL
+        )
+      `);
+      this.sql.exec(
+        "CREATE INDEX IF NOT EXISTS idx_integration_definitions_workspace ON integration_definitions(workspace_id, updated_at)",
+      );
+      this.ensureColumn("integrations", "definition_id", "TEXT");
+      this.sql.exec(
+        "CREATE INDEX IF NOT EXISTS idx_integrations_definition ON integrations(definition_id) WHERE definition_id IS NOT NULL",
+      );
+    }
+
+    const CURRENT_SCHEMA_VERSION = 43;
     if (version < CURRENT_SCHEMA_VERSION) {
       this.ctx.storage.kv.put("schemaVersion", CURRENT_SCHEMA_VERSION);
     }
@@ -3604,13 +3629,16 @@ export class OrgDO extends DurableObject<DOEnv> {
     await this.ensureWorkspaceIntegrationsMigrated(workspaceId);
     return this.sql
       .exec<WorkspaceIntegrationRecord & Record<string, SqlStorageValue>>(
-        `SELECT id, integration_type, name, category, auth_method, config,
-                credentials_encrypted, created_by, created_at, updated_at,
-                deleted_at, token_expires_at, auth_status, auth_error_code,
-                auth_error_message, auth_checked_at, reauth_required_at
-           FROM integrations
-          WHERE workspace_id = ? AND deleted_at IS NULL
-          ORDER BY created_at DESC`,
+        `SELECT i.id, i.integration_type, i.name, i.category, i.auth_method, i.config,
+                i.credentials_encrypted, i.created_by, i.created_at, i.updated_at,
+                i.deleted_at, i.token_expires_at, i.auth_status, i.auth_error_code,
+                i.auth_error_message, i.auth_checked_at, i.reauth_required_at,
+                i.definition_id, d.payload AS definition
+           FROM integrations i
+           LEFT JOIN integration_definitions d
+             ON d.id = i.definition_id AND d.workspace_id = i.workspace_id
+          WHERE i.workspace_id = ? AND i.deleted_at IS NULL
+          ORDER BY i.created_at DESC`,
         workspaceId,
       )
       .toArray();
@@ -3624,12 +3652,15 @@ export class OrgDO extends DurableObject<DOEnv> {
     return (
       this.sql
         .exec<WorkspaceIntegrationRecord & Record<string, SqlStorageValue>>(
-          `SELECT id, integration_type, name, category, auth_method, config,
-                  credentials_encrypted, created_by, created_at, updated_at,
-                  deleted_at, token_expires_at, auth_status, auth_error_code,
-                  auth_error_message, auth_checked_at, reauth_required_at
-             FROM integrations
-            WHERE workspace_id = ? AND id = ? AND deleted_at IS NULL`,
+          `SELECT i.id, i.integration_type, i.name, i.category, i.auth_method, i.config,
+                  i.credentials_encrypted, i.created_by, i.created_at, i.updated_at,
+                  i.deleted_at, i.token_expires_at, i.auth_status, i.auth_error_code,
+                  i.auth_error_message, i.auth_checked_at, i.reauth_required_at,
+                  i.definition_id, d.payload AS definition
+             FROM integrations i
+             LEFT JOIN integration_definitions d
+               ON d.id = i.definition_id AND d.workspace_id = i.workspace_id
+            WHERE i.workspace_id = ? AND i.id = ? AND i.deleted_at IS NULL`,
           workspaceId,
           id,
         )
@@ -3793,6 +3824,7 @@ export class OrgDO extends DurableObject<DOEnv> {
     credentialsEncrypted: string,
     createdBy: string,
     tokenExpiresAt?: number | null,
+    definitionId?: string | null,
   ): Promise<void> {
     if (await this.workspaceIntegrationNameExists(workspaceId, integrationType, name)) {
       throw new Error(
@@ -3809,8 +3841,17 @@ export class OrgDO extends DurableObject<DOEnv> {
     }
 
     const now = Date.now();
+    let credentiallessConnection = false;
+    if (!resolvedCredentialsEncrypted && (integrationType === "other" || integrationType === "remote_mcp")) {
+      try {
+        const parsedConfig = JSON.parse(config) as { auth_type?: unknown };
+        credentiallessConnection = parsedConfig.auth_type === "none";
+      } catch {
+        credentiallessConnection = false;
+      }
+    }
     const initialAuthStatus: WorkspaceIntegrationAuthStatus =
-      resolvedCredentialsEncrypted ? "connected" : "setup_incomplete";
+      resolvedCredentialsEncrypted || credentiallessConnection ? "connected" : "setup_incomplete";
     const initialAuthErrorCode =
       initialAuthStatus === "connected" ? null : "AUTH_SETUP_INCOMPLETE";
     const initialAuthErrorMessage =
@@ -3823,8 +3864,8 @@ export class OrgDO extends DurableObject<DOEnv> {
        (id, workspace_id, integration_type, name, category, auth_method, config,
         credentials_encrypted, created_by, created_at, updated_at, deleted_at,
         token_expires_at, auth_status, auth_error_code, auth_error_message,
-        auth_checked_at, reauth_required_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?)`,
+        auth_checked_at, reauth_required_at, definition_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?)`,
       id,
       workspaceId,
       integrationType,
@@ -3842,6 +3883,7 @@ export class OrgDO extends DurableObject<DOEnv> {
       initialAuthErrorMessage,
       now,
       initialAuthStatus === "connected" ? null : now,
+      definitionId ?? null,
     );
     this.log("integration_created", createdBy, id, {
       workspace_id: workspaceId,
@@ -3853,6 +3895,54 @@ export class OrgDO extends DurableObject<DOEnv> {
     if (resolvedTokenExpiresAt !== null) {
       await this.scheduleNextTokenRefresh();
     }
+  }
+
+  async createWorkspaceIntegrationDefinition(
+    workspaceId: string,
+    id: string,
+    slug: string,
+    payload: string,
+    source: string,
+    sourceUrl: string | null,
+    createdBy: string,
+  ): Promise<void> {
+    JSON.parse(payload);
+    const now = Date.now();
+    this.sql.exec(
+      `INSERT INTO integration_definitions
+       (id, workspace_id, slug, payload, source, source_url, created_by, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      id,
+      workspaceId,
+      slug,
+      payload,
+      source,
+      sourceUrl,
+      createdBy,
+      now,
+      now,
+    );
+    this.log("integration_definition_created", createdBy, id, {
+      workspace_id: workspaceId,
+      slug,
+      source,
+    });
+  }
+
+  async getWorkspaceIntegrationDefinition(
+    workspaceId: string,
+    id: string,
+  ): Promise<WorkspaceIntegrationDefinitionRecord | null> {
+    return this.sql
+      .exec<WorkspaceIntegrationDefinitionRecord & Record<string, SqlStorageValue>>(
+        `SELECT id, workspace_id, slug, payload, source, source_url,
+                created_by, created_at, updated_at
+           FROM integration_definitions
+          WHERE workspace_id = ? AND id = ?`,
+        workspaceId,
+        id,
+      )
+      .toArray()[0] ?? null;
   }
 
   async updateWorkspaceIntegration(
@@ -4110,6 +4200,17 @@ export class OrgDO extends DurableObject<DOEnv> {
           await this.refreshNotionToken(refreshToken));
         break;
       }
+      case "google_analytics": {
+        const refreshToken = credentials.refresh_token as string | undefined;
+        if (!refreshToken) {
+          throw new PermanentRefreshError(
+            `No refresh token for Google Analytics integration ${integration.id}`,
+          );
+        }
+        ({ credentials: newCredentials, expiresAt: newExpiresAt } =
+          await this.refreshGoogleAnalyticsToken(refreshToken, credentials));
+        break;
+      }
       case BIGQUERY_INTEGRATION_TYPE: {
         const serviceAccountJson = credentials.service_account_json;
         if (
@@ -4241,6 +4342,57 @@ export class OrgDO extends DurableObject<DOEnv> {
         owner_user_id: data.owner?.user?.id,
         owner_user_name: data.owner?.user?.name,
         owner_user_email: data.owner?.user?.person?.email,
+      },
+      expiresAt,
+    };
+  }
+
+  private async refreshGoogleAnalyticsToken(
+    refreshToken: string,
+    previous: Record<string, unknown>,
+  ): Promise<{ credentials: Record<string, unknown>; expiresAt: number }> {
+    const clientId = this.env.GOOGLE_ANALYTICS_CLIENT_ID || this.env.GOOGLE_CLIENT_ID;
+    const clientSecret = this.env.GOOGLE_ANALYTICS_CLIENT_SECRET || this.env.GOOGLE_CLIENT_SECRET;
+    if (!clientId || !clientSecret) {
+      throw new Error("Google Analytics OAuth credentials not configured");
+    }
+    const response = await fetch("https://oauth2.googleapis.com/token", {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        grant_type: "refresh_token",
+        refresh_token: refreshToken,
+        client_id: clientId,
+        client_secret: clientSecret,
+      }),
+    });
+    const data = await response.json() as {
+      access_token?: string;
+      expires_in?: number;
+      token_type?: string;
+      scope?: string;
+      error?: string;
+      error_description?: string;
+    };
+    if (!response.ok || !data.access_token) {
+      const message = `Google Analytics token refresh failed: ${response.status} ${data.error_description || data.error || response.statusText}`;
+      if (response.status >= 400 && response.status < 500 && response.status !== 429) {
+        throw new PermanentRefreshError(message);
+      }
+      if (response.status === 429) {
+        throw new RetryableRefreshError(message, Date.now() + TOKEN_REFRESH_RATE_LIMIT_DEFAULT_MS);
+      }
+      throw new Error(message);
+    }
+    const expiresAt = Date.now() + (data.expires_in ?? 3600) * 1000;
+    return {
+      credentials: {
+        ...previous,
+        access_token: data.access_token,
+        refresh_token: refreshToken,
+        expires_at: expiresAt,
+        token_type: data.token_type ?? previous.token_type ?? "Bearer",
+        scope: data.scope ?? previous.scope,
       },
       expiresAt,
     };
@@ -6231,6 +6383,7 @@ export class OrgDO extends DurableObject<DOEnv> {
     this.sql.exec("DELETE FROM workspace_memberships");
     this.sql.exec("DELETE FROM invitations");
     this.sql.exec("DELETE FROM integrations");
+    this.sql.exec("DELETE FROM integration_definitions");
     this.sql.exec("DELETE FROM workspaces");
     this.sql.exec("DELETE FROM audit_log");
     this.sql.exec("DELETE FROM worker_scripts");

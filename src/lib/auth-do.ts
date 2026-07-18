@@ -30,6 +30,7 @@ import {
 } from "./auth-helpers";
 import type { UserOrg } from "../../workers/main/src/auth";
 import type { WorkspaceIntegrationRecord } from "../../workers/main/src/workspace";
+import type { WorkspaceIntegrationDefinitionRecord } from "@/lib/integration-definition";
 import type { LlmProviderConfigRecord } from "./llm-provider-config";
 import { getAppIndexDatabase, getAppIndexReadDatabase } from "../../workers/main/src/app-index-db";
 
@@ -1241,6 +1242,7 @@ export async function createWorkspaceIntegrationRecord(
   credentialsEncrypted: string,
   createdBy: string,
   tokenExpiresAt?: number | null,
+  definitionId?: string | null,
 ): Promise<void> {
   const stub = await getWorkspaceOrgStub(env, workspaceId);
   if (!stub) throw new Error("Workspace not found");
@@ -1257,6 +1259,7 @@ export async function createWorkspaceIntegrationRecord(
         credentialsEncrypted: string,
         createdBy: string,
         tokenExpiresAt?: number | null,
+        definitionId?: string | null,
       ): Promise<void>;
     }
   ).createWorkspaceIntegration(
@@ -1270,7 +1273,60 @@ export async function createWorkspaceIntegrationRecord(
     credentialsEncrypted,
     createdBy,
     tokenExpiresAt,
+    definitionId,
   );
+}
+
+export async function createWorkspaceIntegrationDefinitionRecord(
+  env: AuthEnv,
+  workspaceId: string,
+  id: string,
+  slug: string,
+  payload: string,
+  source: string,
+  sourceUrl: string | null,
+  createdBy: string,
+): Promise<void> {
+  const stub = await getWorkspaceOrgStub(env, workspaceId);
+  if (!stub) throw new Error("Workspace not found");
+  await (
+    stub as unknown as {
+      createWorkspaceIntegrationDefinition(
+        workspaceId: string,
+        id: string,
+        slug: string,
+        payload: string,
+        source: string,
+        sourceUrl: string | null,
+        createdBy: string,
+      ): Promise<void>;
+    }
+  ).createWorkspaceIntegrationDefinition(
+    workspaceId,
+    id,
+    slug,
+    payload,
+    source,
+    sourceUrl,
+    createdBy,
+  );
+}
+
+export async function getWorkspaceIntegrationDefinitionRecord(
+  env: AuthEnv,
+  workspaceId: string,
+  id: string,
+): Promise<WorkspaceIntegrationDefinitionRecord | null> {
+  const stub = await getWorkspaceOrgStub(env, workspaceId);
+  if (!stub) return null;
+  return (
+    stub as unknown as {
+      getWorkspaceIntegrationDefinition(
+        workspaceId: string,
+        id: string,
+      ): Promise<WorkspaceIntegrationDefinitionRecord | null>;
+    }
+  ).getWorkspaceIntegrationDefinition(workspaceId, id);
 }
 
 export async function updateWorkspaceIntegrationRecord(

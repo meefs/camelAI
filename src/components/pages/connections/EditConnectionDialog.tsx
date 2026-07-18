@@ -117,6 +117,13 @@ export function EditConnectionDialog({
   const visibleCredentialFields = typeDef.credentialSchema.filter((field) =>
     shouldShowCredentialField(connection.integration_type, field.name, config)
   );
+  const googleAnalyticsProperties = connection.integration_type === 'google_analytics' && Array.isArray(config.available_properties)
+    ? config.available_properties.filter((value): value is { id: string; name?: string } => (
+        Boolean(value) &&
+        typeof value === 'object' &&
+        typeof (value as { id?: unknown }).id === 'string'
+      ))
+    : [];
   const isRemoteMcpOAuth = connection.integration_type === 'remote_mcp' && config.auth_type === 'oauth';
 
   // Force credential entry (and submission) when the selected auth mode needs a
@@ -231,7 +238,33 @@ export function EditConnectionDialog({
                   {field.label}
                   {field.required && <span className="ml-1 text-red-400">*</span>}
                 </Label>
-                {field.type === 'select' && field.options ? (
+                {field.name === 'property_id' && googleAnalyticsProperties.length > 0 ? (
+                  <Select
+                    value={(config.property_id as string) || ''}
+                    onValueChange={(value) => {
+                      const property = googleAnalyticsProperties.find((candidate) => candidate.id === value);
+                      setForm((previous) => ({
+                        ...previous,
+                        config: {
+                          ...previous.config,
+                          property_id: value,
+                          property_name: property?.name ?? value,
+                        },
+                      }));
+                    }}
+                  >
+                    <SelectTrigger>
+                      <SelectValue placeholder="Select a GA4 property" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {googleAnalyticsProperties.map((property) => (
+                        <SelectItem key={property.id} value={property.id}>
+                          {property.name ? `${property.name} (${property.id})` : property.id}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                ) : field.type === 'select' && field.options ? (
                   <Select
                     value={(config[field.name] as string) || (field.default as string) || ''}
                     onValueChange={(value) => handleConfigChange(field.name, value)}

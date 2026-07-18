@@ -4,15 +4,12 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import {
   useFetcher,
   useNavigate,
-  useNavigation,
   useRevalidator,
   useSearchParams,
-  useSubmit,
 } from "react-router";
 import { Copy, Plus, Search, Settings, X } from "lucide-react";
 import { toast } from "sonner";
 import { useAuthData } from "@/hooks/use-auth-data";
-import { APP_BUILD_ID } from "@/lib/app-build-id";
 import type { IntegrationDefinition } from "@/lib/integration-registry";
 import { IntegrationIcon, hasIntegrationIcon } from "@/lib/integration-icons";
 import { getIntegrationAuthLabel } from "@/lib/integration-auth-label";
@@ -35,6 +32,7 @@ import {
 import { isCurrentWorkspacePendingAction } from "@/lib/connections-pending";
 import { PageHeader } from "@/components/page-header";
 import { AddConnectionDialog } from "./AddConnectionDialog";
+import { ImportConnectionDialog } from "./ImportConnectionDialog";
 import { EditConnectionDialog } from "./EditConnectionDialog";
 import { ConnectionGroupList } from "./connection-group-list";
 import { ConnectionPanel } from "./connection-panel";
@@ -97,13 +95,11 @@ const OAUTH_SUCCESS_MESSAGES: Record<string, string> = {
   slack_connected: "Successfully connected to Slack!",
   notion_connected: "Successfully connected to Notion!",
   salesforce_connected: "Successfully connected to Salesforce!",
+  google_analytics_connected: "Successfully connected to Google Analytics 4!",
   remote_mcp_connected: "Successfully connected to the remote MCP server!",
 };
 
-const CUSTOM_CONNECTION_SYSTEM_MESSAGE =
-  '<camelai system message>The user wants to add a custom connection. They have already searched through all available integration templates and selected "Other" - meaning none of the built-in integrations match what they need. Start by asking what tool or service they would like to connect to. If the service provides a remote MCP endpoint, use the native Remote MCP Server connection type (`remote_mcp`) instead of a generic HTTP API connection.</camelai system message>';
-
-const OAUTH_INTEGRATIONS = ["slack", "notion", "salesforce"];
+const OAUTH_INTEGRATIONS = ["slack", "notion", "salesforce", "google_analytics"];
 
 interface ConnectionsClientProps {
   initialConnections: ConnectionListItem[];
@@ -184,8 +180,6 @@ export default function ConnectionsClient({
   workspaceCreatedAt,
 }: ConnectionsClientProps) {
   const navigate = useNavigate();
-  const submit = useSubmit();
-  const navigation = useNavigation();
   const { currentOrg, currentWorkspace, orgs } = useAuthData();
   const revalidator = useRevalidator();
   const fetcher = useFetcher<{ success?: boolean; error?: string }>();
@@ -283,9 +277,6 @@ export default function ConnectionsClient({
     );
   }, [connectionTypes, pickerSearch]);
 
-  const chatLoading =
-    navigation.state !== "idle" &&
-    navigation.formData?.get("intent") === "createThreadAndStart";
   const renameSubmitting =
     fetcher.state !== "idle" && pendingAction.current?.intent === "rename";
   const showMobileSheet = mounted && Boolean(selectedItem) && !isDesktop;
@@ -528,20 +519,6 @@ export default function ConnectionsClient({
     setSelectedType(type);
     setAddDialogOpen(true);
     setPickerOpen(false);
-  };
-
-  const handleContinueToCustomConnectionChat = () => {
-    if (chatLoading) return;
-
-    submit(
-      {
-        intent: "createThreadAndStart",
-        clientBuildId: APP_BUILD_ID,
-        initialTitle: "Set up a custom connection",
-        firstMessage: CUSTOM_CONNECTION_SYSTEM_MESSAGE,
-      },
-      { method: "post", action: "/chat" },
-    );
   };
 
   const handleCopyToWorkspace = (
@@ -944,13 +921,17 @@ export default function ConnectionsClient({
         />
       ) : null}
 
-      <ConfirmDialog
+      <ImportConnectionDialog
         open={customConnectionModalOpen}
         onOpenChange={setCustomConnectionModalOpen}
-        title="Continue in chat?"
-        description="Custom connections are set up with the agent in chat. We'll open a new chat and help you connect your service."
-        confirmLabel="Continue"
-        onConfirm={handleContinueToCustomConnectionChat}
+        onSuccess={() => {
+          setCustomConnectionModalOpen(false);
+          if (revalidator.state === "idle") revalidator.revalidate();
+        }}
+        onGenericFallback={() => {
+          setSelectedType("other");
+          setAddDialogOpen(true);
+        }}
       />
 
       <ConfirmDialog

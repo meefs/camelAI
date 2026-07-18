@@ -9,6 +9,7 @@ export type ConnectionSort = "updated" | "name" | "created";
 export type Capability =
   | "query_database"
   | "mcp_tools"
+  | "typed_operations"
   | "authenticated_fetch"
   | "channel_send"
   | "slack_api";
@@ -26,6 +27,11 @@ export interface ConnectionListItem extends Integration {
     team_id?: string | null;
     team_name?: string | null;
     bot_user_id?: string | null;
+  };
+  definitionMetadata?: {
+    source: string;
+    operationCount: number;
+    genericFetch: boolean;
   };
 }
 
@@ -64,6 +70,7 @@ export const TYPE_COPY = {
 export const CAPABILITY_LABEL: Record<Capability, string> = {
   query_database: "Query database",
   mcp_tools: "MCP tools",
+  typed_operations: "Typed API operations",
   authenticated_fetch: "Authenticated API calls",
   channel_send: "Channel send",
   slack_api: "Slack API",
@@ -136,6 +143,10 @@ const DETAIL_FIELDS_BY_TYPE: Record<string, DetailField[]> = {
   posthog: [
     { label: "Host", keys: ["host"] },
     { label: "Project ID", keys: ["project_id"] },
+  ],
+  google_analytics: [
+    { label: "Default property", keys: ["property_name", "property_id"] },
+    { label: "Property ID", keys: ["property_id"] },
   ],
   sentry: [{ label: "Organization", keys: ["organization"] }],
   salesforce: [{ label: "Instance URL", keys: ["instance_url"] }],
@@ -221,6 +232,14 @@ export function deriveCapabilities(connection: Integration): Capability[] {
     caps.push("mcp_tools");
   }
 
+  if (
+    connection.integration_type === "google_analytics" ||
+    ("definitionMetadata" in connection &&
+      Boolean((connection as ConnectionListItem).definitionMetadata?.operationCount))
+  ) {
+    caps.push("typed_operations");
+  }
+
   if (connection.integration_type === "telegram") caps.push("channel_send");
   if (connection.integration_type === "slack") {
     caps.push("channel_send", "slack_api");
@@ -231,7 +250,8 @@ export function deriveCapabilities(connection: Integration): Capability[] {
     connection.integration_type !== "remote_mcp" &&
     !getProviderMcpDefinition(connection.integration_type) &&
     connection.integration_type !== "telegram" &&
-    connection.integration_type !== "slack"
+    connection.integration_type !== "slack" &&
+    connection.integration_type !== "google_analytics"
   ) {
     caps.push("authenticated_fetch");
   }
