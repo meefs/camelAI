@@ -171,6 +171,16 @@ describe('code mode runner connection facade', () => {
 });
 
 describe('code mode runner js_exec module', () => {
+  it('enforces the wall-clock timeout inside the loaded worker invocation', () => {
+    const source = codeModeWorkerModule('await tools.analysis_exec({ command: "sleep 600" });');
+
+    expect(source).toContain('async run(timeoutMs, maxTimeoutMs)');
+    expect(source).toContain('const result = await Promise.race([');
+    expect(source).toContain('error.name = "CodeModeTimeoutError"');
+    expect(source).toContain('Do not retry this js_exec in the same turn.');
+    expect(source).toContain('if (timeoutHandle) clearTimeout(timeoutHandle)');
+  });
+
   it('does not pass runtime helper names as runUserCode parameters', () => {
     const source = codeModeWorkerModule(
       'const projects = await tools.list_projects();\nreturn projects;',

@@ -4153,7 +4153,16 @@ describe('ChatThreadDO Pi turn handling', () => {
       CODE_MODE_LOADER: {
         load: vi.fn(() => ({
           getEntrypoint: vi.fn(() => ({
-            run: vi.fn(() => new Promise(() => {})),
+            run: vi.fn((timeoutMs: number, maxTimeoutMs: number) =>
+              new Promise((_, reject) => {
+                setTimeout(
+                  () => reject(new Error(
+                    `JavaScript execution timed out after ${timeoutMs}ms. Do not retry this js_exec in the same turn. If a longer run is needed, start a new turn with a timeout up to ${maxTimeoutMs}ms.`,
+                  )),
+                  timeoutMs,
+                );
+              }),
+            ),
           })),
         })),
       },
@@ -4178,7 +4187,7 @@ describe('ChatThreadDO Pi turn handling', () => {
     });
 
     const rejection = expect(runPromise).rejects.toThrow(
-      'JavaScript execution timed out after 150000ms. If this script needs more wall-clock time, call js_exec again with a larger timeoutMs value (maximum 600000ms).',
+      'JavaScript execution timed out after 150000ms. Do not retry this js_exec in the same turn. If a longer run is needed, start a new turn with a timeout up to 600000ms.',
     );
 
     await vi.advanceTimersByTimeAsync(150_000);
@@ -4193,7 +4202,16 @@ describe('ChatThreadDO Pi turn handling', () => {
       CODE_MODE_LOADER: {
         load: vi.fn(() => ({
           getEntrypoint: vi.fn(() => ({
-            run: vi.fn(() => new Promise(() => {})),
+            run: vi.fn((timeoutMs: number, maxTimeoutMs: number) =>
+              new Promise((_, reject) => {
+                setTimeout(
+                  () => reject(new Error(
+                    `JavaScript execution timed out after ${timeoutMs}ms. Do not retry this js_exec in the same turn. If a longer run is needed, start a new turn with a timeout up to ${maxTimeoutMs}ms.`,
+                  )),
+                  timeoutMs,
+                );
+              }),
+            ),
           })),
         })),
       },
@@ -4218,7 +4236,7 @@ describe('ChatThreadDO Pi turn handling', () => {
     });
 
     const rejection = expect(runPromise).rejects.toThrow(
-      'JavaScript execution timed out after 600000ms. If this script needs more wall-clock time, call js_exec again with a larger timeoutMs value (maximum 600000ms).',
+      'JavaScript execution timed out after 600000ms. Do not retry this js_exec in the same turn. If a longer run is needed, start a new turn with a timeout up to 600000ms.',
     );
 
     await vi.advanceTimersByTimeAsync(600_000);

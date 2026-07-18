@@ -1050,31 +1050,12 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
       ? loader.load(workerCode)
       : loader.get(`pi-codemode-${crypto.randomUUID()}`, () => workerCode);
     const runner = worker.getEntrypoint("CodeModeRunner") as unknown as {
-      run(): Promise<{ text?: unknown }>;
+      run(timeoutMs: number, maxTimeoutMs: number): Promise<{ text?: unknown }>;
     };
-
-    const runPromise = runner.run();
-    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
-    try {
-      const result = await Promise.race([
-        runPromise,
-        new Promise<never>((_, reject) => {
-          timeoutHandle = setTimeout(
-            () => reject(
-              new Error(
-                `JavaScript execution timed out after ${timeoutMs}ms. If this script needs more wall-clock time, call js_exec again with a larger timeoutMs value (maximum ${CODE_MODE_MAX_TIMEOUT_MS}ms).`,
-              ),
-            ),
-            timeoutMs,
-          );
-        }),
-      ]);
-      return {
-        text: truncateCodeModeText(result.text ?? "", maxOutputCharacters),
-      };
-    } finally {
-      if (timeoutHandle) clearTimeout(timeoutHandle);
-    }
+    const result = await runner.run(timeoutMs, CODE_MODE_MAX_TIMEOUT_MS);
+    return {
+      text: truncateCodeModeText(result.text ?? "", maxOutputCharacters),
+    };
   }
 
   // Code-mode artifact buffer collaborator (see

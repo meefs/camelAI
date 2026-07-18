@@ -1085,7 +1085,7 @@ function installSecureFetch(secureFetchBinding) {
 }
 
 export class CodeModeRunner extends WorkerEntrypoint {
-  async run() {
+  async run(timeoutMs, maxTimeoutMs) {
     hardenTimingSurface();
     const output = [];
     globalThis.console = createOutputConsole(output);
@@ -1157,8 +1157,23 @@ export class CodeModeRunner extends WorkerEntrypoint {
       save,
       load,
     });
+    let timeoutHandle;
     try {
-      const result = await runUserCode();
+      const result = await Promise.race([
+        runUserCode(),
+        new Promise((_, reject) => {
+          timeoutHandle = setTimeout(() => {
+            const error = new Error(
+              "JavaScript execution timed out after " + timeoutMs +
+              "ms. Do not retry this js_exec in the same turn. " +
+              "If a longer run is needed, start a new turn with a timeout up to " +
+              maxTimeoutMs + "ms."
+            );
+            error.name = "CodeModeTimeoutError";
+            reject(error);
+          }, timeoutMs);
+        }),
+      ]);
       if (result !== undefined) output.push(stringifyOutput(result));
       if (output.length === 0) {
         // A silent blank reads as a rendering failure and sends agents down
@@ -1174,10 +1189,12 @@ export class CodeModeRunner extends WorkerEntrypoint {
       }
       return { text: output.join("\n") };
     } catch (error) {
+      if (error && error.name === "CodeModeTimeoutError") throw error;
       const formatted = formatRuntimeError(error);
       const prefix = output.length ? output.join("\n") + "\n\n" : "";
       throw new Error(prefix + "JavaScript execution failed: " + formatted);
     } finally {
+      if (timeoutHandle) clearTimeout(timeoutHandle);
       await browserRuntime.cleanup();
       cleanupSecureFetch();
       cleanupRuntimeGlobals();
