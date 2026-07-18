@@ -23,7 +23,6 @@ import {
   hasSuccessfulNotebookRun,
   legacyDeployPathEvidence,
   seedDoProjectFiles,
-  toolCallReferences,
   usedTool,
 } from "./project-eval-helpers";
 
@@ -175,7 +174,7 @@ The report must contain a markdown section headed exactly "## Key Findings" with
 - TOP_REGION=<region with the highest total revenue>
 - TOP_MONTH=<YYYY-MM month with the highest total revenue>
 - REVENUE_PER_UNIT_CENTS=<total revenue divided by total units, rounded to the nearest integer>
-Run the notebook with run_notebook until it executes cleanly, then set_preview for analysis.ipynb.
+Run the notebook with run_notebook until it executes cleanly; the successful run should open analysis.ipynb in preview automatically.
 Do not deploy or use wrangler for this notebook-only project. Reply with the four Key Findings lines.`,
       });
 
@@ -229,7 +228,6 @@ Do not deploy or use wrangler for this notebook-only project. Reply with the fou
       const usedBuild = usedTool(result.events, "build_project");
       const usedDeploy = usedTool(result.events, "deploy_project");
       const legacyFailures = legacyDeployPathEvidence(result.events);
-      const setPreviewTargetedNotebook = toolCallReferences(result.events, "set_preview", "analysis.ipynb");
       const finalResult = result.result ?? "";
       const finalHasFindings = Object.entries(EXPECTED_FINDINGS).every(([name, value]) => finalResult.includes(`${name}=${value}`));
       const keyFindingsPresent = keyFindingsSection !== undefined &&
@@ -243,7 +241,7 @@ Do not deploy or use wrangler for this notebook-only project. Reply with the fou
           passFailCriterion({ id: "notebook_persisted_and_executed", label: "Notebook persisted after a clean successful run", passed: read.success && !parseError && cleanNotebookExecution, reason: read.success && !parseError && cleanNotebookExecution ? undefined : read.error ?? parseError ?? (!successfulNotebookRun ? "No successful clean run_notebook result referenced analysis.ipynb." : errorOutputs.length > 0 ? "The persisted notebook contains error outputs." : "No executed notebook cells were persisted."), details: { readSuccess: read.success, parseError, cellCount: cells.length, executedCellCount: executedCells.length, successfulNotebookRun, errorOutputs } }),
           passFailCriterion({ id: "key_findings_present", label: "Exact ## Key Findings section contains all four lines", passed: keyFindingsPresent, reason: keyFindingsPresent ? undefined : keyFindingsSection === undefined ? "The exact ## Key Findings heading was missing." : "One or more Key Findings lines were missing from that section.", details: { markdown, keyFindingsSection } }),
           passFailCriterion({ id: "findings_match_ground_truth", label: "All four findings match harness-computed ground truth", passed: findingFailures.length === 0, reason: findingFailures.length ? findingFailures.join("; ") : undefined, details: { expected: EXPECTED_FINDINGS, extracted, failures: findingFailures } }),
-          passFailCriterion({ id: "set_preview_targeted_notebook", label: "set_preview targeted analysis.ipynb", passed: setPreviewTargetedNotebook, reason: setPreviewTargetedNotebook ? undefined : "No set_preview runtime item referenced analysis.ipynb.", details: { targeted: setPreviewTargetedNotebook } }),
+          passFailCriterion({ id: "notebook_auto_previewed", label: "Successful run_notebook opened analysis.ipynb in preview", passed: successfulNotebookRun, reason: successfulNotebookRun ? undefined : "No successful run_notebook result referenced analysis.ipynb.", details: { successfulNotebookRun } }),
           passFailCriterion({ id: "avoided_web_deploy_path", label: "Notebook flow avoided build_project, deploy_project, and web deploy commands", passed: !usedBuild && !usedDeploy && legacyFailures.length === 0, reason: !usedBuild && !usedDeploy && legacyFailures.length === 0 ? undefined : [usedBuild ? "used build_project" : "", usedDeploy ? "used deploy_project" : "", ...legacyFailures].filter(Boolean).join("; "), details: { usedBuild, usedDeploy, legacyFailures } }),
           passFailCriterion({ id: "final_response_has_findings", label: "Final response contains all four exact finding tokens", passed: finalHasFindings, reason: finalHasFindings ? undefined : "Final response omitted or changed one or more exact finding tokens.", details: { finalResult, expected: EXPECTED_FINDINGS } }),
           buildNoAssistantErrorCriterion(result),

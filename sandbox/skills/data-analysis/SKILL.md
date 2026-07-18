@@ -203,8 +203,9 @@ Notebooks preview reliabily with rich Altair charts and markdown rendering, and 
 ### Execute notebooks
 
 Run the notebook with **`run_notebook`** — it executes (`jupyter nbconvert
---execute --inplace`), validates the result, and persists the executed notebook +
-any changed files back to the project, all in one call:
+--execute --inplace`), validates the result, persists the executed notebook +
+any changed files back to the project, and opens a clean successful run in
+preview, all in one call:
 
 ```text
 run_notebook({ project: "<project>", path: "analysis.ipynb" })
@@ -229,17 +230,11 @@ with a trailing `;` or assigned to `_` so object reprs do not leak into outputs.
 
 ### Preview notebooks in chat
 
-After `run_notebook` returns `ok`, set the active chat preview to the executed
-notebook (it now lives in the project filesystem):
-
-```text
-set_preview(
-  path="analysis.ipynb",
-  location="project",
-  project="<project>",
-  content_type="application/x-ipynb+json"
-)
-```
+After `run_notebook` returns `ok`, the executed notebook is already the active
+chat preview. No manual `set_preview` call is needed. A failed execution or
+validation leaves the current preview unchanged; fix the notebook and re-run it.
+Use `set_preview` only when you explicitly want to reopen or switch to an
+existing notebook.
 
 ### Publish notebooks as standalone apps
 

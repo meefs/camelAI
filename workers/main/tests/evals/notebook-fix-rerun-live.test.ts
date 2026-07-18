@@ -33,6 +33,7 @@ import {
 import {
   asRecord,
   collectRuntimeEvidence,
+  hasSuccessfulNotebookRun,
   legacyDeployPathEvidence,
   usedTool,
 } from "./project-eval-helpers";
@@ -256,7 +257,7 @@ describe("notebook fix and rerun agent eval", () => {
           `Inspect the notebook, fix the execution bug, and remove the stale marker from the report; the literal string "${STALE_MARKER}" must not appear anywhere in the final notebook source.`,
           `Add the exact markdown marker "${REFRESHED_MARKER}" after the notebook is fixed.`,
           `The executed notebook output must include the exact text "${EXPECTED_OUTPUT}".`,
-          "Run the notebook with run_notebook until it succeeds, then set_preview for analysis.ipynb.",
+          "Run the notebook with run_notebook until it succeeds; the successful run should open analysis.ipynb in preview automatically.",
           "Do not create a new project, do not deploy it, and do not use legacy VM shell commands.",
           "Reply with the refreshed total revenue number from the executed notebook output.",
         ].join(" "),
@@ -279,7 +280,7 @@ describe("notebook fix and rerun agent eval", () => {
       const runtimeAssertions = {
         usedCreateProject: usedTool(result.events, "create_project"),
         usedRunNotebook: usedTool(result.events, "run_notebook"),
-        usedSetPreview: usedTool(result.events, "set_preview"),
+        successfulNotebookRun: hasSuccessfulNotebookRun(result.events, "analysis.ipynb"),
         usedBuildProject: usedTool(result.events, "build_project"),
         usedDeployProject: usedTool(result.events, "deploy_project"),
         legacyFailures,
@@ -305,11 +306,11 @@ describe("notebook fix and rerun agent eval", () => {
           passFailCriterion({
             id: "used_notebook_flow",
             label: "Agent reran and previewed the notebook",
-            passed: runtimeAssertions.usedRunNotebook && runtimeAssertions.usedSetPreview,
+            passed: runtimeAssertions.successfulNotebookRun,
             reason:
-              runtimeAssertions.usedRunNotebook && runtimeAssertions.usedSetPreview
+              runtimeAssertions.successfulNotebookRun
                 ? undefined
-                : `run_notebook=${runtimeAssertions.usedRunNotebook}, set_preview=${runtimeAssertions.usedSetPreview}`,
+                : `run_notebook=${runtimeAssertions.usedRunNotebook}, run_notebook succeeded and auto-previewed=${runtimeAssertions.successfulNotebookRun}`,
             details: runtimeAssertions,
           }),
           passFailCriterion({

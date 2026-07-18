@@ -30,7 +30,6 @@ import {
   countNotebookErrorOutputs,
   hasSuccessfulNotebookRun,
   legacyDeployPathEvidence,
-  toolCallReferences,
   usedTool,
 } from "./project-eval-helpers";
 import { ProjectFilesystemClient } from "../../src/workspace-filesystem-do";
@@ -194,7 +193,7 @@ describe("data-analysis report agent eval", () => {
           `Edit analysis.ipynb into a short report titled exactly "${REPORT_TITLE}" that analyzes hardcoded quarterly revenue data for at least three regions.`,
           `Include this exact finding in markdown: "${REQUIRED_FINDING}"`,
           "Use pandas and Altair or pandas-only outputs; the default Python stack is already installed, so do not install packages unless you truly need one.",
-          "Run the notebook with run_notebook until it succeeds, then set_preview for analysis.ipynb as a project notebook preview.",
+          "Run the notebook with run_notebook until it succeeds; the successful run should open analysis.ipynb in preview automatically.",
           "Do not deploy this notebook-only analysis project or use wrangler or legacy VM shell commands.",
           "Reply with the report title and the key finding once the notebook has run successfully.",
         ].join(" "),
@@ -220,7 +219,6 @@ describe("data-analysis report agent eval", () => {
         ]),
         usedRunNotebook: usedTool(result.events, "run_notebook"),
         successfulNotebookRun: hasSuccessfulNotebookRun(result.events, "analysis.ipynb"),
-        usedSetPreview: toolCallReferences(result.events, "set_preview", "analysis.ipynb"),
         usedBuildProject: usedTool(result.events, "build_project"),
         usedDeployProject: usedTool(result.events, "deploy_project"),
         legacyFailures,
@@ -247,14 +245,12 @@ describe("data-analysis report agent eval", () => {
             label: "Agent used the data-analysis flow tools",
             passed:
               runtimeAssertions.usedCreateProject &&
-              runtimeAssertions.successfulNotebookRun &&
-              runtimeAssertions.usedSetPreview,
+              runtimeAssertions.successfulNotebookRun,
             reason:
               runtimeAssertions.usedCreateProject &&
-              runtimeAssertions.successfulNotebookRun &&
-              runtimeAssertions.usedSetPreview
+              runtimeAssertions.successfulNotebookRun
                 ? undefined
-                : `create_project=${runtimeAssertions.usedCreateProject}, run_notebook invoked=${runtimeAssertions.usedRunNotebook}, run_notebook succeeded=${runtimeAssertions.successfulNotebookRun}, set_preview(analysis.ipynb)=${runtimeAssertions.usedSetPreview}`,
+                : `create_project=${runtimeAssertions.usedCreateProject}, run_notebook invoked=${runtimeAssertions.usedRunNotebook}, run_notebook succeeded and auto-previewed=${runtimeAssertions.successfulNotebookRun}`,
             details: runtimeAssertions,
           }),
           passFailCriterion({

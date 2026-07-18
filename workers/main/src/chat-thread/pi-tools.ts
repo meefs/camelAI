@@ -245,7 +245,7 @@ const JS_EXEC_DESCRIPTION =
   "NEVER guess a tool name: `await tools.search(\"<intent + key nouns>\")`, then `await tools.describe(items[0].name)`, then invoke as the result's `call` field shows (kind \"tool\" runs as `await tools.<name>(args)`; kind \"runtime\" results are sandbox globals, never on `tools`). " +
   "Every `tools.<name>(args)` call resolves to `{ ok: true, data }` or `{ ok: false, error: { message } }` — branch on `result.ok` instead of try/catch; failed calls do not throw, so you can describe the tool and retry in the same run. " +
   `Tools reachable ONLY here (not in your tool list) — ${JS_EXEC_ONLY_TOOL_INVENTORY}. ` +
-  "`deploy_project` returns the live app URL and automatically opens a successful deploy in preview, so no manual `set_preview` or `list_apps` call is needed; `set_preview` remains available for an explicit preview switch. " +
+  "`run_notebook` and `deploy_project` open successful results in preview automatically; failures leave preview unchanged. No follow-up `set_preview` or `list_apps` call is needed; use `set_preview` only for an explicit switch. " +
   "Interactive tools that wait for the user (prompt_connection_setup, delete_connection, delete_project, AskUserQuestion) are top-level tools and cannot be called from js_exec.";
 
 export interface PiToolSurfaceDeps {

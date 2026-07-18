@@ -869,7 +869,7 @@ const CODE_MODE_TOOL_REGISTRY: CodeModeToolRegistration[] = [
   ),
   codeModePassthroughTool(
     "run_notebook",
-    "Execute a Jupyter notebook (.ipynb) in a DO-backed project and persist the executed notebook + any changed files back to the project. This is the PRIMARY data-analysis path — one call runs `jupyter nbconvert --execute --inplace` then validates the result, so you don't drive nbconvert/validate by hand. The default Python data stack (pandas, numpy, polars, duckdb, pyarrow, altair, plotly, matplotlib, seaborn, scipy, scikit-learn, statsmodels, openpyxl, pdfplumber, jupyter) is PREINSTALLED — no setup needed; use add_python_dependency for anything else. Read big inputs from the read-only mounts — uploaded files at /uploads/<name> (the R2 uploads/<name> reference with a leading slash) and connection exports at '/' + r2_key — keep large intermediates in the per-run $SCRATCH directory (created for you, cleaned up after the run), and put notebooks + small results in the project. After it returns ok, set_preview the .ipynb (location: 'project', project, path) when the user wants the notebook file in chat; deploy_project publishes it as a static report app, returns the live URL, and opens that app in preview automatically when the user wants a shareable link. Returns { ok, executed, validation: { clean, issues }, stdout, stderr, exitCode, changedFiles, removedFiles, skippedOversize, durationMs }. If ok is false, fix the failing cells and re-run — never suppress errors: error carries the Python traceback, and when stdout/stderr are truncated inline, fullOutput.path is an R2 log with the complete output (read({ location: 'r2', path: fullOutput.path })). Arguments: { project, path, timeoutMs? }.",
+    "Execute a Jupyter notebook (.ipynb) in a DO-backed project, persist the executed notebook + any changed files, and open a clean successful run in preview automatically. This is the PRIMARY data-analysis path — one call runs `jupyter nbconvert --execute --inplace`, validates the result, and previews it, so you don't drive nbconvert/validate or call set_preview by hand. The default Python data stack (pandas, numpy, polars, duckdb, pyarrow, altair, plotly, matplotlib, seaborn, scipy, scikit-learn, statsmodels, openpyxl, pdfplumber, jupyter) is PREINSTALLED — no setup needed; use add_python_dependency for anything else. Read big inputs from the read-only mounts — uploaded files at /uploads/<name> (the R2 uploads/<name> reference with a leading slash) and connection exports at '/' + r2_key — keep large intermediates in the per-run $SCRATCH directory (created for you, cleaned up after the run), and put notebooks + small results in the project. deploy_project publishes the executed notebook as a static report app, returns the live URL, and opens that app in preview automatically when the user wants a shareable link. Returns { ok, executed, validation: { clean, issues }, preview?, message?, stdout, stderr, exitCode, changedFiles, removedFiles, skippedOversize, durationMs }. If ok is false, the current preview is unchanged; fix the failing cells and re-run — never suppress errors: error carries the Python traceback, and when stdout/stderr are truncated inline, fullOutput.path is an R2 log with the complete output (read({ location: 'r2', path: fullOutput.path })). Arguments: { project, path, timeoutMs? }.",
     Type.Object({
       project: Type.String(),
       path: Type.String(),
@@ -3409,7 +3409,28 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
     const raw = await this.analysisService().runNotebook({ projectId: project.id, path, timeoutMs });
     const { result, fullLog } = clampAnalysisRunOutputs(raw as Record<string, unknown>);
     const fullOutput = fullLog ? await this.storeAnalysisRunLog("run-notebook", fullLog) : undefined;
-    return { ...result, ...(fullOutput ? { fullOutput } : {}), project: project.name };
+    if (result.ok !== true) {
+      return {
+        ...result,
+        ...(fullOutput ? { fullOutput } : {}),
+        project: project.name,
+      };
+    }
+    const preview = await this.setPreview({
+      location: "project",
+      project: project.name,
+      path,
+      content_type: "application/x-ipynb+json",
+    });
+    const message = `Executed and previewed ${path}`;
+    console.log(message);
+    return {
+      ...result,
+      preview,
+      message,
+      ...(fullOutput ? { fullOutput } : {}),
+      project: project.name,
+    };
   }
 
   /**

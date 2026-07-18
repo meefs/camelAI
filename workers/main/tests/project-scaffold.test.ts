@@ -277,7 +277,9 @@ describe("defaultProjectScaffoldFiles", () => {
     expect(readme).toContain("# Demo App");
     expect(readme).toContain("Report mode");
     expect(readme).toContain("set_preview");
-    expect(readme).toContain('"application/x-ipynb+json"');
+    expect(readme).toContain("opens a clean successful run in preview automatically");
+    expect(readme).toContain("If `ok` is false, the current preview is unchanged");
+    expect(readme).toContain("No manual `set_preview` call is needed after a clean run");
     expect(readme).toContain("no build step");
     expect(readme).toContain("deploy_project");
     expect(readme).toContain("opens it in preview automatically");

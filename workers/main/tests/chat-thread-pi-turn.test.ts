@@ -4350,6 +4350,9 @@ describe('ChatThreadDO Pi turn handling', () => {
     expect((byName.get('build_project') as any).description).toContain('Deprecated compatibility alias');
     expect((byName.get('deploy_project') as any).description).toContain('build, or deploy FAILS');
     expect((byName.get('deploy_project') as any).description).toContain('changing preview');
+    expect((byName.get('run_notebook') as any).description).toContain('open a clean successful run in preview automatically');
+    expect((byName.get('run_notebook') as any).description).toContain("don't drive nbconvert/validate or call set_preview by hand");
+    expect((byName.get('run_notebook') as any).description).toContain('current preview is unchanged');
     expect((byName.get('add_dependency') as any).parameters.properties.dependency).toBeDefined();
     expect((byName.get('revert_project') as any).parameters.properties.snapshot_id).toBeDefined();
     expect((byName.get('list_commits') as any).parameters.properties.project).toBeDefined();
@@ -5753,6 +5756,8 @@ describe('ChatThreadDO Pi turn handling', () => {
     expect(prompt).toContain('answer in chat only');
     expect(prompt).toContain('set_preview({ location: "workspace", path: "/notes.md" })');
     expect(prompt).toContain('set_preview({ location: "r2", path: "outputs/report.html" })');
+    expect(prompt).toContain('A clean successful `run_notebook` opens the executed notebook automatically');
+    expect(prompt).toContain('a failed run leaves preview unchanged');
     expect(prompt).toContain('deploy_project` returns the live URL and opens successfully deployed apps automatically');
     expect(prompt).toContain('pass `dry_run: true`');
     expect(prompt).toContain('no manual app `set_preview` or `list_apps` call is needed after deploy');
@@ -7012,6 +7017,86 @@ describe('ChatThreadDO Pi turn handling', () => {
     expect(projectStub.projectWriteFile).toHaveBeenCalledWith('/package.json', expect.stringContaining('devDependencies'));
     expect(projectStub.projectWriteFile).toHaveBeenCalledWith('/bun.lock', '# zod lockfile\n');
     expect(chatThreadStub.recordProjectActivity).not.toHaveBeenCalled();
+  });
+
+  it('opens a clean successful notebook run in preview automatically', async () => {
+    const { fake, projectStub, chatThreadStub } = createProjectToolFake({
+      projectFileEntries: [['/analysis.ipynb', '{"cells":[]}']],
+    });
+    const runNotebook = vi.fn(async () => ({
+      ok: true,
+      executed: true,
+      validation: { clean: true, issues: [] },
+      stdout: '',
+      stderr: '',
+      exitCode: 0,
+      changedFiles: ['analysis.ipynb'],
+      removedFiles: [],
+      skippedOversize: [],
+      durationMs: 42,
+    }));
+    fake.ctx.exports = { AnalysisService: vi.fn(() => ({ runNotebook })) };
+    const consoleLog = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+
+    const result = await CodeModeToolsBinding.prototype.callTool.call(fake, 'run_notebook', {
+      project: 'Demo App',
+      path: 'analysis.ipynb',
+    });
+
+    expect(runNotebook).toHaveBeenCalledWith({
+      projectId: 'project-1',
+      path: 'analysis.ipynb',
+      timeoutMs: undefined,
+    });
+    expect(projectStub.projectExists).toHaveBeenCalledWith('/analysis.ipynb');
+    expect(result).toMatchObject({
+      ok: true,
+      project: 'Demo App',
+      message: 'Executed and previewed analysis.ipynb',
+      preview: {
+        success: true,
+        target: {
+          kind: 'file',
+          source: 'project',
+          workspaceId: 'workspace1',
+          path: '/analysis.ipynb',
+          project: 'Demo App',
+          filename: 'analysis.ipynb',
+          contentType: 'application/x-ipynb+json',
+        },
+      },
+    });
+    expect(consoleLog).toHaveBeenCalledWith('Executed and previewed analysis.ipynb');
+    expect(chatThreadStub.setPreviewTarget).toHaveBeenCalledWith((result as any).preview.target);
+  });
+
+  it('leaves preview unchanged when a notebook run fails', async () => {
+    const { fake, chatThreadStub } = createProjectToolFake({
+      projectFileEntries: [['/analysis.ipynb', '{"cells":[]}']],
+    });
+    const runNotebook = vi.fn(async () => ({
+      ok: false,
+      executed: false,
+      validation: { clean: false, issues: ['cell failed'] },
+      stdout: '',
+      stderr: 'ValueError: bad data',
+      exitCode: 1,
+      changedFiles: ['analysis.ipynb'],
+      removedFiles: [],
+      skippedOversize: [],
+      durationMs: 42,
+      error: 'ValueError: bad data',
+    }));
+    fake.ctx.exports = { AnalysisService: vi.fn(() => ({ runNotebook })) };
+
+    const result = await CodeModeToolsBinding.prototype.callTool.call(fake, 'run_notebook', {
+      project: 'Demo App',
+      path: 'analysis.ipynb',
+    });
+
+    expect(result).toMatchObject({ ok: false, project: 'Demo App' });
+    expect(result).not.toHaveProperty('preview');
+    expect(chatThreadStub.setPreviewTarget).not.toHaveBeenCalled();
   });
 
   it('builds a DO-backed project immediately after dependency changes are persisted', async () => {
@@ -9003,15 +9088,16 @@ describe('ChatThreadDO Pi turn handling', () => {
     // js_exec-only inventory (they are named only in the cannot-run-here caveat).
     const inventory = description.slice(
       description.indexOf('Tools reachable ONLY here'),
-      description.indexOf('`deploy_project` returns'),
+      description.indexOf('`run_notebook` and `deploy_project`'),
     );
     expect(inventory).toContain('send_email');
     expect(inventory).not.toContain('prompt_connection_setup');
     expect(inventory).not.toContain('delete_connection');
-    // The eval-critical post-deploy verification nudge stays inline.
-    expect(description).toContain('automatically opens');
-    expect(description).toContain('no manual `set_preview` or `list_apps` call is needed');
-    expect(description).toContain('`set_preview` remains available');
+    // The eval-critical automatic-preview nudge stays inline.
+    expect(description).toContain('`run_notebook` and `deploy_project` open successful results in preview automatically');
+    expect(description).toContain('failures leave preview unchanged');
+    expect(description).toContain('No follow-up `set_preview` or `list_apps` call is needed');
+    expect(description).toContain('use `set_preview` only for an explicit switch');
     // Executor-style calling shape: result envelope and TypeScript acceptance.
     expect(description).toContain('result.ok');
     expect(description).toContain('TypeScript');
