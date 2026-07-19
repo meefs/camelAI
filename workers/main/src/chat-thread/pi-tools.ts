@@ -86,6 +86,7 @@ export function capabilityAgentSystemPrompt(toolName: "Research" | "Oracle"): st
     "Work only on the supplied bounded task. Advise or execute according to the request; mutate files only when asked to implement, fix, or create.",
     "Do not send messages or change external systems unless the supplied task explicitly requests it.",
     "Start from workspace evidence. For advice, give a direct recommendation, the strongest reasoning, important tradeoffs, and uncertainty. For implementation, establish or repair a concrete working foundation and verify it.",
+    'If the supplied task references image files (for example uploads/<file>), read them with the `read` tool (`location: "r2"` for uploads) and describe exactly what you see before advising or implementing.',
     "When starting an ambitious project, leave an ordered roadmap whose phases each name a concrete next action or deliverable.",
     "Return the outcome or recommendation, strongest evidence or verified changes, and remaining uncertainty.",
   ].join(" ");
@@ -248,6 +249,15 @@ const JS_EXEC_DESCRIPTION =
   "`run_notebook` and `deploy_project` open successful results in preview automatically; failures leave preview unchanged. No follow-up `set_preview` or `list_apps` call is needed; use `set_preview` only for an explicit switch. " +
   "Interactive tools that wait for the user (prompt_connection_setup, delete_connection, delete_project, AskUserQuestion) are top-level tools and cannot be called from js_exec.";
 
+export interface PiAfterToolCallOptions {
+  /**
+   * The model that consumes this tool result. Capability children pass their
+   * own model so image-result gating keys off the consuming agent (e.g. a
+   * vision-capable Oracle) instead of the main session's thread model.
+   */
+  consumerModel?: Model<any>;
+}
+
 export interface PiToolSurfaceDeps {
   // DO operations the tool closures invoke.
   scopedCodeModeTools(
@@ -282,6 +292,7 @@ export interface PiToolSurfaceDeps {
   afterPiToolCall(
     context: AfterToolCallContext,
     signal?: AbortSignal,
+    options?: PiAfterToolCallOptions,
   ): Promise<AfterToolCallResult | undefined>;
   beforePiToolCall(
     context: BeforeToolCallContext,
@@ -530,7 +541,7 @@ export function createPiToolDefinitions(
       name: "Oracle",
       label: "Oracle",
       description:
-        "Delegate difficult architecture, debugging, planning, or implementation when stronger reasoning would materially help, especially after failed attempts. Oracle can inspect, edit, and verify the workspace.",
+        "Delegate difficult architecture, debugging, planning, or implementation when stronger reasoning would materially help, especially after failed attempts. Oracle can inspect, edit, and verify the workspace. Oracle can also view and interpret images (screenshots, charts, photos) that you cannot see yourself; give it the image file path.",
       parameters: Type.Object({
         question: Type.String(),
       }),
@@ -811,8 +822,14 @@ export async function runPiCapabilityAgentTool(
     },
     beforeToolCall: (toolContext, childSignal) =>
       deps.beforePiToolCall(toolContext, childSignal),
+    // Gate tool-result image stripping on the capability child's own model
+    // (e.g. a vision-capable Oracle on a text-only camelCode thread), not the
+    // main session's; `modelConfig` is reassigned in getApiKey, so the closure
+    // always sees the current capability model.
     afterToolCall: (toolContext, childSignal) =>
-      deps.afterPiToolCall(toolContext, childSignal),
+      deps.afterPiToolCall(toolContext, childSignal, {
+        consumerModel: modelConfig.model,
+      }),
     streamFn: (model, llmContext, options) =>
       deps.streamPiModel(model, llmContext, options, streamSimple),
     sessionId: `${context.threadId}:${toolName}:${crypto.randomUUID()}`,

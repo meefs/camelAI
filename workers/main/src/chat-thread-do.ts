@@ -311,6 +311,7 @@ import {
   createPiToolDefinitions,
   runPiSubagentTool,
   createPiSubagentSystemPrompt,
+  type PiAfterToolCallOptions,
   type PiToolDefinitionOptions,
   type PiToolSurfaceDeps,
 } from "./chat-thread/pi-tools";
@@ -2455,13 +2456,16 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
 
   private async truncatePiToolResultForModel(
     context: AfterToolCallContext,
+    options?: PiAfterToolCallOptions,
   ): Promise<AfterToolCallResult | undefined> {
     const content = Array.isArray(context.result.content)
       ? context.result.content
       : [];
     const textParts: string[] = [];
     const nonTextContent: AfterToolCallResult["content"] = [];
-    const imageBlindModel = isPiImageBlindModel(this.piSession?.state.model);
+    const imageBlindModel = isPiImageBlindModel(
+      options?.consumerModel ?? this.piSession?.state.model,
+    );
     let omittedImageParts = 0;
     let omittedImageBytes = 0;
     for (const part of content) {
@@ -2485,8 +2489,13 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
     const inlineImages = imageBlindModel
       ? stripPiInlineImageDataUrls(fullText)
       : { text: fullText, count: 0, bytes: 0 };
+    // camelCode threads have a vision-capable Oracle; redirect the agent there
+    // exactly where its own image read failed.
+    const imageOmissionRedirect = this.isCamelCodeActive()
+      ? ". Delegate image understanding to the `Oracle` tool, passing this file path"
+      : "";
     const imagePartNotice = omittedImageParts > 0
-      ? `[${omittedImageParts} image tool result${omittedImageParts === 1 ? "" : "s"} omitted: ${omittedImageBytes} bytes; active model cannot inspect images]`
+      ? `[${omittedImageParts} image tool result${omittedImageParts === 1 ? "" : "s"} omitted: ${omittedImageBytes} bytes; active model cannot inspect images${imageOmissionRedirect}]`
       : "";
     const modelText = [inlineImages.text, imagePartNotice]
       .filter(Boolean)
@@ -2545,10 +2554,11 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
   private async afterPiToolCall(
     context: AfterToolCallContext,
     signal?: AbortSignal,
+    options?: PiAfterToolCallOptions,
   ): Promise<AfterToolCallResult | undefined> {
     if (signal?.aborted) return undefined;
     try {
-      const truncated = await this.truncatePiToolResultForModel(context);
+      const truncated = await this.truncatePiToolResultForModel(context, options);
       const repeatedFailure = ChatThreadDO.prototype.recordPiToolFailure.call(this, {
         toolCallId: context.toolCall.id,
         toolName: context.toolCall.name,
@@ -5150,8 +5160,8 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
       consumeCapabilityAllowance: (context, capability, idempotencyKey) =>
         this.consumeCapabilityAllowance(context, capability, idempotencyKey),
       piModelResolver: () => this.piModelResolver,
-      afterPiToolCall: (toolContext, signal) =>
-        this.afterPiToolCall(toolContext, signal),
+      afterPiToolCall: (toolContext, signal, options) =>
+        this.afterPiToolCall(toolContext, signal, options),
       beforePiToolCall: (toolContext, signal) =>
         this.beforePiToolCall(toolContext, signal),
       streamPiModel: (model, llmContext, options, streamSimple) =>

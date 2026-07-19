@@ -73,6 +73,8 @@ describe('capability agent tool boundaries', () => {
     const oraclePrompt = capabilityAgentSystemPrompt('Oracle');
     expect(oraclePrompt).toContain('mutate files only when asked');
     expect(oraclePrompt).toContain('unless the supplied task explicitly requests it');
+    expect(oraclePrompt).toContain('If the supplied task references image files');
+    expect(oraclePrompt).toContain('describe exactly what you see before advising or implementing');
     expect(oraclePrompt).not.toContain('WebSearch');
     expect(oraclePrompt).not.toContain('WebFetch');
     expect(oraclePrompt).not.toMatch(/gpt|luna/i);
@@ -4772,6 +4774,69 @@ describe('ChatThreadDO Pi turn handling', () => {
     expect(result).toBeUndefined();
   });
 
+  it('preserves typed image parts for a vision-capable consumer model on an image-blind thread', async () => {
+    // The Oracle-child case: the camelCode thread model is text-only, but the
+    // capability child passes its own vision-capable model as the consumer.
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    fake.piSession = { state: { model: { id: 'dynamic/deepseek-v4-auto', input: ['text'] } } };
+
+    const result = await ChatThreadDO.prototype['afterPiToolCall'].call(fake, {
+      toolCall: { id: 'call_read', name: 'read' },
+      result: {
+        content: [
+          { type: 'text', text: 'uploads/screenshot.png (image/png)' },
+          { type: 'image', data: 'abcd', mimeType: 'image/png' },
+        ],
+        details: {},
+      },
+    }, undefined, { consumerModel: { id: 'vision-capability-model', input: ['text', 'image'] } });
+
+    expect(result).toBeUndefined();
+  });
+
+  it('strips typed image parts for an image-blind consumer model without the Oracle redirect off camelCode', async () => {
+    // The Research-child case: the consumer model is text-only even though the
+    // thread model can see images, and non-camelCode threads get no Oracle nudge.
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    fake.piSession = { state: { model: { id: 'vision-model', input: ['text', 'image'] } } };
+
+    const result = await ChatThreadDO.prototype['afterPiToolCall'].call(fake, {
+      toolCall: { id: 'call_read', name: 'read' },
+      result: {
+        content: [
+          { type: 'text', text: 'uploads/screenshot.png (image/png)' },
+          { type: 'image', data: 'AAAA', mimeType: 'image/png' },
+        ],
+        details: {},
+      },
+    }, undefined, { consumerModel: { id: 'text-only-capability-model', input: ['text'] } });
+
+    const text = (result?.content?.[0] as { text: string }).text;
+    expect(text).toContain('1 image tool result omitted');
+    expect(text).toContain('active model cannot inspect images');
+    expect(text).not.toContain('Oracle');
+  });
+
+  it('redirects stripped camelCode image reads to the Oracle tool', async () => {
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    fake.piSession = { state: { model: { id: 'dynamic/deepseek-v4-auto', input: ['text'] } } };
+    fake.currentThreadModel = 'deepseek-v4-auto';
+
+    const result = await ChatThreadDO.prototype['afterPiToolCall'].call(fake, {
+      toolCall: { id: 'call_read', name: 'read' },
+      result: {
+        content: [
+          { type: 'text', text: 'uploads/screenshot.png (image/png)' },
+          { type: 'image', data: 'AAAA', mimeType: 'image/png' },
+        ],
+        details: {},
+      },
+    });
+
+    const text = (result?.content?.[0] as { text: string }).text;
+    expect(text).toContain('active model cannot inspect images. Delegate image understanding to the `Oracle` tool, passing this file path]');
+  });
+
   it('truncates oversized Pi tool results and stores full text in R2', async () => {
     const puts: Array<{ key: string; value: string; options: unknown }> = [];
     const fake = Object.create(ChatThreadDO.prototype) as any;
@@ -5771,6 +5836,8 @@ describe('ChatThreadDO Pi turn handling', () => {
     expect(prompt).not.toContain('WebSearch');
     expect(prompt).not.toContain('WebFetch');
     expect(prompt).not.toContain('Oracle');
+    // Image routing to Oracle is camelCode-only guidance (asserted below).
+    expect(prompt).not.toContain('You cannot see images');
     expect(prompt).not.toContain('tools.send_email');
     expect(prompt).not.toContain('tools.send_slack_message');
     expect(prompt).not.toContain('tools.send_telegram_message');
@@ -5781,8 +5848,17 @@ describe('ChatThreadDO Pi turn handling', () => {
     expect(camelFreePrompt).toContain('stuck after failed attempts');
     expect(camelFreePrompt).toContain('difficult architecture, debugging, planning, or implementation');
     expect(camelFreePrompt).toContain('Handle routine work directly');
+    expect(camelFreePrompt).toContain('You cannot see images');
+    expect(camelFreePrompt).toContain('do not guess and do not answer generically: call `Oracle`');
+    expect(camelFreePrompt).toContain('include the exact image path(s)');
+    expect(camelFreePrompt).toContain("Use Oracle's description of the image as ground truth");
+    expect(camelFreePrompt).toContain('never claim to have viewed an image yourself');
     expect(camelFreePrompt).not.toContain('WebSearch');
     expect(camelFreePrompt).not.toContain('WebFetch');
+
+    const oracleTools = ChatThreadDO.prototype['createPiToolDefinitions'].call(fake, context, { includeOracle: true });
+    const oracleTool = oracleTools.find((tool: any) => tool.name === 'Oracle');
+    expect(oracleTool?.description).toContain('Oracle can also view and interpret images (screenshots, charts, photos) that you cannot see yourself; give it the image file path.');
 
     const piTools = ChatThreadDO.prototype['createPiToolDefinitions'].call(fake, context);
     expect(piTools.map((tool: any) => tool.description ?? '').join('\n')).not.toContain('WebSearch');
