@@ -14,7 +14,7 @@ import {
 } from "./selfhost-assets-registry.js";
 import { resolveUploadedDispatchScriptVersion, withUsageGuardTracing } from "./usage-guard-config.js";
 import {
-  acquireUsageGuardOperationLease,
+  acquireUsageGuardOperationLeaseWithRetry,
   releaseUsageGuardOperationLease,
 } from "./usage-guard-state.js";
 
@@ -320,7 +320,7 @@ export async function deployWorkerModulesDirect(
   const cloudflareUploadStartedAt = Date.now();
   const operationLeaseHolder = crypto.randomUUID();
   const operationAppId = `${request.identity.orgId}:${request.scriptName}`;
-  if (env.APP_DB && !(await acquireUsageGuardOperationLease({ db: env.APP_DB, appId: operationAppId, holder: operationLeaseHolder }))) {
+  if (env.APP_DB && !(await acquireUsageGuardOperationLeaseWithRetry({ db: env.APP_DB, appId: operationAppId, holder: operationLeaseHolder })).acquired) {
     throw new Error("App deployment is temporarily busy; retry shortly");
   }
   let response: Response;
@@ -686,7 +686,7 @@ export async function rollbackWorkerDeployFromArtifactCache(
     `/scripts/${encodeURIComponent(record.dispatchScriptName)}`;
   const operationLeaseHolder = crypto.randomUUID();
   const operationAppId = `${record.identity.orgId}:${record.scriptName}`;
-  if (env.APP_DB && !(await acquireUsageGuardOperationLease({ db: env.APP_DB, appId: operationAppId, holder: operationLeaseHolder }))) {
+  if (env.APP_DB && !(await acquireUsageGuardOperationLeaseWithRetry({ db: env.APP_DB, appId: operationAppId, holder: operationLeaseHolder })).acquired) {
     throw new Error("App deployment is temporarily busy; retry shortly");
   }
   let response: Response;

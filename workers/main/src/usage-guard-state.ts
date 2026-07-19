@@ -9,6 +9,9 @@ export type UsageGuardStatus =
   | "exempt";
 
 export const USAGE_GUARD_PROBATION_MS = 60 * 60 * 1000;
+export const USAGE_GUARD_OPERATION_LEASE_TTL_MS = 60_000;
+export const USAGE_GUARD_OPERATION_LEASE_WAIT_MS = 15_000;
+const USAGE_GUARD_OPERATION_LEASE_RETRY_MS = 250;
 
 export interface UsageGuardRegistryFields {
   usage_guard_status?: UsageGuardStatus;
@@ -108,13 +111,74 @@ export async function acquireUsageGuardOperationLease(input: {
 }): Promise<boolean> {
   const now = input.now ?? Date.now();
   await ensureUsageGuardSchema(input.db);
+  return tryAcquireUsageGuardOperationLease(input, now);
+}
+
+async function tryAcquireUsageGuardOperationLease(
+  input: {
+    db: D1Database;
+    appId: string;
+    holder: string;
+    ttlMs?: number;
+  },
+  now: number,
+): Promise<boolean> {
   const result = await input.db.prepare(`
     INSERT INTO app_usage_guard_leases (name, holder, expires_at)
     VALUES (?, ?, ?)
     ON CONFLICT(name) DO UPDATE SET holder = excluded.holder, expires_at = excluded.expires_at
-    WHERE app_usage_guard_leases.expires_at < ?
-  `).bind(operationLeaseName(input.appId), input.holder, now + (input.ttlMs ?? 15 * 60 * 1000), now).run();
+    WHERE app_usage_guard_leases.expires_at <= ?
+  `).bind(operationLeaseName(input.appId), input.holder, now + (input.ttlMs ?? USAGE_GUARD_OPERATION_LEASE_TTL_MS), now).run();
   return (result.meta.changes ?? 0) > 0;
+}
+
+export interface UsageGuardOperationLeaseAcquireResult {
+  acquired: boolean;
+  attempts: number;
+  waitedMs: number;
+}
+
+export async function acquireUsageGuardOperationLeaseWithRetry(
+  input: {
+    db: D1Database;
+    appId: string;
+    holder: string;
+    ttlMs?: number;
+    waitMs?: number;
+    retryMs?: number;
+  },
+  runtime: {
+    now?: () => number;
+    sleep?: (ms: number) => Promise<void>;
+    random?: () => number;
+  } = {},
+): Promise<UsageGuardOperationLeaseAcquireResult> {
+  const now = runtime.now ?? Date.now;
+  const sleep = runtime.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  const random = runtime.random ?? Math.random;
+  const startedAt = now();
+  const waitMs = input.waitMs ?? USAGE_GUARD_OPERATION_LEASE_WAIT_MS;
+  const retryMs = input.retryMs ?? USAGE_GUARD_OPERATION_LEASE_RETRY_MS;
+  let attempts = 0;
+  await ensureUsageGuardSchema(input.db);
+
+  while (true) {
+    attempts += 1;
+    const attemptAt = now();
+    if (await tryAcquireUsageGuardOperationLease(input, attemptAt)) {
+      const result = { acquired: true, attempts, waitedMs: attemptAt - startedAt };
+      if (attempts > 1) console.info("[usage-guard-lease] acquired after contention", { appId: input.appId, ...result });
+      return result;
+    }
+    const elapsed = now() - startedAt;
+    if (elapsed >= waitMs) {
+      const result = { acquired: false, attempts, waitedMs: elapsed };
+      console.warn("[usage-guard-lease] acquisition timed out", { appId: input.appId, ...result });
+      return result;
+    }
+    const jitteredDelay = Math.max(1, Math.round(retryMs * (0.75 + random() * 0.5)));
+    await sleep(Math.min(jitteredDelay, waitMs - elapsed));
+  }
 }
 
 export async function releaseUsageGuardOperationLease(input: {

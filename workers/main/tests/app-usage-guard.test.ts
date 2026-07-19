@@ -5,7 +5,13 @@ import { runUsageGuard } from "../../app-usage-guard/src/index";
 import { evaluateUsage, estimatedSqliteCostUsd, type UsageWindow } from "../../app-usage-guard/src/policy";
 import { quarantineDispatchScript, quarantineModule } from "../../app-usage-guard/src/quarantine";
 import { queryDurableObjectRows } from "../../app-usage-guard/src/telemetry";
-import { ensureUsageGuardSchema } from "../src/usage-guard-state";
+import {
+  acquireUsageGuardOperationLease,
+  acquireUsageGuardOperationLeaseWithRetry,
+  ensureUsageGuardSchema,
+  releaseUsageGuardOperationLease,
+  USAGE_GUARD_OPERATION_LEASE_TTL_MS,
+} from "../src/usage-guard-state";
 
 function window(overrides: Partial<UsageWindow>): UsageWindow {
   const usage = {
@@ -37,6 +43,67 @@ describe("app usage guard policy", () => {
       action: "suspend",
       catastrophic: true,
     });
+  });
+});
+
+describe.sequential("usage guard operation leases", () => {
+  const db = (testEnv as unknown as { APP_DB: D1Database }).APP_DB;
+  const appId = "lease-test-org:lease-test-app";
+  const leaseName = `app-operation:${appId}`;
+
+  afterEach(async () => {
+    await db.prepare("DELETE FROM app_usage_guard_leases WHERE name = ?").bind(leaseName).run();
+  });
+
+  it("allows an abandoned lease to be replaced after one minute", async () => {
+    expect(await acquireUsageGuardOperationLease({ db, appId, holder: "first", now: 1_000 })).toBe(true);
+    expect(await acquireUsageGuardOperationLease({ db, appId, holder: "second", now: 1_000 + USAGE_GUARD_OPERATION_LEASE_TTL_MS - 1 })).toBe(false);
+    expect(await acquireUsageGuardOperationLease({ db, appId, holder: "second", now: 1_000 + USAGE_GUARD_OPERATION_LEASE_TTL_MS })).toBe(true);
+  });
+
+  it("waits through brief contention and acquires the expired lease", async () => {
+    expect(await acquireUsageGuardOperationLease({ db, appId, holder: "first", now: 0, ttlMs: 1_000 })).toBe(true);
+    let now = 0;
+    const sleep = vi.fn(async (ms: number) => { now += ms; });
+
+    const result = await acquireUsageGuardOperationLeaseWithRetry(
+      { db, appId, holder: "second", ttlMs: 1_000, waitMs: 1_500, retryMs: 500 },
+      { now: () => now, sleep, random: () => 0.5 },
+    );
+
+    expect(result).toEqual({ acquired: true, attempts: 3, waitedMs: 1_000 });
+    expect(sleep).toHaveBeenCalledTimes(2);
+  });
+
+  it("stops waiting at the acquisition deadline", async () => {
+    expect(await acquireUsageGuardOperationLease({ db, appId, holder: "first", now: 0 })).toBe(true);
+    let now = 0;
+    const sleep = vi.fn(async (ms: number) => { now += ms; });
+    const consoleWarn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+    const result = await acquireUsageGuardOperationLeaseWithRetry(
+      { db, appId, holder: "second", waitMs: 1_000, retryMs: 500 },
+      { now: () => now, sleep, random: () => 0.5 },
+    );
+
+    expect(result).toEqual({ acquired: false, attempts: 3, waitedMs: 1_000 });
+    expect(consoleWarn).toHaveBeenCalledWith(
+      "[usage-guard-lease] acquisition timed out",
+      expect.objectContaining({ appId, attempts: 3, waitedMs: 1_000 }),
+    );
+    consoleWarn.mockRestore();
+  });
+
+  it("does not let an old holder release a replacement lease", async () => {
+    expect(await acquireUsageGuardOperationLease({ db, appId, holder: "first", now: 0, ttlMs: 1_000 })).toBe(true);
+    expect(await acquireUsageGuardOperationLease({ db, appId, holder: "second", now: 1_000, ttlMs: 1_000 })).toBe(true);
+
+    await releaseUsageGuardOperationLease({ db, appId, holder: "first" });
+
+    const row = await db.prepare("SELECT holder FROM app_usage_guard_leases WHERE name = ?")
+      .bind(leaseName)
+      .first<{ holder: string }>();
+    expect(row?.holder).toBe("second");
   });
 });
 

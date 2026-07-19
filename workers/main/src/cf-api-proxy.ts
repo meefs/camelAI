@@ -29,7 +29,7 @@ import {
 } from "./selfhost-assets-registry.js";
 import { resolveUploadedDispatchScriptVersion, withUsageGuardTracing } from "./usage-guard-config.js";
 import {
-  acquireUsageGuardOperationLease,
+  acquireUsageGuardOperationLeaseWithRetry,
   releaseUsageGuardOperationLease,
 } from "./usage-guard-state.js";
 
@@ -2535,7 +2535,7 @@ export async function proxyCloudflareApi(
     operationAppId &&
     operationLeaseHolder &&
     env.APP_DB &&
-    !(await acquireUsageGuardOperationLease({ db: env.APP_DB, appId: operationAppId, holder: operationLeaseHolder }))
+    !(await acquireUsageGuardOperationLeaseWithRetry({ db: env.APP_DB, appId: operationAppId, holder: operationLeaseHolder })).acquired
   ) {
     return cfApiError(10008, "App deployment is temporarily busy; retry shortly", 409);
   }
