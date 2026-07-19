@@ -1,4 +1,5 @@
 import { SHADCN_NPM_PACKAGE_VERSIONS, SHADCN_REGISTRY } from "./shadcn-registry.generated";
+import { DEFAULT_CRUD_BUN_LOCK } from "./project-scaffold-lock.generated";
 
 export type ProjectScaffoldTemplate =
   | "crud"
@@ -930,6 +931,7 @@ function updateScaffoldJson(
 
 function crudScaffoldFiles(projectName: string, scriptName: string): ProjectScaffoldFile[] {
   const files = defaultReactRouterScaffoldFiles(projectName, scriptName);
+  replaceScaffoldFile(files, "/bun.lock", DEFAULT_CRUD_BUN_LOCK);
   updateScaffoldJson(files, "/wrangler.jsonc", (config) => {
     config.durable_objects = { bindings: [{ name: "ITEMS", class_name: "ItemStore" }] };
     config.migrations = [{ tag: "v1", new_sqlite_classes: ["ItemStore"] }];

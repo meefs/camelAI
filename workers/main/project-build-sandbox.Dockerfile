@@ -14,7 +14,9 @@
 # Dockerfile's directory (workers/main), hence the relative COPY path.
 FROM docker.io/cloudflare/sandbox:0.12.0
 
-COPY project-build-sandbox-warmup/package.json /tmp/camelai-warmup/package.json
+COPY project-build-sandbox-warmup/ /tmp/camelai-warmup/
 RUN cd /tmp/camelai-warmup \
-    && bun install --no-progress \
+    && bun install --frozen-lockfile --no-progress \
+    && cd /tmp/camelai-warmup/crud \
+    && bun install --frozen-lockfile --no-progress \
     && rm -rf /tmp/camelai-warmup

@@ -8,6 +8,14 @@ function scaffoldFile(files: Array<{ path: string; content: string }>, path: str
   return file.content;
 }
 
+function parseBunLock(content: string): {
+  lockfileVersion: number;
+  configVersion: number;
+  workspaces: Record<string, { dependencies: Record<string, string>; devDependencies: Record<string, string> }>;
+} {
+  return JSON.parse(content.replace(/,(\s*[}\]])/g, "$1"));
+}
+
 describe("normalizeProjectScaffoldTemplate", () => {
   it("defaults to CRUD while preserving explicit templates", () => {
     expect(normalizeProjectScaffoldTemplate(undefined)).toBe("crud");
@@ -31,8 +39,10 @@ describe("normalizeProjectScaffoldTemplate", () => {
 describe("defaultProjectScaffoldFiles", () => {
   it("generates the default stateful CRUD scaffold", () => {
     const files = defaultProjectScaffoldFiles("Demo App", "crud", "demo-app");
+    const packageJson = JSON.parse(scaffoldFile(files, "/package.json"));
     const wrangler = JSON.parse(scaffoldFile(files, "/wrangler.jsonc"));
     const readme = scaffoldFile(files, "/README.md");
+    const bunLock = parseBunLock(scaffoldFile(files, "/bun.lock"));
 
     expect(wrangler.durable_objects.bindings).toContainEqual({ name: "ITEMS", class_name: "ItemStore" });
     expect(wrangler.migrations).toContainEqual({ tag: "v1", new_sqlite_classes: ["ItemStore"] });
@@ -53,6 +63,9 @@ describe("defaultProjectScaffoldFiles", () => {
     expect(readme).toContain("dry_run: true");
     expect(readme).toContain("hidden `build_project` name is compatibility-only");
     expect(readme).toContain("`set_preview` remains available for an explicit preview switch");
+    expect(bunLock).toMatchObject({ lockfileVersion: 1, configVersion: 1 });
+    expect(bunLock.workspaces[""].dependencies).toEqual(packageJson.dependencies);
+    expect(bunLock.workspaces[""].devDependencies).toEqual(packageJson.devDependencies);
   });
 
   it("generates the specialized web scaffolds", () => {
