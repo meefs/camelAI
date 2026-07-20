@@ -62,6 +62,7 @@
 		"print:pi-system-prompt": "bun scripts/print-pi-system-prompt.ts",
 		"generate:pi-system-prompt-doc": "bun scripts/print-pi-system-prompt.ts --output docs/pi-system-prompt.md",
 		"generate:lucide-icons": "bun scripts/generate-lucide-icon-names.mjs",
+		"generate:project-dependency-locks": "bun scripts/generate-project-dependency-locks.mjs",
 		"test": "vitest",
 		"test:run": "vitest run",
 		"test:all": "bun run test:run && bun run test:workers",
