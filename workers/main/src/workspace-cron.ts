@@ -12,7 +12,6 @@ import {
   parseCronExpression,
 } from "./cron-schedule";
 import type { WorkspaceDO } from "./workspace";
-import { prewarmWorkspaceBuildSandboxes } from "./project-build-service";
 import type { WorkspaceFilesystemDO } from "./workspace-filesystem-do";
 import type { ProjectBuildSandbox } from "./project-build-sandbox";
 import {
@@ -39,11 +38,6 @@ import {
 } from "./model-picker-config-compat";
 
 const MAX_DUE_JOBS_PER_ALARM = 20;
-// Wake this far ahead of the next scheduled run to prewarm the build container,
-// so its 10s+ cold boot overlaps the lead window instead of the deploy. The
-// early wake only prewarms (due queries still gate on next_run_at <= now, so
-// nothing runs early) and then re-arms the alarm for the real run time.
-const BUILD_SANDBOX_PREWARM_LEAD_MS = 20_000;
 const WORKSPACE_ID_KEY = "workspaceId";
 const AUTOMATION_WORKFLOW_BINDING = "DETERMINISTIC_AUTOMATION_WORKFLOWS";
 const SCHEDULE_DISABLED_BY_BILLING_PREFIX =
@@ -1352,15 +1346,9 @@ export class WorkspaceCronDO extends DurableObject<WorkspaceCronEnv> {
     }
 
     const now = Date.now();
-    // When the next run is still more than the lead window away, wake early to
-    // prewarm the build container; otherwise (already inside the lead window,
-    // e.g. re-arming right after a prewarm wake) target the real run time so we
-    // don't busy-loop 1s alarms across the lead window.
-    const target =
-      nextRunAt - now > BUILD_SANDBOX_PREWARM_LEAD_MS
-        ? nextRunAt - BUILD_SANDBOX_PREWARM_LEAD_MS
-        : nextRunAt;
-    await this.ctx.storage.setAlarm(Math.max(now + 1000, target));
+    // Floor at now+1s so a just-due or slightly-past next_run_at cannot arm a
+    // tight 0-delay loop if the handler returns without advancing schedules.
+    await this.ctx.storage.setAlarm(Math.max(now + 1000, nextRunAt));
   }
 
   async listScheduledPrompts(
@@ -2252,8 +2240,8 @@ export class WorkspaceCronDO extends DurableObject<WorkspaceCronEnv> {
 
   /**
    * Whether any scheduled prompt or deterministic automation is actually due as
-   * of `now`. Used to tell a real due-run alarm from an early prewarm-only lead
-   * wake, so the latter never takes the destructive "workspace unavailable"
+   * of `now`. Used so a spurious early alarm (or race after another writer
+   * advanced next_run_at) never takes the destructive "workspace unavailable"
    * disable path on a transient failure.
    */
   private hasDueScheduledWork(now: number): boolean {
@@ -2279,11 +2267,8 @@ export class WorkspaceCronDO extends DurableObject<WorkspaceCronEnv> {
     }
 
     const now = Date.now();
-    // Tell a real due-run wake apart from an early prewarm-only lead wake
-    // (scheduled BUILD_SANDBOX_PREWARM_LEAD_MS before next_run_at). Only a wake
-    // with actually-due work may take the destructive disable path below; a
-    // transient getWorkspaceInfo failure during the prewarm lead window must not
-    // tear down future schedules before their scheduled time.
+    // Only a wake with actually-due work may take the destructive disable path
+    // below; a spurious early alarm must not tear down future schedules.
     const hasDueWork = this.hasDueScheduledWork(now);
 
     let workspace: WorkspaceInfo;
@@ -2302,32 +2287,14 @@ export class WorkspaceCronDO extends DurableObject<WorkspaceCronEnv> {
         );
         return;
       }
-      // Prewarm-only wake: don't disable anything on a transient failure. Re-arm
-      // so the real run time gets its own (destructive-on-failure) attempt.
+      // Nothing due yet: don't disable on a transient failure. Re-arm so the
+      // real run time gets its own (destructive-on-failure) attempt.
       await this.scheduleNextAlarm();
       return;
     }
 
-    // Every alarm wake precedes a scheduled run within the lead window (either
-    // this wake runs due jobs, or it's the early prewarm wake ahead of them), so
-    // warming the build container now overlaps its cold boot with the dispatched
-    // turn. Fire-and-forget + best-effort; a warm failure never blocks the run.
-    this.ctx.waitUntil(
-      prewarmWorkspaceBuildSandboxes(this.env, workspace.org_id, workspaceId).catch(
-        (error) => {
-          console.warn("[WorkspaceCronDO] build sandbox prewarm failed", {
-            workspaceId,
-            error: error instanceof Error ? error.message : String(error),
-          });
-        },
-      ),
-    );
-
     if (!hasDueWork) {
-      // Prewarm-only lead wake: nothing is due yet. Skip the billing read and
-      // (empty) due-row processing — a transient failure there would reject
-      // before the re-arm below and drop the real run — and just re-arm for the
-      // actual run time.
+      // Spurious/early wake: nothing is due. Re-arm for the next real run.
       await this.scheduleNextAlarm();
       return;
     }
