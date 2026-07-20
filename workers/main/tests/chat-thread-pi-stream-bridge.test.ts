@@ -1664,6 +1664,9 @@ describe('ChatThreadDO stall-watchdog heartbeat', () => {
     try {
       const { fake, writes } = createHeartbeatFake();
       fake.piTurnLastProgressAtMs = 0;
+      fake.piToolKeepAliveInterval = null;
+      fake.piAgentStartedAtMs = Date.now();
+      fake.piTurnStartedAtMs = Date.now();
 
       let resolveTool!: (value: string) => void;
       const running = ChatThreadDO.prototype[
@@ -1691,6 +1694,177 @@ describe('ChatThreadDO stall-watchdog heartbeat', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it('fails a hung harness tool as a throw (tool error) without disposing the session', async () => {
+    vi.useFakeTimers();
+    try {
+      const { fake, writes } = createHeartbeatFake();
+      fake.piToolKeepAliveInterval = null;
+      fake.piAgentStartedAtMs = Date.now();
+      fake.piTurnStartedAtMs = Date.now();
+      fake.recordChatThreadObservabilityEvent = vi.fn();
+      fake.disposePiSession = vi.fn();
+
+      const running = ChatThreadDO.prototype[
+        'keepPiTurnToolProgressAliveWhile'
+      ].call(
+        fake,
+        // Never settles — without a ceiling keep-alive would pin the DO forever.
+        () => new Promise<string>(() => {}),
+      ) as Promise<string>;
+
+      // Just under 20m: heartbeats still flow, tool still pending.
+      await vi.advanceTimersByTimeAsync(19 * 60_000);
+      expect(
+        writes.filter((chunk) => chunk.type === 'data-pi-heartbeat').length,
+      ).toBeGreaterThan(0);
+      expect(fake.recordChatThreadObservabilityEvent).not.toHaveBeenCalledWith(
+        'pi_turn_tool_hard_timeout',
+        expect.anything(),
+      );
+
+      // Cross the 20m hard ceiling → reject so pi-agent-core records isError
+      // tool result; the Pi session must stay alive so the turn can continue.
+      const settled = expect(running).rejects.toMatchObject({
+        name: 'PiTurnToolHardTimeoutError',
+        message: expect.stringContaining('timed out after 20 minutes'),
+      });
+      await vi.advanceTimersByTimeAsync(60_000);
+      await settled;
+
+      expect(fake.disposePiSession).not.toHaveBeenCalled();
+      expect(fake.recordChatThreadObservabilityEvent).toHaveBeenCalledWith(
+        'pi_turn_tool_hard_timeout',
+        expect.objectContaining({
+          operation: 'tool_hard_timeout',
+          status: 'timeout',
+          severity: 'warn',
+        }),
+      );
+      // Interval must not keep firing after the hard timeout.
+      const after = writes.length;
+      await vi.advanceTimersByTimeAsync(120_000);
+      expect(writes).toHaveLength(after);
+      expect(fake.piToolKeepAliveInterval).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+
+
+describe('ChatThreadDO.abortTurnForAbsoluteTimeout', () => {
+  it('surfaces a user-visible stop before going idle', async () => {
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    fake.chatContext = { threadId: 'thread-abs-timeout' };
+    fake.piToolKeepAliveInterval = null;
+    fake.piTurnAbsoluteTimeoutTimer = setInterval(() => {}, 60_000);
+    fake.piUnsubscribe = null;
+    fake.piModelResolver = null;
+    fake.piSession = { state: { isStreaming: true }, abort: vi.fn() };
+    fake.piMainBaselineIndex = 0;
+    fake.piSessionPromise = null;
+    fake.piEventHandlerChain = Promise.resolve();
+    fake.piActiveItemId = null;
+    fake.piAssistantText = '';
+    fake.activePiStreamTurnId = 'turn-long';
+    fake.pendingPiPromptQueue = [];
+    fake.piStreamWriter = { write: vi.fn() };
+    fake.lastError = null;
+    fake.readPiActiveTurn = vi.fn(() => ({ turnId: 'turn-long', openedAt: 1 }));
+    fake.clearPiActiveTurnAndJournal = vi.fn(async () => {});
+    fake.setActiveTurnUserId = vi.fn();
+    fake.finishTurn = vi.fn();
+    fake.syncAgentState = vi.fn();
+    fake.pushChatEvent = vi.fn();
+    fake.piProviderErrorEvent = vi.fn((message: string) => ({
+      type: 'error',
+      error: message,
+    }));
+    fake.updateActiveAutomationRun = vi.fn();
+    fake.recordChatThreadObservabilityEvent = vi.fn();
+    fake.stopStreamingLeaseHeartbeat = vi.fn();
+
+    await ChatThreadDO.prototype['abortTurnForAbsoluteTimeout'].call(
+      fake,
+      60 * 60_000,
+    );
+
+    expect(fake.lastError).toEqual(
+      expect.objectContaining({
+        error: expect.stringContaining('60 minutes'),
+        errorType: 'PiTurnAbsoluteTimeout',
+      }),
+    );
+    expect(fake.pushChatEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: 'error',
+        error: expect.stringContaining('60 minutes'),
+      }),
+    );
+    expect(fake.clearPiActiveTurnAndJournal).toHaveBeenCalled();
+    expect(fake.finishTurn).toHaveBeenCalledWith({ markUnread: true });
+    expect(fake.piSession).toBeNull();
+    expect(fake.activePiStreamTurnId).toBeNull();
+    expect(fake.piTurnAbsoluteTimeoutTimer).toBeNull();
+  });
+});
+
+describe('ChatThreadDO.forceClearHungTurn', () => {
+  it('clears marker, session, and intervals', async () => {
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    fake.chatContext = { threadId: 'thread-force-clear' };
+    fake.piToolKeepAliveInterval = setInterval(() => {}, 60_000);
+    fake.piTurnAbsoluteTimeoutTimer = setInterval(() => {}, 60_000);
+    fake.streamingLeaseRefreshTimer = null;
+    fake.pendingStreamingActivity = null;
+    fake.streamingActivityFlushTimer = null;
+    fake.runningActivityLastText = null;
+    fake.runningActivityLastSentAt = 0;
+    fake.piUnsubscribe = null;
+    fake.piModelResolver = null;
+    fake.piSession = { state: { isStreaming: true }, abort: vi.fn() };
+    fake.piMainBaselineIndex = 0;
+    fake.piSessionPromise = null;
+    fake.piEventHandlerChain = Promise.resolve();
+    fake.piActiveItemId = null;
+    fake.piAssistantText = '';
+    fake.activePiStreamTurnId = 'turn-stuck';
+    fake.pendingPiPromptQueue = [{ userMessage: {} }];
+    fake.piStreamWriter = { write: vi.fn() };
+    fake.piPendingTransientTurnRetry = { errorText: 'x' };
+    fake.piTransientRetryBackoffAbort = { abort: vi.fn() };
+    fake.readPiActiveTurn = vi.fn(() => ({ turnId: 'turn-stuck', openedAt: 1 }));
+    fake.clearPiActiveTurnAndJournal = vi.fn(async () => {});
+    fake.setActiveTurnUserId = vi.fn();
+    fake.finishTurn = vi.fn();
+    fake.recordChatThreadObservabilityEvent = vi.fn();
+
+    const result = await ChatThreadDO.prototype.forceClearHungTurn.call(
+      fake,
+      'test_clear',
+    );
+
+    expect(result).toEqual({
+      cleared: true,
+      hadMarker: true,
+      hadSession: true,
+      reason: 'test_clear',
+    });
+    expect(fake.piSession).toBeNull();
+    expect(fake.activePiStreamTurnId).toBeNull();
+    expect(fake.pendingPiPromptQueue).toEqual([]);
+    expect(fake.piToolKeepAliveInterval).toBeNull();
+    expect(fake.piTurnAbsoluteTimeoutTimer).toBeNull();
+    expect(fake.clearPiActiveTurnAndJournal).toHaveBeenCalled();
+    expect(fake.setActiveTurnUserId).toHaveBeenCalledWith(null);
+    expect(fake.finishTurn).toHaveBeenCalled();
+    expect(fake.recordChatThreadObservabilityEvent).toHaveBeenCalledWith(
+      'pi_turn_force_cleared',
+      expect.objectContaining({ operation: 'force_clear_hung_turn' }),
+    );
   });
 });
 
