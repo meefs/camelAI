@@ -422,6 +422,31 @@ class PiTurnInactivityTimeoutError extends Error {
   }
 }
 
+/**
+ * Thrown when a single harness tool exceeds {@link PI_TURN_TOOL_HARD_TIMEOUT_MS}.
+ * Tool keep-alive heartbeats intentionally feed the ai-chat stall watchdog so
+ * long silent tools are not killed at the 10m inter-chunk stall window; without
+ * this hard ceiling a hung tool promise pins the DO forever.
+ */
+class PiTurnToolHardTimeoutError extends Error {
+  constructor(message = "Pi tool hard timeout") {
+    super(message);
+    this.name = "PiTurnToolHardTimeoutError";
+  }
+}
+
+/**
+ * Thrown when a turn exceeds {@link PI_TURN_ABSOLUTE_MAX_MS} wall clock from
+ * agent_start. Terminal — marker is cleared so chatRecovery cannot re-drive a
+ * multi-hour hang.
+ */
+class PiTurnAbsoluteTimeoutError extends Error {
+  constructor(message = "Pi turn absolute timeout") {
+    super(message);
+    this.name = "PiTurnAbsoluteTimeoutError";
+  }
+}
+
 const CHAT_CONTEXT_KEY = "chatContext";
 // Durable resume of an interrupted Pi turn (e.g. the DO is evicted mid-turn by a
 // deploy). ai-chat's `chatRecovery` owns recovery now: a turn runs through
@@ -442,6 +467,12 @@ const CHAT_CONTEXT_WINDOW_BY_MODEL_KEY = "chatContextWindowByModel";
 const CHAT_ACTIVE_TURN_USER_ID_KEY = "chatActiveTurnUserId";
 const PI_TURN_INACTIVITY_TIMEOUT_MS = 10 * 60_000;
 const PI_TURN_PROGRESS_INTERVAL_MS = 30_000;
+// Single-tool ceiling under keep-alive. Must sit above the longest legitimate
+// harness tool wall clock (notebook exec max 15m, code-mode max 10m) with slack.
+const PI_TURN_TOOL_HARD_TIMEOUT_MS = 20 * 60_000;
+// Whole-turn wall clock from agent_start. Bounds multi-tool hangs and any path
+// that keeps feeding the stall watchdog without making real progress.
+const PI_TURN_ABSOLUTE_MAX_MS = 60 * 60_000;
 
 // ai-chat's recovery-bookkeeping storage keys are imported from agents/chat
 // (CHAT_RECOVERY_INCIDENT_KEY_PREFIX / CHAT_RECOVERING_KEY /
@@ -574,6 +605,12 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
   // Interval renewing the WorkspaceDO running row's liveness lease during a
   // turn; started by markTurnStarted, stopped by resetRunningActivityState.
   private streamingLeaseRefreshTimer: ReturnType<typeof setInterval> | null = null;
+  // Absolute wall-clock watchdog for the whole agent turn (agent_start → end).
+  private piTurnAbsoluteTimeoutTimer: ReturnType<typeof setInterval> | null = null;
+  // Interval owned by the in-flight keepPiTurnToolProgressAliveWhile call (at
+  // most one tool at a time). Cleared on settle and on dispose so a hung tool
+  // cannot leave a ghost heartbeat interval after abort.
+  private piToolKeepAliveInterval: ReturnType<typeof setInterval> | null = null;
   private runnerTransitionChain: Promise<void> = Promise.resolve();
   private piSessionPromise: Promise<PiCoreAgent> | null = null;
   private piSession: PiCoreAgent | null = null;
@@ -2405,6 +2442,7 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
     this.piUnsubscribe?.();
     this.piUnsubscribe = null;
     this.piModelResolver = null;
+    this.clearPiToolKeepAliveInterval();
     try {
       this.piSession?.abort();
     } catch {
@@ -2416,6 +2454,13 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
     this.piEventHandlerChain = Promise.resolve();
     this.piActiveItemId = null;
     this.piAssistantText = "";
+  }
+
+  private clearPiToolKeepAliveInterval(): void {
+    if (this.piToolKeepAliveInterval !== null) {
+      clearInterval(this.piToolKeepAliveInterval);
+      this.piToolKeepAliveInterval = null;
+    }
   }
 
   // pi_core persistence (table DDL, R2 image/tool-result externalization, the
@@ -3058,7 +3103,46 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
 
   private async keepPiTurnToolProgressAliveWhile<T>(fn: () => Promise<T>): Promise<T> {
     this.touchPiTurnProgress();
-    const interval = setInterval(() => {
+    // Only one harness tool runs at a time; drop any prior interval (defensive).
+    this.clearPiToolKeepAliveInterval();
+    const toolStartedAtMs = Date.now();
+    let rejectHard: ((error: Error) => void) | null = null;
+    const hardTimeoutPromise = new Promise<never>((_, reject) => {
+      rejectHard = reject;
+    });
+    this.piToolKeepAliveInterval = setInterval(() => {
+      const now = Date.now();
+      const toolElapsedMs = now - toolStartedAtMs;
+      const turnStartedAtMs = this.piAgentStartedAtMs || this.piTurnStartedAtMs;
+      const turnElapsedMs = turnStartedAtMs > 0 ? now - turnStartedAtMs : 0;
+
+      // Hard ceilings beat keep-alive heartbeats: without them a hung tool
+      // promise feeds the stall watchdog forever and pins the DO.
+      if (toolElapsedMs >= PI_TURN_TOOL_HARD_TIMEOUT_MS) {
+        this.recordChatThreadObservabilityEvent("pi_turn_tool_hard_timeout", {
+          operation: "tool_hard_timeout",
+          status: "timeout",
+          severity: "error",
+          durationMs: toolElapsedMs,
+        });
+        this.disposePiSession();
+        rejectHard?.(
+          new PiTurnToolHardTimeoutError(
+            `Tool exceeded hard timeout of ${PI_TURN_TOOL_HARD_TIMEOUT_MS}ms`,
+          ),
+        );
+        return;
+      }
+      if (turnElapsedMs >= PI_TURN_ABSOLUTE_MAX_MS) {
+        void this.abortTurnForAbsoluteTimeout(turnElapsedMs);
+        rejectHard?.(
+          new PiTurnAbsoluteTimeoutError(
+            `Turn exceeded absolute timeout of ${PI_TURN_ABSOLUTE_MAX_MS}ms`,
+          ),
+        );
+        return;
+      }
+
       this.touchPiTurnProgress();
       // An executing harness tool is genuine turn liveness even when it writes
       // nothing to the wire (a silent long command/build); keep the ai-chat
@@ -3066,9 +3150,9 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
       this.writePiStreamHeartbeat();
     }, PI_TURN_PROGRESS_INTERVAL_MS);
     try {
-      return await fn();
+      return await Promise.race([fn(), hardTimeoutPromise]);
     } finally {
-      clearInterval(interval);
+      this.clearPiToolKeepAliveInterval();
       this.touchPiTurnProgress();
     }
   }
@@ -3762,6 +3846,7 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
 
   private resetRunningActivityState(): void {
     this.streamingActivity.resetRunningActivityState();
+    this.stopPiTurnAbsoluteTimeoutWatchdog();
   }
 
   private startStreamingLeaseHeartbeat(): void {
@@ -3942,6 +4027,102 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
     this.syncAgentState();
     this.pushWorkspaceStreaming(true);
     this.startStreamingLeaseHeartbeat();
+    this.startPiTurnAbsoluteTimeoutWatchdog();
+  }
+
+  private startPiTurnAbsoluteTimeoutWatchdog(): void {
+    this.stopPiTurnAbsoluteTimeoutWatchdog();
+    this.piTurnAbsoluteTimeoutTimer = setInterval(() => {
+      const startedAtMs = this.piAgentStartedAtMs || this.piTurnStartedAtMs;
+      if (!(startedAtMs > 0)) return;
+      const elapsedMs = Date.now() - startedAtMs;
+      if (elapsedMs < PI_TURN_ABSOLUTE_MAX_MS) return;
+      void this.abortTurnForAbsoluteTimeout(elapsedMs);
+    }, PI_TURN_PROGRESS_INTERVAL_MS);
+  }
+
+  private stopPiTurnAbsoluteTimeoutWatchdog(): void {
+    if (this.piTurnAbsoluteTimeoutTimer !== null) {
+      clearInterval(this.piTurnAbsoluteTimeoutTimer);
+      this.piTurnAbsoluteTimeoutTimer = null;
+    }
+  }
+
+  /**
+   * Terminal kill for a turn that exceeded {@link PI_TURN_ABSOLUTE_MAX_MS}.
+   * Disposes the Pi session, stops keep-alive/lease intervals, clears the
+   * active-turn marker (no recovery re-drive of a multi-hour hang), and marks
+   * the thread idle. Idempotent if the turn already settled.
+   */
+  private async abortTurnForAbsoluteTimeout(elapsedMs: number): Promise<void> {
+    // Stop the watchdog first so a slow cleanup cannot re-enter.
+    this.stopPiTurnAbsoluteTimeoutWatchdog();
+    this.clearPiToolKeepAliveInterval();
+
+    const hadMarker = this.readPiActiveTurn() !== null;
+    const hadLiveTurn = Boolean(this.activePiStreamTurnId || this.piSession?.state.isStreaming);
+    if (!hadMarker && !hadLiveTurn) {
+      this.stopStreamingLeaseHeartbeat();
+      return;
+    }
+
+    this.recordChatThreadObservabilityEvent("pi_turn_absolute_timeout", {
+      operation: "absolute_timeout",
+      status: "timeout",
+      severity: "error",
+      durationMs: elapsedMs,
+    });
+
+    this.disposePiSession();
+    this.activePiStreamTurnId = null;
+    this.pendingPiPromptQueue = [];
+    this.piStreamWriter = null;
+    try {
+      await this.clearPiActiveTurnAndJournal();
+    } catch (error) {
+      console.error("[ChatThreadDO] failed to clear active turn after absolute timeout", error);
+    }
+    this.setActiveTurnUserId(null);
+    this.finishTurn();
+  }
+
+  /**
+   * Break-glass: force a hung/zombie thread idle. Disposes any live Pi session,
+   * clears the active-turn marker + journal, stops lease/tool intervals, and
+   * broadcasts idle. Safe to call when no turn is active (no-op-ish cleanup).
+   * Intended for admin_js_exec / ops against known billing zombies.
+   */
+  async forceClearHungTurn(reason = "admin_force_clear"): Promise<{
+    cleared: boolean;
+    hadMarker: boolean;
+    hadSession: boolean;
+    reason: string;
+  }> {
+    const hadMarker = this.readPiActiveTurn() !== null;
+    const hadSession = this.piSession !== null;
+    this.recordChatThreadObservabilityEvent("pi_turn_force_cleared", {
+      operation: "force_clear_hung_turn",
+      status: "cleared",
+      severity: "warn",
+      error: reason,
+    });
+    this.stopPiTurnAbsoluteTimeoutWatchdog();
+    this.clearPiToolKeepAliveInterval();
+    this.disposePiSession();
+    this.activePiStreamTurnId = null;
+    this.pendingPiPromptQueue = [];
+    this.piStreamWriter = null;
+    this.piPendingTransientTurnRetry = null;
+    this.piTransientRetryBackoffAbort?.abort();
+    this.piTransientRetryBackoffAbort = null;
+    try {
+      await this.clearPiActiveTurnAndJournal();
+    } catch (error) {
+      console.error("[ChatThreadDO] forceClearHungTurn failed to clear marker", error);
+    }
+    this.setActiveTurnUserId(null);
+    this.finishTurn();
+    return { cleared: true, hadMarker, hadSession, reason };
   }
 
   /**
