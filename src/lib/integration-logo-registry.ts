@@ -38,6 +38,7 @@ export const logoRegistry: Record<string, IntegrationLogoVariant> = {
   gemini: 'single',
   glm: 'single',
   gcp: 'single',
+  google_analytics: 'single',
   hubspot: 'single',
   intercom: 'single',
   jira: 'single',

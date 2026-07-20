@@ -47,4 +47,12 @@ describe("IntegrationIcon", () => {
     expect(icon.tagName).toBe("IMG");
     expect(icon).toHaveAttribute("src", "/logos/telegram.svg");
   });
+
+  it("uses the Google Analytics product icon", () => {
+    render(<IntegrationIcon type="google_analytics" size={16} />);
+
+    const icon = screen.getByRole("img", { name: "google_analytics" });
+    expect(icon.tagName).toBe("IMG");
+    expect(icon).toHaveAttribute("src", "/logos/google_analytics.svg");
+  });
 });
