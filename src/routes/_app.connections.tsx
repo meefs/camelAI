@@ -55,6 +55,7 @@ import {
 import { getBillingPlanLimits } from '@/lib/billing-plans';
 import type { Integration, User } from '@/types';
 import type { ConnectionListItem } from '@/lib/connections-shared';
+import { getConnectionContract } from '@/lib/connection-contract';
 import { projectsToMentionables, type MentionableProject } from '@/lib/mentions';
 import {
   loadUserProfileSummaries,
@@ -183,6 +184,10 @@ async function recordToIntegration(
   const config = parseIntegrationConfig(record.config);
   const importedDefinition = parseWorkspaceIntegrationDefinition(record.definition);
   const creator = creators.get(record.created_by);
+  const contract = getConnectionContract(record.integration_type, {
+    config,
+    definition: importedDefinition,
+  });
   return {
     id: record.id,
     integration_type: record.integration_type,
@@ -210,6 +215,14 @@ async function recordToIntegration(
           genericFetch: true,
         }
       : undefined,
+    contract,
+    verification: {
+      status: record.verification_status ?? 'unknown',
+      message: record.verification_message ?? null,
+      checkedAt: record.verification_checked_at ?? null,
+      live: record.verification_live === 1,
+      strategy: record.verification_strategy ?? contract.verification.strategy,
+    },
   };
 }
 
@@ -249,6 +262,28 @@ export async function action({ request, context }: Route.ActionArgs) {
     );
     if (!canManageConnections) {
       return { error: 'Only organization admins can manage connections' };
+    }
+  }
+
+  if (intent === 'verifyIntegration') {
+    const integrationId = String(formData.get('integrationId') ?? '').trim();
+    if (!integrationId) return { error: 'Integration ID is required' };
+    try {
+      const { verifyConnection } = await import(
+        '../../workers/main/src/connections-runtime'
+      );
+      const verification = await verifyConnection(
+        env as never,
+        {
+          orgId: authContext.currentOrg.id,
+          workspaceId,
+          userId: authContext.user.id,
+        },
+        { id: integrationId },
+      );
+      return { success: true, verification };
+    } catch (err) {
+      return { error: err instanceof Error ? err.message : 'Failed to verify connection' };
     }
   }
 

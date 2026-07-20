@@ -9,6 +9,7 @@ import {
   MessageSquare,
   Plug,
   Settings,
+  ShieldCheck,
   X,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -277,11 +278,25 @@ function StatusAndHousekeeping({
   connection,
   canManage,
   onConfigure,
+  onVerify,
 }: {
   connection: ConnectionListItem;
   canManage: boolean;
   onConfigure: (connection: ConnectionListItem, forceCredentialUpdate?: boolean) => void;
+  onVerify: (connection: ConnectionListItem) => void;
 }) {
+  const verification = connection.verification;
+  const statusLabel = verification?.status === "ready"
+    ? "Ready"
+    : verification?.status === "configured"
+      ? "Configured"
+      : verification?.status === "needs_authorization"
+        ? "Needs authorization"
+        : verification?.status === "misconfigured"
+          ? "Needs setup"
+          : verification?.status === "degraded"
+            ? "Unavailable"
+            : "Not verified";
   return (
     <Section
       title="Status & housekeeping"
@@ -306,6 +321,26 @@ function StatusAndHousekeeping({
       }
     >
       <dl className="space-y-2">
+        <DetailRow label="Health">
+          <span className="inline-flex items-center justify-end gap-2">
+            <Badge
+              variant={verification?.status === "ready" ? "default" : "secondary"}
+              className="font-normal"
+            >
+              {statusLabel}
+            </Badge>
+            <Button type="button" variant="ghost" size="sm" onClick={() => onVerify(connection)}>
+              <ShieldCheck />
+              Verify
+            </Button>
+          </span>
+        </DetailRow>
+        <DetailRow label="Last verified">
+          {formatAbsoluteTime(verification?.checkedAt)}
+        </DetailRow>
+        <DetailRow label="Check type">
+          {connection.contract?.verification.live ? "Live provider check" : "Configuration check"}
+        </DetailRow>
         <DetailRow label="Added by">
           <CreatedBy
             id={connection.created_by}
@@ -330,12 +365,14 @@ function ConnectionBody({
   canManage,
   onNewChat,
   onConfigure,
+  onVerify,
 }: {
   item: Extract<PanelItem, { kind: "connection" }>;
   mentionSlug: string | null;
   canManage: boolean;
   onNewChat: (item: PanelItem, mentionSlug: string) => void;
   onConfigure: (connection: ConnectionListItem, forceCredentialUpdate?: boolean) => void;
+  onVerify: (connection: ConnectionListItem) => void;
 }) {
   const { connection } = item;
   return (
@@ -351,6 +388,7 @@ function ConnectionBody({
         connection={connection}
         canManage={canManage}
         onConfigure={onConfigure}
+        onVerify={onVerify}
       />
     </>
   );
@@ -522,6 +560,7 @@ function ChannelBody({
   onNewChat,
   onConfigure,
   onManageEmailSettings,
+  onVerify,
 }: {
   item: Extract<PanelItem, { kind: "channel" }>;
   mentionSlug: string | null;
@@ -529,6 +568,7 @@ function ChannelBody({
   onNewChat: (item: PanelItem, mentionSlug: string) => void;
   onConfigure: (connection: ConnectionListItem, forceCredentialUpdate?: boolean) => void;
   onManageEmailSettings: () => void;
+  onVerify: (connection: ConnectionListItem) => void;
 }) {
   if (item.channel === "email") {
     return (
@@ -563,6 +603,7 @@ function ChannelBody({
         connection={connection}
         canManage={canManage}
         onConfigure={onConfigure}
+        onVerify={onVerify}
       />
     </>
   );
@@ -583,6 +624,7 @@ export function ConnectionPanel({
   onStartRename,
   onConfigure,
   onReconnect,
+  onVerify,
   onClone,
   onDelete,
   onCopyEmailAddress,
@@ -605,6 +647,7 @@ export function ConnectionPanel({
             onStartRename={onStartRename}
             onConfigure={onConfigure}
             onReconnect={onReconnect}
+            onVerify={onVerify}
             onClone={onClone}
             onDelete={onDelete}
             onCopyEmailAddress={onCopyEmailAddress}
@@ -671,6 +714,7 @@ export function ConnectionPanel({
               canManage={isAdmin}
               onNewChat={onNewChat}
               onConfigure={onConfigure}
+              onVerify={onVerify}
             />
           ) : (
             <ChannelBody
@@ -679,6 +723,7 @@ export function ConnectionPanel({
               canManage={isAdmin}
               onNewChat={onNewChat}
               onConfigure={onConfigure}
+              onVerify={onVerify}
               onManageEmailSettings={onManageEmailSettings}
             />
           )}

@@ -9,6 +9,7 @@ import {
   Pencil,
   Plug,
   RefreshCw,
+  ShieldCheck,
   Settings,
   Trash2,
 } from "lucide-react";
@@ -36,6 +37,7 @@ export interface ConnectionActionHandlers {
   onStartRename: (item: PanelItem) => void;
   onConfigure: (connection: ConnectionListItem, forceCredentialUpdate?: boolean) => void;
   onReconnect: (connection: ConnectionListItem) => void;
+  onVerify: (connection: ConnectionListItem) => void;
   onClone: (connection: ConnectionListItem) => void;
   onDelete: (connection: ConnectionListItem) => void;
   onCopyEmailAddress: () => void;
@@ -63,6 +65,7 @@ export function ConnectionActionsMenu({
   onStartRename,
   onConfigure,
   onReconnect,
+  onVerify,
   onClone,
   onDelete,
   onCopyEmailAddress,
@@ -73,7 +76,8 @@ export function ConnectionActionsMenu({
   const showRecordActions = Boolean(connection && isAdmin);
   const showReconnect = Boolean(connection && isAdmin && canReconnectConnection(connection));
   const showClone = Boolean(connection && isAdmin && otherWorkspacesCount > 0);
-  const hasActions = isEmail || showRecordActions || showReconnect || showClone;
+  const showVerify = Boolean(connection);
+  const hasActions = isEmail || showVerify || showRecordActions || showReconnect || showClone;
 
   if (!hasActions) return null;
 
@@ -129,8 +133,23 @@ export function ConnectionActionsMenu({
           </>
         ) : null}
 
+        {connection && showVerify ? (
+          <DropdownMenuItem
+            onSelect={(event) => {
+              event.stopPropagation();
+              onVerify(connection);
+            }}
+          >
+            <MenuItemIcon>
+              <ShieldCheck />
+            </MenuItemIcon>
+            Verify connection
+          </DropdownMenuItem>
+        ) : null}
+
         {connection && showRecordActions ? (
           <>
+            <DropdownMenuSeparator />
             <DropdownMenuItem
               onSelect={(event) => {
                 event.stopPropagation();
@@ -245,6 +264,7 @@ export function ConnectionRow({
   onStartRename,
   onConfigure,
   onReconnect,
+  onVerify,
   onClone,
   onDelete,
   onCopyEmailAddress,
@@ -319,6 +339,7 @@ export function ConnectionRow({
           onStartRename={onStartRename}
           onConfigure={onConfigure}
           onReconnect={onReconnect}
+          onVerify={onVerify}
           onClone={onClone}
           onDelete={onDelete}
           onCopyEmailAddress={onCopyEmailAddress}

@@ -9,9 +9,9 @@ import {
   listConnectionTools,
   listConnections,
   testConnectionMethodEntry,
+  verifyConnection,
   type ConnectionsRuntimeEnv,
 } from '../src/connections-runtime.js';
-import { handleIntegrationsMcp } from '../src/routes/integrations-mcp.js';
 import type { WorkspaceIntegrationRecord } from '../src/workspace.js';
 import { fakeDbQuerySandboxNamespace } from './fake-db-query-sandbox.js';
 
@@ -40,7 +40,8 @@ function integration(overrides: Partial<WorkspaceIntegrationRecord>): WorkspaceI
 
 function envWith(
   records: WorkspaceIntegrationRecord[],
-  onAuthStatus?: (id: string, status: string, code: string | null, message: string | null) => void
+  onAuthStatus?: (id: string, status: string, code: string | null, message: string | null) => void,
+  onVerification?: (id: string, verification: Record<string, unknown>) => void,
 ): ConnectionsRuntimeEnv {
   const orgStub = {
     getWorkspaceIntegrations: async () => records,
@@ -54,6 +55,14 @@ function envWith(
       message: string | null
     ) => {
       onAuthStatus?.(id, status, code, message);
+    },
+    updateWorkspaceIntegrationVerification: async (
+      _workspaceId: string,
+      id: string,
+      verification: Record<string, unknown>,
+    ) => {
+      onVerification?.(id, verification);
+      return true;
     },
   };
   return {
@@ -107,14 +116,14 @@ describe('connections runtime', () => {
         id: 'bq_prod',
         type: 'bigquery',
         name: 'analytics',
-        capabilities: ['mcp_tools', 'camelai_hosted_mcp'],
+        capabilities: ['query_database', 'mcp_tools'],
         nativeMcp: { serverName: 'bigquery', transport: 'streamable_http', directConnect: false },
       },
       {
         id: 'stripe_prod',
         type: 'stripe',
         name: 'prod',
-        capabilities: ['mcp_tools', 'first_party_mcp_brokered'],
+        capabilities: ['mcp_tools'],
         nativeMcp: {
           serverName: 'stripe',
           transport: 'streamable_http',
@@ -132,7 +141,7 @@ describe('connections runtime', () => {
         id: 'pg_main',
         type: 'postgres',
         name: 'main',
-        capabilities: ['mcp_tools', 'camelai_hosted_mcp'],
+        capabilities: ['query_database', 'mcp_tools'],
         nativeMcp: { serverName: 'postgres', transport: 'streamable_http', directConnect: false },
       },
     ]);
@@ -1167,6 +1176,167 @@ describe('connections runtime', () => {
     });
   });
 
+  it('persists an honest configuration-only verification for generic HTTP', async () => {
+    const persisted = vi.fn();
+    const records = [
+      integration({
+        id: 'custom_api',
+        integration_type: 'other',
+        name: 'custom-api',
+        config: JSON.stringify({
+          display_name: 'Custom API',
+          base_url: 'https://api.example.com',
+          auth_type: 'none',
+        }),
+      }),
+    ];
+
+    await expect(verifyConnection(
+      envWith(records, undefined, persisted),
+      context,
+      { id: 'custom_api' },
+    )).resolves.toMatchObject({
+      ok: true,
+      status: 'configured',
+      live: false,
+      strategy: 'http_configuration',
+      connection: {
+        capabilities: ['authenticated_fetch'],
+      },
+    });
+    expect(persisted).toHaveBeenCalledWith('custom_api', expect.objectContaining({
+      status: 'configured',
+      live: false,
+      strategy: 'http_configuration',
+    }));
+  });
+
+  it('records verification telemetry without credential or request data', async () => {
+    const writeDataPoint = vi.fn();
+    const records = [
+      integration({
+        id: 'custom_api',
+        integration_type: 'other',
+        name: 'custom-api',
+        config: JSON.stringify({
+          base_url: 'https://api.example.com',
+          auth_type: 'none',
+        }),
+      }),
+    ];
+    const env = envWith(records);
+    env.OBSERVABILITY_EVENTS = { writeDataPoint } as never;
+
+    await verifyConnection(env, context, 'custom_api');
+
+    expect(writeDataPoint).toHaveBeenCalledTimes(1);
+    const point = writeDataPoint.mock.calls[0]![0] as { blobs: string[] };
+    expect(point.blobs[0]).toBe('connection_verification');
+    expect(point.blobs[4]).toBe('configured');
+    expect(point.blobs[9]).toBe('ws_1');
+    expect(point.blobs[10]).toBe('org_1');
+    expect(point.blobs[13]).toBe('other');
+    expect(JSON.stringify(point)).not.toContain('api.example.com');
+  });
+
+  it('performs a live Slack auth probe and records ready health', async () => {
+    const fetchMock = vi.fn(async (url: string | URL | Request) => {
+      expect(String(url)).toBe('https://slack.com/api/auth.test');
+      return new Response(JSON.stringify({ ok: true, team: 'Example' }));
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const persisted = vi.fn();
+    const records = [
+      integration({
+        id: 'slack_workspace',
+        integration_type: 'slack',
+        name: 'workspace',
+        category: 'communication',
+        credentials_encrypted: await encryptedCredentials({ access_token: 'xoxb-token' }),
+      }),
+    ];
+
+    await expect(verifyConnection(
+      envWith(records, undefined, persisted),
+      context,
+      'slack_workspace',
+    )).resolves.toMatchObject({
+      ok: true,
+      status: 'ready',
+      live: true,
+      strategy: 'slack_auth',
+      method: 'auth.test',
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(persisted).toHaveBeenCalledWith('slack_workspace', expect.objectContaining({
+      status: 'ready',
+      live: true,
+    }));
+  });
+
+  it('verifies Databricks by listing warehouses without requiring a warehouse id', async () => {
+    const fetchMock = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      expect(String(url)).toBe('https://dbc.example.cloud.databricks.com/api/2.0/sql/warehouses');
+      expect(new Headers(init?.headers).get('authorization')).toBe('Bearer dapi-token');
+      return new Response(JSON.stringify({ warehouses: [{ id: 'wh_123', name: 'Starter Warehouse' }] }));
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const persisted = vi.fn();
+    const records = [
+      integration({
+        id: 'databricks_prod',
+        integration_type: 'databricks',
+        name: 'prod',
+        category: 'databases',
+        config: JSON.stringify({ workspace_url: 'https://dbc.example.cloud.databricks.com' }),
+        credentials_encrypted: await encryptedCredentials({ api_key: 'dapi-token' }),
+      }),
+    ];
+
+    await expect(verifyConnection(
+      envWith(records, undefined, persisted),
+      context,
+      'databricks_prod',
+    )).resolves.toMatchObject({
+      ok: true,
+      status: 'ready',
+      live: true,
+      strategy: 'mcp_discovery',
+      method: 'list_sql_warehouses',
+      connection: {
+        capabilities: ['query_database', 'mcp_tools'],
+      },
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(persisted).toHaveBeenCalledWith('databricks_prod', expect.objectContaining({
+      status: 'ready',
+      strategy: 'mcp_discovery',
+    }));
+  });
+
+  it('normalizes known auth failures without attempting a provider call', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    const records = [
+      integration({
+        id: 'slack_workspace',
+        integration_type: 'slack',
+        name: 'workspace',
+        category: 'communication',
+        auth_status: 'needs_reauth',
+        auth_error_message: 'Token expired',
+      }),
+    ];
+
+    await expect(verifyConnection(envWith(records), context, 'slack_workspace'))
+      .resolves.toMatchObject({
+        ok: false,
+        status: 'needs_authorization',
+        message: 'Token expired',
+      });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it('rejects custom API fetch URLs with embedded credentials', async () => {
     const records = [
       integration({
@@ -1600,7 +1770,7 @@ describe('connections runtime', () => {
       {
         id: 'notion_workspace',
         type: 'notion',
-        capabilities: ['mcp_tools', 'first_party_mcp_brokered'],
+        capabilities: ['mcp_tools'],
         nativeMcp: {
           serverName: 'notion',
           directConnect: false,
@@ -1638,7 +1808,7 @@ describe('connections runtime', () => {
       {
         id: 'cf_account',
         type: 'cloudflare',
-        capabilities: ['mcp_tools', 'first_party_mcp_brokered'],
+        capabilities: ['mcp_tools'],
         nativeMcp: {
           serverName: 'cloudflare',
           directConnect: false,
@@ -1669,7 +1839,7 @@ describe('connections runtime', () => {
       {
         id: 'salesforce_prod',
         type: 'salesforce',
-        capabilities: ['mcp_tools', 'first_party_mcp_brokered'],
+        capabilities: ['mcp_tools'],
         nativeMcp: {
           serverName: 'salesforce',
           directConnect: false,
@@ -1700,7 +1870,7 @@ describe('connections runtime', () => {
       {
         id: 'supabase_main',
         type: 'supabase',
-        capabilities: ['mcp_tools', 'first_party_mcp_brokered'],
+        capabilities: ['mcp_tools'],
         nativeMcp: {
           serverName: 'supabase',
           transport: 'streamable_http',
@@ -1731,7 +1901,7 @@ describe('connections runtime', () => {
       {
         id: 'square_prod',
         type: 'square',
-        capabilities: ['authenticated_fetch'],
+        capabilities: ['project_credentials'],
         nativeMcp: null,
       },
     ]);
@@ -1777,7 +1947,7 @@ describe('connections runtime', () => {
       {
         id: 'intercom_support',
         type: 'intercom',
-        capabilities: ['mcp_tools', 'first_party_mcp_brokered'],
+        capabilities: ['mcp_tools'],
         nativeMcp: {
           serverName: 'intercom',
           directConnect: false,
@@ -1909,7 +2079,7 @@ describe('connections runtime', () => {
       {
         id: 'typeform_forms',
         type: 'typeform',
-        capabilities: ['mcp_tools', 'first_party_mcp_brokered'],
+        capabilities: ['mcp_tools'],
         nativeMcp: {
           serverName: 'typeform',
           directConnect: false,
@@ -2062,71 +2232,6 @@ describe('connections runtime', () => {
     expect(JSON.parse(result.content[0]!.text)).toEqual({
       records: [{ id: 'rec1', fields: { Title: 'Fix bug' } }],
     });
-  });
-
-  it('marks hosted MCP broker credentials stale when the provider returns 401', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () =>
-      new Response(JSON.stringify({ error: { message: 'invalid token' } }), { status: 401 })
-    ));
-    const updates: Array<{ id: string; status: string; code: string | null; message: string | null }> = [];
-    const records = [
-      integration({
-        id: 'airtable_main',
-        integration_type: 'airtable',
-        name: 'main',
-        category: 'saas',
-        credentials_encrypted: await encryptedCredentials({ api_key: 'airtable-token' }),
-      }),
-    ];
-    const req = new Request('https://worker.test/mcp/integrations/native/airtable_main', {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        'x-sandbox-secret': 'secret',
-        'x-chiridion-org-id': context.orgId,
-        'x-chiridion-workspace-id': context.workspaceId,
-        'x-chiridion-user-id': context.userId,
-      },
-      body: JSON.stringify({
-        jsonrpc: '2.0',
-        id: 1,
-        method: 'tools/call',
-        params: {
-          name: 'query_records',
-          arguments: { baseId: 'app123', table: 'Tasks' },
-        },
-      }),
-    });
-
-    const response = await handleIntegrationsMcp({
-      req,
-      env: {
-        ...envWith(records, (id, status, code, message) => {
-          updates.push({ id, status, code, message });
-        }),
-        SANDBOX_PROXY_SECRET: 'secret',
-      } as never,
-      ctx: {} as never,
-      url: new URL(req.url),
-    });
-
-    const body = await response.json() as {
-      error?: { code?: number; data?: { auth_status?: string; code?: string } };
-    };
-    expect(body.error).toMatchObject({
-      code: -32001,
-      data: {
-        auth_status: 'needs_reauth',
-        code: 'AUTH_REAUTH_REQUIRED',
-      },
-    });
-    expect(updates).toMatchObject([
-      {
-        id: 'airtable_main',
-        status: 'needs_reauth',
-        code: 'AUTH_REAUTH_REQUIRED',
-      },
-    ]);
   });
 
   it('marks hosted MCP setup failures as setup incomplete', async () => {
@@ -2905,208 +3010,6 @@ describe('connections runtime', () => {
     });
   });
 
-  it('serves BigQuery tools from the integrations MCP broker endpoint', async () => {
-    const records = [
-      integration({
-        id: 'bq_prod',
-        integration_type: 'bigquery',
-        name: 'analytics',
-        category: 'databases',
-        config: JSON.stringify({ project_id: 'demo-project' }),
-      }),
-    ];
-    const req = new Request('https://worker.test/mcp/integrations/native/bq_prod', {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        'x-sandbox-secret': 'sandbox-secret',
-        'x-chiridion-org-id': 'org_1',
-        'x-chiridion-workspace-id': 'ws_1',
-      },
-      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }),
-    });
-    const response = await handleIntegrationsMcp({
-      req,
-      env: {
-        ...envWith(records),
-        SANDBOX_PROXY_SECRET: 'sandbox-secret',
-      },
-      ctx: {} as ExecutionContext,
-      url: new URL(req.url),
-      match: [] as unknown as RegExpMatchArray,
-    } as Parameters<typeof handleIntegrationsMcp>[0]);
-
-    const body = await response.json() as { result?: { tools?: Array<{ name?: string }> } };
-    expect(body).toMatchObject({
-      jsonrpc: '2.0',
-      id: 1,
-    });
-    expect(body.result?.tools?.map((tool) => tool.name)).toContain('list_dataset_ids');
-  });
-
-  it('preserves JSON-RPC ids and batch shape for native MCP missing-token errors', async () => {
-    const updates: Array<{ id: string; status: string; code: string | null }> = [];
-    const records = [
-      integration({
-        id: 'cloudflare_account',
-        integration_type: 'cloudflare',
-        name: 'account',
-        category: 'cloud_providers',
-      }),
-    ];
-    const req = new Request('https://worker.test/mcp/integrations/native/cloudflare_account', {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        'x-sandbox-secret': 'sandbox-secret',
-        'x-chiridion-org-id': 'org_1',
-        'x-chiridion-workspace-id': 'ws_1',
-      },
-      body: JSON.stringify([
-        { jsonrpc: '2.0', id: 'a', method: 'tools/list' },
-        { jsonrpc: '2.0', id: 'b', method: 'tools/call', params: { name: 'x' } },
-      ]),
-    });
-
-    const response = await handleIntegrationsMcp({
-      req,
-      env: {
-        ...envWith(records, (id, status, code) => {
-          updates.push({ id, status, code });
-        }),
-        SANDBOX_PROXY_SECRET: 'sandbox-secret',
-      },
-      ctx: {} as ExecutionContext,
-      url: new URL(req.url),
-      match: [] as unknown as RegExpMatchArray,
-    } as Parameters<typeof handleIntegrationsMcp>[0]);
-
-    const body = await response.json() as Array<{ id: string; error?: { code?: number } }>;
-    expect(response.status).toBe(400);
-    expect(body).toMatchObject([
-      { id: 'a', error: { code: -32002 } },
-      { id: 'b', error: { code: -32002 } },
-    ]);
-    expect(updates).toMatchObject([
-      {
-        id: 'cloudflare_account',
-        status: 'setup_incomplete',
-        code: 'AUTH_SETUP_INCOMPLETE',
-      },
-    ]);
-  });
-
-  it('omits Square from the integrations MCP registry until SSE transport is supported', async () => {
-    const records = [
-      integration({
-        id: 'square_prod',
-        integration_type: 'square',
-        name: 'prod',
-        category: 'saas',
-      }),
-    ];
-    const req = new Request('https://worker.test/mcp/integrations', {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        'x-sandbox-secret': 'sandbox-secret',
-        'x-chiridion-org-id': 'org_1',
-        'x-chiridion-workspace-id': 'ws_1',
-      },
-      body: JSON.stringify({
-        jsonrpc: '2.0',
-        id: 1,
-        method: 'tools/call',
-        params: {
-          name: 'list_mcp_servers',
-          arguments: {},
-        },
-      }),
-    });
-    const response = await handleIntegrationsMcp({
-      req,
-      env: {
-        ...envWith(records),
-        SANDBOX_PROXY_SECRET: 'sandbox-secret',
-      },
-      ctx: {} as ExecutionContext,
-      url: new URL(req.url),
-      match: [] as unknown as RegExpMatchArray,
-    } as Parameters<typeof handleIntegrationsMcp>[0]);
-
-    const body = await response.json() as {
-      result?: { content?: Array<{ type?: string; text?: string }> };
-    };
-    const payload = JSON.parse(body.result?.content?.[0]?.text ?? '{}');
-    expect(payload.servers).toEqual([]);
-  });
-
-  it('describes first-party remote MCP servers as camelAI-brokered in the registry endpoint', async () => {
-    const records = [
-      integration({
-        id: 'stripe_prod',
-        integration_type: 'stripe',
-        name: 'prod',
-        category: 'saas',
-        credentials_encrypted: 'encrypted-key',
-      }),
-    ];
-    const req = new Request('https://worker.test/mcp/integrations', {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        'x-sandbox-secret': 'sandbox-secret',
-        'x-chiridion-org-id': 'org_1',
-        'x-chiridion-workspace-id': 'ws_1',
-      },
-      body: JSON.stringify({
-        jsonrpc: '2.0',
-        id: 1,
-        method: 'tools/call',
-        params: {
-          name: 'list_mcp_servers',
-          arguments: {},
-        },
-      }),
-    });
-    const response = await handleIntegrationsMcp({
-      req,
-      env: {
-        ...envWith(records),
-        SANDBOX_PROXY_SECRET: 'sandbox-secret',
-      },
-      ctx: {} as ExecutionContext,
-      url: new URL(req.url),
-      match: [] as unknown as RegExpMatchArray,
-    } as Parameters<typeof handleIntegrationsMcp>[0]);
-
-    const body = await response.json() as {
-      result?: { content?: Array<{ type?: string; text?: string }> };
-    };
-    const payload = JSON.parse(body.result?.content?.[0]?.text ?? '{}');
-    expect(payload.servers).toMatchObject([
-      {
-        server_name: 'stripe',
-        url: 'https://mcp.stripe.com',
-        broker_path: '/mcp/integrations/native/stripe_prod',
-        transport: 'streamable_http',
-        direct_connect: false,
-        brokered: true,
-        preferred_mode: 'brokered',
-        requires_camelai_broker: true,
-        has_connected_credentials: true,
-        direct: null,
-        broker: {
-          server_name: 'stripe',
-          url: 'https://mcp.stripe.com',
-          broker_path: '/mcp/integrations/native/stripe_prod',
-          transport: 'streamable_http',
-          auth_strategy: 'connected_credentials_broker',
-        },
-      },
-    ]);
-  });
-
   it('lists MCP tools for the new hosted broker batch', async () => {
     const records = [
       integration({ id: 'snowflake_prod', integration_type: 'snowflake', name: 'prod', category: 'databases' }),
@@ -3120,14 +3023,14 @@ describe('connections runtime', () => {
     ];
 
     await expect(listConnections(envWith(records), context)).resolves.toMatchObject([
-      { id: 'snowflake_prod', capabilities: ['mcp_tools', 'camelai_hosted_mcp'], nativeMcp: { serverName: 'snowflake', brokered: true } },
-      { id: 'mongo_prod', capabilities: ['mcp_tools', 'camelai_hosted_mcp'], nativeMcp: { serverName: 'mongodb', brokered: true } },
-      { id: 'redis_prod', capabilities: ['mcp_tools', 'camelai_hosted_mcp'], nativeMcp: { serverName: 'redis', brokered: true } },
-      { id: 'turso_prod', capabilities: ['mcp_tools', 'camelai_hosted_mcp'], nativeMcp: { serverName: 'turso', brokered: true } },
-      { id: 'databricks_prod', capabilities: ['mcp_tools', 'camelai_hosted_mcp'], nativeMcp: { serverName: 'databricks', brokered: true } },
-      { id: 'shopify_prod', capabilities: ['mcp_tools', 'camelai_hosted_mcp'], nativeMcp: { serverName: 'shopify', brokered: true } },
-      { id: 'segment_prod', capabilities: ['mcp_tools', 'camelai_hosted_mcp'], nativeMcp: { serverName: 'segment', brokered: true } },
-      { id: 'teams_prod', capabilities: ['mcp_tools', 'camelai_hosted_mcp'], nativeMcp: { serverName: 'teams', brokered: true } },
+      { id: 'snowflake_prod', capabilities: ['query_database', 'mcp_tools'], nativeMcp: { serverName: 'snowflake', brokered: true } },
+      { id: 'mongo_prod', capabilities: ['mcp_tools'], nativeMcp: { serverName: 'mongodb', brokered: true } },
+      { id: 'redis_prod', capabilities: ['mcp_tools'], nativeMcp: { serverName: 'redis', brokered: true } },
+      { id: 'turso_prod', capabilities: ['query_database', 'mcp_tools'], nativeMcp: { serverName: 'turso', brokered: true } },
+      { id: 'databricks_prod', capabilities: ['query_database', 'mcp_tools'], nativeMcp: { serverName: 'databricks', brokered: true } },
+      { id: 'shopify_prod', capabilities: ['mcp_tools'], nativeMcp: { serverName: 'shopify', brokered: true } },
+      { id: 'segment_prod', capabilities: ['mcp_tools'], nativeMcp: { serverName: 'segment', brokered: true } },
+      { id: 'teams_prod', capabilities: ['mcp_tools'], nativeMcp: { serverName: 'teams', brokered: true } },
     ]);
 
     await expect(listConnectionTools(envWith(records), context, 'snowflake_prod')).resolves.toEqual(

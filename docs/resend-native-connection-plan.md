@@ -63,7 +63,7 @@ Read these before coding:
 | Connection list/detail helpers | `src/lib/connections-shared.ts` |
 | Connections page loader/action | `src/routes/_app.connections.tsx` |
 | Runtime method facade and fetch dispatch | `workers/main/src/connections-runtime.ts` |
-| Stateless sandbox/project RPC endpoint | `workers/main/src/routes/integrations-mcp.ts` |
+| Stateless sandbox/project RPC endpoint | `workers/main/src/routes/connections-rpc.ts` |
 | Published app service binding | `workers/main/src/connections-service.ts` |
 | Starter app method facade | `sandbox/create-worker/templates/starter/app/lib/connections.ts` |
 | Runtime tests | `workers/main/tests/connections-runtime.test.ts` |
@@ -312,8 +312,8 @@ They are not needed for users to access the underlying Resend feature set.
 ### 6. Stateless RPC endpoint
 
 No separate hosted-broker branch should be needed in
-`workers/main/src/routes/integrations-mcp.ts` if the RPC endpoint already routes
-`invoke` through `invokeConnectionMethod()` from `connections-runtime.ts`.
+`workers/main/src/routes/connections-rpc.ts`; the RPC endpoint routes `invoke`
+through `invokeConnectionMethod()` from `connections-runtime.ts`.
 
 Verify this with a route-level test. If that route has a parallel hard-coded
 method path for `authenticated_fetch`, update it to use the same generalized

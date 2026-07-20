@@ -125,7 +125,7 @@ interface RenameState {
 }
 
 interface PendingAction {
-  intent: "clone" | "delete" | "rename";
+  intent: "clone" | "delete" | "rename" | "verify";
   workspaceId: string;
   previous?: ConnectionListItem[];
   targetId?: string;
@@ -437,6 +437,13 @@ export default function ConnectionsClient({
       if (pending.intent === "clone") toast.success("Connection cloned to workspace");
       if (pending.intent === "rename") toast.success("Connection renamed");
       if (pending.intent === "delete") toast.success("Connection deleted");
+      if (pending.intent === "verify") {
+        const verification = "verification" in fetcher.data
+          ? fetcher.data.verification as { ok?: boolean; message?: string } | null
+          : null;
+        if (verification?.ok) toast.success(verification.message);
+        else if (verification?.message) toast.error(verification.message);
+      }
       setDeleteTarget(null);
       setCopyTarget(null);
       if (revalidator.state === "idle") {
@@ -647,10 +654,23 @@ export default function ConnectionsClient({
     navigate("/settings/workspace/general");
   };
 
+  const handleVerify = (connection: ConnectionListItem) => {
+    pendingAction.current = {
+      intent: "verify",
+      workspaceId,
+      targetId: connection.id,
+    };
+    fetcher.submit(
+      { intent: "verifyIntegration", integrationId: connection.id },
+      { method: "post" },
+    );
+  };
+
   const actions = {
     onStartRename: handleStartRename,
     onConfigure: handleConfigure,
     onReconnect: startReauth,
+    onVerify: handleVerify,
     onClone: setCopyTarget,
     onDelete: setDeleteTarget,
     onCopyEmailAddress: handleCopyEmailAddress,

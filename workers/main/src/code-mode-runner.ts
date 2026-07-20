@@ -441,7 +441,7 @@ const JS_EXEC_GUIDE = Object.freeze([
   "Tool results: every await tools.<name>(args) call resolves to { ok: true, data } on success or { ok: false, error: { tool, message } } on failure — branch on result.ok and read result.data; failed calls do not throw, so you can inspect the error, tools.describe the tool, and retry in the same run. deploy_project resolves ok: false when validation, build, or deploy FAILS (error.message carries the summary, error.stage says which phase, and the full result is still in data); for other tools ok means the call executed and outcomes live in data. EXCEPTION: runtime bindings (env.*, connections[alias]) and tools.search/describe/help return their values directly with NO { ok, data } wrapper — tools.search resolves to { query, total, items, usage } where items is the matches array.",
   "Discovery: await tools.search(\"<intent + key nouns>\") ranks matching tools; await tools.describe(name) returns one definition with a compact inputTypeScript argument shape; await tools.help(\"<category>\") expands a category. Results with kind \"tool\" run as await tools.<name>(args); kind \"runtime\" results are sandbox globals (env.*, connections, text/store/load) used directly, never through tools.",
   "Every top-level harness tool is also on tools, e.g. await tools.create_project(...).",
-  "Connections: const entry = await env.CONNECTIONS.find(\"clickhouse\"); return await connections[entry.alias].query({ query: \"SELECT 1 AS ok\" }). Use await env.CONNECTIONS.methods() for the full catalog and await env.CONNECTIONS.test(\"clickhouse\") for a smoke test; custom \"other\" connections expose fetch.",
+  "Connections: const entry = await env.CONNECTIONS.find(\"clickhouse\"); return await connections[entry.alias].query({ query: \"SELECT 1 AS ok\" }). Use env.CONNECTIONS.methods() for the full catalog, env.CONNECTIONS.verify(\"clickhouse\") for normalized health, or env.CONNECTIONS.test(\"clickhouse\") for the legacy smoke test; custom \"other\" connections expose fetch.",
   "File tools require an explicit location (\"workspace\" | \"project\" | \"r2\"), e.g. const file = await tools.read({ location: \"project\", project: project.name, path: \"src/App.tsx\" }); if (!file.ok) throw new Error(file.error.message); then use file.data.text for text file contents. R2 mounts are uploads/ (read-only), outputs/ (user-visible), tmp/. tools.grep, tools.find, and tools.move are also available.",
   "Projects: use env.PROJECTS to list/create projects; edit DO-backed project files with the file tools at location \"project\", then call tools.deploy_project to build, deploy, and open preview. Pass dry_run: true only for validation without publishing.",
   "Deploy results: deploy_project returns the live app URL and opens successful deploys in preview automatically, so no manual set_preview or list_apps call is needed. set_preview remains available for an explicit preview switch.",
@@ -973,6 +973,7 @@ function createConnectionsFacade(binding) {
       if (connectionName === "$methods") return () => binding.methods();
       if (connectionName === "$find") return (query) => binding.find(query);
       if (connectionName === "$test") return (query) => binding.test(query);
+      if (connectionName === "$verify") return (query) => binding.verify(query);
       if (connectionName === "$list") return () => binding.list();
       if (connectionName === "$get") return (connection) => binding.get(connection);
       if (connectionName === "$tools") return (connection) => binding.tools(connection);
@@ -984,6 +985,7 @@ function createConnectionsFacade(binding) {
         "methods",
         "find",
         "test",
+        "verify",
         "invoke",
         legacyInvokeMethod,
       ].includes(connectionName)) {
@@ -1028,6 +1030,7 @@ function createToolBackedConnectionsBinding(callTool) {
     methods: () => callTool("connections_methods", {}),
     find: (query) => callTool("connections_find", { query }),
     test: (query) => callTool("connections_test", { query }),
+    verify: (query) => callTool("connections_verify", { query }),
     invoke: (request) => callTool("connections_invoke", request),
   });
 }

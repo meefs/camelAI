@@ -26,6 +26,49 @@ Protocol count, catalog size, and imported operation count are supporting
 metrics, not product outcomes. Successful first use and trustworthy execution
 are the outcomes.
 
+## Universal connection architecture
+
+Every saved connection is described by one versioned product contract in
+`src/lib/connection-contract.ts`. It is the source of truth for the execution
+driver, capabilities shown to users and agents, live or configuration-only
+verification, read/write posture, and provenance.
+
+Do not add capability inference to a UI, agent catalog, or proxy. Extend the
+contract instead. Credential-only connections use the `configuration` driver
+and `project_credentials`; they must not claim arbitrary HTTP execution. Generic
+authenticated fetch remains intentionally available for `other` and the small
+native HTTP adapter set.
+
+Hosted MCP implementations are registered once in
+`workers/main/src/connection-adapters.ts`, which the connections runtime
+consumes. Each hosted provider with a safe identity or discovery call declares
+one bounded, read-only verification probe. Contract
+tests fail when a hosted definition lacks an implementation or a probe names a
+tool the adapter does not expose.
+
+### Health model
+
+Credential health and connection verification are separate:
+
+- `auth_status` says whether credentials need setup, scopes, or reauthorization;
+- `verification_status` is `ready`, `configured`, `needs_authorization`,
+  `misconfigured`, `degraded`, or `unknown`;
+- `verification_live` distinguishes a provider check from local setup validation;
+- strategy, message, and timestamp explain what camelAI actually checked.
+
+Changing endpoint configuration or credentials invalidates the persisted
+verification snapshot so an old `ready` result cannot survive behavior changes.
+
+The normalized result is available in the Connections UI,
+`env.CONNECTIONS.verify(query)`, connections RPC, code-mode tooling, and agent
+catalogs. The legacy `test` smoke action remains for compatibility; new product
+work should use `verify`.
+
+Verification never exercises an arbitrary write. SQL uses `SELECT 1`, GA4 lists
+properties, Slack calls `auth.test`, remote MCP lists tools, and hosted adapters
+use their registered read-only probe. Configuration-only adapters are labeled
+honestly and do not pretend to have contacted a provider.
+
 ## Durable product policy
 
 ### Rank by trust, then capability
@@ -279,11 +322,24 @@ For every connection-system change:
 8. After release, compare completion and first-use success by source/protocol;
    revert or adjust ranking when evidence contradicts the hypothesis.
 
+### Adding or promoting a provider
+
+1. Add or update its setup schema in `integration-registry.ts`.
+2. Choose its driver and verification behavior in `connection-contract.ts`.
+3. For hosted MCP, register the implementation and bounded read-only probe in
+   `connection-adapters.ts`.
+4. Add a curated pack only when it meets the curation threshold; otherwise
+   prefer owner MCP/OpenAPI and keep generic HTTP as fallback.
+5. Add contract, provider behavior, auth failure, and telemetry tests. Strengthen
+   an agent eval when method selection or verification changes.
+6. Confirm UI, service binding, RPC, and code mode all report the same contract.
+   Never patch those consumers separately.
+
 Focused local verification:
 
 ```bash
-bun run test:run -- tests/openapi-integration.test.ts tests/connections-action.test.ts
-bun run test:workers -- workers/main/tests/connections-runtime.test.ts
+bun run test:run -- tests/connection-contract.test.ts tests/openapi-integration.test.ts tests/connections-action.test.ts
+bun run test:workers -- connection-adapters.test.ts connections-runtime.test.ts code-mode-integrations.test.ts
 bun run typecheck
 bun run lint
 ```

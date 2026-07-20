@@ -34,6 +34,7 @@ function envWith(records: WorkspaceIntegrationRecord[]): ConnectionsRuntimeEnv &
     getWorkspaceIntegration: async (_workspaceId: string, integrationId: string) =>
       records.find((record) => record.id === integrationId) ?? null,
     updateWorkspaceIntegrationAuthStatus: async () => {},
+    updateWorkspaceIntegrationVerification: async () => true,
   };
 
   return {
@@ -141,6 +142,39 @@ describe('connections RPC route', () => {
       },
     ]);
     expect(JSON.stringify(connections)).not.toContain('encrypted-value');
+  });
+
+  it('verifies a connection through the stateless RPC endpoint', async () => {
+    const records = [
+      integration({
+        id: 'custom_api',
+        integration_type: 'other',
+        name: 'inventory',
+        category: 'saas',
+        auth_method: 'api_key',
+        config: JSON.stringify({ base_url: 'https://api.example.com', auth_type: 'none' }),
+      }),
+    ];
+    const req = rpcRequest({ action: 'verify', query: { id: 'custom_api' } });
+
+    const response = await handleConnectionsRpc({
+      req,
+      env: envWith(records) as never,
+      ctx: {} as ExecutionContext,
+      url: new URL(req.url),
+      match: [] as unknown as RegExpMatchArray,
+    });
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      ok: true,
+      result: {
+        ok: true,
+        status: 'configured',
+        live: false,
+        strategy: 'http_configuration',
+      },
+    });
   });
 
   it('rejects RPC requests without a valid sandbox proxy secret', async () => {

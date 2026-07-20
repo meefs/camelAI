@@ -146,6 +146,11 @@ export interface WorkspaceIntegrationRecord {
   auth_error_message: string | null;
   auth_checked_at: number | null;
   reauth_required_at: number | null;
+  verification_status?: string | null;
+  verification_message?: string | null;
+  verification_checked_at?: number | null;
+  verification_live?: number | null;
+  verification_strategy?: string | null;
   definition_id?: string | null;
   /** Joined definition payload. Credentials remain on the connection record. */
   definition?: string | null;

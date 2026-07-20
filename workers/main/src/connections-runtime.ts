@@ -1,5 +1,10 @@
 import { decryptCredentials } from '../../../src/lib/integration-crypto';
 import { getIntegrationDefinition } from '../../../src/lib/integration-registry';
+import {
+  getConnectionContract,
+  type ConnectionContract,
+  type ConnectionVerificationStatus,
+} from '../../../src/lib/connection-contract';
 import { validateRemoteMcpUrl } from '../../../src/lib/remote-mcp';
 import {
   parseWorkspaceIntegrationDefinition,
@@ -10,85 +15,13 @@ import {
   type ProviderMcpDefinition,
 } from '../../../src/lib/provider-mcp-registry';
 import {
-  airtableMcpRpc,
-  isAirtableMcpIntegration,
-} from './airtable-mcp.js';
+  getHostedConnectionAdapter,
+  getHostedConnectionVerificationProbe,
+} from './connection-adapters.js';
 import {
-  bigQueryMcpRpc,
-  isBigQueryMcpIntegration,
-} from './bigquery-mcp.js';
-import {
-  clickHouseMcpRpc,
-  isClickHouseMcpIntegration,
-} from './clickhouse-mcp.js';
-import {
-  isSentryMcpIntegration,
-  sentryMcpRpc,
-} from './sentry-mcp.js';
-import {
-  isMailchimpMcpIntegration,
-  mailchimpMcpRpc,
-} from './mailchimp-mcp.js';
-import {
-  isSendGridMcpIntegration,
-  sendGridMcpRpc,
-} from './sendgrid-mcp.js';
-import {
-  isTwilioMcpIntegration,
-  twilioMcpRpc,
-} from './twilio-mcp.js';
-import {
-  isPostHogMcpIntegration,
-  postHogMcpRpc,
-} from './posthog-mcp.js';
-import {
-  isMixpanelMcpIntegration,
-  mixpanelMcpRpc,
-} from './mixpanel-mcp.js';
-import {
-  amplitudeMcpRpc,
-  isAmplitudeMcpIntegration,
-} from './amplitude-mcp.js';
-import {
-  isZendeskMcpIntegration,
-  zendeskMcpRpc,
-} from './zendesk-mcp.js';
-import {
-  isSqlDatabaseMcpIntegration,
-  sqlDatabaseMcpRpc,
-} from './sql-database-mcp.js';
-import {
-  databricksMcpRpc,
-  isDatabricksMcpIntegration,
-} from './databricks-mcp.js';
-import {
-  isMongoDbMcpIntegration,
-  mongoDbMcpRpc,
-} from './mongodb-mcp.js';
-import {
-  isRedisMcpIntegration,
-  redisMcpRpc,
-} from './redis-mcp.js';
-import {
-  isSnowflakeMcpIntegration,
-  snowflakeMcpRpc,
-} from './snowflake-mcp.js';
-import {
-  isTursoMcpIntegration,
-  tursoMcpRpc,
-} from './turso-mcp.js';
-import {
-  isShopifyMcpIntegration,
-  shopifyMcpRpc,
-} from './shopify-mcp.js';
-import {
-  isSegmentMcpIntegration,
-  segmentMcpRpc,
-} from './segment-mcp.js';
-import {
-  isTeamsMcpIntegration,
-  teamsMcpRpc,
-} from './teams-mcp.js';
+  recordObservabilityEvent,
+  type ObservabilityEnv,
+} from './observability.js';
 import {
   GOOGLE_ANALYTICS_INTEGRATION_TYPE,
   GOOGLE_ANALYTICS_METHODS,
@@ -109,7 +42,7 @@ type JsonValue =
   | JsonValue[]
   | { [key: string]: JsonValue };
 
-export interface ConnectionsRuntimeEnv extends DataProxyEnv {
+export interface ConnectionsRuntimeEnv extends DataProxyEnv, ObservabilityEnv {
   INTEGRATION_SECRET_KEY: string;
   ORG: DurableObjectNamespace<OrgDO>;
   /** Auto-expiring R2 staging bucket for warehouse exports (connection `export` method). */
@@ -137,6 +70,14 @@ export interface ConnectionSummary {
   reauthUrl: string | null;
   hasCredentials: boolean;
   capabilities: string[];
+  contract: ConnectionContract;
+  verification: {
+    status: ConnectionVerificationStatus;
+    message: string | null;
+    checkedAt: string | null;
+    live: boolean;
+    strategy: ConnectionContract['verification']['strategy'];
+  };
   recommendedActions: ConnectionRecommendedAction[];
   nativeMcp: {
     serverName: string;
@@ -218,6 +159,17 @@ export interface ConnectionSmokeTestResult {
   result?: unknown;
 }
 
+export interface ConnectionVerificationResult {
+  ok: boolean;
+  status: ConnectionVerificationStatus;
+  checkedAt: string;
+  live: boolean;
+  strategy: ConnectionContract['verification']['strategy'];
+  message: string;
+  connection: ConnectionSummary;
+  method?: string;
+}
+
 const NATIVE_MCP_SERVERS = PROVIDER_MCP_REGISTRY;
 const OTHER_CONNECTION_FETCH_TOOL = 'authenticated_fetch';
 const IMPORTED_OPERATION_TOOL_PREFIX = 'integration_operation:';
@@ -240,8 +192,6 @@ const NATIVE_HTTP_API_CONNECTIONS: Record<string, NativeHttpApiConnection> = {
     },
   },
 };
-const SLACK_CHANNEL_SEND_CAPABILITY = 'channel_send';
-const SLACK_API_CAPABILITY = 'slack_api';
 const SLACK_SEND_TOOL = 'send_slack_message';
 const SLACK_API_TOOL = 'slack_api';
 const SLACK_COMMON_API_METHODS: ConnectionMethodSummary[] = [
@@ -326,7 +276,6 @@ const SLACK_COMMON_API_METHODS: ConnectionMethodSummary[] = [
     example: 'await connections.<alias>.addSlackReaction({ channel: "C123", timestamp: "1712345678.901", name: "white_check_mark" })',
   },
 ];
-const TELEGRAM_CHANNEL_SEND_CAPABILITY = 'channel_send';
 const TELEGRAM_SEND_TOOL = 'send_telegram_message';
 const SLACK_SEND_METHOD: ConnectionMethodSummary = {
   name: 'sendSlackMessage',
@@ -507,38 +456,18 @@ function parseJsonObject(value: string | null | undefined): Record<string, unkno
   }
 }
 
-function fallbackCapabilities(integrationType: string, config: Record<string, unknown>): string[] {
-  if (integrationType === 'other' && typeof config.base_url === 'string' && config.base_url.trim()) {
-    return ['authenticated_fetch'];
-  }
-  if (integrationType === 'slack') {
-    return [SLACK_CHANNEL_SEND_CAPABILITY, SLACK_API_CAPABILITY];
-  }
-  if (integrationType === 'telegram') {
-    return [TELEGRAM_CHANNEL_SEND_CAPABILITY];
-  }
-  if (integrationType === 'remote_mcp') {
-    return [];
-  }
-  if (integrationType === GOOGLE_ANALYTICS_INTEGRATION_TYPE) {
-    return ['typed_operations'];
-  }
-  const nativeMcp = NATIVE_MCP_SERVERS[integrationType];
-  if (!nativeMcp) {
-    if (integrationType === 'postgres' || integrationType === 'mysql') {
-      return ['query_database'];
-    }
-    return ['authenticated_fetch'];
-  }
-  return [
-    nativeMcp.authStrategy === 'camelai_hosted_broker'
-      ? 'camelai_hosted_mcp'
-      : 'first_party_mcp_brokered',
-  ];
-}
-
 function timestamp(value: number | null | undefined): string | null {
   return value ? new Date(value).toISOString() : null;
+}
+
+function normalizedVerificationStatus(value: string | null | undefined): ConnectionVerificationStatus {
+  return value === 'ready' ||
+    value === 'configured' ||
+    value === 'needs_authorization' ||
+    value === 'misconfigured' ||
+    value === 'degraded'
+    ? value
+    : 'unknown';
 }
 
 function hasTelegramDefaultRecipient(config: Record<string, unknown>): boolean {
@@ -681,7 +610,11 @@ async function markConnectionAuthStatus(
       status,
       code,
       message,
-      context.userId ?? 'system'
+      context.userId ?? 'system',
+      {
+        config: record.config,
+        credentialsEncrypted: record.credentials_encrypted,
+      },
     );
   } catch (error) {
     console.warn('[connections-runtime] failed to update connection auth status', {
@@ -689,6 +622,43 @@ async function markConnectionAuthStatus(
       status,
       error: error instanceof Error ? error.message : String(error),
     });
+  }
+}
+
+async function persistConnectionVerification(
+  env: ConnectionsRuntimeEnv,
+  context: ConnectionsContext,
+  record: WorkspaceIntegrationRecord,
+  result: Pick<
+    ConnectionVerificationResult,
+    'status' | 'message' | 'live' | 'strategy'
+  > & { checkedAtMs: number },
+): Promise<boolean> {
+  try {
+    const orgStub = env.ORG.get(env.ORG.idFromName(context.orgId)) as unknown as OrgDO;
+    return await orgStub.updateWorkspaceIntegrationVerification(
+      context.workspaceId,
+      record.id,
+      {
+        status: result.status,
+        message: result.message,
+        checkedAt: result.checkedAtMs,
+        live: result.live,
+        strategy: result.strategy,
+      },
+      context.userId ?? 'system',
+      {
+        config: record.config,
+        credentialsEncrypted: record.credentials_encrypted,
+      },
+    );
+  } catch (error) {
+    console.warn('[connections-runtime] failed to persist connection verification', {
+      integrationId: record.id,
+      status: result.status,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return false;
   }
 }
 
@@ -728,6 +698,10 @@ function summarizeConnection(record: WorkspaceIntegrationRecord, context: Connec
   const importedDefinition = parseWorkspaceIntegrationDefinition(record.definition);
   const definition = getIntegrationDefinition(record.integration_type);
   const nativeMcp = mcpDefinitionForRecord(record, config);
+  const contract = getConnectionContract(record.integration_type, {
+    config,
+    definition: importedDefinition,
+  });
   const resolvedAuthStatus = authStatus(record);
   return {
     id: record.id,
@@ -746,11 +720,16 @@ function summarizeConnection(record: WorkspaceIntegrationRecord, context: Connec
     reauthRequiredAt: timestamp(record.reauth_required_at),
     reauthUrl: resolvedAuthStatus === 'connected' ? null : reauthUrl(record, context),
     hasCredentials: Boolean(record.credentials_encrypted),
-    capabilities: [
-      ...(nativeMcp ? ['mcp_tools'] : []),
-      ...(importedDefinition?.operations.length ? ['typed_operations'] : []),
-      ...fallbackCapabilities(record.integration_type, config),
-    ],
+    capabilities: contract.capabilities,
+    contract,
+    verification: {
+      status: normalizedVerificationStatus(record.verification_status),
+      message: record.verification_message ?? null,
+      checkedAt: timestamp(record.verification_checked_at),
+      live: record.verification_live === 1,
+      strategy: (record.verification_strategy as ConnectionContract['verification']['strategy'] | null)
+        ?? contract.verification.strategy,
+    },
     recommendedActions: recommendedConnectionActions(record, config),
     nativeMcp: nativeMcp
       ? {
@@ -1028,7 +1007,7 @@ async function invokeNativeMcpRpc(
   params: Record<string, unknown> = {}
 ): Promise<unknown> {
   try {
-    return await nativeMcpRpc(env, context, record, method, params);
+    return await invokeConnectionMcpRpc(env, context, record, method, params);
   } catch (error) {
     const status = (error as { status?: unknown })?.status;
     const message = error instanceof Error
@@ -1226,7 +1205,241 @@ export async function testConnectionMethodEntry(
   };
 }
 
+function verificationStatusForAuth(
+  status: WorkspaceIntegrationAuthStatus,
+): ConnectionVerificationStatus | null {
+  if (status === 'connected') return null;
+  if (status === 'needs_reauth' || status === 'missing_scopes') return 'needs_authorization';
+  if (status === 'setup_incomplete') return 'misconfigured';
+  return 'degraded';
+}
+
+function verificationFailureStatus(error: unknown): ConnectionVerificationStatus {
+  const status = (error as { status?: unknown })?.status;
+  if (status === 401 || status === 403) return 'needs_authorization';
+  if (typeof status === 'number' && status >= 400 && status < 500) return 'misconfigured';
+  return 'degraded';
+}
+
+export async function verifyConnection(
+  env: ConnectionsRuntimeEnv,
+  context: ConnectionsContext,
+  query: ConnectionFindQuery,
+): Promise<ConnectionVerificationResult> {
+  const startedAt = Date.now();
+  const records = await getWorkspaceIntegrations(env, context);
+  const usedAliases = new Set<string>();
+  const verificationCatalog = records.map((candidate) => {
+    const connection = summarizeConnection(candidate, context);
+    return {
+      alias: connectionAlias(connection, usedAliases),
+      connection,
+      methods: [],
+    } satisfies ConnectionMethodCatalogEntry;
+  });
+  const matches = findCatalogMatches(verificationCatalog, query);
+  const label = typeof query === 'string' ? query : JSON.stringify(query);
+  if (matches.length === 0) {
+    throw Object.assign(new Error(`No connected integration matched ${label}`), {
+      status: 404,
+      matches: verificationCatalog.map(compactCatalogEntry),
+    });
+  }
+  if (matches.length > 1) {
+    throw Object.assign(new Error(`Multiple connected integrations matched ${label}. Retry with a connection alias or id.`), {
+      status: 409,
+      matches: matches.map(compactCatalogEntry),
+    });
+  }
+  const entry = matches[0]!;
+  const record = records.find((candidate) => candidate.id === entry.connection.id);
+  if (!record) {
+    throw Object.assign(new Error('Connection disappeared while it was being verified.'), { status: 404 });
+  }
+
+  const finish = async (
+    status: ConnectionVerificationStatus,
+    message: string,
+    method?: string,
+  ): Promise<ConnectionVerificationResult> => {
+    const checkedAtMs = Date.now();
+    const checkedAt = new Date(checkedAtMs).toISOString();
+    const persisted = await persistConnectionVerification(env, context, record, {
+      status,
+      message,
+      live: entry.connection.contract.verification.live,
+      strategy: entry.connection.contract.verification.strategy,
+      checkedAtMs,
+    });
+    const effectiveStatus = persisted ? status : 'unknown';
+    const effectiveMessage = persisted
+      ? message
+      : 'The connection changed while verification was running. Verify it again.';
+    const verification: ConnectionVerificationResult = {
+      ok: persisted && (status === 'ready' || status === 'configured'),
+      status: effectiveStatus,
+      checkedAt,
+      live: entry.connection.contract.verification.live,
+      strategy: entry.connection.contract.verification.strategy,
+      message: effectiveMessage,
+      connection: {
+        ...entry.connection,
+        verification: {
+          status: effectiveStatus,
+          message: effectiveMessage,
+          checkedAt,
+          live: entry.connection.contract.verification.live,
+          strategy: entry.connection.contract.verification.strategy,
+        },
+      },
+      ...(method ? { method } : {}),
+    };
+    recordObservabilityEvent(env, {
+      event: 'connection_verification',
+      component: 'connections-runtime',
+      operation: verification.strategy,
+      status: effectiveStatus,
+      workspaceId: context.workspaceId,
+      orgId: context.orgId,
+      userId: context.userId,
+      provider: record.integration_type,
+      durationMs: Date.now() - startedAt,
+      sampleIndex: record.id,
+    });
+    return verification;
+  };
+
+  const authProblem = verificationStatusForAuth(authStatus(record));
+  if (authProblem) {
+    return finish(
+      authProblem,
+      record.auth_error_message || (
+        authProblem === 'needs_authorization'
+          ? 'This connection needs authorization.'
+          : 'This connection is not fully configured.'
+      ),
+    );
+  }
+
+  try {
+    const strategy = entry.connection.contract.verification.strategy;
+    let method: string | undefined;
+
+    if (strategy === 'database_query') {
+      method = 'execute_sql_readonly';
+      await invokeConnectionMcpRpc(env, context, record, 'tools/call', {
+        name: method,
+        arguments: { query: 'SELECT 1 AS ok' },
+      });
+    } else if (strategy === 'slack_auth') {
+      method = 'auth.test';
+      await callSlackConnectionTool(env, context, record.id, SLACK_API_TOOL, {
+        method,
+        params: {},
+        http_method: 'POST',
+      });
+    } else if (strategy === 'curated_api') {
+      method = 'list_properties';
+      await callGoogleAnalyticsConnectionTool(env, context, record.id, method, {});
+    } else if (strategy === 'mcp_discovery') {
+      const probe = getHostedConnectionVerificationProbe(record.integration_type);
+      if (probe) {
+        method = probe.tool;
+        await invokeConnectionMcpRpc(env, context, record, 'tools/call', {
+          name: probe.tool,
+          arguments: probe.input ?? {},
+        });
+      } else {
+        method = 'tools/list';
+        await invokeConnectionMcpRpc(env, context, record, method);
+      }
+    } else if (strategy === 'telegram_setup') {
+      if (!hasTelegramDefaultRecipient(parseJsonObject(record.config))) {
+        return finish('misconfigured', 'Choose a default Telegram chat before using this connection.');
+      }
+    } else if (strategy === 'http_configuration') {
+      const provider = NATIVE_HTTP_API_CONNECTIONS[record.integration_type];
+      if (provider) {
+        requireNativeProviderUrl(provider);
+      } else {
+        requireConfiguredUrl(parseJsonObject(record.config).base_url, 'base_url');
+      }
+    }
+
+    await markConnectionAuthStatus(env, context, record, 'connected', '', '');
+    return finish(
+      entry.connection.contract.verification.live ? 'ready' : 'configured',
+      entry.connection.contract.verification.live
+        ? 'Connection verified successfully.'
+        : 'Connection configuration is valid. This adapter does not make a network request during verification.',
+      method,
+    );
+  } catch (error) {
+    const status = verificationFailureStatus(error);
+    const message = error instanceof Error ? error.message : String(error);
+    const upstreamStatus = (error as { status?: unknown })?.status;
+    if (typeof upstreamStatus === 'number') {
+      const authProblem = providerAuthStatus(upstreamStatus) ?? providerSetupStatus(upstreamStatus, message);
+      if (authProblem) {
+        await markConnectionAuthStatus(
+          env,
+          context,
+          record,
+          authProblem,
+          authProblem === 'missing_scopes'
+            ? 'AUTH_MISSING_SCOPES'
+            : authProblem === 'setup_incomplete'
+              ? 'AUTH_SETUP_INCOMPLETE'
+              : 'AUTH_REAUTH_REQUIRED',
+          message,
+        );
+      }
+    }
+    return finish(status, message);
+  }
+}
+
 export async function invokeConnectionMethod(
+  env: ConnectionsRuntimeEnv,
+  context: ConnectionsContext,
+  request: ConnectionInvokeRequest
+): Promise<unknown> {
+  const startedAt = Date.now();
+  try {
+    const result = await invokeConnectionMethodInternal(env, context, request);
+    recordObservabilityEvent(env, {
+      event: 'connection_invocation',
+      component: 'connections-runtime',
+      operation: typeof request.method === 'string' ? request.method : 'unknown',
+      status: 'success',
+      workspaceId: context.workspaceId,
+      orgId: context.orgId,
+      userId: context.userId,
+      durationMs: Date.now() - startedAt,
+      sampleIndex: context.workspaceId,
+    });
+    return result;
+  } catch (error) {
+    recordObservabilityEvent(env, {
+      event: 'connection_invocation',
+      severity: 'warn',
+      component: 'connections-runtime',
+      operation: typeof request.method === 'string' ? request.method : 'unknown',
+      status: 'error',
+      workspaceId: context.workspaceId,
+      orgId: context.orgId,
+      userId: context.userId,
+      durationMs: Date.now() - startedAt,
+      statusCode: typeof (error as { status?: unknown })?.status === 'number'
+        ? (error as { status: number }).status
+        : null,
+      sampleIndex: context.workspaceId,
+    });
+    throw error;
+  }
+}
+
+async function invokeConnectionMethodInternal(
   env: ConnectionsRuntimeEnv,
   context: ConnectionsContext,
   request: ConnectionInvokeRequest
@@ -1944,7 +2157,7 @@ export async function callConnectionTool(
   });
 }
 
-async function nativeMcpRpc(
+export async function invokeConnectionMcpRpc(
   env: ConnectionsRuntimeEnv,
   context: ConnectionsContext,
   record: WorkspaceIntegrationRecord,
@@ -1959,66 +2172,8 @@ async function nativeMcpRpc(
       { status: 404 }
     );
   }
-  if (isBigQueryMcpIntegration(record.integration_type)) {
-    return bigQueryMcpRpc(env, { workspaceId: context.workspaceId }, record, method, params);
-  }
-  if (isClickHouseMcpIntegration(record.integration_type)) {
-    return clickHouseMcpRpc(env, { workspaceId: context.workspaceId }, record, method, params);
-  }
-  if (isSqlDatabaseMcpIntegration(record.integration_type)) {
-    return sqlDatabaseMcpRpc(env, context, record, method, params);
-  }
-  if (isDatabricksMcpIntegration(record.integration_type)) {
-    return databricksMcpRpc(env, record, method, params);
-  }
-  if (isMongoDbMcpIntegration(record.integration_type)) {
-    return mongoDbMcpRpc(env, record, method, params);
-  }
-  if (isRedisMcpIntegration(record.integration_type)) {
-    return redisMcpRpc(env, record, method, params);
-  }
-  if (isSnowflakeMcpIntegration(record.integration_type)) {
-    return snowflakeMcpRpc(env, record, method, params);
-  }
-  if (isTursoMcpIntegration(record.integration_type)) {
-    return tursoMcpRpc(env, record, method, params);
-  }
-  if (isAirtableMcpIntegration(record.integration_type)) {
-    return airtableMcpRpc(env, record, method, params);
-  }
-  if (isSentryMcpIntegration(record.integration_type)) {
-    return sentryMcpRpc(env, record, method, params);
-  }
-  if (isMailchimpMcpIntegration(record.integration_type)) {
-    return mailchimpMcpRpc(env, record, method, params);
-  }
-  if (isSendGridMcpIntegration(record.integration_type)) {
-    return sendGridMcpRpc(env, record, method, params);
-  }
-  if (isTwilioMcpIntegration(record.integration_type)) {
-    return twilioMcpRpc(env, record, method, params);
-  }
-  if (isPostHogMcpIntegration(record.integration_type)) {
-    return postHogMcpRpc(env, record, method, params);
-  }
-  if (isMixpanelMcpIntegration(record.integration_type)) {
-    return mixpanelMcpRpc(env, record, method, params);
-  }
-  if (isAmplitudeMcpIntegration(record.integration_type)) {
-    return amplitudeMcpRpc(env, record, method, params);
-  }
-  if (isZendeskMcpIntegration(record.integration_type)) {
-    return zendeskMcpRpc(env, record, method, params);
-  }
-  if (isShopifyMcpIntegration(record.integration_type)) {
-    return shopifyMcpRpc(env, record, method, params);
-  }
-  if (isSegmentMcpIntegration(record.integration_type)) {
-    return segmentMcpRpc(env, record, method, params);
-  }
-  if (isTeamsMcpIntegration(record.integration_type)) {
-    return teamsMcpRpc(env, record, method, params);
-  }
+  const hostedAdapter = getHostedConnectionAdapter(record.integration_type);
+  if (hostedAdapter) return hostedAdapter(env, context, record, method, params);
 
   const credentials = record.credentials_encrypted
     ? await decryptCredentials<Record<string, unknown>>(record.credentials_encrypted, env.INTEGRATION_SECRET_KEY)

@@ -7,11 +7,13 @@ import {
   listConnections,
   listConnectionTools,
   testConnectionMethodEntry,
+  verifyConnection,
   type ConnectionFindQuery,
   type ConnectionInvokeRequest,
   type ConnectionMethodCatalogEntry,
   type ConnectionSmokeTestResult,
   type ConnectionSummary,
+  type ConnectionVerificationResult,
   type ConnectionsRuntimeEnv,
 } from './connections-runtime.js';
 
@@ -71,6 +73,11 @@ export class ConnectionsService extends WorkerEntrypoint<
    */
   async test(query: ConnectionFindQuery): Promise<ConnectionSmokeTestResult> {
     return testConnectionMethodEntry(this.env, this.context, query);
+  }
+
+  /** Performs the adapter's normalized live or configuration verification. */
+  async verify(query: ConnectionFindQuery): Promise<ConnectionVerificationResult> {
+    return verifyConnection(this.env, this.context, query);
   }
 
   async invoke<T = unknown>(request: ConnectionInvokeRequest): Promise<T> {

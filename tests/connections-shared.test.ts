@@ -179,6 +179,7 @@ describe("deriveCapabilities", () => {
           id: "other",
           integration_type: "other",
           name: "Custom API",
+          config: { base_url: "https://api.example.com" },
         }),
       ),
     ).toEqual(["authenticated_fetch"]);
@@ -193,5 +194,17 @@ describe("deriveCapabilities", () => {
         }),
       ),
     ).toEqual(["channel_send"]);
+  });
+
+  it("reports credential-only connections honestly", () => {
+    expect(
+      deriveCapabilities(
+        connection({
+          id: "openai",
+          integration_type: "openai",
+          name: "OpenAI",
+        }),
+      ),
+    ).toEqual(["project_credentials"]);
   });
 });

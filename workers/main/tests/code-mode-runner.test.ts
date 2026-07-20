@@ -19,12 +19,13 @@ function createConnectionsFacade(binding: any): Record<string, unknown> {
       if (connectionName === '$methods') return () => binding.methods();
       if (connectionName === '$find') return (query: unknown) => binding.find(query);
       if (connectionName === '$test') return (query: unknown) => binding.test(query);
+      if (connectionName === '$verify') return (query: unknown) => binding.verify(query);
       if (connectionName === '$list') return () => binding.list();
       if (connectionName === '$get') return (connection: unknown) => binding.get(connection);
       if (connectionName === '$tools') return (connection: unknown) => binding.tools(connection);
       if (typeof connectionName !== 'string') return binding[connectionName];
       if (
-        ['list', 'get', 'tools', 'methods', 'find', 'test', 'invoke', legacyInvokeMethod]
+        ['list', 'get', 'tools', 'methods', 'find', 'test', 'verify', 'invoke', legacyInvokeMethod]
           .includes(connectionName)
       ) {
         const value = binding[connectionName];
@@ -107,6 +108,7 @@ describe('code mode runner connection facade', () => {
       methods: async () => [{ alias: 'remoteMcpAdmin', method: 'getDashboardSummary' }],
       find: async () => ({ alias: 'remoteMcpAdmin' }),
       test: async () => ({ ok: true }),
+      verify: async () => ({ ok: true, status: 'ready' }),
       invoke(request: unknown) {
         calls.push(request);
         return { ok: true, request };
@@ -117,6 +119,8 @@ describe('code mode runner connection facade', () => {
     const context = { cloudflare: { env, connections } };
 
     const admin = await env.CONNECTIONS.find('admin');
+    await expect(env.CONNECTIONS.verify('admin')).resolves.toEqual({ ok: true, status: 'ready' });
+    await expect((env.CONNECTIONS as any).$verify('admin')).resolves.toEqual({ ok: true, status: 'ready' });
     const workflowStyle = await env.CONNECTIONS[admin.alias].getDashboardSummary({
       date: '2026-05-29',
     });

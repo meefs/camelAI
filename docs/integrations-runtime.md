@@ -4,6 +4,11 @@ camelAI separates an integration **definition** (auth templates, operations,
 provenance, and policy classification) from a workspace **connection** (account
 configuration and encrypted credentials).
 
+Every connection is projected through the universal contract in
+`src/lib/connection-contract.ts`. The contract gives every consumer the same
+driver, capabilities, verification strategy, permissions, and provenance, so
+the UI and agent catalogs cannot advertise execution the runtime does not have.
+
 ## Storage
 
 - Imported definitions live in OrgDO's `integration_definitions` table.
@@ -11,6 +16,38 @@ configuration and encrypted credentials).
   definition. Built-in and legacy connections may leave this null.
 - OrgDO list/get methods join the definition payload onto
   `WorkspaceIntegrationRecord.definition`; credentials never enter the payload.
+- Normalized connection verification is stored separately from auth health in
+  `verification_status`, `verification_message`, `verification_checked_at`,
+  `verification_live`, and `verification_strategy`.
+
+## Drivers, adapters, and verification
+
+| Driver | Typical connections | Execution |
+| --- | --- | --- |
+| `sql` | Postgres, MySQL, BigQuery, ClickHouse, Snowflake | Read-only SQL and metadata tools |
+| `channel` | Slack, Telegram | Channel actions and provider API where supported |
+| `curated` | GA4 | Purpose-built semantic operations |
+| `remote_mcp` | User or owner MCP server | Credentialed MCP proxy |
+| `provider_mcp` | GitHub, Notion, hosted providers | Brokered MCP tools |
+| `authenticated_http` | Other, Resend | Origin-scoped generic fetch and imported operations |
+| `configuration` | OpenAI, AWS, GCP, credential-only types | Project credentials, with no invented API executor |
+
+Hosted MCP implementations and safe verification probes are registered in
+`workers/main/src/connection-adapters.ts` and consumed by the connections
+runtime. Specialized SQL, GA4, channel, imported-operation, and generic HTTP
+paths stay explicit because their policy and execution semantics differ.
+
+`env.CONNECTIONS.verify(query)` and connections RPC action `verify` return a
+normalized health result. `ready` means a bounded live provider check passed.
+`configured` means local setup validation passed without a network request.
+Failures map to `needs_authorization`, `misconfigured`, or `degraded`. The UI
+shows the persisted result and check type rather than treating stored
+credentials as proof of readiness.
+
+Invocation and verification emit structured Analytics Engine events containing
+tenant ids, operation or strategy, provider type where available, status, and
+duration. They never include credentials, headers, bodies, endpoint query
+strings, or response data.
 
 ## Discovery and execution
 
@@ -68,16 +105,18 @@ separate integration connection from login OAuth.
 
 Relevant code:
 
+- `src/lib/connection-contract.ts`
 - `src/lib/integration-definition.ts`
 - `src/lib/openapi-integration.server.ts`
 - `workers/main/src/connections-runtime.ts`
+- `workers/main/src/connection-adapters.ts`
 - `workers/main/src/google-analytics-mcp.ts`
 - `src/components/pages/connections/ImportConnectionDialog.tsx`
 
 Focused verification:
 
 ```bash
-bun run test:run -- tests/openapi-integration.test.ts tests/connections-action.test.ts
-bun run test:workers -- workers/main/tests/connections-runtime.test.ts
+bun run test:run -- tests/connection-contract.test.ts tests/openapi-integration.test.ts tests/connections-action.test.ts
+bun run test:workers -- connection-adapters.test.ts connections-runtime.test.ts code-mode-integrations.test.ts
 bun run typecheck
 ```

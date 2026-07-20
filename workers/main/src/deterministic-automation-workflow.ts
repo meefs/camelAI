@@ -264,6 +264,7 @@ function __camelAiCreateConnectionsFacade(binding, tools) {
       if (connectionName === "$methods") return () => callConnectionTool("connections_methods") ?? binding.methods();
       if (connectionName === "$find") return (query) => callConnectionTool("connections_find", { query }) ?? binding.find(query);
       if (connectionName === "$test") return (query) => callConnectionTool("connections_test", { query }) ?? binding.test(query);
+      if (connectionName === "$verify") return (query) => callConnectionTool("connections_verify", { query }) ?? binding.verify(query);
       if (connectionName === "$list") return () => callConnectionTool("connections_list") ?? binding.list();
       if (connectionName === "$get") return (connection) => callConnectionTool("connections_get", { connection }) ?? binding.get(connection);
       if (connectionName === "$tools") return (connection) => callConnectionTool("connections_tools", { connection }) ?? binding.tools(connection);
@@ -275,6 +276,7 @@ function __camelAiCreateConnectionsFacade(binding, tools) {
         "methods",
         "find",
         "test",
+        "verify",
         "invoke",
         legacyInvokeMethod,
       ].includes(connectionName)) {
@@ -285,6 +287,7 @@ function __camelAiCreateConnectionsFacade(binding, tools) {
         if (connectionName === "methods") return () => callConnectionTool("connections_methods") ?? value.apply(binding);
         if (connectionName === "find") return (query) => callConnectionTool("connections_find", { query }) ?? value.apply(binding, [query]);
         if (connectionName === "test") return (query) => callConnectionTool("connections_test", { query }) ?? value.apply(binding, [query]);
+        if (connectionName === "verify") return (query) => callConnectionTool("connections_verify", { query }) ?? value.apply(binding, [query]);
         return typeof value === "function" ? (...args) => value.apply(binding, args) : value;
       }
 

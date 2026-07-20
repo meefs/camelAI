@@ -36,10 +36,22 @@ const maybeIt = testEnv.RUN_AGENT_EVALS === "1" ? it : it.skip;
 const SESSION_TIMEOUT_MS = getEvalTimeoutMs(testEnv, 150_000);
 const CONNECTION_NAME = "inventory-api";
 const TYPED_METHOD = "getWidget";
+const RUBRIC = {
+  version: 1,
+  objective: "Inspect and verify an imported API connection without making an upstream API request.",
+  passThreshold: 75,
+  criticalMinimum: 3,
+  criteria: [
+    { id: "catalog_discovery", description: "The agent uses the connection catalog and reports both the typed operation and generic fetch fallback exactly.", weight: 35, critical: true, evidenceHints: ["trajectory", "result", "runtimeAssertions"] },
+    { id: "normalized_verification", description: "The agent explicitly verifies the connection and correctly reports configured health from a configuration-only check.", weight: 30, critical: true, evidenceHints: ["trajectory", "result", "runtimeAssertions.verification"] },
+    { id: "contract_understanding", description: "The agent identifies authenticated_http as the driver and does not misrepresent the check as a live upstream probe.", weight: 20, critical: true, evidenceHints: ["result", "runtimeAssertions"] },
+    { id: "safe_execution", description: "The agent follows the request not to call the upstream inventory API and gives a concise, actionable answer.", weight: 15, critical: false, evidenceHints: ["trajectory", "result"] },
+  ],
+} as const;
 
 describe("imported integration definition discovery agent eval", () => {
   maybeIt(
-    "discovers typed methods and the generic fetch fallback without calling upstream",
+    "discovers methods and verifies the universal connection contract without calling upstream",
     async () => {
       const suffix = crypto.randomUUID().slice(0, 8);
       const { userId } = await createUser(
@@ -138,7 +150,8 @@ describe("imported integration definition discovery agent eval", () => {
         timeoutMs: SESSION_TIMEOUT_MS,
         message: [
           `Inspect the workspace connection named "${CONNECTION_NAME}" and report its exact callable method names.`,
-          "Do not call the upstream API. Tell me both the typed widget method and the generic HTTP fallback method.",
+          "Explicitly verify the connection, but do not call the upstream inventory API.",
+          "Tell me the typed widget method, generic HTTP fallback method, execution driver, verification status, and whether verification was live or configuration-only.",
         ].join(" "),
       });
 
@@ -149,10 +162,18 @@ describe("imported integration definition discovery agent eval", () => {
       const usedConnectionDiscovery =
         usedTool(result.events, "connections_find", [/env\.CONNECTIONS\.find\s*\(/]) ||
         usedTool(result.events, "connections_methods", [/env\.CONNECTIONS\.methods\s*\(/]);
+      const usedConnectionVerification = usedTool(
+        result.events,
+        "connections_verify",
+        [/env\.CONNECTIONS\.verify\s*\(/],
+      );
       const finalReply = result.result ?? "";
       const reportedTypedMethod = finalReply.includes(TYPED_METHOD);
       const reportedGenericFallback = /\bfetch\b/.test(finalReply);
       const stored = await orgStub.getWorkspaceIntegration(defaultWorkspaceId, connectionId);
+      const reportedContract = /authenticated_http/.test(finalReply);
+      const reportedConfigured = /configured/i.test(finalReply);
+      const reportedConfigurationOnly = /configuration[- ]only|configuration check/i.test(finalReply);
       const evaluation = buildEvalCriteriaSummary({
         passFail: [
           buildSessionCompletedCriterion(result),
@@ -162,6 +183,28 @@ describe("imported integration definition discovery agent eval", () => {
             passed: usedConnectionDiscovery,
             reason: usedConnectionDiscovery ? undefined : "Agent did not call env.CONNECTIONS.find() or methods().",
             details: { toolCallsByName: signal.toolCallsByName },
+          }),
+          passFailCriterion({
+            id: "used_connection_verification",
+            label: "Agent ran normalized connection verification",
+            passed: usedConnectionVerification,
+            reason: usedConnectionVerification ? undefined : "Agent did not call env.CONNECTIONS.verify().",
+          }),
+          passFailCriterion({
+            id: "reported_connection_contract",
+            label: "Agent reported driver and verification semantics",
+            passed: reportedContract && reportedConfigured && reportedConfigurationOnly,
+            reason: reportedContract && reportedConfigured && reportedConfigurationOnly
+              ? undefined
+              : "Final reply did not accurately report authenticated_http, configured, and configuration-only verification.",
+          }),
+          passFailCriterion({
+            id: "verification_persisted",
+            label: "Normalized verification snapshot persisted",
+            passed: stored?.verification_status === "configured" && stored.verification_live === 0,
+            reason: stored?.verification_status === "configured" && stored.verification_live === 0
+              ? undefined
+              : "Connection did not persist configured/configuration-only verification health.",
           }),
           passFailCriterion({
             id: "reported_typed_method",
@@ -208,6 +251,7 @@ describe("imported integration definition discovery agent eval", () => {
 
       emitEvalTranscript({
         status: result.status,
+        rubric: RUBRIC,
         evaluation,
         error: result.error,
         model: testEnv.EVAL_MODEL,
@@ -217,14 +261,29 @@ describe("imported integration definition discovery agent eval", () => {
         messages: result.messages,
         runtimeAssertions: {
           usedConnectionDiscovery,
+          usedConnectionVerification,
           reportedTypedMethod,
           reportedGenericFallback,
+          reportedContract,
+          reportedConfigured,
+          reportedConfigurationOnly,
+          verification: stored
+            ? {
+                status: stored.verification_status ?? null,
+                live: stored.verification_live ?? null,
+                strategy: stored.verification_strategy ?? null,
+              }
+            : null,
           definitionId: stored?.definition_id ?? null,
           toolCallsByName: signal.toolCallsByName,
           failures: [
             ...(!usedConnectionDiscovery ? ["connection catalog was not inspected"] : []),
             ...(!reportedTypedMethod ? [`final reply omitted ${TYPED_METHOD}`] : []),
             ...(!reportedGenericFallback ? ["final reply omitted fetch"] : []),
+            ...(!usedConnectionVerification ? ["connection verification was not run"] : []),
+            ...(!reportedContract ? ["final reply omitted authenticated_http driver"] : []),
+            ...(!reportedConfigured ? ["final reply omitted configured status"] : []),
+            ...(!reportedConfigurationOnly ? ["final reply omitted configuration-only semantics"] : []),
           ],
         },
       });

@@ -22,6 +22,7 @@ const targetIntegrationNameExistsMock = vi.fn();
 const targetGetInfoMock = vi.fn();
 const putSetupTokenMock = vi.fn();
 const listProjectsMock = vi.fn();
+const verifyConnectionMock = vi.fn();
 
 vi.mock("@/lib/auth.server", () => ({
   requireAuthContext: requireAuthContextMock,
@@ -102,6 +103,10 @@ vi.mock("../workers/main/src/workspace-filesystem-do", () => ({
   WorkspaceFilesystemClient: class WorkspaceFilesystemClient {
     listProjects = listProjectsMock;
   },
+}));
+
+vi.mock("../workers/main/src/connections-runtime", () => ({
+  verifyConnection: verifyConnectionMock,
 }));
 
 const { action, loader } = await import("@/routes/_app.connections");
@@ -205,6 +210,11 @@ describe("connections action admin guard", () => {
     getIntegrationMock.mockResolvedValue(makeRecord());
     getIntegrationsMock.mockResolvedValue([]);
     putSetupTokenMock.mockResolvedValue(undefined);
+    verifyConnectionMock.mockResolvedValue({
+      ok: true,
+      status: "ready",
+      message: "Connection verified successfully.",
+    });
   });
 
   it.each([
@@ -245,6 +255,25 @@ describe("connections action admin guard", () => {
     ).resolves.toEqual({ error: "Unknown action" });
 
     expect(isOrgAdminMock).not.toHaveBeenCalled();
+  });
+
+  it("allows a full-access member to verify without granting management access", async () => {
+    const response = await action({
+      request: postForm({ intent: "verifyIntegration", integrationId: "int_1" }),
+      context: {},
+      params: {},
+    } as never);
+
+    expect(response).toMatchObject({
+      success: true,
+      verification: { ok: true, status: "ready" },
+    });
+    expect(isOrgAdminMock).not.toHaveBeenCalled();
+    expect(verifyConnectionMock).toHaveBeenCalledWith(
+      expect.any(Object),
+      { orgId: "org_1", workspaceId: "ws_1", userId: "user_1" },
+      { id: "int_1" },
+    );
   });
 
   it("allows admins to create, update, delete, and duplicate integrations", async () => {

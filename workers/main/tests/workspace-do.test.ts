@@ -579,6 +579,59 @@ describe('Workspace DO (full-stack with DOs)', () => {
     expect(actions).toContain('integration_updated');
   });
 
+  it('invalidates persisted verification when connection behavior changes', async () => {
+    const email = testEmail();
+    const { userId } = await createUser(testEnv, email, 'password123', 'Verification Owner');
+    const { org } = await createOrg(testEnv, 'Verification Org', userId);
+    const [workspace] = await listUserWorkspaces(testEnv, userId, org.id);
+    expect(workspace).toBeDefined();
+
+    const integration = await createWorkspaceIntegration(testEnv, workspace!.id, userId, {
+      integration_type: 'other',
+      name: 'Inventory',
+      config: { base_url: 'https://api.example.com/v1', auth_type: 'none' },
+    });
+    const orgStub = testEnv.ORG.get(testEnv.ORG.idFromName(org.id));
+    const sourceRecord = await orgStub.getWorkspaceIntegration(workspace!.id, integration.id);
+    expect(sourceRecord).toBeDefined();
+    await orgStub.updateWorkspaceIntegrationVerification(workspace!.id, integration.id, {
+      status: 'configured',
+      message: 'Configuration valid.',
+      checkedAt: Date.now(),
+      live: false,
+      strategy: 'http_configuration',
+    }, userId, {
+      config: sourceRecord!.config,
+      credentialsEncrypted: sourceRecord!.credentials_encrypted,
+    });
+    const verifiedRecord = await orgStub.getWorkspaceIntegration(workspace!.id, integration.id);
+    expect(verifiedRecord?.updated_at).toBe(sourceRecord!.updated_at);
+    await updateWorkspaceIntegration(testEnv, workspace!.id, integration.id, userId, {
+      config: { base_url: 'https://api.example.com/v2', auth_type: 'none' },
+    });
+
+    const staleWriteApplied = await orgStub.updateWorkspaceIntegrationVerification(workspace!.id, integration.id, {
+      status: 'ready',
+      message: 'Stale provider response.',
+      checkedAt: Date.now(),
+      live: true,
+      strategy: 'mcp_discovery',
+    }, userId, {
+      config: sourceRecord!.config,
+      credentialsEncrypted: sourceRecord!.credentials_encrypted,
+    });
+    expect(staleWriteApplied).toBe(false);
+
+    const record = await orgStub.getWorkspaceIntegration(workspace!.id, integration.id);
+    expect(record).toMatchObject({
+      verification_status: null,
+      verification_message: null,
+      verification_checked_at: null,
+      verification_live: null,
+      verification_strategy: null,
+    });
+  });
+
   it('deletes integration (soft delete) and logs audit entry', async () => {
     const email = testEmail();
     const { userId } = await createUser(testEnv, email, 'password123', 'Integration Owner');

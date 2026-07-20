@@ -122,7 +122,7 @@ describe('CodeModeIntegrations', () => {
     });
   });
 
-  it('advertises remote_mcp as the native MCP connection type', () => {
+  it('advertises the universal remote MCP driver and contract', () => {
     const { integrations } = integrationsHarness();
 
     const result = integrations.listTypes({}) as {
@@ -133,9 +133,11 @@ describe('CodeModeIntegrations', () => {
       .find((type) => type.type === 'remote_mcp');
 
     expect(remoteMcp).toMatchObject({
-      connection_kind: 'native_remote_mcp',
+      connection_kind: 'remote_mcp',
       supports_native_mcp_connection: true,
       supports_brokered_mcp_tools: true,
+      capabilities: ['mcp_tools'],
+      verification: { strategy: 'mcp_discovery', live: true },
     });
     expect(remoteMcp?.setup_hint).toContain('native remote MCP servers');
   });

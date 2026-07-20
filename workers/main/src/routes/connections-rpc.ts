@@ -18,6 +18,7 @@ import {
   listConnectionTools,
   listConnections,
   testConnectionMethodEntry,
+  verifyConnection,
   type ConnectionsContext,
   type ConnectionFindQuery,
 } from '../connections-runtime.js';
@@ -36,7 +37,7 @@ type ResolvedConnectionsContext = ConnectionsContext & {
   projectId?: string;
 };
 
-const ACTIONS = ['list', 'get', 'find', 'tools', 'methods', 'test', 'invoke'] as const;
+const ACTIONS = ['list', 'get', 'find', 'tools', 'methods', 'test', 'verify', 'invoke'] as const;
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -125,6 +126,9 @@ async function handleRpcAction(
 
     case 'test':
       return rpcResult(await testConnectionMethodEntry(env, auth, requireFindQuery(request.query)));
+
+    case 'verify':
+      return rpcResult(await verifyConnection(env, auth, requireFindQuery(request.query)));
 
     case 'invoke':
       return rpcResult(await invokeConnectionMethod(env, auth, {

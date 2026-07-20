@@ -125,7 +125,7 @@
     },
     {
       "id": "integration-definition-discovery-live",
-      "description": "Discover imported typed API operations and the generic fetch fallback from a linked connection definition",
+      "description": "Discover and explicitly verify an imported API through the universal connection contract without calling upstream",
       "kind": "unit"
     },
     {

@@ -13,6 +13,8 @@ import {
   type DynamicIntegrationSchema,
 } from "../../../src/lib/integration-registry";
 import { getProviderMcpDefinition } from "../../../src/lib/provider-mcp-registry";
+import { getConnectionContract } from "../../../src/lib/connection-contract";
+import { parseWorkspaceIntegrationDefinition } from "../../../src/lib/integration-definition";
 import {
   normalizeRemoteMcpUrl,
   validateRemoteMcpConnection,
@@ -144,6 +146,19 @@ export class CodeModeIntegrations {
         created_at: record.created_at,
         updated_at: record.updated_at,
         config: parsedConfig,
+        contract: getConnectionContract(record.integration_type, {
+          config: parsedConfig,
+          definition: parseWorkspaceIntegrationDefinition(record.definition),
+        }),
+        verification: {
+          status: record.verification_status ?? "unknown",
+          message: record.verification_message ?? null,
+          checked_at: record.verification_checked_at
+            ? new Date(record.verification_checked_at).toISOString()
+            : null,
+          live: record.verification_live === 1,
+          strategy: record.verification_strategy ?? null,
+        },
       };
     });
     const filtered = category
@@ -162,6 +177,8 @@ export class CodeModeIntegrations {
         category: integration.category,
         auth_method: integration.auth_method,
         has_credentials: integration.has_credentials,
+        contract: integration.contract,
+        verification: integration.verification,
         created_at: new Date(integration.created_at).toISOString(),
         updated_at: new Date(integration.updated_at).toISOString(),
         recommended_access: recommendedAccess(
@@ -190,39 +207,40 @@ export class CodeModeIntegrations {
         ? category
         : "";
     const definitions = validCategory ? getIntegrationsByCategory(validCategory) : getAllIntegrations();
-    const types = definitions.map((definition) => ({
-      connection_kind:
-        definition.type === "remote_mcp"
-          ? "native_remote_mcp"
-          : getProviderMcpDefinition(definition.type)
-            ? "brokered_mcp"
-            : "api",
-      type: definition.type,
-      display_name: definition.displayName,
-      description: definition.description,
-      category: definition.category,
-      auth_method: definition.authMethod,
-      config_fields: definition.configSchema.map((field) => ({
-        name: field.name,
-        label: field.label,
-        type: field.type,
-        required: field.required,
-        description: field.description,
-      })),
-      credential_fields: definition.credentialSchema.map((field) => ({
-        name: field.name,
-        label: field.label,
-        required: field.required,
-        description: field.description,
-      })),
-      supports_proxy: false,
-      supports_native_mcp_connection: definition.type === "remote_mcp",
-      supports_brokered_mcp_tools: definition.type === "remote_mcp" || Boolean(getProviderMcpDefinition(definition.type)),
-      setup_hint:
-        definition.type === "remote_mcp"
-          ? "Use this type for native remote MCP servers. Provide config.server_url and config.auth_type; use auth_type oauth for MCP OAuth/DCR servers, bearer/custom_header with credentials.token for token auth, or none for public servers."
-          : undefined,
-    }));
+    const types = definitions.map((definition) => {
+      const contract = getConnectionContract(definition.type);
+      return {
+        connection_kind: contract.driver,
+        type: definition.type,
+        display_name: definition.displayName,
+        description: definition.description,
+        category: definition.category,
+        auth_method: definition.authMethod,
+        config_fields: definition.configSchema.map((field) => ({
+          name: field.name,
+          label: field.label,
+          type: field.type,
+          required: field.required,
+          description: field.description,
+        })),
+        credential_fields: definition.credentialSchema.map((field) => ({
+          name: field.name,
+          label: field.label,
+          required: field.required,
+          description: field.description,
+        })),
+        supports_proxy: false,
+        supports_native_mcp_connection: definition.type === "remote_mcp",
+        supports_brokered_mcp_tools: definition.type === "remote_mcp" || Boolean(getProviderMcpDefinition(definition.type)),
+        capabilities: contract.capabilities,
+        verification: contract.verification,
+        permissions: contract.permissions,
+        setup_hint:
+          definition.type === "remote_mcp"
+            ? "Use this type for native remote MCP servers. Provide config.server_url and config.auth_type; use auth_type oauth for MCP OAuth/DCR servers, bearer/custom_header with credentials.token for token auth, or none for public servers."
+            : undefined,
+      };
+    });
     const byCategory: Record<string, typeof types> = {};
     for (const type of types) {
       if (!byCategory[type.category]) byCategory[type.category] = [];

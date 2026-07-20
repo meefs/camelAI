@@ -1,18 +1,16 @@
 import type { Avatar, Integration } from "@/types";
 import { getIntegrationDefinition } from "@/lib/integration-registry";
-import { getProviderMcpDefinition } from "@/lib/provider-mcp-registry";
+import {
+  getConnectionContract,
+  type ConnectionCapability,
+  type ConnectionContract,
+} from "@/lib/connection-contract";
 
 export const CHANNEL_INTEGRATION_TYPES = ["slack", "telegram"] as const;
 
 export type ChannelIntegrationType = (typeof CHANNEL_INTEGRATION_TYPES)[number];
 export type ConnectionSort = "updated" | "name" | "created";
-export type Capability =
-  | "query_database"
-  | "mcp_tools"
-  | "typed_operations"
-  | "authenticated_fetch"
-  | "channel_send"
-  | "slack_api";
+export type Capability = ConnectionCapability;
 
 export interface ConnectionListItem extends Integration {
   auth_status?: string | null;
@@ -32,6 +30,14 @@ export interface ConnectionListItem extends Integration {
     source: string;
     operationCount: number;
     genericFetch: boolean;
+  };
+  contract?: ConnectionContract;
+  verification?: {
+    status: string;
+    message: string | null;
+    checkedAt: number | null;
+    live: boolean;
+    strategy: string;
   };
 }
 
@@ -74,6 +80,7 @@ export const CAPABILITY_LABEL: Record<Capability, string> = {
   authenticated_fetch: "Authenticated API calls",
   channel_send: "Channel send",
   slack_api: "Slack API",
+  project_credentials: "Project credentials",
 };
 
 export interface DetailField {
@@ -221,42 +228,14 @@ export function providerDisplayName(integrationType: string): string {
 }
 
 export function deriveCapabilities(connection: Integration): Capability[] {
-  const caps: Capability[] = [];
-
-  if (connection.category === "databases") caps.push("query_database");
-
-  if (
-    connection.integration_type === "remote_mcp" ||
-    getProviderMcpDefinition(connection.integration_type)
-  ) {
-    caps.push("mcp_tools");
-  }
-
-  if (
-    connection.integration_type === "google_analytics" ||
-    ("definitionMetadata" in connection &&
-      Boolean((connection as ConnectionListItem).definitionMetadata?.operationCount))
-  ) {
-    caps.push("typed_operations");
-  }
-
-  if (connection.integration_type === "telegram") caps.push("channel_send");
-  if (connection.integration_type === "slack") {
-    caps.push("channel_send", "slack_api");
-  }
-
-  if (
-    connection.category !== "databases" &&
-    connection.integration_type !== "remote_mcp" &&
-    !getProviderMcpDefinition(connection.integration_type) &&
-    connection.integration_type !== "telegram" &&
-    connection.integration_type !== "slack" &&
-    connection.integration_type !== "google_analytics"
-  ) {
-    caps.push("authenticated_fetch");
-  }
-
-  return caps;
+  const item = connection as ConnectionListItem;
+  if (item.contract) return item.contract.capabilities;
+  const capabilities = getConnectionContract(connection.integration_type, {
+    config: connection.config,
+  }).capabilities;
+  return item.definitionMetadata?.operationCount
+    ? [...new Set([...capabilities, "typed_operations" as const])]
+    : capabilities;
 }
 
 export function getConnectionDetailRows(

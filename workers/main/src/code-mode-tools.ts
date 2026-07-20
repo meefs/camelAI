@@ -15,7 +15,7 @@ import type { WorkspaceCronDO } from "./workspace-cron";
 import { ProjectFilesystemClient, WorkspaceFilesystemClient, normalizeWorkspacePath as normalizeDurableWorkspacePath, type WorkspaceFileStoreLike, type WorkspaceProject, type WorkspaceProjectCloneSummary, projectNameKey } from "./workspace-filesystem-do";
 import type { RuntimeCallArtifact, RuntimeCallArtifactKind } from "../../../src/lib/runtime-artifacts";
 import { getPreferredAppUrl } from "../../../src/lib/app-url";
-import { findConnectionMethodEntry, getConnection, invokeConnectionMethod, listConnectionMethods, listConnections, listConnectionTools, testConnectionMethodEntry } from "./connections-runtime";
+import { findConnectionMethodEntry, getConnection, invokeConnectionMethod, listConnectionMethods, listConnections, listConnectionTools, testConnectionMethodEntry, verifyConnection } from "./connections-runtime";
 import { confirmDestructiveAction, DESTRUCTIVE_CONFIRM_LABEL } from "./confirmed-destructive-action";
 import { collectProjectDeletionTargets } from "./project-deletion";
 import { listPiBundledSkillFiles, readPiBundledSkillFile } from "./pi-skill-bundle-helpers";
@@ -1228,6 +1228,15 @@ const CODE_MODE_TOOL_REGISTRY: CodeModeToolRegistration[] = [
       examples: [`await env.CONNECTIONS.test("clickhouse")`],
     },
   ),
+  codeModeTool(
+    "connections_verify",
+    "Verify a workspace connection with its normalized adapter strategy. Live-capable adapters make a bounded read-only provider call; configuration-only adapters validate setup. Prefer await env.CONNECTIONS.verify(query). Arguments: { query }.",
+    CONNECTION_QUERY_PARAMETERS,
+    {
+      category: "connections",
+      examples: [`await env.CONNECTIONS.verify("slack")`],
+    },
+  ),
 ];
 
 export const CODE_MODE_TOOL_DEFINITIONS: CodeModeToolDefinition[] = CODE_MODE_TOOL_REGISTRY
@@ -1668,6 +1677,8 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
       findConnectionMethodEntry(binding.env, binding.connectionsContext, binding.connectionQuery(args)),
     connections_test: (binding, args) =>
       testConnectionMethodEntry(binding.env, binding.connectionsContext, binding.connectionQuery(args)),
+    connections_verify: (binding, args) =>
+      verifyConnection(binding.env, binding.connectionsContext, binding.connectionQuery(args)),
     connections_invoke: (binding, args) => invokeConnectionMethod(binding.env, binding.connectionsContext, {
       connection: typeof args.connection === "string" ? args.connection : "",
       method: typeof args.method === "string" ? args.method : undefined,

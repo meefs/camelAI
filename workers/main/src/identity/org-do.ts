@@ -1775,7 +1775,18 @@ export class OrgDO extends DurableObject<DOEnv> {
       );
     }
 
-    const CURRENT_SCHEMA_VERSION = 43;
+    if (version < 44) {
+      // V44: Persist the latest normalized connection verification separately
+      // from auth health. A valid credential is not proof that an endpoint is
+      // reachable, and configuration-only adapters cannot be live-checked.
+      this.ensureColumn("integrations", "verification_status", "TEXT");
+      this.ensureColumn("integrations", "verification_message", "TEXT");
+      this.ensureColumn("integrations", "verification_checked_at", "INTEGER");
+      this.ensureColumn("integrations", "verification_live", "INTEGER");
+      this.ensureColumn("integrations", "verification_strategy", "TEXT");
+    }
+
+    const CURRENT_SCHEMA_VERSION = 44;
     if (version < CURRENT_SCHEMA_VERSION) {
       this.ctx.storage.kv.put("schemaVersion", CURRENT_SCHEMA_VERSION);
     }
@@ -3633,6 +3644,8 @@ export class OrgDO extends DurableObject<DOEnv> {
                 i.credentials_encrypted, i.created_by, i.created_at, i.updated_at,
                 i.deleted_at, i.token_expires_at, i.auth_status, i.auth_error_code,
                 i.auth_error_message, i.auth_checked_at, i.reauth_required_at,
+                i.verification_status, i.verification_message,
+                i.verification_checked_at, i.verification_live, i.verification_strategy,
                 i.definition_id, d.payload AS definition
            FROM integrations i
            LEFT JOIN integration_definitions d
@@ -3656,6 +3669,8 @@ export class OrgDO extends DurableObject<DOEnv> {
                   i.credentials_encrypted, i.created_by, i.created_at, i.updated_at,
                   i.deleted_at, i.token_expires_at, i.auth_status, i.auth_error_code,
                   i.auth_error_message, i.auth_checked_at, i.reauth_required_at,
+                  i.verification_status, i.verification_message,
+                  i.verification_checked_at, i.verification_live, i.verification_strategy,
                   i.definition_id, d.payload AS definition
              FROM integrations i
              LEFT JOIN integration_definitions d
@@ -4004,6 +4019,15 @@ export class OrgDO extends DurableObject<DOEnv> {
       );
       params.push(now);
     }
+    if (updates.config !== undefined || updates.credentialsEncrypted !== undefined) {
+      setClauses.push(
+        "verification_status = NULL",
+        "verification_message = NULL",
+        "verification_checked_at = NULL",
+        "verification_live = NULL",
+        "verification_strategy = NULL",
+      );
+    }
     if (updates.tokenExpiresAt !== undefined) {
       setClauses.push("token_expires_at = ?");
       params.push(updates.tokenExpiresAt);
@@ -4031,13 +4055,14 @@ export class OrgDO extends DurableObject<DOEnv> {
     errorCode?: string | null,
     errorMessage?: string | null,
     actorId = "system",
-  ): Promise<void> {
+    expected?: { config: string; credentialsEncrypted: string },
+  ): Promise<boolean> {
     const now = Date.now();
     const requiresReauth =
       authStatus === "needs_reauth" ||
       authStatus === "missing_scopes" ||
       authStatus === "setup_incomplete";
-    this.sql.exec(
+    const result = this.sql.exec(
       `UPDATE integrations
        SET auth_status = ?,
            auth_error_code = ?,
@@ -4045,7 +4070,8 @@ export class OrgDO extends DurableObject<DOEnv> {
            auth_checked_at = ?,
            reauth_required_at = ?,
            updated_at = ?
-       WHERE workspace_id = ? AND id = ? AND deleted_at IS NULL`,
+       WHERE workspace_id = ? AND id = ? AND deleted_at IS NULL
+         ${expected ? "AND config = ? AND credentials_encrypted = ?" : ""}`,
       authStatus,
       authStatus === "connected" ? null : errorCode ?? null,
       authStatus === "connected" ? null : errorMessage ?? null,
@@ -4054,12 +4080,57 @@ export class OrgDO extends DurableObject<DOEnv> {
       now,
       workspaceId,
       id,
+      ...(expected ? [expected.config, expected.credentialsEncrypted] : []),
     );
+    if (result.rowsWritten === 0) return false;
     this.log("integration_auth_status_updated", actorId, id, {
       workspace_id: workspaceId,
       auth_status: authStatus,
       error_code: authStatus === "connected" ? null : errorCode ?? null,
     });
+    return true;
+  }
+
+  async updateWorkspaceIntegrationVerification(
+    workspaceId: string,
+    id: string,
+    verification: {
+      status: string;
+      message: string;
+      checkedAt: number;
+      live: boolean;
+      strategy: string;
+    },
+    actorId = "system",
+    expected: { config: string; credentialsEncrypted: string },
+  ): Promise<boolean> {
+    const result = this.sql.exec(
+      `UPDATE integrations
+       SET verification_status = ?,
+           verification_message = ?,
+           verification_checked_at = ?,
+           verification_live = ?,
+           verification_strategy = ?
+       WHERE workspace_id = ? AND id = ? AND deleted_at IS NULL
+         AND config = ? AND credentials_encrypted = ?`,
+      verification.status,
+      verification.message,
+      verification.checkedAt,
+      verification.live ? 1 : 0,
+      verification.strategy,
+      workspaceId,
+      id,
+      expected.config,
+      expected.credentialsEncrypted,
+    );
+    if (result.rowsWritten === 0) return false;
+    this.log("integration_verified", actorId, id, {
+      workspace_id: workspaceId,
+      status: verification.status,
+      live: verification.live,
+      strategy: verification.strategy,
+    });
+    return true;
   }
 
   async deleteWorkspaceIntegration(
