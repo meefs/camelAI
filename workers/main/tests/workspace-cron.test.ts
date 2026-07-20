@@ -981,7 +981,7 @@ export class AutomationWorkflow extends WorkflowEntrypoint {
     expect(empty.nextCursor).toBeNull();
   });
 
-  it('treats a healthy prewarm-only lead wake as non-destructive and does not consume the schedule', async () => {
+  it('treats a healthy early alarm (before next_run_at) as non-destructive and does not consume the schedule', async () => {
     const { userId } = await createUser(testEnv, testEmail(), 'password123', 'Cron Owner');
     const { org } = await createOrg(testEnv, 'Cron Org', userId);
     const workspaces = await listUserWorkspaces(testEnv, userId, org.id);
@@ -1000,8 +1000,7 @@ export class AutomationWorkflow extends WorkflowEntrypoint {
     });
     const nextRun = created.next_run_at!;
 
-    // Wake inside the prewarm lead window, before the prompt is due: it must not
-    // run, advance, or disable the prompt (it returns after firing the warm).
+    // Wake before the prompt is due: it must not run, advance, or disable.
     useFixedTime(new Date(nextRun - 5_000).toISOString());
     await cronStub.runDueAutomationsForTest(workspaceId!);
 
@@ -1012,7 +1011,7 @@ export class AutomationWorkflow extends WorkflowEntrypoint {
     expect(after?.run_count).toBe(0);
   });
 
-  it('does not disable schedules on a prewarm-only lead wake when the workspace lookup fails, but still disables on the real due run', async () => {
+  it('does not disable schedules on an early alarm when the workspace lookup fails, but still disables on the real due run', async () => {
     const { userId } = await createUser(testEnv, testEmail(), 'password123', 'Cron Owner');
     const { org } = await createOrg(testEnv, 'Cron Org', userId);
     const workspaces = await listUserWorkspaces(testEnv, userId, org.id);
@@ -1042,8 +1041,8 @@ export class AutomationWorkflow extends WorkflowEntrypoint {
       instance.ctx.storage.sql.exec("DELETE FROM workspace_info WHERE key = 'data'");
     });
 
-    // Early prewarm-only lead wake (before next_run_at): the failure must NOT
-    // disable the schedule — the real run still deserves its chance.
+    // Early wake (before next_run_at): the failure must NOT disable the
+    // schedule — the real run still deserves its chance.
     useFixedTime(new Date(nextRun - 5_000).toISOString());
     await cronStub.runDueAutomationsForTest(workspaceId!);
     const afterLead = (await cronStub.listScheduledPrompts(workspaceId!))[0];

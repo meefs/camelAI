@@ -27,11 +27,7 @@ export type {
   ProjectDependencyResult,
 } from "./project-build-contracts.js";
 export { buildLogTail, cleanBuildLog } from "./project-build-result-policy.js";
-export {
-  prewarmProjectBuildSandbox,
-  prewarmWorkspaceBuildSandboxes,
-  projectBuildSandboxKey,
-} from "./project-build-sandbox-lifecycle.js";
+export { projectBuildSandboxKey } from "./project-build-sandbox-lifecycle.js";
 export { collectWorkerBundleFromSandbox } from "./project-worker-bundle.js";
 export type { ProjectBuildSandboxLike, ProjectWorkerBundle } from "./project-worker-bundle.js";
 

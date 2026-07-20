@@ -106,15 +106,12 @@ function loadBedrockDevVars(): Record<string, string> {
 // Attach Docker containers to the sandbox DO bindings ONLY for runs that
 // actually boot them (agent evals, the build-sandbox repro, the sandbox eval
 // prototype — all opt-in via env). Regular unit/CI runs leave the DOs
-// container-less. The binding below disables incidental per-org build-sandbox
-// prewarms from turn-start and cron paths, because workerd reports the missing
-// container from the DO constructor as an unhandled rejection even when the
-// caller catches the RPC failure. With containers attached, those same paths make workerd boot real
-// images — and on runners without the images (CI has neither the sandbox
-// images nor the cloudflare/proxy-everything egress interceptor), the
-// container client's background monitor rejects with "Container failed to
-// start" OUTSIDE any test's try/catch, failing the run on unhandled errors
-// even when every test passes.
+// container-less. With containers attached, workerd boots real images — and on
+// runners without the images (CI has neither the sandbox images nor the
+// cloudflare/proxy-everything egress interceptor), the container client's
+// background monitor rejects with "Container failed to start" OUTSIDE any
+// test's try/catch, failing the run on unhandled errors even when every test
+// passes.
 const runBootsContainers =
   process.env.RUN_AGENT_EVALS === '1' ||
   process.env.RUN_PROJECT_BUILD_SANDBOX_REPRO === '1' ||
@@ -136,9 +133,6 @@ export default defineConfig({
       miniflare: {
         bindings: {
           ...loadBedrockDevVars(),
-          ...(runBootsContainers
-            ? {}
-            : { DISABLE_PROJECT_BUILD_SANDBOX_PREWARM: '1' }),
         },
         compatibilityDate: '2026-03-24',
         compatibilityFlags: ['nodejs_compat'],
