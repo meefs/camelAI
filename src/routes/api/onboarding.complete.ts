@@ -6,6 +6,7 @@ import {
   resolveOrgBillingAccess,
 } from "@/lib/billing.server";
 import { getEffectiveLlmProviderConfig } from "@/lib/selfhost-ai-provider";
+import { associateAttributionWithUser } from "@/lib/marketing-attribution.server";
 
 type OnboardingAccessChoice = "byok" | "existing" | null;
 
@@ -87,6 +88,7 @@ export async function action({ request, context }: Route.ActionArgs) {
   if (!authContext.onboarding?.completed_at) {
     await userStub.updateOnboarding({ completed_at: Date.now() });
   }
+  await associateAttributionWithUser(request, env.APP_KV, authContext.user.id);
 
   return Response.json({
     success: true,

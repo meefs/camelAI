@@ -1,21 +1,23 @@
-const ATTRIBUTION_STORAGE_KEY = "camelai_marketing_attribution_v1";
-const TRACKED_EVENT_PREFIX = "camelai_marketing_event_v1:";
+export type MarketingAttribution = Partial<
+  Record<
+    | "gclid"
+    | "gbraid"
+    | "wbraid"
+    | "gad_source"
+    | "_gl"
+    | "utm_source"
+    | "utm_medium"
+    | "utm_campaign"
+    | "utm_term"
+    | "utm_content",
+    string
+  >
+>;
 
-const ATTRIBUTION_QUERY_KEYS = [
-  "gclid",
-  "gbraid",
-  "wbraid",
-  "gad_source",
-  "_gl",
-  "utm_source",
-  "utm_medium",
-  "utm_campaign",
-  "utm_term",
-  "utm_content",
-] as const;
-
-type AttributionKey = (typeof ATTRIBUTION_QUERY_KEYS)[number];
-export type MarketingAttribution = Partial<Record<AttributionKey, string>>;
+type AttributionEnvelope = {
+  id: string | null;
+  attribution: MarketingAttribution;
+};
 
 declare global {
   interface Window {
@@ -24,34 +26,44 @@ declare global {
   }
 }
 
-function readStoredAttribution(): MarketingAttribution {
-  try {
-    return JSON.parse(localStorage.getItem(ATTRIBUTION_STORAGE_KEY) ?? "{}") as MarketingAttribution;
-  } catch {
-    return {};
-  }
+let attributionRequest: Promise<AttributionEnvelope> | null = null;
+let attributionEnvelope: AttributionEnvelope = { id: null, attribution: {} };
+const trackedEvents = new Set<string>();
+
+export function initializeMarketingAttribution(
+  search = window.location.search,
+): Promise<AttributionEnvelope> {
+  if (attributionRequest) return attributionRequest;
+  const attributionId = new URLSearchParams(search).get("attribution_id");
+  attributionRequest = fetch("/api/marketing-attribution", {
+    method: attributionId ? "POST" : "GET",
+    headers: attributionId ? { "Content-Type": "application/json" } : undefined,
+    body: attributionId
+      ? JSON.stringify({ attributionId, search: window.location.search })
+      : undefined,
+  })
+    .then((response) => {
+      if (!response.ok) throw new Error("Failed to initialize attribution");
+      return response.json() as Promise<AttributionEnvelope>;
+    })
+    .then((envelope) => {
+      attributionEnvelope = envelope;
+      return envelope;
+    })
+    .catch(() => attributionEnvelope);
+  return attributionRequest;
 }
 
-export function captureMarketingAttribution(search = window.location.search): MarketingAttribution {
-  const params = new URLSearchParams(search);
-  const current = Object.fromEntries(
-    ATTRIBUTION_QUERY_KEYS.flatMap((key) => {
-      const value = params.get(key)?.trim();
-      return value ? [[key, value]] : [];
-    }),
-  ) as MarketingAttribution;
-  const combined = { ...readStoredAttribution(), ...current };
-  if (Object.keys(combined).length > 0) {
-    localStorage.setItem(ATTRIBUTION_STORAGE_KEY, JSON.stringify(combined));
-  }
-  return combined;
-}
-
-export function trackMarketingEvent(
+export async function trackMarketingEvent(
   event: string,
   properties: Record<string, unknown> = {},
-): boolean {
-  const payload = { ...captureMarketingAttribution(), ...properties };
+): Promise<boolean> {
+  const envelope = await initializeMarketingAttribution();
+  const payload = {
+    ...envelope.attribution,
+    attribution_id: envelope.id,
+    ...properties,
+  };
   if (window.zaraz?.track) {
     window.zaraz.track(event, payload);
     return true;
@@ -63,14 +75,14 @@ export function trackMarketingEvent(
   return false;
 }
 
-export function trackMarketingEventOnce(
+export async function trackMarketingEventOnce(
   event: string,
   dedupeId: string,
   properties: Record<string, unknown> = {},
-) {
-  const key = `${TRACKED_EVENT_PREFIX}${event}:${dedupeId}`;
-  if (localStorage.getItem(key)) return;
-  if (trackMarketingEvent(event, properties)) {
-    localStorage.setItem(key, new Date().toISOString());
+): Promise<void> {
+  const key = `${event}:${dedupeId}`;
+  if (trackedEvents.has(key)) return;
+  if (await trackMarketingEvent(event, { event_id: key, ...properties })) {
+    trackedEvents.add(key);
   }
 }

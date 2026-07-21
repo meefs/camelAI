@@ -1,65 +1,89 @@
-import {
-  captureMarketingAttribution,
-  trackMarketingEventOnce,
-} from "@/lib/marketing-attribution.client";
-
 describe("marketing attribution", () => {
   beforeEach(() => {
-    const values = new Map<string, string>();
-    const storage = {
-      getItem: (key: string) => values.get(key) ?? null,
-      setItem: (key: string, value: string) => values.set(key, value),
-      removeItem: (key: string) => values.delete(key),
-      clear: () => values.clear(),
-      key: (index: number) => Array.from(values.keys())[index] ?? null,
-      get length() {
-        return values.size;
-      },
-    } satisfies Storage;
-    Object.defineProperty(globalThis, "localStorage", {
-      configurable: true,
-      value: storage,
-    });
+    vi.resetModules();
+    vi.restoreAllMocks();
     delete window.zaraz;
     delete window.gtag;
   });
 
-  it("captures Google click IDs and UTM parameters", () => {
-    expect(
-      captureMarketingAttribution(
-        "?gclid=test-click&utm_source=google&utm_campaign=brand&ignored=nope",
+  it("exchanges an opaque attribution ID for the KV-backed record", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      Response.json({
+        id: "11111111-1111-1111-1111-111111111111",
+        attribution: { gclid: "test-click", utm_source: "google" },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const { initializeMarketingAttribution } = await import(
+      "@/lib/marketing-attribution.client"
+    );
+
+    await expect(
+      initializeMarketingAttribution(
+        "?attribution_id=11111111-1111-1111-1111-111111111111",
       ),
-    ).toEqual({
-      gclid: "test-click",
-      utm_source: "google",
-      utm_campaign: "brand",
-    });
+    ).resolves.toMatchObject({ attribution: { gclid: "test-click" } });
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/marketing-attribution",
+      expect.objectContaining({ method: "POST" }),
+    );
   });
 
-  it("retains the first click ID when later pages have no attribution query", () => {
-    captureMarketingAttribution("?gclid=test-click&utm_source=google");
-    expect(captureMarketingAttribution("?page=chat")).toEqual({
-      gclid: "test-click",
-      utm_source: "google",
-    });
+  it("recovers attribution from the first-party dev cookie", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      Response.json({ id: "journey", attribution: { gclid: "test-click" } }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const { initializeMarketingAttribution } = await import(
+      "@/lib/marketing-attribution.client"
+    );
+
+    await initializeMarketingAttribution("");
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/marketing-attribution",
+      expect.objectContaining({ method: "GET" }),
+    );
   });
 
-  it("sends conversion events once through Zaraz", () => {
+  it("sends KV-enriched conversion events once through Zaraz", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        Response.json({ id: "journey", attribution: { gclid: "test-click" } }),
+      ),
+    );
     const track = vi.fn();
     window.zaraz = { track };
+    const { trackMarketingEventOnce } = await import(
+      "@/lib/marketing-attribution.client"
+    );
 
-    trackMarketingEventOnce("sign_up", "attempt-1", { method: "email" });
-    trackMarketingEventOnce("sign_up", "attempt-1", { method: "email" });
+    await trackMarketingEventOnce("sign_up", "attempt-1", { method: "email" });
+    await trackMarketingEventOnce("sign_up", "attempt-1", { method: "email" });
 
     expect(track).toHaveBeenCalledOnce();
-    expect(track).toHaveBeenCalledWith("sign_up", { method: "email" });
+    expect(track).toHaveBeenCalledWith(
+      "sign_up",
+      expect.objectContaining({
+        gclid: "test-click",
+        attribution_id: "journey",
+        method: "email",
+      }),
+    );
   });
 
-  it("does not mark an event sent before an analytics provider is ready", () => {
-    trackMarketingEventOnce("sign_up", "attempt-1");
+  it("does not mark an event sent before an analytics provider is ready", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(Response.json({ id: null, attribution: {} })),
+    );
+    const { trackMarketingEventOnce } = await import(
+      "@/lib/marketing-attribution.client"
+    );
+    await trackMarketingEventOnce("sign_up", "attempt-1");
     const track = vi.fn();
     window.zaraz = { track };
-    trackMarketingEventOnce("sign_up", "attempt-1");
+    await trackMarketingEventOnce("sign_up", "attempt-1");
 
     expect(track).toHaveBeenCalledOnce();
   });

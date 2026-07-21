@@ -171,10 +171,10 @@ export default function OnboardingRoute() {
           redirectTo?: string;
         };
 
-        trackMarketingEventOnce("sign_up", "onboarding-complete", {
+        void trackMarketingEventOnce("sign_up", "onboarding-complete", {
           completion_basis: "onboarding_complete",
         });
-        trackMarketingEventOnce(
+        void trackMarketingEventOnce(
           "new_camel_activation",
           "onboarding-complete",
           { completion_basis: "onboarding_complete" },

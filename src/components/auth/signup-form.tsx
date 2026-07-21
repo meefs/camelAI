@@ -65,7 +65,7 @@ export function SignupForm({
       return;
     }
     if (fetcher.state === "idle" && fetcher.data && !fetcher.data.error) {
-      trackMarketingEventOnce("sign_up", signupAttemptId.current, {
+      void trackMarketingEventOnce("sign_up", signupAttemptId.current, {
         method: "email",
       });
       navigate(redirectTo);
