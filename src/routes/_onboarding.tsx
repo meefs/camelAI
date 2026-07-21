@@ -14,6 +14,7 @@ import { hasCompletedOnboarding } from "@/lib/onboarding";
 import { OnboardingLayout } from "@/components/onboarding/onboarding-layout";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
+import { trackMarketingEventOnce } from "@/lib/marketing-attribution.client";
 
 interface OnboardingLoaderData {
   userEmail: string;
@@ -170,6 +171,14 @@ export default function OnboardingRoute() {
           redirectTo?: string;
         };
 
+        trackMarketingEventOnce("sign_up", "onboarding-complete", {
+          completion_basis: "onboarding_complete",
+        });
+        trackMarketingEventOnce(
+          "new_camel_activation",
+          "onboarding-complete",
+          { completion_basis: "onboarding_complete" },
+        );
         navigate(data.redirectTo || "/chat");
       })();
 
