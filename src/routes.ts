@@ -143,6 +143,10 @@ export default [
   route("api/orgs", "routes/api/orgs.ts"),
   route("api/onboarding/complete", "routes/api/onboarding.complete.ts"),
   route(
+    "api/marketing-attribution",
+    "routes/api/marketing-attribution.ts",
+  ),
+  route(
     "api/billing/start-subscription",
     "routes/api/billing.start-subscription.ts",
   ),

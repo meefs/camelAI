@@ -15,6 +15,7 @@ import { Toaster } from '@/components/ui/sonner';
 import { ThemeProvider } from '@/components/theme-provider';
 import { NavigationProgress } from '@/components/ui/navigation-progress';
 import { AppLoadingOverlay } from '@/components/app-loading-overlay';
+import { MarketingAttributionTracker } from '@/components/marketing-attribution-tracker';
 import {
   reportClientError,
   scheduleClientErrorReload,
@@ -104,6 +105,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
           disableTransitionOnChange
         >
           <ThemeColorSync />
+          <MarketingAttributionTracker />
           <NavigationProgress />
           {children}
           <Toaster />

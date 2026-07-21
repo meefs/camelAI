@@ -12,6 +12,7 @@ import { AlertCircle } from "lucide-react";
 import { FullLogo } from "@/components/ui/logo";
 import { OAuthButtons, OAuthDivider } from "@/components/auth/oauth-buttons";
 import { TurnstileWidget } from "@/components/auth/turnstile-widget";
+import { trackMarketingEventOnce } from "@/lib/marketing-attribution.client";
 
 const inspirationalPrompts = [
   "Alert me in Slack whenever someone signs up with a .edu email address",
@@ -64,6 +65,9 @@ export function SignupForm({
       return;
     }
     if (fetcher.state === "idle" && fetcher.data && !fetcher.data.error) {
+      void trackMarketingEventOnce("sign_up", signupAttemptId.current, {
+        method: "email",
+      });
       navigate(redirectTo);
     }
   }, [fetcher.state, fetcher.data, navigate, redirectTo]);
