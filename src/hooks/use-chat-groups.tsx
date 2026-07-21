@@ -23,6 +23,7 @@ import { useAuthData } from "@/hooks/use-auth-data";
 import { getChatDebugFlags } from "@/lib/chat-debug-flags";
 import { maxThreadStatus } from "@/lib/thread-status";
 import { isPlaceholderThreadTitle } from "@/lib/thread-title";
+import { writePinnedGroupCountHint } from "@/lib/pinned-groups-cookie";
 import {
   ChatGroupsContext,
 } from "@/hooks/chat-groups-context";
@@ -317,7 +318,7 @@ export function getChatGroupRecency(
 
 export function orderChatGroupsForDisplay(
   groups: ChatGroupView[],
-  pinnedFirstGroupId: string | null = null,
+  activeFirstGroupId: string | null = null,
   optimisticPatches: ReadonlyMap<
     string,
     OptimisticUserMessageRecencyPatch
@@ -328,11 +329,11 @@ export function orderChatGroupsForDisplay(
       getChatGroupRecency(b, optimisticPatches) -
       getChatGroupRecency(a, optimisticPatches),
   );
-  if (pinnedFirstGroupId !== null) {
-    const index = sorted.findIndex((group) => group.id === pinnedFirstGroupId);
+  if (activeFirstGroupId !== null) {
+    const index = sorted.findIndex((group) => group.id === activeFirstGroupId);
     if (index > 0) {
-      const [pinned] = sorted.splice(index, 1);
-      sorted.unshift(pinned);
+      const [activeFirst] = sorted.splice(index, 1);
+      sorted.unshift(activeFirst);
     }
   }
   return sorted;
@@ -406,6 +407,7 @@ function mergeActiveGroupWithExistingGroup(
     ...activeGroup,
     name: existingGroup.name || activeGroup.name,
     avatar: existingGroup.avatar,
+    pinned_at: existingGroup.pinned_at,
     open_thread_ids: openThreadIds,
     closed_thread_ids: closedThreadIds,
     open_threads: openThreads,
@@ -603,6 +605,44 @@ export function applyLocalGroupAvatarPatches(
       ...group,
       avatar: patch.avatar,
     };
+  });
+  return changed ? nextGroups : source;
+}
+
+export function reconcileGroupPinnedPatchesWithGroups(
+  patches: ReadonlyMap<string, number | null>,
+  groups: ChatGroupView[] | undefined,
+): Map<string, number | null> {
+  if (patches.size === 0 || !groups) {
+    return patches as Map<string, number | null>;
+  }
+
+  const groupsById = new Map(groups.map((group) => [group.id, group] as const));
+  let next: Map<string, number | null> | null = null;
+  for (const [groupId, pinnedAt] of patches) {
+    const refreshedGroup = groupsById.get(groupId);
+    if (!refreshedGroup) continue;
+    const pinStateMatches =
+      (refreshedGroup.pinned_at !== null) === (pinnedAt !== null);
+    if (!pinStateMatches) continue;
+    next ??= new Map(patches);
+    next.delete(groupId);
+  }
+  return next ?? (patches as Map<string, number | null>);
+}
+
+export function applyLocalGroupPinnedPatches(
+  source: ChatGroupView[],
+  pinnedPatches: ReadonlyMap<string, number | null>,
+): ChatGroupView[] {
+  if (pinnedPatches.size === 0) return source;
+  let changed = false;
+  const nextGroups = source.map((group) => {
+    if (!pinnedPatches.has(group.id)) return group;
+    const pinnedAt = pinnedPatches.get(group.id) ?? null;
+    if (group.pinned_at === pinnedAt) return group;
+    changed = true;
+    return { ...group, pinned_at: pinnedAt };
   });
   return changed ? nextGroups : source;
 }
@@ -952,6 +992,9 @@ export function ChatGroupsProvider({
   const [localGroupAvatarPatches, setLocalGroupAvatarPatches] = useState<
     Map<string, GroupAvatarPatch>
   >(() => new Map());
+  const [localGroupPinnedPatches, setLocalGroupPinnedPatches] = useState<
+    Map<string, number | null>
+  >(() => new Map());
   const [expiredPendingGroupAvatarIds, setExpiredPendingGroupAvatarIds] = useState<
     Set<string>
   >(() => new Set());
@@ -1015,7 +1058,29 @@ export function ChatGroupsProvider({
         { snapshotVersion: resolvedChatGroupsSnapshotVersionRef.current },
       ),
     );
+    setLocalGroupPinnedPatches((current) =>
+      reconcileGroupPinnedPatchesWithGroups(
+        current,
+        resolvedChatGroups ?? undefined,
+      ),
+    );
   }, [resolvedChatGroups]);
+
+  useEffect(() => {
+    if (
+      !currentWorkspaceId ||
+      resolvedChatGroups === null ||
+      resolvedChatGroups.some(
+        (group) => group.workspace_id !== currentWorkspaceId,
+      )
+    ) {
+      return;
+    }
+    writePinnedGroupCountHint(
+      currentWorkspaceId,
+      resolvedChatGroups.filter((group) => group.pinned_at !== null).length,
+    );
+  }, [currentWorkspaceId, resolvedChatGroups]);
 
   useEffect(() => {
     if (typeof window === "undefined" || localGroupAvatarPatches.size === 0) {
@@ -1091,10 +1156,47 @@ export function ChatGroupsProvider({
   }, []);
 
   useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    const handleLocalGroupPinned = (event: Event) => {
+      const detail = (event as CustomEvent<unknown>).detail;
+      if (!detail || typeof detail !== "object") return;
+      const payload = detail as { groupId?: unknown; pinnedAt?: unknown };
+      if (
+        typeof payload.groupId !== "string" ||
+        (payload.pinnedAt !== null &&
+          (typeof payload.pinnedAt !== "number" ||
+            !Number.isFinite(payload.pinnedAt)))
+      ) {
+        return;
+      }
+      const pinnedAt = payload.pinnedAt as number | null;
+      setLocalGroupPinnedPatches((current) => {
+        if (current.has(payload.groupId as string)) {
+          const currentPinnedAt = current.get(payload.groupId as string) ?? null;
+          if (currentPinnedAt === pinnedAt) return current;
+        }
+        const next = new Map(current);
+        next.set(payload.groupId as string, pinnedAt);
+        return next;
+      });
+    };
+
+    window.addEventListener("camelai:chat-group-pinned", handleLocalGroupPinned);
+    return () => {
+      window.removeEventListener(
+        "camelai:chat-group-pinned",
+        handleLocalGroupPinned,
+      );
+    };
+  }, []);
+
+  useEffect(() => {
     const workspaceChanged = previousWorkspaceIdRef.current !== currentWorkspaceId;
     previousWorkspaceIdRef.current = currentWorkspaceId;
     if (workspaceChanged) {
       setOptimisticUserMessageRecencyPatches(new Map());
+      setLocalGroupPinnedPatches(new Map());
     }
     const markRawSnapshotChanged = () => {
       if (rawChatGroupsRef.current === rawChatGroups) return;
@@ -1120,6 +1222,7 @@ export function ChatGroupsProvider({
     if (workspaceChanged) {
       setResolvedChatGroups(null);
       setLocalGroupAvatarPatches(new Map());
+      setLocalGroupPinnedPatches(new Map());
       setExpiredPendingGroupAvatarIds(new Set());
       pendingGroupAvatarStartedAtRef.current.clear();
     }
@@ -1727,8 +1830,12 @@ export function ChatGroupsProvider({
       source,
       localGroupAvatarPatches,
     );
-    const withLiveStatuses = applyLiveRunningStatuses(
+    const pinnedPatchedSource = applyLocalGroupPinnedPatches(
       avatarPatchedSource,
+      localGroupPinnedPatches,
+    );
+    const withLiveStatuses = applyLiveRunningStatuses(
+      pinnedPatchedSource,
       runningThreadIds,
       hasStatusSnapshot,
       activeThreadId,
@@ -1737,7 +1844,7 @@ export function ChatGroupsProvider({
     );
     // Sorting must run last: the snapshot-bounded optimistic recency overlay
     // lets a local send run ahead of the server key without mutating canonical
-    // timestamps. Pin the active group to the top only when it is missing from
+    // timestamps. Keep the active group first only when it is missing from
     // the LIMIT-bounded loader list (mergeActiveChatGroup prepends it); a strict
     // recency sort would sink it below the fold.
     return orderChatGroupsForDisplay(
@@ -1749,6 +1856,7 @@ export function ChatGroupsProvider({
     activeThreadId,
     hasStatusSnapshot,
     localGroupAvatarPatches,
+    localGroupPinnedPatches,
     localThreadSummaryPatches,
     matches,
     optimisticUserMessageRecencyPatches,

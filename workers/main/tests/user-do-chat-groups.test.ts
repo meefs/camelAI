@@ -23,10 +23,49 @@ describe("UserDO chat groups", () => {
     };
   }
 
-  it("migrates UserDO to schema V11", async () => {
+  it("migrates UserDO to schema V12", async () => {
     const { userId } = await createUserStub();
 
-    await expect(getUserSchemaVersion(testEnv, userId)).resolves.toBe(11);
+    await expect(getUserSchemaVersion(testEnv, userId)).resolves.toBe(12);
+  });
+
+  it("adds pinned_at to V11 rows idempotently without losing group data", async () => {
+    const { userId, userStub } = await createUserStub();
+    const orgId = crypto.randomUUID();
+    const workspaceId = crypto.randomUUID();
+    const group = await userStub.createChatGroup(orgId, workspaceId, {
+      name: "Existing group",
+    });
+    await userStub.updateChatGroup(group.id, {
+      avatar: { color: "#e0476b", content: "sparkles" },
+    });
+
+    await runInDurableObject(userStub, async (instance) => {
+      const sql = instance.ctx.storage.sql;
+      sql.exec("ALTER TABLE chat_groups DROP COLUMN pinned_at");
+      instance.ctx.storage.kv.put("schemaVersion", 11);
+      (instance as unknown as { migrate(): void }).migrate();
+
+      expect(
+        sql
+          .exec<{ name: string }>("PRAGMA table_info(chat_groups)")
+          .toArray()
+          .map((column) => column.name),
+      ).toContain("pinned_at");
+    });
+
+    await expect(getUserSchemaVersion(testEnv, userId)).resolves.toBe(12);
+    await expect(userStub.getChatGroup(group.id)).resolves.toMatchObject({
+      name: "Existing group",
+      pinned_at: null,
+      avatar: { color: "#E0476B", content: "sparkles", status: "user" },
+    });
+
+    await runInDurableObject(userStub, async (instance) => {
+      instance.ctx.storage.kv.put("schemaVersion", 11);
+      (instance as unknown as { migrate(): void }).migrate();
+    });
+    await expect(getUserSchemaVersion(testEnv, userId)).resolves.toBe(12);
   });
 
   it("classifies V10 avatar rows without changing group recency", async () => {
@@ -107,7 +146,7 @@ describe("UserDO chat groups", () => {
       (instance as unknown as { migrate(): void }).migrate();
     });
 
-    await expect(getUserSchemaVersion(testEnv, userId)).resolves.toBe(11);
+    await expect(getUserSchemaVersion(testEnv, userId)).resolves.toBe(12);
     await expect(userStub.getChatGroup(generatedEmoji.id)).resolves.toMatchObject({
       updated_at: originalUpdatedAt,
       avatar: {
@@ -182,7 +221,7 @@ describe("UserDO chat groups", () => {
       (instance as unknown as { migrate(): void }).migrate();
     });
 
-    await expect(getUserSchemaVersion(testEnv, userId)).resolves.toBe(11);
+    await expect(getUserSchemaVersion(testEnv, userId)).resolves.toBe(12);
     await expect(userStub.getChatGroup(legacyEmoji.id)).resolves.toMatchObject({
       avatar: { content: DEFAULT_CHAT_GROUP_ICON, status: "pending" },
     });
@@ -198,7 +237,7 @@ describe("UserDO chat groups", () => {
         instance.ctx.storage.kv.put("schemaVersion", 10);
         (instance as unknown as { migrate(): void }).migrate();
       });
-      await expect(getUserSchemaVersion(testEnv, userId)).resolves.toBe(11);
+      await expect(getUserSchemaVersion(testEnv, userId)).resolves.toBe(12);
       await expect(userStub.getChatGroup(legacyEmoji.id)).resolves.toMatchObject({
         avatar: { content: DEFAULT_CHAT_GROUP_ICON, status: "pending" },
       });
@@ -633,6 +672,103 @@ describe("UserDO chat groups", () => {
     expect(all).toHaveLength(12);
     expect(visible[0].name).toBe("Group 11");
     expect(visible[9].name).toBe("Group 2");
+  });
+
+  it("pins idempotently without changing recency and unpins back to null", async () => {
+    const { userStub } = await createUserStub();
+    const orgId = crypto.randomUUID();
+    const workspaceId = crypto.randomUUID();
+    const group = await userStub.createChatGroup(orgId, workspaceId, {
+      name: "Pin me",
+    });
+
+    expect(group.pinned_at).toBeNull();
+    await userStub.updateChatGroup(group.id, { pinned: true });
+    const pinned = await userStub.getChatGroup(group.id);
+    expect(pinned?.pinned_at).toEqual(expect.any(Number));
+    expect(pinned?.updated_at).toBe(group.updated_at);
+
+    await new Promise((resolve) => setTimeout(resolve, 2));
+    await userStub.updateChatGroup(group.id, { pinned: true });
+    await expect(userStub.getChatGroup(group.id)).resolves.toMatchObject({
+      pinned_at: pinned?.pinned_at,
+      updated_at: group.updated_at,
+    });
+
+    await userStub.updateChatGroup(group.id, {
+      name: "Pinned and renamed",
+      pinned: false,
+    });
+    await expect(userStub.getChatGroup(group.id)).resolves.toMatchObject({
+      name: "Pinned and renamed",
+      pinned_at: null,
+      updated_at: group.updated_at,
+    });
+
+    await userStub.updateChatGroup(group.id, { pinned: false });
+    await expect(userStub.getChatGroup(group.id)).resolves.toMatchObject({
+      pinned_at: null,
+      updated_at: group.updated_at,
+    });
+  });
+
+  it("returns all pinned groups first and limits only scoped unpinned recents", async () => {
+    const { userStub } = await createUserStub();
+    const orgId = crypto.randomUUID();
+    const workspaceId = crypto.randomUUID();
+    const otherWorkspaceId = crypto.randomUUID();
+    const groups = [];
+    for (let index = 0; index < 5; index += 1) {
+      groups.push(
+        await userStub.createChatGroup(orgId, workspaceId, {
+          name: `Group ${index}`,
+        }),
+      );
+    }
+    const other = await userStub.createChatGroup(orgId, otherWorkspaceId, {
+      name: "Other workspace",
+    });
+
+    await runInDurableObject(userStub, async (instance) => {
+      const sql = instance.ctx.storage.sql;
+      groups.forEach((group, index) => {
+        sql.exec(
+          "UPDATE chat_groups SET updated_at = ? WHERE id = ?",
+          (index + 1) * 100,
+          group.id,
+        );
+      });
+      sql.exec(
+        "UPDATE chat_groups SET pinned_at = ? WHERE id = ?",
+        200,
+        groups[0].id,
+      );
+      sql.exec(
+        "UPDATE chat_groups SET pinned_at = ? WHERE id = ?",
+        100,
+        groups[4].id,
+      );
+      sql.exec(
+        "UPDATE chat_groups SET pinned_at = ? WHERE id = ?",
+        50,
+        other.id,
+      );
+    });
+
+    const visible = await userStub.listChatGroups(orgId, workspaceId, {
+      limit: 2,
+    });
+    expect(visible.map((group) => group.id)).toEqual([
+      groups[4].id,
+      groups[0].id,
+      groups[3].id,
+      groups[2].id,
+    ]);
+    expect(new Set(visible.map((group) => group.id)).size).toBe(4);
+    expect(visible.map((group) => group.id)).not.toContain(other.id);
+    await expect(
+      userStub.listChatGroups(orgId, otherWorkspaceId, { limit: 1 }),
+    ).resolves.toMatchObject([{ id: other.id, pinned_at: 50 }]);
   });
 
   it("orders groups by last user message activity rather than selection", async () => {

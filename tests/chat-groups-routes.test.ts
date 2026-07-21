@@ -41,6 +41,7 @@ const group = {
   workspace_id: "workspace_1",
   name: "Launch",
   avatar: { color: "#4F46E5", content: "💬" },
+  pinned_at: null,
   last_active_thread_id: null,
   created_at: 1,
   updated_at: 1,
@@ -319,6 +320,35 @@ describe("chat group tab routes", () => {
       name: "Planning",
       avatar: { color: "#E0476B", content: "waves" },
     });
+  });
+
+  it.each([true, false])("updates a group's pinned state through PATCH", async (pinned) => {
+    const response = await groupRoute.action(makePatchGroupArgs({ pinned }));
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({ success: true });
+    expect(updateChatGroupMock).toHaveBeenCalledWith("group_1", {
+      name: undefined,
+      avatar: undefined,
+      pinned,
+    });
+  });
+
+  it("rejects invalid and empty pin PATCH payloads", async () => {
+    const invalidResponse = await groupRoute.action(
+      makePatchGroupArgs({ pinned: "yes" }),
+    );
+    const emptyResponse = await groupRoute.action(makePatchGroupArgs({}));
+
+    expect(invalidResponse.status).toBe(400);
+    await expect(invalidResponse.json()).resolves.toEqual({
+      error: "Invalid pinned state",
+    });
+    expect(emptyResponse.status).toBe(400);
+    await expect(emptyResponse.json()).resolves.toEqual({
+      error: "Name, avatar, or pinned required",
+    });
+    expect(updateChatGroupMock).not.toHaveBeenCalled();
   });
 
   it("rejects invalid PATCH avatar payloads", async () => {

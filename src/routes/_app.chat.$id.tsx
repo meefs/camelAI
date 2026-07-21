@@ -52,6 +52,7 @@ import {
   saveChatGroupRename,
   type ChatGroupRenameInput,
 } from "@/lib/chat-group-rename.client";
+import { saveChatGroupPinned } from "@/lib/chat-group-pin.client";
 import * as authDO from "@/lib/auth-do.server";
 import * as chatDO from "@/lib/chat-do.server";
 import {
@@ -1205,6 +1206,20 @@ export default function ChatPage() {
     });
   };
 
+  const toggleGroupPin = async () => {
+    if (!liveActiveChatGroup || !workspaceId) return;
+    await saveChatGroupPinned({
+      groupId: liveActiveChatGroup.id,
+      workspaceId,
+      pinned: liveActiveChatGroup.pinned_at === null,
+      currentPinnedAt: liveActiveChatGroup.pinned_at,
+      currentPinnedCount: liveChatGroups.filter(
+        (group) => group.pinned_at !== null,
+      ).length,
+      revalidate: () => revalidator.revalidate(),
+    });
+  };
+
   const reorderTabs = async (orderedThreadIds: string[]) => {
     const groupId = liveActiveChatGroup?.id ?? resolvedActiveGroupId;
     if (!groupId) return;
@@ -1259,6 +1274,7 @@ export default function ChatPage() {
             groupId={liveActiveChatGroup.id}
             groupName={liveActiveChatGroup.name}
             groupAvatar={liveActiveChatGroup.avatar}
+            groupPinnedAt={liveActiveChatGroup.pinned_at}
             openTabs={openTabs}
             closedTabs={closedTabs}
             activeThreadId={displayThreadId}
@@ -1272,6 +1288,7 @@ export default function ChatPage() {
             }
             onReopenClosedTab={reopenTab}
             onRenameGroup={renameGroup}
+            onTogglePin={toggleGroupPin}
             onMoveTabToGroup={moveTabToGroup}
           />
         ) : null}

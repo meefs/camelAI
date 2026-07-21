@@ -37,6 +37,7 @@ export interface ChatGroup {
   workspace_id: string;
   name: string;
   avatar: ChatGroupAvatar;
+  pinned_at: number | null;
   last_active_thread_id: string | null;
   created_at: number;
   updated_at: number;

@@ -2,8 +2,8 @@
 
 import { useCallback, useEffect, useState } from "react"
 import { Cable, CircleHelp, Clock, LayoutGrid, MessagesSquare, Plus, Sparkles } from "lucide-react"
-import { Link, useFetcher, useLocation, useNavigate, useRevalidator } from "react-router"
-import type { ChatGroupThreadSummary } from "@/types"
+import { Link, useFetcher, useLocation, useNavigate, useRevalidator, useRouteLoaderData } from "react-router"
+import type { ChatGroupThreadSummary, ChatGroupView } from "@/types"
 
 import { OpenAiSignInDialog } from "@/components/billing/openai-sign-in-dialog"
 import { PlanUpgradeDialog } from "@/components/billing/plan-upgrade-dialog"
@@ -61,6 +61,35 @@ interface CreditPacksResourceData {
   unavailableReason?: string | null
 }
 
+interface AppSidebarLoaderData {
+  pinnedGroupCountHint?: number
+}
+
+export function resolveChatGroupSidebarSections(
+  groups: ChatGroupView[],
+  isLoading: boolean,
+  pinnedGroupCountHint: number,
+) {
+  const pinnedGroups = groups
+    .filter((group) => group.pinned_at !== null)
+    .sort((left, right) => (left.pinned_at ?? 0) - (right.pinned_at ?? 0))
+  const recentGroups = groups.filter((group) => group.pinned_at === null)
+  const pinnedSkeletonCount = Math.min(
+    Math.max(0, pinnedGroupCountHint),
+    20,
+  )
+  return {
+    pinnedGroups,
+    recentGroups,
+    pinnedSkeletonCount,
+    showPinnedSection:
+      pinnedGroups.length > 0 ||
+      (isLoading && groups.length === 0 && pinnedSkeletonCount > 0),
+    showRecentsSection:
+      recentGroups.length > 0 || pinnedGroups.length === 0,
+  }
+}
+
 // Collapsed-rail section separator. A constant-height in-flow hairline: it
 // occupies the same 1px in both sidebar states, so toggling the rail never
 // shifts content — only opacity animates. Sitting between the two sections'
@@ -104,6 +133,20 @@ export function AppSidebar({
   const revalidator = useRevalidator()
   const { setSidebarBillingDialogOpen } = useBillingDialogPresence()
   const { groups, activeGroupId, isLoading } = useChatGroups()
+  const appLoaderData = useRouteLoaderData("routes/_app") as
+    | AppSidebarLoaderData
+    | undefined
+  const {
+    pinnedGroups,
+    recentGroups,
+    pinnedSkeletonCount,
+    showPinnedSection,
+    showRecentsSection,
+  } = resolveChatGroupSidebarSections(
+    groups,
+    isLoading,
+    appLoaderData?.pinnedGroupCountHint ?? 0,
+  )
   const isHistory = pathname === "/history"
   const isConnections = pathname === "/connections"
   const isApps = pathname === "/apps"
@@ -315,21 +358,45 @@ export function AppSidebar({
           </SidebarMenu>
         </SidebarGroup>
         {(groups.length > 0 || isLoading) && <CollapsedRailSeparator />}
-        <SidebarGroup>
-          <SidebarGroupLabel>Chat Groups</SidebarGroupLabel>
-          <ChatGroupsList
-            groups={groups}
-            activeGroupId={activeGroupId}
-            isLoading={isLoading}
-            onSelectGroup={(groupId) => {
-              const group = groups.find((entry) => entry.id === groupId)
-              navigate(group ? getGroupLandingHref(group) : "/chat")
-            }}
-            onCloseGroup={handleCloseGroup}
-            onSelectThread={handleSelectThreadFromHover}
-            onMoveThreadToGroup={handleMoveThreadToGroup}
-          />
-        </SidebarGroup>
+        {showPinnedSection ? (
+          <>
+            <SidebarGroup>
+              <SidebarGroupLabel>Pinned</SidebarGroupLabel>
+              <ChatGroupsList
+                groups={pinnedGroups}
+                activeGroupId={activeGroupId}
+                isLoading={isLoading}
+                skeletonCount={pinnedSkeletonCount}
+                emptyState={null}
+                onSelectGroup={(groupId) => {
+                  const group = groups.find((entry) => entry.id === groupId)
+                  navigate(group ? getGroupLandingHref(group) : "/chat")
+                }}
+                onCloseGroup={handleCloseGroup}
+                onSelectThread={handleSelectThreadFromHover}
+                onMoveThreadToGroup={handleMoveThreadToGroup}
+              />
+            </SidebarGroup>
+            {showRecentsSection ? <CollapsedRailSeparator /> : null}
+          </>
+        ) : null}
+        {showRecentsSection ? (
+          <SidebarGroup>
+            <SidebarGroupLabel>Chat Groups</SidebarGroupLabel>
+            <ChatGroupsList
+              groups={recentGroups}
+              activeGroupId={activeGroupId}
+              isLoading={isLoading}
+              onSelectGroup={(groupId) => {
+                const group = groups.find((entry) => entry.id === groupId)
+                navigate(group ? getGroupLandingHref(group) : "/chat")
+              }}
+              onCloseGroup={handleCloseGroup}
+              onSelectThread={handleSelectThreadFromHover}
+              onMoveThreadToGroup={handleMoveThreadToGroup}
+            />
+          </SidebarGroup>
+        ) : null}
       </SidebarContent>
       <SidebarFooter className="[--safe-area-padding-left:0.5rem] [--safe-area-padding-right:0.5rem] [--safe-area-padding-bottom:0.5rem] pl-safe pr-safe pb-safe">
         <SidebarMenu>

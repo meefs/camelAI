@@ -30,6 +30,10 @@ import { listGroupsForWorkspace } from "@/lib/chat-groups.server";
 import { getByokProviderLabel } from "@/lib/byok-providers";
 import { getEffectiveLlmProviderConfig } from "@/lib/selfhost-ai-provider";
 import { isConnectionsUiOnlySearchChange } from "@/lib/connections-route-revalidation";
+import {
+  PINNED_GROUPS_COOKIE_NAME,
+  readPinnedGroupCountHint,
+} from "@/lib/pinned-groups-cookie";
 
 const SIDEBAR_COOKIE_NAME = "sidebar_state";
 
@@ -83,6 +87,13 @@ export async function loader({ request, context }: Route.LoaderArgs) {
   if (sidebarValue === "false") {
     defaultSidebarOpen = false;
   }
+  const currentWorkspaceId = authContext.currentWorkspace?.id ?? null;
+  const pinnedGroupCountHint = currentWorkspaceId
+    ? readPinnedGroupCountHint(
+        cookies[PINNED_GROUPS_COOKIE_NAME],
+        currentWorkspaceId,
+      )
+    : 0;
 
   const embedMode =
     /^\/chat\/[^/]+$/.test(url.pathname) &&
@@ -106,6 +117,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     const responseData = {
       authState,
       defaultSidebarOpen,
+      pinnedGroupCountHint,
       showLegacyBanner: Promise.resolve(false),
       chatGroups: Promise.resolve([] as ChatGroupView[]),
       billingAccessReady: true,
@@ -173,7 +185,6 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     error: null,
   };
 
-  const currentWorkspaceId = authContext.currentWorkspace?.id ?? null;
   const actingUserId =
     authContext.user?.id ?? authContext.session?.user_id ?? null;
   const currentChatGroupsPromise: Promise<ChatGroupView[]> = currentWorkspaceId && actingUserId
@@ -212,6 +223,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
   const responseData = {
     authState,
     defaultSidebarOpen,
+    pinnedGroupCountHint,
     showLegacyBanner: showLegacyBannerPromise,
     chatGroups: currentChatGroupsPromise,
     billingAccessReady,

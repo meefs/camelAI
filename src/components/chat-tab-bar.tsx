@@ -14,6 +14,8 @@ import {
   CircleFadingPlus,
   MoreHorizontal,
   Pencil,
+  Pin,
+  PinOff,
   Plus,
   X,
 } from "lucide-react";
@@ -76,6 +78,7 @@ interface ChatTabBarProps {
   groupId: string;
   groupName: string;
   groupAvatar: Avatar;
+  groupPinnedAt: number | null;
   openTabs: ChatTab[];
   closedTabs: ChatTab[];
   activeThreadId: string | null;
@@ -87,6 +90,7 @@ interface ChatTabBarProps {
   onNewTab: () => void;
   onReopenClosedTab: (threadId: string) => void;
   onRenameGroup: (next: { name: string; avatar?: Avatar }) => void;
+  onTogglePin: () => void;
   onMoveTabToGroup: (threadId: string, targetGroupId: string | "new") => void;
 }
 
@@ -129,6 +133,7 @@ export function ChatTabBar({
   groupId,
   groupName,
   groupAvatar,
+  groupPinnedAt,
   openTabs,
   closedTabs,
   activeThreadId,
@@ -140,6 +145,7 @@ export function ChatTabBar({
   onNewTab,
   onReopenClosedTab,
   onRenameGroup,
+  onTogglePin,
   onMoveTabToGroup,
 }: ChatTabBarProps) {
   const navigate = useNavigate();
@@ -542,7 +548,12 @@ export function ChatTabBar({
                 setIsRenameGroupOpen(true);
               }}
             >
+              <Pencil />
               Rename group
+            </DropdownMenuItem>
+            <DropdownMenuItem onSelect={onTogglePin}>
+              {groupPinnedAt !== null ? <PinOff /> : <Pin />}
+              {groupPinnedAt !== null ? "Unpin group" : "Pin group"}
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>

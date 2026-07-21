@@ -59,6 +59,7 @@ import {
   saveChatGroupRename,
   type ChatGroupRenameInput,
 } from "@/lib/chat-group-rename.client";
+import { saveChatGroupPinned } from "@/lib/chat-group-pin.client";
 import { extractGroupNewChatRecentItems } from "@/lib/group-new-chat-recent-items";
 import Chat from "@/components/Chat";
 import { ChatTabBar } from "@/components/chat-tab-bar";
@@ -1155,6 +1156,19 @@ function ChatWelcomeContent({
     const groupId = liveActiveChatGroup?.id ?? resolvedActiveGroupId;
     await saveChatGroupRename(groupId, next, { revalidate: refresh });
   };
+  const toggleGroupPin = async () => {
+    if (!liveActiveChatGroup) return;
+    await saveChatGroupPinned({
+      groupId: liveActiveChatGroup.id,
+      workspaceId,
+      pinned: liveActiveChatGroup.pinned_at === null,
+      currentPinnedAt: liveActiveChatGroup.pinned_at,
+      currentPinnedCount: liveChatGroups.filter(
+        (group) => group.pinned_at !== null,
+      ).length,
+      revalidate: refresh,
+    });
+  };
   const reorderTabs = async (orderedThreadIds: string[]) => {
     const groupId = liveActiveChatGroup?.id ?? resolvedActiveGroupId;
     if (!groupId) return;
@@ -1190,6 +1204,7 @@ function ChatWelcomeContent({
           groupId={liveActiveChatGroup.id}
           groupName={liveActiveChatGroup.name}
           groupAvatar={liveActiveChatGroup.avatar}
+          groupPinnedAt={liveActiveChatGroup.pinned_at}
           openTabs={openTabs}
           closedTabs={closedTabs}
           activeThreadId={null}
@@ -1202,6 +1217,7 @@ function ChatWelcomeContent({
           }
           onReopenClosedTab={reopenTab}
           onRenameGroup={renameGroup}
+          onTogglePin={toggleGroupPin}
           onMoveTabToGroup={moveTabToGroup}
         />
       ) : (

@@ -58,6 +58,7 @@ function makeGroup(): ChatGroupSummary {
     last_active_thread_id: "thread_1",
     created_at: 100,
     updated_at: 200,
+    pinned_at: null,
     avatar: {
       color: "#4F46E5",
       content: "💬",

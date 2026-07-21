@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useRef, useState, type ReactNode } from "react";
 import { X } from "lucide-react";
 import type { ChatGroupThreadSummary, ChatGroupView, ThreadStatus } from "@/types";
 import { ChatGroupAvatar } from "@/components/avatar/chat-group-avatar";
@@ -65,6 +65,8 @@ interface ChatGroupsListProps {
   groups: ChatGroupView[];
   activeGroupId: string | null;
   isLoading?: boolean;
+  skeletonCount?: number;
+  emptyState?: ReactNode | null;
   onSelectGroup: (groupId: string) => void;
   onCloseGroup: (groupId: string) => void;
   onSelectThread?: (
@@ -163,6 +165,8 @@ export function ChatGroupsList({
   groups,
   activeGroupId,
   isLoading = false,
+  skeletonCount = 5,
+  emptyState,
   onSelectGroup,
   onCloseGroup,
   onSelectThread,
@@ -181,7 +185,9 @@ export function ChatGroupsList({
   if (isLoading && groups.length === 0) {
     return (
       <SidebarMenu>
-        {Array.from({ length: 5 }).map((_, index) => (
+        {Array.from({
+          length: Math.max(0, Math.floor(skeletonCount)),
+        }).map((_, index) => (
           <SidebarMenuItem key={index}>
             <SidebarMenuSkeleton showIcon />
           </SidebarMenuItem>
@@ -191,6 +197,8 @@ export function ChatGroupsList({
   }
 
   if (groups.length === 0) {
+    if (emptyState === null) return null;
+    if (emptyState !== undefined) return emptyState;
     return (
       <div className="px-2 py-1.5 text-xs text-muted-foreground group-data-[collapsible=icon]:hidden">
         No groups yet

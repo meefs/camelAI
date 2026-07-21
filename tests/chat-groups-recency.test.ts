@@ -50,6 +50,7 @@ function makeGroup(
     workspace_id: "workspace_1",
     name: id,
     avatar: { color: "#4F46E5", content: "messages-square" },
+    pinned_at: null,
     last_active_thread_id: null,
     created_at: 1,
     updated_at: updatedAt,

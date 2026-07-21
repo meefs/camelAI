@@ -20,11 +20,16 @@ export async function action({ request, context, params }: ActionFunctionArgs) {
 
   if (request.method === "PATCH") {
     const body = (await request.json().catch(() => null)) as
-      | { name?: unknown; avatar?: unknown }
+      | { name?: unknown; avatar?: unknown; pinned?: unknown }
       | null;
-    if (!body || (body.name === undefined && body.avatar === undefined)) {
+    if (
+      !body ||
+      (body.name === undefined &&
+        body.avatar === undefined &&
+        body.pinned === undefined)
+    ) {
       return Response.json(
-        { error: "Name or avatar required" },
+        { error: "Name, avatar, or pinned required" },
         { status: 400 },
       );
     }
@@ -46,13 +51,24 @@ export async function action({ request, context, params }: ActionFunctionArgs) {
       }
       avatar = normalizedAvatar;
     }
+    let pinned: boolean | undefined;
+    if (body.pinned !== undefined) {
+      if (typeof body.pinned !== "boolean") {
+        return Response.json({ error: "Invalid pinned state" }, { status: 400 });
+      }
+      pinned = body.pinned;
+    }
     const authEnv = getAuthEnv(getEnv(context));
     const userStub = authEnv.USER.get(authEnv.USER.idFromName(userId));
     const group = await userStub.getChatGroup(groupId);
     if (!group || group.org_id !== orgId || group.workspace_id !== workspaceId) {
       return Response.json({ error: "Group not found" }, { status: 404 });
     }
-    await userStub.updateChatGroup(groupId, { name, avatar });
+    await userStub.updateChatGroup(groupId, {
+      name,
+      avatar,
+      ...(pinned === undefined ? {} : { pinned }),
+    });
     return Response.json({ success: true });
   }
 

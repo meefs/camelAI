@@ -716,7 +716,16 @@ export class UserDO extends DurableObject<DOEnv> {
       });
     }
 
-    const CURRENT_SCHEMA_VERSION = 11;
+    if (version < 12) {
+      // V12: Per-user chat group pinning.
+      try {
+        this.sql.exec("ALTER TABLE chat_groups ADD COLUMN pinned_at INTEGER");
+      } catch {
+        // Column may already exist after a partially completed migration.
+      }
+    }
+
+    const CURRENT_SCHEMA_VERSION = 12;
     if (version < CURRENT_SCHEMA_VERSION) {
       this.ctx.storage.kv.put("schemaVersion", CURRENT_SCHEMA_VERSION);
     }
@@ -1175,6 +1184,7 @@ export class UserDO extends DurableObject<DOEnv> {
       last_active_thread_id: string | null;
       created_at: number;
       updated_at: number;
+      pinned_at?: number | null;
       avatar_color?: string | null;
       avatar_content?: string | null;
       avatar_content_source?: string | null;
@@ -1191,6 +1201,7 @@ export class UserDO extends DurableObject<DOEnv> {
       org_id: group.org_id,
       workspace_id: group.workspace_id,
       name: group.name,
+      pinned_at: group.pinned_at ?? null,
       last_active_thread_id: group.last_active_thread_id ?? null,
       created_at: group.created_at,
       updated_at: group.updated_at,
@@ -1307,11 +1318,22 @@ export class UserDO extends DurableObject<DOEnv> {
     opts: { limit?: number } = {},
   ): ChatGroupSummary[] {
     const limit = Math.max(1, Math.min(opts.limit ?? 10, 1000));
-    const groups = this.sql
+    const pinnedGroups = this.sql
       .exec(
         `SELECT *
          FROM chat_groups
-         WHERE org_id = ? AND workspace_id = ?
+         WHERE org_id = ? AND workspace_id = ? AND pinned_at IS NOT NULL
+         ORDER BY pinned_at ASC`,
+        orgId,
+        workspaceId,
+      )
+      .toArray()
+      .map((row) => this.toChatGroup(row));
+    const recentGroups = this.sql
+      .exec(
+        `SELECT *
+         FROM chat_groups
+         WHERE org_id = ? AND workspace_id = ? AND pinned_at IS NULL
          ORDER BY updated_at DESC
          LIMIT ?`,
         orgId,
@@ -1320,7 +1342,9 @@ export class UserDO extends DurableObject<DOEnv> {
       )
       .toArray()
       .map((row) => this.toChatGroup(row));
-    return groups.map((group) => this.summarizeChatGroup(group));
+    return [...pinnedGroups, ...recentGroups].map((group) =>
+      this.summarizeChatGroup(group),
+    );
   }
 
   listChatGroupsForMove(orgId: string, workspaceId: string): ChatGroup[] {
@@ -1372,7 +1396,7 @@ export class UserDO extends DurableObject<DOEnv> {
 
   updateChatGroup(
     groupId: string,
-    updates: { name?: string; avatar?: Avatar },
+    updates: { name?: string; avatar?: Avatar; pinned?: boolean },
   ): void {
     this.ctx.storage.transactionSync(() => {
       if (updates.name !== undefined) {
@@ -1417,6 +1441,22 @@ export class UserDO extends DurableObject<DOEnv> {
            WHERE id = ?`,
           avatar.color,
           avatar.content,
+          groupId,
+        );
+      }
+      if (updates.pinned === true) {
+        this.sql.exec(
+          `UPDATE chat_groups
+           SET pinned_at = ?
+           WHERE id = ? AND pinned_at IS NULL`,
+          Date.now(),
+          groupId,
+        );
+      } else if (updates.pinned === false) {
+        this.sql.exec(
+          `UPDATE chat_groups
+           SET pinned_at = NULL
+           WHERE id = ? AND pinned_at IS NOT NULL`,
           groupId,
         );
       }

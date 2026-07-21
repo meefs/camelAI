@@ -16,8 +16,10 @@ import {
   ChatGroupsList,
   CLOSE_CHAT_GROUP_CONFIRMATION_SUPPRESSED_KEY,
 } from "@/components/sidebar/chat-groups-list";
+import { resolveChatGroupSidebarSections } from "@/components/sidebar/app-sidebar";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import {
+  applyLocalGroupPinnedPatches,
   applyLiveRunningStatuses,
   ChatGroupsProvider,
   getThreadIdsRequiringSnapshotRevalidation,
@@ -37,7 +39,6 @@ import {
   useChatGroups,
 } from "@/hooks/use-chat-groups";
 import { SidebarProvider } from "@/components/ui/sidebar";
-import { DEFAULT_CHAT_GROUP_ICON } from "@/lib/chat-group-icons";
 import type { ChatGroup, ChatGroupThreadSummary, ChatGroupView } from "@/types";
 
 const moveGroups: ChatGroup[] = [
@@ -47,6 +48,7 @@ const moveGroups: ChatGroup[] = [
     workspace_id: "workspace_1",
     name: "Launch",
     avatar: { color: "#4F46E5", content: "💬" },
+    pinned_at: null,
     last_active_thread_id: null,
     created_at: 1,
     updated_at: 1,
@@ -150,6 +152,9 @@ function ChatGroupsProviderProbe({ threadId = "thread_1" }: { threadId?: string 
       <div data-testid="group-avatar-status">
         {group?.avatar.status ?? ""}
       </div>
+      <div data-testid="group-pinned-at">
+        {group?.pinned_at ?? "unpinned"}
+      </div>
       <div data-testid="groups-loading">
         {isLoading ? "loading" : "loaded"}
       </div>
@@ -233,6 +238,7 @@ beforeEach(() => {
   window.localStorage.removeItem(
     "camelai:close-chat-group-confirmation-suppressed",
   );
+  document.cookie = "pinned_groups=; path=/; max-age=0";
 });
 
 function renderTabBar(overrides: Partial<React.ComponentProps<typeof ChatTabBar>> = {}) {
@@ -240,6 +246,7 @@ function renderTabBar(overrides: Partial<React.ComponentProps<typeof ChatTabBar>
     groupId: "group_1",
     groupName: "Launch",
     groupAvatar: moveGroups[0].avatar,
+    groupPinnedAt: null,
     openTabs: [
       { threadId: "thread_1", title: "API plan", model: "haiku", status: "idle" },
       {
@@ -266,6 +273,7 @@ function renderTabBar(overrides: Partial<React.ComponentProps<typeof ChatTabBar>
     onNewTab: vi.fn(),
     onReopenClosedTab: vi.fn(),
     onRenameGroup: vi.fn(),
+    onTogglePin: vi.fn(),
     onMoveTabToGroup: vi.fn(),
     ...overrides,
   };
@@ -440,6 +448,29 @@ describe("ChatTabBar", () => {
     expect(screen.getByLabelText("Search icons")).toBeInTheDocument();
   });
 
+  it("toggles the pin menu label and handler from group state", async () => {
+    const user = userEvent.setup();
+    const onPin = vi.fn();
+    const pinnedRender = renderTabBar({ onTogglePin: onPin });
+
+    await user.click(screen.getByRole("button", { name: "Group options" }));
+    const pinItem = await screen.findByRole("menuitem", { name: "Pin group" });
+    expect(pinItem.querySelector(".lucide-pin")).not.toBeNull();
+    await user.click(pinItem);
+    expect(onPin).toHaveBeenCalledTimes(1);
+
+    pinnedRender.unmount();
+    const onUnpin = vi.fn();
+    renderTabBar({ groupPinnedAt: 123, onTogglePin: onUnpin });
+    await user.click(screen.getByRole("button", { name: "Group options" }));
+    const unpinItem = await screen.findByRole("menuitem", {
+      name: "Unpin group",
+    });
+    expect(unpinItem.querySelector(".lucide-pin-off")).not.toBeNull();
+    await user.click(unpinItem);
+    expect(onUnpin).toHaveBeenCalledTimes(1);
+  });
+
   it("closes the move-to-group context submenu immediately after selecting a group", async () => {
     const onMoveTabToGroup = vi.fn();
     renderTabBar({
@@ -452,6 +483,7 @@ describe("ChatTabBar", () => {
           workspace_id: "workspace_1",
           name: "Research",
           avatar: { color: "#7C3AED", content: "🔍" },
+          pinned_at: null,
           last_active_thread_id: null,
           created_at: 2,
           updated_at: 2,
@@ -698,6 +730,33 @@ describe("ChatGroupsList", () => {
 
     expect(screen.queryByText("No groups yet")).not.toBeInTheDocument();
     expect(document.querySelectorAll('[data-sidebar="menu-skeleton"]')).toHaveLength(5);
+  });
+
+  it("supports section-specific skeleton counts and a suppressed empty state", () => {
+    const { rerender } = render(
+      <ChatGroupsList
+        groups={[]}
+        activeGroupId={null}
+        isLoading
+        skeletonCount={2}
+        emptyState={null}
+        onSelectGroup={vi.fn()}
+        onCloseGroup={vi.fn()}
+      />,
+    );
+
+    expect(document.querySelectorAll('[data-sidebar="menu-skeleton"]')).toHaveLength(2);
+    rerender(
+      <ChatGroupsList
+        groups={[]}
+        activeGroupId={null}
+        emptyState={null}
+        onSelectGroup={vi.fn()}
+        onCloseGroup={vi.fn()}
+      />,
+    );
+    expect(screen.queryByText("No groups yet")).not.toBeInTheDocument();
+    expect(document.querySelector('[data-sidebar="menu"]')).toBeNull();
   });
 
   it("renders rows in the order of the groups prop", () => {
@@ -1166,6 +1225,56 @@ describe("ChatGroupsList", () => {
   });
 });
 
+describe("chat group sidebar sections", () => {
+  it("orders pins oldest-first and keeps recents in their input order", () => {
+    const recent = { ...groupView, id: "recent", name: "Recent" };
+    const newerPin = {
+      ...groupView,
+      id: "pin_newer",
+      name: "Newer pin",
+      pinned_at: 200,
+    };
+    const olderPin = {
+      ...groupView,
+      id: "pin_older",
+      name: "Older pin",
+      pinned_at: 100,
+    };
+    const sections = resolveChatGroupSidebarSections(
+      [recent, newerPin, olderPin],
+      false,
+      0,
+    );
+
+    expect(sections.pinnedGroups.map((group) => group.id)).toEqual([
+      "pin_older",
+      "pin_newer",
+    ]);
+    expect(sections.recentGroups.map((group) => group.id)).toEqual(["recent"]);
+    expect(sections.showPinnedSection).toBe(true);
+    expect(sections.showRecentsSection).toBe(true);
+  });
+
+  it("hides empty/all-pinned sections and sizes loading pins from the hint", () => {
+    const allPinned = resolveChatGroupSidebarSections(
+      [{ ...groupView, pinned_at: 100 }],
+      true,
+      0,
+    );
+    expect(allPinned.showPinnedSection).toBe(true);
+    expect(allPinned.showRecentsSection).toBe(false);
+
+    const loading = resolveChatGroupSidebarSections([], true, 25);
+    expect(loading.showPinnedSection).toBe(true);
+    expect(loading.showRecentsSection).toBe(true);
+    expect(loading.pinnedSkeletonCount).toBe(20);
+
+    const empty = resolveChatGroupSidebarSections([], false, 0);
+    expect(empty.showPinnedSection).toBe(false);
+    expect(empty.showRecentsSection).toBe(true);
+  });
+});
+
 describe("getCloseGroupRedirect", () => {
   it("navigates away before closing the active group so the thread route cannot recreate it", () => {
     expect(getCloseGroupRedirect([groupView], "group_1", "group_1")).toBe(
@@ -1337,6 +1446,21 @@ describe("mergeActiveChatGroup", () => {
     const merged = mergeActiveChatGroup([groupView], activeGroup);
 
     expect(merged.map((group) => group.id)).toEqual(["group_new", "group_1"]);
+  });
+
+  it("keeps an active pinned group in one client-side partition", () => {
+    const pinnedGroup = { ...groupView, pinned_at: 100 };
+    const merged = mergeActiveChatGroup([pinnedGroup], pinnedGroup);
+    const patched = applyLocalGroupPinnedPatches(
+      merged,
+      new Map([[pinnedGroup.id, 200]]),
+    );
+    const pinned = patched.filter((group) => group.pinned_at !== null);
+    const recent = patched.filter((group) => group.pinned_at === null);
+
+    expect(merged).toHaveLength(1);
+    expect(pinned.map((group) => group.id)).toEqual([pinnedGroup.id]);
+    expect(recent).toEqual([]);
   });
 });
 
@@ -2064,6 +2188,47 @@ describe("ChatGroupsProvider summary patches", () => {
     );
     expect(loader).toHaveBeenCalledTimes(1);
     addEventListenerSpy.mockRestore();
+  });
+
+  it("applies pin events before revalidation and settles on loader state", async () => {
+    let loaderState = authLoaderState([groupView]);
+    const router = createMemoryRouter(
+      [
+        {
+          id: "routes/_app",
+          path: "/",
+          loader: () => loaderState,
+          element: (
+            <ChatGroupsProvider>
+              <ChatGroupsProviderProbe />
+            </ChatGroupsProvider>
+          ),
+        },
+      ],
+      { initialEntries: ["/"] },
+    );
+
+    render(<RouterProvider router={router} />);
+    expect(await screen.findByTestId("group-pinned-at")).toHaveTextContent(
+      "unpinned",
+    );
+
+    act(() => {
+      window.dispatchEvent(
+        new CustomEvent("camelai:chat-group-pinned", {
+          detail: { groupId: "group_1", pinnedAt: 123 },
+        }),
+      );
+    });
+    expect(screen.getByTestId("group-pinned-at")).toHaveTextContent("123");
+
+    loaderState = authLoaderState([{ ...groupView, pinned_at: 456 }]);
+    await act(async () => {
+      await router.revalidate();
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId("group-pinned-at")).toHaveTextContent("456");
+    });
   });
 
   it("reconciles pending avatar events with generated loader data", async () => {
