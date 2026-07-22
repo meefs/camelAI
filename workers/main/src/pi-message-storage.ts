@@ -55,6 +55,9 @@ export const PI_R2_IMAGE_REF_METADATA_KEY = "chiridionR2Image";
 export const PI_TOOL_RESULT_MAX_LINES = 2_000;
 export const PI_TOOL_RESULT_MAX_BYTES = 50 * 1024;
 export const PI_TOOL_RESULT_R2_REF_METADATA_KEY = "chiridionR2ToolResult";
+export const PI_TOOL_DETAILS_MAX_BYTES = 32 * 1024;
+export const PI_TOOL_DETAILS_MAX_ITEMS = 128;
+export const PI_TOOL_DETAILS_MAX_DEPTH = 6;
 // Tools whose oversized output is truncated from the head (keeping the most
 // recent lines) rather than the tail. Empty now that the shell `bash` tool is
 // gone; kept as an extension point for future streaming/log-style tools.
@@ -209,6 +212,210 @@ export function sanitizePiProviderContentForSqlStorage(content: unknown, stats?:
   return changed ? sanitized : content;
 }
 
+const PI_TOOL_DETAIL_DUPLICATE_ROOT_KEYS = [
+  "body",
+  "content",
+  "data",
+  "output",
+  "raw",
+  "stderr",
+  "stdout",
+  "text",
+] as const;
+const PI_TOOL_DETAIL_PRIORITY_KEYS = [
+  "status",
+  "statusCode",
+  "ok",
+  "success",
+  "isError",
+  "error",
+  "artifacts",
+  "artifact",
+  "uiMetadata",
+  "metadata",
+  "details",
+  // Tool-specific render fields must be admitted before potentially large
+  // diagnostics such as edit diffs.
+  "replacementCount",
+  "activities",
+  "toolActivities",
+  "childToolsUsed",
+  "durationMs",
+  "toolUseCount",
+  "preview",
+  "deployment",
+  "diff",
+  "patch",
+];
+const PI_TOOL_DETAIL_OMITTED = "[model-visible tool output omitted from details]";
+const PI_TOOL_DETAIL_TRUNCATED = "[details truncated]";
+const PI_TOOL_DETAIL_TEXT_ENCODER = new TextEncoder();
+
+function jsonUtf8Bytes(value: string | number | boolean | null): number {
+  return PI_TOOL_DETAIL_TEXT_ENCODER.encode(JSON.stringify(value)).byteLength;
+}
+
+function boundedJsonStringUtf8Bytes(value: string, maxBytes: number): number | null {
+  if (maxBytes < 2) return null;
+  let bytes = 2;
+  for (const character of value) {
+    const encoded = JSON.stringify(character);
+    bytes += PI_TOOL_DETAIL_TEXT_ENCODER.encode(encoded.slice(1, -1)).byteLength;
+    if (bytes > maxBytes) return null;
+  }
+  return bytes;
+}
+
+function projectPiToolDetailString(
+  value: string,
+  maxBytes: number,
+): { value: string; bytes: number; changed: boolean } | null {
+  if (maxBytes < 2) return null;
+  let output = "";
+  let bytes = 2;
+  let changed = false;
+  for (const character of value) {
+    // Stringify one code point only; never materialize an unbounded escaped copy.
+    const encoded = JSON.stringify(character);
+    const characterBytes = PI_TOOL_DETAIL_TEXT_ENCODER.encode(encoded.slice(1, -1)).byteLength;
+    if (bytes + characterBytes > maxBytes) {
+      changed = true;
+      break;
+    }
+    output += character;
+    bytes += characterBytes;
+  }
+  if (changed) {
+    const markerBytes = jsonUtf8Bytes(PI_TOOL_DETAIL_TRUNCATED) - 2;
+    if (bytes + markerBytes <= maxBytes) {
+      output += PI_TOOL_DETAIL_TRUNCATED;
+      bytes += markerBytes;
+    }
+  }
+  return { value: output, bytes, changed };
+}
+
+interface ProjectedPiToolDetail {
+  value: unknown;
+  bytes: number;
+  changed: boolean;
+}
+
+/**
+ * Preserve bounded status/artifact/UI metadata without retaining a second full
+ * copy of model-visible tool output. The budget is the exact JSON UTF-8 size,
+ * including object keys and syntax. Traversal never stringifies an unbounded
+ * object, and duplicate payload names are stripped only at the result root so
+ * nested artifact schemas keep legitimate `data`/`body` fields.
+ */
+export function projectPiToolResultDetails(value: unknown): unknown {
+  if (value === undefined) return undefined;
+  let remainingItems = PI_TOOL_DETAILS_MAX_ITEMS;
+
+  const visit = (
+    item: unknown,
+    depth: number,
+    maxBytes: number,
+    rootKey?: string,
+  ): ProjectedPiToolDetail | null => {
+    if (
+      depth === 1 &&
+      rootKey &&
+      (PI_TOOL_DETAIL_DUPLICATE_ROOT_KEYS as readonly string[]).includes(rootKey)
+    ) {
+      const projected = projectPiToolDetailString(PI_TOOL_DETAIL_OMITTED, maxBytes);
+      return projected ? { ...projected, changed: true } : null;
+    }
+    if (typeof item === "string") return projectPiToolDetailString(item, maxBytes);
+    if (item === null || typeof item === "boolean" || typeof item === "number") {
+      const normalized = typeof item === "number" && !Number.isFinite(item) ? null : item;
+      const bytes = jsonUtf8Bytes(normalized);
+      return bytes <= maxBytes ? { value: normalized, bytes, changed: normalized !== item } : null;
+    }
+    if (item === undefined || typeof item === "function" || typeof item === "symbol") return null;
+    if (typeof item === "bigint") {
+      const projected = projectPiToolDetailString(String(item), maxBytes);
+      return projected ? { ...projected, changed: true } : null;
+    }
+    if (depth >= PI_TOOL_DETAILS_MAX_DEPTH || maxBytes < 2 || remainingItems <= 0) {
+      return null;
+    }
+
+    if (Array.isArray(item)) {
+      const result: unknown[] = [];
+      let bytes = 2;
+      let changed = Object.getPrototypeOf(item) !== Array.prototype;
+      for (const nested of item) {
+        if (remainingItems <= 0) {
+          changed = true;
+          break;
+        }
+        const commaBytes = result.length > 0 ? 1 : 0;
+        const projected = visit(nested, depth + 1, maxBytes - bytes - commaBytes);
+        remainingItems -= 1;
+        if (!projected) {
+          changed = true;
+          continue;
+        }
+        result.push(projected.value);
+        bytes += commaBytes + projected.bytes;
+        changed ||= projected.changed;
+      }
+      changed ||= result.length !== item.length;
+      return { value: result, bytes, changed };
+    }
+
+    const source = item as Record<string, unknown>;
+    const sourceKeys = Object.keys(source);
+    const priority = new Map(PI_TOOL_DETAIL_PRIORITY_KEYS.map((key, index) => [key, index]));
+    const keys = sourceKeys
+      .map((key, index) => ({ key, index }))
+      .sort((left, right) =>
+        (priority.get(left.key) ?? PI_TOOL_DETAIL_PRIORITY_KEYS.length) -
+          (priority.get(right.key) ?? PI_TOOL_DETAIL_PRIORITY_KEYS.length) ||
+        left.index - right.index,
+      );
+    const result: Record<string, unknown> = {};
+    let bytes = 2;
+    const prototype = Object.getPrototypeOf(item);
+    let changed = prototype !== Object.prototype && prototype !== null;
+    for (const { key } of keys) {
+      if (remainingItems <= 0) {
+        changed = true;
+        break;
+      }
+      // Count and bound the escaped UTF-8 key before visiting its value. This
+      // stops an attacker-controlled giant key without materializing it via a
+      // whole-key JSON.stringify or starving prioritized metadata.
+      const commaBytes = Object.keys(result).length > 0 ? 1 : 0;
+      const keyBudget = maxBytes - bytes - commaBytes - 1;
+      const keyBytes = boundedJsonStringUtf8Bytes(key, keyBudget);
+      if (keyBytes === null) {
+        changed = true;
+        continue;
+      }
+      const entryOverhead = commaBytes + keyBytes + 1;
+      const projected = visit(source[key], depth + 1, maxBytes - bytes - entryOverhead, key);
+      remainingItems -= 1;
+      if (!projected) {
+        changed = true;
+        continue;
+      }
+      result[key] = projected.value;
+      bytes += entryOverhead + projected.bytes;
+      changed ||= projected.changed;
+    }
+    changed ||= Object.keys(result).length !== sourceKeys.length;
+    return { value: result, bytes, changed };
+  };
+
+  const projected = visit(value, 0, PI_TOOL_DETAILS_MAX_BYTES);
+  if (!projected) return { detailsOmitted: "payload budget exceeded" };
+  // Preserve identity for unchanged plain JSON graphs so afterToolCall remains
+  // a no-op. Custom prototypes/toJSON methods always use the plain projection.
+  return projected.changed ? projected.value : value;
+}
+
 export function shrinkPiValueForSqlStorage(value: unknown, depth = 0, stats?: PiSqlStorageStats): unknown {
   if (typeof value === "string") return truncatePiStorageString(value, stats);
   if (value === null || value === undefined) return value;
@@ -242,15 +449,19 @@ export function preparePiMessageForSqlStorage(message: AgentMessage, stats?: PiS
   const content = Array.isArray(record.content)
     ? sanitizePiProviderContentForSqlStorage(record.content, stats)
     : record.content;
-  const next = content === record.content ? record : { ...record, content };
+  let next = content === record.content ? record : { ...record, content };
+  if (record.role === "toolResult" && "details" in record) {
+    next = { ...next, details: projectPiToolResultDetails(record.details) };
+  }
   return shrinkPiValueForSqlStorage(next, 0, stats) as AgentMessage;
 }
 
 export function serializePiMessageForSqlStorageDetailed(message: AgentMessage): PiSqlStorageSerialization {
   const stats = emptyPiSqlStorageStats();
-  stats.originalChars = JSON.stringify(message).length;
   let prepared = preparePiMessageForSqlStorage(message, stats);
   let serialized = JSON.stringify(prepared);
+  // Avoid materializing the unbounded source solely for diagnostics.
+  stats.originalChars = serialized.length;
   if (serialized.length <= PI_SQLITE_STORAGE_SOFT_LIMIT_CHARS) {
     stats.storedChars = serialized.length;
     return { payload: serialized, stats };

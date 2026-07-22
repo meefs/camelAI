@@ -2305,6 +2305,48 @@ function mcpAuthHeaders(
   return { ok: true, headers: { authorization: `Bearer ${token}` } };
 }
 
+export const NATIVE_MCP_MAX_RESPONSE_BYTES = 4 * 1024 * 1024;
+
+export async function readBoundedMcpResponseText(
+  response: Response,
+  maxBytes = NATIVE_MCP_MAX_RESPONSE_BYTES,
+): Promise<string> {
+  const limit = Math.max(0, Math.floor(maxBytes));
+  const contentLength = response.headers.get("content-length");
+  const declared = contentLength === null ? null : Number(contentLength);
+  if (declared !== null && Number.isFinite(declared) && declared > limit) {
+    response.body?.cancel().catch(() => undefined);
+    throw Object.assign(
+      new Error(`Native MCP response exceeded ${limit} byte limit`),
+      { status: 502 },
+    );
+  }
+  if (!response.body) return "";
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let bytes = 0;
+  let text = "";
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      bytes += value.byteLength;
+      if (bytes > limit) {
+        await reader.cancel().catch(() => undefined);
+        throw Object.assign(
+          new Error(`Native MCP response exceeded ${limit} byte limit`),
+          { status: 502 },
+        );
+      }
+      text += decoder.decode(value, { stream: true });
+    }
+    return text + decoder.decode();
+  } finally {
+    reader.releaseLock();
+  }
+}
+
 async function nativeMcpHttp(
   definition: ProviderMcpDefinition,
   authHeaders: Record<string, string>,
@@ -2336,7 +2378,7 @@ async function nativeMcpHttp(
         params,
       }),
     });
-    text = await response.text();
+    text = await readBoundedMcpResponseText(response);
   } catch (error) {
     if (controller.signal.aborted) {
       throw Object.assign(

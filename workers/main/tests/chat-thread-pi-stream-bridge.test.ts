@@ -67,6 +67,8 @@ function seedPiCoreRow(instance: any, idx: number, message: AnyRecord): void {
     JSON.stringify(message),
     typeof message.timestamp === 'number' ? message.timestamp : Date.now(),
   );
+  const revision = instance['piCoreStore'].getPiCoreRevision();
+  instance['piCoreStore'].markPiCoreChanged(revision.count + 1);
 }
 
 describe('ChatThreadDO native stream bridge (commit 3b)', () => {

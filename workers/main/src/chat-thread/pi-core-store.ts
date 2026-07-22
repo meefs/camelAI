@@ -32,7 +32,20 @@ import { createPiSummaryMessage } from "./pi-compaction";
 import { buildWorkspaceScopedR2Key } from "../../../../src/lib/workspace-r2-paths";
 import type { ChatContextState } from "./types";
 
-export type PiCoreImageHydration = "provider" | "render";
+export type PiCoreImagePolicy = "reference" | "render" | "provider";
+
+export const PI_PROVIDER_IMAGE_HYDRATION_MAX_COUNT = 2;
+export const PI_PROVIDER_IMAGE_HYDRATION_MAX_DECLARED_CHARS = 6_000_000;
+
+export interface PiImageHydrationBudget {
+  maxCount: number;
+  maxDeclaredChars: number;
+}
+
+interface PiImageHydrationState {
+  count: number;
+  declaredChars: number;
+}
 
 export interface PiCoreRevision {
   generation: number;
@@ -244,7 +257,6 @@ export class PiCoreMessageStore {
             };
           } catch (error) {
             console.warn("[pi-core] failed to externalize stored image", {
-              key,
               error: error instanceof Error ? error.message : String(error),
             });
           }
@@ -300,22 +312,58 @@ export class PiCoreMessageStore {
     return next;
   }
 
-  async hydratePiStoredImages(value: unknown): Promise<unknown> {
+  async hydratePiStoredImages(
+    value: unknown,
+    budget: PiImageHydrationBudget = {
+      maxCount: PI_PROVIDER_IMAGE_HYDRATION_MAX_COUNT,
+      maxDeclaredChars: PI_PROVIDER_IMAGE_HYDRATION_MAX_DECLARED_CHARS,
+    },
+    state: PiImageHydrationState = { count: 0, declaredChars: 0 },
+  ): Promise<unknown> {
     if (value === null || value === undefined || typeof value !== "object") return value;
     if (Array.isArray(value)) {
-      return Promise.all(value.map((item) => this.hydratePiStoredImages(item)));
+      const hydrated = new Array<unknown>(value.length);
+      // Prefer recent provider context and avoid concurrently materializing
+      // several R2 bodies/base64 strings. The source/session graph is untouched.
+      for (let index = value.length - 1; index >= 0; index -= 1) {
+        hydrated[index] = await this.hydratePiStoredImages(value[index], budget, state);
+      }
+      return hydrated;
     }
     const record = value as Record<string, unknown>;
     if (record.type === "image") {
       const ref = this.readPiR2ImageReference(record);
       if (ref && typeof record.data === "string" && record.data.length === 0) {
+        const availableChars = Math.max(0, budget.maxDeclaredChars - state.declaredChars);
+        if (state.count >= budget.maxCount || ref.size > availableChars) {
+          return {
+            type: "text",
+            text: `(image omitted from provider context: hydration budget exceeded; ${ref.mimeType}, ${ref.size} base64 chars)`,
+          };
+        }
+
+        // Charge admission before I/O. A missing/corrupt object remains charged,
+        // keeping the request's maximum work deterministic.
+        state.count += 1;
+        state.declaredChars += ref.size;
         let data = "";
         try {
           const object = await this.deps.r2().get(ref.key);
+          const objectSize = object
+            ? Math.max(0, Math.floor(Number(object.size) || 0))
+            : 0;
+          if (object && (objectSize > ref.size || objectSize > availableChars)) {
+            object.body?.cancel().catch(() => undefined);
+            return {
+              type: "text",
+              text: `(image omitted from provider context: stored object exceeds hydration budget; ${ref.mimeType}, ${objectSize} base64 chars)`,
+            };
+          }
+          // R2 exposes size before body materialization, so the aggregate limit
+          // is enforced before object.text() allocates the base64 string.
           data = object ? await object.text() : "";
         } catch (error) {
           console.warn("[pi-core] failed to hydrate stored image", {
-            key: ref.key,
             error: error instanceof Error ? error.message : String(error),
           });
         }
@@ -335,18 +383,19 @@ export class PiCoreMessageStore {
     }
     const next: Record<string, unknown> = {};
     for (const [key, nested] of Object.entries(record)) {
-      next[key] = await this.hydratePiStoredImages(nested);
+      next[key] = await this.hydratePiStoredImages(nested, budget, state);
     }
     return next;
   }
 
   async serializePiMessageForSqlStorageDetailed(message: AgentMessage): Promise<PiSqlStorageSerialization> {
     const stats = emptyPiSqlStorageStats();
-    stats.originalChars = JSON.stringify(message).length;
     const providerSanitized = sanitizePiProviderMessage(message);
     const externalized = await this.externalizePiImagesForSqlStorage(providerSanitized, stats);
     let prepared = preparePiMessageForSqlStorage(externalized as AgentMessage, stats);
     let serialized = JSON.stringify(prepared);
+    // Never stringify the unprojected source solely for diagnostics.
+    stats.originalChars = serialized.length;
     if (serialized.length <= PI_SQLITE_STORAGE_SOFT_LIMIT_CHARS) {
       stats.storedChars = serialized.length;
       return { payload: serialized, stats };
@@ -398,7 +447,8 @@ export class PiCoreMessageStore {
 
   async loadPiCoreMessages(options: {
     includeUiMetadata?: boolean;
-    imageHydration?: PiCoreImageHydration;
+    imagePolicy?: PiCoreImagePolicy;
+    imageHydrationBudget?: PiImageHydrationBudget;
   } = {}): Promise<AgentMessage[]> {
     this.ensurePiCoreTables();
     const compaction = this.loadPiCoreCompaction();
@@ -416,14 +466,22 @@ export class PiCoreMessageStore {
         )
         .toArray();
     const messages: AgentMessage[] = [];
+    const hydrationState: PiImageHydrationState = { count: 0, declaredChars: 0 };
     for (const row of rows) {
       try {
         this.deps.recordReadOperation?.("payload_row_parsed");
         const parsed = JSON.parse(row.payload) as AgentMessage;
         if (parsed && typeof parsed === "object" && "role" in parsed) {
-          const resolved = options.imageHydration === "render"
+          const imagePolicy = options.imagePolicy ?? "reference";
+          const resolved = imagePolicy === "render"
             ? this.renderPiStoredImageReferences(parsed)
-            : await this.hydratePiStoredImages(parsed);
+            : imagePolicy === "provider"
+              ? await this.hydratePiStoredImages(
+                  parsed,
+                  options.imageHydrationBudget,
+                  hydrationState,
+                )
+              : parsed;
           messages.push(options.includeUiMetadata
             ? sanitizePiProviderMessage(resolved as AgentMessage)
             : sanitizePiModelMessage(resolved as AgentMessage));
@@ -467,9 +525,9 @@ export class PiCoreMessageStore {
 
   async appendPiCoreMessagesIfMissing(messages: AgentMessage[]): Promise<void> {
     if (messages.length === 0) return;
-    // Identity does not depend on provider image bytes. Keep external refs as
-    // bounded markers so dedup never downloads an entire historical image set.
-    const existingMessages = await this.loadPiCoreMessages({ imageHydration: "render" });
+    // Identity does not depend on provider image bytes. Keep compact external
+    // references so dedup never downloads an entire historical image set.
+    const existingMessages = await this.loadPiCoreMessages({ imagePolicy: "reference" });
     const existingKeys = new Set(
       existingMessages.map((message) => piCoreMessageKey(message)),
     );

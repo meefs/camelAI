@@ -257,7 +257,8 @@ import {
 // pi_core message persistence (PiCoreMessageStore).
 import {
   PiCoreMessageStore,
-  type PiCoreImageHydration,
+  type PiCoreImagePolicy,
+  type PiImageHydrationBudget,
 } from "./chat-thread/pi-core-store";
 
 // pi_core → ai-chat render-mirror machinery (ChatThreadUiMirror): the top-up
@@ -332,6 +333,7 @@ import {
   PI_TAIL_TRUNCATED_TOOL_NAMES,
   sanitizePiModelMessage,
   stripPiInlineImageDataUrls,
+  projectPiToolResultDetails,
 } from "./pi-message-storage";
 import type {
   PiR2ToolResultReference,
@@ -1497,12 +1499,23 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
       : 200;
 
     return this.ctx.storage.sql
-      .exec(
+      .exec<{ idx: number; payload: string; created_at: number }>(
         "SELECT idx, payload, created_at FROM pi_core_messages ORDER BY idx DESC LIMIT ?",
         resolvedLimit,
       )
       .toArray()
-      .reverse() as unknown as PiCoreMessageRow[];
+      .reverse()
+      .map((row) => {
+        try {
+          const parsed = JSON.parse(row.payload);
+          return {
+            ...row,
+            payload: JSON.stringify(this.piCoreStore.renderPiStoredImageReferences(parsed)),
+          };
+        } catch {
+          return row;
+        }
+      });
   }
 
   async repairPiCoreMessageHistory(input: {
@@ -1525,8 +1538,8 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
       try {
         const parsed = JSON.parse(row.payload) as AgentMessage;
         if (parsed && typeof parsed === "object" && "role" in parsed) {
-          const hydrated = await this.hydratePiStoredImages(parsed);
-          messages.push(sanitizePiModelMessage(hydrated as AgentMessage));
+          // Repair identities/order only; provider image bytes are irrelevant.
+          messages.push(sanitizePiModelMessage(parsed));
         } else {
           invalidRows += 1;
         }
@@ -1956,7 +1969,7 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
     // so only canonical persisted history is returned here.
     const storedMessages = await this.loadPiCoreMessages({
       includeUiMetadata: true,
-      imageHydration: "render",
+      imagePolicy: "render",
     });
     storedMessages.forEach((message, index) => {
       const record = message as unknown as Record<string, unknown>;
@@ -1984,7 +1997,7 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
   } = {}): Promise<AdminExplorerThreadSummary> {
     const messages = await this.loadPiCoreMessages({
       includeUiMetadata: true,
-      imageHydration: "render",
+      imagePolicy: "render",
     });
     return summarizeAdminExplorerThread(messages, {
       userMessageCap: input.userMessageCap,
@@ -2151,7 +2164,7 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
     forkEntryId: string;
     renderedMessageId?: string;
   }): Promise<ChatThreadPiCoreForkResult> {
-    const messages = await this.loadPiCoreMessages();
+    const messages = await this.loadPiCoreMessages({ imagePolicy: "reference" });
     if (messages.length === 0) {
       return {
         success: false,
@@ -2548,6 +2561,10 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
     const content = Array.isArray(context.result.content)
       ? context.result.content
       : [];
+    // Project before any truncation merge or persistence can serialize a second
+    // copy of the model-visible payload under `details`.
+    const projectedDetails = projectPiToolResultDetails(context.result.details) as
+      AfterToolCallResult["details"];
     const textParts: string[] = [];
     const nonTextContent: AfterToolCallResult["content"] = [];
     const imageBlindModel = isPiImageBlindModel(
@@ -2570,7 +2587,11 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
         }
       }
     }
-    if (textParts.length === 0 && omittedImageParts === 0) return undefined;
+    if (textParts.length === 0 && omittedImageParts === 0) {
+      return projectedDetails === context.result.details
+        ? undefined
+        : { content, details: projectedDetails };
+    }
 
     const fullText = textParts.join(textParts.length > 1 ? "\n" : "");
     const inlineImages = imageBlindModel
@@ -2591,7 +2612,11 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
       ? "tail"
       : "head";
     const truncated = truncatePiToolResultText(modelText, direction);
-    if (!truncated.truncation && inlineImages.count === 0 && omittedImageParts === 0) return undefined;
+    if (!truncated.truncation && inlineImages.count === 0 && omittedImageParts === 0) {
+      return projectedDetails === context.result.details
+        ? undefined
+        : { content, details: projectedDetails };
+    }
 
     let fullOutput: PiR2ToolResultReference | undefined;
     if (truncated.truncation) {
@@ -2620,7 +2645,7 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
         },
         ...nonTextContent,
       ],
-      details: mergePiToolResultDetails(context.result.details, {
+      details: mergePiToolResultDetails(projectedDetails, {
         ...(truncated.truncation && {
           [PI_TOOL_RESULT_R2_REF_METADATA_KEY]: fullOutput,
           truncation,
@@ -2786,8 +2811,11 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
     };
   }
 
-  private hydratePiStoredImages(value: unknown): Promise<unknown> {
-    return this.piCoreStore.hydratePiStoredImages(value);
+  private hydratePiStoredImages(
+    value: unknown,
+    budget?: PiImageHydrationBudget,
+  ): Promise<unknown> {
+    return this.piCoreStore.hydratePiStoredImages(value, budget);
   }
 
   private serializePiMessageForSqlStorageDetailed(message: AgentMessage): Promise<PiSqlStorageSerialization> {
@@ -2826,7 +2854,8 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
 
   private loadPiCoreMessages(options: {
     includeUiMetadata?: boolean;
-    imageHydration?: PiCoreImageHydration;
+    imagePolicy?: PiCoreImagePolicy;
+    imageHydrationBudget?: PiImageHydrationBudget;
   } = {}): Promise<AgentMessage[]> {
     return this.piCoreStore.loadPiCoreMessages(options);
   }
@@ -2943,7 +2972,9 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
       ensureTables: () => this.ensurePiCoreTables(),
       serializeMessageDetailed: (message) =>
         this.serializePiMessageForSqlStorageDetailed(message),
-      hydrateStoredImages: (value) => this.hydratePiStoredImages(value),
+      // Recovery/fork/dedup use compact references. Provider hydration happens
+      // only on transformContext's temporary request copy.
+      hydrateStoredImages: async (value) => value,
     }));
   }
 
@@ -4912,7 +4943,7 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
     const resolveCurrentModel = () => this.resolvePiModel(context, envVars, getModel);
     const modelConfig = await resolveCurrentModel();
     this.piModelResolver = resolveCurrentModel;
-    const persistedMessages = await this.loadPiCoreMessages();
+    const persistedMessages = await this.loadPiCoreMessages({ imagePolicy: "reference" });
     let initialMessages = [...persistedMessages];
     this.piMainBaselineIndex = persistedMessages.length;
     // Resume an interrupted turn: fold the journaled in-flight tail back in and
@@ -4976,9 +5007,10 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
           completeSimple,
           signal,
         );
-        const repaired = repairPiMessageHistoryForReplay(
+        const hydrated = await this.hydratePiStoredImages(
           compacted.map((message) => sanitizePiModelMessage(message)),
-        );
+        ) as AgentMessage[];
+        const repaired = repairPiMessageHistoryForReplay(hydrated);
         if (repaired.repairedCount > 0) {
         }
         return repaired.messages;

@@ -48,6 +48,7 @@ import type {
 } from "./types";
 import type { HostedCapability } from "../../../../src/lib/capability-allowances";
 import { capPiMainRequestOutput } from "./pi-compaction";
+import { projectPiToolResultDetails } from "../pi-message-storage";
 
 export interface PiToolDefinitionOptions {
   includeSubagents?: boolean;
@@ -353,7 +354,7 @@ export function createPiToolDefinitions(
     if (signal?.aborted) throw new Error("Operation aborted");
     return {
       content: extractToolContent(result),
-      details: result,
+      details: projectPiToolResultDetails(result),
     };
   };
 
@@ -434,7 +435,7 @@ export function createPiToolDefinitions(
         }));
         return {
           content: [{ type: "text" as const, text: result.text }],
-          details: result,
+          details: projectPiToolResultDetails(result),
         };
       },
       executionMode: "sequential",

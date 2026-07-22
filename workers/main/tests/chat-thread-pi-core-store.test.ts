@@ -61,7 +61,7 @@ describe('PiCoreMessageStore image hydration policy', () => {
 
     const messages = await harness.store.loadPiCoreMessages({
       includeUiMetadata: true,
-      imageHydration: 'render',
+      imagePolicy: 'render',
     });
 
     expect(harness.operations).toEqual({
@@ -82,7 +82,7 @@ describe('PiCoreMessageStore image hydration policy', () => {
       JSON.stringify(externalImageMessage()),
     ]);
 
-    const messages = await harness.store.loadPiCoreMessages();
+    const messages = await harness.store.loadPiCoreMessages({ imagePolicy: 'provider' });
 
     expect(harness.operations).toEqual({
       payloadRowsParsed: 1,
@@ -92,6 +92,17 @@ describe('PiCoreMessageStore image hydration policy', () => {
     expect(messages[0].content).toEqual([
       expect.objectContaining({ type: 'image', data: 'provider-image-data' }),
     ]);
+  });
+
+  it('keeps references by default without hydration or render leakage conversion', async () => {
+    const privateKey = 'private/reference/image.base64';
+    const harness = createReadHarness([JSON.stringify(externalImageMessage(privateKey))]);
+
+    const messages = await harness.store.loadPiCoreMessages({ includeUiMetadata: true });
+
+    expect(harness.get).not.toHaveBeenCalled();
+    expect(harness.operations.r2ImagesHydrated).toBe(0);
+    expect(JSON.stringify(messages)).toContain(privateKey);
   });
 
   it('deduplicates against image-bearing history without R2 hydration', async () => {

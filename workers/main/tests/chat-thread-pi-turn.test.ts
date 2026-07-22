@@ -8,6 +8,7 @@ import {
   summarizePiMessages,
   createPiSummaryMessage,
   estimatePiTextTokens,
+  estimatePiMessageTokens,
   piCompactionReserveTokens,
   piModelContextWindow,
   capPiMainRequestOutput,
@@ -7819,7 +7820,11 @@ describe('ChatThreadDO Pi turn handling', () => {
         })),
       },
     };
-    fake.runCodeModeJavascript = vi.fn(async () => ({ text: 'done' }));
+    fake.runCodeModeJavascript = vi.fn(async () => ({
+      text: 'done',
+      status: 'completed',
+      artifacts: [{ id: 'artifact-1', kind: 'email' }],
+    }));
 
     const tools = ChatThreadDO.prototype['createPiToolDefinitions'].call(fake, {
       orgId: 'org1',
@@ -7848,6 +7853,11 @@ describe('ChatThreadDO Pi turn handling', () => {
       maxOutputCharacters: 4321,
     });
     expect(result.content[0].text).toBe('done');
+    expect(result.details).toEqual({
+      status: 'completed',
+      artifacts: [{ id: 'artifact-1', kind: 'email' }],
+      text: '[model-visible tool output omitted from details]',
+    });
   });
 
   it('passes user scope into the shared code mode tools binding', async () => {
@@ -10780,12 +10790,55 @@ describe('ChatThreadDO Pi turn handling', () => {
     );
   });
 
+  it('does not expose raw image storage references through admin Pi rows', () => {
+    const privateKey = 'org-secret/workspace-secret/pi-images/private.base64';
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    fake.env = { R2_BUCKET: {} };
+    fake.ctx = {
+      storage: {
+        sql: {
+          exec: vi.fn(() => ({
+            toArray: () => [{
+              idx: 1,
+              created_at: 1,
+              payload: JSON.stringify({
+                role: 'user',
+                content: [{
+                  type: 'image',
+                  mimeType: 'image/png',
+                  data: '',
+                  metadata: {
+                    chiridionR2Image: {
+                      key: privateKey,
+                      mimeType: 'image/png',
+                      size: 100,
+                      sha256: 'private-hash',
+                      storedAt: 1,
+                    },
+                  },
+                }],
+              }),
+            }],
+          })),
+        },
+      },
+    };
+
+    const rows = ChatThreadDO.prototype.getPiCoreMessageRows.call(fake, 10);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].payload).toContain('persisted image omitted from render');
+    expect(rows[0].payload).not.toContain(privateKey);
+    expect(rows[0].payload).not.toContain('private-hash');
+    expect(rows[0].payload).not.toContain('chiridionR2Image');
+  });
+
   it('hydrates oversized Pi image data from R2 when loading history', async () => {
     const fake = Object.create(ChatThreadDO.prototype) as any;
     fake.ensurePiCoreTables = vi.fn();
     fake.recordChatThreadObservabilityEvent = vi.fn();
     const imageData = 'b'.repeat(300_000);
     const get = vi.fn(async () => ({
+      size: imageData.length,
       text: async () => imageData,
     }));
     fake.env = {
@@ -10829,8 +10882,13 @@ describe('ChatThreadDO Pi turn handling', () => {
       },
     };
 
-    const messages = await ChatThreadDO.prototype['loadPiCoreMessages'].call(fake);
+    const references = await ChatThreadDO.prototype['loadPiCoreMessages'].call(fake);
+    expect((references[0].content as any[])[0].data).toBe('');
+    expect(get).not.toHaveBeenCalled();
 
+    const messages = await ChatThreadDO.prototype['loadPiCoreMessages'].call(fake, {
+      imagePolicy: 'provider',
+    });
     expect(messages).toHaveLength(1);
     expect(messages[0].content).toEqual([
       expect.objectContaining({
@@ -10840,6 +10898,75 @@ describe('ChatThreadDO Pi turn handling', () => {
       }),
     ]);
     expect(get).toHaveBeenCalledWith('org1/workspace1/chat-sessions/thread1/pi-images/abc.base64');
+  });
+
+  it('hydrates only recent provider images sequentially under one aggregate budget', async () => {
+    const activeReads = { count: 0, max: 0 };
+    const get = vi.fn(async (key: string) => ({
+      size: 100,
+      text: async () => {
+        activeReads.count += 1;
+        activeReads.max = Math.max(activeReads.max, activeReads.count);
+        await Promise.resolve();
+        activeReads.count -= 1;
+        return `data-for-${key}`;
+      },
+    }));
+    const store = new PiCoreMessageStore({
+      sql: () => ({}) as SqlStorage,
+      r2: () => ({ get }) as unknown as R2Bucket,
+      chatContext: () => null,
+    });
+    const content = Array.from({ length: 3 }, (_, index) => ({
+      type: 'image',
+      mimeType: 'image/png',
+      data: '',
+      metadata: {
+        chiridionR2Image: {
+          key: `image-${index}`,
+          mimeType: 'image/png',
+          size: 100,
+          sha256: `sha-${index}`,
+          storedAt: 1,
+        },
+      },
+    }));
+
+    const hydrated = await store.hydratePiStoredImages(content, {
+      maxCount: 2,
+      maxDeclaredChars: 1_000,
+    }) as Array<Record<string, unknown>>;
+
+    expect(get.mock.calls.map(([key]) => key)).toEqual(['image-2', 'image-1']);
+    expect(activeReads.max).toBe(1);
+    expect(hydrated[0]).toEqual({
+      type: 'text',
+      text: '(image omitted from provider context: hydration budget exceeded; image/png, 100 base64 chars)',
+    });
+    expect(hydrated[1].data).toBe('data-for-image-1');
+    expect(hydrated[2].data).toBe('data-for-image-2');
+    expect(content.every((part) => part.data === '')).toBe(true);
+  });
+
+  it('charges inline and referenced images to pre-provider context estimation', () => {
+    const message = {
+      role: 'user',
+      content: [
+        { type: 'image', mimeType: 'image/png', data: 'a'.repeat(4_000) },
+        {
+          type: 'image',
+          mimeType: 'image/png',
+          data: '',
+          metadata: {
+            chiridionR2Image: {
+              key: 'private-ref', mimeType: 'image/png', size: 8_000, sha256: 'sha', storedAt: 1,
+            },
+          },
+        },
+      ],
+    } as any;
+
+    expect(estimatePiMessageTokens(message)).toBeGreaterThanOrEqual(9_000);
   });
 
   it('sanitizes unsupported image tool outputs before Pi can persist them', () => {
@@ -11407,7 +11534,9 @@ describe('ChatThreadDO Pi turn handling', () => {
     };
     fake.ctx = {
       storage: { kv: { put: vi.fn() } },
+      waitUntil: vi.fn(),
     };
+    fake.maybeGenerateChatGroupAvatarForThread = vi.fn(async () => undefined);
     fake.messages = [];
     fake.ctx.waitUntil = vi.fn();
     fake.chatIsStreaming = false;

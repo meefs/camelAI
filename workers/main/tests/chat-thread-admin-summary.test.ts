@@ -88,7 +88,10 @@ describe("summarizeAdminExplorerThread", () => {
       userMessageCap: 1,
     });
 
-    expect(fake.loadPiCoreMessages).toHaveBeenCalledWith({ includeUiMetadata: true });
+    expect(fake.loadPiCoreMessages).toHaveBeenCalledWith({
+      includeUiMetadata: true,
+      imagePolicy: "render",
+    });
     expect(summary).toMatchObject({
       userMessageCount: 1,
       userMessageCountCapped: true,

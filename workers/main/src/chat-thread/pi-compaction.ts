@@ -8,6 +8,7 @@ import { isContextOverflow } from "@earendil-works/pi-ai";
 import type { Model } from "@earendil-works/pi-ai";
 import { stripPiUiMetadata } from "../../../../src/lib/runtime-artifacts";
 import { piAgentLoopErrorDetails } from "./pi-message-helpers";
+import { PI_R2_IMAGE_REF_METADATA_KEY } from "../pi-message-storage";
 
 export function piModelContextWindow(model: Model<any> | null | undefined): number {
   return typeof model?.contextWindow === "number" && model.contextWindow > 0
@@ -155,7 +156,28 @@ export function estimatePiMessageTokens(message: AgentMessage): number {
       text = String(message);
     }
   }
-  return estimatePiTextTokens(text);
+  return estimatePiTextTokens(text) + estimatePiImageMemoryTokens(record.content);
+}
+
+/** Charge inline or externally-declared base64 size before provider hydration. */
+export function estimatePiImageMemoryTokens(content: unknown): number {
+  if (!Array.isArray(content)) return 0;
+  let tokens = 0;
+  for (const part of content) {
+    if (!part || typeof part !== "object") continue;
+    const record = part as Record<string, unknown>;
+    if (record.type !== "image") continue;
+    const inlineChars = typeof record.data === "string" ? record.data.length : 0;
+    const metadata = record.metadata && typeof record.metadata === "object"
+      ? record.metadata as Record<string, unknown>
+      : undefined;
+    const ref = metadata?.[PI_R2_IMAGE_REF_METADATA_KEY];
+    const declaredChars = ref && typeof ref === "object"
+      ? Math.max(0, Math.floor(Number((ref as Record<string, unknown>).size) || 0))
+      : 0;
+    tokens += Math.ceil(Math.max(inlineChars, declaredChars) * 0.75);
+  }
+  return tokens;
 }
 
 export function stringifyPiUserContentForCompaction(content: unknown): string {

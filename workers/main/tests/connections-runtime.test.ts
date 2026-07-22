@@ -8,12 +8,33 @@ import {
   listConnectionMethods,
   listConnectionTools,
   listConnections,
+  readBoundedMcpResponseText,
   testConnectionMethodEntry,
   verifyConnection,
   type ConnectionsRuntimeEnv,
 } from '../src/connections-runtime.js';
 import type { WorkspaceIntegrationRecord } from '../src/workspace.js';
 import { fakeDbQuerySandboxNamespace } from './fake-db-query-sandbox.js';
+
+describe('bounded native MCP responses', () => {
+  it('rejects declared and streamed oversized bodies before full materialization', async () => {
+    const declared = new Response('small', { headers: { 'content-length': '100' } });
+    await expect(readBoundedMcpResponseText(declared, 10)).rejects.toThrow(
+      'Native MCP response exceeded 10 byte limit',
+    );
+
+    const streamed = new Response(new ReadableStream({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode('123456'));
+        controller.enqueue(new TextEncoder().encode('789012'));
+        controller.close();
+      },
+    }));
+    await expect(readBoundedMcpResponseText(streamed, 10)).rejects.toThrow(
+      'Native MCP response exceeded 10 byte limit',
+    );
+  });
+});
 
 function integration(overrides: Partial<WorkspaceIntegrationRecord>): WorkspaceIntegrationRecord {
   return {
