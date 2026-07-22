@@ -3241,7 +3241,20 @@ async function preparePaidSubscriptionInvoice(
     customerMetadata = await fetchStripeCustomerMetadata(env, customerId);
   }
   const orgId = directOrgId || resolveOrgIdFromStripeCustomerMetadata(customerMetadata);
-  if (!orgId) throw new Error(`Paid subscription invoice ${invoice.id} has no organization.`);
+  // Legacy SaaS / API product renewals share this Stripe account but never had
+  // platform org_id metadata. Ack them as ignored so Stripe stops retrying;
+  // only invoices that resolve to an org receive included-credit grants.
+  if (!orgId) {
+    return {
+      kind: "ignored",
+      result: {
+        status: "ignored",
+        reason: "organization_not_resolved",
+        invoiceId: invoice.id,
+        subscriptionId,
+      },
+    };
+  }
   const orgStub = getOrgStub(env, orgId);
   const org = await orgStub.getInfo();
   if (!org) throw new Error(`Organization ${orgId} does not exist.`);

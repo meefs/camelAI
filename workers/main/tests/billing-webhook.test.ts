@@ -495,4 +495,71 @@ describe("Stripe paid-invoice webhook routing", () => {
     consoleInfo.mockRestore();
     consoleError.mockRestore();
   });
+
+  it("acks unlinked legacy/API renewals instead of failing the webhook", async () => {
+    const invoiceId = `in_webhook_orphan_${crypto.randomUUID()}`;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string, init?: RequestInit) => {
+        if (url.endsWith(`/invoices/${invoiceId}`)) {
+          return Response.json({
+            id: invoiceId,
+            status: "paid",
+            customer: "cus_legacy_orphan",
+            subscription: "sub_legacy_orphan",
+            billing_reason: "subscription_cycle",
+          });
+        }
+        if (url.includes(`/invoices/${invoiceId}/lines?`)) {
+          return Response.json({ data: [], has_more: false });
+        }
+        if (url.endsWith("/subscriptions/sub_legacy_orphan")) {
+          return Response.json({
+            id: "sub_legacy_orphan",
+            status: "active",
+            customer: "cus_legacy_orphan",
+            metadata: { lookup_key: "api_standard_monthly" },
+          });
+        }
+        if (url.endsWith("/customers/cus_legacy_orphan")) {
+          return Response.json({
+            id: "cus_legacy_orphan",
+            metadata: { user_id: "101" },
+          });
+        }
+        throw new Error(
+          `Unexpected Stripe request: ${init?.method ?? "GET"} ${url}`,
+        );
+      }),
+    );
+    const consoleWarn = vi
+      .spyOn(console, "warn")
+      .mockImplementation(() => undefined);
+    const consoleError = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => undefined);
+
+    const response = await sendWebhook({
+      eventType: "invoice.payment_succeeded",
+      secret: "whsec_current",
+      invoiceId,
+    });
+
+    expect(response.status).toBe(200);
+    expect(consoleError).not.toHaveBeenCalledWith(
+      "[billing] webhook processing failed",
+      expect.anything(),
+    );
+    expect(consoleWarn).toHaveBeenCalledWith(
+      "[billing] paid invoice ignored (no platform organization)",
+      expect.objectContaining({
+        invoiceId,
+        outcome: "ignored",
+        reason: "organization_not_resolved",
+        subscriptionId: "sub_legacy_orphan",
+      }),
+    );
+    consoleWarn.mockRestore();
+    consoleError.mockRestore();
+  });
 });

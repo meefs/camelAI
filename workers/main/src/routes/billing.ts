@@ -108,8 +108,19 @@ export async function handleStripeWebhook({
           seatCount: result.status === "ignored" ? null : result.seatCount,
           grantCents: result.status === "ignored" ? 0 : result.grantCents,
           outcome: result.status,
+          reason: result.status === "ignored" ? result.reason : undefined,
         };
-        console.info("[billing] paid invoice webhook processed", safe);
+        if (
+          result.status === "ignored" &&
+          result.reason === "organization_not_resolved"
+        ) {
+          console.warn(
+            "[billing] paid invoice ignored (no platform organization)",
+            safe,
+          );
+        } else {
+          console.info("[billing] paid invoice webhook processed", safe);
+        }
         recordObservabilityEvent(env, {
           event: "stripe_subscription_invoice",
           component: "billing_webhook",
