@@ -18,6 +18,7 @@ export interface ProjectBuildSandboxLike {
   writeFile(path: string, content: string, options?: { encoding?: "base64" | "utf8" }): Promise<unknown>;
   exists?(path: string): Promise<{ exists: boolean }>;
   readFile?(path: string, options?: { encoding?: "base64" | "utf8" }): Promise<{ content: string }>;
+  readFileStream?(path: string): Promise<ReadableStream<Uint8Array>>;
   listFiles?(path: string, options?: { recursive?: boolean; includeHidden?: boolean }): Promise<{ files: Array<{
     name: string;
     type: "file" | "directory";
@@ -356,7 +357,9 @@ async function collectAssetsFromManifest(
       ? manifest.assets.directory
       : "";
   if (!rawDirectory) return [];
-  if (!sandbox.readFile || !sandbox.listFiles) throw new Error("Sandbox does not support asset output reads");
+  if ((!sandbox.readFile && !sandbox.readFileStream) || !sandbox.listFiles) {
+    throw new Error("Sandbox does not support asset output reads");
+  }
   const assetsRoot = joinSandboxPath(serverRoot, rawDirectory);
   const listed = await sandbox.listFiles(assetsRoot, { recursive: true, includeHidden: true });
   const assets = listed.files.filter((file) => file.type === "file").map((file) => {
@@ -367,9 +370,17 @@ async function collectAssetsFromManifest(
     path: relativePath,
     contentType: contentTypeForAsset(relativePath),
     size,
-    read: () => readSandboxFileBytes(sandbox, absolutePath),
+    read: () => readSandboxAssetBytes(sandbox, absolutePath),
   }));
   return assets.sort((a, b) => a.path.localeCompare(b.path));
+}
+
+async function readSandboxAssetBytes(sandbox: ProjectBuildSandboxLike, path: string): Promise<Uint8Array> {
+  if (sandbox.readFileStream) {
+    const stream = await sandbox.readFileStream(path);
+    return new Uint8Array(await new Response(stream).arrayBuffer());
+  }
+  return readSandboxFileBytes(sandbox, path);
 }
 
 async function readSandboxFileBytes(sandbox: ProjectBuildSandboxLike, path: string): Promise<Uint8Array> {

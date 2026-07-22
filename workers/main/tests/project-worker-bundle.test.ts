@@ -13,6 +13,19 @@ function fakeBundleSandbox(files: Map<string, string>): ProjectBuildSandboxLike 
       if (content == null) throw new Error(`missing ${path}`);
       return { content: Buffer.from(content).toString("base64") };
     }),
+    readFileStream: vi.fn(async (path: string) => {
+      const content = files.get(path);
+      if (content == null) throw new Error(`missing ${path}`);
+      const bytes = new TextEncoder().encode(content);
+      const midpoint = Math.ceil(bytes.byteLength / 2);
+      return new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(bytes.slice(0, midpoint));
+          controller.enqueue(bytes.slice(midpoint));
+          controller.close();
+        },
+      });
+    }),
     listFiles: vi.fn(async (root: string) => ({
       files: Array.from(files.keys()).filter((absolutePath) => absolutePath.startsWith(`${root}/`)).map((absolutePath) => ({
         name: absolutePath.split("/").pop() || "",
@@ -27,6 +40,10 @@ function fakeBundleSandbox(files: Map<string, string>): ProjectBuildSandboxLike 
 
 function readFilePaths(sandbox: ProjectBuildSandboxLike): string[] {
   return (sandbox.readFile as unknown as { mock: { calls: unknown[][] } }).mock.calls.map((call) => call[0] as string);
+}
+
+function readFileStreamPaths(sandbox: ProjectBuildSandboxLike): string[] {
+  return (sandbox.readFileStream as unknown as { mock: { calls: unknown[][] } }).mock.calls.map((call) => call[0] as string);
 }
 
 describe("collectWorkerBundleFromSandbox", () => {
@@ -70,7 +87,8 @@ describe("collectWorkerBundleFromSandbox", () => {
     // The lazy handle reads the real bytes on demand.
     const cssAsset = bundle.assets.find((asset) => asset.path === "assets/app.css")!;
     expect(new TextDecoder().decode(await cssAsset.read())).toBe("body{}");
-    expect(readFilePaths(sandbox)).toContain("/workspace/demo/build/client/assets/app.css");
+    expect(readFileStreamPaths(sandbox)).toContain("/workspace/demo/build/client/assets/app.css");
+    expect(readFilePaths(sandbox)).not.toContain("/workspace/demo/build/client/assets/app.css");
   });
 
   it("converts wrangler durable object config into upload bindings", async () => {
