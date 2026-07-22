@@ -33,6 +33,7 @@ function createHarness(options: {
   let piRevision = { generation: 1, count: options.piMessages?.length ?? 0 };
   const getPiCoreParsedMessages = vi.fn(async () => options.piMessages ?? []);
   const recordChatThreadObservabilityEvent = vi.fn();
+  const memoryPhases: string[] = [];
   const mirror = new ChatThreadUiMirror({
     sql: () => ({}) as never,
     kv: () => ({
@@ -65,6 +66,10 @@ function createHarness(options: {
     getPiCoreParsedMessages,
     reloadAiChatMessagesOrdered: vi.fn(),
     topUpUiMessagesFromPiCore: vi.fn(async () => {}),
+    withMemoryPhase: async (operation, fn) => {
+      memoryPhases.push(operation);
+      return fn();
+    },
     recordChatThreadObservabilityEvent,
   });
 
@@ -76,6 +81,7 @@ function createHarness(options: {
     },
     persistRenderMessages,
     getPiCoreParsedMessages,
+    memoryPhases,
     recordChatThreadObservabilityEvent,
     setActiveTurn(value: boolean) {
       activeTurn = value;
@@ -110,6 +116,7 @@ describe('ChatThreadUiMirror top-up preflight', () => {
 
     expect(harness.getPiCoreParsedMessages).not.toHaveBeenCalled();
     expect(harness.persistRenderMessages).not.toHaveBeenCalled();
+    expect(harness.memoryPhases).toEqual(['pi_topup_preflight']);
   });
 });
 

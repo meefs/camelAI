@@ -84,6 +84,7 @@ export interface ChatThreadUiMirrorDeps {
   getPiCoreParsedMessages(threadId: string): Promise<AgentEvalParsedMessage[]>;
   reloadAiChatMessagesOrdered(): void;
   topUpUiMessagesFromPiCore(options?: { force?: boolean }): Promise<void>;
+  withMemoryPhase<T>(operation: string, fn: () => Promise<T>): Promise<T>;
   recordChatThreadObservabilityEvent(
     event: string,
     details?: {
@@ -349,18 +350,39 @@ export class ChatThreadUiMirror {
     // persists (uiMetadata.renderMessageId), so whichever writer runs first,
     // the other's upsert converges on one row. `force` bypasses the gate for
     // explicit rebuild flows (admin resync, fork seeding).
-    if (!options.force && this.deps.readPiActiveTurn()) return;
     const startedAt = Date.now();
-    const revision = this.deps.getPiCoreRevision();
-    const revisionToken = `${revision.generation}:${revision.count}`;
-    if (
-      !options.force &&
-      this.deps.kv().get<string>(UI_MESSAGES_PI_CORE_REVISION_KEY) === revisionToken
-    ) {
-      return;
-    }
-    const threadId = this.deps.chatContext()?.threadId ?? "";
-    const parsed = await this.deps.getPiCoreParsedMessages(threadId);
+    const preflight = await this.deps.withMemoryPhase(
+      "pi_topup_preflight",
+      async () => {
+        if (!options.force && this.deps.readPiActiveTurn()) return null;
+        const revision = this.deps.getPiCoreRevision();
+        const revisionToken = `${revision.generation}:${revision.count}`;
+        if (
+          !options.force &&
+          this.deps.kv().get<string>(UI_MESSAGES_PI_CORE_REVISION_KEY) === revisionToken
+        ) {
+          return null;
+        }
+        return {
+          revisionToken,
+          threadId: this.deps.chatContext()?.threadId ?? "",
+        };
+      },
+    );
+    if (!preflight) return;
+    const parsed = await this.deps.withMemoryPhase("pi_topup_read", () =>
+      this.deps.getPiCoreParsedMessages(preflight.threadId),
+    );
+    await this.deps.withMemoryPhase("pi_topup_convert", () =>
+      this.convertPiCoreTopUp(parsed, preflight.revisionToken, startedAt),
+    );
+  }
+
+  private async convertPiCoreTopUp(
+    parsed: AgentEvalParsedMessage[],
+    revisionToken: string,
+    startedAt: number,
+  ): Promise<void> {
     const mark = this.deps.kv().get<number>(
       UI_MESSAGES_PI_CORE_HIGH_WATER_KEY,
     ) ?? 0;

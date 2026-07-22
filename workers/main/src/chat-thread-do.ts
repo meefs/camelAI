@@ -309,6 +309,10 @@ import { ChatThreadCodeModeArtifacts } from "./chat-thread/code-mode-artifacts";
 
 // Bounded per-thread rollup of successful project create/deploy activity.
 import { ChatThreadProjectActivity } from "./chat-thread/project-activity";
+import {
+  collectChatMemoryStats,
+  type ChatMemoryStats,
+} from "./chat-thread/chat-memory-telemetry";
 
 // Chat send failure / error payload helpers (ChatThreadErrors): send-failure
 // status + billing classification, error payload construction, and the
@@ -608,6 +612,11 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
   private previewStateInstance?: ChatThreadPreviewState;
   private streamingActivityInstance?: ChatThreadStreamingActivity;
   private threadMetadataInstance?: ChatThreadMetadata;
+  private lastChatMemoryStoreSnapshotAt = 0;
+  private lastChatMemoryPhaseAt = new Map<string, number>();
+  private aiChatMemoryBoundariesInstrumented = false;
+  private cachedChatMemoryStats: ChatMemoryStats | null = null;
+  private cachedChatMemoryStatsAt = 0;
   private titleGenerationInFlight: boolean = false;
   private activeTurnUserId: string | null = null;
   private workspaceStatusStubs = new Map<string, DurableObjectStub<WorkspaceDO>>();
@@ -1012,6 +1021,14 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
     this.activeAutomationRun = this.normalizeActiveAutomationRun(
       ctx.storage.kv.get<unknown>(CHAT_ACTIVE_AUTOMATION_RUN_KEY),
     );
+
+    this.instrumentAiChatMemoryBoundaries();
+
+    // super() has already performed ai-chat's eager render load. We cannot emit
+    // before a base constructor in JavaScript, but this post-constructor pair
+    // records the first allocation-safe watermark available to the subclass.
+    const constructorPhase = this.startChatMemoryPhase("render_post_constructor");
+    this.endChatMemoryPhase(constructorPhase);
   }
 
   async runCodeModeJavascript(
@@ -1185,17 +1202,36 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
   }
 
   override async onStart(props?: unknown): Promise<void> {
-    await super.onStart?.(props as never);
-    this.hydrateDurableStateOnce();
-    // super.onStart already let ai-chat evaluate recovery budgets and establish
-    // any incident/stream for an interrupted turn, so it is now safe to clear a
-    // marker that ai-chat is provably NOT recovering (an old→new deploy orphan).
-    await this.sweepOrphanedActiveTurnMarker();
-    // PartyServer name bootstrap happens before onStart, not in the constructor.
-    // syncAgentState() calls setState(), which emits through PartyServer and needs
-    // this.name; doing it here keeps cold-wake state fresh without crashing stale
-    // alarm/RPC wakes that haven't initialized the PartyServer name yet.
-    this.syncAgentState();
+    const phase = this.startChatMemoryPhase("on_start");
+    try {
+      await this.withChatMemoryPhase("stream_reconstruct", async () => {
+        await super.onStart?.(props as never);
+      });
+      this.hydrateDurableStateOnce();
+      // super.onStart already let ai-chat evaluate recovery budgets and establish
+      // any incident/stream for an interrupted turn, so it is now safe to clear a
+      // marker that ai-chat is provably NOT recovering (an old→new deploy orphan).
+      await this.sweepOrphanedActiveTurnMarker();
+      // PartyServer name bootstrap happens before onStart, not in the constructor.
+      // syncAgentState() calls setState(), which emits through PartyServer and needs
+      // this.name; doing it here keeps cold-wake state fresh without crashing stale
+      // alarm/RPC wakes that haven't initialized the PartyServer name yet.
+      this.syncAgentState();
+      this.endChatMemoryPhase(phase, "end", true);
+    } catch (error) {
+      this.endChatMemoryPhase(phase, "error", true);
+      throw error;
+    }
+  }
+
+  override async persistMessages(
+    messages: UIMessage[],
+    excludeBroadcastIds: string[] = [],
+    options?: { _deleteStaleRows?: boolean },
+  ): Promise<void> {
+    return this.withChatMemoryPhase("render_persist_reconcile", () =>
+      super.persistMessages(messages, excludeBroadcastIds, options),
+    );
   }
 
   /**
@@ -1346,6 +1382,7 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
     // ai-chat recovery that skipped silently on an alarm wake) is cleared here,
     // at the moment the user actually opens the thread. Guarded no-op whenever
     // the marker is live, freshly opened, or awaiting recovery.
+    const connectPhase = this.startChatMemoryPhase("on_connect");
     await this.sweepOrphanedActiveTurnMarker();
     await this.healLegacyUiMessageAuthors();
 
@@ -1356,8 +1393,11 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
     // turn, and Agents SDK state sync carries no chat messages. Uses the same
     // frame shape ai-chat's persistMessages broadcast uses (the client handler
     // replaces its list wholesale), sent only to the new connection.
+    const connectSyncPhase = this.startChatMemoryPhase("render_connect_sync");
     if (this.messages.length > 0) {
       try {
+        // Do not retain this full-history frame after send. Until render history
+        // is durably windowed, caching it would add another resident copy of R.
         connection.send(
           JSON.stringify({
             messages: this.messages,
@@ -1372,6 +1412,8 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
         );
       }
     }
+    this.endChatMemoryPhase(connectSyncPhase);
+    this.endChatMemoryPhase(connectPhase);
 
     if (!this.isThreadStreaming() && this.currentTodos.length > 0) {
       // completeTodoStateForTurnEnd() syncs an override marking the stale todos
@@ -2857,7 +2899,9 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
     imagePolicy?: PiCoreImagePolicy;
     imageHydrationBudget?: PiImageHydrationBudget;
   } = {}): Promise<AgentMessage[]> {
-    return this.piCoreStore.loadPiCoreMessages(options);
+    return this.withChatMemoryPhase("pi_read", () =>
+      this.piCoreStore.loadPiCoreMessages(options),
+    );
   }
 
   /**
@@ -2936,6 +2980,7 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
       getPiCoreParsedMessages: (threadId) => this.getPiCoreParsedMessages(threadId),
       reloadAiChatMessagesOrdered: () => this.reloadAiChatMessagesOrdered(),
       topUpUiMessagesFromPiCore: (options) => this.topUpUiMessagesFromPiCore(options),
+      withMemoryPhase: (operation, fn) => this.withChatMemoryPhase(operation, fn),
       recordChatThreadObservabilityEvent: (event, details) =>
         this.recordChatThreadObservabilityEvent(event, details),
     }));
@@ -2981,8 +3026,10 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
   private async recordPiTurnJournalTail(): Promise<void> {
     const session = this.piSession;
     if (!session) return;
-    await this.piTurnJournal.recordTail(
-      session.state.messages.slice(this.piMainBaselineIndex),
+    await this.withChatMemoryPhase("journal_checkpoint", () =>
+      this.piTurnJournal.recordTail(
+        session.state.messages.slice(this.piMainBaselineIndex),
+      ),
     );
   }
 
@@ -2994,7 +3041,9 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
   }
 
   private loadPiTurnJournalTail(): Promise<AgentMessage[]> {
-    return this.piTurnJournal.loadTail();
+    return this.withChatMemoryPhase("journal_recovery_load", () =>
+      this.piTurnJournal.loadTail(),
+    );
   }
 
   private clearPiTurnJournal(): void {
@@ -4032,6 +4081,181 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
     this.streamingActivity.discardPendingStreamingActivity();
   }
 
+  private instrumentAiChatMemoryBoundaries(): void {
+    if (this.aiChatMemoryBoundariesInstrumented) return;
+    this.aiChatMemoryBoundariesInstrumented = true;
+    // ai-chat 0.9.3 exposes no hooks between persist reconciliation, its full
+    // SQL reload, and full-history broadcast. The pinned implementation calls
+    // these prototype methods dynamically, so wrap them without looking at or
+    // retaining their arguments. A future rename merely removes the fine-grain
+    // breadcrumb; the broad render_persist_reconcile phase remains intact.
+    const agent = this as unknown as Record<string, unknown>;
+    const loadMessages = agent._loadMessagesFromDb;
+    if (typeof loadMessages === "function") {
+      agent._loadMessagesFromDb = (...args: unknown[]) => {
+        const phase = this.startChatMemoryPhase("render_persist_reload");
+        try {
+          const result = loadMessages.apply(this, args);
+          this.endChatMemoryPhase(phase);
+          return result;
+        } catch (error) {
+          this.endChatMemoryPhase(phase, "error");
+          throw error;
+        }
+      };
+    }
+    const broadcastMessage = agent._broadcastChatMessage;
+    if (typeof broadcastMessage === "function") {
+      agent._broadcastChatMessage = (...args: unknown[]) => {
+        // This private method also transports high-frequency stream chunks.
+        // Inspect only the public frame type and instrument full-history frames;
+        // never inspect, retain, or serialize the message payload here.
+        const frame = args[0] as { type?: unknown } | null | undefined;
+        if (frame?.type !== CHAT_MESSAGE_TYPES.CHAT_MESSAGES) {
+          return broadcastMessage.apply(this, args);
+        }
+        const phase = this.startChatMemoryPhase("render_persist_broadcast");
+        try {
+          const result = broadcastMessage.apply(this, args);
+          this.endChatMemoryPhase(phase);
+          return result;
+        } catch (error) {
+          this.endChatMemoryPhase(phase, "error");
+          throw error;
+        }
+      };
+    }
+  }
+
+  private readChatMemoryStats(): ChatMemoryStats {
+    const now = Date.now();
+    if (
+      this.cachedChatMemoryStats &&
+      now - (this.cachedChatMemoryStatsAt ?? 0) < 100
+    ) {
+      return this.cachedChatMemoryStats;
+    }
+    try {
+      const stats = collectChatMemoryStats(this.ctx.storage.sql);
+      this.cachedChatMemoryStats = stats;
+      this.cachedChatMemoryStatsAt = now;
+      return stats;
+    } catch {
+      return {
+        totalRows: 0,
+        totalBytes: 0,
+        maxRowBytes: 0,
+        stores: {
+          render: { rows: 0, bytes: 0, maxRowBytes: 0 },
+          pi: { rows: 0, bytes: 0, maxRowBytes: 0 },
+          journal: { rows: 0, bytes: 0, maxRowBytes: 0 },
+          stream: { rows: 0, bytes: 0, maxRowBytes: 0 },
+        },
+      };
+    }
+  }
+
+  private startChatMemoryPhase(operation: string): {
+    operation: string;
+    startedAt: number;
+    emitted: boolean;
+  } {
+    const startedAt = Date.now();
+    const stats = this.readChatMemoryStats();
+    // Keep every breadcrumb for memory-heavy threads. For small threads, emit
+    // the first occurrence and then at most one pair per phase every 10 seconds;
+    // this prevents provider/persistence loops from flooding Analytics Engine.
+    const lastPhaseAt = this.lastChatMemoryPhaseAt?.get(operation) ?? 0;
+    const emitted = stats.totalBytes >= 1024 * 1024 || startedAt - lastPhaseAt >= 10_000;
+    if (emitted) {
+      (this.lastChatMemoryPhaseAt ??= new Map()).set(operation, startedAt);
+      this.recordChatThreadObservabilityEvent("chat_memory_phase", {
+        operation,
+        status: "start",
+        count: stats.totalRows,
+        size: stats.totalBytes,
+        sampleKey: this.chatContext?.threadId,
+      });
+      this.maybeRecordChatMemoryStores(stats, operation, "start", startedAt);
+    }
+    return { operation, startedAt, emitted };
+  }
+
+  private endChatMemoryPhase(
+    phase: { operation: string; startedAt: number; emitted: boolean },
+    status: "end" | "error" = "end",
+    refreshStats = false,
+  ): void {
+    if (!phase.emitted) return;
+    if (refreshStats) {
+      this.cachedChatMemoryStats = null;
+      this.cachedChatMemoryStatsAt = 0;
+    }
+    const stats = this.readChatMemoryStats();
+    this.recordChatThreadObservabilityEvent("chat_memory_phase", {
+      operation: phase.operation,
+      status,
+      count: stats.totalRows,
+      size: stats.totalBytes,
+      durationMs: Date.now() - phase.startedAt,
+      sampleKey: this.chatContext?.threadId,
+    });
+    this.maybeRecordChatMemoryStores(stats, phase.operation, status, Date.now());
+  }
+
+  private maybeRecordChatMemoryStores(
+    stats: ChatMemoryStats,
+    phase: string,
+    status: "start" | "end" | "error",
+    now: number,
+  ): void {
+    // Store-level dimensions are useful for diagnosis but four events at every
+    // boundary would be noisy. Emit at most once/minute per warm thread; the
+    // phase event above remains unthrottled so a missing end identifies the
+    // likely fatal operation.
+    const lastSnapshotAt = this.lastChatMemoryStoreSnapshotAt ?? 0;
+    if (lastSnapshotAt === 0 && stats.totalBytes < 1024 * 1024) {
+      this.lastChatMemoryStoreSnapshotAt = now;
+      return;
+    }
+    if (now - lastSnapshotAt < 60_000) return;
+    this.lastChatMemoryStoreSnapshotAt = now;
+    for (const [store, values] of Object.entries(stats.stores)) {
+      this.recordChatThreadObservabilityEvent("chat_memory_store", {
+        operation: `${phase}:${store}`,
+        status,
+        count: values.rows,
+        size: values.bytes,
+        sampleKey: this.chatContext?.threadId,
+      });
+      this.recordChatThreadObservabilityEvent("chat_memory_max_row", {
+        operation: `${phase}:${store}`,
+        status,
+        count: values.rows,
+        size: values.maxRowBytes,
+        sampleKey: this.chatContext?.threadId,
+      });
+    }
+  }
+
+  private async withChatMemoryPhase<T>(
+    operation: string,
+    fn: () => Promise<T>,
+  ): Promise<T> {
+    const phase = this.startChatMemoryPhase(operation);
+    try {
+      const result = await fn();
+      this.endChatMemoryPhase(phase, "end", true);
+      return result;
+    } catch (error) {
+      // Do not attach the exception: provider/tool errors can contain user or
+      // transcript material. The existing operation's own error telemetry owns
+      // safe error classification.
+      this.endChatMemoryPhase(phase, "error", true);
+      throw error;
+    }
+  }
+
   private recordChatThreadObservabilityEvent(
     event: string,
     details: {
@@ -4147,6 +4371,7 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
    * todos, and broadcasts state. Invoked once per run from the agent_start event.
    */
   private markTurnStarted(): void {
+    const memoryPhase = this.startChatMemoryPhase("turn_start");
     this.recordChatThreadObservabilityEvent("pi_turn_started", {
       operation: "run_pi_turn",
       status: "started",
@@ -4163,6 +4388,7 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
     this.pushWorkspaceStreaming(true);
     this.startStreamingLeaseHeartbeat();
     this.startPiTurnAbsoluteTimeoutWatchdog();
+    this.endChatMemoryPhase(memoryPhase);
   }
 
   private startPiTurnAbsoluteTimeoutWatchdog(): void {
@@ -4943,7 +5169,9 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
     const resolveCurrentModel = () => this.resolvePiModel(context, envVars, getModel);
     const modelConfig = await resolveCurrentModel();
     this.piModelResolver = resolveCurrentModel;
-    const persistedMessages = await this.loadPiCoreMessages({ imagePolicy: "reference" });
+    const persistedMessages = await this.withChatMemoryPhase("pi_session_load", () =>
+      this.loadPiCoreMessages({ imagePolicy: "reference" }),
+    );
     let initialMessages = [...persistedMessages];
     this.piMainBaselineIndex = persistedMessages.length;
     // Resume an interrupted turn: fold the journaled in-flight tail back in and
@@ -4998,23 +5226,22 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
         messages: initialMessages,
         thinkingLevel: "medium",
       },
-      transformContext: async (messages, signal) => {
-        const current = await resolveCurrentModel();
-        const compacted = await this.compactPiContext(
-          messages,
-          current.model,
-          current.apiKey,
-          completeSimple,
-          signal,
-        );
-        const hydrated = await this.hydratePiStoredImages(
-          compacted.map((message) => sanitizePiModelMessage(message)),
-        ) as AgentMessage[];
-        const repaired = repairPiMessageHistoryForReplay(hydrated);
-        if (repaired.repairedCount > 0) {
-        }
-        return repaired.messages;
-      },
+      transformContext: (messages, signal) =>
+        this.withChatMemoryPhase("provider_request_prepare", async () => {
+          const current = await resolveCurrentModel();
+          const compacted = await this.compactPiContext(
+            messages,
+            current.model,
+            current.apiKey,
+            completeSimple,
+            signal,
+          );
+          const hydrated = await this.hydratePiStoredImages(
+            compacted.map((message) => sanitizePiModelMessage(message)),
+          ) as AgentMessage[];
+          const repaired = repairPiMessageHistoryForReplay(hydrated);
+          return repaired.messages;
+        }),
       getApiKey: async () => {
         const current = await resolveCurrentModel();
         if (this.piSession) {
@@ -6618,7 +6845,9 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
               }
               await promptPromise;
             } else {
-              await this.resumeActivePiTurn();
+              await this.withChatMemoryPhase("recovery_redrive", () =>
+                this.resumeActivePiTurn(),
+              );
             }
             // Drain the Pi event handler chain so agent_end's turn/completed → the
             // encoder `finish` chunk is flushed before the stream closes.
@@ -7106,6 +7335,7 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
    * loader wiring is commit 4).
    */
   async getUiMessages(): Promise<UIMessage[]> {
+    return this.withChatMemoryPhase("render_rpc_return", async () => {
     // The SSR loader is the first page-open touch (before the websocket
     // connects). Heal a provably-dead turn's stranded marker here so the load
     // doesn't derive a busy indicator from it — and so the top-up below (which
@@ -7115,6 +7345,7 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
     await this.healLegacyUiMessageTimes();
     await this.healLegacyUiMessageAuthors();
     return this.messages as UIMessage[];
+    });
   }
 
   private healLegacyUiMessageTimes(): Promise<void> {
@@ -7142,11 +7373,20 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
   private topUpUiMessagesFromPiCore(
     options: { force?: boolean } = {},
   ): Promise<void> {
-    return this.uiMirror.topUpUiMessagesFromPiCore(options);
+    return this.withChatMemoryPhase("pi_topup", () =>
+      this.uiMirror.topUpUiMessagesFromPiCore(options),
+    );
   }
 
   private reloadAiChatMessagesOrdered(): void {
-    this.uiMirror.reloadAiChatMessagesOrdered();
+    const phase = this.startChatMemoryPhase("render_persist_reload");
+    try {
+      this.uiMirror.reloadAiChatMessagesOrdered();
+      this.endChatMemoryPhase(phase);
+    } catch (error) {
+      this.endChatMemoryPhase(phase, "error");
+      throw error;
+    }
   }
 
   private getChatSockets(): WebSocket[] {
