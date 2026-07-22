@@ -445,20 +445,6 @@ function summarizeRuntimeItem(item) {
   };
 }
 
-function truncateMiddle(items, maxItems) {
-  if (items.length <= maxItems) return { items, omittedItems: 0 };
-  const headCount = Math.floor(maxItems / 3);
-  const tailCount = maxItems - headCount;
-  return {
-    items: [
-      ...items.slice(0, headCount),
-      { kind: "omitted", omittedItems: items.length - maxItems },
-      ...items.slice(items.length - tailCount),
-    ],
-    omittedItems: items.length - maxItems,
-  };
-}
-
 function trajectoryPriority(item, rubric) {
   const text = safeJsonStringify(item)?.toLowerCase() ?? "";
   let priority = 0;

@@ -1,3 +1,5 @@
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
 describe("marketing attribution", () => {
   beforeEach(() => {
     vi.resetModules();
