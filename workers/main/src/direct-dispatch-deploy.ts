@@ -19,6 +19,7 @@ import {
 } from "./usage-guard-state.js";
 
 const DIRECT_DEPLOY_WRITE_CONCURRENCY = 16;
+const CLOUDFLARE_STATIC_ASSET_MAX_BYTES = 25 * 1024 * 1024;
 
 // Assets are streamed through the deploy in bounded batches so peak isolate
 // memory stays flat regardless of how many (or how large) a project's static
@@ -125,7 +126,15 @@ export interface DirectDispatchDeployResult {
   result?: unknown;
   error?: string;
   warnings?: string[];
+  skippedAssets?: DirectDeploySkippedAsset[];
   sideEffects: DeploySideEffectsInfo;
+}
+
+export interface DirectDeploySkippedAsset {
+  path: string;
+  size: number;
+  limit: number;
+  reason: "asset_too_large";
 }
 
 export interface DirectDispatchDeployTimings {
@@ -193,8 +202,24 @@ export async function deployWorkerModulesDirect(
   } = {},
 ): Promise<DirectDispatchDeployResult> {
   const startedAt = Date.now();
+  const requestedAssets = request.assets ?? [];
+  const skippedAssets: DirectDeploySkippedAsset[] = requestedAssets
+    .filter((asset) => asset.size > CLOUDFLARE_STATIC_ASSET_MAX_BYTES)
+    .map((asset) => ({
+      path: asset.path,
+      size: asset.size,
+      limit: CLOUDFLARE_STATIC_ASSET_MAX_BYTES,
+      reason: "asset_too_large",
+    }));
+  const deployableAssets = requestedAssets.filter((asset) => asset.size <= CLOUDFLARE_STATIC_ASSET_MAX_BYTES);
+  const warnings = skippedAssets.map((asset) =>
+    `Skipped static asset ${JSON.stringify(asset.path)} (${formatMiB(asset.size)} MiB, ${asset.size} bytes): ` +
+    `Cloudflare Workers allows at most 25 MiB per asset. The deployed app will return 404 for this file.`
+  );
   const prepareAssetsStartedAt = Date.now();
-  const preparedAssets = await fingerprintDirectAssets(request.assets ?? []);
+  // Reject known-oversized files before read() transfers their base64 payload
+  // over sandbox RPC, where the transport otherwise fails opaquely.
+  const preparedAssets = await fingerprintDirectAssets(deployableAssets);
   const prepareAssetsMs = Date.now() - prepareAssetsStartedAt;
   const timings: DirectDispatchDeployTimings = {
     totalMs: 0,
@@ -233,7 +258,6 @@ export async function deployWorkerModulesDirect(
   const nativeAssetsStartedAt = Date.now();
   const nativeAssets = await uploadNativeWorkerAssets(env, dispatchNamespace, dispatchScriptName, request, preparedAssets, options.fetcher ?? fetch);
   timings.nativeAssetsMs = Date.now() - nativeAssetsStartedAt;
-  const warnings: string[] = [];
   let assetsRecord: SelfhostAssetsRecord | null = null;
   let storeAssetsTask: Promise<void> | null = null;
   const storeAssetsStartedAt = Date.now();
@@ -250,7 +274,8 @@ export async function deployWorkerModulesDirect(
     assetsRecord = null;
   }
   timings.storeAssetsMs = Date.now() - storeAssetsStartedAt;
-  const bindings = normalizedDirectBindings(request.metadata);
+  const bindings = normalizedDirectBindings(request.metadata)
+    .filter((binding) => nativeAssets || binding.type !== "assets");
   const migrationsStartedAt = Date.now();
   const migrations = await migrationsForDirectDeploy(
     accountId,
@@ -393,6 +418,7 @@ export async function deployWorkerModulesDirect(
       timings,
       sideEffects,
       ...(warnings.length > 0 ? { warnings } : {}),
+      ...(skippedAssets.length > 0 ? { skippedAssets } : {}),
       ...(response.ok ? { result: body } : { error: typeof body === "string" ? body : JSON.stringify(body) }),
     };
   } finally {
@@ -400,6 +426,10 @@ export async function deployWorkerModulesDirect(
       await releaseUsageGuardOperationLease({ db: env.APP_DB, appId: operationAppId, holder: operationLeaseHolder });
     }
   }
+}
+
+function formatMiB(bytes: number): string {
+  return (bytes / (1024 * 1024)).toFixed(1);
 }
 
 async function migrationsForDirectDeploy(
@@ -844,8 +874,9 @@ function prepareDirectAssetsRecord(
   request: DirectDispatchDeployRequest,
   preparedAssets: PreparedDirectAsset[],
 ): { record: SelfhostAssetsRecord | null; store: Promise<void> | null } {
+  if (preparedAssets.length === 0) return { record: null, store: null };
   const hasAssetsBinding = request.metadata.bindings?.some((binding) => binding.type === "assets") || Boolean(request.metadata.assets);
-  if (!hasAssetsBinding && preparedAssets.length === 0) return { record: null, store: null };
+  if (!hasAssetsBinding) return { record: null, store: null };
   if (!env.APP_KV) throw new Error("APP_KV is required for direct deploy assets");
   if (preparedAssets.length > 0 && !env.R2_BUCKET) throw new Error("R2_BUCKET is required for direct deploy assets");
 

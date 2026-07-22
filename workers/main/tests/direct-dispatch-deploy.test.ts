@@ -479,6 +479,110 @@ describe("deployWorkerModulesDirect", () => {
     expect(tracker.totalReads).toBe(60);
   });
 
+  it("skips assets above Cloudflare's per-file limit without reading or failing the deploy", async () => {
+    const oversizedRead = vi.fn(async () => {
+      throw new Error("oversized asset must not cross sandbox RPC");
+    });
+    const fetcher = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/assets-upload-session")) {
+        const body = JSON.parse(init?.body as string) as { manifest: Record<string, { hash: string }> };
+        return Response.json({
+          success: true,
+          result: { jwt: "upload-jwt", buckets: [Object.values(body.manifest).map((entry) => entry.hash)] },
+        });
+      }
+      if (url.endsWith("/workers/assets/upload?base64=true")) {
+        return Response.json({ success: true, result: { jwt: "assets-jwt" } });
+      }
+      return Response.json({ success: true, result: { id: "version-1", has_assets: true } });
+    });
+
+    const result = await deployWorkerModulesDirect(env, {
+      scriptName: "demo-app",
+      hostname: "camelai.dev",
+      identity,
+      metadata: { main_module: "index.js", assets: { directory: "../client", binding: "ASSETS" } },
+      modules: [{ name: "index.js", contentType: "application/javascript+module", content: "export default {};" }],
+      assets: [
+        lazyAsset("index.html", "hello", "text/html; charset=utf-8"),
+        {
+          path: "assets/hero.png",
+          contentType: "image/png",
+          size: 25 * 1024 * 1024 + 1,
+          read: oversizedRead,
+        },
+      ],
+    }, { fetcher: fetcher as unknown as typeof fetch });
+
+    expect(result.success).toBe(true);
+    expect(oversizedRead).not.toHaveBeenCalled();
+    expect(result.skippedAssets).toEqual([{
+      path: "assets/hero.png",
+      size: 25 * 1024 * 1024 + 1,
+      limit: 25 * 1024 * 1024,
+      reason: "asset_too_large",
+    }]);
+    expect(result.warnings).toEqual(expect.arrayContaining([
+      'Skipped static asset "assets/hero.png" (25.0 MiB, 26214401 bytes): Cloudflare Workers allows at most 25 MiB per asset. The deployed app will return 404 for this file.',
+    ]));
+    const sessionBody = JSON.parse(fetcher.mock.calls[0]![1]?.body as string);
+    expect(Object.keys(sessionBody.manifest)).toEqual(["/index.html"]);
+  });
+
+  it("keeps an asset exactly at Cloudflare's 25 MiB boundary", async () => {
+    const boundaryRead = vi.fn(async () => new Uint8Array());
+    const fetcher = vi.fn(async (input: string | URL | Request) => {
+      const url = String(input);
+      if (url.endsWith("/assets-upload-session")) {
+        return Response.json({ success: true, result: { jwt: "assets-jwt", buckets: [] } });
+      }
+      return Response.json({ success: true, result: { id: "version-1", has_assets: true } });
+    });
+
+    const result = await deployWorkerModulesDirect(env, {
+      scriptName: "demo-app",
+      hostname: "camelai.dev",
+      identity,
+      metadata: { main_module: "index.js", assets: { directory: "../client" } },
+      modules: [{ name: "index.js", contentType: "application/javascript+module", content: "export default {};" }],
+      assets: [{ path: "assets/boundary.bin", size: 25 * 1024 * 1024, read: boundaryRead }],
+    }, { fetcher: fetcher as unknown as typeof fetch });
+
+    expect(result.success).toBe(true);
+    expect(result.skippedAssets).toBeUndefined();
+    expect(boundaryRead).toHaveBeenCalled();
+  });
+
+  it("deploys module-only when every static asset is oversized", async () => {
+    const oversizedRead = vi.fn(async () => {
+      throw new Error("oversized asset must not cross sandbox RPC");
+    });
+    const fetcher = vi.fn(async () =>
+      Response.json({ success: true, result: { id: "version-1", has_assets: false } }));
+
+    const result = await deployWorkerModulesDirect(env, {
+      scriptName: "demo-app",
+      hostname: "camelai.dev",
+      identity,
+      metadata: { main_module: "index.js", assets: { directory: "../client", binding: "ASSETS" } },
+      modules: [{ name: "index.js", contentType: "application/javascript+module", content: "export default {};" }],
+      assets: [{
+        path: "assets/hero.png",
+        contentType: "image/png",
+        size: 30 * 1024 * 1024,
+        read: oversizedRead,
+      }],
+    }, { fetcher: fetcher as unknown as typeof fetch });
+
+    expect(result.success).toBe(true);
+    expect(oversizedRead).not.toHaveBeenCalled();
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    const metadata = JSON.parse(await ((fetcher.mock.calls[0]![1]?.body as FormData).get("metadata") as Blob).text());
+    expect(metadata.assets).toBeUndefined();
+    expect(metadata.bindings).not.toContainEqual(expect.objectContaining({ type: "assets" }));
+  });
+
   it("does not publish the active self-host asset manifest when script upload fails", async () => {
     const kvPut = vi.fn(async () => undefined);
     const r2 = new Map<string, { body: string | Uint8Array; options?: unknown }>();

@@ -1392,6 +1392,7 @@ function summarizeDirectDeployResult(deploy: DirectDispatchDeployResult): Record
     ...(deploy.timings ? { timings: deploy.timings } : {}),
     ...(deploy.success ? {} : { errorSummary: summarizeDeployFailure(deploy) }),
     ...(deploy.warnings?.length ? { warnings: deploy.warnings } : {}),
+    ...(deploy.skippedAssets?.length ? { skippedAssets: deploy.skippedAssets } : {}),
   };
 }
 
@@ -4000,6 +4001,7 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
           scriptName: deploy.scriptName,
           dispatchScriptName: deploy.dispatchScriptName,
           status: deploy.status,
+          ...(deploy.skippedAssets?.length ? { skippedAssets: deploy.skippedAssets } : {}),
         },
         ...(warnings.length > 0 ? { warnings } : {}),
       };
