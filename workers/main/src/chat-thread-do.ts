@@ -850,6 +850,17 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
   constructor(ctx: DurableObjectState, env: ChatEnv) {
     super(ctx, env as unknown as ChatAgentEnv);
 
+    // Hibernatable ping/pong so middleboxes and hidden tabs can keep the socket
+    // alive without application traffic. Pair is matched by the browser or any
+    // client that sends the request string as a WS text frame.
+    try {
+      this.ctx.setWebSocketAutoResponse(
+        new WebSocketRequestResponsePair("ping", "pong"),
+      );
+    } catch {
+      // Older local runtimes may lack auto-response; chat still works without it.
+    }
+
     // AIChatAgent's constructor reassigned this.onMessage to a wrapper that
     // services cf_agent_* chat-protocol frames (chat_clear, chat_messages,
     // use_chat_request, request_cancel, tool_result, tool_approval) from any
@@ -1303,7 +1314,10 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
         !this.chatContext ||
         !this.isPreviouslyAuthorizedChatUser(upgradeUserId)
       ) {
-        connection.close(1008, "forbidden");
+        // Cannot verify right now (or no prior grant) — not an authoritative
+        // denial. 1013 keeps the client retrying full auth once DOs recover
+        // instead of a permanent false "no access" terminal close.
+        connection.close(1013, "auth_temporarily_unavailable");
         return;
       }
     } else if (upgradeUserId) {
@@ -1353,12 +1367,22 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
     } else {
       this.syncAgentState();
     }
-    // An in-progress turn's stream is served by ai-chat's resumable stream on
-    // reconnect; completed history was hand-delivered above (and the initial
-    // page load also reads it via getUiMessages).
-    await this.maybeGenerateChatGroupAvatarForThread(
-      this.chatContext?.threadId ?? "",
-    );
+    // Avatar generation can take multiple seconds (UserDO + AI). PartyServer
+    // awaits onConnect before returning HTTP 101, so keep it off the critical
+    // path — a slow avatar must not trip the browser's connectionTimeout.
+    const avatarThreadId = this.chatContext?.threadId ?? "";
+    if (avatarThreadId) {
+      this.ctx.waitUntil(
+        this.maybeGenerateChatGroupAvatarForThread(avatarThreadId).catch(
+          (error) => {
+            console.error(
+              "[ChatThreadDO] background chat-group avatar generation failed",
+              error,
+            );
+          },
+        ),
+      );
+    }
   }
 
   async fetch(request: Request): Promise<Response> {

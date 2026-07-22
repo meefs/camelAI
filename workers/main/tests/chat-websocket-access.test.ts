@@ -168,7 +168,31 @@ describe('requireChatWebSocketAccess', () => {
     expect(access.threadId).toBe(THREAD_ID);
   });
 
-  it('fails closed on non-transient authorization errors', async () => {
+  it('returns degraded access when authorization DOs are overloaded', async () => {
+    const overloaded = Object.assign(new Error('Durable Object is overloaded'), {
+      overloaded: true,
+      retryable: true,
+    });
+    const { env } = buildEnv({
+      orgStub: {
+        getWorkspaceRecord: vi.fn().mockRejectedValue(overloaded),
+      },
+    });
+    const req = await buildRequest();
+
+    const access = await requireChatWebSocketAccess(
+      req,
+      env,
+      THREAD_ID,
+      URL_WORKSPACE_ID,
+    );
+
+    expect('degraded' in access).toBe(true);
+    if (!('degraded' in access)) return;
+    expect(access.userId).toBe(USER_ID);
+  });
+
+  it('returns reconnectable 503 on non-degradable authorization errors', async () => {
     const { env } = buildEnv({
       orgStub: {
         getWorkspaceRecord: vi
@@ -187,7 +211,8 @@ describe('requireChatWebSocketAccess', () => {
 
     expect('error' in access).toBe(true);
     if (!('error' in access)) return;
-    expect(access.error.status).toBe(403);
+    // Not an authoritative denial — client should keep retrying (1013).
+    expect(access.error.status).toBe(503);
   });
 
   it('denies known restricted member access even when the org RPC stays unreachable', async () => {

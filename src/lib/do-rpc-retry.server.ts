@@ -14,12 +14,26 @@ function getBooleanErrorProperty(error: Error, key: string): boolean {
 
 export function isTransientDurableObjectRpcError(error: unknown): boolean {
   if (!error || !(error instanceof Error)) return false;
+  // Overloaded is not a generic write-path retry (caller should back off),
+  // but chat WS auth treats it as degradable via isDegradableChatWebSocketAuthError.
   if (getBooleanErrorProperty(error, "overloaded")) return false;
   if (getBooleanErrorProperty(error, "retryable")) return true;
   const message = error.message.toLowerCase();
   return TRANSIENT_DO_ERROR_PATTERNS.some((pattern) =>
     message.includes(pattern),
   );
+}
+
+/**
+ * Errors that should not fail-closed chat WebSocket authorization. Includes
+ * normal transient DO RPC failures plus `overloaded`, which otherwise becomes
+ * a hard 403 and infinite client reconnect loops while HTTP loaders still work.
+ */
+export function isDegradableChatWebSocketAuthError(error: unknown): boolean {
+  if (isTransientDurableObjectRpcError(error)) return true;
+  if (!error || !(error instanceof Error)) return false;
+  if (getBooleanErrorProperty(error, "overloaded")) return true;
+  return error.message.toLowerCase().includes("overloaded");
 }
 
 function delay(ms: number): Promise<void> {

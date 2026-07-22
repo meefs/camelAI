@@ -148,6 +148,10 @@ import {
   trackChatSocketOpen,
   trackChatSocketTerminalClose,
 } from "@/lib/chat-ws-telemetry";
+import {
+  normalizeWebSocketCloseEvent,
+  terminalChatWebSocketUserMessage,
+} from "@/lib/chat-ws-close";
 import { type AppUrlInput, getAppUrl, getAppIframeUrl } from "@/lib/app-url";
 import {
   collectProjectReferencesFromMessages,
@@ -818,6 +822,12 @@ export default function Chat({
     agent: "chat-thread",
     name: threadId ?? "disabled",
     enabled: agentEnabled,
+    // PartySocket defaults to 4s; chat auth is several sequential DO RPCs plus
+    // DO routing/onConnect. 20s leaves room for degraded fallback under load
+    // without abandoning mid-handshake (which recreates flap loops).
+    connectionTimeout: 20_000,
+    maxReconnectionDelay: 15_000,
+    minReconnectionDelay: 2_000,
     query: {
       threadId: threadId ?? null,
       workspaceId: resolvedWorkspaceId ?? null,
@@ -2648,10 +2658,15 @@ export default function Chat({
           if (activeThreadId !== pendingThreadContextRef.current.threadId) {
             return;
           }
+          // Keep ready=true when the socket is still OPEN. Clearing ready on an
+          // RPC timeout left the UI queueing forever with no onOpen to flush.
+          const socketOpen =
+            chatAgentRef.current?.readyState === WebSocket.OPEN;
           failPendingMessageDelivery(
             error instanceof Error
               ? error.message
               : "The message did not reach the server. I restored it as a draft so you can try again.",
+            { preserveReady: socketOpen },
           );
         });
     },
@@ -2848,7 +2863,25 @@ export default function Chat({
 
   const handleAgentConnectionError = useCallback(
     (error: { code?: number; reason?: string; wasClean?: boolean }) => {
-      if (threadId) trackChatSocketTerminalClose(threadId, error);
+      const normalized = normalizeWebSocketCloseEvent({
+        code: error.code,
+        reason: error.reason,
+        wasClean: error.wasClean,
+      } as CloseEvent);
+      if (threadId) {
+        trackChatSocketTerminalClose(threadId, {
+          code: normalized.code ?? error.code,
+          reason: normalized.reason ?? error.reason,
+          wasClean: normalized.wasClean ?? error.wasClean,
+        });
+      }
+      toast.error(
+        terminalChatWebSocketUserMessage(
+          normalized.code ?? error.code ?? null,
+          normalized.reason ?? error.reason,
+        ),
+        { id: "chat-ws-terminal-close", duration: 12_000 },
+      );
     },
     [threadId],
   );

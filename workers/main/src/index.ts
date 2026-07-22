@@ -59,6 +59,8 @@ import {
 import { handleEmailSendProxy } from './routes/email-send-proxy.js';
 import { handleWorkerAuth } from './routes/worker-auth.js';
 import { requireChatWebSocketAccess } from './helpers/auth.js';
+import { rejectedChatWebSocketUpgrade } from '../../../src/lib/chat-ws-close';
+import { recordObservabilityEvent } from './observability.js';
 
 // Re-exports for wrangler
 export { ChiridionMcp } from './mcp-handler.js';
@@ -278,16 +280,61 @@ async function authorizeChatAgentConnect(
   threadId: string,
 ): Promise<Request | Response> {
   const url = new URL(req.url);
+  const workspaceIdParam = url.searchParams.get('workspaceId');
   const access = await requireChatWebSocketAccess(
     req,
     env,
     threadId,
-    url.searchParams.get('workspaceId'),
+    workspaceIdParam,
   );
-  if ('error' in access) return access.error;
+  if ('error' in access) {
+    const status = access.error.status || 403;
+    const reasonText = (await access.error.clone().text().catch(() => '')) ||
+      access.error.statusText ||
+      'forbidden';
+    recordObservabilityEvent(env, {
+      event: 'chat_ws_upgrade_rejected',
+      severity: status >= 500 ? 'error' : 'warn',
+      component: 'chat_ws_auth',
+      operation: 'authorizeChatAgentConnect',
+      status: String(status),
+      statusCode: status,
+      route: '/agents/chat-thread/:threadId',
+      method: req.method,
+      path: url.pathname,
+      threadId,
+      workspaceId: workspaceIdParam,
+      errorMessage: reasonText.slice(0, 200),
+      sampleIndex: threadId,
+    });
+    // Accept+close with an application code so the browser stops infinite
+    // reconnect on hard failures (401/403/404 → 44xx terminal). 5xx maps to
+    // 1013 (try again later) and remains reconnectable.
+    return rejectedChatWebSocketUpgrade({
+      httpStatus: status,
+      reason: reasonText,
+    });
+  }
 
   const { session, userId } = access;
   const fullAccess = 'degraded' in access ? null : access;
+
+  if ('degraded' in access) {
+    recordObservabilityEvent(env, {
+      event: 'chat_ws_upgrade_degraded',
+      severity: 'warn',
+      component: 'chat_ws_auth',
+      operation: 'authorizeChatAgentConnect',
+      status: 'degraded',
+      route: '/agents/chat-thread/:threadId',
+      method: req.method,
+      path: url.pathname,
+      threadId,
+      workspaceId: workspaceIdParam,
+      userId,
+      sampleIndex: threadId,
+    });
+  }
 
   const headers = new Headers(req.headers);
   headers.delete('X-Chiridion-User-Id');
@@ -303,6 +350,10 @@ async function authorizeChatAgentConnect(
     url.searchParams.set('workspaceId', fullAccess.workspaceId);
     url.searchParams.set('orgId', fullAccess.orgId);
   } else {
+    // Never forward client-controlled scope on degraded admits — ChatThreadDO
+    // must keep its stored workspace/org context rather than trusting query.
+    url.searchParams.delete('workspaceId');
+    url.searchParams.delete('orgId');
     headers.set('X-Chiridion-Auth-Degraded', '1');
   }
 

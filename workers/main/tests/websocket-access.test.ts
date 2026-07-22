@@ -87,7 +87,19 @@ describe('WebSocket access guard', () => {
       },
     });
 
-    expect(response.status).toBe(403);
+    // Hard auth failures accept the upgrade then immediately close with a
+    // terminal application code (4403) so the browser stops reconnecting.
+    expect(response.status).toBe(101);
+    expect(response.webSocket).toBeTruthy();
+    const ws = response.webSocket!;
+    const closed = new Promise<{ code: number; reason: string }>((resolve) => {
+      ws.addEventListener('close', (event) => {
+        resolve({ code: event.code, reason: event.reason });
+      });
+    });
+    ws.accept();
+    const close = await closed;
+    expect(close.code).toBe(4403);
   });
 
   it('denies WebSocket upgrade when org membership is removed', async () => {
@@ -103,6 +115,16 @@ describe('WebSocket access guard', () => {
       },
     });
 
-    expect(response.status).toBe(403);
+    expect(response.status).toBe(101);
+    expect(response.webSocket).toBeTruthy();
+    const ws = response.webSocket!;
+    const closed = new Promise<{ code: number; reason: string }>((resolve) => {
+      ws.addEventListener('close', (event) => {
+        resolve({ code: event.code, reason: event.reason });
+      });
+    });
+    ws.accept();
+    const close = await closed;
+    expect(close.code).toBe(4403);
   });
 });

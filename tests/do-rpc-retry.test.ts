@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  isDegradableChatWebSocketAuthError,
   isTransientDurableObjectRpcError,
   retryTransientDurableObjectRead,
 } from "@/lib/do-rpc-retry.server";
@@ -157,13 +158,16 @@ describe("isTransientDurableObjectRpcError", () => {
         }),
       ),
     ).toBe(true);
+    const overloaded = Object.assign(new Error("Durable Object is overloaded"), {
+      overloaded: true,
+      retryable: true,
+    });
+    // Still non-transient for generic DO write retries...
+    expect(isTransientDurableObjectRpcError(overloaded)).toBe(false);
+    // ...but chat WS auth must degrade instead of hard-403 looping.
+    expect(isDegradableChatWebSocketAuthError(overloaded)).toBe(true);
     expect(
-      isTransientDurableObjectRpcError(
-        Object.assign(new Error("Durable Object is overloaded"), {
-          overloaded: true,
-          retryable: true,
-        }),
-      ),
-    ).toBe(false);
+      isDegradableChatWebSocketAuthError(new Error("Network connection lost.")),
+    ).toBe(true);
   });
 });

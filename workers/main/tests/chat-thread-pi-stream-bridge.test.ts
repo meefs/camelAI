@@ -1942,6 +1942,7 @@ describe('ChatThreadDO stranded-marker healing on page open', () => {
     fake.currentTodos = [];
     fake.syncAgentState = vi.fn();
     fake.maybeGenerateChatGroupAvatarForThread = vi.fn(async () => {});
+    fake.ctx = { waitUntil: vi.fn((promise: Promise<unknown>) => promise) };
     const connection = { send: vi.fn(), close: vi.fn() };
     const ctx = { request: new Request('https://do/ws?orgId=org1') };
 
@@ -1953,6 +1954,9 @@ describe('ChatThreadDO stranded-marker healing on page open', () => {
 
     expect(connection.close).not.toHaveBeenCalled();
     expect(fake.sweepOrphanedActiveTurnMarker).toHaveBeenCalledTimes(1);
+    // Avatar work is scheduled off the critical path (waitUntil), not awaited.
+    expect(fake.ctx.waitUntil).toHaveBeenCalledTimes(1);
+    expect(fake.maybeGenerateChatGroupAvatarForThread).toHaveBeenCalledWith('t1');
     // The sweep ran before the stale-todo/agent-state derivation read the marker.
     expect(
       fake.sweepOrphanedActiveTurnMarker.mock.invocationCallOrder[0],

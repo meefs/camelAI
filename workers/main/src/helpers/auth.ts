@@ -12,14 +12,18 @@ import { getWorkspaceStub, getOrgStub } from "./stubs.js";
 import { isOrgBanned, isUserBanned } from "../ban-list.js";
 import { validateSessionMapsToOrg } from "./proxy-auth-providers.js";
 import {
-  isTransientDurableObjectRpcError,
+  isDegradableChatWebSocketAuthError,
   retryTransientDurableObjectRpc,
 } from "../../../../src/lib/do-rpc-retry.server";
 import { getAppIndexReadDatabase } from "../app-index-db.js";
 
 export type AuthResult = { session: SessionData } | { error: Response };
 
-const CHAT_WS_AUTH_RPC_TIMEOUT_MS = 2_000;
+// Per-RPC budget for the chat WS auth chain. Client connectionTimeout is 20s;
+// two attempts × 2.5s per RPC prefers degrade/retry over abandoning mid-handshake
+// (legacy was 3 × 2s).
+const CHAT_WS_AUTH_RPC_TIMEOUT_MS = 2_500;
+const CHAT_WS_AUTH_RPC_ATTEMPTS = 2;
 const WORKSPACE_ORG_INDEX_PREFIX = "workspace_org:";
 
 async function getWorkspaceOrgId(
@@ -48,23 +52,27 @@ class ChatWebSocketAuthRpcTimeoutError extends Error {
 }
 
 function chatWsAuthRpc<T>(operation: string, fn: () => Promise<T>): Promise<T> {
-  return retryTransientDurableObjectRpc(operation, () => {
-    return new Promise<T>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        reject(new ChatWebSocketAuthRpcTimeoutError(operation));
-      }, CHAT_WS_AUTH_RPC_TIMEOUT_MS);
-      fn().then(
-        (value) => {
-          clearTimeout(timer);
-          resolve(value);
-        },
-        (error) => {
-          clearTimeout(timer);
-          reject(error);
-        },
-      );
-    });
-  });
+  return retryTransientDurableObjectRpc(
+    operation,
+    () => {
+      return new Promise<T>((resolve, reject) => {
+        const timer = setTimeout(() => {
+          reject(new ChatWebSocketAuthRpcTimeoutError(operation));
+        }, CHAT_WS_AUTH_RPC_TIMEOUT_MS);
+        fn().then(
+          (value) => {
+            clearTimeout(timer);
+            resolve(value);
+          },
+          (error) => {
+            clearTimeout(timer);
+            reject(error);
+          },
+        );
+      });
+    },
+    { attempts: CHAT_WS_AUTH_RPC_ATTEMPTS, initialDelayMs: 50 },
+  );
 }
 
 const LOCAL_AUTH_USER_ID = "local-dev-user";
@@ -121,8 +129,8 @@ export async function requireSession(
           .getSessionInvalidatedAt(),
       );
     } catch (error) {
-      if (!isTransientDurableObjectRpcError(error)) {
-        // Only DO unavailability justifies failing open; an application
+      if (!isDegradableChatWebSocketAuthError(error)) {
+        // Only DO unavailability/overload justifies failing open; an application
         // error must keep the pre-existing fail-closed behavior, or a
         // "log out everywhere" revocation would be ignored until the bug
         // is fixed.
@@ -445,12 +453,16 @@ export async function requireChatWebSocketAccess(
       threadId: orgValidation.threadId,
     };
   } catch (error) {
-    if (isTransientDurableObjectRpcError(error)) {
-      // The authorization DOs are unreachable, not denying access. Fall back
-      // to degraded auth: the session is verified, and ChatThreadDO will only
-      // admit users it has already seen pass full authorization.
+    if (isDegradableChatWebSocketAuthError(error)) {
+      // The authorization DOs are unreachable or overloaded, not denying
+      // access. Fall back to degraded auth: the session is verified, and
+      // ChatThreadDO will only admit users it has already seen pass full
+      // authorization.
       return { degraded: true, session, userId, threadId };
     }
-    return { error: text("Forbidden", 403) };
+    // Unknown/application errors are not authoritative denials. Return 503 so
+    // the upgrade path closes with reconnectable 1013 instead of terminal 4403
+    // (which would permanently kill tabs during a bad deploy window).
+    return { error: text("Authorization temporarily unavailable", 503) };
   }
 }

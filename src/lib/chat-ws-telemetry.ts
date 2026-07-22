@@ -1,4 +1,5 @@
 import { reportClientEvent } from "./client-error-reporting";
+import { normalizeWebSocketCloseEvent } from "./chat-ws-close";
 
 /**
  * Client-side chat WebSocket + send-path telemetry.
@@ -115,7 +116,8 @@ export function trackChatSocketClose(
   const stats = statsFor(threadId);
   const now = Date.now();
   stats.closes += 1;
-  const code = typeof event?.code === "number" ? event.code : null;
+  const normalized = normalizeWebSocketCloseEvent(event);
+  const code = normalized.code;
   const socketLifeMs =
     stats.lastOpenAt !== null ? now - stats.lastOpenAt : undefined;
   stats.lastCloseAt = now;
@@ -139,9 +141,11 @@ export function trackChatSocketClose(
       ...connectionContext(),
       ...lifecycleCounts(stats),
       code,
-      reason: event?.reason || undefined,
-      wasClean: event?.wasClean,
+      reason: normalized.reason,
+      wasClean: normalized.wasClean,
       socketLifeMs,
+      // Preserve raw fields when PartySocket nested the real close payload.
+      rawCode: typeof event?.code === "number" ? event.code : String(event?.code ?? ""),
     },
   });
 
@@ -196,20 +200,27 @@ export function trackChatSocketTerminalClose(
   error: { code?: number; reason?: string; wasClean?: boolean },
 ): void {
   const stats = statsFor(threadId);
+  const normalized = normalizeWebSocketCloseEvent({
+    code: error.code,
+    reason: error.reason,
+    wasClean: error.wasClean,
+  } as CloseEvent);
+  const code = normalized.code ?? (typeof error.code === "number" ? error.code : null);
+  const reason = normalized.reason ?? error.reason;
   reportClientEvent({
     source: "chat_websocket",
     event: "chat_ws_terminal_close",
     severity: "error",
-    status: typeof error.code === "number" ? String(error.code) : "terminal",
-    statusCode: typeof error.code === "number" ? error.code : undefined,
+    status: code !== null ? String(code) : "terminal",
+    statusCode: code ?? undefined,
     message: "Chat websocket closed terminally; client will not reconnect.",
     threadId,
     details: {
       ...connectionContext(),
       ...lifecycleCounts(stats),
-      code: error.code,
-      reason: error.reason || undefined,
-      wasClean: error.wasClean,
+      code,
+      reason: reason || undefined,
+      wasClean: normalized.wasClean ?? error.wasClean,
     },
   });
 }
