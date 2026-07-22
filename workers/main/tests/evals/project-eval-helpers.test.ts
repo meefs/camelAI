@@ -89,7 +89,7 @@ describe("project eval runtime evidence extraction", () => {
   it("matches direct and js_exec tool calls that reference the expected path", () => {
     const eventFor = (item: Record<string, unknown>) => ({
       type: "runtime_event",
-      event: { method: "item/completed", params: { item } },
+      event: { method: "item/completed", params: { item: { status: "completed", ...item } } },
     });
     expect(toolCallReferences([
       eventFor({ tool: "set_preview", arguments: { path: "analysis.ipynb" } }),

@@ -10,6 +10,9 @@ import {
   estimatePiTextTokens,
   piCompactionReserveTokens,
   piModelContextWindow,
+  capPiMainRequestOutput,
+  PI_MAIN_REQUEST_DEFAULT_OUTPUT_TOKENS,
+  PI_MAIN_REQUEST_MAX_OUTPUT_TOKENS,
 } from '../src/chat-thread/pi-compaction';
 import { extractToolContent } from '../src/chat-thread/pi-message-helpers';
 import { PiCoreMessageStore } from '../src/chat-thread/pi-core-store';
@@ -321,6 +324,7 @@ function createProjectToolFake({
   };
   const chatThreadStub = {
     recordProjectActivity: vi.fn(async () => undefined),
+    recordVerifiedWorkEvidence: vi.fn(async () => undefined),
     setPreviewTarget: vi.fn(async () => undefined),
   };
   const env = {
@@ -350,7 +354,7 @@ function createProjectToolFake({
     CF_WORKER_NAME: deploy ? 'main-worker' : undefined,
   };
   const fake = Object.create(CodeModeToolsBinding.prototype) as any;
-  fake.ctx = { props: { orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1', userId: 'user1' } };
+  fake.ctx = { props: { orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1', userId: 'user1', parentToolUseId: 'js-exec-1' } };
   fake.env = env;
   fake.projectBuildSandbox = vi.fn(() => sandbox);
   return {
@@ -3592,6 +3596,24 @@ describe('ChatThreadDO Pi turn handling', () => {
     expect(fake.piMainBaselineIndex).toBe(compactedMessages.length);
   });
 
+  it('caps the main Pi request output without mutating catalog metadata', () => {
+    const catalogModel = { id: 'large-output', maxTokens: 262_144, contextWindow: 1_000_000 } as any;
+
+    const requestModel = capPiMainRequestOutput(catalogModel);
+
+    expect(requestModel).not.toBe(catalogModel);
+    expect(requestModel.maxTokens).toBe(PI_MAIN_REQUEST_MAX_OUTPUT_TOKENS);
+    expect(catalogModel.maxTokens).toBe(262_144);
+  });
+
+  it('preserves lower provider output limits and supplies a bounded default', () => {
+    const lower = { id: 'small-output', maxTokens: 8_192 } as any;
+    const missing = { id: 'missing-output' } as any;
+
+    expect(capPiMainRequestOutput(lower)).toBe(lower);
+    expect(capPiMainRequestOutput(missing).maxTokens).toBe(PI_MAIN_REQUEST_DEFAULT_OUTPUT_TOKENS);
+  });
+
   it('uses Pi effective output token cap as reserve for post-turn compaction triggers', () => {
     const fake = Object.create(ChatThreadDO.prototype) as any;
     fake.ctx = { waitUntil: vi.fn() };
@@ -4137,8 +4159,9 @@ describe('ChatThreadDO Pi turn handling', () => {
     expect(capturedWorkerCode.env.BROWSER).toEqual({ launch: expect.any(Function) });
     expect(capturedWorkerCode.modules['index.js'].js).toContain('class CodeModeRunner');
     expect(capturedWorkerCode.modules['index.js'].js).toContain('createConnectionsFacade');
-    expect(capturedWorkerCode.modules['index.js'].js).toContain('if (connectionName === "$find") return (query) => binding.find(query)');
+    expect(capturedWorkerCode.modules['index.js'].js).toContain('if (connectionName === "$find") return (query) => findConnection(query)');
     expect(capturedWorkerCode.modules['index.js'].js).toContain('if (connectionName === "$test") return (query) => binding.test(query)');
+    expect(capturedWorkerCode.modules['index.js'].js).toContain('if (connectionName === "$verify") return (query) => binding.verify(query)');
     expect(capturedWorkerCode.modules['index.js'].js).toContain('createToolBackedConnectionsBinding');
     expect(capturedWorkerCode.modules['index.js'].js).toContain('const CONNECTIONS_BINDING = createToolBackedConnectionsBinding(callTool)');
     expect(capturedWorkerCode.modules['index.js'].js).toContain('const CONNECTIONS = connections');
@@ -4345,6 +4368,7 @@ describe('ChatThreadDO Pi turn handling', () => {
     expect((byName.get('read') as any).parameters.properties.project).toBeDefined();
     expect((byName.get('build_project') as any).hidden).toBe(true);
     expect((byName.get('deploy_project') as any).parameters.properties.dry_run).toBeDefined();
+    expect((byName.get('deploy_project') as any).parameters.properties.publish_intent).toBeDefined();
     expect((byName.get('read_skill') as any).parameters.properties.skill).toBeDefined();
     expect((byName.get('read_skill') as any).parameters.properties.file).toBeDefined();
     expect((byName.get('read_skill') as any).parameters.properties.location).toBeUndefined();
@@ -4368,8 +4392,8 @@ describe('ChatThreadDO Pi turn handling', () => {
     expect((byName.get('set_project_description') as any).parameters.properties.description).toBeDefined();
     expect((byName.get('add_dependency') as any).parameters.properties.project).toBeDefined();
     expect((byName.get('build_project') as any).description).toContain('Deprecated compatibility alias');
-    expect((byName.get('deploy_project') as any).description).toContain('build, or deploy FAILS');
-    expect((byName.get('deploy_project') as any).description).toContain('changing preview');
+    expect((byName.get('deploy_project') as any).description).toContain('when validation, build, or deploy fails');
+    expect((byName.get('deploy_project') as any).description).toContain("publish_intent='user_requested'");
     expect((byName.get('run_notebook') as any).description).toContain('open a clean successful run in preview automatically');
     expect((byName.get('run_notebook') as any).description).toContain("don't drive nbconvert/validate or call set_preview by hand");
     expect((byName.get('run_notebook') as any).description).toContain('current preview is unchanged');
@@ -4717,6 +4741,39 @@ describe('ChatThreadDO Pi turn handling', () => {
     expect(fake.recordChatThreadObservabilityEvent).not.toHaveBeenCalled();
   });
 
+  it('attaches and persists verified completion evidence for operational tools', async () => {
+    const values = new Map<string, unknown>();
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    fake.ctx = {
+      storage: {
+        kv: {
+          get: vi.fn((key: string) => values.get(key)),
+          put: vi.fn((key: string, value: unknown) => values.set(key, value)),
+        },
+      },
+    };
+
+    const result = await ChatThreadDO.prototype['afterPiToolCall'].call(fake, {
+      args: { project: 'demo' },
+      toolCall: { id: 'deploy-1', name: 'deploy_project' },
+      isError: false,
+      result: {
+        content: [{ type: 'text', text: 'deployed' }],
+        details: { success: true, url: 'https://demo.camelai.app' },
+      },
+    });
+
+    expect((result?.content?.at(-1) as { text: string }).text).toContain('Completion evidence');
+    expect(result?.details).toMatchObject({
+      completionEvidence: {
+        status: 'succeeded',
+        supportedClaims: ['deployed', 'published'],
+        unsupportedClaims: ['feature verified', 'live data verified'],
+      },
+    });
+    expect(fake.ctx.storage.kv.put).toHaveBeenCalled();
+  });
+
   it('warns after a repeated identical failure and blocks the third retry', async () => {
     const fake = Object.create(ChatThreadDO.prototype) as any;
     const failure = (id: string) => ({
@@ -4731,7 +4788,7 @@ describe('ChatThreadDO Pi turn handling', () => {
 
     expect(await ChatThreadDO.prototype['afterPiToolCall'].call(fake, failure('call_1'))).toBeUndefined();
     const second = await ChatThreadDO.prototype['afterPiToolCall'].call(fake, failure('call_2'));
-    expect((second?.content?.at(-1) as { text: string }).text).toContain('failed twice');
+    expect((second?.content?.at(-1) as { text: string }).text).toContain('after 2 failed attempt');
 
     const blocked = await ChatThreadDO.prototype['beforePiToolCall'].call(fake, {
       args: { location: 'workspace', path: '/missing.txt' },
@@ -4744,6 +4801,28 @@ describe('ChatThreadDO Pi turn handling', () => {
       toolCall: { id: 'call_4', name: 'read' },
     });
     expect(changed).toBeUndefined();
+  });
+
+  it('blocks an identical non-retryable billing failure after one attempt', async () => {
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    const failure = {
+      args: { project: 'demo' },
+      toolCall: { id: 'billing-1', name: 'deploy_project' },
+      isError: true,
+      result: {
+        content: [{ type: 'text', text: '402 billing quota exhausted' }],
+        details: { success: false },
+      },
+    };
+
+    const first = await ChatThreadDO.prototype['afterPiToolCall'].call(fake, failure);
+    expect((first?.content?.at(-1) as { text: string }).text).toContain('after 1 failed attempt');
+
+    const blocked = await ChatThreadDO.prototype['beforePiToolCall'].call(fake, {
+      args: { project: 'demo' },
+      toolCall: { id: 'billing-2', name: 'deploy_project' },
+    });
+    expect(blocked).toMatchObject({ block: true });
   });
 
   it('removes inline screenshot data from image-blind tool results before it reaches model context', async () => {
@@ -5837,6 +5916,10 @@ describe('ChatThreadDO Pi turn handling', () => {
     expect(prompt).toContain('Do not create a scaffold first and read the skill afterward');
     expect(prompt).toContain('`vanilla` for dependency-light client-only HTML/CSS/JavaScript experiences');
     expect(prompt).toContain('answer in chat only');
+    expect(prompt).toContain('Treat structured tool outcomes as the source of truth');
+    expect(prompt).toContain('creating an analysis, notebook, report, or file does not imply publishing');
+    expect(prompt).toContain('Never invent missing rows, prompts, campaigns, categories, URLs, fields, or provenance');
+    expect(prompt).toContain('User corrections override earlier assumptions');
     expect(prompt).toContain('set_preview({ location: "workspace", path: "/notes.md" })');
     expect(prompt).toContain('set_preview({ location: "r2", path: "outputs/report.html" })');
     expect(prompt).toContain('A clean successful `run_notebook` opens the executed notebook automatically');
@@ -7481,11 +7564,30 @@ describe('ChatThreadDO Pi turn handling', () => {
       projectId: 'project-1',
       activityType: 'deployed',
     });
+    expect(chatThreadStub.recordVerifiedWorkEvidence).toHaveBeenCalledWith(
+      expect.objectContaining({
+        toolName: 'deploy_project',
+        status: 'succeeded',
+        supportedClaims: ['deployed', 'published'],
+      }),
+    );
     expect(chatThreadStub.setPreviewTarget).toHaveBeenCalledWith({
       kind: 'app',
       scriptName: 'demo-app',
       isPublic: false,
     });
+  });
+
+  it('requires explicit publication intent before deploying a data-analysis notebook', async () => {
+    const { fake } = createProjectToolFake({
+      deploy: true,
+      projectFileEntries: [['/analysis.ipynb', '{"cells":[],"nbformat":4,"nbformat_minor":5}']],
+    });
+
+    await expect(CodeModeToolsBinding.prototype.callTool.call(fake, 'deploy_project', {
+      project: 'Demo App',
+      path: 'analysis.ipynb',
+    })).rejects.toThrow("publish_intent='user_requested'");
   });
 
   it('validates through deploy_project dry_run without deploying or changing preview', async () => {
@@ -9012,7 +9114,10 @@ describe('ChatThreadDO Pi turn handling', () => {
 
     await ChatThreadDO.prototype['refreshPiSessionModel'].call(fake);
 
-    expect(fake.piSession.state.model).toBe(refreshedModel);
+    expect(fake.piSession.state.model).toEqual({
+      ...refreshedModel,
+      maxTokens: PI_MAIN_REQUEST_DEFAULT_OUTPUT_TOKENS,
+    });
     expect(fake.piSession.state.systemPrompt).toContain('Use `Oracle` when the user asks for it');
     expect(fake.createPiToolDefinitions).toHaveBeenCalledWith(
       fake.chatContext,
@@ -9062,7 +9167,10 @@ describe('ChatThreadDO Pi turn handling', () => {
 
     await ChatThreadDO.prototype['refreshPiSessionModel'].call(fake);
 
-    expect(fake.piSession.state.model).toBe(refreshedModel);
+    expect(fake.piSession.state.model).toEqual({
+      ...refreshedModel,
+      maxTokens: PI_MAIN_REQUEST_DEFAULT_OUTPUT_TOKENS,
+    });
     expect(fake.piSession.state.tools).toEqual([]);
     expect(fake.piSession.state.systemPrompt).not.toContain('Oracle');
     expect(fake.createPiToolDefinitions).toHaveBeenCalledWith(
@@ -11298,6 +11406,7 @@ describe('ChatThreadDO Pi turn handling', () => {
       storage: { kv: { put: vi.fn() } },
     };
     fake.messages = [];
+    fake.ctx.waitUntil = vi.fn();
     fake.chatIsStreaming = false;
     fake.currentTodos = [{ content: 'Old task', status: 'in_progress' }];
     fake.syncAgentState = vi.fn();

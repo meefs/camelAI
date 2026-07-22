@@ -6,6 +6,28 @@ license: Complete terms in LICENSE.txt
 
 # Data Analysis
 
+## Evidence and provenance contract
+
+Analysis must remain traceable to the data actually observed.
+
+- Separate **observed source data**, **user-provided labels**, **external research**,
+  and **estimates or modeled assumptions** in both the notebook and final answer.
+- For material findings, preserve the source connection/file, table or sheet,
+  query or transformation, coverage window, and relevant row counts. If a query
+  fails or only aggregate data is available, narrow the claim accordingly.
+- Never invent missing rows, prompts, campaigns, categories, URLs, fields,
+  citations, model versions, or provenance. Missing data stays missing.
+- Never present simulated, modeled, cached, delayed, fallback, or sample data as
+  live production data. Label its mode and freshness where the user can see it.
+- Reconcile headline totals against the displayed tables before reporting
+  completion. If they disagree, stop and explain the discrepancy instead of
+  choosing the more convenient number.
+- User corrections replace prior assumptions. Re-run affected calculations and
+  update every downstream artifact that depended on the old assumption.
+- Honor requested implementation constraints such as Python-only, no JavaScript,
+  or reuse-only in deliverable code. `js_exec` may still orchestrate platform
+  tools, but it does not justify adding JavaScript to a Python-only deliverable.
+
 ## Python Environment (DO-backed projects)
 
 For DO-backed projects, data analysis runs in a stateless per-workspace sandbox
@@ -238,11 +260,14 @@ existing notebook.
 
 ### Publish notebooks as standalone apps
 
-When a user wants to publish a notebook as a standalone shareable app, deploy the
-project:
+Only when the user explicitly asks to publish, deploy, or create a standalone
+shareable app, deploy the project. Creating or previewing an analysis notebook
+alone does **not** authorize publishing it:
+
+When publication is requested, deploy the project:
 
 ```text
-deploy_project(project="<project>")
+deploy_project(project="<project>", publish_intent="user_requested")
 ```
 
 For a data-analysis project this skips the build entirely: it packages the

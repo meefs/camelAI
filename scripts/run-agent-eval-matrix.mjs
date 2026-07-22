@@ -352,14 +352,17 @@ writeFileSync(summaryPath, JSON.stringify(summary, null, 2));
 console.log("\n[eval-matrix] summary");
 for (const result of results) {
   const status = result.code === 0 ? "ok" : `failed(${result.code})`;
-  const score = result.summary?.scorePercentage !== undefined
-    ? ` score=${result.summary.scorePercentage}`
+  const primaryScore = result.summary?.grading?.weightedScore !== undefined
+    ? ` primaryScore=${result.summary.grading.weightedScore}`
+    : "";
+  const machineScore = result.summary?.scorePercentage !== undefined
+    ? ` machineDiagnosticScore=${result.summary.scorePercentage}`
     : "";
   const agreement = result.summary?.llmJudge?.agreement !== undefined
     ? ` judgeAgreement=${result.summary.llmJudge.agreement}`
     : "";
   const report = result.reportUrls?.at(-1) ? ` report=${result.reportUrls.at(-1)}` : "";
-  console.log(`${status}\t${result.model}\t${result.evalName}\trepeat=${result.repeat}${score}${agreement}${report}`);
+  console.log(`${status}\t${result.model}\t${result.evalName}\trepeat=${result.repeat}${primaryScore}${machineScore}${agreement}${report}`);
 }
 console.log(`[eval-matrix] artifacts: ${rootArtifactDir}`);
 console.log(`[eval-matrix] summary: ${summaryPath}`);

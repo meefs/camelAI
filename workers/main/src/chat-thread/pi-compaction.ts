@@ -15,11 +15,31 @@ export function piModelContextWindow(model: Model<any> | null | undefined): numb
     : 128_000;
 }
 
+export const PI_MAIN_REQUEST_MAX_OUTPUT_TOKENS = 32_000;
+export const PI_MAIN_REQUEST_DEFAULT_OUTPUT_TOKENS = 16_384;
+
 export function piEffectiveMaxOutputTokens(model: Model<any> | null | undefined): number {
   const maxTokens = Math.floor(Number(model?.maxTokens ?? 0));
   return Number.isFinite(maxTokens) && maxTokens > 0
-    ? Math.min(maxTokens, 32_000)
+    ? Math.min(maxTokens, PI_MAIN_REQUEST_MAX_OUTPUT_TOKENS)
     : 0;
+}
+
+/**
+ * Clamp the model copy handed to the main Pi agent. Model catalog values describe
+ * provider capability and can be 128k-262k; passing those values through as the
+ * request max reserves unaffordable or impossible output on OpenRouter and can
+ * itself overflow the context window. Keep catalog metadata intact and cap only
+ * the request-facing copy.
+ */
+export function capPiMainRequestOutput(
+  model: Model<any>,
+): Model<any> {
+  const configured = Math.floor(Number(model.maxTokens ?? 0));
+  const maxTokens = Number.isFinite(configured) && configured > 0
+    ? Math.min(configured, PI_MAIN_REQUEST_MAX_OUTPUT_TOKENS)
+    : PI_MAIN_REQUEST_DEFAULT_OUTPUT_TOKENS;
+  return maxTokens === model.maxTokens ? model : { ...model, maxTokens };
 }
 
 export function piCompactionReserveTokens(model: Model<any> | null | undefined): number {

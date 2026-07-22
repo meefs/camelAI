@@ -165,6 +165,7 @@ import {
 import { uploadWorkspaceFile } from "@/lib/workspace-upload.client";
 import { isManualCompactCommand } from "@/lib/slash-commands";
 import { buildAppThreadFallbackTitle } from "@/lib/thread-title";
+import { buildAppWorkSystemMessage } from "@/lib/app-chat-context";
 import { normalizeThreadPreviewUserMessage } from "@/lib/thread-preview";
 import {
   getDefaultLlmModel,
@@ -3825,12 +3826,12 @@ export default function Chat({
 
       if (isSubmittingNewThread) return;
 
-      // Build the camelai system message
       const appUrl = getAppUrl(app.script_name, hostname, orgSlug);
-      const sourceInfo = app.config_path
-        ? ` The app's wrangler config is at "${app.config_path}".`
-        : ` The project location is unknown - use list_projects to find it, then look in its VM checkout at /workspace. The project may have a different name than the app, and look for either wrangler.toml or wrangler.jsonc files.`;
-      const systemMessage = `<camelai system message>I'd like to work on the app "${app.script_name}" at ${appUrl}.${sourceInfo}</camelai system message>`;
+      const systemMessage = buildAppWorkSystemMessage({
+        scriptName: app.script_name,
+        appUrl,
+        projectId: app.project_id,
+      });
       const threadTitle = buildAppThreadFallbackTitle(app.script_name);
 
       submit(

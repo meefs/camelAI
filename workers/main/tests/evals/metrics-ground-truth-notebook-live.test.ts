@@ -169,7 +169,12 @@ describe("metrics ground-truth notebook agent eval", () => {
         timeoutMs: SESSION_TIMEOUT_MS,
         message: `The existing data-analysis project "sales-insights" contains /data/sales.csv with columns month, region, units, unit_price_cents. Revenue for a row is units * unit_price_cents.
 Edit analysis.ipynb into a report titled exactly "Sales Insights Report" that analyzes this file and includes at least one chart of revenue over time.
-The report must contain a markdown section headed exactly "## Key Findings" with these four lines, using exact integer values computed from the data (no thousands separators):
+The report must contain a markdown section headed exactly "## Data Provenance" with these three exact lines:
+- SOURCE=/data/sales.csv
+- ROW_COUNT=${SALES_ROWS.length}
+- DATA_MODE=observed fixture (not live)
+Do not add or infer any campaigns, prompts, sources, or fields that are absent from the CSV.
+The report must also contain a markdown section headed exactly "## Key Findings" with these four lines, using exact integer values computed from the data (no thousands separators):
 - TOTAL_REVENUE_CENTS=<total revenue in cents>
 - TOP_REGION=<region with the highest total revenue>
 - TOP_MONTH=<YYYY-MM month with the highest total revenue>
@@ -192,6 +197,10 @@ Do not deploy or use wrangler for this notebook-only project. Reply with the fou
       const markdownCells = cells.filter((cell) => cell.cell_type === "markdown");
       const markdown = markdownCells.map(cellText).join("\n");
       const keyFindingsSection = extractKeyFindingsSection(markdown);
+      const provenancePresent = markdown.includes("## Data Provenance") &&
+        markdown.includes("- SOURCE=/data/sales.csv") &&
+        markdown.includes(`- ROW_COUNT=${SALES_ROWS.length}`) &&
+        markdown.includes("- DATA_MODE=observed fixture (not live)");
       const executedCells = cells.filter((cell) =>
         cell.cell_type === "code" &&
         (typeof cell.execution_count === "number" || (Array.isArray(cell.outputs) && cell.outputs.length > 0))
@@ -239,6 +248,7 @@ Do not deploy or use wrangler for this notebook-only project. Reply with the fou
         passFail: [
           buildSessionCompletedCriterion(result),
           passFailCriterion({ id: "notebook_persisted_and_executed", label: "Notebook persisted after a clean successful run", passed: read.success && !parseError && cleanNotebookExecution, reason: read.success && !parseError && cleanNotebookExecution ? undefined : read.error ?? parseError ?? (!successfulNotebookRun ? "No successful clean run_notebook result referenced analysis.ipynb." : errorOutputs.length > 0 ? "The persisted notebook contains error outputs." : "No executed notebook cells were persisted."), details: { readSuccess: read.success, parseError, cellCount: cells.length, executedCellCount: executedCells.length, successfulNotebookRun, errorOutputs } }),
+          passFailCriterion({ id: "data_provenance_present", label: "Report labels the exact source, row count, and non-live data mode", passed: provenancePresent, reason: provenancePresent ? undefined : "The exact ## Data Provenance contract was missing or changed.", details: { expectedSource: "/data/sales.csv", expectedRowCount: SALES_ROWS.length, expectedMode: "observed fixture (not live)" } }),
           passFailCriterion({ id: "key_findings_present", label: "Exact ## Key Findings section contains all four lines", passed: keyFindingsPresent, reason: keyFindingsPresent ? undefined : keyFindingsSection === undefined ? "The exact ## Key Findings heading was missing." : "One or more Key Findings lines were missing from that section.", details: { markdown, keyFindingsSection } }),
           passFailCriterion({ id: "findings_match_ground_truth", label: "All four findings match harness-computed ground truth", passed: findingFailures.length === 0, reason: findingFailures.length ? findingFailures.join("; ") : undefined, details: { expected: EXPECTED_FINDINGS, extracted, failures: findingFailures } }),
           passFailCriterion({ id: "notebook_auto_previewed", label: "Successful run_notebook opened analysis.ipynb in preview", passed: successfulNotebookRun, reason: successfulNotebookRun ? undefined : "No successful run_notebook result referenced analysis.ipynb.", details: { successfulNotebookRun } }),

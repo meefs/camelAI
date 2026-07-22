@@ -194,7 +194,7 @@ Important DOs and runtime classes live primarily in `workers/main/src/`:
 
 - `identity/` (`auth.ts` barrel) - `UserDO`, `OrgDO`, and identity helpers. OrgDO domain extraction is in progress (`plans/split-auth-durable-objects.md`); prefer new org logic in `identity/org/` modules rather than growing `org-do.ts`.
 - `workspace.ts` - `WorkspaceDO`, workspace metadata, integration state, token refresh alarms.
-- `chat-thread-do.ts` - `ChatThreadDO` compatibility façade and chat WebSocket/turn orchestration. Focused collaborators live in `chat-thread/` (Pi persistence, model/tool setup, UI mirroring, recovery journals, metadata, preview/access/automation, and streaming activity); verify this surface with `bun run test:workers -- chat-thread`.
+- `chat-thread-do.ts` - `ChatThreadDO` compatibility façade and chat WebSocket/turn orchestration. Focused collaborators live in `chat-thread/` (Pi persistence, model/tool setup, UI mirroring, recovery journals, verified completion evidence, metadata, preview/access/automation, and streaming activity); verify this surface with `bun run test:workers -- chat-thread`.
 - `workspace-cron.ts` - `WorkspaceCronDO`, scheduled prompt storage and dispatch.
 - `worker-logs-do.ts` - `WorkerLogsDO`, deployed app log tail/streaming (in-memory ring buffer; not SQLite-persisted).
 - `admin-index-do.ts` - `AdminIndexDO`, admin indexes and dashboard-style aggregates.

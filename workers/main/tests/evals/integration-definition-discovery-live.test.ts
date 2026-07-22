@@ -165,7 +165,17 @@ describe("imported integration definition discovery agent eval", () => {
       const usedConnectionVerification = usedTool(
         result.events,
         "connections_verify",
-        [/env\.CONNECTIONS\.verify\s*\(/],
+        [
+          /env\.CONNECTIONS\.verify\s*\(/,
+          /env\.CONNECTIONS(?:\.[A-Za-z_$][\w$]*|\[[^\]]+\])\.verify\s*\(/,
+        ],
+      );
+      const calledUpstreamMethod = usedTool(
+        result.events,
+        "connections_invoke",
+        [
+          /env\.CONNECTIONS(?:\.[A-Za-z_$][\w$]*|\[[^\]]+\])\.(?:getWidget|fetch)\s*\(/,
+        ],
       );
       const finalReply = result.result ?? "";
       const reportedTypedMethod = finalReply.includes(TYPED_METHOD);
@@ -175,29 +185,12 @@ describe("imported integration definition discovery agent eval", () => {
       const reportedConfigured = /configured/i.test(finalReply);
       const reportedConfigurationOnly = /configuration[- ]only|configuration check/i.test(finalReply);
       const evaluation = buildEvalCriteriaSummary({
+        // Keep deterministic pass/fail checks to durable state, safety, and
+        // harness integrity. The primary LLM judge owns semantic quality and
+        // instruction-following; exact tool paths and reply wording below are
+        // retained as diagnostic runtimeAssertions rather than rigid gates.
         passFail: [
           buildSessionCompletedCriterion(result),
-          passFailCriterion({
-            id: "used_connection_discovery",
-            label: "Agent inspected the connection method catalog",
-            passed: usedConnectionDiscovery,
-            reason: usedConnectionDiscovery ? undefined : "Agent did not call env.CONNECTIONS.find() or methods().",
-            details: { toolCallsByName: signal.toolCallsByName },
-          }),
-          passFailCriterion({
-            id: "used_connection_verification",
-            label: "Agent ran normalized connection verification",
-            passed: usedConnectionVerification,
-            reason: usedConnectionVerification ? undefined : "Agent did not call env.CONNECTIONS.verify().",
-          }),
-          passFailCriterion({
-            id: "reported_connection_contract",
-            label: "Agent reported driver and verification semantics",
-            passed: reportedContract && reportedConfigured && reportedConfigurationOnly,
-            reason: reportedContract && reportedConfigured && reportedConfigurationOnly
-              ? undefined
-              : "Final reply did not accurately report authenticated_http, configured, and configuration-only verification.",
-          }),
           passFailCriterion({
             id: "verification_persisted",
             label: "Normalized verification snapshot persisted",
@@ -207,16 +200,12 @@ describe("imported integration definition discovery agent eval", () => {
               : "Connection did not persist configured/configuration-only verification health.",
           }),
           passFailCriterion({
-            id: "reported_typed_method",
-            label: "Agent reported the imported typed method",
-            passed: reportedTypedMethod,
-            reason: reportedTypedMethod ? undefined : `Final reply did not include ${TYPED_METHOD}.`,
-          }),
-          passFailCriterion({
-            id: "reported_generic_fallback",
-            label: "Agent reported generic fetch fallback",
-            passed: reportedGenericFallback,
-            reason: reportedGenericFallback ? undefined : "Final reply did not include fetch.",
+            id: "avoided_upstream_method_call",
+            label: "No upstream integration operation was invoked",
+            passed: !calledUpstreamMethod,
+            reason: calledUpstreamMethod
+              ? "Agent invoked getWidget or fetch despite the configuration-only request."
+              : undefined,
           }),
           passFailCriterion({
             id: "definition_joined",
@@ -225,12 +214,6 @@ describe("imported integration definition discovery agent eval", () => {
             reason: stored?.definition_id === definitionId && stored.definition
               ? undefined
               : "Stored connection did not return its joined definition payload.",
-          }),
-          passFailCriterion({
-            id: "produced_token_usage",
-            label: "Agent produced token usage",
-            passed: signal.tokenUsage.totalTokens > 0,
-            reason: signal.tokenUsage.totalTokens > 0 ? undefined : "Signal reported zero total tokens.",
           }),
           buildNoAssistantErrorCriterion(result),
           buildRuntimeEventsCriterion(result),
@@ -262,6 +245,7 @@ describe("imported integration definition discovery agent eval", () => {
         runtimeAssertions: {
           usedConnectionDiscovery,
           usedConnectionVerification,
+          calledUpstreamMethod,
           reportedTypedMethod,
           reportedGenericFallback,
           reportedContract,
@@ -281,6 +265,7 @@ describe("imported integration definition discovery agent eval", () => {
             ...(!reportedTypedMethod ? [`final reply omitted ${TYPED_METHOD}`] : []),
             ...(!reportedGenericFallback ? ["final reply omitted fetch"] : []),
             ...(!usedConnectionVerification ? ["connection verification was not run"] : []),
+            ...(calledUpstreamMethod ? ["an upstream connection method was called"] : []),
             ...(!reportedContract ? ["final reply omitted authenticated_http driver"] : []),
             ...(!reportedConfigured ? ["final reply omitted configured status"] : []),
             ...(!reportedConfigurationOnly ? ["final reply omitted configuration-only semantics"] : []),

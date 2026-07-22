@@ -12,6 +12,7 @@ import type { WorkspaceWithAccess, WorkerScriptWithCreator } from '@/types';
 import { APP_BUILD_ID } from '@/lib/app-build-id';
 import { type AppUrlInput, getPreferredAppUrl } from '@/lib/app-url';
 import { buildAppThreadFallbackTitle } from '@/lib/thread-title';
+import { buildAppWorkSystemMessage } from '@/lib/app-chat-context';
 import { PageHeader } from '@/components/page-header';
 import { AppCard } from './AppCard';
 import { AppSettingsDialog } from './AppSettingsDialog';
@@ -113,8 +114,11 @@ export default function AppsClient({
     if (chatLoading) return;
     const threadTitle = buildAppThreadFallbackTitle(app.script_name);
     const appUrl = getPreferredAppUrl(app, { hostname, orgSlug, orgCustomDomain });
-    const sourceInfo = app.config_path ? ` The app's wrangler config is at "${app.config_path}".` : '';
-    const systemMessage = `<camelai system message>I'd like to work on the app "${app.script_name}" at ${appUrl}.${sourceInfo}</camelai system message>`;
+    const systemMessage = buildAppWorkSystemMessage({
+      scriptName: app.script_name,
+      appUrl,
+      projectId: app.project_id,
+    });
 
     submit(
       {
@@ -156,8 +160,11 @@ export default function AppsClient({
         // Re-trigger chat start - workspace is now correct
         const threadTitle = buildAppThreadFallbackTitle(targetApp.script_name);
         const appUrl = getPreferredAppUrl(targetApp, { hostname, orgSlug, orgCustomDomain });
-        const sourceInfo = targetApp.config_path ? ` The app's wrangler config is at "${targetApp.config_path}".` : '';
-        const systemMessage = `<camelai system message>I'd like to work on the app "${targetApp.script_name}" at ${appUrl}.${sourceInfo}</camelai system message>`;
+        const systemMessage = buildAppWorkSystemMessage({
+          scriptName: targetApp.script_name,
+          appUrl,
+          projectId: targetApp.project_id,
+        });
         submit(
           {
             intent: 'createThreadAndStart',

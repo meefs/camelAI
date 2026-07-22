@@ -33,6 +33,10 @@ import { detectImageMimeType as detectSharedImageMimeType, getSupportedImageMime
 import { CodeModeScheduledPrompts } from "./code-mode-scheduled-prompts";
 import { CodeModeDeterministicAutomations } from "./code-mode-deterministic-automations";
 import { CodeModeIntegrations } from "./code-mode-integrations";
+import {
+  deriveVerifiedWorkEvidence,
+  type VerifiedWorkEvidence,
+} from "./chat-thread/verified-work-state";
 import { recordErrorEvent } from "./observability";
 import { buildLogTail, cleanBuildLog, projectBuildSandboxKey, runProjectAddDependency, runProjectBuild, type ProjectBuildResult } from "./project-build-service";
 import { collectWorkerBundleFromSandbox, findUnexportedDurableObjectClasses, type ProjectBuildSandboxLike } from "./project-worker-bundle";
@@ -719,7 +723,7 @@ const CODE_MODE_TOOL_REGISTRY: CodeModeToolRegistration[] = [
   ),
   codeModeTool(
     "deploy_project",
-    "Build, deploy, return the live URL, and open a DO-backed project in preview through the platform direct deploy path. A successful call is the complete publish workflow, so no manual set_preview or list_apps call is needed. set_preview remains available if you explicitly want to reopen or switch previews. Pass dry_run=true only when you want to validate the build without publishing or changing preview. In js_exec the call resolves ok: false when validation, build, or deploy FAILS (error.stage says which phase, error.message has the summary, full result in data). Data-analysis (notebook) projects publish the executed .ipynb as a static read-only report app using the platform notebook renderer — run_notebook first so outputs are fresh. Use path to pick the notebook when the project has more than one. Arguments: { project, script_name?, path?, timeoutMs?, dry_run? }.",
+    "Build, deploy, return the live URL, and open a DO-backed project in preview through the platform direct deploy path. A successful call proves publication, not feature correctness or live-data quality. Pass dry_run=true to validate without publishing or changing preview. In js_exec the call resolves ok: false when validation, build, or deploy fails. Data-analysis notebook publication is an external side effect and requires publish_intent='user_requested'; creating or previewing a report alone does not authorize publication. Run run_notebook first so outputs are fresh. Arguments: { project, script_name?, path?, timeoutMs?, dry_run?, publish_intent? }.",
     Type.Object({
       project: Type.String(),
       script_name: Type.Optional(Type.String()),
@@ -729,6 +733,9 @@ const CODE_MODE_TOOL_REGISTRY: CodeModeToolRegistration[] = [
       timeoutMs: Type.Optional(Type.Number()),
       dry_run: Type.Optional(Type.Boolean({
         description: "Validate/build without deploying or changing the active preview. Defaults to false.",
+      })),
+      publish_intent: Type.Optional(Type.Literal("user_requested", {
+        description: "Required to publish a data-analysis notebook; confirms the user explicitly asked to publish, deploy, or create a shareable app.",
       })),
     }, { additionalProperties: false }),
     { category: "workspace", sideEffect: true },
@@ -2864,11 +2871,45 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
       await Promise.all([
         this.recordCodeModeArtifactBestEffort(name, args, result),
         this.recordProjectActivityBestEffort(name, args, result),
+        this.recordVerifiedWorkEvidenceBestEffort(name, args, result),
       ]);
       return result;
     } catch (error) {
-      await this.recordCodeModeArtifactBestEffort(name, args, undefined, error);
+      await Promise.all([
+        this.recordCodeModeArtifactBestEffort(name, args, undefined, error),
+        this.recordVerifiedWorkEvidenceBestEffort(name, args, undefined, error),
+      ]);
       throw error;
+    }
+  }
+
+  private async recordVerifiedWorkEvidenceBestEffort(
+    name: string,
+    args: Record<string, unknown>,
+    result?: unknown,
+    error?: unknown,
+  ): Promise<void> {
+    const parentToolUseId = this.ctx?.props?.parentToolUseId?.trim();
+    const threadId = this.ctx?.props?.threadId?.trim();
+    if (!parentToolUseId || !threadId) return;
+    const evidence = deriveVerifiedWorkEvidence({
+      toolCallId: `${parentToolUseId}:${name}:${crypto.randomUUID()}`,
+      toolName: name,
+      args,
+      result,
+      isError: error !== undefined,
+    });
+    if (!evidence) return;
+    try {
+      await (this.chatThreadStub as unknown as {
+        recordVerifiedWorkEvidence(evidence: VerifiedWorkEvidence): Promise<void>;
+      }).recordVerifiedWorkEvidence(evidence);
+    } catch (recordError) {
+      console.error("Failed to record verified work evidence", {
+        toolName: name,
+        threadId,
+        error: recordError instanceof Error ? recordError.message : String(recordError),
+      });
     }
   }
 
@@ -3869,6 +3910,12 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
         typeof args.path === "string" && args.path.trim() ? args.path.trim() : null,
       );
       if (notebookPath) {
+        if (args.dry_run !== true && args.publish_intent !== "user_requested") {
+          throw new Error(
+            "Publishing a data-analysis notebook requires publish_intent='user_requested'. " +
+            "Creating or previewing an analysis does not authorize deployment; ask the user to publish or use run_notebook for chat preview.",
+          );
+        }
         return await this.deployNotebookProject(project, notebookProjectFiles, notebookPath, args);
       }
       const sandbox = this.projectBuildSandbox();

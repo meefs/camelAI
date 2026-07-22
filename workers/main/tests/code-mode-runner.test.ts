@@ -13,11 +13,25 @@ function createConnectionsFacade(binding: any): Record<string, unknown> {
     throw new Error('CONNECTIONS method invocation is not configured');
   };
 
+  const findConnection = async (query: unknown) => {
+    const result = await binding.find(query);
+    if (!result || typeof result !== 'object' || Array.isArray(result)) return result;
+    const connection = (result as any).connection;
+    const verificationQuery = typeof connection?.name === 'string' && connection.name
+      ? connection.name
+      : String(query || (result as any).alias || '');
+    return {
+      ...result,
+      recommendedVerificationCall: `await env.CONNECTIONS.verify(${JSON.stringify(verificationQuery)})`,
+      verificationNote: 'Run the recommended verification call when verification is requested; inspecting status alone does not perform verification.',
+    };
+  };
+
   return new Proxy({}, {
     get(_target, connectionName) {
       if (connectionName === 'then') return undefined;
       if (connectionName === '$methods') return () => binding.methods();
-      if (connectionName === '$find') return (query: unknown) => binding.find(query);
+      if (connectionName === '$find') return (query: unknown) => findConnection(query);
       if (connectionName === '$test') return (query: unknown) => binding.test(query);
       if (connectionName === '$verify') return (query: unknown) => binding.verify(query);
       if (connectionName === '$list') return () => binding.list();
@@ -28,6 +42,7 @@ function createConnectionsFacade(binding: any): Record<string, unknown> {
         ['list', 'get', 'tools', 'methods', 'find', 'test', 'verify', 'invoke', legacyInvokeMethod]
           .includes(connectionName)
       ) {
+        if (connectionName === 'find') return (query: unknown) => findConnection(query);
         const value = binding[connectionName];
         return typeof value === 'function' ? (...args: unknown[]) => value.apply(binding, args) : value;
       }
@@ -37,12 +52,21 @@ function createConnectionsFacade(binding: any): Record<string, unknown> {
           if (methodName === 'then') return undefined;
           if (typeof methodName !== 'string') return undefined;
           return async (...args: unknown[]) => {
+            if (methodName === 'verify') return binding.verify(connectionName);
+            if (methodName === 'test') return binding.test(connectionName);
             const input = args[0] ?? {};
-            return invokeConnectionMethod({
-              connection: connectionName,
-              method: methodName,
-              input,
-            });
+            try {
+              return await invokeConnectionMethod({
+                connection: connectionName,
+                method: methodName,
+                input,
+              });
+            } catch (error) {
+              const message = error instanceof Error ? error.message : String(error);
+              throw new Error(
+                `${message} Use await env.CONNECTIONS.find("${connectionName}") to inspect callable methods, or await env.CONNECTIONS.verify("${connectionName}") for normalized verification.`,
+              );
+            }
           };
         },
       });
@@ -119,8 +143,12 @@ describe('code mode runner connection facade', () => {
     const context = { cloudflare: { env, connections } };
 
     const admin = await env.CONNECTIONS.find('admin');
+    expect(admin.recommendedVerificationCall).toBe('await env.CONNECTIONS.verify("admin")');
+    expect(admin.verificationNote).toContain('inspecting status alone does not perform verification');
     await expect(env.CONNECTIONS.verify('admin')).resolves.toEqual({ ok: true, status: 'ready' });
     await expect((env.CONNECTIONS as any).$verify('admin')).resolves.toEqual({ ok: true, status: 'ready' });
+    await expect(env.CONNECTIONS[admin.alias].verify()).resolves.toEqual({ ok: true, status: 'ready' });
+    await expect(env.CONNECTIONS[admin.alias].test()).resolves.toEqual({ ok: true });
     const workflowStyle = await env.CONNECTIONS[admin.alias].getDashboardSummary({
       date: '2026-05-29',
     });
@@ -158,6 +186,22 @@ describe('code mode runner connection facade', () => {
       },
     });
     expect(calls).toHaveLength(3);
+  });
+
+  it('adds catalog and verification guidance to unknown connection method errors', async () => {
+    const binding = {
+      invoke: async () => {
+        throw new Error('No method "verifyWidget" exists on connection "inventory-api"');
+      },
+    };
+    const connections = createConnectionsFacade(binding) as any;
+
+    await expect(connections['inventory-api'].verifyWidget()).rejects.toThrow(
+      'Use await env.CONNECTIONS.find("inventory-api")',
+    );
+    await expect(connections['inventory-api'].verifyWidget()).rejects.toThrow(
+      'env.CONNECTIONS.verify("inventory-api")',
+    );
   });
 
   it('does not detach service binding methods when invoking a connection method', () => {
@@ -360,7 +404,8 @@ function loadGeneratedRuntimeErrorHelpers(userCode = ''): {
 function loadGeneratedToolSearch(): {
   createToolSearch: (allTools: unknown[]) => (input?: unknown) => any;
   createToolDescribe: (allTools: unknown[]) => (input?: unknown) => any;
-  createEnvelopeToolCall: (name: string, callTool: (name: string, args?: unknown) => unknown) => (args?: unknown) => Promise<any>;
+  createEnvelopeToolCall: (name: string, callTool: (name: string, args?: unknown) => unknown, failureBudget?: Map<string, unknown>) => (args?: unknown) => Promise<any>;
+  createToolsFacade: (entries: Array<[string, unknown]>, search: (input: unknown) => any) => Record<string, any>;
   schemaToTypeScript: (schema: unknown) => string;
 } {
   const source = codeModeWorkerModule('');
@@ -369,7 +414,7 @@ function loadGeneratedToolSearch(): {
   expect(start).toBeGreaterThanOrEqual(0);
   expect(end).toBeGreaterThan(start);
   const slice = source.slice(start, end);
-  return new Function(`${slice}; return { createToolSearch, createToolDescribe, createEnvelopeToolCall, schemaToTypeScript };`)();
+  return new Function(`${slice}; return { createToolSearch, createToolDescribe, createEnvelopeToolCall, createToolsFacade, schemaToTypeScript };`)();
 }
 
 describe('code mode runner tools.search / tools.describe', () => {
@@ -492,19 +537,22 @@ describe('code mode runner tools.search / tools.describe', () => {
       ok: false,
       error: { tool: 'create_scheduled_prompt', message: 'cron_expression is required' },
     }));
-    await expect(toolFailure({ name: 'x' })).resolves.toEqual({
+    await expect(toolFailure({ name: 'x' })).resolves.toMatchObject({
       ok: false,
       error: { tool: 'create_scheduled_prompt', message: 'cron_expression is required' },
+      completionEvidence: { status: 'failed', supportedClaims: [] },
+      recovery: { blocked: false, remainingEquivalentRetries: 1 },
     });
 
     const deployFailure = createEnvelopeToolCall('deploy_project', async () => ({
       ok: true,
       data: { success: false, stage: 'build', errorSummary: 'Build failed' },
     }));
-    await expect(deployFailure({})).resolves.toEqual({
+    await expect(deployFailure({})).resolves.toMatchObject({
       ok: false,
       error: { tool: 'deploy_project', message: 'Build failed', origin: 'tool', stage: 'build' },
       data: { success: false, stage: 'build', errorSummary: 'Build failed' },
+      completionEvidence: { status: 'failed', supportedClaims: [] },
     });
 
     const transportFailure = createEnvelopeToolCall('list_apps', async () => {
@@ -512,9 +560,10 @@ describe('code mode runner tools.search / tools.describe', () => {
     });
     const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
     try {
-      await expect(transportFailure({ secret: 'do-not-log' })).resolves.toEqual({
+      await expect(transportFailure({ secret: 'do-not-log' })).resolves.toMatchObject({
         ok: false,
         error: { tool: 'list_apps', message: 'RPC connection lost', origin: 'transport' },
+        completionEvidence: { status: 'failed', supportedClaims: [] },
       });
       expect(consoleError).toHaveBeenCalledWith('[code-mode] tools RPC failed', {
         toolName: 'list_apps',
@@ -525,6 +574,82 @@ describe('code mode runner tools.search / tools.describe', () => {
     } finally {
       consoleError.mockRestore();
     }
+  });
+
+  it('returns discovery guidance for guessed tool names', async () => {
+    const { createToolSearch, createToolsFacade } = loadGeneratedToolSearch();
+    const search = createToolSearch(allTools);
+    const tools = createToolsFacade([
+      ['search', search],
+      ['send_email', vi.fn()],
+    ], search);
+
+    expect(tools.then).toBeUndefined();
+    await expect(tools.send_mail({ to: 'person@example.com' })).resolves.toMatchObject({
+      ok: false,
+      error: {
+        tool: 'send_mail',
+        origin: 'discovery',
+        suggestions: expect.arrayContaining(['send_email']),
+      },
+      recovery: { blocked: true },
+      completionEvidence: { status: 'failed' },
+    });
+  });
+
+  it('blocks equivalent failures after a bounded retry budget', async () => {
+    const { createEnvelopeToolCall } = loadGeneratedToolSearch();
+    const invoke = vi.fn(async () => ({
+      ok: false,
+      error: { tool: 'list_apps', message: 'temporary upstream failure', origin: 'tool' },
+    }));
+    const call = createEnvelopeToolCall('list_apps', invoke);
+
+    expect((await call({ limit: 5 })).recovery.blocked).toBe(false);
+    expect((await call({ limit: 5 })).recovery.blocked).toBe(true);
+    const blocked = await call({ limit: 5 });
+
+    expect(blocked.error.origin).toBe('retry_budget');
+    expect(invoke).toHaveBeenCalledTimes(2);
+  });
+
+  it('blocks non-retryable authorization and billing failures after one attempt', async () => {
+    const { createEnvelopeToolCall } = loadGeneratedToolSearch();
+    const invoke = vi.fn(async () => ({
+      ok: false,
+      error: { tool: 'send_email', message: '402 billing quota exhausted', origin: 'tool' },
+    }));
+    const call = createEnvelopeToolCall('send_email', invoke);
+
+    expect((await call({ to: 'person@example.com' })).recovery.blocked).toBe(true);
+    expect((await call({ to: 'person@example.com' })).error.origin).toBe('retry_budget');
+    expect(invoke).toHaveBeenCalledTimes(1);
+  });
+
+  it('distinguishes deploy publication evidence from dry-run validation', async () => {
+    const { createEnvelopeToolCall } = loadGeneratedToolSearch();
+    const published = createEnvelopeToolCall('deploy_project', async () => ({
+      ok: true,
+      data: { success: true, url: 'https://demo.camelai.app' },
+    }));
+    const dryRun = createEnvelopeToolCall('deploy_project', async () => ({
+      ok: true,
+      data: { success: true, dryRun: true },
+    }));
+
+    await expect(published({})).resolves.toMatchObject({
+      completionEvidence: {
+        status: 'succeeded',
+        supportedClaims: ['deployed', 'published'],
+        target: 'https://demo.camelai.app',
+      },
+    });
+    await expect(dryRun({})).resolves.toMatchObject({
+      completionEvidence: {
+        supportedClaims: ['build validated'],
+        unsupportedClaims: ['deployed', 'published', 'live'],
+      },
+    });
   });
 
   it('describe on a runtime helper explains it is a global, not a tools.<name> call', () => {
@@ -557,15 +682,14 @@ describe('js_exec result-shape contracts', () => {
     // rely on the documented direct shape (no wrapper).
     expect(source).toMatch(/return \{\s*query,\s*total: scored\.length,\s*items,\s*usage/);
     // And the guidance must say exactly that, including the shape.
-    expect(source).toContain('tools.search resolves to { query, total, items, usage }');
+    expect(source).toContain('tools.search/describe/help return their values directly');
     expect(source).toContain('NO { ok, data } wrapper');
   });
 
-  it('resolves ok: false for build/deploy operational failures, with the result kept in data', () => {
-    // The wrapper flips ok for these tools when data.success === false.
-    expect(source).toContain('OPERATIONAL_OUTCOME_TOOLS = new Set(["build_project", "deploy_project"])');
-    expect(source).toContain('envelope.data.success === false');
-    expect(source).toContain('resolves ok: false when validation, build, or deploy FAILS');
+  it('resolves ok: false for build/deploy/notebook operational failures, with the result kept in data', () => {
+    expect(source).toContain('OPERATIONAL_OUTCOME_TOOLS = new Set(["build_project", "deploy_project", "run_notebook"])');
+    expect(source).toContain('envelope.data.success === false || envelope.data.ok === false');
+    expect(source).toContain('deploy_project and run_notebook resolve ok: false');
   });
 });
 

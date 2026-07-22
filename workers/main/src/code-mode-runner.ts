@@ -438,7 +438,7 @@ function normalizeHelpInput(input) {
 // guidance is fetched on demand the moment the model actually writes code.
 const JS_EXEC_GUIDE = Object.freeze([
   "Results: the final expression is returned automatically and console.log/warn/error output is captured; use an explicit return inside branches or loops. You may write TypeScript — type annotations are stripped before execution.",
-  "Tool results: every await tools.<name>(args) call resolves to { ok: true, data } on success or { ok: false, error: { tool, message, origin } } on failure — branch on result.ok and read result.data; origin is tool for a tool-side failure and transport when the tools RPC itself failed. Failed calls do not throw, so you can inspect the error, tools.describe the tool, and retry in the same run. deploy_project resolves ok: false when validation, build, or deploy FAILS (error.message carries the summary, error.stage says which phase, and the full result is still in data); for other tools ok means the call executed and outcomes live in data. EXCEPTION: runtime bindings (env.*, connections[alias]) and tools.search/describe/help return their values directly with NO { ok, data } wrapper — tools.search resolves to { query, total, items, usage } where items is the matches array.",
+  "Tool results: every await tools.<name>(args) call resolves to { ok: true, data } on success or { ok: false, error: { tool, message, origin } } on failure — branch on result.ok and read result.data. Operational results include completionEvidence; use its supportedClaims and never assert an unsupported completion. Unknown tool names return discovery suggestions instead of throwing. Equivalent failures have a retry budget: when recovery.blocked is true, change arguments or approach rather than looping. deploy_project and run_notebook resolve ok: false when their operational outcome fails, with full diagnostics retained in data. EXCEPTION: runtime bindings (env.*, connections[alias]) and tools.search/describe/help return their values directly with NO { ok, data } wrapper.",
   "Discovery: await tools.search(\"<intent + key nouns>\") ranks matching tools; await tools.describe(name) returns one definition with a compact inputTypeScript argument shape; await tools.help(\"<category>\") expands a category. Results with kind \"tool\" run as await tools.<name>(args); kind \"runtime\" results are sandbox globals (env.*, connections, text/store/load) used directly, never through tools.",
   "Every top-level harness tool is also on tools, e.g. await tools.create_project(...).",
   "Connections: const entry = await env.CONNECTIONS.find(\"clickhouse\"); return await connections[entry.alias].query({ query: \"SELECT 1 AS ok\" }). Use env.CONNECTIONS.methods() for the full catalog, env.CONNECTIONS.verify(\"clickhouse\") for normalized health, or env.CONNECTIONS.test(\"clickhouse\") for the legacy smoke test; custom \"other\" connections expose fetch.",
@@ -728,34 +728,122 @@ function createToolDescribe(allTools) {
 }
 
 // Executor-style result envelope for tools.<name>() calls: expected tool/domain
-// failures come back as values the model can branch on inside the same script
-// (search -> call -> on-error describe -> retry in one run), instead of throwing
-// and killing the whole js_exec turn. The envelope is built on the DO side of
-// the RPC (TOOLS.callToolEnvelope) so no exception ever crosses capnweb; the
-// catch here only normalizes transport-level failures. Runtime bindings (env.*,
-// connections[alias]) and tools.search/describe/help keep returning
-// raw values.
-// Deploy (and the hidden build_project compatibility alias) reports its outcome
-// via data.success. For these tools ok mirrors the operational outcome; the
-// full result stays in data either way.
-const OPERATIONAL_OUTCOME_TOOLS = new Set(["build_project", "deploy_project"]);
+// failures come back as values the model can branch on inside the same script.
+// The runner also emits compact completion evidence and stops equivalent retry
+// loops; those controls are more reliable than asking the model to infer state
+// from prose or repeatedly rediscover the same contract.
+const OPERATIONAL_OUTCOME_TOOLS = new Set(["build_project", "deploy_project", "run_notebook"]);
+const COMPLETION_EVIDENCE_TOOLS = new Set([
+  "build_project",
+  "deploy_project",
+  "run_notebook",
+  "send_email",
+  "send_slack_message",
+  "send_telegram_message",
+  "create_scheduled_prompt",
+  "create_workflow",
+  "set_preview",
+]);
+const NON_RETRYABLE_TOOL_ERROR = /(?:\\b401\\b|\\b402\\b|unauthori[sz]ed|forbidden|permission denied|credits? (?:are )?(?:used up|exhausted)|quota|billing|reserved for the Research agent|unknown (?:code mode )?tool|not configured)/i;
 
-function createEnvelopeToolCall(name, invokeEnvelope) {
+function stableToolArgs(value) {
+  if (Array.isArray(value)) return value.map(stableToolArgs);
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(
+    Object.entries(value).sort(([a], [b]) => a.localeCompare(b)).map(([key, item]) => [key, stableToolArgs(item)]),
+  );
+}
+
+function toolAttemptKey(name, args) {
+  try {
+    return name + ":" + JSON.stringify(stableToolArgs(args));
+  } catch {
+    return name + ":" + String(args);
+  }
+}
+
+function completionEvidenceFor(name, envelope) {
+  if (!envelope || envelope.ok !== true) {
+    return {
+      tool: name,
+      status: "failed",
+      supportedClaims: [],
+      instruction: "Do not claim this operation succeeded. Report the blocker or change approach.",
+    };
+  }
+  if (!COMPLETION_EVIDENCE_TOOLS.has(name)) return null;
+  const data = envelope.data && typeof envelope.data === "object" ? envelope.data : {};
+  if (name === "deploy_project") {
+    if (data.dryRun === true) {
+      return {
+        tool: name,
+        status: "succeeded",
+        supportedClaims: ["build validated"],
+        unsupportedClaims: ["deployed", "published", "live"],
+      };
+    }
+    const url = typeof data.url === "string" ? data.url : (typeof data.appUrl === "string" ? data.appUrl : null);
+    return url
+      ? { tool: name, status: "succeeded", supportedClaims: ["deployed", "published"], target: url, instruction: "Publication is proven; feature correctness and live-data quality are not." }
+      : { tool: name, status: "partial", supportedClaims: [], unsupportedClaims: ["deployed", "published", "live"], instruction: "No live URL was returned; do not claim deployment." };
+  }
+  if (name === "build_project") {
+    return { tool: name, status: "succeeded", supportedClaims: ["build validated"], unsupportedClaims: ["deployed", "published"] };
+  }
+  if (name === "run_notebook") {
+    const clean = data.ok !== false && (!data.validation || data.validation.clean !== false);
+    return clean
+      ? { tool: name, status: "succeeded", supportedClaims: ["notebook executed", "notebook validated"], unsupportedClaims: ["published"] }
+      : { tool: name, status: "failed", supportedClaims: [], unsupportedClaims: ["validated", "complete", "published"] };
+  }
+  if (name.startsWith("send_")) {
+    return { tool: name, status: "succeeded", supportedClaims: ["sent"], instruction: "The send operation is proven only for the returned destination." };
+  }
+  if (name === "create_scheduled_prompt" || name === "create_workflow") {
+    return { tool: name, status: "succeeded", supportedClaims: ["created"], instruction: "Creation does not prove a future run succeeded." };
+  }
+  return { tool: name, status: "succeeded", supportedClaims: ["preview changed"] };
+}
+
+function withCompletionEvidence(name, envelope) {
+  const completionEvidence = completionEvidenceFor(name, envelope);
+  return completionEvidence ? { ...envelope, completionEvidence } : envelope;
+}
+
+function createEnvelopeToolCall(name, invokeEnvelope, failureBudget = new Map()) {
   return async (args = {}) => {
+    const attemptKey = toolAttemptKey(name, args);
+    const previous = failureBudget.get(attemptKey);
+    if (previous && previous.count >= previous.limit) {
+      return withCompletionEvidence(name, {
+        ok: false,
+        error: {
+          tool: name,
+          message: "Blocked an equivalent retry after " + previous.count + " failed attempt(s): " + previous.message,
+          origin: "retry_budget",
+        },
+        recovery: {
+          blocked: true,
+          instruction: "Change the arguments or approach. Use tools.search/describe when the contract is unclear; do not repeat this call.",
+        },
+      });
+    }
+
+    let envelope;
     try {
-      const envelope = await invokeEnvelope(name, args);
-      if (
+      envelope = await invokeEnvelope(name, args);
+      const outcomeFailed =
         OPERATIONAL_OUTCOME_TOOLS.has(name) &&
         envelope && envelope.ok === true &&
         envelope.data && typeof envelope.data === "object" &&
-        envelope.data.success === false
-      ) {
+        (envelope.data.success === false || envelope.data.ok === false);
+      if (outcomeFailed) {
         const message = typeof envelope.data.errorSummary === "string" && envelope.data.errorSummary
           ? envelope.data.errorSummary
           : typeof envelope.data.error === "string" && envelope.data.error
             ? envelope.data.error
-            : name + " reported success: false";
-        return {
+            : name + " reported an unsuccessful outcome";
+        envelope = {
           ok: false,
           error: {
             tool: name,
@@ -766,7 +854,6 @@ function createEnvelopeToolCall(name, invokeEnvelope) {
           data: envelope.data,
         };
       }
-      return envelope;
     } catch (error) {
       const message = error && typeof error.message === "string" && error.message
         ? error.message
@@ -776,9 +863,60 @@ function createEnvelopeToolCall(name, invokeEnvelope) {
         origin: "transport",
         error: message,
       });
-      return { ok: false, error: { tool: name, message, origin: "transport" } };
+      envelope = { ok: false, error: { tool: name, message, origin: "transport" } };
     }
+
+    if (!envelope || envelope.ok !== true) {
+      const message = envelope && envelope.error && typeof envelope.error.message === "string"
+        ? envelope.error.message
+        : "tool call failed";
+      const limit = NON_RETRYABLE_TOOL_ERROR.test(message) ? 1 : 2;
+      const count = previous && previous.message === message ? previous.count + 1 : 1;
+      failureBudget.set(attemptKey, { count, limit, message });
+      envelope = {
+        ...envelope,
+        recovery: {
+          blocked: count >= limit,
+          remainingEquivalentRetries: Math.max(0, limit - count),
+          instruction: count >= limit
+            ? "Do not repeat this call. Change the arguments or approach."
+            : "Inspect the error and change course if the next attempt fails identically.",
+        },
+      };
+    } else {
+      failureBudget.delete(attemptKey);
+    }
+    return withCompletionEvidence(name, envelope);
   };
+}
+
+function createToolsFacade(entries, search) {
+  const target = Object.freeze(Object.fromEntries(entries));
+  return new Proxy(target, {
+    get(object, property, receiver) {
+      if (property === "then") return undefined;
+      if (typeof property !== "string" || Reflect.has(object, property)) {
+        return Reflect.get(object, property, receiver);
+      }
+      return async () => {
+        const suggestions = search({ query: property, limit: 5 }).items.map((item) => item.name);
+        return withCompletionEvidence(property, {
+          ok: false,
+          error: {
+            tool: property,
+            message: "Unknown tool " + JSON.stringify(property) + "." +
+              (suggestions.length ? " Suggested tools: " + suggestions.join(", ") + "." : " Browse tools with await tools.help()."),
+            origin: "discovery",
+            suggestions,
+          },
+          recovery: {
+            blocked: true,
+            instruction: "Use await tools.search(\"<intent>\") and await tools.describe(name) before calling a replacement.",
+          },
+        });
+      };
+    },
+  });
 }
 
 function createScreenshotFacade(binding) {
@@ -937,6 +1075,22 @@ function createConnectionsFacade(binding) {
     throw new Error("CONNECTIONS method invocation is not configured");
   };
 
+  async function findConnection(query) {
+    const result = await binding.find(query);
+    if (!result || typeof result !== "object" || Array.isArray(result)) return result;
+    const connection = result.connection && typeof result.connection === "object"
+      ? result.connection
+      : null;
+    const verificationQuery = typeof connection?.name === "string" && connection.name
+      ? connection.name
+      : String(query || result.alias || "");
+    return {
+      ...result,
+      recommendedVerificationCall: "await env.CONNECTIONS.verify(" + JSON.stringify(verificationQuery) + ")",
+      verificationNote: "Run the recommended verification call when verification is requested; inspecting status alone does not perform verification.",
+    };
+  }
+
   function responseFromFetchPayload(payload) {
     if (!payload || typeof payload !== "object" || typeof payload.status !== "number") {
       return payload;
@@ -977,7 +1131,7 @@ function createConnectionsFacade(binding) {
     get(_target, connectionName) {
       if (connectionName === "then") return undefined;
       if (connectionName === "$methods") return () => binding.methods();
-      if (connectionName === "$find") return (query) => binding.find(query);
+      if (connectionName === "$find") return (query) => findConnection(query);
       if (connectionName === "$test") return (query) => binding.test(query);
       if (connectionName === "$verify") return (query) => binding.verify(query);
       if (connectionName === "$list") return () => binding.list();
@@ -995,6 +1149,7 @@ function createConnectionsFacade(binding) {
         "invoke",
         legacyInvokeMethod,
       ].includes(connectionName)) {
+        if (connectionName === "find") return (query) => findConnection(query);
         const value = binding[connectionName];
         return typeof value === "function" ? (...args) => value.apply(binding, args) : value;
       }
@@ -1004,6 +1159,13 @@ function createConnectionsFacade(binding) {
           if (methodName === "then") return undefined;
           if (typeof methodName !== "string") return undefined;
           return async (...args) => {
+            // Connection-level verification is an intuitive spelling and must
+            // use the normalized registry operation, not method invocation.
+            // It preserves configuration-only semantics for imported APIs and
+            // persists the resulting health snapshot.
+            if (methodName === "verify") return binding.verify(connectionName);
+            if (methodName === "test") return binding.test(connectionName);
+
             let input = args[0] ?? {};
             if (methodName === "fetch") {
               const serialized = await serializeFetchInput(args[0] ?? "");
@@ -1015,12 +1177,21 @@ function createConnectionsFacade(binding) {
                 },
               };
             }
-            const result = await invokeConnectionMethod({
-              connection: connectionName,
-              method: methodName,
-              input,
-            });
-            return methodName === "fetch" ? responseFromFetchPayload(result) : result;
+            try {
+              const result = await invokeConnectionMethod({
+                connection: connectionName,
+                method: methodName,
+                input,
+              });
+              return methodName === "fetch" ? responseFromFetchPayload(result) : result;
+            } catch (error) {
+              const message = error instanceof Error ? error.message : String(error);
+              throw new Error(
+                message + " Use await env.CONNECTIONS.find(\"" + connectionName
+                  + "\") to inspect callable methods, or await env.CONNECTIONS.verify(\""
+                  + connectionName + "\") for normalized verification.",
+              );
+            }
           };
         },
       });
@@ -1122,13 +1293,17 @@ export class CodeModeRunner extends WorkerEntrypoint {
     const rawTools = Object.freeze(Object.fromEntries(
       registeredTools.map((tool) => [tool.name, (args = {}) => callTool(tool.name, args)]),
     ));
-    const toolEntries = registeredTools.map((tool) => [tool.name, createEnvelopeToolCall(tool.name, invokeEnvelope)]);
-    const tools = Object.freeze(Object.fromEntries([
+    const failureBudget = new Map();
+    const toolEntries = registeredTools.map((tool) => [
+      tool.name,
+      createEnvelopeToolCall(tool.name, invokeEnvelope, failureBudget),
+    ]);
+    const tools = createToolsFacade([
       ["help", help],
       ["search", search],
       ["describe", describe],
       ...toolEntries,
-    ]));
+    ], search);
     const CONNECTIONS_BINDING = createToolBackedConnectionsBinding(callTool);
     const connections = createConnectionsFacade(CONNECTIONS_BINDING);
     const CONNECTIONS = connections;

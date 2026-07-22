@@ -1,5 +1,5 @@
 {
-  "$comment": "Single source of truth for committed agent evals. Adding an eval = create workers/main/tests/evals/<id>.test.ts (gated on RUN_AGENT_EVALS, ending in emitEvalTranscript from ./eval-transcript) and add one entry here. Each entry requires kind: unit checks one mechanism; skill checks end-to-end agent ability. Optional tier:\"hard\" marks high-difficulty evals; absent means standard. New evals should emit a task-specific 0-4 anchored rubric with 3-8 criteria whose positive weights total 100. Machine checks and scorecards remain diagnostic evidence; the rollout judge is primary when available, while harness and artifact-contract failures remain hard gates. Consumed by scripts/run-agent-eval.mjs and scripts/run-eval-suite.sh. custom-prompt-live is intentionally NOT listed — it's the generic env-driven custom-prompt harness, not a fixed eval. realDeploy:true marks evals that only run when real deploy is enabled (CF_API_TOKEN + EVAL_REAL_DEPLOY!=0).",
+  "$comment": "Single source of truth for committed agent evals. Adding an eval = create workers/main/tests/evals/<id>.test.ts (gated on RUN_AGENT_EVALS, ending in emitEvalTranscript from ./eval-transcript) and add one entry here. Each entry requires kind: unit checks one mechanism; skill checks end-to-end agent ability. Optional tier:\"hard\" marks high-difficulty evals; absent means standard. New evals should emit a task-specific 0-4 anchored rubric with 3-8 criteria whose positive weights total 100. Machine checks and scorecards remain diagnostic evidence; the rollout judge is primary when available, while harness and artifact-contract failures remain hard gates. Deterministic pass/fail checks should cover objective persisted state, safety boundaries, and harness integrity—not exact tool spellings, incidental call order, prose wording, or efficiency; put those semantic judgments in the task rubric and retain probes as runtimeAssertions. Consumed by scripts/run-agent-eval.mjs and scripts/run-eval-suite.sh. custom-prompt-live is intentionally NOT listed — it's the generic env-driven custom-prompt harness, not a fixed eval. realDeploy:true marks evals that only run when real deploy is enabled (CF_API_TOKEN + EVAL_REAL_DEPLOY!=0).",
   "evals": [
     {
       "id": "dashboard-fake-data-live",
@@ -194,7 +194,7 @@
     },
     {
       "id": "metrics-ground-truth-notebook-live",
-      "description": "Analyze a seeded CSV in a notebook and report four findings the harness checks against computed ground truth",
+      "description": "Analyze a seeded CSV with explicit provenance, avoid deployment, and report findings checked against computed ground truth",
       "kind": "skill",
       "tier": "hard"
     }

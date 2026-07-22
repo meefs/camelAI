@@ -14,7 +14,7 @@ Users can upload files by dragging and dropping onto the chat or clicking the + 
 (user uploaded file to uploads/document-1736712345-abc123.pdf)
 ```
 
-Uploads live in workspace-scoped R2, not in the project VM checkout. Use the normal file tools with `location: "r2"` and paths under `uploads/`.
+Uploads live in workspace-scoped R2. Use the normal file tools with `location: "r2"` and paths under `uploads/`.
 
 ### Reading User Uploads
 
@@ -29,12 +29,14 @@ await tools.read({ location: "r2", path: "uploads/filename.txt" });
 await tools.read({ location: "r2", path: "uploads/image.png" });
 ```
 
-If you need an uploaded file inside a project VM, copy it explicitly:
+If you need a durable copy inside a project, copy it explicitly. For analysis,
+prefer reading the mounted upload directly at `/uploads/<name>` so large inputs
+are not duplicated:
 
 ```js
 await tools.move({
   source: { location: "r2", path: "uploads/input.csv" },
-  destination: { location: "vm", project: "analysis-app", path: "/workspace/input.csv" },
+  destination: { location: "project", project: "analysis-app", path: "input.csv" },
 });
 ```
 
@@ -42,7 +44,7 @@ Files persist across sessions, so users can reference previously uploaded files.
 
 ## Creating Output Files
 
-Files the user should download or preview must be written to workspace-scoped R2 under `outputs/`. Do not create a local `outputs/` directory in the project VM and link to it; those links will not use the workspace outputs API.
+Files the user should download or preview must be written to workspace-scoped R2 under `outputs/`. Do not create a project-local `outputs/` directory and link to it; those links will not use the workspace outputs API.
 
 ```js
 // Save a text file directly to R2 outputs
@@ -53,15 +55,15 @@ await tools.write({
   content_type: "text/plain",
 });
 
-// Copy a generated VM file to R2 outputs
+// Copy a generated project file to R2 outputs
 await tools.move({
-  source: { location: "vm", project: "analysis-app", path: "/workspace/output.pdf" },
+  source: { location: "project", project: "analysis-app", path: "output.pdf" },
   destination: { location: "r2", path: "outputs/report.pdf" },
 });
 
-// Copy a generated VM directory to R2 outputs
+// Copy a generated project directory to R2 outputs
 await tools.move({
-  source: { location: "vm", project: "analysis-app", path: "/workspace/charts" },
+  source: { location: "project", project: "analysis-app", path: "charts" },
   destination: { location: "r2", path: "outputs/charts" },
 });
 ```
@@ -94,21 +96,25 @@ Images will display inline in the chat; other files will download when clicked.
 
 2. **Use descriptive filenames** - When creating output files, use clear names like `sales-report-2024.pdf` instead of `output.pdf`.
 
-3. **Always provide links** - Don't just say "I've saved the file". Provide a URL so users can easily access it.
+3. **Verify before claiming delivery** - Read back or list the exact `outputs/` path after writing or moving it. For ZIP, workbook, PDF, and other structured formats, validate that the file opens and has the expected entries/sheets/pages before calling it complete. A successful generation command does not prove the user-facing output exists.
 
-4. **Use inline images** - For charts, diagrams, and visual outputs, use the image markdown syntax so users see them directly in the chat.
+4. **Always provide links** - Don't just say "I've saved the file". Provide a URL so users can easily access it.
 
-5. **Handle large files** - For very large outputs, create an archive in the project VM and then move the archive to R2 outputs:
+5. **Use inline images** - For charts, diagrams, and visual outputs, use the image markdown syntax so users see them directly in the chat.
+
+6. **Handle large files** - For large generated outputs, create an archive in the
+   analysis sandbox for a DO-backed project, let the changed archive persist to
+   project storage, and then copy it to R2 outputs:
 
    ```js
-   await vm.exec({ project: "analysis-app", command: "zip -r /workspace/all-files.zip generated-files/" });
+   await tools.analysis_exec({ project: "analysis-app", command: "zip -r all-files.zip generated-files/" });
    await tools.move({
-     source: { location: "vm", project: "analysis-app", path: "/workspace/all-files.zip" },
+     source: { location: "project", project: "analysis-app", path: "all-files.zip" },
      destination: { location: "r2", path: "outputs/all-files.zip" },
    });
    ```
 
-6. **Clean up** - If you create temporary project VM files during processing, remove them when done. Only keep files under `outputs/` that the user needs.
+7. **Clean up** - If you create temporary project files during processing, remove them when done. Only keep files under `outputs/` that the user needs.
 
 ## R2 Path Structure
 

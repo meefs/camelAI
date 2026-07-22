@@ -47,6 +47,7 @@ import type {
   CodeModeJavascriptResult,
 } from "./types";
 import type { HostedCapability } from "../../../../src/lib/capability-allowances";
+import { capPiMainRequestOutput } from "./pi-compaction";
 
 export interface PiToolDefinitionOptions {
   includeSubagents?: boolean;
@@ -241,10 +242,10 @@ const JS_EXEC_ONLY_TOOL_INVENTORY = (() => {
 // is fetched only when the model actually writes code, instead of sitting in
 // every turn's prompt prefix.
 const JS_EXEC_DESCRIPTION =
-  "Run JavaScript or TypeScript (types are stripped) in a Worker-style sandbox with every workspace tool on the global `tools` object plus runtime bindings (`env.CONNECTIONS`, `env.AI`, `env.CAMELAI`, `env.WORKSPACE`, `env.PROJECTS`). The final expression is returned and console output is captured. " +
-  "Before writing non-trivial code, run `await tools.help()` once — it returns the full usage guide (file locations, projects, connections, hosted helpers) plus the tool catalog by category. " +
-  "NEVER guess a tool name: `await tools.search(\"<intent + key nouns>\")`, then `await tools.describe(items[0].name)`, then invoke as the result's `call` field shows (kind \"tool\" runs as `await tools.<name>(args)`; kind \"runtime\" results are sandbox globals, never on `tools`). " +
-  "Every `tools.<name>(args)` call resolves to `{ ok: true, data }` or `{ ok: false, error: { message } }` — branch on `result.ok` instead of try/catch; failed calls do not throw, so you can describe the tool and retry in the same run. " +
+  "Run JavaScript or TypeScript in a Worker sandbox with workspace tools on `tools` and runtime bindings on `env`. The final expression and console output are returned. " +
+  "Before non-trivial code, run `await tools.help()` once for the guide and catalog. " +
+  "NEVER guess a tool name: call `await tools.search(\"<intent + nouns>\")`, inspect with `await tools.describe(name)`, then invoke as its `call` field shows. Runtime results are globals, not `tools` methods. " +
+  "Tool calls return `{ ok, data?, error?, completionEvidence? }`; branch on `result.ok` and assert only `completionEvidence.supportedClaims`. Unknown tools suggest replacements and equivalent failures have retry budgets. " +
   `Tools reachable ONLY here (not in your tool list) — ${JS_EXEC_ONLY_TOOL_INVENTORY}. ` +
   "`run_notebook` and `deploy_project` open successful results in preview automatically; failures leave preview unchanged. No follow-up `set_preview` or `list_apps` call is needed; use `set_preview` only for an explicit switch. " +
   "Interactive tools that wait for the user (prompt_connection_setup, delete_connection, delete_project, AskUserQuestion) are top-level tools and cannot be called from js_exec.";
@@ -599,7 +600,7 @@ export async function runPiSubagentTool(
   const child = new Agent({
     initialState: {
       systemPrompt: await deps.createPiSubagentSystemPrompt(context, isExplore),
-      model: modelConfig.model,
+      model: capPiMainRequestOutput(modelConfig.model),
       tools: deps.createPiToolDefinitions(context, {
         includeSubagents: false,
         includeResearch: false,
@@ -612,7 +613,7 @@ export async function runPiSubagentTool(
     getApiKey: async () => {
       const current = await resolveCurrentModel();
       modelConfig = current;
-      child.state.model = current.model;
+      child.state.model = capPiMainRequestOutput(current.model);
       return current.apiKey;
     },
     beforeToolCall: (toolContext, signal) =>

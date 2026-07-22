@@ -52,6 +52,7 @@ The React Router templates include SSR, Tailwind v4, Cloudflare deployment metad
 - Declare every package and build CLI in `package.json`. Add packages with `add_dependency`.
 - Preserve the scaffold's build script, deploy-manifest writer, TypeScript strictness, and binding metadata unless the architecture requires a deliberate change.
 - Fail loudly on unexpected persistence, binding, or runtime errors. Do not turn failures into empty data.
+- Never silently replace requested live data with samples, random values, modeled estimates, cached fixtures, or fallback data. If a non-live mode is explicitly useful, label it in the UI and API as `sample`, `simulated`, `modeled`, `cached`, or `delayed`, include freshness where known, and keep connection failures visible.
 
 ## Read Only the Relevant Reference
 

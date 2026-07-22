@@ -111,6 +111,12 @@ import { codeModeWorkerModule } from "./code-mode-runner";
 import type {
   DynamicIntegrationSchema,
 } from "../../../src/lib/integration-registry";
+import {
+  deriveVerifiedWorkEvidence,
+  formatVerifiedWorkStatePrompt,
+  mergeVerifiedWorkState,
+  type VerifiedWorkEvidence,
+} from "./chat-thread/verified-work-state";
 
 export type { ConnectionSetupResponse } from "./chat-thread-browser-prompts";
 export {
@@ -202,6 +208,7 @@ import {
 import {
   piModelContextWindow,
   piCompactionReserveTokens,
+  capPiMainRequestOutput,
   estimatePiCompactionTokens,
   shouldCompactPiAfterAssistantUsage,
   loadPiCompleteSimple,
@@ -481,6 +488,7 @@ const CHAT_TODOS_KEY = "chatTodos";
 const CHAT_CONTEXT_USED_PERCENT_KEY = "chatContextUsedPercent";
 const CHAT_CONTEXT_WINDOW_BY_MODEL_KEY = "chatContextWindowByModel";
 const CHAT_ACTIVE_TURN_USER_ID_KEY = "chatActiveTurnUserId";
+const CHAT_VERIFIED_WORK_STATE_KEY = "chatVerifiedWorkState";
 
 // ai-chat's recovery-bookkeeping storage keys are imported from agents/chat
 // (CHAT_RECOVERY_INCIDENT_KEY_PREFIX / CHAT_RECOVERING_KEY /
@@ -642,7 +650,7 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
   private piActiveItemText = "";
   private piReasoningItemId: string | null = null;
   private piToolArgs: Map<string, Record<string, unknown>> = new Map();
-  private piToolFailures = new Map<string, { count: number; error: string }>();
+  private piToolFailures = new Map<string, { count: number; error: string; limit: number }>();
   private piToolFailureRecordedCallIds = new Set<string>();
   private piAssistantText = "";
   private runningActivityLastText: string | null = null;
@@ -2633,23 +2641,57 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
         result: context.result,
         isError: context.isError,
       });
-      if (repeatedFailure !== 2) return truncated;
+      const evidence = deriveVerifiedWorkEvidence({
+        toolCallId: context.toolCall.id,
+        toolName: context.toolCall.name,
+        args: context.args,
+        result: context.result,
+        isError: context.isError,
+      });
+      if (evidence) {
+        ChatThreadDO.prototype.recordVerifiedWorkEvidence.call(this, evidence);
+      }
+      const retryBudgetReached = repeatedFailure !== null &&
+        repeatedFailure.count >= repeatedFailure.limit;
+      if (!retryBudgetReached && !evidence) return truncated;
       const content = truncated?.content ?? context.result.content;
       return {
         ...truncated,
         content: [
           ...content,
-          {
-            type: "text",
-            text: "Recovery hint: this exact tool call has failed twice with the same error. Change the arguments or approach before retrying; use tools.search/describe when the contract is unclear.",
-          },
+          ...(evidence ? [{
+            type: "text" as const,
+            text: `Completion evidence: ${JSON.stringify({
+              status: evidence.status,
+              supportedClaims: evidence.supportedClaims,
+              unsupportedClaims: evidence.unsupportedClaims,
+              target: evidence.target,
+            })}`,
+          }] : []),
+          ...(retryBudgetReached ? [{
+            type: "text" as const,
+            text: `Recovery hint: this exact tool call exhausted its retry budget after ${repeatedFailure!.count} failed attempt(s). Change the arguments or approach; use tools.search/describe when the contract is unclear, and do not repeat this call.`,
+          }] : []),
         ],
-        details: truncated?.details ?? context.result.details,
+        details: mergePiToolResultDetails(
+          truncated?.details ?? context.result.details,
+          evidence ? { completionEvidence: evidence } : {},
+        ),
       };
     } catch (error) {
       console.error("[ChatThreadDO] Pi afterToolCall hook failed", error);
       return undefined;
     }
+  }
+
+  recordVerifiedWorkEvidence(evidence: VerifiedWorkEvidence): void {
+    const kv = this.ctx?.storage?.kv;
+    if (!kv) return;
+    const next = mergeVerifiedWorkState(
+      kv.get<unknown>(CHAT_VERIFIED_WORK_STATE_KEY),
+      evidence,
+    );
+    kv.put(CHAT_VERIFIED_WORK_STATE_KEY, next);
   }
 
   private piToolFailureKey(toolName: string, args: unknown): string {
@@ -2689,21 +2731,24 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
     args: unknown;
     result: unknown;
     isError: boolean;
-  }): number {
+  }): { count: number; limit: number } | null {
     this.piToolFailureRecordedCallIds ??= new Set();
     this.piToolFailures ??= new Map();
-    if (this.piToolFailureRecordedCallIds.has(input.toolCallId)) return 0;
+    if (this.piToolFailureRecordedCallIds.has(input.toolCallId)) return null;
     this.piToolFailureRecordedCallIds.add(input.toolCallId);
     const key = ChatThreadDO.prototype.piToolFailureKey.call(this, input.toolName, input.args);
     const error = ChatThreadDO.prototype.piToolFailureText.call(this, input.result, input.isError);
     if (!error) {
       this.piToolFailures.delete(key);
-      return 0;
+      return null;
     }
     const previous = this.piToolFailures.get(key);
     const count = previous?.error === error ? previous.count + 1 : 1;
-    this.piToolFailures.set(key, { count, error });
-    return count;
+    const limit = /(?:\b401\b|\b402\b|unauthori[sz]ed|forbidden|permission denied|credits? (?:are )?(?:used up|exhausted)|quota|billing|unknown tool|not configured)/i.test(error)
+      ? 1
+      : 2;
+    this.piToolFailures.set(key, { count, error, limit });
+    return { count, limit };
   }
 
   private async beforePiToolCall(
@@ -2715,10 +2760,17 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
     const previous = this.piToolFailures.get(
       ChatThreadDO.prototype.piToolFailureKey.call(this, context.toolCall.name, context.args),
     );
-    if (!previous || previous.count < 2) return undefined;
+    if (!previous || previous.count < previous.limit) return undefined;
+    if (typeof this.recordChatThreadObservabilityEvent === "function") {
+      this.recordChatThreadObservabilityEvent("pi_tool_retry_blocked", {
+        operation: context.toolCall.name,
+        status: "blocked",
+        count: previous.count,
+      });
+    }
     return {
       block: true,
-      reason: "Blocked an identical third retry after the same tool call failed twice. Change the arguments, inspect the tool contract, or use a different approach.",
+      reason: `Blocked an identical retry after the same tool call exhausted its ${previous.limit}-attempt budget. Change the arguments, inspect the tool contract, or use a different approach.`,
     };
   }
 
@@ -4886,7 +4938,7 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
     const session = new Agent({
       initialState: {
         systemPrompt: this.createPiSystemPrompt(context, envVars),
-        model: modelConfig.model,
+        model: capPiMainRequestOutput(modelConfig.model),
         tools: this.createPiToolDefinitions(context, {
           includeOracle: this.isCamelCodeActive(envVars),
         }),
@@ -4912,7 +4964,7 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
       getApiKey: async () => {
         const current = await resolveCurrentModel();
         if (this.piSession) {
-          this.piSession.state.model = current.model;
+          this.piSession.state.model = capPiMainRequestOutput(current.model);
           this.refreshPiSessionCapabilitySurface(context, envVars);
         }
         return current.apiKey;
@@ -4946,11 +4998,15 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
     context: ChatContextState,
     envVars?: Record<string, string>,
   ): string {
-    return createPiSystemPrompt(context, {
+    const base = createPiSystemPrompt(context, {
       skillNames: PI_SKILL_NAMES,
       skillDescriptions: PI_SKILL_DESCRIPTIONS,
       oracleAvailable: this.isCamelCodeActive(envVars),
     });
+    const verifiedWorkState = formatVerifiedWorkStatePrompt(
+      this.ctx?.storage?.kv?.get<unknown>(CHAT_VERIFIED_WORK_STATE_KEY),
+    );
+    return verifiedWorkState ? `${base}\n\n${verifiedWorkState}` : base;
   }
 
   private async compactPiContext(
@@ -6126,7 +6182,7 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
     // may dispose (or replace) the Pi session while it is in flight; never
     // dereference or mutate that stale session after the await.
     if (this.piSession !== session) return;
-    session.state.model = current.model;
+    session.state.model = capPiMainRequestOutput(current.model);
     if (this.chatContext) {
       this.refreshPiSessionCapabilitySurface(this.chatContext);
     }

@@ -52,9 +52,9 @@ A 30x speedup means you can iterate 30 times faster. This compounds: what takes 
    bun test
    ```
 
-6. **Deploy** - Once tests pass, deploy with confidence
-   ```bash
-   bun deploy
+6. **Deploy** - Once tests pass, publish through the mediated project tool (not a package-manager or Wrangler deploy command)
+   ```js
+   await tools.deploy_project({ project: "<project-name>" });
    ```
 
 ### Test File Location

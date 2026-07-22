@@ -315,10 +315,15 @@ export function toolCallReferences(
   toolName: string,
   expectedText: string,
 ): boolean {
-  return collectRuntimeItems(events).some((item) =>
-    item.isError !== true && asString(item.status)?.toLowerCase() === "completed" &&
-    runtimeItemToolCallReferences(item, toolName, expectedText)
-  );
+  return collectRuntimeItems(events).some((item) => {
+    const result = asRecord(item.result);
+    const details = asRecord(result?.details);
+    const failedOutcome = result?.ok === false || result?.success === false ||
+      details?.ok === false || details?.success === false;
+    return item.isError !== true && !failedOutcome &&
+      asString(item.status)?.toLowerCase() === "completed" &&
+      runtimeItemToolCallReferences(item, toolName, expectedText);
+  });
 }
 
 export function completedToolDetails(

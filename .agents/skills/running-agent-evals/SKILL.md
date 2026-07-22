@@ -56,6 +56,9 @@ Author evals with these guardrails:
 - Use structured runtime evidence from `project-eval-helpers.ts`. Associate expected paths with
   the specific invocation (`toolCallReferences`), and require successful result evidence where
   outcome matters (`hasSuccessfulNotebookRun`); never hard-gate on serialized event substrings.
+- Keep deterministic pass/fail checks to objective persisted state, safety boundaries, and harness
+  integrity. Put semantic quality, acceptable tool strategy, and instruction-following in the
+  task rubric for the primary judge; keep exact tool spellings/order and prose probes diagnostic.
 - Clear seeded notebook execution state, require a successful clean `run_notebook`, and reject
   persisted error outputs. Seed data-analysis fixtures with `resetNotebookExecution: true`.
 - Use `fetchJsonWithRetry`/`fetchWithRetry` for live checks. Mutations default to one attempt to
