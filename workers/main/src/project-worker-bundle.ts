@@ -2,7 +2,6 @@ import { collectFile } from "@cloudflare/sandbox";
 import type { DirectDeployAsset, DirectWorkerMetadata, DirectWorkerModule } from "./direct-dispatch-deploy.js";
 import type { WorkerBinding } from "./cf-api-proxy.js";
 import { mapWithConcurrency } from "../../../src/lib/map-with-concurrency";
-import { base64ToBytes } from "./base64-codec.js";
 
 const BUNDLE_READ_CONCURRENCY = 4;
 
@@ -51,8 +50,8 @@ export async function collectWorkerBundleFromSandbox(
   workdir: string,
   manifestPath = "build/server/wrangler.json",
 ): Promise<ProjectWorkerBundle> {
-  if ((!sandbox.readFile && !sandbox.readFileStream) || !sandbox.listFiles) {
-    throw new Error("Sandbox does not support build output reads");
+  if (!sandbox.readFileStream || !sandbox.listFiles) {
+    throw new Error("Sandbox does not support streamed build output reads");
   }
   const absoluteManifestPath = joinSandboxPath(workdir, manifestPath);
   const manifestBytes = await readSandboxFileBytes(sandbox, absoluteManifestPath);
@@ -358,9 +357,7 @@ async function collectAssetsFromManifest(
       ? manifest.assets.directory
       : "";
   if (!rawDirectory) return [];
-  if ((!sandbox.readFile && !sandbox.readFileStream) || !sandbox.listFiles) {
-    throw new Error("Sandbox does not support asset output reads");
-  }
+  if (!sandbox.listFiles) throw new Error("Sandbox does not support file listing");
   const assetsRoot = joinSandboxPath(serverRoot, rawDirectory);
   const listed = await sandbox.listFiles(assetsRoot, { recursive: true, includeHidden: true });
   const assets = listed.files.filter((file) => file.type === "file").map((file) => {
@@ -377,14 +374,9 @@ async function collectAssetsFromManifest(
 }
 
 async function readSandboxFileBytes(sandbox: ProjectBuildSandboxLike, path: string): Promise<Uint8Array> {
-  if (sandbox.readFileStream) {
-    const stream = await sandbox.readFileStream(path);
-    const { content } = await collectFile(stream);
-    return typeof content === "string" ? new TextEncoder().encode(content) : content;
-  }
-  if (!sandbox.readFile) throw new Error("Sandbox does not support file reads");
-  const read = await sandbox.readFile(path, { encoding: "base64" });
-  return base64ToBytes(read.content);
+  if (!sandbox.readFileStream) throw new Error("Sandbox does not support streamed file reads");
+  const { content } = await collectFile(await sandbox.readFileStream(path));
+  return typeof content === "string" ? new TextEncoder().encode(content) : content;
 }
 
 /** Wrangler module rule types → Cloudflare upload content types. */

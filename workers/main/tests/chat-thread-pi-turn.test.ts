@@ -273,6 +273,24 @@ function createProjectToolFake({
       return { success: true, stdout: 'built', stderr: '', exitCode: 0 };
     }),
     readFile: vi.fn(async (path: string) => ({ content: sandboxFiles.get(path) ?? base64('') })),
+    readFileStream: vi.fn(async (path: string) => {
+      const binary = atob(sandboxFiles.get(path) ?? base64(''));
+      const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0));
+      const midpoint = Math.ceil(bytes.byteLength / 2);
+      const events = [
+        { type: 'metadata', mimeType: 'application/octet-stream', size: bytes.byteLength, isBinary: true, encoding: 'base64' },
+        { type: 'chunk', data: btoa(String.fromCharCode(...bytes.slice(0, midpoint))) },
+        { type: 'chunk', data: btoa(String.fromCharCode(...bytes.slice(midpoint))) },
+        { type: 'complete' },
+      ].map((event) => `data: ${JSON.stringify(event)}\n\n`).join('');
+      const encoded = new TextEncoder().encode(events);
+      return new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(encoded);
+          controller.close();
+        },
+      });
+    }),
     listFiles: vi.fn(async (path: string) => ({
       files: [...sandboxFiles.keys()]
         .filter((file) => file.startsWith(`${path.replace(/\/+$/g, '')}/`))

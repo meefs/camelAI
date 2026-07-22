@@ -100,23 +100,6 @@ describe("collectWorkerBundleFromSandbox", () => {
     expect(readFilePaths(sandbox)).not.toContain("/workspace/demo/build/client/assets/app.css");
   });
 
-  it("falls back to base64 readFile when streaming is unavailable", async () => {
-    const files = new Map<string, string>([
-      ["/workspace/demo/build/server/wrangler.json", JSON.stringify({ main: "index.js", no_bundle: true })],
-      ["/workspace/demo/build/server/index.js", "export default {};"],
-    ]);
-    const sandbox = fakeBundleSandbox(files);
-    delete sandbox.readFileStream;
-
-    const bundle = await collectWorkerBundleFromSandbox(sandbox, "/workspace/demo");
-
-    expect(bundle.modules).toHaveLength(1);
-    expect(readFilePaths(sandbox)).toEqual([
-      "/workspace/demo/build/server/wrangler.json",
-      "/workspace/demo/build/server/index.js",
-    ]);
-  });
-
   it("converts wrangler durable object config into upload bindings", async () => {
     const files = new Map<string, string>([
       ["/workspace/demo/build/server/wrangler.json", JSON.stringify({
